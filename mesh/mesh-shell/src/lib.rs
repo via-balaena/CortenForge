@@ -23,7 +23,7 @@
 //! mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
-//! // Generate shell with defaults
+//! // Generate a shell
 //! let result = ShellBuilder::new(&mesh)
 //!     .wall_thickness(2.0)
 //!     .fast()

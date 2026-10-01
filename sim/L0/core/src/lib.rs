@@ -2,7 +2,7 @@
 //!
 //! This crate provides the MuJoCo-aligned Model/Data architecture for physics-based
 //! simulations, including collision detection (GJK/EPA, BVH, height fields, SDF),
-//! contact resolution (PGS solver), and forward/inverse dynamics. It follows
+//! contact resolution, and forward/inverse dynamics. It follows
 //! Todorov's design where:
 //!
 //! - [`Model`] is static (immutable after loading)

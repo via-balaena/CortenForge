@@ -1,8 +1,7 @@
 //! # sim-rl
 //!
 //! Generic RL baselines (CEM, REINFORCE, PPO, TD3, SAC) bolted onto
-//! `sim-ml-chassis`. The control group for every CortenForge competition
-//! against physics-aware algorithms in `sim-opt`.
+//! `sim-ml-chassis`.
 //!
 //! Re-exports the chassis types that every algorithm consumer also needs,
 //! so `use sim_rl::{Cem, Algorithm, VecEnv}` works without reaching into

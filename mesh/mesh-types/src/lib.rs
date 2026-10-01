@@ -48,12 +48,6 @@
 //! assert_eq!(mesh.face_count(), 1);
 //! assert!(!mesh.is_empty());
 //! ```
-//!
-//! # Quality Standards
-//!
-//! This crate maintains A-grade standards per [STANDARDS.md](../../docs/STANDARDS.md):
-//! - Zero clippy/doc warnings
-//! - Zero `unwrap`/`expect` in library code
 
 // Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]

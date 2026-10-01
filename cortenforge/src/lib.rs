@@ -2,8 +2,7 @@
 //!
 //! The single, stable public surface of the CortenForge SDK. Applications
 //! depend on this one crate and reach the whole SDK through it — so the SDK's
-//! internal crate structure can evolve behind one contract. See `MISSION.md`
-//! and the app-vs-SDK boundary.
+//! internal crate structure can evolve behind one contract.
 //!
 //! This is a **facade**: each item below re-exports a constituent SDK crate (or
 //! a domain umbrella) verbatim. It adds no logic of its own, and it is
@@ -22,10 +21,10 @@
 //! The flagship headless spine, one umbrella (`cortenforge::sim`):
 //! - [`sim::core`] — rigid-body dynamics (MuJoCo-compatible).
 //! - [`sim::soft`] — backward-Euler soft-body FEM with IFT gradients.
-//! - [`sim::coupling`] — the L1 keystone: differentiable soft↔rigid coupling.
+//! - [`sim::coupling`] — differentiable soft↔rigid coupling.
 //! - [`sim::mjcf`] / [`sim::urdf`] — model I/O.
 //! - [`sim::ml_chassis`] / [`sim::rl`] / [`sim::opt`] — the learning + optimization stack.
-//! - [`sim::thermostat`] / [`sim::therm_env`] — thermodynamic-computing track.
+//! - [`sim::thermostat`] / [`sim::therm_env`] — thermodynamic computing.
 //!
 //! ### Mesh processing — [`mesh`]
 //! The full mesh toolkit, one umbrella (`cortenforge::mesh`):

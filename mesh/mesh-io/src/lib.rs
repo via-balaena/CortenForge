@@ -42,13 +42,6 @@
 //! // Save to a different format
 //! save_mesh(&mesh, "model.obj").unwrap();
 //! ```
-//!
-//! # Quality Standards
-//!
-//! This crate maintains A-grade standards per [STANDARDS.md](../../docs/STANDARDS.md):
-//! - >=90% test coverage
-//! - Zero clippy/doc warnings
-//! - Zero `unwrap`/`expect` in library code
 
 // Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]

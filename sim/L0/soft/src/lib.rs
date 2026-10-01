@@ -1,28 +1,17 @@
 //! `sim-soft` — soft-body FEM crate.
 //!
-//! Scope: backward-Euler hyperelastic FEM on
-//! linear-tetrahedral (`Tet4`) meshes with per-element materials
-//! sourced from a per-mesh [`MaterialField`] aggregator. Two material
-//! impls today — [`NeoHookean`] (Phase 4 scaffold) and [`Yeoh`] (Yeoh
-//! arc, F1+F2+F3+F4.0). Multi-element assembly (Phase 2), pure-Rust
-//! SDF→tet bridge via BCC plus Labelle-Shewchuk Isosurface Stuffing
-//! (Phase 3), bonded multi-material via spatial field aggregation
-//! (Phase 4), and rigid-contact FEM via penalty and IPC C²-barrier
-//! models with friction (Phase 5). Architecture follows the seven
-//! γ-locked API names from
-//! `project_soft_body_gamma_apis.md`;
-//! `MaterialField` is internal-API-shaped per Phase 4 scope memo
-//! Decision M.
+//! Scope: backward-Euler hyperelastic FEM on tetrahedral meshes with
+//! per-element materials sourced from a per-mesh [`MaterialField`]
+//! aggregator. Two material impls today — [`NeoHookean`] and [`Yeoh`].
+//! Multi-element assembly, pure-Rust SDF→tet bridge via BCC plus
+//! Labelle-Shewchuk Isosurface Stuffing, bonded multi-material via
+//! spatial field aggregation, and rigid-contact FEM via penalty and IPC
+//! C²-barrier models with friction.
 //!
 //! Mesh + solver are generic over `M: Material` (default
-//! [`NeoHookean`]); existing NH consumers compile unchanged via
-//! default-type-param elision, Yeoh consumers write `M = Yeoh`
-//! explicitly via the [`CpuTet4YeohSolver`] /
+//! [`NeoHookean`]); Yeoh consumers write `M = Yeoh` explicitly via the
+//! [`CpuTet4YeohSolver`] /
 //! [`PenaltyRigidContactYeohSolver`] aliases.
-//!
-//! Forward roadmap: Phase E GPU port; Phase H decorators (HGO
-//! anisotropy, viscoelasticity, thermal coupling), Tet10, and
-//! interface-aware refinement.
 
 // Lint policy for intentional placeholders is scoped per-module (not crate-wide)
 // so the crate root can't silently mask unrelated dead code or panic-doc gaps:

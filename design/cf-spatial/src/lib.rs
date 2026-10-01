@@ -1,7 +1,7 @@
 //! Spatial data structures for CortenForge.
 //!
-//! This crate provides foundational spatial data structures used across the CortenForge
-//! ecosystem for pathfinding, collision detection, and spatial queries:
+//! This crate provides foundational spatial data structures for pathfinding,
+//! collision detection, and spatial queries:
 //!
 //! - [`VoxelGrid`] - Regular 3D voxel lattice with efficient indexing
 //! - [`VoxelCoord`] - Integer voxel coordinates
@@ -23,8 +23,7 @@
 //! # Geometric Primitives
 //!
 //! [`Aabb`], [`Sphere`], and [`Ray`] are re-exported from [`cf_geometry`], the
-//! shared geometric kernel. This crate previously defined its own versions;
-//! they have been unified into `cf-geometry` to eliminate duplication.
+//! shared geometric kernel.
 //!
 //! # Use Cases
 //!
@@ -50,7 +49,7 @@
 //! use cf_spatial::{VoxelGrid, VoxelCoord};
 //! use nalgebra::Point3;
 //!
-//! // Create a 10x10x10 grid with 0.1 unit voxel size
+//! // Create a grid with 0.1 unit voxel size
 //! let mut grid: VoxelGrid<bool> = VoxelGrid::new(0.1);
 //!
 //! // Mark some voxels as occupied
@@ -133,13 +132,6 @@
 //!     println!("Found voxel {:?} with value {}", coord, value);
 //! }
 //! ```
-//!
-//! # Quality Standards
-//!
-//! This crate maintains A-grade standards per [STANDARDS.md](../../docs/STANDARDS.md):
-//! - ≥90% test coverage
-//! - Zero clippy/doc warnings
-//! - Zero `unwrap`/`expect` in library code
 
 // Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]

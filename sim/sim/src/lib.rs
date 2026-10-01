@@ -7,9 +7,6 @@
 //! its `gpu-probe` feature), so this toolkit runs in CLI tools, WASM, servers,
 //! or headless training loops.
 //!
-//! Bevy/GUI crates (`sim/L1/bevy*`) and the wgpu-backed `sim-gpu` are
-//! deliberately excluded — depend on those directly when you need rendering.
-//!
 //! # Module Organization
 //!
 //! ## Foundation
@@ -18,8 +15,8 @@
 //! ## Physics engines
 //! - [`core`] — rigid-body dynamics (MuJoCo-compatible forward/inverse).
 //! - [`soft`] — backward-Euler soft-body FEM with implicit-function-theorem gradients.
-//! - [`coupling`] — the L1 keystone: staggered forward soft↔rigid coupling with
-//!   one `tape.backward` across both engines.
+//! - [`coupling`] — staggered forward soft↔rigid coupling with one
+//!   `tape.backward` across both engines.
 //!
 //! ## Model I/O
 //! - [`mjcf`] — MJCF (MuJoCo XML) model loading.
@@ -28,7 +25,7 @@
 //! ## Learning & optimization
 //! - [`ml_chassis`] — autograd / `Policy` / `VecEnv` training chassis.
 //! - [`rl`] — reinforcement-learning algorithms (CEM/PPO/TD3/SAC).
-//! - [`opt`] — black-box optimizers (SA / parallel tempering / rematch).
+//! - [`opt`] — black-box optimizers (SA / parallel tempering).
 //! - [`thermostat`] — thermodynamic-computing primitives.
 //! - [`therm_env`] — thermodynamic training environments.
 //!

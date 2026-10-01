@@ -1,14 +1,14 @@
-//! Staggered forward soft↔rigid coupling — the Layer-2 keystone, forward half.
+//! Staggered forward soft↔rigid coupling.
 //!
 //! Couples a [`sim_soft`] deformable body and a [`sim_core`] rigid body into one
 //! simulation where they exchange contact force *both* ways, once per lockstep
 //! step (a *partitioned* / staggered scheme). Each [`StaggeredCoupling::step`]:
 //!
-//! 1. reads the rigid body's pose (`sim_core::Data::xpos`) and poses the soft
-//!    body's penalty-contact plane from it (rigid → soft);
-//! 2. takes one *dynamic* backward-Euler soft step against that plane (the
+//! 1. reads the rigid body's pose (`sim_core::Data::xpos`) and poses the
+//!    contact from it (rigid → soft);
+//! 2. takes one *dynamic* backward-Euler soft step against it (the
 //!    inertia term regularises the contact Newton solve — a quasi-static solve
-//!    cannot make the no-contact→contact jump, see `docs/keystone/recon.md`);
+//!    cannot make the no-contact→contact jump);
 //! 3. sums the contact `force_on_soft` over the active pairs;
 //! 4. routes the Newton's-3rd-law reaction `−force_on_soft` onto the rigid
 //!    body's `xfrc_applied` (soft → rigid);
@@ -20,10 +20,7 @@
 //! interface force balance holds and a rigid body settles when the soft
 //! reaction matches its weight.
 //!
-//! Scope: penalty contact (a non-smooth stepping stone to IPC); a single
-//! body-posed plane against a hand-built soft block; the soft solver is rebuilt
-//! per step (re-posing in place is a deferred optimisation). Differentiability
-//! was added incrementally and now spans both engines:
+//! Differentiability spans both engines:
 //! - the *explicit* (fixed-soft-position) coupled-step factors — the analytic
 //!   contact-force-vs-pose derivative ([`StaggeredCoupling::contact_force_height_jacobian`])
 //!   and the rigid force response ([`StaggeredCoupling::rigid_step_probe`]);
@@ -36,8 +33,7 @@
 //! - the soft **material-parameter** gradient
 //!   ([`StaggeredCoupling::coupled_step_material_gradient`]) and its multi-step
 //!   **time-adjoint** ([`StaggeredCoupling::coupled_trajectory_material_gradient`]),
-//!   one `tape.backward` over an N-step coupled rollout — the gradient the
-//!   co-design optimizer's *design* half consumes;
+//!   one `tape.backward` over an N-step coupled rollout;
 //! - the multi-step **open-loop control gradient**
 //!   ([`StaggeredCoupling::coupled_trajectory_control_gradient`]) — `∂z_N/∂u_k`
 //!   for a per-step platen control force (the control input adds to
@@ -45,13 +41,11 @@
 //! - the multi-step **closed-loop policy gradient**
 //!   ([`StaggeredCoupling::coupled_trajectory_policy_gradient`]) — `∂z_N/∂θ` for a
 //!   state-feedback policy `u_k = π_θ(state_k)` ([`DiffPolicy`]/[`LinearFeedback`]),
-//!   backprop-through-time across the state→control recurrence on the same tape,
-//!   the gradient the co-design optimizer's *policy* half consumes;
+//!   backprop-through-time across the state→control recurrence on the same tape;
 //! - the **joint design+policy gradient**
 //!   ([`StaggeredCoupling::coupled_trajectory_joint_gradient`]) — BOTH the soft
 //!   material design variable `μ` (λ = 4μ) AND the policy parameters `θ` live on
-//!   ONE tape, read `(∂z_N/∂μ_total, ∂z_N/∂θ)` from one `tape.backward` — the
-//!   mission's "one outer loop differentiating w.r.t. *both* design and policy".
+//!   ONE tape, read `(∂z_N/∂μ_total, ∂z_N/∂θ)` from one `tape.backward`.
 
 use sim_core::{Data, Model};
 use sim_soft::{MaterialField, PenaltyRigidContact, SolverConfig, Vec3, VertexId};

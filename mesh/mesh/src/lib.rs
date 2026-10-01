@@ -33,7 +33,7 @@
 //!
 //! ## Foundation
 //! - [`types`] - Core data structures: `IndexedMesh`, `Triangle`, `Aabb`, `AttributedMesh`
-//! - [`io`] - File I/O for STL, OBJ, PLY, 3MF, STEP formats
+//! - [`io`] - File I/O for STL, OBJ, PLY, 3MF formats
 //!
 //! ## Core Operations
 //! - [`repair`] - Mesh validation and repair (holes, winding, intersections)
@@ -60,7 +60,7 @@
 /// Core data structures: `IndexedMesh`, `Triangle`, `Aabb`, `AttributedMesh`.
 pub use mesh_types as types;
 
-/// File I/O for STL, OBJ, PLY, 3MF, STEP formats.
+/// File I/O for STL, OBJ, PLY, 3MF formats.
 pub use mesh_io as io;
 
 /// Mesh validation and repair.

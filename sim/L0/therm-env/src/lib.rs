@@ -4,8 +4,7 @@
 //! [`ThermCircuitEnv::builder`] encapsulates the boilerplate that every
 //! thermodynamic-computing experiment repeats: MJCF generation,
 //! thermostat construction, passive-stack wiring, and obs/act space
-//! setup.  All 7 biological navigation experiments use this builder,
-//! configured with different passive components and reward functions.
+//! setup.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

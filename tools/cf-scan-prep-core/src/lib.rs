@@ -1,12 +1,6 @@
 //! `cf-scan-prep-core` — the headless, Bevy-free mesh-editing core for scan
 //! preprocessing.
 //!
-//! This is the pure-compute half of the `cf-scan-prep` tool, extracted so a
-//! second frontend (CortenForge Studio's Bevy scan editor) can drive
-//! the exact same algorithms the Bevy tool does, with no behavior drift. The
-//! Bevy tool keeps the ECS/egui/rendering shell and calls into here; Studio
-//! calls into here too.
-//!
 //! Everything here operates on [`mesh_types::IndexedMesh`] + nalgebra types.
 //! Nothing here depends on Bevy, egui, or any renderer.
 

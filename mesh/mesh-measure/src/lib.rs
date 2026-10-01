@@ -6,7 +6,7 @@
 //! # Features
 //!
 //! - **Dimensions**: Axis-aligned bounding box and derived measurements
-//! - **Oriented Bounding Box**: Minimum-volume bounding box using PCA
+//! - **Oriented Bounding Box**: PCA-aligned bounding box
 //! - **Cross-Sections**: Plane-mesh intersection with area and perimeter
 //! - **Distance**: Point-to-point and point-to-mesh distance calculations
 //!

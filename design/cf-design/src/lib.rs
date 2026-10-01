@@ -22,8 +22,7 @@
 //!
 //! # Layer 0
 //!
-//! Zero Bevy, zero GPU, zero framework dependencies. Pure `nalgebra` +
-//! `cf-geometry`.
+//! Zero Bevy, zero GPU, zero framework dependencies.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

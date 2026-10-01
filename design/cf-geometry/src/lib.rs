@@ -1,8 +1,8 @@
 //! Shared geometric kernel for CortenForge.
 //!
 //! `cf-geometry` provides the canonical geometric primitives used across all
-//! CortenForge domains — mesh processing, physics simulation, spatial queries,
-//! and route planning.
+//! CortenForge domains — mesh processing, physics simulation, and spatial
+//! queries.
 //!
 //! # Design principles
 //!
@@ -18,7 +18,7 @@
 //! # Layer 0
 //!
 //! Zero Bevy, zero GPU, zero framework dependencies. Pure `nalgebra` +
-//! `thiserror` + optional `serde`.
+//! optional `serde`.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
