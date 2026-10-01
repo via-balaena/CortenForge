@@ -18,6 +18,10 @@ exclude = ["COMPLETION.md"]
 [package.metadata.cortenforge]
 tier = "L0-io"
 
+[package.metadata.docs.rs]
+features = ["threemf", "step"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lints]
 workspace = true
 

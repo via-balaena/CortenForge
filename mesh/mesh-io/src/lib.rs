@@ -43,6 +43,7 @@
 //! save_mesh(&mesh, "model.obj").unwrap();
 //! ```
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
 // Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]

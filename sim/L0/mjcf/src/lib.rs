@@ -145,6 +145,7 @@
 //! - Y: forward
 //! - Z: up
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![warn(missing_docs)]
 #![allow(

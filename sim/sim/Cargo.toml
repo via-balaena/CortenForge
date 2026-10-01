@@ -52,6 +52,3 @@ sim-opt = { workspace = true }
 # Thermodynamic-computing track
 sim-thermostat = { workspace = true }
 sim-therm-env = { workspace = true }
-
-[package.metadata.docs.rs]
-all-features = true

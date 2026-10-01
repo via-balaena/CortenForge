@@ -13,6 +13,10 @@ rust-version.workspace = true
 [package.metadata.cortenforge]
 tier = "L0-io"
 
+[package.metadata.docs.rs]
+features = ["mjb"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 # Foundation types (BodyId, Pose) assembled into the Model
 sim-types = { workspace = true }
