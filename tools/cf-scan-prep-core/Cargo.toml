@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-publish = false
 
 # SDK library tier: the Cendrillon app stack (and the cf-scan-prep Bevy tool)
 # consume this AS A LIBRARY, so it is governed (no longer exempt). L0-io — it

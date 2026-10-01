@@ -29,7 +29,7 @@ CortenForge — including the **Cendrillon** application — is general-purpose 
 | **Mesh** | mesh-io, mesh-repair, mesh-sdf + 8 more | STL/OBJ/PLY/3MF I/O, repair, offset, shell, lattice, print validation |
 | **Scan → fabrication** | cf-scan-prep-core, cf-cast, mesh-printability | Scan cleanup, multi-material mold generation, printability gating |
 
-Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel through CMake, so a first build of the facade needs CMake and a C++ compiler — `default-features = false, features = ["sim", "mesh"]` skips it. Layer-0 crates are checked against `wasm32-unknown-unknown` by the quality gate.
+Pure Rust with no framework dependencies in the physics and mesh cores. The mold-CSG stage in `cf-cast` builds a C++ kernel with CMake (fetched at build time), so building `cf-cast` needs CMake and a C++ compiler; the facade leaves it out for now. Layer-0 crates are checked against `wasm32-unknown-unknown` by the quality gate.
 
 ## Quick start
 
@@ -44,7 +44,7 @@ cortenforge = { git = "https://github.com/via-balaena/CortenForge" }
 ```rust
 use cortenforge::sim;   // rigid + soft physics, soft↔rigid coupling, RL/opt
 use cortenforge::mesh;  // load / repair / measure / print meshes
-use cortenforge::{cf_design, cf_scan_prep_core, cf_cast};
+use cortenforge::{cf_design, cf_scan_prep_core};
 ```
 
 ```bash

@@ -111,7 +111,7 @@ fn temp_dir(label: &str) -> PathBuf {
 fn a_full_cast_never_reports_a_file_an_earlier_run_left_behind() {
     let dir = temp_dir("full");
     let first = cast_into(&dir, &PartSelection::all());
-    let stls_dir = first.out_dir.join(cortenforge::cf_cast_cli::STLS_SUBDIR);
+    let stls_dir = first.out_dir.join(cf_cast_cli::STLS_SUBDIR);
 
     // The fixture is only meaningful if the run actually emitted something.
     assert!(
@@ -146,8 +146,8 @@ fn a_full_cast_never_reports_a_file_an_earlier_run_left_behind() {
 fn the_manifest_separates_this_runs_output_from_what_was_already_there() {
     let dir = temp_dir("manifest");
     let first = cast_into(&dir, &PartSelection::all());
-    let stls_dir = first.out_dir.join(cortenforge::cf_cast_cli::STLS_SUBDIR);
-    let manifest = stls_dir.join(cortenforge::cf_cast_cli::MANIFEST_FILENAME);
+    let stls_dir = first.out_dir.join(cf_cast_cli::STLS_SUBDIR);
+    let manifest = stls_dir.join(cf_cast_cli::MANIFEST_FILENAME);
 
     assert!(manifest.is_file(), "a cast writes the manifest");
     let after_first = std::fs::read_to_string(&manifest).unwrap();
@@ -157,8 +157,7 @@ fn the_manifest_separates_this_runs_output_from_what_was_already_there() {
     );
 
     // Regenerate ONE part. Everything else in the folder is now a leftover.
-    let plug_only =
-        PartSelection::from_ids([cortenforge::cf_cast_cli::PartId::Plug { layer_index: 0 }]);
+    let plug_only = PartSelection::from_ids([cf_cast_cli::PartId::Plug { layer_index: 0 }]);
     let second = cast_into(&dir, &plug_only);
     assert_eq!(
         reported(&second),
@@ -193,7 +192,7 @@ fn the_manifest_separates_this_runs_output_from_what_was_already_there() {
     // TEXT and never call the read API. Measured: make `folder_provenance`
     // read the wrong directory and this is the only assertion in the test
     // that fails — the text ones pass throughout.
-    let read_back = cortenforge::cf_cast_cli::folder_provenance(&first.out_dir)
+    let read_back = cf_cast_cli::folder_provenance(&first.out_dir)
         .expect("the cast wrote a manifest this build can read");
     assert_eq!(read_back.run, 2, "the run the file records");
     assert_eq!(
@@ -236,8 +235,7 @@ fn a_selective_recast_exports_one_part_into_a_folder_that_still_holds_the_rest()
         "a fresh destination holds exactly what was copied into it"
     );
 
-    let plug_only =
-        PartSelection::from_ids([cortenforge::cf_cast_cli::PartId::Plug { layer_index: 0 }]);
+    let plug_only = PartSelection::from_ids([cf_cast_cli::PartId::Plug { layer_index: 0 }]);
     let second = cast_into(&dir, &plug_only);
     let partial = export_print_package(&second, &dest).expect("the selective package exports");
 

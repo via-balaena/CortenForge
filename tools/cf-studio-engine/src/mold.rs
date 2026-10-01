@@ -5,11 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_studio_core::{DesignDraft, MoldOutputs, PrepInput, RidgeOptions};
-use cortenforge::cf_cast_cli::{
+use cf_cast_cli::{
     CanalConfig, CastConfig, CastMode, PartSelection, RingConfig, run_selected_with_config,
     run_with_config,
 };
+use cf_studio_core::{DesignDraft, MoldOutputs, PrepInput, RidgeOptions};
 
 use crate::design::save_design_from_draft;
 use crate::error::{EngineError, Result};
@@ -385,7 +385,7 @@ mod tests {
     /// every call site here passes `Detachable`.
     #[test]
     fn only_a_full_detachable_cast_takes_the_validated_full_export() {
-        use cortenforge::cf_cast_cli::PartId;
+        use cf_cast_cli::PartId;
 
         let all = PartSelection::all();
         let subset = PartSelection::from_ids([PartId::Plug { layer_index: 0 }]);
@@ -945,8 +945,7 @@ mod tests {
                 },
             ],
         };
-        let selection =
-            PartSelection::from_ids([cortenforge::cf_cast_cli::PartId::Plug { layer_index: 0 }]);
+        let selection = PartSelection::from_ids([cf_cast_cli::PartId::Plug { layer_index: 0 }]);
         let out_name = "cast_base_mold_studio_verify_plug_only";
 
         let out = generate_molds_for_design(

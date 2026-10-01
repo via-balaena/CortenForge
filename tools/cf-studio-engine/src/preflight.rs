@@ -8,13 +8,13 @@
 //! next to the STL.
 use std::path::PathBuf;
 
-use cf_studio_core::{PlugDraft, PrepInput};
-use cortenforge::cf_cap_planes::parse_cap_planes;
-use cortenforge::cf_cast::plug_fit_verdict;
-use cortenforge::cf_cast_cli::{
+use cf_cast::plug_fit_verdict;
+use cf_cast_cli::{
     CastConfig, DerivedSpec, LayerConfig, derive_spec_and_ribbon, load_scan_sdf,
     parse_centerline_from_prep_toml,
 };
+use cf_studio_core::{PlugDraft, PrepInput};
+use cortenforge::cf_cap_planes::parse_cap_planes;
 
 use crate::error::{EngineError, Result};
 use crate::mold::canal_config_from_ridges;
@@ -179,7 +179,7 @@ pub fn plug_fit_preflight(
 
 #[cfg(test)]
 mod tests {
-    use cortenforge::cf_cast_cli::CastDefaults;
+    use cf_cast_cli::CastDefaults;
 
     use super::*;
 

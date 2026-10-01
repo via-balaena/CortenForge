@@ -1153,6 +1153,47 @@ jobs:
           command: check licenses sources
 
   # ============================================================================
+  # PUBLISH DRY-RUN - the crates.io release set still packages and builds
+  # ============================================================================
+  # A published version can be yanked but never deleted, so the release set is
+  # rehearsed on every run instead of discovered broken on release day. Cheapest
+  # step first:
+  #   1. `publish-set`: the set is the `cortenforge` facade's closure, at one
+  #      version. What it asserts is defined once, in
+  #      `cargo xtask publish-set --help`, and deliberately not restated here.
+  #   2. `cargo publish --workspace --dry-run`: every crate in that set packages,
+  #      then builds (default features) from its own tarball against the
+  #      others' tarballs.
+  # ⚠ Neither step can see name OWNERSHIP, so a name someone else holds on
+  # crates.io passes both. A name+version already on the index prints
+  # `already exists` as a warning, not an error (cargo downgrades it in a dry
+  # run). Requirements between the set's crates are exact (`=`), and
+  # `publish-set` enforces that: with a caret, the facade was verified against
+  # another project's `sim` 0.9.2 and this step still passed (measured).
+  # No event-type `if:` (see `doc-theft`): `quality-gate` fails anything that is
+  # not exactly `success`.
+  publish-dry-run:
+    name: Publish dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      - name: The release set is the facade's closure, at one version
+        run: cargo run -q -p xtask -- publish-set
+
+      - name: Every crate in it packages and builds from its own tarball
+        run: cargo publish --workspace --dry-run
+
+  # ============================================================================
   # SEMVER - Breaking change detection
   # ============================================================================
   semver:
@@ -1472,7 +1513,7 @@ jobs:
 
   quality-gate:
     name: Quality Gate
-    needs: [format, ci-scripts, doc-theft, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates]
+    needs: [format, ci-scripts, doc-theft, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates, publish-dry-run]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -43,8 +43,11 @@
 //! - [`cf_cap_planes`] — cap-plane parsing.
 //! - [`cf_device_types`] — shared device-design domain types.
 //! - [`cf_scan_prep_core`] — headless scan-prep (repair / cap / centerline / trim).
-//! - [`cf_cast`] — multi-material mold generation.
-//! - [`cf_cast_cli`] — the scan→cast bridge (`run_with_config`, `CastConfig`).
+//!
+//! Mold generation (`cf-cast`) and the scan→cast bridge (`cf-cast-cli`) are not
+//! re-exported for now: cf-cast builds a C++ kernel, and this facade stays free
+//! of C++. Depend on them from the repository until they rejoin the
+//! `fabrication` feature.
 
 // =============================================================================
 // Simulation & co-design
@@ -103,14 +106,6 @@ pub use cf_device_types;
 /// Headless scan-prep (repair / cap / centerline / trim).
 #[cfg(feature = "fabrication")]
 pub use cf_scan_prep_core;
-
-/// Multi-material mold generation.
-#[cfg(feature = "fabrication")]
-pub use cf_cast;
-
-/// The scan→cast bridge (`run_with_config`, `CastConfig`).
-#[cfg(feature = "fabrication")]
-pub use cf_cast_cli;
 
 #[cfg(test)]
 mod tests {

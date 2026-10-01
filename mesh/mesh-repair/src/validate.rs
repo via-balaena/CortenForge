@@ -295,8 +295,8 @@ pub fn validate_mesh(mesh: &IndexedMesh) -> MeshReport {
 /// ⚠ **Two edge maps, not one**, when `winding_census` is on: the
 /// [`MeshAdjacency`] built here, and [`winding_census`]'s own. The census
 /// needs per-edge traversal *direction*, which `MeshAdjacency` does not
-/// record and cannot currently supply. Measured at **~28 % over the 1.0.0
-/// single-map version** across 12–5120 faces (+0.4 µs at 12 faces, +204 µs at
+/// record and cannot currently supply. Measured at **~28 % over the single-map
+/// version it replaced** across 12–5120 faces (+0.4 µs at 12 faces, +204 µs at
 /// 5120).
 #[must_use]
 pub fn validate_mesh_with_options(mesh: &IndexedMesh, options: &ValidationOptions) -> MeshReport {
