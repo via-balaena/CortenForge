@@ -6,7 +6,7 @@
 with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
 path step 7 runs, is §16t. Step 6's obstacle bake is §16u, the wall's canal surface §16v, and the lowering §16w.
 Step 7's first run is §16x (#978), the element collapsing at its seated tip §16y (#979), and D1's element size §16z
-(#980). The GPU steps are §17, step 3 first (§17a).
+(#980). The GPU steps are §17, step 3 first (§17a). What sets the step at rest is §18.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
@@ -14,6 +14,7 @@ Step 7's first run is §16x (#978), the element collapsing at its seated tip §1
   canal surface, §16v; the lowering, §16w; step 7's first run, §16x; the element collapsing at the seated tip, §16y;
   D1's element size, §16z.
 - **The GPU steps, 3–5:** §17.
+- **What sets the step at rest, and whether the wall's mass or shape can raise it:** §18.
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -5459,3 +5460,65 @@ onto the viscous fixture, taking viscosity at κ = 0 with it, and the widened co
 made to fail. A third, narrow, on those fixes found 2: three fixtures asserted nothing of what they are for, and
 the one-pass gate's later comparisons had never failed. A fourth, gentle, found 1: the viscous fixture's purpose did
 not pin κ = 0. The mutation record above was taken after all four; the last fix has not been reviewed.
+
+## 18. What sets the step at rest (2026-10-02)
+
+Jon asked whether preprocessing the mesh would speed the run. §16y measured where the step falls at the seat; this
+measures what sets it at rest, on the product wall at h_K2's elements (`step7_rest_limiter`, ignored, run on the local
+scan). Every step is a ratio to the unchanged wall's; counts stay local.
+
+Two steps are read throughout. The elastic step is the top mode's with no viscosity (`β = 0`). The loop's step is the
+one the run takes: the probe reproduces the stepper's estimate and asserts that it equals `rest_step`'s. At rest the
+loop's step is 0.63 of the elastic. Added mass can only raise the elastic step, yet between rounds it falls by up to
+0.3 %: the estimate's error is at least that, and its size is not measured. Steps are given to two decimals.
+
+- **Where the step is set.** Each vector's top node, the one carrying the most of it by mass-weighted size, sits on
+  the surface, and none of its elements is lattice-shaped (a BCC tetrahedron, by its edge ratio and its volume, each
+  within 1 %; the test does not tell a cut piece from a warped lattice tetrahedron). The loop's top node carries 0.86
+  of its vector, the elastic one 0.30. Of the wall's elements, 0.51 are lattice-shaped, and of the rest 1.000 touch
+  the surface (to three decimals). Ranked by shortest altitude, both top nodes' worst element sits in the worst 0.3 %.
+- **What mass buys.**
+
+  | density change | added mass | elastic step | loop's step |
+  |---|---|---|---|
+  | 16 rounds, each ×4 around the loop's current top node | 0.14 % | 1.02 | 1.17 |
+  | every element not lattice-shaped, ×2 | 43 % | 1.40 | 1.64 |
+  | the same, ×4 | 129 % | 1.97 | 2.56 |
+  | the same, ×16 | 645 % | 3.91 | 5.62 |
+  | the same, ×100 | 4255 % | 4.62 | 6.48 |
+  | the worst 1 % by shortest altitude, ×100 | 16 % | 1.12 | 1.21 |
+  | the worst 2 %, ×100 | 35 % | 1.25 | 1.40 |
+  | the worst 5 %, ×100 | 113 % | 1.46 | 1.75 |
+  | the worst 10 %, ×100 | 307 % | 1.90 | 2.41 |
+  | the worst 25 %, ×100 | 1362 % | 3.30 | 4.79 |
+
+  After every round, at every row but the ×100 one, and after every smoothing pass below, both top nodes are on the
+  surface, on elements none of which is lattice-shaped (as meshed). At ×100 both are inside, on lattice-shaped
+  elements only.
+- **Whether a few elements hold it.** Against the ×100 row's gain, the worst 5 % recover 13 % on the elastic step and
+  14 % on the loop's; the worst 25 %, 63 % and 69 %. The worst 5 % have 0.145–0.256 of the median element's volume
+  (quartiles); every one touches the surface, and none is lattice-shaped.
+- **The mesher's thresholds.** Every row of Labelle and Shewchuk's Table 1 marked safe has α_long ≤ 0.24999, and
+  every row with a larger one is marked unsafe. The row used, "min dihedral, safe" (0.24999, 0.41189), has the
+  largest α_short of the rows a single pass of warping allows, as stuffing warps; the two larger, 0.42978 and 0.5,
+  need ordered warping. The other single-pass safe rows warp less. None was run.
+- **Smoothing.** Surface and held nodes fixed, the other nodes of the worst 5 % moved halfway to their neighbours'
+  average, after 1, 2, 4 and 8 passes: the elastic step reads 1.00, 0.98, 0.96 and 0.95, and the loop's 0.87, 0.80,
+  0.75 and 0.73. The elements that were the worst 5 % gain 3–8 % in shortest altitude (quartiles, over the unchanged
+  wall's median), while the smallest dihedral angle over the wall falls from 15.68° to 13.84°. No element inverts,
+  and the dihedrals stay inside stuffing's guaranteed range.
+
+**Reading.** At rest, at h_K2's elements, on both steps the top nodes sit on the surface, in elements none of which is
+lattice-shaped; with the elements that are not lattice-shaped 100 times denser the top nodes are inside, at 4.6 times
+the elastic step and 6.5 times the loop's. On the loop's step, little of that comes cheaply: sixteen rounds at its top
+nodes buy 1.17 at 0.14 % added mass, doubling every element that is not lattice-shaped (43 % added mass) buys 1.64, the
+worst 5 % recover 14 % of the gain, and the smoothing lowers it. By the bars set before the runs, the worst 5 %
+recovering under a quarter of the gain reads as a broad layer, not a few elements. By those bars the rest step needs a
+different boundary mesher, or is accepted as it is; that call is open. Jon chose the GPU host-vs-device probe next
+(2026-10-02).
+
+Not tried: moving surface nodes along the surface, smoothing by optimization, merging the small pieces, the
+ordered-warping rows, another boundary mesher. Not measured: what sets those elements' shortest altitude, the refined
+walls (two to eight times h_K2's elements), what in the smoothed wall lowers the loop's step, and whether any of these
+changes moves the seated limit §16y measured: 0.40, 0.06 and 0.18 of the loop's rest step at h_K2's elements and at two
+and four times them, while G6 judged D4 at eight times (§17c).
