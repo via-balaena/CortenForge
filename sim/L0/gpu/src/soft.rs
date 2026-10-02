@@ -1214,6 +1214,33 @@ impl GpuExecutor {
         })
     }
 
+    /// Time every pass on the GPU from here on (recon §17d), on a context
+    /// made with [`GpuContext::with_timestamps`]: see [`Self::pass_times`].
+    ///
+    /// # Panics
+    ///
+    /// When the context was not made that way.
+    pub fn time_passes(&mut self) {
+        self.record_pending();
+        self.recorder.time_passes();
+    }
+
+    /// Each pass's time on the GPU, in seconds, since [`Self::time_passes`]
+    /// or the last call, by label: `step` for the pending phases, one step or
+    /// part of one; `read` for a monitor read's reduction; `estimate` for
+    /// the step estimate. Waits for everything recorded.
+    pub fn pass_times(&mut self) -> std::collections::BTreeMap<String, Vec<f64>> {
+        self.record_pending();
+        self.recorder.pass_times()
+    }
+
+    /// The host's time submitting since [`Self::time_passes`]: finishing each
+    /// encoder and handing it to the queue.
+    #[must_use]
+    pub fn submit_times(&self) -> crate::submit::SubmitTimes {
+        self.recorder.submit_times()
+    }
+
     /// Append `phase` to the pending list, recording what is pending first
     /// when it must be; `carry` sets what the phase carries in the step's
     /// values.
@@ -1248,7 +1275,7 @@ impl GpuExecutor {
         record_pass(
             &mut self.recorder,
             &self.kernels,
-            &pending.values,
+            ("step", &pending.values),
             dispatches,
         );
     }
@@ -1395,16 +1422,17 @@ impl GpuExecutor {
     }
 }
 
-/// Record `dispatches` as one pass, in one recorder step carrying `values`.
+/// Record `dispatches` as one pass labelled `label`, in one recorder step
+/// carrying `values`.
 fn record_pass<'a>(
     recorder: &mut Recorder<StepValues>,
     kernels: &Kernels,
-    values: &StepValues,
+    (label, values): (&str, &StepValues),
     dispatches: impl IntoIterator<Item = &'a Dispatch>,
 ) {
     let offset = recorder.begin_step(values);
     {
-        let mut pass = recorder.pass("soft");
+        let mut pass = recorder.pass(label);
         for dispatch in dispatches {
             kernels.record(&mut pass, dispatch, offset);
         }
@@ -1622,7 +1650,7 @@ impl Executor for GpuExecutor {
         record_pass(
             &mut self.recorder,
             &self.kernels,
-            &StepValues::default(),
+            ("read", &StepValues::default()),
             &self.programs.read,
         );
         let (nodes, elements, surface) = (self.node_count, self.element_count, self.surface_count);
@@ -1792,7 +1820,7 @@ impl Executor for GpuExecutor {
         record_pass(
             &mut self.recorder,
             &self.kernels,
-            &carried,
+            ("estimate", &carried),
             dispatches.into_iter().flatten(),
         );
         let nodes = self.node_count;

@@ -1,6 +1,7 @@
 //! The recorder's gates (recon §17a): each step reads its own values, a write
-//! waits for the steps before it, a submit at the cap completes, and what the
-//! recorder refuses, it refuses with a message.
+//! waits for the steps before it, a submit at the cap completes, timed passes
+//! come back one a pass (§17d), and what the recorder refuses, it refuses with
+//! a message.
 //!
 //! The two collapse tests assert wgpu's own behaviour, the reason the ring and
 //! the write rule exist: if either stops collapsing, the reason is gone.
@@ -8,6 +9,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 
@@ -47,12 +49,18 @@ struct Step { cell: u32, value: u32, pad0: u32, pad1: u32 }
 @compute @workgroup_size(1) fn own_value() { cells[step.cell] = step.value; }
 @compute @workgroup_size(1) fn from_source() { cells[step.cell] = source[0]; }
 @compute @workgroup_size(1) fn count() { cells[0] = cells[0] + 1u; }
+@compute @workgroup_size(64) fn spin(@builtin(local_invocation_index) i: u32) {
+    var x = i;
+    for (var k = 0u; k < step.value; k = k + 1u) { x = x * 1664525u + 1013904223u; }
+    if (i == 0u) { cells[step.cell] = x; }
+}
 ";
 
 struct Kernel {
     own_value: wgpu::ComputePipeline,
     from_source: wgpu::ComputePipeline,
     count: wgpu::ComputePipeline,
+    spin: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
     cells: wgpu::Buffer,
     source: wgpu::Buffer,
@@ -125,6 +133,7 @@ impl Kernel {
             own_value: entry("own_value"),
             from_source: entry("from_source"),
             count: entry("count"),
+            spin: entry("spin"),
             layout,
             cells: storage_buffer("cells", u64::from(n) * 4),
             source: storage_buffer("source", 16),
@@ -366,6 +375,98 @@ fn a_step_without_values_past_the_cap_submits_itself() {
         rec.read::<u32>(&kernel.cells, 1)
     });
     assert_eq!(counted, [PASSES]);
+}
+
+/// Record one step whose one pass, labelled `label`, spins `turns` times.
+fn spin_step(
+    rec: &mut Recorder<Step>,
+    (kernel, group): (&Kernel, &wgpu::BindGroup),
+    label: &str,
+    turns: u32,
+) {
+    let offset = rec.begin_step(&Step {
+        cell: 0,
+        value: turns,
+        pad: [0; 2],
+    });
+    {
+        let mut pass = rec.pass(label);
+        pass.set_pipeline(&kernel.spin);
+        pass.set_bind_group(0, group, &[offset]);
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+    rec.end_step();
+}
+
+/// ★★ Timed passes (recon §17d) come back one a pass, under their labels: a
+/// pass that spins 2²⁰ times takes over ten times one that spins once, and
+/// the passes together took no longer on the GPU than the host took from the
+/// first to the wait for them. A 4-slot ring submits every 4 steps and each
+/// round reads twice; a read after the last round finds nothing new. The
+/// host's submits are counted: two at the ring and one at each read, then
+/// one and one. It cannot see a query set written again before its resolve
+/// completed, nor when the resolves happen.
+#[test]
+fn timed_passes_come_back_one_a_pass_under_their_labels() {
+    if gpu_context_or_skip(SUITE).is_none() {
+        return;
+    }
+    let Ok(ctx) = GpuContext::with_timestamps() else {
+        eprintln!("{SUITE}: SKIP the timed passes: this adapter cannot write timestamps");
+        return;
+    };
+    let kernel = Kernel::new(&ctx, 1, true);
+    let mut rec = Recorder::<Step>::with_step_values(&ctx, 4);
+    let group = kernel.bind_group(&ctx, rec.step_values_binding().unwrap());
+    rec.time_passes();
+    assert_eq!(rec.submit_times(), super::SubmitTimes::default());
+    for (pairs, submits) in [(8, 6), (4, 10)] {
+        let started = Instant::now();
+        for _ in 0..2 {
+            for _ in 0..pairs / 2 {
+                spin_step(&mut rec, (&kernel, &group), "once", 1);
+                spin_step(&mut rec, (&kernel, &group), "spun", 1 << 20);
+            }
+            rec.read::<u32>(&kernel.cells, 1);
+        }
+        let waited = started.elapsed().as_secs_f64();
+        let times = rec.pass_times();
+        assert_eq!(times.keys().collect::<Vec<_>>(), ["once", "spun"]);
+        let median = |label: &str| {
+            let mut each = times[label].clone();
+            assert_eq!(each.len(), pairs, "{label}");
+            assert!(
+                each.iter().all(|&t| t > 0.0 && t.is_finite()),
+                "{label}: {each:?}"
+            );
+            each.sort_by(f64::total_cmp);
+            each[pairs / 2]
+        };
+        assert!(median("spun") > 10.0 * median("once"), "{times:?}");
+        let host = rec.submit_times();
+        assert_eq!(host.submits, submits);
+        assert!(host.finishing > 0.0 && host.submitting > 0.0, "{host:?}");
+        let total: f64 = times.values().flatten().sum();
+        assert!(
+            total <= waited,
+            "the passes took {total} s on the GPU, the host {waited} s"
+        );
+    }
+    assert!(
+        rec.pass_times().is_empty(),
+        "a read after the last finds nothing new"
+    );
+}
+
+/// ★ A recorder on a context without timestamps refuses to time passes.
+#[test]
+fn timing_passes_without_timestamps_stops_with_a_message() {
+    let Some(ctx) = gpu_context_or_skip(SUITE) else {
+        return;
+    };
+    let mut rec = Recorder::new(&ctx);
+    let message = panic_message(|| rec.time_passes());
+    assert!(message.contains("with_timestamps"), "{message}");
 }
 
 /// The message a closure panicked with.

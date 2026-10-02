@@ -16,8 +16,15 @@
 //!
 //! Reads, writes and submits happen between steps, and stop with a message
 //! inside one.
+//!
+//! A recorder can also time its passes on the GPU ([`Recorder::time_passes`],
+//! recon §17d): a timestamp at each pass's start and end, resolved after the
+//! next read's wait and mapped at the wait after that, so timing adds no wait
+//! of its own until [`Recorder::pass_times`] reads them.
 
+use std::collections::BTreeMap;
 use std::sync::mpsc;
+use std::time::Instant;
 
 use bytemuck::Pod;
 
@@ -83,6 +90,7 @@ pub struct Recorder<T: Pod = ()> {
     steps: u32,
     in_step: bool,
     ring: Option<Ring>,
+    timer: Option<PassTimer>,
     values: std::marker::PhantomData<T>,
     /// Reads made, for a test to count.
     #[cfg(test)]
@@ -97,6 +105,200 @@ struct Ring {
     stride: u64,
     slots: u32,
     staged: Vec<u8>,
+}
+
+/// The host's time submitting since [`Recorder::time_passes`], in seconds
+/// (recon §17d).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SubmitTimes {
+    /// Finishing each encoder: wgpu validates what was recorded and encodes
+    /// it for the backend.
+    pub finishing: f64,
+    /// Handing each finished encoder to the queue.
+    pub submitting: f64,
+    /// The submits counted.
+    pub submits: u64,
+}
+
+/// The timestamps behind [`Recorder::time_passes`]. Each submit's passes write
+/// a query set of their own, two queries a pass, and it is resolved only once
+/// a read's wait shows its submit complete: resolved earlier, even from a
+/// later submit, some submits' last pass read 0 on the M4 Pro (recon §17d).
+/// So timing adds no wait of its own; each resolve's copy maps at the next
+/// wait, and is kept, at most one a read, until [`Recorder::pass_times`]
+/// reads it.
+struct PassTimer {
+    /// Nanoseconds a timestamp tick.
+    period: f64,
+    host: SubmitTimes,
+    labels: Vec<String>,
+    /// The query set the pending passes write, with each pass's label as an
+    /// index into `labels`.
+    current: (wgpu::QuerySet, Vec<usize>),
+    /// Query sets submitted and not yet resolved, with their passes' labels.
+    submitted: Vec<(wgpu::QuerySet, Vec<usize>)>,
+    /// Query sets whose resolve was submitted, free once a wait covers it.
+    resolving: Vec<wgpu::QuerySet>,
+    free: Vec<wgpu::QuerySet>,
+    /// Each resolve's copy, with each query set's first query in it and its
+    /// passes' labels.
+    copies: Vec<(wgpu::Buffer, Vec<(usize, Vec<usize>)>)>,
+    mapped: (
+        mpsc::Sender<Result<(), wgpu::BufferAsyncError>>,
+        mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    ),
+}
+
+impl PassTimer {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        Self {
+            period: f64::from(queue.get_timestamp_period()),
+            host: SubmitTimes::default(),
+            labels: Vec::new(),
+            current: (query_set(device), Vec::new()),
+            submitted: Vec::new(),
+            resolving: Vec::new(),
+            free: Vec::new(),
+            copies: Vec::new(),
+            mapped: mpsc::channel(),
+        }
+    }
+
+    /// Open a pass labelled `label`: the query set it writes, and its first
+    /// query there.
+    #[allow(clippy::cast_possible_truncation)] // at most PASS_CAP passes a submit
+    fn open(&mut self, label: &str) -> (&wgpu::QuerySet, u32) {
+        let index = self
+            .labels
+            .iter()
+            .position(|known| known == label)
+            .unwrap_or_else(|| {
+                self.labels.push(label.to_owned());
+                self.labels.len() - 1
+            });
+        let first = 2 * self.current.1.len() as u32;
+        self.current.1.push(index);
+        (&self.current.0, first)
+    }
+
+    /// The pending passes were submitted: their query set waits for a resolve,
+    /// and the next passes write another.
+    fn submitted(&mut self, device: &wgpu::Device) {
+        if self.current.1.is_empty() {
+            return;
+        }
+        let next = self.free.pop().unwrap_or_else(|| query_set(device));
+        let done = std::mem::replace(&mut self.current, (next, Vec::new()));
+        self.submitted.push(done);
+    }
+
+    /// Resolve every submitted query set into one copy that maps at the next
+    /// wait. Only right after a wait that covers every submit so far.
+    #[allow(clippy::cast_possible_truncation)] // at most PASS_CAP passes a set
+    fn resolve(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.free.append(&mut self.resolving);
+        if self.submitted.is_empty() {
+            return;
+        }
+        let align = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT / u64::from(wgpu::QUERY_SIZE);
+        let firsts: Vec<u64> = self
+            .submitted
+            .iter()
+            .scan(0, |next, (_, labels)| {
+                let first = *next;
+                *next += (2 * labels.len() as u64).next_multiple_of(align);
+                Some(first)
+            })
+            .collect();
+        let (last, (_, labels)) = (firsts[firsts.len() - 1], &self.submitted[firsts.len() - 1]);
+        let bytes = (last + 2 * labels.len() as u64) * u64::from(wgpu::QUERY_SIZE);
+        let buffer = |label, usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let resolved = buffer(
+            "pass_times_resolved",
+            wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let copy = buffer(
+            "pass_times",
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("pass_times"),
+        });
+        let mut segments = Vec::with_capacity(firsts.len());
+        for (first, (set, labels)) in firsts.into_iter().zip(self.submitted.drain(..)) {
+            let queries = 2 * labels.len() as u32;
+            encoder.resolve_query_set(
+                &set,
+                0..queries,
+                &resolved,
+                first * u64::from(wgpu::QUERY_SIZE),
+            );
+            segments.push((first as usize, labels));
+            self.resolving.push(set);
+        }
+        encoder.copy_buffer_to_buffer(&resolved, 0, &copy, 0, bytes);
+        queue.submit([encoder.finish()]);
+        let sent = self.mapped.0.clone();
+        copy.slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                // The receiver lives in the timer, which outlives the wait.
+                sent.send(result).unwrap_or_default();
+            });
+        self.copies.push((copy, segments));
+    }
+
+    /// Every resolved pass's time on the GPU, in seconds, by label. Only after
+    /// a wait that covers the last resolve.
+    // Panicking is the contract, as for reads: there is nothing to return.
+    #[allow(clippy::panic)]
+    fn read(&mut self) -> BTreeMap<String, Vec<f64>> {
+        let mut seen = 0;
+        for result in self.mapped.1.try_iter() {
+            if let Err(err) = result {
+                panic!("mapping the pass times failed: {err}");
+            }
+            seen += 1;
+        }
+        assert_eq!(
+            seen,
+            self.copies.len(),
+            "pass times still unmapped after the wait"
+        );
+        let mut times: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        for (copy, segments) in self.copies.drain(..) {
+            let ticks: Vec<u64> = values(&copy.slice(..).get_mapped_range());
+            copy.unmap();
+            for (first, labels) in segments {
+                for (pass, &label) in labels.iter().enumerate() {
+                    let (start, end) = (ticks[first + 2 * pass], ticks[first + 2 * pass + 1]);
+                    // Signed, so a timestamp that was never written shows.
+                    #[allow(clippy::cast_precision_loss)] // ticks within f64's integers
+                    let elapsed = (end as f64 - start as f64) * self.period * 1e-9;
+                    times
+                        .entry(self.labels[label].clone())
+                        .or_default()
+                        .push(elapsed);
+                }
+            }
+        }
+        times
+    }
+}
+
+/// A query set for one submit's timed passes: two queries a pass.
+fn query_set(device: &wgpu::Device) -> wgpu::QuerySet {
+    device.create_query_set(&wgpu::QuerySetDescriptor {
+        label: Some("pass_times"),
+        ty: wgpu::QueryType::Timestamp,
+        count: 2 * PASS_CAP,
+    })
 }
 
 impl Recorder<()> {
@@ -150,6 +352,7 @@ impl<T: Pod> Recorder<T> {
             steps: 0,
             in_step: false,
             ring,
+            timer: None,
             values: std::marker::PhantomData,
             #[cfg(test)]
             reads: 0,
@@ -230,6 +433,64 @@ impl<T: Pod> Recorder<T> {
         }
     }
 
+    /// Time every compute pass opened through [`Recording::pass`] from here
+    /// on, on the GPU, for [`Self::pass_times`]. Submits what is recorded
+    /// first.
+    ///
+    /// # Panics
+    ///
+    /// Inside a step, or when the context was not made with
+    /// [`GpuContext::with_timestamps`].
+    pub fn time_passes(&mut self) {
+        assert!(
+            self.device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY),
+            "timing passes needs a context made with GpuContext::with_timestamps"
+        );
+        self.submit();
+        self.timer = Some(PassTimer::new(&self.device, &self.queue));
+    }
+
+    /// Each timed pass's time on the GPU, in seconds, by its label, in the
+    /// order the passes were opened, since [`Self::time_passes`] or the last
+    /// call; empty when passes are not timed. Submits what is recorded and
+    /// waits for everything submitted.
+    ///
+    /// # Panics
+    ///
+    /// Inside a step, or when the GPU wait or a mapping fails.
+    // Panicking is the contract, as for reads: there is nothing to return.
+    #[allow(clippy::panic)]
+    pub fn pass_times(&mut self) -> BTreeMap<String, Vec<f64>> {
+        self.submit();
+        let device = &self.device;
+        let Some(timer) = self.timer.as_mut() else {
+            return BTreeMap::new();
+        };
+        let wait = || {
+            if let Err(err) = device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            }) {
+                panic!("the GPU wait for the pass times failed: {err}");
+            }
+        };
+        wait();
+        timer.resolve(device, &self.queue);
+        wait();
+        timer.read()
+    }
+
+    /// The host's time submitting since [`Self::time_passes`]; zero when
+    /// passes are not timed. The pass times' own resolves are not counted.
+    #[must_use]
+    pub fn submit_times(&self) -> SubmitTimes {
+        self.timer
+            .as_ref()
+            .map_or_else(SubmitTimes::default, |timer| timer.host)
+    }
+
     /// Submit everything recorded, the ring's staged slots written first.
     ///
     /// # Panics
@@ -258,7 +519,17 @@ impl<T: Pod> Recorder<T> {
                     .write_buffer(&ring.buffer, 0, &ring.staged[..used]);
             }
         }
-        Some(self.queue.submit([encoder.finish()]))
+        let started = Instant::now();
+        let finished = encoder.finish();
+        let handing = Instant::now();
+        let submitted = self.queue.submit([finished]);
+        if let Some(timer) = self.timer.as_mut() {
+            timer.host.finishing += (handing - started).as_secs_f64();
+            timer.host.submitting += handing.elapsed().as_secs_f64();
+            timer.host.submits += 1;
+            timer.submitted(&self.device);
+        }
+        Some(submitted)
     }
 
     /// The reads made so far.
@@ -352,6 +623,10 @@ impl<T: Pod> Recorder<T> {
         }) {
             panic!("the GPU wait for a read failed: {err}");
         }
+        // Everything submitted is complete, so the timed passes resolve.
+        if let Some(timer) = self.timer.as_mut() {
+            timer.resolve(&self.device, &self.queue);
+        }
         let expected = staging.iter().flatten().count();
         let mut seen = 0;
         for (i, result) in mapped.try_iter() {
@@ -403,7 +678,24 @@ impl<T: Pod> Recording for Recorder<T> {
             self.flush();
         }
         self.passes += 1;
-        self.commands().pass(label)
+        let device = &self.device;
+        let encoder = self.encoder.get_or_insert_with(|| {
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("recorder"),
+            })
+        });
+        let Some(timer) = self.timer.as_mut() else {
+            return encoder.pass(label);
+        };
+        let (query_set, first) = timer.open(label);
+        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some(label),
+            timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                query_set,
+                beginning_of_pass_write_index: Some(first),
+                end_of_pass_write_index: Some(first + 1),
+            }),
+        })
     }
 
     fn commands(&mut self) -> &mut wgpu::CommandEncoder {
