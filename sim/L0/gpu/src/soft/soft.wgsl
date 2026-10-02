@@ -149,8 +149,21 @@ struct Reduction {
 @group(0) @binding(38) var<storage, read_write> magnitudes: array<f32>;
 @group(0) @binding(39) var<storage, read_write> quotients: array<f32>;
 @group(0) @binding(40) var<storage, read_write> dampings: array<f32>;
+// Bound read_write to every entry point, and written by none: a model has
+// nodes (`ExplicitModel::new`). Every pass so shares a buffer bound for writing
+// with the one before it; on the M4 Pro, passes that share none ran at once
+// (recon §17e). Both ways of recording a step run these same shaders. On
+// Vulkan wgpu orders every dispatch on it; what that costs is not measured.
+@group(0) @binding(41) var<storage, read_write> order: array<u32>;
 
 // ---- Helpers ----
+
+// Use `order`, so every entry point binds it.
+fn keep_order() {
+    if (constants.nodes == 0u) {
+        order[0] = 0u;
+    }
+}
 
 // The item an invocation takes, for a dispatch whose workgroups may run in
 // two dimensions (a dimension holds at most 65 535).
@@ -292,6 +305,7 @@ fn element_dilations(
     @builtin(num_workgroups) groups: vec3<u32>,
     @builtin(local_invocation_index) local: u32,
 ) {
+    keep_order();
     let e = item(id, groups, WORKGROUP);
     var inverted = false;
     if (e < constants.elements) {
@@ -310,6 +324,7 @@ fn gather_volume_changes(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes) {
         return;
@@ -328,6 +343,7 @@ fn nodal_pressures(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes) {
         return;
@@ -342,6 +358,7 @@ fn elastic_element_forces(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let e = item(id, groups, WORKGROUP);
     if (e >= constants.elements) {
         return;
@@ -366,6 +383,7 @@ fn viscous_element_forces(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let e = item(id, groups, WORKGROUP);
     if (e >= constants.elements) {
         return;
@@ -387,6 +405,7 @@ fn gather_forces(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes) {
         return;
@@ -415,6 +434,7 @@ fn contact(
     @builtin(num_workgroups) groups: vec3<u32>,
     @builtin(local_invocation_index) local: u32,
 ) {
+    keep_order();
     let i = item(id, groups, WORKGROUP);
     var coarse = false;
     if (i < constants.surface) {
@@ -478,6 +498,7 @@ fn integrate(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes) {
         return;
@@ -498,6 +519,7 @@ fn boundary_conditions(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes) {
         return;
@@ -520,6 +542,7 @@ fn accumulate(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes) {
         return;
@@ -577,6 +600,7 @@ fn reduce_partials(
     @builtin(num_workgroups) groups: vec3<u32>,
     @builtin(local_invocation_index) local: u32,
 ) {
+    keep_order();
     let block = group.x + group.y * groups.x;
     let blocks = (reduction.items + TREE - 1u) / TREE;
     let i = block * TREE + local;
@@ -600,6 +624,7 @@ fn reduce_partials(
 // invocation takes every `TREE`th partial in order, then a fixed tree.
 @compute @workgroup_size(256)
 fn reduce_row(@builtin(local_invocation_index) local: u32) {
+    keep_order();
     let components = reduction.components;
     let blocks = (reduction.items + TREE - 1u) / TREE;
     for (var c = 0u; c < components; c++) {
@@ -632,6 +657,7 @@ fn element_energies(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let e = item(id, groups, WORKGROUP);
     if (e >= constants.elements) {
         return;
@@ -652,6 +678,7 @@ fn node_energies(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes) {
         return;
@@ -683,6 +710,7 @@ fn estimate_start(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a == 0u) {
         scalars[STOPPED] = 0.0;
@@ -705,6 +733,7 @@ fn estimate_start(
 // iteration's scaled next vector was zero; else the finite difference's step.
 @compute @workgroup_size(1)
 fn estimate_scale() {
+    keep_order();
     if (scalars[STOPPED] != 0.0) {
         return;
     }
@@ -722,6 +751,7 @@ fn estimate_shift(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes || scalars[STOPPED] != 0.0) {
         return;
@@ -736,6 +766,7 @@ fn estimate_stiffness(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes || scalars[STOPPED] != 0.0) {
         return;
@@ -759,6 +790,7 @@ fn estimate_next(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes || scalars[STOPPED] != 0.0) {
         return;
@@ -782,6 +814,7 @@ fn estimate_advance(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes || scalars[STOPPED] != 0.0) {
         return;
@@ -802,6 +835,7 @@ fn estimate_damping(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(num_workgroups) groups: vec3<u32>,
 ) {
+    keep_order();
     let a = item(id, groups, WORKGROUP);
     if (a >= constants.nodes) {
         return;

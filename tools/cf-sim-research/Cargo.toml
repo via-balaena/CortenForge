@@ -130,6 +130,8 @@ clap = { version = "4", features = ["derive"] }
 sim-soft-explicit = { workspace = true }
 # Step 4 (recon §17b): G6 on the GPU executor, through the step-7 probe's press. Test-only, as the probe is.
 sim-gpu = { workspace = true }
+# Recon §17e: the streaming copy that measures what the GPU streams, beside the soft executor's kernels. Test-only.
+wgpu = { workspace = true }
 
 [features]
 default = ["x11"]

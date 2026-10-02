@@ -11,6 +11,8 @@
 //!   pending, when the step's `dt` or damping changes, and before any read,
 //!   write or [`Executor::clear_accumulators`]. In the stepping loop that is
 //!   once a step: a pass costs 12–22 µs on Metal beyond its dispatches.
+//!   [`GpuExecutor::pass_per_dispatch`] records each dispatch as a pass of its
+//!   own instead, to time each kernel (recon §17e).
 //! - **The pose, on the host.** `contact` interpolates the obstacle's pose at
 //!   the step's start and end with the shared f32 math, as the CPU executor
 //!   does, and the step carries both. So [`Executor::set_poses`] writes
@@ -54,8 +56,8 @@ use log::{BOUNDARY_ROW, CONTACT_ROW, Motion, Totals};
 /// Items a reduction's partial covers (`soft.wgsl`'s `TREE`).
 const TREE: u32 = 256;
 
-/// Steps a submit's ring holds: a step is one pass, so a submit at
-/// [`crate::submit::STEP_PASS_CAP`] passes is this many steps.
+/// Recorder steps a submit's ring holds: each records one pass, so a submit
+/// at [`crate::submit::STEP_PASS_CAP`] passes is this many.
 const RING_SLOTS: u32 = crate::submit::STEP_PASS_CAP;
 
 /// Rows the step log starts with; it doubles when full.
@@ -171,6 +173,23 @@ enum Phase {
     Integrate,
     BoundaryConditions,
     Accumulate,
+}
+
+impl Phase {
+    /// Its name in a pass's label.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Dilations => "dilations",
+            Self::VolumeChanges => "volume_changes",
+            Self::Pressures => "pressures",
+            Self::ElementForces => "element_forces",
+            Self::GatherForces => "gather_forces",
+            Self::Contact => "contact",
+            Self::Integrate => "integrate",
+            Self::BoundaryConditions => "boundary_conditions",
+            Self::Accumulate => "accumulate",
+        }
+    }
 }
 
 /// The phases appended since the last recording, and what they carry.
@@ -374,6 +393,9 @@ impl Host {
 /// The buffers read back or written after construction.
 struct Buffers {
     constants: wgpu::Buffer,
+    /// What every entry point binds read-write (`soft.wgsl`'s `order`), to
+    /// bind it again when a log grows.
+    order: wgpu::Buffer,
     displacements: wgpu::Buffer,
     velocities: wgpu::Buffer,
     anchors: wgpu::Buffer,
@@ -444,9 +466,8 @@ pub struct GpuExecutor {
     surface_count: u32,
     shortest_edge: f64,
     viscous: bool,
-    /// Record each phase as its own pass (the one-pass gate's comparison).
-    #[cfg(test)]
-    pass_per_phase: bool,
+    /// Record each dispatch as a pass of its own ([`Self::pass_per_dispatch`]).
+    split: bool,
 }
 
 /// Workgroups of partials for `items`.
@@ -646,6 +667,7 @@ impl GpuExecutor {
             contents: bytemuck::bytes_of(&constants),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        let order = make.zeroed("order", 4)?;
         let incidence = model.element_incidence();
         let node_buffer = make.filled("node constants", &node_table)?;
         let element_buffer = make.filled("element constants", &element_table)?;
@@ -769,6 +791,7 @@ impl GpuExecutor {
         let shared_bindings = Shared {
             constants: &constants_buffer,
             step_values,
+            order: &order,
         };
         let bind = |kernel, items, buffers: &[(u32, &wgpu::Buffer)]| {
             kernels.bind(device, &shared_bindings, kernel, items, buffers)
@@ -1160,6 +1183,7 @@ impl GpuExecutor {
         };
         let buffers = Buffers {
             constants: constants_buffer,
+            order,
             displacements,
             velocities,
             anchors: anchor_buffer,
@@ -1209,8 +1233,7 @@ impl GpuExecutor {
             surface_count,
             shortest_edge: model.shortest_edge(),
             viscous,
-            #[cfg(test)]
-            pass_per_phase: false,
+            split: false,
         })
     }
 
@@ -1225,13 +1248,35 @@ impl GpuExecutor {
         self.recorder.time_passes();
     }
 
+    /// Record each dispatch as a pass of its own, in a recorder step of its
+    /// own, from here on (recon §17e), so [`Self::pass_times`] times each
+    /// kernel. The steps are the same steps; each pass adds its own cost, and
+    /// its label a string. There is no way back.
+    pub fn pass_per_dispatch(&mut self) {
+        self.record_pending();
+        self.split = true;
+    }
+
     /// Each pass's time on the GPU, in seconds, since [`Self::time_passes`]
     /// or the last call, by label: `step` for the pending phases, one step or
     /// part of one; `read` for a monitor read's reduction; `estimate` for
-    /// the step estimate. Waits for everything recorded.
+    /// the step estimate. With [`Self::pass_per_dispatch`], a pass's label
+    /// goes on with its phase, for a step's, and its entry point in
+    /// `soft.wgsl`: `step/contact/reduce_partials`, `estimate/estimate_shift`.
+    /// Waits for everything recorded.
     pub fn pass_times(&mut self) -> std::collections::BTreeMap<String, Vec<f64>> {
         self.record_pending();
         self.recorder.pass_times()
+    }
+
+    /// The timed passes that started on the GPU before an earlier one had
+    /// ended, among all [`Self::pass_times`] has read since
+    /// [`Self::time_passes`]: passes that ran at once, whose times overlap.
+    /// Every entry point binds `soft.wgsl`'s `order` to keep it zero (recon
+    /// §17e). Zero when passes are not timed.
+    #[must_use]
+    pub fn pass_overlaps(&self) -> u64 {
+        self.recorder.pass_overlaps()
     }
 
     /// The host's time submitting since [`Self::time_passes`]: finishing each
@@ -1255,19 +1300,28 @@ impl GpuExecutor {
             self.pending.timing = timing;
         }
         self.pending.phases.push(phase);
-        #[cfg(test)]
-        if self.pass_per_phase {
-            self.record_pending();
-        }
     }
 
-    /// Record the pending phases as one pass, in one recorder step.
+    /// Record the pending phases as one pass, in one recorder step; or, split,
+    /// each phase's dispatches as passes of their own.
     fn record_pending(&mut self) {
         if self.pending.phases.is_empty() {
             return;
         }
         let pending = std::mem::take(&mut self.pending);
         let phases = &self.programs.phases;
+        if self.split {
+            for &phase in &pending.phases {
+                record_pass(
+                    &mut self.recorder,
+                    &self.kernels,
+                    (&format!("step/{}", phase.name()), &pending.values),
+                    &phases[phase as usize],
+                    true,
+                );
+            }
+            return;
+        }
         let dispatches = pending
             .phases
             .iter()
@@ -1277,6 +1331,7 @@ impl GpuExecutor {
             &self.kernels,
             ("step", &pending.values),
             dispatches,
+            false,
         );
     }
 
@@ -1323,6 +1378,7 @@ impl GpuExecutor {
             let shared_bindings = Shared {
                 constants: &self.buffers.constants,
                 step_values,
+                order: &self.buffers.order,
             };
             let row = self.kernels.bind(
                 &self.device,
@@ -1423,13 +1479,22 @@ impl GpuExecutor {
 }
 
 /// Record `dispatches` as one pass labelled `label`, in one recorder step
-/// carrying `values`.
+/// carrying `values`; or, `split`, each dispatch as a pass of its own in a
+/// step of its own, labelled `label` and its entry point.
 fn record_pass<'a>(
     recorder: &mut Recorder<StepValues>,
     kernels: &Kernels,
     (label, values): (&str, &StepValues),
     dispatches: impl IntoIterator<Item = &'a Dispatch>,
+    split: bool,
 ) {
+    if split {
+        for dispatch in dispatches {
+            let label = format!("{label}/{}", dispatch.entry());
+            record_pass(recorder, kernels, (&label, values), [dispatch], false);
+        }
+        return;
+    }
     let offset = recorder.begin_step(values);
     {
         let mut pass = recorder.pass(label);
@@ -1652,6 +1717,7 @@ impl Executor for GpuExecutor {
             &self.kernels,
             ("read", &StepValues::default()),
             &self.programs.read,
+            self.split,
         );
         let (nodes, elements, surface) = (self.node_count, self.element_count, self.surface_count);
         let buffers = &self.buffers;
@@ -1822,6 +1888,7 @@ impl Executor for GpuExecutor {
             &self.kernels,
             ("estimate", &carried),
             dispatches.into_iter().flatten(),
+            self.split,
         );
         let nodes = self.node_count;
         let buffers = &self.buffers;
