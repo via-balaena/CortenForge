@@ -5533,81 +5533,93 @@ Apple GPUs; the other corners; the 4070 Ti.
 
 ### 17e. Which kernels hold a GPU step (2026-10-02)
 
-§17d left open which phases cost what, and how near the passes run to this GPU's limits.
+§17d left open which phases cost what, and how near the passes run to this GPU's limits. This section names the
+kernels, and measures one of the limits: how near each kernel's least bytes move to the rate of a streaming copy.
 `GpuExecutor::pass_per_dispatch` records each dispatch as a pass of its own, timed as in §17d and labelled by its phase
 and entry point. `step7_gpu_kernels` (ignored, run on the local scan) runs §17d's press and corner at four and eight
 times h_K2's elements on the M4 Pro, four runs a size: one pass a step, a pass a dispatch twice, one pass a step.
-- Before each run a copy kernel measures what this GPU streams: 235–241 GB/s read and written, over copies of 64 MiB.
-- Each step kernel's least bytes are counted from `soft.wgsl` (`least_bytes`): each byte it must read or write,
-  once, by the fields it uses. Its bytes over its time, over the copy's rate, is its fraction f. Both rates are timed by
-  one clock, so f does not depend on the timestamps' period.
-- The plan, written before any code or run, and the logs are kept locally.
+- Before each run a copy kernel measures what this GPU streams: 235–241 GB/s read and written, the median of a burst
+  of 50 copies of 64 MiB. The rate during a run is not measured.
+- Each step kernel's least bytes are counted from `soft.wgsl` (`least_bytes`): each field it uses, once. Its bytes over
+  its time, over the copy's rate, is its fraction f. Both rates are timed by one clock, so f does not depend on the
+  timestamps' period. A scattered read fetches more than the bytes it uses, by an amount not measured here.
+- The plan was written before any code or run; an addendum after the first runs at ×4 added one check, below. After
+  the runs, the probe's copy gained checks and its printing changed; what is timed did not. The plan and the logs are
+  kept locally.
 
-**The instrument.** Run a pass a dispatch, the M4 Pro ran passes at once: at ×4, 46 % of them started before an
-earlier one had ended, and their times summed to 1.39 of the host's waits. Those runs were not read. Every entry point
-now binds one buffer read-write that no model writes (`order` in `soft.wgsl`), and the recorder counts the passes
-that started before an earlier one ended (`Recorder::pass_overlaps`). In the runs below none did. The executor's
-label test fails with the buffer unused. One pass a step, at ×4, none had started early before the change either. With
-the buffer bound, the one-pass step's GPU time a step was 0.98 to 1.00 of §17d's runs.
+**The instrument.** Run a pass a dispatch, the M4 Pro ran passes at once. At ×4 the split runs' pass times summed to
+1.39 of the host's waits, and their kernel shares were not read. A run that counted them, the timer patched and then
+restored, found 46 % of the passes starting before an earlier one had ended; one pass a step, none. Every entry point
+now binds one buffer read-write that no model writes (`order` in `soft.wgsl`), and the recorder counts the passes that
+start before an earlier one ended (`Recorder::pass_overlaps`); the addendum made that count's zero a check. The
+executor's label test fails with the buffer unused, and a test fails if an entry point does not use it. With the buffer
+bound, the one-pass step's GPU time a step was 0.997 at ×4 and 0.993 at ×8 of the one-pass runs the same day before the
+change. On Vulkan wgpu orders every dispatch on the buffer; what that costs there is not measured.
 
 **The plan's checks.** All held, at both sizes.
 - No pass started before an earlier one ended, and none read zero or less.
 - The GPU's passes stayed under the host's waits: 0.92 to 0.97.
-- Each kernel ran one pass a step, `gather_forces` two (the material is viscous), and `accumulate` one on 0.61 of the
-  steps: the stepper runs it only while a window is open (`stepping.rs`).
+- Each kernel ran one pass a step, `gather_forces` two (the material is viscous), and `accumulate` one on 0.66 (×4)
+  and 0.61 (×8) of the steps: the stepper runs it only while a window is open (`stepping.rs`).
 - The copy stayed under the specification, at 0.86 to 0.88 of its 273 GB/s.
 - Run a pass a dispatch, the step passes took 1.01 to 1.03 of the one-pass runs' time a step. The plan read the
   split's shares as the step's within 0.8 to 1.25.
 - The two split runs' shares differ by at most 0.003, and the two one-pass runs' step time by at most 1.4 %.
 - Not set by the plan: the one-pass runs at ×8 reproduce §17d's split, 0.97 on the GPU, 0.83 in the step passes and
-  0.14 in the estimates.
+  0.14 in the estimates. Before ×4 the GPU read 93 % busy, what used it not known; before ×8, 0 %.
 
 At ×8, the mean of the two split runs (f: the range over them; time an item: the mean over the four pairs of a ×8
 and a ×4 split run):
 
-| Kernel | Share of the step passes' GPU time | f, fields used | f, rows whole | Time an item, ×8 over ×4 |
-|---|---|---|---|---|
-| `gather_forces` (twice a step) | 0.281 | 0.39–0.40 | 0.39–0.40 | 1.52 |
-| `gather_volume_changes` | 0.175 | 0.12 | 0.47–0.48 | 1.48 |
-| `contact` | 0.163 | 0.05–0.06 | 0.06 | 0.98 |
-| `viscous_element_forces` | 0.105 | 0.87–0.90 | 1.03–1.06 | 1.67 |
-| `elastic_element_forces` | 0.092 | 1.09–1.10 | 1.20–1.21 | 1.61 |
-| `element_dilations` | 0.073 | 0.65–0.66 | 0.96–0.97 | 0.87 |
-| The other eight dispatches | 0.113, none above 0.022 | | | |
+| Kernel | Share of the step passes' GPU time | f | Time an item, ×8 over ×4 |
+|---|---|---|---|
+| `gather_forces` (twice a step: the elastic and the viscous forces, not timed apart) | 0.281 | 0.39–0.40 | 1.52 |
+| `gather_volume_changes` | 0.175 | 0.12 | 1.48 |
+| `contact` | 0.163 | 0.05–0.06 | 0.98 |
+| `viscous_element_forces` | 0.104 | 0.87–0.90 | 1.67 |
+| `elastic_element_forces` | 0.092 | 1.09–1.10 | 1.61 |
+| `element_dilations` | 0.073 | 0.65–0.66 | 0.87 |
+| The other eight dispatches | 0.112, none above 0.022 | | |
 
-- **Rows whole** counts each node, element and contact row a kernel reads from as read whole. The plan's rules read
-  the fields-used column.
-- **Time an item** is a kernel's time a pass over the elements, nodes or surface nodes it runs over.
+Time an item is a kernel's time a pass over the elements, nodes or surface nodes it runs over; for the reduction into a
+row, one workgroup, it is the time a pass.
 
 **Reading, by the plan's rules, at ×8.**
-1. The fewest kernels holding half the step passes' GPU time are the two gathers over the incidence lists and the
-   contact kernel: 0.62 together, the gathers 0.46 of it.
-2. None of those three runs near what this GPU streams by the bytes counted. The plan's bar is 0.6 for near and 0.25
-   for far: `gather_forces` falls between, the other two are far. What limits them is not isolated here. The count
-   leaves out the cache lines a scattered read fetches beyond the bytes it uses, and the contact kernel's grid samples.
-3. The element kernels run near the copy's rate or above it: dilations 0.66, viscous forces 0.89, elastic forces 1.10.
-   Above 1, the bound says part of their data came from cache. By the plan's rule for near, their lever is fewer
-   bytes.
-4. The step's counted bytes over its time are 0.43 of the copy's rate. 2.07 times faster, D4's bar with the estimates
-   gone (§17d), would be 0.88 of it. The plan's rule (above 1 ⇒ the bytes must drop) does not fire; with rows whole it
-   would, at 1.18.
-5. From ×4 to ×8 the time an item grew by more than the plan's 1.15 for both gathers and both force kernels. At ×4
-   the force kernels' f was above 1 (1.47 to 1.81) and `gather_forces`' 0.58. The contact kernel's held.
-6. The estimates spend 0.86 of their GPU time in the step's phase kernels on scratch arrays, 0.54 in the two gathers.
-   The estimate's own kernels take 0.07 and the reductions 0.07.
+1. Three kernels are the fewest that hold half the step passes' GPU time. The three largest are the two gathers over
+   the incidence lists, 0.28 and 0.18, and the contact kernel, 0.16: 0.62 together.
+2. By the bytes counted, none of the three runs near the copy's rate. The plan's bar is 0.6 for near and 0.25 for far:
+   `gather_forces` falls between, `gather_volume_changes` and the contact kernel are far. For the gathers that reading
+   is not settled: each reads its elements' data through the incidence lists, and how much more than the bytes used
+   such reads fetch on this GPU is not measured, nor whether the memory they move or the wait on their chained loads
+   holds them. The contact kernel's count leaves out its grid samples.
+3. Dilations (0.65–0.66) and viscous forces (0.87–0.90) run near the copy's rate; by the plan's rule for near, their
+   lever is fewer bytes. Elastic forces run above it (1.09–1.10). The plan read above 1 as data from cache; the copy is
+   a best case at 0.86–0.88 of the specification, so that does not follow, and its lever is not established.
+4. The step's counted bytes over its time are 0.42–0.43 of the copy's rate; 2.07 times faster would be 0.87–0.89 of it.
+   2.07 is D4's 2.30 times (§17c) on the step passes alone, the estimates gone: by §17d's ×8 shares the step passes are
+   0.828 of a run, and 0.035 is neither theirs nor the estimates'. The plan's rule (above 1 ⇒ the bytes must drop) does
+   not fire. That does not make D4 reachable without fewer bytes: it would take the whole step at 0.87–0.89 of a
+   best-case copy, on its least bytes.
+5. From ×4 to ×8 the time an item grew by more than the plan's 1.15 for both gathers and both force kernels, and, at
+   1.152, for the reduction into the boundary row. Why has not been isolated. The contact kernel's time a surface node
+   held.
+6. The estimates spend 0.86 of their GPU time in the step's phase kernels on scratch arrays, 0.54 in the two gathers;
+   the estimate's own kernels take 0.07 and the reductions 0.07. An estimate stops early only on a vector of zeros;
+   its later passes would still run, and are not separated here.
 
-Arithmetic, holding the rest of the step as it is: 2.07 times on the step passes needs the three kernels' 0.62 down
-to 0.10, about 6 times faster. Which lever comes first is Jon's call.
+Arithmetic, holding the rest of the step as it is: 2.07 times on the step passes, the estimates gone, needs the three
+largest kernels' 0.62 down to 0.10, about 6 times faster. Which lever comes first is Jon's call.
 
 Seen once, not in the plan: allowed to run at once, before the `order` buffer, the passes kept the GPU busy 0.93 of
 the time the one-pass run's passes did, at ×4; why has not been isolated.
 
-The copy's rate bounds the timestamps' period from below, at 0.86 ns, if the specification is this GPU's peak. §17d's
-check bounds it from above: the one-pass runs at ×8 put the passes at 0.97 of the waits, so the period is at most
-1.03 ns.
+The fastest copy bounds the timestamps' period from below, at 0.89 ns, if the specification is this GPU's peak and the
+copies' bytes all crossed its memory. §17d's check bounds it from above: the one-pass runs at ×8 put the passes at
+0.97 of the waits, so the period is at most 1.03 ns.
 
-Not measured: what limits the gathers and the contact kernel; whether the time an item keeps growing past ×8; the
-other corners; the 4070 Ti.
+Not measured: what holds the gathers and the contact kernel; whether the kernels near the copy's rate also run near
+this GPU's arithmetic limits; why the time an item grows from ×4 to ×8, and whether it carries to other sizes; whether
+naga's Metal shaders run slower than hand-written ones; the copy's rate during a run; the other corners; the 4070 Ti.
 
 ## 18. What sets the step at rest (2026-10-02)
 
