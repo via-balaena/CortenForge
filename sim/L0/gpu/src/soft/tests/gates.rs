@@ -4,7 +4,7 @@
 
 use bytemuck::Zeroable;
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{Executor, Monitors, PhaseOutputs, Snapshot};
+use sim_soft_explicit::executor::{Executor, Monitors, PhaseOutputs, Snapshot, TopMode};
 use sim_soft_explicit::stepping::{RunError, Stepper, StepperConfig};
 use wgpu::util::DeviceExt;
 
@@ -123,16 +123,17 @@ fn a_read_and_an_estimate_leave_the_steps_outputs_and_count_alone() {
     );
 }
 
-/// A run of `steps` steps of `f` with a window open, as one pass a step or
-/// pass by pass; what it reads at the end.
-fn run(
-    ctx: &GpuContext,
-    f: &Fixture,
-    pass_per_phase: bool,
-    steps: u32,
-) -> (Snapshot, PhaseOutputs, Monitors) {
+/// What a run reads at its end: the state, the phase outputs, the monitors
+/// and an estimate.
+type Read = (Snapshot, PhaseOutputs, Monitors, TopMode);
+
+/// A run of `steps` steps of `f` with a window open, then an estimate with a
+/// viscous weight, as one pass a step or, `split`, a pass a dispatch.
+fn run(ctx: &GpuContext, f: &Fixture, split: bool, steps: u32) -> Read {
     let mut gpu = gpu(ctx, f);
-    gpu.pass_per_phase = pass_per_phase;
+    if split {
+        gpu.pass_per_dispatch();
+    }
     gpu.clear_accumulators();
     let mut time = f.time;
     for _ in 0..steps {
@@ -140,20 +141,108 @@ fn run(
         gpu.accumulate();
         time += f.dt;
     }
-    (gpu.snapshot(), gpu.phase_outputs(), gpu.monitors())
+    let top = gpu.estimate_top_mode(10, perturbation(&gpu), 0.5);
+    (gpu.snapshot(), gpu.phase_outputs(), gpu.monitors(), top)
 }
 
-/// ★ Steps recorded one pass a step are byte for byte the same steps recorded
-/// pass by pass.
+/// ★ Steps, a read and an estimate recorded one pass a step are byte for
+/// byte the same recorded a pass a dispatch, on an elastic and a viscous
+/// material.
 #[test]
-fn one_pass_a_step_is_the_same_as_a_pass_a_phase() {
+fn one_pass_a_step_is_the_same_as_a_pass_a_dispatch() {
     let Some(ctx) = context() else { return };
-    let f = fixtures::tube();
-    let (one, each) = (run(&ctx, &f, false, 10), run(&ctx, &f, true, 10));
-    let bits = |r: &(Snapshot, PhaseOutputs, Monitors)| {
-        [snapshot_bits(&r.0), outputs_bits(&r.1), monitor_bits(&r.2)].concat()
+    for f in [fixtures::tube(), fixtures::viscous()] {
+        let (one, each) = (run(&ctx, &f, false, 10), run(&ctx, &f, true, 10));
+        let bits = |r: &Read| {
+            let top = [r.3.omega_squared, r.3.damping_quotient].map(f64::to_bits);
+            [
+                snapshot_bits(&r.0),
+                outputs_bits(&r.1),
+                monitor_bits(&r.2),
+                top.to_vec(),
+            ]
+            .concat()
+        };
+        assert!(bits(&one) == bits(&each), "{}: the runs differ", f.name);
+    }
+}
+
+/// ★ Timed a pass a dispatch, the passes come back under the labels written
+/// here by hand, each as many times as its dispatch ran: three steps of a
+/// viscous block with a window open, a read, and an estimate of two
+/// iterations with a viscous weight.
+#[test]
+fn a_pass_a_dispatch_comes_back_under_its_phase_and_entry_point() {
+    if context().is_none() {
+        return;
+    }
+    let Ok(ctx) = GpuContext::with_timestamps() else {
+        eprintln!("soft executor: SKIP the timed passes: this adapter cannot write timestamps");
+        return;
     };
-    assert!(bits(&one) == bits(&each), "the steps differ");
+    let f = fixtures::viscous();
+    let mut gpu = gpu(&ctx, &f);
+    gpu.time_passes();
+    gpu.pass_per_dispatch();
+    gpu.clear_accumulators();
+    let mut time = f.time;
+    for _ in 0..3 {
+        step(&mut gpu, &f, time);
+        gpu.accumulate();
+        time += f.dt;
+    }
+    gpu.monitors();
+    gpu.estimate_top_mode(2, perturbation(&gpu), 0.5);
+    let counts: Vec<(String, usize)> = gpu
+        .pass_times()
+        .into_iter()
+        .map(|(label, times)| {
+            assert!(
+                times.iter().all(|&t| t > 0.0 && t.is_finite()),
+                "{label}: {times:?}"
+            );
+            (label, times.len())
+        })
+        .collect();
+    let mut expected = [
+        ("step/dilations/element_dilations", 3),
+        ("step/volume_changes/gather_volume_changes", 3),
+        ("step/pressures/nodal_pressures", 3),
+        ("step/element_forces/elastic_element_forces", 3),
+        ("step/element_forces/viscous_element_forces", 3),
+        ("step/gather_forces/gather_forces", 6),
+        ("step/contact/contact", 3),
+        ("step/contact/reduce_partials", 3),
+        ("step/contact/reduce_row", 3),
+        ("step/integrate/integrate", 3),
+        ("step/boundary_conditions/boundary_conditions", 3),
+        ("step/boundary_conditions/reduce_partials", 3),
+        ("step/boundary_conditions/reduce_row", 3),
+        ("step/accumulate/accumulate", 3),
+        ("read/element_dilations", 1),
+        ("read/gather_volume_changes", 1),
+        ("read/element_energies", 1),
+        ("read/node_energies", 1),
+        ("read/reduce_partials", 3),
+        ("estimate/estimate_start", 1),
+        ("estimate/element_dilations", 3),
+        ("estimate/gather_volume_changes", 3),
+        ("estimate/nodal_pressures", 3),
+        ("estimate/elastic_element_forces", 3),
+        ("estimate/gather_forces", 6),
+        ("estimate/reduce_partials", 7),
+        ("estimate/reduce_row", 4),
+        ("estimate/estimate_scale", 2),
+        ("estimate/estimate_shift", 2),
+        ("estimate/estimate_stiffness", 2),
+        ("estimate/viscous_element_forces", 3),
+        ("estimate/estimate_next", 2),
+        ("estimate/estimate_advance", 2),
+        ("estimate/estimate_damping", 1),
+    ]
+    .map(|(label, count)| (label.to_owned(), count));
+    expected.sort();
+    assert_eq!(counts, expected);
 }
 
 /// The estimate's arguments as the stepping loop passes them.
@@ -529,6 +618,7 @@ fn sum_and_largest(
         kernels,
         ("reduction", &StepValues::zeroed()),
         &dispatches,
+        false,
     );
     recorder.read(&rows, 2)
 }

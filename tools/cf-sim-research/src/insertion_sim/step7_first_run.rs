@@ -1,5 +1,5 @@
 //! Step 7's first run on the product scan (soft-contact recon §16x): one press at the 5 mm inset, mounted at the
-//! closed end, on the fitted path, with the rules §16x set before its runs. Six stages and five diagnostics, each an
+//! closed end, on the fitted path, with the rules §16x set before its runs. Six stages and six diagnostics, each an
 //! ignored test:
 //! - [`step7_ladder`], rule 1: the loading time, at h_K2;
 //! - [`step7_sizes`], rule 2: the element size, at a loading, and rule 1 again at the size it picks (§16z: with an
@@ -9,6 +9,8 @@
 //! - [`step7_cost`], G6: a press timed at a loading and a size, with the probe's own instruments off;
 //! - [`step7_gpu_split`], where a GPU step's time goes: recording on the host, waiting at reads, the passes on the
 //!   device (§17d);
+//! - [`gpu_kernels::step7_gpu_kernels`], which kernels hold a GPU step, and how near what this GPU streams they run
+//!   (§17e);
 //! - [`step7_blow_up`] and [`step7_stiffening`], the element collapsing at the seated tip, one change at a time;
 //! - [`step7_rest_limiter`], what sets the step at rest, and whether the wall's mass or shape raises it (§18);
 //! - [`step7_stabilized`], exploratory: the volumetric stabilization's ladder against the collapse and D1's readings
@@ -25,11 +27,11 @@
 //! rule 10's probe holds are not gated.
 //!
 //! A stage's loading is `STEP7_LOADING`, in multiples of the budget's (default 1; §16x's runs used 4 for every stage but
-//! the ladder); `step7_cost`'s, `step7_gpu_split`'s and `step7_rest_limiter`'s size is `STEP7_SIZE`, 0, 1, 2 or 3 for
-//! one, two, four and eight times h_K2's element count (default 0). Run each with
+//! the ladder); `step7_cost`'s, `step7_gpu_split`'s, `step7_gpu_kernels`'s and `step7_rest_limiter`'s size is
+//! `STEP7_SIZE`, 0, 1, 2 or 3 for one, two, four and eight times h_K2's element count (default 0). Run each with
 //! `RAYON_NUM_THREADS=4 cargo test --release -p cf-sim-research --bin cf-sim-research --
-//! insertion_sim::step7_first_run::<stage> --ignored --nocapture`, the scan at `~/scans/base_mold.cleaned.stl` (or
-//! `CF_SIM_RESEARCH_PRODUCT_SCAN`).
+//! insertion_sim::step7_first_run::<stage> --ignored --nocapture` (`<stage>` is `gpu_kernels::step7_gpu_kernels` for
+//! that one), the scan at `~/scans/base_mold.cleaned.stl` (or `CF_SIM_RESEARCH_PRODUCT_SCAN`).
 //!
 //! ⛔ The scan never enters the repo. LOCAL lines stay on the machine that ran it; PUBLIC lines are the ratios and
 //! verdicts the plan records (Jon, 2026-09-26).
@@ -81,6 +83,8 @@ use super::explicit_budget::{
 use super::product_lowering::{
     HOLD, Less, POISSON, boundary_points, densities, pieces, step7_wall, step7_wall_at_size,
 };
+
+mod gpu_kernels;
 
 /// The pairing the first run presses at: the library's lowest `μ_f`, every corner checked (§16x).
 const PAIRING: &str = "silicone on skin, water-based gel, fresh";

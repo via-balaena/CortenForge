@@ -379,3 +379,10 @@ pub(super) struct Dispatch {
     group: wgpu::BindGroup,
     items: u32,
 }
+
+impl Dispatch {
+    /// Its entry point in `soft.wgsl`.
+    pub(super) const fn entry(&self) -> &'static str {
+        self.kernel.entry()
+    }
+}

@@ -173,6 +173,23 @@ enum Phase {
     Accumulate,
 }
 
+impl Phase {
+    /// Its name in a pass's label.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Dilations => "dilations",
+            Self::VolumeChanges => "volume_changes",
+            Self::Pressures => "pressures",
+            Self::ElementForces => "element_forces",
+            Self::GatherForces => "gather_forces",
+            Self::Contact => "contact",
+            Self::Integrate => "integrate",
+            Self::BoundaryConditions => "boundary_conditions",
+            Self::Accumulate => "accumulate",
+        }
+    }
+}
+
 /// The phases appended since the last recording, and what they carry.
 #[derive(Default)]
 struct Pending {
@@ -444,9 +461,8 @@ pub struct GpuExecutor {
     surface_count: u32,
     shortest_edge: f64,
     viscous: bool,
-    /// Record each phase as its own pass (the one-pass gate's comparison).
-    #[cfg(test)]
-    pass_per_phase: bool,
+    /// Record each dispatch as a pass of its own ([`Self::pass_per_dispatch`]).
+    split: bool,
 }
 
 /// Workgroups of partials for `items`.
@@ -1209,8 +1225,7 @@ impl GpuExecutor {
             surface_count,
             shortest_edge: model.shortest_edge(),
             viscous,
-            #[cfg(test)]
-            pass_per_phase: false,
+            split: false,
         })
     }
 
@@ -1225,10 +1240,21 @@ impl GpuExecutor {
         self.recorder.time_passes();
     }
 
+    /// Record each dispatch as a pass of its own from here on (recon §17e),
+    /// so [`Self::pass_times`] times each kernel. The steps are the same
+    /// steps; each pass adds its own cost.
+    pub fn pass_per_dispatch(&mut self) {
+        self.record_pending();
+        self.split = true;
+    }
+
     /// Each pass's time on the GPU, in seconds, since [`Self::time_passes`]
     /// or the last call, by label: `step` for the pending phases, one step or
     /// part of one; `read` for a monitor read's reduction; `estimate` for
-    /// the step estimate. Waits for everything recorded.
+    /// the step estimate. With [`Self::pass_per_dispatch`], a pass's label
+    /// goes on with its phase, for a step's, and its entry point in
+    /// `soft.wgsl`: `step/contact/reduce_partials`, `estimate/estimate_shift`.
+    /// Waits for everything recorded.
     pub fn pass_times(&mut self) -> std::collections::BTreeMap<String, Vec<f64>> {
         self.record_pending();
         self.recorder.pass_times()
@@ -1255,19 +1281,28 @@ impl GpuExecutor {
             self.pending.timing = timing;
         }
         self.pending.phases.push(phase);
-        #[cfg(test)]
-        if self.pass_per_phase {
-            self.record_pending();
-        }
     }
 
-    /// Record the pending phases as one pass, in one recorder step.
+    /// Record the pending phases as one pass, in one recorder step; or, split,
+    /// each phase's dispatches as passes of their own.
     fn record_pending(&mut self) {
         if self.pending.phases.is_empty() {
             return;
         }
         let pending = std::mem::take(&mut self.pending);
         let phases = &self.programs.phases;
+        if self.split {
+            for &phase in &pending.phases {
+                record_pass(
+                    &mut self.recorder,
+                    &self.kernels,
+                    (&format!("step/{}", phase.name()), &pending.values),
+                    &phases[phase as usize],
+                    true,
+                );
+            }
+            return;
+        }
         let dispatches = pending
             .phases
             .iter()
@@ -1277,6 +1312,7 @@ impl GpuExecutor {
             &self.kernels,
             ("step", &pending.values),
             dispatches,
+            false,
         );
     }
 
@@ -1423,13 +1459,22 @@ impl GpuExecutor {
 }
 
 /// Record `dispatches` as one pass labelled `label`, in one recorder step
-/// carrying `values`.
+/// carrying `values`; or, `split`, each dispatch as a pass of its own in a
+/// step of its own, labelled `label` and its entry point.
 fn record_pass<'a>(
     recorder: &mut Recorder<StepValues>,
     kernels: &Kernels,
     (label, values): (&str, &StepValues),
     dispatches: impl IntoIterator<Item = &'a Dispatch>,
+    split: bool,
 ) {
+    if split {
+        for dispatch in dispatches {
+            let label = format!("{label}/{}", dispatch.entry());
+            record_pass(recorder, kernels, (&label, values), [dispatch], false);
+        }
+        return;
+    }
     let offset = recorder.begin_step(values);
     {
         let mut pass = recorder.pass(label);
@@ -1652,6 +1697,7 @@ impl Executor for GpuExecutor {
             &self.kernels,
             ("read", &StepValues::default()),
             &self.programs.read,
+            self.split,
         );
         let (nodes, elements, surface) = (self.node_count, self.element_count, self.surface_count);
         let buffers = &self.buffers;
@@ -1822,6 +1868,7 @@ impl Executor for GpuExecutor {
             &self.kernels,
             ("estimate", &carried),
             dispatches.into_iter().flatten(),
+            self.split,
         );
         let nodes = self.node_count;
         let buffers = &self.buffers;
