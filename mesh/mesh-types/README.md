@@ -1,6 +1,8 @@
-# mesh-types
+# cortenforge-mesh-types
 
 Core mesh types for CortenForge: IndexedMesh, AttributedMesh, Triangle, Aabb
+
+In code, this crate is `mesh_types`.
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

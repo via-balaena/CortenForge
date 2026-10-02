@@ -10,38 +10,6 @@ workspace and were never published to crates.io.
 
 ## [Unreleased]
 
-### Added
-
-- **`OrientedBoundingBox::contains_with_tol(point, eps)`** — tolerance-aware
-  containment. A vertex that defines the OBB (an extreme along a principal
-  axis) projects to the local-frame boundary, where PCA's `SymmetricEigen`
-  leaves ~1 ULP of roundoff, so strict `contains` could reject it by
-  `~1.78e-15`. `contains` is now `contains_with_tol(p, 0.0)`. Surfaced by the
-  `measure` stress-test, which previously hand-rolled a tolerant
-  reimplementation; it now calls the library method.
-- **Rotated-box OBB extent-recovery test** — a non-degenerate 20×12×8 box
-  rotated 45° whose OBB recovers the true `(20, 12, 8)` extents (the defining
-  OBB-vs-AABB behavior, previously only exercised on axis-aligned cubes).
-
-### Changed
-
-- **`CrossSection`/`Contour` centroid is now the true polygon centroid**
-  (area-weighted shoelace moments in the plane frame), replacing the naive
-  `sum(points) / points.len()` average that a chain-closure-duplicate vertex
-  biased away from the geometric centroid (~0.077 mm on the 32-gon cylinder
-  mid-slice; now `(0, 0, 5)` to ~3e-17). The 2D projection basis is shared
-  with the area computation via the new `plane_basis` helper. Surfaced by the
-  `measure` stress-test. *Consumer note:* callers reading `.centroid` now get
-  the geometric centroid, not the point-mean — a value change, not an API one.
-
-- **Minimum supported Rust version is now 1.92** (was 1.87). The crate inherits
-  the workspace-wide declaration, and that floor is set by the locked dependency
-  graph as a whole — `wgpu 28.0.0` requires 1.92 — not by anything this crate
-  uses, so cargo refuses older toolchains even where this crate alone would have
-  built. The 1.87 it replaces was never verified: since 2026-02-17 the weekly
-  MSRV job had been trying to install a Rust version that does not exist, so it
-  never compiled anything.
-
 ### Deferred candidates
 
 These backlog candidates are gated on a real consumer driving them per
@@ -75,6 +43,39 @@ the entries below are the mesh-measure-specific subset.
   is `mesh-sdf` with `mesh-measure` re-exporting the consolidated
   function. Listed here so the dedup is discoverable from this
   crate's backlog.
+
+## [0.9.0]
+
+The first release on crates.io, as `cortenforge-mesh-measure`; code still names it `mesh_measure`.
+
+### Added
+
+- **`OrientedBoundingBox::contains_with_tol(point, eps)`** — tolerance-aware
+  containment. A vertex that defines the OBB (an extreme along a principal
+  axis) projects to the local-frame boundary, where PCA's `SymmetricEigen`
+  leaves ~1 ULP of roundoff, so strict `contains` could reject it by
+  `~1.78e-15`. `contains` is now `contains_with_tol(p, 0.0)`. Surfaced by the
+  `measure` stress-test, which previously hand-rolled a tolerant
+  reimplementation; it now calls the library method.
+- **Rotated-box OBB extent-recovery test** — a non-degenerate 20×12×8 box
+  rotated 45° whose OBB recovers the true `(20, 12, 8)` extents (the defining
+  OBB-vs-AABB behavior, previously only exercised on axis-aligned cubes).
+
+### Changed
+
+- **`CrossSection`/`Contour` centroid is now the true polygon centroid**
+  (area-weighted shoelace moments in the plane frame), replacing the naive
+  `sum(points) / points.len()` average that a chain-closure-duplicate vertex
+  biased away from the geometric centroid (~0.077 mm on the 32-gon cylinder
+  mid-slice; now `(0, 0, 5)` to ~3e-17). The 2D projection basis is shared
+  with the area computation via the new `plane_basis` helper. Surfaced by the
+  `measure` stress-test. *Consumer note:* callers reading `.centroid` now get
+  the geometric centroid, not the point-mean — a value change, not an API one.
+
+- **Minimum supported Rust version is now 1.92** (was 1.87). The crate inherits
+  the workspace-wide declaration. The 1.87 it replaces was never verified: since
+  2026-02-17 the weekly MSRV job had been trying to install a Rust version that
+  does not exist, so it never compiled anything.
 
 ## [1.0.0] - 2026-05-03
 

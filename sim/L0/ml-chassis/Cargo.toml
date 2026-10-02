@@ -1,5 +1,5 @@
 [package]
-name = "sim-ml-chassis"
+name = "cortenforge-sim-ml-chassis"
 description = "Algorithm chassis: traits, primitives, Competition runner — the foundation every CortenForge algorithm crate bolts onto"
 keywords = ["machine-learning", "autograd", "rl", "optimization", "framework"]
 categories = ["science", "algorithms", "mathematics"]
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "sim_ml_chassis"
 
 [dependencies]
 # Linear algebra — DVector / DMatrix used throughout policy forward passes

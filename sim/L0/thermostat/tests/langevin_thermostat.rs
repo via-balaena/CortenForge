@@ -161,7 +161,7 @@ fn test_equipartition_central_parameter_set() {
 /// is already proven by `test_equipartition_central_parameter_set`,
 /// the sweep is verification rather than the gate, and total cost
 /// is order-of-minutes vs order-of-seconds. Run with
-/// `cargo test -p sim-thermostat -- --ignored test_equipartition_sweep_gamma_T`
+/// `cargo test -p cortenforge-sim-thermostat -- --ignored test_equipartition_sweep_gamma_T`
 /// when manually verifying after touching the thermostat algorithm.
 ///
 /// **Per-combo `τ_eq` scaling.** `n_burn_in` and `n_measure` are computed

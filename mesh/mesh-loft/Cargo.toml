@@ -1,5 +1,5 @@
 [package]
-name = "mesh-loft"
+name = "cortenforge-mesh-loft"
 description = "Join two painted contact patches into one closed, watertight bushing (extract patch + rim, stitch the perimeter wall, assemble, and smooth only the free wall)"
 keywords = ["mesh", "loft", "bushing", "geometry", "watertight"]
 categories = ["mathematics", "graphics"]
@@ -16,6 +16,9 @@ rust-version.workspace = true
 # well under the L0 100/120 caps.
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "mesh_loft"
 
 [lints]
 workspace = true

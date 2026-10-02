@@ -573,7 +573,7 @@ benchmarks:
 
 ```bash
 cargo install cargo-mutants
-cargo mutants --package mesh-repair -- --release
+cargo mutants --package cortenforge-mesh-repair -- --release
 ```
 
 **Why**:
@@ -676,7 +676,8 @@ if a && b {  // Need tests where:
 │ Release tag                              │
 │   ├── build-check (3 triples, blocking)  │
 │   ├── sbom — only asset, if produced     │
-│   └── Changelog generated                │
+│   ├── Changelog generated                │
+│   └── crates.io publish (publish.yml)    │
 └─────────────────────────────────────────┘
 ```
 

@@ -1758,7 +1758,7 @@ fn tet10_at_nu_0_49_decision_gate() {
 
 #[ignore = "pre-push one-shot, NEVER CI — the h/4 Tet10 mesh is 94,710 nodes / 284k DOF and \
             measured 7.16 GB peak RSS over 500 s for the two solves, above what a CI runner \
-            has. Run with `cargo test --release -p sim-soft --test tet10_lame_decision -- \
+            has. Run with `cargo test --release -p cortenforge-sim-soft --test tet10_lame_decision -- \
             --ignored tet10_nu_0_49_h4`"]
 #[test]
 fn tet10_nu_0_49_h4_mesh_stability_confirmation() {

@@ -1,5 +1,5 @@
 [package]
-name = "mesh-sdf"
+name = "cortenforge-mesh-sdf"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,9 @@ categories = ["algorithms", "graphics", "game-development"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "mesh_sdf"
 
 [dependencies]
 # Shared mesh data structures (workspace)

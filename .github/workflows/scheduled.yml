@@ -328,8 +328,8 @@ jobs:
       fail-fast: false
       matrix:
         crate:
-          - mesh-types
-          - mesh-repair
+          - cortenforge-mesh-types
+          - cortenforge-mesh-repair
     steps:
       - uses: actions/checkout@v7
 
@@ -685,4 +685,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run the demand-#1 bonded-layer indentation gate
-        run: cargo test --release -p sim-soft --test bonded_layer_indentation
+        run: cargo test --release -p cortenforge-sim-soft --test bonded_layer_indentation

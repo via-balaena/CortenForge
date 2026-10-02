@@ -1,6 +1,8 @@
-# mesh-loft
+# cortenforge-mesh-loft
 
 Join two painted contact patches into one closed, watertight bushing (extract patch + rim, stitch the perimeter wall, assemble, and smooth only the free wall)
+
+In code, this crate is `mesh_loft`.
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

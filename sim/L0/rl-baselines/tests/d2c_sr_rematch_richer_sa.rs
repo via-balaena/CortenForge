@@ -18,7 +18,7 @@
 //!
 //! **Two tests live here:**
 //! 1. `d2c_sr_rematch_richer_sa_smoke` — runs in debug-mode
-//!    seconds under `cargo test -p sim-opt --release` without
+//!    seconds under `cargo test -p sim-rl-baselines --release` without
 //!    `--ignored`, at a reduced `n_envs = 4`, `episode_steps =
 //!    50`, `sub_steps = 10`, and a 2-epoch-per-replicate budget.
 //!    The smoke test is a plumbing gate: it verifies that
@@ -36,9 +36,9 @@
 //!
 //! ```text
 //! # Smoke (runs by default):
-//! cargo test -p sim-opt --release d2c_sr_rematch_richer_sa_smoke
+//! cargo test -p sim-rl-baselines --release --test d2c_sr_rematch_richer_sa d2c_sr_rematch_richer_sa_smoke
 //! # Production (fires the 16M-step run):
-//! cargo test -p sim-opt --release --ignored d2c_sr_rematch_richer_sa
+//! cargo test -p sim-rl-baselines --release --test d2c_sr_rematch_richer_sa -- --ignored
 //! ```
 
 #![allow(

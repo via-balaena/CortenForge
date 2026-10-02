@@ -10,6 +10,10 @@ workspace and were never published to crates.io.
 
 ## [Unreleased]
 
+## [0.9.0]
+
+The first release on crates.io, as `cortenforge-mesh-repair`; code still names it `mesh_repair`.
+
 ### Changed
 
 - **License is `MIT OR Apache-2.0` again.** The workspace was relicensed to the
@@ -20,12 +24,9 @@ workspace and were never published to crates.io.
   accurate record of what 2.0.0 shipped.
 
 - **Minimum supported Rust version is now 1.92** (was 1.87). The crate inherits
-  the workspace-wide declaration, and that floor is set by the locked dependency
-  graph as a whole — `wgpu 28.0.0` requires 1.92 — not by anything this crate
-  uses, so cargo refuses older toolchains even where this crate alone would have
-  built. The 1.87 it replaces was never verified: since 2026-02-17 the weekly
-  MSRV job had been trying to install a Rust version that does not exist, so it
-  never compiled anything.
+  the workspace-wide declaration. The 1.87 it replaces was never verified: since
+  2026-02-17 the weekly MSRV job had been trying to install a Rust version that
+  does not exist, so it never compiled anything.
 
 ## [2.0.0] - 2026-08-07
 

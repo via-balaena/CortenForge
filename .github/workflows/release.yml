@@ -283,26 +283,3 @@ jobs:
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ============================================================================
-  # PUBLISH TO CRATES.IO (Optional - manual trigger)
-  # ============================================================================
-  # publish:
-  #   name: Publish to crates.io
-  #   needs: [release]
-  #   runs-on: ubuntu-latest
-  #   if: ${{ !contains(github.ref, '-') }}  # Only stable releases
-  #   steps:
-  #     - uses: actions/checkout@v7
-  #
-  #     - name: Install Rust
-  #       uses: dtolnay/rust-toolchain@stable
-  #
-  #     - name: Publish crates
-  #       run: |
-  #         # Publish in dependency order
-  #         cargo publish -p mesh-types --token ${{ secrets.CARGO_TOKEN }}
-  #         cargo publish -p mesh-io --token ${{ secrets.CARGO_TOKEN }}
-  #         # ... etc
-  #       env:
-  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}

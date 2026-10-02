@@ -34,6 +34,6 @@ serde_json = { workspace = true }
 # Emit the morphed Model to MJCF (the `build` path) in the scan-source tests.
 cf-mjcf-emit = { path = "../cf-mjcf-emit" }
 # Load the morphed MJCF to prove the scan→params→model path emits a valid model.
-sim-mjcf = { path = "../../sim/L0/mjcf" }
+sim-mjcf = { workspace = true }
 # Drive the emitted muscle-driven twin (read actuator force) in the muscle_drive example.
-sim-core = { path = "../../sim/L0/core" }
+sim-core = { workspace = true }

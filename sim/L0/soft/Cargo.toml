@@ -1,5 +1,5 @@
 [package]
-name = "sim-soft"
+name = "cortenforge-sim-soft"
 description = "Backward-Euler soft-body FEM: hyperelastic materials (Neo-Hookean, Yeoh) on tetrahedral meshes, SDF-to-tet meshing, bonded multi-material, and penalty and IPC contact with friction"
 keywords = ["physics", "simulation", "soft-body", "fem", "differentiable"]
 categories = ["simulation", "science", "mathematics"]
@@ -54,7 +54,7 @@ dependency_budget = 200
 tier_up_features = { gpu-probe = "L0-io" }
 
 # Binaries the COVERAGE pass skips. They still run, and still gate: `grade`'s
-# pass 2 is an uninstrumented `cargo test --release -p sim-soft` over the whole
+# pass 2 is an uninstrumented `cargo test --release -p cortenforge-sim-soft` over the whole
 # suite, and `bonded_layer_indentation` additionally has its own CI job. Only
 # the instrumented measurement pass omits them.
 #
@@ -87,6 +87,9 @@ coverage_skip_binaries = [
     "non_interpenetration",
     "slender_bending_matches_analytic",
 ]
+
+[lib]
+name = "sim_soft"
 
 [features]
 default = []

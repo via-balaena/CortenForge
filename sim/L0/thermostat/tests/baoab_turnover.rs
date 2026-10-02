@@ -13,7 +13,7 @@
 //! engine for the high-Q beam; MM is a ±20% guide untested in our regime.
 //!
 //! Heavy; run with `--release`:
-//! `cargo test -p sim-thermostat --release --test baoab_turnover -- --ignored --nocapture`
+//! `cargo test -p cortenforge-sim-thermostat --release --test baoab_turnover -- --ignored --nocapture`
 
 #![allow(
     clippy::cast_precision_loss,

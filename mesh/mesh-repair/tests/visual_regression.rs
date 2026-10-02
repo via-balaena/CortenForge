@@ -17,7 +17,7 @@
 //! 2. Apply the operation being tested
 //! 3. Assert specific geometric properties of the output
 //!
-//! Run with: cargo test -p mesh-repair visual_regression
+//! Run with: cargo test -p cortenforge-mesh-repair visual_regression
 
 #![allow(
     // Tests use `.expect()` to assert holes-filled counts and similar

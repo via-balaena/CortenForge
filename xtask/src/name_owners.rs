@@ -6,12 +6,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
+
+use crate::crates_io;
 
 /// Shown by `cargo xtask name-owners --help`. The single statement of what this
 /// asserts; CI's comments point here rather than restating it.
@@ -51,10 +52,7 @@ const OURS: [&str; 1] = ["bigmark222"];
 
 /// Release-set names on crates.io that are not ours: another account holds
 /// each today.
-const FOREIGN: [&str; 3] = ["mesh", "mesh-types", "sim"];
-
-/// Tries per name, the first included.
-const ATTEMPTS: u32 = 4;
+const FOREIGN: [&str; 0] = [];
 
 /// Identifies this check to crates.io, as its data access policy asks.
 const USER_AGENT: &str =
@@ -77,7 +75,11 @@ enum Answer {
 /// When it finds a problem, or crates.io gives an answer it does not expect.
 pub fn check() -> Result<()> {
     let set = crate::publish_set::release_set(Path::new("."))?;
-    let answers = ask_all(&set, |name| ask(name, curl, sleep), sleep)?;
+    let answers = ask_all(
+        &set,
+        |name| ask(name, |url| crates_io::curl(url, USER_AGENT), sleep),
+        sleep,
+    )?;
     println!("{}", verdict(&answers, &FOREIGN)?);
     Ok(())
 }
@@ -130,61 +132,12 @@ fn ask_all(
 /// 429/5xx after a `wait` that doubles each time.
 fn ask(
     name: &str,
-    mut get: impl FnMut(&str) -> Result<(String, String)>,
-    mut wait: impl FnMut(Duration),
+    get: impl FnMut(&str) -> Result<(String, String)>,
+    wait: impl FnMut(Duration),
 ) -> Result<Answer> {
     let url = format!("https://crates.io/api/v1/crates/{name}/owners");
-    let mut last = String::new();
-    for attempt in 0..ATTEMPTS {
-        if attempt > 0 {
-            wait(Duration::from_secs(2_u64 << attempt));
-        }
-        let (status, body) = get(&url)?;
-        if !transient(&status) {
-            return read_answer(name, &status, &body);
-        }
-        last = if status == "000" {
-            body
-        } else {
-            format!("HTTP {status}")
-        };
-    }
-    bail!("crates.io did not answer for `{name}` in {ATTEMPTS} tries: {last}")
-}
-
-/// One GET of `url`: the HTTP status and the body. A request that never got an
-/// answer comes back as status `000` with curl's error as the body.
-fn curl(url: &str) -> Result<(String, String)> {
-    let out = Command::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--max-time",
-            "30",
-            "--user-agent",
-            USER_AGENT,
-            "--write-out",
-            "\n%{http_code}",
-            url,
-        ])
-        .output()
-        .context("run `curl`, which this check needs to ask crates.io")?;
-    if !out.status.success() {
-        return Ok((
-            "000".into(),
-            String::from_utf8_lossy(&out.stderr).trim().into(),
-        ));
-    }
-    let text = String::from_utf8(out.stdout).context("crates.io sent non-UTF-8")?;
-    let (body, status) = text
-        .rsplit_once('\n')
-        .with_context(|| format!("curl printed no status line for {url}"))?;
-    Ok((status.trim().into(), body.into()))
-}
-
-/// Worth asking again: no answer at all, rate limited, or a server error.
-fn transient(status: &str) -> bool {
-    status == "000" || status == "429" || status.starts_with('5')
+    let (status, body) = crates_io::get_retrying(&url, name, get, wait)?;
+    read_answer(name, &status, &body)
 }
 
 /// Reads one answer, refusing anything but a list of owners (200) or a 404
@@ -313,16 +266,6 @@ mod tests {
         assert!(read_answer("a", "200", "<html>").is_err());
         assert!(read_answer("a", "200", r#"{"crate":{}}"#).is_err());
         assert!(read_answer("a", "200", r#"{"users":[{"kind":"user"}]}"#).is_err());
-    }
-
-    #[test]
-    fn retries_only_what_can_pass_on_a_second_try() {
-        for status in ["000", "429", "500", "502", "503", "504", "520"] {
-            assert!(transient(status), "{status}");
-        }
-        for status in ["200", "404", "403", "301", "400"] {
-            assert!(!transient(status), "{status}");
-        }
     }
 
     #[test]
@@ -501,7 +444,7 @@ mod tests {
     #[test]
     fn the_help_matches_the_code() {
         let help = LONG_ABOUT.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(help.contains(&format!("up to {} times", ATTEMPTS - 1)));
+        assert!(help.contains(&format!("up to {} times", crates_io::ATTEMPTS - 1)));
         assert!(help.contains("passes when it has an owner and every owner is in OURS"));
         assert!(help.contains("a release-set name on crates.io that is not ours"));
         assert!(help.contains("unless its name is in FOREIGN"));

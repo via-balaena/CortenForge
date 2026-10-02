@@ -158,7 +158,7 @@ fn gate_a_kl_convergence() {
 // ─── Gate B: Parameter recovery (ignore — 600M steps) ────────────────────
 
 #[test]
-#[ignore = "600M steps — run with `cargo test -p sim-thermostat -- --ignored gate_b`"]
+#[ignore = "600M steps — run with `cargo test -p cortenforge-sim-thermostat -- --ignored gate_b`"]
 fn gate_b_parameter_recovery() {
     let model = bistable_chain(N);
     let target = make_target();

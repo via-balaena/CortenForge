@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-mesh-io = { path = ".." }
+mesh-io = { path = "..", package = "cortenforge-mesh-io" }
 tempfile = "3"
 
 # Prevent this from interfering with workspaces

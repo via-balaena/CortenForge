@@ -1,7 +1,7 @@
 [package]
-name = "sim-opt"
+name = "cortenforge-sim-opt"
 description = "Gradient-free optimizers (simulated annealing, parallel tempering) and bootstrap statistics for comparing two training algorithms"
-keywords = ["optimization", "annealing", "cem", "gradient-free", "metaheuristic"]
+keywords = ["optimization", "annealing", "parallel-tempering", "gradient-free", "metaheuristic"]
 categories = ["algorithms", "mathematics", "science"]
 version.workspace = true
 edition.workspace = true
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "sim_opt"
 
 [dependencies]
 # RNG traits — StdRng + SeedableRng for SA/richer-SA/PT per-epoch sampling

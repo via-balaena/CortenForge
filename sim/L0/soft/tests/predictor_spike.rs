@@ -105,7 +105,7 @@
 //! sim-soft test target, so it cannot bit-rot silently).
 //!
 //! ```text
-//! cargo test --release -p sim-soft --test predictor_spike -- --ignored --nocapture --test-threads=1
+//! cargo test --release -p cortenforge-sim-soft --test predictor_spike -- --ignored --nocapture --test-threads=1
 //! ```
 //!
 //! `--test-threads=1` is load-bearing twice over: it keeps the printed tables

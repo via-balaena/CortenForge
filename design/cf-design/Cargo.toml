@@ -1,5 +1,5 @@
 [package]
-name = "cf-design"
+name = "cortenforge-design"
 description = "Implicit surface design kernel for CortenForge"
 keywords = ["sdf", "implicit", "geometry", "design", "cad"]
 categories = ["graphics", "mathematics", "algorithms"]
@@ -13,6 +13,9 @@ exclude = ["docs/"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "cf_design"
 
 [lints]
 workspace = true

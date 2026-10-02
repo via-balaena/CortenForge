@@ -23,6 +23,12 @@
 //! are the three ways a package reaches a `cargo test` invocation in this
 //! workflow.
 //!
+//! Every name read that way must be a package in the repository. One that is
+//! not is a misspelling, or a crate renamed or deleted since the list was
+//! written: on a pull request `affected-packages.sh` intersects it with the
+//! affected set and drops it without a word, so the job it was meant to start
+//! passes having tested it nowhere.
+//!
 //! ⚠ Being named is necessary, not sufficient — this check does not verify that
 //! the naming job actually runs the crate's tests, only that nothing is
 //! unreachable by construction. A `--lib`-scoped invocation still *names* its
@@ -50,6 +56,9 @@ CI test job in .github/workflows/quality-gate.yml.
 
 A crate is REACHED when its package name appears as a `-p <name>` argument, in a
 job matrix's crate list, or in an `affected-packages.sh \"<list>\"` argument.
+Every name read that way must be a package in the repository: a pull request's
+scoping drops one that is not (a misspelling, or a crate renamed or deleted
+since) without a word.
 
 ⚠ Necessary, not sufficient: this does not verify the naming job runs the
 crate's tests. A `--lib`-scoped invocation still names its crate, which is how
@@ -73,6 +82,8 @@ const REACHED_ELSEWHERE: &[(&str, &str)] = &[];
 
 /// Packages with at least one `#[test]`, and how many.
 struct Survey {
+    /// Every package that owns a source file.
+    packages: BTreeSet<String>,
     /// Package name → number of `#[test]` attributes found in its sources.
     with_tests: BTreeMap<String, usize>,
     /// Source files that could not be read or parsed. Reported, never silent:
@@ -81,12 +92,14 @@ struct Survey {
 }
 
 fn survey(root: &Path) -> Survey {
+    let mut packages = BTreeSet::new();
     let mut with_tests: BTreeMap<String, usize> = BTreeMap::new();
     let mut unreadable = Vec::new();
     for path in source_files(root) {
         let Some((_, package)) = owning_package(&path) else {
             continue;
         };
+        packages.insert(package.clone());
         let Ok(text) = std::fs::read_to_string(&path) else {
             unreadable.push(path);
             continue;
@@ -101,6 +114,7 @@ fn survey(root: &Path) -> Survey {
         }
     }
     Survey {
+        packages,
         with_tests,
         unreadable,
     }
@@ -282,8 +296,8 @@ fn extend_names(named: &mut BTreeSet<String>, list: &str) {
 ///
 /// Returns an error if the workflow cannot be read, if either enumeration comes
 /// back empty (which would mean the parser broke, not that the tree is clean),
-/// if any source file could not be parsed, or if a crate with tests is
-/// unreachable.
+/// if any source file could not be parsed, if the workflow names a package the
+/// repository does not have, or if a crate with tests is unreachable.
 pub fn check() -> Result<()> {
     check_at(Path::new("."))
 }
@@ -293,6 +307,7 @@ pub fn check() -> Result<()> {
 /// would race whichever sibling test happens to read a relative path.
 pub(crate) fn check_at(root: &Path) -> Result<()> {
     let Survey {
+        packages,
         with_tests,
         unreadable,
     } = survey(root);
@@ -316,6 +331,19 @@ pub(crate) fn check_at(root: &Path) -> Result<()> {
     let named = crates_named_in_workflow(&yaml);
     if named.is_empty() {
         bail!("parsed NO crate names out of {WORKFLOW} — the parser is broken");
+    }
+    let unknown: Vec<&str> = named
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !packages.contains(*name))
+        .collect();
+    if !unknown.is_empty() {
+        bail!(
+            "{WORKFLOW} names {unknown:?}, which no package in the repository is called: a \
+             misspelling, or a crate renamed or deleted since the list was written. On a pull request \
+             affected-packages.sh drops such a name without a word. Use the package's \
+             current name, or remove the entry."
+        );
     }
 
     let exempt: BTreeMap<&str, &str> = REACHED_ELSEWHERE.iter().copied().collect();
@@ -460,6 +488,29 @@ mod tests {
     fn the_workspace_has_no_orphaned_test_crates() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         check_at(root).expect("every crate with tests should be named by a CI job");
+    }
+
+    /// ★ BOTH FACES. A workflow naming a package the repository does not have
+    /// fails, and naming the name the package has passes, so the refusal is
+    /// about the name and not about the fixture.
+    #[test]
+    fn a_workflow_naming_no_package_fails() {
+        let workflow = |crates: &str| {
+            format!("jobs:\n  t:\n    strategy:\n      matrix:\n        include:\n          - crates: {crates}\n")
+        };
+        let root = crate_fixture(
+            "unknown-name",
+            "widget",
+            &[
+                ("src/lib.rs", "#[test]\nfn a() {}\n"),
+                (WORKFLOW, &workflow("widget gadget")),
+            ],
+        );
+        let err = check_at(&root).expect_err("a name no package carries must fail");
+        assert!(err.to_string().contains("[\"gadget\"]"), "{err}");
+
+        std::fs::write(root.join(WORKFLOW), workflow("widget")).expect("rewrite workflow");
+        check_at(&root).expect("the package's own name passes");
     }
 
     /// A throwaway crate tree: `(relative path, contents)`, plus a manifest

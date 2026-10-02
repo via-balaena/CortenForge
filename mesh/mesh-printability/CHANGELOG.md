@@ -10,65 +10,6 @@ workspace and were never published to crates.io.
 
 ## [Unreleased]
 
-### Added
-
-- **Degenerate-face detection.** Faces listing a vertex twice are necessarily
-  zero-area and unprintable. The §5.5 directed-edge count was catching them
-  incidentally and reporting them as a *winding* inconsistency, which they are
-  not. Now reported as its own `NonManifold` Critical reading "N face(s) list a
-  vertex twice (degenerate, zero-area)".
-
-  A lone such face was already caught: `[a,a,b]` presents `(a,b)` twice and the
-  self-loop `(a,a)` once, so the open-edge pass fires. It takes a *pair* sharing
-  the repeated vertex — `[[0,0,1],[0,0,2]]` — to lift the self-loop to two
-  incidences as well, at which point every edge looks interior and the manifold
-  passes see a closed mesh.
-
-### Changed
-
-- **§5.5 Gap F and the ThinWall precondition now read
-  `mesh_repair::winding_census`** instead of each building a private
-  directed-edge map. Two private reimplementations of winding consistency are
-  gone; the crate now has one instrument for it, shared with `mesh-repair`.
-  ⚠ Not a pure substitution — the census is not the same test, as the next
-  entry describes. The precondition, however, is behaviourally identical on
-  every non-empty mesh searched.
-- Gap F is consequently **narrower**: it judges only edges with exactly two
-  non-degenerate incident faces. Orientation is undefined across a
-  non-manifold edge or a repeated-index face, so those no longer collect a
-  Critical describing them as a winding problem — they are reported as what
-  they are.
-
-  ⚠ **The description string moves for degenerate-face meshes**, and §5.5's
-  convention is that callers discriminate issues by that string. A mesh such as
-  `[[0,0,1],[0,0,2]]` previously raised a Critical containing
-  `"winding inconsistency"`; it now raises one containing
-  `"list a vertex twice"`. Code matching the former to catch such meshes will
-  stop seeing them. The severity, the issue type (`NonManifold`) and the
-  verdict are all unchanged — only which pass reports it, and under what name.
-
-  ⚠ `is_printable()` is unchanged. Verified by comparing verdicts against the
-  previous implementation across every mesh of one to three faces on four
-  vertices (137 280): identical, signature `f0fbce6d786e8ca3`, 732 printable in
-  both. Re-checked on five vertices (1 000 125 meshes): zero verdicts moved.
-  The narrowing alone would have flipped 2 640 of the smaller set to printable;
-  the new degenerate pass is what holds the verdict.
-
-- **Minimum supported Rust version is now 1.92** (was 1.87). The crate inherits
-  the workspace-wide declaration, and that floor is set by the locked dependency
-  graph as a whole — `wgpu 28.0.0` requires 1.92 — not by anything this crate
-  uses, so cargo refuses older toolchains even where this crate alone would have
-  built. The 1.87 it replaces was never verified: since 2026-02-17 the weekly
-  MSRV job had been trying to install a Rust version that does not exist, so it
-  never compiled anything.
-
-### Fixed
-
-- `docs/studies/mesh_architecture/src/50-shell-and-print.md` claimed Gap F
-  "catches inside-out shells". It does not, and no per-edge test can: a
-  uniform reversal leaves every edge in agreement. It catches *locally
-  inconsistent* winding.
-
 ### Deferred candidates
 
 These deferred backlog items are tracked here so per-site `#[allow]`
@@ -245,6 +186,66 @@ deleted v0.8 spec.
   `validation.issues.sort_by(|a, b| b.severity.cmp(&a.severity))`
   pass at the end of `validate_for_printing` (using `IssueSeverity`'s
   variant order: Critical = 2, Warning = 1, Info = 0).
+
+## [0.9.0]
+
+The first release on crates.io, as `cortenforge-mesh-printability`; code still names it `mesh_printability`.
+
+### Added
+
+- **Degenerate-face detection.** Faces listing a vertex twice are necessarily
+  zero-area and unprintable. The §5.5 directed-edge count was catching them
+  incidentally and reporting them as a *winding* inconsistency, which they are
+  not. Now reported as its own `NonManifold` Critical reading "N face(s) list a
+  vertex twice (degenerate, zero-area)".
+
+  A lone such face was already caught: `[a,a,b]` presents `(a,b)` twice and the
+  self-loop `(a,a)` once, so the open-edge pass fires. It takes a *pair* sharing
+  the repeated vertex — `[[0,0,1],[0,0,2]]` — to lift the self-loop to two
+  incidences as well, at which point every edge looks interior and the manifold
+  passes see a closed mesh.
+
+### Changed
+
+- **§5.5 Gap F and the ThinWall precondition now read
+  `mesh_repair::winding_census`** instead of each building a private
+  directed-edge map. Two private reimplementations of winding consistency are
+  gone; the crate now has one instrument for it, shared with `mesh-repair`.
+  ⚠ Not a pure substitution — the census is not the same test, as the next
+  entry describes. The precondition, however, is behaviourally identical on
+  every non-empty mesh searched.
+- Gap F is consequently **narrower**: it judges only edges with exactly two
+  non-degenerate incident faces. Orientation is undefined across a
+  non-manifold edge or a repeated-index face, so those no longer collect a
+  Critical describing them as a winding problem — they are reported as what
+  they are.
+
+  ⚠ **The description string moves for degenerate-face meshes**, and §5.5's
+  convention is that callers discriminate issues by that string. A mesh such as
+  `[[0,0,1],[0,0,2]]` previously raised a Critical containing
+  `"winding inconsistency"`; it now raises one containing
+  `"list a vertex twice"`. Code matching the former to catch such meshes will
+  stop seeing them. The severity, the issue type (`NonManifold`) and the
+  verdict are all unchanged — only which pass reports it, and under what name.
+
+  ⚠ `is_printable()` is unchanged. Verified by comparing verdicts against the
+  previous implementation across every mesh of one to three faces on four
+  vertices (137 280): identical, signature `f0fbce6d786e8ca3`, 732 printable in
+  both. Re-checked on five vertices (1 000 125 meshes): zero verdicts moved.
+  The narrowing alone would have flipped 2 640 of the smaller set to printable;
+  the new degenerate pass is what holds the verdict.
+
+- **Minimum supported Rust version is now 1.92** (was 1.87). The crate inherits
+  the workspace-wide declaration. The 1.87 it replaces was never verified: since
+  2026-02-17 the weekly MSRV job had been trying to install a Rust version that
+  does not exist, so it never compiled anything.
+
+### Fixed
+
+- `docs/studies/mesh_architecture/src/50-shell-and-print.md` claimed Gap F
+  "catches inside-out shells". It does not, and no per-edge test can: a
+  uniform reversal leaves every edge in agreement. It catches *locally
+  inconsistent* winding.
 
 ## [0.8.0] - 2026-05-01
 

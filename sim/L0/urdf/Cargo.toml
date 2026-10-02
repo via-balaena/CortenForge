@@ -1,5 +1,5 @@
 [package]
-name = "sim-urdf"
+name = "cortenforge-sim-urdf"
 description = "URDF robot description parser for physics simulation"
 keywords = ["urdf", "robotics", "physics", "simulation", "parser"]
 categories = ["parsing", "simulation", "science::robotics"]
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0-io"
+
+[lib]
+name = "sim_urdf"
 
 [dependencies]
 # Physics Model / Data target of URDF -> MJCF -> Model conversion

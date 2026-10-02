@@ -1,5 +1,5 @@
 [package]
-name = "cf-cap-planes"
+name = "cortenforge-cap-planes"
 description = "Cap-plane parsing for cleaned scans: reads a .prep.toml [caps] block and strips cap-polygon faces from the scan, so consumers can build cap-stripped (dome-wall-only) signed-distance fields"
 keywords = ["geometry", "mesh", "sdf", "3d", "scan"]
 categories = ["graphics", "mathematics"]
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "cf_cap_planes"
 
 [lints]
 workspace = true

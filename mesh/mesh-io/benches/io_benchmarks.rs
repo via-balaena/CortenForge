@@ -1,10 +1,10 @@
 //! Benchmarks for mesh-io operations.
 //!
-//! Run with: cargo bench -p mesh-io
+//! Run with: cargo bench -p cortenforge-mesh-io
 //!
 //! To compare against baseline:
-//! 1. First run: cargo bench -p mesh-io -- --save-baseline main
-//! 2. After changes: cargo bench -p mesh-io -- --baseline main
+//! 1. First run: cargo bench -p cortenforge-mesh-io -- --save-baseline main
+//! 2. After changes: cargo bench -p cortenforge-mesh-io -- --baseline main
 
 #![allow(
     missing_docs,

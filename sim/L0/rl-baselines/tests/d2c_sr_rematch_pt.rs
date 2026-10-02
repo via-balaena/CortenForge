@@ -28,8 +28,8 @@
 //!    second-MBP fire.
 //!
 //! ```text
-//! cargo test -p sim-opt --release d2c_sr_rematch_pt_smoke
-//! cargo test -p sim-opt --release --ignored d2c_sr_rematch_pt
+//! cargo test -p sim-rl-baselines --release --test d2c_sr_rematch_pt d2c_sr_rematch_pt_smoke
+//! cargo test -p sim-rl-baselines --release --test d2c_sr_rematch_pt -- --ignored
 //! ```
 
 #![allow(

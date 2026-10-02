@@ -14,7 +14,7 @@
 //! `tests/reduced_phase_shares.rs`.
 //!
 //! ```text
-//! cargo test --release -p sim-soft --test reduced_contact -- --ignored --nocapture
+//! cargo test --release -p cortenforge-sim-soft --test reduced_contact -- --ignored --nocapture
 //! ```
 //!
 //! ## No new physics is involved
@@ -1360,7 +1360,7 @@ fn reduced_contact_does_not_tunnel_through_the_barrier() {
 /// for.**
 ///
 /// ```text
-/// cargo test --release -p sim-soft --features phase-timing \
+/// cargo test --release -p cortenforge-sim-soft --features phase-timing \
 ///   --test reduced_contact -- --ignored --nocapture --test-threads=1
 /// ```
 ///
@@ -1784,7 +1784,7 @@ const GEN_A_OVER_CELL: f64 = 2.0;
 /// **R1's open question, and R3 is blocked on it.**
 ///
 /// ```text
-/// cargo test --release -p sim-soft --test reduced_contact \
+/// cargo test --release -p cortenforge-sim-soft --test reduced_contact \
 ///   reduced_basis_generalises -- --ignored --nocapture
 /// ```
 ///
@@ -2818,7 +2818,7 @@ fn signal(arm: &Arm, pick: fn(&Signals) -> f64, q: Quantile) -> Option<f64> {
 /// a reduced answer can be wrong?**
 ///
 /// ```text
-/// cargo test --release -p sim-soft --test reduced_contact \
+/// cargo test --release -p cortenforge-sim-soft --test reduced_contact \
 ///   an_online_signal_separates_out_of_domain -- --ignored --nocapture
 /// ```
 ///
@@ -3433,7 +3433,7 @@ const OFF_LATTICE_EXTRAP: f64 = 1.75;
 /// **Every margin in [`an_online_signal_separates_out_of_domain`] is FITTED.**
 ///
 /// ```text
-/// cargo test --release -p sim-soft --test reduced_contact \
+/// cargo test --release -p cortenforge-sim-soft --test reduced_contact \
 ///   the_signal_margin_on_a_held_out_position -- --ignored --nocapture
 /// ```
 ///
@@ -3796,7 +3796,7 @@ const DENSITY_SETS: [(&str, &[f64]); 3] = [
 /// **How dense must the training ensemble be — and is "density" SPACING or COUNT?**
 ///
 /// ```text
-/// cargo test --release -p sim-soft --test reduced_contact \
+/// cargo test --release -p cortenforge-sim-soft --test reduced_contact \
 ///   how_dense_the_training_ensemble_must_be -- --ignored --nocapture
 /// ```
 ///

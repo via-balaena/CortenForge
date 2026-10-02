@@ -30,6 +30,7 @@ mod check;
 mod complete;
 mod coverage;
 mod coverage_run;
+mod crates_io;
 mod disclaimer_sync;
 mod doc_theft;
 mod grade;
@@ -50,6 +51,7 @@ mod licensed_gates;
 mod name_owners;
 mod native_build;
 mod pr_scope;
+mod publish;
 mod publish_set;
 mod release_gates;
 mod setup;
@@ -87,7 +89,7 @@ enum Commands {
 
     /// Grade a specific crate against the A-grade standard
     Grade {
-        /// The crate to grade (e.g., "mesh-types")
+        /// The crate to grade (e.g., "cortenforge-mesh-types")
         #[arg(name = "CRATE")]
         crate_name: String,
 
@@ -124,7 +126,7 @@ enum Commands {
     /// Costs one full instrumented run. Use it to decide which binaries a
     /// coverage pass can skip without moving the reported number.
     CoverageCensus {
-        /// The crate to census (e.g., "sim-soft")
+        /// The crate to census (e.g., "cortenforge-sim-soft")
         #[arg(name = "CRATE")]
         crate_name: String,
 
@@ -341,6 +343,26 @@ enum Commands {
     #[command(long_about = name_owners::LONG_ABOUT)]
     NameOwners,
 
+    /// Publish the crates.io release set's crates that crates.io lacks at its version.
+    #[command(long_about = publish::LONG_ABOUT)]
+    Publish {
+        /// Print the crates crates.io lacks, one per line, and stop
+        #[arg(long, conflicts_with_all = ["dry_run", "no_verify"])]
+        list: bool,
+
+        /// Verify them with `cargo publish --dry-run`, and stop
+        #[arg(long, conflicts_with = "no_verify")]
+        dry_run: bool,
+
+        /// Upload them without verifying them, for a run whose verify step already passed
+        #[arg(long)]
+        no_verify: bool,
+
+        /// Refuse unless the release version is this tag without its leading `v`
+        #[arg(long)]
+        tag: Option<String>,
+    },
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -419,6 +441,15 @@ fn main() -> Result<()> {
         Commands::PublishSet => publish_set::check(),
         Commands::NativeBuild => native_build::check(),
         Commands::NameOwners => name_owners::check(),
+        Commands::Publish {
+            list,
+            dry_run,
+            no_verify,
+            tag,
+        } => publish::run(
+            publish::Mode::from_flags(list, dry_run, no_verify),
+            tag.as_deref(),
+        ),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }
@@ -453,6 +484,23 @@ fn parse_shard(s: &str) -> Result<(usize, usize), String> {
 #[cfg(test)]
 mod tests {
     use super::parse_shard;
+    use super::Cli;
+    use clap::Parser;
+
+    /// `publish`'s three mode flags exclude each other, so no combination
+    /// leaves which steps run to their order of precedence.
+    #[test]
+    fn publish_mode_flags_conflict() {
+        for flags in [
+            ["--list", "--dry-run"],
+            ["--list", "--no-verify"],
+            ["--dry-run", "--no-verify"],
+        ] {
+            let args = ["xtask", "publish", flags[0], flags[1]];
+            assert!(Cli::try_parse_from(args).is_err(), "{flags:?}");
+        }
+        assert!(Cli::try_parse_from(["xtask", "publish", "--list", "--tag", "v0.9.0"]).is_ok());
+    }
 
     #[test]
     fn parse_shard_accepts_valid() {

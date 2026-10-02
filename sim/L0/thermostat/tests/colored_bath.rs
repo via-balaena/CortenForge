@@ -10,7 +10,7 @@
 //! deep no-escape well does not probe escape / barrier-top distortion.
 //!
 //! Heavy; run with `--release`:
-//! `cargo test -p sim-thermostat --release --test colored_bath -- --ignored --nocapture`
+//! `cargo test -p cortenforge-sim-thermostat --release --test colored_bath -- --ignored --nocapture`
 
 #![allow(
     clippy::cast_precision_loss,

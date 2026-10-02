@@ -2,7 +2,7 @@
 # Full story in src/lib.rs.
 
 [package]
-name = "sim-soft-explicit"
+name = "cortenforge-sim-soft-explicit"
 description = "Explicit hyperelastic soft-body solver core: the shared CPU/GPU physics, written once, and the lowered model layout"
 keywords = ["fem", "explicit", "hyperelastic", "soft-body", "simulation"]
 categories = ["simulation", "science", "mathematics"]
@@ -25,6 +25,9 @@ tier = "L0"
 # kept out of it. `tube_sanity` drives the same `TubeRun` path in every
 # coverage pass; the stabilization is covered by the unit tests.
 coverage_skip_binaries = ["tube_release", "k6_release", "collapse_release"]
+
+[lib]
+name = "sim_soft_explicit"
 
 [dependencies]
 # Derive macro for the model's error type.

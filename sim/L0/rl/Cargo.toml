@@ -1,5 +1,5 @@
 [package]
-name = "sim-rl"
+name = "cortenforge-sim-rl"
 description = "Generic RL baselines (CEM, REINFORCE, PPO, TD3, SAC)"
 keywords = ["rl", "ppo", "sac", "td3", "reinforcement"]
 categories = ["science", "algorithms", "simulation"]
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0-integration"
+
+[lib]
+name = "sim_rl"
 
 [dependencies]
 # RNG traits — StdRng + SeedableRng for per-epoch sampling in all 5 algorithms

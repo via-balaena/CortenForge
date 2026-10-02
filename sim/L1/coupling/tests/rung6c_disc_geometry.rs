@@ -39,7 +39,7 @@
 //!
 //! ```text
 //! CF_DISC_STL=/path/to/FMA16036.stl \
-//!   cargo test -p sim-coupling --release \
+//!   cargo test -p cortenforge-sim-coupling --release \
 //!   --test rung6c_disc_geometry -- --ignored --nocapture
 //! ```
 

@@ -1996,9 +1996,9 @@ name = "cf-anthro"
 version = "0.9.0"
 dependencies = [
  "approx 0.5.1",
- "mesh-io",
- "mesh-measure",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-measure",
+ "cortenforge-mesh-types",
  "nalgebra 0.34.2",
 ]
 
@@ -2006,7 +2006,7 @@ dependencies = [
 name = "cf-assembly-checks"
 version = "0.9.0"
 dependencies = [
- "cf-design",
+ "cortenforge-design",
  "nalgebra 0.34.2",
 ]
 
@@ -2015,18 +2015,7 @@ name = "cf-bevy-common"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "mesh-types",
-]
-
-[[package]]
-name = "cf-cap-planes"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "mesh-types",
- "nalgebra 0.34.2",
- "serde",
- "toml",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -2034,13 +2023,13 @@ name = "cf-cast"
 version = "0.9.0"
 dependencies = [
  "approx 0.5.1",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-offset",
+ "cortenforge-mesh-printability",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
  "manifold3d",
- "mesh-io",
- "mesh-offset",
- "mesh-printability",
- "mesh-repair",
- "mesh-types",
  "nalgebra 0.34.2",
  "rayon",
  "thiserror 2.0.18",
@@ -2051,14 +2040,14 @@ name = "cf-cast-cli"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-cap-planes",
  "cf-cast",
- "cf-design",
- "cf-geometry",
  "clap",
- "mesh-io",
- "mesh-printability",
- "mesh-sdf",
+ "cortenforge-cap-planes",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-printability",
+ "cortenforge-mesh-sdf",
  "nalgebra 0.34.2",
  "serde",
  "tempfile",
@@ -2069,48 +2058,35 @@ dependencies = [
 name = "cf-codesign"
 version = "0.9.0"
 dependencies = [
- "cf-design",
  "cf-fsu-geometry",
  "cf-routing",
+ "cortenforge-design",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-core",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "matfile",
- "mesh-sdf",
- "mesh-types",
  "nalgebra 0.34.2",
  "sha2",
- "sim-core",
- "sim-coupling",
- "sim-mjcf",
- "sim-ml-chassis",
  "sim-truss",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "cf-design"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "cf-geometry",
- "mesh-sdf",
- "mesh-types",
- "nalgebra 0.34.2",
- "rayon",
- "sim-core",
 ]
 
 [[package]]
 name = "cf-design-tests"
 version = "0.9.0"
 dependencies = [
- "cf-design",
  "cf-fsu-geometry",
- "cf-geometry",
- "mesh-io",
- "mesh-repair",
- "mesh-sdf",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-sdf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
  "tempfile",
 ]
 
@@ -2122,13 +2098,13 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
- "cf-cap-planes",
  "cf-device-geometry",
- "cf-device-types",
  "cf-viewer",
  "clap",
- "mesh-io",
- "mesh-types",
+ "cortenforge-cap-planes",
+ "cortenforge-device-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
  "serde",
  "toml",
 ]
@@ -2142,26 +2118,14 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
- "cf-cap-planes",
- "cf-design",
- "cf-device-types",
- "mesh-offset",
- "mesh-repair",
- "mesh-sdf",
- "mesh-types",
+ "cortenforge-cap-planes",
+ "cortenforge-design",
+ "cortenforge-device-types",
+ "cortenforge-mesh-offset",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
  "nalgebra 0.34.2",
-]
-
-[[package]]
-name = "cf-device-types"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "bevy",
- "mesh-types",
- "nalgebra 0.34.2",
- "serde",
- "toml",
 ]
 
 [[package]]
@@ -2176,11 +2140,11 @@ name = "cf-fsu-geometry"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
- "cf-geometry",
- "mesh-io",
- "mesh-repair",
- "mesh-sdf",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-sdf",
  "nalgebra 0.34.2",
  "tempfile",
 ]
@@ -2192,23 +2156,14 @@ dependencies = [
  "anyhow",
  "cf-fsu-geometry",
  "cf-fsu-model",
- "cf-geometry",
- "mesh-loft",
- "mesh-repair",
+ "cortenforge-geometry",
+ "cortenforge-mesh-loft",
+ "cortenforge-mesh-repair",
+ "cortenforge-sim-core",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-coupling",
- "sim-mjcf",
- "sim-soft",
-]
-
-[[package]]
-name = "cf-geometry"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra 0.34.2",
- "serde",
 ]
 
 [[package]]
@@ -2218,10 +2173,10 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
- "cf-geometry",
  "cf-viewer",
- "mesh-select",
- "mesh-types",
+ "cortenforge-geometry",
+ "cortenforge-mesh-select",
+ "cortenforge-mesh-types",
  "nalgebra 0.34.2",
 ]
 
@@ -2231,10 +2186,10 @@ version = "0.9.0"
 dependencies = [
  "cf-msk-lib",
  "cf-osim",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -2245,13 +2200,13 @@ dependencies = [
  "cf-mjcf-emit",
  "cf-msk-lib",
  "cf-osim",
- "mesh-io",
- "mesh-sdf",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -2282,11 +2237,11 @@ version = "0.9.0"
 dependencies = [
  "approx 0.5.1",
  "cf-msk-lib",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "quick-xml",
  "serde_json",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -2294,9 +2249,9 @@ name = "cf-routing"
 version = "0.9.0"
 dependencies = [
  "approx 0.5.1",
- "cf-design",
- "cf-geometry",
- "mesh-repair",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-repair",
  "nalgebra 0.34.2",
 ]
 
@@ -2305,11 +2260,11 @@ name = "cf-routing-tests"
 version = "0.9.0"
 dependencies = [
  "approx 0.5.1",
- "cf-design",
  "cf-fsu-geometry",
- "cf-geometry",
  "cf-routing",
- "mesh-repair",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-repair",
  "nalgebra 0.34.2",
 ]
 
@@ -2321,26 +2276,12 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
- "cf-scan-prep-core",
  "cf-viewer",
  "clap",
- "mesh-io",
- "mesh-repair",
- "mesh-types",
- "nalgebra 0.34.2",
- "serde",
- "toml",
-]
-
-[[package]]
-name = "cf-scan-prep-core"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "baby_shark",
- "mesh-io",
- "mesh-repair",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
+ "cortenforge-scan-prep-core",
  "nalgebra 0.34.2",
  "serde",
  "toml",
@@ -2355,35 +2296,23 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cf-bevy-common",
- "cf-cap-planes",
- "cf-design",
  "cf-device-geometry",
- "cf-device-types",
  "cf-viewer",
  "clap",
- "mesh-io",
- "mesh-repair",
- "mesh-sdf",
- "mesh-types",
+ "cortenforge-cap-planes",
+ "cortenforge-design",
+ "cortenforge-device-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
+ "cortenforge-sim-soft-explicit",
  "nalgebra 0.34.2",
  "serde",
  "sim-gpu",
- "sim-ml-chassis",
- "sim-soft",
- "sim-soft-explicit",
  "toml",
-]
-
-[[package]]
-name = "cf-spatial"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "cf-geometry",
- "nalgebra 0.34.2",
- "proptest",
- "serde",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2399,13 +2328,13 @@ dependencies = [
  "cf-mesh-paint",
  "cf-viewer",
  "clap",
- "mesh-loft",
- "mesh-repair",
- "mesh-types",
+ "cortenforge-mesh-loft",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
  "sim-bevy-soft",
- "sim-core",
 ]
 
 [[package]]
@@ -2456,8 +2385,8 @@ dependencies = [
  "cf-bevy-common",
  "cf-studio-core",
  "cf-studio-engine",
+ "cortenforge-mesh-types",
  "egui_kittest",
- "mesh-types",
  "rfd",
 ]
 
@@ -2477,7 +2406,7 @@ name = "cf-trike"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
+ "cortenforge-design",
  "nalgebra 0.34.2",
 ]
 
@@ -2497,8 +2426,8 @@ dependencies = [
  "bevy_egui",
  "cf-bevy-common",
  "clap",
- "mesh-io",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
  "tempfile",
 ]
 
@@ -2818,14 +2747,426 @@ dependencies = [
 name = "cortenforge"
 version = "0.9.0"
 dependencies = [
- "cf-cap-planes",
- "cf-design",
- "cf-device-types",
- "cf-geometry",
- "cf-scan-prep-core",
- "cf-spatial",
- "mesh",
- "sim",
+ "cortenforge-cap-planes",
+ "cortenforge-design",
+ "cortenforge-device-types",
+ "cortenforge-geometry",
+ "cortenforge-mesh",
+ "cortenforge-scan-prep-core",
+ "cortenforge-sim",
+ "cortenforge-spatial",
+]
+
+[[package]]
+name = "cortenforge-cap-planes"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "cortenforge-mesh-types",
+ "nalgebra 0.34.2",
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "cortenforge-design"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-geometry",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-core",
+ "nalgebra 0.34.2",
+ "rayon",
+]
+
+[[package]]
+name = "cortenforge-device-types"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "cortenforge-mesh-types",
+ "nalgebra 0.34.2",
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "cortenforge-geometry"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra 0.34.2",
+ "serde",
+]
+
+[[package]]
+name = "cortenforge-mesh"
+version = "0.9.0"
+dependencies = [
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-lattice",
+ "cortenforge-mesh-loft",
+ "cortenforge-mesh-measure",
+ "cortenforge-mesh-offset",
+ "cortenforge-mesh-printability",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-select",
+ "cortenforge-mesh-shell",
+ "cortenforge-mesh-types",
+ "tempfile",
+]
+
+[[package]]
+name = "cortenforge-mesh-io"
+version = "0.9.0"
+dependencies = [
+ "cortenforge-mesh-types",
+ "criterion",
+ "ply-rs",
+ "quick-xml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "truck-meshalgo",
+ "truck-modeling",
+ "truck-polymesh",
+ "truck-stepio",
+ "truck-topology",
+ "zip",
+]
+
+[[package]]
+name = "cortenforge-mesh-lattice"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-mesh-offset",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "hashbrown 0.16.1",
+ "nalgebra 0.34.2",
+ "rand 0.9.2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-mesh-loft"
+version = "0.9.0"
+dependencies = [
+ "cortenforge-geometry",
+ "cortenforge-mesh-repair",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
+name = "cortenforge-mesh-measure"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-mesh-types",
+ "nalgebra 0.34.2",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "cortenforge-mesh-offset"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "nalgebra 0.34.2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-mesh-printability"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
+ "hashbrown 0.16.1",
+ "nalgebra 0.34.2",
+ "parry3d-f64",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-mesh-repair"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-geometry",
+ "cortenforge-mesh-types",
+ "hashbrown 0.16.1",
+ "nalgebra 0.34.2",
+ "parry3d-f64",
+ "proptest",
+ "rayon",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "cortenforge-mesh-sdf"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-geometry",
+ "cortenforge-mesh-types",
+ "nalgebra 0.34.2",
+ "parry3d",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-mesh-select"
+version = "0.9.0"
+dependencies = [
+ "cortenforge-geometry",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
+name = "cortenforge-mesh-shell"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-mesh-offset",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
+ "hashbrown 0.16.1",
+ "nalgebra 0.34.2",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "cortenforge-mesh-types"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-geometry",
+ "nalgebra 0.34.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cortenforge-scan-prep-core"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "baby_shark",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
+ "nalgebra 0.34.2",
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "cortenforge-sim"
+version = "0.9.0"
+dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-opt",
+ "cortenforge-sim-rl",
+ "cortenforge-sim-soft",
+ "cortenforge-sim-therm-env",
+ "cortenforge-sim-thermostat",
+ "cortenforge-sim-types",
+ "cortenforge-sim-urdf",
+]
+
+[[package]]
+name = "cortenforge-sim-core"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-geometry",
+ "cortenforge-sim-types",
+ "log",
+ "nalgebra 0.34.2",
+ "rand 0.9.2",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-sim-coupling"
+version = "0.9.0"
+dependencies = [
+ "cf-fsu-geometry",
+ "cf-fsu-model",
+ "cortenforge-geometry",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
+name = "cortenforge-sim-mjcf"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "bincode",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-core",
+ "cortenforge-sim-types",
+ "image",
+ "nalgebra 0.34.2",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "cortenforge-sim-ml-chassis"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-sim-core",
+ "getrandom 0.3.4",
+ "nalgebra 0.34.2",
+ "num-traits",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-sim-opt"
+version = "0.9.0"
+dependencies = [
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-thermostat",
+ "getrandom 0.3.4",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-sim-rl"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
+ "rand 0.9.2",
+ "serde_json",
+]
+
+[[package]]
+name = "cortenforge-sim-soft"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "bytemuck",
+ "cortenforge-geometry",
+ "cortenforge-mesh-offset",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft-explicit",
+ "faer 0.24.0",
+ "feral-metis",
+ "getrandom 0.3.4",
+ "nalgebra 0.34.2",
+ "pollster",
+ "rayon",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
+name = "cortenforge-sim-soft-explicit"
+version = "0.9.0"
+dependencies = [
+ "nalgebra 0.34.2",
+ "rayon",
+ "sim-wgsl-gen",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-sim-therm-env"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-thermostat",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-sim-thermostat"
+version = "0.9.0"
+dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
+ "getrandom 0.3.4",
+ "nalgebra 0.34.2",
+ "rand 0.9.2",
+ "rand_chacha 0.9.0",
+ "rand_distr 0.5.1",
+]
+
+[[package]]
+name = "cortenforge-sim-types"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra 0.34.2",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-sim-urdf"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "nalgebra 0.34.2",
+ "quick-xml",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cortenforge-spatial"
+version = "0.9.0"
+dependencies = [
+ "approx 0.5.1",
+ "cortenforge-geometry",
+ "nalgebra 0.34.2",
+ "proptest",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3516,9 +3857,9 @@ name = "example-actuator-activation-filter"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3526,9 +3867,9 @@ name = "example-actuator-cylinder"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3536,9 +3877,9 @@ name = "example-actuator-damper"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3546,9 +3887,9 @@ name = "example-actuator-gear-and-limits"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3556,9 +3897,9 @@ name = "example-actuator-integrator"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3566,9 +3907,9 @@ name = "example-actuator-motor"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3576,9 +3917,9 @@ name = "example-actuator-position-servo"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3586,9 +3927,9 @@ name = "example-actuator-site-transmission"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3596,9 +3937,9 @@ name = "example-actuator-slider-crank"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3606,9 +3947,9 @@ name = "example-actuator-velocity-servo"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3616,9 +3957,9 @@ name = "example-ball-joint-cone-limit"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3626,9 +3967,9 @@ name = "example-ball-joint-cone-orbit"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3636,9 +3977,9 @@ name = "example-ball-joint-conical"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3646,9 +3987,9 @@ name = "example-ball-joint-pendulum"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3656,9 +3997,9 @@ name = "example-batch-sim-parameter-sweep"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3666,17 +4007,17 @@ name = "example-batch-sim-reset-subset"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-batch-sim-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -3684,8 +4025,8 @@ name = "example-bio-shapes"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
- "cf-geometry",
+ "cortenforge-design",
+ "cortenforge-geometry",
  "nalgebra 0.34.2",
  "sim-bevy",
 ]
@@ -3696,11 +4037,11 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "mesh-io",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -3709,8 +4050,8 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "cf-cast",
- "cf-design",
- "mesh-printability",
+ "cortenforge-design",
+ "cortenforge-mesh-printability",
  "nalgebra 0.34.2",
 ]
 
@@ -3720,7 +4061,7 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "cf-cast",
- "mesh-printability",
+ "cortenforge-mesh-printability",
 ]
 
 [[package]]
@@ -3728,9 +4069,9 @@ name = "example-composite-cable-catenary"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3738,9 +4079,9 @@ name = "example-composite-cable-loaded"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3748,17 +4089,17 @@ name = "example-composite-hanging-cable"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-composite-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -3766,10 +4107,10 @@ name = "example-contact-condim-compare"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3777,9 +4118,9 @@ name = "example-contact-filtering-bitmask"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3787,9 +4128,9 @@ name = "example-contact-filtering-exclude-pairs"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3797,18 +4138,18 @@ name = "example-contact-filtering-ghost-layers"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-contact-filtering-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3816,10 +4157,10 @@ name = "example-contact-friction-slide"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3827,10 +4168,10 @@ name = "example-contact-margin-gap"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3838,10 +4179,10 @@ name = "example-contact-pair-override"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3849,10 +4190,10 @@ name = "example-contact-solimp-depth"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3860,19 +4201,19 @@ name = "example-contact-solref-bounce"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-contact-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3880,10 +4221,10 @@ name = "example-derivatives-control-design"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3891,10 +4232,10 @@ name = "example-derivatives-convergence"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3902,10 +4243,10 @@ name = "example-derivatives-epsilon-vcurve"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3913,10 +4254,10 @@ name = "example-derivatives-hybrid-vs-fd"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3924,10 +4265,10 @@ name = "example-derivatives-inverse-dynamics"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3935,10 +4276,10 @@ name = "example-derivatives-linearize-pendulum"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3946,19 +4287,19 @@ name = "example-derivatives-sensor-jacobians"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-derivatives-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -3966,13 +4307,13 @@ name = "example-design-to-print"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
- "cf-geometry",
- "mesh-lattice",
- "mesh-measure",
- "mesh-printability",
- "mesh-repair",
- "mesh-shell",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-lattice",
+ "cortenforge-mesh-measure",
+ "cortenforge-mesh-printability",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-shell",
  "nalgebra 0.34.2",
  "sim-bevy",
 ]
@@ -3982,10 +4323,10 @@ name = "example-design-to-sim"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -3993,9 +4334,9 @@ name = "example-energy-damped-decay"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4003,9 +4344,9 @@ name = "example-energy-elastic-bounce"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4013,9 +4354,9 @@ name = "example-energy-free-flight"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4023,17 +4364,17 @@ name = "example-energy-pendulum-energy"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-energy-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -4041,10 +4382,10 @@ name = "example-equality-connect-body-to-body"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4052,10 +4393,10 @@ name = "example-equality-connect-to-world"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4063,10 +4404,10 @@ name = "example-equality-distance"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4074,9 +4415,9 @@ name = "example-equality-joint-gear"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4084,18 +4425,18 @@ name = "example-equality-joint-mimic"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-equality-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4103,10 +4444,10 @@ name = "example-equality-weld-body-to-body"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4114,10 +4455,10 @@ name = "example-equality-weld-to-world"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4125,11 +4466,11 @@ name = "example-finger-design"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
- "cf-geometry",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -4137,9 +4478,9 @@ name = "example-free-joint-projectile"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4147,18 +4488,18 @@ name = "example-free-joint-spinning-toss"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-free-joint-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4166,9 +4507,9 @@ name = "example-free-joint-tumble"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4176,16 +4517,16 @@ name = "example-full-pipeline"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
- "cf-geometry",
- "mesh-lattice",
- "mesh-measure",
- "mesh-printability",
- "mesh-repair",
- "mesh-shell",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-lattice",
+ "cortenforge-mesh-measure",
+ "cortenforge-mesh-printability",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-shell",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -4193,8 +4534,8 @@ name = "example-hello-solid"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
- "cf-geometry",
+ "cortenforge-design",
+ "cortenforge-geometry",
  "nalgebra 0.34.2",
  "sim-bevy",
 ]
@@ -4204,9 +4545,9 @@ name = "example-hinge-joint-double-pendulum"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4214,9 +4555,9 @@ name = "example-hinge-joint-pendulum"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4225,10 +4566,10 @@ version = "0.9.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-soft",
  "sim-bevy-soft",
- "sim-coupling",
- "sim-mjcf",
- "sim-soft",
 ]
 
 [[package]]
@@ -4237,10 +4578,10 @@ version = "0.9.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-soft",
  "sim-bevy-soft",
- "sim-coupling",
- "sim-mjcf",
- "sim-soft",
 ]
 
 [[package]]
@@ -4249,10 +4590,10 @@ version = "0.9.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-soft",
  "sim-bevy-soft",
- "sim-coupling",
- "sim-mjcf",
- "sim-soft",
 ]
 
 [[package]]
@@ -4261,10 +4602,10 @@ version = "0.9.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-soft",
  "sim-bevy-soft",
- "sim-coupling",
- "sim-mjcf",
- "sim-soft",
 ]
 
 [[package]]
@@ -4273,10 +4614,10 @@ version = "0.9.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-soft",
  "sim-bevy-soft",
- "sim-coupling",
- "sim-mjcf",
- "sim-soft",
 ]
 
 [[package]]
@@ -4284,8 +4625,8 @@ name = "example-integrator-comparison-visual"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4293,9 +4634,9 @@ name = "example-integrator-euler"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4303,9 +4644,9 @@ name = "example-integrator-implicit"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4313,9 +4654,9 @@ name = "example-integrator-implicit-fast"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4323,9 +4664,9 @@ name = "example-integrator-implicit-spring-damper"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4333,16 +4674,16 @@ name = "example-integrator-rk4"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-integrator-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-mjcf",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -4350,9 +4691,9 @@ name = "example-inverse-forward-replay"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4360,9 +4701,9 @@ name = "example-inverse-gravity-compensation"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4370,17 +4711,17 @@ name = "example-inverse-jacobian"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-inverse-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -4388,9 +4729,9 @@ name = "example-inverse-torque-profile"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4398,9 +4739,9 @@ name = "example-joint-limits-ball-cone"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4408,9 +4749,9 @@ name = "example-joint-limits-hinge-limits"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4418,17 +4759,17 @@ name = "example-joint-limits-slide-limits"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-joint-limits-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -4436,9 +4777,9 @@ name = "example-keyframes-multi-body"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4446,17 +4787,17 @@ name = "example-keyframes-save-restore"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-keyframes-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -4465,9 +4806,9 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "mesh-io",
- "mesh-lattice",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-lattice",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -4475,9 +4816,9 @@ name = "example-material-stress-test"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-soft",
 ]
 
 [[package]]
@@ -4486,9 +4827,9 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "mesh-io",
- "mesh-measure",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-measure",
+ "cortenforge-mesh-types",
  "nalgebra 0.34.2",
 ]
 
@@ -4497,7 +4838,7 @@ name = "example-mesh-attributed-mesh-basics"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "mesh-types",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -4505,9 +4846,9 @@ name = "example-mesh-collision-box"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4515,9 +4856,9 @@ name = "example-mesh-collision-capsule"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4525,9 +4866,9 @@ name = "example-mesh-collision-cylinder"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4535,9 +4876,9 @@ name = "example-mesh-collision-ellipsoid"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4545,9 +4886,9 @@ name = "example-mesh-collision-mesh"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4555,9 +4896,9 @@ name = "example-mesh-collision-plane"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4565,17 +4906,17 @@ name = "example-mesh-collision-sphere"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-mesh-collision-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -4583,8 +4924,8 @@ name = "example-mesh-format-conversion"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "mesh-io",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -4592,9 +4933,9 @@ name = "example-mesh-mesh-repair-walkthrough"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "mesh-io",
- "mesh-repair",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -4602,10 +4943,10 @@ name = "example-mesh-mesh-sdf-distance-query"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-geometry",
- "mesh-io",
- "mesh-sdf",
- "mesh-types",
+ "cortenforge-geometry",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -4614,13 +4955,13 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "bevy",
- "cf-design",
- "cf-geometry",
- "mesh-lattice",
- "mesh-measure",
- "mesh-printability",
- "mesh-repair",
- "mesh-shell",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-lattice",
+ "cortenforge-mesh-measure",
+ "cortenforge-mesh-printability",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-shell",
  "nalgebra 0.34.2",
  "sim-bevy",
 ]
@@ -4630,8 +4971,8 @@ name = "example-mesh-ply-with-custom-attributes"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "mesh-io",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -4639,24 +4980,24 @@ name = "example-ml-6dof-cem-linear"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-rl",
  "example-ml-shared",
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "sim-bevy",
- "sim-core",
- "sim-ml-chassis",
- "sim-rl",
 ]
 
 [[package]]
 name = "example-ml-6dof-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-rl",
  "rand 0.9.2",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
- "sim-rl",
 ]
 
 [[package]]
@@ -4664,10 +5005,10 @@ name = "example-ml-persistence-train-then-replay"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-rl",
  "example-ml-shared",
  "sim-bevy",
- "sim-core",
- "sim-rl",
 ]
 
 [[package]]
@@ -4675,9 +5016,9 @@ name = "example-ml-shared"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-ml-chassis",
 ]
 
 [[package]]
@@ -4685,10 +5026,10 @@ name = "example-ml-sim-env-episode-loop"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
  "sim-ml-chassis-bevy",
 ]
 
@@ -4697,10 +5038,10 @@ name = "example-ml-sim-env-on-reset"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
  "sim-ml-chassis-bevy",
 ]
 
@@ -4708,9 +5049,9 @@ dependencies = [
 name = "example-ml-sim-env-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
 ]
 
 [[package]]
@@ -4718,10 +5059,10 @@ name = "example-ml-sim-env-sub-stepping"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
 ]
 
 [[package]]
@@ -4729,10 +5070,10 @@ name = "example-ml-spaces-act-clamping"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
  "sim-ml-chassis-bevy",
 ]
 
@@ -4741,10 +5082,10 @@ name = "example-ml-spaces-act-inject"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
  "sim-ml-chassis-bevy",
 ]
 
@@ -4753,10 +5094,10 @@ name = "example-ml-spaces-obs-extract"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
  "sim-ml-chassis-bevy",
 ]
 
@@ -4765,10 +5106,10 @@ name = "example-ml-spaces-obs-rich"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
  "sim-ml-chassis-bevy",
 ]
 
@@ -4776,9 +5117,9 @@ dependencies = [
 name = "example-ml-spaces-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
 ]
 
 [[package]]
@@ -4786,13 +5127,13 @@ name = "example-ml-vec-env-auto-reset"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-rl",
  "example-ml-shared",
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "sim-bevy",
- "sim-core",
- "sim-ml-chassis",
- "sim-rl",
 ]
 
 [[package]]
@@ -4800,10 +5141,10 @@ name = "example-ml-vec-env-parallel-step"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
 ]
 
 [[package]]
@@ -4811,13 +5152,13 @@ name = "example-ml-vec-env-ppo"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-rl",
  "example-ml-shared",
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "sim-bevy",
- "sim-core",
- "sim-ml-chassis",
- "sim-rl",
 ]
 
 [[package]]
@@ -4825,13 +5166,13 @@ name = "example-ml-vec-env-reinforce"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-rl",
  "example-ml-shared",
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "sim-bevy",
- "sim-core",
- "sim-ml-chassis",
- "sim-rl",
 ]
 
 [[package]]
@@ -4839,22 +5180,22 @@ name = "example-ml-vec-env-sac"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-rl",
  "example-ml-shared",
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "sim-bevy",
- "sim-core",
- "sim-ml-chassis",
- "sim-rl",
 ]
 
 [[package]]
 name = "example-ml-vec-env-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
 ]
 
 [[package]]
@@ -4862,13 +5203,13 @@ name = "example-ml-vec-env-td3"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-rl",
  "example-ml-shared",
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "sim-bevy",
- "sim-core",
- "sim-ml-chassis",
- "sim-rl",
 ]
 
 [[package]]
@@ -4876,10 +5217,10 @@ name = "example-ml-vec-env-terminal-obs"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
 ]
 
 [[package]]
@@ -4887,10 +5228,10 @@ name = "example-mocap-bodies-drag-target"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4898,19 +5239,19 @@ name = "example-mocap-bodies-push-object"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-mocap-bodies-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4918,10 +5259,10 @@ name = "example-mocap-bodies-tilt-drop"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4929,9 +5270,9 @@ name = "example-multi-scene-test"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4939,9 +5280,9 @@ name = "example-muscle-activation"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4949,9 +5290,9 @@ name = "example-muscle-cocontraction"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4959,9 +5300,9 @@ name = "example-muscle-force-length"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -4969,17 +5310,17 @@ name = "example-muscle-forearm-flexion"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-muscle-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -4987,10 +5328,10 @@ name = "example-offset-stress-test"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "mesh-io",
- "mesh-offset",
- "mesh-repair",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-offset",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -4998,9 +5339,9 @@ name = "example-passive-ellipsoid-drag"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5008,9 +5349,9 @@ name = "example-passive-fluid-drag"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5018,18 +5359,18 @@ name = "example-passive-spring-damper-tuning"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-passive-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5037,10 +5378,10 @@ name = "example-passive-wind"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5049,9 +5390,9 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "mesh-io",
- "mesh-printability",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-printability",
+ "cortenforge-mesh-types",
  "nalgebra 0.34.2",
 ]
 
@@ -5060,10 +5401,10 @@ name = "example-raycasting-basic-shapes"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5071,10 +5412,10 @@ name = "example-raycasting-heightfield"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5082,20 +5423,20 @@ name = "example-raycasting-scene-query"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-raycasting-stress-test"
 version = "0.9.0"
 dependencies = [
- "cf-geometry",
+ "cortenforge-geometry",
+ "cortenforge-sim-core",
+ "cortenforge-sim-types",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-types",
 ]
 
 [[package]]
@@ -5103,9 +5444,9 @@ name = "example-scalar-field-stress-test"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "mesh-io",
- "mesh-types",
- "sim-soft",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-soft",
 ]
 
 [[package]]
@@ -5114,13 +5455,13 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "cf-design",
- "mesh-io",
- "mesh-sdf",
- "mesh-types",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5128,7 +5469,7 @@ name = "example-sdf-cpu-01-sdf-grid"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
  "nalgebra 0.34.2",
  "sim-bevy",
 ]
@@ -5138,7 +5479,7 @@ name = "example-sdf-cpu-02-thin-grid"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
  "nalgebra 0.34.2",
  "sim-bevy",
 ]
@@ -5148,10 +5489,10 @@ name = "example-sdf-cpu-03-freefall"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5159,10 +5500,10 @@ name = "example-sdf-cpu-04-rest"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5170,10 +5511,10 @@ name = "example-sdf-cpu-05-drop"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5181,10 +5522,10 @@ name = "example-sdf-cpu-06-slide"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5192,10 +5533,10 @@ name = "example-sdf-cpu-07-pair"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5203,10 +5544,10 @@ name = "example-sdf-cpu-08-stack"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5214,10 +5555,10 @@ name = "example-sdf-cpu-09-cube-in-box"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5225,10 +5566,10 @@ name = "example-sdf-cpu-10-ball-in-bowl"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5236,10 +5577,10 @@ name = "example-sdf-cpu-11-hinge-free"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
  "sim-gpu",
 ]
 
@@ -5248,10 +5589,10 @@ name = "example-sdf-cpu-12-hinge-wall"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5259,10 +5600,10 @@ name = "example-sdf-cpu-13-hinge-stop"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5270,10 +5611,10 @@ name = "example-sdf-cpu-14-damped-hinge"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5281,10 +5622,10 @@ name = "example-sdf-cpu-15-concave-stop"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5292,10 +5633,10 @@ name = "example-sdf-cpu-16-socket"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
+ "cortenforge-design",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5308,9 +5649,9 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
- "mesh-io",
- "mesh-types",
- "sim-soft",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-soft",
 ]
 
 [[package]]
@@ -5318,9 +5659,9 @@ name = "example-sensor-accelerometer"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5328,9 +5669,9 @@ name = "example-sensor-actuator-force"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5338,9 +5679,9 @@ name = "example-sensor-adv-actuator-pos-vel"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5348,9 +5689,9 @@ name = "example-sensor-adv-force-torque"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5358,9 +5699,9 @@ name = "example-sensor-adv-frame-acceleration"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5368,9 +5709,9 @@ name = "example-sensor-adv-frame-velocity"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5378,18 +5719,18 @@ name = "example-sensor-adv-rangefinder"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-sensor-adv-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5397,9 +5738,9 @@ name = "example-sensor-adv-subtree-angmom"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5407,9 +5748,9 @@ name = "example-sensor-adv-subtree-velocity"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5417,9 +5758,9 @@ name = "example-sensor-clock"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5427,9 +5768,9 @@ name = "example-sensor-frame-pos-quat"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5437,9 +5778,9 @@ name = "example-sensor-geom-distance"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5447,9 +5788,9 @@ name = "example-sensor-gyro-velocimeter"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5457,9 +5798,9 @@ name = "example-sensor-joint-pos-vel"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5467,9 +5808,9 @@ name = "example-sensor-subtree-com"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5477,9 +5818,9 @@ name = "example-sensor-touch"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5487,12 +5828,12 @@ name = "example-shell-generation-stress-test"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "mesh-io",
- "mesh-measure",
- "mesh-repair",
- "mesh-sdf",
- "mesh-shell",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-measure",
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-shell",
+ "cortenforge-mesh-types",
 ]
 
 [[package]]
@@ -5500,14 +5841,14 @@ name = "example-sim-informed-design"
 version = "0.9.0"
 dependencies = [
  "bevy",
- "cf-design",
- "cf-geometry",
- "mesh-lattice",
- "mesh-measure",
- "mesh-repair",
+ "cortenforge-design",
+ "cortenforge-geometry",
+ "cortenforge-mesh-lattice",
+ "cortenforge-mesh-measure",
+ "cortenforge-mesh-repair",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
 ]
 
 [[package]]
@@ -5518,12 +5859,12 @@ dependencies = [
  "approx 0.5.1",
  "bevy",
  "cf-bevy-common",
- "mesh-io",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "serde_json",
  "sim-bevy-soft",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5534,12 +5875,12 @@ dependencies = [
  "approx 0.5.1",
  "bevy",
  "cf-bevy-common",
- "mesh-io",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "serde_json",
  "sim-bevy-soft",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5550,12 +5891,12 @@ dependencies = [
  "approx 0.5.1",
  "bevy",
  "cf-bevy-common",
- "mesh-io",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "serde_json",
  "sim-bevy-soft",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5563,14 +5904,14 @@ name = "example-sim-soft-layered-silicone-device"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
- "mesh-io",
- "mesh-sdf",
- "mesh-types",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5578,13 +5919,13 @@ name = "example-sim-soft-scan-fit-3layer-sleeve"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
- "mesh-io",
- "mesh-types",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5592,13 +5933,13 @@ name = "example-sim-soft-scan-fit-3layer-sleeve-ramp"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
- "mesh-io",
- "mesh-types",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5606,13 +5947,13 @@ name = "example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
- "mesh-io",
- "mesh-types",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5620,13 +5961,13 @@ name = "example-sim-soft-scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
- "mesh-io",
- "mesh-types",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5634,13 +5975,13 @@ name = "example-sim-soft-scan-fit-3layer-sleeve-yeoh-ramp"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
- "mesh-io",
- "mesh-types",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5651,11 +5992,11 @@ dependencies = [
  "approx 0.5.1",
  "bevy",
  "cf-bevy-common",
- "mesh-io",
- "mesh-types",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "sim-bevy-soft",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5663,9 +6004,9 @@ name = "example-sleep-wake-contact"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5673,9 +6014,9 @@ name = "example-sleep-wake-islands"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5683,17 +6024,17 @@ name = "example-sleep-wake-settle"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-sleep-wake-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -5701,9 +6042,9 @@ name = "example-slide-joint-horizontal"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5711,9 +6052,9 @@ name = "example-slide-joint-vertical"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5721,9 +6062,9 @@ name = "example-solver-cg"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5731,9 +6072,9 @@ name = "example-solver-comparison-visual"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5741,9 +6082,9 @@ name = "example-solver-newton"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5751,16 +6092,16 @@ name = "example-solver-pgs"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-solver-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-mjcf",
+ "cortenforge-sim-mjcf",
 ]
 
 [[package]]
@@ -5769,10 +6110,10 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "approx 0.5.1",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
  "serde_json",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -5780,9 +6121,9 @@ name = "example-tendon-actuator"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5790,10 +6131,10 @@ name = "example-tendon-cylinder-wrap"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5801,9 +6142,9 @@ name = "example-tendon-fixed-coupling"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5811,9 +6152,9 @@ name = "example-tendon-limits"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5821,9 +6162,9 @@ name = "example-tendon-pulley"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5831,9 +6172,9 @@ name = "example-tendon-spatial-path"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5841,18 +6182,18 @@ name = "example-tendon-sphere-wrap"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
 name = "example-tendon-stress-test"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -5860,8 +6201,8 @@ name = "example-thermo-bistable-pbit"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "cf-design",
- "mesh-io",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
  "nalgebra 0.34.2",
 ]
 
@@ -5871,12 +6212,12 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "cf-assembly-checks",
- "cf-design",
  "cf-trike",
  "cf-vehicle",
- "mesh-io",
+ "cortenforge-design",
+ "cortenforge-mesh-io",
+ "cortenforge-sim-core",
  "nalgebra 0.34.2",
- "sim-core",
 ]
 
 [[package]]
@@ -5884,9 +6225,9 @@ name = "example-urdf-continuous"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-urdf",
  "sim-bevy",
- "sim-core",
- "sim-urdf",
 ]
 
 [[package]]
@@ -5894,10 +6235,10 @@ name = "example-urdf-damping-friction"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-urdf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-urdf",
 ]
 
 [[package]]
@@ -5905,9 +6246,9 @@ name = "example-urdf-fixed"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-urdf",
  "sim-bevy",
- "sim-core",
- "sim-urdf",
 ]
 
 [[package]]
@@ -5915,9 +6256,9 @@ name = "example-urdf-geometry"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-urdf",
  "sim-bevy",
- "sim-core",
- "sim-urdf",
 ]
 
 [[package]]
@@ -5925,10 +6266,10 @@ name = "example-urdf-inertia"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-urdf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-urdf",
 ]
 
 [[package]]
@@ -5936,9 +6277,9 @@ name = "example-urdf-mimic"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-urdf",
  "sim-bevy",
- "sim-core",
- "sim-urdf",
 ]
 
 [[package]]
@@ -5946,10 +6287,10 @@ name = "example-urdf-prismatic"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-urdf",
  "sim-bevy",
- "sim-core",
- "sim-mjcf",
- "sim-urdf",
 ]
 
 [[package]]
@@ -5957,18 +6298,18 @@ name = "example-urdf-revolute"
 version = "0.9.0"
 dependencies = [
  "bevy",
+ "cortenforge-sim-core",
+ "cortenforge-sim-urdf",
  "sim-bevy",
- "sim-core",
- "sim-urdf",
 ]
 
 [[package]]
 name = "example-urdf-stress-test"
 version = "0.9.0"
 dependencies = [
- "sim-core",
- "sim-mjcf",
- "sim-urdf",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-urdf",
 ]
 
 [[package]]
@@ -7678,176 +8019,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "mesh"
-version = "0.9.0"
-dependencies = [
- "mesh-io",
- "mesh-lattice",
- "mesh-loft",
- "mesh-measure",
- "mesh-offset",
- "mesh-printability",
- "mesh-repair",
- "mesh-sdf",
- "mesh-select",
- "mesh-shell",
- "mesh-types",
- "tempfile",
-]
-
-[[package]]
-name = "mesh-io"
-version = "0.9.0"
-dependencies = [
- "criterion",
- "mesh-types",
- "ply-rs",
- "quick-xml",
- "tempfile",
- "thiserror 2.0.18",
- "truck-meshalgo",
- "truck-modeling",
- "truck-polymesh",
- "truck-stepio",
- "truck-topology",
- "zip",
-]
-
-[[package]]
-name = "mesh-lattice"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "hashbrown 0.16.1",
- "mesh-offset",
- "mesh-sdf",
- "mesh-types",
- "nalgebra 0.34.2",
- "rand 0.9.2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "mesh-loft"
-version = "0.9.0"
-dependencies = [
- "cf-geometry",
- "mesh-repair",
- "nalgebra 0.34.2",
-]
-
-[[package]]
-name = "mesh-measure"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "mesh-types",
- "nalgebra 0.34.2",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "mesh-offset"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "mesh-sdf",
- "mesh-types",
- "nalgebra 0.34.2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "mesh-printability"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "hashbrown 0.16.1",
- "mesh-repair",
- "mesh-types",
- "nalgebra 0.34.2",
- "parry3d-f64",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "mesh-repair"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "cf-geometry",
- "hashbrown 0.16.1",
- "mesh-types",
- "nalgebra 0.34.2",
- "parry3d-f64",
- "proptest",
- "rayon",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "mesh-repair-benches"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-mesh-repair",
+ "cortenforge-mesh-types",
  "criterion",
- "mesh-repair",
- "mesh-types",
-]
-
-[[package]]
-name = "mesh-sdf"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "cf-geometry",
- "mesh-types",
- "nalgebra 0.34.2",
- "parry3d",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "mesh-select"
-version = "0.9.0"
-dependencies = [
- "cf-geometry",
- "nalgebra 0.34.2",
-]
-
-[[package]]
-name = "mesh-shell"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "hashbrown 0.16.1",
- "mesh-offset",
- "mesh-repair",
- "mesh-types",
- "nalgebra 0.34.2",
- "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
 name = "mesh-shell-benches"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-mesh-shell",
+ "cortenforge-mesh-types",
  "criterion",
- "mesh-shell",
- "mesh-types",
-]
-
-[[package]]
-name = "mesh-types"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "cf-geometry",
- "nalgebra 0.34.2",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -10003,35 +10189,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "sim"
-version = "0.9.0"
-dependencies = [
- "sim-core",
- "sim-coupling",
- "sim-mjcf",
- "sim-ml-chassis",
- "sim-opt",
- "sim-rl",
- "sim-soft",
- "sim-therm-env",
- "sim-thermostat",
- "sim-types",
- "sim-urdf",
-]
-
-[[package]]
 name = "sim-bevy"
 version = "0.9.0"
 dependencies = [
  "bevy",
  "cf-bevy-common",
- "cf-geometry",
- "mesh-types",
+ "cortenforge-geometry",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-types",
+ "cortenforge-sim-urdf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
- "sim-types",
- "sim-urdf",
 ]
 
 [[package]]
@@ -10042,18 +10211,18 @@ dependencies = [
  "cf-bevy-common",
  "cf-fsu-geometry",
  "cf-fsu-model",
- "cf-geometry",
  "cf-mesh-paint",
  "cf-viewer",
- "mesh-io",
- "mesh-loft",
- "mesh-sdf",
- "mesh-types",
+ "cortenforge-geometry",
+ "cortenforge-mesh-io",
+ "cortenforge-mesh-loft",
+ "cortenforge-mesh-sdf",
+ "cortenforge-mesh-types",
+ "cortenforge-sim-coupling",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-ml-chassis",
+ "cortenforge-sim-soft",
  "nalgebra 0.34.2",
- "sim-coupling",
- "sim-mjcf",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -10061,52 +10230,22 @@ name = "sim-conformance-tests"
 version = "0.9.0"
 dependencies = [
  "approx 0.5.1",
+ "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
+ "cortenforge-sim-thermostat",
+ "cortenforge-sim-types",
+ "cortenforge-sim-urdf",
  "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
- "sim-thermostat",
- "sim-types",
- "sim-urdf",
-]
-
-[[package]]
-name = "sim-core"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "cf-geometry",
- "log",
- "nalgebra 0.34.2",
- "rand 0.9.2",
- "rayon",
- "serde",
- "serde_json",
- "sim-types",
- "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "sim-core-benches"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
  "criterion",
  "nalgebra 0.34.2",
  "rand 0.9.2",
- "sim-core",
-]
-
-[[package]]
-name = "sim-coupling"
-version = "0.9.0"
-dependencies = [
- "cf-fsu-geometry",
- "cf-fsu-model",
- "cf-geometry",
- "nalgebra 0.34.2",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
- "sim-soft",
 ]
 
 [[package]]
@@ -10114,12 +10253,12 @@ name = "sim-gpu"
 version = "0.9.0"
 dependencies = [
  "bytemuck",
- "cf-geometry",
+ "cortenforge-geometry",
+ "cortenforge-sim-core",
+ "cortenforge-sim-soft-explicit",
  "log",
  "nalgebra 0.34.2",
  "pollster",
- "sim-core",
- "sim-soft-explicit",
  "wgpu",
 ]
 
@@ -10127,54 +10266,19 @@ dependencies = [
 name = "sim-gpu-benches"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
  "criterion",
  "nalgebra 0.34.2",
- "sim-core",
  "sim-gpu",
-]
-
-[[package]]
-name = "sim-mjcf"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "bincode",
- "image",
- "mesh-io",
- "mesh-types",
- "nalgebra 0.34.2",
- "quick-xml",
- "serde",
- "serde_json",
- "sim-core",
- "sim-types",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "sim-ml-chassis"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "getrandom 0.3.4",
- "nalgebra 0.34.2",
- "num-traits",
- "rand 0.9.2",
- "serde",
- "serde_json",
- "sim-core",
- "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "sim-ml-chassis-benches"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
  "criterion",
- "sim-core",
- "sim-ml-chassis",
 ]
 
 [[package]]
@@ -10182,104 +10286,23 @@ name = "sim-ml-chassis-bevy"
 version = "0.9.0"
 dependencies = [
  "bevy_ecs",
- "sim-core",
- "sim-ml-chassis",
-]
-
-[[package]]
-name = "sim-opt"
-version = "0.9.0"
-dependencies = [
- "getrandom 0.3.4",
- "rand 0.9.2",
- "serde",
- "serde_json",
- "sim-ml-chassis",
- "sim-thermostat",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-rl"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "rand 0.9.2",
- "serde_json",
- "sim-core",
- "sim-ml-chassis",
+ "cortenforge-sim-core",
+ "cortenforge-sim-ml-chassis",
 ]
 
 [[package]]
 name = "sim-rl-baselines"
 version = "0.9.0"
 dependencies = [
+ "cortenforge-sim-core",
+ "cortenforge-sim-opt",
+ "cortenforge-sim-rl",
+ "cortenforge-sim-therm-env",
+ "cortenforge-sim-thermostat",
  "rand 0.9.2",
  "rand_chacha 0.9.0",
  "rand_distr 0.5.1",
  "serde_json",
- "sim-core",
- "sim-opt",
- "sim-rl",
- "sim-therm-env",
- "sim-thermostat",
-]
-
-[[package]]
-name = "sim-soft"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "bytemuck",
- "cf-geometry",
- "faer 0.24.0",
- "feral-metis",
- "getrandom 0.3.4",
- "mesh-offset",
- "mesh-sdf",
- "mesh-types",
- "nalgebra 0.34.2",
- "pollster",
- "rayon",
- "serde_json",
- "sim-ml-chassis",
- "sim-soft-explicit",
- "wgpu",
-]
-
-[[package]]
-name = "sim-soft-explicit"
-version = "0.9.0"
-dependencies = [
- "nalgebra 0.34.2",
- "rayon",
- "sim-wgsl-gen",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-therm-env"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "sim-core",
- "sim-mjcf",
- "sim-ml-chassis",
- "sim-thermostat",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-thermostat"
-version = "0.9.0"
-dependencies = [
- "getrandom 0.3.4",
- "nalgebra 0.34.2",
- "rand 0.9.2",
- "rand_chacha 0.9.0",
- "rand_distr 0.5.1",
- "sim-core",
- "sim-ml-chassis",
 ]
 
 [[package]]
@@ -10288,29 +10311,6 @@ version = "0.9.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra 0.34.2",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-types"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra 0.34.2",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-urdf"
-version = "0.9.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra 0.34.2",
- "quick-xml",
- "serde",
- "sim-core",
- "sim-mjcf",
  "thiserror 2.0.18",
 ]
 

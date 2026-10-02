@@ -1,6 +1,8 @@
-# mesh-printability
+# cortenforge-mesh-printability
 
 Print validation and manufacturing analysis for triangle meshes
+
+In code, this crate is `mesh_printability`.
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

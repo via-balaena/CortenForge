@@ -15,13 +15,13 @@ grading_profile = "integration-only"
 
 [dependencies]
 # MJCF loader under test in the conformance suite
-sim-mjcf = { path = "../mjcf" }
+sim-mjcf = { workspace = true }
 # URDF loader under test in the conformance suite
-sim-urdf = { path = "../urdf" }
+sim-urdf = { workspace = true }
 # Physics Model / Data being stepped and compared against MuJoCo
-sim-core = { path = "../core" }
+sim-core = { workspace = true }
 # BodyId / Pose primitives shared by fixtures and assertions
-sim-types = { path = "../types" }
+sim-types = { workspace = true }
 # Matrix / vector primitives for state comparison and fixture construction
 nalgebra = { workspace = true }
 # Float-tolerance assertions for conformance deltas vs MuJoCo reference
@@ -30,7 +30,7 @@ approx = { workspace = true }
 [dev-dependencies]
 # PR 1b regression test — parallel_matches_sequential_with_langevin
 # exercises BatchSim::new_per_env with a LangevinThermostat stack.
-sim-thermostat = { path = "../thermostat" }
+sim-thermostat = { workspace = true }
 
 [[test]]
 name = "mujoco_conformance"

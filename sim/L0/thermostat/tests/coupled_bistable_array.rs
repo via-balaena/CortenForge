@@ -381,7 +381,7 @@ fn gate_a_nn_correlations() {
 // ─── Gate B: Coupling-strength sweep ──────────────────────────────────────
 
 #[test]
-#[ignore = "600M steps — run with `cargo test -p sim-thermostat -- --ignored gate_b`"]
+#[ignore = "600M steps — run with `cargo test -p cortenforge-sim-thermostat -- --ignored gate_b`"]
 fn gate_b_coupling_sweep() {
     let coupling_values = [0.25, 0.50, 0.75];
     let mut measured_correlations = Vec::with_capacity(coupling_values.len());

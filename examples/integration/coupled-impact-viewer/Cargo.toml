@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 # StaggeredCoupling + the de-escalation impact rollout (soft buffer ← rigid limb strike), plus
 # the soft_positions / soft_boundary_faces capture surface for the deformed-mesh trajectory.
-sim-coupling = { path = "../../../sim/L1/coupling" }
+sim-coupling = { workspace = true }
 # load_model — the limb MJCF (a free-joint mass over the soft buffer).
 sim-mjcf = { workspace = true }
 # Vec3 / VertexId / the measured Ecoflex material const for the buffer.

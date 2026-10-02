@@ -1,6 +1,8 @@
-# sim-soft-explicit
+# cortenforge-sim-soft-explicit
 
 Explicit hyperelastic soft-body solver core: the shared CPU/GPU physics, written once, and the lowered model layout
+
+In code, this crate is `sim_soft_explicit`.
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

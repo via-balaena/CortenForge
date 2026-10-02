@@ -728,7 +728,7 @@ tier_up_features = { gpu-probe = "L0-io" }
 
 | Tier | Definition | Release max | Test max | Banned prefixes |
 |---|---|---:|---:|---|
-| **L0** | Pure compute substrate. Math, types, algorithms, in-memory data structures. No file I/O, no graphics, no GPU compute, no game-engine integration. WASM-buildable. | 80 | 100 | `bevy*`, `winit`, `wgpu*`, `image*`, `zip*`, `zstd*`, `sim-mjcf`, `sim-urdf`, `mesh-io`, `criterion`, `plotters*` |
+| **L0** | Pure compute substrate. Math, types, algorithms, in-memory data structures. No file I/O, no graphics, no GPU compute, no game-engine integration. WASM-buildable. | 80 | 100 | `bevy*`, `winit`, `wgpu*`, `image*`, `zip*`, `zstd*`, `cortenforge-sim-mjcf`, `cortenforge-sim-urdf`, `cortenforge-mesh-io`, `criterion`, `plotters*` |
 | **L0-io** | Format parsers, asset loaders, GPU compute kernels. Allowed format-specific heavy chains and `wgpu` compute (NOT bevy). WASM-buildable not required. | 200 | 220 | `bevy*`, `winit` |
 | **L0-integration** | Composes L0 + L0-io into higher-level abstractions. Bevy-free. Inherits L0-io weight legitimately. | 200 | 220 | `bevy*`, `winit` |
 | **L1** | Visualization, ECS integration, interactive runtime. Bevy/winit/wgpu allowed unconditionally. | unbounded | unbounded | (none) |
@@ -916,10 +916,10 @@ impl Default for RepairConfig {
 ## The Grade Command
 
 ```bash
-$ cargo xtask grade mesh-types
+$ cargo xtask grade cortenforge-mesh-types
 
 ╔══════════════════════════════════════════════════════════════╗
-║                    GRADING: mesh-types                        ║
+║                GRADING: cortenforge-mesh-types                ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ Criterion          │ Result           │ Grade │ Threshold    ║
 ╠══════════════════════════════════════════════════════════════╣
@@ -983,7 +983,7 @@ Every push to `main`/`develop` and every PR triggers parallel CI jobs (`.github/
 | Publish dry-run | `cargo xtask publish-set` (the crates.io release set is the `cortenforge` facade's closure, at one version, and each crate in it carries the licence texts, NOTICE and a README; the rules are in its `--help`), then `cargo xtask native-build` (the set builds no C++ on a desktop target, and its other native build steps are listed; rules in its `--help`), then `cargo publish --workspace --dry-run` (every crate in the set packages and builds, with default features, from its own tarball), then `cargo xtask name-owners` (each name in the set is ours, not on crates.io, or listed as another account's; rules in its `--help`). |
 | CI script guards | `shellcheck` over `.github/actions/*/*.sh`, plus the `install-linux-deps` and `msrv-toolchain` action self-tests. Asserts `shellcheck`/`timeout` exist rather than skipping when they do not. |
 | Validate Examples (shard N/3) | `cargo xtask run-validators --shard N/3` — runs the examples declaring `example_kind = "validator"` red-or-green. PR-scoped with `--only <affected>`, full run on every other path. |
-| sim-soft heavy contact (#676) | `cargo test --release -p sim-soft --test bonded_layer_indentation` — one heavy contact target. PR-only by design — on push/merge_group the weekly scheduled run is the coverage, so a ~1 h job never sits between a merge and `main`. |
+| sim-soft heavy contact (#676) | `cargo test --release -p cortenforge-sim-soft --test bonded_layer_indentation` — one heavy contact target. PR-only by design — on push/merge_group the weekly scheduled run is the coverage, so a ~1 h job never sits between a merge and `main`. |
 | Licensed gate inventory | `cargo xtask licensed-gates --check`, `release-gates`, `test-reachability`. |
 | Affected crates | Computes the PR-affected crate set (changed crates + reverse-dependency closure) that scopes `grade`, `tests-debug`, `tests-release`, `cross-os`, `validate-examples`, and the named feature combos. **Does not block merge** (it is an input, and every consumer falls back to the full workspace if it fails). |
 | Semver | `cargo-semver-checks` against the prior published release. ⚠ **Does not block merge**: `continue-on-error: true`, and it is not in the aggregator's `needs:`. |

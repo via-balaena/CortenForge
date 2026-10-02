@@ -1,6 +1,8 @@
 [package]
-name = "cf-device-types"
+name = "cortenforge-device-types"
 description = "Shared device-design domain types: cavity and layer-stack state, scan resources, centerline, sim-design projection and Smooth-On Slacker curve data"
+keywords = ["design", "casting", "silicone", "geometry", "cad"]
+categories = ["data-structures", "science"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +17,9 @@ rust-version.workspace = true
 [package.metadata.cortenforge]
 tier = "L0"
 tier_up_features = { bevy = "L1" }
+
+[lib]
+name = "cf_device_types"
 
 # Matches cf-device-design's lint posture (the crate this code was
 # lifted out of). Workspace `pedantic = warn` is intentionally NOT

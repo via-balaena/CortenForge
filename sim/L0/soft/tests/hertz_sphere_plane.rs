@@ -623,7 +623,7 @@ fn run_at_refinement(cell_size: f64) -> StepReport {
 // tier per `quality-gate.yml:138-178`) but exercises it under
 // `cargo test --release` (developer pre-push verification +
 // any future CI release-tier inclusion). Flagged as a Phase 5
-// followup: adding `cargo test --release -p sim-soft --test
+// followup: adding `cargo test --release -p cortenforge-sim-soft --test
 // hertz_sphere_plane` to `quality-gate.yml`'s tests-release job
 // would give CI release-tier coverage.
 #[cfg_attr(

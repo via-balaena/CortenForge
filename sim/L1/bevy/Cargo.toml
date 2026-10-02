@@ -16,22 +16,22 @@ tier = "L1"
 
 [dependencies]
 # Shared geometry kernel — SDF primitives and AABBs for debug rendering
-cf-geometry = { path = "../../../design/cf-geometry" }
+cf-geometry = { workspace = true }
 # Per-vertex attribute container — renderer consumes AttributedMesh
-mesh-types = { path = "../../../mesh/mesh-types" }
+mesh-types = { workspace = true }
 # Shared Bevy helpers — `OrbitCamera` + `OrbitCameraPlugin` re-exported by
 # `sim_bevy::camera` and `sim_bevy::prelude`. Single source of truth for
 # the orbit-camera controller across cf-viewer + sim-bevy + sim-bevy-soft.
 cf-bevy-common = { workspace = true }
 
 # BodyId / Pose primitives threaded from Layer 0 into Bevy ECS components
-sim-types = { path = "../../L0/types" }
+sim-types = { workspace = true }
 # Physics Model / Data stepped by the Bevy app's simulation system
-sim-core = { path = "../../L0/core" }
+sim-core = { workspace = true }
 # MJCF scene loader that seeds the Bevy scene tree
-sim-mjcf = { path = "../../L0/mjcf" }
+sim-mjcf = { workspace = true }
 # URDF scene loader reused alongside sim-mjcf for robot description files
-sim-urdf = { path = "../../L0/urdf" }
+sim-urdf = { workspace = true }
 
 # Matrix / vector / rotation primitives converted into Bevy Transform
 nalgebra = { workspace = true }

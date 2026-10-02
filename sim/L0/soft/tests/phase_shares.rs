@@ -41,7 +41,7 @@
 //! zeros looks like a successful run. The harness detects that and fails.
 //!
 //! ```text
-//! cargo test --release -p sim-soft --features phase-timing \
+//! cargo test --release -p cortenforge-sim-soft --features phase-timing \
 //!   --test phase_shares -- --ignored --nocapture --test-threads=1
 //! ```
 

@@ -1,5 +1,5 @@
 [package]
-name = "sim-therm-env"
+name = "cortenforge-sim-therm-env"
 description = "ThermCircuitEnv: typed builder producing SimEnv/VecEnv from thermodynamic circuit descriptions"
 keywords = ["thermodynamics", "simulation", "environment", "rl", "circuit"]
 categories = ["simulation", "science"]
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0-integration"
+
+[lib]
+name = "sim_therm_env"
 
 [dependencies]
 # Model/Data/DVector/StepError for builder thermostat wiring + Environment impl
