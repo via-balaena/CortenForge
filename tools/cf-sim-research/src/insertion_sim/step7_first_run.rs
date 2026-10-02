@@ -1,5 +1,5 @@
 //! Step 7's first run on the product scan (soft-contact recon §16x): one press at the 5 mm inset, mounted at the
-//! closed end, on the fitted path, with the rules §16x set before its runs. Six stages and three diagnostics, each an
+//! closed end, on the fitted path, with the rules §16x set before its runs. Six stages and four diagnostics, each an
 //! ignored test:
 //! - [`step7_ladder`], rule 1: the loading time, at h_K2;
 //! - [`step7_sizes`], rule 2: the element size, at a loading, and rule 1 again at the size it picks (§16z: with an
@@ -8,6 +8,7 @@
 //! - [`step7_room`], the room on step 7's wall;
 //! - [`step7_cost`], G6: a press timed at a loading and a size, with the probe's own instruments off;
 //! - [`step7_blow_up`] and [`step7_stiffening`], the element collapsing at the seated tip, one change at a time;
+//! - [`step7_rest_limiter`], what sets the step at rest, and whether the wall's mass or shape raises it (§18);
 //! - [`step7_stabilized`], exploratory: the volumetric stabilization's ladder against the collapse and D1's readings
 //!   (§16y);
 //! - [`step7_masked`], §16y rule 2: the stabilization on the collapsing elements alone, against the element as it is;
@@ -22,8 +23,8 @@
 //! rule 10's probe holds are not gated.
 //!
 //! A stage's loading is `STEP7_LOADING`, in multiples of the budget's (default 1; §16x's runs used 4 for every stage but
-//! the ladder); `step7_cost`'s size is `STEP7_SIZE`, 0, 1, 2 or 3 for one, two, four and eight times h_K2's element
-//! count (default 0). Run each with
+//! the ladder); `step7_cost`'s and `step7_rest_limiter`'s size is `STEP7_SIZE`, 0, 1, 2 or 3 for one, two, four
+//! and eight times h_K2's element count (default 0). Run each with
 //! `RAYON_NUM_THREADS=4 cargo test --release -p cf-sim-research --bin cf-sim-research --
 //! insertion_sim::step7_first_run::<stage> --ignored --nocapture`, the scan at `~/scans/base_mold.cleaned.stl` (or
 //! `CF_SIM_RESEARCH_PRODUCT_SCAN`).
@@ -2969,6 +2970,477 @@ fn step7_stiffening() {
             label,
         );
     }
+}
+
+/// [`step7_rest_limiter`]'s single-node mass rounds.
+const MASS_ROUNDS: usize = 16;
+
+/// What each mass round multiplies the density of the elements around the top node by.
+const MASS_FACTOR: f64 = 4.0;
+
+/// [`step7_rest_limiter`]'s factors on the density of every element that is not lattice-shaped.
+const NON_LATTICE_FACTORS: [f64; 4] = [2.0, 4.0, 16.0, 100.0];
+
+/// [`step7_rest_limiter`]'s shares of the elements, worst by shortest altitude, whose density it scales.
+const WORST_SHARES: [f64; 5] = [0.01, 0.02, 0.05, 0.10, 0.25];
+
+/// What [`step7_rest_limiter`] multiplies the worst elements' density by.
+const WORST_FACTOR: f64 = 100.0;
+
+/// [`step7_rest_limiter`]'s smoothing: how far each pass moves a free node towards its neighbours' average.
+const SMOOTH_WEIGHT: f64 = 0.5;
+
+/// [`step7_rest_limiter`]'s smoothing: the pass counts it reads the wall at.
+const SMOOTH_PASSES: [usize; 4] = [1, 2, 4, 8];
+
+/// What sets the stable step at rest, and whether changing the wall's mass or shape raises it (§16y measured where
+/// the step falls at the seat). On the product wall at `STEP7_SIZE`, every reading gives two steps over the unchanged
+/// wall's: the elastic top mode's (`β = 0`), and the loop's own (`rest_step`, viscosity included), since the
+/// viscosity is deviatoric and the two need not be set by one vector.
+/// - Where each limiting vector sits at rest: the node carrying the most of it by mass-weighted size, whether it is on
+///   the surface, and the share of its elements that are lattice-shaped ([`lattice_shaped`]).
+/// - [`MASS_ROUNDS`] rounds that each multiply the density of the elements around the loop's vector's current top
+///   node by [`MASS_FACTOR`].
+/// - The density of every element that is not lattice-shaped times each of [`NON_LATTICE_FACTORS`].
+/// - The worst [`WORST_SHARES`] of the elements by shortest altitude ([`altitudes`]), their density times
+///   [`WORST_FACTOR`].
+/// - Smoothing: every surface and held node fixed, the other nodes of the worst 5 % moved [`SMOOTH_WEIGHT`] of the
+///   way to their neighbours' average, read after each of [`SMOOTH_PASSES`] passes.
+///
+/// The loop's step is reproduced here, to say which vector set it; the test asserts that the reproduced step equals
+/// `rest_step`'s. A rebuild with nothing changed reads 1.000 by construction (`lower` builds through the same
+/// constructor).
+#[test]
+#[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
+fn step7_rest_limiter() {
+    let size = SIZES[env_number("STEP7_SIZE", 0.0) as usize];
+    let stage = Stage::new(&format!(
+        "what sets the step at rest, ×{size} h_K2's elements"
+    ));
+    let wall = Wall::build(&stage.scene, stage.h_k2 / size.cbrt(), None, [0.0; 3]);
+    let lowering = Lowering {
+        poisson: POISSON,
+        viscous_time: ECOFLEX_00_30_VISCOUS_TIME,
+    };
+    let base = lower(&wall.mesh, &wall.densities, lowering, &wall.mount)
+        .unwrap()
+        .model;
+    assert_eq!(wall.densities.len(), base.element_count());
+    let surface = surface_nodes(&base);
+    let lattice = lattice_shaped(&base);
+    println!(
+        "  {:.3} of the elements lattice-shaped [PUBLIC]; {} elements [LOCAL]",
+        lattice.iter().filter(|&&l| l).count() as f64 / lattice.len() as f64,
+        lattice.len()
+    );
+    let config = StepperConfig::new(0.0);
+    // The power iteration's vector, at `β = viscous_weight`.
+    let vector_at = |model: &ExplicitModel, viscous_weight: f64| {
+        let executor = cpu::f64::CpuExecutor::new(model, &stage.obstacle).unwrap();
+        executor.top_mode_and_vector(
+            config.power_iterations,
+            executor.epsilon().sqrt() * executor.shortest_edge(),
+            viscous_weight,
+        )
+    };
+    // The elastic top mode's step (`β = 0`, no damping), then the loop's own as `Stepper::new` estimates it: the
+    // first estimate's step sets `β = 2/Δt` for the second. Each with its vector.
+    let steps = |model: &ExplicitModel| {
+        let (first, elastic_vector) = vector_at(model, 0.0);
+        let (looped, loop_vector) = vector_at(
+            model,
+            2.0 / config.stable_step(first.omega_squared, first.damping_quotient),
+        );
+        (
+            config.stable_step(first.omega_squared, 0.0),
+            config.stable_step(looped.omega_squared, looped.damping_quotient),
+            elastic_vector,
+            loop_vector,
+        )
+    };
+    let (elastic_rest, loop_rest, elastic_vector, loop_vector) = steps(&base);
+    // Reproduced here so each reading can say which vector set the loop's step; the step must be the loop's own.
+    let reproduced = loop_rest / rest_step(&base, &stage.obstacle);
+    println!("  the loop's step as reproduced here over `rest_step`: {reproduced:.6} [PUBLIC]");
+    assert!(
+        (reproduced - 1.0).abs() <= 1e-12,
+        "the reproduced loop's step no longer follows `Stepper::new`: {reproduced}"
+    );
+    println!(
+        "  the loop's own rest step over the elastic top mode's: {:.3} [PUBLIC]",
+        loop_rest / elastic_rest
+    );
+    let place = |model: &ExplicitModel, node: usize| {
+        let (around, shaped) = elements_around(model, node, &lattice);
+        (
+            surface.binary_search(&(node as u32)).is_ok(),
+            shaped as f64 / around as f64,
+        )
+    };
+    for (label, vector) in [
+        ("the elastic top mode", &elastic_vector),
+        ("the loop's vector (β = 2/Δt)", &loop_vector),
+    ] {
+        let (top, share, half) = top_node(&base, vector);
+        let (on_surface, shaped) = place(&base, top);
+        println!(
+            "  at rest, {label}: its top node carries {share:.3} of it; on the surface {on_surface}; held {}; \
+             lattice-shaped share of its elements {shaped:.3} [PUBLIC]; {half} nodes carry half of it [LOCAL]",
+            base.held()[top]
+        );
+    }
+    let total: f64 = base.node_masses().iter().sum();
+    let rebuild = |positions: Vec<[f64; 3]>, materials: Vec<Material>| {
+        ExplicitModel::new(
+            positions,
+            base.elements().to_vec(),
+            materials,
+            base.held().to_vec(),
+        )
+    };
+    // One reading: both steps over the unchanged wall's, the added mass, where each vector's top node sits; and the
+    // loop vector's top node.
+    let read = |model: &ExplicitModel| {
+        let (elastic, looped, elastic_vector, loop_vector) = steps(model);
+        let elastic_top = top_node(model, &elastic_vector).0;
+        let loop_top = top_node(model, &loop_vector).0;
+        let (elastic_surface, elastic_shaped) = place(model, elastic_top);
+        let (loop_surface, loop_shaped) = place(model, loop_top);
+        let line = format!(
+            "{:.3} | {:.3} | {:.3} | {elastic_surface}, {elastic_shaped:.3} | {loop_surface}, {loop_shaped:.3}",
+            elastic / elastic_rest,
+            looped / loop_rest,
+            100.0 * (model.node_masses().iter().sum::<f64>() / total - 1.0)
+        );
+        (line, loop_top)
+    };
+    let header = "elastic step | loop's step | added mass % | each top node, elastic then the loop's: on the \
+                  surface, lattice-shaped share of its elements";
+    println!(
+        "  control, rebuilt unchanged: {} [PUBLIC]",
+        read(&rebuild(base.rest_positions().to_vec(), base.materials().to_vec()).unwrap()).0
+    );
+    println!("  round, chasing the loop vector's top node | {header} [PUBLIC]");
+    let mut materials = base.materials().to_vec();
+    let mut top = top_node(&base, &loop_vector).0;
+    for round in 1..=MASS_ROUNDS {
+        for (e, nodes) in base.elements().iter().enumerate() {
+            if nodes.contains(&(top as u32)) {
+                materials[e].density *= MASS_FACTOR;
+            }
+        }
+        // Rebuilt as `Wall::model` rebuilds a varied wall: `lower` reads the materials from the densities and
+        // refuses one changed inside a material.
+        let model = rebuild(base.rest_positions().to_vec(), materials.clone()).unwrap();
+        let (line, next) = read(&model);
+        println!("  {round:>5} | {line} [PUBLIC]");
+        top = next;
+    }
+    let scaled = |factor: &dyn Fn(usize) -> f64| {
+        let materials = base
+            .materials()
+            .iter()
+            .enumerate()
+            .map(|(e, m)| Material {
+                density: factor(e) * m.density,
+                ..*m
+            })
+            .collect();
+        rebuild(base.rest_positions().to_vec(), materials).unwrap()
+    };
+    println!("  every element not lattice-shaped, density × k | {header} [PUBLIC]");
+    for k in NON_LATTICE_FACTORS {
+        let model = scaled(&|e| if lattice[e] { 1.0 } else { k });
+        println!("  {k:>5} | {} [PUBLIC]", read(&model).0);
+    }
+    let altitude = altitudes(&base);
+    let mut ranked: Vec<usize> = (0..altitude.len()).collect();
+    ranked.sort_by(|&a, &b| altitude[a].total_cmp(&altitude[b]));
+    let mut rank = vec![0_usize; ranked.len()];
+    for (place, &e) in ranked.iter().enumerate() {
+        rank[e] = place;
+    }
+    for (label, vector) in [("elastic", &elastic_vector), ("loop's", &loop_vector)] {
+        let top = top_node(&base, vector).0;
+        let worst_around = (0..base.element_count())
+            .filter(|&e| base.elements()[e].contains(&(top as u32)))
+            .map(|e| rank[e])
+            .min()
+            .unwrap();
+        println!(
+            "  ranked by shortest altitude: the {label} top node's worst element sits at the {:.4} quantile [PUBLIC]",
+            worst_around as f64 / ranked.len() as f64
+        );
+    }
+    println!("  the worst share by altitude, density × {WORST_FACTOR} | {header} [PUBLIC]");
+    for share in WORST_SHARES {
+        let worst: BTreeSet<usize> = ranked
+            .iter()
+            .take((share * ranked.len() as f64).round() as usize)
+            .copied()
+            .collect();
+        let model = scaled(&|e| {
+            if worst.contains(&e) {
+                WORST_FACTOR
+            } else {
+                1.0
+            }
+        });
+        println!("  {share:>5} | {} [PUBLIC]", read(&model).0);
+    }
+    let fifth: Vec<usize> = ranked
+        .iter()
+        .take((0.05 * ranked.len() as f64).round() as usize)
+        .copied()
+        .collect();
+    let mut volumes = base.rest_volumes().to_vec();
+    volumes.sort_by(f64::total_cmp);
+    let median_volume = volumes[volumes.len() / 2];
+    let quartiles = |mut values: Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        [0.25, 0.5, 0.75].map(|q| values[((values.len() - 1) as f64 * q).round() as usize])
+    };
+    let volume = quartiles(
+        fifth
+            .iter()
+            .map(|&e| base.rest_volumes()[e] / median_volume)
+            .collect(),
+    );
+    let worst_altitude = quartiles(fifth.iter().map(|&e| altitude[e]).collect());
+    let touches = |e: usize| {
+        base.elements()[e]
+            .iter()
+            .any(|n| surface.binary_search(n).is_ok())
+    };
+    let not_lattice: Vec<usize> = (0..base.element_count()).filter(|&e| !lattice[e]).collect();
+    println!(
+        "  of the elements not lattice-shaped, {:.3} touch the surface [PUBLIC]",
+        not_lattice.iter().filter(|&&e| touches(e)).count() as f64 / not_lattice.len() as f64
+    );
+    let touching = fifth.iter().filter(|&&e| touches(e)).count();
+    println!(
+        "  the worst 5 %: volume over the median's at quartiles {:.3} / {:.3} / {:.3}; shortest altitude over the \
+         median's {:.3} / {:.3} / {:.3}; {:.3} touch the surface; {:.3} lattice-shaped [PUBLIC]",
+        volume[0],
+        volume[1],
+        volume[2],
+        worst_altitude[0],
+        worst_altitude[1],
+        worst_altitude[2],
+        touching as f64 / fifth.len() as f64,
+        fifth.iter().filter(|&&e| lattice[e]).count() as f64 / fifth.len() as f64
+    );
+    // Smoothing: every surface and held node fixed, so the surface, and the wall's fit to the scan, cannot move.
+    let fixed: BTreeSet<u32> = surface
+        .iter()
+        .copied()
+        .chain(
+            (0..base.node_count())
+                .filter(|&a| base.held()[a])
+                .map(|a| a as u32),
+        )
+        .collect();
+    let free: BTreeSet<u32> = fifth
+        .iter()
+        .flat_map(|&e| base.elements()[e])
+        .filter(|n| !fixed.contains(n))
+        .collect();
+    let mut neighbours: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for nodes in base.elements() {
+        for &a in nodes {
+            if free.contains(&a) {
+                neighbours
+                    .entry(a)
+                    .or_default()
+                    .extend(nodes.iter().copied().filter(|&b| b != a));
+            }
+        }
+    }
+    // Altitudes over the UNCHANGED wall's median, so a pass's change is not mixed with its median's.
+    let raw = raw_altitudes(&base);
+    let mut sorted = raw.clone();
+    sorted.sort_by(f64::total_cmp);
+    let base_median = sorted[sorted.len() / 2];
+    let (low, high) = dihedral_range(base.rest_positions(), base.elements());
+    println!(
+        "  smoothing (w {SMOOTH_WEIGHT}); unsmoothed: dihedrals {low:.2}°..{high:.2}°, none inverted by this probe's \
+         orientation {} [PUBLIC]; {} free nodes [LOCAL]",
+        base.elements()
+            .iter()
+            .all(|nodes| signed_volume(base.rest_positions(), nodes) > 0.0),
+        free.len()
+    );
+    println!(
+        "  passes | {header} (shapes as meshed) | the first worst 5 %'s altitude quartiles, over the unchanged \
+         median | dihedrals | none inverted | largest move over the cell [PUBLIC]"
+    );
+    let mut positions = base.rest_positions().to_vec();
+    let mut done = 0;
+    for passes in SMOOTH_PASSES {
+        while done < passes {
+            let current = positions.clone();
+            for (&a, around) in &neighbours {
+                let mut mean = [0.0; 3];
+                for &b in around {
+                    for k in 0..3 {
+                        mean[k] += current[b as usize][k] / around.len() as f64;
+                    }
+                }
+                for k in 0..3 {
+                    positions[a as usize][k] =
+                        (1.0 - SMOOTH_WEIGHT) * current[a as usize][k] + SMOOTH_WEIGHT * mean[k];
+                }
+            }
+            done += 1;
+        }
+        let inverted = base
+            .elements()
+            .iter()
+            .filter(|nodes| signed_volume(&positions, nodes) <= 0.0)
+            .count();
+        let moved = positions
+            .iter()
+            .zip(base.rest_positions())
+            .map(|(p, q)| {
+                ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+            })
+            .fold(0.0_f64, f64::max)
+            / wall.cell;
+        let (low, high) = dihedral_range(&positions, base.elements());
+        let Ok(model) = rebuild(positions.clone(), base.materials().to_vec()) else {
+            println!(
+                "  {passes:>6} | the model refuses the moved wall [PUBLIC]; {inverted} inverted [LOCAL]"
+            );
+            continue;
+        };
+        let smoothed = raw_altitudes(&model);
+        let worst = quartiles(fifth.iter().map(|&e| smoothed[e] / base_median).collect());
+        println!(
+            "  {passes:>6} | {} | {:.3} / {:.3} / {:.3} | {low:.2}°..{high:.2}° | {} | {moved:.3} [PUBLIC]",
+            read(&model).0,
+            worst[0],
+            worst[1],
+            worst[2],
+            inverted == 0
+        );
+    }
+}
+
+/// The signed volume of the tetrahedron `nodes` at `positions` (positive as the mesher orients them).
+fn signed_volume(positions: &[[f64; 3]], nodes: &[u32; 4]) -> f64 {
+    let p = |i: usize| Vector3::from(positions[nodes[i] as usize]);
+    (p(1) - p(0)).cross(&(p(2) - p(0))).dot(&(p(3) - p(0))) / 6.0
+}
+
+/// The smallest and largest dihedral angle, in degrees, over every element at `positions`.
+fn dihedral_range(positions: &[[f64; 3]], elements: &[[u32; 4]]) -> (f64, f64) {
+    let (mut low, mut high) = (f64::INFINITY, 0.0_f64);
+    for nodes in elements {
+        let p = |i: usize| Vector3::from(positions[nodes[i] as usize]);
+        for (i, j) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+            let others: Vec<usize> = (0..4).filter(|&k| k != i && k != j).collect();
+            let edge = (p(j) - p(i)).normalize();
+            let side = |k: usize| {
+                let v = p(k) - p(i);
+                v - edge * v.dot(&edge)
+            };
+            let (a, b) = (side(others[0]), side(others[1]));
+            let angle = (a.dot(&b) / (a.norm() * b.norm()))
+                .clamp(-1.0, 1.0)
+                .acos()
+                .to_degrees();
+            low = low.min(angle);
+            high = high.max(angle);
+        }
+    }
+    (low, high)
+}
+
+/// Each element's shortest altitude: three times its volume over its largest face.
+fn raw_altitudes(model: &ExplicitModel) -> Vec<f64> {
+    let positions = model.rest_positions();
+    model
+        .elements()
+        .iter()
+        .zip(model.rest_volumes())
+        .map(|(nodes, &volume)| {
+            let p = |i: usize| Vector3::from(positions[nodes[i] as usize]);
+            let largest = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]
+                .iter()
+                .map(|f| 0.5 * (p(f[1]) - p(f[0])).cross(&(p(f[2]) - p(f[0]))).norm())
+                .fold(0.0_f64, f64::max);
+            3.0 * volume / largest
+        })
+        .collect()
+}
+
+/// Each element's shortest altitude over the median element's.
+fn altitudes(model: &ExplicitModel) -> Vec<f64> {
+    let raw = raw_altitudes(model);
+    let mut sorted = raw.clone();
+    sorted.sort_by(f64::total_cmp);
+    let median = sorted[sorted.len() / 2];
+    raw.iter().map(|a| a / median).collect()
+}
+
+/// Each element lattice-shaped (a BCC lattice's tetrahedron: its shortest edge over its longest within 1 % of
+/// `√3/2`, and its volume within 1 % of the median element's) or not (cut, or warped by the mesher at the boundary;
+/// the test does not tell the two apart).
+fn lattice_shaped(model: &ExplicitModel) -> Vec<bool> {
+    let positions = model.rest_positions();
+    let mut volumes = model.rest_volumes().to_vec();
+    volumes.sort_by(f64::total_cmp);
+    let median = volumes[volumes.len() / 2];
+    let ratio = 3.0_f64.sqrt() / 2.0;
+    model
+        .elements()
+        .iter()
+        .zip(model.rest_volumes())
+        .map(|(nodes, &volume)| {
+            let (mut short, mut long) = (f64::INFINITY, 0.0_f64);
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    let (a, b) = (positions[nodes[i] as usize], positions[nodes[j] as usize]);
+                    let edge =
+                        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2))
+                            .sqrt();
+                    short = short.min(edge);
+                    long = long.max(edge);
+                }
+            }
+            (short / long - ratio).abs() <= 0.01 * ratio && (volume / median - 1.0).abs() <= 0.01
+        })
+        .collect()
+}
+
+/// The node carrying the most of `vector` by its mass-weighted size, its share, and how many nodes carry half.
+fn top_node(model: &ExplicitModel, vector: &[[f64; 3]]) -> (usize, f64, usize) {
+    let weights: Vec<f64> = vector
+        .iter()
+        .zip(model.node_masses())
+        .map(|(v, m)| m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+        .collect();
+    let total: f64 = weights.iter().sum();
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by(|&a, &b| weights[b].total_cmp(&weights[a]));
+    let half = order
+        .iter()
+        .scan(0.0, |sum, &a| {
+            *sum += weights[a];
+            Some(*sum)
+        })
+        .position(|sum| sum >= 0.5 * total)
+        .map_or(0, |i| i + 1);
+    (order[0], weights[order[0]] / total, half)
+}
+
+/// The elements around `node`, and how many of them are lattice-shaped.
+fn elements_around(model: &ExplicitModel, node: usize, lattice: &[bool]) -> (usize, usize) {
+    let around: Vec<usize> = (0..model.element_count())
+        .filter(|&e| model.elements()[e].contains(&(node as u32)))
+        .collect();
+    let shaped = around.iter().filter(|&&e| lattice[e]).count();
+    (around.len(), shaped)
 }
 
 /// The volumetric stabilization's stiffnesses over μ, the exploratory ladder (§16y), within the sources' span of 0.5 to
