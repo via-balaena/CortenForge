@@ -11,6 +11,8 @@
 //!   pending, when the step's `dt` or damping changes, and before any read,
 //!   write or [`Executor::clear_accumulators`]. In the stepping loop that is
 //!   once a step: a pass costs 12–22 µs on Metal beyond its dispatches.
+//!   [`GpuExecutor::pass_per_dispatch`] records each dispatch as a pass of its
+//!   own instead, to time each kernel (recon §17e).
 //! - **The pose, on the host.** `contact` interpolates the obstacle's pose at
 //!   the step's start and end with the shared f32 math, as the CPU executor
 //!   does, and the step carries both. So [`Executor::set_poses`] writes
@@ -54,8 +56,9 @@ use log::{BOUNDARY_ROW, CONTACT_ROW, Motion, Totals};
 /// Items a reduction's partial covers (`soft.wgsl`'s `TREE`).
 const TREE: u32 = 256;
 
-/// Steps a submit's ring holds: a step is one pass, so a submit at
-/// [`crate::submit::STEP_PASS_CAP`] passes is this many steps.
+/// Steps a submit's ring holds: a step recorded as one pass is one recorder
+/// step, so a submit at [`crate::submit::STEP_PASS_CAP`] passes is this many
+/// steps.
 const RING_SLOTS: u32 = crate::submit::STEP_PASS_CAP;
 
 /// Rows the step log starts with; it doubles when full.
@@ -1246,9 +1249,10 @@ impl GpuExecutor {
         self.recorder.time_passes();
     }
 
-    /// Record each dispatch as a pass of its own from here on (recon §17e),
-    /// so [`Self::pass_times`] times each kernel. The steps are the same
-    /// steps; each pass adds its own cost.
+    /// Record each dispatch as a pass of its own, in a recorder step of its
+    /// own, from here on (recon §17e), so [`Self::pass_times`] times each
+    /// kernel. The steps are the same steps; each pass adds its own cost, and
+    /// its label a string. There is no way back.
     pub fn pass_per_dispatch(&mut self) {
         self.record_pending();
         self.split = true;
@@ -1267,9 +1271,10 @@ impl GpuExecutor {
     }
 
     /// The timed passes that started on the GPU before an earlier one had
-    /// ended, among those [`Self::pass_times`] has read: passes that ran at
-    /// once, whose times overlap. Every entry point binds `soft.wgsl`'s
-    /// `order` to keep it zero (recon §17e).
+    /// ended, among all [`Self::pass_times`] has read since
+    /// [`Self::time_passes`]: passes that ran at once, whose times overlap.
+    /// Every entry point binds `soft.wgsl`'s `order` to keep it zero (recon
+    /// §17e). Zero when passes are not timed.
     #[must_use]
     pub fn pass_overlaps(&self) -> u64 {
         self.recorder.pass_overlaps()

@@ -145,9 +145,9 @@ struct PassTimer {
     /// Each resolve's copy, with each query set's first query in it and its
     /// passes' labels.
     copies: Vec<(wgpu::Buffer, Vec<(usize, Vec<usize>)>)>,
-    /// The passes read that started before an earlier pass had ended, and the
-    /// latest end read.
+    /// The passes read that started before an earlier pass had ended.
     overlapping: u64,
+    /// The latest end read.
     latest_end: Option<u64>,
     mapped: (
         mpsc::Sender<Result<(), wgpu::BufferAsyncError>>,
@@ -290,7 +290,8 @@ impl PassTimer {
                         self.overlapping += 1;
                     }
                     self.latest_end = Some(self.latest_end.map_or(end, |latest| latest.max(end)));
-                    // Signed, so a timestamp that was never written shows.
+                    // Signed, so an end never written shows. A start never
+                    // written counts as overlapping, but for the first pass.
                     #[allow(clippy::cast_precision_loss)] // ticks within f64's integers
                     let elapsed = (end as f64 - start as f64) * self.period * 1e-9;
                     times
@@ -495,9 +496,10 @@ impl<T: Pod> Recorder<T> {
     }
 
     /// The timed passes that started on the GPU before an earlier one had
-    /// ended, among those [`Self::pass_times`] has read: passes run at once,
-    /// so their times overlap and add to more than the GPU took. Zero when
-    /// passes are not timed.
+    /// ended, among all [`Self::pass_times`] has read since
+    /// [`Self::time_passes`]: passes run at once, so their times overlap and
+    /// add to more than the GPU took. A start never written counts too, but
+    /// for the first pass. Zero when passes are not timed.
     #[must_use]
     pub fn pass_overlaps(&self) -> u64 {
         self.timer.as_ref().map_or(0, |timer| timer.overlapping)

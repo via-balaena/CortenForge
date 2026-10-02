@@ -127,9 +127,10 @@ fn a_read_and_an_estimate_leave_the_steps_outputs_and_count_alone() {
 /// and an estimate.
 type Read = (Snapshot, PhaseOutputs, Monitors, TopMode);
 
-/// A run of `steps` steps of `f` with a window open, then an estimate with a
-/// viscous weight, as one pass a step or, `split`, a pass a dispatch.
-fn run(ctx: &GpuContext, f: &Fixture, split: bool, steps: u32) -> Read {
+/// A run of `steps` steps of `f` with a window open, then an estimate of
+/// `iterations` passed a viscous weight, as one pass a step or, `split`, a
+/// pass a dispatch.
+fn run(ctx: &GpuContext, f: &Fixture, split: bool, (steps, iterations): (u32, usize)) -> Read {
     let mut gpu = gpu(ctx, f);
     if split {
         gpu.pass_per_dispatch();
@@ -141,18 +142,21 @@ fn run(ctx: &GpuContext, f: &Fixture, split: bool, steps: u32) -> Read {
         gpu.accumulate();
         time += f.dt;
     }
-    let top = gpu.estimate_top_mode(10, perturbation(&gpu), 0.5);
+    let top = gpu.estimate_top_mode(iterations, perturbation(&gpu), 0.5);
     (gpu.snapshot(), gpu.phase_outputs(), gpu.monitors(), top)
 }
 
 /// ★ Steps, a read and an estimate recorded one pass a step are byte for
 /// byte the same recorded a pass a dispatch, on an elastic and a viscous
-/// material.
+/// material. Split, 70 steps grow the step log past its 64 rows and fill the
+/// ring several times, and an estimate of 40 iterations takes more passes
+/// than a submit holds.
 #[test]
 fn one_pass_a_step_is_the_same_as_a_pass_a_dispatch() {
     let Some(ctx) = context() else { return };
+    let length = (70, 40);
     for f in [fixtures::tube(), fixtures::viscous()] {
-        let (one, each) = (run(&ctx, &f, false, 10), run(&ctx, &f, true, 10));
+        let (one, each) = (run(&ctx, &f, false, length), run(&ctx, &f, true, length));
         let bits = |r: &Read| {
             let top = [r.3.omega_squared, r.3.damping_quotient].map(f64::to_bits);
             [
@@ -169,9 +173,8 @@ fn one_pass_a_step_is_the_same_as_a_pass_a_dispatch() {
 
 /// ★ Timed a pass a dispatch, the passes come back under the labels written
 /// here by hand, each as many times as its dispatch ran, and none started
-/// before the one before it ended: three steps of a viscous block with a
-/// window open, a read, and an estimate of two iterations with a viscous
-/// weight.
+/// before an earlier one ended: three steps of a viscous block with a window
+/// open, a read, and an estimate of two iterations with a viscous weight.
 #[test]
 fn a_pass_a_dispatch_comes_back_under_its_phase_and_entry_point() {
     if context().is_none() {
@@ -245,6 +248,33 @@ fn a_pass_a_dispatch_comes_back_under_its_phase_and_entry_point() {
     expected.sort();
     assert_eq!(counts, expected);
     assert_eq!(gpu.pass_overlaps(), 0, "passes ran at once");
+}
+
+/// ★ Every entry point in `soft.wgsl` calls `keep_order` first, so it binds
+/// the `order` buffer that keeps a pass a dispatch in order on Metal: the
+/// label test sees passes run at once with none calling it, but a tiny
+/// fixture may not see one entry point missing it.
+#[test]
+fn every_entry_point_keeps_the_order() {
+    let source = include_str!("../soft.wgsl");
+    let entries: Vec<&str> = source.split("@compute").skip(1).collect();
+    assert_eq!(
+        entries.len(),
+        Kernel::ALL.len(),
+        "an entry point per kernel"
+    );
+    for entry in entries {
+        let name = entry
+            .split("fn ")
+            .nth(1)
+            .and_then(|rest| rest.split('(').next())
+            .unwrap_or("?");
+        let body = entry.split_once(") {").map_or("", |(_, body)| body);
+        assert!(
+            body.trim_start().starts_with("keep_order();"),
+            "{name} does not call keep_order first"
+        );
+    }
 }
 
 /// The estimate's arguments as the stepping loop passes them.

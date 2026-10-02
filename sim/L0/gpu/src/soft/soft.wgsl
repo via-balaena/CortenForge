@@ -149,9 +149,11 @@ struct Reduction {
 @group(0) @binding(38) var<storage, read_write> magnitudes: array<f32>;
 @group(0) @binding(39) var<storage, read_write> quotients: array<f32>;
 @group(0) @binding(40) var<storage, read_write> dampings: array<f32>;
-// Bound read_write to every entry point and never written (no model has no
-// nodes), so every pass shares a written buffer with the one before it: on the
-// M4 Pro, passes that share none ran at once (recon §17e).
+// Bound read_write to every entry point, and written by none: a model has
+// nodes (`ExplicitModel::new`). Every pass so shares a buffer bound for writing
+// with the one before it; on the M4 Pro, passes that share none ran at once
+// (recon §17e). Both ways of recording a step run these same shaders. On
+// Vulkan wgpu orders every dispatch on it; what that costs is not measured.
 @group(0) @binding(41) var<storage, read_write> order: array<u32>;
 
 // ---- Helpers ----

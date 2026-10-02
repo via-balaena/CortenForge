@@ -3,7 +3,7 @@
 //!
 //! Every binding sits in group 0 under its own number, and an entry point's
 //! layout lists only the ones it uses, so none binds more than the 16 storage
-//! buffers a stage is given (`context.rs`). A [`Dispatch`] is an entry point
+//! buffers a stage is given (`context.rs`); `contact` binds 15. A [`Dispatch`] is an entry point
 //! over one bind group: the same entry point runs on the step's arrays or on
 //! scratch ones by the group it is given.
 
@@ -114,7 +114,7 @@ pub(super) enum Kernel {
 }
 
 impl Kernel {
-    const ALL: [Self; 21] = [
+    pub(super) const ALL: [Self; 21] = [
         Self::ElementDilations,
         Self::GatherVolumeChanges,
         Self::NodalPressures,
