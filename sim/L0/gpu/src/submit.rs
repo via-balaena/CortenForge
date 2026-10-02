@@ -20,7 +20,9 @@
 //! A recorder can also time its passes on the GPU ([`Recorder::time_passes`],
 //! recon §17d): a timestamp at each pass's start and end, resolved after the
 //! next read's wait and mapped at the wait after that, so timing adds no wait
-//! of its own until [`Recorder::pass_times`] reads them.
+//! of its own until [`Recorder::pass_times`] reads them. Passes may run at
+//! once on the GPU, and their times then overlap: [`Recorder::pass_overlaps`]
+//! counts them (recon §17e).
 
 use std::collections::BTreeMap;
 use std::sync::mpsc;
@@ -143,6 +145,10 @@ struct PassTimer {
     /// Each resolve's copy, with each query set's first query in it and its
     /// passes' labels.
     copies: Vec<(wgpu::Buffer, Vec<(usize, Vec<usize>)>)>,
+    /// The passes read that started before an earlier pass had ended, and the
+    /// latest end read.
+    overlapping: u64,
+    latest_end: Option<u64>,
     mapped: (
         mpsc::Sender<Result<(), wgpu::BufferAsyncError>>,
         mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
@@ -160,6 +166,8 @@ impl PassTimer {
             resolving: Vec::new(),
             free: Vec::new(),
             copies: Vec::new(),
+            overlapping: 0,
+            latest_end: None,
             mapped: mpsc::channel(),
         }
     }
@@ -278,6 +286,10 @@ impl PassTimer {
             for (first, labels) in segments {
                 for (pass, &label) in labels.iter().enumerate() {
                     let (start, end) = (ticks[first + 2 * pass], ticks[first + 2 * pass + 1]);
+                    if self.latest_end.is_some_and(|latest| start < latest) {
+                        self.overlapping += 1;
+                    }
+                    self.latest_end = Some(self.latest_end.map_or(end, |latest| latest.max(end)));
                     // Signed, so a timestamp that was never written shows.
                     #[allow(clippy::cast_precision_loss)] // ticks within f64's integers
                     let elapsed = (end as f64 - start as f64) * self.period * 1e-9;
@@ -480,6 +492,15 @@ impl<T: Pod> Recorder<T> {
         timer.resolve(device, &self.queue);
         wait();
         timer.read()
+    }
+
+    /// The timed passes that started on the GPU before an earlier one had
+    /// ended, among those [`Self::pass_times`] has read: passes run at once,
+    /// so their times overlap and add to more than the GPU took. Zero when
+    /// passes are not timed.
+    #[must_use]
+    pub fn pass_overlaps(&self) -> u64 {
+        self.timer.as_ref().map_or(0, |timer| timer.overlapping)
     }
 
     /// The host's time submitting since [`Self::time_passes`]; zero when

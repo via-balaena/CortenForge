@@ -168,9 +168,10 @@ fn one_pass_a_step_is_the_same_as_a_pass_a_dispatch() {
 }
 
 /// ★ Timed a pass a dispatch, the passes come back under the labels written
-/// here by hand, each as many times as its dispatch ran: three steps of a
-/// viscous block with a window open, a read, and an estimate of two
-/// iterations with a viscous weight.
+/// here by hand, each as many times as its dispatch ran, and none started
+/// before the one before it ended: three steps of a viscous block with a
+/// window open, a read, and an estimate of two iterations with a viscous
+/// weight.
 #[test]
 fn a_pass_a_dispatch_comes_back_under_its_phase_and_entry_point() {
     if context().is_none() {
@@ -243,6 +244,7 @@ fn a_pass_a_dispatch_comes_back_under_its_phase_and_entry_point() {
     .map(|(label, count)| (label.to_owned(), count));
     expected.sort();
     assert_eq!(counts, expected);
+    assert_eq!(gpu.pass_overlaps(), 0, "passes ran at once");
 }
 
 /// The estimate's arguments as the stepping loop passes them.
@@ -569,10 +571,12 @@ fn sum_and_largest(
         .zeroed("partials", bytes::<f32>(items.div_ceil(TREE)))
         .unwrap();
     let rows = maker.zeroed("rows", bytes::<f32>(2)).unwrap();
+    let order = maker.zeroed("order", 4).unwrap();
     let dispatches: Vec<Dispatch> = {
         let shared = Shared {
             constants: &constants,
             step_values: recorder.step_values_binding().unwrap(),
+            order: &order,
         };
         [(SUM, 0), (MAX, 1)]
             .into_iter()

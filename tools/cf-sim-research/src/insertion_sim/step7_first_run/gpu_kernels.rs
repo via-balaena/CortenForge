@@ -320,6 +320,7 @@ fn step7_gpu_kernels() {
         );
         let host = stepper.executor().times;
         let device = stepper.executor_mut().inner.pass_times();
+        let overlaps = stepper.executor().inner.pass_overlaps();
         let steps = run.steps as f64;
         let stepping = run.clock.setup + run.clock.stepping;
         let total = |prefix: &str| under(&device, prefix).values().map(|(t, _)| t).sum::<f64>();
@@ -328,7 +329,8 @@ fn step7_gpu_kernels() {
         println!(
             "  run {} ({}): {:.1} s over {} steps, {} reads, {} estimates [LOCAL]; stood {}; GPU of the setup and \
              stepping {:.3}: steps {:.3}, reads {:.3}, estimates {:.3}; over the host's waits {:.3}; any pass not \
-             positive {} [PUBLIC]; the step passes' µs a step {:.1} [LOCAL]",
+             positive {}; any pass started before an earlier one ended {} [PUBLIC]; the step passes' µs a step {:.1}, \
+             such passes {overlaps} [LOCAL]",
             i + 1,
             if split {
                 "a pass a dispatch"
@@ -349,6 +351,7 @@ fn step7_gpu_kernels() {
                 .values()
                 .flatten()
                 .any(|&t| t <= 0.0 || !t.is_finite()),
+            overlaps > 0,
             1e6 * step / steps
         );
         if !split {

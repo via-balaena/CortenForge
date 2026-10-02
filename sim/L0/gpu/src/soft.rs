@@ -391,6 +391,9 @@ impl Host {
 /// The buffers read back or written after construction.
 struct Buffers {
     constants: wgpu::Buffer,
+    /// What every entry point binds read-write (`soft.wgsl`'s `order`), to
+    /// bind it again when a log grows.
+    order: wgpu::Buffer,
     displacements: wgpu::Buffer,
     velocities: wgpu::Buffer,
     anchors: wgpu::Buffer,
@@ -662,6 +665,7 @@ impl GpuExecutor {
             contents: bytemuck::bytes_of(&constants),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        let order = make.zeroed("order", 4)?;
         let incidence = model.element_incidence();
         let node_buffer = make.filled("node constants", &node_table)?;
         let element_buffer = make.filled("element constants", &element_table)?;
@@ -785,6 +789,7 @@ impl GpuExecutor {
         let shared_bindings = Shared {
             constants: &constants_buffer,
             step_values,
+            order: &order,
         };
         let bind = |kernel, items, buffers: &[(u32, &wgpu::Buffer)]| {
             kernels.bind(device, &shared_bindings, kernel, items, buffers)
@@ -1176,6 +1181,7 @@ impl GpuExecutor {
         };
         let buffers = Buffers {
             constants: constants_buffer,
+            order,
             displacements,
             velocities,
             anchors: anchor_buffer,
@@ -1258,6 +1264,15 @@ impl GpuExecutor {
     pub fn pass_times(&mut self) -> std::collections::BTreeMap<String, Vec<f64>> {
         self.record_pending();
         self.recorder.pass_times()
+    }
+
+    /// The timed passes that started on the GPU before an earlier one had
+    /// ended, among those [`Self::pass_times`] has read: passes that ran at
+    /// once, whose times overlap. Every entry point binds `soft.wgsl`'s
+    /// `order` to keep it zero (recon §17e).
+    #[must_use]
+    pub fn pass_overlaps(&self) -> u64 {
+        self.recorder.pass_overlaps()
     }
 
     /// The host's time submitting since [`Self::time_passes`]: finishing each
@@ -1359,6 +1374,7 @@ impl GpuExecutor {
             let shared_bindings = Shared {
                 constants: &self.buffers.constants,
                 step_values,
+                order: &self.buffers.order,
             };
             let row = self.kernels.bind(
                 &self.device,

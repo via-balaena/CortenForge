@@ -56,15 +56,16 @@ pub(super) mod binding {
     pub const MAGNITUDES: u32 = 38;
     pub const QUOTIENTS: u32 = 39;
     pub const DAMPINGS: u32 = 40;
+    pub const ORDER: u32 = 41;
 }
 
 use binding::{
     ANCHORS, BASE_FORCES, CONSTANTS, CONTACTS, COUNTERS, DAMPINGS, DILATIONS, DISPLACEMENTS,
     ELASTIC_FORCES, ELEMENT_FORCES, ELEMENTS, ENTRIES, FINE_MAP, FINE_VALUES, GRID_VALUES,
-    LOG_ROWS, MAGNITUDES, MAXIMA, MEASURED, NEXT_VECTOR, NODE_FORCES, NODES, OFFSETS, PARTIALS,
-    PRESSURES, PREVIOUS_VELOCITIES, QUOTIENTS, REDUCTION, SCALARS, SHIFTED, SHIFTED_FORCES,
-    START_VECTOR, STEP_VALUES, SURFACE_NODES, TERMS, VECTOR, VELOCITIES, VISCOUS_AT,
-    VISCOUS_FORCES, VOLUME_CHANGES, WINDOW,
+    LOG_ROWS, MAGNITUDES, MAXIMA, MEASURED, NEXT_VECTOR, NODE_FORCES, NODES, OFFSETS, ORDER,
+    PARTIALS, PRESSURES, PREVIOUS_VELOCITIES, QUOTIENTS, REDUCTION, SCALARS, SHIFTED,
+    SHIFTED_FORCES, START_VECTOR, STEP_VALUES, SURFACE_NODES, TERMS, VECTOR, VELOCITIES,
+    VISCOUS_AT, VISCOUS_FORCES, VOLUME_CHANGES, WINDOW,
 };
 
 /// How `soft.wgsl` declares a binding.
@@ -164,8 +165,8 @@ impl Kernel {
         }
     }
 
-    /// The bindings it uses besides the constants and the step values, which
-    /// every entry point is given.
+    /// The bindings it uses besides the constants, the step values and the
+    /// order, which every entry point is given.
     const fn bindings(self) -> &'static [u32] {
         match self {
             Self::ElementDilations => &[ELEMENTS, DISPLACEMENTS, DILATIONS, COUNTERS],
@@ -285,7 +286,7 @@ impl Kernels {
         let pipelines = Kernel::ALL
             .iter()
             .map(|&kernel| {
-                let entries: Vec<wgpu::BindGroupLayoutEntry> = [CONSTANTS, STEP_VALUES]
+                let entries: Vec<wgpu::BindGroupLayoutEntry> = [CONSTANTS, STEP_VALUES, ORDER]
                     .iter()
                     .chain(kernel.bindings())
                     .map(|&b| match kind(b) {
@@ -315,8 +316,8 @@ impl Kernels {
         Self { pipelines }
     }
 
-    /// `kernel` over `buffers`, one per binding it uses besides the constants
-    /// and the step values, which are `shared`'s.
+    /// `kernel` over `buffers`, one per binding it uses besides the constants,
+    /// the step values and the order, which are `shared`'s.
     pub(super) fn bind(
         &self,
         device: &wgpu::Device,
@@ -331,6 +332,7 @@ impl Kernels {
                 binding: STEP_VALUES,
                 resource: shared.step_values.clone(),
             },
+            buf_entry(ORDER, shared.order),
         ];
         entries.extend(buffers.iter().map(|&(b, buffer)| buf_entry(b, buffer)));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -365,10 +367,12 @@ impl Kernels {
     }
 }
 
-/// What every bind group shares: the constants, and the step values.
+/// What every bind group shares: the constants, the step values, and the
+/// order (`soft.wgsl`'s `order`).
 pub(super) struct Shared<'a> {
     pub constants: &'a wgpu::Buffer,
     pub step_values: wgpu::BindingResource<'a>,
+    pub order: &'a wgpu::Buffer,
 }
 
 /// An entry point over one bind group, for `items` elements, nodes or
