@@ -150,10 +150,9 @@ struct Counts {
 }
 
 /// The bytes a step's kernel, `phase/entry` as its pass's label ends, must read and write at least, each counted once
-/// (`sim-gpu`'s `soft.wgsl`): with the node, element and contact rows as far as the kernel uses them, and whole. A
-/// kernel reading part of each row in item order fetches the row's cache lines, so whole rows are nearer what it
-/// moves; the fields alone are the most a layout of one array a field could save. Uniforms, workgroup memory, the
-/// counters and the contact kernel's grid samples are not counted; every node is taken to be in an element.
+/// (`sim-gpu`'s `soft.wgsl`): with the node, element and contact rows as far as the kernel uses them (the plan's
+/// count, recon §17e), and with each row it reads from counted whole. Uniforms, workgroup memory, the counters and the
+/// contact kernel's grid samples are not counted; every node is taken to be in an element.
 fn least_bytes(kernel: &str, counts: Counts) -> Option<[f64; 2]> {
     let Counts {
         elements: e,

@@ -5531,6 +5531,84 @@ Not measured: which phases cost what; how near the passes run to this GPU's memo
 whether naga's Metal shaders run slower than hand-written ones; the timestamps' period, which wgpu takes as 1 ns on
 Apple GPUs; the other corners; the 4070 Ti.
 
+### 17e. Which kernels hold a GPU step (2026-10-02)
+
+§17d left open which phases cost what, and how near the passes run to this GPU's limits.
+`GpuExecutor::pass_per_dispatch` records each dispatch as a pass of its own, timed as in §17d and labelled by its phase
+and entry point. `step7_gpu_kernels` (ignored, run on the local scan) runs §17d's press and corner at four and eight
+times h_K2's elements on the M4 Pro, four runs a size: one pass a step, a pass a dispatch twice, one pass a step.
+- Before each run a copy kernel measures what this GPU streams: 235–241 GB/s read and written, over copies of 64 MiB.
+- Each step kernel's least bytes are counted from `soft.wgsl` (`least_bytes`): each byte it must read or write,
+  once, by the fields it uses. Its bytes over its time, over the copy's rate, is its fraction f. Both rates are timed by
+  one clock, so f does not depend on the timestamps' period.
+- The plan, written before any code or run, and the logs are kept locally.
+
+**The instrument.** Run a pass a dispatch, the M4 Pro ran passes at once: at ×4, 46 % of them started before an
+earlier one had ended, and their times summed to 1.39 of the host's waits. Those runs were not read. Every entry point
+now binds one buffer read-write that no model writes (`order` in `soft.wgsl`), and the recorder counts the passes
+that started before an earlier one ended (`Recorder::pass_overlaps`). In the runs below none did. The executor's
+label test fails with the buffer unused. One pass a step, at ×4, none had started early before the change either. With
+the buffer bound, the one-pass step's GPU time a step was 0.98 to 1.00 of §17d's runs.
+
+**The plan's checks.** All held, at both sizes.
+- No pass started before an earlier one ended, and none read zero or less.
+- The GPU's passes stayed under the host's waits: 0.92 to 0.97.
+- Each kernel ran one pass a step, `gather_forces` two (the material is viscous), and `accumulate` one on 0.61 of the
+  steps: the stepper runs it only while a window is open (`stepping.rs`).
+- The copy stayed under the specification, at 0.86 to 0.88 of its 273 GB/s.
+- Run a pass a dispatch, the step passes took 1.01 to 1.03 of the one-pass runs' time a step. The plan read the
+  split's shares as the step's within 0.8 to 1.25.
+- The two split runs' shares differ by at most 0.003, and the two one-pass runs' step time by at most 1.4 %.
+- Not set by the plan: the one-pass runs at ×8 reproduce §17d's split, 0.97 on the GPU, 0.83 in the step passes and
+  0.14 in the estimates.
+
+At ×8, the mean of the two split runs (f: the range over them; time an item: the mean over the four pairs of a ×8
+and a ×4 split run):
+
+| Kernel | Share of the step passes' GPU time | f, fields used | f, rows whole | Time an item, ×8 over ×4 |
+|---|---|---|---|---|
+| `gather_forces` (twice a step) | 0.281 | 0.39–0.40 | 0.39–0.40 | 1.52 |
+| `gather_volume_changes` | 0.175 | 0.12 | 0.47–0.48 | 1.48 |
+| `contact` | 0.163 | 0.05–0.06 | 0.06 | 0.98 |
+| `viscous_element_forces` | 0.105 | 0.87–0.90 | 1.03–1.06 | 1.67 |
+| `elastic_element_forces` | 0.092 | 1.09–1.10 | 1.20–1.21 | 1.61 |
+| `element_dilations` | 0.073 | 0.65–0.66 | 0.96–0.97 | 0.87 |
+| The other eight dispatches | 0.113, none above 0.022 | | | |
+
+- **Rows whole** counts each node, element and contact row a kernel reads from as read whole. The plan's rules read
+  the fields-used column.
+- **Time an item** is a kernel's time a pass over the elements, nodes or surface nodes it runs over.
+
+**Reading, by the plan's rules, at ×8.**
+1. The fewest kernels holding half the step passes' GPU time are the two gathers over the incidence lists and the
+   contact kernel: 0.62 together, the gathers 0.46 of it.
+2. None of those three runs near what this GPU streams by the bytes counted. The plan's bar is 0.6 for near and 0.25
+   for far: `gather_forces` falls between, the other two are far. What limits them is not isolated here. The count
+   leaves out the cache lines a scattered read fetches beyond the bytes it uses, and the contact kernel's grid samples.
+3. The element kernels run near the copy's rate or above it: dilations 0.66, viscous forces 0.89, elastic forces 1.10.
+   Above 1, the bound says part of their data came from cache. By the plan's rule for near, their lever is fewer
+   bytes.
+4. The step's counted bytes over its time are 0.43 of the copy's rate. 2.07 times faster, D4's bar with the estimates
+   gone (§17d), would be 0.88 of it. The plan's rule (above 1 ⇒ the bytes must drop) does not fire; with rows whole it
+   would, at 1.18.
+5. From ×4 to ×8 the time an item grew by more than the plan's 1.15 for both gathers and both force kernels. At ×4
+   the force kernels' f was above 1 (1.47 to 1.81) and `gather_forces`' 0.58. The contact kernel's held.
+6. The estimates spend 0.86 of their GPU time in the step's phase kernels on scratch arrays, 0.54 in the two gathers.
+   The estimate's own kernels take 0.07 and the reductions 0.07.
+
+Arithmetic, holding the rest of the step as it is: 2.07 times on the step passes needs the three kernels' 0.62 down
+to 0.10, about 6 times faster. Which lever comes first is Jon's call.
+
+Seen once, not in the plan: allowed to run at once, before the `order` buffer, the passes kept the GPU busy 0.93 of
+the time the one-pass run's passes did, at ×4; why has not been isolated.
+
+The copy's rate bounds the timestamps' period from below, at 0.86 ns, if the specification is this GPU's peak. §17d's
+check bounds it from above: the one-pass runs at ×8 put the passes at 0.97 of the waits, so the period is at most
+1.03 ns.
+
+Not measured: what limits the gathers and the contact kernel; whether the time an item keeps growing past ×8; the
+other corners; the 4070 Ti.
+
 ## 18. What sets the step at rest (2026-10-02)
 
 Jon asked whether preprocessing the mesh would speed the run. §16y measured where the step falls at the seat; this
