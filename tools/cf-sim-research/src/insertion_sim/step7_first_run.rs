@@ -1,5 +1,5 @@
 //! Step 7's first run on the product scan (soft-contact recon §16x): one press at the 5 mm inset, mounted at the
-//! closed end, on the fitted path, with the rules §16x set before its runs. Six stages and four diagnostics, each an
+//! closed end, on the fitted path, with the rules §16x set before its runs. Six stages and five diagnostics, each an
 //! ignored test:
 //! - [`step7_ladder`], rule 1: the loading time, at h_K2;
 //! - [`step7_sizes`], rule 2: the element size, at a loading, and rule 1 again at the size it picks (§16z: with an
@@ -7,6 +7,8 @@
 //! - [`step7_at_h_k2`], rules 3, 5, 10 and 11 at h_K2 and a loading, with the push's linearity in friction;
 //! - [`step7_room`], the room on step 7's wall;
 //! - [`step7_cost`], G6: a press timed at a loading and a size, with the probe's own instruments off;
+//! - [`step7_gpu_split`], where a GPU step's time goes: recording on the host, waiting at reads, the passes on the
+//!   device (§17d);
 //! - [`step7_blow_up`] and [`step7_stiffening`], the element collapsing at the seated tip, one change at a time;
 //! - [`step7_rest_limiter`], what sets the step at rest, and whether the wall's mass or shape raises it (§18);
 //! - [`step7_stabilized`], exploratory: the volumetric stabilization's ladder against the collapse and D1's readings
@@ -23,8 +25,8 @@
 //! rule 10's probe holds are not gated.
 //!
 //! A stage's loading is `STEP7_LOADING`, in multiples of the budget's (default 1; §16x's runs used 4 for every stage but
-//! the ladder); `step7_cost`'s and `step7_rest_limiter`'s size is `STEP7_SIZE`, 0, 1, 2 or 3 for one, two, four
-//! and eight times h_K2's element count (default 0). Run each with
+//! the ladder); `step7_cost`'s, `step7_gpu_split`'s and `step7_rest_limiter`'s size is `STEP7_SIZE`, 0, 1, 2 or 3 for
+//! one, two, four and eight times h_K2's element count (default 0). Run each with
 //! `RAYON_NUM_THREADS=4 cargo test --release -p cf-sim-research --bin cf-sim-research --
 //! insertion_sim::step7_first_run::<stage> --ignored --nocapture`, the scan at `~/scans/base_mold.cleaned.stl` (or
 //! `CF_SIM_RESEARCH_PRODUCT_SCAN`).
@@ -61,7 +63,9 @@ use sim_soft::pairing::PAIRINGS;
 use sim_soft::{Mesh, SdfMeshedTetMesh, VertexId, Yeoh};
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{Executor, Monitors, Obstacle, PhaseOutputs, Snapshot, TopMode};
+use sim_soft_explicit::executor::{
+    Executor, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot, TopMode,
+};
 use sim_soft_explicit::f64::{Material, Pose, pose_to_body};
 use sim_soft_explicit::fixtures::tube::ECOFLEX_00_30_VISCOUS_TIME;
 use sim_soft_explicit::readings::{
@@ -4123,6 +4127,303 @@ fn step7_cost() {
         println!(
             "  the rest step's factor on the steps at {label}: {:.3} [PUBLIC]",
             at / rest(&other)
+        );
+    }
+}
+
+/// What a [`Timed`] executor's calls took on the host, in seconds, by kind (§17d).
+#[derive(Clone, Copy, Debug, Default)]
+struct HostTimes {
+    /// The phases, accumulating and clearing: on the GPU, recording each step.
+    phases: f64,
+    /// The monitor reads, snapshots and phase outputs: on the GPU, each submits what is recorded and waits for it.
+    reads: f64,
+    /// The step estimates: on the GPU, each records its pass, submits and waits.
+    estimates: f64,
+    /// Setting the state and the poses.
+    other: f64,
+    reads_made: u64,
+    estimates_made: u64,
+}
+
+/// Which of [`HostTimes`] a call adds to.
+#[derive(Clone, Copy)]
+enum CallKind {
+    Phase,
+    Read,
+    Estimate,
+    Other,
+}
+
+/// An executor whose every call that does work is timed on the host, by kind (§17d); the three getters pass
+/// through.
+struct Timed<E> {
+    inner: E,
+    times: HostTimes,
+}
+
+impl<E> Timed<E> {
+    const fn new(inner: E) -> Self {
+        Self {
+            inner,
+            times: HostTimes {
+                phases: 0.0,
+                reads: 0.0,
+                estimates: 0.0,
+                other: 0.0,
+                reads_made: 0,
+                estimates_made: 0,
+            },
+        }
+    }
+
+    fn time<R>(&mut self, kind: CallKind, call: impl FnOnce(&mut E) -> R) -> R {
+        let started = Instant::now();
+        let result = call(&mut self.inner);
+        let elapsed = started.elapsed().as_secs_f64();
+        let times = &mut self.times;
+        match kind {
+            CallKind::Phase => times.phases += elapsed,
+            CallKind::Read => {
+                times.reads += elapsed;
+                times.reads_made += 1;
+            }
+            CallKind::Estimate => {
+                times.estimates += elapsed;
+                times.estimates_made += 1;
+            }
+            CallKind::Other => times.other += elapsed,
+        }
+        result
+    }
+}
+
+impl<E: Executor> Executor for Timed<E> {
+    fn node_count(&self) -> usize {
+        self.inner.node_count()
+    }
+
+    fn shortest_edge(&self) -> f64 {
+        self.inner.shortest_edge()
+    }
+
+    fn epsilon(&self) -> f64 {
+        self.inner.epsilon()
+    }
+
+    fn set_state(
+        &mut self,
+        time: f64,
+        displacements: &[[f64; 3]],
+        velocities: &[[f64; 3]],
+        anchors: Option<&[[f64; 3]]>,
+    ) {
+        self.time(CallKind::Other, |e| {
+            e.set_state(time, displacements, velocities, anchors);
+        });
+    }
+
+    fn set_poses(
+        &mut self,
+        start: f64,
+        interval: f64,
+        poses: &[Pose],
+    ) -> Result<(), ObstacleError> {
+        self.time(CallKind::Other, |e| e.set_poses(start, interval, poses))
+    }
+
+    fn element_dilations(&mut self) {
+        self.time(CallKind::Phase, E::element_dilations);
+    }
+
+    fn gather_volume_changes(&mut self) {
+        self.time(CallKind::Phase, E::gather_volume_changes);
+    }
+
+    fn nodal_pressures(&mut self) {
+        self.time(CallKind::Phase, E::nodal_pressures);
+    }
+
+    fn element_forces(&mut self) {
+        self.time(CallKind::Phase, E::element_forces);
+    }
+
+    fn gather_forces(&mut self) {
+        self.time(CallKind::Phase, E::gather_forces);
+    }
+
+    fn contact(&mut self, time: f64, dt: f64, damping: f64) {
+        self.time(CallKind::Phase, |e| e.contact(time, dt, damping));
+    }
+
+    fn integrate(&mut self, dt: f64, damping: f64) {
+        self.time(CallKind::Phase, |e| e.integrate(dt, damping));
+    }
+
+    fn boundary_conditions(&mut self, dt: f64, damping: f64) {
+        self.time(CallKind::Phase, |e| e.boundary_conditions(dt, damping));
+    }
+
+    fn accumulate(&mut self) {
+        self.time(CallKind::Phase, E::accumulate);
+    }
+
+    fn clear_accumulators(&mut self) {
+        self.time(CallKind::Phase, E::clear_accumulators);
+    }
+
+    fn monitors(&mut self) -> Monitors {
+        self.time(CallKind::Read, E::monitors)
+    }
+
+    fn snapshot(&mut self) -> Snapshot {
+        self.time(CallKind::Read, E::snapshot)
+    }
+
+    fn phase_outputs(&mut self) -> PhaseOutputs {
+        self.time(CallKind::Read, E::phase_outputs)
+    }
+
+    fn estimate_top_mode(
+        &mut self,
+        iterations: usize,
+        perturbation: f64,
+        viscous_weight: f64,
+    ) -> TopMode {
+        self.time(CallKind::Estimate, |e| {
+            e.estimate_top_mode(iterations, perturbation, viscous_weight)
+        })
+    }
+}
+
+/// [`step7_gpu_split`]'s runs of its corner: with the passes timed on the GPU, twice so the repeat's gap shows, then
+/// with the host's times alone, so what timing the passes costs shows.
+const SPLIT_RUNS: [bool; 3] = [true, true, false];
+
+/// §17d: where a GPU step's time goes, on G6's press (`step7_cost`) at `STEP7_LOADING` and `STEP7_SIZE`, its middle
+/// friction corner, under the loop's step control. Each run prints the host's time recording the steps, at the reads
+/// and at the estimates ([`Timed`]), the passes' time on the GPU by label (`GpuExecutor::pass_times`) and the host's
+/// finishing and submitting of the encoders (`GpuExecutor::submit_times`), as shares of the setup and stepping and per
+/// step; [`SPLIT_RUNS`] says which runs time the passes.
+///
+/// Host and GPU are serialized here: the recorder submits at a read, an estimate or 512 steps, so between those the
+/// GPU waits for the host, and at a read the host waits for the GPU.
+#[test]
+#[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
+fn step7_gpu_split() {
+    let factor = env_number("STEP7_LOADING", 1.0);
+    let size = SIZES[env_number("STEP7_SIZE", 0.0) as usize];
+    let mut stage = Stage::new(&format!(
+        "§17d, a GPU step's time at ×{size} h_K2's elements, loading ×{factor}"
+    ));
+    let wall = Wall::build(&stage.scene, stage.h_k2 / size.cbrt(), None, [0.0; 3]);
+    let model = wall.model(POISSON, 1.0, 1.0);
+    let start = stage.wall_line(&format!("×{size}"), &wall, &model);
+    let loading = factor * Stage::budget_loading(&wall, start);
+    let friction = corners()[1];
+    let spec = Spec {
+        instruments: false,
+        reestimate_every: 500,
+        gpu: true,
+        ..spec(friction, loading)
+    };
+    stage.set(&spec);
+    let damping = stage.damping(&wall);
+    let press = Press {
+        scene: &stage.scene,
+        model: &model,
+        surface: surface_nodes(&model),
+        start,
+        loading: spec.loading,
+    };
+    println!(
+        "  μ_f {friction}; the loop's re-estimate every 500 steps; the probe's instruments off [PUBLIC]"
+    );
+    for (i, timed) in SPLIT_RUNS.into_iter().enumerate() {
+        let ctx = if timed {
+            GpuContext::with_timestamps()
+        } else {
+            GpuContext::new()
+        }
+        .expect("a GPU adapter");
+        let (run, mut stepper) = run(
+            &press,
+            &stage.obstacle,
+            |m, o| {
+                let mut executor = GpuExecutor::new(&ctx, m, o).unwrap();
+                if timed {
+                    executor.time_passes();
+                }
+                Timed::new(executor)
+            },
+            damping,
+            spec,
+        );
+        let host = stepper.executor().times;
+        let submitting = stepper.executor().inner.submit_times();
+        let device = stepper.executor_mut().inner.pass_times();
+        let steps = run.steps as f64;
+        let stepping = run.clock.setup + run.clock.stepping;
+        let timed_host = host.phases + host.reads + host.estimates + host.other;
+        println!(
+            "  run {} ({}): {:.1} s over {} steps, {} reads, {} estimates [LOCAL]; stood {}; the calls timed \
+             cover {:.3} of the setup and stepping [PUBLIC]",
+            i + 1,
+            if timed { "passes timed" } else { "host only" },
+            stepping,
+            run.steps,
+            host.reads_made,
+            host.estimates_made,
+            run.stopped.is_none(),
+            timed_host / stepping
+        );
+        println!(
+            "    host, of the setup and stepping: recording {:.3}, at reads {:.3}, at estimates {:.3}, setting state \
+             {:.3} [PUBLIC]; µs a step: {:.1}, {:.1}, {:.1} [LOCAL]",
+            host.phases / stepping,
+            host.reads / stepping,
+            host.estimates / stepping,
+            host.other / stepping,
+            1e6 * host.phases / steps,
+            1e6 * host.reads / steps,
+            1e6 * host.estimates / steps
+        );
+        if !timed {
+            continue;
+        }
+        let sum = |label: &str| {
+            device
+                .get(label)
+                .map_or(0.0, |each| each.iter().sum::<f64>())
+        };
+        let passes = |label: &str| device.get(label).map_or(0, Vec::len);
+        let on_device = sum("step") + sum("read") + sum("estimate");
+        println!(
+            "    GPU, of the setup and stepping: steps {:.3}, reads {:.3}, estimates {:.3}; all {:.3}, over the host's \
+             waits {:.3}; step passes over steps {:.3}; any pass not positive {} [PUBLIC]; µs a step, the step passes \
+             on the GPU, {:.1} [LOCAL]",
+            sum("step") / stepping,
+            sum("read") / stepping,
+            sum("estimate") / stepping,
+            on_device / stepping,
+            on_device / (host.reads + host.estimates),
+            passes("step") as f64 / steps,
+            device
+                .values()
+                .flatten()
+                .any(|&t| t <= 0.0 || !t.is_finite()),
+            1e6 * sum("step") / steps
+        );
+        let waits = host.reads + host.estimates;
+        println!(
+            "    host submitting, of the setup and stepping: finishing the encoders {:.3}, handing them over {:.3}; \
+             submits over reads and estimates {:.3}; the rest of the waits, not attributed, {:.3} [PUBLIC]; µs a step \
+             finishing {:.1} [LOCAL]",
+            submitting.finishing / stepping,
+            submitting.submitting / stepping,
+            submitting.submits as f64 / (host.reads_made + host.estimates_made) as f64,
+            (waits - on_device - submitting.finishing - submitting.submitting) / stepping,
+            1e6 * submitting.finishing / steps
         );
     }
 }
