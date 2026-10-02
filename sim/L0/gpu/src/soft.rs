@@ -56,9 +56,8 @@ use log::{BOUNDARY_ROW, CONTACT_ROW, Motion, Totals};
 /// Items a reduction's partial covers (`soft.wgsl`'s `TREE`).
 const TREE: u32 = 256;
 
-/// Steps a submit's ring holds: a step recorded as one pass is one recorder
-/// step, so a submit at [`crate::submit::STEP_PASS_CAP`] passes is this many
-/// steps.
+/// Recorder steps a submit's ring holds: each records one pass, so a submit
+/// at [`crate::submit::STEP_PASS_CAP`] passes is this many.
 const RING_SLOTS: u32 = crate::submit::STEP_PASS_CAP;
 
 /// Rows the step log starts with; it doubles when full.

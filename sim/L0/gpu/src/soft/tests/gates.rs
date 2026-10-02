@@ -148,9 +148,8 @@ fn run(ctx: &GpuContext, f: &Fixture, split: bool, (steps, iterations): (u32, us
 
 /// ★ Steps, a read and an estimate recorded one pass a step are byte for
 /// byte the same recorded a pass a dispatch, on an elastic and a viscous
-/// material. Split, 70 steps grow the step log past its 64 rows and fill the
-/// ring several times, and an estimate of 40 iterations takes more passes
-/// than a submit holds.
+/// material. Split, this length submits while it steps and inside the
+/// estimate, which one pass a step does not.
 #[test]
 fn one_pass_a_step_is_the_same_as_a_pass_a_dispatch() {
     let Some(ctx) = context() else { return };
@@ -251,9 +250,7 @@ fn a_pass_a_dispatch_comes_back_under_its_phase_and_entry_point() {
 }
 
 /// ★ Every entry point in `soft.wgsl` calls `keep_order` first, so it binds
-/// the `order` buffer that keeps a pass a dispatch in order on Metal: the
-/// label test sees passes run at once with none calling it, but a tiny
-/// fixture may not see one entry point missing it.
+/// the `order` buffer that keeps a pass a dispatch in order on Metal.
 #[test]
 fn every_entry_point_keeps_the_order() {
     let source = include_str!("../soft.wgsl");

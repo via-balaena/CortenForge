@@ -5542,10 +5542,10 @@ times h_K2's elements on the M4 Pro, four runs a size: one pass a step, a pass a
   of 50 copies of 64 MiB. The rate during a run is not measured.
 - Each step kernel's least bytes are counted from `soft.wgsl` (`least_bytes`): each field it uses, once. Its bytes over
   its time, over the copy's rate, is its fraction f. Both rates are timed by one clock, so f does not depend on the
-  timestamps' period. A scattered read fetches more than the bytes it uses, by an amount not measured here.
-- The plan was written before any code or run; an addendum after the first runs at ×4 added one check, below. After
-  the runs, the probe's copy gained checks and its printing changed; what is timed did not. The plan and the logs are
-  kept locally.
+  timestamps' period. A scattered read can fetch more than the bytes it uses, by an amount not measured here.
+- The plan was written before any code or run. One addendum, before any run, corrected its hand count of the
+  dispatches; another, after the first runs at ×4, added a check, below. After the runs, the probe's copy gained checks
+  and its printing changed; what is timed did not. The plan and the logs are kept locally.
 
 **The instrument.** Run a pass a dispatch, the M4 Pro ran passes at once. At ×4 the split runs' pass times summed to
 1.39 of the host's waits, and their kernel shares were not read. A run that counted them, the timer patched and then
@@ -5553,8 +5553,9 @@ restored, found 46 % of the passes starting before an earlier one had ended; one
 now binds one buffer read-write that no model writes (`order` in `soft.wgsl`), and the recorder counts the passes that
 start before an earlier one ended (`Recorder::pass_overlaps`); the addendum made that count's zero a check. The
 executor's label test fails with the buffer unused, and a test fails if an entry point does not use it. With the buffer
-bound, the one-pass step's GPU time a step was 0.997 at ×4 and 0.993 at ×8 of the one-pass runs the same day before the
-change. On Vulkan wgpu orders every dispatch on the buffer; what that costs there is not measured.
+bound, the one-pass step's GPU time a step was 0.997 at ×4 and 0.993 at ×8 of the same day's one-pass runs before the
+change (one at ×8), within the one-pass runs' own spread of up to 1.4 %. On Vulkan wgpu orders every dispatch on the
+buffer; what that costs there is not measured.
 
 **The plan's checks.** All held, at both sizes.
 - No pass started before an earlier one ended, and none read zero or less.
@@ -5581,8 +5582,9 @@ and a ×4 split run):
 | `element_dilations` | 0.073 | 0.65–0.66 | 0.87 |
 | The other eight dispatches | 0.112, none above 0.022 | | |
 
-Time an item is a kernel's time a pass over the elements, nodes or surface nodes it runs over; for the reduction into a
-row, one workgroup, it is the time a pass.
+Time an item is a kernel's time a pass over the elements, nodes or surface nodes it runs over. The two reductions into
+a row run one workgroup whatever the size, and have no such items; they are left out of the rule, a choice made after
+the runs.
 
 **Reading, by the plan's rules, at ×8.**
 1. Three kernels are the fewest that hold half the step passes' GPU time. The three largest are the two gathers over
@@ -5593,16 +5595,15 @@ row, one workgroup, it is the time a pass.
    such reads fetch on this GPU is not measured, nor whether the memory they move or the wait on their chained loads
    holds them. The contact kernel's count leaves out its grid samples.
 3. Dilations (0.65–0.66) and viscous forces (0.87–0.90) run near the copy's rate; by the plan's rule for near, their
-   lever is fewer bytes. Elastic forces run above it (1.09–1.10). The plan read above 1 as data from cache; the copy is
-   a best case at 0.86–0.88 of the specification, so that does not follow, and its lever is not established.
+   lever is fewer bytes. Elastic forces run above it (1.09–1.10). The plan read above 1 as data from cache; the copy
+   runs at 0.86–0.88 of the specification, so that does not follow, and its lever is not established.
 4. The step's counted bytes over its time are 0.42–0.43 of the copy's rate; 2.07 times faster would be 0.87–0.89 of it.
    2.07 is D4's 2.30 times (§17c) on the step passes alone, the estimates gone: by §17d's ×8 shares the step passes are
-   0.828 of a run, and 0.035 is neither theirs nor the estimates'. The plan's rule (above 1 ⇒ the bytes must drop) does
-   not fire. That does not make D4 reachable without fewer bytes: it would take the whole step at 0.87–0.89 of a
-   best-case copy, on its least bytes.
-5. From ×4 to ×8 the time an item grew by more than the plan's 1.15 for both gathers and both force kernels, and, at
-   1.152, for the reduction into the boundary row. Why has not been isolated. The contact kernel's time a surface node
-   held.
+   0.828 of a run, and 0.035 is neither theirs nor the estimates', taking the other corners to split alike, which is
+   not measured. The plan's rule (above 1 ⇒ the bytes must drop) does not fire. That does not make D4 reachable without
+   fewer bytes: it would take the whole step at 0.87–0.89 of the copy's rate, on its least bytes.
+5. From ×4 to ×8 the time an item grew by more than the plan's 1.15 for both gathers and both force kernels. Why has
+   not been isolated. The contact kernel's time a surface node held.
 6. The estimates spend 0.86 of their GPU time in the step's phase kernels on scratch arrays, 0.54 in the two gathers;
    the estimate's own kernels take 0.07 and the reductions 0.07. An estimate stops early only on a vector of zeros;
    its later passes would still run, and are not separated here.

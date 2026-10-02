@@ -27,7 +27,8 @@ const STREAM_COPIES: usize = 50;
 const SPEC_GB_S: f64 = 273.0;
 
 /// The step passes' speed-up D4 needs at ×8 with the estimates gone: D4's 2.30 times (§17c) on the step passes alone,
-/// by §17d's ×8 shares (the step passes 0.828 of a run, 0.035 besides them and the estimates).
+/// by §17d's ×8 shares (the step passes 0.828 of a run, 0.035 besides them and the estimates), taking the other
+/// corners to split alike, which is not measured.
 const D4_STEP_SPEEDUP: f64 = 2.07;
 
 /// The items a reduction sums into one partial (`soft.wgsl`'s `TREE`).
@@ -154,8 +155,8 @@ struct Counts {
 }
 
 /// The bytes a step's kernel, `phase/entry` as its pass's label ends, must read and write at least (`sim-gpu`'s
-/// `soft.wgsl`): each field it uses counted once, a gathered array once whole. A scattered read fetches more than the
-/// bytes it uses, by an amount not measured here. Uniforms, workgroup memory, the counters and the contact kernel's
+/// `soft.wgsl`): each field it uses counted once, a gathered array once whole. A scattered read can fetch more than
+/// the bytes it uses, by an amount not measured here. Uniforms, workgroup memory, the counters and the contact kernel's
 /// grid samples are not counted; every node is taken to be in an element, and a held node's constraints, which it
 /// skips, are counted.
 fn least_bytes(kernel: &str, counts: Counts) -> Option<f64> {
