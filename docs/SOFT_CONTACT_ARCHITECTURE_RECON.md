@@ -6,7 +6,8 @@
 with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
 path step 7 runs, is §16t. Step 6's obstacle bake is §16u, the wall's canal surface §16v, and the lowering §16w.
 Step 7's first run is §16x (#978), the element collapsing at its seated tip §16y (#979), and D1's element size §16z
-(#980). The GPU steps are §17, step 3 first (§17a). What sets the step at rest is §18.
+(#980). The GPU steps are §17, step 3 first (§17a); where a GPU step's time goes is §17d. What sets the step at rest
+is §18.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
@@ -5460,6 +5461,75 @@ onto the viscous fixture, taking viscosity at κ = 0 with it, and the widened co
 made to fail. A third, narrow, on those fixes found 2: three fixtures asserted nothing of what they are for, and
 the one-pass gate's later comparisons had never failed. A fourth, gentle, found 1: the viscous fixture's purpose did
 not pin κ = 0. The mutation record above was taken after all four; the last fix has not been reviewed.
+
+### 17d. Where a GPU step's time goes (2026-10-02)
+
+Jon asked whether wgpu will cut it: §17c missed D4, which takes 2.3 times this GPU's speed. `step7_gpu_split` (ignored,
+run on the local scan) runs G6's press on its middle friction corner (μ_f 0.104), at the loading four times the budget's
+and under the loop's step control, at one, two, four and eight times h_K2's elements on the M4 Pro.
+- Every executor call that does work is timed on the host by kind (`Timed`).
+- `sim-gpu`'s recorder times each pass on the GPU with timestamps, and the host's finishing and submitting of each
+  encoder it submits, not its own resolves (`GpuContext::with_timestamps`, `Recorder::time_passes`,
+  `Recorder::submit_times`).
+- Each size ran three times: twice with the passes timed, then once with the host's times alone. Before each size no
+  other process used more than 7 % of a core, and no thermal or performance warning was recorded; the GPU read 35 %
+  busy just before ×1 and at most 1 % before the others, and what used it then is not known (logs kept locally).
+
+Figures are shares of a run's setup and stepping, the mean of the two timed runs, which agree within 0.008 on every
+share. Every run stood.
+
+| Elements | GPU: step passes | GPU: step estimates | GPU: reads | Host: finishing the encoders | Host: recording and handing over | The rest of the waits, not attributed |
+|---|---|---|---|---|---|---|
+| ×1 | 0.559 | 0.075 | 0.009 | 0.126 | 0.016 | 0.202 |
+| ×2 | 0.663 | 0.085 | 0.008 | 0.101 | 0.011 | 0.130 |
+| ×4 | 0.808 | 0.112 | 0.008 | 0.029 | 0.003 | 0.038 |
+| ×8 | 0.828 | 0.137 | 0.005 | 0.015 | 0.002 | 0.013 |
+
+- **The rest of the waits** is what the reads and estimates took on the host once the GPU's passes and the host's
+  finishing and handing over are taken out. It is not split.
+- **The plan's checks.** The plan, written before the runs (kept locally), set two.
+  - The passes' GPU time stays under the waits. It was taken over each run's totals, not per read as planned:
+    0.66, 0.76, 0.93 and 0.97 of the waits. It bounds the timestamps' scale from above only.
+  - The host's time a step stays roughly flat while the GPU's grows with the elements. From ×1 to ×8 the step
+    passes' GPU time a step grows 6.1 times and the elements 7.6 times; the host's time a step did not grow with the
+    elements.
+  - Not set by the plan: submits over reads and estimates, and step passes over steps, read 1.000 to three decimals;
+    no pass reads zero or less.
+- **Not reproduced at ×1.** A smoke run at ×1 minutes before the timed runs, on the same code, took about
+  half the timed runs' host time a step with the same GPU time a step; why has not been isolated. So the host's
+  share at ×1 is not established, and ×2 was not run again; at ×8 the host's share is 0.02.
+- **What timing costs.** The host-only run, always third, took 0.98, 0.94, 1.01 and 1.00 of the timed runs' time at
+  the four sizes; with one such run a size, timing's cost is not separated from the order of the runs.
+- **The instrument.** Resolved before their submit had completed, even from a later submit, some submits' last timed
+  pass read 0 on this GPU; why has not been isolated. So timestamps are resolved only after a read's wait, and the
+  recorder's test fails if they are resolved straight after each submit.
+
+**Reading, by the plan's rules, at ×8.** The plan set:
+- a host share of 0.5 or more ⇒ record less a step;
+- a GPU share of 0.7 or more ⇒ time each phase next;
+- the reads' and estimates' share at 0.25 or more ⇒ read and estimate less;
+- each lever's bound against D4's 2.3 times.
+
+After the ×1 smoke run, and before the timed runs, an addendum counted the host's finishing and handing over as the
+host's, and set the rest of the waits apart as its own share. At ×8:
+- the GPU's passes take 0.97 (the step passes 0.83, the step estimates' 0.14): the GPU rule holds;
+- the host takes 0.02: its rule does not hold;
+- the plan did not say which share the reads' and estimates' rule meant: counting their passes and the rest of the
+  waits it reads 0.15, counting all the time spent in those calls 1.00.
+
+Removed entirely, the host's share would buy 1.02 times and the estimates' passes 1.16 times; neither meets D4. Each
+estimate costs the GPU about 82 steps' time, every 500 steps, and runs the step's own phase kernels on scratch
+arrays, so work on those kernels speeds both. Meeting D4 at this split needs every GPU pass about 2.4 times faster,
+the host as it is (arithmetic, taking the other corners to split alike, which is not measured).
+
+So "will wgpu cut it" is half answered: at ×8 wgpu's host side does not decide D4; the time is inside the GPU's
+passes, and how near they run to this GPU's limits is not measured. D4 stays with Jon, with §17b's options. Jon chose
+(2026-10-02) to time each phase as a pass of its own and work on the kernels on this GPU first, and to measure the
+4070 Ti later.
+
+Not measured: which phases cost what; how near the passes run to this GPU's memory bandwidth and arithmetic limits;
+whether naga's Metal shaders run slower than hand-written ones; the timestamps' period, which wgpu takes as 1 ns on
+Apple GPUs; the other corners; the 4070 Ti.
 
 ## 18. What sets the step at rest (2026-10-02)
 
