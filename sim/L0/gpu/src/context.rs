@@ -24,10 +24,22 @@ impl GpuContext {
     /// Returns [`GpuError::NoAdapter`] if no suitable GPU is found, or
     /// [`GpuError::DeviceRequest`] if the device cannot be created.
     pub fn new() -> Result<Self, GpuError> {
-        pollster::block_on(Self::new_async())
+        pollster::block_on(Self::new_async(wgpu::Features::empty()))
     }
 
-    async fn new_async() -> Result<Self, GpuError> {
+    /// A context that can time compute passes: [`Self::new`]'s, granted
+    /// `TIMESTAMP_QUERY` (recon §17d), for
+    /// [`Recorder::time_passes`](crate::submit::Recorder::time_passes).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::new`]'s; [`GpuError::DeviceRequest`] also when the adapter
+    /// cannot write timestamps.
+    pub fn with_timestamps() -> Result<Self, GpuError> {
+        pollster::block_on(Self::new_async(wgpu::Features::TIMESTAMP_QUERY))
+    }
+
+    async fn new_async(features: wgpu::Features) -> Result<Self, GpuError> {
         let adapter = request_adapter().await?;
 
         let adapter_info = adapter.get_info();
@@ -36,7 +48,7 @@ impl GpuContext {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("sim-gpu-physics"),
-                required_features: wgpu::Features::empty(),
+                required_features: features,
                 // Raise storage buffer limit for physics pipeline (FK uses
                 // ~12 storage buffers per shader stage). Metal supports 31,
                 // Vulkan/NVIDIA supports many more. WebGPU default is 8.

@@ -524,6 +524,11 @@ fn sum_and_largest(
             })
             .collect()
     };
-    record_pass(recorder, kernels, &StepValues::zeroed(), &dispatches);
+    record_pass(
+        recorder,
+        kernels,
+        ("reduction", &StepValues::zeroed()),
+        &dispatches,
+    );
     recorder.read(&rows, 2)
 }
