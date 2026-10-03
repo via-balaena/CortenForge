@@ -5622,6 +5622,125 @@ Not measured: what holds the gathers and the contact kernel; whether the kernels
 this GPU's arithmetic limits; why the time an item grows from ×4 to ×8, and whether it carries to other sizes; whether
 naga's Metal shaders run slower than hand-written ones; the copy's rate during a run; the other corners; the 4070 Ti.
 
+### 17f. What the gathers fetch, and the plan for them (2026-10-03)
+
+§17e left open what holds the two gathers, 0.46 of the ×8 step passes' time between them: the bytes a scattered read
+fetches, or the latency of its chained loads (offsets, then entries, then an element's data). This section counts what
+they fetch, on the mesh the GPU runs, and plans two changes. The plan is written before either is built.
+
+**The count.** `step7_gather_lines` (ignored, run on the local scan) builds §17d's wall at eight times h_K2's elements,
+takes the incidence lists the GPU uploads (`ExplicitModel::element_incidence`), and for each workgroup of 64 nodes
+collects the distinct lines each entry point's reads and writes touch, at 32, 64 and 128 bytes. Geometry only: no step
+runs. At 4-byte lines every line fetched once must equal `least_bytes`; it does, 1.00 for both (per workgroup, the
+volume gather's 4-byte count is 1.35–1.42 as built: its elements are shared across workgroups). The probe was first
+run outside the tree; it lands with the first change below.
+
+| fetched over least bytes | 32 B | 64 B | 128 B |
+|---|---|---|---|
+| `gather_volume_changes`, each workgroup its own lines | 4.21 | 7.19 | 9.67 |
+| `gather_volume_changes`, every line once | 2.10 | 3.35 | 3.97 |
+| `gather_forces`, each workgroup its own lines | 1.80 | 2.17 | 2.46 |
+| `gather_forces`, every line once | 1.00 | 1.00 | 1.00 |
+
+- The volume gather reads each element's 4-byte rest volume out of its 80-byte `Element` row: at 64 bytes, 5.89 of the
+  7.19 is that row. Even fetched once, at 64- or 128-byte lines, the gather moves 3.4–4.0 times its least bytes.
+- The force gather uses every byte of `element_forces`, but each element's 48-byte row is read by up to four nodes in
+  different workgroups, and fetched by each.
+- Times §17e's fractions (0.12, 0.40), the gathers' traffic would be 0.25–1.16 and 0.40–0.98 of the copy's rate. The
+  line size and the reuse across workgroups in the GPU's shared cache are not measured, so the range is the result: it
+  allows memory traffic to hold both, and does not exclude latency. Only a change that moves fewer bytes, timed, can
+  separate them.
+
+**Already ruled out.** The per-item workgroup size, 32 to 256 for the 18 entry points at 64, moved the ×8 step within
+its own repeat spread (1.6 %, twenty one-pass runs an arm; the gathers within 1.5 %). Each variant passed the `soft::`
+tests, and one that dispatches half the items failed them. Those runs were at the probe's default loading, one times
+the budget's, not §17d's four; at ×8 their kernel shares match §17e's within 0.012. The scripts are kept locally.
+
+**The two ceilings.** A run's time is its steps times a step's time, and each has a ceiling. The steps' ceiling was
+measured; the bytes' ceiling is arithmetic from `least_bytes`. Both were read before either change below; the
+probes, first run outside the tree, land with change 1.
+- Steps: `step7_step_profile` reads the loop's own samples over §17d's press at loading four times the budget's, ×4
+  and ×8, every run standing. The step is 0.97–1.00 of its first size at a tenth of the run's time, 0.63–0.74 at
+  half, and 0.24–0.28 from three-quarters on; 0.63–0.70 of all steps are taken below half the first size. The runs
+  take 2.36 (×4) and 2.28 (×8) times the steps they would at the first size: the ceiling for anything that keeps
+  the step from falling. Such a change moves what a run reads beyond f32's noise, unlike either change here. What
+  sets the late step is in the dossier below; §18 read the step at rest.
+- A step's time: by `least_bytes` and the passes a step, elements carry 0.84 of a ×8 step's least bytes, 436 an
+  element against 72 for the fields a step uses, read once. At the copy's rate (a step's f is 0.42–0.43, §17e),
+  today's least bytes would take the step 2.33–2.38 times faster. How far fusing passes would cut the bytes is not
+  worked out here.
+- D4 needs about 2.4 times on the GPU's passes (§17d's review); at today's bytes the ceiling, 2.33–2.38, falls just
+  short, so the step's time alone reaches D4 only with fewer bytes. Change 1 leaves the physics as it is, and change 2
+  moves it within f32's noise (Gate 1); raising the step is a change of another kind, and Jon's call.
+
+**Change 1: the volume gather's term.** `element_dilations` already loads each element's row; it also writes
+`0.25 · rest_volume · dilation` to a new per-element array (binding 42), and `gather_volume_changes` sums that array
+instead of reading `element_table` and `dilations`. `dilations` stays: the elastic forces and the energies read it.
+The array is bound wherever the two entry points are dispatched, on the step's arrays and, with a scratch twin, on
+the estimate's. `least_bytes` is updated for both entry points.
+- Gate 1, the physics: at loading four times the budget's, §17d's press runs at ×1, ×2, ×4 and ×8 with the same steps
+  and the same deciding readings bit for bit. If the shader compiler had fused the old sum's multiply and add, the
+  last bits may differ; then the readings must agree within 0.002 % (a tolerance borrowed from rule 5's
+  f32-against-f64 difference), and the difference is reported.
+- Gate 2, the tests: sim-gpu's `soft::` tests pass; building the executor's pipelines, which they do, has wgpu check
+  each entry point's bindings against its layout.
+- Gate 3, the time: at ×8, twenty one-pass runs an arm, interleaved, the change against `main`. It is kept only if the
+  median step passes' time a step improves by more than the baseline arm's spread (its slowest run over its fastest);
+  otherwise it is reported and dropped.
+- Decided (Jon, 2026-10-03): the CPU executor gains the same array, so each entry point stays the CPU loop's body.
+  Rust does not fuse a multiply and add on its own, so the CPU's runs must match `main`'s bit for bit at Gate 1.
+
+**Change 2: numbering for locality.** A permutation of nodes and elements inside `ExplicitModel`, so that a
+workgroup's nodes share their elements: nodes along a space-filling curve of their rest positions, elements by their
+own. Everything indexed by node or element is permuted with it (positions, masses, rest volumes, λ, stabilizations,
+held nodes, constraints, surface triangles, elements, materials, edge inverses); the incidence lists and the probe's
+surface nodes are derived from the model. Each node's sum then runs in a different order, so the physics is not bit
+for bit.
+- Gate 0, before any timing: the count above, on the permuted mesh, must move the force gather's per-workgroup fetch
+  toward its floor of 1.00. If it does not, the change stops there.
+- Gate 1: the deciding readings within 0.002 % of `main`'s at ×1–×8, every run standing.
+- Gates 2 and 3 as for change 1.
+- Decided (2026-10-03, Jon's call delegated): Gate 0 picks the ordering — the count runs on the CPU in seconds, so
+  Morton, Hilbert and reverse Cuthill–McKee are counted on the same mesh before any is timed; Morton is built first.
+  The permutation is the caller's choice, a model transform that returns it, the given order the default: the sums'
+  order changes, so a default permutation would break every bit-for-bit reproduction, and both executors consume the
+  same model.
+
+**The dossier (2026-10-03, after the plan; every probe at loading four times the budget's, run outside the tree, landing
+with change 1).**
+- `step7_gpu_kernels` at ×1–×8 reproduces §17e at ×8 within 0.005 (shares 0.281, 0.175, 0.162 and 0.276, 0.176,
+  0.164 in its two split runs, against 0.281, 0.175, 0.163). The contact kernel holds the most at the smaller sizes,
+  0.33 of the step passes at ×1, 0.30 at ×2, 0.24 at ×4, at 0.04–0.05 of the copy's rate at every size, on bytes that
+  leave out its grid samples; what holds it is not measured. From ×4 to ×8 the gathers' time an item grows 1.51–1.59
+  and 1.45–1.49 times over the four split-run pairs (§17e: 1.52 and 1.48) while their per-workgroup lines grow 4 %:
+  the count does not explain the growth. A cache's capacity, or reuse across workgroups, which the count does not
+  model, would fit; neither is measured.
+- Gate 0 for change 2, at ×8: Morton numbering takes the force gather's per-workgroup fetch from 2.17 to 1.84 at
+  64-byte lines (0.28 of the way to its floor) and the volume gather's from 7.19 to 6.30; a shuffle, the control,
+  takes them to 4.57 and 20.28. Morton's gain grows with the size (1.95 to 1.80 at ×1). Were the gathers' time
+  their fetched bytes, that is about 0.06 of the step. Gate 0 as written sets no threshold, so this meets it; change 2
+  waits behind change 1, and Hilbert and reverse Cuthill–McKee are counted before Morton is timed.
+- The steps, at ×1–×8 (`step7_step_profile`): 1.67, 4.42, 2.36 and 2.28 times the steps at the first step size;
+  ×2's step falls to 0.11 of its first, and 0.81 of its steps are taken below a quarter of it.
+- What sets the late step, at ×4 and ×8 (`step7_late_step`, which runs `diagnose` on the corner above, CPU f32): at
+  the smallest step, 0.25 and 0.28 of the rest step, the vector that sets it lies 0.96–0.97 on one node near
+  the seated tip, not on the most compressed element (whose nodes carry none of it), with a damping ratio of 2.2–2.8.
+  The viscosity sets it: at rest it takes the step to 0.52 and 0.42 of the elastic one, and late the elastic mode
+  alone would allow 0.58 and 0.65 of its own rest step. By that arithmetic, a step the viscosity did not limit would
+  be 1.9–2.4 times the loop's at rest and 4.6–5.4 times it late; the next item measures it over whole runs. Such a
+  change is to the integrator, not the material, and it moves what a run reads: Jon's call.
+- The step the viscosity does not set (`step7_elastic_profile`: the stages' run, CPU f32, to the hold's end, its
+  steps within 0.02 % of the GPU runs'; at each of the loop's re-estimates, the step the elastic top mode alone gives).
+  The runs take 2.10 (×1), 4.21 (×2), 3.41 (×4) and 4.21 (×8) times the steps they would at it: 1.70–3.06 over the
+  loading, 2.58–5.61 over the hold. At rest the elastic step is 1.58–2.37 times the loop's, late 2.6–5.6 times.
+  Where the loop's step is least, the elastic vector lies 0.999–1.000 on ten nodes (0.49–0.996 on one). So the
+  viscous limit's ceiling is 2.1–4.2 on a run's steps, by itself above D4's need at ×8, if the viscous term can be
+  integrated without setting the step and nothing the power iteration does not see (the contact) sets it instead;
+  neither is measured, nor the accuracy of such an integrator. The elastic limit after it sits on a few nodes.
+
+Not measured: which of memory traffic and latency holds the gathers; the GPU's line size and its reuse across
+workgroups; what holds the contact kernel (f 0.06, §17e); either change's effect on the 4070 Ti.
+
 ## 18. What sets the step at rest (2026-10-02)
 
 Jon asked whether preprocessing the mesh would speed the run. §16y measured where the step falls at the seat; this
