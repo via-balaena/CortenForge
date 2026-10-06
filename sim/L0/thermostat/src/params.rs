@@ -211,6 +211,14 @@ mod tests {
                 n: 3,
             })
         );
+        assert_eq!(
+            check_edges("C", Some(3), &[(3, 0)]),
+            Err(ThermostatError::EdgeOutOfRange {
+                component: "C",
+                edge: (3, 0),
+                n: 3,
+            })
+        );
         assert_eq!(check_edges("C", None, &[(0, 3), (5, 4)]), Ok(()));
         assert_eq!(check_edges("C", Some(3), &[(0, 1), (2, 1)]), Ok(()));
     }

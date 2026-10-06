@@ -910,6 +910,49 @@ mod tests {
         assert_eq!(refused(target).as_deref(), Some("target.distribution[3]"));
     }
 
+    #[test]
+    fn try_with_initial_params_refuses_initial_values_that_are_not_finite() {
+        let refused = |initial_j: Vec<f64>, initial_h: Vec<f64>| {
+            crate::params::refused_parameter(IsingLearner::try_with_initial_params(
+                minimal_config(),
+                minimal_target(),
+                load_model(),
+                initial_j,
+                initial_h,
+            ))
+        };
+        assert_eq!(
+            refused(vec![f64::NAN], vec![0.0, 0.0]).as_deref(),
+            Some("initial_j[0]")
+        );
+        assert_eq!(
+            refused(vec![0.0], vec![0.0, f64::INFINITY]).as_deref(),
+            Some("initial_h[1]")
+        );
+    }
+
+    /// The defaults `LearnerConfig::new` documents.
+    #[test]
+    fn learner_config_new_has_the_documented_defaults() {
+        let c = LearnerConfig::new(4, vec![(0, 1)]);
+        assert_eq!((c.n, c.edges.as_slice()), (4, [(0, 1)].as_slice()));
+        assert_eq!(
+            (
+                c.delta_v,
+                c.x_0,
+                c.gamma,
+                c.k_b_t,
+                c.learning_rate,
+                c.x_thresh
+            ),
+            (3.0, 1.0, 10.0, 1.0, 0.5, 0.5)
+        );
+        assert_eq!(
+            (c.n_steps, c.n_burn_in, c.n_trajectories, c.seed_base),
+            (1_000_000, 20_000, 3, 0)
+        );
+    }
+
     /// `minimal_config` has `x_0 = 0.3`.
     #[test]
     fn try_new_refuses_a_bad_learning_rate_or_threshold() {

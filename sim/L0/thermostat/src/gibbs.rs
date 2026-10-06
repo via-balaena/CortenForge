@@ -287,6 +287,7 @@ mod tests {
             })
         );
         assert!(GibbsSampler::try_new(2, &[(0, 1)], &[f64::NAN], &[0.0; 2], 1.0, 0).is_err());
+        assert!(GibbsSampler::try_new(20, &[], &[], &[0.0; 20], 1.0, 0).is_ok());
     }
 
     #[test]
