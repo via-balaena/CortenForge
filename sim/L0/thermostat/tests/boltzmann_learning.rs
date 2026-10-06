@@ -228,7 +228,8 @@ fn external_field_breaks_symmetry() {
             0,
         ))
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     let mut data = model.make_data();
     data.qpos[0] = X_0;

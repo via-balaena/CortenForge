@@ -82,7 +82,7 @@ use crate::prf;
 ///
 /// Construct via [`LangevinThermostat::new`], add to a stack via
 /// `PassiveStack::builder().with(thermostat).build()`, install onto
-/// a `Model` via `stack.install(&mut model)`, and step the
+/// a `Model` via `stack.try_install(&mut model)?`, and step the
 /// simulation normally with `data.step(&model)?`.
 ///
 /// Implements three traits from the chassis surface:
@@ -668,7 +668,8 @@ mod tests {
                         .with_ctrl_temperature(0),
                 )
                 .build()
-                .install(&mut model);
+                .try_install(&mut model)
+                .unwrap();
             let mut data = model.make_data();
             data.qvel[0] = 1.0;
             data.ctrl[0] = f64::NAN;

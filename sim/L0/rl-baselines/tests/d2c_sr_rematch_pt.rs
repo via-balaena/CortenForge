@@ -107,7 +107,8 @@ fn make_training_vecenv(
         .with(double_well)
         .with(signal)
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     let model = Arc::new(model);
     let obs_space = ObservationSpace::builder()

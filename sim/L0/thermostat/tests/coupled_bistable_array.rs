@@ -76,7 +76,7 @@ fn setup(coupling_j: f64, seed: u64) -> (sim_core::Model, sim_core::Data) {
         seed,
         0,
     ));
-    builder.build().install(&mut model);
+    builder.build().try_install(&mut model).unwrap();
 
     // Initial condition: all elements in the right well
     for i in 0..N {

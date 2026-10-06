@@ -155,7 +155,8 @@ fn test_free_body_equipartition() {
                 i as u64,
             ))
             .build()
-            .install(&mut model);
+            .try_install(&mut model)
+            .unwrap();
 
         // Burn in — no measurement.
         for _ in 0..n_burn_in {
@@ -231,7 +232,8 @@ fn test_hinge_chain_equipartition() {
                 i as u64,
             ))
             .build()
-            .install(&mut model);
+            .try_install(&mut model)
+            .unwrap();
 
         // Burn in — no measurement.
         for _ in 0..n_burn_in {
@@ -318,7 +320,8 @@ fn assert_multi_dof_reproducibility(factory: fn() -> Model, nv: usize, nq: usize
             0,
         ))
         .build()
-        .install(&mut model1);
+        .try_install(&mut model1)
+        .unwrap();
 
     let mut model2 = factory();
     let mut data2 = model2.make_data();
@@ -330,7 +333,8 @@ fn assert_multi_dof_reproducibility(factory: fn() -> Model, nv: usize, nq: usize
             0,
         ))
         .build()
-        .install(&mut model2);
+        .try_install(&mut model2)
+        .unwrap();
 
     for _ in 0..n_steps {
         data1.step(&model1).expect("sim 1 step");

@@ -21,7 +21,7 @@
 //! 2. **Composition** ([`PassiveStack`], [`PassiveStackBuilder`],
 //!    [`StochasticGuard`], plus `sim_core::batch::EnvBatch`) — a
 //!    builder-style stack that
-//!    `install`s as a single `cb_passive` callback. The stack drives the
+//!    installs (`try_install`) as a single `cb_passive` callback. The stack drives the
 //!    split-borrow dance between `Fn(&Model, &mut Data)` (the real
 //!    `cb_passive` shape) and the trait's `&Data + &mut DVector<f64>` shape,
 //!    so component authors never touch raw borrowing.
@@ -55,7 +55,7 @@
 //!         0,
 //!     ))
 //!     .build()
-//!     .install(&mut model);
+//!     .try_install(&mut model)?;
 //!
 //! for _ in 0..n_steps {
 //!     data.step(&model)?;

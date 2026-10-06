@@ -73,7 +73,7 @@ fn make_training_vecenv(seed: u64) -> VecEnv {
         .with(thermostat)
         .with(ratchet)
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let model = Arc::new(model);
 
@@ -109,7 +109,7 @@ fn make_eval_env(seed: u64) -> SimEnv {
         .with(thermostat)
         .with(ratchet)
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let model = Arc::new(model);
 

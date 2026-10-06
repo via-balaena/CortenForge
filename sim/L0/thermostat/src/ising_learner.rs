@@ -229,9 +229,15 @@ impl IsingLearner {
         learner
     }
 
-    /// Build and install a `PassiveStack` with the current parameters.
+    /// Replace the model's passive stack with one for the current parameters.
+    // `new` validated this stack on the model; learning changes only `coupling_j` and
+    // `field_h`, which no component's `validate` reads.
+    #[allow(clippy::panic)]
     fn install_stack(&mut self, seed: u64, traj_id: u64) {
-        self.build_stack(seed, traj_id).install(&mut self.model);
+        self.model.clear_passive_callback();
+        if let Err(e) = self.build_stack(seed, traj_id).try_install(&mut self.model) {
+            panic!("{e}");
+        }
     }
 
     /// The passive stack for the current parameters.

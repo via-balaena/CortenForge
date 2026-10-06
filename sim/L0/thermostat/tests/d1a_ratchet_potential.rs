@@ -48,7 +48,7 @@ fn ratchet_on_produces_bounded_motion() {
         .with(thermostat)
         .with(ratchet)
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let mut data = model.make_data();
 
@@ -98,7 +98,7 @@ fn ratchet_off_produces_diffusion() {
         .with(thermostat)
         .with(ratchet)
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let mut data = model.make_data();
 
@@ -136,7 +136,7 @@ fn ratchet_off_produces_diffusion() {
             .with(thermostat_i)
             .with(ratchet_i)
             .build();
-        stack_i.install(&mut model_i);
+        stack_i.try_install(&mut model_i).unwrap();
         let mut data_i = model_i.make_data();
         // ctrl stays at 0.0 (potential OFF)
         for _ in 0..n_steps {
@@ -196,7 +196,7 @@ fn ctrl_persists_across_steps() {
     let ratchet = RatchetPotential::new(V1, V2, PHI, PERIOD, 0, 0);
     // No thermostat — deterministic test.
     let stack = PassiveStack::builder().with(ratchet).build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let mut data = model.make_data();
     // Place particle at x = 0.1 (non-equilibrium position)

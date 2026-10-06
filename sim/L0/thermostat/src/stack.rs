@@ -7,7 +7,7 @@
 //!
 //! 1. Holds an ordered list of `Arc<dyn PassiveComponent>`s assembled
 //!    via [`PassiveStackBuilder`].
-//! 2. On `install`, registers a single `cb_passive` callback that
+//! 2. On [`PassiveStack::try_install`], registers a single `cb_passive` callback that
 //!    iterates the components in order, performing the split-borrow
 //!    dance once per step so component authors never see the mutable
 //!    `Data` borrow.
@@ -20,9 +20,8 @@
 //! 4. Supports parallel-environment construction via
 //!    [`PassiveStack::install_per_env`], which builds N independent
 //!    `(Model, PassiveStack)` pairs from a user-supplied factory.
-//!    Decision-3 + N4 enforce that each env's stack is fresh (no
-//!    aliased RNG state) via a `debug_assert!` + defensive
-//!    `clear_passive_callback` pair.
+//!    Each env gets its own stack (no aliased RNG state), and a model
+//!    that already has a passive callback is refused.
 //!
 //! ## The split-borrow dance
 //!
@@ -88,7 +87,7 @@ impl PassiveStackBuilder {
     }
 
     /// Finalize the builder into an `Arc<PassiveStack>` ready to be
-    /// `install`ed onto a `Model`.
+    /// installed onto a `Model` (see [`PassiveStack::try_install`]).
     #[must_use]
     pub fn build(self) -> Arc<PassiveStack> {
         Arc::new(PassiveStack {
@@ -104,7 +103,7 @@ impl PassiveStackBuilder {
 /// `PassiveStack` is always handed around as `Arc<PassiveStack>` —
 /// the `cb_passive` callback closure captures a clone of the `Arc`,
 /// and any caller that wants to call [`PassiveStack::disable_stochastic`]
-/// later retains its own `Arc` handle. Both `install` and
+/// later retains its own `Arc` handle. Both `try_install` and
 /// `install_per_env` take `self: &Arc<Self>` (the standard
 /// idiomatic-Rust pattern for "method on an Arc-wrapped type that
 /// captures a clone of self into a callback") so the caller's handle
@@ -133,34 +132,25 @@ impl PassiveStack {
         }
     }
 
-    /// Install this stack onto `model` as a single `cb_passive`
-    /// callback. The closure captures a clone of `self` and replaces
-    /// any prior `cb_passive` setting on `model`.
+    /// Install this stack onto `model` as its passive callback (`Model::cb_passive`), if
+    /// `model` has none yet and every component accepts it.
     ///
-    /// `self: &Arc<Self>` — the caller retains its handle and can
-    /// call [`PassiveStack::disable_stochastic`] or read the stack
-    /// after `install` returns.
+    /// The callback captures a clone of `self`, and the caller keeps its own handle, so it
+    /// can call [`PassiveStack::disable_stochastic`] or read the stack afterwards.
     ///
-    /// # Panics
-    ///
-    /// Panics if a component refuses `model` (see [`Self::validate`]).
-    /// [`Self::try_install`] does the same but returns the error.
-    #[allow(clippy::panic)] // the documented refusal; try_install is the non-panicking path
-    pub fn install(self: &Arc<Self>, model: &mut Model) {
-        if let Err(e) = self.validate(model) {
-            panic!("PassiveStack::install: {e}");
-        }
-        self.install_unchecked(model);
-    }
-
-    /// [`Self::install`], returning a refusal instead of panicking: if
-    /// every component accepts `model`, install the stack (replacing any
-    /// prior `cb_passive`).
+    /// A model holds one passive callback. To replace one on purpose (another stack, or a
+    /// callback of your own), call `model.clear_passive_callback()` first.
     ///
     /// # Errors
     ///
-    /// The first error from [`Self::validate`]; nothing is installed.
+    /// Nothing is installed on an error.
+    /// - [`ThermostatError::PassiveCallbackInstalled`] if `model` already has a passive
+    ///   callback.
+    /// - Otherwise, the first error from [`Self::validate`].
     pub fn try_install(self: &Arc<Self>, model: &mut Model) -> Result<(), ThermostatError> {
+        if model.cb_passive.is_some() {
+            return Err(ThermostatError::PassiveCallbackInstalled);
+        }
         self.validate(model)?;
         self.install_unchecked(model);
         Ok(())
@@ -279,7 +269,7 @@ impl PassiveStack {
 ///
 /// `install_per_env` builds N independent `(Model, Arc<PassiveStack>)`
 /// pairs by invoking `build_one(i)` for each `i in 0..n`, installs the
-/// resulting stack onto each model via [`PassiveStack::install`], and
+/// resulting stack onto each model via [`PassiveStack::try_install`], and
 /// returns an [`EnvBatch<PassiveStack>`] holding the N installed
 /// models and retained stack handles.
 ///
@@ -290,25 +280,13 @@ impl PassiveStack {
 /// `LangevinThermostat` counter lives on the per-env thermostat
 /// instance).
 ///
-/// # N4 defensive clear
-///
-/// `build_one` is expected to return a freshly-constructed `Model`
-/// with no `cb_passive` already set. If a previous `cb_passive` is
-/// detected on the returned model:
-///
-/// 1. In debug builds, a `debug_assert!` panics with a diagnostic
-///    message — the user is misusing the API and should fix the
-///    factory function.
-/// 2. In release builds (where `debug_assert!` is a no-op), the prior
-///    callback is silently `clear_passive_callback`'d before the new
-///    stack is installed. This is the "fail loud in dev, behave
-///    correctly in release" pattern.
-///
 /// # Panics
 ///
-/// Each stack is installed with [`PassiveStack::install`], so a component
-/// that refuses its env's model panics.
+/// If an env's stack refuses its model (see [`PassiveStack::try_install`]): a
+/// component refuses it, or `build_one` returned a model that already has a
+/// passive callback. Build each model fresh inside `build_one`.
 impl PerEnvStack for PassiveStack {
+    #[allow(clippy::panic)] // the documented refusal: the trait's signature has no error path
     fn install_per_env<F>(self: &Arc<Self>, n: usize, mut build_one: F) -> EnvBatch<Self>
     where
         F: FnMut(usize) -> (Model, Arc<Self>),
@@ -324,19 +302,9 @@ impl PerEnvStack for PassiveStack {
         let mut stacks = Vec::with_capacity(n);
         for i in 0..n {
             let (mut model, stack) = build_one(i);
-            // N4: catch misuse loud in dev, fix correctness in release.
-            // The order matters — assert FIRST (so it can fire), then
-            // defensive clear (so release builds stay correct).
-            debug_assert!(
-                model.cb_passive.is_none(),
-                "install_per_env: build_one returned a Model that already has \
-                 a cb_passive set. install_per_env will overwrite it (silently \
-                 dropping the prior callback's captured state). Construct the \
-                 Model fresh inside build_one and let install_per_env be the \
-                 only callback installer.",
-            );
-            model.clear_passive_callback();
-            stack.install(&mut model);
+            if let Err(e) = stack.try_install(&mut model) {
+                panic!("install_per_env: env {i}: {e}");
+            }
             models.push(model);
             stacks.push(stack);
         }
@@ -569,14 +537,14 @@ mod tests {
         assert!(model.cb_passive.is_none());
 
         let stack = PassiveStack::builder().with(DummyDeterministic).build();
-        stack.install(&mut model);
+        stack.try_install(&mut model).unwrap();
 
         assert!(model.cb_passive.is_some());
     }
 
     #[test]
     fn install_callback_actually_invokes_each_component_per_forward() {
-        // A counting component installed via stack.install — verify
+        // A counting component installed via stack.try_install — verify
         // that calling data.forward(&model) once causes the counter
         // to advance. cb_passive is documented as firing once per
         // mj_fwd_passive call, which forward() invokes once.
@@ -589,7 +557,7 @@ mod tests {
                 count: Arc::clone(&counter),
             })
             .build();
-        stack.install(&mut model);
+        stack.try_install(&mut model).unwrap();
 
         assert_eq!(counter.load(Ordering::SeqCst), 0);
         data.forward(&model).unwrap();
@@ -779,13 +747,9 @@ mod tests {
         );
     }
 
-    /// `try_install` is `install` returning the refusal: it replaces a prior callback, and a
-    /// refused model is left without one.
+    /// A model a component refuses is left without a callback.
     #[test]
-    fn try_install_replaces_like_install_and_leaves_a_refused_model_alone() {
-        let mut model = chain(1);
-        one(DummyDeterministic).install(&mut model);
-        assert_eq!(one(DummyDeterministic).try_install(&mut model), Ok(()));
+    fn a_refused_model_gets_no_callback() {
         let mut refused = chain(1);
         assert!(
             one(DoubleWellPotential::new(1.0, 1.0, 1))
@@ -798,10 +762,24 @@ mod tests {
         );
     }
 
+    /// `install_per_env` has no error path, so a refusal panics, naming the env.
     #[test]
-    #[should_panic(expected = "PassiveStack::install: DoubleWellPotential acts on DOF 2")]
-    fn install_panics_on_a_refused_model() {
-        one(DoubleWellPotential::new(1.0, 1.0, 2)).install(&mut chain(2));
+    #[should_panic(expected = "install_per_env: env 1: DoubleWellPotential acts on DOF 2")]
+    fn install_per_env_panics_on_a_refused_model() {
+        let _batch = one(DummyDeterministic).install_per_env(2, |i| {
+            (chain(2), one(DoubleWellPotential::new(1.0, 1.0, 2 * i)))
+        });
+    }
+
+    /// A factory model that already has a passive callback is refused, not silently cleared.
+    #[test]
+    #[should_panic(expected = "install_per_env: env 0: the model already has a passive callback")]
+    fn install_per_env_refuses_a_model_that_already_has_a_callback() {
+        let _batch = one(DummyDeterministic).install_per_env(1, |_| {
+            let mut model = chain(1);
+            model.set_passive_callback(|_, _| {});
+            (model, one(DummyDeterministic))
+        });
     }
 
     #[test]
@@ -987,33 +965,48 @@ mod tests {
         }
     }
 
-    /// `try_install` replaces an installed stack: after it, only the new stack's component runs.
+    /// `try_install` refuses a model that already has a passive callback, from a stack or set
+    /// directly, and leaves that callback running; after `clear_passive_callback` it installs.
     #[test]
-    fn try_install_replaces_the_installed_stack() {
-        let mut model = chain(1);
-        let first = Arc::new(AtomicUsize::new(0));
-        let second = Arc::new(AtomicUsize::new(0));
-        one(CountingComponent {
-            count: Arc::clone(&first),
-        })
-        .install(&mut model);
-        assert_eq!(
+    fn try_install_refuses_a_model_that_already_has_a_passive_callback() {
+        let count = |counter: &Arc<AtomicUsize>| {
             one(CountingComponent {
-                count: Arc::clone(&second)
+                count: Arc::clone(counter),
             })
-            .try_install(&mut model),
-            Ok(())
-        );
-        let mut data = model.make_data();
-        data.forward(&model).unwrap();
+        };
+        let runs = |model: &Model| {
+            model.make_data().forward(model).unwrap();
+        };
+        let (first, second) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let mut model = chain(1);
+        count(&first).try_install(&mut model).unwrap();
         assert_eq!(
-            first.load(Ordering::SeqCst),
-            0,
-            "the replaced stack still ran"
+            count(&second).try_install(&mut model),
+            Err(ThermostatError::PassiveCallbackInstalled)
         );
+        runs(&model);
+        assert_eq!(
+            (
+                first.load(Ordering::SeqCst) > 0,
+                second.load(Ordering::SeqCst)
+            ),
+            (true, 0),
+            "the refusal replaced the installed stack"
+        );
+
+        model.clear_passive_callback();
+        count(&second).try_install(&mut model).unwrap();
+        runs(&model);
         assert!(
             second.load(Ordering::SeqCst) > 0,
             "the new stack did not run"
+        );
+
+        let mut own = chain(1);
+        own.set_passive_callback(|_, _| {});
+        assert_eq!(
+            count(&second).try_install(&mut own),
+            Err(ThermostatError::PassiveCallbackInstalled)
         );
     }
 }

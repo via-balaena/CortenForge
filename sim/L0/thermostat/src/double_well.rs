@@ -34,7 +34,7 @@ use crate::error::ThermostatError;
 /// or hinge DOF, or one of a free joint's three translation DOFs. A ball
 /// joint's DOFs and a free joint's rotation DOFs have no coordinate of their
 /// own, so
-/// [`PassiveStack::install`](crate::PassiveStack::install) refuses them.
+/// [`PassiveStack::try_install`](crate::PassiveStack::try_install) refuses them.
 ///
 /// # Example
 ///
@@ -54,7 +54,7 @@ use crate::error::ThermostatError;
 ///     .with(well)
 ///     .with(thermostat)
 ///     .build()
-///     .install(&mut model);
+///     .try_install(&mut model)?;
 /// ```
 pub struct DoubleWellPotential {
     /// Barrier height: `ΔV = V(0) − V(±x₀)`.

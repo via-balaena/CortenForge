@@ -64,6 +64,10 @@ pub enum ThermostatError {
         /// The most it supports.
         max: usize,
     },
+    /// The model already has a passive callback (`Model::cb_passive`), from another stack or
+    /// set directly. A model holds one, so installing would replace it; call
+    /// `Model::clear_passive_callback` first to replace it on purpose.
+    PassiveCallbackInstalled,
     /// Any other reason, for components outside this crate.
     Other {
         /// The component's type name.
@@ -118,6 +122,11 @@ impl fmt::Display for ThermostatError {
                 dofs,
                 max,
             } => write!(f, "{component} supports at most {max} DOFs, got {dofs}"),
+            Self::PassiveCallbackInstalled => write!(
+                f,
+                "the model already has a passive callback; call Model::clear_passive_callback \
+                 first to replace it"
+            ),
             Self::Other { component, reason } => write!(f, "{component}: {reason}"),
         }
     }
