@@ -118,8 +118,12 @@ impl DoubleWellPotential {
     ///
     /// Valid for moderate-to-strong friction (`γ̃ ≳ ω_b`). Below the
     /// Kramers turnover, this formula overestimates the rate.
+    ///
+    /// # Panics
+    /// Panics unless `mass > 0`, `k_b_t > 0` and `gamma >= 0`.
     #[must_use]
     pub fn kramers_rate(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
+        check_rate_inputs(gamma, mass, k_b_t);
         let omega_a = self.omega_a(mass);
         let omega_b = self.omega_b(mass);
         let gamma_tilde = gamma / mass;
@@ -151,8 +155,12 @@ impl DoubleWellPotential {
     /// trapezoidal quadrature. Bridges the Kramers turnover to ~±20%
     /// (Hänggi–Talkner–Borkovec, Rev. Mod. Phys. 62, 251, 1990, Eq. 4.55). The
     /// `1/(λ²+¼)` denominator is essential — it makes `Υ → δ` as `δ → 0`.
+    ///
+    /// # Panics
+    /// Panics unless `mass > 0`, `k_b_t > 0` and `gamma >= 0`.
     #[must_use]
     pub fn depopulation_factor(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
+        check_rate_inputs(gamma, mass, k_b_t);
         let delta = (gamma / mass) * self.barrier_action(mass) / k_b_t;
         if delta <= 0.0 {
             return 1.0;
@@ -171,7 +179,8 @@ impl DoubleWellPotential {
             let denom = lam.mul_add(lam, 0.25);
             let s = delta * denom;
             let weight = if i == 0 || i == steps { 0.5 } else { 1.0 };
-            integral += weight * (1.0 - (-s).exp()).ln() / denom;
+            // ln(1 − e^(−s)) via expm1: `1.0 - (-s).exp()` rounds to 0 for tiny s.
+            integral += weight * (-(-s).exp_m1()).ln() / denom;
             lam += dlam;
         }
         integral *= dlam;
@@ -192,6 +201,13 @@ impl DoubleWellPotential {
         self.kramers_rate(gamma, mass, k_b_t) * self.depopulation_factor(gamma, mass, k_b_t)
     }
 
+    /// Force at position `x`: `F(x) = −V′(x) = −4ax(x² − x₀²)`, where `a = ΔV/x₀⁴`.
+    #[must_use]
+    pub fn force(&self, x: f64) -> f64 {
+        let a = self.delta_v / self.x_0.powi(4);
+        -4.0 * a * x * x.mul_add(x, -(self.x_0 * self.x_0))
+    }
+
     /// Potential energy at position `x`: `V(x) = a(x² − x₀²)²`.
     #[must_use]
     pub fn potential(&self, x: f64) -> f64 {
@@ -201,12 +217,16 @@ impl DoubleWellPotential {
     }
 }
 
+/// The rate formulas' domain: positive mass and temperature, non-negative friction.
+fn check_rate_inputs(gamma: f64, mass: f64, k_b_t: f64) {
+    assert!(mass > 0.0, "mass must be positive, got {mass}");
+    assert!(k_b_t > 0.0, "k_b_t must be positive, got {k_b_t}");
+    assert!(gamma >= 0.0, "gamma must be non-negative, got {gamma}");
+}
+
 impl PassiveComponent for DoubleWellPotential {
     fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
-        let q = data.qpos[qpos_index(model, self.dof)];
-        let a = self.delta_v / self.x_0.powi(4);
-        // F(x) = −V′(x) = −4ax(x² − x₀²)
-        qfrc_out[self.dof] += -4.0 * a * q * q.mul_add(q, -(self.x_0 * self.x_0));
+        qfrc_out[self.dof] += self.force(data.qpos[qpos_index(model, self.dof)]);
     }
 
     fn as_diagnose(&self) -> Option<&dyn Diagnose> {
@@ -377,5 +397,41 @@ mod tests {
             k_turn_under < 0.3 * k_spatial_under,
             "underdamped: k_S should overestimate ≫3×"
         );
+    }
+
+    /// `force` is `−V′`: central differences of `potential` agree.
+    #[test]
+    fn force_is_minus_the_potential_slope() {
+        let w = DoubleWellPotential::new(3.0, 0.7, 0);
+        let eps = 1e-6;
+        for x in [-1.1, -0.7, -0.2, 0.0, 0.35, 0.7, 1.3] {
+            let fd = -(w.potential(x + eps) - w.potential(x - eps)) / (2.0 * eps);
+            assert!(
+                (w.force(x) - fd).abs() < 1e-6,
+                "x = {x}: force {} vs {fd}",
+                w.force(x)
+            );
+        }
+    }
+
+    /// At tiny friction the depopulation factor approaches `δ` instead of collapsing to 0:
+    /// `1 − e^(−s)` rounds to 0 for tiny `s`, so the integrand needs `expm1`.
+    #[test]
+    fn depopulation_factor_stays_near_delta_at_tiny_friction() {
+        let w = DoubleWellPotential::new(1.0, 1.0, 0);
+        let (mass, k_b_t) = (1.0, 1.0);
+        let gamma = 1.725e-17;
+        let delta = (gamma / mass) * w.barrier_action(mass) / k_b_t;
+        let upsilon = w.depopulation_factor(gamma, mass, k_b_t);
+        assert!(
+            (upsilon / delta - 1.0).abs() < 0.05,
+            "Υ = {upsilon:e} at δ = {delta:e}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "mass must be positive")]
+    fn kramers_rate_refuses_zero_mass() {
+        let _rate = DoubleWellPotential::new(1.0, 1.0, 0).kramers_rate(0.1, 0.0, 1.0);
     }
 }

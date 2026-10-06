@@ -50,6 +50,10 @@ impl ColoredDriveSim {
     /// Drive `well` (mass `mass`, damping `gamma`) with OU colored noise of
     /// correlation time `tau` whose white-noise limit is a thermal bath at
     /// `kt_eff`. Timestep `dt`, seed `seed`, starts at `x_init` (zero velocity).
+    ///
+    /// # Panics
+    /// Panics unless `mass`, `tau` and `dt` are positive and `gamma` and
+    /// `kt_eff` are non-negative (`tau = 0` would divide by zero).
     #[must_use]
     // integrator config: 8 physical parameters; a config struct would add
     // ceremony without clarity for a numerical constructor.
@@ -64,6 +68,11 @@ impl ColoredDriveSim {
         seed: u64,
         x_init: f64,
     ) -> Self {
+        assert!(mass > 0.0, "mass must be positive, got {mass}");
+        assert!(tau > 0.0, "tau must be positive, got {tau}");
+        assert!(dt > 0.0, "dt must be positive, got {dt}");
+        assert!(gamma >= 0.0, "gamma must be non-negative, got {gamma}");
+        assert!(kt_eff >= 0.0, "kt_eff must be non-negative, got {kt_eff}");
         let x_0 = well.well_separation();
         let a = well.barrier_height() / x_0.powi(4);
         let sigma2 = gamma * kt_eff / tau; // ⟨η²⟩
@@ -110,6 +119,12 @@ impl ColoredDriveSim {
         self.x += half_dt * self.v; // A
         let total2 = self.force(self.x) + self.eta;
         self.v += half_dt * total2 / m; // B
+    }
+
+    /// Current position.
+    #[must_use]
+    pub const fn position(&self) -> f64 {
+        self.x
     }
 
     /// Current velocity.
@@ -169,5 +184,19 @@ mod tests {
             "kin/conf = {:.3} not ≈1",
             kt_kin / kt_conf
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "tau must be positive")]
+    fn new_refuses_zero_tau() {
+        let well = DoubleWellPotential::new(1.0, 1.0, 0);
+        let _sim = ColoredDriveSim::new(&well, 1.0, 0.1, 1.0, 0.0, 1e-3, 0, 1.0);
+    }
+
+    #[test]
+    fn position_starts_at_x_init() {
+        let well = DoubleWellPotential::new(1.0, 1.0, 0);
+        let sim = ColoredDriveSim::new(&well, 1.0, 0.1, 1.0, 0.5, 1e-3, 0, 0.8);
+        assert_eq!(sim.position(), 0.8);
     }
 }

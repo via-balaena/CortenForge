@@ -48,6 +48,10 @@ impl Baoab1D {
     /// Create an integrator for `well` at mass `mass`, friction `gamma`,
     /// temperature `k_b_t`, timestep `dt`, seeded by `seed`, starting at `x_init`
     /// (zero velocity).
+    ///
+    /// # Panics
+    /// Panics unless `mass` and `dt` are positive and `gamma` and `k_b_t`
+    /// are non-negative (a negative `gamma` makes the `O` step's noise `NaN`).
     #[must_use]
     pub fn new(
         well: &DoubleWellPotential,
@@ -58,6 +62,10 @@ impl Baoab1D {
         seed: u64,
         x_init: f64,
     ) -> Self {
+        assert!(mass > 0.0, "mass must be positive, got {mass}");
+        assert!(dt > 0.0, "dt must be positive, got {dt}");
+        assert!(gamma >= 0.0, "gamma must be non-negative, got {gamma}");
+        assert!(k_b_t >= 0.0, "k_b_t must be non-negative, got {k_b_t}");
         let x_0 = well.well_separation();
         let a = well.barrier_height() / x_0.powi(4);
         Self {
@@ -157,5 +165,12 @@ mod tests {
                 sim.position()
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "gamma must be non-negative")]
+    fn new_refuses_negative_gamma() {
+        let well = DoubleWellPotential::new(1.0, 1.0, 0);
+        let _sim = Baoab1D::new(&well, 1.0, -0.1, 1.0, 1e-3, 0, 1.0);
     }
 }
