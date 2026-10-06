@@ -111,8 +111,7 @@ pub struct LangevinThermostat {
     traj_id: u64,
     /// Step index, advanced once per `apply` call (gated by
     /// `stochastic_active`). Atomic so the containing stack's
-    /// `cb_passive` closure can hold `&self` — not for cross-thread
-    /// contention (per-env stacks give each env its own instance).
+    /// `cb_passive` closure can hold `&self`.
     counter: AtomicU64,
     stochastic_active: AtomicBool,
     /// Optional ctrl index for runtime temperature modulation (D2).

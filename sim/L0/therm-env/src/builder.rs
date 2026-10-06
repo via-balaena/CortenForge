@@ -319,16 +319,8 @@ impl ThermCircuitEnvBuilder {
             .reward_fn
             .ok_or(ThermCircuitError::MissingField { field: "reward" })?;
 
-        // 1. Determine ctrl layout
-        let n_ctrl = usize::from(self.ctrl_temperature);
-
-        // 2. Generate MJCF
-        let xml = generate_mjcf(self.n_particles, n_ctrl, self.timestep, self.ctrl_range);
-
-        // 3. Parse model
-        let mut model = sim_mjcf::load_model(&xml)?;
-
-        // 4. Build thermostat
+        // 1. Build thermostat, before any MJCF: a refused gamma or k_b_t
+        //    costs nothing
         let gamma_vec = DVector::from_element(self.n_particles, self.gamma);
         let thermostat = LangevinThermostat::try_new(gamma_vec, self.k_b_t, self.seed, 0)?;
         let thermostat = if self.ctrl_temperature {
@@ -336,6 +328,15 @@ impl ThermCircuitEnvBuilder {
         } else {
             thermostat
         };
+
+        // 2. Determine ctrl layout
+        let n_ctrl = usize::from(self.ctrl_temperature);
+
+        // 3. Generate MJCF
+        let xml = generate_mjcf(self.n_particles, n_ctrl, self.timestep, self.ctrl_range);
+
+        // 4. Parse model
+        let mut model = sim_mjcf::load_model(&xml)?;
 
         // 5. Build passive stack: thermostat first, then landscape components
         let mut stack_builder = PassiveStack::builder().with(thermostat);
@@ -510,6 +511,17 @@ mod tests {
         assert_eq!(refused_parameter(err).as_deref(), Some("gamma[0]"));
         let err = minimal_valid().k_b_t(-1.0).build_vec(2).unwrap_err();
         assert_eq!(refused_parameter(err).as_deref(), Some("k_b_t"));
+    }
+
+    #[test]
+    fn a_refused_gamma_comes_before_the_model_is_built() {
+        // A zero timestep fails at MJCF load; the thermostat refuses gamma first.
+        let err = minimal_valid()
+            .gamma(-0.1)
+            .timestep(0.0)
+            .build()
+            .unwrap_err();
+        assert_eq!(refused_parameter(err).as_deref(), Some("gamma[0]"));
     }
 
     #[test]

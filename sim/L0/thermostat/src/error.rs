@@ -1,4 +1,4 @@
-//! Why a passive component, or a whole stack, refuses a model.
+//! Why a passive component or a stack refuses a model, or a constructor refuses a parameter.
 
 use std::fmt;
 
@@ -6,12 +6,6 @@ use sim_core::Integrator;
 
 /// Why a passive component, or a [`PassiveStack`](crate::PassiveStack), refuses a model, or a
 /// component's constructor refuses its parameters.
-///
-/// Returned by [`PassiveComponent::validate`](crate::PassiveComponent::validate),
-/// [`PassiveStack::try_install`](crate::PassiveStack::try_install) and
-/// [`LangevinThermostat::try_new`](crate::LangevinThermostat::try_new);
-/// [`PassiveStack::install`](crate::PassiveStack::install) and
-/// [`LangevinThermostat::new`](crate::LangevinThermostat::new) panic with it.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ThermostatError {
