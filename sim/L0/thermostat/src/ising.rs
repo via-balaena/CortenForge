@@ -86,9 +86,9 @@ pub fn exact_distribution(
     // Boltzmann factors relative to the minimum energy.
     let e_min = dist.iter().map(|&(_, e)| e).fold(f64::INFINITY, f64::min);
     let mut z = 0.0_f64;
-    for (_, p) in &mut dist {
-        *p = (-(*p - e_min) / k_b_t).exp();
-        z += *p;
+    for (_, w) in &mut dist {
+        *w = (-(*w - e_min) / k_b_t).exp();
+        z += *w;
     }
 
     // Normalize to probabilities
@@ -402,15 +402,21 @@ mod tests {
 
     #[test]
     fn tied_ground_states_split_evenly_near_overflow() {
-        // Two spins with a field on spin 0 only, at kT = 1/709.5: each of the
-        // two tied ground states has a finite factor exp(709.5), but their
-        // sum exceeds f64::MAX.
-        let dist = exact_distribution(2, &[], &[], &[1.0, 0.0], 1.0 / 709.5);
+        // A frustrated antiferromagnetic triangle (J = -1, no field) at
+        // kT = 1/709.5: the six configurations with one spin against the
+        // other two tie at E = -1, and each has a finite factor exp(709.5),
+        // but their sum exceeds f64::MAX. The two aligned ones have E = 3.
+        let edges = [(0, 1), (1, 2), (0, 2)];
+        let dist = exact_distribution(3, &edges, &[-1.0; 3], &[0.0; 3], 1.0 / 709.5);
         for (config, p) in dist {
-            let expected = if (config & 1) == 1 { 0.5 } else { 0.0 };
+            let expected = if config == 0 || config == 7 {
+                0.0
+            } else {
+                1.0 / 6.0
+            };
             assert!(
                 (p - expected).abs() < 1e-12,
-                "config {config:#04b}: p = {p}, expected {expected}"
+                "config {config:#05b}: p = {p}, expected {expected}"
             );
         }
     }
