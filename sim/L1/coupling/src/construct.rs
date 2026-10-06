@@ -180,6 +180,17 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// [`Self::coupled_trajectory_tangential_friction_coeff_gradient`]. Each of those two is
     /// checked against central finite differences by its `friction·` row in
     /// `tests/coupling_grad_harness.rs`.
+    ///
+    /// The normal-only gradients build the soft step's VJP without `x_prev`, so with friction
+    /// set they panic (sim-soft's `SolverConfig::friction_mu` gives the rule):
+    /// [`Self::coupled_step_material_gradient`], [`Self::contact_force_centre_total_jacobian`],
+    /// [`Self::coupled_trajectory_material_gradient`] and its `_articulated` form,
+    /// [`Self::coupled_trajectory_peak_force_gradient`],
+    /// [`Self::coupled_trajectory_actuator_gradient`],
+    /// [`Self::coupled_trajectory_control_gradient`],
+    /// [`Self::coupled_trajectory_policy_gradient`] and
+    /// [`Self::coupled_trajectory_joint_gradient`]. `tests/friction_gradient_paths.rs` checks
+    /// the four free-platen ones.
     #[must_use]
     pub fn with_friction(mut self, mu: f64, eps_v: f64) -> Self {
         self.cfg.friction_mu = mu;

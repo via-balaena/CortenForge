@@ -285,24 +285,29 @@ pub struct SolverConfig {
     /// Newton solve (residual + its Hessian).
     ///
     /// **Gradients with a nonzero `friction_mu`.** The friction adjoint needs the step-start
-    /// position `x_prev`, so a gradient method that factors the adjoint tangent without it
-    /// panics rather than return a gradient that leaves friction out. On Tet4:
+    /// position `x_prev`, so a `CpuNewtonSolver` gradient method that factors the adjoint
+    /// tangent without it panics. On Tet4:
     /// - **Panic:** [`Solver::step`](crate::solver::Solver::step) and
     ///   [`Solver::try_step`](crate::solver::Solver::try_step) (a panic, not an `Err`); the
     ///   VJP builders `material_step_vjp`, `state_step_vjp`, `trajectory_step_vjp`,
     ///   `trajectory_step_vjp_twist` and `trajectory_step_vjp_combined`;
     ///   `equilibrium_dirichlet_reaction_sensitivity` and `equilibrium_dirichlet_reaction_vjp`;
     ///   and `equilibrium_{pose,material,state}_sensitivity` called with `x_prev = None`.
-    /// - **Run:** those three called with `Some(x_prev)`, `equilibrium_drift_sensitivity`,
+    /// - **Run:** those three called with `Some(x_prev)` (the pose one for translation twists
+    ///   only; see its `# Panics`), `equilibrium_drift_sensitivity`,
     ///   `equilibrium_friction_coeff_sensitivity`, and the six `trajectory_step_vjp_grip*`
     ///   methods. One caveat: [`equilibrium_state_sensitivity`] runs, but its right-hand side
     ///   leaves out friction's own dependence on `x_prev` (see its doc).
     ///
     /// On Tet10 every one of these methods panics with friction set, with or without
-    /// `x_prev`. The Tet10 forward solve also panics once
+    /// `x_prev`. With friction set, the Tet10 forward solve also panics once
     /// [`IpcRigidContact`](crate::contact::IpcRigidContact) puts a face in contact, because
     /// Tet10 face contact is frictionless only. `tests/gradient_entry_points.rs`
     /// calls each method listed here and checks which ones panic.
+    ///
+    /// These checks are on `CpuNewtonSolver`'s methods only.
+    /// [`ReducedNewtonSolver::adjoint`](crate::solver::backward_euler::reduced::ReducedNewtonSolver::adjoint)
+    /// builds its own tangent and checks neither `friction_mu` nor [`Self::fbar`].
     ///
     /// For forward-only friction, use
     /// [`Solver::replay_step`](crate::solver::Solver::replay_step), or
@@ -334,14 +339,15 @@ pub struct SolverConfig {
     /// accurate path is higher-order (Tet10) — see the module docs and
     /// `docs/SIM_SOFT_TET10_PLAN.md`.
     ///
-    /// **Gradients with `fbar` set.** Every method that factors the adjoint
-    /// tangent panics, with or without `x_prev`:
+    /// **Gradients with `fbar` set.** Every `CpuNewtonSolver` method that factors
+    /// the adjoint tangent panics, with or without `x_prev`:
     /// [`Solver::step`](crate::solver::Solver::step),
     /// [`Solver::try_step`](crate::solver::Solver::try_step) (a panic, not an
     /// `Err`), and the sensitivity and VJP methods listed under
-    /// [`Self::friction_mu`]. `tests/gradient_entry_points.rs` calls
-    /// each of them. For the forward solve, use
-    /// [`Solver::replay_step`](crate::solver::Solver::replay_step), or
+    /// [`Self::friction_mu`]. `tests/gradient_entry_points.rs` calls each of them
+    /// on Tet4. F-bar is Tet4 only: on Tet10 the forward solve panics too. On
+    /// Tet4, use [`Solver::replay_step`](crate::solver::Solver::replay_step) for
+    /// the forward solve, or
     /// [`Solver::try_replay_step`](crate::solver::Solver::try_replay_step) to
     /// get a failed solve as an `Err`.
     pub fbar: bool,

@@ -13,10 +13,10 @@
 //! [`CpuTet4YeohSolver`] /
 //! [`PenaltyRigidContactYeohSolver`] aliases.
 //!
-//! The `Tensor`, `Tape` and `Var` types in the solver's signatures come from the
+//! The `Tensor` and `Var` types in the solver's signatures come from the
 //! `cortenforge-sim-ml-chassis` crate (imported as `sim_ml_chassis`), which this
-//! crate does not re-export. Through the `cortenforge` facade they are under
-//! `cortenforge::sim::ml_chassis`.
+//! crate does not re-export; [`CpuTape`] is an alias of that crate's `Tape`.
+//! Through the `cortenforge` facade they are under `cortenforge::sim::ml_chassis`.
 
 // Lint policy for intentional placeholders is scoped per-module (not crate-wide)
 // so the crate root can't silently mask unrelated dead code or panic-doc gaps:
@@ -124,8 +124,9 @@ pub type CpuTet4YeohSolver<Msh> =
 /// differentiable path (`step`, the sensitivities) runs on Tet10 and is checked
 /// against finite differences, for example in
 /// `tests/tet10_load_theta_gradcheck.rs` and
-/// `tests/tet10_material_sensitivity.rs`. It panics when the config sets `fbar`
-/// or a nonzero `friction_mu` (see [`SolverConfig::friction_mu`]).
+/// `tests/tet10_material_sensitivity.rs`. With `fbar` set, the forward solve and
+/// the gradients panic (F-bar is Tet4 only). With a nonzero `friction_mu`, the
+/// gradients panic (see [`SolverConfig::friction_mu`]).
 pub type CpuTet10NHSolver<Msh> =
     solver::CpuNewtonSolver<element::Tet10, Msh, contact::NullContact, material::NeoHookean, 10, 4>;
 

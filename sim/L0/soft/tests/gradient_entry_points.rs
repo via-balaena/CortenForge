@@ -4,9 +4,11 @@
 //! The rules, stated on `SolverConfig::friction_mu` and `SolverConfig::fbar`: with a nonzero
 //! `friction_mu` the adjoint tangent needs the step-start position `x_prev`, so a method that
 //! factors it without `x_prev` panics, and on Tet10 every method that factors it panics. With
-//! `fbar` set, every method that factors it panics. This file calls every public method that
-//! factors the adjoint tangent, with each setting on and off, and checks each outcome against
-//! those rules. It checks only whether a call panics, not the gradient's value.
+//! `fbar` set, every method that factors it panics. This file calls every public
+//! `CpuNewtonSolver` method that factors the adjoint tangent, with each setting on and off,
+//! and checks each outcome against those rules. It checks only whether a call panics, not the
+//! gradient's value. (`ReducedNewtonSolver::adjoint` factors its own tangent and has no such
+//! checks; it is not called here.)
 
 // let_underscore_must_use: each call is made only to see whether it panics, so its result
 // is discarded on purpose.
@@ -35,6 +37,7 @@ const FRICTION_MU: f64 = 3.0;
 const WITHOUT_X_PREV: &str = "friction-exact gradient requested without x_prev";
 const TET10_FRICTION: &str = "Tet10 friction-exact gradients";
 const FBAR: &str = "F-bar differentiable gradients are not yet supported";
+const POSE_TRANSLATION_ONLY: &str = "friction pose sensitivity supports only a pure translation";
 
 /// One call's outcome: the method, whether the call passed `x_prev`, and its panic message.
 struct Outcome {
@@ -320,6 +323,39 @@ fn tet4_with_friction_panics_exactly_where_x_prev_is_missing() {
 fn tet4_without_friction_runs_every_path() {
     for o in &tet4_outcomes(0.0) {
         assert!(o.panic.is_none(), "{} panicked: {:?}", o.method, o.panic);
+    }
+}
+
+/// With friction, the pose sensitivity given `Some(x_prev)` takes a translation twist only:
+/// an angular twist panics. Without friction the same call runs.
+#[test]
+fn tet4_friction_pose_sensitivity_takes_translations_only() {
+    let angular = RigidTwist {
+        linear: Vec3::zeros(),
+        angular: Vec3::new(1.0, 0.0, 0.0),
+    };
+    for (friction_mu, expected) in [(FRICTION_MU, Some(POSE_TRANSLATION_ONLY)), (0.0, None)] {
+        let scene = tet4_scene(friction_mu, false);
+        let x = &scene.x_rest;
+        let mut out = Vec::new();
+        record(
+            &mut out,
+            "equilibrium_pose_sensitivity(Some, angular)",
+            true,
+            || {
+                let _ = scene
+                    .solver
+                    .equilibrium_pose_sensitivity(x, Some(x), DT, angular);
+            },
+        );
+        let panic = out[0].panic.as_deref();
+        match expected {
+            Some(msg) => assert!(
+                panic.is_some_and(|p| p.contains(msg)),
+                "μ = {friction_mu}: expected the translation-only panic, got {panic:?}"
+            ),
+            None => assert!(panic.is_none(), "μ = {friction_mu}: panicked: {panic:?}"),
+        }
     }
 }
 
