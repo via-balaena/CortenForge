@@ -122,6 +122,10 @@ pub struct LangevinThermostat {
 }
 
 impl LangevinThermostat {
+    /// The most DOFs a thermostat acts on: each group of 8 DOFs needs its own
+    /// noise stream, and there are `2^16` of them.
+    pub const MAX_DOFS: usize = 1 << 19;
+
     /// Construct a thermostat with per-DOF damping coefficients
     /// `gamma`, bath temperature `k_b_t`, master seed `master_seed`,
     /// and trajectory id `traj_id`.
@@ -141,13 +145,12 @@ impl LangevinThermostat {
     ///
     /// # Panics
     ///
-    /// - If `gamma` has more than `2^19` entries: each group of 8 DOFs
-    ///   needs its own noise stream, and there are `2^16` of them.
+    /// - If `gamma` has more than [`Self::MAX_DOFS`] (`2^19`) entries.
     /// - If an entry of `gamma`, or `k_b_t`, is negative or not finite.
     #[must_use]
     pub fn new(gamma: DVector<f64>, k_b_t: f64, master_seed: u64, traj_id: u64) -> Self {
         assert!(
-            gamma.len() <= 1 << 19,
+            gamma.len() <= Self::MAX_DOFS,
             "LangevinThermostat supports at most 2^19 DOFs, got {}",
             gamma.len()
         );

@@ -223,9 +223,11 @@ impl ThermCircuitEnvBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`ThermCircuitError`] if `n_particles` is zero, `reward`
-    /// was not set, a parameter is `NaN` or infinite, `gamma` or `k_b_t` is
-    /// negative, or building the model, the spaces or the environment fails.
+    /// Returns [`ThermCircuitError`] if `n_particles` is zero or above
+    /// [`LangevinThermostat::MAX_DOFS`], `reward` was not set, a parameter is
+    /// `NaN` or infinite, `gamma` or `k_b_t` is negative, a passive component
+    /// refuses the model, or building the model, the spaces or the
+    /// environment fails.
     pub fn build(self) -> Result<ThermCircuitEnv, ThermCircuitError> {
         let p = self.prepare()?;
 
@@ -258,9 +260,11 @@ impl ThermCircuitEnvBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`ThermCircuitError`] if `n_particles` is zero, `reward`
-    /// was not set, a parameter is `NaN` or infinite, `gamma` or `k_b_t` is
-    /// negative, or building the model, the spaces or the environment fails.
+    /// Returns [`ThermCircuitError`] if `n_particles` is zero or above
+    /// [`LangevinThermostat::MAX_DOFS`], `reward` was not set, a parameter is
+    /// `NaN` or infinite, `gamma` or `k_b_t` is negative, a passive component
+    /// refuses the model, or building the model, the spaces or the
+    /// environment fails.
     pub fn build_vec(self, n_envs: usize) -> Result<VecEnv, ThermCircuitError> {
         let p = self.prepare()?;
 
@@ -311,6 +315,12 @@ impl ThermCircuitEnvBuilder {
         if self.n_particles == 0 {
             return Err(ThermCircuitError::ZeroParticles);
         }
+        if self.n_particles > LangevinThermostat::MAX_DOFS {
+            return Err(ThermCircuitError::TooManyParticles {
+                n_particles: self.n_particles,
+                max: LangevinThermostat::MAX_DOFS,
+            });
+        }
         let reward_fn = self
             .reward_fn
             .ok_or(ThermCircuitError::MissingField { field: "reward" })?;
@@ -340,8 +350,8 @@ impl ThermCircuitEnvBuilder {
         }
         let stack = stack_builder.build();
 
-        // 6. Install onto model
-        stack.install(&mut model);
+        // 6. Install onto model; a component that refuses it is an error
+        stack.try_install(&mut model)?;
 
         // 7. Arc the model
         let model = Arc::new(model);
@@ -494,13 +504,53 @@ mod tests {
         let err = minimal_valid().gamma(-0.1).build().unwrap_err();
         assert!(matches!(
             err,
-            ThermCircuitError::NegativeParameter { field: "gamma", value } if (value + 0.1).abs() < 1e-15
+            ThermCircuitError::NegativeParameter { field: "gamma", value }
+                if (value + 0.1).abs() < 1e-15
         ));
         let err = minimal_valid().k_b_t(-1.0).build_vec(2).unwrap_err();
         assert!(matches!(
             err,
-            ThermCircuitError::NegativeParameter { field: "k_b_t", value } if (value + 1.0).abs() < 1e-15
+            ThermCircuitError::NegativeParameter { field: "k_b_t", value }
+                if (value + 1.0).abs() < 1e-15
         ));
+    }
+
+    #[test]
+    fn a_refused_landscape_component_is_an_error() {
+        let err = minimal_valid()
+            .with(sim_thermostat::DoubleWellPotential::new(1.0, 1.0, 2))
+            .build()
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ThermCircuitError::Thermostat(sim_thermostat::ThermostatError::DofOutOfRange {
+                    dof: 2,
+                    ..
+                })
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn particle_count_above_the_thermostat_limit_is_an_error() {
+        // No reward set: past the particle check, prepare stops at the missing
+        // reward, before generating any MJCF.
+        let max = LangevinThermostat::MAX_DOFS;
+        let err = ThermCircuitEnvBuilder::new(max + 1).build().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ThermCircuitError::TooManyParticles { n_particles, .. } if n_particles == max + 1
+            ),
+            "{err:?}"
+        );
+        let err = ThermCircuitEnvBuilder::new(max).build().unwrap_err();
+        assert!(
+            matches!(err, ThermCircuitError::MissingField { field: "reward" }),
+            "{err:?}"
+        );
     }
 
     #[test]
