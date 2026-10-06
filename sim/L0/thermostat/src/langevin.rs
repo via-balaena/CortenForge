@@ -72,7 +72,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sim_core::{DVector, Data, Integrator, Model};
 
-use crate::component::{PassiveComponent, Stochastic, check_dof};
+use crate::component::{PassiveComponent, Stochastic, check_dof, clamped_ctrl};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 use crate::prf;
@@ -141,14 +141,25 @@ impl LangevinThermostat {
     ///
     /// # Panics
     ///
-    /// Panics if `gamma` has more than `2^19` entries: each group of 8
-    /// DOFs needs its own noise stream, and there are `2^16` of them.
+    /// - If `gamma` has more than `2^19` entries: each group of 8 DOFs
+    ///   needs its own noise stream, and there are `2^16` of them.
+    /// - If an entry of `gamma`, or `k_b_t`, is negative or not finite.
     #[must_use]
     pub fn new(gamma: DVector<f64>, k_b_t: f64, master_seed: u64, traj_id: u64) -> Self {
         assert!(
             gamma.len() <= 1 << 19,
             "LangevinThermostat supports at most 2^19 DOFs, got {}",
             gamma.len()
+        );
+        for (i, &g) in gamma.iter().enumerate() {
+            assert!(
+                g.is_finite() && g >= 0.0,
+                "LangevinThermostat: gamma[{i}] must be finite and non-negative, got {g}"
+            );
+        }
+        assert!(
+            k_b_t.is_finite() && k_b_t >= 0.0,
+            "LangevinThermostat: k_b_t must be finite and non-negative, got {k_b_t}"
         );
         Self {
             gamma,
@@ -166,9 +177,11 @@ impl LangevinThermostat {
     ///
     /// When set, `apply` reads `data.ctrl[ctrl_idx]` as a multiplier on
     /// the base `k_b_t`. The effective temperature is
-    /// `k_b_t * ctrl.clamp(0.0, 10.0)`. At multiplier 0, the thermostat
-    /// produces pure damping (no noise). At 10, the effective temperature
-    /// is 10× the base.
+    /// `k_b_t * ctrl.clamp(0.0, 10.0)`, and a bad control value (`NaN`,
+    /// infinite, or beyond ±1e10) counts as 0. At multiplier 0, the
+    /// thermostat produces pure damping (no noise). At 10, the effective
+    /// temperature is 10× the base. The model needs control channel
+    /// `ctrl_idx`: install refuses a model without it.
     ///
     /// This is the D2 forward design from D1 spec §3.4: the first time a
     /// physical parameter of the bath becomes an RL action.
@@ -195,9 +208,9 @@ impl PassiveComponent for LangevinThermostat {
         // by the multiplier — only the FDT-paired noise amplitude
         // changes. This preserves the FDT relation at the effective
         // temperature.
-        let k_b_t = self.k_b_t_ctrl.map_or(self.k_b_t, |idx| {
-            self.k_b_t * data.ctrl[idx].clamp(0.0, 10.0)
-        });
+        let k_b_t = self
+            .k_b_t_ctrl
+            .map_or(self.k_b_t, |idx| self.k_b_t * clamped_ctrl(data, idx, 10.0));
 
         // Damping (-γ·v) is unconditional — it is the deterministic
         // half of the FD pair and runs in both stochastic-active and
@@ -585,6 +598,82 @@ mod tests {
             "ctrl=20 should clamp to 10, matching kT=10 thermostat: \
              A={}, B={}",
             q_a[0], q_b[0],
+        );
+    }
+
+    #[test]
+    fn ctrl_temperature_reads_a_bad_control_as_zero() {
+        // A bad control (NaN, ±∞, beyond ±1e10) → multiplier 0 → damping only.
+        let model = sim_core::test_fixtures::stochastic_resonance();
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
+            .with_ctrl_temperature(0);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 2e10, -2e10] {
+            let mut data = model.make_data();
+            data.qvel[0] = 1.0;
+            data.ctrl[0] = bad;
+            let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);
+            t.apply(&model, &data, &mut qfrc_out);
+            assert_eq!(qfrc_out[0], -0.1, "ctrl {bad}: expected damping only");
+        }
+    }
+
+    /// sim-core's actuation stage sets a bad control to 0 before passive forces run; with
+    /// actuation disabled the thermostat gets the bad value itself, and reads it as 0.
+    #[test]
+    fn a_bad_control_is_read_as_zero_with_actuation_on_or_off() {
+        for disable_actuation in [false, true] {
+            let mut model = sim_core::test_fixtures::stochastic_resonance();
+            if disable_actuation {
+                model.disableflags |= sim_core::DISABLE_ACTUATION;
+            }
+            crate::PassiveStack::builder()
+                .with(
+                    LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
+                        .with_ctrl_temperature(0),
+                )
+                .build()
+                .install(&mut model);
+            let mut data = model.make_data();
+            data.qvel[0] = 1.0;
+            data.ctrl[0] = f64::NAN;
+            data.forward(&model).unwrap();
+            assert_eq!(data.ctrl[0].is_nan(), disable_actuation);
+            assert_eq!(
+                data.qfrc_passive[0], -0.1,
+                "actuation disabled: {disable_actuation}"
+            );
+        }
+    }
+
+    /// The panic message of `LangevinThermostat::new(gamma, k_b_t, ..)`, or `None` if it
+    /// accepts them.
+    fn new_refusal(gamma: &[f64], k_b_t: f64) -> Option<String> {
+        let gamma = DVector::from_column_slice(gamma);
+        std::panic::catch_unwind(|| LangevinThermostat::new(gamma, k_b_t, 42, 0))
+            .err()
+            .map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default())
+    }
+
+    #[test]
+    fn new_refuses_negative_or_non_finite_damping_and_temperature() {
+        for bad in [-0.1, f64::NAN, f64::INFINITY] {
+            let msg = new_refusal(&[0.1, bad], 1.0);
+            assert!(
+                msg.as_deref()
+                    .is_some_and(|m| m.contains("gamma[1] must be finite and non-negative")),
+                "gamma[1] = {bad}: {msg:?}"
+            );
+            let msg = new_refusal(&[0.1, 0.1], bad);
+            assert!(
+                msg.as_deref()
+                    .is_some_and(|m| m.contains("k_b_t must be finite and non-negative")),
+                "k_b_t = {bad}: {msg:?}"
+            );
+        }
+        assert_eq!(
+            new_refusal(&[0.0, 0.1], 0.0),
+            None,
+            "zero damping and temperature are allowed"
         );
     }
 

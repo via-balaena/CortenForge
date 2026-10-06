@@ -27,7 +27,7 @@
 //! and `Model` is itself `Clone + Send + Sync` for `BatchSim` parallel
 //! environments.
 
-use sim_core::{DVector, Data, MjJointType, Model};
+use sim_core::{DVector, Data, MjJointType, Model, is_bad};
 
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
@@ -154,6 +154,19 @@ pub fn check_position_dof(
 /// [`check_position_dof`]; for a DOF without one it returns its joint's first coordinate.
 pub fn qpos_index(model: &Model, dof: usize) -> usize {
     position_index(model, dof).unwrap_or(model.jnt_qpos_adr[model.dof_jnt[dof]])
+}
+
+/// Control channel `ctrl`'s value, clamped to `[0, max]`. A bad value (`NaN`, infinite, or beyond
+/// ±1e10: [`sim_core::is_bad`]) reads as 0, the value sim-core's actuation stage sets it to before
+/// passive forces run. A component sees one itself with actuation disabled, or when its `apply`
+/// is called directly.
+pub fn clamped_ctrl(data: &Data, ctrl: usize, max: f64) -> f64 {
+    let value = data.ctrl[ctrl];
+    if is_bad(value) {
+        0.0
+    } else {
+        value.clamp(0.0, max)
+    }
 }
 
 /// Decision-7 gating opt-in for stochastic passive components.

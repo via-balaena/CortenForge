@@ -25,7 +25,7 @@ use std::f64::consts::PI;
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::{PassiveComponent, check_position_dof, qpos_index};
+use crate::component::{PassiveComponent, check_position_dof, clamped_ctrl, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 
@@ -37,7 +37,8 @@ use crate::error::ThermostatError;
 /// ```
 ///
 /// where `k₁ = 2π/L`, `k₂ = 4π/L`, and `α = data.ctrl[ctrl_idx]`
-/// clamped to `[0, 1]`.
+/// clamped to `[0, 1]`. A bad control value (`NaN`, infinite, or beyond
+/// ±1e10) counts as 0.
 ///
 /// # Which DOFs
 ///
@@ -145,7 +146,7 @@ impl RatchetPotential {
 impl PassiveComponent for RatchetPotential {
     fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
         let x = data.qpos[qpos_index(model, self.dof)];
-        let alpha = data.ctrl[self.ctrl_idx].clamp(0.0, 1.0);
+        let alpha = clamped_ctrl(data, self.ctrl_idx, 1.0);
 
         qfrc_out[self.dof] += self.force(x, alpha);
     }
@@ -250,6 +251,30 @@ mod tests {
         let r = RatchetPotential::new(1.0, 0.25, PI / 4.0, 1.0, 0, 0);
         for &x in &[0.0, 0.5, 1.0] {
             assert_eq!(r.potential(x, 0.0), 0.0);
+        }
+    }
+
+    // ── the amplitude control ───────────────────────────────────────────
+
+    #[test]
+    fn apply_clamps_the_amplitude_and_reads_a_bad_control_as_zero() {
+        let model = sim_core::test_fixtures::ratchet();
+        let r = RatchetPotential::new(1.0, 0.25, PI / 4.0, 1.0, 0, 0);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.1;
+        for (ctrl, alpha) in [
+            (0.5, 0.5),
+            (3.0, 1.0),
+            (-1.0, 0.0),
+            (f64::NAN, 0.0),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, 0.0),
+            (2e10, 0.0),
+        ] {
+            data.ctrl[0] = ctrl;
+            let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);
+            r.apply(&model, &data, &mut qfrc_out);
+            assert_eq!(qfrc_out[0], r.force(0.1, alpha), "ctrl {ctrl}");
         }
     }
 
