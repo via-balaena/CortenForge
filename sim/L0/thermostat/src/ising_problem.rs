@@ -453,6 +453,45 @@ mod tests {
     }
 
     #[test]
+    fn try_from_qubo_refuses_a_pair_outside_the_variables_and_a_non_finite_term() {
+        assert!(matches!(
+            IsingProblem::try_from_qubo(&[0.0; 2], &[(0, 2)], &[1.0]),
+            Err(ThermostatError::EdgeOutOfRange { n: 2, .. })
+        ));
+        assert_eq!(
+            refused_parameter(IsingProblem::try_from_qubo(
+                &[0.0; 2],
+                &[(0, 1)],
+                &[f64::NAN]
+            ))
+            .as_deref(),
+            Some("quadratic[0]")
+        );
+    }
+
+    #[test]
+    fn try_scaled_and_try_add_components_refuse_what_overflows_or_is_out_of_domain() {
+        let problem = IsingProblem::new(2, vec![(0, 1)], vec![1e300], vec![0.0; 2]);
+        assert_eq!(
+            refused_parameter(problem.try_scaled(1e10)).as_deref(),
+            Some("coupling_j[0]")
+        );
+        assert_eq!(
+            refused_parameter(problem.try_add_components(PassiveStack::builder(), 0.0, 1.0))
+                .as_deref(),
+            Some("delta_v")
+        );
+        // J/x₀² overflows at a tiny x₀: the coupling's own refusal comes back.
+        assert!(matches!(
+            problem.try_add_components(PassiveStack::builder(), 1.0, 1e-200),
+            Err(ThermostatError::InvalidParameter {
+                component: "PairwiseCoupling",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn try_new_refuses_an_edge_outside_the_spins() {
         assert!(matches!(
             IsingProblem::try_new(2, vec![(0, 2)], vec![1.0], vec![0.0; 2]),
@@ -561,7 +600,8 @@ mod tests {
     /// the earlier of two equal energies, and forgets everything on `reset`.
     #[test]
     fn spin_latch_keeps_the_lowest_energy_read() {
-        // Ferromagnetic pair with a field on spin 0: H(++) = -1.5, H(--) = -0.5, H(+-) = H(-+) = 1.
+        // Ferromagnetic pair with a field on spin 0: H(++) = -1.5, H(--) = -0.5, H(+-) = 0.5,
+        // H(-+) = 1.5.
         let problem = IsingProblem::new(2, vec![(0, 1)], vec![1.0], vec![0.5, 0.0]);
         let model = sim_core::test_fixtures::bistable_chain(2);
         let mut data = model.make_data();
@@ -582,6 +622,18 @@ mod tests {
         assert_eq!(latch.in_well_reads(), 5);
         latch.reset();
         assert_eq!((latch.best(), latch.in_well_reads()), (None, 0));
+
+        // Without the field, (++) and (--) tie: the one read first stays.
+        let mut tie = SpinLatch::new(
+            IsingProblem::new(2, vec![(0, 1)], vec![1.0], vec![0.0; 2]),
+            0.5,
+        );
+        for x in [[-1.0, -1.0], [1.0, 1.0]] {
+            data.qpos[0] = x[0];
+            data.qpos[1] = x[1];
+            tie.observe(&model, &data).unwrap();
+        }
+        assert_eq!(tie.best(), Some(([-1.0, -1.0].as_slice(), -1.0)));
     }
 
     #[test]
@@ -603,5 +655,16 @@ mod tests {
                 Some("x_thresh")
             );
         }
+        // A free body: DOFs 0..3 translate (positions of their own), DOF 3 rotates.
+        let free =
+            sim_core::test_fixtures::free_body_diag(1.0, sim_core::Vector3::new(1.0, 1.0, 1.0));
+        let spins4 = IsingProblem::new(4, vec![], vec![], vec![0.0; 4]);
+        assert_eq!(
+            SpinLatch::new(spins4, 0.5).observe(&free, &free.make_data()),
+            Err(ThermostatError::NoPositionCoordinate {
+                component: "SpinLatch",
+                dof: 3,
+            })
+        );
     }
 }

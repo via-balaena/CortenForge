@@ -531,21 +531,34 @@ mod tests {
     #[test]
     fn rate_formulas_refuse_infinite_inputs() {
         let well = DoubleWellPotential::new(1.0, 1.0, 0);
-        for (gamma, mass, k_b_t) in [
-            (f64::INFINITY, 1.0, 1.0),
-            (1.0, f64::INFINITY, 1.0),
-            (1.0, 1.0, f64::INFINITY),
+        // The panic message, if `f` panicked with one.
+        let message = |f: &dyn Fn() -> f64| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+                .err()
+                .and_then(|e| e.downcast::<String>().ok())
+                .map(|m| *m)
+        };
+        for ((gamma, mass, k_b_t), parameter) in [
+            ((f64::INFINITY, 1.0, 1.0), "gamma"),
+            ((1.0, f64::INFINITY, 1.0), "mass"),
+            ((1.0, 1.0, f64::INFINITY), "k_b_t"),
         ] {
-            let refused = std::panic::catch_unwind(|| well.kramers_rate(gamma, mass, k_b_t));
-            assert!(
-                refused.is_err(),
-                "kramers_rate({gamma}, {mass}, {k_b_t}) ran"
-            );
-            let refused = std::panic::catch_unwind(|| well.depopulation_factor(gamma, mass, k_b_t));
-            assert!(
-                refused.is_err(),
-                "depopulation_factor({gamma}, {mass}, {k_b_t}) ran"
-            );
+            let expected = format!("DoubleWellPotential: {parameter} must be finite");
+            for (name, refused) in [
+                (
+                    "kramers_rate",
+                    message(&|| well.kramers_rate(gamma, mass, k_b_t)),
+                ),
+                (
+                    "depopulation_factor",
+                    message(&|| well.depopulation_factor(gamma, mass, k_b_t)),
+                ),
+            ] {
+                assert!(
+                    refused.as_deref().is_some_and(|m| m.starts_with(&expected)),
+                    "{name}({gamma}, {mass}, {k_b_t}): {refused:?}"
+                );
+            }
         }
     }
 

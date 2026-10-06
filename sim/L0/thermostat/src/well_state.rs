@@ -88,6 +88,18 @@ mod tests {
         let _state = WellState::from_position(0.0, -0.1);
     }
 
+    /// Zero is a threshold (every nonzero position is in a well); `NaN` and infinity are not.
+    #[test]
+    fn from_position_takes_zero_and_refuses_non_finite_thresholds() {
+        assert_eq!(WellState::from_position(1e-9, 0.0), WellState::Right);
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert!(
+                std::panic::catch_unwind(|| WellState::from_position(1.0, bad)).is_err(),
+                "threshold {bad} was taken"
+            );
+        }
+    }
+
     #[test]
     fn checked_spin_is_none_in_the_barrier() {
         assert_eq!(WellState::Right.checked_spin(), Some(1.0));

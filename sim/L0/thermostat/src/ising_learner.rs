@@ -667,6 +667,21 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-12);
     }
 
+    #[test]
+    fn try_from_ising_params_refuses_what_exact_distribution_refuses() {
+        assert!(matches!(
+            IsingTarget::try_from_ising_params(2, &[(0, 1)], &[0.5], &[0.0; 2], 0.0),
+            Err(ThermostatError::InvalidParameter {
+                component: "IsingTarget",
+                ..
+            })
+        ));
+        assert!(matches!(
+            IsingTarget::try_from_ising_params(2, &[(0, 2)], &[0.5], &[0.0; 2], 1.0),
+            Err(ThermostatError::EdgeOutOfRange { n: 2, .. })
+        ));
+    }
+
     // ── IsingLearner::new ─────────────────────────────────���────────────
 
     #[test]
@@ -846,23 +861,42 @@ mod tests {
     #[test]
     fn a_record_reports_the_kl_of_the_parameters_it_sampled_with() {
         let target = minimal_target();
+        let x_0 = minimal_config().x_0;
+        // The Ising parameters the components stand for, read off their energies at the
+        // wells' bottoms rather than recomputed from x₀: −V at (x₀, x₀) for the coupling, and
+        // −V at x₀ on one spin for each field.
+        let ising = |j: &[f64], h: &[f64]| {
+            let model = load_model();
+            let at = |x: [f64; 2]| {
+                let mut data = model.make_data();
+                data.qpos[0] = x[0];
+                data.qpos[1] = x[1];
+                data
+            };
+            let coupling = PairwiseCoupling::new(j.to_vec(), vec![(0, 1)]);
+            let field = ExternalField::new(h.to_vec());
+            let j_ising = -coupling.coupling_energy(&model, &at([x_0, x_0])).unwrap();
+            let h_ising: Vec<f64> = [[x_0, 0.0], [0.0, x_0]]
+                .into_iter()
+                .map(|x| -field.field_energy(&model, &at(x)).unwrap())
+                .collect();
+            (vec![j_ising], h_ising)
+        };
         let kl_at = |j: &[f64], h: &[f64]| {
-            let x_0 = minimal_config().x_0;
-            let j: Vec<f64> = j.iter().map(|j| j * x_0 * x_0).collect();
-            let h: Vec<f64> = h.iter().map(|h| h * x_0).collect();
+            let (j, h) = ising(j, h);
             let dist = crate::ising::exact_distribution(2, &[(0, 1)], &j, &h, 1.0);
             crate::ising::kl_divergence(&target.distribution, &dist)
         };
+        let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b.abs();
         let mut learner = IsingLearner::new(minimal_config(), target.clone(), load_model());
         let first = learner.step();
-        assert_eq!(
-            first.kl_divergence.to_bits(),
-            kl_at(&[0.0], &[0.0, 0.0]).to_bits()
-        );
+        assert!(close(first.kl_divergence, kl_at(&[0.0], &[0.0, 0.0])));
         let second = learner.step();
-        assert_eq!(
-            second.kl_divergence.to_bits(),
-            kl_at(&first.coupling_j, &first.field_h).to_bits()
+        let expected = kl_at(&first.coupling_j, &first.field_h);
+        assert!(
+            close(second.kl_divergence, expected),
+            "KL {} vs {expected}",
+            second.kl_divergence
         );
     }
 
@@ -1039,18 +1073,45 @@ mod tests {
         config.n_steps = 20_000;
         config.n_trajectories = 2;
         let seed_base = config.seed_base;
-        let learner = || IsingLearner::new(config.clone(), minimal_target(), load_model());
-        let record = learner().step();
-        let mut solo = learner();
-        let (m0, _) =
-            solo.run_trajectory(noise_ids(seed_base, 0, 0).0, noise_ids(seed_base, 0, 0).1);
-        let (m1, _) =
-            solo.run_trajectory(noise_ids(seed_base, 0, 1).0, noise_ids(seed_base, 0, 1).1);
-        assert_ne!(m0, m1, "the two trajectories drew the same noise");
-        let mean: Vec<f64> = m0.iter().zip(&m1).map(|(a, b)| (a + b) / 2.0).collect();
-        assert_eq!(record.measured_magnetizations, mean);
+        let mut learner = IsingLearner::new(config.clone(), minimal_target(), load_model());
+        let first = learner.step();
+        let second = learner.step();
+        // A learner at the parameters iteration `iteration` ran with, run trajectory by
+        // trajectory on that iteration's streams.
+        let solo_mean = |iteration: usize, initial_j: &[f64], initial_h: &[f64]| {
+            let mut solo = IsingLearner::with_initial_params(
+                config.clone(),
+                minimal_target(),
+                load_model(),
+                initial_j.to_vec(),
+                initial_h.to_vec(),
+            );
+            let mut run = |traj| {
+                let (seed, traj_id) = noise_ids(seed_base, iteration, traj);
+                solo.run_trajectory(seed, traj_id).0
+            };
+            let (m0, m1) = (run(0), run(1));
+            assert_ne!(
+                m0, m1,
+                "iteration {iteration}: the trajectories drew the same noise"
+            );
+            m0.iter()
+                .zip(&m1)
+                .map(|(a, b)| (a + b) / 2.0)
+                .collect::<Vec<f64>>()
+        };
+        assert_eq!(
+            first.measured_magnetizations,
+            solo_mean(0, &[0.0], &[0.0, 0.0])
+        );
+        // Iteration 1's streams differ from iteration 0's, so a step that dropped the
+        // iteration from the noise ids would fail here.
+        assert_eq!(
+            second.measured_magnetizations,
+            solo_mean(1, &first.coupling_j, &first.field_h)
+        );
         assert!(
-            learner()
+            IsingLearner::new(config.clone(), minimal_target(), load_model())
                 .build_stack(5, 7)
                 .components()
                 .iter()

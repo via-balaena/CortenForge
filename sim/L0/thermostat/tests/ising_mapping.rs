@@ -30,7 +30,9 @@
 )]
 
 use sim_core::test_fixtures::bistable_chain;
-use sim_thermostat::{DoubleWellPotential, ExternalField, PairwiseCoupling, PassiveStack};
+use sim_thermostat::{
+    DoubleWellPotential, ExternalField, IsingProblem, PairwiseCoupling, PassiveStack,
+};
 
 /// The tilt at which one quartic well loses its second minimum, in units of `ΔV/x₀`:
 /// `8/(3√3) ≈ 1.5396`.
@@ -134,8 +136,10 @@ impl Physics {
 
 // ─── The test's energy is the components' ────────────────────────────────
 
-/// The quadrature below integrates `Physics::energy`. Here that energy, and its force, are
-/// the installed components': at `x₀ = 1.5`, so a `J/x₀` for `J/x₀²` mix-up shows.
+/// `Physics::energy` is the components' energy, and the force of the stack
+/// `IsingProblem::add_components` installs is its negative gradient: at `x₀ = 1.5`, so a
+/// `J/x₀` for `J/x₀²` mix-up shows. (The quadrature below assembles the same terms site by
+/// site in `visit`.)
 #[test]
 fn the_test_energy_and_force_are_the_installed_components() {
     let physics = Physics {
@@ -158,17 +162,19 @@ fn the_test_energy_and_force_are_the_installed_components() {
         )
     };
     let field = || ExternalField::new(problem.field_h.iter().map(|h| h / x_0).collect());
+    // The installed stack is the shipped helper's, so the forces below pin it: its wells'
+    // barrier and DOFs, and its J/x₀² and h/x₀, at positions off the wells' bottoms.
     let mut model = bistable_chain(problem.n);
-    let mut builder = PassiveStack::builder();
-    for i in 0..problem.n {
-        builder = builder.with(well(i));
-    }
-    builder
-        .with(coupling())
-        .with(field())
-        .build()
-        .try_install(&mut model)
-        .unwrap();
+    IsingProblem::new(
+        problem.n,
+        problem.edges.clone(),
+        problem.coupling_j.clone(),
+        problem.field_h.clone(),
+    )
+    .add_components(PassiveStack::builder(), physics.delta_v, x_0)
+    .build()
+    .try_install(&mut model)
+    .unwrap();
     let mut data = model.make_data();
 
     for x in [
@@ -382,11 +388,12 @@ fn effective_fields(physics: Physics, p: &Problem, distribution: &[f64]) -> Vec<
 // ─── Effective couplings ─────────────────────────────────────────────────
 
 /// On the complete graph K4, ferro- and antiferromagnetic, at tilt ratio 0.3 and `ΔV/kT = 3`,
-/// in both readouts: every edge's effective coupling is `J·μ²` plus the induced term,
-/// within 0.005, and misses `J` plus the induced term (no `μ²`) by more than 0.05.
+/// in both readouts: every edge's effective coupling is `J·μ²` plus the induced term, within
+/// 0.005. The first-order factor `μ²` is 0.914 with the drop and 0.822 sign-only, each more
+/// than 0.05 from 1, so the band tells `μ²·J` from `J`.
 ///
 /// The bands were set after cold reviewers' quadrature of the same integrals (residual
-/// ≤ 0.002, gap 0.084), not before.
+/// ≤ 0.002), not before.
 #[test]
 fn k4_realises_the_first_order_factor_and_the_induced_couplings() {
     let physics = Physics {
@@ -401,6 +408,14 @@ fn k4_realises_the_first_order_factor_and_the_induced_couplings() {
         for (readout, distribution) in [(Readout::Drop, drop), (Readout::Sign, sign_only)] {
             let (mean, variance) = well_moments(physics, readout);
             let first_order = mean * mean;
+            let documented = match readout {
+                Readout::Drop => 0.914,
+                Readout::Sign => 0.822,
+            };
+            assert!(
+                (first_order - documented).abs() < 0.001,
+                "{readout:?}: μ² is {first_order}, the docs say {documented}"
+            );
             for (k, (&(i, l), j_eff)) in problem
                 .edges
                 .iter()
@@ -418,12 +433,6 @@ fn k4_realises_the_first_order_factor_and_the_induced_couplings() {
                     (ratio - (first_order + induced)).abs() < 0.005,
                     "J {j}, {readout:?}, edge ({i},{l}): J_eff/J {ratio}, predicted {}",
                     first_order + induced
-                );
-                assert!(
-                    (ratio - (1.0 + induced)).abs() > 0.05,
-                    "J {j}, {readout:?}, edge ({i},{l}): J_eff/J {ratio} is within 0.05 of \
-                     the prediction without μ², {}",
-                    1.0 + induced
                 );
             }
         }
@@ -507,16 +516,19 @@ fn has_minimum(physics: Physics, p: &Problem, s: usize) -> bool {
         [0.01, -0.01, 0.02, -0.02],
         [-0.02, 0.01, -0.01, 0.02],
     ];
+    assert!(p.n <= 4, "the perturbed starts cover 4 spins");
     starts.iter().any(|delta| {
         let mut x: Vec<f64> = (0..p.n).map(|i| spin(i) * physics.x_0 + delta[i]).collect();
         let step = 1e-3 * physics.x_0 * physics.x_0 / physics.delta_v;
-        for _ in 0..2_000_000 {
+        let converged = (0..2_000_000).any(|_| {
             let g = physics.gradient(p, &x);
             if g.iter().map(|v| v * v).sum::<f64>().sqrt() < 1e-10 {
-                break;
+                return true;
             }
             x.iter_mut().zip(&g).for_each(|(xi, gi)| *xi -= step * gi);
-        }
+            false
+        });
+        assert!(converged, "descent from configuration {s} did not converge");
         let signs_kept = (0..p.n).all(|i| x[i] * spin(i) > 0.0);
         signs_kept && hessian_is_positive_definite(physics, p, &x)
     })
@@ -568,8 +580,21 @@ fn the_tilt_ratio_where_a_well_first_vanishes_depends_on_the_graph() {
         ("K4 antiferro", 4, 3, -1.0, 1.53, 1.58),
     ] {
         let at = |r: f64| {
-            let j = sign * Problem::coupling_at(r, degree, physics.delta_v);
-            every_configuration_has_a_minimum(physics, &Problem::complete(n, j))
+            let problem =
+                Problem::complete(n, sign * Problem::coupling_at(r, degree, physics.delta_v));
+            // The tilt ratio the brackets are in is the public one.
+            let reported = IsingProblem::new(
+                n,
+                problem.edges.clone(),
+                problem.coupling_j.clone(),
+                problem.field_h.clone(),
+            )
+            .tilt_ratios(physics.delta_v);
+            assert!(
+                reported.iter().all(|&ri| (ri - r).abs() < 1e-12),
+                "{label}: tilt_ratios {reported:?}, r {r}"
+            );
+            every_configuration_has_a_minimum(physics, &problem)
         };
         assert!(at(below), "{label}: a well has vanished at r = {below}");
         assert!(!at(above), "{label}: every well survives at r = {above}");
