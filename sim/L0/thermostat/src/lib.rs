@@ -29,7 +29,9 @@
 //!    [`DoubleWellPotential`], [`PairwiseCoupling`], [`ExternalField`],
 //!    [`OscillatingField`], [`RatchetPotential`], [`ColoredDriveSim`],
 //!    [`GibbsSampler`], [`IsingLearner`]) — the building blocks for
-//!    thermodynamic computing simulations.
+//!    thermodynamic computing simulations. [`IsingProblem`] puts an Ising
+//!    problem or a QUBO onto a coupled array of double wells, and
+//!    [`SpinLatch`] keeps the lowest-energy configuration a run reads.
 //!
 //! `sim-core` does **not** depend on any `rand` crate — that property is the
 //! load-bearing reason this crate exists as a sibling crate rather than as a
@@ -37,15 +39,13 @@
 //!
 //! ## Quick start
 //!
-//! ```ignore
-//! use sim_core::{DVector, Model};
+//! ```
+//! use sim_core::DVector;
 //! use sim_thermostat::{LangevinThermostat, PassiveStack};
 //!
-//! // Bring your own Model — load via sim-mjcf, build a fixture from
-//! // sim_core::test_fixtures, or construct one through sim-core's Model
-//! // factory APIs. sim-thermostat doesn't care how you got it.
-//! let mut model: Model = /* ... */;
-//! let mut data  = model.make_data();
+//! // Bring your own Model; see "The model" below.
+//! let mut model = sim_core::test_fixtures::bistable_chain(1);
+//! let mut data = model.make_data();
 //!
 //! PassiveStack::builder()
 //!     .with(LangevinThermostat::new(
@@ -57,10 +57,22 @@
 //!     .build()
 //!     .try_install(&mut model)?;
 //!
-//! for _ in 0..n_steps {
+//! for _ in 0..1_000 {
 //!     data.step(&model)?;
 //! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! ## The model
+//!
+//! The components act on DOFs by index (entry `i` on DOF `i`) and read
+//! positions through each DOF's joint, so the usual model is one slide joint
+//! per element, with no gravity or contacts, under the Euler integrator.
+//! `sim_therm_env::generate_mjcf` writes such a model as MJCF for
+//! `sim_mjcf::load_model`; both are reachable through the `sim` crate, whose
+//! docs run an annealing example end to end. The examples here use
+//! `sim_core::test_fixtures::bistable_chain`, which needs sim-core's
+//! `test-fixtures` feature.
 
 mod baoab;
 mod colored_drive;

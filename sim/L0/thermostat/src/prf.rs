@@ -5,25 +5,16 @@
 //!
 //! 1. **Per-step noise generation.** The private helpers
 //!    `chacha8_block`, `expand_master_seed`, `noise_position`,
-//!    and `box_muller_from_block` form the Route 2 PRF chain that
-//!    C-3 stochastic components (starting with
-//!    [`LangevinThermostat`](crate::LangevinThermostat)) call
-//!    from their `apply` method. These replace the per-component
-//!    `Mutex<ChaCha8Rng>` pattern that pre-C-3 stochastic
-//!    components used.
+//!    and `box_muller_from_block` form the counter-based noise chain
+//!    that [`LangevinThermostat`](crate::LangevinThermostat) calls from
+//!    its `apply` method, so it holds no mutable RNG state.
 //!
 //! 2. **Seed derivation.** [`splitmix64`] is the canonical
-//!    counter-to-stream hash used by Ch 32's rematch protocol
-//!    (and by any other code that needs many uncorrelated `u64`
-//!    seeds from one master seed). It is not called by `apply` —
+//!    counter-to-stream hash for code that needs many uncorrelated
+//!    `u64` seeds from one master seed. It is not called by `apply` —
 //!    it lives here because it is the same shape (pure
 //!    integer-to-pseudorandom function) and belongs in the same
 //!    toolbox.
-//!
-//! See the ML chassis refactor study Ch 15 for the argument that
-//! shape 3 + Route 2 is the right chassis primitive, and Ch 32
-//! §4.6 for the argument that splitmix64 is the right
-//! seed-derivation primitive.
 //!
 //! ## Version pin
 //!

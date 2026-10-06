@@ -1,6 +1,6 @@
 //! `Diagnose` — minimal introspection trait for passive components.
 //!
-//! Per chassis Decision 4, the diagnostic surface is intentionally
+//! The diagnostic surface is intentionally
 //! minimal: a single `diagnostic_summary` method that returns a
 //! human-readable string. Components that need richer introspection
 //! (per-DOF state dumps, histograms, energy traces) implement them

@@ -3,7 +3,7 @@
 //! Provides exact enumeration over `2^N` spin configurations for arbitrary
 //! coupling topology, per-edge coupling constants, and per-site external
 //! fields. Used by [`IsingLearner`](crate::IsingLearner) for KL divergence
-//! monitoring and by Phase 6+ for Gibbs sampler comparison.
+//! monitoring and by the tests that compare samplers with it.
 //!
 //! A configuration is a `u32` bitmask: bit `i` set means spin `i` is `+1`,
 //! clear means `−1`. [`GibbsSampler`](crate::GibbsSampler) uses the same

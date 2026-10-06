@@ -5,10 +5,8 @@
 //! learning rule. The physical Langevin simulation is the generative
 //! model — no software sampler, no autograd tape, no finite differences.
 //!
-//! Phase 5 of the thermodynamic computing initiative validates this
-//! module against a known Ising target on a fully-connected 4-element
-//! graph. D4 (sim-to-real on a printed device) reuses this training
-//! algorithm to train the EBM before printing.
+//! `tests/boltzmann_learning.rs` trains it against a known Ising target on a
+//! fully connected 4-element graph.
 
 use std::sync::Arc;
 
@@ -177,8 +175,18 @@ pub struct LearningRecord {
 ///
 /// The learner owns the [`Model`]. At each iteration it rebuilds and
 /// re-installs the [`PassiveStack`] with updated parameters, then creates
-/// fresh [`Data`](sim_core::Data) via `model.make_data()`. The caller is
-/// responsible for loading the model before constructing the learner.
+/// fresh [`Data`](sim_core::Data) via `model.make_data()`.
+///
+/// # The model
+///
+/// Spin `i` lives on DOF `i` for `i < n`. Each of those DOFs must have a
+/// position coordinate of its own (a slide or hinge DOF, or a free joint's
+/// translation DOF), and the model must not use RK4: [`Self::try_new`] checks
+/// both. The learner replaces the model's passive callback for every
+/// trajectory, steps at the model's timestep, and puts no damping or noise on
+/// DOFs past `n`. Gravity, contacts and actuators act as the model defines
+/// them, so the usual model is `n` slide joints without any:
+/// `sim_therm_env::generate_mjcf(n, 0, 0.001, (0.0, 1.0))` writes one.
 pub struct IsingLearner {
     config: LearnerConfig,
     target: IsingTarget,

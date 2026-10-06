@@ -1,8 +1,7 @@
-//! BAOAB Langevin integrator (1-DOF) — D4 Layer-2 R6.
+//! BAOAB Langevin integrator (1-DOF).
 //!
-//! The reference integrator that is **correct in the underdamped limit**, where
-//! the production Euler–Maruyama path is not (R1 showed EM tracks the
-//! spatial-diffusion rate even at γ=0.1, missing the energy-diffusion turnover).
+//! A reference integrator for the underdamped limit, which the production
+//! Euler–Maruyama path is not built for.
 //!
 //! BAOAB (Leimkuhler & Matthews) splits one Langevin step into
 //! `B A O A B`:

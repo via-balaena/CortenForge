@@ -1,7 +1,6 @@
 //! `LangevinThermostat` — explicit Langevin thermostat via Euler-Maruyama.
 //!
-//! Per chassis design + spec §3, the thermostat writes the
-//! fluctuation–dissipation pair `(−γ·v, σ·z)` into the per-DOF
+//! The thermostat writes the fluctuation–dissipation pair `(−γ·v, σ·z)` into the per-DOF
 //! accumulator on every step:
 //!
 //! ```text
@@ -10,18 +9,12 @@
 //! ```
 //!
 //! `γ_i` and `k_B·T` are owned by this struct — `model.dof_damping`
-//! stays at zero (Q4 resolution, recon log part 2). The fluctuation–
+//! stays at zero. The fluctuation–
 //! dissipation relation `σ² = 2γkT/h` is the only physics statement
 //! the implementation makes; everything else is bookkeeping.
 //!
-//! The discretization-bias temperature error is `O(h·γ/M)`. At the
-//! Phase 1 central parameter set (`h=0.001`, `γ=0.1`, `M=1`) that is
-//! ≈ `10⁻⁴` of `½kT` — well below the §7 sampling-error tolerance of
-//! 4.5%. The gate passes with margin, not at threshold.
-//!
-//! Higher-order schemes (BAOAB, GJF) reduce this further but are not
-//! needed for Phase 1; the upgrade path is to swap the
-//! `PassiveComponent` impl without touching the chassis.
+//! The discretization-bias temperature error is `O(h·γ/M)`: at `h = 0.001`,
+//! `γ = 0.1`, `M = 1` that is `≈ 10⁻⁴` of `½kT`.
 //!
 //! The damping is computed from each step's starting velocity, so under
 //! the Euler integrator, for a diagonal mass matrix, it alone multiplies a
@@ -32,14 +25,13 @@
 //! The thermostat is measured under the Euler integrator. RK4 calls the
 //! passive callback four times per step and the thermostat draws fresh
 //! noise at each call, so `validate` refuses RK4 (and
-//! [`crate::PassiveStack::install`] with it). The implicit integrators
+//! [`crate::PassiveStack::try_install`] with it). The implicit integrators
 //! have not been measured. Changing `model.integrator` after install
 //! bypasses the check.
 //!
 //! ## RNG and `cb_passive`
 //!
-//! Under the C-3 chassis refactor (study Ch 15), the thermostat holds
-//! no mutable RNG state. Noise at step `s` for DOF `d` is computed as
+//! The thermostat holds no mutable RNG state. Noise at step `s` for DOF `d` is computed as
 //!
 //! ```text
 //! (counter, stream) = noise_position(traj_id, s, group)
@@ -58,15 +50,13 @@
 //! Because the PRF is a pure function of integers, a thermostat's noise
 //! at a given step depends only on `(master_seed, traj_id, step)`, not on
 //! thread scheduling. That holds when each env has its own thermostat
-//! (`install_per_env`, `BatchSim::new_per_env`), as in the
-//! `parallel_matches_sequential_with_langevin` regression test at
-//! `sim/L0/tests/integration/batch_sim.rs`. A stack shared by several
+//! (`install_per_env`, `BatchSim::new_per_env`). A stack shared by several
 //! `Data` (a cloned `Model`, or `BatchSim::new`) shares one step counter,
 //! so which env draws which step depends on the order of the calls.
 //!
-//! See [`crate::prf`] for the primitive module and the study's Ch 15
-//! §2 for the argument that Route 2 (the manual `ChaCha8` implementation
-//! used by `prf.rs`) is the right PRF-implementation choice.
+//! The step index takes 48 bits of the noise position, so a thermostat panics
+//! once its step counter reaches `2^48` (after about `2.8·10¹⁴` noise draws). See
+//! [`crate::prf`] for the primitives.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -86,14 +76,16 @@ use crate::prf;
 /// a `Model` via `stack.try_install(&mut model)?`, and step the
 /// simulation normally with `data.step(&model)?`.
 ///
-/// Implements three traits from the chassis surface:
-/// - [`PassiveComponent`] (the M5 contract — the apply method that
-///   writes forces into `qfrc_out`).
-/// - [`Stochastic`] (Decision 7 — the gating opt-in that lets
-///   `PassiveStack::disable_stochastic` zero the noise contribution
-///   for finite-difference and autograd contexts).
-/// - [`Diagnose`] (Decision 4 — the minimal one-line introspection
-///   trait for debugging and test failure messages).
+/// Implements three traits:
+/// - [`PassiveComponent`]: `apply` writes the forces into `qfrc_out`.
+/// - [`Stochastic`]: `PassiveStack::disable_stochastic` switches the noise
+///   off, for finite-difference and autograd contexts.
+/// - [`Diagnose`]: a one-line summary for debugging and test failures.
+///
+/// # Panics
+///
+/// `apply` panics once the step counter reaches `2^48` (after about `2.8·10¹⁴`
+/// noise draws): the step index takes 48 bits of the noise position.
 pub struct LangevinThermostat {
     gamma: DVector<f64>,
     k_b_t: f64,
@@ -213,11 +205,7 @@ impl LangevinThermostat {
     /// temperature is 10× the base. The model needs control channel
     /// `ctrl_idx`: install refuses a model without it.
     ///
-    /// This is the D2 forward design from D1 spec §3.4: the first time a
-    /// physical parameter of the bath becomes an RL action.
-    ///
-    /// Without calling this method, `k_b_t_ctrl` is `None` and `apply`
-    /// uses `self.k_b_t` directly — identical to the pre-D2 behavior.
+    /// Without calling this method, `apply` uses the base `k_b_t`.
     #[must_use]
     pub const fn with_ctrl_temperature(mut self, ctrl_idx: usize) -> Self {
         self.k_b_t_ctrl = Some(ctrl_idx);

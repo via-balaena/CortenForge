@@ -6,9 +6,8 @@
 //! biasing elements toward the right well (`h > 0`) or left well
 //! (`h < 0`). The continuous analogue of the Ising external field.
 //!
-//! Phase 5 of the thermodynamic computing initiative uses this component
-//! together with [`PairwiseCoupling`] to build a trainable Ising-like
-//! system via the Boltzmann machine learning rule.
+//! With [`PairwiseCoupling`] it builds the Ising-like system that
+//! [`IsingLearner`](crate::IsingLearner) trains.
 //!
 //! [`PassiveComponent`]: crate::PassiveComponent
 //! [`PairwiseCoupling`]: crate::PairwiseCoupling

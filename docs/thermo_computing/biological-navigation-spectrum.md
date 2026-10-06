@@ -241,7 +241,7 @@ Implement a lateral-line-style sensor array in the simulated circuit: distribute
 
 | Simulation need | CortenForge module |
 |---|---|
-| Langevin dynamics | `sim-thermostat` / `sim-therm-env` (Langevin thermostats) + `sim-core` integrators (Euler / RK4) |
+| Langevin dynamics | `sim-thermostat` / `sim-therm-env` (Langevin thermostats) + `sim-core`'s Euler integrator (the thermostat refuses RK4; implicit integrators not measured) |
 | Hill-type muscle for octopus | `sim-core` (Hill-type muscle models) |
 | Fluid-structure interaction | *not yet built — no fluid solver in the workspace* |
 | RL for guidance-law optimization | `sim-ml-chassis` + `sim-rl` (custom autograd; PPO / TD3 / SAC) |

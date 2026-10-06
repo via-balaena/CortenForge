@@ -6,9 +6,8 @@
 //! a [`PassiveStack`], this produces a bistable system whose switching
 //! rate between wells is governed by Kramers' escape-rate formula.
 //!
-//! Phase 3 of the thermodynamic computing initiative validates this
-//! component against Kramers' formula. Phase 4+ uses arrays of these
-//! elements to build coupled bistable systems.
+//! `tests/kramers_escape_rate.rs` checks its switching rate against
+//! Kramers' formula.
 //!
 //! [`PassiveComponent`]: crate::PassiveComponent
 //! [`LangevinThermostat`]: crate::LangevinThermostat
@@ -37,25 +36,48 @@ use crate::params::{Domain, or_panic};
 /// own, so
 /// [`PassiveStack::try_install`](crate::PassiveStack::try_install) refuses them.
 ///
-/// # Example
+/// # A tilt removes a well
 ///
-/// ```ignore
-/// use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PassiveStack};
-/// use sim_core::DVector;
+/// A constant force `F` on the element (an [`ExternalField`](crate::ExternalField)
+/// entry, or its neighbours through a [`PairwiseCoupling`](crate::PairwiseCoupling))
+/// shifts its minima, and above `8ΔV/(3√3·x₀) ≈ 1.54·ΔV/x₀` it leaves only one:
+///
+/// ```
+/// use sim_thermostat::DoubleWellPotential;
 ///
 /// let well = DoubleWellPotential::new(3.0, 1.0, 0);
-/// let thermostat = LangevinThermostat::new(
-///     DVector::from_element(1, 10.0),
-///     1.0,
-///     42,
-///     0,
-/// );
+/// let removal = 8.0 * 3.0 / (3.0 * 3.0_f64.sqrt() * 1.0);
+/// // A minimum of V(x) − F·x is where the net force −V′(x) + F turns from + to −.
+/// let minima = |f: f64| {
+///     (0..4000)
+///         .map(|k| -2.0 + f64::from(k) * 1e-3)
+///         .filter(|&x| well.force(x) + f > 0.0 && well.force(x + 1e-3) + f <= 0.0)
+///         .count()
+/// };
+/// assert_eq!(minima(0.999 * removal), 2);
+/// assert_eq!(minima(1.001 * removal), 1);
+/// ```
 ///
+/// # Example
+///
+/// ```
+/// use sim_core::DVector;
+/// use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PassiveStack};
+///
+/// // One slide particle of mass 1. This fixture needs sim-core's `test-fixtures`
+/// // feature; `sim_therm_env::generate_mjcf` writes such a model as MJCF.
+/// let mut model = sim_core::test_fixtures::bistable_chain(1);
 /// PassiveStack::builder()
-///     .with(well)
-///     .with(thermostat)
+///     .with(DoubleWellPotential::new(3.0, 1.0, 0))
+///     .with(LangevinThermostat::new(DVector::from_element(1, 10.0), 1.0, 42, 0))
 ///     .build()
 ///     .try_install(&mut model)?;
+/// let mut data = model.make_data();
+/// data.qpos[0] = 1.0; // start in the right well
+/// for _ in 0..1_000 {
+///     data.step(&model)?;
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct DoubleWellPotential {
     /// Barrier height: `ΔV = V(0) − V(±x₀)`.
@@ -128,6 +150,11 @@ impl DoubleWellPotential {
     ///
     /// Valid for moderate-to-strong friction (`γ̃ ≳ ω_b`). Below the
     /// Kramers turnover, this formula overestimates the rate.
+    ///
+    /// `k` is the rate of escape from one well per unit time spent in it. In
+    /// this symmetric well that is also the number of committed switches, in
+    /// either direction, per unit of total time, which is how
+    /// `tests/kramers_escape_rate.rs` measures it.
     ///
     /// # Panics
     /// Unless `mass` and `k_b_t` are finite and positive and `gamma` is finite and
@@ -208,7 +235,7 @@ impl DoubleWellPotential {
     /// the energy-diffusion (`∝ γ`) rate at low friction. **Use this — not
     /// `kramers_rate` — for a high-Q / underdamped device**, where the bare
     /// spatial-diffusion rate overestimates (it is an upper bound, since
-    /// `Υ ≤ 1`). See `docs/thermo_computing/03_phases/d4_physical_pbit` R1.
+    /// `Υ ≤ 1`). It counts escapes as [`kramers_rate`](Self::kramers_rate) does.
     ///
     /// # Panics
     /// Unless `mass` and `k_b_t` are finite and positive and `gamma` is finite and

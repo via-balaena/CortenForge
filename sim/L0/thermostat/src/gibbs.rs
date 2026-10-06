@@ -10,9 +10,9 @@
 //! Each call to [`GibbsSampler::sweep`] updates all N sites in index order
 //! using the exact conditional `P(σ_i | σ_{-i}) = sigmoid(2·local_field_i / kT)`.
 //!
-//! Phase 6 of the thermodynamic computing initiative uses this sampler
-//! as a CPU reference for three-way distribution comparison (Gibbs vs
-//! exact vs Langevin).
+//! The sampler holds at most [`MAX_EXACT_SPINS`](crate::ising::MAX_EXACT_SPINS)
+//! (20) spins because [`GibbsSampler::sample`] returns a histogram over all `2^n`
+//! configurations, indexed by a `u32` bitmask (bit `i` = spin `i`).
 
 use rand::Rng;
 use rand::SeedableRng;

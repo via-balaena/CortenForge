@@ -14,11 +14,6 @@
 //! thermal noise — and the SR peak occurs at the noise level where
 //! noise-assisted switching synchronizes with the signal.
 //!
-//! D2 of the thermodynamic computing initiative validates this component
-//! in combination with a [`DoubleWellPotential`], a [`LangevinThermostat`]
-//! (with ctrl-temperature modulation), and an RL agent (CEM) that discovers
-//! the SR-optimal noise level.
-//!
 //! [`PassiveComponent`]: crate::PassiveComponent
 //! [`DoubleWellPotential`]: crate::DoubleWellPotential
 //! [`LangevinThermostat`]: crate::LangevinThermostat
@@ -38,7 +33,7 @@ use crate::params::{Domain, or_panic};
 /// Applies a time-dependent force to a single DOF by reading `data.time`
 /// at each physics step. This is a deterministic force — it does not
 /// implement [`Stochastic`](crate::Stochastic) and is unaffected by the
-/// stochastic gating mechanism (Decision 7).
+/// stochastic gating.
 ///
 /// # Which DOFs
 ///

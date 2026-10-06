@@ -2,21 +2,12 @@
 //!
 //! Implements the coupling potential `V = −Σ J_k · x_i · x_j` for each
 //! edge `(i, j)` as a [`PassiveComponent`] that contributes conservative
-//! forces to the `qfrc_passive` accumulator. Supports per-edge coupling
-//! constants: each edge `k` has its own `J_k`. Combined with
-//! [`DoubleWellPotential`] instances and a [`LangevinThermostat`] in a
-//! [`PassiveStack`], this produces a coupled bistable system whose
-//! equilibrium statistics match the Ising model on the same coupling
-//! topology.
-//!
-//! Phase 4 validates this component (with uniform J) against exact Ising
-//! predictions on a 4-element chain. Phase 5 uses per-edge J for
-//! Boltzmann learning on a fully-connected graph.
+//! forces to the `qfrc_passive` accumulator, with one `J_k` per edge.
+//! [`PairwiseCoupling`]'s doc says which Ising model a coupled array of
+//! [`DoubleWellPotential`]s samples.
 //!
 //! [`PassiveComponent`]: crate::PassiveComponent
 //! [`DoubleWellPotential`]: crate::DoubleWellPotential
-//! [`LangevinThermostat`]: crate::LangevinThermostat
-//! [`PassiveStack`]: crate::PassiveStack
 
 use sim_core::{DVector, Data, Model};
 
@@ -63,21 +54,43 @@ const fn check_count(
 /// own, so
 /// [`PassiveStack::try_install`](crate::PassiveStack::try_install) refuses them.
 ///
+/// # As an Ising model
+///
+/// With a [`DoubleWellPotential`](crate::DoubleWellPotential) on each DOF (minima at
+/// `±x₀`), the coupling's energy at the wells' bottoms is the Ising coupling `J_k·x₀²`
+/// between the spins, the signs of the positions. At a temperature the array samples a
+/// different Ising model:
+/// - at first order its couplings are `μ²·J_k·x₀²`, where `μ` is the mean of `|x|/x₀` in
+///   one well (`μ² ≈ 0.91` at `ΔV/kT = 3`, reading only positions beyond `x₀/2`);
+/// - at second order, spins that share a neighbour gain a coupling through it;
+/// - a well vanishes once a site's neighbours tilt it far enough, at a point that depends
+///   on the graph.
+///
+/// `tests/ising_mapping.rs` measures all three.
+/// [`IsingProblem::add_components`](crate::IsingProblem::add_components) builds the
+/// components for an Ising problem.
+///
 /// # Example
 ///
-/// ```ignore
-/// use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PairwiseCoupling, PassiveStack};
+/// ```
 /// use sim_core::DVector;
+/// use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PairwiseCoupling, PassiveStack};
 ///
+/// // Four slide particles of mass 1 (sim-core's `test-fixtures` feature; or
+/// // `sim_therm_env::generate_mjcf(4, 0, 0.001, (0.0, 1.0))` as MJCF).
+/// let mut model = sim_core::test_fixtures::bistable_chain(4);
 /// let mut builder = PassiveStack::builder();
 /// for i in 0..4 {
 ///     builder = builder.with(DoubleWellPotential::new(3.0, 1.0, i));
 /// }
-/// builder = builder.with(PairwiseCoupling::chain(4, 0.5));
-/// builder = builder.with(LangevinThermostat::new(
-///     DVector::from_element(4, 10.0), 1.0, 42, 0,
-/// ));
-/// builder.build().try_install(&mut model)?;
+/// builder
+///     .with(PairwiseCoupling::chain(4, 0.5))
+///     .with(LangevinThermostat::new(DVector::from_element(4, 10.0), 1.0, 42, 0))
+///     .build()
+///     .try_install(&mut model)?;
+/// let mut data = model.make_data();
+/// data.step(&model)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct PairwiseCoupling {
     /// Per-edge coupling constants. `coupling_j[k]` is the coupling

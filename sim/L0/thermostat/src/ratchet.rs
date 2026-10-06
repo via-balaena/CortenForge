@@ -5,7 +5,7 @@
 //! [`PassiveComponent`] that contributes conservative forces to the
 //! `qfrc_passive` accumulator. The amplitude multiplier `α ∈ [0, 1]` is
 //! read from `data.ctrl[ctrl_idx]` at each step, enabling RL control of
-//! the potential via the ctrl-channel bridge pattern (spec §3).
+//! the potential through a control channel.
 //!
 //! With `V₂ > 0` and `φ ≠ 0, nπ`, the potential is spatially asymmetric
 //! within each period `L`. A flashing protocol (alternating α between 0
@@ -14,12 +14,7 @@
 //! holds and the steady-state current is exactly zero regardless of the
 //! asymmetry.
 //!
-//! D1 of the thermodynamic computing initiative validates this component
-//! in combination with a [`LangevinThermostat`] and an RL agent (CEM)
-//! that discovers the flashing strategy.
-//!
 //! [`PassiveComponent`]: crate::PassiveComponent
-//! [`LangevinThermostat`]: crate::LangevinThermostat
 
 use std::f64::consts::PI;
 
@@ -57,8 +52,7 @@ use crate::params::{Domain, or_panic};
 /// The amplitude `α` is read from `data.ctrl[ctrl_idx]` at each physics
 /// step. The MJCF model must include a zero-gain actuator at `ctrl_idx`
 /// so the RL agent can write to `data.ctrl` via `ActionSpace::apply`
-/// without the actuator producing any force of its own. See spec §3 and
-/// §5 for the MJCF model and ctrl flow.
+/// without the actuator producing any force of its own.
 pub struct RatchetPotential {
     /// First harmonic amplitude V₁.
     v1: f64,

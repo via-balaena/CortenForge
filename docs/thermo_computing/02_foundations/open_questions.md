@@ -39,6 +39,10 @@ referenceability.
   RK4 is excluded by the split-step API itself, which is fine for Langevin).
   No BAOAB or integrator bypass needed for Phase 1. See Recon Log entry
   2026-04-09 part 2 for the full trace.
+  *Erratum (2026-10):* "all work" was not measured. The thermostat is measured
+  under Euler only; `LangevinThermostat::validate` refuses RK4 (it calls the
+  passive callback four times per step), and the implicit integrators have
+  not been measured.
 - **Q3 — Does `thrml-rs` exist?** **RESOLVED 2026-04-09 (doc review S1)
   via web search. COMMITTED 2026-04-10: Option B (native single-site Gibbs
   sampler in Rust). Implemented as `GibbsSampler` in `sim-thermostat/src/gibbs.rs`.

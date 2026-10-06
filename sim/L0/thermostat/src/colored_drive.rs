@@ -1,18 +1,22 @@
-//! Colored-noise-driven 1-DOF integrator — D4 Layer-2 R2.
+//! Colored-noise-driven 1-DOF integrator.
 //!
 //! Models the macroscopic shaker-driven beam: intrinsic damping `γ` plus an
 //! **external** Ornstein–Uhlenbeck colored force `η(t)` that is **not**
 //! fluctuation-dissipation-paired with the damping (the shaker noise), with
-//! negligible room-temperature thermal noise. The question R2 answers: does this
+//! negligible room-temperature thermal noise. The question it answers: does this
 //! reach a Boltzmann-like (thermal) stationary state, and under what noise
 //! bandwidth?
 //!
 //! ```text
-//! m·ẍ = F(x) − γ·ẋ + η(t),   η̇ = −η/τ + √(σ²)·white,   σ² = γ·kT_eff/τ
+//! m·ẍ = F(x) − γ·ẋ + η(t),   η̇ = −η/τ + (√(2γ·kT_eff)/τ)·ξ(t)
 //! ```
 //!
-//! `η` has correlation time `τ` (inverse bandwidth); its white-noise limit
-//! (`τ→0`) is intensity `2γ·kT_eff`, i.e. an ordinary thermal bath at `kT_eff`.
+//! with `ξ` unit white noise, so `η`'s stationary variance is `σ² = γ·kT_eff/τ`
+//! (the integrator uses the exact OU update at that variance). `η` has
+//! correlation time `τ` (inverse bandwidth); its white-noise limit (`τ→0`) is
+//! intensity `2γ·kT_eff`, i.e. an ordinary thermal bath at `kT_eff`. `η` starts
+//! at 0, not at a draw from its stationary distribution, so the first few `τ` of
+//! a run are a transient.
 //! The diagnostic is Boltzmann **shape**: whether the **kinetic** temperature
 //! `m⟨v²⟩` and the **configurational** temperature `⟨V′²⟩/⟨V″⟩` agree
 //! (equipartition). They do for short `τ` (wide bandwidth) and diverge for long

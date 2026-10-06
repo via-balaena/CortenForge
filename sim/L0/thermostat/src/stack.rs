@@ -69,7 +69,10 @@ pub struct PassiveStackBuilder {
 
 impl PassiveStackBuilder {
     /// Append a component to the stack. Components are applied in
-    /// insertion order during each `cb_passive` invocation.
+    /// insertion order during each `cb_passive` invocation, and each adds
+    /// its forces to the same accumulator, so a stack can hold several
+    /// components of one type (two double wells on different DOFs, or a
+    /// field and a coupling on the same DOFs).
     #[must_use]
     pub fn with<C: PassiveComponent>(mut self, component: C) -> Self {
         self.components.push(Arc::new(component));
@@ -192,8 +195,8 @@ impl PassiveStack {
     ///
     /// Prefer [`PassiveStack::disable_stochastic`] over
     /// `set_all_stochastic(false)` when the disable is scoped to a
-    /// block — the RAII guard restores prior states on drop, which is
-    /// exception-safe and avoids the "forgot to re-enable" footgun.
+    /// block: when the last live guard drops, the prior flags come back,
+    /// even if the block panicked.
     pub fn set_all_stochastic(&self, active: bool) {
         for component in &self.components {
             if let Some(stoch) = component.as_stochastic() {
@@ -212,15 +215,17 @@ impl PassiveStack {
     /// overwritten when the last guard drops. The count is per stack: a
     /// component shared by two stacks has two independent counts.
     ///
-    /// This is the chassis Decision-7 entry point for finite-difference
-    /// and autograd contexts: wrap the FD perturbation block in
+    /// For finite-difference and autograd contexts, wrap the FD perturbation block in
     /// `let _guard = stack.disable_stochastic();`, run the perturbed
     /// and baseline rollouts, drop the guard, and the stack returns to
     /// its prior stochastic state. Stochastic components produce only
     /// their deterministic forces inside the guarded block, so the FD
-    /// difference recovers `∂F_det/∂qpos` exactly (state-independent
-    /// noise is the only kind on the roadmap).
-    #[must_use = "the StochasticGuard restores prior flags on drop; \
+    /// difference recovers `∂F_det/∂qpos` exactly (the crate's noise does
+    /// not depend on the state).
+    ///
+    /// If a component's `set_stochastic_active` panics here, no guard is
+    /// returned and the components switched off before it stay off.
+    #[must_use = "the last StochasticGuard to drop restores the prior flags; \
                   discarding it immediately can re-enable noise — call \
                   set_all_stochastic(false) instead if that is desired"]
     pub fn disable_stochastic(self: &Arc<Self>) -> StochasticGuard {
@@ -255,17 +260,16 @@ impl PassiveStack {
         }
     }
 
-    /// Read-only view of the components, useful for testing and for
-    /// callers that need to enumerate the stack (e.g. building a
-    /// per-component diagnostic report).
+    /// Read-only view of the components, in the order they apply. Each
+    /// component's [`PassiveComponent::as_diagnose`] gives its one-line
+    /// summary, for a per-component diagnostic report.
     #[must_use]
     pub fn components(&self) -> &[Arc<dyn PassiveComponent>] {
         &self.components
     }
 }
 
-/// `PassiveStack` implements the sim-core chassis entry point for
-/// per-env batch construction.
+/// `PassiveStack` implements sim-core's per-env batch construction.
 ///
 /// `install_per_env` builds N independent `(Model, Arc<PassiveStack>)`
 /// pairs by invoking `build_one(i)` for each `i in 0..n`, installs the
@@ -273,12 +277,9 @@ impl PassiveStack {
 /// returns an [`EnvBatch<PassiveStack>`] holding the N installed
 /// models and retained stack handles.
 ///
-/// This is the chassis Decision-3 entry point for `BatchSim`-style
-/// parallel-env runs: each env gets its own fresh stack with its own
-/// step counter, so per-env independence is guaranteed by construction
-/// (no aliased mutable state shared across envs; under C-3 the
-/// `LangevinThermostat` counter lives on the per-env thermostat
-/// instance).
+/// For `BatchSim`-style parallel-env runs: each env gets its own fresh
+/// stack, and so its own thermostat step counter, so no mutable state is
+/// shared across envs.
 ///
 /// # Panics
 ///
@@ -320,9 +321,8 @@ impl PerEnvStack for PassiveStack {
 /// live guard drops, the active flags from before the first guard are
 /// restored, whatever order the guards drop in.
 ///
-/// The guard is exception-safe: if the code inside the guarded block
-/// panics, `Drop::drop` still runs and restores the prior states, so
-/// the stack is never left in a partially-disabled state.
+/// If the code inside the guarded block panics, `Drop::drop` still runs, so
+/// the last guard to drop restores the prior flags all the same.
 pub struct StochasticGuard {
     stack: Arc<PassiveStack>,
 }
