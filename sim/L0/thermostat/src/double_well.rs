@@ -177,26 +177,27 @@ impl DoubleWellPotential {
         if delta <= 0.0 {
             return 0.0; // the δ → 0 limit: Υ → δ
         }
-        // λ accumulates to avoid index→float casts; the integrand is bounded
-        // (denominator ≥ ¼) and decays once δλ² ≫ 1, so cut off at √(30/δ).
-        let lam_max = (30.0 / delta).sqrt().clamp(20.0, 400.0);
+        // λ = ½·tan θ maps λ ∈ [0, ∞) onto θ ∈ [0, π/2), with dλ/(λ²+¼) = 2·dθ and
+        // λ²+¼ = 1/(4·cos²θ), so the exponent is (2/π)∫₀^{π/2} ln(1 − e^(−δ/(4cos²θ))) dθ.
+        // θ = (π/2)(1 − (1−t)²) then gathers the nodes near π/2, where the integrand has a
+        // ln cos θ singularity at small δ, and leaves a smooth integrand in t ∈ [0, 1] with no
+        // cut-off. The tests check it against a high-precision evaluation.
         let steps = 6000usize;
-        // steps is a small exact-in-f64 constant; deriving dlam from it (rather
-        // than a hardcoded 6000.0) keeps the two in sync if the count changes.
+        // steps is a small exact-in-f64 constant.
         #[allow(clippy::cast_precision_loss)]
-        let dlam = lam_max / steps as f64;
-        let mut lam = 0.0_f64;
+        let dt = 1.0 / steps as f64;
         let mut integral = 0.0;
         for i in 0..=steps {
-            let denom = lam.mul_add(lam, 0.25);
-            let s = delta * denom;
-            let weight = if i == 0 || i == steps { 0.5 } else { 1.0 };
+            #[allow(clippy::cast_precision_loss)]
+            let u = 1.0 - i as f64 * dt;
+            let cos = (std::f64::consts::FRAC_PI_2 * u.mul_add(-u, 1.0)).cos();
+            let s = delta / (4.0 * cos * cos);
             // ln(1 − e^(−s)) via expm1: `1.0 - (-s).exp()` rounds to 0 for tiny s.
-            integral += weight * (-(-s).exp_m1()).ln() / denom;
-            lam += dlam;
+            let integrand = (-(-s).exp_m1()).ln() * std::f64::consts::PI * u;
+            let weight = if i == 0 || i == steps { 0.5 } else { 1.0 };
+            integral += weight * integrand;
         }
-        integral *= dlam;
-        (integral / std::f64::consts::PI).exp()
+        (2.0 / std::f64::consts::PI * integral * dt).exp()
     }
 
     /// Kramers escape rate across the **full friction range** (the turnover):
@@ -445,13 +446,34 @@ mod tests {
     fn depopulation_factor_stays_near_delta_at_tiny_friction() {
         let w = DoubleWellPotential::new(1.0, 1.0, 0);
         let (mass, k_b_t) = (1.0, 1.0);
-        let gamma = 1.725e-17;
-        let delta = (gamma / mass) * w.barrier_action(mass) / k_b_t;
-        let upsilon = w.depopulation_factor(gamma, mass, k_b_t);
-        assert!(
-            (upsilon / delta - 1.0).abs() < 0.05,
-            "Υ = {upsilon:e} at δ = {delta:e}"
-        );
+        // The old λ cut-off overshot here: Υ/δ was 1.019, 1.045 and 1.71.
+        for delta in [4.6e-17, 1e-30, 1e-300] {
+            let gamma = delta * mass * k_b_t / w.barrier_action(mass);
+            let upsilon = w.depopulation_factor(gamma, mass, k_b_t);
+            assert!(
+                (upsilon / delta - 1.0).abs() < 1e-5,
+                "Υ = {upsilon:e} at δ = {delta:e}"
+            );
+        }
+    }
+
+    /// Υ(δ) against an mpmath evaluation of the same integral (40 digits).
+    #[test]
+    fn depopulation_factor_matches_a_high_precision_reference() {
+        let w = DoubleWellPotential::new(1.0, 1.0, 0);
+        for (delta, reference) in [
+            (0.01, 0.009_209_201_854_993_58),
+            (1.0, 0.442_978_309_950_351),
+            (3.0, 0.756_430_798_283_154),
+            (10.0, 0.974_171_497_588_707),
+        ] {
+            let gamma = delta / w.barrier_action(1.0);
+            let upsilon = w.depopulation_factor(gamma, 1.0, 1.0);
+            assert!(
+                (upsilon / reference - 1.0).abs() < 1e-6,
+                "δ = {delta}: Υ = {upsilon}, reference {reference}"
+            );
+        }
     }
 
     #[test]
