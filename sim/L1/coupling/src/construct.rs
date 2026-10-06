@@ -175,10 +175,16 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// the grip is exercised by the friction-aware forward rollout
     /// [`Self::coupled_trajectory_grip`].
     ///
-    /// **Forward-only** (this leaf, PR3a): the *gradient* of a friction-coupled trajectory
-    /// is not yet supported — the soft adjoint panics on a nonzero collider drift with
-    /// friction (`sim_soft`'s `friction_surface_drift` guard). PR3b threads the drift
-    /// through the adjoint.
+    /// Gradients through the grip: the tangential trajectory gradients carry the friction
+    /// term, for example [`Self::coupled_trajectory_tangential_material_gradient`] and
+    /// [`Self::coupled_trajectory_tangential_friction_coeff_gradient`]. Each of those two is
+    /// checked against central finite differences by its `friction·` row in
+    /// `tests/coupling_grad_harness.rs`.
+    ///
+    /// Not every gradient method is friction-aware. One that factors the soft adjoint
+    /// without `x_prev` panics with friction set (sim-soft's `SolverConfig::friction_mu`
+    /// gives the rule); `tests/friction_gradient_paths.rs` checks four that do, among them
+    /// [`Self::coupled_trajectory_material_gradient`].
     #[must_use]
     pub fn with_friction(mut self, mu: f64, eps_v: f64) -> Self {
         self.cfg.friction_mu = mu;

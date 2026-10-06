@@ -926,8 +926,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// [`Self::coupled_trajectory_joint_gradient`]).
     ///
     /// Like the sibling trajectory-gradient methods this takes `&mut self` (it runs
-    /// the real rollout in place; `Data` is not `Clone`), so build a fresh coupling
-    /// per call. Forward values come from the real coupled dynamics (the policy's
+    /// the real rollout in place), so build a fresh coupling per call. Forward
+    /// values come from the real coupled dynamics (the policy's
     /// [`DiffPolicy::eval`] feeds the real `xfrc_applied`, identical to the tape
     /// node's value); the per-node Jacobians are the analytic/factored
     /// sensitivities. FD-validated against [`Self::coupled_trajectory_policy_z`]

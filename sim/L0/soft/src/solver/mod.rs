@@ -208,6 +208,14 @@ pub trait Solver: Send + Sync {
     /// tangent at `x_final`, and pushes `NewtonStepVjp` onto the tape
     /// with `theta_var` as parent. Deterministic in `(x_prev, v_prev,
     /// theta_value, dt)` — no cross-call output-affecting state.
+    ///
+    /// # Panics
+    ///
+    /// Panics on each failure that [`Self::try_step`] returns as `Err`, and on
+    /// malformed input, for example a non-positive `dt` or an `x_prev`, `v_prev`
+    /// or `theta` of the wrong length. For [`CpuNewtonSolver`], also panics when
+    /// `fbar` is set or `friction_mu` is nonzero (see
+    /// [`SolverConfig::friction_mu`]).
     fn step(
         &mut self,
         tape: &mut Self::Tape,
@@ -235,6 +243,14 @@ pub trait Solver: Send + Sync {
     /// host's core count. Replay on one machine reproduces itself, which
     /// is what the checkpointed-adjoint machinery in Part 6 Ch 04 needs;
     /// two machines agreeing bit-for-bit is not promised and never was.
+    ///
+    /// # Panics
+    ///
+    /// Panics on each failure that [`Self::try_replay_step`] returns as `Err`,
+    /// and on malformed input as [`Self::step`] does. Call `try_replay_step`
+    /// instead to handle a failed solve. On Tet10 the forward solve also panics
+    /// for the settings described under [`SolverConfig::fbar`] and
+    /// [`SolverConfig::friction_mu`].
     fn replay_step(
         &self,
         x_prev: &Tensor<f64>,
@@ -266,6 +282,12 @@ pub trait Solver: Send + Sync {
     /// over-stretching / inverting, Decision Q) — all four always
     /// surface as `Err` here, never a panic. See variant docs for
     /// `x_partial` semantics.
+    ///
+    /// # Panics
+    ///
+    /// Panics on malformed input, as [`Self::step`] does. For
+    /// [`CpuNewtonSolver`], also panics when `fbar` is set or `friction_mu` is
+    /// nonzero (see [`SolverConfig::friction_mu`]).
     fn try_step(
         &mut self,
         tape: &mut Self::Tape,
@@ -282,6 +304,11 @@ pub trait Solver: Send + Sync {
     ///
     /// # Errors
     /// Same as [`Self::try_step`].
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Self::replay_step`] does, except on the failures it
+    /// returns as `Err`.
     fn try_replay_step(
         &self,
         x_prev: &Tensor<f64>,

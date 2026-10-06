@@ -733,9 +733,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// one tape — is a documented follow-on).
     ///
     /// Like [`Self::coupled_trajectory_material_gradient`] this takes `&mut self`
-    /// (it runs the real rollout in place; the `sim-core` `Data` is not `Clone`),
-    /// so build a fresh coupling per call. Forward values come from the real
-    /// coupled dynamics (identical to [`Self::step`] with the control force added);
+    /// (it runs the real rollout in place), so build a fresh coupling per call.
+    /// Forward values come from the real coupled dynamics (identical to
+    /// [`Self::step`] with the control force added);
     /// the per-node Jacobians are the analytic/factored sensitivities. FD-validated
     /// against [`Self::coupled_trajectory_control_z`] (the real re-rolled coupled
     /// oracle) by the `control` row of `tests/coupling_grad_harness.rs`.

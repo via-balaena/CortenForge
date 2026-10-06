@@ -510,8 +510,7 @@ where
     ///
     /// Panics if friction is active (`config.friction_mu != 0` and `x_prev`
     /// is `Some`) while `twist.angular` is non-zero: the friction pose
-    /// sensitivity supports only a pure translation (pass a translation
-    /// twist, or `x_prev = None` for the frictionless path).
+    /// sensitivity supports only a pure translation.
     #[must_use]
     pub fn equilibrium_pose_sensitivity(
         &self,
@@ -947,6 +946,14 @@ where
     /// sensitivity reuse. The RHS is gathered over the FREE DOFs only — the
     /// world-pinned base is a constant outside the differentiable thread (see
     /// [`StateStepVjp`]). The reverse-mode dual is [`Self::state_step_vjp`].
+    ///
+    /// **With friction** (a nonzero `friction_mu`), pass `Some(x_prev)`: `None`
+    /// panics (see [`SolverConfig::friction_mu`](crate::solver::SolverConfig::friction_mu)).
+    /// The tangent `A` then includes
+    /// friction, but the right-hand side is still only the two inertia terms
+    /// above. Under friction `x_prev` also enters the friction residual; the
+    /// reverse grip methods ([`Self::trajectory_step_vjp_grip`] and its
+    /// siblings) include that term, and this method leaves it out.
     // `dx_prev`/`dv_prev` are the perturbations of `x_prev`/`v_prev`; the
     // parallel naming is the clearest scheme (renaming would obscure the pair).
     #[allow(clippy::similar_names)]

@@ -114,8 +114,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// One scratch rigid step from a supplied `(qpos, qvel)` with a held spatial
     /// `wrench` on `body`, returning `(qpos', qvel')`. Like [`Self::rigid_step_probe`]
     /// but for the full generalized state (the LOADED step map whose Jacobian is the
-    /// multi-DOF carry). Does NOT advance `self` (`Data` is not `Clone`, so a fresh
-    /// scratch is built).
+    /// multi-DOF carry). Does NOT advance `self`: it steps a fresh scratch `Data`.
     ///
     /// **Linear-axis damping.** When `rigid_damping != 0` (the free-platen contact-axis damping
     /// the wrench carry now supports), the velocity-dependent damping force `−c·vz` is added on

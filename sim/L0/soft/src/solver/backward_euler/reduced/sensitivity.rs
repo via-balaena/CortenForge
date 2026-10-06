@@ -78,12 +78,13 @@ where
     ///
     /// ## `x_prev`
     ///
-    /// Threaded through to the tangent exactly as the forward solve threads it. Pass
-    /// `Some(x_prev)` to differentiate the map [`ReducedNewtonSolver::step`] actually
-    /// solves: with friction active the forward residual depends on `x` through `∇D`,
-    /// so `∂r/∂x` includes `∇²D` and only the `Some` arm is the true Jacobian. (The
-    /// crate's full-order differentiable path passes `None` by a separate convention;
-    /// under [`NullContact`](crate::contact::NullContact) the two agree exactly.)
+    /// Threaded through to the tangent exactly as the forward solve threads it. With
+    /// friction active the forward residual depends on `x` through `∇D`, so `∂r/∂x`
+    /// includes `∇²D`, which only the `Some` arm assembles. Neither arm adds
+    /// the `∂λⁿ/∂x` term that `CpuNewtonSolver`'s friction gradients add as a Woodbury
+    /// correction, and this method checks neither `friction_mu` nor `fbar` (see
+    /// [`SolverConfig::friction_mu`](crate::solver::SolverConfig::friction_mu)). Under
+    /// [`NullContact`](crate::contact::NullContact) the two arms agree exactly.
     ///
     /// ## Cost
     ///
