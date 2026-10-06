@@ -510,8 +510,7 @@ where
     ///
     /// Panics if friction is active (`config.friction_mu != 0` and `x_prev`
     /// is `Some`) while `twist.angular` is non-zero: the friction pose
-    /// sensitivity supports only a pure translation (pass a translation
-    /// twist, or `x_prev = None` for the frictionless path).
+    /// sensitivity supports only a pure translation.
     #[must_use]
     pub fn equilibrium_pose_sensitivity(
         &self,

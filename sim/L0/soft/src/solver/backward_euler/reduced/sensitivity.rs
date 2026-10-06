@@ -78,10 +78,9 @@ where
     ///
     /// ## `x_prev`
     ///
-    /// Threaded through to the tangent exactly as the forward solve threads it. Pass
-    /// `Some(x_prev)` to differentiate the map [`ReducedNewtonSolver::step`] actually
-    /// solves: with friction active the forward residual depends on `x` through `∇D`,
-    /// so `∂r/∂x` includes `∇²D`, which only the `Some` arm assembles. Neither arm adds
+    /// Threaded through to the tangent exactly as the forward solve threads it. With
+    /// friction active the forward residual depends on `x` through `∇D`, so `∂r/∂x`
+    /// includes `∇²D`, which only the `Some` arm assembles. Neither arm adds
     /// the `∂λⁿ/∂x` term that `CpuNewtonSolver`'s friction gradients add as a Woodbury
     /// correction, and this method checks neither `friction_mu` nor `fbar` (see
     /// [`SolverConfig::friction_mu`](crate::solver::SolverConfig::friction_mu)). Under

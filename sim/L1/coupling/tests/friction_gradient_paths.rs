@@ -1,9 +1,7 @@
-//! With friction set, the coupling's normal-only gradients panic; without it they run.
+//! With friction set, four of the coupling's normal-only gradients panic; without it they run.
 //!
-//! These methods build the soft step's VJP without `x_prev`, and sim-soft panics on that
-//! when friction is set (`SolverConfig::friction_mu`). The friction-aware gradients are
-//! the `coupled_trajectory_tangential_*` family, checked in `tests/coupling_grad_harness.rs`.
-//! This file covers the free-platen methods; it checks only whether a call panics.
+//! These methods factor the soft adjoint without `x_prev`, and sim-soft panics on that when
+//! friction is set (`SolverConfig::friction_mu`). This file checks only whether a call panics.
 
 // let_underscore_must_use: each call is made only to see whether it panics, so its result
 // is discarded on purpose.
@@ -16,7 +14,7 @@ use sim_mjcf::load_model;
 
 const WITHOUT_X_PREV: &str = "friction-exact gradient requested without x_prev";
 
-/// The free platen resting on the soft block (the `coupling_grad_harness.rs` grip scene).
+/// A free platen resting on the soft block.
 fn platen(friction_mu: f64) -> StaggeredCoupling {
     const MJCF: &str = r#"<mujoco>
   <option gravity="2.0 0 -9.81" timestep="0.001"/>

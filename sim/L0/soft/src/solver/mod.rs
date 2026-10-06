@@ -212,9 +212,8 @@ pub trait Solver: Send + Sync {
     /// # Panics
     ///
     /// Panics on each failure that [`Self::try_step`] returns as `Err`. For
-    /// [`CpuNewtonSolver`], also panics when `fbar` is set, and when
-    /// `friction_mu` is nonzero, because `step` factors the adjoint without
-    /// `x_prev` (see [`SolverConfig::friction_mu`]).
+    /// [`CpuNewtonSolver`], also panics when `fbar` is set or `friction_mu` is
+    /// nonzero (see [`SolverConfig::friction_mu`]).
     fn step(
         &mut self,
         tape: &mut Self::Tape,
@@ -282,8 +281,7 @@ pub trait Solver: Send + Sync {
     /// # Panics
     ///
     /// For [`CpuNewtonSolver`], panics as [`Self::step`] does when `fbar` is
-    /// set, and when `friction_mu` is nonzero, because it factors the adjoint
-    /// without `x_prev` (see [`SolverConfig::friction_mu`]).
+    /// set or `friction_mu` is nonzero (see [`SolverConfig::friction_mu`]).
     fn try_step(
         &mut self,
         tape: &mut Self::Tape,
@@ -297,8 +295,7 @@ pub trait Solver: Send + Sync {
     /// semantics as [`Self::try_step`] but on the pure-function
     /// (tape-free) path. REQUIRED with no default impl, same
     /// rationale as `try_step`. It does not factor the adjoint tangent, so the
-    /// `fbar` and `friction_mu` panics under [`Self::try_step`] do not apply
-    /// (F-bar on Tet10 panics in the forward solve; see [`SolverConfig::fbar`]).
+    /// `fbar` and `friction_mu` panics under [`Self::try_step`] do not apply.
     ///
     /// # Errors
     /// Same as [`Self::try_step`].
