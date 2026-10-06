@@ -75,6 +75,7 @@ mod ising_learner;
 mod langevin;
 mod oscillating_field;
 mod pairwise_coupling;
+mod params;
 pub mod prf;
 mod ratchet;
 mod reference_integrator;

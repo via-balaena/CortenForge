@@ -19,6 +19,7 @@ use sim_core::{DVector, Data, Model};
 use crate::component::{PassiveComponent, check_position_dof, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
+use crate::params::{Domain, or_panic};
 
 /// Symmetric quartic double-well potential: `V(x) = a(x² − x₀²)²`
 /// where `a = ΔV / x₀⁴`.
@@ -74,15 +75,22 @@ impl DoubleWellPotential {
     /// - `dof`: DOF index (must be valid for the target model)
     ///
     /// # Panics
-    /// Panics if `delta_v <= 0` or `x_0 <= 0`.
+    /// If [`Self::try_new`] refuses the parameters.
     #[must_use]
+    #[track_caller]
     pub fn new(delta_v: f64, x_0: f64, dof: usize) -> Self {
-        assert!(
-            delta_v > 0.0,
-            "barrier height must be positive, got {delta_v}"
-        );
-        assert!(x_0 > 0.0, "well separation must be positive, got {x_0}");
-        Self { delta_v, x_0, dof }
+        or_panic(Self::try_new(delta_v, x_0, dof))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidParameter`] unless `delta_v` and `x_0` are finite and
+    /// positive.
+    pub fn try_new(delta_v: f64, x_0: f64, dof: usize) -> Result<Self, ThermostatError> {
+        Domain::Positive.check(COMPONENT, "delta_v", delta_v)?;
+        Domain::Positive.check(COMPONENT, "x_0", x_0)?;
+        Ok(Self { delta_v, x_0, dof })
     }
 
     /// Barrier height `ΔV`.
@@ -122,7 +130,8 @@ impl DoubleWellPotential {
     /// Kramers turnover, this formula overestimates the rate.
     ///
     /// # Panics
-    /// Panics unless `mass > 0`, `k_b_t > 0` and `gamma >= 0`.
+    /// Unless `mass` and `k_b_t` are finite and positive and `gamma` is finite and
+    /// non-negative.
     #[must_use]
     pub fn kramers_rate(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
         check_rate_inputs(gamma, mass, k_b_t);
@@ -159,7 +168,8 @@ impl DoubleWellPotential {
     /// `1/(λ²+¼)` denominator is essential — it makes `Υ → δ` as `δ → 0`.
     ///
     /// # Panics
-    /// Panics unless `mass > 0`, `k_b_t > 0` and `gamma >= 0`.
+    /// Unless `mass` and `k_b_t` are finite and positive and `gamma` is finite and
+    /// non-negative.
     #[must_use]
     pub fn depopulation_factor(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
         check_rate_inputs(gamma, mass, k_b_t);
@@ -200,7 +210,8 @@ impl DoubleWellPotential {
     /// `Υ ≤ 1`). See `docs/thermo_computing/03_phases/d4_physical_pbit` R1.
     ///
     /// # Panics
-    /// Panics unless `mass > 0`, `k_b_t > 0` and `gamma >= 0`.
+    /// Unless `mass` and `k_b_t` are finite and positive and `gamma` is finite and
+    /// non-negative.
     #[must_use]
     pub fn kramers_rate_turnover(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
         self.kramers_rate(gamma, mass, k_b_t) * self.depopulation_factor(gamma, mass, k_b_t)
@@ -222,11 +233,19 @@ impl DoubleWellPotential {
     }
 }
 
-/// The rate formulas' domain: positive mass and temperature, non-negative friction.
+const COMPONENT: &str = "DoubleWellPotential";
+
+/// The rate formulas' domain: finite positive mass and temperature, finite non-negative
+/// friction. Panics outside it.
+#[track_caller]
 fn check_rate_inputs(gamma: f64, mass: f64, k_b_t: f64) {
-    assert!(mass > 0.0, "mass must be positive, got {mass}");
-    assert!(k_b_t > 0.0, "k_b_t must be positive, got {k_b_t}");
-    assert!(gamma >= 0.0, "gamma must be non-negative, got {gamma}");
+    or_panic(rate_inputs(gamma, mass, k_b_t));
+}
+
+fn rate_inputs(gamma: f64, mass: f64, k_b_t: f64) -> Result<(), ThermostatError> {
+    Domain::Positive.check(COMPONENT, "mass", mass)?;
+    Domain::Positive.check(COMPONENT, "k_b_t", k_b_t)?;
+    Domain::NonNegative.check(COMPONENT, "gamma", gamma)
 }
 
 impl PassiveComponent for DoubleWellPotential {
@@ -256,6 +275,7 @@ impl Diagnose for DoubleWellPotential {
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+    use crate::params::refused_parameter;
 
     #[test]
     fn new_validates_positive_params() {
@@ -265,14 +285,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "barrier height must be positive")]
+    #[should_panic(expected = "DoubleWellPotential: delta_v must be finite and positive, got 0")]
     fn new_rejects_zero_barrier() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = DoubleWellPotential::new(0.0, 1.0, 0);
     }
 
     #[test]
-    #[should_panic(expected = "well separation must be positive")]
+    #[should_panic(expected = "DoubleWellPotential: x_0 must be finite and positive, got 0")]
     fn new_rejects_zero_separation() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = DoubleWellPotential::new(3.0, 0.0, 0);
@@ -435,9 +455,46 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "mass must be positive")]
+    #[should_panic(expected = "DoubleWellPotential: mass must be finite and positive, got 0")]
     fn kramers_rate_refuses_zero_mass() {
         let _rate = DoubleWellPotential::new(1.0, 1.0, 0).kramers_rate(0.1, 0.0, 1.0);
+    }
+
+    #[test]
+    fn try_new_refuses_a_barrier_or_separation_that_is_not_finite_and_positive() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            for (delta_v, x_0, parameter) in [(bad, 1.0, "delta_v"), (1.0, bad, "x_0")] {
+                assert_eq!(
+                    refused_parameter(DoubleWellPotential::try_new(delta_v, x_0, 0)).as_deref(),
+                    Some(parameter),
+                    "({delta_v}, {x_0})"
+                );
+            }
+        }
+        assert!(DoubleWellPotential::try_new(f64::MIN_POSITIVE, 1e300, 0).is_ok());
+    }
+
+    /// The rate formulas refuse +∞ like the other out-of-domain inputs: an infinite friction
+    /// or mass would make the rate `NaN`.
+    #[test]
+    fn rate_formulas_refuse_infinite_inputs() {
+        let well = DoubleWellPotential::new(1.0, 1.0, 0);
+        for (gamma, mass, k_b_t) in [
+            (f64::INFINITY, 1.0, 1.0),
+            (1.0, f64::INFINITY, 1.0),
+            (1.0, 1.0, f64::INFINITY),
+        ] {
+            let refused = std::panic::catch_unwind(|| well.kramers_rate(gamma, mass, k_b_t));
+            assert!(
+                refused.is_err(),
+                "kramers_rate({gamma}, {mass}, {k_b_t}) ran"
+            );
+            let refused = std::panic::catch_unwind(|| well.depopulation_factor(gamma, mass, k_b_t));
+            assert!(
+                refused.is_err(),
+                "depopulation_factor({gamma}, {mass}, {k_b_t}) ran"
+            );
+        }
     }
 
     /// Without friction there is no energy diffusion: the factor is 0, the δ → 0 limit.

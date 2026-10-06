@@ -75,6 +75,7 @@ use sim_core::{DVector, Data, Integrator, Model};
 use crate::component::{PassiveComponent, Stochastic, check_ctrl, check_dof, clamped_ctrl};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
+use crate::params::{Domain, or_panic};
 use crate::prf;
 
 /// Explicit Langevin thermostat implementing the
@@ -148,12 +149,9 @@ impl LangevinThermostat {
     /// [`Self::MAX_DOFS`] (`2^19`) entries, or an entry of `gamma`, or
     /// `k_b_t`, is negative or not finite.
     #[must_use]
-    #[allow(clippy::panic)] // the documented refusal; try_new is the non-panicking path
+    #[track_caller]
     pub fn new(gamma: DVector<f64>, k_b_t: f64, master_seed: u64, traj_id: u64) -> Self {
-        match Self::try_new(gamma, k_b_t, master_seed, traj_id) {
-            Ok(thermostat) => thermostat,
-            Err(e) => panic!("{e}"),
-        }
+        or_panic(Self::try_new(gamma, k_b_t, master_seed, traj_id))
     }
 
     /// [`Self::new`], returning the refusal instead of panicking.
@@ -170,7 +168,6 @@ impl LangevinThermostat {
         traj_id: u64,
     ) -> Result<Self, ThermostatError> {
         const COMPONENT: &str = "LangevinThermostat";
-        const REQUIREMENT: &str = "finite and non-negative";
         if gamma.len() > Self::MAX_DOFS {
             return Err(ThermostatError::TooManyDofs {
                 component: COMPONENT,
@@ -178,24 +175,8 @@ impl LangevinThermostat {
                 max: Self::MAX_DOFS,
             });
         }
-        for (i, &g) in gamma.iter().enumerate() {
-            if !g.is_finite() || g < 0.0 {
-                return Err(ThermostatError::InvalidParameter {
-                    component: COMPONENT,
-                    parameter: format!("gamma[{i}]"),
-                    value: g,
-                    requirement: REQUIREMENT,
-                });
-            }
-        }
-        if !k_b_t.is_finite() || k_b_t < 0.0 {
-            return Err(ThermostatError::InvalidParameter {
-                component: COMPONENT,
-                parameter: "k_b_t".to_owned(),
-                value: k_b_t,
-                requirement: REQUIREMENT,
-            });
-        }
+        Domain::NonNegative.check_each(COMPONENT, "gamma", gamma.as_slice())?;
+        Domain::NonNegative.check(COMPONENT, "k_b_t", k_b_t)?;
         Ok(Self {
             gamma,
             k_b_t,

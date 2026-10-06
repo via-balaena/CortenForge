@@ -783,7 +783,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "duplicate coupling: the pair (1, 0) appears twice")]
+    #[should_panic(
+        expected = "PairwiseCoupling: edge (1, 0) repeats the pair of an earlier edge (in either order)"
+    )]
     fn pairwise_coupling_refuses_a_reversed_duplicate_edge() {
         let _coupling = PairwiseCoupling::new(vec![1.0, 1.0], vec![(0, 1), (1, 0)]);
     }

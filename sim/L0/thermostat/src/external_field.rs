@@ -18,6 +18,7 @@ use sim_core::{DVector, Data, Model};
 use crate::component::{PassiveComponent, check_dof, check_position_dof, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
+use crate::params::{Domain, or_panic};
 
 /// Linear external field: `V = −Σ h_i · x_i`.
 ///
@@ -38,9 +39,22 @@ pub struct ExternalField {
 
 impl ExternalField {
     /// Create an external field with per-DOF field strengths.
+    ///
+    /// # Panics
+    /// If [`Self::try_new`] refuses the field.
     #[must_use]
-    pub const fn new(field_h: Vec<f64>) -> Self {
-        Self { field_h }
+    #[track_caller]
+    pub fn new(field_h: Vec<f64>) -> Self {
+        or_panic(Self::try_new(field_h))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidParameter`] if an entry of `field_h` is not finite.
+    pub fn try_new(field_h: Vec<f64>) -> Result<Self, ThermostatError> {
+        Domain::Finite.check_each("ExternalField", "field_h", &field_h)?;
+        Ok(Self { field_h })
     }
 
     /// Field strengths (read-only).

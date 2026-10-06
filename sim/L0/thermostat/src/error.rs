@@ -64,6 +64,48 @@ pub enum ThermostatError {
         /// The most it supports.
         max: usize,
     },
+    /// A list parameter has the wrong number of entries.
+    LengthMismatch {
+        /// The component's type name.
+        component: &'static str,
+        /// The list.
+        parameter: &'static str,
+        /// Its entry count.
+        len: usize,
+        /// The entry count it needs.
+        expected: usize,
+        /// What it needs one entry per (`"edge"`, `"spin"`).
+        per: &'static str,
+    },
+    /// An edge joins an element to itself, or repeats the pair of an earlier edge.
+    InvalidEdge {
+        /// The component's type name.
+        component: &'static str,
+        /// The edge, as given.
+        edge: (usize, usize),
+        /// What is wrong with it.
+        reason: &'static str,
+    },
+    /// An edge names a spin outside `0..n`.
+    EdgeOutOfRange {
+        /// The component's type name.
+        component: &'static str,
+        /// The edge, as given.
+        edge: (usize, usize),
+        /// The spin count.
+        n: usize,
+    },
+    /// A count parameter is outside its domain.
+    InvalidCount {
+        /// The component's type name.
+        component: &'static str,
+        /// The parameter.
+        parameter: &'static str,
+        /// The value supplied.
+        value: usize,
+        /// What the parameter must be.
+        requirement: &'static str,
+    },
     /// The model already has a passive callback (`Model::cb_passive`), from another stack or
     /// set directly. A model holds one, so installing would replace it; call
     /// `Model::clear_passive_callback` first to replace it on purpose.
@@ -122,6 +164,38 @@ impl fmt::Display for ThermostatError {
                 dofs,
                 max,
             } => write!(f, "{component} supports at most {max} DOFs, got {dofs}"),
+            Self::LengthMismatch {
+                component,
+                parameter,
+                len,
+                expected,
+                per,
+            } => write!(
+                f,
+                "{component}: {parameter} has {len} entries, expected {expected} (one per {per})"
+            ),
+            Self::InvalidEdge {
+                component,
+                edge: (i, j),
+                reason,
+            } => write!(f, "{component}: edge ({i}, {j}) {reason}"),
+            Self::EdgeOutOfRange {
+                component,
+                edge: (i, j),
+                n,
+            } => write!(
+                f,
+                "{component}: edge ({i}, {j}) names a spin outside 0..{n}"
+            ),
+            Self::InvalidCount {
+                component,
+                parameter,
+                value,
+                requirement,
+            } => write!(
+                f,
+                "{component}: {parameter} must be {requirement}, got {value}"
+            ),
             Self::PassiveCallbackInstalled => write!(
                 f,
                 "the model already has a passive callback; call Model::clear_passive_callback \
