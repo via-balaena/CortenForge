@@ -35,9 +35,11 @@ use crate::error::ThermostatError;
 ///
 /// # Which DOFs
 ///
-/// Each edge is a pair of DOF indices; the forces go to those DOFs. The position is read from the DOF's own coordinate, found through its joint: a slide or
-/// hinge DOF, or one of a free joint's three translation DOFs. A ball joint's DOFs and a free
-/// joint's rotation DOFs have no coordinate of their own, so
+/// Each edge is a pair of DOF indices; the forces go to those DOFs.
+/// The position is read through the DOF's joint, so the DOF must be a slide
+/// or hinge DOF, or one of a free joint's three translation DOFs. A ball
+/// joint's DOFs and a free joint's rotation DOFs have no coordinate of their
+/// own, so
 /// [`PassiveStack::install`](crate::PassiveStack::install) refuses them.
 ///
 /// # Example

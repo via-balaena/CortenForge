@@ -132,6 +132,8 @@ impl IsingLearner {
     /// - If `config.n_trajectories == 0`.
     /// - If an edge names a spin outside `0..n`, joins a spin to itself, or
     ///   repeats a pair.
+    /// - If `config.delta_v` or `config.x_0` is not positive (see
+    ///   [`DoubleWellPotential::new`]).
     /// - If the learner's passive stack refuses `model` (see
     ///   [`PassiveStack::validate`]): one of the first `n` DOFs has no
     ///   position coordinate of its own, or the model uses RK4.
@@ -268,8 +270,7 @@ impl IsingLearner {
 
         self.install_stack(seed, traj_id);
         let mut data = self.model.make_data();
-        // Each element's position coordinate. `install_stack` has checked that DOFs 0..n
-        // are slide or hinge joints.
+        // Each element's position coordinate; `new` checked that DOFs 0..n each have one.
         let x_index: Vec<usize> = (0..n).map(|i| qpos_index(&self.model, i)).collect();
 
         // Initial condition: all elements in the right well.
@@ -432,7 +433,7 @@ impl IsingLearner {
 /// The thermostat's `(master_seed, traj_id)` for trajectory `traj` of iteration `iteration`:
 /// the seed is `seed_base` itself and the trajectory id packs the iteration above the
 /// trajectory, so every pair gets its own noise stream within a run, and runs with different
-/// `seed_base` share none.
+/// `seed_base` share none (for iteration and trajectory indices below 2^32).
 const fn noise_ids(seed_base: u64, iteration: usize, traj: usize) -> (u64, u64) {
     (seed_base, ((iteration as u64) << 32) | traj as u64)
 }

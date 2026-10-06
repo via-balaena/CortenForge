@@ -159,7 +159,7 @@ impl PassiveStack {
     ///
     /// # Errors
     ///
-    /// The first error from [`Self::validate`]; `model` is left unchanged.
+    /// The first error from [`Self::validate`]; nothing is installed.
     pub fn try_install(self: &Arc<Self>, model: &mut Model) -> Result<(), ThermostatError> {
         self.validate(model)?;
         self.install_unchecked(model);
@@ -347,7 +347,8 @@ impl PerEnvStack for PassiveStack {
 /// RAII guard returned by [`PassiveStack::disable_stochastic`].
 ///
 /// While any guard on the stack is alive, every stochastic component in
-/// it is inactive (produces only deterministic forces). When the last
+/// it is inactive (produces only deterministic forces), unless switched
+/// back on with [`PassiveStack::set_all_stochastic`]. When the last
 /// live guard drops, the active flags from before the first guard are
 /// restored, whatever order the guards drop in.
 ///

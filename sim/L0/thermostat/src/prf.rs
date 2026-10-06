@@ -402,18 +402,23 @@ mod tests {
         let _ = noise_position(0, 0, 1 << 16);
     }
 
-    /// The largest group stays distinct from its neighbours on the step and trajectory axes.
+    /// Each field sits in its documented bit range, so no field can overlap another: groups,
+    /// step bits 32–47 and `traj_id` bits 32–63 at their extremes.
     #[test]
-    fn noise_position_keeps_the_largest_group_distinct() {
-        let top = (1 << 16) - 1;
-        let p = noise_position(5, 9, top);
-        for other in [
-            noise_position(5, 9, top - 1),
-            noise_position(5, 9 + (1 << 32), 0),
-            noise_position(5 + (1 << 32), 9, 0),
-            noise_position(6, 9, top),
+    fn noise_position_puts_each_field_in_its_bit_range() {
+        let step_hi = 0xFFFFu64;
+        for (traj, step, group) in [
+            (0u64, 0u64, 0u64),
+            (0xFFFF_FFFF, 0xFFFF_FFFF, (1 << 16) - 1),
+            (u64::MAX, (step_hi << 32) | 0xFFFF_FFFF, 1 << 15),
+            (0x0123_4567_89AB_CDEF, 0x0000_9876_5432_1001, 0x0ACE),
         ] {
-            assert_ne!(p, other);
+            let (counter, stream) = noise_position(traj, step, group);
+            assert_eq!(counter & 0xFFFF_FFFF, step & 0xFFFF_FFFF);
+            assert_eq!(counter >> 32, traj & 0xFFFF_FFFF);
+            assert_eq!(stream & 0xFFFF, group);
+            assert_eq!((stream >> 16) & 0xFFFF, step >> 32);
+            assert_eq!(stream >> 32, traj >> 32);
         }
     }
 }
