@@ -143,6 +143,27 @@ struct GaussGeometry<const N: usize, const G: usize> {
 /// `SdfMeshedTetMesh<Yeoh>`. Per-tet `M`
 /// instances live on the mesh and are read at the assembly hot
 /// points via `self.mesh.materials()`.
+///
+/// # Output on stderr
+///
+/// The solver factors the free-DOF tangent with Cholesky. When Cholesky hits a
+/// non-positive-definite pivot, the solver factors the same matrix with LU
+/// instead and prints one line to stderr with `eprintln!`:
+///
+/// ```text
+/// sim-soft: faer LU fallback fired at <site> (Llt non-PD pivot: …)
+/// ```
+///
+/// `<site>` is `factor_and_solve_free at Newton iter <k> (free residual norm <r>)`
+/// for an iteration of the forward solve, or
+/// `factor_at_position (IFT adjoint at x_final)` for the adjoint factor. The
+/// solve continues with the LU factor. If LU fails too, the step fails with
+/// [`SolverFailure::DoublyFailedFactor`](crate::solver::SolverFailure::DoublyFailedFactor):
+/// `step` and `replay_step` panic, and `try_step` and `try_replay_step` return
+/// it. No setting turns the line off. With
+/// [`SolverConfig::lm_regularization`](crate::solver::SolverConfig::lm_regularization)
+/// set, the Levenberg–Marquardt retries print lines of their own, each starting
+/// `sim-soft: LM`.
 pub struct CpuNewtonSolver<
     E,
     Msh,

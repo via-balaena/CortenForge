@@ -208,6 +208,13 @@ pub trait Solver: Send + Sync {
     /// tangent at `x_final`, and pushes `NewtonStepVjp` onto the tape
     /// with `theta_var` as parent. Deterministic in `(x_prev, v_prev,
     /// theta_value, dt)` — no cross-call output-affecting state.
+    ///
+    /// # Panics
+    ///
+    /// Panics on each failure that [`Self::try_step`] returns as `Err`. For
+    /// [`CpuNewtonSolver`], also panics when its config asks for a gradient the
+    /// adjoint does not support: `fbar` set, or a nonzero `friction_mu` (see
+    /// [`SolverConfig::friction_mu`]).
     fn step(
         &mut self,
         tape: &mut Self::Tape,
@@ -235,6 +242,11 @@ pub trait Solver: Send + Sync {
     /// host's core count. Replay on one machine reproduces itself, which
     /// is what the checkpointed-adjoint machinery in Part 6 Ch 04 needs;
     /// two machines agreeing bit-for-bit is not promised and never was.
+    ///
+    /// # Panics
+    ///
+    /// Panics on each failure that [`Self::try_replay_step`] returns as `Err`.
+    /// Call that method instead to handle a failed solve.
     fn replay_step(
         &self,
         x_prev: &Tensor<f64>,
@@ -266,6 +278,12 @@ pub trait Solver: Send + Sync {
     /// over-stretching / inverting, Decision Q) — all four always
     /// surface as `Err` here, never a panic. See variant docs for
     /// `x_partial` semantics.
+    ///
+    /// # Panics
+    ///
+    /// For [`CpuNewtonSolver`], panics, as [`Self::step`] does, when its config
+    /// asks for a gradient the adjoint does not support: `fbar` set, or a
+    /// nonzero `friction_mu` (see [`SolverConfig::friction_mu`]).
     fn try_step(
         &mut self,
         tape: &mut Self::Tape,

@@ -24,8 +24,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// Unlike the single-step [`Self::coupled_step_material_gradient`] (a
     /// non-mutating `&self` probe), this takes `&mut self` because it MUTATES the
-    /// coupling: it runs the rollout in place (the `sim-core` `Data` is not
-    /// `Clone`, so there is no copy to roll on). Build a fresh coupling per call.
+    /// coupling: it runs the rollout in place, and `StaggeredCoupling` is not
+    /// `Clone`, so there is no copy to roll on. Build a fresh coupling per call.
     ///
     /// The tape threads the full coupled recurrence so the reverse pass crosses
     /// BOTH step boundaries and the soft↔rigid interface over the whole rollout:

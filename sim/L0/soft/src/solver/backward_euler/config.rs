@@ -281,14 +281,35 @@ pub struct SolverConfig {
     /// Coulomb friction coefficient `μ_c` for the smoothed-Coulomb friction term
     /// (`contact::friction`). Default `0.0` = FRICTIONLESS, which short-circuits the
     /// friction scatter in the forward assembly → bit-equal to the pre-friction path
-    /// (the [`Self::skeleton`] / `gravity_z = 0` pattern). Friction enters the FORWARD
-    /// Newton solve (residual + its Hessian); the differentiable tangent
-    /// (`factor_at_position`) stays friction-free until the differentiability leaf.
+    /// (the [`Self::skeleton`] / `gravity_z = 0` pattern). Friction enters the forward
+    /// Newton solve (residual + its Hessian).
     ///
-    /// PR1 is FORWARD-ONLY: gradients with `friction_mu > 0` are **not** supported and the
-    /// differentiable paths (`step`, the VJP / equilibrium-sensitivity methods) panic rather
-    /// than silently return a tangent that omits the friction Hessian. Use `replay_step` for
-    /// forward-only friction; PR2 (the differentiability leaf) wires friction into the adjoint.
+    /// **Gradients with a nonzero `friction_mu`.** The friction adjoint needs the step-start
+    /// position `x_prev`, so a gradient method that factors the adjoint tangent without it
+    /// panics rather than return a gradient that leaves friction out. On Tet4:
+    /// - **Panic:** [`Solver::step`](crate::solver::Solver::step) and
+    ///   [`Solver::try_step`](crate::solver::Solver::try_step) (a panic, not an `Err`); the
+    ///   VJP builders `material_step_vjp`, `state_step_vjp`, `trajectory_step_vjp`,
+    ///   `trajectory_step_vjp_twist` and `trajectory_step_vjp_combined`;
+    ///   `equilibrium_dirichlet_reaction_sensitivity` and `equilibrium_dirichlet_reaction_vjp`;
+    ///   and `equilibrium_{pose,material,state}_sensitivity` called with `x_prev = None`.
+    /// - **Run:** those three called with `Some(x_prev)`, `equilibrium_drift_sensitivity`,
+    ///   `equilibrium_friction_coeff_sensitivity`, and the six `trajectory_step_vjp_grip*`
+    ///   methods. One caveat: [`equilibrium_state_sensitivity`] runs, but its right-hand side
+    ///   leaves out friction's own dependence on `x_prev` (see its doc).
+    ///
+    /// On Tet10 every one of these methods panics with friction set, with or without
+    /// `x_prev`. The Tet10 forward solve also panics once
+    /// [`IpcRigidContact`](crate::contact::IpcRigidContact) puts a face in contact, because
+    /// Tet10 face contact is frictionless only. `tests/gradient_entry_points.rs`
+    /// calls each method listed here and checks which ones panic.
+    ///
+    /// For forward-only friction, use
+    /// [`Solver::replay_step`](crate::solver::Solver::replay_step), or
+    /// [`Solver::try_replay_step`](crate::solver::Solver::try_replay_step) to get a failed
+    /// solve as an `Err`.
+    ///
+    /// [`equilibrium_state_sensitivity`]: crate::solver::CpuNewtonSolver::equilibrium_state_sensitivity
     pub friction_mu: f64,
     /// Friction velocity threshold `ε_v` (m/s): the transition-zone width in displacement
     /// space is `w = dt·ε_v` (below this sliding speed the smoothed force ramps from zero
@@ -313,12 +334,16 @@ pub struct SolverConfig {
     /// accurate path is higher-order (Tet10) — see the module docs and
     /// `docs/SIM_SOFT_TET10_PLAN.md`.
     ///
-    /// PR1 is FORWARD-ONLY: the differentiable paths (`step`, the VJP /
-    /// sensitivity methods) **panic** when `fbar` is set rather than silently
-    /// return a tangent that omits the F-bar neighbor coupling. Use
-    /// `replay_step` for forward-only F-bar; the differentiability leaf (PR2)
-    /// wires the coupling into the adjoint. (Mirrors the `friction_mu`
-    /// forward-only-in-PR1 contract above.)
+    /// **Gradients with `fbar` set.** Every method that factors the adjoint
+    /// tangent panics, with or without `x_prev`:
+    /// [`Solver::step`](crate::solver::Solver::step),
+    /// [`Solver::try_step`](crate::solver::Solver::try_step) (a panic, not an
+    /// `Err`), and the sensitivity and VJP methods listed under
+    /// [`Self::friction_mu`]. `tests/gradient_entry_points.rs` calls
+    /// each of them. For the forward solve, use
+    /// [`Solver::replay_step`](crate::solver::Solver::replay_step), or
+    /// [`Solver::try_replay_step`](crate::solver::Solver::try_replay_step) to
+    /// get a failed solve as an `Err`.
     pub fbar: bool,
     /// Where Newton starts each step. Default [`InitialGuess::PreviousState`]
     /// = start from `x_prev`, **bit-equal** to the pre-predictor path (the

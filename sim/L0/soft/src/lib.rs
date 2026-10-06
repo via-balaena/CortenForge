@@ -12,6 +12,11 @@
 //! [`NeoHookean`]); Yeoh consumers write `M = Yeoh` explicitly via the
 //! [`CpuTet4YeohSolver`] /
 //! [`PenaltyRigidContactYeohSolver`] aliases.
+//!
+//! The `Tensor`, `Tape` and `Var` types in the solver's signatures come from the
+//! `cortenforge-sim-ml-chassis` crate (imported as `sim_ml_chassis`), which this
+//! crate does not re-export. Through the `cortenforge` facade they are under
+//! `cortenforge::sim::ml_chassis`.
 
 // Lint policy for intentional placeholders is scoped per-module (not crate-wide)
 // so the crate root can't silently mask unrelated dead code or panic-doc gaps:
@@ -114,11 +119,13 @@ pub type CpuTet4YeohSolver<Msh> =
 /// `NullContact` + `NeoHookean`, generic over the mesh impl.
 ///
 /// The quadratic (Tet10) sibling of [`CpuTet4NHSolver`], driven with a
-/// [`Tet10Mesh`] (`CpuTet10NHSolver<Tet10Mesh>`). Ladder rung
-/// 3b onward the **forward** primal solve (`replay_step`) frees the midside
-/// DOFs and lumps their mass (HRZ); the **differentiable** path (`step` /
-/// sensitivities) is guarded until ladder rung 7 wires the Tet10 adjoint —
-/// see `docs/SIM_SOFT_TET10_PLAN.md`.
+/// [`Tet10Mesh`] (`CpuTet10NHSolver<Tet10Mesh>`). The forward solve
+/// (`replay_step`) frees the midside DOFs and lumps their mass (HRZ). The
+/// differentiable path (`step`, the sensitivities) runs on Tet10 and is checked
+/// against finite differences, for example in
+/// `tests/tet10_load_theta_gradcheck.rs` and
+/// `tests/tet10_material_sensitivity.rs`. It panics when the config sets `fbar`
+/// or a nonzero `friction_mu` (see [`SolverConfig::friction_mu`]).
 pub type CpuTet10NHSolver<Msh> =
     solver::CpuNewtonSolver<element::Tet10, Msh, contact::NullContact, material::NeoHookean, 10, 4>;
 
