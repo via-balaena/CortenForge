@@ -107,18 +107,18 @@ impl DoubleWellPotential {
     ///
     /// # Errors
     /// [`ThermostatError::InvalidParameter`] unless `delta_v` and `x_0` are finite and
-    /// positive, and so are the force's constants `ΔV/x₀⁴` and `x₀²` (an extreme `x₀`
-    /// makes them 0 or infinite, and the force `NaN`).
+    /// positive, and so is the force's constant `ΔV/x₀⁴` (an extreme `x₀` makes it 0 or
+    /// infinite, and the force `NaN`).
     pub fn try_new(delta_v: f64, x_0: f64, dof: usize) -> Result<Self, ThermostatError> {
         Domain::Positive.check(COMPONENT, "delta_v", delta_v)?;
         Domain::Positive.check(COMPONENT, "x_0", x_0)?;
-        let quartic = delta_v / x_0.powi(4);
-        if !(Domain::Positive.contains(quartic) && Domain::Positive.contains(x_0 * x_0)) {
+        // `x₀⁴` overflows or underflows before `x₀²` does, so this covers `x₀²` too.
+        if !Domain::Positive.contains(delta_v / x_0.powi(4)) {
             return Err(ThermostatError::InvalidParameter {
                 component: COMPONENT,
                 parameter: "x_0".to_owned(),
                 value: x_0,
-                requirement: "such that delta_v/x_0^4 and x_0^2 are finite and positive",
+                requirement: "such that delta_v/x_0^4 is finite and positive",
             });
         }
         Ok(Self { delta_v, x_0, dof })
@@ -535,11 +535,11 @@ mod tests {
         assert!(DoubleWellPotential::try_new(1e-6, 1e3, 0).is_ok());
     }
 
-    /// An `x₀` whose force constants `ΔV/x₀⁴` or `x₀²` leave the finite positive range is
-    /// refused: at `1e300` the quartic constant is 0 and `x₀²` infinite (the force is `NaN`),
-    /// at `1e-80` the quartic constant is infinite, at `1e100` it is 0 (no wells).
+    /// An `x₀` whose force constant `ΔV/x₀⁴` leaves the finite positive range is refused: at
+    /// `1e300` it is 0 and `x₀²` infinite (the force is `NaN`), at `1e-80` it is infinite, at
+    /// `1e100` it is 0 (no wells).
     #[test]
-    fn try_new_refuses_an_x0_whose_force_constants_are_not_finite_and_positive() {
+    fn try_new_refuses_an_x0_whose_force_constant_is_not_finite_and_positive() {
         for x_0 in [1e300, 1e-80, 1e100] {
             assert_eq!(
                 refused_parameter(DoubleWellPotential::try_new(3.0, x_0, 0)).as_deref(),
