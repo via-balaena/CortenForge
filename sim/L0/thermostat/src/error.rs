@@ -125,6 +125,16 @@ pub enum ThermostatError {
         /// What the parameter must be.
         requirement: &'static str,
     },
+    /// The thermostat's noise variance on a DOF, `2·γ·kT/h` at the largest temperature it
+    /// can apply, is not finite at the model's timestep `h`.
+    NoiseOverflow {
+        /// The component's type name.
+        component: &'static str,
+        /// The DOF.
+        dof: usize,
+        /// The model's timestep.
+        timestep: f64,
+    },
     /// The model already has a passive callback (`Model::cb_passive`), from another stack or
     /// set directly. A model holds one, so installing would replace it; call
     /// `Model::clear_passive_callback` first to replace it on purpose.
@@ -139,6 +149,7 @@ pub enum ThermostatError {
 }
 
 impl fmt::Display for ThermostatError {
+    #[allow(clippy::too_many_lines)] // one short arm per variant
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DofOutOfRange { component, dof, nv } => {
@@ -228,6 +239,15 @@ impl fmt::Display for ThermostatError {
             } => write!(
                 f,
                 "{component}: {parameter} must be {requirement}, got {value}"
+            ),
+            Self::NoiseOverflow {
+                component,
+                dof,
+                timestep,
+            } => write!(
+                f,
+                "{component}: the noise variance 2·gamma·k_b_t/timestep on DOF {dof} is not \
+                 finite at timestep {timestep}"
             ),
             Self::PassiveCallbackInstalled => write!(
                 f,

@@ -121,6 +121,9 @@ pub struct LangevinThermostat {
     k_b_t_ctrl: Option<usize>,
 }
 
+/// The largest temperature multiplier [`LangevinThermostat::ctrl_multiplier`] returns.
+const MAX_CTRL_MULTIPLIER: f64 = 10.0;
+
 impl LangevinThermostat {
     /// The most DOFs a thermostat acts on: each group of 8 DOFs needs its own
     /// noise stream, and there are `2^16` of them.
@@ -132,7 +135,10 @@ impl LangevinThermostat {
     ///
     /// The thermostat acts on DOFs `0..gamma.len()`: a `gamma` shorter than
     /// the model's DOF count leaves the other DOFs alone, and a longer one
-    /// is refused at install (see [`PassiveComponent::validate`]).
+    /// is refused at install (see [`PassiveComponent::validate`]). So is a
+    /// `gamma` and `k_b_t` whose noise variance `2·γ·kT/h` (×10 under
+    /// [`Self::with_ctrl_temperature`]) is not finite at the model's timestep
+    /// `h`; a timestep changed after install is not checked again.
     ///
     /// `master_seed` is expanded once at construction into a 32-byte
     /// `ChaCha8` key via `prf::expand_master_seed` (a private helper
@@ -194,7 +200,7 @@ impl LangevinThermostat {
     /// bad value (`NaN`, infinite, or beyond ±1e10) counting as 0.
     #[must_use]
     pub fn ctrl_multiplier(ctrl: f64) -> f64 {
-        clamped_ctrl(ctrl, 10.0)
+        clamped_ctrl(ctrl, MAX_CTRL_MULTIPLIER)
     }
 
     /// Enable runtime temperature modulation via a ctrl channel.
@@ -286,10 +292,24 @@ impl PassiveComponent for LangevinThermostat {
     }
 
     /// Accepts a `gamma` shorter than the model's DOF count: the thermostat acts on the
-    /// first DOFs only.
+    /// first DOFs only. Refuses a noise variance that is not finite at the model's timestep.
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         if let Some(last) = self.gamma.len().checked_sub(1) {
             check_dof(model, last, "LangevinThermostat")?;
+        }
+        // The largest variance `apply` can compute, in its order of operations.
+        let k_b_t = self.k_b_t * self.k_b_t_ctrl.map_or(1.0, |_| MAX_CTRL_MULTIPLIER);
+        let h = model.timestep;
+        if let Some(dof) = self
+            .gamma
+            .iter()
+            .position(|&gamma_i| !(2.0 * gamma_i * k_b_t / h).is_finite())
+        {
+            return Err(ThermostatError::NoiseOverflow {
+                component: "LangevinThermostat",
+                dof,
+                timestep: h,
+            });
         }
         if model.integrator == Integrator::RungeKutta4 {
             return Err(ThermostatError::UnsupportedIntegrator {
@@ -703,6 +723,33 @@ mod tests {
     )]
     fn new_panics_with_the_refusal() {
         let _t = LangevinThermostat::new(DVector::from_element(1, -1.0), 1.0, 0, 0);
+    }
+
+    /// A noise variance `2·γ·kT/h` that overflows `f64` is refused at install, under ctrl
+    /// temperature at its largest multiplier, 10. The fixture's timestep is 1e-3.
+    #[test]
+    fn install_refuses_a_noise_variance_that_overflows() {
+        let verdict = |gamma: f64, ctrl: bool| {
+            let mut model = sim_core::test_fixtures::stochastic_resonance();
+            let mut thermostat =
+                LangevinThermostat::new(DVector::from_element(1, gamma), 1.0, 0, 0);
+            if ctrl {
+                thermostat = thermostat.with_ctrl_temperature(0);
+            }
+            crate::PassiveStack::builder()
+                .with(thermostat)
+                .build()
+                .try_install(&mut model)
+        };
+        let overflow = Err(ThermostatError::NoiseOverflow {
+            component: "LangevinThermostat",
+            dof: 0,
+            timestep: 1e-3,
+        });
+        assert_eq!(verdict(1e306, false), overflow);
+        assert_eq!(verdict(1e304, false), Ok(()));
+        assert_eq!(verdict(1e304, true), overflow);
+        assert_eq!(verdict(1e303, true), Ok(()));
     }
 
     #[test]
