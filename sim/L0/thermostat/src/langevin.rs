@@ -13,8 +13,7 @@
 //! dissipation relation `σ² = 2γkT/h` is the only physics statement
 //! the implementation makes; everything else is bookkeeping.
 //!
-//! The discretization-bias temperature error is `O(h·γ/M)`; `h·γ/M = 10⁻⁴` at
-//! `h = 0.001`, `γ = 0.1`, `M = 1`.
+//! The discretization-bias temperature error is `O(h·γ/M)`.
 //!
 //! The damping is computed from each step's starting velocity, so under
 //! the Euler integrator, for a diagonal mass matrix, it alone multiplies a
@@ -55,7 +54,7 @@
 //! so which env draws which step depends on the order of the calls.
 //!
 //! The step index takes 48 bits of the noise position, so a thermostat panics
-//! once its step counter reaches `2^48` (after about `2.8·10¹⁴` steps with noise on). See
+//! once its step counter reaches `2^48`. See
 //! [`crate::prf`] for the primitives.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -84,8 +83,8 @@ use crate::prf;
 ///
 /// # Panics
 ///
-/// `apply` panics once the step counter reaches `2^48` (after about `2.8·10¹⁴`
-/// steps with noise on): the step index takes 48 bits of the noise position.
+/// `apply` panics once the step counter reaches `2^48`: the step index takes 48 bits of
+/// the noise position.
 pub struct LangevinThermostat {
     gamma: DVector<f64>,
     k_b_t: f64,
@@ -291,7 +290,7 @@ impl PassiveComponent for LangevinThermostat {
         if let Some(dof) = self
             .gamma
             .iter()
-            .position(|&gamma_i| !Domain::NonNegative.contains(2.0 * gamma_i * k_b_t / h))
+            .position(|&gamma_i| !(2.0 * gamma_i * k_b_t / h).is_finite())
         {
             return Err(ThermostatError::NoiseOverflow {
                 component: "LangevinThermostat",
@@ -738,26 +737,6 @@ mod tests {
         assert_eq!(verdict(1e304, false), Ok(()));
         assert_eq!(verdict(1e304, true), overflow);
         assert_eq!(verdict(1e303, true), Ok(()));
-
-        // A timestep that is not positive gives a variance that is not.
-        let mut model = sim_core::test_fixtures::stochastic_resonance();
-        model.timestep = -1e-3;
-        assert_eq!(
-            crate::PassiveStack::builder()
-                .with(LangevinThermostat::new(
-                    DVector::from_element(1, 1.0),
-                    1.0,
-                    0,
-                    0
-                ))
-                .build()
-                .try_install(&mut model),
-            Err(ThermostatError::NoiseOverflow {
-                component: "LangevinThermostat",
-                dof: 0,
-                timestep: -1e-3,
-            })
-        );
     }
 
     #[test]

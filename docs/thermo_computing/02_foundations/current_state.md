@@ -27,16 +27,16 @@ review pass.*
   2. `PassiveStack::builder().with(...).build().install(&mut model)`
   3. `install_per_env(prototype, n, build_one)` + defensive clear
      resolves the `Model::clone()` callback-sharing footgun
-
-  *Erratum (2026-10):* 0.10 removes `install`. `try_install` refuses a model
-  that already has a passive callback, and `install_per_env` panics on one
-  instead of clearing it.
   4. `Diagnose` trait with `diagnostic_summary -> String` (minimal)
   5. `WelfordOnline` (with `reset` + `merge` per M4) +
      `assert_within_n_sigma` + `sample_stats` test utilities
   6. Flat ml-bridge-style crate layout at `sim/L0/thermostat/`
   7. `Stochastic` orthogonal trait + `disable_stochastic()` RAII guard
      for FD/autograd contexts (Decision 7 added by doc review M2)
+
+  *Erratum (2026-10):* 0.10 removes `install`. `try_install` refuses a model
+  that already has a passive callback, and `install_per_env` panics on one
+  instead of clearing it.
 - **Doc review pass COMPLETE for must-fixes**. M1 (sampling-error
   tolerance wording), M2 (Decision 7 stochastic gating), M3 (Q5
   escalated to active recon), M4 (Welford reset + merge), M5 (trait

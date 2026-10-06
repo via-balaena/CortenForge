@@ -39,10 +39,7 @@ use crate::params::{Domain, or_panic};
 /// # A tilt removes a well
 ///
 /// A constant force `F` on the element (an [`ExternalField`](crate::ExternalField)
-/// entry) shifts its minima, and above `8ΔV/(3√3·x₀) ≈ 1.54·ΔV/x₀` it leaves only one.
-/// Neighbours coupled through a [`PairwiseCoupling`](crate::PairwiseCoupling) move too,
-/// so for them the point depends on the graph (see
-/// [`IsingProblem::tilt_ratios`](crate::IsingProblem::tilt_ratios)):
+/// entry) shifts its minima, and above `8ΔV/(3√3·x₀) ≈ 1.54·ΔV/x₀` it leaves only one:
 ///
 /// ```
 /// use sim_thermostat::DoubleWellPotential;

@@ -99,8 +99,7 @@ impl LearnerConfig {
 /// and the summary statistics (for the Boltzmann learning rule update).
 ///
 /// Build one with [`Self::from_ising_params`]; the struct is `#[non_exhaustive]`, so a
-/// field added in a later release does not break callers. Its fields can still be set,
-/// for a target taken from data.
+/// field added in a later release does not break callers.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct IsingTarget {
@@ -186,10 +185,9 @@ pub struct LearningRecord {
 ///
 /// Spin `i` lives on DOF `i` for `i < n`. Each of those DOFs must have a
 /// position coordinate of its own (a slide or hinge DOF, or a free joint's
-/// translation DOF), and the model must not use RK4: [`Self::try_new`] checks
-/// both. The learner replaces the model's passive callback for every
-/// trajectory, steps at the model's timestep, and puts no damping or noise on
-/// DOFs past `n`. Gravity, contacts and actuators act as the model defines
+/// translation DOF), the model must not use RK4, and it must not have a
+/// passive callback: [`Self::try_new`] checks all three. The learner steps at
+/// the model's timestep and puts no damping or noise on DOFs past `n`. Gravity, contacts and actuators act as the model defines
 /// them, so the usual model is `n` slide joints without any:
 /// `sim_therm_env::generate_mjcf(n, 0, 0.001, (0.0, 1.0))` writes one.
 pub struct IsingLearner {
@@ -218,8 +216,8 @@ impl IsingLearner {
     /// - [`ThermostatError::TooManySpins`] if `config.n` exceeds
     ///   [`MAX_EXACT_SPINS`](crate::ising::MAX_EXACT_SPINS).
     /// - [`ThermostatError::EdgeOutOfRange`], [`ThermostatError::SelfEdge`] or
-    ///   [`ThermostatError::RepeatedEdge`] if an edge
-    ///   names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
+    ///   [`ThermostatError::RepeatedEdge`] if an edge names a spin outside `0..n`, joins a
+    ///   spin to itself, or repeats a pair.
     /// - [`ThermostatError::DofOutOfRange`] if `model` has fewer than `n` DOFs.
     /// - [`ThermostatError::LengthMismatch`] unless the target has one magnetization per
     ///   spin, one correlation per edge and one probability per configuration (`2^n`).
@@ -564,8 +562,9 @@ impl IsingLearner {
     }
 
     /// Current coupling constants, as given to [`PairwiseCoupling`]: energy per unit
-    /// position squared (force per unit position). At the wells' bottoms `±x₀` they put Ising coupling `J·x₀²` on each edge, so
-    /// they are the Ising couplings themselves only at `x₀ = 1`.
+    /// position squared (force per unit position). At the wells' bottoms `±x₀` they put
+    /// Ising coupling `J·x₀²` on each edge, so they are the Ising couplings themselves only
+    /// at `x₀ = 1`.
     #[must_use]
     pub fn coupling_j(&self) -> &[f64] {
         &self.coupling_j
@@ -927,8 +926,6 @@ mod tests {
         let _learner = IsingLearner::new(minimal_config(), minimal_target(), model);
     }
 
-    /// The exact distribution needs `kT > 0`; the thermostat alone would take 0, and the
-    /// first `step` used to panic after running every trajectory.
     /// The learner installs its own stack for every trajectory, so it refuses a model whose
     /// passive callback it would replace.
     #[test]
@@ -941,6 +938,8 @@ mod tests {
         );
     }
 
+    /// The exact distribution needs `kT > 0`; the thermostat alone would take 0, and the
+    /// first `step` used to panic after running every trajectory.
     #[test]
     fn try_new_refuses_zero_temperature() {
         let mut config = minimal_config();

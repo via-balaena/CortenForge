@@ -117,8 +117,8 @@ impl PairwiseCoupling {
     /// - [`ThermostatError::LengthMismatch`] unless `coupling_j` has one entry per edge.
     /// - [`ThermostatError::InvalidParameter`] if an entry of `coupling_j` is not finite.
     /// - [`ThermostatError::SelfEdge`] if an edge has `i == j` (self-coupling), or
-    ///   [`ThermostatError::RepeatedEdge`] if a pair
-    ///   appears twice in either order (the two edges would add their `J`s).
+    ///   [`ThermostatError::RepeatedEdge`] if a pair appears twice in either order (the two
+    ///   edges would add their `J`s).
     pub fn try_new(
         coupling_j: Vec<f64>,
         edges: Vec<(usize, usize)>,

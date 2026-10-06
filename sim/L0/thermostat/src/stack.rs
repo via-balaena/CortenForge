@@ -277,9 +277,7 @@ impl PassiveStack {
 /// returns an [`EnvBatch<PassiveStack>`] holding the N installed
 /// models and retained stack handles.
 ///
-/// For `BatchSim`-style parallel-env runs, where each env needs its own
-/// stack, and so its own thermostat step counter. A component shared
-/// between two stacks (one `Arc` passed to both through
+/// A component shared between two stacks (one `Arc` passed to both through
 /// [`PassiveStackBuilder::with_arc`]) is not detected, and shares its state.
 ///
 /// # Panics
@@ -308,8 +306,7 @@ impl PerEnvStack for PassiveStack {
             let (mut model, stack) = build_one(i);
             if let Some(earlier) = stacks.iter().position(|s| Arc::ptr_eq(s, &stack)) {
                 panic!(
-                    "install_per_env: env {i} got the stack of env {earlier}; each env needs its \
-                     own, or they share the thermostat's step counter"
+                    "install_per_env: env {i} got the stack of env {earlier}; each env needs its own"
                 );
             }
             if let Err(e) = stack.try_install(&mut model) {
@@ -780,7 +777,7 @@ mod tests {
         });
     }
 
-    /// A stack returned for two envs is refused: they would share its step counter.
+    /// A stack returned for two envs is refused.
     #[test]
     #[should_panic(expected = "install_per_env: env 1 got the stack of env 0")]
     fn install_per_env_refuses_one_stack_for_two_envs() {

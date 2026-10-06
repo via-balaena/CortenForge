@@ -52,8 +52,8 @@ impl IsingProblem {
     ///
     /// # Errors
     /// - [`ThermostatError::EdgeOutOfRange`], [`ThermostatError::SelfEdge`] or
-    ///   [`ThermostatError::RepeatedEdge`] if an edge
-    ///   names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
+    ///   [`ThermostatError::RepeatedEdge`] if an edge names a spin outside `0..n`, joins a
+    ///   spin to itself, or repeats a pair.
     /// - [`ThermostatError::LengthMismatch`] unless `coupling_j` has one entry per edge and
     ///   `field_h` one per spin.
     /// - [`ThermostatError::InvalidParameter`] if an entry of either is not finite.

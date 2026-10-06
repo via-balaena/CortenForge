@@ -136,12 +136,12 @@ impl Physics {
 
 // ─── The test's energy is the components' ────────────────────────────────
 
-/// `Physics::energy` is the components' energy, and the force of the stack
-/// `IsingProblem::add_components` installs is its negative gradient: at `x₀ = 1.5`, so a
-/// `J/x₀` for `J/x₀²` mix-up shows. (The quadrature below assembles the same terms site by
-/// site in `visit`.)
+/// `Physics::energy` is the energy of the component types (built here with `J/x₀²` and
+/// `h/x₀`), and the force of the stack `IsingProblem::add_components` installs is its
+/// negative gradient: at `x₀ = 1.5`, so a `J/x₀` for `J/x₀²` mix-up shows. (The quadrature
+/// below assembles the same terms site by site in `visit`.)
 #[test]
-fn the_test_energy_and_force_are_the_installed_components() {
+fn the_test_energy_is_the_components_and_the_installed_force_its_gradient() {
     let physics = Physics {
         delta_v: 3.0,
         x_0: 1.5,

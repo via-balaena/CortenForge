@@ -132,8 +132,7 @@ pub enum ThermostatError {
         requirement: &'static str,
     },
     /// The thermostat's noise variance on a DOF, `2·γ·kT/h` at the largest temperature it
-    /// can apply, is not finite and non-negative at the model's timestep `h` (a huge `γ·kT`,
-    /// or a timestep that is not positive).
+    /// can apply, is not finite at the model's timestep `h`.
     NoiseOverflow {
         /// The component's type name.
         component: &'static str,
@@ -260,7 +259,7 @@ impl fmt::Display for ThermostatError {
             } => write!(
                 f,
                 "{component}: the noise variance 2·gamma·k_b_t/timestep on DOF {dof} is not \
-                 finite and non-negative at timestep {timestep}"
+                 finite at timestep {timestep}"
             ),
             Self::PassiveCallbackInstalled => write!(
                 f,
