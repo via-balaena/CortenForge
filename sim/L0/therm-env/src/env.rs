@@ -7,6 +7,8 @@ use sim_ml_chassis::{
     ActionSpace, Environment, ObservationSpace, ResetError, SimEnv, StepResult, Tensor,
 };
 
+use sim_thermostat::LangevinThermostat;
+
 use crate::builder::ThermCircuitEnvBuilder;
 
 /// A thermodynamic-circuit environment implementing [`Environment`].
@@ -51,11 +53,12 @@ impl ThermCircuitEnv {
     }
 
     /// Effective temperature: `k_B·T * ctrl_multiplier` if ctrl-temperature
-    /// is enabled, otherwise just `k_B·T`.
+    /// is enabled, otherwise just `k_B·T`. The multiplier is the
+    /// thermostat's, [`LangevinThermostat::ctrl_multiplier`] of the control.
     #[must_use]
     pub fn effective_temperature(&self) -> f64 {
         self.ctrl_temperature_idx.map_or(self.k_b_t, |idx| {
-            self.k_b_t * self.inner.data().ctrl[idx].clamp(0.0, 10.0)
+            self.k_b_t * LangevinThermostat::ctrl_multiplier(self.inner.data().ctrl[idx])
         })
     }
 

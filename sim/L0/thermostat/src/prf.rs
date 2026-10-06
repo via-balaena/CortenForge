@@ -4,7 +4,7 @@
 //! Two kinds of primitives live here:
 //!
 //! 1. **Per-step noise generation.** The private helpers
-//!    `chacha8_block`, `expand_master_seed`, `encode_block_counter`,
+//!    `chacha8_block`, `expand_master_seed`, `noise_position`,
 //!    and `box_muller_from_block` form the Route 2 PRF chain that
 //!    C-3 stochastic components (starting with
 //!    [`LangevinThermostat`](crate::LangevinThermostat)) call
@@ -36,19 +36,19 @@
 //! components.
 
 /// Compute one `ChaCha8` block keyed by `key` at block counter
-/// `block_counter`. Returns 64 bytes (one `ChaCha` block) of
-/// uniform pseudorandom output. Pure function: same inputs
+/// `block_counter` in stream `stream`. Returns 64 bytes (one `ChaCha`
+/// block) of uniform pseudorandom output. Pure function: same inputs
 /// always produce the same output.
 ///
-/// The block counter occupies the low 64 bits of `ChaCha`'s
-/// 128-bit position field (state words 12 and 13, low-word
-/// first); state words 14 and 15 are zero. This matches
-/// `rand_chacha 0.9`'s `ChaCha8Rng::set_word_pos(counter * 16)`
-/// convention, verified by the cross-check tests in this file.
-// Truncating `block_counter` and `block_counter >> 32` to u32 is the
-// intended split into ChaCha state words 12 and 13.
+/// The block counter fills state words 12 and 13 and the stream fills
+/// words 14 and 15, each low word first. This matches `rand_chacha
+/// 0.9`'s `ChaCha8Rng::set_stream(stream)` followed by
+/// `set_word_pos(counter * 16)`, verified by the cross-check tests in
+/// this file.
+// Truncating each u64 and its `>> 32` to u32 is the intended split into
+// ChaCha state words 12–13 (counter) and 14–15 (stream).
 #[allow(clippy::cast_possible_truncation)]
-pub(crate) fn chacha8_block(key: &[u8; 32], block_counter: u64) -> [u8; 64] {
+pub(crate) fn chacha8_block(key: &[u8; 32], block_counter: u64, stream: u64) -> [u8; 64] {
     // ChaCha constants: "expand 32-byte k" as four little-endian u32s.
     const C0: u32 = 0x6170_7865;
     const C1: u32 = 0x3320_646e;
@@ -66,8 +66,8 @@ pub(crate) fn chacha8_block(key: &[u8; 32], block_counter: u64) -> [u8; 64] {
     }
     state[12] = block_counter as u32;
     state[13] = (block_counter >> 32) as u32;
-    // state[14] and state[15] stay zero — the high 64 bits of
-    // ChaCha's 128-bit position field are unused here.
+    state[14] = stream as u32;
+    state[15] = (stream >> 32) as u32;
 
     let initial = state;
 
@@ -115,8 +115,9 @@ const fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: u
 ///
 /// The cross-verification tests in this module assert that the
 /// end-to-end pipeline
-/// `chacha8_block(&expand_master_seed(s), n)` matches
-/// `ChaCha8Rng::seed_from_u64(s)` advanced to block `n`.
+/// `chacha8_block(&expand_master_seed(s), n, k)` matches
+/// `ChaCha8Rng::seed_from_u64(s)` set to stream `k` and advanced to
+/// block `n`.
 // PCG32-XSH-RR's xorshifted and rotation values are intentionally
 // truncated to u32 — this is the algorithm's defined output width.
 #[allow(clippy::cast_possible_truncation)]
@@ -138,11 +139,26 @@ pub(crate) fn expand_master_seed(master_seed: u64) -> [u8; 32] {
     seed
 }
 
-/// Encode a `(traj_id, step_index)` pair into a 64-bit block
-/// counter. 32/32 split (D4): `traj_id` occupies the high 32
-/// bits, `step_index` the low 32 bits.
-pub(crate) const fn encode_block_counter(traj_id: u64, step_index: u64) -> u64 {
-    (traj_id << 32) | (step_index & 0xFFFF_FFFF)
+/// The `ChaCha` position `(block_counter, stream)` of the noise block for DOF group `group`
+/// at step `step_index` of trajectory `traj_id`.
+///
+/// - counter: bits 0–31 are `step_index` bits 0–31, bits 32–63 are `traj_id` bits 0–31;
+/// - stream: bits 0–15 are `group`, bits 16–31 are `step_index` bits 32–47, bits 32–63 are
+///   `traj_id` bits 32–63.
+///
+/// Every `(traj_id, step_index < 2^48, group < 2^16)` gets its own position. Group 0 with
+/// `traj_id` and `step_index` below `2^32` keeps stream 0, so its noise is the same as before
+/// the stream words were used.
+///
+/// # Panics
+///
+/// Panics if `step_index >= 2^48` or `group >= 2^16`, where positions would repeat.
+pub(crate) const fn noise_position(traj_id: u64, step_index: u64, group: u64) -> (u64, u64) {
+    assert!(step_index < 1 << 48, "noise step index must be below 2^48");
+    assert!(group < 1 << 16, "noise DOF group must be below 2^16");
+    let counter = (traj_id << 32) | (step_index & 0xFFFF_FFFF);
+    let stream = group | ((step_index >> 32) << 16) | ((traj_id >> 32) << 32);
+    (counter, stream)
 }
 
 /// Apply Box–Muller to a 64-byte block, producing 8 `f64`
@@ -210,16 +226,17 @@ mod tests {
     use rand::{RngCore, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
-    fn ref_block(seed: u64, counter: u64) -> [u8; 64] {
+    fn ref_block(seed: u64, counter: u64, stream: u64) -> [u8; 64] {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        rng.set_stream(stream);
         rng.set_word_pos(u128::from(counter) * 16);
         let mut out = [0u8; 64];
         rng.fill_bytes(&mut out);
         out
     }
 
-    fn our_block(seed: u64, counter: u64) -> [u8; 64] {
-        chacha8_block(&expand_master_seed(seed), counter)
+    fn our_block(seed: u64, counter: u64, stream: u64) -> [u8; 64] {
+        chacha8_block(&expand_master_seed(seed), counter, stream)
     }
 
     #[test]
@@ -249,25 +266,52 @@ mod tests {
         }
     }
 
+    /// Every `(traj_id, step, group)` on a grid that crosses the 32-bit boundaries gets its own
+    /// position, and group 0 below those boundaries keeps the position it had when the
+    /// counter alone carried `(traj_id, step)` (stream 0).
     #[test]
-    fn encode_block_counter_round_trip() {
-        let cases = [
-            (0u64, 0u64),
-            (1, 0),
-            (0, 1),
-            (42, 100),
-            (0xFFFF_FFFF, 0xFFFF_FFFF),
-        ];
-        for (traj_id, step_index) in cases {
-            let encoded = encode_block_counter(traj_id, step_index);
-            assert_eq!(encoded >> 32, traj_id);
-            assert_eq!(encoded & 0xFFFF_FFFF, step_index);
+    fn noise_position_is_one_to_one_and_keeps_group_zero() {
+        let trajs = [0u64, 7, (1 << 32) - 1, 1 << 32, u64::MAX];
+        let steps = [0u64, 1, (1 << 32) - 1, 1 << 32, (1 << 48) - 1];
+        let mut seen = std::collections::HashSet::new();
+        for &traj in &trajs {
+            for &step in &steps {
+                for group in 0..4 {
+                    assert!(
+                        seen.insert(noise_position(traj, step, group)),
+                        "position repeated at (traj {traj:#x}, step {step:#x}, group {group})"
+                    );
+                }
+                if traj < 1 << 32 && step < 1 << 32 {
+                    assert_eq!(noise_position(traj, step, 0), ((traj << 32) | step, 0));
+                }
+            }
         }
     }
 
     #[test]
+    #[should_panic(expected = "noise step index must be below 2^48")]
+    fn noise_position_refuses_a_step_past_2_pow_48() {
+        let _ = noise_position(0, 1 << 48, 0);
+    }
+
+    #[test]
     fn chacha8_block_matches_rand_chacha_at_origin() {
-        assert_eq!(our_block(0, 0), ref_block(0, 0));
+        assert_eq!(our_block(0, 0, 0), ref_block(0, 0, 0));
+    }
+
+    /// Streams whose two 32-bit halves differ, so a swap of words 14 and 15 cannot pass.
+    #[test]
+    fn chacha8_block_matches_rand_chacha_with_a_stream() {
+        for stream in [1u64, 1 << 32, 0x0000_0001_0002_0003] {
+            for counter in [0u64, 0xFFFF_FFFF, 0x1_0000_0000] {
+                assert_eq!(
+                    our_block(42, counter, stream),
+                    ref_block(42, counter, stream),
+                    "mismatch at (counter={counter:#x}, stream={stream:#x})"
+                );
+            }
+        }
     }
 
     #[test]
@@ -276,14 +320,20 @@ mod tests {
         // u32 maximum (last block where state[13] is zero) and
         // counter at u32_max + 1 (first block where state[13]
         // is nonzero).
-        assert_eq!(our_block(42, 0xFFFF_FFFF), ref_block(42, 0xFFFF_FFFF));
-        assert_eq!(our_block(42, 0x1_0000_0000), ref_block(42, 0x1_0000_0000));
+        assert_eq!(our_block(42, 0xFFFF_FFFF, 0), ref_block(42, 0xFFFF_FFFF, 0));
+        assert_eq!(
+            our_block(42, 0x1_0000_0000, 0),
+            ref_block(42, 0x1_0000_0000, 0)
+        );
     }
 
     #[test]
     fn chacha8_block_matches_rand_chacha_near_u64_max() {
         let counter = u64::MAX - 1;
-        assert_eq!(our_block(u64::MAX, counter), ref_block(u64::MAX, counter));
+        assert_eq!(
+            our_block(u64::MAX, counter, 0),
+            ref_block(u64::MAX, counter, 0)
+        );
     }
 
     #[test]
@@ -298,8 +348,8 @@ mod tests {
         ];
         for (seed, counter) in pairs {
             assert_eq!(
-                our_block(seed, counter),
-                ref_block(seed, counter),
+                our_block(seed, counter, 0),
+                ref_block(seed, counter, 0),
                 "mismatch at (seed={seed:#x}, counter={counter:#x})"
             );
         }
@@ -308,8 +358,8 @@ mod tests {
     #[test]
     fn chacha8_block_is_pure() {
         let key = expand_master_seed(12345);
-        let a = chacha8_block(&key, 42);
-        let b = chacha8_block(&key, 42);
+        let a = chacha8_block(&key, 42, 7);
+        let b = chacha8_block(&key, 42, 7);
         assert_eq!(a, b);
     }
 
@@ -344,5 +394,31 @@ mod tests {
         // near machine epsilon.
         assert!(out[0].abs() > 1.0);
         assert!(out[1].abs() < 1e-10);
+    }
+
+    #[test]
+    #[should_panic(expected = "noise DOF group must be below 2^16")]
+    fn noise_position_refuses_group_2_pow_16() {
+        let _ = noise_position(0, 0, 1 << 16);
+    }
+
+    /// Each field sits in its documented bit range, so no field can overlap another: groups,
+    /// step bits 32–47 and `traj_id` bits 32–63 at their extremes.
+    #[test]
+    fn noise_position_puts_each_field_in_its_bit_range() {
+        let step_hi = 0xFFFFu64;
+        for (traj, step, group) in [
+            (0u64, 0u64, 0u64),
+            (0xFFFF_FFFF, 0xFFFF_FFFF, (1 << 16) - 1),
+            (u64::MAX, (step_hi << 32) | 0xFFFF_FFFF, 1 << 15),
+            (0x0123_4567_89AB_CDEF, 0x0000_9876_5432_1001, 0x0ACE),
+        ] {
+            let (counter, stream) = noise_position(traj, step, group);
+            assert_eq!(counter & 0xFFFF_FFFF, step & 0xFFFF_FFFF);
+            assert_eq!(counter >> 32, traj & 0xFFFF_FFFF);
+            assert_eq!(stream & 0xFFFF, group);
+            assert_eq!((stream >> 16) & 0xFFFF, step >> 32);
+            assert_eq!(stream >> 32, traj >> 32);
+        }
     }
 }

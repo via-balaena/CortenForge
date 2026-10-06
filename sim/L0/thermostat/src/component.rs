@@ -27,7 +27,10 @@
 //! and `Model` is itself `Clone + Send + Sync` for `BatchSim` parallel
 //! environments.
 
-use sim_core::{DVector, Data, Model};
+use sim_core::{DVector, Data, MjJointType, Model, is_bad};
+
+use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 
 /// A passive force injector that writes into a per-DOF accumulator.
 ///
@@ -72,6 +75,112 @@ pub trait PassiveComponent: Send + Sync + 'static {
     fn as_stochastic(&self) -> Option<&dyn Stochastic> {
         None
     }
+
+    /// Check that `model` has everything this component addresses: its DOFs, its control
+    /// channels, and a position coordinate of its own for every DOF whose position it reads
+    /// (a slide or hinge DOF, or a free joint's translation DOF).
+    /// [`PassiveStack::install`](crate::PassiveStack::install) calls it on every component
+    /// before installing.
+    ///
+    /// The default accepts any model. A component that wraps another must forward this
+    /// call, or the inner component's checks never run.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ThermostatError`] the model fails.
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        let _ = model;
+        Ok(())
+    }
+
+    /// The component's [`Diagnose`] view, so a caller holding the stack's
+    /// `Arc<dyn PassiveComponent>`s can read each one's summary. The
+    /// default is `None`; every component in this crate returns `Some`.
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        None
+    }
+}
+
+/// Check that DOF `dof` exists in `model`.
+pub const fn check_dof(
+    model: &Model,
+    dof: usize,
+    component: &'static str,
+) -> Result<(), ThermostatError> {
+    if dof < model.nv {
+        Ok(())
+    } else {
+        Err(ThermostatError::DofOutOfRange {
+            component,
+            dof,
+            nv: model.nv,
+        })
+    }
+}
+
+/// The `qpos` index of DOF `dof`'s own position coordinate, or `None` if it has none.
+///
+/// A slide or hinge DOF's coordinate is its joint's; a free joint's three translation DOFs
+/// each have one (`qpos[adr + k]` for DOF `k < 3` of the joint). A ball joint's DOFs and a
+/// free joint's rotation DOFs move a quaternion, so they have no coordinate of their own.
+/// `qpos` and `qvel` share indices only until the first ball or free joint, so the index is
+/// found through the joint. The caller has checked `dof < model.nv`.
+fn position_index(model: &Model, dof: usize) -> Option<usize> {
+    let joint = model.dof_jnt[dof];
+    let adr = model.jnt_qpos_adr[joint];
+    let k = dof - model.jnt_dof_adr[joint];
+    match model.jnt_type[joint] {
+        MjJointType::Slide | MjJointType::Hinge => Some(adr),
+        MjJointType::Free if k < 3 => Some(adr + k),
+        _ => None,
+    }
+}
+
+/// Check that DOF `dof` exists in `model` and has its own position coordinate,
+/// `qpos[qpos_index(model, dof)]` (see [`position_index`]).
+pub fn check_position_dof(
+    model: &Model,
+    dof: usize,
+    component: &'static str,
+) -> Result<(), ThermostatError> {
+    check_dof(model, dof, component)?;
+    match position_index(model, dof) {
+        Some(_) => Ok(()),
+        None => Err(ThermostatError::NoPositionCoordinate { component, dof }),
+    }
+}
+
+/// The `qpos` index of DOF `dof`'s position coordinate. The caller has checked the DOF with
+/// [`check_position_dof`]; for a DOF without one it returns its joint's first coordinate.
+pub fn qpos_index(model: &Model, dof: usize) -> usize {
+    position_index(model, dof).unwrap_or(model.jnt_qpos_adr[model.dof_jnt[dof]])
+}
+
+/// Check that control channel `ctrl` exists in `model`.
+pub const fn check_ctrl(
+    model: &Model,
+    ctrl: usize,
+    component: &'static str,
+) -> Result<(), ThermostatError> {
+    if ctrl < model.nu {
+        Ok(())
+    } else {
+        Err(ThermostatError::CtrlOutOfRange {
+            component,
+            ctrl,
+            nu: model.nu,
+        })
+    }
+}
+
+/// A control value clamped to `[0, max]`. A bad value (`NaN`, infinite, or beyond ±1e10:
+/// [`sim_core::is_bad`]) reads as 0, the value sim-core's actuation stage sets it to.
+pub fn clamped_ctrl(value: f64, max: f64) -> f64 {
+    if is_bad(value) {
+        0.0
+    } else {
+        value.clamp(0.0, max)
+    }
 }
 
 /// Decision-7 gating opt-in for stochastic passive components.
@@ -106,6 +215,10 @@ pub trait Stochastic: Send + Sync {
 
     /// Read the current active flag.
     fn is_stochastic_active(&self) -> bool;
+
+    /// Restart the noise sequence from its first step, so a reset
+    /// simulation draws the same noise again.
+    fn reset_stochastic(&self);
 }
 
 #[cfg(test)]
@@ -149,6 +262,7 @@ mod tests {
         fn is_stochastic_active(&self) -> bool {
             self.active.load(Ordering::SeqCst)
         }
+        fn reset_stochastic(&self) {}
     }
 
     #[test]

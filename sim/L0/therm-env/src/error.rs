@@ -16,6 +16,16 @@ pub enum ThermCircuitError {
     #[error("n_particles must be >= 1")]
     ZeroParticles,
 
+    /// `n_particles` was above the thermostat's limit,
+    /// [`LangevinThermostat::MAX_DOFS`](sim_thermostat::LangevinThermostat::MAX_DOFS).
+    #[error("n_particles must be at most {max}, got {n_particles}")]
+    TooManyParticles {
+        /// The particle count that was supplied.
+        n_particles: usize,
+        /// The most the thermostat supports.
+        max: usize,
+    },
+
     /// A builder f64 parameter was `NaN` or infinite.
     #[error("non-finite parameter `{field}`: {value}")]
     NonFiniteParameter {
@@ -24,6 +34,11 @@ pub enum ThermCircuitError {
         /// The non-finite value that was supplied.
         value: f64,
     },
+
+    /// The thermostat refused its parameters (see `LangevinThermostat::try_new`), or a passive
+    /// component refused the model (see `PassiveStack::try_install`).
+    #[error(transparent)]
+    Thermostat(#[from] sim_thermostat::ThermostatError),
 
     /// Propagated from `SimEnv::builder().build()`.
     #[error(transparent)]

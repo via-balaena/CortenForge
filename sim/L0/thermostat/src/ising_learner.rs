@@ -10,14 +10,19 @@
 //! graph. D4 (sim-to-real on a printed device) reuses this training
 //! algorithm to train the EBM before printing.
 
+use std::sync::Arc;
+
 use sim_core::{DVector, Model};
 
+use crate::component::qpos_index;
+use crate::ising::{MAX_EXACT_SPINS, check_edges};
 use crate::well_state::WellState;
 use crate::{
     DoubleWellPotential, ExternalField, LangevinThermostat, PairwiseCoupling, PassiveStack,
 };
 
 /// Configuration for the Boltzmann learning loop.
+#[derive(Clone, Debug)]
 pub struct LearnerConfig {
     /// Number of elements.
     pub n: usize,
@@ -49,6 +54,7 @@ pub struct LearnerConfig {
 ///
 /// Stores both the full probability distribution (for KL computation)
 /// and the summary statistics (for the Boltzmann learning rule update).
+#[derive(Clone, Debug)]
 pub struct IsingTarget {
     /// Per-site target magnetizations `⟨σ_i⟩`.
     pub magnetizations: Vec<f64>,
@@ -91,7 +97,10 @@ pub struct LearningRecord {
     pub measured_magnetizations: Vec<f64>,
     /// Measured per-edge correlations from the physical sampler.
     pub measured_correlations: Vec<f64>,
-    /// KL divergence between exact Ising at current params and target.
+    /// KL divergence `KL(target ‖ exact)` at the parameters this iteration's
+    /// trajectories ran with: the parameters BEFORE this iteration's update,
+    /// so the first record's KL is the starting KL. `coupling_j` and
+    /// `field_h` above are the parameters AFTER it.
     pub kl_divergence: f64,
 }
 
@@ -117,8 +126,29 @@ impl IsingLearner {
     /// - If `model.nv < config.n`.
     /// - If `target.correlations.len() != config.edges.len()`.
     /// - If `target.magnetizations.len() != config.n`.
+    /// - If `config.n > MAX_EXACT_SPINS`.
+    /// - If `target.distribution` does not have `2^n` entries.
+    /// - If `config.n_steps <= config.n_burn_in` (no measured steps).
+    /// - If `config.n_trajectories == 0`.
+    /// - If an edge names a spin outside `0..n`, joins a spin to itself, or
+    ///   repeats a pair.
+    /// - If `config.delta_v` or `config.x_0` is not positive (see
+    ///   [`DoubleWellPotential::new`]).
+    /// - If `config.gamma` or `config.k_b_t` is negative or not finite (see
+    ///   [`LangevinThermostat::new`]).
+    /// - If the learner's passive stack refuses `model` (see
+    ///   [`PassiveStack::validate`]): one of the first `n` DOFs has no
+    ///   position coordinate of its own, or the model uses RK4.
     #[must_use]
+    // The stack check is the documented refusal (see # Panics).
+    #[allow(clippy::panic)]
     pub fn new(config: LearnerConfig, target: IsingTarget, model: Model) -> Self {
+        assert!(
+            config.n <= MAX_EXACT_SPINS,
+            "n={} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})",
+            config.n
+        );
+        check_edges(config.n, &config.edges);
         assert!(
             model.nv >= config.n,
             "model has {} DOFs, need at least {}",
@@ -137,16 +167,36 @@ impl IsingLearner {
             target.magnetizations.len(),
             config.n,
         );
+        assert!(
+            target.distribution.len() == 1 << config.n,
+            "target distribution has {} entries, need 2^n = {}",
+            target.distribution.len(),
+            1_usize << config.n,
+        );
+        assert!(
+            config.n_steps > config.n_burn_in,
+            "n_steps ({}) must exceed n_burn_in ({})",
+            config.n_steps,
+            config.n_burn_in,
+        );
+        assert!(
+            config.n_trajectories >= 1,
+            "n_trajectories must be at least 1"
+        );
         let n_edges = config.edges.len();
         let n = config.n;
-        Self {
+        let learner = Self {
             config,
             target,
             model,
             coupling_j: vec![0.0; n_edges],
             field_h: vec![0.0; n],
             iteration: 0,
+        };
+        if let Err(e) = learner.build_stack(0, 0).validate(&learner.model) {
+            panic!("IsingLearner::new: {e}");
         }
+        learner
     }
 
     /// Create from explicit initial parameters.
@@ -180,7 +230,12 @@ impl IsingLearner {
     }
 
     /// Build and install a `PassiveStack` with the current parameters.
-    fn install_stack(&mut self, seed: u64) {
+    fn install_stack(&mut self, seed: u64, traj_id: u64) {
+        self.build_stack(seed, traj_id).install(&mut self.model);
+    }
+
+    /// The passive stack for the current parameters.
+    fn build_stack(&self, seed: u64, traj_id: u64) -> Arc<PassiveStack> {
         let n = self.config.n;
         let mut builder = PassiveStack::builder();
         for i in 0..n {
@@ -199,12 +254,9 @@ impl IsingLearner {
             DVector::from_element(n, self.config.gamma),
             self.config.k_b_t,
             seed,
-            // traj_id: ising_learner is single-env today (no batched
-            // caller); use 0 as the default per-trajectory slot. A
-            // future batched caller would thread its env index here.
-            0,
+            traj_id,
         ));
-        builder.build().install(&mut self.model);
+        builder.build()
     }
 
     /// Run a single trajectory and return per-site magnetization means
@@ -213,17 +265,19 @@ impl IsingLearner {
     // `corr_count`) → f64 casts used to average magnetization/correlation.
     // Panics on step/forward failure are intentional — see § Panics.
     #[allow(clippy::cast_precision_loss, clippy::panic)]
-    fn run_trajectory(&mut self, seed: u64) -> (Vec<f64>, Vec<f64>) {
+    fn run_trajectory(&mut self, seed: u64, traj_id: u64) -> (Vec<f64>, Vec<f64>) {
         let n = self.config.n;
         let n_edges = self.config.edges.len();
         let n_measure = self.config.n_steps - self.config.n_burn_in;
 
-        self.install_stack(seed);
+        self.install_stack(seed, traj_id);
         let mut data = self.model.make_data();
+        // Each element's position coordinate; `new` checked that DOFs 0..n each have one.
+        let x_index: Vec<usize> = (0..n).map(|i| qpos_index(&self.model, i)).collect();
 
         // Initial condition: all elements in the right well.
-        for i in 0..n {
-            data.qpos[i] = self.config.x_0;
+        for (i, &xi) in x_index.iter().enumerate() {
+            data.qpos[xi] = self.config.x_0;
             data.qvel[i] = 0.0;
         }
         // Infallible with valid MJCF — panic is an intentional safety net.
@@ -250,8 +304,9 @@ impl IsingLearner {
                 panic!("measure step failed: {e}");
             }
 
-            let states: Vec<WellState> = (0..n)
-                .map(|i| WellState::from_position(data.qpos[i], self.config.x_thresh))
+            let states: Vec<WellState> = x_index
+                .iter()
+                .map(|&xi| WellState::from_position(data.qpos[xi], self.config.x_thresh))
                 .collect();
 
             for (i, mag) in mag_sum.iter_mut().enumerate() {
@@ -299,8 +354,8 @@ impl IsingLearner {
         let mut all_corrs = vec![vec![]; n_edges];
 
         for traj in 0..self.config.n_trajectories {
-            let seed = self.config.seed_base + self.iteration as u64 * 1000 + traj as u64;
-            let (mags, corrs) = self.run_trajectory(seed);
+            let (seed, traj_id) = noise_ids(self.config.seed_base, self.iteration, traj);
+            let (mags, corrs) = self.run_trajectory(seed, traj_id);
             for (i, m) in mags.into_iter().enumerate() {
                 all_mags[i].push(m);
             }
@@ -319,7 +374,7 @@ impl IsingLearner {
             .map(|v| v.iter().sum::<f64>() / v.len() as f64)
             .collect();
 
-        // 3. Compute KL divergence.
+        // 3. KL divergence at the parameters these trajectories ran with (before the update).
         let current_dist = crate::ising::exact_distribution(
             n,
             &self.config.edges,
@@ -360,21 +415,8 @@ impl IsingLearner {
     }
 
     /// Run multiple iterations. Returns the full learning curve.
-    ///
-    /// Prints per-iteration progress to stderr (visible with
-    /// `cargo test -- --nocapture` or when run outside of test harness).
     pub fn train(&mut self, n_iterations: usize) -> Vec<LearningRecord> {
-        let mut curve = Vec::with_capacity(n_iterations);
-        for i in 0..n_iterations {
-            let record = self.step();
-            eprintln!(
-                "  [IsingLearner] iter {}/{n_iterations}: KL = {:.6}",
-                i + 1,
-                record.kl_divergence,
-            );
-            curve.push(record);
-        }
-        curve
+        (0..n_iterations).map(|_| self.step()).collect()
     }
 
     /// Current coupling constants.
@@ -388,6 +430,14 @@ impl IsingLearner {
     pub fn field_h(&self) -> &[f64] {
         &self.field_h
     }
+}
+
+/// The thermostat's `(master_seed, traj_id)` for trajectory `traj` of iteration `iteration`:
+/// the seed is `seed_base` itself and the trajectory id packs the iteration above the
+/// trajectory, so every pair gets its own noise stream within a run, and runs with different
+/// `seed_base` share none (for iteration and trajectory indices below 2^32).
+const fn noise_ids(seed_base: u64, iteration: usize, traj: usize) -> (u64, u64) {
+    (seed_base, ((iteration as u64) << 32) | traj as u64)
 }
 
 #[cfg(test)]
@@ -554,5 +604,101 @@ mod tests {
         assert_eq!(curve[0].iteration, 0);
         assert_eq!(curve[1].iteration, 1);
         assert_eq!(curve[2].iteration, 2);
+    }
+
+    // ── input checks, seeds, recorded KL ──────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "n_steps (5) must exceed n_burn_in (5)")]
+    fn new_refuses_no_measured_steps() {
+        let config = LearnerConfig {
+            n_steps: 5,
+            ..minimal_config()
+        };
+        let _learner = IsingLearner::new(config, minimal_target(), load_model());
+    }
+
+    #[test]
+    #[should_panic(expected = "n_trajectories must be at least 1")]
+    fn new_refuses_zero_trajectories() {
+        let config = LearnerConfig {
+            n_trajectories: 0,
+            ..minimal_config()
+        };
+        let _learner = IsingLearner::new(config, minimal_target(), load_model());
+    }
+
+    #[test]
+    #[should_panic(expected = "target distribution has 3 entries, need 2^n = 4")]
+    fn new_refuses_a_short_target_distribution() {
+        let mut target = minimal_target();
+        target.distribution.pop();
+        let _learner = IsingLearner::new(minimal_config(), target, load_model());
+    }
+
+    /// Trajectory 1000 of one iteration and trajectory 0 of the next used to share a seed.
+    #[test]
+    fn every_iteration_and_trajectory_gets_its_own_noise() {
+        let mut seen = std::collections::HashSet::new();
+        for iteration in 0..3 {
+            for traj in [0, 1, 999, 1000, 1001] {
+                assert!(
+                    seen.insert(noise_ids(42, iteration, traj)),
+                    "iteration {iteration}, trajectory {traj} repeats a noise stream"
+                );
+            }
+        }
+    }
+
+    /// A record's KL is at the parameters the iteration sampled with: the first record's is
+    /// the starting KL, and the second's is at the first record's (updated) parameters.
+    #[test]
+    fn a_record_reports_the_kl_of_the_parameters_it_sampled_with() {
+        let target = minimal_target();
+        let kl_at = |j: &[f64], h: &[f64]| {
+            let dist = crate::ising::exact_distribution(2, &[(0, 1)], j, h, 1.0);
+            crate::ising::kl_divergence(&target.distribution, &dist)
+        };
+        let mut learner = IsingLearner::new(minimal_config(), target.clone(), load_model());
+        let first = learner.step();
+        assert_eq!(
+            first.kl_divergence.to_bits(),
+            kl_at(&[0.0], &[0.0, 0.0]).to_bits()
+        );
+        let second = learner.step();
+        assert_eq!(
+            second.kl_divergence.to_bits(),
+            kl_at(&first.coupling_j, &first.field_h).to_bits()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate edge")]
+    fn new_refuses_a_duplicate_edge() {
+        let config = LearnerConfig {
+            edges: vec![(0, 1), (1, 0)],
+            ..minimal_config()
+        };
+        let target = IsingTarget {
+            correlations: vec![0.0, 0.0],
+            ..minimal_target()
+        };
+        let _learner = IsingLearner::new(config, target, load_model());
+    }
+
+    #[test]
+    #[should_panic(expected = "IsingLearner::new: LangevinThermostat does not support")]
+    fn new_refuses_an_rk4_model() {
+        let mut model = load_model();
+        model.integrator = sim_core::Integrator::RungeKutta4;
+        let _learner = IsingLearner::new(minimal_config(), minimal_target(), model);
+    }
+
+    /// Runs whose `seed_base` differ by one used to share noise an iteration apart.
+    #[test]
+    fn runs_with_different_seed_bases_share_no_noise() {
+        for traj in [0, 1, 1000] {
+            assert_ne!(noise_ids(42, 1, traj), noise_ids(43, 0, traj));
+        }
     }
 }

@@ -223,8 +223,11 @@ impl ThermCircuitEnvBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`ThermCircuitError`] if `n_particles` is zero or `reward`
-    /// was not set.
+    /// Returns [`ThermCircuitError`] if `n_particles` is zero or above
+    /// [`LangevinThermostat::MAX_DOFS`], `reward` was not set, a parameter is
+    /// `NaN` or infinite, the thermostat refuses `gamma` or `k_b_t` (see
+    /// [`LangevinThermostat::try_new`]), a passive component refuses the
+    /// model, or building the model, the spaces or the environment fails.
     pub fn build(self) -> Result<ThermCircuitEnv, ThermCircuitError> {
         let p = self.prepare()?;
 
@@ -257,8 +260,11 @@ impl ThermCircuitEnvBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`ThermCircuitError`] if `n_particles` is zero or `reward`
-    /// was not set.
+    /// Returns [`ThermCircuitError`] if `n_particles` is zero or above
+    /// [`LangevinThermostat::MAX_DOFS`], `reward` was not set, a parameter is
+    /// `NaN` or infinite, the thermostat refuses `gamma` or `k_b_t` (see
+    /// [`LangevinThermostat::try_new`]), a passive component refuses the
+    /// model, or building the model, the spaces or the environment fails.
     pub fn build_vec(self, n_envs: usize) -> Result<VecEnv, ThermCircuitError> {
         let p = self.prepare()?;
 
@@ -303,27 +309,34 @@ impl ThermCircuitEnvBuilder {
         if self.n_particles == 0 {
             return Err(ThermCircuitError::ZeroParticles);
         }
+        if self.n_particles > LangevinThermostat::MAX_DOFS {
+            return Err(ThermCircuitError::TooManyParticles {
+                n_particles: self.n_particles,
+                max: LangevinThermostat::MAX_DOFS,
+            });
+        }
         let reward_fn = self
             .reward_fn
             .ok_or(ThermCircuitError::MissingField { field: "reward" })?;
 
-        // 1. Determine ctrl layout
-        let n_ctrl = usize::from(self.ctrl_temperature);
-
-        // 2. Generate MJCF
-        let xml = generate_mjcf(self.n_particles, n_ctrl, self.timestep, self.ctrl_range);
-
-        // 3. Parse model
-        let mut model = sim_mjcf::load_model(&xml)?;
-
-        // 4. Build thermostat
+        // 1. Build thermostat, before any MJCF: a refused gamma or k_b_t
+        //    costs nothing
         let gamma_vec = DVector::from_element(self.n_particles, self.gamma);
-        let thermostat = LangevinThermostat::new(gamma_vec, self.k_b_t, self.seed, 0);
+        let thermostat = LangevinThermostat::try_new(gamma_vec, self.k_b_t, self.seed, 0)?;
         let thermostat = if self.ctrl_temperature {
             thermostat.with_ctrl_temperature(0)
         } else {
             thermostat
         };
+
+        // 2. Determine ctrl layout
+        let n_ctrl = usize::from(self.ctrl_temperature);
+
+        // 3. Generate MJCF
+        let xml = generate_mjcf(self.n_particles, n_ctrl, self.timestep, self.ctrl_range);
+
+        // 4. Parse model
+        let mut model = sim_mjcf::load_model(&xml)?;
 
         // 5. Build passive stack: thermostat first, then landscape components
         let mut stack_builder = PassiveStack::builder().with(thermostat);
@@ -332,8 +345,8 @@ impl ThermCircuitEnvBuilder {
         }
         let stack = stack_builder.build();
 
-        // 6. Install onto model
-        stack.install(&mut model);
+        // 6. Install onto model; a component that refuses it is an error
+        stack.try_install(&mut model)?;
 
         // 7. Arc the model
         let model = Arc::new(model);
@@ -479,6 +492,79 @@ mod tests {
             ThermCircuitError::NonFiniteParameter { field: "gamma", value }
                 if value.is_infinite() && value.is_sign_negative()
         ));
+    }
+
+    /// The parameter named by a thermostat's `InvalidParameter` refusal.
+    fn refused_parameter(err: ThermCircuitError) -> Option<String> {
+        match err {
+            ThermCircuitError::Thermostat(sim_thermostat::ThermostatError::InvalidParameter {
+                parameter,
+                ..
+            }) => Some(parameter),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn negative_gamma_and_k_b_t_rejected() {
+        let err = minimal_valid().gamma(-0.1).build().unwrap_err();
+        assert_eq!(refused_parameter(err).as_deref(), Some("gamma[0]"));
+        let err = minimal_valid().k_b_t(-1.0).build_vec(2).unwrap_err();
+        assert_eq!(refused_parameter(err).as_deref(), Some("k_b_t"));
+    }
+
+    #[test]
+    fn a_refused_gamma_comes_before_the_model_is_built() {
+        // A zero timestep fails at MJCF load; the thermostat refuses gamma first.
+        let err = minimal_valid()
+            .gamma(-0.1)
+            .timestep(0.0)
+            .build()
+            .unwrap_err();
+        assert_eq!(refused_parameter(err).as_deref(), Some("gamma[0]"));
+    }
+
+    #[test]
+    fn a_refused_landscape_component_is_an_error() {
+        let err = minimal_valid()
+            .with(sim_thermostat::DoubleWellPotential::new(1.0, 1.0, 2))
+            .build()
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ThermCircuitError::Thermostat(sim_thermostat::ThermostatError::DofOutOfRange {
+                    dof: 2,
+                    ..
+                })
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn particle_count_above_the_thermostat_limit_is_an_error() {
+        // No reward set: past the particle check, prepare stops at the missing
+        // reward, before generating any MJCF.
+        let max = LangevinThermostat::MAX_DOFS;
+        let err = ThermCircuitEnvBuilder::new(max + 1).build().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ThermCircuitError::TooManyParticles { n_particles, .. } if n_particles == max + 1
+            ),
+            "{err:?}"
+        );
+        let err = ThermCircuitEnvBuilder::new(max).build().unwrap_err();
+        assert!(
+            matches!(err, ThermCircuitError::MissingField { field: "reward" }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn zero_gamma_and_k_b_t_build() {
+        assert!(minimal_valid().gamma(0.0).k_b_t(0.0).build().is_ok());
     }
 
     #[test]

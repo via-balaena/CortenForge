@@ -23,13 +23,27 @@
 //! needed for Phase 1; the upgrade path is to swap the
 //! `PassiveComponent` impl without touching the chassis.
 //!
+//! The damping is computed from each step's starting velocity, so under
+//! the Euler integrator, for a diagonal mass matrix, it alone multiplies a
+//! DOF's velocity by `1 − γh/M` per step (`M` the DOF's mass or inertia):
+//! stable only for `γh/M < 2`. With coupled DOFs the eigenvalues of
+//! `h·M⁻¹·Γ` set the limit instead.
+//!
+//! The thermostat is measured under the Euler integrator. RK4 calls the
+//! passive callback four times per step and the thermostat draws fresh
+//! noise at each call, so `validate` refuses RK4 (and
+//! [`crate::PassiveStack::install`] with it). The implicit integrators
+//! have not been measured. Changing `model.integrator` after install
+//! bypasses the check.
+//!
 //! ## RNG and `cb_passive`
 //!
 //! Under the C-3 chassis refactor (study Ch 15), the thermostat holds
 //! no mutable RNG state. Noise at step `s` for DOF `d` is computed as
 //!
 //! ```text
-//! block = chacha8_block(master_key, encode_block_counter(traj_id, s) + group)
+//! (counter, stream) = noise_position(traj_id, s, group)
+//! block = chacha8_block(master_key, counter, stream)
 //! z_d   = box_muller_from_block(block)[d - group*8]
 //! ```
 //!
@@ -38,15 +52,17 @@
 //! `install_per_env` factory, `s` is the component's own `AtomicU64`
 //! counter (advanced once per `apply` call, gated by
 //! `stochastic_active`), and `group = d / 8` handles DOF counts above
-//! 8.
+//! 8. Each `(traj_id, s, group)` has its own block, so every DOF group
+//! at every step draws independent noise.
 //!
-//! Because the PRF is a pure function of integers, the thermostat is
-//! structurally immune to the parallel-vs-sequential reproducibility
-//! defect Ch 10 named: two runs at the same `(master_seed, traj_id)`
-//! at the same step index produce bit-identical noise regardless of
-//! thread scheduling. The `parallel_matches_sequential_with_langevin`
-//! regression test at `sim/L0/tests/integration/batch_sim.rs` asserts
-//! this by construction.
+//! Because the PRF is a pure function of integers, a thermostat's noise
+//! at a given step depends only on `(master_seed, traj_id, step)`, not on
+//! thread scheduling. That holds when each env has its own thermostat
+//! (`install_per_env`, `BatchSim::new_per_env`), as in the
+//! `parallel_matches_sequential_with_langevin` regression test at
+//! `sim/L0/tests/integration/batch_sim.rs`. A stack shared by several
+//! `Data` (a cloned `Model`, or `BatchSim::new`) shares one step counter,
+//! so which env draws which step depends on the order of the calls.
 //!
 //! See [`crate::prf`] for the primitive module and the study's Ch 15
 //! §2 for the argument that Route 2 (the manual `ChaCha8` implementation
@@ -54,10 +70,11 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use sim_core::{DVector, Data, Model};
+use sim_core::{DVector, Data, Integrator, Model};
 
-use crate::component::{PassiveComponent, Stochastic};
+use crate::component::{PassiveComponent, Stochastic, check_ctrl, check_dof, clamped_ctrl};
 use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 use crate::prf;
 
 /// Explicit Langevin thermostat implementing the
@@ -94,8 +111,7 @@ pub struct LangevinThermostat {
     traj_id: u64,
     /// Step index, advanced once per `apply` call (gated by
     /// `stochastic_active`). Atomic so the containing stack's
-    /// `cb_passive` closure can hold `&self` — not for cross-thread
-    /// contention (per-env stacks give each env its own instance).
+    /// `cb_passive` closure can hold `&self`.
     counter: AtomicU64,
     stochastic_active: AtomicBool,
     /// Optional ctrl index for runtime temperature modulation (D2).
@@ -105,16 +121,17 @@ pub struct LangevinThermostat {
 }
 
 impl LangevinThermostat {
+    /// The most DOFs a thermostat acts on: each group of 8 DOFs needs its own
+    /// noise stream, and there are `2^16` of them.
+    pub const MAX_DOFS: usize = 1 << 19;
+
     /// Construct a thermostat with per-DOF damping coefficients
     /// `gamma`, bath temperature `k_b_t`, master seed `master_seed`,
     /// and trajectory id `traj_id`.
     ///
-    /// `gamma.len()` must match the simulation's `model.nv` at
-    /// install time; the apply method indexes `qvel` and the PRF
-    /// draws by `i in 0..gamma.len()`. Mismatches between `gamma.len()`
-    /// and `model.nv` are not detected at construction time (the
-    /// thermostat doesn't see the model until install), so the caller
-    /// is responsible for matching them.
+    /// The thermostat acts on DOFs `0..gamma.len()`: a `gamma` shorter than
+    /// the model's DOF count leaves the other DOFs alone, and a longer one
+    /// is refused at install (see [`PassiveComponent::validate`]).
     ///
     /// `master_seed` is expanded once at construction into a 32-byte
     /// `ChaCha8` key via `prf::expand_master_seed` (a private helper
@@ -124,9 +141,62 @@ impl LangevinThermostat {
     /// index under an `install_per_env` factory, but it can be any
     /// `u64` — distinct `traj_id` values at the same `master_seed`
     /// produce disjoint noise streams by the PRF's construction.
+    ///
+    /// # Panics
+    ///
+    /// If [`Self::try_new`] refuses the parameters: `gamma` has more than
+    /// [`Self::MAX_DOFS`] (`2^19`) entries, or an entry of `gamma`, or
+    /// `k_b_t`, is negative or not finite.
     #[must_use]
+    #[allow(clippy::panic)] // the documented refusal; try_new is the non-panicking path
     pub fn new(gamma: DVector<f64>, k_b_t: f64, master_seed: u64, traj_id: u64) -> Self {
-        Self {
+        match Self::try_new(gamma, k_b_t, master_seed, traj_id) {
+            Ok(thermostat) => thermostat,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// [`ThermostatError::TooManyDofs`] if `gamma` has more than
+    /// [`Self::MAX_DOFS`] entries; [`ThermostatError::InvalidParameter`] if
+    /// an entry of `gamma`, or `k_b_t`, is negative or not finite.
+    pub fn try_new(
+        gamma: DVector<f64>,
+        k_b_t: f64,
+        master_seed: u64,
+        traj_id: u64,
+    ) -> Result<Self, ThermostatError> {
+        const COMPONENT: &str = "LangevinThermostat";
+        const REQUIREMENT: &str = "finite and non-negative";
+        if gamma.len() > Self::MAX_DOFS {
+            return Err(ThermostatError::TooManyDofs {
+                component: COMPONENT,
+                dofs: gamma.len(),
+                max: Self::MAX_DOFS,
+            });
+        }
+        for (i, &g) in gamma.iter().enumerate() {
+            if !g.is_finite() || g < 0.0 {
+                return Err(ThermostatError::InvalidParameter {
+                    component: COMPONENT,
+                    parameter: format!("gamma[{i}]"),
+                    value: g,
+                    requirement: REQUIREMENT,
+                });
+            }
+        }
+        if !k_b_t.is_finite() || k_b_t < 0.0 {
+            return Err(ThermostatError::InvalidParameter {
+                component: COMPONENT,
+                parameter: "k_b_t".to_owned(),
+                value: k_b_t,
+                requirement: REQUIREMENT,
+            });
+        }
+        Ok(Self {
             gamma,
             k_b_t,
             master_seed,
@@ -135,16 +205,26 @@ impl LangevinThermostat {
             counter: AtomicU64::new(0),
             stochastic_active: AtomicBool::new(true),
             k_b_t_ctrl: None,
-        }
+        })
+    }
+
+    /// The temperature multiplier read from control value `ctrl` under
+    /// [`Self::with_ctrl_temperature`]: `ctrl` clamped to `[0, 10]`, with a
+    /// bad value (`NaN`, infinite, or beyond ±1e10) counting as 0.
+    #[must_use]
+    pub fn ctrl_multiplier(ctrl: f64) -> f64 {
+        clamped_ctrl(ctrl, 10.0)
     }
 
     /// Enable runtime temperature modulation via a ctrl channel.
     ///
     /// When set, `apply` reads `data.ctrl[ctrl_idx]` as a multiplier on
     /// the base `k_b_t`. The effective temperature is
-    /// `k_b_t * ctrl.clamp(0.0, 10.0)`. At multiplier 0, the thermostat
-    /// produces pure damping (no noise). At 10, the effective temperature
-    /// is 10× the base.
+    /// `k_b_t * Self::ctrl_multiplier(ctrl)`: the control clamped to
+    /// `[0, 10]`, with a bad value counting as 0. At multiplier 0, the
+    /// thermostat produces pure damping (no noise). At 10, the effective
+    /// temperature is 10× the base. The model needs control channel
+    /// `ctrl_idx`: install refuses a model without it.
     ///
     /// This is the D2 forward design from D1 spec §3.4: the first time a
     /// physical parameter of the bath becomes an RL action.
@@ -172,7 +252,7 @@ impl PassiveComponent for LangevinThermostat {
         // changes. This preserves the FDT relation at the effective
         // temperature.
         let k_b_t = self.k_b_t_ctrl.map_or(self.k_b_t, |idx| {
-            self.k_b_t * data.ctrl[idx].clamp(0.0, 10.0)
+            self.k_b_t * Self::ctrl_multiplier(data.ctrl[idx])
         });
 
         // Damping (-γ·v) is unconditional — it is the deterministic
@@ -192,23 +272,18 @@ impl PassiveComponent for LangevinThermostat {
             return;
         }
 
-        // Counter advance (one per apply call). Relaxed ordering is
-        // sufficient because per-env stacks give each env its own
-        // instance — cross-thread visibility of this counter is never
-        // observed by another thread within the same env.
+        // Counter advance (one per apply call). `fetch_add` is atomic, so
+        // each call gets its own step index whatever the ordering. A stack
+        // shared by several envs shares this counter (see the module doc).
         let step_index = self.counter.fetch_add(1, Ordering::Relaxed);
-        let base_counter = prf::encode_block_counter(self.traj_id, step_index);
 
-        // D5 general case: iterate DOFs in groups of 8 (one ChaCha8
-        // block yields 64 bytes = 8 f64 Box-Muller samples). The
-        // common path (n_dofs ≤ 8) does exactly one iteration. The
-        // `wrapping_add` is defensive against `u64::MAX` wraparound
-        // at the extreme high end of the 32/32 layout — not a live
-        // concern for any realistic DOF count.
+        // DOFs in groups of 8: one ChaCha8 block yields 64 bytes = 8
+        // f64 Box-Muller samples. The common path (n_dofs ≤ 8) does
+        // exactly one iteration.
         let n_groups = n_dofs.div_ceil(8);
         for group in 0..n_groups {
-            let block =
-                prf::chacha8_block(&self.master_key, base_counter.wrapping_add(group as u64));
+            let (counter, stream) = prf::noise_position(self.traj_id, step_index, group as u64);
+            let block = prf::chacha8_block(&self.master_key, counter, stream);
             let gaussians = prf::box_muller_from_block(&block);
             let dof_start = group * 8;
             let dof_end = (dof_start + 8).min(n_dofs);
@@ -224,6 +299,28 @@ impl PassiveComponent for LangevinThermostat {
     fn as_stochastic(&self) -> Option<&dyn Stochastic> {
         Some(self)
     }
+
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        Some(self)
+    }
+
+    /// Accepts a `gamma` shorter than the model's DOF count: the thermostat acts on the
+    /// first DOFs only.
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        if let Some(last) = self.gamma.len().checked_sub(1) {
+            check_dof(model, last, "LangevinThermostat")?;
+        }
+        if model.integrator == Integrator::RungeKutta4 {
+            return Err(ThermostatError::UnsupportedIntegrator {
+                component: "LangevinThermostat",
+                integrator: model.integrator,
+                reason: "RK4 calls the passive callback four times per step, and the thermostat \
+                         draws fresh noise at each call",
+            });
+        }
+        self.k_b_t_ctrl
+            .map_or(Ok(()), |ctrl| check_ctrl(model, ctrl, "LangevinThermostat"))
+    }
 }
 
 impl Stochastic for LangevinThermostat {
@@ -233,6 +330,10 @@ impl Stochastic for LangevinThermostat {
 
     fn is_stochastic_active(&self) -> bool {
         self.stochastic_active.load(Ordering::Relaxed)
+    }
+
+    fn reset_stochastic(&self) {
+        self.counter.store(0, Ordering::Relaxed);
     }
 }
 
@@ -537,6 +638,112 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_temperature_reads_a_bad_control_as_zero() {
+        // A bad control (NaN, ±∞, beyond ±1e10) → multiplier 0 → damping only.
+        let model = sim_core::test_fixtures::stochastic_resonance();
+        let t = LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
+            .with_ctrl_temperature(0);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 2e10, -2e10] {
+            let mut data = model.make_data();
+            data.qvel[0] = 1.0;
+            data.ctrl[0] = bad;
+            let mut qfrc_out: DVector<f64> = DVector::zeros(model.nv);
+            t.apply(&model, &data, &mut qfrc_out);
+            assert_eq!(qfrc_out[0], -0.1, "ctrl {bad}: expected damping only");
+        }
+    }
+
+    /// sim-core's actuation stage sets a bad control to 0 before passive forces run; with
+    /// actuation disabled the thermostat gets the bad value itself, and reads it as 0.
+    #[test]
+    fn a_bad_control_is_read_as_zero_with_actuation_on_or_off() {
+        for disable_actuation in [false, true] {
+            let mut model = sim_core::test_fixtures::stochastic_resonance();
+            if disable_actuation {
+                model.disableflags |= sim_core::DISABLE_ACTUATION;
+            }
+            crate::PassiveStack::builder()
+                .with(
+                    LangevinThermostat::new(DVector::from_element(model.nv, 0.1), 1.0, 42, 0)
+                        .with_ctrl_temperature(0),
+                )
+                .build()
+                .install(&mut model);
+            let mut data = model.make_data();
+            data.qvel[0] = 1.0;
+            data.ctrl[0] = f64::NAN;
+            data.forward(&model).unwrap();
+            assert_eq!(data.ctrl[0].is_nan(), disable_actuation);
+            assert_eq!(
+                data.qfrc_passive[0], -0.1,
+                "actuation disabled: {disable_actuation}"
+            );
+        }
+    }
+
+    /// The refusal `LangevinThermostat::try_new(gamma, k_b_t, ..)` returns, if any.
+    fn refusal(gamma: &[f64], k_b_t: f64) -> Option<ThermostatError> {
+        LangevinThermostat::try_new(DVector::from_column_slice(gamma), k_b_t, 42, 0).err()
+    }
+
+    /// The parameter named by an `InvalidParameter` refusal.
+    fn refused_parameter(refusal: Option<ThermostatError>) -> Option<String> {
+        match refusal {
+            Some(ThermostatError::InvalidParameter { parameter, .. }) => Some(parameter),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn try_new_refuses_negative_or_non_finite_damping_and_temperature() {
+        for bad in [-0.1, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                refused_parameter(refusal(&[0.1, bad], 1.0)).as_deref(),
+                Some("gamma[1]"),
+                "gamma[1] = {bad}"
+            );
+            assert_eq!(
+                refused_parameter(refusal(&[0.1, 0.1], bad)).as_deref(),
+                Some("k_b_t"),
+                "k_b_t = {bad}"
+            );
+        }
+        assert_eq!(
+            refusal(&[0.0, 0.1], 0.0),
+            None,
+            "zero damping and temperature are allowed"
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LangevinThermostat: gamma[0] must be finite and non-negative, got -1"
+    )]
+    fn new_panics_with_the_refusal() {
+        let _t = LangevinThermostat::new(DVector::from_element(1, -1.0), 1.0, 0, 0);
+    }
+
+    #[test]
+    fn ctrl_multiplier_clamps_and_reads_a_bad_control_as_zero() {
+        for (ctrl, expected) in [
+            (0.5, 0.5),
+            (20.0, 10.0),
+            (1e10, 10.0),
+            (-1.0, 0.0),
+            (f64::NAN, 0.0),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, 0.0),
+            (2e10, 0.0),
+        ] {
+            assert_eq!(
+                LangevinThermostat::ctrl_multiplier(ctrl),
+                expected,
+                "ctrl {ctrl}"
+            );
+        }
+    }
+
+    #[test]
     fn ctrl_zero_produces_zero_noise() {
         // ctrl=0 → kT_eff=0 → σ=0 → pure damping (+ RNG advances)
         let model = sim_core::test_fixtures::stochastic_resonance();
@@ -556,5 +763,125 @@ mod tests {
             "ctrl=0 should produce pure damping: expected -0.1, got {}",
             qfrc_out[0],
         );
+    }
+
+    /// The noise force on each of `n` DOFs at step `step` of trajectory `traj_id`: one
+    /// `apply` on an `n`-slide chain at rest, so the damping term is zero.
+    fn noise_forces(n: usize, traj_id: u64, step: u64) -> Vec<f64> {
+        let model = sim_core::test_fixtures::bistable_chain(n);
+        let data = model.make_data();
+        let t = LangevinThermostat::new(DVector::from_element(n, 0.5), 1.0, 42, traj_id);
+        t.counter.store(step, Ordering::Relaxed);
+        let mut qfrc_out: DVector<f64> = DVector::zeros(n);
+        t.apply(&model, &data, &mut qfrc_out);
+        qfrc_out.iter().copied().collect()
+    }
+
+    /// No two DOF groups share noise at any step. Before each group had its own stream,
+    /// group `g` at step `s` drew the same block as group 0 at step `s + g`, so DOFs 0–7
+    /// replayed DOFs 8–15's noise one step later. 17 DOFs give two full groups and a
+    /// partial third.
+    #[test]
+    fn dof_groups_draw_distinct_noise() {
+        let n = 17;
+        let steps = 0..4u64;
+        let mut first_values = Vec::new();
+        let mut full_blocks = Vec::new();
+        for step in steps {
+            let f = noise_forces(n, 0, step);
+            for group in 0..n.div_ceil(8) {
+                first_values.push(f[group * 8].to_bits());
+                if group * 8 + 8 <= n {
+                    let block: Vec<u64> = f[group * 8..group * 8 + 8]
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect();
+                    full_blocks.push(block);
+                }
+            }
+        }
+        let distinct_first: std::collections::HashSet<_> = first_values.iter().collect();
+        assert_eq!(
+            distinct_first.len(),
+            first_values.len(),
+            "a noise value repeated"
+        );
+        for (i, a) in full_blocks.iter().enumerate() {
+            for b in &full_blocks[i + 1..] {
+                assert_ne!(a, b, "two DOF groups drew the same 8 noise values");
+            }
+        }
+    }
+
+    /// Group 0's noise is unchanged by giving each group its own stream: pinned bits of DOFs
+    /// 0 and 7, recorded before the change (at `e2d42077`), for trajectory ids and steps up to
+    /// 2^32 − 1 (above that the noise changed by design). A 17-DOF run's first 8 DOFs match
+    /// the 8-DOF run.
+    #[test]
+    fn group_zero_noise_is_unchanged() {
+        const PINS: [(u64, u64, u64, u64); 6] = [
+            (0, 0, 0x403a_5529_e5c6_5d49, 0xc046_e337_607c_c8e3),
+            (0, 0xFFFF_FFFF, 0xc040_ab5b_1e69_0166, 0xc02f_8f6b_e841_d60b),
+            (7, 0, 0x401f_dae6_6ecd_fa57, 0x4045_6b4b_62f0_ff6e),
+            (7, 0xFFFF_FFFF, 0xc031_67e9_d2b3_c66c, 0xc044_fe83_77bb_795f),
+            (0xFFFF_FFFF, 0, 0x4041_8479_e306_ec81, 0x4025_4797_3cfc_ceb3),
+            (
+                0xFFFF_FFFF,
+                0xFFFF_FFFF,
+                0x403f_b3a8_1f2e_aa7c,
+                0x3ff3_8049_d5a3_86bb,
+            ),
+        ];
+        for (traj, step, dof0, dof7) in PINS {
+            let f8 = noise_forces(8, traj, step);
+            assert_eq!(
+                f8[0].to_bits(),
+                dof0,
+                "DOF 0 moved at (traj {traj}, step {step})"
+            );
+            assert_eq!(
+                f8[7].to_bits(),
+                dof7,
+                "DOF 7 moved at (traj {traj}, step {step})"
+            );
+            let f17 = noise_forces(17, traj, step);
+            assert_eq!(
+                f17[..8],
+                f8[..],
+                "17-DOF run's group 0 differs at (traj {traj}, step {step})"
+            );
+        }
+    }
+
+    /// Trajectory ids that differ only above bit 32, and steps 0 and 2^32, used to share noise.
+    #[test]
+    fn noise_differs_across_the_32_bit_boundaries() {
+        let base = noise_forces(8, 0, 0);
+        assert_ne!(
+            noise_forces(8, 1 << 32, 0),
+            base,
+            "traj_id 2^32 shares traj 0's noise"
+        );
+        assert_ne!(
+            noise_forces(8, 0, 1 << 32),
+            base,
+            "step 2^32 shares step 0's noise"
+        );
+    }
+
+    #[test]
+    fn try_new_takes_max_dofs_and_refuses_one_more() {
+        let max = LangevinThermostat::MAX_DOFS;
+        assert_eq!(refusal(&vec![0.1; max], 1.0), None);
+        assert!(matches!(
+            refusal(&vec![0.1; max + 1], 1.0),
+            Some(ThermostatError::TooManyDofs { dofs, max: m, .. }) if dofs == max + 1 && m == max
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "LangevinThermostat supports at most 524288 DOFs")]
+    fn new_refuses_more_than_2_pow_19_dofs() {
+        let _t = LangevinThermostat::new(DVector::from_element((1 << 19) + 1, 0.1), 1.0, 0, 0);
     }
 }

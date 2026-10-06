@@ -18,6 +18,8 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
+use crate::ising::{MAX_EXACT_SPINS, check_edges};
+
 /// Single-site systematic-scan Gibbs sampler for pairwise Ising models.
 ///
 /// Construct via [`GibbsSampler::new`], then call [`sample`](Self::sample)
@@ -37,13 +39,15 @@ pub struct GibbsSampler {
 }
 
 impl GibbsSampler {
-    /// Create a new Gibbs sampler with all spins initialized to +1.
+    /// Create a new Gibbs sampler with all spins initialized to +1
+    /// (see [`Self::set_config_bitmask`] to start elsewhere).
     ///
     /// # Panics
-    /// - If `n > 20` (inherited safety limit from `exact_distribution`).
+    /// - If `n > MAX_EXACT_SPINS`.
     /// - If `coupling_j.len() != edges.len()`.
     /// - If `field_h.len() != n`.
     /// - If `k_b_t <= 0`.
+    /// - If an edge names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
     #[must_use]
     pub fn new(
         n: usize,
@@ -53,7 +57,11 @@ impl GibbsSampler {
         k_b_t: f64,
         seed: u64,
     ) -> Self {
-        assert!(n <= 20, "n={n} exceeds safety limit of 20");
+        assert!(
+            n <= MAX_EXACT_SPINS,
+            "n={n} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})"
+        );
+        check_edges(n, edges);
         assert!(
             coupling_j.len() == edges.len(),
             "coupling_j length ({}) must match edges length ({})",
@@ -109,6 +117,22 @@ impl GibbsSampler {
         }
     }
 
+    /// Set the spins from a configuration bitmask (bit `i` set means
+    /// `σ_i = +1`), e.g. to start the chain somewhere other than all `+1`.
+    ///
+    /// # Panics
+    /// Panics if `config` sets a bit at or above `n`.
+    pub fn set_config_bitmask(&mut self, config: u32) {
+        assert!(
+            u64::from(config) >> self.n == 0,
+            "configuration {config:#b} sets a bit at or above n = {}",
+            self.n
+        );
+        for (i, spin) in self.spins.iter_mut().enumerate() {
+            *spin = if config & (1 << i) != 0 { 1.0 } else { -1.0 };
+        }
+    }
+
     /// Current spin configuration as a bitmask.
     ///
     /// Matches [`exact_distribution`](crate::ising::exact_distribution)'s
@@ -131,8 +155,12 @@ impl GibbsSampler {
     /// format as [`exact_distribution`](crate::ising::exact_distribution):
     /// all `2^N` configs present, sorted by config index, probabilities
     /// summing to 1.
+    ///
+    /// # Panics
+    /// Panics if `n_samples` is 0: there would be nothing to normalize.
     #[must_use]
     pub fn sample(&mut self, n_burn_in: usize, n_samples: usize) -> Vec<(u32, f64)> {
+        assert!(n_samples > 0, "n_samples must be at least 1");
         // Burn-in
         for _ in 0..n_burn_in {
             self.sweep();
@@ -217,5 +245,34 @@ mod tests {
         // All -1 → 0
         sampler.spins = vec![-1.0, -1.0, -1.0, -1.0];
         assert_eq!(sampler.config_bitmask(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "self-edge (2, 2) is not supported")]
+    fn new_refuses_a_self_edge() {
+        let _sampler = GibbsSampler::new(3, &[(2, 2)], &[1.0], &[0.0; 3], 1.0, 0);
+    }
+
+    #[test]
+    fn set_config_bitmask_sets_every_spin() {
+        let mut sampler = GibbsSampler::new(3, &[(0, 1)], &[1.0], &[0.0; 3], 1.0, 0);
+        sampler.set_config_bitmask(0b101);
+        assert_eq!(sampler.config_bitmask(), 0b101);
+        sampler.set_config_bitmask(0);
+        assert_eq!(sampler.config_bitmask(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "sets a bit at or above n = 3")]
+    fn set_config_bitmask_refuses_a_bit_above_n() {
+        let mut sampler = GibbsSampler::new(3, &[], &[], &[0.0; 3], 1.0, 0);
+        sampler.set_config_bitmask(0b1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "n_samples must be at least 1")]
+    fn sample_refuses_zero_samples() {
+        let mut sampler = GibbsSampler::new(2, &[], &[], &[0.0; 2], 1.0, 0);
+        let _dist = sampler.sample(0, 0);
     }
 }

@@ -4,6 +4,15 @@
 //! coupling topology, per-edge coupling constants, and per-site external
 //! fields. Used by [`IsingLearner`](crate::IsingLearner) for KL divergence
 //! monitoring and by Phase 6+ for Gibbs sampler comparison.
+//!
+//! A configuration is a `u32` bitmask: bit `i` set means spin `i` is `+1`,
+//! clear means `−1`. [`GibbsSampler`](crate::GibbsSampler) uses the same
+//! convention.
+
+/// The largest spin count [`exact_distribution`] and
+/// [`GibbsSampler`](crate::GibbsSampler) accept. Both hold all `2^n`
+/// configurations, about a million at 20.
+pub const MAX_EXACT_SPINS: usize = 20;
 
 /// Summary statistics from an Ising distribution.
 #[derive(Clone, Debug)]
@@ -18,6 +27,28 @@ pub struct IsingStats {
 /// `−1` otherwise.
 const fn spin(c: u32, i: usize) -> f64 {
     if c & (1 << i) != 0 { 1.0 } else { -1.0 }
+}
+
+/// Check that every edge joins two different spins among the `n`, and that no pair appears
+/// twice (in either order), matching [`PairwiseCoupling`](crate::PairwiseCoupling).
+///
+/// A self-edge is refused because the two solvers would read it
+/// differently: in [`exact_distribution`] `σ_i·σ_i = 1` is a constant, while
+/// [`GibbsSampler`](crate::GibbsSampler) would add it to spin `i`'s local
+/// field.
+pub(crate) fn check_edges(n: usize, edges: &[(usize, usize)]) {
+    let mut seen = std::collections::HashSet::with_capacity(edges.len());
+    for &(i, j) in edges {
+        assert!(
+            i < n && j < n,
+            "edge ({i}, {j}) names a spin outside 0..{n}"
+        );
+        assert!(i != j, "self-edge ({i}, {i}) is not supported");
+        assert!(
+            seen.insert((i.min(j), i.max(j))),
+            "duplicate edge: the pair ({i}, {j}) appears twice"
+        );
+    }
 }
 
 /// Exact Ising distribution by enumeration over `2^N` configurations.
@@ -36,10 +67,11 @@ const fn spin(c: u32, i: usize) -> f64 {
 /// clear = `−1`.
 ///
 /// # Panics
-/// - If `n > 20` (safety limit: `2^20` = 1M configurations).
+/// - If `n > MAX_EXACT_SPINS`.
 /// - If `coupling_j.len() != edges.len()`.
 /// - If `field_h.len() != n`.
 /// - If `k_b_t <= 0`.
+/// - If an edge names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
 #[must_use]
 pub fn exact_distribution(
     n: usize,
@@ -48,7 +80,11 @@ pub fn exact_distribution(
     field_h: &[f64],
     k_b_t: f64,
 ) -> Vec<(u32, f64)> {
-    assert!(n <= 20, "n={n} exceeds safety limit of 20");
+    assert!(
+        n <= MAX_EXACT_SPINS,
+        "n={n} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})"
+    );
+    check_edges(n, edges);
     assert!(
         coupling_j.len() == edges.len(),
         "coupling_j length ({}) must match edges length ({})",
@@ -101,8 +137,17 @@ pub fn exact_distribution(
 
 /// Extract magnetizations `⟨σ_i⟩` and pairwise correlations `⟨σ_i σ_j⟩`
 /// from an exact distribution.
+///
+/// # Panics
+/// Panics if `n > MAX_EXACT_SPINS`, or if an edge names a spin outside
+/// `0..n`, joins a spin to itself, or repeats a pair.
 #[must_use]
 pub fn ising_statistics(dist: &[(u32, f64)], n: usize, edges: &[(usize, usize)]) -> IsingStats {
+    assert!(
+        n <= MAX_EXACT_SPINS,
+        "n={n} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})"
+    );
+    check_edges(n, edges);
     let mut magnetizations = vec![0.0; n];
     let mut correlations = vec![0.0; edges.len()];
 
@@ -133,15 +178,11 @@ pub fn ising_statistics(dist: &[(u32, f64)], n: usize, edges: &[(usize, usize)])
 /// index (as returned by [`exact_distribution`]).
 ///
 /// # Panics
-/// Panics if `p.len() != q.len()`.
+/// Panics if `p` and `q` do not list the same configurations in the same
+/// order.
 #[must_use]
 pub fn tv_distance(p: &[(u32, f64)], q: &[(u32, f64)]) -> f64 {
-    assert!(
-        p.len() == q.len(),
-        "distributions must have the same length: {} vs {}",
-        p.len(),
-        q.len(),
-    );
+    check_same_configs(p, q);
 
     0.5 * p
         .iter()
@@ -159,28 +200,42 @@ pub fn tv_distance(p: &[(u32, f64)], q: &[(u32, f64)]) -> f64 {
 /// Returns `f64::INFINITY` if any configuration has `P > 0` and `Q = 0`.
 ///
 /// # Panics
-/// Panics if `p.len() != q.len()`.
+/// Panics if `p` and `q` do not list the same configurations in the same
+/// order.
 #[must_use]
 pub fn kl_divergence(p: &[(u32, f64)], q: &[(u32, f64)]) -> f64 {
+    check_same_configs(p, q);
+
+    p.iter()
+        .zip(q)
+        .map(|(&(_, p_val), &(_, q_val))| {
+            if p_val <= 0.0 {
+                0.0 // 0 · log(0/q) = 0 by convention
+            } else if q_val <= 0.0 {
+                f64::INFINITY
+            } else {
+                // ln p − ln q, not ln(p/q): the ratio overflows for a subnormal q.
+                p_val * (p_val.ln() - q_val.ln())
+            }
+        })
+        .sum()
+}
+
+/// Check that `p` and `q` list the same configurations in the same order:
+/// the distances pair entries by position.
+fn check_same_configs(p: &[(u32, f64)], q: &[(u32, f64)]) {
     assert!(
         p.len() == q.len(),
         "distributions must have the same length: {} vs {}",
         p.len(),
         q.len(),
     );
-
-    p.iter()
-        .zip(q)
-        .map(|(&(_, p_val), &(_, q_val))| {
-            if p_val < 1e-300 {
-                0.0 // 0 · log(0/q) = 0 by convention
-            } else if q_val < 1e-300 {
-                f64::INFINITY
-            } else {
-                p_val * (p_val / q_val).ln()
-            }
-        })
-        .sum()
+    for (k, (&(pc, _), &(qc, _))) in p.iter().zip(q).enumerate() {
+        assert!(
+            pc == qc,
+            "entry {k} is configuration {pc:#b} in one distribution and {qc:#b} in the other"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -419,5 +474,82 @@ mod tests {
                 "config {config:#05b}: p = {p}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "edge (0, 3) names a spin outside 0..3")]
+    fn exact_distribution_refuses_an_edge_outside_the_spins() {
+        let _dist = exact_distribution(3, &[(0, 3)], &[1.0], &[0.0; 3], 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "self-edge (1, 1) is not supported")]
+    fn exact_distribution_refuses_a_self_edge() {
+        let _dist = exact_distribution(3, &[(1, 1)], &[1.0], &[0.0; 3], 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "self-edge (0, 0) is not supported")]
+    fn ising_statistics_refuses_a_self_edge() {
+        let dist = exact_distribution(2, &[], &[], &[0.0; 2], 1.0);
+        let _stats = ising_statistics(&dist, 2, &[(0, 0)]);
+    }
+
+    /// The distances pair entries by position, so both must list the same configurations in
+    /// the same order.
+    #[test]
+    #[should_panic(expected = "entry 0 is configuration")]
+    fn tv_distance_refuses_differently_ordered_configurations() {
+        let p = exact_distribution(2, &[], &[], &[0.3, 0.0], 1.0);
+        let mut q = p.clone();
+        q.reverse();
+        let _tv = tv_distance(&p, &q);
+    }
+
+    #[test]
+    #[should_panic(expected = "entry 0 is configuration")]
+    fn kl_divergence_refuses_differently_ordered_configurations() {
+        let p = exact_distribution(2, &[], &[], &[0.3, 0.0], 1.0);
+        let mut q = p.clone();
+        q.reverse();
+        let _kl = kl_divergence(&p, &q);
+    }
+
+    /// Only an exact zero in `Q` makes KL infinite: a tiny positive probability gives a large,
+    /// finite value.
+    #[test]
+    fn kl_divergence_is_finite_for_a_tiny_positive_q() {
+        let p = [(0, 0.5), (1, 0.5)];
+        let q = [(0, 1e-310), (1, 1.0 - 1e-310)];
+        let kl = kl_divergence(&p, &q);
+        let expected =
+            0.5 * (0.5_f64.ln() - 1e-310_f64.ln()) + 0.5 * (0.5_f64.ln() - (1.0 - 1e-310_f64).ln());
+        assert!(kl.is_finite(), "KL is {kl}");
+        assert!(
+            (kl - expected).abs() < 1e-9,
+            "expected {expected}, got {kl}"
+        );
+    }
+
+    /// A single swapped pair in the middle is caught, not only a full reversal.
+    #[test]
+    #[should_panic(expected = "entry 1 is configuration")]
+    fn tv_distance_refuses_one_swapped_pair() {
+        let p = exact_distribution(2, &[], &[], &[0.3, 0.0], 1.0);
+        let mut q = p.clone();
+        q.swap(1, 2);
+        let _tv = tv_distance(&p, &q);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate edge: the pair (1, 0) appears twice")]
+    fn exact_distribution_refuses_a_duplicate_edge() {
+        let _dist = exact_distribution(2, &[(0, 1), (1, 0)], &[1.0, 1.0], &[0.0; 2], 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds MAX_EXACT_SPINS")]
+    fn ising_statistics_refuses_too_many_spins() {
+        let _stats = ising_statistics(&[], MAX_EXACT_SPINS + 1, &[]);
     }
 }

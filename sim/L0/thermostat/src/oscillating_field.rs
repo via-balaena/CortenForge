@@ -28,8 +28,9 @@ use std::f64::consts::PI;
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::PassiveComponent;
+use crate::component::{PassiveComponent, check_dof};
 use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 
 /// Sinusoidal driving force: `F(t) = A₀ cos(ωt + φ₀)`.
 ///
@@ -38,12 +39,10 @@ use crate::diagnose::Diagnose;
 /// implement [`Stochastic`](crate::Stochastic) and is unaffected by the
 /// stochastic gating mechanism (Decision 7).
 ///
-/// # Joint type constraint
+/// # Which DOFs
 ///
-/// Same as [`DoubleWellPotential`](crate::DoubleWellPotential): the `dof`
-/// field indexes both `data.qpos` and `qfrc_out`. This is correct for
-/// slide and hinge joints where `nq = nv = 1`. It does **not** support
-/// ball or free joints.
+/// The force goes to DOF `dof`. The position is not read, so any DOF the
+/// model has will do.
 ///
 /// # Signal phase and `data.time`
 ///
@@ -58,7 +57,7 @@ pub struct OscillatingField {
     omega: f64,
     /// Initial phase offset φ₀ (radians).
     phase: f64,
-    /// DOF index (= qpos index for slide/hinge joints).
+    /// DOF index this field acts on.
     dof: usize,
 }
 
@@ -132,6 +131,14 @@ impl OscillatingField {
 impl PassiveComponent for OscillatingField {
     fn apply(&self, _model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
         qfrc_out[self.dof] += self.signal_value(data.time);
+    }
+
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        Some(self)
+    }
+
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        check_dof(model, self.dof, "OscillatingField")
     }
 }
 
