@@ -72,7 +72,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sim_core::{DVector, Data, Integrator, Model};
 
-use crate::component::{PassiveComponent, Stochastic, check_dof, clamped_ctrl};
+use crate::component::{PassiveComponent, Stochastic, check_ctrl, check_dof, clamped_ctrl};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 use crate::prf;
@@ -232,10 +232,9 @@ impl PassiveComponent for LangevinThermostat {
             return;
         }
 
-        // Counter advance (one per apply call). Relaxed ordering is
-        // sufficient because per-env stacks give each env its own
-        // instance — cross-thread visibility of this counter is never
-        // observed by another thread within the same env.
+        // Counter advance (one per apply call). `fetch_add` is atomic, so
+        // each call gets its own step index whatever the ordering. A stack
+        // shared by several envs shares this counter (see the module doc).
         let step_index = self.counter.fetch_add(1, Ordering::Relaxed);
 
         // DOFs in groups of 8: one ChaCha8 block yields 64 bytes = 8
@@ -279,14 +278,8 @@ impl PassiveComponent for LangevinThermostat {
                          draws fresh noise at each call",
             });
         }
-        match self.k_b_t_ctrl {
-            Some(ctrl) if ctrl >= model.nu => Err(ThermostatError::CtrlOutOfRange {
-                component: "LangevinThermostat",
-                ctrl,
-                nu: model.nu,
-            }),
-            _ => Ok(()),
-        }
+        self.k_b_t_ctrl
+            .map_or(Ok(()), |ctrl| check_ctrl(model, ctrl, "LangevinThermostat"))
     }
 }
 

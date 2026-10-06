@@ -25,7 +25,9 @@ use std::f64::consts::PI;
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::{PassiveComponent, check_position_dof, clamped_ctrl, qpos_index};
+use crate::component::{
+    PassiveComponent, check_ctrl, check_position_dof, clamped_ctrl, qpos_index,
+};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 
@@ -157,15 +159,7 @@ impl PassiveComponent for RatchetPotential {
 
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         check_position_dof(model, self.dof, "RatchetPotential")?;
-        if self.ctrl_idx < model.nu {
-            Ok(())
-        } else {
-            Err(ThermostatError::CtrlOutOfRange {
-                component: "RatchetPotential",
-                ctrl: self.ctrl_idx,
-                nu: model.nu,
-            })
-        }
+        check_ctrl(model, self.ctrl_idx, "RatchetPotential")
     }
 }
 

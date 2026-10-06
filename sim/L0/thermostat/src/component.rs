@@ -156,6 +156,23 @@ pub fn qpos_index(model: &Model, dof: usize) -> usize {
     position_index(model, dof).unwrap_or(model.jnt_qpos_adr[model.dof_jnt[dof]])
 }
 
+/// Check that control channel `ctrl` exists in `model`.
+pub const fn check_ctrl(
+    model: &Model,
+    ctrl: usize,
+    component: &'static str,
+) -> Result<(), ThermostatError> {
+    if ctrl < model.nu {
+        Ok(())
+    } else {
+        Err(ThermostatError::CtrlOutOfRange {
+            component,
+            ctrl,
+            nu: model.nu,
+        })
+    }
+}
+
 /// Control channel `ctrl`'s value, clamped to `[0, max]`. A bad value (`NaN`, infinite, or beyond
 /// ±1e10: [`sim_core::is_bad`]) reads as 0, the value sim-core's actuation stage sets it to.
 pub fn clamped_ctrl(data: &Data, ctrl: usize, max: f64) -> f64 {
