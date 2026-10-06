@@ -16,8 +16,9 @@
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::PassiveComponent;
+use crate::component::{PassiveComponent, check_scalar_dof, qpos_index};
 use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 
 /// Symmetric quartic double-well potential: `V(x) = a(x² − x₀²)²`
 /// where `a = ΔV / x₀⁴`.
@@ -201,11 +202,15 @@ impl DoubleWellPotential {
 }
 
 impl PassiveComponent for DoubleWellPotential {
-    fn apply(&self, _model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
-        let q = data.qpos[self.dof];
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
+        let q = data.qpos[qpos_index(model, self.dof)];
         let a = self.delta_v / self.x_0.powi(4);
         // F(x) = −V′(x) = −4ax(x² − x₀²)
         qfrc_out[self.dof] += -4.0 * a * q * q.mul_add(q, -(self.x_0 * self.x_0));
+    }
+
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        check_scalar_dof(model, self.dof, "DoubleWellPotential")
     }
 }
 

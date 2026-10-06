@@ -27,7 +27,9 @@
 //! and `Model` is itself `Clone + Send + Sync` for `BatchSim` parallel
 //! environments.
 
-use sim_core::{DVector, Data, Model};
+use sim_core::{DVector, Data, MjJointType, Model};
+
+use crate::error::ThermostatError;
 
 /// A passive force injector that writes into a per-DOF accumulator.
 ///
@@ -72,6 +74,60 @@ pub trait PassiveComponent: Send + Sync + 'static {
     fn as_stochastic(&self) -> Option<&dyn Stochastic> {
         None
     }
+
+    /// Check that `model` has everything this component addresses: its DOFs, its control
+    /// channels, and a single position coordinate for every DOF whose position it reads.
+    /// [`PassiveStack::install`](crate::PassiveStack::install) calls it on every component
+    /// before installing.
+    ///
+    /// The default accepts any model. A component that wraps another must forward this
+    /// call, or the inner component's checks never run.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ThermostatError`] the model fails.
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        let _ = model;
+        Ok(())
+    }
+}
+
+/// Check that DOF `dof` exists in `model`.
+pub const fn check_dof(
+    model: &Model,
+    dof: usize,
+    component: &'static str,
+) -> Result<(), ThermostatError> {
+    if dof < model.nv {
+        Ok(())
+    } else {
+        Err(ThermostatError::DofOutOfRange {
+            component,
+            dof,
+            nv: model.nv,
+        })
+    }
+}
+
+/// Check that DOF `dof` exists in `model` and belongs to a slide or hinge joint, whose
+/// single position coordinate is `qpos[qpos_index(model, dof)]`.
+pub fn check_scalar_dof(
+    model: &Model,
+    dof: usize,
+    component: &'static str,
+) -> Result<(), ThermostatError> {
+    check_dof(model, dof, component)?;
+    match model.jnt_type[model.dof_jnt[dof]] {
+        MjJointType::Slide | MjJointType::Hinge => Ok(()),
+        _ => Err(ThermostatError::NotScalarJoint { component, dof }),
+    }
+}
+
+/// The `qpos` index of a slide or hinge DOF. `qpos` and `qvel` share indices only until
+/// the first ball or free joint, so a DOF's position must be found through its joint.
+/// The caller has checked the DOF with [`check_scalar_dof`].
+pub fn qpos_index(model: &Model, dof: usize) -> usize {
+    model.jnt_qpos_adr[model.dof_jnt[dof]]
 }
 
 /// Decision-7 gating opt-in for stochastic passive components.

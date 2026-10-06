@@ -12,6 +12,7 @@
 
 use sim_core::{DVector, Model};
 
+use crate::component::qpos_index;
 use crate::well_state::WellState;
 use crate::{
     DoubleWellPotential, ExternalField, LangevinThermostat, PairwiseCoupling, PassiveStack,
@@ -220,10 +221,13 @@ impl IsingLearner {
 
         self.install_stack(seed);
         let mut data = self.model.make_data();
+        // Each element's position coordinate. `install_stack` has checked that DOFs 0..n
+        // are slide or hinge joints.
+        let x_index: Vec<usize> = (0..n).map(|i| qpos_index(&self.model, i)).collect();
 
         // Initial condition: all elements in the right well.
-        for i in 0..n {
-            data.qpos[i] = self.config.x_0;
+        for (i, &xi) in x_index.iter().enumerate() {
+            data.qpos[xi] = self.config.x_0;
             data.qvel[i] = 0.0;
         }
         // Infallible with valid MJCF — panic is an intentional safety net.
@@ -250,8 +254,9 @@ impl IsingLearner {
                 panic!("measure step failed: {e}");
             }
 
-            let states: Vec<WellState> = (0..n)
-                .map(|i| WellState::from_position(data.qpos[i], self.config.x_thresh))
+            let states: Vec<WellState> = x_index
+                .iter()
+                .map(|&xi| WellState::from_position(data.qpos[xi], self.config.x_thresh))
                 .collect();
 
             for (i, mag) in mag_sum.iter_mut().enumerate() {
@@ -287,7 +292,8 @@ impl IsingLearner {
     ///
     /// # Panics
     /// Panics if `data.forward()` or `data.step()` fails (should not
-    /// happen with valid MJCF models).
+    /// happen with valid MJCF models), or if the model's first `n` DOFs
+    /// are not all slide or hinge joints (see [`PassiveStack::install`]).
     // Precision loss is acceptable for trajectory count / iteration index casting.
     #[allow(clippy::cast_precision_loss)]
     pub fn step(&mut self) -> LearningRecord {

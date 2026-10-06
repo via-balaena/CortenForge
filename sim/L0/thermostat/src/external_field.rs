@@ -15,8 +15,9 @@
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::PassiveComponent;
+use crate::component::{PassiveComponent, check_dof, qpos_index};
 use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 
 /// Linear external field: `V = −Σ h_i · x_i`.
 ///
@@ -47,13 +48,18 @@ impl ExternalField {
         &self.field_h
     }
 
-    /// Field energy: `V = −Σ h_i · x_i`.
+    /// Field energy at `data`'s positions: `V = −Σ h_i · x_i`, where `x_i` is DOF `i`'s
+    /// position. Every DOF the field covers must belong to a slide or hinge joint.
+    ///
+    /// # Panics
+    ///
+    /// May panic if the field is longer than the model's DOF count.
     #[must_use]
-    pub fn field_energy(&self, qpos: &DVector<f64>) -> f64 {
+    pub fn field_energy(&self, model: &Model, data: &Data) -> f64 {
         self.field_h
             .iter()
             .enumerate()
-            .map(|(i, &h)| -h * qpos[i])
+            .map(|(i, &h)| -h * data.qpos[qpos_index(model, i)])
             .sum()
     }
 }
@@ -62,6 +68,14 @@ impl PassiveComponent for ExternalField {
     fn apply(&self, _model: &Model, _data: &Data, qfrc_out: &mut DVector<f64>) {
         for (i, &h) in self.field_h.iter().enumerate() {
             qfrc_out[i] += h;
+        }
+    }
+
+    /// Accepts a field shorter than the model's DOF count: it acts on the first DOFs only.
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        match self.field_h.len() {
+            0 => Ok(()),
+            len => check_dof(model, len - 1, "ExternalField"),
         }
     }
 }
@@ -86,6 +100,16 @@ impl Diagnose for ExternalField {
 mod tests {
     use super::*;
 
+    /// An `n`-slide chain at positions `x`.
+    fn chain_at(x: &[f64]) -> (Model, Data) {
+        let model = sim_core::test_fixtures::bistable_chain(x.len());
+        let mut data = model.make_data();
+        for (i, &xi) in x.iter().enumerate() {
+            data.qpos[i] = xi;
+        }
+        (model, data)
+    }
+
     #[test]
     fn new_creates_field() {
         let f = ExternalField::new(vec![0.3, -0.2, 0.0, 0.15]);
@@ -97,9 +121,9 @@ mod tests {
     #[test]
     fn field_energy_computation() {
         let f = ExternalField::new(vec![0.5, -0.3]);
-        let qpos = DVector::from_vec(vec![1.0, 1.0]);
+        let (model, data) = chain_at(&[1.0, 1.0]);
         // V = -0.5*1.0 + -(-0.3)*1.0 = -0.5 + 0.3 = -0.2
-        let energy = f.field_energy(&qpos);
+        let energy = f.field_energy(&model, &data);
         assert!(
             (energy - (-0.2)).abs() < 1e-15,
             "expected -0.2, got {energy}"
@@ -109,8 +133,8 @@ mod tests {
     #[test]
     fn field_energy_zero_field() {
         let f = ExternalField::new(vec![0.0, 0.0]);
-        let qpos = DVector::from_vec(vec![5.0, -3.0]);
-        assert_eq!(f.field_energy(&qpos), 0.0);
+        let (model, data) = chain_at(&[5.0, -3.0]);
+        assert_eq!(f.field_energy(&model, &data), 0.0);
     }
 
     #[test]
@@ -120,12 +144,14 @@ mod tests {
         let eps = 1e-8;
 
         for dof in 0..2 {
-            let mut qpos_plus = DVector::from_vec(vec![0.0, 0.0]);
-            let mut qpos_minus = DVector::from_vec(vec![0.0, 0.0]);
-            qpos_plus[dof] += eps;
-            qpos_minus[dof] -= eps;
+            let mut x_plus = [0.0, 0.0];
+            let mut x_minus = [0.0, 0.0];
+            x_plus[dof] += eps;
+            x_minus[dof] -= eps;
+            let (model, plus) = chain_at(&x_plus);
+            let (_, minus) = chain_at(&x_minus);
             let force_fd =
-                -(f.field_energy(&qpos_plus) - f.field_energy(&qpos_minus)) / (2.0 * eps);
+                -(f.field_energy(&model, &plus) - f.field_energy(&model, &minus)) / (2.0 * eps);
             assert!(
                 (force_fd - f.field_h()[dof]).abs() < 1e-6,
                 "DOF {dof}: expected F={}, got {force_fd}",

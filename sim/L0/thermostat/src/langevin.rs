@@ -58,8 +58,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::{PassiveComponent, Stochastic};
+use crate::component::{PassiveComponent, Stochastic, check_dof};
 use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 use crate::prf;
 
 /// Explicit Langevin thermostat implementing the
@@ -231,6 +232,22 @@ impl PassiveComponent for LangevinThermostat {
 
     fn as_stochastic(&self) -> Option<&dyn Stochastic> {
         Some(self)
+    }
+
+    /// Accepts a `gamma` shorter than the model's DOF count: the thermostat acts on the
+    /// first DOFs only.
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        if let Some(last) = self.gamma.len().checked_sub(1) {
+            check_dof(model, last, "LangevinThermostat")?;
+        }
+        match self.k_b_t_ctrl {
+            Some(ctrl) if ctrl >= model.nu => Err(ThermostatError::CtrlOutOfRange {
+                component: "LangevinThermostat",
+                ctrl,
+                nu: model.nu,
+            }),
+            _ => Ok(()),
+        }
     }
 }
 

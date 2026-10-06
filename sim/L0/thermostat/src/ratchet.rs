@@ -25,8 +25,9 @@ use std::f64::consts::PI;
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::PassiveComponent;
+use crate::component::{PassiveComponent, check_scalar_dof, qpos_index};
 use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 
 /// Two-harmonic ratchet potential with ctrl-dependent amplitude modulation.
 ///
@@ -140,11 +141,24 @@ impl RatchetPotential {
 }
 
 impl PassiveComponent for RatchetPotential {
-    fn apply(&self, _model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
-        let x = data.qpos[self.dof];
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
+        let x = data.qpos[qpos_index(model, self.dof)];
         let alpha = data.ctrl[self.ctrl_idx].clamp(0.0, 1.0);
 
         qfrc_out[self.dof] += self.force(x, alpha);
+    }
+
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        check_scalar_dof(model, self.dof, "RatchetPotential")?;
+        if self.ctrl_idx < model.nu {
+            Ok(())
+        } else {
+            Err(ThermostatError::CtrlOutOfRange {
+                component: "RatchetPotential",
+                ctrl: self.ctrl_idx,
+                nu: model.nu,
+            })
+        }
     }
 }
 

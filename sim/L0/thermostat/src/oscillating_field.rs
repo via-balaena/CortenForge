@@ -28,8 +28,9 @@ use std::f64::consts::PI;
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::PassiveComponent;
+use crate::component::{PassiveComponent, check_dof};
 use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 
 /// Sinusoidal driving force: `F(t) = A₀ cos(ωt + φ₀)`.
 ///
@@ -132,6 +133,10 @@ impl OscillatingField {
 impl PassiveComponent for OscillatingField {
     fn apply(&self, _model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
         qfrc_out[self.dof] += self.signal_value(data.time);
+    }
+
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        check_dof(model, self.dof, "OscillatingField")
     }
 }
 

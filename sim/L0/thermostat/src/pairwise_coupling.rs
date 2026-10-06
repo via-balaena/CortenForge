@@ -20,8 +20,9 @@
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::PassiveComponent;
+use crate::component::{PassiveComponent, check_scalar_dof, qpos_index};
 use crate::diagnose::Diagnose;
+use crate::error::ThermostatError;
 
 /// Pairwise coupling: `V = −Σ_k J_k · x_i · x_j` for each edge `(i, j)`.
 ///
@@ -70,6 +71,7 @@ impl PairwiseCoupling {
     /// # Panics
     /// - If `coupling_j.len() != edges.len()`.
     /// - If any edge has `i == j` (self-coupling).
+    /// - If a pair appears twice, in either order: the two edges would add their `J`s.
     #[must_use]
     pub fn new(coupling_j: Vec<f64>, edges: Vec<(usize, usize)>) -> Self {
         assert!(
@@ -78,8 +80,13 @@ impl PairwiseCoupling {
             coupling_j.len(),
             edges.len(),
         );
+        let mut seen = std::collections::HashSet::with_capacity(edges.len());
         for &(i, j) in &edges {
             assert!(i != j, "self-coupling not supported: edge ({i}, {j})");
+            assert!(
+                seen.insert((i.min(j), i.max(j))),
+                "duplicate coupling: the pair ({i}, {j}) appears twice"
+            );
         }
         Self { coupling_j, edges }
     }
@@ -88,6 +95,7 @@ impl PairwiseCoupling {
     ///
     /// # Panics
     /// - If any edge has `i == j` (self-coupling).
+    /// - If a pair appears twice, in either order.
     #[must_use]
     pub fn uniform(coupling_j: f64, edges: Vec<(usize, usize)>) -> Self {
         let j_vec = vec![coupling_j; edges.len()];
@@ -153,26 +161,39 @@ impl PairwiseCoupling {
         &self.edges
     }
 
-    /// Total coupling energy: `V = −Σ_k J_k · x_i · x_j`.
+    /// Total coupling energy at `data`'s positions: `V = −Σ_k J_k · x_i · x_j`, where `x_i`
+    /// is DOF `i`'s position.
+    ///
+    /// # Panics
+    ///
+    /// May panic, or read the wrong coordinate, if `model` fails [`PassiveComponent::validate`].
     #[must_use]
-    pub fn coupling_energy(&self, qpos: &DVector<f64>) -> f64 {
+    pub fn coupling_energy(&self, model: &Model, data: &Data) -> f64 {
+        let x = |dof| data.qpos[qpos_index(model, dof)];
         self.edges
             .iter()
             .zip(&self.coupling_j)
-            .map(|(&(i, j), &j_k)| -j_k * qpos[i] * qpos[j])
+            .map(|(&(i, j), &j_k)| -j_k * x(i) * x(j))
             .sum()
     }
 }
 
 impl PassiveComponent for PairwiseCoupling {
-    fn apply(&self, _model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
         for (&(i, j), &j_k) in self.edges.iter().zip(&self.coupling_j) {
-            let xi = data.qpos[i];
-            let xj = data.qpos[j];
+            let xi = data.qpos[qpos_index(model, i)];
+            let xj = data.qpos[qpos_index(model, j)];
             // V = −J_k · xi · xj  →  F_i = +J_k · xj,  F_j = +J_k · xi
             qfrc_out[i] += j_k * xj;
             qfrc_out[j] += j_k * xi;
         }
+    }
+
+    fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        self.edges.iter().try_for_each(|&(i, j)| {
+            check_scalar_dof(model, i, "PairwiseCoupling")?;
+            check_scalar_dof(model, j, "PairwiseCoupling")
+        })
     }
 }
 
@@ -203,6 +224,16 @@ impl Diagnose for PairwiseCoupling {
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    /// An `n`-slide chain at positions `x`.
+    fn chain_at(x: &[f64]) -> (Model, Data) {
+        let model = sim_core::test_fixtures::bistable_chain(x.len());
+        let mut data = model.make_data();
+        for (i, &xi) in x.iter().enumerate() {
+            data.qpos[i] = xi;
+        }
+        (model, data)
+    }
 
     #[test]
     #[should_panic(expected = "self-coupling not supported")]
@@ -281,11 +312,9 @@ mod tests {
     fn per_edge_coupling_energy() {
         // 2 edges with different J: edge (0,1) J=1.0, edge (1,2) J=-0.5
         let c = PairwiseCoupling::new(vec![1.0, -0.5], vec![(0, 1), (1, 2)]);
-        let qpos = DVector::from_vec(vec![1.0, 1.0, 1.0]);
-        // V = -1.0*1*1 + -(-0.5)*1*1 = -1.0 + 0.5... wait:
-        // V = Σ -J_k * x_i * x_j
-        // = -1.0 * 1 * 1 + -(-0.5) * 1 * 1 = -1.0 + 0.5 = -0.5
-        let energy = c.coupling_energy(&qpos);
+        let (model, data) = chain_at(&[1.0, 1.0, 1.0]);
+        // V = Σ -J_k * x_i * x_j = -1.0 * 1 * 1 + -(-0.5) * 1 * 1 = -1.0 + 0.5 = -0.5
+        let energy = c.coupling_energy(&model, &data);
         assert!(
             (energy - (-0.5)).abs() < 1e-15,
             "expected -0.5, got {energy}"
@@ -296,8 +325,8 @@ mod tests {
     fn coupling_energy_all_aligned() {
         // 4-chain, all at +1: V = -J(1·1 + 1·1 + 1·1) = -3J
         let c = PairwiseCoupling::chain(4, 0.5);
-        let qpos = DVector::from_element(4, 1.0);
-        let energy = c.coupling_energy(&qpos);
+        let (model, data) = chain_at(&[1.0; 4]);
+        let energy = c.coupling_energy(&model, &data);
         assert!(
             (energy - (-1.5)).abs() < 1e-15,
             "expected -1.5, got {energy}"
@@ -308,22 +337,19 @@ mod tests {
     fn coupling_energy_alternating() {
         // 4-chain, alternating +1/-1: V = -J(-1 + -1 + -1) = +3J
         let c = PairwiseCoupling::chain(4, 0.5);
-        let qpos = DVector::from_vec(vec![1.0, -1.0, 1.0, -1.0]);
-        let energy = c.coupling_energy(&qpos);
+        let (model, data) = chain_at(&[1.0, -1.0, 1.0, -1.0]);
+        let energy = c.coupling_energy(&model, &data);
         assert!((energy - 1.5).abs() < 1e-15, "expected 1.5, got {energy}");
     }
 
     #[test]
     fn force_direction_ferromagnetic() {
         let c = PairwiseCoupling::chain(2, 1.0);
-        let qpos = DVector::from_vec(vec![0.0, 1.0]);
         let eps = 1e-8;
-        let mut qpos_plus = qpos.clone();
-        qpos_plus[0] += eps;
-        let mut qpos_minus = qpos;
-        qpos_minus[0] -= eps;
+        let (model, plus) = chain_at(&[eps, 1.0]);
+        let (_, minus) = chain_at(&[-eps, 1.0]);
         let force_0 =
-            -(c.coupling_energy(&qpos_plus) - c.coupling_energy(&qpos_minus)) / (2.0 * eps);
+            -(c.coupling_energy(&model, &plus) - c.coupling_energy(&model, &minus)) / (2.0 * eps);
         assert!(
             force_0 > 0.0,
             "ferromagnetic coupling should pull DOF 0 toward positive neighbor, got F={force_0}"

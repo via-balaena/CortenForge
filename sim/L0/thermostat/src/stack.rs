@@ -60,6 +60,7 @@ use sim_core::batch::{EnvBatch, PerEnvStack};
 use sim_core::{DVector, Data, Model};
 
 use crate::component::PassiveComponent;
+use crate::error::ThermostatError;
 
 /// Builder for [`PassiveStack`]. Construct via [`PassiveStack::builder`]
 /// then chain `.with(component)` calls and finish with `.build()`.
@@ -128,7 +129,48 @@ impl PassiveStack {
     /// `self: &Arc<Self>` — the caller retains its handle and can
     /// call [`PassiveStack::disable_stochastic`] or read the stack
     /// after `install` returns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a component refuses `model` (see [`Self::validate`]).
+    /// [`Self::try_install`] returns the error instead.
+    #[allow(clippy::panic)] // the documented refusal; try_install is the non-panicking path
     pub fn install(self: &Arc<Self>, model: &mut Model) {
+        if let Err(e) = self.validate(model) {
+            panic!("PassiveStack::install: {e}");
+        }
+        self.install_unchecked(model);
+    }
+
+    /// Install this stack onto `model` if every component accepts it and
+    /// `model` has no passive callback yet.
+    ///
+    /// # Errors
+    ///
+    /// [`ThermostatError::AlreadyInstalled`] if `model.cb_passive` is set,
+    /// or the first error from [`Self::validate`].
+    pub fn try_install(self: &Arc<Self>, model: &mut Model) -> Result<(), ThermostatError> {
+        if model.cb_passive.is_some() {
+            return Err(ThermostatError::AlreadyInstalled);
+        }
+        self.validate(model)?;
+        self.install_unchecked(model);
+        Ok(())
+    }
+
+    /// Check `model` against every component in the stack, in order
+    /// (see [`PassiveComponent::validate`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns the first component's error.
+    pub fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        self.components
+            .iter()
+            .try_for_each(|component| component.validate(model))
+    }
+
+    fn install_unchecked(self: &Arc<Self>, model: &mut Model) {
         let stack_ref = Arc::clone(self);
         model.set_passive_callback(move |model_inner, data_inner| {
             // Take qfrc_passive out of data via O(1) DVector pointer
@@ -534,5 +576,151 @@ mod tests {
                 "env {i} should have cb_passive set after install_per_env",
             );
         }
+    }
+
+    // --- install-time validation ---
+
+    use crate::{
+        DoubleWellPotential, ExternalField, LangevinThermostat, OscillatingField, PairwiseCoupling,
+        RatchetPotential,
+    };
+
+    fn one(component: impl PassiveComponent) -> Arc<PassiveStack> {
+        PassiveStack::builder().with(component).build()
+    }
+
+    /// What `try_install` says about `component` on `model`.
+    fn verdict(component: impl PassiveComponent, mut model: Model) -> Result<(), ThermostatError> {
+        one(component).try_install(&mut model)
+    }
+
+    fn chain(n: usize) -> Model {
+        sim_core::test_fixtures::bistable_chain(n)
+    }
+
+    /// A model whose DOFs 0–5 belong to one free joint.
+    fn free_body() -> Model {
+        sim_core::test_fixtures::free_body_diag(1.0, sim_core::Vector3::new(0.1, 0.1, 0.1))
+    }
+
+    #[test]
+    fn components_accept_a_model_that_has_what_they_address() {
+        assert_eq!(
+            verdict(DoubleWellPotential::new(1.0, 1.0, 1), chain(2)),
+            Ok(())
+        );
+        assert_eq!(verdict(PairwiseCoupling::chain(3, 0.5), chain(3)), Ok(()));
+        assert_eq!(
+            verdict(ExternalField::new(vec![0.1, 0.2]), chain(2)),
+            Ok(())
+        );
+        assert_eq!(verdict(ExternalField::new(vec![0.1]), chain(2)), Ok(()));
+        assert_eq!(
+            verdict(OscillatingField::new(1.0, 1.0, 0.0, 1), chain(2)),
+            Ok(())
+        );
+        let gamma = DVector::from_element(2, 0.1);
+        assert_eq!(
+            verdict(LangevinThermostat::new(gamma, 1.0, 1, 0), chain(2)),
+            Ok(())
+        );
+        // The thermostat reads velocities only, so a free joint is fine.
+        let gamma6 = DVector::from_element(6, 0.1);
+        assert_eq!(
+            verdict(LangevinThermostat::new(gamma6, 1.0, 1, 0), free_body()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn components_refuse_a_dof_the_model_lacks() {
+        let out_of_range =
+            |component, dof, nv| ThermostatError::DofOutOfRange { component, dof, nv };
+        assert_eq!(
+            verdict(DoubleWellPotential::new(1.0, 1.0, 2), chain(2)),
+            Err(out_of_range("DoubleWellPotential", 2, 2))
+        );
+        assert_eq!(
+            verdict(PairwiseCoupling::new(vec![1.0], vec![(0, 2)]), chain(2)),
+            Err(out_of_range("PairwiseCoupling", 2, 2))
+        );
+        assert_eq!(
+            verdict(ExternalField::new(vec![0.1; 3]), chain(2)),
+            Err(out_of_range("ExternalField", 2, 2))
+        );
+        assert_eq!(
+            verdict(OscillatingField::new(1.0, 1.0, 0.0, 2), chain(2)),
+            Err(out_of_range("OscillatingField", 2, 2))
+        );
+        let gamma = DVector::from_element(3, 0.1);
+        assert_eq!(
+            verdict(LangevinThermostat::new(gamma, 1.0, 1, 0), chain(2)),
+            Err(out_of_range("LangevinThermostat", 2, 2))
+        );
+    }
+
+    #[test]
+    fn position_readers_refuse_a_free_joint_dof() {
+        let not_scalar = |component| ThermostatError::NotScalarJoint { component, dof: 0 };
+        assert_eq!(
+            verdict(DoubleWellPotential::new(1.0, 1.0, 0), free_body()),
+            Err(not_scalar("DoubleWellPotential"))
+        );
+        assert_eq!(
+            verdict(PairwiseCoupling::new(vec![1.0], vec![(0, 1)]), free_body()),
+            Err(not_scalar("PairwiseCoupling"))
+        );
+        assert_eq!(
+            verdict(
+                RatchetPotential::new(1.0, 0.25, 0.0, 1.0, 0, 0),
+                free_body()
+            ),
+            Err(not_scalar("RatchetPotential"))
+        );
+    }
+
+    #[test]
+    fn components_refuse_a_control_the_model_lacks() {
+        // The chain has no actuators.
+        assert_eq!(
+            verdict(RatchetPotential::new(1.0, 0.25, 0.0, 1.0, 0, 0), chain(1)),
+            Err(ThermostatError::CtrlOutOfRange {
+                component: "RatchetPotential",
+                ctrl: 0,
+                nu: 0
+            })
+        );
+        let gamma = DVector::from_element(1, 0.1);
+        let thermostat = LangevinThermostat::new(gamma, 1.0, 1, 0).with_ctrl_temperature(0);
+        assert_eq!(
+            verdict(thermostat, chain(1)),
+            Err(ThermostatError::CtrlOutOfRange {
+                component: "LangevinThermostat",
+                ctrl: 0,
+                nu: 0
+            })
+        );
+    }
+
+    #[test]
+    fn try_install_refuses_a_model_that_has_a_passive_callback() {
+        let mut model = chain(1);
+        one(DummyDeterministic).install(&mut model);
+        assert_eq!(
+            one(DummyDeterministic).try_install(&mut model),
+            Err(ThermostatError::AlreadyInstalled)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "PassiveStack::install: DoubleWellPotential acts on DOF 2")]
+    fn install_panics_on_a_refused_model() {
+        one(DoubleWellPotential::new(1.0, 1.0, 2)).install(&mut chain(2));
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate coupling: the pair (1, 0) appears twice")]
+    fn pairwise_coupling_refuses_a_reversed_duplicate_edge() {
+        let _coupling = PairwiseCoupling::new(vec![1.0, 1.0], vec![(0, 1), (1, 0)]);
     }
 }
