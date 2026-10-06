@@ -63,7 +63,7 @@ pub fn exact_distribution(
     assert!(k_b_t > 0.0, "k_b_t must be positive, got {k_b_t}");
 
     let n_configs = 1u32 << n;
-    let mut weights = Vec::with_capacity(n_configs as usize);
+    let mut dist = Vec::with_capacity(n_configs as usize);
 
     for c in 0..n_configs {
         // Coupling energy: −Σ J_k σ_i σ_j
@@ -80,27 +80,23 @@ pub fn exact_distribution(
             .map(|(i, &h)| -h * spin(c, i))
             .sum();
 
-        weights.push((c, coupling_energy + field_energy));
+        dist.push((c, coupling_energy + field_energy));
     }
 
-    // Boltzmann factors relative to the minimum energy: the ground state's
-    // factor is exactly 1 and none exceeds it, so no factor overflows and Z ≥ 1.
-    let e_min = weights
-        .iter()
-        .map(|&(_, e)| e)
-        .fold(f64::INFINITY, f64::min);
+    // Boltzmann factors relative to the minimum energy.
+    let e_min = dist.iter().map(|&(_, e)| e).fold(f64::INFINITY, f64::min);
     let mut z = 0.0_f64;
-    for (_, w) in &mut weights {
-        *w = (-(*w - e_min) / k_b_t).exp();
-        z += *w;
+    for (_, p) in &mut dist {
+        *p = (-(*p - e_min) / k_b_t).exp();
+        z += *p;
     }
 
     // Normalize to probabilities
-    for (_, w) in &mut weights {
-        *w /= z;
+    for (_, p) in &mut dist {
+        *p /= z;
     }
 
-    weights
+    dist
 }
 
 /// Extract magnetizations `⟨σ_i⟩` and pairwise correlations `⟨σ_i σ_j⟩`
@@ -368,13 +364,40 @@ mod tests {
 
     #[test]
     fn low_temperature_keeps_the_ground_state() {
-        // One spin in a field h = 1 at kT = 1/720: the ground state's
-        // Boltzmann factor exp(720) exceeds f64::MAX.
-        let dist = exact_distribution(1, &[], &[], &[1.0], 1.0 / 720.0);
-        let p_down = dist[0].1;
-        let p_up = dist[1].1;
-        assert!((p_up - 1.0).abs() < 1e-12, "p(up) = {p_up}");
-        assert!((0.0..1e-300).contains(&p_down), "p(down) = {p_down}");
+        // One spin in a field h = ±1 at kT = 1/720: the ground state's
+        // Boltzmann factor exp(720) exceeds f64::MAX. Both signs, so the
+        // ground state is config 1 once and config 0 once.
+        for h in [1.0, -1.0] {
+            let dist = exact_distribution(1, &[], &[], &[h], 1.0 / 720.0);
+            let ground = usize::from(h > 0.0);
+            let p_ground = dist[ground].1;
+            let p_other = dist[1 - ground].1;
+            assert!(
+                (p_ground - 1.0).abs() < 1e-12,
+                "h = {h}: p(ground) = {p_ground}"
+            );
+            assert!(
+                (0.0..1e-300).contains(&p_other),
+                "h = {h}: p(other) = {p_other}"
+            );
+        }
+    }
+
+    #[test]
+    fn low_temperature_resolves_a_near_tie() {
+        // Two spins, h = (1, 0.01), at kT = 1/720: the two lowest states both
+        // have Boltzmann factors above f64::MAX, and they differ by
+        // ΔE/kT = 0.02 · 720 = 14.4.
+        let dist = exact_distribution(2, &[], &[], &[1.0, 0.01], 1.0 / 720.0);
+        let r = (-14.4_f64).exp();
+        let expected = [0.0, r / (1.0 + r), 0.0, 1.0 / (1.0 + r)];
+        for (config, p) in dist {
+            let want = expected[config as usize];
+            assert!(
+                (p - want).abs() < 1e-12,
+                "config {config:#04b}: p = {p}, expected {want}"
+            );
+        }
     }
 
     #[test]
