@@ -215,10 +215,12 @@ impl PassiveStack {
     /// Disable every stochastic component in the stack and return an
     /// RAII guard that restores their prior active flags on drop.
     ///
-    /// Guards nest in any order: noise stays off until the LAST live
-    /// guard drops, which restores the flags from before the FIRST.
-    /// A [`Self::set_all_stochastic`] call made while a guard is alive
-    /// is overwritten when the last guard drops.
+    /// Guards on this stack nest in any order: each guard turns noise
+    /// off when taken, noise stays off until the LAST live guard drops,
+    /// and that drop restores the flags from before the FIRST. A
+    /// [`Self::set_all_stochastic`] call made while a guard is alive is
+    /// overwritten when the last guard drops. The count is per stack: a
+    /// component shared by two stacks has two independent counts.
     ///
     /// This is the chassis Decision-7 entry point for finite-difference
     /// and autograd contexts: wrap the FD perturbation block in
@@ -229,7 +231,7 @@ impl PassiveStack {
     /// difference recovers `∂F_det/∂qpos` exactly (state-independent
     /// noise is the only kind on the roadmap).
     #[must_use = "the StochasticGuard restores prior flags on drop; \
-                  discarding it immediately re-enables noise — call \
+                  discarding it immediately can re-enable noise — call \
                   set_all_stochastic(false) instead if that is desired"]
     pub fn disable_stochastic(self: &Arc<Self>) -> StochasticGuard {
         let mut disabled = self.disabled.lock().unwrap_or_else(PoisonError::into_inner);
@@ -301,6 +303,11 @@ impl PassiveStack {
 ///    callback is silently `clear_passive_callback`'d before the new
 ///    stack is installed. This is the "fail loud in dev, behave
 ///    correctly in release" pattern.
+///
+/// # Panics
+///
+/// Each stack is installed with [`PassiveStack::install`], so a component
+/// that refuses its env's model panics.
 impl PerEnvStack for PassiveStack {
     fn install_per_env<F>(self: &Arc<Self>, n: usize, mut build_one: F) -> EnvBatch<Self>
     where

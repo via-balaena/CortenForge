@@ -27,12 +27,12 @@ use crate::error::ThermostatError;
 /// force accumulator on a single DOF. This is a deterministic conservative
 /// force — it does not implement [`Stochastic`](crate::Stochastic).
 ///
-/// # Joint type constraint
+/// # Which DOFs
 ///
-/// The `dof` field is used to index both `data.qpos` and `qfrc_out`.
-/// This is correct for slide and hinge joints where `nq = nv = 1` (DOF
-/// index = qpos index). It does **not** support ball (`nq=4, nv=3`) or
-/// free (`nq=7, nv=6`) joints where these indices diverge.
+/// The force goes to DOF `dof`. The position is read from the DOF's own coordinate, found through its joint: a slide or
+/// hinge DOF, or one of a free joint's three translation DOFs. A ball joint's DOFs and a free
+/// joint's rotation DOFs have no coordinate of their own, so
+/// [`PassiveStack::install`](crate::PassiveStack::install) refuses them.
 ///
 /// # Example
 ///
@@ -59,7 +59,7 @@ pub struct DoubleWellPotential {
     delta_v: f64,
     /// Well half-separation: potential minima at `±x₀`.
     x_0: f64,
-    /// DOF index this potential acts on (= qpos index for slide/hinge).
+    /// DOF index this potential acts on.
     dof: usize,
 }
 
@@ -196,6 +196,9 @@ impl DoubleWellPotential {
     /// `kramers_rate` — for a high-Q / underdamped device**, where the bare
     /// spatial-diffusion rate overestimates (it is an upper bound, since
     /// `Υ ≤ 1`). See `docs/thermo_computing/03_phases/d4_physical_pbit` R1.
+    ///
+    /// # Panics
+    /// Panics unless `mass > 0`, `k_b_t > 0` and `gamma >= 0`.
     #[must_use]
     pub fn kramers_rate_turnover(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
         self.kramers_rate(gamma, mass, k_b_t) * self.depopulation_factor(gamma, mass, k_b_t)

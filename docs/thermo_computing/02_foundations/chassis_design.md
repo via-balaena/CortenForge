@@ -2496,6 +2496,10 @@ for i in 0..model.nv {
   correctly via the `prior: Vec<bool>` capture-and-restore
   pattern. Each guard restores to the state at its construction,
   not to "true."
+  *(Superseded 2026-10-06: per-guard restore broke when guards dropped
+  out of order. The stack now counts live guards and the last drop
+  restores the flags from before the first — `stack.rs`
+  `disable_stochastic`.)*
 - **Doesn't pollute non-stochastic components.** A user writing
   a custom drag-law `PassiveComponent` doesn't have to think
   about stochasticity at all — `as_stochastic` defaults to
@@ -2671,7 +2675,8 @@ chassis explicitly leaves that door open below.
   goes out of scope, the disabled components are re-enabled.
   Reentrant by virtue of the `prior: Vec<bool>` capture (each
   guard restores to its construction-time state, not to
-  hard-coded `true`).
+  hard-coded `true`). *(Superseded 2026-10-06: see the note under
+  "Reentrant" above.)*
 - **`StochasticGuard` is non-`Send`** (no explicit `unsafe impl`,
   inherits from `&PassiveStack` which is `Send + Sync` so the
   guard is technically `Send`, but conceptually it should not

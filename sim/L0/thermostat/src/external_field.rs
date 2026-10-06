@@ -25,11 +25,12 @@ use crate::error::ThermostatError;
 /// deterministic conservative force — it does not implement
 /// [`Stochastic`](crate::Stochastic).
 ///
-/// # Joint type constraint
+/// # Which DOFs
 ///
-/// Same as [`DoubleWellPotential`](crate::DoubleWellPotential) and
-/// [`PairwiseCoupling`](crate::PairwiseCoupling): only correct for slide
-/// and hinge joints where `nq = nv = 1`.
+/// Entry `i` acts on DOF `i`; a field shorter than the model's DOF count
+/// acts on the first DOFs only. The forces need no positions, so any DOF
+/// will do; [`Self::field_energy`] reads positions and refuses a DOF
+/// without a coordinate of its own.
 pub struct ExternalField {
     /// Per-DOF field strengths.
     field_h: Vec<f64>,
@@ -54,8 +55,8 @@ impl ExternalField {
     /// # Errors
     ///
     /// Returns [`ThermostatError::DofOutOfRange`] or [`ThermostatError::NoPositionCoordinate`]
-    /// if a DOF the field covers is missing from `model` or has no single position
-    /// coordinate.
+    /// if a DOF the field covers is missing from `model` or has no position coordinate of
+    /// its own.
     pub fn field_energy(&self, model: &Model, data: &Data) -> Result<f64, ThermostatError> {
         for i in 0..self.field_h.len() {
             check_position_dof(model, i, "ExternalField")?;

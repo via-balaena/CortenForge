@@ -77,7 +77,8 @@ pub trait PassiveComponent: Send + Sync + 'static {
     }
 
     /// Check that `model` has everything this component addresses: its DOFs, its control
-    /// channels, and a single position coordinate for every DOF whose position it reads.
+    /// channels, and a position coordinate of its own for every DOF whose position it reads
+    /// (a slide or hinge DOF, or a free joint's translation DOF).
     /// [`PassiveStack::install`](crate::PassiveStack::install) calls it on every component
     /// before installing.
     ///

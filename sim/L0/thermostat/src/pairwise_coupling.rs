@@ -33,13 +33,12 @@ use crate::error::ThermostatError;
 ///
 /// Not stochastic — this is a deterministic conservative force.
 ///
-/// # Joint type constraint
+/// # Which DOFs
 ///
-/// The `edges` field contains pairs of DOF indices used to access both
-/// `data.qpos` and `qfrc_out`. This is correct for slide and hinge joints
-/// where `nq = nv = 1` (DOF index = qpos index). It does **not** support
-/// ball (`nq=4, nv=3`) or free (`nq=7, nv=6`) joints where these indices
-/// diverge.
+/// Each edge is a pair of DOF indices; the forces go to those DOFs. The position is read from the DOF's own coordinate, found through its joint: a slide or
+/// hinge DOF, or one of a free joint's three translation DOFs. A ball joint's DOFs and a free
+/// joint's rotation DOFs have no coordinate of their own, so
+/// [`PassiveStack::install`](crate::PassiveStack::install) refuses them.
 ///
 /// # Example
 ///
@@ -167,7 +166,7 @@ impl PairwiseCoupling {
     /// # Errors
     ///
     /// Returns the error [`PassiveComponent::validate`] would: an edge's DOF is missing from
-    /// `model` or has no single position coordinate.
+    /// `model` or has no position coordinate of its own.
     pub fn coupling_energy(&self, model: &Model, data: &Data) -> Result<f64, ThermostatError> {
         self.validate(model)?;
         let x = |dof| data.qpos[qpos_index(model, dof)];

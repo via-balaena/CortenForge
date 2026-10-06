@@ -39,12 +39,12 @@ use crate::error::ThermostatError;
 /// where `k₁ = 2π/L`, `k₂ = 4π/L`, and `α = data.ctrl[ctrl_idx]`
 /// clamped to `[0, 1]`.
 ///
-/// # Joint type constraint
+/// # Which DOFs
 ///
-/// Same as [`DoubleWellPotential`](crate::DoubleWellPotential): the `dof`
-/// field indexes both `data.qpos` and `qfrc_out`. This is correct for
-/// slide and hinge joints where `nq = nv = 1`. It does **not** support
-/// ball or free joints.
+/// The force goes to DOF `dof`. The position is read from the DOF's own coordinate, found through its joint: a slide or
+/// hinge DOF, or one of a free joint's three translation DOFs. A ball joint's DOFs and a free
+/// joint's rotation DOFs have no coordinate of their own, so
+/// [`PassiveStack::install`](crate::PassiveStack::install) refuses them.
 ///
 /// # Ctrl-channel pattern
 ///
@@ -62,7 +62,7 @@ pub struct RatchetPotential {
     phi: f64,
     /// Spatial period L.
     period: f64,
-    /// DOF index (= qpos index for slide/hinge joints).
+    /// DOF index this potential acts on.
     dof: usize,
     /// Index into `data.ctrl` for amplitude modulation α.
     ctrl_idx: usize,

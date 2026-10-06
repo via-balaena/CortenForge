@@ -24,9 +24,10 @@
 //! `PassiveComponent` impl without touching the chassis.
 //!
 //! The damping is computed from each step's starting velocity, so under
-//! the Euler integrator it alone multiplies a DOF's velocity by
-//! `1 − γh/M` per step (`M` the DOF's mass or inertia): stable only for
-//! `γh/M < 2`.
+//! the Euler integrator, for a diagonal mass matrix, it alone multiplies a
+//! DOF's velocity by `1 − γh/M` per step (`M` the DOF's mass or inertia):
+//! stable only for `γh/M < 2`. With coupled DOFs the eigenvalues of
+//! `h·M⁻¹·Γ` set the limit instead.
 //!
 //! The thermostat is measured under the Euler integrator. RK4 calls the
 //! passive callback four times per step and the thermostat draws fresh
@@ -125,12 +126,9 @@ impl LangevinThermostat {
     /// `gamma`, bath temperature `k_b_t`, master seed `master_seed`,
     /// and trajectory id `traj_id`.
     ///
-    /// `gamma.len()` must match the simulation's `model.nv` at
-    /// install time; the apply method indexes `qvel` and the PRF
-    /// draws by `i in 0..gamma.len()`. Mismatches between `gamma.len()`
-    /// and `model.nv` are not detected at construction time (the
-    /// thermostat doesn't see the model until install), so the caller
-    /// is responsible for matching them.
+    /// The thermostat acts on DOFs `0..gamma.len()`: a `gamma` shorter than
+    /// the model's DOF count leaves the other DOFs alone, and a longer one
+    /// is refused at install (see [`PassiveComponent::validate`]).
     ///
     /// `master_seed` is expanded once at construction into a 32-byte
     /// `ChaCha8` key via `prf::expand_master_seed` (a private helper
@@ -625,8 +623,8 @@ mod tests {
     }
 
     /// No two DOF groups share noise at any step. Before each group had its own stream,
-    /// group `g` at step `s` drew the same block as group 0 at step `s + g`, so joints 8–15
-    /// replayed joints 0–7's noise one step later. 17 DOFs give two full groups and a
+    /// group `g` at step `s` drew the same block as group 0 at step `s + g`, so DOFs 0–7
+    /// replayed DOFs 8–15's noise one step later. 17 DOFs give two full groups and a
     /// partial third.
     #[test]
     fn dof_groups_draw_distinct_noise() {
@@ -661,8 +659,9 @@ mod tests {
     }
 
     /// Group 0's noise is unchanged by giving each group its own stream: pinned bits of DOFs
-    /// 0 and 7, recorded before the change (at `e2d42077`), for trajectory ids and steps on
-    /// both sides of 2^32 − 1. A 17-DOF run's first 8 DOFs match the 8-DOF run.
+    /// 0 and 7, recorded before the change (at `e2d42077`), for trajectory ids and steps up to
+    /// 2^32 − 1 (above that the noise changed by design). A 17-DOF run's first 8 DOFs match
+    /// the 8-DOF run.
     #[test]
     fn group_zero_noise_is_unchanged() {
         const PINS: [(u64, u64, u64, u64); 6] = [

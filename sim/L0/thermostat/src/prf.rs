@@ -142,8 +142,9 @@ pub(crate) fn expand_master_seed(master_seed: u64) -> [u8; 32] {
 /// The `ChaCha` position `(block_counter, stream)` of the noise block for DOF group `group`
 /// at step `step_index` of trajectory `traj_id`.
 ///
-/// - counter: `traj_id` low 32 bits, then `step_index` low 32 bits;
-/// - stream: `group` (16 bits), then `step_index` bits 32–47, then `traj_id` high 32 bits.
+/// - counter: bits 0–31 are `step_index` bits 0–31, bits 32–63 are `traj_id` bits 0–31;
+/// - stream: bits 0–15 are `group`, bits 16–31 are `step_index` bits 32–47, bits 32–63 are
+///   `traj_id` bits 32–63.
 ///
 /// Every `(traj_id, step_index < 2^48, group < 2^16)` gets its own position. Group 0 with
 /// `traj_id` and `step_index` below `2^32` keeps stream 0, so its noise is the same as before

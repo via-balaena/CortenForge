@@ -811,8 +811,8 @@ live concern.
 
 > **Erratum (2026-10-06):** those slots were not reserved.
 > `step_index` occupies the same low 32 bits, so group `g` at
-> step `s` drew the block of group 0 at step `s + g`: DOFs 8–15
-> replayed DOFs 0–7's noise one step later. The thermostat now
+> step `s` drew the block of group 0 at step `s + g`: DOFs 0–7
+> replayed DOFs 8–15's noise one step later. The thermostat now
 > puts the group in `ChaCha`'s stream words (`prf::noise_position`).
 
 The `Stochastic` impl is unchanged (Ch 15 §4 point 2):
@@ -915,6 +915,12 @@ counter-based PRF pattern and cross-references `prf.rs`:
 //! manual ChaCha8 implementation used by `prf.rs`) is the
 //! right PRF-implementation choice.
 ```
+
+> **Erratum (2026-10-06):** the formula above reused noise across
+> DOF groups (see the erratum earlier in this chapter), and the
+> "structurally immune" claim holds only with one thermostat per env;
+> a stack shared by several `Data` shares one step counter. The
+> module doc now says both.
 
 This rewrite is not a D13 item literally, but it is the same
 class of change (stale mutex-era prose in `langevin.rs`) and

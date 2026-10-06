@@ -98,9 +98,9 @@ pub struct LearningRecord {
     /// Measured per-edge correlations from the physical sampler.
     pub measured_correlations: Vec<f64>,
     /// KL divergence `KL(target ‖ exact)` at the parameters this iteration's
-    /// trajectories ran with: the parameters BEFORE this iteration's update.
-    /// `coupling_j` and `field_h` above are the parameters AFTER it, so the
-    /// first record's KL is the starting KL.
+    /// trajectories ran with: the parameters BEFORE this iteration's update,
+    /// so the first record's KL is the starting KL. `coupling_j` and
+    /// `field_h` above are the parameters AFTER it.
     pub kl_divergence: f64,
 }
 
