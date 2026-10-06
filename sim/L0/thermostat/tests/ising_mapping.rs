@@ -362,6 +362,23 @@ fn effective_couplings(physics: Physics, p: &Problem, distribution: &[f64]) -> V
         .collect()
 }
 
+/// The effective field on each spin: `kT` times the order-1 Walsh–Hadamard coefficient of
+/// `ln P(s)` on that spin.
+fn effective_fields(physics: Physics, p: &Problem, distribution: &[f64]) -> Vec<f64> {
+    let spin = |c: usize, i: usize| if c >> i & 1 == 1 { 1.0 } else { -1.0 };
+    (0..p.n)
+        .map(|i| {
+            let coefficient: f64 = distribution
+                .iter()
+                .enumerate()
+                .map(|(c, &prob)| prob.ln() * spin(c, i))
+                .sum::<f64>()
+                / distribution.len() as f64;
+            physics.k_b_t * coefficient
+        })
+        .collect()
+}
+
 // ─── Effective couplings ─────────────────────────────────────────────────
 
 /// On the complete graph K4, ferro- and antiferromagnetic, at tilt ratio 0.3 and `ΔV/kT = 3`,
@@ -409,6 +426,71 @@ fn k4_realises_the_first_order_factor_and_the_induced_couplings() {
                     1.0 + induced
                 );
             }
+        }
+    }
+}
+
+/// Fields enter at first order as `μ·h` (one factor of `μ`, where couplings get two), plus
+/// `β·μ·σ²·Σ_l h_l·J_lj` at second order. Checked on `gibbs_sampler.rs` gate B's mixed problem
+/// (couplings `[0.8, −0.3, 0.1, 0.5, −0.2, 0.6]`, fields `[0.3, −0.2, 0.0, 0.15]`, tilt
+/// ratios 0.23–0.37 at `ΔV = 3`), both readouts, `ΔV/kT = 3`. The 0.005 band was set before
+/// this test first ran; `μ²·h` instead of `μ·h` misses spin 0 by 0.013.
+#[test]
+fn fields_enter_with_one_factor_of_mu() {
+    let physics = Physics {
+        delta_v: 3.0,
+        x_0: 1.5,
+        k_b_t: 1.0,
+    };
+    let problem = Problem {
+        n: 4,
+        edges: vec![(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)],
+        coupling_j: vec![0.8, -0.3, 0.1, 0.5, -0.2, 0.6],
+        field_h: vec![0.3, -0.2, 0.0, 0.15],
+    };
+    let coupling = |a: usize, b: usize| {
+        problem
+            .edges
+            .iter()
+            .position(|&(p, q)| (p, q) == (a, b) || (p, q) == (b, a))
+            .map_or(0.0, |k| problem.coupling_j[k])
+    };
+    let (drop, sign_only) = spin_distributions(physics, &problem);
+    for (readout, distribution) in [(Readout::Drop, drop), (Readout::Sign, sign_only)] {
+        let (mean, variance) = well_moments(physics, readout);
+        let fields = effective_fields(physics, &problem, &distribution);
+        for (j, h_eff) in fields.into_iter().enumerate() {
+            let induced = mean * variance / physics.k_b_t
+                * (0..problem.n)
+                    .map(|l| problem.field_h[l] * coupling(l, j))
+                    .sum::<f64>();
+            let predicted = mean * problem.field_h[j] + induced;
+            eprintln!(
+                "{readout:?} spin {j}: h {:+.3}, h_eff {h_eff:+.5}, μ·h {:+.5} + induced {induced:+.5}",
+                problem.field_h[j],
+                mean * problem.field_h[j]
+            );
+            assert!(
+                (h_eff - predicted).abs() < 0.005,
+                "{readout:?}, spin {j}: h_eff {h_eff}, predicted {predicted}"
+            );
+        }
+        for (k, (&(i, l), j_eff)) in problem
+            .edges
+            .iter()
+            .zip(effective_couplings(physics, &problem, &distribution))
+            .enumerate()
+        {
+            let predicted = mean * mean * problem.coupling_j[k]
+                + mean * mean * variance / physics.k_b_t * problem.shared_neighbour_sum(i, l);
+            eprintln!(
+                "{readout:?} edge ({i},{l}): J {:+.3}, J_eff {j_eff:+.5}, predicted {predicted:+.5}",
+                problem.coupling_j[k]
+            );
+            assert!(
+                (j_eff - predicted).abs() < 0.005,
+                "{readout:?}, edge ({i},{l}): J_eff {j_eff}, predicted {predicted}"
+            );
         }
     }
 }
