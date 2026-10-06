@@ -145,26 +145,59 @@ impl LangevinThermostat {
     ///
     /// # Panics
     ///
-    /// - If `gamma` has more than [`Self::MAX_DOFS`] (`2^19`) entries.
-    /// - If an entry of `gamma`, or `k_b_t`, is negative or not finite.
+    /// If [`Self::try_new`] refuses the parameters: `gamma` has more than
+    /// [`Self::MAX_DOFS`] (`2^19`) entries, or an entry of `gamma`, or
+    /// `k_b_t`, is negative or not finite.
     #[must_use]
+    #[allow(clippy::panic)] // the documented refusal; try_new is the non-panicking path
     pub fn new(gamma: DVector<f64>, k_b_t: f64, master_seed: u64, traj_id: u64) -> Self {
-        assert!(
-            gamma.len() <= Self::MAX_DOFS,
-            "LangevinThermostat supports at most 2^19 DOFs, got {}",
-            gamma.len()
-        );
-        for (i, &g) in gamma.iter().enumerate() {
-            assert!(
-                g.is_finite() && g >= 0.0,
-                "LangevinThermostat: gamma[{i}] must be finite and non-negative, got {g}"
-            );
+        match Self::try_new(gamma, k_b_t, master_seed, traj_id) {
+            Ok(thermostat) => thermostat,
+            Err(e) => panic!("{e}"),
         }
-        assert!(
-            k_b_t.is_finite() && k_b_t >= 0.0,
-            "LangevinThermostat: k_b_t must be finite and non-negative, got {k_b_t}"
-        );
-        Self {
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// [`ThermostatError::TooManyDofs`] if `gamma` has more than
+    /// [`Self::MAX_DOFS`] entries; [`ThermostatError::InvalidParameter`] if
+    /// an entry of `gamma`, or `k_b_t`, is negative or not finite.
+    pub fn try_new(
+        gamma: DVector<f64>,
+        k_b_t: f64,
+        master_seed: u64,
+        traj_id: u64,
+    ) -> Result<Self, ThermostatError> {
+        const COMPONENT: &str = "LangevinThermostat";
+        const REQUIREMENT: &str = "finite and non-negative";
+        if gamma.len() > Self::MAX_DOFS {
+            return Err(ThermostatError::TooManyDofs {
+                component: COMPONENT,
+                dofs: gamma.len(),
+                max: Self::MAX_DOFS,
+            });
+        }
+        for (i, &g) in gamma.iter().enumerate() {
+            if !g.is_finite() || g < 0.0 {
+                return Err(ThermostatError::InvalidParameter {
+                    component: COMPONENT,
+                    parameter: format!("gamma[{i}]"),
+                    value: g,
+                    requirement: REQUIREMENT,
+                });
+            }
+        }
+        if !k_b_t.is_finite() || k_b_t < 0.0 {
+            return Err(ThermostatError::InvalidParameter {
+                component: COMPONENT,
+                parameter: "k_b_t".to_owned(),
+                value: k_b_t,
+                requirement: REQUIREMENT,
+            });
+        }
+        Ok(Self {
             gamma,
             k_b_t,
             master_seed,
@@ -173,15 +206,23 @@ impl LangevinThermostat {
             counter: AtomicU64::new(0),
             stochastic_active: AtomicBool::new(true),
             k_b_t_ctrl: None,
-        }
+        })
+    }
+
+    /// The temperature multiplier read from control value `ctrl` under
+    /// [`Self::with_ctrl_temperature`]: `ctrl` clamped to `[0, 10]`, with a
+    /// bad value (`NaN`, infinite, or beyond ±1e10) counting as 0.
+    #[must_use]
+    pub fn ctrl_multiplier(ctrl: f64) -> f64 {
+        clamped_ctrl(ctrl, 10.0)
     }
 
     /// Enable runtime temperature modulation via a ctrl channel.
     ///
     /// When set, `apply` reads `data.ctrl[ctrl_idx]` as a multiplier on
     /// the base `k_b_t`. The effective temperature is
-    /// `k_b_t * ctrl.clamp(0.0, 10.0)`, and a bad control value (`NaN`,
-    /// infinite, or beyond ±1e10) counts as 0. At multiplier 0, the
+    /// `k_b_t * Self::ctrl_multiplier(ctrl)`: the control clamped to
+    /// `[0, 10]`, with a bad value counting as 0. At multiplier 0, the
     /// thermostat produces pure damping (no noise). At 10, the effective
     /// temperature is 10× the base. The model needs control channel
     /// `ctrl_idx`: install refuses a model without it.
@@ -211,9 +252,9 @@ impl PassiveComponent for LangevinThermostat {
         // by the multiplier — only the FDT-paired noise amplitude
         // changes. This preserves the FDT relation at the effective
         // temperature.
-        let k_b_t = self
-            .k_b_t_ctrl
-            .map_or(self.k_b_t, |idx| self.k_b_t * clamped_ctrl(data, idx, 10.0));
+        let k_b_t = self.k_b_t_ctrl.map_or(self.k_b_t, |idx| {
+            self.k_b_t * Self::ctrl_multiplier(data.ctrl[idx])
+        });
 
         // Damping (-γ·v) is unconditional — it is the deterministic
         // half of the FD pair and runs in both stochastic-active and
@@ -641,36 +682,66 @@ mod tests {
         }
     }
 
-    /// The panic message of `LangevinThermostat::new(gamma, k_b_t, ..)`, or `None` if it
-    /// accepts them.
-    fn new_refusal(gamma: &[f64], k_b_t: f64) -> Option<String> {
-        let gamma = DVector::from_column_slice(gamma);
-        std::panic::catch_unwind(|| LangevinThermostat::new(gamma, k_b_t, 42, 0))
-            .err()
-            .map(|e| e.downcast_ref::<String>().cloned().unwrap_or_default())
+    /// The refusal `LangevinThermostat::try_new(gamma, k_b_t, ..)` returns, if any.
+    fn refusal(gamma: &[f64], k_b_t: f64) -> Option<ThermostatError> {
+        LangevinThermostat::try_new(DVector::from_column_slice(gamma), k_b_t, 42, 0).err()
+    }
+
+    /// The parameter named by an `InvalidParameter` refusal.
+    fn refused_parameter(refusal: Option<ThermostatError>) -> Option<String> {
+        match refusal {
+            Some(ThermostatError::InvalidParameter { parameter, .. }) => Some(parameter),
+            _ => None,
+        }
     }
 
     #[test]
-    fn new_refuses_negative_or_non_finite_damping_and_temperature() {
+    fn try_new_refuses_negative_or_non_finite_damping_and_temperature() {
         for bad in [-0.1, f64::NAN, f64::INFINITY] {
-            let msg = new_refusal(&[0.1, bad], 1.0);
-            assert!(
-                msg.as_deref()
-                    .is_some_and(|m| m.contains("gamma[1] must be finite and non-negative")),
-                "gamma[1] = {bad}: {msg:?}"
+            assert_eq!(
+                refused_parameter(refusal(&[0.1, bad], 1.0)).as_deref(),
+                Some("gamma[1]"),
+                "gamma[1] = {bad}"
             );
-            let msg = new_refusal(&[0.1, 0.1], bad);
-            assert!(
-                msg.as_deref()
-                    .is_some_and(|m| m.contains("k_b_t must be finite and non-negative")),
-                "k_b_t = {bad}: {msg:?}"
+            assert_eq!(
+                refused_parameter(refusal(&[0.1, 0.1], bad)).as_deref(),
+                Some("k_b_t"),
+                "k_b_t = {bad}"
             );
         }
         assert_eq!(
-            new_refusal(&[0.0, 0.1], 0.0),
+            refusal(&[0.0, 0.1], 0.0),
             None,
             "zero damping and temperature are allowed"
         );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LangevinThermostat: gamma[0] must be finite and non-negative, got -1"
+    )]
+    fn new_panics_with_the_refusal() {
+        let _t = LangevinThermostat::new(DVector::from_element(1, -1.0), 1.0, 0, 0);
+    }
+
+    #[test]
+    fn ctrl_multiplier_clamps_and_reads_a_bad_control_as_zero() {
+        for (ctrl, expected) in [
+            (0.5, 0.5),
+            (20.0, 10.0),
+            (1e10, 10.0),
+            (-1.0, 0.0),
+            (f64::NAN, 0.0),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, 0.0),
+            (2e10, 0.0),
+        ] {
+            assert_eq!(
+                LangevinThermostat::ctrl_multiplier(ctrl),
+                expected,
+                "ctrl {ctrl}"
+            );
+        }
     }
 
     #[test]
@@ -800,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "LangevinThermostat supports at most 2^19 DOFs")]
+    #[should_panic(expected = "LangevinThermostat supports at most 524288 DOFs")]
     fn new_refuses_more_than_2_pow_19_dofs() {
         let _t = LangevinThermostat::new(DVector::from_element((1 << 19) + 1, 0.1), 1.0, 0, 0);
     }

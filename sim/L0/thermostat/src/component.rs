@@ -173,10 +173,9 @@ pub const fn check_ctrl(
     }
 }
 
-/// Control channel `ctrl`'s value, clamped to `[0, max]`. A bad value (`NaN`, infinite, or beyond
-/// ±1e10: [`sim_core::is_bad`]) reads as 0, the value sim-core's actuation stage sets it to.
-pub fn clamped_ctrl(data: &Data, ctrl: usize, max: f64) -> f64 {
-    let value = data.ctrl[ctrl];
+/// A control value clamped to `[0, max]`. A bad value (`NaN`, infinite, or beyond ±1e10:
+/// [`sim_core::is_bad`]) reads as 0, the value sim-core's actuation stage sets it to.
+pub fn clamped_ctrl(value: f64, max: f64) -> f64 {
     if is_bad(value) {
         0.0
     } else {

@@ -225,9 +225,9 @@ impl ThermCircuitEnvBuilder {
     ///
     /// Returns [`ThermCircuitError`] if `n_particles` is zero or above
     /// [`LangevinThermostat::MAX_DOFS`], `reward` was not set, a parameter is
-    /// `NaN` or infinite, `gamma` or `k_b_t` is negative, a passive component
-    /// refuses the model, or building the model, the spaces or the
-    /// environment fails.
+    /// `NaN` or infinite, the thermostat refuses `gamma` or `k_b_t` (see
+    /// [`LangevinThermostat::try_new`]), a passive component refuses the
+    /// model, or building the model, the spaces or the environment fails.
     pub fn build(self) -> Result<ThermCircuitEnv, ThermCircuitError> {
         let p = self.prepare()?;
 
@@ -262,9 +262,9 @@ impl ThermCircuitEnvBuilder {
     ///
     /// Returns [`ThermCircuitError`] if `n_particles` is zero or above
     /// [`LangevinThermostat::MAX_DOFS`], `reward` was not set, a parameter is
-    /// `NaN` or infinite, `gamma` or `k_b_t` is negative, a passive component
-    /// refuses the model, or building the model, the spaces or the
-    /// environment fails.
+    /// `NaN` or infinite, the thermostat refuses `gamma` or `k_b_t` (see
+    /// [`LangevinThermostat::try_new`]), a passive component refuses the
+    /// model, or building the model, the spaces or the environment fails.
     pub fn build_vec(self, n_envs: usize) -> Result<VecEnv, ThermCircuitError> {
         let p = self.prepare()?;
 
@@ -285,9 +285,8 @@ impl ThermCircuitEnvBuilder {
 
     // ── Private ───────────────────────────────────────────────────────
 
-    /// Reject `NaN` or ±Inf on any user-supplied f64 parameter, and a
-    /// negative `gamma` or `k_b_t` (which `LangevinThermostat::new` refuses).
-    fn validate_params(&self) -> Result<(), ThermCircuitError> {
+    /// Reject `NaN` or ±Inf on any user-supplied f64 parameter.
+    fn validate_finite_params(&self) -> Result<(), ThermCircuitError> {
         let checks: [(&'static str, f64); 5] = [
             ("timestep", self.timestep),
             ("gamma", self.gamma),
@@ -300,18 +299,13 @@ impl ThermCircuitEnvBuilder {
                 return Err(ThermCircuitError::NonFiniteParameter { field, value });
             }
         }
-        for (field, value) in [("gamma", self.gamma), ("k_b_t", self.k_b_t)] {
-            if value < 0.0 {
-                return Err(ThermCircuitError::NegativeParameter { field, value });
-            }
-        }
         Ok(())
     }
 
     /// Validate config and execute shared setup (MJCF, model, thermostat,
     /// passive stack, obs/act spaces, closure defaults).
     fn prepare(self) -> Result<PreparedCircuit, ThermCircuitError> {
-        self.validate_params()?;
+        self.validate_finite_params()?;
         if self.n_particles == 0 {
             return Err(ThermCircuitError::ZeroParticles);
         }
@@ -336,7 +330,7 @@ impl ThermCircuitEnvBuilder {
 
         // 4. Build thermostat
         let gamma_vec = DVector::from_element(self.n_particles, self.gamma);
-        let thermostat = LangevinThermostat::new(gamma_vec, self.k_b_t, self.seed, 0);
+        let thermostat = LangevinThermostat::try_new(gamma_vec, self.k_b_t, self.seed, 0)?;
         let thermostat = if self.ctrl_temperature {
             thermostat.with_ctrl_temperature(0)
         } else {
@@ -499,20 +493,23 @@ mod tests {
         ));
     }
 
+    /// The parameter named by a thermostat's `InvalidParameter` refusal.
+    fn refused_parameter(err: ThermCircuitError) -> Option<String> {
+        match err {
+            ThermCircuitError::Thermostat(sim_thermostat::ThermostatError::InvalidParameter {
+                parameter,
+                ..
+            }) => Some(parameter),
+            _ => None,
+        }
+    }
+
     #[test]
     fn negative_gamma_and_k_b_t_rejected() {
         let err = minimal_valid().gamma(-0.1).build().unwrap_err();
-        assert!(matches!(
-            err,
-            ThermCircuitError::NegativeParameter { field: "gamma", value }
-                if (value + 0.1).abs() < 1e-15
-        ));
+        assert_eq!(refused_parameter(err).as_deref(), Some("gamma[0]"));
         let err = minimal_valid().k_b_t(-1.0).build_vec(2).unwrap_err();
-        assert!(matches!(
-            err,
-            ThermCircuitError::NegativeParameter { field: "k_b_t", value }
-                if (value + 1.0).abs() < 1e-15
-        ));
+        assert_eq!(refused_parameter(err).as_deref(), Some("k_b_t"));
     }
 
     #[test]

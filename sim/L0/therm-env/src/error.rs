@@ -35,16 +35,8 @@ pub enum ThermCircuitError {
         value: f64,
     },
 
-    /// `gamma` or `k_b_t` was negative.
-    #[error("parameter `{field}` must be non-negative, got {value}")]
-    NegativeParameter {
-        /// Name of the offending field.
-        field: &'static str,
-        /// The negative value that was supplied.
-        value: f64,
-    },
-
-    /// A passive component refused the model (see `PassiveStack::try_install`).
+    /// The thermostat refused its parameters (see `LangevinThermostat::try_new`), or a passive
+    /// component refused the model (see `PassiveStack::try_install`).
     #[error(transparent)]
     Thermostat(#[from] sim_thermostat::ThermostatError),
 

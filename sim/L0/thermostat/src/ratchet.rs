@@ -148,7 +148,7 @@ impl RatchetPotential {
 impl PassiveComponent for RatchetPotential {
     fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
         let x = data.qpos[qpos_index(model, self.dof)];
-        let alpha = clamped_ctrl(data, self.ctrl_idx, 1.0);
+        let alpha = clamped_ctrl(data.ctrl[self.ctrl_idx], 1.0);
 
         qfrc_out[self.dof] += self.force(x, alpha);
     }

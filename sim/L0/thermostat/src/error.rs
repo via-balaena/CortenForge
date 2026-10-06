@@ -4,11 +4,14 @@ use std::fmt;
 
 use sim_core::Integrator;
 
-/// Why a passive component, or a [`PassiveStack`](crate::PassiveStack), refuses a model.
+/// Why a passive component, or a [`PassiveStack`](crate::PassiveStack), refuses a model, or a
+/// component's constructor refuses its parameters.
 ///
-/// Returned by [`PassiveComponent::validate`](crate::PassiveComponent::validate) and
-/// [`PassiveStack::try_install`](crate::PassiveStack::try_install);
-/// [`PassiveStack::install`](crate::PassiveStack::install) panics with it.
+/// Returned by [`PassiveComponent::validate`](crate::PassiveComponent::validate),
+/// [`PassiveStack::try_install`](crate::PassiveStack::try_install) and
+/// [`LangevinThermostat::try_new`](crate::LangevinThermostat::try_new);
+/// [`PassiveStack::install`](crate::PassiveStack::install) and
+/// [`LangevinThermostat::new`](crate::LangevinThermostat::new) panic with it.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ThermostatError {
@@ -46,6 +49,26 @@ pub enum ThermostatError {
         integrator: Integrator,
         /// Why.
         reason: &'static str,
+    },
+    /// A constructor parameter is outside its domain.
+    InvalidParameter {
+        /// The component's type name.
+        component: &'static str,
+        /// The parameter, with the entry for a vector (`gamma[3]`).
+        parameter: String,
+        /// The value supplied.
+        value: f64,
+        /// What the parameter must be.
+        requirement: &'static str,
+    },
+    /// The component is given more DOFs than it supports.
+    TooManyDofs {
+        /// The component's type name.
+        component: &'static str,
+        /// The DOF count supplied.
+        dofs: usize,
+        /// The most it supports.
+        max: usize,
     },
     /// Any other reason, for components outside this crate.
     Other {
@@ -87,6 +110,20 @@ impl fmt::Display for ThermostatError {
                 f,
                 "{component} does not support the {integrator:?} integrator: {reason}"
             ),
+            Self::InvalidParameter {
+                component,
+                parameter,
+                value,
+                requirement,
+            } => write!(
+                f,
+                "{component}: {parameter} must be {requirement}, got {value}"
+            ),
+            Self::TooManyDofs {
+                component,
+                dofs,
+                max,
+            } => write!(f, "{component} supports at most {max} DOFs, got {dofs}"),
             Self::Other { component, reason } => write!(f, "{component}: {reason}"),
         }
     }
