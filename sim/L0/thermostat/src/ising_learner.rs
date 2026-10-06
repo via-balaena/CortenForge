@@ -156,18 +156,20 @@ impl IsingTarget {
 pub struct LearningRecord {
     /// Iteration index (0-based).
     pub iteration: usize,
-    /// Per-edge coupling constants at end of this iteration.
+    /// Per-edge coupling constants at end of this iteration, as given to
+    /// [`PairwiseCoupling`] (see [`IsingLearner::coupling_j`]).
     pub coupling_j: Vec<f64>,
-    /// Per-site external fields at end of this iteration.
+    /// Per-site external fields at end of this iteration, as given to [`ExternalField`]
+    /// (see [`IsingLearner::field_h`]).
     pub field_h: Vec<f64>,
     /// Measured per-site magnetizations from the physical sampler.
     pub measured_magnetizations: Vec<f64>,
     /// Measured per-edge correlations from the physical sampler.
     pub measured_correlations: Vec<f64>,
-    /// KL divergence `KL(target ‖ exact)` at the parameters this iteration's
-    /// trajectories ran with: the parameters BEFORE this iteration's update,
-    /// so the first record's KL is the starting KL. `coupling_j` and
-    /// `field_h` above are the parameters AFTER it.
+    /// KL divergence `KL(target ‖ exact)`, where `exact` is the Ising distribution of the
+    /// parameters this iteration's trajectories ran with, in Ising units (`J·x₀²`, `h·x₀`):
+    /// the parameters BEFORE this iteration's update, so the first record's KL is the starting
+    /// KL. `coupling_j` and `field_h` above are the parameters AFTER it.
     pub kl_divergence: f64,
 }
 
@@ -489,12 +491,16 @@ impl IsingLearner {
             .map(|v| v.iter().sum::<f64>() / v.len() as f64)
             .collect();
 
-        // 3. KL divergence at the parameters these trajectories ran with (before the update).
+        // 3. KL divergence at the parameters these trajectories ran with (before the update),
+        // in Ising units.
+        let x_0 = self.config.x_0;
+        let ising_j: Vec<f64> = self.coupling_j.iter().map(|j| j * x_0 * x_0).collect();
+        let ising_h: Vec<f64> = self.field_h.iter().map(|h| h * x_0).collect();
         let current_dist = crate::ising::exact_distribution(
             n,
             &self.config.edges,
-            &self.coupling_j,
-            &self.field_h,
+            &ising_j,
+            &ising_h,
             self.config.k_b_t,
         );
         let kl = crate::ising::kl_divergence(&self.target.distribution, &current_dist);
@@ -534,13 +540,16 @@ impl IsingLearner {
         (0..n_iterations).map(|_| self.step()).collect()
     }
 
-    /// Current coupling constants.
+    /// Current coupling constants, as given to [`PairwiseCoupling`]: force per unit position
+    /// squared. At the wells' bottoms `±x₀` they put Ising coupling `J·x₀²` on each edge, so
+    /// they are the Ising couplings themselves only at `x₀ = 1`.
     #[must_use]
     pub fn coupling_j(&self) -> &[f64] {
         &self.coupling_j
     }
 
-    /// Current external fields.
+    /// Current external fields, as given to [`ExternalField`]: force. At the wells' bottoms
+    /// they put Ising field `h·x₀` on each spin.
     #[must_use]
     pub fn field_h(&self) -> &[f64] {
         &self.field_h
@@ -814,12 +823,16 @@ mod tests {
     }
 
     /// A record's KL is at the parameters the iteration sampled with: the first record's is
-    /// the starting KL, and the second's is at the first record's (updated) parameters.
+    /// the starting KL, and the second's is at the first record's (updated) parameters, in
+    /// Ising units (`minimal_config` has `x₀ = 0.3`).
     #[test]
     fn a_record_reports_the_kl_of_the_parameters_it_sampled_with() {
         let target = minimal_target();
         let kl_at = |j: &[f64], h: &[f64]| {
-            let dist = crate::ising::exact_distribution(2, &[(0, 1)], j, h, 1.0);
+            let x_0 = minimal_config().x_0;
+            let j: Vec<f64> = j.iter().map(|j| j * x_0 * x_0).collect();
+            let h: Vec<f64> = h.iter().map(|h| h * x_0).collect();
+            let dist = crate::ising::exact_distribution(2, &[(0, 1)], &j, &h, 1.0);
             crate::ising::kl_divergence(&target.distribution, &dist)
         };
         let mut learner = IsingLearner::new(minimal_config(), target.clone(), load_model());
