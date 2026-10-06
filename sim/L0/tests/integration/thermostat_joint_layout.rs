@@ -44,7 +44,8 @@ fn components_read_slide_positions_after_a_free_joint() {
         .with(coupling())
         .with(ratchet())
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .expect("the stack installs");
 
     let mut data = model.make_data();
     let (x6, x7) = (0.5, -0.3);
@@ -113,7 +114,8 @@ fn components_read_hinge_and_free_translation_positions_after_a_ball() {
         .with(DoubleWellPotential::new(1.0, 1.0, 6))
         .with(PairwiseCoupling::new(vec![0.5], vec![(0, 4)]))
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .expect("the stack installs");
 
     let mut data = model.make_data();
     let (x0, x4, x6) = (0.2, 0.5, -0.4);

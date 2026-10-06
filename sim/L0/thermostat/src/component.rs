@@ -3,24 +3,22 @@
 //! This module defines the two traits that any passive force injector
 //! installed onto a `Model` via `cb_passive` must implement:
 //!
-//! - [`PassiveComponent`] is the M5 contract — it gives a component
+//! - [`PassiveComponent`] gives a component
 //!   immutable access to `Model`/`Data` and a single `&mut DVector<f64>`
 //!   accumulator to write its per-DOF contribution into. Mutable access
 //!   to `Data` is **uncompilable** at this layer, not just discouraged;
-//!   the [`crate::PassiveStack`](crate) wrapper drives the split-borrow
+//!   the [`PassiveStack`](crate::PassiveStack) wrapper drives the split-borrow
 //!   dance against the underlying `cb_passive: Fn(&Model, &mut Data)`
 //!   shape so component authors never have to.
 //!
-//! - [`Stochastic`] is the Decision-7 gating opt-in trait. A component
-//!   that injects random forces (`LangevinThermostat`, future
-//!   colored-noise / GLE / Brownian-motor components) implements
+//! - [`Stochastic`] is the opt-in for gating noise off. A component
+//!   that injects random forces (`LangevinThermostat`) implements
 //!   `Stochastic` and reports its current active flag via
 //!   [`PassiveComponent::as_stochastic`]. Finite-difference and autograd
-//!   contexts call [`crate::PassiveStack::disable_stochastic`](crate)
-//!   to wrap the stochastic contribution off via an RAII guard, so the
-//!   FD perturbation block recovers `∂F_det/∂qpos` exactly even though
-//!   the component would normally be writing FDT noise into
-//!   `qfrc_passive`.
+//!   contexts call [`PassiveStack::disable_stochastic`](crate::PassiveStack::disable_stochastic)
+//!   to wrap the stochastic contribution off via an RAII guard, so no
+//!   noise enters the FD difference even though the component would
+//!   normally be writing FDT noise into `qfrc_passive`.
 //!
 //! Both traits are `Send + Sync` because the resulting `cb_passive`
 //! callback is stored in an `Arc<dyn Fn + Send + Sync>` on `Model`,
@@ -35,17 +33,17 @@ use crate::error::ThermostatError;
 /// A passive force injector that writes into a per-DOF accumulator.
 ///
 /// Implementors are bolted onto a `Model` indirectly via
-/// [`crate::PassiveStack::install`](crate). The stack drives the split
+/// [`PassiveStack::try_install`](crate::PassiveStack::try_install). The stack drives the split
 /// from the underlying `Fn(&Model, &mut Data)` `cb_passive` shape into
 /// the trait's `(&Model, &Data, &mut DVector<f64>)` shape, so an
 /// implementor never observes the mutable `Data` borrow.
 ///
-/// # The M5 contract
+/// # The accumulator contract
 ///
 /// `apply` reads `model` and `data` immutably and accumulates its
 /// per-DOF contribution **with `+=`**, never `=`, into `qfrc_out`.
 /// `qfrc_out` is the same vector as `data.qfrc_passive` at runtime —
-/// the stack temporarily takes ownership of it via `std::mem::take`
+/// the stack temporarily takes ownership of it via `std::mem::replace`
 /// across the trait call so this signature is sound, and restores it
 /// before the callback returns. Components must not assume `qfrc_out`
 /// is zero on entry; earlier components in the same stack may have
@@ -61,6 +59,47 @@ use crate::error::ThermostatError;
 /// is itself stored in `Model::cb_passive: Option<Callback<dyn Fn +
 /// Send + Sync>>`. The full chain is verified by the unit tests in
 /// this file.
+///
+/// # Example: a component of your own
+///
+/// A linear spring pulling one DOF toward zero. The crate's own helpers that
+/// find a DOF's position through its joint are private, so this one reads
+/// `qpos[dof]`, which is that DOF's position in a model of slide joints.
+///
+/// ```
+/// use sim_core::{DVector, Data, Model};
+/// use sim_thermostat::{PassiveComponent, PassiveStack, ThermostatError};
+///
+/// struct Spring {
+///     stiffness: f64,
+///     dof: usize,
+/// }
+///
+/// impl PassiveComponent for Spring {
+///     fn apply(&self, _model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
+///         qfrc_out[self.dof] += -self.stiffness * data.qpos[self.dof];
+///     }
+///
+///     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+///         if self.dof < model.nv {
+///             Ok(())
+///         } else {
+///             Err(ThermostatError::DofOutOfRange { component: "Spring", dof: self.dof, nv: model.nv })
+///         }
+///     }
+/// }
+///
+/// let mut model = sim_core::test_fixtures::bistable_chain(1);
+/// PassiveStack::builder()
+///     .with(Spring { stiffness: 2.0, dof: 0 })
+///     .build()
+///     .try_install(&mut model)?;
+/// let mut data = model.make_data();
+/// data.qpos[0] = 0.5;
+/// data.forward(&model)?;
+/// assert_eq!(data.qfrc_passive[0], -1.0);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub trait PassiveComponent: Send + Sync + 'static {
     /// Read `model`/`data` and accumulate the component's per-DOF
     /// contribution into `qfrc_out` with `+=`.
@@ -70,8 +109,8 @@ pub trait PassiveComponent: Send + Sync + 'static {
     /// trait. Components that inject randomness override this to
     /// return `Some(self)`; deterministic components leave the default
     /// `None`. The stack uses this to implement
-    /// [`crate::PassiveStack::disable_stochastic`](crate) without
-    /// requiring `dyn` downcasting.
+    /// [`PassiveStack::disable_stochastic`](crate::PassiveStack::disable_stochastic)
+    /// without requiring `dyn` downcasting.
     fn as_stochastic(&self) -> Option<&dyn Stochastic> {
         None
     }
@@ -79,7 +118,7 @@ pub trait PassiveComponent: Send + Sync + 'static {
     /// Check that `model` has everything this component addresses: its DOFs, its control
     /// channels, and a position coordinate of its own for every DOF whose position it reads
     /// (a slide or hinge DOF, or a free joint's translation DOF).
-    /// [`PassiveStack::install`](crate::PassiveStack::install) calls it on every component
+    /// [`PassiveStack::try_install`](crate::PassiveStack::try_install) calls it on every component
     /// before installing.
     ///
     /// The default accepts any model. A component that wraps another must forward this
@@ -183,7 +222,7 @@ pub fn clamped_ctrl(value: f64, max: f64) -> f64 {
     }
 }
 
-/// Decision-7 gating opt-in for stochastic passive components.
+/// The opt-in that lets a stack switch a stochastic component's noise off.
 ///
 /// A component that writes random forces into `qfrc_out` implements
 /// `Stochastic` and exposes a flag the stack can flip on or off
@@ -193,12 +232,13 @@ pub fn clamped_ctrl(value: f64, max: f64) -> f64 {
 /// zero).
 ///
 /// The flag is per-component, not per-step, so a single
-/// [`crate::PassiveStack::disable_stochastic`](crate) call can wrap an
+/// [`PassiveStack::disable_stochastic`](crate::PassiveStack::disable_stochastic) call can wrap an
 /// arbitrary block of code (an FD perturbation loop, an autograd
 /// rollout, a derivative test) where every stochastic component in
-/// the stack must produce exactly its deterministic forces. The RAII
-/// guard returned by `disable_stochastic` restores the prior flag
-/// values on drop, so the wrapping is exception-safe.
+/// the stack must produce exactly its deterministic forces. When the
+/// last live guard returned by `disable_stochastic` drops, the flags
+/// from before the first are restored, even if the guarded block
+/// panicked.
 ///
 /// # Why `&self` and not `&mut self`
 ///

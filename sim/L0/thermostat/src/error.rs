@@ -64,6 +64,87 @@ pub enum ThermostatError {
         /// The most it supports.
         max: usize,
     },
+    /// A list parameter has the wrong number of entries.
+    LengthMismatch {
+        /// The component's type name.
+        component: &'static str,
+        /// The list.
+        parameter: &'static str,
+        /// Its entry count.
+        len: usize,
+        /// The entry count it needs.
+        expected: usize,
+        /// What it needs one entry per (`"edge"`, `"spin"`).
+        per: &'static str,
+    },
+    /// An edge joins an element to itself.
+    SelfEdge {
+        /// The component's type name.
+        component: &'static str,
+        /// The edge, as given.
+        edge: (usize, usize),
+    },
+    /// An edge repeats the pair of an earlier edge, in either order: the two would add their
+    /// couplings.
+    RepeatedEdge {
+        /// The component's type name.
+        component: &'static str,
+        /// The edge, as given.
+        edge: (usize, usize),
+    },
+    /// An edge names a spin outside `0..n`.
+    EdgeOutOfRange {
+        /// The component's type name.
+        component: &'static str,
+        /// The edge, as given.
+        edge: (usize, usize),
+        /// The spin count.
+        n: usize,
+    },
+    /// An Ising problem has more spins than the exact solvers enumerate.
+    TooManySpins {
+        /// The component's type name, or the function's.
+        component: &'static str,
+        /// The spin count supplied.
+        spins: usize,
+        /// The most it supports.
+        max: usize,
+    },
+    /// A distribution does not list its configurations in order: entry `k` must be
+    /// configuration `k`.
+    ConfigurationOrder {
+        /// The component's type name.
+        component: &'static str,
+        /// The first entry out of order.
+        entry: usize,
+        /// The configuration it holds.
+        config: u32,
+    },
+    /// A count parameter is outside its domain.
+    InvalidCount {
+        /// The component's type name.
+        component: &'static str,
+        /// The parameter.
+        parameter: &'static str,
+        /// The value supplied.
+        value: usize,
+        /// What the parameter must be.
+        requirement: &'static str,
+    },
+    /// The thermostat's noise variance on a DOF, `2·γ·kT/h` at the largest temperature it
+    /// can apply, is not finite at the model's timestep `h`.
+    NoiseOverflow {
+        /// The component's type name.
+        component: &'static str,
+        /// The DOF.
+        dof: usize,
+        /// The model's timestep.
+        timestep: f64,
+    },
+    /// The model already has a passive callback (`Model::cb_passive`), from another stack or
+    /// set directly. A model holds one, so installing would replace it; call
+    /// `Model::clear_passive_callback` first to replace it on purpose.
+    PassiveCallbackInstalled,
     /// Any other reason, for components outside this crate.
     Other {
         /// The component's type name.
@@ -74,6 +155,7 @@ pub enum ThermostatError {
 }
 
 impl fmt::Display for ThermostatError {
+    #[allow(clippy::too_many_lines)] // one short arm per variant
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DofOutOfRange { component, dof, nv } => {
@@ -118,6 +200,72 @@ impl fmt::Display for ThermostatError {
                 dofs,
                 max,
             } => write!(f, "{component} supports at most {max} DOFs, got {dofs}"),
+            Self::LengthMismatch {
+                component,
+                parameter,
+                len,
+                expected,
+                per,
+            } => write!(
+                f,
+                "{component}: {parameter} has length {len}, expected {expected} (one per {per})"
+            ),
+            Self::SelfEdge {
+                component,
+                edge: (i, j),
+            } => write!(f, "{component}: edge ({i}, {j}) joins an element to itself"),
+            Self::RepeatedEdge {
+                component,
+                edge: (i, j),
+            } => write!(
+                f,
+                "{component}: edge ({i}, {j}) repeats the pair of an earlier edge (in either order)"
+            ),
+            Self::EdgeOutOfRange {
+                component,
+                edge: (i, j),
+                n,
+            } => write!(
+                f,
+                "{component}: edge ({i}, {j}) names a spin outside 0..{n}"
+            ),
+            Self::TooManySpins {
+                component,
+                spins,
+                max,
+            } => write!(f, "{component} supports at most {max} spins, got {spins}"),
+            Self::ConfigurationOrder {
+                component,
+                entry,
+                config,
+            } => write!(
+                f,
+                "{component}: entry {entry} is configuration {config:#b}; entries must be in \
+                 configuration order"
+            ),
+            Self::InvalidCount {
+                component,
+                parameter,
+                value,
+                requirement,
+            } => write!(
+                f,
+                "{component}: {parameter} must be {requirement}, got {value}"
+            ),
+            Self::NoiseOverflow {
+                component,
+                dof,
+                timestep,
+            } => write!(
+                f,
+                "{component}: the noise variance 2·gamma·k_b_t/timestep on DOF {dof} is not \
+                 finite at timestep {timestep}"
+            ),
+            Self::PassiveCallbackInstalled => write!(
+                f,
+                "the model already has a passive callback; call Model::clear_passive_callback \
+                 first to replace it"
+            ),
             Self::Other { component, reason } => write!(f, "{component}: {reason}"),
         }
     }

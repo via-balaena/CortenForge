@@ -4,6 +4,10 @@
 > **Branch**: `feature/thermo-computing`
 > **Owner**: Jon
 > **Parent**: [MASTER_PLAN.md](./MASTER_PLAN.md)
+>
+> **Erratum (2026-10):** 0.10 removes `PassiveStack::install`, used throughout
+> below. `try_install` refuses a model that already has a passive callback, and
+> `install_per_env` panics on one instead of the "defensive clear" described here.
 
 This document defines the **bolt patterns** of the `sim-thermostat`
 crate — the trait shapes, composition idioms, lifecycle handling, and

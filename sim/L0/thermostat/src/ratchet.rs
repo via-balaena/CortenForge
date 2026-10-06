@@ -5,7 +5,7 @@
 //! [`PassiveComponent`] that contributes conservative forces to the
 //! `qfrc_passive` accumulator. The amplitude multiplier `α ∈ [0, 1]` is
 //! read from `data.ctrl[ctrl_idx]` at each step, enabling RL control of
-//! the potential via the ctrl-channel bridge pattern (spec §3).
+//! the potential through a control channel.
 //!
 //! With `V₂ > 0` and `φ ≠ 0, nπ`, the potential is spatially asymmetric
 //! within each period `L`. A flashing protocol (alternating α between 0
@@ -14,12 +14,7 @@
 //! holds and the steady-state current is exactly zero regardless of the
 //! asymmetry.
 //!
-//! D1 of the thermodynamic computing initiative validates this component
-//! in combination with a [`LangevinThermostat`] and an RL agent (CEM)
-//! that discovers the flashing strategy.
-//!
 //! [`PassiveComponent`]: crate::PassiveComponent
-//! [`LangevinThermostat`]: crate::LangevinThermostat
 
 use std::f64::consts::PI;
 
@@ -30,6 +25,7 @@ use crate::component::{
 };
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
+use crate::params::{Domain, or_panic};
 
 /// Two-harmonic ratchet potential with ctrl-dependent amplitude modulation.
 ///
@@ -49,15 +45,14 @@ use crate::error::ThermostatError;
 /// or hinge DOF, or one of a free joint's three translation DOFs. A ball
 /// joint's DOFs and a free joint's rotation DOFs have no coordinate of their
 /// own, so
-/// [`PassiveStack::install`](crate::PassiveStack::install) refuses them.
+/// [`PassiveStack::try_install`](crate::PassiveStack::try_install) refuses them.
 ///
 /// # Ctrl-channel pattern
 ///
 /// The amplitude `α` is read from `data.ctrl[ctrl_idx]` at each physics
 /// step. The MJCF model must include a zero-gain actuator at `ctrl_idx`
 /// so the RL agent can write to `data.ctrl` via `ActionSpace::apply`
-/// without the actuator producing any force of its own. See spec §3 and
-/// §5 for the MJCF model and ctrl flow.
+/// without the actuator producing any force of its own.
 pub struct RatchetPotential {
     /// First harmonic amplitude V₁.
     v1: f64,
@@ -85,19 +80,39 @@ impl RatchetPotential {
     /// - `ctrl_idx`: index into `data.ctrl` for amplitude modulation
     ///
     /// # Panics
-    /// Panics if `v1 <= 0` or `period <= 0`.
+    /// If [`Self::try_new`] refuses the parameters.
     #[must_use]
+    #[track_caller]
     pub fn new(v1: f64, v2: f64, phi: f64, period: f64, dof: usize, ctrl_idx: usize) -> Self {
-        assert!(v1 > 0.0, "V₁ must be positive, got {v1}");
-        assert!(period > 0.0, "period must be positive, got {period}");
-        Self {
+        or_panic(Self::try_new(v1, v2, phi, period, dof, ctrl_idx))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidParameter`] unless `v1` and `period` are finite and positive,
+    /// `v2` is finite and non-negative, and `phi` is finite.
+    pub fn try_new(
+        v1: f64,
+        v2: f64,
+        phi: f64,
+        period: f64,
+        dof: usize,
+        ctrl_idx: usize,
+    ) -> Result<Self, ThermostatError> {
+        const COMPONENT: &str = "RatchetPotential";
+        Domain::Positive.check(COMPONENT, "v1", v1)?;
+        Domain::NonNegative.check(COMPONENT, "v2", v2)?;
+        Domain::Finite.check(COMPONENT, "phi", phi)?;
+        Domain::Positive.check(COMPONENT, "period", period)?;
+        Ok(Self {
             v1,
             v2,
             phi,
             period,
             dof,
             ctrl_idx,
-        }
+        })
     }
 
     /// First harmonic amplitude V₁.
@@ -176,8 +191,32 @@ impl Diagnose for RatchetPotential {
 #[allow(clippy::unwrap_used, clippy::float_cmp, clippy::cast_lossless)]
 mod tests {
     use super::*;
+    use crate::params::refused_parameter;
 
     // ── construction ────────────────────────────────────────────────────
+
+    #[test]
+    fn try_new_refuses_each_parameter_outside_its_domain() {
+        let refused = |v1, v2, phi, period| {
+            refused_parameter(RatchetPotential::try_new(v1, v2, phi, period, 0, 0))
+        };
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert_eq!(refused(bad, 0.0, 0.0, 1.0).as_deref(), Some("v1"));
+            assert_eq!(refused(1.0, bad, 0.0, 1.0).as_deref(), Some("v2"));
+            assert_eq!(refused(1.0, 0.0, bad, 1.0).as_deref(), Some("phi"));
+            assert_eq!(refused(1.0, 0.0, 0.0, bad).as_deref(), Some("period"));
+        }
+        assert_eq!(refused(0.0, 0.0, 0.0, 1.0).as_deref(), Some("v1"));
+        assert_eq!(refused(1.0, -0.1, 0.0, 1.0).as_deref(), Some("v2"));
+        assert_eq!(refused(1.0, 0.0, 0.0, 0.0).as_deref(), Some("period"));
+        assert!(RatchetPotential::try_new(1.0, 0.0, -7.0, 1.0, 0, 0).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "RatchetPotential: v2 must be finite and non-negative, got -1")]
+    fn new_panics_with_the_refusal() {
+        let _ratchet = RatchetPotential::new(1.0, -1.0, 0.0, 1.0, 0, 0);
+    }
 
     #[test]
     fn new_validates_positive_v1() {
@@ -187,14 +226,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "V₁ must be positive")]
+    #[should_panic(expected = "RatchetPotential: v1 must be finite and positive, got 0")]
     fn new_rejects_zero_v1() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = RatchetPotential::new(0.0, 0.25, PI / 4.0, 1.0, 0, 0);
     }
 
     #[test]
-    #[should_panic(expected = "period must be positive")]
+    #[should_panic(expected = "RatchetPotential: period must be finite and positive, got 0")]
     fn new_rejects_zero_period() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = RatchetPotential::new(1.0, 0.25, PI / 4.0, 0.0, 0, 0);

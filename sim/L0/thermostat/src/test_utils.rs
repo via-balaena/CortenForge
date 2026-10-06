@@ -1,35 +1,20 @@
-//! Public test utilities for validating stochastic passive components.
+//! Test utilities for validating stochastic passive components.
 //!
-//! Per chassis Decision 5 + M4, this module ships:
+//! These are the crate's own statistical test helpers, exported so that
+//! integration tests (which compile against the crate as a library) and
+//! downstream test suites can use them. They are not part of the crate's
+//! stable API: they may change in any release.
 //!
 //! - [`WelfordOnline`]: a numerically stable single-pass mean/variance
-//!   accumulator (Welford 1962) with `reset` (M4: burn-in support) and
-//!   `merge` (M4: Chan/Pébay parallel-accumulator combination). The
-//!   Phase 1 equipartition gate (spec §7.3 option β) uses a **two-level
-//!   Welford pattern** built on `push` and `mean` — a per-trajectory
-//!   inner accumulator collects per-step `½v²` samples, and its scalar
-//!   `mean()` is pushed into a top-level accumulator that holds the
-//!   100 trajectory means as IID samples. `merge` is **not** used by
-//!   the §7 gate (merging per-step accumulators across trajectories
-//!   underestimates the std error by `√(1+2·τ_int) ≈ 100`); it ships
-//!   for IID parallel-reduce contexts in Phase 4+ batch reductions.
-//!
-//! - [`assert_within_n_sigma`]: a small assertion helper that fails
-//!   with a clear diagnostic when a measured value deviates from its
-//!   expected value by more than `n_sigma · standard_error`. The
-//!   default `n_sigma = 3.0` is the chassis sub-decision N2 default;
-//!   the Phase 1 tests use the default verbatim.
-//!
-//! ## Why this lives in `pub mod test_utils` and not `#[cfg(test)]`
-//!
-//! The chassis Decision-6 layout puts these helpers behind
-//! `pub mod test_utils` so they are reachable from downstream
-//! integration tests in other crates (notably the Phase 1
-//! integration test in `tests/langevin_thermostat.rs` and any
-//! Phase 2+ phase-specific test that wants the same statistical
-//! machinery). Behind `#[cfg(test)]` they would be invisible to
-//! integration tests, which compile against the crate as a normal
-//! library consumer.
+//!   accumulator (Welford 1962) with `reset`, for a burn-in window, and
+//!   `merge` (Chan/Pébay), for combining independent accumulators. The
+//!   equipartition tests use two levels: a per-trajectory accumulator over
+//!   per-step `½v²` samples, whose `mean()` is pushed into a top-level
+//!   accumulator over trajectories. Merging per-step accumulators across
+//!   trajectories instead would treat autocorrelated samples as independent
+//!   and understate the standard error by `√(1+2·τ_int)`.
+//! - [`assert_within_n_sigma`]: fails with a diagnostic when a measured value
+//!   deviates from its expected value by more than `n_sigma` standard errors.
 
 /// Numerically stable single-pass mean/variance accumulator.
 ///
@@ -41,13 +26,10 @@
 /// small variance — exactly the regime the equipartition gate runs
 /// in: `½v² ≈ 0.5` with std error `≈ 0.032`).
 ///
-/// Supports both [`reset`](Self::reset) (M4: re-initialize for
-/// burn-in) and [`merge`](Self::merge) (M4: combine two independent
-/// accumulators via Chan/Pébay 1979/2008). The Phase 1 §7.3 gate
-/// uses `push`/`mean` in a **two-level pattern** (per-trajectory
-/// inner accumulator + across-trajectories top-level accumulator);
-/// `merge` ships for Phase 4+ IID parallel-reduce contexts but is
-/// not used by the §7 gate. See the module-level docstring for why.
+/// Supports both [`reset`](Self::reset) (re-initialize after a burn-in)
+/// and [`merge`](Self::merge) (combine two independent accumulators via
+/// Chan/Pébay 1979/2008). See the module doc for when `merge` is the wrong
+/// tool.
 #[derive(Clone, Debug)]
 pub struct WelfordOnline {
     count: usize,
@@ -80,8 +62,8 @@ impl WelfordOnline {
         self.m2 += delta * delta2;
     }
 
-    /// Re-initialize the accumulator. Required by M4 to support the
-    /// "burn-in then measure" pattern: push N steps, call `reset`,
+    /// Re-initialize the accumulator, for the "burn-in then measure"
+    /// pattern: push N steps, call `reset`,
     /// then push the measurement window. Cheaper than constructing
     /// a fresh `WelfordOnline` because no allocation is involved.
     pub const fn reset(&mut self) {
@@ -102,27 +84,15 @@ impl WelfordOnline {
     /// - `μ   = μ_a + δ · n_b / n`
     /// - `M2  = M2_a + M2_b + δ² · n_a · n_b / n`
     ///
-    /// **`merge` is intended for IID parallel-reduce contexts** (e.g.
-    /// folding per-env statistics across `BatchSim` envs in Phase 4+
-    /// where every sample is independent of every other). It is
-    /// **NOT** used by the Phase 1 §7 equipartition gate. The §7.3
-    /// gate uses a two-level Welford pattern (`push`/`mean` only)
-    /// because per-step `½v²` samples within a trajectory are
-    /// autocorrelated (`τ_int ≈ 5000` steps for the central case),
-    /// and merging per-step accumulators across trajectories then
-    /// calling `std_error_of_mean` on the merged result yields the
-    /// IID std error — which underestimates the true std error by
-    /// `√(1+2·τ_int) ≈ 100`.
+    /// **`merge` is for independent samples**, such as statistics folded
+    /// across independent envs. On autocorrelated samples (per-step `½v²`
+    /// within one trajectory), `std_error_of_mean` on the merged result is
+    /// the independent-sample standard error, which understates the true
+    /// one by `√(1+2·τ_int)`.
     ///
-    /// The unit test
-    /// `welford_merge_matches_one_pass_over_full_dataset` locks the
-    /// formula by splitting a deterministic dataset into two halves,
-    /// computing Welford on each half, merging, and asserting the
-    /// merged `mean`/`variance` match a one-pass Welford over the
-    /// whole dataset to within an absolute tolerance of `1e-12`. The
-    /// merge formula is mathematically correct for IID samples; it
-    /// just isn't the right primitive for the §7 gate's autocorrelated
-    /// per-step samples.
+    /// The unit test `welford_merge_matches_one_pass_over_full_dataset`
+    /// checks the formula against a one-pass Welford over the whole
+    /// dataset, to an absolute tolerance of `1e-12`.
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
             return;
@@ -199,8 +169,7 @@ impl Default for WelfordOnline {
 /// Assert that `measured` is within `n_sigma · standard_error` of
 /// `expected`.
 ///
-/// Default convention: `n_sigma = 3.0` per chassis sub-decision N2.
-/// At `n_sigma = 3.0` the false-rejection rate on a true Gaussian
+/// The crate's tests use `n_sigma = 3.0`. At `n_sigma = 3.0` the false-rejection rate on a true Gaussian
 /// distribution is ~0.27%, which is the right ballpark for
 /// equipartition tests that run on every thermo-touching PR (a
 /// 1-in-370 flake rate is acceptable; a 1-in-20 flake rate from

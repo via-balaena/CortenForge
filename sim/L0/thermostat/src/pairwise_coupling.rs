@@ -2,27 +2,39 @@
 //!
 //! Implements the coupling potential `V = −Σ J_k · x_i · x_j` for each
 //! edge `(i, j)` as a [`PassiveComponent`] that contributes conservative
-//! forces to the `qfrc_passive` accumulator. Supports per-edge coupling
-//! constants: each edge `k` has its own `J_k`. Combined with
-//! [`DoubleWellPotential`] instances and a [`LangevinThermostat`] in a
-//! [`PassiveStack`], this produces a coupled bistable system whose
-//! equilibrium statistics match the Ising model on the same coupling
-//! topology.
-//!
-//! Phase 4 validates this component (with uniform J) against exact Ising
-//! predictions on a 4-element chain. Phase 5 uses per-edge J for
-//! Boltzmann learning on a fully-connected graph.
+//! forces to the `qfrc_passive` accumulator, with one `J_k` per edge.
+//! [`PairwiseCoupling`]'s doc says which Ising model a coupled array of
+//! [`DoubleWellPotential`]s samples.
 //!
 //! [`PassiveComponent`]: crate::PassiveComponent
 //! [`DoubleWellPotential`]: crate::DoubleWellPotential
-//! [`LangevinThermostat`]: crate::LangevinThermostat
-//! [`PassiveStack`]: crate::PassiveStack
 
 use sim_core::{DVector, Data, Model};
 
 use crate::component::{PassiveComponent, check_position_dof, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
+use crate::params::{Domain, check_edges, check_len, or_panic};
+
+const COMPONENT: &str = "PairwiseCoupling";
+
+/// `Ok` if a generated topology's element count `n` is at least `min`.
+const fn check_count(
+    n: usize,
+    min: usize,
+    requirement: &'static str,
+) -> Result<(), ThermostatError> {
+    if n >= min {
+        Ok(())
+    } else {
+        Err(ThermostatError::InvalidCount {
+            component: COMPONENT,
+            parameter: "n",
+            value: n,
+            requirement,
+        })
+    }
+}
 
 /// Pairwise coupling: `V = −Σ_k J_k · x_i · x_j` for each edge `(i, j)`.
 ///
@@ -40,23 +52,45 @@ use crate::error::ThermostatError;
 /// or hinge DOF, or one of a free joint's three translation DOFs. A ball
 /// joint's DOFs and a free joint's rotation DOFs have no coordinate of their
 /// own, so
-/// [`PassiveStack::install`](crate::PassiveStack::install) refuses them.
+/// [`PassiveStack::try_install`](crate::PassiveStack::try_install) refuses them.
+///
+/// # As an Ising model
+///
+/// With a [`DoubleWellPotential`](crate::DoubleWellPotential) on each DOF (minima at
+/// `±x₀`), the coupling's energy at the wells' bottoms is the Ising coupling `J_k·x₀²`
+/// between the spins, the signs of the positions. At a temperature the array samples a
+/// different Ising model:
+/// - at first order its couplings are `μ²·J_k·x₀²`, where `μ` is the mean of `|x|/x₀` in
+///   one well (`μ² ≈ 0.91` at `ΔV/kT = 3`, reading only positions beyond `x₀/2`);
+/// - at second order, spins that share a neighbour gain a coupling through it;
+/// - a well vanishes once a site's neighbours tilt it far enough, at a point that depends
+///   on the graph.
+///
+/// `tests/ising_mapping.rs` measures all three.
+/// [`IsingProblem::add_components`](crate::IsingProblem::add_components) builds the
+/// components for an Ising problem.
 ///
 /// # Example
 ///
-/// ```ignore
-/// use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PairwiseCoupling, PassiveStack};
+/// ```
 /// use sim_core::DVector;
+/// use sim_thermostat::{DoubleWellPotential, LangevinThermostat, PairwiseCoupling, PassiveStack};
 ///
+/// // Four slide particles of mass 1 (sim-core's `test-fixtures` feature; or
+/// // `sim_therm_env::generate_mjcf(4, 0, 0.001, (0.0, 1.0))` as MJCF).
+/// let mut model = sim_core::test_fixtures::bistable_chain(4);
 /// let mut builder = PassiveStack::builder();
 /// for i in 0..4 {
 ///     builder = builder.with(DoubleWellPotential::new(3.0, 1.0, i));
 /// }
-/// builder = builder.with(PairwiseCoupling::chain(4, 0.5));
-/// builder = builder.with(LangevinThermostat::new(
-///     DVector::from_element(4, 10.0), 1.0, 42, 0,
-/// ));
-/// builder.build().install(&mut model);
+/// builder
+///     .with(PairwiseCoupling::chain(4, 0.5))
+///     .with(LangevinThermostat::new(DVector::from_element(4, 10.0), 1.0, 42, 0))
+///     .build()
+///     .try_install(&mut model)?;
+/// let mut data = model.make_data();
+/// data.step(&model)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct PairwiseCoupling {
     /// Per-edge coupling constants. `coupling_j[k]` is the coupling
@@ -70,62 +104,103 @@ impl PairwiseCoupling {
     /// Create a coupling with per-edge coupling constants.
     ///
     /// # Panics
-    /// - If `coupling_j.len() != edges.len()`.
-    /// - If any edge has `i == j` (self-coupling).
-    /// - If a pair appears twice, in either order: the two edges would add their `J`s.
+    /// If [`Self::try_new`] refuses the coupling.
     #[must_use]
+    #[track_caller]
     pub fn new(coupling_j: Vec<f64>, edges: Vec<(usize, usize)>) -> Self {
-        assert!(
-            coupling_j.len() == edges.len(),
-            "coupling_j length ({}) must match edges length ({})",
+        or_panic(Self::try_new(coupling_j, edges))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// - [`ThermostatError::LengthMismatch`] unless `coupling_j` has one entry per edge.
+    /// - [`ThermostatError::InvalidParameter`] if an entry of `coupling_j` is not finite.
+    /// - [`ThermostatError::SelfEdge`] if an edge has `i == j` (self-coupling), or
+    ///   [`ThermostatError::RepeatedEdge`] if a pair appears twice in either order (the two
+    ///   edges would add their `J`s).
+    pub fn try_new(
+        coupling_j: Vec<f64>,
+        edges: Vec<(usize, usize)>,
+    ) -> Result<Self, ThermostatError> {
+        check_len(
+            COMPONENT,
+            "coupling_j",
             coupling_j.len(),
             edges.len(),
-        );
-        let mut seen = std::collections::HashSet::with_capacity(edges.len());
-        for &(i, j) in &edges {
-            assert!(i != j, "self-coupling not supported: edge ({i}, {j})");
-            assert!(
-                seen.insert((i.min(j), i.max(j))),
-                "duplicate coupling: the pair ({i}, {j}) appears twice"
-            );
-        }
-        Self { coupling_j, edges }
+            "edge",
+        )?;
+        Domain::Finite.check_each(COMPONENT, "coupling_j", &coupling_j)?;
+        check_edges(COMPONENT, None, &edges)?;
+        Ok(Self { coupling_j, edges })
     }
 
     /// Create with uniform coupling constant across all edges.
     ///
     /// # Panics
-    /// - If any edge has `i == j` (self-coupling).
-    /// - If a pair appears twice, in either order.
+    /// If [`Self::try_uniform`] refuses the coupling.
     #[must_use]
+    #[track_caller]
     pub fn uniform(coupling_j: f64, edges: Vec<(usize, usize)>) -> Self {
-        let j_vec = vec![coupling_j; edges.len()];
-        Self::new(j_vec, edges)
+        or_panic(Self::try_uniform(coupling_j, edges))
+    }
+
+    /// [`Self::uniform`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidParameter`] if `coupling_j` is not finite, and
+    /// [`ThermostatError::SelfEdge`] or [`ThermostatError::RepeatedEdge`] as for
+    /// [`Self::try_new`].
+    pub fn try_uniform(
+        coupling_j: f64,
+        edges: Vec<(usize, usize)>,
+    ) -> Result<Self, ThermostatError> {
+        Domain::Finite.check(COMPONENT, "coupling_j", coupling_j)?;
+        Self::try_new(vec![coupling_j; edges.len()], edges)
     }
 
     /// Create a nearest-neighbor open chain:
     /// edges `[(0,1), (1,2), ..., (n−2, n−1)]`, uniform J.
     ///
     /// # Panics
-    /// Panics if `n < 2`.
+    /// If [`Self::try_chain`] refuses the coupling.
     #[must_use]
+    #[track_caller]
     pub fn chain(n: usize, coupling_j: f64) -> Self {
-        assert!(n >= 2, "chain requires at least 2 elements, got {n}");
-        let edges = (0..n - 1).map(|i| (i, i + 1)).collect();
-        Self::uniform(coupling_j, edges)
+        or_panic(Self::try_chain(n, coupling_j))
+    }
+
+    /// [`Self::chain`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidCount`] if `n < 2`, and
+    /// [`ThermostatError::InvalidParameter`] if `coupling_j` is not finite.
+    pub fn try_chain(n: usize, coupling_j: f64) -> Result<Self, ThermostatError> {
+        check_count(n, 2, "at least 2 for a chain")?;
+        Self::try_uniform(coupling_j, (0..n - 1).map(|i| (i, i + 1)).collect())
     }
 
     /// Create a nearest-neighbor ring: chain + closing edge `(n−1, 0)`,
     /// uniform J.
     ///
     /// # Panics
-    /// Panics if `n < 3`.
+    /// If [`Self::try_ring`] refuses the coupling.
     #[must_use]
+    #[track_caller]
     pub fn ring(n: usize, coupling_j: f64) -> Self {
-        assert!(n >= 3, "ring requires at least 3 elements, got {n}");
+        or_panic(Self::try_ring(n, coupling_j))
+    }
+
+    /// [`Self::ring`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidCount`] if `n < 3`, and
+    /// [`ThermostatError::InvalidParameter`] if `coupling_j` is not finite.
+    pub fn try_ring(n: usize, coupling_j: f64) -> Result<Self, ThermostatError> {
+        check_count(n, 3, "at least 3 for a ring")?;
         let mut edges: Vec<(usize, usize)> = (0..n - 1).map(|i| (i, i + 1)).collect();
         edges.push((n - 1, 0));
-        Self::uniform(coupling_j, edges)
+        Self::try_uniform(coupling_j, edges)
     }
 
     /// Fully connected graph: all `N(N−1)/2` edges, uniform J.
@@ -134,20 +209,27 @@ impl PairwiseCoupling {
     /// Lexicographic.
     ///
     /// # Panics
-    /// Panics if `n < 2`.
+    /// If [`Self::try_fully_connected`] refuses the coupling.
     #[must_use]
+    #[track_caller]
     pub fn fully_connected(n: usize, coupling_j: f64) -> Self {
-        assert!(
-            n >= 2,
-            "fully_connected requires at least 2 elements, got {n}"
-        );
+        or_panic(Self::try_fully_connected(n, coupling_j))
+    }
+
+    /// [`Self::fully_connected`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidCount`] if `n < 2`, and
+    /// [`ThermostatError::InvalidParameter`] if `coupling_j` is not finite.
+    pub fn try_fully_connected(n: usize, coupling_j: f64) -> Result<Self, ThermostatError> {
+        check_count(n, 2, "at least 2")?;
         let mut edges = Vec::with_capacity(n * (n - 1) / 2);
         for i in 0..n {
             for j in (i + 1)..n {
                 edges.push((i, j));
             }
         }
-        Self::uniform(coupling_j, edges)
+        Self::try_uniform(coupling_j, edges)
     }
 
     /// Per-edge coupling constants (read-only).
@@ -231,6 +313,7 @@ impl Diagnose for PairwiseCoupling {
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+    use crate::params::refused_parameter;
 
     /// An `n`-slide chain at positions `x`.
     fn chain_at(x: &[f64]) -> (Model, Data) {
@@ -243,14 +326,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "self-coupling not supported")]
+    #[should_panic(expected = "PairwiseCoupling: edge (0, 0) joins an element to itself")]
     fn new_rejects_self_coupling() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = PairwiseCoupling::new(vec![1.0], vec![(0, 0)]);
     }
 
     #[test]
-    #[should_panic(expected = "coupling_j length (2) must match edges length (1)")]
+    #[should_panic(
+        expected = "PairwiseCoupling: coupling_j has length 2, expected 1 (one per edge)"
+    )]
     fn new_rejects_length_mismatch() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = PairwiseCoupling::new(vec![1.0, 2.0], vec![(0, 1)]);
@@ -271,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "chain requires at least 2")]
+    #[should_panic(expected = "PairwiseCoupling: n must be at least 2 for a chain, got 1")]
     fn chain_1_panics() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = PairwiseCoupling::chain(1, 1.0);
@@ -285,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ring requires at least 3")]
+    #[should_panic(expected = "PairwiseCoupling: n must be at least 3 for a ring, got 2")]
     fn ring_2_panics() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = PairwiseCoupling::ring(2, 1.0);
@@ -309,10 +394,42 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "fully_connected requires at least 2")]
+    #[should_panic(expected = "PairwiseCoupling: n must be at least 2, got 1")]
     fn fully_connected_1_panics() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = PairwiseCoupling::fully_connected(1, 1.0);
+    }
+
+    #[test]
+    fn every_constructor_refuses_a_coupling_that_is_not_finite() {
+        for bad in [f64::NAN, f64::INFINITY] {
+            let names = [
+                PairwiseCoupling::try_new(vec![1.0, bad], vec![(0, 1), (1, 2)]),
+                PairwiseCoupling::try_uniform(bad, vec![(0, 1)]),
+                PairwiseCoupling::try_chain(3, bad),
+                PairwiseCoupling::try_ring(3, bad),
+                PairwiseCoupling::try_fully_connected(3, bad),
+            ]
+            .map(refused_parameter);
+            let expected = [
+                "coupling_j[1]",
+                "coupling_j",
+                "coupling_j",
+                "coupling_j",
+                "coupling_j",
+            ];
+            assert_eq!(names, expected.map(|p| Some(p.to_owned())), "{bad}");
+        }
+    }
+
+    /// A topology too small to build is refused before its coupling is read.
+    #[test]
+    fn try_constructors_refuse_too_few_elements() {
+        assert!(matches!(
+            PairwiseCoupling::try_ring(2, f64::NAN),
+            Err(ThermostatError::InvalidCount { value: 2, .. })
+        ));
+        assert!(PairwiseCoupling::try_ring(3, 0.0).is_ok());
     }
 
     #[test]

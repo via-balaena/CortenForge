@@ -64,20 +64,17 @@ fn gate_a_kl_convergence() {
     let model = bistable_chain(N);
     let target = make_target();
 
-    let config = LearnerConfig {
-        n: N,
-        edges: edges_vec(),
-        delta_v: DELTA_V,
-        x_0: X_0,
-        gamma: GAMMA,
-        k_b_t: K_B_T,
-        learning_rate: 0.5,
-        n_steps: 1_000_000,
-        n_burn_in: 20_000,
-        n_trajectories: 3,
-        x_thresh: X_THRESH,
-        seed_base: 2_026_041_005,
-    };
+    let mut config = LearnerConfig::new(N, edges_vec());
+    config.delta_v = DELTA_V;
+    config.x_0 = X_0;
+    config.gamma = GAMMA;
+    config.k_b_t = K_B_T;
+    config.learning_rate = 0.5;
+    config.n_steps = 1_000_000;
+    config.n_burn_in = 20_000;
+    config.n_trajectories = 3;
+    config.x_thresh = X_THRESH;
+    config.seed_base = 2_026_041_005;
 
     let mut learner = IsingLearner::new(config, target, model);
     let curve = learner.train(30);
@@ -163,20 +160,17 @@ fn gate_b_parameter_recovery() {
     let model = bistable_chain(N);
     let target = make_target();
 
-    let config = LearnerConfig {
-        n: N,
-        edges: edges_vec(),
-        delta_v: DELTA_V,
-        x_0: X_0,
-        gamma: GAMMA,
-        k_b_t: K_B_T,
-        learning_rate: 0.3,
-        n_steps: 2_000_000,
-        n_burn_in: 20_000,
-        n_trajectories: 5,
-        x_thresh: X_THRESH,
-        seed_base: 2_026_041_005 + 100_000,
-    };
+    let mut config = LearnerConfig::new(N, edges_vec());
+    config.delta_v = DELTA_V;
+    config.x_0 = X_0;
+    config.gamma = GAMMA;
+    config.k_b_t = K_B_T;
+    config.learning_rate = 0.3;
+    config.n_steps = 2_000_000;
+    config.n_burn_in = 20_000;
+    config.n_trajectories = 5;
+    config.x_thresh = X_THRESH;
+    config.seed_base = 2_026_041_005 + 100_000;
 
     let mut learner = IsingLearner::new(config, target, model);
     let curve = learner.train(60);
@@ -228,7 +222,8 @@ fn external_field_breaks_symmetry() {
             0,
         ))
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     let mut data = model.make_data();
     data.qpos[0] = X_0;
@@ -278,20 +273,17 @@ fn learning_reproducibility() {
     let run = || {
         let model = bistable_chain(N);
         let target = make_target();
-        let config = LearnerConfig {
-            n: N,
-            edges: edges_vec(),
-            delta_v: DELTA_V,
-            x_0: X_0,
-            gamma: GAMMA,
-            k_b_t: K_B_T,
-            learning_rate: 0.5,
-            n_steps: 100_000,
-            n_burn_in: 5_000,
-            n_trajectories: 2,
-            x_thresh: X_THRESH,
-            seed_base: 12345,
-        };
+        let mut config = LearnerConfig::new(N, edges_vec());
+        config.delta_v = DELTA_V;
+        config.x_0 = X_0;
+        config.gamma = GAMMA;
+        config.k_b_t = K_B_T;
+        config.learning_rate = 0.5;
+        config.n_steps = 100_000;
+        config.n_burn_in = 5_000;
+        config.n_trajectories = 2;
+        config.x_thresh = X_THRESH;
+        config.seed_base = 12345;
         let mut learner = IsingLearner::new(config, target, model);
         learner.train(n_iter)
     };

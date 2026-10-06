@@ -55,7 +55,7 @@ fn three_component_stack_installs() {
         .with(double_well)
         .with(signal)
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let mut data = model.make_data();
     // Set ctrl to 1.0 (kT_eff = kT_base × 1.0 = 1.0)
@@ -83,7 +83,8 @@ fn bounded_bistable_motion_with_signal() {
         .with(double_well)
         .with(signal)
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     let mut data = model.make_data();
     data.ctrl[0] = 1.0;
@@ -146,7 +147,8 @@ fn signal_force_present_in_stack() {
         .with(double_well)
         .with(signal)
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     let mut data = model.make_data();
     data.ctrl[0] = 1.0;
@@ -189,7 +191,8 @@ fn ctrl_zero_is_deterministic() {
         .with(double_well)
         .with(signal)
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     let mut data = model.make_data();
     data.ctrl[0] = 0.0; // zero noise

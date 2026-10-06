@@ -72,7 +72,8 @@ fn run_trajectory(k_b_t: f64, seed: u64) -> (usize, WelfordOnline) {
             0,
         ))
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     // Initial condition: start in the right well
     data.qpos[0] = X_0;
@@ -282,7 +283,8 @@ fn supporting_boltzmann_distribution() {
             0,
         ))
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     // Initial condition
     data.qpos[0] = X_0;
@@ -426,7 +428,8 @@ fn supporting_reproducibility() {
                 0,
             ))
             .build()
-            .install(&mut model);
+            .try_install(&mut model)
+            .unwrap();
 
         data.qpos[0] = X_0;
         data.qvel[0] = 0.0;

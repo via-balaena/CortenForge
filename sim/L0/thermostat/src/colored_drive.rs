@@ -1,30 +1,36 @@
-//! Colored-noise-driven 1-DOF integrator — D4 Layer-2 R2.
+//! Colored-noise-driven 1-DOF integrator.
 //!
 //! Models the macroscopic shaker-driven beam: intrinsic damping `γ` plus an
 //! **external** Ornstein–Uhlenbeck colored force `η(t)` that is **not**
 //! fluctuation-dissipation-paired with the damping (the shaker noise), with
-//! negligible room-temperature thermal noise. The question R2 answers: does this
+//! negligible room-temperature thermal noise. The question it answers: does this
 //! reach a Boltzmann-like (thermal) stationary state, and under what noise
 //! bandwidth?
 //!
 //! ```text
-//! m·ẍ = F(x) − γ·ẋ + η(t),   η̇ = −η/τ + √(σ²)·white,   σ² = γ·kT_eff/τ
+//! m·ẍ = F(x) − γ·ẋ + η(t),   η̇ = −η/τ + (√(2γ·kT_eff)/τ)·ξ(t)
 //! ```
 //!
-//! `η` has correlation time `τ` (inverse bandwidth); its white-noise limit
-//! (`τ→0`) is intensity `2γ·kT_eff`, i.e. an ordinary thermal bath at `kT_eff`.
+//! with `ξ` unit white noise, so `η`'s stationary variance is `σ² = γ·kT_eff/τ`
+//! (the integrator uses the exact OU update at that variance). `η` has
+//! correlation time `τ` (inverse bandwidth); its white-noise limit (`τ→0`) is
+//! intensity `2γ·kT_eff`, i.e. an ordinary thermal bath at `kT_eff`. `η` starts
+//! at 0, not at a draw from its stationary distribution, so the first few `τ` of
+//! a run are a transient.
 //! The diagnostic is Boltzmann **shape**: whether the **kinetic** temperature
 //! `m⟨v²⟩` and the **configurational** temperature `⟨V′²⟩/⟨V″⟩` agree
 //! (equipartition). They do for short `τ` (wide bandwidth) and diverge for long
 //! `τ`, setting the rig rule: drive the shaker with broadband noise. **Note:**
 //! the ratio measures *shape*, not absolute temperature — the OU rolloff also
-//! suppresses the absolute `kT` (~10% at `τ·ω_a ≈ 0.3`), so the operating point
+//! suppresses the absolute `kT`, so the operating point
 //! must be calibrated against the measured in-well variance.
 //!
 //! Integrated BAOAB-style (damping-only O step, since the colored force is the
 //! energy source) for underdamped fidelity.
 
 use crate::double_well::DoubleWellPotential;
+use crate::error::ThermostatError;
+use crate::params::{Domain, or_panic};
 use crate::reference_integrator::{NormalSampler, quartic_well_force};
 
 /// A 1-DOF quartic-double-well oscillator driven by external OU colored noise.
@@ -52,9 +58,9 @@ impl ColoredDriveSim {
     /// `kt_eff`. Timestep `dt`, seed `seed`, starts at `x_init` (zero velocity).
     ///
     /// # Panics
-    /// Panics unless `mass`, `tau` and `dt` are positive and `gamma` and
-    /// `kt_eff` are non-negative (`tau = 0` would divide by zero).
+    /// If [`Self::try_new`] refuses the parameters.
     #[must_use]
+    #[track_caller]
     // integrator config: 8 physical parameters; a config struct would add
     // ceremony without clarity for a numerical constructor.
     #[allow(clippy::too_many_arguments)]
@@ -68,17 +74,41 @@ impl ColoredDriveSim {
         seed: u64,
         x_init: f64,
     ) -> Self {
-        assert!(mass > 0.0, "mass must be positive, got {mass}");
-        assert!(tau > 0.0, "tau must be positive, got {tau}");
-        assert!(dt > 0.0, "dt must be positive, got {dt}");
-        assert!(gamma >= 0.0, "gamma must be non-negative, got {gamma}");
-        assert!(kt_eff >= 0.0, "kt_eff must be non-negative, got {kt_eff}");
+        or_panic(Self::try_new(
+            well, mass, gamma, kt_eff, tau, dt, seed, x_init,
+        ))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidParameter`] unless `mass`, `tau` and `dt` are finite and
+    /// positive (`tau = 0` would divide by zero), `gamma` and `kt_eff` are finite and
+    /// non-negative, and `x_init` is finite.
+    #[allow(clippy::too_many_arguments)] // as `new`
+    pub fn try_new(
+        well: &DoubleWellPotential,
+        mass: f64,
+        gamma: f64,
+        kt_eff: f64,
+        tau: f64,
+        dt: f64,
+        seed: u64,
+        x_init: f64,
+    ) -> Result<Self, ThermostatError> {
+        const COMPONENT: &str = "ColoredDriveSim";
+        Domain::Positive.check(COMPONENT, "mass", mass)?;
+        Domain::Positive.check(COMPONENT, "tau", tau)?;
+        Domain::Positive.check(COMPONENT, "dt", dt)?;
+        Domain::NonNegative.check(COMPONENT, "gamma", gamma)?;
+        Domain::NonNegative.check(COMPONENT, "kt_eff", kt_eff)?;
+        Domain::Finite.check(COMPONENT, "x_init", x_init)?;
         let x_0 = well.well_separation();
         let a = well.barrier_height() / x_0.powi(4);
         let sigma2 = gamma * kt_eff / tau; // ⟨η²⟩
         let ou_retain = (-dt / tau).exp();
         let ou_innov = (sigma2 * (1.0 - ou_retain * ou_retain)).sqrt();
-        Self {
+        Ok(Self {
             a,
             x_0,
             mass,
@@ -90,7 +120,7 @@ impl ColoredDriveSim {
             x: x_init,
             v: 0.0,
             noise: NormalSampler::seed_from_u64(seed),
-        }
+        })
     }
 
     /// Conservative force `F(x) = −4ax(x² − x₀²)`.
@@ -147,6 +177,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::float_cmp, clippy::cast_precision_loss)]
 
     use super::*;
+    use crate::params::refused_parameter;
 
     /// Wide bandwidth (short τ): the injected colored noise behaves as a thermal
     /// bath — kinetic and configurational temperatures both ≈ `kT_eff`.
@@ -187,10 +218,32 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "tau must be positive")]
+    #[should_panic(expected = "ColoredDriveSim: tau must be finite and positive, got 0")]
     fn new_refuses_zero_tau() {
         let well = DoubleWellPotential::new(1.0, 1.0, 0);
         let _sim = ColoredDriveSim::new(&well, 1.0, 0.1, 1.0, 0.0, 1e-3, 0, 1.0);
+    }
+
+    #[test]
+    fn try_new_refuses_infinite_inputs() {
+        let well = DoubleWellPotential::new(1.0, 1.0, 0);
+        let inf = f64::INFINITY;
+        for (args, parameter) in [
+            ((inf, 0.1, 1.0, 0.5, 1e-3, 0.0), "mass"),
+            ((1.0, 0.1, 1.0, inf, 1e-3, 0.0), "tau"),
+            ((1.0, 0.1, 1.0, 0.5, inf, 0.0), "dt"),
+            ((1.0, inf, 1.0, 0.5, 1e-3, 0.0), "gamma"),
+            ((1.0, 0.1, inf, 0.5, 1e-3, 0.0), "kt_eff"),
+            ((1.0, 0.1, 1.0, 0.5, 1e-3, inf), "x_init"),
+        ] {
+            let (mass, gamma, kt_eff, tau, dt, x_init) = args;
+            let refusal = ColoredDriveSim::try_new(&well, mass, gamma, kt_eff, tau, dt, 0, x_init);
+            assert_eq!(
+                refused_parameter(refusal).as_deref(),
+                Some(parameter),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

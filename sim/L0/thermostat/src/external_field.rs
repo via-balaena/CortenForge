@@ -6,9 +6,8 @@
 //! biasing elements toward the right well (`h > 0`) or left well
 //! (`h < 0`). The continuous analogue of the Ising external field.
 //!
-//! Phase 5 of the thermodynamic computing initiative uses this component
-//! together with [`PairwiseCoupling`] to build a trainable Ising-like
-//! system via the Boltzmann machine learning rule.
+//! With [`PairwiseCoupling`] it builds the Ising-like system that
+//! [`IsingLearner`](crate::IsingLearner) trains.
 //!
 //! [`PassiveComponent`]: crate::PassiveComponent
 //! [`PairwiseCoupling`]: crate::PairwiseCoupling
@@ -18,6 +17,7 @@ use sim_core::{DVector, Data, Model};
 use crate::component::{PassiveComponent, check_dof, check_position_dof, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
+use crate::params::{Domain, or_panic};
 
 /// Linear external field: `V = −Σ h_i · x_i`.
 ///
@@ -38,9 +38,22 @@ pub struct ExternalField {
 
 impl ExternalField {
     /// Create an external field with per-DOF field strengths.
+    ///
+    /// # Panics
+    /// If [`Self::try_new`] refuses the field.
     #[must_use]
-    pub const fn new(field_h: Vec<f64>) -> Self {
-        Self { field_h }
+    #[track_caller]
+    pub fn new(field_h: Vec<f64>) -> Self {
+        or_panic(Self::try_new(field_h))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidParameter`] if an entry of `field_h` is not finite.
+    pub fn try_new(field_h: Vec<f64>) -> Result<Self, ThermostatError> {
+        Domain::Finite.check_each("ExternalField", "field_h", &field_h)?;
+        Ok(Self { field_h })
     }
 
     /// Field strengths (read-only).
@@ -118,6 +131,24 @@ mod tests {
             data.qpos[i] = xi;
         }
         (model, data)
+    }
+
+    #[test]
+    fn try_new_refuses_a_field_entry_that_is_not_finite() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                crate::params::refused_parameter(ExternalField::try_new(vec![0.5, bad])).as_deref(),
+                Some("field_h[1]"),
+                "{bad}"
+            );
+        }
+        assert!(ExternalField::try_new(vec![]).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "ExternalField: field_h[0] must be finite, got NaN")]
+    fn new_panics_with_the_refusal() {
+        let _field = ExternalField::new(vec![f64::NAN]);
     }
 
     #[test]

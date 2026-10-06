@@ -37,6 +37,48 @@
 //! // Reach every engine through one dependency: `sim::core`, `sim::soft`,
 //! // `sim::coupling`, `sim::rl`, …
 //! ```
+//!
+//! # Annealing a QUBO on a thermodynamic circuit
+//!
+//! Load one slide particle per variable from MJCF, put a QUBO on the array
+//! as coupled double wells, cool it through a temperature control, and keep
+//! the lowest-energy configuration it visits. The QUBO here is a maximum
+//! independent set on the path 0–1–2: each pick earns −1, two neighbours
+//! picked together cost 2, so the answer is `x = (1, 0, 1)` at `E = −2`.
+//!
+//! ```
+//! use sim::core::DVector;
+//! use sim::mjcf::load_model;
+//! use sim::therm_env::generate_mjcf;
+//! use sim::thermostat::{IsingProblem, LangevinThermostat, PassiveStack, SpinLatch};
+//!
+//! let (problem, offset) =
+//!     IsingProblem::from_qubo(&[-1.0, -1.0, -1.0], &[(0, 1), (1, 2)], &[2.0, 2.0]);
+//!
+//! // Three slide particles, a 1 ms step, and one control channel for the temperature.
+//! let mut model = load_model(&generate_mjcf(3, 1, 0.001, (0.0, 10.0)))?;
+//! problem
+//!     .add_components(PassiveStack::builder(), 3.0, 1.0)
+//!     .with(LangevinThermostat::new(DVector::from_element(3, 1.0), 1.0, 7, 0).with_ctrl_temperature(0))
+//!     .build()
+//!     .try_install(&mut model)?;
+//!
+//! let mut data = model.make_data();
+//! let mut latch = SpinLatch::new(problem, 0.5);
+//! let steps = 100_000;
+//! for step in 0..steps {
+//!     // Cool linearly from 5 kT toward 0.
+//!     data.ctrl[0] = 5.0 * f64::from(steps - step) / f64::from(steps);
+//!     data.step(&model)?;
+//!     latch.observe(&model, &data)?;
+//! }
+//!
+//! let (spins, energy) = latch.best().ok_or("no configuration was read")?;
+//! let x: Vec<f64> = spins.iter().map(|s| (1.0 + s) / 2.0).collect();
+//! assert_eq!(x, [1.0, 0.0, 1.0]);
+//! assert_eq!(energy + offset, -2.0);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
 // =============================================================================
 // Re-exports

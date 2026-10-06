@@ -95,7 +95,7 @@ fn langevin_trajectory_histogram(topology: &Topology, seed: u64) -> [usize; N_CO
         seed,
         0,
     ));
-    builder.build().install(&mut model);
+    builder.build().try_install(&mut model).unwrap();
 
     // Initial condition: all elements in the right well
     for i in 0..N {

@@ -83,7 +83,8 @@ fn make_sr_env(seed: u64) -> SimEnv {
         .with(double_well)
         .with(signal)
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     let model = Arc::new(model);
 
@@ -171,7 +172,8 @@ fn vecenv_construction() {
         .with(double_well)
         .with(signal)
         .build()
-        .install(&mut model);
+        .try_install(&mut model)
+        .unwrap();
 
     let model = Arc::new(model);
     let n_envs = 4;
@@ -397,7 +399,8 @@ fn control_no_signal_zero_synchrony() {
             .with(double_well)
             .with(signal)
             .build()
-            .install(&mut model);
+            .try_install(&mut model)
+            .unwrap();
 
         let model = Arc::new(model);
 

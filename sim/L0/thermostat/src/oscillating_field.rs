@@ -14,11 +14,6 @@
 //! thermal noise — and the SR peak occurs at the noise level where
 //! noise-assisted switching synchronizes with the signal.
 //!
-//! D2 of the thermodynamic computing initiative validates this component
-//! in combination with a [`DoubleWellPotential`], a [`LangevinThermostat`]
-//! (with ctrl-temperature modulation), and an RL agent (CEM) that discovers
-//! the SR-optimal noise level.
-//!
 //! [`PassiveComponent`]: crate::PassiveComponent
 //! [`DoubleWellPotential`]: crate::DoubleWellPotential
 //! [`LangevinThermostat`]: crate::LangevinThermostat
@@ -31,13 +26,14 @@ use sim_core::{DVector, Data, Model};
 use crate::component::{PassiveComponent, check_dof};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
+use crate::params::{Domain, or_panic};
 
 /// Sinusoidal driving force: `F(t) = A₀ cos(ωt + φ₀)`.
 ///
 /// Applies a time-dependent force to a single DOF by reading `data.time`
 /// at each physics step. This is a deterministic force — it does not
 /// implement [`Stochastic`](crate::Stochastic) and is unaffected by the
-/// stochastic gating mechanism (Decision 7).
+/// stochastic gating.
 ///
 /// # Which DOFs
 ///
@@ -71,20 +67,34 @@ impl OscillatingField {
     /// - `dof`: DOF index (must be valid for the target model)
     ///
     /// # Panics
-    /// Panics if `amplitude < 0` or `omega <= 0`.
+    /// If [`Self::try_new`] refuses the parameters.
     #[must_use]
+    #[track_caller]
     pub fn new(amplitude: f64, omega: f64, phase: f64, dof: usize) -> Self {
-        assert!(
-            amplitude >= 0.0,
-            "amplitude must be non-negative, got {amplitude}"
-        );
-        assert!(omega > 0.0, "omega must be positive, got {omega}");
-        Self {
+        or_panic(Self::try_new(amplitude, omega, phase, dof))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidParameter`] unless `amplitude` is finite and non-negative,
+    /// `omega` is finite and positive, and `phase` is finite.
+    pub fn try_new(
+        amplitude: f64,
+        omega: f64,
+        phase: f64,
+        dof: usize,
+    ) -> Result<Self, ThermostatError> {
+        const COMPONENT: &str = "OscillatingField";
+        Domain::NonNegative.check(COMPONENT, "amplitude", amplitude)?;
+        Domain::Positive.check(COMPONENT, "omega", omega)?;
+        Domain::Finite.check(COMPONENT, "phase", phase)?;
+        Ok(Self {
             amplitude,
             omega,
             phase,
             dof,
-        }
+        })
     }
 
     /// Signal amplitude A₀.
@@ -164,6 +174,7 @@ impl Diagnose for OscillatingField {
 )]
 mod tests {
     use super::*;
+    use crate::params::refused_parameter;
 
     // ── construction ────────────────────────────────────────────────────
 
@@ -182,24 +193,44 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "amplitude must be non-negative")]
+    #[should_panic(
+        expected = "OscillatingField: amplitude must be finite and non-negative, got -1"
+    )]
     fn new_rejects_negative_amplitude() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = OscillatingField::new(-1.0, 1.0, 0.0, 0);
     }
 
     #[test]
-    #[should_panic(expected = "omega must be positive")]
+    #[should_panic(expected = "OscillatingField: omega must be finite and positive, got 0")]
     fn new_rejects_zero_omega() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = OscillatingField::new(1.0, 0.0, 0.0, 0);
     }
 
     #[test]
-    #[should_panic(expected = "omega must be positive")]
+    #[should_panic(expected = "OscillatingField: omega must be finite and positive, got -1")]
     fn new_rejects_negative_omega() {
         #[allow(clippy::let_underscore_must_use)]
         let _ = OscillatingField::new(1.0, -1.0, 0.0, 0);
+    }
+
+    #[test]
+    fn try_new_refuses_non_finite_parameters() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (args, parameter) in [
+                ((bad, 1.0, 0.0), "amplitude"),
+                ((1.0, bad, 0.0), "omega"),
+                ((1.0, 1.0, bad), "phase"),
+            ] {
+                assert_eq!(
+                    refused_parameter(OscillatingField::try_new(args.0, args.1, args.2, 0))
+                        .as_deref(),
+                    Some(parameter),
+                    "{args:?}"
+                );
+            }
+        }
     }
 
     // ── signal value correctness ────────────────────────────────────────

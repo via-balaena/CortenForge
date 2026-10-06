@@ -118,7 +118,7 @@ fn test_equipartition_central_parameter_set() {
                 i as u64,
             ))
             .build();
-        stack.install(&mut model);
+        stack.try_install(&mut model).unwrap();
 
         // Burn in (no measurement).
         for _ in 0..n_burn_in {
@@ -203,7 +203,7 @@ fn test_equipartition_sweep_gamma_t() {
                         i as u64,
                     ))
                     .build();
-                stack.install(&mut model);
+                stack.try_install(&mut model).unwrap();
 
                 for _ in 0..n_burn_in {
                     data.step(&model).expect("burn-in");
@@ -266,7 +266,7 @@ fn test_callback_firing_count() {
             ),
         })
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let k_steps = 1_000;
     for _ in 0..k_steps {
@@ -290,7 +290,7 @@ fn test_callback_firing_count() {
 /// (catastrophic — the entire reproducibility-as-foundation argument
 /// from recon log part 6 breaks) or the chassis introduced
 /// nondeterminism somewhere it shouldn't have (e.g., a `HashMap`
-/// iteration in `PassiveStack::install`). Either is a stop-the-line
+/// iteration in the stack's callback). Either is a stop-the-line
 /// bug.
 #[test]
 fn test_reproducibility_from_seed() {
@@ -309,7 +309,7 @@ fn test_reproducibility_from_seed() {
             0,
         ))
         .build();
-    stack1.install(&mut model1);
+    stack1.try_install(&mut model1).unwrap();
 
     let mut model2 = sho_1d();
     let mut data2 = model2.make_data();
@@ -321,7 +321,7 @@ fn test_reproducibility_from_seed() {
             0,
         ))
         .build();
-    stack2.install(&mut model2);
+    stack2.try_install(&mut model2).unwrap();
 
     for _ in 0..n_steps {
         data1.step(&model1).expect("sim 1 step");
@@ -365,7 +365,7 @@ fn test_stochastic_gating_sanity() {
             0,
         ))
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     // Initial state: stretched spring at rest.
     data.qpos[0] = 1.0;

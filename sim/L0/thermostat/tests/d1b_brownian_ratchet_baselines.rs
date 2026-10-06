@@ -58,7 +58,7 @@ fn make_ratchet_env(seed: u64) -> SimEnv {
         .with(thermostat)
         .with(ratchet)
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let model = Arc::new(model);
 
@@ -284,7 +284,7 @@ fn vecenv_construction() {
         .with(thermostat)
         .with(ratchet)
         .build();
-    stack.install(&mut model);
+    stack.try_install(&mut model).unwrap();
 
     let model = Arc::new(model);
     let n_envs = 4;

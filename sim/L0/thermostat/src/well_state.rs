@@ -1,17 +1,18 @@
-//! Hysteresis-based well-state classification for bistable elements.
+//! Threshold classification of a bistable element's position.
 
-/// Hysteresis-based well-state classification for bistable elements.
+use crate::params::{Domain, or_panic};
+
+/// Which region of a double well a position is in: the left well, the right
+/// well, or the barrier between them, split at `±x_thresh`.
 ///
-/// Classifies a 1-DOF position into one of three regions: left well,
-/// right well, or barrier. The threshold `x_thresh` defines the
-/// boundary between well and barrier regions.
+/// The classification is stateless: [`Self::from_position`] looks at one
+/// position. A caller that keeps an element's last well while it is in the
+/// barrier gets a dead band of width `2·x_thresh`, so a trajectory that
+/// recrosses the barrier top without reaching the other well does not count
+/// as a switch.
 ///
-/// Used by [`IsingLearner`](crate::IsingLearner)'s trajectory scoring to
-/// map a continuous bistable position onto a discrete spin, and by the
-/// Phase 3+ integration tests. At the Phase 3 central parameters
-/// (`κ = λ_r/ω_b = 0.313`), ~69% of zero-crossings are recrossings;
-/// hysteresis at `x_thresh = x₀/2` filters these out and recovers the
-/// genuine committed-transition rate.
+/// [`IsingLearner`](crate::IsingLearner) and [`SpinLatch`](crate::SpinLatch)
+/// read spins this way, and the crate's gates use `x_thresh = x₀/2`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WellState {
     /// Position is in the left well: `x < −x_thresh`.
@@ -23,9 +24,16 @@ pub enum WellState {
 }
 
 impl WellState {
-    /// Classify a position into a well state given the hysteresis threshold.
+    /// Classify position `x` with threshold `x_thresh`. A `NaN` position
+    /// reads as the barrier.
+    ///
+    /// # Panics
+    /// Unless `x_thresh` is finite and non-negative: a negative threshold would
+    /// leave no barrier and classify `0.0` as a well.
     #[must_use]
+    #[track_caller]
     pub fn from_position(x: f64, x_thresh: f64) -> Self {
+        or_panic(Domain::NonNegative.check("WellState", "x_thresh", x_thresh));
         if x > x_thresh {
             Self::Right
         } else if x < -x_thresh {
@@ -43,11 +51,22 @@ impl WellState {
     #[must_use]
     // Panic on Barrier is a deliberate contract — callers must check is_in_well() first.
     #[allow(clippy::panic)]
+    #[track_caller]
     pub fn spin(self) -> f64 {
         match self {
             Self::Right => 1.0,
             Self::Left => -1.0,
             Self::Barrier => panic!("spin() called on Barrier state"), // deliberate contract violation
+        }
+    }
+
+    /// The spin, or `None` in the barrier.
+    #[must_use]
+    pub const fn checked_spin(self) -> Option<f64> {
+        match self {
+            Self::Right => Some(1.0),
+            Self::Left => Some(-1.0),
+            Self::Barrier => None,
         }
     }
 
@@ -62,6 +81,32 @@ impl WellState {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "WellState: x_thresh must be finite and non-negative, got -0.1")]
+    fn from_position_refuses_a_negative_threshold() {
+        let _state = WellState::from_position(0.0, -0.1);
+    }
+
+    /// Zero is a threshold (every nonzero position is in a well); `NaN` and infinity are not.
+    #[test]
+    fn from_position_takes_zero_and_refuses_non_finite_thresholds() {
+        assert_eq!(WellState::from_position(1e-9, 0.0), WellState::Right);
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert!(
+                std::panic::catch_unwind(|| WellState::from_position(1.0, bad)).is_err(),
+                "threshold {bad} was taken"
+            );
+        }
+    }
+
+    #[test]
+    fn checked_spin_is_none_in_the_barrier() {
+        assert_eq!(WellState::Right.checked_spin(), Some(1.0));
+        assert_eq!(WellState::Left.checked_spin(), Some(-1.0));
+        assert_eq!(WellState::Barrier.checked_spin(), None);
+        assert_eq!(WellState::from_position(f64::NAN, 0.5), WellState::Barrier);
+    }
 
     #[test]
     fn well_state_from_position_classifies_correctly() {

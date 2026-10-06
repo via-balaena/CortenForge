@@ -1,8 +1,7 @@
-//! BAOAB Langevin integrator (1-DOF) — D4 Layer-2 R6.
+//! BAOAB Langevin integrator (1-DOF).
 //!
-//! The reference integrator that is **correct in the underdamped limit**, where
-//! the production Euler–Maruyama path is not (R1 showed EM tracks the
-//! spatial-diffusion rate even at γ=0.1, missing the energy-diffusion turnover).
+//! A reference integrator for the underdamped limit, which the production
+//! Euler–Maruyama path is not built for.
 //!
 //! BAOAB (Leimkuhler & Matthews) splits one Langevin step into
 //! `B A O A B`:
@@ -20,6 +19,8 @@
 //! the high-Q regime the real p-bit lives in.
 
 use crate::double_well::DoubleWellPotential;
+use crate::error::ThermostatError;
+use crate::params::{Domain, or_panic};
 use crate::reference_integrator::{NormalSampler, quartic_well_force};
 
 /// A 1-DOF BAOAB Langevin integrator in a quartic double well.
@@ -50,9 +51,9 @@ impl Baoab1D {
     /// (zero velocity).
     ///
     /// # Panics
-    /// Panics unless `mass` and `dt` are positive and `gamma` and `k_b_t`
-    /// are non-negative (a negative `gamma` makes the `O` step's noise `NaN`).
+    /// If [`Self::try_new`] refuses the parameters.
     #[must_use]
+    #[track_caller]
     pub fn new(
         well: &DoubleWellPotential,
         mass: f64,
@@ -62,13 +63,33 @@ impl Baoab1D {
         seed: u64,
         x_init: f64,
     ) -> Self {
-        assert!(mass > 0.0, "mass must be positive, got {mass}");
-        assert!(dt > 0.0, "dt must be positive, got {dt}");
-        assert!(gamma >= 0.0, "gamma must be non-negative, got {gamma}");
-        assert!(k_b_t >= 0.0, "k_b_t must be non-negative, got {k_b_t}");
+        or_panic(Self::try_new(well, mass, gamma, k_b_t, dt, seed, x_init))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// [`ThermostatError::InvalidParameter`] unless `mass` and `dt` are finite and positive,
+    /// `gamma` and `k_b_t` are finite and non-negative (a negative `gamma` makes the `O`
+    /// step's noise `NaN`), and `x_init` is finite.
+    pub fn try_new(
+        well: &DoubleWellPotential,
+        mass: f64,
+        gamma: f64,
+        k_b_t: f64,
+        dt: f64,
+        seed: u64,
+        x_init: f64,
+    ) -> Result<Self, ThermostatError> {
+        const COMPONENT: &str = "Baoab1D";
+        Domain::Positive.check(COMPONENT, "mass", mass)?;
+        Domain::NonNegative.check(COMPONENT, "gamma", gamma)?;
+        Domain::NonNegative.check(COMPONENT, "k_b_t", k_b_t)?;
+        Domain::Positive.check(COMPONENT, "dt", dt)?;
+        Domain::Finite.check(COMPONENT, "x_init", x_init)?;
         let x_0 = well.well_separation();
         let a = well.barrier_height() / x_0.powi(4);
-        Self {
+        Ok(Self {
             a,
             x_0,
             mass,
@@ -78,7 +99,7 @@ impl Baoab1D {
             x: x_init,
             v: 0.0,
             noise: NormalSampler::seed_from_u64(seed),
-        }
+        })
     }
 
     /// Conservative force `F(x) = −V′(x) = −4ax(x² − x₀²)`.
@@ -123,6 +144,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::float_cmp, clippy::cast_precision_loss)]
 
     use super::*;
+    use crate::params::refused_parameter;
 
     /// BAOAB's hallmark: the kinetic temperature `⟨v²⟩ = kT/m` holds to within a
     /// few percent essentially independent of `dt` — even at a coarse step where
@@ -168,9 +190,30 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "gamma must be non-negative")]
+    #[should_panic(expected = "Baoab1D: gamma must be finite and non-negative, got -0.1")]
     fn new_refuses_negative_gamma() {
         let well = DoubleWellPotential::new(1.0, 1.0, 0);
         let _sim = Baoab1D::new(&well, 1.0, -0.1, 1.0, 1e-3, 0, 1.0);
+    }
+
+    #[test]
+    fn try_new_refuses_infinite_inputs() {
+        let well = DoubleWellPotential::new(1.0, 1.0, 0);
+        let inf = f64::INFINITY;
+        for (args, parameter) in [
+            ((inf, 1.0, 1.0, 1e-3, 0.0), "mass"),
+            ((1.0, inf, 1.0, 1e-3, 0.0), "gamma"),
+            ((1.0, 1.0, inf, 1e-3, 0.0), "k_b_t"),
+            ((1.0, 1.0, 1.0, inf, 0.0), "dt"),
+            ((1.0, 1.0, 1.0, 1e-3, inf), "x_init"),
+        ] {
+            let (mass, gamma, k_b_t, dt, x_init) = args;
+            let refusal = Baoab1D::try_new(&well, mass, gamma, k_b_t, dt, 0, x_init);
+            assert_eq!(
+                refused_parameter(refusal).as_deref(),
+                Some(parameter),
+                "{args:?}"
+            );
+        }
     }
 }
