@@ -39,6 +39,13 @@ pub enum ThermostatError {
     /// [`PassiveStack::try_install`](crate::PassiveStack::try_install) found a passive
     /// callback already installed on the model.
     AlreadyInstalled,
+    /// The component does not support the model's integrator.
+    UnsupportedIntegrator {
+        /// The component's type name.
+        component: &'static str,
+        /// Why.
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for ThermostatError {
@@ -65,6 +72,12 @@ impl fmt::Display for ThermostatError {
             ),
             Self::AlreadyInstalled => {
                 write!(f, "the model already has a passive callback installed")
+            }
+            Self::UnsupportedIntegrator { component, reason } => {
+                write!(
+                    f,
+                    "{component} does not support the model's integrator: {reason}"
+                )
             }
         }
     }

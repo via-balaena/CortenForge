@@ -209,6 +209,10 @@ impl PassiveComponent for DoubleWellPotential {
         qfrc_out[self.dof] += -4.0 * a * q * q.mul_add(q, -(self.x_0 * self.x_0));
     }
 
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        Some(self)
+    }
+
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         check_scalar_dof(model, self.dof, "DoubleWellPotential")
     }

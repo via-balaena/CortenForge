@@ -54,12 +54,12 @@
 //! back into `data_inner.qfrc_passive`. Total cost per step:
 //! two `DVector` pointer swaps. No `unsafe`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use sim_core::batch::{EnvBatch, PerEnvStack};
 use sim_core::{DVector, Data, Model};
 
-use crate::component::PassiveComponent;
+use crate::component::{PassiveComponent, Stochastic};
 use crate::error::ThermostatError;
 
 /// Builder for [`PassiveStack`]. Construct via [`PassiveStack::builder`]
@@ -93,6 +93,7 @@ impl PassiveStackBuilder {
     pub fn build(self) -> Arc<PassiveStack> {
         Arc::new(PassiveStack {
             components: self.components,
+            disabled: Mutex::new(Disabled::default()),
         })
     }
 }
@@ -111,6 +112,16 @@ impl PassiveStackBuilder {
 /// the call site.
 pub struct PassiveStack {
     components: Vec<Arc<dyn PassiveComponent>>,
+    /// Live [`StochasticGuard`]s and the flags they will restore.
+    disabled: Mutex<Disabled>,
+}
+
+/// How many [`StochasticGuard`]s are alive, and each component's active flag from before the
+/// first of them (`prior[i]` for `components[i]`; read only for stochastic components).
+#[derive(Default)]
+struct Disabled {
+    depth: usize,
+    prior: Vec<bool>,
 }
 
 impl PassiveStack {
@@ -207,6 +218,11 @@ impl PassiveStack {
     /// Disable every stochastic component in the stack and return an
     /// RAII guard that restores their prior active flags on drop.
     ///
+    /// Guards nest in any order: noise stays off until the LAST live
+    /// guard drops, which restores the flags from before the FIRST.
+    /// A [`Self::set_all_stochastic`] call made while a guard is alive
+    /// is overwritten when the last guard drops.
+    ///
     /// This is the chassis Decision-7 entry point for finite-difference
     /// and autograd contexts: wrap the FD perturbation block in
     /// `let _guard = stack.disable_stochastic();`, run the perturbed
@@ -219,22 +235,32 @@ impl PassiveStack {
                   discarding it immediately re-enables noise — call \
                   set_all_stochastic(false) instead if that is desired"]
     pub fn disable_stochastic(self: &Arc<Self>) -> StochasticGuard {
-        let mut prior_states = Vec::with_capacity(self.components.len());
-        for component in &self.components {
-            if let Some(stoch) = component.as_stochastic() {
-                prior_states.push(stoch.is_stochastic_active());
-                stoch.set_stochastic_active(false);
-            } else {
-                // Sentinel for non-stochastic components — never read
-                // back during Drop because we re-check `as_stochastic`
-                // there. The slot exists only to keep the index aligned
-                // with `self.components`.
-                prior_states.push(false);
-            }
+        let mut disabled = self.disabled.lock().unwrap_or_else(PoisonError::into_inner);
+        if disabled.depth == 0 {
+            disabled.prior = self
+                .components
+                .iter()
+                .map(|c| {
+                    c.as_stochastic()
+                        .is_some_and(Stochastic::is_stochastic_active)
+                })
+                .collect();
+            self.set_all_stochastic(false);
         }
+        disabled.depth += 1;
+        drop(disabled);
         StochasticGuard {
             stack: Arc::clone(self),
-            prior_states,
+        }
+    }
+
+    /// Restart every stochastic component's noise sequence from its first
+    /// step (see [`Stochastic::reset_noise`]).
+    pub fn reset_stochastic(&self) {
+        for component in &self.components {
+            if let Some(stoch) = component.as_stochastic() {
+                stoch.reset_noise();
+            }
         }
     }
 
@@ -314,23 +340,31 @@ impl PerEnvStack for PassiveStack {
 
 /// RAII guard returned by [`PassiveStack::disable_stochastic`].
 ///
-/// While the guard is alive, every stochastic component in the stack
-/// is inactive (produces only deterministic forces). When the guard
-/// is dropped, the components' prior active flags are restored.
+/// While any guard on the stack is alive, every stochastic component in
+/// it is inactive (produces only deterministic forces). When the last
+/// live guard drops, the active flags from before the first guard are
+/// restored, whatever order the guards drop in.
 ///
 /// The guard is exception-safe: if the code inside the guarded block
 /// panics, `Drop::drop` still runs and restores the prior states, so
 /// the stack is never left in a partially-disabled state.
 pub struct StochasticGuard {
     stack: Arc<PassiveStack>,
-    prior_states: Vec<bool>,
 }
 
 impl Drop for StochasticGuard {
     fn drop(&mut self) {
-        for (component, prior) in self.stack.components.iter().zip(&self.prior_states) {
-            if let Some(stoch) = component.as_stochastic() {
-                stoch.set_stochastic_active(*prior);
+        let mut disabled = self
+            .stack
+            .disabled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        disabled.depth -= 1;
+        if disabled.depth == 0 {
+            for (component, &prior) in self.stack.components.iter().zip(&disabled.prior) {
+                if let Some(stoch) = component.as_stochastic() {
+                    stoch.set_stochastic_active(prior);
+                }
             }
         }
     }
@@ -342,7 +376,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
-    use crate::component::Stochastic;
 
     /// A no-op deterministic component used for builder/order tests.
     struct DummyDeterministic;
@@ -581,8 +614,8 @@ mod tests {
     // --- install-time validation ---
 
     use crate::{
-        DoubleWellPotential, ExternalField, LangevinThermostat, OscillatingField, PairwiseCoupling,
-        RatchetPotential,
+        Diagnose, DoubleWellPotential, ExternalField, LangevinThermostat, OscillatingField,
+        PairwiseCoupling, RatchetPotential,
     };
 
     fn one(component: impl PassiveComponent) -> Arc<PassiveStack> {
@@ -752,5 +785,140 @@ mod tests {
     #[should_panic(expected = "duplicate coupling: the pair (1, 0) appears twice")]
     fn pairwise_coupling_refuses_a_reversed_duplicate_edge() {
         let _coupling = PairwiseCoupling::new(vec![1.0, 1.0], vec![(0, 1), (1, 0)]);
+    }
+
+    // --- guards, noise reset, diagnostics, integrator ---
+
+    fn thermostat_stack() -> Arc<PassiveStack> {
+        one(LangevinThermostat::new(
+            DVector::from_element(1, 0.5),
+            1.0,
+            7,
+            0,
+        ))
+    }
+
+    fn noise_on(stack: &PassiveStack) -> bool {
+        stack.components()[0]
+            .as_stochastic()
+            .unwrap()
+            .is_stochastic_active()
+    }
+
+    /// Guards dropped in the order they were taken, and in the other order, both keep noise
+    /// off until the last one drops, then restore it.
+    #[test]
+    fn guards_keep_noise_off_until_the_last_drops_in_either_order() {
+        for first_taken_drops_first in [false, true] {
+            let stack = thermostat_stack();
+            let a = stack.disable_stochastic();
+            let b = stack.disable_stochastic();
+            if first_taken_drops_first {
+                drop(a);
+                assert!(
+                    !noise_on(&stack),
+                    "noise came back with a guard still alive"
+                );
+                drop(b);
+            } else {
+                drop(b);
+                assert!(
+                    !noise_on(&stack),
+                    "noise came back with a guard still alive"
+                );
+                drop(a);
+            }
+            assert!(
+                noise_on(&stack),
+                "noise stayed off after every guard dropped"
+            );
+        }
+    }
+
+    /// A component that was already off before the first guard stays off after the last.
+    #[test]
+    fn guards_restore_a_component_that_was_already_off() {
+        let stack = thermostat_stack();
+        stack.set_all_stochastic(false);
+        let a = stack.disable_stochastic();
+        let b = stack.disable_stochastic();
+        drop(a);
+        drop(b);
+        assert!(!noise_on(&stack));
+    }
+
+    /// After `reset_stochastic`, the thermostat draws its first step's noise again.
+    #[test]
+    fn reset_stochastic_replays_the_noise() {
+        let model = chain(1);
+        let data = model.make_data();
+        let stack = thermostat_stack();
+        let draw = || {
+            let mut qfrc = DVector::zeros(1);
+            stack.components()[0].apply(&model, &data, &mut qfrc);
+            qfrc[0]
+        };
+        let first = draw();
+        let second = draw();
+        assert_ne!(
+            first.to_bits(),
+            second.to_bits(),
+            "two steps drew the same noise"
+        );
+        stack.reset_stochastic();
+        assert_eq!(
+            draw().to_bits(),
+            first.to_bits(),
+            "reset did not replay step 0"
+        );
+    }
+
+    /// Every component in the crate answers `as_diagnose`.
+    #[test]
+    fn every_component_has_a_diagnostic_view() {
+        let stack = PassiveStack::builder()
+            .with(LangevinThermostat::new(
+                DVector::from_element(1, 0.5),
+                1.0,
+                7,
+                0,
+            ))
+            .with(DoubleWellPotential::new(1.0, 1.0, 0))
+            .with(PairwiseCoupling::chain(2, 0.5))
+            .with(ExternalField::new(vec![0.1]))
+            .with(OscillatingField::new(1.0, 1.0, 0.0, 0))
+            .with(RatchetPotential::new(1.0, 0.25, 0.0, 1.0, 0, 0))
+            .build();
+        let summaries: Vec<String> = stack
+            .components()
+            .iter()
+            .filter_map(|c| c.as_diagnose().map(Diagnose::diagnostic_summary))
+            .collect();
+        assert_eq!(summaries.len(), 6);
+        assert!(summaries[0].starts_with("LangevinThermostat"));
+    }
+
+    /// The thermostat refuses RK4; a deterministic component does not.
+    #[test]
+    fn the_thermostat_refuses_rk4() {
+        let rk4 = || {
+            let mut model = chain(1);
+            model.integrator = sim_core::Integrator::RungeKutta4;
+            model
+        };
+        assert!(matches!(
+            verdict(
+                LangevinThermostat::new(DVector::from_element(1, 0.5), 1.0, 7, 0),
+                rk4()
+            ),
+            Err(ThermostatError::UnsupportedIntegrator {
+                component: "LangevinThermostat",
+                ..
+            })
+        ));
+        assert_eq!(
+            verdict(DoubleWellPotential::new(1.0, 1.0, 0), rk4()),
+            Ok(())
+        );
     }
 }

@@ -74,6 +74,10 @@ impl PassiveComponent for ExternalField {
         }
     }
 
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        Some(self)
+    }
+
     /// Accepts a field shorter than the model's DOF count: it acts on the first DOFs only.
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         match self.field_h.len() {

@@ -135,6 +135,10 @@ impl PassiveComponent for OscillatingField {
         qfrc_out[self.dof] += self.signal_value(data.time);
     }
 
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        Some(self)
+    }
+
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         check_dof(model, self.dof, "OscillatingField")
     }

@@ -191,6 +191,10 @@ impl PassiveComponent for PairwiseCoupling {
         }
     }
 
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        Some(self)
+    }
+
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         self.edges.iter().try_for_each(|&(i, j)| {
             check_scalar_dof(model, i, "PairwiseCoupling")?;

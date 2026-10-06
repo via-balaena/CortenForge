@@ -23,6 +23,18 @@
 //! needed for Phase 1; the upgrade path is to swap the
 //! `PassiveComponent` impl without touching the chassis.
 //!
+//! The damping is computed from each step's starting velocity, so under
+//! the Euler integrator it alone multiplies a DOF's velocity by
+//! `1 − γh/M` per step (`M` the DOF's mass or inertia): stable only for
+//! `γh/M < 2`.
+//!
+//! The thermostat is measured under the Euler integrator. RK4 calls the
+//! passive callback four times per step and the thermostat draws fresh
+//! noise at each call, so `validate` refuses RK4 (and
+//! [`crate::PassiveStack::install`] with it). The implicit integrators
+//! have not been measured. Changing `model.integrator` after install
+//! bypasses the check.
+//!
 //! ## RNG and `cb_passive`
 //!
 //! Under the C-3 chassis refactor (study Ch 15), the thermostat holds
@@ -42,13 +54,14 @@
 //! 8. Each `(traj_id, s, group)` has its own block, so every DOF group
 //! at every step draws independent noise.
 //!
-//! Because the PRF is a pure function of integers, the thermostat is
-//! structurally immune to the parallel-vs-sequential reproducibility
-//! defect Ch 10 named: two runs at the same `(master_seed, traj_id)`
-//! at the same step index produce bit-identical noise regardless of
-//! thread scheduling. The `parallel_matches_sequential_with_langevin`
-//! regression test at `sim/L0/tests/integration/batch_sim.rs` asserts
-//! this by construction.
+//! Because the PRF is a pure function of integers, a thermostat's noise
+//! at a given step depends only on `(master_seed, traj_id, step)`, not on
+//! thread scheduling. That holds when each env has its own thermostat
+//! (`install_per_env`, `BatchSim::new_per_env`), as in the
+//! `parallel_matches_sequential_with_langevin` regression test at
+//! `sim/L0/tests/integration/batch_sim.rs`. A stack shared by several
+//! `Data` (a cloned `Model`, or `BatchSim::new`) shares one step counter,
+//! so which env draws which step depends on the order of the calls.
 //!
 //! See [`crate::prf`] for the primitive module and the study's Ch 15
 //! §2 for the argument that Route 2 (the manual `ChaCha8` implementation
@@ -56,7 +69,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use sim_core::{DVector, Data, Model};
+use sim_core::{DVector, Data, Integrator, Model};
 
 use crate::component::{PassiveComponent, Stochastic, check_dof};
 use crate::diagnose::Diagnose;
@@ -234,11 +247,22 @@ impl PassiveComponent for LangevinThermostat {
         Some(self)
     }
 
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        Some(self)
+    }
+
     /// Accepts a `gamma` shorter than the model's DOF count: the thermostat acts on the
     /// first DOFs only.
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         if let Some(last) = self.gamma.len().checked_sub(1) {
             check_dof(model, last, "LangevinThermostat")?;
+        }
+        if model.integrator == Integrator::RungeKutta4 {
+            return Err(ThermostatError::UnsupportedIntegrator {
+                component: "LangevinThermostat",
+                reason: "RK4 calls the passive callback four times per step, and the thermostat \
+                         draws fresh noise at each call",
+            });
         }
         match self.k_b_t_ctrl {
             Some(ctrl) if ctrl >= model.nu => Err(ThermostatError::CtrlOutOfRange {
@@ -258,6 +282,10 @@ impl Stochastic for LangevinThermostat {
 
     fn is_stochastic_active(&self) -> bool {
         self.stochastic_active.load(Ordering::Relaxed)
+    }
+
+    fn reset_noise(&self) {
+        self.counter.store(0, Ordering::Relaxed);
     }
 }
 

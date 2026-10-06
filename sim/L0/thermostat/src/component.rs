@@ -29,6 +29,7 @@
 
 use sim_core::{DVector, Data, MjJointType, Model};
 
+use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 
 /// A passive force injector that writes into a per-DOF accumulator.
@@ -89,6 +90,13 @@ pub trait PassiveComponent: Send + Sync + 'static {
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         let _ = model;
         Ok(())
+    }
+
+    /// The component's [`Diagnose`] view, so a caller holding the stack's
+    /// `Arc<dyn PassiveComponent>`s can read each one's summary. The
+    /// default is `None`; every component in this crate returns `Some`.
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        None
     }
 }
 
@@ -162,6 +170,10 @@ pub trait Stochastic: Send + Sync {
 
     /// Read the current active flag.
     fn is_stochastic_active(&self) -> bool;
+
+    /// Restart the noise sequence from its first step, so a reset
+    /// simulation draws the same noise again. The default does nothing.
+    fn reset_noise(&self) {}
 }
 
 #[cfg(test)]

@@ -148,6 +148,10 @@ impl PassiveComponent for RatchetPotential {
         qfrc_out[self.dof] += self.force(x, alpha);
     }
 
+    fn as_diagnose(&self) -> Option<&dyn Diagnose> {
+        Some(self)
+    }
+
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         check_scalar_dof(model, self.dof, "RatchetPotential")?;
         if self.ctrl_idx < model.nu {
