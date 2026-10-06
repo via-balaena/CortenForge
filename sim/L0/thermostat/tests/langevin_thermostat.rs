@@ -290,7 +290,7 @@ fn test_callback_firing_count() {
 /// (catastrophic — the entire reproducibility-as-foundation argument
 /// from recon log part 6 breaks) or the chassis introduced
 /// nondeterminism somewhere it shouldn't have (e.g., a `HashMap`
-/// iteration in `PassiveStack::install`). Either is a stop-the-line
+/// iteration in the stack's callback). Either is a stop-the-line
 /// bug.
 #[test]
 fn test_reproducibility_from_seed() {

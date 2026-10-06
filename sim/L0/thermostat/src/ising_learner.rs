@@ -232,10 +232,13 @@ impl IsingLearner {
     ///   finite and non-negative, or `x_thresh` is not finite, non-negative and below `x_0`.
     /// - [`ThermostatError::InvalidCount`] unless `n_steps > n_burn_in` (some measured
     ///   steps) and `n_trajectories >= 1`.
+    /// - [`ThermostatError::PassiveCallbackInstalled`] if `model` already has a passive
+    ///   callback: the learner installs its own for every trajectory.
     /// - The refusal of a component the learner builds: `delta_v`, `x_0`, `gamma` (see
     ///   [`DoubleWellPotential::try_new`], [`LangevinThermostat::try_new`]), or of the model
     ///   (see [`PassiveStack::validate`]): one of the first `n` DOFs has no position
-    ///   coordinate of its own, or the model uses RK4.
+    ///   coordinate of its own, the model uses RK4, or the noise variance overflows at the
+    ///   model's timestep.
     pub fn try_new(
         config: LearnerConfig,
         target: IsingTarget,
@@ -296,7 +299,8 @@ impl IsingLearner {
         })
     }
 
-    /// Create from explicit initial parameters.
+    /// Create from explicit initial parameters, in the units of [`Self::coupling_j`] and
+    /// [`Self::field_h`].
     ///
     /// # Panics
     /// If [`Self::try_with_initial_params`] refuses them.
@@ -476,8 +480,9 @@ impl IsingLearner {
     ///
     /// # Panics
     /// If `data.forward()` or `data.step()` fails (should not happen with valid MJCF
-    /// models), or if an update makes a coupling or field non-finite (a learning rate or a
-    /// target large enough to overflow `f64`).
+    /// models); on the step after an update made a coupling or field non-finite (a learning
+    /// rate or a target large enough to overflow `f64`); or if a coupling or field in Ising
+    /// units, `J·x₀²` or `h·x₀`, overflows.
     // Precision loss is acceptable for trajectory count / iteration index casting.
     #[allow(clippy::cast_precision_loss)]
     pub fn step(&mut self) -> LearningRecord {
@@ -558,8 +563,8 @@ impl IsingLearner {
         (0..n_iterations).map(|_| self.step()).collect()
     }
 
-    /// Current coupling constants, as given to [`PairwiseCoupling`]: force per unit position
-    /// squared. At the wells' bottoms `±x₀` they put Ising coupling `J·x₀²` on each edge, so
+    /// Current coupling constants, as given to [`PairwiseCoupling`]: energy per unit
+    /// position squared (force per unit position). At the wells' bottoms `±x₀` they put Ising coupling `J·x₀²` on each edge, so
     /// they are the Ising couplings themselves only at `x₀ = 1`.
     #[must_use]
     pub fn coupling_j(&self) -> &[f64] {

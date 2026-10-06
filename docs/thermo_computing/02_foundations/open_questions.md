@@ -42,7 +42,8 @@ referenceability.
   *Erratum (2026-10):* "all work" was not measured. The thermostat is measured
   under Euler only; `LangevinThermostat::validate` refuses RK4 (it calls the
   passive callback four times per step), and the implicit integrators have
-  not been measured.
+  not been measured. The shipped thermostat writes into `qfrc_passive` through
+  the `cb_passive` callback, not into `qfrc_applied`.
 - **Q3 — Does `thrml-rs` exist?** **RESOLVED 2026-04-09 (doc review S1)
   via web search. COMMITTED 2026-04-10: Option B (native single-site Gibbs
   sampler in Rust). Implemented as `GibbsSampler` in `sim-thermostat/src/gibbs.rs`.

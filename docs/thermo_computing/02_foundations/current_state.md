@@ -27,6 +27,10 @@ review pass.*
   2. `PassiveStack::builder().with(...).build().install(&mut model)`
   3. `install_per_env(prototype, n, build_one)` + defensive clear
      resolves the `Model::clone()` callback-sharing footgun
+
+  *Erratum (2026-10):* 0.10 removes `install`. `try_install` refuses a model
+  that already has a passive callback, and `install_per_env` panics on one
+  instead of clearing it.
   4. `Diagnose` trait with `diagnostic_summary -> String` (minimal)
   5. `WelfordOnline` (with `reset` + `merge` per M4) +
      `assert_within_n_sigma` + `sample_stats` test utilities

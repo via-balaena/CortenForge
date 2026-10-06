@@ -13,8 +13,8 @@
 //! dissipation relation `σ² = 2γkT/h` is the only physics statement
 //! the implementation makes; everything else is bookkeeping.
 //!
-//! The discretization-bias temperature error is `O(h·γ/M)`: at `h = 0.001`,
-//! `γ = 0.1`, `M = 1` that is `≈ 10⁻⁴` of `½kT`.
+//! The discretization-bias temperature error is `O(h·γ/M)`; `h·γ/M = 10⁻⁴` at
+//! `h = 0.001`, `γ = 0.1`, `M = 1`.
 //!
 //! The damping is computed from each step's starting velocity, so under
 //! the Euler integrator, for a diagonal mass matrix, it alone multiplies a
@@ -55,7 +55,7 @@
 //! so which env draws which step depends on the order of the calls.
 //!
 //! The step index takes 48 bits of the noise position, so a thermostat panics
-//! once its step counter reaches `2^48` (after about `2.8·10¹⁴` noise draws). See
+//! once its step counter reaches `2^48` (after about `2.8·10¹⁴` steps with noise on). See
 //! [`crate::prf`] for the primitives.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -85,19 +85,19 @@ use crate::prf;
 /// # Panics
 ///
 /// `apply` panics once the step counter reaches `2^48` (after about `2.8·10¹⁴`
-/// noise draws): the step index takes 48 bits of the noise position.
+/// steps with noise on): the step index takes 48 bits of the noise position.
 pub struct LangevinThermostat {
     gamma: DVector<f64>,
     k_b_t: f64,
-    /// User-facing seed (D7). Retained alongside `master_key` for
+    /// User-facing seed. Retained alongside `master_key` for
     /// display in `diagnostic_summary` — the key space is larger than
     /// the seed space, so reconstructing `u64` from `[u8; 32]` would
     /// be lossy.
     master_seed: u64,
     /// 32-byte `ChaCha8` key, expanded once at construction from
-    /// `master_seed` via [`crate::prf::expand_master_seed`] (D7).
+    /// `master_seed` via [`crate::prf::expand_master_seed`].
     master_key: [u8; 32],
-    /// Per-env trajectory identifier (D2). Typically the env index
+    /// Per-env trajectory identifier. Typically the env index
     /// under a `PassiveStack::install_per_env` factory; any distinct
     /// `u64` value produces a disjoint noise stream at the same
     /// `master_seed`.
@@ -107,7 +107,7 @@ pub struct LangevinThermostat {
     /// `cb_passive` closure can hold `&self`.
     counter: AtomicU64,
     stochastic_active: AtomicBool,
-    /// Optional ctrl index for runtime temperature modulation (D2).
+    /// Optional ctrl index for runtime temperature modulation.
     /// When `Some(idx)`, `apply` reads `data.ctrl[idx]` as a multiplier
     /// on `k_b_t`. When `None`, `k_b_t` is used directly.
     k_b_t_ctrl: Option<usize>,

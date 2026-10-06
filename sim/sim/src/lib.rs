@@ -67,7 +67,7 @@
 //! let mut latch = SpinLatch::new(problem, 0.5);
 //! let steps = 100_000;
 //! for step in 0..steps {
-//!     // Cool linearly from 5 kT to 0.
+//!     // Cool linearly from 5 kT toward 0.
 //!     data.ctrl[0] = 5.0 * f64::from(steps - step) / f64::from(steps);
 //!     data.step(&model)?;
 //!     latch.observe(&model, &data)?;

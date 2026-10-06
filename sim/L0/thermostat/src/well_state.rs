@@ -12,7 +12,7 @@ use crate::params::{Domain, or_panic};
 /// as a switch.
 ///
 /// [`IsingLearner`](crate::IsingLearner) and [`SpinLatch`](crate::SpinLatch)
-/// read spins this way, and the crate's tests use `x_thresh = x₀/2`.
+/// read spins this way, and the crate's gates use `x_thresh = x₀/2`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WellState {
     /// Position is in the left well: `x < −x_thresh`.

@@ -12,15 +12,13 @@
 //!   shape so component authors never have to.
 //!
 //! - [`Stochastic`] is the opt-in for gating noise off. A component
-//!   that injects random forces (`LangevinThermostat`, future
-//!   colored-noise / GLE / Brownian-motor components) implements
+//!   that injects random forces (`LangevinThermostat`) implements
 //!   `Stochastic` and reports its current active flag via
 //!   [`PassiveComponent::as_stochastic`]. Finite-difference and autograd
 //!   contexts call [`PassiveStack::disable_stochastic`](crate::PassiveStack::disable_stochastic)
-//!   to wrap the stochastic contribution off via an RAII guard, so the
-//!   FD perturbation block recovers `∂F_det/∂qpos` exactly even though
-//!   the component would normally be writing FDT noise into
-//!   `qfrc_passive`.
+//!   to wrap the stochastic contribution off via an RAII guard, so no
+//!   noise enters the FD difference even though the component would
+//!   normally be writing FDT noise into `qfrc_passive`.
 //!
 //! Both traits are `Send + Sync` because the resulting `cb_passive`
 //! callback is stored in an `Arc<dyn Fn + Send + Sync>` on `Model`,
@@ -45,7 +43,7 @@ use crate::error::ThermostatError;
 /// `apply` reads `model` and `data` immutably and accumulates its
 /// per-DOF contribution **with `+=`**, never `=`, into `qfrc_out`.
 /// `qfrc_out` is the same vector as `data.qfrc_passive` at runtime —
-/// the stack temporarily takes ownership of it via `std::mem::take`
+/// the stack temporarily takes ownership of it via `std::mem::replace`
 /// across the trait call so this signature is sound, and restores it
 /// before the callback returns. Components must not assume `qfrc_out`
 /// is zero on entry; earlier components in the same stack may have

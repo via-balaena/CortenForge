@@ -30,7 +30,7 @@
 //! `&mut Data`, but the trait wants `&Data + &mut DVector<f64>`. We
 //! resolve it with `std::mem::replace`:
 //!
-//! ```ignore
+//! ```text
 //! let mut qfrc_out = std::mem::replace(
 //!     &mut data_inner.qfrc_passive,
 //!     DVector::zeros(0),
@@ -72,8 +72,7 @@ impl PassiveStackBuilder {
     /// Append a component to the stack. Components are applied in
     /// insertion order during each `cb_passive` invocation, and each adds
     /// its forces to the same accumulator, so a stack can hold several
-    /// components of one type (two double wells on different DOFs, or a
-    /// field and a coupling on the same DOFs).
+    /// components of one type (two double wells on different DOFs).
     #[must_use]
     pub fn with<C: PassiveComponent>(mut self, component: C) -> Self {
         self.components.push(Arc::new(component));
@@ -206,8 +205,9 @@ impl PassiveStack {
         }
     }
 
-    /// Disable every stochastic component in the stack and return an
-    /// RAII guard that restores their prior active flags on drop.
+    /// Disable every stochastic component in the stack and return a guard;
+    /// when the last live guard on the stack drops, the flags from before
+    /// the first are restored.
     ///
     /// Guards on this stack nest in any order: each guard turns noise
     /// off when taken, noise stays off until the LAST live guard drops,
@@ -220,9 +220,8 @@ impl PassiveStack {
     /// `let _guard = stack.disable_stochastic();`, run the perturbed
     /// and baseline rollouts, drop the guard, and the stack returns to
     /// its prior stochastic state. Stochastic components produce only
-    /// their deterministic forces inside the guarded block, so the FD
-    /// difference recovers `∂F_det/∂qpos` exactly (the crate's noise does
-    /// not depend on the state).
+    /// their deterministic forces inside the guarded block, so no noise
+    /// enters the FD difference.
     ///
     /// If a component's `set_stochastic_active` panics here, no guard is
     /// returned and the components switched off before it stay off.

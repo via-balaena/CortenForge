@@ -225,11 +225,12 @@ impl IsingProblem {
     /// couplings `μ²·J` and fields `μ·h`, where `μ` is the mean of `|x|/x₀` in one well
     /// (`μ² ≈ 0.91` at `ΔV/kT = 3` counting only samples with every `|x| ≥ x₀/2`, `0.82`
     /// counting every sample), and at second order spins with a shared neighbour gain a
-    /// coupling through it. A site's well can vanish once its tilt ratio (see
-    /// [`Self::tilt_ratios`]) nears 1. `tests/ising_mapping.rs` measures all three.
+    /// coupling through it. A site's well can vanish, at a tilt ratio (see
+    /// [`Self::tilt_ratios`]) that depends on the graph. `tests/ising_mapping.rs` measures
+    /// all three.
     ///
     /// # Panics
-    /// If [`Self::try_add_components`] refuses `delta_v` or `x_0`.
+    /// If [`Self::try_add_components`] refuses.
     #[must_use]
     #[track_caller]
     pub fn add_components(
@@ -333,7 +334,7 @@ impl SpinLatch {
     /// Read the configuration at `data`. If every spin is in a well, count the read and keep
     /// the configuration if its energy is below the best so far (on a tie the earlier one
     /// stays). Returns whether this read became the best. A `NaN` position reads as the
-    /// barrier, so a simulation that has blown up stops being read.
+    /// barrier.
     ///
     /// # Errors
     /// [`ThermostatError::DofOutOfRange`] or [`ThermostatError::NoPositionCoordinate`] if one
