@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use sim_core::{Data, Model, StepError};
+use sim_core::{Data, Model, StepError, is_bad};
 use sim_ml_chassis::{
     ActionSpace, Environment, ObservationSpace, ResetError, SimEnv, StepResult, Tensor,
 };
@@ -51,11 +51,19 @@ impl ThermCircuitEnv {
     }
 
     /// Effective temperature: `k_B·T * ctrl_multiplier` if ctrl-temperature
-    /// is enabled, otherwise just `k_B·T`.
+    /// is enabled, otherwise just `k_B·T`. The multiplier is read as the
+    /// thermostat reads it: the control clamped to `[0, 10]`, with a bad
+    /// value (`NaN`, infinite, or beyond ±1e10) counting as 0.
     #[must_use]
     pub fn effective_temperature(&self) -> f64 {
         self.ctrl_temperature_idx.map_or(self.k_b_t, |idx| {
-            self.k_b_t * self.inner.data().ctrl[idx].clamp(0.0, 10.0)
+            let ctrl = self.inner.data().ctrl[idx];
+            let multiplier = if is_bad(ctrl) {
+                0.0
+            } else {
+                ctrl.clamp(0.0, 10.0)
+            };
+            self.k_b_t * multiplier
         })
     }
 

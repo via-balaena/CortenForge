@@ -134,6 +134,8 @@ impl IsingLearner {
     ///   repeats a pair.
     /// - If `config.delta_v` or `config.x_0` is not positive (see
     ///   [`DoubleWellPotential::new`]).
+    /// - If `config.gamma` or `config.k_b_t` is negative or not finite (see
+    ///   [`LangevinThermostat::new`]).
     /// - If the learner's passive stack refuses `model` (see
     ///   [`PassiveStack::validate`]): one of the first `n` DOFs has no
     ///   position coordinate of its own, or the model uses RK4.

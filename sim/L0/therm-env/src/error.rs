@@ -25,6 +25,15 @@ pub enum ThermCircuitError {
         value: f64,
     },
 
+    /// `gamma` or `k_b_t` was negative.
+    #[error("parameter `{field}` must be non-negative, got {value}")]
+    NegativeParameter {
+        /// Name of the offending field.
+        field: &'static str,
+        /// The negative value that was supplied.
+        value: f64,
+    },
+
     /// Propagated from `SimEnv::builder().build()`.
     #[error(transparent)]
     Env(#[from] EnvError),

@@ -255,6 +255,21 @@ fn effective_temperature_with_ctrl() {
     assert_abs_diff_eq!(env.effective_temperature(), 3.0, epsilon = 1e-10);
 }
 
+#[test]
+fn effective_temperature_reads_a_bad_control_as_zero() {
+    let mut env = ThermCircuitEnv::builder(1)
+        .k_b_t(1.0)
+        .with_ctrl_temperature()
+        .reward(|_m, _d| 0.0)
+        .build()
+        .unwrap();
+    env.reset().unwrap();
+    for bad in [f64::NAN, f64::INFINITY, 2e10] {
+        env.inner_mut().data_mut().ctrl[0] = bad;
+        assert_abs_diff_eq!(env.effective_temperature(), 0.0, epsilon = 1e-15);
+    }
+}
+
 // ── 8. Builder validation ───────────────────────────────────────────────
 
 #[test]

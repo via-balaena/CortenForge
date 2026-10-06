@@ -157,9 +157,7 @@ pub fn qpos_index(model: &Model, dof: usize) -> usize {
 }
 
 /// Control channel `ctrl`'s value, clamped to `[0, max]`. A bad value (`NaN`, infinite, or beyond
-/// ±1e10: [`sim_core::is_bad`]) reads as 0, the value sim-core's actuation stage sets it to before
-/// passive forces run. A component sees one itself with actuation disabled, or when its `apply`
-/// is called directly.
+/// ±1e10: [`sim_core::is_bad`]) reads as 0, the value sim-core's actuation stage sets it to.
 pub fn clamped_ctrl(data: &Data, ctrl: usize, max: f64) -> f64 {
     let value = data.ctrl[ctrl];
     if is_bad(value) {

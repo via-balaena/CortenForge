@@ -223,8 +223,9 @@ impl ThermCircuitEnvBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`ThermCircuitError`] if `n_particles` is zero or `reward`
-    /// was not set.
+    /// Returns [`ThermCircuitError`] if `n_particles` is zero, `reward`
+    /// was not set, a parameter is `NaN` or infinite, `gamma` or `k_b_t` is
+    /// negative, or building the model, the spaces or the environment fails.
     pub fn build(self) -> Result<ThermCircuitEnv, ThermCircuitError> {
         let p = self.prepare()?;
 
@@ -257,8 +258,9 @@ impl ThermCircuitEnvBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`ThermCircuitError`] if `n_particles` is zero or `reward`
-    /// was not set.
+    /// Returns [`ThermCircuitError`] if `n_particles` is zero, `reward`
+    /// was not set, a parameter is `NaN` or infinite, `gamma` or `k_b_t` is
+    /// negative, or building the model, the spaces or the environment fails.
     pub fn build_vec(self, n_envs: usize) -> Result<VecEnv, ThermCircuitError> {
         let p = self.prepare()?;
 
@@ -279,8 +281,9 @@ impl ThermCircuitEnvBuilder {
 
     // ── Private ───────────────────────────────────────────────────────
 
-    /// Reject `NaN` or ±Inf on any user-supplied f64 parameter.
-    fn validate_finite_params(&self) -> Result<(), ThermCircuitError> {
+    /// Reject `NaN` or ±Inf on any user-supplied f64 parameter, and a
+    /// negative `gamma` or `k_b_t` (which `LangevinThermostat::new` refuses).
+    fn validate_params(&self) -> Result<(), ThermCircuitError> {
         let checks: [(&'static str, f64); 5] = [
             ("timestep", self.timestep),
             ("gamma", self.gamma),
@@ -293,13 +296,18 @@ impl ThermCircuitEnvBuilder {
                 return Err(ThermCircuitError::NonFiniteParameter { field, value });
             }
         }
+        for (field, value) in [("gamma", self.gamma), ("k_b_t", self.k_b_t)] {
+            if value < 0.0 {
+                return Err(ThermCircuitError::NegativeParameter { field, value });
+            }
+        }
         Ok(())
     }
 
     /// Validate config and execute shared setup (MJCF, model, thermostat,
     /// passive stack, obs/act spaces, closure defaults).
     fn prepare(self) -> Result<PreparedCircuit, ThermCircuitError> {
-        self.validate_finite_params()?;
+        self.validate_params()?;
         if self.n_particles == 0 {
             return Err(ThermCircuitError::ZeroParticles);
         }
@@ -479,6 +487,25 @@ mod tests {
             ThermCircuitError::NonFiniteParameter { field: "gamma", value }
                 if value.is_infinite() && value.is_sign_negative()
         ));
+    }
+
+    #[test]
+    fn negative_gamma_and_k_b_t_rejected() {
+        let err = minimal_valid().gamma(-0.1).build().unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NegativeParameter { field: "gamma", value } if (value + 0.1).abs() < 1e-15
+        ));
+        let err = minimal_valid().k_b_t(-1.0).build_vec(2).unwrap_err();
+        assert!(matches!(
+            err,
+            ThermCircuitError::NegativeParameter { field: "k_b_t", value } if (value + 1.0).abs() < 1e-15
+        ));
+    }
+
+    #[test]
+    fn zero_gamma_and_k_b_t_build() {
+        assert!(minimal_valid().gamma(0.0).k_b_t(0.0).build().is_ok());
     }
 
     #[test]
