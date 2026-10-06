@@ -179,4 +179,19 @@ mod tests {
         assert!(s.contains("0.3000"));
         assert!(s.contains("n=4"));
     }
+
+    /// The energy is the plain sum `Σ −h_i·x_i`, bit for bit; a fused multiply-add differs on
+    /// these inputs (found with Python's math.fma).
+    #[test]
+    fn field_energy_is_the_plain_sum() {
+        let h = [-0.567, -0.156, -0.942];
+        let x = [-1.113, -0.248, -0.017];
+        let f = ExternalField::new(h.to_vec());
+        let (model, data) = chain_at(&x);
+        let plain = (-h[0] * x[0]) + (-h[1] * x[1]) + (-h[2] * x[2]);
+        assert_eq!(
+            f.field_energy(&model, &data).unwrap().to_bits(),
+            plain.to_bits()
+        );
+    }
 }

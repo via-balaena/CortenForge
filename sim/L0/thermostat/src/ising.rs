@@ -530,4 +530,26 @@ mod tests {
             "expected {expected}, got {kl}"
         );
     }
+
+    /// A single swapped pair in the middle is caught, not only a full reversal.
+    #[test]
+    #[should_panic(expected = "entry 1 is configuration")]
+    fn tv_distance_refuses_one_swapped_pair() {
+        let p = exact_distribution(2, &[], &[], &[0.3, 0.0], 1.0);
+        let mut q = p.clone();
+        q.swap(1, 2);
+        let _tv = tv_distance(&p, &q);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate edge: the pair (1, 0) appears twice")]
+    fn exact_distribution_refuses_a_duplicate_edge() {
+        let _dist = exact_distribution(2, &[(0, 1), (1, 0)], &[1.0, 1.0], &[0.0; 2], 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds MAX_EXACT_SPINS")]
+    fn ising_statistics_refuses_too_many_spins() {
+        let _stats = ising_statistics(&[], MAX_EXACT_SPINS + 1, &[]);
+    }
 }

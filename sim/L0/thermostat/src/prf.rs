@@ -394,4 +394,25 @@ mod tests {
         assert!(out[0].abs() > 1.0);
         assert!(out[1].abs() < 1e-10);
     }
+
+    #[test]
+    #[should_panic(expected = "noise DOF group must be below 2^16")]
+    fn noise_position_refuses_group_2_pow_16() {
+        let _ = noise_position(0, 0, 1 << 16);
+    }
+
+    /// The largest group stays distinct from its neighbours on the step and trajectory axes.
+    #[test]
+    fn noise_position_keeps_the_largest_group_distinct() {
+        let top = (1 << 16) - 1;
+        let p = noise_position(5, 9, top);
+        for other in [
+            noise_position(5, 9, top - 1),
+            noise_position(5, 9 + (1 << 32), 0),
+            noise_position(5 + (1 << 32), 9, 0),
+            noise_position(6, 9, top),
+        ] {
+            assert_ne!(p, other);
+        }
+    }
 }

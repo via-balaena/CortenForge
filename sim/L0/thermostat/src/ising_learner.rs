@@ -668,4 +668,34 @@ mod tests {
             kl_at(&first.coupling_j, &first.field_h).to_bits()
         );
     }
+
+    #[test]
+    #[should_panic(expected = "duplicate edge")]
+    fn new_refuses_a_duplicate_edge() {
+        let config = LearnerConfig {
+            edges: vec![(0, 1), (1, 0)],
+            ..minimal_config()
+        };
+        let target = IsingTarget {
+            correlations: vec![0.0, 0.0],
+            ..minimal_target()
+        };
+        let _learner = IsingLearner::new(config, target, load_model());
+    }
+
+    #[test]
+    #[should_panic(expected = "IsingLearner::new: LangevinThermostat does not support")]
+    fn new_refuses_an_rk4_model() {
+        let mut model = load_model();
+        model.integrator = sim_core::Integrator::RungeKutta4;
+        let _learner = IsingLearner::new(minimal_config(), minimal_target(), model);
+    }
+
+    /// Runs whose `seed_base` differ by one used to share noise an iteration apart.
+    #[test]
+    fn runs_with_different_seed_bases_share_no_noise() {
+        for traj in [0, 1, 1000] {
+            assert_ne!(noise_ids(42, 1, traj), noise_ids(43, 0, traj));
+        }
+    }
 }

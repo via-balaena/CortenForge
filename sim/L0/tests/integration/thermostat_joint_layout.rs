@@ -5,7 +5,9 @@
 //! DOFs 6 and 7 sit at `qpos[7]` and `qpos[8]`.
 
 use sim_mjcf::load_model;
-use sim_thermostat::{DoubleWellPotential, PairwiseCoupling, PassiveStack, RatchetPotential};
+use sim_thermostat::{
+    DoubleWellPotential, PairwiseCoupling, PassiveStack, RatchetPotential, ThermostatError,
+};
 
 const MJCF: &str = r#"<mujoco>
   <option timestep="0.001" gravity="0 0 0"/>
@@ -73,4 +75,80 @@ fn components_read_slide_positions_after_a_free_joint() {
         (energy - (-0.5 * x6 * x7)).abs() < 1e-12,
         "coupling energy {energy}"
     );
+}
+
+/// A slide (DOF 0, qpos 0), a ball (DOFs 1–3, qpos 1–4), a hinge (DOF 4, qpos 5) and a free
+/// body (DOFs 5–10, qpos 6–12; translations 5–7 at qpos 6–8).
+const MIXED: &str = r#"<mujoco>
+  <option timestep="0.001" gravity="0 0 0"/>
+  <worldbody>
+    <body name="s" pos="0 0 0">
+      <joint name="slide" type="slide" axis="1 0 0"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+    <body name="b" pos="0 1 0">
+      <joint name="ball" type="ball"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+    <body name="h" pos="0 2 0">
+      <joint name="hinge" type="hinge" axis="0 0 1"/>
+      <geom type="box" size="0.1 0.02 0.02" mass="1"/>
+    </body>
+    <body name="f" pos="0 3 1">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"#;
+
+#[test]
+fn components_read_hinge_and_free_translation_positions_after_a_ball() {
+    let mut model = load_model(MIXED).expect("MJCF loads");
+    assert_eq!((model.nq, model.nv), (13, 11));
+
+    // Double wells on the hinge (DOF 4) and the free body's y translation (DOF 6), and a
+    // coupling J = 0.5 between the slide (DOF 0) and the hinge.
+    PassiveStack::builder()
+        .with(DoubleWellPotential::new(1.0, 1.0, 4))
+        .with(DoubleWellPotential::new(1.0, 1.0, 6))
+        .with(PairwiseCoupling::new(vec![0.5], vec![(0, 4)]))
+        .build()
+        .install(&mut model);
+
+    let mut data = model.make_data();
+    let (x0, x4, x6) = (0.2, 0.5, -0.4);
+    data.qpos[0] = x0;
+    data.qpos[5] = x4;
+    data.qpos[7] = 3.0 + x6; // the free body starts at y = 3
+    data.forward(&model).expect("forward");
+
+    // F = −4x(x² − 1) for each well; the coupling adds J·x_other to both ends.
+    let well = |x: f64| -4.0 * x * (x * x - 1.0);
+    let y = 3.0 + x6;
+    let expected = [(0, 0.5 * x4), (4, well(x4) + 0.5 * x0), (6, well(y))];
+    for (dof, f) in expected {
+        assert!(
+            (data.qfrc_passive[dof] - f).abs() < 1e-12,
+            "DOF {dof}: expected {f}, got {}",
+            data.qfrc_passive[dof]
+        );
+    }
+}
+
+#[test]
+fn position_readers_refuse_ball_and_free_rotation_dofs() {
+    for dof in [2, 9] {
+        let mut model = load_model(MIXED).expect("MJCF loads");
+        let verdict = PassiveStack::builder()
+            .with(DoubleWellPotential::new(1.0, 1.0, dof))
+            .build()
+            .try_install(&mut model);
+        assert_eq!(
+            verdict,
+            Err(ThermostatError::NoPositionCoordinate {
+                component: "DoubleWellPotential",
+                dof
+            })
+        );
+    }
 }

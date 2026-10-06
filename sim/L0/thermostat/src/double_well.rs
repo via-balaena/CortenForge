@@ -434,4 +434,11 @@ mod tests {
     fn kramers_rate_refuses_zero_mass() {
         let _rate = DoubleWellPotential::new(1.0, 1.0, 0).kramers_rate(0.1, 0.0, 1.0);
     }
+
+    /// Without friction there is no energy diffusion: the factor is 0, the δ → 0 limit.
+    #[test]
+    fn depopulation_factor_is_zero_without_friction() {
+        let w = DoubleWellPotential::new(1.0, 1.0, 0);
+        assert_eq!(w.depopulation_factor(0.0, 1.0, 1.0), 0.0);
+    }
 }

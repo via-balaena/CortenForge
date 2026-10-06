@@ -936,4 +936,76 @@ mod tests {
             Ok(())
         );
     }
+
+    // --- review round 1 ---
+
+    /// Noise switched back on under a live guard goes off again for the next guard, and the
+    /// flags from before the first guard come back after the last.
+    #[test]
+    fn a_new_guard_turns_noise_off_after_it_was_switched_back_on() {
+        let stack = thermostat_stack();
+        let a = stack.disable_stochastic();
+        stack.set_all_stochastic(true);
+        let b = stack.disable_stochastic();
+        assert!(!noise_on(&stack), "the second guard left noise on");
+        drop(a);
+        drop(b);
+        assert!(noise_on(&stack));
+    }
+
+    /// Three guards dropped in each of the six orders keep noise off until the last drop.
+    #[test]
+    fn three_guards_in_every_drop_order() {
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let stack = thermostat_stack();
+            let mut guards: Vec<Option<StochasticGuard>> =
+                (0..3).map(|_| Some(stack.disable_stochastic())).collect();
+            for (k, &i) in order.iter().enumerate() {
+                drop(guards[i].take());
+                let expected_on = k == 2;
+                assert_eq!(
+                    noise_on(&stack),
+                    expected_on,
+                    "order {order:?}, after drop {k}"
+                );
+            }
+        }
+    }
+
+    /// `try_install` replaces an installed stack: after it, only the new stack's component runs.
+    #[test]
+    fn try_install_replaces_the_installed_stack() {
+        let mut model = chain(1);
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        one(CountingComponent {
+            count: Arc::clone(&first),
+        })
+        .install(&mut model);
+        assert_eq!(
+            one(CountingComponent {
+                count: Arc::clone(&second)
+            })
+            .try_install(&mut model),
+            Ok(())
+        );
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+        assert_eq!(
+            first.load(Ordering::SeqCst),
+            0,
+            "the replaced stack still ran"
+        );
+        assert!(
+            second.load(Ordering::SeqCst) > 0,
+            "the new stack did not run"
+        );
+    }
 }

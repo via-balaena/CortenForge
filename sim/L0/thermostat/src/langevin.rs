@@ -714,4 +714,10 @@ mod tests {
             "step 2^32 shares step 0's noise"
         );
     }
+
+    #[test]
+    #[should_panic(expected = "LangevinThermostat supports at most 2^19 DOFs")]
+    fn new_refuses_more_than_2_pow_19_dofs() {
+        let _t = LangevinThermostat::new(DVector::from_element((1 << 19) + 1, 0.1), 1.0, 0, 0);
+    }
 }
