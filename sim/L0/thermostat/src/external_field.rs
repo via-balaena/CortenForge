@@ -15,7 +15,7 @@
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::{PassiveComponent, check_dof, check_scalar_dof, qpos_index};
+use crate::component::{PassiveComponent, check_dof, check_position_dof, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 
@@ -53,17 +53,19 @@ impl ExternalField {
     ///
     /// # Errors
     ///
-    /// Returns [`ThermostatError::DofOutOfRange`] or [`ThermostatError::NotScalarJoint`]
+    /// Returns [`ThermostatError::DofOutOfRange`] or [`ThermostatError::NoPositionCoordinate`]
     /// if a DOF the field covers is missing from `model` or has no single position
     /// coordinate.
     pub fn field_energy(&self, model: &Model, data: &Data) -> Result<f64, ThermostatError> {
-        self.field_h
+        for i in 0..self.field_h.len() {
+            check_position_dof(model, i, "ExternalField")?;
+        }
+        Ok(self
+            .field_h
             .iter()
             .enumerate()
-            .try_fold(0.0, |energy, (i, &h)| {
-                check_scalar_dof(model, i, "ExternalField")?;
-                Ok((-h).mul_add(data.qpos[qpos_index(model, i)], energy))
-            })
+            .map(|(i, &h)| -h * data.qpos[qpos_index(model, i)])
+            .sum())
     }
 }
 

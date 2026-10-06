@@ -16,7 +16,7 @@
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::{PassiveComponent, check_scalar_dof, qpos_index};
+use crate::component::{PassiveComponent, check_position_dof, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 
@@ -146,7 +146,7 @@ impl DoubleWellPotential {
         (8.0 / 3.0) * self.x_0 * (mass * self.delta_v).sqrt()
     }
 
-    /// Meľnikov–Meshkov depopulation factor `Υ(δ) ∈ (0, 1]`, with
+    /// Meľnikov–Meshkov depopulation factor `Υ(δ) ∈ [0, 1]`, with
     /// `δ = (γ/M)·S(E_b)/kT` the reduced energy loss per barrier→well→barrier
     /// round trip. `Υ → 1` at high friction (recovers the spatial-diffusion
     /// rate); `Υ → δ` at low friction (gives the energy-diffusion `∝γ` rate).
@@ -163,7 +163,7 @@ impl DoubleWellPotential {
         check_rate_inputs(gamma, mass, k_b_t);
         let delta = (gamma / mass) * self.barrier_action(mass) / k_b_t;
         if delta <= 0.0 {
-            return 1.0;
+            return 0.0; // the δ → 0 limit: Υ → δ
         }
         // λ accumulates to avoid index→float casts; the integrand is bounded
         // (denominator ≥ ¼) and decays once δλ² ≫ 1, so cut off at √(30/δ).
@@ -234,7 +234,7 @@ impl PassiveComponent for DoubleWellPotential {
     }
 
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
-        check_scalar_dof(model, self.dof, "DoubleWellPotential")
+        check_position_dof(model, self.dof, "DoubleWellPotential")
     }
 }
 

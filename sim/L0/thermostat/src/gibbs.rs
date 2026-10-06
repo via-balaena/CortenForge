@@ -40,14 +40,14 @@ pub struct GibbsSampler {
 
 impl GibbsSampler {
     /// Create a new Gibbs sampler with all spins initialized to +1
-    /// (see [`Self::set_config`] to start elsewhere).
+    /// (see [`Self::set_config_bitmask`] to start elsewhere).
     ///
     /// # Panics
     /// - If `n > MAX_EXACT_SPINS`.
     /// - If `coupling_j.len() != edges.len()`.
     /// - If `field_h.len() != n`.
     /// - If `k_b_t <= 0`.
-    /// - If an edge names a spin outside `0..n`, or joins a spin to itself.
+    /// - If an edge names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
     #[must_use]
     pub fn new(
         n: usize,
@@ -122,7 +122,7 @@ impl GibbsSampler {
     ///
     /// # Panics
     /// Panics if `config` sets a bit at or above `n`.
-    pub fn set_config(&mut self, config: u32) {
+    pub fn set_config_bitmask(&mut self, config: u32) {
         assert!(
             u64::from(config) >> self.n == 0,
             "configuration {config:#b} sets a bit at or above n = {}",
@@ -254,19 +254,19 @@ mod tests {
     }
 
     #[test]
-    fn set_config_sets_every_spin() {
+    fn set_config_bitmask_sets_every_spin() {
         let mut sampler = GibbsSampler::new(3, &[(0, 1)], &[1.0], &[0.0; 3], 1.0, 0);
-        sampler.set_config(0b101);
+        sampler.set_config_bitmask(0b101);
         assert_eq!(sampler.config_bitmask(), 0b101);
-        sampler.set_config(0);
+        sampler.set_config_bitmask(0);
         assert_eq!(sampler.config_bitmask(), 0);
     }
 
     #[test]
     #[should_panic(expected = "sets a bit at or above n = 3")]
-    fn set_config_refuses_a_bit_above_n() {
+    fn set_config_bitmask_refuses_a_bit_above_n() {
         let mut sampler = GibbsSampler::new(3, &[], &[], &[0.0; 3], 1.0, 0);
-        sampler.set_config(0b1000);
+        sampler.set_config_bitmask(0b1000);
     }
 
     #[test]

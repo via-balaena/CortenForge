@@ -29,19 +29,25 @@ const fn spin(c: u32, i: usize) -> f64 {
     if c & (1 << i) != 0 { 1.0 } else { -1.0 }
 }
 
-/// Check that every edge joins two different spins among the `n`.
+/// Check that every edge joins two different spins among the `n`, and that no pair appears
+/// twice (in either order), matching [`PairwiseCoupling`](crate::PairwiseCoupling).
 ///
 /// A self-edge is refused because the two solvers would read it
 /// differently: in [`exact_distribution`] `σ_i·σ_i = 1` is a constant, while
 /// [`GibbsSampler`](crate::GibbsSampler) would add it to spin `i`'s local
 /// field.
 pub(crate) fn check_edges(n: usize, edges: &[(usize, usize)]) {
+    let mut seen = std::collections::HashSet::with_capacity(edges.len());
     for &(i, j) in edges {
         assert!(
             i < n && j < n,
             "edge ({i}, {j}) names a spin outside 0..{n}"
         );
         assert!(i != j, "self-edge ({i}, {i}) is not supported");
+        assert!(
+            seen.insert((i.min(j), i.max(j))),
+            "duplicate edge: the pair ({i}, {j}) appears twice"
+        );
     }
 }
 
@@ -65,7 +71,7 @@ pub(crate) fn check_edges(n: usize, edges: &[(usize, usize)]) {
 /// - If `coupling_j.len() != edges.len()`.
 /// - If `field_h.len() != n`.
 /// - If `k_b_t <= 0`.
-/// - If an edge names a spin outside `0..n`, or joins a spin to itself.
+/// - If an edge names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
 #[must_use]
 pub fn exact_distribution(
     n: usize,
@@ -133,9 +139,14 @@ pub fn exact_distribution(
 /// from an exact distribution.
 ///
 /// # Panics
-/// Panics if an edge names a spin outside `0..n`, or joins a spin to itself.
+/// Panics if `n > MAX_EXACT_SPINS`, or if an edge names a spin outside
+/// `0..n`, joins a spin to itself, or repeats a pair.
 #[must_use]
 pub fn ising_statistics(dist: &[(u32, f64)], n: usize, edges: &[(usize, usize)]) -> IsingStats {
+    assert!(
+        n <= MAX_EXACT_SPINS,
+        "n={n} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})"
+    );
     check_edges(n, edges);
     let mut magnetizations = vec![0.0; n];
     let mut correlations = vec![0.0; edges.len()];

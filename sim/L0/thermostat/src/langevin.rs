@@ -260,6 +260,7 @@ impl PassiveComponent for LangevinThermostat {
         if model.integrator == Integrator::RungeKutta4 {
             return Err(ThermostatError::UnsupportedIntegrator {
                 component: "LangevinThermostat",
+                integrator: model.integrator,
                 reason: "RK4 calls the passive callback four times per step, and the thermostat \
                          draws fresh noise at each call",
             });
@@ -284,7 +285,7 @@ impl Stochastic for LangevinThermostat {
         self.stochastic_active.load(Ordering::Relaxed)
     }
 
-    fn reset_noise(&self) {
+    fn reset_stochastic(&self) {
         self.counter.store(0, Ordering::Relaxed);
     }
 }

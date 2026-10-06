@@ -117,25 +117,42 @@ pub const fn check_dof(
     }
 }
 
-/// Check that DOF `dof` exists in `model` and belongs to a slide or hinge joint, whose
-/// single position coordinate is `qpos[qpos_index(model, dof)]`.
-pub fn check_scalar_dof(
+/// The `qpos` index of DOF `dof`'s own position coordinate, or `None` if it has none.
+///
+/// A slide or hinge DOF's coordinate is its joint's; a free joint's three translation DOFs
+/// each have one (`qpos[adr + k]` for DOF `k < 3` of the joint). A ball joint's DOFs and a
+/// free joint's rotation DOFs move a quaternion, so they have no coordinate of their own.
+/// `qpos` and `qvel` share indices only until the first ball or free joint, so the index is
+/// found through the joint. The caller has checked `dof < model.nv`.
+fn position_index(model: &Model, dof: usize) -> Option<usize> {
+    let joint = model.dof_jnt[dof];
+    let adr = model.jnt_qpos_adr[joint];
+    let k = dof - model.jnt_dof_adr[joint];
+    match model.jnt_type[joint] {
+        MjJointType::Slide | MjJointType::Hinge => Some(adr),
+        MjJointType::Free if k < 3 => Some(adr + k),
+        _ => None,
+    }
+}
+
+/// Check that DOF `dof` exists in `model` and has its own position coordinate,
+/// `qpos[qpos_index(model, dof)]` (see [`position_index`]).
+pub fn check_position_dof(
     model: &Model,
     dof: usize,
     component: &'static str,
 ) -> Result<(), ThermostatError> {
     check_dof(model, dof, component)?;
-    match model.jnt_type[model.dof_jnt[dof]] {
-        MjJointType::Slide | MjJointType::Hinge => Ok(()),
-        _ => Err(ThermostatError::NotScalarJoint { component, dof }),
+    match position_index(model, dof) {
+        Some(_) => Ok(()),
+        None => Err(ThermostatError::NoPositionCoordinate { component, dof }),
     }
 }
 
-/// The `qpos` index of a slide or hinge DOF. `qpos` and `qvel` share indices only until
-/// the first ball or free joint, so a DOF's position must be found through its joint.
-/// The caller has checked the DOF with [`check_scalar_dof`].
+/// The `qpos` index of DOF `dof`'s position coordinate. The caller has checked the DOF with
+/// [`check_position_dof`]; for a DOF without one it returns its joint's first coordinate.
 pub fn qpos_index(model: &Model, dof: usize) -> usize {
-    model.jnt_qpos_adr[model.dof_jnt[dof]]
+    position_index(model, dof).unwrap_or(model.jnt_qpos_adr[model.dof_jnt[dof]])
 }
 
 /// Decision-7 gating opt-in for stochastic passive components.
@@ -172,8 +189,8 @@ pub trait Stochastic: Send + Sync {
     fn is_stochastic_active(&self) -> bool;
 
     /// Restart the noise sequence from its first step, so a reset
-    /// simulation draws the same noise again. The default does nothing.
-    fn reset_noise(&self) {}
+    /// simulation draws the same noise again.
+    fn reset_stochastic(&self);
 }
 
 #[cfg(test)]
@@ -217,6 +234,7 @@ mod tests {
         fn is_stochastic_active(&self) -> bool {
             self.active.load(Ordering::SeqCst)
         }
+        fn reset_stochastic(&self) {}
     }
 
     #[test]

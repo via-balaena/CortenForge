@@ -144,7 +144,7 @@ impl PassiveStack {
     /// # Panics
     ///
     /// Panics if a component refuses `model` (see [`Self::validate`]).
-    /// [`Self::try_install`] returns the error instead.
+    /// [`Self::try_install`] does the same but returns the error.
     #[allow(clippy::panic)] // the documented refusal; try_install is the non-panicking path
     pub fn install(self: &Arc<Self>, model: &mut Model) {
         if let Err(e) = self.validate(model) {
@@ -153,17 +153,14 @@ impl PassiveStack {
         self.install_unchecked(model);
     }
 
-    /// Install this stack onto `model` if every component accepts it and
-    /// `model` has no passive callback yet.
+    /// [`Self::install`], returning a refusal instead of panicking: if
+    /// every component accepts `model`, install the stack (replacing any
+    /// prior `cb_passive`).
     ///
     /// # Errors
     ///
-    /// [`ThermostatError::AlreadyInstalled`] if `model.cb_passive` is set,
-    /// or the first error from [`Self::validate`].
+    /// The first error from [`Self::validate`]; `model` is left unchanged.
     pub fn try_install(self: &Arc<Self>, model: &mut Model) -> Result<(), ThermostatError> {
-        if model.cb_passive.is_some() {
-            return Err(ThermostatError::AlreadyInstalled);
-        }
         self.validate(model)?;
         self.install_unchecked(model);
         Ok(())
@@ -245,8 +242,10 @@ impl PassiveStack {
                         .is_some_and(Stochastic::is_stochastic_active)
                 })
                 .collect();
-            self.set_all_stochastic(false);
         }
+        // Off on every take, not only the first: noise switched back on under a live guard
+        // goes off again for the new one.
+        self.set_all_stochastic(false);
         disabled.depth += 1;
         drop(disabled);
         StochasticGuard {
@@ -255,11 +254,11 @@ impl PassiveStack {
     }
 
     /// Restart every stochastic component's noise sequence from its first
-    /// step (see [`Stochastic::reset_noise`]).
+    /// step (see [`Stochastic::reset_stochastic`]).
     pub fn reset_stochastic(&self) {
         for component in &self.components {
             if let Some(stoch) = component.as_stochastic() {
-                stoch.reset_noise();
+                stoch.reset_stochastic();
             }
         }
     }
@@ -412,6 +411,7 @@ mod tests {
         fn is_stochastic_active(&self) -> bool {
             self.active.load(Ordering::SeqCst)
         }
+        fn reset_stochastic(&self) {}
     }
 
     #[test]
@@ -692,23 +692,29 @@ mod tests {
         );
     }
 
+    /// A free joint's translation DOFs (0–2) have a position coordinate each; its rotation
+    /// DOFs (3–5) move a quaternion and have none.
     #[test]
-    fn position_readers_refuse_a_free_joint_dof() {
-        let not_scalar = |component| ThermostatError::NotScalarJoint { component, dof: 0 };
+    fn position_readers_take_free_translations_and_refuse_free_rotations() {
         assert_eq!(
-            verdict(DoubleWellPotential::new(1.0, 1.0, 0), free_body()),
-            Err(not_scalar("DoubleWellPotential"))
+            verdict(DoubleWellPotential::new(1.0, 1.0, 2), free_body()),
+            Ok(())
+        );
+        let none = |component, dof| ThermostatError::NoPositionCoordinate { component, dof };
+        assert_eq!(
+            verdict(DoubleWellPotential::new(1.0, 1.0, 3), free_body()),
+            Err(none("DoubleWellPotential", 3))
         );
         assert_eq!(
-            verdict(PairwiseCoupling::new(vec![1.0], vec![(0, 1)]), free_body()),
-            Err(not_scalar("PairwiseCoupling"))
+            verdict(PairwiseCoupling::new(vec![1.0], vec![(0, 4)]), free_body()),
+            Err(none("PairwiseCoupling", 4))
         );
         assert_eq!(
             verdict(
-                RatchetPotential::new(1.0, 0.25, 0.0, 1.0, 0, 0),
+                RatchetPotential::new(1.0, 0.25, 0.0, 1.0, 5, 0),
                 free_body()
             ),
-            Err(not_scalar("RatchetPotential"))
+            Err(none("RatchetPotential", 5))
         );
     }
 
@@ -740,17 +746,17 @@ mod tests {
         let model = free_body();
         let data = model.make_data();
         assert_eq!(
-            ExternalField::new(vec![0.1]).field_energy(&model, &data),
-            Err(ThermostatError::NotScalarJoint {
+            ExternalField::new(vec![0.1; 4]).field_energy(&model, &data),
+            Err(ThermostatError::NoPositionCoordinate {
                 component: "ExternalField",
-                dof: 0
+                dof: 3
             })
         );
         assert_eq!(
-            PairwiseCoupling::new(vec![1.0], vec![(0, 1)]).coupling_energy(&model, &data),
-            Err(ThermostatError::NotScalarJoint {
+            PairwiseCoupling::new(vec![1.0], vec![(2, 3)]).coupling_energy(&model, &data),
+            Err(ThermostatError::NoPositionCoordinate {
                 component: "PairwiseCoupling",
-                dof: 0
+                dof: 3
             })
         );
         let model = chain(2);
@@ -765,13 +771,22 @@ mod tests {
         );
     }
 
+    /// `try_install` is `install` returning the refusal: it replaces a prior callback, and a
+    /// refused model is left without one.
     #[test]
-    fn try_install_refuses_a_model_that_has_a_passive_callback() {
+    fn try_install_replaces_like_install_and_leaves_a_refused_model_alone() {
         let mut model = chain(1);
         one(DummyDeterministic).install(&mut model);
-        assert_eq!(
-            one(DummyDeterministic).try_install(&mut model),
-            Err(ThermostatError::AlreadyInstalled)
+        assert_eq!(one(DummyDeterministic).try_install(&mut model), Ok(()));
+        let mut refused = chain(1);
+        assert!(
+            one(DoubleWellPotential::new(1.0, 1.0, 1))
+                .try_install(&mut refused)
+                .is_err()
+        );
+        assert!(
+            refused.cb_passive.is_none(),
+            "a refused model got a callback"
         );
     }
 

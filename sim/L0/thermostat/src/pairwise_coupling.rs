@@ -20,7 +20,7 @@
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::{PassiveComponent, check_scalar_dof, qpos_index};
+use crate::component::{PassiveComponent, check_position_dof, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 
@@ -197,8 +197,8 @@ impl PassiveComponent for PairwiseCoupling {
 
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
         self.edges.iter().try_for_each(|&(i, j)| {
-            check_scalar_dof(model, i, "PairwiseCoupling")?;
-            check_scalar_dof(model, j, "PairwiseCoupling")
+            check_position_dof(model, i, "PairwiseCoupling")?;
+            check_position_dof(model, j, "PairwiseCoupling")
         })
     }
 }

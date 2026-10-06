@@ -2,12 +2,14 @@
 
 use std::fmt;
 
+use sim_core::Integrator;
+
 /// Why a passive component, or a [`PassiveStack`](crate::PassiveStack), refuses a model.
 ///
 /// Returned by [`PassiveComponent::validate`](crate::PassiveComponent::validate) and
 /// [`PassiveStack::try_install`](crate::PassiveStack::try_install);
 /// [`PassiveStack::install`](crate::PassiveStack::install) panics with it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ThermostatError {
     /// The component acts on a DOF the model does not have.
@@ -19,9 +21,9 @@ pub enum ThermostatError {
         /// The model's DOF count, `model.nv`.
         nv: usize,
     },
-    /// The component reads a DOF's position, but that DOF belongs to a joint without a
-    /// single position coordinate (a ball or free joint).
-    NotScalarJoint {
+    /// The component reads a DOF's position, but the DOF has no position coordinate of its
+    /// own: it is one of a ball joint's DOFs or a free joint's rotation DOFs.
+    NoPositionCoordinate {
         /// The component's type name.
         component: &'static str,
         /// The DOF index it reads.
@@ -36,15 +38,21 @@ pub enum ThermostatError {
         /// The model's control count, `model.nu`.
         nu: usize,
     },
-    /// [`PassiveStack::try_install`](crate::PassiveStack::try_install) found a passive
-    /// callback already installed on the model.
-    AlreadyInstalled,
     /// The component does not support the model's integrator.
     UnsupportedIntegrator {
         /// The component's type name.
         component: &'static str,
+        /// The model's integrator.
+        integrator: Integrator,
         /// Why.
         reason: &'static str,
+    },
+    /// Any other reason, for components outside this crate.
+    Other {
+        /// The component's type name.
+        component: &'static str,
+        /// Why.
+        reason: String,
     },
 }
 
@@ -57,10 +65,11 @@ impl fmt::Display for ThermostatError {
                     "{component} acts on DOF {dof}, but the model has {nv} DOFs"
                 )
             }
-            Self::NotScalarJoint { component, dof } => write!(
+            Self::NoPositionCoordinate { component, dof } => write!(
                 f,
-                "{component} reads the position of DOF {dof}, which belongs to a ball or free \
-                 joint; only slide and hinge joints have a single position coordinate"
+                "{component} reads the position of DOF {dof}, which has no position coordinate \
+                 of its own (a ball joint's DOFs and a free joint's rotation DOFs move a \
+                 quaternion)"
             ),
             Self::CtrlOutOfRange {
                 component,
@@ -70,15 +79,15 @@ impl fmt::Display for ThermostatError {
                 f,
                 "{component} reads control {ctrl}, but the model has {nu} controls"
             ),
-            Self::AlreadyInstalled => {
-                write!(f, "the model already has a passive callback installed")
-            }
-            Self::UnsupportedIntegrator { component, reason } => {
-                write!(
-                    f,
-                    "{component} does not support the model's integrator: {reason}"
-                )
-            }
+            Self::UnsupportedIntegrator {
+                component,
+                integrator,
+                reason,
+            } => write!(
+                f,
+                "{component} does not support the {integrator:?} integrator: {reason}"
+            ),
+            Self::Other { component, reason } => write!(f, "{component}: {reason}"),
         }
     }
 }

@@ -10,9 +10,12 @@
 //! graph. D4 (sim-to-real on a printed device) reuses this training
 //! algorithm to train the EBM before printing.
 
+use std::sync::Arc;
+
 use sim_core::{DVector, Model};
 
 use crate::component::qpos_index;
+use crate::ising::{MAX_EXACT_SPINS, check_edges};
 use crate::well_state::WellState;
 use crate::{
     DoubleWellPotential, ExternalField, LangevinThermostat, PairwiseCoupling, PassiveStack,
@@ -123,11 +126,25 @@ impl IsingLearner {
     /// - If `model.nv < config.n`.
     /// - If `target.correlations.len() != config.edges.len()`.
     /// - If `target.magnetizations.len() != config.n`.
-    /// - If `target.distribution` does not hold all `2^n` configurations.
+    /// - If `config.n > MAX_EXACT_SPINS`.
+    /// - If `target.distribution` does not have `2^n` entries.
     /// - If `config.n_steps <= config.n_burn_in` (no measured steps).
     /// - If `config.n_trajectories == 0`.
+    /// - If an edge names a spin outside `0..n`, joins a spin to itself, or
+    ///   repeats a pair.
+    /// - If the learner's passive stack refuses `model` (see
+    ///   [`PassiveStack::validate`]): one of the first `n` DOFs has no
+    ///   position coordinate of its own, or the model uses RK4.
     #[must_use]
+    // The stack check is the documented refusal (see # Panics).
+    #[allow(clippy::panic)]
     pub fn new(config: LearnerConfig, target: IsingTarget, model: Model) -> Self {
+        assert!(
+            config.n <= MAX_EXACT_SPINS,
+            "n={} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})",
+            config.n
+        );
+        check_edges(config.n, &config.edges);
         assert!(
             model.nv >= config.n,
             "model has {} DOFs, need at least {}",
@@ -164,14 +181,18 @@ impl IsingLearner {
         );
         let n_edges = config.edges.len();
         let n = config.n;
-        Self {
+        let learner = Self {
             config,
             target,
             model,
             coupling_j: vec![0.0; n_edges],
             field_h: vec![0.0; n],
             iteration: 0,
+        };
+        if let Err(e) = learner.build_stack(0, 0).validate(&learner.model) {
+            panic!("IsingLearner::new: {e}");
         }
+        learner
     }
 
     /// Create from explicit initial parameters.
@@ -206,6 +227,11 @@ impl IsingLearner {
 
     /// Build and install a `PassiveStack` with the current parameters.
     fn install_stack(&mut self, seed: u64, traj_id: u64) {
+        self.build_stack(seed, traj_id).install(&mut self.model);
+    }
+
+    /// The passive stack for the current parameters.
+    fn build_stack(&self, seed: u64, traj_id: u64) -> Arc<PassiveStack> {
         let n = self.config.n;
         let mut builder = PassiveStack::builder();
         for i in 0..n {
@@ -226,7 +252,7 @@ impl IsingLearner {
             seed,
             traj_id,
         ));
-        builder.build().install(&mut self.model);
+        builder.build()
     }
 
     /// Run a single trajectory and return per-site magnetization means
@@ -313,8 +339,7 @@ impl IsingLearner {
     ///
     /// # Panics
     /// Panics if `data.forward()` or `data.step()` fails (should not
-    /// happen with valid MJCF models), or if the model's first `n` DOFs
-    /// are not all slide or hinge joints (see [`PassiveStack::install`]).
+    /// happen with valid MJCF models).
     // Precision loss is acceptable for trajectory count / iteration index casting.
     #[allow(clippy::cast_precision_loss)]
     pub fn step(&mut self) -> LearningRecord {
@@ -405,10 +430,11 @@ impl IsingLearner {
 }
 
 /// The thermostat's `(master_seed, traj_id)` for trajectory `traj` of iteration `iteration`:
-/// one seed per iteration and one thermostat trajectory per run, so every pair gets its own
-/// noise stream however many trajectories an iteration runs.
+/// the seed is `seed_base` itself and the trajectory id packs the iteration above the
+/// trajectory, so every pair gets its own noise stream within a run, and runs with different
+/// `seed_base` share none.
 const fn noise_ids(seed_base: u64, iteration: usize, traj: usize) -> (u64, u64) {
-    (seed_base.wrapping_add(iteration as u64), traj as u64)
+    (seed_base, ((iteration as u64) << 32) | traj as u64)
 }
 
 #[cfg(test)]
