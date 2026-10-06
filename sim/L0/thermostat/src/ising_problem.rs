@@ -482,9 +482,9 @@ mod tests {
                 .as_deref(),
             Some("delta_v")
         );
-        // J/x₀² overflows at a tiny x₀: the coupling's own refusal comes back.
+        // J/x₀² overflows at a small x₀ the wells accept: the coupling's own refusal comes back.
         assert!(matches!(
-            problem.try_add_components(PassiveStack::builder(), 1.0, 1e-200),
+            problem.try_add_components(PassiveStack::builder(), 1.0, 1e-10),
             Err(ThermostatError::InvalidParameter {
                 component: "PairwiseCoupling",
                 ..

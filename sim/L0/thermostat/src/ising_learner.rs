@@ -99,7 +99,8 @@ impl LearnerConfig {
 /// and the summary statistics (for the Boltzmann learning rule update).
 ///
 /// Build one with [`Self::from_ising_params`]; the struct is `#[non_exhaustive]`, so a
-/// field added in a later release does not break callers.
+/// field added in a later release does not break callers. For a target taken from data,
+/// build one on the same `n` and edges and replace all three fields.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct IsingTarget {
@@ -187,8 +188,9 @@ pub struct LearningRecord {
 /// position coordinate of its own (a slide or hinge DOF, or a free joint's
 /// translation DOF), the model must not use RK4, and it must not have a
 /// passive callback: [`Self::try_new`] checks all three. The learner steps at
-/// the model's timestep and puts no damping or noise on DOFs past `n`. Gravity, contacts and actuators act as the model defines
-/// them, so the usual model is `n` slide joints without any:
+/// the model's timestep and puts no damping or noise on DOFs past `n`. Gravity,
+/// contacts and actuators act as the model defines them, so the usual model is
+/// `n` slide joints without any:
 /// `sim_therm_env::generate_mjcf(n, 0, 0.001, (0.0, 1.0))` writes one.
 pub struct IsingLearner {
     config: LearnerConfig,
@@ -235,7 +237,7 @@ impl IsingLearner {
     /// - The refusal of a component the learner builds: `delta_v`, `x_0`, `gamma` (see
     ///   [`DoubleWellPotential::try_new`], [`LangevinThermostat::try_new`]), or of the model
     ///   (see [`PassiveStack::validate`]): one of the first `n` DOFs has no position
-    ///   coordinate of its own, the model uses RK4, or the noise variance overflows at the
+    ///   coordinate of its own, the model uses RK4, or the noise variance is not finite at the
     ///   model's timestep.
     pub fn try_new(
         config: LearnerConfig,
