@@ -211,9 +211,11 @@ pub trait Solver: Send + Sync {
     ///
     /// # Panics
     ///
-    /// Panics on each failure that [`Self::try_step`] returns as `Err`. For
-    /// [`CpuNewtonSolver`], also panics when `fbar` is set or `friction_mu` is
-    /// nonzero (see [`SolverConfig::friction_mu`]).
+    /// Panics on each failure that [`Self::try_step`] returns as `Err`, and on
+    /// malformed input, for example a non-positive `dt` or an `x_prev`, `v_prev`
+    /// or `theta` of the wrong length. For [`CpuNewtonSolver`], also panics when
+    /// `fbar` is set or `friction_mu` is nonzero (see
+    /// [`SolverConfig::friction_mu`]).
     fn step(
         &mut self,
         tape: &mut Self::Tape,
@@ -244,8 +246,11 @@ pub trait Solver: Send + Sync {
     ///
     /// # Panics
     ///
-    /// Panics on each failure that [`Self::try_replay_step`] returns as `Err`.
-    /// Call that method instead to handle a failed solve.
+    /// Panics on each failure that [`Self::try_replay_step`] returns as `Err`,
+    /// and on malformed input as [`Self::step`] does. Call `try_replay_step`
+    /// instead to handle a failed solve. On Tet10 the forward solve also panics
+    /// for the settings described under [`SolverConfig::fbar`] and
+    /// [`SolverConfig::friction_mu`].
     fn replay_step(
         &self,
         x_prev: &Tensor<f64>,
@@ -280,8 +285,9 @@ pub trait Solver: Send + Sync {
     ///
     /// # Panics
     ///
-    /// For [`CpuNewtonSolver`], panics as [`Self::step`] does when `fbar` is
-    /// set or `friction_mu` is nonzero (see [`SolverConfig::friction_mu`]).
+    /// Panics on malformed input, as [`Self::step`] does. For
+    /// [`CpuNewtonSolver`], also panics when `fbar` is set or `friction_mu` is
+    /// nonzero (see [`SolverConfig::friction_mu`]).
     fn try_step(
         &mut self,
         tape: &mut Self::Tape,
@@ -294,11 +300,15 @@ pub trait Solver: Send + Sync {
     /// Graceful-failure counterpart to [`Self::replay_step`]. Same
     /// semantics as [`Self::try_step`] but on the pure-function
     /// (tape-free) path. REQUIRED with no default impl, same
-    /// rationale as `try_step`. It does not factor the adjoint tangent, so the
-    /// `fbar` and `friction_mu` panics under [`Self::try_step`] do not apply.
+    /// rationale as `try_step`.
     ///
     /// # Errors
     /// Same as [`Self::try_step`].
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Self::replay_step`] does, except on the failures it
+    /// returns as `Err`.
     fn try_replay_step(
         &self,
         x_prev: &Tensor<f64>,
