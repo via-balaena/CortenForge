@@ -27,7 +27,9 @@ const fn spin(c: u32, i: usize) -> f64 {
 /// H(σ) = −Σ_{k} J_k · σ_{i_k} · σ_{j_k} − Σ_i h_i · σ_i
 /// ```
 ///
-/// The Boltzmann distribution: `P(σ) = exp(−H(σ) / kT) / Z`.
+/// The Boltzmann distribution: `P(σ) = exp(−H(σ) / kT) / Z`, computed with
+/// every energy taken relative to the minimum, so low temperatures do not
+/// overflow.
 ///
 /// Returns a vector of `(config_bitmask, probability)` pairs sorted by
 /// config index. Bit `i` of the bitmask represents spin `i`: set = `+1`,
@@ -62,7 +64,6 @@ pub fn exact_distribution(
 
     let n_configs = 1u32 << n;
     let mut weights = Vec::with_capacity(n_configs as usize);
-    let mut z = 0.0_f64;
 
     for c in 0..n_configs {
         // Coupling energy: −Σ J_k σ_i σ_j
@@ -79,10 +80,19 @@ pub fn exact_distribution(
             .map(|(i, &h)| -h * spin(c, i))
             .sum();
 
-        let energy = coupling_energy + field_energy;
-        let w = (-energy / k_b_t).exp();
-        z += w;
-        weights.push((c, w));
+        weights.push((c, coupling_energy + field_energy));
+    }
+
+    // Boltzmann factors relative to the minimum energy: the ground state's
+    // factor is exactly 1 and none exceeds it, so no factor overflows and Z ≥ 1.
+    let e_min = weights
+        .iter()
+        .map(|&(_, e)| e)
+        .fold(f64::INFINITY, f64::min);
+    let mut z = 0.0_f64;
+    for (_, w) in &mut weights {
+        *w = (-(*w - e_min) / k_b_t).exp();
+        z += *w;
     }
 
     // Normalize to probabilities
@@ -354,5 +364,31 @@ mod tests {
         let tv = tv_distance(&p, &q);
         assert!(tv >= 0.0, "TV should be >= 0, got {tv}");
         assert!(tv <= 1.0, "TV should be <= 1, got {tv}");
+    }
+
+    #[test]
+    fn low_temperature_keeps_the_ground_state() {
+        // One spin in a field h = 1 at kT = 1/720: the ground state's
+        // Boltzmann factor exp(720) exceeds f64::MAX.
+        let dist = exact_distribution(1, &[], &[], &[1.0], 1.0 / 720.0);
+        let p_down = dist[0].1;
+        let p_up = dist[1].1;
+        assert!((p_up - 1.0).abs() < 1e-12, "p(up) = {p_up}");
+        assert!((0.0..1e-300).contains(&p_down), "p(down) = {p_down}");
+    }
+
+    #[test]
+    fn tied_ground_states_split_evenly_near_overflow() {
+        // Two spins with a field on spin 0 only, at kT = 1/709.5: each of the
+        // two tied ground states has a finite factor exp(709.5), but their
+        // sum exceeds f64::MAX.
+        let dist = exact_distribution(2, &[], &[], &[1.0, 0.0], 1.0 / 709.5);
+        for (config, p) in dist {
+            let expected = if (config & 1) == 1 { 0.5 } else { 0.0 };
+            assert!(
+                (p - expected).abs() < 1e-12,
+                "config {config:#04b}: p = {p}, expected {expected}"
+            );
+        }
     }
 }
