@@ -164,17 +164,19 @@ impl PairwiseCoupling {
     /// Total coupling energy at `data`'s positions: `V = −Σ_k J_k · x_i · x_j`, where `x_i`
     /// is DOF `i`'s position.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// May panic, or read the wrong coordinate, if `model` fails [`PassiveComponent::validate`].
-    #[must_use]
-    pub fn coupling_energy(&self, model: &Model, data: &Data) -> f64 {
+    /// Returns the error [`PassiveComponent::validate`] would: an edge's DOF is missing from
+    /// `model` or has no single position coordinate.
+    pub fn coupling_energy(&self, model: &Model, data: &Data) -> Result<f64, ThermostatError> {
+        self.validate(model)?;
         let x = |dof| data.qpos[qpos_index(model, dof)];
-        self.edges
+        Ok(self
+            .edges
             .iter()
             .zip(&self.coupling_j)
             .map(|(&(i, j), &j_k)| -j_k * x(i) * x(j))
-            .sum()
+            .sum())
     }
 }
 
@@ -314,7 +316,7 @@ mod tests {
         let c = PairwiseCoupling::new(vec![1.0, -0.5], vec![(0, 1), (1, 2)]);
         let (model, data) = chain_at(&[1.0, 1.0, 1.0]);
         // V = Σ -J_k * x_i * x_j = -1.0 * 1 * 1 + -(-0.5) * 1 * 1 = -1.0 + 0.5 = -0.5
-        let energy = c.coupling_energy(&model, &data);
+        let energy = c.coupling_energy(&model, &data).unwrap();
         assert!(
             (energy - (-0.5)).abs() < 1e-15,
             "expected -0.5, got {energy}"
@@ -326,7 +328,7 @@ mod tests {
         // 4-chain, all at +1: V = -J(1·1 + 1·1 + 1·1) = -3J
         let c = PairwiseCoupling::chain(4, 0.5);
         let (model, data) = chain_at(&[1.0; 4]);
-        let energy = c.coupling_energy(&model, &data);
+        let energy = c.coupling_energy(&model, &data).unwrap();
         assert!(
             (energy - (-1.5)).abs() < 1e-15,
             "expected -1.5, got {energy}"
@@ -338,7 +340,7 @@ mod tests {
         // 4-chain, alternating +1/-1: V = -J(-1 + -1 + -1) = +3J
         let c = PairwiseCoupling::chain(4, 0.5);
         let (model, data) = chain_at(&[1.0, -1.0, 1.0, -1.0]);
-        let energy = c.coupling_energy(&model, &data);
+        let energy = c.coupling_energy(&model, &data).unwrap();
         assert!((energy - 1.5).abs() < 1e-15, "expected 1.5, got {energy}");
     }
 
@@ -348,8 +350,9 @@ mod tests {
         let eps = 1e-8;
         let (model, plus) = chain_at(&[eps, 1.0]);
         let (_, minus) = chain_at(&[-eps, 1.0]);
-        let force_0 =
-            -(c.coupling_energy(&model, &plus) - c.coupling_energy(&model, &minus)) / (2.0 * eps);
+        let force_0 = -(c.coupling_energy(&model, &plus).unwrap()
+            - c.coupling_energy(&model, &minus).unwrap())
+            / (2.0 * eps);
         assert!(
             force_0 > 0.0,
             "ferromagnetic coupling should pull DOF 0 toward positive neighbor, got F={force_0}"

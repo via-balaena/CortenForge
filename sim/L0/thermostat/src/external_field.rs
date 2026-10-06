@@ -15,7 +15,7 @@
 
 use sim_core::{DVector, Data, Model};
 
-use crate::component::{PassiveComponent, check_dof, qpos_index};
+use crate::component::{PassiveComponent, check_dof, check_scalar_dof, qpos_index};
 use crate::diagnose::Diagnose;
 use crate::error::ThermostatError;
 
@@ -49,18 +49,21 @@ impl ExternalField {
     }
 
     /// Field energy at `data`'s positions: `V = −Σ h_i · x_i`, where `x_i` is DOF `i`'s
-    /// position. Every DOF the field covers must belong to a slide or hinge joint.
+    /// position.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// May panic if the field is longer than the model's DOF count.
-    #[must_use]
-    pub fn field_energy(&self, model: &Model, data: &Data) -> f64 {
+    /// Returns [`ThermostatError::DofOutOfRange`] or [`ThermostatError::NotScalarJoint`]
+    /// if a DOF the field covers is missing from `model` or has no single position
+    /// coordinate.
+    pub fn field_energy(&self, model: &Model, data: &Data) -> Result<f64, ThermostatError> {
         self.field_h
             .iter()
             .enumerate()
-            .map(|(i, &h)| -h * data.qpos[qpos_index(model, i)])
-            .sum()
+            .try_fold(0.0, |energy, (i, &h)| {
+                check_scalar_dof(model, i, "ExternalField")?;
+                Ok((-h).mul_add(data.qpos[qpos_index(model, i)], energy))
+            })
     }
 }
 
@@ -123,7 +126,7 @@ mod tests {
         let f = ExternalField::new(vec![0.5, -0.3]);
         let (model, data) = chain_at(&[1.0, 1.0]);
         // V = -0.5*1.0 + -(-0.3)*1.0 = -0.5 + 0.3 = -0.2
-        let energy = f.field_energy(&model, &data);
+        let energy = f.field_energy(&model, &data).unwrap();
         assert!(
             (energy - (-0.2)).abs() < 1e-15,
             "expected -0.2, got {energy}"
@@ -134,7 +137,7 @@ mod tests {
     fn field_energy_zero_field() {
         let f = ExternalField::new(vec![0.0, 0.0]);
         let (model, data) = chain_at(&[5.0, -3.0]);
-        assert_eq!(f.field_energy(&model, &data), 0.0);
+        assert_eq!(f.field_energy(&model, &data).unwrap(), 0.0);
     }
 
     #[test]
@@ -150,8 +153,9 @@ mod tests {
             x_minus[dof] -= eps;
             let (model, plus) = chain_at(&x_plus);
             let (_, minus) = chain_at(&x_minus);
-            let force_fd =
-                -(f.field_energy(&model, &plus) - f.field_energy(&model, &minus)) / (2.0 * eps);
+            let force_fd = -(f.field_energy(&model, &plus).unwrap()
+                - f.field_energy(&model, &minus).unwrap())
+                / (2.0 * eps);
             assert!(
                 (force_fd - f.field_h()[dof]).abs() < 1e-6,
                 "DOF {dof}: expected F={}, got {force_fd}",

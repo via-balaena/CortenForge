@@ -703,6 +703,36 @@ mod tests {
     }
 
     #[test]
+    fn energy_helpers_refuse_dofs_without_a_position_coordinate() {
+        let model = free_body();
+        let data = model.make_data();
+        assert_eq!(
+            ExternalField::new(vec![0.1]).field_energy(&model, &data),
+            Err(ThermostatError::NotScalarJoint {
+                component: "ExternalField",
+                dof: 0
+            })
+        );
+        assert_eq!(
+            PairwiseCoupling::new(vec![1.0], vec![(0, 1)]).coupling_energy(&model, &data),
+            Err(ThermostatError::NotScalarJoint {
+                component: "PairwiseCoupling",
+                dof: 0
+            })
+        );
+        let model = chain(2);
+        let data = model.make_data();
+        assert_eq!(
+            ExternalField::new(vec![0.1; 3]).field_energy(&model, &data),
+            Err(ThermostatError::DofOutOfRange {
+                component: "ExternalField",
+                dof: 2,
+                nv: 2
+            })
+        );
+    }
+
+    #[test]
     fn try_install_refuses_a_model_that_has_a_passive_callback() {
         let mut model = chain(1);
         one(DummyDeterministic).install(&mut model);

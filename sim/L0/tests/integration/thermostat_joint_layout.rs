@@ -66,7 +66,9 @@ fn components_read_slide_positions_after_a_free_joint() {
         data.qfrc_passive[7]
     );
     // V = −J·x₆·x₇.
-    let energy = coupling().coupling_energy(&model, &data);
+    let energy = coupling()
+        .coupling_energy(&model, &data)
+        .expect("DOFs 6 and 7 are slides");
     assert!(
         (energy - (-0.5 * x6 * x7)).abs() < 1e-12,
         "coupling energy {energy}"
