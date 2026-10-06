@@ -871,6 +871,16 @@ mod tests {
     }
 
     #[test]
+    fn try_new_takes_max_dofs_and_refuses_one_more() {
+        let max = LangevinThermostat::MAX_DOFS;
+        assert_eq!(refusal(&vec![0.1; max], 1.0), None);
+        assert!(matches!(
+            refusal(&vec![0.1; max + 1], 1.0),
+            Some(ThermostatError::TooManyDofs { dofs, max: m, .. }) if dofs == max + 1 && m == max
+        ));
+    }
+
+    #[test]
     #[should_panic(expected = "LangevinThermostat supports at most 524288 DOFs")]
     fn new_refuses_more_than_2_pow_19_dofs() {
         let _t = LangevinThermostat::new(DVector::from_element((1 << 19) + 1, 0.1), 1.0, 0, 0);
