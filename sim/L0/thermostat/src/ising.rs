@@ -27,7 +27,9 @@ const fn spin(c: u32, i: usize) -> f64 {
 /// H(σ) = −Σ_{k} J_k · σ_{i_k} · σ_{j_k} − Σ_i h_i · σ_i
 /// ```
 ///
-/// The Boltzmann distribution: `P(σ) = exp(−H(σ) / kT) / Z`.
+/// The Boltzmann distribution: `P(σ) = exp(−H(σ) / kT) / Z`, computed with
+/// every energy taken relative to the minimum, so low temperatures do not
+/// overflow.
 ///
 /// Returns a vector of `(config_bitmask, probability)` pairs sorted by
 /// config index. Bit `i` of the bitmask represents spin `i`: set = `+1`,
@@ -61,8 +63,7 @@ pub fn exact_distribution(
     assert!(k_b_t > 0.0, "k_b_t must be positive, got {k_b_t}");
 
     let n_configs = 1u32 << n;
-    let mut weights = Vec::with_capacity(n_configs as usize);
-    let mut z = 0.0_f64;
+    let mut dist = Vec::with_capacity(n_configs as usize);
 
     for c in 0..n_configs {
         // Coupling energy: −Σ J_k σ_i σ_j
@@ -79,18 +80,23 @@ pub fn exact_distribution(
             .map(|(i, &h)| -h * spin(c, i))
             .sum();
 
-        let energy = coupling_energy + field_energy;
-        let w = (-energy / k_b_t).exp();
-        z += w;
-        weights.push((c, w));
+        dist.push((c, coupling_energy + field_energy));
+    }
+
+    // Boltzmann factors relative to the minimum energy.
+    let e_min = dist.iter().map(|&(_, e)| e).fold(f64::INFINITY, f64::min);
+    let mut z = 0.0_f64;
+    for (_, w) in &mut dist {
+        *w = (-(*w - e_min) / k_b_t).exp();
+        z += *w;
     }
 
     // Normalize to probabilities
-    for (_, w) in &mut weights {
-        *w /= z;
+    for (_, p) in &mut dist {
+        *p /= z;
     }
 
-    weights
+    dist
 }
 
 /// Extract magnetizations `⟨σ_i⟩` and pairwise correlations `⟨σ_i σ_j⟩`
@@ -354,5 +360,64 @@ mod tests {
         let tv = tv_distance(&p, &q);
         assert!(tv >= 0.0, "TV should be >= 0, got {tv}");
         assert!(tv <= 1.0, "TV should be <= 1, got {tv}");
+    }
+
+    #[test]
+    fn low_temperature_keeps_the_ground_state() {
+        // One spin in a field h = ±1 at kT = 1/720: the ground state's
+        // Boltzmann factor exp(720) exceeds f64::MAX. Both signs, so the
+        // ground state is config 1 once and config 0 once.
+        for h in [1.0, -1.0] {
+            let dist = exact_distribution(1, &[], &[], &[h], 1.0 / 720.0);
+            let ground = usize::from(h > 0.0);
+            let p_ground = dist[ground].1;
+            let p_other = dist[1 - ground].1;
+            assert!(
+                (p_ground - 1.0).abs() < 1e-12,
+                "h = {h}: p(ground) = {p_ground}"
+            );
+            assert!(
+                (0.0..1e-300).contains(&p_other),
+                "h = {h}: p(other) = {p_other}"
+            );
+        }
+    }
+
+    #[test]
+    fn low_temperature_resolves_a_near_tie() {
+        // Two spins, h = (1, 0.01), at kT = 1/720: the two lowest states both
+        // have Boltzmann factors above f64::MAX, and they differ by
+        // ΔE/kT = 0.02 · 720 = 14.4.
+        let dist = exact_distribution(2, &[], &[], &[1.0, 0.01], 1.0 / 720.0);
+        let r = (-14.4_f64).exp();
+        let expected = [0.0, r / (1.0 + r), 0.0, 1.0 / (1.0 + r)];
+        for (config, p) in dist {
+            let want = expected[config as usize];
+            assert!(
+                (p - want).abs() < 1e-12,
+                "config {config:#04b}: p = {p}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn tied_ground_states_split_evenly_near_overflow() {
+        // A frustrated antiferromagnetic triangle (J = -1, no field) at
+        // kT = 1/709.5: the six configurations with one spin against the
+        // other two tie at E = -1, and each has a finite factor exp(709.5),
+        // but their sum exceeds f64::MAX. The two aligned ones have E = 3.
+        let edges = [(0, 1), (1, 2), (0, 2)];
+        let dist = exact_distribution(3, &edges, &[-1.0; 3], &[0.0; 3], 1.0 / 709.5);
+        for (config, p) in dist {
+            let expected = if config == 0 || config == 7 {
+                0.0
+            } else {
+                1.0 / 6.0
+            };
+            assert!(
+                (p - expected).abs() < 1e-12,
+                "config {config:#05b}: p = {p}, expected {expected}"
+            );
+        }
     }
 }
