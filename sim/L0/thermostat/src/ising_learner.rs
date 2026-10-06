@@ -94,8 +94,10 @@ pub struct LearningRecord {
     pub measured_magnetizations: Vec<f64>,
     /// Measured per-edge correlations from the physical sampler.
     pub measured_correlations: Vec<f64>,
-    /// KL divergence `KL(target ‖ exact)` at this record's `coupling_j` and
-    /// `field_h`.
+    /// KL divergence `KL(target ‖ exact)` at the parameters this iteration's
+    /// trajectories ran with: the parameters BEFORE this iteration's update.
+    /// `coupling_j` and `field_h` above are the parameters AFTER it, so the
+    /// first record's KL is the starting KL.
     pub kl_divergence: f64,
 }
 
@@ -344,7 +346,17 @@ impl IsingLearner {
             .map(|v| v.iter().sum::<f64>() / v.len() as f64)
             .collect();
 
-        // 3. Update parameters (Boltzmann learning rule).
+        // 3. KL divergence at the parameters these trajectories ran with (before the update).
+        let current_dist = crate::ising::exact_distribution(
+            n,
+            &self.config.edges,
+            &self.coupling_j,
+            &self.field_h,
+            self.config.k_b_t,
+        );
+        let kl = crate::ising::kl_divergence(&self.target.distribution, &current_dist);
+
+        // 4. Update parameters (Boltzmann learning rule).
         for (j, (target_corr, measured_corr)) in self
             .coupling_j
             .iter_mut()
@@ -360,16 +372,6 @@ impl IsingLearner {
         ) {
             *h += self.config.learning_rate * (target_mag - measured_mag);
         }
-
-        // 4. KL divergence at the updated parameters, the ones this record holds.
-        let current_dist = crate::ising::exact_distribution(
-            n,
-            &self.config.edges,
-            &self.coupling_j,
-            &self.field_h,
-            self.config.k_b_t,
-        );
-        let kl = crate::ising::kl_divergence(&self.target.distribution, &current_dist);
 
         let record = LearningRecord {
             iteration: self.iteration,
@@ -619,20 +621,25 @@ mod tests {
         }
     }
 
-    /// A record's KL is the KL at the parameters the record holds.
+    /// A record's KL is at the parameters the iteration sampled with: the first record's is
+    /// the starting KL, and the second's is at the first record's (updated) parameters.
     #[test]
-    fn a_record_reports_the_kl_of_its_own_parameters() {
+    fn a_record_reports_the_kl_of_the_parameters_it_sampled_with() {
         let target = minimal_target();
+        let kl_at = |j: &[f64], h: &[f64]| {
+            let dist = crate::ising::exact_distribution(2, &[(0, 1)], j, h, 1.0);
+            crate::ising::kl_divergence(&target.distribution, &dist)
+        };
         let mut learner = IsingLearner::new(minimal_config(), target.clone(), load_model());
-        let record = learner.step();
-        let dist = crate::ising::exact_distribution(
-            2,
-            &[(0, 1)],
-            &record.coupling_j,
-            &record.field_h,
-            1.0,
+        let first = learner.step();
+        assert_eq!(
+            first.kl_divergence.to_bits(),
+            kl_at(&[0.0], &[0.0, 0.0]).to_bits()
         );
-        let kl = crate::ising::kl_divergence(&target.distribution, &dist);
-        assert_eq!(record.kl_divergence.to_bits(), kl.to_bits());
+        let second = learner.step();
+        assert_eq!(
+            second.kl_divergence.to_bits(),
+            kl_at(&first.coupling_j, &first.field_h).to_bits()
+        );
     }
 }
