@@ -29,7 +29,8 @@
 //! no mutable RNG state. Noise at step `s` for DOF `d` is computed as
 //!
 //! ```text
-//! block = chacha8_block(master_key, encode_block_counter(traj_id, s) + group)
+//! (counter, stream) = noise_position(traj_id, s, group)
+//! block = chacha8_block(master_key, counter, stream)
 //! z_d   = box_muller_from_block(block)[d - group*8]
 //! ```
 //!
@@ -38,7 +39,8 @@
 //! `install_per_env` factory, `s` is the component's own `AtomicU64`
 //! counter (advanced once per `apply` call, gated by
 //! `stochastic_active`), and `group = d / 8` handles DOF counts above
-//! 8.
+//! 8. Each `(traj_id, s, group)` has its own block, so every DOF group
+//! at every step draws independent noise.
 //!
 //! Because the PRF is a pure function of integers, the thermostat is
 //! structurally immune to the parallel-vs-sequential reproducibility
@@ -124,8 +126,18 @@ impl LangevinThermostat {
     /// index under an `install_per_env` factory, but it can be any
     /// `u64` — distinct `traj_id` values at the same `master_seed`
     /// produce disjoint noise streams by the PRF's construction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `gamma` has more than `2^19` entries: each group of 8
+    /// DOFs needs its own noise stream, and there are `2^16` of them.
     #[must_use]
     pub fn new(gamma: DVector<f64>, k_b_t: f64, master_seed: u64, traj_id: u64) -> Self {
+        assert!(
+            gamma.len() <= 1 << 19,
+            "LangevinThermostat supports at most 2^19 DOFs, got {}",
+            gamma.len()
+        );
         Self {
             gamma,
             k_b_t,
@@ -197,18 +209,14 @@ impl PassiveComponent for LangevinThermostat {
         // instance — cross-thread visibility of this counter is never
         // observed by another thread within the same env.
         let step_index = self.counter.fetch_add(1, Ordering::Relaxed);
-        let base_counter = prf::encode_block_counter(self.traj_id, step_index);
 
-        // D5 general case: iterate DOFs in groups of 8 (one ChaCha8
-        // block yields 64 bytes = 8 f64 Box-Muller samples). The
-        // common path (n_dofs ≤ 8) does exactly one iteration. The
-        // `wrapping_add` is defensive against `u64::MAX` wraparound
-        // at the extreme high end of the 32/32 layout — not a live
-        // concern for any realistic DOF count.
+        // DOFs in groups of 8: one ChaCha8 block yields 64 bytes = 8
+        // f64 Box-Muller samples. The common path (n_dofs ≤ 8) does
+        // exactly one iteration.
         let n_groups = n_dofs.div_ceil(8);
         for group in 0..n_groups {
-            let block =
-                prf::chacha8_block(&self.master_key, base_counter.wrapping_add(group as u64));
+            let (counter, stream) = prf::noise_position(self.traj_id, step_index, group as u64);
+            let block = prf::chacha8_block(&self.master_key, counter, stream);
             let gaussians = prf::box_muller_from_block(&block);
             let dof_start = group * 8;
             let dof_end = (dof_start + 8).min(n_dofs);
@@ -555,6 +563,109 @@ mod tests {
             (qfrc_out[0] - (-0.1)).abs() < 1e-15,
             "ctrl=0 should produce pure damping: expected -0.1, got {}",
             qfrc_out[0],
+        );
+    }
+
+    /// The noise force on each of `n` DOFs at step `step` of trajectory `traj_id`: one
+    /// `apply` on an `n`-slide chain at rest, so the damping term is zero.
+    fn noise_forces(n: usize, traj_id: u64, step: u64) -> Vec<f64> {
+        let model = sim_core::test_fixtures::bistable_chain(n);
+        let data = model.make_data();
+        let t = LangevinThermostat::new(DVector::from_element(n, 0.5), 1.0, 42, traj_id);
+        t.counter.store(step, Ordering::Relaxed);
+        let mut qfrc_out: DVector<f64> = DVector::zeros(n);
+        t.apply(&model, &data, &mut qfrc_out);
+        qfrc_out.iter().copied().collect()
+    }
+
+    /// No two DOF groups share noise at any step. Before each group had its own stream,
+    /// group `g` at step `s` drew the same block as group 0 at step `s + g`, so joints 8–15
+    /// replayed joints 0–7's noise one step later. 17 DOFs give two full groups and a
+    /// partial third.
+    #[test]
+    fn dof_groups_draw_distinct_noise() {
+        let n = 17;
+        let steps = 0..4u64;
+        let mut first_values = Vec::new();
+        let mut full_blocks = Vec::new();
+        for step in steps {
+            let f = noise_forces(n, 0, step);
+            for group in 0..n.div_ceil(8) {
+                first_values.push(f[group * 8].to_bits());
+                if group * 8 + 8 <= n {
+                    let block: Vec<u64> = f[group * 8..group * 8 + 8]
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect();
+                    full_blocks.push(block);
+                }
+            }
+        }
+        let distinct_first: std::collections::HashSet<_> = first_values.iter().collect();
+        assert_eq!(
+            distinct_first.len(),
+            first_values.len(),
+            "a noise value repeated"
+        );
+        for (i, a) in full_blocks.iter().enumerate() {
+            for b in &full_blocks[i + 1..] {
+                assert_ne!(a, b, "two DOF groups drew the same 8 noise values");
+            }
+        }
+    }
+
+    /// Group 0's noise is unchanged by giving each group its own stream: pinned bits of DOFs
+    /// 0 and 7, recorded before the change (at `e2d42077`), for trajectory ids and steps on
+    /// both sides of 2^32 − 1. A 17-DOF run's first 8 DOFs match the 8-DOF run.
+    #[test]
+    fn group_zero_noise_is_unchanged() {
+        const PINS: [(u64, u64, u64, u64); 6] = [
+            (0, 0, 0x403a_5529_e5c6_5d49, 0xc046_e337_607c_c8e3),
+            (0, 0xFFFF_FFFF, 0xc040_ab5b_1e69_0166, 0xc02f_8f6b_e841_d60b),
+            (7, 0, 0x401f_dae6_6ecd_fa57, 0x4045_6b4b_62f0_ff6e),
+            (7, 0xFFFF_FFFF, 0xc031_67e9_d2b3_c66c, 0xc044_fe83_77bb_795f),
+            (0xFFFF_FFFF, 0, 0x4041_8479_e306_ec81, 0x4025_4797_3cfc_ceb3),
+            (
+                0xFFFF_FFFF,
+                0xFFFF_FFFF,
+                0x403f_b3a8_1f2e_aa7c,
+                0x3ff3_8049_d5a3_86bb,
+            ),
+        ];
+        for (traj, step, dof0, dof7) in PINS {
+            let f8 = noise_forces(8, traj, step);
+            assert_eq!(
+                f8[0].to_bits(),
+                dof0,
+                "DOF 0 moved at (traj {traj}, step {step})"
+            );
+            assert_eq!(
+                f8[7].to_bits(),
+                dof7,
+                "DOF 7 moved at (traj {traj}, step {step})"
+            );
+            let f17 = noise_forces(17, traj, step);
+            assert_eq!(
+                f17[..8],
+                f8[..],
+                "17-DOF run's group 0 differs at (traj {traj}, step {step})"
+            );
+        }
+    }
+
+    /// Trajectory ids that differ only above bit 32, and steps 0 and 2^32, used to share noise.
+    #[test]
+    fn noise_differs_across_the_32_bit_boundaries() {
+        let base = noise_forces(8, 0, 0);
+        assert_ne!(
+            noise_forces(8, 1 << 32, 0),
+            base,
+            "traj_id 2^32 shares traj 0's noise"
+        );
+        assert_ne!(
+            noise_forces(8, 0, 1 << 32),
+            base,
+            "step 2^32 shares step 0's noise"
         );
     }
 }

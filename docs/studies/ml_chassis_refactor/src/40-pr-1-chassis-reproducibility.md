@@ -809,6 +809,12 @@ any realistic DOF count, so the `wrapping_add` is defensive
 against `u64::MAX` wraparound at the high end rather than a
 live concern.
 
+> **Erratum (2026-10-06):** those slots were not reserved.
+> `step_index` occupies the same low 32 bits, so group `g` at
+> step `s` drew the block of group 0 at step `s + g`: DOFs 8–15
+> replayed DOFs 0–7's noise one step later. The thermostat now
+> puts the group in `ChaCha`'s stream words (`prf::noise_position`).
+
 The `Stochastic` impl is unchanged (Ch 15 §4 point 2):
 
 ```rust
