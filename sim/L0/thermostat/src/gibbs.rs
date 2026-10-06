@@ -18,7 +18,9 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
-use crate::ising::{MAX_EXACT_SPINS, check_edges};
+use crate::error::ThermostatError;
+use crate::ising::check_problem;
+use crate::params::or_panic;
 
 /// Single-site systematic-scan Gibbs sampler for pairwise Ising models.
 ///
@@ -43,12 +45,9 @@ impl GibbsSampler {
     /// (see [`Self::set_config_bitmask`] to start elsewhere).
     ///
     /// # Panics
-    /// - If `n > MAX_EXACT_SPINS`.
-    /// - If `coupling_j.len() != edges.len()`.
-    /// - If `field_h.len() != n`.
-    /// - If `k_b_t <= 0`.
-    /// - If an edge names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
+    /// If [`Self::try_new`] refuses the problem.
     #[must_use]
+    #[track_caller]
     pub fn new(
         n: usize,
         edges: &[(usize, usize)],
@@ -57,23 +56,25 @@ impl GibbsSampler {
         k_b_t: f64,
         seed: u64,
     ) -> Self {
-        assert!(
-            n <= MAX_EXACT_SPINS,
-            "n={n} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})"
-        );
-        check_edges(n, edges);
-        assert!(
-            coupling_j.len() == edges.len(),
-            "coupling_j length ({}) must match edges length ({})",
-            coupling_j.len(),
-            edges.len(),
-        );
-        assert!(
-            field_h.len() == n,
-            "field_h length ({}) must match n ({n})",
-            field_h.len(),
-        );
-        assert!(k_b_t > 0.0, "k_b_t must be positive, got {k_b_t}");
+        or_panic(Self::try_new(n, edges, coupling_j, field_h, k_b_t, seed))
+    }
+
+    /// [`Self::new`], returning the refusal instead of panicking.
+    ///
+    /// # Errors
+    /// As [`exact_distribution`](crate::ising::exact_distribution) refuses the same problem:
+    /// more than [`MAX_EXACT_SPINS`](crate::ising::MAX_EXACT_SPINS) spins, a bad edge,
+    /// `coupling_j` or `field_h` of the wrong length or not finite, or `k_b_t` not finite
+    /// and positive.
+    pub fn try_new(
+        n: usize,
+        edges: &[(usize, usize)],
+        coupling_j: &[f64],
+        field_h: &[f64],
+        k_b_t: f64,
+        seed: u64,
+    ) -> Result<Self, ThermostatError> {
+        check_problem("GibbsSampler", n, edges, coupling_j, field_h, k_b_t)?;
 
         // Build adjacency list: for each site i, store (j, J_ij) for all
         // edges involving i. Edges are undirected, so (i,j) adds j to i's
@@ -84,14 +85,14 @@ impl GibbsSampler {
             neighbors[j].push((i, coupling_j[k]));
         }
 
-        Self {
+        Ok(Self {
             n,
             field_h: field_h.to_vec(),
             k_b_t,
             spins: vec![1.0; n],
             rng: ChaCha8Rng::seed_from_u64(seed),
             neighbors,
-        }
+        })
     }
 
     /// Perform one full sweep: update each site once in index order.
@@ -248,18 +249,44 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "self-edge (2, 2) is not supported")]
+    #[should_panic(expected = "GibbsSampler: edge (2, 2) joins an element to itself")]
     fn new_refuses_a_self_edge() {
         let _sampler = GibbsSampler::new(3, &[(2, 2)], &[1.0], &[0.0; 3], 1.0, 0);
     }
 
+    /// Bit `i` is spin `i`: the masks are not palindromes over 3 bits, so a reversed bit
+    /// order fails.
     #[test]
     fn set_config_bitmask_sets_every_spin() {
         let mut sampler = GibbsSampler::new(3, &[(0, 1)], &[1.0], &[0.0; 3], 1.0, 0);
-        sampler.set_config_bitmask(0b101);
-        assert_eq!(sampler.config_bitmask(), 0b101);
-        sampler.set_config_bitmask(0);
-        assert_eq!(sampler.config_bitmask(), 0);
+        sampler.set_config_bitmask(0b011);
+        assert_eq!(sampler.spins, [1.0, 1.0, -1.0]);
+        assert_eq!(sampler.config_bitmask(), 0b011);
+        sampler.set_config_bitmask(0b110);
+        assert_eq!(sampler.spins, [-1.0, 1.0, 1.0]);
+        assert_eq!(sampler.config_bitmask(), 0b110);
+    }
+
+    #[test]
+    fn try_new_refuses_what_exact_distribution_refuses() {
+        assert_eq!(
+            GibbsSampler::try_new(2, &[], &[], &[0.0; 2], 0.0, 0).err(),
+            Some(ThermostatError::InvalidParameter {
+                component: "GibbsSampler",
+                parameter: "k_b_t".to_owned(),
+                value: 0.0,
+                requirement: "finite and positive",
+            })
+        );
+        assert_eq!(
+            GibbsSampler::try_new(21, &[], &[], &[0.0; 21], 1.0, 0).err(),
+            Some(ThermostatError::TooManySpins {
+                component: "GibbsSampler",
+                spins: 21,
+                max: 20,
+            })
+        );
+        assert!(GibbsSampler::try_new(2, &[(0, 1)], &[f64::NAN], &[0.0; 2], 1.0, 0).is_err());
     }
 
     #[test]

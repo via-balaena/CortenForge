@@ -9,6 +9,9 @@
 //! clear means `−1`. [`GibbsSampler`](crate::GibbsSampler) uses the same
 //! convention.
 
+use crate::error::ThermostatError;
+use crate::params::{Domain, check_edges, check_len, or_panic};
+
 /// The largest spin count [`exact_distribution`] and
 /// [`GibbsSampler`](crate::GibbsSampler) accept. Both hold all `2^n`
 /// configurations, about a million at 20.
@@ -29,26 +32,50 @@ const fn spin(c: u32, i: usize) -> f64 {
     if c & (1 << i) != 0 { 1.0 } else { -1.0 }
 }
 
-/// Check that every edge joins two different spins among the `n`, and that no pair appears
-/// twice (in either order), matching [`PairwiseCoupling`](crate::PairwiseCoupling).
+/// `Ok` if `n` is at most [`MAX_EXACT_SPINS`] and every edge joins two different spins among
+/// the `n`, with no pair appearing twice in either order, matching
+/// [`PairwiseCoupling`](crate::PairwiseCoupling).
 ///
-/// A self-edge is refused because the two solvers would read it
-/// differently: in [`exact_distribution`] `σ_i·σ_i = 1` is a constant, while
-/// [`GibbsSampler`](crate::GibbsSampler) would add it to spin `i`'s local
-/// field.
-pub(crate) fn check_edges(n: usize, edges: &[(usize, usize)]) {
-    let mut seen = std::collections::HashSet::with_capacity(edges.len());
-    for &(i, j) in edges {
-        assert!(
-            i < n && j < n,
-            "edge ({i}, {j}) names a spin outside 0..{n}"
-        );
-        assert!(i != j, "self-edge ({i}, {i}) is not supported");
-        assert!(
-            seen.insert((i.min(j), i.max(j))),
-            "duplicate edge: the pair ({i}, {j}) appears twice"
-        );
+/// A self-edge is refused because the two solvers would read it differently: in
+/// [`exact_distribution`] `σ_i·σ_i = 1` is a constant, while
+/// [`GibbsSampler`](crate::GibbsSampler) would add it to spin `i`'s local field.
+pub(crate) fn check_problem_shape(
+    component: &'static str,
+    n: usize,
+    edges: &[(usize, usize)],
+) -> Result<(), ThermostatError> {
+    if n > MAX_EXACT_SPINS {
+        return Err(ThermostatError::TooManySpins {
+            component,
+            spins: n,
+            max: MAX_EXACT_SPINS,
+        });
     }
+    check_edges(component, Some(n), edges)
+}
+
+/// [`check_problem_shape`], plus one finite coupling per edge, one finite field per spin, and
+/// a finite, positive temperature.
+pub(crate) fn check_problem(
+    component: &'static str,
+    n: usize,
+    edges: &[(usize, usize)],
+    coupling_j: &[f64],
+    field_h: &[f64],
+    k_b_t: f64,
+) -> Result<(), ThermostatError> {
+    check_problem_shape(component, n, edges)?;
+    check_len(
+        component,
+        "coupling_j",
+        coupling_j.len(),
+        edges.len(),
+        "edge",
+    )?;
+    check_len(component, "field_h", field_h.len(), n, "spin")?;
+    Domain::Finite.check_each(component, "coupling_j", coupling_j)?;
+    Domain::Finite.check_each(component, "field_h", field_h)?;
+    Domain::Positive.check(component, "k_b_t", k_b_t)
 }
 
 /// Exact Ising distribution by enumeration over `2^N` configurations.
@@ -68,11 +95,11 @@ pub(crate) fn check_edges(n: usize, edges: &[(usize, usize)]) {
 ///
 /// # Panics
 /// - If `n > MAX_EXACT_SPINS`.
-/// - If `coupling_j.len() != edges.len()`.
-/// - If `field_h.len() != n`.
-/// - If `k_b_t <= 0`.
 /// - If an edge names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
+/// - Unless `coupling_j` has one finite entry per edge and `field_h` one per spin.
+/// - Unless `k_b_t` is finite and positive.
 #[must_use]
+#[track_caller]
 pub fn exact_distribution(
     n: usize,
     edges: &[(usize, usize)],
@@ -80,23 +107,14 @@ pub fn exact_distribution(
     field_h: &[f64],
     k_b_t: f64,
 ) -> Vec<(u32, f64)> {
-    assert!(
-        n <= MAX_EXACT_SPINS,
-        "n={n} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})"
-    );
-    check_edges(n, edges);
-    assert!(
-        coupling_j.len() == edges.len(),
-        "coupling_j length ({}) must match edges length ({})",
-        coupling_j.len(),
-        edges.len(),
-    );
-    assert!(
-        field_h.len() == n,
-        "field_h length ({}) must match n ({n})",
-        field_h.len(),
-    );
-    assert!(k_b_t > 0.0, "k_b_t must be positive, got {k_b_t}");
+    or_panic(check_problem(
+        "exact_distribution",
+        n,
+        edges,
+        coupling_j,
+        field_h,
+        k_b_t,
+    ));
 
     let n_configs = 1u32 << n;
     let mut dist = Vec::with_capacity(n_configs as usize);
@@ -142,12 +160,9 @@ pub fn exact_distribution(
 /// Panics if `n > MAX_EXACT_SPINS`, or if an edge names a spin outside
 /// `0..n`, joins a spin to itself, or repeats a pair.
 #[must_use]
+#[track_caller]
 pub fn ising_statistics(dist: &[(u32, f64)], n: usize, edges: &[(usize, usize)]) -> IsingStats {
-    assert!(
-        n <= MAX_EXACT_SPINS,
-        "n={n} exceeds MAX_EXACT_SPINS ({MAX_EXACT_SPINS})"
-    );
-    check_edges(n, edges);
+    or_panic(check_problem_shape("ising_statistics", n, edges));
     let mut magnetizations = vec![0.0; n];
     let mut correlations = vec![0.0; edges.len()];
 
@@ -477,19 +492,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "edge (0, 3) names a spin outside 0..3")]
+    #[should_panic(expected = "exact_distribution: edge (0, 3) names a spin outside 0..3")]
     fn exact_distribution_refuses_an_edge_outside_the_spins() {
         let _dist = exact_distribution(3, &[(0, 3)], &[1.0], &[0.0; 3], 1.0);
     }
 
     #[test]
-    #[should_panic(expected = "self-edge (1, 1) is not supported")]
+    #[should_panic(expected = "exact_distribution: edge (1, 1) joins an element to itself")]
     fn exact_distribution_refuses_a_self_edge() {
         let _dist = exact_distribution(3, &[(1, 1)], &[1.0], &[0.0; 3], 1.0);
     }
 
     #[test]
-    #[should_panic(expected = "self-edge (0, 0) is not supported")]
+    #[should_panic(expected = "ising_statistics: edge (0, 0) joins an element to itself")]
     fn ising_statistics_refuses_a_self_edge() {
         let dist = exact_distribution(2, &[], &[], &[0.0; 2], 1.0);
         let _stats = ising_statistics(&dist, 2, &[(0, 0)]);
@@ -542,13 +557,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "duplicate edge: the pair (1, 0) appears twice")]
+    #[should_panic(
+        expected = "exact_distribution: edge (1, 0) repeats the pair of an earlier edge"
+    )]
     fn exact_distribution_refuses_a_duplicate_edge() {
         let _dist = exact_distribution(2, &[(0, 1), (1, 0)], &[1.0, 1.0], &[0.0; 2], 1.0);
     }
 
     #[test]
-    #[should_panic(expected = "exceeds MAX_EXACT_SPINS")]
+    #[should_panic(expected = "ising_statistics supports at most 20 spins, got 21")]
     fn ising_statistics_refuses_too_many_spins() {
         let _stats = ising_statistics(&[], MAX_EXACT_SPINS + 1, &[]);
     }

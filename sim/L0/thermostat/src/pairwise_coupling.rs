@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "PairwiseCoupling: coupling_j has 2 entries, expected 1 (one per edge)"
+        expected = "PairwiseCoupling: coupling_j has length 2, expected 1 (one per edge)"
     )]
     fn new_rejects_length_mismatch() {
         #[allow(clippy::let_underscore_must_use)]

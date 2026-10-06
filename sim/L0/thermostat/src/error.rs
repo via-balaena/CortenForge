@@ -95,6 +95,25 @@ pub enum ThermostatError {
         /// The spin count.
         n: usize,
     },
+    /// An Ising problem has more spins than the exact solvers enumerate.
+    TooManySpins {
+        /// The component's type name, or the function's.
+        component: &'static str,
+        /// The spin count supplied.
+        spins: usize,
+        /// The most it supports.
+        max: usize,
+    },
+    /// A distribution does not list its configurations in order: entry `k` must be
+    /// configuration `k`.
+    ConfigurationOrder {
+        /// The component's type name.
+        component: &'static str,
+        /// The first entry out of order.
+        entry: usize,
+        /// The configuration it holds.
+        config: u32,
+    },
     /// A count parameter is outside its domain.
     InvalidCount {
         /// The component's type name.
@@ -172,7 +191,7 @@ impl fmt::Display for ThermostatError {
                 per,
             } => write!(
                 f,
-                "{component}: {parameter} has {len} entries, expected {expected} (one per {per})"
+                "{component}: {parameter} has length {len}, expected {expected} (one per {per})"
             ),
             Self::InvalidEdge {
                 component,
@@ -186,6 +205,20 @@ impl fmt::Display for ThermostatError {
             } => write!(
                 f,
                 "{component}: edge ({i}, {j}) names a spin outside 0..{n}"
+            ),
+            Self::TooManySpins {
+                component,
+                spins,
+                max,
+            } => write!(f, "{component} supports at most {max} spins, got {spins}"),
+            Self::ConfigurationOrder {
+                component,
+                entry,
+                config,
+            } => write!(
+                f,
+                "{component}: entry {entry} is configuration {config:#b}; entries must be in \
+                 configuration order"
             ),
             Self::InvalidCount {
                 component,

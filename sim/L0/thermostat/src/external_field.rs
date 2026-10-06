@@ -135,6 +135,24 @@ mod tests {
     }
 
     #[test]
+    fn try_new_refuses_a_field_entry_that_is_not_finite() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                crate::params::refused_parameter(ExternalField::try_new(vec![0.5, bad])).as_deref(),
+                Some("field_h[1]"),
+                "{bad}"
+            );
+        }
+        assert!(ExternalField::try_new(vec![]).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "ExternalField: field_h[0] must be finite, got NaN")]
+    fn new_panics_with_the_refusal() {
+        let _field = ExternalField::new(vec![f64::NAN]);
+    }
+
+    #[test]
     fn new_creates_field() {
         let f = ExternalField::new(vec![0.3, -0.2, 0.0, 0.15]);
         assert_eq!(f.field_h().len(), 4);
