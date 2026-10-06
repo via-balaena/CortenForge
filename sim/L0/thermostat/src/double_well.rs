@@ -216,7 +216,7 @@ impl DoubleWellPotential {
         let dt = 1.0 / steps as f64;
         let mut integral = 0.0;
         for i in 0..=steps {
-            #[allow(clippy::cast_precision_loss)]
+            #[allow(clippy::cast_precision_loss)] // i ≤ steps, exact in f64
             let u = 1.0 - i as f64 * dt;
             let cos = (std::f64::consts::FRAC_PI_2 * u.mul_add(-u, 1.0)).cos();
             let s = delta / (4.0 * cos * cos);
