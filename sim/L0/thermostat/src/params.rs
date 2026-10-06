@@ -108,18 +108,18 @@ pub fn check_edges(
                 n,
             });
         }
-        let reason = if i == j {
-            "joins an element to itself"
-        } else if !seen.insert((i.min(j), i.max(j))) {
-            "repeats the pair of an earlier edge (in either order)"
-        } else {
-            continue;
-        };
-        return Err(ThermostatError::InvalidEdge {
-            component,
-            edge: (i, j),
-            reason,
-        });
+        if i == j {
+            return Err(ThermostatError::SelfEdge {
+                component,
+                edge: (i, j),
+            });
+        }
+        if !seen.insert((i.min(j), i.max(j))) {
+            return Err(ThermostatError::RepeatedEdge {
+                component,
+                edge: (i, j),
+            });
+        }
     }
     Ok(())
 }
@@ -184,23 +184,18 @@ mod tests {
 
     #[test]
     fn check_edges_refuses_self_edges_repeats_and_out_of_range_spins() {
-        let edge = |reason| {
-            Err(ThermostatError::InvalidEdge {
-                component: "C",
-                edge: (1, 0),
-                reason,
-            })
-        };
         assert_eq!(
             check_edges("C", None, &[(0, 1), (1, 0)]),
-            edge("repeats the pair of an earlier edge (in either order)")
+            Err(ThermostatError::RepeatedEdge {
+                component: "C",
+                edge: (1, 0),
+            })
         );
         assert_eq!(
             check_edges("C", None, &[(2, 2)]),
-            Err(ThermostatError::InvalidEdge {
+            Err(ThermostatError::SelfEdge {
                 component: "C",
                 edge: (2, 2),
-                reason: "joins an element to itself",
             })
         );
         assert_eq!(

@@ -51,6 +51,7 @@ impl WellState {
     #[must_use]
     // Panic on Barrier is a deliberate contract — callers must check is_in_well() first.
     #[allow(clippy::panic)]
+    #[track_caller]
     pub fn spin(self) -> f64 {
         match self {
             Self::Right => 1.0,

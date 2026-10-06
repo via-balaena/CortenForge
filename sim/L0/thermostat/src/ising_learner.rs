@@ -97,7 +97,12 @@ impl LearnerConfig {
 ///
 /// Stores both the full probability distribution (for KL computation)
 /// and the summary statistics (for the Boltzmann learning rule update).
+///
+/// Build one with [`Self::from_ising_params`]; the struct is `#[non_exhaustive]`, so a
+/// field added in a later release does not break callers. Its fields can still be set,
+/// for a target taken from data.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct IsingTarget {
     /// Per-site target magnetizations `⟨σ_i⟩`.
     pub magnetizations: Vec<f64>,
@@ -212,7 +217,8 @@ impl IsingLearner {
     /// # Errors
     /// - [`ThermostatError::TooManySpins`] if `config.n` exceeds
     ///   [`MAX_EXACT_SPINS`](crate::ising::MAX_EXACT_SPINS).
-    /// - [`ThermostatError::EdgeOutOfRange`] or [`ThermostatError::InvalidEdge`] if an edge
+    /// - [`ThermostatError::EdgeOutOfRange`], [`ThermostatError::SelfEdge`] or
+    ///   [`ThermostatError::RepeatedEdge`] if an edge
     ///   names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
     /// - [`ThermostatError::DofOutOfRange`] if `model` has fewer than `n` DOFs.
     /// - [`ThermostatError::LengthMismatch`] unless the target has one magnetization per
@@ -237,6 +243,10 @@ impl IsingLearner {
     ) -> Result<Self, ThermostatError> {
         let n = config.n;
         let n_edges = config.edges.len();
+        if model.cb_passive.is_some() {
+            // The learner installs its own stack for every trajectory.
+            return Err(ThermostatError::PassiveCallbackInstalled);
+        }
         check_problem_shape(COMPONENT, n, &config.edges)?;
         if model.nv < n {
             return Err(ThermostatError::DofOutOfRange {
@@ -880,6 +890,18 @@ mod tests {
 
     /// The exact distribution needs `kT > 0`; the thermostat alone would take 0, and the
     /// first `step` used to panic after running every trajectory.
+    /// The learner installs its own stack for every trajectory, so it refuses a model whose
+    /// passive callback it would replace.
+    #[test]
+    fn try_new_refuses_a_model_that_already_has_a_passive_callback() {
+        let mut model = load_model();
+        model.set_passive_callback(|_, _| {});
+        assert_eq!(
+            IsingLearner::try_new(minimal_config(), minimal_target(), model).err(),
+            Some(ThermostatError::PassiveCallbackInstalled)
+        );
+    }
+
     #[test]
     fn try_new_refuses_zero_temperature() {
         let mut config = minimal_config();

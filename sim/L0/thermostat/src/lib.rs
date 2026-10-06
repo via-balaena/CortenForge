@@ -95,6 +95,7 @@ mod reference_integrator;
 mod stack;
 mod well_state;
 
+#[doc(hidden)]
 pub mod test_utils;
 
 pub use baoab::Baoab1D;

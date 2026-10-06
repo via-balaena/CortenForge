@@ -51,7 +51,8 @@ impl IsingProblem {
     /// [`Self::new`], returning the refusal instead of panicking.
     ///
     /// # Errors
-    /// - [`ThermostatError::EdgeOutOfRange`] or [`ThermostatError::InvalidEdge`] if an edge
+    /// - [`ThermostatError::EdgeOutOfRange`], [`ThermostatError::SelfEdge`] or
+    ///   [`ThermostatError::RepeatedEdge`] if an edge
     ///   names a spin outside `0..n`, joins a spin to itself, or repeats a pair.
     /// - [`ThermostatError::LengthMismatch`] unless `coupling_j` has one entry per edge and
     ///   `field_h` one per spin.
@@ -120,7 +121,8 @@ impl IsingProblem {
             field_h[i] -= b / 4.0;
             field_h[j] -= b / 4.0;
         }
-        let offset = linear.iter().sum::<f64>() / 2.0 + quadratic.iter().sum::<f64>() / 4.0;
+        let offset = linear.iter().map(|a| a / 2.0).sum::<f64>()
+            + quadratic.iter().map(|b| b / 4.0).sum::<f64>();
         Domain::Finite.check(COMPONENT, "offset", offset)?;
         let coupling_j = quadratic.iter().map(|b| -b / 4.0).collect();
         Ok((
@@ -426,7 +428,7 @@ mod tests {
     fn try_from_qubo_refuses_a_repeated_pair_and_a_mismatched_length() {
         assert!(matches!(
             IsingProblem::try_from_qubo(&[0.0; 3], &[(0, 1), (1, 0)], &[1.0, 1.0]),
-            Err(ThermostatError::InvalidEdge { edge: (1, 0), .. })
+            Err(ThermostatError::RepeatedEdge { edge: (1, 0), .. })
         ));
         assert!(matches!(
             IsingProblem::try_from_qubo(&[0.0; 3], &[(0, 1)], &[1.0, 1.0]),
@@ -439,6 +441,15 @@ mod tests {
             refused_parameter(IsingProblem::try_from_qubo(&[0.0, f64::NAN], &[], &[])).as_deref(),
             Some("linear[1]")
         );
+    }
+
+    /// The offset is summed term by term: two linear terms near `f64::MAX` halve to a finite
+    /// offset whose raw sum would overflow.
+    #[test]
+    fn from_qubo_keeps_a_finite_offset_whose_raw_sum_overflows() {
+        let (problem, offset) = IsingProblem::from_qubo(&[1.5e308, 1.5e308], &[], &[]);
+        assert_eq!(offset, 1.5e308);
+        assert_eq!(problem.field_h(), [-7.5e307, -7.5e307]);
     }
 
     #[test]

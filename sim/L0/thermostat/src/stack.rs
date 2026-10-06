@@ -20,8 +20,9 @@
 //! 4. Supports parallel-environment construction via
 //!    [`PassiveStack::install_per_env`], which builds N independent
 //!    `(Model, PassiveStack)` pairs from a user-supplied factory.
-//!    Each env gets its own stack (no aliased RNG state), and a model
-//!    that already has a passive callback is refused.
+//!    Each env needs its own stack, so a thermostat's step counter is
+//!    not shared; a stack returned for two envs is refused, and so is a
+//!    model that already has a passive callback.
 //!
 //! ## The split-borrow dance
 //!
@@ -277,15 +278,18 @@ impl PassiveStack {
 /// returns an [`EnvBatch<PassiveStack>`] holding the N installed
 /// models and retained stack handles.
 ///
-/// For `BatchSim`-style parallel-env runs: each env gets its own fresh
-/// stack, and so its own thermostat step counter, so no mutable state is
-/// shared across envs.
+/// For `BatchSim`-style parallel-env runs, where each env needs its own
+/// stack, and so its own thermostat step counter. A component shared
+/// between two stacks (one `Arc` passed to both through
+/// [`PassiveStackBuilder::with_arc`]) is not detected, and shares its state.
 ///
 /// # Panics
 ///
-/// If an env's stack refuses its model (see [`PassiveStack::try_install`]): a
-/// component refuses it, or `build_one` returned a model that already has a
-/// passive callback. Build each model fresh inside `build_one`.
+/// - If `build_one` returns, for env `i`, the same stack as for an earlier
+///   env.
+/// - If an env's stack refuses its model (see [`PassiveStack::try_install`]):
+///   a component refuses it, or `build_one` returned a model that already
+///   has a passive callback. Build each model fresh inside `build_one`.
 impl PerEnvStack for PassiveStack {
     #[allow(clippy::panic)] // the documented refusal: the trait's signature has no error path
     fn install_per_env<F>(self: &Arc<Self>, n: usize, mut build_one: F) -> EnvBatch<Self>
@@ -303,6 +307,12 @@ impl PerEnvStack for PassiveStack {
         let mut stacks = Vec::with_capacity(n);
         for i in 0..n {
             let (mut model, stack) = build_one(i);
+            if let Some(earlier) = stacks.iter().position(|s| Arc::ptr_eq(s, &stack)) {
+                panic!(
+                    "install_per_env: env {i} got the stack of env {earlier}; each env needs its \
+                     own, or they share the thermostat's step counter"
+                );
+            }
             if let Err(e) = stack.try_install(&mut model) {
                 panic!("install_per_env: env {i}: {e}");
             }
@@ -769,6 +779,15 @@ mod tests {
         let _batch = one(DummyDeterministic).install_per_env(2, |i| {
             (chain(2), one(DoubleWellPotential::new(1.0, 1.0, 2 * i)))
         });
+    }
+
+    /// A stack returned for two envs is refused: they would share its step counter.
+    #[test]
+    #[should_panic(expected = "install_per_env: env 1 got the stack of env 0")]
+    fn install_per_env_refuses_one_stack_for_two_envs() {
+        let shared = one(DummyDeterministic);
+        let _batch =
+            one(DummyDeterministic).install_per_env(2, |_| (chain(1), Arc::clone(&shared)));
     }
 
     /// A factory model that already has a passive callback is refused, not silently cleared.

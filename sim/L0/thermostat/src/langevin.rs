@@ -291,7 +291,7 @@ impl PassiveComponent for LangevinThermostat {
         if let Some(dof) = self
             .gamma
             .iter()
-            .position(|&gamma_i| !(2.0 * gamma_i * k_b_t / h).is_finite())
+            .position(|&gamma_i| !Domain::NonNegative.contains(2.0 * gamma_i * k_b_t / h))
         {
             return Err(ThermostatError::NoiseOverflow {
                 component: "LangevinThermostat",
@@ -738,6 +738,26 @@ mod tests {
         assert_eq!(verdict(1e304, false), Ok(()));
         assert_eq!(verdict(1e304, true), overflow);
         assert_eq!(verdict(1e303, true), Ok(()));
+
+        // A timestep that is not positive gives a variance that is not.
+        let mut model = sim_core::test_fixtures::stochastic_resonance();
+        model.timestep = -1e-3;
+        assert_eq!(
+            crate::PassiveStack::builder()
+                .with(LangevinThermostat::new(
+                    DVector::from_element(1, 1.0),
+                    1.0,
+                    0,
+                    0
+                ))
+                .build()
+                .try_install(&mut model),
+            Err(ThermostatError::NoiseOverflow {
+                component: "LangevinThermostat",
+                dof: 0,
+                timestep: -1e-3,
+            })
+        );
     }
 
     #[test]

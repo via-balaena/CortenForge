@@ -77,14 +77,20 @@ pub enum ThermostatError {
         /// What it needs one entry per (`"edge"`, `"spin"`).
         per: &'static str,
     },
-    /// An edge joins an element to itself, or repeats the pair of an earlier edge.
-    InvalidEdge {
+    /// An edge joins an element to itself.
+    SelfEdge {
         /// The component's type name.
         component: &'static str,
         /// The edge, as given.
         edge: (usize, usize),
-        /// What is wrong with it.
-        reason: &'static str,
+    },
+    /// An edge repeats the pair of an earlier edge, in either order: the two would add their
+    /// couplings.
+    RepeatedEdge {
+        /// The component's type name.
+        component: &'static str,
+        /// The edge, as given.
+        edge: (usize, usize),
     },
     /// An edge names a spin outside `0..n`.
     EdgeOutOfRange {
@@ -126,7 +132,8 @@ pub enum ThermostatError {
         requirement: &'static str,
     },
     /// The thermostat's noise variance on a DOF, `2·γ·kT/h` at the largest temperature it
-    /// can apply, is not finite at the model's timestep `h`.
+    /// can apply, is not finite and non-negative at the model's timestep `h` (a huge `γ·kT`,
+    /// or a timestep that is not positive).
     NoiseOverflow {
         /// The component's type name.
         component: &'static str,
@@ -204,11 +211,17 @@ impl fmt::Display for ThermostatError {
                 f,
                 "{component}: {parameter} has length {len}, expected {expected} (one per {per})"
             ),
-            Self::InvalidEdge {
+            Self::SelfEdge {
                 component,
                 edge: (i, j),
-                reason,
-            } => write!(f, "{component}: edge ({i}, {j}) {reason}"),
+            } => write!(f, "{component}: edge ({i}, {j}) joins an element to itself"),
+            Self::RepeatedEdge {
+                component,
+                edge: (i, j),
+            } => write!(
+                f,
+                "{component}: edge ({i}, {j}) repeats the pair of an earlier edge (in either order)"
+            ),
             Self::EdgeOutOfRange {
                 component,
                 edge: (i, j),
@@ -247,7 +260,7 @@ impl fmt::Display for ThermostatError {
             } => write!(
                 f,
                 "{component}: the noise variance 2·gamma·k_b_t/timestep on DOF {dof} is not \
-                 finite at timestep {timestep}"
+                 finite and non-negative at timestep {timestep}"
             ),
             Self::PassiveCallbackInstalled => write!(
                 f,

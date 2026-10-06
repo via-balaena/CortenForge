@@ -160,6 +160,7 @@ impl DoubleWellPotential {
     /// Unless `mass` and `k_b_t` are finite and positive and `gamma` is finite and
     /// non-negative.
     #[must_use]
+    #[track_caller]
     pub fn kramers_rate(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
         check_rate_inputs(gamma, mass, k_b_t);
         let omega_a = self.omega_a(mass);
@@ -198,6 +199,7 @@ impl DoubleWellPotential {
     /// Unless `mass` and `k_b_t` are finite and positive and `gamma` is finite and
     /// non-negative.
     #[must_use]
+    #[track_caller]
     pub fn depopulation_factor(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
         check_rate_inputs(gamma, mass, k_b_t);
         let delta = (gamma / mass) * self.barrier_action(mass) / k_b_t;
@@ -241,6 +243,7 @@ impl DoubleWellPotential {
     /// Unless `mass` and `k_b_t` are finite and positive and `gamma` is finite and
     /// non-negative.
     #[must_use]
+    #[track_caller]
     pub fn kramers_rate_turnover(&self, gamma: f64, mass: f64, k_b_t: f64) -> f64 {
         self.kramers_rate(gamma, mass, k_b_t) * self.depopulation_factor(gamma, mass, k_b_t)
     }

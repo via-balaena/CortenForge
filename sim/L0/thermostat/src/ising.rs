@@ -19,6 +19,7 @@ pub const MAX_EXACT_SPINS: usize = 20;
 
 /// Summary statistics from an Ising distribution.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct IsingStats {
     /// Per-site magnetizations `⟨σ_i⟩`.
     pub magnetizations: Vec<f64>,
