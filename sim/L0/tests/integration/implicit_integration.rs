@@ -1408,3 +1408,57 @@ fn implicit_warmstart_is_explicit() {
         );
     }
 }
+
+/// The same with a constraint active, where `qacc` and `qacc_smooth` differ:
+/// a hinge past its limit, solved by PGS, which leaves `qacc` to the
+/// acceleration stage. MuJoCo 3.5.0 (unfused build), from qpos 0.25, qvel 0.5:
+/// after `forward()`, `qacc` −664.8448367629019 (`qacc_smooth`
+/// 28.570339542525833) and the accelerometer's z 208.95848188585194; after one
+/// step, warmstart −664.8448367629019 and qvel −4.580515979255743 (implicitfast)
+/// or −4.580515979255744 (implicit).
+#[test]
+fn implicit_qacc_is_explicit_with_an_active_limit_under_pgs() {
+    let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want.abs().max(1.0);
+    for (integrator, qvel_after) in [
+        ("implicitfast", -4.580_515_979_255_743),
+        ("implicit", -4.580_515_979_255_744),
+    ] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}" solver="PGS"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.5"
+                         limited="true" range="-0.2 0.2"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"
+                        contype="0" conaffinity="0"/>
+                  <site name="s" pos="0.3 0 0"/>
+                </body>
+              </worldbody>
+              <sensor><accelerometer site="s"/></sensor>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.25;
+        data.qvel[0] = 0.5;
+        data.forward(&model).expect("forward");
+        assert_eq!(data.efc_type.len(), 1, "{integrator}: the limit is active");
+        let (qacc, acc_z) = (data.qacc[0], data.sensordata[2]);
+        assert!(
+            close(qacc, -664.844_836_762_901_9),
+            "{integrator}: qacc {qacc}"
+        );
+        assert!(
+            close(acc_z, 208.958_481_885_851_94),
+            "{integrator}: accelerometer z {acc_z}"
+        );
+        data.step(&model).expect("step");
+        let (warmstart, qvel) = (data.qacc_warmstart[0], data.qvel[0]);
+        assert!(
+            close(warmstart, -664.844_836_762_901_9),
+            "{integrator}: warmstart {warmstart}"
+        );
+        assert!(close(qvel, qvel_after), "{integrator}: qvel {qvel}");
+    }
+}

@@ -1,7 +1,7 @@
 //! `xfrc_applied` projection tests (DT-21).
 //!
 //! Verifies that Cartesian body forces (`xfrc_applied`) are correctly projected
-//! into joint-space passive forces via J^T in `mj_fwd_passive()`.
+//! into joint-space forces via J^T (`compute_qacc_smooth`).
 
 /// Test: free body with upward force gets upward acceleration.
 #[test]
@@ -157,7 +157,9 @@ fn pure_torque() {
 /// Test: a row copied from MuJoCo applies its force first and its torque
 /// second. Free body, mass 2, inertia 0.1·I, no gravity: MuJoCo 3.5.0 gives
 /// `qacc` = (0, 0, 10, 0, 50, 0) for the row `[0, 0, 20, 0, 5, 0]` (F = ma,
-/// τ = Iα).
+/// τ = Iα) under Euler, implicit, implicitfast and RK4. Implicitspringdamper,
+/// which projects the wrench at its own site and which MuJoCo does not have,
+/// gives the same to rounding: the body has no springs or dampers.
 #[test]
 fn xfrc_applied_is_force_then_torque() {
     let xml = r#"
@@ -171,11 +173,47 @@ fn xfrc_applied_is_force_then_torque() {
       </worldbody>
     </mujoco>"#;
 
-    let model = sim_mjcf::load_model(xml).expect("load");
+    use sim_core::Integrator;
+    let want = [0.0, 0.0, 10.0, 0.0, 50.0, 0.0];
+    for integrator in [
+        Integrator::Euler,
+        Integrator::ImplicitFast,
+        Integrator::Implicit,
+        Integrator::RungeKutta4,
+        Integrator::ImplicitSpringDamper,
+    ] {
+        let mut model = sim_mjcf::load_model(xml).expect("load");
+        model.integrator = integrator;
+        let mut data = model.make_data();
+        data.xfrc_applied[1] =
+            sim_core::BodyWrench::from_mujoco_row([0.0, 0.0, 20.0, 0.0, 5.0, 0.0]);
+
+        data.forward(&model).expect("forward");
+
+        if integrator == Integrator::ImplicitSpringDamper {
+            for (got, w) in data.qacc.iter().zip(want) {
+                assert!(
+                    (got - w).abs() < 1e-12,
+                    "{integrator:?}: qacc {}",
+                    data.qacc
+                );
+            }
+        } else {
+            assert_eq!(data.qacc.as_slice(), &want, "{integrator:?}");
+        }
+    }
+}
+
+/// Test: `Data::reset` clears every applied wrench.
+#[test]
+fn reset_zeroes_xfrc_applied() {
+    let model = sim_core::Model::free_body(2.0, nalgebra::Vector3::new(0.1, 0.1, 0.1));
     let mut data = model.make_data();
-    data.xfrc_applied[1] = sim_core::BodyWrench::from_mujoco_row([0.0, 0.0, 20.0, 0.0, 5.0, 0.0]);
-
-    data.forward(&model).expect("forward");
-
-    assert_eq!(data.qacc.as_slice(), &[0.0, 0.0, 10.0, 0.0, 50.0, 0.0]);
+    data.xfrc_applied[1] = sim_core::BodyWrench::from_mujoco_row([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    data.reset(&model);
+    assert!(
+        data.xfrc_applied
+            .iter()
+            .all(|w| *w == sim_core::BodyWrench::default())
+    );
 }

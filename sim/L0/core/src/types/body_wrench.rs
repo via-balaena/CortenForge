@@ -23,8 +23,8 @@ use nalgebra::Vector3;
 /// # Ok::<(), sim_core::StepError>(())
 /// ```
 ///
-/// Until 0.9 the row was a `Vector6` laid out torque first. Neither 0.9 form
-/// compiles now, so old code cannot run with its halves swapped:
+/// Through 0.9 the row was a `Vector6` laid out torque first. None of the 0.9
+/// forms compiles now, so old code cannot run with its halves swapped:
 ///
 /// ```compile_fail,E0608
 /// # let model = sim_core::Model::free_body(2.0, nalgebra::Vector3::new(0.1, 0.1, 0.1));
@@ -37,8 +37,21 @@ use nalgebra::Vector3;
 /// # let mut data = model.make_data();
 /// data.xfrc_applied[1] = nalgebra::Vector6::zeros();
 /// ```
-// No `Index`, `Deref` or `From<Vector6<f64>>`/`From<[f64; 6]>`: each would let
-// one of the 0.9 forms above compile with the halves swapped.
+///
+/// ```compile_fail,E0277
+/// # let model = sim_core::Model::free_body(2.0, nalgebra::Vector3::new(0.1, 0.1, 0.1));
+/// # let mut data = model.make_data();
+/// data.xfrc_applied[1] = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0].into();
+/// ```
+///
+/// ```compile_fail,E0277
+/// # let model = sim_core::Model::free_body(2.0, nalgebra::Vector3::new(0.1, 0.1, 0.1));
+/// # let mut data = model.make_data();
+/// data.xfrc_applied[1] = nalgebra::Vector6::<f64>::zeros().into();
+/// ```
+// No `Index` or `Deref` (the first form above would compile) and no
+// `From<[f64; 6]>` or `From<Vector6<f64>>` (the last two would): each would
+// take a 0.9 row with its halves swapped.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct BodyWrench {
     /// Force (N), world frame, applied at the body's centre of mass.
@@ -104,10 +117,14 @@ mod tests {
 
     #[test]
     fn negative_zero_is_zero_by_value_not_by_bytes() {
-        let mut w = BodyWrench::default();
+        let w = BodyWrench::default();
         assert!(w.is_zero() && w.is_zero_bytes());
-        w.torque.z = -0.0;
-        assert!(w.is_zero());
-        assert!(!w.is_zero_bytes());
+        for k in 0..6 {
+            let mut row = [0.0; 6];
+            row[k] = -0.0;
+            let w = BodyWrench::from_mujoco_row(row);
+            assert!(w.is_zero(), "component {k}");
+            assert!(!w.is_zero_bytes(), "component {k}");
+        }
     }
 }
