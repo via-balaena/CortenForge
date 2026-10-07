@@ -267,6 +267,10 @@ jobs:
       - name: The census extractor reads doc comments as rustdoc does
         run: python3 sim/L0/tests/scripts/test_extract_mjcf.py
 
+      # The check above, against each hand edit it must refuse or pass.
+      - name: The census checks refuse the edits they exist to refuse
+        run: python3 sim/L0/tests/scripts/test_check_census.py
+
   # ============================================================================
   # AFFECTED - Compute the PR-scoped crate set (changed + reverse-dep closure)
   # ============================================================================

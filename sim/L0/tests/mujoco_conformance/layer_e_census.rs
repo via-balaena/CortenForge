@@ -20,9 +20,10 @@
 //!   permanent deviation (the ID must be a row of `divergences.tsv`), or
 //!   `fixed_by=<Pnn|Lnn> was=<class>` when a later commit fixes it (bless
 //!   clears that note once the doc's class ranks as high as `was=`). Lower the
-//!   `# agree_floor` line if needed. The gate cannot tell a hand-edited row
-//!   from a blessed one; `scripts/check_census_append_only.sh` refuses a commit
-//!   that lowers a row's class without one of these notes, or adds `nondet=`.
+//!   `# agree_floor` line by at most the number of `agree` rows lowered. The
+//!   gate cannot tell a hand-edited row from a blessed one; the hand edits CI
+//!   refuses are listed in `scripts/check_census_verdicts.py`, which
+//!   `scripts/check_census_append_only.sh` runs.
 //! - **`ours-*`** needs a `divergence=`, `known=<label>` (a defect not fixed
 //!   yet) or `fixed_by=` note.
 //! - **A `divergence=` doc whose class changes fails**: the deliberate

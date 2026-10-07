@@ -3,12 +3,12 @@
 # (assets/census/docs/) and MuJoCo's golden data for it (assets/census/golden/).
 # Both only gain files: a doc's golden is never regenerated or edited to make it
 # agree, and a doc is never edited or removed, so the census can only see more.
-# The manifest only gains lines. The four files the census rewrites by design —
-# golden/meta.json, verdicts.tsv, divergences.tsv and manifest.tsv — are the
-# exceptions to "no modified file".
+# The manifest only gains lines, and names each doc and only docs. The four
+# files the census rewrites by design — golden/meta.json, verdicts.tsv,
+# divergences.tsv and manifest.tsv — are the exceptions to "no modified file".
 #
-# It also runs check_census_verdicts.py: verdicts.tsv may change, but a row
-# whose class a commit lowers must carry a note.
+# It also runs check_census_verdicts.py, which holds the rules for the hand
+# edits verdicts.tsv may take.
 #
 # Usage: check_census_append_only.sh <base-ref>
 #   Checks the range <base-ref>...HEAD, and each commit of it against its
@@ -24,6 +24,15 @@ dir=sim/L0/tests/assets/census
 mutable="^$dir/(golden/meta\.json|verdicts\.tsv|divergences\.tsv|manifest\.tsv)\$"
 
 status=0
+# The doc ids under docs/ at <ref>, and the ids manifest.tsv names there.
+doc_ids() {
+    git ls-tree --name-only "$1" -- "$dir/docs/" | sed -n 's|^.*/\([^/]*\)\.xml$|\1|p' | sort -u
+}
+manifest_ids() {
+    { git show "$1:$dir/manifest.tsv" 2>/dev/null || true; } | { grep -v '^#' || true; } \
+        | cut -f1 | sed '/^$/d' | sort -u
+}
+
 # check <from> <to> <label>
 check() {
     local changed removed_lines
@@ -40,6 +49,18 @@ check() {
     fi
     if [[ "$removed_lines" -gt 0 ]]; then
         echo "::error::$3: $dir/manifest.tsv only gains lines; $removed_lines removed"
+        status=1
+    fi
+    unlisted="$(comm -23 <(doc_ids "$2") <(manifest_ids "$2"))"
+    unbacked="$(comm -13 <(doc_ids "$2") <(manifest_ids "$2"))"
+    if [[ -n "$unlisted" ]]; then
+        echo "::error::$3: docs with no manifest.tsv line:"
+        echo "$unlisted"
+        status=1
+    fi
+    if [[ -n "$unbacked" ]]; then
+        echo "::error::$3: manifest.tsv names no doc for:"
+        echo "$unbacked"
         status=1
     fi
     python3 -I "$here/check_census_verdicts.py" "$1" "$2" "$3" || status=1
