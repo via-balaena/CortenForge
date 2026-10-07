@@ -47,8 +47,12 @@ check() {
 
 merge_base="$(git merge-base "$base" HEAD)"
 check "$merge_base" HEAD "$base...HEAD"
-for commit in $(git rev-list --no-merges --reverse "$merge_base"..HEAD); do
-    check "$commit^" "$commit" "commit $(git rev-parse --short "$commit")"
+# A merge is checked against each of its parents: against the one that holds
+# a file, an edit to it is a modification.
+for commit in $(git rev-list --reverse "$merge_base"..HEAD); do
+    for parent in $(git log --format=%P -n 1 "$commit"); do
+        check "$parent" "$commit" "commit $(git rev-parse --short "$commit")"
+    done
 done
 [[ $status -eq 0 ]] && echo "census snapshot: append-only against $base, and in each commit since"
 exit $status

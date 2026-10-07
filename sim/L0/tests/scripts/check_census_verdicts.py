@@ -6,11 +6,13 @@
 The census test compares each doc's verdict with sim/L0/tests/assets/census/
 verdicts.tsv, so it cannot tell a row a commit lowered by hand from one the
 test wrote. This compares the file at the two refs: a doc whose class ranks
-lower at <to-ref> must carry a `divergence=`, `known=` or
-`fixed_by=<Pnn|Lnn> was=<class>` note there. A doc missing at <from-ref> is
-new and skipped. `klass`, `rank` and the note forms mirror class, rank and
+lower at <to-ref> must carry a `divergence=<ID>`, `known=<label>` or
+`fixed_by=<Pnn|Lnn> was=<class>` note there, a was= class ranking at least as
+high as the doc's class at <from-ref>; and no row may gain a `nondet=` note,
+which makes the census skip it. A doc missing at <from-ref> is new and
+skipped. `klass`, `rank` and the note forms mirror class, rank, is_class and
 fixed_by in sim/L0/tests/mujoco_conformance/layer_e_census/ratchet.rs.
-Exits 1 on a lowered row without a note.
+Exits 1 on either.
 """
 import re
 import subprocess
@@ -57,16 +59,20 @@ def rank(cls):
 
 
 def is_class(cls):
+    if any(c.isspace() for c in cls):
+        return False
     return (cls in ('agree', 'dyn', 'mj-refuses', 'both-refuse')
             or (cls.startswith('ours-') and len(cls) > len('ours-'))
             or (cls.startswith('model:') and cls.endswith((';dyn-agree', ';dyn-differs'))))
 
 
-def explained(note):
-    if note.startswith(('divergence=', 'known=')):
-        return True
-    m = re.fullmatch(r'fixed_by=[PL][0-9]+[a-z]? was=(\S+)', note)
-    return bool(m) and is_class(m.group(1))
+def explained(note, before):
+    """Whether `note` accounts for a row lowered from the verdict `before`."""
+    for prefix in ('divergence=', 'known='):
+        if note.startswith(prefix):
+            return len(note) > len(prefix)
+    m = re.fullmatch(r'fixed_by=[PL][0-9]+[a-z]? was=(.+)', note)
+    return bool(m) and is_class(m.group(1)) and rank(m.group(1)) >= rank(klass(before))
 
 
 def main():
@@ -75,11 +81,16 @@ def main():
     before, after, label = rows(sys.argv[1]), rows(sys.argv[2]), sys.argv[3]
     lowered = [(doc, before[doc][0], verdict, note) for doc, (verdict, note) in sorted(after.items())
                if doc in before and rank(klass(verdict)) < rank(klass(before[doc][0]))
-               and not explained(note)]
+               and not explained(note, before[doc][0])]
     for doc, was, now, note in lowered:
-        print(f'::error::{label}: {doc} lowered from {was} to {now} without a divergence=, known= '
-              f'or fixed_by=<Pnn|Lnn> was=<class> note (has {note!r})')
-    return 1 if lowered else 0
+        print(f'::error::{label}: {doc} lowered from {was} to {now} without a divergence=<ID>, '
+              f'known=<label> or fixed_by=<Pnn|Lnn> was=<class at least {klass(was)}> note '
+              f'(has {note!r})')
+    skipped = [doc for doc, (_, note) in sorted(after.items())
+               if note.startswith('nondet=') and not before.get(doc, ('', ''))[1].startswith('nondet=')]
+    for doc in skipped:
+        print(f'::error::{label}: {doc} gained a nondet= note; the census would stop checking it')
+    return 1 if lowered or skipped else 0
 
 
 if __name__ == '__main__':

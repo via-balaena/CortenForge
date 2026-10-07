@@ -88,9 +88,8 @@ pub fn verdict(golden: &Value, ours: &Value) -> String {
 }
 
 /// The part of a verdict the ratchet pins. The rest of a verdict — which
-/// step or quantity differs first — is a label: listed in the test's output
-/// when it changes and recorded on bless, never failed on, because last-bit
-/// perturbations move it (A20 §2.4).
+/// step or quantity differs first — is a label: recorded on bless, never
+/// failed on, because last-bit perturbations move it (A20 §2.4).
 fn class(v: &str) -> String {
     if v == "agree" || v.starts_with("ours-") || v == "mj-refuses" || v == "both-refuse" {
         return v.to_string();
@@ -175,6 +174,9 @@ fn write_expected(path: &Path, rows: &BTreeMap<String, Row>) {
 
 /// Whether `c` is a class (what [`class`] returns), not a verdict.
 fn is_class(c: &str) -> bool {
+    if c.contains(char::is_whitespace) {
+        return false;
+    }
     matches!(c, "agree" | "dyn" | "mj-refuses" | "both-refuse")
         || c.strip_prefix("ours-").is_some_and(|s| !s.is_empty())
         || c.strip_prefix("model:")
@@ -257,8 +259,8 @@ impl Report {
 /// Compare every doc's verdict (`got`) with the expected file and, when
 /// `bless`, rewrite the file for improvements, shifts, label shifts and new
 /// docs — never for a regression, a lost divergence or a bad note. A
-/// `fixed_by=` note is cleared once the doc is back at its `was=` class or
-/// above: the later commit fixed it.
+/// `fixed_by=` note is cleared once the doc's class ranks as high as its
+/// `was=` class: the later commit fixed it.
 pub fn ratchet(
     got: &BTreeMap<String, String>,
     expected_path: &Path,
@@ -315,7 +317,7 @@ pub fn ratchet(
         }
         let explained = ["divergence=", "known=", "fixed_by="]
             .iter()
-            .any(|p| row.note.starts_with(p));
+            .any(|p| row.note.len() > p.len() && row.note.starts_with(p));
         if v.starts_with("ours-") && !explained {
             report.bad_notes.push((
                 doc.clone(),

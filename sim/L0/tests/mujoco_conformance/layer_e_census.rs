@@ -19,15 +19,16 @@
 //!   edit of the row's verdict with a note: `divergence=<ID>` when it is a
 //!   permanent deviation (the ID must be a row of `divergences.tsv`), or
 //!   `fixed_by=<Pnn|Lnn> was=<class>` when a later commit fixes it (bless
-//!   clears that note once the doc is back at its `was=` class). Lower the
+//!   clears that note once the doc's class ranks as high as `was=`). Lower the
 //!   `# agree_floor` line if needed. The gate cannot tell a hand-edited row
 //!   from a blessed one; `scripts/check_census_append_only.sh` refuses a commit
-//!   that lowers a row's class without one of these notes.
-//! - **`ours-*` on a doc MuJoCo loads** needs a `divergence=`, `known=<label>`
-//!   (a defect not fixed yet) or `fixed_by=` note.
+//!   that lowers a row's class without one of these notes, or adds `nondet=`.
+//! - **`ours-*`** needs a `divergence=`, `known=<label>` (a defect not fixed
+//!   yet) or `fixed_by=` note.
 //! - **A `divergence=` doc whose class changes fails**: the deliberate
 //!   difference was lost, or became another.
-//! - **Label shifts** (same class) are listed in the output and recorded on bless.
+//! - **Label shifts** (same class) never fail; bless records them, and a passing
+//!   run prints them only under `--nocapture`.
 //! - **`nondet=`** skips a doc whose verdict varies between processes (none today).
 //!
 //! The snapshot and the golden are append-only (a CI step checks it): new
@@ -126,7 +127,7 @@ fn layer_e_parity_census() {
     list(&mut msg, "rows with no golden doc", &r.missing);
     list(
         &mut msg,
-        "divergence= docs that now agree",
+        "divergence= docs whose class changed",
         &r.lost_divergences,
     );
     list(&mut msg, "notes the gate cannot accept", &r.bad_notes);

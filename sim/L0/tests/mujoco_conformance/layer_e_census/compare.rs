@@ -645,7 +645,11 @@ fn nonzero_contacts(dump: &Value) -> Vec<&[Value]> {
         .iter()
         .filter_map(Value::as_array)
         .map(Vec::as_slice)
-        .filter(|c| c.get(4).map_or(0.0, num).abs() > ZERO_DISTANCE)
+        .filter(|c| {
+            // A NaN distance is not zero: it is compared, and differs.
+            let d = c.get(4).map_or(0.0, num).abs();
+            d > ZERO_DISTANCE || d.is_nan()
+        })
         .collect()
 }
 

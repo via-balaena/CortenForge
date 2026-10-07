@@ -90,6 +90,9 @@ def model_json(m):
         r = np.zeros(9)
         mujoco.mju_quat2Mat(r, m.body_iquat[b])
         r = r.reshape(3, 3)
+        # numpy is not built without fused multiply-adds; at the census's 1e-9
+        # tolerance its last bits do not matter, but a bit-exact golden must not
+        # come from numpy arithmetic.
         body_I.append(floats(r @ np.diag(m.body_inertia[b]) @ r.T))
     return {
         'nq': m.nq, 'nv': m.nv, 'nu': m.nu, 'na': m.na, 'nbody': m.nbody, 'ngeom': m.ngeom,
