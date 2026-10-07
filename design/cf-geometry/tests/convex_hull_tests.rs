@@ -786,9 +786,22 @@ impl SplitMix64 {
 }
 
 /// 2–4 planes, each with 8–30 points perturbed off it by up to 1e-7…1e-12:
-/// the near-coplanar input on which a float visibility test splits the
-/// visible region and leaves a face the new point can see.
+/// the input on which a float visibility test with a tolerance of 1e-10 of
+/// the diagonal (the test before the exact one) left points outside the hull.
 fn near_coplanar_points(seed: u64) -> Vec<Point3<f64>> {
+    plane_points(seed, true)
+}
+
+/// The same planes and points as [`near_coplanar_points`], each point on its
+/// plane up to rounding: the input on which a float visibility test with no
+/// tolerance leaves points outside the hull.
+fn coplanar_points(seed: u64) -> Vec<Point3<f64>> {
+    plane_points(seed, false)
+}
+
+/// Points on 2–4 random planes, perturbed off them or not. Both forms draw
+/// the same random numbers, so a seed names the same planes in each.
+fn plane_points(seed: u64, perturbed: bool) -> Vec<Point3<f64>> {
     let mut rng = SplitMix64(seed);
     let planes = 2 + (rng.next_u64() % 3) as usize;
     let mut points = Vec::new();
@@ -808,7 +821,12 @@ fn near_coplanar_points(seed: u64) -> Vec<Point3<f64>> {
         let a = normal.cross(&helper).normalize();
         let b = normal.cross(&a);
         let count = 8 + (rng.next_u64() % 23) as usize;
-        let off_plane = 10_f64.powi(-7 - (rng.next_u64() % 6) as i32);
+        let decades = (rng.next_u64() % 6) as i32;
+        let off_plane = if perturbed {
+            10_f64.powi(-7 - decades)
+        } else {
+            0.0
+        };
         for _ in 0..count {
             let p = normal * offset
                 + a * rng.range(-1.0, 1.0)
@@ -905,4 +923,40 @@ fn hull_has_no_unreferenced_vertices() {
             hull.vertices.len()
         );
     }
+}
+
+/// Seeds whose points lie on their planes up to rounding, on which a float
+/// visibility test with no tolerance left a point outside the hull by more
+/// than 1e-12 of the diagonal (the first 32 of 513 in seeds 0..3000).
+const COPLANAR_SEEDS: [u64; 32] = [
+    8, 12, 13, 20, 24, 26, 48, 50, 59, 74, 95, 98, 101, 108, 110, 114, 115, 116, 117, 120, 129,
+    131, 137, 151, 156, 157, 159, 160, 162, 169, 174, 180,
+];
+
+#[test]
+fn coplanar_hulls_contain_every_point() {
+    for seed in COPLANAR_SEEDS {
+        let worst = worst_outside(&coplanar_points(seed));
+        assert!(
+            worst <= 1e-12,
+            "seed {seed}: a point lies {worst:.3e} of the diagonal outside the hull"
+        );
+    }
+}
+
+/// A point on a face of the hull is not a vertex of it: visibility is
+/// strict. The 27 points of a 3×3×3 grid hold a cube's corners, edge
+/// midpoints, face centres and centre; only the corners are vertices.
+#[test]
+fn a_point_on_a_face_is_not_a_vertex() {
+    let mut points = Vec::new();
+    for x in [-1.0, 0.0, 1.0] {
+        for y in [-1.0, 0.0, 1.0] {
+            for z in [-1.0, 0.0, 1.0] {
+                points.push(Point3::new(x, y, z));
+            }
+        }
+    }
+    let hull = convex_hull(&points, None).expect("hull");
+    assert_eq!(hull.vertices.len(), 8, "{:?}", hull.vertices);
 }
