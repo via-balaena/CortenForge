@@ -2381,20 +2381,6 @@ pub fn mjd_transition_hybrid(
     //    The clone preserves qLD_data/qLD_diag_inv, scratch_m_impl, qM — all
     //    unmodified by mjd_smooth_vel.
     let mut data_work = data.clone();
-    // ImplicitSpringDamper is the only integrator whose forward pass OVERWRITES
-    // `qvel` (to v⁺) while leaving `cvel` at the pre-step v_old (see
-    // `mj_fwd_acceleration_implicit`). The transition operating point is (q, v⁺),
-    // so the Coriolis velocity-Jacobian inside `qDeriv` must be evaluated at v⁺ —
-    // refresh velocity kinematics first. (Euler/ImplicitFast/Implicit do NOT
-    // overwrite qvel in forward, so for them this would be a no-op; gating it to
-    // ISD keeps their result byte-for-byte unchanged.) `mj_fwd_velocity` touches
-    // only velocity-FK fields (cvel/cdof/...); qM, qLD, and scratch_m_impl — used
-    // by the velocity/activation solves below — are position-only and untouched.
-    // NOTE: the analytic-position branch does its OWN later refresh (it also re-points
-    // qacc); the two are independent and both required — do not dedupe them.
-    if matches!(model.integrator, Integrator::ImplicitSpringDamper) {
-        crate::forward::mj_fwd_velocity(model, &mut data_work);
-    }
     mjd_smooth_vel(model, &mut data_work);
 
     // 1b. Eulerdamp factor. The real Euler step applies joint damping IMPLICITLY:
@@ -2463,9 +2449,7 @@ pub fn mjd_transition_hybrid(
             // `f_ext` carrying −qfrc_bias(q,v). Holding q fixed, `∂(RHS)/∂v = M + h·∂f_ext/∂v`,
             // and since the joint damper is moved to the LHS, `∂f_ext/∂v = qDeriv + D`
             // (qDeriv carries the −D damper diagonal that cancels back out). M_impl has no
-            // v-dependence, so there is no second-order term. `qDeriv` is evaluated at the
-            // refreshed (q, v⁺) operating point (see the ISD re-forward above) — without
-            // that refresh the Coriolis block is silently wrong for coupled DOFs.
+            // v-dependence, so there is no second-order term.
             let d = &model.implicit_damping;
             let mut dvdv = DMatrix::zeros(nv, nv);
             for j in 0..nv {
@@ -2738,10 +2722,9 @@ pub fn mjd_transition_hybrid(
     scratch.step(model)?;
     let y_0 = extract_state(model, &scratch, &qpos_0);
 
-    // For implicit integrators, save the transition qacc from the nominal step.
-    // This is qacc_transition = (v⁺⁺ − v⁺)/h, computed by the ISD solver during
-    // the nominal step. The analytical position derivative needs this (not the
-    // qacc from the initial forward pass) as the operating point for (∂M/∂q)·qacc.
+    // For implicit integrators, save the qacc of the nominal step: the analytical
+    // position derivative uses it as the operating point for (∂M/∂q)·qacc, not
+    // the qacc `data` arrived with.
     let qacc_transition = if matches!(
         model.integrator,
         Integrator::Euler | Integrator::RungeKutta4
@@ -2778,12 +2761,8 @@ pub fn mjd_transition_hybrid(
     };
 
     if use_analytical_pos {
-        // For implicit integrators, the initial forward() sets qacc to
-        // (v⁺ − v_old)/h and updates qvel to v⁺, but cvel was computed with
-        // v_old. The transition maps (q, v⁺) → (q⁺, v⁺⁺), so derivatives
-        // must be evaluated at (q, v⁺):
-        //  - qacc_transition = (v⁺⁺ − v⁺)/h (from nominal step, not initial forward)
-        //  - cvel must reflect v⁺ (recompute velocity FK)
+        // For implicit integrators, evaluate at the nominal step's qacc
+        // (qacc_transition), with velocity kinematics recomputed from qvel.
         if let Some(ref qt) = qacc_transition {
             data_work.qacc.copy_from(qt);
             crate::forward::mj_fwd_velocity(model, &mut data_work);

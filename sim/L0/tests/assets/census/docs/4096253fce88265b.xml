@@ -1,0 +1,11 @@
+<mujoco>
+      <option timestep="0.01" integrator="implicitspringdamper">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="slide" axis="1 0 0" stiffness="10" damping="0.5"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+    </mujoco>

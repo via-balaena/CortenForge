@@ -1250,3 +1250,30 @@ fn test_implicitfast_connect_ball_chain_stability() {
         "Cable should be settling: final max_qvel={final_max:.4} rad/s"
     );
 }
+
+/// `forward()` computes; it does not advance the state. Under
+/// implicitspringdamper it wrote the solved velocity into `qvel`, so two
+/// calls moved `qvel` twice (0 → −0.00994 → −0.01982 on this spring).
+#[test]
+fn implicitspringdamper_forward_does_not_change_the_state() {
+    let xml = r#"
+    <mujoco>
+      <option timestep="0.01" integrator="implicitspringdamper">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="slide" axis="1 0 0" stiffness="10" damping="0.5"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+    </mujoco>"#;
+    let model = sim_mjcf::load_model(xml).expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    let (qpos, qvel) = (data.qpos.clone(), data.qvel.clone());
+    data.forward(&model).expect("forward");
+    data.forward(&model).expect("forward");
+    assert_eq!(data.qpos, qpos);
+    assert_eq!(data.qvel, qvel);
+}

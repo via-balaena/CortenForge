@@ -67,7 +67,7 @@ fn split_step_implicit_equivalence() {
 
     for i in 0..qpos_step.len() {
         assert!(
-            (qpos_step[i] - qpos_split[i]).abs() < 1e-12,
+            qpos_step[i].to_bits() == qpos_split[i].to_bits(),
             "qpos[{i}] mismatch: step={} split={}",
             qpos_step[i],
             qpos_split[i]
@@ -75,7 +75,7 @@ fn split_step_implicit_equivalence() {
     }
     for i in 0..qvel_step.len() {
         assert!(
-            (qvel_step[i] - qvel_split[i]).abs() < 1e-12,
+            qvel_step[i].to_bits() == qvel_split[i].to_bits(),
             "qvel[{i}] mismatch: step={} split={}",
             qvel_step[i],
             qvel_split[i]

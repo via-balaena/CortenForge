@@ -209,12 +209,10 @@ impl Default for DerivativeConfig {
 /// pure finite difference (Phase A) — it is multi-stage and not yet differentiated
 /// analytically. FD is exact there.
 ///
-/// The implicit-Coriolis integrators get their velocity-Jacobian right in two ways
-/// (see `hybrid::mjd_transition_hybrid`): ImplicitSpringDamper evaluates `qDeriv` at
-/// the refreshed (q, v⁺) operating point (its forward pass overwrites qvel but leaves
-/// cvel stale), and full Implicit adds the second-order term `h²·M_hat⁻¹·rne_vel(qacc)`
-/// for the `v`-dependence of `M_hat = M − h·D`. Both are guarded machine-exact by the
-/// stiffness/damping rows of the transition harness.
+/// Full Implicit gets its velocity-Jacobian right by adding the second-order term
+/// `h²·M_hat⁻¹·rne_vel(qacc)` for the `v`-dependence of `M_hat = M − h·D` (see
+/// `hybrid::mjd_transition_hybrid`), guarded machine-exact by the stiffness/damping
+/// rows of the transition harness.
 ///
 /// # Errors
 ///

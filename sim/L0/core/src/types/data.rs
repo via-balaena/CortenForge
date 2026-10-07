@@ -544,7 +544,9 @@ pub struct Data {
     /// Scratch vector for RHS of linear solves (length `nv`).
     pub scratch_rhs: DVector<f64>,
     /// Scratch vector for new velocity in implicit solve (length `nv`).
-    /// Used to hold v_new while computing qacc = (v_new - v_old) / h.
+    /// Holds the `v_new` ImplicitSpringDamper's acceleration stage solves for,
+    /// from which it computes `qacc = (v_new - v_old) / h`; `integrate` then
+    /// copies it into `qvel`.
     pub scratch_v_new: DVector<f64>,
     /// Pivot permutation for LU factorization in `Integrator::Implicit` (length `nv`).
     /// Stores row swap indices from partial pivoting. Persists after forward pass

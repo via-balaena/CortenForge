@@ -34,8 +34,10 @@ impl Data {
     /// - **Euler**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`),
     ///   then integrates position using the new velocity.
     ///
-    /// - **Implicit**: Velocity was already updated in `mj_fwd_acceleration_implicit()`.
-    ///   We only integrate positions here.
+    /// - **Implicit, ImplicitFast**: `qvel += qacc * h`.
+    ///
+    /// - **ImplicitSpringDamper**: `qvel` becomes the `v_new` the acceleration
+    ///   stage solved for, or `qvel += qacc * h` after a Newton solve.
     ///
     /// Does not check `model.timestep` or the shape of `self`;
     /// [`step`](Self::step) and [`step2`](Self::step2) do. Time runs backwards
@@ -66,8 +68,8 @@ impl Data {
             }
         }
 
-        // For Euler and new implicit variants, update velocity using computed acceleration.
-        // For legacy ImplicitSpringDamper, velocity was already updated in mj_fwd_acceleration_implicit.
+        // Update velocity: from the computed acceleration, or for ImplicitSpringDamper
+        // without a Newton solve, from the v_new its acceleration stage solved for.
         match model.integrator {
             Integrator::Euler => {
                 // Eulerdamp: implicit damping via full matrix solve.
@@ -186,9 +188,12 @@ impl Data {
                         };
                         self.qvel[i] += self.qacc[i] * h;
                     }
+                } else {
+                    // The non-Newton path solved for v_new directly
+                    // (`mj_fwd_acceleration_implicit`); apply it here, so that
+                    // `forward()` does not change qvel.
+                    self.qvel.copy_from(&self.scratch_v_new);
                 }
-                // Otherwise: velocity already updated by mj_fwd_acceleration_implicit
-                // (non-Newton path solves for v_new directly, not qacc)
             }
             Integrator::RungeKutta4 => {
                 // Fallback to Euler when called from step2() split-step API.
