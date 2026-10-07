@@ -1,0 +1,3 @@
+# What planning could not see
+
+No Rust for the MJCF areas was written (A4's flip list comes from a Python model of the parser, checked against MuJoCo); the core areas' patches were applied to scratch copies but per-commit greenness in this order was not run; the 157 templates and runtime MJCF were not captured; ~130 corpus docs hide later errors behind MuJoCo's first; the opt-0 stack for composites; downstream suites (sim-coupling, cf-design, cf-codesign, sim-rl, sim-opt, therm-env; sim-gpu's lib tests ran only at A21's head, 84/84, with no record of whether a GPU adapter was present, A21 §10.2); grade; licensed gates. A `<composite type="cable" count="1000">` reached ~2 GB RSS during planning, cause not isolated — run it only under an RSS watchdog.
