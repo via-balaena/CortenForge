@@ -1,6 +1,6 @@
 # Every open question, and its answer
 
-> **Answers to the 37 questions classed (c) (2026-10-07).** Jon answered four (the wrong-value rule, FMA, flex meaning, ultrareview — see *The decisions*); the rest follow from the parity rule or a technical reason:
+> **Answers to the 37 questions classed (c) (2026-10-07).** Jon answered four (the wrong-value rule, FMA, flex meaning, ultrareview — see *The decisions*), and two more on 2026-10-07 (Q103, Q122: refuse, as MuJoCo); the rest follow from the parity rule or a technical reason:
 >
 > | Q | answer |
 > |---|---|
@@ -23,9 +23,9 @@
 > | Q81 | MuJoCo's meaning (C7) |
 > | Q90–Q95 | implement (C2) |
 > | Q96 | `eig3` (C6) |
-> | Q103 | refuse where MuJoCo needs a hull; load the shell-without-collision case MuJoCo loads (Jon's "provably right" condition is not met — A10 §5) |
+> | Q103 | refuse where MuJoCo needs a hull; load the shell-without-collision case MuJoCo loads (Jon, 2026-10-07: no test can show our result right, A10 §5) |
 > | Q118 | load ASCII STL and > 200,000 faces under the lenient kind, each with a test that the result equals the binary/split form |
-> | Q122 | refuse (no right value exists, A11 §LR-3; MuJoCo's refusal is intended) |
+> | Q122 | refuse, as MuJoCo (Jon, 2026-10-07: no right value exists, A11 §LR-3) |
 > | Q129, U12 | refused as stated limitations (non-scalar ball/free transmission; flex membrane modes we do not implement) |
 
 
@@ -37,7 +37,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 - **(b) technical.** A clear recommendation with no owner-level consequence. Where 11-settled already adopted it, that is said; 11-settled records calls for review, not fixed decisions (12-open-for-jon: "the 14 earlier decisions are in 11-settled as recommended").
 - **(c) needs Jon.** It changes scope, changes what a public API means to existing callers, is a deviation outside the four kinds, has no recommendation, or two sections disagree.
 
-**Tally: 130 questions — (a) 47, (b) 46, (c) 37.** Separately, 17 findings no section's commit list carried (end of file): (a) 9, (b) 7, (c) 1; the series now carries 8 of the (a) rows and the (c) row.
+**Tally: 130 questions — (a) 47, (b) 46, (c) 37.** Separately, 17 findings no section's commit list carried (end of file): (a) 9, (b) 7, (c) 1; the series now carries all 9 (a) rows and the (c) row.
 
 ## 1. sim-core state, API and callbacks
 
@@ -180,7 +180,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q100 | `actuatorfrcrange`/`actuatorfrclimited` | A5 Q5 | refuse / implement | refuse | (a) | stated limitation |
 | Q101 | muscle `actlimited` default | A5 Q6 | parity for `<muscle>`; extensions keep (0,1) | that | (a) | parity |
 | Q102 | URDF inertia triangle violations | A5 Q7 | refuse / `balanceinertia` | refuse, fix two example inertias | (a) | parity with MuJoCo's own URDF importer |
-| Q103 | flat or degenerate mesh that needs a hull | A5 Q8; A10 §5, Q5.1 | refuse where MuJoCo needs a hull / lenient load | refuse; load the shell-without-collision case MuJoCo loads | **(c)** | 01-decisions: where no test can show our result right, "the item comes back to Jon" — A10 §5 found none |
+| Q103 | flat or degenerate mesh that needs a hull | A5 Q8; A10 §5, Q5.1 | refuse where MuJoCo needs a hull / lenient load | refuse; load the shell-without-collision case MuJoCo loads | **(c)** | 01-decisions: where no test can show our result right, "the item comes back to Jon" — A10 §5 found none; Jon decided refuse (2026-10-07) |
 | Q104 | caller-built and `.mjb` input | A5 Q9 | builder guards + docs / exhaustive walk | guards + docs | (b) | adopted, 11-settled A5-Q9 |
 | Q105 | repeated `<pair>` | A5 Q10 | keep both / last wins | keep both | (a) | parity |
 
@@ -219,7 +219,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 
 | # | question | sections | options | recommendation | class | basis |
 |---|---|---|---|---|---|---|
-| Q122 | the 4 docs MuJoCo refuses as "did not converge" | A11 Q-LR1 | refuse / load with (0,0) / an arbitrary value | refuse | **(c)** | 01-decisions listed this as lenient, but A11 §LR-3 shows no right value exists, so no test can be written — "the item comes back to Jon" |
+| Q122 | the 4 docs MuJoCo refuses as "did not converge" | A11 Q-LR1 | refuse / load with (0,0) / an arbitrary value | refuse | **(c)** | 01-decisions listed this as lenient, but A11 §LR-3 shows no right value exists, so no test can be written — "the item comes back to Jon"; Jon decided refuse (2026-10-07) |
 | Q123 | `uselimit`: raw or gear-scaled | A11 Q-LR2 | raw / scaled | raw | (a) | parity |
 | Q124 | Hill/Millard in the mode filter | A11 Q-LR3 | MuJoCo's literal filter / include | literal filter | (b) | — |
 | Q125 | a reset during the lengthrange run | A11 Q-LR4 | `Unstable` / MuJoCo's restart | `Unstable` ("not measured either way") | (a) | stricter |

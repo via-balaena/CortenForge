@@ -2,6 +2,8 @@
 
 Run 2026-10-07 on the book at `fea25180` (code identical to `main` @ `3520544e`). The five reports and the consolidated triage are in `$SCRATCH/rigid_stress/` and are not in the repo. This chapter records what was searched for, what was found, and where each finding was sent; it does not say the book is now correct.
 
+The R1–R5 ids cited in chapters 20 and 22 refer to the findings summarised in *The findings, and where each went*; the full reports stay in the planning scratch.
+
 ## Method
 
 **Criteria.** A finding is something that would make an implementer, following the spec as written, do the wrong thing, get stuck, or ship something the owner decided against. Each is scored blocker, should-fix or nit, and needs a referent (book `file:line`, a research section, a repo `file:line` at HEAD, or a command and its output).
@@ -49,7 +51,7 @@ The counts are each reviewer's own, before duplicates across reviewers were merg
 | T8 | C9: P42 says the stored normal is not renormalised | R1 B2, R3 S2, R4 C9-1–C9-5 | fixed in ch. 20 (P42; P52 depends on P42) |
 | T9 | C8: P10 keeps `# Panics` for the joint-layout check | R1 B3, R2 S12, R3 S1, R4 F8 | fixed in ch. 20 (P10) |
 | T10 | physics tests that need later loading fixes: P39, P52, P33, P18 | R1 B6 B7 S11 S12, R2 S11, R5 S6 | fixed in ch. 20 (those tests set the fields in code) |
-| T11 | answered questions with no carrier (Q17, Q22–Q24, Q28–Q30, Q44, Q46, Q66, Q69, Q73, Q108, Q118, Q119, Q127, Q129, U12) and the class-(a) U-findings | R1 B8 S16, R2 S10, R3 S6–S24, R4 F13 | fixed in ch. 20 and 22; the U table in 13-open-questions names each carrier (U11 has none) |
+| T11 | answered questions with no carrier (Q17, Q22–Q24, Q28–Q30, Q44, Q46, Q66, Q69, Q73, Q108, Q118, Q119, Q127, Q129, U12) and the class-(a) U-findings | R1 B8 S16, R2 S10, R3 S6–S24, R4 F13 | fixed in ch. 20 and 22; the U table in 13-open-questions names each carrier |
 | T12 | L05 is not green alone: sim-urdf writes `<inertial pos>` only when non-zero | R2 B2 | fixed in ch. 22 (L05, cross-crate) |
 | T13 | must-fails whose parent side hangs or grows are bounded by `timeout` only | R1 S14, R2 B6 S7 S8 N1 N2 N7, R5 S11 | rule added to 40-verification; entries fixed in ch. 22 |
 | T14 | L46 has no change or must-fail; P23 is not green alone and leaves init-sleep failures at reset unspecified | R2 S5, R4 F1–F7 | fixed in ch. 22 (L46 from R4's draft) and ch. 20 (P23) |
@@ -111,10 +113,26 @@ The question: does an x86_64 MuJoCo 3.5.0 build, which contains no fused multipl
 | fused instructions (`vfmadd`/`vfmsub`/`vfnmadd`/`vfnmsub`) | 0 in the Linux manylinux x86_64 `.so` (clang 20.1.8), 0 in the macOS x86_64 wheel (`macosx_10_16_x86_64`), 0 in the x86_64 slice of the arm64 wheel (the binary A18 §3.4 counted). The counter was made to fail: `box.c` built for x86_64 with `-mfma` gives 185 |
 | A21's C build, rebuilt | equals A21's output files byte for byte: 4,400 poses and 3,000 frames, with and without FMA |
 | arm64 wheel vs the C build with FMA | equal on every case: 4,400 poses, 3,000 frames, 20,211 inertia tensors |
-| arm64 wheel vs the C build without FMA | differs on 1,153 of 4,400 poses, 1,664 of 3,000 frames, 19,960 of 20,211 tensors; max 4.13e-12 |
+| arm64 wheel vs the C build without FMA | differs on 1,153 of 4,400 poses, 1,664 of 3,000 frames, 19,960 of 20,211 tensors (tensors: max 4.13e-12) |
 | the C build without FMA vs A10's plain Rust `mjuu_eig3` port | equal on 20,211 of 20,211 (A10 had stated it by reading) |
 | an x86_64 build vs the C build without FMA | **not measured**: 0 cases. This machine has no Rosetta (`arch -x86_64` fails), and the x86_64 Python bindings refuse to load under Rosetta (`mujoco/__init__.py:40-50`) |
 
 **Decision (engineering):** the oracle is the committed `-ffp-contract=off` build (40-verification, *The unfused oracle*): it is the one measured to equal a plain port, and it runs on the machine that blesses. Not seen: an x86_64 run of any kind; differences other than fusion (libm, other code generation); the AVX paths a whole step takes on x86_64.
 
 ## Fix-diff pass
+
+A fix to prose is new prose, so it can write new defects. Two cold reviewers read the round-1 diff (`git diff fea25180 81fa9cc5`): FD1 took chapter 20, FD2 chapter 22 and every other file. Each classed a finding **N** (created by the round-1 diff), **M** (a round-1 item fixed in part or not at all) or **P** (older, and on no list).
+
+| reviewer | N (blocker/should/nit) | M | P |
+|---|---|---|---|
+| FD1 | 0/8/11 | 0/1/1 | 0/0/0 |
+| FD2 | 0/7/11 | 0/2/1 | 0/1/0 |
+
+Four findings were reported by both, so **33 distinct findings were created by the round-1 fixes**, none a blocker. The ones an implementer would have hit:
+
+- P10, P18 and P50 put refusals in `try_make_data`, but the MJCF builder calls `make_data` for four derivations (`mjcf/src/builder/build.rs:38-41`), so a refused doc would panic inside the loader. P10 now adds `make_data_for_derivation`, which refuses nothing.
+- The census generator was still pinned to the PyPI wheel, which is the fused build C1 rules out. It now runs on bindings built by the oracle script (P01).
+- Ten residual owners in 40-verification landed before their residuals existed. The owner rule is restated there and every owner recomputed.
+- Q103 and Q122 had been answered by the planner, though the lenient rule sends a case with no possible test back to Jon. Jon decided both on 2026-10-07: refuse, as MuJoCo does.
+
+The round-2 fixes (the commit after `81fa9cc5`) were made cut-first. **No reviewer has read them**, so how many findings they created is not measured; the book is handed over unconverged. What both passes checked: every new repo `file:line` and MuJoCo 3.5.0 citation, by opening it; commit-title regex; dependency order and cross-chapter ids, by script, each made to fail once; public-text hygiene. What they cannot see: anything only compiling or running shows. Per-commit greenness and the per-commit census counts stay unmeasured until implementation, where the must-fail tests check each claim.

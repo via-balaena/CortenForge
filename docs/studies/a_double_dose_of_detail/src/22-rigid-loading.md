@@ -25,7 +25,7 @@ Input: *A Double Dose of Detail* at `caa1c1c0`, Parts 0–3 and research A1–A2
 As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`) is a commit added after the stress test, and the order is the Summary's row order (L49 sits before L47); "src" is the book's or the section's id; titles carry no `!` and one scope (the commit-msg hook); must-fail tests are the ones the research or a reviewer's draft names; census counts are what a section measured on the base it names — **not measured as a series**. In addition:
 - Every MJCF commit carries its MuJoCo 3.5.0 citation and is checked by the five buckets of A6 §4(b) (unchanged · ok→ok changed on the pre-registered list · ok→err mapped to this commit's rule · err→ok MuJoCo-ok · err→err message change). From L02 on, "NEW NONDETERMINISTIC" must stay empty (A6 §4(b), §6).
 - Every commit re-blesses `verdicts.tsv`; a deliberate new refusal of a MuJoCo-loading doc is a hand-edited regression with its `divergence=<ID>` (A20 §2.4, §2.7). Commits that rewrite in-tree MJCF also append-refresh the gate's corpus snapshot (A20 §2.2, §2.7).
-- **Divergence rows:** each commit adds, in the same commit, the divergences-table row of every deviation it introduces, including each `divergence=<ID>` its verdicts name. The registry and its ID column are added by P01 (20-rigid-physics.md). L50 only collects prose.
+- **Divergence rows:** each commit adds, in the same commit, the divergences-table row of every deviation it introduces, including each `divergence=<ID>` its verdicts name. The registry and its ID column are added by P01 (20-rigid-physics.md). L50 adds only the rows of deviations that exist at `main` and stay.
 - **Bit-exact goldens** come from the unfused oracle named in 40-verification § The unfused oracle (C1), not from the arm64 wheel.
 - **Hazards:** a must-fail whose parent side hangs or grows is marked either "established by reading; do not run at the parent" or "run only under the 2.5 GB RSS watchdog (40-verification)".
 - A research sketch that returns `ModelConversionError` means L01's `MjcfError`.
@@ -80,8 +80,8 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 | L42 | A20 R3-L5 | `fix(sim-mjcf): fusestatic accumulates body inertias, moves fromto geoms` | behaviour | L16, L03 |
 | L43 | A20 R3-L6 | `fix(sim-mjcf): <inertial> orientation alternatives` (cross-crate) | behaviour | L05 |
 | L44 | A11 LR-a | `fix(sim-mjcf): actuator lengthrange computed and kept as MuJoCo 3.5.0` (cross-layer, cross-crate) | **yes** | P11, L01, P04 |
-| L45 | A17 C6 | `fix(sim-mjcf): height-field data as MuJoCo (rows bottom-to-top, normalised, grid kept)` (cross-crate) | **yes** (`HeightFieldData`) | P52 |
-| L46 | A8 SP-3/Q3 (R4) | `fix(sim-mjcf): sleep-policy compile errors and init-sleep refusal as MuJoCo` (cross-layer) | behaviour | L01, P11, P20, P23 |
+| L45 | A17 C6 | `fix(sim-mjcf): height-field data as MuJoCo (rows bottom-to-top, normalised, grid kept)` (cross-layer, cross-crate) | **yes** (`HeightFieldData`) | P52 |
+| L46 | A8 SP-3/Q3 (R4) | `fix(sim-mjcf): sleep-policy compile errors and init-sleep refusal as MuJoCo` | behaviour | L01, P11, P20, P23 |
 | L49 | A11 LR-b | `feat(sim-mjcf): <compiler><lengthrange>` | additive field | L44, L09, L05, L06 |
 | L47 | M15 (A4 #7) | `feat(sim-mjcf): schema pre-pass at MuJoCo 3.5.0 with the extension allowlist` | behaviour | L05, L07, L10–L14, L31, L32, L33, L41, L43, L49 |
 | L48 | M25 = A7 DH-3 | `feat(sim-mjcf): delay and history as MuJoCo 3.5.0` | **yes** (`MjcfSensor.interval`) | L01, L05, L16, L47, P08 |
@@ -102,7 +102,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 9. **L22 before L33** (A10 §7: MH3 after M19, else `fluid_derivatives.rs:1391` and `fluid_forces.rs:119,185` go NaN instead of refusing). **L14 before L33** (the fromto axis moves into L14 — see "Merged"; A10 §2.3 measured that the one-geom copy without the fromto change is worse than main).
 10. **L10 before L15, L31, L32, L47** (R4): L15's self-closing flex test, L31's fixture and L32's rewrites use L10's vertex-body docs, and the child form is refused only once the docs are rewritten. **L10 → L10a:** both edit `create_flex_vertex_body`. **L02 → L29, L30, L31** (A9 §5; A13 §4). **L30 → L32**; **L31 and L32 before L47** — otherwise the schema pre-pass refuses `<edge equality>`, `<equality><flex>` and `elastic2d` as unimplemented (A9 §5, A13 §4).
 11. **P03 (MH1) → L36, L37; L35 → L37; L37 → L38** (A10 §7–§8: hull built once on deduplicated points; M23 after MH6).
-12. **L44 needs P11, L01, P04** (A11 §8). Its split into an additive core and a switch is recorded in L44 and not measured.
+12. **L44 needs P11, L01, P04** (A11 §8).
 13. **L45 after P52** (A17 §12).
 14. **L47 after L10–L14** ("6 before 7 so the docs can be rewritten to MuJoCo forms before the pre-pass refuses our spellings; 2–3 before 7", A4 §9) **and after L31, L32, L33, L41, L43, L49**: C2 implements what those read, and L47's sync guard asserts every accepted attribute is read (A4 §1.3).
 15. **L48 after L01, L05, L16, L47** (A7 §6) and after P08 (A13 §4).
@@ -193,8 +193,8 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
      - (c) each vertex body has no joints, or exactly 3 slides on axes x, y, z in that order, with an unrotated frame and a parent that is world or has no dofs.
 
      Rule (c) is where sim-core's flex assumption is checked: the flex Jacobian maps a vertex's 3 dofs straight onto world x, y, z (`constraint/jacobian.rs:62-74`, `:194-202`), and the vertex position is its body's `xpos` (`dynamics/flex.rs:14-17`).
-  3. **Flexcomp.** `<deformable><flexcomp>` keeps generating bodies; `create_flex_vertex_body` becomes flexcomp-only.
-  4. **Doc rewrites** (A20 §1B.4, stage S4), R4's counts: the 92 `<flex>` elements with `<vertex>` children (`flex_unified.rs` 59, `flex_flex_collision.rs` 25, `mjcf/src/parser/tests.rs` 4, `deformable_friction_dt25.rs` 3, `runtime_flags.rs` 1); the 7 `format!` templates (A4 §7); 21 lines of living markdown (`sim/docs/ARCHITECTURE.md`, `MUJOCO_CONFORMANCE.md`, `MUJOCO_GAP_ANALYSIS.md`, `TRAIT_ARCHITECTURE.md`, `examples/COVERAGE_SPEC.md`; the historical `sim/docs/todo/**` stay).
+  3. **Flexcomp.** `<deformable><flexcomp>` keeps generating bodies; `create_flex_vertex_body` becomes flexcomp-only and gives each slide it creates the flex's `flex_damping` as joint damping, in place of the vertex damping step 4 deletes (`passive.rs:474-490`).
+  4. **Doc rewrites** (A20 §1B.4, stage S4), R4's counts: the 92 `<flex>` elements with `<vertex>` children (`flex_unified.rs` 59, `flex_flex_collision.rs` 25, `mjcf/src/parser/tests.rs` 4, `deformable_friction_dt25.rs` 3, `runtime_flags.rs` 1); the 7 `format!` templates (A4 §7); the living markdown that describes `<flex>` as a direct vertex/element specification (`sim/docs/ARCHITECTURE.md:476`, `MUJOCO_CONFORMANCE.md:96`, `MUJOCO_GAP_ANALYSIS.md:1109`; the historical `sim/docs/todo/**` stay).
      - For each vertex, a `<body name="<flex>_v<i>" pos="<vertex i>">` at the end of `<worldbody>`, in vertex order, which keeps today's body ids. It holds 3 slides (none if pinned) and `<inertial pos="0 0 0" mass="<today's lumped mass>" diaginertia="1e-15 1e-15 1e-15"/>` (MuJoCo's `mjMINVAL`); the masses come from today's `compute_vertex_masses`.
      - The flex becomes `<flex body="…" element="…">`, with no `vertex`. In the templates, `{sqrt3_2}` moves into `pos`.
      - The `node=` docs (`flex_unified.rs:1264,1322,1398,1447`): the node bodies become the 3-slide vertex bodies. This moves the geom mass onto the vertices; the effect on the tests' tolerances was not checked. `:1362` becomes a refusal test.
@@ -205,7 +205,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
   - `flex_unknown_vertex_body_is_an_error`: main warns and loads.
   - `flex_child_vertex_form_is_refused`, `flex_node_is_refused`, `flex_empty_element_is_refused` (U07), `flex_pin_and_mass_are_refused`: main loads each.
   - `flex_vertex_body_with_a_hinge_is_refused`: main makes the hinge body a *parent*.
-  - Must not change: `flexcomp_vertex_damping_unchanged`: a `<deformable><flexcomp>` with `<elasticity damping>` > 0 (no in-tree test sets one), `qpos` and `qvel` after 100 steps bit-identical to the parent's. By reading it fails unless the flexcomp generator puts that damping on its slides.
+  - Must not change: `flexcomp_vertex_damping_unchanged`: a `<deformable><flexcomp>` with `<elasticity damping>` > 0 (no in-tree test sets one), `qpos` and `qvel` after 100 steps bit-identical to the parent's.
   - A one-off A/B, not in CI: each rewritten doc has the same `nbody`, `body_mass`, `body_pos`, `jnt_*`, `flexvert_*` and `flexedge_*` as the old form at the parent.
 - **Flips:** every in-tree flex doc, through the rewrites; `flex_unified.rs:1362`.
 - **Census:** append the rewritten forms to the snapshot with their MuJoCo 3.5.0 goldens (`gen_census_golden.py`); the old forms move to both-refuse. At main, under e2: 0 of 72 agree, and 35 of 66 are nondeterministic until L02 (A20 §1B.5). The classes after this commit were not measured.
@@ -217,7 +217,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** U06 (13-open-questions; A20 §1B.5).
 - **Now.** `create_flex_vertex_body` (`mjcf/src/builder/flex.rs:231`) pushes no `body_gravcomp` for the vertex body and no `jnt_actgravcomp` for its slides, which `builder/body.rs:220` and `builder/joint.rs:137` push for every other body and joint. A flex doc plus any `gravcomp` body then panics in `forward` at `dynamics/rne.rs:357` ("index out of bounds: the len is 2 but the index is 2"); MuJoCo loads such a doc (A20 §1B.5, measured).
 - **Change.** The vertex body pushes `body_gravcomp` 0.0, each of its slides `jnt_actgravcomp` false.
-- **Must-fail:** `flexcomp_with_a_gravcomp_body_steps`: a `<deformable><flexcomp>` plus one body with `gravcomp="1"`; `step` returns `Ok`. Main panics (A20 §1B.5).
+- **Must-fail:** `flexcomp_with_a_gravcomp_body_steps`: a `<deformable><flexcomp>` plus one body with `gravcomp="1"`; `step` returns `Ok`. Main panics, by reading: A20 §1B.5 measured the panic on a `<flex>` doc (`flex_gravcomp.xml`), not a `<flexcomp>`.
 - **Census:** not measured. After L10 only `<deformable><flexcomp>`, our extension (11-settled A4-Q3), reaches `create_flex_vertex_body`.
 - **Note:** it edits sim-mjcf only, so it is in this PR (split by layer, 01-decisions). L10 leaves `create_flex_vertex_body` serving `<flexcomp>` only (C7), so the fix stays needed.
 
@@ -339,7 +339,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **The core rule is Rigid-physics'** (R5; A13 §3.6 measured `ISO_FLEX=1`, every flex treated as requesting edges, with 0 test failures): `EqualityType::Flex`, `flexedge_invweight0`, `flex_edgeequality`, the removed `flex_edge_solref`/`solimp` and `ConstraintType::FlexEdge` → `Equality` (Q36) land in the physics commit carrying L31's core rule (chapter 20, P36a). This commit is the loading half.
 - **Closes:** ledger-L39c (A13 §3) = census ledger-L44c (A16 §3), with that physics commit.
 - **Implements:** A13 §3.5's sim-mjcf part: parse `<equality><flex flex=…/>` (C2) and `<flexcomp><edge equality solref solimp>` (`true` creates the equality); edge equalities only for a flex an equality names; refuse `equality="vert"` and `<equality><flexvert>` (stated limitation, A13 Q5); delete `compute_edge_solref`. Doc rewrites, on L10's vertex-body docs: `<equality><flex flex="…"/>` wherever a test needs edges to hold, at least `ac5`, `ac20`, `t09` (Q37, A13 Q4; which others was not determined).
-- **Must-fail:** `flex_rows_only_with_edge_equality`, `flex_edge_rows_match_mujoco_3_5_0` (A13 §3.7); the second uses L10's declared-body form as its fixture.
+- **Must-fail:** `flex_edge_rows_match_mujoco_3_5_0` (A13 §3.7), on L10's declared-body form; `flex_edge_rows_only_where_the_doc_asks`: the same fixture without `<equality><flex>` → 0 flex edge rows. Parent: P36a's builder gives every flex an equality, so it has rows.
 - **Flips:** without the rewrites, `flex_unified::ac5_edge_constraint_stiffness`, `ac20_bending_stability_clamp`, `flex_flex_collision::t09_full_forward_step_no_panic` (A13 §3.6, `ISO_FLEX=2`).
 - **Census:** on L10's rewritten flex docs, not measured. "Item 3's MJCF side … was not prototyped" (A13 §7).
 - **Breaking:** behaviour: a flex no equality names has no edge rows. The Model changes are the physics commit's.
@@ -421,7 +421,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L44 · A11 LR-a · `fix(sim-mjcf): actuator lengthrange computed and kept as MuJoCo 3.5.0` — cross-layer (sim-core), cross-crate (cf-design)
 - **In Rigid-loading although most of it is sim-core:** it needs L01's error variant (A11 §8, Q-LR5). Body: sim-core changes, the breaking `LengthRangeError`, and `compute_actuator_params` no longer sets lengthrange (A11 §8).
-- **Split** (R5): it splits into an additive core (`Model::set_length_range`, `LengthRangeError`, MuJoCo's mode filter; called by nothing) and a switch (the `LengthRangeOpt` default, the builder's call after `builder.build()`, `compute_actuator_params` no longer setting lengthrange). The split is not measured; A11 §8's "cannot be split green" is about removing the old path without the builder's call.
+- **One commit.** It could split into an additive core (`Model::set_length_range`, `LengthRangeError`, MuJoCo's mode filter; called by nothing) and a switch (the `LengthRangeOpt` default, the builder's call after `builder.build()`, `compute_actuator_params` no longer setting lengthrange) (R5; not measured).
 - **Closes:** A5-Q4 (explicit `lengthrange` honoured; 11-settled); ledger-L37 (A16 §2); A6 §5.3's NO-ROW "lengthrange did not converge" — the 4 docs are refused with MuJoCo's message (Q122).
 - **Implements:** A11 §2 LR-1 + LR-2 (`LengthRangeOpt` default `uselimit = false`; `Model::set_length_range`; MuJoCo's mode filter; raw `uselimit` copy; called after `builder.build()`). **Q129** (stated limitation): an actuator on a ball or free joint with a non-scalar gear (a nonzero `gear[1..]`) → `Unsupported`. Ours applies `gear[0]` to the first dof and has no ball/free length (`forward/actuation.rs:390-404`); MuJoCo uses the whole gear (`engine_core_smooth.c:1311-1360`; A11 §6 item 1). A ball-joint muscle with a scalar gear is still refused, by "Invalid lengthrange (0, 0)", because its length is 0 in ours (A11 §6 item 1).
 - **cf-design (Q127):** `mechanism/model_builder.rs:940` calls `compute_actuator_params`, whose lengthrange side effect goes away; it calls `set_length_range` after it (A11 §5, Q-LR6).
@@ -429,19 +429,19 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Flips:** `fiber.rs:569`, `:1815`, `:1421`; `builder/actuator.rs:967`; `activation_clamping.rs:213`, `:229`, `:255` (template `:65-85`); `actuator_phase5.rs:193`, `:125`, `:225`; `phase7_spec_a.rs:270` (A11 §4).
 - **Census:** ok→err 4 + 1; 9 muscle docs' trajectories now equal MuJoCo's (≤ 5.1e-14); 15 docs change `actuator_lengthrange` only (A11 §4); 4 docs `mj-refuses` → `both-refuse` (A20 §2.10).
 
-### L45 · A17 C6 · `fix(sim-mjcf): height-field data as MuJoCo (rows bottom-to-top, normalised, grid kept)` — cross-crate (cf-geometry)
-- **Implements:** A17 §11 R3-C sim-mjcf part (f32, rows flipped, MuJoCo normalisation, no resampling; PNG likewise). **Q67:** cf-geometry `HeightFieldData` (`design/cf-geometry/src/heightfield.rs:54`, pub) gains separate x/y spacing, and `new(…, cell_size)` (`:78`) changes with it. Constructors (`git grep`): `collision/flex_collide.rs`, `collision/hfield.rs`, sim-mjcf `builder/mesh.rs`, cf-geometry `tests/shape_tests.rs`. Readers: `flex_narrow.rs:205`, `sdf_collide.rs:226`, `raycast.rs:298`, `builder/build.rs:582` (A17 §11 R3-C).
+### L45 · A17 C6 · `fix(sim-mjcf): height-field data as MuJoCo (rows bottom-to-top, normalised, grid kept)` — cross-layer (sim-core), cross-crate (cf-geometry)
+- **Implements:** A17 §11 R3-C sim-mjcf part (f32, rows flipped, MuJoCo normalisation, no resampling; PNG likewise). **Q67:** cf-geometry `HeightFieldData` (`design/cf-geometry/src/heightfield.rs:54`, pub) gains separate x/y spacing, and `new(…, cell_size)` (`:78`) changes with it. Constructors (`git grep`): `collision/flex_collide.rs`, `collision/hfield.rs`, sim-mjcf `builder/mesh.rs`, cf-geometry's own tests (`src/heightfield.rs:425-589`). Readers: `flex_narrow.rs:205`, `sdf_collide.rs:226`, `raycast.rs:298`, `builder/build.rs:582` (A17 §11 R3-C).
 - **Must-fail:** `hfield_rows_bottom_to_top`, `hfield_elevation_normalised`, `bodies_rest_on_bumpy_hfield_as_mujoco`, `nonsquare_hfield_as_mujoco` (A17 §11 R3-C tests 1, 2, 4, 6). Test 5, `hfield_contacts_match_mujoco_bitwise`, is P52's, with its field set in code.
 - **Flips:** none in the suites run; the raycasting validator's stdout is unchanged (A17 §11 R3-C).
 - **Breaking:** `HeightFieldData` (pub, cf-geometry).
 
-### L46 · A8 SP-3/Q3 · `fix(sim-mjcf): sleep-policy compile errors and init-sleep refusal as MuJoCo` — cross-layer (sim-core: `Model::tendon_trees`)
+### L46 · A8 SP-3/Q3 · `fix(sim-mjcf): sleep-policy compile errors and init-sleep refusal as MuJoCo`
 - **Closes:** A8 SP-3's two compile errors ("belong in the MJCF series … with `MjcfError`", A8 Dependencies); the load half of Q27 (A8 Q3 (a), parity); A6 §5.1's NO-ROW "sleep-policy compile check" (2 docs: `fluid_derivatives.rs:2768`, `sleeping.rs:2615`). R4's draft.
-- **Now.**
+- **Now** (lines at `main`; P11 keeps the explicit-policy step in sim-mjcf as `apply_explicit_sleep_policies` and moves the rest of `build.rs:810-956` into sim-core, A1 §7).
   - A non-root `sleep` attribute: `warn!`, then the policy is applied to the tree (`builder/build.rs:934-950`); after P20 it is skipped silently on a static body.
   - An explicit `allowed`/`init` on a tendon-coupled tree: the explicit policy wins.
   - An explicit `auto` becomes `AutoAllowed`, so an actuated tree can sleep (`:952-956`).
-  - An init tree that cannot sleep is warned (`island/sleep.rs:300-304`). After P23 `try_make_data` refuses it, but `load_model` does not: every `make_data` in the build runs before trees and policies exist (`build.rs:37-50`).
+  - An init tree that cannot sleep is warned (`island/sleep.rs:300-304`). After P23 `try_make_data` refuses it, but `load_model` does not.
 - **Target** (MuJoCo 3.5.0), in this order:
   1. `user/user_model.cc:3036-3048`: a non-auto policy on a body that is not a movable root → "sleep policy only allowed for movable root bodies"; an explicit `auto` is skipped (`:3041`).
   2. `engine/engine_setconst.c:205-245`: for a tendon with `treenum > 2`, or `treenum == 2` and nonzero stiffness or damping, an explicit `ALLOWED`/`INIT` on any tree its wraps touch → the errors at `:234-243`. Limits do not count.
@@ -449,13 +449,12 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Change.**
   - An explicit `Auto` is a no-op.
   - An explicit non-auto policy on a body with no tree, or not its tree's first body (`tree_body_adr[tree] != body_id`, P20's tables) → `MjcfError::InvalidValue { element: "body", attribute: "sleep", reason: "sleep policy only allowed for movable root bodies", at }`, replacing the `warn!`.
-  - Rule 2 → `MjcfError::InvalidModel` with MuJoCo's text and our ids, at `Location::none()` (MuJoCo's is an engine error with no element). The trees come from a new `pub fn Model::tendon_trees(&self, tendon: usize) -> impl Iterator<Item = usize> + '_` in sim-core: the cross-layer part, and the walk P20 needs to mark every tree of a qualifying tendon (A8 SP-3).
-  - At the end of `model_from_mjcf`, if `ENABLE_SLEEP` is set and any tree is `Init`: `model.try_make_data()`, mapping `MakeDataError::InitSleep` → `MjcfError::InvalidModel { reason: e.to_string(), at: Location::none() }`; the `Data` is dropped.
-  - **P23 supplies** (20-rigid-physics.md): `MakeDataError::InitSleep { marked, slept, tree, root_body }`, which carries MuJoCo's two counts (`engine_io.c:1490-1492`), and a crate-private `make_data_for_derivation` for the build's derivation sites, so they do not run the init-sleep forward (`user_model.cc:5108-5113`).
-  - 30-error-type gains the rows: the root rule → `InvalidValue`; the tendon rule and init-sleep → `InvalidModel`; each Display carries MuJoCo's text.
+  - Rule 2 → `MjcfError::InvalidModel` with MuJoCo's text and our ids, at `Location::none()` (MuJoCo's is an engine error with no element). The trees come from P20's `Model::tendon_trees`.
+  - At the end of `model_from_mjcf`, if `ENABLE_SLEEP` is set and any tree is `Init`: `model.try_make_data()`, mapping any `MakeDataError` → `MjcfError::InvalidModel { reason: e.to_string(), at: Location::none() }`; the `Data` is dropped.
+  - **P23 supplies** (20-rigid-physics.md): `MakeDataError::InitSleep { marked, slept, tree, root_body }`, which carries MuJoCo's two counts (`engine_io.c:1490-1492`).
 - **Must-fail** (not run): `sleep_policy_on_child_body_refused` (main warns); `sleep_policy_on_static_body_refused`; `init_on_damped_cross_tree_tendon_refused` (fixture `fluid_derivatives.rs:2768`; MuJoCo refuses it, A6 §5.1); `allowed_on_three_tree_tendon_refused`; `init_mixed_island_refused_at_load` (A8's `initmix.xml`, `initmix_contact.xml` and the T60 doc); `explicit_auto_on_actuated_tree_never_sleeps` (main `AutoAllowed`). Pins: `explicit_auto_on_child_body_loads`, `init_on_limited_only_cross_tree_tendon_loads`.
 - **Flips:** `fluid_derivatives.rs:2990` t56 (rewrite without `sleep="init"`); `:3045` t57 (delete, or make it the refusal test); `sleeping.rs:2612` T60 (its assertion moves to `load_model`). Every other in-tree `sleep=` is on a world child (`git grep`, R4).
-- **Downstream:** cf-design builds its `Model` with every tree `Never` (`design/cf-design/src/mechanism/model_builder.rs:1173-1218`); sim-urdf emits no `sleep`.
+- **Downstream:** cf-design sets every tree `Never` (after P11, over `compute_kinematic_trees`, A1 §7(c)); sim-urdf emits no `sleep`.
 - **Census:** the 2 docs move `ours-ok/mj-refuses` → `both-refuse` (A6 §5.1 measured MuJoCo's side).
 - **Open:** code-built models. Rule 2 is a setconst rule in MuJoCo, so it also refuses a programmatic `Model`; as written, ours refuses only MJCF. R4 recommends also refusing in `try_make_data` (`MakeDataError::SleepPolicy { tree, tendon }`); otherwise it is a divergence row.
 
@@ -481,7 +480,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Breaking:** `MjcfSensor.interval: Option<(f64, f64)>`; `with_interval(period, phase)` (A7 H-3).
 
 ### L50 · M26 · `docs: MuJoCo divergences, sim-mjcf docs, conformance status`
-- **Implements:** prose only; each divergence row arrives with its commit (Conventions). The stale "Real-World Model Loading ✅ COMPLETE" (A1 §10); `MUJOCO_CONFORMANCE.md` 3.5.0 vs 3.4.0 references (A1 "Found in passing"; A20 §2.1); the lengthrange docs list (A11 §5); `POST_V1_ROADMAP.md` DT-107/DT-108 (A7 H-4).
+- **Implements:** each divergence row a commit introduces arrives with that commit (Conventions); L50 adds the rows of deviations that exist at `main` and stay, enumerated from the research (for example A9 §6's stricter composite `initial`, `builder/composite.rs:127-134`). The rest is prose: the stale "Real-World Model Loading ✅ COMPLETE" (A1 §10); `MUJOCO_CONFORMANCE.md` 3.5.0 vs 3.4.0 references (A1 "Found in passing"; A20 §2.1); the lengthrange docs list (A11 §5); `POST_V1_ROADMAP.md` DT-107/DT-108 (A7 H-4).
 
 ## Merged, split, dropped
 
