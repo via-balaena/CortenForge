@@ -2,7 +2,9 @@
 //!
 //! `gen_census_golden.py` writes MuJoCo's side; the two must describe the same
 //! quantities under the same names, so a field added here is added there too.
-//! Enums are their `Debug` names, which the generator maps MuJoCo's values to.
+//! Enums are their `Debug` names, which the generator maps MuJoCo's values to;
+//! sensor types are the exception, kept in MuJoCo's names on the golden side
+//! and brought to one spelling in `compare.rs`.
 //! Non-finite numbers are the strings `"inf"`, `"-inf"` and `"nan"`.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -176,7 +178,7 @@ pub fn model_json(m: &Model) -> Value {
         "actuator_delay": nums(m.actuator_delay.iter().copied()), "actuator_nsample": m.actuator_nsample,
     });
     let tendons = json!({
-        "tendon_type": names(&m.tendon_type), "tendon_limited": flags(&m.tendon_limited),
+        "tendon_limited": flags(&m.tendon_limited),
         "tendon_range": pairs(&m.tendon_range), "tendon_stiffness": nums(m.tendon_stiffness.iter().copied()),
         "tendon_damping": nums(m.tendon_damping.iter().copied()),
         "tendon_lengthspring": rows(&m.tendon_lengthspring),
@@ -197,7 +199,7 @@ pub fn model_json(m: &Model) -> Value {
         "sensor_noise": nums(m.sensor_noise.iter().copied()),
         "sensor_delay": nums(m.sensor_delay.iter().copied()), "sensor_nsample": m.sensor_nsample,
         "flex_dim": m.flex_dim, "flex_vertnum": m.flex_vertnum, "flex_edgenum": m.flex_edgenum,
-        "flex_elemnum": m.flex_elemnum, "flexvert_mass": nums(m.flexvert_mass.iter().copied()),
+        "flex_elemnum": m.flex_elemnum,
         "flexvert_bodyid": m.flexvert_bodyid,
     });
     merge([

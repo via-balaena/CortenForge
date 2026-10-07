@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::compare::{SHAPE_FIELDS, dump_diff, model_diff, state_differs};
+use super::compare::{COUNT_FIELDS, dump_diff, model_diff, state_differs};
 
 /// The first difference within one excitation: the earliest step, and at
 /// that step a differing state before a differing `forward` dump.
@@ -61,11 +61,15 @@ fn dynamics_verdict(golden: &Value, ours: &Value) -> String {
     "agree".to_string()
 }
 
-/// One doc's verdict: the load statuses, then the first differing model
-/// field, then the first difference in the dynamics. A model-differing doc
-/// whose counts agree carries its dynamics verdict too
-/// (`model:geom_quat;dyn:agree`), so its dynamics are pinned as well.
+/// One doc's verdict: a panic in our loader (`ours-panic`, whatever MuJoCo
+/// does), the load statuses, then the first differing model field, then the
+/// first difference in the dynamics. A model-differing doc whose counts agree
+/// carries its dynamics verdict too (`model:geom_quat;dyn:agree`), so its
+/// dynamics are pinned as well.
 pub fn verdict(golden: &Value, ours: &Value) -> String {
+    if ours["status"] == "panic" {
+        return "ours-panic".to_string();
+    }
     match (golden["status"] == "ok", ours["status"] == "ok") {
         (false, false) => return "both-refuse".to_string(),
         (false, true) => return "mj-refuses".to_string(),
@@ -76,7 +80,7 @@ pub fn verdict(golden: &Value, ours: &Value) -> String {
     let Some(first) = fields.first() else {
         return dynamics_verdict(golden, ours);
     };
-    if fields.iter().any(|f| SHAPE_FIELDS.contains(&f.as_str())) {
+    if fields.iter().any(|f| COUNT_FIELDS.contains(&f.as_str())) {
         format!("model:{first}")
     } else {
         format!("model:{first};dyn:{}", dynamics_verdict(golden, ours))
@@ -84,8 +88,9 @@ pub fn verdict(golden: &Value, ours: &Value) -> String {
 }
 
 /// The part of a verdict the ratchet pins. The rest of a verdict — which
-/// step or quantity differs first — is a label: printed when it changes,
-/// never failed on, because last-bit perturbations move it (A20 §2.4).
+/// step or quantity differs first — is a label: listed in the test's output
+/// when it changes and recorded on bless, never failed on, because last-bit
+/// perturbations move it (A20 §2.4).
 fn class(v: &str) -> String {
     if v == "agree" || v.starts_with("ours-") || v == "mj-refuses" || v == "both-refuse" {
         return v.to_string();
@@ -168,6 +173,33 @@ fn write_expected(path: &Path, rows: &BTreeMap<String, Row>) {
     std::fs::write(path, s).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }
 
+/// Whether `c` is a class (what [`class`] returns), not a verdict.
+fn is_class(c: &str) -> bool {
+    matches!(c, "agree" | "dyn" | "mj-refuses" | "both-refuse")
+        || c.strip_prefix("ours-").is_some_and(|s| !s.is_empty())
+        || c.strip_prefix("model:")
+            .is_some_and(|r| r.ends_with(";dyn-agree") || r.ends_with(";dyn-differs"))
+}
+
+/// Whether `id` names a commit of the Rigid series: `P` or `L`, digits, and
+/// at most one lowercase letter (`P08a`).
+fn is_commit_id(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix(['P', 'L']) else {
+        return false;
+    };
+    let digits = rest.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && rest.len() - digits.len() <= 1
+}
+
+/// A `fixed_by=<commit> was=<class>` note: the commit that fixes a regressed
+/// doc, and the class the doc had before it regressed. `None` when malformed.
+fn fixed_by(note: &str) -> Option<(&str, &str)> {
+    let (commit, was) = note.strip_prefix("fixed_by=")?.split_once(" was=")?;
+    (is_commit_id(commit) && is_class(was)).then_some((commit, was))
+}
+
 /// The divergence registry's IDs (the first column of `divergences.tsv`).
 pub fn read_divergence_ids(path: &Path) -> BTreeSet<String> {
     std::fs::read_to_string(path)
@@ -192,7 +224,8 @@ pub struct Report {
     pub shifts: Vec<Move>,
     /// Only the label changed; reported, never failed on.
     pub label_shifts: Vec<Move>,
-    /// A `divergence=` doc that agrees: the deliberate difference was lost.
+    /// A `divergence=` doc whose class changed: the deliberate difference was
+    /// lost or became another one.
     pub lost_divergences: Vec<String>,
     /// A note the gate cannot accept, with the reason.
     pub bad_notes: Vec<(String, String)>,
@@ -223,8 +256,9 @@ impl Report {
 
 /// Compare every doc's verdict (`got`) with the expected file and, when
 /// `bless`, rewrite the file for improvements, shifts, label shifts and new
-/// docs — never for a regression, a lost divergence or a bad note. An
-/// improved row loses its `fixed_by=` note: the later commit fixed it.
+/// docs — never for a regression, a lost divergence or a bad note. A
+/// `fixed_by=` note is cleared once the doc is back at its `was=` class or
+/// above: the later commit fixed it.
 pub fn ratchet(
     got: &BTreeMap<String, String>,
     expected_path: &Path,
@@ -265,10 +299,16 @@ pub fn ratchet(
                     format!("divergence ID {id} is not in divergences.tsv"),
                 ));
             }
-            if v == "agree" {
+            if class(v) != class(&row.verdict) {
                 report.lost_divergences.push(doc.clone());
                 continue;
             }
+        }
+        if row.note.starts_with("fixed_by=") && fixed_by(&row.note).is_none() {
+            report.bad_notes.push((
+                doc.clone(),
+                "a fixed_by= note is `fixed_by=<Pnn|Lnn> was=<class>`".to_string(),
+            ));
         }
         if v == "agree" {
             report.agree += 1;
@@ -299,11 +339,8 @@ pub fn ratchet(
             );
         } else if rank(&now) > rank(&was) {
             report.improvements.push(moved);
-            let note = if note.starts_with("fixed_by=") {
-                String::new()
-            } else {
-                note
-            };
+            let restored = fixed_by(&note).is_some_and(|(_, was)| rank(&now) >= rank(was));
+            let note = if restored { String::new() } else { note };
             rows.insert(
                 doc.clone(),
                 Row {

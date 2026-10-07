@@ -7,7 +7,7 @@
 //! - B: Per-stage reference comparison (MuJoCo 3.4.0)
 //! - C: Trajectory comparison
 //! - D: Property/invariant tests
-//! - E: Parity census of every embedded MJCF doc (MuJoCo 3.5.0)
+//! - E: Parity census of the MJCF docs in string literals and Markdown (MuJoCo 3.5.0)
 
 mod common;
 mod layer_a;

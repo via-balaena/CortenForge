@@ -1,10 +1,12 @@
 //! The census comparison: which quantities of our record differ from MuJoCo's.
 //!
 //! A float quantity differs when `max|ours − mj| / max(1, max|mj|)` exceeds
-//! [`TOLERANCE`]; a shape mismatch, or a finite value where the other side is
-//! not, always differs, and NaN equals NaN at the same position. Model fields
-//! are compared only where they act (a joint's range only when it is limited,
-//! a geom's solver parameters only when it collides, and so on).
+//! [`TOLERANCE`]; contacts and quaternions are compared on absolute
+//! differences. A shape mismatch, a finite value where the other side is not,
+//! or two different non-finite values always differ, and NaN equals NaN at
+//! the same position. Model fields are compared only where they act (a
+//! joint's range only when it is limited, a geom's solver parameters only when
+//! it collides, and so on).
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -54,6 +56,18 @@ fn flatten(v: &Value) -> (Vec<usize>, Vec<f64>) {
     (s, d)
 }
 
+/// `|x − y|`, except that a finite value against a non-finite one, or two
+/// different non-finite values, are infinitely far apart, and NaN equals NaN.
+fn diff(x: f64, y: f64) -> f64 {
+    if x.is_finite() && y.is_finite() {
+        (x - y).abs()
+    } else if (x.is_nan() && y.is_nan()) || x == y {
+        0.0
+    } else {
+        f64::INFINITY
+    }
+}
+
 /// The scaled difference of two quantities.
 fn scaled(ours: &Value, mj: &Value) -> f64 {
     let (so, o) = flatten(ours);
@@ -87,12 +101,12 @@ fn quat_scaled(ours: &Value, mj: &Value) -> f64 {
         let minus = a
             .iter()
             .zip(b)
-            .map(|(x, y)| (x - y).abs())
+            .map(|(&x, &y)| diff(x, y))
             .fold(0.0, f64::max);
         let plus = a
             .iter()
             .zip(b)
-            .map(|(x, y)| (x + y).abs())
+            .map(|(&x, &y)| diff(x, -y))
             .fold(0.0, f64::max);
         worst.max(minus.min(plus))
     })
@@ -130,8 +144,9 @@ fn row_head(v: &Value, i: usize, n: usize) -> Value {
     )
 }
 
-/// Counts and options whose mismatch makes the rest of the model incomparable.
-pub const SHAPE_FIELDS: &[&str] = &[
+/// Counts whose mismatch makes the rest of the model incomparable: the arrays
+/// they size cannot be matched entry by entry.
+pub const COUNT_FIELDS: &[&str] = &[
     "nq",
     "nv",
     "nu",
@@ -148,6 +163,10 @@ pub const SHAPE_FIELDS: &[&str] = &[
     "nflexvert",
     "nflexedge",
     "nmocap",
+];
+
+/// Options compared exactly.
+const OPTION_EXACT: &[&str] = &[
     "integrator",
     "solver",
     "iterations",
@@ -255,14 +274,17 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
         mj,
         fields: Vec::new(),
     };
-    for f in SHAPE_FIELDS {
+    for f in COUNT_FIELDS {
         d.exact(f);
     }
-    let shapes_agree = d.fields.is_empty();
+    let counts_agree = d.fields.is_empty();
+    for f in OPTION_EXACT {
+        d.exact(f);
+    }
     for f in OPTION_FLOATS {
         d.close(f);
     }
-    if !shapes_agree {
+    if !counts_agree {
         return d.fields;
     }
     let count = |f: &str| {
@@ -414,8 +436,8 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
     for f in ["eq_type", "eq_obj1id", "eq_obj2id", "eq_active"] {
         d.exact(f);
     }
-    // A weld's data is 11 numbers in MuJoCo (the last is its torque scale) and
-    // 10 in ours, so ours is compared with that last number taken as 1.
+    // A weld's data is 11 numbers on both sides, but ours never writes the last
+    // (MuJoCo's torque scale), so ours is compared with that number taken as 1.
     let eq_data_differs = (0..neq).any(|e| match str_at(&mj["eq_type"], e) {
         "Weld" => {
             let mut o = arr(&row_head(&ours["eq_data"], e, 10)).to_vec();
@@ -475,6 +497,7 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
 /// differs names a dump's verdict. `con_zero` (the count of zero-distance
 /// contacts) is checked last.
 const PIPELINE_ORDER: &[&str] = &[
+    "time",
     "qpos",
     "qvel",
     "act",
@@ -533,9 +556,7 @@ fn vec3(v: &Value) -> [f64; 3] {
 }
 
 fn max_abs_diff(a: [f64; 3], b: [f64; 3], sign: f64) -> f64 {
-    (0..3)
-        .map(|i| (a[i] - sign * b[i]).abs())
-        .fold(0.0, f64::max)
+    (0..3).map(|i| diff(a[i], sign * b[i])).fold(0.0, f64::max)
 }
 
 type Grouped<'a> = BTreeMap<PairKey, Vec<(&'a [Value], bool, bool)>>;
@@ -577,7 +598,7 @@ fn contact_diffs(ours: &[&[Value]], mj: &[&[Value]], out: &mut Vec<(&'static str
                 })
                 .unwrap_or(0);
             let (co, swapped_o, _) = candidates.remove(nearest);
-            dist = dist.max((num(&co[4]) - num(&cm[4])).abs());
+            dist = dist.max(diff(num(&co[4]), num(&cm[4])));
             pos = pos.max(max_abs_diff(vec3(&co[5]), pm, 1.0));
             let flip = |swapped: bool| if swapped { -1.0 } else { 1.0 };
             let no = vec3(&co[6]).map(|x| x * flip(swapped_o));
@@ -603,7 +624,7 @@ fn contact_diffs(ours: &[&[Value]], mj: &[&[Value]], out: &mut Vec<(&'static str
 }
 
 /// Constraint-row counts with a flex edge counted as an equality (ours keeps
-/// a separate kind) and MuJoCo's two friction-loss kinds as one.
+/// a separate kind). The golden already merges MuJoCo's two friction-loss kinds.
 fn row_counts(c: &Value) -> BTreeMap<String, i64> {
     let mut out = BTreeMap::new();
     if let Value::Object(o) = c {
@@ -634,7 +655,7 @@ pub fn dump_diff(ours: &Value, mj: &Value) -> Vec<&'static str> {
         return vec!["ours_err"];
     }
     let mut q: Vec<(&'static str, f64)> = Vec::new();
-    for f in ["qpos", "qvel", "act", "xpos"] {
+    for f in ["time", "qpos", "qvel", "act", "xpos"] {
         q.push((f, scaled(&ours[f], &mj[f])));
     }
     q.push(("xquat", quat_scaled(&ours["xquat"], &mj["xquat"])));
@@ -685,13 +706,13 @@ pub fn dump_diff(ours: &Value, mj: &Value) -> Vec<&'static str> {
         .collect()
 }
 
-/// Whether qpos, qvel or act differ after our step `k_ours` and MuJoCo's
-/// checkpoint `k_mj` (both 0-based indices into their trajectories).
+/// Whether qpos, qvel, act or time differ after our step `k_ours` and
+/// MuJoCo's checkpoint `k_mj` (both 0-based indices into their trajectories).
 pub fn state_differs(ours: &Value, mj: &Value, k_ours: usize, k_mj: usize) -> bool {
-    ["q", "v", "a"].iter().any(
-        |x| match (arr(&ours[*x]).get(k_ours), arr(&mj[*x]).get(k_mj)) {
+    ["q", "v", "a", "t"].iter().any(|x| {
+        match (arr(&ours[*x]).get(k_ours), arr(&mj[*x]).get(k_mj)) {
             (Some(a), Some(b)) => scaled(a, b) > TOLERANCE,
             _ => true,
-        },
-    )
+        }
+    })
 }

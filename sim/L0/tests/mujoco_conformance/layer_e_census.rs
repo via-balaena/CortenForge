@@ -1,15 +1,15 @@
 //! Layer E — the parity census against MuJoCo 3.5.0.
 //!
-//! Every MJCF document the repository embeds is snapshotted under
-//! `assets/census/docs/` (`scripts/extract_mjcf.py`; `manifest.tsv` says where
-//! each was found). Each is loaded and run here — `forward` dumps at steps 0, 1
+//! The MJCF documents in the repository's Rust string literals and Markdown
+//! fences are snapshotted under `assets/census/docs/` (`scripts/extract_mjcf.py`;
+//! `manifest.tsv` says where each was found). Each is loaded and run here — `forward` dumps at steps 0, 1
 //! and 100 and the state at 19 checkpoints, from two initial velocities — and
 //! compared with golden data from MuJoCo 3.5.0 built without fused
 //! multiply-adds (`scripts/build_mujoco_oracle.sh`, `scripts/gen_census_golden.py`).
 //!
 //! Each doc gets one verdict: `agree`; the first differing model field; the
-//! first differing step or quantity; or a load status (`ours-refused`,
-//! `mj-refuses`, `both-refuse`). `assets/census/verdicts.tsv` pins each doc's
+//! first differing step or quantity; or a load status (`ours-panic`,
+//! `ours-refused`, `mj-refuses`, `both-refuse`). `assets/census/verdicts.tsv` pins each doc's
 //! class (see `ratchet::class`) and is a ratchet:
 //!
 //! - **An improvement fails until blessed.** Run with `CENSUS_BLESS=1` to
@@ -18,11 +18,16 @@
 //! - **A regression fails and is never blessed.** A deliberate one is a hand
 //!   edit of the row's verdict with a note: `divergence=<ID>` when it is a
 //!   permanent deviation (the ID must be a row of `divergences.tsv`), or
-//!   `fixed_by=<commit>` when a later commit fixes it (bless clears that note
-//!   when the doc improves again). Lower the `# agree_floor` line if needed.
-//! - **`ours-refused` on a doc MuJoCo loads** needs a `divergence=`, `known=`
-//!   (a tracked bug) or `fixed_by=` note.
-//! - **A `divergence=` doc that agrees fails**: the deliberate difference was lost.
+//!   `fixed_by=<Pnn|Lnn> was=<class>` when a later commit fixes it (bless
+//!   clears that note once the doc is back at its `was=` class). Lower the
+//!   `# agree_floor` line if needed. The gate cannot tell a hand-edited row
+//!   from a blessed one; `scripts/check_census_append_only.sh` refuses a commit
+//!   that lowers a row's class without one of these notes.
+//! - **`ours-*` on a doc MuJoCo loads** needs a `divergence=`, `known=<label>`
+//!   (a defect not fixed yet) or `fixed_by=` note.
+//! - **A `divergence=` doc whose class changes fails**: the deliberate
+//!   difference was lost, or became another.
+//! - **Label shifts** (same class) are listed in the output and recorded on bless.
 //! - **`nondet=`** skips a doc whose verdict varies between processes (none today).
 //!
 //! The snapshot and the golden are append-only (a CI step checks it): new
@@ -97,7 +102,7 @@ fn layer_e_parity_census() {
         got.insert(doc.clone(), ratchet::verdict(&mj, &ours::record(&xml)));
     }
 
-    let bless = std::env::var_os("CENSUS_BLESS").is_some();
+    let bless = std::env::var("CENSUS_BLESS").is_ok_and(|v| v == "1");
     let divergences = ratchet::read_divergence_ids(&dir.join("divergences.tsv"));
     let r = ratchet::ratchet(&got, &dir.join("verdicts.tsv"), &divergences, bless);
 
@@ -133,5 +138,8 @@ fn layer_e_parity_census() {
         );
     } else {
         assert!(r.passes(), "{msg}");
+        if !r.label_shifts.is_empty() {
+            println!("{msg}");
+        }
     }
 }

@@ -7,6 +7,9 @@
 # golden/meta.json, verdicts.tsv, divergences.tsv and manifest.tsv — are the
 # exceptions to "no modified file".
 #
+# It also runs check_census_verdicts.py: verdicts.tsv may change, but a row
+# whose class a commit lowers must carry a note.
+#
 # Usage: check_census_append_only.sh <base-ref>
 #   Checks the range <base-ref>...HEAD, and each commit of it against its
 #   parent, so a commit cannot edit a file an earlier commit of the same
@@ -15,6 +18,7 @@ set -euo pipefail
 
 [[ $# -eq 1 && -n $1 ]] || { echo "usage: check_census_append_only.sh <base-ref>" >&2; exit 2; }
 base=$1
+here="$(cd "$(dirname "$0")" && pwd)"
 cd "$(git rev-parse --show-toplevel)"
 dir=sim/L0/tests/assets/census
 mutable="^$dir/(golden/meta\.json|verdicts\.tsv|divergences\.tsv|manifest\.tsv)\$"
@@ -38,6 +42,7 @@ check() {
         echo "::error::$3: $dir/manifest.tsv only gains lines; $removed_lines removed"
         status=1
     fi
+    python3 -I "$here/check_census_verdicts.py" "$1" "$2" "$3" || status=1
 }
 
 merge_base="$(git merge-base "$base" HEAD)"
