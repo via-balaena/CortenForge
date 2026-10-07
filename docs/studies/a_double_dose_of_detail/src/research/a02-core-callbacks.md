@@ -1,4 +1,4 @@
-> Appendix to `RIGID_SPEC.md`, written during planning by a read-only researcher at `3520544e`. Paths under `$SCRATCH` are the planning session's scratch and are **not in the repo**; every claim here is re-established by the tests its commit adds. Where this appendix and `RIGID_SPEC.md` disagree, `RIGID_SPEC.md` wins.
+> Research for *A Double Dose of Detail*, written during planning by a read-only researcher at `3520544e`. Paths under `$SCRATCH` are the planning session's scratch and are **not in the repo**; every claim here is re-established by the tests its commit adds. Where this section and the book's spec chapters (Parts 0–4) disagree, the spec chapters win.
 
 # Rigid spec — sim-core callbacks and control (core-C1, core-C2, core-C3, core-C4, core-L4, core-B1, ledger-L31's FD item, FD under RK4)
 

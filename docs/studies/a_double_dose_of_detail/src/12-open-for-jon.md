@@ -1,0 +1,12 @@
+# Open for Jon
+
+**Answered 2026-10-06** (items 1–4, recorded in §2): accepted with no effect; load where MuJoCo fails, with a correctness test; implement delay; fix the divergences. Items below are kept for the record; item 5 is still open.
+
+
+1. **Visual-only and capacity-hint elements** (`camera light material texture visual skin`, `<statistic>` except `meaninertia`, `<size memory njmax nconmax nkey nstack nuserdata>`). Read literally, "MuJoCo-valid things we don't implement are errors" refuses them: 0 in-tree docs flip, but **47 of the 53 submodule models that load today stop loading** (226 of 253 use one). Proposed: a third verdict, **accepted with no effect**, for elements whose only effect is rendering or allocation capacity, each listed in the divergences table. *Recommend accept-with-no-effect*: nothing the simulation computes differs, so the file is not being silently disobeyed; refusing defeats P-L28.
+2. **Where MuJoCo itself fails.** (a) MuJoCo 3.5.0 refuses its own 2-body cables (internal exclude naming, "body 'B_1' not found", 8 corpus docs once `curve` is fixed); (b) lengthrange computation does not converge (4); (c) qhull fails on a flat mesh (1 + 2 CI tests). *Recommend*: (a) load and list (MuJoCo's defect, our result is defined); (b) and (c) parity — refuse — because our value for those quantities is not shown to be right.
+3. **P-L34 delay/history.** Implement MuJoCo 3.5.0's history (samples inserted in `mj_advance`, actuation and sensors read delayed values) or refuse `delay > 0` / `nsample > 0` as a stated limitation. *Recommend refuse in Rigid* (23 in-tree docs become refusal tests; the Model/Data fields keep MuJoCo's shape) and implement later as a feature.
+4. **Known divergences documented, not fixed here** — each needs Jon's DONE-or-DROPPED in the 0.10 ledger: sleep re-forwards on the sleep step and sleep timing (step 69 vs MuJoCo 76, A2 Q3); dim-3 tet re-orientation and boundary flaps (A6 §1.10); STL vertices not deduplicated (3× MuJoCo on `fourier_n1`); principal-axis order of a full inertia (A5 §4.4); hull face order (limitation). *Recommend*: document all in the divergences table; fix tet orientation and flaps with the flex work after 0.10.
+5. **P-L32 multi-joint dynamics** — in Rigid or its own PR. Cause isolated and fix measured (§5). *Recommend Rigid* (K13).
+
+Also for Jon's review, though the rule settles them: the 14 earlier decisions are in §3 as recommended; sensor derivatives change semantics (§2).

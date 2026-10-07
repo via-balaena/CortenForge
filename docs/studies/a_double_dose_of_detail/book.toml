@@ -1,0 +1,17 @@
+[book]
+title = "A Double Dose of Detail"
+authors = ["CortenForge"]
+description = "The spec for the Rigid PRs of the 0.10.0 arc: an outside user's findings against the published sim-core and sim-mjcf crates, what planning found by comparing them with MuJoCo 3.5.0, the parity rule, and the commit series that fixes it."
+language = "en"
+multilingual = false
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+
+[output.html.fold]
+enable = true
+level = 1
