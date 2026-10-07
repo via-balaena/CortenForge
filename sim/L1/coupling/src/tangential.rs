@@ -1,6 +1,7 @@
 //! Tangential (drift) single-step and trajectory gradients — the velocity-perturbation
 //! drift Jacobian and the friction-tangential material / coefficient time-adjoints.
 
+use crate::xfrc_from_torque_force;
 use sim_ml_chassis::{Tape, Tensor};
 use sim_soft::{BoundaryConditions, CpuNewtonSolver, Solver, Tet4, Vec3};
 
@@ -267,7 +268,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // (4) route the gripped wrench (normal + friction + moment) + z-damping; real step.
             let mut wrench = self.contact_wrench_gripped(height, &friction);
             wrench[5] -= self.rigid_damping * vz_k;
-            self.data.xfrc_applied[self.body] = wrench;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&wrench);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in tangential trajectory");
@@ -490,7 +491,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // (4) route the gripped wrench (normal + friction + moment) + z-damping; real step.
             let mut wrench = self.contact_wrench_gripped(height, &friction);
             wrench[5] -= self.rigid_damping * vz_k;
-            self.data.xfrc_applied[self.body] = wrench;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&wrench);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in tangential trajectory");

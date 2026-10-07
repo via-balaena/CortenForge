@@ -89,12 +89,10 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
     // MuJoCo projects xfrc_applied in mj_fwdAcceleration, not mj_passive.
     // No sleep guard — MuJoCo projects ALL bodies unconditionally.
     for body_id in 1..model.nbody {
-        let xfrc = &data.xfrc_applied[body_id];
-        if xfrc.iter().all(|&v| v == 0.0) {
+        let wrench = data.xfrc_applied[body_id];
+        if wrench.is_zero() {
             continue;
         }
-        let torque = Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
-        let force = Vector3::new(xfrc[3], xfrc[4], xfrc[5]);
         let point = data.xipos[body_id];
         mj_apply_ft(
             model,
@@ -102,8 +100,8 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
             &data.xquat,
             &data.xaxis,
             &data.xanchor,
-            &force,
-            &torque,
+            &wrench.force,
+            &wrench.torque,
             &point,
             body_id,
             &mut qfrc_smooth,

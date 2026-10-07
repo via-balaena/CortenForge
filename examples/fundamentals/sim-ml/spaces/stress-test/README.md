@@ -11,7 +11,7 @@ correctness invariants that the crate's 111 unit tests don't cover.
    sensordata, actuator_force, qfrc_constraint, xpos, xquat, cvel,
    sensor (by name), contact_count, time, energy. Verifies dim accounting
    matches the sum of every extractor's contribution.
-3. **All 5 injectors in one space** — ctrl, qfrc_applied, xfrc_applied,
+3. **All 5 injectors in one space** — ctrl, qfrc_applied, body_wrench,
    mocap_pos, mocap_quat on a mocap-enabled model. Verifies dim and
    successful apply.
 4. **1000-step endurance** — extract obs + apply actions in a loop for

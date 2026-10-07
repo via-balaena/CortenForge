@@ -566,8 +566,8 @@ fn test_body_accumulators() -> (u32, u32) {
 
     let m2 = sim_mjcf::load_model(mjcf_free).expect("parse");
     let mut d2 = m2.make_data();
-    // xfrc_applied is Cartesian force/torque on body (6D: [torque, force])
-    d2.xfrc_applied[1][3] = 10.0; // 10 N in x on body 1
+    // xfrc_applied is a Cartesian force and torque on the body, world frame
+    d2.xfrc_applied[1].force[0] = 10.0; // 10 N in x on body 1
     d2.forward(&m2).expect("forward");
     d2.inverse(&m2);
 

@@ -209,9 +209,9 @@ fn apply_impulse(mut data: ResMut<PhysicsData>, bodies: Res<BodyIds>) {
     let t = data.0.time;
     let a3 = bodies.a[2];
     if (IMPULSE_TIME..IMPULSE_TIME + IMPULSE_DURATION).contains(&t) {
-        data.0.xfrc_applied[a3][5] = IMPULSE_FORCE; // upward force on top of Stack A
+        data.0.xfrc_applied[a3].force[2] = IMPULSE_FORCE; // upward force on top of Stack A
     } else {
-        data.0.xfrc_applied[a3][5] = 0.0;
+        data.0.xfrc_applied[a3].force[2] = 0.0;
     }
 }
 

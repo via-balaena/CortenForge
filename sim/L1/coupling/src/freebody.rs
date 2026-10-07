@@ -1,6 +1,7 @@
 //! Free-body trajectory gradients — the multi-step time-adjoints for the free (6-DOF)
 //! rigid body: material, angular-velocity, orientation, and peak-force gradients.
 
+use crate::xfrc_from_torque_force;
 use sim_core::{Matrix3, MjJointType, SpatialVector};
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::Vec3;
@@ -158,7 +159,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             sf[3] = -force_on_soft.x;
             sf[4] = -force_on_soft.y;
             sf[5] = -force_on_soft.z - self.rigid_damping * vz_k;
-            self.data.xfrc_applied[self.body] = sf;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in coupled trajectory");
@@ -374,7 +375,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             if self.rigid_damping != 0.0 {
                 applied[5] += -self.rigid_damping * self.data.qvel[2];
             }
-            self.data.xfrc_applied[self.body] = applied;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&applied);
             self.data.step(&self.model).expect("rigid step");
             let g_pos = if self.model.nq == self.model.nv {
                 self.model.timestep * &g_vel
@@ -657,7 +658,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             sf[3] = -force_on_soft.x;
             sf[4] = -force_on_soft.y;
             sf[5] = -force_on_soft.z - self.rigid_damping * vz_k;
-            self.data.xfrc_applied[self.body] = sf;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in coupled trajectory");

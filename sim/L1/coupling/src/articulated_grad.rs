@@ -2,6 +2,7 @@
 //! arm: the material gradient and the two tangential (friction) material / coefficient
 //! gradients, backprop-through-time on one soft↔rigid tape.
 
+use crate::xfrc_from_torque_force;
 use sim_core::{Matrix3, SpatialVector};
 use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor};
@@ -338,7 +339,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let g_vel = self.fresh_xfrc_column();
 
             // (4)+(5) route the wrench and step the real rigid body.
-            self.data.xfrc_applied[self.body] = wrench;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&wrench);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in articulated trajectory");
@@ -686,7 +687,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .unwrap_or_else(|| self.loaded_state_jacobian(&w_total));
             let g_vel = self.fresh_xfrc_column();
 
-            self.data.xfrc_applied[self.body] = w_total;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&w_total);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in articulated friction trajectory");
@@ -994,7 +995,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 .unwrap_or_else(|| self.loaded_state_jacobian(&w_total));
             let g_vel = self.fresh_xfrc_column();
 
-            self.data.xfrc_applied[self.body] = w_total;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&w_total);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in articulated friction-coeff trajectory");

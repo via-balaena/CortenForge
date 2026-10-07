@@ -39,7 +39,7 @@ const CARTPOLE_MJCF: &str = r#"
 "#;
 
 // Mocap-enabled model: a mocap target body + a pendulum with actuator.
-// Enables all 5 injector types: ctrl, qfrc_applied, xfrc_applied,
+// Enables all 5 injector types: ctrl, qfrc_applied, body_wrench,
 // mocap_pos, mocap_quat.
 const MOCAP_MJCF: &str = r#"
 <mujoco model="mocap-stress">
@@ -166,7 +166,7 @@ fn check_3_all_injectors() -> Check {
 
     // Mocap model: nu=1, nv=1, nbody=3 (world + target + pendulum), nmocap=1
     // 5 injector types:
-    //   ctrl(0..1)=1, qfrc_applied(0..1)=1, xfrc_applied(1..3)=12,
+    //   ctrl(0..1)=1, qfrc_applied(0..1)=1, body_wrench(1..3)=12,
     //   mocap_pos(0..1)=3, mocap_quat(0..1)=4
     //   Total = 21
     let expected_dim = 1 + 1 + 12 + 3 + 4;
@@ -174,7 +174,7 @@ fn check_3_all_injectors() -> Check {
     let act = ActionSpace::builder()
         .ctrl(0..model.nu)
         .qfrc_applied(0..model.nv)
-        .xfrc_applied(1..model.nbody)
+        .body_wrench(1..model.nbody)
         .mocap_pos(0..model.nmocap)
         .mocap_quat(0..model.nmocap)
         .build(&model)

@@ -2,6 +2,7 @@
 //! across the state→control recurrence for a state-feedback policy `u_k = π_θ(state_k)`,
 //! including the mission's joint `(∂z_N/∂μ, ∂z_N/∂θ)` from one `tape.backward`.
 
+use crate::xfrc_from_torque_force;
 use sim_core::{DMatrix, Matrix3, SpatialVector};
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{BoundaryConditions, CpuNewtonSolver, Solver, Tet4, Vec3};
@@ -315,7 +316,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let g_vel = self.fresh_xfrc_column();
             let g_act_vel = self.actuator_velocity_column();
 
-            self.data.xfrc_applied[self.body] = w_total;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&w_total);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in policy-friction trajectory");
@@ -679,7 +680,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let g_vel = self.fresh_xfrc_column();
             let g_act_vel = self.actuator_velocity_column();
 
-            self.data.xfrc_applied[self.body] = w_total;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&w_total);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in design+policy-friction trajectory");
@@ -1046,7 +1047,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             sf[3] = -force_on_soft.x;
             sf[4] = -force_on_soft.y;
             sf[5] = -force_on_soft.z - self.rigid_damping * vz_k + u_k;
-            self.data.xfrc_applied[self.body] = sf;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in coupled policy trajectory");
@@ -1131,7 +1132,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             sf[3] = -force_on_soft.x;
             sf[4] = -force_on_soft.y;
             sf[5] = -force_on_soft.z - self.rigid_damping * vz_k + u_k;
-            self.data.xfrc_applied[self.body] = sf;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in coupled policy rollout");
@@ -1254,7 +1255,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 *vi = (xf - xo) / dt;
             }
             self.x = x_next;
-            self.data.xfrc_applied[self.body] = self.contact_wrench_gripped(height, &friction);
+            self.data.xfrc_applied[self.body] =
+                xfrc_from_torque_force(&self.contact_wrench_gripped(height, &friction));
             self.data.ctrl[0] = u_k;
             self.data
                 .step(&self.model)
@@ -1427,7 +1429,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             sf[3] = -force_on_soft.x;
             sf[4] = -force_on_soft.y;
             sf[5] = -force_on_soft.z - self.rigid_damping * vz_k + u_k;
-            self.data.xfrc_applied[self.body] = sf;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in coupled joint trajectory");

@@ -8,6 +8,7 @@
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 
 // Imports from sibling modules
+use super::body_wrench::BodyWrench;
 use super::enums::{ConstraintState, ConstraintType, ResetError, SleepState};
 use super::model::Model;
 
@@ -201,8 +202,10 @@ pub struct Data {
     pub ten_limit_frc: Vec<f64>,
 
     // Cartesian forces (alternative input method)
-    /// Applied spatial forces in world frame (length `nbody`).
-    pub xfrc_applied: Vec<SpatialVector>,
+    /// Force and torque applied to each body at its centre of mass, in the
+    /// world frame (length `nbody`): MuJoCo's `xfrc_applied`, one
+    /// [`BodyWrench`] per body.
+    pub xfrc_applied: Vec<BodyWrench>,
 
     // ==================== Mass Matrix ====================
     /// Joint-space inertia matrix (`nv` x `nv`).
@@ -648,7 +651,8 @@ pub struct Data {
     /// Backward pass: `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`,
     /// accumulated into parent.
     pub cfrc_int: Vec<SpatialVector>,
-    /// Per-body external forces in world frame (length `nbody`).
+    /// Per-body external forces in world frame (length `nbody`), laid out
+    /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`).
     /// `xfrc_applied` + contact/constraint solver forces, converted to spatial
     /// force at body CoM. Populated by `mj_body_accumulators()`.
     pub cfrc_ext: Vec<SpatialVector>,
@@ -1136,9 +1140,7 @@ impl Data {
         self.qfrc_smooth.fill(0.0);
         self.qfrc_frictionloss.fill(0.0);
         self.qfrc_applied.fill(0.0);
-        for v in &mut self.xfrc_applied {
-            *v = SpatialVector::zeros();
-        }
+        self.xfrc_applied.fill(BodyWrench::default());
 
         // 4b. Body accumulators + inverse dynamics — zero.
         for v in &mut self.cacc {
@@ -1258,9 +1260,7 @@ impl Data {
         self.actuator_velocity.fill(0.0);
         self.actuator_force.fill(0.0);
         self.qfrc_applied.fill(0.0);
-        for v in &mut self.xfrc_applied {
-            *v = SpatialVector::zeros();
-        }
+        self.xfrc_applied.fill(BodyWrench::default());
         self.sensordata.fill(0.0);
         self.ncon = 0;
         self.contacts.clear();

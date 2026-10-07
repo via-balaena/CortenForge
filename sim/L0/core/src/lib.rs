@@ -167,6 +167,8 @@ pub use types::{
     ActuatorDynamics,
     ActuatorTransmission,
     BiasType,
+    // One body's applied force and torque (types/body_wrench.rs)
+    BodyWrench,
     ConstraintState,
     ConstraintType,
     // Contact representation (extracted to types/contact_types.rs)

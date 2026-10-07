@@ -125,12 +125,10 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     // needed because we can't use data.qfrc_smooth (overridden by Newton).
     // No sleep guard — MuJoCo projects ALL bodies unconditionally.
     for body_id in 1..model.nbody {
-        let xfrc = &data.xfrc_applied[body_id];
-        if xfrc.iter().all(|&v| v == 0.0) {
+        let wrench = data.xfrc_applied[body_id];
+        if wrench.is_zero() {
             continue;
         }
-        let torque = nalgebra::Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
-        let force = nalgebra::Vector3::new(xfrc[3], xfrc[4], xfrc[5]);
         let point = data.xipos[body_id];
         crate::jacobian::mj_apply_ft(
             model,
@@ -138,8 +136,8 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
             &data.xquat,
             &data.xaxis,
             &data.xanchor,
-            &force,
-            &torque,
+            &wrench.force,
+            &wrench.torque,
             &point,
             body_id,
             &mut data.scratch_force,
@@ -400,7 +398,8 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
 pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // ===== Step 1: cfrc_ext = xfrc_applied + contact/constraint forces =====
     for b in 0..model.nbody {
-        data.cfrc_ext[b] = data.xfrc_applied[b];
+        let (t, f) = (data.xfrc_applied[b].torque, data.xfrc_applied[b].force);
+        data.cfrc_ext[b] = SpatialVector::new(t.x, t.y, t.z, f.x, f.y, f.z);
     }
 
     // §51 Fix B: Add contact forces to cfrc_ext.

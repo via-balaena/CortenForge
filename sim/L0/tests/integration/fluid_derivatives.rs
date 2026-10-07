@@ -2187,7 +2187,7 @@ fn t34_sleep_enabled_all_awake() {
     // Sleep model: wake body 2 via xfrc_applied
     let model = load_model(SLEEP_IBOX_2BODY).expect("should load");
     let mut data = model.make_data();
-    data.xfrc_applied[2][2] = 10.0; // Force in Z to wake body 2
+    data.xfrc_applied[2].torque[2] = 10.0; // Torque about Z to wake body 2
     data.step(&model).expect("step");
     assert_eq!(
         data.body_sleep_state[2],
@@ -2198,7 +2198,7 @@ fn t34_sleep_enabled_all_awake() {
     // Clear xfrc_applied, reset qpos/qvel to reference state, run forward.
     // After DT-21, xfrc_applied affects qfrc_passive during the step, so qpos
     // diverges from the reference. Reset both to ensure identical state.
-    data.xfrc_applied[2][2] = 0.0;
+    data.xfrc_applied[2].torque[2] = 0.0;
     data.qpos.copy_from(&ref_data.qpos);
     for (i, &v) in qvel.iter().enumerate() {
         data.qvel[i] = v;
@@ -2575,7 +2575,7 @@ fn t41_wake_transition_derivatives() {
     );
 
     // Wake via xfrc_applied
-    data.xfrc_applied[2][2] = 10.0;
+    data.xfrc_applied[2].torque[2] = 10.0;
     data.step(&model).expect("step");
     assert_eq!(
         data.body_sleep_state[2],
@@ -2586,7 +2586,7 @@ fn t41_wake_transition_derivatives() {
     // Clear xfrc_applied, reset qpos/qvel to reference state, run forward.
     // After DT-21, xfrc_applied affects qfrc_passive during the step, so qpos
     // diverges from the reference. Reset both to ensure identical state.
-    data.xfrc_applied[2][2] = 0.0;
+    data.xfrc_applied[2].torque[2] = 0.0;
     data.qpos.copy_from(&ref_data.qpos);
     for (i, &v) in qvel.iter().enumerate() {
         data.qvel[i] = v;
@@ -2859,7 +2859,7 @@ fn t53_per_dof_damping_awake_matches_baseline() {
     data.forward(&model).expect("forward");
 
     // Wake body 2
-    data.xfrc_applied[2][2] = 10.0;
+    data.xfrc_applied[2].torque[2] = 10.0;
     data.step(&model).expect("step");
     assert_eq!(
         data.body_sleep_state[2],
@@ -2868,7 +2868,7 @@ fn t53_per_dof_damping_awake_matches_baseline() {
     );
 
     // Set qvel, forward, compute derivatives
-    data.xfrc_applied[2][2] = 0.0;
+    data.xfrc_applied[2].torque[2] = 0.0;
     data.qvel[0] = 1.0;
     data.qvel[1] = -0.5;
     data.forward(&model).expect("forward");
@@ -2996,7 +2996,7 @@ fn t56_tendon_cross_tree_not_skipped() {
     assert_eq!(model.ntendon, 1);
 
     // Wake body 1 via xfrc_applied
-    data.xfrc_applied[1][2] = 10.0;
+    data.xfrc_applied[1].torque[2] = 10.0;
     data.step(&model).expect("step");
     assert_eq!(
         data.body_sleep_state[1],
@@ -3005,7 +3005,7 @@ fn t56_tendon_cross_tree_not_skipped() {
     );
 
     // Clear force, forward, compute derivatives
-    data.xfrc_applied[1][2] = 0.0;
+    data.xfrc_applied[1].torque[2] = 0.0;
     data.forward(&model).expect("forward");
 
     let mut work = data.clone();

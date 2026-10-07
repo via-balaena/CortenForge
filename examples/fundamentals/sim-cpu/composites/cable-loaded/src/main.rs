@@ -205,11 +205,9 @@ fn setup(
     commands.insert_resource(PhysicsData(data));
 }
 
-/// Apply constant downward force at the midpoint body every frame.
-/// xfrc_applied layout: [torque_x, torque_y, torque_z, force_x, force_y, force_z]
-/// Downward (physics -z) = index 5.
+/// Apply constant downward (physics −z) force at the midpoint body every frame.
 fn apply_midpoint_load(mid: Res<MidpointBody>, mut data: ResMut<PhysicsData>) {
-    data.xfrc_applied[mid.0][5] = -LOAD_FORCE;
+    data.xfrc_applied[mid.0].force[2] = -LOAD_FORCE;
 }
 
 /// Keep the red sphere tracking the midpoint body's world position.

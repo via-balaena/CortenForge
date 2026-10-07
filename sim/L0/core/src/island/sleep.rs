@@ -134,8 +134,7 @@ fn tree_can_sleep(model: &Model, data: &Data, tree: usize) -> bool {
     let body_start = model.tree_body_adr[tree];
     let body_end = body_start + model.tree_body_num[tree];
     for body_id in body_start..body_end {
-        let f = &data.xfrc_applied[body_id];
-        if f[0] != 0.0 || f[1] != 0.0 || f[2] != 0.0 || f[3] != 0.0 || f[4] != 0.0 || f[5] != 0.0 {
+        if !data.xfrc_applied[body_id].is_zero() {
             return false;
         }
     }
@@ -525,9 +524,7 @@ pub fn mj_wake(model: &Model, data: &mut Data) -> bool {
             continue;
         }
         // Bytewise nonzero check (matches MuJoCo: -0.0 wakes because sign bit is set).
-        // Use to_bits() != 0 instead of != 0.0 because IEEE 754 treats -0.0 == 0.0.
-        let force = &data.xfrc_applied[body_id];
-        if force.iter().any(|&v| v.to_bits() != 0) {
+        if !data.xfrc_applied[body_id].is_zero_bytes() {
             mj_wake_tree(model, data, model.body_treeid[body_id]);
             woke_any = true;
         }

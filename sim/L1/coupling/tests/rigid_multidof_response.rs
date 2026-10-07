@@ -16,7 +16,7 @@
 #![allow(clippy::expect_used)]
 
 use nalgebra::DVector;
-use sim_core::{Model, SpatialVector, max_relative_error};
+use sim_core::{BodyWrench, Model, Vector3, max_relative_error};
 use sim_coupling::rigid_xfrc_column;
 
 /// Step a fresh scratch `Data` from `(qpos, qvel)` with a spatial force
@@ -31,11 +31,11 @@ fn next_qvel(
     let mut d = model.make_data();
     d.qpos.copy_from(qpos);
     d.qvel.copy_from(qvel);
-    let mut s = SpatialVector::zeros();
-    for (i, &c) in sf.iter().enumerate() {
-        s[i] = c;
-    }
-    d.xfrc_applied[body] = s;
+    // `sf` is `[τ; f]`, the column order of `rigid_xfrc_column`.
+    d.xfrc_applied[body] = BodyWrench::new(
+        Vector3::new(sf[3], sf[4], sf[5]),
+        Vector3::new(sf[0], sf[1], sf[2]),
+    );
     d.step(model).expect("scratch step");
     d.qvel.clone()
 }

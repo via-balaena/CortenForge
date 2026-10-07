@@ -3,8 +3,8 @@
 //! neither: it steps at any timestep, and it never reads the model signature it stores in
 //! `mjData` (divergences D-STEP-TIMESTEP and D-DATA-SHAPE).
 
-use nalgebra::{DVector, UnitQuaternion, Vector3, Vector6};
-use sim_core::{Data, MjStage, Model, StepError};
+use nalgebra::{DVector, UnitQuaternion, Vector3};
+use sim_core::{BodyWrench, Data, MjStage, Model, StepError};
 
 type EntryPoint = fn(&mut Data, &Model) -> Result<(), StepError>;
 
@@ -118,7 +118,9 @@ fn every_checked_array_is_named() {
         ("qfrc_applied", |d| {
             d.qfrc_applied = DVector::zeros(d.qfrc_applied.len() + 1);
         }),
-        ("xfrc_applied", |d| d.xfrc_applied.push(Vector6::zeros())),
+        ("xfrc_applied", |d| {
+            d.xfrc_applied.push(BodyWrench::default())
+        }),
         ("mocap_pos", |d| d.mocap_pos.push(Vector3::zeros())),
         ("mocap_quat", |d| {
             d.mocap_quat.push(UnitQuaternion::identity())

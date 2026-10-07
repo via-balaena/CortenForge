@@ -1,0 +1,9 @@
+<mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <body name="b">
+          <freejoint/>
+          <inertial pos="0 0 0" mass="2" diaginertia="0.1 0.1 0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
