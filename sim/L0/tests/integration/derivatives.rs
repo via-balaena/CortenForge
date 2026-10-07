@@ -2236,6 +2236,48 @@ fn t4_hybrid_matches_fd_sensor_derivatives() {
     );
 }
 
+/// The hybrid path's sensor-only finite-difference columns (velocity,
+/// activation and control) give exactly the pure-FD `C` and `D`: each runs
+/// every pipeline stage, since the scratch it reuses holds the previous
+/// column's post-step state.
+#[test]
+fn hybrid_sensor_derivatives_equal_pure_fd() {
+    for integrator in ["Euler", "implicit", "implicitfast", "implicitspringdamper"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body>
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+                  <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <motor joint="j"/>
+                <general joint="j" dyntype="filter" dynprm="0.1"/>
+              </actuator>
+              <sensor><jointpos joint="j"/><jointvel joint="j"/></sensor>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.2;
+        data.qvel[0] = 0.3;
+        data.ctrl[0] = 0.4;
+        data.ctrl[1] = 0.5;
+        data.act[0] = 0.1;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig {
+            compute_sensor_derivatives: true,
+            ..DerivativeConfig::default()
+        };
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        assert_eq!(fd.C, hybrid.C, "C, {integrator}");
+        assert_eq!(fd.D, hybrid.D, "D, {integrator}");
+    }
+}
+
 /// T5: A/B unchanged when sensors enabled → AC7
 #[test]
 fn t5_ab_unchanged_with_sensors_enabled() {

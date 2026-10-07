@@ -2992,7 +2992,9 @@ pub fn mjd_transition_hybrid(
 
     // === Velocity columns: sensor-only FD ===
     // A velocity columns are analytical (no FD step). Sensor C velocity
-    // columns need FD passes with skipstage=MjStage::Pos.
+    // columns need FD passes. Every sensor-only pass below runs every stage
+    // (MjStage::None): the scratch holds the previous column's post-step
+    // state, so a skipped stage would reuse that state's results.
     if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
         for i in 0..nv {
             let state_col = nv + i;
@@ -3010,7 +3012,7 @@ pub fn mjd_transition_hybrid(
                 nv,
                 na,
             );
-            scratch.forward_skip(model, MjStage::Pos, false)?;
+            scratch.forward_skip(model, MjStage::None, false)?;
             scratch.integrate(model);
             scratch.forward(model)?;
             let s_plus = scratch.sensordata.clone();
@@ -3030,7 +3032,7 @@ pub fn mjd_transition_hybrid(
                     nv,
                     na,
                 );
-                scratch.forward_skip(model, MjStage::Pos, false)?;
+                scratch.forward_skip(model, MjStage::None, false)?;
                 scratch.integrate(model);
                 scratch.forward(model)?;
                 let s_minus = scratch.sensordata.clone();
@@ -3075,7 +3077,7 @@ pub fn mjd_transition_hybrid(
                     nv,
                     na,
                 );
-                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.forward_skip(model, MjStage::None, false)?;
                 scratch.integrate(model);
                 scratch.forward(model)?;
                 let s_plus = scratch.sensordata.clone();
@@ -3095,7 +3097,7 @@ pub fn mjd_transition_hybrid(
                         nv,
                         na,
                     );
-                    scratch.forward_skip(model, MjStage::Vel, false)?;
+                    scratch.forward_skip(model, MjStage::None, false)?;
                     scratch.integrate(model);
                     scratch.forward(model)?;
                     let s_minus = scratch.sensordata.clone();
@@ -3302,7 +3304,7 @@ pub fn mjd_transition_hybrid(
                 scratch.ctrl[actuator_idx] += eps;
                 scratch.qacc_warmstart.copy_from(&warmstart_0);
                 scratch.time = time_0;
-                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.forward_skip(model, MjStage::None, false)?;
                 scratch.integrate(model);
                 scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
@@ -3318,7 +3320,7 @@ pub fn mjd_transition_hybrid(
                 scratch.ctrl[actuator_idx] -= eps;
                 scratch.qacc_warmstart.copy_from(&warmstart_0);
                 scratch.time = time_0;
-                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.forward_skip(model, MjStage::None, false)?;
                 scratch.integrate(model);
                 scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
