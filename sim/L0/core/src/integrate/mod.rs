@@ -23,11 +23,12 @@ use nalgebra::DVector;
 use euler::{mj_integrate_pos, mj_normalize_quat};
 
 impl Data {
-    /// Integration step for Euler and implicit-spring-damper integrators.
+    /// Integration step after the acceleration stage: velocity, then position and time.
     ///
     /// This is exposed as part of the split-step API ([`step1`](Self::step1) /
-    /// [`step2`](Self::step2)). RK4 integration is handled by
-    /// `mj_runge_kutta()` and does not call this method.
+    /// [`step2`](Self::step2)). Under RK4, [`step`](Self::step) integrates with
+    /// `mj_runge_kutta()` instead; this method takes the Euler step, as
+    /// MuJoCo's `mj_step2` does.
     ///
     /// # Integration Methods
     ///
@@ -73,7 +74,10 @@ impl Data {
         // Update velocity: from the computed acceleration, or for ImplicitSpringDamper
         // without a Newton solve, from the v_new its acceleration stage solved for.
         match model.integrator {
-            Integrator::Euler => {
+            // Under RK4, `step` integrates with `mj_runge_kutta`; `step2` lands
+            // here and takes MuJoCo's Euler step, as `mj_step2` calls `mj_Euler`
+            // for every integrator but the implicit pair (engine_forward.c:1505-1512).
+            Integrator::Euler | Integrator::RungeKutta4 => {
                 // Eulerdamp: implicit damping via full matrix solve.
                 //
                 // MuJoCo 3.x solves (M + h·D)·qacc_new = F_total, then qvel += h·qacc_new.
@@ -195,19 +199,6 @@ impl Data {
                     // (`mj_fwd_acceleration_implicit`); apply it here, so that
                     // `forward()` does not change qvel.
                     self.qvel.copy_from(&self.scratch_v_new);
-                }
-            }
-            Integrator::RungeKutta4 => {
-                // Fallback to Euler when called from step2() split-step API.
-                // Full RK4 is handled by mj_runge_kutta() in step().
-                let nv = if use_dof_ind { self.nv_awake } else { model.nv };
-                for idx in 0..nv {
-                    let i = if use_dof_ind {
-                        self.dof_awake_ind[idx]
-                    } else {
-                        idx
-                    };
-                    self.qvel[i] += self.qacc[i] * h;
                 }
             }
         }
