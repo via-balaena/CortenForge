@@ -7,7 +7,7 @@
 **How it is organised.**
 
 - **Parts 0–3 are the spec.** They settle every question the research left open, order the work into commit series, and say how each commit is checked. Where they disagree with Part 4, they win.
-- **Part 4 is the research** — twenty sections written by read-only researchers at `3520544e`, each with probes, measurements against `mujoco==3.5.0`, and MuJoCo source citations. Paths under `$SCRATCH` are the planning session's scratch and are not in the repo; every claim is re-established by the tests its commit adds.
+- **Part 4 is the research** — twenty-one sections written by read-only researchers at `3520544e`, each with probes, measurements against `mujoco==3.5.0`, and MuJoCo source citations. Paths under `$SCRATCH` are the planning session's scratch and are not in the repo; every claim is re-established by the tests its commit adds.
 
 **Row ids.** `core-*` and `mjcf-*` are the outside user's findings (triaged); `P-*` are items found while planning (the 0.10 carried-items ledger). Scope lists them all.
 
@@ -33,3 +33,4 @@
 | [A18](research/a18-constraint-solver.md) | Newton, CG, elliptic/noslip, equality, weld |
 | [A19](research/a19-sensors-kinematics.md) | accelerometer, `cfrc_ext`, `ref`/`qpos0`, FD tangent, sleep under RK4 |
 | [A20](research/a20-model-clusters-and-census-gate.md) | model clusters, flex comparability, the census gate |
+| [A21](research/a21-collision-primitives.md) | primitive collision ports, contact frame and inclusion, GJK distance |
