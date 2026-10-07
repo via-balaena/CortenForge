@@ -1257,6 +1257,41 @@ fn test_implicitfast_connect_ball_chain_stability() {
 /// calls moved `qvel` twice (0 → −0.00994 → −0.01982 on this spring).
 #[test]
 fn implicitspringdamper_forward_does_not_change_the_state() {
+    let model = isd_spring();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    let (qpos, qvel) = (data.qpos.clone(), data.qvel.clone());
+    data.forward(&model).expect("forward");
+    data.forward(&model).expect("forward");
+    assert_eq!(data.qpos, qpos);
+    assert_eq!(data.qvel, qvel);
+}
+
+/// `integrate()` adds `h·qacc` to the current `qvel` under
+/// implicitspringdamper, as under every other integrator: a `qvel` edit made
+/// between `forward()` and `integrate()` is kept, and after `reset()` (which
+/// zeroes `qacc`) `integrate()` leaves `qvel` at zero.
+#[test]
+fn implicitspringdamper_integrate_adds_h_qacc_to_the_current_qvel() {
+    let model = isd_spring();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    data.forward(&model).expect("forward");
+    let qacc = data.qacc[0];
+    data.qvel[0] += 1.0;
+    data.integrate(&model);
+    assert_eq!(data.qvel[0].to_bits(), (1.0 + qacc * 0.01).to_bits());
+
+    for _ in 0..5 {
+        data.step(&model).expect("step");
+    }
+    data.reset(&model);
+    data.integrate(&model);
+    assert_eq!(data.qvel[0], 0.0);
+}
+
+/// A slide joint on a spring and damper under implicitspringdamper.
+fn isd_spring() -> sim_core::Model {
     let xml = r#"
     <mujoco>
       <option timestep="0.01" integrator="implicitspringdamper">
@@ -1269,14 +1304,7 @@ fn implicitspringdamper_forward_does_not_change_the_state() {
         </body>
       </worldbody>
     </mujoco>"#;
-    let model = sim_mjcf::load_model(xml).expect("load");
-    let mut data = model.make_data();
-    data.qpos[0] = 0.1;
-    let (qpos, qvel) = (data.qpos.clone(), data.qvel.clone());
-    data.forward(&model).expect("forward");
-    data.forward(&model).expect("forward");
-    assert_eq!(data.qpos, qpos);
-    assert_eq!(data.qvel, qvel);
+    sim_mjcf::load_model(xml).expect("load")
 }
 
 /// Under implicit and implicitfast, `data.qacc` after `forward()` is the

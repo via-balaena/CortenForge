@@ -49,8 +49,9 @@ impl Data {
     ///   `(M − h·∂f/∂v)⁻¹ f` the acceleration stage solved for; `qacc` keeps the
     ///   explicit one, as in MuJoCo.
     ///
-    /// - **ImplicitSpringDamper**: `qvel` becomes the `v_new` the acceleration
-    ///   stage solved for, or `qvel += qacc * h` after a Newton solve.
+    /// - **ImplicitSpringDamper**: `qvel += qacc * h`, where `qacc` is the
+    ///   implicit acceleration the acceleration stage (or a Newton solve)
+    ///   computed.
     ///
     /// Does not check `model.timestep` or the shape of `self`;
     /// [`step`](Self::step) and [`step2`](Self::step2) do. Time runs backwards
@@ -81,8 +82,7 @@ impl Data {
             }
         }
 
-        // Update velocity: from the computed acceleration, or for ImplicitSpringDamper
-        // without a Newton solve, from the v_new its acceleration stage solved for.
+        // Update velocity from the acceleration the step integrates.
         match model.integrator {
             // Under RK4, `step` integrates with `mj_runge_kutta`; `step2` lands
             // here and takes MuJoCo's Euler step, as `mj_step2` calls `mj_Euler`
@@ -183,24 +183,18 @@ impl Data {
                 }
             }
             Integrator::ImplicitSpringDamper => {
-                if self.newton_solved {
-                    // Newton already computed qacc with implicit spring/damper effects
-                    // baked into the constraint solve via M_impl (DT-35: includes
-                    // tendon K/D coupling). Update velocity explicitly.
-                    let nv = if use_dof_ind { self.nv_awake } else { model.nv };
-                    for idx in 0..nv {
-                        let i = if use_dof_ind {
-                            self.dof_awake_ind[idx]
-                        } else {
-                            idx
-                        };
-                        self.qvel[i] += self.qacc[i] * h;
-                    }
-                } else {
-                    // The non-Newton path solved for v_new directly
-                    // (`mj_fwd_acceleration_implicit`); apply it here, so that
-                    // `forward()` does not change qvel.
-                    self.qvel.copy_from(&self.scratch_v_new);
+                // qacc is the implicit acceleration: (v_new − qvel) / h from
+                // `mj_fwd_acceleration_implicit`, or Newton's, which folds the
+                // implicit springs and dampers into M_impl (DT-35: includes
+                // tendon K/D coupling).
+                let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+                for idx in 0..nv {
+                    let i = if use_dof_ind {
+                        self.dof_awake_ind[idx]
+                    } else {
+                        idx
+                    };
+                    self.qvel[i] += self.qacc[i] * h;
                 }
             }
         }

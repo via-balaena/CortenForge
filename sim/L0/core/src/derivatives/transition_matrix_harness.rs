@@ -296,15 +296,12 @@ fn analytic_transition_matches_fd_under_stiffness() {
 /// implicit-Coriolis integrators (**ImplicitSpringDamper**, full **Implicit**)
 /// under joint **damping** with a multi-link chain and live Coriolis (`qvel ≠ 0`).
 ///
-/// This guards the two analytic fixes those integrators rely on, **independent of
-/// joint stiffness** (the `under_stiffness` sweep drives `k`; this drives `D` and
-/// the velocity-coupling that exposes the implicit-Coriolis term):
-///  - ISD evaluates `qDeriv` at the refreshed (q, v⁺) operating point — its forward
-///    pass overwrites `qvel` but leaves `cvel` stale; without the refresh the
-///    off-diagonal `∂vᵢ⁺/∂vⱼ` Coriolis block is silently wrong.
-///  - full Implicit adds the second-order term `h²·M_hat⁻¹·rne_vel(qacc)` for the
-///    `v`-dependence of `M_hat = M − h·D`; without it the same off-diagonal block
-///    diverges, growing with chain length (1-DOF is exact either way).
+/// This guards their damped velocity coupling, **independent of joint
+/// stiffness** (the `under_stiffness` sweep drives `k`; this drives `D` and the
+/// velocity-coupling that exposes the implicit-Coriolis term): full Implicit adds
+/// the second-order term `h²·M_hat⁻¹·rne_vel(qacc_implicit)` for the
+/// `v`-dependence of `M_hat = M − h·D`; without it the off-diagonal `∂vᵢ⁺/∂vⱼ`
+/// block diverges, growing with chain length (1-DOF is exact either way).
 ///
 /// `damp = 0` is included to assert the no-damping path stays exact too.
 #[test]

@@ -2759,11 +2759,10 @@ pub fn mjd_transition_hybrid(
     };
 
     if use_analytical_pos {
-        // For implicit integrators, evaluate at the nominal step's qacc
-        // (qacc_transition), with velocity kinematics recomputed from qvel.
+        // For implicit integrators, evaluate at the nominal step's acceleration
+        // (qacc_transition).
         if let Some(ref qt) = qacc_transition {
             data_work.qacc.copy_from(qt);
-            crate::forward::mj_fwd_velocity(model, &mut data_work);
         }
 
         // Eulerdamp (explicit Euler): the position columns' mass-directional term

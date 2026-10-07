@@ -236,8 +236,8 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     data.scratch_v_new.copy_from(&data.scratch_rhs);
     cholesky_solve_in_place(&data.scratch_m_impl, &mut data.scratch_v_new);
 
-    // qacc = (v_new - v_old) / h. qvel is not written here: `integrate`
-    // copies `scratch_v_new` into it, so `forward()` leaves the state alone.
+    // qacc = (v_new - v_old) / h. qvel is not written here (`integrate` adds
+    // h·qacc to it), so `forward()` leaves the state alone.
     for i in 0..model.nv {
         data.qacc[i] = (data.scratch_v_new[i] - data.qvel[i]) / h;
     }

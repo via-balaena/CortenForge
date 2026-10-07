@@ -240,9 +240,9 @@ pub fn mjd_transition(
             model.integrator,
             // RK4 is the only integrator without an analytic transition derivative:
             // it is multi-stage and not yet differentiated analytically. FD is exact.
-            // (ImplicitSpringDamper and full Implicit now have sound analytic paths —
-            // ISD via an operating-point refresh, Implicit via the implicit-Coriolis
-            // second-order term; see `hybrid::mjd_transition_hybrid`.)
+            // (ImplicitSpringDamper and full Implicit have analytic paths — full
+            // Implicit adds the implicit-Coriolis second-order term; see
+            // `hybrid::mjd_transition_hybrid`.)
             Integrator::RungeKutta4
         )
         && !has_millard

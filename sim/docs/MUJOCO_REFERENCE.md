@@ -744,10 +744,10 @@ pipeline's compute shaders. See `sim/L0/gpu/src/pipeline/` and
 
 **ImplicitSpringDamper (`Integrator::ImplicitSpringDamper`):**
 
-Activation integration is identical to Euler (step 0 above). Velocity becomes
-the `v_new` that `mj_fwd_acceleration_implicit` solved for (`scratch_v_new`),
-or `qvel += h * qacc` after a Newton solve. Position update uses the new
-velocity, identical to step 2 above.
+Activation integration is identical to Euler (step 0 above). Velocity:
+`qvel += h * qacc`, where `qacc` is `(v_new − qvel) / h` for the `v_new` that
+`mj_fwd_acceleration_implicit` solved for, or a Newton solve's. Position update
+uses the new velocity, identical to step 2 above.
 
 **ImplicitFast / Implicit (`Integrator::ImplicitFast`, `Integrator::Implicit`):**
 
