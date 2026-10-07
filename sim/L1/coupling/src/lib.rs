@@ -47,7 +47,7 @@
 //!   material design variable `μ` (λ = 4μ) AND the policy parameters `θ` live on
 //!   ONE tape, read `(∂z_N/∂μ_total, ∂z_N/∂θ)` from one `tape.backward`.
 
-use sim_core::{Data, Model};
+use sim_core::{BodyWrench, Data, Model, SpatialVector, Vector3};
 use sim_soft::{MaterialField, PenaltyRigidContact, SolverConfig, Vec3, VertexId};
 use std::marker::PhantomData;
 
@@ -145,6 +145,18 @@ pub struct StaggeredCoupling<C: PlaneContact = PenaltyRigidContact> {
     /// [`Self::with_contact_moment`].
     contact_moment: bool,
     _contact: PhantomData<C>,
+}
+
+/// The `xfrc_applied` row for a wrench in this crate's `[τ; f]` layout.
+///
+/// This crate builds its wrenches as [`SpatialVector`]s laid out torque first,
+/// the order of [`rigid_xfrc_column`]'s columns; `Data::xfrc_applied` holds a
+/// [`BodyWrench`], force first as in MuJoCo.
+pub(crate) fn xfrc_from_torque_force(w: &SpatialVector) -> BodyWrench {
+    BodyWrench::new(
+        Vector3::new(w[3], w[4], w[5]),
+        Vector3::new(w[0], w[1], w[2]),
+    )
 }
 
 #[cfg(test)]

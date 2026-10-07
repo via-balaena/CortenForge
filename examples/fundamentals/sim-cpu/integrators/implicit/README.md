@@ -2,8 +2,9 @@
 
 The most accurate implicit integrator. Assembles the full velocity
 derivative matrix D (including Coriolis terms from `mjd_rne_vel`), then
-solves `(M - h*D) * qacc = rhs` via LU factorization. Unconditionally
-stable for stiff systems.
+solves `(M - h*D) * a = rhs` via LU factorization for the acceleration `a`
+the step advances `qvel` with (`data.qacc` keeps the explicit acceleration,
+as in MuJoCo). Unconditionally stable for stiff systems.
 
 ## What you see
 
@@ -25,7 +26,8 @@ nothing to implicitly integrate.
 ## How it works
 
 ```
-(M - h*D) * qacc = qfrc_smooth + qfrc_constraint
+(M - h*D) * a = qfrc_smooth + qfrc_constraint
+qvel <- qvel + h * a
 ```
 
 Where D = dF/dv is the full Jacobian of smooth forces with respect to

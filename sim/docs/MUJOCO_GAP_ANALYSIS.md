@@ -152,7 +152,7 @@ Three implicit integrator variants are implemented:
 - MJCF: `integrator="implicitspringdamper"`
 
 **`ImplicitFast` (full Jacobian, Cholesky):**
-- Solves: `(M − h·D)·qacc = qfrc_smooth + qfrc_applied + qfrc_constraint`
+- Solves: `(M − h·D)·qacc_implicit = qfrc_smooth + qfrc_constraint` (`qacc` keeps the explicit acceleration)
 - D = ∂(qfrc_smooth)/∂(qvel) via `mjd_passive_vel` + `mjd_actuator_vel`
 - D is symmetrized: `D ← (D + D^T)/2`, then Cholesky factorization
 - MJCF: `integrator="implicitfast"`

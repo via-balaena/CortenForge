@@ -67,7 +67,7 @@ fn split_step_implicit_equivalence() {
 
     for i in 0..qpos_step.len() {
         assert!(
-            (qpos_step[i] - qpos_split[i]).abs() < 1e-12,
+            qpos_step[i].to_bits() == qpos_split[i].to_bits(),
             "qpos[{i}] mismatch: step={} split={}",
             qpos_step[i],
             qpos_split[i]
@@ -75,7 +75,7 @@ fn split_step_implicit_equivalence() {
     }
     for i in 0..qvel_step.len() {
         assert!(
-            (qvel_step[i] - qvel_split[i]).abs() < 1e-12,
+            qvel_step[i].to_bits() == qvel_split[i].to_bits(),
             "qvel[{i}] mismatch: step={} split={}",
             qvel_step[i],
             qvel_split[i]
@@ -197,5 +197,59 @@ fn rk4_split_step_no_panic() {
         (data.qpos[0] - std::f64::consts::FRAC_PI_4).abs() > 1e-6,
         "State should advance after multiple step1()+step2(), qpos[0]={}",
         data.qpos[0]
+    );
+}
+
+/// `step2` under RK4 takes MuJoCo's Euler step: `mj_step2` calls `mj_Euler`
+/// for every integrator but the implicit pair (`engine_forward.c:1505-1512`),
+/// and `mj_Euler` damps implicitly (eulerdamp). Twenty `step1` + `step2` on a
+/// damped hinge give the Euler model's state bit for bit, and MuJoCo 3.5.0's
+/// (unfused build): qpos 0.7528394373220885, qvel 6.259426228521821.
+#[test]
+fn rk4_step2_is_the_euler_step() {
+    let run = |integrator: &str| {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.05"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        for _ in 0..20 {
+            data.step1(&model).expect("step1");
+            data.step2(&model).expect("step2");
+        }
+        (data.qpos[0], data.qvel[0])
+    };
+    let (rk4, euler) = (run("RK4"), run("Euler"));
+    assert_eq!(
+        rk4.0.to_bits(),
+        euler.0.to_bits(),
+        "qpos: RK4 {} vs Euler {}",
+        rk4.0,
+        euler.0
+    );
+    assert_eq!(
+        rk4.1.to_bits(),
+        euler.1.to_bits(),
+        "qvel: RK4 {} vs Euler {}",
+        rk4.1,
+        euler.1
+    );
+    assert!(
+        (rk4.0 - 0.752_839_437_322_088_5).abs() < 1e-12,
+        "qpos {}",
+        rk4.0
+    );
+    assert!(
+        (rk4.1 - 6.259_426_228_521_821).abs() < 1e-12,
+        "qvel {}",
+        rk4.1
     );
 }

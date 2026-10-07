@@ -24,8 +24,12 @@ On a single hinge pendulum, Coriolis is a scalar and both methods agree.
 ## How it works
 
 ```
-(M - h*D_sym) * qacc = qfrc_smooth + qfrc_constraint
+(M - h*D_sym) * a = qfrc_smooth + qfrc_constraint
+qvel <- qvel + h * a
 ```
+
+`a` is the acceleration the step advances `qvel` with; `data.qacc` keeps the
+explicit acceleration, as in MuJoCo.
 
 Where D_sym = (D + D^T) / 2 is the symmetrized Jacobian, excluding
 Coriolis terms. The symmetry guarantee means M - h*D_sym is SPD

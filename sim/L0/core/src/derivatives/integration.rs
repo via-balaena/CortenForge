@@ -1,7 +1,30 @@
 //! Integration-specific derivative logic.
 
-use crate::types::{ActuatorDynamics, Data, Model};
-use nalgebra::{DMatrix, Matrix3, UnitQuaternion, Vector3};
+use crate::linalg::cholesky_solve_in_place;
+use crate::types::{ActuatorDynamics, Data, Integrator, Model};
+use nalgebra::{DMatrix, DVector, Matrix3, UnitQuaternion, Vector3};
+
+/// The velocity a step leaves, `qvel + h·a`, where `a` is the acceleration
+/// `integrate` advances `qvel` with: `qacc_implicit` under Implicit and
+/// ImplicitFast; under Euler with eulerdamp, `(M + h·D)⁻¹·(qfrc_smooth +
+/// qfrc_constraint)`, with `m_impl_euler` the Cholesky factor of `M + h·D`;
+/// `qacc` otherwise.
+pub(super) fn post_step_qvel(
+    model: &Model,
+    data: &Data,
+    m_impl_euler: Option<&DMatrix<f64>>,
+) -> DVector<f64> {
+    let acc = match (model.integrator, m_impl_euler) {
+        (Integrator::ImplicitFast | Integrator::Implicit, _) => data.qacc_implicit.clone(),
+        (Integrator::Euler, Some(mi)) => {
+            let mut a = &data.qfrc_smooth + &data.qfrc_constraint;
+            cholesky_solve_in_place(mi, &mut a);
+            a
+        }
+        _ => data.qacc.clone(),
+    };
+    &data.qvel + acc * model.timestep
+}
 
 // ============================================================================
 // Phase C: Analytical integration derivatives
@@ -97,11 +120,13 @@ pub(super) struct IntegrationDerivatives {
     pub dact_dactdot: DMatrix<f64>,
 }
 
-/// Compute integration Jacobians (pure function, no mutation).
+/// Compute integration Jacobians (pure function, no mutation). `qvel_next` is
+/// the velocity the step integrates positions with ([`post_step_qvel`]).
 #[allow(non_snake_case)]
 pub(super) fn compute_integration_derivatives(
     model: &Model,
     data: &Data,
+    qvel_next: &DVector<f64>,
 ) -> IntegrationDerivatives {
     let nv = model.nv;
     let na = model.na;
@@ -123,24 +148,12 @@ pub(super) fn compute_integration_derivatives(
                 dqpos_dqvel[(dof_adr, dof_adr)] = h;
             }
             crate::types::MjJointType::Ball => {
-                // θ = ω'·h uses the POST-step velocity (semi-implicit Euler
-                // integrates qpos with qvel_{t+1} = qvel + h·qacc), not the
-                // pre-step qvel — otherwise J_l⁻¹(θ) is evaluated at the wrong
-                // angle and the position-row columns carry an O(h²·qacc) error
-                // (only quaternion joints have a θ-dependent block).
-                //
-                // `qvel + h·qacc` is the exact post-step velocity for UNDAMPED
-                // Euler. For eulerdamp / ImplicitSpringDamper the true post-step
-                // velocity uses M_impl⁻¹ (not the bare `qacc` read here), so a
-                // damped quaternion joint keeps a residual O(h²·D·qacc) in this
-                // block — strictly smaller than the pre-step error this replaces,
-                // never larger. Closing it for the damped path is a follow-on
-                // (route the transition `qacc` in); the undamped path is exact.
-                let omega = Vector3::new(
-                    data.qvel[dof_adr] + h * data.qacc[dof_adr],
-                    data.qvel[dof_adr + 1] + h * data.qacc[dof_adr + 1],
-                    data.qvel[dof_adr + 2] + h * data.qacc[dof_adr + 2],
-                );
+                // θ = ω'·h uses the velocity the step integrates qpos with,
+                // qvel_{t+1} (semi-implicit), not the pre-step qvel: J_l⁻¹(θ) is
+                // evaluated at that angle (only quaternion joints have a
+                // θ-dependent block).
+                let v = qvel_next;
+                let omega = Vector3::new(v[dof_adr], v[dof_adr + 1], v[dof_adr + 2]);
                 let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                     data.qpos[qpos_adr],
                     data.qpos[qpos_adr + 1],
@@ -162,12 +175,9 @@ pub(super) fn compute_integration_derivatives(
                     dqpos_dqvel[(dof_adr + i, dof_adr + i)] = h;
                 }
                 // Angular part (dof_adr+3..dof_adr+6) — post-step velocity θ=ω'·h
-                // (see Ball above; pre-step qvel leaves an O(h²·qacc) error).
-                let omega = Vector3::new(
-                    data.qvel[dof_adr + 3] + h * data.qacc[dof_adr + 3],
-                    data.qvel[dof_adr + 4] + h * data.qacc[dof_adr + 4],
-                    data.qvel[dof_adr + 5] + h * data.qacc[dof_adr + 5],
-                );
+                // (see Ball above).
+                let v = qvel_next;
+                let omega = Vector3::new(v[dof_adr + 3], v[dof_adr + 4], v[dof_adr + 5]);
                 let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                     data.qpos[qpos_adr + 3],
                     data.qpos[qpos_adr + 4],
@@ -664,5 +674,49 @@ mod sub_quat_tests {
 
         assert_mat_close("d_dqa (neg-w qb)", &d_dqa_pos, &d_dqa_neg, 1e-10);
         assert_mat_close("d_dqb (neg-w qb)", &d_dqb_pos, &d_dqb_neg, 1e-10);
+    }
+}
+
+#[cfg(test)]
+mod post_step_qvel_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+    use crate::linalg::cholesky_in_place;
+
+    /// Under Euler with a damped DOF and an active joint limit,
+    /// `post_step_qvel` is the velocity `integrate()` leaves: eulerdamp's
+    /// solve of `qfrc_smooth + qfrc_constraint`, constraint force included.
+    #[test]
+    fn post_step_qvel_is_the_velocity_integrate_leaves() {
+        let mut model = Model::n_link_pendulum(2, 0.5, 1.0);
+        model.jnt_damping = vec![0.4, 0.3];
+        model.jnt_limited[0] = true;
+        model.jnt_range[0] = (-0.1, 0.1);
+        // The factory leaves `jnt_margin` empty; limits read it.
+        model.jnt_margin = vec![0.0; model.njnt];
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 0.5;
+        data.qvel[1] = -0.7;
+        data.forward(&model).expect("forward");
+        assert!(
+            data.qfrc_constraint[0].abs() > 1.0,
+            "the limit is active: {}",
+            data.qfrc_constraint
+        );
+
+        let h = model.timestep;
+        let mut m_impl = data.qM.clone();
+        for i in 0..model.nv {
+            m_impl[(i, i)] += h * model.implicit_damping[i];
+        }
+        cholesky_in_place(&mut m_impl).expect("M + h·D factors");
+        let want = post_step_qvel(&model, &data, Some(&m_impl));
+        let mut stepped = data.clone();
+        stepped.integrate(&model);
+        let err = (want - &stepped.qvel).abs().max();
+        assert!(err < 1e-12, "post_step_qvel vs integrate: {err:e}");
     }
 }

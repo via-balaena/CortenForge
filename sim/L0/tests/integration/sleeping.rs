@@ -6,8 +6,9 @@
 //! Benchmarks T15–T16 are in a separate benchmark file.
 
 use approx::assert_relative_eq;
+use nalgebra::Vector3;
 use sim_core::batch::BatchSim;
-use sim_core::{DISABLE_ISLAND, ENABLE_SLEEP, SleepPolicy, SleepState};
+use sim_core::{BodyWrench, DISABLE_ISLAND, ENABLE_SLEEP, SleepPolicy, SleepState};
 use sim_mjcf::load_model;
 use std::sync::Arc;
 
@@ -473,8 +474,8 @@ fn test_wake_on_xfrc_applied() {
         "ball should be asleep before applying force"
     );
 
-    // Apply external force to wake it
-    data.xfrc_applied[ball_body][2] = 10.0; // Force in Z
+    // Apply an external torque to wake it
+    data.xfrc_applied[ball_body].torque[2] = 10.0; // Torque about Z
 
     // Step once — wake detection runs in forward()
     data.step(&model).expect("step");
@@ -732,8 +733,8 @@ fn test_sleep_wake_scenario() {
     assert!(data.tree_asleep[tree_a] >= 0, "ball_a should be asleep");
     assert!(data.tree_asleep[tree_b] >= 0, "ball_b should be asleep");
 
-    // Wake ball_a with external force
-    data.xfrc_applied[ball_a][2] = 20.0;
+    // Wake ball_a with an external torque
+    data.xfrc_applied[ball_a].torque[2] = 20.0;
     data.step(&model).expect("step");
 
     // ball_a should be awake, ball_b still asleep
@@ -743,8 +744,8 @@ fn test_sleep_wake_scenario() {
         "ball_b should still be asleep"
     );
 
-    // Clear force
-    data.xfrc_applied[ball_a][2] = 0.0;
+    // Clear the torque
+    data.xfrc_applied[ball_a].torque[2] = 0.0;
 }
 
 // ============================================================================
@@ -837,7 +838,7 @@ fn test_batch_sleep_independence() {
     );
 
     // Wake only environment 0
-    batch.env_mut(0).unwrap().xfrc_applied[1][2] = 20.0;
+    batch.env_mut(0).unwrap().xfrc_applied[1].torque[2] = 20.0;
     let errors = batch.step_all();
     for e in &errors {
         assert!(e.is_none(), "step should succeed");
@@ -1320,8 +1321,8 @@ fn test_reset_restores_sleep_state() {
         data.step(&model).expect("step");
     }
 
-    // Apply force to wake resting body
-    data.xfrc_applied[resting_body][2] = 50.0;
+    // Apply a torque to wake the resting body
+    data.xfrc_applied[resting_body].torque[2] = 50.0;
     data.step(&model).expect("step");
     assert!(
         data.tree_asleep[resting_tree] < 0,
@@ -1374,8 +1375,8 @@ fn test_wake_on_negative_zero() {
     let tree = model.body_treeid[ball_body];
     assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
 
-    // Apply -0.0 force — should wake (MuJoCo bytewise check: -0.0 != 0 in bytes)
-    data.xfrc_applied[ball_body][0] = -0.0_f64;
+    // Apply a -0.0 torque — should wake (MuJoCo bytewise check: -0.0 != 0 in bytes)
+    data.xfrc_applied[ball_body].torque[0] = -0.0_f64;
 
     // Step once — wake detection runs
     data.step(&model).expect("step");
@@ -2319,8 +2320,8 @@ fn test_wake_cycle_propagation() {
     assert!(a_asleep, "tree A should be asleep");
     assert!(b_asleep, "tree B should be asleep");
 
-    // Apply external force to body A → wakes tree A
-    data.xfrc_applied[1] = nalgebra::Vector6::new(0.0, 0.0, 10.0, 0.0, 0.0, 0.0);
+    // Apply an external torque to body A → wakes tree A
+    data.xfrc_applied[1] = BodyWrench::new(Vector3::zeros(), Vector3::new(0.0, 0.0, 10.0));
 
     // One step triggers wake detection
     data.step(&model).expect("step");
@@ -2552,8 +2553,8 @@ fn test_user_force_wake_phase_b() {
     let tree = model.body_treeid[1];
     assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
 
-    // Apply external force
-    data.xfrc_applied[1] = nalgebra::Vector6::new(0.0, 0.0, 100.0, 0.0, 0.0, 0.0);
+    // Apply an external torque
+    data.xfrc_applied[1] = BodyWrench::new(Vector3::zeros(), Vector3::new(0.0, 0.0, 100.0));
 
     // One step → mj_wake() detects force and wakes the body
     data.step(&model).expect("step");
@@ -3925,8 +3926,8 @@ fn test_selective_crba_awake_identical() {
         .iter()
         .position(|n| n.as_deref() == Some("ball_a"))
         .expect("ball_a");
-    data_sleep.xfrc_applied[ball_a][2] = 5.0;
-    data_nosleep.xfrc_applied[ball_a][2] = 5.0;
+    data_sleep.xfrc_applied[ball_a].torque[2] = 5.0;
+    data_nosleep.xfrc_applied[ball_a].torque[2] = 5.0;
 
     // Sync qpos/qvel between models (they may have drifted slightly, use sleep's state)
     data_nosleep.qpos.copy_from(&data_sleep.qpos);
@@ -4040,9 +4041,9 @@ fn test_selective_crba_wake_recomputes() {
         .find(|&t| data.tree_asleep[t] >= 0)
         .expect("a tree should be asleep");
 
-    // Wake it with a force
+    // Wake it with a torque
     let body_start = model.tree_body_adr[slept_tree];
-    data.xfrc_applied[body_start][2] = 5.0;
+    data.xfrc_applied[body_start].torque[2] = 5.0;
 
     // Snapshot qpos/qvel
     let saved_qpos = data.qpos.clone();
@@ -4058,7 +4059,7 @@ fn test_selective_crba_wake_recomputes() {
     let mut data_ref = model_ref.make_data();
     data_ref.qpos.copy_from(&saved_qpos);
     data_ref.qvel.copy_from(&saved_qvel);
-    data_ref.xfrc_applied[body_start][2] = 5.0;
+    data_ref.xfrc_applied[body_start].torque[2] = 5.0;
     data_ref.step(&model_ref).expect("ref step");
 
     // The previously-sleeping tree's DOFs should now have fresh, correct qM
@@ -4222,9 +4223,9 @@ fn test_selective_crba_armature_correct() {
     } else {
         // Wake tree 0
         let body_start = model.tree_body_adr[0];
-        data.xfrc_applied[body_start][2] = 5.0;
+        data.xfrc_applied[body_start].torque[2] = 5.0;
         data.step(&model).expect("step to wake");
-        data.xfrc_applied[body_start][2] = 0.0;
+        data.xfrc_applied[body_start].torque[2] = 0.0;
         0
     };
 
@@ -4313,11 +4314,11 @@ fn test_selective_crba_multi_tree() {
     // Wake trees 0 and 2, leave tree 1 sleeping
     let body_a = model.tree_body_adr[0];
     let body_c = model.tree_body_adr[2];
-    data.xfrc_applied[body_a][2] = 5.0;
-    data.xfrc_applied[body_c][2] = 5.0;
+    data.xfrc_applied[body_a].torque[2] = 5.0;
+    data.xfrc_applied[body_c].torque[2] = 5.0;
     data.step(&model).expect("step after wake");
-    data.xfrc_applied[body_a][2] = 0.0;
-    data.xfrc_applied[body_c][2] = 0.0;
+    data.xfrc_applied[body_a].torque[2] = 0.0;
+    data.xfrc_applied[body_c].torque[2] = 0.0;
 
     // Verify: tree 0 awake, tree 1 sleeping, tree 2 awake
     assert!(
@@ -4423,9 +4424,9 @@ fn test_selective_crba_deep_chain() {
 
     // Wake tree 0 only
     let body_a1 = model.tree_body_adr[0];
-    data.xfrc_applied[body_a1][2] = 5.0;
+    data.xfrc_applied[body_a1].torque[2] = 5.0;
     data.step(&model).expect("step after wake");
-    data.xfrc_applied[body_a1][2] = 0.0;
+    data.xfrc_applied[body_a1].torque[2] = 0.0;
 
     // Tree 0 awake, tree 1 sleeping
     assert!(data.tree_asleep[0] < 0, "tree 0 should be awake");
@@ -4496,8 +4497,8 @@ fn test_selective_crba_qld_awake_matches_full() {
 
     // Wake one tree
     let body_a = model.tree_body_adr[0];
-    data.xfrc_applied[body_a][2] = 5.0;
-    data_ref.xfrc_applied[body_a][2] = 5.0;
+    data.xfrc_applied[body_a].torque[2] = 5.0;
+    data_ref.xfrc_applied[body_a].torque[2] = 5.0;
 
     // Sync state
     data_ref.qpos.copy_from(&data.qpos);
@@ -4604,8 +4605,8 @@ fn test_partial_ldl_awake_identical() {
 
     // Wake tree 0 only
     let body_a1 = model.tree_body_adr[0];
-    data.xfrc_applied[body_a1][2] = 5.0;
-    data_ref.xfrc_applied[body_a1][2] = 5.0;
+    data.xfrc_applied[body_a1].torque[2] = 5.0;
+    data_ref.xfrc_applied[body_a1].torque[2] = 5.0;
 
     // Sync state
     data_ref.qpos.copy_from(&data.qpos);
@@ -4736,8 +4737,8 @@ fn test_partial_ldl_solve_correct() {
 
     // Wake tree 0
     let body_a1 = model.tree_body_adr[0];
-    data.xfrc_applied[body_a1][2] = 5.0;
-    data_ref.xfrc_applied[body_a1][2] = 5.0;
+    data.xfrc_applied[body_a1].torque[2] = 5.0;
+    data_ref.xfrc_applied[body_a1].torque[2] = 5.0;
 
     // Sync state
     data_ref.qpos.copy_from(&data.qpos);
@@ -4797,10 +4798,10 @@ fn test_partial_ldl_wake_recomputes() {
     // Wake BOTH trees — both get fresh factorization
     let body_a1 = model.tree_body_adr[0];
     let body_b1 = model.tree_body_adr[1];
-    data.xfrc_applied[body_a1][2] = 10.0;
-    data.xfrc_applied[body_b1][2] = 10.0;
-    data_ref.xfrc_applied[body_a1][2] = 10.0;
-    data_ref.xfrc_applied[body_b1][2] = 10.0;
+    data.xfrc_applied[body_a1].torque[2] = 10.0;
+    data.xfrc_applied[body_b1].torque[2] = 10.0;
+    data_ref.xfrc_applied[body_a1].torque[2] = 10.0;
+    data_ref.xfrc_applied[body_b1].torque[2] = 10.0;
 
     // Sync state
     data_ref.qpos.copy_from(&data.qpos);
@@ -4854,10 +4855,10 @@ fn test_partial_ldl_all_awake_noop() {
 
     // Run for a few steps with constant perturbation (nothing sleeps)
     for _ in 0..50 {
-        data.xfrc_applied[body_a1][2] = 1.0;
-        data.xfrc_applied[body_b1][2] = -1.0;
-        data_ref.xfrc_applied[body_a1][2] = 1.0;
-        data_ref.xfrc_applied[body_b1][2] = -1.0;
+        data.xfrc_applied[body_a1].torque[2] = 1.0;
+        data.xfrc_applied[body_b1].torque[2] = -1.0;
+        data_ref.xfrc_applied[body_a1].torque[2] = 1.0;
+        data_ref.xfrc_applied[body_b1].torque[2] = -1.0;
 
         data.step(&model).expect("step");
         data_ref.step(&model_ref).expect("ref step");
@@ -4918,7 +4919,7 @@ fn test_partial_ldl_spd_preserved() {
 
     // Phase 2: Wake one tree, continue checking
     let body_a1 = model.tree_body_adr[0];
-    data.xfrc_applied[body_a1][2] = 5.0;
+    data.xfrc_applied[body_a1].torque[2] = 5.0;
 
     for step in 0..100 {
         data.step(&model).expect("step");
@@ -4932,8 +4933,8 @@ fn test_partial_ldl_spd_preserved() {
         }
     }
 
-    // Phase 3: Remove force, let it re-settle
-    data.xfrc_applied[body_a1][2] = 0.0;
+    // Phase 3: Remove the torque, let it re-settle
+    data.xfrc_applied[body_a1].torque[2] = 0.0;
     for step in 0..200 {
         data.step(&model).expect("step");
         for d in 0..model.nv {
@@ -4983,8 +4984,8 @@ fn test_partial_ldl_multi_tree_independence() {
     // Wake trees 0 and 2, leave tree 1 sleeping
     let body_a = model.tree_body_adr[0];
     let body_c = model.tree_body_adr[2];
-    data.xfrc_applied[body_a][2] = 5.0;
-    data.xfrc_applied[body_c][2] = 5.0;
+    data.xfrc_applied[body_a].torque[2] = 5.0;
+    data.xfrc_applied[body_c].torque[2] = 5.0;
 
     // Step multiple times with tree 1 sleeping
     for step in 0..10 {
@@ -5031,9 +5032,9 @@ fn test_partial_ldl_multi_tree_independence() {
 /// T106: Solve with zero RHS for sleeping DOFs yields zero output (AC #72).
 ///
 /// After partial factorization, sleeping DOFs have zero qvel and qacc.
-/// Uses the three-tree free-body model where forces directly produce non-zero
-/// accelerations on free-joint DOFs. Verifies that sleeping trees' qacc stays
-/// zero while awake trees get non-zero qacc from the applied force.
+/// Uses the three-tree free-body model where applied wrenches directly produce
+/// non-zero accelerations on free-joint DOFs. Verifies that sleeping trees' qacc
+/// stays zero while awake trees get non-zero qacc from the applied torque.
 #[test]
 fn test_partial_ldl_solve_zero_sleeping_rhs() {
     let model = load_model(three_tree_crba_mjcf()).expect("load model");
@@ -5054,9 +5055,9 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
         assert_eq!(data.qacc[d], 0.0, "sleeping qacc[{d}] should be zero");
     }
 
-    // Wake tree 0 only (free-body sphere — force directly produces acceleration)
+    // Wake tree 0 only (free-body sphere — a torque directly produces acceleration)
     let body_a = model.tree_body_adr[0];
-    data.xfrc_applied[body_a][2] = 50.0; // large upward force on free body
+    data.xfrc_applied[body_a].torque[2] = 50.0; // large torque about Z on the free body
     data.step(&model).expect("step after wake");
     assert!(
         data.tree_asleep[0] < 0,

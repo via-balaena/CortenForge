@@ -28,12 +28,13 @@ fn scatter_dfz_dxstar(factors: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64]
 /// on `body` — the matrix successor to the scalar free-body `∂vz'/∂fz = dt/m`
 /// ([`StaggeredCoupling::rigid_vz_response`](crate::StaggeredCoupling::rigid_vz_response)).
 ///
-/// Returns `∂qvel'/∂xfrc_applied[body] = Δt · M_impl⁻¹ · J_comᵀ` — the `nv × 6` input
-/// (`G`) block of the coupled-step Jacobian `[A | G]` (the "xfrc column" of the
-/// recon), one column per spatial-force component. `J_com` is the body's COM
-/// spatial Jacobian (`mj_jac_point` at `xipos`, rows 0–2 angular / 3–5 linear —
-/// the `[τ; f]` layout the integrator projects through `mj_apply_ft`), and `Δt =
-/// model.timestep`. `M_impl = M + Δt·D` is the Euler `eulerdamp` matrix — the
+/// Returns `∂qvel'/∂w = Δt · M_impl⁻¹ · J_comᵀ` for a wrench `w = [τ; f]` applied at
+/// the body's COM through `xfrc_applied[body]` — the `nv × 6` input (`G`) block of
+/// the coupled-step Jacobian `[A | G]` (the "xfrc column" of the recon), one column
+/// per wrench component, torque columns 0–2 and force columns 3–5. (`xfrc_applied`
+/// itself stores the force first: a [`sim_core::BodyWrench`].) `J_com` is the body's
+/// COM spatial Jacobian (`mj_jac_point` at `xipos`, rows 0–2 angular / 3–5 linear),
+/// and `Δt = model.timestep`. `M_impl = M + Δt·D` is the Euler `eulerdamp` matrix — the
 /// joint-space mass `M = data.qM` plus the implicit joint **damping** `D =
 /// model.implicit_damping` on the diagonal (the integrator solves `(M + Δt·D)·qacc =
 /// F` then `qvel += Δt·qacc`, so the wrench reaches `qvel'` through `M_impl⁻¹`).
@@ -73,7 +74,7 @@ fn scatter_dfz_dxstar(factors: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64]
 /// linearization; see `docs/keystone/multidof_rigid_recon.md` §8a.
 ///
 /// To route a pure contact force `f` applied at an off-COM point `r_c`, the caller
-/// sets `xfrc_applied[body] = [(r_c − xipos) × f ; f]` (the contact moment) so the
+/// applies the wrench `[(r_c − xipos) × f ; f]` (the contact moment) so the
 /// column — defined w.r.t. the COM-interpreted `xfrc` the integrator consumes —
 /// maps it correctly.
 ///

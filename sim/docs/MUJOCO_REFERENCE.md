@@ -28,9 +28,10 @@ Data::step():
      f. mj_fwd_passive     — Spring, damper, friction loss forces (skips sleeping DOFs)
      g. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
         mj_fwd_constraint_islands — Per-island block-diagonal solving (when islands > 1)
-     h. mj_fwd_acceleration — Solve M*qacc = f (explicit) or implicit velocity update
-  2a. integrate()          — Activation integration + semi-implicit Euler or implicit
-                              (for Euler / ImplicitSpringDamper integrators)
+     h. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one);
+                              implicit and implicitfast also solve for qacc_implicit
+  2a. integrate()          — Activation integration + the integrator's velocity update
+                              (under RK4, only step2() calls it, for the Euler step)
                               (skips sleeping joints for position/velocity integration)
   2b. mj_runge_kutta()     — True 4-stage RK4 with Butcher tableau, including
                               activation state (for RungeKutta4 integrator)
@@ -673,7 +674,7 @@ Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/�
 1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + tendon damping J^T B J (sleep-filtered, §40c)
 2. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
 
-Symmetrizes D, then solves `(M − h·D) · qacc = f` via dense Cholesky factorization.
+Symmetrizes D, then solves `(M − h·D) · qacc_implicit = f` via dense Cholesky factorization.
 Skips Coriolis derivatives (`mjd_rne_vel`). Returns `StepError::CholeskyFailed` if
 `M − h·D` is not positive definite (e.g., strong positive velocity feedback).
 
@@ -684,8 +685,11 @@ Does NOT symmetrize D (Coriolis terms break symmetry). Uses LU factorization wit
 partial pivoting instead of Cholesky. Returns `StepError::LuSingular` if any pivot
 magnitude is below `1e-30`.
 
-Both ImplicitFast and Implicit compute `qacc` (not `v_new` directly), then velocity
-is updated in the integration step via `qvel += h * qacc`, matching MuJoCo's approach.
+Both ImplicitFast and Implicit solve for an acceleration (not `v_new` directly),
+kept in the crate-private `qacc_implicit`; the integration step updates velocity via
+`qvel += h * qacc_implicit`. `qacc` keeps the explicit acceleration (the solver's
+result, or `M⁻¹ f`), as in MuJoCo, where `mj_fwdConstraint` leaves it in `d->qacc`
+and `mj_implicitSkip` solves `M − h·D` into a local (`engine_forward.c:1128-1146`).
 
 ---
 
@@ -741,14 +745,16 @@ pipeline's compute shaders. See `sim/L0/gpu/src/pipeline/` and
 
 **ImplicitSpringDamper (`Integrator::ImplicitSpringDamper`):**
 
-Activation integration is identical to Euler (step 0 above). Velocity was
-already updated in `mj_fwd_acceleration_implicit`. Integration only updates
-positions using the new velocity, identical to step 2 above.
+Activation integration is identical to Euler (step 0 above). Velocity:
+`qvel += h * qacc`, where `qacc` is `(v_new − qvel) / h` for the `v_new` that
+`mj_fwd_acceleration_implicit` solved for, or a Newton solve's. Position update
+uses the new velocity, identical to step 2 above.
 
 **ImplicitFast / Implicit (`Integrator::ImplicitFast`, `Integrator::Implicit`):**
 
 Activation integration is identical to Euler (step 0 above). Velocity is
-updated in the integration step via `qvel += h * qacc` (same as Euler).
+updated in the integration step via `qvel += h * qacc_implicit`, the implicit
+acceleration solved in Stage 4.
 Position update uses the new velocity, identical to step 2 above.
 
 **Runge-Kutta 4 (`Integrator::RungeKutta4`):**
@@ -903,7 +909,7 @@ Combines analytical velocity/activation columns with FD position columns:
 
 ```
 Velocity columns (analytical):
-  Euler:    ∂v⁺/∂v = I + h · M⁻¹ · qDeriv   (sparse LDL solve)
+  Euler:    ∂v⁺/∂v = I + h · M_impl⁻¹ · qDeriv   (M_impl = M + h·D under eulerdamp, else M)
   Implicit: ∂v⁺/∂v = (M+hD+h²K)⁻¹ · (M + h·(qDeriv+D))  (Cholesky solve)
 
 Activation columns (analytical):

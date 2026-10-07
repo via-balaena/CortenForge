@@ -1686,3 +1686,10 @@ ff60001c783e0f4d	sim/L0/tests/integration/fluid_derivatives.rs:2067
 ff60001c783e0f4d	sim/L0/tests/integration/fluid_forces.rs:1334
 ffdc191d5d00f71a	sim/L0/tests/integration/sensor_phase6.rs:1105
 ffe246517dc498d6	sim/L0/tests/integration/keyframes.rs:113
+2cbf8e52f094a78e	sim/L0/tests/integration/xfrc_applied.rs:163
+048d945711ed909a	sim/L0/mjcf/src/lib.rs:32
+2340ed39d751a99c	sim/L0/mjcf/src/builder/mod.rs:209
+35fb7b50188fd4c8	sim/L0/mjcf/src/mjb.rs:22
+4096253fce88265b	sim/L0/tests/integration/implicit_integration.rs:1259
+c10b50f7458fbc2c	sim/L0/tests/integration/derivatives.rs:2799
+37f05467b082fc7d	sim/L0/tests/integration/implicit_integration.rs:1301

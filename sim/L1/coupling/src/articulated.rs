@@ -2,6 +2,7 @@
 //! state-transition Jacobians (`∂state'/∂state`), and the single-hinge / chain analytic
 //! Jacobians the articulated trajectory adjoints thread through.
 
+use crate::xfrc_from_torque_force;
 use sim_core::{
     DMatrix, DVector, MjJointType, SpatialVector, mass_directional_derivative,
     mj_differentiate_pos, mj_integrate_pos_explicit, mj_jac_point,
@@ -144,7 +145,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         if self.rigid_damping != 0.0 {
             w[5] += -self.rigid_damping * qvel[2]; // velocity-dependent contact-axis damping (free platen z)
         }
-        scratch.xfrc_applied[self.body] = w;
+        scratch.xfrc_applied[self.body] = xfrc_from_torque_force(&w);
         // Replicate the held control so the actuator force is present during the FD: on a
         // CHAIN the actuator force interacts with `∂M⁻¹/∂q`, so a `ctrl`-blind step would
         // drop that from the loaded `J_state`. `ctrl = 0` (no actuator / unactuated leaf)
@@ -662,7 +663,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             self.x = x_next;
             // Route the full contact wrench [τ; f] at the COM (the off-COM moment
             // τ = Σ rᵢ × fᵢ, NOT a pure force at the COM), about the fresh-FK COM.
-            self.data.xfrc_applied[self.body] = self.contact_wrench(height);
+            self.data.xfrc_applied[self.body] =
+                xfrc_from_torque_force(&self.contact_wrench(height));
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in articulated rollout");

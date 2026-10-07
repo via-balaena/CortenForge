@@ -3,6 +3,7 @@
 //! This module contains the fundamental types that flow through every stage of
 //! the simulation: enums, Model, Data, contacts, and keyframes.
 
+pub(crate) mod body_wrench;
 pub mod callbacks;
 pub(crate) mod contact_types;
 pub(crate) mod data;
@@ -15,6 +16,7 @@ pub(crate) mod model_init;
 pub mod validation;
 pub mod warning;
 
+pub use body_wrench::BodyWrench;
 pub(crate) use contact_types::compute_tangent_frame;
 pub use contact_types::{Contact, ContactPair};
 pub use data::*;

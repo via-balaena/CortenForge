@@ -209,12 +209,10 @@ impl Default for DerivativeConfig {
 /// pure finite difference (Phase A) — it is multi-stage and not yet differentiated
 /// analytically. FD is exact there.
 ///
-/// The implicit-Coriolis integrators get their velocity-Jacobian right in two ways
-/// (see `hybrid::mjd_transition_hybrid`): ImplicitSpringDamper evaluates `qDeriv` at
-/// the refreshed (q, v⁺) operating point (its forward pass overwrites qvel but leaves
-/// cvel stale), and full Implicit adds the second-order term `h²·M_hat⁻¹·rne_vel(qacc)`
-/// for the `v`-dependence of `M_hat = M − h·D`. Both are guarded machine-exact by the
-/// stiffness/damping rows of the transition harness.
+/// Full Implicit gets its velocity-Jacobian right by adding the second-order term
+/// `h²·M_hat⁻¹·rne_vel(qacc_implicit)` for the `v`-dependence of `M_hat = M − h·D` (see
+/// `hybrid::mjd_transition_hybrid`), guarded machine-exact by the stiffness/damping
+/// rows of the transition harness.
 ///
 /// # Errors
 ///
@@ -242,9 +240,9 @@ pub fn mjd_transition(
             model.integrator,
             // RK4 is the only integrator without an analytic transition derivative:
             // it is multi-stage and not yet differentiated analytically. FD is exact.
-            // (ImplicitSpringDamper and full Implicit now have sound analytic paths —
-            // ISD via an operating-point refresh, Implicit via the implicit-Coriolis
-            // second-order term; see `hybrid::mjd_transition_hybrid`.)
+            // (ImplicitSpringDamper and full Implicit have analytic paths — full
+            // Implicit adds the implicit-Coriolis second-order term; see
+            // `hybrid::mjd_transition_hybrid`.)
             Integrator::RungeKutta4
         )
         && !has_millard

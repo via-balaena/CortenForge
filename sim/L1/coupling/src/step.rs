@@ -1,6 +1,7 @@
 //! The forward step drivers and their multi-step forward rollouts — the lockstep
 //! `step` family (free / articulated / kinematic) and the peak-pressure / grip rollouts.
 
+use crate::xfrc_from_torque_force;
 use sim_core::SpatialVector;
 use sim_ml_chassis::Tensor;
 use sim_soft::{BoundaryConditions, CpuNewtonSolver, Solver, Tet4, Vec3, peak_contact_pressure};
@@ -100,7 +101,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
                 add_contact_moment(&mut sf, r.position, -r.force_on_soft, c);
             }
         }
-        self.data.xfrc_applied[self.body] = sf;
+        self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
 
         // (5) step the rigid body.
         self.data
@@ -162,7 +163,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let readouts = self.pair_readouts_at_height(height);
         let force_on_soft: Vec3 = readouts.iter().map(|r| r.force_on_soft).sum();
         let peak_pressure = peak_contact_pressure(&readouts);
-        self.data.xfrc_applied[self.body] = self.contact_wrench(height);
+        self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&self.contact_wrench(height));
         self.data
             .step(&self.model)
             .expect("rigid step diverged in articulated coupled solve");
@@ -324,7 +325,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // COM, plus the contact-axis (z) damping so the platen settles vertically.
             let mut wrench = self.contact_wrench_gripped(height, &friction);
             wrench[5] -= self.rigid_damping * self.data.qvel[2];
-            self.data.xfrc_applied[self.body] = wrench;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&wrench);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in grip rollout");
@@ -413,7 +414,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             self.x = x_next;
             // Route the full gripped reaction wrench [τ; f] (normal + friction + off-COM moment)
             // about the fresh-FK COM, then step the articulated body.
-            self.data.xfrc_applied[self.body] = self.contact_wrench_gripped(height, &friction);
+            self.data.xfrc_applied[self.body] =
+                xfrc_from_torque_force(&self.contact_wrench_gripped(height, &friction));
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in articulated grip rollout");

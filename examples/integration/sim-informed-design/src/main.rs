@@ -156,8 +156,11 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vector3<f64>, f32)>, f64) {
 
     // Apply a downward force + torque to the bracket body to simulate loading
     if model.nbody > 1 {
-        // Spatial force: [torque_x, torque_y, torque_z, force_x, force_y, force_z]
-        data.xfrc_applied[1] = nalgebra::Vector6::new(0.0, 5.0, 0.0, 0.0, 0.0, -20.0);
+        // 20 N down and 5 N·m about y, at the body's centre of mass
+        data.xfrc_applied[1] = sim_core::BodyWrench::new(
+            nalgebra::Vector3::new(0.0, 0.0, -20.0),
+            nalgebra::Vector3::new(0.0, 5.0, 0.0),
+        );
     }
 
     // Run forward kinematics + constraint solver to populate cfrc_ext
@@ -167,7 +170,10 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vector3<f64>, f32)>, f64) {
     let n_steps = 50;
     for _ in 0..n_steps {
         if model.nbody > 1 {
-            data.xfrc_applied[1] = nalgebra::Vector6::new(0.0, 5.0, 0.0, 0.0, 0.0, -20.0);
+            data.xfrc_applied[1] = sim_core::BodyWrench::new(
+                nalgebra::Vector3::new(0.0, 0.0, -20.0),
+                nalgebra::Vector3::new(0.0, 5.0, 0.0),
+            );
         }
         let _ = data.step(&model);
     }

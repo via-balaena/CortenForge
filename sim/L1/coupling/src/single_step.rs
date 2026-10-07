@@ -1,6 +1,7 @@
 //! Single-step contact force, wrench, and the single-step differentiable factors —
 //! the analytic pose/load/material derivatives and the one-step soft-tape `VjpOp` crossings.
 
+use crate::xfrc_from_torque_force;
 use sim_core::SpatialVector;
 use sim_ml_chassis::{Tape, Tensor, Var};
 use sim_soft::{
@@ -168,7 +169,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         scratch.qvel.copy_from(&self.data.qvel);
         let mut sf = SpatialVector::zeros();
         sf[5] = applied_fz; // linear z (SpatialVector layout [angular(3), linear(3)])
-        scratch.xfrc_applied[self.body] = sf;
+        scratch.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
         scratch.step(&self.model).expect("probe step");
         (scratch.xpos[self.body].z, scratch.qvel[2])
     }

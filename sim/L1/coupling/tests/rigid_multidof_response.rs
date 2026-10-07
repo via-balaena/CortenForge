@@ -1,6 +1,7 @@
 //! Keystone multi-DOF rigid coupling, PR1 — the rigid factor in isolation.
 //!
-//! `rigid_xfrc_column` returns `∂qvel'/∂xfrc_applied[body] = Δt·M⁻¹·J_comᵀ`, the
+//! `rigid_xfrc_column` returns `∂qvel'/∂w = Δt·M⁻¹·J_comᵀ` for a wrench `w = [τ; f]`
+//! on `body` (this crate's spatial layout; sim-core's `xfrc_applied` is force first), the
 //! matrix successor to the scalar free-body `∂vz'/∂fz = dt/m` the merged coupling
 //! caps to. This gate validates it against an INDEPENDENT finite difference over a
 //! real sim-core step (perturb each of the 6 spatial-force components, read the
@@ -16,7 +17,7 @@
 #![allow(clippy::expect_used)]
 
 use nalgebra::DVector;
-use sim_core::{Model, SpatialVector, max_relative_error};
+use sim_core::{BodyWrench, Model, Vector3, max_relative_error};
 use sim_coupling::rigid_xfrc_column;
 
 /// Step a fresh scratch `Data` from `(qpos, qvel)` with a spatial force
@@ -31,16 +32,16 @@ fn next_qvel(
     let mut d = model.make_data();
     d.qpos.copy_from(qpos);
     d.qvel.copy_from(qvel);
-    let mut s = SpatialVector::zeros();
-    for (i, &c) in sf.iter().enumerate() {
-        s[i] = c;
-    }
-    d.xfrc_applied[body] = s;
+    // `sf` is `[τ; f]`, the column order of `rigid_xfrc_column`.
+    d.xfrc_applied[body] = BodyWrench::new(
+        Vector3::new(sf[3], sf[4], sf[5]),
+        Vector3::new(sf[0], sf[1], sf[2]),
+    );
     d.step(model).expect("scratch step");
     d.qvel.clone()
 }
 
-/// Central-difference `∂qvel'/∂xfrc[body]` (nv × 6) over the real step, evaluated
+/// Central-difference `∂qvel'/∂[τ; f]` (nv × 6) over the real step, evaluated
 /// at the SAME configuration `(qpos, qvel)` the analytic column is taken at.
 fn fd_column(
     model: &Model,
@@ -194,7 +195,7 @@ fn damped_xfrc_column_matches_fd() {
 #[test]
 fn free_body_column_collapses_to_dt_over_m() {
     // A single free-joint box (the merged platen): the column must reduce to the
-    // scalar dt/m on the contact axis (qvel[2] = vz vs xfrc[5] = f_z).
+    // scalar dt/m on the contact axis (qvel[2] = vz vs column 5 = f_z of [τ; f]).
     const PLATEN: &str = r#"<mujoco>
   <option gravity="0 0 -9.81" timestep="0.001"/>
   <worldbody>

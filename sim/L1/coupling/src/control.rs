@@ -2,6 +2,7 @@
 //! their `∂z_N/∂u_k` control-force time-adjoints (actuator, actuator-friction, and the
 //! platen-control gradients).
 
+use crate::xfrc_from_torque_force;
 use sim_core::{DMatrix, Matrix3, SpatialVector};
 use sim_ml_chassis::autograd::VjpOp;
 use sim_ml_chassis::{Tape, Tensor, Var};
@@ -46,7 +47,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             // Route the contact wrench AND the motor control, then step (the actuator
             // drives the integration, not the pre-step contact, so set ctrl after the
             // wrench readout — mirrors the gradient method's staggered order).
-            self.data.xfrc_applied[self.body] = self.contact_wrench(height);
+            self.data.xfrc_applied[self.body] =
+                xfrc_from_torque_force(&self.contact_wrench(height));
             self.data.ctrl[0] = u_k;
             self.data
                 .step(&self.model)
@@ -112,7 +114,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             self.x = x_next;
             // Route the gripped reaction wrench AND the motor control, then step (ctrl set after
             // the wrench readout — the staggered order the gradient method also uses).
-            self.data.xfrc_applied[self.body] = self.contact_wrench_gripped(height, &friction);
+            self.data.xfrc_applied[self.body] =
+                xfrc_from_torque_force(&self.contact_wrench_gripped(height, &friction));
             self.data.ctrl[0] = u_k;
             self.data
                 .step(&self.model)
@@ -336,7 +339,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let g_act_vel = self.actuator_velocity_column(); // nv × nu
 
             // (4)+(5) route the wrench and step (control already set above).
-            self.data.xfrc_applied[self.body] = wrench;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&wrench);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in actuator trajectory");
@@ -653,7 +656,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             let g_vel = self.fresh_xfrc_column();
             let g_act_vel = self.actuator_velocity_column(); // nv × nu
 
-            self.data.xfrc_applied[self.body] = w_total;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&w_total);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in actuator-friction trajectory");
@@ -717,7 +720,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `(z_N, [∂z_N/∂u_0 … ∂z_N/∂u_{N−1}])`. `controls.len()` is the rollout
     /// length.
     ///
-    /// The control force adds to the same `xfrc_applied[body].z` the contact
+    /// The control force adds to the same `xfrc_applied[body].force.z` the contact
     /// reaction uses, so the rigid carry becomes
     /// `vz' = a·vz − (Δt/m)·fz + (Δt/m)·u_k + Δt·g` and `∂vz'/∂u_k = +Δt/m` (the
     /// free-body factor, opposite sign to the contact term). Each `u_k` is a tape
@@ -830,7 +833,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             sf[3] = -force_on_soft.x;
             sf[4] = -force_on_soft.y;
             sf[5] = -force_on_soft.z - self.rigid_damping * vz_k + u_k;
-            self.data.xfrc_applied[self.body] = sf;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in coupled control trajectory");
@@ -899,7 +902,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             sf[3] = -force_on_soft.x;
             sf[4] = -force_on_soft.y;
             sf[5] = -force_on_soft.z - self.rigid_damping * vz_k + u_k;
-            self.data.xfrc_applied[self.body] = sf;
+            self.data.xfrc_applied[self.body] = xfrc_from_torque_force(&sf);
             self.data
                 .step(&self.model)
                 .expect("rigid step diverged in coupled control rollout");

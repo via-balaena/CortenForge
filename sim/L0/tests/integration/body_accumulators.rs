@@ -109,19 +109,20 @@ fn cfrc_ext_matches_xfrc_applied() {
     let mut data = model.make_data();
 
     // Apply some external force/torque
-    data.xfrc_applied[1][0] = 1.0; // torque_x
-    data.xfrc_applied[1][3] = 5.0; // force_x
-    data.xfrc_applied[1][5] = 10.0; // force_z
+    data.xfrc_applied[1].torque[0] = 1.0; // torque_x
+    data.xfrc_applied[1].force[0] = 5.0; // force_x
+    data.xfrc_applied[1].force[2] = 10.0; // force_z
 
     data.forward(&model).expect("forward");
 
-    // cfrc_ext should be a copy of xfrc_applied
-    for i in 0..6 {
+    // cfrc_ext should be a copy of xfrc_applied, laid out [torque; force]
+    let (t, f) = (data.xfrc_applied[1].torque, data.xfrc_applied[1].force);
+    let expected = [t.x, t.y, t.z, f.x, f.y, f.z];
+    for (i, want) in expected.into_iter().enumerate() {
         assert!(
-            (data.cfrc_ext[1][i] - data.xfrc_applied[1][i]).abs() < 1e-10,
-            "cfrc_ext[1][{i}] = {} should match xfrc_applied[1][{i}] = {}",
+            (data.cfrc_ext[1][i] - want).abs() < 1e-10,
+            "cfrc_ext[1][{i}] = {} should be {want}",
             data.cfrc_ext[1][i],
-            data.xfrc_applied[1][i]
         );
     }
 }

@@ -9,6 +9,11 @@ articulated coupling's **finite-differenced** loaded-state Jacobian
 machine-exact. The spike CONFIRMED the analytic term but FALSIFIED the premise. This
 doc records the derivation, the measurements, and the re-diagnosis of the true cap.*
 
+> **0.10 layout note.** Written against 0.9, where `xfrc_applied` was a torque-first
+> `[τ; f]` 6-vector. From 0.10 it is `BodyWrench` with named `force` and `torque`
+> (MuJoCo's row is force first); sim-coupling still writes `[τ; f]` wrenches,
+> converted at one function (`xfrc_from_torque_force`).
+
 ## 1. The analytic term (derivation)
 
 The rigid `step` consumes `xfrc_applied[body]` as a spatial wrench `w = [τ; f]` at the

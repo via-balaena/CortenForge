@@ -38,6 +38,7 @@
 //! model timestep — the standard staggered scheme, with the penalty contact replaced
 //! by the Dirichlet bond.
 
+use crate::xfrc_from_torque_force;
 use nalgebra::UnitQuaternion;
 use sim_core::{Data, MjJointType, Model, SpatialVector};
 use sim_ml_chassis::Tensor;
@@ -421,8 +422,8 @@ impl<Msh: Mesh, E: Element<N, G> + Default, const N: usize, const G: usize>
     #[allow(clippy::expect_used)]
     pub fn step(&mut self) -> BondStep {
         let (lower_wrench, upper_wrench) = self.resolve();
-        self.data.xfrc_applied[self.lower.body] = lower_wrench;
-        self.data.xfrc_applied[self.upper.body] = upper_wrench;
+        self.data.xfrc_applied[self.lower.body] = xfrc_from_torque_force(&lower_wrench);
+        self.data.xfrc_applied[self.upper.body] = xfrc_from_torque_force(&upper_wrench);
         // Step the rigid engine, then refresh FK so poses/COMs are current for the
         // next step and any caller readout.
         self.data

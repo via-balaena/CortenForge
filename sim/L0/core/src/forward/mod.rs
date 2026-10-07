@@ -122,7 +122,7 @@ impl Data {
     ///
     /// # Important
     ///
-    /// - Always uses Euler-style integration in `step2()` (not RK4). RK4's
+    /// - Under RK4, `step2()` takes the Euler step (not RK4). RK4's
     ///   multi-stage substeps don't work with force injection between stages.
     /// - `step()` is NOT refactored to call step1/step2 — it remains the
     ///   canonical entry point with full RK4 support.
@@ -153,8 +153,9 @@ impl Data {
     /// Split-step phase 2: acceleration stage + integration.
     ///
     /// Runs actuation, dynamics, constraints, acc-sensors, then integrates
-    /// positions and velocities using Euler-style integration (regardless of
-    /// `model.integrator`), sleep update, and warmstart save.
+    /// velocities and positions with [`integrate`](Self::integrate): Euler
+    /// under Euler and RK4 (as MuJoCo's `mj_step2`), the integrator's own
+    /// velocity update otherwise; then the sleep update and warmstart save.
     ///
     /// Must be called after [`step1()`](Self::step1). The user may modify
     /// `ctrl`, `qfrc_applied`, `xfrc_applied`, etc. between step1 and step2
@@ -167,9 +168,9 @@ impl Data {
     ///
     /// # Note
     ///
-    /// This always uses Euler-style integration. RK4 is not compatible with
-    /// split-step force injection because its multi-stage substeps recompute
-    /// `forward()` internally.
+    /// Under RK4 this takes the Euler step, as `mj_step2` does. RK4 is not
+    /// compatible with split-step force injection because its multi-stage
+    /// substeps recompute `forward()` internally.
     ///
     /// # Errors
     ///
@@ -193,7 +194,7 @@ impl Data {
         // Validate accelerations
         check::mj_check_acc(model, self);
 
-        // Euler-style integration (matches step() for non-RK4 integrators)
+        // The integrator's velocity update (as step() for non-RK4 integrators)
         self.integrate(model);
 
         // Sleep update (§16.12): Phase B island-aware sleep transition.
@@ -564,12 +565,12 @@ impl Data {
         // falls back to global solve when DISABLE_ISLAND or no islands.
         crate::constraint::mj_fwd_constraint_islands(model, self);
 
-        // ImplicitFast/Implicit: always run mj_fwd_acceleration to apply
-        // M_hat = M − h·∂f/∂v correction, even when Newton succeeded.
-        // Newton uses base M; the acceleration solver recomputes qacc with
-        // M_hat, providing the implicit velocity-derivative stabilization
-        // that prevents divergence in stiff-constraint + light-body systems
-        // (e.g., connect constraints on ball-joint chains).
+        // ImplicitFast/Implicit: always run mj_fwd_acceleration, even when
+        // Newton succeeded: it solves M_hat = M − h·∂f/∂v for qacc_implicit,
+        // the acceleration `integrate` advances qvel with, which provides the
+        // implicit velocity-derivative stabilization that prevents divergence
+        // in stiff-constraint + light-body systems (e.g., connect constraints
+        // on ball-joint chains). qacc keeps the explicit acceleration.
         // ImplicitSpringDamper does NOT need this — Newton already uses
         // M_impl via build_m_impl_for_newton().
         let needs_implicit_qacc = matches!(

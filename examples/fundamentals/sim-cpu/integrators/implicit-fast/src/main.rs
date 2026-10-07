@@ -48,10 +48,10 @@ use sim_core::validation::{Check, print_report};
 //        M_hat = M - h · D    (symmetric positive definite)
 //
 //   4. Solve via Cholesky factorization:
-//        M_hat = L · Lᵀ,  then backsolve for qacc
+//        M_hat = L · Lᵀ,  then backsolve for the acceleration a
 //
-//   5. Update:
-//        qvel  ←  qvel + h · qacc
+//   5. Update (data.qacc keeps the explicit acceleration, as in MuJoCo):
+//        qvel  ←  qvel + h · a
 //        qpos  ←  manifold_integrate(qpos, h, qvel)
 //
 //   Properties:

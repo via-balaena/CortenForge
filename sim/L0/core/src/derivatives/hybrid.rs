@@ -8,7 +8,7 @@
 //! - Muscle derivative helpers
 
 use super::fd::{apply_state_perturbation, extract_state, in_ctrl_range, mjd_transition_fd};
-use super::integration::{compute_integration_derivatives, mjd_sub_quat};
+use super::integration::{compute_integration_derivatives, mjd_sub_quat, post_step_qvel};
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::object_velocity_local;
@@ -19,6 +19,7 @@ use crate::forward::{
     MjStage, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, hill_force_velocity,
     mj_fwd_position, muscle_gain_length, muscle_gain_velocity, norm3,
 };
+use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
@@ -27,9 +28,8 @@ use crate::linalg::{
     mj_solve_sparse_batch,
 };
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_DAMPER, DISABLE_EULERDAMP,
-    DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError,
-    TendonType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType,
+    Integrator, MjJointType, Model, StepError, TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -2310,7 +2310,7 @@ pub fn mass_directional_derivative(
 ///   tendon `JᵀJ` q-dependence of `M_impl`. (ISD's own `M_impl` is otherwise
 ///   v-independent, so joint-only chains need no correction.)
 /// - **Full Implicit with a Muscle/HillMuscle gain actuator.** The velocity-block
-///   second-order term `T = rne_vel(qacc)` captures only the Coriolis part of
+///   second-order term `T = rne_vel(qacc_implicit)` captures only the Coriolis part of
 ///   `∂D/∂v`; a force–velocity-curve gain is v-dependent and contributes a
 ///   `∂D_actuator/∂v` that `T` misses. (Affine gain is constant in v ⇒ fine.)
 ///
@@ -2381,20 +2381,6 @@ pub fn mjd_transition_hybrid(
     //    The clone preserves qLD_data/qLD_diag_inv, scratch_m_impl, qM — all
     //    unmodified by mjd_smooth_vel.
     let mut data_work = data.clone();
-    // ImplicitSpringDamper is the only integrator whose forward pass OVERWRITES
-    // `qvel` (to v⁺) while leaving `cvel` at the pre-step v_old (see
-    // `mj_fwd_acceleration_implicit`). The transition operating point is (q, v⁺),
-    // so the Coriolis velocity-Jacobian inside `qDeriv` must be evaluated at v⁺ —
-    // refresh velocity kinematics first. (Euler/ImplicitFast/Implicit do NOT
-    // overwrite qvel in forward, so for them this would be a no-op; gating it to
-    // ISD keeps their result byte-for-byte unchanged.) `mj_fwd_velocity` touches
-    // only velocity-FK fields (cvel/cdof/...); qM, qLD, and scratch_m_impl — used
-    // by the velocity/activation solves below — are position-only and untouched.
-    // NOTE: the analytic-position branch does its OWN later refresh (it also re-points
-    // qacc); the two are independent and both required — do not dedupe them.
-    if matches!(model.integrator, Integrator::ImplicitSpringDamper) {
-        crate::forward::mj_fwd_velocity(model, &mut data_work);
-    }
     mjd_smooth_vel(model, &mut data_work);
 
     // 1b. Eulerdamp factor. The real Euler step applies joint damping IMPLICITLY:
@@ -2405,10 +2391,8 @@ pub fn mjd_transition_hybrid(
     //     Gated identically to the step (DISABLE_EULERDAMP / DISABLE_DAMPER). When
     //     no DOF is damped, `M_impl == M` and the bare-`M` fast path is kept, so the
     //     undamped result is byte-for-byte unchanged.
-    let eulerdamp_active = matches!(model.integrator, Integrator::Euler)
-        && model.disableflags & DISABLE_EULERDAMP == 0
-        && model.disableflags & DISABLE_DAMPER == 0
-        && (0..nv).any(|i| model.implicit_damping[i] > 0.0);
+    let eulerdamp_active =
+        matches!(model.integrator, Integrator::Euler) && eulerdamp_applies(model);
     let m_impl_euler = if eulerdamp_active {
         let mut mi = data_work.qM.clone();
         for i in 0..nv {
@@ -2420,8 +2404,10 @@ pub fn mjd_transition_hybrid(
         None
     };
 
-    // 2. Compute integration derivatives (pure function).
-    let integ = compute_integration_derivatives(model, data);
+    // 2. Compute integration derivatives (pure function), at the velocity the
+    //    step integrates positions with.
+    let qvel_next = post_step_qvel(model, data, m_impl_euler.as_ref());
+    let integ = compute_integration_derivatives(model, data, &qvel_next);
 
     // 3. Allocate output.
     let mut a_mat = DMatrix::zeros(nx, nx);
@@ -2463,9 +2449,7 @@ pub fn mjd_transition_hybrid(
             // `f_ext` carrying −qfrc_bias(q,v). Holding q fixed, `∂(RHS)/∂v = M + h·∂f_ext/∂v`,
             // and since the joint damper is moved to the LHS, `∂f_ext/∂v = qDeriv + D`
             // (qDeriv carries the −D damper diagonal that cancels back out). M_impl has no
-            // v-dependence, so there is no second-order term. `qDeriv` is evaluated at the
-            // refreshed (q, v⁺) operating point (see the ISD re-forward above) — without
-            // that refresh the Coriolis block is silently wrong for coupled DOFs.
+            // v-dependence, so there is no second-order term.
             let d = &model.implicit_damping;
             let mut dvdv = DMatrix::zeros(nv, nv);
             for j in 0..nv {
@@ -2482,6 +2466,8 @@ pub fn mjd_transition_hybrid(
         }
         Integrator::Implicit => {
             // ∂v⁺/∂v = I + h·M_hat⁻¹·qDeriv + h²·M_hat⁻¹·T.
+            // `qacc` in this derivation is the acceleration the step integrates
+            // (`qacc_implicit`), not the explicit `data.qacc`.
             // The full-implicit step is `qacc = M_hat⁻¹·F`, `v⁺ = v + h·qacc`, with
             // `M_hat = M − h·D` and `D = qDeriv` (the FULL smooth-vel Jacobian, Coriolis
             // INCLUDED → v-dependent). Differentiating `M_hat(v)·qacc = F(v)`:
@@ -2507,10 +2493,11 @@ pub fn mjd_transition_hybrid(
                     dvdv[(i, j)] += h * col[i];
                 }
             }
-            // T = Coriolis velocity-Jacobian at qvel := qacc. Refresh velocity FK at qacc,
-            // then accumulate ONLY the bias term (mjd_rne_vel) into a fresh qDeriv buffer.
+            // T = Coriolis velocity-Jacobian at qvel := qacc_implicit (the acceleration
+            // the full-implicit step integrates). Refresh velocity FK there, then
+            // accumulate ONLY the bias term (mjd_rne_vel) into a fresh qDeriv buffer.
             let mut dq = data_work.clone();
-            dq.qvel.copy_from(&data_work.qacc);
+            dq.qvel.copy_from(&data_work.qacc_implicit);
             crate::forward::mj_fwd_velocity(model, &mut dq);
             dq.qDeriv.fill(0.0);
             mjd_rne_vel(model, &mut dq);
@@ -2706,11 +2693,11 @@ pub fn mjd_transition_hybrid(
                 BiasType::Muscle | BiasType::HillMuscle | BiasType::MillardMuscle
             )
         })
-        // Full Implicit's POSITION columns are FD-only. Its forward step is
-        // `qacc = M_hat⁻¹·F` with `M_hat = M − h·D`; D's Coriolis part depends on q,
-        // so the exact `∂v⁺/∂q` carries `+h²·M_hat⁻¹·(∂D/∂q)·qacc` — a MIXED q–v
-        // second derivative of the bias. Unlike the velocity block's v–v term (which
-        // collapses to `rne_vel(qacc)` by symmetry), the mixed term has no clean
+        // Full Implicit's POSITION columns are FD-only. Its step integrates
+        // `qacc_implicit = M_hat⁻¹·F` with `M_hat = M − h·D`; D's Coriolis part depends
+        // on q, so the exact `∂v⁺/∂q` carries `+h²·M_hat⁻¹·(∂D/∂q)·qacc_implicit` — a
+        // MIXED q–v second derivative of the bias. Unlike the velocity block's v–v term
+        // (which collapses to `rne_vel(qacc_implicit)` by symmetry), the mixed term has no clean
         // single-call analytic form, and FD-ing it costs the same as FD-ing the
         // position columns outright. So: analytic velocity columns (the implicit-
         // Coriolis term IS handled there), FD position columns (exact). ISD is
@@ -2738,17 +2725,13 @@ pub fn mjd_transition_hybrid(
     scratch.step(model)?;
     let y_0 = extract_state(model, &scratch, &qpos_0);
 
-    // For implicit integrators, save the transition qacc from the nominal step.
-    // This is qacc_transition = (v⁺⁺ − v⁺)/h, computed by the ISD solver during
-    // the nominal step. The analytical position derivative needs this (not the
-    // qacc from the initial forward pass) as the operating point for (∂M/∂q)·qacc.
-    let qacc_transition = if matches!(
-        model.integrator,
-        Integrator::Euler | Integrator::RungeKutta4
-    ) {
-        None
-    } else {
-        Some(scratch.qacc.clone())
+    // For implicit integrators, save the acceleration the nominal step advanced
+    // qvel with: the analytical position derivative uses it as the operating
+    // point for (∂M/∂q)·qacc, not the qacc `data` arrived with.
+    let qacc_transition = match model.integrator {
+        Integrator::Euler | Integrator::RungeKutta4 => None,
+        Integrator::ImplicitFast | Integrator::Implicit => Some(scratch.qacc_implicit.clone()),
+        Integrator::ImplicitSpringDamper => Some(scratch.qacc.clone()),
     };
     // Re-evaluate sensors at post-step state (same as mjd_transition_fd).
     if compute_sensors {
@@ -2778,15 +2761,10 @@ pub fn mjd_transition_hybrid(
     };
 
     if use_analytical_pos {
-        // For implicit integrators, the initial forward() sets qacc to
-        // (v⁺ − v_old)/h and updates qvel to v⁺, but cvel was computed with
-        // v_old. The transition maps (q, v⁺) → (q⁺, v⁺⁺), so derivatives
-        // must be evaluated at (q, v⁺):
-        //  - qacc_transition = (v⁺⁺ − v⁺)/h (from nominal step, not initial forward)
-        //  - cvel must reflect v⁺ (recompute velocity FK)
+        // For implicit integrators, evaluate at the nominal step's acceleration
+        // (qacc_transition).
         if let Some(ref qt) = qacc_transition {
             data_work.qacc.copy_from(qt);
-            crate::forward::mj_fwd_velocity(model, &mut data_work);
         }
 
         // Eulerdamp (explicit Euler): the position columns' mass-directional term
@@ -2992,7 +2970,9 @@ pub fn mjd_transition_hybrid(
 
     // === Velocity columns: sensor-only FD ===
     // A velocity columns are analytical (no FD step). Sensor C velocity
-    // columns need FD passes with skipstage=MjStage::Pos.
+    // columns need FD passes. Every sensor-only pass below runs every stage
+    // (MjStage::None): the scratch holds the previous column's post-step
+    // state, so a skipped stage would reuse that state's results.
     if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
         for i in 0..nv {
             let state_col = nv + i;
@@ -3010,7 +2990,7 @@ pub fn mjd_transition_hybrid(
                 nv,
                 na,
             );
-            scratch.forward_skip(model, MjStage::Pos, false)?;
+            scratch.forward_skip(model, MjStage::None, false)?;
             scratch.integrate(model);
             scratch.forward(model)?;
             let s_plus = scratch.sensordata.clone();
@@ -3030,7 +3010,7 @@ pub fn mjd_transition_hybrid(
                     nv,
                     na,
                 );
-                scratch.forward_skip(model, MjStage::Pos, false)?;
+                scratch.forward_skip(model, MjStage::None, false)?;
                 scratch.integrate(model);
                 scratch.forward(model)?;
                 let s_minus = scratch.sensordata.clone();
@@ -3075,7 +3055,7 @@ pub fn mjd_transition_hybrid(
                     nv,
                     na,
                 );
-                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.forward_skip(model, MjStage::None, false)?;
                 scratch.integrate(model);
                 scratch.forward(model)?;
                 let s_plus = scratch.sensordata.clone();
@@ -3095,7 +3075,7 @@ pub fn mjd_transition_hybrid(
                         nv,
                         na,
                     );
-                    scratch.forward_skip(model, MjStage::Vel, false)?;
+                    scratch.forward_skip(model, MjStage::None, false)?;
                     scratch.integrate(model);
                     scratch.forward(model)?;
                     let s_minus = scratch.sensordata.clone();
@@ -3302,7 +3282,7 @@ pub fn mjd_transition_hybrid(
                 scratch.ctrl[actuator_idx] += eps;
                 scratch.qacc_warmstart.copy_from(&warmstart_0);
                 scratch.time = time_0;
-                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.forward_skip(model, MjStage::None, false)?;
                 scratch.integrate(model);
                 scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
@@ -3318,7 +3298,7 @@ pub fn mjd_transition_hybrid(
                 scratch.ctrl[actuator_idx] -= eps;
                 scratch.qacc_warmstart.copy_from(&warmstart_0);
                 scratch.time = time_0;
-                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.forward_skip(model, MjStage::None, false)?;
                 scratch.integrate(model);
                 scratch.forward(model)?;
                 Some(scratch.sensordata.clone())

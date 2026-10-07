@@ -2236,6 +2236,48 @@ fn t4_hybrid_matches_fd_sensor_derivatives() {
     );
 }
 
+/// The hybrid path's sensor-only finite-difference columns (velocity,
+/// activation and control) give exactly the pure-FD `C` and `D`: each runs
+/// every pipeline stage, since the scratch it reuses holds the previous
+/// column's post-step state.
+#[test]
+fn hybrid_sensor_derivatives_equal_pure_fd() {
+    for integrator in ["Euler", "implicit", "implicitfast", "implicitspringdamper"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body>
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+                  <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <motor joint="j"/>
+                <general joint="j" dyntype="filter" dynprm="0.1"/>
+              </actuator>
+              <sensor><jointpos joint="j"/><jointvel joint="j"/></sensor>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.2;
+        data.qvel[0] = 0.3;
+        data.ctrl[0] = 0.4;
+        data.ctrl[1] = 0.5;
+        data.act[0] = 0.1;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig {
+            compute_sensor_derivatives: true,
+            ..DerivativeConfig::default()
+        };
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        assert_eq!(fd.C, hybrid.C, "C, {integrator}");
+        assert_eq!(fd.D, hybrid.D, "D, {integrator}");
+    }
+}
+
 /// T5: A/B unchanged when sensors enabled → AC7
 #[test]
 fn t5_ab_unchanged_with_sensors_enabled() {
@@ -2744,5 +2786,76 @@ fn test_ball_joint_hybrid_vs_fd_a() {
     assert!(
         err2 < 2e-3,
         "Ball joint hybrid vs FD A (extreme inertia): {err2:.2e}"
+    );
+}
+
+/// Under implicitfast the analytic transition's quaternion blocks use the
+/// post-step angular velocity `qvel + h·qacc_implicit` — the acceleration the
+/// step integrates, not the explicit `qacc` forward() leaves. A free body with
+/// a damped ball joint and a damped hinge: analytic A matches pure FD within
+/// 1e-6; reading the explicit `qacc` there instead puts it 5.4e-2 off.
+#[test]
+fn implicitfast_transition_matches_fd_with_quaternion_joints() {
+    assert_transition_matches_fd_with_quaternion_joints(None);
+}
+
+/// The same model under Euler: its damped joints make the step advance `qvel`
+/// with eulerdamp's `(M + h·D)⁻¹·f`, which the quaternion blocks must read
+/// instead of `qacc`.
+#[test]
+fn euler_eulerdamp_transition_matches_fd_with_quaternion_joints() {
+    assert_transition_matches_fd_with_quaternion_joints(Some(Integrator::Euler));
+}
+
+/// A free body with a damped ball joint and a damped hinge, under the model's
+/// implicitfast or `integrator`: analytic A matches pure FD within 1e-6.
+fn assert_transition_matches_fd_with_quaternion_joints(integrator: Option<Integrator>) {
+    let xml = r#"
+    <mujoco model="deriv_free">
+      <option timestep="0.005" integrator="implicitfast"/>
+      <worldbody>
+        <body name="f" pos="0 0 1">
+          <freejoint/>
+          <geom type="box" size="0.1 0.05 0.03" mass="1" contype="0" conaffinity="0"/>
+          <body name="c" pos="0.1 0 0">
+            <joint type="ball" damping="0.3"/>
+            <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.3"
+                  contype="0" conaffinity="0"/>
+            <body name="d" pos="0.2 0 0">
+              <joint name="h" type="hinge" axis="0 1 0" damping="0.4"/>
+              <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <actuator><motor joint="h" gear="1"/></actuator>
+    </mujoco>"#;
+    let mut model = sim_mjcf::load_model(xml).expect("load");
+    if let Some(integrator) = integrator {
+        model.integrator = integrator;
+    }
+    let mut data = model.make_data();
+    for i in 0..model.nv {
+        data.qvel[i] = 2.1 * ((i + 1) as f64).sin();
+    }
+    data.ctrl[0] = 0.5;
+    data.forward(&model).expect("forward");
+    let fd = mjd_transition_fd(
+        &model,
+        &data,
+        &DerivativeConfig {
+            use_analytical: false,
+            ..DerivativeConfig::default()
+        },
+    )
+    .expect("fd");
+    let hybrid =
+        mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).expect("hybrid");
+    let err = (&fd.A - &hybrid.A).abs().max();
+    assert!(
+        err < 1e-6,
+        "{:?}: analytic A vs FD A: max abs difference {err}",
+        model.integrator
     );
 }

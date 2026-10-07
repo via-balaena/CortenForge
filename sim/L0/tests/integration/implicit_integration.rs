@@ -1196,7 +1196,8 @@ fn test_implicit_derivative_consistency() {
 ///
 /// The fix: `forward_acc()` always runs `mj_fwd_acceleration_implicitfast()`
 /// for ImplicitFast, even when Newton succeeded. This applies the
-/// velocity-derivative mass correction to qacc.
+/// velocity-derivative mass correction to `qacc_implicit`, the acceleration
+/// the step integrates.
 #[test]
 fn test_implicitfast_connect_ball_chain_stability() {
     let mjcf = r#"
@@ -1249,4 +1250,382 @@ fn test_implicitfast_connect_ball_chain_stability() {
         final_max < 10.0,
         "Cable should be settling: final max_qvel={final_max:.4} rad/s"
     );
+}
+
+/// `forward()` computes; it does not advance the state. Under
+/// implicitspringdamper it wrote the solved velocity into `qvel`, so two
+/// calls moved `qvel` twice (0 → −0.00994 → −0.01982 on this spring).
+#[test]
+fn implicitspringdamper_forward_does_not_change_the_state() {
+    let model = isd_spring();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    let (qpos, qvel) = (data.qpos.clone(), data.qvel.clone());
+    data.forward(&model).expect("forward");
+    data.forward(&model).expect("forward");
+    assert_eq!(data.qpos, qpos);
+    assert_eq!(data.qvel, qvel);
+}
+
+/// `integrate()` adds `h·qacc` to the current `qvel` under
+/// implicitspringdamper: a `qvel` edit made between `forward()` and
+/// `integrate()` is kept, and after `reset()` (which zeroes `qacc`)
+/// `integrate()` leaves `qvel` at zero.
+#[test]
+fn implicitspringdamper_integrate_adds_h_qacc_to_the_current_qvel() {
+    let model = isd_spring();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    data.forward(&model).expect("forward");
+    let qacc = data.qacc[0];
+    data.qvel[0] += 1.0;
+    data.integrate(&model);
+    assert_eq!(data.qvel[0].to_bits(), (1.0 + qacc * 0.01).to_bits());
+
+    for _ in 0..5 {
+        data.step(&model).expect("step");
+    }
+    data.reset(&model);
+    data.integrate(&model);
+    assert_eq!(data.qvel[0], 0.0);
+}
+
+/// A hinged capsule and a free box joined by a connect, under implicitfast
+/// and PGS: 500 steps against MuJoCo 3.5.0 (unfused build) at 1e-12. Needs
+/// the connect impedance fix, Rigid-physics P26 (spec book
+/// `docs/studies/a_double_dose_of_detail`, chapter 20). Before it, `qvel` is
+/// 1.4e-8 off at step 10 and 8.4e-3 at step 100.
+#[test]
+#[ignore = "known gap until Rigid-physics P26 (connect impedance): qvel off MuJoCo from step 10"]
+fn connect_under_implicitfast_pgs_matches_mujoco_3_5_0() {
+    let xml = r#"<mujoco model="conn_free2_implicitfast_PGS">
+  <option timestep="0.002" integrator="implicitfast" solver="PGS"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="h" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0.35 0 1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.04 0.03" mass="2" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="a" body2="b" anchor="0.3 0 0"/>
+  </equality>
+</mujoco>"#;
+    // (step, qpos, qvel) from MuJoCo 3.5.0.
+    let mujoco: [(usize, [f64; 8], [f64; 7]); 4] = [
+        (
+            1,
+            [
+                0.000_150_615_865_164_580_9,
+                0.35,
+                0.0,
+                0.999_958_910_816_922_2,
+                0.999_999_999_168_055_2,
+                0.0,
+                -4.079_080_317_457_580_5e-5,
+                0.0,
+            ],
+            [
+                0.075_307_932_582_290_45,
+                0.0,
+                0.0,
+                -0.020_544_591_538_880_122,
+                0.0,
+                -0.040_790_803_185_887_71,
+                0.0,
+            ],
+        ),
+        (
+            10,
+            [
+                0.008_225_467_727_977_663,
+                0.349_994_618_271_628,
+                0.0,
+                0.997_745_272_420_910_3,
+                0.999_997_733_538_263_2,
+                0.0,
+                -0.002_129_065_132_177_455_5,
+                0.0,
+            ],
+            [
+                0.745_143_095_838_215_6,
+                -0.000_954_664_881_397_169_3,
+                0.0,
+                -0.204_738_196_972_304_53,
+                0.0,
+                -0.376_582_287_981_853_17,
+                0.0,
+            ],
+        ),
+        (
+            100,
+            [
+                0.624_328_958_454_719_3,
+                0.293_650_525_094_194_26,
+                0.0,
+                0.807_960_029_131_666_2,
+                0.987_573_754_934_375_2,
+                0.0,
+                0.157_156_223_436_485_86,
+                0.0,
+            ],
+            [
+                4.916_630_586_465_196,
+                -0.975_449_656_299_381_1,
+                0.0,
+                -1.691_854_655_578_644_7,
+                0.0,
+                9.842_900_002_184_427,
+                0.0,
+            ],
+        ),
+        (
+            500,
+            [
+                1.588_070_156_157_654,
+                -0.008_295_250_502_834_306,
+                0.0,
+                0.644_718_770_719_321_5,
+                0.694_791_714_894_669_1,
+                0.0,
+                0.719_211_007_225_087_2,
+                0.0,
+            ],
+            [
+                -7.168_072_156_701_531,
+                2.228_840_555_752_991_6,
+                0.0,
+                -0.076_064_463_849_692_68,
+                0.0,
+                -1.002_695_680_163_950_8,
+                0.0,
+            ],
+        ),
+    ];
+    let model = sim_mjcf::load_model(xml).expect("load");
+    let mut data = model.make_data();
+    let mut checked = 0;
+    for k in 1..=500 {
+        data.step(&model).expect("step");
+        for (step, qpos, qvel) in &mujoco {
+            if k == *step {
+                let dq = (data.qpos.iter().zip(qpos))
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0, f64::max);
+                let dv = (data.qvel.iter().zip(qvel))
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0, f64::max);
+                assert!(
+                    dq < 1e-12 && dv < 1e-12,
+                    "step {k}: |Δqpos| {dq:e}, |Δqvel| {dv:e}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, mujoco.len());
+}
+
+/// A slide joint on a spring and damper under implicitspringdamper.
+fn isd_spring() -> sim_core::Model {
+    let xml = r#"
+    <mujoco>
+      <option timestep="0.01" integrator="implicitspringdamper">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="slide" axis="1 0 0" stiffness="10" damping="0.5"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+    </mujoco>"#;
+    sim_mjcf::load_model(xml).expect("load")
+}
+
+/// Under implicit and implicitfast, `data.qacc` after `forward()` is the
+/// explicit acceleration, as MuJoCo's `mj_fwdConstraint` leaves it; the
+/// implicit acceleration only advances `qvel`. MuJoCo 3.5.0 (unfused build):
+/// `qacc` = `qacc_smooth` = −2.907859844926252 on this damped hinge at
+/// qpos 0.3, qvel 1.5.
+#[test]
+fn forward_qacc_is_explicit_under_implicit() {
+    for integrator in ["implicitfast", "implicit"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.5"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"
+                        contype="0" conaffinity="0"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 1.5;
+        data.forward(&model).expect("forward");
+        let qacc = data.qacc[0];
+        assert!(
+            (qacc - -2.907_859_844_926_252).abs() < 1e-12,
+            "{integrator}: qacc {qacc}"
+        );
+        assert!(
+            (qacc - data.qacc_smooth[0]).abs() < 1e-12,
+            "{integrator}: qacc {qacc}, qacc_smooth {}",
+            data.qacc_smooth[0]
+        );
+    }
+}
+
+/// The accelerometer reads the explicit acceleration under every
+/// integrator. Damped hinge driven through 20 steps; MuJoCo 3.5.0 (unfused
+/// build) reads the same values under Euler, implicitfast and implicit.
+#[test]
+fn implicit_accelerometer_matches_mujoco_3_5_0() {
+    const CTRL: [f64; 20] = [
+        0.0, 0.8, 1.1, 0.6, -0.2, -0.7, -0.5, 0.4, 1.2, 1.4, 0.9, 0.1, -0.4, -0.1, 0.7, 1.6, 1.8,
+        1.2, 0.4, 0.0,
+    ];
+    let mujoco: [(usize, [f64; 3]); 3] = [
+        (1, [0.0, 0.0, 0.0]),
+        (10, [-0.024_371_234_406_227_43, 4.920_874_043_921_441, 0.0]),
+        (
+            20,
+            [-0.312_796_860_887_476_94, -0.945_390_709_313_387_9, 0.0],
+        ),
+    ];
+    for integrator in ["Euler", "implicitfast", "implicit"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" gravity="0 0 0" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b">
+                  <joint name="j" type="hinge" axis="0 0 1" damping="0.05"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
+                  <site name="s" pos="0.3 0 0"/>
+                </body>
+              </worldbody>
+              <actuator><motor joint="j" gear="0.2"/></actuator>
+              <sensor><accelerometer site="s"/></sensor>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        let mut checked = 0;
+        for (k, &ctrl) in CTRL.iter().enumerate() {
+            data.ctrl[0] = ctrl;
+            data.step(&model).expect("step");
+            for (step, want) in &mujoco {
+                if k + 1 == *step {
+                    for (axis, w) in want.iter().enumerate() {
+                        let got = data.sensordata[axis];
+                        assert!(
+                            (got - w).abs() < 1e-12,
+                            "{integrator}, step {step}, axis {axis}: {got} vs MuJoCo {w}"
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, mujoco.len());
+    }
+}
+
+/// A step saves the explicit acceleration as the next warmstart, as MuJoCo's
+/// `mj_advance` saves `d->qacc` (`engine_forward.c:939`), and still advances
+/// `qvel` with the implicit one. MuJoCo 3.5.0 (unfused build), one step from
+/// qpos 0.3, qvel 1.5: warmstart −2.907859844926252, qvel 1.4777791334298165.
+#[test]
+fn implicit_warmstart_is_explicit() {
+    for integrator in ["implicitfast", "implicit"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.5"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"
+                        contype="0" conaffinity="0"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 1.5;
+        data.step(&model).expect("step");
+        let warmstart = data.qacc_warmstart[0];
+        assert!(
+            (warmstart - -2.907_859_844_926_252).abs() < 1e-12,
+            "{integrator}: warmstart {warmstart}"
+        );
+        let qvel = data.qvel[0];
+        assert!(
+            (qvel - 1.477_779_133_429_816_5).abs() < 1e-12,
+            "{integrator}: qvel {qvel}"
+        );
+    }
+}
+
+/// The same with a constraint active, where `qacc` and `qacc_smooth` differ:
+/// a hinge past its limit, solved by PGS, which leaves `qacc` to the
+/// acceleration stage. MuJoCo 3.5.0 (unfused build), from qpos 0.25, qvel 0.5:
+/// after `forward()`, `qacc` −664.8448367629019 (`qacc_smooth`
+/// 28.570339542525833) and the accelerometer's z 208.95848188585194; after one
+/// step, warmstart −664.8448367629019 and qvel −4.580515979255743 (implicitfast)
+/// or −4.580515979255744 (implicit).
+#[test]
+fn implicit_qacc_is_explicit_with_an_active_limit_under_pgs() {
+    let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want.abs().max(1.0);
+    for (integrator, qvel_after) in [
+        ("implicitfast", -4.580_515_979_255_743),
+        ("implicit", -4.580_515_979_255_744),
+    ] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}" solver="PGS"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.5"
+                         limited="true" range="-0.2 0.2"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"
+                        contype="0" conaffinity="0"/>
+                  <site name="s" pos="0.3 0 0"/>
+                </body>
+              </worldbody>
+              <sensor><accelerometer site="s"/></sensor>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.25;
+        data.qvel[0] = 0.5;
+        data.forward(&model).expect("forward");
+        assert_eq!(data.efc_type.len(), 1, "{integrator}: the limit is active");
+        let (qacc, acc_z) = (data.qacc[0], data.sensordata[2]);
+        assert!(
+            close(qacc, -664.844_836_762_901_9),
+            "{integrator}: qacc {qacc}"
+        );
+        assert!(
+            close(acc_z, 208.958_481_885_851_94),
+            "{integrator}: accelerometer z {acc_z}"
+        );
+        data.step(&model).expect("step");
+        let (warmstart, qvel) = (data.qacc_warmstart[0], data.qvel[0]);
+        assert!(
+            close(warmstart, -664.844_836_762_901_9),
+            "{integrator}: warmstart {warmstart}"
+        );
+        assert!(close(qvel, qvel_after), "{integrator}: qvel {qvel}");
+    }
 }

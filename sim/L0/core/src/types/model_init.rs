@@ -8,6 +8,7 @@
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 use std::collections::{HashMap, HashSet};
 
+use super::body_wrench::BodyWrench;
 use super::enums::{Integrator, MIN_AWAKE, MjJointType, SleepPolicy, SleepState, SolverType};
 use super::model::Model;
 
@@ -598,7 +599,7 @@ impl Model {
             qfrc_constraint: DVector::zeros(self.nv),
             jnt_limit_frc: vec![0.0; self.njnt],
             ten_limit_frc: vec![0.0; self.ntendon],
-            xfrc_applied: vec![SpatialVector::zeros(); self.nbody],
+            xfrc_applied: vec![BodyWrench::default(); self.nbody],
 
             // Mass matrix (dense)
             qM: DMatrix::zeros(self.nv, self.nv),
@@ -798,6 +799,7 @@ impl Model {
             scratch_force: DVector::zeros(self.nv),
             scratch_rhs: DVector::zeros(self.nv),
             scratch_v_new: DVector::zeros(self.nv),
+            qacc_implicit: DVector::zeros(self.nv),
             scratch_lu_piv: vec![0; self.nv],
 
             // RK4 scratch buffers

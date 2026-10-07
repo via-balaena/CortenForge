@@ -10,7 +10,7 @@
 
 use std::ops::Range;
 
-use sim_core::{Data, Model};
+use sim_core::{BodyWrench, Data, Model};
 
 use crate::error::SpaceError;
 use crate::tensor::{Tensor, TensorSpec};
@@ -604,7 +604,7 @@ fn resolve_sensor(name: &str, model: &Model) -> Result<Extractor, SpaceError> {
 /// A single injection: "write these action elements into this field of Data."
 ///
 /// Flat fields use element indices.  Per-body fields use body indices and
-/// unflatten automatically (6 per body for `xfrc_applied`, 3 for `mocap_pos`,
+/// unflatten automatically (6 per body for `body_wrench`, 3 for `mocap_pos`,
 /// 4 for `mocap_quat`).
 #[derive(Debug, Clone)]
 enum Injector {
@@ -612,8 +612,9 @@ enum Injector {
     Ctrl(Range<usize>),
     /// `action[offset..]` → `data.qfrc_applied[range]`.
     QfrcApplied(Range<usize>),
-    /// `action[offset..]` → `data.xfrc_applied[body_range]` (6 per body).
-    XfrcApplied(Range<usize>),
+    /// `action[offset..]` → `data.xfrc_applied[body_range]` (6 per body,
+    /// force then torque, as a MuJoCo `xfrc_applied` row).
+    BodyWrench(Range<usize>),
     /// `action[offset..]` → `data.mocap_pos[body_range]` (3 per body).
     MocapPos(Range<usize>),
     /// `action[offset..]` → `data.mocap_quat[body_range]` (4 per body).
@@ -625,7 +626,7 @@ impl Injector {
     fn dim(&self) -> usize {
         match self {
             Self::Ctrl(r) | Self::QfrcApplied(r) => r.len(),
-            Self::XfrcApplied(r) => r.len() * 6,
+            Self::BodyWrench(r) => r.len() * 6,
             Self::MocapPos(r) => r.len() * 3,
             Self::MocapQuat(r) => r.len() * 4,
         }
@@ -648,12 +649,11 @@ impl Injector {
                     data.qfrc_applied[i] = f64::from(val);
                 }
             }
-            Self::XfrcApplied(r) => {
+            Self::BodyWrench(r) => {
                 let mut offset = 0;
                 for body in r.clone() {
-                    for k in 0..6 {
-                        data.xfrc_applied[body][k] = f64::from(action_slice[offset + k]);
-                    }
+                    let row = std::array::from_fn(|k| f64::from(action_slice[offset + k]));
+                    data.xfrc_applied[body] = BodyWrench::from_mujoco_row(row);
                     offset += 6;
                 }
             }
@@ -816,11 +816,16 @@ impl ActionSpaceBuilder {
         self
     }
 
-    /// Inject `action[..]` → `data.xfrc_applied[body_range]` (6 per body).
+    /// Inject `action[..]` → `data.xfrc_applied[body_range]`: 6 per body,
+    /// force then torque (world frame), as a MuJoCo `xfrc_applied` row.
+    ///
+    /// Replaces 0.9's `xfrc_applied` builder method, which took the 6 values
+    /// torque first: an action vector or policy built for 0.9 needs its halves
+    /// swapped, not only the method renamed.
     #[must_use]
-    pub fn xfrc_applied(mut self, body_range: Range<usize>) -> Self {
+    pub fn body_wrench(mut self, body_range: Range<usize>) -> Self {
         self.entries
-            .push(ActionBuilderEntry::Resolved(Injector::XfrcApplied(
+            .push(ActionBuilderEntry::Resolved(Injector::BodyWrench(
                 body_range,
             )));
         self
@@ -878,7 +883,7 @@ fn validate_injector(inj: &Injector, model: &Model) -> Result<(), SpaceError> {
     match inj {
         Injector::Ctrl(r) => check_flat("ctrl", r, model.nu),
         Injector::QfrcApplied(r) => check_flat("qfrc_applied", r, model.nv),
-        Injector::XfrcApplied(r) => check_body("xfrc_applied", r, model.nbody),
+        Injector::BodyWrench(r) => check_body("xfrc_applied", r, model.nbody),
         Injector::MocapPos(r) => check_mocap("mocap_pos", r, model.nmocap),
         Injector::MocapQuat(r) => check_mocap("mocap_quat", r, model.nmocap),
     }
@@ -1495,23 +1500,28 @@ mod tests {
         assert_eq!(data.qfrc_applied[0], f64::from(2.71_f32));
     }
 
-    // ── xfrc_applied injection ───────────────────────────────────────────
+    // ── body_wrench injection ────────────────────────────────────────────
 
     #[test]
-    fn apply_xfrc_applied_roundtrip() {
+    fn apply_body_wrench_is_force_then_torque() {
         let (model, mut data) = pendulum();
         // Body 1 = pendulum
         let space = ActionSpace::builder()
-            .xfrc_applied(1..2)
+            .body_wrench(1..2)
             .build(&model)
             .unwrap();
         assert_eq!(space.dim(), 6);
         let vals = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
         let action = Tensor::from_slice(&vals, &[6]);
         space.apply(&action, &mut data, &model);
-        for (k, &val) in vals.iter().enumerate() {
-            assert_eq!(data.xfrc_applied[1][k], f64::from(val));
-        }
+        assert_eq!(
+            data.xfrc_applied[1].force,
+            nalgebra::Vector3::new(1.0, 2.0, 3.0)
+        );
+        assert_eq!(
+            data.xfrc_applied[1].torque,
+            nalgebra::Vector3::new(4.0, 5.0, 6.0)
+        );
     }
 
     // ── mocap_pos injection ─────────────────────────────────────────────��
@@ -1587,11 +1597,11 @@ mod tests {
     #[test]
     fn action_dim_sums_injectors() {
         let (model, _data) = pendulum();
-        // ctrl(1) + qfrc_applied(1) + xfrc_applied(1 body × 6) = 8
+        // ctrl(1) + qfrc_applied(1) + body_wrench(1 body × 6) = 8
         let space = ActionSpace::builder()
             .ctrl(0..1)
             .qfrc_applied(0..1)
-            .xfrc_applied(1..2)
+            .body_wrench(1..2)
             .build(&model)
             .unwrap();
         assert_eq!(space.dim(), 8);
@@ -1686,10 +1696,10 @@ mod tests {
     }
 
     #[test]
-    fn action_xfrc_applied_range_out_of_bounds() {
+    fn action_body_wrench_range_out_of_bounds() {
         let (model, _data) = pendulum();
         let err = ActionSpace::builder()
-            .xfrc_applied(0..100)
+            .body_wrench(0..100)
             .build(&model)
             .unwrap_err();
         assert!(matches!(

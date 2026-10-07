@@ -252,14 +252,20 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
         }
         // Apply load on fingers
         for body_id in 2..model.nbody {
-            data.xfrc_applied[body_id] = nalgebra::Vector6::new(0.0, 5.0, 0.0, 0.0, 0.0, -15.0);
+            data.xfrc_applied[body_id] = sim_core::BodyWrench::new(
+                nalgebra::Vector3::new(0.0, 0.0, -15.0),
+                nalgebra::Vector3::new(0.0, 5.0, 0.0),
+            );
         }
         let _ = data.step(&model);
     }
     // Re-apply forces and call inverse() to populate cfrc_ext
     let _ = data.forward(&model);
     for body_id in 1..model.nbody {
-        data.xfrc_applied[body_id] = nalgebra::Vector6::new(0.0, 5.0, 0.0, 0.0, 0.0, -15.0);
+        data.xfrc_applied[body_id] = sim_core::BodyWrench::new(
+            nalgebra::Vector3::new(0.0, 0.0, -15.0),
+            nalgebra::Vector3::new(0.0, 5.0, 0.0),
+        );
     }
     data.inverse(&model);
     println!("  Simulation complete");

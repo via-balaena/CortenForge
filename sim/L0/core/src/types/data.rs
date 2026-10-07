@@ -8,6 +8,7 @@
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 
 // Imports from sibling modules
+use super::body_wrench::BodyWrench;
 use super::enums::{ConstraintState, ConstraintType, ResetError, SleepState};
 use super::model::Model;
 
@@ -37,7 +38,13 @@ pub struct Data {
     pub qpos: DVector<f64>,
     /// Joint velocities (length `nv`).
     pub qvel: DVector<f64>,
-    /// Joint accelerations (length `nv`) - computed by forward dynamics.
+    /// Joint accelerations (length `nv`) - computed by forward dynamics: the
+    /// constraint solver's result, else `M⁻¹ (qfrc_smooth + qfrc_constraint)`,
+    /// as MuJoCo's `mj_fwdConstraint` leaves it. Under Implicit and ImplicitFast
+    /// this is still the explicit acceleration, while the step advances `qvel`
+    /// with the implicit one, `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)`,
+    /// as in MuJoCo. Under ImplicitSpringDamper (not a MuJoCo integrator) it is
+    /// the implicit acceleration `(v_new - qvel) / h`.
     pub qacc: DVector<f64>,
     /// Warm-start for constraint solver (length `nv`).
     pub qacc_warmstart: DVector<f64>,
@@ -201,8 +208,10 @@ pub struct Data {
     pub ten_limit_frc: Vec<f64>,
 
     // Cartesian forces (alternative input method)
-    /// Applied spatial forces in world frame (length `nbody`).
-    pub xfrc_applied: Vec<SpatialVector>,
+    /// Force and torque applied to each body at its centre of mass, in the
+    /// world frame (length `nbody`): MuJoCo's `xfrc_applied`, one
+    /// [`BodyWrench`] per body.
+    pub xfrc_applied: Vec<BodyWrench>,
 
     // ==================== Mass Matrix ====================
     /// Joint-space inertia matrix (`nv` x `nv`).
@@ -541,8 +550,13 @@ pub struct Data {
     /// Scratch vector for RHS of linear solves (length `nv`).
     pub scratch_rhs: DVector<f64>,
     /// Scratch vector for new velocity in implicit solve (length `nv`).
-    /// Used to hold v_new while computing qacc = (v_new - v_old) / h.
+    /// Holds the `v_new` ImplicitSpringDamper's acceleration stage solves for,
+    /// from which it computes `qacc = (v_new - v_old) / h`.
     pub scratch_v_new: DVector<f64>,
+    /// The acceleration Implicit and ImplicitFast advance `qvel` with,
+    /// `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)` (length `nv`). MuJoCo
+    /// keeps it in a stack local of `mj_implicitSkip` (`engine_forward.c:1134`).
+    pub(crate) qacc_implicit: DVector<f64>,
     /// Pivot permutation for LU factorization in `Integrator::Implicit` (length `nv`).
     /// Stores row swap indices from partial pivoting. Persists after forward pass
     /// for reuse by derivative column solves in `mjd_transition_hybrid`.
@@ -648,7 +662,8 @@ pub struct Data {
     /// Backward pass: `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`,
     /// accumulated into parent.
     pub cfrc_int: Vec<SpatialVector>,
-    /// Per-body external forces in world frame (length `nbody`).
+    /// Per-body external forces in world frame (length `nbody`), laid out
+    /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`).
     /// `xfrc_applied` + contact/constraint solver forces, converted to spatial
     /// force at body CoM. Populated by `mj_body_accumulators()`.
     pub cfrc_ext: Vec<SpatialVector>,
@@ -857,6 +872,7 @@ impl Clone for Data {
             scratch_force: self.scratch_force.clone(),
             scratch_rhs: self.scratch_rhs.clone(),
             scratch_v_new: self.scratch_v_new.clone(),
+            qacc_implicit: self.qacc_implicit.clone(),
             scratch_lu_piv: self.scratch_lu_piv.clone(),
             // RK4 scratch
             rk4_qpos_saved: self.rk4_qpos_saved.clone(),
@@ -1081,6 +1097,7 @@ impl Data {
         self.qpos = model.qpos0.clone();
         self.qvel.fill(0.0);
         self.qacc.fill(0.0);
+        self.qacc_implicit.fill(0.0);
         self.qacc_warmstart.fill(0.0);
         self.time = 0.0;
 
@@ -1136,9 +1153,7 @@ impl Data {
         self.qfrc_smooth.fill(0.0);
         self.qfrc_frictionloss.fill(0.0);
         self.qfrc_applied.fill(0.0);
-        for v in &mut self.xfrc_applied {
-            *v = SpatialVector::zeros();
-        }
+        self.xfrc_applied.fill(BodyWrench::default());
 
         // 4b. Body accumulators + inverse dynamics — zero.
         for v in &mut self.cacc {
@@ -1252,15 +1267,14 @@ impl Data {
 
         // Clear derived quantities and applied forces (matching Data::reset()).
         self.qacc.fill(0.0);
+        self.qacc_implicit.fill(0.0);
         self.qacc_warmstart.fill(0.0);
         self.act_dot.fill(0.0);
         self.actuator_length.fill(0.0);
         self.actuator_velocity.fill(0.0);
         self.actuator_force.fill(0.0);
         self.qfrc_applied.fill(0.0);
-        for v in &mut self.xfrc_applied {
-            *v = SpatialVector::zeros();
-        }
+        self.xfrc_applied.fill(BodyWrench::default());
         self.sensordata.fill(0.0);
         self.ncon = 0;
         self.contacts.clear();
@@ -1310,7 +1324,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4416;
+        const EXPECTED_SIZE: usize = 4448;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

@@ -330,9 +330,9 @@ fn check_countdown_duration() -> Check {
     }
 
     // Reset: apply a brief kick, then let it settle again while counting
-    data.xfrc_applied[1][5] = 5.0; // small upward force
+    data.xfrc_applied[1].force[2] = 5.0; // small upward force
     data.step(&model).expect("step");
-    data.xfrc_applied[1][5] = 0.0;
+    data.xfrc_applied[1].force[2] = 0.0;
 
     // Count steps from first sub-threshold observation to actual sleep
     let mut sub_threshold_steps = 0;
@@ -401,9 +401,9 @@ fn check_wake_on_equality() -> Check {
     let tree_b = model.body_treeid[body_b];
 
     // Apply force to A — should wake A, and equality constraint should wake B
-    data.xfrc_applied[body_a][5] = 20.0; // upward force
+    data.xfrc_applied[body_a].force[2] = 20.0; // upward force
     data.step(&model).expect("step");
-    data.xfrc_applied[body_a][5] = 0.0;
+    data.xfrc_applied[body_a].force[2] = 0.0;
 
     let a_awake = data.tree_asleep[tree_a] < 0;
     let b_awake = data.tree_asleep[tree_b] < 0;
@@ -424,11 +424,11 @@ fn check_wake_on_xfrc() -> Check {
     let tree = model.body_treeid[1];
     let was_asleep = data.tree_asleep[tree] >= 0;
 
-    data.xfrc_applied[1][5] = 10.0; // upward force
+    data.xfrc_applied[1].force[2] = 10.0; // upward force
     data.step(&model).expect("step");
 
     let now_awake = data.tree_asleep[tree] < 0;
-    data.xfrc_applied[1][5] = 0.0;
+    data.xfrc_applied[1].force[2] = 0.0;
 
     Check {
         name: "Wake on xfrc_applied",
@@ -449,11 +449,11 @@ fn check_wake_cascade() -> Check {
     let settled = settle_until_asleep(&model, &mut data, 5000);
 
     // Poke the left box toward middle with a strong impulse
-    data.xfrc_applied[left][3] = 500.0; // strong force in +X
+    data.xfrc_applied[left].force[0] = 500.0; // strong force in +X
     for _ in 0..10 {
         data.step(&model).expect("step");
     }
-    data.xfrc_applied[left][3] = 0.0;
+    data.xfrc_applied[left].force[0] = 0.0;
 
     // Track: did middle ever wake during the cascade?
     let mut middle_woke = false;
@@ -566,9 +566,9 @@ fn check_selective_wake() -> Check {
     let settled = settle_until_asleep(&model, &mut data, 5000);
 
     // Poke stack A
-    data.xfrc_applied[a2][5] = 20.0;
+    data.xfrc_applied[a2].force[2] = 20.0;
     data.step(&model).expect("step");
-    data.xfrc_applied[a2][5] = 0.0;
+    data.xfrc_applied[a2].force[2] = 0.0;
 
     let a1_awake = data.sleep_state(a1) == SleepState::Awake;
     let a2_awake = data.sleep_state(a2) == SleepState::Awake;
@@ -594,9 +594,9 @@ fn check_countdown_reset() -> Check {
     settle_until_asleep(&model, &mut data, 5000);
 
     // Wake it with a small force
-    data.xfrc_applied[1][5] = 5.0;
+    data.xfrc_applied[1].force[2] = 5.0;
     data.step(&model).expect("step");
-    data.xfrc_applied[1][5] = 0.0;
+    data.xfrc_applied[1].force[2] = 0.0;
     if data.tree_asleep[tree] >= 0 {
         return Check {
             name: "Countdown reset",
@@ -613,9 +613,9 @@ fn check_countdown_reset() -> Check {
         if timer > -(1 + MIN_AWAKE) && timer < 0 {
             saw_counting = true;
             // Now apply another velocity spike to reset
-            data.xfrc_applied[1][5] = 5.0;
+            data.xfrc_applied[1].force[2] = 5.0;
             data.step(&model).expect("step");
-            data.xfrc_applied[1][5] = 0.0;
+            data.xfrc_applied[1].force[2] = 0.0;
             break;
         }
     }

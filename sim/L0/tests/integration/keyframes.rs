@@ -381,7 +381,10 @@ fn ac08_reset_zeroes_applied_forces() {
 
     // Set applied forces before reset.
     data.qfrc_applied[0] = 42.0;
-    data.xfrc_applied[1] = nalgebra::Vector6::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
+    data.xfrc_applied[1] = sim_core::BodyWrench::new(
+        nalgebra::Vector3::new(4.0, 5.0, 6.0),
+        nalgebra::Vector3::new(1.0, 2.0, 3.0),
+    );
 
     // Step to populate derived quantities.
     data.qpos[0] = 0.5;
@@ -393,7 +396,7 @@ fn ac08_reset_zeroes_applied_forces() {
 
     // Applied forces zeroed (matching MuJoCo mj_resetData behaviour).
     assert_relative_eq!(data.qfrc_applied[0], 0.0, epsilon = 1e-12);
-    assert_relative_eq!(data.xfrc_applied[1][0], 0.0, epsilon = 1e-12);
+    assert_relative_eq!(data.xfrc_applied[1].torque[0], 0.0, epsilon = 1e-12);
 
     // Derived quantities cleared.
     assert_relative_eq!(data.qacc[0], 0.0, epsilon = 1e-12);

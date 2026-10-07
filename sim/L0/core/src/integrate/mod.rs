@@ -22,20 +22,38 @@ use nalgebra::DVector;
 
 use euler::{mj_integrate_pos, mj_normalize_quat};
 
+/// Whether an Euler step solves `(M + h·D)·qacc_new = qfrc_smooth +
+/// qfrc_constraint` for the acceleration it advances `qvel` with (eulerdamp):
+/// neither eulerdamp nor dampers disabled, and some DOF damped (an undamped
+/// model skips the refactorisation).
+pub(crate) fn eulerdamp_applies(model: &Model) -> bool {
+    model.disableflags & DISABLE_EULERDAMP == 0
+        && model.disableflags & DISABLE_DAMPER == 0
+        && model.implicit_damping.iter().any(|&d| d > 0.0)
+}
+
 impl Data {
-    /// Integration step for Euler and implicit-spring-damper integrators.
+    /// Integration step after the acceleration stage: velocity, then position and time.
     ///
     /// This is exposed as part of the split-step API ([`step1`](Self::step1) /
-    /// [`step2`](Self::step2)). RK4 integration is handled by
-    /// `mj_runge_kutta()` and does not call this method.
+    /// [`step2`](Self::step2)). Under RK4, [`step`](Self::step) integrates with
+    /// `mj_runge_kutta()` instead; this method takes the Euler step, as
+    /// MuJoCo's `mj_step2` does.
     ///
     /// # Integration Methods
     ///
-    /// - **Euler**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`),
-    ///   then integrates position using the new velocity.
+    /// - **Euler**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`,
+    ///   or with a damped DOF eulerdamp's `(M + h·D)⁻¹ (qfrc_smooth +
+    ///   qfrc_constraint)` in place of `qacc`), then integrates position using the
+    ///   new velocity.
     ///
-    /// - **Implicit**: Velocity was already updated in `mj_fwd_acceleration_implicit()`.
-    ///   We only integrate positions here.
+    /// - **Implicit, ImplicitFast**: `qvel += qacc_implicit * h`, the acceleration
+    ///   `(M − h·∂f/∂v)⁻¹ f` the acceleration stage solved for; `qacc` keeps the
+    ///   explicit one, as in MuJoCo.
+    ///
+    /// - **ImplicitSpringDamper**: `qvel += qacc * h`, where `qacc` is the
+    ///   implicit acceleration the acceleration stage (or a Newton solve)
+    ///   computed.
     ///
     /// Does not check `model.timestep` or the shape of `self`;
     /// [`step`](Self::step) and [`step2`](Self::step2) do. Time runs backwards
@@ -66,10 +84,12 @@ impl Data {
             }
         }
 
-        // For Euler and new implicit variants, update velocity using computed acceleration.
-        // For legacy ImplicitSpringDamper, velocity was already updated in mj_fwd_acceleration_implicit.
+        // Update velocity from the acceleration the step integrates.
         match model.integrator {
-            Integrator::Euler => {
+            // Under RK4, `step` integrates with `mj_runge_kutta`; `step2` lands
+            // here and takes MuJoCo's Euler step, as `mj_step2` calls `mj_Euler`
+            // for every integrator but the implicit pair (engine_forward.c:1505-1512).
+            Integrator::Euler | Integrator::RungeKutta4 => {
                 // Eulerdamp: implicit damping via full matrix solve.
                 //
                 // MuJoCo 3.x solves (M + h·D)·qacc_new = F_total, then qvel += h·qacc_new.
@@ -84,15 +104,7 @@ impl Data {
                 //   4. Solve qH · qacc_new = rhs
                 //   5. qvel += h · qacc_new
                 //
-                // Gated on: !disabled(DISABLE_EULERDAMP) && !disabled(DISABLE_DAMPER).
-                let eulerdamp = model.disableflags & DISABLE_EULERDAMP == 0
-                    && model.disableflags & DISABLE_DAMPER == 0;
-
-                // Check if any DOF has damping (avoid expensive refactorize for undamped models)
-                let has_damping =
-                    eulerdamp && (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
-
-                if has_damping {
+                if eulerdamp_applies(model) {
                     // Save original factorization (restored after solve)
                     let saved_qld = self.qLD_data.clone();
                     let saved_inv = self.qLD_diag_inv.clone();
@@ -169,30 +181,14 @@ impl Data {
                     } else {
                         idx
                     };
-                    self.qvel[i] += self.qacc[i] * h;
+                    self.qvel[i] += self.qacc_implicit[i] * h;
                 }
             }
             Integrator::ImplicitSpringDamper => {
-                if self.newton_solved {
-                    // Newton already computed qacc with implicit spring/damper effects
-                    // baked into the constraint solve via M_impl (DT-35: includes
-                    // tendon K/D coupling). Update velocity explicitly.
-                    let nv = if use_dof_ind { self.nv_awake } else { model.nv };
-                    for idx in 0..nv {
-                        let i = if use_dof_ind {
-                            self.dof_awake_ind[idx]
-                        } else {
-                            idx
-                        };
-                        self.qvel[i] += self.qacc[i] * h;
-                    }
-                }
-                // Otherwise: velocity already updated by mj_fwd_acceleration_implicit
-                // (non-Newton path solves for v_new directly, not qacc)
-            }
-            Integrator::RungeKutta4 => {
-                // Fallback to Euler when called from step2() split-step API.
-                // Full RK4 is handled by mj_runge_kutta() in step().
+                // qacc is the implicit acceleration: (v_new − qvel) / h from
+                // `mj_fwd_acceleration_implicit`, or Newton's, which folds the
+                // implicit springs and dampers into M_impl (DT-35: includes
+                // tendon K/D coupling).
                 let nv = if use_dof_ind { self.nv_awake } else { model.nv };
                 for idx in 0..nv {
                     let i = if use_dof_ind {
