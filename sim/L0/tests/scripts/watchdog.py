@@ -7,7 +7,7 @@
 without bound can swap the machine out well before any time limit. This runs the
 command in its own process group, sums the group's resident memory every
 <poll_ms>, and SIGKILLs the group once the sum exceeds <limit_mb> or the run
-exceeds <timeout_s>. The verification protocol uses `watchdog.py 2500 <secs> 20`
+exceeds <timeout_s>, and once the command exits, whatever of it is still running. The verification protocol uses `watchdog.py 2500 <secs> 20`
 for anything that loads an untrusted or submodule model, one process per file.
 
 Prints one JSON line to stderr: {"rc", "killed", "peak_mb", "secs", "samples"};
@@ -50,6 +50,10 @@ def main():
             break
         time.sleep(poll_s)
     rc = proc.wait()
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:  # the group is already empty
+        pass
     print(json.dumps({'rc': rc, 'killed': killed, 'peak_mb': round(peak, 1),
                       'secs': round(time.time() - start, 2), 'samples': samples}), file=sys.stderr)
     sys.exit(128 - rc if rc < 0 else rc)

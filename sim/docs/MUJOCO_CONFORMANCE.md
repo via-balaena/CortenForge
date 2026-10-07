@@ -330,12 +330,14 @@ Some differences from MuJoCo are by design:
 | A-SOLVER | Contact solver | Custom sparse | PGS + CG/PGD + Newton (reduced primal, §15) with variable condim (1/3/4/6), elliptic friction cones | Maintainability |
 | A-VIS | Visualization | Built-in | Separate L1 crate | Headless training |
 
-These are architectural. Each difference a model shows — a document we refuse
-that MuJoCo 3.5.0 loads, or a value we compute differently on purpose — is a
-row of the divergence registry, `sim/L0/tests/assets/census/divergences.tsv`
-(ID, area, MuJoCo, ours, kind, test). The parity census
-(`sim/L0/tests/mujoco_conformance/layer_e_census.rs`) checks every
-`divergence=<ID>` it records against that file.
+These are architectural. A deliberate difference a model shows — a document we
+refuse on purpose that MuJoCo 3.5.0 loads, or a value we compute differently on
+purpose — is a row of the divergence registry,
+`sim/L0/tests/assets/census/divergences.tsv` (ID, area, MuJoCo, ours, kind,
+test). The parity census (`sim/L0/tests/mujoco_conformance/layer_e_census.rs`)
+checks every `divergence=<ID>` note in its `verdicts.tsv` against that file; a
+document we refuse because of a defect not yet fixed carries a `known=` note
+instead.
 
 ---
 

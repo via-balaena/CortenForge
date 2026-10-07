@@ -100,16 +100,28 @@ case "$(uname -m)" in
     *) die "no fused-instruction pattern for $(uname -m)" ;;
 esac
 pkg="$("$py" -I -c 'import mujoco, os; print(os.path.dirname(mujoco.__file__))')"
+libraries() { find "$1" -type f \( -name '*.dylib' -o -name '*.so' -o -name '*.so.*' \) | LC_ALL=C sort; }
 total=0
-while IFS= read -r bin; do
-    n="$(objdump -d --no-show-raw-insn "$bin" | grep -cE "$fused" || true)"
-    echo "$n $bin"
-    total=$((total + n))
-done < <(find "$install" "$pkg" -type f \( -name '*.dylib' -o -name '*.so' -o -name '*.so.*' \) | sort)
+for root in "$install" "$pkg"; do
+    found=0
+    while IFS= read -r bin; do
+        dis="$(objdump -d --no-show-raw-insn "$bin")" || die "objdump failed on $bin"
+        n="$(printf '%s\n' "$dis" | grep -cE "$fused" || true)"
+        echo "$n $bin"
+        total=$((total + n))
+        found=$((found + 1))
+    done < <(libraries "$root")
+    [[ "$found" -gt 0 ]] || die "no binaries found under $root"
+done
 [[ "$total" -eq 0 ]] || die "$total fused multiply-add instructions found"
 
-# gen_census_golden.py refuses any interpreter without this marker beside it.
+# gen_census_golden.py refuses an interpreter whose mujoco package libraries do
+# not hash to libraries_sha256: sha256 over "<path in the package>\t<sha256>\n",
+# one line per library, in byte order of the path.
+libraries_sha256="$(libraries "$pkg" | while IFS= read -r bin; do
+    printf '%s\t%s\n' "${bin#"$pkg"/}" "$(shasum -a 256 < "$bin" | cut -d' ' -f1)"
+done | shasum -a 256 | cut -d' ' -f1)"
 cat > "$work/oracle.json" <<EOF
-{"mujoco": "$TAG", "commit": "$COMMIT", "flags": "$FLAGS", "platform": "$(uname -s)-$(uname -m)"}
+{"mujoco": "$TAG", "commit": "$COMMIT", "flags": "$FLAGS", "platform": "$(uname -s)-$(uname -m)", "libraries_sha256": "$libraries_sha256"}
 EOF
 echo "oracle ready: $py"

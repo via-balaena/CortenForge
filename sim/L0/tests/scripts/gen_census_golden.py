@@ -6,10 +6,12 @@ Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
     <workdir>/venv/bin/python -I sim/L0/tests/scripts/gen_census_golden.py \\
         sim/L0/tests/assets/census/docs sim/L0/tests/assets/census/golden [ids-file]
 
-It refuses any other interpreter: the PyPI wheel fuses multiply-adds, so its
-numbers are not the numbers sim-core's plain arithmetic should reach. It also
-refuses to write into a golden directory blessed on another platform; moving
-the golden to a new platform is a deliberate act (delete meta.json first).
+It refuses an interpreter whose mujoco package libraries do not hash to the
+marker build_mujoco_oracle.sh writes beside the venv: the PyPI wheel fuses
+multiply-adds, so its numbers are not the numbers sim-core's plain arithmetic
+should reach. It also refuses to write into a golden directory whose meta.json
+names another oracle; moving the golden to a new oracle is a deliberate act
+(delete meta.json first).
 
 For every <docs>/<id>.xml (or every id in ids-file) it writes <golden>/<id>.json:
 
@@ -30,6 +32,8 @@ The rules are the census's, and layer_e_census.rs runs the same ones on our side
   qpos, qvel, act and time at 19 checkpoints (steps 1-10, 20, 30, ..., 100).
 """
 import copy
+import fnmatch
+import hashlib
 import json
 import math
 import os
@@ -48,7 +52,8 @@ EXCITATIONS = {
     'e2': lambda i: 0.1 * (1 + i % 5) * (1 if i % 2 == 0 else -1),
 }
 
-# MuJoCo enum values under the names sim-core's Debug output uses.
+# MuJoCo enum values under the names sim-core's Debug output uses; SENSOR keeps
+# MuJoCo's mjSENS_ names, and compare.rs maps sim-core's names onto them.
 INTEGRATOR = {0: 'Euler', 1: 'RungeKutta4', 2: 'Implicit', 3: 'ImplicitFast'}
 SOLVER = {0: 'PGS', 1: 'CG', 2: 'Newton'}
 JOINT = {0: 'Free', 1: 'Ball', 2: 'Slide', 3: 'Hinge'}
@@ -242,15 +247,31 @@ def finite_or_string(o):
 
 def golden(path):
     doc = os.path.basename(path)[:-len('.xml')]
+    with open(path, encoding='utf-8') as f:
+        text = f.read()
     try:
-        with open(path, encoding='utf-8') as f:
-            m = mujoco.MjModel.from_xml_string(f.read())
+        m = mujoco.MjModel.from_xml_string(text)
     except Exception:  # noqa: BLE001 — any refusal is the same verdict: status only
         return {'doc': doc, 'status': 'refused'}
     out = {'doc': doc, 'status': 'ok', 'model': model_json(m)}
     for name, qvel_of in EXCITATIONS.items():
         out[name] = run_excitation(m, qvel_of)
     return finite_or_string(out)
+
+
+def libraries_sha256(pkg):
+    """build_mujoco_oracle.sh's hash: sha256 over "<path in pkg>\\t<sha256>\\n" per library."""
+    lines = []
+    for root, _, files in os.walk(pkg):
+        for name in files:
+            path = os.path.join(root, name)
+            if os.path.islink(path) or not any(
+                    fnmatch.fnmatch(name, g) for g in ('*.dylib', '*.so', '*.so.*')):
+                continue
+            with open(path, 'rb') as f:
+                lines.append((os.path.relpath(path, pkg), hashlib.sha256(f.read()).hexdigest()))
+    text = ''.join(f'{rel}\t{digest}\n' for rel, digest in sorted(lines))
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def oracle():
@@ -264,6 +285,10 @@ def oracle():
     here = f'{platform.system()}-{platform.machine()}'
     if o['mujoco'] != mujoco.__version__ or o['platform'] != here:
         sys.exit(f'oracle marker {o} does not match mujoco {mujoco.__version__} on {here}')
+    loaded = libraries_sha256(os.path.dirname(mujoco.__file__))
+    if o.get('libraries_sha256') != loaded:
+        sys.exit(f'the mujoco this interpreter loads ({loaded}) is not the build the marker '
+                 f'{marker} records ({o.get("libraries_sha256")})')
     return o
 
 
@@ -275,9 +300,9 @@ def main():
     meta_path = os.path.join(out, 'meta.json')
     if os.path.exists(meta_path):
         with open(meta_path) as f:
-            blessed = json.load(f)['oracle']['platform']
-        if blessed != built['platform']:
-            sys.exit(f'{out} was blessed on {blessed}; this oracle runs on {built["platform"]}')
+            blessed = json.load(f)['oracle']
+        if blessed != built:
+            sys.exit(f'{out} was blessed by the oracle {blessed}; this one is {built}')
     os.makedirs(out, exist_ok=True)
     if len(sys.argv) == 4:
         with open(sys.argv[3]) as f:
@@ -285,8 +310,9 @@ def main():
     else:
         ids = sorted(f[:-len('.xml')] for f in os.listdir(docs) if f.endswith('.xml'))
     for doc in ids:
+        record = golden(os.path.join(docs, doc + '.xml'))
         with open(os.path.join(out, doc + '.json'), 'w') as f:
-            f.write(json.dumps(golden(os.path.join(docs, doc + '.xml')), separators=(',', ':')) + '\n')
+            f.write(json.dumps(record, separators=(',', ':')) + '\n')
     if len(sys.argv) == 3:
         meta = {
             'oracle': built, 'numpy': np.__version__, 'python': platform.python_version(),

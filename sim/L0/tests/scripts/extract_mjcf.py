@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""Extract every MJCF document embedded in the repository's Rust sources and Markdown.
+"""Extract the MJCF documents in the repository's Rust string literals and Markdown fences.
 
     extract_mjcf.py extract <out_dir>   every doc to <out_dir>/docs/<id>.xml, and one record per
                                         `<mujoco` occurrence (loadable or not) to <out_dir>/manifest.jsonl
-    extract_mjcf.py drift [--append]    compare HEAD's docs with the parity-census snapshot
+    extract_mjcf.py drift [--append]    compare the working tree's docs with the parity-census snapshot
 
 A doc is one `<mujoco ...>...</mujoco>` span of a string literal (or of a fenced
 Markdown block) that holds a complete document; its id is sha256(text)[:16]. A
 `format!` template is recorded but not extracted: its text is not a document
-until it runs. Read-only on the repository, except `drift --append`.
+until it runs. A doc in a `///` or `//!` doc comment is recorded but not
+extracted either. Read-only on the repository, except `drift --append`.
 
-`drift` exits 1 when HEAD holds a doc the snapshot lacks. With `--append` it adds
+`drift` exits 1 when the working tree holds a doc the snapshot lacks. With `--append` it adds
 those docs to sim/L0/tests/assets/census/docs/, appends their rows to its
 manifest.tsv, and prints their ids — the ids-file gen_census_golden.py takes:
 
     extract_mjcf.py drift --append > new_ids.txt
     <oracle>/venv/bin/python -I gen_census_golden.py <docs> <golden> new_ids.txt
 
-A doc the snapshot holds and HEAD no longer does stays: the snapshot only grows.
+A doc the snapshot holds and the working tree no longer does stays: the snapshot only grows.
 """
 import collections
 import hashlib
@@ -274,8 +275,8 @@ def drift(append):
         records = extract(root, tmp)
         head = {f[:-len(".xml")] for f in os.listdir(os.path.join(tmp, "docs"))}
         added = sorted(head - snapshot)
-        print(f"drift: {len(head)} docs at HEAD, {len(snapshot)} in the snapshot; "
-              f"{len(added)} added, {len(snapshot - head)} no longer at HEAD (kept)", file=sys.stderr)
+        print(f"drift: {len(head)} docs in the working tree, {len(snapshot)} in the snapshot; "
+              f"{len(added)} added, {len(snapshot - head)} no longer in the tree (kept)", file=sys.stderr)
         if not added:
             return 0
         if not append:
