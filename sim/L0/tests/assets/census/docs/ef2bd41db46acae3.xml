@@ -1,0 +1,32 @@
+<mujoco model="slide-limits">
+  <option gravity="0 0 0" timestep="0.002"/>
+
+  <worldbody>
+    <!-- Rail visual (non-colliding) -->
+    <geom name="rail" type="capsule" fromto="-0.5 0 0.3 0.5 0 0.3"
+          size="0.008" rgba="0.5 0.5 0.5 0.6" contype="0" conaffinity="0"/>
+
+    <!-- Left endstop visual -->
+    <geom name="stop_lo" type="sphere" size="0.02"
+          pos="-0.3 0 0.3" rgba="0.6 0.6 0.6 0.8" contype="0" conaffinity="0"/>
+
+    <!-- Right endstop visual -->
+    <geom name="stop_hi" type="sphere" size="0.02"
+          pos="0.3 0 0.3" rgba="0.6 0.6 0.6 0.8" contype="0" conaffinity="0"/>
+
+    <body name="slider" pos="0 0 0.3">
+      <joint name="slide" type="slide" axis="1 0 0"
+             limited="true" range="-0.3 0.3" damping="2.0"/>
+      <geom name="slider_geom" type="box" size="0.04 0.04 0.04" mass="1.0"
+            rgba="0.3 0.5 0.85 1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="push" joint="slide" gear="1"/>
+  </actuator>
+
+  <sensor>
+    <jointlimitfrc name="slide_lf" joint="slide"/>
+  </sensor>
+</mujoco>

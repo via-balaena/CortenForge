@@ -1,0 +1,13 @@
+<mujoco model="cap_cap_parallel_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cap1" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+                <body name="cap2" pos="0.35 0 0">
+                    <joint type="free"/>
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>

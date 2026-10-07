@@ -1,0 +1,65 @@
+<mujoco model="hinge-limits">
+  <compiler angle="degree"/>
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+
+  <worldbody>
+    <!-- Stiff (blue) -->
+    <body name="pivot_stiff" pos="-0.6 0 1.5">
+      <geom name="pivot_stiff_geom" type="sphere" size="0.03"
+            rgba="0.4 0.4 0.4 1" contype="0" conaffinity="0"/>
+      <body name="rod_stiff" pos="0 0 0">
+        <joint name="stiff" type="hinge" axis="0 1 0"
+               limited="true" range="-45 45" ref="60"
+               solreflimit="0.005 1.0"/>
+        <geom name="rod_stiff_geom" type="capsule"
+              fromto="0 0 0 0 0 -0.5" size="0.015" mass="0.5"
+              rgba="0.3 0.5 0.85 1"/>
+        <body name="tip_stiff" pos="0 0 -0.5">
+          <geom name="tip_stiff_geom" type="sphere" size="0.04" mass="0.5"
+                rgba="0.3 0.5 0.85 1"/>
+        </body>
+      </body>
+    </body>
+
+    <!-- Default (green) -->
+    <body name="pivot_default" pos="0 0 1.5">
+      <geom name="pivot_default_geom" type="sphere" size="0.03"
+            rgba="0.4 0.4 0.4 1" contype="0" conaffinity="0"/>
+      <body name="rod_default" pos="0 0 0">
+        <joint name="default" type="hinge" axis="0 1 0"
+               limited="true" range="-45 45" ref="60"/>
+        <geom name="rod_default_geom" type="capsule"
+              fromto="0 0 0 0 0 -0.5" size="0.015" mass="0.5"
+              rgba="0.2 0.75 0.3 1"/>
+        <body name="tip_default" pos="0 0 -0.5">
+          <geom name="tip_default_geom" type="sphere" size="0.04" mass="0.5"
+                rgba="0.2 0.75 0.3 1"/>
+        </body>
+      </body>
+    </body>
+
+    <!-- Soft (red) -->
+    <body name="pivot_soft" pos="0.6 0 1.5">
+      <geom name="pivot_soft_geom" type="sphere" size="0.03"
+            rgba="0.4 0.4 0.4 1" contype="0" conaffinity="0"/>
+      <body name="rod_soft" pos="0 0 0">
+        <joint name="soft" type="hinge" axis="0 1 0"
+               limited="true" range="-45 45" ref="60"
+               solreflimit="0.08 1.0"/>
+        <geom name="rod_soft_geom" type="capsule"
+              fromto="0 0 0 0 0 -0.5" size="0.015" mass="0.5"
+              rgba="0.85 0.2 0.2 1"/>
+        <body name="tip_soft" pos="0 0 -0.5">
+          <geom name="tip_soft_geom" type="sphere" size="0.04" mass="0.5"
+                rgba="0.85 0.2 0.2 1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <jointlimitfrc name="stiff_lf" joint="stiff"/>
+    <jointlimitfrc name="default_lf" joint="default"/>
+    <jointlimitfrc name="soft_lf" joint="soft"/>
+  </sensor>
+</mujoco>

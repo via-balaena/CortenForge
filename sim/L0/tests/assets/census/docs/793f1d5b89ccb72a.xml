@@ -1,0 +1,18 @@
+<mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="actuator_target" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05"/>
+                        </body>
+                        <body name="unprotected" pos="0 0 1">
+                            <geom type="sphere" size="0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <adhesion name="stick" body="actuator_target" gain="1"/>
+                </actuator>
+            </mujoco>

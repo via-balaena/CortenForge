@@ -1,0 +1,9 @@
+<mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0" euler="0 0 90">
+                            <geom type="capsule" size="0.05" fromto="0 0 0 0 0 1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

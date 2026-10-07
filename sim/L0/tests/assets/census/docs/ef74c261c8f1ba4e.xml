@@ -1,0 +1,11 @@
+<mujoco model="island_singleton">
+        <option gravity="0 0 0" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="floater" pos="0 0 1">
+                <freejoint name="jf"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

@@ -1,0 +1,20 @@
+<mujoco>
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="pendulum" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0" damping="0.02"/>
+      <geom name="rod" type="capsule" size="0.05"
+            fromto="0 0 0 0 0 -0.5" mass="1"
+            rgba="0.48 0.48 0.50 1"/>
+      <geom name="tip" type="sphere" size="0.07"
+            pos="0 0 -0.5" rgba="0.2 0.8 0.3 1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="hinge" name="motor" ctrllimited="true" ctrlrange="-1 1"/>
+  </actuator>
+  <sensor>
+    <jointpos joint="hinge" name="angle"/>
+    <jointvel joint="hinge" name="angvel"/>
+  </sensor>
+</mujoco>

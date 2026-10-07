@@ -724,3 +724,239 @@ fn test_euler_characteristic() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Determinism
+// ---------------------------------------------------------------------------
+
+/// The hull's order must not come from a hash order. Before the fix, 50 calls
+/// on one input gave up to 6 different vertex and face orders, so a model
+/// built from a mesh differed between processes.
+#[test]
+fn hull_is_identical_across_repeated_calls() {
+    let octahedron = vec![
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(-1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Point3::new(0.0, -1.0, 0.0),
+        Point3::new(0.0, 0.0, 1.0),
+        Point3::new(0.0, 0.0, -1.0),
+    ];
+    let grid: Vec<Point3<f64>> = (0..27)
+        .map(|i| Point3::new((i % 3) as f64, ((i / 3) % 3) as f64, (i / 9) as f64))
+        .collect();
+    for (name, points) in [
+        ("octahedron", octahedron),
+        ("cube", cube_vertices()),
+        ("3x3x3 grid", grid),
+    ] {
+        let first = convex_hull(&points, None).expect("hull");
+        for call in 1..50 {
+            let again = convex_hull(&points, None).expect("hull");
+            let same = again.vertices == first.vertices
+                && again.faces == first.faces
+                && again.normals == first.normals
+                && again.adjacency == first.adjacency;
+            assert!(same, "{name}: call {call} differs from the first call");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Convexity on near-coplanar input
+// ---------------------------------------------------------------------------
+
+/// A small deterministic generator (`SplitMix64`), so the seeded inputs below
+/// need no dependency and are the same on every platform.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    const fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        let unit = (self.next_u64() >> 11) as f64 / (1_u64 << 53) as f64;
+        lo + (hi - lo) * unit
+    }
+}
+
+/// 2–4 planes, each with 8–30 points perturbed off it by up to 1e-7…1e-12:
+/// the input on which a float visibility test with a tolerance of 1e-10 of
+/// the diagonal (the test before the exact one) left points outside the hull.
+fn near_coplanar_points(seed: u64) -> Vec<Point3<f64>> {
+    plane_points(seed, true)
+}
+
+/// The same planes and points as [`near_coplanar_points`], each point on its
+/// plane up to rounding: the input on which a float visibility test with no
+/// tolerance leaves points outside the hull.
+fn coplanar_points(seed: u64) -> Vec<Point3<f64>> {
+    plane_points(seed, false)
+}
+
+/// Points on 2–4 random planes, perturbed off them or not. Both forms draw
+/// the same random numbers, so a seed names the same planes in each.
+fn plane_points(seed: u64, perturbed: bool) -> Vec<Point3<f64>> {
+    let mut rng = SplitMix64(seed);
+    let planes = 2 + (rng.next_u64() % 3) as usize;
+    let mut points = Vec::new();
+    for _ in 0..planes {
+        let normal = Vector3::new(
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        )
+        .normalize();
+        let offset = rng.range(-1.0, 1.0);
+        let helper = if normal.x.abs() < 0.9 {
+            Vector3::x()
+        } else {
+            Vector3::y()
+        };
+        let a = normal.cross(&helper).normalize();
+        let b = normal.cross(&a);
+        let count = 8 + (rng.next_u64() % 23) as usize;
+        let decades = (rng.next_u64() % 6) as i32;
+        let off_plane = if perturbed {
+            10_f64.powi(-7 - decades)
+        } else {
+            0.0
+        };
+        for _ in 0..count {
+            let p = normal * offset
+                + a * rng.range(-1.0, 1.0)
+                + b * rng.range(-1.0, 1.0)
+                + normal * off_plane * rng.range(-1.0, 1.0);
+            points.push(Point3::from(p));
+        }
+    }
+    points
+}
+
+/// How far the farthest input point lies outside any face plane, as a
+/// fraction of the input's bounding-box diagonal (0 when none is outside).
+fn worst_outside(points: &[Point3<f64>]) -> f64 {
+    let hull = convex_hull(points, None).expect("hull");
+    let (mut lo, mut hi) = (points[0].coords, points[0].coords);
+    for p in points {
+        lo = lo.inf(&p.coords);
+        hi = hi.sup(&p.coords);
+    }
+    let diag = (hi - lo).norm();
+    let mut worst = 0.0_f64;
+    for (face, normal) in hull.faces.iter().zip(&hull.normals) {
+        let on_plane = hull.vertices[face[0] as usize];
+        for p in points {
+            worst = worst.max((p - on_plane).dot(normal) / diag);
+        }
+    }
+    worst
+}
+
+/// Eight points, four on the plane y = 1.6 and three 1e-7 below it: the float
+/// visibility test left a point 6.6 % of the diagonal outside the hull.
+#[test]
+fn hull_contains_every_input_point() {
+    let points: Vec<Point3<f64>> = [
+        [-15.5, -1.5, 13.5],
+        [-13.9, 1.6, 17.8],
+        [-11.2, 1.6, 19.0],
+        [-10.1, 1.6, 15.4],
+        [-10.5, 1.6, 14.5],
+        [12.4, 1.599_999_9, -17.2],
+        [10.8, 1.599_999_9, -18.5],
+        [12.0, 1.599_999_9, -16.3],
+    ]
+    .iter()
+    .map(|p| Point3::new(p[0], p[1], p[2]))
+    .collect();
+    let worst = worst_outside(&points);
+    assert!(
+        worst <= 1e-12,
+        "a point lies {worst:.3e} of the diagonal outside the hull"
+    );
+}
+
+/// Seeds whose hull left a point outside by more than 1e-12 of the diagonal
+/// under the float visibility test (the first 32 of 659 in seeds 0..3000).
+const NONCONVEX_SEEDS: [u64; 32] = [
+    8, 11, 12, 13, 14, 16, 19, 20, 26, 32, 50, 59, 60, 74, 87, 88, 95, 97, 98, 101, 107, 108, 110,
+    114, 115, 117, 120, 131, 137, 151, 155, 159,
+];
+
+#[test]
+fn near_coplanar_hulls_contain_every_point() {
+    for seed in NONCONVEX_SEEDS {
+        let worst = worst_outside(&near_coplanar_points(seed));
+        assert!(
+            worst <= 1e-12,
+            "seed {seed}: a point lies {worst:.3e} of the diagonal outside the hull"
+        );
+    }
+}
+
+/// Seeds whose hull kept a vertex no face uses (every one in seeds 0..3000).
+const UNREFERENCED_VERTEX_SEEDS: [u64; 16] = [
+    41, 72, 130, 277, 988, 1049, 1073, 1292, 1295, 1355, 1503, 1676, 1842, 2077, 2216, 2481,
+];
+
+#[test]
+fn hull_has_no_unreferenced_vertices() {
+    for seed in UNREFERENCED_VERTEX_SEEDS {
+        let hull = convex_hull(&near_coplanar_points(seed), None).expect("hull");
+        let mut used = vec![false; hull.vertices.len()];
+        for face in &hull.faces {
+            for &i in face {
+                used[i as usize] = true;
+            }
+        }
+        let unused = used.iter().filter(|u| !**u).count();
+        assert_eq!(
+            unused,
+            0,
+            "seed {seed}: {unused} of {} vertices are in no face",
+            hull.vertices.len()
+        );
+    }
+}
+
+/// Seeds whose points lie on their planes up to rounding, on which a float
+/// visibility test with no tolerance left a point outside the hull by more
+/// than 1e-12 of the diagonal (the first 32 of 513 in seeds 0..3000).
+const COPLANAR_SEEDS: [u64; 32] = [
+    8, 12, 13, 20, 24, 26, 48, 50, 59, 74, 95, 98, 101, 108, 110, 114, 115, 116, 117, 120, 129,
+    131, 137, 151, 156, 157, 159, 160, 162, 169, 174, 180,
+];
+
+#[test]
+fn coplanar_hulls_contain_every_point() {
+    for seed in COPLANAR_SEEDS {
+        let worst = worst_outside(&coplanar_points(seed));
+        assert!(
+            worst <= 1e-12,
+            "seed {seed}: a point lies {worst:.3e} of the diagonal outside the hull"
+        );
+    }
+}
+
+/// A point on a face of the hull is not a vertex of it: visibility is
+/// strict. The 27 points of a 3×3×3 grid hold a cube's corners, edge
+/// midpoints, face centres and centre; only the corners are vertices.
+#[test]
+fn a_point_on_a_face_is_not_a_vertex() {
+    let mut points = Vec::new();
+    for x in [-1.0, 0.0, 1.0] {
+        for y in [-1.0, 0.0, 1.0] {
+            for z in [-1.0, 0.0, 1.0] {
+                points.push(Point3::new(x, y, z));
+            }
+        }
+    }
+    let hull = convex_hull(&points, None).expect("hull");
+    assert_eq!(hull.vertices.len(), 8, "{:?}", hull.vertices);
+}

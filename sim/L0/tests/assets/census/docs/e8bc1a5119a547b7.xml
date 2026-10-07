@@ -1,0 +1,10 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="a"/>
+                    <body name="b"/>
+                </worldbody>
+                <equality>
+                    <connect body1="a" body2="b"/>
+                    <connect body1="b"/>
+                </equality>
+            </mujoco>

@@ -1,0 +1,10 @@
+<mujoco model="frictionless">
+        <option gravity="0 0 -9.81" timestep="0.002" solver="CG"/>
+        <worldbody>
+            <geom name="floor" type="plane" size="10 10 0.1" friction="0 0 0"/>
+            <body name="ball" pos="0.0 0 0.05">
+                <joint type="free"/>
+                <geom type="sphere" size="0.05" mass="1.0" friction="0 0 0"/>
+            </body>
+        </worldbody>
+    </mujoco>

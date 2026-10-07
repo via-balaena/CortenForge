@@ -1,0 +1,10 @@
+<mujoco model="sho_1d_langevin_regression">
+  <option timestep="0.001" gravity="0 0 0" integrator="Euler"/>
+  <worldbody>
+    <body name="particle">
+      <joint name="x" type="slide" axis="1 0 0"
+             stiffness="1" damping="0" springref="0" ref="0"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>

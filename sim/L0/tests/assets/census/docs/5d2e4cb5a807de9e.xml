@@ -1,0 +1,16 @@
+<mujoco model="pair_friction_clamp">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <contact>
+            <pair geom1="floor" geom2="sphere"
+                  friction="0 0 0 0 0"
+                  condim="3" solref="0.02 1.0" solimp="0.9 0.95 0.001 0.5 2.0"
+                  margin="0.05"/>
+        </contact>
+    </mujoco>

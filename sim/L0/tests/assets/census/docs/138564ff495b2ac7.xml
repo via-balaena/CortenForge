@@ -1,0 +1,14 @@
+<mujoco model="t19">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom name="g1" type="sphere" size="0.05" pos="0.5 0 0" mass="1"/>
+                    <site name="s1" pos="0.5 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framelinvel name="flv_geom" objtype="geom" objname="g1"/>
+                <framelinvel name="flv_site" site="s1"/>
+            </sensor>
+        </mujoco>

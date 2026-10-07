@@ -1,0 +1,5 @@
+<mujoco model="compiler_lww">
+                <compiler angle="degree"/>
+                <compiler angle="radian"/>
+                <worldbody/>
+            </mujoco>

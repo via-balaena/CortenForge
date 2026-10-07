@@ -1,0 +1,12 @@
+<mujoco model="damper-dissipation">
+  <option gravity="0 0 -9.81" timestep="0.001">
+    <flag energy="enable"/>
+  </option>
+  <worldbody>
+    <body name="arm" pos="0 0 2">
+      <joint name="hinge_j" type="hinge" axis="0 1 0"
+             stiffness="0" damping="2.0"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.04" mass="1.0"/>
+    </body>
+  </worldbody>
+</mujoco>

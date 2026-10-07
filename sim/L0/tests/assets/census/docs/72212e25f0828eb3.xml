@@ -1,0 +1,15 @@
+<mujoco model="free-zerog">
+  <option gravity="0 0 0" timestep="0.001"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="box" pos="0 0 1">
+      <freejoint name="float"/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1.0" contype="0" conaffinity="0"/>
+      <site name="center" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <force name="force" site="center"/>
+    <torque name="torque" site="center"/>
+  </sensor>
+</mujoco>

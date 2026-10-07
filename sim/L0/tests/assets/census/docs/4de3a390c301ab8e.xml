@@ -1,0 +1,5 @@
+<mujoco>
+                <worldbody>
+                    <include file="nonexistent.xml"/>
+                </worldbody>
+            </mujoco>

@@ -1,0 +1,30 @@
+<mujoco model="condim-test">
+          <compiler angle="radian"/>
+          <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"
+                  iterations="50" tolerance="1e-10"/>
+
+          <worldbody>
+            <body name="ramp" euler="0 0.2618 0">
+              <geom name="floor" type="plane" size="5 5 0.01"
+                    friction="0 0 0"/>
+            </body>
+
+            <body name="frictionless" pos="-0.2 0 0.15">
+              <freejoint/>
+              <geom name="g_fric" type="sphere" size="0.05" mass="0.5"
+                    friction="1 0.005 0.001"/>
+            </body>
+            <body name="sliding" pos="0.2 0 0.15">
+              <freejoint/>
+              <geom name="g_slide" type="sphere" size="0.05" mass="0.5"
+                    friction="1 0.005 0.001"/>
+            </body>
+          </worldbody>
+
+          <contact>
+            <pair geom1="floor" geom2="g_fric" condim="1"
+                  friction="0 0 0 0 0"/>
+            <pair geom1="floor" geom2="g_slide" condim="3"
+                  friction="1 1 0.005 0.001 0.001"/>
+          </contact>
+        </mujoco>

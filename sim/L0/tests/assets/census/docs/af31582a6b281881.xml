@@ -1,0 +1,12 @@
+<mujoco>
+            <worldbody>
+                <body name="b1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <jointpos joint="j1"/>
+                <jointvel joint="j1"/>
+            </sensor>
+        </mujoco>

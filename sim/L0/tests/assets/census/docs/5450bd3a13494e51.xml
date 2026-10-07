@@ -1,0 +1,19 @@
+<mujoco model="sensor_deriv_test">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0.5 0 0">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j1" ctrlrange="-10 10"/>
+            </actuator>
+            <sensor>
+                <jointpos joint="j1"/>
+                <jointpos joint="j2"/>
+            </sensor>
+        </mujoco>

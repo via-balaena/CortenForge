@@ -5,11 +5,87 @@
 //! (unless `DISABLE_AUTORESET` is set).
 //!
 //! Corresponds to MuJoCo's `mj_checkPos`, `mj_checkVel`, `mj_checkAcc`.
+//!
+//! Before any of them, every `Result` entry point runs [`check_step_inputs`],
+//! which refuses a timestep and a `Data` that MuJoCo does not check.
 
 use crate::types::flags::{disabled, enabled};
 use crate::types::validation::is_bad;
 use crate::types::warning::{Warning, mj_warning};
-use crate::types::{DISABLE_AUTORESET, Data, ENABLE_SLEEP, Model};
+use crate::types::{DISABLE_AUTORESET, Data, ENABLE_SLEEP, Model, StepError};
+
+/// The check every `Result` entry point (`step`, `step1`, `step2`, `forward`,
+/// `forward_skip`) runs before any work: the timestep, then the shape of `data`.
+///
+/// # Errors
+///
+/// [`StepError::InvalidTimestep`] if `model.timestep` is not positive and
+/// finite; otherwise [`check_data_shape`]'s error.
+pub fn check_step_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
+    if model.timestep <= 0.0 || !model.timestep.is_finite() {
+        return Err(StepError::InvalidTimestep);
+    }
+    check_data_shape(model, data)
+}
+
+/// Refuses a `data` made by a model of other dimensions, or one whose caller
+/// resized one of the arrays below.
+///
+/// Compares the inputs (`qpos`, `qvel`, `act`, `ctrl`, `qfrc_applied`,
+/// `xfrc_applied`, `mocap_pos`, `mocap_quat`), then derived arrays that cover
+/// every dimension [`Model::make_data`] sizes from. A resized array outside
+/// that list (`cvel` or `qacc_warmstart`, say) is not caught.
+///
+/// # Errors
+///
+/// [`StepError::DataShapeMismatch`] naming the first array, in that order,
+/// whose length differs.
+pub fn check_data_shape(model: &Model, data: &Data) -> Result<(), StepError> {
+    let lengths = [
+        ("qpos", data.qpos.len(), model.nq),
+        ("qvel", data.qvel.len(), model.nv),
+        ("act", data.act.len(), model.na),
+        ("ctrl", data.ctrl.len(), model.nu),
+        ("qfrc_applied", data.qfrc_applied.len(), model.nv),
+        ("xfrc_applied", data.xfrc_applied.len(), model.nbody),
+        ("mocap_pos", data.mocap_pos.len(), model.nmocap),
+        ("mocap_quat", data.mocap_quat.len(), model.nmocap),
+        ("xpos", data.xpos.len(), model.nbody),
+        ("xanchor", data.xanchor.len(), model.njnt),
+        ("geom_xpos", data.geom_xpos.len(), model.ngeom),
+        ("site_xpos", data.site_xpos.len(), model.nsite),
+        ("ten_length", data.ten_length.len(), model.ntendon),
+        ("wrap_xpos", data.wrap_xpos.len(), 2 * model.nwrap),
+        ("eq_violation", data.eq_violation.len(), 6 * model.neq),
+        ("flexvert_xpos", data.flexvert_xpos.len(), model.nflexvert),
+        (
+            "flexedge_length",
+            data.flexedge_length.len(),
+            model.nflexedge,
+        ),
+        (
+            "flexedge_J",
+            data.flexedge_J.len(),
+            model.flexedge_J_colind.len(),
+        ),
+        ("qLD_data", data.qLD_data.len(), model.qLD_nnz),
+        ("sensordata", data.sensordata.len(), model.nsensordata),
+        ("history", data.history.len(), model.nhistory),
+        ("tree_asleep", data.tree_asleep.len(), model.ntree),
+        ("plugin_state", data.plugin_state.len(), model.npluginstate),
+        ("plugin_data", data.plugin_data.len(), model.nplugin),
+    ];
+    lengths
+        .into_iter()
+        .find(|&(_, actual, expected)| actual != expected)
+        .map_or(Ok(()), |(field, actual, expected)| {
+            Err(StepError::DataShapeMismatch {
+                field,
+                expected,
+                actual,
+            })
+        })
+}
 
 /// Validate position coordinates (NOT sleep-aware — scans all nq elements).
 ///

@@ -1,0 +1,10 @@
+<mujoco model="mass_check">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="mass_test" dim="1" mass="2.0">
+                <elasticity young="1000" damping="0.0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>

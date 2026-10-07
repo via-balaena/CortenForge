@@ -1,0 +1,13 @@
+<mujoco model="test">
+                <option timestep="0.002">
+                    <flag
+                        contact="disable"
+                        gravity="disable"
+                        constraint="enable"
+                        warmstart="disable"
+                        energy="enable"
+                        island="enable"
+                    />
+                </option>
+                <worldbody/>
+            </mujoco>

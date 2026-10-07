@@ -1,0 +1,13 @@
+<mujoco model="adhesion_velocity">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <geom type="plane" size="10 10 1"/>
+                <body name="ball" pos="0 0 0.099">
+                    <freejoint/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <adhesion name="grip" body="ball" gain="100" ctrlrange="0 1"/>
+            </actuator>
+        </mujoco>

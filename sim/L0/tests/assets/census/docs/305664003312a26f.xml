@@ -1,0 +1,9 @@
+<mujoco model="cg_test">
+        <option solver="CG" timestep="0.002"/>
+        <worldbody>
+            <body name="ball" pos="0 0 1">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

@@ -1,0 +1,16 @@
+<mujoco model="weld_relpose">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="base" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                </body>
+                <body name="rotated" pos="0.5 0 1">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <weld body1="base" body2="rotated" relpose="0 0 0 0.707 0 0.707 0"/>
+            </equality>
+        </mujoco>

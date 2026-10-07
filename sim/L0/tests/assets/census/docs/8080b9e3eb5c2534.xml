@@ -1,0 +1,2 @@
+<mujoco><size nuser_body="5" nuser_geom="3"/>
+            <size nuser_jnt="2"/><worldbody/></mujoco>

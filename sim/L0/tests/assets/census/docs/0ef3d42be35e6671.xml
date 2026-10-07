@@ -1,0 +1,18 @@
+<mujoco model="t38">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="bRef" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" pos="0.3 0 0" mass="1"/>
+                </body>
+                <body name="bObj" pos="0 1 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="sObj" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="sObj" reftype="body" refname="bRef"/>
+                <framepos site="sObj" reftype="xbody" refname="bRef"/>
+            </sensor>
+        </mujoco>

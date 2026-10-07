@@ -1,0 +1,8 @@
+<mujoco model="test">
+                <option ccd_tolerance="1e-8"/>
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

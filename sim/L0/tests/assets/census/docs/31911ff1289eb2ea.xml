@@ -1,0 +1,15 @@
+<mujoco>
+                <compiler angle="radian" fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                        <body name="sensor_target" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <subtreecom name="com_sensor" body="sensor_target"/>
+                </sensor>
+            </mujoco>

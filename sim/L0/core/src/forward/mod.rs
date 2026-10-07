@@ -129,12 +129,11 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// Returns `Err(StepError)` if timestep is invalid.
+    /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
+    /// positive and finite, and `Err(StepError::DataShapeMismatch)` if `self`
+    /// was made by a model of other dimensions or an input array was resized.
     pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
-        // Validate timestep
-        if model.timestep <= 0.0 || !model.timestep.is_finite() {
-            return Err(StepError::InvalidTimestep);
-        }
+        check::check_step_inputs(model, self)?;
 
         // Validate state before stepping
         check::mj_check_pos(model, self);
@@ -174,9 +173,13 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// Returns `Err(StepError)` if forward acceleration computation fails
-    /// (e.g., Cholesky failure in implicit integrator).
+    /// Returns `Err(StepError)` if the timestep is not positive and finite,
+    /// if `self` was made by a model of other dimensions or an input array
+    /// was resized, or if forward acceleration computation fails (e.g.,
+    /// Cholesky failure in implicit integrator).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
+        check::check_step_inputs(model, self)?;
+
         // §53: RK4 is not compatible with split-step — warn if configured.
         if model.integrator == Integrator::RungeKutta4 {
             log::warn!(
@@ -217,16 +220,15 @@ impl Data {
     /// Returns `Err(StepError)` if:
     /// - Cholesky decomposition fails (implicit integrator only)
     /// - LU decomposition fails (implicit integrator only)
-    /// - Timestep is invalid
+    /// - The timestep is not positive and finite (`InvalidTimestep`)
+    /// - `self` was made by a model of other dimensions, or an input array
+    ///   was resized (`DataShapeMismatch`)
     ///
     /// NaN/divergence in qpos, qvel, or qacc triggers auto-reset (matching
     /// MuJoCo). Disable with `DISABLE_AUTORESET`. Use `data.divergence_detected()`
     /// to check if a reset occurred.
     pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
-        // Validate timestep
-        if model.timestep <= 0.0 || !model.timestep.is_finite() {
-            return Err(StepError::InvalidTimestep);
-        }
+        check::check_step_inputs(model, self)?;
 
         // Validate state before stepping — void, auto-resets internally.
         check::mj_check_pos(model, self);
@@ -279,9 +281,13 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// Returns `Err(StepError::CholeskyFailed)` if using implicit integrator
-    /// and the modified mass matrix decomposition fails.
+    /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
+    /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
+    /// made by a model of other dimensions or an input array was resized, and
+    /// `Err(StepError::CholeskyFailed)` if using implicit integrator and the
+    /// modified mass matrix decomposition fails.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
+        check::check_step_inputs(model, self)?;
         self.forward_core(model, true)
     }
 
@@ -318,13 +324,17 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// Returns `Err(StepError)` if implicit acceleration solver fails.
+    /// Returns `Err(StepError)` if the timestep is not positive and finite,
+    /// if `self` was made by a model of other dimensions or an input array
+    /// was resized, or if implicit acceleration solver fails.
     pub fn forward_skip(
         &mut self,
         model: &Model,
         skipstage: MjStage,
         skipsensor: bool,
     ) -> Result<(), StepError> {
+        check::check_step_inputs(model, self)?;
+
         let compute_sensors = !skipsensor;
 
         // Position stage: FK, collision, CRBA, transmission, pos sensors, energy_pos

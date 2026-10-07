@@ -1,0 +1,32 @@
+<mujoco model="cylinder">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <!-- Moving piston: barrel + rod (housing spawned by Bevy as hollow tube) -->
+    <body name="piston" pos="0 0 0">
+      <joint name="slide" type="slide" axis="1 0 0" armature="0.01"
+             range="-0.25 0.25" limited="true"/>
+      <inertial pos="0 0 0" mass="1.0" diaginertia="0.001 0.001 0.001"/>
+      <geom name="barrel" type="cylinder" size="0.06 0.08" euler="0 1.5708 0"
+            rgba="0.5 0.7 0.3 1"/>
+      <geom name="rod" type="cylinder" size="0.02 0.35" pos="0.43 0 0"
+            euler="0 1.5708 0" rgba="0.7 0.7 0.7 1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <cylinder name="pneumatic" joint="slide" timeconst="0.5" diameter="0.5"
+              bias="0 0 -0.5" ctrlrange="-1 1" ctrllimited="false"/>
+  </actuator>
+
+  <sensor>
+    <actuatorfrc name="act_force" actuator="pneumatic"/>
+    <jointpos name="jpos" joint="slide"/>
+    <jointvel name="jvel" joint="slide"/>
+  </sensor>
+</mujoco>

@@ -1,0 +1,10 @@
+<mujoco model="solver_stats_test">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"/>
+            <worldbody>
+                <body pos="0 0 0.15">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>

@@ -131,6 +131,14 @@ pub enum ThermostatError {
         /// What the parameter must be.
         requirement: &'static str,
     },
+    /// The model's timestep is not positive and finite. sim-core's `step` and `forward`
+    /// refuse such a model too (`StepError::InvalidTimestep`); install refuses it first.
+    InvalidTimestep {
+        /// The component's type name.
+        component: &'static str,
+        /// The model's timestep.
+        timestep: f64,
+    },
     /// The thermostat's noise variance on a DOF, `2·γ·kT/h` at the largest temperature it
     /// can apply, is not finite at the model's timestep `h`.
     NoiseOverflow {
@@ -251,6 +259,13 @@ impl fmt::Display for ThermostatError {
             } => write!(
                 f,
                 "{component}: {parameter} must be {requirement}, got {value}"
+            ),
+            Self::InvalidTimestep {
+                component,
+                timestep,
+            } => write!(
+                f,
+                "{component}: the model's timestep must be positive and finite, got {timestep}"
             ),
             Self::NoiseOverflow {
                 component,

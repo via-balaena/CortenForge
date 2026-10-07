@@ -1,0 +1,13 @@
+<mujoco model="dup_config">
+                <extension>
+                    <plugin plugin="test.plugin">
+                        <instance name="inst1">
+                            <config key="gain" value="100"/>
+                            <config key="gain" value="200"/>
+                        </instance>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b"/>
+                </worldbody>
+            </mujoco>

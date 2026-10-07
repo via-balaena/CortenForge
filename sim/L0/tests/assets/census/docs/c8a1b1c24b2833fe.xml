@@ -1,0 +1,8 @@
+<mujoco model="eulerseq_test">
+                <compiler angle="radian" eulerseq="ZYX"/>
+                <worldbody>
+                    <body name="b" euler="0.3 0.2 0.1">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

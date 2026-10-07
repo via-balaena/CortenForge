@@ -1318,11 +1318,11 @@ fn test_jointvel_ignores_ball_joint() {
 }
 
 // ========================================================================
-// Bounds-Check Robustness Test (Fix 4)
+// Undersized sensordata (refused by the pre-step check)
 // ========================================================================
 
 #[test]
-fn test_sensor_write_with_undersized_buffer_does_not_panic() {
+fn test_forward_refuses_an_undersized_sensordata() {
     let mut model = make_sensor_test_model();
     add_sensor(
         &mut model,
@@ -1333,8 +1333,13 @@ fn test_sensor_write_with_undersized_buffer_does_not_panic() {
     );
 
     let mut data = model.make_data();
-    // Manually shrink sensordata to empty buffer
     data.sensordata = DVector::zeros(0);
-    // Should not panic — sensor_write guards all writes
-    data.forward(&model).unwrap();
+    assert_eq!(
+        data.forward(&model),
+        Err(StepError::DataShapeMismatch {
+            field: "sensordata",
+            expected: 1,
+            actual: 0,
+        })
+    );
 }

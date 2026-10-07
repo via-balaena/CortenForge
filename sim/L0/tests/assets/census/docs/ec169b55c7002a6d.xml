@@ -1,0 +1,15 @@
+<mujoco model="m">
+                <worldbody>
+                    <body name="a"><geom name="g1" type="sphere" size="0.1" mass="1.0"
+                        condim="3" friction="1 0.04 0.001"
+                        solref="0.01 1.0"
+                        solimp="0.7 0.8 0.005 0.4 1.0"/></body>
+                    <body name="b"><geom name="g2" type="sphere" size="0.1" mass="1.0"
+                        condim="6" friction="4 0.16 0.004"
+                        solref="0.05 2.0"
+                        solimp="0.9 0.95 0.001 0.6 3.0"/></body>
+                </worldbody>
+                <contact>
+                    <pair geom1="g1" geom2="g2"/>
+                </contact>
+            </mujoco>

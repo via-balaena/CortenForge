@@ -1,0 +1,8 @@
+<mujoco model="test">
+                <asset>
+                    <mesh name="mesh1" file="a.stl"/>
+                    <mesh name="mesh2" file="b.stl" scale="2 2 2"/>
+                    <mesh name="mesh3" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>

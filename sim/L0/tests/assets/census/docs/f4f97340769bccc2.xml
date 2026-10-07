@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <default>
+                    <mesh scale="0.001 0.001 0.001"/>
+                </default>
+                <worldbody/>
+            </mujoco>

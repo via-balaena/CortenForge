@@ -1,0 +1,25 @@
+<mujoco model="sphere-wrap">
+  <option gravity="0 0 0" timestep="0.002"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="wrap_body" pos="0 0 0.8">
+      <geom name="wrap_sphere" type="sphere" size="0.1"
+            contype="0" conaffinity="0"/>
+    </body>
+    <body name="arm" pos="0 0 0.8">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.025" fromto="0 0 0 0.25 0 0" mass="0.5"/>
+      <site name="s_origin" pos="0.2 0 0"/>
+    </body>
+    <body name="anchor" pos="-0.2 0 0.8">
+      <site name="s_insert" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t1">
+      <site site="s_origin"/>
+      <geom geom="wrap_sphere"/>
+      <site site="s_insert"/>
+    </spatial>
+  </tendon>
+</mujoco>

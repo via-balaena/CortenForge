@@ -1,0 +1,21 @@
+<mujoco>
+    <option density="0" viscosity="0" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="link1" pos="0 0 1" sleep="init">
+            <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+            <body name="link2" pos="0 0 -0.5">
+                <joint name="j2" type="hinge" axis="0 1 0" damping="0"/>
+                <geom type="sphere" size="0.1" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+    <tendon>
+        <fixed name="t0" damping="5.0">
+            <joint joint="j1" coef="0.7"/>
+            <joint joint="j2" coef="0.3"/>
+        </fixed>
+    </tendon>
+</mujoco>

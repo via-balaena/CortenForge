@@ -1,0 +1,5 @@
+<mujoco>
+                <actuator>
+                    <motor joint="j1" name="m1"/>
+                </actuator>
+            </mujoco>

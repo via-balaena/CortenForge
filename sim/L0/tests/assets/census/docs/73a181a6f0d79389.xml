@@ -1,0 +1,35 @@
+<mujoco model="solref-bounce">
+  <option gravity="0 0 -9.81" timestep="0.0005" solver="Newton"
+          iterations="50" tolerance="1e-10">
+    <flag energy="enable"/>
+  </option>
+
+  <worldbody>
+    <geom name="ground" type="plane" size="5 5 0.01" rgba="0.35 0.35 0.35 1"/>
+
+    <body name="stiff" pos="-0.3 0 0.55">
+      <freejoint/>
+      <geom name="g_stiff" type="sphere" size="0.05" mass="0.5"
+            rgba="0.9 0.2 0.2 1"/>
+    </body>
+    <body name="default" pos="0 0 0.55">
+      <freejoint/>
+      <geom name="g_default" type="sphere" size="0.05" mass="0.5"
+            rgba="0.2 0.8 0.2 1"/>
+    </body>
+    <body name="soft" pos="0.3 0 0.55">
+      <freejoint/>
+      <geom name="g_soft" type="sphere" size="0.05" mass="0.5"
+            rgba="0.2 0.4 0.9 1"/>
+    </body>
+  </worldbody>
+
+  <contact>
+    <pair geom1="ground" geom2="g_stiff"
+          solref="-5000 -10" condim="1"/>
+    <pair geom1="ground" geom2="g_default"
+          solref="-5000 -30" condim="1"/>
+    <pair geom1="ground" geom2="g_soft"
+          solref="-5000 -500" condim="1"/>
+  </contact>
+</mujoco>

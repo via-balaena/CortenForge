@@ -1,0 +1,8 @@
+<mujoco model="merge_asset">
+                <asset>
+                    <mesh name="m1" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+                <asset>
+                    <mesh name="m2" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+            </mujoco>

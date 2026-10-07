@@ -1,0 +1,13 @@
+<mujoco model="sphere_sphere_diag">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="s1" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.5"/>
+                </body>
+                <body name="s2" pos="0.4 0.4 0.4">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>

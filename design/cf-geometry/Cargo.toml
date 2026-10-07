@@ -22,6 +22,9 @@ workspace = true
 [dependencies]
 # Linear algebra (vectors, matrices, rotations)
 nalgebra = { workspace = true }
+# Exact orientation predicates: the convex hull decides which faces a point
+# sees with them, so near-coplanar input still gives a convex hull
+robust = { workspace = true }
 # Serialization for save/load and config
 serde = { workspace = true, optional = true }
 

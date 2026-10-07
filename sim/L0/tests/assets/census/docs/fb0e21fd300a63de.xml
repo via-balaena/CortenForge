@@ -1,0 +1,24 @@
+<mujoco model="subtree-angmom">
+    <compiler angle="radian"/>
+    <option gravity="0 0 0" timestep="0.001"/>
+
+    <default>
+        <geom contype="0" conaffinity="0"/>
+    </default>
+
+    <worldbody>
+        <body name="rod" pos="0 0 0.5">
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="0"/>
+            <geom name="shaft" type="capsule" size="0.03"
+                  fromto="0 0 0 0 0 -0.6" mass="1.0" rgba="0.48 0.48 0.50 1"/>
+            <geom name="tip_a" type="sphere" size="0.05"
+                  pos="0 0 0" rgba="0.2 0.5 0.85 1" mass="0.001"/>
+            <geom name="tip_b" type="sphere" size="0.05"
+                  pos="0 0 -0.6" rgba="0.85 0.3 0.2 1" mass="0.001"/>
+        </body>
+    </worldbody>
+
+    <sensor>
+        <subtreeangmom name="sub_angmom" body="rod"/>
+    </sensor>
+</mujoco>

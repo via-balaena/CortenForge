@@ -1,0 +1,15 @@
+<mujoco model="actuated_allowed">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="arm" pos="0 0 0.5" sleep="allowed">
+                <freejoint name="arm_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <motor joint="arm_free" gear="1 0 0 0 0 0"/>
+        </actuator>
+    </mujoco>

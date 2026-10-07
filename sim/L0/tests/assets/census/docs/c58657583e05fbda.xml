@@ -1,0 +1,14 @@
+<mujoco>
+            <default>
+                <joint user="1 2 3"/>
+                <default class="myclass">
+                </default>
+            </default>
+            <worldbody>
+                <body pos="0 0 1" childclass="myclass">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>

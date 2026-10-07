@@ -1,0 +1,33 @@
+<mujoco model="mesh-on-mesh">
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4">
+    <flag multiccd="enable"/>
+  </option>
+
+  <asset>
+    <!-- Platform: box mesh, 1x1x0.1 -->
+    <mesh name="platform"
+          vertex="-0.5 -0.5 -0.05  0.5 -0.5 -0.05  0.5 0.5 -0.05  -0.5 0.5 -0.05
+                  -0.5 -0.5  0.05  0.5 -0.5  0.05  0.5 0.5  0.05  -0.5 0.5  0.05"
+          face="0 2 1  0 3 2  4 5 6  4 6 7
+                0 5 4  0 1 5  2 7 6  2 3 7
+                0 7 3  0 4 7  1 6 5  1 2 6"/>
+
+    <!-- Wedge: triangular prism, centered at volumetric centroid.
+         Cross-section triangle (xz): (-0.15,0), (0.15,0), (0,0.25)
+         Centroid z = 0.25/3 ≈ 0.0833, subtracted from all vertices. -->
+    <mesh name="wedge"
+          vertex="-0.15 -0.15 -0.08333   0.15 -0.15 -0.08333   0.0 -0.15  0.16667
+                  -0.15  0.15 -0.08333   0.15  0.15 -0.08333   0.0  0.15  0.16667"
+          face="0 1 2  3 5 4
+                0 3 4  0 4 1  1 4 5  1 5 2  2 5 3  2 3 0"/>
+  </asset>
+
+  <worldbody>
+    <geom type="plane" size="2 2 0.01"/>
+    <geom name="platform" type="mesh" mesh="platform" pos="0 0 0.05"/>
+    <body name="wedge" pos="0 0 0.3">
+      <joint type="free"/>
+      <geom name="wedge" type="mesh" mesh="wedge" density="1000"/>
+    </body>
+  </worldbody>
+</mujoco>

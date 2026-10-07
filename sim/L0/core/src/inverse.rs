@@ -30,6 +30,13 @@ impl Data {
     ///
     /// `forward()` must have been called first to compute `qM`, `qacc`,
     /// `qfrc_bias`, `qfrc_passive`, and `qfrc_constraint`.
+    ///
+    /// Unlike [`forward`](Self::forward), this does not check the shape of
+    /// `self`. It does not read `model.timestep`.
+    ///
+    /// # Panics
+    ///
+    /// May panic if an array of `self` is shorter than `model` requires.
     pub fn inverse(&mut self, model: &Model) {
         if model.nv == 0 {
             return;

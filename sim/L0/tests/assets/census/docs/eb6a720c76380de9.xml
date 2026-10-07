@@ -1,0 +1,18 @@
+<mujoco model="spinning-rod">
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="rod" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 0 1" damping="0"/>
+      <geom type="capsule" size="0.02" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+      <site name="tip" pos="0.5 0 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <velocity name="motor" joint="hinge" kv="100"/>
+  </actuator>
+  <sensor>
+    <framelinvel name="tip_linvel" objtype="site" objname="tip"/>
+    <frameangvel name="tip_angvel" objtype="site" objname="tip"/>
+  </sensor>
+</mujoco>

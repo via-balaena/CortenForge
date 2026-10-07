@@ -1,0 +1,7 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <geom type="capsule" fromto="0 0 0 0 0 0.5" size="0.05"/>
+                    </body>
+                </worldbody>
+            </mujoco>

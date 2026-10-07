@@ -1,0 +1,9 @@
+<mujoco>
+    <option integrator="implicit"/>
+    <worldbody>
+        <body pos="0 0 1">
+            <joint type="hinge" stiffness="100" damping="10"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>

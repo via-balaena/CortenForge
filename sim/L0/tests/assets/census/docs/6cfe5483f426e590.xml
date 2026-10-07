@@ -1,0 +1,26 @@
+<mujoco model="test">
+                <option
+                    timestep="0.005"
+                    integrator="RK4"
+                    solver="PGS"
+                    iterations="200"
+                    tolerance="1e-6"
+                    ls_iterations="100"
+                    noslip_iterations="10"
+                    ccd_iterations="25"
+                    sdf_iterations="15"
+                    sdf_initpoints="60"
+                    cone="elliptic"
+                    jacobian="sparse"
+                    impratio="2.0"
+                    gravity="0 0 -10.5"
+                    wind="1 2 0"
+                    magnetic="0.1 0.2 0.3"
+                    density="1.2"
+                    viscosity="0.01"
+                    nconmax="500"
+                    njmax="1000"
+                    o_margin="0.002"
+                />
+                <worldbody/>
+            </mujoco>

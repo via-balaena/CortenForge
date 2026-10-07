@@ -1,0 +1,33 @@
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="0 0 0.5">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.25"/>
+      <site name="s1" pos="0 0 0"/>
+      <body name="b2" pos="0 0 -0.5">
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.2"/>
+        <site name="s2" pos="0 0 0"/>
+        <site name="s3" pos="0 0.2 0"/>
+        <body name="b3" pos="0 0 -0.5">
+          <joint name="j3" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.2"/>
+          <site name="s4" pos="0 0 0"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_spatial1">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+    <fixed name="t_fixed">
+      <joint joint="j1" coef="0.1"/>
+    </fixed>
+    <spatial name="t_spatial2">
+      <site site="s3"/>
+      <site site="s4"/>
+    </spatial>
+  </tendon>
+</mujoco>

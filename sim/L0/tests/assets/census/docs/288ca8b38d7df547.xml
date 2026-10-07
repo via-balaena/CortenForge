@@ -1,0 +1,8 @@
+<mujoco model="mocap-zero-mass">
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <body name="ghost" mocap="true" pos="1 2 3">
+      <geom type="sphere" size="0.05" mass="0"/>
+    </body>
+  </worldbody>
+</mujoco>

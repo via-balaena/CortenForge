@@ -1,0 +1,24 @@
+<mujoco model="island-groups">
+  <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.05">
+    <flag sleep="enable"/>
+  </option>
+  <worldbody>
+    <geom name="floor" type="plane" size="10 10 0.1" solref="0.005 1.5"/>
+
+    <!-- Stack A (left) — dropped from height for visible settling -->
+    <body name="a1" pos="-1.5 0 1.0"><freejoint/>
+      <geom name="ga1" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="a2" pos="-1.5 0 1.5"><freejoint/>
+      <geom name="ga2" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="a3" pos="-1.5 0 2.0"><freejoint/>
+      <geom name="ga3" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+
+    <!-- Stack B (right) — same heights -->
+    <body name="b1" pos="1.5 0 1.0"><freejoint/>
+      <geom name="gb1" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="b2" pos="1.5 0 1.5"><freejoint/>
+      <geom name="gb2" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="b3" pos="1.5 0 2.0"><freejoint/>
+      <geom name="gb3" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+  </worldbody>
+</mujoco>

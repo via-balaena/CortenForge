@@ -1,0 +1,17 @@
+<mujoco model="basic-shapes">
+  <option gravity="0 0 0" timestep="0.002"/>
+  <worldbody>
+    <geom name="sphere"    type="sphere"    pos="-4 0 0.5" size="0.5"
+          rgba="0.25 0.55 0.85 1"/>
+    <geom name="box"       type="box"       pos="-2 0 0.5" size="0.5 0.5 0.5"
+          rgba="0.85 0.35 0.25 1"/>
+    <geom name="capsule"   type="capsule"   pos=" 0 0 0.8" size="0.3 0.5"
+          rgba="0.30 0.75 0.40 1"/>
+    <geom name="cylinder"  type="cylinder"  pos=" 2 0 0.5" size="0.3 0.5"
+          rgba="0.80 0.65 0.20 1"/>
+    <geom name="ellipsoid" type="ellipsoid"  pos=" 4 0 0.3" size="0.6 0.4 0.3"
+          rgba="0.65 0.30 0.75 1"/>
+    <geom name="ground"    type="plane"     size="6 2 0.01"
+          rgba="0.25 0.25 0.28 1"/>
+  </worldbody>
+</mujoco>

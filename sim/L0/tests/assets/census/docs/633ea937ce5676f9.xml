@@ -1,0 +1,14 @@
+<mujoco model="crank_force">
+            <worldbody>
+                <site name="slider" pos="0 0 0"/>
+                <body pos="0 0 0">
+                    <joint name="j" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    <site name="crank" pos="0.5 0 0.5"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general cranksite="crank" slidersite="slider" cranklength="0.6"
+                         gear="1" gainprm="1"/>
+            </actuator>
+        </mujoco>

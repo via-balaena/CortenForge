@@ -1,0 +1,4 @@
+<mujoco>
+  <asset><mesh name="cube" inertia="shell" vertex="..." face="..."/></asset>
+  ...
+</mujoco>

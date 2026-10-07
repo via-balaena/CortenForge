@@ -1,0 +1,21 @@
+<mujoco model="mixed_qpos_spring">
+            <compiler angle="radian"/>
+            <worldbody>
+                <body name="hinge_body" pos="0 0 1">
+                    <joint name="j_hinge" type="hinge" axis="0 1 0" springref="0.5"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="slide_body" pos="0 0 2">
+                    <joint name="j_slide" type="slide" axis="0 0 1" springref="0.1"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="ball_body" pos="0 0 3">
+                    <joint name="j_ball" type="ball"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="free_body" pos="1 2 3">
+                    <freejoint name="j_free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

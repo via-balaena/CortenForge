@@ -1,0 +1,9 @@
+<mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame>
+                            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

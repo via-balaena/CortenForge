@@ -1,0 +1,14 @@
+<mujoco>
+            <worldbody>
+                <body name="b1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0.1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <jointpos name="jpos" joint="j1"/>
+                <gyro name="gyro1" site="s1"/>
+                <clock name="clk"/>
+            </sensor>
+        </mujoco>

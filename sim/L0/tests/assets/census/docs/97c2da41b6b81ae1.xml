@@ -1,0 +1,10 @@
+<mujoco model="base_path_test">
+                <asset>
+                    <mesh name="shape" file="assets/shape.stl"/>
+                </asset>
+                <worldbody>
+                    <body name="obj" pos="0 0 1">
+                        <geom type="mesh" mesh="shape" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

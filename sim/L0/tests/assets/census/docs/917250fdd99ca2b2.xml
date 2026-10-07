@@ -1,0 +1,14 @@
+<mujoco model="pendulum_mixed_kf">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="link" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <keyframe>
+            <key name="home" qpos="0.0"/>
+            <key qpos="0.5"/>
+            <key name="up" qpos="1.5708"/>
+        </keyframe>
+    </mujoco>

@@ -1,0 +1,23 @@
+<mujoco>
+  <worldbody>
+    <body name="upper" pos="0 0 1">
+      <joint name="shoulder" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+      <site name="s1" pos="0 0 0"/>
+      <body name="lower" pos="0 0 -0.5">
+        <joint name="elbow" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+        <site name="s2" pos="0 0 -0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t1" stiffness="100" damping="10">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <motor name="m1" tendon="t1" gear="1"/>
+  </actuator>
+</mujoco>

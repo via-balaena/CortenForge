@@ -1,0 +1,8 @@
+<mujoco>
+                <compiler angle="radian" boundmass="0.5"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom type="sphere" size="0.01" mass="0.001"/>
+                    </body>
+                </worldbody>
+            </mujoco>

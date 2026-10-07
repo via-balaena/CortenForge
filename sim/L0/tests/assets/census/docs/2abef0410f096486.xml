@@ -1,0 +1,11 @@
+<mujoco model="options">
+            <option solver="Newton" iterations="50" tolerance="1e-6"
+                    ls_iterations="30" ls_tolerance="0.05"
+                    noslip_iterations="10" noslip_tolerance="1e-5"/>
+            <worldbody>
+                <body name="b" pos="0 0 0">
+                    <joint type="hinge"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

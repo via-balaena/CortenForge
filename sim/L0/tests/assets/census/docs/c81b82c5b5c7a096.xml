@@ -1,0 +1,13 @@
+<mujoco model="distance_world">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="world_geom" type="sphere" size="0.1"/>
+                <body name="body1" pos="2 0 0">
+                    <freejoint/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="g1" geom2="world_geom" distance="2.0"/>
+            </equality>
+        </mujoco>

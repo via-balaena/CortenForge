@@ -1,0 +1,22 @@
+<mujoco model="tendon-actuator">
+      <compiler angle="radian"/>
+      <option gravity="0 0 -9.81" timestep="0.002"/>
+      <worldbody>
+        <body name="link" pos="0 0 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.1 0.1 0.001"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0  0 0 -1" rgba="0.5 0.5 0.5 1"/>
+          <site name="tip" pos="0 0 -1"/>
+        </body>
+        <site name="anchor" pos="0 0 0"/>
+      </worldbody>
+      <tendon>
+        <spatial name="ten">
+          <site site="anchor"/>
+          <site site="tip"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <motor name="ten_motor" tendon="ten" gear="5"/>
+      </actuator>
+    </mujoco>

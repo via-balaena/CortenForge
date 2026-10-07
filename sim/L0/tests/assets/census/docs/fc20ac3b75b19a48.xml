@@ -1,0 +1,32 @@
+<mujoco model="weld-stress-test">
+          <compiler angle="radian"/>
+          <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"
+                  iterations="50" tolerance="1e-10">
+            <flag energy="enable"/>
+          </option>
+          <worldbody>
+            <geom name="ground" type="plane" size="2 2 0.01"/>
+
+            <!-- Welded pair — base + arm, falling together -->
+            <body name="base" pos="-0.5 0 1.5">
+              <freejoint/>
+              <geom name="base_box" type="box" size="0.12 0.08 0.08" mass="1.0"/>
+            </body>
+            <body name="arm" pos="-0.5 0 1.2">
+              <freejoint/>
+              <geom name="arm_cap" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.04" mass="0.5"/>
+            </body>
+
+            <!-- Fixed to world — should resist gravity.
+                 Offset body requires stiffer solref to avoid penalty-method
+                 pendulum drift (MuJoCo shows 549mm with default solref). -->
+            <body name="fixed" pos="0.5 0 1.0">
+              <freejoint/>
+              <geom name="fixed_sphere" type="sphere" size="0.1" mass="1.0"/>
+            </body>
+          </worldbody>
+          <equality>
+            <weld body1="base" body2="arm" solref="0.02 1.0"/>
+            <weld body1="fixed" solref="0.004 1.0"/>
+          </equality>
+        </mujoco>

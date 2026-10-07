@@ -1,0 +1,19 @@
+<mujoco model="two_group_actuator">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+            <body name="link2" pos="1 0 1">
+                <joint name="j2" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <motor joint="j1" name="motor1" group="0"/>
+            <motor joint="j2" name="motor2" group="2"/>
+        </actuator>
+    </mujoco>

@@ -1,0 +1,10 @@
+<mujoco model="test">
+        <option timestep="0.001" integrator="RK4" gravity="0 0 -10">
+            <flag warmstart="true" contact="true"/>
+        </option>
+        <worldbody>
+            <body name="ball">
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody>
+    </mujoco>

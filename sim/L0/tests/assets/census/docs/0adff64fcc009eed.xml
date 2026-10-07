@@ -1,0 +1,8 @@
+<mujoco model="test">
+                <option sdf_iterations="7" sdf_initpoints="50"/>
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

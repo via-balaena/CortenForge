@@ -1,0 +1,5 @@
+<mujoco model="m"><worldbody>
+                    <body name="a"><geom name="g1" type="sphere" size="0.1" mass="1.0"/></body>
+                </worldbody><equality>
+                    <distance geom1="ghost"/>
+                </equality></mujoco>

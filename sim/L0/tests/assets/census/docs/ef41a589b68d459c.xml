@@ -1,0 +1,9 @@
+<mujoco model="ball_standard">
+            <option gravity="0 0 -9.81" timestep="0.002"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint type="ball" name="ball"/>
+                    <geom type="box" size="0.3 0.1 0.05" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

@@ -1,0 +1,12 @@
+<mujoco model="t20">
+            <option timestep="1"/>
+            <worldbody>
+                <body name="b" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <clock name="clk" cutoff="5"/>
+            </sensor>
+        </mujoco>

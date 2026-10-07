@@ -1,0 +1,13 @@
+<mujoco model="cyl_sphere_cap">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cyl" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+                <body name="sph" pos="0 0 0.75">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>

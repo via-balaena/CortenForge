@@ -1,0 +1,13 @@
+<mujoco model="muscle_lr">
+            <worldbody>
+                <body name="arm" pos="0 0 0">
+                    <joint name="hinge" type="hinge" axis="0 1 0"
+                           limited="true" range="-60 60"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                    <site name="s1" pos="0 0 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <muscle name="mus" joint="hinge" gear="2"/>
+            </actuator>
+        </mujoco>

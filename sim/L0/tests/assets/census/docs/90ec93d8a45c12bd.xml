@@ -1,0 +1,8 @@
+<mujoco model="dt16_density">
+                <deformable>
+                    <flex name="test" dim="1" density="500">
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>

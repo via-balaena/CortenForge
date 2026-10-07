@@ -1,0 +1,30 @@
+<mujoco model="joint-gear">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.001">
+    <flag energy="enable"/>
+  </option>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <body name="arm1" pos="-0.6 0 2.0">
+      <joint name="j1" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom name="arm1" type="capsule" fromto="0 0 0 0 0 -0.7" size="0.03" mass="0.5"/>
+    </body>
+    <body name="arm2" pos="0.6 0 2.0">
+      <joint name="j2" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom name="arm2" type="capsule" fromto="0 0 0 0 0 -0.7" size="0.03" mass="0.5"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="drive" joint="j1" gear="1"/>
+  </actuator>
+
+  <equality>
+    <!-- j2 = 2*j1 -->
+    <joint joint1="j2" joint2="j1" polycoef="0 2" solref="0.05 1.0"/>
+  </equality>
+</mujoco>

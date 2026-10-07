@@ -1,0 +1,30 @@
+<mujoco model="frame-velocity">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.001">
+        <flag energy="enable"/>
+    </option>
+
+    <default>
+        <geom contype="0" conaffinity="0"/>
+    </default>
+
+    <worldbody>
+        <body name="rod" pos="0 0 0.5">
+            <joint name="hinge" type="hinge" axis="0 0 1" damping="0"/>
+            <geom name="shaft" type="capsule" size="0.02"
+                  fromto="0 0 0 0.5 0 0" rgba="0.48 0.48 0.50 1"/>
+            <geom name="tip_ball" type="sphere" size="0.04"
+                  pos="0.5 0 0" rgba="0.2 0.5 0.85 1"/>
+            <site name="tip" pos="0.5 0 0"/>
+        </body>
+    </worldbody>
+
+    <actuator>
+        <velocity name="motor" joint="hinge" kv="100"/>
+    </actuator>
+
+    <sensor>
+        <framelinvel name="tip_linvel" objtype="site" objname="tip"/>
+        <frameangvel name="tip_angvel" objtype="site" objname="tip"/>
+    </sensor>
+</mujoco>

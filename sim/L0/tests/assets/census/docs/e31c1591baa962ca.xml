@@ -1,0 +1,50 @@
+<mujoco model="humanoid_simplified">
+            <option gravity="0 0 -9.81" timestep="0.002"/>
+            <worldbody>
+                <body name="torso" pos="0 0 1.2">
+                    <joint type="free"/>
+                    <geom type="capsule" size="0.1 0.2" mass="10"/>
+
+                    <body name="head" pos="0 0 0.3">
+                        <joint type="ball"/>
+                        <geom type="sphere" size="0.1" mass="2"/>
+                    </body>
+
+                    <body name="upper_arm_r" pos="0.2 0 0.1">
+                        <joint type="ball"/>
+                        <geom type="capsule" size="0.04 0.15" mass="1.5"/>
+                        <body name="lower_arm_r" pos="0.3 0 0">
+                            <joint type="hinge" axis="0 1 0"/>
+                            <geom type="capsule" size="0.03 0.12" mass="1"/>
+                        </body>
+                    </body>
+
+                    <body name="upper_arm_l" pos="-0.2 0 0.1">
+                        <joint type="ball"/>
+                        <geom type="capsule" size="0.04 0.15" mass="1.5"/>
+                        <body name="lower_arm_l" pos="-0.3 0 0">
+                            <joint type="hinge" axis="0 1 0"/>
+                            <geom type="capsule" size="0.03 0.12" mass="1"/>
+                        </body>
+                    </body>
+
+                    <body name="upper_leg_r" pos="0.1 0 -0.3">
+                        <joint type="ball"/>
+                        <geom type="capsule" size="0.05 0.2" mass="3"/>
+                        <body name="lower_leg_r" pos="0 0 -0.4">
+                            <joint type="hinge" axis="0 1 0"/>
+                            <geom type="capsule" size="0.04 0.2" mass="2"/>
+                        </body>
+                    </body>
+
+                    <body name="upper_leg_l" pos="-0.1 0 -0.3">
+                        <joint type="ball"/>
+                        <geom type="capsule" size="0.05 0.2" mass="3"/>
+                        <body name="lower_leg_l" pos="0 0 -0.4">
+                            <joint type="hinge" axis="0 1 0"/>
+                            <geom type="capsule" size="0.04 0.2" mass="2"/>
+                        </body>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

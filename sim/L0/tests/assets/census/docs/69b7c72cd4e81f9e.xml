@@ -1,0 +1,9 @@
+<mujoco model="dt39_compare">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="b1" pos="0 0 1">
+                <joint name="J1" type="hinge" axis="0 1 0" limited="true" range="-1 1"/>
+                <geom type="box" size="0.1 0.1 0.1" mass="2.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

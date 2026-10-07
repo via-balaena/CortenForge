@@ -1,0 +1,24 @@
+<mujoco model="solver-newton">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+          iterations="100" tolerance="1e-10">
+    <flag energy="enable"/>
+  </option>
+
+  <worldbody>
+    <geom name="ground" type="plane" size="2 2 0.01"
+          friction="0.5 0.005 0.001" rgba="0.35 0.35 0.38 1"/>
+
+    <body name="box_a" pos="0 0 0.1">
+      <joint type="free" name="jnt_a"/>
+      <geom name="box_a" type="box" size="0.1 0.1 0.1" mass="1.0"
+            friction="0.5 0.005 0.001" rgba="0.82 0.22 0.15 1"/>
+    </body>
+
+    <body name="box_b" pos="0 0 0.3">
+      <joint type="free" name="jnt_b"/>
+      <geom name="box_b" type="box" size="0.1 0.1 0.1" mass="0.5"
+            friction="0.5 0.005 0.001" rgba="0.15 0.45 0.82 1"/>
+    </body>
+  </worldbody>
+</mujoco>

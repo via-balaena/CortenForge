@@ -1,0 +1,17 @@
+<mujoco model="t24">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="A" pos="0 0 0">
+                    <joint name="jA" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="s_ref" pos="0 0 0"/>
+                </body>
+                <body name="B" pos="1 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framequat objtype="xbody" objname="B" reftype="site" refname="s_ref"/>
+            </sensor>
+        </mujoco>

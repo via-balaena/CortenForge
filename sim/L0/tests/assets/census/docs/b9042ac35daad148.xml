@@ -1,0 +1,18 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link1">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="link2">
+                        <joint name="j2" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="coupling" limited="true" range="0 0.5">
+                        <joint joint="j1" coef="1"/>
+                        <joint joint="j2" coef="-1"/>
+                    </fixed>
+                </tendon>
+            </mujoco>

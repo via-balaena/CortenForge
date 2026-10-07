@@ -31,6 +31,11 @@ approx = { workspace = true }
 # PR 1b regression test — parallel_matches_sequential_with_langevin
 # exercises BatchSim::new_per_env with a LangevinThermostat stack.
 sim-thermostat = { workspace = true }
+# The parity census (mujoco_conformance/layer_e_census) reads MuJoCo's golden
+# JSON. `float_roundtrip` parses each number to the f64 Python wrote, not to a
+# neighbour; the feature unifies into every crate built with serde_json in the
+# same build.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [[test]]
 name = "mujoco_conformance"
@@ -39,6 +44,12 @@ path = "mujoco_conformance/mod.rs"
 [[test]]
 name = "integration"
 path = "integration/mod.rs"
+
+# The corpus harness of the Rigid verification protocol (scripts/corpus_harness.rs
+# says how it is run). An example, so it is built and linted with the crate.
+[[example]]
+name = "corpus_harness"
+path = "scripts/corpus_harness.rs"
 
 [features]
 default = []

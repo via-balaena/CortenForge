@@ -1,0 +1,9 @@
+<mujoco>
+                <worldbody>
+                    <body name="b" pos="1 2 3">
+                        <joint name="j" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                        <site name="s" pos="0.5 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

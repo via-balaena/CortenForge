@@ -1,0 +1,16 @@
+<mujoco>
+            <default>
+                <general user="100"/>
+                <motor user="200"/>
+            </default>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j1"/>
+            </actuator>
+            </mujoco>

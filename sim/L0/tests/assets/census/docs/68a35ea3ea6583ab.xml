@@ -1,0 +1,11 @@
+<mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent">
+                        <joint type="hinge"/>
+                        <body name="static_child" pos="1 0 0" euler="0 0 90">
+                            <geom type="sphere" size="0.1" xyaxes="0 1 0 -1 0 0"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>

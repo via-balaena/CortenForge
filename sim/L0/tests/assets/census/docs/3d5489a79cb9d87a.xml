@@ -1,0 +1,11 @@
+<mujoco model="spec_d_t11">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position joint="j0" nsample="3" interp="linear" delay="0.005"/>
+            </actuator>
+        </mujoco>

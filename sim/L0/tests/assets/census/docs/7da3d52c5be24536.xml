@@ -1,0 +1,6 @@
+<mujoco>
+  <worldbody><body>
+    <geom type="sphere" size="1" density="1000"/>
+    <geom type="sphere" size="1" density="1000" shellinertia="true" pos="3 0 0"/>
+  </body></worldbody>
+</mujoco>

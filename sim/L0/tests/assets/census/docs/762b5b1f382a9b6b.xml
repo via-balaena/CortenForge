@@ -1,0 +1,11 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="body1"/>
+                    <body name="body2"/>
+                </worldbody>
+                <equality>
+                    <connect body1="body1" body2="body2"
+                             solref="0.02 1"
+                             solimp="0.9 0.95 0.001 0.5 2"/>
+                </equality>
+            </mujoco>

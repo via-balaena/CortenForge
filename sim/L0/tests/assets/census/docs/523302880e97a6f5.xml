@@ -1,0 +1,8 @@
+<mujoco model="qpos_spring_ball">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="ball"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

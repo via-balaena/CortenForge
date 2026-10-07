@@ -1,0 +1,13 @@
+<mujoco>
+      <option gravity="0 0 -9.81"/>
+      <worldbody>
+        <body name="b1" pos="0 0 1">
+          <joint name="j1" type="hinge" axis="0 1 0"/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+          <site name="imu" pos="0 0 0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <accelerometer site="imu"/>
+      </sensor>
+    </mujoco>

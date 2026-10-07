@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <worldbody/>
+                <tendon>
+                    <spatial name="colored" rgba="1 0 0 1"/>
+                </tendon>
+            </mujoco>

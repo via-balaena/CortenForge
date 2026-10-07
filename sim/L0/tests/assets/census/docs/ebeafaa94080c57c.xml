@@ -1,0 +1,14 @@
+<mujoco>
+          <compiler angle="radian"/>
+          <worldbody>
+            <body name="b">
+              <joint name="j" type="hinge"/>
+              <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t" springlength="0.5">
+              <joint joint="j" coef="1.0"/>
+            </fixed>
+          </tendon>
+        </mujoco>

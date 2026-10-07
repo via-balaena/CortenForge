@@ -1,0 +1,16 @@
+<mujoco model="gravcomp_subchain">
+            <compiler angle="radian"/>
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="parent" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.05" mass="0.001" contype="0" conaffinity="0"/>
+                    <inertial pos="0.25 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                    <body name="child" pos="0.5 0 0">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="sphere" size="0.05" mass="0.001" contype="0" conaffinity="0"/>
+                        <inertial pos="0.2 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

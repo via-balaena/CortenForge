@@ -1,0 +1,15 @@
+<mujoco model="spec_a_multi">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="50" damping="0.1"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+            </flex>
+            <flex name="shell" dim="2" density="1.0">
+                <elasticity young="200" damping="0.1" thickness="0.01"/>
+                <vertex pos="0 0 1  1 0 1  0 1 1  1 1 1"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>

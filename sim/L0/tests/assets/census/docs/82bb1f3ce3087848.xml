@@ -1,0 +1,8 @@
+<mujoco model="test">
+                <option
+                    o_solimp="0.9 0.95 0.001 0.5 2"
+                    o_solref="0.02 1"
+                    o_friction="1 0.005 0.0001 0.0001 0.0001"
+                />
+                <worldbody/>
+            </mujoco>

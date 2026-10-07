@@ -1,0 +1,8 @@
+<mujoco model="meaninertia">
+            <worldbody>
+                <body name="b" pos="0 0 0">
+                    <joint type="hinge"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

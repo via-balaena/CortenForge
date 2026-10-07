@@ -1,0 +1,11 @@
+<mujoco>
+                <compiler discardvisual="true"/>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0">
+                            <geom type="sphere" size="0.1" contype="0" conaffinity="0"/>
+                        </frame>
+                        <geom type="sphere" size="0.1" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

@@ -1,0 +1,30 @@
+<mujoco model="connect-body-to-body">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"
+          iterations="50" tolerance="1e-10">
+    <flag energy="enable"/>
+  </option>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <body name="link1" pos="0 0 0">
+      <freejoint damping="0.01"/>
+      <geom name="rod1" type="capsule" fromto="0 0 0 0 0 -0.5" size="0.03" mass="1"/>
+      <geom name="tip1" type="sphere" pos="0 0 -0.5" size="0.06" mass="0.5"/>
+    </body>
+
+    <body name="link2" pos="0 0 -0.5">
+      <freejoint damping="0.01"/>
+      <geom name="rod2" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.025" mass="0.8"/>
+      <geom name="tip2" type="sphere" pos="0 0 -0.4" size="0.05" mass="0.3"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <connect body1="link1" anchor="0 0 0" solref="0.005 1.0"/>
+    <connect body1="link1" body2="link2" anchor="0 0 -0.5" solref="0.005 1.0"/>
+  </equality>
+</mujoco>

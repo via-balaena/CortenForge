@@ -1,0 +1,17 @@
+<mujoco model="multi_connect">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+                <body name="b2" pos="0.3 0 1">
+                    <freejoint/>
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="b1" anchor="0 0 0"/>
+                <connect body1="b2" anchor="0 0 0" body2="b1"/>
+            </equality>
+        </mujoco>

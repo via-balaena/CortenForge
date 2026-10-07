@@ -1,0 +1,19 @@
+<mujoco model="dt28_divergence">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <worldbody>
+            <body name="b1" pos="0 0 1">
+                <joint name="J_ball" type="ball"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="b2" pos="1 0 1">
+                <joint name="J_hinge" type="hinge" axis="0 1 0"/>
+                <geom type="capsule" size="0.05 0.3" mass="1.0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <fixed name="T1">
+                <joint joint="J_ball" coef="2.0"/>
+                <joint joint="J_hinge" coef="3.0"/>
+            </fixed>
+        </tendon>
+    </mujoco>

@@ -1,0 +1,12 @@
+<mujoco model="actuated">
+                <worldbody>
+                    <body name="arm" pos="0 0 1">
+                        <joint name="shoulder" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="motor1" joint="shoulder" gear="100"/>
+                </actuator>
+            </mujoco>

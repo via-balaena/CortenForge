@@ -1,0 +1,16 @@
+<mujoco model="t10">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1"/>
+                    <site name="touch_site"/>
+                </body>
+                <body name="b2" pos="0 0 -1">
+                    <joint type="free"/>
+                    <geom name="g2" type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <touch name="t" site="touch_site"/>
+            </sensor>
+        </mujoco>

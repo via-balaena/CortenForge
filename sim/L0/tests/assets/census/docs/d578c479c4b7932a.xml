@@ -1,0 +1,14 @@
+<mujoco model="mocap_contact">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="wall" mocap="true" pos="0.15 0 0.5">
+                <geom type="box" size="0.05 1 1" mass="10.0"/>
+            </body>
+            <body name="ball" pos="0 0 0.5">
+                <joint name="slide_x" type="slide" axis="1 0 0"/>
+                <joint name="slide_z" type="slide" axis="0 0 1"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

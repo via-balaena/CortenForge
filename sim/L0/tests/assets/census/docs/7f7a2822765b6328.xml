@@ -1,0 +1,15 @@
+<mujoco model="mocap-stress">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="target" mocap="true" pos="0.5 0 0.5">
+      <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+    </body>
+    <body name="pendulum" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="hinge" name="motor"/>
+  </actuator>
+</mujoco>

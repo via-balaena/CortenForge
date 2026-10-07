@@ -223,6 +223,45 @@ jobs:
           GITHUB_BASE_REF_MG: ${{ github.event.merge_group.base_ref }}
         shell: bash
 
+  # The parity census (sim/L0/tests/mujoco_conformance/layer_e_census.rs) compares
+  # against a snapshot of the repository's MJCF and MuJoCo's golden data for it.
+  # Both only gain files, so a golden is never regenerated or edited to make a doc
+  # agree; the rule and its four exceptions live in the script.
+  census-append-only:
+    name: Census snapshot append-only
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: The census snapshot and golden only gain files
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request)
+              BASE_BRANCH="${{ github.base_ref }}"
+              ;;
+            merge_group)
+              BASE_BRANCH="${GITHUB_BASE_REF_MG##refs/heads/}"
+              ;;
+            *)
+              # A push to main is already in; report and succeed (as doc-theft does).
+              echo "event=${{ github.event_name }} has no PR base; nothing to compare."
+              exit 0
+              ;;
+          esac
+          if [ -z "$BASE_BRANCH" ]; then
+            echo "::error::census-append-only: no base branch for ${{ github.event_name }}"
+            exit 1
+          fi
+          git fetch --no-tags --prune origin "$BASE_BRANCH"
+          bash sim/L0/tests/scripts/check_census_append_only.sh "origin/$BASE_BRANCH"
+        env:
+          GITHUB_BASE_REF_MG: ${{ github.event.merge_group.base_ref }}
+        shell: bash
+
   # ============================================================================
   # AFFECTED - Compute the PR-scoped crate set (changed + reverse-dep closure)
   # ============================================================================
@@ -1526,7 +1565,7 @@ jobs:
 
   quality-gate:
     name: Quality Gate
-    needs: [format, ci-scripts, doc-theft, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates, publish-dry-run]
+    needs: [format, ci-scripts, doc-theft, census-append-only, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates, publish-dry-run]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -1,0 +1,20 @@
+<mujoco>
+                <compiler angle="radian"/>
+                <default>
+                    <default class="X">
+                        <joint damping="3.0"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="top" childclass="X">
+                        <geom type="sphere" size="0.1"/>
+                        <body name="mid" pos="0 0 1">
+                            <geom type="sphere" size="0.1"/>
+                            <body name="bot" pos="0 0 1">
+                                <joint name="j" type="hinge"/>
+                                <geom type="sphere" size="0.1"/>
+                            </body>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>

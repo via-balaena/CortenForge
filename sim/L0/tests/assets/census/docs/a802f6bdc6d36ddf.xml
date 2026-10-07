@@ -1,0 +1,11 @@
+<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <deformable>
+    <flex name="rigid_shell" dim="2" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0  0.5 -0.866 0"/>
+      <element data="0 1 2  1 0 3"/>
+      <pin id="0 1 2 3"/>
+    </flex>
+  </deformable>
+</mujoco>

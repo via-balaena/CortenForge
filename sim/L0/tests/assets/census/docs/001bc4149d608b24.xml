@@ -1,0 +1,13 @@
+<mujoco model="friction_loss">
+            <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"/>
+            <worldbody>
+                <body name="arm" pos="0 0 0">
+                    <joint type="hinge" axis="0 0 1" frictionloss="1.0"/>
+                    <geom type="capsule" size="0.05 0.3" mass="1.0"/>
+                    <body name="forearm" pos="0 0.6 0">
+                        <joint type="hinge" axis="0 0 1" frictionloss="0.5"/>
+                        <geom type="capsule" size="0.04 0.2" mass="0.5"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

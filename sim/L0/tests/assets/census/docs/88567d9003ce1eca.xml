@@ -1,0 +1,17 @@
+<mujoco model="nested_classes">
+            <default>
+                <joint damping="0.1"/>
+                <default class="robot">
+                    <joint damping="0.5"/>
+                    <default class="arm">
+                        <joint armature="0.01"/>
+                    </default>
+                </default>
+            </default>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0" class="arm"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

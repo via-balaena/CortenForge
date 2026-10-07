@@ -1,0 +1,4 @@
+<mujoco model="test">
+                <option timestep="0.001" gravity="0 0 -10"/>
+                <worldbody/>
+            </mujoco>

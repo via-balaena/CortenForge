@@ -1,0 +1,22 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link1">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                    <body name="link2">
+                        <joint name="j2" type="slide"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                    <body name="gripper">
+                        <geom type="box" size="0.05 0.05 0.01"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="motor1" joint="j1" gear="50"/>
+                    <position name="pos1" joint="j1" kp="100"/>
+                    <cylinder name="cyl1" joint="j2" area="0.001"/>
+                    <muscle name="mus1" joint="j1" force="200"/>
+                    <adhesion name="adh1" body="gripper" gain="50"/>
+                </actuator>
+            </mujoco>

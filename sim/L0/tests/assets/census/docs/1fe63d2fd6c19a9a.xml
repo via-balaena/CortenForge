@@ -1,0 +1,11 @@
+<mujoco>
+          <default>
+            <joint margin="0.05"/>
+          </default>
+          <worldbody>
+            <body>
+              <joint type="hinge" margin="0.1" limited="true" range="-1 1"/>
+              <geom type="sphere" size="0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>

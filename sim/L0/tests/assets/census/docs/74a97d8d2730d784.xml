@@ -1,0 +1,7 @@
+<mujoco model="axisangle_test">
+                <worldbody>
+                    <body name="b" axisangle="0 0 1 90">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

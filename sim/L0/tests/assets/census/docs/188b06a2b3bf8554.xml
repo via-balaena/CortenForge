@@ -1,0 +1,16 @@
+<mujoco model="tendon_damping">
+            <default>
+                <tendon damping="50"/>
+            </default>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t1">
+                    <joint joint="j1" coef="1.0"/>
+                </fixed>
+            </tendon>
+        </mujoco>

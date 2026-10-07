@@ -1,0 +1,15 @@
+<mujoco model="eq_no_class">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="b2" pos="0 0 2">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="b1" body2="b2" anchor="0 0 1.5"/>
+            </equality>
+        </mujoco>

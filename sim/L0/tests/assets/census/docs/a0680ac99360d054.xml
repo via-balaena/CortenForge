@@ -1,0 +1,8 @@
+<mujoco model="flag_parse_en">
+            <option>
+                <flag energy="enable" override="enable" sleep="enable"/>
+            </option>
+            <worldbody>
+                <body><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>

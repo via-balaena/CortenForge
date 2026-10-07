@@ -1,0 +1,22 @@
+<mujoco model="distance-stress-test">
+          <compiler angle="radian"/>
+          <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"
+                  iterations="50" tolerance="1e-10">
+            <flag energy="enable"/>
+          </option>
+          <worldbody>
+            <geom name="ground" type="plane" size="2 2 0.01"/>
+
+            <body name="sphere_a" pos="0 0 1.5">
+              <freejoint/>
+              <geom name="ga" type="sphere" size="0.08" mass="1.0"/>
+            </body>
+            <body name="sphere_b" pos="0 0 1.0">
+              <freejoint/>
+              <geom name="gb" type="sphere" size="0.06" mass="0.5"/>
+            </body>
+          </worldbody>
+          <equality>
+            <distance geom1="ga" geom2="gb" distance="0.5" solref="0.005 1.0"/>
+          </equality>
+        </mujoco>

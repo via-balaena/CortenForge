@@ -1,0 +1,12 @@
+<mujoco>
+      <worldbody>
+        <body name="b1" pos="0 0 0.5">
+          <site name="s1" pos="0 0 0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="bad">
+          <site site="s1"/>
+        </spatial>
+      </tendon>
+    </mujoco>

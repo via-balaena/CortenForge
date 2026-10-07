@@ -1,0 +1,12 @@
+<mujoco model="spec_d_t4">
+            <option timestep="0.002"/>
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="4"/>
+            </actuator>
+        </mujoco>

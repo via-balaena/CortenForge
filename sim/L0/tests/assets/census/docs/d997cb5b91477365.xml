@@ -1,0 +1,20 @@
+<mujoco model="island_chain">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.5">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="A" pos="0 0 0.1">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="B" pos="0 0 0.31">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="C" pos="0 0 0.52">
+                <freejoint name="jC"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

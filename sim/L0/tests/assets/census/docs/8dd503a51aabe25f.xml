@@ -1,0 +1,11 @@
+<mujoco model="spec_d_t06b">
+            <worldbody>
+                <body>
+                    <joint type="hinge" name="j1"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <jointpos name="s" joint="j1" delay="0.01" interval="0.5"/>
+            </sensor>
+        </mujoco>

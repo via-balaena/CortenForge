@@ -1,0 +1,10 @@
+<mujoco model="gravcomp_nograv">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="floating" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="sphere" size="0.1" mass="2.0" contype="0" conaffinity="0"/>
+                    <inertial pos="0 0 0" mass="2.0" diaginertia="0.008 0.008 0.008"/>
+                </body>
+            </worldbody>
+        </mujoco>

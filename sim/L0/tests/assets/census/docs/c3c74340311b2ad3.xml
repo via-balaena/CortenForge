@@ -1,0 +1,16 @@
+<mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <body name="b1" pos="1 0 0">
+          <freejoint/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="b2" pos="-1 0 0">
+          <freejoint/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <subtreeangmom body="world"/>
+      </sensor>
+    </mujoco>

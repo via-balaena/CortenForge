@@ -1,0 +1,19 @@
+<mujoco model="actuator-gear">
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0" damping="0.5"/>
+      <geom type="capsule" size="0.02" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="motor" joint="hinge" kp="100" gear="2"/>
+  </actuator>
+  <sensor>
+    <actuatorpos name="act_pos" actuator="motor"/>
+    <actuatorvel name="act_vel" actuator="motor"/>
+    <jointpos name="jnt_pos" joint="hinge"/>
+    <jointvel name="jnt_vel" joint="hinge"/>
+  </sensor>
+</mujoco>

@@ -1,0 +1,17 @@
+<mujoco>
+          <option gravity="0 0 0" timestep="0.001"/>
+          <worldbody>
+            <body name="a" pos="0 0 0">
+              <freejoint/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.03" mass="1"/>
+            </body>
+            <body name="b" pos="0 0 -0.5">
+              <freejoint/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.4" size="0.025" mass="0.8"/>
+            </body>
+          </worldbody>
+          <equality>
+            <connect body1="a" anchor="0 0 0"/>
+            <connect body1="a" body2="b" anchor="0 0 -0.5"/>
+          </equality>
+        </mujoco>

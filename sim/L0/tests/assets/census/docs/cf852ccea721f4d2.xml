@@ -1,0 +1,99 @@
+<mujoco model="humanoid">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.002"/>
+
+    <default>
+        <joint damping="5.0"/>
+        <geom rgba="0.8 0.6 0.4 1"/>
+    </default>
+
+    <worldbody>
+        <!-- Ground plane (visual reference, no collision) -->
+        <geom type="plane" size="5 5 0.1" rgba="0.3 0.3 0.35 1" contype="0" conaffinity="0"/>
+
+        <!-- Torso (floating base) -->
+        <body name="torso" pos="0 0 1.2">
+            <joint type="free"/>
+            <geom type="capsule" fromto="0 0 0 0 0 0.3" size="0.12"/>
+            <inertial pos="0 0 0.15" mass="10.0" diaginertia="0.5 0.5 0.2"/>
+
+            <!-- Head -->
+            <body name="head" pos="0 0 0.4">
+                <joint name="neck" type="ball" damping="8.0"/>
+                <geom type="sphere" size="0.1" rgba="0.9 0.7 0.6 1"/>
+                <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+            </body>
+
+            <!-- Left Arm -->
+            <body name="left_upper_arm" pos="0.15 0 0.28">
+                <joint name="left_shoulder" type="ball" damping="4.0"/>
+                <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.035"/>
+                <inertial pos="0.1 0 0" mass="1.0" diaginertia="0.01 0.01 0.005"/>
+
+                <body name="left_lower_arm" pos="0.22 0 0">
+                    <joint name="left_elbow" type="hinge" axis="0 1 0" range="-2.5 0" limited="true" damping="3.0"/>
+                    <geom type="capsule" fromto="0 0 0 0.18 0 0" size="0.03"/>
+                    <inertial pos="0.09 0 0" mass="0.5" diaginertia="0.005 0.005 0.002"/>
+                </body>
+            </body>
+
+            <!-- Right Arm -->
+            <body name="right_upper_arm" pos="-0.15 0 0.28">
+                <joint name="right_shoulder" type="ball" damping="4.0"/>
+                <geom type="capsule" fromto="0 0 0 -0.2 0 0" size="0.035"/>
+                <inertial pos="-0.1 0 0" mass="1.0" diaginertia="0.01 0.01 0.005"/>
+
+                <body name="right_lower_arm" pos="-0.22 0 0">
+                    <joint name="right_elbow" type="hinge" axis="0 1 0" range="0 2.5" limited="true" damping="3.0"/>
+                    <geom type="capsule" fromto="0 0 0 -0.18 0 0" size="0.03"/>
+                    <inertial pos="-0.09 0 0" mass="0.5" diaginertia="0.005 0.005 0.002"/>
+                </body>
+            </body>
+
+            <!-- Pelvis -->
+            <body name="pelvis" pos="0 0 -0.1">
+                <joint name="spine" type="ball" damping="15.0"/>
+                <geom type="capsule" fromto="-0.08 0 0 0.08 0 0" size="0.07"/>
+                <inertial pos="0 0 0" mass="5.0" diaginertia="0.2 0.2 0.1"/>
+
+                <!-- Left Leg -->
+                <body name="left_upper_leg" pos="0.08 0 -0.05">
+                    <joint name="left_hip" type="ball" damping="8.0"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.045"/>
+                    <inertial pos="0 0 -0.14" mass="2.0" diaginertia="0.04 0.04 0.01"/>
+
+                    <body name="left_lower_leg" pos="0 0 -0.3">
+                        <joint name="left_knee" type="hinge" axis="1 0 0" range="-2.5 0" limited="true" damping="6.0"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.038"/>
+                        <inertial pos="0 0 -0.125" mass="1.5" diaginertia="0.03 0.03 0.008"/>
+
+                        <body name="left_foot" pos="0 0 -0.27">
+                            <joint name="left_ankle" type="ball" damping="3.0"/>
+                            <geom type="box" size="0.04 0.07 0.015" pos="0 0.02 0"/>
+                            <inertial pos="0 0.02 0" mass="0.3" diaginertia="0.002 0.002 0.001"/>
+                        </body>
+                    </body>
+                </body>
+
+                <!-- Right Leg -->
+                <body name="right_upper_leg" pos="-0.08 0 -0.05">
+                    <joint name="right_hip" type="ball" damping="8.0"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.045"/>
+                    <inertial pos="0 0 -0.14" mass="2.0" diaginertia="0.04 0.04 0.01"/>
+
+                    <body name="right_lower_leg" pos="0 0 -0.3">
+                        <joint name="right_knee" type="hinge" axis="1 0 0" range="-2.5 0" limited="true" damping="6.0"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.038"/>
+                        <inertial pos="0 0 -0.125" mass="1.5" diaginertia="0.03 0.03 0.008"/>
+
+                        <body name="right_foot" pos="0 0 -0.27">
+                            <joint name="right_ankle" type="ball" damping="3.0"/>
+                            <geom type="box" size="0.04 0.07 0.015" pos="0 0.02 0"/>
+                            <inertial pos="0 0.02 0" mass="0.3" diaginertia="0.002 0.002 0.001"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>

@@ -1,0 +1,20 @@
+<mujoco model="two_link_arm">
+                <compiler angle="radian"/>
+                <option timestep="0.002" integrator="RK4"/>
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <inertial pos="0 0 0.25" mass="1.0" diaginertia="0.01 0.01 0.001"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                        <joint name="shoulder" type="hinge" axis="1 0 0" range="-3.14 3.14"/>
+                        <body name="link2" pos="0 0 0.5">
+                            <inertial pos="0 0 0.25" mass="0.5" diaginertia="0.005 0.005 0.0005"/>
+                            <geom type="capsule" size="0.04" fromto="0 0 0 0 0 0.5"/>
+                            <joint name="elbow" type="hinge" axis="1 0 0" range="0 2.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="shoulder_motor" joint="shoulder" gear="100"/>
+                    <motor name="elbow_motor" joint="elbow" gear="50"/>
+                </actuator>
+            </mujoco>

@@ -1,0 +1,17 @@
+<mujoco>
+      <option gravity="0 0 -9.81"/>
+      <worldbody>
+        <body pos="0 0 1">
+          <freejoint/>
+          <geom type="capsule" size="0.05 0.3" mass="1.0"/>
+          <body pos="0 0 -0.6">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="capsule" size="0.04 0.2" mass="0.5"/>
+            <body pos="0 0 -0.4">
+              <joint type="ball"/>
+              <geom type="sphere" size="0.1" mass="0.3"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>

@@ -1,0 +1,84 @@
+<mujoco model="activation-dynamics">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4">
+    <flag energy="enable"/>
+  </option>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <!-- Fast (left) -->
+    <body name="upper_fast" pos="0 -0.4 0.8">
+      <geom name="upper_fast" type="capsule" size="0.025"
+            fromto="0 0 0.15  0 0 0" rgba="0.35 0.35 0.38 1"/>
+      <body name="forearm_fast" pos="0 0 0">
+        <joint name="elbow_fast" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true" damping="0.3"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom name="rod_fast" type="capsule" size="0.02"
+              fromto="0 0 0  0 0 -0.3" rgba="0.48 0.48 0.50 1"/>
+        <geom name="tip_fast" type="sphere" size="0.04"
+              pos="0 0 -0.3" rgba="0.2 0.7 0.3 1"/>
+      </body>
+    </body>
+
+    <!-- Medium (center) -->
+    <body name="upper_med" pos="0 0 0.8">
+      <geom name="upper_med" type="capsule" size="0.025"
+            fromto="0 0 0.15  0 0 0" rgba="0.35 0.35 0.38 1"/>
+      <body name="forearm_med" pos="0 0 0">
+        <joint name="elbow_med" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true" damping="0.3"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom name="rod_med" type="capsule" size="0.02"
+              fromto="0 0 0  0 0 -0.3" rgba="0.48 0.48 0.50 1"/>
+        <geom name="tip_med" type="sphere" size="0.04"
+              pos="0 0 -0.3" rgba="0.85 0.6 0.15 1"/>
+      </body>
+    </body>
+
+    <!-- Slow (right) -->
+    <body name="upper_slow" pos="0 0.4 0.8">
+      <geom name="upper_slow" type="capsule" size="0.025"
+            fromto="0 0 0.15  0 0 0" rgba="0.35 0.35 0.38 1"/>
+      <body name="forearm_slow" pos="0 0 0">
+        <joint name="elbow_slow" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true" damping="0.3"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom name="rod_slow" type="capsule" size="0.02"
+              fromto="0 0 0  0 0 -0.3" rgba="0.48 0.48 0.50 1"/>
+        <geom name="tip_slow" type="sphere" size="0.04"
+              pos="0 0 -0.3" rgba="0.85 0.3 0.2 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <muscle name="fast" joint="elbow_fast"
+            scale="200" range="0.75 1.05"
+            lmin="0.5" lmax="1.6" vmax="1.0"
+            fpmax="0.3" fvmax="1.4"
+            timeconst="0.005 0.02"/>
+    <muscle name="medium" joint="elbow_med"
+            scale="200" range="0.75 1.05"
+            lmin="0.5" lmax="1.6" vmax="1.0"
+            fpmax="0.3" fvmax="1.4"
+            timeconst="0.01 0.04"/>
+    <muscle name="slow" joint="elbow_slow"
+            scale="200" range="0.75 1.05"
+            lmin="0.5" lmax="1.6" vmax="1.0"
+            fpmax="0.3" fvmax="1.4"
+            timeconst="0.05 0.20"/>
+  </actuator>
+
+  <sensor>
+    <jointpos name="jpos_fast" joint="elbow_fast"/>
+    <jointpos name="jpos_med" joint="elbow_med"/>
+    <jointpos name="jpos_slow" joint="elbow_slow"/>
+  </sensor>
+</mujoco>

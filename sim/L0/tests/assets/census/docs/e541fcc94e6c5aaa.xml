@@ -1,0 +1,9 @@
+<mujoco>
+      <option gravity="0 0 -9.81"/>
+      <worldbody>
+        <body pos="0 0 2">
+          <freejoint/>
+          <geom type="sphere" size="0.1" mass="2.0"/>
+        </body>
+      </worldbody>
+    </mujoco>

@@ -1,0 +1,14 @@
+<mujoco model="m">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld body1="a" body2="b" anchor="0 0 0"
+                          relpose="0 0 0 1 0 0 0"/>
+                </equality>
+            </mujoco>

@@ -1,0 +1,16 @@
+<mujoco model="merge_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j1" type="hinge"/>
+                        <joint name="j2" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor joint="j1" name="m1"/>
+                </actuator>
+                <actuator>
+                    <motor joint="j2" name="m2"/>
+                </actuator>
+            </mujoco>

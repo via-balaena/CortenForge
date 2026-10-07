@@ -1,0 +1,11 @@
+<mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0">
+                            <frame pos="0 1 0">
+                                <geom name="fg" type="sphere" size="0.1"/>
+                            </frame>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

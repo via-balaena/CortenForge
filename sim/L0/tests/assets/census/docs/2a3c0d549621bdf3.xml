@@ -1,0 +1,7 @@
+<mujoco>
+            <worldbody/>
+            <deformable>
+                <flexcomp type="grid" count="2 2" spacing="1.0"
+                    inertiabox="0.5" file="mesh.obj"/>
+            </deformable>
+            </mujoco>

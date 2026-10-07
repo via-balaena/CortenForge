@@ -1,0 +1,13 @@
+<mujoco model="direct_solref">
+            <option gravity="0 0 -9.81" timestep="0.001" solver="Newton" cone="elliptic"/>
+            <default>
+                <geom solref="-500 -50"/>
+            </default>
+            <worldbody>
+                <body name="ball" pos="0 0 0.15">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>

@@ -1,0 +1,14 @@
+<mujoco model="symmetric-free">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="0.001" integrator="RK4">
+    <flag energy="enable"/>
+  </option>
+
+  <worldbody>
+    <body name="sphere" pos="0 0 0">
+      <freejoint name="free"/>
+      <inertial pos="0 0 0" mass="2.0" diaginertia="0.04 0.04 0.04"/>
+      <geom type="sphere" size="0.1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

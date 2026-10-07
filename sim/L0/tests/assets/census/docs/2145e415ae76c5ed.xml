@@ -1,0 +1,23 @@
+<mujoco model="eq_nested_class">
+            <default>
+                <default class="parent">
+                    <equality solref="0.05 0.8"/>
+                    <default class="child">
+                        <equality solimp="0.8 0.9 0.01 0.4 3.0"/>
+                    </default>
+                </default>
+            </default>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="b2" pos="0 0 2">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect class="child" body1="b1" body2="b2" anchor="0 0 1.5"/>
+            </equality>
+        </mujoco>

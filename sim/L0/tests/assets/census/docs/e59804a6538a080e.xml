@@ -1,0 +1,9 @@
+<mujoco model="jac_test">
+            <worldbody>
+                <body pos="0 0 0">
+                    <joint name="j" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    <site name="pt" pos="1 0 0"/>
+                </body>
+            </worldbody>
+        </mujoco>

@@ -1,0 +1,11 @@
+<mujoco model="invalid_geom">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <freejoint/>
+                    <geom name="g1" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="nonexistent_geom"/>
+            </equality>
+        </mujoco>

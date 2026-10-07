@@ -1,0 +1,16 @@
+<mujoco model="single_island">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.5">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="ball_bottom" pos="0 0 0.15">
+                <freejoint name="free_bottom"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+            <body name="ball_top" pos="0 0 0.35">
+                <freejoint name="free_top"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>

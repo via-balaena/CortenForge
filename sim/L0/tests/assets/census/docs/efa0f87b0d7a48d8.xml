@@ -1,0 +1,31 @@
+<mujoco model="actuator-pos-vel">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.001">
+        <flag energy="enable"/>
+    </option>
+
+    <default>
+        <geom contype="0" conaffinity="0"/>
+    </default>
+
+    <worldbody>
+        <body name="arm" pos="0 0 1">
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="0.5"/>
+            <geom name="rod" type="capsule" size="0.025"
+                  fromto="0 0 0 0.6 0 0" mass="1.0" rgba="0.48 0.48 0.50 1"/>
+            <geom name="tip_ball" type="sphere" size="0.045"
+                  pos="0.6 0 0" rgba="0.6 0.2 0.8 1" mass="0.001"/>
+        </body>
+    </worldbody>
+
+    <actuator>
+        <position name="motor" joint="hinge" kp="100" gear="2"/>
+    </actuator>
+
+    <sensor>
+        <actuatorpos name="act_pos" actuator="motor"/>
+        <actuatorvel name="act_vel" actuator="motor"/>
+        <jointpos name="jnt_pos" joint="hinge"/>
+        <jointvel name="jnt_vel" joint="hinge"/>
+    </sensor>
+</mujoco>

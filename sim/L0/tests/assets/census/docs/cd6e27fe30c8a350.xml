@@ -1,0 +1,36 @@
+<mujoco model="exclude-pairs-demo">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -2.0" timestep="0.002"/>
+
+  <worldbody>
+    <!-- Left platform: mocap (fixed), excluded from left_sphere -->
+    <body name="plat_left" mocap="true" pos="-0.4 0 0">
+      <geom name="pl_geom" type="box" size="0.2 0.2 0.04" mass="1.0"
+            rgba="0.3 0.5 0.85 1"/>
+    </body>
+
+    <!-- Right platform: mocap (fixed), NOT excluded -->
+    <body name="plat_right" mocap="true" pos="0.4 0 0">
+      <geom name="pr_geom" type="box" size="0.2 0.2 0.04" mass="1.0"
+            rgba="0.3 0.5 0.85 1"/>
+    </body>
+
+    <!-- Left sphere: excluded from left platform -->
+    <body name="sphere_excluded" pos="-0.4 0 1.0">
+      <freejoint name="ex_free"/>
+      <geom name="ex_geom" type="sphere" size="0.08" mass="0.5"
+            rgba="0.85 0.25 0.2 0.6"/>
+    </body>
+
+    <!-- Right sphere: normal collision with right platform -->
+    <body name="sphere_normal" pos="0.4 0 1.0">
+      <freejoint name="nm_free"/>
+      <geom name="nm_geom" type="sphere" size="0.08" mass="0.5"
+            rgba="0.85 0.7 0.2 1"/>
+    </body>
+  </worldbody>
+
+  <contact>
+    <exclude body1="plat_left" body2="sphere_excluded"/>
+  </contact>
+</mujoco>

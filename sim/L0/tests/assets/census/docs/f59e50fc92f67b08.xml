@@ -1,0 +1,31 @@
+<mujoco model="two_chain_c3b">
+        <option gravity="0 0 -9.81" timestep="0.001" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="a1" pos="-2 0 0">
+                <joint name="ha1" type="hinge" axis="0 1 0" damping="20"/>
+                <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                <body name="a2" pos="0 0 -0.3">
+                    <joint name="ha2" type="hinge" axis="0 1 0" damping="20"/>
+                    <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    <body name="a3" pos="0 0 -0.3">
+                        <joint name="ha3" type="hinge" axis="0 1 0" damping="20"/>
+                        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    </body>
+                </body>
+            </body>
+            <body name="b1" pos="2 0 0">
+                <joint name="hb1" type="hinge" axis="0 1 0" damping="20"/>
+                <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                <body name="b2" pos="0 0 -0.3">
+                    <joint name="hb2" type="hinge" axis="0 1 0" damping="20"/>
+                    <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    <body name="b3" pos="0 0 -0.3">
+                        <joint name="hb3" type="hinge" axis="0 1 0" damping="20"/>
+                        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    </body>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>

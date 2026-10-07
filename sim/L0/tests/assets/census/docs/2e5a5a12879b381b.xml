@@ -1,0 +1,17 @@
+<mujoco>
+      <option gravity="0 0 -9.81" timestep="0.002"/>
+      <worldbody>
+        <geom type="plane" size="10 10 0.1"/>
+        <body name="a" pos="0 0 1">
+          <freejoint/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="b" pos="0 0 1.5">
+          <freejoint/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="a" body2="b"/>
+      </equality>
+    </mujoco>

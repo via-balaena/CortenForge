@@ -1,0 +1,4 @@
+<mujoco model="test">
+                <option sdf_iterations="20" sdf_initpoints="80"/>
+                <worldbody/>
+            </mujoco>

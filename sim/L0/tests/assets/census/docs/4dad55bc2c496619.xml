@@ -1,0 +1,11 @@
+<mujoco model="tendon_test">
+                <worldbody>
+                    <body name="link" pos="0 0 1">
+                        <joint name="j1" type="hinge"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="m1" tendon="some_tendon" gear="1"/>
+                </actuator>
+            </mujoco>

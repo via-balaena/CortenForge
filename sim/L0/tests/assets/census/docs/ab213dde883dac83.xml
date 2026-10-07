@@ -1,0 +1,16 @@
+<mujoco model="t25">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <geom name="g1_parent" type="sphere" size="0.1" pos="0 0 0"/>
+                    <body name="b1_child" pos="1.5 0 0">
+                        <geom name="g1_child" type="sphere" size="0.1" pos="0 0 0"/>
+                    </body>
+                </body>
+                <body name="b2" pos="2 0 0">
+                    <geom name="g2" type="sphere" size="0.1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <distance name="d" body1="b1" body2="b2" cutoff="10"/>
+            </sensor>
+        </mujoco>

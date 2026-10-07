@@ -1,0 +1,15 @@
+<mujoco>
+    <option density="0" viscosity="0" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="body1" pos="0 0 1" sleep="init">
+            <joint name="j1" type="hinge" axis="0 1 0" damping="2.0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="body2" pos="2 0 1" sleep="init">
+            <joint name="j2" type="hinge" axis="0 1 0" damping="3.0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>

@@ -1,0 +1,50 @@
+<mujoco model="slider-crank">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <!-- Crank: rotates about Y. High armature stores flywheel energy. -->
+    <body name="crank" pos="0 0 0">
+      <joint name="crank_joint" type="hinge" axis="0 1 0"
+             armature="0.05" damping="0.3"/>
+      <inertial pos="0.05 0 0" mass="1.0" diaginertia="0.003 0.003 0.003"/>
+      <geom name="crank_arm" type="capsule" size="0.015"
+            fromto="0 0 0  0.1 0 0" rgba="0.48 0.48 0.50 1"/>
+      <site name="crank_pin" pos="0.1 0 0"/>
+    </body>
+
+    <!-- Piston: translates along X, driven by servo to follow crank kinematics.
+         Long piston rod keeps the wrist pin outside the cylinder housing. -->
+    <body name="slider_body" pos="0.50 0 0">
+      <joint name="slider_joint" type="slide" axis="1 0 0"
+             armature="0.01" damping="0.5"/>
+      <inertial pos="0 0 0" mass="1.0" diaginertia="0.001 0.001 0.001"/>
+      <geom name="piston_rod" type="capsule" size="0.008"
+            fromto="-0.25 0 0  0 0 0" rgba="0.48 0.48 0.50 1"/>
+      <geom name="piston_head" type="cylinder" size="0.025"
+            fromto="-0.015 0 0  0.015 0 0" rgba="0.7 0.5 0.2 1"/>
+      <!-- Wrist pin at rod end — connecting rod attaches here, outside housing -->
+      <site name="slider_pin" pos="-0.25 0 0" euler="0 1.5708 0"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Motor keeps the crank spinning at steady speed -->
+    <motor name="spin_motor" joint="crank_joint" gear="1"/>
+    <!-- Servo drives piston along kinematic curve (simulates rod constraint) -->
+    <position name="slider_servo" joint="slider_joint" kp="200" dampratio="1"/>
+    <!-- Slider-crank transmission: computes moment arm + applies linkage force -->
+    <general name="linkage" cranksite="crank_pin" slidersite="slider_pin"
+             cranklength="0.2" gainprm="3" gear="1"/>
+  </actuator>
+
+  <sensor>
+    <actuatorfrc name="linkage_force" actuator="linkage"/>
+    <jointpos name="crank_angle" joint="crank_joint"/>
+    <jointpos name="slider_pos" joint="slider_joint"/>
+  </sensor>
+</mujoco>

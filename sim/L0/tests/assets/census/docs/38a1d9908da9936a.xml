@@ -1,0 +1,24 @@
+<mujoco model="fixed-tendon">
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="a" pos="-0.3 0 1">
+      <joint name="j_a" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.4" mass="0.5"/>
+    </body>
+    <body name="b" pos="0.3 0 1">
+      <joint name="j_b" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.4" mass="0.5"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t1">
+      <joint joint="j_a" coef="1.0"/>
+      <joint joint="j_b" coef="-0.5"/>
+    </fixed>
+  </tendon>
+  <sensor>
+    <tendonpos name="tp" tendon="t1"/>
+    <tendonvel name="tv" tendon="t1"/>
+  </sensor>
+</mujoco>

@@ -1,0 +1,19 @@
+<mujoco model="inertia_comparison">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="0.002"/>
+
+  <worldbody>
+    <body name="diag" pos="-1 0 1">
+      <freejoint name="free_diag"/>
+      <inertial pos="0 0 0" mass="2.0" diaginertia="0.1 0.2 0.3"/>
+      <geom name="diag_box" type="box" size="0.25 0.15 0.075"
+            rgba="0.4 0.6 0.8 1"/>
+    </body>
+    <body name="full" pos="1 0 1">
+      <freejoint name="free_full"/>
+      <inertial pos="0 0 0" mass="2.0" fullinertia="0.1 0.2 0.3 0.02 0.01 0.03"/>
+      <geom name="full_box" type="box" size="0.25 0.15 0.125"
+            rgba="0.8 0.5 0.3 1"/>
+    </body>
+  </worldbody>
+</mujoco>

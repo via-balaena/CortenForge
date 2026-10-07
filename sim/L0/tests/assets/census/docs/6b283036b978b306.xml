@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <compiler angle="radian">
+                    <lengthrange/>
+                </compiler>
+                <worldbody/>
+            </mujoco>

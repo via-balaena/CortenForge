@@ -1,0 +1,13 @@
+<mujoco model="t12">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <geom name="g1" type="sphere" size="0.5" pos="0 0 0"/>
+                </body>
+                <body name="b2" pos="0.3 0 0">
+                    <geom name="g2" type="sphere" size="0.5" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <fromto name="ft" geom1="g1" geom2="g2" cutoff="0.5"/>
+            </sensor>
+        </mujoco>

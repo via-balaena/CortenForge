@@ -1,0 +1,13 @@
+<mujoco model="override_zero_margin">
+        <option gravity="0 0 0" timestep="0.002"/>
+        <worldbody>
+            <body name="a" pos="-0.105 0 0">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.05"/>
+            </body>
+            <body name="b" pos="0.105 0 0">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.05"/>
+            </body>
+        </worldbody>
+    </mujoco>

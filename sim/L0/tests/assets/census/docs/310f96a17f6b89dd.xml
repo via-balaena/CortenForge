@@ -1,0 +1,13 @@
+<mujoco>
+          <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"
+                  iterations="50" tolerance="1e-10"/>
+          <worldbody>
+            <geom name="floor" type="plane" size="5 5 0.01"
+                  friction="0.3 0.01 0.002"/>
+            <body name="ball" pos="0 0 0.06">
+              <freejoint/>
+              <geom name="g" type="sphere" size="0.05" mass="0.5"
+                    friction="0.7 0.005 0.004"/>
+            </body>
+          </worldbody>
+        </mujoco>

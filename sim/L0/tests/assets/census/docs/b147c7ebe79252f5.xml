@@ -1,0 +1,15 @@
+<mujoco>
+  <compiler autolimits="true"/>
+  <option timestep="0.001"/>
+  <worldbody>
+    <body>
+      <joint name="hinge" type="hinge"/>
+      <geom size="0.1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <general name="act" joint="hinge" dyntype="integrator"
+             actrange="-3 3"
+             gainprm="1" biasprm="0 0 0" biastype="none"/>
+  </actuator>
+</mujoco>

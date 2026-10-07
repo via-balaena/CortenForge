@@ -1,0 +1,39 @@
+<mujoco model="gear-and-limits">
+  <compiler angle="radian" autolimits="true"/>
+  <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <body name="arm_a" pos="0 0.5 0">
+      <joint name="hinge_a" type="hinge" axis="0 1 0" armature="0.01" damping="1.0"/>
+      <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom name="rod_a" type="capsule" size="0.02"
+            fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
+      <geom name="tip_a" type="sphere" size="0.05"
+            pos="0 0 -0.5" rgba="0.3 0.6 0.9 1"/>
+    </body>
+    <body name="arm_b" pos="0 -0.5 0">
+      <joint name="hinge_b" type="hinge" axis="0 1 0" armature="0.01" damping="1.0"/>
+      <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom name="rod_b" type="capsule" size="0.02"
+            fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
+      <geom name="tip_b" type="sphere" size="0.05"
+            pos="0 0 -0.5" rgba="0.9 0.4 0.2 1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="baseline" joint="hinge_a" gear="1"/>
+    <motor name="geared_limited" joint="hinge_b" gear="5" forcerange="-3 3"/>
+  </actuator>
+
+  <sensor>
+    <actuatorfrc name="force_a" actuator="baseline"/>
+    <actuatorfrc name="force_b" actuator="geared_limited"/>
+    <jointvel name="vel_a" joint="hinge_a"/>
+    <jointvel name="vel_b" joint="hinge_b"/>
+  </sensor>
+</mujoco>

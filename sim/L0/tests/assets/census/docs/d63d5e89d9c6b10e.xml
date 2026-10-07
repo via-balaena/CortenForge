@@ -1,0 +1,18 @@
+<mujoco model="t15">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom name="g1" type="sphere" size="0.1"/>
+                </body>
+                <body name="b2" pos="1 0 0">
+                    <geom name="g2" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <clock name="s_clock"/>
+                <jointactuatorfrc name="s_jaf" joint="j1"/>
+                <distance name="s_dist" geom1="g1" geom2="g2"/>
+                <normal name="s_norm" geom1="g1" geom2="g2"/>
+                <fromto name="s_ft" geom1="g1" geom2="g2"/>
+            </sensor>
+        </mujoco>

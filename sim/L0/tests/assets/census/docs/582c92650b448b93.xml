@@ -1,0 +1,13 @@
+<mujoco model="fk_test">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="link1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.5" mass="1.0"/>
+                    <body name="link2" pos="0 0 1">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="box" size="0.1 0.1 0.5" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

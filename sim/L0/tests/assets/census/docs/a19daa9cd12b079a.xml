@@ -1,0 +1,17 @@
+<mujoco model="default_inheritance">
+            <option gravity="0 0 0" timestep="0.001" solver="PGS"/>
+            <default>
+                <joint solreffriction="0.04 0.7"/>
+            </default>
+            <worldbody>
+                <body name="a" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0" frictionloss="1.0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b" pos="0 0.5 0">
+                        <joint name="j2" type="hinge" axis="0 1 0" frictionloss="0.5"
+                               solreffriction="0.08 0.3"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

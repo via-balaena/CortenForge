@@ -1,0 +1,7 @@
+<mujoco model="test">
+                <default>
+                    <joint damping="0.5"/>
+                    <geom density="500"/>
+                </default>
+                <worldbody/>
+            </mujoco>

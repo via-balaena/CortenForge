@@ -1,0 +1,9 @@
+<mujoco model="hfield_meshdir_test">
+                <compiler meshdir="hfields"/>
+                <asset>
+                    <hfield name="hill" file="hill.png" size="2 2 1 0"/>
+                </asset>
+                <worldbody>
+                    <geom type="hfield" hfield="hill"/>
+                </worldbody>
+            </mujoco>

@@ -1,0 +1,11 @@
+<mujoco model="ref_joint_limit">
+            <compiler angle="radian"/>
+            <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"/>
+            <worldbody>
+                <body name="arm" pos="0 0 0">
+                    <joint name="j" type="hinge" limited="true" range="-1.0 1.0"
+                           damping="0.1"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0.3 0 0" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

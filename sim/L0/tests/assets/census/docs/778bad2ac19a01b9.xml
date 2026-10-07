@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <asset>
+                    <mesh name="scaled_mesh" file="model.obj" scale="0.001 0.001 0.001"/>
+                </asset>
+                <worldbody/>
+            </mujoco>

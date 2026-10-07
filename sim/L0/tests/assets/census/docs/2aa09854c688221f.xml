@@ -1,0 +1,6 @@
+<mujoco>
+  <asset><mesh name="cube" vertex="..." face="..."/></asset>
+  <worldbody><body>
+    <geom type="mesh" mesh="cube" density="1000"/>
+  </body></worldbody>
+</mujoco>

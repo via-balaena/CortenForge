@@ -1,0 +1,11 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="joint1" type="hinge"/>
+                        <geom type="capsule" size="0.02" fromto="0 0 0 0 0 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="muscle1" joint="joint1" timeconst="0.02 0.06" range="0.8 1.1" force="500" scale="300" lmin="0.4" lmax="1.8" vmax="2.0" fpmax="1.5" fvmax="1.3"/>
+                </actuator>
+            </mujoco>

@@ -1,0 +1,4 @@
+<mujoco model="test">
+                <worldbody/>
+                <equality/>
+            </mujoco>

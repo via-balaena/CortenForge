@@ -1,0 +1,12 @@
+<mujoco>
+          <compiler exactmeshinertia="true"/>
+          <asset>
+            <mesh name="flat" vertex="0 0 0  1 0 0  1 1 0  0 1 0"
+                  face="0 1 2  0 2 3"/>
+          </asset>
+          <worldbody>
+            <body name="flat_body">
+              <geom type="mesh" mesh="flat" density="1000"/>
+            </body>
+          </worldbody>
+        </mujoco>

@@ -1,0 +1,17 @@
+<mujoco>
+                <compiler angle="radian"/>
+                <default>
+                    <default class="R">
+                        <geom contype="7"/>
+                        <joint damping="5.0"/>
+                        <site size="0.05"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="R">
+                        <joint name="j" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                        <site name="s"/>
+                    </body>
+                </worldbody>
+            </mujoco>

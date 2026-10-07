@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <asset>
+                    <mesh name="triangle" vertex="0 0 0 1 0 0 0 1 0"/>
+                </asset>
+                <worldbody/>
+            </mujoco>

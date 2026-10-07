@@ -1,0 +1,19 @@
+<mujoco model="tendon_actuator_policy">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <fixed name="ten1">
+                <joint joint="j1" coef="1.0"/>
+            </fixed>
+        </tendon>
+        <actuator>
+            <general tendon="ten1" gainprm="100 0 0 0 0 0 0 0 0 0"/>
+        </actuator>
+    </mujoco>

@@ -1,0 +1,15 @@
+<mujoco model="spec_d_t16">
+            <worldbody>
+                <body>
+                    <joint type="hinge" name="j1"/>
+                    <geom size="0.1"/>
+                    <site name="s1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j1" nsample="4"/>
+            </actuator>
+            <sensor>
+                <framepos name="fp" site="s1" nsample="3"/>
+            </sensor>
+        </mujoco>

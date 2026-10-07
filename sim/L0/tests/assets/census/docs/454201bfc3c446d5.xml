@@ -1,0 +1,10 @@
+<mujoco model="sph_zero">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="sph" pos="0 0 -0.1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>

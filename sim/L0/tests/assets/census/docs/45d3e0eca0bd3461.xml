@@ -1,0 +1,13 @@
+<mujoco model="cyl_cap_parallel_overlap">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cyl" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+                <body name="cap" pos="0.45 0 0">
+                    <joint type="free"/>
+                    <geom type="capsule" size="0.2 0.4"/>
+                </body>
+            </worldbody>
+        </mujoco>

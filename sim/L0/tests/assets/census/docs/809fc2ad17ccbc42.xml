@@ -1,0 +1,12 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <site name="imu_site" pos="0 0 0"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <accelerometer name="accel" site="imu_site"/>
+                    <gyro name="gyro" site="imu_site" noise="0.001"/>
+                </sensor>
+            </mujoco>

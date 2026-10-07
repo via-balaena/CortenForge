@@ -1,0 +1,15 @@
+<mujoco model="activation_test">
+                <worldbody>
+                    <body name="arm" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <joint name="j2" type="hinge" axis="1 0 0"/>
+                        <joint name="j3" type="hinge" axis="0 0 1"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="motor1" joint="j1" gear="10"/>
+                    <position name="pos1" joint="j2" kp="100"/>
+                    <velocity name="vel1" joint="j3" kv="10"/>
+                </actuator>
+            </mujoco>

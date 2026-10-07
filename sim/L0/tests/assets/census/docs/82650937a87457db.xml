@@ -1,0 +1,36 @@
+<mujoco model="actuator_force">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+
+    <default>
+        <geom contype="0" conaffinity="0"/>
+    </default>
+
+    <worldbody>
+        <!-- Support frame -->
+        <geom name="beam" type="capsule" size="0.022"
+              fromto="-0.25 0 0  0.25 0 0" rgba="0.40 0.40 0.43 1"/>
+        <geom name="post_l" type="capsule" size="0.022"
+              fromto="-0.25 0 0  -0.25 0 0.30" rgba="0.40 0.40 0.43 1"/>
+        <geom name="post_r" type="capsule" size="0.022"
+              fromto="0.25 0 0  0.25 0 0.30" rgba="0.40 0.40 0.43 1"/>
+
+        <body name="arm" pos="0 0 0">
+            <joint name="hinge" type="hinge" axis="1 0 0" damping="0.1"/>
+            <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+            <geom name="rod" type="capsule" size="0.02"
+                  fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
+            <geom name="tip" type="sphere" size="0.05"
+                  pos="0 0 -0.5" rgba="0.85 0.55 0.15 1"/>
+        </body>
+    </worldbody>
+
+    <actuator>
+        <motor name="motor" joint="hinge" gear="1"/>
+    </actuator>
+
+    <sensor>
+        <actuatorfrc name="afrc" actuator="motor"/>
+        <jointactuatorfrc name="jfrc" joint="hinge"/>
+    </sensor>
+</mujoco>

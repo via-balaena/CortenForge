@@ -1,0 +1,69 @@
+<mujoco model="force-length">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="0.001" integrator="RK4">
+    <flag energy="enable"/>
+  </option>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <!-- Left arm: wide FL range (lmin=0.5, lmax=1.6) — broad force curve -->
+    <body name="upper_wide" pos="0 -0.3 0.8">
+      <geom name="upper_wide" type="capsule" size="0.025"
+            fromto="0 0 0.15  0 0 0" rgba="0.35 0.35 0.38 1"/>
+      <body name="forearm_wide" pos="0 0 0">
+        <joint name="elbow_wide" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true" damping="0.3"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom name="rod_wide" type="capsule" size="0.02"
+              fromto="0 0 0  0 0 -0.3" rgba="0.48 0.48 0.50 1"/>
+        <geom name="tip_wide" type="sphere" size="0.04"
+              pos="0 0 -0.3" rgba="0.2 0.5 0.85 1"/>
+      </body>
+    </body>
+
+    <!-- Right arm: narrow FL range (lmin=0.8, lmax=1.2) — sharp force peak -->
+    <body name="upper_narrow" pos="0 0.3 0.8">
+      <geom name="upper_narrow" type="capsule" size="0.025"
+            fromto="0 0 0.15  0 0 0" rgba="0.35 0.35 0.38 1"/>
+      <body name="forearm_narrow" pos="0 0 0">
+        <joint name="elbow_narrow" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true" damping="0.3"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom name="rod_narrow" type="capsule" size="0.02"
+              fromto="0 0 0  0 0 -0.3" rgba="0.48 0.48 0.50 1"/>
+        <geom name="tip_narrow" type="sphere" size="0.04"
+              pos="0 0 -0.3" rgba="0.85 0.4 0.2 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Muscles: fully activated, force depends on joint position -->
+    <muscle name="wide" joint="elbow_wide"
+            scale="50" range="0.75 1.05"
+            lmin="0.5" lmax="1.6" vmax="1.0"
+            fpmax="0.3" fvmax="1.4"
+            timeconst="0.01 0.04"/>
+    <muscle name="narrow" joint="elbow_narrow"
+            scale="50" range="0.75 1.05"
+            lmin="0.8" lmax="1.2" vmax="1.0"
+            fpmax="0.3" fvmax="1.4"
+            timeconst="0.01 0.04"/>
+
+    <!-- Position servos to sweep joint angle -->
+    <position name="sweep_wide" joint="elbow_wide" kp="20" dampratio="1"/>
+    <position name="sweep_narrow" joint="elbow_narrow" kp="20" dampratio="1"/>
+  </actuator>
+
+  <sensor>
+    <jointpos name="jpos_wide" joint="elbow_wide"/>
+    <jointpos name="jpos_narrow" joint="elbow_narrow"/>
+    <actuatorfrc name="frc_wide" actuator="wide"/>
+    <actuatorfrc name="frc_narrow" actuator="narrow"/>
+  </sensor>
+</mujoco>

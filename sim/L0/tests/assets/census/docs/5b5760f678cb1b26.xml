@@ -1,0 +1,17 @@
+<mujoco model="fluid_sleep_test">
+            <option density="1.2" viscosity="0.001" timestep="0.002">
+                <flag sleep="enable"/>
+            </option>
+            <worldbody>
+                <body name="awake_body" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.05 0.025" mass="1.0"
+                          contype="0" conaffinity="0"/>
+                </body>
+                <body name="sleeping_body" pos="2 0 1" sleep="init">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.05 0.025" mass="1.0"
+                          contype="0" conaffinity="0"/>
+                </body>
+            </worldbody>
+        </mujoco>

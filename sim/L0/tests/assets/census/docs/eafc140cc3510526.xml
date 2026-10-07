@@ -1,0 +1,15 @@
+<mujoco model="spec_d_t2">
+            <worldbody>
+                <body>
+                    <joint type="hinge" name="j0"/>
+                    <joint type="hinge" name="j1"/>
+                    <joint type="hinge" name="j2"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general joint="j0" nsample="2" interp="zoh"/>
+                <general joint="j1" nsample="2" interp="linear"/>
+                <general joint="j2" nsample="2" interp="cubic"/>
+            </actuator>
+        </mujoco>

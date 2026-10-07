@@ -1,0 +1,11 @@
+<mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent">
+                        <joint type="hinge"/>
+                        <body name="static_child" pos="0 0 1">
+                            <site name="s" pos="0 0 0" axisangle="0 0 1 90"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>

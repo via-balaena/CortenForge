@@ -1,0 +1,15 @@
+<mujoco model="general_defaults_override">
+                <default>
+                    <general gaintype="affine" gainprm="0 0 -10"/>
+                </default>
+                <worldbody>
+                    <body name="b" pos="0 0 1">
+                        <joint name="j" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general joint="j" gaintype="fixed" gainprm="50"/>
+                </actuator>
+            </mujoco>

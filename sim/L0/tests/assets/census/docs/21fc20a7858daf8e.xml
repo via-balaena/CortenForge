@@ -1,0 +1,31 @@
+<mujoco model="margin-gap">
+  <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"
+          iterations="50" tolerance="1e-10">
+    <flag energy="enable"/>
+  </option>
+
+  <worldbody>
+    <geom name="ground" type="plane" size="5 5 0.01" rgba="0.35 0.35 0.35 1"/>
+
+    <!-- Zero margin: rests at the surface -->
+    <body name="zero" pos="-0.2 0 0.06">
+      <freejoint/>
+      <geom name="g_zero" type="sphere" size="0.05" mass="0.5"
+            rgba="0.2 0.8 0.2 1"/>
+    </body>
+
+    <!-- margin=0.02: contact activates 20mm before touching -->
+    <body name="mid" pos="0 0 0.08">
+      <freejoint/>
+      <geom name="g_mid" type="sphere" size="0.05" mass="0.5"
+            margin="0.02" rgba="0.9 0.8 0.1 1"/>
+    </body>
+
+    <!-- margin=0.05: contact activates 50mm before touching -->
+    <body name="high" pos="0.2 0 0.11">
+      <freejoint/>
+      <geom name="g_high" type="sphere" size="0.05" mass="0.5"
+            margin="0.05" rgba="0.9 0.2 0.2 1"/>
+    </body>
+  </worldbody>
+</mujoco>

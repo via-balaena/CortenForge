@@ -1,0 +1,9 @@
+<mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="0.5 0 0">
+                            <site name="s" pos="0 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

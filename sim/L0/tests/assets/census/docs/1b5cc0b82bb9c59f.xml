@@ -1,0 +1,5 @@
+<mujoco>
+  <worldbody><body>
+    <geom type="ellipsoid" size="1 2 3" density="1000"/>
+  </body></worldbody>
+</mujoco>

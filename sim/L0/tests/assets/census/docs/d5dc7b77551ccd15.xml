@@ -1,0 +1,12 @@
+<mujoco>
+            <worldbody>
+                <body name="b1">
+                    <joint name="hinge1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body name="b2">
+                        <joint name="slide1" type="slide" axis="1 0 0"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

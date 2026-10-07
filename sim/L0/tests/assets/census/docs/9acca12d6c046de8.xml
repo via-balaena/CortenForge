@@ -1,0 +1,9 @@
+<mujoco>
+  <option gravity="2.0 0 -9.81" timestep="0.001"/>
+  <worldbody>
+    <body name="platen" pos="0 0 0.115">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.005" mass="0.2"/>
+    </body>
+  </worldbody>
+</mujoco>

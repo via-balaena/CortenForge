@@ -1,0 +1,11 @@
+<mujoco model="slide_test">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="slider" pos="0 0 1">
+                <joint name="slide" type="slide" axis="0 0 1"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

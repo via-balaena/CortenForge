@@ -1,0 +1,14 @@
+<mujoco model="double_pendulum">
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                        <geom type="capsule" size="0.05 0.25"/>
+                        <body name="link2" pos="0 0 -0.5">
+                            <joint name="j2" type="hinge" axis="0 1 0"/>
+                            <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                            <geom type="capsule" size="0.05 0.25"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>

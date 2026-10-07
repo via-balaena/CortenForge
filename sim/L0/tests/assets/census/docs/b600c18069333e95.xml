@@ -1,0 +1,20 @@
+<mujoco model="mesh-capsule">
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+
+  <asset>
+    <mesh name="ground"
+          vertex="-1 -1 -1  1 -1 -1  1 1 -1  -1 1 -1
+                  -1 -1  1  1 -1  1  1 1  1  -1 1  1"
+          face="0 2 1  0 3 2  4 5 6  4 6 7
+                0 5 4  0 1 5  2 7 6  2 3 7
+                0 7 3  0 4 7  1 6 5  1 2 6"/>
+  </asset>
+
+  <worldbody>
+    <geom name="ground" type="mesh" mesh="ground" pos="0 0 -1"/>
+    <body name="capsule" pos="0 0 0.2" quat="0.707 0.707 0 0">
+      <joint type="free"/>
+      <geom name="capsule" type="capsule" size="0.1 0.2" density="1000"/>
+    </body>
+  </worldbody>
+</mujoco>

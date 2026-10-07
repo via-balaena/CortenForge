@@ -596,6 +596,9 @@ nalgebra = "0.34.2"
 # already transitive via nalgebra, this just gives us a direct import path.
 # Default "std" feature required — Float impls for f32/f64 are gated on it.
 num-traits = "0.2"
+# robust: Shewchuk's exact orientation predicates (orient3d), for the convex
+# hull's visibility test. Pure Rust, no dependencies; already in the lock via spade.
+robust = "1.2"
 # (glam removed — was only used by routing crates)
 
 # ---------------------------------------------------------------------------

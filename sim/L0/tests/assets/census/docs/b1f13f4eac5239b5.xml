@@ -1,0 +1,24 @@
+<mujoco model="hill-auto-f0">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+
+  <worldbody>
+    <body name="upper_arm" pos="0 0 1">
+      <body name="forearm" pos="0 0 0">
+        <joint name="elbow" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.3"
+              contype="0" conaffinity="0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <general name="hill_muscle" joint="elbow"
+             dyntype="hillmuscle"
+             gainprm="0.75 1.05 -1 200 1.0 0.0 10.0 0.0 35.0"
+             dynprm="0.01 0.04 0.0"/>
+  </actuator>
+</mujoco>

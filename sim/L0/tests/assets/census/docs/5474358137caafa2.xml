@@ -1,0 +1,15 @@
+<mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <site name="world_site" pos="0 0 0"/>
+        <body name="b1" pos="0 0 1">
+          <freejoint/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <velocimeter site="world_site"/>
+        <framelinvel site="world_site"/>
+        <frameangvel site="world_site"/>
+      </sensor>
+    </mujoco>

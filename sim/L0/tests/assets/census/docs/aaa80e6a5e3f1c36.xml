@@ -1,0 +1,14 @@
+<mujoco model="pendulum_3kf">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="link" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <keyframe>
+            <key name="up"    qpos="1.5708" qvel="0.0" time="0.0"/>
+            <key name="down"  qpos="-1.5708" qvel="1.0" time="1.0"/>
+            <key name="swing" qpos="0.7854" qvel="-2.0" time="2.0"/>
+        </keyframe>
+    </mujoco>

@@ -1,0 +1,15 @@
+<mujoco model="both_init">
+  <option gravity="0 0 0" timestep="0.002" sleep_tolerance="0.1">
+    <flag sleep="enable"/>
+  </option>
+  <worldbody>
+    <body name="A" pos="-0.05 0 0" sleep="init">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1.0" margin="0.1"/>
+    </body>
+    <body name="B" pos="0.05 0 0" sleep="init">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1.0" margin="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>

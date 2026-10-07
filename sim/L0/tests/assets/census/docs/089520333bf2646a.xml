@@ -1,0 +1,13 @@
+<mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <body name="b1" pos="0 0 0">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+          <site name="vel_site" pos="0.5 0 0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <velocimeter site="vel_site"/>
+      </sensor>
+    </mujoco>

@@ -1,0 +1,14 @@
+<mujoco model="ctrl_limited">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor name="m1" joint="j1" ctrlrange="0 1" ctrllimited="true"/>
+            </actuator>
+            <sensor>
+                <actuatorfrc actuator="m1"/>
+            </sensor>
+        </mujoco>

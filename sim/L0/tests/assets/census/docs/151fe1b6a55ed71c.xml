@@ -1,0 +1,15 @@
+<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_ell" pos="0 0 1"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+        <body name="sleeping_ell" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+    </worldbody>
+</mujoco>

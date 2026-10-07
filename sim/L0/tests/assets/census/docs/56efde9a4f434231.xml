@@ -1,0 +1,12 @@
+<mujoco model="dt28_free">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <worldbody>
+            <body name="b1" pos="2 0 1">
+                <freejoint name="J_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <fixed name="T1"><joint joint="J_free" coef="1.5"/></fixed>
+        </tendon>
+    </mujoco>

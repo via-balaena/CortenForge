@@ -1,0 +1,12 @@
+<mujoco model="noslip_cone_regression">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="PGS" cone="elliptic"
+                    iterations="100" noslip_iterations="20" noslip_tolerance="1e-12"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>

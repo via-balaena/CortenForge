@@ -1,0 +1,8 @@
+<mujoco model="slide_test">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="slide" limited="true" range="-0.5 0.5"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

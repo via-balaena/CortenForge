@@ -1,0 +1,7 @@
+<mujoco model="test_model">
+                <worldbody>
+                    <body name="base">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

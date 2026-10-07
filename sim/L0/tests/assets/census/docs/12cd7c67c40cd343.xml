@@ -1,0 +1,12 @@
+<mujoco model="spec_d_t14">
+            <worldbody>
+                <body>
+                    <joint type="free"/>
+                    <geom size="0.1"/>
+                    <site name="s1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos name="fp" site="s1" nsample="3"/>
+            </sensor>
+        </mujoco>

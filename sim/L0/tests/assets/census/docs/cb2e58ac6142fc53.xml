@@ -1,0 +1,10 @@
+<mujoco model="test">
+                <asset>
+                    <mesh name="tet" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 3 1 2 3 0 2 3"/>
+                </asset>
+                <worldbody>
+                    <body name="b">
+                        <geom type="mesh" mesh="tet"/>
+                    </body>
+                </worldbody>
+            </mujoco>

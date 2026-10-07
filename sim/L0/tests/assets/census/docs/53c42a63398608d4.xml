@@ -1,0 +1,13 @@
+<mujoco model="magnetometer_test">
+            <option magnetic="0 -0.5 0"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <site name="mag_site" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <magnetometer site="mag_site"/>
+            </sensor>
+        </mujoco>

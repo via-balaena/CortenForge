@@ -1,0 +1,11 @@
+<mujoco model="kv_test">
+            <worldbody>
+                <body name="arm" pos="0 0 0">
+                    <joint name="hinge" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position name="pos" joint="hinge" kp="100" kv="10"/>
+            </actuator>
+        </mujoco>

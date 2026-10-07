@@ -1,0 +1,8 @@
+<mujoco model="passive_attr">
+            <option>
+                <flag passive="disable"/>
+            </option>
+            <worldbody>
+                <body><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>

@@ -1,0 +1,6 @@
+<mujoco><option density="1.2" viscosity="0"/>
+    <worldbody><body pos="0 0 1"><freejoint/>
+    <geom type="sphere" size="0.05" mass="0.5"/>
+    <geom type="ellipsoid" size="0.1 0.05 0.02" mass="0.5"
+          fluidshape="ellipsoid" pos="0.2 0 0"/>
+    </body></worldbody></mujoco>

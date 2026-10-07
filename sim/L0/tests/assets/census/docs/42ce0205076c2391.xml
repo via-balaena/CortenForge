@@ -1,0 +1,12 @@
+<mujoco model="mixed">
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="ball" type="ball"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <body name="link2" pos="0 0 -0.5">
+                            <joint name="hinge" type="hinge" axis="0 1 0"/>
+                            <inertial pos="0 0 0" mass="0.5" diaginertia="0.05 0.05 0.01"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>

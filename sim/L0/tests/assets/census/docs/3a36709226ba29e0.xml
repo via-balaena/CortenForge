@@ -1,0 +1,8 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <inertial pos="0 0 0.1" mass="2.0" diaginertia="0.1 0.2 0.3"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
