@@ -9,8 +9,8 @@ test wrote. This compares the file at the two refs: a doc whose class ranks
 lower at <to-ref> must carry a `divergence=<ID>`, `known=<label>` or
 `fixed_by=<Pnn|Lnn> was=<class>` note there, a was= class ranking at least as
 high as the doc's class at <from-ref>; and no row may gain a `nondet=` note,
-which makes the census skip it. A doc missing at <from-ref> is new and
-skipped. `klass`, `rank` and the note forms mirror class, rank, is_class and
+which makes the census skip it, a new doc included. A doc missing at
+<from-ref> cannot have been lowered. `klass`, `rank` and the note forms mirror class, rank, is_class and
 fixed_by in sim/L0/tests/mujoco_conformance/layer_e_census/ratchet.rs.
 Exits 1 on either.
 """

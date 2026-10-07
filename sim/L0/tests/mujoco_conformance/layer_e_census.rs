@@ -29,7 +29,8 @@
 //!   difference was lost, or became another.
 //! - **Label shifts** (same class) never fail; bless records them, and a passing
 //!   run prints them only under `--nocapture`.
-//! - **`nondet=`** skips a doc whose verdict varies between processes (none today).
+//! - **`nondet=`** skips a doc whose verdict varies between processes. None
+//!   carries one, and the CI check above refuses a commit that adds one.
 //!
 //! The snapshot and the golden are append-only (a CI step checks it): new
 //! in-tree MJCF is added as new docs with their golden, never edited in place.
