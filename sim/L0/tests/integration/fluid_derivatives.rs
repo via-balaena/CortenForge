@@ -3004,7 +3004,7 @@ fn t56_tendon_cross_tree_not_skipped() {
         "body 1 should be awake after wake"
     );
 
-    // Clear force, forward, compute derivatives
+    // Clear the torque, forward, compute derivatives
     data.xfrc_applied[1].torque[2] = 0.0;
     data.forward(&model).expect("forward");
 

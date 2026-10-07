@@ -122,7 +122,7 @@ impl Data {
     ///
     /// # Important
     ///
-    /// - Always uses Euler-style integration in `step2()` (not RK4). RK4's
+    /// - Under RK4, `step2()` takes the Euler step (not RK4). RK4's
     ///   multi-stage substeps don't work with force injection between stages.
     /// - `step()` is NOT refactored to call step1/step2 — it remains the
     ///   canonical entry point with full RK4 support.
@@ -168,9 +168,9 @@ impl Data {
     ///
     /// # Note
     ///
-    /// This always uses Euler-style integration. RK4 is not compatible with
-    /// split-step force injection because its multi-stage substeps recompute
-    /// `forward()` internally.
+    /// Under RK4 this takes the Euler step, as `mj_step2` does. RK4 is not
+    /// compatible with split-step force injection because its multi-stage
+    /// substeps recompute `forward()` internally.
     ///
     /// # Errors
     ///
@@ -194,7 +194,7 @@ impl Data {
         // Validate accelerations
         check::mj_check_acc(model, self);
 
-        // Euler-style integration (matches step() for non-RK4 integrators)
+        // The integrator's velocity update (as step() for non-RK4 integrators)
         self.integrate(model);
 
         // Sleep update (§16.12): Phase B island-aware sleep transition.

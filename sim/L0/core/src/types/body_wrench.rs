@@ -55,10 +55,9 @@ use nalgebra::Vector3;
 /// # let mut data = model.make_data();
 /// data.xfrc_applied[1] = nalgebra::Vector6::<f64>::zeros().into();
 /// ```
-// No `Index`, `IndexMut` or `Deref` (each lets one of the first two forms
-// above compile) and no `From<[f64; 6]>` or `From<Vector6<f64>>` (each lets
-// one of the last two compile): each would take a 0.9 row with its halves
-// swapped.
+// Each impl left out would let a 0.9 form above compile, with the halves
+// swapped: `Index` or `Deref` the first, `IndexMut` the first two,
+// `From<[f64; 6]>` the fourth, `From<Vector6<f64>>` the fifth.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct BodyWrench {
     /// Force (N), world frame, applied at the body's centre of mass.

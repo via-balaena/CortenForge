@@ -21,7 +21,7 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPT = os.environ.get("EXTRACT_MJCF", os.path.join(HERE, "extract_mjcf.py"))
+SCRIPT = os.path.abspath(os.environ.get("EXTRACT_MJCF", os.path.join(HERE, "extract_mjcf.py")))
 _spec = importlib.util.spec_from_file_location("extract_mjcf", SCRIPT)
 ex = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ex)

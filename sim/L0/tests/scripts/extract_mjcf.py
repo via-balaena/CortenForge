@@ -197,8 +197,8 @@ def fence_tokens(info):
 def is_rust_fence(info):
     """Whether rustdoc compiles a fenced block with this info string as a doctest, modelled on
     rustdoc's `LangString::parse` and checked against rustdoc 1.96.0 on the info strings in
-    test_extract_mjcf.py (a word glued to an attribute group, `text{.x}`, which rustdoc runs as a
-    doctest, is read here as not Rust): untagged is Rust; `rust` keeps it
+    test_extract_mjcf.py (a non-Rust word glued to an attribute group, `text{.x}`, which rustdoc
+    runs as a doctest, is read here as not Rust): untagged is Rust; `rust` keeps it
     Rust; `should_panic`, `no_run`, `ignore` and `ignore-*` keep it Rust only before any other
     word, `compile_fail`, `test_harness` and `standalone_crate` before any other word or after a
     Rust tag; `edition*` changes nothing; `custom`, and any other word on its own, make it not

@@ -1268,9 +1268,9 @@ fn implicitspringdamper_forward_does_not_change_the_state() {
 }
 
 /// `integrate()` adds `h·qacc` to the current `qvel` under
-/// implicitspringdamper, as under every other integrator: a `qvel` edit made
-/// between `forward()` and `integrate()` is kept, and after `reset()` (which
-/// zeroes `qacc`) `integrate()` leaves `qvel` at zero.
+/// implicitspringdamper: a `qvel` edit made between `forward()` and
+/// `integrate()` is kept, and after `reset()` (which zeroes `qacc`)
+/// `integrate()` leaves `qvel` at zero.
 #[test]
 fn implicitspringdamper_integrate_adds_h_qacc_to_the_current_qvel() {
     let model = isd_spring();

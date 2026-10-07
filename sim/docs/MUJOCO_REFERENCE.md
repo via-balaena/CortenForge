@@ -28,11 +28,10 @@ Data::step():
      f. mj_fwd_passive     — Spring, damper, friction loss forces (skips sleeping DOFs)
      g. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
         mj_fwd_constraint_islands — Per-island block-diagonal solving (when islands > 1)
-     h. mj_fwd_acceleration — qacc = M⁻¹ f (explicit); the implicit integrators also
-                              solve for the acceleration they advance qvel with
-  2a. integrate()          — Activation integration + the velocity update with that
-                              acceleration (every integrator but RK4 under step(), and
-                              RK4 too under step2())
+     h. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one);
+                              implicit and implicitfast also solve for qacc_implicit
+  2a. integrate()          — Activation integration + the integrator's velocity update
+                              (under RK4, only step2() calls it, for the Euler step)
                               (skips sleeping joints for position/velocity integration)
   2b. mj_runge_kutta()     — True 4-stage RK4 with Butcher tableau, including
                               activation state (for RungeKutta4 integrator)
@@ -910,7 +909,7 @@ Combines analytical velocity/activation columns with FD position columns:
 
 ```
 Velocity columns (analytical):
-  Euler:    ∂v⁺/∂v = I + h · M⁻¹ · qDeriv   (sparse LDL solve)
+  Euler:    ∂v⁺/∂v = I + h · M_impl⁻¹ · qDeriv   (M_impl = M + h·D under eulerdamp, else M)
   Implicit: ∂v⁺/∂v = (M+hD+h²K)⁻¹ · (M + h·(qDeriv+D))  (Cholesky solve)
 
 Activation columns (analytical):
