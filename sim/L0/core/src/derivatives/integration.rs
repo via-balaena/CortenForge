@@ -676,3 +676,47 @@ mod sub_quat_tests {
         assert_mat_close("d_dqb (neg-w qb)", &d_dqb_pos, &d_dqb_neg, 1e-10);
     }
 }
+
+#[cfg(test)]
+mod post_step_qvel_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+    use crate::linalg::cholesky_in_place;
+
+    /// Under Euler with a damped DOF and an active joint limit,
+    /// `post_step_qvel` is the velocity `integrate()` leaves: eulerdamp's
+    /// solve of `qfrc_smooth + qfrc_constraint`, constraint force included.
+    #[test]
+    fn post_step_qvel_is_the_velocity_integrate_leaves() {
+        let mut model = Model::n_link_pendulum(2, 0.5, 1.0);
+        model.jnt_damping = vec![0.4, 0.3];
+        model.jnt_limited[0] = true;
+        model.jnt_range[0] = (-0.1, 0.1);
+        // The factory leaves `jnt_margin` empty; limits read it.
+        model.jnt_margin = vec![0.0; model.njnt];
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 0.5;
+        data.qvel[1] = -0.7;
+        data.forward(&model).expect("forward");
+        assert!(
+            data.qfrc_constraint[0].abs() > 1.0,
+            "the limit is active: {}",
+            data.qfrc_constraint
+        );
+
+        let h = model.timestep;
+        let mut m_impl = data.qM.clone();
+        for i in 0..model.nv {
+            m_impl[(i, i)] += h * model.implicit_damping[i];
+        }
+        cholesky_in_place(&mut m_impl).expect("M + h·D factors");
+        let want = post_step_qvel(&model, &data, Some(&m_impl));
+        let mut stepped = data.clone();
+        stepped.integrate(&model);
+        let err = (want - &stepped.qvel).abs().max();
+        assert!(err < 1e-12, "post_step_qvel vs integrate: {err:e}");
+    }
+}

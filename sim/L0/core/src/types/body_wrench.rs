@@ -28,6 +28,12 @@ use nalgebra::Vector3;
 ///
 /// ```compile_fail,E0608
 /// # let model = sim_core::Model::free_body(2.0, nalgebra::Vector3::new(0.1, 0.1, 0.1));
+/// # let data = model.make_data();
+/// let tz = data.xfrc_applied[1][2];
+/// ```
+///
+/// ```compile_fail,E0608
+/// # let model = sim_core::Model::free_body(2.0, nalgebra::Vector3::new(0.1, 0.1, 0.1));
 /// # let mut data = model.make_data();
 /// data.xfrc_applied[1][5] = 1.0;
 /// ```
@@ -49,9 +55,10 @@ use nalgebra::Vector3;
 /// # let mut data = model.make_data();
 /// data.xfrc_applied[1] = nalgebra::Vector6::<f64>::zeros().into();
 /// ```
-// No `Index` or `Deref` (the first form above would compile) and no
-// `From<[f64; 6]>` or `From<Vector6<f64>>` (the last two would): each would
-// take a 0.9 row with its halves swapped.
+// No `Index`, `IndexMut` or `Deref` (each lets one of the first two forms
+// above compile) and no `From<[f64; 6]>` or `From<Vector6<f64>>` (each lets
+// one of the last two compile): each would take a 0.9 row with its halves
+// swapped.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct BodyWrench {
     /// Force (N), world frame, applied at the body's centre of mass.
