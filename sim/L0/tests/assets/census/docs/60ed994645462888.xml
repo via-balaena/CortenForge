@@ -1,0 +1,10 @@
+<mujoco model="spring_regression">
+            <compiler angle="radian"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"
+                           stiffness="100.0" springref="0.0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

@@ -1,0 +1,12 @@
+<mujoco model="site_actuator_test">
+                <worldbody>
+                    <body name="arm" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <site name="end_effector" pos="0 0 -1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general name="site_act" site="end_effector" gear="50"/>
+                </actuator>
+            </mujoco>

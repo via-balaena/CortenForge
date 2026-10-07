@@ -1,0 +1,11 @@
+<mujoco model="slide_spring">
+            <compiler angle="radian"/>
+            <option gravity="0 0 0" timestep="0.002"/>
+            <worldbody>
+                <body name="slider" pos="0 0 0">
+                    <joint name="slide" type="slide" axis="1 0 0"
+                           stiffness="500" damping="20" springref="0.2"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

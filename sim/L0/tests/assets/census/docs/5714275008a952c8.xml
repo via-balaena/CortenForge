@@ -1,0 +1,15 @@
+<mujoco model="stochastic-resonance">
+  <option timestep="0.001" gravity="0 0 0" integrator="Euler">
+    <flag contact="disable"/>
+  </option>
+  <worldbody>
+    <body name="particle">
+      <joint name="x" type="slide" axis="1 0 0" damping="0"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <general name="temp_ctrl" joint="x" gainprm="0" biasprm="0 0 0"
+             ctrllimited="true" ctrlrange="0 10"/>
+  </actuator>
+</mujoco>

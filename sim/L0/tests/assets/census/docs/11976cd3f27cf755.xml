@@ -1,0 +1,46 @@
+<mujoco model="sphere-wrap">
+  <option gravity="0 0 0" timestep="0.002"/>
+  <compiler angle="radian"/>
+
+  <worldbody>
+    <!-- Wrap sphere (translucent, no collision) -->
+    <body name="wrap_body" pos="0 0 0.8">
+      <geom name="wrap_sphere" type="sphere" size="0.1"
+            rgba="0.9 0.85 0.2 0.3" contype="0" conaffinity="0"/>
+      <!-- Sidesite above the sphere — disambiguates which side to wrap on -->
+      <site name="side" pos="0 0 0.12" size="0.005"/>
+    </body>
+
+    <!-- Rotating arm with origin site on the tip -->
+    <body name="arm" pos="0 0 0.8">
+      <joint name="j1" type="hinge" axis="0 1 0" damping="5.0"/>
+      <geom name="arm_geom" type="capsule" fromto="0 0 0 0.3 0 0"
+            size="0.02" mass="0.5" rgba="0.3 0.5 0.85 1"/>
+      <site name="s_origin" pos="0.2 0 0" size="0.012" rgba="1 1 0 1"/>
+    </body>
+
+    <!-- Fixed anchor on the opposite side -->
+    <body name="anchor" pos="-0.2 0 0.8">
+      <geom name="anchor_geom" type="sphere" size="0.015"
+            rgba="0.85 0.25 0.2 1" contype="0" conaffinity="0"/>
+      <site name="s_insert" pos="0 0 0" size="0.012" rgba="1 1 0 1"/>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <spatial name="wrap_tendon">
+      <site site="s_origin"/>
+      <geom geom="wrap_sphere" sidesite="side"/>
+      <site site="s_insert"/>
+    </spatial>
+  </tendon>
+
+  <actuator>
+    <motor name="drive" joint="j1" gear="1"/>
+  </actuator>
+
+  <sensor>
+    <tendonpos name="ten_pos" tendon="wrap_tendon"/>
+    <tendonvel name="ten_vel" tendon="wrap_tendon"/>
+  </sensor>
+</mujoco>

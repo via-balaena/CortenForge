@@ -1,0 +1,16 @@
+<mujoco model="pendulum-stress">
+  <option timestep="0.01"/>
+  <worldbody>
+    <body name="pendulum" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="hinge" name="motor"/>
+  </actuator>
+  <sensor>
+    <jointpos joint="hinge" name="angle"/>
+    <jointvel joint="hinge" name="angvel"/>
+  </sensor>
+</mujoco>

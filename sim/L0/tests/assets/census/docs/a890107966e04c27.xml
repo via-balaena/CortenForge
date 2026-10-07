@@ -1,0 +1,4 @@
+<mujoco model="test">
+                <compiler/>
+                <worldbody/>
+            </mujoco>

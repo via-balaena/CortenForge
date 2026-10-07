@@ -1,0 +1,5 @@
+<mujoco><worldbody>
+            <composite type="cable" count="1 1 1" curve="l 0 0" size="1">
+                <joint kind="main"/><geom type="capsule" size=".005"/>
+            </composite>
+        </worldbody></mujoco>

@@ -1,0 +1,18 @@
+<mujoco>
+                <default>
+                    <default class="F1"><geom contype="4"/></default>
+                    <default class="F2"><geom contype="8"/></default>
+                </default>
+                <worldbody>
+                    <body name="b">
+                        <frame childclass="F1">
+                            <frame>
+                                <geom name="g1" type="sphere" size="0.1"/>
+                            </frame>
+                            <frame childclass="F2">
+                                <geom name="g2" type="sphere" size="0.1"/>
+                            </frame>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

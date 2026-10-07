@@ -1,0 +1,13 @@
+<mujoco model="mocap_reset_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="mocap_body" mocap="true" pos="1 2 3">
+                <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+            </body>
+            <body name="link" pos="0 0 1">
+                <joint name="j" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+    </mujoco>

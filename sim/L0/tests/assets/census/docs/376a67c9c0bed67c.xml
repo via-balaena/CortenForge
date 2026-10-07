@@ -1,0 +1,11 @@
+<mujoco model="invalid_body">
+            <worldbody>
+                <body name="real_body" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="nonexistent_body"/>
+            </equality>
+        </mujoco>

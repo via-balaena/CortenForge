@@ -1,0 +1,11 @@
+<mujoco model="combined_passive">
+            <compiler angle="radian"/>
+            <option gravity="0 0 0" timestep="0.0005"/>
+            <worldbody>
+                <body name="pendulum" pos="0 0 0">
+                    <joint name="hinge" type="hinge" axis="0 1 0"
+                           stiffness="50" damping="2" frictionloss="0.5" springref="0.3"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

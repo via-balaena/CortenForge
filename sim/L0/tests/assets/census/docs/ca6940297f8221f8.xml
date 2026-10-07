@@ -1,0 +1,24 @@
+<mujoco model="three_trees">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="chain_a" pos="-2 0 1">
+                <joint name="hinge_a" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+                <body name="chain_a_child" pos="0 0 -0.5">
+                    <joint name="hinge_a2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="0.5"/>
+                </body>
+            </body>
+            <body name="chain_b" pos="0 0 1">
+                <joint name="hinge_b" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="chain_c" pos="2 0 1">
+                <joint name="hinge_c" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

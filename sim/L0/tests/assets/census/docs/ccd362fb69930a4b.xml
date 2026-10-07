@@ -1,0 +1,8 @@
+<mujoco model="no_range">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

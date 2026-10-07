@@ -1,0 +1,9 @@
+<mujoco model="dt90_friction1">
+                <deformable>
+                    <flex name="test" dim="1">
+                        <contact friction="0.5"/>
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>

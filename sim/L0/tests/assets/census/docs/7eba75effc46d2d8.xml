@@ -1,0 +1,8 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="floating_body"/>
+                </worldbody>
+                <equality>
+                    <connect body1="floating_body" anchor="0 0 1"/>
+                </equality>
+            </mujoco>

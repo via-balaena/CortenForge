@@ -1,0 +1,38 @@
+<mujoco model="mixed-muscle">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+
+  <worldbody>
+    <body name="arm_a" pos="0 0 1">
+      <body name="forearm_a" pos="0 0 0">
+        <joint name="elbow_a" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.3"
+              contype="0" conaffinity="0"/>
+      </body>
+    </body>
+    <body name="arm_b" pos="0.5 0 1">
+      <body name="forearm_b" pos="0 0 0">
+        <joint name="elbow_b" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.3"
+              contype="0" conaffinity="0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <muscle name="mj_bicep" joint="elbow_a" force="500"
+            range="0.75 1.05" lmin="0.5" lmax="1.6"
+            vmax="1.0" fpmax="0.3" fvmax="1.4"
+            timeconst="0.01 0.04"/>
+    <general name="hill_bicep" joint="elbow_b"
+             dyntype="hillmuscle"
+             gainprm="0.75 1.05 500 200 1.0 0.0 10.0 0.0 35.0"
+             dynprm="0.01 0.04 0.0"/>
+  </actuator>
+</mujoco>

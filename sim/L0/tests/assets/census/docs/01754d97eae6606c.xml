@@ -1,0 +1,13 @@
+<mujoco model="sym_ba">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="b" pos="0.7 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.3"/>
+                </body>
+                <body name="a" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>

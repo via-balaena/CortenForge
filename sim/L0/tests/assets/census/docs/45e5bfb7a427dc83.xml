@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <default>
+                    <motor gear="100" ctrlrange="-1 1" kp="50" kv="5" ctrllimited="true"/>
+                </default>
+                <worldbody/>
+            </mujoco>

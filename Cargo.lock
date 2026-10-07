@@ -10237,6 +10237,7 @@ dependencies = [
  "cortenforge-sim-types",
  "cortenforge-sim-urdf",
  "nalgebra 0.34.2",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,19 @@
+<mujoco model="tendon_damp">
+            <option timestep="0.01" integrator="implicitfast" gravity="0 0 -9.81"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j0" type="hinge" axis="0 1 0" damping="0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0 0 -1">
+                        <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t0" damping="100.0">
+                    <joint joint="j0" coef="1.0"/>
+                    <joint joint="j1" coef="1.0"/>
+                </fixed>
+            </tendon>
+        </mujoco>

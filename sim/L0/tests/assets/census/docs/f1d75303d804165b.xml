@@ -1,0 +1,7 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint type="invalid"/>
+                    </body>
+                </worldbody>
+            </mujoco>

@@ -1,0 +1,6 @@
+<mujoco model="group_disable">
+            <option actuatorgroupdisable="2 5"/>
+            <worldbody>
+                <body><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>

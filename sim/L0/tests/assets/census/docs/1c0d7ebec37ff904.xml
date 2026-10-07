@@ -1,0 +1,8 @@
+<mujoco model="ball_chain">
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="j1" type="ball"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

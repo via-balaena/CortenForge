@@ -1,0 +1,13 @@
+<mujoco model="solimp_strong">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="ball" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="ball" anchor="0 0 0"
+                         solimp="0.95 0.99 0.001 0.5 2"/>
+            </equality>
+        </mujoco>

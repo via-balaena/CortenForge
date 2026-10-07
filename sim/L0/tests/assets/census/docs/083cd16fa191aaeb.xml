@@ -1,0 +1,24 @@
+<mujoco model="tendon_zero_stiffness">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="body_a" pos="-1 0 0.5">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+                <site name="s_a" pos="0 0 0"/>
+            </body>
+            <body name="body_b" pos="1 0 0.5">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+                <site name="s_b" pos="0 0 0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <spatial name="t_ab" stiffness="0" damping="0">
+                <site site="s_a"/>
+                <site site="s_b"/>
+            </spatial>
+        </tendon>
+    </mujoco>

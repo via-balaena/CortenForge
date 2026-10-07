@@ -1,0 +1,11 @@
+<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit"/>
+    <worldbody>
+        <body name="awake_box" pos="0 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="sleeping_box" pos="2 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>

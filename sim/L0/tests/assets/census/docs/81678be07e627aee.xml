@@ -1,0 +1,4 @@
+<mujoco><option density="1.2" viscosity="0.001"/>
+    <worldbody><body pos="0 0 1"><freejoint/>
+    <geom type="sphere" size="0.001" mass="1e-20"/>
+    </body></worldbody></mujoco>

@@ -1,0 +1,8 @@
+<mujoco model="springref_deg">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" stiffness="100" springref="45"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

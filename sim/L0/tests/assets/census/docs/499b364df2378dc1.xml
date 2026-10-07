@@ -1,0 +1,12 @@
+<mujoco>
+      <option gravity="0 0 -9.81"/>
+      <worldbody>
+        <body pos="0 0 1">
+          <joint name="slide0" type="slide" axis="0 0 1"/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="slide0" gear="1"/>
+      </actuator>
+    </mujoco>

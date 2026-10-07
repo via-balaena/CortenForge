@@ -1,0 +1,24 @@
+<mujoco model="multi-body">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="0.001" integrator="RK4">
+    <flag energy="enable"/>
+  </option>
+
+  <worldbody>
+    <body name="a" pos="0 0 0">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="1 0 0">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="2.0" diaginertia="0.02 0.03 0.01"/>
+      <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+    </body>
+    <body name="c" pos="0 1 0">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+      <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

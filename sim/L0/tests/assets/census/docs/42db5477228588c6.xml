@@ -1,0 +1,21 @@
+<mujoco>
+            <worldbody>
+                <body name="b1" pos="0 0 1" user="10">
+                    <joint name="j1" type="hinge" axis="0 1 0" user="20 21"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" user="30 31 32"/>
+                    <site name="s1" pos="0 0 0" user="40"/>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t1" user="50 51">
+                    <joint joint="j1" coef="1"/>
+                </fixed>
+            </tendon>
+            <actuator>
+                <motor name="a1" joint="j1" user="60 61 62 63"/>
+            </actuator>
+            <sensor>
+                <jointpos joint="j1" user="70 71"/>
+            </sensor>
+            </mujoco>

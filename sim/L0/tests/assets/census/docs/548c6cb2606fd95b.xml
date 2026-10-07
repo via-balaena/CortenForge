@@ -1,0 +1,19 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <site name="s1" pos="0 0 0"/>
+                        <site name="s2" pos="0 0 0.5"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="t1">
+                        <site site="s1"/>
+                        <site site="s2"/>
+                    </spatial>
+                    <fixed name="t2">
+                        <joint joint="j1" coef="2"/>
+                    </fixed>
+                </tendon>
+            </mujoco>

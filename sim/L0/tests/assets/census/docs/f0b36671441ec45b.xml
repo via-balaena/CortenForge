@@ -1,0 +1,13 @@
+<mujoco model="t07">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" pos="0.3 0.1 0" mass="1"/>
+                    <geom type="sphere" size="0.05" pos="-0.1 0.2 0" mass="0.5"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framequat name="fq_body" objtype="body" objname="b1"/>
+                <framequat name="fq_xbody" objtype="xbody" objname="b1"/>
+            </sensor>
+        </mujoco>

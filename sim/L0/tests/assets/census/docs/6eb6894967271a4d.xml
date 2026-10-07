@@ -1,0 +1,10 @@
+<mujoco model="empty_config">
+                <extension>
+                    <plugin plugin="test.simple">
+                        <instance name="inst1"/>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b"/>
+                </worldbody>
+            </mujoco>

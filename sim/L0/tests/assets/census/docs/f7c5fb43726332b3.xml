@@ -1,0 +1,17 @@
+<mujoco model="t18">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+                <body name="b_empty" pos="1 2 3">
+                    <joint type="free"/>
+                    <site name="anchor"/>
+                    <geom type="sphere" size="0.001" mass="0.001"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos name="fp" objtype="body" objname="b_empty"/>
+                <framepos name="fp_x" objtype="xbody" objname="b_empty"/>
+            </sensor>
+        </mujoco>

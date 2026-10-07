@@ -1,0 +1,12 @@
+<mujoco model="merge_wb">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

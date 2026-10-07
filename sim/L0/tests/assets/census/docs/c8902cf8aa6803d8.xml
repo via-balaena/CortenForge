@@ -1,0 +1,13 @@
+<mujoco model="cubes">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cube1" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+                <body name="cube2" pos="0.9 0 0">
+                    <joint type="free"/>
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>

@@ -1,0 +1,10 @@
+<mujoco model="s30_parse_explicit">
+        <deformable>
+            <flex name="cloth" dim="2" density="1000">
+                <contact contype="3" conaffinity="5" margin="0.001"/>
+                <elasticity young="50" thickness="0.01"/>
+                <vertex pos="0 0 0  1 0 0  0 1 0"/>
+                <element data="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>

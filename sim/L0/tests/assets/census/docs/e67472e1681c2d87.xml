@@ -1,0 +1,14 @@
+<mujoco model="free_dof_length">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="base" pos="0 0 1">
+                <freejoint name="free1"/>
+                <geom type="sphere" size="0.05" mass="1.0"/>
+                <body name="child" pos="0.5 0 0">
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>

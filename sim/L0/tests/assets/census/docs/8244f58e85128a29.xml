@@ -1,0 +1,10 @@
+<mujoco model="mesh_test">
+                <asset>
+                    <mesh name="cube_mesh" file="cube.stl"/>
+                </asset>
+                <worldbody>
+                    <body name="cube" pos="0 0 1">
+                        <geom type="mesh" mesh="cube_mesh" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

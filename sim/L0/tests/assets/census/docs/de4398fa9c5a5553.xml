@@ -1,0 +1,6 @@
+<mujoco model="m">
+                <worldbody>
+                    <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
+                </worldbody>
+                <contact><exclude body1="a" body2="ghost"/></contact>
+            </mujoco>

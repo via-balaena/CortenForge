@@ -1,0 +1,11 @@
+<mujoco>
+                <worldbody>
+                    <body name="parent">
+                        <frame pos="2 0 0">
+                            <body name="child" pos="1 0 0">
+                                <geom type="sphere" size="0.1"/>
+                            </body>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

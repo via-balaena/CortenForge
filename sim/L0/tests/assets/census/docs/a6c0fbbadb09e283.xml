@@ -1,0 +1,16 @@
+<mujoco model="mixed">
+            <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"/>
+            <worldbody>
+                <body name="a" pos="0 0 0.5">
+                    <joint name="j1" type="hinge" axis="0 0 1" frictionloss="1.0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b" pos="0 0.5 0">
+                        <joint name="j2" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+            <equality>
+                <joint joint1="j1" joint2="j2"/>
+            </equality>
+        </mujoco>

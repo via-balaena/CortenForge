@@ -1,0 +1,15 @@
+<mujoco model="instance_ref_test">
+                <extension>
+                    <plugin plugin="test.cable">
+                        <instance name="cable1">
+                            <config key="stiffness" value="100"/>
+                        </instance>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b1">
+                        <plugin plugin="test.cable" instance="cable1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

@@ -1,0 +1,8 @@
+<mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="0 0 5"/>
+                    </body>
+                </worldbody>
+            </mujoco>

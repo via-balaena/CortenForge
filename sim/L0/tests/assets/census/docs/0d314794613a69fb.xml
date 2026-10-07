@@ -1,0 +1,10 @@
+<mujoco model="stiff_contact">
+            <option gravity="0 0 -10" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1" solref="0.005 1.0"/>
+                <body name="ball" pos="0 0 0.5">
+                    <freejoint/>
+                    <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

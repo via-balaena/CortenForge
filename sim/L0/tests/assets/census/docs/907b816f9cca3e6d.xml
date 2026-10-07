@@ -1,0 +1,9 @@
+<mujoco model="bad_mocap_joints">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="bad_mocap" mocap="true" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

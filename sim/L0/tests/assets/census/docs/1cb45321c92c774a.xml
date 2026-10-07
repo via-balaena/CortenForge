@@ -1,0 +1,8 @@
+<mujoco model="cable_uservert">
+            <worldbody>
+                <composite type="cable" vertex="0 0 0 1 0 0 2 0 1">
+                    <joint kind="main" damping="0.01"/>
+                    <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
+                </composite>
+            </worldbody>
+        </mujoco>

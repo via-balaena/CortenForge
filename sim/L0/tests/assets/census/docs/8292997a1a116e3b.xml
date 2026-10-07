@@ -1,0 +1,11 @@
+<mujoco model="jip_slide">
+            <worldbody>
+                <body pos="0 0 0">
+                    <joint name="slide" type="slide" axis="0 0 1"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general jointinparent="slide" gear="3"/>
+            </actuator>
+        </mujoco>

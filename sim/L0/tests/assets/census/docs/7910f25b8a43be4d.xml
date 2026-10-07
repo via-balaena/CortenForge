@@ -1,0 +1,20 @@
+<mujoco model="node_test">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="n0" pos="0 0 1">
+                <geom type="sphere" size="0.01" mass="0.001" contype="0" conaffinity="0"/>
+            </body>
+            <body name="n1" pos="1 0 1">
+                <geom type="sphere" size="0.01" mass="0.001" contype="0" conaffinity="0"/>
+            </body>
+            <body name="n2" pos="0.5 0.866 1">
+                <geom type="sphere" size="0.01" mass="0.001" contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="tri" dim="2" node="n0 n1 n2" density="300">
+                <elasticity young="5e4" damping="0.1" thickness="0.002"/>
+                <element data="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>

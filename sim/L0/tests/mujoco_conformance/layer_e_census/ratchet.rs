@@ -1,0 +1,331 @@
+//! Verdicts, their classes, and the ratchet over the expected-verdict file.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
+use std::path::Path;
+
+use serde_json::Value;
+
+use super::compare::{SHAPE_FIELDS, dump_diff, model_diff, state_differs};
+
+/// The first difference within one excitation: the earliest step, and at
+/// that step a differing state before a differing `forward` dump.
+fn dynamics_verdict(golden: &Value, ours: &Value) -> String {
+    for key in ["e1", "e2"] {
+        let (g, o) = (&golden[key], &ours[key]);
+        // (step, rank within the step, label)
+        let mut events: Vec<(usize, u8, String)> = Vec::new();
+        if let Some(q) = dump_diff(&o["dump"]["0"], &g["dump"]["0"]).first() {
+            events.push((0, 1, format!("t0:{q}")));
+        }
+        let checkpoints: Vec<usize> = g["traj_steps"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_u64)
+                    .filter_map(|s| usize::try_from(s).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let our_steps = o["traj"]["q"].as_array().map_or(0, Vec::len);
+        for (i, &step) in checkpoints.iter().enumerate() {
+            if step > our_steps {
+                events.push((step, 0, format!("steperr@{step}")));
+                break;
+            }
+            if state_differs(&o["traj"], &g["traj"], step - 1, i) {
+                events.push((step, 0, format!("state@{step}")));
+                break;
+            }
+        }
+        if let Value::Object(dumps) = &g["dump"] {
+            for (k, gd) in dumps {
+                let step: usize = k.parse().unwrap_or(0);
+                if step == 0 {
+                    continue;
+                }
+                match o["dump"].get(k) {
+                    None => events.push((step, 1, format!("s{k}:missing"))),
+                    Some(od) => {
+                        if let Some(q) = dump_diff(od, gd).first() {
+                            events.push((step, 1, format!("s{k}:{q}")));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((_, _, label)) = events.into_iter().min_by_key(|(s, r, _)| (*s, *r)) {
+            return format!("{key}:{label}");
+        }
+    }
+    "agree".to_string()
+}
+
+/// One doc's verdict: the load statuses, then the first differing model
+/// field, then the first difference in the dynamics. A model-differing doc
+/// whose counts agree carries its dynamics verdict too
+/// (`model:geom_quat;dyn:agree`), so its dynamics are pinned as well.
+pub fn verdict(golden: &Value, ours: &Value) -> String {
+    match (golden["status"] == "ok", ours["status"] == "ok") {
+        (false, false) => return "both-refuse".to_string(),
+        (false, true) => return "mj-refuses".to_string(),
+        (true, false) => return format!("ours-{}", ours["status"].as_str().unwrap_or("?")),
+        (true, true) => {}
+    }
+    let fields = model_diff(&ours["model"], &golden["model"]);
+    let Some(first) = fields.first() else {
+        return dynamics_verdict(golden, ours);
+    };
+    if fields.iter().any(|f| SHAPE_FIELDS.contains(&f.as_str())) {
+        format!("model:{first}")
+    } else {
+        format!("model:{first};dyn:{}", dynamics_verdict(golden, ours))
+    }
+}
+
+/// The part of a verdict the ratchet pins. The rest of a verdict — which
+/// step or quantity differs first — is a label: printed when it changes,
+/// never failed on, because last-bit perturbations move it (A20 §2.4).
+fn class(v: &str) -> String {
+    if v == "agree" || v.starts_with("ours-") || v == "mj-refuses" || v == "both-refuse" {
+        return v.to_string();
+    }
+    if let Some(rest) = v.strip_prefix("model:") {
+        let field = rest.split(';').next().unwrap_or("");
+        let dynamics = if rest.ends_with(";dyn:agree") {
+            "dyn-agree"
+        } else {
+            "dyn-differs"
+        };
+        return format!("model:{field};{dynamics}");
+    }
+    "dyn".to_string()
+}
+
+/// Rank within MuJoCo's fixed status: a move up is an improvement, a move
+/// down a regression. Golden ok: agree > model with agreeing dynamics >
+/// differing dynamics > ours refused. Golden refused: both refuse > MuJoCo refuses.
+fn rank(class: &str) -> u8 {
+    match class {
+        "agree" => 5,
+        "both-refuse" => 4,
+        c if c.starts_with("model:") && c.ends_with(";dyn-agree") => 3,
+        "mj-refuses" => 1,
+        c if c.starts_with("ours-") => 0,
+        _ => 2,
+    }
+}
+
+/// A row of the expected-verdict file: `doc<TAB>verdict[<TAB>note]`.
+#[derive(Clone)]
+pub struct Row {
+    pub verdict: String,
+    pub note: String,
+}
+
+/// The expected-verdict file: its rows and the agree floor (`# agree_floor N`).
+pub struct Expected {
+    pub floor: usize,
+    pub rows: BTreeMap<String, Row>,
+}
+
+const HEADER: &str = "\
+# Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
+# Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
+";
+
+pub fn read_expected(path: &Path) -> Expected {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut floor = 0;
+    let mut rows = BTreeMap::new();
+    for line in text.lines() {
+        if let Some(n) = line.strip_prefix("# agree_floor ") {
+            floor = n.trim().parse().unwrap_or(0);
+        } else if !line.starts_with('#') && !line.trim().is_empty() {
+            let mut cols = line.split('\t');
+            let doc = cols.next().unwrap_or_default().to_string();
+            let verdict = cols.next().unwrap_or_default().to_string();
+            let note = cols.next().unwrap_or_default().to_string();
+            rows.insert(doc, Row { verdict, note });
+        }
+    }
+    Expected { floor, rows }
+}
+
+fn write_expected(path: &Path, rows: &BTreeMap<String, Row>) {
+    let agree = rows
+        .values()
+        .filter(|r| r.verdict == "agree" && !r.note.starts_with("nondet="))
+        .count();
+    let mut s = format!("{HEADER}# agree_floor {agree}\n");
+    for (doc, r) in rows {
+        if r.note.is_empty() {
+            let _ = writeln!(s, "{doc}\t{}", r.verdict);
+        } else {
+            let _ = writeln!(s, "{doc}\t{}\t{}", r.verdict, r.note);
+        }
+    }
+    std::fs::write(path, s).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+/// The divergence registry's IDs (the first column of `divergences.tsv`).
+pub fn read_divergence_ids(path: &Path) -> BTreeSet<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .skip(1) // the column header
+        .filter_map(|l| l.split('\t').next().map(str::to_string))
+        .collect()
+}
+
+/// A verdict that moved: `(doc, expected, got)`.
+pub type Move = (String, String, String);
+
+#[derive(Default)]
+pub struct Report {
+    pub agree: usize,
+    pub floor: usize,
+    pub improvements: Vec<Move>,
+    pub regressions: Vec<Move>,
+    /// A class change of equal rank.
+    pub shifts: Vec<Move>,
+    /// Only the label changed; reported, never failed on.
+    pub label_shifts: Vec<Move>,
+    /// A `divergence=` doc that agrees: the deliberate difference was lost.
+    pub lost_divergences: Vec<String>,
+    /// A note the gate cannot accept, with the reason.
+    pub bad_notes: Vec<(String, String)>,
+    /// Golden docs with no row.
+    pub new_docs: Vec<String>,
+    /// Rows with no golden doc.
+    pub missing: Vec<String>,
+}
+
+impl Report {
+    /// Whether something fails that blessing cannot record.
+    pub fn blocked(&self) -> bool {
+        !(self.regressions.is_empty()
+            && self.lost_divergences.is_empty()
+            && self.bad_notes.is_empty()
+            && self.missing.is_empty())
+    }
+
+    /// Whether the file already records every verdict and the floor holds.
+    pub fn passes(&self) -> bool {
+        !self.blocked()
+            && self.improvements.is_empty()
+            && self.shifts.is_empty()
+            && self.new_docs.is_empty()
+            && self.agree >= self.floor
+    }
+}
+
+/// Compare every doc's verdict (`got`) with the expected file and, when
+/// `bless`, rewrite the file for improvements, shifts, label shifts and new
+/// docs — never for a regression, a lost divergence or a bad note. An
+/// improved row loses its `fixed_by=` note: the later commit fixed it.
+pub fn ratchet(
+    got: &BTreeMap<String, String>,
+    expected_path: &Path,
+    divergence_ids: &BTreeSet<String>,
+    bless: bool,
+) -> Report {
+    let expected = read_expected(expected_path);
+    let mut report = Report {
+        floor: expected.floor,
+        ..Report::default()
+    };
+    report.missing = expected
+        .rows
+        .keys()
+        .filter(|d| !got.contains_key(*d))
+        .cloned()
+        .collect();
+    let mut rows = expected.rows.clone();
+    for (doc, v) in got {
+        let Some(row) = expected.rows.get(doc) else {
+            report.new_docs.push(doc.clone());
+            rows.insert(
+                doc.clone(),
+                Row {
+                    verdict: v.clone(),
+                    note: String::new(),
+                },
+            );
+            continue;
+        };
+        if row.note.starts_with("nondet=") {
+            continue;
+        }
+        if let Some(id) = row.note.strip_prefix("divergence=") {
+            if !divergence_ids.contains(id) {
+                report.bad_notes.push((
+                    doc.clone(),
+                    format!("divergence ID {id} is not in divergences.tsv"),
+                ));
+            }
+            if v == "agree" {
+                report.lost_divergences.push(doc.clone());
+                continue;
+            }
+        }
+        if v == "agree" {
+            report.agree += 1;
+        }
+        let explained = ["divergence=", "known=", "fixed_by="]
+            .iter()
+            .any(|p| row.note.starts_with(p));
+        if v.starts_with("ours-") && !explained {
+            report.bad_notes.push((
+                doc.clone(),
+                format!("{v} needs a divergence=, known= or fixed_by= note"),
+            ));
+        }
+        if *v == row.verdict {
+            continue;
+        }
+        let moved = (doc.clone(), row.verdict.clone(), v.clone());
+        let (was, now) = (class(&row.verdict), class(v));
+        let note = row.note.clone();
+        if was == now {
+            report.label_shifts.push(moved);
+            rows.insert(
+                doc.clone(),
+                Row {
+                    verdict: v.clone(),
+                    note,
+                },
+            );
+        } else if rank(&now) > rank(&was) {
+            report.improvements.push(moved);
+            let note = if note.starts_with("fixed_by=") {
+                String::new()
+            } else {
+                note
+            };
+            rows.insert(
+                doc.clone(),
+                Row {
+                    verdict: v.clone(),
+                    note,
+                },
+            );
+        } else if rank(&now) < rank(&was) {
+            report.regressions.push(moved);
+        } else {
+            report.shifts.push(moved);
+            rows.insert(
+                doc.clone(),
+                Row {
+                    verdict: v.clone(),
+                    note,
+                },
+            );
+        }
+    }
+    if bless {
+        write_expected(expected_path, &rows);
+    }
+    report
+}

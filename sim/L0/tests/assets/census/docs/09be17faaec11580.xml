@@ -1,0 +1,9 @@
+<mujoco model="rad_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" limited="true" range="-1.57 1.57"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

@@ -1,0 +1,9 @@
+<mujoco>
+      <option gravity="0 0 0" timestep="0.002"/>
+      <worldbody>
+        <body pos="0 0 0">
+          <freejoint/>
+          <geom type="sphere" size="0.1" mass="2.0"/>
+        </body>
+      </worldbody>
+    </mujoco>

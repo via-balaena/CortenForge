@@ -1,0 +1,9 @@
+<mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame childclass="ghost">
+                            <geom type="sphere" size="0.1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

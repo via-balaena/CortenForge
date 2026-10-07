@@ -1,0 +1,8 @@
+<mujoco model="deg_test">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" limited="true" range="-90 90"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

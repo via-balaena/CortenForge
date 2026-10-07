@@ -1,0 +1,17 @@
+<mujoco model="exclude-reversed">
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <geom name="ground" type="plane" size="5 5 0.1"/>
+    <body name="box_a" pos="0 0 0.5">
+      <freejoint name="a_free"/>
+      <geom name="a_geom" type="box" size="0.15 0.15 0.15" mass="1.0"/>
+    </body>
+    <body name="box_b" pos="0 0 0.7">
+      <freejoint name="b_free"/>
+      <geom name="b_geom" type="box" size="0.15 0.15 0.15" mass="1.0"/>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="box_b" body2="box_a"/>
+  </contact>
+</mujoco>

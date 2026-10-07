@@ -1,0 +1,8 @@
+<mujoco model="cable_test">
+            <worldbody>
+                <composite type="cable" count="5 1 1" curve="s 0 0" size="1" offset="0 0 1">
+                    <joint kind="main" damping="0.01"/>
+                    <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
+                </composite>
+            </worldbody>
+        </mujoco>

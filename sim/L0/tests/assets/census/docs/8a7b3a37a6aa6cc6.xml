@@ -1,0 +1,6 @@
+<mujoco>
+                <asset>
+                    <hfield name="bad" size="1 1 1 0"/>
+                </asset>
+                <worldbody/>
+            </mujoco>

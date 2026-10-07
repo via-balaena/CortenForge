@@ -1,0 +1,32 @@
+<mujoco model="conical_pendulum">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4">
+        <flag energy="enable"/>
+    </option>
+
+    <default>
+        <geom contype="0" conaffinity="0"/>
+    </default>
+
+    <worldbody>
+        <!-- Support frame -->
+        <geom name="beam" type="capsule" size="0.022"
+              fromto="-0.3 0 0  0.3 0 0" rgba="0.40 0.40 0.43 1"/>
+        <geom name="post_l" type="capsule" size="0.022"
+              fromto="-0.3 0 0  -0.3 0 0.35" rgba="0.40 0.40 0.43 1"/>
+        <geom name="post_r" type="capsule" size="0.022"
+              fromto="0.3 0 0  0.3 0 0.35" rgba="0.40 0.40 0.43 1"/>
+
+        <!-- Pendulum: unlimited ball joint, zero damping -->
+        <body name="pendulum" pos="0 0 0">
+            <joint name="ball" type="ball" damping="0"/>
+            <inertial pos="0 0 -0.8" mass="1.0" diaginertia="0.001 0.001 0.001"/>
+            <geom name="socket" type="sphere" size="0.035"
+                  pos="0 0 0" rgba="0.35 0.33 0.32 1"/>
+            <geom name="rod" type="capsule" size="0.018"
+                  fromto="0 0 0  0 0 -0.8" rgba="0.48 0.48 0.50 1"/>
+            <geom name="tip" type="sphere" size="0.06"
+                  pos="0 0 -0.8" rgba="0.2 0.7 0.4 1"/>
+        </body>
+    </worldbody>
+</mujoco>

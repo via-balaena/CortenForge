@@ -1,0 +1,19 @@
+<mujoco>
+          <compiler angle="radian"/>
+          <default>
+            <default class="deadband">
+              <tendon springlength="0.1 0.9"/>
+            </default>
+          </default>
+          <worldbody>
+            <body name="b">
+              <joint name="j" type="hinge"/>
+              <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t" class="deadband">
+              <joint joint="j" coef="1.0"/>
+            </fixed>
+          </tendon>
+        </mujoco>

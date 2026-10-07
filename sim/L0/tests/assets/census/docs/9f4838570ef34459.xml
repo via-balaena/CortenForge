@@ -1,0 +1,15 @@
+<mujoco model="weld_mocap">
+            <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+            <worldbody>
+                <body name="target" mocap="true" pos="0 0 1">
+                    <geom type="sphere" size="0.05" mass="0.1"/>
+                </body>
+                <body name="follower" pos="0 0 1">
+                    <freejoint name="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <weld body1="follower" body2="target" solref="0.02 1.0"/>
+            </equality>
+        </mujoco>

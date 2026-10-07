@@ -1,0 +1,4 @@
+<mujoco>
+        <worldbody><body>
+            <geom type="sphere" size="0.1" fluidshape="box"/>
+        </body></worldbody></mujoco>

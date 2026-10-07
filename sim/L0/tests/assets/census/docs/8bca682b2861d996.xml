@@ -1,0 +1,17 @@
+<mujoco>
+                <default>
+                    <default class="A">
+                        <geom contype="7"/>
+                    </default>
+                    <default class="B">
+                        <geom contype="3"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="outer" childclass="A">
+                        <body name="inner" childclass="B">
+                            <geom type="sphere" size="0.1"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>

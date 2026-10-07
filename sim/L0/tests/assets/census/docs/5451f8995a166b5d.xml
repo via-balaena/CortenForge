@@ -1,0 +1,6 @@
+<mujoco>
+                <worldbody>
+                    <include file="shared.xml"/>
+                    <include file="shared.xml"/>
+                </worldbody>
+            </mujoco>

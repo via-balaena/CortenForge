@@ -1,0 +1,16 @@
+<mujoco model="override_pair_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <contact>
+            <pair geom1="floor" geom2="sphere"
+                  condim="3" friction="0.3 0.3 0.001 0.0001 0.0001"
+                  solref="0.01 0.5" solimp="0.8 0.85 0.002 0.3 1.5"
+                  margin="0.05" gap="0.01"/>
+        </contact>
+    </mujoco>

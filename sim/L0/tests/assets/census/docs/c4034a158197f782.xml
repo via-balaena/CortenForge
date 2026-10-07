@@ -1,0 +1,14 @@
+<mujoco model="pgs_combined">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="PGS" iterations="50"/>
+            <worldbody>
+                <body name="arm" pos="0 0 0.5">
+                    <joint type="hinge" axis="0 1 0" frictionloss="0.5"/>
+                    <geom type="capsule" size="0.05 0.3" mass="1.0" friction="0.8 0.003 0.0001"/>
+                    <body name="ball" pos="0 0 -0.4">
+                        <joint type="hinge" axis="0 1 0" frictionloss="0.3"/>
+                        <geom type="sphere" size="0.08" mass="0.5" friction="0.8 0.003 0.0001"/>
+                    </body>
+                </body>
+                <geom type="plane" size="5 5 0.1" friction="0.8 0.003 0.0001"/>
+            </worldbody>
+        </mujoco>

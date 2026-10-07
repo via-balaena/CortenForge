@@ -1,0 +1,9 @@
+<mujoco>
+                <default>
+                    <default class="empty"><geom contype="5"/></default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="empty" pos="0 0 1">
+                    </body>
+                </worldbody>
+            </mujoco>

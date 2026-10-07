@@ -1,0 +1,13 @@
+<mujoco model="locked-hinge">
+  <compiler angle="degree"/>
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <body name="pivot" pos="0 0 1.5">
+      <body name="rod" pos="0 0 0">
+        <joint name="locked" type="hinge" axis="0 1 0"
+               limited="true" range="0 0" ref="0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.02" mass="1.0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

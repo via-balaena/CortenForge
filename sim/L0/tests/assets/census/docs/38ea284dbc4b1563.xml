@@ -1,0 +1,21 @@
+<mujoco model="dual-AB">
+          <option gravity="0 0 -9.81" timestep="0.002" integrator="implicitfast"/>
+          <worldbody>
+            <body name="anchor_A" pos="0 0 1">
+              <composite type="cable" prefix="A" count="6 1 1"
+                         initial="none" curve="l 0 0" size="0.8">
+                <joint kind="main" damping="0.05"/>
+                <geom type="capsule" size="0.01" rgba="0.8 0.2 0.1 1"
+                      density="500"/>
+              </composite>
+            </body>
+            <body name="anchor_B" pos="2 0 1">
+              <composite type="cable" prefix="B" count="8 1 1"
+                         initial="none" curve="l 0 0" size="0.8">
+                <joint kind="main" damping="0.05"/>
+                <geom type="capsule" size="0.01" rgba="0.2 0.8 0.1 1"
+                      density="500"/>
+              </composite>
+            </body>
+          </worldbody>
+        </mujoco>

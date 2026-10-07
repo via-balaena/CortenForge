@@ -1,0 +1,5 @@
+<mujoco>
+  <worldbody><body>
+    <geom type="capsule" size="1 2" density="1000" shellinertia="true"/>
+  </body></worldbody>
+</mujoco>

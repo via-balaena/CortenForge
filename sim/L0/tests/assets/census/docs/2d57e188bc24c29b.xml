@@ -1,0 +1,12 @@
+<mujoco model="dt28_hinge">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <worldbody>
+            <body name="b1" pos="0 0 1">
+                <joint name="J1" type="hinge" axis="0 1 0"/>
+                <geom type="capsule" size="0.05 0.3" mass="1.0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <fixed name="T1"><joint joint="J1" coef="2.5"/></fixed>
+        </tendon>
+    </mujoco>

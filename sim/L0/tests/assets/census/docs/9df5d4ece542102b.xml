@@ -1,0 +1,9 @@
+<mujoco model="zero_constraints">
+            <option gravity="0 0 -9.81" solver="Newton"/>
+            <worldbody>
+                <body pos="0 0 10">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

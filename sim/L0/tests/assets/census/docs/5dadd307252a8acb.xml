@@ -1,0 +1,18 @@
+<mujoco model="zero_elem">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody/>
+            <deformable>
+                <flex name="f1" dim="2" density="1000" radius="0.01">
+                    <contact contype="1" conaffinity="1" margin="0.01"/>
+                    <elasticity young="50"/>
+                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
+                    <element data="0 1 2  1 3 2"/>
+                </flex>
+                <flex name="f2" dim="2" density="1000" radius="0.01">
+                    <contact contype="1" conaffinity="1" margin="0.01"/>
+                    <elasticity young="50"/>
+                    <vertex pos="0.5 0.5 0  1.5 0.5 0  0.5 1.5 0  1.5 1.5 0"/>
+                    <element data="0 1 2  1 3 2"/>
+                </flex>
+            </deformable>
+        </mujoco>

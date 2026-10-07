@@ -1,0 +1,8 @@
+<mujoco>
+            <worldbody>
+                <body name="b1">
+                    <joint name="slide1" type="slide" axis="1 0 0"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>

@@ -1,0 +1,27 @@
+<mujoco model="spinning-toss">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4">
+    <flag energy="enable"/>
+  </option>
+
+  <worldbody>
+    <body name="brick" pos="0 0 0.5">
+      <freejoint name="free"/>
+      <inertial pos="0 0 0" mass="1.5" diaginertia="0.06 0.03 0.015"/>
+      <geom name="body" type="box" size="0.18 0.12 0.07"
+            contype="0" conaffinity="0" rgba="0.40 0.55 0.75 1"/>
+      <geom name="marker" type="sphere" size="0.025"
+            pos="0.18 0.12 0.07" contype="0" conaffinity="0"
+            rgba="0.95 0.25 0.15 1"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <subtreeangmom name="angmom" body="brick"/>
+  </sensor>
+
+  <keyframe>
+    <key name="toss" qpos="0 0 0.5 1 0 0 0"
+         qvel="2 0 4 3 1 0.5"/>
+  </keyframe>
+</mujoco>

@@ -1,0 +1,3 @@
+<mujoco model="test">
+                <worldbody/>
+            </mujoco>

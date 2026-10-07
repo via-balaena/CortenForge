@@ -1,0 +1,13 @@
+<mujoco model="cap_box_face_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="box" size="1.0 1.0 0.5"/>
+                </body>
+                <body name="cap" pos="0 0 0.65">
+                    <joint type="free"/>
+                    <geom type="capsule" size="0.2 0.4" euler="0 90 0"/>
+                </body>
+            </worldbody>
+        </mujoco>

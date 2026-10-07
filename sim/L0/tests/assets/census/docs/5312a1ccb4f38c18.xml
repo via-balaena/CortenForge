@@ -1,0 +1,23 @@
+<mujoco model="static-hinge">
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0" damping="50"/>
+      <geom type="capsule" size="0.02" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+      <site name="tip" pos="0.5 0 0"/>
+      <site name="base" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="motor" joint="hinge" kp="5000"/>
+  </actuator>
+  <sensor>
+    <framelinvel name="tip_linvel" objtype="site" objname="tip"/>
+    <frameangvel name="tip_angvel" objtype="site" objname="tip"/>
+    <framelinacc name="tip_linacc" objtype="site" objname="tip"/>
+    <frameangacc name="tip_angacc" objtype="site" objname="tip"/>
+    <force name="base_force" site="base"/>
+    <torque name="base_torque" site="base"/>
+  </sensor>
+</mujoco>

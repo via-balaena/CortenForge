@@ -1,0 +1,10 @@
+<mujoco model="determinism">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0.1 0.2 1.0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.5" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>

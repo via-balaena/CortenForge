@@ -1,0 +1,18 @@
+<mujoco model="moment-arm">
+  <option gravity="0 0 0" timestep="0.002"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <site name="s_world" pos="0 0 1.05"/>
+    <body name="arm" pos="0 0 1">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.03" fromto="0 0 0 0.3 0 0" mass="0.5"/>
+      <site name="s_arm" pos="0.25 0 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t1">
+      <site site="s_world"/>
+      <site site="s_arm"/>
+    </spatial>
+  </tendon>
+</mujoco>

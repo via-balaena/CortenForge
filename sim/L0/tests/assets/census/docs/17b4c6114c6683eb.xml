@@ -1,0 +1,13 @@
+<mujoco model="sphere_capsule_side">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cap" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+                <body name="sph" pos="0.45 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>

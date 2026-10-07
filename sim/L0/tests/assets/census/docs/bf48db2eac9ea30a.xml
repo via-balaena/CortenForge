@@ -1,0 +1,6 @@
+<mujoco model="dup">
+                <worldbody>
+                    <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
+                    <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
+                </worldbody>
+            </mujoco>

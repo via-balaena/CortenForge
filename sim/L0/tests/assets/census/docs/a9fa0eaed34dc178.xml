@@ -1,0 +1,13 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <site name="ft_site" pos="0 0 0"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <force name="force1" site="ft_site"/>
+                    <torque name="torque1" site="ft_site"/>
+                    <touch name="contact1" site="ft_site"/>
+                </sensor>
+            </mujoco>

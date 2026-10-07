@@ -1,0 +1,21 @@
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_cyl_z" type="cylinder" size="0.15 0.5"/>
+      <site name="s1_z" pos="0.3 0.05 0.3"/>
+      <site name="side_z" pos="0.05 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 0 1"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2_z" pos="0.3 -0.15 -0.1"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_z_interp">
+      <site site="s1_z"/>
+      <geom geom="wrap_cyl_z" sidesite="side_z"/>
+      <site site="s2_z"/>
+    </spatial>
+  </tendon>
+</mujoco>

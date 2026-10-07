@@ -1,0 +1,10 @@
+<mujoco>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                    <site pos="0 0 0"/>
+                </body>
+            </worldbody>
+            </mujoco>

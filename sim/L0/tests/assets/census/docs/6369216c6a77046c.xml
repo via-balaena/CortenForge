@@ -1,0 +1,32 @@
+<mujoco model="robot_arm">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="base" pos="0 0 0.1">
+                    <geom type="cylinder" size="0.1 0.1" mass="5"/>
+                    <body name="link1" pos="0 0 0.1">
+                        <joint type="hinge" axis="0 0 1"/>
+                        <geom type="capsule" size="0.04 0.15" pos="0 0 0.15" mass="2"/>
+                        <body name="link2" pos="0 0 0.3">
+                            <joint type="hinge" axis="0 1 0"/>
+                            <geom type="capsule" size="0.03 0.2" pos="0 0 0.2" mass="1.5"/>
+                            <body name="link3" pos="0 0 0.4">
+                                <joint type="hinge" axis="0 1 0"/>
+                                <geom type="capsule" size="0.025 0.15" pos="0 0 0.15" mass="1"/>
+                                <body name="link4" pos="0 0 0.3">
+                                    <joint type="hinge" axis="0 0 1"/>
+                                    <geom type="capsule" size="0.02 0.1" pos="0 0 0.1" mass="0.5"/>
+                                    <body name="link5" pos="0 0 0.2">
+                                        <joint type="hinge" axis="0 1 0"/>
+                                        <geom type="capsule" size="0.015 0.05" pos="0 0 0.05" mass="0.3"/>
+                                        <body name="end_effector" pos="0 0 0.1">
+                                            <joint type="hinge" axis="0 0 1"/>
+                                            <geom type="sphere" size="0.02" mass="0.1"/>
+                                        </body>
+                                    </body>
+                                </body>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

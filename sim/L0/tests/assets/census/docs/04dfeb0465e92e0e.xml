@@ -1,0 +1,13 @@
+<mujoco>
+                <compiler angle="radian" discardvisual="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="collision_geom" type="sphere" size="0.1" mass="1"/>
+                        <geom name="visual_ref" type="sphere" size="0.2" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <framepos name="vis_sensor" objname="visual_ref"/>
+                </sensor>
+            </mujoco>

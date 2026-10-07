@@ -1,0 +1,13 @@
+<mujoco model="flag_parse">
+            <option>
+                <flag gravity="disable" contact="disable" actuation="disable"
+                      sensor="disable" clampctrl="disable" warmstart="disable"
+                      constraint="disable" equality="disable" limit="disable"
+                      spring="disable" damper="disable" frictionloss="disable"
+                      filterparent="disable" eulerdamp="disable"
+                      refsafe="disable" autoreset="disable"/>
+            </option>
+            <worldbody>
+                <body><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>

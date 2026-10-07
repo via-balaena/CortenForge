@@ -1,0 +1,20 @@
+<mujoco model="t29">
+            <option gravity="0 0 -10"/>
+            <worldbody>
+                <body name="b_ref" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+                <body name="b1" pos="0 0 2">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framelinacc site="s1" reftype="xbody" refname="b_ref"/>
+                <framelinacc site="s1"/>
+                <frameangacc site="s1" reftype="xbody" refname="b_ref"/>
+                <frameangacc site="s1"/>
+            </sensor>
+        </mujoco>

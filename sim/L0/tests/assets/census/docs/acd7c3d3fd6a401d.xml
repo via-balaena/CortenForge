@@ -1,0 +1,21 @@
+<mujoco model="mjcf_double_pendulum">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4"/>
+
+    <worldbody>
+        <!-- Pivot at Z=2, links hang down along -Z -->
+        <body name="upper" pos="0 0 2">
+            <joint name="joint1" type="hinge" axis="0 1 0"
+                   damping="1.2"/>
+            <geom name="upper_geom" type="capsule" fromto="0 0 0 0 0 -0.8"
+                  size="0.04" mass="1.0" rgba="0.3 0.5 0.85 1"/>
+
+            <body name="lower" pos="0 0 -0.8">
+                <joint name="joint2" type="hinge" axis="0 1 0"
+                       damping="0.3"/>
+                <geom name="lower_geom" type="capsule" fromto="0 0 0 0 0 -0.6"
+                      size="0.035" mass="0.5" rgba="0.85 0.25 0.2 1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>

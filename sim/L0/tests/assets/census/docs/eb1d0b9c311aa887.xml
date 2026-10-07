@@ -1,0 +1,12 @@
+<mujoco model="actuated">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="motor" pos="0 0 0">
+                    <joint name="motor_joint" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.5 0.1 0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor name="motor1" joint="motor_joint" gear="10"/>
+            </actuator>
+        </mujoco>

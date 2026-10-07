@@ -1,0 +1,9 @@
+<mujoco model="autolimits_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" range="-1.0 1.0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>

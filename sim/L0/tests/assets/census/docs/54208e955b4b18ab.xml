@@ -1,0 +1,11 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <jointpos name="filtered" joint="j1" cutoff="50"/>
+                </sensor>
+            </mujoco>

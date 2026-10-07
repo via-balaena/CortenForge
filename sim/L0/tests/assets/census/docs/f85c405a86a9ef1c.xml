@@ -1,0 +1,10 @@
+<mujoco model="m">
+                <worldbody>
+                    <body name="a" pos="0 0 1">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect name="c1" body1="a" anchor="0.2 0 0"/>
+                </equality>
+            </mujoco>

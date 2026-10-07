@@ -1,0 +1,38 @@
+<mujoco model="joint-coupling-stress-test">
+          <compiler angle="radian"/>
+          <option gravity="0 0 -9.81" timestep="0.001">
+            <flag energy="enable"/>
+          </option>
+          <worldbody>
+            <!-- Mimic pair -->
+            <body name="arm_a1" pos="-0.8 0 1.5">
+              <joint name="j_a1" type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom name="arm_a1" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.5"/>
+            </body>
+            <body name="arm_a2" pos="-0.4 0 1.5">
+              <joint name="j_a2" type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom name="arm_a2" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.5"/>
+            </body>
+
+            <!-- Gear pair — motor drives j_b1, j_b2 follows at 2x -->
+            <body name="arm_b1" pos="0.4 0 1.5">
+              <joint name="j_b1" type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom name="arm_b1" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.5"/>
+            </body>
+            <body name="arm_b2" pos="0.8 0 1.5">
+              <joint name="j_b2" type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom name="arm_b2" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.5"/>
+            </body>
+          </worldbody>
+
+          <actuator>
+            <motor name="drive" joint="j_b1" gear="1"/>
+          </actuator>
+
+          <equality>
+            <!-- Mimic: j_a1 = j_a2 (1:1) -->
+            <joint joint1="j_a1" joint2="j_a2" polycoef="0 1" solref="0.05 1.0"/>
+            <!-- Gear: j_b2 = 2*j_b1 (joint1=j_b2, joint2=j_b1, so j_b2 = poly(j_b1) = 2*j_b1) -->
+            <joint joint1="j_b2" joint2="j_b1" polycoef="0 2" solref="0.05 1.0"/>
+          </equality>
+        </mujoco>

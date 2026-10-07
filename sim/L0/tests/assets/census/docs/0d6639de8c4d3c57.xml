@@ -1,0 +1,11 @@
+<mujoco model="spring_direction">
+            <compiler angle="radian"/>
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="pendulum" pos="0 0 0">
+                    <joint name="hinge" type="hinge" axis="0 1 0"
+                           stiffness="100" damping="50" springref="0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

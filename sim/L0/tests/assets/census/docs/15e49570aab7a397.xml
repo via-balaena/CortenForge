@@ -1,0 +1,22 @@
+<mujoco model="integrator-implicit">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.005" integrator="implicit">
+    <flag energy="enable" contact="disable"/>
+  </option>
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+  <worldbody>
+    <body name="arm" pos="0 0 0">
+      <joint name="hinge" type="hinge" axis="0 1 0" damping="0"/>
+      <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom name="rod" type="capsule" size="0.02"
+            fromto="0 0 0  0 0 -0.5"/>
+      <geom name="tip" type="sphere" size="0.05" pos="0 0 -0.5"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <jointpos name="jpos" joint="hinge"/>
+    <jointvel name="jvel" joint="hinge"/>
+  </sensor>
+</mujoco>

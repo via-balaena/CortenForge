@@ -1,0 +1,20 @@
+<mujoco>
+            <default>
+                <default class="A">
+                    <geom user="1 2"/>
+                </default>
+                <default class="B">
+                    <geom user="10 20 30"/>
+                </default>
+            </default>
+            <worldbody>
+                <body pos="0 0 1" childclass="A">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1"/>
+                    <body pos="0 0 1" childclass="B">
+                        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                        <geom name="g2" type="sphere" size="0.1"/>
+                    </body>
+                </body>
+            </worldbody>
+            </mujoco>

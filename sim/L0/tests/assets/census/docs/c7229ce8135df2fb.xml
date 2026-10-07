@@ -1,0 +1,10 @@
+<mujoco model="low_stiffness_implicit">
+            <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 0"/>
+            <worldbody>
+                <body name="mass" pos="0 0 0">
+                    <joint name="slide" type="slide" axis="1 0 0"
+                           stiffness="10" damping="1" springref="0"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>

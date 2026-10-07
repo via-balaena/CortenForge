@@ -1,0 +1,31 @@
+<mujoco model="integrator">
+  <compiler angle="radian" autolimits="true"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <body name="arm" pos="0 0 0">
+      <joint name="hinge" type="hinge" axis="0 1 0" armature="0.01"/>
+      <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom name="rod" type="capsule" size="0.02"
+            fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
+      <geom name="tip" type="sphere" size="0.05"
+            pos="0 0 -0.5" rgba="0.7 0.3 0.7 1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <general name="int_actuator" joint="hinge"
+             dyntype="integrator" gainprm="50"
+             biastype="affine" biasprm="0 -50 -5"
+             actlimited="true" actrange="-1.57 1.57"/>
+  </actuator>
+
+  <sensor>
+    <actuatorfrc name="act_force" actuator="int_actuator"/>
+    <jointpos name="jpos" joint="hinge"/>
+  </sensor>
+</mujoco>

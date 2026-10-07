@@ -1,0 +1,10 @@
+<mujoco>
+                <compiler angle="degree"/>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0" euler="0 0 90">
+                            <geom name="fg" type="sphere" size="0.1" pos="1 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

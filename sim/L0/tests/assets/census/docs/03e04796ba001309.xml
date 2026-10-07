@@ -1,0 +1,49 @@
+<mujoco model="pulley">
+  <option gravity="0 0 0" timestep="0.002"/>
+
+  <worldbody>
+    <!-- Top mass (blue, load) — vertical rail, spring-centered -->
+    <body name="top" pos="0 0 1.1">
+      <joint name="j_top" type="slide" axis="0 0 1" damping="1.0"
+             stiffness="8" springref="0"/>
+      <geom name="top_geom" type="box" size="0.05 0.05 0.04"
+            rgba="0.3 0.5 0.85 1" mass="1.0"/>
+      <site name="s1" pos="0 0 -0.04" size="0.012" rgba="1 1 0 1"/>
+    </body>
+
+    <!-- Pulley anchor (yellow, fixed, between the two masses) -->
+    <body name="anchor" pos="0 0 0.7">
+      <geom name="anchor_geom" type="sphere" size="0.035"
+            rgba="0.9 0.85 0.2 1" contype="0" conaffinity="0"/>
+      <site name="s2" pos="0 0 0.035" size="0.012" rgba="1 1 0 1"/>
+      <site name="s3" pos="0 0 -0.035" size="0.012" rgba="1 1 0 1"/>
+    </body>
+
+    <!-- Bottom mass (red, effort/pull side) — vertical rail, spring-centered -->
+    <body name="bottom" pos="0 0 0.3">
+      <joint name="j_bot" type="slide" axis="0 0 1" damping="1.0"
+             stiffness="8" springref="0"/>
+      <geom name="bot_geom" type="box" size="0.05 0.05 0.04"
+            rgba="0.85 0.25 0.2 1" mass="1.0"/>
+      <site name="s4" pos="0 0 0.04" size="0.012" rgba="1 1 0 1"/>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <spatial name="pulley_tendon" stiffness="500" damping="10">
+      <site site="s1"/>
+      <site site="s2"/>
+      <pulley divisor="2"/>
+      <site site="s3"/>
+      <site site="s4"/>
+    </spatial>
+  </tendon>
+
+  <actuator>
+    <motor name="drive" joint="j_bot" gear="1"/>
+  </actuator>
+
+  <sensor>
+    <tendonpos name="ten_pos" tendon="pulley_tendon"/>
+  </sensor>
+</mujoco>

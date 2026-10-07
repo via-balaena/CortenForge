@@ -1,0 +1,9 @@
+<mujoco model="multi_joint">
+                <worldbody>
+                    <body name="link" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="1 0 0"/>
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

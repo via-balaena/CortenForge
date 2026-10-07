@@ -1,0 +1,44 @@
+{
+ "act": "0",
+ "ctrl": "lo + 0.625 (hi - lo) if ctrllimited else 0",
+ "dumps": [
+  0,
+  1,
+  100
+ ],
+ "excitations": {
+  "e1": "qvel_i = 0.1 (1 + i mod 3)",
+  "e2": "qvel_i = 0.1 (1 + i mod 5) (-1)^i"
+ },
+ "nstep": 100,
+ "numpy": "2.1.3",
+ "oracle": {
+  "commit": "881544c0c58dc2e95fbd132a5ec90b99e012b6f7",
+  "flags": "-ffp-contract=off",
+  "mujoco": "3.5.0",
+  "platform": "Darwin-arm64"
+ },
+ "python": "3.12.12",
+ "qpos": "qpos0",
+ "traj_steps": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  20,
+  30,
+  40,
+  50,
+  60,
+  70,
+  80,
+  90,
+  100
+ ]
+}

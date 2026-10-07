@@ -1,0 +1,10 @@
+<mujoco model="box_plane_tilted">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="box" pos="0 0 0.6" euler="45 0 0">
+                    <joint type="free"/>
+                    <geom type="box" size="0.3 0.3 0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>

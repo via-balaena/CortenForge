@@ -1,0 +1,22 @@
+<mujoco model="mixed">
+            <default>
+                <joint damping="0.2" stiffness="10.0"/>
+                <default class="stiff">
+                    <joint damping="5.0" stiffness="100.0"/>
+                </default>
+            </default>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j_root" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0 0 0.5">
+                        <joint name="j_stiff" type="hinge" axis="0 1 0" class="stiff"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <body name="b3" pos="0 0 0.5">
+                            <joint name="j_override" type="hinge" axis="0 1 0" class="stiff" damping="99.0"/>
+                            <geom type="sphere" size="0.1" mass="1.0"/>
+                        </body>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

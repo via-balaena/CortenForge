@@ -1,0 +1,12 @@
+<mujoco model="chain">
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                        <body name="link2" pos="0 0 -0.5">
+                            <joint name="j2" type="hinge" axis="0 1 0"/>
+                            <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>

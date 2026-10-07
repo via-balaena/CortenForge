@@ -1,0 +1,14 @@
+<mujoco model="t21">
+            <worldbody>
+                <body name="b" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor name="m1" joint="j1" gear="1"/>
+            </actuator>
+            <sensor>
+                <jointactuatorfrc name="jaf" joint="j1" cutoff="5"/>
+            </sensor>
+        </mujoco>

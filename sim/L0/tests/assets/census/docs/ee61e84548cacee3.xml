@@ -1,0 +1,10 @@
+<mujoco model="flex_roundtrip">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="test_flex" dim="2" density="300">
+                <elasticity young="5e4" thickness="0.002"/>
+                <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
+                <element data="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>

@@ -1,0 +1,12 @@
+<mujoco>
+            <worldbody>
+                <body name="arm">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body name="forearm">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

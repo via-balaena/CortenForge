@@ -1,0 +1,18 @@
+<mujoco model="sleep-settle">
+  <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.05">
+    <flag sleep="enable"/>
+  </option>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+    <body name="box_0" pos="-2 0 1.0"><freejoint/>
+      <geom name="g0" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="box_1" pos="-1 0 1.5"><freejoint/>
+      <geom name="g1" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="box_2" pos="0 0 2.0"><freejoint/>
+      <geom name="g2" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="box_3" pos="1 0 2.5"><freejoint/>
+      <geom name="g3" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="box_4" pos="2 0 3.0"><freejoint/>
+      <geom name="g4" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,20 @@
+<mujoco model="elastic-bounce">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.0005" integrator="RK4">
+    <flag energy="enable"/>
+  </option>
+
+  <default>
+    <geom solref="-10000 -0.99" solimp="0.99 0.99 0.001 0.5 2"/>
+  </default>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="2 2 0.01" rgba="0.3 0.3 0.3 1"/>
+    <body name="ball" pos="0 0 0.55">
+      <freejoint name="free"/>
+      <inertial pos="0 0 0" mass="1.0" diaginertia="0.001 0.001 0.001"/>
+      <geom name="sphere" type="sphere" size="0.05" condim="1"
+            rgba="0.2 0.6 0.9 1"/>
+    </body>
+  </worldbody>
+</mujoco>

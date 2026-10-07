@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <default>
+                    <joint damping="0.5" stiffness="10.0" armature="0.01"/>
+                </default>
+                <worldbody/>
+            </mujoco>

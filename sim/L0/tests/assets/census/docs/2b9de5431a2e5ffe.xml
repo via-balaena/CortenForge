@@ -1,0 +1,8 @@
+<mujoco>
+                <compiler angle="radian" balanceinertia="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.5"/>
+                    </body>
+                </worldbody>
+            </mujoco>

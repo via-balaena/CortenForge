@@ -1,0 +1,30 @@
+<mujoco model="coupled_pendulums">
+    <compiler angle="radian" inertiafromgeom="false"/>
+    <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+
+    <default>
+        <geom contype="0" conaffinity="0"/>
+    </default>
+
+    <worldbody>
+        <body name="pend1" pos="-0.75 0 2.0">
+            <joint name="j1" type="hinge" axis="0 1 0" damping="0.02"/>
+            <inertial pos="0 0 -0.6" mass="1.0"
+                      diaginertia="0.001 0.001 0.001"/>
+            <geom name="rod1" type="capsule" fromto="0 0 0 0 0 -0.6"
+                  size="0.015" rgba="0.3 0.5 0.85 0"/>
+            <geom name="bob1" type="sphere" pos="0 0 -0.6"
+                  size="0.05" rgba="0.3 0.5 0.85 0"/>
+        </body>
+
+        <body name="pend2" pos="0.75 0 2.0">
+            <joint name="j2" type="hinge" axis="0 1 0" damping="0.02"/>
+            <inertial pos="0 0 -0.8" mass="1.0"
+                      diaginertia="0.001 0.001 0.001"/>
+            <geom name="rod2" type="capsule" fromto="0 0 0 0 0 -0.8"
+                  size="0.015" rgba="0.85 0.25 0.2 0"/>
+            <geom name="bob2" type="sphere" pos="0 0 -0.8"
+                  size="0.05" rgba="0.85 0.25 0.2 0"/>
+        </body>
+    </worldbody>
+</mujoco>

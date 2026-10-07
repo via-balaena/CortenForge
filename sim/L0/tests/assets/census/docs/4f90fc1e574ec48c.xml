@@ -1,0 +1,5 @@
+<mujoco>
+                <worldbody>
+                    <include file="bodies.xml"/>
+                </worldbody>
+            </mujoco>

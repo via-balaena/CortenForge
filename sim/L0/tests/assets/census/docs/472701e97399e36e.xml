@@ -1,0 +1,21 @@
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_sphere" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <site name="side_origin" pos="0 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_origin">
+      <site site="s1"/>
+      <geom geom="wrap_sphere" sidesite="side_origin"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>

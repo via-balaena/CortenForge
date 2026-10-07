@@ -1,0 +1,12 @@
+<mujoco model="connect_world">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="pendulum" pos="0 0 1">
+                    <freejoint name="free"/>
+                    <geom type="sphere" size="0.1" pos="0 0 -0.5" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="pendulum" anchor="0 0 0"/>
+            </equality>
+        </mujoco>

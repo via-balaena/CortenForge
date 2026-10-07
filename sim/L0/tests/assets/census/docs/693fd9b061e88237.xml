@@ -1,0 +1,9 @@
+<mujoco>
+                <compiler angle="radian" eulerseq="ZYX"/>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="0.3 0.2 0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

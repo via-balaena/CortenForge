@@ -1,0 +1,9 @@
+<mujoco>
+          <compiler exactmeshinertia="true"/>
+          <worldbody>
+            <body>
+              <inertial mass="1" pos="0 0 0" diaginertia="1 1 1"/>
+              <geom type="sphere" size="0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>

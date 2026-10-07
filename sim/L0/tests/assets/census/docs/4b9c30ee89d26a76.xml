@@ -1,0 +1,9 @@
+<mujoco model="free_body">
+            <option timestep="0.002" integrator="implicitspringdamper" gravity="0 0 0"/>
+            <worldbody>
+                <body name="floater" pos="0 0 1">
+                    <joint name="free" type="free" damping="5"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>

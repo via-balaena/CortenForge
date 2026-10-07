@@ -1,0 +1,16 @@
+<mujoco model="t34">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                    <site name="s_ref" pos="0.1 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="site" refname="s_ref"/>
+                <framepos site="s1" reftype="body" refname="b1"/>
+                <framepos site="s1" reftype="xbody" refname="b1"/>
+                <framepos site="s1" reftype="geom" refname="g1"/>
+            </sensor>
+        </mujoco>

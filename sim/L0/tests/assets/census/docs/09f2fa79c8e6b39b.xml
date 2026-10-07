@@ -1,0 +1,12 @@
+<mujoco>
+            <worldbody>
+                <body name="b1" pos="0 0 1" user="1 2 3">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+                <body name="b2" pos="0 0 2" user="4 5">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>

@@ -1,0 +1,11 @@
+<mujoco model="invalid_joint">
+            <worldbody>
+                <body name="body1" pos="0 0 1">
+                    <joint name="real_joint" type="hinge"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <equality>
+                <joint joint1="fake_joint"/>
+            </equality>
+        </mujoco>

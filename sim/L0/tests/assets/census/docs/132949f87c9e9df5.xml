@@ -1,0 +1,8 @@
+<mujoco>
+            <worldbody>
+                <body name="b1">
+                    <joint name="ball1" type="ball"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>

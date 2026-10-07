@@ -1,0 +1,11 @@
+<mujoco model="or-rule">
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <geom name="ground" type="plane" size="5 5 0.1"/>
+    <body name="ball" pos="0 0 1">
+      <freejoint name="ball_free"/>
+      <geom name="ball_geom" type="sphere" size="0.1" mass="1.0"
+            contype="0" conaffinity="1"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,28 @@
+<mujoco model="margin-gap">
+          <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"
+                  iterations="50" tolerance="1e-10"/>
+
+          <worldbody>
+            <geom name="ground" type="plane" size="5 5 0.01"/>
+
+            <!-- Zero margin: rests at surface -->
+            <body name="zero" pos="-0.2 0 0.06">
+              <freejoint/>
+              <geom name="g_zero" type="sphere" size="0.05" mass="0.5"/>
+            </body>
+
+            <!-- margin=0.02: floats ~20mm above surface -->
+            <body name="mid" pos="0 0 0.08">
+              <freejoint/>
+              <geom name="g_mid" type="sphere" size="0.05" mass="0.5"
+                    margin="0.02"/>
+            </body>
+
+            <!-- margin=0.05: floats ~50mm above surface -->
+            <body name="high" pos="0.2 0 0.11">
+              <freejoint/>
+              <geom name="g_high" type="sphere" size="0.05" mass="0.5"
+                    margin="0.05"/>
+            </body>
+          </worldbody>
+        </mujoco>

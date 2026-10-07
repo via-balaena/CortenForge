@@ -1,0 +1,16 @@
+<mujoco model="elliptic_contact">
+  <option timestep="1e-5" cone="elliptic"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="2 2 0.1" pos="0 0 0"/>
+    <body name="ball" pos="0 0 0.033">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.057" diaginertia="4.0e-5 4.0e-5 4.0e-5"/>
+      <geom name="ball" type="sphere" size="0.033"/>
+    </body>
+  </worldbody>
+  <contact>
+    <pair geom1="floor" geom2="ball" condim="3"
+          friction="0.67 0.67 0.005 0.0001 0.0001" solref="0.001 0.08"/>
+  </contact>
+</mujoco>

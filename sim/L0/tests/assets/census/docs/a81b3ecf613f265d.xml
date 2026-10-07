@@ -1,0 +1,12 @@
+<mujoco model="free_joint_site">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <freejoint name="j1"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <site name="thrust" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="jet_z" site="thrust" gear="0 0 1 0 0 0" ctrlrange="-100 100"/>
+            </actuator>
+        </mujoco>

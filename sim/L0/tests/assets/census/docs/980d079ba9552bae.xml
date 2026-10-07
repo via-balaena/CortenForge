@@ -1,0 +1,16 @@
+<mujoco model="joint_gear">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="link1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0" damping="1"/>
+                    <geom type="capsule" size="0.05 0.3" mass="1.0"/>
+                </body>
+                <body name="link2" pos="1 0 1">
+                    <joint name="j2" type="hinge" axis="0 1 0" damping="1"/>
+                    <geom type="capsule" size="0.05 0.3" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <joint joint1="j1" joint2="j2" polycoef="0 2"/>
+            </equality>
+        </mujoco>

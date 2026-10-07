@@ -1,0 +1,9 @@
+<mujoco model="dt39_free">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="b1" pos="0 0 1">
+                <freejoint name="J_free"/>
+                <geom type="sphere" size="0.1" mass="5.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

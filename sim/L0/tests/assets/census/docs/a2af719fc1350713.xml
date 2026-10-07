@@ -1,0 +1,38 @@
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="-0.3 0.3 0">
+      <joint name="j1" type="hinge" axis="0 0 1"/>
+      <geom type="sphere" size="0.02"/>
+      <site name="s1" pos="0 0 0"/>
+    </body>
+    <body name="b2" pos="0.3 0.3 0">
+      <joint name="j2" type="hinge" axis="0 0 1"/>
+      <geom type="sphere" size="0.02"/>
+      <site name="s2" pos="0 0 0"/>
+    </body>
+    <body name="b3" pos="-0.3 0.05 0">
+      <joint name="j3" type="hinge" axis="0 0 1"/>
+      <geom type="sphere" size="0.02"/>
+      <site name="s3" pos="0 0 0"/>
+    </body>
+    <body name="wrap_body" pos="0 0 0">
+      <geom name="wrap_sphere" type="sphere" size="0.1"/>
+    </body>
+    <body name="b4" pos="0.3 0.05 0">
+      <joint name="j4" type="hinge" axis="0 0 1"/>
+      <geom type="sphere" size="0.02"/>
+      <site name="s4" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_straight">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+    <spatial name="t_wrapped">
+      <site site="s3"/>
+      <geom geom="wrap_sphere"/>
+      <site site="s4"/>
+    </spatial>
+  </tendon>
+</mujoco>

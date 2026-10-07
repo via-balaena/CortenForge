@@ -1,0 +1,10 @@
+<mujoco model="wind-stationary">
+  <option gravity="0 0 0" timestep="0.002"
+          density="1.2" viscosity="1.5e-5" wind="10 0 0"/>
+  <worldbody>
+    <body name="sphere" pos="0 0 0">
+      <freejoint name="sphere_free"/>
+      <geom type="sphere" size="0.2" mass="1.0"/>
+    </body>
+  </worldbody>
+</mujoco>

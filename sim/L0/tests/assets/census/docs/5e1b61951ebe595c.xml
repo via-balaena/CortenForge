@@ -1,0 +1,9 @@
+<mujoco model="test_model">
+                <option timestep="0.001" gravity="0 0 -9.81"/>
+                <worldbody>
+                    <body name="base" pos="0 0 1">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <joint type="free"/>
+                    </body>
+                </worldbody>
+            </mujoco>

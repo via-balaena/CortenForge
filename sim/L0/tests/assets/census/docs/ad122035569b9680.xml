@@ -1,0 +1,16 @@
+<mujoco model="flex_friction_tilt">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS" iterations="50"/>
+        <worldbody>
+            <body pos="0 0 -0.5" euler="0 30 0">
+                <geom type="box" size="5 5 0.5" friction="1.0 0.005 0.0001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="point" dim="1" density="1.0" radius="0.01">
+                <contact condim="3" friction="1.0 0.005 0.0001" solref="0.02 1.0"/>
+                <elasticity young="1e4"/>
+                <vertex pos="0 0 0.1"/>
+                <element data="0"/>
+            </flex>
+        </deformable>
+    </mujoco>

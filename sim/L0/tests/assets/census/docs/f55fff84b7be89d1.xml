@@ -1,0 +1,11 @@
+<mujoco model="single_edge">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="spring" dim="1" density="1.0">
+                <elasticity young="1000.0" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+                <pin id="0"/>
+            </flex>
+        </deformable>
+    </mujoco>

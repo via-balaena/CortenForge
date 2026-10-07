@@ -1,0 +1,15 @@
+<mujoco model="spec_d_t09b">
+            <worldbody>
+                <body>
+                    <joint type="hinge" name="j1"/>
+                    <joint type="hinge" name="j2"/>
+                    <joint type="hinge" name="j3"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <jointpos name="sp1" joint="j1" nsample="3"/>
+                <jointpos name="sp2" joint="j2"/>
+                <jointpos name="sp3" joint="j3" nsample="5"/>
+            </sensor>
+        </mujoco>

@@ -1,0 +1,18 @@
+<mujoco model="constrained_springs">
+            <option timestep="0.002" integrator="implicitspringdamper" gravity="0 0 -10"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="slide" axis="0 0 1"
+                           stiffness="500" damping="20"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+                <body name="b2" pos="0.5 0 1">
+                    <joint name="j2" type="slide" axis="0 0 1"
+                           stiffness="500" damping="20"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="b1" body2="b2" anchor="0.25 0 0"/>
+            </equality>
+        </mujoco>

@@ -1,0 +1,13 @@
+<mujoco model="actuator_plugin_test">
+                <worldbody>
+                    <body name="b1">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general joint="j1">
+                        <plugin plugin="test.actuator"/>
+                    </general>
+                </actuator>
+            </mujoco>

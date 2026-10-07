@@ -1,0 +1,11 @@
+<mujoco model="joint_spring_pgs">
+        <option timestep="0.001" integrator="implicitspringdamper"
+                solver="PGS" gravity="0 0 0"/>
+        <worldbody>
+            <body name="b1" pos="0 0 0">
+                <joint name="j0" type="hinge" axis="0 1 0"
+                       stiffness="100.0" damping="10.0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

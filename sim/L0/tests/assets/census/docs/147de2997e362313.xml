@@ -1,0 +1,10 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="gripper">
+                        <geom type="box" size="0.05 0.05 0.01"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <adhesion name="grip1" body="gripper" gain="100" ctrlrange="0 1"/>
+                </actuator>
+            </mujoco>

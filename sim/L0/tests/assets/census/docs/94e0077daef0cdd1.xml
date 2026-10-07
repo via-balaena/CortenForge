@@ -1,0 +1,13 @@
+<mujoco model="plugin_test">
+                <extension>
+                    <plugin plugin="mujoco.elasticity.cable">
+                        <instance name="cable1">
+                            <config key="twist" value="1e-4"/>
+                            <config key="bend" value="1e-2"/>
+                        </instance>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b"/>
+                </worldbody>
+            </mujoco>

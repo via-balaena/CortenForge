@@ -1,0 +1,15 @@
+<mujoco model="tendon_sentinel_qpos_spring">
+            <compiler angle="radian"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"
+                           ref="0.0" springref="0.3" stiffness="100"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t1" stiffness="100">
+                    <joint joint="j1" coef="1.0"/>
+                </fixed>
+            </tendon>
+        </mujoco>

@@ -1,0 +1,25 @@
+<mujoco model="joint-mimic">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.001">
+    <flag energy="enable"/>
+  </option>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <body name="arm1" pos="-0.4 0 2.0">
+      <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+      <geom name="arm1" type="capsule" fromto="0 0 0 0 0 -0.7" size="0.03" mass="1.0"/>
+    </body>
+    <body name="arm2" pos="0.4 0 2.0">
+      <joint name="j2" type="hinge" axis="0 1 0" damping="0"/>
+      <geom name="arm2" type="capsule" fromto="0 0 0 0 0 -0.7" size="0.03" mass="1.0"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <joint joint1="j1" joint2="j2" polycoef="0 1" solref="0.8 0.5"/>
+  </equality>
+</mujoco>

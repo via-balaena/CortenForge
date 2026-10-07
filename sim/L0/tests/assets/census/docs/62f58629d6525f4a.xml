@@ -1,0 +1,14 @@
+<mujoco model="t02">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <site name="s1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos name="fp_both" site="s1" reftype="body" refname="b1"/>
+                <framepos name="fp_refname_only" site="s1" refname="b1"/>
+                <framepos name="fp_reftype_only" site="s1" reftype="body"/>
+            </sensor>
+        </mujoco>

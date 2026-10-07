@@ -1,0 +1,16 @@
+<mujoco model="free-two-bodies">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+  <worldbody>
+    <body name="a" pos="0 0 0">
+      <freejoint name="free_a"/>
+      <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="2 0 0">
+      <freejoint name="free_b"/>
+      <inertial pos="0 0 0" mass="3.0" diaginertia="0.05 0.05 0.05"/>
+      <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,16 @@
+<mujoco model="multi_joint_spring">
+            <compiler angle="radian"/>
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="link1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"
+                           stiffness="100" damping="10" springref="0.2"/>
+                    <geom type="capsule" size="0.05 0.4" mass="1.0"/>
+                    <body name="link2" pos="0 0 -1">
+                        <joint name="j2" type="hinge" axis="0 1 0"
+                               stiffness="100" damping="10" springref="-0.3"/>
+                        <geom type="capsule" size="0.05 0.4" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

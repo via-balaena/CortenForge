@@ -1,0 +1,14 @@
+<mujoco model="pendulum">
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="arm" pos="0 0 2">
+      <joint name="hinge" type="hinge" axis="0 1 0" damping="0"/>
+      <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.5" mass="1.0"/>
+      <site name="tip" pos="0 0 -0.5"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <framelinacc name="tip_linacc" objtype="site" objname="tip"/>
+  </sensor>
+</mujoco>

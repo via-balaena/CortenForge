@@ -1,0 +1,28 @@
+<mujoco model="geom_distance">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4">
+        <flag energy="enable"/>
+    </option>
+
+    <default>
+        <geom contype="0" conaffinity="0"/>
+    </default>
+
+    <worldbody>
+        <geom name="fixed" type="sphere" size="0.1" pos="0.5 0 0"
+              rgba="0.82 0.22 0.15 1"/>
+        <body name="moving" pos="-0.3 0 0">
+            <joint name="slide" type="slide" axis="1 0 0"
+                   stiffness="10" damping="0"/>
+            <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+            <geom name="box" type="box" size="0.1 0.1 0.1"
+                  rgba="0.2 0.5 0.85 1"/>
+        </body>
+    </worldbody>
+
+    <sensor>
+        <distance name="dist" geom1="box" geom2="fixed" cutoff="10"/>
+        <normal name="norm" geom1="box" geom2="fixed" cutoff="10"/>
+        <fromto name="ft" geom1="box" geom2="fixed" cutoff="10"/>
+    </sensor>
+</mujoco>

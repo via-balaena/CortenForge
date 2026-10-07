@@ -1,0 +1,15 @@
+<mujoco>
+      <option gravity="0 0 0">
+        <flag sensor="disable"/>
+      </option>
+      <worldbody>
+        <body name="b1" pos="0 0 0">
+          <freejoint/>
+          <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <subtreelinvel body="b1"/>
+        <subtreeangmom body="b1"/>
+      </sensor>
+    </mujoco>

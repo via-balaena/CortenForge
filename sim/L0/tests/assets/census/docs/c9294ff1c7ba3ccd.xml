@@ -1,0 +1,19 @@
+<mujoco model="pendulum">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.002"/>
+
+    <default>
+        <geom contype="0" conaffinity="0"/>
+    </default>
+
+    <worldbody>
+        <body name="arm" pos="0 0 0">
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="0"/>
+            <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+            <geom name="rod" type="capsule" size="0.02"
+                  fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
+            <geom name="tip" type="sphere" size="0.05"
+                  pos="0 0 -0.5" rgba="0.2 0.5 0.85 1"/>
+        </body>
+    </worldbody>
+</mujoco>

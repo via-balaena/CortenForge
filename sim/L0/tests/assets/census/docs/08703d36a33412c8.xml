@@ -1,0 +1,13 @@
+<mujoco model="hang-test">
+          <option gravity="0 0 -9.81" timestep="0.002" integrator="implicitfast"/>
+          <worldbody>
+            <body name="anchor" pos="0 0 1.5">
+              <composite type="cable" prefix="" count="11 1 1"
+                         initial="none" curve="l 0 0" size="1">
+                <joint kind="main" damping="0.5"/>
+                <geom type="capsule" size="0.01" rgba="0.8 0.2 0.1 1"
+                      density="500"/>
+              </composite>
+            </body>
+          </worldbody>
+        </mujoco>

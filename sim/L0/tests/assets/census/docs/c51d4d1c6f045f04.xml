@@ -1,0 +1,11 @@
+<mujoco model="motor_no_lr">
+            <worldbody>
+                <body name="arm" pos="0 0 0">
+                    <joint name="slide" type="slide" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor name="m" joint="slide" gear="1"/>
+            </actuator>
+        </mujoco>

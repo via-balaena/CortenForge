@@ -1,0 +1,10 @@
+<mujoco model="hfield_inline">
+                <asset>
+                    <hfield name="flat" size="1 1 0.5 0"
+                            nrow="2" ncol="2"
+                            elevation="0 0 0 0"/>
+                </asset>
+                <worldbody>
+                    <geom type="hfield" hfield="flat"/>
+                </worldbody>
+            </mujoco>

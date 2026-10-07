@@ -1,0 +1,10 @@
+<mujoco>
+            <compiler angle="degree"/>
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body pos="0 0 0">
+                    <joint type="ball" limited="false" range="0 45"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

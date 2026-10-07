@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <asset>
+                    <mesh name="robot_body" file="meshes/body.stl"/>
+                </asset>
+                <worldbody/>
+            </mujoco>

@@ -1,0 +1,7 @@
+<mujoco model="included">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <include file="arm.xml"/>
+                </worldbody>
+                <include file="actuators.xml"/>
+            </mujoco>

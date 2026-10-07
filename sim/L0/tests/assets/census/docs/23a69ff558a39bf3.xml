@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <default>
+                    <sensor noise="0.01" cutoff="100"/>
+                </default>
+                <worldbody/>
+            </mujoco>

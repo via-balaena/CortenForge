@@ -1,0 +1,10 @@
+<mujoco model="edge_lengths">
+            <option gravity="0 0 0"/>
+            <deformable>
+                <flex name="test" dim="1" density="1.0">
+                    <elasticity young="1000"/>
+                    <vertex pos="0 0 0  3 0 0  3 4 0"/>
+                    <element data="0 1  1 2"/>
+                </flex>
+            </deformable>
+        </mujoco>

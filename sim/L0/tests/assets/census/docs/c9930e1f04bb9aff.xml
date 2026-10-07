@@ -1,0 +1,47 @@
+<mujoco model="cocontraction">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4">
+    <flag energy="enable"/>
+  </option>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <body name="upper_arm" pos="0 0 0.8">
+      <geom name="upper" type="capsule" size="0.025"
+            fromto="0 0 0.15  0 0 0" rgba="0.35 0.35 0.38 1"/>
+      <body name="forearm" pos="0 0 0">
+        <joint name="elbow" type="hinge" axis="0 1 0"
+               range="-1.57 1.57" limited="true" damping="0.5"/>
+        <inertial pos="0 0 -0.15" mass="1.0"
+                  diaginertia="0.015 0.015 0.001"/>
+        <geom name="rod" type="capsule" size="0.02"
+              fromto="0 0 0  0 0 -0.3" rgba="0.48 0.48 0.50 1"/>
+        <geom name="tip" type="sphere" size="0.04"
+              pos="0 0 -0.3" rgba="0.7 0.7 0.72 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <muscle name="agonist" joint="elbow" gear="1"
+            scale="50" range="0.75 1.05"
+            lmin="0.5" lmax="1.6" vmax="1.0"
+            fpmax="0.3" fvmax="1.4"
+            timeconst="0.01 0.04"/>
+    <muscle name="antagonist" joint="elbow" gear="-1"
+            scale="50" range="0.75 1.05"
+            lmin="0.5" lmax="1.6" vmax="1.0"
+            fpmax="0.3" fvmax="1.4"
+            timeconst="0.01 0.04"/>
+  </actuator>
+
+  <sensor>
+    <jointpos name="jpos" joint="elbow"/>
+    <jointvel name="jvel" joint="elbow"/>
+    <actuatorfrc name="ago_force" actuator="agonist"/>
+    <actuatorfrc name="ant_force" actuator="antagonist"/>
+  </sensor>
+</mujoco>

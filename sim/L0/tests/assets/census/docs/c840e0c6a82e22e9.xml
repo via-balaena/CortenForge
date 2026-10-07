@@ -1,0 +1,13 @@
+<mujoco>
+                <default>
+                    <default class="sensor_site">
+                        <site type="cylinder" size="0.02 0.01"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" class="sensor_site" euler="0 0 90"/>
+                    </body>
+                </worldbody>
+            </mujoco>

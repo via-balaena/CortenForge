@@ -1,0 +1,27 @@
+<mujoco model="cylinder-wrap">
+  <option gravity="0 0 0" timestep="0.002"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="cyl_body" pos="0 0 0.6">
+      <geom name="wrap_cyl" type="cylinder" size="0.08 0.3"
+            contype="0" conaffinity="0"/>
+    </body>
+    <body name="b1" pos="-0.3 0.1 0.8">
+      <joint name="j1" type="slide" axis="1 0 0"/>
+      <geom type="sphere" size="0.02" mass="0.5"/>
+      <site name="s1" pos="0 0 0"/>
+    </body>
+    <body name="b2" pos="0.3 -0.05 0.4">
+      <joint name="j2" type="slide" axis="1 0 0"/>
+      <geom type="sphere" size="0.02" mass="0.5"/>
+      <site name="s2" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t1">
+      <site site="s1"/>
+      <geom geom="wrap_cyl"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>

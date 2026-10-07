@@ -1,0 +1,11 @@
+<mujoco model="friction_rest">
+            <compiler angle="radian"/>
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="pendulum" pos="0 0 0">
+                    <joint name="hinge" type="hinge" axis="0 1 0"
+                           stiffness="0" damping="1.0" frictionloss="5"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

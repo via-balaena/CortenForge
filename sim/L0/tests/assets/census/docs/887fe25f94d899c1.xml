@@ -1,0 +1,11 @@
+<mujoco model="jip_parse">
+            <worldbody>
+                <body pos="0 0 0">
+                    <joint name="j" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="a" jointinparent="j" gear="5"/>
+            </actuator>
+        </mujoco>

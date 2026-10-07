@@ -1,0 +1,13 @@
+<mujoco model="double_pendulum">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="link1" pos="0 0 0">
+                    <joint name="joint1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.02 0.25" mass="0.5"/>
+                    <body name="link2" pos="0 0 -0.5">
+                        <joint name="joint2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" size="0.02 0.25" mass="0.5"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>

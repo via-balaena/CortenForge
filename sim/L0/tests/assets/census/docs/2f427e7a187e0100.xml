@@ -1,0 +1,11 @@
+<mujoco model="m">
+                <worldbody>
+                    <body name="a">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <joint joint1="j1" polycoef="1 0 0 0 0"/>
+                </equality>
+            </mujoco>

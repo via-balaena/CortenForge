@@ -1,0 +1,15 @@
+<mujoco>
+                <default>
+                    <default class="robot">
+                        <joint damping="5.0"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="parent" childclass="robot">
+                        <body name="child" pos="0 0 1">
+                            <joint name="j1" type="hinge"/>
+                            <geom type="sphere" size="0.1"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>

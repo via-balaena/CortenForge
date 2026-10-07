@@ -1,0 +1,5 @@
+<mujoco>
+                <body name="arm">
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </mujoco>

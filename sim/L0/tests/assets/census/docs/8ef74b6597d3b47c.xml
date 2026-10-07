@@ -1,0 +1,22 @@
+<mujoco model="tendon_sleep">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+                <body name="link2" pos="0 0 -0.5">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+        <tendon>
+            <fixed>
+                <joint joint="j1" coef="1"/>
+                <joint joint="j2" coef="-1"/>
+            </fixed>
+        </tendon>
+    </mujoco>

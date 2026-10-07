@@ -1,0 +1,5 @@
+<mujoco>
+  <compiler exactmeshinertia="true"/>
+  <asset><mesh name="cube" vertex="..." face="..."/></asset>
+  ...
+</mujoco>

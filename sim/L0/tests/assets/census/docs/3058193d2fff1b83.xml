@@ -1,0 +1,10 @@
+<mujoco model="capsule_plane_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cap" pos="0 0 0.1" euler="0 90 0">
+                    <joint type="free"/>
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>

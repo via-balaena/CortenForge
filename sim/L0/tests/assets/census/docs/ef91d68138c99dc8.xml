@@ -1,0 +1,19 @@
+<mujoco>
+          <compiler angle="radian"/>
+          <default>
+            <default class="pretensioned">
+              <tendon springlength="0.2"/>
+            </default>
+          </default>
+          <worldbody>
+            <body name="b">
+              <joint name="j" type="hinge"/>
+              <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t" class="pretensioned" springlength="0.8">
+              <joint joint="j" coef="1.0"/>
+            </fixed>
+          </tendon>
+        </mujoco>

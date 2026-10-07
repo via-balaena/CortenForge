@@ -1,0 +1,16 @@
+<mujoco>
+  <worldbody>
+    <site name="anchor" pos="0 0 0"/>
+    <body name="floating" pos="1 0 0" euler="0 45 0">
+      <freejoint name="free"/>
+      <geom type="sphere" size="0.05"/>
+      <site name="attach" pos="0.2 0.1 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_free" stiffness="100">
+      <site site="anchor"/>
+      <site site="attach"/>
+    </spatial>
+  </tendon>
+</mujoco>

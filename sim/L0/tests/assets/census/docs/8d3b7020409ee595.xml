@@ -1,0 +1,10 @@
+<mujoco model="all_pinned">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>

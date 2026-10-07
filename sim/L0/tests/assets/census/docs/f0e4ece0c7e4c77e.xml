@@ -1,0 +1,13 @@
+<mujoco model="gravcomp_parse">
+            <option gravity="0 0 -9.81"/>
+            <worldbody>
+                <body name="b1" gravcomp="0">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="b2" gravcomp="7.2" pos="1 0 0">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>

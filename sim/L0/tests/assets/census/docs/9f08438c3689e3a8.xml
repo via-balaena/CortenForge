@@ -1,0 +1,18 @@
+<mujoco model="init_mixed">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="A" pos="0 0 1" sleep="init">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="B" pos="1 0 1">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <equality>
+            <connect body1="A" body2="B" anchor="0.5 0 1"/>
+        </equality>
+    </mujoco>

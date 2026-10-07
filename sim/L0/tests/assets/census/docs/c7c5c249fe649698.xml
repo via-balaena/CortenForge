@@ -1,0 +1,12 @@
+<mujoco><option density="1.2" viscosity="0.001" integrator="implicit"/>
+    <worldbody>
+    <body pos="0 0 1">
+    <joint type="hinge" axis="0 1 0"/>
+    <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+    <body pos="0.3 0 0">
+    <joint type="hinge" axis="0 1 0"/>
+    <geom type="box" size="0.08 0.04 0.02" mass="0.5"/>
+    <body pos="0.25 0 0">
+    <joint type="hinge" axis="0 1 0"/>
+    <geom type="box" size="0.06 0.03 0.015" mass="0.3"/>
+    </body></body></body></worldbody></mujoco>

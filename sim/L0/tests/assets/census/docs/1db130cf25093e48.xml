@@ -1,0 +1,9 @@
+<mujoco>
+            <size nuser_geom="2"/>
+            <worldbody>
+                <body pos="0 0 1">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1" user="10 20 30 40"/>
+                </body>
+            </worldbody>
+            </mujoco>

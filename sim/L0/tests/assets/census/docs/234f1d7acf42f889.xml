@@ -1,0 +1,36 @@
+<mujoco model="cable-loaded">
+  <option gravity="0 0 -9.81" timestep="0.002" integrator="implicitfast"
+          solver="Newton" iterations="50"/>
+
+  <worldbody>
+    <!-- Ground plane -->
+    <geom name="floor" type="plane" size="2 2 0.01" rgba="0.25 0.25 0.28 1"
+          pos="0 0 0" contype="0" conaffinity="0"/>
+
+    <!-- Left pylon -->
+    <body name="pylon_L" pos="-0.5 0 0.8">
+      <geom name="pylon_L_geom" type="box" size="0.025 0.025 0.4"
+            rgba="0.5 0.5 0.5 1" contype="0" conaffinity="0"/>
+
+      <!-- Cable: 15 segments, cyan, starts with sine bulge for slack -->
+      <composite type="cable" prefix="A" count="16 1 1"
+                 initial="ball" curve="l 0 s" size="1.0 0.2 1.0"
+                 offset="0 0 0.4">
+        <joint kind="main" damping="0.05"/>
+        <geom type="capsule" size="0.01" rgba="0.2 0.8 0.9 1"
+              density="800" contype="0" conaffinity="0"/>
+      </composite>
+    </body>
+
+    <!-- Right pylon -->
+    <body name="pylon_R" pos="0.5 0 0.8">
+      <geom name="pylon_R_geom" type="box" size="0.025 0.025 0.4"
+            rgba="0.5 0.5 0.5 1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <connect body1="AB_last" body2="pylon_R"
+             anchor="0.06667 0 0" solref="0.002 1.0"/>
+  </equality>
+</mujoco>

@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <default>
+                    <tendon stiffness="1000" damping="10" width="0.01" limited="true" range="0 0.5"/>
+                </default>
+                <worldbody/>
+            </mujoco>

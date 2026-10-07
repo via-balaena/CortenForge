@@ -1,0 +1,16 @@
+<mujoco model="wake-on-contact">
+  <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.05">
+    <flag sleep="enable"/>
+  </option>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+    <body name="box" pos="0 0 0.15" sleep="init">
+      <freejoint/>
+      <geom name="box_geom" type="box" size="0.15 0.15 0.15" mass="2" solref="0.005 1.5"/>
+    </body>
+    <body name="ball" pos="0 0 2.0">
+      <freejoint/>
+      <geom name="ball_geom" type="sphere" size="0.1" mass="0.5" solref="0.005 1.5"/>
+    </body>
+  </worldbody>
+</mujoco>

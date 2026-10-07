@@ -1,0 +1,9 @@
+<mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame xyaxes="0 1 0 -1 0 0">
+                            <geom type="sphere" size="0.1" pos="1 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>

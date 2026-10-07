@@ -1,0 +1,22 @@
+<mujoco model="param_unit">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody/>
+            <deformable>
+                <flex name="f1" dim="2" density="1000" radius="0.01">
+                    <contact contype="1" conaffinity="1"
+                             solref="0.02 1.0" solimp="0.9 0.95 0.001 0.5 2.0"
+                             friction="0.5 0.005 0.0001" gap="0.01" margin="0.05"/>
+                    <elasticity young="50"/>
+                    <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
+                    <element data="0 1 2  1 3 2"/>
+                </flex>
+                <flex name="f2" dim="2" density="1000" radius="0.01">
+                    <contact contype="1" conaffinity="1"
+                             solref="0.04 2.0" solimp="0.8 0.99 0.002 0.6 3.0"
+                             friction="0.3 0.003 0.0002" gap="0.02" margin="0.05"/>
+                    <elasticity young="50"/>
+                    <vertex pos="0.25 0.25 0  1.25 0.25 0  0.25 1.25 0  1.25 1.25 0"/>
+                    <element data="0 1 2  1 3 2"/>
+                </flex>
+            </deformable>
+        </mujoco>

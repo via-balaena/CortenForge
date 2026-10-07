@@ -1,0 +1,50 @@
+<mujoco model="dims">
+  <option gravity="0 0 -9.81" timestep="0.001" magnetic="0 0 -0.5"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b1" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0"/>
+      <geom name="g1" type="capsule" size="0.02" fromto="0 0 0 0.3 0 0" mass="0.5"/>
+      <site name="s1" pos="0.1 0 0"/>
+    </body>
+    <body name="b2" pos="0 0 2">
+      <joint name="ball" type="ball"/>
+      <geom name="g2" type="sphere" size="0.05" mass="0.5"/>
+      <site name="s2" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="motor" joint="hinge" gear="1"/>
+  </actuator>
+  <sensor>
+    <touch name="s_touch" site="s1"/>
+    <accelerometer name="s_accel" site="s1"/>
+    <velocimeter name="s_veloc" site="s1"/>
+    <gyro name="s_gyro" site="s1"/>
+    <force name="s_force" site="s1"/>
+    <torque name="s_torque" site="s1"/>
+    <magnetometer name="s_mag" site="s1"/>
+    <rangefinder name="s_range" site="s1"/>
+    <jointpos name="s_jntpos" joint="hinge"/>
+    <jointvel name="s_jntvel" joint="hinge"/>
+    <ballquat name="s_bquat" joint="ball"/>
+    <ballangvel name="s_bangvel" joint="ball"/>
+    <actuatorpos name="s_actpos" actuator="motor"/>
+    <actuatorvel name="s_actvel" actuator="motor"/>
+    <actuatorfrc name="s_actfrc" actuator="motor"/>
+    <framepos name="s_fpos" objtype="site" objname="s1"/>
+    <framequat name="s_fquat" objtype="site" objname="s1"/>
+    <framexaxis name="s_fxax" objtype="site" objname="s1"/>
+    <frameyaxis name="s_fyax" objtype="site" objname="s1"/>
+    <framezaxis name="s_fzax" objtype="site" objname="s1"/>
+    <framelinvel name="s_flinv" objtype="site" objname="s1"/>
+    <frameangvel name="s_fangv" objtype="site" objname="s1"/>
+    <framelinacc name="s_flina" objtype="site" objname="s1"/>
+    <frameangacc name="s_fanga" objtype="site" objname="s1"/>
+    <subtreecom name="s_stcom" body="b1"/>
+    <subtreelinvel name="s_stlv" body="b1"/>
+    <subtreeangmom name="s_stam" body="b1"/>
+    <clock name="s_clock"/>
+    <jointactuatorfrc name="s_jaf" joint="hinge"/>
+  </sensor>
+</mujoco>

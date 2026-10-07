@@ -1,0 +1,30 @@
+<mujoco model="pulley">
+  <option gravity="0 0 0" timestep="0.002"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="top" pos="0 0 1">
+      <joint name="j_top" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.02" mass="0.5"/>
+      <site name="s1" pos="0 0 0"/>
+    </body>
+    <body name="mid" pos="0 0 0.5">
+      <geom type="sphere" size="0.01" mass="0.1" contype="0" conaffinity="0"/>
+      <site name="s2" pos="0 0 0"/>
+      <site name="s3" pos="0 0 0"/>
+    </body>
+    <body name="bot" pos="0 0 0">
+      <joint name="j_bot" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.02" mass="0.5"/>
+      <site name="s4" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t1">
+      <site site="s1"/>
+      <site site="s2"/>
+      <pulley divisor="2"/>
+      <site site="s3"/>
+      <site site="s4"/>
+    </spatial>
+  </tendon>
+</mujoco>

@@ -1,0 +1,6 @@
+<mujoco model="test">
+                <default>
+                    <site type="sphere" size="0.02" rgba="0 1 0 1"/>
+                </default>
+                <worldbody/>
+            </mujoco>

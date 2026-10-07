@@ -1,0 +1,13 @@
+<mujoco model="passive_spring">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.01">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="spring_body" pos="0 0 0.5">
+                <joint name="spring_hinge" type="hinge" axis="0 1 0"
+                       stiffness="10" damping="5"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

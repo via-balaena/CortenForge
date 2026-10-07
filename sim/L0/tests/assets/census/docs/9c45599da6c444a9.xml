@@ -1,0 +1,14 @@
+<mujoco model="same_body">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <site name="s1" pos="0.1 0 0"/>
+                    <site name="s2" pos="-0.1 0 0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="a1" site="s1" refsite="s2" gear="1 0 0 0 0 0"
+                         ctrlrange="-100 100"/>
+            </actuator>
+        </mujoco>

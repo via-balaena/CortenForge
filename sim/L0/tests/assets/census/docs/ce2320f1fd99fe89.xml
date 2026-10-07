@@ -1,0 +1,15 @@
+<mujoco>
+                <default>
+                    <default class="robot">
+                        <geom contype="5"/>
+                        <default class="arm">
+                            <geom conaffinity="3"/>
+                        </default>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="arm">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

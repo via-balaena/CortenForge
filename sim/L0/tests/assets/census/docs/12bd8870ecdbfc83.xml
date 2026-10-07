@@ -1,0 +1,8 @@
+<mujoco model="hfield_feature_off">
+                <asset>
+                    <hfield name="terrain" file="anywhere.png" size="1 1 0.5 0.1"/>
+                </asset>
+                <worldbody>
+                    <geom type="hfield" hfield="terrain"/>
+                </worldbody>
+            </mujoco>

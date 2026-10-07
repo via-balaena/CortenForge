@@ -1,0 +1,6 @@
+<mujoco model="hfield_missing">
+                <asset>
+                    <hfield name="gone" file="nonexistent.png" size="1 1 1 0"/>
+                </asset>
+                <worldbody/>
+            </mujoco>

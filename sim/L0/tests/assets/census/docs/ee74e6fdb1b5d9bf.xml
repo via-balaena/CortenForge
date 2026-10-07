@@ -1,0 +1,8 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="joint1" type="hinge" axis="0 1 0" limited="true" range="-1.57 1.57" damping="0.5"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>

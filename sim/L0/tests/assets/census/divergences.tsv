@@ -1,0 +1,8 @@
+# Divergence registry: each deliberate difference from MuJoCo 3.5.0 that a census doc shows. Every
+# `divergence=<ID>` note in verdicts.tsv names an ID here (mujoco_conformance/layer_e_census.rs checks it).
+# kind: stricter (we refuse what MuJoCo accepts) · limitation (MuJoCo does what we cannot) ·
+#       no-effect (accepted, with no effect) · lenient (we load where MuJoCo wrongly refuses) ·
+#       wrong-value (MuJoCo computes a wrong value; the test shows ours is right).
+ID	area	MuJoCo	ours	kind	test
+D-NONFINITE	MJCF numbers	loads NaN and inf in keyframe and tendon springlength values	refuses a non-finite number	stricter	sim/L0/tests/integration/keyframes.rs ac22_keyframe_nan_rejected; sim/L0/tests/integration/tendon_springlength.rs test_ac5c_nan_springlength_rejected
+D-FRAME-INERTIAL	MJCF frame	loads an <inertial> inside a <frame>	refuses an <inertial> inside a <frame>	limitation	sim/L0/mjcf/src/builder/frame.rs test_ac19_inertial_inside_frame_error

@@ -1,0 +1,21 @@
+<mujoco model="solimp-compare">
+  <option gravity="0 0 0" timestep="0.002"/>
+  <worldbody>
+    <body name="narrow_body" pos="-0.5 0 0.3">
+      <joint name="narrow" type="slide" axis="1 0 0"
+             limited="true" range="-0.5 0.3" damping="5.0"
+             solimplimit="0.01 0.99 0.001 0.5 2.0"/>
+      <geom type="box" size="0.05 0.05 0.05" mass="1.0"/>
+    </body>
+    <body name="wide_body" pos="0.5 0 0.3">
+      <joint name="wide" type="slide" axis="1 0 0"
+             limited="true" range="-0.5 0.3" damping="5.0"
+             solimplimit="0.01 0.99 0.5 0.5 2.0"/>
+      <geom type="box" size="0.05 0.05 0.05" mass="1.0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="push_narrow" joint="narrow" gear="1"/>
+    <motor name="push_wide" joint="wide" gear="1"/>
+  </actuator>
+</mujoco>

@@ -1,0 +1,9 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link1"/>
+                    <body name="link2"/>
+                </worldbody>
+                <equality>
+                    <connect name="ball_joint" body1="link1" body2="link2"/>
+                </equality>
+            </mujoco>

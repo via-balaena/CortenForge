@@ -1,0 +1,4 @@
+<mujoco model="test">
+                <compiler coordinate="global"/>
+                <worldbody/>
+            </mujoco>

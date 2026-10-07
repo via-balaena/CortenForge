@@ -1,0 +1,11 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="joint1" type="slide"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <cylinder name="cyl1" joint="joint1" area="0.002" timeconst="0.5" bias="1 2 3"/>
+                </actuator>
+            </mujoco>

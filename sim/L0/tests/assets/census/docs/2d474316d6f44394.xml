@@ -1,0 +1,17 @@
+<mujoco model="rangefinder">
+  <option gravity="0 0 0" timestep="0.001"/>
+  <compiler angle="radian"/>
+  <worldbody>
+    <geom name="ground" type="box" size="5 5 0.005" pos="0 0 -0.005"/>
+    <body name="sensor_body" pos="0 0 1.5">
+      <joint name="slide" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.05" mass="0.5" contype="0" conaffinity="0"/>
+      <site name="eye_down" pos="0 0 0" euler="3.14159 0 0"/>
+      <site name="eye_side" pos="0 0 0" euler="0 -1.5708 0"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <rangefinder name="down" site="eye_down"/>
+    <rangefinder name="side" site="eye_side"/>
+  </sensor>
+</mujoco>

@@ -1,0 +1,7 @@
+<mujoco model="robot">
+        <worldbody>
+            <body name="base" pos="0 0 1">
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>

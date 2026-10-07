@@ -1,0 +1,13 @@
+<mujoco model="mode_b_trans_len">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <site name="ee" pos="0 0 -0.5"/>
+                </body>
+                <site name="target" pos="0 0 0"/>
+            </worldbody>
+            <actuator>
+                <general name="a1" site="ee" refsite="target" gear="0 0 1 0 0 0"/>
+            </actuator>
+        </mujoco>

@@ -1,0 +1,20 @@
+<mujoco model="accelerometer">
+    <compiler angle="radian"/>
+    <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+
+    <worldbody>
+        <geom name="floor" type="plane" size="5 5 0.1"
+              contype="1" conaffinity="1" condim="1" rgba="0.3 0.3 0.35 1"/>
+        <body name="box" pos="0 0 4.0">
+            <joint name="free" type="free"/>
+            <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+            <geom name="cube" type="box" size="0.1 0.1 0.1"
+                  contype="1" conaffinity="1" condim="1" rgba="0.82 0.22 0.15 1"/>
+            <site name="imu" pos="0 0 0"/>
+        </body>
+    </worldbody>
+
+    <sensor>
+        <accelerometer name="accel" site="imu"/>
+    </sensor>
+</mujoco>

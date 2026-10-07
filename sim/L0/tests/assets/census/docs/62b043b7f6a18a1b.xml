@@ -1,0 +1,12 @@
+<mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="joint1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="motor1" joint="joint1" gear="100"/>
+                    <position name="servo1" joint="joint1" kp="10"/>
+                </actuator>
+            </mujoco>

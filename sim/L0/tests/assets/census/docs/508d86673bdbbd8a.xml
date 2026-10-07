@@ -1,0 +1,16 @@
+<mujoco model="s31_direct_mode">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="-100 -20"/>
+            </contact>
+        </mujoco>
