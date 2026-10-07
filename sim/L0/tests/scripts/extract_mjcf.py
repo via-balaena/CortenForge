@@ -8,8 +8,11 @@
 A doc is one `<mujoco ...>...</mujoco>` span of a string literal (or of a fenced
 Markdown block) that holds a complete document; its id is sha256(text)[:16]. A
 `format!` template is recorded but not extracted: its text is not a document
-until it runs. A doc in a `///` or `//!` doc comment is recorded but not
-extracted either. Read-only on the repository, except `drift --append`.
+until it runs. In `///` and `//!` doc comments, a doc in a string literal of a
+Rust code block (a doctest) is extracted as rustdoc compiles it, and a doc in
+an `xml` or other fenced block like a Markdown fence; a `<mujoco` outside a
+fence is recorded but not extracted. Read-only on the repository, except
+`drift --append`.
 
 `drift` exits 1 when the working tree holds a doc the snapshot lacks. With `--append` it adds
 those docs to sim/L0/tests/assets/census/docs/, appends their rows to its
@@ -173,6 +176,134 @@ def test_ranges(src, toks):
     return ranges
 
 
+RUSTDOC_FENCE_WORDS = {"", "rust", "ignore", "no_run", "should_panic", "compile_fail", "test_harness",
+                       "standalone_crate"}
+
+
+def is_rust_fence(info):
+    """Whether rustdoc compiles a fenced block with this info string as Rust (an untagged block is Rust)."""
+    words = [w for w in re.split(r"[\s,]+", info.strip()) if w]
+    return all(w in RUSTDOC_FENCE_WORDS or re.fullmatch(r"edition\d+|E\d{4}", w) for w in words)
+
+
+def is_line_doc(tok):
+    """Whether a token is a `///` or `//!` line doc comment (`////` is a plain comment)."""
+    return tok[0] == "comment" and tok[3][:3] in ("///", "//!") and not tok[3].startswith("////")
+
+
+def doc_blocks(src, toks):
+    """Runs of `///` (or `//!`) line comments on consecutive lines, unindented as rustdoc does.
+
+    Yields (lines, source_lines): the Markdown text of the run, one entry per comment line with
+    the marker and the run's common leading whitespace removed, and each entry's 1-based line."""
+    runs = []
+    for t in toks:
+        if not is_line_doc(t):
+            if runs and runs[-1]:
+                runs.append([])
+            continue
+        last = runs[-1][-1] if runs and runs[-1] else None
+        if last is None or last[3][:3] != t[3][:3] or src[last[2]:t[1]].count("\n") != 1:
+            runs.append([])
+        runs[-1].append(t)
+    for run in filter(None, runs):
+        bodies = [t[3][3:] for t in run]
+        indent = min((len(b) - len(b.lstrip()) for b in bodies if b.strip()), default=0)
+        lines = [b[indent:] if b.strip() else "" for b in bodies]
+        yield lines, [src.count("\n", 0, t[1]) + 1 for t in run]
+
+
+def doc_fences(lines):
+    """Fenced blocks of a doc comment's Markdown: (info, first line index, body lines)."""
+    i = 0
+    while i < len(lines):
+        m = re.match(r"\s*(```+|~~~+)(.*)$", lines[i])
+        if not m:
+            i += 1
+            continue
+        fence, info, start = m.group(1), m.group(2), i + 1
+        j = start
+        while j < len(lines) and not lines[j].lstrip().startswith(fence):
+            j += 1
+        yield info, start, lines[start:j]
+        i = j + 1
+
+
+def doctest_code(body):
+    """A Rust doctest's code as rustdoc compiles it: a hidden line `# x` (or `#`) is code `x`."""
+    out = []
+    for line in body:
+        s = line.lstrip()
+        if s == "#" or s.startswith("# "):
+            out.append(line[:len(line) - len(s)] + s[2:])
+        elif s.startswith("##"):
+            out.append(line[:len(line) - len(s)] + s[1:])
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def literal_records(src, toks, tranges, line_of):
+    """One record per string literal holding `<mujoco`: its kind, macro and text."""
+    recs = []
+    for idx, t in enumerate(toks):
+        if t[0] != "str" or "<mujoco" not in t[3]:
+            continue
+        mac = macro_of(prev_code(src, toks, idx))
+        text = t[3]
+        rec = dict(line=line_of(t[1]), lit=t[4], macro=mac, in_test_block=any(a <= t[1] <= b for a, b in tranges))
+        if mac == "concat":
+            rec["kind"] = "concat"
+            parts = [text]
+            for tk in toks[idx + 1:]:
+                if tk[0] == "str":
+                    parts.append(tk[3])
+                elif not (tk[0] == "comment" or (tk[0] == "other" and tk[2] == ",")):
+                    break
+            text = "".join(parts)
+        elif mac in FORMAT_MACROS:
+            ph = placeholders(text)
+            rec["placeholders"] = len(ph)
+            if ph:
+                rec["kind"] = "format-template"
+                rec["placeholder_names"] = sorted(set(ph))[:8]
+            else:
+                rec["kind"] = "format-noarg"
+                text = text.replace("{{", "{").replace("}}", "}")
+        else:
+            rec["kind"] = "literal"
+        rec["text"] = text
+        recs.append(rec)
+    return recs
+
+
+def doc_comment_records(src, toks):
+    """Records for the `<mujoco` occurrences in doc comments (see the module docstring)."""
+    recs = []
+    for lines, src_lines in doc_blocks(src, toks):
+        if not any("<mujoco" in line for line in lines):
+            continue
+        fenced = set()
+        for info, start, body in doc_fences(lines):
+            fenced.update(range(start - 1, start + len(body) + 1))
+            if not any("<mujoco" in line for line in body):
+                continue
+            if is_rust_fence(info):
+                code = doctest_code(body)
+                ctoks = lex(code)
+                for rec in literal_records(code, ctoks, [], lambda p: src_lines[start + code.count("\n", 0, p)]):
+                    rec["doctest"] = True
+                    rec["kind"] = "doc-" + rec["kind"]
+                    recs.append(rec)
+            else:
+                recs.append(dict(kind="doc-md-block", lang=info.strip(), line=src_lines[start],
+                                 text="\n".join(body) + "\n"))
+        for i, line in enumerate(lines):
+            if "<mujoco" in line and i not in fenced:
+                recs.append(dict(kind="doc-comment", line=src_lines[i], text=None))
+    return recs
+
+
 def extract(root, out_dir):
     """Write every doc under <out_dir>/docs and return the manifest records."""
     meta = json.loads(subprocess.run(["cargo", "metadata", "--no-deps", "--format-version", "1"],
@@ -206,49 +337,21 @@ def extract(root, out_dir):
                     recs.append(dict(kind="md-block", lang=m.group(1), line=line, text=m.group(2)))
         else:
             toks = lex(src)
-            tranges = test_ranges(src, toks)
-            for idx, t in enumerate(toks):
-                if t[0] == "comment" and "<mujoco" in t[3]:
+            for t in toks:
+                if t[0] == "comment" and "<mujoco" in t[3] and not is_line_doc(t):
                     line = src.count("\n", 0, t[1]) + 1
                     recs.append(dict(kind="doc-comment" if t[4] else "comment", line=line, text=None))
-                    continue
-                if t[0] != "str" or "<mujoco" not in t[3]:
-                    continue
-                line = src.count("\n", 0, t[1]) + 1
-                mac = macro_of(prev_code(src, toks, idx))
-                text = t[3]
-                rec = dict(line=line, lit=t[4], macro=mac, in_test_block=any(a <= t[1] <= b for a, b in tranges))
-                if mac == "concat":
-                    rec["kind"] = "concat"
-                    parts = [text]
-                    for tk in toks[idx + 1:]:
-                        if tk[0] == "str":
-                            parts.append(tk[3])
-                        elif not (tk[0] == "comment" or (tk[0] == "other" and tk[2] == ",")):
-                            break
-                    text = "".join(parts)
-                elif mac in FORMAT_MACROS:
-                    ph = placeholders(text)
-                    rec["placeholders"] = len(ph)
-                    if ph:
-                        rec["kind"] = "format-template"
-                        rec["placeholder_names"] = sorted(set(ph))[:8]
-                    else:
-                        rec["kind"] = "format-noarg"
-                        text = text.replace("{{", "{").replace("}}", "}")
-                else:
-                    rec["kind"] = "literal"
-                rec["text"] = text
-                recs.append(rec)
+            recs += doc_comment_records(src, toks)
+            recs += literal_records(src, toks, test_ranges(src, toks), lambda p: src.count("\n", 0, p) + 1)
         for r in recs:
             r["file"] = rel
             r["crate"] = owner(rel)
             text = r.pop("text")
-            if text is None or r["kind"] == "format-template":
+            if text is None or r["kind"] in ("format-template", "doc-format-template"):
                 records.append(r)
                 continue
             r["complete"] = "</mujoco>" in text or re.search(r"<mujoco[^>]*/>", text) is not None
-            if r["kind"] == "md-block" or r["complete"]:
+            if r["kind"] in ("md-block", "doc-md-block") or r["complete"]:
                 # one document per <mujoco ...> ... </mujoco> span (a literal can hold several)
                 r["doc_ids"] = []
                 for span in re.findall(r"<mujoco\b.*?</mujoco>|<mujoco\b[^>]*/>", text, re.S):
