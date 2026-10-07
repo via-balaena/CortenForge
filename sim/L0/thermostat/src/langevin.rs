@@ -279,14 +279,21 @@ impl PassiveComponent for LangevinThermostat {
     }
 
     /// Accepts a `gamma` shorter than the model's DOF count: the thermostat acts on the
-    /// first DOFs only. Refuses a noise variance that is not finite at the model's timestep.
+    /// first DOFs only. Refuses a timestep that is not positive and finite, then a noise
+    /// variance that is not finite at the model's timestep.
     fn validate(&self, model: &Model) -> Result<(), ThermostatError> {
+        let h = model.timestep;
+        if h <= 0.0 || !h.is_finite() {
+            return Err(ThermostatError::InvalidTimestep {
+                component: "LangevinThermostat",
+                timestep: h,
+            });
+        }
         if let Some(last) = self.gamma.len().checked_sub(1) {
             check_dof(model, last, "LangevinThermostat")?;
         }
         // The largest variance `apply` can compute, in its order of operations.
         let k_b_t = self.k_b_t * self.k_b_t_ctrl.map_or(1.0, |_| MAX_CTRL_MULTIPLIER);
-        let h = model.timestep;
         if let Some(dof) = self
             .gamma
             .iter()
@@ -737,6 +744,57 @@ mod tests {
         assert_eq!(verdict(1e304, false), Ok(()));
         assert_eq!(verdict(1e304, true), overflow);
         assert_eq!(verdict(1e303, true), Ok(()));
+    }
+
+    /// Installing on a model with a timestep that is not positive and finite is refused:
+    /// at a negative timestep the variance is negative and finite, so the overflow check
+    /// passed and `apply` took the square root of a negative number.
+    #[test]
+    fn thermostat_install_refuses_a_negative_timestep() {
+        let mut model = sim_core::test_fixtures::stochastic_resonance();
+        model.timestep = -1e-3;
+        let installed = crate::PassiveStack::builder()
+            .with(LangevinThermostat::new(
+                DVector::from_element(1, 1.0),
+                1.0,
+                0,
+                0,
+            ))
+            .build()
+            .try_install(&mut model);
+        assert!(installed.is_err());
+    }
+
+    /// Zero, negative, `NaN` and infinite timesteps are all refused as `InvalidTimestep`: at
+    /// `NaN` the variance check would report `NoiseOverflow`, and at +∞ the variance is 0.
+    #[test]
+    fn thermostat_names_the_timestep() {
+        for timestep in [0.0, -1e-3, f64::NAN, f64::INFINITY] {
+            let mut model = sim_core::test_fixtures::stochastic_resonance();
+            model.timestep = timestep;
+            let installed = crate::PassiveStack::builder()
+                .with(LangevinThermostat::new(
+                    DVector::from_element(1, 1.0),
+                    1.0,
+                    0,
+                    0,
+                ))
+                .build()
+                .try_install(&mut model);
+            assert!(
+                matches!(installed, Err(ThermostatError::InvalidTimestep { .. })),
+                "timestep {timestep}: {installed:?}"
+            );
+            if let Err(refused) = installed {
+                assert_eq!(
+                    refused.to_string(),
+                    format!(
+                        "LangevinThermostat: the model's timestep must be positive and finite, \
+                         got {timestep}"
+                    )
+                );
+            }
+        }
     }
 
     #[test]

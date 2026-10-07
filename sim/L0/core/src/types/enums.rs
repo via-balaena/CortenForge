@@ -830,8 +830,18 @@ pub enum StepError {
     CholeskyFailed,
     /// LU decomposition failed (zero pivot in M − h·D).
     LuSingular,
-    /// Timestep is zero or negative.
+    /// `model.timestep` is not positive and finite: zero, negative, NaN or infinite.
     InvalidTimestep,
+    /// A `Data` array does not have the length the model requires: the `Data` was made by
+    /// another model, or the caller resized one of its arrays.
+    DataShapeMismatch {
+        /// The `Data` field (`"geom_xpos"`).
+        field: &'static str,
+        /// The length the model requires.
+        expected: usize,
+        /// The field's length.
+        actual: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -843,7 +853,16 @@ impl std::fmt::Display for StepError {
             Self::LuSingular => {
                 write!(f, "LU decomposition failed in implicit integration")
             }
-            Self::InvalidTimestep => write!(f, "timestep is zero or negative"),
+            Self::InvalidTimestep => write!(f, "timestep must be positive and finite"),
+            Self::DataShapeMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "data.{field} has length {actual}, but the model needs {expected}: the Data was \
+                 made by another model, or the array was resized"
+            ),
         }
     }
 }

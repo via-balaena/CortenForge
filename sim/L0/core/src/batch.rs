@@ -223,7 +223,8 @@ impl BatchSim {
     /// Returns per-environment errors. `None` = success, `Some(e)` = that
     /// environment's step failed. NaN/divergence triggers auto-reset (§41 S8)
     /// — use `data.divergence_detected()` to check. Only non-recoverable
-    /// errors (`CholeskyFailed`, `LuSingular`, `InvalidTimestep`) return `Some`.
+    /// errors (`CholeskyFailed`, `LuSingular`, `InvalidTimestep`,
+    /// `DataShapeMismatch`) return `Some`.
     ///
     /// When the `parallel` feature is enabled, environments are stepped in
     /// parallel via rayon `par_iter_mut`. When disabled, environments are

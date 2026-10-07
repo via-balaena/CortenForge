@@ -36,6 +36,14 @@ impl Data {
     ///
     /// - **Implicit**: Velocity was already updated in `mj_fwd_acceleration_implicit()`.
     ///   We only integrate positions here.
+    ///
+    /// Does not check `model.timestep` or the shape of `self`;
+    /// [`step`](Self::step) and [`step2`](Self::step2) do. Time runs backwards
+    /// at a negative timestep and becomes NaN or infinite at a non-finite one.
+    ///
+    /// # Panics
+    ///
+    /// May panic if an array of `self` is shorter than `model` requires.
     pub fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
