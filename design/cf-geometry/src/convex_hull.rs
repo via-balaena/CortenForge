@@ -8,7 +8,6 @@
 //! library. CortenForge implements Quickhull directly in pure Rust.
 
 use nalgebra::{Point3, Vector3};
-use std::collections::HashSet;
 
 use crate::{Aabb, Bounded};
 
@@ -24,7 +23,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Invariants
 ///
-/// - All face indices are valid indices into `vertices`.
+/// - All face indices are valid indices into `vertices`, and every vertex is
+///   used by at least one face.
 /// - All adjacency indices are valid indices into `vertices`.
 /// - Faces are CCW-wound (outward normal follows right-hand rule).
 /// - `normals.len() == faces.len()`.
@@ -180,14 +180,8 @@ pub fn convex_hull(points: &[Point3<f64>], max_vertices: Option<usize>) -> Optio
 
     // Step 2-3: create initial faces, init conflict graph, expand.
     let mut faces = create_initial_faces(&hull_vertices, &[0, 1, 2, 3]);
-    init_conflict_graph(points, &mut faces, &simplex, epsilon);
-    expand_hull(
-        points,
-        &mut hull_vertices,
-        &mut faces,
-        max_vertices,
-        epsilon,
-    );
+    init_conflict_graph(points, &hull_vertices, &mut faces, &simplex);
+    expand_hull(points, &mut hull_vertices, &mut faces, max_vertices);
 
     // Step 4-5: extract alive faces, build graph and normals.
     let alive_faces: Vec<[usize; 3]> = faces
@@ -195,6 +189,7 @@ pub fn convex_hull(points: &[Point3<f64>], max_vertices: Option<usize>) -> Optio
         .filter(|f| f.alive)
         .map(|f| f.indices)
         .collect();
+    let (hull_vertices, alive_faces) = drop_unused_vertices(&hull_vertices, &alive_faces);
 
     let adjacency = build_adjacency(&hull_vertices, &alive_faces);
 
@@ -458,36 +453,60 @@ fn create_initial_faces(hull_vertices: &[Point3<f64>], simplex: &[usize; 4]) -> 
 // Conflict graph
 // ---------------------------------------------------------------------------
 
-fn init_conflict_graph(
+/// Whether `p` lies strictly outside `face`, decided exactly (Shewchuk's
+/// `orient3d`). A float distance misjudges a point within rounding of a
+/// near-coplanar face: the visible region then splits, a face the new point
+/// can see survives, and the hull is no longer convex.
+fn is_outside(hull_vertices: &[Point3<f64>], face: &Face, p: &Point3<f64>) -> bool {
+    let coord = |q: &Point3<f64>| robust::Coord3D {
+        x: q.x,
+        y: q.y,
+        z: q.z,
+    };
+    let [a, b, c] = face.indices.map(|i| coord(&hull_vertices[i]));
+    // Negative: `p` is on the side the face's counter-clockwise winding faces.
+    robust::orient3d(a, b, c, coord(p)) < 0.0
+}
+
+/// Give point `pi` to the alive face (from `first_face` on) that it lies
+/// outside of and farthest from; a point outside none of them is inside the
+/// hull and is dropped. The float distance only ranks the faces it is outside.
+fn assign_conflict(
     points: &[Point3<f64>],
+    hull_vertices: &[Point3<f64>],
     faces: &mut [Face],
-    simplex: &[usize; 4],
-    epsilon: f64,
+    first_face: usize,
+    pi: usize,
 ) {
-    let simplex_set: HashSet<usize> = simplex.iter().copied().collect();
-    for (pi, p) in points.iter().enumerate() {
-        if simplex_set.contains(&pi) {
+    let p = &points[pi];
+    let mut best: Option<(usize, f64)> = None;
+    for (fi, face) in faces.iter().enumerate().skip(first_face) {
+        if !face.alive || !is_outside(hull_vertices, face, p) {
             continue;
         }
-        let mut best_face: Option<usize> = None;
-        let mut best_dist = epsilon;
-        for (fi, face) in faces.iter().enumerate() {
-            if !face.alive {
-                continue;
-            }
-            let dist = (p - face.center).dot(&face.normal);
-            if dist > best_dist {
-                best_dist = dist;
-                best_face = Some(fi);
-            }
+        let dist = (p - face.center).dot(&face.normal);
+        if best.is_none_or(|(_, farthest)| dist > farthest) {
+            best = Some((fi, dist));
         }
-        if let Some(fi) = best_face {
-            faces[fi].conflict_list.push(pi);
-            if best_dist > faces[fi].farthest_dist {
-                faces[fi].farthest_dist = best_dist;
-                faces[fi].farthest_idx = pi;
-            }
+    }
+    if let Some((fi, dist)) = best {
+        let face = &mut faces[fi];
+        face.conflict_list.push(pi);
+        if dist > face.farthest_dist {
+            face.farthest_dist = dist;
+            face.farthest_idx = pi;
         }
+    }
+}
+
+fn init_conflict_graph(
+    points: &[Point3<f64>],
+    hull_vertices: &[Point3<f64>],
+    faces: &mut [Face],
+    simplex: &[usize; 4],
+) {
+    for pi in (0..points.len()).filter(|pi| !simplex.contains(pi)) {
+        assign_conflict(points, hull_vertices, faces, 0, pi);
     }
 }
 
@@ -496,10 +515,10 @@ fn init_conflict_graph(
 // ---------------------------------------------------------------------------
 
 fn find_horizon(
+    hull_vertices: &[Point3<f64>],
     faces: &[Face],
     eye: &Point3<f64>,
     start_face: usize,
-    epsilon: f64,
 ) -> (Vec<usize>, Vec<(usize, usize, usize)>) {
     // `visible` in BFS order: its order decides the horizon's first edge, hence
     // the cone faces' order and the orphan points' order — never a hash order.
@@ -514,13 +533,9 @@ fn find_horizon(
             if ni == usize::MAX {
                 continue;
             }
-            if !is_visible[ni] && faces[ni].alive {
-                let n = &faces[ni];
-                let dist = (eye - n.center).dot(&n.normal);
-                if dist > epsilon {
-                    is_visible[ni] = true;
-                    visible.push(ni);
-                }
+            if !is_visible[ni] && faces[ni].alive && is_outside(hull_vertices, &faces[ni], eye) {
+                is_visible[ni] = true;
+                visible.push(ni);
             }
         }
     }
@@ -576,7 +591,6 @@ fn expand_hull(
     hull_vertices: &mut Vec<Point3<f64>>,
     faces: &mut Vec<Face>,
     max_vertices: Option<usize>,
-    epsilon: f64,
 ) {
     loop {
         // 1. Find the face with the farthest conflict point
@@ -606,7 +620,7 @@ fn expand_hull(
         hull_vertices.push(eye_pt);
 
         // 3-4. BFS to find visible faces + extract horizon edges.
-        let (visible, mut horizon) = find_horizon(faces, &eye_pt, face_idx, epsilon);
+        let (visible, mut horizon) = find_horizon(hull_vertices, faces, &eye_pt, face_idx);
 
         // Sort horizon edges into a closed polygon.
         order_horizon_edges(&mut horizon);
@@ -666,28 +680,34 @@ fn expand_hull(
 
         // 7. Redistribute orphan conflict points to new cone faces only.
         for &pi in &orphan_points {
-            let p = &points[pi];
-            let mut best_face: Option<usize> = None;
-            let mut best_dist = epsilon;
-            for (fi, face) in faces.iter().enumerate().skip(cone_start) {
-                if !face.alive {
-                    continue;
-                }
-                let dist = (p - face.center).dot(&face.normal);
-                if dist > best_dist {
-                    best_dist = dist;
-                    best_face = Some(fi);
-                }
-            }
-            if let Some(fi) = best_face {
-                faces[fi].conflict_list.push(pi);
-                if best_dist > faces[fi].farthest_dist {
-                    faces[fi].farthest_dist = best_dist;
-                    faces[fi].farthest_idx = pi;
-                }
-            }
+            assign_conflict(points, hull_vertices, faces, cone_start, pi);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+/// The vertices some face uses, in the order they were added, and the faces
+/// renumbered to them. A point added as an eye can end up inside a later
+/// hull with no face of its own.
+fn drop_unused_vertices(
+    hull_vertices: &[Point3<f64>],
+    faces: &[[usize; 3]],
+) -> (Vec<Point3<f64>>, Vec<[usize; 3]>) {
+    let mut used = vec![false; hull_vertices.len()];
+    for &i in faces.iter().flatten() {
+        used[i] = true;
+    }
+    let mut new_index = vec![usize::MAX; hull_vertices.len()];
+    let mut vertices = Vec::with_capacity(hull_vertices.len());
+    for (i, v) in hull_vertices.iter().enumerate().filter(|&(i, _)| used[i]) {
+        new_index[i] = vertices.len();
+        vertices.push(*v);
+    }
+    let faces = faces.iter().map(|f| f.map(|i| new_index[i])).collect();
+    (vertices, faces)
 }
 
 // ---------------------------------------------------------------------------

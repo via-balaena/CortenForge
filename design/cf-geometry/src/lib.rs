@@ -17,8 +17,9 @@
 //!
 //! # Layer 0
 //!
-//! Zero Bevy, zero GPU, zero framework dependencies. Pure `nalgebra` +
-//! optional `serde`.
+//! Zero Bevy, zero GPU, zero framework dependencies. Pure `nalgebra`, plus
+//! `robust` (exact orientation predicates for the convex hull) and optional
+//! `serde`.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // A model built from a mesh must not depend on hash order (its hull is part of
