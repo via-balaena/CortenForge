@@ -151,15 +151,23 @@ Each line: the call, why, and where the appendix records what would differ if it
 2. **Where MuJoCo itself fails.** (a) MuJoCo 3.5.0 refuses its own 2-body cables (internal exclude naming, "body 'B_1' not found", 8 corpus docs once `curve` is fixed); (b) lengthrange computation does not converge (4); (c) qhull fails on a flat mesh (1 + 2 CI tests). *Recommend*: (a) load and list (MuJoCo's defect, our result is defined); (b) and (c) parity — refuse — because our value for those quantities is not shown to be right.
 3. **P-L34 delay/history.** Implement MuJoCo 3.5.0's history (samples inserted in `mj_advance`, actuation and sensors read delayed values) or refuse `delay > 0` / `nsample > 0` as a stated limitation. *Recommend refuse in Rigid* (23 in-tree docs become refusal tests; the Model/Data fields keep MuJoCo's shape) and implement later as a feature.
 4. **Known divergences documented, not fixed here** — each needs Jon's DONE-or-DROPPED in the 0.10 ledger: sleep re-forwards on the sleep step and sleep timing (step 69 vs MuJoCo 76, A2 Q3); dim-3 tet re-orientation and boundary flaps (A6 §1.10); STL vertices not deduplicated (3× MuJoCo on `fourier_n1`); principal-axis order of a full inertia (A5 §4.4); hull face order (limitation). *Recommend*: document all in the divergences table; fix tet orientation and flaps with the flex work after 0.10.
-5. **P-L32 multi-joint dynamics** — in Rigid or its own PR. Waiting on the isolation (§5).
+5. **P-L32 multi-joint dynamics** — in Rigid or its own PR. Cause isolated and fix measured (§5). *Recommend Rigid* (K13).
 
 Also for Jon's review, though the rule settles them: the 14 earlier decisions are in §3 as recommended; sensor derivatives change semantics (§2).
 
 ---
 
-## 5. P-L32 (pending)
+## 5. P-L32 — multi-joint bodies (cause isolated, fix measured)
 
-Any body with ≥ 2 joints diverges from MuJoCo 3.5.0 after one Euler step (qvel 2.3e-4…3.0e-3); one joint per body agrees to ~1e-16; at t = 0 `qM` agrees to ≤ 2e-17 and `qfrc_bias` does not (hinge+hinge dof 0: 0.6116 vs 0.5528). Cause not isolated (A5 §4.1). An investigation is finding the first differing intermediate quantity and testing a fix in a scratch copy; this section is filled when it reports.
+**Fixture confirmed identical** in both engines (nq, nv, `jnt_pos`, `jnt_axis`, `body_pos`, `body_quat`, `body_ipos`, mass, qpos, qvel; inertia to 2.8e-17). Positions, `cdof`, `cinert`, `cvel` agree to ≤ 1.4e-17; the **first differing quantity is the bias acceleration** (`cacc_bias`: 0.500 on hinge+hinge, 0.30–0.50 on slide+hinge, hinge+slide, hinge→ball, slide→ball, a six-joint body). The same two joints split across two bodies agree at every stage.
+
+**Cause.** MuJoCo's `mj_comVel` (`engine_core_smooth.c:2290,2331,2335`; ball `:2315-2317`) computes each joint's `cdof_dot` from the body velocity accumulated over the body's earlier joints. Ours (`sim/L0/core/src/dynamics/rne.rs:233-234`) uses the parent velocity for every joint; its comment (`:221-223`) relies on (S·q̇)×(S·q̇) = 0, which holds only for one joint per body. The same pattern sits at `forward/acceleration.rs:603-604` (`cacc`, `cfrc_int`, acceleration sensors), `derivatives/hybrid.rs:443-444` (`mjd_rne_vel`), `:1278` (`mjd_rne_pos`), and `sim/L0/gpu/src/shaders/rne.wgsl:236-254`.
+
+**Fix (scratch copy, 3 files, +87 lines).** A running `v_partial += v_joint` per joint in both forward paths and at `mjd_rne_pos`'s operating point; `mjd_rne_vel` carries a running `vt`/`dvt` as MuJoCo's `mjd_comVel_vel_dense` (`engine_derivative.c:321`); `mjd_rne_pos` gains the derivative of the cross terms. **One commit**: the forward half alone fails `derivatives::test_pos_deriv_multi_joint_body` (2.6e-2 > 1e-4) and leaves Implicit 1.6e-5 off MuJoCo. **The GPU shader gets the same change in that commit** (not yet written or run: T15c, tolerance 1e-3, moves 4.8e-2 on CPU).
+
+**Measured:** every stage ≤ 1e-12 vs MuJoCo; Euler qvel exact after 1 step on hinge/slide cases and ≤ 2.4e-14 after 500 (ball cases ≤ 1.2e-13, the level single-joint ball bodies already have); Implicit, ImplicitFast, RK4 ≤ 7.1e-14 after 500; `cacc`, `cfrc_int`, `qfrc_inverse` agree; analytic vs FD ≤ 5.6e-10; 1,387/1,387 deterministic one-joint-per-body corpus docs bit-identical over 100 steps; sim-core lib (720), sim-conformance (1,338 + 83), sim-mjcf (386), cf-mjcf-emit (18) unchanged. Six corpus docs change trajectory (`integration/validation.rs:487/571/627`, `derivatives.rs:1899`, `mjcf/src/builder/actuator.rs:795`, one unrun md block). Not run: sim-gpu, sim-urdf, sim-thermostat, cf-design (builds multi-joint bodies at `model_builder.rs:612`), cf-osim, cf-msk-fit, cf-codesign, L1 crates, examples, licensed gates, sleep.
+
+**Found alongside, not fixed by this:** analytic position derivatives already disagree with FD on main for hinge-then-slide on one body (7.2e-2), mechanism not isolated; a ball joint stores `xaxis = 0` (`forward/position.rs:112`), MuJoCo the rotated axis, no reader traced. Both go with K13.
 
 ---
 
