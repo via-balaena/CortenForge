@@ -9,12 +9,18 @@ A doc is one `<mujoco ...>...</mujoco>` span of a string literal (or of a fenced
 Markdown block) that holds a complete document; its id is sha256(text)[:16]. A
 `format!` template is recorded but not extracted: its text is not a document
 until it runs. In `///` and `//!` doc comments, a doc in a string literal of a
-Rust code block (a doctest) is extracted as rustdoc compiles it, and a doc in
-an `xml` or other fenced block like a Markdown fence; a `<mujoco` outside a
-fence is recorded but not extracted. Read-only on the repository, except
-`drift --append`.
+fenced Rust code block (a doctest) is extracted as rustdoc compiles it, and a
+doc in an `xml` or other fenced block like a Markdown fence; a `<mujoco` in
+prose is recorded but not extracted. The rules for which fence is a doctest,
+hidden `#` lines, fences and doc runs follow rustdoc 1.96.0 and CommonMark;
+test_extract_mjcf.py checks them against rustdoc's own results. A `<mujoco` in
+a doc comment rustdoc may compile but this does not model is recorded as
+`doc-unmodelled`: a block doc comment (`/** */`, `/*! */`), a `doc` attribute,
+an indented code block, a block quote, or a doctest that does not lex.
+Read-only on the repository, except `drift --append`.
 
-`drift` exits 1 when the working tree holds a doc the snapshot lacks. With `--append` it adds
+`drift` exits 1 when the working tree holds a doc the snapshot lacks, or a
+`doc-unmodelled` record (rewrite it as a fenced block in `///` or `//!`). With `--append` it adds
 those docs to sim/L0/tests/assets/census/docs/, appends their rows to its
 manifest.tsv, and prints their ids — the ids-file gen_census_golden.py takes:
 
@@ -50,7 +56,7 @@ def lex(src):
             j = src.find("\n", i)
             j = n if j < 0 else j
             text = src[i:j]
-            doc = text.startswith("///") or text.startswith("//!")
+            doc = (text.startswith("///") and not text.startswith("////")) or text.startswith("//!")
             out.append(("comment", i, j, text, doc))
             i = j
             continue
@@ -65,7 +71,9 @@ def lex(src):
                     j += 2
                 else:
                     j += 1
-            out.append(("comment", i, j, src[i:j], src.startswith("/**", i) or src.startswith("/*!", i)))
+            text = src[i:j]
+            doc = (text.startswith("/**") and not text.startswith("/***") and text != "/**/") or text.startswith("/*!")
+            out.append(("comment", i, j, text, doc))
             i = j
             continue
         # raw strings / byte / c strings
@@ -176,14 +184,36 @@ def test_ranges(src, toks):
     return ranges
 
 
-RUSTDOC_FENCE_WORDS = {"", "rust", "ignore", "no_run", "should_panic", "compile_fail", "test_harness",
-                       "standalone_crate"}
+RUSTDOC_TEST_WORDS = {"should_panic", "no_run", "ignore"}
+RUSTDOC_TEST_ATTRS = {"test_harness", "compile_fail", "standalone_crate"}
+
+
+def fence_tokens(info):
+    """The words of a fence info string as rustdoc splits them: on commas and whitespace, with
+    `{...}` attribute groups (`{.class}`) dropped."""
+    return [w for w in re.split(r"[\s,]+", re.sub(r"\{[^}]*\}?", " ", info)) if w]
 
 
 def is_rust_fence(info):
-    """Whether rustdoc compiles a fenced block with this info string as Rust (an untagged block is Rust)."""
-    words = [w for w in re.split(r"[\s,]+", info.strip()) if w]
-    return all(w in RUSTDOC_FENCE_WORDS or re.fullmatch(r"edition\d+|E\d{4}", w) for w in words)
+    """Whether rustdoc compiles a fenced block with this info string as a doctest, by rustdoc's
+    rule (`LangString::parse`, checked against rustdoc 1.96.0): untagged is Rust; `rust` keeps it
+    Rust; `should_panic`, `no_run`, `ignore` and `ignore-*` keep it Rust only before any other
+    word, `compile_fail`, `test_harness` and `standalone_crate` before any other word or after a
+    Rust tag; `edition*` changes nothing; `custom`, and any other word on its own, make it not
+    Rust (an error code such as `E0308` is such a word on stable rustdoc)."""
+    seen_rust = seen_other = custom = False
+    for w in fence_tokens(info):
+        if w in RUSTDOC_TEST_WORDS or w.startswith("ignore-"):
+            seen_rust = not seen_other
+        elif w == "rust":
+            seen_rust = True
+        elif w in RUSTDOC_TEST_ATTRS:
+            seen_rust = not seen_other or seen_rust
+        elif w == "custom":
+            custom = True
+        elif not w.startswith("edition"):
+            seen_other = True
+    return not custom and (not seen_other or seen_rust)
 
 
 def is_line_doc(tok):
@@ -192,20 +222,20 @@ def is_line_doc(tok):
 
 
 def doc_blocks(src, toks):
-    """Runs of `///` (or `//!`) line comments on consecutive lines, unindented as rustdoc does.
+    """The doc text of each item, from its `///` (or `//!`) line comments, unindented as rustdoc
+    does. A blank line or a plain comment between two of them does not end the item's doc; code
+    or the other marker does.
 
-    Yields (lines, source_lines): the Markdown text of the run, one entry per comment line with
-    the marker and the run's common leading whitespace removed, and each entry's 1-based line."""
-    runs = []
+    Yields (lines, source_lines): one entry per doc comment line with the marker and the common
+    leading whitespace removed, and each entry's 1-based line."""
+    runs = [[]]
     for t in toks:
-        if not is_line_doc(t):
-            if runs and runs[-1]:
+        if is_line_doc(t):
+            if runs[-1] and runs[-1][-1][3][:3] != t[3][:3]:
                 runs.append([])
-            continue
-        last = runs[-1][-1] if runs and runs[-1] else None
-        if last is None or last[3][:3] != t[3][:3] or src[last[2]:t[1]].count("\n") != 1:
+            runs[-1].append(t)
+        elif t[0] != "comment" and runs[-1]:
             runs.append([])
-        runs[-1].append(t)
     for run in filter(None, runs):
         bodies = [t[3][3:] for t in run]
         indent = min((len(b) - len(b.lstrip()) for b in bodies if b.strip()), default=0)
@@ -213,31 +243,43 @@ def doc_blocks(src, toks):
         yield lines, [src.count("\n", 0, t[1]) + 1 for t in run]
 
 
+FENCE_OPEN = re.compile(r"( {0,3})(`{3,}|~{3,})(.*)$")
+
+
 def doc_fences(lines):
-    """Fenced blocks of a doc comment's Markdown: (info, first line index, body lines)."""
+    """Fenced blocks of a doc comment's Markdown, by CommonMark's rules: a fence opens with three
+    or more backticks or tildes indented at most three spaces, closes with at least as many of the
+    same character and nothing else on the line, and its body loses up to the opening fence's
+    indentation. Yields (info, first body line index, body lines)."""
     i = 0
     while i < len(lines):
-        m = re.match(r"\s*(```+|~~~+)(.*)$", lines[i])
-        if not m:
+        m = FENCE_OPEN.fullmatch(lines[i])
+        if not m or (m.group(2)[0] == "`" and "`" in m.group(3)):
             i += 1
             continue
-        fence, info, start = m.group(1), m.group(2), i + 1
-        j = start
-        while j < len(lines) and not lines[j].lstrip().startswith(fence):
+        indent, fence, info = len(m.group(1)), m.group(2), m.group(3)
+        close = re.compile(r" {0,3}%s{%d,}\s*" % (re.escape(fence[0]), len(fence)))
+        j = i + 1
+        while j < len(lines) and not close.fullmatch(lines[j]):
             j += 1
-        yield info, start, lines[start:j]
+        body = [line[min(indent, len(line) - len(line.lstrip(" "))):] for line in lines[i + 1:j]]
+        yield info, i + 1, body
         i = j + 1
 
 
 def doctest_code(body):
-    """A Rust doctest's code as rustdoc compiles it: a hidden line `# x` (or `#`) is code `x`."""
+    """A Rust doctest's code as rustdoc compiles it (its `map_line`): a line whose trimmed text
+    starts `# ` or is `#` alone is hidden and contributes the rest of its trimmed text; a line
+    starting `##` keeps one `#`."""
     out = []
     for line in body:
-        s = line.lstrip()
-        if s == "#" or s.startswith("# "):
-            out.append(line[:len(line) - len(s)] + s[2:])
-        elif s.startswith("##"):
-            out.append(line[:len(line) - len(s)] + s[1:])
+        t = line.strip()
+        if t.startswith("##"):
+            out.append(line.replace("##", "#", 1))
+        elif t.startswith("# "):
+            out.append(t[2:])
+        elif t == "#":
+            out.append("")
         else:
             out.append(line)
     return "\n".join(out)
@@ -278,7 +320,9 @@ def literal_records(src, toks, tranges, line_of):
 
 
 def doc_comment_records(src, toks):
-    """Records for the `<mujoco` occurrences in doc comments (see the module docstring)."""
+    """Records for the `<mujoco` occurrences in `///` and `//!` doc comments (see the module
+    docstring). A `<mujoco` on a line rustdoc may compile that this does not model (an indented
+    code block, a block quote, or a Rust fence that does not lex) is `doc-unmodelled`."""
     recs = []
     for lines, src_lines in doc_blocks(src, toks):
         if not any("<mujoco" in line for line in lines):
@@ -290,8 +334,19 @@ def doc_comment_records(src, toks):
                 continue
             if is_rust_fence(info):
                 code = doctest_code(body)
-                ctoks = lex(code)
-                for rec in literal_records(code, ctoks, [], lambda p: src_lines[start + code.count("\n", 0, p)]):
+                try:
+                    ctoks = lex(code)
+                except ValueError as e:
+                    recs.append(dict(kind="doc-unmodelled", line=src_lines[start], text=None,
+                                     reason=f"doctest does not lex: {e}"))
+                    continue
+
+                def line_of(p, start=start, code=code):
+                    return src_lines[start + code.count("\n", 0, p)]
+                for t in ctoks:
+                    if t[0] == "comment" and "<mujoco" in t[3]:
+                        recs.append(dict(kind="doc-comment", line=line_of(t[1]), text=None))
+                for rec in literal_records(code, ctoks, [], line_of):
                     rec["doctest"] = True
                     rec["kind"] = "doc-" + rec["kind"]
                     recs.append(rec)
@@ -300,8 +355,40 @@ def doc_comment_records(src, toks):
                                  text="\n".join(body) + "\n"))
         for i, line in enumerate(lines):
             if "<mujoco" in line and i not in fenced:
-                recs.append(dict(kind="doc-comment", line=src_lines[i], text=None))
+                if line.startswith("    ") or line.lstrip().startswith(">"):
+                    recs.append(dict(kind="doc-unmodelled", line=src_lines[i], text=None,
+                                     reason="indented code block or block quote"))
+                else:
+                    recs.append(dict(kind="doc-comment", line=src_lines[i], text=None))
     return recs
+
+
+DOC_ATTR = re.compile(r"(#!?\[\s*|cfg_attr\([^()]*,\s*)doc\s*=\s*$")
+
+
+def rs_records(src):
+    """Every record of a Rust source file, each with its `text` (None when not extracted)."""
+    toks = lex(src)
+    recs = []
+    for t in toks:
+        if t[0] == "comment" and "<mujoco" in t[3] and not is_line_doc(t):
+            line = src.count("\n", 0, t[1]) + 1
+            if t[4]:
+                recs.append(dict(kind="doc-unmodelled", line=line, text=None, reason="block doc comment"))
+            else:
+                recs.append(dict(kind="comment", line=line, text=None))
+    recs += doc_comment_records(src, toks)
+    for rec, t in zip(literal_records(src, toks, test_ranges(src, toks), lambda p: src.count("\n", 0, p) + 1),
+                      [t for t in toks if t[0] == "str" and "<mujoco" in t[3]]):
+        if DOC_ATTR.search(src[max(0, t[1] - 200):t[1]]):
+            rec = dict(kind="doc-unmodelled", line=rec["line"], text=None, reason="doc attribute")
+        recs.append(rec)
+    return recs
+
+
+def doc_spans(text):
+    """The documents in a record's text: each `<mujoco ...>...</mujoco>` or `<mujoco .../>` span."""
+    return re.findall(r"<mujoco\b.*?</mujoco>|<mujoco\b[^>]*/>", text, re.S)
 
 
 def extract(root, out_dir):
@@ -336,13 +423,7 @@ def extract(root, out_dir):
                     line = src.count("\n", 0, m.start()) + 1
                     recs.append(dict(kind="md-block", lang=m.group(1), line=line, text=m.group(2)))
         else:
-            toks = lex(src)
-            for t in toks:
-                if t[0] == "comment" and "<mujoco" in t[3] and not is_line_doc(t):
-                    line = src.count("\n", 0, t[1]) + 1
-                    recs.append(dict(kind="doc-comment" if t[4] else "comment", line=line, text=None))
-            recs += doc_comment_records(src, toks)
-            recs += literal_records(src, toks, test_ranges(src, toks), lambda p: src.count("\n", 0, p) + 1)
+            recs = rs_records(src)
         for r in recs:
             r["file"] = rel
             r["crate"] = owner(rel)
@@ -354,7 +435,7 @@ def extract(root, out_dir):
             if r["kind"] in ("md-block", "doc-md-block") or r["complete"]:
                 # one document per <mujoco ...> ... </mujoco> span (a literal can hold several)
                 r["doc_ids"] = []
-                for span in re.findall(r"<mujoco\b.*?</mujoco>|<mujoco\b[^>]*/>", text, re.S):
+                for span in doc_spans(text):
                     h = hashlib.sha256(span.encode()).hexdigest()[:16]
                     path = os.path.join(out_dir, "docs", h + ".xml")
                     if not os.path.exists(path):
@@ -376,6 +457,12 @@ def drift(append):
     snapshot = {f[:-len(".xml")] for f in os.listdir(os.path.join(census, "docs")) if f.endswith(".xml")}
     with tempfile.TemporaryDirectory() as tmp:
         records = extract(root, tmp)
+        unmodelled = [r for r in records if r["kind"] == "doc-unmodelled"]
+        for r in unmodelled:
+            print(f"drift: {r['file']}:{r['line']}: MJCF in a doc comment this does not model "
+                  f"({r['reason']})", file=sys.stderr)
+        if unmodelled:
+            return 1
         head = {f[:-len(".xml")] for f in os.listdir(os.path.join(tmp, "docs"))}
         added = sorted(head - snapshot)
         print(f"drift: {len(head)} docs in the working tree, {len(snapshot)} in the snapshot; "

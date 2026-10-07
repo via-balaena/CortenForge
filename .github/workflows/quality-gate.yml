@@ -262,6 +262,11 @@ jobs:
           GITHUB_BASE_REF_MG: ${{ github.event.merge_group.base_ref }}
         shell: bash
 
+      # The extractor that finds the census's documents, against rustdoc's own
+      # doctests: the test's expected values were measured with rustdoc.
+      - name: The census extractor reads doc comments as rustdoc does
+        run: python3 sim/L0/tests/scripts/test_extract_mjcf.py
+
   # ============================================================================
   # AFFECTED - Compute the PR-scoped crate set (changed + reverse-dep closure)
   # ============================================================================
