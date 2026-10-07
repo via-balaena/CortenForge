@@ -13,7 +13,7 @@ fenced Rust code block (a doctest) is extracted as rustdoc compiles it, and a
 doc in an `xml` or other fenced block like a Markdown fence; a `<mujoco` in
 prose is recorded but not extracted. The rules for which fence is a doctest,
 hidden `#` lines, fences and doc runs follow rustdoc 1.96.0 and CommonMark;
-test_extract_mjcf.py checks them against rustdoc's own results. A `<mujoco` in
+test_extract_mjcf.py checks them against rustdoc's results on its cases. A `<mujoco` in
 a doc comment rustdoc may compile but this does not model is recorded as
 `doc-unmodelled`: a block doc comment (`/** */`, `/*! */`), a `doc` attribute,
 an indented code block, a block quote, or a doctest that does not lex.
@@ -195,8 +195,10 @@ def fence_tokens(info):
 
 
 def is_rust_fence(info):
-    """Whether rustdoc compiles a fenced block with this info string as a doctest, by rustdoc's
-    rule (`LangString::parse`, checked against rustdoc 1.96.0): untagged is Rust; `rust` keeps it
+    """Whether rustdoc compiles a fenced block with this info string as a doctest, modelled on
+    rustdoc's `LangString::parse` and checked against rustdoc 1.96.0 on the info strings in
+    test_extract_mjcf.py (a word glued to an attribute group, `text{.x}`, which rustdoc runs as a
+    doctest, is read here as not Rust): untagged is Rust; `rust` keeps it
     Rust; `should_panic`, `no_run`, `ignore` and `ignore-*` keep it Rust only before any other
     word, `compile_fail`, `test_harness` and `standalone_crate` before any other word or after a
     Rust tag; `edition*` changes nothing; `custom`, and any other word on its own, make it not

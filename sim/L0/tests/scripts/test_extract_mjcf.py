@@ -7,16 +7,22 @@ The expected values were measured with rustdoc 1.96.0. Each case below was the d
 comment of an item in a crate whose doctests wrote their MJCF string to a file
 (`cargo test --doc`): a case's expected doc is what rustdoc's doctest held. Whether
 a fence info string makes a doctest is what `rustdoc --test --test-args --list`
-listed. A case rustdoc compiles but this extractor does not model expects
-`doc-unmodelled`. Set EXTRACT_MJCF to a path to test another copy of the script.
+listed. A case this extractor does not model expects `doc-unmodelled` (one of
+them, a fence indented four spaces after a paragraph, rustdoc reads as prose:
+the rule is conservative). `Drift` runs `drift` in a throwaway git repository
+(needs git and cargo). Set EXTRACT_MJCF to a path to test another copy of the
+script.
 """
 import importlib.util
 import os
+import subprocess
+import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_spec = importlib.util.spec_from_file_location(
-    "extract_mjcf", os.environ.get("EXTRACT_MJCF", os.path.join(HERE, "extract_mjcf.py")))
+SCRIPT = os.environ.get("EXTRACT_MJCF", os.path.join(HERE, "extract_mjcf.py"))
+_spec = importlib.util.spec_from_file_location("extract_mjcf", SCRIPT)
 ex = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ex)
 
@@ -128,6 +134,31 @@ pub fn t() {}
 /// ```
 pub fn v() {}
 ''', [("doc-literal", ['<mujoco model="V">\n```xml\n</mujoco>'])]),
+    ("a fence's body loses the fence's indentation", '''
+/// K
+/// - item
+///   ```
+///   let x = r#"<mujoco model="K">
+///     <worldbody/>
+///   </mujoco>"#;
+///   ```
+pub fn k() {}
+''', [("doc-literal", ['<mujoco model="K">\n  <worldbody/>\n</mujoco>'])]),
+    ("a line starting ## keeps one #", '''
+/// ```
+/// let x = r#"<mujoco model="HH">
+/// ## comment
+/// </mujoco>"#;
+/// ```
+pub fn hh() {}
+''', [("doc-literal", ['<mujoco model="HH">\n# comment\n</mujoco>'])]),
+    ("a backtick in a backtick fence's info string: not a fence", '''
+/// BT
+/// ```a`b
+/// let x = r#"<mujoco model="BT"/>"#;
+/// ```
+pub fn bt() {}
+''', [("doc-comment", [])]),
     ("MJCF in a doctest's comment", '''
 /// ```
 /// // the root element is <mujoco>
@@ -143,6 +174,23 @@ pub fn x() {}
 //// <mujoco model="W"/>
 pub fn w() {}
 ''', [("comment", [])]),
+    ("three stars are a plain comment", '''
+/*** <mujoco model="SS"/> */
+pub fn ss() {}
+''', [("comment", [])]),
+    ("a fence indented four spaces is not a fence", '''
+/// X
+///     ```
+///     let x = r#"<mujoco model="X"/>"#;
+///     ```
+pub fn xx() {}
+''', [("doc-unmodelled", [])]),
+    ("a doctest that does not lex", '''
+/// ```compile_fail
+/// let x = r#"<mujoco model="UL"/>;
+/// ```
+pub fn ul() {}
+''', [("doc-unmodelled", [])]),
     ("indented code block", '''
 /// G
 ///
@@ -193,6 +241,30 @@ class DocComments(unittest.TestCase):
         for name, src, want in CASES:
             with self.subTest(case=name):
                 self.assertEqual(records(src), want)
+
+
+class Drift(unittest.TestCase):
+    def drift(self, lib_rs):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src"))
+            os.makedirs(os.path.join(d, "sim", "L0", "tests", "assets", "census", "docs"))
+            with open(os.path.join(d, "Cargo.toml"), "w") as f:
+                f.write('[package]\nname = "t"\nversion = "0.0.0"\nedition = "2021"\n')
+            with open(os.path.join(d, "src", "lib.rs"), "w") as f:
+                f.write(lib_rs)
+            subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+            return subprocess.run([sys.executable, "-I", SCRIPT, "drift"], cwd=d, capture_output=True,
+                                  text=True, timeout=120)
+
+    def test_fails_on_doc_comment_mjcf_it_does_not_model(self):
+        r = self.drift('/**\n```\nlet x = r#"<mujoco model=\\"N\\"/>"#;\n```\n*/\npub fn n() {}\n')
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("src/lib.rs:1: MJCF in a doc comment this does not model", r.stderr)
+
+    def test_passes_without_it(self):
+        r = self.drift("/// No MJCF here.\npub fn n() {}\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 if __name__ == "__main__":
