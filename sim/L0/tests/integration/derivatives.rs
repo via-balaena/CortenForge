@@ -2796,6 +2796,20 @@ fn test_ball_joint_hybrid_vs_fd_a() {
 /// 1e-6; reading the explicit `qacc` there instead puts it 5.4e-2 off.
 #[test]
 fn implicitfast_transition_matches_fd_with_quaternion_joints() {
+    assert_transition_matches_fd_with_quaternion_joints(None);
+}
+
+/// The same model under Euler: its damped joints make the step advance `qvel`
+/// with eulerdamp's `(M + h·D)⁻¹·f`, which the quaternion blocks must read
+/// instead of `qacc`.
+#[test]
+fn euler_eulerdamp_transition_matches_fd_with_quaternion_joints() {
+    assert_transition_matches_fd_with_quaternion_joints(Some(Integrator::Euler));
+}
+
+/// A free body with a damped ball joint and a damped hinge, under the model's
+/// implicitfast or `integrator`: analytic A matches pure FD within 1e-6.
+fn assert_transition_matches_fd_with_quaternion_joints(integrator: Option<Integrator>) {
     let xml = r#"
     <mujoco model="deriv_free">
       <option timestep="0.005" integrator="implicitfast"/>
@@ -2817,7 +2831,10 @@ fn implicitfast_transition_matches_fd_with_quaternion_joints() {
       </worldbody>
       <actuator><motor joint="h" gear="1"/></actuator>
     </mujoco>"#;
-    let model = sim_mjcf::load_model(xml).expect("load");
+    let mut model = sim_mjcf::load_model(xml).expect("load");
+    if let Some(integrator) = integrator {
+        model.integrator = integrator;
+    }
     let mut data = model.make_data();
     for i in 0..model.nv {
         data.qvel[i] = 2.1 * ((i + 1) as f64).sin();
@@ -2836,5 +2853,9 @@ fn implicitfast_transition_matches_fd_with_quaternion_joints() {
     let hybrid =
         mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).expect("hybrid");
     let err = (&fd.A - &hybrid.A).abs().max();
-    assert!(err < 1e-6, "analytic A vs FD A: max abs difference {err}");
+    assert!(
+        err < 1e-6,
+        "{:?}: analytic A vs FD A: max abs difference {err}",
+        model.integrator
+    );
 }

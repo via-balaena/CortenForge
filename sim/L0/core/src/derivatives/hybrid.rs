@@ -8,7 +8,7 @@
 //! - Muscle derivative helpers
 
 use super::fd::{apply_state_perturbation, extract_state, in_ctrl_range, mjd_transition_fd};
-use super::integration::{compute_integration_derivatives, mjd_sub_quat};
+use super::integration::{compute_integration_derivatives, mjd_sub_quat, post_step_qvel};
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::object_velocity_local;
@@ -19,6 +19,7 @@ use crate::forward::{
     MjStage, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, hill_force_velocity,
     mj_fwd_position, muscle_gain_length, muscle_gain_velocity, norm3,
 };
+use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
@@ -27,9 +28,8 @@ use crate::linalg::{
     mj_solve_sparse_batch,
 };
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_DAMPER, DISABLE_EULERDAMP,
-    DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError,
-    TendonType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType,
+    Integrator, MjJointType, Model, StepError, TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -2391,10 +2391,8 @@ pub fn mjd_transition_hybrid(
     //     Gated identically to the step (DISABLE_EULERDAMP / DISABLE_DAMPER). When
     //     no DOF is damped, `M_impl == M` and the bare-`M` fast path is kept, so the
     //     undamped result is byte-for-byte unchanged.
-    let eulerdamp_active = matches!(model.integrator, Integrator::Euler)
-        && model.disableflags & DISABLE_EULERDAMP == 0
-        && model.disableflags & DISABLE_DAMPER == 0
-        && (0..nv).any(|i| model.implicit_damping[i] > 0.0);
+    let eulerdamp_active =
+        matches!(model.integrator, Integrator::Euler) && eulerdamp_applies(model);
     let m_impl_euler = if eulerdamp_active {
         let mut mi = data_work.qM.clone();
         for i in 0..nv {
@@ -2406,8 +2404,10 @@ pub fn mjd_transition_hybrid(
         None
     };
 
-    // 2. Compute integration derivatives (pure function).
-    let integ = compute_integration_derivatives(model, data);
+    // 2. Compute integration derivatives (pure function), at the velocity the
+    //    step integrates positions with.
+    let qvel_next = post_step_qvel(model, data, m_impl_euler.as_ref());
+    let integ = compute_integration_derivatives(model, data, &qvel_next);
 
     // 3. Allocate output.
     let mut a_mat = DMatrix::zeros(nx, nx);

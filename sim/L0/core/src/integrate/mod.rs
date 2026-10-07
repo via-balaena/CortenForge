@@ -22,6 +22,16 @@ use nalgebra::DVector;
 
 use euler::{mj_integrate_pos, mj_normalize_quat};
 
+/// Whether an Euler step solves `(M + h·D)·qacc_new = qfrc_smooth +
+/// qfrc_constraint` for the acceleration it advances `qvel` with (eulerdamp):
+/// neither eulerdamp nor dampers disabled, and some DOF damped (an undamped
+/// model skips the refactorisation).
+pub(crate) fn eulerdamp_applies(model: &Model) -> bool {
+    model.disableflags & DISABLE_EULERDAMP == 0
+        && model.disableflags & DISABLE_DAMPER == 0
+        && model.implicit_damping.iter().any(|&d| d > 0.0)
+}
+
 impl Data {
     /// Integration step after the acceleration stage: velocity, then position and time.
     ///
@@ -92,15 +102,7 @@ impl Data {
                 //   4. Solve qH · qacc_new = rhs
                 //   5. qvel += h · qacc_new
                 //
-                // Gated on: !disabled(DISABLE_EULERDAMP) && !disabled(DISABLE_DAMPER).
-                let eulerdamp = model.disableflags & DISABLE_EULERDAMP == 0
-                    && model.disableflags & DISABLE_DAMPER == 0;
-
-                // Check if any DOF has damping (avoid expensive refactorize for undamped models)
-                let has_damping =
-                    eulerdamp && (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
-
-                if has_damping {
+                if eulerdamp_applies(model) {
                     // Save original factorization (restored after solve)
                     let saved_qld = self.qLD_data.clone();
                     let saved_inv = self.qLD_diag_inv.clone();
