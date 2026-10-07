@@ -285,13 +285,16 @@ forward():
                mj_fwd_passive         Springs, dampers, friction loss, flex bending + vertex damping
   Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
                mj_fwd_constraint_islands  Per-island block-diagonal solving (when islands > 1)
-  Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
-integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper]:
+  Solve        mj_fwd_acceleration    qacc = M^-1 * f; the implicit integrators also solve:
+                                      ImplicitFast: (M − h·D_sym) · qacc_implicit = f, Cholesky
+                                        (D = passive + actuator vel)
+                                      Implicit: (M − h·D) · qacc_implicit = f, LU with partial
+                                        pivot (D includes Coriolis)
+                                      ImplicitSpringDamper: qacc = (v_new − qvel) / h
+integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper; RK4 under step2()]:
   Activation integration (act += dt * act_dot, muscle clamp to [0,1])
   Semi-implicit Euler (velocity first, then position with new velocity)
   Quaternion integration on SO(3) for ball/free joints (skips sleeping joints)
-  ImplicitFast: (M − h·D_sym) · qacc_implicit = f, Cholesky (D = passive + actuator vel)
-  Implicit: (M − h·D) · qacc_implicit = f, LU with partial pivot (D includes Coriolis)
 mj_runge_kutta() [RungeKutta4]:
   True 4-stage RK4 with Butcher tableau [1/6, 1/3, 1/3, 1/6]
   Integrates activation alongside qpos/qvel with same RK4 weights

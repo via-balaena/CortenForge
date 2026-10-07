@@ -4,6 +4,11 @@
 most load-bearing cap every coupling gradient carries: the rigid side is a
 **free-body platen** where `∂vz'/∂fz = dt/m` is a SCALAR.*
 
+> **0.10 layout note.** Written against 0.9, where `xfrc_applied` was a torque-first
+> `[τ; f]` 6-vector. From 0.10 it is `BodyWrench` with named `force` and `torque`
+> (MuJoCo's row is force first); sim-coupling still writes `[τ; f]` wrenches,
+> converted at one function (`xfrc_from_torque_force`).
+
 ## 1. The gap (one sentence)
 
 Every merged coupling gradient — `coupled_trajectory_{material,control,policy,joint}_gradient`,

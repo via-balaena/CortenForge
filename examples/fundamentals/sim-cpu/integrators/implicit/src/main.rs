@@ -45,11 +45,11 @@ use sim_core::validation::{Check, print_report};
 //        M_hat = M - h · D
 //
 //   3. Solve via LU factorization (P·L·U decomposition):
-//        M_hat · qacc = qfrc_smooth + qfrc_constraint
+//        M_hat · a = qfrc_smooth + qfrc_constraint
 //        Requires pivoting since M_hat is not symmetric
 //
-//   4. Update:
-//        qvel  ←  qvel + h · qacc
+//   4. Update (data.qacc keeps the explicit acceleration, as in MuJoCo):
+//        qvel  ←  qvel + h · a
 //        qpos  ←  manifold_integrate(qpos, h, qvel)
 //
 //   Properties:

@@ -210,7 +210,7 @@ impl Default for DerivativeConfig {
 /// analytically. FD is exact there.
 ///
 /// Full Implicit gets its velocity-Jacobian right by adding the second-order term
-/// `h²·M_hat⁻¹·rne_vel(qacc)` for the `v`-dependence of `M_hat = M − h·D` (see
+/// `h²·M_hat⁻¹·rne_vel(qacc_implicit)` for the `v`-dependence of `M_hat = M − h·D` (see
 /// `hybrid::mjd_transition_hybrid`), guarded machine-exact by the stiffness/damping
 /// rows of the transition harness.
 ///

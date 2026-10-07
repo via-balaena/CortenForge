@@ -40,9 +40,11 @@ pub struct Data {
     pub qvel: DVector<f64>,
     /// Joint accelerations (length `nv`) - computed by forward dynamics: the
     /// constraint solver's result, else `M⁻¹ (qfrc_smooth + qfrc_constraint)`,
-    /// under every integrator, as MuJoCo's `mj_fwdConstraint` leaves it.
-    /// Implicit and ImplicitFast advance `qvel` with another acceleration
-    /// (see `qacc_implicit`); ImplicitSpringDamper stores `(v_new - qvel) / h`.
+    /// as MuJoCo's `mj_fwdConstraint` leaves it. Under Implicit and ImplicitFast
+    /// this is still the explicit acceleration, while the step advances `qvel`
+    /// with the implicit one, `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)`,
+    /// as in MuJoCo. Under ImplicitSpringDamper (not a MuJoCo integrator) it is
+    /// the implicit acceleration `(v_new - qvel) / h`.
     pub qacc: DVector<f64>,
     /// Warm-start for constraint solver (length `nv`).
     pub qacc_warmstart: DVector<f64>,

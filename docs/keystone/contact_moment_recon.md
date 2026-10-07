@@ -9,6 +9,11 @@ of the multi-DOF wrench routing (PR #312) — the rigid carry already CONSUMES a
 on the contact side and threading its gradient — and the first step of the
 curved/distributed device-on-tissue contact arc the capstone needs.*
 
+> **0.10 layout note.** Written against 0.9, where `xfrc_applied` was a torque-first
+> `[τ; f]` 6-vector. From 0.10 it is `BodyWrench` with named `force` and `torque`
+> (MuJoCo's row is force first); sim-coupling still writes `[τ; f]` wrenches,
+> converted at one function (`xfrc_from_torque_force`).
+
 ## 1. The gap (one sentence)
 
 In `coupled_trajectory_articulated_z` (the forward oracle) and

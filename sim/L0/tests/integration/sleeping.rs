@@ -474,7 +474,7 @@ fn test_wake_on_xfrc_applied() {
         "ball should be asleep before applying force"
     );
 
-    // Apply external force to wake it
+    // Apply an external torque to wake it
     data.xfrc_applied[ball_body].torque[2] = 10.0; // Torque about Z
 
     // Step once — wake detection runs in forward()
@@ -733,7 +733,7 @@ fn test_sleep_wake_scenario() {
     assert!(data.tree_asleep[tree_a] >= 0, "ball_a should be asleep");
     assert!(data.tree_asleep[tree_b] >= 0, "ball_b should be asleep");
 
-    // Wake ball_a with external force
+    // Wake ball_a with an external torque
     data.xfrc_applied[ball_a].torque[2] = 20.0;
     data.step(&model).expect("step");
 
@@ -744,7 +744,7 @@ fn test_sleep_wake_scenario() {
         "ball_b should still be asleep"
     );
 
-    // Clear force
+    // Clear the torque
     data.xfrc_applied[ball_a].torque[2] = 0.0;
 }
 
@@ -1321,7 +1321,7 @@ fn test_reset_restores_sleep_state() {
         data.step(&model).expect("step");
     }
 
-    // Apply force to wake resting body
+    // Apply a torque to wake the resting body
     data.xfrc_applied[resting_body].torque[2] = 50.0;
     data.step(&model).expect("step");
     assert!(
@@ -1375,7 +1375,7 @@ fn test_wake_on_negative_zero() {
     let tree = model.body_treeid[ball_body];
     assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
 
-    // Apply -0.0 force — should wake (MuJoCo bytewise check: -0.0 != 0 in bytes)
+    // Apply a -0.0 torque — should wake (MuJoCo bytewise check: -0.0 != 0 in bytes)
     data.xfrc_applied[ball_body].torque[0] = -0.0_f64;
 
     // Step once — wake detection runs
@@ -2320,7 +2320,7 @@ fn test_wake_cycle_propagation() {
     assert!(a_asleep, "tree A should be asleep");
     assert!(b_asleep, "tree B should be asleep");
 
-    // Apply external force to body A → wakes tree A
+    // Apply an external torque to body A → wakes tree A
     data.xfrc_applied[1] = BodyWrench::new(Vector3::zeros(), Vector3::new(0.0, 0.0, 10.0));
 
     // One step triggers wake detection
@@ -2553,7 +2553,7 @@ fn test_user_force_wake_phase_b() {
     let tree = model.body_treeid[1];
     assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
 
-    // Apply external force
+    // Apply an external torque
     data.xfrc_applied[1] = BodyWrench::new(Vector3::zeros(), Vector3::new(0.0, 0.0, 100.0));
 
     // One step → mj_wake() detects force and wakes the body
@@ -4041,7 +4041,7 @@ fn test_selective_crba_wake_recomputes() {
         .find(|&t| data.tree_asleep[t] >= 0)
         .expect("a tree should be asleep");
 
-    // Wake it with a force
+    // Wake it with a torque
     let body_start = model.tree_body_adr[slept_tree];
     data.xfrc_applied[body_start].torque[2] = 5.0;
 
@@ -4933,7 +4933,7 @@ fn test_partial_ldl_spd_preserved() {
         }
     }
 
-    // Phase 3: Remove force, let it re-settle
+    // Phase 3: Remove the torque, let it re-settle
     data.xfrc_applied[body_a1].torque[2] = 0.0;
     for step in 0..200 {
         data.step(&model).expect("step");
@@ -5032,9 +5032,9 @@ fn test_partial_ldl_multi_tree_independence() {
 /// T106: Solve with zero RHS for sleeping DOFs yields zero output (AC #72).
 ///
 /// After partial factorization, sleeping DOFs have zero qvel and qacc.
-/// Uses the three-tree free-body model where forces directly produce non-zero
-/// accelerations on free-joint DOFs. Verifies that sleeping trees' qacc stays
-/// zero while awake trees get non-zero qacc from the applied force.
+/// Uses the three-tree free-body model where applied wrenches directly produce
+/// non-zero accelerations on free-joint DOFs. Verifies that sleeping trees' qacc
+/// stays zero while awake trees get non-zero qacc from the applied torque.
 #[test]
 fn test_partial_ldl_solve_zero_sleeping_rhs() {
     let model = load_model(three_tree_crba_mjcf()).expect("load model");
@@ -5055,7 +5055,7 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
         assert_eq!(data.qacc[d], 0.0, "sleeping qacc[{d}] should be zero");
     }
 
-    // Wake tree 0 only (free-body sphere — force directly produces acceleration)
+    // Wake tree 0 only (free-body sphere — a torque directly produces acceleration)
     let body_a = model.tree_body_adr[0];
     data.xfrc_applied[body_a].torque[2] = 50.0; // large torque about Z on the free body
     data.step(&model).expect("step after wake");

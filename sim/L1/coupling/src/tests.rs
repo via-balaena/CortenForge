@@ -400,7 +400,7 @@ fn rigid_xfrc_column_free_body_smoke() {
     data.forward(&model).expect("forward");
     let col = rigid_xfrc_column(&model, &data, 1);
     assert_eq!(col.shape(), (6, 6)); // free joint: nv=6, 6 spatial-force columns
-    // ∂vz'/∂f_z (qvel[2] vs xfrc[5]) is the free-body dt/m (read from the model,
+    // ∂vz'/∂f_z (qvel[2] vs column 5, f_z of [τ; f]) is the free-body dt/m (read from the model,
     // not hardcoded, so it can't go stale if the fixture changes).
     let dt_over_m = model.timestep / model.body_mass[1];
     assert!(

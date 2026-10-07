@@ -818,6 +818,10 @@ impl ActionSpaceBuilder {
 
     /// Inject `action[..]` → `data.xfrc_applied[body_range]`: 6 per body,
     /// force then torque (world frame), as a MuJoCo `xfrc_applied` row.
+    ///
+    /// Replaces 0.9's `xfrc_applied` builder method, which took the 6 values
+    /// torque first: an action vector or policy built for 0.9 needs its halves
+    /// swapped, not only the method renamed.
     #[must_use]
     pub fn body_wrench(mut self, body_range: Range<usize>) -> Self {
         self.entries

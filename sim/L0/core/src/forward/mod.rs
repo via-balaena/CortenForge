@@ -153,8 +153,9 @@ impl Data {
     /// Split-step phase 2: acceleration stage + integration.
     ///
     /// Runs actuation, dynamics, constraints, acc-sensors, then integrates
-    /// positions and velocities using Euler-style integration (regardless of
-    /// `model.integrator`), sleep update, and warmstart save.
+    /// velocities and positions with [`integrate`](Self::integrate): Euler
+    /// under Euler and RK4 (as MuJoCo's `mj_step2`), the integrator's own
+    /// velocity update otherwise; then the sleep update and warmstart save.
     ///
     /// Must be called after [`step1()`](Self::step1). The user may modify
     /// `ctrl`, `qfrc_applied`, `xfrc_applied`, etc. between step1 and step2

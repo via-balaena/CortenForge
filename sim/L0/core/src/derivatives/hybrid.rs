@@ -2310,7 +2310,7 @@ pub fn mass_directional_derivative(
 ///   tendon `JᵀJ` q-dependence of `M_impl`. (ISD's own `M_impl` is otherwise
 ///   v-independent, so joint-only chains need no correction.)
 /// - **Full Implicit with a Muscle/HillMuscle gain actuator.** The velocity-block
-///   second-order term `T = rne_vel(qacc)` captures only the Coriolis part of
+///   second-order term `T = rne_vel(qacc_implicit)` captures only the Coriolis part of
 ///   `∂D/∂v`; a force–velocity-curve gain is v-dependent and contributes a
 ///   `∂D_actuator/∂v` that `T` misses. (Affine gain is constant in v ⇒ fine.)
 ///
@@ -2466,6 +2466,8 @@ pub fn mjd_transition_hybrid(
         }
         Integrator::Implicit => {
             // ∂v⁺/∂v = I + h·M_hat⁻¹·qDeriv + h²·M_hat⁻¹·T.
+            // `qacc` in this derivation is the acceleration the step integrates
+            // (`qacc_implicit`), not the explicit `data.qacc`.
             // The full-implicit step is `qacc = M_hat⁻¹·F`, `v⁺ = v + h·qacc`, with
             // `M_hat = M − h·D` and `D = qDeriv` (the FULL smooth-vel Jacobian, Coriolis
             // INCLUDED → v-dependent). Differentiating `M_hat(v)·qacc = F(v)`:
@@ -2691,11 +2693,11 @@ pub fn mjd_transition_hybrid(
                 BiasType::Muscle | BiasType::HillMuscle | BiasType::MillardMuscle
             )
         })
-        // Full Implicit's POSITION columns are FD-only. Its forward step is
-        // `qacc = M_hat⁻¹·F` with `M_hat = M − h·D`; D's Coriolis part depends on q,
-        // so the exact `∂v⁺/∂q` carries `+h²·M_hat⁻¹·(∂D/∂q)·qacc` — a MIXED q–v
-        // second derivative of the bias. Unlike the velocity block's v–v term (which
-        // collapses to `rne_vel(qacc)` by symmetry), the mixed term has no clean
+        // Full Implicit's POSITION columns are FD-only. Its step integrates
+        // `qacc_implicit = M_hat⁻¹·F` with `M_hat = M − h·D`; D's Coriolis part depends
+        // on q, so the exact `∂v⁺/∂q` carries `+h²·M_hat⁻¹·(∂D/∂q)·qacc_implicit` — a
+        // MIXED q–v second derivative of the bias. Unlike the velocity block's v–v term
+        // (which collapses to `rne_vel(qacc_implicit)` by symmetry), the mixed term has no clean
         // single-call analytic form, and FD-ing it costs the same as FD-ing the
         // position columns outright. So: analytic velocity columns (the implicit-
         // Coriolis term IS handled there), FD position columns (exact). ISD is

@@ -4,6 +4,11 @@
 half of the mission's "one outer loop differentiating w.r.t. **both** design and
 policy parameters" (`MISSION.md` §"What we must build" #2).*
 
+> **0.10 layout note.** Written against 0.9, where `xfrc_applied` was a torque-first
+> `[τ; f]` 6-vector. From 0.10 it is `BodyWrench` with named `force` and `torque`
+> (MuJoCo's row is force first); sim-coupling still writes `[τ; f]` wrenches,
+> converted at one function (`xfrc_from_torque_force`).
+
 The DESIGN half is done and merged: the keystone differentiability arc (S1–S5,
 PRs #299–#303) made `∂(rigid outcome)/∂(soft material)` differentiable; the
 time-adjoint (#306) + IPC carry-fix (#307) made the **multi-step** coupled
