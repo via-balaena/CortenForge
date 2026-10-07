@@ -799,6 +799,7 @@ impl Model {
             scratch_force: DVector::zeros(self.nv),
             scratch_rhs: DVector::zeros(self.nv),
             scratch_v_new: DVector::zeros(self.nv),
+            qacc_implicit: DVector::zeros(self.nv),
             scratch_lu_piv: vec![0; self.nv],
 
             // RK4 scratch buffers

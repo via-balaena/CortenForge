@@ -1,7 +1,16 @@
 //! Integration-specific derivative logic.
 
-use crate::types::{ActuatorDynamics, Data, Model};
-use nalgebra::{DMatrix, Matrix3, UnitQuaternion, Vector3};
+use crate::types::{ActuatorDynamics, Data, Integrator, Model};
+use nalgebra::{DMatrix, DVector, Matrix3, UnitQuaternion, Vector3};
+
+/// The acceleration `integrate` advances `qvel` with: `qacc_implicit` under
+/// Implicit and ImplicitFast, `qacc` otherwise.
+fn step_acceleration<'a>(model: &Model, data: &'a Data) -> &'a DVector<f64> {
+    match model.integrator {
+        Integrator::ImplicitFast | Integrator::Implicit => &data.qacc_implicit,
+        _ => &data.qacc,
+    }
+}
 
 // ============================================================================
 // Phase C: Analytical integration derivatives
@@ -136,10 +145,11 @@ pub(super) fn compute_integration_derivatives(
                 // block — strictly smaller than the pre-step error this replaces,
                 // never larger. Closing it for the damped path is a follow-on
                 // (route the transition `qacc` in); the undamped path is exact.
+                let qacc = step_acceleration(model, data);
                 let omega = Vector3::new(
-                    data.qvel[dof_adr] + h * data.qacc[dof_adr],
-                    data.qvel[dof_adr + 1] + h * data.qacc[dof_adr + 1],
-                    data.qvel[dof_adr + 2] + h * data.qacc[dof_adr + 2],
+                    data.qvel[dof_adr] + h * qacc[dof_adr],
+                    data.qvel[dof_adr + 1] + h * qacc[dof_adr + 1],
+                    data.qvel[dof_adr + 2] + h * qacc[dof_adr + 2],
                 );
                 let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                     data.qpos[qpos_adr],
@@ -163,10 +173,11 @@ pub(super) fn compute_integration_derivatives(
                 }
                 // Angular part (dof_adr+3..dof_adr+6) — post-step velocity θ=ω'·h
                 // (see Ball above; pre-step qvel leaves an O(h²·qacc) error).
+                let qacc = step_acceleration(model, data);
                 let omega = Vector3::new(
-                    data.qvel[dof_adr + 3] + h * data.qacc[dof_adr + 3],
-                    data.qvel[dof_adr + 4] + h * data.qacc[dof_adr + 4],
-                    data.qvel[dof_adr + 5] + h * data.qacc[dof_adr + 5],
+                    data.qvel[dof_adr + 3] + h * qacc[dof_adr + 3],
+                    data.qvel[dof_adr + 4] + h * qacc[dof_adr + 4],
+                    data.qvel[dof_adr + 5] + h * qacc[dof_adr + 5],
                 );
                 let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                     data.qpos[qpos_adr + 3],

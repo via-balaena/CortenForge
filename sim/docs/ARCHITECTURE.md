@@ -290,8 +290,8 @@ integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper]:
   Activation integration (act += dt * act_dot, muscle clamp to [0,1])
   Semi-implicit Euler (velocity first, then position with new velocity)
   Quaternion integration on SO(3) for ball/free joints (skips sleeping joints)
-  ImplicitFast: (M − h·D_sym) · qacc = f, Cholesky (D = passive + actuator vel)
-  Implicit: (M − h·D) · qacc = f, LU with partial pivot (D includes Coriolis)
+  ImplicitFast: (M − h·D_sym) · qacc_implicit = f, Cholesky (D = passive + actuator vel)
+  Implicit: (M − h·D) · qacc_implicit = f, LU with partial pivot (D includes Coriolis)
 mj_runge_kutta() [RungeKutta4]:
   True 4-stage RK4 with Butcher tableau [1/6, 1/3, 1/3, 1/6]
   Integrates activation alongside qpos/qvel with same RK4 weights

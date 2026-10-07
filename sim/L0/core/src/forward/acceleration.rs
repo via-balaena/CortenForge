@@ -32,8 +32,19 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
 
     match model.integrator {
         Integrator::ImplicitSpringDamper => mj_fwd_acceleration_implicit(model, data),
-        Integrator::ImplicitFast => mj_fwd_acceleration_implicitfast(model, data),
-        Integrator::Implicit => mj_fwd_acceleration_implicit_full(model, data),
+        Integrator::ImplicitFast | Integrator::Implicit => {
+            // MuJoCo leaves the explicit acceleration in qacc (mj_fwdConstraint,
+            // engine_forward.c:747-750) and solves M − h·D only in the integrator
+            // (mj_implicitSkip, :1128). After a Newton solve qacc is already its result.
+            if !data.newton_solved {
+                mj_fwd_acceleration_explicit(model, data);
+            }
+            if matches!(model.integrator, Integrator::ImplicitFast) {
+                mj_fwd_acceleration_implicitfast(model, data)
+            } else {
+                mj_fwd_acceleration_implicit_full(model, data)
+            }
+        }
         Integrator::Euler | Integrator::RungeKutta4 => {
             // qacc is always computed explicitly for Euler/RK4.
             // MuJoCo's eulerdamp is applied as a post-velocity correction in
@@ -262,7 +273,7 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
 
 /// Implicit-fast forward acceleration: symmetric D, Cholesky factorization.
 ///
-/// Solves `(M − h·D) · qacc = qfrc_smooth + qfrc_applied + qfrc_constraint`
+/// Solves `(M − h·D) · qacc_implicit = qfrc_smooth + qfrc_constraint`
 /// where D = ∂(qfrc_smooth)/∂(qvel) is assembled from DOF damping, tendon
 /// damping, and actuator velocity derivatives (Coriolis terms skipped).
 /// D is symmetrized: `D ← (D + D^T) / 2`.
@@ -309,10 +320,10 @@ fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<()
     data.scratch_rhs.copy_from(&data.qfrc_smooth);
     data.scratch_rhs += &data.qfrc_constraint;
 
-    // Step 5: Solve (M − h·D) · qacc = rhs via dense Cholesky
+    // Step 5: Solve (M − h·D) · qacc_implicit = rhs via dense Cholesky
     cholesky_in_place(&mut data.scratch_m_impl)?;
-    data.qacc.copy_from(&data.scratch_rhs);
-    cholesky_solve_in_place(&data.scratch_m_impl, &mut data.qacc);
+    data.qacc_implicit.copy_from(&data.scratch_rhs);
+    cholesky_solve_in_place(&data.scratch_m_impl, &mut data.qacc_implicit);
 
     Ok(())
 }
@@ -357,10 +368,14 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
     data.scratch_rhs.copy_from(&data.qfrc_smooth);
     data.scratch_rhs += &data.qfrc_constraint;
 
-    // Step 5: Factor (M − h·D) = P·L·U, then solve for qacc
+    // Step 5: Factor (M − h·D) = P·L·U, then solve for qacc_implicit
     lu_factor_in_place(&mut data.scratch_m_impl, &mut data.scratch_lu_piv)?;
-    data.qacc.copy_from(&data.scratch_rhs);
-    lu_solve_factored(&data.scratch_m_impl, &data.scratch_lu_piv, &mut data.qacc);
+    data.qacc_implicit.copy_from(&data.scratch_rhs);
+    lu_solve_factored(
+        &data.scratch_m_impl,
+        &data.scratch_lu_piv,
+        &mut data.qacc_implicit,
+    );
 
     Ok(())
 }

@@ -564,12 +564,12 @@ impl Data {
         // falls back to global solve when DISABLE_ISLAND or no islands.
         crate::constraint::mj_fwd_constraint_islands(model, self);
 
-        // ImplicitFast/Implicit: always run mj_fwd_acceleration to apply
-        // M_hat = M − h·∂f/∂v correction, even when Newton succeeded.
-        // Newton uses base M; the acceleration solver recomputes qacc with
-        // M_hat, providing the implicit velocity-derivative stabilization
-        // that prevents divergence in stiff-constraint + light-body systems
-        // (e.g., connect constraints on ball-joint chains).
+        // ImplicitFast/Implicit: always run mj_fwd_acceleration, even when
+        // Newton succeeded: it solves M_hat = M − h·∂f/∂v for qacc_implicit,
+        // the acceleration `integrate` advances qvel with, which provides the
+        // implicit velocity-derivative stabilization that prevents divergence
+        // in stiff-constraint + light-body systems (e.g., connect constraints
+        // on ball-joint chains). qacc keeps the explicit acceleration.
         // ImplicitSpringDamper does NOT need this — Newton already uses
         // M_impl via build_m_impl_for_newton().
         let needs_implicit_qacc = matches!(

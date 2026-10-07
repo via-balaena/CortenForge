@@ -1196,7 +1196,8 @@ fn test_implicit_derivative_consistency() {
 ///
 /// The fix: `forward_acc()` always runs `mj_fwd_acceleration_implicitfast()`
 /// for ImplicitFast, even when Newton succeeded. This applies the
-/// velocity-derivative mass correction to qacc.
+/// velocity-derivative mass correction to `qacc_implicit`, the acceleration
+/// the step integrates.
 #[test]
 fn test_implicitfast_connect_ball_chain_stability() {
     let mjcf = r#"
@@ -1276,4 +1277,134 @@ fn implicitspringdamper_forward_does_not_change_the_state() {
     data.forward(&model).expect("forward");
     assert_eq!(data.qpos, qpos);
     assert_eq!(data.qvel, qvel);
+}
+
+/// Under implicit and implicitfast, `data.qacc` after `forward()` is the
+/// explicit acceleration, as MuJoCo's `mj_fwdConstraint` leaves it; the
+/// implicit acceleration only advances `qvel`. MuJoCo 3.5.0 (unfused build):
+/// `qacc` = `qacc_smooth` = −2.907859844926252 on this damped hinge at
+/// qpos 0.3, qvel 1.5.
+#[test]
+fn forward_qacc_is_explicit_under_implicit() {
+    for integrator in ["implicitfast", "implicit"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.5"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"
+                        contype="0" conaffinity="0"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 1.5;
+        data.forward(&model).expect("forward");
+        let qacc = data.qacc[0];
+        assert!(
+            (qacc - -2.907_859_844_926_252).abs() < 1e-12,
+            "{integrator}: qacc {qacc}"
+        );
+        assert!(
+            (qacc - data.qacc_smooth[0]).abs() < 1e-12,
+            "{integrator}: qacc {qacc}, qacc_smooth {}",
+            data.qacc_smooth[0]
+        );
+    }
+}
+
+/// The accelerometer reads the explicit acceleration under every
+/// integrator. Damped hinge driven through 20 steps; MuJoCo 3.5.0 (unfused
+/// build) reads the same values under Euler, implicitfast and implicit.
+#[test]
+fn implicit_accelerometer_matches_mujoco_3_5_0() {
+    const CTRL: [f64; 20] = [
+        0.0, 0.8, 1.1, 0.6, -0.2, -0.7, -0.5, 0.4, 1.2, 1.4, 0.9, 0.1, -0.4, -0.1, 0.7, 1.6, 1.8,
+        1.2, 0.4, 0.0,
+    ];
+    let mujoco: [(usize, [f64; 3]); 3] = [
+        (1, [0.0, 0.0, 0.0]),
+        (10, [-0.024_371_234_406_227_43, 4.920_874_043_921_441, 0.0]),
+        (
+            20,
+            [-0.312_796_860_887_476_94, -0.945_390_709_313_387_9, 0.0],
+        ),
+    ];
+    for integrator in ["Euler", "implicitfast", "implicit"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" gravity="0 0 0" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b">
+                  <joint name="j" type="hinge" axis="0 0 1" damping="0.05"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
+                  <site name="s" pos="0.3 0 0"/>
+                </body>
+              </worldbody>
+              <actuator><motor joint="j" gear="0.2"/></actuator>
+              <sensor><accelerometer site="s"/></sensor>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        let mut checked = 0;
+        for (k, &ctrl) in CTRL.iter().enumerate() {
+            data.ctrl[0] = ctrl;
+            data.step(&model).expect("step");
+            for (step, want) in &mujoco {
+                if k + 1 == *step {
+                    for (axis, w) in want.iter().enumerate() {
+                        let got = data.sensordata[axis];
+                        assert!(
+                            (got - w).abs() < 1e-12,
+                            "{integrator}, step {step}, axis {axis}: {got} vs MuJoCo {w}"
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, mujoco.len());
+    }
+}
+
+/// A step saves the explicit acceleration as the next warmstart, as MuJoCo's
+/// `mj_advance` saves `d->qacc` (`engine_forward.c:939`), and still advances
+/// `qvel` with the implicit one. MuJoCo 3.5.0 (unfused build), one step from
+/// qpos 0.3, qvel 1.5: warmstart −2.907859844926252, qvel 1.4777791334298165.
+#[test]
+fn implicit_warmstart_is_explicit() {
+    for integrator in ["implicitfast", "implicit"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.5"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"
+                        contype="0" conaffinity="0"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 1.5;
+        data.step(&model).expect("step");
+        let warmstart = data.qacc_warmstart[0];
+        assert!(
+            (warmstart - -2.907_859_844_926_252).abs() < 1e-12,
+            "{integrator}: warmstart {warmstart}"
+        );
+        let qvel = data.qvel[0];
+        assert!(
+            (qvel - 1.477_779_133_429_816_5).abs() < 1e-12,
+            "{integrator}: qvel {qvel}"
+        );
+    }
 }

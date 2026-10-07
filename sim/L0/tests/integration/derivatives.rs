@@ -2788,3 +2788,53 @@ fn test_ball_joint_hybrid_vs_fd_a() {
         "Ball joint hybrid vs FD A (extreme inertia): {err2:.2e}"
     );
 }
+
+/// Under implicitfast the analytic transition's quaternion blocks use the
+/// post-step angular velocity `qvel + h·qacc_implicit` — the acceleration the
+/// step integrates, not the explicit `qacc` forward() leaves. A free body with
+/// a damped ball joint and a damped hinge: analytic A matches pure FD within
+/// 1e-6; reading the explicit `qacc` there instead puts it 5.4e-2 off.
+#[test]
+fn implicitfast_transition_matches_fd_with_quaternion_joints() {
+    let xml = r#"
+    <mujoco model="deriv_free">
+      <option timestep="0.005" integrator="implicitfast"/>
+      <worldbody>
+        <body name="f" pos="0 0 1">
+          <freejoint/>
+          <geom type="box" size="0.1 0.05 0.03" mass="1" contype="0" conaffinity="0"/>
+          <body name="c" pos="0.1 0 0">
+            <joint type="ball" damping="0.3"/>
+            <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.3"
+                  contype="0" conaffinity="0"/>
+            <body name="d" pos="0.2 0 0">
+              <joint name="h" type="hinge" axis="0 1 0" damping="0.4"/>
+              <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <actuator><motor joint="h" gear="1"/></actuator>
+    </mujoco>"#;
+    let model = sim_mjcf::load_model(xml).expect("load");
+    let mut data = model.make_data();
+    for i in 0..model.nv {
+        data.qvel[i] = 2.1 * ((i + 1) as f64).sin();
+    }
+    data.ctrl[0] = 0.5;
+    data.forward(&model).expect("forward");
+    let fd = mjd_transition_fd(
+        &model,
+        &data,
+        &DerivativeConfig {
+            use_analytical: false,
+            ..DerivativeConfig::default()
+        },
+    )
+    .expect("fd");
+    let hybrid =
+        mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).expect("hybrid");
+    let err = (&fd.A - &hybrid.A).abs().max();
+    assert!(err < 1e-6, "analytic A vs FD A: max abs difference {err}");
+}

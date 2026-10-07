@@ -38,7 +38,11 @@ pub struct Data {
     pub qpos: DVector<f64>,
     /// Joint velocities (length `nv`).
     pub qvel: DVector<f64>,
-    /// Joint accelerations (length `nv`) - computed by forward dynamics.
+    /// Joint accelerations (length `nv`) - computed by forward dynamics: the
+    /// constraint solver's result, else `M⁻¹ (qfrc_smooth + qfrc_constraint)`,
+    /// under every integrator, as MuJoCo's `mj_fwdConstraint` leaves it.
+    /// Implicit and ImplicitFast advance `qvel` with another acceleration
+    /// (see `qacc_implicit`); ImplicitSpringDamper stores `(v_new - qvel) / h`.
     pub qacc: DVector<f64>,
     /// Warm-start for constraint solver (length `nv`).
     pub qacc_warmstart: DVector<f64>,
@@ -548,6 +552,10 @@ pub struct Data {
     /// from which it computes `qacc = (v_new - v_old) / h`; `integrate` then
     /// copies it into `qvel`.
     pub scratch_v_new: DVector<f64>,
+    /// The acceleration Implicit and ImplicitFast advance `qvel` with,
+    /// `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)` (length `nv`). MuJoCo
+    /// keeps it in a stack local of `mj_implicitSkip` (`engine_forward.c:1134`).
+    pub(crate) qacc_implicit: DVector<f64>,
     /// Pivot permutation for LU factorization in `Integrator::Implicit` (length `nv`).
     /// Stores row swap indices from partial pivoting. Persists after forward pass
     /// for reuse by derivative column solves in `mjd_transition_hybrid`.
@@ -863,6 +871,7 @@ impl Clone for Data {
             scratch_force: self.scratch_force.clone(),
             scratch_rhs: self.scratch_rhs.clone(),
             scratch_v_new: self.scratch_v_new.clone(),
+            qacc_implicit: self.qacc_implicit.clone(),
             scratch_lu_piv: self.scratch_lu_piv.clone(),
             // RK4 scratch
             rk4_qpos_saved: self.rk4_qpos_saved.clone(),
@@ -1087,6 +1096,7 @@ impl Data {
         self.qpos = model.qpos0.clone();
         self.qvel.fill(0.0);
         self.qacc.fill(0.0);
+        self.qacc_implicit.fill(0.0);
         self.qacc_warmstart.fill(0.0);
         self.time = 0.0;
 
@@ -1256,6 +1266,7 @@ impl Data {
 
         // Clear derived quantities and applied forces (matching Data::reset()).
         self.qacc.fill(0.0);
+        self.qacc_implicit.fill(0.0);
         self.qacc_warmstart.fill(0.0);
         self.act_dot.fill(0.0);
         self.actuator_length.fill(0.0);
@@ -1312,7 +1323,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4416;
+        const EXPECTED_SIZE: usize = 4448;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

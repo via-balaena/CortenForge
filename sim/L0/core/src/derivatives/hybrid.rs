@@ -2491,10 +2491,11 @@ pub fn mjd_transition_hybrid(
                     dvdv[(i, j)] += h * col[i];
                 }
             }
-            // T = Coriolis velocity-Jacobian at qvel := qacc. Refresh velocity FK at qacc,
-            // then accumulate ONLY the bias term (mjd_rne_vel) into a fresh qDeriv buffer.
+            // T = Coriolis velocity-Jacobian at qvel := qacc_implicit (the acceleration
+            // the full-implicit step integrates). Refresh velocity FK there, then
+            // accumulate ONLY the bias term (mjd_rne_vel) into a fresh qDeriv buffer.
             let mut dq = data_work.clone();
-            dq.qvel.copy_from(&data_work.qacc);
+            dq.qvel.copy_from(&data_work.qacc_implicit);
             crate::forward::mj_fwd_velocity(model, &mut dq);
             dq.qDeriv.fill(0.0);
             mjd_rne_vel(model, &mut dq);
@@ -2722,16 +2723,13 @@ pub fn mjd_transition_hybrid(
     scratch.step(model)?;
     let y_0 = extract_state(model, &scratch, &qpos_0);
 
-    // For implicit integrators, save the qacc of the nominal step: the analytical
-    // position derivative uses it as the operating point for (∂M/∂q)·qacc, not
-    // the qacc `data` arrived with.
-    let qacc_transition = if matches!(
-        model.integrator,
-        Integrator::Euler | Integrator::RungeKutta4
-    ) {
-        None
-    } else {
-        Some(scratch.qacc.clone())
+    // For implicit integrators, save the acceleration the nominal step advanced
+    // qvel with: the analytical position derivative uses it as the operating
+    // point for (∂M/∂q)·qacc, not the qacc `data` arrived with.
+    let qacc_transition = match model.integrator {
+        Integrator::Euler | Integrator::RungeKutta4 => None,
+        Integrator::ImplicitFast | Integrator::Implicit => Some(scratch.qacc_implicit.clone()),
+        Integrator::ImplicitSpringDamper => Some(scratch.qacc.clone()),
     };
     // Re-evaluate sensors at post-step state (same as mjd_transition_fd).
     if compute_sensors {

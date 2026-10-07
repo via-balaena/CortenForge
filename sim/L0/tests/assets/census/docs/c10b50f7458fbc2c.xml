@@ -1,0 +1,20 @@
+<mujoco model="deriv_free">
+      <option timestep="0.005" integrator="implicitfast"/>
+      <worldbody>
+        <body name="f" pos="0 0 1">
+          <freejoint/>
+          <geom type="box" size="0.1 0.05 0.03" mass="1" contype="0" conaffinity="0"/>
+          <body name="c" pos="0.1 0 0">
+            <joint type="ball" damping="0.3"/>
+            <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.3"
+                  contype="0" conaffinity="0"/>
+            <body name="d" pos="0.2 0 0">
+              <joint name="h" type="hinge" axis="0 1 0" damping="0.4"/>
+              <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <actuator><motor joint="h" gear="1"/></actuator>
+    </mujoco>

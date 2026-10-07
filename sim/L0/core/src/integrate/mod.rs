@@ -34,7 +34,9 @@ impl Data {
     /// - **Euler**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`),
     ///   then integrates position using the new velocity.
     ///
-    /// - **Implicit, ImplicitFast**: `qvel += qacc * h`.
+    /// - **Implicit, ImplicitFast**: `qvel += qacc_implicit * h`, the acceleration
+    ///   `(M − h·∂f/∂v)⁻¹ f` the acceleration stage solved for; `qacc` keeps the
+    ///   explicit one, as in MuJoCo.
     ///
     /// - **ImplicitSpringDamper**: `qvel` becomes the `v_new` the acceleration
     ///   stage solved for, or `qvel += qacc * h` after a Newton solve.
@@ -171,7 +173,7 @@ impl Data {
                     } else {
                         idx
                     };
-                    self.qvel[i] += self.qacc[i] * h;
+                    self.qvel[i] += self.qacc_implicit[i] * h;
                 }
             }
             Integrator::ImplicitSpringDamper => {

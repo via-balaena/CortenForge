@@ -673,7 +673,7 @@ Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/�
 1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + tendon damping J^T B J (sleep-filtered, §40c)
 2. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
 
-Symmetrizes D, then solves `(M − h·D) · qacc = f` via dense Cholesky factorization.
+Symmetrizes D, then solves `(M − h·D) · qacc_implicit = f` via dense Cholesky factorization.
 Skips Coriolis derivatives (`mjd_rne_vel`). Returns `StepError::CholeskyFailed` if
 `M − h·D` is not positive definite (e.g., strong positive velocity feedback).
 
@@ -684,8 +684,11 @@ Does NOT symmetrize D (Coriolis terms break symmetry). Uses LU factorization wit
 partial pivoting instead of Cholesky. Returns `StepError::LuSingular` if any pivot
 magnitude is below `1e-30`.
 
-Both ImplicitFast and Implicit compute `qacc` (not `v_new` directly), then velocity
-is updated in the integration step via `qvel += h * qacc`, matching MuJoCo's approach.
+Both ImplicitFast and Implicit solve for an acceleration (not `v_new` directly),
+kept in the crate-private `qacc_implicit`; the integration step updates velocity via
+`qvel += h * qacc_implicit`. `qacc` keeps the explicit acceleration (the solver's
+result, or `M⁻¹ f`), as in MuJoCo, where `mj_fwdConstraint` leaves it in `d->qacc`
+and `mj_implicitSkip` solves `M − h·D` into a local (`engine_forward.c:1128-1146`).
 
 ---
 
@@ -749,7 +752,8 @@ velocity, identical to step 2 above.
 **ImplicitFast / Implicit (`Integrator::ImplicitFast`, `Integrator::Implicit`):**
 
 Activation integration is identical to Euler (step 0 above). Velocity is
-updated in the integration step via `qvel += h * qacc` (same as Euler).
+updated in the integration step via `qvel += h * qacc_implicit`, the implicit
+acceleration solved in Stage 4.
 Position update uses the new velocity, identical to step 2 above.
 
 **Runge-Kutta 4 (`Integrator::RungeKutta4`):**
