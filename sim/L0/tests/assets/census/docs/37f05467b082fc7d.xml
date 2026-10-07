@@ -1,0 +1,16 @@
+<mujoco model="conn_free2_implicitfast_PGS">
+  <option timestep="0.002" integrator="implicitfast" solver="PGS"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="h" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0.35 0 1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.04 0.03" mass="2" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="a" body2="b" anchor="0.3 0 0"/>
+  </equality>
+</mujoco>

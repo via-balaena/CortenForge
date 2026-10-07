@@ -1290,6 +1290,145 @@ fn implicitspringdamper_integrate_adds_h_qacc_to_the_current_qvel() {
     assert_eq!(data.qvel[0], 0.0);
 }
 
+/// A hinged capsule and a free box joined by a connect, under implicitfast
+/// and PGS: 500 steps against MuJoCo 3.5.0 (unfused build) at 1e-12. Needs
+/// the connect impedance fix, Rigid-physics P26 (spec book
+/// `docs/studies/a_double_dose_of_detail`, chapter 20). Before it, `qvel` is
+/// 1.4e-8 off at step 10 and 8.4e-3 at step 100.
+#[test]
+#[ignore = "known gap until Rigid-physics P26 (connect impedance): qvel off MuJoCo from step 10"]
+fn connect_under_implicitfast_pgs_matches_mujoco_3_5_0() {
+    let xml = r#"<mujoco model="conn_free2_implicitfast_PGS">
+  <option timestep="0.002" integrator="implicitfast" solver="PGS"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="h" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0.35 0 1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.04 0.03" mass="2" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="a" body2="b" anchor="0.3 0 0"/>
+  </equality>
+</mujoco>"#;
+    // (step, qpos, qvel) from MuJoCo 3.5.0.
+    let mujoco: [(usize, [f64; 8], [f64; 7]); 4] = [
+        (
+            1,
+            [
+                0.000_150_615_865_164_580_9,
+                0.35,
+                0.0,
+                0.999_958_910_816_922_2,
+                0.999_999_999_168_055_2,
+                0.0,
+                -4.079_080_317_457_580_5e-5,
+                0.0,
+            ],
+            [
+                0.075_307_932_582_290_45,
+                0.0,
+                0.0,
+                -0.020_544_591_538_880_122,
+                0.0,
+                -0.040_790_803_185_887_71,
+                0.0,
+            ],
+        ),
+        (
+            10,
+            [
+                0.008_225_467_727_977_663,
+                0.349_994_618_271_628,
+                0.0,
+                0.997_745_272_420_910_3,
+                0.999_997_733_538_263_2,
+                0.0,
+                -0.002_129_065_132_177_455_5,
+                0.0,
+            ],
+            [
+                0.745_143_095_838_215_6,
+                -0.000_954_664_881_397_169_3,
+                0.0,
+                -0.204_738_196_972_304_53,
+                0.0,
+                -0.376_582_287_981_853_17,
+                0.0,
+            ],
+        ),
+        (
+            100,
+            [
+                0.624_328_958_454_719_3,
+                0.293_650_525_094_194_26,
+                0.0,
+                0.807_960_029_131_666_2,
+                0.987_573_754_934_375_2,
+                0.0,
+                0.157_156_223_436_485_86,
+                0.0,
+            ],
+            [
+                4.916_630_586_465_196,
+                -0.975_449_656_299_381_1,
+                0.0,
+                -1.691_854_655_578_644_7,
+                0.0,
+                9.842_900_002_184_427,
+                0.0,
+            ],
+        ),
+        (
+            500,
+            [
+                1.588_070_156_157_654,
+                -0.008_295_250_502_834_306,
+                0.0,
+                0.644_718_770_719_321_5,
+                0.694_791_714_894_669_1,
+                0.0,
+                0.719_211_007_225_087_2,
+                0.0,
+            ],
+            [
+                -7.168_072_156_701_531,
+                2.228_840_555_752_991_6,
+                0.0,
+                -0.076_064_463_849_692_68,
+                0.0,
+                -1.002_695_680_163_950_8,
+                0.0,
+            ],
+        ),
+    ];
+    let model = sim_mjcf::load_model(xml).expect("load");
+    let mut data = model.make_data();
+    let mut checked = 0;
+    for k in 1..=500 {
+        data.step(&model).expect("step");
+        for (step, qpos, qvel) in &mujoco {
+            if k == *step {
+                let dq = (data.qpos.iter().zip(qpos))
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0, f64::max);
+                let dv = (data.qvel.iter().zip(qvel))
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0, f64::max);
+                assert!(
+                    dq < 1e-12 && dv < 1e-12,
+                    "step {k}: |Δqpos| {dq:e}, |Δqvel| {dv:e}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, mujoco.len());
+}
+
 /// A slide joint on a spring and damper under implicitspringdamper.
 fn isd_spring() -> sim_core::Model {
     let xml = r#"
