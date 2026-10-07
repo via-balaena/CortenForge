@@ -247,7 +247,7 @@ impl PluginRegistry {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
     /// Minimal test plugin that tracks calls via atomic counters.
     struct TestPlugin {
@@ -255,8 +255,11 @@ mod tests {
         caps: PluginCapabilities,
         stage: PluginStage,
         state_count: usize,
+        init_error: Option<String>,
         compute_count: Arc<AtomicU32>,
         advance_count: Arc<AtomicU32>,
+        /// The `data.qpos[0]` the last `advance` saw, as `f64` bits.
+        advance_qpos: Arc<AtomicU64>,
         capability_bits_seen: Arc<AtomicU32>,
     }
 
@@ -267,8 +270,10 @@ mod tests {
                 caps,
                 stage: PluginStage::Acc,
                 state_count: 0,
+                init_error: None,
                 compute_count: Arc::new(AtomicU32::new(0)),
                 advance_count: Arc::new(AtomicU32::new(0)),
+                advance_qpos: Arc::new(AtomicU64::new(0)),
                 capability_bits_seen: Arc::new(AtomicU32::new(0)),
             }
         }
@@ -280,6 +285,11 @@ mod tests {
 
         fn with_stage(mut self, stage: PluginStage) -> Self {
             self.stage = stage;
+            self
+        }
+
+        fn with_init_error(mut self, message: &str) -> Self {
+            self.init_error = Some(message.to_string());
             self
         }
     }
@@ -301,6 +311,10 @@ mod tests {
             self.state_count
         }
 
+        fn init(&self, _model: &Model, _data: &mut Data, _instance: usize) -> Result<(), String> {
+            self.init_error.clone().map_or(Ok(()), Err)
+        }
+
         fn compute(
             &self,
             _model: &Model,
@@ -313,8 +327,10 @@ mod tests {
                 .fetch_or(capability as u32, Ordering::Relaxed);
         }
 
-        fn advance(&self, _model: &Model, _data: &mut Data, _instance: usize) {
+        fn advance(&self, _model: &Model, data: &mut Data, _instance: usize) {
             self.advance_count.fetch_add(1, Ordering::Relaxed);
+            let qpos = data.qpos.get(0).copied().unwrap_or(0.0);
+            self.advance_qpos.store(qpos.to_bits(), Ordering::Relaxed);
         }
 
         #[allow(clippy::cast_precision_loss)]
@@ -615,6 +631,92 @@ mod tests {
         data.integrate(&model);
 
         assert_eq!(advance_count.load(Ordering::Relaxed), 1);
+    }
+
+    /// RK4 advances each plugin once per step, after the state and time
+    /// advance, as MuJoCo's `mj_RungeKutta` ends in `mj_advance`.
+    #[test]
+    fn rk4_advances_plugins_once_per_step() {
+        let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
+        let plugin = TestPlugin::new("test.rk4", PluginCapabilities::NONE);
+        let (advance_count, advance_qpos) = (
+            Arc::clone(&plugin.advance_count),
+            Arc::clone(&plugin.advance_qpos),
+        );
+        model.nplugin = 1;
+        model.plugin_objects.push(Arc::new(plugin));
+        model.plugin_capabilities.push(PluginCapabilities::NONE);
+        model.plugin_needstage.push(PluginStage::Acc);
+        model.plugin_stateadr.push(0);
+        model.plugin_statenum.push(0);
+        model.plugin_name.push(None);
+        model.plugin_attradr.push(0);
+        model.plugin_attrnum.push(0);
+        model.integrator = crate::types::Integrator::RungeKutta4;
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        for _ in 0..10 {
+            data.step(&model).unwrap();
+        }
+        assert_eq!(advance_count.load(Ordering::Relaxed), 10);
+        // The advance sees the step's final state.
+        assert_eq!(
+            f64::from_bits(advance_qpos.load(Ordering::Relaxed)),
+            data.qpos[0]
+        );
+    }
+
+    /// A plugin's `init` error comes back from `try_make_data` with its
+    /// instance, and `make_data` panics with the same message.
+    #[test]
+    fn try_make_data_returns_a_plugin_init_failure() {
+        let mut model = Model::empty();
+        let plugin = TestPlugin::new("test.failing", PluginCapabilities::NONE)
+            .with_init_error("no calibration file");
+        model.nplugin = 1;
+        model.plugin_objects.push(Arc::new(plugin));
+        model.plugin_capabilities.push(PluginCapabilities::NONE);
+        model.plugin_needstage.push(PluginStage::Acc);
+        model.plugin_stateadr.push(0);
+        model.plugin_statenum.push(0);
+        model.plugin_name.push(None);
+        model.plugin_attradr.push(0);
+        model.plugin_attrnum.push(0);
+        let err = model.try_make_data().err();
+        assert_eq!(
+            err,
+            Some(crate::MakeDataError::PluginInit {
+                instance: 0,
+                message: "no calibration file".to_string()
+            })
+        );
+        let panic =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| model.make_data())).err();
+        let text = panic.as_ref().and_then(|p| p.downcast_ref::<String>());
+        assert_eq!(
+            text.map(String::as_str),
+            Some("plugin init failed for instance 0: no calibration file")
+        );
+    }
+
+    /// A clone leaves `plugin_data` empty: there is no plugin copy hook.
+    #[test]
+    fn a_cloned_data_has_no_plugin_data() {
+        let (model, _, _, _) = model_with_plugin(PluginCapabilities::NONE, 0);
+        let mut data = model.make_data();
+        data.plugin_data[0] = Some(Box::new(7_u32));
+        let clone = data.clone();
+        assert!(clone.plugin_data[0].is_none());
+        assert!(data.plugin_data[0].is_some());
+    }
+
+    /// `make_data` resets each plugin after `init`, as MuJoCo's `mj_makeData`
+    /// runs `mj_resetData` after `mj_initPlugin`.
+    #[test]
+    fn make_data_resets_plugins() {
+        let (model, _, _, _) = model_with_plugin(PluginCapabilities::NONE, 2);
+        let data = model.make_data();
+        assert_eq!(data.plugin_state, vec![1.0, 2.0]);
     }
 
     // T15: Multi-capability plugin dispatched for both capabilities → AC8, AC9

@@ -1,0 +1,23 @@
+<mujoco model="derivation">
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="locked" type="hinge" axis="0 1 0" limited="true" range="0 0"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.02" mass="1"/>
+      <site name="s0"/>
+      <body name="b" pos="0 0 -0.5">
+        <joint name="swing" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.02" mass="1"/>
+        <site name="s1" pos="0.1 0 -0.4"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t">
+      <site site="s0"/>
+      <site site="s1"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <muscle name="m" tendon="t"/>
+  </actuator>
+</mujoco>

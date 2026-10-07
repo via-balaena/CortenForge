@@ -142,7 +142,7 @@ fn make_two_sphere_scene() -> (Model, Data) {
     // only *compares* `geom_body`, never indexes the per-body arrays, so no real
     // bodies are needed. This mirrors sim-core's own `raycast.rs` scene test;
     // setting `nbody` to 3 without populating the 21 `body_*` arrays would make a
-    // malformed Model that `make_data`'s `validate_joint_layout` rightly panics on.
+    // malformed Model that `make_data`'s `check_joint_layout` rightly panics on.
     model.nbody = 1;
 
     push_sphere_geom(&mut model, 1, 1.0);

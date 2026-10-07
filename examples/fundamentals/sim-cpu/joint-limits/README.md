@@ -9,7 +9,7 @@ for contacts.
 
 | Example | Concept | What you see |
 |---------|---------|-------------|
-| [stress-test](stress-test/) | Headless validation | 12 checks: hinge/slide/ball activation, sensor readback, solref scaling, solimp width, motor vs limit, locked joint, force vs penetration, cone symmetry. |
+| [stress-test](stress-test/) | Headless validation | 12 checks: hinge/slide/ball activation, sensor readback, solref scaling, solimp width, motor vs limit, a refused zero-width range, force vs penetration, cone symmetry. |
 | [hinge-limits](hinge-limits/) | Solref tuning comparison | Three pendulums (stiff/default/soft) released beyond limit — different bounce and penetration behavior. |
 | [slide-limits](slide-limits/) | Motor vs limit constraint | Box on rail pushed by motor into limit — limit force balances motor force. |
 | [ball-cone](ball-cone/) | Ball joint cone limit | Rod on ball joint with 30-degree cone — symmetric limit regardless of azimuth. |

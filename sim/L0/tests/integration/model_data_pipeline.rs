@@ -622,6 +622,50 @@ fn an_auto_reset_recaptures_energy_initial() {
     assert_eq!(data.energy_initial, at_reset.total_energy());
 }
 
+/// Building a model derives values from a `Data` (`acc0`, a muscle's
+/// `lengthrange`, `invweight0`, `stat_meaninertia`, a spatial tendon's
+/// `length0`) without `try_make_data`'s checks, so a model they refuse still
+/// loads, and is refused when its `Data` is made.
+#[test]
+fn derivation_loads_a_model_try_make_data_refuses() {
+    let model = load_model(
+        r#"<mujoco model="derivation">
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="locked" type="hinge" axis="0 1 0" limited="true" range="0 0"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.02" mass="1"/>
+      <site name="s0"/>
+      <body name="b" pos="0 0 -0.5">
+        <joint name="swing" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.02" mass="1"/>
+        <site name="s1" pos="0.1 0 -0.4"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t">
+      <site site="s0"/>
+      <site site="s1"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <muscle name="m" tendon="t"/>
+  </actuator>
+</mujoco>"#,
+    )
+    .expect("building the model runs no try_make_data check");
+    assert!(model.tendon_length0[0] > 0.0);
+    assert!(model.actuator_acc0[0] > 0.0);
+    let refused = model.try_make_data().err();
+    assert!(
+        matches!(
+            &refused,
+            Some(sim_core::MakeDataError::Range(e)) if e.field == "jnt_range" && e.index == 0
+        ),
+        "{refused:?}"
+    );
+}
+
 /// A clone keeps the baseline it was cloned with.
 #[test]
 fn a_clone_keeps_the_energy_baseline() {

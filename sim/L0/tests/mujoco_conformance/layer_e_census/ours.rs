@@ -333,6 +333,9 @@ pub fn record(xml: &str) -> Value {
         Ok(Err(e)) => return json!({ "status": "refused", "err": e.to_string() }),
         Ok(Ok(m)) => m,
     };
+    if let Err(e) = model.try_make_data() {
+        return json!({ "status": "refused", "err": e.to_string() });
+    }
     let mut out = Map::new();
     out.insert("status".to_string(), json!("ok"));
     out.insert("model".to_string(), model_json(&model));

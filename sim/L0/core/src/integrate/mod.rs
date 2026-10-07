@@ -210,11 +210,15 @@ impl Data {
         // Advance time
         self.time += h;
 
-        // §66: Plugin state advance
-        if model.nplugin > 0 {
-            for i in 0..model.nplugin {
-                model.plugin_objects[i].advance(model, self, i);
-            }
-        }
+        advance_plugins(model, self);
+    }
+}
+
+/// §66: advance every plugin instance's state, after the state and time
+/// advance, as MuJoCo 3.5.0's `mj_advance` does (`engine_forward.c:923-936`),
+/// which its Euler, implicit and RK4 integrators all end in.
+pub(crate) fn advance_plugins(model: &Model, data: &mut Data) {
+    for i in 0..model.nplugin {
+        model.plugin_objects[i].advance(model, data, i);
     }
 }

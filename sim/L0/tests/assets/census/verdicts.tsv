@@ -84,7 +84,7 @@
 0dbb47b3e366560e	agree
 0e9ce360330d515c	e1:t0:con_zero
 0ebba01683910c5e	e1:t0:con_zero
-0eccac56941cb124	mj-refuses
+0eccac56941cb124	both-refuse
 0ee0d13ee3c0e9ed	e1:t0:nefc
 0eec3d0de1d13094	mj-refuses
 0ef3d42be35e6671	mj-refuses
@@ -588,7 +588,7 @@
 5bdaaf1e6d1d80af	agree
 5bfe217b52ce2309	mj-refuses
 5c4da5d9350a760a	agree
-5c58ce02cdba0838	mj-refuses
+5c58ce02cdba0838	both-refuse
 5c66012aec9ab775	agree
 5c86a66581f69274	agree
 5c8f5f2ab5e7a2a3	e1:t0:con_zero
@@ -1546,6 +1546,7 @@ f7d1a8a1467cd89a	mj-refuses
 f7d307b4d288627b	agree
 f7fd30f2e729d528	agree
 f7fdbcd7a023d6ac	agree
+f84a884ee4f1c972	both-refuse
 f85c405a86a9ef1c	e1:t0:nefc
 f85cc2e5a5e709e6	agree
 f865f1d13a165902	mj-refuses

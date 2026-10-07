@@ -878,7 +878,11 @@ fn generate(
             };
             model.actuator_gear.push([gear, 0.0, 0.0, 0.0, 0.0, 0.0]);
         } else {
-            model.actuator_ctrlrange.push((0.0, 0.0));
+            // Unlimited, as sim-core stores it (and as the MJCF this crate
+            // writes leaves `ctrlrange` out).
+            model
+                .actuator_ctrlrange
+                .push((f64::NEG_INFINITY, f64::INFINITY));
             model.actuator_gear.push([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         }
 
@@ -1487,6 +1491,47 @@ mod tests {
         assert_eq!(model.ntendon, 1, "expected 1 tendon");
         assert_eq!(model.nu, 1, "expected 1 actuator");
         assert_eq!(model.nsite, 2, "expected 2 sites (tendon waypoints)");
+    }
+
+    /// An actuator with no ctrl range takes any control, as the MJCF this
+    /// crate writes for it (no `ctrlrange` attribute) does.
+    #[test]
+    fn an_actuator_with_no_ctrl_range_takes_any_ctrl() {
+        let m = Mechanism::builder("actuated")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .joint(JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .tendon(TendonDef::new(
+                "cable",
+                vec![
+                    TendonWaypoint::new("a", Point3::origin()),
+                    TendonWaypoint::new("b", Point3::new(0.0, 5.0, 0.0)),
+                ],
+                0.5,
+            ))
+            .actuator(ActuatorDef::new(
+                "motor",
+                "cable",
+                ActuatorKind::Motor,
+                (-50.0, 50.0),
+            ))
+            .build();
+        let model = m.to_model(2.0, 2.0).unwrap();
+        let mut data = model.make_data();
+        data.ctrl[0] = 7.0;
+        data.forward(&model).unwrap();
+        assert!(
+            (data.actuator_force[0] - 7.0).abs() < 1e-12,
+            "actuator force {} for ctrl 7",
+            data.actuator_force[0]
+        );
     }
 
     // ── 8. Single part mechanism ───────────────────────────────────

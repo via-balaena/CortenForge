@@ -9,7 +9,10 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
-use super::enums::{Integrator, MIN_AWAKE, MjJointType, SleepPolicy, SleepState, SolverType};
+use super::enums::{
+    Integrator, JointLayoutError, MIN_AWAKE, MakeDataError, MjJointType, RangeError, SleepPolicy,
+    SleepState, SolverType,
+};
 use super::model::Model;
 
 // Types from dynamics module (Phase 7 extraction)
@@ -438,61 +441,159 @@ impl Model {
         }
     }
 
-    /// Validate the per-body joint layout: a Ball or Free joint must be the
-    /// LAST (for free, the sole) joint on its body.
+    /// Check the per-body joint layout, in MuJoCo's order for each body:
     ///
-    /// The motion subspace of a ball/free joint is read from the body's FINAL
-    /// orientation (`xquat[body]`), which is only the correct partial frame
-    /// when no later same-body joint rotates it. Hinge/slide joints publish a
-    /// partial-frame `xaxis`/`xanchor` and so may appear in any order, but
-    /// ball/free do not — a ball followed by another same-body joint would
-    /// silently over-rotate its subspace (wrong dynamics/Jacobians). This is a
-    /// one-time structural check so the violation is a loud model-load error
-    /// rather than a `debug_assert` that vanishes in release builds.
+    /// 1. a body's joints have at most 6 degrees of freedom (MuJoCo 3.5.0
+    ///    `user_objects.cc:2524-2526`), so a free joint is its body's only
+    ///    joint;
+    /// 2. a ball joint is the last joint on its body. MuJoCo refuses a ball
+    ///    followed by a ball or hinge (`:2528-2537`); this also refuses one
+    ///    followed by a slide.
+    ///
+    /// The motion subspace of a ball or free joint is read from the body's
+    /// final orientation (`xquat[body]`), which is the right frame only when no
+    /// later same-body joint rotates it.
+    ///
+    /// Not checked: a free joint below the root, which sim-core supports.
+    ///
+    /// # Errors
+    /// The first [`JointLayoutError`] found.
     ///
     /// # Panics
-    /// Panics if a ball/free joint is not the last (sole) joint on its body.
-    // An invalid joint layout is an unrecoverable model-load error (it would
-    // silently corrupt ball/free dynamics); panicking is the contract, mirrored
-    // by make_data's plugin-init panic. The `# Panics` doc above documents it.
-    #[allow(clippy::panic)]
-    pub fn validate_joint_layout(&self) {
+    /// Panics if `body_jnt_adr`, `body_jnt_num` or `jnt_type` is shorter than
+    /// the model's bodies and joints need.
+    pub fn check_joint_layout(&self) -> Result<(), JointLayoutError> {
         for body in 0..self.nbody {
-            let start = self.body_jnt_adr[body];
-            let num = self.body_jnt_num[body];
-            if num == 0 {
-                continue;
+            let joints = self.body_jnt_adr[body]..self.body_jnt_adr[body] + self.body_jnt_num[body];
+            let ndof: usize = joints.clone().map(|j| self.jnt_type[j].nv()).sum();
+            if ndof > 6 {
+                return Err(JointLayoutError::TooManyDofs { body, ndof });
             }
-            for (offset, jnt) in (start..start + num).enumerate() {
-                let is_last = offset + 1 == num;
-                match self.jnt_type[jnt] {
-                    MjJointType::Free => assert!(
-                        num == 1,
-                        "free joint {jnt} on body {body} must be the body's only joint \
-                         (found {num} joints); a free joint cannot share a body"
-                    ),
-                    MjJointType::Ball => assert!(
-                        is_last,
-                        "ball joint {jnt} on body {body} must be the LAST joint on its body; \
-                         a later same-body joint would over-rotate its motion subspace"
-                    ),
-                    MjJointType::Hinge | MjJointType::Slide => {}
+            let last = joints.end;
+            for joint in joints {
+                if self.jnt_type[joint] == MjJointType::Ball && joint + 1 != last {
+                    return Err(JointLayoutError::BallNotLast { body, joint });
                 }
             }
         }
+        Ok(())
     }
 
-    /// Create initial Data struct for this model with all arrays pre-allocated.
+    /// Check every limited range, as MuJoCo's compiler does:
+    ///
+    /// - a limited hinge or slide joint, a limited tendon and an actuator's
+    ///   activation range when limited: `lower < upper` (MuJoCo 3.5.0
+    ///   `user_objects.cc:2909`, `:6419`, `:6889`);
+    /// - a limited ball joint: `lower == 0` (`:2912`);
+    /// - an actuator's ctrl and force range: `lower < upper` (`:6883-6888`).
+    ///   They have no `limited` flag here; an unlimited one is stored as
+    ///   `(-inf, inf)`, so these two may have infinite bounds.
+    ///
+    /// The others must also be finite, which MuJoCo does not check. A NaN
+    /// bound fails every rule.
+    ///
+    /// # Errors
+    /// The first [`RangeError`] found, naming the field and the entry.
+    pub fn check_ranges(&self) -> Result<(), RangeError> {
+        let finite_and_increasing =
+            |(lo, hi): (f64, f64)| lo.is_finite() && hi.is_finite() && lo < hi;
+        let joints = self
+            .jnt_type
+            .iter()
+            .zip(&self.jnt_limited)
+            .zip(&self.jnt_range);
+        for (index, ((&kind, &limited), &(lo, hi))) in joints.enumerate() {
+            let valid = match kind {
+                MjJointType::Hinge | MjJointType::Slide => finite_and_increasing((lo, hi)),
+                MjJointType::Ball => lo == 0.0 && hi.is_finite(),
+                MjJointType::Free => true,
+            };
+            if limited && !valid {
+                return Err(RangeError {
+                    field: "jnt_range",
+                    index,
+                });
+            }
+        }
+        let limited_ranges = [
+            ("tendon_range", &self.tendon_limited, &self.tendon_range),
+            (
+                "actuator_actrange",
+                &self.actuator_actlimited,
+                &self.actuator_actrange,
+            ),
+        ];
+        for (field, limited, ranges) in limited_ranges {
+            for (index, (&limited, &range)) in limited.iter().zip(ranges).enumerate() {
+                if limited && !finite_and_increasing(range) {
+                    return Err(RangeError { field, index });
+                }
+            }
+        }
+        let clamps = [
+            ("actuator_ctrlrange", &self.actuator_ctrlrange),
+            ("actuator_forcerange", &self.actuator_forcerange),
+        ];
+        for (field, ranges) in clamps {
+            for (index, &(lo, hi)) in ranges.iter().enumerate() {
+                let increasing = lo < hi;
+                if !increasing {
+                    return Err(RangeError { field, index });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Create the `Data` for this model: [`Self::try_make_data`], panicking on
+    /// its error.
     ///
     /// # Panics
-    /// Panics if any plugin's `init()` callback returns an error, or if a ball
-    /// or free joint is not the last (sole) joint on its body — see
-    /// [`Self::validate_joint_layout`].
+    /// Panics with the [`MakeDataError`]'s message where `try_make_data`
+    /// returns it, and as [`Self::check_joint_layout`] says.
     #[must_use]
-    // Plugin init failures are unrecoverable model-load errors and propagate via panic; the `# Panics` doc above documents the contract.
+    // The documented panic: `try_make_data` is the non-panicking form.
     #[allow(clippy::panic)]
     pub fn make_data(&self) -> Data {
-        self.validate_joint_layout();
+        self.try_make_data().unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create the `Data` for this model, with every array allocated: the joint
+    /// layout and range checks, then the arrays, then each plugin's `init` and
+    /// `reset`, as MuJoCo 3.5.0's `mj_makeData` runs `mj_initPlugin` and then
+    /// `mj_resetData` (`engine_io.c:1110-1111`).
+    ///
+    /// # Errors
+    /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
+    /// [`MakeDataError::Range`] ([`Self::check_ranges`]), or
+    /// [`MakeDataError::PluginInit`] if a plugin's `init` returns an error.
+    ///
+    /// # Panics
+    /// As [`Self::check_joint_layout`] says.
+    pub fn try_make_data(&self) -> Result<Data, MakeDataError> {
+        self.check_joint_layout()?;
+        self.check_ranges()?;
+        let mut data = self.make_data_for_derivation();
+        for i in 0..self.nplugin {
+            self.plugin_objects[i]
+                .init(self, &mut data, i)
+                .map_err(|message| MakeDataError::PluginInit {
+                    instance: i,
+                    message,
+                })?;
+        }
+        for i in 0..self.nplugin {
+            let state = self.plugin_stateadr[i]..self.plugin_stateadr[i] + self.plugin_statenum[i];
+            self.plugin_objects[i].reset(self, &mut data.plugin_state[state], i);
+        }
+        Ok(data)
+    }
+
+    /// The `Data` that building a model derives values from (`acc0`,
+    /// `lengthrange`, `invweight0`, `stat_meaninertia`, tendon `length0`):
+    /// every array allocated, with no checks and no plugin `init`, so that
+    /// building a model never panics on what `try_make_data` refuses.
+    pub(crate) fn make_data_for_derivation(&self) -> Data {
         let mut data = Data {
             // Generalized coordinates
             qpos: self.qpos0.clone(),
@@ -896,13 +997,6 @@ impl Model {
         // island-aware sleep cycles.
         reset_sleep_state(self, &mut data);
 
-        // §66: Initialize plugin instances
-        for i in 0..self.nplugin {
-            if let Err(e) = self.plugin_objects[i].init(self, &mut data, i) {
-                panic!("plugin init failed for instance {i}: {e}");
-            }
-        }
-
         data
     }
 
@@ -1033,7 +1127,7 @@ impl Model {
 
         // --- MuJoCo algorithm: invweight via M⁻¹ at qpos0 ---
         // Create temporary Data, run FK + CRBA + factor to get factored M.
-        let mut data = self.make_data();
+        let mut data = self.make_data_for_derivation();
         mj_fwd_position(self, &mut data);
         mj_crba(self, &mut data);
         mj_factor_sparse(self, &mut data);
@@ -1211,7 +1305,7 @@ impl Model {
             self.stat_meaninertia = 1.0;
             return;
         }
-        let mut data = self.make_data();
+        let mut data = self.make_data_for_derivation();
         mj_fwd_position(self, &mut data);
         mj_crba(self, &mut data);
         // (§27F) Pinned flex vertices now have no DOFs — no need to skip them.
@@ -1299,9 +1393,9 @@ pub fn compute_dof_lengths(model: &mut Model) {
 mod joint_layout_tests {
     #![allow(clippy::expect_used)]
     use crate::test_fixtures::builders::{
-        add_ball_joint, add_body, add_freejoint, add_hinge_joint, finalize,
+        add_ball_joint, add_body, add_freejoint, add_hinge_joint, add_slide_joint, finalize,
     };
-    use crate::types::Model;
+    use crate::types::{JointLayoutError, MakeDataError, Model, RangeError};
     use nalgebra::Vector3;
 
     fn body(model: &mut Model, parent: usize, name: &str) -> usize {
@@ -1316,68 +1410,242 @@ mod joint_layout_tests {
         )
     }
 
+    fn hinge(m: &mut Model, b: usize, name: &str) {
+        add_hinge_joint(m, b, name, Vector3::x(), 0.0, 0.0, 0.0, false, (-3.0, 3.0));
+    }
+
     /// A ball joint that is the LAST joint on its body is valid (hinge → ball).
     #[test]
     fn ball_last_on_body_is_valid() {
         let mut m = Model::empty();
         let b = body(&mut m, 0, "l0");
-        add_hinge_joint(
-            &mut m,
-            b,
-            "h0",
-            Vector3::x(),
-            0.0,
-            0.0,
-            0.0,
-            false,
-            (-3.0, 3.0),
-        );
+        hinge(&mut m, b, "h0");
         add_ball_joint(&mut m, b, "ball0");
         finalize(&mut m);
-        m.validate_joint_layout(); // must not panic
+        assert_eq!(m.check_joint_layout(), Ok(()));
+        assert!(m.try_make_data().is_ok());
     }
 
-    /// A ball joint followed by another same-body joint must be rejected.
     #[test]
-    #[should_panic(expected = "must be the LAST joint")]
-    fn ball_not_last_on_body_panics() {
+    fn try_make_data_refuses_ball_before_hinge() {
         let mut m = Model::empty();
         let b = body(&mut m, 0, "l0");
         add_ball_joint(&mut m, b, "ball0");
-        add_hinge_joint(
-            &mut m,
-            b,
-            "h0",
-            Vector3::x(),
-            0.0,
-            0.0,
-            0.0,
-            false,
-            (-3.0, 3.0),
-        );
+        hinge(&mut m, b, "h0");
         finalize(&mut m);
-        m.validate_joint_layout();
+        assert_eq!(
+            m.try_make_data().err(),
+            Some(MakeDataError::JointLayout(JointLayoutError::BallNotLast {
+                body: b,
+                joint: 0
+            }))
+        );
     }
 
-    /// A free joint sharing a body with another joint must be rejected.
+    /// MuJoCo refuses a ball followed by a rotation; this also refuses a ball
+    /// followed by a slide.
     #[test]
-    #[should_panic(expected = "must be the body's only joint")]
-    fn free_sharing_body_panics() {
+    fn try_make_data_refuses_ball_before_slide() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_ball_joint(&mut m, b, "ball0");
+        add_slide_joint(&mut m, b, "s0", Vector3::x(), 0.0, 0.0, 0.0);
+        finalize(&mut m);
+        assert_eq!(
+            m.check_joint_layout(),
+            Err(JointLayoutError::BallNotLast { body: b, joint: 0 })
+        );
+    }
+
+    /// A free joint and a hinge on one body are 7 degrees of freedom, which is
+    /// what MuJoCo reports for it ("more than 6 dofs").
+    #[test]
+    fn try_make_data_refuses_a_free_joint_sharing_its_body() {
         let mut m = Model::empty();
         let b = body(&mut m, 0, "l0");
         add_freejoint(&mut m, b, "free0");
-        add_hinge_joint(
-            &mut m,
-            b,
-            "h0",
-            Vector3::x(),
-            0.0,
-            0.0,
-            0.0,
-            false,
-            (-3.0, 3.0),
-        );
+        hinge(&mut m, b, "h0");
         finalize(&mut m);
-        m.validate_joint_layout();
+        assert_eq!(
+            m.try_make_data().err(),
+            Some(MakeDataError::JointLayout(JointLayoutError::TooManyDofs {
+                body: b,
+                ndof: 7
+            }))
+        );
+    }
+
+    #[test]
+    fn try_make_data_refuses_seven_dofs_on_one_body() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        for i in 0..7 {
+            hinge(&mut m, b, &format!("h{i}"));
+        }
+        finalize(&mut m);
+        assert_eq!(
+            m.check_joint_layout(),
+            Err(JointLayoutError::TooManyDofs { body: b, ndof: 7 })
+        );
+    }
+
+    /// MuJoCo counts a body's degrees of freedom before it checks the ball
+    /// rule: a ball before four hinges is reported as 7 dofs.
+    #[test]
+    fn the_dof_count_is_checked_before_the_ball_rule() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_ball_joint(&mut m, b, "ball0");
+        for i in 0..4 {
+            hinge(&mut m, b, &format!("h{i}"));
+        }
+        finalize(&mut m);
+        assert_eq!(
+            m.check_joint_layout(),
+            Err(JointLayoutError::TooManyDofs { body: b, ndof: 7 })
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must be the LAST joint")]
+    fn make_data_still_panics_on_a_bad_layout() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_ball_joint(&mut m, b, "ball0");
+        hinge(&mut m, b, "h0");
+        finalize(&mut m);
+        let _data = m.make_data();
+    }
+
+    /// A backwards ctrl range used to build a `Data` and panic in `f64::clamp`
+    /// at the first step.
+    #[test]
+    fn try_make_data_refuses_a_backwards_limited_ctrlrange() {
+        let mut m = crate::test_fixtures::hinge_chain(1);
+        m.actuator_ctrlrange[0] = (1.0, -1.0);
+        assert_eq!(
+            m.try_make_data().err(),
+            Some(MakeDataError::Range(RangeError {
+                field: "actuator_ctrlrange",
+                index: 0
+            }))
+        );
+    }
+
+    /// Each rule of `check_ranges`, on a one-hinge chain with a motor and on a
+    /// body with a ball joint.
+    #[test]
+    fn check_ranges_refuses_each_invalid_limited_range() {
+        type Edit = fn(&mut Model);
+        let inf = f64::INFINITY;
+        let refused = |field| Err(RangeError { field, index: 0 });
+        let chain: [(&str, Edit, Result<(), RangeError>); 15] = [
+            ("as built", |_| {}, Ok(())),
+            (
+                "hinge backwards",
+                |m| set_joint(m, true, (1.0, -1.0)),
+                refused("jnt_range"),
+            ),
+            (
+                "hinge empty",
+                |m| set_joint(m, true, (1.0, 1.0)),
+                refused("jnt_range"),
+            ),
+            (
+                "hinge infinite",
+                |m| set_joint(m, true, (0.0, f64::INFINITY)),
+                refused("jnt_range"),
+            ),
+            (
+                "hinge NaN",
+                |m| set_joint(m, true, (f64::NAN, 1.0)),
+                refused("jnt_range"),
+            ),
+            (
+                "hinge unlimited backwards",
+                |m| set_joint(m, false, (1.0, -1.0)),
+                Ok(()),
+            ),
+            (
+                "ctrl empty",
+                |m| m.actuator_ctrlrange[0] = (1.0, 1.0),
+                refused("actuator_ctrlrange"),
+            ),
+            (
+                "ctrl NaN",
+                |m| m.actuator_ctrlrange[0] = (f64::NAN, 1.0),
+                refused("actuator_ctrlrange"),
+            ),
+            (
+                "ctrl unlimited",
+                |m| m.actuator_ctrlrange[0] = (-f64::INFINITY, f64::INFINITY),
+                Ok(()),
+            ),
+            (
+                "force backwards",
+                |m| m.actuator_forcerange[0] = (2.0, -2.0),
+                refused("actuator_forcerange"),
+            ),
+            (
+                "act limited backwards",
+                |m| set_act(m, true, (1.0, 0.0)),
+                refused("actuator_actrange"),
+            ),
+            (
+                "act limited infinite",
+                |m| set_act(m, true, (0.0, f64::INFINITY)),
+                refused("actuator_actrange"),
+            ),
+            (
+                "act unlimited backwards",
+                |m| set_act(m, false, (1.0, 0.0)),
+                Ok(()),
+            ),
+            (
+                "tendon limited backwards",
+                |m| add_tendon_range(m, true, (1.0, 0.0)),
+                refused("tendon_range"),
+            ),
+            (
+                "tendon unlimited backwards",
+                |m| add_tendon_range(m, false, (1.0, 0.0)),
+                Ok(()),
+            ),
+        ];
+        for (case, edit, want) in chain {
+            let mut m = crate::test_fixtures::hinge_chain(1);
+            edit(&mut m);
+            assert_eq!(m.check_ranges(), want, "{case}");
+        }
+        let ball: [(&str, (f64, f64), Result<(), RangeError>); 4] = [
+            ("from 0", (0.0, 1.0), Ok(())),
+            ("not from 0", (0.1, 1.0), refused("jnt_range")),
+            ("infinite", (0.0, inf), refused("jnt_range")),
+            ("NaN", (f64::NAN, 1.0), refused("jnt_range")),
+        ];
+        for (case, range, want) in ball {
+            let mut m = Model::empty();
+            let b = body(&mut m, 0, "l0");
+            add_ball_joint(&mut m, b, "ball0");
+            finalize(&mut m);
+            set_joint(&mut m, true, range);
+            assert_eq!(m.check_ranges(), want, "ball {case}");
+        }
+    }
+
+    fn set_joint(m: &mut Model, limited: bool, range: (f64, f64)) {
+        m.jnt_limited[0] = limited;
+        m.jnt_range[0] = range;
+    }
+
+    fn set_act(m: &mut Model, limited: bool, range: (f64, f64)) {
+        m.actuator_actlimited[0] = limited;
+        m.actuator_actrange[0] = range;
+    }
+
+    /// Only `check_ranges` reads these two arrays here; the model has no tendon.
+    fn add_tendon_range(m: &mut Model, limited: bool, range: (f64, f64)) {
+        m.tendon_limited.push(limited);
+        m.tendon_range.push(range);
     }
 }

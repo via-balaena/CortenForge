@@ -698,6 +698,11 @@ pub struct Data {
     pub plugin_state: Vec<f64>,
     /// Plugin-managed data (type-erased). Length: `nplugin`.
     /// Plugins can store arbitrary data here via `init()`.
+    ///
+    /// A clone of this `Data` has `None` in every entry, and so has a
+    /// finite-difference scratch copy: there is no plugin copy hook, where
+    /// MuJoCo's `mj_copyData` calls each plugin's `copy` (MuJoCo 3.5.0
+    /// `engine_io.c:1239-1246`).
     pub plugin_data: Vec<Option<Box<dyn std::any::Any + Send + Sync>>>,
 }
 

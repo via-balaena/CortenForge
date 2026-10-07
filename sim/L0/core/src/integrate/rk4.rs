@@ -205,6 +205,7 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     }
 
     data.time = t0 + h;
+    crate::integrate::advance_plugins(model, data);
 
     Ok(())
 }
