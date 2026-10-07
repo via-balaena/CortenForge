@@ -81,6 +81,10 @@ Also fixed because the rules need it (A3 §4, A5 §4): defaults ignore `<frame>`
 - **MJCF parity target: MuJoCo 3.5.0** for loading; golden numeric data stay 3.4.0. (276 rule cases agree between 3.4.0 and 3.5.0, A5 §0.)
 - **Unknown attributes and elements are errors**, with an allowlist of the extensions in-tree code uses; MuJoCo-valid attributes we never implement are errors (stated limitation).
 - **Process**: think it out → spec → compact → stress-test the spec → implement off the stress-tested spec.
+- **Visual-only and capacity-hint elements: accepted with no effect** (a third verdict), each listed — `camera light material texture visual skin`, `<statistic>` except `meaninertia`, `<size memory njmax nconmax nkey nstack nuserdata>`.
+- **Where MuJoCo itself fails, load:** *"wouldnt it make sense to load all 3? parity doesn't mean we have to inherit its bugs"* — a fourth deviation kind, **lenient**: MuJoCo refuses a valid input through its own defect; we load it and list it, **provided a test shows our result is right**. Applies to MuJoCo's 2-body cable refusal, its non-converging lengthrange, and qhull on a flat mesh. Where such a test cannot be written, the item comes back to Jon.
+- **Delay/history (P-L34): implement in Rigid** (MuJoCo 3.5.0's history buffers, delayed actuation and sensors).
+- **The known divergences: fix in Rigid** — sleep re-forward and sleep timing, dim-3 tet re-orientation, flex boundary flaps, STL vertex deduplication, principal-axis order of a full inertia, hull face order. ⚠ Hull face order comes from qhull (C/C++, excluded by the no-C++ rule); matching its exact order means porting qhull's tie-breaking. The spec matches and tests the hull as SETS (vertices, faces) and keeps our order unless Jon wants the port.
 
 Consequences the rule settles directly: refuse every NaN/±inf number; refuse ball-then-slide; refuse an automatic backwards range; refuse a timestep ≤ 0 or NaN and drop the `> 1` rule; callbacks follow MuJoCo's order and counts; the bad-ctrl check reads the clamped copy; finite differences refuse RK4; **sensor derivatives take MuJoCo's semantics** (C at the current state, A2 Q4 — flips `tests/integration/derivatives.rs` and the `sensor-jacobians` and `derivatives/stress-test` examples).
 
@@ -139,6 +143,9 @@ Each line: the call, why, and where the appendix records what would differ if it
 ---
 
 ## 4. Open for Jon
+
+**Answered 2026-10-06** (items 1–4, recorded in §2): accepted with no effect; load where MuJoCo fails, with a correctness test; implement delay; fix the divergences. Items below are kept for the record; item 5 is still open.
+
 
 1. **Visual-only and capacity-hint elements** (`camera light material texture visual skin`, `<statistic>` except `meaninertia`, `<size memory njmax nconmax nkey nstack nuserdata>`). Read literally, "MuJoCo-valid things we don't implement are errors" refuses them: 0 in-tree docs flip, but **47 of the 53 submodule models that load today stop loading** (226 of 253 use one). Proposed: a third verdict, **accepted with no effect**, for elements whose only effect is rendering or allocation capacity, each listed in the divergences table. *Recommend accept-with-no-effect*: nothing the simulation computes differs, so the file is not being silently disobeyed; refusing defeats P-L28.
 2. **Where MuJoCo itself fails.** (a) MuJoCo 3.5.0 refuses its own 2-body cables (internal exclude naming, "body 'B_1' not found", 8 corpus docs once `curve` is fixed); (b) lengthrange computation does not converge (4); (c) qhull fails on a flat mesh (1 + 2 CI tests). *Recommend*: (a) load and list (MuJoCo's defect, our result is defined); (b) and (c) parity — refuse — because our value for those quantities is not shown to be right.
