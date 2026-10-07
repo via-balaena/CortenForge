@@ -1,6 +1,6 @@
 # How to read this book
 
-**Status:** draft for stress test, 2026-10-06. Base `main` @ `3520544e`. Two PRs, split by layer — Rigid-physics, then Rigid-loading — with commits separated by area.
+**Status:** draft for stress test, 2026-10-06. Base `main` @ `3520544e`. Two PRs, split by layer — Rigid-physics (53 commits, takes the last ultrareview), then Rigid-loading (50 commits) — with commits separated by area. Draft series; not yet run in this order.
 
 **What it is.** The spec for the "Rigid" PRs of the 0.10.0 arc. An outside user reviewed the published 0.9.0 `sim-core` and `sim-mjcf` crates; planning then compared both crates with MuJoCo 3.5.0, first row by row and then over the whole in-tree MJCF corpus (the parity census), and found far more than the user reported. This book holds the rule that decides every case, the decisions, and the commits that carry them out.
 

@@ -10,10 +10,12 @@
 - [Scope](10-scope.md)
 - [Settled in this spec](11-settled.md)
 - [Open for Jon](12-open-for-jon.md)
+- [Every open question, and its answer](13-open-questions.md)
 
 # Part 2 — The work
 
-- [The commit series](20-commit-series.md)
+- [Rigid-physics: the commit series](20-rigid-physics.md)
+- [Rigid-loading: the commit series](22-rigid-loading.md)
 - [P-L32: multi-joint bodies](21-multi-joint-bias.md)
 - [The error type (mjcf-E1)](30-error-type.md)
 
