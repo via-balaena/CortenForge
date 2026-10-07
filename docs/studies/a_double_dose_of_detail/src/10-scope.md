@@ -48,7 +48,7 @@ An outside user reviewed the published 0.9.0 crates; the rows below are theirs (
 | P-L27 | bug | model construction depends on hash order (71 of 1,478 corpus docs vary across processes) |
 | P-L28 | compat | 200 of 253 MuJoCo submodule models fail to load |
 | P-L31 | panic | `ENABLE_SLEEP` on a factory-built model panics; a ctrl-writing callback zeroes FD `B` |
-| P-L32 | physics | any body with ≥ 2 joints diverges from MuJoCo (`qfrc_bias`); **under investigation, §5** |
+| P-L32 | physics | any body with ≥ 2 joints diverges from MuJoCo (`qfrc_bias`); cause isolated and fix measured (21-multi-joint-bias, A12); fixed in Rigid-physics (P24) |
 | P-L33 | bug | hybrid sensor derivatives read stale caches (wrong on `main`, CI green) |
 | P-L34 | bug | actuator/sensor delay is parsed but never applied |
 | P-L35 | hang/bug | `quat="0 0 0 0"` hangs; `MjcfModel::all_bodies()` skips levels |

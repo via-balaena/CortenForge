@@ -1,6 +1,6 @@
 # How to read this book
 
-**Status:** draft for stress test, 2026-10-06. Base `main` @ `3520544e`. Two PRs, split by layer — Rigid-physics (53 commits, takes the last ultrareview), then Rigid-loading (50 commits) — with commits separated by area. Draft series; not yet run in this order.
+**Status:** stress-tested 2026-10-07 (*Stress test, round 1*); being fixed after it. Base `main` @ `3520544e`. Two PRs, split by layer — Rigid-physics (20-rigid-physics, takes the last ultrareview), then Rigid-loading (22-rigid-loading) — with commits separated by area. Not yet run in this order.
 
 **What it is.** The spec for the "Rigid" PRs of the 0.10.0 arc. An outside user reviewed the published 0.9.0 `sim-core` and `sim-mjcf` crates; planning then compared both crates with MuJoCo 3.5.0, first row by row and then over the whole in-tree MJCF corpus (the parity census), and found far more than the user reported. This book holds the rule that decides every case, the decisions, and the commits that carry them out.
 
@@ -8,6 +8,7 @@
 
 - **Parts 0–3 are the spec.** They settle every question the research left open, order the work into commit series, and say how each commit is checked. Where they disagree with Part 4, they win.
 - **Part 4 is the research** — twenty-one sections written by read-only researchers at `3520544e`, each with probes, measurements against `mujoco==3.5.0`, and MuJoCo source citations. Paths under `$SCRATCH` are the planning session's scratch and are not in the repo; every claim is re-established by the tests its commit adds.
+- **Part 5 is the stress test** — what the reviewers searched for, what they found, and where each finding was sent.
 
 **Row ids.** `core-*` and `mjcf-*` are the outside user's findings (triaged); `P-*` are items found while planning (the 0.10 carried-items ledger). Scope lists them all.
 

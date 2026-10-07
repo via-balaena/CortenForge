@@ -34,10 +34,10 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 ## How the class was assigned
 
 - **(a) settled by a fixed decision.** The answer follows from 01-decisions: the parity rule (match MuJoCo) or one of its four deviation kinds — **stricter** (MuJoCo panics, hangs or silently does other than asked → refuse), **stated limitation** (MuJoCo-valid, we do not implement → refuse), **accepted with no effect** (visual-only and capacity hints), **lenient** (MuJoCo refuses a valid input through its own defect → load, if a test shows our result right) — or a named decision (P-L32 in Rigid; fix the known divergences; fix every census cluster; sensor-derivative semantics; delay; hull order).
-- **(b) technical.** A clear recommendation with no owner-level consequence. Where 11-settled already adopted it, that is said; 11-settled records calls for review, not fixed decisions (12-open-for-jon: "the 14 earlier decisions are in §3 as recommended").
+- **(b) technical.** A clear recommendation with no owner-level consequence. Where 11-settled already adopted it, that is said; 11-settled records calls for review, not fixed decisions (12-open-for-jon: "the 14 earlier decisions are in 11-settled as recommended").
 - **(c) needs Jon.** It changes scope, changes what a public API means to existing callers, is a deviation outside the four kinds, has no recommendation, or two sections disagree.
 
-**Tally: 130 questions — (a) 47, (b) 46, (c) 37.** Separately, 17 findings no commit carries (end of file): (a) 9, (b) 7, (c) 1.
+**Tally: 130 questions — (a) 47, (b) 46, (c) 37.** Separately, 17 findings no section's commit list carried (end of file): (a) 9, (b) 7, (c) 1; the series now carries 8 of the (a) rows and the (c) row.
 
 ## 1. sim-core state, API and callbacks
 
@@ -57,7 +57,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q12 | FD with `nhistory > 0`: panic → `Err` | A2 Q2 | convert / leave | convert | (b) | adopted, 11-settled A2-Q2 |
 | Q13 | sleep re-forward on the sleep step | A2 Q3 | match now / document | document now, leave the restructure to sleep work | (a) | 01-decisions: "fix in Rigid — sleep re-forward and sleep timing" (A8 S3 = P22) |
 | Q14 | sensor-derivative semantics | A2 Q4 | ours (next-step sensors) / MuJoCo's (current state) | raise to Jon | (a) | 01-decisions: "sensor derivatives take MuJoCo's semantics" (P14) |
-| Q15 | where the hybrid stale-cache fix gets its row | A2 §7 | — | "needs a row (Jon / the planner decides where)" | (b) | 10-scope lists it as P-L33; the earlier single series K2 places it (P06) |
+| Q15 | where the hybrid stale-cache fix gets its row | A2 §7 | — | "needs a row (Jon / the planner decides where)" | (b) | 10-scope lists it as P-L33; P06 carries it (K2 of the single series, `20-commit-series.md` at `caa1c1c0`) |
 | Q16 | sim-core joint-layout check: panic or `Result` | A1 §6; A5 §3.3 | keep `# Panics` / `check_joint_layout -> Result<(), JointLayoutError>` via `try_make_data` | A1: panic stays; A5: fallible | **(c)** | C8: sections disagree |
 | Q17 | range invariant (limited ⇒ finite, lo ≤ hi) for a hand-edited `Model` | A5 §3.4, §6 | fallible model check / silent clamp | fallible check, "owned by core" | **(c)** | no core section takes it; adds a refusal at `try_make_data`/pre-step |
 
@@ -88,7 +88,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 
 | # | question | sections | options | recommendation | class | basis |
 |---|---|---|---|---|---|---|
-| Q31 | GPU `rne.wgsl` in the K13 commit | A12 Q1 | now / later | now, per joint | (b) | adopted by 21-multi-joint-bias |
+| Q31 | GPU `rne.wgsl` in the P-L32 commit (P24) | A12 Q1 | now / later | now, per joint | (b) | adopted by 21-multi-joint-bias |
 | Q32 | pre-existing hinge-then-slide derivative gap | A12 Q2 | own ledger row | — | (b) | isolated and fixed by A14 L36a (P25) |
 | Q33 | P-L32 in Rigid or its own PR | A12 Q3 | Rigid / own PR | Rigid | (a) | 01-decisions default: "P-L32 in Rigid" |
 | Q34 | A13's D1, D2, D3 in Rigid | A13 Q1 | in / ledger | D1, D2 in; D3 only if the flex rewrites land | (a) | 01-decisions: "P-L32 in Rigid with every other isolated fix"; D3's condition is carried into L31 |
@@ -234,26 +234,26 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 |---|---|---|---|---|---|---|
 | Q130 | gate parameters | A20 "Open for Jon" 6 | 19 checkpoints (8.1 MB) or every step (28.3 MB); pin classes or labels; snapshot or extract | 19 / classes / append-only snapshot | (b) | — |
 
-## Findings no commit carries
+## Findings no section's commit list carried
 
-Measured defects or gaps a section handed off and no section's commit list picked up.
+Measured defects or gaps a section handed off and no section's commit list picked up. The carrier column names the commit of 20-rigid-physics or 22-rigid-loading that now takes each (a) and (c) row; (b) rows have none.
 
-| # | finding | sections | class | note |
-|---|---|---|---|---|
-| U01 | a limit sensor on an unlimited joint loads; MuJoCo refuses (`mjcf_sensors.rs:221`) | A6 §5.1, §5.3 | (a) | NO-ROW refusal kind; parity |
-| U02 | `step2` under an RK4 model ignores eulerdamp (qvel 2.6e-2 after 20 steps) | A7 §8 F2 | (a) | MuJoCo's `mj_step2` calls `mj_Euler` |
-| U03 | collision calls the unbounded `UnitQuaternion::from_matrix` (`narrow.rs:175-176`, `mesh_collide.rs:144-145`, `hfield.rs:82,86,111`, `flex_narrow.rs:165,210,224`); a NaN `geom_xmat` "not traced" | A5 §4.6 | (b) | same mechanism as the H1 hang |
-| U04 | muscle force clamps use 1e-10, MuJoCo `mjMINVAL` 1e-15 | A11 §6 item 2 | (a) | parity |
-| U05 | `BiasType::Muscle` reads `gainprm`, MuJoCo `biasprm` | A11 §6 item 3 | (a) | parity |
-| U06 | a flex doc plus any `gravcomp` body panics at `rne.rs:357` | A20 §1B.5 | (a) | MuJoCo loads it |
-| U07 | an empty flex `element` loads a 1-vertex flex; MuJoCo refuses | A20 §1B.3 C7 | (a) | "no spec row" |
-| U08 | `<deformable><flexcomp spacing="…">` parsed as one f64; `pos` not applied | A13 §5 | (b) | our extension (A4-Q3) |
-| U09 | our flex grid generator's vertex order and diagonal differ from MuJoCo's | A13 §5 | (b) | matters for D3's fixture (A13 §3.7) |
-| U10 | sim-urdf writes URDF `rpy` as intrinsic `xyz` | A20 §1A.3.9 | (a) | parity with MuJoCo's URDF reader; 3.4e-3 inertia residual "not isolated" |
-| U11 | spatial tendon velocity over a sphere wrap reads 0 at the initial forward | A20 §1A.3.9 | (a) | not isolated |
-| U12 | no dim-3 or 2-D membrane flex elasticity in sim-core | A9 §7 H6 | **(c)** | implement later or refuse as a limitation: scope |
-| U13 | 17 OBJ files with a face count ≠ MuJoCo's; MuJoCo's OBJ graph ids disagree with its `mesh_vert` | A10 §4.1, §6 item 8 | (b) | not isolated |
-| U14 | MuJoCo refuses < 4 vertices for every mesh; ours with faces + 3 vertices "not measured" | A10 §6 item 9 | (a) | parity |
-| U15 | `<composite type="cable" count="1000">` reached ~2 GB RSS; cause not isolated | A4 §1.4; 41-what-planning | (b) | "whoever owns composites should look before Rigid ships" |
-| U16 | `Data::reset` sets `stat_meaninertia = 0.0`, `make_data` 1.0 | A1 §4 | (b) | readers overwrite it first |
-| U17 | box–box contact normals differ (`28695e44` step 56, `496f2186` step 33) | A18 §5.4, §8.1, §16 | (b) | whether A21 R6 (P46) fixes them is not stated |
+| # | finding | sections | class | note | carrier |
+|---|---|---|---|---|---|
+| U01 | a limit sensor on an unlimited joint loads; MuJoCo refuses (`mjcf_sensors.rs:221`) | A6 §5.1, §5.3 | (a) | NO-ROW refusal kind; parity | L21 |
+| U02 | `step2` under an RK4 model ignores eulerdamp (qvel 2.6e-2 after 20 steps) | A7 §8 F2 | (a) | MuJoCo's `mj_step2` calls `mj_Euler` | P08a |
+| U03 | collision calls the unbounded `UnitQuaternion::from_matrix` (`narrow.rs:175-176`, `mesh_collide.rs:144-145`, `hfield.rs:82,86,111`, `flex_narrow.rs:165,210,224`); a NaN `geom_xmat` "not traced" | A5 §4.6 | (b) | same mechanism as the H1 hang | — |
+| U04 | muscle force clamps use 1e-10, MuJoCo `mjMINVAL` 1e-15 | A11 §6 item 2 | (a) | parity | P33 |
+| U05 | `BiasType::Muscle` reads `gainprm`, MuJoCo `biasprm` | A11 §6 item 3 | (a) | parity | P33 |
+| U06 | a flex doc plus any `gravcomp` body panics at `rne.rs:357` | A20 §1B.5 | (a) | MuJoCo loads it | L10a |
+| U07 | an empty flex `element` loads a 1-vertex flex; MuJoCo refuses | A20 §1B.3 C7 | (a) | "no spec row" | L10 |
+| U08 | `<deformable><flexcomp spacing="…">` parsed as one f64; `pos` not applied | A13 §5 | (b) | our extension (A4-Q3) | — |
+| U09 | our flex grid generator's vertex order and diagonal differ from MuJoCo's | A13 §5 | (b) | matters for D3's fixture (A13 §3.7) | — |
+| U10 | sim-urdf writes URDF `rpy` as intrinsic `xyz` | A20 §1A.3.9 | (a) | parity with MuJoCo's URDF reader; 3.4e-3 inertia residual "not isolated" | L43 |
+| U11 | spatial tendon velocity over a sphere wrap reads 0 at the initial forward | A20 §1A.3.9 | (a) | not isolated | P29 (isolates it) |
+| U12 | no dim-3 or 2-D membrane flex elasticity in sim-core | A9 §7 H6 | **(c)** | implement later or refuse as a limitation: scope | L32 |
+| U13 | 17 OBJ files with a face count ≠ MuJoCo's; MuJoCo's OBJ graph ids disagree with its `mesh_vert` | A10 §4.1, §6 item 8 | (b) | not isolated | — |
+| U14 | MuJoCo refuses < 4 vertices for every mesh; ours with faces + 3 vertices "not measured" | A10 §6 item 9 | (a) | parity | L38 |
+| U15 | `<composite type="cable" count="1000">` reached ~2 GB RSS; cause not isolated | A4 §1.4; 41-what-planning | (b) | "whoever owns composites should look before Rigid ships" | — |
+| U16 | `Data::reset` sets `stat_meaninertia = 0.0`, `make_data` 1.0 | A1 §4 | (b) | readers overwrite it first | — |
+| U17 | box–box contact normals differ (`28695e44` step 56, `496f2186` step 33) | A18 §5.4, §8.1, §16 | (b) | whether A21 R6 (P46) fixes them is not stated | — |

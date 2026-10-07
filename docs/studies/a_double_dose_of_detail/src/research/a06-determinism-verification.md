@@ -304,7 +304,7 @@ Method: `DV/scripts/l30.py`.
 | a3 | `timeout 120 $BIN < in_repo_xml.tsv > base_repo.jsonl` | < 1 s |
 | a4 | `for i in 1 2 3; do python3 -I DV/scripts/run_files.py $BIN base_sub_$i.jsonl sub_xml.txt; done` — all 253 submodule files, `fourier_n1` included (harness2 only) | 78 s per pass (233 s for 3, measured) |
 | a5 | MuJoCo 3.5.0 oracle on the corpus: the batch loop in §4d over `$T/corpus/docs` → `mj350_full.jsonl` | ~2 s for 1,584 docs (measured, 16 batches of 100). ⚠ **MuJoCo's own message varies between runs for 2 docs** (`67ed261056e8c19d`, `ce4efcfe7cb49f86`: which missing `.stl` it names); status does not ⇒ compare status, and messages only after normalising |
-| a6 | **licensed gates:** fetch and verify the BodyParts3D meshes per `project_licence_gated_red_gates_on_main.md`, export `CF_L4_STL CF_L5_STL CF_DISC_STL`, then `cargo xtask licensed-gates --run`; tally the runner's own `PASS`/`FAIL` lines, never the panic text | 39.6 min wall (`hub_active_arcs.md:50`, not re-measured). Expect the 4 known reds (`cf-fsu-model`, 2026-09-21); **a different set is a new baseline, not a PR regression** |
+| a6 | **licensed gates:** fetch and verify the BodyParts3D meshes per `design/cf-fsu-geometry/BODYPARTS3D.md`, export `CF_L4_STL CF_L5_STL CF_DISC_STL`, then `cargo xtask licensed-gates --run`; tally the runner's own `PASS`/`FAIL` lines, never the panic text | not measured here. The set of red gates at `main` is the baseline: **a different set at `main` is a new baseline, not a PR regression** |
 | a7 | `cargo test -p sim-conformance-tests --release --test integration golden_ -- --ignored 2>&1 \| tee base_golden.log`; for each of the 24 ignored tests record the first-mismatch line (`step`, `dof`, `diff`). The test stops at the first mismatch, so for whole residuals use a scratch probe computing max\|Δqacc\| per flag file | not measured |
 | a8 | `cargo test -p cortenforge-sim-mjcf --features mjb` and `cargo test -p cortenforge-sim-mjcf --no-default-features` | not measured |
 | a9 | full validator fleet: `cargo run -p xtask --release -- run-validators` | not measured |
@@ -372,7 +372,7 @@ while (( i <= ${#files} )); do timeout 120 $SCR/rigid_oracle_350/venv/bin/python
 | submodule models | §4a step a4 at the parent and at each mjcf commit | CI never checks out submodules |
 | full validator fleet | `cargo run -p xtask --release -- run-validators` | CI scopes it to the affected crates on PRs (`quality-gate.yml:1327-1341`); running it locally finds flips before CI does |
 | grade | `RAYON_NUM_THREADS=1 cargo xtask grade <crate>` for every touched crate (sim-core, sim-types, sim-mjcf, cf-geometry, sim-thermostat if ledger-L24 touches it) and downstream consumers | grade runs only in CI shards; a clean push proves nothing |
-| clippy as the hook runs it | `cargo clippy -p <crate> --all-targets --all-features -- -D warnings` | memory rule |
+| clippy as the hook runs it | `cargo clippy -p <crate> --all-targets --all-features -- -D warnings` | the pre-commit hook runs this per staged crate (`xtask/hooks/pre-commit:273`) |
 | doc-theft | `cargo run -q -p xtask --release -- doc-theft --base origin/main` | CI gate; find it before pushing |
 | the dump guard | §4c step 6 | — |
 
