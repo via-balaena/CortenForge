@@ -534,3 +534,105 @@ fn test_model_sensor_fields() {
     assert!(model.sensor_adr.is_empty());
     assert!(model.sensor_dim.is_empty());
 }
+
+// ============================================================================
+// energy_initial: the drift baseline, captured once per reset
+// ============================================================================
+
+/// A one-link pendulum under gravity with energy computed.
+fn energy_pendulum() -> sim_core::Model {
+    let mut model = sim_core::Model::n_link_pendulum(1, 1.0, 0.1);
+    model.enableflags |= sim_core::ENABLE_ENERGY;
+    model
+}
+
+/// `forward` and `forward_skip` both record the first energy, and stepping
+/// does not move it.
+#[test]
+fn forward_captures_energy_initial() {
+    let model = energy_pendulum();
+    for skip in [false, true] {
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        if skip {
+            data.forward_skip(&model, sim_core::MjStage::None, false)
+                .unwrap();
+        } else {
+            data.forward(&model).unwrap();
+        }
+        let first = data.total_energy();
+        assert_ne!(first, 0.0);
+        assert_eq!(data.energy_initial, first, "forward_skip: {skip}");
+        for _ in 0..100 {
+            data.step(&model).unwrap();
+        }
+        assert_eq!(
+            data.energy_initial, first,
+            "after 100 steps, forward_skip: {skip}"
+        );
+    }
+}
+
+/// A first energy of exactly 0 is a baseline like any other.
+#[test]
+fn energy_initial_is_captured_once_even_when_zero() {
+    let mut model = energy_pendulum();
+    model.gravity = nalgebra::Vector3::zeros();
+    let mut data = model.make_data();
+    data.forward_skip(&model, sim_core::MjStage::None, false)
+        .unwrap(); // at rest: E = 0
+    assert_eq!(data.total_energy(), 0.0);
+    data.qvel[0] = 1.0;
+    data.forward_skip(&model, sim_core::MjStage::None, false)
+        .unwrap();
+    assert_ne!(data.total_energy(), 0.0);
+    assert_eq!(
+        data.energy_initial, 0.0,
+        "baseline moved to {}",
+        data.energy_initial
+    );
+}
+
+/// `reset` clears the baseline; the next forward pass records it again.
+#[test]
+fn reset_clears_the_energy_baseline() {
+    let model = energy_pendulum();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).unwrap();
+    data.reset(&model);
+    data.qpos[0] = 0.6;
+    data.forward(&model).unwrap();
+    assert_eq!(data.energy_initial, data.total_energy());
+}
+
+/// An auto-reset is a reset: the baseline is the energy at the reset state.
+#[test]
+fn an_auto_reset_recaptures_energy_initial() {
+    let model = energy_pendulum();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).unwrap();
+    data.qpos[0] = f64::NAN;
+    data.step(&model).unwrap();
+    assert!(data.divergence_detected());
+    let mut at_reset = model.make_data();
+    at_reset.forward(&model).unwrap();
+    assert_ne!(at_reset.total_energy(), 0.0);
+    assert_eq!(data.energy_initial, at_reset.total_energy());
+}
+
+/// A clone keeps the baseline it was cloned with.
+#[test]
+fn a_clone_keeps_the_energy_baseline() {
+    let model = energy_pendulum();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).unwrap();
+    let first = data.total_energy();
+    let mut clone = data.clone();
+    clone.qpos[0] = 0.6;
+    clone.forward(&model).unwrap();
+    assert_ne!(clone.total_energy(), first);
+    assert_eq!(clone.energy_initial, first);
+}

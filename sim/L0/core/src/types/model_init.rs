@@ -689,6 +689,7 @@ impl Model {
             energy_potential: 0.0,
             energy_kinetic: 0.0,
             energy_initial: 0.0,
+            energy_initial_captured: false,
             solver_fwdinv: [0.0, 0.0],
 
             // Sleep state (§16.7) — initialized from tree sleep policies.

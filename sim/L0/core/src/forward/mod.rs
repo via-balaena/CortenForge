@@ -395,10 +395,7 @@ impl Data {
             }
             if enabled(model, ENABLE_ENERGY) {
                 crate::energy::mj_energy_vel(model, self);
-                // Capture initial energy on first computation (baseline for drift).
-                if self.energy_initial == 0.0 {
-                    self.energy_initial = self.total_energy();
-                }
+                self.capture_energy_initial();
             } else {
                 self.energy_kinetic = 0.0;
             }
@@ -524,8 +521,18 @@ impl Data {
         // it in mj_step1, before the acceleration stage).
         if enabled(model, ENABLE_ENERGY) {
             crate::energy::mj_energy_vel(model, self);
+            self.capture_energy_initial();
         } else {
             self.energy_kinetic = 0.0;
+        }
+    }
+
+    /// Record the drift baseline the first time both energies are computed
+    /// after `make_data` or a reset (see [`Data::energy_initial`]).
+    fn capture_energy_initial(&mut self) {
+        if !self.energy_initial_captured {
+            self.energy_initial = self.total_energy();
+            self.energy_initial_captured = true;
         }
     }
 

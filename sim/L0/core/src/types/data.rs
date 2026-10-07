@@ -443,12 +443,18 @@ pub struct Data {
     pub energy_potential: f64,
     /// Kinetic energy.
     pub energy_kinetic: f64,
-    /// Total energy at the first `forward()` call with `ENABLE_ENERGY`.
+    /// Total energy at the first forward pass that computes energy
+    /// (`ENABLE_ENERGY`) after [`Model::make_data`] or [`Data::reset`]; `0.0`
+    /// until then.
     ///
-    /// Set once (when `energy_initial == 0.0` and total energy is computed
-    /// for the first time). Use this as the baseline for drift calculations:
-    /// `drift = data.total_energy() - data.energy_initial`.
+    /// The baseline for drift: `data.total_energy() - data.energy_initial`.
+    /// Every reset clears it, an auto-reset on a bad `qpos`, `qvel` or `qacc`
+    /// and [`Data::reset_to_keyframe`] included, so it is recorded again at the
+    /// reset state. Not a MuJoCo field.
     pub energy_initial: f64,
+    /// Whether [`Self::energy_initial`] has been recorded since `make_data` or
+    /// the last reset.
+    pub(crate) energy_initial_captured: bool,
 
     /// §52: Forward/inverse comparison (diagnostic, matches MuJoCo `solver_fwdinv[2]`).
     ///
@@ -828,6 +834,7 @@ impl Clone for Data {
             energy_potential: self.energy_potential,
             energy_kinetic: self.energy_kinetic,
             energy_initial: self.energy_initial,
+            energy_initial_captured: self.energy_initial_captured,
             solver_fwdinv: self.solver_fwdinv,
             // Sleep state
             tree_asleep: self.tree_asleep.clone(),
@@ -1087,11 +1094,9 @@ impl Data {
     ///
     /// # Staleness guard
     ///
-    /// A compile-time assertion at the bottom of this file checks
-    /// `size_of::<Data>()`. If you add a field to [`Data`], the test
-    /// `data_reset_field_inventory` will fail — update `reset()`,
-    /// `reset_to_keyframe()` (if applicable), and the `EXPECTED_SIZE`
-    /// constant in the test.
+    /// The test `data_reset_field_inventory` at the bottom of this file checks
+    /// `size_of::<Data>()`: when a field added to [`Data`] changes it, the test
+    /// fails — update `reset()` and the `EXPECTED_SIZE` constant in the test.
     pub fn reset(&mut self, model: &Model) {
         // 1. State variables — restore from Model.
         self.qpos = model.qpos0.clone();
@@ -1203,6 +1208,7 @@ impl Data {
         self.energy_potential = 0.0;
         self.energy_kinetic = 0.0;
         self.energy_initial = 0.0;
+        self.energy_initial_captured = false;
         self.solver_fwdinv = [0.0, 0.0];
 
         // 8. Warning counters — zero.
@@ -1229,18 +1235,23 @@ impl Data {
         }
     }
 
-    /// Reset simulation state to a keyframe by index.
+    /// Reset to keyframe `keyframe_idx`: [`Data::reset`], then copy the
+    /// keyframe's `time`, `qpos`, `qvel`, `act`, `ctrl`, `mocap_pos` and
+    /// `mocap_quat`.
     ///
-    /// Overwrites `time`, `qpos`, `qvel`, `act`, `ctrl`, `mocap_pos`, and
-    /// `mocap_quat` from the keyframe. Clears derived quantities (`qacc`,
-    /// `qacc_warmstart`, actuator arrays, `sensordata`, contacts) and
-    /// user-applied forces (`qfrc_applied`, `xfrc_applied`) — matching the
-    /// convention of `Data::reset()`.
-    /// Caller must invoke `forward()` after reset to recompute derived state.
+    /// Everything else is what `reset` leaves (warnings, energy, forces,
+    /// contacts, plugin state). Call `forward()` afterwards to recompute
+    /// derived quantities.
+    ///
+    /// # MuJoCo equivalence
+    ///
+    /// `mj_resetDataKeyframe` (MuJoCo 3.5.0 `engine_io.c:1562-1575`), except
+    /// that an out-of-range index is refused and `Data` is left unchanged;
+    /// MuJoCo resets and skips the copy.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if `keyframe_idx >= model.nkeyframe`.
+    /// [`ResetError::InvalidKeyframeIndex`] if `keyframe_idx >= model.nkeyframe`.
     pub fn reset_to_keyframe(
         &mut self,
         model: &Model,
@@ -1253,54 +1264,14 @@ impl Data {
                 index: keyframe_idx,
                 nkeyframe: model.nkeyframe,
             })?;
-
-        // Overwrite primary state from keyframe.
+        self.reset(model);
         self.time = kf.time;
         self.qpos.copy_from(&kf.qpos);
         self.qvel.copy_from(&kf.qvel);
         self.act.copy_from(&kf.act);
         self.ctrl.copy_from(&kf.ctrl);
-
-        // Mocap state (length may be 0 if no mocap bodies).
         self.mocap_pos.copy_from_slice(&kf.mpos);
         self.mocap_quat.copy_from_slice(&kf.mquat);
-
-        // Clear derived quantities and applied forces (matching Data::reset()).
-        self.qacc.fill(0.0);
-        self.qacc_implicit.fill(0.0);
-        self.qacc_warmstart.fill(0.0);
-        self.act_dot.fill(0.0);
-        self.actuator_length.fill(0.0);
-        self.actuator_velocity.fill(0.0);
-        self.actuator_force.fill(0.0);
-        self.qfrc_applied.fill(0.0);
-        self.xfrc_applied.fill(BodyWrench::default());
-        self.sensordata.fill(0.0);
-        self.ncon = 0;
-        self.contacts.clear();
-
-        // Restore history buffer to pre-populated initial state (matching mj_resetDataKeyframe)
-        #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
-        {
-            self.history.fill(0.0);
-            for i in 0..model.actuator_nsample.len() {
-                let ns = model.actuator_nsample[i];
-                if ns <= 0 {
-                    continue;
-                }
-                let adr = model.actuator_historyadr[i] as usize;
-                let n = ns as usize;
-                self.history[adr + 1] = (n - 1) as f64;
-                let ts = model.timestep;
-                for k in 0..n {
-                    self.history[adr + 2 + k] = -((n - k) as f64) * ts;
-                }
-            }
-        }
-
-        // Reset sleep state from model policies (§16.7).
-        reset_sleep_state(model, self);
-
         Ok(())
     }
 }
@@ -1316,10 +1287,11 @@ mod tests {
     /// added or removed a field. Steps to fix:
     ///
     /// 1. Update `Data::reset()` to handle the new field.
-    /// 2. Update `Data::reset_to_keyframe()` if the field should also be
-    ///    reset on keyframe load.
-    /// 3. Update `EXPECTED_SIZE` below to the new size printed in the
+    /// 2. Update `EXPECTED_SIZE` below to the new size printed in the
     ///    failure message.
+    ///
+    /// A field that fits in the struct's padding (a `bool`, for one) leaves
+    /// the size unchanged, so this test does not see it.
     #[test]
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
@@ -1331,7 +1303,7 @@ mod tests {
             actual, EXPECTED_SIZE,
             "\n\nData struct size changed: expected {EXPECTED_SIZE}, got {actual}.\n\
              A field was likely added or removed.\n\
-             → Update Data::reset() (and reset_to_keyframe() if applicable)\n\
+             → Update Data::reset()\n\
              → Then set EXPECTED_SIZE = {actual} in this test.\n"
         );
     }
