@@ -21,6 +21,9 @@
 //! optional `serde`.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// A model built from a mesh must not depend on hash order (its hull is part of
+// the model), so nothing here iterates a hash container.
+#![deny(clippy::iter_over_hash_type)]
 
 mod aabb;
 mod bounded;

@@ -8,7 +8,7 @@
 //! library. CortenForge implements Quickhull directly in pure Rust.
 
 use nalgebra::{Point3, Vector3};
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
 use crate::{Aabb, Bounded};
 
@@ -281,13 +281,11 @@ fn find_initial_simplex(points: &[Point3<f64>], epsilon: f64) -> Option<[usize; 
     }
 
     // Find most distant pair among extremals
-    let candidates: Vec<usize> = min_idx
-        .iter()
-        .chain(max_idx.iter())
-        .copied()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
+    // Ascending and deduplicated: `most_distant_pair` keeps the first of equally
+    // distant pairs, so the candidates' order must not come from a hash set.
+    let mut candidates: Vec<usize> = min_idx.iter().chain(max_idx.iter()).copied().collect();
+    candidates.sort_unstable();
+    candidates.dedup();
     let (i0, i1) = most_distant_pair(points, &candidates);
 
     // Find point farthest from line (i0, i1)
@@ -502,24 +500,26 @@ fn find_horizon(
     eye: &Point3<f64>,
     start_face: usize,
     epsilon: f64,
-) -> (HashSet<usize>, Vec<(usize, usize, usize)>) {
-    let mut visible = HashSet::new();
-    let mut queue = VecDeque::new();
-    visible.insert(start_face);
-    queue.push_back(start_face);
-
-    while let Some(fi) = queue.pop_front() {
-        let face = &faces[fi];
+) -> (Vec<usize>, Vec<(usize, usize, usize)>) {
+    // `visible` in BFS order: its order decides the horizon's first edge, hence
+    // the cone faces' order and the orphan points' order — never a hash order.
+    let mut is_visible = vec![false; faces.len()];
+    let mut visible = vec![start_face];
+    is_visible[start_face] = true;
+    let mut head = 0;
+    while head < visible.len() {
+        let face = &faces[visible[head]];
+        head += 1;
         for &ni in &face.neighbors {
             if ni == usize::MAX {
                 continue;
             }
-            if !visible.contains(&ni) && faces[ni].alive {
+            if !is_visible[ni] && faces[ni].alive {
                 let n = &faces[ni];
                 let dist = (eye - n.center).dot(&n.normal);
                 if dist > epsilon {
-                    visible.insert(ni);
-                    queue.push_back(ni);
+                    is_visible[ni] = true;
+                    visible.push(ni);
                 }
             }
         }
@@ -530,7 +530,7 @@ fn find_horizon(
         let face = &faces[fi];
         for edge_idx in 0..3 {
             let ni = face.neighbors[edge_idx];
-            if !visible.contains(&ni) {
+            if ni == usize::MAX || !is_visible[ni] {
                 let (a, b) = face_edge(face, edge_idx);
                 horizon.push((a, b, ni));
             }

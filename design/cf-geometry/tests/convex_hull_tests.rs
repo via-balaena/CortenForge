@@ -724,3 +724,40 @@ fn test_euler_characteristic() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Determinism
+// ---------------------------------------------------------------------------
+
+/// The hull's order must not come from a hash order. Before the fix, 50 calls
+/// on one input gave up to 6 different vertex and face orders, so a model
+/// built from a mesh differed between processes.
+#[test]
+fn hull_is_identical_across_repeated_calls() {
+    let octahedron = vec![
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(-1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Point3::new(0.0, -1.0, 0.0),
+        Point3::new(0.0, 0.0, 1.0),
+        Point3::new(0.0, 0.0, -1.0),
+    ];
+    let grid: Vec<Point3<f64>> = (0..27)
+        .map(|i| Point3::new((i % 3) as f64, ((i / 3) % 3) as f64, (i / 9) as f64))
+        .collect();
+    for (name, points) in [
+        ("octahedron", octahedron),
+        ("cube", cube_vertices()),
+        ("3x3x3 grid", grid),
+    ] {
+        let first = convex_hull(&points, None).expect("hull");
+        for call in 1..50 {
+            let again = convex_hull(&points, None).expect("hull");
+            let same = again.vertices == first.vertices
+                && again.faces == first.faces
+                && again.normals == first.normals
+                && again.adjacency == first.adjacency;
+            assert!(same, "{name}: call {call} differs from the first call");
+        }
+    }
+}
