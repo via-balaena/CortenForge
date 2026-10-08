@@ -403,7 +403,7 @@ Each constraint below is a dependency note from a section; the order above satis
 
 ### P28 · A19 R2 · `fix(sim-core): forward kinematics as mj_kinematics1 (qpos − qpos0, off-centre ball, xaxis/xanchor)` — cross-layer (sim-gpu)
 - **Closes:** ledger-L45 FK half = census L45ref (A16 §2); A14 L36b core part, which R2 takes over (A19 §2.3); A11's unexplained `muscle_qpos0_ref` residual (A19 §2.4).
-- **Implements:** A19 §2.3 (C5): FK, ball velocity and subspace, the sleep FK copy, `fk.wgsl` subtracting `qpos0` for hinge and slide.
+- **Implements:** A19 §2.3 (C5): FK, ball velocity and subspace, `fk.wgsl` subtracting `qpos0` for hinge and slide. The sleep FK copy A19 also edits (`island/sleep.rs` `sync_tree_fk`) is gone since P22: the sleep step's second forward pass recomputes the slept trees, as MuJoCo's `sleepTrees` has no copy.
 - **GPU offset ball** (C5, Q42: stated limitation; R4): the refusal already exists, because `GpuPhysicsPipeline::new_batched` refuses every non-free joint (`gpu/src/pipeline/orchestrator.rs:130-133`). No shader change for the ball; doc lines on `GpuFkPipeline` and `GpuModelBuffers::upload` say the public sub-pipelines validate nothing and rotate a ball about the body origin.
 - **Must-fail:** `hinge_ref_fk_matches_mujoco`, `slide_ref_fk`, `offset_ball_matches_mujoco` (the chain case needs P25), and A14's X1/X3/X5 `xaxis`/`xanchor` literals (A19 §2.6; A14 §3.3); `gpu_fk_hinge_ref_is_identity_at_qpos0` (A19 §2.6 test 1's `ref="30"` fixture through `GpuFkPipeline`; no sim-gpu test sets `model.qpos0`, `git grep qpos0 -- sim/L0/gpu` finds one local variable) (R4). Pin: `gpu_pipeline_refuses_a_ball_joint`.
 - **Flips:** none; validator `joint_limits` prints 5 changed values (A19 §2.5).
@@ -532,7 +532,7 @@ Each constraint below is a dependency note from a section; the order above satis
 - **Flips:** `cg_solver.rs:307` `test_cg_single_contact_direct` (A21 §8).
 - **Census:** L41list 29/30, L41 3/14, NEW-LATE +3 (A21 §2). On A18's base the box–plane rule alone brought 5 of 6 late-onset docs, `a0ff89f4`, `1a42c10c`, `74908604` to agree; 18 corpus docs change bits (A18 §5.3).
 - **Breaking:** `ncon` now counts excluded contacts; `Contact::is_excluded` is additive (A21 §11). The `contacts_*` helpers count them too (Q71).
-- **Note:** excluded contacts make no rows, so they join no island of P22's row partition (Q28, Q30), and A21 §8's separate `island/mod.rs` edit is not needed. The sleep census docs were not re-checked against a sleep fix (A21 §11).
+- **Note:** excluded contacts make no rows, so they join no island of P22's row partition (Q28, Q30), and A21 §8's separate `island/mod.rs` edit is not needed. After P22–P23 five init-sleep census docs still differ: `a6e04a3c`, `d72ea476` (`e1:t0:nefc`), `7ad5a27c` (`e1:t0:con_zero`), `e6ea68ac` (`e1:t0:con_frame`), `f9ec5b23` (`e1:s1:qfrc_constraint`). On `a6e04a3c` the first forward pass after the census's initial velocity gives 4 contacts in both and 0 rows in MuJoCo against 16 here: the box rests at distance 0 (P23's commit message). The other four were not isolated.
 
 ### P43a · Q69 · `fix(sim-core): broadphase as MuJoCo's mj_broadphase, float bounds included`
 - **Closes:** Q69 (parity: MuJoCo's broadphase culls touching and barely overlapping pairs, A21 Q1).
