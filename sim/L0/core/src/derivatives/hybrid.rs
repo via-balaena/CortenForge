@@ -17,7 +17,7 @@ use crate::dynamics::spatial::{
 };
 use crate::forward::{
     MjStage, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, hill_force_velocity,
-    mj_fwd_position, muscle_gain_length, muscle_gain_velocity, norm3,
+    mj_fwd_position, mj_next_activation, muscle_gain_length, muscle_gain_velocity, norm3,
 };
 use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
@@ -27,9 +27,10 @@ use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse,
     mj_solve_sparse_batch,
 };
+use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType,
-    Integrator, MjJointType, Model, StepError, TendonType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_ACTUATION, DISABLE_SPRING, Data,
+    ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError, TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -132,10 +133,33 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
 /// piecewise FLV curve gradient (force-velocity derivative).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
+    // As MuJoCo's `mjd_actuator_vel` (`engine_derivative.c:1066-1146`): no
+    // term with actuation disabled, none for a disabled or sleeping actuator
+    // or one whose force its forcerange clamps, and an `actearly` actuator's
+    // gain reads the next activation, as its force does.
+    if disabled(model, DISABLE_ACTUATION) {
+        return;
+    }
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.ntree_awake < model.ntree;
     for i in 0..model.nu {
-        let input = match model.actuator_dyntype[i] {
-            ActuatorDynamics::None => data.ctrl[i],
-            _ => data.act[model.actuator_act_adr[i]],
+        if actuator_disabled(model, i)
+            || (sleep_filter && crate::island::actuator_asleep(model, data, i))
+        {
+            continue;
+        }
+        // An unlimited force range is (-inf, inf) (MuJoCo's forcelimited 0).
+        let (lo, hi) = model.actuator_forcerange[i];
+        let force = data.actuator_force[i];
+        if (lo > f64::NEG_INFINITY || hi < f64::INFINITY) && (force <= lo || force >= hi) {
+            continue;
+        }
+        let adr = model.actuator_act_adr[i];
+        let input = if model.actuator_dyntype[i] == ActuatorDynamics::None {
+            data.ctrl[i]
+        } else if model.actuator_actearly[i] {
+            mj_next_activation(model, i, data.act[adr], data.act_dot[adr])
+        } else {
+            data.act[adr]
         };
 
         let length = data.actuator_length[i];

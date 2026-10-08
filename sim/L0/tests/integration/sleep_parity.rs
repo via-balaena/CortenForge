@@ -843,3 +843,21 @@ fn slider_crank_on_a_static_site_follows_its_crank() {
     );
     assert_trace("slider_static", &["tree_asleep"]);
 }
+
+/// Under implicitfast a sleeping actuator adds no term to the velocity
+/// derivative, as MuJoCo's `mjd_actuator_vel` skips it
+/// (`engine_derivative.c:1083-1085`): its velocity feedback reaches the awake
+/// sprung slide through the derivative alone once the slide is pushed at
+/// step 50.
+#[test]
+fn sleeping_actuator_adds_no_implicit_derivative() {
+    assert_trace("deriv_asleep", &["tree_asleep"]);
+    let (ours, theirs) = trace("deriv_asleep");
+    let qvel = |steps: &[Step]| steps[75].floats.as_ref().expect("kept")[0][1];
+    assert!(
+        (qvel(&ours) - qvel(&theirs)).abs() <= 1e-12,
+        "qvel[1] after step 75: ours {}, MuJoCo {}",
+        qvel(&ours),
+        qvel(&theirs)
+    );
+}

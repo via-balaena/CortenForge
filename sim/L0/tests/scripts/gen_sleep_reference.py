@@ -78,7 +78,10 @@ static bodies, and a rangefinder on the box aimed at the sphere; two
 hinges joined by a fixed tendon with no stiffness, one at rest (it
 sleeps), one swinging, with tendon sensors; a slider-crank whose slider
 site is on the world body, its ctrl set to 1 at step 0, until its crank
-sleeps; and, in zero gravity, a
+sleeps; under implicitfast, a velocity-feedback actuator between a slide
+that sleeps and a sprung slide that never does, the sprung one pushed at
+step 50 (the sleeping actuator adds no term to the implicit derivative);
+and, in zero gravity, a
 sphere that starts asleep beside a resting one, which is moved against it
 at step 5 while its countdown runs, so the sleeping sphere wakes with that
 countdown; the resting box given a velocity of 1e-6, below the tolerance,
@@ -345,6 +348,15 @@ TRACES = {
     "act_sleep_ctrl": (TRACES_ACT_SLEEP, 800, [(700, "ctrl", 0, 0.5)], True),
     "act_tendon_ctrl": (TRACES_ACT_SLEEP_TENDON, 800, [(700, "ctrl", 0, 0.5)], True),
     "slider_static": (TRACES_SLIDER_STATIC, 1150, [(0, "ctrl", 0, 1.0)], True),
+    "deriv_asleep": ("""<mujoco><option timestep="0.002" integrator="implicitfast"><flag sleep="enable"/></option>
+<worldbody>
+<body name="a" pos="0 0 1" sleep="allowed"><joint name="ja" type="slide" axis="1 0 0" damping="5"/>
+  <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/><site name="sa"/></body>
+<body name="b" pos="1 0 1" sleep="never"><joint name="jb" type="slide" axis="1 0 0" stiffness="10"/>
+  <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/><site name="sb"/></body>
+</worldbody>
+<actuator><general name="act" site="sa" refsite="sb" gear="1 0 0 0 0 0" biastype="affine" biasprm="0 0 -50"/></actuator>
+</mujoco>""", 80, [(50, "qvel", 1, 1.0)], True),
     "sensor_mix": (f"""<mujoco>{SLEEP_OPT}
 <worldbody>{PLANE}
 <body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/>

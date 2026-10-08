@@ -1629,3 +1629,74 @@ fn implicit_qacc_is_explicit_with_an_active_limit_under_pgs() {
         assert!(close(qvel, qvel_after), "{integrator}: qvel {qvel}");
     }
 }
+
+/// The velocity derivative the implicit integrators solve with leaves out
+/// what MuJoCo's `mjd_actuator_vel` leaves out (`engine_derivative.c:1066-1093`):
+/// every actuator when actuation is disabled, an actuator whose group is
+/// disabled, and one whose force its forcerange clamps; and an `actearly`
+/// actuator's gain term reads the next activation, as its force does. A hinge
+/// at qvel 1 with a velocity-feedback actuator, one step; MuJoCo 3.5.0
+/// (unfused build). An actuator left out steps as under Euler.
+#[test]
+fn implicit_actuator_derivative_leaves_out_what_mujoco_does() {
+    let cases = [
+        (
+            "group disabled",
+            r#" actuatorgroupdisable="2""#,
+            "",
+            r#"<general joint="j" group="2" biastype="affine" biasprm="0 0 -5"/>"#,
+            0.0,
+            1.454_129_564_578_057_4,
+        ),
+        (
+            "force clamped",
+            "",
+            "",
+            r#"<general joint="j" biastype="affine" biasprm="0 0 -5" forcelimited="true" forcerange="-0.1 0.1"/>"#,
+            0.0,
+            1.423_267_888_425_963_7,
+        ),
+        (
+            "actuation disabled",
+            "",
+            r#"<flag actuation="disable"/>"#,
+            r#"<general joint="j" biastype="affine" biasprm="0 0 -5"/>"#,
+            0.0,
+            1.454_129_564_578_057_4,
+        ),
+        (
+            "actearly",
+            "",
+            "",
+            r#"<general joint="j" dyntype="filter" dynprm="0.05" gaintype="affine" gainprm="1 0 -2" actearly="true"/>"#,
+            1.0,
+            1.349_287_786_117_687,
+        ),
+    ];
+    for (name, option, flags, actuator, ctrl, mujoco) in cases {
+        for integrator in ["implicitfast", "implicit"] {
+            let xml = format!(
+                r#"<mujoco>
+                  <option timestep="0.01" integrator="{integrator}"{option}>{flags}</option>
+                  <worldbody>
+                    <body name="b">
+                      <joint name="j" type="hinge" axis="0 1 0"/>
+                      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                    </body>
+                  </worldbody>
+                  <actuator>{actuator}</actuator>
+                </mujoco>"#
+            );
+            let model = load_model(&xml).expect("load");
+            let mut data = model.make_data();
+            data.qvel[0] = 1.0;
+            data.ctrl.fill(ctrl);
+            data.step(&model).expect("step");
+            let qvel = data.qvel[0];
+            assert!(
+                (qvel - mujoco).abs() < 1e-12,
+                "{name}, {integrator}: qvel {qvel}, MuJoCo {mujoco}"
+            );
+        }
+    }
+}
