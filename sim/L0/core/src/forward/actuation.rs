@@ -486,7 +486,7 @@ pub fn mj_next_activation(
 /// its `ctrlrange` unless `DISABLE_CLAMPCTRL` is set. sim-mjcf gives an
 /// actuator without a control limit the range `(-inf, inf)`, which clamping
 /// leaves as is.
-fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
+pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
     // MuJoCo tests the delay for non-zero (`engine_forward.c:304`).
     let ctrl = if model.nhistory > 0 && model.actuator_delay[i] != 0.0 {
         crate::history::read_ctrl(model, data, i, data.time)

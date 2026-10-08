@@ -3320,3 +3320,189 @@ fn centered_d_has_the_forward_sign() {
         assert!(d[(1, 0)] > 0.5, "centered {centered}: {d}");
     }
 }
+
+/// The transition derivatives leave out what MuJoCo's actuator derivatives
+/// leave out (`engine_derivative.c:1066-1146`): every actuator when actuation
+/// is disabled, an actuator whose group is disabled, and one whose force its
+/// forcerange clamps; and an `actearly` actuator's force reads the next
+/// activation in its position and activation columns. The analytic path and
+/// pure finite differences both give MuJoCo 3.5.0's `mjd_transitionFD`
+/// (unfused build, centered, eps 1e-6; Euler and implicitfast alike): a hinge
+/// at qpos 0.5, qvel 1, ctrl 0.3 and act 0.5.
+#[test]
+fn transition_derivatives_leave_out_what_mujoco_does() {
+    const P: f64 = 0.997_822_786_896_751_5;
+    const G: f64 = -0.217_721_311_202_012_66;
+    const H: f64 = 0.01;
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        Vec<Vec<f64>>,
+        Vec<f64>,
+    );
+    let cases: Vec<Case> = vec![
+        (
+            "actuation disabled",
+            "",
+            r#"<flag actuation="disable"/>"#,
+            r#"<motor joint="j" gear="1"/>"#,
+            vec![vec![P, H], vec![G, 1.0]],
+            vec![0.0, 0.0],
+        ),
+        (
+            "group disabled",
+            r#" actuatorgroupdisable="2""#,
+            "",
+            r#"<motor joint="j" gear="1" group="2"/>"#,
+            vec![vec![P, H], vec![G, 1.0]],
+            vec![0.0, 0.0],
+        ),
+        (
+            "force clamped",
+            "",
+            "",
+            r#"<position joint="j" kp="10" forcelimited="true" forcerange="-0.1 0.1"/>"#,
+            vec![vec![P, H], vec![G, 1.0]],
+            vec![0.0, 0.0],
+        ),
+        (
+            "filter, group disabled",
+            r#" actuatorgroupdisable="2""#,
+            "",
+            r#"<general joint="j" dyntype="filter" dynprm="0.05" group="2"/>"#,
+            vec![vec![P, H, 0.0], vec![G, 1.0, 0.0], vec![0.0, 0.0, 1.0]],
+            vec![0.0, 0.0, 0.0],
+        ),
+        (
+            "filter, force clamped",
+            "",
+            "",
+            r#"<general joint="j" dyntype="filter" dynprm="0.05" forcelimited="true" forcerange="-0.1 0.1"/>"#,
+            vec![vec![P, H, 0.0], vec![G, 1.0, 0.0], vec![0.0, 0.0, 0.8]],
+            vec![0.0, 0.0, 0.2],
+        ),
+        (
+            "actearly",
+            "",
+            "",
+            r#"<general joint="j" dyntype="filter" dynprm="0.05" gaintype="affine" gainprm="1 2 0" actearly="true"/>"#,
+            vec![
+                vec![1.000_662_061_101_387_2, H, 0.004_937_868_169_907_489],
+                vec![0.066_206_109_261_557_34, 1.0, 0.493_786_818_323_016_5],
+                vec![0.0, 0.0, 0.8],
+            ],
+            vec![0.001_234_467_028_599_084_4, 0.123_446_704_636_265_28, 0.2],
+        ),
+    ];
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+    for (name, option, flags, actuator, a, b) in cases {
+        for integrator in ["Euler", "implicitfast"] {
+            let xml = format!(
+                r#"<mujoco>
+                  <option timestep="0.01" integrator="{integrator}"{option}>{flags}</option>
+                  <worldbody>
+                    <body name="b">
+                      <joint name="j" type="hinge" axis="0 1 0"/>
+                      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                    </body>
+                  </worldbody>
+                  <actuator>{actuator}</actuator>
+                </mujoco>"#
+            );
+            let model = sim_mjcf::load_model(&xml).expect("load");
+            let mut data = model.make_data();
+            data.qpos[0] = 0.5;
+            data.qvel[0] = 1.0;
+            data.ctrl[0] = 0.3;
+            data.act.fill(0.5);
+            data.forward(&model).expect("forward");
+            let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+            let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+            for (path, ours) in [("analytic", &hybrid), ("fd", &fd)] {
+                for (r, row) in a.iter().enumerate() {
+                    for (c, want) in row.iter().enumerate() {
+                        let got = ours.A[(r, c)];
+                        assert!(
+                            (got - want).abs() < 1e-6,
+                            "{name}, {integrator}, {path}: A[{r},{c}] {got}, MuJoCo {want}"
+                        );
+                    }
+                }
+                for (r, want) in b.iter().enumerate() {
+                    let got = ours.B[(r, 0)];
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "{name}, {integrator}, {path}: B[{r},0] {got}, MuJoCo {want}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A bad control makes every actuator's input 0 for the pass, so MuJoCo's
+/// transition derivative has no control column and no position term from a
+/// gain: a NaN control on a motor beside a `kp="10"` position actuator. The
+/// analytic path and pure finite differences both give MuJoCo 3.5.0's
+/// `mjd_transitionFD` (unfused build, centered, eps 1e-6; Euler and
+/// implicitfast alike) at qpos 0.5, qvel 1.
+#[test]
+fn transition_derivatives_with_a_bad_control_are_mujocos() {
+    let a = [
+        [0.966_961_110_737_685_2, 0.01],
+        [-3.303_888_925_998_421_7, 1.0],
+    ];
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+    for integrator in ["Euler", "implicitfast"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <motor joint="j" gear="1"/>
+                <position joint="j" kp="10"/>
+              </actuator>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        data.qvel[0] = 1.0;
+        data.ctrl[0] = f64::NAN;
+        data.ctrl[1] = 0.3;
+        data.forward(&model).expect("forward");
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        for (path, ours) in [("analytic", &hybrid), ("fd", &fd)] {
+            for (r, row) in a.iter().enumerate() {
+                for (c, &want) in row.iter().enumerate() {
+                    let got = ours.A[(r, c)];
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "{integrator}, {path}: A[{r},{c}] {got}, MuJoCo {want}"
+                    );
+                    let got = ours.B[(r, c)];
+                    assert!(
+                        got.abs() < 1e-6,
+                        "{integrator}, {path}: B[{r},{c}] {got}, MuJoCo 0"
+                    );
+                }
+            }
+        }
+    }
+}

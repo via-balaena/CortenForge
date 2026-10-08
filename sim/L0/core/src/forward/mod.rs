@@ -54,8 +54,9 @@ pub use muscle::{
 
 #[allow(unused_imports)]
 pub(crate) use actuation::{
-    mj_actuator_velocity, mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
-    mj_transmission_joint_tendon, mj_transmission_site, mj_transmission_slidercrank,
+    actuator_ctrl_input, mj_actuator_velocity, mj_fwd_actuation, mj_gravcomp_to_actuator,
+    mj_transmission_body_dispatch, mj_transmission_joint_tendon, mj_transmission_site,
+    mj_transmission_slidercrank,
 };
 #[allow(unused_imports)]
 pub(crate) use passive::mj_fwd_passive;
@@ -233,7 +234,9 @@ impl Data {
     /// to check if a reset occurred. A bad control (after clamping to
     /// `ctrlrange`) makes every actuator's control input 0 for that pass (an
     /// actuator with an activation still acts on it), leaves `ctrl` as written
-    /// and counts `Warning::BadCtrl` (matching MuJoCo).
+    /// and counts `Warning::BadCtrl` (matching MuJoCo). Under `implicit` and
+    /// `implicitfast` the velocity derivative still reads it for an actuator
+    /// whose gain has a velocity term, as MuJoCo's does.
     pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;

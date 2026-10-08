@@ -1631,7 +1631,7 @@ fn implicit_qacc_is_explicit_with_an_active_limit_under_pgs() {
 }
 
 /// The velocity derivative the implicit integrators solve with leaves out
-/// what MuJoCo's `mjd_actuator_vel` leaves out (`engine_derivative.c:1066-1093`):
+/// what MuJoCo's `mjd_actuator_vel` leaves out (`engine_derivative.c:1066-1146`):
 /// every actuator when actuation is disabled, an actuator whose group is
 /// disabled, and one whose force its forcerange clamps; and an `actearly`
 /// actuator's gain term reads the next activation, as its force does. A hinge
@@ -1697,6 +1697,75 @@ fn implicit_actuator_derivative_leaves_out_what_mujoco_does() {
                 (qvel - mujoco).abs() < 1e-12,
                 "{name}, {integrator}: qvel {qvel}, MuJoCo {mujoco}"
             );
+        }
+    }
+}
+
+/// A bad control under the implicit integrators: the velocity derivative reads
+/// the raw control, as MuJoCo's does, and adds the gain term only when the
+/// gain depends on velocity (`engine_derivative.c:1125-1127`). A motor, or an
+/// affine bias, steps as MuJoCo's with a NaN or an infinite control; an
+/// affine gain with a velocity term carries the bad control into the step in
+/// both. A hinge at qvel 1, one step; MuJoCo 3.5.0 (unfused build).
+#[test]
+fn implicit_derivative_reads_a_bad_control_as_mujoco_does() {
+    let cases = [
+        (
+            r#"<motor joint="j" gear="1"/>"#,
+            f64::NAN,
+            Some(1.454_129_564_578_057_4),
+        ),
+        (
+            r#"<motor joint="j" gear="1"/>"#,
+            f64::INFINITY,
+            Some(1.454_129_564_578_057_4),
+        ),
+        (
+            r#"<general joint="j" biastype="affine" biasprm="0 0 -5"/>"#,
+            f64::NAN,
+            Some(0.571_797_736_366_264_6),
+        ),
+        (
+            r#"<general joint="j" gaintype="affine" gainprm="1 0 -2"/>"#,
+            f64::NAN,
+            None,
+        ),
+        (
+            r#"<general joint="j" gaintype="affine" gainprm="1 0 -2"/>"#,
+            f64::INFINITY,
+            Some(1.0),
+        ),
+    ];
+    for (actuator, ctrl, mujoco) in cases {
+        for integrator in ["implicitfast", "implicit"] {
+            let xml = format!(
+                r#"<mujoco>
+                  <option timestep="0.01" integrator="{integrator}"/>
+                  <worldbody>
+                    <body name="b">
+                      <joint name="j" type="hinge" axis="0 1 0"/>
+                      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                    </body>
+                  </worldbody>
+                  <actuator>{actuator}</actuator>
+                </mujoco>"#
+            );
+            let model = load_model(&xml).expect("load");
+            let mut data = model.make_data();
+            data.qvel[0] = 1.0;
+            data.ctrl[0] = ctrl;
+            data.step(&model).expect("step");
+            let qvel = data.qvel[0];
+            match mujoco {
+                Some(v) => assert!(
+                    (qvel - v).abs() < 1e-12,
+                    "{actuator}, ctrl {ctrl}, {integrator}: qvel {qvel}, MuJoCo {v}"
+                ),
+                None => assert!(
+                    qvel.is_nan(),
+                    "{actuator}, ctrl {ctrl}, {integrator}: qvel {qvel}, MuJoCo NaN"
+                ),
+            }
         }
     }
 }
