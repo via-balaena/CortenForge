@@ -1117,9 +1117,12 @@ impl From<RangeError> for MakeDataError {
 /// The calls are [`Data::read_ctrl`](crate::Data::read_ctrl),
 /// [`Data::read_sensor`](crate::Data::read_sensor),
 /// [`Data::init_ctrl_history`](crate::Data::init_ctrl_history) and
-/// [`Data::init_sensor_history`](crate::Data::init_sensor_history); each
-/// refuses where MuJoCo 3.5.0's `mj_readCtrl`, `mj_readSensor`,
-/// `mj_initCtrlHistory` or `mj_initSensorHistory` raises `mjERROR`.
+/// [`Data::init_sensor_history`](crate::Data::init_sensor_history). An index
+/// out of range, a missing buffer and times that do not increase are where
+/// MuJoCo 3.5.0's `mj_readCtrl`, `mj_readSensor`, `mj_initCtrlHistory` or
+/// `mj_initSensorHistory` raises `mjERROR`; a slice of the wrong length
+/// (MuJoCo's C takes no lengths; its Python binding checks them) and a
+/// `Data` of another shape (registry row `D-DATA-SHAPE`) are this API's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HistoryError {
@@ -1151,6 +1154,17 @@ pub enum HistoryError {
         /// The first index of the pair.
         index: usize,
     },
+    /// An array the call reads or writes (`history`, `ctrl`, `sensordata`)
+    /// does not have the length the model requires: the `Data` was made by
+    /// another model, or the caller resized it.
+    DataShapeMismatch {
+        /// The `Data` field.
+        field: &'static str,
+        /// The length the model requires.
+        expected: usize,
+        /// The field's length.
+        actual: usize,
+    },
 }
 
 impl std::fmt::Display for HistoryError {
@@ -1168,6 +1182,14 @@ impl std::fmt::Display for HistoryError {
                 f,
                 "times must be strictly increasing, got times[{index}] >= times[{}]",
                 index + 1
+            ),
+            Self::DataShapeMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "data.{field} has length {actual}, the model requires {expected}"
             ),
         }
     }

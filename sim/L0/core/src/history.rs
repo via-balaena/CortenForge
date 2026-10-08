@@ -184,7 +184,8 @@ fn address(historyadr: i32) -> usize {
 /// Fill `history` (length `model.nhistory`) as `_resetData` does: each
 /// buffer's newest sample last, timestamps one timestep apart and ending at
 /// `-timestep` (or, for an interval sensor, one period apart and ending at
-/// its phase, each rounded up to a timestep), and values 0.
+/// its phase, or at `-period` when the phase is 0, each rounded up to a
+/// timestep), and values 0.
 #[allow(clippy::cast_precision_loss)] // sample counts <= 2^24
 pub fn init(model: &Model, history: &mut [f64]) {
     history.fill(0.0);
@@ -224,6 +225,12 @@ pub fn init(model: &Model, history: &mut [f64]) {
 /// buffer, else its buffer read at `time - actuator_delay[i]` with the
 /// model's interpolation. MuJoCo `mj_readCtrl`.
 pub fn read_ctrl(model: &Model, data: &Data, i: usize, time: f64) -> f64 {
+    ctrl_at(model, data, i, time, model.actuator_interp[i])
+}
+
+/// Actuator `i`'s control at `time` with `interp`: `ctrl[i]` without a
+/// buffer, else the buffer read at `time - actuator_delay[i]`.
+fn ctrl_at(model: &Model, data: &Data, i: usize, time: f64, interp: InterpolationType) -> f64 {
     if model.actuator_nsample[i] <= 0 {
         return data.ctrl[i];
     }
@@ -235,11 +242,54 @@ pub fn read_ctrl(model: &Model, data: &Data, i: usize, time: f64) -> f64 {
         1,
         &mut res,
         time - model.actuator_delay[i],
-        model.actuator_interp[i],
+        interp,
     ) {
         Some(offset) => buf[offset],
         None => res[0],
     }
+}
+
+/// Sensor `i`'s buffer read at `time - sensor_delay[i]` with `interp` into
+/// `out` (length `sensor_dim[i]`).
+fn sensor_from_buffer(
+    model: &Model,
+    history: &[f64],
+    i: usize,
+    time: f64,
+    interp: InterpolationType,
+    out: &mut [f64],
+) {
+    let dim = model.sensor_dim[i];
+    let buf = &history[address(model.sensor_historyadr[i])..];
+    if let Some(offset) = read(
+        buf,
+        count(model.sensor_nsample[i]),
+        dim,
+        out,
+        time - model.sensor_delay[i],
+        interp,
+    ) {
+        out.copy_from_slice(&buf[offset..offset + dim]);
+    }
+}
+
+/// Refuses a `Data` whose `history`, `ctrl` or `sensordata`, the arrays the
+/// history API reads and writes, does not have the model's length.
+fn check_shape(model: &Model, data: &Data) -> Result<(), HistoryError> {
+    for (field, actual, expected) in [
+        ("history", data.history.len(), model.nhistory),
+        ("ctrl", data.ctrl.len(), model.nu),
+        ("sensordata", data.sensordata.len(), model.nsensordata),
+    ] {
+        if actual != expected {
+            return Err(HistoryError::DataShapeMismatch {
+                field,
+                expected,
+                actual,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Whether sensor `i` takes its value from its buffer in this pass instead
@@ -268,21 +318,16 @@ pub fn sensor_reads_history(model: &Model, data: &Data, i: usize) -> bool {
 /// Write sensor `i`'s value at `data.time - sensor_delay[i]`, read from its
 /// buffer, into `sensordata`. MuJoCo `mj_readSensor`.
 pub fn read_sensor(model: &Model, data: &mut Data, i: usize) {
-    let dim = model.sensor_dim[i];
     let adr = model.sensor_adr[i];
-    let buf = &data.history[address(model.sensor_historyadr[i])..];
-    let out = &mut data.sensordata.as_mut_slice()[adr..adr + dim];
-    let t = data.time - model.sensor_delay[i];
-    if let Some(offset) = read(
-        buf,
-        count(model.sensor_nsample[i]),
-        dim,
-        out,
-        t,
+    let out = &mut data.sensordata.as_mut_slice()[adr..adr + model.sensor_dim[i]];
+    sensor_from_buffer(
+        model,
+        &data.history,
+        i,
+        data.time,
         model.sensor_interp[i],
-    ) {
-        out.copy_from_slice(&buf[offset..offset + dim]);
-    }
+        out,
+    );
 }
 
 /// Insert every buffered actuator's `ctrl` at `time` (`engine_forward.c:838-847`).
@@ -399,7 +444,8 @@ impl Data {
     /// `mj_readCtrl`.
     ///
     /// # Errors
-    /// [`HistoryError::InvalidActuator`] when `id >= model.nu`.
+    /// [`HistoryError::InvalidActuator`] when `id >= model.nu`;
+    /// [`HistoryError::DataShapeMismatch`] for a `Data` of another shape.
     pub fn read_ctrl(
         &self,
         model: &Model,
@@ -410,24 +456,14 @@ impl Data {
         if id >= model.nu {
             return Err(HistoryError::InvalidActuator { id, nu: model.nu });
         }
-        if model.actuator_nsample[id] <= 0 {
-            return Ok(self.ctrl[id]);
-        }
-        let buf = &self.history[address(model.actuator_historyadr[id])..];
-        let mut res = [0.0];
-        Ok(
-            match read(
-                buf,
-                count(model.actuator_nsample[id]),
-                1,
-                &mut res,
-                time - model.actuator_delay[id],
-                interp.unwrap_or(model.actuator_interp[id]),
-            ) {
-                Some(offset) => buf[offset],
-                None => res[0],
-            },
-        )
+        check_shape(model, self)?;
+        Ok(ctrl_at(
+            model,
+            self,
+            id,
+            time,
+            interp.unwrap_or(model.actuator_interp[id]),
+        ))
     }
 
     /// Sensor `id`'s value at `time - sensor_delay[id]`, read from its buffer
@@ -437,7 +473,8 @@ impl Data {
     ///
     /// # Errors
     /// [`HistoryError::InvalidSensor`] when `id >= model.nsensor`;
-    /// [`HistoryError::WrongLength`] when `out` is not `sensor_dim[id]` long.
+    /// [`HistoryError::WrongLength`] when `out` is not `sensor_dim[id]` long;
+    /// [`HistoryError::DataShapeMismatch`] for a `Data` of another shape.
     pub fn read_sensor(
         &self,
         model: &Model,
@@ -459,22 +496,20 @@ impl Data {
                 actual: out.len(),
             });
         }
+        check_shape(model, self)?;
         if model.sensor_nsample[id] <= 0 {
             let adr = model.sensor_adr[id];
             out.copy_from_slice(&self.sensordata.as_slice()[adr..adr + dim]);
             return Ok(());
         }
-        let buf = &self.history[address(model.sensor_historyadr[id])..];
-        if let Some(offset) = read(
-            buf,
-            count(model.sensor_nsample[id]),
-            dim,
-            out,
-            time - model.sensor_delay[id],
+        sensor_from_buffer(
+            model,
+            &self.history,
+            id,
+            time,
             interp.unwrap_or(model.sensor_interp[id]),
-        ) {
-            out.copy_from_slice(&buf[offset..offset + dim]);
-        }
+            out,
+        );
         Ok(())
     }
 
@@ -485,8 +520,10 @@ impl Data {
     ///
     /// # Errors
     /// [`HistoryError::InvalidActuator`], [`HistoryError::NoBuffer`],
-    /// [`HistoryError::WrongLength`] for `times` or `values`, or
-    /// [`HistoryError::TimesNotIncreasing`]; the buffer is then unchanged.
+    /// [`HistoryError::WrongLength`] for `times` or `values`,
+    /// [`HistoryError::TimesNotIncreasing`], or
+    /// [`HistoryError::DataShapeMismatch`] for a `Data` of another shape; the
+    /// buffer is then unchanged.
     pub fn init_ctrl_history(
         &mut self,
         model: &Model,
@@ -500,6 +537,7 @@ impl Data {
         if model.actuator_nsample[id] <= 0 {
             return Err(HistoryError::NoBuffer);
         }
+        check_shape(model, self)?;
         let buf = &mut self.history[address(model.actuator_historyadr[id])..];
         let user = buf[0];
         init_buffer(
@@ -518,8 +556,10 @@ impl Data {
     ///
     /// # Errors
     /// [`HistoryError::InvalidSensor`], [`HistoryError::NoBuffer`],
-    /// [`HistoryError::WrongLength`] for `times` or `values`, or
-    /// [`HistoryError::TimesNotIncreasing`]; the buffer is then unchanged.
+    /// [`HistoryError::WrongLength`] for `times` or `values`,
+    /// [`HistoryError::TimesNotIncreasing`], or
+    /// [`HistoryError::DataShapeMismatch`] for a `Data` of another shape; the
+    /// buffer is then unchanged.
     pub fn init_sensor_history(
         &mut self,
         model: &Model,
@@ -537,6 +577,7 @@ impl Data {
         if model.sensor_nsample[id] <= 0 {
             return Err(HistoryError::NoBuffer);
         }
+        check_shape(model, self)?;
         let dim = model.sensor_dim[id];
         let buf = &mut self.history[address(model.sensor_historyadr[id])..];
         init_buffer(

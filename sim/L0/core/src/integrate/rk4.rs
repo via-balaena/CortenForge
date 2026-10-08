@@ -40,8 +40,9 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
 
     // 0. Sensor history samples, at the step's start state (registry
     // `D-HISTORY-RK4-SENSOR`): MuJoCo inserts them after the stages, from the
-    // last stage's kinematics, so its delayed position and acceleration
-    // sensors read values that are not the sensor's at the sample's time.
+    // last stage's kinematics, velocities and forces, so its delayed sensors
+    // that read those read values that are not the sensor's at the sample's
+    // time.
     crate::history::advance_sensors(model, data);
 
     // 1. SAVE initial state

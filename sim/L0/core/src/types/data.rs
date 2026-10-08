@@ -89,8 +89,8 @@ pub struct Data {
     /// Made and reset with timestamps one timestep apart ending at
     /// `-timestep` (an interval sensor's one period apart, rounded up to a
     /// timestep) and values 0; a step inserts a sample of each buffered
-    /// actuator's `ctrl` and each buffered sensor. MuJoCo: `mjData.history`,
-    /// part of its physics state.
+    /// actuator's `ctrl` and each buffered sensor, an interval sensor's only
+    /// on its tick. MuJoCo: `mjData.history`, part of its physics state.
     pub history: Vec<f64>,
 
     // ==================== Mocap Bodies ====================

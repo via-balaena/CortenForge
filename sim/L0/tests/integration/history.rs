@@ -177,8 +177,8 @@ fn run(golden: &Value, name: &str, skip_sensors: &[usize]) {
 }
 
 /// Delayed actuators act on the control their buffer holds at `time - delay`,
-/// with MuJoCo's interpolation, under each integrator and driver, across a
-/// reset and from keyframes at positive and negative times.
+/// with MuJoCo's interpolation, under Euler, RK4 and implicitfast and each
+/// driver, across a reset and from keyframes at positive and negative times.
 #[test]
 fn delayed_actuators_match_mujoco_3_5_0() {
     let golden = golden();
@@ -330,9 +330,9 @@ fn delayed_sensor_reads_the_value_one_step_earlier() {
 /// Registry `D-STEP12-ACCELEROMETER`: `step1` + `step2` leave the
 /// accelerometer `step` leaves. MuJoCo 3.5.0's are 5.9 off `mj_step`'s on
 /// this model, on the same trajectory: `mj_step2` does not clear
-/// `flg_rnepost`, so it reads `mj_step1`'s body accelerations; clearing the
-/// flag between the two calls removes the difference (measured on the
-/// unfused oracle).
+/// `flg_rnepost`, so it reads body accelerations an earlier pass left
+/// (`mj_step1` computes none); clearing the flag between the two calls
+/// removes the difference (measured on the unfused oracle).
 #[test]
 fn step1_step2_accelerometer_equals_step() {
     let model = load_model(ONE_STEP_DELAY).expect("load");
@@ -356,7 +356,8 @@ fn step1_step2_accelerometer_equals_step() {
 
 /// A user sensor with a delay cannot be computed when its sample is inserted
 /// (MuJoCo `mjERROR`s there): `try_make_data` and `try_reset` refuse it.
-/// MJCF cannot express one; a code-built model can.
+/// MuJoCo's schema has no delay on a user sensor; sim-mjcf loads one until
+/// Rigid-loading L48, and `make_data` then refuses it.
 #[test]
 fn try_make_data_refuses_a_delayed_user_sensor() {
     let mut model = load_model(
@@ -559,8 +560,9 @@ fn history_inits_match_mujoco_3_5_0() {
     }
 }
 
-/// Where MuJoCo `mjERROR`s, the API returns the reason: a bad index, no
-/// buffer, a slice of the wrong length, times that do not increase.
+/// The API returns the reason where MuJoCo `mjERROR`s (a bad index, no
+/// buffer, times that do not increase) and for a slice of the wrong length,
+/// which MuJoCo's C does not check (its Python binding does).
 #[test]
 fn history_api_refuses_what_mujoco_refuses() {
     let golden = api_golden();
@@ -623,7 +625,8 @@ fn history_api_refuses_what_mujoco_refuses() {
 
 /// `None` keeps what the buffer holds: new times with the values kept, then
 /// new values with the times kept (MuJoCo's C API takes NULL for either;
-/// its Python binding, which the golden comes from, does not).
+/// its Python binding, which the golden comes from, takes `None` for the
+/// times only).
 #[test]
 fn history_init_keeps_what_it_is_not_given() {
     let golden = api_golden();
@@ -685,5 +688,44 @@ fn history_init_keeps_the_user_slot() {
         &data.history,
         &floats(&user["after_steps"]),
         &[],
+    );
+}
+
+/// A `Data` of another shape is refused, as the step's input check refuses
+/// one (registry `D-DATA-SHAPE`), not read or written past its end: each call
+/// on a `Data` whose `history` is one shorter than its model's.
+#[test]
+fn history_api_refuses_a_data_of_another_shape() {
+    let golden = api_golden();
+    let refusal = |model: &Model| HistoryError::DataShapeMismatch {
+        field: "history",
+        expected: model.nhistory,
+        actual: model.nhistory - 1,
+    };
+    let act = api_model(&golden, "act");
+    let mut data = act.make_data();
+    data.history.pop();
+    assert_eq!(
+        data.read_ctrl(&act, 2, 0.0, None).err(),
+        Some(refusal(&act))
+    );
+    assert_eq!(
+        data.init_ctrl_history(&act, 2, None, Some(&[1.0, 2.0, 3.0]))
+            .err(),
+        Some(refusal(&act))
+    );
+    let sens = api_model(&golden, "sens");
+    let mut data = sens.make_data();
+    data.history.pop();
+    let mut out = vec![0.0; sens.sensor_dim[6]];
+    assert_eq!(
+        data.read_sensor(&sens, 6, 0.0, None, &mut out).err(),
+        Some(refusal(&sens))
+    );
+    let values: Vec<f64> = (0..12).map(f64::from).collect();
+    assert_eq!(
+        data.init_sensor_history(&sens, 6, None, Some(&values), 0.0)
+            .err(),
+        Some(refusal(&sens))
     );
 }

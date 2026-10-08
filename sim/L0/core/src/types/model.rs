@@ -619,16 +619,18 @@ pub struct Model {
     /// Time delay per sensor in seconds (length `nsensor`).
     /// MuJoCo: `sensor_delay`.  Default: 0.0.  Present for all sensors.
     /// A sensor with a buffer and a delay above 0 reads its buffer at
-    /// `time - delay` instead of being computed. A user or plugin sensor
-    /// cannot have one: `try_make_data` and `try_reset` refuse it.
+    /// `time - delay` instead of being computed. `try_make_data` and
+    /// `try_reset` refuse a user or plugin sensor with a buffer and a delay.
     pub sensor_delay: Vec<f64>,
 
     /// Sampling interval per sensor: `(period, phase)` (length `nsensor`).
     /// MuJoCo: `sensor_interval[2*i]` = period, `sensor_interval[2*i+1]` = phase.
     /// With a buffer and `period > 0`, the sensor is computed once a period
-    /// and read from its buffer between; the first tick is at `phase`, or at 0
-    /// when `phase` is 0. sim-mjcf reads `interval` as the period alone and
-    /// sets `phase` to 0.
+    /// and read from its buffer between. A reset records `phase` (or
+    /// `-period` when `phase` is 0) as its last tick, so it is first computed
+    /// one period after that (MuJoCo `_resetData`, `engine_io.c:1404`).
+    /// sim-mjcf reads a one-value `interval` as the period with `phase` 0 and
+    /// a two-value one as no interval, until Rigid-loading L48.
     pub sensor_interval: Vec<(f64, f64)>,
 
     // ==================== Actuators (indexed by actuator_id) ====================
