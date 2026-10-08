@@ -288,8 +288,8 @@ fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
 
 /// Re-initialize all sleep state from model policies (§16.7).
 ///
-/// Called by `Data::reset()` and `Data::reset_to_keyframe()` to ensure sleep
-/// state matches the model's tree sleep policies after a reset.
+/// Called when a `Data` is made or reset (through `Model::start_sleep`), so
+/// the sleep state matches the model's tree sleep policies.
 pub fn reset_sleep_state(model: &Model, data: &mut Data) {
     // First: set all trees to awake
     for t in 0..model.ntree {

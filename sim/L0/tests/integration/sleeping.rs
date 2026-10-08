@@ -112,6 +112,27 @@ fn sleep_init_mjcf() -> &'static str {
     "#
 }
 
+/// `reset` leaves the `Data` a fresh `make_data` leaves, a tree that starts
+/// asleep included: its bodies get the kinematics `make_data` computes for
+/// them before they sleep.
+#[test]
+fn reset_leaves_the_data_make_data_leaves_with_an_init_asleep_tree() {
+    let model = load_model(sleep_init_mjcf()).expect("load");
+    let want = format!("{:#?}", model.make_data());
+    let mut data = model.make_data();
+    for _ in 0..50 {
+        data.step(&model).expect("step");
+    }
+    super::model_data_pipeline::scramble(&mut data);
+    data.reset(&model);
+    let got = format!("{data:#?}");
+    assert!(
+        got == want,
+        "reset differs from make_data in: {:?}",
+        super::keyframes::differing_fields(&got, &want)
+    );
+}
+
 /// RK4 + sleep (should warn and disable sleep).
 fn rk4_sleep_mjcf() -> &'static str {
     r#"

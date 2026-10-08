@@ -1121,7 +1121,7 @@ fn name_lookup_ac10_urdf_no_keyframes() {
 // ============================================================================
 
 /// The fields of `Data` whose `{:#?}` dumps differ.
-fn differing_fields(got: &str, want: &str) -> Vec<String> {
+pub(super) fn differing_fields(got: &str, want: &str) -> Vec<String> {
     let field = |line: &str| {
         line.strip_prefix("    ")
             .filter(|l| !l.starts_with(' '))

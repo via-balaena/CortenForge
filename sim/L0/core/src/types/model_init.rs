@@ -559,8 +559,9 @@ impl Model {
     }
 
     /// Create the `Data` for this model, with every array allocated: the joint
-    /// layout and range checks, then the arrays, then each plugin's `init` and
-    /// `reset`, as MuJoCo 3.5.0's `mj_makeData` runs `mj_initPlugin` and then
+    /// layout and range checks, then the arrays, each plugin's `init`, and the
+    /// rest of a reset ([`Data::reset`]: the sleep state, each plugin's
+    /// `reset`), as MuJoCo 3.5.0's `mj_makeData` runs `mj_initPlugin` and then
     /// `mj_resetData` (`engine_io.c:1110-1111`).
     ///
     /// # Errors
@@ -573,7 +574,7 @@ impl Model {
     pub fn try_make_data(&self) -> Result<Data, MakeDataError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
-        let mut data = self.make_data_for_derivation();
+        let mut data = self.allocate_data();
         for i in 0..self.nplugin {
             self.plugin_objects[i]
                 .init(self, &mut data, i)
@@ -582,10 +583,8 @@ impl Model {
                     message,
                 })?;
         }
-        for i in 0..self.nplugin {
-            let state = self.plugin_stateadr[i]..self.plugin_stateadr[i] + self.plugin_statenum[i];
-            self.plugin_objects[i].reset(self, &mut data.plugin_state[state], i);
-        }
+        self.start_sleep(&mut data);
+        data.reset_plugins(self);
         Ok(data)
     }
 
@@ -594,7 +593,17 @@ impl Model {
     /// every array allocated, with no checks and no plugin `init`, so that
     /// building a model never panics on what `try_make_data` refuses.
     pub(crate) fn make_data_for_derivation(&self) -> Data {
-        let mut data = Data {
+        let mut data = self.allocate_data();
+        self.start_sleep(&mut data);
+        data
+    }
+
+    /// Every array of a `Data` for this model, as a reset leaves it before
+    /// the sleep state and the plugins: `qpos0`, the mocap bodies' poses, the
+    /// history buffers' timestamps, and zero elsewhere. No checks and no
+    /// plugin `init`.
+    pub(crate) fn allocate_data(&self) -> Data {
+        Data {
             // Generalized coordinates
             qpos: self.qpos0.clone(),
             qvel: DVector::zeros(self.nv),
@@ -955,8 +964,13 @@ impl Model {
             // §66: Plugin state
             plugin_state: vec![0.0; self.npluginstate],
             plugin_data: (0..self.nplugin).map(|_| None).collect(),
-        };
+        }
+    }
 
+    /// Start the sleep state: trees that start asleep get their kinematics
+    /// and mass matrix first, as `make_data` has always computed them, then
+    /// every tree is put in the state its policy gives.
+    pub(crate) fn start_sleep(&self, data: &mut Data) {
         // Run initial FK to populate body/geom/site positions from qpos0.
         // This must happen BEFORE sleep gating takes effect so that Init-asleep
         // bodies have correct world positions. We temporarily mark all bodies
@@ -978,13 +992,13 @@ impl Model {
             }
             // Temporarily update awake-index arrays so CRBA's sleep_filter
             // evaluates to false (all bodies awake).
-            mj_update_sleep_arrays(self, &mut data);
+            mj_update_sleep_arrays(self, data);
 
             // Run FK and CRBA to populate body positions and mass matrix.
             // CRBA is required so that Init-asleep bodies have valid qM
             // entries before selective CRBA (§16.29.3) begins preserving them.
-            mj_fwd_position(self, &mut data);
-            mj_crba(self, &mut data);
+            mj_fwd_position(self, data);
+            mj_crba(self, data);
 
             // Restore sleep states
             data.body_sleep_state = saved_body_sleep;
@@ -995,9 +1009,7 @@ impl Model {
         // Initialize sleep state with union-find validation (§16.24).
         // This replaces the inline Init-sleep self-links with proper
         // island-aware sleep cycles.
-        reset_sleep_state(self, &mut data);
-
-        data
+        reset_sleep_state(self, data);
     }
 
     /// Compute pre-computed kinematic data (ancestor lists and masks).

@@ -17,7 +17,6 @@ use super::enums::SolverStat;
 
 // Spatial algebra (extracted in Phase 2)
 use crate::dynamics::SpatialVector;
-use crate::island::reset_sleep_state;
 
 /// Dynamic simulation state (like mjData).
 ///
@@ -1095,148 +1094,35 @@ impl Data {
 
     // ====================================================================
 
-    /// Reset state to model defaults.
+    /// Reset to the `Data` [`Model::make_data`] makes: every array as it
+    /// allocates it (`qpos0`, the mocap bodies' poses, the history buffers'
+    /// timestamps, zero elsewhere), the trees that start asleep with their
+    /// kinematics computed and put to sleep, and each plugin's `reset`, run on
+    /// the plugin state the `Data` had. `plugin_data` is kept.
     ///
-    /// # Staleness guard
+    /// # MuJoCo equivalence
     ///
-    /// The test `data_reset_field_inventory` at the bottom of this file checks
-    /// `size_of::<Data>()`: when a field added to [`Data`] changes it, the test
-    /// fails — update `reset()` and the `EXPECTED_SIZE` constant in the test.
+    /// `mj_resetData`: `_resetData` zeroes the whole `mjData` (MuJoCo 3.5.0
+    /// `engine_io.c:1354`), keeps the plugin state and data, and calls each
+    /// plugin's `reset` (`:1528-1541`). The `Data` is rebuilt rather than
+    /// cleared field by field, so a field added to `Data` is reset too. With a
+    /// tree that starts asleep, MuJoCo runs a full `mj_forward` at the reset;
+    /// this computes its kinematics and mass matrix only.
     pub fn reset(&mut self, model: &Model) {
-        // 1. State variables — restore from Model.
-        self.qpos = model.qpos0.clone();
-        self.qvel.fill(0.0);
-        self.qacc.fill(0.0);
-        self.qacc_implicit.fill(0.0);
-        self.qacc_warmstart.fill(0.0);
-        self.time = 0.0;
+        let mut fresh = model.allocate_data();
+        std::mem::swap(&mut fresh.plugin_state, &mut self.plugin_state);
+        std::mem::swap(&mut fresh.plugin_data, &mut self.plugin_data);
+        *self = fresh;
+        model.start_sleep(self);
+        self.reset_plugins(model);
+    }
 
-        // 2. Control / actuation — zero.
-        self.ctrl.fill(0.0);
-        self.act.fill(0.0);
-        self.act_dot.fill(0.0);
-        self.qfrc_actuator.fill(0.0);
-        self.actuator_force.fill(0.0);
-        self.actuator_velocity.fill(0.0);
-        self.actuator_length.fill(0.0);
-        for m in &mut self.actuator_moment {
-            m.fill(0.0);
-        }
-
-        // 2b. Restore history buffer to pre-populated initial state (matching mj_resetData)
-        #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
-        {
-            self.history.fill(0.0);
-            for i in 0..model.actuator_nsample.len() {
-                let ns = model.actuator_nsample[i];
-                if ns <= 0 {
-                    continue;
-                }
-                let adr = model.actuator_historyadr[i] as usize;
-                let n = ns as usize;
-                self.history[adr + 1] = (n - 1) as f64;
-                let ts = model.timestep;
-                for k in 0..n {
-                    self.history[adr + 2 + k] = -((n - k) as f64) * ts;
-                }
-            }
-        }
-
-        // 3. Mocap — restore from Model.
-        let mut mocap_idx = 0;
-        for (body_id, mid) in model.body_mocapid.iter().enumerate() {
-            if mid.is_some() {
-                self.mocap_pos[mocap_idx] = model.body_pos[body_id];
-                self.mocap_quat[mocap_idx] = model.body_quat[body_id];
-                mocap_idx += 1;
-            }
-        }
-
-        // 4. Force vectors — zero.
-        self.qfrc_passive.fill(0.0);
-        self.qfrc_spring.fill(0.0);
-        self.qfrc_damper.fill(0.0);
-        self.qfrc_gravcomp.fill(0.0);
-        self.qfrc_fluid.fill(0.0);
-        self.qfrc_constraint.fill(0.0);
-        self.qfrc_bias.fill(0.0);
-        self.qfrc_smooth.fill(0.0);
-        self.qfrc_frictionloss.fill(0.0);
-        self.qfrc_applied.fill(0.0);
-        self.xfrc_applied.fill(BodyWrench::default());
-
-        // 4b. Body accumulators + inverse dynamics — zero.
-        for v in &mut self.cacc {
-            *v = SpatialVector::zeros();
-        }
-        for v in &mut self.cfrc_int {
-            *v = SpatialVector::zeros();
-        }
-        for v in &mut self.cfrc_ext {
-            *v = SpatialVector::zeros();
-        }
-        self.qfrc_inverse.fill(0.0);
-        self.flg_rnepost = false;
-
-        // 4b2. Flex edge pre-computed fields — zero.
-        self.flexedge_length.fill(0.0);
-        self.flexedge_velocity.fill(0.0);
-        self.flexedge_J.fill(0.0);
-
-        // 4c. Subtree velocity fields — zero.
-        for v in &mut self.subtree_linvel {
-            *v = Vector3::zeros();
-        }
-        for v in &mut self.subtree_angmom {
-            *v = Vector3::zeros();
-        }
-        self.flg_subtreevel = false;
-
-        // 5. Contact / constraint state — zero.
-        self.ncon = 0;
-        self.contacts.clear();
-        self.ne = 0;
-        self.nf = 0;
-        self.ncone = 0;
-        self.efc_force.fill(0.0);
-        self.solver_niter = 0;
-        self.solver_nnz = 0;
-        self.solver_stat.clear();
-        self.newton_solved = false;
-        self.efc_cost = 0.0;
-        self.stat_meaninertia = 0.0;
-
-        // 6. Sensor data — zero.
-        self.sensordata.fill(0.0);
-
-        // 7. Energy — zero.
-        self.energy_potential = 0.0;
-        self.energy_kinetic = 0.0;
-        self.energy_initial = 0.0;
-        self.energy_initial_captured = false;
-        self.solver_fwdinv = [0.0, 0.0];
-
-        // 8. Warning counters — zero.
-        for w in &mut self.warnings {
-            w.last_info = 0;
-            w.count = 0;
-        }
-
-        // 9. Sleep state — reset to fully awake.
-        reset_sleep_state(model, self);
-
-        // 10. Island state — zero.
-        self.nisland = 0;
-        self.tree_island[..model.ntree].fill(-1);
-        self.contact_island.clear();
-
-        // 11. §66: Plugin state — zero then call plugin reset().
-        self.plugin_state.fill(0.0);
+    /// Run each plugin's `reset` on its slice of `plugin_state`.
+    pub(crate) fn reset_plugins(&mut self, model: &Model) {
         for i in 0..model.nplugin {
-            let adr = model.plugin_stateadr[i];
-            let num = model.plugin_statenum[i];
-            let state = &mut self.plugin_state[adr..adr + num];
-            model.plugin_objects[i].reset(model, state, i);
+            let state =
+                model.plugin_stateadr[i]..model.plugin_stateadr[i] + model.plugin_statenum[i];
+            model.plugin_objects[i].reset(model, &mut self.plugin_state[state], i);
         }
     }
 
@@ -1278,38 +1164,5 @@ impl Data {
         self.mocap_pos.copy_from_slice(&kf.mpos);
         self.mocap_quat.copy_from_slice(&kf.mquat);
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Staleness guard: fails when a field is added to [`Data`] without
-    /// updating [`Data::reset()`].
-    ///
-    /// When this test fails, it means `size_of::<Data>()` changed — someone
-    /// added or removed a field. Steps to fix:
-    ///
-    /// 1. Update `Data::reset()` to handle the new field.
-    /// 2. Update `EXPECTED_SIZE` below to the new size printed in the
-    ///    failure message.
-    ///
-    /// A field that fits in the struct's padding (a `bool`, for one) leaves
-    /// the size unchanged, so this test does not see it.
-    #[test]
-    fn data_reset_field_inventory() {
-        // Update this constant whenever Data's layout changes.
-        // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4448;
-
-        let actual = std::mem::size_of::<Data>();
-        assert_eq!(
-            actual, EXPECTED_SIZE,
-            "\n\nData struct size changed: expected {EXPECTED_SIZE}, got {actual}.\n\
-             A field was likely added or removed.\n\
-             → Update Data::reset()\n\
-             → Then set EXPECTED_SIZE = {actual} in this test.\n"
-        );
     }
 }

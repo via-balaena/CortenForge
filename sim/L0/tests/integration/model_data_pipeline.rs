@@ -680,3 +680,50 @@ fn a_clone_keeps_the_energy_baseline() {
     assert_ne!(clone.total_energy(), first);
     assert_eq!(clone.energy_initial, first);
 }
+
+// ============================================================================
+// Data::reset leaves what make_data leaves
+// ============================================================================
+
+/// Write values `make_data` never leaves into a `Data`'s state, derived
+/// arrays, flags and statistics.
+pub(super) fn scramble(data: &mut sim_core::Data) {
+    data.time = 7.0;
+    data.qpos.fill(0.7);
+    data.qvel.fill(7.0);
+    data.qacc_warmstart.fill(7.0);
+    data.xpos.fill(nalgebra::Vector3::repeat(7.0));
+    data.xipos.fill(nalgebra::Vector3::repeat(7.0));
+    data.subtree_com.fill(nalgebra::Vector3::repeat(7.0));
+    data.cinert.fill(nalgebra::Matrix6::repeat(7.0));
+    data.qM.fill(7.0);
+    data.qLD_valid = true;
+    data.qfrc_bias.fill(7.0);
+    data.qfrc_applied.fill(7.0);
+    data.stat_meaninertia = 7.0;
+    data.solver_niter = 7;
+    data.energy_potential = 7.0;
+    data.sensordata.fill(7.0);
+}
+
+/// After any history, `reset` leaves the `Data` a fresh `make_data` leaves:
+/// MuJoCo's `_resetData` zeroes the whole `mjData` before it sets the
+/// defaults, and `mj_makeData` ends in it.
+#[test]
+fn reset_leaves_the_data_make_data_leaves() {
+    let model = energy_pendulum();
+    let want = format!("{:#?}", model.make_data());
+    let mut data = model.make_data();
+    data.qpos[0] = f64::NAN;
+    for _ in 0..6 {
+        data.step(&model).unwrap(); // the first auto-resets, with a bad-qpos warning
+    }
+    scramble(&mut data);
+    data.reset(&model);
+    let got = format!("{data:#?}");
+    assert!(
+        got == want,
+        "reset differs from make_data in: {:?}",
+        super::keyframes::differing_fields(&got, &want)
+    );
+}

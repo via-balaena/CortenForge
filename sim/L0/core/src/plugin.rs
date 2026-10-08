@@ -710,6 +710,66 @@ mod tests {
         assert!(data.plugin_data[0].is_some());
     }
 
+    /// A plugin whose `reset` counts, in its one state entry, how often it ran.
+    struct ResetCounter;
+
+    impl Plugin for ResetCounter {
+        fn name(&self) -> &'static str {
+            "test.reset_counter"
+        }
+
+        fn capabilities(&self) -> PluginCapabilities {
+            PluginCapabilities::NONE
+        }
+
+        fn nstate(&self, _model: &Model, _instance: usize) -> usize {
+            1
+        }
+
+        fn reset(&self, _model: &Model, state: &mut [f64], _instance: usize) {
+            state[0] += 1.0;
+        }
+    }
+
+    fn model_with(plugin: Arc<dyn Plugin>, nstate: usize) -> Model {
+        let mut model = Model::empty();
+        model.nplugin = 1;
+        model.plugin_capabilities.push(plugin.capabilities());
+        model.plugin_needstage.push(PluginStage::Acc);
+        model.plugin_objects.push(plugin);
+        model.plugin_stateadr.push(0);
+        model.plugin_statenum.push(nstate);
+        model.plugin_name.push(None);
+        model.plugin_attradr.push(0);
+        model.plugin_attrnum.push(0);
+        model.npluginstate = nstate;
+        model
+    }
+
+    /// `reset` keeps the plugin state for the plugin's own `reset`, as
+    /// MuJoCo's `_resetData` restores it before calling the plugin's `reset`.
+    #[test]
+    fn reset_keeps_plugin_state_for_the_plugin_reset() {
+        let model = model_with(Arc::new(ResetCounter), 1);
+        let mut data = model.make_data();
+        assert_eq!(data.plugin_state, vec![1.0]);
+        data.reset(&model);
+        assert_eq!(data.plugin_state, vec![2.0]);
+    }
+
+    /// `reset` keeps `plugin_data`, as `_resetData` does.
+    #[test]
+    fn reset_keeps_plugin_data() {
+        let model = model_with(Arc::new(ResetCounter), 1);
+        let mut data = model.make_data();
+        data.plugin_data[0] = Some(Box::new(7_u32));
+        data.reset(&model);
+        let kept = data.plugin_data[0]
+            .as_ref()
+            .and_then(|d| d.downcast_ref::<u32>());
+        assert_eq!(kept, Some(&7));
+    }
+
     /// `make_data` resets each plugin after `init`, as MuJoCo's `mj_makeData`
     /// runs `mj_resetData` after `mj_initPlugin`.
     #[test]
