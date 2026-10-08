@@ -211,6 +211,32 @@ mod tests {
         data.step(model).expect("step");
     }
 
+    /// A motor without a control range is unlimited, as MuJoCo's with
+    /// `ctrllimited` false: a control of +inf or 1e11 is bad, so the pass
+    /// reads it as 0 and counts `Warning::BadCtrl`; 1e10 is not bad. MuJoCo 3.5.0
+    /// (unfused build), a hinge with `<motor joint="j" gear="1"/>`: force 0
+    /// and one BadCtrl for +inf and 1e11, force 1e10 and none for 1e10.
+    #[test]
+    fn an_unlimited_motor_reads_a_bad_control_as_zero() {
+        let m = pendulum_with_angle_sensor();
+        assert_eq!(m.actuator_ctrlrange[0], (f64::NEG_INFINITY, f64::INFINITY));
+        for (ctrl, force, count) in [(f64::INFINITY, 0.0, 1), (1e11, 0.0, 1), (1e10, 1e10, 0)] {
+            let mut d = m.make_data();
+            d.ctrl[0] = ctrl;
+            d.forward(&m).expect("forward");
+            assert_eq!(
+                d.actuator_force[0].to_bits(),
+                f64::to_bits(force),
+                "ctrl {ctrl}"
+            );
+            assert_eq!(
+                d.warnings[crate::Warning::BadCtrl as usize].count,
+                count,
+                "ctrl {ctrl}"
+            );
+        }
+    }
+
     #[test]
     fn pendulum_basic_shape() {
         let m = pendulum_basic();

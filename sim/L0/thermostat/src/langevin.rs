@@ -674,6 +674,13 @@ mod tests {
                 data.qfrc_passive[0], -0.1,
                 "actuation disabled: {disable_actuation}"
             );
+            // MuJoCo returns before its bad-ctrl check with actuation
+            // disabled (`engine_forward.c:288-292`).
+            assert_eq!(
+                data.warnings[sim_core::Warning::BadCtrl as usize].count,
+                i32::from(!disable_actuation),
+                "actuation disabled: {disable_actuation}"
+            );
         }
     }
 

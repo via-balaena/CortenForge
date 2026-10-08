@@ -635,12 +635,14 @@ fn push_actuator(
     let mut gear6 = [0.0; 6];
     gear6[0] = gear;
     model.actuator_gear.push(gear6);
-    // MuJoCo encodes "unlimited" by setting ctrlrange to a huge sentinel
-    // pair; the `actuation` step clamps to the range unconditionally and
-    // an effectively-infinite range is a no-op clamp.
-    let range = ctrlrange.unwrap_or((-1e10, 1e10));
+    // No range is unlimited, (-inf, inf), as sim-mjcf writes MuJoCo's
+    // `ctrllimited`/`forcelimited` false: the clamp is then a no-op, and a
+    // control MuJoCo's bad-ctrl check refuses (> 1e10) reaches that check.
+    let range = ctrlrange.unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
     model.actuator_ctrlrange.push(range);
-    model.actuator_forcerange.push((-1e10, 1e10));
+    model
+        .actuator_forcerange
+        .push((f64::NEG_INFINITY, f64::INFINITY));
     model.actuator_name.push(name.map(str::to_string));
     model.actuator_act_adr.push(model.na);
     model.actuator_act_num.push(0);

@@ -526,8 +526,9 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
     data.qfrc_actuator.fill(0.0);
 
-    // A bad input (after clamping) makes every actuator act on 0 for this
-    // pass; `ctrl` itself is left as written (MuJoCo `mj_fwdActuation`).
+    // A bad input (after clamping) makes every actuator's control input 0
+    // for this pass, an actuator with an activation still acting on it;
+    // `ctrl` itself is left as written (MuJoCo `mj_fwdActuation`).
     let bad = (0..model.nu).find(|&i| is_bad(actuator_ctrl_input(model, data, i)));
     if let Some(i) = bad {
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]

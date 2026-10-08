@@ -830,9 +830,10 @@ pub enum Integrator {
 /// A bad state is not an error: a NaN, ±inf or |x| > 1e10 in `qpos`, `qvel`
 /// or `qacc` resets the `Data` (unless `DISABLE_AUTORESET` is set) and the
 /// step returns `Ok`; check [`Data::divergence_detected`]. A bad control
-/// (after clamping to `ctrlrange`) makes every actuator act on 0 for that
-/// pass, leaves `ctrl` as written and counts [`Warning::BadCtrl`], which
-/// `divergence_detected` does not read. Both as MuJoCo.
+/// (after clamping to `ctrlrange`) makes every actuator's control input 0 for
+/// that pass (an actuator with an activation still acts on it), leaves `ctrl`
+/// as written and counts [`Warning::BadCtrl`], which `divergence_detected`
+/// does not read. Both as MuJoCo.
 ///
 /// [`Data::divergence_detected`]: crate::Data::divergence_detected
 /// [`Warning::BadCtrl`]: crate::Warning::BadCtrl

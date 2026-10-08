@@ -723,7 +723,8 @@ fn ac29_ctrl_validation() {
     data.ctrl[0] = f64::NAN;
     data.forward(&model).expect("forward");
 
-    // Every actuator acts on 0; ctrl keeps what was written
+    // Every actuator's control input is 0 and none has an activation yet, so
+    // every force is 0; ctrl keeps what was written
     assert!(data.ctrl[0].is_nan(), "ctrl[0] is left as written");
     for i in 0..model.nu {
         assert_eq!(data.actuator_force[i], 0.0, "actuator_force[{i}]");
@@ -743,8 +744,8 @@ fn ac29_ctrl_validation() {
 /// The bad-ctrl check reads each actuator's input after clamping to
 /// `ctrlrange`, as MuJoCo 3.5.0's `mj_fwdActuation`: a huge or infinite value
 /// on a limited actuator clamps and acts, a bad input zeroes every actuator's
-/// input for the pass, and `ctrl` keeps what was written. Expected values are
-/// the oracle's.
+/// control input for the pass (an actuator with an activation still acts on
+/// it), and `ctrl` keeps what was written. Expected values are the oracle's.
 #[test]
 fn bad_ctrl_check_runs_on_the_clamped_input_and_leaves_ctrl_alone() {
     let mut model = load_model(
@@ -757,6 +758,8 @@ fn bad_ctrl_check_runs_on_the_clamped_input_and_leaves_ctrl_alone() {
     /// One forward pass from `ctrl`, with MuJoCo's results.
     struct Case {
         ctrl: [f64; 3],
+        /// The filter actuator's activation before the pass.
+        act: f64,
         clamp: bool,
         /// BadCtrl count and last info.
         warning: (i32, i32),
@@ -765,8 +768,9 @@ fn bad_ctrl_check_runs_on_the_clamped_input_and_leaves_ctrl_alone() {
         /// After one step: BadCtrl count and qpos.
         after_step: Option<(i32, f64)>,
     }
-    let case = |ctrl, clamp, warning, force, act_dot, after_step| Case {
+    let case = |ctrl, act, clamp, warning, force, act_dot, after_step| Case {
         ctrl,
+        act,
         clamp,
         warning,
         force,
@@ -776,6 +780,7 @@ fn bad_ctrl_check_runs_on_the_clamped_input_and_leaves_ctrl_alone() {
     let cases = [
         case(
             [1e11, 0.5, 1.0],
+            0.0,
             true,
             (0, 0),
             [1.0, 0.5, 0.0],
@@ -784,6 +789,7 @@ fn bad_ctrl_check_runs_on_the_clamped_input_and_leaves_ctrl_alone() {
         ),
         case(
             [f64::INFINITY, 0.5, 1.0],
+            0.0,
             true,
             (0, 0),
             [1.0, 0.5, 0.0],
@@ -792,19 +798,46 @@ fn bad_ctrl_check_runs_on_the_clamped_input_and_leaves_ctrl_alone() {
         ),
         case(
             [f64::NAN, 0.5, 1.0],
+            0.0,
             true,
             (1, 0),
             [0.0; 3],
             0.0,
             Some((2, 1.089_910_954_987_337_7e-4)),
         ),
-        case([0.3, 1e11, 1.0], true, (1, 1), [0.0; 3], 0.0, None),
-        case([1e11, 0.5, 1.0], false, (1, 0), [0.0; 3], 0.0, None),
-        case([0.3, 0.5, 3.0], true, (0, 0), [0.3, 0.5, 0.0], 5.0, None),
-        case([f64::NAN, 1e11, 1.0], true, (1, 0), [0.0; 3], 0.0, None),
+        case(
+            [f64::NAN, 0.5, 1.0],
+            0.5,
+            true,
+            (1, 0),
+            [0.0, 0.0, 0.5],
+            -2.5,
+            Some((2, 1.312_115_023_282_411_8e-4)),
+        ),
+        case([0.3, 1e11, 1.0], 0.0, true, (1, 1), [0.0; 3], 0.0, None),
+        case([1e11, 0.5, 1.0], 0.0, false, (1, 0), [0.0; 3], 0.0, None),
+        case(
+            [0.3, 0.5, 3.0],
+            0.0,
+            true,
+            (0, 0),
+            [0.3, 0.5, 0.0],
+            5.0,
+            None,
+        ),
+        case(
+            [f64::NAN, 1e11, 1.0],
+            0.0,
+            true,
+            (1, 0),
+            [0.0; 3],
+            0.0,
+            None,
+        ),
     ];
     for Case {
         ctrl,
+        act,
         clamp,
         warning: (count, info),
         force,
@@ -815,8 +848,9 @@ fn bad_ctrl_check_runs_on_the_clamped_input_and_leaves_ctrl_alone() {
         model.disableflags = if clamp { 0 } else { DISABLE_CLAMPCTRL };
         let mut data = model.make_data();
         data.ctrl.copy_from_slice(&ctrl);
+        data.act[0] = act;
         data.forward(&model).expect("forward");
-        let case = format!("ctrl {ctrl:?}, clamping {clamp}");
+        let case = format!("ctrl {ctrl:?}, act {act}, clamping {clamp}");
         let warning = data.warnings[Warning::BadCtrl as usize];
         assert_eq!((warning.count, warning.last_info), (count, info), "{case}");
         for (i, &f) in force.iter().enumerate() {

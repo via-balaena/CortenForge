@@ -230,8 +230,9 @@ impl Data {
     /// NaN/divergence in qpos, qvel, or qacc triggers auto-reset (matching
     /// MuJoCo). Disable with `DISABLE_AUTORESET`. Use `data.divergence_detected()`
     /// to check if a reset occurred. A bad control (after clamping to
-    /// `ctrlrange`) makes every actuator act on 0 for that pass, leaves `ctrl`
-    /// as written and counts `Warning::BadCtrl` (matching MuJoCo).
+    /// `ctrlrange`) makes every actuator's control input 0 for that pass (an
+    /// actuator with an activation still acts on it), leaves `ctrl` as written
+    /// and counts `Warning::BadCtrl` (matching MuJoCo).
     pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;
