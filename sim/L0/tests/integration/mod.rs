@@ -173,6 +173,10 @@ pub mod newton_solver;
 /// pipeline skip, sensor freezing, batch independence.
 pub mod sleeping;
 
+/// Sleep against MuJoCo 3.5.0: kinematic trees, automatic sleep policies and
+/// body sleep states.
+pub mod sleep_parity;
+
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
 // ============================================================================

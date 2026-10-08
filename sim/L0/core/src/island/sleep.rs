@@ -21,9 +21,10 @@ use super::equality_trees;
 impl Data {
     /// Query the sleep state of a body.
     ///
-    /// Returns `SleepState::Static` for the world body (body 0),
-    /// `SleepState::Asleep` for sleeping bodies, `SleepState::Awake`
-    /// for active bodies.
+    /// Returns `SleepState::Static` for a body in no tree (the world and
+    /// the bodies welded to it, except under a mocap body),
+    /// `SleepState::Asleep` for the bodies of a sleeping tree and
+    /// `SleepState::Awake` for the rest.
     #[must_use]
     pub fn sleep_state(&self, body_id: usize) -> SleepState {
         self.body_sleep_state[body_id]
@@ -388,6 +389,24 @@ fn validate_init_sleep(model: &Model, data: &mut Data) -> Result<(), SleepError>
 // Derived sleep arrays
 // ---------------------------------------------------------------------------
 
+/// A body's state from its tree's (MuJoCo `mj_updateSleepInit`,
+/// `engine_sleep.c:62-82`): a body in no tree is `Static`, or `Awake` under a
+/// mocap root body.
+fn body_sleep_state(model: &Model, tree_awake: &[bool], body_id: usize) -> SleepState {
+    let tree = model.body_treeid[body_id];
+    if tree < model.ntree {
+        if tree_awake[tree] {
+            SleepState::Awake
+        } else {
+            SleepState::Asleep
+        }
+    } else if model.body_mocapid[model.body_rootid[body_id]].is_some() {
+        SleepState::Awake
+    } else {
+        SleepState::Static
+    }
+}
+
 /// Recompute derived sleep arrays from `tree_asleep` (§16.3, §16.17).
 ///
 /// Updates: tree_awake, body_sleep_state, ntree_awake, nv_awake,
@@ -424,20 +443,11 @@ pub fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
     // Update per-body sleep states and build indirection arrays
     if model.body_treeid.len() == model.nbody {
         for body_id in 1..model.nbody {
-            let tree = model.body_treeid[body_id];
-            let awake = if tree < model.ntree {
-                data.tree_awake[tree]
-            } else {
-                true // No tree info → treat as awake
-            };
+            let state = body_sleep_state(model, &data.tree_awake, body_id);
+            data.body_sleep_state[body_id] = state;
+            let awake = state != SleepState::Asleep;
 
-            data.body_sleep_state[body_id] = if awake {
-                SleepState::Awake
-            } else {
-                SleepState::Asleep
-            };
-
-            // Include in body_awake_ind if awake
+            // Include in body_awake_ind if awake or static
             if awake && nbody_awake < data.body_awake_ind.len() {
                 data.body_awake_ind[nbody_awake] = body_id;
                 nbody_awake += 1;
@@ -461,7 +471,7 @@ pub fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
     for dof in 0..model.nv {
         let is_awake = if model.dof_treeid.len() > dof {
             let tree = model.dof_treeid[dof];
-            // Flex DOFs have tree == usize::MAX (no tree) → always awake
+            // Every dof is in a tree once the tree tables are computed
             tree >= model.ntree || data.tree_awake[tree]
         } else {
             // No tree info → treat as awake

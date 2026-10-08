@@ -632,7 +632,8 @@ pub enum SleepPolicy {
 /// Per-body sleep state for efficient pipeline gating (§16.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepState {
-    /// Body 0 (world) or body with no DOFs. Always computed, never sleeps.
+    /// A body in no kinematic tree: the world and every body welded to it,
+    /// except a body under a mocap body, which is `Awake`. Never sleeps.
     Static,
     /// Body is asleep. Position/velocity stages are skipped.
     Asleep,

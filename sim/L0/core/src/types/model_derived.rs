@@ -28,7 +28,7 @@ impl Model {
     /// | spatial tendon geometry, `qpos0` | spatial `tendon_length0` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
-    /// | `body_rootid`, `body_dof_*`, actuators, tendons | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |
+    /// | `dof_parent`, `body_dof_*`, `body_weldid`, actuators, tendons, flex vertex bodies | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |
     /// | `body_pos`, the tree, joint types | `dof_length` | [`compute_dof_lengths`] |
     /// | `body_gravcomp` | `ngravcomp`, the bodies with a positive value | this function |
     /// | `actuator_nsample`, `sensor_nsample`, `sensor_dim` | `actuator_historyadr`, `sensor_historyadr`, `nhistory`, so `Data::history`'s length: make a new `Data` | [`Self::compute_history_addresses`] |

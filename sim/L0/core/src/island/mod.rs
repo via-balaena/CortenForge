@@ -287,9 +287,9 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
     }
 
     // 4c: Contacts per island (§16.16)
-    // Assign each contact to an island based on its bodies' trees.
-    // For contacts with two dynamic bodies, use the first body's tree
-    // (both trees are in the same island by construction of the edge graph).
+    // Assign each contact to an island based on its bodies' trees: the first
+    // body that is in a tree (a static body is in none). With two such bodies
+    // both trees are in the same island by construction of the edge graph.
     let ncon = data.contacts.len();
     data.contact_island.resize(ncon, -1);
 
@@ -305,15 +305,11 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
         } else {
             continue;
         };
-        // Pick the first dynamic body's tree for island assignment
-        let tree = if body1 > 0 && body1 < model.body_treeid.len() {
-            model.body_treeid[body1]
-        } else if body2 > 0 && body2 < model.body_treeid.len() {
-            model.body_treeid[body2]
-        } else {
-            continue; // Both world — shouldn't happen but skip
+        let tree_of = |body: usize| model.body_treeid.get(body).copied().filter(|&t| t < ntree);
+        let Some(tree) = tree_of(body1).or_else(|| tree_of(body2)) else {
+            continue; // Both static
         };
-        if tree < ntree && island_out[tree] >= 0 {
+        if island_out[tree] >= 0 {
             data.contact_island[ci] = island_out[tree];
         }
     }

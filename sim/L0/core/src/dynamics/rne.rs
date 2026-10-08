@@ -358,8 +358,10 @@ pub fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
         if gc == 0.0 {
             continue;
         }
-        // Sleep filtering: skip bodies in sleeping trees
-        if sleep_enabled && !data.tree_awake[model.body_treeid[b]] {
+        // Sleep filtering: skip bodies in sleeping trees (a static body is in
+        // none, and MuJoCo computes it with the awake ones)
+        let tree = model.body_treeid[b];
+        if sleep_enabled && tree < model.ntree && !data.tree_awake[tree] {
             continue;
         }
         has_gravcomp = true;
