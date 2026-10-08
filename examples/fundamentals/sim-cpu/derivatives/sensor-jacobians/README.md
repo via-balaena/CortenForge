@@ -36,7 +36,8 @@ and the motor's force (`actuatorfrc`), plus one motor actuator. This gives:
 The cable's length is a nonlinear function of the joint angle, so C*dx
 predicts it well near the linearization point and drifts away from it as the
 pendulum swings out. The cable's rows of D are zero; the force sensor's row
-is the motor's gear (1): the force follows the control in the same step.
+is the motor's gain (1), since `actuatorfrc` reads the actuator force, gain ×
+ctrl: the force follows the control in the same step.
 
 | Parameter | Value |
 |-----------|-------|

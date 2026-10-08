@@ -74,6 +74,9 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
+/// The rows of C and D: the model's three scalar sensors, in order.
+const SENSOR_NAMES: [&str; 3] = ["pos", "vel", "force"];
+
 // ── Resources ─────────────────────────────────────────────────────────────
 
 const FREEZE_SECS: f64 = 3.0;
@@ -182,17 +185,16 @@ fn setup(
     let d = derivs.D.as_ref().expect("D should be Some");
 
     println!("\n  C ({}x{}) — dsensor/dstate:", c.nrows(), c.ncols());
-    let sensor_names = ["pos", "vel"];
-    for r in 0..c.nrows() {
+    for (r, name) in SENSOR_NAMES.iter().enumerate().take(c.nrows()) {
         let vals: Vec<String> = (0..c.ncols())
             .map(|col| format!("{:>10.6}", c[(r, col)]))
             .collect();
-        println!("    {:<4} [{}]", sensor_names[r], vals.join(", "));
+        println!("    {name:<5} [{}]", vals.join(", "));
     }
 
     println!("\n  D ({}x{}) — dsensor/dctrl:", d.nrows(), d.ncols());
-    for r in 0..d.nrows() {
-        println!("    {:<4} [{:>10.6}]", sensor_names[r], d[(r, 0)]);
+    for (r, name) in SENSOR_NAMES.iter().enumerate().take(d.nrows()) {
+        println!("    {name:<5} [{:>10.6}]", d[(r, 0)]);
     }
 
     // Baseline state and sensors at linearization point
@@ -324,19 +326,17 @@ fn update_hud(
     hud.raw(String::new());
 
     // Always show C and D
-    let sensor_names = ["pos", "vel"];
-
     hud.raw(format!(
         "C ({}x{}) dsensor/dstate:",
         r.c.nrows(),
         r.c.ncols()
     ));
     hud.raw("          dq        qvel".into());
-    for row in 0..r.c.nrows() {
+    for (row, name) in SENSOR_NAMES.iter().enumerate().take(r.c.nrows()) {
         let vals: Vec<String> = (0..r.c.ncols())
             .map(|c| format!("{:>10.6}", r.c[(row, c)]))
             .collect();
-        hud.raw(format!("  {:<4} [{}]", sensor_names[row], vals.join(",")));
+        hud.raw(format!("  {name:<5} [{}]", vals.join(",")));
     }
     hud.raw(String::new());
 
@@ -345,12 +345,8 @@ fn update_hud(
         r.d.nrows(),
         r.d.ncols()
     ));
-    for row in 0..r.d.nrows() {
-        hud.raw(format!(
-            "  {:<4} [{:>10.6}]",
-            sensor_names[row],
-            r.d[(row, 0)]
-        ));
+    for (row, name) in SENSOR_NAMES.iter().enumerate().take(r.d.nrows()) {
+        hud.raw(format!("  {name:<5} [{:>10.6}]", r.d[(row, 0)]));
     }
     hud.raw(String::new());
 
