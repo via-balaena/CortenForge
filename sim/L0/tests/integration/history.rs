@@ -11,7 +11,8 @@
 
 use serde_json::Value;
 use sim_core::{
-    Data, HistoryError, Integrator, InterpolationType, MakeDataError, Model, ResetError,
+    Data, HistoryError, Integrator, InterpolationType, MakeDataError, MjSensorType, Model,
+    ResetError,
 };
 use sim_mjcf::load_model;
 
@@ -96,7 +97,14 @@ fn assert_close(what: &str, ours: &[f64], theirs: &[f64], skip: &[std::ops::Rang
 /// values and buffers.
 fn run(golden: &Value, name: &str, skip_sensors: &[usize]) {
     let case = case(golden, name);
-    let model = model_of(case);
+    let mut model = model_of(case);
+    if case["driver"] == "step_cb" {
+        // The generator's control callback, on every actuator.
+        model.set_control_callback(|_, data| {
+            let ctrl = (37.0 * data.time).sin() + 3.0 * data.qpos[0];
+            data.ctrl.fill(ctrl);
+        });
+    }
     let mut data = start(&model, case);
     let skip_data: Vec<_> = skip_sensors
         .iter()
@@ -135,7 +143,7 @@ fn run(golden: &Value, name: &str, skip_sensors: &[usize]) {
             "{at}: time"
         );
         match case["driver"].as_str().expect("driver") {
-            "step" => data.step(&model).expect("step"),
+            "step" | "step_cb" => data.step(&model).expect("step"),
             "forward" => data.forward(&model).expect("forward"),
             "step12" => {
                 data.step1(&model).expect("step1");
@@ -370,15 +378,39 @@ fn try_make_data_refuses_a_delayed_user_sensor() {
     model.sensor_nsample[0] = 2;
     model.sensor_delay[0] = 0.002;
     model.recompute_derived().expect("derive");
-    assert_eq!(
-        model.try_make_data().err(),
-        Some(MakeDataError::DelayedUserSensor { sensor: 0 })
-    );
-    data.history = vec![0.0; model.nhistory];
-    assert_eq!(
-        data.try_reset(&model),
-        Err(ResetError::DelayedUserSensor { sensor: 0 })
-    );
+    // A plugin sensor's sample cannot be computed either; a jointpos made
+    // into one, as no MJCF loads a plugin sensor.
+    for kind in [MjSensorType::User, MjSensorType::Plugin] {
+        model.sensor_type[0] = kind;
+        assert_eq!(
+            model.try_make_data().err(),
+            Some(MakeDataError::DelayedUserSensor { sensor: 0 }),
+            "{kind:?}"
+        );
+        data.history = vec![0.0; model.nhistory];
+        assert_eq!(
+            data.try_reset(&model),
+            Err(ResetError::DelayedUserSensor { sensor: 0 }),
+            "{kind:?}"
+        );
+    }
+}
+
+/// Under RK4 a delayed actuator's buffer takes `ctrl` as the last stage's
+/// control callback left it, as MuJoCo's `mj_RungeKutta` inserts it after
+/// the stages (`engine_forward.c:1113-1121`): the act model with a callback
+/// that writes `ctrl = sin(37 t) + 3 qpos[0]`.
+#[test]
+fn rk4_buffers_take_the_last_stage_control() {
+    run(&golden(), "act_RK4_control_cb", &[]);
+}
+
+/// A negative delay reads the newest sample, as MuJoCo tests a delay for
+/// non-zero (`mj_readCtrl`): the act model with delays of -1 and -0.3
+/// timesteps.
+#[test]
+fn a_negative_delay_reads_the_newest_sample() {
+    run(&golden(), "act_negative_delay", &[]);
 }
 
 /// History timestamps are multiples of the timestep, so MuJoCo's
@@ -643,6 +675,13 @@ fn history_init_keeps_what_it_is_not_given() {
     data.init_ctrl_history(&model, 4, None, Some(&[5.0, 6.0, 7.0, 8.0]))
         .expect("values only");
     assert_eq!(
+        data.init_ctrl_history(&model, 2, None, Some(&[1.0, 2.0])),
+        Err(HistoryError::WrongLength {
+            expected: 3,
+            actual: 2
+        })
+    );
+    assert_eq!(
         data.history[adr + 2..adr + 10],
         [-0.05, -0.03, -0.02, -0.01, 5.0, 6.0, 7.0, 8.0]
     );
@@ -727,5 +766,25 @@ fn history_api_refuses_a_data_of_another_shape() {
         data.init_sensor_history(&sens, 6, None, Some(&values), 0.0)
             .err(),
         Some(refusal(&sens))
+    );
+}
+
+/// An init with `None` times keeps the buffer's own times in their stored
+/// order, as MuJoCo's does: after 12 steps those times no longer increase
+/// where they are stored, and both refuse.
+#[test]
+fn an_init_with_the_buffers_own_times_refuses_them_out_of_order() {
+    let golden = api_golden();
+    let theirs = golden["api"]["act"]["stored_order"]
+        .as_str()
+        .expect("MuJoCo refuses");
+    assert!(
+        theirs.contains("times must be strictly increasing, got times[1]"),
+        "{theirs}"
+    );
+    let (model, mut data) = after_twelve_steps(&golden, "act");
+    assert_eq!(
+        data.init_ctrl_history(&model, 7, None, Some(&[0.5, -0.5, 0.25, 4.0, 1.0])),
+        Err(HistoryError::TimesNotIncreasing { index: 1 })
     );
 }

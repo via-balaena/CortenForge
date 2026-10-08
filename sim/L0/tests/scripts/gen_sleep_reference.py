@@ -99,7 +99,9 @@ jointinparent and an adhesion actuator on trees that sleep, their ctrl set
 later; a clock sensor beside a box that sleeps; three spheres in zero
 gravity, one starting asleep, whose two neighbours touch it in one pass
 with different countdowns; A8's filtered actuator with a delayed jointpos
-and jointvel; the box that starts asleep with sleep disabled; a box
+and jointvel; that hinge with a delayed filtered actuator, delayed,
+history-only and interval sensors, beside a slide driven through a delayed
+motor (the history samples are taken before the sleep step); the box that starts asleep with sleep disabled; a box
 declared before the static table it rests on; two damped hanging hinges
 joined by a joint equality; a pendulum beside A8's damped two-link chain,
 and the same chain sprung, at a tolerance of 0.05; and the resting box
@@ -543,6 +545,27 @@ TRACES.update({
 <sensor><jointpos joint="j1" delay="0.02" nsample="20"/><jointvel joint="j1" delay="0.02" nsample="20"/></sensor>
 </mujoco>""", 660, [], True),
     "box_init_nosleep": (BOX_INIT, 5, [], False),
+    "sleep_history": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="l1" pos="0 0 1" sleep="allowed"><joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/><site name="s1" pos="0.3 0 0"/></body>
+<body name="b2" pos="1 0 1"><joint name="j2" type="slide" axis="1 0 0"/>
+  <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/></body>
+</worldbody>
+<actuator>
+  <general name="a1" joint="j1" {ACT} nsample="4" delay="0.003" interp="linear"/>
+  <motor name="a2" joint="j2" gear="0.01" nsample="3" delay="0.004" interp="cubic"/>
+</actuator>
+<sensor>
+  <actuatorfrc actuator="a1" nsample="4" delay="0.003" interp="linear"/>
+  <jointvel joint="j1" nsample="3" delay="0.001" interp="linear"/>
+  <jointpos joint="j1" nsample="3" delay="0.002"/>
+  <accelerometer site="s1" nsample="3" delay="0.002"/>
+  <framepos objtype="site" objname="s1" nsample="3"/>
+  <jointvel joint="j1" nsample="3" interval="0.005"/>
+  <jointvel joint="j1"/>
+  <jointvel joint="j2" nsample="3" delay="0.002"/>
+</sensor></mujoco>""", 700, [(0, "ctrl", 1, 0.5)], True),
     "box_on_table_first": (f"""<mujoco>{SLEEP_OPT}
 <worldbody>
 <body name="b" pos="0 0 0.6495"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>

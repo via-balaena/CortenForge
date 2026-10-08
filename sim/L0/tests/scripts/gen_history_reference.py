@@ -26,7 +26,11 @@ sensordata and history. The models:
 Drivers: mj_step under Euler, RK4, implicitfast and implicit; mj_forward;
 mj_step1 + mj_step2; a reset part-way; keyframes at times 0.5, -0.015, -0.02
 and -0.0333 (the negative times take the buffer's out-of-order, exact-match
-and older-than-oldest insert branches).
+and older-than-oldest insert branches); mj_step under RK4 with a control
+callback that writes ctrl = sin(37 t) + 3 qpos[0] on every actuator, so the
+buffers take the last stage's control; and the act model with two negative
+delays (MuJoCo tests a delay for non-zero, so a negative one reads the newest
+sample).
 
 The control is sin(0.9 k) + 0.05 k at step k on every actuator, so a delay
 shows in the force.
@@ -39,7 +43,9 @@ cursor is not at its last slot); the buffers mj_initCtrlHistory (actuators 2 and
 mj_initSensorHistory (sensor 6, phase 0.123) leave, and the forces of the
 4 steps after; the same two actuator inits after a value is written into
 each buffer's slot 0 (its user slot), and the history then and after 3
-steps; and which calls MuJoCo refuses.
+steps; and which calls MuJoCo refuses, among them an init of actuator 7 with
+its own times after 12 steps, which are no longer in increasing order where
+they are stored.
 """
 import json
 import math
@@ -128,9 +134,17 @@ ACC_CONFIGS = [
 ]
 
 
-def act_xml(integ):
+# Two negative delays and a positive one, in timesteps.
+NEG_ACT_CONFIGS = [
+    (3, -1.0, "zoh"),
+    (4, -0.3, "linear"),
+    (3, 1.0, "linear"),
+]
+
+
+def act_xml(integ, configs=ACT_CONFIGS):
     lines = []
-    for i, (ns, dl, ip) in enumerate(ACT_CONFIGS):
+    for i, (ns, dl, ip) in enumerate(configs):
         attrs = f'name="m{i}" joint="j" gear="0.01"'
         if ns:
             attrs += f' nsample="{ns}"'
@@ -168,6 +182,10 @@ def floats(a):
     return [float(x) for x in a]
 
 
+def control_cb(m, d):
+    d.ctrl[:] = math.sin(37.0 * d.time) + 3.0 * d.qpos[0]
+
+
 def run_case(name, xml, driver="step", nstep=NSTEP, key=None, reset_at=None):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -188,6 +206,12 @@ def run_case(name, xml, driver="step", nstep=NSTEP, key=None, reset_at=None):
         elif driver == "step12":
             mujoco.mj_step1(m, d)
             mujoco.mj_step2(m, d)
+        elif driver == "step_cb":
+            mujoco.set_mjcb_control(control_cb)
+            try:
+                mujoco.mj_step(m, d)
+            finally:
+                mujoco.set_mjcb_control(None)
         else:
             raise ValueError(driver)
         records.append({
@@ -233,6 +257,8 @@ def cases():
         out.append(run_case(f"sens_key_t{t}", with_key(sens_xml("Euler"), f'time="{t}"'), key=0, nstep=8))
     for integ in ["Euler", "implicitfast", "implicit", "RK4"]:
         out.append(run_case(f"acc_{integ}", sens_xml(integ, ACC_CONFIGS)))
+    out.append(run_case("act_RK4_control_cb", act_xml("RK4"), driver="step_cb"))
+    out.append(run_case("act_negative_delay", act_xml("Euler", NEG_ACT_CONFIGS)))
     return out
 
 
@@ -269,6 +295,9 @@ def api():
                     reads.append([i, interp, t, value])
         out[kind] = {"xml": xml, "history": floats(d.history), "reads": reads}
         if kind == "act":
+            # the buffer's own times, in their stored order, no longer increase
+            out[kind]["stored_order"] = refusal(lambda: mujoco.mj_initCtrlHistory(
+                m, d, 7, None, np.array([0.5, -0.5, 0.25, 4.0, 1.0])))
             # an init after steps, where the cursor is not at the last slot
             mujoco.mj_initCtrlHistory(
                 m, d, 8, np.array([-0.03, -0.02, -0.01, 0.0, 0.05]), np.array([1.0, 2.0, 3.0, 4.0, 5.0]))
