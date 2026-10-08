@@ -55,7 +55,10 @@ impl<F: ?Sized> fmt::Debug for Callback<F> {
 ///   (MuJoCo's `mj_passive` does the same), so a component that must always
 ///   act, a thermostat, goes silent under those two flags;
 /// - also on a model with no degrees of freedom;
-/// - inside finite-difference derivatives, many times per call.
+/// - inside finite-difference derivatives, many times per call. Not matched:
+///   pure finite differences run it in their control and activation columns,
+///   where MuJoCo's `mjd_transitionFD` skips the velocity stage (registry
+///   `D-FD-CTRL-COLUMNS`), so B holds what it does with `ctrl`.
 ///
 /// Not matched: on the step that puts a tree to sleep, MuJoCo runs the forward
 /// pass once more (both callbacks fire twice); sim-core does not.

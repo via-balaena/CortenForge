@@ -3243,3 +3243,35 @@ fn inverse_finite_differences_match_mujoco_3_5_0_without_constraints() {
         }
     }
 }
+
+/// Registry `D-FD-CTRL-COLUMNS`: pure finite differences take each control
+/// column through a full step, so B is the derivative of the step a passive
+/// callback that reads `ctrl` changes. MuJoCo 3.5.0's `mjd_transitionFD`
+/// skips the velocity stage there (`engine_derivative_fd.c:350`) and keeps the
+/// nominal passive force: with this callback its B is [0.0010988, 0.10988],
+/// as without it (measured). Ours equals a central difference of two steps.
+#[test]
+fn fd_control_columns_differentiate_a_ctrl_reading_passive_callback() {
+    let (mut model, data) = sensed_hinge("Euler");
+    model.set_passive_callback(|_, d| d.qfrc_passive[0] += 5.0 * d.ctrl[0]);
+    let cfg = DerivativeConfig {
+        use_analytical: false,
+        ..DerivativeConfig::default()
+    };
+    let b = mjd_transition_fd(&model, &data, &cfg).unwrap().B;
+    let next = |du: f64| {
+        let mut d = data.clone();
+        d.ctrl[0] += du;
+        d.step(&model).unwrap();
+        [d.qpos[0], d.qvel[0]]
+    };
+    let (plus, minus) = (next(cfg.eps), next(-cfg.eps));
+    for row in 0..2 {
+        let want = (plus[row] - minus[row]) / (2.0 * cfg.eps);
+        assert!(
+            (b[(row, 0)] - want).abs() < 1e-9,
+            "B {b}, row {row}: {want}"
+        );
+    }
+    assert!((b[(1, 0)] - 0.109_881_231_336_039_78).abs() > 0.1, "{b}");
+}
