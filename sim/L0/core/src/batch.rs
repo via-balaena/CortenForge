@@ -1,9 +1,10 @@
-//! Batched simulation: N independent environments sharing one [`Model`].
+//! Batched simulation: N independent environments.
 //!
-//! All environments have identical physics (same [`Model`]), but independent
-//! state (separate [`Data`]). Stepping is parallelized across CPU cores via
-//! rayon when the `parallel` feature is enabled; sequential fallback when
-//! disabled.
+//! They share one [`Model`] ([`BatchSim::new`], [`BatchSim::try_new`]) or each
+//! have their own ([`BatchSim::new_per_env`], [`BatchSim::try_new_per_env`]),
+//! and each has its own state (a separate [`Data`]). Stepping is parallelized
+//! across CPU cores via rayon when the `parallel` feature is enabled;
+//! sequential fallback when disabled.
 //!
 //! This is a **pure physics batching** API — it knows nothing about rewards,
 //! episodes, or RL semantics. Higher-level wrappers (Gymnasium, etc.) are
@@ -75,11 +76,12 @@ use crate::types::{Data, MakeDataError, Model, StepError};
 /// other lengths than env 0's model does. For callers that need to
 /// distinguish, use [`BatchSim::is_per_env`].
 pub struct BatchSim {
-    /// Shared-model path: populated by [`BatchSim::new`]; `None` under
-    /// [`BatchSim::new_per_env`].
+    /// Shared-model path: populated by [`BatchSim::new`] and
+    /// [`BatchSim::try_new`]; `None` on the per-env path.
     shared_model: Option<Arc<Model>>,
-    /// Per-env path: one [`Model`] per env with its stack installed. Empty
-    /// under [`BatchSim::new`].
+    /// Per-env path: one [`Model`] per env with its stack installed, by
+    /// [`BatchSim::new_per_env`] and [`BatchSim::try_new_per_env`]. Empty on
+    /// the shared path.
     per_env_models: Vec<Model>,
     /// One [`Data`] per env. Always populated, regardless of which
     /// construction path was used.
@@ -242,9 +244,10 @@ impl BatchSim {
 
     /// Reference to a representative [`Model`] for this batch.
     ///
-    /// Under the shared-model path (constructed via [`BatchSim::new`]),
-    /// this returns the one shared [`Model`]. Under the per-env path
-    /// (constructed via [`BatchSim::new_per_env`]), this returns env 0's
+    /// Under the shared-model path ([`BatchSim::new`],
+    /// [`BatchSim::try_new`]), this returns the one shared [`Model`]. Under
+    /// the per-env path ([`BatchSim::new_per_env`],
+    /// [`BatchSim::try_new_per_env`]), this returns env 0's
     /// model: its parameters and callbacks are env 0's, and the batch
     /// checked that every env's [`Data`] has the lengths it needs.
     /// [`BatchSim::model_of`] returns each env's own.
@@ -323,9 +326,13 @@ impl BatchSim {
     ///
     /// # Determinism
     ///
-    /// Output is independent of thread count and scheduling order. Each
-    /// environment's step is a pure function of its own [`Data`] and the
-    /// shared [`Model`]. No cross-environment communication occurs.
+    /// Output is independent of thread count and scheduling order while each
+    /// environment's step is a function of its own [`Data`] and its model.
+    /// Callbacks that share mutable state across environments break that: a
+    /// thermostat stack on a shared model draws its noise from one step
+    /// counter, so which environment draws which step follows the order of
+    /// the calls (sim-thermostat's `langevin.rs` module docs); give each
+    /// environment its own stack ([`BatchSim::new_per_env`]).
     pub fn step_all(&mut self) -> Vec<Option<StepError>> {
         self.map_envs(|data, model| data.step(model).err())
     }

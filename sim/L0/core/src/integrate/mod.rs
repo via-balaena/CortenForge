@@ -74,9 +74,10 @@ impl Data {
     /// finite and `StepError::DataShapeMismatch` if `self` was made by a
     /// model of other dimensions or an input array was resized, both before
     /// anything changes; and the error of the forward pass a sleep step runs
-    /// (an implicit factorization), which leaves the activations advanced and
-    /// the slept trees' velocities zeroed, and positions and time not
-    /// advanced. MuJoCo's forward pass has no failure there.
+    /// (an implicit factorization), which leaves the history samples inserted,
+    /// the activations advanced, the slept trees asleep with their velocities
+    /// zeroed but the sleep arrays not updated for them, and positions and
+    /// time not advanced. MuJoCo's forward pass has no failure there.
     pub fn integrate(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         self.integrate_unchecked(model)

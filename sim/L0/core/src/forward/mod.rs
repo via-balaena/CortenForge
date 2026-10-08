@@ -163,8 +163,9 @@ impl Data {
 
     /// Split-step phase 2: acceleration stage + integration.
     ///
-    /// Runs actuation, constraints, acc-sensors (no callback fires),
-    /// then advances with [`integrate`](Self::integrate): Euler under Euler
+    /// Runs actuation, constraints, acc-sensors (no callback fires but on a
+    /// step that puts a tree to sleep, whose advance runs the forward pass
+    /// once more), then advances with [`integrate`](Self::integrate): Euler under Euler
     /// and RK4 (as MuJoCo's `mj_step2`), the integrator's own velocity update
     /// otherwise, with the sleep step and the warmstart save inside it.
     ///

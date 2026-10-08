@@ -12,9 +12,9 @@ fuses multiply-adds.
 It writes sleep.json. Its `trees` entry holds, for each model below, MuJoCo's
 kinematic-tree tables (ntree, body_treeid, tree_bodyadr, tree_bodynum,
 tree_dofadr, tree_dofnum, dof_treeid, tendon_treenum, tendon_treeid), the
-resolved tree_sleep_policy by name, and body_awake after mj_resetData and
-after one mj_step, with sleep enabled and with it disabled. The models, all
-with sleep enabled:
+resolved tree_sleep_policy by name, body_awake after mj_resetData and
+after one mj_step, with sleep enabled and with it disabled, and
+qfrc_gravcomp after mj_forward. The models, all with sleep enabled:
 
 - table: a box resting on a static box (A8's fixture);
 - static_root: a static body with two hinged children;
@@ -32,8 +32,7 @@ with sleep enabled:
   book's Rigid-loading L47 refuses it), so the case also holds `ours_xml`,
   the same grid in the `<deformable><flexcomp>` form sim-mjcf reads, which
   the test loads;
-- gravcomp: a static body and a free body with gravity compensation; also
-  qfrc_gravcomp after mj_forward;
+- gravcomp: a static body and a free body with gravity compensation;
 - tendon_one_tree: a stiff fixed tendon over two hinges of one tree, and a
   second tree.
 

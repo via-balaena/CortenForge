@@ -940,10 +940,6 @@ impl Model {
             contact_island: Vec::new(),
 
             // Island scratch space (§16.11)
-            island_scratch_stack: vec![0; self.ntree],
-            island_scratch_rownnz: vec![0; self.ntree],
-            island_scratch_rowadr: vec![0; self.ntree],
-            island_scratch_colind: Vec::new(),
 
             // qpos change detection (§16.15)
             tree_qpos_dirty: vec![false; self.ntree],

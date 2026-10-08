@@ -1,4 +1,4 @@
-//! Linear algebra utilities: Cholesky, LU, sparse solve, union-find.
+//! Linear algebra utilities: Cholesky, LU, sparse solve.
 //!
 //! Pure math routines with no pipeline state dependencies. Used by the
 //! forward dynamics pipeline (dense Cholesky for implicit integration,

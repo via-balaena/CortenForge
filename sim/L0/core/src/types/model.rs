@@ -94,18 +94,20 @@ pub struct Model {
     pub tree_dof_adr: Vec<usize>,
     /// Number of DOFs in tree `t` (length `ntree`).
     pub tree_dof_num: Vec<usize>,
-    /// Tree index for each body (body 0 → `usize::MAX` sentinel, length `nbody`).
+    /// Tree index for each body; a static body (the world and every body
+    /// welded to it) has `usize::MAX`. Length `nbody`.
     pub body_treeid: Vec<usize>,
     /// Tree index for each DOF (length `nv`).
     pub dof_treeid: Vec<usize>,
     /// Per-tree sleep policy (computed at model build, length `ntree`).
     pub tree_sleep_policy: Vec<SleepPolicy>,
-    /// Per-DOF length scale for sleep threshold normalization (length `nv`).
-    /// Translational DOFs = 1.0; rotational DOFs = mechanism length estimate.
+    /// Per-DOF length scale for the sleep test (length `nv`): 1 for a
+    /// translational DOF, the size of its body for a rotational one (MuJoCo's
+    /// `dof_length`).
     pub dof_length: Vec<f64>,
-    /// Sleep velocity tolerance. Bodies with all DOF velocities below
-    /// `sleep_tolerance * dof_length[dof]` for `MIN_AWAKE` consecutive steps
-    /// are eligible for sleep. Default: `1e-4`. Units: `[m/s]`.
+    /// Sleep velocity tolerance. A tree whose DOFs all have
+    /// `dof_length[dof] * |qvel[dof]|` below it for `MIN_AWAKE` consecutive
+    /// steps is eligible for sleep (MuJoCo's `treeCanSleep`). Default: `1e-4`.
     pub sleep_tolerance: f64,
 
     // ==================== Body Tree (indexed by body_id, 0 = world) ====================
@@ -780,13 +782,15 @@ pub struct Model {
     pub tendon_group: Vec<i32>,
     /// RGBA color per tendon [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
     pub tendon_rgba: Vec<[f64; 4]>,
-    /// Number of distinct kinematic trees spanned by each tendon (§16.10.1).
-    /// 0 = no bodies, 1 = single tree, 2 = two trees. Length: ntendon.
+    /// Number of distinct kinematic trees each tendon's wraps reach
+    /// (§16.10.1): 0 for none, else the count, which may exceed 2. Length:
+    /// ntendon.
     pub tendon_treenum: Vec<usize>,
     /// Packed tree indices for two-tree tendons (§16.10.1).
     /// For tendon t: `tendon_tree[2*t]` and `tendon_tree[2*t+1]`.
-    /// `tendon_tree[2*t]` is populated when `treenum >= 1`; `tendon_tree[2*t+1]`
-    /// is populated when `treenum == 2`. Unused slots are `usize::MAX`.
+    /// They hold the first and second trees in wrap order: `tendon_tree[2*t]`
+    /// when `treenum >= 1`, `tendon_tree[2*t+1]` when `treenum >= 2`. Unused
+    /// slots are `usize::MAX`.
     /// Length: 2 * ntendon.
     pub tendon_tree: Vec<usize>,
     /// Per-tendon inverse weight for diagonal approximation (length `ntendon`).

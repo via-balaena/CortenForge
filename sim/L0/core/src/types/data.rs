@@ -517,9 +517,11 @@ pub struct Data {
     pub island_nv: Vec<usize>,
     /// Start index in `map_idof2dof` for each island. Length: ≤ ntree.
     pub island_idofadr: Vec<usize>,
-    /// DOF → island-local DOF index. Length: nv.
+    /// DOF → its index in the island-ordered DOF list: each island's DOFs in
+    /// island order, then the DOFs in no island. Length: nv.
     pub map_dof2idof: Vec<i32>,
-    /// Island-local DOF → global DOF. Length: nv.
+    /// Island-ordered DOF index → DOF (the inverse of `map_dof2idof`).
+    /// Length: nv.
     pub map_idof2dof: Vec<usize>,
     /// Island index for each constraint row. Resized per step.
     pub efc_island: Vec<i32>,
@@ -527,27 +529,18 @@ pub struct Data {
     pub island_nefc: Vec<usize>,
     /// Start index in `map_iefc2efc` for each island. Length: ≤ ntree.
     pub island_iefcadr: Vec<usize>,
-    /// Global constraint row → island-local row. Resized per step.
+    /// Constraint row → its index in the island-ordered row list (each
+    /// island's rows in island order). Resized per step.
     pub map_efc2iefc: Vec<i32>,
-    /// Island-local row → global constraint row. Resized per step.
+    /// Island-ordered row index → constraint row. Resized per step.
     pub map_iefc2efc: Vec<usize>,
     /// Island assignment for each contact. Length: data.contacts.len(). Resized per step.
     /// -1 = not in any island (e.g., contact between two world-body geoms).
     pub contact_island: Vec<i32>,
 
-    // ==================== Island Scratch Space (§16.11) ====================
-    /// DFS stack for flood-fill. Length: ntree.
-    pub island_scratch_stack: Vec<usize>,
-    /// Per-tree edge counts (CSR rownnz). Length: ntree.
-    pub island_scratch_rownnz: Vec<usize>,
-    /// Per-tree CSR row pointers. Length: ntree.
-    pub island_scratch_rowadr: Vec<usize>,
-    /// CSR column indices (edge targets). Resized per step.
-    pub island_scratch_colind: Vec<usize>,
-
     // ==================== qpos Change Detection (§16.15) ====================
-    /// Per-tree dirty flag set by mj_kinematics1() when a sleeping body's
-    /// xpos/xquat changed. Read/cleared by mj_check_qpos_changed(). Length: ntree.
+    /// Per-tree dirty flag set by the kinematics when a sleeping body's
+    /// xpos/xquat changed; `mj_wake` reads and clears it. Length: ntree.
     pub tree_qpos_dirty: Vec<bool>,
 
     // ==================== Time ====================
@@ -878,10 +871,6 @@ impl Clone for Data {
             map_iefc2efc: self.map_iefc2efc.clone(),
             contact_island: self.contact_island.clone(),
             // Island scratch
-            island_scratch_stack: self.island_scratch_stack.clone(),
-            island_scratch_rownnz: self.island_scratch_rownnz.clone(),
-            island_scratch_rowadr: self.island_scratch_rowadr.clone(),
-            island_scratch_colind: self.island_scratch_colind.clone(),
             // qpos change detection
             tree_qpos_dirty: self.tree_qpos_dirty.clone(),
             // Time

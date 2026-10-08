@@ -159,7 +159,7 @@ fn sleep_runs_on_factory_models() {
     }
 }
 
-/// RK4 + sleep (should warn and disable sleep).
+/// RK4 with sleep enabled (sleep stays enabled, as in MuJoCo).
 fn rk4_sleep_mjcf() -> &'static str {
     r#"
     <mujoco model="rk4_sleep">
@@ -1274,10 +1274,9 @@ fn test_tendon_passive_mixed_sleep() {
 
 #[test]
 fn test_forward_skip_sensors_sleep() {
-    // RK4 disables sleep, so forward_skip_sensors is called in that path.
-    // This test verifies that the shared forward_core path works correctly.
-    // Since RK4 disables sleep, we just verify that forward() and step() work
-    // correctly with sleep enabled (non-RK4).
+    // forward() and step() through the shared forward_core with sleep
+    // enabled. RK4's stages take forward_skip_sensors, the sleep step
+    // included: sleep_parity.rs's rk4_sleeps_and_wakes_as_mujoco.
     let model = load_model(free_body_sleep_mjcf()).expect("load model");
     let mut data = model.make_data();
 
@@ -1766,12 +1765,9 @@ fn test_qpos_dirty_flag_isolation() {
     data.qpos[2] += 0.5;
     data.forward(&model).expect("forward");
 
-    // After forward(), mj_check_qpos_changed should have cleared the dirty flags
+    // After forward(), mj_wake has read and cleared the dirty flags
     for &d in &data.tree_qpos_dirty {
-        assert!(
-            !d,
-            "tree_qpos_dirty should be cleared after mj_check_qpos_changed"
-        );
+        assert!(!d, "tree_qpos_dirty should be cleared by mj_wake");
     }
 
     // But the body should now be awake (the dirty flag was consumed to wake it)
@@ -1803,11 +1799,6 @@ fn test_make_data_island_array_sizes() {
     assert_eq!(data.map_idof2dof.len(), model.nv);
     assert_eq!(data.island_nefc.len(), model.ntree);
     assert_eq!(data.island_iefcadr.len(), model.ntree);
-
-    // Scratch arrays
-    assert_eq!(data.island_scratch_stack.len(), model.ntree);
-    assert_eq!(data.island_scratch_rownnz.len(), model.ntree);
-    assert_eq!(data.island_scratch_rowadr.len(), model.ntree);
 
     // qpos change detection
     assert_eq!(data.tree_qpos_dirty.len(), model.ntree);
@@ -2340,7 +2331,8 @@ fn test_sleep_cycle_single_tree() {
     );
 }
 
-/// T73: sleep_trees zeros all DOF-level and body-level arrays.
+/// T73: a tree asleep keeps the arrays of its last awake pass, as MuJoCo's:
+/// velocities 0, the acceleration and bias force the sleep step's pass left.
 #[test]
 fn test_sleep_trees_keep_their_last_awake_arrays() {
     let mjcf = free_body_sleep_mjcf();
@@ -2637,7 +2629,8 @@ fn test_init_sleep_mixed_island_refused() {
     );
 }
 
-/// T76: Init-sleep validation uses model-time adjacency (union-find), not runtime islands.
+/// T76: two trees that start asleep, joined by an equality, sleep as one
+/// cycle: the reset's forward pass puts them in one island.
 #[test]
 fn test_init_sleep_validation_model_time() {
     // Two Init trees connected by equality constraint should form a sleep cycle.
@@ -2681,7 +2674,7 @@ fn test_init_sleep_validation_model_time() {
         "Init tree B should be asleep"
     );
 
-    // They should form a cycle: A→B, B→A (union-find grouped them)
+    // They should form a cycle: A→B, B→A (one island)
     let next_a = data.tree_asleep[tree_a] as usize;
     let next_b = data.tree_asleep[tree_b] as usize;
     assert_eq!(next_a, tree_b, "A should point to B in cycle");

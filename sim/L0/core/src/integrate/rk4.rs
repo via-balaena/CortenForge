@@ -18,7 +18,8 @@ use crate::types::{
 /// Uses the classic RK4 Butcher tableau. Stage 0 reuses qacc from the preceding
 /// `forward()` call. Stages 1-3 each call `forward_skip_sensors()` at trial
 /// states, which fires `cb_passive` and `cb_control` as `forward()` does, so
-/// both callbacks fire four times per step.
+/// both callbacks fire four times per step (five on a step that puts a tree to
+/// sleep, whose advance runs the forward pass once more).
 /// Position integration uses `mj_integrate_pos_explicit()` for quaternion correctness.
 ///
 /// After this function returns, derived quantities (xpos, contacts, forces, etc.)

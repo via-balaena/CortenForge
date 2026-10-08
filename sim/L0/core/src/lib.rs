@@ -71,7 +71,7 @@
 // Core type definitions (enums, Model, Data, contacts, keyframes)
 pub mod types;
 
-// Linear algebra utilities (Cholesky, LU, sparse solve, union-find)
+// Linear algebra utilities (Cholesky, LU, sparse solve)
 pub mod linalg;
 
 // Dynamics computations (spatial algebra, CRBA, RNE, factorization)
