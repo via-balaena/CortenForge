@@ -693,8 +693,6 @@ mod post_step_qvel_tests {
         model.jnt_damping = vec![0.4, 0.3];
         model.jnt_limited[0] = true;
         model.jnt_range[0] = (-0.1, 0.1);
-        // The factory leaves `jnt_margin` empty; limits read it.
-        model.jnt_margin = vec![0.0; model.njnt];
         model.compute_implicit_params();
         let mut data = model.make_data();
         data.qpos[0] = 0.3;

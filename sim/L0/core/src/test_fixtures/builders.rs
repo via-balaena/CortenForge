@@ -815,6 +815,13 @@ pub fn finalize(model: &mut Model) {
     } else {
         model.qpos0 = DVector::from_vec(model.qpos_spring.clone());
     }
+    // Per-element arrays the push helpers above leave short: no user data, no
+    // plugin, as the MJCF builder gives an element without them.
+    model.jnt_user.resize(model.njnt, Vec::new());
+    model.body_user.resize(model.nbody, Vec::new());
+    model.actuator_user.resize(model.nu, Vec::new());
+    model.actuator_plugin.resize(model.nu, None);
+    model.site_user.resize(model.nsite, Vec::new());
     if model.check_joint_layout().is_ok() {
         if let Err(e) = model.recompute_derived() {
             panic!("finalize: {e}");
