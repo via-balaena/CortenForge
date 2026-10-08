@@ -96,13 +96,10 @@ pub fn mjd_transition_fd(
     // - forward differencing (non-centered A/B columns)
     // - clamped control differencing fallback (centered mode where one
     //   direction is infeasible due to actuator_ctrlrange boundary)
+    // step() computes the sensors in its forward pass, before integrating:
+    // sensordata is then at the step's (here unperturbed) current state, the
+    // state C and D differentiate, as MuJoCo's mjd_stepFD reads it.
     scratch.step(model)?;
-    // Re-evaluate sensors at post-step state. step() calls forward() before
-    // integrate(), so sensordata reflects the pre-integration state. We need
-    // sensors at the post-integration state for C/D derivatives.
-    if compute_sensors {
-        scratch.forward(model)?;
-    }
     let y_0 = extract_state(model, &scratch, &qpos_0);
     let sensor_0 = if compute_sensors {
         Some(scratch.sensordata.clone())
@@ -148,9 +145,6 @@ pub fn mjd_transition_fd(
             na,
         );
         scratch.step(model)?;
-        if compute_sensors {
-            scratch.forward(model)?;
-        }
         let y_plus = extract_state(model, &scratch, &qpos_0);
         let s_plus = if compute_sensors {
             Some(scratch.sensordata.clone())
@@ -175,9 +169,6 @@ pub fn mjd_transition_fd(
                 na,
             );
             scratch.step(model)?;
-            if compute_sensors {
-                scratch.forward(model)?;
-            }
             let y_minus = extract_state(model, &scratch, &qpos_0);
             let s_minus = if compute_sensors {
                 Some(scratch.sensordata.clone())
@@ -225,9 +216,6 @@ pub fn mjd_transition_fd(
             scratch.qacc_warmstart.copy_from(&warmstart_0);
             scratch.time = time_0;
             scratch.step(model)?;
-            if compute_sensors {
-                scratch.forward(model)?;
-            }
             let yp = extract_state(model, &scratch, &qpos_0);
             let sp = if compute_sensors {
                 Some(scratch.sensordata.clone())
@@ -248,9 +236,6 @@ pub fn mjd_transition_fd(
             scratch.qacc_warmstart.copy_from(&warmstart_0);
             scratch.time = time_0;
             scratch.step(model)?;
-            if compute_sensors {
-                scratch.forward(model)?;
-            }
             let ym = extract_state(model, &scratch, &qpos_0);
             let sm = if compute_sensors {
                 Some(scratch.sensordata.clone())

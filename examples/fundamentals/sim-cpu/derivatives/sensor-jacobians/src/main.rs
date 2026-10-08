@@ -43,6 +43,7 @@ const MJCF: &str = r#"
   </default>
 
   <worldbody>
+    <site name="anchor" pos="0.4 0 -0.2"/>
     <body name="link" pos="0 0 0">
       <joint name="hinge" type="hinge" axis="0 1 0" damping="0.5"/>
       <inertial pos="0 0 -0.5" mass="5.0" diaginertia="0.5 0.5 0.01"/>
@@ -50,16 +51,25 @@ const MJCF: &str = r#"
             fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
       <geom name="tip" type="sphere" size="0.06"
             pos="0 0 -0.5" rgba="0.9 0.5 0.1 1"/>
+      <site name="tip_site" pos="0 0 -0.5"/>
     </body>
   </worldbody>
+
+  <tendon>
+    <spatial name="cable">
+      <site site="anchor"/>
+      <site site="tip_site"/>
+    </spatial>
+  </tendon>
 
   <actuator>
     <motor name="torque" joint="hinge" gear="1"/>
   </actuator>
 
   <sensor>
-    <jointpos name="pos" joint="hinge"/>
-    <jointvel name="vel" joint="hinge"/>
+    <tendonpos name="pos" tendon="cable"/>
+    <tendonvel name="vel" tendon="cable"/>
+    <actuatorfrc name="force" actuator="torque"/>
   </sensor>
 </mujoco>
 "#;
@@ -108,7 +118,7 @@ struct ErrorStats {
 fn main() {
     println!("=== CortenForge: Sensor Jacobians ===");
     println!("  C, D matrices — predicted vs actual sensor response");
-    println!("  1-DOF pendulum with jointpos + jointvel sensors");
+    println!("  1-DOF pendulum with a cable's length and speed, and the motor's force");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -196,8 +206,8 @@ fn setup(
     // Validation checks
     let c_some = derivs.C.is_some();
     let d_some = derivs.D.is_some();
-    let c_dims_ok = c.nrows() == 2 && c.ncols() == 2;
-    let d_dims_ok = d.nrows() == 2 && d.ncols() == 1;
+    let c_dims_ok = c.nrows() == 3 && c.ncols() == 2;
+    let d_dims_ok = d.nrows() == 3 && d.ncols() == 1;
     let c_nonzero = c.iter().any(|v| v.abs() > 1e-15);
     let d_nonzero = d.iter().any(|v| v.abs() > 1e-15);
 
@@ -208,12 +218,12 @@ fn setup(
             detail: format!("C={}", if c_some { "Some" } else { "None" }),
         },
         Check {
-            name: "C is 2x2",
+            name: "C is 3x2",
             pass: c_dims_ok,
             detail: format!("{}x{} (nsensordata x 2*nv)", c.nrows(), c.ncols()),
         },
         Check {
-            name: "D is 2x1",
+            name: "D is 3x1",
             pass: d_some && d_dims_ok,
             detail: format!("{}x{} (nsensordata x nu)", d.nrows(), d.ncols()),
         },
@@ -225,7 +235,7 @@ fn setup(
         Check {
             name: "D not all zeros",
             pass: d_nonzero,
-            detail: "sensors respond to control".into(),
+            detail: "the actuator force sensor responds to control".into(),
         },
     ];
     let _ = print_report("Sensor Jacobians", &checks);

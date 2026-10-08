@@ -1,0 +1,38 @@
+<mujoco model="sensor-jacobians">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <worldbody>
+    <site name="anchor" pos="0.4 0 -0.2"/>
+    <body name="link" pos="0 0 0">
+      <joint name="hinge" type="hinge" axis="0 1 0" damping="0.5"/>
+      <inertial pos="0 0 -0.5" mass="5.0" diaginertia="0.5 0.5 0.01"/>
+      <geom name="rod" type="capsule" size="0.025"
+            fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
+      <geom name="tip" type="sphere" size="0.06"
+            pos="0 0 -0.5" rgba="0.9 0.5 0.1 1"/>
+      <site name="tip_site" pos="0 0 -0.5"/>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <spatial name="cable">
+      <site site="anchor"/>
+      <site site="tip_site"/>
+    </spatial>
+  </tendon>
+
+  <actuator>
+    <motor name="torque" joint="hinge" gear="1"/>
+  </actuator>
+
+  <sensor>
+    <tendonpos name="pos" tendon="cable"/>
+    <tendonvel name="vel" tendon="cable"/>
+    <actuatorfrc name="force" actuator="torque"/>
+  </sensor>
+</mujoco>

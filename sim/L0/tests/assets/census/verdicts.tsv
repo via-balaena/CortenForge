@@ -178,6 +178,7 @@
 1dd022d80c047df3	mj-refuses
 1de2df5e6cfba237	model:geom_quat;dyn:agree
 1df6da8cb4de1a9c	mj-refuses
+1dfb0ae985a09777	model:geom_quat;dyn:agree
 1e78b5bd98f89f81	agree
 1e7aa253ab67c7af	mj-refuses
 1eb993f02da6c959	agree
@@ -218,6 +219,7 @@
 24ca4e64709df92c	agree
 251c59049dab062a	model:meaninertia;dyn:e1:t0:xpos
 2525a05126a05da3	e1:t0:con_zero
+2529ce5bef3785f7	e1:state@30
 254c1b2c0f82fb2a	mj-refuses
 25b2aa32d83e7bbf	model:geom_quat;dyn:agree
 25befe2869676628	agree
@@ -930,6 +932,7 @@
 98f687e62a86bbe9	agree
 9968986b6dfa9f65	agree
 996de36bc1273778	agree
+99aac113082e788d	model:geom_quat;dyn:agree
 99c698b70d9622b7	mj-refuses
 99cacfea74cdb20c	agree
 99e9006e1aab02fe	agree

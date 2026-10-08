@@ -2248,8 +2248,7 @@ fn t3_sensor_derivative_fd_accuracy() {
         } else {
             scratch_p.act[i - 2 * nv] += eps;
         }
-        scratch_p.step(&model).unwrap();
-        // Re-evaluate sensors at post-step state to match API behavior
+        // Sensors at the perturbed current state, as MuJoCo's mjd_transitionFD.
         scratch_p.forward(&model).unwrap();
         let s_plus = scratch_p.sensordata.clone();
 
@@ -2266,7 +2265,6 @@ fn t3_sensor_derivative_fd_accuracy() {
         } else {
             scratch_m.act[i - 2 * nv] -= eps;
         }
-        scratch_m.step(&model).unwrap();
         scratch_m.forward(&model).unwrap();
         let s_minus = scratch_m.sensordata.clone();
 
@@ -2284,13 +2282,11 @@ fn t3_sensor_derivative_fd_accuracy() {
     for j in 0..nu {
         let mut scratch_p = data.clone();
         scratch_p.ctrl[j] += eps;
-        scratch_p.step(&model).unwrap();
         scratch_p.forward(&model).unwrap();
         let s_plus = scratch_p.sensordata.clone();
 
         let mut scratch_m = data.clone();
         scratch_m.ctrl[j] -= eps;
-        scratch_m.step(&model).unwrap();
         scratch_m.forward(&model).unwrap();
         let s_minus = scratch_m.sensordata.clone();
 
@@ -2575,15 +2571,9 @@ fn t10_forward_difference_sensor_derivatives() {
 
 /// T11: Structural C matrix test for jointpos sensors → AC13
 ///
-/// C captures `∂sensor(x_{t+1})/∂x_t` — the post-step observation Jacobian.
-/// Sensors are re-evaluated at the post-integration state, matching the
-/// standard state-space model: `y_{t+1} = C·x_t + D·u_t`.
-///
-/// For jointpos sensors through one step:
-/// - Position columns: C\[s, j\] ≈ 1 for own joint (close to identity, but dynamics
-///   couple through one step so not exactly 1)
-/// - Velocity columns: C\[s, nv+j\] ≈ dt (position changes with velocity over one step)
-/// - D\[s, k\] small (control affects position only indirectly through acceleration)
+/// C is `∂sensordata_t/∂x_t`, the sensors at the current state, as MuJoCo's
+/// `mjd_transitionFD`. A jointpos sensor reads its own joint's position, so its
+/// position block is the identity, its velocity block 0, and D 0.
 #[test]
 fn t11_structural_cd_to_ab_crosscheck() {
     let (model, data) = sensor_pendulum_2link();
@@ -2598,39 +2588,19 @@ fn t11_structural_cd_to_ab_crosscheck() {
     let c = derivs.C.as_ref().unwrap();
     let d = derivs.D.as_ref().unwrap();
 
-    // For jointpos sensors: C position block ≈ identity (within ~1e-4,
-    // not exact because dynamics couple through one integration step)
     for sensor_idx in 0..2 {
         for j in 0..nv {
             let expected = if sensor_idx == j { 1.0 } else { 0.0 };
             let c_val = c[(sensor_idx, j)];
-            let err = (c_val - expected).abs();
             assert!(
-                err < 1e-3,
-                "C[{sensor_idx},{j}] = {c_val:.8e}, expected ~{expected:.1}, err = {err:.2e}"
+                (c_val - expected).abs() < 1e-9,
+                "C[{sensor_idx},{j}] = {c_val:.12e}, expected {expected:.1}"
             );
+            let c_vel = c[(sensor_idx, nv + j)];
+            assert_eq!(c_vel, 0.0, "C[{sensor_idx},{}]", nv + j);
         }
-        // Velocity columns: ~dt for own joint (post-step qpos depends on qvel)
-        for j in 0..nv {
-            let c_val = c[(sensor_idx, nv + j)];
-            if sensor_idx == j {
-                assert!(
-                    c_val.abs() > 1e-6,
-                    "C[{sensor_idx},{}] = {c_val:.8e}, expected ~dt for own velocity column",
-                    nv + j
-                );
-            }
-        }
-    }
-
-    // D is small for jointpos (control affects position only through one step of acceleration)
-    for sensor_idx in 0..2 {
         for k in 0..model.nu {
-            let d_val = d[(sensor_idx, k)];
-            assert!(
-                d_val.abs() < 0.01,
-                "D[{sensor_idx},{k}] = {d_val:.8e}, expected small for jointpos sensor"
-            );
+            assert_eq!(d[(sensor_idx, k)], 0.0, "D[{sensor_idx},{k}]");
         }
     }
 }
@@ -2959,4 +2929,156 @@ fn assert_transition_matches_fd_with_quaternion_joints(integrator: Option<Integr
         "{:?}: analytic A vs FD A: max abs difference {err}",
         model.integrator
     );
+}
+
+// ============================================================================
+// Sensor derivatives at the current state (MuJoCo's mjd_transitionFD)
+// ============================================================================
+
+/// A damped hinge with a motor, a jointpos and a jointvel sensor, under
+/// `integrator` (and `option`'s extra attributes), at qpos 0.2, qvel 0.3,
+/// ctrl 0.4 after `forward`.
+fn sensed_hinge_with(integrator: &str, option: &str) -> (Model, sim_core::Data) {
+    let xml = format!(
+        r#"<mujoco><option timestep="0.01" integrator="{integrator}" {option}/>
+<worldbody><body><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor joint="j"/></actuator>
+<sensor><jointpos joint="j"/><jointvel joint="j"/></sensor></mujoco>"#
+    );
+    let model = sim_mjcf::load_model(&xml).expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.2;
+    data.qvel[0] = 0.3;
+    data.ctrl[0] = 0.4;
+    data.forward(&model).unwrap();
+    (model, data)
+}
+
+fn sensed_hinge(integrator: &str) -> (Model, sim_core::Data) {
+    sensed_hinge_with(integrator, "")
+}
+
+/// C and D are the sensors' derivatives at the current state: MuJoCo 3.5.0's
+/// `mjd_transitionFD` on this model, eps 1e-6, centered or not, with and
+/// without fluid density (measured with the unfused oracle, all three
+/// integrators), gives C = [[1.000000000001, 0], [0, 0.9999999999732445]] and
+/// D = 0. Density makes the hybrid take its finite-difference position columns.
+#[test]
+fn sensor_derivatives_at_current_state_match_mujoco_3_5_0() {
+    let mujoco_c = [[1.000000000001, 0.0], [0.0, 0.999_999_999_973_244_5]];
+    let cases = ["Euler", "implicit", "implicitfast"]
+        .into_iter()
+        .flat_map(|i| {
+            [
+                (i, true, ""),
+                (i, false, ""),
+                (i, true, r#"density="1.2""#),
+                (i, false, r#"density="1.2""#),
+            ]
+        });
+    for (integrator, centered, option) in cases {
+        let cfg = DerivativeConfig {
+            eps: 1e-6,
+            centered,
+            compute_sensor_derivatives: true,
+            ..DerivativeConfig::default()
+        };
+        let (model, data) = sensed_hinge_with(integrator, option);
+        let paths = [
+            ("fd", mjd_transition_fd(&model, &data, &cfg).unwrap()),
+            (
+                "hybrid",
+                mjd_transition_hybrid(&model, &data, &cfg).unwrap(),
+            ),
+        ];
+        for (path, derivs) in paths {
+            let (c, d) = (derivs.C.unwrap(), derivs.D.unwrap());
+            for (r, row) in mujoco_c.iter().enumerate() {
+                for (k, want) in row.iter().enumerate() {
+                    assert!(
+                        (c[(r, k)] - want).abs() < 1e-9,
+                        "{integrator} {option} {path} centered {centered}: C[{r},{k}] = {:e}, MuJoCo {want:e}",
+                        c[(r, k)]
+                    );
+                }
+            }
+            assert!(
+                d.iter().all(|&x| x == 0.0),
+                "{integrator} {option} {path} centered {centered}: D = {d}"
+            );
+        }
+    }
+}
+
+/// Asking pure finite differences for sensor derivatives evaluates no extra
+/// forward pass: the passive callback fires as often with them as without.
+/// (The hybrid computes A and B analytically where it can, so its C and D
+/// need finite-difference columns it would otherwise not run.)
+#[test]
+fn sensor_derivatives_do_not_add_callbacks() {
+    {
+        let mut counts = Vec::new();
+        for sensors in [false, true] {
+            let (mut model, data) = sensed_hinge("Euler");
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let c = std::sync::Arc::clone(&calls);
+            model.set_passive_callback(move |_, _| {
+                c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+            let cfg = DerivativeConfig {
+                compute_sensor_derivatives: sensors,
+                ..DerivativeConfig::default()
+            };
+            mjd_transition_fd(&model, &data, &cfg).unwrap();
+            counts.push(calls.load(std::sync::atomic::Ordering::Relaxed));
+        }
+        assert_eq!(counts[0], counts[1], "callbacks without and with sensors");
+    }
+}
+
+/// With an active constraint row the hybrid's analytic velocity columns are
+/// wrong (they hold no constraint-force derivative), so it returns pure finite
+/// differences; with none it stays analytic.
+#[test]
+fn hybrid_takes_finite_differences_under_an_active_constraint() {
+    let cases = [
+        (
+            "a hinge at its limit",
+            r#"<mujoco><option timestep="0.002"/><worldbody><body>
+<joint type="hinge" axis="0 1 0" damping="0.1" limited="true" range="-0.1 0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+            Some(0.12),
+        ),
+        (
+            "a box resting on a plane",
+            r#"<mujoco><option timestep="0.002"/><worldbody><geom type="plane" size="5 5 0.1"/>
+<body pos="0 0 0.099"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+</worldbody></mujoco>"#,
+            None,
+        ),
+    ];
+    let cfg = DerivativeConfig::default();
+    for (name, xml, q0) in cases {
+        let model = sim_mjcf::load_model(xml).expect("load");
+        let mut data = model.make_data();
+        if let Some(q) = q0 {
+            data.qpos[0] = q;
+        }
+        data.forward(&model).unwrap();
+        assert!(!data.efc_type.is_empty(), "{name}: a constraint is active");
+        let fd = mjd_transition_fd(&model, &data, &cfg).unwrap();
+        let hybrid = mjd_transition_hybrid(&model, &data, &cfg).unwrap();
+        assert_eq!(hybrid.A, fd.A, "{name}");
+        assert_eq!(hybrid.B, fd.B, "{name}");
+    }
+    let (model, data) = sensed_hinge("Euler");
+    assert!(data.efc_type.is_empty());
+    let fd = mjd_transition_fd(&model, &data, &cfg).unwrap();
+    let hybrid = mjd_transition_hybrid(&model, &data, &cfg).unwrap();
+    assert_ne!(
+        hybrid.A, fd.A,
+        "without a constraint the hybrid is analytic"
+    );
+    assert!((&hybrid.A - &fd.A).abs().max() < 1e-9);
 }

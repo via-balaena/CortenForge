@@ -2336,6 +2336,11 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
 /// It does not read `config.use_analytical`; [`mjd_transition`](super::mjd_transition)
 /// chooses between this and pure FD.
 ///
+/// It returns pure FD instead when `data` has an active constraint row (a
+/// contact, a limit, an equality, friction loss): the analytic columns hold no
+/// constraint-force derivative. It reads the constraint rows the caller's
+/// last forward pass left in `data`, as it reads the mass matrix.
+///
 /// See module-level docs for the four-phase strategy.
 ///
 /// # Panics
@@ -2366,6 +2371,13 @@ pub fn mjd_transition_hybrid(
     // analytic path is incomplete (tendon-K/D under ISD, Muscle/HillMuscle gain under
     // Implicit). `mjd_transition` already gates these to FD; this guards a direct call.
     if implicit_analytic_incomplete(model) {
+        return mjd_transition_fd(model, data, config);
+    }
+    // The analytic velocity columns hold no derivative of a constraint force,
+    // so with an active constraint row at the nominal state (a contact, a joint
+    // or tendon limit, an equality, friction loss) they are wrong; pure FD is
+    // exact there (hybrid_takes_finite_differences_under_an_active_constraint).
+    if !data.efc_type.is_empty() {
         return mjd_transition_fd(model, data, config);
     }
 
@@ -2728,10 +2740,7 @@ pub fn mjd_transition_hybrid(
         Integrator::ImplicitFast | Integrator::Implicit => Some(scratch.qacc_implicit.clone()),
         Integrator::ImplicitSpringDamper => Some(scratch.qacc.clone()),
     };
-    // Re-evaluate sensors at post-step state (same as mjd_transition_fd).
-    if compute_sensors {
-        scratch.forward(model)?;
-    }
+    // sensordata is at the current state: step() computed it before integrating.
     let sensor_0 = if compute_sensors {
         Some(scratch.sensordata.clone())
     } else {
@@ -2864,8 +2873,6 @@ pub fn mjd_transition_hybrid(
                     na,
                 );
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 let s_plus = scratch.sensordata.clone();
 
                 if config.centered {
@@ -2884,8 +2891,6 @@ pub fn mjd_transition_hybrid(
                         na,
                     );
                     scratch.forward_skip(model, MjStage::None, false)?;
-                    scratch.integrate(model);
-                    scratch.forward(model)?;
                     let s_minus = scratch.sensordata.clone();
                     let scol = (&s_plus - &s_minus) / (2.0 * eps);
                     c.column_mut(i).copy_from(&scol);
@@ -2915,7 +2920,6 @@ pub fn mjd_transition_hybrid(
             scratch.step(model)?;
             let y_plus = extract_state(model, &scratch, &qpos_0);
             let s_plus = if compute_sensors {
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -2939,7 +2943,6 @@ pub fn mjd_transition_hybrid(
                 scratch.step(model)?;
                 let y_minus = extract_state(model, &scratch, &qpos_0);
                 let s_minus = if compute_sensors {
-                    scratch.forward(model)?;
                     Some(scratch.sensordata.clone())
                 } else {
                     None
@@ -2966,7 +2969,7 @@ pub fn mjd_transition_hybrid(
     // === Velocity columns: sensor-only FD ===
     // A velocity columns are analytical (no FD step). Sensor C velocity
     // columns need FD passes. Every sensor-only pass below runs every stage
-    // (MjStage::None): the scratch holds the previous column's post-step
+    // (MjStage::None): the scratch holds the previous column's perturbed
     // state, so a skipped stage would reuse that state's results.
     if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
         for i in 0..nv {
@@ -2986,8 +2989,6 @@ pub fn mjd_transition_hybrid(
                 na,
             );
             scratch.forward_skip(model, MjStage::None, false)?;
-            scratch.integrate(model);
-            scratch.forward(model)?;
             let s_plus = scratch.sensordata.clone();
 
             if config.centered {
@@ -3006,8 +3007,6 @@ pub fn mjd_transition_hybrid(
                     na,
                 );
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 let s_minus = scratch.sensordata.clone();
                 let scol = (&s_plus - &s_minus) / (2.0 * eps);
                 c.column_mut(state_col).copy_from(&scol);
@@ -3051,8 +3050,6 @@ pub fn mjd_transition_hybrid(
                     na,
                 );
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 let s_plus = scratch.sensordata.clone();
 
                 if config.centered {
@@ -3071,8 +3068,6 @@ pub fn mjd_transition_hybrid(
                         na,
                     );
                     scratch.forward_skip(model, MjStage::None, false)?;
-                    scratch.integrate(model);
-                    scratch.forward(model)?;
                     let s_minus = scratch.sensordata.clone();
                     let scol = (&s_plus - &s_minus) / (2.0 * eps);
                     c.column_mut(state_col).copy_from(&scol);
@@ -3103,7 +3098,6 @@ pub fn mjd_transition_hybrid(
         scratch.step(model)?;
         let y_plus = extract_state(model, &scratch, &qpos_0);
         let s_plus = if compute_sensors {
-            scratch.forward(model)?;
             Some(scratch.sensordata.clone())
         } else {
             None
@@ -3127,7 +3121,6 @@ pub fn mjd_transition_hybrid(
             scratch.step(model)?;
             let y_minus = extract_state(model, &scratch, &qpos_0);
             let s_minus = if compute_sensors {
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -3278,8 +3271,6 @@ pub fn mjd_transition_hybrid(
                 scratch.qacc_warmstart.copy_from(&warmstart_0);
                 scratch.time = time_0;
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -3294,8 +3285,6 @@ pub fn mjd_transition_hybrid(
                 scratch.qacc_warmstart.copy_from(&warmstart_0);
                 scratch.time = time_0;
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -3330,7 +3319,6 @@ pub fn mjd_transition_hybrid(
             scratch.step(model)?;
             let yp = extract_state(model, &scratch, &qpos_0);
             let sp = if compute_sensors {
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -3351,7 +3339,6 @@ pub fn mjd_transition_hybrid(
             scratch.step(model)?;
             let ym = extract_state(model, &scratch, &qpos_0);
             let sm = if compute_sensors {
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None

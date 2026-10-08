@@ -1698,3 +1698,6 @@ f55567dc9d0dc54b	sim/L0/tests/integration/model_data_pipeline.rs:747
 c1de94c308e7742e	sim/L0/mjcf/src/builder/build.rs:600
 5d9f935e708b7dd8	sim/L0/tests/integration/callbacks.rs:641
 d5508eb4b387b674	sim/L0/tests/integration/callbacks.rs:586
+1dfb0ae985a09777	examples/fundamentals/sim-cpu/derivatives/sensor-jacobians/src/main.rs:36
+2529ce5bef3785f7	sim/L0/tests/integration/derivatives.rs:3055
+99aac113082e788d	sim/L0/tests/integration/derivatives.rs:3048

@@ -123,14 +123,15 @@ pub struct TransitionMatrices {
     /// Dimensions: `(2*nv + na) × nu`.
     pub B: DMatrix<f64>,
 
-    /// Sensor-state Jacobian `∂sensordata_{t+1}/∂x_t`.
+    /// Sensor-state Jacobian `∂sensordata_t/∂x_t`: the sensors at the current
+    /// state, as MuJoCo's `mjd_transitionFD` computes them.
     /// Dimensions: `nsensordata × (2*nv + na)`.
     /// `None` when `DerivativeConfig.compute_sensor_derivatives` is false (default).
     /// `Some(matrix)` when sensor derivatives are computed — even if
     /// `nsensordata == 0` (in which case the matrix has 0 rows).
     pub C: Option<DMatrix<f64>>,
 
-    /// Sensor-control Jacobian `∂sensordata_{t+1}/∂u_t`.
+    /// Sensor-control Jacobian `∂sensordata_t/∂u_t`, at the current state.
     /// Dimensions: `nsensordata × nu`.
     /// `None` when `DerivativeConfig.compute_sensor_derivatives` is false (default).
     /// `Some(matrix)` when sensor derivatives are computed.
@@ -168,21 +169,21 @@ pub struct DerivativeConfig {
     ///
     /// Read by [`mjd_transition`]: when true and the model's analytic path is
     /// complete, velocity columns of A and simple actuator columns of B use
-    /// analytical derivatives from `qDeriv` ([`mjd_transition_hybrid`]);
-    /// otherwise pure FD. [`mjd_transition_hybrid`] called directly does not
-    /// read it.
+    /// analytical derivatives from `qDeriv` ([`mjd_transition_hybrid`], which
+    /// takes pure FD at a state with an active constraint row); otherwise pure
+    /// FD. [`mjd_transition_hybrid`] called directly does not read it.
     ///
     /// Default: `true`.
     pub use_analytical: bool,
 
     /// When true, compute sensor derivatives (C, D matrices) alongside
-    /// state transition derivatives (A, B). Sensor outputs are captured
-    /// via finite differencing of `sensordata` during the same perturbation
-    /// loop that computes A/B.
+    /// state transition derivatives (A, B): the derivatives of `sensordata`
+    /// at the current state, read from each perturbed step's forward pass
+    /// before it integrates, in the same loop that computes A and B. The
+    /// hybrid path runs extra finite-difference passes for the columns whose A
+    /// and B it computes analytically.
     ///
-    /// When false (default), C and D remain `None` in `TransitionMatrices`
-    /// and sensor evaluation is skipped during FD perturbation steps,
-    /// reducing computation cost.
+    /// When false (default), C and D remain `None` in `TransitionMatrices`.
     ///
     /// MuJoCo equivalent: passing non-NULL `C`/`D` pointers to
     /// `mjd_transitionFD()`.
@@ -245,7 +246,8 @@ fn check_fd_integrator(model: &Model) -> Result<(), StepError> {
 /// When `config.use_analytical == true` and the model's analytic transition
 /// derivative is complete (not with a Millard muscle, nor in the cases
 /// `hybrid::implicit_analytic_incomplete` names), uses hybrid analytical+FD
-/// (Phase D); otherwise pure finite differences (Phase A). Both refuse RK4, as
+/// (Phase D), which itself takes pure FD at a state with an active constraint
+/// row; otherwise pure finite differences (Phase A). Both refuse RK4, as
 /// MuJoCo's `mjd_transitionFD` does.
 ///
 /// Full Implicit gets its velocity-Jacobian right by adding the second-order term
