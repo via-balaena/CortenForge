@@ -17,8 +17,8 @@ resting objects.
 ## Key ideas
 
 - **Sleep is opt-in**: `<flag sleep="enable"/>` must be set. Off by default.
-- **Velocity threshold**: a body sleeps when all DOF velocities stay below
-  `sleep_tolerance * dof_length` for `MIN_AWAKE` consecutive timesteps (10).
+- **Velocity threshold**: a body sleeps when `dof_length * |qvel|` stays below
+  `sleep_tolerance` for every DOF for `MIN_AWAKE` consecutive timesteps (10).
 - **Constraint islands**: the engine builds a contact/constraint adjacency
   graph each step and flood-fills connected components. Each island sleeps
   and wakes atomically — all trees in an island must be ready before any sleep.

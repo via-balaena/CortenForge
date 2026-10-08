@@ -498,8 +498,8 @@ in three phases with comprehensive test coverage.
 
 | Phase | Scope | Tests | Status |
 |-------|-------|-------|--------|
-| A | Per-tree sleeping (countdown, wake detection, pipeline skip, RK4 guard) | 27 | ✅ |
-| B | Island discovery (DFS flood-fill), cross-tree coupling, qpos change detection, per-island solving | 33 | ✅ |
+| A | Per-tree sleeping (countdown, wake detection, pipeline skip, RK4 guard, since removed) | 27 | ✅ |
+| B | Island discovery (DFS flood-fill, since replaced by islands from the constraint rows), cross-tree coupling, qpos change detection, per-island solving | 33 | ✅ |
 | C | Selective CRBA, partial LDL factorization, awake-index iteration, island-local Delassus | 33 | ✅ |
 
 **Key verification properties:**
@@ -515,7 +515,8 @@ in three phases with comprehensive test coverage.
 | Per-function bit-identity | Each pipeline function individually bit-identical when all bodies awake | ✅ |
 
 **Test categories:**
-- Sleep state machine: countdown timer, policy resolution, init-sleep validation
+- Sleep state machine: countdown timer, policy resolution, init-sleep refusal
+- Parity with MuJoCo 3.5.0: `sleep_parity.rs` against goldens from the oracle
 - Wake conditions: user forces (bytewise check), contacts, tendons, equality, qpos change
 - Pipeline skip: FK, collision, velocity, passive forces, integration, sensors
 - Island discovery: singleton, chain, contact coupling, disable flag

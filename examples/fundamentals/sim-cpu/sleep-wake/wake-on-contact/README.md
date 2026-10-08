@@ -31,10 +31,9 @@ changes, so the box sits at its initial position with zero velocity, zero
 acceleration, and zero gravity drift. This is not approximate — sleeping bodies
 are completely frozen.
 
-The narrowphase skip optimization means two sleeping bodies (Asleep + Asleep)
-generate zero contacts between them. But a sleeping body touching a Static body
-(the ground plane) still generates contacts — it's only the Asleep-Asleep pair
-that is skipped.
+The collision filter skips a pair whose bodies are both asleep, or one asleep
+and the other static (the ground plane), as MuJoCo's does: the sleeping box
+makes no contacts until something awake touches it.
 
 | Parameter | Value |
 |-----------|-------|

@@ -1004,18 +1004,18 @@ Three phases fully implemented with 93 integration tests in `sleeping.rs`.
 **Phase A — Per-tree sleeping:**
 - Kinematic tree enumeration (`ntree`, `tree_body_adr`, `tree_dof_adr`, etc.)
 - Sleep policy resolution (Auto→AutoNever/AutoAllowed, user Never/Allowed/Init)
-- Sleep countdown timer (`tree_asleep`), velocity threshold check (`sleep_tolerance * dof_length`)
+- Sleep countdown timer (`tree_asleep`), velocity threshold check (now MuJoCo's: `dof_length · |qvel|` below `sleep_tolerance`)
 - Wake detection: user forces (bytewise check), contact, `tree_qpos_dirty`
 - Pipeline skip logic: FK, collision, velocity, passive forces, integration, sensors
-- RK4 guard (sleep disabled for RK4, warning emitted)
+- RK4 guard (sleep disabled for RK4, warning emitted); since removed: RK4 sleeps as MuJoCo's
 
 **Phase B — Island discovery and cross-tree coupling:**
-- `mj_island()`: DFS flood-fill over tree-tree adjacency graph (contact/tendon/equality)
+- `mj_island()`: DFS flood-fill over tree-tree adjacency graph (contact/tendon/equality); now built from the constraint rows, as MuJoCo's
 - Sleep-cycle linked list (`tree_asleep[t] >= 0` encodes linked list)
 - Cross-island wake: `mj_wake_tendon()`, `mj_wake_equality()`, `mj_wake_collision()`
-- qpos change detection (`tree_qpos_dirty` flags, `mj_check_qpos_changed()`)
+- qpos change detection (`tree_qpos_dirty` flags; now read by `mj_wake`)
 - Per-island block-diagonal constraint solving (`mj_fwd_constraint_islands`)
-- Union-find validation for `sleep="init"` trees
+- Union-find validation for `sleep="init"` trees; since replaced: the reset's forward pass puts them to sleep, and a model where one cannot sleep is refused
 - `dof_length` mechanism length computation for non-uniform thresholds
 
 **Phase C — Performance optimization:**

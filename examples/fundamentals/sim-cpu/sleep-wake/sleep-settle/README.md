@@ -16,24 +16,27 @@ gravity, contact, and the countdown timer.
 
 ## Physics
 
-The sleep decision is per-tree, checked every timestep after integration:
+The sleep decision is per-tree, made in each step's advance, before the
+velocities are updated:
 
 ```
 for each DOF in tree:
-    if |qvel[dof]| > sleep_tolerance * dof_length[dof]:
+    if dof_length[dof] * |qvel[dof]| >= sleep_tolerance:
         reset countdown to -(1 + MIN_AWAKE)
         break
 
 if countdown == -1:
-    sleep the tree (zero qvel, qacc, qfrc)
+    sleep the tree (zero qvel and qacc, then run the forward pass again)
 else:
     countdown += 1
 ```
 
-With `sleep_tolerance = 0.05` and `dof_length ≈ 1.0` for translational DOFs,
-the threshold is 0.05 m/s. Once all 6 DOFs of a free joint stay below that for
-10 steps (20 ms at dt=0.002), the body sleeps. Sleeping zeroes velocity and
-acceleration bitwise — not approximately, exactly.
+`dof_length` is 1 for a translational DOF and the body's size for a rotational
+one, so with `sleep_tolerance = 0.05` the threshold is 0.05 m/s for a free
+joint's three translational DOFs and `0.05 / dof_length` for its three
+rotational ones. Once all 6 stay below theirs for 10 steps (20 ms at
+dt=0.002), the body sleeps. Sleeping zeroes its velocity bitwise — not
+approximately, exactly.
 
 | Parameter | Value |
 |-----------|-------|
