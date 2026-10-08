@@ -60,8 +60,9 @@ impl<F: ?Sized> fmt::Debug for Callback<F> {
 ///   where MuJoCo's `mjd_transitionFD` skips the velocity stage (registry
 ///   `D-FD-CTRL-COLUMNS`), so B holds what it does with `ctrl`.
 ///
-/// Not matched: on the step that puts a tree to sleep, MuJoCo runs the forward
-/// pass once more (both callbacks fire twice); sim-core does not.
+/// On the step that puts a tree to sleep, the forward pass runs once more
+/// from the velocity stage inside the advance ([`Data::integrate`]), so both
+/// callbacks fire twice, in `step2` too, as in MuJoCo.
 ///
 /// [`MjStage::None`]: crate::MjStage::None
 /// [`MjStage::Pos`]: crate::MjStage::Pos

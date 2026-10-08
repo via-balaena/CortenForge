@@ -2,14 +2,11 @@
 //!
 //! Implements sleep eligibility, velocity thresholds, wake-on-contact,
 //! wake-on-tendon, wake-on-equality, and the circular-linked-list sleep
-//! cycle mechanism. Corresponds to MuJoCo's sleep logic in `engine_island.c`.
+//! cycle mechanism. Corresponds to MuJoCo's `engine_sleep.c`.
 
-use nalgebra::{UnitQuaternion, Vector3};
-
-use crate::dynamics::SpatialVector;
 use crate::linalg::UnionFind;
 use crate::types::{
-    Data, ENABLE_SLEEP, MIN_AWAKE, MjJointType, Model, SleepError, SleepPolicy, SleepState,
+    Data, ENABLE_SLEEP, EqualityType, MIN_AWAKE, Model, SleepError, SleepPolicy, SleepState,
 };
 
 use super::equality_trees;
@@ -50,14 +47,15 @@ impl Data {
 }
 
 // ---------------------------------------------------------------------------
-// Sleep update (end-of-step)
+// Sleep update (in the advance)
 // ---------------------------------------------------------------------------
 
-/// Sleep update: check velocity thresholds, transition sleeping trees (§16.3).
+/// Sleep update: check velocity thresholds, transition sleeping trees (§16.3),
+/// as MuJoCo's `mj_sleep` (`engine_sleep.c:499-568`).
 ///
-/// Called at the end of `step()`, after integration completes and before
-/// the warmstart save. This is the central sleep state machine.
-/// Phase B sleep transition function (§16.12.2).
+/// Called in the advance (`Data::integrate`), after the activations and
+/// before the velocity update, as MuJoCo's `mj_advance` calls it. With
+/// constraint rows but no islands (`DISABLE_ISLAND`) no tree sleeps.
 ///
 /// Three-phase approach:
 /// 1. Countdown: awake trees that can sleep have their timer incremented
@@ -69,6 +67,9 @@ impl Data {
 #[allow(clippy::cast_sign_loss)]
 pub fn mj_sleep(model: &Model, data: &mut Data) -> usize {
     if model.enableflags & ENABLE_SLEEP == 0 {
+        return 0;
+    }
+    if !data.efc_type.is_empty() && data.nisland == 0 {
         return 0;
     }
 
@@ -153,121 +154,21 @@ fn tree_can_sleep(model: &Model, data: &Data, tree: usize, tol: f64) -> bool {
         .any(|d| model.dof_length[d] * data.qvel[d].abs() >= tol)
 }
 
-/// Sleep a set of trees as a circular linked list (§16.12.1).
-///
-/// Creates a circular sleep cycle among the given trees, zeros all DOF-level
-/// and body-level arrays, and syncs xpos/xquat with post-integration qpos.
-/// For a single tree, this creates a self-link (Phase A compatible).
+/// Sleep a set of trees as a circular linked list (§16.12.1), as MuJoCo's
+/// `sleepTrees` (`engine_sleep.c:461-484`): each tree points at the next, and
+/// its `qvel` and `qacc` are zeroed. The forward pass the advance then runs
+/// recomputes the rest at the zeroed velocity.
 // `nbody`/`nv` model dimensions are usize but stored as i32 in mjData; bounded by realistic model sizes.
 #[allow(clippy::cast_possible_wrap)]
 fn sleep_trees(model: &Model, data: &mut Data, trees: &[usize]) {
     let n = trees.len();
-    if n == 0 {
-        return;
-    }
-
-    for i in 0..n {
-        let tree = trees[i];
-        let next = trees[(i + 1) % n];
-
-        // Create circular linked list
-        data.tree_asleep[tree] = next as i32;
-
-        // Zero DOF-level arrays
-        let dof_start = model.tree_dof_adr[tree];
-        let dof_end = dof_start + model.tree_dof_num[tree];
-        for dof in dof_start..dof_end {
+    for (i, &tree) in trees.iter().enumerate() {
+        data.tree_asleep[tree] = trees[(i + 1) % n] as i32;
+        let dofs = model.tree_dof_adr[tree]..model.tree_dof_adr[tree] + model.tree_dof_num[tree];
+        for dof in dofs {
             data.qvel[dof] = 0.0;
             data.qacc[dof] = 0.0;
-            data.qfrc_bias[dof] = 0.0;
-            data.qfrc_passive[dof] = 0.0;
-            data.qfrc_constraint[dof] = 0.0;
-            data.qfrc_actuator[dof] = 0.0; // §16.26.7: needed for policy relaxation
         }
-
-        // Zero body-level arrays
-        let body_start = model.tree_body_adr[tree];
-        let body_end = body_start + model.tree_body_num[tree];
-        for body_id in body_start..body_end {
-            data.cvel[body_id] = SpatialVector::zeros();
-            data.cacc_bias[body_id] = SpatialVector::zeros();
-            data.cfrc_bias[body_id] = SpatialVector::zeros();
-        }
-
-        // Sync xpos/xquat with post-integration qpos (§16.15 compatibility)
-        sync_tree_fk(model, data, tree);
-    }
-}
-
-/// Recompute FK for a single tree's bodies to sync xpos/xquat with current qpos.
-///
-/// Called after integration to prevent false positives in qpos change detection.
-fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
-    let body_start = model.tree_body_adr[tree];
-    let body_end = body_start + model.tree_body_num[tree];
-    for body_id in body_start..body_end {
-        let parent_id = model.body_parent[body_id];
-        let mut pos = data.xpos[parent_id];
-        let mut quat = data.xquat[parent_id];
-
-        // Apply body offset in parent frame
-        pos += quat * model.body_pos[body_id];
-        quat *= model.body_quat[body_id];
-
-        // Apply each joint
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
-        for jnt_id in jnt_start..jnt_end {
-            let qpos_adr = model.jnt_qpos_adr[jnt_id];
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    let angle = data.qpos[qpos_adr];
-                    let axis = model.jnt_axis[jnt_id];
-                    let anchor = model.jnt_pos[jnt_id];
-                    let world_anchor = pos + quat * anchor;
-                    let world_axis = quat * axis;
-                    let rot = if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
-                        UnitQuaternion::from_axis_angle(&unit_axis, angle)
-                    } else {
-                        UnitQuaternion::identity()
-                    };
-                    quat = rot * quat;
-                    pos = world_anchor + rot * (pos - world_anchor);
-                }
-                MjJointType::Slide => {
-                    let displacement = data.qpos[qpos_adr];
-                    let axis = model.jnt_axis[jnt_id];
-                    pos += quat * (axis * displacement);
-                }
-                MjJointType::Ball => {
-                    // Must normalize — integration can drift from unit norm.
-                    let q = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                        data.qpos[qpos_adr + 3],
-                    ));
-                    quat *= q;
-                }
-                MjJointType::Free => {
-                    pos = Vector3::new(
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                    );
-                    // Must normalize — integration can drift from unit norm.
-                    quat = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr + 3],
-                        data.qpos[qpos_adr + 4],
-                        data.qpos[qpos_adr + 5],
-                        data.qpos[qpos_adr + 6],
-                    ));
-                }
-            }
-        }
-        data.xpos[body_id] = pos;
-        data.xquat[body_id] = quat;
-        data.xmat[body_id] = quat.to_rotation_matrix().into_inner();
     }
 }
 
@@ -376,6 +277,44 @@ fn validate_init_sleep(model: &Model, data: &mut Data) -> Result<(), SleepError>
 // ---------------------------------------------------------------------------
 // Derived sleep arrays
 // ---------------------------------------------------------------------------
+
+/// Whether constraint assembly filters sleeping objects: sleep enabled and
+/// some tree asleep (MuJoCo's `sleep_filter`, `engine_core_constraint.c:390`).
+pub fn constraint_sleep_filter(model: &Model, data: &Data) -> bool {
+    model.enableflags & ENABLE_SLEEP != 0 && data.ntree_awake < model.ntree
+}
+
+/// Whether dof `dof`'s tree is asleep (MuJoCo `mj_sleepState` of the dof's
+/// body, from the sleep arrays).
+pub fn dof_asleep(model: &Model, data: &Data, dof: usize) -> bool {
+    !data.tree_awake[model.dof_treeid[dof]]
+}
+
+/// Whether equality `eq` is asleep: neither of its objects awake, a static
+/// or missing object counting as not awake (MuJoCo `mj_equalitySleepState`,
+/// `engine_sleep.c:629-660`). A tendon is awake when one of its two trees is,
+/// static with none, and awake with more than two (`:572-594`).
+pub fn equality_asleep(model: &Model, data: &Data, eq: usize) -> bool {
+    let body_awake = |body: usize| data.body_sleep_state.get(body) == Some(&SleepState::Awake);
+    let tendon_awake = |t: usize| {
+        let trees = &model.tendon_tree[2 * t..2 * t + 2];
+        match model.tendon_treenum[t] {
+            0 => false,
+            1 => data.tree_awake[trees[0]],
+            2 => data.tree_awake[trees[0]] || data.tree_awake[trees[1]],
+            _ => true,
+        }
+    };
+    let awake = |id: usize| -> bool {
+        match model.eq_type[eq] {
+            EqualityType::Connect | EqualityType::Weld => body_awake(id),
+            EqualityType::Joint => model.jnt_body.get(id).is_some_and(|&b| body_awake(b)),
+            EqualityType::Distance => model.geom_body.get(id).is_some_and(|&b| body_awake(b)),
+            EqualityType::Tendon => id < model.ntendon && tendon_awake(id),
+        }
+    };
+    !awake(model.eq_obj1id[eq]) && !awake(model.eq_obj2id[eq])
+}
 
 /// A body's state from its tree's (MuJoCo `mj_updateSleepInit`,
 /// `engine_sleep.c:62-82`): a body in no tree is `Static`, or `Awake` under a

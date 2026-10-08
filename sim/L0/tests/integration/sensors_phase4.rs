@@ -621,12 +621,13 @@ fn d11_disable_sensor_acc_stage() {
     }
 }
 
-/// 4A.6-T14 / AC: Sleep interaction — RNE pass computes for all bodies.
-///
-/// When an acc-stage sensor triggers mj_body_accumulators, it computes cacc
-/// and cfrc_int for ALL bodies, including sleeping ones.
+/// 4A.6-T14 / AC: Sleep interaction — an acc-stage sensor triggers
+/// mj_body_accumulators with a sleeping body: the world keeps its gravity
+/// pseudo-acceleration, and the sleeping body's `cfrc_int` is 0, MuJoCo
+/// 3.5.0's value on this model (measured on the unfused oracle: asleep after
+/// step 82, `cfrc_int[1]` 0 after `mj_forward` and `mj_rnePostConstraint`).
 #[test]
-fn d12_acc_sensor_sleep_computes_all() {
+fn d12_acc_sensor_sleeping_body_matches_mujoco() {
     let xml = r#"
     <mujoco>
       <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
@@ -673,12 +674,8 @@ fn d12_acc_sensor_sleep_computes_all() {
         data.cacc[0][5]
     );
 
-    // cfrc_int for the sleeping body should be nonzero
-    let norm: f64 = data.cfrc_int[1].iter().map(|x| x * x).sum::<f64>().sqrt();
-    assert!(
-        norm > 0.1,
-        "cfrc_int[1] should be nonzero for sleeping body, got norm={norm}"
-    );
+    // cfrc_int for the sleeping body: MuJoCo's 0
+    assert_eq!(data.cfrc_int[1].as_slice(), &[0.0; 6]);
 }
 
 // ============================================================================

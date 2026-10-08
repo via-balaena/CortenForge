@@ -1,10 +1,14 @@
 # Sleep golden
 
 `sleep.json` holds MuJoCo 3.5.0's kinematic-tree tables, resolved automatic
-sleep policies, body sleep states and `qfrc_gravcomp` for the models
-`integration/sleep_parity.rs` checks.
+sleep policies, body sleep states, `qfrc_gravcomp`, `dof_length`, and the
+sleep state after each step of short runs; `sleep_traces.json` holds, after
+each step of longer runs, the sleep state, contact, row and island counts and
+the callbacks that fired, and the velocities, accelerations and sensors near
+each change of a tree's sleep state. `integration/sleep_parity.rs` checks
+both.
 
-It comes from the unfused oracle, MuJoCo 3.5.0 built without fused
+They come from the unfused oracle, MuJoCo 3.5.0 built without fused
 multiply-adds (`scripts/build_mujoco_oracle.sh`), which the generator
 requires, as `gen_census_golden.py` does:
 
@@ -13,5 +17,5 @@ requires, as `gen_census_golden.py` does:
     sim/L0/tests/assets/golden/sleep
 ```
 
-The file is byte-stable across runs; its `oracle` entry is the oracle's
-marker. The generator's docstring describes the models.
+Both files are byte-stable across runs; their `oracle` entry is the oracle's
+marker. The generator's docstring describes the models and runs.

@@ -38,13 +38,39 @@ use crate::types::{DISABLE_GRAVITY, Data, ENABLE_SLEEP, MIN_VAL, MjJointType, Mo
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 5
 ///
 /// Reference: MuJoCo Computation docs - mj_rne section
+pub fn mj_rne(model: &Model, data: &mut Data) {
+    // A sleeping dof keeps the bias force of its last awake pass, as MuJoCo's
+    // `mj_rne` writes the awake dofs only (`engine_core_smooth.c:2481-2484`);
+    // the pass that puts its tree to sleep computes it at zero velocity.
+    let kept: Vec<(usize, f64)> =
+        if model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv {
+            (0..model.nv)
+                .filter(|&dof| {
+                    model
+                        .dof_treeid
+                        .get(dof)
+                        .is_some_and(|&t| !data.tree_awake[t])
+                })
+                .map(|dof| (dof, data.qfrc_bias[dof]))
+                .collect()
+        } else {
+            Vec::new()
+        };
+    rne_bias(model, data);
+    for (dof, bias) in kept {
+        data.qfrc_bias[dof] = bias;
+    }
+}
+
+/// The bias force of every dof (a sleeping body's is zero); [`mj_rne`]
+/// keeps the sleeping dofs' previous values over it.
 // RNE inlined as a single function so the forward/backward Featherstone passes read end-to-end; paired body/parent identifiers are intentionally similar; indexed loops mutate parallel per-body force/acceleration buffers.
 #[allow(
     clippy::too_many_lines,
     clippy::similar_names,
     clippy::needless_range_loop
 )]
-pub fn mj_rne(model: &Model, data: &mut Data) {
+fn rne_bias(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     data.qfrc_bias.fill(0.0);
@@ -69,7 +95,7 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let jnt_body = model.jnt_body[jnt_id];
 
-        // §16.5a: Skip RNE for sleeping bodies — bias forces are zeroed
+        // §16.5a: Skip RNE for sleeping bodies (mj_rne puts their kept values back)
         if sleep_enabled && data.body_sleep_state[jnt_body] == SleepState::Asleep {
             continue;
         }

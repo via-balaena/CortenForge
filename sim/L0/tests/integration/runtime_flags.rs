@@ -1759,8 +1759,8 @@ fn ac38_island_default_correctness() {
         "DISABLE_ISLAND should be clear by default"
     );
 
-    // Enable sleep so mj_island() runs during forward().
-    // Island discovery is gated on ENABLE_SLEEP, not on DISABLE_ISLAND alone.
+    // Islands are made from the constraint rows with or without sleep;
+    // DISABLE_ISLAND alone turns them off.
     model.enableflags |= ENABLE_SLEEP;
 
     let mut data = model.make_data();

@@ -47,6 +47,25 @@ boxes spun or moving at the tolerance, the tolerance 0 with a velocity of
 +0 and of -0, A8's box_uw_negzero with qfrc_applied, or the force of
 xfrc_applied, set to -0 at step 200, and A8's actuated damped hinge, whose
 tree the actuator keeps awake (automatic policy never).
+
+Its `traces` entry holds, for each trace of TRACES (A8's fixtures), after
+each mj_step: tree_asleep, ncon, nefc, nisland and the callbacks that fired
+(P passive, C control); and qvel, qacc, qacc_warmstart and sensordata after
+the steps within 3 of a change of any tree's sleep state and every 25th. The
+fixtures: a box resting on the plane (Euler, implicit, implicitfast, RK4, and
+with islands disabled), the same box with sleep disabled, two stacked
+spheres, a sphere woken by another falling on it, two spheres joined by a
+connect with a third falling, a hinge on its limit with friction loss beside
+a falling sphere, a box on a static table, a filtered actuator with an
+allowed sleep policy, and A8's damped two-link chain started at qvel
+(1.5, -1); the resting box colliding with the plane through an explicit
+<pair> only; the resting box with a contact filter that keeps every pair
+and logs each call (F) in the callback string; and the resting box beside a
+falling sphere whose passive callback adds 0.001 times its call count to the
+sphere's vertical force, so the second forward pass of the box's sleep step
+computes another acceleration for the sphere than the first, and the step
+advances the sphere with the first's; and the filtered actuator asleep, its
+ctrl set to 0.5 at step 700 (a ctrl change wakes nothing).
 """
 import json
 import os
@@ -221,6 +240,80 @@ RUNS = {
 </mujoco>""", 800, []),
 }
 
+PLANE = '<geom type="plane" size="5 5 0.1"/>'
+BOX = '<body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>'
+BOX_SENSORS = ('<sensor><framelinvel objtype="body" objname="b"/>'
+               '<framepos objtype="body" objname="b"/></sensor>')
+
+
+def box_rest(opt='', flags=''):
+    return (f'<mujoco><option timestep="0.002"{opt}><flag sleep="enable"{flags}/></option>\n'
+            f'<worldbody>{PLANE}\n{BOX}</worldbody>\n{BOX_SENSORS}</mujoco>')
+
+
+SPHERE = '<body name="{n}" pos="{p}"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>'
+SLEEP_OPT = '<option timestep="0.002"><flag sleep="enable"/></option>'
+
+TRACES_ACT_SLEEP = f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="l1" pos="0 0 1" sleep="allowed"><joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+</worldbody>
+<actuator><general name="a1" joint="j1" dyntype="filter" dynprm="0.05" gainprm="1" biastype="affine"
+  biasprm="0 -20 -1"/></actuator>
+<sensor><actuatorfrc actuator="a1"/><jointvel joint="j1"/></sensor></mujoco>"""
+
+# name: (xml, nstep, sets, sleep enabled[, log the contact filter[, (dof, scale) of the passive counter]])
+TRACES = {
+    "box_rest": (box_rest(), 300, [], True),
+    "box_rest_nosleep": (box_rest(), 5, [], False),
+    "box_rest_implicit": (box_rest(' integrator="implicit"'), 300, [], True),
+    "box_rest_implicitfast": (box_rest(' integrator="implicitfast"'), 300, [], True),
+    "box_rest_RK4": (box_rest(' integrator="RK4"'), 300, [], True),
+    "box_noisland": (box_rest('', ' island="disable"'), 300, [], True),
+    "sstack": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+{SPHERE.format(n="a", p="0 0 0.0995")}
+{SPHERE.format(n="b", p="0 0 0.2985")}</worldbody>
+<sensor><framelinvel objtype="body" objname="b"/></sensor></mujoco>""", 300, [], True),
+    "swake": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+{SPHERE.format(n="a", p="0 0 0.0995")}
+{SPHERE.format(n="b", p="0 0 0.6")}</worldbody>
+<sensor><framelinvel objtype="body" objname="a"/></sensor></mujoco>""", 400, [], True),
+    "eqpair": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+{SPHERE.format(n="a", p="0 0 0.0995")}
+{SPHERE.format(n="b", p="0.3 0 0.0995")}
+{SPHERE.format(n="c", p="1.0 0 0.6")}</worldbody>
+<equality><connect body1="a" body2="b" anchor="0.15 0 0"/></equality>
+<sensor><framelinvel objtype="body" objname="b"/></sensor></mujoco>""", 400, [], True),
+    "limit": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="l1" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0" damping="0.3" limited="true"
+  range="-30 30" frictionloss="0.01"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+<body name="f" pos="1 0 1"><freejoint/><geom type="sphere" size="0.05" mass="0.2"/></body>
+</worldbody>
+<sensor><jointvel joint="j1"/></sensor></mujoco>""", 400, [], True),
+    "table": (TREES["table"], 300, [], True),
+    "act_sleep": (TRACES_ACT_SLEEP, 800, [], True),
+    "act_sleep_ctrl": (TRACES_ACT_SLEEP, 800, [(700, "ctrl", 0, 0.5)], True),
+    "chain2": (LENGTHS["chain2"], 3000, [(0, "qvel", 0, 1.5), (0, "qvel", 1, -1.0)], True),
+    "box_rest_pair": ("""<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom name="floor" type="plane" size="5 5 0.1" contype="0" conaffinity="0"/>
+<body name="b" pos="0 0 0.0995"><freejoint/>
+  <geom name="box" type="box" size="0.1 0.1 0.1" mass="1" contype="0" conaffinity="0"/></body></worldbody>
+<contact><pair geom1="floor" geom2="box"/></contact>
+<sensor><framelinvel objtype="body" objname="b"/><framepos objtype="body" objname="b"/></sensor></mujoco>""",
+                      300, [], True),
+    "box_rest_filter": (box_rest(), 120, [], True, True),
+    "box_rest_counter": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+{BOX}
+<body name="s" pos="2 0 5"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body></worldbody>
+<sensor><framelinvel objtype="body" objname="s"/></sensor></mujoco>""", 100, [], True, False, (8, 1e-3)),
+}
+
 POLICY = {
     int(mujoco.mjtSleepPolicy.mjSLEEP_AUTO): "Auto",
     int(mujoco.mjtSleepPolicy.mjSLEEP_AUTO_NEVER): "AutoNever",
@@ -304,6 +397,52 @@ def run_case(name, xml, nstep, sets):
     return {"name": name, "xml": xml, "sets": [list(x) for x in sets], "asleep": asleep}
 
 
+def trace_case(name, xml, nstep, sets, sleep, log_filter=False, passive_force=None):
+    m = mujoco.MjModel.from_xml_string(xml)
+    if not sleep:
+        m.opt.enableflags &= ~int(mujoco.mjtEnableBit.mjENBL_SLEEP)
+    d = mujoco.MjData(m)
+    log = []
+    calls = [0]
+
+    def passive(m_, d_):
+        log.append("P")
+        if passive_force is not None:
+            calls[0] += 1
+            d_.qfrc_passive[passive_force[0]] += passive_force[1] * calls[0]
+
+    mujoco.set_mjcb_passive(passive)
+    mujoco.set_mjcb_control(lambda m_, d_: log.append("C"))
+    if log_filter:
+        mujoco.set_mjcb_contactfilter(lambda m_, d_, g1, g2: log.append("F") or 0)
+    steps = []
+    try:
+        for k in range(nstep):
+            for at, field, idx, value in sets:
+                if at == k:
+                    getattr(d, field).reshape(-1)[idx] = value
+            log.clear()
+            mujoco.mj_step(m, d)
+            steps.append({"tree_asleep": ints(d.tree_asleep), "ncon": int(d.ncon), "nefc": int(d.nefc),
+                          "nisland": int(d.nisland), "cb": "".join(log),
+                          "qvel": floats(d.qvel), "qacc": floats(d.qacc),
+                          "qacc_warmstart": floats(d.qacc_warmstart), "sensordata": floats(d.sensordata)})
+    finally:
+        mujoco.set_mjcb_passive(None)
+        mujoco.set_mjcb_control(None)
+        mujoco.set_mjcb_contactfilter(None)
+    asleep = [[a >= 0 for a in st["tree_asleep"]] for st in steps]
+    change = {k for k in range(nstep) if asleep[k] != (asleep[k - 1] if k else [False] * m.ntree)}
+    keep = {k for c in change for k in range(c - 3, c + 4) if 0 <= k < nstep} | set(range(0, nstep, 25))
+    for k, st in enumerate(steps):
+        if k not in keep:
+            for f in ("qvel", "qacc", "qacc_warmstart", "sensordata"):
+                del st[f]
+    return {"name": name, "xml": xml, "sets": [list(x) for x in sets], "sleep": sleep,
+            "log_filter": log_filter, "passive_force": list(passive_force) if passive_force else None,
+            "steps": steps}
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -317,10 +456,13 @@ def main():
     trees = [tree_case(name, xml) for name, xml in TREES.items()]
     lengths = [length_case(name, xml) for name, xml in LENGTHS.items()]
     runs = [run_case(name, *run) for name, run in RUNS.items()]
+    traces = [trace_case(name, *trace) for name, trace in TRACES.items()]
     doc = {"oracle": marker, "trees": finite_or_string(trees), "lengths": finite_or_string(lengths),
            "runs": finite_or_string(runs)}
+    write(os.path.join(sys.argv[1], "sleep_traces.json"), {"oracle": marker, "traces": finite_or_string(traces)})
     write(os.path.join(sys.argv[1], "sleep.json"), doc)
-    print(f"{len(trees)} tree, {len(lengths)} length and {len(runs)} run cases -> {sys.argv[1]}")
+    print(f"{len(trees)} tree, {len(lengths)} length, {len(runs)} run and {len(traces)} trace cases"
+          f" -> {sys.argv[1]}")
 
 
 if __name__ == "__main__":

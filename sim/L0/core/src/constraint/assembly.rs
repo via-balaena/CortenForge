@@ -133,11 +133,25 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     let equality_disabled = disabled(model, DISABLE_EQUALITY);
     let frictionloss_disabled = disabled(model, DISABLE_FRICTIONLOSS);
     let limit_disabled = disabled(model, DISABLE_LIMIT);
+    // Rows of sleeping equalities, dof friction and joint limits are not made
+    // (MuJoCo `engine_core_constraint.c:389-413, 700-716, 767-783`); tendon
+    // friction and limit rows are.
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
+    let asleep_dofs: Vec<bool> = if sleep_filter {
+        (0..nv)
+            .map(|dof| crate::island::dof_asleep(model, data, dof))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let asleep_dof = |dof: usize| asleep_dofs.get(dof).copied().unwrap_or(false);
 
     // Equality constraints (S4.4: gated on DISABLE_EQUALITY)
     if !equality_disabled {
         for eq_id in 0..model.neq {
-            if !model.eq_active[eq_id] {
+            if !model.eq_active[eq_id]
+                || (sleep_filter && crate::island::equality_asleep(model, data, eq_id))
+            {
                 continue;
             }
             nefc += match model.eq_type[eq_id] {
@@ -154,7 +168,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     // DOF friction loss (S4.5: gated on DISABLE_FRICTIONLOSS)
     if !frictionloss_disabled {
         for dof_idx in 0..nv {
-            if model.dof_frictionloss[dof_idx] > 0.0 {
+            if model.dof_frictionloss[dof_idx] > 0.0 && !asleep_dof(dof_idx) {
                 nefc += 1;
             }
         }
@@ -171,7 +185,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     // MuJoCo convention: dist < 0 means violated.
     if !limit_disabled {
         for jnt_id in 0..model.njnt {
-            if !model.jnt_limited[jnt_id] {
+            if !model.jnt_limited[jnt_id] || asleep_dof(model.jnt_dof_adr[jnt_id]) {
                 continue;
             }
             match model.jnt_type[jnt_id] {
@@ -284,7 +298,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     if !frictionloss_disabled {
         for dof_idx in 0..nv {
             let fl = model.dof_frictionloss[dof_idx];
-            if fl <= 0.0 {
+            if fl <= 0.0 || asleep_dof(dof_idx) {
                 continue;
             }
             // Jacobian: 1×nv with 1.0 at dof_idx
@@ -347,7 +361,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     // --- 3d: Joint limits (S4.6: gated on DISABLE_LIMIT) ---
     if !limit_disabled {
         for jnt_id in 0..model.njnt {
-            if !model.jnt_limited[jnt_id] {
+            if !model.jnt_limited[jnt_id] || asleep_dof(model.jnt_dof_adr[jnt_id]) {
                 continue;
             }
             match model.jnt_type[jnt_id] {

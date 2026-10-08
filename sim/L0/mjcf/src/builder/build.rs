@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use nalgebra::DVector;
-use sim_core::{ENABLE_SLEEP, Integrator, Model, SleepPolicy, compute_dof_lengths};
+use sim_core::{Model, SleepPolicy, compute_dof_lengths};
 use tracing::warn;
 
 use super::ModelBuilder;
@@ -50,7 +50,6 @@ impl ModelBuilder {
         model.compute_kinematic_trees();
         apply_explicit_sleep_policies(&mut model, &body_sleep_policy);
         compute_dof_lengths(&mut model);
-        guard_rk4_sleep(&mut model);
 
         model
     }
@@ -536,16 +535,6 @@ fn apply_explicit_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<
                 model.tree_sleep_policy[tree] = *policy;
             }
         }
-    }
-}
-
-/// RK4 incompatibility guard (§16.6).
-///
-/// Sleeping is incompatible with the RK4 integrator; disable sleep if both are active.
-fn guard_rk4_sleep(model: &mut Model) {
-    if model.enableflags & ENABLE_SLEEP != 0 && model.integrator == Integrator::RungeKutta4 {
-        warn!("Sleeping is incompatible with RK4 integrator. Disabling sleep.");
-        model.enableflags &= !ENABLE_SLEEP;
     }
 }
 

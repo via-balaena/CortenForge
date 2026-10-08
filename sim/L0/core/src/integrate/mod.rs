@@ -12,11 +12,12 @@ pub(crate) mod implicit;
 pub(crate) mod rk4;
 
 use crate::dynamics::factor::mj_factor_sparse;
-use crate::forward::mj_next_activation;
+use crate::forward::{MjStage, check, mj_next_activation};
 use crate::linalg::mj_solve_sparse;
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::{
     DISABLE_ACTUATION, DISABLE_DAMPER, DISABLE_EULERDAMP, Data, ENABLE_SLEEP, Integrator, Model,
+    StepError,
 };
 use nalgebra::DVector;
 
@@ -33,13 +34,24 @@ pub(crate) fn eulerdamp_applies(model: &Model) -> bool {
 }
 
 impl Data {
-    /// Integration step after the acceleration stage: history samples, then
-    /// velocity, then position and time.
+    /// Advance the state by one timestep after the acceleration stage, as
+    /// MuJoCo's `mj_advance` (`engine_forward.c:833-939`): the history
+    /// samples, the activations, the sleep step, then velocity, position and
+    /// time, the plugins, and `qacc_warmstart = qacc`.
     ///
     /// This is exposed as part of the split-step API ([`step1`](Self::step1) /
     /// [`step2`](Self::step2)). Under RK4, [`step`](Self::step) integrates with
     /// `mj_runge_kutta()` instead; this method takes the Euler step, as
     /// MuJoCo's `mj_step2` does.
+    ///
+    /// # Sleep
+    ///
+    /// With sleep enabled, sleep is decided here, after the activations and
+    /// before the velocity update, from the velocities the step started
+    /// with. On a step that puts a tree to sleep, its velocity and
+    /// acceleration are zeroed and the forward pass runs again from the
+    /// velocity stage, sensors and both callbacks included, before the awake
+    /// trees advance with the acceleration computed before that pass.
     ///
     /// # Integration Methods
     ///
@@ -56,14 +68,23 @@ impl Data {
     ///   implicit acceleration the acceleration stage (or a Newton solve)
     ///   computed.
     ///
-    /// Does not check `model.timestep` or the shape of `self`;
-    /// [`step`](Self::step) and [`step2`](Self::step2) do. Time runs backwards
-    /// at a negative timestep and becomes NaN or infinite at a non-finite one.
+    /// # Errors
     ///
-    /// # Panics
-    ///
-    /// May panic if an array of `self` is shorter than `model` requires.
-    pub fn integrate(&mut self, model: &Model) {
+    /// `StepError::InvalidTimestep` if the timestep is not positive and
+    /// finite and `StepError::DataShapeMismatch` if `self` was made by a
+    /// model of other dimensions or an input array was resized, both before
+    /// anything changes; and the error of the forward pass a sleep step runs
+    /// (an implicit factorization), which leaves the activations advanced and
+    /// the slept trees' velocities zeroed, and positions and time not
+    /// advanced. MuJoCo's forward pass has no failure there.
+    pub fn integrate(&mut self, model: &Model) -> Result<(), StepError> {
+        check::check_step_inputs(model, self)?;
+        self.integrate_unchecked(model)
+    }
+
+    /// [`Self::integrate`] without its input checks, for `step` and `step2`,
+    /// which make them first.
+    pub(crate) fn integrate_unchecked(&mut self, model: &Model) -> Result<(), StepError> {
         // History first, at the step's time, as MuJoCo's `mj_advance`
         // (`engine_forward.c:837-884`): each buffered actuator's `ctrl`, then
         // each buffered sensor's sample.
@@ -72,12 +93,10 @@ impl Data {
 
         let h = model.timestep;
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-        // §16.27: Use indirection array for cache-friendly iteration over awake DOFs.
-        let use_dof_ind = sleep_enabled && self.nv_awake < model.nv;
 
         // Integrate activation per actuator via mj_next_activation() (§34).
         // Handles both integration (Euler/FilterExact) and actlimited clamping.
-        // MuJoCo order: activation → velocity → position.
+        // MuJoCo order: activation → sleep → velocity → position.
         // S4.8: Per-actuator disable gating — disabled actuators get act_dot=0,
         // freezing activation state without zeroing it.
         for i in 0..model.nu {
@@ -91,121 +110,41 @@ impl Data {
             }
         }
 
-        // Update velocity from the acceleration the step integrates.
-        match model.integrator {
-            // Under RK4, `step` integrates with `mj_runge_kutta`; `step2` lands
-            // here and takes MuJoCo's Euler step, as `mj_step2` calls `mj_Euler`
-            // for every integrator but the implicit pair (engine_forward.c:1505-1512).
-            Integrator::Euler | Integrator::RungeKutta4 => {
-                // Eulerdamp: implicit damping via full matrix solve.
-                //
-                // MuJoCo 3.x solves (M + h·D)·qacc_new = F_total, then qvel += h·qacc_new.
-                // This properly handles off-diagonal coupling in the mass matrix for
-                // multi-DOF systems (chains, branching trees). A per-DOF approximation
-                // only works for 1-DOF systems where M is diagonal.
-                //
-                // Algorithm (matches mj_EulerSkip in engine_forward.c):
-                //   1. Copy M → qH, add h·damp[i] to diagonal
-                //   2. Factorize qH via LDL'
-                //   3. rhs = qfrc_smooth + qfrc_constraint (total force)
-                //   4. Solve qH · qacc_new = rhs
-                //   5. qvel += h · qacc_new
-                //
-                if eulerdamp_applies(model) {
-                    // Save original factorization (restored after solve)
-                    let saved_qld = self.qLD_data.clone();
-                    let saved_inv = self.qLD_diag_inv.clone();
-
-                    // Add h·damp to mass matrix diagonal, then refactorize
-                    for i in 0..model.nv {
-                        let d = model.implicit_damping[i];
-                        if d > 0.0 {
-                            self.qM[(i, i)] += h * d;
-                        }
-                    }
-                    mj_factor_sparse(model, self);
-
-                    // RHS = total force = qfrc_smooth + qfrc_constraint
-                    let mut rhs = DVector::zeros(model.nv);
-                    let nv = if use_dof_ind { self.nv_awake } else { model.nv };
-                    for idx in 0..nv {
-                        let i = if use_dof_ind {
-                            self.dof_awake_ind[idx]
-                        } else {
-                            idx
-                        };
-                        rhs[i] = self.qfrc_smooth[i] + self.qfrc_constraint[i];
-                    }
-
-                    // Solve: (M + h·D) · qacc_new = rhs
-                    let (rowadr, rownnz, colind) = model.qld_csr();
-                    mj_solve_sparse(
-                        rowadr,
-                        rownnz,
-                        colind,
-                        &self.qLD_data,
-                        &self.qLD_diag_inv,
-                        &mut rhs,
-                    );
-
-                    // qvel += h · qacc_new
-                    for idx in 0..nv {
-                        let i = if use_dof_ind {
-                            self.dof_awake_ind[idx]
-                        } else {
-                            idx
-                        };
-                        self.qvel[i] += h * rhs[i];
-                    }
-
-                    // Restore original mass matrix diagonal and factorization
-                    for i in 0..model.nv {
-                        let d = model.implicit_damping[i];
-                        if d > 0.0 {
-                            self.qM[(i, i)] -= h * d;
-                        }
-                    }
-                    self.qLD_data = saved_qld;
-                    self.qLD_diag_inv = saved_inv;
-                } else {
-                    // No damping: simple qvel += h · qacc
-                    let nv = if use_dof_ind { self.nv_awake } else { model.nv };
-                    for idx in 0..nv {
-                        let i = if use_dof_ind {
-                            self.dof_awake_ind[idx]
-                        } else {
-                            idx
-                        };
-                        self.qvel[i] += self.qacc[i] * h;
-                    }
-                }
+        // The acceleration the velocities advance with, computed before the
+        // sleep step as MuJoCo's integrators compute theirs before
+        // `mj_advance`: eulerdamp's solve under Euler (and under RK4, which
+        // `step2` takes as Euler) with a damped dof; else the live array.
+        let mut solved = (matches!(
+            model.integrator,
+            Integrator::Euler | Integrator::RungeKutta4
+        ) && eulerdamp_applies(model))
+        .then(|| self.eulerdamp_acceleration(model));
+        if crate::island::mj_sleep(model, self) > 0 {
+            // The re-forward overwrites `qacc` and `qacc_implicit`.
+            if solved.is_none() {
+                solved = Some(match model.integrator {
+                    Integrator::Implicit | Integrator::ImplicitFast => self.qacc_implicit.clone(),
+                    _ => self.qacc.clone(),
+                });
             }
-            Integrator::ImplicitFast | Integrator::Implicit => {
-                let nv = if use_dof_ind { self.nv_awake } else { model.nv };
-                for idx in 0..nv {
-                    let i = if use_dof_ind {
-                        self.dof_awake_ind[idx]
-                    } else {
-                        idx
-                    };
-                    self.qvel[i] += self.qacc_implicit[i] * h;
-                }
-            }
-            Integrator::ImplicitSpringDamper => {
-                // qacc is the implicit acceleration: (v_new − qvel) / h from
-                // `mj_fwd_acceleration_implicit`, or Newton's, which folds the
-                // implicit springs and dampers into M_impl (DT-35: includes
-                // tendon K/D coupling).
-                let nv = if use_dof_ind { self.nv_awake } else { model.nv };
-                for idx in 0..nv {
-                    let i = if use_dof_ind {
-                        self.dof_awake_ind[idx]
-                    } else {
-                        idx
-                    };
-                    self.qvel[i] += self.qacc[i] * h;
-                }
-            }
+            self.reforward_after_sleep(model)?;
+        }
+        let acc = match (&solved, model.integrator) {
+            (Some(acc), _) => acc,
+            (None, Integrator::Implicit | Integrator::ImplicitFast) => &self.qacc_implicit,
+            (None, _) => &self.qacc,
+        };
+
+        // §16.27: Use indirection array for cache-friendly iteration over awake DOFs.
+        let use_dof_ind = sleep_enabled && self.nv_awake < model.nv;
+        let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+        for idx in 0..nv {
+            let i = if use_dof_ind {
+                self.dof_awake_ind[idx]
+            } else {
+                idx
+            };
+            self.qvel[i] += acc[i] * h;
         }
 
         // Update positions - quaternions need special handling!
@@ -218,6 +157,80 @@ impl Data {
         self.time += h;
 
         advance_plugins(model, self);
+
+        // Save qacc for the next step's warmstart (§15.9), as `mj_advance`
+        // ends (engine_forward.c:938).
+        self.qacc_warmstart.copy_from(&self.qacc);
+        Ok(())
+    }
+
+    /// Eulerdamp's acceleration: MuJoCo 3.x solves
+    /// `(M + h·D)·qacc_new = qfrc_smooth + qfrc_constraint` (`mj_EulerSkip`),
+    /// which handles the mass matrix's off-diagonal coupling in multi-DOF
+    /// systems. `qM` and its factorization are restored afterwards.
+    fn eulerdamp_acceleration(&mut self, model: &Model) -> DVector<f64> {
+        let h = model.timestep;
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+        let use_dof_ind = sleep_enabled && self.nv_awake < model.nv;
+
+        // Save original factorization (restored after solve)
+        let saved_qld = self.qLD_data.clone();
+        let saved_inv = self.qLD_diag_inv.clone();
+
+        // Add h·damp to mass matrix diagonal, then refactorize
+        for i in 0..model.nv {
+            let d = model.implicit_damping[i];
+            if d > 0.0 {
+                self.qM[(i, i)] += h * d;
+            }
+        }
+        mj_factor_sparse(model, self);
+
+        // RHS = total force = qfrc_smooth + qfrc_constraint
+        let mut rhs = DVector::zeros(model.nv);
+        let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+        for idx in 0..nv {
+            let i = if use_dof_ind {
+                self.dof_awake_ind[idx]
+            } else {
+                idx
+            };
+            rhs[i] = self.qfrc_smooth[i] + self.qfrc_constraint[i];
+        }
+
+        // Solve: (M + h·D) · qacc_new = rhs
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &self.qLD_data,
+            &self.qLD_diag_inv,
+            &mut rhs,
+        );
+
+        // Restore original mass matrix diagonal and factorization
+        for i in 0..model.nv {
+            let d = model.implicit_damping[i];
+            if d > 0.0 {
+                self.qM[(i, i)] -= h * d;
+            }
+        }
+        self.qLD_data = saved_qld;
+        self.qLD_diag_inv = saved_inv;
+        rhs
+    }
+
+    /// The rest of `mj_advance`'s sleep block (`engine_forward.c:898-905`),
+    /// after `mj_sleep` put a tree to sleep: the forward pass from the
+    /// velocity stage, sensors and `cb_control` included, while the sleep
+    /// arrays still list the slept trees as awake, so their velocity- and
+    /// acceleration-stage quantities are computed at the zeroed velocity;
+    /// then the sleep arrays.
+    pub(crate) fn reforward_after_sleep(&mut self, model: &Model) -> Result<(), StepError> {
+        self.forward_skip_unchecked(model, MjStage::Pos, false)?;
+        crate::island::mj_update_sleep_arrays(model, self);
+        Ok(())
     }
 }
 

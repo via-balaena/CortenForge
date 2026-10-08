@@ -493,8 +493,8 @@ fn test_sleep_zeros_velocity() {
             dof
         );
         assert_eq!(
-            data.qacc[dof], 0.0,
-            "sleeping DOF {} qacc should be zero",
+            data.qacc[dof], data.qacc_smooth[dof],
+            "sleeping DOF {} qacc is its last unconstrained acceleration",
             dof
         );
     }
@@ -707,18 +707,18 @@ fn test_sleep_init_policy() {
 }
 
 // ============================================================================
-// T11: test_rk4_sleep_warning (AC #7)
+// T11: test_rk4_keeps_sleep_enabled (AC #7)
 // ============================================================================
 
 #[test]
-fn test_rk4_sleep_warning() {
+fn test_rk4_keeps_sleep_enabled() {
     let model = load_model(rk4_sleep_mjcf()).expect("load model");
 
-    // RK4 + sleep → sleep should be disabled
+    // RK4 + sleep → sleep stays enabled, as MuJoCo runs it
     assert_eq!(
         model.enableflags & ENABLE_SLEEP,
-        0,
-        "sleep should be disabled with RK4 integrator"
+        ENABLE_SLEEP,
+        "sleep should stay enabled with the RK4 integrator"
     );
 }
 
@@ -2395,7 +2395,7 @@ fn test_sleep_cycle_single_tree() {
 
 /// T73: sleep_trees zeros all DOF-level and body-level arrays.
 #[test]
-fn test_sleep_trees_zeros_all_arrays() {
+fn test_sleep_trees_keep_their_last_awake_arrays() {
     let mjcf = free_body_sleep_mjcf();
     let model = load_model(mjcf).expect("load");
     let mut data = model.make_data();
@@ -2408,13 +2408,24 @@ fn test_sleep_trees_zeros_all_arrays() {
     let tree = model.body_treeid[1];
     assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
 
-    // Check DOF arrays are zeroed
+    // The DOF arrays are MuJoCo 3.5.0's on this model after 3000 steps
+    // (unfused oracle): velocity 0; the acceleration and bias force of the
+    // last awake pass, computed at zero velocity on the sleep step (free fall
+    // and its gravity force); no passive, constraint or actuator force.
     let dof_start = model.tree_dof_adr[tree];
     let dof_end = dof_start + model.tree_dof_num[tree];
+    let (qacc, qfrc_bias) = (
+        [0.0, 0.0, -9.81, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 9.81, 0.0, 0.0, 0.0],
+    );
     for dof in dof_start..dof_end {
         assert_eq!(data.qvel[dof], 0.0, "qvel[{dof}] should be 0");
-        assert_eq!(data.qacc[dof], 0.0, "qacc[{dof}] should be 0");
-        assert_eq!(data.qfrc_bias[dof], 0.0, "qfrc_bias[{dof}] should be 0");
+        assert_eq!(data.qacc[dof], qacc[dof - dof_start], "qacc[{dof}]");
+        assert_eq!(
+            data.qfrc_bias[dof],
+            qfrc_bias[dof - dof_start],
+            "qfrc_bias[{dof}]"
+        );
         assert_eq!(
             data.qfrc_passive[dof], 0.0,
             "qfrc_passive[{dof}] should be 0"
@@ -2429,7 +2440,7 @@ fn test_sleep_trees_zeros_all_arrays() {
         );
     }
 
-    // Check body arrays are zeroed
+    // The body velocity arrays: zero
     let body_start = model.tree_body_adr[tree];
     let body_end = body_start + model.tree_body_num[tree];
     for body_id in body_start..body_end {
@@ -3325,8 +3336,8 @@ fn test_indirection_vel_integration_equivalence() {
                     "sleeping DOF {dof} qvel should be zero"
                 );
                 assert_eq!(
-                    data.qacc[dof], 0.0,
-                    "sleeping DOF {dof} qacc should be zero"
+                    data.qacc[dof], data.qacc_smooth[dof],
+                    "sleeping DOF {dof} qacc is its last unconstrained acceleration"
                 );
             }
         }
@@ -3487,16 +3498,17 @@ fn test_indirection_rne_gyroscopic_equivalence() {
     assert!(has_asleep, "need at least one sleeping tree for this test");
 
     // Step once more — mj_rne runs via indirection
+    let bias = data.qfrc_bias.clone();
     data.step(&model).expect("step");
 
-    // Sleeping DOFs must have zero qfrc_bias
+    // A sleeping DOF keeps its qfrc_bias (MuJoCo's mj_rne writes awake DOFs only)
     for dof in 0..model.nv {
         if dof < model.dof_treeid.len() {
             let tree = model.dof_treeid[dof];
             if tree < model.ntree && !data.tree_awake(tree) {
                 assert_eq!(
-                    data.qfrc_bias[dof], 0.0,
-                    "sleeping DOF {dof} qfrc_bias should be zero"
+                    data.qfrc_bias[dof], bias[dof],
+                    "sleeping DOF {dof} qfrc_bias should be kept"
                 );
             }
         }
@@ -3528,18 +3540,19 @@ fn test_rne_featherstone_sleeping_zero_contribution() {
         }
     }
 
-    // Step once — Featherstone runs over all bodies including sleeping.
-    // Sleeping bodies contribute zero because cvel=0 → zero bias forces.
+    // Step once — Featherstone runs over all bodies including sleeping;
+    // a sleeping DOF then keeps the qfrc_bias of its last awake pass.
+    let bias = data.qfrc_bias.clone();
     data.step(&model).expect("step");
 
-    // After Featherstone: sleeping DOFs' qfrc_bias must still be zero
+    // After Featherstone: sleeping DOFs' qfrc_bias is unchanged
     for dof in 0..model.nv {
         if dof < model.dof_treeid.len() {
             let tree = model.dof_treeid[dof];
             if tree < model.ntree && !data.tree_awake(tree) {
                 assert_eq!(
-                    data.qfrc_bias[dof], 0.0,
-                    "sleeping DOF {dof} qfrc_bias should be zero after Featherstone"
+                    data.qfrc_bias[dof], bias[dof],
+                    "sleeping DOF {dof} qfrc_bias should be kept after Featherstone"
                 );
             }
         }
@@ -3713,12 +3726,17 @@ fn test_island_delassus_equivalence() {
 
     let mut max_nisland = 0usize;
 
-    // Step 500 times — bodies fall, contact, and settle
+    // Step 500 times — bodies fall, contact, and settle. With islands
+    // disabled a tree with constraint rows cannot sleep (MuJoCo's mj_sleep),
+    // so the two runs are compared until the island run puts a tree to sleep.
     for step in 0..500 {
         data_island.step(&model_island).expect("island step");
         data_global.step(&model_global).expect("global step");
+        if data_island.tree_asleep.iter().any(|&a| a >= 0) {
+            break;
+        }
 
-        // Track maximum islands seen (islands clear when bodies sleep)
+        // Track maximum islands seen
         max_nisland = max_nisland.max(data_island.nisland);
 
         // Compare qfrc_constraint (contact + penalty forces)
@@ -5063,10 +5081,12 @@ fn test_partial_ldl_multi_tree_independence() {
 
 /// T106: Solve with zero RHS for sleeping DOFs yields zero output (AC #72).
 ///
-/// After partial factorization, sleeping DOFs have zero qvel and qacc.
-/// Uses the three-tree free-body model where applied wrenches directly produce
-/// non-zero accelerations on free-joint DOFs. Verifies that sleeping trees' qacc
-/// stays zero while awake trees get non-zero qacc from the applied torque.
+/// After partial factorization, sleeping DOFs have zero qvel and keep their
+/// last unconstrained acceleration, as in MuJoCo. Uses the three-tree
+/// free-body model where applied wrenches directly produce non-zero
+/// accelerations on free-joint DOFs. Verifies that sleeping trees' qacc is
+/// unchanged by the partial solve while awake trees get non-zero qacc from
+/// the applied torque.
 #[test]
 fn test_partial_ldl_solve_zero_sleeping_rhs() {
     let model = load_model(three_tree_crba_mjcf()).expect("load model");
@@ -5081,10 +5101,13 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
         "all trees should be sleeping"
     );
 
-    // All sleeping — qvel and qacc should be zero
+    // All sleeping — qvel is zero, qacc the last unconstrained acceleration
     for d in 0..model.nv {
         assert_eq!(data.qvel[d], 0.0, "sleeping qvel[{d}] should be zero");
-        assert_eq!(data.qacc[d], 0.0, "sleeping qacc[{d}] should be zero");
+        assert_eq!(
+            data.qacc[d], data.qacc_smooth[d],
+            "sleeping qacc[{d}] is its last unconstrained acceleration"
+        );
     }
 
     // Wake tree 0 only (free-body sphere — a torque directly produces acceleration)
@@ -5096,7 +5119,7 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
         "tree 0 should be awake after force"
     );
 
-    // Sleeping trees (1 and 2) — qacc and qvel should be zero
+    // Sleeping trees (1 and 2) — qvel zero, qacc their last unconstrained one
     for t in 1..model.ntree {
         if data.tree_asleep[t] < 0 {
             continue; // skip if this tree also woke
@@ -5105,8 +5128,8 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
         let dof_count = model.tree_dof_num[t];
         for d in dof_start..dof_start + dof_count {
             assert_eq!(
-                data.qacc[d], 0.0,
-                "sleeping tree {t} qacc[{d}] should be zero after partial solve"
+                data.qacc[d], data.qacc_smooth[d],
+                "sleeping tree {t} qacc[{d}] after the partial solve"
             );
             assert_eq!(
                 data.qvel[d], 0.0,

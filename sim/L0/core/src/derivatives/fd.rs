@@ -700,7 +700,7 @@ mod forward_skip_tests {
         data_skip
             .forward_skip(&model, MjStage::None, true)
             .expect("forward_skip failed");
-        data_skip.integrate(&model);
+        data_skip.integrate(&model).expect("integrate");
 
         for i in 0..model.nq {
             assert!(

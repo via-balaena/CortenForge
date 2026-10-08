@@ -357,17 +357,15 @@ fn cfrc_int_propagation_chain() {
     );
 }
 
-/// T2/G6: Body accumulators are still computed for sleeping bodies.
+/// T2/G6: Body accumulators with a sleeping body, as MuJoCo 3.5.0.
 ///
-/// `mj_body_accumulators()` does NOT skip sleeping bodies — gravity pseudo-
-/// acceleration and internal forces are computed regardless of sleep state.
 /// The accelerometer sensor on the awake body triggers the lazy gate
-/// (`flg_rnepost`), and the sleeping body's accumulators are also populated.
+/// (`flg_rnepost`); the world keeps its gravity pseudo-acceleration, and the
+/// sleeping ball's `cfrc_int` is 0, MuJoCo's value on this model.
 #[test]
 fn sleep_state_body_accumulators() {
     // Two bodies: "ball" will sleep, "sentinel" stays awake (high up, no contact).
-    // The accelerometer on sentinel triggers mj_body_accumulators(), which
-    // computes cacc/cfrc_int for ALL bodies including the sleeping ball.
+    // The accelerometer on sentinel triggers mj_body_accumulators().
     let xml = r#"
     <mujoco model="sleep_accum">
       <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
@@ -415,18 +413,8 @@ fn sleep_state_body_accumulators() {
         cacc_world[5]
     );
 
-    // Assertion 2: cfrc_int for the sleeping ball is nonzero (body accumulators
-    // compute for ALL bodies, not just awake ones).
-    let cfrc_int_norm: f64 = data.cfrc_int[1].iter().map(|x| x * x).sum::<f64>().sqrt();
-    assert!(
-        cfrc_int_norm > 0.1,
-        "cfrc_int[1] should be nonzero for sleeping body under gravity, got norm={cfrc_int_norm}"
-    );
-
-    // Assertion 3: cfrc_int should have a gravitational component.
-    let cfrc_int_z = data.cfrc_int[1][5]; // linear z component
-    assert!(
-        cfrc_int_z.abs() > 0.1,
-        "cfrc_int[1] z-force should be nonzero under gravity while sleeping, got {cfrc_int_z}"
-    );
+    // Assertion 2: cfrc_int for the sleeping ball is 0, as MuJoCo 3.5.0 leaves
+    // it on this model (measured on the unfused oracle: asleep after step 82,
+    // cfrc_int[1] = 0 after mj_forward and mj_rnePostConstraint).
+    assert_eq!(data.cfrc_int[1].as_slice(), &[0.0; 6]);
 }

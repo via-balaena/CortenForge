@@ -6,6 +6,8 @@
 //! 3.5.0 oracle (`scripts/gen_sleep_reference.py`, which describes its
 //! models).
 
+use std::sync::{Arc, Mutex};
+
 use serde_json::Value;
 use sim_core::{BodyWrench, ENABLE_SLEEP, Model, SleepPolicy, SleepState};
 use sim_mjcf::load_model;
@@ -297,4 +299,339 @@ fn an_actuated_tree_never_sleeps() {
 fn zero_tolerance_sleeps_at_rest() {
     let (ours, theirs) = run("tol0_zero");
     assert_eq!(ours, theirs);
+}
+
+// ── Per-step traces (sleep_traces.json) ──────────────────────────────────
+
+fn traces_golden() -> Value {
+    serde_json::from_str(include_str!("../assets/golden/sleep/sleep_traces.json"))
+        .expect("sleep traces golden parses")
+}
+
+/// What one step left, in this crate or in MuJoCo: the discrete fields at
+/// every step, `qvel`, `qacc`, `qacc_warmstart` and `sensordata` where the
+/// golden keeps them.
+#[derive(Debug, PartialEq)]
+struct Step {
+    tree_asleep: Vec<i64>,
+    ncon: usize,
+    nefc: usize,
+    nisland: usize,
+    cb: String,
+    floats: Option<[Vec<f64>; 4]>,
+}
+
+const FLOATS: [&str; 4] = ["qvel", "qacc", "qacc_warmstart", "sensordata"];
+
+fn count(v: &Value) -> usize {
+    usize::try_from(v.as_u64().expect("count")).expect("count")
+}
+
+/// Run the golden's trace `name` on this crate, logging the callbacks as the
+/// generator does (P passive, C control), and return its steps with
+/// MuJoCo's.
+fn trace(name: &str) -> (Vec<Step>, Vec<Step>) {
+    let golden = traces_golden();
+    let case = golden["traces"]
+        .as_array()
+        .expect("traces")
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no trace {name}"));
+    let mut model = model_of(case);
+    if case["sleep"] == false {
+        model.enableflags &= !ENABLE_SLEEP;
+    }
+    let log = Arc::new(Mutex::new(String::new()));
+    let (passive, control) = (Arc::clone(&log), Arc::clone(&log));
+    // The passive counter: 0.001 times the callback's call count added to one
+    // dof's passive force, as the generator's callback does.
+    let counter = case["passive_force"].as_array().map(|pf| {
+        let dof = usize::try_from(pf[0].as_u64().expect("dof")).expect("dof");
+        (dof, pf[1].as_f64().expect("scale"))
+    });
+    let calls = Arc::new(Mutex::new(0.0_f64));
+    model.set_passive_callback(move |_, data| {
+        passive.lock().expect("log").push('P');
+        if let Some((dof, scale)) = counter {
+            let mut n = calls.lock().expect("calls");
+            *n += 1.0;
+            data.qfrc_passive[dof] += scale * *n;
+        }
+    });
+    model.set_control_callback(move |_, _| control.lock().expect("log").push('C'));
+    if case["log_filter"] == true {
+        let filter = Arc::clone(&log);
+        model.set_contactfilter_callback(move |_, _, _, _| {
+            filter.lock().expect("log").push('F');
+            true
+        });
+    }
+    let mut data = model.make_data();
+    let sets = case["sets"].as_array().expect("sets");
+    let theirs: Vec<Step> = case["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .map(|s| Step {
+            tree_asleep: s["tree_asleep"]
+                .as_array()
+                .expect("tree_asleep")
+                .iter()
+                .map(|a| a.as_i64().expect("int"))
+                .collect(),
+            ncon: count(&s["ncon"]),
+            nefc: count(&s["nefc"]),
+            nisland: count(&s["nisland"]),
+            cb: s["cb"].as_str().expect("cb").to_owned(),
+            floats: s.get("qvel").map(|_| FLOATS.map(|f| floats(&s[f]))),
+        })
+        .collect();
+    let mut ours = Vec::with_capacity(theirs.len());
+    for (k, mine) in theirs.iter().enumerate() {
+        for set in sets {
+            if set[0].as_u64() == u64::try_from(k).ok() {
+                let idx = usize::try_from(set[2].as_u64().expect("index")).expect("index");
+                let value = set[3].as_f64().expect("value");
+                match set[1].as_str().expect("field") {
+                    "qvel" => data.qvel[idx] = value,
+                    "ctrl" => data.ctrl[idx] = value,
+                    other => panic!("{name}: unknown field {other}"),
+                }
+            }
+        }
+        log.lock().expect("log").clear();
+        data.step(&model).expect("step");
+        ours.push(Step {
+            tree_asleep: data.tree_asleep.iter().map(|&a| i64::from(a)).collect(),
+            ncon: data.ncon,
+            nefc: data.efc_type.len(),
+            nisland: data.nisland,
+            cb: log.lock().expect("log").clone(),
+            floats: mine.floats.as_ref().map(|_| {
+                [
+                    data.qvel.as_slice().to_vec(),
+                    data.qacc.as_slice().to_vec(),
+                    data.qacc_warmstart.as_slice().to_vec(),
+                    data.sensordata.as_slice().to_vec(),
+                ]
+            }),
+        });
+    }
+    (ours, theirs)
+}
+
+/// The first step at which `field` of trace `name` differs from MuJoCo's:
+/// `tree_asleep`, `ncon`, `nefc`, `nisland` or `cb`.
+fn assert_trace(name: &str, fields: &[&str]) {
+    let (ours, theirs) = trace(name);
+    for (k, (a, b)) in ours.iter().zip(&theirs).enumerate() {
+        for &field in fields {
+            let (x, y) = match field {
+                "tree_asleep" => (
+                    format!("{:?}", a.tree_asleep),
+                    format!("{:?}", b.tree_asleep),
+                ),
+                "ncon" => (a.ncon.to_string(), b.ncon.to_string()),
+                "nefc" => (a.nefc.to_string(), b.nefc.to_string()),
+                "nisland" => (a.nisland.to_string(), b.nisland.to_string()),
+                "cb" => (a.cb.clone(), b.cb.clone()),
+                other => panic!("unknown field {other}"),
+            };
+            assert_eq!(x, y, "{name}: {field} after step {k}: ours, MuJoCo");
+        }
+    }
+}
+
+/// The first step at which a tree is asleep in MuJoCo's trace `name`.
+fn first_sleep(name: &str) -> Option<usize> {
+    trace(name)
+        .1
+        .iter()
+        .position(|s| s.tree_asleep.iter().any(|&a| a >= 0))
+}
+
+/// Sleep is decided in the advance, from the velocities the step started
+/// with: a box resting on the plane falls asleep after step 86, as in
+/// MuJoCo (85 when it was decided after the velocity update, A8 §0).
+#[test]
+fn sleep_step_matches_mujoco() {
+    assert_eq!(first_sleep("box_rest"), Some(86));
+    assert_trace("box_rest", &["tree_asleep"]);
+}
+
+/// On the step that puts a tree to sleep, the forward pass runs again from
+/// the velocity stage: both callbacks fire twice.
+#[test]
+fn sleep_step_reforward_fires_both_callbacks() {
+    assert_eq!(trace("box_rest").1[86].cb, "PCPC");
+    assert_trace("box_rest", &["cb"]);
+}
+
+/// The re-forward computes the sensors at the zeroed velocity: the box's
+/// `framelinvel` after its sleep step is 0, as in MuJoCo.
+#[test]
+fn sleep_step_sensors_see_zero_velocity() {
+    let (ours, theirs) = trace("box_rest");
+    let sensors = |s: &Step| s.floats.as_ref().expect("kept at a sleep step")[3][..3].to_vec();
+    assert_eq!(sensors(&theirs[86]), vec![0.0; 3]);
+    assert_eq!(sensors(&ours[86]), vec![0.0; 3]);
+}
+
+/// The implicit integrators take the same sleep step.
+#[test]
+fn sleep_step_matches_mujoco_implicit() {
+    for name in ["box_rest_implicit", "box_rest_implicitfast"] {
+        assert_eq!(first_sleep(name), Some(86), "{name}");
+        assert_trace(name, &["tree_asleep", "cb"]);
+    }
+}
+
+/// Two stacked spheres, one island, sleep together after step 72.
+#[test]
+fn sleep_wakes_and_sleeps_with_contact() {
+    assert_trace("sstack", &["tree_asleep", "ncon", "nefc", "nisland"]);
+}
+
+/// A box asleep on the plane makes no contacts and no rows (MuJoCo skips a
+/// sleeping body against a static one before the narrow phase).
+#[test]
+fn asleep_on_static_makes_no_contacts() {
+    let (_, theirs) = trace("box_rest");
+    assert!(theirs[87..].iter().all(|s| s.ncon == 0 && s.nefc == 0));
+    assert_trace("box_rest", &["ncon", "nefc"]);
+}
+
+/// A box on a static body sleeps when MuJoCo's does and, asleep, makes no
+/// contacts with it.
+#[test]
+fn box_on_static_body_sleeps_as_mujoco() {
+    assert_eq!(first_sleep("table"), Some(86));
+    assert_trace("table", &["tree_asleep", "ncon", "nefc"]);
+}
+
+/// The rows of a sleeping equality, joint limit and dof friction are not
+/// made.
+#[test]
+fn sleeping_rows_dropped() {
+    assert_trace("eqpair", &["tree_asleep", "nefc"]);
+    assert_trace("limit", &["tree_asleep", "nefc"]);
+}
+
+/// With islands disabled, a tree with constraint rows cannot sleep, as in
+/// MuJoCo.
+#[test]
+fn island_disabled_blocks_sleep_with_constraints() {
+    assert_eq!(first_sleep("box_noisland"), None);
+    assert_trace("box_noisland", &["tree_asleep", "nisland"]);
+}
+
+/// Friction-loss rows join their tree to an island: the hinge on its limit
+/// with friction loss sleeps after step 219.
+#[test]
+fn friction_rows_make_islands() {
+    assert_trace("limit", &["tree_asleep", "nisland"]);
+}
+
+/// Islands are made from the constraint rows with sleep disabled too.
+#[test]
+fn islands_exist_without_sleep() {
+    assert!(trace("box_rest_nosleep").1.iter().all(|s| s.nisland == 1));
+    assert_trace("box_rest_nosleep", &["nisland"]);
+}
+
+/// A8's damped chain and its filtered actuator with an allowed policy fall
+/// asleep when MuJoCo's do (the activations advance before the sleep step).
+#[test]
+fn sleep_timing_matches_mujoco() {
+    assert_eq!(first_sleep("chain2"), Some(2792));
+    assert_eq!(first_sleep("act_sleep"), Some(636));
+    for name in ["chain2", "act_sleep"] {
+        assert_trace(name, &["tree_asleep", "cb"]);
+    }
+}
+
+/// A sleeping body meets a static one in no narrow phase and no contact
+/// filter call (MuJoCo filters the body pair first), and an explicit pair
+/// with a sleeping body and a static one collides no more.
+#[test]
+fn asleep_on_static_skips_the_contact_filter_and_explicit_pairs() {
+    assert_eq!(trace("box_rest_filter").1[87].cb, "PC");
+    assert_trace("box_rest_filter", &["tree_asleep", "ncon", "cb"]);
+    assert_trace("box_rest_pair", &["tree_asleep", "ncon", "nefc"]);
+}
+
+/// The awake trees advance with the acceleration computed before the sleep
+/// step's second forward pass: a passive force that grows with each call
+/// gives the falling sphere another acceleration in that pass, and its
+/// velocity is MuJoCo's.
+#[test]
+fn awake_trees_advance_with_the_first_pass_acceleration() {
+    assert_eq!(trace("box_rest_counter").1[86].cb, "PCPC");
+    assert_trace("box_rest_counter", &["tree_asleep", "cb"]);
+    let (ours, theirs) = trace("box_rest_counter");
+    let vz = |s: &Step| s.floats.as_ref().expect("kept at a sleep step")[0][8];
+    assert!((vz(&ours[86]) - vz(&theirs[86])).abs() <= 1e-12);
+}
+
+/// A sleeping actuated tree (policy allowed) keeps its last acceleration
+/// when its ctrl changes, and stays asleep, as in MuJoCo.
+#[test]
+fn ctrl_change_keeps_a_sleeping_tree_asleep() {
+    assert_trace("act_sleep_ctrl", &["tree_asleep"]);
+    let (ours, theirs) = trace("act_sleep_ctrl");
+    let qacc = |s: &Step| s.floats.as_ref().expect("kept")[1].clone();
+    assert_eq!(qacc(&ours[725]), qacc(&theirs[725]));
+}
+
+/// Under RK4 a tree falls asleep and wakes the next step, every ten steps,
+/// as in MuJoCo: the re-forward skips the position stage, so the stored
+/// poses are the last stage's and the next step's kinematics differ.
+#[test]
+fn rk4_sleeps_and_wakes_as_mujoco() {
+    assert_trace("box_rest_RK4", &["tree_asleep", "cb"]);
+}
+
+/// With a tolerance of 0 and a velocity of -0.0, MuJoCo's first test sees
+/// -0.0 and refuses; the step makes the velocity +0.0, so the box sleeps a
+/// step later than at +0.0.
+#[test]
+fn zero_tolerance_negative_zero_velocity_sleeps_a_step_later() {
+    let (ours, theirs) = run("tol0_negzero");
+    assert_eq!(theirs.iter().position(|&a| a), Some(10));
+    assert_eq!(ours, theirs);
+}
+
+/// Every trace, every step: the discrete fields equal MuJoCo's, and `qvel`,
+/// `qacc`, `qacc_warmstart` and `sensordata` agree to 1e-12 where the golden
+/// keeps them, except under `island="disable"`: that box never sleeps, its
+/// contacts are solved every step, and its accelerations end 3.9e-10 from
+/// MuJoCo's at step 275 (measured; what grows the gap is not isolated). Not
+/// compared: `act_sleep_ctrl`'s sensors after its ctrl change, which MuJoCo
+/// does not recompute for a sleeping actuator and this crate does (Rigid
+/// P23 ports MuJoCo's actuator and sensor sleep filters).
+#[test]
+fn traces_match_mujoco() {
+    for case in traces_golden()["traces"].as_array().expect("traces") {
+        let name = case["name"].as_str().expect("name");
+        assert_trace(name, &["tree_asleep", "ncon", "nefc", "nisland", "cb"]);
+        let tol = if name == "box_noisland" { 1e-9 } else { 1e-12 };
+        let (ours, theirs) = trace(name);
+        for (k, (a, b)) in ours.iter().zip(&theirs).enumerate() {
+            let (Some(a), Some(b)) = (&a.floats, &b.floats) else {
+                continue;
+            };
+            for (field, (x, y)) in FLOATS.iter().zip(a.iter().zip(b)) {
+                if name == "act_sleep_ctrl" && *field == "sensordata" && k >= 700 {
+                    continue;
+                }
+                for (i, (p, q)) in x.iter().zip(y).enumerate() {
+                    assert!(
+                        (p - q).abs() <= tol,
+                        "{name}: {field}[{i}] after step {k}: ours {p}, MuJoCo {q}"
+                    );
+                }
+            }
+        }
+    }
 }

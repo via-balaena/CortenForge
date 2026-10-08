@@ -271,23 +271,28 @@ fn check_sleeping_qvel_zero() -> Check {
     }
 }
 
-/// Check 3: Sleeping body has qacc == 0 bitwise.
-fn check_sleeping_qacc_zero() -> Check {
+/// Check 3: A sleeping body's qacc is its last unconstrained acceleration,
+/// `qacc_smooth`, bitwise (MuJoCo 3.5.0 computes neither for sleeping dofs).
+/// On the step it falls asleep, qacc is the constrained acceleration of that
+/// step's second forward pass, so the check takes one more step.
+fn check_sleeping_qacc_smooth() -> Check {
     let model = sim_mjcf::load_model(MJCF_SINGLE).expect("load");
     let mut data = model.make_data();
     settle_until_asleep(&model, &mut data, 5000);
+    data.step(&model).expect("step");
 
     let dof_adr = model.body_dof_adr[1];
     let nv = model.body_dof_num[1];
-    let all_zero = (0..nv).all(|i| data.qacc[dof_adr + i] == 0.0);
+    let all_smooth = (0..nv)
+        .all(|i| data.qacc[dof_adr + i].to_bits() == data.qacc_smooth[dof_adr + i].to_bits());
 
     Check {
-        name: "Sleeping qacc = 0",
-        pass: all_zero,
+        name: "Sleeping qacc = qacc_smooth",
+        pass: all_smooth,
         detail: format!(
-            "max |qacc| = {:.2e}",
+            "max |qacc - qacc_smooth| = {:.2e}",
             (0..nv)
-                .map(|i| data.qacc[dof_adr + i].abs())
+                .map(|i| (data.qacc[dof_adr + i] - data.qacc_smooth[dof_adr + i]).abs())
                 .fold(0.0_f64, f64::max)
         ),
     }
@@ -762,7 +767,7 @@ fn main() {
     let checks = vec![
         check_sleep_after_threshold(),
         check_sleeping_qvel_zero(),
-        check_sleeping_qacc_zero(),
+        check_sleeping_qacc_smooth(),
         check_sleeping_qfrc_zero(),
         check_countdown_duration(),
         check_wake_on_contact(),

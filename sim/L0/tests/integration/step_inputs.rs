@@ -8,8 +8,8 @@ use sim_core::{BodyWrench, Data, MjStage, Model, StepError};
 
 type EntryPoint = fn(&mut Data, &Model) -> Result<(), StepError>;
 
-/// The five `Result` entry points on `Data`.
-const ENTRY_POINTS: [(&str, EntryPoint); 5] = [
+/// The six `Result` entry points on `Data`.
+const ENTRY_POINTS: [(&str, EntryPoint); 6] = [
     ("step", |d, m| d.step(m)),
     ("step1", |d, m| d.step1(m)),
     ("step2", |d, m| d.step2(m)),
@@ -17,6 +17,7 @@ const ENTRY_POINTS: [(&str, EntryPoint); 5] = [
     ("forward_skip", |d, m| {
         d.forward_skip(m, MjStage::None, false)
     }),
+    ("integrate", |d, m| d.integrate(m)),
 ];
 
 fn pendulum(links: usize) -> Model {
@@ -56,6 +57,21 @@ fn step2_at_negative_timestep_does_not_run_time_backwards() {
     assert!(data.step2(&model).is_err());
     assert_eq!(data.time, 0.0);
     assert_eq!(data.qpos[0], 0.0);
+}
+
+/// `integrate` refuses before anything changes: the activations, velocities,
+/// positions and time are as they were.
+#[test]
+fn integrate_refuses_before_anything_changes() {
+    let mut model = pendulum(1);
+    model.timestep = -1e-3;
+    let mut data = model.make_data();
+    data.qvel[0] = 1.0;
+    data.forward(&model).expect_err("refused");
+    assert!(data.integrate(&model).is_err());
+    assert_eq!(data.time, 0.0);
+    assert_eq!(data.qpos[0], 0.0);
+    assert_eq!(data.qvel[0], 1.0);
 }
 
 /// A `Data` made by one model and used with another of other dimensions. Before the check,

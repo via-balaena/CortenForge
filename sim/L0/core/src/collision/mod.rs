@@ -124,6 +124,15 @@ pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize
     (c1 & a2) != 0 || (c2 & a1) != 0
 }
 
+/// Whether the sleep filter drops the pair of `geom1` and `geom2`: both
+/// bodies asleep, or one asleep and the other welded to the world.
+fn asleep_pair_skipped(model: &Model, data: &Data, geom1: usize, geom2: usize) -> bool {
+    let (b1, b2) = (model.geom_body[geom1], model.geom_body[geom2]);
+    let asleep1 = data.body_sleep_state[b1] == SleepState::Asleep;
+    let asleep2 = data.body_sleep_state[b2] == SleepState::Asleep;
+    (asleep1 && (asleep2 || model.body_weldid[b2] == 0)) || (asleep2 && model.body_weldid[b1] == 0)
+}
+
 // ============================================================================
 // Contact parameter combination
 // ============================================================================
@@ -521,24 +530,20 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 continue;
             }
 
+            // §16.5b: a sleeping body meets neither a sleeping body nor a
+            // static one (MuJoCo's `filterBodyPair`, before the narrow phase
+            // and the contact filter, engine_collision_driver.c:160-187).
+            // Sleeping-vs-awake pairs stay: they wake the sleeping tree.
+            if sleep_enabled && asleep_pair_skipped(model, data, geom1, geom2) {
+                continue;
+            }
+
             // DT-79: User contact filter callback (if set).
             // Return false to reject this pair.
             if let Some(ref cb) = model.cb_contactfilter
                 && !(cb.0)(model, data, geom1, geom2)
             {
                 continue;
-            }
-
-            // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
-            // Keep sleeping-vs-awake pairs — they may trigger wake detection (§16.4).
-            if sleep_enabled {
-                let b1 = model.geom_body[geom1];
-                let b2 = model.geom_body[geom2];
-                if data.body_sleep_state[b1] == SleepState::Asleep
-                    && data.body_sleep_state[b2] == SleepState::Asleep
-                {
-                    continue;
-                }
             }
 
             // Get world-space poses
@@ -583,15 +588,13 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             let geom1 = pair.geom1;
             let geom2 = pair.geom2;
 
-            // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
-            if sleep_enabled {
-                let b1 = model.geom_body[geom1];
-                let b2 = model.geom_body[geom2];
-                if data.body_sleep_state[b1] == SleepState::Asleep
-                    && data.body_sleep_state[b2] == SleepState::Asleep
-                {
-                    continue;
-                }
+            // §16.5b: an explicit pair collides only when one of its bodies
+            // is awake (engine_collision_driver.c:1465-1472).
+            if sleep_enabled
+                && data.body_sleep_state[model.geom_body[geom1]] != SleepState::Awake
+                && data.body_sleep_state[model.geom_body[geom2]] != SleepState::Awake
+            {
+                continue;
             }
 
             // Pair margin overrides geom margins.

@@ -161,10 +161,9 @@ impl Data {
     /// Split-step phase 2: acceleration stage + integration.
     ///
     /// Runs actuation, constraints, acc-sensors (no callback fires),
-    /// then integrates
-    /// velocities and positions with [`integrate`](Self::integrate): Euler
-    /// under Euler and RK4 (as MuJoCo's `mj_step2`), the integrator's own
-    /// velocity update otherwise; then the sleep update and warmstart save.
+    /// then advances with [`integrate`](Self::integrate): Euler under Euler
+    /// and RK4 (as MuJoCo's `mj_step2`), the integrator's own velocity update
+    /// otherwise, with the sleep step and the warmstart save inside it.
     ///
     /// Must be called after [`step1()`](Self::step1). The user may modify
     /// `ctrl`, `qfrc_applied`, `xfrc_applied`, etc. between step1 and step2
@@ -173,7 +172,8 @@ impl Data {
     /// # MuJoCo Equivalence
     ///
     /// Matches `mj_step2()` in `engine_forward.c`: actuation → acceleration
-    /// → constraints → integration → sleep → warmstart.
+    /// → constraints → the advance (history, activations, sleep, velocity,
+    /// position, time, warmstart).
     ///
     /// # Note
     ///
@@ -203,20 +203,8 @@ impl Data {
         // Validate accelerations
         check::mj_check_acc(model, self);
 
-        // The integrator's velocity update (as step() for non-RK4 integrators)
-        self.integrate(model);
-
-        // Sleep update (§16.12): Phase B island-aware sleep transition.
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-        if sleep_enabled {
-            crate::island::mj_sleep(model, self);
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
-
-        // Save qacc for next-step warmstart (§15.9).
-        self.qacc_warmstart.copy_from(&self.qacc);
-
-        Ok(())
+        // The advance (as step() for non-RK4 integrators)
+        self.integrate_unchecked(model)
     }
 
     /// Perform one simulation step.
@@ -252,7 +240,7 @@ impl Data {
                 // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
-                crate::integrate::rk4::mj_runge_kutta(model, self)?;
+                crate::integrate::rk4::mj_runge_kutta(model, self)
             }
             Integrator::Euler
             | Integrator::ImplicitSpringDamper
@@ -260,24 +248,9 @@ impl Data {
             | Integrator::Implicit => {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
-                self.integrate(model);
+                self.integrate_unchecked(model)
             }
         }
-
-        // Sleep update (§16.12): Phase B island-aware sleep transition.
-        // After integration and before warmstart save.
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-        if sleep_enabled {
-            crate::island::mj_sleep(model, self);
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
-
-        // Save qacc for next-step warmstart (§15.9).
-        // Done at the very end of step(), after integration, matching MuJoCo's
-        // mj_advance() which saves qacc_warmstart after the step completes.
-        self.qacc_warmstart.copy_from(&self.qacc);
-
-        Ok(())
     }
 
     /// Forward dynamics only (like `mj_forward`).
@@ -375,7 +348,27 @@ impl Data {
         control: bool,
     ) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
+        self.forward_skip_stages(model, skipstage, skipsensor, control)
+    }
 
+    /// [`Self::forward_skip`] without its input checks, for the sleep step
+    /// of the advance, whose caller made them.
+    pub(crate) fn forward_skip_unchecked(
+        &mut self,
+        model: &Model,
+        skipstage: MjStage,
+        skipsensor: bool,
+    ) -> Result<(), StepError> {
+        self.forward_skip_stages(model, skipstage, skipsensor, true)
+    }
+
+    fn forward_skip_stages(
+        &mut self,
+        model: &Model,
+        skipstage: MjStage,
+        skipsensor: bool,
+        control: bool,
+    ) -> Result<(), StepError> {
         let compute_sensors = !skipsensor;
 
         // MuJoCo mj_forwardSkip (engine_forward.c:1365-1411): the position
@@ -534,20 +527,12 @@ impl Data {
     ///
     /// Returns `Err(StepError)` if implicit acceleration solver fails.
     fn forward_acc(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-
         // ========== Acceleration Stage ==========
         actuation::mj_fwd_actuation(model, self);
 
         // S4.2a: Route gravcomp → qfrc_actuator for jnt_actgravcomp joints.
         // qfrc_gravcomp comes from the velocity stage's passive forces.
         actuation::mj_gravcomp_to_actuator(model, self);
-
-        // §16.11: Island discovery must run BEFORE constraint solve so that
-        // contact_island assignments are available for per-island partitioning.
-        if sleep_enabled {
-            crate::island::mj_island(model, self);
-        }
 
         // §16.16: Per-island constraint solve when islands are active;
         // falls back to global solve when DISABLE_ISLAND or no islands.

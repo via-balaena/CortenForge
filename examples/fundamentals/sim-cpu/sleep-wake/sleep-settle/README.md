@@ -56,7 +56,7 @@ Four automated checks at t=15s:
 | All awake at start | nbody_awake == 6 at t=0.1 |
 | All asleep by t=6 | nbody_awake == 1 (world only) |
 | Sleeping qvel = 0 | Bitwise zero for all sleeping DOFs |
-| Sleeping qacc = 0 | Bitwise zero for all sleeping DOFs |
+| Sleeping qacc = qacc_smooth | Each sleeping DOF keeps its last unconstrained acceleration, as MuJoCo |
 
 ## Run
 

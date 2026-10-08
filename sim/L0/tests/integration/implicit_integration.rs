@@ -1279,14 +1279,14 @@ fn implicitspringdamper_integrate_adds_h_qacc_to_the_current_qvel() {
     data.forward(&model).expect("forward");
     let qacc = data.qacc[0];
     data.qvel[0] += 1.0;
-    data.integrate(&model);
+    data.integrate(&model).expect("integrate");
     assert_eq!(data.qvel[0].to_bits(), (1.0 + qacc * 0.01).to_bits());
 
     for _ in 0..5 {
         data.step(&model).expect("step");
     }
     data.reset(&model);
-    data.integrate(&model);
+    data.integrate(&model).expect("integrate");
     assert_eq!(data.qvel[0], 0.0);
 }
 

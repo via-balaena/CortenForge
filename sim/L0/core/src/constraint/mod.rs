@@ -37,7 +37,7 @@ use crate::constraint::solver::noslip::noslip_postprocess;
 use crate::constraint::solver::pgs::pgs_solve_unified;
 
 use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
-use crate::island::populate_efc_island;
+use crate::island::mj_island;
 
 /// Island-aware constraint dispatch.
 ///
@@ -121,6 +121,18 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
     );
 
     // Store on Data for solver access
+    // A dof whose tree is asleep keeps the values of its last awake pass:
+    // MuJoCo computes them over the awake dofs only (`mj_fwdAcceleration`,
+    // engine_forward.c:574-605). Its tree has no constraint rows, so its
+    // entries reach no row.
+    if model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < nv {
+        for dof in 0..nv {
+            if !data.tree_awake[model.dof_treeid[dof]] {
+                qfrc_smooth[dof] = data.qfrc_smooth[dof];
+                qacc_smooth[dof] = data.qacc_smooth[dof];
+            }
+        }
+    }
     data.qacc_smooth = qacc_smooth.clone();
     data.qfrc_smooth = qfrc_smooth.clone();
 
@@ -390,9 +402,9 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     }
     let nefc = data.efc_type.len();
 
-    // Step 2b: Populate efc_island from constraint rows and island data.
-    // This must happen after assembly since mj_island runs before us with stale efc data.
-    populate_efc_island(model, data);
+    // Step 2b: The islands, from the rows just made (MuJoCo: `mj_island`
+    // after `mj_makeConstraint`).
+    mj_island(model, data);
 
     if nefc == 0 {
         data.qacc.copy_from(&qacc_smooth_impl);
@@ -469,21 +481,19 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         }
     }
 
-    // Step 6: Zero sleeping DOFs (§16.26.5)
-    //
-    // Sleeping trees must have zero qacc, qfrc_constraint, and qfrc_frictionloss.
-    // The solver may produce non-zero forces for constraints involving sleeping bodies
-    // (e.g., resting contact with the ground plane). We zero them here to maintain
-    // the sleeping invariant. This is simpler than filtering constraints during assembly.
+    // Step 6: Sleeping DOFs (§16.26.5). A dof whose tree is asleep takes its
+    // last unconstrained acceleration, as MuJoCo copies `qacc_smooth` into
+    // the dofs outside every island (engine_forward.c:670-676), and no
+    // constraint force. The sleep arrays decide, not `tree_asleep`, so the
+    // forward pass of a sleep step solves the trees that just slept.
     if model.enableflags & ENABLE_SLEEP != 0 {
-        for tree in 0..model.ntree {
-            if data.tree_asleep[tree] < 0 {
-                continue; // Awake
-            }
-            let dof_start = model.tree_dof_adr[tree];
-            let dof_end = dof_start + model.tree_dof_num[tree];
-            for dof in dof_start..dof_end {
-                data.qacc[dof] = 0.0;
+        for dof in 0..model.nv {
+            if model
+                .dof_treeid
+                .get(dof)
+                .is_some_and(|&t| !data.tree_awake[t])
+            {
+                data.qacc[dof] = data.qacc_smooth[dof];
                 data.qfrc_constraint[dof] = 0.0;
                 data.qfrc_frictionloss[dof] = 0.0;
             }

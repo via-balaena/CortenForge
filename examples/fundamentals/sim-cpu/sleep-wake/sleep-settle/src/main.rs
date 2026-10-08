@@ -69,7 +69,7 @@ struct SettleValidation {
     all_awake_at_start: Option<bool>,
     all_asleep_by_6: Option<bool>,
     sleeping_qvel_zero: Option<bool>,
-    sleeping_qacc_zero: Option<bool>,
+    sleeping_qacc_smooth: Option<bool>,
     reported: bool,
 }
 
@@ -202,14 +202,16 @@ fn track_validation(
                     if data.0.qvel[dof_adr + i] != 0.0 {
                         qvel_ok = false;
                     }
-                    if data.0.qacc[dof_adr + i] != 0.0 {
+                    if data.0.qacc[dof_adr + i].to_bits()
+                        != data.0.qacc_smooth[dof_adr + i].to_bits()
+                    {
                         qacc_ok = false;
                     }
                 }
             }
         }
         val.sleeping_qvel_zero = Some(qvel_ok);
-        val.sleeping_qacc_zero = Some(qacc_ok);
+        val.sleeping_qacc_smooth = Some(qacc_ok);
     }
 
     if harness.reported() && !val.reported {
@@ -231,9 +233,11 @@ fn track_validation(
                 detail: "bitwise zero for all sleeping DOFs at t=6.5".into(),
             },
             Check {
-                name: "Sleeping qacc = 0",
-                pass: val.sleeping_qacc_zero.unwrap_or(false),
-                detail: "bitwise zero for all sleeping DOFs at t=6.5".into(),
+                name: "Sleeping qacc = qacc_smooth",
+                pass: val.sleeping_qacc_smooth.unwrap_or(false),
+                detail:
+                    "the last unconstrained acceleration, as MuJoCo, for all sleeping DOFs at t=6.5"
+                        .into(),
             },
         ];
         let _ = print_report("Sleep Settle (t=15s)", &checks);

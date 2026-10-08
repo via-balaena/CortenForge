@@ -713,7 +713,7 @@ mod post_step_qvel_tests {
         cholesky_in_place(&mut m_impl).expect("M + h·D factors");
         let want = post_step_qvel(&model, &data, Some(&m_impl));
         let mut stepped = data.clone();
-        stepped.integrate(&model);
+        stepped.integrate(&model).expect("integrate");
         let err = (want - &stepped.qvel).abs().max();
         assert!(err < 1e-12, "post_step_qvel vs integrate: {err:e}");
     }

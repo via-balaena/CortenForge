@@ -2341,6 +2341,12 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
 /// constraint-force derivative. It reads the constraint rows the caller's
 /// last forward pass left in `data`, as it reads the mass matrix.
 ///
+/// With sleep enabled, a step that puts a tree to sleep runs the forward pass
+/// again inside the step (see [`Data::integrate`]): pure finite differences
+/// step, so their sensor columns read that pass's sensors; the sensor-only
+/// columns here run forward passes without stepping and do not. The two can
+/// differ on that step (by reading the code; not measured).
+///
 /// See module-level docs for the four-phase strategy.
 ///
 /// # Panics
