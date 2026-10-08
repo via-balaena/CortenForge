@@ -26,7 +26,7 @@ parameter tuning, and motor interaction.
 | 7 | Stiff solref produces higher force than soft solref | Solref stiffness scaling |
 | 8 | Wide solimp allows more penetration than narrow | Solimp width control |
 | 9 | Motor cannot push past limit | Limit vs actuator force |
-| 10 | Zero-width range holds position at zero | Locked joint (range="0 0") |
+| 10 | A limited hinge with range="0 0" is refused, as MuJoCo refuses it | Zero-width range |
 | 11 | Higher initial overshoot produces higher peak force | Force vs penetration depth |
 | 12 | Ball cone limit force is azimuthally symmetric | Cone rotational symmetry |
 

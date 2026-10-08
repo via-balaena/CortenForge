@@ -32,7 +32,7 @@ Exits with code 1 if any check fails.
 | 20 | Integrators | Euler computes without error | no panic |
 | 21 | Integrators | ImplicitSpringDamper computes without error | no panic |
 | 22 | Integrators | ImplicitFast computes without error | no panic |
-| 23 | Integrators | RK4 computes without error (pure FD fallback) | no panic |
+| 23 | Integrators | RK4 is refused (`StepError::UnsupportedIntegrator`), as MuJoCo refuses it | refused |
 | 24 | Quaternions | Ball joint A is 6x6 (tangent, not 8x8) | exact |
 | 25 | Quaternions | Free joint A is 12x12 (tangent, not 14x14) | exact |
 | 26 | Quaternions | Ball joint hybrid vs FD A agreement | < 2e-3 |

@@ -447,43 +447,185 @@ fn test_integrator_coverage_implicit() {
     assert!(derivs.is_ok(), "ImplicitSpringDamper FD should succeed");
 }
 
-#[test]
-fn test_integrator_coverage_rk4() {
-    let mut model = Model::n_link_pendulum(3, 1.0, 0.1);
-    model.integrator = Integrator::RungeKutta4;
-    let mut data = model.make_data();
-    data.qpos[0] = 0.3;
-    data.forward(&model).unwrap();
-
-    let config = DerivativeConfig::default();
-    let derivs = mjd_transition_fd(&model, &data, &config);
-    assert!(derivs.is_ok(), "RK4 FD should succeed");
+/// A pendulum with a motor under `integrator`; `extra` goes inside `<option>`'s
+/// tag and `actuator` is the motor's extra attributes.
+fn fd_pendulum(integrator: &str, extra: &str, actuator: &str) -> Model {
+    let xml = format!(
+        r#"<mujoco><option timestep="0.01" integrator="{integrator}" {extra}/>
+<worldbody><body><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor joint="j" {actuator}/></actuator></mujoco>"#
+    );
+    sim_mjcf::load_model(&xml).expect("load")
 }
 
+/// Every finite-difference entry point, through `mjd_transition` and the
+/// `Data` method too, with and without the analytic path.
+fn fd_entry_points(
+    model: &Model,
+    data: &sim_core::Data,
+) -> Vec<(String, Result<(), sim_core::StepError>)> {
+    let mut out = Vec::new();
+    for analytic in [false, true] {
+        let cfg = DerivativeConfig {
+            use_analytical: analytic,
+            ..Default::default()
+        };
+        out.push((
+            format!("mjd_transition_fd {analytic}"),
+            mjd_transition_fd(model, data, &cfg).map(|_| ()),
+        ));
+        out.push((
+            format!("mjd_transition_hybrid {analytic}"),
+            mjd_transition_hybrid(model, data, &cfg).map(|_| ()),
+        ));
+        out.push((
+            format!("mjd_transition {analytic}"),
+            sim_core::mjd_transition(model, data, &cfg).map(|_| ()),
+        ));
+        out.push((
+            format!("transition_derivatives {analytic}"),
+            data.transition_derivatives(model, &cfg).map(|_| ()),
+        ));
+        out.push((
+            format!("mjd_inverse_fd {analytic}"),
+            sim_core::mjd_inverse_fd(model, data, &cfg).map(|_| ()),
+        ));
+    }
+    out
+}
+
+/// As MuJoCo 3.5.0's `mjd_transitionFD` and `mjd_inverseFD` ("RK4 integrator
+/// is not supported"), before anything runs: no callback fires.
 #[test]
-fn test_rk4_differs_from_euler() {
-    let model_euler = Model::n_link_pendulum(3, 1.0, 0.1);
-    let mut model_rk4 = Model::n_link_pendulum(3, 1.0, 0.1);
-    model_rk4.integrator = Integrator::RungeKutta4;
+fn finite_differences_refuse_rk4() {
+    let mut model = fd_pendulum("RK4", "", "");
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = std::sync::Arc::clone(&calls);
+    model.set_passive_callback(move |_, _| {
+        c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    for (entry, result) in fd_entry_points(&model, &data) {
+        assert_eq!(
+            result,
+            Err(sim_core::StepError::UnsupportedIntegrator {
+                integrator: Integrator::RungeKutta4
+            }),
+            "{entry}"
+        );
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
 
-    let config = DerivativeConfig::default();
+/// As MuJoCo 3.5.0's `mjd_transitionFD` ("delays are not supported"); its
+/// `mjd_inverseFD` does not check history.
+#[test]
+fn finite_differences_refuse_history() {
+    let model = fd_pendulum("Euler", "", r#"nsample="2""#);
+    assert!(model.nhistory > 0);
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    for (entry, result) in fd_entry_points(&model, &data) {
+        if entry.starts_with("mjd_inverse_fd") {
+            assert!(result.is_ok(), "{entry}: {result:?}");
+        } else {
+            assert_eq!(
+                result,
+                Err(sim_core::StepError::UnsupportedHistory {
+                    nhistory: model.nhistory
+                }),
+                "{entry}"
+            );
+        }
+    }
+}
 
-    let mut data_e = model_euler.make_data();
-    data_e.qpos[0] = 0.3;
-    data_e.forward(&model_euler).unwrap();
-    let de = mjd_transition_fd(&model_euler, &data_e, &config).unwrap();
+/// As MuJoCo 3.5.0's `mjd_inverseFD` ("noslip solver is not supported");
+/// the transition derivatives take noslip.
+#[test]
+fn inverse_finite_differences_refuse_noslip() {
+    let model = fd_pendulum("Euler", r#"noslip_iterations="3""#, "");
+    assert_eq!(model.noslip_iterations, 3);
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    for (entry, result) in fd_entry_points(&model, &data) {
+        if entry.starts_with("mjd_inverse_fd") {
+            assert_eq!(
+                result,
+                Err(sim_core::StepError::UnsupportedNoslip { iterations: 3 }),
+                "{entry}"
+            );
+        } else {
+            assert!(result.is_ok(), "{entry}: {result:?}");
+        }
+    }
+}
 
-    let mut data_r = model_rk4.make_data();
-    data_r.qpos[0] = 0.3;
-    data_r.forward(&model_rk4).unwrap();
-    let dr = mjd_transition_fd(&model_rk4, &data_r, &config).unwrap();
+/// The entry points check the timestep and the `Data`'s shape first, as
+/// `step` does: a `Data` made by another model and a non-finite timestep are
+/// errors, not a panic or another error from the work done first.
+#[test]
+fn finite_differences_check_their_inputs_first() {
+    let model = fd_pendulum("implicitfast", "", "");
+    let other = Model::n_link_pendulum(3, 1.0, 0.1);
+    let mut short = other.make_data();
+    short.forward(&other).unwrap();
+    for (entry, result) in fd_entry_points(&model, &short) {
+        assert!(
+            matches!(result, Err(sim_core::StepError::DataShapeMismatch { .. })),
+            "{entry}: {result:?}"
+        );
+    }
+    let mut bad_h = fd_pendulum("implicitfast", "", "");
+    let mut data = bad_h.make_data();
+    data.forward(&bad_h).unwrap();
+    bad_h.timestep = f64::NEG_INFINITY;
+    for (entry, result) in fd_entry_points(&bad_h, &data) {
+        assert_eq!(result, Err(sim_core::StepError::InvalidTimestep), "{entry}");
+    }
+}
 
-    let diff = (&de.A - &dr.A).norm();
-    assert!(
-        diff > 1e-4,
-        "RK4 A should differ from Euler A, diff={}",
-        diff
-    );
+/// The refusals come in the documented order: the step inputs, then the
+/// integrator, then history (transition) or noslip (inverse). A model with no
+/// degrees of freedom checks its inputs too, though the inverse then returns
+/// before any pipeline call.
+#[test]
+fn finite_difference_refusals_come_in_their_documented_order() {
+    let other = Model::n_link_pendulum(3, 1.0, 0.1);
+    let mut short = other.make_data();
+    short.forward(&other).unwrap();
+    let rk4 = fd_pendulum("RK4", r#"noslip_iterations="3""#, r#"nsample="2""#);
+    assert!(rk4.nhistory > 0);
+    for (entry, result) in fd_entry_points(&rk4, &short) {
+        assert!(
+            matches!(result, Err(sim_core::StepError::DataShapeMismatch { .. })),
+            "{entry}: {result:?}"
+        );
+    }
+    let mut data = rk4.make_data();
+    data.forward(&rk4).unwrap();
+    for (entry, result) in fd_entry_points(&rk4, &data) {
+        assert_eq!(
+            result,
+            Err(sim_core::StepError::UnsupportedIntegrator {
+                integrator: Integrator::RungeKutta4
+            }),
+            "{entry}"
+        );
+    }
+    let still = sim_mjcf::load_model(
+        r#"<mujoco><worldbody><geom type="sphere" size="0.1"/></worldbody></mujoco>"#,
+    )
+    .expect("load");
+    assert_eq!(still.nv, 0);
+    for (entry, result) in fd_entry_points(&still, &short) {
+        assert!(
+            matches!(result, Err(sim_core::StepError::DataShapeMismatch { .. })),
+            "{entry}: {result:?}"
+        );
+    }
 }
 
 // ============================================================================
@@ -2147,8 +2289,7 @@ fn t3_sensor_derivative_fd_accuracy() {
         } else {
             scratch_p.act[i - 2 * nv] += eps;
         }
-        scratch_p.step(&model).unwrap();
-        // Re-evaluate sensors at post-step state to match API behavior
+        // Sensors at the perturbed current state, as MuJoCo's mjd_transitionFD.
         scratch_p.forward(&model).unwrap();
         let s_plus = scratch_p.sensordata.clone();
 
@@ -2165,7 +2306,6 @@ fn t3_sensor_derivative_fd_accuracy() {
         } else {
             scratch_m.act[i - 2 * nv] -= eps;
         }
-        scratch_m.step(&model).unwrap();
         scratch_m.forward(&model).unwrap();
         let s_minus = scratch_m.sensordata.clone();
 
@@ -2183,13 +2323,11 @@ fn t3_sensor_derivative_fd_accuracy() {
     for j in 0..nu {
         let mut scratch_p = data.clone();
         scratch_p.ctrl[j] += eps;
-        scratch_p.step(&model).unwrap();
         scratch_p.forward(&model).unwrap();
         let s_plus = scratch_p.sensordata.clone();
 
         let mut scratch_m = data.clone();
         scratch_m.ctrl[j] -= eps;
-        scratch_m.step(&model).unwrap();
         scratch_m.forward(&model).unwrap();
         let s_minus = scratch_m.sensordata.clone();
 
@@ -2474,15 +2612,9 @@ fn t10_forward_difference_sensor_derivatives() {
 
 /// T11: Structural C matrix test for jointpos sensors → AC13
 ///
-/// C captures `∂sensor(x_{t+1})/∂x_t` — the post-step observation Jacobian.
-/// Sensors are re-evaluated at the post-integration state, matching the
-/// standard state-space model: `y_{t+1} = C·x_t + D·u_t`.
-///
-/// For jointpos sensors through one step:
-/// - Position columns: C\[s, j\] ≈ 1 for own joint (close to identity, but dynamics
-///   couple through one step so not exactly 1)
-/// - Velocity columns: C\[s, nv+j\] ≈ dt (position changes with velocity over one step)
-/// - D\[s, k\] small (control affects position only indirectly through acceleration)
+/// C is `∂sensordata_t/∂x_t`, the sensors at the current state, as MuJoCo's
+/// `mjd_transitionFD`. A jointpos sensor reads its own joint's position, so its
+/// position block is the identity, its velocity block 0, and D 0.
 #[test]
 fn t11_structural_cd_to_ab_crosscheck() {
     let (model, data) = sensor_pendulum_2link();
@@ -2497,39 +2629,19 @@ fn t11_structural_cd_to_ab_crosscheck() {
     let c = derivs.C.as_ref().unwrap();
     let d = derivs.D.as_ref().unwrap();
 
-    // For jointpos sensors: C position block ≈ identity (within ~1e-4,
-    // not exact because dynamics couple through one integration step)
     for sensor_idx in 0..2 {
         for j in 0..nv {
             let expected = if sensor_idx == j { 1.0 } else { 0.0 };
             let c_val = c[(sensor_idx, j)];
-            let err = (c_val - expected).abs();
             assert!(
-                err < 1e-3,
-                "C[{sensor_idx},{j}] = {c_val:.8e}, expected ~{expected:.1}, err = {err:.2e}"
+                (c_val - expected).abs() < 1e-9,
+                "C[{sensor_idx},{j}] = {c_val:.12e}, expected {expected:.1}"
             );
+            let c_vel = c[(sensor_idx, nv + j)];
+            assert_eq!(c_vel, 0.0, "C[{sensor_idx},{}]", nv + j);
         }
-        // Velocity columns: ~dt for own joint (post-step qpos depends on qvel)
-        for j in 0..nv {
-            let c_val = c[(sensor_idx, nv + j)];
-            if sensor_idx == j {
-                assert!(
-                    c_val.abs() > 1e-6,
-                    "C[{sensor_idx},{}] = {c_val:.8e}, expected ~dt for own velocity column",
-                    nv + j
-                );
-            }
-        }
-    }
-
-    // D is small for jointpos (control affects position only through one step of acceleration)
-    for sensor_idx in 0..2 {
         for k in 0..model.nu {
-            let d_val = d[(sensor_idx, k)];
-            assert!(
-                d_val.abs() < 0.01,
-                "D[{sensor_idx},{k}] = {d_val:.8e}, expected small for jointpos sensor"
-            );
+            assert_eq!(d[(sensor_idx, k)], 0.0, "D[{sensor_idx},{k}]");
         }
     }
 }
@@ -2858,4 +2970,353 @@ fn assert_transition_matches_fd_with_quaternion_joints(integrator: Option<Integr
         "{:?}: analytic A vs FD A: max abs difference {err}",
         model.integrator
     );
+}
+
+// ============================================================================
+// Sensor derivatives at the current state (MuJoCo's mjd_transitionFD)
+// ============================================================================
+
+/// A damped hinge with a motor, a jointpos and a jointvel sensor, under
+/// `integrator` (and `option`'s extra attributes), at qpos 0.2, qvel 0.3,
+/// ctrl 0.4 after `forward`.
+fn sensed_hinge_with(integrator: &str, option: &str) -> (Model, sim_core::Data) {
+    let xml = format!(
+        r#"<mujoco><option timestep="0.01" integrator="{integrator}" {option}/>
+<worldbody><body><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor joint="j"/></actuator>
+<sensor><jointpos joint="j"/><jointvel joint="j"/></sensor></mujoco>"#
+    );
+    let model = sim_mjcf::load_model(&xml).expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.2;
+    data.qvel[0] = 0.3;
+    data.ctrl[0] = 0.4;
+    data.forward(&model).unwrap();
+    (model, data)
+}
+
+fn sensed_hinge(integrator: &str) -> (Model, sim_core::Data) {
+    sensed_hinge_with(integrator, "")
+}
+
+/// C and D are the sensors' derivatives at the current state: MuJoCo 3.5.0's
+/// `mjd_transitionFD` on this model, eps 1e-6, centered or not, with and
+/// without fluid density (measured with the unfused oracle, all three
+/// integrators), gives C = [[1.000000000001, 0], [0, 0.9999999999732445]] and
+/// D = 0. Density makes the hybrid take its finite-difference position columns.
+#[test]
+fn sensor_derivatives_at_current_state_match_mujoco_3_5_0() {
+    let mujoco_c = [[1.000000000001, 0.0], [0.0, 0.999_999_999_973_244_5]];
+    let cases = ["Euler", "implicit", "implicitfast"]
+        .into_iter()
+        .flat_map(|i| {
+            [
+                (i, true, ""),
+                (i, false, ""),
+                (i, true, r#"density="1.2""#),
+                (i, false, r#"density="1.2""#),
+            ]
+        });
+    for (integrator, centered, option) in cases {
+        let cfg = DerivativeConfig {
+            eps: 1e-6,
+            centered,
+            compute_sensor_derivatives: true,
+            ..DerivativeConfig::default()
+        };
+        let (model, data) = sensed_hinge_with(integrator, option);
+        let paths = [
+            ("fd", mjd_transition_fd(&model, &data, &cfg).unwrap()),
+            (
+                "hybrid",
+                mjd_transition_hybrid(&model, &data, &cfg).unwrap(),
+            ),
+        ];
+        for (path, derivs) in paths {
+            let (c, d) = (derivs.C.unwrap(), derivs.D.unwrap());
+            for (r, row) in mujoco_c.iter().enumerate() {
+                for (k, want) in row.iter().enumerate() {
+                    assert!(
+                        (c[(r, k)] - want).abs() < 1e-9,
+                        "{integrator} {option} {path} centered {centered}: C[{r},{k}] = {:e}, MuJoCo {want:e}",
+                        c[(r, k)]
+                    );
+                }
+            }
+            assert!(
+                d.iter().all(|&x| x == 0.0),
+                "{integrator} {option} {path} centered {centered}: D = {d}"
+            );
+        }
+    }
+}
+
+/// Asking pure finite differences for sensor derivatives evaluates no extra
+/// forward pass: the passive callback fires as often with them as without.
+/// (The hybrid computes A and B analytically where it can, so its C and D
+/// need finite-difference columns it would otherwise not run.)
+#[test]
+fn sensor_derivatives_do_not_add_callbacks() {
+    {
+        let mut counts = Vec::new();
+        for sensors in [false, true] {
+            let (mut model, data) = sensed_hinge("Euler");
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let c = std::sync::Arc::clone(&calls);
+            model.set_passive_callback(move |_, _| {
+                c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+            let cfg = DerivativeConfig {
+                compute_sensor_derivatives: sensors,
+                ..DerivativeConfig::default()
+            };
+            mjd_transition_fd(&model, &data, &cfg).unwrap();
+            counts.push(calls.load(std::sync::atomic::Ordering::Relaxed));
+        }
+        assert_eq!(counts[0], counts[1], "callbacks without and with sensors");
+    }
+}
+
+/// With an active constraint row the hybrid's analytic velocity columns are
+/// wrong (they hold no constraint-force derivative), so it returns pure finite
+/// differences; with none it stays analytic.
+#[test]
+fn hybrid_takes_finite_differences_under_an_active_constraint() {
+    let cases = [
+        (
+            "a hinge at its limit",
+            r#"<mujoco><option timestep="0.002"/><worldbody><body>
+<joint type="hinge" axis="0 1 0" damping="0.1" limited="true" range="-0.1 0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody></mujoco>"#,
+            Some(0.12),
+        ),
+        (
+            "a box resting on a plane",
+            r#"<mujoco><option timestep="0.002"/><worldbody><geom type="plane" size="5 5 0.1"/>
+<body pos="0 0 0.099"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+</worldbody></mujoco>"#,
+            None,
+        ),
+    ];
+    let cfg = DerivativeConfig::default();
+    for (name, xml, q0) in cases {
+        let model = sim_mjcf::load_model(xml).expect("load");
+        let mut data = model.make_data();
+        if let Some(q) = q0 {
+            data.qpos[0] = q;
+        }
+        data.forward(&model).unwrap();
+        assert!(!data.efc_type.is_empty(), "{name}: a constraint is active");
+        let fd = mjd_transition_fd(&model, &data, &cfg).unwrap();
+        let hybrid = mjd_transition_hybrid(&model, &data, &cfg).unwrap();
+        assert_eq!(hybrid.A, fd.A, "{name}");
+        assert_eq!(hybrid.B, fd.B, "{name}");
+    }
+    let (model, data) = sensed_hinge("Euler");
+    assert!(data.efc_type.is_empty());
+    let fd = mjd_transition_fd(&model, &data, &cfg).unwrap();
+    let hybrid = mjd_transition_hybrid(&model, &data, &cfg).unwrap();
+    assert_ne!(
+        hybrid.A, fd.A,
+        "without a constraint the hybrid is analytic"
+    );
+    assert!((&hybrid.A - &fd.A).abs().max() < 1e-9);
+}
+
+/// MuJoCo 3.5.0's `mjd_inverseFD` takes every column through `mj_inverseSkip`,
+/// which fires no control callback (`engine_inverse.c:184-245`), so the
+/// inverse reads `ctrl` as the caller left it. At a joint limit the constraint
+/// force depends on the actuator force, so a callback that wrote `ctrl` would
+/// change the derivatives.
+#[test]
+fn inverse_finite_differences_fire_no_control_callback() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for centered in [true, false] {
+        for at_limit in [false, true] {
+            let (mut model, mut data) = sensed_hinge("Euler");
+            if at_limit {
+                model.jnt_limited[0] = true;
+                model.jnt_range[0] = (-0.1, 0.1);
+                data.qpos[0] = 0.12;
+                data.forward(&model).unwrap();
+                assert!(!data.efc_type.is_empty(), "the limit is active");
+            }
+            let ctx = format!("centered {centered}, at the limit {at_limit}");
+            let cfg = DerivativeConfig {
+                centered,
+                ..DerivativeConfig::default()
+            };
+            let plain = sim_core::mjd_inverse_fd(&model, &data, &cfg).unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let c = Arc::clone(&calls);
+            model.set_control_callback(move |_, d| {
+                c.fetch_add(1, Ordering::Relaxed);
+                d.ctrl[0] = 3.0 - 50.0 * d.qpos[0] - d.qvel[0];
+            });
+            let with_callback = sim_core::mjd_inverse_fd(&model, &data, &cfg).unwrap();
+            assert_eq!(calls.load(Ordering::Relaxed), 0, "{ctx}");
+            assert_eq!(with_callback.DfDq, plain.DfDq, "{ctx}");
+            assert_eq!(with_callback.DfDv, plain.DfDv, "{ctx}");
+            assert_eq!(with_callback.DfDa, plain.DfDa, "{ctx}");
+        }
+    }
+}
+
+/// The acceleration columns are taken at the nominal state, as MuJoCo's
+/// `mjd_inverseFD` takes them, from the centre point before the velocity and
+/// position columns (`engine_derivative_fd.c:641-660`): forward and centered
+/// differences both give the mass matrix.
+#[test]
+fn inverse_acceleration_columns_are_taken_at_the_nominal_state() {
+    let (model, data) = sensed_hinge("Euler");
+    for centered in [true, false] {
+        let cfg = DerivativeConfig {
+            centered,
+            ..DerivativeConfig::default()
+        };
+        let d = sim_core::mjd_inverse_fd(&model, &data, &cfg).unwrap();
+        assert_relative_eq!(d.DfDa[(0, 0)], data.qM[(0, 0)], epsilon = 1e-6);
+    }
+}
+
+/// Without a constraint the inverse finite differences are MuJoCo 3.5.0's
+/// `mjd_inverseFD`: on this moving two-link chain, forward differences with
+/// eps 1e-6 give the oracle's values.
+#[test]
+fn inverse_finite_differences_match_mujoco_3_5_0_without_constraints() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco><option timestep="0.01"/>
+<worldbody><body><joint name="a" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/>
+<body pos="0.5 0 0"><joint type="hinge" axis="0 1 0" damping="0.2"/>
+<geom type="capsule" fromto="0 0 0 0.4 0 0" size="0.04" mass="0.5"/></body></body></worldbody>
+<actuator><motor joint="a"/></actuator></mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos.copy_from_slice(&[0.3, -0.5]);
+    data.qvel.copy_from_slice(&[0.7, -1.1]);
+    data.ctrl[0] = 0.4;
+    data.forward(&model).unwrap();
+    let cfg = DerivativeConfig {
+        centered: false,
+        ..DerivativeConfig::default()
+    };
+    let ours = sim_core::mjd_inverse_fd(&model, &data, &cfg).unwrap();
+    let mujoco = [
+        (
+            "DfDq",
+            &ours.DfDq,
+            [
+                [1.254_634_826_253_209_2, 0.560_739_485_955_252_8],
+                [-0.194_894_132_610_201_6, 0.307_832_018_431_319_9],
+            ],
+        ),
+        (
+            "DfDv",
+            &ours.DfDv,
+            [
+                [0.047_263_191_582_658_24, -0.019_176_996_879_366_47],
+                [-0.033_559_811_596_362_01, 0.199_999_999_894_728_83],
+            ],
+        ),
+        (
+            "DfDa",
+            &ours.DfDa,
+            [
+                [0.331_567_962_419_399, 0.072_681_481_277_925_29],
+                [0.072_681_481_277_925_29, 0.028_802_352_947_110_42],
+            ],
+        ),
+    ];
+    for (name, ours, theirs) in mujoco {
+        for (r, row) in theirs.iter().enumerate() {
+            for (c, &want) in row.iter().enumerate() {
+                assert!(
+                    (ours[(r, c)] - want).abs() < 1e-8,
+                    "{name}[{r}][{c}]: ours {}, MuJoCo {want}",
+                    ours[(r, c)]
+                );
+            }
+        }
+    }
+}
+
+/// Registry `D-FD-CTRL-COLUMNS`: pure finite differences take each control
+/// column through a full step, so B is the derivative of the step a passive
+/// callback that reads `ctrl` changes. MuJoCo 3.5.0's `mjd_transitionFD`
+/// skips the velocity stage there (`engine_derivative_fd.c:350`) and keeps the
+/// nominal passive force: with this callback its B is [0.0010988, 0.10988],
+/// as without it (measured). Ours equals a central difference of two steps.
+#[test]
+fn fd_control_columns_differentiate_a_ctrl_reading_passive_callback() {
+    let (mut model, data) = sensed_hinge("Euler");
+    model.set_passive_callback(|_, d| d.qfrc_passive[0] += 5.0 * d.ctrl[0]);
+    let cfg = DerivativeConfig {
+        use_analytical: false,
+        ..DerivativeConfig::default()
+    };
+    let b = mjd_transition_fd(&model, &data, &cfg).unwrap().B;
+    let next = |du: f64| {
+        let mut d = data.clone();
+        d.ctrl[0] += du;
+        d.step(&model).unwrap();
+        [d.qpos[0], d.qvel[0]]
+    };
+    let (plus, minus) = (next(cfg.eps), next(-cfg.eps));
+    for row in 0..2 {
+        let want = (plus[row] - minus[row]) / (2.0 * cfg.eps);
+        assert!(
+            (b[(row, 0)] - want).abs() < 1e-9,
+            "B {b}, row {row}: {want}"
+        );
+    }
+    assert!((b[(1, 0)] - 0.109_881_231_336_039_78).abs() > 0.1, "{b}");
+}
+
+/// Registry `D-FD-CENTERED-D-SIGN`: MuJoCo 3.5.0's centered `mjd_transitionFD`
+/// gives the control columns of D the wrong sign: `clampedDiff` takes
+/// `x_minus - x_plus` there (`engine_derivative_fd.c:79`), where every other
+/// centered column takes plus minus minus. Measured on this hinge's
+/// `actuatorfrc` sensor: D = 0.99999999997 forward, -0.99999999997 centered.
+/// Ours has the forward sign both ways, as a central difference of the sensor
+/// at the current state does.
+#[test]
+fn centered_d_has_the_forward_sign() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco><option timestep="0.01"/>
+<worldbody><body><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor name="m" joint="j"/></actuator>
+<sensor><jointpos joint="j"/><actuatorfrc actuator="m"/></sensor></mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.2;
+    data.ctrl[0] = 0.4;
+    data.forward(&model).unwrap();
+    let eps = 1e-6;
+    let sensed = |du: f64| {
+        let mut d = data.clone();
+        d.ctrl[0] += du;
+        d.forward(&model).unwrap();
+        d.sensordata[1]
+    };
+    let central = (sensed(eps) - sensed(-eps)) / (2.0 * eps);
+    for centered in [false, true] {
+        let cfg = DerivativeConfig {
+            centered,
+            eps,
+            use_analytical: false,
+            compute_sensor_derivatives: true,
+        };
+        let d = mjd_transition_fd(&model, &data, &cfg).unwrap().D.unwrap();
+        assert!(
+            (d[(1, 0)] - central).abs() < 1e-6,
+            "centered {centered}: {d}"
+        );
+        assert!(d[(1, 0)] > 0.5, "centered {centered}: {d}");
+    }
 }

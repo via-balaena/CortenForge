@@ -86,7 +86,7 @@ impl ModelBuilder {
             Some(v) => v,
             None => {
                 if self.compiler.autolimits {
-                    joint.range.is_some()
+                    super::has_range(joint.range)
                 } else {
                     false
                 }

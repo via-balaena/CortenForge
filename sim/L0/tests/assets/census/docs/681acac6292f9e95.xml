@@ -1,0 +1,6 @@
+<mujoco><option timestep="0.01"/>
+<worldbody><body><joint name="a" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/>
+<body pos="0.5 0 0"><joint type="hinge" axis="0 1 0" damping="0.2"/>
+<geom type="capsule" fromto="0 0 0 0.4 0 0" size="0.04" mass="0.5"/></body></body></worldbody>
+<actuator><motor joint="a"/></actuator></mujoco>

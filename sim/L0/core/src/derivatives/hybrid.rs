@@ -2314,7 +2314,7 @@ pub fn mass_directional_derivative(
 ///   `∂D/∂v`; a force–velocity-curve gain is v-dependent and contributes a
 ///   `∂D_actuator/∂v` that `T` misses. (Affine gain is constant in v ⇒ fine.)
 ///
-/// FD is exact in both cases. Euler / ImplicitFast / RK4 never hit these terms, so
+/// FD is exact in both cases. Euler and ImplicitFast never hit these terms, so
 /// they always return `false` here. This is the single source of truth shared by
 /// `mjd_transition`'s `can_analytical` gate and the defensive FD return below, so a
 /// direct `mjd_transition_hybrid` caller is guarded identically.
@@ -2333,7 +2333,13 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
 /// Compute hybrid analytical+FD transition derivatives.
 ///
 /// Uses analytical `qDeriv` for velocity columns of A, FD for position columns.
-/// Falls back to pure FD for RK4 or when `config.use_analytical == false`.
+/// It does not read `config.use_analytical`; [`mjd_transition`](super::mjd_transition)
+/// chooses between this and pure FD.
+///
+/// It returns pure FD instead when `data` has an active constraint row (a
+/// contact, a limit, an equality, friction loss): the analytic columns hold no
+/// constraint-force derivative. It reads the constraint rows the caller's
+/// last forward pass left in `data`, as it reads the mass matrix.
 ///
 /// See module-level docs for the four-phase strategy.
 ///
@@ -2343,30 +2349,35 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any simulation step during FD perturbation fails.
+/// The refusals [`mjd_transition_fd`](super::mjd_transition_fd) returns, checked
+/// before any work, or a `StepError` from a simulation step during FD
+/// perturbation.
 // Mathematical symbols follow MuJoCo's transition-derivatives notation; the unwrap is a defensive guard on length-known matrices.
 #[allow(non_snake_case, clippy::similar_names, clippy::unwrap_used)]
-#[allow(clippy::unreachable)] // RK4 integrator uses a separate transition path before reaching this code
+#[allow(clippy::unreachable)] // RK4 is refused at entry (check_fd_transition_inputs)
 pub fn mjd_transition_hybrid(
     model: &Model,
     data: &Data,
     config: &DerivativeConfig,
 ) -> Result<TransitionMatrices, StepError> {
+    super::check_fd_transition_inputs(model, data)?;
     assert!(
         config.eps.is_finite() && config.eps > 0.0 && config.eps <= 1e-2,
         "DerivativeConfig::eps must be in (0, 1e-2], got {}",
         config.eps
-    );
-    // MuJoCo rejects models with history (delays) for FD derivatives.
-    assert!(
-        model.nhistory == 0,
-        "FD derivatives not supported with nhistory > 0 (delays)"
     );
 
     // Defensive FD fallback for the implicit-Coriolis integrators on models whose
     // analytic path is incomplete (tendon-K/D under ISD, Muscle/HillMuscle gain under
     // Implicit). `mjd_transition` already gates these to FD; this guards a direct call.
     if implicit_analytic_incomplete(model) {
+        return mjd_transition_fd(model, data, config);
+    }
+    // The analytic velocity columns hold no derivative of a constraint force,
+    // so with an active constraint row at the nominal state (a contact, a joint
+    // or tendon limit, an equality, friction loss) they are wrong; pure FD is
+    // exact there (hybrid_takes_finite_differences_under_an_active_constraint).
+    if !data.efc_type.is_empty() {
         return mjd_transition_fd(model, data, config);
     }
 
@@ -2514,12 +2525,8 @@ pub fn mjd_transition_hybrid(
             }
             dvdv
         }
-        Integrator::RungeKutta4 => {
-            // RK4 is multi-stage; no analytic transition derivative yet. FD is exact.
-            // `mjd_transition` already gates it to FD; this guards a direct
-            // `mjd_transition_hybrid` call.
-            return mjd_transition_fd(model, data, config);
-        }
+        // Refused at entry (check_fd_transition_inputs).
+        Integrator::RungeKutta4 => unreachable!(),
         Integrator::ImplicitFast => {
             // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
             // scratch_m_impl holds Cholesky factors of (M − h·D) from forward pass
@@ -2653,7 +2660,7 @@ pub fn mjd_transition_hybrid(
                         &mut dvdact,
                     );
                 }
-                // RK4 is dispatched via a separate transition path before reaching this code.
+                // RK4 is refused at entry (check_fd_transition_inputs).
                 Integrator::RungeKutta4 => unreachable!(),
             }
 
@@ -2733,10 +2740,7 @@ pub fn mjd_transition_hybrid(
         Integrator::ImplicitFast | Integrator::Implicit => Some(scratch.qacc_implicit.clone()),
         Integrator::ImplicitSpringDamper => Some(scratch.qacc.clone()),
     };
-    // Re-evaluate sensors at post-step state (same as mjd_transition_fd).
-    if compute_sensors {
-        scratch.forward(model)?;
-    }
+    // sensordata is at the current state: step() computed it before integrating.
     let sensor_0 = if compute_sensors {
         Some(scratch.sensordata.clone())
     } else {
@@ -2835,11 +2839,11 @@ pub fn mjd_transition_hybrid(
             }
             // Full Implicit is excluded from `use_analytical_pos` (its position columns
             // need the mixed q–v Coriolis term and route through the FD branch below),
-            // so this arm is never reached. Kept explicit, like RK4.
+            // so this arm is never reached. Kept explicit, like RK4 (refused at entry).
             Integrator::Implicit => unreachable!(
                 "full Implicit uses FD position columns (excluded from use_analytical_pos)"
             ),
-            // RK4 is dispatched via a separate transition path before reaching this code.
+            // RK4 is refused at entry (check_fd_transition_inputs).
             Integrator::RungeKutta4 => unreachable!(),
         };
 
@@ -2869,8 +2873,6 @@ pub fn mjd_transition_hybrid(
                     na,
                 );
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 let s_plus = scratch.sensordata.clone();
 
                 if config.centered {
@@ -2889,8 +2891,6 @@ pub fn mjd_transition_hybrid(
                         na,
                     );
                     scratch.forward_skip(model, MjStage::None, false)?;
-                    scratch.integrate(model);
-                    scratch.forward(model)?;
                     let s_minus = scratch.sensordata.clone();
                     let scol = (&s_plus - &s_minus) / (2.0 * eps);
                     c.column_mut(i).copy_from(&scol);
@@ -2920,7 +2920,6 @@ pub fn mjd_transition_hybrid(
             scratch.step(model)?;
             let y_plus = extract_state(model, &scratch, &qpos_0);
             let s_plus = if compute_sensors {
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -2944,7 +2943,6 @@ pub fn mjd_transition_hybrid(
                 scratch.step(model)?;
                 let y_minus = extract_state(model, &scratch, &qpos_0);
                 let s_minus = if compute_sensors {
-                    scratch.forward(model)?;
                     Some(scratch.sensordata.clone())
                 } else {
                     None
@@ -2971,7 +2969,7 @@ pub fn mjd_transition_hybrid(
     // === Velocity columns: sensor-only FD ===
     // A velocity columns are analytical (no FD step). Sensor C velocity
     // columns need FD passes. Every sensor-only pass below runs every stage
-    // (MjStage::None): the scratch holds the previous column's post-step
+    // (MjStage::None): the scratch holds the previous column's perturbed
     // state, so a skipped stage would reuse that state's results.
     if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
         for i in 0..nv {
@@ -2991,8 +2989,6 @@ pub fn mjd_transition_hybrid(
                 na,
             );
             scratch.forward_skip(model, MjStage::None, false)?;
-            scratch.integrate(model);
-            scratch.forward(model)?;
             let s_plus = scratch.sensordata.clone();
 
             if config.centered {
@@ -3011,8 +3007,6 @@ pub fn mjd_transition_hybrid(
                     na,
                 );
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 let s_minus = scratch.sensordata.clone();
                 let scol = (&s_plus - &s_minus) / (2.0 * eps);
                 c.column_mut(state_col).copy_from(&scol);
@@ -3056,8 +3050,6 @@ pub fn mjd_transition_hybrid(
                     na,
                 );
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 let s_plus = scratch.sensordata.clone();
 
                 if config.centered {
@@ -3076,8 +3068,6 @@ pub fn mjd_transition_hybrid(
                         na,
                     );
                     scratch.forward_skip(model, MjStage::None, false)?;
-                    scratch.integrate(model);
-                    scratch.forward(model)?;
                     let s_minus = scratch.sensordata.clone();
                     let scol = (&s_plus - &s_minus) / (2.0 * eps);
                     c.column_mut(state_col).copy_from(&scol);
@@ -3108,7 +3098,6 @@ pub fn mjd_transition_hybrid(
         scratch.step(model)?;
         let y_plus = extract_state(model, &scratch, &qpos_0);
         let s_plus = if compute_sensors {
-            scratch.forward(model)?;
             Some(scratch.sensordata.clone())
         } else {
             None
@@ -3132,7 +3121,6 @@ pub fn mjd_transition_hybrid(
             scratch.step(model)?;
             let y_minus = extract_state(model, &scratch, &qpos_0);
             let s_minus = if compute_sensors {
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -3243,7 +3231,7 @@ pub fn mjd_transition_hybrid(
                         &mut dvdctrl,
                     );
                 }
-                // RK4 is dispatched via a separate transition path before reaching this code.
+                // RK4 is refused at entry (check_fd_transition_inputs).
                 Integrator::RungeKutta4 => unreachable!(),
             }
 
@@ -3283,8 +3271,6 @@ pub fn mjd_transition_hybrid(
                 scratch.qacc_warmstart.copy_from(&warmstart_0);
                 scratch.time = time_0;
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -3299,8 +3285,6 @@ pub fn mjd_transition_hybrid(
                 scratch.qacc_warmstart.copy_from(&warmstart_0);
                 scratch.time = time_0;
                 scratch.forward_skip(model, MjStage::None, false)?;
-                scratch.integrate(model);
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -3335,7 +3319,6 @@ pub fn mjd_transition_hybrid(
             scratch.step(model)?;
             let yp = extract_state(model, &scratch, &qpos_0);
             let sp = if compute_sensors {
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None
@@ -3356,7 +3339,6 @@ pub fn mjd_transition_hybrid(
             scratch.step(model)?;
             let ym = extract_state(model, &scratch, &qpos_0);
             let sm = if compute_sensors {
-                scratch.forward(model)?;
                 Some(scratch.sensordata.clone())
             } else {
                 None

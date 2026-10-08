@@ -1115,3 +1115,94 @@ fn name_lookup_ac10_urdf_no_keyframes() {
     assert!(model.keyframe_name_to_id.is_empty());
     assert_eq!(model.name2id(ElementType::Keyframe, "anything"), None);
 }
+
+// ============================================================================
+// reset_to_keyframe = reset, then the keyframe (MuJoCo mj_resetDataKeyframe)
+// ============================================================================
+
+/// The fields of `Data` whose `{:#?}` dumps differ.
+pub(super) fn differing_fields(got: &str, want: &str) -> Vec<String> {
+    let field = |line: &str| {
+        line.strip_prefix("    ")
+            .filter(|l| !l.starts_with(' '))
+            .and_then(|l| l.split_once(':'))
+            .map(|(name, _)| name.to_string())
+    };
+    let mut current = String::new();
+    let mut fields: Vec<String> = Vec::new();
+    for (g, w) in got.lines().zip(want.lines()) {
+        if let Some(name) = field(g) {
+            current = name;
+        }
+        if g != w && fields.last() != Some(&current) {
+            fields.push(current.clone());
+        }
+    }
+    if got.lines().count() != want.lines().count() {
+        fields.push("(the dumps differ in length)".to_string());
+    }
+    fields
+}
+
+/// `reset_to_keyframe` is `reset` followed by the keyframe's seven fields, as
+/// MuJoCo's `mj_resetDataKeyframe` is `_resetData` followed by the copy: after
+/// an auto-reset's warning and five more steps, it leaves the `Data` that
+/// `reset` and the copy leave.
+#[test]
+fn reset_to_keyframe_is_a_full_reset() {
+    let model = load_model(pendulum_with_keyframe()).unwrap();
+    let mut data = model.make_data();
+    data.qpos[0] = f64::NAN;
+    for _ in 0..6 {
+        data.step(&model).unwrap(); // the first auto-resets, with a bad-qpos warning
+    }
+    assert!(data.divergence_detected());
+
+    let kf = &model.keyframes[0];
+    let mut want = data.clone();
+    want.reset(&model);
+    want.time = kf.time;
+    want.qpos.copy_from(&kf.qpos);
+    want.qvel.copy_from(&kf.qvel);
+    want.act.copy_from(&kf.act);
+    want.ctrl.copy_from(&kf.ctrl);
+    want.mocap_pos.copy_from_slice(&kf.mpos);
+    want.mocap_quat.copy_from_slice(&kf.mquat);
+
+    data.reset_to_keyframe(&model, 0).unwrap();
+    let (got, want) = (format!("{data:#?}"), format!("{want:#?}"));
+    assert!(
+        got == want,
+        "reset_to_keyframe differs from reset and the copy in: {:?}",
+        differing_fields(&got, &want)
+    );
+    assert!(!data.divergence_detected());
+}
+
+/// The keyframe's `ctrl` is copied, as its other fields are.
+#[test]
+fn reset_to_keyframe_copies_ctrl() {
+    let mut model = load_model(pendulum_partial_keyframe()).unwrap();
+    model.keyframes[0].ctrl[0] = 0.25;
+    let mut data = model.make_data();
+    data.ctrl[0] = 0.9;
+    data.reset_to_keyframe(&model, 0).unwrap();
+    assert_eq!(data.ctrl[0], 0.25);
+}
+
+/// An index past the last keyframe is refused before anything is reset.
+#[test]
+fn reset_to_keyframe_with_a_bad_index_leaves_data_unchanged() {
+    let model = load_model(pendulum_with_keyframe()).unwrap();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.25;
+    data.step(&model).unwrap();
+    let before = format!("{data:#?}");
+    assert!(data.reset_to_keyframe(&model, 1).is_err());
+    let after = format!("{data:#?}");
+    assert!(
+        after == before,
+        "a refused reset_to_keyframe changed Data: {:?}",
+        differing_fields(&after, &before)
+    );
+}

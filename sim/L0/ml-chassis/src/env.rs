@@ -276,7 +276,8 @@ impl SimEnvBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError`] if a required field is missing or `sub_steps` is 0.
+    /// Returns [`EnvError`] if a required field is missing, `sub_steps` is 0,
+    /// or the model's `Data` cannot be made ([`EnvError::MakeData`]).
     pub fn build(self) -> Result<SimEnv, EnvError> {
         let obs_space = self.obs_space.ok_or(EnvError::MissingField {
             field: "observation_space",
@@ -297,7 +298,7 @@ impl SimEnvBuilder {
             return Err(EnvError::ZeroSubSteps);
         }
 
-        let data = self.model.make_data();
+        let data = self.model.try_make_data()?;
 
         Ok(SimEnv {
             model: self.model,
@@ -729,5 +730,31 @@ mod tests {
             .build()
             .unwrap_err();
         assert!(matches!(err, EnvError::ZeroSubSteps));
+    }
+
+    /// A model `try_make_data` refuses is an error, not a panic.
+    #[test]
+    fn build_returns_the_make_data_refusal() {
+        let mut model = sim_core::test_fixtures::pendulum_with_angle_sensor();
+        model.actuator_ctrlrange[0] = (1.0, -1.0);
+        let model = Arc::new(model);
+        let obs_space = ObservationSpace::builder()
+            .all_qpos()
+            .build(&model)
+            .unwrap();
+        let act_space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+        let err = SimEnv::builder(model)
+            .observation_space(obs_space)
+            .action_space(act_space)
+            .reward(|_m, _d| 0.0)
+            .done(|_m, _d| false)
+            .truncated(|_m, _d| false)
+            .sub_steps(1)
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            EnvError::MakeData(sim_core::MakeDataError::Range(_))
+        ));
     }
 }

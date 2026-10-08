@@ -1,0 +1,3 @@
+<mujoco><option timestep="0.002"/><worldbody><body>
+<joint type="hinge" axis="0 1 0" damping="0.1" limited="true" range="-0.1 0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody></mujoco>

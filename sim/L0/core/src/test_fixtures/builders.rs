@@ -748,6 +748,8 @@ fn add_scalar_joint_sensor(
     model.sensor_historyadr.push(0);
     model.sensor_delay.push(0.0);
     model.sensor_interval.push((0.0, 0.0));
+    model.sensor_user.push(Vec::new());
+    model.sensor_plugin.push(None);
 
     sensor_id
 }
@@ -792,13 +794,21 @@ pub(super) fn set_options(
     }
 }
 
-/// Run the standard structural pre-computation sequence. Mirrors what
-/// the existing `Model::n_link_pendulum` factory does internally
-/// (`compute_ancestors`, `compute_implicit_params`,
-/// `compute_qld_csr_metadata`). Sets `qpos0` from the accumulated
-/// `qpos_spring`-style state — for our fixtures, qpos0 starts at the
-/// joint's reference configuration (springref for hinge/slide,
+/// Derive every field the fixture's primary fields determine
+/// ([`Model::recompute_derived`]), as the factories do, after setting `qpos0`
+/// from the accumulated `qpos_spring`-style state — for our fixtures, qpos0
+/// starts at the joint's reference configuration (springref for hinge/slide,
 /// `[1,0,0,0]` for ball, `[0,0,0,1,0,0,0]` for free).
+///
+/// A fixture built with a joint layout `check_joint_layout` refuses, for the
+/// tests of that refusal, gets only `compute_ancestors`,
+/// `compute_implicit_params` and `compute_qld_csr_metadata`.
+///
+/// # Panics
+/// Panics if `recompute_derived` refuses one of the fixture's ranges.
+// The documented panic: a fixture's ranges are its author's, and a refusal is
+// a bug in the fixture.
+#[allow(clippy::panic)]
 pub fn finalize(model: &mut Model) {
     // qpos0 mirrors qpos_spring (reference/spring rest configuration).
     if model.qpos_spring.is_empty() {
@@ -806,9 +816,22 @@ pub fn finalize(model: &mut Model) {
     } else {
         model.qpos0 = DVector::from_vec(model.qpos_spring.clone());
     }
-    model.compute_ancestors();
-    model.compute_implicit_params();
-    model.compute_qld_csr_metadata();
+    // Per-element arrays the push helpers above leave short: no user data, no
+    // plugin, as the MJCF builder gives an element without them.
+    model.jnt_user.resize(model.njnt, Vec::new());
+    model.body_user.resize(model.nbody, Vec::new());
+    model.actuator_user.resize(model.nu, Vec::new());
+    model.actuator_plugin.resize(model.nu, None);
+    model.site_user.resize(model.nsite, Vec::new());
+    if model.check_joint_layout().is_ok() {
+        if let Err(e) = model.recompute_derived() {
+            panic!("finalize: {e}");
+        }
+    } else {
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+    }
     rebuild_name_indices(model);
 }
 

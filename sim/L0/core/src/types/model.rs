@@ -1012,9 +1012,9 @@ pub struct Model {
     pub contact_excludes: HashSet<(usize, usize)>,
 
     // ==================== User Callbacks (DT-79) ====================
-    /// Passive force callback: called at end of `mj_fwd_passive()`.
+    /// Passive force callback; when it runs: [`CbPassive`](super::callbacks::CbPassive).
     pub cb_passive: Option<super::callbacks::CbPassive>,
-    /// Control callback: called between velocity and acceleration stages (§53).
+    /// Control callback; when it runs: [`CbControl`](super::callbacks::CbControl).
     pub cb_control: Option<super::callbacks::CbControl>,
     /// Contact filter callback: called after affinity check in collision.
     pub cb_contactfilter: Option<super::callbacks::CbContactFilter>,

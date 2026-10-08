@@ -97,6 +97,10 @@ pub enum EnvError {
         /// Actual length of the provided `obs_scale`.
         actual: usize,
     },
+
+    /// The model's `Data` cannot be made ([`sim_core::Model::try_make_data`]).
+    #[error("the model's Data cannot be made: {0}")]
+    MakeData(#[from] sim_core::MakeDataError),
 }
 
 /// Bridge-level error from [`VecEnv::step()`](crate::VecEnv::step).

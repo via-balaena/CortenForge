@@ -59,7 +59,7 @@ impl Model {
             return;
         }
 
-        let mut data = self.make_data();
+        let mut data = self.make_data_for_derivation();
         mj_fwd_position(self, &mut data); // runs FK + mj_fwd_tendon
 
         // Compute tendon_length0 and default lengthspring for spatial tendons.

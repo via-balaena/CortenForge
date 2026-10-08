@@ -878,7 +878,11 @@ fn generate(
             };
             model.actuator_gear.push([gear, 0.0, 0.0, 0.0, 0.0, 0.0]);
         } else {
-            model.actuator_ctrlrange.push((0.0, 0.0));
+            // Unlimited, as sim-core stores it (and as the MJCF this crate
+            // writes leaves `ctrlrange` out).
+            model
+                .actuator_ctrlrange
+                .push((f64::NEG_INFINITY, f64::INFINITY));
             model.actuator_gear.push([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         }
 
@@ -1163,66 +1167,11 @@ fn compute_geom_bounding(model: &mut Model) {
     }
 }
 
-/// Discover kinematic trees (simplified — one tree per root body).
+/// The kinematic trees (sim-core's `compute_kinematic_trees`), every one
+/// `Never` asleep.
 fn discover_kinematic_trees(model: &mut Model) {
-    let mut tree_id = 0usize;
-    model.tree_body_adr.clear();
-    model.tree_body_num.clear();
-    model.tree_dof_adr.clear();
-    model.tree_dof_num.clear();
-    model.tree_sleep_policy.clear();
-
-    for body_id in 1..model.nbody {
-        if model.body_parent[body_id] == 0 {
-            // Root of a new tree
-            model.tree_body_adr.push(body_id);
-
-            // Count bodies in this tree
-            let mut count = 0;
-            let mut dof_start = usize::MAX;
-            let mut dof_count = 0;
-
-            for b in body_id..model.nbody {
-                // Check if b is in this tree (trace parent chain to body_id)
-                let mut cur = b;
-                loop {
-                    if cur == body_id {
-                        count += 1;
-                        model.body_treeid[b] = tree_id;
-                        // Track DOFs
-                        let adr = model.body_dof_adr[b];
-                        let num = model.body_dof_num[b];
-                        if num > 0 {
-                            dof_start = dof_start.min(adr);
-                            dof_count += num;
-                            for d in adr..adr + num {
-                                model.dof_treeid[d] = tree_id;
-                            }
-                        }
-                        break;
-                    }
-                    if cur == 0 || model.body_parent[cur] == cur {
-                        break;
-                    }
-                    cur = model.body_parent[cur];
-                }
-            }
-
-            model.tree_body_num.push(count);
-            model.tree_dof_adr.push(if dof_start == usize::MAX {
-                0
-            } else {
-                dof_start
-            });
-            model.tree_dof_num.push(dof_count);
-            model.tree_sleep_policy.push(sim_core::SleepPolicy::Never);
-
-            tree_id += 1;
-        }
-    }
-
-    model.ntree = tree_id;
-    model.dof_length = vec![1.0; model.nv];
+    model.compute_kinematic_trees();
+    model.tree_sleep_policy.fill(sim_core::SleepPolicy::Never);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -1487,6 +1436,78 @@ mod tests {
         assert_eq!(model.ntendon, 1, "expected 1 tendon");
         assert_eq!(model.nu, 1, "expected 1 actuator");
         assert_eq!(model.nsite, 2, "expected 2 sites (tendon waypoints)");
+    }
+
+    /// The kinematic trees are sim-core's `compute_kinematic_trees`, and every
+    /// tree is `Never` asleep; a ball joint limited from 0 makes its `Data`.
+    #[test]
+    fn kinematic_trees_come_from_sim_core_and_never_sleep() {
+        let m = Mechanism::builder("tree")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .joint(
+                JointDef::new(
+                    "j",
+                    "a",
+                    "b",
+                    JointKind::Ball,
+                    Point3::new(5.0, 0.0, 0.0),
+                    Vector3::x(),
+                )
+                .with_range(0.0, 0.5),
+            )
+            .build();
+        let model = m.to_model(2.0, 2.0).unwrap();
+        assert!(model.ntree >= 1);
+        assert_eq!(model.dof_treeid.len(), model.nv);
+        assert!(
+            model
+                .tree_sleep_policy
+                .iter()
+                .all(|&p| p == sim_core::SleepPolicy::Never)
+        );
+        assert!(model.try_make_data().is_ok());
+    }
+
+    /// An actuator with no ctrl range takes any control, as the MJCF this
+    /// crate writes for it (no `ctrlrange` attribute) does.
+    #[test]
+    fn an_actuator_with_no_ctrl_range_takes_any_ctrl() {
+        let m = Mechanism::builder("actuated")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .joint(JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .tendon(TendonDef::new(
+                "cable",
+                vec![
+                    TendonWaypoint::new("a", Point3::origin()),
+                    TendonWaypoint::new("b", Point3::new(0.0, 5.0, 0.0)),
+                ],
+                0.5,
+            ))
+            .actuator(ActuatorDef::new(
+                "motor",
+                "cable",
+                ActuatorKind::Motor,
+                (-50.0, 50.0),
+            ))
+            .build();
+        let model = m.to_model(2.0, 2.0).unwrap();
+        let mut data = model.make_data();
+        data.ctrl[0] = 7.0;
+        data.forward(&model).unwrap();
+        assert!(
+            (data.actuator_force[0] - 7.0).abs() < 1e-12,
+            "actuator force {} for ctrl 7",
+            data.actuator_force[0]
+        );
     }
 
     // ── 8. Single part mechanism ───────────────────────────────────

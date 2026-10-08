@@ -10,7 +10,6 @@
 //! - T7: Limit enforcement over time
 //! - T8: Wrapped rotation Jacobian
 //! - T9: Radian-mode range (no double-conversion)
-//! - T10: Range interpretation symmetry
 //! - T11: Multiple ball joints (counting/assembly consistency)
 //! - T12: Mixed hinge + ball limits (cross-type consistency)
 //! - T13: jnt_limit_frc propagation
@@ -21,7 +20,7 @@
 //! - T18: Multiple simultaneous violations
 //! - T19: efc_vel sign with opposing angular velocity
 //! - T20: Unnormalized quaternion in constraint assembly
-//! - T21: range="45 0" parser-level verification
+//! - T21: a limited ball range that does not start at 0 is refused
 //! - T22: Margin = 0.0 regression anchor
 
 use approx::assert_relative_eq;
@@ -476,51 +475,6 @@ fn test_ball_limit_radian_mode() {
         .filter(|t| matches!(t, sim_core::ConstraintType::LimitJoint))
         .count();
     assert_eq!(limit_rows, 1, "radian-mode ball limit should activate");
-}
-
-// ============================================================================
-// T10: Range interpretation symmetry
-// ============================================================================
-
-#[test]
-fn test_ball_limit_range_symmetry() {
-    // range="0 45" and range="45 0" should produce identical behavior
-    for range in &["0 45", "45 0"] {
-        let mjcf = format!(
-            r#"
-            <mujoco>
-                <compiler angle="degree"/>
-                <option gravity="0 0 0" timestep="0.001"/>
-                <worldbody>
-                    <body pos="0 0 0">
-                        <joint type="ball" limited="true" range="{range}"/>
-                        <geom type="sphere" size="0.1" mass="1.0"/>
-                    </body>
-                </worldbody>
-            </mujoco>
-        "#
-        );
-        let model = load_model(&mjcf).unwrap();
-        let mut data = model.make_data();
-
-        // Rotate 60° about X (past limit)
-        let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 60.0);
-        data.qpos[0] = q[0];
-        data.qpos[1] = q[1];
-        data.qpos[2] = q[2];
-        data.qpos[3] = q[3];
-
-        data.step(&model).unwrap();
-        let limit_rows = data
-            .efc_type
-            .iter()
-            .filter(|t| matches!(t, sim_core::ConstraintType::LimitJoint))
-            .count();
-        assert_eq!(
-            limit_rows, 1,
-            "range=\"{range}\" should produce 1 ball limit constraint"
-        );
-    }
 }
 
 // ============================================================================
@@ -1207,53 +1161,39 @@ fn test_ball_limit_unnormalized_quaternion() {
 }
 
 // ============================================================================
-// T21: range="45 0" parser-level verification
+// T21: a limited ball range must start at 0
 // ============================================================================
 
+/// MuJoCo refuses a limited ball joint whose range does not start at 0
+/// ("range[0] should be 0 in ball joint"), and so does `try_make_data`. The
+/// range is set in code, as `range="45 0"` stores it.
 #[test]
-fn test_ball_limit_reversed_range_parsing() {
-    let mjcf = r#"
+fn test_ball_limit_reversed_range_is_refused() {
+    let range = "0 45";
+    let mjcf = format!(
+        r#"
         <mujoco>
             <compiler angle="degree"/>
-            <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
-                <body pos="0 0 0">
-                    <joint type="ball" limited="true" range="45 0"/>
+                <body>
+                    <joint type="ball" limited="true" range="{range}"/>
                     <geom type="sphere" size="0.1" mass="1.0"/>
                 </body>
             </worldbody>
         </mujoco>
-    "#;
-    let model = load_model(mjcf).unwrap();
-
-    // Verify parser stored (45°→rad, 0°→rad) — not swapped
-    assert_relative_eq!(model.jnt_range[0].0, 45.0_f64.to_radians(), epsilon = 1e-6,);
-    assert_relative_eq!(model.jnt_range[0].1, 0.0, epsilon = 1e-10);
-
-    // Runtime: max(45°, 0°) = 45° is the effective cone half-angle
-    let mut data = model.make_data();
-    let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 60.0);
-    data.qpos[0] = q[0];
-    data.qpos[1] = q[1];
-    data.qpos[2] = q[2];
-    data.qpos[3] = q[3];
-    data.step(&model).unwrap();
-
-    let limit_rows = data
-        .efc_type
-        .iter()
-        .filter(|t| matches!(t, sim_core::ConstraintType::LimitJoint))
-        .count();
-    assert_eq!(limit_rows, 1, "reversed range should still activate limit");
-
-    // dist = max(45°, 0°) - 60° = 45° - 60° = -15° in radians
-    let limit_row = data
-        .efc_type
-        .iter()
-        .position(|t| matches!(t, sim_core::ConstraintType::LimitJoint))
-        .unwrap();
-    let expected_dist = 45.0_f64.to_radians() - 60.0_f64.to_radians();
-    assert_relative_eq!(data.efc_pos[limit_row], expected_dist, epsilon = 1e-4);
+    "#
+    );
+    let mut model = load_model(&mjcf).unwrap();
+    assert!(model.try_make_data().is_ok());
+    model.jnt_range[0] = (45.0_f64.to_radians(), 0.0);
+    let refused = model.try_make_data().err();
+    assert!(
+        matches!(
+            &refused,
+            Some(sim_core::MakeDataError::Range(e)) if e.field == "jnt_range" && e.index == 0
+        ),
+        "{refused:?}"
+    );
 }
 
 // ============================================================================

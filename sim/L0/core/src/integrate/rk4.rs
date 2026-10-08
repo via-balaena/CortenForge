@@ -14,7 +14,9 @@ use crate::types::{ActuatorDynamics, DISABLE_ACTUATION, Data, Model, StepError};
 ///
 /// # Algorithm
 /// Uses the classic RK4 Butcher tableau. Stage 0 reuses qacc from the preceding
-/// `forward()` call. Stages 1-3 each call `forward_skip_sensors()` at trial states.
+/// `forward()` call. Stages 1-3 each call `forward_skip_sensors()` at trial
+/// states, which fires `cb_passive` and `cb_control` as `forward()` does, so
+/// both callbacks fire four times per step.
 /// Position integration uses `mj_integrate_pos_explicit()` for quaternion correctness.
 ///
 /// After this function returns, derived quantities (xpos, contacts, forces, etc.)
@@ -205,6 +207,7 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     }
 
     data.time = t0 + h;
+    crate::integrate::advance_plugins(model, data);
 
     Ok(())
 }

@@ -7,7 +7,7 @@ use crate::types::{Data, Model};
 
 /// Reset simulation state to model defaults.
 ///
-/// Delegates to [`Data::reset`] — see that method for the full field inventory.
+/// Delegates to [`Data::reset`].
 pub fn mj_reset_data(model: &Model, data: &mut Data) {
     data.reset(model);
 }

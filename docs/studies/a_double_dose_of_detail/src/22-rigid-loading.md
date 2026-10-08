@@ -144,6 +144,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** mjcf-S2 (numbers, lengths, required attributes), P-L28 single-value friction, mjcf-S8 (zero quaternion, multiple orientations), P-L35 (zero-quaternion hang); 10-scope's "sim-urdf emits `<inertial>` without `pos` (28 of 37 in-tree URDFs)".
 - **Implements:** A4 §2.3 (`Attrs`; `Prefix<N>` and `TfAuto` pub types; exact lengths; trim; underflow; empty strings; entity unescape; the required attributes of §2.4 except sensor targets and user `dim`; `quat`; multiple-orientation refusal). Merging moves to `over`/`over_prefix` in the defaults file (A4 §2.3). This fixes A13 §1.1's one-value `solref` and A20's partial `polycoef` (A20 §1A.2). Non-finite tokens are L06's.
 - **Owns** (one place each, R2): `<inertial>` `pos` and `mass` required (A4 §2.4); the field types `gear: Option<Prefix<6>>`, `dynprm: Option<Prefix<10>>`, `gainprm`/`biasprm: Option<Prefix<9>>` and geom `size: Option<Prefix<3>>` (A4 §2.3, §10; the `Option` is A3 §3's). L17 and L18 use these types.
+- **sim-urdf** (ledger-L64): every revolute or prismatic `<limit>` is written `limited="true"`, a missing bound as 0 (`urdf/src/parser.rs:411-412`, `converter.rs:350-362`). MuJoCo's importer leaves a joint with one bound given, or `lower > upper`, unlimited, and otherwise leaves `limited` automatic, so `lower == upper` is unlimited too (`xml_urdf.cc:499-508`, `user_objects.cc:184-189`). Ours: a range that does not increase is refused at `make_data` since P10, and `upper="1"` alone loads limited to (0, 1) (by reading). `UrdfJointLimit` then needs to carry which bounds were given.
 - **sim-urdf:** the converter writes `<inertial pos>` only when it is non-zero (`urdf/src/converter.rs:451-454`); it now always writes it (A5 §3.5). Without that, 28 of the 37 convertible in-tree URDFs are refused (A5 §3.5) and `urdf/src/lib.rs:165` `test_two_link_arm_model_data` fails (its `base_link` inertial has no `<origin>`; R2, by reading).
 - **Must-fail:** A4 §2.5's number/length cases (`timestep="0.01s"`, `damping="abc"`, `mass="2kg"`, `mass="2,5"`, `mass=" 2 "`, `condim="3.0"`, `group="99999999999"`, `pos="0 0 0 1"`, `friction="1 2 3 4"`, `gear` ×7, `mass="1e-999"`, `name="a&amp;b"`, `friction="0.7"`, `solref="0.05"`, `fluidcoef="0.5 0.25"`); `s11_gear` (A3 §3; it passes at L17's parent once this commit's `over_prefix` lands, R2); A4 §8.4's multiple orientation; A4 §8.4's zero quaternion — run only under the 2.5 GB RSS watchdog (40-verification). A4 measured main not returning within 20 s; with L03 in, the parent may return a different `Err` instead (R2, by reading), so the test asserts MuJoCo's "zero quaternion is not allowed".
 - **Flips:** 19 five-value `friction` rewrites (class E); `inertial` without `pos` in validator `urdf-loading/stress-test/src/main.rs:120` `ARM_MJCF`; the multiple-orientation site `builder/body.rs:702`; `fluid_forces.rs:1205-1220` T39 err→ok (A4 §7, §9).
@@ -174,6 +175,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L10 · M14 part + C7 · `feat(sim-mjcf): <flex body= vertex= element=> with MuJoCo's meaning; in-tree docs declare their vertex bodies` — cross-layer (sim-core: one deletion)
 - **Split from M14** (A4 §9 commit 6 bundles six unrelated forms; each touches different elements). R4's draft.
+- **Also** (ledger-L63): in 73 flex docs the per-joint arrays `jnt_name`, `jnt_margin`, `jnt_solref`, `jnt_solimp`, `jnt_group`, `jnt_actgravcomp`, `jnt_user` are empty, and in 77 `body_gravcomp` and `body_user` are short: the flex child form's generated bodies and joints skip those pushes. Run the per-element length check of sim-core's factory test (`factory_models_size_every_per_element_array`) over the loadable census docs; 0 short is the gate.
 - **Closes:** C7 / Q81 (MuJoCo's flex meaning; A4-Q1's "same meaning" is superseded); A6 §1.10 / A20 §1B.3 C4 (`vertex=`/`element=` ignored today); U07 (an empty `element` loads a 1-vertex flex; MuJoCo refuses).
 - **Now.**
   - The parser reads `body` (`parser/deformable.rs:233-235`) and `node` (`:237-239`) as name lists and reads the `<vertex>`/`<element>` children (A4 §3). It ignores `vertex=`/`element=`; A20 measured 72 of 79 docs loading with `nflexvert = 0`.
@@ -273,7 +275,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L19 · M16 · `feat(sim-mjcf): joint layout as MuJoCo`
 - **Closes:** mjcf-H3; ball-then-slide refused (01-decisions consequences). **Implements:** A5 §3.3 (`check_joint_layout` before `build()`).
-- **Must-fail:** the 12 `Err` cases and 5 `Ok` cases of A5 §3.3 (main: 8 panic, 4 load).
+- **Must-fail:** the 12 `Err` cases and 5 `Ok` cases of A5 §3.3 (main before Rigid: 8 panic, 4 load; since P11 all 12 load, chunk 2b's review).
 - **Flips:** none (A5 §3.3). The sim-core side (C8) is Rigid-physics' (20-rigid-physics.md).
 
 ### L20 · M17 + A14 + A19 · `feat(sim-mjcf): joint axis too small is an error; ball and free axes are (0,0,1)`
@@ -286,7 +288,8 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** mjcf-H4, mjcf-S6, P-L1; U01 (a limit sensor on an unlimited joint loads; MuJoCo refuses).
 - **Implements:** A5 §3.4 with 11-settled A5-Q2 (`lo == hi` refused), A5-Q3 (MuJoCo's stored range), A5-Q6 (MuJoCo `<muscle>` gets no forced limit; Hill/Millard keep (0,1)). **U01** (parity): `jointlimitfrc` on an unlimited joint and `tendonlimitfrc` on an unlimited tendon are refused with MuJoCo's "joint must be limited in sensor" / "tendon must be limited in sensor" (`user_objects.cc:7442-7468`), checked on the `limited` this commit resolves.
 - **Must-fail:** A5 §3.4's list; `limit_sensor_on_unlimited_joint_refused` (main loads; A6 §5.1).
-- **Flips:** validator `joint-limits/stress-test/src/main.rs:175`; `builder/joint.rs:661-683`; `phase7_spec_a.rs:465`, `:496`; `builder/compiler.rs:516` (A5 §3.4); U01: `mjcf_sensors.rs:220` `test_joint_limit_frc_sensor` (its joint has no range) gets a `range`. `ball_joint_limits.rs:485` and `:1213`, which A5 §3.4 lists here, flip at P10 (20-rigid-physics.md).
+- **Flips:** `builder/joint.rs:661-683`; `phase7_spec_a.rs:465`, `:496`; `builder/compiler.rs:516` (A5 §3.4); U01: `mjcf_sensors.rs:220` `test_joint_limit_frc_sensor` (its joint has no range) gets a `range`. `ball_joint_limits.rs:485` and `:1213`, which A5 §3.4 lists here, and validator `joint-limits/stress-test` check 10 flipped at P10.
+- **Also** (ledger-L69): an automatic ball range `(0, hi)` with `hi < 0` loads limited (the helper must require `range[0] < range[1]` for a ball's automatic limit too; MuJoCo leaves it unlimited, measured); a range of `0 0` is no range since chunk 2b (`has_range`).
 - **Census:** `bc9d11e0` (free joint `limited`) flips; muscle `actlimited` is one of three causes of the muscle cluster (A20 §1A.2); A6 §5.1's one limit-sensor doc moves to both-refuse.
 
 ### L22 · M19 · `feat(sim-mjcf): sizes, masses and inertias as MuJoCo` — cross-crate (sim-urdf: one comment)
@@ -425,6 +428,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** A5-Q4 (explicit `lengthrange` honoured; 11-settled); ledger-L37 (A16 §2); A6 §5.3's NO-ROW "lengthrange did not converge" — the 4 docs are refused with MuJoCo's message (Q122).
 - **Implements:** A11 §2 LR-1 + LR-2 (`LengthRangeOpt` default `uselimit = false`; `Model::set_length_range`; MuJoCo's mode filter; raw `uselimit` copy; called after `builder.build()`). **Q129** (stated limitation): an actuator on a ball or free joint with a non-scalar gear (a nonzero `gear[1..]`) → `Unsupported`. Ours applies `gear[0]` to the first dof and has no ball/free length (`forward/actuation.rs:390-404`); MuJoCo uses the whole gear (`engine_core_smooth.c:1311-1360`; A11 §6 item 1). A ball-joint muscle with a scalar gear is still refused, by "Invalid lengthrange (0, 0)", because its length is 0 in ours (A11 §6 item 1).
 - **cf-design (Q127):** `mechanism/model_builder.rs:940` calls `compute_actuator_params`, whose lengthrange side effect goes away; it calls `set_length_range` after it (A11 §5, Q-LR6).
+- **Keep the skip:** `build()` skips the derivations on a joint layout or a range `try_make_data` refuses (P11 and chunk 2b's review), because the length-range simulation steps the model and a backwards range panicked in `f64::clamp` while loading; `set_length_range` after `build()` runs under the same check (`a_backwards_range_loads_and_make_data_refuses_it`). `Model::recompute_derived`'s doc table lists `actuator_lengthrange` under `compute_actuator_params`: move it.
 - **Must-fail:** T1–T7, T9–T12 (A11 §3); `ball_joint_nonscalar_gear_is_refused` (Q129; main loads).
 - **Flips:** `fiber.rs:569`, `:1815`, `:1421`; `builder/actuator.rs:967`; `activation_clamping.rs:213`, `:229`, `:255` (template `:65-85`); `actuator_phase5.rs:193`, `:125`, `:225`; `phase7_spec_a.rs:270` (A11 §4).
 - **Census:** ok→err 4 + 1; 9 muscle docs' trajectories now equal MuJoCo's (≤ 5.1e-14); 15 docs change `actuator_lengthrange` only (A11 §4); 4 docs `mj-refuses` → `both-refuse` (A20 §2.10).
@@ -440,14 +444,13 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Now** (lines at `main`; P11 keeps the explicit-policy step in sim-mjcf as `apply_explicit_sleep_policies` and moves the rest of `build.rs:810-956` into sim-core, A1 §7).
   - A non-root `sleep` attribute: `warn!`, then the policy is applied to the tree (`builder/build.rs:934-950`); after P20 it is skipped silently on a static body.
   - An explicit `allowed`/`init` on a tendon-coupled tree: the explicit policy wins.
-  - An explicit `auto` becomes `AutoAllowed`, so an actuated tree can sleep (`:952-956`).
+  - An explicit `auto` is a no-op since chunk 2b's review fixes (`an_explicit_auto_sleep_policy_is_the_default`, MuJoCo's values), so the must-fail `explicit_auto_on_actuated_tree_never_sleeps` below would pass at this entry's parent; before them it became `AutoAllowed`.
   - An init tree that cannot sleep is warned (`island/sleep.rs:300-304`). After P23 `try_make_data` refuses it, but `load_model` does not.
 - **Target** (MuJoCo 3.5.0), in this order:
   1. `user/user_model.cc:3036-3048`: a non-auto policy on a body that is not a movable root → "sleep policy only allowed for movable root bodies"; an explicit `auto` is skipped (`:3041`).
   2. `engine/engine_setconst.c:205-245`: for a tendon with `treenum > 2`, or `treenum == 2` and nonzero stiffness or damping, an explicit `ALLOWED`/`INIT` on any tree its wraps touch → the errors at `:234-243`. Limits do not count.
   3. `user_model.cc:5160-5179`: a final `mj_makeData` raises the init-sleep error (`engine_io.c:1473-1493`). A8 measured MuJoCo refusing both `initmix` fixtures at load.
 - **Change.**
-  - An explicit `Auto` is a no-op.
   - An explicit non-auto policy on a body with no tree, or not its tree's first body (`tree_body_adr[tree] != body_id`, P20's tables) → `MjcfError::InvalidValue { element: "body", attribute: "sleep", reason: "sleep policy only allowed for movable root bodies", at }`, replacing the `warn!`.
   - Rule 2 → `MjcfError::InvalidModel` with MuJoCo's text and our ids, at `Location::none()` (MuJoCo's is an engine error with no element). The trees come from P20's `Model::tendon_trees`.
   - At the end of `model_from_mjcf`, if `ENABLE_SLEEP` is set and any tree is `Init`: `model.try_make_data()`, mapping any `MakeDataError` → `MjcfError::InvalidModel { reason: e.to_string(), at: Location::none() }`; the `Data` is dropped.

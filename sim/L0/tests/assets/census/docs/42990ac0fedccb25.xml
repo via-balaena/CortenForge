@@ -1,0 +1,6 @@
+<mujoco><worldbody><body><joint name="a" type="hinge" axis="0 1 0" range="0 0"/>
+<geom type="sphere" size="0.1"/><body pos="1 0 0"><joint name="b" type="hinge" axis="0 1 0"/>
+<geom type="sphere" size="0.1"/></body></body></worldbody>
+<tendon><fixed range="0 0"><joint joint="a" coef="1"/><joint joint="b" coef="1"/></fixed></tendon>
+<actuator><general joint="a" dyntype="integrator" actrange="0 0"/>
+<motor joint="b" ctrlrange="0 0" forcerange="0 0"/></actuator></mujoco>

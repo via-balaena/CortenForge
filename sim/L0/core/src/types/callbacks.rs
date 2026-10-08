@@ -34,15 +34,64 @@ impl<F: ?Sized> fmt::Debug for Callback<F> {
 
 // ==================== Callback Type Aliases ====================
 
-/// Passive force callback: called at end of `mj_fwd_passive()`.
+/// Passive force callback, the counterpart of MuJoCo's `mjcb_passive`.
 ///
-/// Use to inject custom passive forces (e.g., viscous drag, spring models).
-/// The callback may modify `data.qfrc_passive` or any other Data field.
+/// Runs at the end of the passive-force computation in the velocity stage,
+/// after `qfrc_spring`, `qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid` and their
+/// sum `qfrc_passive` are written and before passive plugins. Add custom forces
+/// to `qfrc_passive`. It runs before [`CbControl`] in the same pass: actuator
+/// forces, `qfrc_bias`, constraint forces and `qacc` have not been computed for
+/// this pass yet.
+///
+/// # When it runs (as MuJoCo 3.5.0)
+///
+/// - once per [`Data::forward`], [`Data::step1`], and [`Data::forward_skip`]
+///   with [`MjStage::None`] or [`MjStage::Pos`];
+/// - once per [`Data::step`] with Euler and the implicit integrators, four
+///   times with RK4 (once per stage);
+/// - never in [`Data::step2`] or `forward_skip(MjStage::Vel, _)`;
+/// - never while both `DISABLE_SPRING` and `DISABLE_DAMPER` are set: passive
+///   forces are skipped as a whole, callback and passive plugins included
+///   (MuJoCo's `mj_passive` does the same), so a component that must always
+///   act, a thermostat, goes silent under those two flags;
+/// - also on a model with no degrees of freedom;
+/// - inside finite-difference derivatives, many times per call. Not matched:
+///   pure finite differences run it in their control and activation columns,
+///   where MuJoCo's `mjd_transitionFD` skips the velocity stage (registry
+///   `D-FD-CTRL-COLUMNS`), so B holds what it does with `ctrl`.
+///
+/// Not matched: on the step that puts a tree to sleep, MuJoCo runs the forward
+/// pass once more (both callbacks fire twice); sim-core does not.
+///
+/// [`MjStage::None`]: crate::MjStage::None
+/// [`MjStage::Pos`]: crate::MjStage::Pos
 pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 
-/// Control callback: called at start of `mj_fwd_actuation()`.
+/// Control callback, the counterpart of MuJoCo's `mjcb_control`.
 ///
-/// Use to set `data.ctrl` from a controller (e.g., RL policy output).
+/// Runs after the velocity stage (after [`CbPassive`]) and before actuation.
+/// Set `ctrl` (or `qfrc_applied` / `xfrc_applied`) here. Positions,
+/// velocities, passive forces and the bias force `qfrc_bias` are this pass's,
+/// as in MuJoCo.
+///
+/// Not matched: MuJoCo has also built this pass's constraint rows (`efc_*`)
+/// by then; sim-core builds them after the callback, so it reads the previous
+/// pass's (registry `D-CONTROL-CONSTRAINT-ROWS`).
+///
+/// # When it runs (as MuJoCo 3.5.0)
+///
+/// - once per [`Data::forward`] and per [`Data::forward_skip`] (every
+///   [`MjStage`]), unless `DISABLE_ACTUATION` is set;
+/// - in [`Data::step`]: once with Euler and the implicit integrators, four
+///   times with RK4, each RK4 stage calling it at that stage's trial state and
+///   time, so a state-dependent controller is re-evaluated (unless
+///   `DISABLE_ACTUATION` is set);
+/// - once per [`Data::step1`], even with `DISABLE_ACTUATION` set (MuJoCo's
+///   `mj_step1` does not check the flag); never in [`Data::step2`];
+/// - inside the transition finite differences; never in
+///   [`crate::mjd_inverse_fd`] (MuJoCo's `mjd_inverseFD` fires none).
+///
+/// [`MjStage`]: crate::MjStage
 pub type CbControl = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 
 /// Contact filter callback: called after affinity check in collision.

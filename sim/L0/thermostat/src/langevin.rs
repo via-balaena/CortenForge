@@ -648,8 +648,8 @@ mod tests {
         }
     }
 
-    /// sim-core's actuation stage sets a bad control to 0 before passive forces run; with
-    /// actuation disabled the thermostat gets the bad value itself, and reads it as 0.
+    /// Passive forces run before the actuation stage, so the thermostat gets a bad
+    /// control itself, with actuation on or off, and reads it as 0.
     #[test]
     fn a_bad_control_is_read_as_zero_with_actuation_on_or_off() {
         for disable_actuation in [false, true] {

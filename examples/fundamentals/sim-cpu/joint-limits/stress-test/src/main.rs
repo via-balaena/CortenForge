@@ -1,9 +1,9 @@
-//! Stress test — headless validation of all joint limit constraint invariants.
+//! Stress test — headless validation of joint limits.
 //!
 //! 12 checks covering: hinge/slide/ball limit activation, JointLimitFrc sensor
 //! readback, one-sided constraints, solref stiffness scaling, solimp width
-//! control, motor vs limit, locked joints, penetration-force relationship, and
-//! ball cone azimuthal symmetry.
+//! control, motor vs limit, a refused zero-width range, penetration-force
+//! relationship, and ball cone azimuthal symmetry.
 //!
 //! Run: `cargo run -p example-joint-limits-stress-test --release`
 
@@ -171,7 +171,7 @@ const MODEL_SOLIMP: &str = r#"
 "#;
 
 /// Model G — Zero-width range (check 10).
-/// Hinge with range="0 0" → effectively locked at 0.
+/// A limited hinge with range="0 0", which MuJoCo refuses.
 const MODEL_LOCKED: &str = r#"
 <mujoco model="locked-hinge">
   <compiler angle="degree"/>
@@ -466,31 +466,17 @@ fn check_9_motor_vs_limit() -> (u32, u32) {
     (u32::from(p), 1)
 }
 
-// ── Check 10: Zero-width range (locked joint) ─────────────────────────────
+// ── Check 10: Zero-width range is refused ─────────────────────────────────
 
-fn check_10_locked_joint() -> (u32, u32) {
-    let model = sim_mjcf::load_model(MODEL_LOCKED).expect("parse");
-    let mut data = model.make_data();
-
-    let jid = model.joint_id("locked").expect("joint");
-    let adr = model.jnt_qpos_adr[jid];
-
-    // Track max deviation from 0 over 1000 steps
-    let mut max_dev = 0.0_f64;
-    for _ in 0..1000 {
-        data.step(&model).expect("step");
-        max_dev = max_dev.max(data.qpos[adr].abs());
-    }
-
-    let tol_deg = 1.0_f64;
-    let tol_rad = tol_deg.to_radians();
+fn check_10_zero_width_range_refused() -> (u32, u32) {
+    // MuJoCo refuses a limited hinge whose range is not lower < upper
+    // ("range[0] should be smaller than range[1] in joint"); sim-core refuses
+    // it when it makes the model's Data. Refused at load counts too.
+    let refused = sim_mjcf::load_model(MODEL_LOCKED).map_or(true, |m| m.try_make_data().is_err());
     let p = check(
-        "Zero-width range holds position",
-        max_dev < tol_rad,
-        &format!(
-            "max deviation = {:.4}° (tol = {tol_deg}°)",
-            max_dev.to_degrees()
-        ),
+        "Zero-width range is refused",
+        refused,
+        r#"limited hinge with range="0 0""#,
     );
     (u32::from(p), 1)
 }
@@ -596,7 +582,10 @@ fn main() {
         ("Solref stiffness scales force", check_7_solref_stiffness),
         ("Solimp width controls penetration", check_8_solimp_width),
         ("Motor cannot push past limit", check_9_motor_vs_limit),
-        ("Zero-width range holds position", check_10_locked_joint),
+        (
+            "Zero-width range is refused",
+            check_10_zero_width_range_refused,
+        ),
         (
             "Higher penetration -> higher peak force",
             check_11_force_vs_penetration,

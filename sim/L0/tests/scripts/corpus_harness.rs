@@ -159,14 +159,16 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// The bits of the state after `STEPS` steps from qvel[i] = 0.1 (1 + i mod 3)
 /// and every ctrl at 0.25, hashed.
-fn trajectory_fingerprint(model: &sim_core::Model) -> Result<String, sim_core::StepError> {
-    let mut data = model.make_data();
+fn trajectory_fingerprint(model: &sim_core::Model) -> Result<String, String> {
+    let mut data = model
+        .try_make_data()
+        .map_err(|e| format!("make_data: {e}"))?;
     for (i, v) in data.qvel.iter_mut().enumerate() {
         *v = 0.1 * (1.0 + (i % 3) as f64);
     }
     data.ctrl.fill(0.25);
     for _ in 0..STEPS {
-        data.step(model)?;
+        data.step(model).map_err(|e| format!("{e:?}"))?;
     }
     let bits: Vec<u64> = data
         .qpos
@@ -232,10 +234,9 @@ fn fingerprint(mode: &str, path: &str) -> Value {
                     ("traj".into(), json!("panic")),
                     ("traj_err".into(), json!(panic_text(p.as_ref()))),
                 ]),
-                Ok(Err(e)) => rec.extend([
-                    ("traj".into(), json!("err")),
-                    ("traj_err".into(), json!(format!("{e:?}"))),
-                ]),
+                Ok(Err(e)) => {
+                    rec.extend([("traj".into(), json!("err")), ("traj_err".into(), json!(e))])
+                }
                 Ok(Ok(fp)) => {
                     rec.extend([("traj".into(), json!("ok")), ("traj_fp".into(), json!(fp))])
                 }

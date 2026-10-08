@@ -212,19 +212,23 @@ pub use types::{
     GeomType,
     Integrator,
     InterpolationType,
+    JointLayoutError,
     // Keyframe (extracted to types/keyframe.rs)
     Keyframe,
     // Numeric validation (§41 S8a)
     MAX_VAL,
     MIN_AWAKE,
     MIN_VAL,
+    MakeDataError,
     MjJointType,
     MjObjectType,
     MjSensorDataType,
     MjSensorType,
     Model,
+    ModelError,
     // Warning system (§41 S8b)
     NUM_WARNINGS,
+    RangeError,
     ResetError,
     // Model struct (extracted to types/model.rs)
     // Sensor callback stage

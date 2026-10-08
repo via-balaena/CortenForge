@@ -81,6 +81,12 @@ impl std::fmt::Display for ModelConversionError {
 
 impl std::error::Error for ModelConversionError {}
 
+/// Whether an MJCF range makes an automatic limit: `0 0` does not, as MuJoCo
+/// leaves it unlimited (`islimited`, `user_objects.cc:184-189`).
+fn has_range(range: Option<(f64, f64)>) -> bool {
+    range.is_some_and(|(lo, hi)| lo != 0.0 || hi != 0.0)
+}
+
 // Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
 //
 // Validates lengths, finiteness, and fills missing fields with model defaults.

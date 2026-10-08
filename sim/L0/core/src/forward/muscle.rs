@@ -138,7 +138,7 @@ fn eval_length_range(
     let mut lmax_sides = [f64::MIN; 2];
 
     for side in 0..2usize {
-        let mut data = lr_model.make_data(); // init at qpos0
+        let mut data = lr_model.make_data_for_derivation(); // init at qpos0
         let sign: f64 = if side == 0 { -1.0 } else { 1.0 };
 
         let mut updated = false;

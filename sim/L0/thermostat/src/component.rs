@@ -213,7 +213,7 @@ pub const fn check_ctrl(
 }
 
 /// A control value clamped to `[0, max]`. A bad value (`NaN`, infinite, or beyond ±1e10:
-/// [`sim_core::is_bad`]) reads as 0, the value sim-core's actuation stage sets it to.
+/// [`sim_core::is_bad`]) reads as 0.
 pub fn clamped_ctrl(value: f64, max: f64) -> f64 {
     if is_bad(value) {
         0.0

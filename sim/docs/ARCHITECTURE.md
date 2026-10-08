@@ -270,19 +270,18 @@ forward():
                mj_sleep               Sleep state machine (countdown → sleep transition)
                mj_island              Island discovery (DFS flood-fill over constraints)
   Position     mj_fwd_position       FK from qpos → body poses (skips sleeping bodies)
-               mj_fwd_position_flex  Flex vertex positions from qpos
+               mj_crba                Selective CRBA (skips sleeping subtrees)
                mj_fwd_tendon         Tendon lengths + Jacobians + wrap visualization data (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
                                      + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
                mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
                mj_actuator_length     Actuator length/velocity from transmission
+               mj_fwd_passive         Springs, dampers, flex bending + vertex damping;
+                                      cb_passive, then passive plugins, at its end
+               mj_rne                 Bias forces (Recursive Newton-Euler)
+  Control      cb_control             Unless DISABLE_ACTUATION
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
-  Dynamics     mj_crba                Selective CRBA (skips sleeping subtrees)
-               mj_crba_flex           Flex diagonal mass matrix
-               mj_factor_flex         Flex LDL factorization (diagonal)
-               mj_rne                 Bias forces (Recursive Newton-Euler) + flex gravity
-               mj_fwd_passive         Springs, dampers, friction loss, flex bending + vertex damping
   Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
                mj_fwd_constraint_islands  Per-island block-diagonal solving (when islands > 1)
   Solve        mj_fwd_acceleration    qacc = M^-1 * f; the implicit integrators also solve:
@@ -466,10 +465,9 @@ Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching
 MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries
 (discriminated by `flex_vertex: Option<usize>`).
 
-**Key pipeline functions:** `mj_collision_flex()` (brute-force vertex-vs-geom),
-`mj_crba_flex()` / `mj_factor_flex()` (diagonal mass + LDL),
-`mj_integrate_pos_flex()` (position integration),
-`mj_fwd_position_flex()` (vertex position update from qpos).
+**Key pipeline functions:** `mj_collision_flex()` (brute-force vertex-vs-geom).
+Flex vertices are bodies with slide joints, so the rigid CRBA, kinematics and
+integration handle them (`MUJOCO_GAP_ANALYSIS.md`, §27F).
 
 **Material model:** Young's modulus, Poisson's ratio, density, thickness,
 damping. Bending stiffness derived from material (Kirchhoff-Love for shells,

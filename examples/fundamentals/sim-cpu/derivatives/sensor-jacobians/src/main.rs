@@ -43,6 +43,7 @@ const MJCF: &str = r#"
   </default>
 
   <worldbody>
+    <site name="anchor" pos="0.4 0 -0.2"/>
     <body name="link" pos="0 0 0">
       <joint name="hinge" type="hinge" axis="0 1 0" damping="0.5"/>
       <inertial pos="0 0 -0.5" mass="5.0" diaginertia="0.5 0.5 0.01"/>
@@ -50,19 +51,31 @@ const MJCF: &str = r#"
             fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
       <geom name="tip" type="sphere" size="0.06"
             pos="0 0 -0.5" rgba="0.9 0.5 0.1 1"/>
+      <site name="tip_site" pos="0 0 -0.5"/>
     </body>
   </worldbody>
+
+  <tendon>
+    <spatial name="cable">
+      <site site="anchor"/>
+      <site site="tip_site"/>
+    </spatial>
+  </tendon>
 
   <actuator>
     <motor name="torque" joint="hinge" gear="1"/>
   </actuator>
 
   <sensor>
-    <jointpos name="pos" joint="hinge"/>
-    <jointvel name="vel" joint="hinge"/>
+    <tendonpos name="pos" tendon="cable"/>
+    <tendonvel name="vel" tendon="cable"/>
+    <actuatorfrc name="force" actuator="torque"/>
   </sensor>
 </mujoco>
 "#;
+
+/// The rows of C and D: the model's three scalar sensors, in order.
+const SENSOR_NAMES: [&str; 3] = ["pos", "vel", "force"];
 
 // ── Resources ─────────────────────────────────────────────────────────────
 
@@ -108,7 +121,7 @@ struct ErrorStats {
 fn main() {
     println!("=== CortenForge: Sensor Jacobians ===");
     println!("  C, D matrices — predicted vs actual sensor response");
-    println!("  1-DOF pendulum with jointpos + jointvel sensors");
+    println!("  1-DOF pendulum with a cable's length and speed, and the motor's force");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -172,17 +185,16 @@ fn setup(
     let d = derivs.D.as_ref().expect("D should be Some");
 
     println!("\n  C ({}x{}) — dsensor/dstate:", c.nrows(), c.ncols());
-    let sensor_names = ["pos", "vel"];
-    for r in 0..c.nrows() {
+    for (r, name) in SENSOR_NAMES.iter().enumerate().take(c.nrows()) {
         let vals: Vec<String> = (0..c.ncols())
             .map(|col| format!("{:>10.6}", c[(r, col)]))
             .collect();
-        println!("    {:<4} [{}]", sensor_names[r], vals.join(", "));
+        println!("    {name:<5} [{}]", vals.join(", "));
     }
 
     println!("\n  D ({}x{}) — dsensor/dctrl:", d.nrows(), d.ncols());
-    for r in 0..d.nrows() {
-        println!("    {:<4} [{:>10.6}]", sensor_names[r], d[(r, 0)]);
+    for (r, name) in SENSOR_NAMES.iter().enumerate().take(d.nrows()) {
+        println!("    {name:<5} [{:>10.6}]", d[(r, 0)]);
     }
 
     // Baseline state and sensors at linearization point
@@ -196,8 +208,8 @@ fn setup(
     // Validation checks
     let c_some = derivs.C.is_some();
     let d_some = derivs.D.is_some();
-    let c_dims_ok = c.nrows() == 2 && c.ncols() == 2;
-    let d_dims_ok = d.nrows() == 2 && d.ncols() == 1;
+    let c_dims_ok = c.nrows() == 3 && c.ncols() == 2;
+    let d_dims_ok = d.nrows() == 3 && d.ncols() == 1;
     let c_nonzero = c.iter().any(|v| v.abs() > 1e-15);
     let d_nonzero = d.iter().any(|v| v.abs() > 1e-15);
 
@@ -208,12 +220,12 @@ fn setup(
             detail: format!("C={}", if c_some { "Some" } else { "None" }),
         },
         Check {
-            name: "C is 2x2",
+            name: "C is 3x2",
             pass: c_dims_ok,
             detail: format!("{}x{} (nsensordata x 2*nv)", c.nrows(), c.ncols()),
         },
         Check {
-            name: "D is 2x1",
+            name: "D is 3x1",
             pass: d_some && d_dims_ok,
             detail: format!("{}x{} (nsensordata x nu)", d.nrows(), d.ncols()),
         },
@@ -225,7 +237,7 @@ fn setup(
         Check {
             name: "D not all zeros",
             pass: d_nonzero,
-            detail: "sensors respond to control".into(),
+            detail: "the actuator force sensor responds to control".into(),
         },
     ];
     let _ = print_report("Sensor Jacobians", &checks);
@@ -314,19 +326,17 @@ fn update_hud(
     hud.raw(String::new());
 
     // Always show C and D
-    let sensor_names = ["pos", "vel"];
-
     hud.raw(format!(
         "C ({}x{}) dsensor/dstate:",
         r.c.nrows(),
         r.c.ncols()
     ));
     hud.raw("          dq        qvel".into());
-    for row in 0..r.c.nrows() {
+    for (row, name) in SENSOR_NAMES.iter().enumerate().take(r.c.nrows()) {
         let vals: Vec<String> = (0..r.c.ncols())
             .map(|c| format!("{:>10.6}", r.c[(row, c)]))
             .collect();
-        hud.raw(format!("  {:<4} [{}]", sensor_names[row], vals.join(",")));
+        hud.raw(format!("  {name:<5} [{}]", vals.join(",")));
     }
     hud.raw(String::new());
 
@@ -335,12 +345,8 @@ fn update_hud(
         r.d.nrows(),
         r.d.ncols()
     ));
-    for row in 0..r.d.nrows() {
-        hud.raw(format!(
-            "  {:<4} [{:>10.6}]",
-            sensor_names[row],
-            r.d[(row, 0)]
-        ));
+    for (row, name) in SENSOR_NAMES.iter().enumerate().take(r.d.nrows()) {
+        hud.raw(format!("  {name:<5} [{:>10.6}]", r.d[(row, 0)]));
     }
     hud.raw(String::new());
 

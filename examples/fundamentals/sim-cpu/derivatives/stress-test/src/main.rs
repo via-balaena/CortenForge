@@ -784,7 +784,24 @@ fn check_22_implicit_fast() -> (u32, u32) {
 }
 
 fn check_23_rk4() -> (u32, u32) {
-    check_integrator("RK4", "RK4")
+    // Finite differences refuse RK4, as MuJoCo's mjd_transitionFD does.
+    let model = pendulum_with_integrator("RK4");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5;
+    data.forward(&model).expect("forward");
+    let result = mjd_transition_fd(&model, &data, &DerivativeConfig::default());
+    let refused = matches!(
+        result,
+        Err(sim_core::StepError::UnsupportedIntegrator {
+            integrator: sim_core::Integrator::RungeKutta4
+        })
+    );
+    let detail = match &result {
+        Ok(_) => "computed".to_string(),
+        Err(e) => format!("error: {e}"),
+    };
+    let p = check("RK4 refused", refused, &detail);
+    (u32::from(p), 1)
 }
 
 // ── Quaternion handling (3 checks) ────────────────────────────────────────

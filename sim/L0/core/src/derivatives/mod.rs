@@ -4,8 +4,10 @@
 //! step function `x_{t+1} = f(x_t, u_t)`. It implements a four-phase strategy:
 //!
 //! - **Phase A** (Step 2): Pure finite-difference transition derivatives via
-//!   [`mjd_transition_fd`]. Black-box perturbation through `step()` — works with
-//!   any integrator, captures contact transitions. Unblocks iLQR/DDP/MPC workflows.
+//!   [`mjd_transition_fd`]. Black-box perturbation through `step()`, captures
+//!   contact transitions. Unblocks iLQR/DDP/MPC workflows. Every entry point
+//!   refuses RK4 and, for the transition, a model with history buffers, as
+//!   MuJoCo's `mjd_transitionFD` does ([`StepError`]).
 //!
 //! - **Phase B** (Steps 3–7): Analytical smooth-force velocity derivatives via
 //!   [`mjd_smooth_vel`]. Computes `∂(qfrc_smooth)/∂qvel` analytically through
@@ -121,14 +123,15 @@ pub struct TransitionMatrices {
     /// Dimensions: `(2*nv + na) × nu`.
     pub B: DMatrix<f64>,
 
-    /// Sensor-state Jacobian `∂sensordata_{t+1}/∂x_t`.
+    /// Sensor-state Jacobian `∂sensordata_t/∂x_t`: the sensors at the current
+    /// state, as MuJoCo's `mjd_transitionFD` computes them.
     /// Dimensions: `nsensordata × (2*nv + na)`.
     /// `None` when `DerivativeConfig.compute_sensor_derivatives` is false (default).
     /// `Some(matrix)` when sensor derivatives are computed — even if
     /// `nsensordata == 0` (in which case the matrix has 0 rows).
     pub C: Option<DMatrix<f64>>,
 
-    /// Sensor-control Jacobian `∂sensordata_{t+1}/∂u_t`.
+    /// Sensor-control Jacobian `∂sensordata_t/∂u_t`, at the current state.
     /// Dimensions: `nsensordata × nu`.
     /// `None` when `DerivativeConfig.compute_sensor_derivatives` is false (default).
     /// `Some(matrix)` when sensor derivatives are computed.
@@ -164,23 +167,24 @@ pub struct DerivativeConfig {
 
     /// Use hybrid analytical+FD method (Phase D) when available.
     ///
-    /// When true and the integrator supports it (Euler or ImplicitSpringDamper),
-    /// velocity columns of A and simple actuator columns of B use analytical
-    /// derivatives from `qDeriv`. Position columns always use FD.
-    /// Falls back to pure FD for RK4 or when analytical derivatives are
-    /// unavailable.
+    /// Read by [`mjd_transition`]: when true and the model's analytic path is
+    /// complete, velocity columns of A and simple actuator columns of B use
+    /// analytical derivatives from `qDeriv` ([`mjd_transition_hybrid`], which
+    /// takes pure FD when `data` holds an active constraint row from the
+    /// caller's last forward pass); otherwise pure FD.
+    /// [`mjd_transition_hybrid`] called directly does not read it.
     ///
     /// Default: `true`.
     pub use_analytical: bool,
 
     /// When true, compute sensor derivatives (C, D matrices) alongside
-    /// state transition derivatives (A, B). Sensor outputs are captured
-    /// via finite differencing of `sensordata` during the same perturbation
-    /// loop that computes A/B.
+    /// state transition derivatives (A, B): the derivatives of `sensordata`
+    /// at the current state, read from each perturbed step's forward pass
+    /// before it integrates, in the same loop that computes A and B. The
+    /// hybrid path runs extra finite-difference passes for the columns whose A
+    /// and B it computes analytically.
     ///
-    /// When false (default), C and D remain `None` in `TransitionMatrices`
-    /// and sensor evaluation is skipped during FD perturbation steps,
-    /// reducing computation cost.
+    /// When false (default), C and D remain `None` in `TransitionMatrices`.
     ///
     /// MuJoCo equivalent: passing non-NULL `C`/`D` pointers to
     /// `mjd_transitionFD()`.
@@ -197,17 +201,59 @@ impl Default for DerivativeConfig {
         }
     }
 }
+/// What every finite-difference transition entry point checks before any
+/// work: the step inputs `step` checks (the timestep and the `Data`'s shape),
+/// then the integrator and the history buffers MuJoCo's `mjd_transitionFD`
+/// refuses, in its order.
+pub(crate) fn check_fd_transition_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
+    crate::forward::check::check_step_inputs(model, data)?;
+    check_fd_integrator(model)?;
+    if model.nhistory > 0 {
+        return Err(StepError::UnsupportedHistory {
+            nhistory: model.nhistory,
+        });
+    }
+    Ok(())
+}
+
+/// What `mjd_inverse_fd` checks before any work: the step inputs, then the
+/// integrator and the noslip solver MuJoCo's `mjd_inverseFD` refuses.
+pub(crate) fn check_fd_inverse_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
+    crate::forward::check::check_step_inputs(model, data)?;
+    check_fd_integrator(model)?;
+    if model.noslip_iterations > 0 {
+        return Err(StepError::UnsupportedNoslip {
+            iterations: model.noslip_iterations,
+        });
+    }
+    Ok(())
+}
+
+fn check_fd_integrator(model: &Model) -> Result<(), StepError> {
+    if model.integrator == Integrator::RungeKutta4 {
+        return Err(StepError::UnsupportedIntegrator {
+            integrator: model.integrator,
+        });
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Step 10 — Public API dispatch
 // ============================================================================
 
 /// Compute transition derivatives using the best available method.
 ///
-/// When `config.use_analytical == true` and the integrator has a sound analytic
-/// transition derivative (Euler, ImplicitFast, ImplicitSpringDamper, or full
-/// Implicit), uses hybrid analytical+FD (Phase D). Only RungeKutta4 falls back to
-/// pure finite difference (Phase A) — it is multi-stage and not yet differentiated
-/// analytically. FD is exact there.
+/// When `config.use_analytical == true` and the model's analytic transition
+/// derivative is complete (not with a Millard muscle, nor in the cases
+/// `hybrid::implicit_analytic_incomplete` names), uses hybrid analytical+FD
+/// (Phase D), which itself takes pure FD when `data` holds an active
+/// constraint row; otherwise pure finite differences (Phase A). Both refuse
+/// RK4, as MuJoCo's `mjd_transitionFD` does.
+///
+/// The hybrid reads the constraint rows the caller's last forward pass left in
+/// `data`: call `forward()` at the state first. A `Data` moved since, or never
+/// forwarded, holds the old rows or none.
 ///
 /// Full Implicit gets its velocity-Jacobian right by adding the second-order term
 /// `h²·M_hat⁻¹·rne_vel(qacc_implicit)` for the `v`-dependence of `M_hat = M − h·D` (see
@@ -216,7 +262,8 @@ impl Default for DerivativeConfig {
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any simulation step during derivative computation fails.
+/// The refusals `mjd_transition_fd` returns, or a `StepError` from a
+/// simulation step during the computation.
 pub fn mjd_transition(
     model: &Model,
     data: &Data,
@@ -236,15 +283,6 @@ pub fn mjd_transition(
             .iter()
             .any(|b| matches!(b, BiasType::MillardMuscle));
     let can_analytical = config.use_analytical
-        && !matches!(
-            model.integrator,
-            // RK4 is the only integrator without an analytic transition derivative:
-            // it is multi-stage and not yet differentiated analytically. FD is exact.
-            // (ImplicitSpringDamper and full Implicit have analytic paths — full
-            // Implicit adds the implicit-Coriolis second-order term; see
-            // `hybrid::mjd_transition_hybrid`.)
-            Integrator::RungeKutta4
-        )
         && !has_millard
         // ISD/Implicit analytic is incomplete for tendon-K/D (ISD) or Muscle/HillMuscle
         // gain (Implicit); such models take exact FD. See `implicit_analytic_incomplete`.
@@ -260,11 +298,14 @@ pub fn mjd_transition(
 impl Data {
     /// Compute transition derivatives at the current state.
     ///
-    /// Equivalent to `mjd_transition(model, self, config)`.
+    /// Equivalent to `mjd_transition(model, self, config)`, which reads the
+    /// constraint rows of the last `forward()`: call it at the current state
+    /// first.
     ///
     /// # Errors
     ///
-    /// Returns `StepError` if any simulation step during derivative computation fails.
+    /// The refusals [`mjd_transition_fd`] returns before any work, or a
+    /// `StepError` from a simulation step.
     pub fn transition_derivatives(
         &self,
         model: &Model,
@@ -311,10 +352,13 @@ pub fn max_relative_error(a: &DMatrix<f64>, b: &DMatrix<f64>, floor: f64) -> (f6
 ///
 /// Returns `(max_error_A, max_error_B)` — the max relative errors between
 /// pure-FD and hybrid A/B matrices. The caller checks against desired tolerance.
+/// With an active constraint row in `data` the hybrid takes pure FD, so this
+/// compares pure FD with itself and returns `(0, 0)`.
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any simulation step during derivative computation fails.
+/// The refusals [`mjd_transition_fd`] returns before any work, or a
+/// `StepError` from a simulation step.
 #[allow(non_snake_case)]
 pub fn validate_analytical_vs_fd(model: &Model, data: &Data) -> Result<(f64, f64), StepError> {
     let fd = mjd_transition(
@@ -346,7 +390,8 @@ pub fn validate_analytical_vs_fd(model: &Model, data: &Data) -> Result<(f64, f64
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any simulation step during FD computation fails.
+/// The refusals [`mjd_transition_fd`] returns before any work, or a
+/// `StepError` from a simulation step.
 pub fn fd_convergence_check(
     model: &Model,
     data: &Data,

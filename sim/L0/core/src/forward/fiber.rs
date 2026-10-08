@@ -131,7 +131,7 @@ impl Model {
         // CRBA builds M and factors it (L^T D L). For fixed tendons, J is constructed
         // from wrap_objid/wrap_prm (constant). For spatial tendons, J is read from
         // data.ten_J[tid] (populated by mj_fwd_tendon_spatial during FK).
-        let mut data = self.make_data(); // qpos = qpos0
+        let mut data = self.make_data_for_derivation(); // qpos = qpos0
         mj_fwd_position(self, &mut data); // FK: cinert from qpos0
         mj_crba(self, &mut data); // Mass matrix M + sparse factorization
 

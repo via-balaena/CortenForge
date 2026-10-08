@@ -1,0 +1,2 @@
+<mujoco><worldbody><body name="a" gravcomp="-1"><freejoint/>
+<geom type="sphere" size="0.1" mass="2"/></body></worldbody></mujoco>

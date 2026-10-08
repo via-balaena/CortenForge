@@ -17,18 +17,20 @@ Data::step():
              mj_sleep            — Sleep state machine (countdown → sleep transition)
              mj_island           — Island discovery (DFS flood-fill over constraints)
      a. mj_fwd_position    — Forward kinematics (skips sleeping bodies)
+        mj_crba             — Mass matrix (selective CRBA, skips sleeping subtrees)
         mj_fwd_tendon       — Tendon lengths + Jacobians + wrap visualization data
         mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
         mj_transmission_body_dispatch — Body transmission moment arms (§36, requires contacts)
      b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
         mj_actuator_length  — Actuator length/velocity from transmission state
+        mj_fwd_passive      — Spring and damper forces (skips sleeping DOFs);
+                              cb_passive, then passive plugins, at its end
+        mj_rne              — Bias forces (Recursive Newton-Euler)
+        cb_control          — unless DISABLE_ACTUATION
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
-     d. mj_crba            — Mass matrix (selective CRBA, skips sleeping subtrees)
-     e. mj_rne             — Bias forces (Recursive Newton-Euler)
-     f. mj_fwd_passive     — Spring, damper, friction loss forces (skips sleeping DOFs)
-     g. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
+     d. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
         mj_fwd_constraint_islands — Per-island block-diagonal solving (when islands > 1)
-     h. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one);
+     e. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one);
                               implicit and implicitfast also solve for qacc_implicit
   2a. integrate()          — Activation integration + the integrator's velocity update
                               (under RK4, only step2() calls it, for the Euler step)
@@ -860,8 +862,10 @@ Position perturbations: mj_integrate_pos_explicit() (tangent → coordinate)
 Position differences:   mj_differentiate_pos()      (coordinate → tangent)
 ```
 
-Cost: `2·(2·nv + na + nu)` step() calls (centered). Handles any integrator
-including RK4. Captures contact transitions naturally.
+Cost: `1 + 2·(2·nv + na + nu)` step() calls (centered; the 1 is the nominal
+step). Refuses RK4 and a model
+with history buffers (`StepError`), as MuJoCo's `mjd_transitionFD` does.
+Captures contact transitions naturally.
 
 ### 6.2 Analytical Velocity Derivatives: `mjd_smooth_vel()`
 
@@ -922,6 +926,8 @@ Position columns: FD (captures contact transitions, implicit spring ∂v/∂q)
 B matrix: analytical for DynType::None, FD for actuators with dynamics
 
 Cost: ~nv FD step() calls (position columns only) vs 2·(2nv+na+nu) for pure FD
+With an active constraint row in `data` (from the caller's last forward pass)
+it returns pure FD: its analytic columns hold no constraint-force derivative.
 ```
 
 ### 6.5 Public Dispatch: `mjd_transition()`

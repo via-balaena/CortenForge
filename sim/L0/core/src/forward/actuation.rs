@@ -468,8 +468,9 @@ pub fn mj_next_activation(
 /// 3. Clamps control inputs and output forces to their declared ranges.
 /// 4. Maps actuator force to joint forces via the transmission.
 ///
-/// **Note**: `cb_control` is NOT invoked here. It fires at the split boundary
-/// between velocity and acceleration stages — see `forward_core()` and `step1()`.
+/// **Note**: `cb_control` is NOT invoked here. It fires after the velocity
+/// stage and before this one — see `forward_core()`, `forward_skip()` and
+/// `step1()`.
 pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     // S4.8: Unconditional zero of per-actuator forces (matches MuJoCo).
     for i in 0..model.nu {

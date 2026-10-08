@@ -17,7 +17,6 @@ use super::enums::SolverStat;
 
 // Spatial algebra (extracted in Phase 2)
 use crate::dynamics::SpatialVector;
-use crate::island::reset_sleep_state;
 
 /// Dynamic simulation state (like mjData).
 ///
@@ -443,12 +442,19 @@ pub struct Data {
     pub energy_potential: f64,
     /// Kinetic energy.
     pub energy_kinetic: f64,
-    /// Total energy at the first `forward()` call with `ENABLE_ENERGY`.
+    /// Total energy at the first forward pass that computes energy
+    /// (`ENABLE_ENERGY`) after [`Model::make_data`] or [`Data::reset`]; `0.0`
+    /// until then.
     ///
-    /// Set once (when `energy_initial == 0.0` and total energy is computed
-    /// for the first time). Use this as the baseline for drift calculations:
-    /// `drift = data.total_energy() - data.energy_initial`.
+    /// The baseline for drift: `data.total_energy() - data.energy_initial`.
+    /// Every reset clears it, an auto-reset on a bad `qpos`, `qvel` or `qacc`
+    /// and [`Data::reset_to_keyframe`] included, so it is recorded again at the
+    /// reset state; a value written here before that pass is overwritten by
+    /// it. Not a MuJoCo field.
     pub energy_initial: f64,
+    /// Whether [`Self::energy_initial`] has been recorded since `make_data` or
+    /// the last reset.
+    pub(crate) energy_initial_captured: bool,
 
     /// §52: Forward/inverse comparison (diagnostic, matches MuJoCo `solver_fwdinv[2]`).
     ///
@@ -692,6 +698,11 @@ pub struct Data {
     pub plugin_state: Vec<f64>,
     /// Plugin-managed data (type-erased). Length: `nplugin`.
     /// Plugins can store arbitrary data here via `init()`.
+    ///
+    /// A clone of this `Data` has `None` in every entry, and so has a
+    /// finite-difference scratch copy: there is no plugin copy hook, where
+    /// MuJoCo's `mj_copyData` calls each plugin's `copy` (MuJoCo 3.5.0
+    /// `engine_io.c:1239-1246`).
     pub plugin_data: Vec<Option<Box<dyn std::any::Any + Send + Sync>>>,
 }
 
@@ -828,6 +839,7 @@ impl Clone for Data {
             energy_potential: self.energy_potential,
             energy_kinetic: self.energy_kinetic,
             energy_initial: self.energy_initial,
+            energy_initial_captured: self.energy_initial_captured,
             solver_fwdinv: self.solver_fwdinv,
             // Sleep state
             tree_asleep: self.tree_asleep.clone(),
@@ -1083,164 +1095,57 @@ impl Data {
 
     // ====================================================================
 
-    /// Reset state to model defaults.
+    /// Reset to the `Data` [`Model::make_data`] makes: every field as it
+    /// allocates it (`qpos0`, the mocap bodies' poses, the history buffers'
+    /// timestamps and so on), the trees that start asleep with their
+    /// kinematics computed and put to sleep, and each plugin's `reset`, run on
+    /// the plugin state the `Data` had. `plugin_data` is kept.
     ///
-    /// # Staleness guard
+    /// # MuJoCo equivalence
     ///
-    /// A compile-time assertion at the bottom of this file checks
-    /// `size_of::<Data>()`. If you add a field to [`Data`], the test
-    /// `data_reset_field_inventory` will fail — update `reset()`,
-    /// `reset_to_keyframe()` (if applicable), and the `EXPECTED_SIZE`
-    /// constant in the test.
+    /// `mj_resetData`: `_resetData` zeroes the whole `mjData` (MuJoCo 3.5.0
+    /// `engine_io.c:1354`), keeps the plugin state and data, and calls each
+    /// plugin's `reset` (`:1528-1541`). The `Data` is rebuilt rather than
+    /// cleared field by field, so a field added to `Data` is reset too. With a
+    /// tree that starts asleep, MuJoCo runs a full `mj_forward` at the reset;
+    /// this computes its kinematics and mass matrix only. With sleep enabled and
+    /// no such tree, MuJoCo computes the kinematics, centres of mass, cameras
+    /// and tendons (`engine_io.c:1453-1458`); this computes none of them.
     pub fn reset(&mut self, model: &Model) {
-        // 1. State variables — restore from Model.
-        self.qpos = model.qpos0.clone();
-        self.qvel.fill(0.0);
-        self.qacc.fill(0.0);
-        self.qacc_implicit.fill(0.0);
-        self.qacc_warmstart.fill(0.0);
-        self.time = 0.0;
+        let mut fresh = model.allocate_data();
+        std::mem::swap(&mut fresh.plugin_state, &mut self.plugin_state);
+        std::mem::swap(&mut fresh.plugin_data, &mut self.plugin_data);
+        *self = fresh;
+        model.start_sleep(self);
+        self.reset_plugins(model);
+    }
 
-        // 2. Control / actuation — zero.
-        self.ctrl.fill(0.0);
-        self.act.fill(0.0);
-        self.act_dot.fill(0.0);
-        self.qfrc_actuator.fill(0.0);
-        self.actuator_force.fill(0.0);
-        self.actuator_velocity.fill(0.0);
-        self.actuator_length.fill(0.0);
-        for m in &mut self.actuator_moment {
-            m.fill(0.0);
-        }
-
-        // 2b. Restore history buffer to pre-populated initial state (matching mj_resetData)
-        #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
-        {
-            self.history.fill(0.0);
-            for i in 0..model.actuator_nsample.len() {
-                let ns = model.actuator_nsample[i];
-                if ns <= 0 {
-                    continue;
-                }
-                let adr = model.actuator_historyadr[i] as usize;
-                let n = ns as usize;
-                self.history[adr + 1] = (n - 1) as f64;
-                let ts = model.timestep;
-                for k in 0..n {
-                    self.history[adr + 2 + k] = -((n - k) as f64) * ts;
-                }
-            }
-        }
-
-        // 3. Mocap — restore from Model.
-        let mut mocap_idx = 0;
-        for (body_id, mid) in model.body_mocapid.iter().enumerate() {
-            if mid.is_some() {
-                self.mocap_pos[mocap_idx] = model.body_pos[body_id];
-                self.mocap_quat[mocap_idx] = model.body_quat[body_id];
-                mocap_idx += 1;
-            }
-        }
-
-        // 4. Force vectors — zero.
-        self.qfrc_passive.fill(0.0);
-        self.qfrc_spring.fill(0.0);
-        self.qfrc_damper.fill(0.0);
-        self.qfrc_gravcomp.fill(0.0);
-        self.qfrc_fluid.fill(0.0);
-        self.qfrc_constraint.fill(0.0);
-        self.qfrc_bias.fill(0.0);
-        self.qfrc_smooth.fill(0.0);
-        self.qfrc_frictionloss.fill(0.0);
-        self.qfrc_applied.fill(0.0);
-        self.xfrc_applied.fill(BodyWrench::default());
-
-        // 4b. Body accumulators + inverse dynamics — zero.
-        for v in &mut self.cacc {
-            *v = SpatialVector::zeros();
-        }
-        for v in &mut self.cfrc_int {
-            *v = SpatialVector::zeros();
-        }
-        for v in &mut self.cfrc_ext {
-            *v = SpatialVector::zeros();
-        }
-        self.qfrc_inverse.fill(0.0);
-        self.flg_rnepost = false;
-
-        // 4b2. Flex edge pre-computed fields — zero.
-        self.flexedge_length.fill(0.0);
-        self.flexedge_velocity.fill(0.0);
-        self.flexedge_J.fill(0.0);
-
-        // 4c. Subtree velocity fields — zero.
-        for v in &mut self.subtree_linvel {
-            *v = Vector3::zeros();
-        }
-        for v in &mut self.subtree_angmom {
-            *v = Vector3::zeros();
-        }
-        self.flg_subtreevel = false;
-
-        // 5. Contact / constraint state — zero.
-        self.ncon = 0;
-        self.contacts.clear();
-        self.ne = 0;
-        self.nf = 0;
-        self.ncone = 0;
-        self.efc_force.fill(0.0);
-        self.solver_niter = 0;
-        self.solver_nnz = 0;
-        self.solver_stat.clear();
-        self.newton_solved = false;
-        self.efc_cost = 0.0;
-        self.stat_meaninertia = 0.0;
-
-        // 6. Sensor data — zero.
-        self.sensordata.fill(0.0);
-
-        // 7. Energy — zero.
-        self.energy_potential = 0.0;
-        self.energy_kinetic = 0.0;
-        self.energy_initial = 0.0;
-        self.solver_fwdinv = [0.0, 0.0];
-
-        // 8. Warning counters — zero.
-        for w in &mut self.warnings {
-            w.last_info = 0;
-            w.count = 0;
-        }
-
-        // 9. Sleep state — reset to fully awake.
-        reset_sleep_state(model, self);
-
-        // 10. Island state — zero.
-        self.nisland = 0;
-        self.tree_island[..model.ntree].fill(-1);
-        self.contact_island.clear();
-
-        // 11. §66: Plugin state — zero then call plugin reset().
-        self.plugin_state.fill(0.0);
+    /// Run each plugin's `reset` on its slice of `plugin_state`.
+    pub(crate) fn reset_plugins(&mut self, model: &Model) {
         for i in 0..model.nplugin {
-            let adr = model.plugin_stateadr[i];
-            let num = model.plugin_statenum[i];
-            let state = &mut self.plugin_state[adr..adr + num];
-            model.plugin_objects[i].reset(model, state, i);
+            let state =
+                model.plugin_stateadr[i]..model.plugin_stateadr[i] + model.plugin_statenum[i];
+            model.plugin_objects[i].reset(model, &mut self.plugin_state[state], i);
         }
     }
 
-    /// Reset simulation state to a keyframe by index.
+    /// Reset to keyframe `keyframe_idx`: [`Data::reset`], then copy the
+    /// keyframe's `time`, `qpos`, `qvel`, `act`, `ctrl`, `mocap_pos` and
+    /// `mocap_quat`.
     ///
-    /// Overwrites `time`, `qpos`, `qvel`, `act`, `ctrl`, `mocap_pos`, and
-    /// `mocap_quat` from the keyframe. Clears derived quantities (`qacc`,
-    /// `qacc_warmstart`, actuator arrays, `sensordata`, contacts) and
-    /// user-applied forces (`qfrc_applied`, `xfrc_applied`) — matching the
-    /// convention of `Data::reset()`.
-    /// Caller must invoke `forward()` after reset to recompute derived state.
+    /// Everything else is what `reset` leaves (warnings, energy, forces,
+    /// contacts, plugin state). Call `forward()` afterwards to recompute
+    /// derived quantities.
+    ///
+    /// # MuJoCo equivalence
+    ///
+    /// `mj_resetDataKeyframe` (MuJoCo 3.5.0 `engine_io.c:1562-1575`), except
+    /// that an out-of-range index is refused and `Data` is left unchanged;
+    /// MuJoCo resets and skips the copy.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if `keyframe_idx >= model.nkeyframe`.
+    /// [`ResetError::InvalidKeyframeIndex`] if `keyframe_idx >= model.nkeyframe`.
     pub fn reset_to_keyframe(
         &mut self,
         model: &Model,
@@ -1253,86 +1158,14 @@ impl Data {
                 index: keyframe_idx,
                 nkeyframe: model.nkeyframe,
             })?;
-
-        // Overwrite primary state from keyframe.
+        self.reset(model);
         self.time = kf.time;
         self.qpos.copy_from(&kf.qpos);
         self.qvel.copy_from(&kf.qvel);
         self.act.copy_from(&kf.act);
         self.ctrl.copy_from(&kf.ctrl);
-
-        // Mocap state (length may be 0 if no mocap bodies).
         self.mocap_pos.copy_from_slice(&kf.mpos);
         self.mocap_quat.copy_from_slice(&kf.mquat);
-
-        // Clear derived quantities and applied forces (matching Data::reset()).
-        self.qacc.fill(0.0);
-        self.qacc_implicit.fill(0.0);
-        self.qacc_warmstart.fill(0.0);
-        self.act_dot.fill(0.0);
-        self.actuator_length.fill(0.0);
-        self.actuator_velocity.fill(0.0);
-        self.actuator_force.fill(0.0);
-        self.qfrc_applied.fill(0.0);
-        self.xfrc_applied.fill(BodyWrench::default());
-        self.sensordata.fill(0.0);
-        self.ncon = 0;
-        self.contacts.clear();
-
-        // Restore history buffer to pre-populated initial state (matching mj_resetDataKeyframe)
-        #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
-        {
-            self.history.fill(0.0);
-            for i in 0..model.actuator_nsample.len() {
-                let ns = model.actuator_nsample[i];
-                if ns <= 0 {
-                    continue;
-                }
-                let adr = model.actuator_historyadr[i] as usize;
-                let n = ns as usize;
-                self.history[adr + 1] = (n - 1) as f64;
-                let ts = model.timestep;
-                for k in 0..n {
-                    self.history[adr + 2 + k] = -((n - k) as f64) * ts;
-                }
-            }
-        }
-
-        // Reset sleep state from model policies (§16.7).
-        reset_sleep_state(model, self);
-
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Staleness guard: fails when a field is added to [`Data`] without
-    /// updating [`Data::reset()`].
-    ///
-    /// When this test fails, it means `size_of::<Data>()` changed — someone
-    /// added or removed a field. Steps to fix:
-    ///
-    /// 1. Update `Data::reset()` to handle the new field.
-    /// 2. Update `Data::reset_to_keyframe()` if the field should also be
-    ///    reset on keyframe load.
-    /// 3. Update `EXPECTED_SIZE` below to the new size printed in the
-    ///    failure message.
-    #[test]
-    fn data_reset_field_inventory() {
-        // Update this constant whenever Data's layout changes.
-        // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4448;
-
-        let actual = std::mem::size_of::<Data>();
-        assert_eq!(
-            actual, EXPECTED_SIZE,
-            "\n\nData struct size changed: expected {EXPECTED_SIZE}, got {actual}.\n\
-             A field was likely added or removed.\n\
-             → Update Data::reset() (and reset_to_keyframe() if applicable)\n\
-             → Then set EXPECTED_SIZE = {actual} in this test.\n"
-        );
     }
 }

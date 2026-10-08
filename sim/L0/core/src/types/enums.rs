@@ -842,6 +842,28 @@ pub enum StepError {
         /// The field's length.
         actual: usize,
     },
+    /// Finite-difference derivatives refuse the model's integrator (RK4), as
+    /// MuJoCo 3.5.0's `mjd_transitionFD` and `mjd_inverseFD` do ("RK4
+    /// integrator is not supported", `engine_derivative_fd.c:544-546`,
+    /// `:614-616`).
+    UnsupportedIntegrator {
+        /// The model's integrator.
+        integrator: Integrator,
+    },
+    /// Finite-difference transition derivatives refuse a model with history
+    /// buffers (actuator or sensor delays), as `mjd_transitionFD` does ("delays
+    /// are not supported", `engine_derivative_fd.c:547-549`).
+    UnsupportedHistory {
+        /// The model's history buffer length.
+        nhistory: usize,
+    },
+    /// Finite-difference inverse-dynamics derivatives refuse the noslip
+    /// solver, as `mjd_inverseFD` does ("noslip solver is not supported",
+    /// `engine_derivative_fd.c:618-620`).
+    UnsupportedNoslip {
+        /// The model's noslip iterations.
+        iterations: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -862,6 +884,19 @@ impl std::fmt::Display for StepError {
                 f,
                 "data.{field} has length {actual}, but the model needs {expected}: the Data was \
                  made by another model, or the array was resized"
+            ),
+            Self::UnsupportedIntegrator { integrator } => write!(
+                f,
+                "finite-difference derivatives: {integrator:?} integrator is not supported"
+            ),
+            Self::UnsupportedHistory { nhistory } => write!(
+                f,
+                "finite-difference derivatives: delays are not supported (nhistory {nhistory})"
+            ),
+            Self::UnsupportedNoslip { iterations } => write!(
+                f,
+                "inverse finite-difference derivatives: noslip solver is not supported \
+                 ({iterations} iterations)"
             ),
         }
     }
@@ -931,6 +966,167 @@ impl std::fmt::Display for ResetError {
 }
 
 impl std::error::Error for ResetError {}
+
+/// Why [`Model::try_make_data`](crate::Model::try_make_data) cannot make a `Data`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MakeDataError {
+    /// The model's joints break a layout rule
+    /// ([`Model::check_joint_layout`](crate::Model::check_joint_layout)).
+    JointLayout(JointLayoutError),
+    /// A limited range is not a valid range
+    /// ([`Model::check_ranges`](crate::Model::check_ranges)).
+    Range(RangeError),
+    /// Plugin instance `instance`'s [`Plugin::init`](crate::plugin::Plugin::init)
+    /// returned an error.
+    PluginInit {
+        /// The plugin instance.
+        instance: usize,
+        /// The plugin's message.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for MakeDataError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JointLayout(e) => write!(f, "{e}"),
+            Self::Range(e) => write!(f, "{e}"),
+            Self::PluginInit { instance, message } => {
+                write!(f, "plugin init failed for instance {instance}: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MakeDataError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::JointLayout(e) => Some(e),
+            Self::Range(e) => Some(e),
+            Self::PluginInit { .. } => None,
+        }
+    }
+}
+
+impl From<JointLayoutError> for MakeDataError {
+    fn from(e: JointLayoutError) -> Self {
+        Self::JointLayout(e)
+    }
+}
+
+impl From<RangeError> for MakeDataError {
+    fn from(e: RangeError) -> Self {
+        Self::Range(e)
+    }
+}
+
+/// Why [`Model::recompute_derived`](crate::Model::recompute_derived) refuses a model.
+///
+/// Its joint layout or one of its limited ranges, which
+/// [`Model::try_make_data`](crate::Model::try_make_data) refuses too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ModelError {
+    /// [`Model::check_joint_layout`](crate::Model::check_joint_layout)'s error.
+    JointLayout(JointLayoutError),
+    /// [`Model::check_ranges`](crate::Model::check_ranges)'s error.
+    Range(RangeError),
+}
+
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JointLayout(e) => write!(f, "{e}"),
+            Self::Range(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ModelError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::JointLayout(e) => Some(e),
+            Self::Range(e) => Some(e),
+        }
+    }
+}
+
+impl From<JointLayoutError> for ModelError {
+    fn from(e: JointLayoutError) -> Self {
+        Self::JointLayout(e)
+    }
+}
+
+impl From<RangeError> for ModelError {
+    fn from(e: RangeError) -> Self {
+        Self::Range(e)
+    }
+}
+
+/// A joint layout [`Model::check_joint_layout`](crate::Model::check_joint_layout)
+/// refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum JointLayoutError {
+    /// Body `body`'s joints have `ndof` degrees of freedom, more than 6
+    /// (MuJoCo: "more than 6 dofs"). A free joint sharing its body is this.
+    TooManyDofs {
+        /// The body.
+        body: usize,
+        /// Its joints' degrees of freedom.
+        ndof: usize,
+    },
+    /// Ball joint `joint` is not the last joint on body `body`.
+    BallNotLast {
+        /// The body.
+        body: usize,
+        /// The ball joint.
+        joint: usize,
+    },
+}
+
+impl std::fmt::Display for JointLayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManyDofs { body, ndof } => write!(
+                f,
+                "body {body} has {ndof} degrees of freedom, more than 6 \
+                 (a free joint must be the body's only joint)"
+            ),
+            Self::BallNotLast { body, joint } => write!(
+                f,
+                "ball joint {joint} on body {body} must be the LAST joint on its body; \
+                 a later same-body joint would over-rotate its motion subspace"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for JointLayoutError {}
+
+/// A limited range [`Model::check_ranges`](crate::Model::check_ranges) refuses:
+/// entry `index` of the model's `field`, e.g. `jnt_range` 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RangeError {
+    /// The `Model` field, e.g. `"actuator_ctrlrange"`.
+    pub field: &'static str,
+    /// The entry.
+    pub index: usize,
+}
+
+impl std::fmt::Display for RangeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}[{}] is not a valid range (see Model::check_ranges)",
+            self.field, self.index
+        )
+    }
+}
+
+impl std::error::Error for RangeError {}
 
 /// Bending model for dim=2 flex bodies.
 ///
