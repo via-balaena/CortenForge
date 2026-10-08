@@ -1,0 +1,6 @@
+<mujoco><option timestep="0.002"/><worldbody><body>
+<joint name="j" type="hinge" axis="0 1 0"/>
+<geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody>
+<actuator><general joint="j" dyntype="filter" dynprm="0.05"/>
+<motor joint="j" nsample="3" delay="0.002"/></actuator>
+<sensor><jointpos joint="j" nsample="3" delay="0.002"/></sensor></mujoco>

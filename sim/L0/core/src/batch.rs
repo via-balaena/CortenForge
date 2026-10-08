@@ -573,6 +573,7 @@ impl<E: std::error::Error + 'static> std::error::Error for PerEnvError<E> {
 mod tests {
     use super::*;
     use crate::types::enums::ENABLE_ENERGY;
+    use nalgebra::DVector;
 
     fn pendulum_model() -> Model {
         let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
@@ -1121,5 +1122,26 @@ mod tests {
         let batch = BatchSim::new(Arc::clone(&shared), 2);
         assert!(std::ptr::eq(batch.model_of(1).unwrap(), shared.as_ref()));
         assert!(batch.model_of(2).is_none());
+    }
+
+    /// `forward_all` and `step_all` return each environment's error and run
+    /// the others: env 1, its `qpos` resized, refuses with
+    /// `DataShapeMismatch` and is left as it was.
+    #[test]
+    fn forward_all_and_step_all_return_each_envs_error() {
+        let mut batch = BatchSim::new(Arc::new(chain(2, 1.0)), 3);
+        let nq = batch.model().nq;
+        batch.env_mut(1).unwrap().qpos = DVector::zeros(nq + 1);
+        let refused = StepError::DataShapeMismatch {
+            field: "qpos",
+            expected: nq,
+            actual: nq + 1,
+        };
+        assert_eq!(batch.forward_all(), vec![None, Some(refused), None]);
+        assert_eq!(batch.step_all(), vec![None, Some(refused), None]);
+        let dt = batch.model().timestep;
+        for (i, time) in [dt, 0.0, dt].into_iter().enumerate() {
+            assert_eq!(batch.env(i).unwrap().time, time, "env {i}");
+        }
     }
 }
