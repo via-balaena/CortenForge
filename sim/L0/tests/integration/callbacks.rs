@@ -665,9 +665,7 @@ fn control_callback_reads_this_pass_bias_force() {
 
 /// `step2` and `forward_skip(MjStage::Vel)` do not compute the bias force, as
 /// MuJoCo's `mj_step2` and `mj_forwardSkip(mjSTAGE_VEL)` do not call `mj_rne`:
-/// a value written to `qfrc_bias` after `step1` is the one they use. (A
-/// recomputation from the velocity stage's outputs would give the same value
-/// after a `qpos` or `qvel` edit, so only a written value tells them apart.)
+/// a value written to `qfrc_bias` after `step1` is the one they use.
 #[test]
 fn step2_and_a_velocity_skip_do_not_compute_the_bias_force() {
     use sim_core::MjStage;

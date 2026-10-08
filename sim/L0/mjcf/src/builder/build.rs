@@ -703,11 +703,11 @@ mod tests {
         );
     }
 
-    /// A range of "0 0" is no range, as MuJoCo's `hasrange` says
-    /// (`user_objects.cc:2902`, `:6414`, `:6870`, `:6874`): automatic limits
-    /// leave each of these unlimited (MuJoCo 3.5.0, measured) and the model
-    /// makes its `Data`. A nonzero automatic range with lo >= hi is refused
-    /// when the `Data` is made (registry `D-MODEL-CHECKS`, 11-settled A5-Q2).
+    /// A range of "0 0" makes no automatic limit: MuJoCo 3.5.0 leaves each of
+    /// these unlimited (measured; `islimited`, `user_objects.cc:184-189`) and
+    /// the model makes its `Data`. A nonzero automatic hinge range with
+    /// lo >= hi is refused when the `Data` is made (registry `D-MODEL-CHECKS`,
+    /// 11-settled A5-Q2).
     #[test]
     fn an_automatic_zero_range_is_no_range() {
         let model = load_model(
