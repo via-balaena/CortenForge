@@ -237,7 +237,6 @@ pub use types::{
     // Model struct (extracted to types/model.rs)
     // Sensor callback stage
     SensorStage,
-    SleepError,
     SleepPolicy,
     SleepState,
     SolverStat,

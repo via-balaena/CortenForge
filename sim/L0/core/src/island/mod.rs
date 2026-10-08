@@ -12,7 +12,7 @@ use crate::types::{ConstraintType, DISABLE_ISLAND, Data, EqualityType, Model};
 
 // Re-exports — island functions for external consumers.
 pub(crate) use sleep::{
-    constraint_sleep_filter, dof_asleep, equality_asleep, mj_check_qpos_changed, mj_sleep,
+    K_AWAKE, constraint_sleep_filter, dof_asleep, equality_asleep, mj_sleep,
     mj_update_sleep_arrays, mj_wake, mj_wake_collision, mj_wake_equality, mj_wake_tendon,
     reset_sleep_state,
 };
@@ -244,113 +244,4 @@ fn row_trees(model: &Model, data: &Data, row: usize) -> Vec<usize> {
         }
     }
     trees
-}
-
-/// Get the tree pair spanned by an equality constraint (§16.11.2).
-///
-/// Returns `(tree1, tree2)` where `tree1` and `tree2` may be equal
-/// for single-tree constraints. Returns `(usize::MAX, usize::MAX)`
-/// if the trees cannot be determined.
-pub(super) fn equality_trees(model: &Model, eq_id: usize) -> (usize, usize) {
-    let sentinel = usize::MAX;
-    match model.eq_type[eq_id] {
-        EqualityType::Connect | EqualityType::Weld => {
-            // obj1/obj2 are body IDs
-            let b1 = model.eq_obj1id[eq_id];
-            let b2 = model.eq_obj2id[eq_id];
-            let t1 = if b1 > 0 && b1 < model.body_treeid.len() {
-                model.body_treeid[b1]
-            } else {
-                sentinel
-            };
-            let t2 = if b2 > 0 && b2 < model.body_treeid.len() {
-                model.body_treeid[b2]
-            } else {
-                sentinel
-            };
-            (t1, t2)
-        }
-        EqualityType::Joint => {
-            // obj1/obj2 are joint IDs → jnt_body → body_treeid
-            let j1 = model.eq_obj1id[eq_id];
-            let j2 = model.eq_obj2id[eq_id];
-            let t1 = if j1 < model.jnt_body.len() {
-                let b = model.jnt_body[j1];
-                if b > 0 && b < model.body_treeid.len() {
-                    model.body_treeid[b]
-                } else {
-                    sentinel
-                }
-            } else {
-                sentinel
-            };
-            let t2 = if j2 < model.jnt_body.len() {
-                let b = model.jnt_body[j2];
-                if b > 0 && b < model.body_treeid.len() {
-                    model.body_treeid[b]
-                } else {
-                    sentinel
-                }
-            } else {
-                sentinel
-            };
-            (t1, t2)
-        }
-        EqualityType::Distance => {
-            // obj1/obj2 are geom IDs → geom_body → body_treeid
-            let g1 = model.eq_obj1id[eq_id];
-            let g2 = model.eq_obj2id[eq_id];
-            let t1 = if g1 < model.geom_body.len() {
-                let b = model.geom_body[g1];
-                if b > 0 && b < model.body_treeid.len() {
-                    model.body_treeid[b]
-                } else {
-                    sentinel
-                }
-            } else {
-                sentinel
-            };
-            let t2 = if g2 < model.geom_body.len() {
-                let b = model.geom_body[g2];
-                if b > 0 && b < model.body_treeid.len() {
-                    model.body_treeid[b]
-                } else {
-                    sentinel
-                }
-            } else {
-                sentinel
-            };
-            (t1, t2)
-        }
-        EqualityType::Tendon => {
-            let t1_id = model.eq_obj1id[eq_id];
-            // Primary tree for tendon 1 (sentinel if treenum == 0, i.e. static)
-            let tree1 = if model.tendon_treenum[t1_id] >= 1 {
-                model.tendon_tree[2 * t1_id]
-            } else {
-                sentinel
-            };
-
-            if model.eq_obj2id[eq_id] == usize::MAX {
-                // Single-tendon: if it spans two trees, return both
-                if model.tendon_treenum[t1_id] == 2 {
-                    (
-                        model.tendon_tree[2 * t1_id],
-                        model.tendon_tree[2 * t1_id + 1],
-                    )
-                } else {
-                    (tree1, tree1)
-                }
-            } else {
-                // Two-tendon coupling: primary tree from each tendon
-                let t2_id = model.eq_obj2id[eq_id];
-                let tree2 = if model.tendon_treenum[t2_id] >= 1 {
-                    model.tendon_tree[2 * t2_id]
-                } else {
-                    sentinel
-                };
-                (tree1, tree2)
-            }
-        }
-    }
 }

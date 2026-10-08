@@ -9,7 +9,9 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
-use sim_core::{BodyWrench, ENABLE_SLEEP, Model, SleepPolicy, SleepState};
+use sim_core::{
+    BodyWrench, ENABLE_SLEEP, MakeDataError, Model, ResetError, SleepPolicy, SleepState, StepError,
+};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -395,7 +397,15 @@ fn trace(name: &str) -> (Vec<Step>, Vec<Step>) {
                 let value = set[3].as_f64().expect("value");
                 match set[1].as_str().expect("field") {
                     "qvel" => data.qvel[idx] = value,
+                    "qpos" => data.qpos[idx] = value,
                     "ctrl" => data.ctrl[idx] = value,
+                    "xfrc_applied" => {
+                        let mut row = data.xfrc_applied[idx / 6].to_mujoco_row();
+                        row[idx % 6] = value;
+                        data.xfrc_applied[idx / 6] = BodyWrench::from_mujoco_row(row);
+                    }
+                    "sleep_off" => model.enableflags &= !ENABLE_SLEEP,
+                    "eq_active" => model.eq_active[idx] = value != 0.0,
                     other => panic!("{name}: unknown field {other}"),
                 }
             }
@@ -634,4 +644,158 @@ fn traces_match_mujoco() {
             }
         }
     }
+}
+
+/// A sleeping tree woken by contact takes the countdown of the awake tree
+/// that touched it: the resting sphere moved against the sleeping one at
+/// step 5, its countdown at -5, leaves both at -4 after the step (fully
+/// awake would be -10); the sphere landing on a sleeping one.
+#[test]
+fn wake_on_contact_inherits_countdown() {
+    assert_eq!(trace("wake_countdown").1[5].tree_asleep, vec![-4, -4]);
+    assert_trace("wake_countdown", &["tree_asleep", "ncon"]);
+    assert_eq!(trace("swake").1[124].tree_asleep, vec![-10, -11]);
+    assert_trace("swake", &["tree_asleep"]);
+}
+
+/// A velocity the user writes into a sleeping tree wakes it, as MuJoCo's
+/// wake test reads every velocity bit, one below the sleep tolerance too.
+#[test]
+fn user_qvel_wakes_sleeping_tree() {
+    assert_trace("uw_qvel", &["tree_asleep", "ncon", "nefc"]);
+    assert_trace("uw_qvel_small", &["tree_asleep", "ncon", "nefc"]);
+}
+
+/// A connect made active between two trees asleep in two cycles wakes both.
+#[test]
+fn equality_joins_sleeping_cycles() {
+    assert_eq!(trace("eq_activate").1[149].tree_asleep, vec![0, 1]);
+    assert_trace("eq_activate", &["tree_asleep", "nefc"]);
+}
+
+/// After `make_data`, every trace's sleep state, contacts, rows and islands
+/// are what MuJoCo's `mj_makeData` leaves: a reset that puts a tree to sleep
+/// keeps its forward pass's contacts and clears its rows.
+#[test]
+fn reset_matches_mujoco() {
+    for case in traces_golden()["traces"].as_array().expect("traces") {
+        let name = case["name"].as_str().expect("name");
+        let mut model = model_of(case);
+        if case["sleep"] == false {
+            model.enableflags &= !ENABLE_SLEEP;
+        }
+        let data = model.make_data();
+        let reset = &case["reset"];
+        let theirs: Vec<i64> = reset["tree_asleep"]
+            .as_array()
+            .expect("tree_asleep")
+            .iter()
+            .map(|a| a.as_i64().expect("int"))
+            .collect();
+        let ours: Vec<i64> = data.tree_asleep.iter().map(|&a| i64::from(a)).collect();
+        assert_eq!(ours, theirs, "{name}: tree_asleep");
+        assert_eq!(data.ncon, count(&reset["ncon"]), "{name}: ncon");
+        assert_eq!(data.efc_type.len(), count(&reset["nefc"]), "{name}: nefc");
+        assert_eq!(data.nisland, count(&reset["nisland"]), "{name}: nisland");
+    }
+}
+
+/// A position the user writes wakes the tree through the pose the
+/// kinematics finds changed; a force on `xfrc_applied` wakes it through its
+/// bytes.
+#[test]
+fn user_qpos_and_xfrc_wake() {
+    for name in ["uw_qpos", "uw_xfrc", "rbox"] {
+        assert_trace(name, &["tree_asleep", "ncon", "nefc"]);
+    }
+}
+
+/// Switching sleep off wakes every sleeping tree at the next forward pass.
+#[test]
+fn disabling_sleep_wakes_all() {
+    assert!(trace("sleep_off").1[150].tree_asleep.iter().all(|&a| a < 0));
+    assert_trace("sleep_off", &["tree_asleep", "ncon", "nefc"]);
+}
+
+/// A tree that starts asleep has the values of a forward pass at the reset,
+/// as MuJoCo's reset runs one: its box's position sensor reads 0.0995.
+#[test]
+fn init_tree_has_reset_values() {
+    let (ours, theirs) = trace("box_init");
+    let pos_z = |s: &Step| s.floats.as_ref().expect("kept at step 0")[3][5];
+    assert_eq!(pos_z(&theirs[0]), 0.0995);
+    assert!((pos_z(&ours[0]) - 0.0995).abs() <= 1e-12);
+    assert_trace("box_init", &["tree_asleep", "ncon", "nefc", "cb"]);
+}
+
+fn refusal(name: &str) -> (Model, String) {
+    let golden = golden();
+    let case = golden["refusals"]
+        .as_array()
+        .expect("refusals")
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no refusal {name}"));
+    let message = case["message"].as_str().expect("MuJoCo refuses").to_owned();
+    (model_of(case), message)
+}
+
+/// A tree that starts asleep but cannot sleep, because a connect or a
+/// contact joins it to an awake tree, is refused where MuJoCo refuses it: at
+/// making a `Data` and at a reset, with MuJoCo's counts.
+#[test]
+fn init_mixed_island_refused() {
+    for (name, tree, root_body) in [("initmix", 0, 1), ("initmix_contact", 1, 2)] {
+        let (model, theirs) = refusal(name);
+        assert!(theirs.contains("1 trees were marked as sleep='init' but only 0 could be slept"));
+        assert!(theirs.contains(&format!("(id={root_body}) is the root of the first tree")));
+        let refused = MakeDataError::InitSleep {
+            marked: 1,
+            slept: 0,
+            tree,
+            root_body,
+        };
+        assert_eq!(model.try_make_data().err(), Some(refused.clone()), "{name}");
+        assert!(
+            refused
+                .to_string()
+                .starts_with("1 trees were marked as sleep='init' but only 0 could be slept")
+        );
+        let mut awake = model.clone();
+        awake.tree_sleep_policy.fill(SleepPolicy::AutoAllowed);
+        let mut data = awake.make_data();
+        data.step(&awake).expect("step");
+        assert_eq!(
+            data.try_reset(&model),
+            Err(ResetError::InitSleep {
+                marked: 1,
+                slept: 0,
+                tree,
+                root_body,
+            }),
+            "{name}"
+        );
+        // A refused reset leaves the Data as it was
+        assert_eq!(data.time, awake.timestep, "{name}");
+    }
+}
+
+/// A tendon equality with sleep enabled is refused at the first forward
+/// pass, as MuJoCo raises an error there.
+#[test]
+fn tendon_equality_with_sleep_refused() {
+    let (model, theirs) = refusal("tendon_equality");
+    assert_eq!(
+        theirs,
+        "mj_wakeEquality: tendon equality does not yet support sleeping"
+    );
+    let mut data = model.make_data();
+    assert_eq!(
+        data.forward(&model),
+        Err(StepError::TendonEqualityWithSleep { eq: 0 })
+    );
+    let mut asleep_off = model.clone();
+    asleep_off.enableflags &= !ENABLE_SLEEP;
+    let mut data = asleep_off.make_data();
+    assert_eq!(data.forward(&asleep_off), Ok(()));
 }

@@ -1487,12 +1487,14 @@ fn t46_ellipsoid_sleep_qfrc_fluid_zero() {
 }
 
 // ============================================================================
-// T47: Wind + sleep — sleeping body in wind has zero qfrc_fluid
+// T47: Wind + sleep — a sleeping body keeps the qfrc_fluid of the reset
 // ============================================================================
 
-/// Sleeping body with wind has nonzero local velocity but zero qfrc_fluid.
+/// A body that starts asleep in wind keeps the fluid force the reset's
+/// forward pass computed: MuJoCo 3.5.0 (unfused oracle) gives its dofs
+/// [0.004099557428756427, 0, 0, 0, 0, 0] after this forward pass.
 #[test]
-fn t47_wind_sleep_qfrc_fluid_zero() {
+fn t47_wind_sleep_keeps_the_reset_qfrc_fluid() {
     let (_, data) = setup(
         SLEEP_WIND_2BODY_FWD,
         &[0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -1504,12 +1506,14 @@ fn t47_wind_sleep_qfrc_fluid_zero() {
         "body 2 should be asleep"
     );
 
-    // Sleeping DOFs zero despite wind
-    for i in 6..12 {
-        assert_eq!(
-            data.qfrc_fluid[i], 0.0,
-            "T47 qfrc_fluid[{}] should be zero for sleeping body in wind, got {:.17e}",
-            i, data.qfrc_fluid[i]
+    // Sleeping DOFs: the reset's values, MuJoCo's
+    let mujoco = [0.004099557428756427, 0.0, 0.0, 0.0, 0.0, 0.0];
+    for (i, want) in (6..12).zip(mujoco) {
+        assert!(
+            (data.qfrc_fluid[i] - want).abs() <= 1e-15,
+            "T47 qfrc_fluid[{}] of the sleeping body: {:.17e}, MuJoCo {want:.17e}",
+            i,
+            data.qfrc_fluid[i]
         );
     }
 

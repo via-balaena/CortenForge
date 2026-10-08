@@ -411,20 +411,18 @@ impl Data {
     /// Position stage: wake detection, forward kinematics, CRBA,
     /// transmissions, collision, position sensors and potential energy.
     fn forward_pos(&mut self, model: &Model, compute_sensors: bool) {
-        // Sleep is only active after the initial forward pass.
-        // The first forward (time == 0.0) must compute FK for all bodies
-        // to establish initial positions, even for Init-sleeping bodies.
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-
-        // ===== Pre-pipeline: Wake detection (§16.4) =====
-        // Must update sleep arrays after user-force wake so that
-        // body_awake_ind/dof_awake_ind are current before mj_crba (§16.29.3).
-        if sleep_enabled && crate::island::mj_wake(model, self) {
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
 
         // ========== Position Stage ==========
         position::mj_fwd_position(model, self);
+
+        // Wake what the user changed (§16.4), after the kinematics found a
+        // sleeping pose changed and before the mass matrix, as MuJoCo's
+        // `mj_kinematics` runs `mj_wake` (engine_core_smooth.c:236-241); with
+        // sleep disabled it wakes every sleeping tree.
+        if crate::island::mj_wake(model, self) {
+            crate::island::mj_update_sleep_arrays(model, self);
+        }
         crate::dynamics::flex::mj_flex(model, self);
         crate::dynamics::flex::mj_flex_edge(model, self);
 
@@ -433,11 +431,6 @@ impl Data {
         // position stage; we do the same so that mj_energy_vel (velocity
         // stage) has a valid mass matrix.
         crate::dynamics::crba::mj_crba(model, self);
-
-        // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
-        if sleep_enabled && crate::island::mj_check_qpos_changed(model, self) {
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
 
         actuation::mj_transmission_site(model, self);
         actuation::mj_transmission_slidercrank(model, self);

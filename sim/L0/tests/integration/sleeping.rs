@@ -2650,12 +2650,12 @@ fn test_init_sleep_valid() {
     );
 }
 
-/// T60: Mixed Init/non-Init in coupled group degrades gracefully.
-/// The spec says this should produce an error and degrade to awake.
+/// T60: A tree that starts asleep, joined by a connect to one that does not,
+/// cannot be put to sleep (its island is not all ready): making its `Data`
+/// is refused, as MuJoCo 3.5.0 refuses the model.
 #[test]
-fn test_init_sleep_mixed_island_warning() {
+fn test_init_sleep_mixed_island_refused() {
     // Two bodies connected by equality constraint: A is Init, B is not.
-    // The validation should detect the mixed group and degrade A to awake.
     let mjcf = r#"
     <mujoco model="init_mixed">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -2677,25 +2677,16 @@ fn test_init_sleep_mixed_island_warning() {
     </mujoco>
     "#;
     let model = load_model(mjcf).expect("load");
-    let data = model.make_data();
-
     let tree_a = model.body_treeid[1];
-    let tree_b = model.body_treeid[2];
-
-    // A has Init policy, B doesn't → mixed group → A should be degraded to awake
     assert_eq!(model.tree_sleep_policy[tree_a], SleepPolicy::Init);
-
-    // After degradation, A should be awake (Init trees in mixed groups
-    // don't get put to sleep)
-    assert!(
-        data.tree_asleep[tree_a] < 0,
-        "mixed Init tree A should be degraded to awake, got {}",
-        data.tree_asleep[tree_a]
-    );
-    assert!(
-        data.tree_asleep[tree_b] < 0,
-        "non-Init tree B should be awake, got {}",
-        data.tree_asleep[tree_b]
+    assert_eq!(
+        model.try_make_data().err(),
+        Some(sim_core::MakeDataError::InitSleep {
+            marked: 1,
+            slept: 0,
+            tree: tree_a,
+            root_body: 1,
+        })
     );
 }
 

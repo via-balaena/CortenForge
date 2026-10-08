@@ -64,8 +64,25 @@ and logs each call (F) in the callback string; and the resting box beside a
 falling sphere whose passive callback adds 0.001 times its call count to the
 sphere's vertical force, so the second forward pass of the box's sleep step
 computes another acceleration for the sphere than the first, and the step
-advances the sphere with the first's; and the filtered actuator asleep, its
-ctrl set to 0.5 at step 700 (a ctrl change wakes nothing).
+advances the sphere with the first's; the filtered actuator asleep, its
+ctrl set to 0.5 at step 700 (a ctrl change wakes nothing); A8's user wakes
+of the resting box at step 200, by qvel, by qpos, and by a vertical force on
+xfrc_applied for one step; A8's flat box rotated and spun while asleep; a
+box that starts asleep (sleep="init"); the resting box with sleep
+switched off at step 150 (a set of `sleep_off`); and, in zero gravity, a
+sphere that starts asleep beside a resting one, which is moved against it
+at step 5 while its countdown runs, so the sleeping sphere wakes with that
+countdown; the resting box given a velocity of 1e-6, below the tolerance,
+at step 200 (it wakes: the wake test uses a tolerance of 0); and two boxes
+resting apart, asleep in two cycles, joined at step 150 by a connect made
+active (`eq_active`). Each trace also holds `reset`: tree_asleep, ncon, nefc
+and nisland after mj_makeData.
+
+Its `refusals` entry holds the message MuJoCo raises for each model of
+REFUSALS: two models whose init-asleep tree cannot sleep (A8's initmix,
+joined by a connect, and initmix_contact, resting on an awake sphere), at
+compile, which makes a Data; and a tendon equality with sleep enabled, at
+the first mj_forward.
 """
 import json
 import os
@@ -314,6 +331,59 @@ TRACES = {
 <sensor><framelinvel objtype="body" objname="s"/></sensor></mujoco>""", 100, [], True, False, (8, 1e-3)),
 }
 
+UW = box_rest()
+RBOX = """<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/>
+<body name="b" pos="0 0 0.0595"><freejoint/><geom type="box" size="0.1 0.08 0.06" mass="1"/></body></worldbody>
+<sensor><framelinvel objtype="body" objname="b"/><frameangvel objtype="body" objname="b"/></sensor></mujoco>"""
+BOX_INIT = """<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/>
+<body name="b" pos="0 0 0.0995" sleep="init"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+</worldbody>
+<sensor><framelinvel objtype="body" objname="b"/><framepos objtype="body" objname="b"/></sensor></mujoco>"""
+TRACES.update({
+    "uw_qvel": (UW, 300, [(200, "qvel", 0, 0.01)], True),
+    "uw_qpos": (UW, 300, [(200, "qpos", 0, 0.05)], True),
+    "uw_xfrc": (UW, 300, [(200, "xfrc_applied", 8, 3.0), (201, "xfrc_applied", 8, 0.0)], True),
+    "rbox": (RBOX, 300, [(200, "qpos", 3, 0.9659258262890683), (200, "qpos", 6, 0.25881904510252074),
+                         (200, "qvel", 5, 0.5)], True),
+    "box_init": (BOX_INIT, 60, [], True),
+    "sleep_off": (UW, 200, [(150, "sleep_off", 0, 0.0)], True),
+    "uw_qvel_small": (UW, 300, [(200, "qvel", 0, 1e-6)], True),
+    "eq_activate": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+<body name="a" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+<body name="b" pos="1 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody>
+<equality><connect body1="a" body2="b" anchor="0.5 0 0.0995" active="false"/></equality></mujoco>""",
+                    300, [(150, "eq_active", 0, 1.0)], True),
+    "wake_countdown": ("""<mujoco><option timestep="0.002" gravity="0 0 0"><flag sleep="enable"/></option>
+<worldbody>
+<body name="a" pos="0 0 1" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+<body name="b" pos="0.5 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+</worldbody></mujoco>""", 60, [(5, "qpos", 7, 0.199)], True),
+})
+
+REFUSALS = {
+    "initmix": f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+<body name="a" pos="0 0 0.0995" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+{SPHERE.format(n="b", p="0.3 0 0.0995")}
+{SPHERE.format(n="c", p="1.0 0 0.6")}</worldbody>
+<equality><connect body1="a" body2="b" anchor="0.15 0 0"/></equality></mujoco>""",
+    "initmix_contact": f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+{SPHERE.format(n="a", p="0 0 0.0995")}
+<body name="b" pos="0 0 0.2985" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+</worldbody></mujoco>""",
+    "tendon_equality": f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="a" pos="0 0 1"><joint name="ja"/><geom type="sphere" size="0.05" mass="1"/></body>
+<body name="b" pos="1 0 1"><joint name="jb"/><geom type="sphere" size="0.05" mass="1"/></body>
+</worldbody>
+<tendon><fixed name="t"><joint joint="ja" coef="1"/><joint joint="jb" coef="-1"/></fixed></tendon>
+<equality><tendon tendon1="t"/></equality></mujoco>""",
+}
+
 POLICY = {
     int(mujoco.mjtSleepPolicy.mjSLEEP_AUTO): "Auto",
     int(mujoco.mjtSleepPolicy.mjSLEEP_AUTO_NEVER): "AutoNever",
@@ -402,6 +472,8 @@ def trace_case(name, xml, nstep, sets, sleep, log_filter=False, passive_force=No
     if not sleep:
         m.opt.enableflags &= ~int(mujoco.mjtEnableBit.mjENBL_SLEEP)
     d = mujoco.MjData(m)
+    reset = {"tree_asleep": ints(d.tree_asleep), "ncon": int(d.ncon), "nefc": int(d.nefc),
+             "nisland": int(d.nisland)}
     log = []
     calls = [0]
 
@@ -419,7 +491,9 @@ def trace_case(name, xml, nstep, sets, sleep, log_filter=False, passive_force=No
     try:
         for k in range(nstep):
             for at, field, idx, value in sets:
-                if at == k:
+                if at == k and field == "sleep_off":
+                    m.opt.enableflags &= ~int(mujoco.mjtEnableBit.mjENBL_SLEEP)
+                elif at == k:
                     getattr(d, field).reshape(-1)[idx] = value
             log.clear()
             mujoco.mj_step(m, d)
@@ -440,7 +514,16 @@ def trace_case(name, xml, nstep, sets, sleep, log_filter=False, passive_force=No
                 del st[f]
     return {"name": name, "xml": xml, "sets": [list(x) for x in sets], "sleep": sleep,
             "log_filter": log_filter, "passive_force": list(passive_force) if passive_force else None,
-            "steps": steps}
+            "reset": reset, "steps": steps}
+
+
+def refusal(xml):
+    try:
+        m = mujoco.MjModel.from_xml_string(xml)
+        mujoco.mj_forward(m, mujoco.MjData(m))
+    except Exception as e:  # noqa: BLE001 — MuJoCo's mjERROR, recorded as its message
+        return str(e)
+    return None
 
 
 def write(path, doc):
@@ -457,9 +540,11 @@ def main():
     lengths = [length_case(name, xml) for name, xml in LENGTHS.items()]
     runs = [run_case(name, *run) for name, run in RUNS.items()]
     traces = [trace_case(name, *trace) for name, trace in TRACES.items()]
+    refusals = {name: refusal(xml) for name, xml in REFUSALS.items()}
     doc = {"oracle": marker, "trees": finite_or_string(trees), "lengths": finite_or_string(lengths),
            "runs": finite_or_string(runs)}
     write(os.path.join(sys.argv[1], "sleep_traces.json"), {"oracle": marker, "traces": finite_or_string(traces)})
+    doc["refusals"] = [{"name": name, "xml": REFUSALS[name], "message": msg} for name, msg in refusals.items()]
     write(os.path.join(sys.argv[1], "sleep.json"), doc)
     print(f"{len(trees)} tree, {len(lengths)} length, {len(runs)} run and {len(traces)} trace cases"
           f" -> {sys.argv[1]}")

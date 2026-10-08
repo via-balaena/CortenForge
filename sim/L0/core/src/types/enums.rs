@@ -879,6 +879,13 @@ pub enum StepError {
         /// The model's noslip iterations.
         iterations: usize,
     },
+    /// Sleep is enabled and equality `eq`, a tendon equality, is active:
+    /// MuJoCo 3.5.0 raises an error on every forward pass then ("tendon
+    /// equality does not yet support sleeping", `engine_sleep.c:390-392`).
+    TendonEqualityWithSleep {
+        /// The equality.
+        eq: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -913,46 +920,15 @@ impl std::fmt::Display for StepError {
                 "inverse finite-difference derivatives: noslip solver is not supported \
                  ({iterations} iterations)"
             ),
+            Self::TendonEqualityWithSleep { eq } => write!(
+                f,
+                "equality {eq}: tendon equality does not yet support sleeping"
+            ),
         }
     }
 }
 
 impl std::error::Error for StepError {}
-
-/// Errors during Init-sleep validation (§16.24).
-#[derive(Debug, Clone)]
-pub enum SleepError {
-    /// Init-sleep tree has no DOFs (cannot meaningfully sleep).
-    InitSleepInvalidTree {
-        /// The tree index that failed validation.
-        tree: usize,
-    },
-    /// Statically-coupled tree group contains a mix of Init and non-Init
-    /// trees. All trees connected by equality constraints or multi-tree
-    /// tendons must have the same Init policy.
-    InitSleepMixedIsland {
-        /// The union-find representative tree for the mixed group.
-        group_root: usize,
-    },
-}
-
-impl std::fmt::Display for SleepError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InitSleepInvalidTree { tree } => {
-                write!(f, "Init-sleep tree {tree} has no DOFs")
-            }
-            Self::InitSleepMixedIsland { group_root } => {
-                write!(
-                    f,
-                    "mixed Init/non-Init trees in coupled group (root={group_root})"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for SleepError {}
 
 /// Error returned by state reset operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -975,6 +951,24 @@ pub enum ResetError {
         /// The sensor.
         sensor: usize,
     },
+    /// Of the `marked` trees whose policy is `Init`, `mj_sleep` put only
+    /// `slept` to sleep (one is in an island with an awake tree); `tree`,
+    /// rooted at `root_body`, is the first it did not (MuJoCo `_resetData`
+    /// raises an error, `engine_io.c:1472-1493`).
+    InitSleep {
+        /// The trees whose policy is `Init`.
+        marked: usize,
+        /// The trees `mj_sleep` put to sleep.
+        slept: usize,
+        /// The first `Init` tree left awake.
+        tree: usize,
+        /// That tree's root body.
+        root_body: usize,
+    },
+    /// The forward pass a reset runs before putting the `Init` trees to sleep
+    /// failed (an implicit factorization; MuJoCo's `mj_forward` has no
+    /// failure there).
+    InitForward(StepError),
 }
 
 impl std::fmt::Display for ResetError {
@@ -988,9 +982,28 @@ impl std::fmt::Display for ResetError {
             }
             Self::InvalidTimestep => f.write_str(HISTORY_TIMESTEP),
             Self::DelayedUserSensor { sensor } => write!(f, "{}", delayed_user_sensor(*sensor)),
+            Self::InitSleep {
+                marked,
+                slept,
+                tree,
+                root_body,
+            } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
+            Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
         }
     }
 }
+
+/// The message of `InitSleep` in [`ResetError`] and [`MakeDataError`]:
+/// MuJoCo's (`engine_io.c:1490-1492`), with ids.
+fn init_sleep(marked: usize, slept: usize, tree: usize, root_body: usize) -> String {
+    format!(
+        "{marked} trees were marked as sleep='init' but only {slept} could be slept; body \
+         {root_body} is the root of tree {tree}, the first that could not be slept"
+    )
+}
+
+/// The message of `InitForward` in [`ResetError`] and [`MakeDataError`].
+const INIT_FORWARD: &str = "the forward pass before the sleep='init' trees sleep failed";
 
 /// The message of `InvalidTimestep` in [`ResetError`] and [`MakeDataError`].
 const HISTORY_TIMESTEP: &str = "history buffers require a positive timestep";
@@ -1029,6 +1042,22 @@ pub enum MakeDataError {
         /// The sensor.
         sensor: usize,
     },
+    /// Of the `marked` trees whose policy is `Init`, `mj_sleep` put only
+    /// `slept` to sleep; see [`ResetError::InitSleep`]. MuJoCo refuses such a
+    /// model at compile, which makes a Data.
+    InitSleep {
+        /// The trees whose policy is `Init`.
+        marked: usize,
+        /// The trees `mj_sleep` put to sleep.
+        slept: usize,
+        /// The first `Init` tree left awake.
+        tree: usize,
+        /// That tree's root body.
+        root_body: usize,
+    },
+    /// The forward pass before the `Init` trees sleep failed; see
+    /// [`ResetError::InitForward`].
+    InitForward(StepError),
 }
 
 impl std::fmt::Display for MakeDataError {
@@ -1041,6 +1070,13 @@ impl std::fmt::Display for MakeDataError {
             }
             Self::InvalidTimestep => f.write_str(HISTORY_TIMESTEP),
             Self::DelayedUserSensor { sensor } => write!(f, "{}", delayed_user_sensor(*sensor)),
+            Self::InitSleep {
+                marked,
+                slept,
+                tree,
+                root_body,
+            } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
+            Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
         }
     }
 }
@@ -1050,9 +1086,11 @@ impl std::error::Error for MakeDataError {
         match self {
             Self::JointLayout(e) => Some(e),
             Self::Range(e) => Some(e),
-            Self::PluginInit { .. } | Self::InvalidTimestep | Self::DelayedUserSensor { .. } => {
-                None
-            }
+            Self::InitForward(e) => Some(e),
+            Self::PluginInit { .. }
+            | Self::InvalidTimestep
+            | Self::DelayedUserSensor { .. }
+            | Self::InitSleep { .. } => None,
         }
     }
 }

@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
 use super::enums::{
-    Integrator, JointLayoutError, MIN_AWAKE, MakeDataError, MjJointType, MjSensorType, RangeError,
-    ResetError, SleepPolicy, SleepState, SolverType,
+    ENABLE_SLEEP, Integrator, JointLayoutError, MakeDataError, MjJointType, MjSensorType,
+    RangeError, ResetError, SleepPolicy, SleepState, SolverType, StepError,
 };
 use super::model::Model;
 
@@ -24,7 +24,7 @@ use crate::linalg::mj_solve_sparse_batch;
 
 use super::data::Data;
 use crate::forward::mj_fwd_position;
-use crate::island::{mj_update_sleep_arrays, reset_sleep_state};
+use crate::island::{K_AWAKE, mj_sleep, mj_update_sleep_arrays, reset_sleep_state};
 
 /// Why a model's history buffers cannot be initialised, shared by
 /// [`MakeDataError`] and [`ResetError`].
@@ -50,6 +50,63 @@ impl From<HistoryRefusal> for ResetError {
         match e {
             HistoryRefusal::InvalidTimestep => Self::InvalidTimestep,
             HistoryRefusal::DelayedUserSensor(sensor) => Self::DelayedUserSensor { sensor },
+        }
+    }
+}
+
+/// Why the trees that start asleep could not be put to sleep, shared by
+/// [`MakeDataError`] and [`ResetError`] (see [`Model::start_sleep`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitSleepRefusal {
+    /// The forward pass before they sleep failed.
+    Forward(StepError),
+    /// `mj_sleep` put `slept` of the `marked` trees to sleep.
+    NotSlept {
+        /// The trees whose policy is `Init`.
+        marked: usize,
+        /// The trees put to sleep.
+        slept: usize,
+        /// The first `Init` tree left awake.
+        tree: usize,
+        /// That tree's root body.
+        root_body: usize,
+    },
+}
+
+impl From<InitSleepRefusal> for MakeDataError {
+    fn from(e: InitSleepRefusal) -> Self {
+        match e {
+            InitSleepRefusal::Forward(e) => Self::InitForward(e),
+            InitSleepRefusal::NotSlept {
+                marked,
+                slept,
+                tree,
+                root_body,
+            } => Self::InitSleep {
+                marked,
+                slept,
+                tree,
+                root_body,
+            },
+        }
+    }
+}
+
+impl From<InitSleepRefusal> for ResetError {
+    fn from(e: InitSleepRefusal) -> Self {
+        match e {
+            InitSleepRefusal::Forward(e) => Self::InitForward(e),
+            InitSleepRefusal::NotSlept {
+                marked,
+                slept,
+                tree,
+                root_body,
+            } => Self::InitSleep {
+                marked,
+                slept,
+                tree,
+                root_body,
+            },
         }
     }
 }
@@ -597,8 +654,10 @@ impl Model {
     /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
     /// [`MakeDataError::Range`] ([`Self::check_ranges`]), the history
     /// buffers' refusals ([`MakeDataError::InvalidTimestep`],
-    /// [`MakeDataError::DelayedUserSensor`]), or [`MakeDataError::PluginInit`]
-    /// if a plugin's `init` returns an error.
+    /// [`MakeDataError::DelayedUserSensor`]), [`MakeDataError::PluginInit`]
+    /// if a plugin's `init` returns an error, or the reset's refusal of the
+    /// trees that start asleep ([`MakeDataError::InitSleep`],
+    /// [`MakeDataError::InitForward`]).
     ///
     /// # Panics
     /// As [`Self::check_joint_layout`] says.
@@ -617,7 +676,7 @@ impl Model {
                     message,
                 })?;
         }
-        data.reset(self);
+        data.reset_checked(self)?;
         Ok(data)
     }
 
@@ -650,7 +709,9 @@ impl Model {
     /// layout or a range `try_make_data` refuses.
     pub(crate) fn make_data_for_derivation(&self) -> Data {
         let mut data = self.allocate_data();
-        self.start_sleep(&mut data);
+        // Every tree awake: MuJoCo derives with sleep disabled
+        // (`user_model.cc:5108-5113`).
+        reset_sleep_state(self, &mut data);
         data
     }
 
@@ -843,70 +904,13 @@ impl Model {
             energy_initial_captured: false,
             solver_fwdinv: [0.0, 0.0],
 
-            // Sleep state (§16.7) — initialized from tree sleep policies.
-            // For models not built through MJCF (ntree == 0 or body_treeid not populated),
-            // all bodies start awake and sleep is effectively a no-op.
-            #[allow(clippy::needless_range_loop)]
-            tree_asleep: {
-                let mut v = vec![-(1 + MIN_AWAKE); self.ntree];
-                for t in 0..self.ntree {
-                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
-                        // `t < ntree ≤ nbody`, well below `i32::MAX`, so the wrap/truncation casts are exact.
-                        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-                        {
-                            v[t] = t as i32; // Start asleep (ntree ≤ nbody ≪ i32::MAX)
-                        }
-                    }
-                }
-                v
-            },
-            // Indexed loop reads `tree_sleep_policy[t]` and writes `v[t]` at the same index; iterator forms would obscure the parallel-array update.
-            #[allow(clippy::needless_range_loop)]
-            tree_awake: {
-                let mut v = vec![true; self.ntree];
-                for t in 0..self.ntree {
-                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
-                        v[t] = false;
-                    }
-                }
-                v
-            },
-            // Indexed loop reads `tree_sleep_policy[tree]` and writes `v[body_id]` after a tree-id lookup; iterator forms would obscure the indirect indexing.
-            #[allow(clippy::needless_range_loop)]
-            body_sleep_state: {
-                let mut v = vec![SleepState::Awake; self.nbody];
-                if self.nbody > 0 {
-                    v[0] = SleepState::Static; // World body
-                }
-                // Mark bodies in Init trees as Asleep (only if tree enumeration was run)
-                if self.body_treeid.len() == self.nbody {
-                    for body_id in 1..self.nbody {
-                        let tree = self.body_treeid[body_id];
-                        if tree < self.ntree && self.tree_sleep_policy[tree] == SleepPolicy::Init {
-                            v[body_id] = SleepState::Asleep;
-                        }
-                    }
-                }
-                v
-            },
-            ntree_awake: {
-                let mut count = self.ntree;
-                for t in 0..self.ntree {
-                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
-                        count -= 1;
-                    }
-                }
-                count
-            },
-            nv_awake: {
-                let mut count = self.nv;
-                for t in 0..self.ntree {
-                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
-                        count -= self.tree_dof_num[t];
-                    }
-                }
-                count
-            },
+            // Sleep state (§16.7): every tree awake; `Model::start_sleep` puts
+            // the trees that start asleep to sleep and fills the arrays.
+            tree_asleep: vec![K_AWAKE; self.ntree],
+            tree_awake: vec![true; self.ntree],
+            body_sleep_state: vec![SleepState::Awake; self.nbody],
+            ntree_awake: self.ntree,
+            nv_awake: self.nv,
 
             // Awake-index indirection arrays (§16.17).
             // Allocated to worst-case size; populated by mj_update_sleep_arrays().
@@ -1008,49 +1012,46 @@ impl Model {
         }
     }
 
-    /// Start the sleep state: trees that start asleep get their kinematics
-    /// and mass matrix first, as `make_data` has always computed them, then
-    /// every tree is put in the state its policy gives.
-    pub(crate) fn start_sleep(&self, data: &mut Data) {
-        // Run initial FK to populate body/geom/site positions from qpos0.
-        // This must happen BEFORE sleep gating takes effect so that Init-asleep
-        // bodies have correct world positions. We temporarily mark all bodies
-        // as Awake, run FK, then restore the Init-sleep state.
-        // Only needed when there are Init-asleep trees; other models get FK
-        // from their first forward()/step() call.
-        let has_init_asleep = (0..self.ntree).any(|t| data.tree_asleep[t] >= 0);
-        if has_init_asleep {
-            // Temporarily wake all bodies for FK + CRBA
-            let saved_body_sleep = data.body_sleep_state.clone();
-            let saved_tree_asleep = data.tree_asleep.clone();
-            let saved_tree_awake = data.tree_awake.clone();
-            for b in 1..self.nbody {
-                data.body_sleep_state[b] = SleepState::Awake;
-            }
-            for t in 0..self.ntree {
-                data.tree_awake[t] = true;
-                data.tree_asleep[t] = -(1 + MIN_AWAKE);
-            }
-            // Temporarily update awake-index arrays so CRBA's sleep_filter
-            // evaluates to false (all bodies awake).
-            mj_update_sleep_arrays(self, data);
-
-            // Run FK and CRBA to populate body positions and mass matrix.
-            // CRBA is required so that Init-asleep bodies have valid qM
-            // entries before selective CRBA (§16.29.3) begins preserving them.
-            mj_fwd_position(self, data);
-            mj_crba(self, data);
-
-            // Restore sleep states
-            data.body_sleep_state = saved_body_sleep;
-            data.tree_asleep = saved_tree_asleep;
-            data.tree_awake = saved_tree_awake;
-        }
-
-        // Initialize sleep state with union-find validation (§16.24).
-        // This replaces the inline Init-sleep self-links with proper
-        // island-aware sleep cycles.
+    /// Start the sleep state, as MuJoCo's `mj_resetData` (3.5.0
+    /// `engine_io.c:1440-1505`): every tree awake; then, with sleep enabled
+    /// and a tree whose policy is `Init`, a forward pass, those trees marked
+    /// ready, `mj_sleep`, and `qacc_smooth`, `qfrc_smooth` and the constraint
+    /// rows cleared. With sleep enabled and no such tree, MuJoCo's reset also
+    /// computes the kinematics, centres of mass, cameras and tendons
+    /// (`:1453-1458`); this computes none of them.
+    ///
+    /// # Errors
+    /// The forward pass's error, or the trees that start asleep that
+    /// `mj_sleep` could not put to sleep (a tree in an island with an awake
+    /// one): MuJoCo raises an error for both.
+    pub(crate) fn start_sleep(&self, data: &mut Data) -> Result<(), InitSleepRefusal> {
         reset_sleep_state(self, data);
+        let init = |t: &usize| self.tree_sleep_policy[*t] == SleepPolicy::Init;
+        let marked = (0..self.ntree).filter(init).count();
+        if self.enableflags & ENABLE_SLEEP == 0 || marked == 0 {
+            return Ok(());
+        }
+        data.forward(self).map_err(InitSleepRefusal::Forward)?;
+        for t in 0..self.ntree {
+            data.tree_asleep[t] = if init(&t) { -1 } else { K_AWAKE };
+        }
+        let slept = mj_sleep(self, data);
+        if slept != marked {
+            let tree = (0..self.ntree)
+                .find(|t| init(t) && data.tree_asleep[*t] < 0)
+                .unwrap_or(0);
+            return Err(InitSleepRefusal::NotSlept {
+                marked,
+                slept,
+                tree,
+                root_body: self.tree_body_adr[tree],
+            });
+        }
+        data.qacc_smooth.fill(0.0);
+        data.qfrc_smooth.fill(0.0);
+        crate::constraint::clear_constraint_rows(self, data);
+        mj_update_sleep_arrays(self, data);
+        Ok(())
     }
 
     /// Compute pre-computed kinematic data (ancestor lists and masks).

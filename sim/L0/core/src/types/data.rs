@@ -11,6 +11,7 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 use super::body_wrench::BodyWrench;
 use super::enums::{ConstraintState, ConstraintType, ResetError, SleepState};
 use super::model::Model;
+use super::model_init::InitSleepRefusal;
 
 use super::contact_types::Contact;
 use super::enums::SolverStat;
@@ -1112,11 +1113,13 @@ impl Data {
     /// `mj_resetData`: `_resetData` zeroes the whole `mjData` (MuJoCo 3.5.0
     /// `engine_io.c:1354`), keeps the plugin state and data, and calls each
     /// plugin's `reset` (`:1528-1541`). The `Data` is rebuilt rather than
-    /// cleared field by field, so a field added to `Data` is reset too. With a
-    /// tree that starts asleep, MuJoCo runs a full `mj_forward` at the reset;
-    /// this computes its kinematics and mass matrix only. With sleep enabled and
+    /// cleared field by field, so a field added to `Data` is reset too. With
+    /// sleep enabled and a tree whose policy is `Init`, a forward pass runs
+    /// and those trees are put to sleep, as in MuJoCo. With sleep enabled and
     /// no such tree, MuJoCo computes the kinematics, centres of mass, cameras
-    /// and tendons (`engine_io.c:1453-1458`); this computes none of them.
+    /// and tendons (`engine_io.c:1453-1458`); this computes none of them
+    /// (whether anything reads them before the first forward pass: not
+    /// measured).
     ///
     /// # Panics
     /// With the [`ResetError`]'s message where [`Data::try_reset`] returns it.
@@ -1126,22 +1129,35 @@ impl Data {
         self.try_reset(model).unwrap_or_else(|e| panic!("{e}"));
     }
 
-    /// [`Data::reset`], or the reason the model's history buffers cannot be
-    /// initialised, leaving `self` unchanged.
+    /// [`Data::reset`], or the reason it cannot be made, leaving `self` as it
+    /// was (its plugin state as a refused reset's forward pass left it).
     ///
     /// # Errors
     /// [`ResetError::InvalidTimestep`] when the model has history buffers and
     /// a timestep that is not positive; [`ResetError::DelayedUserSensor`]
-    /// when a user or plugin sensor has a delay.
+    /// when a user or plugin sensor has a delay; [`ResetError::InitSleep`]
+    /// when a tree whose policy is `Init` cannot be put to sleep, and
+    /// [`ResetError::InitForward`] when the forward pass before that fails
+    /// (MuJoCo's `mj_resetData` raises an error for the first two and the
+    /// third).
     pub fn try_reset(&mut self, model: &Model) -> Result<(), ResetError> {
         if let Some(refusal) = model.history_refusal() {
             return Err(refusal.into());
         }
+        Ok(self.reset_checked(model)?)
+    }
+
+    /// [`Data::try_reset`] after its history checks.
+    pub(crate) fn reset_checked(&mut self, model: &Model) -> Result<(), InitSleepRefusal> {
         let mut fresh = model.allocate_data();
         std::mem::swap(&mut fresh.plugin_state, &mut self.plugin_state);
         std::mem::swap(&mut fresh.plugin_data, &mut self.plugin_data);
+        if let Err(refusal) = model.start_sleep(&mut fresh) {
+            std::mem::swap(&mut fresh.plugin_state, &mut self.plugin_state);
+            std::mem::swap(&mut fresh.plugin_data, &mut self.plugin_data);
+            return Err(refusal);
+        }
         *self = fresh;
-        model.start_sleep(self);
         self.reset_plugins(model);
         Ok(())
     }

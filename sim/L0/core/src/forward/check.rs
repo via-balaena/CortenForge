@@ -12,20 +12,30 @@
 use crate::types::flags::{disabled, enabled};
 use crate::types::validation::is_bad;
 use crate::types::warning::{Warning, mj_warning};
-use crate::types::{DISABLE_AUTORESET, Data, ENABLE_SLEEP, Model, StepError};
+use crate::types::{DISABLE_AUTORESET, Data, ENABLE_SLEEP, EqualityType, Model, StepError};
 
 /// The check every `Result` entry point (`step`, `step1`, `step2`, `forward`,
-/// `forward_skip`) runs before any work: the timestep, then the shape of `data`.
+/// `forward_skip`, `integrate`) runs before any work: the timestep, the shape
+/// of `data`, then a tendon equality with sleep enabled.
 ///
 /// # Errors
 ///
 /// [`StepError::InvalidTimestep`] if `model.timestep` is not positive and
-/// finite; otherwise [`check_data_shape`]'s error.
+/// finite; [`check_data_shape`]'s error; [`StepError::TendonEqualityWithSleep`]
+/// if sleep is enabled and a tendon equality is active, on which MuJoCo
+/// 3.5.0 raises an error in every forward pass (`engine_sleep.c:390-392`).
 pub fn check_step_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
     if model.timestep <= 0.0 || !model.timestep.is_finite() {
         return Err(StepError::InvalidTimestep);
     }
-    check_data_shape(model, data)
+    check_data_shape(model, data)?;
+    if model.enableflags & ENABLE_SLEEP != 0
+        && let Some(eq) = (0..model.neq)
+            .find(|&eq| model.eq_active[eq] && model.eq_type[eq] == EqualityType::Tendon)
+    {
+        return Err(StepError::TendonEqualityWithSleep { eq });
+    }
+    Ok(())
 }
 
 /// Refuses a `data` made by a model of other dimensions, or one whose caller
