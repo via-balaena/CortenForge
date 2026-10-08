@@ -644,3 +644,46 @@ fn history_init_keeps_what_it_is_not_given() {
         [-0.05, -0.03, -0.02, -0.01, 5.0, 6.0, 7.0, 8.0]
     );
 }
+
+/// A value the user writes into an actuator buffer's slot 0 (MuJoCo's user
+/// slot) is kept by `Data::init_ctrl_history`, bit for bit, and by the steps
+/// after, as MuJoCo's `mj_initCtrlHistory` and `mj_step` keep it.
+#[test]
+fn history_init_keeps_the_user_slot() {
+    let golden = api_golden();
+    let user = &golden["api"]["init"]["user_slot"];
+    let model = api_model(&golden, "act");
+    let mut data = model.make_data();
+    for written in user["written"].as_array().expect("written") {
+        let id = usize::try_from(written[0].as_u64().expect("id")).expect("id");
+        let adr = usize::try_from(model.actuator_historyadr[id]).expect("adr");
+        data.history[adr] = written[1].as_f64().expect("value");
+    }
+    data.init_ctrl_history(
+        &model,
+        2,
+        Some(&[-0.03, -0.02, -0.01]),
+        Some(&[1.0, 2.0, 3.0]),
+    )
+    .expect("init 2");
+    data.init_ctrl_history(&model, 7, None, Some(&[0.5, -0.5, 0.25, 4.0, 1.0]))
+        .expect("init 7");
+    let theirs = floats(&user["after_init"]);
+    assert_eq!(data.history.len(), theirs.len());
+    for (j, (a, b)) in data.history.iter().zip(&theirs).enumerate() {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "history[{j}] after init: ours {a}, MuJoCo {b}"
+        );
+    }
+    for _ in 0..3 {
+        data.step(&model).expect("step");
+    }
+    assert_close(
+        "history after 3 steps",
+        &data.history,
+        &floats(&user["after_steps"]),
+        &[],
+    );
+}

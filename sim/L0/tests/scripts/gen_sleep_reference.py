@@ -76,7 +76,9 @@ sensors; the resting box with frame sensors relative to a sphere falling
 toward it, relative to a static body, on the static body, between two
 static bodies, and a rangefinder on the box aimed at the sphere; two
 hinges joined by a fixed tendon with no stiffness, one at rest (it
-sleeps), one swinging, with tendon sensors; and, in zero gravity, a
+sleeps), one swinging, with tendon sensors; a slider-crank whose slider
+site is on the world body, its ctrl set to 1 at step 0, until its crank
+sleeps; and, in zero gravity, a
 sphere that starts asleep beside a resting one, which is moved against it
 at step 5 while its countdown runs, so the sleeping sphere wakes with that
 countdown; the resting box given a velocity of 1e-6, below the tolerance,
@@ -296,6 +298,15 @@ TRACES_ACT_SLEEP_TENDON = f"""<mujoco>{SLEEP_OPT}
   biasprm="0 -20 -1"/></actuator>
 <sensor><actuatorfrc actuator="a1"/><actuatorpos actuator="a1"/><tendonpos tendon="t1"/>
   <tendonvel tendon="t1"/><jointvel joint="j1"/></sensor></mujoco>"""
+TRACES_SLIDER_STATIC = f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<site name="s" pos="0.3 0 1"/>
+<body name="crank" pos="0 0 1" sleep="allowed"><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+  <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.02" mass="1"/>
+  <site name="c" pos="0.1 0 0"/></body>
+</worldbody>
+<actuator><general name="a" cranksite="c" slidersite="s" cranklength="0.5" gainprm="1"/></actuator>
+<sensor><actuatorfrc actuator="a"/><jointpos joint="j"/><actuatorpos actuator="a"/></sensor></mujoco>"""
 
 # name: (xml, nstep, sets, sleep enabled[, log the contact filter[, (dof, scale) of the passive counter]])
 TRACES = {
@@ -333,6 +344,7 @@ TRACES = {
     "act_sleep": (TRACES_ACT_SLEEP, 800, [], True),
     "act_sleep_ctrl": (TRACES_ACT_SLEEP, 800, [(700, "ctrl", 0, 0.5)], True),
     "act_tendon_ctrl": (TRACES_ACT_SLEEP_TENDON, 800, [(700, "ctrl", 0, 0.5)], True),
+    "slider_static": (TRACES_SLIDER_STATIC, 1150, [(0, "ctrl", 0, 1.0)], True),
     "sensor_mix": (f"""<mujoco>{SLEEP_OPT}
 <worldbody>{PLANE}
 <body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/>

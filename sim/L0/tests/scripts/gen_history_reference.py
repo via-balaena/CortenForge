@@ -37,7 +37,9 @@ models, at 55 times from -0.05 to 0.1498 with each interpolation (-1 is the
 model's), and the buffer mj_initCtrlHistory leaves on actuator 8 then (its
 cursor is not at its last slot); the buffers mj_initCtrlHistory (actuators 2 and 7) and
 mj_initSensorHistory (sensor 6, phase 0.123) leave, and the forces of the
-4 steps after; and which calls MuJoCo refuses.
+4 steps after; the same two actuator inits after a value is written into
+each buffer's slot 0 (its user slot), and the history then and after 3
+steps; and which calls MuJoCo refuses.
 """
 import json
 import math
@@ -287,11 +289,21 @@ def api():
             m, d, 2, np.array([0.0, 0.0, 1.0]), np.zeros(3))),
         "bad_actuator": refusal(lambda: mujoco.mj_readCtrl(m, d, 99, 0.0, -1)),
     }
+    du = mujoco.MjData(m)
+    written = [[2, 0.25], [7, -1.5]]
+    for a, v in written:
+        du.history[m.actuator_historyadr[a]] = v
+    mujoco.mj_initCtrlHistory(m, du, 2, np.array([-0.03, -0.02, -0.01]), np.array([1.0, 2.0, 3.0]))
+    mujoco.mj_initCtrlHistory(m, du, 7, None, np.array([0.5, -0.5, 0.25, 4.0, 1.0]))
+    user = {"written": written, "after_init": floats(du.history)}
+    for _ in range(3):
+        mujoco.mj_step(m, du)
+    user["after_steps"] = floats(du.history)
     ms = mujoco.MjModel.from_xml_string(sens_xml("Euler"))
     ds = mujoco.MjData(ms)
     mujoco.mj_initSensorHistory(ms, ds, 6, None, np.arange(12, dtype=float).reshape(4, 3), 0.123)
     out["init"] = {"act_history": act_history, "act_forces": forces, "refused": refused,
-                   "sens_history": floats(ds.history)}
+                   "sens_history": floats(ds.history), "user_slot": user}
     return out
 
 

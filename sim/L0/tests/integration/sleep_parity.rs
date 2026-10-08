@@ -820,3 +820,26 @@ fn sleeping_actuators_and_sensors_are_skipped() {
         }
     }
 }
+
+/// A slider-crank whose slider site is on the world body is awake while its
+/// crank's tree is: MuJoCo's `mj_actuatorSleepState` takes either site's body
+/// being awake, and a static body is not awake. Driven from step 0, it acts
+/// (its force sensor reads 1 after that step), and its crank sleeps at step
+/// 1075, as MuJoCo's does.
+#[test]
+fn slider_crank_on_a_static_site_follows_its_crank() {
+    let (ours, theirs) = trace("slider_static");
+    let force = |steps: &[Step]| steps[0].floats.as_ref().expect("kept")[3][0];
+    assert!((force(&theirs) - 1.0).abs() <= 1e-12);
+    assert!(
+        (force(&ours) - force(&theirs)).abs() <= 1e-12,
+        "actuatorfrc after step 0: ours {}, MuJoCo {}",
+        force(&ours),
+        force(&theirs)
+    );
+    assert_eq!(
+        theirs.iter().position(|s| s.tree_asleep[0] >= 0),
+        Some(1075)
+    );
+    assert_trace("slider_static", &["tree_asleep"]);
+}
