@@ -37,25 +37,28 @@
 //! batch.reset_where(&failed);
 //! ```
 
+use std::fmt;
 use std::sync::Arc;
 
-use crate::types::{Data, Model, StepError};
+use crate::forward::check::check_data_shape;
+use crate::types::{Data, MakeDataError, Model, StepError};
 
 /// Batched simulation: N independent environments.
 ///
 /// `BatchSim` has two construction paths:
 ///
-/// 1. **Shared-model** via [`BatchSim::new`] — all environments share the
-///    same [`Arc<Model>`] (same `nq`, `nv`, body tree, geom set). This is
-///    the right choice for deterministic-physics batches (contacts,
-///    control sweeps, non-stochastic rollouts).
+/// 1. **Shared-model** via [`BatchSim::try_new`] or [`BatchSim::new`] — all
+///    environments share the same [`Arc<Model>`] (same `nq`, `nv`, body
+///    tree, geom set). This is the right choice for deterministic-physics
+///    batches (contacts, control sweeps, non-stochastic rollouts).
 ///
-/// 2. **Per-env** via [`BatchSim::new_per_env`] — each environment gets
-///    its own [`Model`] built from a factory closure, with a per-env
-///    stack installed via [`PerEnvStack::install_per_env`]. This is the
-///    right choice for batches whose stochastic components (e.g.
-///    `LangevinThermostat` in `sim-thermostat`) need per-env state to
-///    avoid cross-env noise aliasing.
+/// 2. **Per-env** via [`BatchSim::try_new_per_env`] or
+///    [`BatchSim::new_per_env`] — each environment gets its own [`Model`]
+///    from a factory closure, with the stack the factory pairs it with
+///    installed by [`PerEnvStack::install_on`]. This is the right choice
+///    for batches whose stochastic components (e.g. `LangevinThermostat` in
+///    `sim-thermostat`) need per-env state to avoid cross-env noise
+///    aliasing.
 ///
 /// Each environment owns a full [`Data`] instance with its own heap
 /// allocations (scratch buffers, contact vectors, warmstart `HashMap`).
@@ -66,16 +69,17 @@ use crate::types::{Data, Model, StepError};
 ///
 /// [`BatchSim::model`] and [`BatchSim::step_all`] handle both paths
 /// transparently. Under the shared-model path, `model()` returns the one
-/// shared [`Model`]; under the per-env path, `model()` returns the first
-/// env's model (sound because all per-env models share the same shape —
-/// the factory is expected to return structurally identical models). For
-/// callers that need to distinguish, use [`BatchSim::is_per_env`].
+/// shared [`Model`]; under the per-env path, `model()` returns env 0's model
+/// (its parameters and callbacks), and [`BatchSim::model_of`] returns each
+/// env's. A per-env batch refuses an env whose model makes a [`Data`] of
+/// other lengths than env 0's model does. For callers that need to
+/// distinguish, use [`BatchSim::is_per_env`].
 pub struct BatchSim {
     /// Shared-model path: populated by [`BatchSim::new`]; `None` under
     /// [`BatchSim::new_per_env`].
     shared_model: Option<Arc<Model>>,
-    /// Per-env path: one [`Model`] per env with `cb_passive` already
-    /// installed. Empty under [`BatchSim::new`].
+    /// Per-env path: one [`Model`] per env with its stack installed. Empty
+    /// under [`BatchSim::new`].
     per_env_models: Vec<Model>,
     /// One [`Data`] per env. Always populated, regardless of which
     /// construction path was used.
@@ -83,14 +87,18 @@ pub struct BatchSim {
 }
 
 impl BatchSim {
-    /// Create a batch of `n` environments sharing the same [`Arc<Model>`].
-    /// Each env is initialized via [`Model::make_data()`] (qpos = qpos0,
-    /// qvel = 0, time = 0).
+    /// Create a batch of `n` environments sharing the same [`Arc<Model>`]:
+    /// [`Self::try_new`], panicking on its error.
     ///
     /// Use this constructor for deterministic-physics batches. For
     /// batches whose per-env stochastic components need fresh state (e.g.
     /// `LangevinThermostat` under the C-3 chassis), prefer
     /// [`BatchSim::new_per_env`].
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Model::make_data`] does, with the [`MakeDataError`]'s
+    /// message, if `n > 0` and the model cannot make a [`Data`].
     #[must_use]
     pub fn new(model: Arc<Model>, n: usize) -> Self {
         let envs = (0..n).map(|_| model.make_data()).collect();
@@ -101,46 +109,120 @@ impl BatchSim {
         }
     }
 
-    /// Create a batch of `n` environments, each constructed via a factory
-    /// closure that returns a `(Model, Arc<S>)` pair where `S: PerEnvStack`.
-    /// Each env's model has its `cb_passive` installed from its paired
-    /// stack via [`PerEnvStack::install_per_env`].
+    /// Create a batch of `n` environments sharing the same [`Arc<Model>`].
+    /// Each env is initialized via [`Model::try_make_data()`] (qpos = qpos0,
+    /// qvel = 0, time = 0).
     ///
-    /// The `prototype` argument is the receiver for the
-    /// `PerEnvStack::install_per_env` trait method — it is not held by
-    /// the returned `BatchSim` and can be dropped after the call. The
-    /// factory is the authoritative source of per-env stacks; the caller
-    /// retains ownership of the `Arc<S>` handles it produces (via cloning
-    /// inside the factory or externally) if it needs to call
-    /// `disable_stochastic` per env later.
+    /// An empty batch (`n == 0`) makes no [`Data`], so it checks nothing.
+    ///
+    /// # Errors
+    ///
+    /// The first env's [`MakeDataError`] when the model cannot make a
+    /// [`Data`].
+    pub fn try_new(model: Arc<Model>, n: usize) -> Result<Self, MakeDataError> {
+        let envs = (0..n)
+            .map(|_| model.try_make_data())
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            shared_model: Some(model),
+            per_env_models: Vec::new(),
+            envs,
+        })
+    }
+
+    /// Create a batch of `n` environments, each with its own [`Model`]:
+    /// [`Self::try_new_per_env`], panicking on its error.
+    ///
+    /// # Panics
+    ///
+    /// On any [`PerEnvError`], with the message
+    /// `"BatchSim::new_per_env: {error}"`.
+    #[must_use]
+    // The documented panic: `try_new_per_env` is the non-panicking form.
+    #[allow(clippy::panic)]
+    pub fn new_per_env<S, F>(n: usize, factory: F) -> Self
+    where
+        S: PerEnvStack,
+        F: FnMut(usize) -> (Model, Arc<S>),
+    {
+        Self::try_new_per_env(n, factory).unwrap_or_else(|e| panic!("BatchSim::new_per_env: {e}"))
+    }
+
+    /// Create a batch of `n` environments, each with its own [`Model`].
+    ///
+    /// For each env `i` in order, `factory(i)` returns the env's model and
+    /// the stack to install on it; the batch installs it with
+    /// [`PerEnvStack::install_on`] and makes the env's [`Data`] with
+    /// [`Model::try_make_data`]. The batch holds the models, not the
+    /// stacks: a caller that needs a stack later (e.g. to call
+    /// `disable_stochastic` on one env) keeps its own `Arc` from inside the
+    /// factory.
     ///
     /// Use this constructor when the batch needs per-env stochastic
     /// components (e.g. `LangevinThermostat` under C-3). For
     /// deterministic-physics batches or any case where all envs share
     /// the same callback-free `Model`, prefer [`BatchSim::new`].
-    #[must_use]
-    pub fn new_per_env<S, F>(prototype: &Arc<S>, n: usize, factory: F) -> Self
+    ///
+    /// # Errors
+    ///
+    /// The first refusal, checked env by env in this order:
+    /// - [`PerEnvError::NoEnvs`] if `n == 0`;
+    /// - [`PerEnvError::SharedStack`] if `factory` returns, for env `i`, the
+    ///   stack (the same `Arc`) it returned for an earlier env;
+    /// - [`PerEnvError::Install`] if the stack refuses its model;
+    /// - [`PerEnvError::MakeData`] if the model cannot make a [`Data`];
+    /// - [`PerEnvError::ShapeMismatch`] if the env's [`Data`] has another
+    ///   length than env 0's model needs in an array [`Data::step`] checks
+    ///   before stepping.
+    pub fn try_new_per_env<S, F>(n: usize, mut factory: F) -> Result<Self, PerEnvError<S::Error>>
     where
         S: PerEnvStack,
         F: FnMut(usize) -> (Model, Arc<S>),
     {
-        let batch = prototype.install_per_env(n, factory);
-        let envs = batch.models.iter().map(Model::make_data).collect();
-        // `batch.stacks` is intentionally dropped: the caller retains any
-        // handles it needs via the factory closure's own scope. Holding
-        // them on `BatchSim` would duplicate information the factory
-        // already returns and force `BatchSim` to care about the stack
-        // type parameter `S`, which it does not.
-        drop(batch.stacks);
-        Self {
-            shared_model: None,
-            per_env_models: batch.models,
-            envs,
+        if n == 0 {
+            return Err(PerEnvError::NoEnvs);
         }
+        let mut models: Vec<Model> = Vec::with_capacity(n);
+        let mut stacks: Vec<Arc<S>> = Vec::with_capacity(n);
+        let mut envs = Vec::with_capacity(n);
+        for env in 0..n {
+            let (mut model, stack) = factory(env);
+            if let Some(earlier) = stacks.iter().position(|s| Arc::ptr_eq(s, &stack)) {
+                return Err(PerEnvError::SharedStack { env, earlier });
+            }
+            stack
+                .install_on(&mut model)
+                .map_err(|source| PerEnvError::Install { env, source })?;
+            let data = model
+                .try_make_data()
+                .map_err(|source| PerEnvError::MakeData { env, source })?;
+            if let Err(StepError::DataShapeMismatch {
+                field,
+                expected,
+                actual,
+            }) = check_data_shape(models.first().unwrap_or(&model), &data)
+            {
+                return Err(PerEnvError::ShapeMismatch {
+                    env,
+                    field,
+                    expected,
+                    actual,
+                });
+            }
+            models.push(model);
+            stacks.push(stack);
+            envs.push(data);
+        }
+        Ok(Self {
+            shared_model: None,
+            per_env_models: models,
+            envs,
+        })
     }
 
-    /// `true` if this batch was constructed via [`BatchSim::new_per_env`];
-    /// `false` if via [`BatchSim::new`].
+    /// `true` if this batch was constructed via [`BatchSim::try_new_per_env`]
+    /// or [`BatchSim::new_per_env`]; `false` if via [`BatchSim::try_new`] or
+    /// [`BatchSim::new`].
     #[must_use]
     pub fn is_per_env(&self) -> bool {
         self.shared_model.is_none()
@@ -162,24 +244,32 @@ impl BatchSim {
     ///
     /// Under the shared-model path (constructed via [`BatchSim::new`]),
     /// this returns the one shared [`Model`]. Under the per-env path
-    /// (constructed via [`BatchSim::new_per_env`]), this returns the
-    /// first env's model — sound because all per-env models share the
-    /// same shape (`nq`, `nv`, body tree, geom set) by factory contract;
-    /// callers reading `model.nq`, `model.nv`, or other static fields
-    /// get the correct values.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called on an empty per-env batch (`new_per_env(_, 0, _)`
-    /// returns a `BatchSim` with no first env to borrow a model from).
-    /// Callers should check [`BatchSim::is_empty`] first if this is a
-    /// concern.
+    /// (constructed via [`BatchSim::new_per_env`]), this returns env 0's
+    /// model: its parameters and callbacks are env 0's, and the batch
+    /// checked that every env's [`Data`] has the lengths it needs.
+    /// [`BatchSim::model_of`] returns each env's own.
     #[must_use]
     pub fn model(&self) -> &Model {
         match &self.shared_model {
             Some(m) => m,
             None => &self.per_env_models[0],
         }
+    }
+
+    /// The [`Model`] environment `i` steps with: the shared model, or env
+    /// `i`'s own on the per-env path.
+    ///
+    /// Returns `None` if `i >= len()`.
+    #[must_use]
+    pub fn model_of(&self, i: usize) -> Option<&Model> {
+        if i >= self.envs.len() {
+            return None;
+        }
+        Some(env_model(
+            self.shared_model.as_deref(),
+            &self.per_env_models,
+            i,
+        ))
     }
 
     // ==================== Environment Access ====================
@@ -236,59 +326,58 @@ impl BatchSim {
     /// environment's step is a pure function of its own [`Data`] and the
     /// shared [`Model`]. No cross-environment communication occurs.
     pub fn step_all(&mut self) -> Vec<Option<StepError>> {
-        if let Some(model) = &self.shared_model {
-            #[cfg(feature = "parallel")]
-            {
-                use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
-                self.envs
-                    .par_iter_mut()
-                    .map(|data| data.step(model).err())
-                    .collect()
-            }
+        self.map_envs(|data, model| data.step(model).err())
+    }
 
-            #[cfg(not(feature = "parallel"))]
-            {
-                self.envs
-                    .iter_mut()
-                    .map(|data| data.step(model).err())
-                    .collect()
-            }
-        } else {
-            // Per-env path — each env pairs with its own model. The
-            // disjoint-field borrow (`&self.per_env_models` + `&mut
-            // self.envs`) is sound because the two `Vec`s are separate
-            // fields; the per-env parallel step walks index-paired
-            // pairs without cross-env aliasing.
-            let models = &self.per_env_models;
-            #[cfg(feature = "parallel")]
-            {
-                use rayon::iter::{
-                    IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
-                };
-                self.envs
-                    .par_iter_mut()
-                    .enumerate()
-                    .map(|(i, data)| data.step(&models[i]).err())
-                    .collect()
-            }
+    /// Run [`Data::forward`] on every environment.
+    ///
+    /// Returns per-environment errors, as [`step_all()`](Self::step_all)
+    /// does, and runs the environments the same way: in parallel under the
+    /// `parallel` feature, sequentially without it.
+    ///
+    /// # Determinism
+    ///
+    /// As [`step_all()`](Self::step_all).
+    pub fn forward_all(&mut self) -> Vec<Option<StepError>> {
+        self.map_envs(|data, model| data.forward(model).err())
+    }
 
-            #[cfg(not(feature = "parallel"))]
-            {
-                self.envs
-                    .iter_mut()
-                    .enumerate()
-                    .map(|(i, data)| data.step(&models[i]).err())
-                    .collect()
-            }
+    /// Run `f` on every environment with its model, in parallel under the
+    /// `parallel` feature, and collect what it returns.
+    fn map_envs<G>(&mut self, f: G) -> Vec<Option<StepError>>
+    where
+        G: Fn(&mut Data, &Model) -> Option<StepError> + Sync + Send,
+    {
+        // Disjoint field borrows: the models are read while `envs` is
+        // borrowed mutably, and each env pairs with its own model.
+        let shared = self.shared_model.as_deref();
+        let per_env = &self.per_env_models;
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::iter::{
+                IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+            };
+            self.envs
+                .par_iter_mut()
+                .enumerate()
+                .map(|(i, data)| f(data, env_model(shared, per_env, i)))
+                .collect()
+        }
+
+        #[cfg(not(feature = "parallel"))]
+        {
+            self.envs
+                .iter_mut()
+                .enumerate()
+                .map(|(i, data)| f(data, env_model(shared, per_env, i)))
+                .collect()
         }
     }
 
     // ==================== Reset ====================
 
-    /// Reset environment `i` to initial state via [`Data::reset()`].
-    ///
-    /// Does **not** zero `qfrc_applied` / `xfrc_applied` (see [`Data::reset`]
-    /// documentation). Callers must zero these explicitly if needed.
+    /// Reset environment `i` to initial state via [`Data::reset()`], which
+    /// also zeroes `qfrc_applied` and `xfrc_applied`.
     ///
     /// Returns `None` if `i >= len()`.
     pub fn reset(&mut self, i: usize) -> Option<()> {
@@ -349,49 +438,108 @@ impl BatchSim {
     }
 }
 
-/// Trait exposing the `install_per_env` surface [`BatchSim::new_per_env`]
-/// needs to wire per-env stacks into a batch.
+/// The model env `i` steps with: the shared model if there is one, else
+/// env `i`'s own.
+fn env_model<'a>(shared: Option<&'a Model>, per_env: &'a [Model], i: usize) -> &'a Model {
+    match shared {
+        Some(model) => model,
+        None => &per_env[i],
+    }
+}
+
+/// A stack of callbacks [`BatchSim::try_new_per_env`] installs on each env's
+/// own [`Model`].
 ///
 /// The trait lives in `sim-core::batch` (rather than in the thermostat
 /// crate) so that `sim-core` owns the contract without taking a reverse
 /// dependency on `sim-thermostat`. Implementors live in downstream
-/// crates — today, `sim-thermostat` implements it for `PassiveStack` —
-/// and pass themselves as the `prototype` argument to
-/// [`BatchSim::new_per_env`].
-///
-/// This trait is **not object-safe**: `install_per_env` is generic over
-/// the factory closure type `F`, which prevents `dyn PerEnvStack` at the
-/// call site. Use `S: PerEnvStack` as a generic bound instead (as
-/// [`BatchSim::new_per_env`] does).
-///
-/// # Contract
-///
-/// Implementors build `n` independent `(Model, Arc<Self>)` pairs by
-/// calling `build_one(i)` for each `i in 0..n`, install the resulting
-/// stack onto each returned model, and collect the installed models
-/// plus retained stacks into an [`EnvBatch`]. Each per-env model must
-/// have its `cb_passive` ready to fire after `install_per_env` returns.
+/// crates — today, `sim-thermostat` implements it for `PassiveStack`.
 pub trait PerEnvStack: Send + Sync + 'static {
-    /// Build `n` independent per-env `(Model, Arc<Self>)` pairs from
-    /// `build_one` and install the resulting stacks onto each paired
-    /// model, returning the installed models and retained stack handles.
-    fn install_per_env<F>(self: &Arc<Self>, n: usize, build_one: F) -> EnvBatch<Self>
-    where
-        F: FnMut(usize) -> (Model, Arc<Self>);
+    /// Why [`install_on`](Self::install_on) refuses a model.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Install this stack's callbacks on `model`.
+    ///
+    /// # Errors
+    ///
+    /// The stack's refusal of `model`, which then must be left unchanged.
+    fn install_on(self: &Arc<Self>, model: &mut Model) -> Result<(), Self::Error>;
 }
 
-/// A batch of `n` independent `(Model, Arc<S>)` pairs produced by
-/// [`PerEnvStack::install_per_env`].
-///
-/// Each model has its `cb_passive` already installed, and the matching
-/// stacks are retained in the same order as `models` so callers can
-/// later call stack-type-specific operations (e.g. `disable_stochastic`)
-/// per env.
-pub struct EnvBatch<S: ?Sized> {
-    /// One [`Model`] per env, with `cb_passive` already installed.
-    pub models: Vec<Model>,
-    /// One `Arc<S>` per env, in the same order as [`EnvBatch::models`].
-    pub stacks: Vec<Arc<S>>,
+/// Why [`BatchSim::try_new_per_env`] cannot build a batch. `E` is the
+/// stack's [`PerEnvStack::Error`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum PerEnvError<E> {
+    /// A per-env batch was asked for zero envs.
+    NoEnvs,
+    /// The factory returned, for `env`, the stack it returned for `earlier`;
+    /// each env needs its own.
+    SharedStack {
+        /// The env given another env's stack.
+        env: usize,
+        /// The env the stack was given first.
+        earlier: usize,
+    },
+    /// `env`'s stack refused its model.
+    Install {
+        /// The env whose model was refused.
+        env: usize,
+        /// The stack's refusal.
+        source: E,
+    },
+    /// `env`'s model cannot make a [`Data`] ([`Model::try_make_data`]).
+    MakeData {
+        /// The env whose model was refused.
+        env: usize,
+        /// Why.
+        source: MakeDataError,
+    },
+    /// `env`'s [`Data`] has another length than env 0's model needs in an
+    /// array [`Data::step`] checks.
+    ShapeMismatch {
+        /// The env whose model differs.
+        env: usize,
+        /// The `Data` field (`"qpos"`).
+        field: &'static str,
+        /// The length env 0's model needs.
+        expected: usize,
+        /// The length env `env`'s model gives it.
+        actual: usize,
+    },
+}
+
+impl<E: fmt::Display> fmt::Display for PerEnvError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoEnvs => f.write_str("a per-env batch needs at least one env"),
+            Self::SharedStack { env, earlier } => write!(
+                f,
+                "env {env} got the stack of env {earlier}; each env needs its own"
+            ),
+            Self::Install { env, source } => write!(f, "env {env}: {source}"),
+            Self::MakeData { env, source } => write!(f, "env {env}: {source}"),
+            Self::ShapeMismatch {
+                env,
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "env {env}: data.{field} has length {actual}, but env 0's model needs {expected}"
+            ),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for PerEnvError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Install { source, .. } => Some(source),
+            Self::MakeData { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -767,5 +915,192 @@ mod tests {
         let model = Arc::new(pendulum_model());
         let mut batch = BatchSim::new(model, 0);
         batch.reset_all(); // Should not panic
+    }
+
+    /// `reset` zeroes the applied forces, as [`Data::reset`] does.
+    #[test]
+    fn batch_reset_zeroes_applied_forces() {
+        let mut batch = BatchSim::new(Arc::new(pendulum_model()), 2);
+        for env in batch.envs_mut() {
+            env.qfrc_applied.fill(1.5);
+            env.xfrc_applied[1] = crate::BodyWrench::new(
+                nalgebra::Vector3::new(1.0, 2.0, 3.0),
+                nalgebra::Vector3::new(4.0, 5.0, 6.0),
+            );
+        }
+        batch.step_all();
+        batch.reset(0).unwrap();
+        let env = batch.env(0).unwrap();
+        assert!(env.qfrc_applied.iter().all(|&x| x == 0.0));
+        assert!(
+            env.xfrc_applied
+                .iter()
+                .all(|w| *w == crate::BodyWrench::default())
+        );
+        let untouched = batch.env(1).unwrap();
+        assert_eq!(untouched.qfrc_applied[0], 1.5, "env 1 was not reset");
+    }
+
+    // ==================== Per-env ====================
+
+    /// A stack that installs a passive callback, or refuses a model whose
+    /// `nv` is not `nv`, leaving it unchanged.
+    struct TestStack {
+        nv: Option<usize>,
+    }
+
+    fn stack(nv: Option<usize>) -> Arc<TestStack> {
+        Arc::new(TestStack { nv })
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Refused(usize);
+
+    impl fmt::Display for Refused {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "nv {} refused", self.0)
+        }
+    }
+
+    impl std::error::Error for Refused {}
+
+    impl PerEnvStack for TestStack {
+        type Error = Refused;
+
+        fn install_on(self: &Arc<Self>, model: &mut Model) -> Result<(), Refused> {
+            if self.nv.is_some_and(|nv| nv != model.nv) {
+                return Err(Refused(model.nv));
+            }
+            model.set_passive_callback(|_, _| {});
+            Ok(())
+        }
+    }
+
+    /// A pendulum of `links` links, with link length `length`.
+    fn chain(links: usize, length: f64) -> Model {
+        Model::n_link_pendulum(links, length, 0.1)
+    }
+
+    #[test]
+    fn per_env_batch_refuses_models_of_different_shapes() {
+        assert_eq!(
+            BatchSim::try_new_per_env(0, |_| (chain(2, 1.0), stack(None))).err(),
+            Some(PerEnvError::NoEnvs)
+        );
+        let err = BatchSim::try_new_per_env(3, |i| (chain(2 + i / 2, 1.0), stack(None)));
+        assert_eq!(
+            err.err(),
+            Some(PerEnvError::ShapeMismatch {
+                env: 2,
+                field: "qpos",
+                expected: 2,
+                actual: 3,
+            })
+        );
+        let batch = BatchSim::try_new_per_env(3, |_| (chain(2, 1.0), stack(None))).unwrap();
+        assert_eq!(batch.len(), 3);
+        assert!(batch.is_per_env());
+        assert!((0..3).all(|i| batch.model_of(i).unwrap().cb_passive.is_some()));
+    }
+
+    #[test]
+    fn per_env_batch_refuses_a_shared_stack_and_an_install_refusal() {
+        let shared = stack(None);
+        let err = BatchSim::try_new_per_env(3, |_| (chain(2, 1.0), Arc::clone(&shared)));
+        assert_eq!(
+            err.err(),
+            Some(PerEnvError::SharedStack { env: 1, earlier: 0 })
+        );
+        let err = BatchSim::try_new_per_env(2, |i| (chain(2 + i, 1.0), stack(Some(2))));
+        assert_eq!(
+            err.err(),
+            Some(PerEnvError::Install {
+                env: 1,
+                source: Refused(3)
+            })
+        );
+    }
+
+    #[test]
+    fn per_env_batch_returns_the_make_data_refusal() {
+        let err = BatchSim::try_new_per_env(2, |i| {
+            let mut model = chain(2, 1.0);
+            if i == 1 {
+                model.jnt_limited[0] = true;
+                model.jnt_range[0] = (1.0, -1.0);
+            }
+            (model, stack(None))
+        });
+        assert!(
+            matches!(
+                err,
+                Err(PerEnvError::MakeData {
+                    env: 1,
+                    source: MakeDataError::Range(_)
+                })
+            ),
+            "{:?}",
+            err.err()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "BatchSim::new_per_env: env 1: nv 3 refused")]
+    fn new_per_env_panics_on_a_refused_model() {
+        let _batch = BatchSim::new_per_env(2, |i| (chain(2 + i, 1.0), stack(Some(2))));
+    }
+
+    #[test]
+    fn try_new_returns_the_make_data_refusal() {
+        let mut model = chain(2, 1.0);
+        model.jnt_limited[0] = true;
+        model.jnt_range[0] = (1.0, -1.0);
+        let model = Arc::new(model);
+        assert!(matches!(
+            BatchSim::try_new(Arc::clone(&model), 2),
+            Err(MakeDataError::Range(_))
+        ));
+        assert_eq!(BatchSim::try_new(model, 0).unwrap().len(), 0);
+        assert_eq!(
+            BatchSim::try_new(Arc::new(chain(2, 1.0)), 3).unwrap().len(),
+            3
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "jnt_range[0] is not a valid range")]
+    fn new_panics_with_the_make_data_refusal() {
+        let mut model = chain(2, 1.0);
+        model.jnt_limited[0] = true;
+        model.jnt_range[0] = (1.0, -1.0);
+        let _batch = BatchSim::new(Arc::new(model), 1);
+    }
+
+    #[test]
+    fn model_of_returns_each_envs_model_and_forward_all_runs() {
+        let lengths = [0.5, 1.0, 1.5];
+        let mut batch =
+            BatchSim::try_new_per_env(3, |i| (chain(2, lengths[i]), stack(None))).unwrap();
+        for (i, env) in batch.envs_mut().enumerate() {
+            env.qpos[0] = 0.1 * (i as f64 + 1.0);
+        }
+        assert!(batch.forward_all().iter().all(Option::is_none));
+        for (i, &length) in lengths.iter().enumerate() {
+            let model = batch.model_of(i).unwrap();
+            assert_eq!(model.body_pos[2].z, -length, "env {i}'s own model");
+            let mut alone = model.make_data();
+            alone.qpos[0] = 0.1 * (i as f64 + 1.0);
+            alone.forward(model).unwrap();
+            let env = batch.env(i).unwrap();
+            assert_eq!(env.qacc, alone.qacc, "env {i}: forward_all = forward");
+            assert_eq!(env.time, 0.0, "forward_all does not step");
+        }
+        assert!(batch.model_of(3).is_none());
+        assert!(std::ptr::eq(batch.model(), batch.model_of(0).unwrap()));
+
+        let shared = Arc::new(chain(2, 1.0));
+        let batch = BatchSim::new(Arc::clone(&shared), 2);
+        assert!(std::ptr::eq(batch.model_of(1).unwrap(), shared.as_ref()));
+        assert!(batch.model_of(2).is_none());
     }
 }

@@ -39,8 +39,8 @@
 //! ```
 //!
 //! where `master_key` is expanded once at construction from the
-//! user-supplied `master_seed: u64`, `traj_id` is set per env by an
-//! `install_per_env` factory, `s` is the component's own `AtomicU64`
+//! user-supplied `master_seed: u64`, `traj_id` is set per env by a
+//! `BatchSim::new_per_env` factory, `s` is the component's own `AtomicU64`
 //! counter (advanced once per `apply` call, gated by
 //! `stochastic_active`), and `group = d / 8` handles DOF counts above
 //! 8. Each `(traj_id, s, group)` has its own block, so every DOF group
@@ -49,7 +49,7 @@
 //! Because the PRF is a pure function of integers, a thermostat's noise
 //! at a given step depends only on `(master_seed, traj_id, step)`, not on
 //! thread scheduling. That holds when each env has its own thermostat
-//! (`install_per_env`, `BatchSim::new_per_env`). A stack shared by several
+//! (`BatchSim::new_per_env`). A stack shared by several
 //! `Data` (a cloned `Model`, or `BatchSim::new`) shares one step counter,
 //! so which env draws which step depends on the order of the calls.
 //!
@@ -97,7 +97,7 @@ pub struct LangevinThermostat {
     /// `master_seed` via [`crate::prf::expand_master_seed`].
     master_key: [u8; 32],
     /// Per-env trajectory identifier. Typically the env index
-    /// under a `PassiveStack::install_per_env` factory; any distinct
+    /// under a `BatchSim::new_per_env` factory; any distinct
     /// `u64` value produces a disjoint noise stream at the same
     /// `master_seed`.
     traj_id: u64,
@@ -136,7 +136,7 @@ impl LangevinThermostat {
     /// in this crate's `prf` module); the thermostat's
     /// noise stream at step `s` for DOF `d` is a pure function of
     /// `(master_key, traj_id, s, d)`. `traj_id` is typically the env
-    /// index under an `install_per_env` factory, but it can be any
+    /// index under a `BatchSim::new_per_env` factory, but it can be any
     /// `u64` — distinct `traj_id` values at the same `master_seed`
     /// produce disjoint noise streams by the PRF's construction.
     ///
