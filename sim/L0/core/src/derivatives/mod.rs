@@ -204,7 +204,8 @@ impl Default for DerivativeConfig {
 /// What every finite-difference transition entry point checks before any
 /// work: the step inputs `step` checks (the timestep and the `Data`'s shape),
 /// then the integrator and the history buffers MuJoCo's `mjd_transitionFD`
-/// refuses, in its order.
+/// refuses, in its order. A tendon equality with sleep is refused by the
+/// first step it takes, as MuJoCo's raises an error there.
 pub(crate) fn check_fd_transition_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
     crate::forward::check::check_step_inputs(model, data)?;
     check_fd_integrator(model)?;

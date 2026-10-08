@@ -19,6 +19,7 @@ use super::model::Model;
 use crate::dynamics::SpatialVector;
 use crate::dynamics::crba::{DEFAULT_MASS_FALLBACK, mj_crba};
 use crate::dynamics::factor::mj_factor_sparse;
+use crate::forward::MjStage;
 use crate::jacobian::mj_jac_body_com;
 use crate::linalg::mj_solve_sparse_batch;
 
@@ -1031,7 +1032,13 @@ impl Model {
         if self.enableflags & ENABLE_SLEEP == 0 || marked == 0 {
             return Ok(());
         }
-        data.forward(self).map_err(InitSleepRefusal::Forward)?;
+        // MuJoCo's reset runs `mj_forward`, which checks no timestep (a
+        // timestep at or below 0 is refused only with history buffers,
+        // before this) and raises on a tendon equality with sleep.
+        crate::forward::check::check_tendon_equality_sleep(self)
+            .map_err(InitSleepRefusal::Forward)?;
+        data.forward_skip_unchecked(self, MjStage::None, false)
+            .map_err(InitSleepRefusal::Forward)?;
         for t in 0..self.ntree {
             data.tree_asleep[t] = if init(&t) { -1 } else { K_AWAKE };
         }

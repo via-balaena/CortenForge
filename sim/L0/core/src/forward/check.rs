@@ -15,20 +15,33 @@ use crate::types::warning::{Warning, mj_warning};
 use crate::types::{DISABLE_AUTORESET, Data, ENABLE_SLEEP, EqualityType, Model, StepError};
 
 /// The check every `Result` entry point (`step`, `step1`, `step2`, `forward`,
-/// `forward_skip`, `integrate`) runs before any work: the timestep, the shape
-/// of `data`, then a tendon equality with sleep enabled.
+/// `forward_skip`, `integrate`) runs before any work: the timestep, then the
+/// shape of `data`.
 ///
 /// # Errors
 ///
 /// [`StepError::InvalidTimestep`] if `model.timestep` is not positive and
-/// finite; [`check_data_shape`]'s error; [`StepError::TendonEqualityWithSleep`]
-/// if sleep is enabled and a tendon equality is active, on which MuJoCo
-/// 3.5.0 raises an error in every forward pass (`engine_sleep.c:390-392`).
+/// finite; [`check_data_shape`]'s error.
 pub fn check_step_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
     if model.timestep <= 0.0 || !model.timestep.is_finite() {
         return Err(StepError::InvalidTimestep);
     }
-    check_data_shape(model, data)?;
+    check_data_shape(model, data)
+}
+
+/// The check the calls that run the position stage make before any work
+/// (`step`, `step1`, `forward`, `forward_skip` from `MjStage::None`, the
+/// transition finite differences, the init-sleep reset): MuJoCo 3.5.0's
+/// position stage raises an error on an active tendon equality with sleep
+/// enabled (`mj_wakeEquality`, `engine_sleep.c:398-400`). `step2`,
+/// `integrate`, `forward_skip` past the position stage and the inverse
+/// finite differences run, as MuJoCo's `mj_step2`, `mj_Euler`,
+/// `mj_forwardSkip` and `mjd_inverseFD` do.
+///
+/// # Errors
+///
+/// [`StepError::TendonEqualityWithSleep`] naming the first such equality.
+pub fn check_tendon_equality_sleep(model: &Model) -> Result<(), StepError> {
     if model.enableflags & ENABLE_SLEEP != 0
         && let Some(eq) = (0..model.neq)
             .find(|&eq| model.eq_active[eq] && model.eq_type[eq] == EqualityType::Tendon)

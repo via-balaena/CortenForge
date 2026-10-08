@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use sim_core::{
-    BodyWrench, ENABLE_SLEEP, MakeDataError, Model, ResetError, SleepPolicy, SleepState, StepError,
+    BodyWrench, ENABLE_SLEEP, MakeDataError, MjStage, Model, ResetError, SleepPolicy, SleepState,
+    StepError,
 };
 use sim_mjcf::load_model;
 
@@ -775,24 +776,136 @@ fn init_mixed_island_refused() {
     }
 }
 
-/// A tendon equality with sleep enabled is refused at the first forward
-/// pass, as MuJoCo raises an error there.
+/// A tendon equality with sleep enabled is refused by the calls that run the
+/// position stage, as MuJoCo's raise an error there, and by none of the
+/// others; an inactive one, and one with sleep disabled, by none. Each call
+/// on a fresh `Data`, against the MuJoCo call the golden names.
 #[test]
 fn tendon_equality_with_sleep_refused() {
-    let (model, theirs) = refusal("tendon_equality");
+    let (_, theirs) = refusal("tendon_equality");
     assert_eq!(
         theirs,
         "mj_wakeEquality: tendon equality does not yet support sleeping"
     );
+    let golden = golden();
+    let config = sim_core::DerivativeConfig::default();
+    for key in ["active", "inactive"] {
+        let case = &golden["tendon_equality_calls"][key];
+        let model = model_of(case);
+        let calls = case["calls"].as_object().expect("calls");
+        assert_eq!(calls.len(), 10, "{key}");
+        for (call, message) in calls {
+            let mut data = model.make_data();
+            let ours = match call.as_str() {
+                "mj_forward" => data.forward(&model),
+                "mj_step" => data.step(&model),
+                "mj_step1" => data.step1(&model),
+                "mj_step2" => data.step2(&model),
+                "mj_forwardSkip(NONE)" => data.forward_skip(&model, MjStage::None, false),
+                "mj_forwardSkip(POS)" => data.forward_skip(&model, MjStage::Pos, false),
+                "mj_forwardSkip(VEL)" => data.forward_skip(&model, MjStage::Vel, false),
+                "mj_Euler" => data.integrate(&model),
+                "mjd_transitionFD" => sim_core::mjd_transition_fd(&model, &data, &config).map(drop),
+                "mjd_inverseFD" => sim_core::mjd_inverse_fd(&model, &data, &config).map(drop),
+                other => panic!("no call {other}"),
+            };
+            let want = if message.is_null() {
+                Ok(())
+            } else {
+                Err(StepError::TendonEqualityWithSleep { eq: 0 })
+            };
+            assert_eq!(ours, want, "{key} {call}");
+        }
+        let mut asleep_off = model.clone();
+        asleep_off.enableflags &= !ENABLE_SLEEP;
+        let mut data = asleep_off.make_data();
+        assert_eq!(data.forward(&asleep_off), Ok(()), "{key}, sleep disabled");
+    }
+    // `step` refuses before any work: a NaN position stays, where the check
+    // `step` makes first would reset it (MuJoCo's `mj_step` resets it, then
+    // its forward pass raises).
+    let model = model_of(&golden["tendon_equality_calls"]["active"]);
     let mut data = model.make_data();
+    data.qpos[0] = f64::NAN;
     assert_eq!(
-        data.forward(&model),
+        data.step(&model),
         Err(StepError::TendonEqualityWithSleep { eq: 0 })
     );
-    let mut asleep_off = model.clone();
-    asleep_off.enableflags &= !ENABLE_SLEEP;
-    let mut data = asleep_off.make_data();
-    assert_eq!(data.forward(&asleep_off), Ok(()));
+    assert!(data.qpos[0].is_nan());
+}
+
+/// A tree that starts asleep beside an active tendon equality: MuJoCo
+/// refuses the model at compile, where its reset's `mj_forward` raises the
+/// tendon-equality error; making its `Data` here refuses it with that error.
+#[test]
+fn init_sleep_with_a_tendon_equality_refused() {
+    let (model, theirs) = refusal("init_tendon_equality");
+    assert!(
+        theirs.ends_with("mj_wakeEquality: tendon equality does not yet support sleeping"),
+        "{theirs}"
+    );
+    assert_eq!(
+        model.try_make_data().err(),
+        Some(MakeDataError::InitForward(
+            StepError::TendonEqualityWithSleep { eq: 0 }
+        ))
+    );
+}
+
+/// The trees that start asleep see each mocap body at its pose. MuJoCo's
+/// reset runs the init-sleep `mj_forward` with every mocap body at the origin
+/// and places them after it (`engine_io.c:1374-1375`, `:1463`, `:1507-1517`),
+/// so its sphere under a mocap sphere at (0, 0, 5) touches it there and keeps
+/// that touch reading while it sleeps; here the sphere touches nothing.
+/// Registry row `D-INIT-SLEEP-MOCAP`.
+#[test]
+fn init_sleep_sees_mocap_bodies_where_they_are() {
+    let golden = golden();
+    let case = &golden["init_mocap"];
+    assert_eq!(case["ncon"], 1);
+    assert!((case["sensordata"][0].as_f64().expect("touch") - 625.0).abs() < 1e-9);
+    assert!((case["after_20"]["sensordata"][0].as_f64().expect("touch") - 625.0).abs() < 1e-9);
+    let model = model_of(case);
+    let mut data = model.make_data();
+    assert_eq!(data.tree_asleep, vec![0]);
+    assert_eq!(data.ncon, 0);
+    assert!((data.xpos[1].z - 5.0).abs() < 1e-12, "{}", data.xpos[1]);
+    assert!(data.sensordata[0].abs() < 1e-12);
+    for _ in 0..20 {
+        data.step(&model).expect("step");
+    }
+    assert_eq!(data.tree_asleep, vec![0]);
+    assert!(data.sensordata[0].abs() < 1e-12);
+}
+
+/// A model with a tree that starts asleep makes its `Data` at a timestep of
+/// 0 or below, its tree asleep: MuJoCo's reset runs `mj_forward`, which
+/// checks no timestep (`init_timestep` in the golden).
+#[test]
+fn init_sleep_takes_no_timestep_check() {
+    let golden = golden();
+    let xml = traces_golden()["traces"]
+        .as_array()
+        .expect("traces")
+        .iter()
+        .find(|c| c["name"] == "box_init")
+        .expect("box_init")["xml"]
+        .as_str()
+        .expect("xml")
+        .to_owned();
+    for (dt, want) in [(0.0, "0.0"), (-0.001, "-0.001")] {
+        let mut model = load_model(&xml).expect("load");
+        model.timestep = dt;
+        let data = model.try_make_data().expect("MuJoCo makes this Data");
+        let theirs: Vec<i64> = golden["init_timestep"][want]
+            .as_array()
+            .expect("tree_asleep")
+            .iter()
+            .map(|x| x.as_i64().expect("int"))
+            .collect();
+        let ours: Vec<i64> = data.tree_asleep.iter().map(|&a| i64::from(a)).collect();
+        assert_eq!(ours, theirs, "timestep {dt}");
+    }
 }
 
 /// A sleeping actuator acts with no force and keeps its `act_dot`, so its

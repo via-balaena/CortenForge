@@ -312,9 +312,10 @@ impl BatchSim {
     ///
     /// Returns per-environment errors. `None` = success, `Some(e)` = that
     /// environment's step failed. NaN/divergence triggers auto-reset (§41 S8)
-    /// — use `data.divergence_detected()` to check. Only non-recoverable
-    /// errors (`CholeskyFailed`, `LuSingular`, `InvalidTimestep`,
-    /// `DataShapeMismatch`) return `Some`.
+    /// — use `data.divergence_detected()` to check. Only the errors
+    /// [`Data::step`] returns (`CholeskyFailed`, `LuSingular`,
+    /// `InvalidTimestep`, `DataShapeMismatch`, `TendonEqualityWithSleep`)
+    /// return `Some`.
     ///
     /// When the `parallel` feature is enabled, environments are stepped in
     /// parallel via rayon `par_iter_mut`. When disabled, environments are
@@ -383,8 +384,9 @@ impl BatchSim {
     ///
     /// # Panics
     ///
-    /// Where [`Data::reset`] does: the model's history buffers cannot be
-    /// initialised ([`Data::try_reset`]).
+    /// Where [`Data::reset`] does, on the [`ResetError`](crate::ResetError) [`Data::try_reset`]
+    /// returns: the model's history buffers cannot be initialised, or a tree
+    /// that starts asleep cannot sleep.
     pub fn reset(&mut self, i: usize) -> Option<()> {
         // Destructure into disjoint field borrows so the model
         // reference (from `shared_model` or `per_env_models`) and the
@@ -411,8 +413,9 @@ impl BatchSim {
     ///
     /// # Panics
     ///
-    /// Where [`Data::reset`] does: the model's history buffers cannot be
-    /// initialised ([`Data::try_reset`]).
+    /// Where [`Data::reset`] does, on the [`ResetError`](crate::ResetError) [`Data::try_reset`]
+    /// returns: the model's history buffers cannot be initialised, or a tree
+    /// that starts asleep cannot sleep.
     pub fn reset_where(&mut self, mask: &[bool]) {
         let Self {
             shared_model,
@@ -435,8 +438,9 @@ impl BatchSim {
     ///
     /// # Panics
     ///
-    /// Where [`Data::reset`] does: the model's history buffers cannot be
-    /// initialised ([`Data::try_reset`]).
+    /// Where [`Data::reset`] does, on the [`ResetError`](crate::ResetError) [`Data::try_reset`]
+    /// returns: the model's history buffers cannot be initialised, or a tree
+    /// that starts asleep cannot sleep.
     pub fn reset_all(&mut self) {
         let Self {
             shared_model,

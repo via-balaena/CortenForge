@@ -137,10 +137,13 @@ impl Data {
     /// # Errors
     ///
     /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
-    /// positive and finite, and `Err(StepError::DataShapeMismatch)` if `self`
-    /// was made by a model of other dimensions or an input array was resized.
+    /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self`
+    /// was made by a model of other dimensions or an input array was resized,
+    /// and `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
+    /// tendon equality is active.
     pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
+        check::check_tendon_equality_sleep(model)?;
 
         // Validate state before stepping
         check::mj_check_pos(model, self);
@@ -221,6 +224,8 @@ impl Data {
     /// - The timestep is not positive and finite (`InvalidTimestep`)
     /// - `self` was made by a model of other dimensions, or an input array
     ///   was resized (`DataShapeMismatch`)
+    /// - Sleep is enabled and a tendon equality is active
+    ///   (`TendonEqualityWithSleep`)
     ///
     /// NaN/divergence in qpos, qvel, or qacc triggers auto-reset (matching
     /// MuJoCo). Disable with `DISABLE_AUTORESET`. Use `data.divergence_detected()`
@@ -229,6 +234,7 @@ impl Data {
     /// as written and counts `Warning::BadCtrl` (matching MuJoCo).
     pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
+        check::check_tendon_equality_sleep(model)?;
 
         // Validate state before stepping — void, auto-resets internally.
         check::mj_check_pos(model, self);
@@ -271,11 +277,14 @@ impl Data {
     ///
     /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
-    /// made by a model of other dimensions or an input array was resized, and
-    /// `Err(StepError::CholeskyFailed)` if using implicit integrator and the
-    /// modified mass matrix decomposition fails.
+    /// made by a model of other dimensions or an input array was resized,
+    /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
+    /// tendon equality is active, and `Err(StepError::CholeskyFailed)` if
+    /// using implicit integrator and the modified mass matrix decomposition
+    /// fails.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
+        check::check_tendon_equality_sleep(model)?;
         self.forward_core(model, true)
     }
 
@@ -317,13 +326,17 @@ impl Data {
     ///
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
-    /// was resized, or if implicit acceleration solver fails.
+    /// was resized, if `skipstage` is `MjStage::None` with sleep enabled and a
+    /// tendon equality active, or if implicit acceleration solver fails.
     pub fn forward_skip(
         &mut self,
         model: &Model,
         skipstage: MjStage,
         skipsensor: bool,
     ) -> Result<(), StepError> {
+        if skipstage == MjStage::None {
+            check::check_tendon_equality_sleep(model)?;
+        }
         self.forward_skip_inner(model, skipstage, skipsensor, true)
     }
 

@@ -880,8 +880,12 @@ pub enum StepError {
         iterations: usize,
     },
     /// Sleep is enabled and equality `eq`, a tendon equality, is active:
-    /// MuJoCo 3.5.0 raises an error on every forward pass then ("tendon
-    /// equality does not yet support sleeping", `engine_sleep.c:390-392`).
+    /// MuJoCo 3.5.0 raises an error in the position stage then ("tendon
+    /// equality does not yet support sleeping", `mj_wakeEquality`,
+    /// `engine_sleep.c:398-400`), so the calls that run that stage refuse it:
+    /// `step`, `step1`, `forward`, `forward_skip` from `MjStage::None`, the
+    /// transition finite differences and the reset that puts `Init` trees
+    /// to sleep.
     TendonEqualityWithSleep {
         /// The equality.
         eq: usize,
@@ -966,8 +970,8 @@ pub enum ResetError {
         root_body: usize,
     },
     /// The forward pass a reset runs before putting the `Init` trees to sleep
-    /// failed (an implicit factorization; MuJoCo's `mj_forward` has no
-    /// failure there).
+    /// failed: a tendon equality with sleep, on which MuJoCo's reset raises
+    /// the same error, or an implicit factorization.
     InitForward(StepError),
 }
 

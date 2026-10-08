@@ -93,8 +93,20 @@ and nisland after mj_makeData.
 Its `refusals` entry holds the message MuJoCo raises for each model of
 REFUSALS: two models whose init-asleep tree cannot sleep (A8's initmix,
 joined by a connect, and initmix_contact, resting on an awake sphere), at
-compile, which makes a Data; and a tendon equality with sleep enabled, at
-the first mj_forward.
+compile, which makes a Data; a tendon equality with sleep enabled, at
+the first mj_forward; and the same with a tree that starts asleep, at
+compile.
+
+Its `tendon_equality_calls` entry holds, for that tendon equality active
+and made inactive, the message each MuJoCo call raises on a fresh Data, or
+null: mj_forward, mj_step, mj_step1, mj_step2, mj_forwardSkip from each
+stage, mj_Euler, mjd_transitionFD and mjd_inverseFD. Its `init_timestep`
+entry holds tree_asleep after mj_makeData of the box that starts asleep
+with a timestep of 0 and of -0.001. Its `init_mocap` entry holds, for a
+sphere that starts asleep under a mocap sphere at (0, 0, 5) in zero gravity,
+with a touch sensor, ncon, the mocap body's xpos and sensordata after
+mj_makeData, and ncon and sensordata after 20 steps: MuJoCo's reset runs the
+init-sleep mj_forward with every mocap body at the origin.
 """
 import json
 import os
@@ -448,6 +460,13 @@ REFUSALS = {
 </worldbody>
 <tendon><fixed name="t"><joint joint="ja" coef="1"/><joint joint="jb" coef="-1"/></fixed></tendon>
 <equality><tendon tendon1="t"/></equality></mujoco>""",
+    "init_tendon_equality": f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="a" pos="0 0 1" sleep="init"><joint name="ja"/><geom type="sphere" size="0.05" mass="1"/></body>
+<body name="b" pos="1 0 1"><joint name="jb"/><geom type="sphere" size="0.05" mass="1"/></body>
+</worldbody>
+<tendon><fixed name="t"><joint joint="ja" coef="1"/><joint joint="jb" coef="-1"/></fixed></tendon>
+<equality><tendon tendon1="t"/></equality></mujoco>""",
 }
 
 POLICY = {
@@ -593,6 +612,69 @@ def refusal(xml):
     return None
 
 
+TENDON_EQUALITY_CALLS = {
+    "mj_forward": lambda m, d: mujoco.mj_forward(m, d),
+    "mj_step": lambda m, d: mujoco.mj_step(m, d),
+    "mj_step1": lambda m, d: mujoco.mj_step1(m, d),
+    "mj_step2": lambda m, d: mujoco.mj_step2(m, d),
+    "mj_forwardSkip(NONE)": lambda m, d: mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_NONE, 0),
+    "mj_forwardSkip(POS)": lambda m, d: mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_POS, 0),
+    "mj_forwardSkip(VEL)": lambda m, d: mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_VEL, 0),
+    "mj_Euler": lambda m, d: mujoco.mj_Euler(m, d),
+    "mjd_transitionFD": lambda m, d: mujoco.mjd_transitionFD(
+        m, d, 1e-6, 0, np.zeros((2 * m.nv, 2 * m.nv)), None, None, None),
+    "mjd_inverseFD": lambda m, d: mujoco.mjd_inverseFD(
+        m, d, 1e-6, 0, np.zeros((m.nv, m.nv)), None, None, None, None, None, None),
+}
+
+
+def tendon_equality_calls():
+    out = {}
+    active = REFUSALS["tendon_equality"]
+    inactive = active.replace('<tendon tendon1="t"/>', '<tendon tendon1="t" active="false"/>')
+    assert inactive != active
+    for key, xml in (("active", active), ("inactive", inactive)):
+        calls = {}
+        for name, call in TENDON_EQUALITY_CALLS.items():
+            m = mujoco.MjModel.from_xml_string(xml)
+            try:
+                call(m, mujoco.MjData(m))
+                calls[name] = None
+            except Exception as e:  # noqa: BLE001 — MuJoCo's mjERROR, recorded as its message
+                calls[name] = str(e)
+        out[key] = {"xml": xml, "calls": calls}
+    return out
+
+
+INIT_MOCAP = """<mujoco><option timestep="0.002" gravity="0 0 0"><flag sleep="enable"/></option>
+<worldbody>
+<body name="m" mocap="true" pos="0 0 5"><geom type="sphere" size="0.2"/></body>
+<body name="b" pos="0 0 0.1" sleep="init"><freejoint/><geom type="sphere" size="0.15" mass="1"/>
+  <site name="t" size="0.3"/></body>
+</worldbody>
+<sensor><touch site="t"/></sensor></mujoco>"""
+
+
+def init_mocap():
+    m = mujoco.MjModel.from_xml_string(INIT_MOCAP)
+    d = mujoco.MjData(m)
+    out = {"xml": INIT_MOCAP, "ncon": int(d.ncon), "mocap_xpos": floats(d.xpos[1]),
+           "sensordata": floats(d.sensordata), "tree_asleep": ints(d.tree_asleep)}
+    for _ in range(20):
+        mujoco.mj_step(m, d)
+    out["after_20"] = {"ncon": int(d.ncon), "sensordata": floats(d.sensordata)}
+    return out
+
+
+def init_timestep():
+    out = {}
+    for dt in (0.0, -0.001):
+        m = mujoco.MjModel.from_xml_string(BOX_INIT)
+        m.opt.timestep = dt
+        out[repr(dt)] = ints(mujoco.MjData(m).tree_asleep)
+    return out
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -612,6 +694,9 @@ def main():
            "runs": finite_or_string(runs)}
     write(os.path.join(sys.argv[1], "sleep_traces.json"), {"oracle": marker, "traces": finite_or_string(traces)})
     doc["refusals"] = [{"name": name, "xml": REFUSALS[name], "message": msg} for name, msg in refusals.items()]
+    doc["tendon_equality_calls"] = tendon_equality_calls()
+    doc["init_timestep"] = init_timestep()
+    doc["init_mocap"] = init_mocap()
     write(os.path.join(sys.argv[1], "sleep.json"), doc)
     print(f"{len(trees)} tree, {len(lengths)} length, {len(runs)} run and {len(traces)} trace cases"
           f" -> {sys.argv[1]}")
