@@ -663,6 +663,31 @@ fn control_callback_reads_this_pass_bias_force() {
     }
 }
 
+/// `step2` and `forward_skip(MjStage::Vel)` do not compute the bias force, as
+/// MuJoCo's `mj_step2` and `mj_forwardSkip(mjSTAGE_VEL)` do not call `mj_rne`:
+/// a value written to `qfrc_bias` after `step1` is the one they use. (A
+/// recomputation from the velocity stage's outputs would give the same value
+/// after a `qpos` or `qvel` edit, so only a written value tells them apart.)
+#[test]
+fn step2_and_a_velocity_skip_do_not_compute_the_bias_force() {
+    use sim_core::MjStage;
+    let model = logged_hinge("Euler");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.4;
+    data.step1(&model).expect("step1");
+    data.qfrc_bias[0] = 7.0;
+    data.step2(&model).expect("step2");
+    assert_eq!(data.qfrc_bias[0].to_bits(), 7.0_f64.to_bits(), "step2");
+    data.qfrc_bias[0] = -3.0;
+    data.forward_skip(&model, MjStage::Vel, true)
+        .expect("forward_skip");
+    assert_eq!(
+        data.qfrc_bias[0].to_bits(),
+        (-3.0_f64).to_bits(),
+        "forward_skip(Vel)"
+    );
+}
+
 /// The passive callback runs before the bias force in the velocity stage, as
 /// in MuJoCo's `mj_fwdVelocity` (`mj_passive` at `engine_forward.c:250`,
 /// `mj_rne` at :254), so it sees the previous pass's `qfrc_bias`: measured,
