@@ -1,0 +1,8 @@
+<mujoco><worldbody><body>
+                <joint type="ball"/>
+                <joint name="h" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1"/>
+                <site name="a" pos="0.1 0 0"/>
+            </body><site name="b" pos="0.3 0 0.2"/></worldbody>
+            <tendon><spatial><site site="a"/><site site="b"/></spatial></tendon>
+            <actuator><motor joint="h"/></actuator></mujoco>

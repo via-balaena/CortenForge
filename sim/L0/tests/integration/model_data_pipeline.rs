@@ -622,10 +622,9 @@ fn an_auto_reset_recaptures_energy_initial() {
     assert_eq!(data.energy_initial, at_reset.total_energy());
 }
 
-/// Building a model derives values from a `Data` (`acc0`, a muscle's
-/// `lengthrange`, `invweight0`, `stat_meaninertia`, a spatial tendon's
-/// `length0`) without `try_make_data`'s checks, so a model they refuse still
-/// loads, and is refused when its `Data` is made.
+/// A model with a range `try_make_data` refuses still loads, with a muscle and
+/// a spatial tendon whose derivations would build a `Data`: building skips
+/// those derivations, and making its `Data` refuses it.
 #[test]
 fn derivation_loads_a_model_try_make_data_refuses() {
     let model = load_model(
@@ -654,8 +653,6 @@ fn derivation_loads_a_model_try_make_data_refuses() {
 </mujoco>"#,
     )
     .expect("building the model runs no try_make_data check");
-    assert!(model.tendon_length0[0] > 0.0);
-    assert!(model.actuator_acc0[0] > 0.0);
     let refused = model.try_make_data().err();
     assert!(
         matches!(

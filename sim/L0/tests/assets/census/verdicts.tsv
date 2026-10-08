@@ -778,6 +778,7 @@
 7e263d7f932dee36	agree
 7e7dec456748850e	model:geom_quat;dyn:agree
 7e81460055d1f5f2	agree
+7e89297a8c017676	both-refuse
 7eba75effc46d2d8	ours-refused	known=connect-body1
 7ed4f697e9d99582	agree
 7ef33e6abd7ad54b	model:geom_quat;dyn:agree
@@ -1311,6 +1312,7 @@ d2625a39c3c900fe	agree
 d2913a815c073efb	agree
 d2fc1fd4eb336d1d	e1:t0:con_normal
 d304c9ed2afdad9f	model:geom_quat;dyn:agree
+d326c0455f17075d	both-refuse
 d32f16e15f6aff43	both-refuse
 d33779d199265de9	both-refuse
 d39bad6c5073ce22	agree

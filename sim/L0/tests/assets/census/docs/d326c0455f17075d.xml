@@ -1,0 +1,5 @@
+<mujoco><worldbody><body><joint name="j" type="hinge" axis="0 1 0"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05"/><site name="a" pos="0.1 0 0"/></body>
+<site name="b" pos="0.3 0 0.2"/></worldbody>
+<tendon><spatial name="t"><site site="a"/><site site="b"/></spatial></tendon>
+<actuator><muscle tendon="t"/><motor joint="j" ctrllimited="true" ctrlrange="1 -1"/></actuator></mujoco>
