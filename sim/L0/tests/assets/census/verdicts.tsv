@@ -1185,6 +1185,7 @@ c11fdf6346a72751	ours-refused	known=mjcf-D1
 c12e67997b699d32	model:geom_quat;dyn:agree
 c1b2d647ca4cb848	both-refuse
 c1cf992b9271955f	agree
+c1de94c308e7742e	both-refuse
 c1e06e7a0761a4bb	mj-refuses
 c1e14bd011601840	mj-refuses
 c1ea7105ab6b98b0	model:geom_quat;dyn:agree
@@ -1521,6 +1522,7 @@ f4ed90e2f10583d4	e1:t0:con_zero
 f4f97340769bccc2	agree
 f529edbdead17c2b	mj-refuses
 f554165fcdc81201	agree
+f55567dc9d0dc54b	model:geom_quat;dyn:e1:t0:xpos
 f55adfc299eedcef	both-refuse
 f55fff84b7be89d1	mj-refuses
 f56833a8792c2840	e1:t0:con_pos

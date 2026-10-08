@@ -134,15 +134,6 @@ impl Model {
         model.solver_iterations = 10;
         model.solver_tolerance = 1e-8;
 
-        // Pre-compute kinematic data for O(n) CRBA/RNE
-        model.compute_ancestors();
-
-        // Pre-compute implicit integration parameters
-        model.compute_implicit_params();
-
-        // Pre-compute CSR sparsity metadata for sparse LDL factorization
-        model.compute_qld_csr_metadata();
-
         // Per-DOF constraint-solver parameters, so a friction-loss or joint-limit
         // constraint assembles correctly if one is added (the MJCF builder populates
         // these for every DOF; the factory left them empty, which panicked on the
@@ -150,8 +141,8 @@ impl Model {
         // `MJ_MINVAL` invweight fallback). Inert for the default constraint-free use.
         model.dof_solref = vec![DEFAULT_SOLREF; model.nv];
         model.dof_solimp = vec![DEFAULT_SOLIMP; model.nv];
-        model.compute_invweight0();
 
+        recompute(&mut model);
         model
     }
 
@@ -262,10 +253,7 @@ impl Model {
         model.solver_iterations = 10;
         model.solver_tolerance = 1e-8;
 
-        model.compute_ancestors();
-        model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
-
+        recompute(&mut model);
         model
     }
 
@@ -357,15 +345,7 @@ impl Model {
         model.solver_iterations = 10;
         model.solver_tolerance = 1e-8;
 
-        // Pre-compute kinematic data for O(n) CRBA/RNE
-        model.compute_ancestors();
-
-        // Pre-compute implicit integration parameters
-        model.compute_implicit_params();
-
-        // Pre-compute CSR sparsity metadata for sparse LDL factorization
-        model.compute_qld_csr_metadata();
-
+        recompute(&mut model);
         model
     }
 
@@ -448,15 +428,7 @@ impl Model {
         model.solver_iterations = 10;
         model.solver_tolerance = 1e-8;
 
-        // Pre-compute kinematic data for O(n) CRBA/RNE
-        model.compute_ancestors();
-
-        // Pre-compute implicit integration parameters
-        model.compute_implicit_params();
-
-        // Pre-compute CSR sparsity metadata for sparse LDL factorization
-        model.compute_qld_csr_metadata();
-
+        recompute(&mut model);
         model
     }
 
@@ -500,6 +472,15 @@ impl Model {
         if self.body_geom_num[0] == 1 {
             self.body_geom_adr[0] = geom_id;
         }
+    }
+}
+
+/// Derive every field a factory model's primary fields determine.
+// A factory's ranges are fixed and valid, so a refusal is a bug in the factory.
+#[allow(clippy::panic)]
+fn recompute(model: &mut Model) {
+    if let Err(e) = model.recompute_derived() {
+        panic!("a factory model has an invalid range: {e}");
     }
 }
 

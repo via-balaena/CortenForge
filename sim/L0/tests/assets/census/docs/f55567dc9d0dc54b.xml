@@ -1,0 +1,30 @@
+<mujoco model="derived">
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="j0" type="hinge" axis="0 1 0" damping="0.5" ref="0.3"/>
+      <inertial pos="0 0 -0.25" mass="1" diaginertia="0.02 0.02 0.001"/>
+      <geom name="rod" type="capsule" fromto="0 0 0 0 0 -0.5" size="0.02"/>
+      <site name="s0" pos="0.05 0 -0.1"/>
+      <body name="b" pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0" stiffness="2"/>
+        <inertial pos="0 0 -0.1" mass="0.5" diaginertia="0.005 0.005 0.001"/>
+        <geom type="sphere" size="0.05"/>
+        <site name="s1" pos="0.05 0 -0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="sum">
+      <joint joint="j0" coef="1"/>
+      <joint joint="j1" coef="0.5"/>
+    </fixed>
+    <spatial name="cable">
+      <site site="s0"/>
+      <site site="s1"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <muscle name="m" tendon="cable"/>
+    <position name="p" joint="j0" kp="10" dampratio="1"/>
+  </actuator>
+</mujoco>

@@ -986,6 +986,58 @@ impl From<RangeError> for MakeDataError {
     }
 }
 
+/// Why [`Model::recompute_derived`](crate::Model::recompute_derived) refuses a model.
+///
+/// Its joint layout or one of its limited ranges, which
+/// [`Model::try_make_data`](crate::Model::try_make_data) refuses too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ModelError {
+    /// [`Model::check_joint_layout`](crate::Model::check_joint_layout)'s error.
+    JointLayout(JointLayoutError),
+    /// [`Model::check_ranges`](crate::Model::check_ranges)'s error.
+    Range(RangeError),
+}
+
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JointLayout(e) => write!(f, "{e}"),
+            Self::Range(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ModelError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::JointLayout(e) => Some(e),
+            Self::Range(e) => Some(e),
+        }
+    }
+}
+
+impl From<JointLayoutError> for ModelError {
+    fn from(e: JointLayoutError) -> Self {
+        Self::JointLayout(e)
+    }
+}
+
+impl From<RangeError> for ModelError {
+    fn from(e: RangeError) -> Self {
+        Self::Range(e)
+    }
+}
+
+impl From<ModelError> for MakeDataError {
+    fn from(e: ModelError) -> Self {
+        match e {
+            ModelError::JointLayout(e) => Self::JointLayout(e),
+            ModelError::Range(e) => Self::Range(e),
+        }
+    }
+}
+
 /// A joint layout [`Model::check_joint_layout`](crate::Model::check_joint_layout)
 /// refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

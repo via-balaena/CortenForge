@@ -1167,66 +1167,11 @@ fn compute_geom_bounding(model: &mut Model) {
     }
 }
 
-/// Discover kinematic trees (simplified — one tree per root body).
+/// The kinematic trees (sim-core's `compute_kinematic_trees`), every one
+/// `Never` asleep.
 fn discover_kinematic_trees(model: &mut Model) {
-    let mut tree_id = 0usize;
-    model.tree_body_adr.clear();
-    model.tree_body_num.clear();
-    model.tree_dof_adr.clear();
-    model.tree_dof_num.clear();
-    model.tree_sleep_policy.clear();
-
-    for body_id in 1..model.nbody {
-        if model.body_parent[body_id] == 0 {
-            // Root of a new tree
-            model.tree_body_adr.push(body_id);
-
-            // Count bodies in this tree
-            let mut count = 0;
-            let mut dof_start = usize::MAX;
-            let mut dof_count = 0;
-
-            for b in body_id..model.nbody {
-                // Check if b is in this tree (trace parent chain to body_id)
-                let mut cur = b;
-                loop {
-                    if cur == body_id {
-                        count += 1;
-                        model.body_treeid[b] = tree_id;
-                        // Track DOFs
-                        let adr = model.body_dof_adr[b];
-                        let num = model.body_dof_num[b];
-                        if num > 0 {
-                            dof_start = dof_start.min(adr);
-                            dof_count += num;
-                            for d in adr..adr + num {
-                                model.dof_treeid[d] = tree_id;
-                            }
-                        }
-                        break;
-                    }
-                    if cur == 0 || model.body_parent[cur] == cur {
-                        break;
-                    }
-                    cur = model.body_parent[cur];
-                }
-            }
-
-            model.tree_body_num.push(count);
-            model.tree_dof_adr.push(if dof_start == usize::MAX {
-                0
-            } else {
-                dof_start
-            });
-            model.tree_dof_num.push(dof_count);
-            model.tree_sleep_policy.push(sim_core::SleepPolicy::Never);
-
-            tree_id += 1;
-        }
-    }
-
-    model.ntree = tree_id;
-    model.dof_length = vec![1.0; model.nv];
+    model.compute_kinematic_trees();
+    model.tree_sleep_policy.fill(sim_core::SleepPolicy::Never);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────

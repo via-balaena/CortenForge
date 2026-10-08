@@ -1380,6 +1380,7 @@ fn compute_body_lengths(model: &Model) -> Vec<f64> {
 /// Called during model construction to replace the Phase A uniform 1.0.
 pub fn compute_dof_lengths(model: &mut Model) {
     let body_length = compute_body_lengths(model);
+    model.dof_length.resize(model.nv, 1.0);
 
     // (§27F) All DOFs now have real joints — iterate all DOFs uniformly.
     for dof in 0..model.nv {
@@ -1407,7 +1408,7 @@ mod joint_layout_tests {
     use crate::test_fixtures::builders::{
         add_ball_joint, add_body, add_freejoint, add_hinge_joint, add_slide_joint, finalize,
     };
-    use crate::types::{JointLayoutError, MakeDataError, Model, RangeError};
+    use crate::types::{JointLayoutError, MakeDataError, Model, ModelError, RangeError};
     use nalgebra::Vector3;
 
     fn body(model: &mut Model, parent: usize, name: &str) -> usize {
@@ -1515,6 +1516,29 @@ mod joint_layout_tests {
         assert_eq!(
             m.check_joint_layout(),
             Err(JointLayoutError::TooManyDofs { body: b, ndof: 7 })
+        );
+    }
+
+    /// `recompute_derived` refuses a bad joint layout before it derives
+    /// anything, and leaves the model as it was.
+    #[test]
+    fn recompute_derived_refuses_a_bad_joint_layout() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_ball_joint(&mut m, b, "ball0");
+        hinge(&mut m, b, "h0");
+        finalize(&mut m);
+        let before = format!("{m:#?}");
+        assert_eq!(
+            m.recompute_derived(),
+            Err(ModelError::JointLayout(JointLayoutError::BallNotLast {
+                body: b,
+                joint: 0
+            }))
+        );
+        assert!(
+            format!("{m:#?}") == before,
+            "a refused recompute changed the model"
         );
     }
 

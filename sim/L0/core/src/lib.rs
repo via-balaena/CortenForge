@@ -225,6 +225,7 @@ pub use types::{
     MjSensorDataType,
     MjSensorType,
     Model,
+    ModelError,
     // Warning system (§41 S8b)
     NUM_WARNINGS,
     RangeError,

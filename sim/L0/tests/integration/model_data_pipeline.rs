@@ -727,3 +727,217 @@ fn reset_leaves_the_data_make_data_leaves() {
         super::keyframes::differing_fields(&got, &want)
     );
 }
+
+// ============================================================================
+// Model::recompute_derived and the derived fields
+// ============================================================================
+
+/// `compute_dof_lengths` sizes `dof_length` itself.
+#[test]
+fn compute_dof_lengths_sizes_dof_length() {
+    let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+    model.dof_length.clear();
+    sim_core::compute_dof_lengths(&mut model);
+    assert_eq!(model.dof_length.len(), 2);
+}
+
+/// Two hinged links with explicit inertials, a fixed tendon, a spatial tendon,
+/// a muscle and a position actuator with a damping ratio: every derivation has
+/// work to do, and each edit below is one `Model` field.
+const DERIVED: &str = r#"<mujoco model="derived">
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="j0" type="hinge" axis="0 1 0" damping="0.5" ref="0.3"/>
+      <inertial pos="0 0 -0.25" mass="1" diaginertia="0.02 0.02 0.001"/>
+      <geom name="rod" type="capsule" fromto="0 0 0 0 0 -0.5" size="0.02"/>
+      <site name="s0" pos="0.05 0 -0.1"/>
+      <body name="b" pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0" stiffness="2"/>
+        <inertial pos="0 0 -0.1" mass="0.5" diaginertia="0.005 0.005 0.001"/>
+        <geom type="sphere" size="0.05"/>
+        <site name="s1" pos="0.05 0 -0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="sum">
+      <joint joint="j0" coef="1"/>
+      <joint joint="j1" coef="0.5"/>
+    </fixed>
+    <spatial name="cable">
+      <site site="s0"/>
+      <site site="s1"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <muscle name="m" tendon="cable"/>
+    <position name="p" joint="j0" kp="10" dampratio="1"/>
+  </actuator>
+</mujoco>"#;
+
+/// On a model the builder made, `recompute_derived` changes nothing.
+#[test]
+fn recompute_derived_changes_nothing_on_a_built_model() {
+    let mut model = load_model(DERIVED).unwrap();
+    let before = format!("{model:#?}");
+    model.recompute_derived().unwrap();
+    let after = format!("{model:#?}");
+    assert!(after == before, "recompute_derived changed a built model");
+}
+
+/// The derived fields an edit reaches, printed for comparison.
+fn derived_fields(m: &sim_core::Model) -> Vec<(&'static str, String)> {
+    vec![
+        ("body_subtreemass", format!("{:?}", m.body_subtreemass)),
+        ("body_invweight0", format!("{:?}", m.body_invweight0)),
+        ("dof_invweight0", format!("{:?}", m.dof_invweight0)),
+        ("tendon_invweight0", format!("{:?}", m.tendon_invweight0)),
+        ("stat_meaninertia", format!("{:?}", m.stat_meaninertia)),
+        ("actuator_acc0", format!("{:?}", m.actuator_acc0)),
+        (
+            "actuator_lengthrange",
+            format!("{:?}", m.actuator_lengthrange),
+        ),
+        ("tendon_length0", format!("{:?}", m.tendon_length0)),
+        ("geom_rbound", format!("{:?}", m.geom_rbound)),
+        ("geom_aabb", format!("{:?}", m.geom_aabb)),
+        ("implicit_damping", format!("{:?}", m.implicit_damping)),
+    ]
+}
+
+/// An edit of one primary field, then `recompute_derived`, gives the derived
+/// fields that building the edited MJCF gives.
+#[test]
+fn recompute_derived_after_an_edit_matches_building_the_edited_model() {
+    type Edit = fn(&mut sim_core::Model);
+    let edits: [(&str, &str, &str, Edit); 5] = [
+        ("body b's mass", r#"mass="0.5""#, r#"mass="1.5""#, |m| {
+            let b = m.body_id("b").unwrap();
+            m.body_mass[b] = 1.5;
+        }),
+        (
+            "site s1's position",
+            r#"pos="0.05 0 -0.2""#,
+            r#"pos="0.08 0 -0.2""#,
+            |m| {
+                let s1 = m.site_id("s1").unwrap();
+                m.site_pos[s1] = nalgebra::Vector3::new(0.08, 0.0, -0.2);
+            },
+        ),
+        (
+            "the fixed tendon's coefficient on j0",
+            r#"coef="1""#,
+            r#"coef="1.25""#,
+            |m| {
+                let sum = m.tendon_id("sum").unwrap();
+                m.wrap_prm[m.tendon_adr[sum]] = 1.25;
+            },
+        ),
+        (
+            "the rod's radius",
+            r#"size="0.02""#,
+            r#"size="0.04""#,
+            |m| {
+                let rod = m.geom_id("rod").unwrap();
+                m.geom_size[rod].x = 0.04;
+            },
+        ),
+        ("j0's damping", r#"damping="0.5""#, r#"damping="2""#, |m| {
+            let j0 = m.joint_id("j0").unwrap();
+            m.jnt_damping[j0] = 2.0;
+            m.dof_damping[m.jnt_dof_adr[j0]] = 2.0;
+        }),
+    ];
+    for (what, from, to, edit) in edits {
+        assert_eq!(DERIVED.matches(from).count(), 1, "{what}");
+        let built = load_model(&DERIVED.replace(from, to)).unwrap();
+        let mut edited = load_model(DERIVED).unwrap();
+        edit(&mut edited);
+        edited.recompute_derived().unwrap();
+        let unedited = derived_fields(&load_model(DERIVED).unwrap());
+        let (want, got) = (derived_fields(&built), derived_fields(&edited));
+        assert!(
+            want != unedited,
+            "{what}: the edit reaches no derived field"
+        );
+        for ((field, w), (_, g)) in want.iter().zip(&got) {
+            assert_eq!(g, w, "{what}: {field}");
+        }
+    }
+}
+
+/// `recompute_derived` follows a damping edit into the implicit parameters.
+#[test]
+fn recompute_derived_follows_a_damping_edit() {
+    let mut model = sim_core::Model::n_link_pendulum(1, 1.0, 0.1);
+    model.jnt_damping[0] = 5.0;
+    model.dof_damping[0] = 5.0;
+    model.recompute_derived().unwrap();
+    assert_eq!(model.implicit_damping[0], 5.0);
+}
+
+/// The derived fields no one-field edit above reaches: cleared, then
+/// recomputed, they are the built model's again.
+#[test]
+fn recompute_derived_restores_the_structural_fields() {
+    let structural = |m: &sim_core::Model| {
+        format!(
+            "{:?} {:?} {:?} {:?} {:?} {:?} {} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+            m.body_ancestor_joints,
+            m.body_ancestor_mask,
+            m.body_weldid,
+            m.qLD_rowadr,
+            m.qLD_rownnz,
+            m.qLD_colind,
+            m.ntree,
+            m.tree_body_adr,
+            m.tree_dof_num,
+            m.body_treeid,
+            m.dof_treeid,
+            m.tendon_tree,
+            m.tree_sleep_policy,
+            m.dof_length
+        )
+    };
+    let built = load_model(DERIVED).unwrap();
+    let mut cleared = load_model(DERIVED).unwrap();
+    cleared.body_ancestor_joints.clear();
+    cleared.body_ancestor_mask.clear();
+    cleared.body_weldid.fill(0);
+    cleared.qLD_rowadr.clear();
+    cleared.qLD_rownnz.clear();
+    cleared.qLD_colind.clear();
+    cleared.ntree = 0;
+    cleared.tree_body_adr.clear();
+    cleared.tree_dof_num.clear();
+    cleared.body_treeid.clear();
+    cleared.dof_treeid.clear();
+    cleared.tendon_tree.clear();
+    cleared.tree_sleep_policy.clear();
+    cleared.dof_length.clear();
+    assert_ne!(structural(&cleared), structural(&built));
+    cleared.recompute_derived().unwrap();
+    assert_eq!(structural(&cleared), structural(&built));
+}
+
+/// A range `check_ranges` refuses leaves the model as it was.
+#[test]
+fn recompute_derived_refuses_a_backwards_limited_range() {
+    let mut model = sim_core::Model::n_link_pendulum(1, 1.0, 0.1);
+    model.jnt_limited[0] = true;
+    model.jnt_range[0] = (1.0, -1.0);
+    model.jnt_damping[0] = 5.0;
+    let before = format!("{model:#?}");
+    let refused = model.recompute_derived();
+    assert!(
+        matches!(
+            &refused,
+            Err(sim_core::ModelError::Range(e)) if e.field == "jnt_range" && e.index == 0
+        ),
+        "{refused:?}"
+    );
+    assert!(
+        format!("{model:#?}") == before,
+        "a refused recompute changed the model"
+    );
+}

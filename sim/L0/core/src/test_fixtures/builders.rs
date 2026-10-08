@@ -792,13 +792,22 @@ pub(super) fn set_options(
     }
 }
 
-/// Run the standard structural pre-computation sequence. Mirrors what
-/// the existing `Model::n_link_pendulum` factory does internally
-/// (`compute_ancestors`, `compute_implicit_params`,
-/// `compute_qld_csr_metadata`). Sets `qpos0` from the accumulated
-/// `qpos_spring`-style state — for our fixtures, qpos0 starts at the
-/// joint's reference configuration (springref for hinge/slide,
+/// Derive every field the fixture's primary fields determine
+/// ([`Model::recompute_derived`]), as the factories do, after setting `qpos0`
+/// from the accumulated `qpos_spring`-style state — for our fixtures, qpos0
+/// starts at the joint's reference configuration (springref for hinge/slide,
 /// `[1,0,0,0]` for ball, `[0,0,0,1,0,0,0]` for free).
+///
+/// A fixture built with a joint layout `check_joint_layout` refuses, for the
+/// tests of that refusal, gets only the fields derived without running the
+/// joints: `compute_ancestors`, `compute_implicit_params`,
+/// `compute_qld_csr_metadata`.
+///
+/// # Panics
+/// Panics if `recompute_derived` refuses one of the fixture's ranges.
+// The documented panic: a fixture's ranges are its author's, and a refusal is
+// a bug in the fixture.
+#[allow(clippy::panic)]
 pub fn finalize(model: &mut Model) {
     // qpos0 mirrors qpos_spring (reference/spring rest configuration).
     if model.qpos_spring.is_empty() {
@@ -806,9 +815,15 @@ pub fn finalize(model: &mut Model) {
     } else {
         model.qpos0 = DVector::from_vec(model.qpos_spring.clone());
     }
-    model.compute_ancestors();
-    model.compute_implicit_params();
-    model.compute_qld_csr_metadata();
+    if model.check_joint_layout().is_ok() {
+        if let Err(e) = model.recompute_derived() {
+            panic!("finalize: {e}");
+        }
+    } else {
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+    }
     rebuild_name_indices(model);
 }
 

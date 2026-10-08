@@ -1694,3 +1694,5 @@ ffe246517dc498d6	sim/L0/tests/integration/keyframes.rs:113
 c10b50f7458fbc2c	sim/L0/tests/integration/derivatives.rs:2799
 37f05467b082fc7d	sim/L0/tests/integration/implicit_integration.rs:1301
 f84a884ee4f1c972	sim/L0/tests/integration/model_data_pipeline.rs:632
+f55567dc9d0dc54b	sim/L0/tests/integration/model_data_pipeline.rs:747
+c1de94c308e7742e	sim/L0/mjcf/src/builder/build.rs:600

@@ -133,6 +133,32 @@ fn reset_leaves_the_data_make_data_leaves_with_an_init_asleep_tree() {
     );
 }
 
+/// Sleep runs on the factory models: they have kinematic trees and
+/// `dof_length` (they had neither, and `mj_wake` indexed the empty
+/// `dof_treeid`).
+#[test]
+fn sleep_runs_on_factory_models() {
+    let mut ground = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+    ground.add_ground_plane();
+    let models = [
+        sim_core::Model::n_link_pendulum(2, 1.0, 0.1),
+        sim_core::Model::double_pendulum(1.0, 0.1),
+        sim_core::Model::multi_joint_body(),
+        sim_core::Model::spherical_pendulum(1.0, 0.1),
+        sim_core::Model::free_body(1.0, Vector3::new(0.1, 0.1, 0.1)),
+        ground,
+    ];
+    for mut model in models {
+        model.enableflags |= ENABLE_SLEEP;
+        let mut data = model.make_data();
+        for _ in 0..2000 {
+            data.step(&model).expect("step");
+        }
+        assert_eq!(model.ntree, model.tree_body_adr.len());
+        assert!(model.ntree > 0);
+    }
+}
+
 /// RK4 + sleep (should warn and disable sleep).
 fn rk4_sleep_mjcf() -> &'static str {
     r#"

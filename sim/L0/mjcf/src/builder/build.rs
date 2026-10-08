@@ -7,11 +7,8 @@
 
 use std::collections::HashMap;
 
-use nalgebra::{DVector, Vector3};
-use sim_core::{
-    ActuatorTransmission, Bounded, ENABLE_SLEEP, GeomType, Integrator, Model, SleepPolicy,
-    TendonType, WrapType, compute_dof_lengths,
-};
+use nalgebra::DVector;
+use sim_core::{ENABLE_SLEEP, Integrator, Model, SleepPolicy, compute_dof_lengths};
 use tracing::warn;
 
 use super::ModelBuilder;
@@ -34,20 +31,23 @@ impl ModelBuilder {
         model.compute_qld_csr_metadata();
         compute_history_addresses(&mut model);
 
-        // Tendon and actuator derived parameters
-        model.compute_spatial_tendon_length0();
-        model.compute_actuator_params();
-        model.compute_stat_meaninertia();
-        model.compute_invweight0();
+        // Tendon and actuator derived parameters. These run the joints, so a
+        // joint layout `try_make_data` refuses skips them: the model loads,
+        // and making its `Data` refuses it.
+        if model.check_joint_layout().is_ok() {
+            model.compute_spatial_tendon_length0();
+            model.compute_actuator_params();
+            model.compute_stat_meaninertia();
+            model.compute_invweight0();
+        }
 
         // Bounding geometry and tendon rest lengths
-        compute_geom_bounding_radii(&mut model);
-        compute_fixed_tendon_lengths(&mut model);
+        model.compute_geom_bounding_radii();
+        model.compute_fixed_tendon_lengths();
 
         // Kinematic tree enumeration and sleep policy
-        discover_kinematic_trees(&mut model);
-        compute_tendon_tree_mapping(&mut model);
-        resolve_sleep_policies(&mut model, &body_sleep_policy);
+        model.compute_kinematic_trees();
+        apply_explicit_sleep_policies(&mut model, &body_sleep_policy);
         compute_dof_lengths(&mut model);
         guard_rk4_sleep(&mut model);
 
@@ -555,383 +555,9 @@ fn compute_history_addresses(model: &mut Model) {
     }
 }
 
-/// Pre-compute bounding volumes for all geoms (collision broad-phase).
-///
-/// Populates both `geom_rbound` (bounding sphere radius) and `geom_aabb`
-/// (local-frame AABB as `[cx, cy, cz, hx, hy, hz]` — center offset +
-/// half-extents). For meshes/hfield/sdf, bounds come from actual geometry
-/// data. For primitives, bounds come from `geom_size`.
-///
-/// `geom_aabb` is transformed to world-space at runtime by `mj_collision`,
-/// replacing the per-type dispatch in `aabb_from_geom`. This eliminates the
-/// `MESH_DEFAULT_EXTENT` fallback and matches MuJoCo's `mjModel.geom_aabb`.
-fn compute_geom_bounding_radii(model: &mut Model) {
-    for geom_id in 0..model.ngeom {
-        let (rbound, aabb) = if let Some(mesh_id) = model.geom_mesh[geom_id] {
-            // Mesh geom: bounds from actual vertex positions.
-            let (aabb_min, aabb_max) = model.mesh_data[mesh_id].aabb();
-            let center = (aabb_min.coords + aabb_max.coords) * 0.5;
-            let half = (aabb_max.coords - aabb_min.coords) * 0.5;
-            let rbound = half.norm();
-            (
-                rbound,
-                [center.x, center.y, center.z, half.x, half.y, half.z],
-            )
-        } else if let Some(hfield_id) = model.geom_hfield[geom_id] {
-            // Hfield geom: bounds from heightfield data.
-            let aabb = model.hfield_data[hfield_id].aabb();
-            let center = (aabb.min.coords + aabb.max.coords) * 0.5;
-            let half = (aabb.max.coords - aabb.min.coords) * 0.5;
-            let rbound = half.norm();
-            (
-                rbound,
-                [center.x, center.y, center.z, half.x, half.y, half.z],
-            )
-        } else if let Some(sdf_id) = model.geom_shape[geom_id] {
-            // SDF geom: bounds from SDF grid data.
-            let aabb = model.shape_data[sdf_id].sdf_grid().aabb();
-            let center = (aabb.min.coords + aabb.max.coords) * 0.5;
-            let half = (aabb.max.coords - aabb.min.coords) * 0.5;
-            let rbound = half.norm();
-            (
-                rbound,
-                [center.x, center.y, center.z, half.x, half.y, half.z],
-            )
-        } else {
-            // Primitive geom: local AABB from size parameters.
-            let rbound = model.geom_type[geom_id].bounding_radius(model.geom_size[geom_id]);
-            let aabb =
-                local_aabb_from_primitive(model.geom_type[geom_id], model.geom_size[geom_id]);
-            (rbound, aabb)
-        };
-        model.geom_rbound[geom_id] = rbound;
-        model.geom_aabb[geom_id] = aabb;
-    }
-}
-
-/// Compute local-frame AABB `[cx, cy, cz, hx, hy, hz]` for a primitive geom.
-///
-/// Center offset is `(0,0,0)` for all primitives (symmetric about their origin).
-/// Half-extents come from the MuJoCo size convention for each type.
-fn local_aabb_from_primitive(geom_type: GeomType, size: Vector3<f64>) -> [f64; 6] {
-    match geom_type {
-        GeomType::Sphere => {
-            let r = size.x;
-            [0.0, 0.0, 0.0, r, r, r]
-        }
-        GeomType::Box | GeomType::Ellipsoid => [0.0, 0.0, 0.0, size.x, size.y, size.z],
-        GeomType::Capsule | GeomType::Cylinder => {
-            // Local Z is the axis. Half-extents: radius in XY, radius+half_length in Z.
-            let r = size.x;
-            let h = size.y;
-            [0.0, 0.0, 0.0, r, r, r + h]
-        }
-        GeomType::Plane => {
-            // Infinite extent. The PLANE_EXTENT constant is applied at runtime
-            // in aabb_from_geom_aabb since it depends on world-frame orientation.
-            const INF: f64 = 1e6;
-            [0.0, 0.0, 0.0, INF, INF, INF]
-        }
-        // Mesh/Hfield/Sdf are handled by the caller using actual geometry data.
-        // This arm is a fallback for programmatic geoms that bypass the builder.
-        GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => [0.0, 0.0, 0.0, 0.1, 0.1, 0.1],
-    }
-}
-
-/// Pre-compute fixed tendon `length0` and resolve `lengthspring` sentinels from `qpos0`/`qpos_spring`.
-///
-/// For fixed tendons: `length0 = Σ coef_w * qpos0[jnt_qposadr_w]`.
-/// MuJoCo ref: `setSpring()` in `engine_setconst.c` uses `qpos_spring` for sentinel resolution.
-fn compute_fixed_tendon_lengths(model: &mut Model) {
-    for t in 0..model.ntendon {
-        if model.tendon_type[t] == TendonType::Fixed {
-            let adr = model.tendon_adr[t];
-            let num = model.tendon_num[t];
-            // Compute tendon_length0 at qpos0 configuration
-            let mut length0 = 0.0;
-            for w in adr..(adr + num) {
-                let dof_adr = model.wrap_objid[w];
-                let coef = model.wrap_prm[w];
-                if dof_adr < model.nv {
-                    let jnt_id = model.dof_jnt[dof_adr];
-                    let qpos_adr = model.jnt_qpos_adr[jnt_id];
-                    if qpos_adr < model.qpos0.len() {
-                        length0 += coef * model.qpos0[qpos_adr];
-                    }
-                }
-            }
-            model.tendon_length0[t] = length0;
-
-            // Resolve sentinel [-1, -1] at qpos_spring configuration (not qpos0).
-            #[allow(clippy::float_cmp)]
-            if model.tendon_lengthspring[t] == [-1.0, -1.0] {
-                let mut spring_length = 0.0;
-                for w in adr..(adr + num) {
-                    let dof_adr = model.wrap_objid[w];
-                    let coef = model.wrap_prm[w];
-                    if dof_adr < model.nv {
-                        let jnt_id = model.dof_jnt[dof_adr];
-                        let qpos_adr = model.jnt_qpos_adr[jnt_id];
-                        if qpos_adr < model.qpos_spring.len() {
-                            spring_length += coef * model.qpos_spring[qpos_adr];
-                        }
-                    }
-                }
-                model.tendon_lengthspring[t] = [spring_length, spring_length];
-            }
-        }
-    }
-}
-
-/// Kinematic tree enumeration (§16.0).
-///
-/// Groups bodies by `body_rootid` to discover kinematic trees.
-/// Body 0 (world) is excluded — it is its own tree but never sleeps.
-fn discover_kinematic_trees(model: &mut Model) {
-    use std::collections::BTreeMap;
-
-    let mut trees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for body_id in 1..model.nbody {
-        trees
-            .entry(model.body_rootid[body_id])
-            .or_default()
-            .push(body_id);
-    }
-    model.ntree = trees.len();
-    model.tree_body_adr = Vec::with_capacity(model.ntree);
-    model.tree_body_num = Vec::with_capacity(model.ntree);
-    model.tree_dof_adr = Vec::with_capacity(model.ntree);
-    model.tree_dof_num = Vec::with_capacity(model.ntree);
-    model.tree_sleep_policy = vec![SleepPolicy::Auto; model.ntree];
-
-    // body_treeid[0] = usize::MAX (world sentinel, already set)
-    for (tree_idx, (_root_body, body_ids)) in trees.iter().enumerate() {
-        let first_body = body_ids[0];
-        let body_count = body_ids.len();
-        model.tree_body_adr.push(first_body);
-        model.tree_body_num.push(body_count);
-
-        // Assign tree id to each body
-        for &bid in body_ids {
-            model.body_treeid[bid] = tree_idx;
-        }
-
-        // DOF range: find min dof and total DOFs for this tree
-        let mut min_dof = model.nv;
-        let mut total_dofs = 0usize;
-        for &bid in body_ids {
-            let dof_start = model.body_dof_adr[bid];
-            let dof_count = model.body_dof_num[bid];
-            if dof_count > 0 && dof_start < min_dof {
-                min_dof = dof_start;
-            }
-            total_dofs += dof_count;
-        }
-        if total_dofs == 0 {
-            min_dof = 0; // Bodyless tree (e.g., static geoms)
-        }
-        model.tree_dof_adr.push(min_dof);
-        model.tree_dof_num.push(total_dofs);
-
-        // Assign tree id to each DOF
-        for &bid in body_ids {
-            let dof_start = model.body_dof_adr[bid];
-            let dof_count = model.body_dof_num[bid];
-            for dof in dof_start..(dof_start + dof_count) {
-                model.dof_treeid[dof] = tree_idx;
-            }
-        }
-    }
-}
-
-/// Tendon tree mapping (§16.10.1).
-///
-/// Compute `tendon_treenum`/`tendon_tree` by scanning each tendon's waypoints.
-fn compute_tendon_tree_mapping(model: &mut Model) {
-    for t in 0..model.ntendon {
-        let mut tree_set = std::collections::BTreeSet::new();
-        let adr = model.tendon_adr[t];
-        let num = model.tendon_num[t];
-        for w in adr..adr + num {
-            let bid = match model.wrap_type[w] {
-                WrapType::Joint => {
-                    let dof_adr = model.wrap_objid[w];
-                    if dof_adr < model.nv {
-                        Some(model.dof_body[dof_adr])
-                    } else {
-                        None
-                    }
-                }
-                WrapType::Site => {
-                    let site_idx = model.wrap_objid[w];
-                    if site_idx < model.nsite {
-                        Some(model.site_body[site_idx])
-                    } else {
-                        None
-                    }
-                }
-                WrapType::Geom => {
-                    let geom_id = model.wrap_objid[w];
-                    if geom_id < model.ngeom {
-                        Some(model.geom_body[geom_id])
-                    } else {
-                        None
-                    }
-                }
-                WrapType::Pulley => None,
-            };
-            if let Some(bid) = bid
-                && bid > 0
-            {
-                let tree = model.body_treeid[bid];
-                if tree < model.ntree {
-                    tree_set.insert(tree);
-                }
-            }
-        }
-        model.tendon_treenum[t] = tree_set.len();
-        if !tree_set.is_empty() {
-            let mut iter = tree_set.iter();
-            if let Some(&a) = iter.next() {
-                model.tendon_tree[2 * t] = a;
-            }
-            if let Some(&b) = iter.next() {
-                model.tendon_tree[2 * t + 1] = b;
-            }
-        }
-    }
-}
-
-/// Sleep policy resolution (§16.0 steps 1-3).
-///
-/// Step 1: Mark trees with actuators as `AutoNever`.
-/// Step 2: Apply explicit body-level sleep policies from MJCF.
-/// Step 3: Convert remaining `Auto` to `AutoAllowed`.
-fn resolve_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<SleepPolicy>]) {
-    // Step 1: Mark trees with actuators as AutoNever
-    for act_id in 0..model.nu {
-        let trn = model.actuator_trntype[act_id];
-        let trnid = model.actuator_trnid[act_id];
-        let body_id = match trn {
-            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
-                if trnid[0] < model.njnt {
-                    Some(model.jnt_body[trnid[0]])
-                } else {
-                    None
-                }
-            }
-            ActuatorTransmission::Tendon => {
-                // §16.26.5: Mark all trees spanned by the tendon as AutoNever.
-                let tendon_idx = trnid[0];
-                if tendon_idx < model.ntendon {
-                    let wrap_start = model.tendon_adr[tendon_idx];
-                    let wrap_count = model.tendon_num[tendon_idx];
-                    for w in wrap_start..wrap_start + wrap_count {
-                        let bid = match model.wrap_type[w] {
-                            WrapType::Joint => {
-                                let dof_adr = model.wrap_objid[w];
-                                if dof_adr < model.nv {
-                                    Some(model.dof_body[dof_adr])
-                                } else {
-                                    None
-                                }
-                            }
-                            WrapType::Site => {
-                                let site_idx = model.wrap_objid[w];
-                                if site_idx < model.nsite {
-                                    Some(model.site_body[site_idx])
-                                } else {
-                                    None
-                                }
-                            }
-                            WrapType::Geom => {
-                                let geom_id = model.wrap_objid[w];
-                                if geom_id < model.ngeom {
-                                    Some(model.geom_body[geom_id])
-                                } else {
-                                    None
-                                }
-                            }
-                            WrapType::Pulley => None,
-                        };
-                        if let Some(bid) = bid
-                            && bid > 0
-                        {
-                            let tree = model.body_treeid[bid];
-                            if tree < model.ntree {
-                                model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
-                            }
-                        }
-                    }
-                }
-                None
-            }
-            ActuatorTransmission::Site => {
-                if trnid[0] < model.nsite {
-                    Some(model.site_body[trnid[0]])
-                } else {
-                    None
-                }
-            }
-            ActuatorTransmission::Body => {
-                let bid = trnid[0];
-                if bid > 0 && bid < model.nbody {
-                    Some(bid)
-                } else {
-                    None
-                }
-            }
-            ActuatorTransmission::SliderCrank => {
-                // Mark both crank and slider site trees as AutoNever
-                let crank_id = trnid[0];
-                let slider_id = trnid[1];
-                for &sid in &[crank_id, slider_id] {
-                    if sid < model.nsite {
-                        let bid = model.site_body[sid];
-                        if bid > 0 {
-                            let tree = model.body_treeid[bid];
-                            if tree < model.ntree {
-                                model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
-                            }
-                        }
-                    }
-                }
-                None
-            }
-        };
-        if let Some(bid) = body_id
-            && bid > 0
-        {
-            let tree = model.body_treeid[bid];
-            if tree < model.ntree {
-                model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
-            }
-        }
-    }
-
-    // §16.18.2: Multi-tree tendon policy relaxation.
-    // Passive multi-tree tendons with nonzero stiffness, damping, or active limits
-    // create inter-tree coupling forces that prevent independent sleeping.
-    for t in 0..model.ntendon {
-        if model.tendon_treenum[t] < 2 {
-            continue;
-        }
-        let has_stiffness = model.tendon_stiffness[t].abs() > 0.0;
-        let has_damping = model.tendon_damping[t].abs() > 0.0;
-        let has_limit = model.tendon_limited[t];
-        if has_stiffness || has_damping || has_limit {
-            let t1 = model.tendon_tree[2 * t];
-            let t2 = model.tendon_tree[2 * t + 1];
-            if t1 < model.ntree && model.tree_sleep_policy[t1] == SleepPolicy::Auto {
-                model.tree_sleep_policy[t1] = SleepPolicy::AutoNever;
-            }
-            if t2 < model.ntree && model.tree_sleep_policy[t2] == SleepPolicy::Auto {
-                model.tree_sleep_policy[t2] = SleepPolicy::AutoNever;
-            }
-        }
-    }
-
-    // Step 2: Apply explicit body-level sleep policies from MJCF
+/// Apply the explicit `sleep=` body attributes to their trees (§16.0 step 2).
+/// `Model::compute_kinematic_trees` has resolved the automatic policies.
+fn apply_explicit_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<SleepPolicy>]) {
     for (body_id, policy_opt) in body_sleep_policy.iter().enumerate().skip(1) {
         if let Some(policy) = policy_opt {
             let tree = model.body_treeid[body_id];
@@ -946,13 +572,6 @@ fn resolve_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<SleepPo
                 }
                 model.tree_sleep_policy[tree] = *policy;
             }
-        }
-    }
-
-    // Step 3: Convert remaining Auto to AutoAllowed
-    for t in 0..model.ntree {
-        if model.tree_sleep_policy[t] == SleepPolicy::Auto {
-            model.tree_sleep_policy[t] = SleepPolicy::AutoAllowed;
         }
     }
 }
@@ -972,6 +591,26 @@ fn guard_rk4_sleep(model: &mut Model) {
 mod tests {
     use crate::builder::load_model;
     use sim_core::{ActuatorTransmission, MjJointType};
+
+    /// A joint layout `try_make_data` refuses still loads (the derivations
+    /// that run the joints skip it) and is refused when its `Data` is made.
+    #[test]
+    fn a_bad_joint_layout_loads_and_make_data_refuses_it() {
+        let model = load_model(
+            r#"<mujoco><worldbody><body>
+                <joint type="ball"/>
+                <joint type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1"/>
+            </body></worldbody></mujoco>"#,
+        )
+        .expect("loads");
+        assert!(matches!(
+            model.try_make_data().err(),
+            Some(sim_core::MakeDataError::JointLayout(
+                sim_core::JointLayoutError::BallNotLast { body: 1, joint: 0 }
+            ))
+        ));
+    }
 
     #[test]
     fn test_simple_pendulum() {
