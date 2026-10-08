@@ -227,6 +227,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** mjcf-S1 (`intvelocity`). **Implements:** A4 §5 (`mjs_setToIntVelocity`), A4 §4 (user `dim="1"` only).
 - **Must-fail:** `intvelocity` model fields equal the measured 3.5.0 values (A4 §5).
 - **Flips:** `callbacks.rs:199-212` gains `dim="1"`; `parser/tests.rs:2283` (`dim="3"`) becomes a refusal test (A4 §9).
+- **Census:** P18 added `bcbf72b425d3ab65` (`<user dim="1"/>` on a hinge, from `history.rs` `try_make_data_refuses_a_delayed_user_sensor`), verdict `model:nsensordata`: sim-mjcf gives that user sensor dimension 0, MuJoCo 1.
 - **Breaking:** `MjcfActuatorType::IntVelocity` (A4 §5).
 
 ### L12 · M14 part · `feat(sim-mjcf): connect body and site forms as MuJoCo`
@@ -478,7 +479,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** P-L34, sim-mjcf half.
 - **Implements:** A7 H-3: `interval` as `period [phase]`; the 2^24 caps; positive phase and `phase ≤ −period` refused; schema excludes `<user>`/`<plugin>` sensors; stricter rows for negative delay, interval without `nsample`, phase without period; `delay > nsample·timestep` refused with the tolerance `(1 + 1e-12)` (Q19, stricter; A7 Q2: the tolerance is "my choice, no MuJoCo referent").
 - **Must-fail:** one test per rule (A7 H-3). The 2^24 cap test (`nsample="16777217"`) allocates about 0.27 GB per actuator and 0.54 GB per dim-3 sensor at the parent if it builds `Data` (R2, arithmetic from A7 §1.1): run only under the 2.5 GB RSS watchdog (40-verification).
-- **Flips:** `sensor_phase6_spec_d.rs:39` (add `nsample="1"`), `:413` and `:436` (become refusal tests); under Q19, `actuator_phase5.rs:818`, `:1128`, `sensor_phase6_spec_d.rs:14` (A7 H-3).
+- **Flips:** `sensor_phase6_spec_d.rs:39` (add `nsample="1"`), `:413` and `:436` (become refusal tests); under Q19, `actuator_phase5.rs:818`, `:1128`, `sensor_phase6_spec_d.rs:14` (A7 H-3). Until this commit, `integration/history.rs` sets the phase of the sensor models' `interval="0.03 -0.01"` sensor in code (`model_of`, `api_model`); here the parser reads it, and that line goes.
 - **Corpus:** 6 MuJoCo-ok docs refused, 3 of them by Q19 (A7 H-3).
 - **Breaking:** `MjcfSensor.interval: Option<(f64, f64)>`; `with_interval(period, phase)` (A7 H-3).
 
