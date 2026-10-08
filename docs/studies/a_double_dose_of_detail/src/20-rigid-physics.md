@@ -339,6 +339,7 @@ Each constraint below is a dependency note from a section; the order above satis
 ### P20 · A8 S1 · `fix(sim-core): kinematic trees and automatic sleep policies as MuJoCo`
 - **Closes:** part of "sleep re-forward and sleep timing: fix in Rigid" (01-decisions); census sleep cluster, 20 docs (A16 §2).
 - **Implements:** A8 SP-3, plus the `rne.rs:362` `tree < ntree` guard. SP-3 marks every tree of a qualifying tendon through a new `pub fn Model::tendon_trees(&self, tendon: usize) -> impl Iterator<Item = usize> + '_` (the trees its wraps touch), which Rigid-loading L46 also calls. The two MuJoCo compile errors of SP-3 go to the MJCF series (Rigid-loading L46).
+- **Where:** since P11 the tree code is sim-core's `Model::compute_kinematic_trees` (`types/model_trees.rs`); A8 names it at its old home, sim-mjcf's `discover_kinematic_trees`, `compute_tendon_tree_mapping` and `resolve_sleep_policies`, which P11 moved there and deleted.
 - **Must-fail:** `static_body_is_not_a_tree`, `box_on_static_body_sleeps_as_mujoco` (A8 SP-3).
 - **Flips:** none in the suites run; tree tables change in 240 non-sleep docs, no trajectory change (A8 SP-3).
 
@@ -354,6 +355,7 @@ Each constraint below is a dependency note from a section; the order above satis
 - **Must-fail:** `sleep_step_matches_mujoco`, `sleep_step_reforward_fires_both_callbacks`, `sleep_step_sensors_see_zero_velocity`, `sleep_step_matches_mujoco_implicit`, `sleep_wakes_and_sleeps_with_contact` (SP-1); `asleep_on_static_makes_no_contacts`, `sleeping_rows_dropped`, `island_disabled_blocks_sleep_with_constraints`, `friction_rows_make_islands` (SP-5); `integrate_refuses_a_timestep_that_is_not_positive_and_finite`, `integrate_refuses_data_made_by_another_model` (C3, R4 §5); `islands_exist_without_sleep` (`box_rest` with sleep off: `nisland` 1 as MuJoCo, main 0, A8 Q5).
 - **Flips:** `sleeping.rs:3669` (SP-5); `sleeping.rs:425`, `:2365`, `:3276`, `:5038`, `body_accumulators.rs:366`, `sensors_phase4.rs:629` and validator `sleep-wake/stress-test:285` (SP-7, under A8 Q1 = parity); `sleeping.rs:666` (SP-9); `derivatives/fd.rs:765`, `plugin.rs:615` (C3).
 - **Census:** `d22fcd34` (`sleeping.rs:116`, the one in-tree RK4 doc with sleep) → agree: its only difference is `enableflags`, which the deleted RK4 guard sets (A20 §1A.2, A8 SP-9), and it never sleeps and agrees at 2.8e-14 with or without P32's fix (A19 §5.3). Otherwise not measured on the census. All S-items together: 70/70 corpus sleep docs have MuJoCo's transitions (main 41/70); 1,328 non-sleep docs bit-identical (A8 "Result of the prototype").
+- **Docs earlier commits wrote that this changes:** P12's `CbPassive` doc says MuJoCo runs the forward pass once more on the step that puts a tree to sleep and sim-core does not: delete it. P14 left this here: on that step pure FD reads the sensors of the re-forward and the hybrid's sensor-only columns do not, so the two paths differ; the hybrid doc says so.
 - **Breaking:** `integrate`'s signature (0 callers outside sim-core, R4 §5).
 
 ### P23 · A8 S4 · `fix(sim-core): wake rules and init-sleep as MuJoCo`
