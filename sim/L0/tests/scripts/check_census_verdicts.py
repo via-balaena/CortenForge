@@ -96,9 +96,10 @@ def explained(note, needed):
 
 def owed(verdict, note):
     """The rank a row with `note` must reach before the note may go: a
-    fixed_by= note's was= class, otherwise one above the row's own class."""
+    fixed_by= note's was= class, otherwise one above the row's own class, and
+    no more than agree: a note an agree row kept owes nothing."""
     was = fixed_by_was(note)
-    return rank(was) if was is not None else rank(klass(verdict)) + 1
+    return rank(was) if was is not None else min(rank(klass(verdict)) + 1, rank('agree'))
 
 
 def main():

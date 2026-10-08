@@ -25,7 +25,8 @@
 //!   refuses are listed in `scripts/check_census_verdicts.py`, which
 //!   `scripts/check_census_append_only.sh` runs.
 //! - **`ours-*`** needs a `divergence=`, `known=<label>` (a defect not fixed
-//!   yet) or `fixed_by=` note.
+//!   yet) or `fixed_by=` note. Bless clears a `known=` note when the doc's
+//!   class rises; keep a label that still applies by writing it back.
 //! - **A `divergence=` doc whose class changes fails**: the deliberate
 //!   difference was lost, or became another.
 //! - **Label shifts** (same class) never fail; bless records them, and a passing

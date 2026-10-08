@@ -260,7 +260,8 @@ impl Report {
 /// `bless`, rewrite the file for improvements, shifts, label shifts and new
 /// docs — never for a regression, a lost divergence or a bad note. A
 /// `fixed_by=` note is cleared once the doc's class ranks as high as its
-/// `was=` class: the later commit fixed it.
+/// `was=` class: the later commit fixed it. A `known=` note is cleared when
+/// the doc's class rises: it explained the class the doc has left.
 pub fn ratchet(
     got: &BTreeMap<String, String>,
     expected_path: &Path,
@@ -341,8 +342,9 @@ pub fn ratchet(
             );
         } else if rank(&now) > rank(&was) {
             report.improvements.push(moved);
-            let restored = fixed_by(&note).is_some_and(|(_, was)| rank(&now) >= rank(was));
-            let note = if restored { String::new() } else { note };
+            let paid = note.starts_with("known=")
+                || fixed_by(&note).is_some_and(|(_, was)| rank(&now) >= rank(was));
+            let note = if paid { String::new() } else { note };
             rows.insert(
                 doc.clone(),
                 Row {
@@ -367,4 +369,32 @@ pub fn ratchet(
         write_expected(expected_path, &rows);
     }
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bless clears a `known=` note once the doc's class rises: the note
+    /// explained the class the doc has left. A `fixed_by=` note stays until
+    /// the doc ranks as high as its `was=` class.
+    #[test]
+    fn bless_clears_a_known_note_once_the_class_rises() {
+        let path =
+            std::env::temp_dir().join(format!("census_ratchet_{}_known.tsv", std::process::id()));
+        std::fs::write(
+            &path,
+            "# agree_floor 0\naaaa\tours-refused\tknown=x\nbbbb\tours-refused\tfixed_by=P01 was=agree\n",
+        )
+        .expect("write");
+        let got = BTreeMap::from([
+            ("aaaa".to_string(), "e1:state@3".to_string()),
+            ("bbbb".to_string(), "e1:state@3".to_string()),
+        ]);
+        ratchet(&got, &path, &BTreeSet::new(), true);
+        let rows = read_expected(&path).rows;
+        std::fs::remove_file(&path).expect("remove");
+        assert_eq!(rows["aaaa"].note, "");
+        assert_eq!(rows["bbbb"].note, "fixed_by=P01 was=agree");
+    }
 }

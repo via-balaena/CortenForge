@@ -18,15 +18,16 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.abspath(os.environ.get("CHECK_CENSUS", os.path.join(HERE, "check_census_append_only.sh")))
 CENSUS = os.path.join("sim", "L0", "tests", "assets", "census")
-A, B, C, D, N = "a" * 16, "b" * 16, "c" * 16, "d" * 16, "e" * 16
+A, B, C, D, E, N = "a" * 16, "b" * 16, "c" * 16, "d" * 16, "f" * 16, "e" * 16
 
 # The base census: two agree rows, a lowered row a later commit fixes, a refused
-# row with a known= note.
+# row with a known= note, a row the census skips (nondet=).
 BASE_ROWS = {
     A: ("agree", ""),
     B: ("agree", ""),
     C: ("e1:state@1", "fixed_by=P09 was=agree"),
     D: ("ours-refused", "known=x"),
+    E: ("e1:state@1", "nondet=x"),
 }
 BASE_FLOOR = 2
 
@@ -76,6 +77,10 @@ class Census:
         self.floor = floor
         self.write_verdicts()
 
+    def append_verdicts_line(self, line):
+        with open(os.path.join(self.dir, "verdicts.tsv"), "a") as f:
+            f.write(line + "\n")
+
 
 class Repo:
     def __init__(self, root):
@@ -118,7 +123,7 @@ CASES = [
     ("rename a doc", [lambda c: (c.remove(f"docs/{A}.xml"), c.write(f"docs/{N}.xml", "<mujoco/>\n"))],
      "append-only"),
     ("remove a manifest line", [lambda c: c.write("manifest.tsv", "# manifest\n" + "".join(
-        f"{d}\tsrc/lib.rs:1\n" for d in (A, B, C)))], "only gains lines"),
+        f"{d}\tsrc/lib.rs:1\n" for d in (A, B, C, D)))], "only gains lines"),
     ("edit a manifest line", [lambda c: c.write("manifest.tsv", "# manifest\n" + "".join(
         f"{d}\tsrc/lib.rs:{2 if d == A else 1}\n" for d in BASE_ROWS))], "only gains lines"),
     ("edit a golden an earlier commit of the branch added",
@@ -150,6 +155,17 @@ CASES = [
      "dropped or weakened its note"),
     ("turn a known= note into a divergence= note",
      [lambda c: c.set_row(D, "ours-refused", "divergence=D-X")], None),
+    ("drop a known= note a fixed row kept, in a later commit",
+     [lambda c: (c.set_row(D, "agree", "known=x"), c.set_floor(3)),
+      lambda c: c.set_row(D, "agree")], None),
+    ("lower a row with an empty known= note",
+     [lambda c: (c.set_row(A, "e1:state@1", "known="), c.set_floor(1))], "lowered from agree"),
+    ("drop a nondet= note", [lambda c: c.set_row(E, "e1:state@1")], None),
+    ("lower the floor in one commit and restore the row in the next",
+     [lambda c: (c.set_row(A, "e1:state@1", "fixed_by=P20 was=agree"), c.set_floor(1)),
+      lambda c: c.set_row(A, "agree")], "agree_floor fell"),
+    ("add a second floor line below the first",
+     [lambda c: c.append_verdicts_line("# agree_floor 0")], "agree_floor fell"),
     ("lower the floor with no agree row lowered", [lambda c: c.set_floor(1)], "agree_floor fell"),
     ("lower the floor past the agree rows lowered",
      [lambda c: (c.set_row(A, "e1:state@1", "fixed_by=P13 was=agree"), c.set_floor(0))],
