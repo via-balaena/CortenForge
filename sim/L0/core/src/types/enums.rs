@@ -1068,6 +1068,69 @@ impl From<RangeError> for MakeDataError {
     }
 }
 
+/// Why a history-buffer call refuses.
+///
+/// The calls are [`Data::read_ctrl`](crate::Data::read_ctrl),
+/// [`Data::read_sensor`](crate::Data::read_sensor),
+/// [`Data::init_ctrl_history`](crate::Data::init_ctrl_history) and
+/// [`Data::init_sensor_history`](crate::Data::init_sensor_history); each
+/// refuses where MuJoCo 3.5.0's `mj_readCtrl`, `mj_readSensor`,
+/// `mj_initCtrlHistory` or `mj_initSensorHistory` raises `mjERROR`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HistoryError {
+    /// The actuator index is not below `nu`.
+    InvalidActuator {
+        /// The index passed.
+        id: usize,
+        /// The model's `nu`.
+        nu: usize,
+    },
+    /// The sensor index is not below `nsensor`.
+    InvalidSensor {
+        /// The index passed.
+        id: usize,
+        /// The model's `nsensor`.
+        nsensor: usize,
+    },
+    /// The actuator or sensor has no history buffer (`nsample <= 0`).
+    NoBuffer,
+    /// A slice has another length than the buffer or the sensor needs.
+    WrongLength {
+        /// The length needed.
+        expected: usize,
+        /// The length passed.
+        actual: usize,
+    },
+    /// `times[index + 1]` is not above `times[index]` by at least `1e-15`.
+    TimesNotIncreasing {
+        /// The first index of the pair.
+        index: usize,
+    },
+}
+
+impl std::fmt::Display for HistoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidActuator { id, nu } => write!(f, "invalid actuator id {id} (nu {nu})"),
+            Self::InvalidSensor { id, nsensor } => {
+                write!(f, "invalid sensor id {id} (nsensor {nsensor})")
+            }
+            Self::NoBuffer => f.write_str("no history buffer (nsample <= 0)"),
+            Self::WrongLength { expected, actual } => {
+                write!(f, "expected {expected} values, got {actual}")
+            }
+            Self::TimesNotIncreasing { index } => write!(
+                f,
+                "times must be strictly increasing, got times[{index}] >= times[{}]",
+                index + 1
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HistoryError {}
+
 /// Why [`Model::recompute_derived`](crate::Model::recompute_derived) refuses a model.
 ///
 /// Its joint layout or one of its limited ranges, which

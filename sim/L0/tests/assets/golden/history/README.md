@@ -14,8 +14,13 @@ requires, as `gen_census_golden.py` does:
 
 ```sh
 <workdir>/venv/bin/python -I sim/L0/tests/scripts/gen_history_reference.py \
-    sim/L0/tests/assets/golden/history/history.json
+    sim/L0/tests/assets/golden/history
 ```
 
-The file is byte-stable across runs; its `oracle` entry is the oracle's
+`history_api.json` holds what MuJoCo's history functions return on the same
+models: `mj_readCtrl` and `mj_readSensor` at times around and inside the
+buffers with each interpolation, the buffers `mj_initCtrlHistory` and
+`mj_initSensorHistory` leave, and the calls MuJoCo refuses.
+
+Both files are byte-stable across runs; their `oracle` entry is the oracle's
 marker. The generator's docstring describes the models and drivers.

@@ -4,7 +4,7 @@
 Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 
     <workdir>/venv/bin/python -I sim/L0/tests/scripts/gen_history_reference.py \\
-        sim/L0/tests/assets/golden/history/history.json
+        sim/L0/tests/assets/golden/history
 
 It refuses any other interpreter, as gen_census_golden.py does: the PyPI wheel
 fuses multiply-adds. History buffers are new in MuJoCo 3.5.0, so this golden
@@ -30,6 +30,14 @@ and older-than-oldest insert branches).
 
 The control is sin(0.9 k) + 0.05 k at step k on every actuator, so a delay
 shows in the force.
+
+It writes history.json (the cases above) and history_api.json: MuJoCo's
+mj_readCtrl and mj_readSensor after 12 Euler steps of the act and sens
+models, at 55 times from -0.05 to 0.1498 with each interpolation (-1 is the
+model's), and the buffer mj_initCtrlHistory leaves on actuator 8 then (its
+cursor is not at its last slot); the buffers mj_initCtrlHistory (actuators 2 and 7) and
+mj_initSensorHistory (sensor 6, phase 0.123) leave, and the forces of the
+4 steps after; and which calls MuJoCo refuses.
 """
 import json
 import math
@@ -37,6 +45,7 @@ import os
 import sys
 
 import mujoco
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gen_census_golden import finite_or_string, oracle  # noqa: E402
@@ -225,15 +234,82 @@ def cases():
     return out
 
 
+def drive(m, d, nstep):
+    for k in range(nstep):
+        d.ctrl[:] = [math.sin(0.9 * k) + 0.05 * k] * m.nu
+        mujoco.mj_step(m, d)
+
+
+def refusal(call):
+    try:
+        call()
+    except Exception as e:  # noqa: BLE001 — MuJoCo's mjERROR, recorded as its message
+        return str(e)
+    return None
+
+
+def api():
+    out = {}
+    times = [round(-0.05 + 0.0037 * i, 10) for i in range(55)]
+    for kind, xml in [("act", act_xml("Euler")), ("sens", sens_xml("Euler"))]:
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        drive(m, d, 12)
+        reads = []
+        for i in range(m.nu if kind == "act" else m.nsensor):
+            for interp in (-1, 0, 1, 2):
+                for t in times:
+                    if kind == "act":
+                        value = [float(mujoco.mj_readCtrl(m, d, i, t, interp))]
+                    else:
+                        res = np.zeros(m.sensor_dim[i])
+                        value = floats(np.asarray(mujoco.mj_readSensor(m, d, i, t, res, interp)).ravel())
+                    reads.append([i, interp, t, value])
+        out[kind] = {"xml": xml, "history": floats(d.history), "reads": reads}
+        if kind == "act":
+            # an init after steps, where the cursor is not at the last slot
+            mujoco.mj_initCtrlHistory(
+                m, d, 8, np.array([-0.03, -0.02, -0.01, 0.0, 0.05]), np.array([1.0, 2.0, 3.0, 4.0, 5.0]))
+            out[kind]["history_after_init"] = floats(d.history)
+    m = mujoco.MjModel.from_xml_string(act_xml("Euler"))
+    d = mujoco.MjData(m)
+    mujoco.mj_initCtrlHistory(m, d, 2, np.array([-0.03, -0.02, -0.01]), np.array([1.0, 2.0, 3.0]))
+    mujoco.mj_initCtrlHistory(m, d, 7, None, np.array([0.5, -0.5, 0.25, 4.0, 1.0]))
+    act_history = floats(d.history)
+    forces = []
+    for _ in range(4):
+        d.ctrl[:] = 0.0
+        mujoco.mj_step(m, d)
+        forces.append(floats(d.actuator_force))
+    refused = {
+        "no_buffer": refusal(lambda: mujoco.mj_initCtrlHistory(m, d, 0, None, np.zeros(0))),
+        "not_increasing": refusal(lambda: mujoco.mj_initCtrlHistory(
+            m, d, 2, np.array([0.0, 0.0, 1.0]), np.zeros(3))),
+        "bad_actuator": refusal(lambda: mujoco.mj_readCtrl(m, d, 99, 0.0, -1)),
+    }
+    ms = mujoco.MjModel.from_xml_string(sens_xml("Euler"))
+    ds = mujoco.MjData(ms)
+    mujoco.mj_initSensorHistory(ms, ds, 6, None, np.arange(12, dtype=float).reshape(4, 3), 0.123)
+    out["init"] = {"act_history": act_history, "act_forces": forces, "refused": refused,
+                   "sens_history": floats(ds.history)}
+    return out
+
+
+def write(path, doc):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, separators=(",", ":"))
+        f.write("\n")
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
     doc = {"oracle": marker, "dt": DT, "cases": finite_or_string(cases())}
-    with open(sys.argv[1], "w", encoding="utf-8") as f:
-        json.dump(doc, f, separators=(",", ":"))
-        f.write("\n")
-    print(f"{len(doc['cases'])} cases -> {sys.argv[1]}")
+    write(os.path.join(sys.argv[1], "history.json"), doc)
+    write(os.path.join(sys.argv[1], "history_api.json"),
+          {"oracle": marker, "dt": DT, "api": finite_or_string(api())})
+    print(f"{len(doc['cases'])} cases and the API cases -> {sys.argv[1]}")
 
 
 if __name__ == "__main__":

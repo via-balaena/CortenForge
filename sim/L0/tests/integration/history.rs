@@ -10,7 +10,9 @@
 //! `step1_step2_accelerometer_equals_step`).
 
 use serde_json::Value;
-use sim_core::{Data, Integrator, MakeDataError, Model, ResetError};
+use sim_core::{
+    Data, HistoryError, Integrator, InterpolationType, MakeDataError, Model, ResetError,
+};
 use sim_mjcf::load_model;
 
 const TOL: f64 = 1e-12;
@@ -398,7 +400,6 @@ fn try_reset_refuses_history_with_a_nonpositive_timestep() {
 /// `InterpolationType` from MuJoCo's integer code; another value is refused.
 #[test]
 fn interpolation_type_comes_from_mujoco_codes() {
-    use sim_core::InterpolationType;
     assert_eq!(InterpolationType::try_from(0), Ok(InterpolationType::Zoh));
     assert_eq!(
         InterpolationType::try_from(1),
@@ -407,4 +408,239 @@ fn interpolation_type_comes_from_mujoco_codes() {
     assert_eq!(InterpolationType::try_from(2), Ok(InterpolationType::Cubic));
     assert_eq!(InterpolationType::try_from(3), Err(3));
     assert_eq!(InterpolationType::try_from(-1), Err(-1));
+}
+
+fn api_golden() -> Value {
+    serde_json::from_str(include_str!("../assets/golden/history/history_api.json"))
+        .expect("history API golden parses")
+}
+
+/// The API golden's `kind` model ("act" or "sens"), with the sensor model's
+/// interval phase set in code as [`model_of`] sets it.
+fn api_model(golden: &Value, kind: &str) -> Model {
+    let xml = golden["api"][kind]["xml"].as_str().expect("xml");
+    let mut model = load_model(xml).expect("load");
+    if kind == "sens" {
+        model.sensor_interval[11] = (0.03, -0.01);
+    }
+    model
+}
+
+/// The API golden's `kind` model after the 12 Euler steps it takes, at its
+/// control sequence.
+fn after_twelve_steps(golden: &Value, kind: &str) -> (Model, Data) {
+    let model = api_model(golden, kind);
+    let mut data = model.make_data();
+    for k in 0..12 {
+        data.ctrl
+            .fill((0.9 * f64::from(k)).sin() + 0.05 * f64::from(k));
+        data.step(&model).expect("step");
+    }
+    (model, data)
+}
+
+/// MuJoCo's interpolation code, -1 meaning the model's own.
+fn interp_of(code: &Value) -> Option<InterpolationType> {
+    let code = i32::try_from(code.as_i64().expect("interp")).expect("small");
+    (code >= 0).then(|| InterpolationType::try_from(code).expect("0, 1 or 2"))
+}
+
+/// `Data::read_ctrl` and `Data::read_sensor` are MuJoCo's `mj_readCtrl` and
+/// `mj_readSensor`: every actuator and sensor of the golden models, after 12
+/// steps, at 55 times around and inside their buffers, with each
+/// interpolation.
+#[test]
+fn history_reads_match_mujoco_3_5_0() {
+    let golden = api_golden();
+    for kind in ["act", "sens"] {
+        let case = &golden["api"][kind];
+        let (model, mut data) = after_twelve_steps(&golden, kind);
+        assert_close(
+            &format!("{kind} history"),
+            &data.history,
+            &floats(&case["history"]),
+            &[],
+        );
+        for read in case["reads"].as_array().expect("reads") {
+            let id = usize::try_from(read[0].as_u64().expect("id")).expect("id");
+            let interp = interp_of(&read[1]);
+            let time = read[2].as_f64().expect("time");
+            let theirs = floats(&read[3]);
+            let ours = if kind == "act" {
+                vec![data.read_ctrl(&model, id, time, interp).expect("read_ctrl")]
+            } else {
+                let mut out = vec![0.0; model.sensor_dim[id]];
+                data.read_sensor(&model, id, time, interp, &mut out)
+                    .expect("read_sensor");
+                out
+            };
+            assert_close(
+                &format!("{kind} {id} at {time} interp {interp:?}"),
+                &ours,
+                &theirs,
+                &[],
+            );
+        }
+        if kind == "act" {
+            // an init where the cursor is not at the last slot (actuator 8,
+            // 5 samples, after 12 steps): the given order becomes the stored one
+            data.init_ctrl_history(
+                &model,
+                8,
+                Some(&[-0.03, -0.02, -0.01, 0.0, 0.05]),
+                Some(&[1.0, 2.0, 3.0, 4.0, 5.0]),
+            )
+            .expect("init 8");
+            let theirs = floats(&case["history_after_init"]);
+            for (j, (a, b)) in data.history.iter().zip(&theirs).enumerate() {
+                assert_eq!(a.to_bits(), b.to_bits(), "after init: history[{j}]");
+            }
+        }
+    }
+}
+
+/// `Data::init_ctrl_history` and `Data::init_sensor_history` leave the
+/// buffers MuJoCo's `mj_initCtrlHistory` and `mj_initSensorHistory` leave,
+/// bit for bit: new times and values, kept times with new values (the
+/// buffer's own times, in their stored order), and a sensor's phase. The
+/// delayed actuators then act on the values written.
+#[test]
+fn history_inits_match_mujoco_3_5_0() {
+    let golden = api_golden();
+    let init = &golden["api"]["init"];
+    let model = api_model(&golden, "act");
+    let mut data = model.make_data();
+    data.init_ctrl_history(
+        &model,
+        2,
+        Some(&[-0.03, -0.02, -0.01]),
+        Some(&[1.0, 2.0, 3.0]),
+    )
+    .expect("init 2");
+    data.init_ctrl_history(&model, 7, None, Some(&[0.5, -0.5, 0.25, 4.0, 1.0]))
+        .expect("init 7");
+    let theirs = floats(&init["act_history"]);
+    assert_eq!(data.history.len(), theirs.len());
+    for (j, (a, b)) in data.history.iter().zip(&theirs).enumerate() {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "act history[{j}]: ours {a}, MuJoCo {b}"
+        );
+    }
+    for (k, forces) in init["act_forces"]
+        .as_array()
+        .expect("forces")
+        .iter()
+        .enumerate()
+    {
+        data.ctrl.fill(0.0);
+        data.step(&model).expect("step");
+        assert_close(
+            &format!("force after init, step {k}"),
+            &data.actuator_force,
+            &floats(forces),
+            &[],
+        );
+    }
+
+    let model = api_model(&golden, "sens");
+    let mut data = model.make_data();
+    let values: Vec<f64> = (0..12).map(f64::from).collect();
+    data.init_sensor_history(&model, 6, None, Some(&values), 0.123)
+        .expect("init sensor 6");
+    let theirs = floats(&init["sens_history"]);
+    for (j, (a, b)) in data.history.iter().zip(&theirs).enumerate() {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "sens history[{j}]: ours {a}, MuJoCo {b}"
+        );
+    }
+}
+
+/// Where MuJoCo `mjERROR`s, the API returns the reason: a bad index, no
+/// buffer, a slice of the wrong length, times that do not increase.
+#[test]
+fn history_api_refuses_what_mujoco_refuses() {
+    let golden = api_golden();
+    let refused = &golden["api"]["init"]["refused"];
+    let model = api_model(&golden, "act");
+    let mut data = model.make_data();
+    assert!(
+        refused["bad_actuator"].is_string(),
+        "MuJoCo refuses actuator 99"
+    );
+    assert_eq!(
+        data.read_ctrl(&model, 99, 0.0, None),
+        Err(HistoryError::InvalidActuator {
+            id: 99,
+            nu: model.nu
+        })
+    );
+    assert!(
+        refused["no_buffer"].is_string(),
+        "MuJoCo refuses actuator 0"
+    );
+    assert_eq!(
+        data.init_ctrl_history(&model, 0, None, Some(&[])),
+        Err(HistoryError::NoBuffer)
+    );
+    assert!(
+        refused["not_increasing"].is_string(),
+        "MuJoCo refuses equal times"
+    );
+    assert_eq!(
+        data.init_ctrl_history(&model, 2, Some(&[0.0, 0.0, 1.0]), Some(&[0.0; 3])),
+        Err(HistoryError::TimesNotIncreasing { index: 0 })
+    );
+    assert_eq!(
+        data.init_ctrl_history(&model, 2, Some(&[0.0, 1.0]), None),
+        Err(HistoryError::WrongLength {
+            expected: 3,
+            actual: 2
+        })
+    );
+
+    let model = api_model(&golden, "sens");
+    let data = model.make_data();
+    let mut out = [0.0; 2];
+    assert_eq!(
+        data.read_sensor(&model, 99, 0.0, None, &mut out),
+        Err(HistoryError::InvalidSensor {
+            id: 99,
+            nsensor: model.nsensor
+        })
+    );
+    assert_eq!(
+        data.read_sensor(&model, 6, 0.0, None, &mut out),
+        Err(HistoryError::WrongLength {
+            expected: 3,
+            actual: 2
+        })
+    );
+}
+
+/// `None` keeps what the buffer holds: new times with the values kept, then
+/// new values with the times kept (MuJoCo's C API takes NULL for either;
+/// its Python binding, which the golden comes from, does not).
+#[test]
+fn history_init_keeps_what_it_is_not_given() {
+    let golden = api_golden();
+    let model = api_model(&golden, "act");
+    let mut data = model.make_data();
+    let adr = usize::try_from(model.actuator_historyadr[4]).expect("adr");
+    data.history[adr + 6..adr + 10].copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+    data.init_ctrl_history(&model, 4, Some(&[-0.05, -0.03, -0.02, -0.01]), None)
+        .expect("times only");
+    assert_eq!(
+        data.history[adr + 2..adr + 10],
+        [-0.05, -0.03, -0.02, -0.01, 1.0, 2.0, 3.0, 4.0]
+    );
+    data.init_ctrl_history(&model, 4, None, Some(&[5.0, 6.0, 7.0, 8.0]))
+        .expect("values only");
+    assert_eq!(
+        data.history[adr + 2..adr + 10],
+        [-0.05, -0.03, -0.02, -0.01, 5.0, 6.0, 7.0, 8.0]
+    );
 }

@@ -213,6 +213,7 @@ pub use types::{
     FlexSelfCollide,
     GainType,
     GeomType,
+    HistoryError,
     Integrator,
     InterpolationType,
     JointLayoutError,

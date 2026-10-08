@@ -7,6 +7,9 @@
 //! for sensors (`compute_or_read_sensor`, `engine_sensor.c:1346-1388`) and
 //! the insertion when the state advances (`mj_advance`,
 //! `engine_forward.c:837-884`).
+//! The public reads and initialisations are methods of [`Data`]:
+//! [`Data::read_ctrl`], [`Data::read_sensor`], [`Data::init_ctrl_history`]
+//! and [`Data::init_sensor_history`] (`engine_support.c:845-948`).
 //!
 //! The buffer of an actuator or a sensor with `nsample > 0` starts at its
 //! `historyadr` in [`Data::history`](crate::Data::history):
@@ -14,7 +17,7 @@
 //! compute tick in interval mode; `cursor` is the physical index of the
 //! newest sample, stored as an `f64` as MuJoCo stores it as an `mjtNum`.
 
-use crate::types::{Data, InterpolationType, MjSensorType, Model};
+use crate::types::{Data, HistoryError, InterpolationType, MjSensorType, Model};
 
 /// MuJoCo's `mjMINVAL` (`mjtnum.h:26`): two times closer than this are one.
 const MINVAL: f64 = 1e-15;
@@ -341,4 +344,208 @@ fn fill_slot(model: &Model, data: &mut Data, i: usize, offset: usize) {
 fn swap(data: &mut Data, adr: usize, offset: usize, dim: usize) {
     data.sensordata.as_mut_slice()[adr..adr + dim]
         .swap_with_slice(&mut data.history[offset..offset + dim]);
+}
+
+/// Write a buffer as `mju_historyInit` does: `times` (or the buffer's own,
+/// in their stored order) must increase strictly; the newest sample becomes
+/// the last, `user` goes in the first slot, and `values` (if given) replace
+/// the values.
+fn init_buffer(
+    buf: &mut [f64],
+    n: usize,
+    dim: usize,
+    times: Option<&[f64]>,
+    values: Option<&[f64]>,
+    user: f64,
+) -> Result<(), HistoryError> {
+    if let Some(t) = times
+        && t.len() != n
+    {
+        return Err(HistoryError::WrongLength {
+            expected: n,
+            actual: t.len(),
+        });
+    }
+    if let Some(v) = values
+        && v.len() != n * dim
+    {
+        return Err(HistoryError::WrongLength {
+            expected: n * dim,
+            actual: v.len(),
+        });
+    }
+    let t = times.unwrap_or_else(|| &buf[2..2 + n]);
+    if let Some(index) = (0..n.saturating_sub(1)).find(|&i| t[i + 1] - t[i] < MINVAL) {
+        return Err(HistoryError::TimesNotIncreasing { index });
+    }
+    if let Some(t) = times {
+        buf[2..2 + n].copy_from_slice(t);
+    }
+    buf[0] = user;
+    #[allow(clippy::cast_precision_loss)] // n <= 2^24, exact in an f64
+    {
+        buf[1] = (n - 1) as f64;
+    }
+    if let Some(v) = values {
+        buf[2 + n..2 + n + n * dim].copy_from_slice(v);
+    }
+    Ok(())
+}
+
+impl Data {
+    /// The control actuator `id` acted on, or would act on, at `time`: its
+    /// buffer read at `time - actuator_delay[id]`, or `ctrl[id]` when it has
+    /// no buffer. `interp: None` uses the actuator's own. MuJoCo
+    /// `mj_readCtrl`.
+    ///
+    /// # Errors
+    /// [`HistoryError::InvalidActuator`] when `id >= model.nu`.
+    pub fn read_ctrl(
+        &self,
+        model: &Model,
+        id: usize,
+        time: f64,
+        interp: Option<InterpolationType>,
+    ) -> Result<f64, HistoryError> {
+        if id >= model.nu {
+            return Err(HistoryError::InvalidActuator { id, nu: model.nu });
+        }
+        if model.actuator_nsample[id] <= 0 {
+            return Ok(self.ctrl[id]);
+        }
+        let buf = &self.history[address(model.actuator_historyadr[id])..];
+        let mut res = [0.0];
+        Ok(
+            match read(
+                buf,
+                count(model.actuator_nsample[id]),
+                1,
+                &mut res,
+                time - model.actuator_delay[id],
+                interp.unwrap_or(model.actuator_interp[id]),
+            ) {
+                Some(offset) => buf[offset],
+                None => res[0],
+            },
+        )
+    }
+
+    /// Sensor `id`'s value at `time - sensor_delay[id]`, read from its buffer
+    /// into `out` (length `sensor_dim[id]`), or its current `sensordata` when
+    /// it has no buffer. `interp: None` uses the sensor's own. MuJoCo
+    /// `mj_readSensor`.
+    ///
+    /// # Errors
+    /// [`HistoryError::InvalidSensor`] when `id >= model.nsensor`;
+    /// [`HistoryError::WrongLength`] when `out` is not `sensor_dim[id]` long.
+    pub fn read_sensor(
+        &self,
+        model: &Model,
+        id: usize,
+        time: f64,
+        interp: Option<InterpolationType>,
+        out: &mut [f64],
+    ) -> Result<(), HistoryError> {
+        if id >= model.nsensor {
+            return Err(HistoryError::InvalidSensor {
+                id,
+                nsensor: model.nsensor,
+            });
+        }
+        let dim = model.sensor_dim[id];
+        if out.len() != dim {
+            return Err(HistoryError::WrongLength {
+                expected: dim,
+                actual: out.len(),
+            });
+        }
+        if model.sensor_nsample[id] <= 0 {
+            let adr = model.sensor_adr[id];
+            out.copy_from_slice(&self.sensordata.as_slice()[adr..adr + dim]);
+            return Ok(());
+        }
+        let buf = &self.history[address(model.sensor_historyadr[id])..];
+        if let Some(offset) = read(
+            buf,
+            count(model.sensor_nsample[id]),
+            dim,
+            out,
+            time - model.sensor_delay[id],
+            interp.unwrap_or(model.sensor_interp[id]),
+        ) {
+            out.copy_from_slice(&buf[offset..offset + dim]);
+        }
+        Ok(())
+    }
+
+    /// Overwrite actuator `id`'s buffer: `times` (strictly increasing; `None`
+    /// keeps the buffer's own, in their stored order) and `values` (`None`
+    /// keeps them). The last time becomes the newest sample. MuJoCo
+    /// `mj_initCtrlHistory`.
+    ///
+    /// # Errors
+    /// [`HistoryError::InvalidActuator`], [`HistoryError::NoBuffer`],
+    /// [`HistoryError::WrongLength`] for `times` or `values`, or
+    /// [`HistoryError::TimesNotIncreasing`]; the buffer is then unchanged.
+    pub fn init_ctrl_history(
+        &mut self,
+        model: &Model,
+        id: usize,
+        times: Option<&[f64]>,
+        values: Option<&[f64]>,
+    ) -> Result<(), HistoryError> {
+        if id >= model.nu {
+            return Err(HistoryError::InvalidActuator { id, nu: model.nu });
+        }
+        if model.actuator_nsample[id] <= 0 {
+            return Err(HistoryError::NoBuffer);
+        }
+        let buf = &mut self.history[address(model.actuator_historyadr[id])..];
+        let user = buf[0];
+        init_buffer(
+            buf,
+            count(model.actuator_nsample[id]),
+            1,
+            times,
+            values,
+            user,
+        )
+    }
+
+    /// Overwrite sensor `id`'s buffer, as [`Data::init_ctrl_history`] does;
+    /// `phase` becomes its last compute tick, which interval mode reads.
+    /// MuJoCo `mj_initSensorHistory`.
+    ///
+    /// # Errors
+    /// [`HistoryError::InvalidSensor`], [`HistoryError::NoBuffer`],
+    /// [`HistoryError::WrongLength`] for `times` or `values`, or
+    /// [`HistoryError::TimesNotIncreasing`]; the buffer is then unchanged.
+    pub fn init_sensor_history(
+        &mut self,
+        model: &Model,
+        id: usize,
+        times: Option<&[f64]>,
+        values: Option<&[f64]>,
+        phase: f64,
+    ) -> Result<(), HistoryError> {
+        if id >= model.nsensor {
+            return Err(HistoryError::InvalidSensor {
+                id,
+                nsensor: model.nsensor,
+            });
+        }
+        if model.sensor_nsample[id] <= 0 {
+            return Err(HistoryError::NoBuffer);
+        }
+        let dim = model.sensor_dim[id];
+        let buf = &mut self.history[address(model.sensor_historyadr[id])..];
+        init_buffer(
+            buf,
+            count(model.sensor_nsample[id]),
+            dim,
+            times,
+            values,
+            phase,
+        )
+    }
 }
