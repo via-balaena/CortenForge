@@ -14,8 +14,8 @@ impl Model {
     /// Recompute every field derived from the model's primary fields, in the
     /// order building a model computes them, after [`Self::check_joint_layout`]
     /// and [`Self::check_ranges`]: the equivalent of MuJoCo's `mj_setConst` (3.5.0
-    /// `engine_setconst.c:1089-1101`), which also runs the muscle length-range
-    /// simulation `mj_setConst` leaves out (`:1088`). The factories and the test
+    /// `engine_setconst.c:1089-1101`) plus the muscle length-range simulation,
+    /// which `mj_setConst` leaves out (`:1088`). The factories and the test
     /// fixtures' `finalize` run it; call it after editing a primary field.
     ///
     /// | After editing | Stale | Recomputed by |

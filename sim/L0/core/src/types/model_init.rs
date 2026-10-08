@@ -592,8 +592,8 @@ impl Model {
     /// `lengthrange`, `invweight0`, `stat_meaninertia`, tendon `length0`):
     /// every array allocated, with no checks and no plugin `init`. The MJCF
     /// builder and [`Self::recompute_derived`] run those derivations only on a
-    /// model whose joint layout and ranges pass, so they never step a model
-    /// `try_make_data` refuses.
+    /// model whose joint layout and ranges pass, so they never step a joint
+    /// layout or a range `try_make_data` refuses.
     pub(crate) fn make_data_for_derivation(&self) -> Data {
         let mut data = self.allocate_data();
         self.start_sleep(&mut data);

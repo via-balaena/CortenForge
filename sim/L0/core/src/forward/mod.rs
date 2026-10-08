@@ -160,7 +160,7 @@ impl Data {
 
     /// Split-step phase 2: acceleration stage + integration.
     ///
-    /// Runs actuation, dynamics, constraints, acc-sensors (no callback fires),
+    /// Runs actuation, constraints, acc-sensors (no callback fires),
     /// then integrates
     /// velocities and positions with [`integrate`](Self::integrate): Euler
     /// under Euler and RK4 (as MuJoCo's `mj_step2`), the integrator's own
@@ -287,9 +287,10 @@ impl Data {
     /// Pipeline stages follow `MuJoCo`'s `mj_forward`:
     /// 1. Position stage: FK, position-dependent sensors, potential energy
     /// 2. Velocity stage: velocity FK, passive forces (`cb_passive` fires at
-    ///    their end), velocity-dependent sensors, kinetic energy
+    ///    their end), the bias force, velocity-dependent sensors, kinetic
+    ///    energy
     /// 3. `cb_control`, unless `DISABLE_ACTUATION` is set
-    /// 4. Acceleration stage: actuation, dynamics, constraints, acc-dependent sensors
+    /// 4. Acceleration stage: actuation, constraints, acc-dependent sensors
     ///
     /// # Errors
     ///

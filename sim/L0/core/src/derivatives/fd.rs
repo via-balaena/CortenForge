@@ -394,7 +394,9 @@ pub(super) fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>)
 ///
 /// # MuJoCo Equivalence
 ///
-/// The output of MuJoCo's `mjd_inverseFD` (`engine_derivative_fd.c`), without its sensor Jacobians and `DmDq`.
+/// MuJoCo's `mjd_inverseFD` outputs (`engine_derivative_fd.c`), without its
+/// sensor Jacobians and `DmDq`, transposed: column `i` here is the derivative
+/// with respect to input `i`, which MuJoCo stores as row `i`.
 #[derive(Debug, Clone)]
 #[allow(non_snake_case)]
 pub struct InverseDynamicsDerivatives {
@@ -411,7 +413,7 @@ pub struct InverseDynamicsDerivatives {
 /// Compute finite-difference derivatives of inverse dynamics.
 ///
 /// Perturbs `qacc`, `qvel` and `qpos` around the current state, as MuJoCo's
-/// `mjd_inverseFD` (`engine_derivative_fd.c:609-700`), and measures the
+/// `mjd_inverseFD` (`engine_derivative_fd.c:608-710`), and measures the
 /// change of `qfrc_inverse`. Produces three nv×nv Jacobian matrices.
 ///
 /// # Algorithm
@@ -433,7 +435,7 @@ pub struct InverseDynamicsDerivatives {
 /// `ctrl` is read as the caller left it.
 ///
 /// MuJoCo's `mj_inverseSkip` computes the constraint force from `qacc`
-/// (`mj_invConstraint`, `engine_inverse.c:224`); `inverse()` subtracts the
+/// (`mj_invConstraint`, `engine_inverse.c:223`); `inverse()` subtracts the
 /// one the forward solve found. With an active constraint the two
 /// differ.
 ///
@@ -1043,10 +1045,9 @@ mod inverse_fd_tests {
         assert_eq!(derivs.DfDa.nrows(), 0);
     }
 
-    /// Verify mjd_inverse_fd uses forward_skip correctly: position
-    /// perturbation columns use forward_skip(None, true) (full pipeline,
-    /// skip sensors) and velocity columns use forward_skip(Pos, true)
-    /// (skip FK/collision). Test this indirectly by verifying the output
+    /// Verify mjd_inverse_fd's skip stages: position columns run the whole
+    /// pipeline and velocity columns start at the velocity stage (skipping
+    /// FK and collision). Test this indirectly by verifying the output
     /// matches a reference computed with full forward().
     #[test]
     fn dt51_skip_stage_correctness() {

@@ -560,7 +560,7 @@ fn compute_history_addresses(model: &mut Model) {
 /// Apply the explicit `sleep=` body attributes to their trees (§16.0 step 2).
 /// `Model::compute_kinematic_trees` has resolved the automatic policies. An
 /// explicit `auto` is the default and changes nothing, as MuJoCo applies only
-/// a policy other than auto (`user_model.cc:3040`).
+/// a policy other than auto (`user_model.cc:3041`).
 fn apply_explicit_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<SleepPolicy>]) {
     for (body_id, policy_opt) in body_sleep_policy.iter().enumerate().skip(1) {
         if let Some(policy) = policy_opt
@@ -645,7 +645,7 @@ mod tests {
 
     /// An explicit `sleep="auto"` is the default, as in MuJoCo, which sets a
     /// tree's policy only from a body whose policy is not auto
-    /// (`user_model.cc:3040`): MuJoCo 3.5.0 gives this model AUTO_NEVER,
+    /// (`user_model.cc:3041`): MuJoCo 3.5.0 gives this model AUTO_NEVER,
     /// AUTO_ALLOWED, NEVER, AUTO_NEVER, AUTO_NEVER (measured). An explicit
     /// policy survives `recompute_derived`; a computed one follows an edit.
     #[test]

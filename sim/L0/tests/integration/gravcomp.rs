@@ -5,7 +5,8 @@
 //! - Anti-gravity force computation at body CoM (`xipos`)
 //! - Jacobian-transpose projection via `mj_apply_ft()`
 //! - Dedicated `qfrc_gravcomp` array (separate from `qfrc_passive`)
-//! - Sleep filtering, negative values, kinematic chain propagation
+//! - Sleep filtering, a negative value beside a positive one (MuJoCo counts
+//!   only positive values in `ngravcomp`), kinematic chain propagation
 
 use approx::assert_relative_eq;
 use sim_mjcf::load_model;
@@ -177,7 +178,7 @@ fn ac5_parsing() {
     let model = load_model(mjcf).expect("should parse without error");
     assert_relative_eq!(model.body_gravcomp[1], 0.0, epsilon = 1e-15);
     assert_relative_eq!(model.body_gravcomp[2], 7.2, epsilon = 1e-15);
-    assert_eq!(model.ngravcomp, 1); // only body_gravcomp[2] != 0
+    assert_eq!(model.ngravcomp, 1); // only body_gravcomp[2] > 0
 }
 
 // ============================================================================
@@ -437,7 +438,9 @@ fn ac11_sleep_filtering() {
 // AC12: Negative gravcomp
 // ============================================================================
 
-/// Free body with `gravcomp="-1"` → gravity force is doubled (amplified).
+/// Free body with `gravcomp="-1"` and `ngravcomp` set to 1 by hand, as a
+/// model with another, positive body has it → the force adds to gravity.
+/// A lone negative value gives `ngravcomp` 0 and no force, as MuJoCo's.
 #[test]
 fn ac12_negative_gravcomp() {
     let mjcf = r#"
