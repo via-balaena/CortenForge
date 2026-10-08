@@ -703,20 +703,43 @@ mod tests {
         );
     }
 
-    /// Registry `D-MODEL-CHECKS`: a range MJCF makes limited automatically
-    /// with lo >= hi is refused when the `Data` is made (11-settled A5-Q2);
-    /// MuJoCo leaves it unlimited (measured: `"0 0"` loads with
-    /// `jnt_limited` 0).
+    /// A range of "0 0" is no range, as MuJoCo's `hasrange` says
+    /// (`user_objects.cc:2902`, `:6414`, `:6870`, `:6874`): automatic limits
+    /// leave each of these unlimited (MuJoCo 3.5.0, measured) and the model
+    /// makes its `Data`. A nonzero automatic range with lo >= hi is refused
+    /// when the `Data` is made (registry `D-MODEL-CHECKS`, 11-settled A5-Q2).
     #[test]
-    fn an_automatic_empty_range_is_refused() {
+    fn an_automatic_zero_range_is_no_range() {
         let model = load_model(
-            r#"<mujoco><worldbody><body><joint type="hinge" axis="0 1 0" range="0 0"/>
+            r#"<mujoco><worldbody><body><joint name="a" type="hinge" axis="0 1 0" range="0 0"/>
+<geom type="sphere" size="0.1"/><body pos="1 0 0"><joint name="b" type="hinge" axis="0 1 0"/>
+<geom type="sphere" size="0.1"/></body></body></worldbody>
+<tendon><fixed range="0 0"><joint joint="a" coef="1"/><joint joint="b" coef="1"/></fixed></tendon>
+<actuator><general joint="a" dyntype="integrator" actrange="0 0"/>
+<motor joint="b" ctrlrange="0 0" forcerange="0 0"/></actuator></mujoco>"#,
+        )
+        .expect("loads");
+        assert!(!model.jnt_limited[0]);
+        assert!(!model.tendon_limited[0]);
+        assert!(!model.actuator_actlimited[0]);
+        let (lo, hi) = model.actuator_ctrlrange[1];
+        assert!(lo.is_infinite() && hi.is_infinite(), "ctrl ({lo}, {hi})");
+        let (lo, hi) = model.actuator_forcerange[1];
+        assert!(lo.is_infinite() && hi.is_infinite(), "force ({lo}, {hi})");
+        assert!(model.try_make_data().is_ok());
+        let one_zero_bound = load_model(
+            r#"<mujoco><worldbody><body><joint type="hinge" axis="0 1 0" range="0 1"/>
 <geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
         )
         .expect("loads");
-        assert!(model.jnt_limited[0]);
+        assert!(one_zero_bound.jnt_limited[0]);
+        let empty = load_model(
+            r#"<mujoco><worldbody><body><joint type="hinge" axis="0 1 0" range="1 1"/>
+<geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        )
+        .expect("loads");
         assert!(matches!(
-            model.try_make_data().err(),
+            empty.try_make_data().err(),
             Some(sim_core::MakeDataError::Range(_))
         ));
     }

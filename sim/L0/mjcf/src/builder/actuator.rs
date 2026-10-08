@@ -45,7 +45,7 @@ impl ModelBuilder {
                 Some(v) => v,
                 None => {
                     if self.compiler.autolimits {
-                        actuator.ctrlrange.is_some()
+                        super::has_range(actuator.ctrlrange)
                     } else {
                         false
                     }
@@ -99,7 +99,7 @@ impl ModelBuilder {
             Some(v) => v,
             None => {
                 if self.compiler.autolimits {
-                    actuator.forcerange.is_some()
+                    super::has_range(actuator.forcerange)
                 } else {
                     false
                 }
@@ -119,7 +119,7 @@ impl ModelBuilder {
             Some(v) => v,
             None => {
                 if self.compiler.autolimits {
-                    actuator.actrange.is_some()
+                    super::has_range(actuator.actrange)
                 } else {
                     false
                 }

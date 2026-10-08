@@ -31,7 +31,7 @@ impl ModelBuilder {
                 Some(v) => v,
                 None => {
                     if self.compiler.autolimits {
-                        tendon.range.is_some()
+                        super::has_range(tendon.range)
                     } else {
                         false
                     }
