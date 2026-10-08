@@ -501,11 +501,13 @@ mod tests {
     use super::*;
 
     /// Every per-element array of `Model` whose length is not its element
-    /// count, as `"field len/count"`. `tendon_tree` holds two entries per
-    /// tendon.
-    fn short_arrays(m: &Model) -> Vec<String> {
+    /// count, as `"field len/count"`, and the fields checked. `tendon_tree`
+    /// holds two entries per tendon.
+    fn short_arrays(m: &Model) -> (Vec<String>, Vec<&'static str>) {
         let mut short = Vec::new();
-        let mut check = |field: &str, len: usize, n: usize| {
+        let mut checked = Vec::new();
+        let mut check = |field: &'static str, len: usize, n: usize| {
+            checked.push(field);
             if len != n {
                 short.push(format!("{field} {len}/{n}"));
             }
@@ -661,7 +663,66 @@ mod tests {
         check("actuator_user", m.actuator_user.len(), m.nu);
         check("actuator_plugin", m.actuator_plugin.len(), m.nu);
         check("tendon_tree", m.tendon_tree.len(), 2 * m.ntendon);
-        short
+        check("sensor_type", m.sensor_type.len(), m.nsensor);
+        check("sensor_datatype", m.sensor_datatype.len(), m.nsensor);
+        check("sensor_objtype", m.sensor_objtype.len(), m.nsensor);
+        check("sensor_objid", m.sensor_objid.len(), m.nsensor);
+        check("sensor_reftype", m.sensor_reftype.len(), m.nsensor);
+        check("sensor_refid", m.sensor_refid.len(), m.nsensor);
+        check("sensor_adr", m.sensor_adr.len(), m.nsensor);
+        check("sensor_dim", m.sensor_dim.len(), m.nsensor);
+        check("sensor_noise", m.sensor_noise.len(), m.nsensor);
+        check("sensor_cutoff", m.sensor_cutoff.len(), m.nsensor);
+        check("sensor_name", m.sensor_name.len(), m.nsensor);
+        check("sensor_nsample", m.sensor_nsample.len(), m.nsensor);
+        check("sensor_interp", m.sensor_interp.len(), m.nsensor);
+        check("sensor_historyadr", m.sensor_historyadr.len(), m.nsensor);
+        check("sensor_delay", m.sensor_delay.len(), m.nsensor);
+        check("sensor_interval", m.sensor_interval.len(), m.nsensor);
+        check("sensor_user", m.sensor_user.len(), m.nsensor);
+        check("sensor_plugin", m.sensor_plugin.len(), m.nsensor);
+        (short, checked)
+    }
+
+    /// `short_arrays` checks every per-element `Vec` field `Model` declares
+    /// for these kinds, read from `model.rs`, so a field added later is
+    /// checked or this fails.
+    #[test]
+    fn short_arrays_checks_every_per_element_field() {
+        const KINDS: [&str; 8] = [
+            "jnt", "dof", "body", "geom", "site", "tendon", "actuator", "sensor",
+        ];
+        let mut declared: Vec<&str> = include_str!("model.rs")
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("pub ")?.split_once(": "))
+            .filter(|(name, ty)| {
+                ty.starts_with("Vec<") && name.split('_').next().is_some_and(|k| KINDS.contains(&k))
+            })
+            .map(|(name, _)| name)
+            .collect();
+        let (_, mut checked) = short_arrays(&Model::n_link_pendulum(1, 1.0, 0.1));
+        declared.sort_unstable();
+        checked.sort_unstable();
+        assert_eq!(checked, declared);
+    }
+
+    /// The factories fill what they do not set with MuJoCo's defaults: no
+    /// joint margin, no gravity compensation, the default solver parameters.
+    #[test]
+    fn factory_models_take_mujoco_defaults() {
+        let models = vec![
+            Model::n_link_pendulum(3, 1.0, 0.1),
+            Model::multi_joint_body(),
+            Model::spherical_pendulum(1.0, 0.1),
+            Model::free_body(1.0, Vector3::new(0.1, 0.1, 0.1)),
+        ];
+        for m in &models {
+            assert_eq!(m.jnt_margin, vec![0.0; m.njnt]);
+            assert_eq!(m.jnt_actgravcomp, vec![false; m.njnt]);
+            assert_eq!(m.body_gravcomp, vec![0.0; m.nbody]);
+            assert_eq!(m.dof_solref, vec![DEFAULT_SOLREF; m.nv]);
+            assert_eq!(m.dof_solimp, vec![DEFAULT_SOLIMP; m.nv]);
+        }
     }
 
     /// A joint limit on a factory model assembles: the factories used to leave
@@ -681,8 +742,9 @@ mod tests {
     }
 
     /// A factory or test-fixture model sizes every per-joint, per-dof,
-    /// per-body, per-geom, per-site, per-tendon and per-actuator array to its
-    /// element count, as the MJCF builder does for a model without flex. Not
+    /// per-body, per-geom, per-site, per-tendon, per-actuator and per-sensor
+    /// array to its element count, as the MJCF builder does for a model
+    /// without flex. Not
     /// `collision_geoms`, which holds only the contact parameters the
     /// narrow-phase tests read and is never stepped.
     #[test]
@@ -743,7 +805,7 @@ mod tests {
             ("ising_pair", crate::test_fixtures::ising_pair()),
         ];
         for (name, model) in &models {
-            let short = short_arrays(model);
+            let (short, _) = short_arrays(model);
             assert!(short.is_empty(), "{name}: {short:?}");
         }
     }

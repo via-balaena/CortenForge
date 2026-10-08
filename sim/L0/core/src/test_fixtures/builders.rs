@@ -748,6 +748,8 @@ fn add_scalar_joint_sensor(
     model.sensor_historyadr.push(0);
     model.sensor_delay.push(0.0);
     model.sensor_interval.push((0.0, 0.0));
+    model.sensor_user.push(Vec::new());
+    model.sensor_plugin.push(None);
 
     sensor_id
 }
