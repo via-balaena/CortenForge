@@ -817,10 +817,17 @@ pub enum Integrator {
     ImplicitFast,
 }
 
-/// Errors that can occur during a simulation step.
+/// Errors that stop a simulation step.
 ///
-/// Following Rust idioms, step() returns Result<(), StepError> instead of
-/// silently correcting issues. Users must handle failures explicitly.
+/// A bad state is not an error: a NaN, ±inf or |x| > 1e10 in `qpos`, `qvel`
+/// or `qacc` resets the `Data` (unless `DISABLE_AUTORESET` is set) and the
+/// step returns `Ok`; check [`Data::divergence_detected`]. A bad control
+/// (after clamping to `ctrlrange`) makes every actuator act on 0 for that
+/// pass, leaves `ctrl` as written and counts [`Warning::BadCtrl`], which
+/// `divergence_detected` does not read. Both as MuJoCo.
+///
+/// [`Data::divergence_detected`]: crate::Data::divergence_detected
+/// [`Warning::BadCtrl`]: crate::Warning::BadCtrl
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepError {

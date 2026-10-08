@@ -460,12 +460,25 @@ pub fn mj_next_activation(
     act
 }
 
+/// The control input actuator `i` acts on: `data.ctrl[i]` clamped to its
+/// `ctrlrange` unless `DISABLE_CLAMPCTRL` is set. sim-mjcf gives an actuator
+/// without a control limit the range `(-inf, inf)`, which clamping leaves as
+/// is.
+fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
+    if disabled(model, DISABLE_CLAMPCTRL) {
+        data.ctrl[i]
+    } else {
+        data.ctrl[i].clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1)
+    }
+}
+
 /// Compute actuator forces from control inputs, activation dynamics, and muscle FLV curves.
 ///
 /// This function:
 /// 1. Computes activation derivatives (`data.act_dot`) without modifying `data.act`.
 /// 2. Computes actuator force using gain/bias (muscle FLV for muscles, raw input for others).
-/// 3. Clamps control inputs and output forces to their declared ranges.
+/// 3. Clamps a copy of the control inputs, and the output forces, to their
+///    declared ranges; `data.ctrl` is not written.
 /// 4. Maps actuator force to joint forces via the transmission.
 ///
 /// **Note**: `cb_control` is NOT invoked here. It fires after the velocity
@@ -485,16 +498,12 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
     data.qfrc_actuator.fill(0.0);
 
-    // S8d: Bad ctrl validation — zero all ctrl on first bad value.
-    for i in 0..model.nu {
-        if is_bad(data.ctrl[i]) {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-            mj_warning(data, Warning::BadCtrl, i as i32);
-            for j in 0..model.nu {
-                data.ctrl[j] = 0.0;
-            }
-            break;
-        }
+    // A bad input (after clamping) makes every actuator act on 0 for this
+    // pass; `ctrl` itself is left as written (MuJoCo `mj_fwdActuation`).
+    let bad = (0..model.nu).find(|&i| is_bad(actuator_ctrl_input(model, data, i)));
+    if let Some(i) = bad {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        mj_warning(data, Warning::BadCtrl, i as i32);
     }
 
     for i in 0..model.nu {
@@ -504,11 +513,10 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         }
 
         // --- Phase 1: Activation dynamics (compute act_dot, do NOT integrate) ---
-        // S4.9: Skip ctrl clamping when DISABLE_CLAMPCTRL is set.
-        let ctrl = if disabled(model, DISABLE_CLAMPCTRL) {
-            data.ctrl[i]
+        let ctrl = if bad.is_some() {
+            0.0
         } else {
-            data.ctrl[i].clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1)
+            actuator_ctrl_input(model, data, i)
         };
 
         let input = match model.actuator_dyntype[i] {

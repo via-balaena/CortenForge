@@ -39,9 +39,9 @@ impl<F: ?Sized> fmt::Debug for Callback<F> {
 /// Runs at the end of the passive-force computation in the velocity stage,
 /// after `qfrc_spring`, `qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid` and their
 /// sum `qfrc_passive` are written and before passive plugins. Add custom forces
-/// to `qfrc_passive`. It runs before [`CbControl`] in the same pass: actuator
-/// forces, `qfrc_bias`, constraint forces and `qacc` have not been computed for
-/// this pass yet.
+/// to `qfrc_passive`. It runs before [`CbControl`] in the same pass, so it
+/// reads `ctrl` as the caller left it; actuator forces, `qfrc_bias`,
+/// constraint forces and `qacc` have not been computed for this pass yet.
 ///
 /// # When it runs (as MuJoCo 3.5.0)
 ///
@@ -72,7 +72,8 @@ pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 /// Runs after the velocity stage (after [`CbPassive`]) and before actuation.
 /// Set `ctrl` (or `qfrc_applied` / `xfrc_applied`) here. Positions,
 /// velocities, passive forces and the bias force `qfrc_bias` are this pass's,
-/// as in MuJoCo.
+/// as in MuJoCo. The actuation stage reads a clamped copy of `ctrl`; `ctrl`
+/// keeps what the callback wrote.
 ///
 /// Not matched: MuJoCo has also built this pass's constraint rows (`efc_*`)
 /// by then; sim-core builds them after the callback, so it reads the previous

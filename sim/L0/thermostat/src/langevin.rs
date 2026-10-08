@@ -669,7 +669,7 @@ mod tests {
             data.qvel[0] = 1.0;
             data.ctrl[0] = f64::NAN;
             data.forward(&model).unwrap();
-            assert_eq!(data.ctrl[0].is_nan(), disable_actuation);
+            assert!(data.ctrl[0].is_nan(), "sim-core leaves ctrl as written");
             assert_eq!(
                 data.qfrc_passive[0], -0.1,
                 "actuation disabled: {disable_actuation}"

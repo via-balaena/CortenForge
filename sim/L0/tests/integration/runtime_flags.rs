@@ -711,7 +711,7 @@ fn ac28_autoreset_disable() {
 }
 
 // ============================================================================
-// AC29: Ctrl validation — bad ctrl zeros all ctrl, no reset
+// AC29: Ctrl validation — a bad ctrl zeroes every actuator's input, no reset
 // ============================================================================
 
 #[test]
@@ -723,12 +723,10 @@ fn ac29_ctrl_validation() {
     data.ctrl[0] = f64::NAN;
     data.forward(&model).expect("forward");
 
-    // All ctrl should be zeroed
+    // Every actuator acts on 0; ctrl keeps what was written
+    assert!(data.ctrl[0].is_nan(), "ctrl[0] is left as written");
     for i in 0..model.nu {
-        assert_eq!(
-            data.ctrl[i], 0.0,
-            "ctrl[{i}] should be zeroed after bad ctrl"
-        );
+        assert_eq!(data.actuator_force[i], 0.0, "actuator_force[{i}]");
     }
 
     // BadCtrl warning should fire
@@ -740,6 +738,118 @@ fn ac29_ctrl_validation() {
         !data.divergence_detected(),
         "bad ctrl should not trigger position/velocity reset"
     );
+}
+
+/// The bad-ctrl check reads each actuator's input after clamping to
+/// `ctrlrange`, as MuJoCo 3.5.0's `mj_fwdActuation`: a huge or infinite value
+/// on a limited actuator clamps and acts, a bad input zeroes every actuator's
+/// input for the pass, and `ctrl` keeps what was written. Expected values are
+/// the oracle's.
+#[test]
+fn bad_ctrl_check_runs_on_the_clamped_input_and_leaves_ctrl_alone() {
+    let mut model = load_model(
+        r#"<mujoco><worldbody><body><joint name="j" type="hinge" axis="0 1 0"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor joint="j" ctrllimited="true" ctrlrange="-1 1"/><motor joint="j"/>
+<general joint="j" dyntype="filter" dynprm="0.2" ctrllimited="true" ctrlrange="-1 1"/></actuator></mujoco>"#,
+    )
+    .expect("load");
+    /// One forward pass from `ctrl`, with MuJoCo's results.
+    struct Case {
+        ctrl: [f64; 3],
+        clamp: bool,
+        /// BadCtrl count and last info.
+        warning: (i32, i32),
+        force: [f64; 3],
+        act_dot: f64,
+        /// After one step: BadCtrl count and qpos.
+        after_step: Option<(i32, f64)>,
+    }
+    let case = |ctrl, clamp, warning, force, act_dot, after_step| Case {
+        ctrl,
+        clamp,
+        warning,
+        force,
+        act_dot,
+        after_step,
+    };
+    let cases = [
+        case(
+            [1e11, 0.5, 1.0],
+            true,
+            (0, 0),
+            [1.0, 0.5, 0.0],
+            5.0,
+            Some((0, 1.756_523_159_872_559_4e-4)),
+        ),
+        case(
+            [f64::INFINITY, 0.5, 1.0],
+            true,
+            (0, 0),
+            [1.0, 0.5, 0.0],
+            5.0,
+            None,
+        ),
+        case(
+            [f64::NAN, 0.5, 1.0],
+            true,
+            (1, 0),
+            [0.0; 3],
+            0.0,
+            Some((2, 1.089_910_954_987_337_7e-4)),
+        ),
+        case([0.3, 1e11, 1.0], true, (1, 1), [0.0; 3], 0.0, None),
+        case([1e11, 0.5, 1.0], false, (1, 0), [0.0; 3], 0.0, None),
+        case([0.3, 0.5, 3.0], true, (0, 0), [0.3, 0.5, 0.0], 5.0, None),
+        case([f64::NAN, 1e11, 1.0], true, (1, 0), [0.0; 3], 0.0, None),
+    ];
+    for Case {
+        ctrl,
+        clamp,
+        warning: (count, info),
+        force,
+        act_dot,
+        after_step,
+    } in cases
+    {
+        model.disableflags = if clamp { 0 } else { DISABLE_CLAMPCTRL };
+        let mut data = model.make_data();
+        data.ctrl.copy_from_slice(&ctrl);
+        data.forward(&model).expect("forward");
+        let case = format!("ctrl {ctrl:?}, clamping {clamp}");
+        let warning = data.warnings[Warning::BadCtrl as usize];
+        assert_eq!((warning.count, warning.last_info), (count, info), "{case}");
+        for (i, &f) in force.iter().enumerate() {
+            assert!(
+                (data.actuator_force[i] - f).abs() < 1e-12,
+                "{case}: force {i} = {}, MuJoCo {f}",
+                data.actuator_force[i]
+            );
+        }
+        assert!((data.act_dot[0] - act_dot).abs() < 1e-12, "{case}: act_dot");
+        for (i, &c) in ctrl.iter().enumerate() {
+            assert_eq!(data.ctrl[i].to_bits(), c.to_bits(), "{case}: ctrl {i} kept");
+        }
+        assert!(!data.divergence_detected(), "{case}");
+        if let Some((count, qpos)) = after_step {
+            data.step(&model).expect("step");
+            assert_eq!(
+                data.warnings[Warning::BadCtrl as usize].count,
+                count,
+                "{case}"
+            );
+            assert!(
+                (data.qpos[0] - qpos).abs() < 1e-12,
+                "{case}: qpos {}, MuJoCo {qpos}",
+                data.qpos[0]
+            );
+            assert_eq!(
+                data.ctrl[0].to_bits(),
+                ctrl[0].to_bits(),
+                "{case}: ctrl 0 kept"
+            );
+        }
+    }
 }
 
 // ============================================================================
