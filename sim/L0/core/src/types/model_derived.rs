@@ -14,8 +14,9 @@ impl Model {
     /// Recompute every field derived from the model's primary fields, in the
     /// order building a model computes them, after [`Self::check_joint_layout`]
     /// and [`Self::check_ranges`]: the equivalent of MuJoCo's `mj_setConst` (3.5.0
-    /// `engine_setconst.c:1089-1101`). The factories and the test fixtures'
-    /// `finalize` run it; call it after editing a primary field.
+    /// `engine_setconst.c:1089-1101`), which also runs the muscle length-range
+    /// simulation `mj_setConst` leaves out (`:1088`). The factories and the test
+    /// fixtures' `finalize` run it; call it after editing a primary field.
     ///
     /// | After editing | Stale | Recomputed by |
     /// |---|---|---|
@@ -29,14 +30,16 @@ impl Model {
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
     /// | `body_rootid`, `body_dof_*`, actuators, tendons | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |
     /// | `body_pos`, the tree, joint types | `dof_length` | [`compute_dof_lengths`] |
+    /// | `body_gravcomp` | `ngravcomp`, the bodies with a positive value | this function |
     ///
-    /// Some inputs are consumed on the first computation, as MuJoCo's `set0`
-    /// consumes them: a damping ratio in `actuator_biasprm[2]` and a muscle's
-    /// `actuator_gainprm[2]` are replaced by the values derived from them, and
-    /// a `tendon_lengthspring` of `[-1, -1]` by the spring length; a later edit
-    /// of the input is not derived again. Not recomputed here: the history
-    /// buffers' addresses, which the MJCF builder computes from
-    /// `actuator_nsample` and `sensor_nsample`.
+    /// Some inputs are consumed on the first computation: a damping ratio in
+    /// `actuator_biasprm[2]` (as MuJoCo's `set0` consumes it), a muscle's
+    /// `actuator_gainprm[2]` (MuJoCo resolves that one at each call instead)
+    /// and a `tendon_lengthspring` of `[-1, -1]` are replaced by the values
+    /// derived from them; a later edit of the input is not derived again. Not
+    /// recomputed here: the history buffers' addresses, which the MJCF builder
+    /// computes from `actuator_nsample` and `sensor_nsample`, and the tree's own
+    /// tables `body_rootid` and `dof_parent`, which an edit of the tree sets.
     ///
     /// # Errors
     /// The [`ModelError`] `check_joint_layout` or `check_ranges` finds; the
@@ -44,6 +47,8 @@ impl Model {
     pub fn recompute_derived(&mut self) -> Result<(), ModelError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
+        // MuJoCo setFixed (engine_setconst.c:98-103).
+        self.ngravcomp = self.body_gravcomp.iter().filter(|&&gc| gc > 0.0).count();
         self.compute_ancestors();
         self.compute_implicit_params();
         self.compute_qld_csr_metadata();

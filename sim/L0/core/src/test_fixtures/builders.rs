@@ -799,9 +799,8 @@ pub(super) fn set_options(
 /// `[1,0,0,0]` for ball, `[0,0,0,1,0,0,0]` for free).
 ///
 /// A fixture built with a joint layout `check_joint_layout` refuses, for the
-/// tests of that refusal, gets only the fields derived without running the
-/// joints: `compute_ancestors`, `compute_implicit_params`,
-/// `compute_qld_csr_metadata`.
+/// tests of that refusal, gets only `compute_ancestors`,
+/// `compute_implicit_params` and `compute_qld_csr_metadata`.
 ///
 /// # Panics
 /// Panics if `recompute_derived` refuses one of the fixture's ranges.

@@ -1064,15 +1064,6 @@ impl From<RangeError> for ModelError {
     }
 }
 
-impl From<ModelError> for MakeDataError {
-    fn from(e: ModelError) -> Self {
-        match e {
-            ModelError::JointLayout(e) => Self::JointLayout(e),
-            ModelError::Range(e) => Self::Range(e),
-        }
-    }
-}
-
 /// A joint layout [`Model::check_joint_layout`](crate::Model::check_joint_layout)
 /// refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

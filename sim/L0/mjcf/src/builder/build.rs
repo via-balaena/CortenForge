@@ -147,7 +147,8 @@ impl ModelBuilder {
             body_name: self.body_name,
             body_subtreemass: vec![0.0; nbody], // Computed after model construction
             body_mocapid: self.body_mocapid,
-            ngravcomp: self.body_gravcomp.iter().filter(|&&gc| gc != 0.0).count(),
+            // The bodies with a positive value, as MuJoCo's setFixed counts them.
+            ngravcomp: self.body_gravcomp.iter().filter(|&&gc| gc > 0.0).count(),
             body_gravcomp: self.body_gravcomp,
             body_invweight0: vec![[0.0; 2]; nbody], // Computed by compute_invweight0()
 
@@ -678,6 +679,27 @@ mod tests {
         assert_eq!(
             model.tree_sleep_policy,
             vec![AutoNever, AutoAllowed, Never, AutoAllowed, AutoAllowed]
+        );
+    }
+
+    /// `ngravcomp` counts the bodies with a positive `gravcomp`, as MuJoCo's
+    /// `setFixed` (`engine_setconst.c:98-103`): a negative value alone gives 0
+    /// and no compensation force (MuJoCo 3.5.0: `ngravcomp` 0, `qfrc_gravcomp`
+    /// 0, measured).
+    #[test]
+    fn ngravcomp_counts_positive_gravcomp_only() {
+        let model = load_model(
+            r#"<mujoco><worldbody><body name="a" gravcomp="-1"><freejoint/>
+<geom type="sphere" size="0.1" mass="2"/></body></worldbody></mujoco>"#,
+        )
+        .expect("loads");
+        assert_eq!(model.ngravcomp, 0);
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert!(
+            data.qfrc_gravcomp[2].abs() < 1e-12,
+            "{}",
+            data.qfrc_gravcomp[2]
         );
     }
 

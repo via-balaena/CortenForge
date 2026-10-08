@@ -863,6 +863,28 @@ fn recompute_derived_after_an_edit_matches_building_the_edited_model() {
     }
 }
 
+/// `recompute_derived` counts the gravity-compensated bodies, as MuJoCo's
+/// `setFixed` counts those with a positive `body_gravcomp`
+/// (`engine_setconst.c:98-103`): compensation switched on by an edit holds a
+/// pendulum still, and a negative value alone is not counted.
+#[test]
+fn recompute_derived_counts_gravity_compensated_bodies() {
+    let mut model = sim_core::Model::n_link_pendulum(1, 0.5, 1.0);
+    assert_eq!(model.ngravcomp, 0);
+    model.body_gravcomp[1] = 1.0;
+    model.recompute_derived().unwrap();
+    assert_eq!(model.ngravcomp, 1);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5;
+    for _ in 0..100 {
+        data.step(&model).unwrap();
+    }
+    assert!((data.qpos[0] - 0.5).abs() < 1e-12, "qpos {}", data.qpos[0]);
+    model.body_gravcomp[1] = -1.0;
+    model.recompute_derived().unwrap();
+    assert_eq!(model.ngravcomp, 0);
+}
+
 /// `recompute_derived` follows a damping edit into the implicit parameters.
 #[test]
 fn recompute_derived_follows_a_damping_edit() {
