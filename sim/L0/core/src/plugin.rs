@@ -570,8 +570,8 @@ mod tests {
         let (model, compute_count, _, capability_bits_seen) = pendulum_with_plugin(caps, 0);
         let mut data = model.make_data();
 
-        // Run full forward pipeline — passive dispatch fires in forward_acc
-        // (mj_fwd_passive only guards on nv>0, which the pendulum satisfies)
+        // Run full forward pipeline — passive dispatch fires in the velocity
+        // stage, at the end of mj_fwd_passive
         data.forward(&model).unwrap();
 
         assert!(

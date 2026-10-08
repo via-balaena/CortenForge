@@ -22,13 +22,15 @@ Data::step():
         mj_transmission_body_dispatch — Body transmission moment arms (§36, requires contacts)
      b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
         mj_actuator_length  — Actuator length/velocity from transmission state
+        mj_fwd_passive      — Spring, damper, friction loss forces (skips sleeping DOFs);
+                              cb_passive, then passive plugins, at its end
+        cb_control          — unless DISABLE_ACTUATION
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
      d. mj_crba            — Mass matrix (selective CRBA, skips sleeping subtrees)
      e. mj_rne             — Bias forces (Recursive Newton-Euler)
-     f. mj_fwd_passive     — Spring, damper, friction loss forces (skips sleeping DOFs)
-     g. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
+     f. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
         mj_fwd_constraint_islands — Per-island block-diagonal solving (when islands > 1)
-     h. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one);
+     g. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one);
                               implicit and implicitfast also solve for qacc_implicit
   2a. integrate()          — Activation integration + the integrator's velocity update
                               (under RK4, only step2() calls it, for the Euler step)

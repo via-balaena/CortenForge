@@ -4,19 +4,21 @@
 //! which call sub-modules in physics pipeline order. Corresponds to
 //! MuJoCo's `engine_forward.c`.
 //!
-//! ## Pipeline Split (§53)
+//! ## Pipeline stages (§53)
 //!
-//! The pipeline is factored into two halves for split-step support:
+//! As MuJoCo 3.5.0's `mj_forwardSkip`:
 //!
-//! - **`forward_pos_vel()`**: Position + velocity stages (wake detection,
-//!   FK, collision, velocity FK, energy). Does NOT invoke `cb_control`.
+//! - **`forward_pos()`**: position stage (wake detection, FK, CRBA,
+//!   transmissions, collision, position sensors, potential energy);
+//! - **`forward_vel()`**: velocity stage (velocity FK, actuator lengths and
+//!   velocities, passive forces with `cb_passive` and passive plugins,
+//!   velocity sensors, kinetic energy);
+//! - `cb_control`, unless `DISABLE_ACTUATION` is set;
+//! - **`forward_acc()`**: acceleration stage (actuation, RNE, constraints,
+//!   acceleration, body accumulators, acceleration sensors).
 //!
-//! - **`forward_acc()`**: Acceleration stage (actuation, CRBA, RNE, passive,
-//!   constraints, body accumulators, acc-sensors).
-//!
-//! `forward_core()` calls both halves with `cb_control` firing at the
-//! split boundary. `step1()` runs only `forward_pos_vel()` + `cb_control`;
-//! `step2()` runs `forward_acc()` + integration.
+//! `step1()` runs the first two and `cb_control` (whatever the flag);
+//! `step2()` runs `forward_acc()` and integrates.
 
 pub(crate) mod acceleration;
 mod actuation;
@@ -91,15 +93,17 @@ pub enum MjStage {
     None = 0,
     /// Position stage complete — skip FK, collision, CRBA.
     Pos = 1,
-    /// Velocity stage complete — skip FK, collision, CRBA, velocity FK.
+    /// Velocity stage complete — skip FK, collision, CRBA, velocity FK and
+    /// passive forces (`cb_passive` included).
     Vel = 2,
 }
 
 impl Data {
     /// Split-step phase 1: position + velocity stages only.
     ///
-    /// Runs the forward pipeline through the velocity stage, then fires
-    /// `cb_control`. After `step1()`, the user can inject forces (e.g.,
+    /// Runs the forward pipeline through the velocity stage (which fires
+    /// `cb_passive`), then fires `cb_control`, even with `DISABLE_ACTUATION`
+    /// set. After `step1()`, the user can inject forces (e.g.,
     /// modify `ctrl`, `qfrc_applied`, or `xfrc_applied`) before calling
     /// [`step2()`](Self::step2) which runs the acceleration stage and
     /// integrates.
@@ -108,7 +112,8 @@ impl Data {
     ///
     /// Matches `mj_step1()` in `engine_forward.c`: runs position + velocity
     /// stages, fires `mjcb_control`, and returns. `mj_step2()` then runs
-    /// actuation → acceleration → constraints → integration.
+    /// actuation → acceleration → constraints → integration, and fires
+    /// neither callback.
     ///
     /// # Split-Step Usage
     ///
@@ -139,10 +144,11 @@ impl Data {
         check::mj_check_pos(model, self);
         check::mj_check_vel(model, self);
 
-        // §53: Position + velocity stages only (matching MuJoCo's mj_step1).
-        self.forward_pos_vel(model, true);
-
-        // §53: cb_control fires between velocity and acceleration stages.
+        // Position and velocity stages, then cb_control whatever
+        // DISABLE_ACTUATION says, as MuJoCo's mj_step1 does
+        // (engine_forward.c:1481-1483).
+        self.forward_pos(model, true);
+        self.forward_vel(model, true);
         if let Some(ref cb) = model.cb_control {
             (cb.0)(model, self);
         }
@@ -152,7 +158,8 @@ impl Data {
 
     /// Split-step phase 2: acceleration stage + integration.
     ///
-    /// Runs actuation, dynamics, constraints, acc-sensors, then integrates
+    /// Runs actuation, dynamics, constraints, acc-sensors (no callback fires),
+    /// then integrates
     /// velocities and positions with [`integrate`](Self::integrate): Euler
     /// under Euler and RK4 (as MuJoCo's `mj_step2`), the integrator's own
     /// velocity update otherwise; then the sleep update and warmstart save.
@@ -275,10 +282,12 @@ impl Data {
     /// modifying them. After this call, qacc contains the computed
     /// accelerations and all body poses are updated.
     ///
-    /// Pipeline stages follow `MuJoCo`'s `mj_forward` exactly:
+    /// Pipeline stages follow `MuJoCo`'s `mj_forward`:
     /// 1. Position stage: FK, position-dependent sensors, potential energy
-    /// 2. Velocity stage: velocity FK, velocity-dependent sensors, kinetic energy
-    /// 3. Acceleration stage: actuation, dynamics, constraints, acc-dependent sensors
+    /// 2. Velocity stage: velocity FK, passive forces (`cb_passive` fires at
+    ///    their end), velocity-dependent sensors, kinetic energy
+    /// 3. `cb_control`, unless `DISABLE_ACTUATION` is set
+    /// 4. Acceleration stage: actuation, dynamics, constraints, acc-dependent sensors
     ///
     /// # Errors
     ///
@@ -295,7 +304,8 @@ impl Data {
     /// Forward dynamics pipeline without sensor evaluation.
     ///
     /// Identical to [`forward()`](Self::forward) but skips all 4 sensor stages.
-    /// Used by RK4 intermediate stages.
+    /// Used by RK4 intermediate stages; both callbacks fire, as at every
+    /// stage of MuJoCo's `mj_RungeKutta`.
     pub(crate) fn forward_skip_sensors(&mut self, model: &Model) -> Result<(), StepError> {
         self.forward_core(model, false)
     }
@@ -313,8 +323,12 @@ impl Data {
     /// * `skipstage` — which stages to skip:
     ///   - [`MjStage::None`]: run full pipeline (equivalent to `forward()`)
     ///   - [`MjStage::Pos`]: skip position stage (FK, collision, CRBA)
-    ///   - [`MjStage::Vel`]: skip position and velocity stages
+    ///   - [`MjStage::Vel`]: skip position and velocity stages, passive forces
+    ///     and `cb_passive` included
     /// * `skipsensor` — when `true`, skip all sensor evaluation.
+    ///
+    /// `cb_control` fires whatever `skipstage` is, unless `DISABLE_ACTUATION`
+    /// is set.
     ///
     /// # MuJoCo Equivalence
     ///
@@ -338,74 +352,15 @@ impl Data {
 
         let compute_sensors = !skipsensor;
 
-        // Position stage: FK, collision, CRBA, transmission, pos sensors, energy_pos
+        // MuJoCo mj_forwardSkip (engine_forward.c:1365-1411): the position
+        // stage, the velocity stage, then cb_control whatever `skipstage` is.
         if skipstage < MjStage::Pos {
-            let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-
-            // Pre-pipeline: Wake detection (§16.4)
-            if sleep_enabled && crate::island::mj_wake(model, self) {
-                crate::island::mj_update_sleep_arrays(model, self);
-            }
-
-            position::mj_fwd_position(model, self);
-            crate::dynamics::flex::mj_flex(model, self);
-            crate::dynamics::flex::mj_flex_edge(model, self);
-            crate::dynamics::crba::mj_crba(model, self);
-
-            if sleep_enabled && crate::island::mj_check_qpos_changed(model, self) {
-                crate::island::mj_update_sleep_arrays(model, self);
-            }
-
-            actuation::mj_transmission_site(model, self);
-            actuation::mj_transmission_slidercrank(model, self);
-
-            if sleep_enabled && crate::island::mj_wake_tendon(model, self) {
-                crate::island::mj_update_sleep_arrays(model, self);
-            }
-
-            crate::collision::mj_collision(model, self);
-
-            if sleep_enabled && crate::island::mj_wake_collision(model, self) {
-                crate::island::mj_update_sleep_arrays(model, self);
-                crate::collision::mj_collision(model, self);
-            }
-
-            if sleep_enabled && crate::island::mj_wake_equality(model, self) {
-                crate::island::mj_update_sleep_arrays(model, self);
-            }
-
-            actuation::mj_transmission_body_dispatch(model, self);
-
-            if compute_sensors {
-                crate::sensor::mj_sensor_pos(model, self);
-            }
-            if enabled(model, ENABLE_ENERGY) {
-                crate::energy::mj_energy_pos(model, self);
-            } else {
-                self.energy_potential = 0.0;
-            }
+            self.forward_pos(model, compute_sensors);
         }
-
-        // Velocity stage: velocity FK, actuator length, vel sensors, energy_vel
         if skipstage < MjStage::Vel {
-            velocity::mj_fwd_velocity(model, self);
-            actuation::mj_actuator_length(model, self);
-            if compute_sensors {
-                crate::sensor::mj_sensor_vel(model, self);
-            }
-            if enabled(model, ENABLE_ENERGY) {
-                crate::energy::mj_energy_vel(model, self);
-                self.capture_energy_initial();
-            } else {
-                self.energy_kinetic = 0.0;
-            }
+            self.forward_vel(model, compute_sensors);
         }
-
-        // Acceleration stage: always runs (actuation, dynamics, constraints)
-        // Note: cb_control is NOT fired in forward_skip — matching MuJoCo's
-        // mj_forwardSkip which skips mjcb_control. The FD loop uses
-        // forward_skip for perturbation evaluation where the control callback
-        // should not re-fire.
+        self.fire_control_gated(model);
         self.forward_acc(model, compute_sensors)?;
 
         Ok(())
@@ -415,9 +370,8 @@ impl Data {
     ///
     /// `compute_sensors`: `true` for `forward()`, `false` for `forward_skip_sensors()`.
     ///
-    /// §53: Calls `forward_pos_vel()` + `cb_control` + `forward_acc()`.
-    /// `cb_control` only fires on full forward (compute_sensors=true), not on
-    /// RK4 intermediate stages.
+    /// §53: `forward_pos()`, `forward_vel()`, `cb_control` (unless
+    /// `DISABLE_ACTUATION`), `forward_acc()`; RK4's stages included.
     fn forward_core(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
         // INVARIANT: forward_core() must NOT call mj_check_pos, mj_check_vel,
         // or mj_check_acc. mj_check_acc() calls forward() after auto-reset —
@@ -425,29 +379,17 @@ impl Data {
         // qpos0 would cause infinite recursion. step() orchestrates the
         // check → forward → check sequence externally. This function is a
         // pure computation with no validation side-effects.
-        self.forward_pos_vel(model, compute_sensors);
-
-        // §53: cb_control fires between velocity and acceleration stages.
-        // Only on full forward (not RK4 intermediate stages).
-        // Gated on !DISABLE_ACTUATION — MuJoCo skips mjcb_control when actuation is disabled.
-        if compute_sensors
-            && !disabled(model, DISABLE_ACTUATION)
-            && let Some(ref cb) = model.cb_control
-        {
-            (cb.0)(model, self);
-        }
-
+        self.forward_pos(model, compute_sensors);
+        self.forward_vel(model, compute_sensors);
+        // cb_control fires on every forward pass, RK4's stages included
+        // (engine_forward.c:1399-1401, reached from mj_RungeKutta at :1100).
+        self.fire_control_gated(model);
         self.forward_acc(model, compute_sensors)
     }
 
-    /// Position + velocity stages of the forward pipeline.
-    ///
-    /// Runs wake detection, forward kinematics, collision, velocity FK,
-    /// position/velocity sensors, and energy computation.
-    ///
-    /// §53: This is the first half of the pipeline, used by both
-    /// `forward_core()` and `step1()`.
-    fn forward_pos_vel(&mut self, model: &Model, compute_sensors: bool) {
+    /// Position stage: wake detection, forward kinematics, CRBA,
+    /// transmissions, collision, position sensors and potential energy.
+    fn forward_pos(&mut self, model: &Model, compute_sensors: bool) {
         // Sleep is only active after the initial forward pass.
         // The first forward (time == 0.0) must compute FK for all bodies
         // to establish initial positions, even for Init-sleeping bodies.
@@ -510,20 +452,34 @@ impl Data {
         } else {
             self.energy_potential = 0.0;
         }
+    }
 
-        // ========== Velocity Stage ==========
+    /// Velocity stage: velocity FK, actuator lengths and velocities, passive
+    /// forces (`cb_passive` and passive plugins fire at their end), velocity
+    /// sensors and kinetic energy. MuJoCo: `mj_fwdVelocity`
+    /// (engine_forward.c:221-259, `mj_passive` at :250), then `mj_sensorVel`
+    /// and `mj_energyVel` in `mj_forwardSkip`.
+    fn forward_vel(&mut self, model: &Model, compute_sensors: bool) {
         velocity::mj_fwd_velocity(model, self);
         actuation::mj_actuator_length(model, self);
+        passive::mj_fwd_passive(model, self);
         if compute_sensors {
             crate::sensor::mj_sensor_vel(model, self);
         }
-        // §53: Kinetic energy belongs to the velocity stage (MuJoCo computes
-        // it in mj_step1, before the acceleration stage).
         if enabled(model, ENABLE_ENERGY) {
             crate::energy::mj_energy_vel(model, self);
             self.capture_energy_initial();
         } else {
             self.energy_kinetic = 0.0;
+        }
+    }
+
+    /// `cb_control`, unless actuation is disabled (engine_forward.c:1399).
+    fn fire_control_gated(&mut self, model: &Model) {
+        if !disabled(model, DISABLE_ACTUATION)
+            && let Some(ref cb) = model.cb_control
+        {
+            (cb.0)(model, self);
         }
     }
 
@@ -538,9 +494,9 @@ impl Data {
 
     /// Acceleration stage of the forward pipeline.
     ///
-    /// Runs actuation, RNE, passive forces, constraint solve,
-    /// forward acceleration, body accumulators, acc-sensors, and
-    /// forward/inverse comparison. (CRBA runs in forward_pos_vel.)
+    /// Runs actuation, RNE, constraint solve, forward acceleration, body
+    /// accumulators, acc-sensors, and forward/inverse comparison. (CRBA runs
+    /// in the position stage, passive forces in the velocity stage.)
     ///
     /// §53: This is the second half of the pipeline, used by both
     /// `forward_core()` and `step2()`.
@@ -553,13 +509,12 @@ impl Data {
 
         // ========== Acceleration Stage ==========
         actuation::mj_fwd_actuation(model, self);
-        // Note: CRBA already ran in forward_pos_vel() (position stage).
+        // Note: CRBA already ran in forward_pos() (position stage).
         // The mass matrix depends only on qpos, which doesn't change between stages.
         crate::dynamics::rne::mj_rne(model, self);
-        passive::mj_fwd_passive(model, self);
 
         // S4.2a: Route gravcomp → qfrc_actuator for jnt_actgravcomp joints.
-        // Must run after mj_fwd_passive() which computes qfrc_gravcomp.
+        // qfrc_gravcomp comes from the velocity stage's passive forces.
         actuation::mj_gravcomp_to_actuator(model, self);
 
         // §16.11: Island discovery must run BEFORE constraint solve so that

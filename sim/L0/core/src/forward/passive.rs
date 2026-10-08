@@ -350,8 +350,13 @@ fn mj_fluid(model: &Model, data: &mut Data) -> bool {
 /// implicitly in `mj_fwd_acceleration_implicit()`. This function then only
 /// initializes `qfrc_passive` to zero (no explicit passive contributions).
 pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
-    // S4.7a: CortenForge nv == 0 guard — explicit early return for clarity.
+    // MuJoCo's mj_passive has no nv == 0 return (engine_passive.c:638-726): the
+    // callback and passive plugins still run, unless springs and dampers are
+    // both disabled (:658-661).
     if model.nv == 0 {
+        if model.disableflags & DISABLE_SPRING == 0 || model.disableflags & DISABLE_DAMPER == 0 {
+            mj_passive_user(model, data);
+        }
         return;
     }
 
@@ -719,12 +724,15 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     // in compute_qacc_smooth). MuJoCo projects xfrc_applied into qfrc_smooth in
     // mj_fwdAcceleration, not mj_passive.
 
-    // DT-79: Invoke user passive callback (if set).
+    mj_passive_user(model, data);
+}
+
+/// The user passive callback, then passive plugins (MuJoCo 3.5.0
+/// engine_passive.c:702-725).
+fn mj_passive_user(model: &Model, data: &mut Data) {
     if let Some(ref cb) = model.cb_passive {
         (cb.0)(model, data);
     }
-
-    // §66: Plugin passive force dispatch
     if model.nplugin > 0 {
         for i in 0..model.nplugin {
             if model.plugin_capabilities[i].contains(crate::plugin::PluginCapabilityBit::Passive) {

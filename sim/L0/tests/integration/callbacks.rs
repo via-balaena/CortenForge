@@ -495,3 +495,168 @@ fn actuator_user_callbacks_safe_defaults() {
         data.qfrc_actuator[0]
     );
 }
+
+// ============================================================================
+// When the callbacks fire: MuJoCo 3.5.0's order and counts
+// ============================================================================
+
+/// A damped hinge with a motor and two sensors, under `integrator`.
+fn logged_hinge(integrator: &str) -> sim_core::Model {
+    let xml = format!(
+        r#"<mujoco><option timestep="0.01" integrator="{integrator}"/>
+<worldbody><body><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor joint="j"/></actuator>
+<sensor><jointpos joint="j"/><jointvel joint="j"/></sensor></mujoco>"#
+    );
+    sim_mjcf::load_model(&xml).expect("load")
+}
+
+/// Installs a passive callback that logs 'P' and a control callback that logs 'C'.
+fn log_callbacks(model: &mut sim_core::Model) -> Arc<std::sync::Mutex<String>> {
+    let log = Arc::new(std::sync::Mutex::new(String::new()));
+    let l = Arc::clone(&log);
+    model.set_passive_callback(move |_, _| l.lock().expect("log").push('P'));
+    let l = Arc::clone(&log);
+    model.set_control_callback(move |_, _| l.lock().expect("log").push('C'));
+    log
+}
+
+fn take(log: &Arc<std::sync::Mutex<String>>) -> String {
+    std::mem::take(&mut *log.lock().expect("log"))
+}
+
+/// As MuJoCo 3.5.0 (measured): the passive callback fires in the velocity
+/// stage, then the control callback, which actuation being disabled skips except
+/// in `step1`; `step2` fires neither; RK4 fires both at each of its four stages.
+#[test]
+fn callbacks_fire_in_mujoco_order_and_count() {
+    use sim_core::{DISABLE_ACTUATION, MjStage};
+    for (integrator, step_log, step_log_act_off) in [
+        ("Euler", "PC", "P"),
+        ("implicit", "PC", "P"),
+        ("implicitfast", "PC", "P"),
+        ("implicitspringdamper", "PC", "P"),
+        ("RK4", "PCPCPCPC", "PPPP"),
+    ] {
+        for act_off in [false, true] {
+            let mut model = logged_hinge(integrator);
+            if act_off {
+                model.disableflags |= DISABLE_ACTUATION;
+            }
+            let mut data = model.make_data();
+            data.forward(&model).expect("forward");
+            let log = log_callbacks(&mut model);
+            let (pc, c) = if act_off { ("P", "") } else { ("PC", "C") };
+            let ctx = format!("{integrator}, actuation off: {act_off}");
+            data.forward(&model).expect("forward");
+            assert_eq!(take(&log), pc, "forward, {ctx}");
+            for skipsensor in [false, true] {
+                data.forward_skip(&model, MjStage::None, skipsensor)
+                    .expect("skip");
+                assert_eq!(take(&log), pc, "forward_skip(None), {ctx}");
+                data.forward_skip(&model, MjStage::Pos, skipsensor)
+                    .expect("skip");
+                assert_eq!(take(&log), pc, "forward_skip(Pos), {ctx}");
+                data.forward_skip(&model, MjStage::Vel, skipsensor)
+                    .expect("skip");
+                assert_eq!(take(&log), c, "forward_skip(Vel), {ctx}");
+            }
+            data.step1(&model).expect("step1");
+            assert_eq!(
+                take(&log),
+                "PC",
+                "step1 fires both, actuation or not, {ctx}"
+            );
+            data.step2(&model).expect("step2");
+            assert_eq!(take(&log), "", "step2 fires neither, {ctx}");
+            data.step(&model).expect("step");
+            let want = if act_off { step_log_act_off } else { step_log };
+            assert_eq!(take(&log), want, "step, {ctx}");
+        }
+    }
+}
+
+/// MuJoCo's `mj_passive` has no return for a model without degrees of
+/// freedom; springs and dampers both disabled still skip the callback.
+#[test]
+fn passive_callback_fires_on_a_model_without_dofs() {
+    use sim_core::{DISABLE_DAMPER, DISABLE_SPRING};
+    let mut model = sim_mjcf::load_model(
+        r#"<mujoco><worldbody><geom type="sphere" size="0.1"/></worldbody></mujoco>"#,
+    )
+    .expect("load");
+    assert_eq!(model.nv, 0);
+    let mut data = model.make_data();
+    let log = log_callbacks(&mut model);
+    data.step(&model).expect("step");
+    assert_eq!(take(&log), "PC");
+    model.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+    data.step(&model).expect("step");
+    assert_eq!(take(&log), "C");
+}
+
+/// With springs and dampers both disabled, passive forces are skipped as a
+/// whole, callback included, as MuJoCo's `mj_passive` does.
+#[test]
+fn passive_callback_skipped_when_springs_and_dampers_are_disabled() {
+    use sim_core::{DISABLE_DAMPER, DISABLE_SPRING};
+    let mut model = logged_hinge("Euler");
+    model.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+    let mut data = model.make_data();
+    let log = log_callbacks(&mut model);
+    data.step(&model).expect("step");
+    assert!(!take(&log).contains('P'));
+    model.disableflags &= !DISABLE_DAMPER;
+    data.step(&model).expect("step");
+    assert!(take(&log).contains('P'));
+}
+
+/// A state-dependent controller installed as a callback is evaluated at each
+/// RK4 stage's trial state, so it differs from the same law written into `ctrl`
+/// once per step.
+#[test]
+fn rk4_reevaluates_the_control_callback_at_each_stage() {
+    let law = |q: f64, v: f64| -2.0 * q - 0.5 * v;
+    let mut by_callback = logged_hinge("RK4");
+    by_callback.set_control_callback(move |_, d| d.ctrl[0] = law(d.qpos[0], d.qvel[0]));
+    let by_hand = logged_hinge("RK4");
+    let (mut a, mut b) = (by_callback.make_data(), by_hand.make_data());
+    a.qpos[0] = 0.5;
+    b.qpos[0] = 0.5;
+    for _ in 0..200 {
+        a.step(&by_callback).expect("step");
+        b.ctrl[0] = law(b.qpos[0], b.qvel[0]);
+        b.step(&by_hand).expect("step");
+    }
+    assert_ne!(a.qpos[0].to_bits(), b.qpos[0].to_bits());
+}
+
+/// The thermostat's ctrl-temperature channel is read as written, before the
+/// actuation stage runs, even when another channel holds a bad value.
+#[test]
+fn thermostat_reads_its_own_channel_when_another_is_bad() {
+    use nalgebra::DVector;
+    use sim_thermostat::{LangevinThermostat, PassiveStack};
+    let xml = r#"<mujoco><option timestep="0.001" gravity="0 0 0"/>
+<worldbody><body><joint name="a" type="slide" axis="1 0 0"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody>
+<actuator><general joint="a" gainprm="0"/><general joint="a" gainprm="0"/></actuator></mujoco>"#;
+    let noise = |other: f64| {
+        let mut model = sim_mjcf::load_model(xml).expect("load");
+        PassiveStack::builder()
+            .with(
+                LangevinThermostat::new(DVector::from_element(model.nv, 1.0), 1.0, 7, 0)
+                    .with_ctrl_temperature(0),
+            )
+            .build()
+            .try_install(&mut model)
+            .expect("install");
+        let mut data = model.make_data();
+        data.ctrl[0] = 2.0;
+        data.ctrl[1] = other;
+        data.forward(&model).expect("forward");
+        data.qfrc_passive[0]
+    };
+    assert_ne!(noise(0.5), 0.0);
+    assert_eq!(noise(f64::NAN).to_bits(), noise(0.5).to_bits());
+}

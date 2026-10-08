@@ -277,12 +277,14 @@ forward():
                mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
                mj_actuator_length     Actuator length/velocity from transmission
+               mj_fwd_passive         Springs, dampers, friction loss, flex bending + vertex damping;
+                                      cb_passive, then passive plugins, at its end
+  Control      cb_control             Unless DISABLE_ACTUATION
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
   Dynamics     mj_crba                Selective CRBA (skips sleeping subtrees)
                mj_crba_flex           Flex diagonal mass matrix
                mj_factor_flex         Flex LDL factorization (diagonal)
                mj_rne                 Bias forces (Recursive Newton-Euler) + flex gravity
-               mj_fwd_passive         Springs, dampers, friction loss, flex bending + vertex damping
   Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
                mj_fwd_constraint_islands  Per-island block-diagonal solving (when islands > 1)
   Solve        mj_fwd_acceleration    qacc = M^-1 * f; the implicit integrators also solve:

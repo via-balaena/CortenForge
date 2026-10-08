@@ -1,0 +1,3 @@
+<mujoco><option timestep="0.001" gravity="0 0 0"/>
+<worldbody><body><joint name="a" type="slide" axis="1 0 0"/><geom type="sphere" size="0.1" mass="1"/></body></worldbody>
+<actuator><general joint="a" gainprm="0"/><general joint="a" gainprm="0"/></actuator></mujoco>
