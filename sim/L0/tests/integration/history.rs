@@ -732,7 +732,9 @@ fn history_init_keeps_the_user_slot() {
 
 /// A `Data` of another shape is refused, as the step's input check refuses
 /// one (registry `D-DATA-SHAPE`), not read or written past its end: each call
-/// on a `Data` whose `history` is one shorter than its model's.
+/// on a `Data` whose `history` is one shorter than its model's, and a read of
+/// an unbuffered actuator or sensor (which reads `ctrl` or `sensordata`) on
+/// one whose `ctrl` or `sensordata` is.
 #[test]
 fn history_api_refuses_a_data_of_another_shape() {
     let golden = api_golden();
@@ -766,6 +768,35 @@ fn history_api_refuses_a_data_of_another_shape() {
         data.init_sensor_history(&sens, 6, None, Some(&values), 0.0)
             .err(),
         Some(refusal(&sens))
+    );
+
+    let mut data = act.make_data();
+    data.ctrl = nalgebra::DVector::zeros(act.nu - 1);
+    let unbuffered = (0..act.nu)
+        .find(|&i| act.actuator_nsample[i] == 0)
+        .expect("an unbuffered actuator");
+    assert_eq!(
+        data.read_ctrl(&act, unbuffered, 0.0, None).err(),
+        Some(HistoryError::DataShapeMismatch {
+            field: "ctrl",
+            expected: act.nu,
+            actual: act.nu - 1,
+        })
+    );
+    let mut data = sens.make_data();
+    data.sensordata = nalgebra::DVector::zeros(sens.nsensordata - 1);
+    let unbuffered = (0..sens.nsensor)
+        .find(|&i| sens.sensor_nsample[i] == 0)
+        .expect("an unbuffered sensor");
+    let mut out = vec![0.0; sens.sensor_dim[unbuffered]];
+    assert_eq!(
+        data.read_sensor(&sens, unbuffered, 0.0, None, &mut out)
+            .err(),
+        Some(HistoryError::DataShapeMismatch {
+            field: "sensordata",
+            expected: sens.nsensordata,
+            actual: sens.nsensordata - 1,
+        })
     );
 }
 

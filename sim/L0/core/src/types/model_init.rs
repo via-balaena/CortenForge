@@ -939,8 +939,6 @@ impl Model {
             map_iefc2efc: Vec::new(),
             contact_island: Vec::new(),
 
-            // Island scratch space (§16.11)
-
             // qpos change detection (§16.15)
             tree_qpos_dirty: vec![false; self.ntree],
 

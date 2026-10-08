@@ -870,7 +870,6 @@ impl Clone for Data {
             map_efc2iefc: self.map_efc2iefc.clone(),
             map_iefc2efc: self.map_iefc2efc.clone(),
             contact_island: self.contact_island.clone(),
-            // Island scratch
             // qpos change detection
             tree_qpos_dirty: self.tree_qpos_dirty.clone(),
             // Time

@@ -215,12 +215,13 @@ fn test_lengthrange_muscle_unlimited_silently_fails() {
 }
 
 /// The length range is simulated with sleep disabled, as MuJoCo's compiler
-/// clears `mjENBL_SLEEP` before it (`user_model.cc:5111-5112`), so a
-/// sleep-enabled model loads with the range of its sleep-disabled twin. The
+/// clears `mjENBL_SLEEP` before it (`user_model.cc:5111-5112`). The
 /// simulation runs before sim-mjcf derives the kinematic trees. Two muscles
 /// MuJoCo 3.5.0 loads with sleep on: one on a hinge a joint equality ties to
 /// a limited hinge (a constraint row every simulated step), one on a spatial
-/// tendon.
+/// tendon. Both load here with sleep on; their ranges are (0, 0) with sleep
+/// on and off, where MuJoCo's are not (Rigid-loading L44), so the comparison
+/// pins the load, not the range.
 #[test]
 fn lengthrange_is_simulated_with_sleep_disabled() {
     let models = [

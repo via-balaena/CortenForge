@@ -339,10 +339,11 @@ impl Data {
         skipstage: MjStage,
         skipsensor: bool,
     ) -> Result<(), StepError> {
+        check::check_step_inputs(model, self)?;
         if skipstage == MjStage::None {
             check::check_tendon_equality_sleep(model)?;
         }
-        self.forward_skip_inner(model, skipstage, skipsensor, true)
+        self.forward_skip_stages(model, skipstage, skipsensor, true)
     }
 
     /// [`Self::forward_skip`] without `cb_control`, for the inverse
@@ -355,18 +356,8 @@ impl Data {
         skipstage: MjStage,
         skipsensor: bool,
     ) -> Result<(), StepError> {
-        self.forward_skip_inner(model, skipstage, skipsensor, false)
-    }
-
-    fn forward_skip_inner(
-        &mut self,
-        model: &Model,
-        skipstage: MjStage,
-        skipsensor: bool,
-        control: bool,
-    ) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
-        self.forward_skip_stages(model, skipstage, skipsensor, control)
+        self.forward_skip_stages(model, skipstage, skipsensor, false)
     }
 
     /// [`Self::forward_skip`] without its input checks, for the sleep step

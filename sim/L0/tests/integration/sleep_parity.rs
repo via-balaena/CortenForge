@@ -893,6 +893,15 @@ fn tendon_equality_with_sleep_refused() {
         Err(StepError::TendonEqualityWithSleep { eq: 0 })
     );
     assert!(data.qpos[0].is_nan());
+    // Each call makes its input checks before this one.
+    let mut zero_step = model;
+    zero_step.timestep = 0.0;
+    let mut data = zero_step.make_data();
+    assert_eq!(data.forward(&zero_step), Err(StepError::InvalidTimestep));
+    assert_eq!(
+        data.forward_skip(&zero_step, MjStage::None, false),
+        Err(StepError::InvalidTimestep)
+    );
 }
 
 /// A tree that starts asleep beside an active tendon equality: MuJoCo
