@@ -681,7 +681,7 @@ pub const DISABLE_EULERDAMP: u32 = 1 << 15;
 pub const DISABLE_AUTORESET: u32 = 1 << 16;
 /// Fall back to libccd for convex collision.
 pub const DISABLE_NATIVECCD: u32 = 1 << 17;
-/// Skip island discovery → global solve.
+/// Skip island discovery (the constraint solve is global either way).
 pub const DISABLE_ISLAND: u32 = 1 << 18;
 
 // ── Enable flags (mjtEnableBit, mjNENABLE = 6) ──

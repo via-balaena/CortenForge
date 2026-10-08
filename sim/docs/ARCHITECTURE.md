@@ -279,7 +279,6 @@ forward():
   Control      cb_control             Unless DISABLE_ACTUATION
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
   Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
-               mj_fwd_constraint_islands  Per-island block-diagonal solving (when islands > 1)
   Solve        mj_fwd_acceleration    qacc = M^-1 * f; the implicit integrators also solve:
                                       ImplicitFast: (M − h·D_sym) · qacc_implicit = f, Cholesky
                                         (D = passive + actuator vel)
@@ -297,7 +296,6 @@ mj_runge_kutta() [RungeKutta4]:
   Integrates activation alongside qpos/qvel with same RK4 weights
   Stage 0 reuses initial forward(); stages 1-3 call forward_skip_sensors()
   Uses mj_integrate_pos_explicit() for quaternion-safe position updates
-  The sleep step is taken at the step's start state, as MuJoCo's
 ```
 
 **Derivative computation** (optional, after `forward()`):
@@ -665,10 +663,7 @@ Three optimizations reduce work proportional to the awake fraction:
 1. **Awake-index iteration**: `body_awake_ind`, `dof_awake_ind`,
    `parent_awake_ind` arrays enable O(awake) loops instead of O(total)
    with per-body branch skipping.
-2. **Island-local Delassus**: when multiple islands exist,
-   `mj_fwd_constraint_islands` builds small per-island mass matrices
-   and solves independently via block-diagonal decomposition.
-3. **Selective CRBA + Partial LDL**: `mj_factor_sparse_selective`
+2. **Selective CRBA + Partial LDL**: `mj_factor_sparse_selective`
    skips sleeping subtrees in composite-inertia accumulation and
    factorizes only awake DOF blocks. Sleeping DOFs retain their
    last-awake `qM`/`qLD` values (tree independence guarantees no
@@ -687,9 +682,10 @@ Three optimizations reduce work proportional to the awake fraction:
 
 ### Tests
 
-93 integration tests in `sleeping.rs` covering all three phases:
+Integration tests in `sleeping.rs` cover all three phases:
 Phase A (per-tree sleeping), Phase B (island discovery + cross-tree coupling),
-Phase C (selective CRBA, partial LDL, awake-index iteration, island-local solving).
+Phase C (selective CRBA, partial LDL, awake-index iteration). The constraint
+solver is global: no island is solved apart.
 
 ## Design Principles
 

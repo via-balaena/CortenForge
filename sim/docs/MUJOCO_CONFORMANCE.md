@@ -499,8 +499,8 @@ in three phases with comprehensive test coverage.
 | Phase | Scope | Tests | Status |
 |-------|-------|-------|--------|
 | A | Per-tree sleeping (countdown, wake detection, pipeline skip, RK4 guard, since removed) | 27 | ✅ |
-| B | Island discovery (DFS flood-fill, since replaced by islands from the constraint rows), cross-tree coupling, qpos change detection, per-island solving | 33 | ✅ |
-| C | Selective CRBA, partial LDL factorization, awake-index iteration, island-local Delassus | 33 | ✅ |
+| B | Island discovery (DFS flood-fill, since replaced by islands from the constraint rows), cross-tree coupling, qpos change detection | 33 | ✅ |
+| C | Selective CRBA, partial LDL factorization, awake-index iteration | 33 | ✅ |
 
 **Key verification properties:**
 
@@ -509,7 +509,7 @@ in three phases with comprehensive test coverage.
 | All-awake bit-identity | Sleep-enabled model with all bodies awake matches pre-sleep code bit-identically | ✅ |
 | Selective CRBA correctness | Awake DOFs' `qM` entries match full CRBA; sleeping DOFs' `qM` preserved | ✅ |
 | Partial LDL correctness | Awake DOFs' `qLD` matches full factorization; sleeping `qLD` preserved; SPD preserved | ✅ |
-| Per-island solve equivalence | Island-local solve matches global solve forces within tolerance | ✅ |
+| Islands on and off | Forces with islands match those with `DISABLE_ISLAND` (the solver is global) | ✅ |
 | Energy continuity | Total energy continuous across sleep/wake transitions | ✅ |
 | Indirection equivalence | Awake-index loops match branch-per-body/DOF loops bit-identically | ✅ |
 | Per-function bit-identity | Each pipeline function individually bit-identical when all bodies awake | ✅ |
@@ -575,7 +575,7 @@ MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
 | `mj_jacDifPair()` helper | `compute_contact_normal_jacobian()` | J(b2) − J(b1) sign convention via `accumulate_point_jacobian()` | ✅ |
 | Body name → ID resolution | `builder/` body branch | Replaces former `ModelConversionError` with name lookup | ✅ |
 | Phase 3 force application | `mj_fwd_actuation()` Body arm | Moment-based `qfrc += m * force` (merged with Site arm) | ✅ |
-| Actuator velocity | `mj_actuator_length()` Body arm | `velocity = moment.dot(&qvel)`, length = 0 | ✅ |
+| Actuator velocity | `mj_actuator_velocity()` Body arm | `velocity = moment.dot(&qvel)`, length = 0 | ✅ |
 | Derivatives | `derivatives.rs` Body arm | Merged with Site: `qDeriv += dforce_dv * moment[r] * moment[c]` | ✅ |
 
 **Key MuJoCo conformance properties:**

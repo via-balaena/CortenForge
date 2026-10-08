@@ -11,7 +11,7 @@ policy flags, narrowphase optimization, and bookkeeping consistency.
 | 1 | Sleep after threshold | Body sleeps when velocity drops below tolerance |
 | 2 | Sleeping qvel = 0 | Sleeping DOFs have bitwise-zero velocity |
 | 3 | Sleeping qacc = qacc_smooth | Sleeping DOFs keep their last unconstrained acceleration, as MuJoCo |
-| 4 | Sleeping qfrc_applied = 0 | Sleep transition zeroes applied forces |
+| 4 | Sleeping qfrc_applied = 0 | A body that sleeps has no applied force |
 | 5 | Countdown duration | At least MIN_AWAKE (10) sub-threshold steps before sleep |
 | 6 | Wake on contact | Ball hitting init-sleep box wakes it |
 | 7 | Wake on equality | Equality constraint couples sleeping tree to awake tree |

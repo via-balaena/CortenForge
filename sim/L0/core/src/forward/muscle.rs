@@ -114,9 +114,9 @@ pub fn mj_set_length_range(model: &mut Model, opt: &LengthRangeOpt) {
 /// Runs the step1/step2 pipeline on a clone with the length-range timestep and
 /// sleep disabled, as MuJoCo's compiler disables sleep (`user_model.cc:5111-5112`);
 /// the run precedes sim-mjcf's kinematic trees. MuJoCo's `mjCModel::LengthRange`
-/// also replaces the disable flags, turning gravity, contacts, passive forces
-/// and actuation off for the run (`user_model.cc:2410-2412`); this keeps the
-/// model's own until Rigid-loading L44 ports that.
+/// also replaces the disable flags, turning frictionloss, contacts, springs,
+/// dampers, gravity and actuation off for the run (`user_model.cc:2410-2411`);
+/// this keeps the model's own until Rigid-loading L44 ports that.
 fn eval_length_range(
     model: &Model,
     actuator_idx: usize,

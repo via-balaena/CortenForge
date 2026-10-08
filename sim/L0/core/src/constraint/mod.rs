@@ -39,20 +39,6 @@ use crate::constraint::solver::pgs::pgs_solve_unified;
 use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
 use crate::island::mj_island;
 
-/// Island-aware constraint dispatch.
-///
-/// Currently routes directly to [`mj_fwd_constraint`] — island decomposition
-/// is not yet implemented; the unified solvers handle all constraint types
-/// globally.
-// Solver dispatch is inlined as a single function so the per-mode branching (CG / Newton / PGS / primal) reads end-to-end; cast lints are usize/i32 indexing already validated upstream.
-#[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
-pub(crate) fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
-    // §29: ALL solver types now route through unified constraint assembly + solver.
-    // Island decomposition is no longer needed — the unified solvers handle all
-    // constraint types (equality, friction, limits, contacts, flex) globally.
-    mj_fwd_constraint(model, data);
-}
-
 /// Compute the unconstrained acceleration (`qacc_smooth`) and smooth forces.
 ///
 /// - `qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias`
@@ -311,7 +297,7 @@ fn warmstart(model: &Model, data: &mut Data) -> bool {
 /// 3. Dispatch to configured solver (Newton, CG, PGS)
 /// 4. Map efc_force → qfrc_constraint via J^T
 /// 5. Extract qfrc_frictionloss from efc_force
-fn mj_fwd_constraint(model: &Model, data: &mut Data) {
+pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     data.qfrc_constraint.fill(0.0);
     data.qfrc_frictionloss.fill(0.0);
     data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);

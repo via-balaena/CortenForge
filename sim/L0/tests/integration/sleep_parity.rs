@@ -1054,7 +1054,7 @@ fn rk4_sleep_step_keeps_the_last_stage_actuator_length() {
 
 /// Under implicitfast a sleeping actuator adds no term to the velocity
 /// derivative, as MuJoCo's `mjd_actuator_vel` skips it
-/// (`engine_derivative.c:1083-1085`): its velocity feedback reaches the awake
+/// (`engine_derivative.c:1087-1090`): its velocity feedback reaches the awake
 /// sprung slide through the derivative alone once the slide is pushed at
 /// step 50.
 #[test]

@@ -23,10 +23,8 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
     data.xquat[0] = UnitQuaternion::identity();
     data.xmat[0] = Matrix3::identity();
 
-    // Process bodies in order (assumes topological sort: parent before child).
-    // Phase B (§16.15): compute FK for ALL bodies (including sleeping) to detect
-    // external qpos modifications via xpos/xquat comparison. The Phase A skip
-    // is removed; performance comes from per-island constraint solve (§16.16).
+    // Process bodies in order (assumes topological sort: parent before child),
+    // sleeping ones included.
     for body_id in 1..model.nbody {
         let parent_id = model.body_parent[body_id];
 

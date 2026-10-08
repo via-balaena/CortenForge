@@ -537,9 +537,9 @@ impl Data {
         // qfrc_gravcomp comes from the velocity stage's passive forces.
         actuation::mj_gravcomp_to_actuator(model, self);
 
-        // §16.16: Per-island constraint solve when islands are active;
-        // falls back to global solve when DISABLE_ISLAND or no islands.
-        crate::constraint::mj_fwd_constraint_islands(model, self);
+        // One global solve; the islands are built in it but not solved
+        // apart (`island/mod.rs`).
+        crate::constraint::mj_fwd_constraint(model, self);
 
         // ImplicitFast/Implicit: always run mj_fwd_acceleration, even when
         // Newton succeeded: it solves M_hat = M − h·∂f/∂v for qacc_implicit,
@@ -598,8 +598,7 @@ impl Data {
         // Run inverse dynamics to populate qfrc_inverse
         self.inverse(model);
 
-        // solver_fwdinv[0]: constraint discrepancy (reserved — no per-island
-        // solver residual tracked yet).
+        // solver_fwdinv[0]: constraint discrepancy (not computed).
         self.solver_fwdinv[0] = 0.0;
 
         // solver_fwdinv[1]: applied force discrepancy.

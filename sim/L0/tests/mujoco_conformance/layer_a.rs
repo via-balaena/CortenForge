@@ -6,7 +6,7 @@
 //!
 //! Categories:
 //! 1. Forward/inverse equivalence (multiple joint types)
-//! 2. Island/monolithic solver equivalence
+//! 2. Islands on and off (the solver is global)
 //! 3. Determinism (same input → bit-identical output)
 //! 4. Integrator energy ordering (implicit < semi-implicit < Euler drift)
 //! 5. Sparse/dense mass matrix equivalence
@@ -253,14 +253,13 @@ fn layer_a_forward_inverse_formula() {
 }
 
 // ============================================================================
-// 2. Island/Monolithic Solver Equivalence
+// 2. Islands On and Off
 // ============================================================================
 
-/// Island-based solving must produce the same result as monolithic solving.
+/// Islands change no result (the solver is global).
 ///
-/// Two independent free bodies on a plane: the island solver decomposes them
-/// into separate islands, while DISABLE_ISLAND forces a global solve. Both
-/// must agree within floating-point tolerance.
+/// Two independent free bodies on a plane, each its own island, against a run
+/// with DISABLE_ISLAND. Both must agree within floating-point tolerance.
 #[test]
 fn layer_a_island_monolithic_equivalence() {
     let xml = r#"
@@ -316,8 +315,8 @@ fn layer_a_island_monolithic_equivalence() {
 
 /// Island/monolithic equivalence with equality constraints.
 ///
-/// A weld constraint links two bodies — the island solver must handle the
-/// coupling correctly and match the global solver.
+/// A weld constraint links two bodies; the result matches a run with
+/// DISABLE_ISLAND.
 #[test]
 fn layer_a_island_monolithic_with_equality() {
     let xml = r#"

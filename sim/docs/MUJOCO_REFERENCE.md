@@ -27,7 +27,6 @@ Data::step():
         cb_control          — unless DISABLE_ACTUATION
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
      d. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
-        mj_fwd_constraint_islands — Per-island block-diagonal solving (when islands > 1)
      e. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one);
                               implicit and implicitfast also solve for qacc_implicit
   2a. integrate()          — Activation integration + the integrator's velocity update
@@ -100,10 +99,13 @@ The lever arm cross-product `omega x r` is critical for correct Coriolis forces.
 
 ---
 
-## Stage 2b: Actuator Length/Velocity (`mj_actuator_length`)
+## Stage 2b: Actuator Length/Velocity
 
-Computes actuator-space length and velocity from transmission state.
-Called after `mj_fwd_velocity()` (which populates `ten_velocity`).
+Computes actuator-space length and velocity from transmission state. The
+lengths are set in the position stage (`mj_transmission_joint_tendon`,
+`mj_transmission_site`, `mj_transmission_body_dispatch`); the velocities
+after `mj_fwd_velocity()` (which populates `ten_velocity`), by
+`mj_actuator_velocity`.
 
 ```python
 for i in range(nu):
@@ -1112,19 +1114,10 @@ else:
     mj_factor_sparse(model, data)  # full factorization
 ```
 
-### Per-Island Constraint Solving
+### Constraint Solving
 
-When `nisland > 1`, `mj_fwd_constraint_islands` replaces the global solver:
-
-```python
-for island in range(nisland):
-    # Gather island-local DOFs, contacts, constraints
-    # Build small island-local Delassus matrix (island_nv × island_nv)
-    # Solve independently via PGS/CG
-    # Scatter forces back to global arrays
-```
-
-Single-island scenes use the global solver path (no overhead).
+The solver is global: the islands are built but not solved apart
+(`island/mod.rs`).
 
 ---
 

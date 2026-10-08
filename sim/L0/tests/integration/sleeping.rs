@@ -1275,8 +1275,7 @@ fn test_tendon_passive_mixed_sleep() {
 #[test]
 fn test_forward_skip_sensors_sleep() {
     // forward() and step() through the shared forward_core with sleep
-    // enabled. RK4's stages take forward_skip_sensors, the sleep step
-    // included: sleep_parity.rs's rk4_sleeps_and_wakes_as_mujoco.
+    // enabled; sleep_parity.rs's rk4_sleeps_and_wakes_as_mujoco covers RK4.
     let model = load_model(free_body_sleep_mjcf()).expect("load model");
     let mut data = model.make_data();
 
@@ -2687,9 +2686,9 @@ fn test_init_sleep_validation_model_time() {
 
 #[test]
 fn test_per_island_solve_equivalence() {
-    // Per-island solve should produce equivalent results to global solve.
-    // We compare a scene with two independent bodies (each becomes its own
-    // island) against the same scene with DISABLE_ISLAND (global solve).
+    // Islands change no force (the solver is global): a scene with two
+    // independent bodies (each its own island) against the same scene with
+    // DISABLE_ISLAND.
     let mjcf = r#"
     <mujoco model="island_equivalence">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -2763,11 +2762,8 @@ fn test_per_island_solve_equivalence() {
 
 #[test]
 fn test_disable_island_bit_identical() {
-    // DISABLE_ISLAND should make the per-island solver fall through to the
-    // global solver, producing bit-identical results to a model where sleep
-    // is disabled entirely (which also uses the global solver and has no
-    // sleep-induced state changes). Both models disable sleep to isolate
-    // the solver path comparison.
+    // With sleep disabled, a run with DISABLE_ISLAND and one without are
+    // bit-identical.
     let mjcf = r#"
     <mujoco model="disable_island_test">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -2783,15 +2779,12 @@ fn test_disable_island_bit_identical() {
     </mujoco>
     "#;
 
-    // Model A: sleep disabled + DISABLE_ISLAND (global solver path,
-    // mj_fwd_constraint_islands sees nisland=0 → falls through)
+    // Model A: sleep disabled + DISABLE_ISLAND (no islands)
     let mut model_a = load_model(mjcf).expect("load model");
     model_a.disableflags |= DISABLE_ISLAND;
     let mut data_a = model_a.make_data();
 
-    // Model B: sleep disabled, no DISABLE_ISLAND flag
-    // Since sleep is disabled, mj_island() is never called, nisland stays 0,
-    // and mj_fwd_constraint_islands falls through to the global solver.
+    // Model B: sleep disabled, no DISABLE_ISLAND flag (islands built)
     let model_b = load_model(mjcf).expect("load model");
     let mut data_b = model_b.make_data();
 
@@ -3612,7 +3605,7 @@ fn test_energy_continuous_across_sleep_transition() {
 }
 
 // ============================================================================
-// T85–T88: Phase C2 — Island-Local Delassus Assembly (§16.28)
+// T85–T88: Phase C2 (§16.28) — islands on and off; the solver is global
 // ============================================================================
 
 /// MJCF fixture for two separated free bodies that form independent islands.
@@ -3640,17 +3633,17 @@ fn two_island_bodies_mjcf() -> &'static str {
     "#
 }
 
-/// T85: Island-local Delassus assembly produces equivalent constraint forces
-/// to the global assembly for two independent bodies (AC #55).
+/// T85: constraint forces with islands match those with DISABLE_ISLAND for
+/// two independent bodies (AC #55).
 #[test]
 fn test_island_delassus_equivalence() {
     let mjcf = two_island_bodies_mjcf();
 
-    // Run with islands enabled (uses island-local Delassus assembly)
+    // Run with islands enabled
     let model_island = load_model(mjcf).expect("load");
     let mut data_island = model_island.make_data();
 
-    // Run with DISABLE_ISLAND (uses global assembly path)
+    // Run with DISABLE_ISLAND
     let mut model_global = load_model(mjcf).expect("load");
     model_global.disableflags |= DISABLE_ISLAND;
     let mut data_global = model_global.make_data();
@@ -3690,8 +3683,8 @@ fn test_island_delassus_equivalence() {
     );
 }
 
-/// T86: Contact forces from island-local solve match global solve for
-/// two independent free bodies step-by-step (AC #57).
+/// T86: accelerations and velocities with islands match those with
+/// DISABLE_ISLAND for two independent free bodies, step by step (AC #57).
 #[test]
 fn test_island_solve_forces_match_global() {
     let mjcf = two_island_bodies_mjcf();
@@ -3733,8 +3726,8 @@ fn test_island_solve_forces_match_global() {
     }
 }
 
-/// T87: When a single island spans all DOFs, the global fallback path
-/// activates (no island-local Cholesky extraction) (AC #58).
+/// T87: two stacked bodies: one island, when they make one, spans every DOF,
+/// and the run stays finite (AC #58).
 #[test]
 fn test_single_island_uses_global_path() {
     // Two stacked bodies — contacts between them form one connected island.
@@ -3766,7 +3759,7 @@ fn test_single_island_uses_global_path() {
     }
 
     // With stacked bodies, all DOFs should be in one island (or zero islands
-    // if no contacts). When nisland == 1, the global fallback should activate.
+    // if no contacts).
     if data.nisland == 1 {
         assert_eq!(
             data.island_nv[0], model.nv,
@@ -3774,7 +3767,7 @@ fn test_single_island_uses_global_path() {
         );
     }
 
-    // Simulation should produce valid, finite results regardless of path
+    // Simulation should produce valid, finite results
     assert!(
         data.qacc.iter().all(|&v| v.is_finite()),
         "qacc contains non-finite values"
@@ -3785,8 +3778,8 @@ fn test_single_island_uses_global_path() {
     );
 }
 
-/// T88: DISABLE_ISLAND flag produces unchanged results after Phase C2
-/// modifications — the global solver path is untouched (AC #56).
+/// T88: with DISABLE_ISLAND, a run with sleep enabled matches one with sleep
+/// disabled (AC #56).
 #[test]
 fn test_disable_island_phase_c_bit_identical() {
     let mjcf = two_island_bodies_mjcf();
@@ -3821,8 +3814,7 @@ fn test_disable_island_phase_c_bit_identical() {
         data_a.step(&model_a).expect("step A");
         data_b.step(&model_b).expect("step B");
 
-        // Both use DISABLE_ISLAND → nisland=0 → global solver.
-        // With sleep disabled in B, sleep state won't diverge the comparison.
+        // Both use DISABLE_ISLAND → nisland=0.
         for dof in 0..model_a.nv {
             let diff = (data_a.qvel[dof] - data_b.qvel[dof]).abs();
             assert!(

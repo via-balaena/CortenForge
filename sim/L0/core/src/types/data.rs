@@ -1126,8 +1126,8 @@ impl Data {
     /// when a user or plugin sensor has a delay; [`ResetError::InitSleep`]
     /// when a tree whose policy is `Init` cannot be put to sleep, and
     /// [`ResetError::InitForward`] when the forward pass before that fails
-    /// (MuJoCo's `mj_resetData` raises an error for the first two and the
-    /// third).
+    /// (MuJoCo's `mj_resetData` raises an error for the first three, and for
+    /// a tendon equality in the fourth).
     pub fn try_reset(&mut self, model: &Model) -> Result<(), ResetError> {
         if let Some(refusal) = model.history_refusal() {
             return Err(refusal.into());

@@ -378,8 +378,8 @@ fn try_make_data_refuses_a_delayed_user_sensor() {
     model.sensor_nsample[0] = 2;
     model.sensor_delay[0] = 0.002;
     model.recompute_derived().expect("derive");
-    // A plugin sensor's sample cannot be computed either; a jointpos made
-    // into one, as no MJCF loads a plugin sensor.
+    // A plugin sensor's sample cannot be computed either; this user sensor
+    // is made into one, as no MJCF loads a plugin sensor.
     for kind in [MjSensorType::User, MjSensorType::Plugin] {
         model.sensor_type[0] = kind;
         assert_eq!(

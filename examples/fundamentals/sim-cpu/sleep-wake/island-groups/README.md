@@ -1,38 +1,28 @@
 # Island Groups — Independent Constraint Islands
 
 Constraint islands are independent — disturbing one doesn't affect the other.
-The engine discovers islands each step by flood-filling the contact/constraint
-adjacency graph, and each island's sleep state is evaluated atomically.
+The engine builds islands each step from the constraint rows, and each
+island's sleep state is evaluated atomically.
 
 ## What you see
 
 - **Two stacks** of 3 boxes each, 3 m apart, drop and settle into **blue**
   (asleep) columns
 - At t=7 s, an upward impulse launches the top box of **Stack A** (left) — all
-  three boxes in Stack A turn **orange** as the wake cascades through contacts
+  three boxes in Stack A turn **orange**
 - **Stack B** (right) stays **blue** the entire time — it's a separate island,
   completely unaffected
 - Stack A re-settles and turns blue again
 
 ## Physics
 
-Island discovery runs every step via DFS flood-fill over a CSR adjacency graph
-built from contacts, equality constraints, joint limits, and tendon limits:
-
-```
-Phase 1: Extract edges (tree pairs from contacts, equalities, ...)
-Phase 2: Build CSR adjacency graph (rownnz, rowadr, colind)
-Phase 3: Flood-fill DFS → connected components (islands)
-Phase 4: Populate per-island arrays (trees, DOFs, constraint rows)
-```
+Island discovery runs every step over the constraint rows (contacts,
+equality constraints, joint limits, and tendon limits), as MuJoCo's
+`mj_island`: trees that share a row share an island.
 
 Only **awake** trees participate. When all bodies sleep, `nisland == 0` — there
 are no islands to discover. When Stack A wakes, its 3 trees re-enter the island
 graph and form island #0. Stack B's trees remain sleeping and absent.
-
-The wake cascade within Stack A works through `mj_wake_collision`: the impulse
-wakes a3 directly (via `xfrc_applied`), then a3's contact with a2 wakes a2,
-then a2's contact with a1 wakes a1 — all within 3 timesteps.
 
 | Parameter | Value |
 |-----------|-------|
