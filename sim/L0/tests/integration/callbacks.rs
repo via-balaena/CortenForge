@@ -594,6 +594,9 @@ fn passive_callback_fires_on_a_model_without_dofs() {
     model.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
     data.step(&model).expect("step");
     assert_eq!(take(&log), "C");
+    model.disableflags &= !DISABLE_DAMPER;
+    data.step(&model).expect("step");
+    assert_eq!(take(&log), "PC", "springs alone disabled");
 }
 
 /// With springs and dampers both disabled, passive forces are skipped as a
@@ -614,7 +617,8 @@ fn passive_callback_skipped_when_springs_and_dampers_are_disabled() {
 
 /// A state-dependent controller installed as a callback is evaluated at each
 /// RK4 stage's trial state, so it differs from the same law written into `ctrl`
-/// once per step.
+/// once per step. MuJoCo 3.5.0 gives qpos 0.828932973307601 by callback and
+/// 0.8288453616987742 by hand after these 200 steps (measured).
 #[test]
 fn rk4_reevaluates_the_control_callback_at_each_stage() {
     let law = |q: f64, v: f64| -2.0 * q - 0.5 * v;
@@ -629,7 +633,16 @@ fn rk4_reevaluates_the_control_callback_at_each_stage() {
         b.ctrl[0] = law(b.qpos[0], b.qvel[0]);
         b.step(&by_hand).expect("step");
     }
-    assert_ne!(a.qpos[0].to_bits(), b.qpos[0].to_bits());
+    assert!(
+        (a.qpos[0] - 0.828_932_973_307_601).abs() < 1e-12,
+        "{}",
+        a.qpos[0]
+    );
+    assert!(
+        (b.qpos[0] - 0.828_845_361_698_774_2).abs() < 1e-12,
+        "{}",
+        b.qpos[0]
+    );
 }
 
 /// When the control callback runs, `qfrc_bias` is this pass's: MuJoCo

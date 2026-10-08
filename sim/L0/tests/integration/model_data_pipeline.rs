@@ -546,14 +546,15 @@ fn energy_pendulum() -> sim_core::Model {
     model
 }
 
-/// `forward` and `forward_skip` both record the first energy, and stepping
-/// does not move it.
+/// `forward` and `forward_skip` both record the first energy, kinetic
+/// energy included, and stepping does not move it.
 #[test]
 fn forward_captures_energy_initial() {
     let model = energy_pendulum();
     for skip in [false, true] {
         let mut data = model.make_data();
         data.qpos[0] = 0.3;
+        data.qvel[0] = 0.7;
         if skip {
             data.forward_skip(&model, sim_core::MjStage::None, false)
                 .unwrap();
@@ -562,6 +563,7 @@ fn forward_captures_energy_initial() {
         }
         let first = data.total_energy();
         assert_ne!(first, 0.0);
+        assert!(data.energy_kinetic > 0.0);
         assert_eq!(data.energy_initial, first, "forward_skip: {skip}");
         for _ in 0..100 {
             data.step(&model).unwrap();

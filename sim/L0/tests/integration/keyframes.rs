@@ -1179,6 +1179,17 @@ fn reset_to_keyframe_is_a_full_reset() {
     assert!(!data.divergence_detected());
 }
 
+/// The keyframe's `ctrl` is copied, as its other fields are.
+#[test]
+fn reset_to_keyframe_copies_ctrl() {
+    let mut model = load_model(pendulum_partial_keyframe()).unwrap();
+    model.keyframes[0].ctrl[0] = 0.25;
+    let mut data = model.make_data();
+    data.ctrl[0] = 0.9;
+    data.reset_to_keyframe(&model, 0).unwrap();
+    assert_eq!(data.ctrl[0], 0.25);
+}
+
 /// An index past the last keyframe is refused before anything is reset.
 #[test]
 fn reset_to_keyframe_with_a_bad_index_leaves_data_unchanged() {

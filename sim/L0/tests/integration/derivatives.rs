@@ -587,6 +587,47 @@ fn finite_differences_check_their_inputs_first() {
     }
 }
 
+/// The refusals come in the documented order: the step inputs, then the
+/// integrator, then history (transition) or noslip (inverse). A model with no
+/// degrees of freedom checks its inputs too, though the inverse then returns
+/// before any pipeline call.
+#[test]
+fn finite_difference_refusals_come_in_their_documented_order() {
+    let other = Model::n_link_pendulum(3, 1.0, 0.1);
+    let mut short = other.make_data();
+    short.forward(&other).unwrap();
+    let rk4 = fd_pendulum("RK4", r#"noslip_iterations="3""#, r#"nsample="2""#);
+    assert!(rk4.nhistory > 0);
+    for (entry, result) in fd_entry_points(&rk4, &short) {
+        assert!(
+            matches!(result, Err(sim_core::StepError::DataShapeMismatch { .. })),
+            "{entry}: {result:?}"
+        );
+    }
+    let mut data = rk4.make_data();
+    data.forward(&rk4).unwrap();
+    for (entry, result) in fd_entry_points(&rk4, &data) {
+        assert_eq!(
+            result,
+            Err(sim_core::StepError::UnsupportedIntegrator {
+                integrator: Integrator::RungeKutta4
+            }),
+            "{entry}"
+        );
+    }
+    let still = sim_mjcf::load_model(
+        r#"<mujoco><worldbody><geom type="sphere" size="0.1"/></worldbody></mujoco>"#,
+    )
+    .expect("load");
+    assert_eq!(still.nv, 0);
+    for (entry, result) in fd_entry_points(&still, &short) {
+        assert!(
+            matches!(result, Err(sim_core::StepError::DataShapeMismatch { .. })),
+            "{entry}: {result:?}"
+        );
+    }
+}
+
 // ============================================================================
 // Acceptance criterion 8: FD convergence
 // ============================================================================

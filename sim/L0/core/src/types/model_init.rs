@@ -1555,6 +1555,33 @@ mod joint_layout_tests {
         let _data = m.make_data();
     }
 
+    /// The joint layout is checked before the ranges, and a range refusal
+    /// names its entry.
+    #[test]
+    fn try_make_data_checks_the_layout_first_and_names_the_entry() {
+        let mut m = crate::test_fixtures::hinge_chain(2);
+        m.jnt_limited[1] = true;
+        m.jnt_range[1] = (1.0, -1.0);
+        assert_eq!(
+            m.try_make_data().err(),
+            Some(MakeDataError::Range(RangeError {
+                field: "jnt_range",
+                index: 1
+            }))
+        );
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_ball_joint(&mut m, b, "ball0");
+        hinge(&mut m, b, "h0");
+        finalize(&mut m);
+        m.jnt_limited[1] = true;
+        m.jnt_range[1] = (1.0, -1.0);
+        assert!(matches!(
+            m.try_make_data().err(),
+            Some(MakeDataError::JointLayout(_))
+        ));
+    }
+
     /// A backwards ctrl range used to build a `Data` and panic in `f64::clamp`
     /// at the first step.
     #[test]
