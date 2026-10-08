@@ -50,8 +50,9 @@ tree the actuator keeps awake (automatic policy never).
 
 Its `traces` entry holds, for each trace of TRACES (A8's fixtures), after
 each mj_step: tree_asleep, ncon, nefc, nisland and the callbacks that fired
-(P passive, C control); and qvel, qacc, qacc_warmstart and sensordata after
-the steps within 3 of a change of any tree's sleep state and every 25th. The
+(P passive, C control); and qvel, qacc, qacc_warmstart, sensordata and act
+after the steps within 3 of a change of any tree's sleep state and every
+25th. The
 fixtures: a box resting on the plane (Euler, implicit, implicitfast, RK4, and
 with islands disabled), the same box with sleep disabled, two stacked
 spheres, a sphere woken by another falling on it, two spheres joined by a
@@ -69,7 +70,13 @@ ctrl set to 0.5 at step 700 (a ctrl change wakes nothing); A8's user wakes
 of the resting box at step 200, by qvel, by qpos, and by a vertical force on
 xfrc_applied for one step; A8's flat box rotated and spun while asleep; a
 box that starts asleep (sleep="init"); the resting box with sleep
-switched off at step 150 (a set of `sleep_off`); and, in zero gravity, a
+switched off at step 150 (a set of `sleep_off`); the filtered actuator on a
+tendon, asleep, its ctrl changed at step 700, with actuator and tendon
+sensors; the resting box with frame sensors relative to a sphere falling
+toward it, relative to a static body, on the static body, between two
+static bodies, and a rangefinder on the box aimed at the sphere; two
+hinges joined by a fixed tendon with no stiffness, one at rest (it
+sleeps), one swinging, with tendon sensors; and, in zero gravity, a
 sphere that starts asleep beside a resting one, which is moved against it
 at step 5 while its countdown runs, so the sleeping sphere wakes with that
 countdown; the resting box given a velocity of 1e-6, below the tolerance,
@@ -279,6 +286,16 @@ TRACES_ACT_SLEEP = f"""<mujoco>{SLEEP_OPT}
 <actuator><general name="a1" joint="j1" dyntype="filter" dynprm="0.05" gainprm="1" biastype="affine"
   biasprm="0 -20 -1"/></actuator>
 <sensor><actuatorfrc actuator="a1"/><jointvel joint="j1"/></sensor></mujoco>"""
+TRACES_ACT_SLEEP_TENDON = f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="l1" pos="0 0 1" sleep="allowed"><joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+</worldbody>
+<tendon><fixed name="t1"><joint joint="j1" coef="2"/></fixed></tendon>
+<actuator><general name="a1" tendon="t1" dyntype="filter" dynprm="0.05" gainprm="1" biastype="affine"
+  biasprm="0 -20 -1"/></actuator>
+<sensor><actuatorfrc actuator="a1"/><actuatorpos actuator="a1"/><tendonpos tendon="t1"/>
+  <tendonvel tendon="t1"/><jointvel joint="j1"/></sensor></mujoco>"""
 
 # name: (xml, nstep, sets, sleep enabled[, log the contact filter[, (dof, scale) of the passive counter]])
 TRACES = {
@@ -315,6 +332,31 @@ TRACES = {
     "table": (TREES["table"], 300, [], True),
     "act_sleep": (TRACES_ACT_SLEEP, 800, [], True),
     "act_sleep_ctrl": (TRACES_ACT_SLEEP, 800, [(700, "ctrl", 0, 0.5)], True),
+    "act_tendon_ctrl": (TRACES_ACT_SLEEP_TENDON, 800, [(700, "ctrl", 0, 0.5)], True),
+    "sensor_mix": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+<body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/>
+  <site name="up" pos="0 0 0.1" zaxis="0 0 1"/></body>
+<body name="f" pos="0 0 5"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+<body name="s" pos="-2 0 0.5"><geom type="box" size="0.1 0.1 0.1"/></body>
+<body name="s2" pos="-3 0 0.5"><geom type="box" size="0.1 0.1 0.1"/></body></worldbody>
+<sensor><framepos objtype="body" objname="b" reftype="body" refname="f"/>
+  <framepos objtype="body" objname="b" reftype="body" refname="s"/>
+  <framepos objtype="body" objname="s"/>
+  <framelinvel objtype="body" objname="f" reftype="body" refname="b"/>
+  <framepos objtype="body" objname="s" reftype="body" refname="s2"/>
+  <rangefinder site="up"/></sensor></mujoco>""",
+                   200, [], True),
+    "two_tree_tendon": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="l1" pos="0 0 1"><joint name="j1" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body>
+<body name="l2" pos="1 0 1"><joint name="j2" axis="0 1 0"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body>
+</worldbody>
+<tendon><fixed name="t"><joint joint="j1" coef="1"/><joint joint="j2" coef="1"/></fixed></tendon>
+<sensor><tendonpos tendon="t"/><tendonvel tendon="t"/></sensor></mujoco>""",
+                        300, [(0, "qvel", 1, 2.0)], True),
     "chain2": (LENGTHS["chain2"], 3000, [(0, "qvel", 0, 1.5), (0, "qvel", 1, -1.0)], True),
     "box_rest_pair": ("""<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
 <worldbody><geom name="floor" type="plane" size="5 5 0.1" contype="0" conaffinity="0"/>
@@ -500,7 +542,8 @@ def trace_case(name, xml, nstep, sets, sleep, log_filter=False, passive_force=No
             steps.append({"tree_asleep": ints(d.tree_asleep), "ncon": int(d.ncon), "nefc": int(d.nefc),
                           "nisland": int(d.nisland), "cb": "".join(log),
                           "qvel": floats(d.qvel), "qacc": floats(d.qacc),
-                          "qacc_warmstart": floats(d.qacc_warmstart), "sensordata": floats(d.sensordata)})
+                          "qacc_warmstart": floats(d.qacc_warmstart), "sensordata": floats(d.sensordata),
+                          "act": floats(d.act)})
     finally:
         mujoco.set_mjcb_passive(None)
         mujoco.set_mjcb_control(None)
@@ -510,7 +553,7 @@ def trace_case(name, xml, nstep, sets, sleep, log_filter=False, passive_force=No
     keep = {k for c in change for k in range(c - 3, c + 4) if 0 <= k < nstep} | set(range(0, nstep, 25))
     for k, st in enumerate(steps):
         if k not in keep:
-            for f in ("qvel", "qacc", "qacc_warmstart", "sensordata"):
+            for f in ("qvel", "qacc", "qacc_warmstart", "sensordata", "act"):
                 del st[f]
     return {"name": name, "xml": xml, "sets": [list(x) for x in sets], "sleep": sleep,
             "log_filter": log_filter, "passive_force": list(passive_force) if passive_force else None,

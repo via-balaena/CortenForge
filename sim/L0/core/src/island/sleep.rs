@@ -4,7 +4,10 @@
 //! wake-on-tendon, wake-on-equality, and the circular-linked-list sleep
 //! cycle mechanism. Corresponds to MuJoCo's `engine_sleep.c`.
 
-use crate::types::{Data, ENABLE_SLEEP, EqualityType, MIN_AWAKE, Model, SleepPolicy, SleepState};
+use crate::types::{
+    ActuatorTransmission, Data, ENABLE_SLEEP, EqualityType, MIN_AWAKE, MjObjectType, MjSensorType,
+    Model, SleepPolicy, SleepState,
+};
 
 // ---------------------------------------------------------------------------
 // Data sleep query methods (§16.25)
@@ -204,15 +207,7 @@ pub fn dof_asleep(model: &Model, data: &Data, dof: usize) -> bool {
 /// static with none, and awake with more than two (`:572-594`).
 pub fn equality_asleep(model: &Model, data: &Data, eq: usize) -> bool {
     let body_awake = |body: usize| data.body_sleep_state.get(body) == Some(&SleepState::Awake);
-    let tendon_awake = |t: usize| {
-        let trees = &model.tendon_tree[2 * t..2 * t + 2];
-        match model.tendon_treenum[t] {
-            0 => false,
-            1 => data.tree_awake[trees[0]],
-            2 => data.tree_awake[trees[0]] || data.tree_awake[trees[1]],
-            _ => true,
-        }
-    };
+    let tendon_awake = |t: usize| tendon_sleep_state(model, data, t) == SleepState::Awake;
     let awake = |id: usize| -> bool {
         match model.eq_type[eq] {
             EqualityType::Connect | EqualityType::Weld => body_awake(id),
@@ -222,6 +217,98 @@ pub fn equality_asleep(model: &Model, data: &Data, eq: usize) -> bool {
         }
     };
     !awake(model.eq_obj1id[eq]) && !awake(model.eq_obj2id[eq])
+}
+
+/// Tendon `t`'s sleep state (MuJoCo `mj_tendonSleepState`,
+/// `engine_sleep.c:572-594`): static with no tree, its tree's with one,
+/// awake when either of two is, awake with more than two.
+fn tendon_sleep_state(model: &Model, data: &Data, t: usize) -> SleepState {
+    let trees = &model.tendon_tree[2 * t..2 * t + 2];
+    let awake = match model.tendon_treenum[t] {
+        0 => return SleepState::Static,
+        1 => data.tree_awake[trees[0]],
+        2 => data.tree_awake[trees[0]] || data.tree_awake[trees[1]],
+        _ => true,
+    };
+    if awake {
+        SleepState::Awake
+    } else {
+        SleepState::Asleep
+    }
+}
+
+/// The sleep state of object `id` of type `objtype` (MuJoCo `mj_sleepState`,
+/// `engine_sleep.c:722-770`), `None` for no object. A plugin, which MuJoCo
+/// has no state for, counts as awake.
+fn object_sleep_state(
+    model: &Model,
+    data: &Data,
+    objtype: MjObjectType,
+    id: usize,
+) -> Option<SleepState> {
+    let body = |b: Option<&usize>| b.and_then(|&b| data.body_sleep_state.get(b).copied());
+    match objtype {
+        MjObjectType::None => None,
+        MjObjectType::Body | MjObjectType::XBody => body(Some(&id)),
+        MjObjectType::Joint => body(model.jnt_body.get(id)),
+        MjObjectType::Site => body(model.site_body.get(id)),
+        MjObjectType::Geom => body(model.geom_body.get(id)),
+        MjObjectType::Tendon => (id < model.ntendon).then(|| tendon_sleep_state(model, data, id)),
+        MjObjectType::Actuator => (id < model.nu).then(|| actuator_sleep_state(model, data, id)),
+        MjObjectType::Plugin => Some(SleepState::Awake),
+    }
+}
+
+/// Actuator `i`'s sleep state (MuJoCo `mj_actuatorSleepState`,
+/// `engine_sleep.c:597-626`): its joint's, site's, body's or tendon's; a
+/// slider-crank is awake when either site's body is, else asleep.
+fn actuator_sleep_state(model: &Model, data: &Data, i: usize) -> SleepState {
+    let trnid = model.actuator_trnid[i];
+    let state = |objtype, id| object_sleep_state(model, data, objtype, id);
+    let state = match model.actuator_trntype[i] {
+        ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            state(MjObjectType::Joint, trnid[0])
+        }
+        ActuatorTransmission::SliderCrank => {
+            let awake = |site| state(MjObjectType::Site, site) == Some(SleepState::Awake);
+            Some(if awake(trnid[0]) || awake(trnid[1]) {
+                SleepState::Awake
+            } else {
+                SleepState::Asleep
+            })
+        }
+        ActuatorTransmission::Tendon => state(MjObjectType::Tendon, trnid[0]),
+        ActuatorTransmission::Site => state(MjObjectType::Site, trnid[0]),
+        ActuatorTransmission::Body => state(MjObjectType::Body, trnid[0]),
+    };
+    state.unwrap_or(SleepState::Awake)
+}
+
+/// Whether actuator `i` is asleep, so the actuation skips it (MuJoCo
+/// `mj_fwdActuation`, `engine_forward.c:323`, `:394`).
+pub fn actuator_asleep(model: &Model, data: &Data, i: usize) -> bool {
+    actuator_sleep_state(model, data, i) == SleepState::Asleep
+}
+
+/// Whether sensor `i` is asleep, so the sensor stages skip it and it keeps
+/// its value (MuJoCo `mj_sensorSleepState`, `engine_sleep.c:664-718`): user,
+/// plugin and rangefinder sensors never; else by its object and reference
+/// object: with neither, awake; with one, asleep when that one is; with
+/// both, asleep when neither is awake.
+pub fn sensor_asleep(model: &Model, data: &Data, i: usize) -> bool {
+    if matches!(
+        model.sensor_type[i],
+        MjSensorType::User | MjSensorType::Plugin | MjSensorType::Rangefinder
+    ) {
+        return false;
+    }
+    let obj = object_sleep_state(model, data, model.sensor_objtype[i], model.sensor_objid[i]);
+    let reference = object_sleep_state(model, data, model.sensor_reftype[i], model.sensor_refid[i]);
+    match (obj, reference) {
+        (None, None) => false,
+        (Some(one), None) | (None, Some(one)) => one == SleepState::Asleep,
+        (Some(obj), Some(reference)) => obj != SleepState::Awake && reference != SleepState::Awake,
+    }
 }
 
 /// A body's state from its tree's (MuJoCo `mj_updateSleepInit`,

@@ -8,7 +8,7 @@ use super::muscle::muscle_activation_dynamics;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::tendon::{accumulate_point_jacobian, apply_tendon_force, subquat};
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, GainType, Model,
+    ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType, Model,
 };
 use nalgebra::{DVector, Vector3};
 
@@ -513,9 +513,15 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         mj_warning(data, Warning::BadCtrl, i as i32);
     }
 
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     for i in 0..model.nu {
         // S7d: Skip force computation for per-group disabled actuators.
         if actuator_disabled(model, i) {
+            continue;
+        }
+        // A sleeping actuator keeps its act_dot and acts with no force
+        // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394).
+        if sleep_enabled && crate::island::actuator_asleep(model, data, i) {
             continue;
         }
 

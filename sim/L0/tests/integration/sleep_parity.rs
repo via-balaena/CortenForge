@@ -320,10 +320,10 @@ struct Step {
     nefc: usize,
     nisland: usize,
     cb: String,
-    floats: Option<[Vec<f64>; 4]>,
+    floats: Option<[Vec<f64>; 5]>,
 }
 
-const FLOATS: [&str; 4] = ["qvel", "qacc", "qacc_warmstart", "sensordata"];
+const FLOATS: [&str; 5] = ["qvel", "qacc", "qacc_warmstart", "sensordata", "act"];
 
 fn count(v: &Value) -> usize {
     usize::try_from(v.as_u64().expect("count")).expect("count")
@@ -424,6 +424,7 @@ fn trace(name: &str) -> (Vec<Step>, Vec<Step>) {
                     data.qacc.as_slice().to_vec(),
                     data.qacc_warmstart.as_slice().to_vec(),
                     data.sensordata.as_slice().to_vec(),
+                    data.act.as_slice().to_vec(),
                 ]
             }),
         });
@@ -616,10 +617,7 @@ fn zero_tolerance_negative_zero_velocity_sleeps_a_step_later() {
 /// `qacc`, `qacc_warmstart` and `sensordata` agree to 1e-12 where the golden
 /// keeps them, except under `island="disable"`: that box never sleeps, its
 /// contacts are solved every step, and its accelerations end 3.9e-10 from
-/// MuJoCo's at step 275 (measured; what grows the gap is not isolated). Not
-/// compared: `act_sleep_ctrl`'s sensors after its ctrl change, which MuJoCo
-/// does not recompute for a sleeping actuator and this crate does (Rigid
-/// P23 ports MuJoCo's actuator and sensor sleep filters).
+/// MuJoCo's at step 275 (measured; what grows the gap is not isolated).
 #[test]
 fn traces_match_mujoco() {
     for case in traces_golden()["traces"].as_array().expect("traces") {
@@ -632,9 +630,6 @@ fn traces_match_mujoco() {
                 continue;
             };
             for (field, (x, y)) in FLOATS.iter().zip(a.iter().zip(b)) {
-                if name == "act_sleep_ctrl" && *field == "sensordata" && k >= 700 {
-                    continue;
-                }
                 for (i, (p, q)) in x.iter().zip(y).enumerate() {
                     assert!(
                         (p - q).abs() <= tol,
@@ -798,4 +793,30 @@ fn tendon_equality_with_sleep_refused() {
     asleep_off.enableflags &= !ENABLE_SLEEP;
     let mut data = asleep_off.make_data();
     assert_eq!(data.forward(&asleep_off), Ok(()));
+}
+
+/// A sleeping actuator acts with no force and keeps its `act_dot`, so its
+/// activation stays where it was when its ctrl changes, and the sensors of
+/// a sleeping actuator and tendon keep their values, as MuJoCo skips them.
+#[test]
+fn sleeping_actuators_and_sensors_are_skipped() {
+    for name in ["act_sleep_ctrl", "act_tendon_ctrl"] {
+        assert_trace(name, &["tree_asleep"]);
+        let (ours, theirs) = trace(name);
+        for (field, (a, b)) in FLOATS.iter().zip(
+            ours[725]
+                .floats
+                .as_ref()
+                .expect("kept")
+                .iter()
+                .zip(theirs[725].floats.as_ref().expect("kept")),
+        ) {
+            for (x, y) in a.iter().zip(b) {
+                assert!(
+                    (x - y).abs() <= 1e-12,
+                    "{name}: {field} after step 725: ours {x}, MuJoCo {y}"
+                );
+            }
+        }
+    }
 }

@@ -7,12 +7,11 @@
 use crate::types::flags::disabled;
 use crate::types::{
     DISABLE_SENSOR, Data, ENABLE_SLEEP, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
-    Model, SensorStage, SleepState,
+    Model, SensorStage,
 };
 use nalgebra::{Matrix3, Vector3};
 
 use super::postprocess::{sensor_write, sensor_write3};
-use super::sensor_body_id;
 use crate::dynamics::object_velocity;
 use crate::forward::mj_subtree_vel;
 
@@ -53,7 +52,8 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
         return;
     }
 
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // MuJoCo skips a sleeping sensor while some body sleeps (`engine_sensor.c:1467-1475`).
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
 
     for sensor_id in 0..model.nsensor {
         // Skip non-velocity sensors
@@ -61,11 +61,8 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
             continue;
         }
 
-        // §16.5d: Skip sensors on sleeping bodies
-        if sleep_enabled
-            && let Some(body_id) = sensor_body_id(model, sensor_id)
-            && data.body_sleep_state[body_id] == SleepState::Asleep
-        {
+        // §16.5d: a sleeping sensor keeps its value
+        if sleep_filter && crate::island::sensor_asleep(model, data, sensor_id) {
             continue;
         }
 

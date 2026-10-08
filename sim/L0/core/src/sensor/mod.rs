@@ -6,7 +6,7 @@
 //! solve. `mj_sensor_postprocess` applies cutoff clamping.
 
 use crate::plugin::{PluginCapabilityBit, PluginStage};
-use crate::types::{Data, MjObjectType, MjSensorDataType, MjSensorType, Model};
+use crate::types::{Data, MjSensorDataType, MjSensorType, Model};
 
 use self::postprocess::apply_sensor_cutoff;
 
@@ -63,43 +63,6 @@ pub(crate) fn compute_sensor(model: &Model, data: &mut Data, i: usize) {
         MjSensorDataType::Acceleration => acceleration::compute_acc_sensor(model, data, i),
     }
     apply_sensor_cutoff(model, data, i);
-}
-
-/// Map a sensor to the body it is attached to (if any).
-///
-/// Returns `None` for multi-body sensors (tendon, actuator) or world-relative
-/// sensors, which do not have a single owning body for sleep filtering.
-pub(crate) fn sensor_body_id(model: &Model, sensor_id: usize) -> Option<usize> {
-    let objid = model.sensor_objid[sensor_id];
-    match model.sensor_objtype[sensor_id] {
-        MjObjectType::Body | MjObjectType::XBody => Some(objid),
-        MjObjectType::Joint => {
-            if objid < model.njnt {
-                Some(model.jnt_body[objid])
-            } else {
-                None
-            }
-        }
-        MjObjectType::Geom => {
-            if objid < model.ngeom {
-                Some(model.geom_body[objid])
-            } else {
-                None
-            }
-        }
-        MjObjectType::Site => {
-            if objid < model.nsite {
-                Some(model.site_body[objid])
-            } else {
-                None
-            }
-        }
-        // Multi-body, actuated, plugin, or world-relative sensors — always compute
-        MjObjectType::Tendon
-        | MjObjectType::Actuator
-        | MjObjectType::Plugin
-        | MjObjectType::None => None,
-    }
 }
 
 #[cfg(test)]

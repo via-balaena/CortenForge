@@ -12,9 +12,9 @@ use crate::types::{ConstraintType, DISABLE_ISLAND, Data, EqualityType, Model};
 
 // Re-exports — island functions for external consumers.
 pub(crate) use sleep::{
-    K_AWAKE, constraint_sleep_filter, dof_asleep, equality_asleep, mj_sleep,
+    K_AWAKE, actuator_asleep, constraint_sleep_filter, dof_asleep, equality_asleep, mj_sleep,
     mj_update_sleep_arrays, mj_wake, mj_wake_collision, mj_wake_equality, mj_wake_tendon,
-    reset_sleep_state,
+    reset_sleep_state, sensor_asleep,
 };
 
 /// Discover the constraint islands from the constraint rows, as MuJoCo's
