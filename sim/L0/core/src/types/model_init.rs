@@ -559,10 +559,11 @@ impl Model {
     }
 
     /// Create the `Data` for this model, with every array allocated: the joint
-    /// layout and range checks, then the arrays, each plugin's `init`, and the
-    /// rest of a reset ([`Data::reset`]: the sleep state, each plugin's
-    /// `reset`), as MuJoCo 3.5.0's `mj_makeData` runs `mj_initPlugin` and then
-    /// `mj_resetData` (`engine_io.c:1110-1111`).
+    /// layout and range checks, then the arrays, each plugin's `init`, and a
+    /// [`Data::reset`], which clears what `init` wrote outside the plugin
+    /// state, sets the sleep state and runs each plugin's `reset`, as MuJoCo
+    /// 3.5.0's `mj_makeData` runs `mj_initPlugin` and then `mj_resetData`
+    /// (`engine_io.c:1110-1111`).
     ///
     /// # Errors
     /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
@@ -583,8 +584,7 @@ impl Model {
                     message,
                 })?;
         }
-        self.start_sleep(&mut data);
-        data.reset_plugins(self);
+        data.reset(self);
         Ok(data)
     }
 

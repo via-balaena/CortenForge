@@ -146,7 +146,10 @@ pub trait Plugin: Send + Sync {
     }
 
     /// Initialize plugin data when Data is created.
-    /// Called from `make_data()`. Return Err to abort.
+    /// Called from `make_data()`, before the reset that ends it: what `init`
+    /// writes to `data` outside the plugin's state and `plugin_data` is
+    /// cleared, as MuJoCo's `mj_makeData` runs `mj_resetData` after
+    /// `mj_initPlugin`. Return Err to abort.
     ///
     /// # Errors
     /// Returns an error string if plugin initialization fails.
@@ -154,7 +157,13 @@ pub trait Plugin: Send + Sync {
         Ok(())
     }
 
-    /// Reset plugin state to initial values.
+    /// Reset the plugin's state. Called at the end of `make_data()` (after
+    /// `init`) and of every `Data::reset`, on the plugin's slice of
+    /// `plugin_state` as the `Data` had it: a reset keeps the plugin state
+    /// rather than zeroing it, as MuJoCo's `_resetData` does
+    /// (`engine_io.c:1528-1541`). The default leaves the state unchanged.
+    ///
+    /// A cloned `Data` has no `plugin_data` (there is no copy hook).
     fn reset(&self, _model: &Model, _state: &mut [f64], _instance: usize) {}
 
     /// Main computation callback.
@@ -768,6 +777,51 @@ mod tests {
             .as_ref()
             .and_then(|d| d.downcast_ref::<u32>());
         assert_eq!(kept, Some(&7));
+    }
+
+    /// A plugin whose `init` writes `time` and its own state, and whose `reset`
+    /// adds one to that state.
+    struct InitWriter;
+
+    impl Plugin for InitWriter {
+        fn name(&self) -> &'static str {
+            "test.init_writer"
+        }
+
+        fn capabilities(&self) -> PluginCapabilities {
+            PluginCapabilities::NONE
+        }
+
+        fn nstate(&self, _model: &Model, _instance: usize) -> usize {
+            1
+        }
+
+        fn init(&self, _model: &Model, data: &mut Data, _instance: usize) -> Result<(), String> {
+            data.time = 5.0;
+            data.plugin_state[0] = 10.0;
+            Ok(())
+        }
+
+        fn reset(&self, _model: &Model, state: &mut [f64], _instance: usize) {
+            state[0] += 1.0;
+        }
+    }
+
+    /// `make_data` runs the whole reset after the plugins' `init`, as MuJoCo's
+    /// `mj_makeData` runs `mj_resetData` after `mj_initPlugin`
+    /// (`engine_io.c:1110-1111`): what `init` wrote outside its state is
+    /// cleared, and the plugin's `reset` runs on the state `init` left, so the
+    /// `Data` equals a reset one.
+    #[test]
+    fn make_data_resets_after_plugin_init() {
+        let model = model_with(Arc::new(InitWriter), 1);
+        let mut data = model.make_data();
+        assert_eq!(data.time, 0.0);
+        assert_eq!(data.plugin_state, vec![11.0]);
+        data.time = 3.0;
+        data.plugin_state[0] = 10.0;
+        data.reset(&model);
+        assert_eq!(format!("{data:#?}"), format!("{:#?}", model.make_data()));
     }
 
     /// `make_data` resets each plugin after `init`, as MuJoCo's `mj_makeData`
