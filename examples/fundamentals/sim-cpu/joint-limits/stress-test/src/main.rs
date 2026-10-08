@@ -1,10 +1,9 @@
-//! Stress test — headless validation of all joint limit constraint invariants.
+//! Stress test — headless validation of joint limits.
 //!
 //! 12 checks covering: hinge/slide/ball limit activation, JointLimitFrc sensor
 //! readback, one-sided constraints, solref stiffness scaling, solimp width
 //! control, motor vs limit, a refused zero-width range, penetration-force
-//! relationship, and
-//! ball cone azimuthal symmetry.
+//! relationship, and ball cone azimuthal symmetry.
 //!
 //! Run: `cargo run -p example-joint-limits-stress-test --release`
 

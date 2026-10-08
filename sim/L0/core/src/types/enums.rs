@@ -887,15 +887,15 @@ impl std::fmt::Display for StepError {
             ),
             Self::UnsupportedIntegrator { integrator } => write!(
                 f,
-                "finite-difference derivatives do not support the {integrator:?} integrator"
+                "finite-difference derivatives: {integrator:?} integrator is not supported"
             ),
             Self::UnsupportedHistory { nhistory } => write!(
                 f,
-                "finite-difference derivatives do not support delays (nhistory {nhistory})"
+                "finite-difference derivatives: delays are not supported (nhistory {nhistory})"
             ),
             Self::UnsupportedNoslip { iterations } => write!(
                 f,
-                "inverse finite-difference derivatives do not support the noslip solver \
+                "inverse finite-difference derivatives: noslip solver is not supported \
                  ({iterations} iterations)"
             ),
         }
@@ -1091,8 +1091,8 @@ impl std::fmt::Display for JointLayoutError {
         match self {
             Self::TooManyDofs { body, ndof } => write!(
                 f,
-                "body {body} has {ndof} degrees of freedom, more than 6; \
-                 a free joint must be its body's only joint"
+                "body {body} has {ndof} degrees of freedom, more than 6 \
+                 (a free joint must be the body's only joint)"
             ),
             Self::BallNotLast { body, joint } => write!(
                 f,

@@ -10,7 +10,6 @@
 //! - T7: Limit enforcement over time
 //! - T8: Wrapped rotation Jacobian
 //! - T9: Radian-mode range (no double-conversion)
-//! - T10: Range interpretation symmetry
 //! - T11: Multiple ball joints (counting/assembly consistency)
 //! - T12: Mixed hinge + ball limits (cross-type consistency)
 //! - T13: jnt_limit_frc propagation
@@ -21,7 +20,7 @@
 //! - T18: Multiple simultaneous violations
 //! - T19: efc_vel sign with opposing angular velocity
 //! - T20: Unnormalized quaternion in constraint assembly
-//! - T21: range="45 0" parser-level verification
+//! - T21: a limited ball range that does not start at 0 is refused
 //! - T22: Margin = 0.0 regression anchor
 
 use approx::assert_relative_eq;

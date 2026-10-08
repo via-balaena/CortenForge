@@ -170,8 +170,9 @@ pub struct DerivativeConfig {
     /// Read by [`mjd_transition`]: when true and the model's analytic path is
     /// complete, velocity columns of A and simple actuator columns of B use
     /// analytical derivatives from `qDeriv` ([`mjd_transition_hybrid`], which
-    /// takes pure FD at a state with an active constraint row); otherwise pure
-    /// FD. [`mjd_transition_hybrid`] called directly does not read it.
+    /// takes pure FD when `data` holds an active constraint row from the
+    /// caller's last forward pass); otherwise pure FD.
+    /// [`mjd_transition_hybrid`] called directly does not read it.
     ///
     /// Default: `true`.
     pub use_analytical: bool,
@@ -246,9 +247,13 @@ fn check_fd_integrator(model: &Model) -> Result<(), StepError> {
 /// When `config.use_analytical == true` and the model's analytic transition
 /// derivative is complete (not with a Millard muscle, nor in the cases
 /// `hybrid::implicit_analytic_incomplete` names), uses hybrid analytical+FD
-/// (Phase D), which itself takes pure FD at a state with an active constraint
-/// row; otherwise pure finite differences (Phase A). Both refuse RK4, as
-/// MuJoCo's `mjd_transitionFD` does.
+/// (Phase D), which itself takes pure FD when `data` holds an active
+/// constraint row; otherwise pure finite differences (Phase A). Both refuse
+/// RK4, as MuJoCo's `mjd_transitionFD` does.
+///
+/// The hybrid reads the constraint rows the caller's last forward pass left in
+/// `data`: call `forward()` at the state first. A `Data` moved since, or never
+/// forwarded, holds the old rows or none.
 ///
 /// Full Implicit gets its velocity-Jacobian right by adding the second-order term
 /// `h²·M_hat⁻¹·rne_vel(qacc_implicit)` for the `v`-dependence of `M_hat = M − h·D` (see
@@ -293,11 +298,14 @@ pub fn mjd_transition(
 impl Data {
     /// Compute transition derivatives at the current state.
     ///
-    /// Equivalent to `mjd_transition(model, self, config)`.
+    /// Equivalent to `mjd_transition(model, self, config)`, which reads the
+    /// constraint rows of the last `forward()`: call it at the current state
+    /// first.
     ///
     /// # Errors
     ///
-    /// Returns `StepError` if any simulation step during derivative computation fails.
+    /// The refusals [`mjd_transition_fd`] returns before any work, or a
+    /// `StepError` from a simulation step.
     pub fn transition_derivatives(
         &self,
         model: &Model,
@@ -344,10 +352,13 @@ pub fn max_relative_error(a: &DMatrix<f64>, b: &DMatrix<f64>, floor: f64) -> (f6
 ///
 /// Returns `(max_error_A, max_error_B)` — the max relative errors between
 /// pure-FD and hybrid A/B matrices. The caller checks against desired tolerance.
+/// With an active constraint row in `data` the hybrid takes pure FD, so this
+/// compares pure FD with itself and returns `(0, 0)`.
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any simulation step during derivative computation fails.
+/// The refusals [`mjd_transition_fd`] returns before any work, or a
+/// `StepError` from a simulation step.
 #[allow(non_snake_case)]
 pub fn validate_analytical_vs_fd(model: &Model, data: &Data) -> Result<(f64, f64), StepError> {
     let fd = mjd_transition(
@@ -379,7 +390,8 @@ pub fn validate_analytical_vs_fd(model: &Model, data: &Data) -> Result<(f64, f64
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any simulation step during FD computation fails.
+/// The refusals [`mjd_transition_fd`] returns before any work, or a
+/// `StepError` from a simulation step.
 pub fn fd_convergence_check(
     model: &Model,
     data: &Data,

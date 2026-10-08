@@ -1706,3 +1706,4 @@ d5508eb4b387b674	sim/L0/tests/integration/callbacks.rs:586
 d326c0455f17075d	sim/L0/mjcf/src/builder/build.rs:628
 d8710a2541d989ce	sim/L0/mjcf/src/builder/build.rs:654
 dfbd8ab3086d2254	sim/L0/mjcf/src/builder/build.rs:692
+53566d0d40059e99	sim/L0/mjcf/src/builder/build.rs:713

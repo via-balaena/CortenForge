@@ -703,6 +703,24 @@ mod tests {
         );
     }
 
+    /// Registry `D-MODEL-CHECKS`: a range MJCF makes limited automatically
+    /// with lo >= hi is refused when the `Data` is made (11-settled A5-Q2);
+    /// MuJoCo leaves it unlimited (measured: `"0 0"` loads with
+    /// `jnt_limited` 0).
+    #[test]
+    fn an_automatic_empty_range_is_refused() {
+        let model = load_model(
+            r#"<mujoco><worldbody><body><joint type="hinge" axis="0 1 0" range="0 0"/>
+<geom type="sphere" size="0.1"/></body></worldbody></mujoco>"#,
+        )
+        .expect("loads");
+        assert!(model.jnt_limited[0]);
+        assert!(matches!(
+            model.try_make_data().err(),
+            Some(sim_core::MakeDataError::Range(_))
+        ));
+    }
+
     #[test]
     fn test_simple_pendulum() {
         let model = load_model(

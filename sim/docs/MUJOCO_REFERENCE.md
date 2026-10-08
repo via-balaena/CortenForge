@@ -862,7 +862,8 @@ Position perturbations: mj_integrate_pos_explicit() (tangent → coordinate)
 Position differences:   mj_differentiate_pos()      (coordinate → tangent)
 ```
 
-Cost: `2·(2·nv + na + nu)` step() calls (centered). Refuses RK4 and a model
+Cost: `1 + 2·(2·nv + na + nu)` step() calls (centered; the 1 is the nominal
+step). Refuses RK4 and a model
 with history buffers (`StepError`), as MuJoCo's `mjd_transitionFD` does.
 Captures contact transitions naturally.
 
@@ -925,6 +926,8 @@ Position columns: FD (captures contact transitions, implicit spring ∂v/∂q)
 B matrix: analytical for DynType::None, FD for actuators with dynamics
 
 Cost: ~nv FD step() calls (position columns only) vs 2·(2nv+na+nu) for pure FD
+With an active constraint row in `data` (from the caller's last forward pass)
+it returns pure FD: its analytic columns hold no constraint-force derivative.
 ```
 
 ### 6.5 Public Dispatch: `mjd_transition()`

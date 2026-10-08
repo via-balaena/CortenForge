@@ -741,8 +741,10 @@ fn compute_dof_lengths_sizes_dof_length() {
 }
 
 /// Two hinged links with explicit inertials, a fixed tendon, a spatial tendon,
-/// a muscle and a position actuator with a damping ratio: every derivation has
-/// work to do, and each edit below is one `Model` field.
+/// a muscle and a position actuator with a damping ratio: every derivation but
+/// the muscle's length range has work to do (the build leaves it at (0, 0),
+/// where MuJoCo 3.5.0 computes [0.197, 0.609]; book L44 computes it as MuJoCo),
+/// and each edit below is one `Model` field.
 const DERIVED: &str = r#"<mujoco model="derived">
   <worldbody>
     <body name="a" pos="0 0 1">

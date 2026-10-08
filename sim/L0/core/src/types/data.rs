@@ -449,7 +449,8 @@ pub struct Data {
     /// The baseline for drift: `data.total_energy() - data.energy_initial`.
     /// Every reset clears it, an auto-reset on a bad `qpos`, `qvel` or `qacc`
     /// and [`Data::reset_to_keyframe`] included, so it is recorded again at the
-    /// reset state. Not a MuJoCo field.
+    /// reset state; a value written here before that pass is overwritten by
+    /// it. Not a MuJoCo field.
     pub energy_initial: f64,
     /// Whether [`Self::energy_initial`] has been recorded since `make_data` or
     /// the last reset.
@@ -1094,9 +1095,9 @@ impl Data {
 
     // ====================================================================
 
-    /// Reset to the `Data` [`Model::make_data`] makes: every array as it
+    /// Reset to the `Data` [`Model::make_data`] makes: every field as it
     /// allocates it (`qpos0`, the mocap bodies' poses, the history buffers'
-    /// timestamps, zero elsewhere), the trees that start asleep with their
+    /// timestamps and so on), the trees that start asleep with their
     /// kinematics computed and put to sleep, and each plugin's `reset`, run on
     /// the plugin state the `Data` had. `plugin_data` is kept.
     ///
@@ -1107,7 +1108,9 @@ impl Data {
     /// plugin's `reset` (`:1528-1541`). The `Data` is rebuilt rather than
     /// cleared field by field, so a field added to `Data` is reset too. With a
     /// tree that starts asleep, MuJoCo runs a full `mj_forward` at the reset;
-    /// this computes its kinematics and mass matrix only.
+    /// this computes its kinematics and mass matrix only. With sleep enabled and
+    /// no such tree, MuJoCo computes the kinematics, centres of mass, cameras
+    /// and tendons (`engine_io.c:1453-1458`); this computes none of them.
     pub fn reset(&mut self, model: &Model) {
         let mut fresh = model.allocate_data();
         std::mem::swap(&mut fresh.plugin_state, &mut self.plugin_state);
