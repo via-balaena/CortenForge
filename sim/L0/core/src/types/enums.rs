@@ -842,6 +842,28 @@ pub enum StepError {
         /// The field's length.
         actual: usize,
     },
+    /// Finite-difference derivatives refuse the model's integrator (RK4), as
+    /// MuJoCo 3.5.0's `mjd_transitionFD` and `mjd_inverseFD` do ("RK4
+    /// integrator is not supported", `engine_derivative_fd.c:544-546`,
+    /// `:614-616`).
+    UnsupportedIntegrator {
+        /// The model's integrator.
+        integrator: Integrator,
+    },
+    /// Finite-difference transition derivatives refuse a model with history
+    /// buffers (actuator or sensor delays), as `mjd_transitionFD` does ("delays
+    /// are not supported", `engine_derivative_fd.c:547-549`).
+    UnsupportedHistory {
+        /// The model's history buffer length.
+        nhistory: usize,
+    },
+    /// Finite-difference inverse-dynamics derivatives refuse the noslip
+    /// solver, as `mjd_inverseFD` does ("noslip solver is not supported",
+    /// `engine_derivative_fd.c:618-620`).
+    UnsupportedNoslip {
+        /// The model's noslip iterations.
+        iterations: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -862,6 +884,19 @@ impl std::fmt::Display for StepError {
                 f,
                 "data.{field} has length {actual}, but the model needs {expected}: the Data was \
                  made by another model, or the array was resized"
+            ),
+            Self::UnsupportedIntegrator { integrator } => write!(
+                f,
+                "finite-difference derivatives do not support the {integrator:?} integrator"
+            ),
+            Self::UnsupportedHistory { nhistory } => write!(
+                f,
+                "finite-difference derivatives do not support delays (nhistory {nhistory})"
+            ),
+            Self::UnsupportedNoslip { iterations } => write!(
+                f,
+                "inverse finite-difference derivatives do not support the noslip solver \
+                 ({iterations} iterations)"
             ),
         }
     }

@@ -9,7 +9,8 @@ system identification, and any control design workflow.
 
 - **`mjd_transition_fd`** — pure finite-difference linearization. Perturbs
   each state/control component, steps the simulation, measures differences.
-  Works with any integrator, captures contact transitions naturally.
+  Works with every integrator but RK4 (refused, as MuJoCo refuses it), captures
+  contact transitions naturally.
 - **`mjd_transition_hybrid`** — hybrid analytical+FD. Uses analytical
   velocity derivatives (from `qDeriv`) for velocity columns of A, FD only
   for position columns. ~2x faster than pure FD.

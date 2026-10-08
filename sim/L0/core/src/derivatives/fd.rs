@@ -45,7 +45,12 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any perturbed `step()` call fails.
+/// Before any work: the step inputs `step` checks
+/// ([`StepError::InvalidTimestep`], [`StepError::DataShapeMismatch`]), then
+/// [`StepError::UnsupportedIntegrator`] for RK4 and
+/// [`StepError::UnsupportedHistory`] for a model with history buffers, as
+/// MuJoCo's `mjd_transitionFD` refuses them. Then a `StepError` from any
+/// perturbed `step()`.
 ///
 /// # Panics
 ///
@@ -63,16 +68,11 @@ pub fn mjd_transition_fd(
     data: &Data,
     config: &DerivativeConfig,
 ) -> Result<TransitionMatrices, StepError> {
-    // Validate config
+    super::check_fd_transition_inputs(model, data)?;
     assert!(
         config.eps.is_finite() && config.eps > 0.0 && config.eps <= 1e-2,
         "DerivativeConfig::eps must be in (0, 1e-2], got {}",
         config.eps
-    );
-    // MuJoCo rejects models with history (delays) for FD derivatives.
-    assert!(
-        model.nhistory == 0,
-        "FD derivatives not supported with nhistory > 0 (delays)"
     );
 
     let eps = config.eps;
@@ -470,7 +470,12 @@ pub struct InverseDynamicsDerivatives {
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any `forward_skip()` call fails.
+/// Before any work: the step inputs `step` checks
+/// ([`StepError::InvalidTimestep`], [`StepError::DataShapeMismatch`]), then
+/// [`StepError::UnsupportedIntegrator`] for RK4 and
+/// [`StepError::UnsupportedNoslip`] for a model with noslip iterations, as
+/// MuJoCo's `mjd_inverseFD` refuses them. Then a `StepError` from any
+/// `forward_skip()`.
 // Mathematical symbols (J, M, K, qfrc) follow MuJoCo's inverse-dynamics-derivatives notation.
 #[allow(non_snake_case, clippy::similar_names)]
 pub fn mjd_inverse_fd(
@@ -478,6 +483,7 @@ pub fn mjd_inverse_fd(
     data: &Data,
     config: &DerivativeConfig,
 ) -> Result<InverseDynamicsDerivatives, StepError> {
+    super::check_fd_inverse_inputs(model, data)?;
     assert!(
         config.eps.is_finite() && config.eps > 0.0 && config.eps <= 1e-2,
         "DerivativeConfig::eps must be in (0, 1e-2], got {}",

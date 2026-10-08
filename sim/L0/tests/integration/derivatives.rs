@@ -447,43 +447,144 @@ fn test_integrator_coverage_implicit() {
     assert!(derivs.is_ok(), "ImplicitSpringDamper FD should succeed");
 }
 
-#[test]
-fn test_integrator_coverage_rk4() {
-    let mut model = Model::n_link_pendulum(3, 1.0, 0.1);
-    model.integrator = Integrator::RungeKutta4;
-    let mut data = model.make_data();
-    data.qpos[0] = 0.3;
-    data.forward(&model).unwrap();
-
-    let config = DerivativeConfig::default();
-    let derivs = mjd_transition_fd(&model, &data, &config);
-    assert!(derivs.is_ok(), "RK4 FD should succeed");
+/// A pendulum with a motor under `integrator`; `extra` goes inside `<option>`'s
+/// tag and `actuator` is the motor's extra attributes.
+fn fd_pendulum(integrator: &str, extra: &str, actuator: &str) -> Model {
+    let xml = format!(
+        r#"<mujoco><option timestep="0.01" integrator="{integrator}" {extra}/>
+<worldbody><body><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor joint="j" {actuator}/></actuator></mujoco>"#
+    );
+    sim_mjcf::load_model(&xml).expect("load")
 }
 
+/// Every finite-difference entry point, through `mjd_transition` and the
+/// `Data` method too, with and without the analytic path.
+fn fd_entry_points(
+    model: &Model,
+    data: &sim_core::Data,
+) -> Vec<(String, Result<(), sim_core::StepError>)> {
+    let mut out = Vec::new();
+    for analytic in [false, true] {
+        let cfg = DerivativeConfig {
+            use_analytical: analytic,
+            ..Default::default()
+        };
+        out.push((
+            format!("mjd_transition_fd {analytic}"),
+            mjd_transition_fd(model, data, &cfg).map(|_| ()),
+        ));
+        out.push((
+            format!("mjd_transition_hybrid {analytic}"),
+            mjd_transition_hybrid(model, data, &cfg).map(|_| ()),
+        ));
+        out.push((
+            format!("mjd_transition {analytic}"),
+            sim_core::mjd_transition(model, data, &cfg).map(|_| ()),
+        ));
+        out.push((
+            format!("transition_derivatives {analytic}"),
+            data.transition_derivatives(model, &cfg).map(|_| ()),
+        ));
+        out.push((
+            format!("mjd_inverse_fd {analytic}"),
+            sim_core::mjd_inverse_fd(model, data, &cfg).map(|_| ()),
+        ));
+    }
+    out
+}
+
+/// As MuJoCo 3.5.0's `mjd_transitionFD` and `mjd_inverseFD` ("RK4 integrator
+/// is not supported"), before anything runs: no callback fires.
 #[test]
-fn test_rk4_differs_from_euler() {
-    let model_euler = Model::n_link_pendulum(3, 1.0, 0.1);
-    let mut model_rk4 = Model::n_link_pendulum(3, 1.0, 0.1);
-    model_rk4.integrator = Integrator::RungeKutta4;
+fn finite_differences_refuse_rk4() {
+    let mut model = fd_pendulum("RK4", "", "");
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = std::sync::Arc::clone(&calls);
+    model.set_passive_callback(move |_, _| {
+        c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    for (entry, result) in fd_entry_points(&model, &data) {
+        assert_eq!(
+            result,
+            Err(sim_core::StepError::UnsupportedIntegrator {
+                integrator: Integrator::RungeKutta4
+            }),
+            "{entry}"
+        );
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
 
-    let config = DerivativeConfig::default();
+/// As MuJoCo 3.5.0's `mjd_transitionFD` ("delays are not supported"); its
+/// `mjd_inverseFD` does not check history.
+#[test]
+fn finite_differences_refuse_history() {
+    let model = fd_pendulum("Euler", "", r#"nsample="2""#);
+    assert!(model.nhistory > 0);
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    for (entry, result) in fd_entry_points(&model, &data) {
+        if entry.starts_with("mjd_inverse_fd") {
+            assert!(result.is_ok(), "{entry}: {result:?}");
+        } else {
+            assert_eq!(
+                result,
+                Err(sim_core::StepError::UnsupportedHistory {
+                    nhistory: model.nhistory
+                }),
+                "{entry}"
+            );
+        }
+    }
+}
 
-    let mut data_e = model_euler.make_data();
-    data_e.qpos[0] = 0.3;
-    data_e.forward(&model_euler).unwrap();
-    let de = mjd_transition_fd(&model_euler, &data_e, &config).unwrap();
+/// As MuJoCo 3.5.0's `mjd_inverseFD` ("noslip solver is not supported");
+/// the transition derivatives take noslip.
+#[test]
+fn inverse_finite_differences_refuse_noslip() {
+    let model = fd_pendulum("Euler", r#"noslip_iterations="3""#, "");
+    assert_eq!(model.noslip_iterations, 3);
+    let mut data = model.make_data();
+    data.forward(&model).unwrap();
+    for (entry, result) in fd_entry_points(&model, &data) {
+        if entry.starts_with("mjd_inverse_fd") {
+            assert_eq!(
+                result,
+                Err(sim_core::StepError::UnsupportedNoslip { iterations: 3 }),
+                "{entry}"
+            );
+        } else {
+            assert!(result.is_ok(), "{entry}: {result:?}");
+        }
+    }
+}
 
-    let mut data_r = model_rk4.make_data();
-    data_r.qpos[0] = 0.3;
-    data_r.forward(&model_rk4).unwrap();
-    let dr = mjd_transition_fd(&model_rk4, &data_r, &config).unwrap();
-
-    let diff = (&de.A - &dr.A).norm();
-    assert!(
-        diff > 1e-4,
-        "RK4 A should differ from Euler A, diff={}",
-        diff
-    );
+/// The entry points check the timestep and the `Data`'s shape first, as
+/// `step` does: a `Data` made by another model and a non-finite timestep are
+/// errors, not a panic or another error from the work done first.
+#[test]
+fn finite_differences_check_their_inputs_first() {
+    let model = fd_pendulum("implicitfast", "", "");
+    let other = Model::n_link_pendulum(3, 1.0, 0.1);
+    let mut short = other.make_data();
+    short.forward(&other).unwrap();
+    for (entry, result) in fd_entry_points(&model, &short) {
+        assert!(
+            matches!(result, Err(sim_core::StepError::DataShapeMismatch { .. })),
+            "{entry}: {result:?}"
+        );
+    }
+    let mut bad_h = fd_pendulum("implicitfast", "", "");
+    let mut data = bad_h.make_data();
+    data.forward(&bad_h).unwrap();
+    bad_h.timestep = f64::NEG_INFINITY;
+    for (entry, result) in fd_entry_points(&bad_h, &data) {
+        assert_eq!(result, Err(sim_core::StepError::InvalidTimestep), "{entry}");
+    }
 }
 
 // ============================================================================

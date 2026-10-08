@@ -862,8 +862,9 @@ Position perturbations: mj_integrate_pos_explicit() (tangent → coordinate)
 Position differences:   mj_differentiate_pos()      (coordinate → tangent)
 ```
 
-Cost: `2·(2·nv + na + nu)` step() calls (centered). Handles any integrator
-including RK4. Captures contact transitions naturally.
+Cost: `2·(2·nv + na + nu)` step() calls (centered). Refuses RK4 and a model
+with history buffers (`StepError`), as MuJoCo's `mjd_transitionFD` does.
+Captures contact transitions naturally.
 
 ### 6.2 Analytical Velocity Derivatives: `mjd_smooth_vel()`
 

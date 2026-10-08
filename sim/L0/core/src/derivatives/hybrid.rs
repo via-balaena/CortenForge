@@ -2314,7 +2314,7 @@ pub fn mass_directional_derivative(
 ///   `∂D/∂v`; a force–velocity-curve gain is v-dependent and contributes a
 ///   `∂D_actuator/∂v` that `T` misses. (Affine gain is constant in v ⇒ fine.)
 ///
-/// FD is exact in both cases. Euler / ImplicitFast / RK4 never hit these terms, so
+/// FD is exact in both cases. Euler and ImplicitFast never hit these terms, so
 /// they always return `false` here. This is the single source of truth shared by
 /// `mjd_transition`'s `can_analytical` gate and the defensive FD return below, so a
 /// direct `mjd_transition_hybrid` caller is guarded identically.
@@ -2333,7 +2333,8 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
 /// Compute hybrid analytical+FD transition derivatives.
 ///
 /// Uses analytical `qDeriv` for velocity columns of A, FD for position columns.
-/// Falls back to pure FD for RK4 or when `config.use_analytical == false`.
+/// It does not read `config.use_analytical`; [`mjd_transition`](super::mjd_transition)
+/// chooses between this and pure FD.
 ///
 /// See module-level docs for the four-phase strategy.
 ///
@@ -2343,24 +2344,22 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
 ///
 /// # Errors
 ///
-/// Returns `StepError` if any simulation step during FD perturbation fails.
+/// The refusals [`mjd_transition_fd`](super::mjd_transition_fd) returns, checked
+/// before any work, or a `StepError` from a simulation step during FD
+/// perturbation.
 // Mathematical symbols follow MuJoCo's transition-derivatives notation; the unwrap is a defensive guard on length-known matrices.
 #[allow(non_snake_case, clippy::similar_names, clippy::unwrap_used)]
-#[allow(clippy::unreachable)] // RK4 integrator uses a separate transition path before reaching this code
+#[allow(clippy::unreachable)] // RK4 is refused at entry (check_fd_transition_inputs)
 pub fn mjd_transition_hybrid(
     model: &Model,
     data: &Data,
     config: &DerivativeConfig,
 ) -> Result<TransitionMatrices, StepError> {
+    super::check_fd_transition_inputs(model, data)?;
     assert!(
         config.eps.is_finite() && config.eps > 0.0 && config.eps <= 1e-2,
         "DerivativeConfig::eps must be in (0, 1e-2], got {}",
         config.eps
-    );
-    // MuJoCo rejects models with history (delays) for FD derivatives.
-    assert!(
-        model.nhistory == 0,
-        "FD derivatives not supported with nhistory > 0 (delays)"
     );
 
     // Defensive FD fallback for the implicit-Coriolis integrators on models whose
@@ -2514,12 +2513,8 @@ pub fn mjd_transition_hybrid(
             }
             dvdv
         }
-        Integrator::RungeKutta4 => {
-            // RK4 is multi-stage; no analytic transition derivative yet. FD is exact.
-            // `mjd_transition` already gates it to FD; this guards a direct
-            // `mjd_transition_hybrid` call.
-            return mjd_transition_fd(model, data, config);
-        }
+        // Refused at entry (check_fd_transition_inputs).
+        Integrator::RungeKutta4 => unreachable!(),
         Integrator::ImplicitFast => {
             // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
             // scratch_m_impl holds Cholesky factors of (M − h·D) from forward pass
@@ -2653,7 +2648,7 @@ pub fn mjd_transition_hybrid(
                         &mut dvdact,
                     );
                 }
-                // RK4 is dispatched via a separate transition path before reaching this code.
+                // RK4 is refused at entry (check_fd_transition_inputs).
                 Integrator::RungeKutta4 => unreachable!(),
             }
 
@@ -2835,11 +2830,11 @@ pub fn mjd_transition_hybrid(
             }
             // Full Implicit is excluded from `use_analytical_pos` (its position columns
             // need the mixed q–v Coriolis term and route through the FD branch below),
-            // so this arm is never reached. Kept explicit, like RK4.
+            // so this arm is never reached. Kept explicit, like RK4 (refused at entry).
             Integrator::Implicit => unreachable!(
                 "full Implicit uses FD position columns (excluded from use_analytical_pos)"
             ),
-            // RK4 is dispatched via a separate transition path before reaching this code.
+            // RK4 is refused at entry (check_fd_transition_inputs).
             Integrator::RungeKutta4 => unreachable!(),
         };
 
@@ -3243,7 +3238,7 @@ pub fn mjd_transition_hybrid(
                         &mut dvdctrl,
                     );
                 }
-                // RK4 is dispatched via a separate transition path before reaching this code.
+                // RK4 is refused at entry (check_fd_transition_inputs).
                 Integrator::RungeKutta4 => unreachable!(),
             }
 
