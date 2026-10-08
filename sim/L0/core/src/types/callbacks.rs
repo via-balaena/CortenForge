@@ -79,7 +79,8 @@ pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 ///   `DISABLE_ACTUATION` is set);
 /// - once per [`Data::step1`], even with `DISABLE_ACTUATION` set (MuJoCo's
 ///   `mj_step1` does not check the flag); never in [`Data::step2`];
-/// - inside finite-difference derivatives.
+/// - inside the transition finite differences; never in
+///   [`crate::mjd_inverse_fd`] (MuJoCo's `mjd_inverseFD` fires none).
 ///
 /// [`MjStage`]: crate::MjStage
 pub type CbControl = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;

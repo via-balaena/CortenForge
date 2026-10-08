@@ -1,6 +1,7 @@
 //! Finite-difference perturbation methods for transition derivatives.
 
 use super::{DerivativeConfig, TransitionMatrices};
+use crate::forward::MjStage;
 use crate::jacobian::{mj_differentiate_pos, mj_integrate_pos_explicit};
 use crate::types::{Data, Model, StepError};
 use nalgebra::{DMatrix, DVector};
@@ -393,7 +394,7 @@ pub(super) fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>)
 ///
 /// # MuJoCo Equivalence
 ///
-/// Matches the output of `mjd_inverseFD()` in `engine_derivative.c`.
+/// The output of MuJoCo's `mjd_inverseFD` (`engine_derivative_fd.c`), without its sensor Jacobians and `DmDq`.
 #[derive(Debug, Clone)]
 #[allow(non_snake_case)]
 pub struct InverseDynamicsDerivatives {
@@ -409,45 +410,39 @@ pub struct InverseDynamicsDerivatives {
 
 /// Compute finite-difference derivatives of inverse dynamics.
 ///
-/// Perturbs `qpos`, `qvel`, and `qacc` around the current state, recomputes
-/// derived quantities via `forward_skip() + inverse()`, and measures
-/// `qfrc_inverse` deltas. Produces three nv×nv Jacobian matrices.
+/// Perturbs `qacc`, `qvel` and `qpos` around the current state, as MuJoCo's
+/// `mjd_inverseFD` (`engine_derivative_fd.c:609-700`), and measures the
+/// change of `qfrc_inverse`. Produces three nv×nv Jacobian matrices.
 ///
 /// # Algorithm
 ///
-/// **DfDq** (position derivatives): For each DOF `i`:
-///   1. Perturb `qpos` in tangent direction `i` by `±ε`
-///   2. Run `forward_skip(None, true)` — full pipeline, skip sensors
-///   3. Restore `qacc` to nominal (forward overwrites it)
-///   4. Run `inverse()` to compute `qfrc_inverse` with original accelerations
-///   5. Measure `qfrc_inverse` difference → column of DfDq
+/// The centre point runs the whole pipeline at the nominal state, then
+/// `inverse()` with the nominal `qacc`. The columns follow in MuJoCo's order:
 ///
-/// **DfDv** (velocity derivatives): Same as DfDq but perturbing `qvel`
-/// and using `forward_skip(Pos, true)` — position data is unchanged, so
-/// FK/collision/CRBA are skipped (~30–50% savings per column).
+/// 1. **DfDa**: `qacc[i] ± ε`, `inverse()` only, at the centre point (MuJoCo
+///    skips to its acceleration stage).
+/// 2. **DfDv**: `qvel[i] ± ε`, the pipeline from the velocity stage on, then
+///    `inverse()` with the nominal `qacc`.
+/// 3. **DfDq**: `qpos` moved by `± ε` in tangent direction `i`, the whole
+///    pipeline, then `inverse()` with the nominal `qacc`.
 ///
-/// **DfDa** (acceleration derivatives): For each DOF `i`:
-///   1. Perturb `qacc[i]` by `±ε`
-///   2. Run `inverse()` directly (no forward — only `qacc` changed)
-///   3. Measure `qfrc_inverse` difference → column of DfDa
+/// Forward differences (`centered: false`) take each column against the
+/// centre point; MuJoCo's `mjd_inverseFD` takes forward differences only.
+/// Sensors are skipped. No column fires `cb_control`: MuJoCo's columns run
+/// `mj_inverseSkip`, which fires none (`engine_inverse.c:184-245`), so
+/// `ctrl` is read as the caller left it.
 ///
-/// Since `qfrc_inverse = M*qacc + ...`, `DfDa ≈ M`.
-///
-/// # MuJoCo Equivalence
-///
-/// Matches `mjd_inverseFD()` in `engine_derivative.c`:
-/// - Position columns use `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)`
-/// - Velocity columns use `mj_forwardSkip(m, d, mjSTAGE_POS, 1)`
-/// - Acceleration columns call only `mj_inverse(m, d)`
-/// - After each `forward_skip`, `qacc` is restored to nominal before `inverse()`
-///
-/// MuJoCo's version also optionally computes sensor derivatives (DsDq,
-/// DsDv, DsDa) — not included here.
+/// MuJoCo's `mj_inverseSkip` computes the constraint force from `qacc`
+/// (`mj_invConstraint`, `engine_inverse.c:224`); `inverse()` subtracts the
+/// one the forward solve found. With an active constraint the two
+/// differ.
 ///
 /// # Cost
 ///
-/// - Centered: `2·nv` full-forward + `2·nv` skip-pos-forward + `2·nv` inverse-only.
-/// - Forward:  `1 + nv` full-forward + `nv` skip-pos-forward + `nv` inverse-only.
+/// - Centered: `1 + 2·nv` full pipelines and `2·nv` from the velocity stage.
+/// - Forward: `1 + nv` full pipelines and `nv` from the velocity stage.
+///
+/// Every column and the centre point also run `inverse()`.
 ///
 /// # Panics
 ///
@@ -459,8 +454,8 @@ pub struct InverseDynamicsDerivatives {
 /// ([`StepError::InvalidTimestep`], [`StepError::DataShapeMismatch`]), then
 /// [`StepError::UnsupportedIntegrator`] for RK4 and
 /// [`StepError::UnsupportedNoslip`] for a model with noslip iterations, as
-/// MuJoCo's `mjd_inverseFD` refuses them. Then a `StepError` from any
-/// `forward_skip()`.
+/// MuJoCo's `mjd_inverseFD` refuses them. Then a `StepError` from the
+/// pipeline.
 // Mathematical symbols (J, M, K, qfrc) follow MuJoCo's inverse-dynamics-derivatives notation.
 #[allow(non_snake_case, clippy::similar_names)]
 pub fn mjd_inverse_fd(
@@ -486,129 +481,79 @@ pub fn mjd_inverse_fd(
         });
     }
 
-    // Save nominal state.
     let qpos_0 = data.qpos.clone();
     let qvel_0 = data.qvel.clone();
     let qacc_0 = data.qacc.clone();
     let mut scratch = data.clone();
 
-    // Compute nominal qfrc_inverse for forward differences.
-    // full forward_skip(None) to populate all derived quantities, then
-    // restore qacc and compute inverse.
-    let qfrc_0 = if config.centered {
-        None
-    } else {
-        scratch.forward_skip(model, crate::forward::MjStage::None, true)?;
-        scratch.qacc.copy_from(&qacc_0);
+    // The force at the perturbed input; `stage` is where the pipeline starts
+    // (None: after a qpos change, Pos: after a qvel change, Vel: qacc only).
+    let force = |scratch: &mut Data, stage: MjStage| -> Result<DVector<f64>, StepError> {
+        if stage < MjStage::Vel {
+            scratch.forward_skip_without_control(model, stage, true)?;
+            scratch.qacc.copy_from(&qacc_0);
+        }
         scratch.inverse(model);
-        Some(scratch.qfrc_inverse.clone())
+        Ok(scratch.qfrc_inverse.clone())
     };
+
+    // Centre point.
+    let f_0 = force(&mut scratch, MjStage::None)?;
 
     let mut DfDq = DMatrix::zeros(nv, nv);
     let mut DfDv = DMatrix::zeros(nv, nv);
     let mut DfDa = DMatrix::zeros(nv, nv);
+    let difference = |plus: &DVector<f64>, minus: Option<&DVector<f64>>| match minus {
+        Some(minus) => (plus - minus) / (2.0 * eps),
+        None => (plus - &f_0) / eps,
+    };
 
-    // --- DfDq: perturb qpos (tangent space) ---
-    // forward_skip(None, true) recomputes M, qfrc_bias, qfrc_passive,
-    // qfrc_constraint from the perturbed qpos. Sensors are skipped.
-    // We restore qacc after forward (which overwrites it) so inverse()
-    // uses the nominal acceleration.
+    // --- DfDa: perturb qacc, at the centre point ---
     for i in 0..nv {
-        // +eps perturbation
-        let mut dq = DVector::zeros(nv);
+        scratch.qacc[i] = qacc_0[i] + eps;
+        let f_plus = force(&mut scratch, MjStage::Vel)?;
+        let f_minus = if config.centered {
+            scratch.qacc[i] = qacc_0[i] - eps;
+            Some(force(&mut scratch, MjStage::Vel)?)
+        } else {
+            None
+        };
+        scratch.qacc[i] = qacc_0[i];
+        DfDa.column_mut(i)
+            .copy_from(&difference(&f_plus, f_minus.as_ref()));
+    }
+
+    // --- DfDv: perturb qvel; positions are the centre point's ---
+    for i in 0..nv {
+        scratch.qvel[i] = qvel_0[i] + eps;
+        let f_plus = force(&mut scratch, MjStage::Pos)?;
+        let f_minus = if config.centered {
+            scratch.qvel[i] = qvel_0[i] - eps;
+            Some(force(&mut scratch, MjStage::Pos)?)
+        } else {
+            None
+        };
+        scratch.qvel[i] = qvel_0[i];
+        DfDv.column_mut(i)
+            .copy_from(&difference(&f_plus, f_minus.as_ref()));
+    }
+
+    // --- DfDq: perturb qpos in tangent space ---
+    let mut dq = DVector::zeros(nv);
+    for i in 0..nv {
         dq[i] = eps;
         mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos_0, &dq, 1.0);
-        scratch.qvel.copy_from(&qvel_0);
-        scratch.forward_skip(model, crate::forward::MjStage::None, true)?;
-        scratch.qacc.copy_from(&qacc_0);
-        scratch.inverse(model);
-        let f_plus = scratch.qfrc_inverse.clone();
-
-        if config.centered {
-            // -eps perturbation
+        let f_plus = force(&mut scratch, MjStage::None)?;
+        let f_minus = if config.centered {
             dq[i] = -eps;
             mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos_0, &dq, 1.0);
-            scratch.qvel.copy_from(&qvel_0);
-            scratch.forward_skip(model, crate::forward::MjStage::None, true)?;
-            scratch.qacc.copy_from(&qacc_0);
-            scratch.inverse(model);
-            let f_minus = &scratch.qfrc_inverse;
-
-            let col = (&f_plus - f_minus) / (2.0 * eps);
-            DfDq.column_mut(i).copy_from(&col);
-        } else if let Some(ref f_ref) = qfrc_0 {
-            let col = (&f_plus - f_ref) / eps;
-            DfDq.column_mut(i).copy_from(&col);
-        }
-    }
-
-    // --- DfDv: perturb qvel ---
-    // Position is unchanged, so forward_skip(Pos, true) skips FK/collision/CRBA
-    // and only recomputes velocity-dependent quantities (Coriolis, damping).
-    // Matches MuJoCo's mj_forwardSkip(m, d, mjSTAGE_POS, 1) for velocity columns.
-    //
-    // We need position-stage data to be current first. Run a full forward_skip
-    // from nominal qpos to populate FK/collision/CRBA, then use skip(Pos) for
-    // each velocity perturbation.
-    scratch.qpos.copy_from(&qpos_0);
-    scratch.qvel.copy_from(&qvel_0);
-    scratch.forward_skip(model, crate::forward::MjStage::None, true)?;
-
-    for i in 0..nv {
-        // +eps perturbation
-        scratch.qvel.copy_from(&qvel_0);
-        scratch.qvel[i] += eps;
-        scratch.forward_skip(model, crate::forward::MjStage::Pos, true)?;
-        scratch.qacc.copy_from(&qacc_0);
-        scratch.inverse(model);
-        let f_plus = scratch.qfrc_inverse.clone();
-
-        if config.centered {
-            // -eps perturbation
-            scratch.qvel.copy_from(&qvel_0);
-            scratch.qvel[i] -= eps;
-            scratch.forward_skip(model, crate::forward::MjStage::Pos, true)?;
-            scratch.qacc.copy_from(&qacc_0);
-            scratch.inverse(model);
-            let f_minus = &scratch.qfrc_inverse;
-
-            let col = (&f_plus - f_minus) / (2.0 * eps);
-            DfDv.column_mut(i).copy_from(&col);
-        } else if let Some(ref f_ref) = qfrc_0 {
-            let col = (&f_plus - f_ref) / eps;
-            DfDv.column_mut(i).copy_from(&col);
-        }
-    }
-
-    // --- DfDa: perturb qacc ---
-    // Only qacc changes — no forward needed. inverse() reads qacc directly:
-    // qfrc_inverse = M*qacc + qfrc_bias - qfrc_passive - qfrc_constraint.
-    // All other quantities (M, qfrc_bias, etc.) are unchanged from the
-    // full forward_skip done above for DfDv.
-    //
-    // Reset flg_rnepost so each inverse() call recomputes body accumulators
-    // with the perturbed qacc (for correct cacc/cfrc_int/cfrc_ext, even
-    // though qfrc_inverse itself doesn't depend on them).
-    for i in 0..nv {
-        scratch.qacc.copy_from(&qacc_0);
-        scratch.qacc[i] += eps;
-        scratch.flg_rnepost = false;
-        scratch.inverse(model);
-        let f_plus = scratch.qfrc_inverse.clone();
-
-        if config.centered {
-            scratch.qacc.copy_from(&qacc_0);
-            scratch.qacc[i] -= eps;
-            scratch.flg_rnepost = false;
-            scratch.inverse(model);
-            let f_minus = &scratch.qfrc_inverse;
-
-            let col = (&f_plus - f_minus) / (2.0 * eps);
-            DfDa.column_mut(i).copy_from(&col);
-        } else if let Some(ref f_ref) = qfrc_0 {
-            let col = (&f_plus - f_ref) / eps;
-            DfDa.column_mut(i).copy_from(&col);
-        }
+            Some(force(&mut scratch, MjStage::None)?)
+        } else {
+            None
+        };
+        dq[i] = 0.0;
+        DfDq.column_mut(i)
+            .copy_from(&difference(&f_plus, f_minus.as_ref()));
     }
 
     Ok(InverseDynamicsDerivatives { DfDq, DfDv, DfDa })

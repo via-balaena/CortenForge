@@ -334,8 +334,6 @@ impl Data {
     ///
     /// Matches `mj_forwardSkip(m, d, skipstage, skipsensor)` in
     /// `engine_forward.c`. This is forward-only — it does **not** integrate.
-    /// The FD perturbation loop calls `forward_skip() + integrate()` to
-    /// replace `step()`.
     ///
     /// # Errors
     ///
@@ -347,6 +345,29 @@ impl Data {
         model: &Model,
         skipstage: MjStage,
         skipsensor: bool,
+    ) -> Result<(), StepError> {
+        self.forward_skip_inner(model, skipstage, skipsensor, true)
+    }
+
+    /// [`Self::forward_skip`] without `cb_control`, for the inverse
+    /// finite differences: MuJoCo's `mjd_inverseFD` takes its columns through
+    /// `mj_inverseSkip`, which fires no control callback
+    /// (`engine_inverse.c:184-245`).
+    pub(crate) fn forward_skip_without_control(
+        &mut self,
+        model: &Model,
+        skipstage: MjStage,
+        skipsensor: bool,
+    ) -> Result<(), StepError> {
+        self.forward_skip_inner(model, skipstage, skipsensor, false)
+    }
+
+    fn forward_skip_inner(
+        &mut self,
+        model: &Model,
+        skipstage: MjStage,
+        skipsensor: bool,
+        control: bool,
     ) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
 
@@ -360,7 +381,9 @@ impl Data {
         if skipstage < MjStage::Vel {
             self.forward_vel(model, compute_sensors);
         }
-        self.fire_control_gated(model);
+        if control {
+            self.fire_control_gated(model);
+        }
         self.forward_acc(model, compute_sensors)?;
 
         Ok(())

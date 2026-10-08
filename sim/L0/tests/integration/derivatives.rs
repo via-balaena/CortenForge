@@ -3082,3 +3082,123 @@ fn hybrid_takes_finite_differences_under_an_active_constraint() {
     );
     assert!((&hybrid.A - &fd.A).abs().max() < 1e-9);
 }
+
+/// MuJoCo 3.5.0's `mjd_inverseFD` takes every column through `mj_inverseSkip`,
+/// which fires no control callback (`engine_inverse.c:184-245`), so the
+/// inverse reads `ctrl` as the caller left it. At a joint limit the constraint
+/// force depends on the actuator force, so a callback that wrote `ctrl` would
+/// change the derivatives.
+#[test]
+fn inverse_finite_differences_fire_no_control_callback() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for centered in [true, false] {
+        for at_limit in [false, true] {
+            let (mut model, mut data) = sensed_hinge("Euler");
+            if at_limit {
+                model.jnt_limited[0] = true;
+                model.jnt_range[0] = (-0.1, 0.1);
+                data.qpos[0] = 0.12;
+                data.forward(&model).unwrap();
+                assert!(!data.efc_type.is_empty(), "the limit is active");
+            }
+            let ctx = format!("centered {centered}, at the limit {at_limit}");
+            let cfg = DerivativeConfig {
+                centered,
+                ..DerivativeConfig::default()
+            };
+            let plain = sim_core::mjd_inverse_fd(&model, &data, &cfg).unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let c = Arc::clone(&calls);
+            model.set_control_callback(move |_, d| {
+                c.fetch_add(1, Ordering::Relaxed);
+                d.ctrl[0] = 3.0 - 50.0 * d.qpos[0] - d.qvel[0];
+            });
+            let with_callback = sim_core::mjd_inverse_fd(&model, &data, &cfg).unwrap();
+            assert_eq!(calls.load(Ordering::Relaxed), 0, "{ctx}");
+            assert_eq!(with_callback.DfDq, plain.DfDq, "{ctx}");
+            assert_eq!(with_callback.DfDv, plain.DfDv, "{ctx}");
+            assert_eq!(with_callback.DfDa, plain.DfDa, "{ctx}");
+        }
+    }
+}
+
+/// The acceleration columns are taken at the nominal state, as MuJoCo's
+/// `mjd_inverseFD` takes them, from the centre point before the velocity and
+/// position columns (`engine_derivative_fd.c:641-660`): forward and centered
+/// differences both give the mass matrix.
+#[test]
+fn inverse_acceleration_columns_are_taken_at_the_nominal_state() {
+    let (model, data) = sensed_hinge("Euler");
+    for centered in [true, false] {
+        let cfg = DerivativeConfig {
+            centered,
+            ..DerivativeConfig::default()
+        };
+        let d = sim_core::mjd_inverse_fd(&model, &data, &cfg).unwrap();
+        assert_relative_eq!(d.DfDa[(0, 0)], data.qM[(0, 0)], epsilon = 1e-6);
+    }
+}
+
+/// Without a constraint the inverse finite differences are MuJoCo 3.5.0's
+/// `mjd_inverseFD`: on this moving two-link chain, forward differences with
+/// eps 1e-6 give the oracle's values.
+#[test]
+fn inverse_finite_differences_match_mujoco_3_5_0_without_constraints() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco><option timestep="0.01"/>
+<worldbody><body><joint name="a" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/>
+<body pos="0.5 0 0"><joint type="hinge" axis="0 1 0" damping="0.2"/>
+<geom type="capsule" fromto="0 0 0 0.4 0 0" size="0.04" mass="0.5"/></body></body></worldbody>
+<actuator><motor joint="a"/></actuator></mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos.copy_from_slice(&[0.3, -0.5]);
+    data.qvel.copy_from_slice(&[0.7, -1.1]);
+    data.ctrl[0] = 0.4;
+    data.forward(&model).unwrap();
+    let cfg = DerivativeConfig {
+        centered: false,
+        ..DerivativeConfig::default()
+    };
+    let ours = sim_core::mjd_inverse_fd(&model, &data, &cfg).unwrap();
+    let mujoco = [
+        (
+            "DfDq",
+            &ours.DfDq,
+            [
+                [1.254_634_826_253_209_2, 0.560_739_485_955_252_8],
+                [-0.194_894_132_610_201_6, 0.307_832_018_431_319_9],
+            ],
+        ),
+        (
+            "DfDv",
+            &ours.DfDv,
+            [
+                [0.047_263_191_582_658_24, -0.019_176_996_879_366_47],
+                [-0.033_559_811_596_362_01, 0.199_999_999_894_728_83],
+            ],
+        ),
+        (
+            "DfDa",
+            &ours.DfDa,
+            [
+                [0.331_567_962_419_399, 0.072_681_481_277_925_29],
+                [0.072_681_481_277_925_29, 0.028_802_352_947_110_42],
+            ],
+        ),
+    ];
+    for (name, ours, theirs) in mujoco {
+        for (r, row) in theirs.iter().enumerate() {
+            for (c, &want) in row.iter().enumerate() {
+                assert!(
+                    (ours[(r, c)] - want).abs() < 1e-8,
+                    "{name}[{r}][{c}]: ours {}, MuJoCo {want}",
+                    ours[(r, c)]
+                );
+            }
+        }
+    }
+}
