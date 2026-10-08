@@ -289,7 +289,7 @@ pub fn compute_vel_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
         }
 
         MjSensorType::ActuatorVel => {
-            // Read from pre-computed actuator_velocity (populated by mj_actuator_length,
+            // Read from pre-computed actuator_velocity (populated by mj_actuator_velocity,
             // which runs before mj_sensor_vel in forward()).
             let act_id = model.sensor_objid[sensor_id];
             if act_id < model.nu {

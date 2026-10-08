@@ -380,32 +380,53 @@ pub fn mj_transmission_slidercrank(model: &Model, data: &mut Data) {
     }
 }
 
-/// Compute actuator length and velocity from transmission state.
-///
-/// For each actuator, computes `actuator_length = gear * transmission_length`
-/// and `actuator_velocity = gear * transmission_velocity`.
-/// Called after `mj_fwd_velocity()` (which provides `ten_velocity`).
-pub fn mj_actuator_length(model: &Model, data: &mut Data) {
+/// Compute the length of each joint and tendon transmission,
+/// `actuator_length = gear * transmission_length`, in the position stage, as
+/// MuJoCo's `mj_transmission` does (`engine_core_smooth.c:1250`, called from
+/// `mj_fwdPosition` at `engine_forward.c:209`). Must run after
+/// `mj_fwd_position` (which provides `ten_length`). A pass that skips the
+/// position stage keeps the lengths it computed.
+pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
         let gear = model.actuator_gear[i][0];
         match model.actuator_trntype[i] {
             ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                 let jid = model.actuator_trnid[i][0];
-                if jid < model.njnt {
-                    // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
-                    let nv = model.jnt_type[jid].nv();
-                    if nv == 1 {
-                        let qadr = model.jnt_qpos_adr[jid];
-                        let dof_adr = model.jnt_dof_adr[jid];
-                        data.actuator_length[i] = gear * data.qpos[qadr];
-                        data.actuator_velocity[i] = gear * data.qvel[dof_adr];
-                    }
+                // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
+                if jid < model.njnt && model.jnt_type[jid].nv() == 1 {
+                    data.actuator_length[i] = gear * data.qpos[model.jnt_qpos_adr[jid]];
                 }
             }
             ActuatorTransmission::Tendon => {
                 let tid = model.actuator_trnid[i][0];
                 if tid < model.ntendon {
                     data.actuator_length[i] = gear * data.ten_length[tid];
+                }
+            }
+            ActuatorTransmission::Site
+            | ActuatorTransmission::SliderCrank
+            | ActuatorTransmission::Body => {}
+        }
+    }
+}
+
+/// Compute each actuator's velocity, `actuator_velocity = gear *
+/// transmission_velocity`, in the velocity stage. Called after
+/// `mj_fwd_velocity()` (which provides `ten_velocity`).
+pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
+    for i in 0..model.nu {
+        let gear = model.actuator_gear[i][0];
+        match model.actuator_trntype[i] {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                let jid = model.actuator_trnid[i][0];
+                // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
+                if jid < model.njnt && model.jnt_type[jid].nv() == 1 {
+                    data.actuator_velocity[i] = gear * data.qvel[model.jnt_dof_adr[jid]];
+                }
+            }
+            ActuatorTransmission::Tendon => {
+                let tid = model.actuator_trnid[i][0];
+                if tid < model.ntendon {
                     data.actuator_velocity[i] = gear * data.ten_velocity[tid];
                 }
             }

@@ -957,6 +957,30 @@ fn slider_crank_on_a_static_site_follows_its_crank() {
     assert_trace("slider_static", &["tree_asleep"]);
 }
 
+/// Under RK4 the sleep step's second forward pass skips the position stage,
+/// so a joint actuator's length is the last RK4 stage's, as MuJoCo computes
+/// it in `mj_transmission` (`engine_forward.c:209`), not the step's start
+/// state the advance restored: the hinge that sleeps at step 637 reads
+/// MuJoCo's actuator force, accelerometer and acceleration there.
+#[test]
+fn rk4_sleep_step_keeps_the_last_stage_actuator_length() {
+    let (ours, theirs) = trace("act_sleep_RK4");
+    assert_eq!(theirs.iter().position(|s| s.tree_asleep[0] >= 0), Some(637));
+    let (a, b) = (
+        ours[637].floats.as_ref().expect("kept"),
+        theirs[637].floats.as_ref().expect("kept"),
+    );
+    for (field, (x, y)) in FLOATS.iter().zip(a.iter().zip(b)) {
+        assert_eq!(x.len(), y.len(), "{field}");
+        for (p, q) in x.iter().zip(y) {
+            assert!(
+                (p - q).abs() <= 1e-12,
+                "{field} after step 637: ours {p}, MuJoCo {q}"
+            );
+        }
+    }
+}
+
 /// Under implicitfast a sleeping actuator adds no term to the velocity
 /// derivative, as MuJoCo's `mjd_actuator_vel` skips it
 /// (`engine_derivative.c:1083-1085`): its velocity feedback reaches the awake

@@ -76,7 +76,8 @@ sensors; the resting box with frame sensors relative to a sphere falling
 toward it, relative to a static body, on the static body, between two
 static bodies, and a rangefinder on the box aimed at the sphere; two
 hinges joined by a fixed tendon with no stiffness, one at rest (it
-sleeps), one swinging, with tendon sensors; a slider-crank whose slider
+sleeps), one swinging, with tendon sensors; the filtered actuator under RK4 with an accelerometer, until
+it sleeps; a slider-crank whose slider
 site is on the world body, its ctrl set to 1 at step 0, until its crank
 sleeps; under implicitfast, a velocity-feedback actuator between a slide
 that sleeps and a sprung slide that never does, the sprung one pushed at
@@ -313,6 +314,14 @@ TRACES_ACT_SLEEP_TENDON = f"""<mujoco>{SLEEP_OPT}
   biasprm="0 -20 -1"/></actuator>
 <sensor><actuatorfrc actuator="a1"/><actuatorpos actuator="a1"/><tendonpos tendon="t1"/>
   <tendonvel tendon="t1"/><jointvel joint="j1"/></sensor></mujoco>"""
+TRACES_ACT_SLEEP_RK4 = """<mujoco><option timestep="0.002" integrator="RK4"><flag sleep="enable"/></option>
+<worldbody>
+<body name="l1" pos="0 0 1" sleep="allowed"><joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/><site name="s1" pos="0.3 0 0"/></body>
+</worldbody>
+<actuator><general name="a1" joint="j1" dyntype="filter" dynprm="0.05" gainprm="1" biastype="affine"
+  biasprm="0 -20 -1"/></actuator>
+<sensor><actuatorfrc actuator="a1"/><accelerometer site="s1"/><jointvel joint="j1"/></sensor></mujoco>"""
 TRACES_SLIDER_STATIC = f"""<mujoco>{SLEEP_OPT}
 <worldbody>
 <site name="s" pos="0.3 0 1"/>
@@ -359,6 +368,7 @@ TRACES = {
     "act_sleep": (TRACES_ACT_SLEEP, 800, [], True),
     "act_sleep_ctrl": (TRACES_ACT_SLEEP, 800, [(700, "ctrl", 0, 0.5)], True),
     "act_tendon_ctrl": (TRACES_ACT_SLEEP_TENDON, 800, [(700, "ctrl", 0, 0.5)], True),
+    "act_sleep_RK4": (TRACES_ACT_SLEEP_RK4, 700, [], True),
     "slider_static": (TRACES_SLIDER_STATIC, 1150, [(0, "ctrl", 0, 1.0)], True),
     "deriv_asleep": ("""<mujoco><option timestep="0.002" integrator="implicitfast"><flag sleep="enable"/></option>
 <worldbody>

@@ -54,8 +54,8 @@ pub use muscle::{
 
 #[allow(unused_imports)]
 pub(crate) use actuation::{
-    mj_actuator_length, mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
-    mj_transmission_site, mj_transmission_slidercrank,
+    mj_actuator_velocity, mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
+    mj_transmission_joint_tendon, mj_transmission_site, mj_transmission_slidercrank,
 };
 #[allow(unused_imports)]
 pub(crate) use passive::mj_fwd_passive;
@@ -445,6 +445,7 @@ impl Data {
         // stage) has a valid mass matrix.
         crate::dynamics::crba::mj_crba(model, self);
 
+        actuation::mj_transmission_joint_tendon(model, self);
         actuation::mj_transmission_site(model, self);
         actuation::mj_transmission_slidercrank(model, self);
 
@@ -488,7 +489,7 @@ impl Data {
     /// then `mj_sensorVel` and `mj_energyVel` in `mj_forwardSkip`.
     fn forward_vel(&mut self, model: &Model, compute_sensors: bool) {
         velocity::mj_fwd_velocity(model, self);
-        actuation::mj_actuator_length(model, self);
+        actuation::mj_actuator_velocity(model, self);
         passive::mj_fwd_passive(model, self);
         crate::dynamics::rne::mj_rne(model, self);
         if compute_sensors {
