@@ -196,11 +196,14 @@ impl JointDef {
     ///
     /// For [`JointKind::Revolute`], range is in radians.
     /// For [`JointKind::Prismatic`], range is in meters.
+    /// For [`JointKind::Ball`], range is MuJoCo's: `min` is 0 and `max` the
+    /// largest rotation angle from the reference pose, in radians.
     ///
     /// # Panics
     ///
-    /// Panics if `min >= max`, if either bound is non-finite, or if this is a
-    /// [`JointKind::Fixed`] joint — a weld has no travel to limit.
+    /// Panics if `min >= max`, if either bound is non-finite, if this is a
+    /// [`JointKind::Fixed`] joint — a weld has no travel to limit — or if this
+    /// is a [`JointKind::Ball`] joint and `min` is not 0, which MuJoCo refuses.
     #[must_use]
     pub fn with_range(mut self, min: f64, max: f64) -> Self {
         assert!(
@@ -215,6 +218,11 @@ impl JointDef {
         assert!(
             min < max,
             "joint range min must be less than max, got [{min}, {max}]"
+        );
+        assert!(
+            self.kind != JointKind::Ball || min == 0.0,
+            "joint \"{}\" is a Ball: its range is [0, largest angle], got [{min}, {max}]",
+            self.name
         );
         self.range = Some((min, max));
         self
@@ -278,6 +286,23 @@ impl JointDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ball joint's range is MuJoCo's, from 0 to the largest rotation angle;
+    /// MuJoCo refuses another lower bound ("range[0] should be 0 in ball
+    /// joint"), and so does `Model::try_make_data`.
+    #[test]
+    #[should_panic(expected = "Ball")]
+    fn a_ball_range_starts_at_zero() {
+        let _j = JointDef::new(
+            "ball",
+            "parent",
+            "child",
+            JointKind::Ball,
+            Point3::origin(),
+            Vector3::z(),
+        )
+        .with_range(-0.5, 0.5);
+    }
 
     fn make_joint() -> JointDef {
         JointDef::new(

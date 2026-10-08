@@ -1438,6 +1438,37 @@ mod tests {
         assert_eq!(model.nsite, 2, "expected 2 sites (tendon waypoints)");
     }
 
+    /// The kinematic trees are sim-core's `compute_kinematic_trees`, and every
+    /// tree is `Never` asleep; a ball joint limited from 0 makes its `Data`.
+    #[test]
+    fn kinematic_trees_come_from_sim_core_and_never_sleep() {
+        let m = Mechanism::builder("tree")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .joint(
+                JointDef::new(
+                    "j",
+                    "a",
+                    "b",
+                    JointKind::Ball,
+                    Point3::new(5.0, 0.0, 0.0),
+                    Vector3::x(),
+                )
+                .with_range(0.0, 0.5),
+            )
+            .build();
+        let model = m.to_model(2.0, 2.0).unwrap();
+        assert!(model.ntree >= 1);
+        assert_eq!(model.dof_treeid.len(), model.nv);
+        assert!(
+            model
+                .tree_sleep_policy
+                .iter()
+                .all(|&p| p == sim_core::SleepPolicy::Never)
+        );
+        assert!(model.try_make_data().is_ok());
+    }
+
     /// An actuator with no ctrl range takes any control, as the MJCF this
     /// crate writes for it (no `ctrlrange` attribute) does.
     #[test]
