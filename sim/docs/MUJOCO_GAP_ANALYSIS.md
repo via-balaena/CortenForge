@@ -1203,11 +1203,10 @@ All 21 MuJoCo flags supported:
 - `MjcfConeType` - Pyramidal, Elliptic
 - `MjcfSolverType` - PGS, CG, Newton
 - `MjcfJacobianType` - Dense, Sparse, Auto
-- `ExtendedSolverConfig` - Conversion to sim-types with extended settings
 
 **Usage:**
 ```rust
-use sim_mjcf::{parse_mjcf_str, ExtendedSolverConfig};
+use sim_mjcf::parse_mjcf_str;
 
 let mjcf = r#"
     <mujoco model="test">
@@ -1224,17 +1223,13 @@ let mjcf = r#"
 
 let model = parse_mjcf_str(mjcf).expect("should parse");
 
-// Access simulation config
-let sim_config = model.simulation_config();
-assert_eq!(sim_config.timestep, 0.001);
-
-// Access extended config with MJCF-specific settings
-let ext_config = &model.solver_config;
-assert!(ext_config.warmstart_enabled());
-assert!(ext_config.flags.contact);
+// The parsed <option> and its flags
+assert_eq!(model.option.timestep, 0.001);
+assert!(model.option.flag.warmstart);
+assert!(model.option.flag.contact);
 ```
 
-**Files:** `sim-mjcf/src/types.rs`, `parser.rs`, `config.rs`, `builder/`, `validation.rs`
+**Files:** `sim-mjcf/src/types.rs`, `parser.rs`, `builder/`, `validation.rs`
 
 ---
 

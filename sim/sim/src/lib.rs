@@ -10,7 +10,7 @@
 //! # Module Organization
 //!
 //! ## Foundation
-//! - [`types`] — shared simulation types: `BodyId`, `Pose`, `SimulationConfig`, `SimError`.
+//! - [`types`] — shared simulation types: `BodyId`, `Pose`.
 //!
 //! ## Physics engines
 //! - [`core`] — rigid-body dynamics (MuJoCo-compatible forward/inverse).
@@ -84,7 +84,7 @@
 // Re-exports
 // =============================================================================
 
-/// Shared simulation types: `BodyId`, `Pose`, `SimulationConfig`, `SimError`.
+/// Shared simulation types: `BodyId`, `Pose`.
 pub use sim_types as types;
 
 /// Rigid-body dynamics (MuJoCo-compatible forward/inverse).
@@ -130,7 +130,7 @@ pub use sim_therm_env as therm_env;
 /// ```
 pub mod prelude {
     // Foundation types
-    pub use sim_types::{BodyId, Pose, SimError, SimulationConfig};
+    pub use sim_types::{BodyId, Pose};
 
     // The coupling keystone driver
     pub use sim_coupling::StaggeredCoupling;
@@ -149,15 +149,14 @@ mod tests {
         // Zero-assumption reachability: naming the re-exported type paths is
         // enough to prove the umbrella wires every crate through. Note the
         // `sim_core as core` re-export shadows `::core`, so use `std::mem`.
-        assert!(std::mem::size_of::<types::SimulationConfig>() < usize::MAX);
-        assert!(std::mem::size_of::<types::SimError>() < usize::MAX);
+        assert!(std::mem::size_of::<types::Pose>() < usize::MAX);
         assert!(std::mem::size_of::<coupling::CoupledStep>() < usize::MAX);
     }
 
     #[test]
     fn prelude_imports_resolve() {
         use prelude::*;
-        assert!(std::mem::size_of::<SimulationConfig>() < usize::MAX);
+        assert!(std::mem::size_of::<Pose>() < usize::MAX);
         assert!(std::mem::size_of::<BodyId>() < usize::MAX);
     }
 }

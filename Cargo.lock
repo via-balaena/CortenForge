@@ -3029,7 +3029,6 @@ dependencies = [
  "cortenforge-mesh-io",
  "cortenforge-mesh-types",
  "cortenforge-sim-core",
- "cortenforge-sim-types",
  "image",
  "nalgebra 0.34.2",
  "quick-xml",
@@ -3143,7 +3142,6 @@ dependencies = [
  "approx 0.5.1",
  "nalgebra 0.34.2",
  "serde",
- "thiserror 2.0.18",
 ]
 
 [[package]]

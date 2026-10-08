@@ -18,7 +18,7 @@ are the source of truth), and body poses are computed via forward kinematics.
 ```
 sim/
 ├── L0/                    # Layer 0: Bevy-free simulation
-│   ├── types/             # sim-types — Foundation types (BodyId, Pose, config)
+│   ├── types/             # sim-types — Foundation types (BodyId, Pose)
 │   ├── core/              # sim-core — Pipeline, collision, integration
 │   ├── mjcf/              # sim-mjcf — MuJoCo format parser
 │   ├── urdf/              # sim-urdf — URDF parser
@@ -402,10 +402,9 @@ Supporting modules: `mid_phase.rs` (BVH construction and traversal),
 
 ### sim-types
 
-Foundation types with no physics logic. Minimal dependencies: nalgebra, thiserror.
+Foundation types with no physics logic. Minimal dependencies: nalgebra.
 
-`BodyId`, `Pose`, `Gravity`, `SimulationConfig`, `SolverConfig`,
-`SimError`.
+`BodyId`, `Pose`.
 
 ### sim-core
 

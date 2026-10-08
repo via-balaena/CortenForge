@@ -21,8 +21,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 name = "sim_mjcf"
 
 [dependencies]
-# Foundation types (BodyId, Pose) assembled into the Model
-sim-types = { workspace = true }
 # Physics Model / Data the MJCF loader populates
 sim-core = { workspace = true }
 # OBJ / STL / PLY mesh file loaders referenced from <mesh> tags
@@ -58,7 +56,7 @@ serde_json = { workspace = true }
 
 [features]
 default = ["hfields"]
-serde = ["dep:serde", "sim-types/serde", "sim-core/serde"]
+serde = ["dep:serde", "sim-core/serde"]
 # mjb: opt-in binary model format (serialize/deserialize via bincode).
 # Unit-tested in mjb.rs. Run: cargo test -p cortenforge-sim-mjcf --features mjb
 mjb = ["serde", "dep:bincode"]

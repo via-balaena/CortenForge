@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn public_paths_are_reachable() {
         #[cfg(feature = "sim")]
-        assert!(std::mem::size_of::<crate::sim::types::SimulationConfig>() < usize::MAX);
+        assert!(std::mem::size_of::<crate::sim::types::Pose>() < usize::MAX);
         #[cfg(feature = "mesh")]
         assert!(std::mem::size_of::<crate::mesh::types::IndexedMesh>() < usize::MAX);
         #[cfg(any(feature = "sim", feature = "fabrication"))]
