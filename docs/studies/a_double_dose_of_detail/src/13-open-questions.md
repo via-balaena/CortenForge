@@ -255,5 +255,5 @@ Measured defects or gaps a section handed off and no section's commit list picke
 | U13 | 17 OBJ files with a face count ≠ MuJoCo's; MuJoCo's OBJ graph ids disagree with its `mesh_vert` | A10 §4.1, §6 item 8 | (b) | not isolated | — |
 | U14 | MuJoCo refuses < 4 vertices for every mesh; ours with faces + 3 vertices "not measured" | A10 §6 item 9 | (a) | parity | L38 |
 | U15 | `<composite type="cable" count="1000">` reached ~2 GB RSS; cause not isolated | A4 §1.4; 41-what-planning | (b) | "whoever owns composites should look before Rigid ships" | — |
-| U16 | `Data::reset` sets `stat_meaninertia = 0.0`, `make_data` 1.0 | A1 §4 | (b) | readers overwrite it first | — |
+| U16 | `Data::reset` sets `stat_meaninertia = 0.0`, `make_data` 1.0 (settled: since chunk 2b, `reset` rebuilds the `Data` `make_data` makes, both 1.0) | A1 §4 | (b) | readers overwrite it first | — |
 | U17 | box–box contact normals differ (`28695e44` step 56, `496f2186` step 33) | A18 §5.4, §8.1, §16 | (b) | whether A21 R6 (P46) fixes them is not stated | — |
