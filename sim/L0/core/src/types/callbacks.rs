@@ -67,7 +67,13 @@ pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 /// Control callback, the counterpart of MuJoCo's `mjcb_control`.
 ///
 /// Runs after the velocity stage (after [`CbPassive`]) and before actuation.
-/// Set `ctrl` (or `qfrc_applied` / `xfrc_applied`) here.
+/// Set `ctrl` (or `qfrc_applied` / `xfrc_applied`) here. Positions,
+/// velocities, passive forces and the bias force `qfrc_bias` are this pass's,
+/// as in MuJoCo.
+///
+/// Not matched: MuJoCo has also built this pass's constraint rows (`efc_*`)
+/// by then; sim-core builds them after the callback, so it reads the previous
+/// pass's (registry `D-CONTROL-CONSTRAINT-ROWS`).
 ///
 /// # When it runs (as MuJoCo 3.5.0)
 ///

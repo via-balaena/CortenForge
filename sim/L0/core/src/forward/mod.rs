@@ -11,11 +11,13 @@
 //! - **`forward_pos()`**: position stage (wake detection, FK, CRBA,
 //!   transmissions, collision, position sensors, potential energy);
 //! - **`forward_vel()`**: velocity stage (velocity FK, actuator lengths and
-//!   velocities, passive forces with `cb_passive` and passive plugins,
-//!   velocity sensors, kinetic energy);
+//!   velocities, passive forces with `cb_passive` and passive plugins, the
+//!   bias force `qfrc_bias` (RNE), velocity sensors, kinetic energy);
 //! - `cb_control`, unless `DISABLE_ACTUATION` is set;
-//! - **`forward_acc()`**: acceleration stage (actuation, RNE, constraints,
-//!   acceleration, body accumulators, acceleration sensors).
+//! - **`forward_acc()`**: acceleration stage (actuation, constraints,
+//!   acceleration, body accumulators, acceleration sensors). MuJoCo builds the
+//!   constraint rows in its position and velocity stages; sim-core builds them
+//!   here, after `cb_control`.
 //!
 //! `step1()` runs the first two and `cb_control` (whatever the flag);
 //! `step2()` runs `forward_acc()` and integrates.
@@ -478,14 +480,15 @@ impl Data {
     }
 
     /// Velocity stage: velocity FK, actuator lengths and velocities, passive
-    /// forces (`cb_passive` and passive plugins fire at their end), velocity
-    /// sensors and kinetic energy. MuJoCo: `mj_fwdVelocity`
-    /// (engine_forward.c:221-259, `mj_passive` at :250), then `mj_sensorVel`
-    /// and `mj_energyVel` in `mj_forwardSkip`.
+    /// forces (`cb_passive` and passive plugins fire at their end), the bias
+    /// force, velocity sensors and kinetic energy. MuJoCo: `mj_fwdVelocity`
+    /// (engine_forward.c:221-259: `mj_passive` at :250, `mj_rne` at :254),
+    /// then `mj_sensorVel` and `mj_energyVel` in `mj_forwardSkip`.
     fn forward_vel(&mut self, model: &Model, compute_sensors: bool) {
         velocity::mj_fwd_velocity(model, self);
         actuation::mj_actuator_length(model, self);
         passive::mj_fwd_passive(model, self);
+        crate::dynamics::rne::mj_rne(model, self);
         if compute_sensors {
             crate::sensor::mj_sensor_vel(model, self);
         }
@@ -517,9 +520,9 @@ impl Data {
 
     /// Acceleration stage of the forward pipeline.
     ///
-    /// Runs actuation, RNE, constraint solve, forward acceleration, body
+    /// Runs actuation, constraint solve, forward acceleration, body
     /// accumulators, acc-sensors, and forward/inverse comparison. (CRBA runs
-    /// in the position stage, passive forces in the velocity stage.)
+    /// in the position stage, passive forces and RNE in the velocity stage.)
     ///
     /// §53: This is the second half of the pipeline, used by both
     /// `forward_core()` and `step2()`.
@@ -532,9 +535,6 @@ impl Data {
 
         // ========== Acceleration Stage ==========
         actuation::mj_fwd_actuation(model, self);
-        // Note: CRBA already ran in forward_pos() (position stage).
-        // The mass matrix depends only on qpos, which doesn't change between stages.
-        crate::dynamics::rne::mj_rne(model, self);
 
         // S4.2a: Route gravcomp → qfrc_actuator for jnt_actgravcomp joints.
         // qfrc_gravcomp comes from the velocity stage's passive forces.

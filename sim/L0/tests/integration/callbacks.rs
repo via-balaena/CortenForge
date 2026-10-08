@@ -632,6 +632,64 @@ fn rk4_reevaluates_the_control_callback_at_each_stage() {
     assert_ne!(a.qpos[0].to_bits(), b.qpos[0].to_bits());
 }
 
+/// When the control callback runs, `qfrc_bias` is this pass's: MuJoCo
+/// computes it in the velocity stage (`mj_rne` in `mj_fwdVelocity`,
+/// `engine_forward.c:254`), before `mjcb_control`. Gravity compensation
+/// written as `ctrl = qfrc_bias` holds this pendulum still: MuJoCo 3.5.0 leaves
+/// it at exactly 0 after 100 steps under each integrator (measured).
+#[test]
+fn control_callback_reads_this_pass_bias_force() {
+    for integrator in ["Euler", "RK4", "implicit", "implicitfast"] {
+        let mut model = logged_hinge(integrator);
+        model.set_control_callback(|_, d| d.ctrl[0] = d.qfrc_bias[0]);
+        let mut data = model.make_data();
+        for _ in 0..100 {
+            data.step(&model).expect("step");
+        }
+        assert_eq!((data.qpos[0], data.qvel[0]), (0.0, 0.0), "{integrator}");
+    }
+}
+
+/// The passive callback runs before the bias force in the velocity stage, as
+/// in MuJoCo's `mj_fwdVelocity` (`mj_passive` at `engine_forward.c:250`,
+/// `mj_rne` at :254), so it sees the previous pass's `qfrc_bias`: measured,
+/// MuJoCo 3.5.0 gives 0 at the first pass, then -2.4525, the bias at the
+/// previous qpos.
+#[test]
+fn passive_callback_runs_before_the_bias_force() {
+    let mut model = logged_hinge("Euler");
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = Arc::clone(&seen);
+    model.set_passive_callback(move |_, d| s.lock().expect("seen").push(d.qfrc_bias[0]));
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    data.qpos[0] = 0.5;
+    data.forward(&model).expect("forward");
+    let seen = seen.lock().expect("seen").clone();
+    assert_eq!(seen[0], 0.0);
+    assert!((seen[1] + 2.4525).abs() < 1e-12, "{seen:?}");
+}
+
+/// Not matched (registry `D-CONTROL-CONSTRAINT-ROWS`): MuJoCo builds the
+/// constraint rows before `mjcb_control`, so its callback sees this pass's
+/// (measured: 1 row at the limit, then 0 after the joint is moved free);
+/// sim-core builds them after the callback, which sees the previous pass's.
+#[test]
+fn control_callback_reads_the_previous_pass_constraint_rows() {
+    let mut model = logged_hinge("Euler");
+    model.jnt_limited[0] = true;
+    model.jnt_range[0] = (-0.1, 0.1);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = Arc::clone(&seen);
+    model.set_control_callback(move |_, d| s.lock().expect("seen").push(d.efc_type.len()));
+    let mut data = model.make_data();
+    data.qpos[0] = 0.12;
+    data.forward(&model).expect("forward");
+    data.qpos[0] = 0.0;
+    data.forward(&model).expect("forward");
+    assert_eq!(*seen.lock().expect("seen"), vec![0, 1]);
+}
+
 /// The thermostat's ctrl-temperature channel is read as written, before the
 /// actuation stage runs, even when another channel holds a bad value.
 #[test]
