@@ -1,12 +1,13 @@
 //! Sleep against MuJoCo 3.5.0: the kinematic trees, the automatic sleep
-//! policies and the bodies' sleep states.
+//! policies, the bodies' sleep states, `dof_length` and the test a tree must
+//! pass to sleep.
 //!
 //! The golden is `assets/golden/sleep/sleep.json`, from the unfused MuJoCo
 //! 3.5.0 oracle (`scripts/gen_sleep_reference.py`, which describes its
 //! models).
 
 use serde_json::Value;
-use sim_core::{ENABLE_SLEEP, Model, SleepPolicy, SleepState};
+use sim_core::{BodyWrench, ENABLE_SLEEP, Model, SleepPolicy, SleepState};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -172,4 +173,128 @@ fn contact_with_a_static_body_has_an_island() {
             c.geom1, c.geom2
         );
     }
+}
+
+fn floats(v: &Value) -> Vec<f64> {
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| x.as_f64().expect("number"))
+        .collect()
+}
+
+/// `dof_length` is MuJoCo's: a rotational dof takes its body's size, the
+/// largest distance from its centre of mass to a joint anchor of its own or
+/// of a child's, or to the far side of one of its geoms, at least 1e-5.
+#[test]
+fn dof_length_matches_mujoco() {
+    for case in golden()["lengths"].as_array().expect("lengths") {
+        let name = case["name"].as_str().expect("name");
+        let model = model_of(case);
+        let theirs = floats(&case["dof_length"]);
+        assert_eq!(model.dof_length.len(), theirs.len(), "{name}: nv");
+        for (i, (a, b)) in model.dof_length.iter().zip(&theirs).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12,
+                "{name}: dof_length[{i}] ours {a}, MuJoCo {b}"
+            );
+        }
+    }
+}
+
+/// Run the golden's run `name` for its steps, applying its sets (MuJoCo's
+/// flat index; `xfrc_applied` force first), and return whether tree 0 is
+/// asleep after each step, with MuJoCo's flags.
+fn run(name: &str) -> (Vec<bool>, Vec<bool>) {
+    let golden = golden();
+    let case = golden["runs"]
+        .as_array()
+        .expect("runs")
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no run {name}"));
+    let model = model_of(case);
+    let mut data = model.make_data();
+    let theirs: Vec<bool> = case["asleep"]
+        .as_array()
+        .expect("asleep")
+        .iter()
+        .map(|a| a.as_bool().expect("bool"))
+        .collect();
+    let sets = case["sets"].as_array().expect("sets");
+    let mut ours = Vec::with_capacity(theirs.len());
+    for k in 0..theirs.len() {
+        for set in sets {
+            if set[0].as_u64() != u64::try_from(k).ok() {
+                continue;
+            }
+            let idx = usize::try_from(set[2].as_u64().expect("index")).expect("index");
+            let value = set[3].as_f64().expect("value");
+            match set[1].as_str().expect("field") {
+                "qvel" => data.qvel[idx] = value,
+                "qfrc_applied" => data.qfrc_applied[idx] = value,
+                "xfrc_applied" => {
+                    let mut row = data.xfrc_applied[idx / 6].to_mujoco_row();
+                    row[idx % 6] = value;
+                    data.xfrc_applied[idx / 6] = BodyWrench::from_mujoco_row(row);
+                }
+                other => panic!("unknown field {other}"),
+            }
+        }
+        data.step(&model).expect("step");
+        ours.push(data.tree_asleep[0] >= 0);
+    }
+    (ours, theirs)
+}
+
+/// A free box spun in zero gravity at 3e-4 rad/s sleeps when MuJoCo's does:
+/// its rotational `dof_length` is 0.173, so `dof_length · |ω|` is under the
+/// tolerance 1e-4. Its velocity is constant, so the step on which sleep is
+/// decided does not matter.
+#[test]
+fn rotational_sleep_matches_mujoco() {
+    let (ours, theirs) = run("spin");
+    assert_eq!(ours, theirs);
+}
+
+/// A force of -0.0 applied to a sleeping box wakes it and keeps it awake, as
+/// MuJoCo compares the applied forces bit for bit: `qfrc_applied`, and the
+/// force of `xfrc_applied`. The step the box first sleeps on is not compared.
+#[test]
+fn negative_zero_force_blocks_sleep() {
+    for name in ["negzero_qfrc", "negzero_xfrc"] {
+        let (ours, theirs) = run(name);
+        assert!(ours[199] && theirs[199], "{name}: asleep before the force");
+        assert_eq!(ours[200..], theirs[200..], "{name}: from the force on");
+        assert!(
+            theirs[200..].iter().all(|a| !a),
+            "{name}: MuJoCo stays awake"
+        );
+    }
+}
+
+/// A velocity exactly at the tolerance blocks sleep: MuJoCo refuses at
+/// `dof_length · |v| >= tol`.
+#[test]
+fn velocity_at_the_tolerance_blocks_sleep() {
+    let (ours, theirs) = run("at_tolerance");
+    assert_eq!(ours, theirs);
+    assert!(theirs.iter().all(|a| !a), "MuJoCo never sleeps");
+}
+
+/// A tree an actuator acts on never sleeps (its automatic policy is never),
+/// though its hinge comes to rest: MuJoCo lets the same model sleep at step
+/// 636 with `sleep="allowed"` (A8).
+#[test]
+fn an_actuated_tree_never_sleeps() {
+    let (ours, theirs) = run("actuated");
+    assert_eq!(ours, theirs);
+    assert!(theirs.iter().all(|a| !a), "MuJoCo never sleeps");
+}
+
+/// With a tolerance of 0 a tree sleeps only at a velocity of exactly +0.
+#[test]
+fn zero_tolerance_sleeps_at_rest() {
+    let (ours, theirs) = run("tol0_zero");
+    assert_eq!(ours, theirs);
 }

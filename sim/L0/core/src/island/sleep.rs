@@ -77,7 +77,7 @@ pub fn mj_sleep(model: &Model, data: &mut Data) -> usize {
         if data.tree_asleep[t] >= 0 {
             continue; // Already asleep
         }
-        if !tree_can_sleep(model, data, t) {
+        if !tree_can_sleep(model, data, t, model.sleep_tolerance) {
             data.tree_asleep[t] = -(1 + MIN_AWAKE); // Reset
             continue;
         }
@@ -119,50 +119,38 @@ pub fn mj_sleep(model: &Model, data: &mut Data) -> usize {
     nslept
 }
 
-/// Check if a tree is eligible to sleep (§16.12.2).
-///
-/// Returns `false` if policy forbids sleeping, external forces are applied,
-/// or any DOF velocity exceeds the sleep threshold.
-fn tree_can_sleep(model: &Model, data: &Data, tree: usize) -> bool {
-    // Policy check
-    if model.tree_sleep_policy[tree] == SleepPolicy::Never
-        || model.tree_sleep_policy[tree] == SleepPolicy::AutoNever
+/// Whether tree `tree` can sleep (MuJoCo `treeCanSleep`,
+/// `engine_sleep.c:125-152`): its policy allows it; no `xfrc_applied` of its
+/// bodies and no `qfrc_applied` of its dofs has a bit set, so `-0.0` blocks;
+/// and, with `tol` other than zero, `dof_length · |qvel|` is below `tol` for
+/// every dof, or, with `tol` zero, every `qvel` is `+0.0`.
+fn tree_can_sleep(model: &Model, data: &Data, tree: usize, tol: f64) -> bool {
+    if matches!(
+        model.tree_sleep_policy[tree],
+        SleepPolicy::Never | SleepPolicy::AutoNever
+    ) {
+        return false;
+    }
+    let bodies = model.tree_body_adr[tree]..model.tree_body_adr[tree] + model.tree_body_num[tree];
+    if bodies
+        .into_iter()
+        .any(|b| !data.xfrc_applied[b].is_zero_bytes())
     {
         return false;
     }
-
-    // External force check: xfrc_applied on any body in tree
-    let body_start = model.tree_body_adr[tree];
-    let body_end = body_start + model.tree_body_num[tree];
-    for body_id in body_start..body_end {
-        if !data.xfrc_applied[body_id].is_zero() {
-            return false;
-        }
+    let dofs = model.tree_dof_adr[tree]..model.tree_dof_adr[tree] + model.tree_dof_num[tree];
+    if dofs.clone().any(|d| data.qfrc_applied[d].to_bits() != 0) {
+        return false;
     }
-
-    // External force check: qfrc_applied on any DOF in tree
-    let dof_start = model.tree_dof_adr[tree];
-    let dof_end = dof_start + model.tree_dof_num[tree];
-    for dof in dof_start..dof_end {
-        if data.qfrc_applied[dof] != 0.0 {
-            return false;
-        }
+    if tol == 0.0 {
+        return dofs.into_iter().all(|d| data.qvel[d].to_bits() == 0);
     }
-
-    // Velocity threshold check
-    tree_velocity_below_threshold(model, data, tree)
-}
-
-/// Check if all DOFs in a tree have velocities below the sleep threshold.
-fn tree_velocity_below_threshold(model: &Model, data: &Data, tree: usize) -> bool {
-    let dof_start = model.tree_dof_adr[tree];
-    let dof_end = dof_start + model.tree_dof_num[tree];
-    for dof in dof_start..dof_end {
-        if data.qvel[dof].abs() > model.sleep_tolerance * model.dof_length[dof] {
-            return false;
-        }
-    }
-    true // All DOFs below threshold (L∞ norm check)
+    // MuJoCo's `isSmaller` (`:110-121`) refuses once its running maximum
+    // reaches `tol`; every maximum before that is below `tol`, so it refuses
+    // exactly when one product reaches `tol` (a NaN never does).
+    !dofs
+        .into_iter()
+        .any(|d| model.dof_length[d] * data.qvel[d].abs() >= tol)
 }
 
 /// Sleep a set of trees as a circular linked list (§16.12.1).

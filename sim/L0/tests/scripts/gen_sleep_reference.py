@@ -33,6 +33,20 @@ with sleep enabled:
   in the `<deformable><flexcomp>` form sim-mjcf reads, which the test loads;
 - gravcomp: a static body and a free body with gravity compensation; also
   qfrc_gravcomp after mj_forward.
+
+Its `lengths` entry holds MuJoCo's dof_length for each model of LENGTHS (the
+body sizes setStat computes at qpos0): A8's two-link chain, a free box, an
+offset hinge anchor and geom, a ball joint with a hinged child, a body with
+no geom whose centre of mass is its joint anchor,
+and offset capsule, cylinder and ellipsoid geoms.
+
+Its `runs` entry holds, for each run of RUNS, whether tree 0 is asleep
+(`tree_asleep >= 0`) after each of `nstep` mj_step calls. A run sets fields
+before a step (`set`: the step, the field, its flat index, the value): zero-g
+boxes spun or moving at the tolerance, the tolerance 0 with a velocity of
++0 and of -0, A8's box_uw_negzero with qfrc_applied, or the force of
+xfrc_applied, set to -0 at step 200, and A8's actuated damped hinge, whose
+tree the actuator keeps awake (automatic policy never).
 """
 import json
 import os
@@ -149,6 +163,64 @@ TREES = {
 </worldbody></mujoco>""",
 }
 
+ZERO_G = '<option timestep="0.002" gravity="0 0 0"{tol}><flag sleep="enable"/></option>'
+FLOAT = """<mujoco>{opt}
+<worldbody><body name="b" pos="0 0 1"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+</worldbody></mujoco>"""
+REST = """<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/>
+<body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body></worldbody>
+<sensor><framelinvel objtype="body" objname="b"/><framepos objtype="body" objname="b"/></sensor></mujoco>"""
+
+LENGTHS = {
+    "chain2": """<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody>
+<body name="l1" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0" damping="0.5"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/>
+  <body name="l2" pos="0 0 -0.3"><joint name="j2" type="hinge" axis="0 1 0" damping="0.5"/>
+    <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body></body>
+</worldbody></mujoco>""",
+    "free_box": FLOAT.format(opt=ZERO_G.format(tol="")),
+    "offset_hinge": """<mujoco><worldbody>
+<body pos="0 0 1"><joint type="hinge" pos="0 0 0.3" axis="1 0 0"/>
+  <geom type="sphere" size="0.1" pos="0.2 0 0" mass="1"/></body>
+</worldbody></mujoco>""",
+    "ball_child": """<mujoco><worldbody>
+<body pos="0 0 1"><joint type="ball"/><geom type="box" size="0.05 0.1 0.2" pos="0 0 -0.2" mass="2"/>
+  <body pos="0 0 -0.5"><joint type="hinge" pos="0 0.1 0" axis="0 1 0"/>
+    <geom type="sphere" size="0.04" mass="0.5"/></body></body>
+</worldbody></mujoco>""",
+    "point_body": """<mujoco><worldbody>
+<body pos="0 0 1"><joint type="hinge" axis="0 1 0"/>
+  <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/></body>
+</worldbody></mujoco>""",
+    "offset_geoms": """<mujoco><worldbody>
+<body pos="0 0 1"><joint type="hinge" axis="0 0 1"/>
+  <geom type="capsule" fromto="0.1 0 0 0.4 0 0" size="0.02"/>
+  <geom type="cylinder" size="0.05 0.1" pos="0 0.3 0"/>
+  <geom type="ellipsoid" size="0.05 0.1 0.15" pos="0 0 0.25"/></body>
+</worldbody></mujoco>""",
+}
+
+# name: (xml, nstep, [(step, field, flat index, value)])
+RUNS = {
+    "spin": (FLOAT.format(opt=ZERO_G.format(tol="")), 40, [(0, "qvel", 5, 3e-4)]),
+    "at_tolerance": (FLOAT.format(opt=ZERO_G.format(tol="")), 40, [(0, "qvel", 0, 1e-4)]),
+    "tol0_zero": (FLOAT.format(opt=ZERO_G.format(tol=' sleep_tolerance="0"')), 40, []),
+    "tol0_negzero": (FLOAT.format(opt=ZERO_G.format(tol=' sleep_tolerance="0"')), 40,
+                     [(0, "qvel", 0, -0.0)]),
+    "negzero_qfrc": (REST, 600, [(200, "qfrc_applied", 2, -0.0)]),
+    "negzero_xfrc": (REST, 600, [(200, "xfrc_applied", 6 + 2, -0.0)]),
+    "actuated": ("""<mujoco><option timestep="0.002"><flag sleep="enable"/></option>
+<worldbody>
+<body name="l1" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+</worldbody>
+<actuator><general name="a1" joint="j1" dyntype="filter" dynprm="0.05" gainprm="1" biastype="affine"
+  biasprm="0 -20 -1"/></actuator>
+</mujoco>""", 800, []),
+}
+
 POLICY = {
     int(mujoco.mjtSleepPolicy.mjSLEEP_AUTO): "Auto",
     int(mujoco.mjtSleepPolicy.mjSLEEP_AUTO_NEVER): "AutoNever",
@@ -214,6 +286,24 @@ def tree_case(name, xml):
     return out
 
 
+def length_case(name, xml):
+    m = mujoco.MjModel.from_xml_string(xml)
+    return {"name": name, "xml": xml, "dof_length": floats(m.dof_length)}
+
+
+def run_case(name, xml, nstep, sets):
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    asleep = []
+    for k in range(nstep):
+        for at, field, idx, value in sets:
+            if at == k:
+                getattr(d, field).reshape(-1)[idx] = value
+        mujoco.mj_step(m, d)
+        asleep.append(bool(d.tree_asleep[0] >= 0))
+    return {"name": name, "xml": xml, "sets": [list(x) for x in sets], "asleep": asleep}
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -225,9 +315,12 @@ def main():
         sys.exit(__doc__)
     marker = oracle()
     trees = [tree_case(name, xml) for name, xml in TREES.items()]
-    doc = {"oracle": marker, "trees": finite_or_string(trees)}
+    lengths = [length_case(name, xml) for name, xml in LENGTHS.items()]
+    runs = [run_case(name, *run) for name, run in RUNS.items()]
+    doc = {"oracle": marker, "trees": finite_or_string(trees), "lengths": finite_or_string(lengths),
+           "runs": finite_or_string(runs)}
     write(os.path.join(sys.argv[1], "sleep.json"), doc)
-    print(f"{len(trees)} tree cases -> {sys.argv[1]}")
+    print(f"{len(trees)} tree, {len(lengths)} length and {len(runs)} run cases -> {sys.argv[1]}")
 
 
 if __name__ == "__main__":

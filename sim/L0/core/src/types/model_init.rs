@@ -1381,47 +1381,51 @@ impl Model {
     }
 }
 
-/// Compute characteristic body length for dof_length normalization (§16.14.1).
-///
-/// For each body, compute the maximum extent from this body through the
-/// kinematic chain to any descendant. This gives a length scale that converts
-/// angular velocity [rad/s] to tip velocity [m/s] for the mechanism rooted
-/// at this body.
+/// Each body's size, MuJoCo's `setStat` at `qpos0` (3.5.0
+/// `engine_setconst.c:976-1025`): the largest distance from the body's centre
+/// of mass to the anchor of a joint of its own or of a child's; then the
+/// largest `rbound` plus the distance from the centre of mass to the geom, over
+/// its geoms with a finite positive `rbound` (a plane's is 0 in MuJoCo and
+/// infinite here); at least 1e-5. MuJoCo also takes the flex
+/// edge lengths at a flex vertex body; a flex vertex body here has slide
+/// joints only, whose dofs do not read the size, so that term is left out.
 fn compute_body_lengths(model: &Model) -> Vec<f64> {
-    let mut body_length = vec![0.0_f64; model.nbody];
-
-    // Backward pass: accumulate subtree extents from leaves to root
-    for body_id in (1..model.nbody).rev() {
-        let parent = model.body_parent[body_id];
-
-        // Distance from parent to this body (local position in parent frame)
-        let pos = &model.body_pos[body_id];
-        let dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
-
-        // This body's extent: own subtree extent + distance to parent
-        let child_extent = body_length[body_id] + dist;
-        body_length[parent] = body_length[parent].max(child_extent);
-    }
-
-    // Ensure minimum length (no normalization for tiny/zero-extent bodies)
-    for length in &mut body_length {
-        if *length < 1e-10 {
-            *length = 1.0;
+    let mut data = model.make_data_for_derivation();
+    mj_fwd_position(model, &mut data);
+    let mut size = vec![0.0_f64; model.nbody];
+    for jnt in 0..model.njnt {
+        let body = model.jnt_body[jnt];
+        for b in [body, model.body_parent[body]] {
+            size[b] = size[b].max((data.xipos[b] - data.xanchor[jnt]).norm());
         }
     }
-
-    body_length
+    for (b, body_size) in size.iter_mut().enumerate().skip(1) {
+        for g in model.body_geom_adr[b]..model.body_geom_adr[b] + model.body_geom_num[b] {
+            let rbound = model.geom_rbound[g];
+            if rbound > 0.0 && rbound.is_finite() {
+                *body_size = body_size.max(rbound + (data.xipos[b] - data.geom_xpos[g]).norm());
+            }
+        }
+        *body_size = body_size.max(1e-5);
+    }
+    size
 }
 
-/// Compute per-DOF mechanism lengths (§16.14.2).
+/// Each dof's length, MuJoCo's `dof_length` (`engine_setconst.c:1027-1043`).
 ///
-/// Rotational DOFs get the body length (converts rad/s to m/s at the tip).
-/// Translational DOFs keep 1.0 (already in m/s).
+/// A rotational dof (hinge, ball, a free joint's last three) takes its body's
+/// size (`compute_body_lengths`), a translational one 1. Sleep compares
+/// `dof_length · |qvel|` with the sleep tolerance.
 ///
-/// Called during model construction to replace the Phase A uniform 1.0.
+/// The sizes come from the kinematics at `qpos0`, so they need a model whose
+/// joint layout and ranges [`Model::try_make_data`] accepts; for another
+/// model, which cannot be stepped, every dof takes 1.
 pub fn compute_dof_lengths(model: &mut Model) {
+    model.dof_length = vec![1.0; model.nv];
+    if model.nv == 0 || model.check_joint_layout().is_err() || model.check_ranges().is_err() {
+        return;
+    }
     let body_length = compute_body_lengths(model);
-    model.dof_length.resize(model.nv, 1.0);
 
     // (§27F) All DOFs now have real joints — iterate all DOFs uniformly.
     for dof in 0..model.nv {
@@ -1440,6 +1444,51 @@ pub fn compute_dof_lengths(model: &mut Model) {
         } else {
             model.dof_length[dof] = 1.0; // translational: already in [m/s]
         }
+    }
+}
+
+#[cfg(test)]
+mod dof_length_tests {
+    use super::compute_dof_lengths;
+    use crate::types::Model;
+    use nalgebra::Vector3;
+
+    /// A plane on a moving body (MuJoCo refuses one; this crate takes it) has
+    /// an infinite bounding radius, so it does not size its body: the free
+    /// body's centre of mass is its joint anchor, which leaves MuJoCo's
+    /// floor, 1e-5.
+    #[test]
+    fn a_plane_does_not_size_its_body() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.add_ground_plane();
+        model.geom_body[0] = 1;
+        model.body_geom_num[0] = 0;
+        model.body_geom_adr[1] = 0;
+        model.body_geom_num[1] = 1;
+        model.compute_geom_bounding_radii();
+        assert!(model.geom_rbound[0].is_infinite());
+        compute_dof_lengths(&mut model);
+        assert_eq!(model.dof_length, vec![1.0, 1.0, 1.0, 1e-5, 1e-5, 1e-5]);
+    }
+
+    /// A geom with a bounding radius of 0 does not size its body either, as
+    /// MuJoCo takes only positive radii: a zero-radius sphere 0.3 from the
+    /// centre of mass leaves the floor.
+    #[test]
+    fn a_zero_radius_geom_does_not_size_its_body() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.add_ground_plane();
+        model.geom_type[0] = crate::types::GeomType::Sphere;
+        model.geom_size[0] = Vector3::zeros();
+        model.geom_pos[0] = Vector3::new(0.3, 0.0, 0.0);
+        model.geom_body[0] = 1;
+        model.body_geom_num[0] = 0;
+        model.body_geom_adr[1] = 0;
+        model.body_geom_num[1] = 1;
+        model.compute_geom_bounding_radii();
+        assert_eq!(model.geom_rbound[..1], [0.0]);
+        compute_dof_lengths(&mut model);
+        assert_eq!(model.dof_length, vec![1.0, 1.0, 1.0, 1e-5, 1e-5, 1e-5]);
     }
 }
 
@@ -1494,6 +1543,19 @@ mod joint_layout_tests {
                 joint: 0
             }))
         );
+    }
+
+    /// A model whose joint layout `try_make_data` refuses cannot be stepped,
+    /// so no body is sized: every `dof_length` is 1.
+    #[test]
+    fn a_refused_layout_takes_unit_dof_lengths() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_ball_joint(&mut m, b, "ball0");
+        hinge(&mut m, b, "h0");
+        finalize(&mut m);
+        super::compute_dof_lengths(&mut m);
+        assert_eq!(m.dof_length, vec![1.0; 4]);
     }
 
     /// MuJoCo refuses a ball followed by a rotation; this also refuses a ball

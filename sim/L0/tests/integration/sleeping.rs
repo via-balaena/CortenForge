@@ -1081,9 +1081,10 @@ fn test_dof_length_computation() {
         assert_relative_eq!(model.dof_length[dof], 1.0, epsilon = 1e-10);
     }
 
-    // Rotational DOFs (3,4,5): leaf body with no children → clamped to 1.0
+    // Rotational DOFs (3,4,5): the body's size, here the sphere's radius
+    // (MuJoCo 3.5.0: 0.1)
     for dof in 3..6 {
-        assert_relative_eq!(model.dof_length[dof], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(model.dof_length[dof], 0.1, epsilon = 1e-10);
     }
 
     // Hinge DOF
@@ -1102,8 +1103,8 @@ fn test_dof_length_computation() {
     "#;
     let model_hinge = load_model(mjcf_hinge).expect("load model");
     assert_eq!(model_hinge.nv, 1);
-    // Leaf body (no children): body_length clamped to 1.0
-    assert_relative_eq!(model_hinge.dof_length[0], 1.0, epsilon = 1e-10);
+    // The body's size: the sphere's radius (MuJoCo 3.5.0: 0.1)
+    assert_relative_eq!(model_hinge.dof_length[0], 0.1, epsilon = 1e-10);
 
     // Slide DOF
     let mjcf_slide = r#"
@@ -1445,7 +1446,9 @@ fn test_wake_on_negative_zero() {
 
 #[test]
 fn test_dof_length_hinge_1m() {
-    // A hinge joint on a body with a 1-meter child should get dof_length ≈ 1.0
+    // A hinge joint on a body with a child welded 1 m away: the child is a
+    // body of its own, so the hinge's body keeps its own size, its sphere's
+    // radius (MuJoCo 3.5.0: 0.05)
     let mjcf = r#"
     <mujoco model="hinge_1m">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -1465,7 +1468,7 @@ fn test_dof_length_hinge_1m() {
     let model = load_model(mjcf).expect("load model");
 
     assert_eq!(model.nv, 1, "single hinge DOF");
-    assert_relative_eq!(model.dof_length[0], 1.0, epsilon = 1e-6);
+    assert_relative_eq!(model.dof_length[0], 0.05, epsilon = 1e-12);
 }
 
 // ============================================================================
@@ -1474,7 +1477,8 @@ fn test_dof_length_hinge_1m() {
 
 #[test]
 fn test_dof_length_hinge_01m() {
-    // A hinge joint on a body with a 0.1-meter child should get dof_length ≈ 0.1
+    // A hinge joint on a body with a child welded 0.1 m away: as above, the
+    // sphere's radius (MuJoCo 3.5.0: 0.05)
     let mjcf = r#"
     <mujoco model="hinge_01m">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -1494,7 +1498,7 @@ fn test_dof_length_hinge_01m() {
     let model = load_model(mjcf).expect("load model");
 
     assert_eq!(model.nv, 1, "single hinge DOF");
-    assert_relative_eq!(model.dof_length[0], 0.1, epsilon = 1e-6);
+    assert_relative_eq!(model.dof_length[0], 0.05, epsilon = 1e-12);
 }
 
 // ============================================================================
@@ -1533,7 +1537,8 @@ fn test_dof_length_slide() {
 
 #[test]
 fn test_dof_length_free_joint() {
-    // Free joint: translational DOFs (0,1,2) = 1.0; rotational DOFs (3,4,5) = body_length
+    // Free joint: translational DOFs (0,1,2) = 1.0; rotational DOFs (3,4,5) =
+    // the body's size, which the welded child does not enter
     let mjcf = r#"
     <mujoco model="free_dof_length">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -1563,28 +1568,26 @@ fn test_dof_length_free_joint() {
         );
     }
 
-    // Rotational DOFs (3,4,5) should be body_length ≈ 0.5 (child at 0.5m)
+    // Rotational DOFs (3,4,5): the sphere's radius (MuJoCo 3.5.0: 0.05)
     for dof in 3..6 {
         assert!(
-            (model.dof_length[dof] - 0.5).abs() < 1e-6,
-            "rotational dof_length[{dof}] should be ≈ 0.5, got {}",
+            (model.dof_length[dof] - 0.05).abs() < 1e-12,
+            "rotational dof_length[{dof}] should be 0.05, got {}",
             model.dof_length[dof]
         );
     }
 }
 
 // ============================================================================
-// T68: test_dof_length_nonuniform_threshold (§16.14)
+// T68: test_dof_length_ignores_a_welded_tip (§16.14)
 // ============================================================================
 
 #[test]
-fn test_dof_length_nonuniform_threshold() {
-    // Arm length should affect the effective sleep threshold.
-    // With sleep_tolerance = 1e-4:
-    //   1-meter arm: threshold = 1e-4 * 1.0 = 1e-4 rad/s
-    //   0.1-meter arm: threshold = 1e-4 * 0.1 = 1e-5 rad/s (tighter)
-    //
-    // Verify this by checking that dof_length differs for different arm lengths.
+fn test_dof_length_ignores_a_welded_tip() {
+    // A hinged link with a tip body welded 1 m or 0.1 m away. MuJoCo sizes a
+    // body by its own joint anchors and geoms, and the tip is a body of its
+    // own, so both links take their sphere's radius and the same sleep
+    // threshold (MuJoCo 3.5.0: dof_length 0.05 for both).
 
     // 1-meter arm
     let mjcf_1m = r#"
@@ -1624,26 +1627,8 @@ fn test_dof_length_nonuniform_threshold() {
     "#;
     let model_01m = load_model(mjcf_01m).expect("load model");
 
-    // dof_length should reflect the arm length
-    assert_relative_eq!(model_1m.dof_length[0], 1.0, epsilon = 1e-6);
-    assert_relative_eq!(model_01m.dof_length[0], 0.1, epsilon = 1e-6);
-
-    // The ratio should be 10:1
-    let ratio = model_1m.dof_length[0] / model_01m.dof_length[0];
-    assert_relative_eq!(ratio, 10.0, epsilon = 1e-3);
-
-    // Effective threshold difference: for sleep_tolerance=1e-4,
-    // 1m arm threshold = 1e-4, 0.1m arm threshold = 1e-5
-    let tol = 1e-4;
-    let threshold_1m = tol * model_1m.dof_length[0];
-    let threshold_01m = tol * model_01m.dof_length[0];
-    assert!(
-        threshold_1m > threshold_01m,
-        "shorter arm should have tighter threshold: {} vs {}",
-        threshold_1m,
-        threshold_01m
-    );
-    assert_relative_eq!(threshold_1m / threshold_01m, 10.0, epsilon = 1e-3);
+    assert_relative_eq!(model_1m.dof_length[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(model_01m.dof_length[0], 0.05, epsilon = 1e-12);
 }
 
 // ============================================================================
