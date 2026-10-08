@@ -3275,3 +3275,48 @@ fn fd_control_columns_differentiate_a_ctrl_reading_passive_callback() {
     }
     assert!((b[(1, 0)] - 0.109_881_231_336_039_78).abs() > 0.1, "{b}");
 }
+
+/// Registry `D-FD-CENTERED-D-SIGN`: MuJoCo 3.5.0's centered `mjd_transitionFD`
+/// gives the control columns of D the wrong sign: `clampedDiff` takes
+/// `x_minus - x_plus` there (`engine_derivative_fd.c:79`), where every other
+/// centered column takes plus minus minus. Measured on this hinge's
+/// `actuatorfrc` sensor: D = 0.99999999997 forward, -0.99999999997 centered.
+/// Ours has the forward sign both ways, as a central difference of the sensor
+/// at the current state does.
+#[test]
+fn centered_d_has_the_forward_sign() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco><option timestep="0.01"/>
+<worldbody><body><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor name="m" joint="j"/></actuator>
+<sensor><jointpos joint="j"/><actuatorfrc actuator="m"/></sensor></mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.2;
+    data.ctrl[0] = 0.4;
+    data.forward(&model).unwrap();
+    let eps = 1e-6;
+    let sensed = |du: f64| {
+        let mut d = data.clone();
+        d.ctrl[0] += du;
+        d.forward(&model).unwrap();
+        d.sensordata[1]
+    };
+    let central = (sensed(eps) - sensed(-eps)) / (2.0 * eps);
+    for centered in [false, true] {
+        let cfg = DerivativeConfig {
+            centered,
+            eps,
+            use_analytical: false,
+            compute_sensor_derivatives: true,
+        };
+        let d = mjd_transition_fd(&model, &data, &cfg).unwrap().D.unwrap();
+        assert!(
+            (d[(1, 0)] - central).abs() < 1e-6,
+            "centered {centered}: {d}"
+        );
+        assert!(d[(1, 0)] > 0.5, "centered {centered}: {d}");
+    }
+}
