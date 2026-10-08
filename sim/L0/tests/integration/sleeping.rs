@@ -1579,59 +1579,6 @@ fn test_dof_length_free_joint() {
 }
 
 // ============================================================================
-// T68: test_dof_length_ignores_a_welded_tip (§16.14)
-// ============================================================================
-
-#[test]
-fn test_dof_length_ignores_a_welded_tip() {
-    // A hinged link with a tip body welded 1 m or 0.1 m away. MuJoCo sizes a
-    // body by its own joint anchors and geoms, and the tip is a body of its
-    // own, so both links take their sphere's radius and the same sleep
-    // threshold (MuJoCo 3.5.0: dof_length 0.05 for both).
-
-    // 1-meter arm
-    let mjcf_1m = r#"
-    <mujoco model="arm_1m">
-        <option gravity="0 0 -9.81" timestep="0.002">
-            <flag sleep="enable"/>
-        </option>
-        <worldbody>
-            <body name="link1" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 1 0"/>
-                <geom type="sphere" size="0.05" mass="1.0"/>
-                <body name="tip" pos="1 0 0">
-                    <geom type="sphere" size="0.05" mass="0.5"/>
-                </body>
-            </body>
-        </worldbody>
-    </mujoco>
-    "#;
-    let model_1m = load_model(mjcf_1m).expect("load model");
-
-    // 0.1-meter arm
-    let mjcf_01m = r#"
-    <mujoco model="arm_01m">
-        <option gravity="0 0 -9.81" timestep="0.002">
-            <flag sleep="enable"/>
-        </option>
-        <worldbody>
-            <body name="link1" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 1 0"/>
-                <geom type="sphere" size="0.05" mass="1.0"/>
-                <body name="tip" pos="0.1 0 0">
-                    <geom type="sphere" size="0.05" mass="0.5"/>
-                </body>
-            </body>
-        </worldbody>
-    </mujoco>
-    "#;
-    let model_01m = load_model(mjcf_01m).expect("load model");
-
-    assert_relative_eq!(model_1m.dof_length[0], 0.05, epsilon = 1e-12);
-    assert_relative_eq!(model_01m.dof_length[0], 0.05, epsilon = 1e-12);
-}
-
-// ============================================================================
 // T51: test_indirection_equivalence (§16.17)
 // ============================================================================
 

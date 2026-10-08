@@ -28,11 +28,14 @@ with sleep enabled:
   nothing, two with damping only, and a tendon whose wraps reach tree 3
   before tree 2;
 - flex: a free body and a 2 x 2 flexcomp grid, whose four vertex bodies are
-  trees. sim-mjcf does not read a `<flexcomp>` under `<worldbody>` yet (the
-  book's Rigid-loading L10), so the case also holds `ours_xml`, the same grid
-  in the `<deformable><flexcomp>` form sim-mjcf reads, which the test loads;
+  trees. sim-mjcf does not read a `<flexcomp>` under `<worldbody>` (the
+  book's Rigid-loading L47 refuses it), so the case also holds `ours_xml`,
+  the same grid in the `<deformable><flexcomp>` form sim-mjcf reads, which
+  the test loads;
 - gravcomp: a static body and a free body with gravity compensation; also
-  qfrc_gravcomp after mj_forward.
+  qfrc_gravcomp after mj_forward;
+- tendon_one_tree: a stiff fixed tendon over two hinges of one tree, and a
+  second tree.
 
 Its `lengths` entry holds MuJoCo's dof_length for each model of LENGTHS (the
 body sizes setStat computes at qpos0): A8's two-link chain, a free box, an
@@ -88,8 +91,25 @@ at step 5 while its countdown runs, so the sleeping sphere wakes with that
 countdown; the resting box given a velocity of 1e-6, below the tolerance,
 at step 200 (it wakes: the wake test uses a tolerance of 0); and two boxes
 resting apart, asleep in two cycles, joined at step 150 by a connect made
-active (`eq_active`). Each trace also holds `reset`: tree_asleep, ncon, nefc
-and nisland after mj_makeData.
+active (`eq_active`); and, from the chunk 2c review: a limited fixed tendon
+over a hinge that starts asleep and an awake one, pushed to its limit at
+step 5; a joint equality and a connect, inactive, made active at step 5
+between a tree that starts asleep and an awake one; a site, a
+jointinparent and an adhesion actuator on trees that sleep, their ctrl set
+later; a clock sensor beside a box that sleeps; three spheres in zero
+gravity, one starting asleep, whose two neighbours touch it in one pass
+with different countdowns; A8's filtered actuator with a delayed jointpos
+and jointvel; the box that starts asleep with sleep disabled; a box
+declared before the static table it rests on; two damped hanging hinges
+joined by a joint equality; a pendulum beside A8's damped two-link chain,
+and the same chain sprung, at a tolerance of 0.05; and the resting box
+beside a falling sphere on a damped free joint, under Euler, implicit and
+implicitfast. Each trace also holds `reset`: tree_asleep, ncon, nefc,
+nisland and qacc after mj_makeData.
+
+Its `islands` entry holds, for the resting box beside a hinge set onto its
+limit, after mj_forward, nefc, nisland, efc_island, map_efc2iefc,
+map_iefc2efc and island_nefc.
 
 Its `refusals` entry holds the message MuJoCo raises for each model of
 REFUSALS: two models whose init-asleep tree cannot sleep (A8's initmix,
@@ -222,6 +242,15 @@ TREES = {
 <body name="hover" pos="0 0 1" gravcomp="1"><geom type="box" size="0.1 0.1 0.1" mass="2"/></body>
 <body name="f" pos="1 0 1" gravcomp="0.5"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
 </worldbody></mujoco>""",
+    "tendon_one_tree": f"""<mujoco>{SLEEP}
+<worldbody>
+<body name="a" pos="0 0 1"><joint name="ja" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02"/>
+  <body name="a2" pos="0.2 0 0"><joint name="ja2" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02"/></body>
+</body>
+<body name="b" pos="1 0 1"><joint name="jb" axis="0 1 0"/><geom type="sphere" size="0.05"/></body>
+</worldbody>
+<tendon><fixed name="t" stiffness="10"><joint joint="ja" coef="1"/><joint joint="ja2" coef="1"/></fixed></tendon>
+</mujoco>""",
 }
 
 ZERO_G = '<option timestep="0.002" gravity="0 0 0"{tol}><flag sleep="enable"/></option>'
@@ -451,6 +480,110 @@ TRACES.update({
 </worldbody></mujoco>""", 60, [(5, "qpos", 7, 0.199)], True),
 })
 
+ZG = '<option timestep="0.002" gravity="0 0 0"><flag sleep="enable"/></option>'
+HINGES = """<body name="l1" pos="0 0 1" sleep="init"><joint name="j1" axis="0 1 0"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body>
+<body name="l2" pos="1 0 1" sleep="allowed"><joint name="j2" axis="0 1 0"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body>"""
+ACT = 'dyntype="filter" dynprm="0.05" gainprm="1" biastype="affine" biasprm="0 -20 -1"'
+CHAIN = """<body name="p" pos="2 0 1"><joint name="jp" axis="0 1 0"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body>
+<body name="l1" pos="0 0 1"><joint name="j1" type="hinge" axis="0 1 0" damping="0.5"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/>
+  <body name="l2" pos="0 0 -0.3"><joint name="j2" type="hinge" axis="0 1 0" damping="0.5"{spring}/>
+    <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body></body>"""
+DAMPED_SPHERE = """<mujoco><option timestep="0.002" integrator="{integ}"><flag sleep="enable"/></option>
+<worldbody><geom type="plane" size="5 5 0.1"/>
+<body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+<body name="s" pos="2 0 2"><joint type="free" damping="0.1"/><geom type="sphere" size="0.1" mass="1"/></body>
+</worldbody></mujoco>"""
+TRACES.update({
+    "tendon_wake": (f"""<mujoco>{ZG}<worldbody>{HINGES}</worldbody>
+<tendon><fixed name="t" limited="true" range="-0.2 0.2"><joint joint="j1" coef="1"/><joint joint="j2" coef="1"/></fixed></tendon>
+</mujoco>""", 10, [(5, "qpos", 1, 0.25)], True),
+    "joint_eq_wake": (f"""<mujoco>{ZG}<worldbody>{HINGES}</worldbody>
+<equality><joint joint1="j1" joint2="j2" active="false"/></equality></mujoco>""",
+                      10, [(5, "eq_active", 0, 1.0)], True),
+    "connect_eq_wake": (f"""<mujoco>{ZG}<worldbody>
+<body name="a" pos="0 0 1" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+<body name="b" pos="0.5 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+</worldbody>
+<equality><connect body1="a" body2="b" anchor="0.25 0 0" active="false"/></equality></mujoco>""",
+                        10, [(5, "eq_active", 0, 1.0)], True),
+    "site_act_sleep": (f"""<mujoco>{SLEEP_OPT}<worldbody>
+<body name="l1" pos="0 0 1" sleep="allowed"><joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/><site name="s"/></body></worldbody>
+<actuator><general name="a1" site="s" gear="0 0 0 0 1 0" {ACT}/></actuator>
+<sensor><actuatorfrc actuator="a1"/></sensor></mujoco>""", 200, [(150, "ctrl", 0, 0.5)], True),
+    "jip_act_sleep": (f"""<mujoco>{SLEEP_OPT}<worldbody>
+<body name="l1" pos="0 0 1" sleep="allowed"><joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody>
+<actuator><general name="a1" jointinparent="j1" {ACT}/></actuator>
+<sensor><actuatorfrc actuator="a1"/></sensor></mujoco>""", 760, [(700, "ctrl", 0, 0.5)], True),
+    "adhesion_sleep": (f"""<mujoco>{SLEEP_OPT}<worldbody>{PLANE}
+<body name="b" pos="0 0 0.0995" sleep="allowed"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+</worldbody>
+<actuator><adhesion name="a1" body="b" ctrlrange="0 1" gain="5"/></actuator>
+<sensor><actuatorfrc actuator="a1"/></sensor></mujoco>""", 200, [(150, "ctrl", 0, 0.5)], True),
+    "clock_sleep": (f"""<mujoco>{SLEEP_OPT}<worldbody>{PLANE}
+<body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+</worldbody><sensor><clock/></sensor></mujoco>""", 120, [], True),
+    "wake_lower": (f"""<mujoco>{ZG}<worldbody>
+<body name="s" pos="0 0 1" sleep="init"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+<body name="a" pos="-0.5 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+<body name="b" pos="0.5 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+</worldbody></mujoco>""", 8, [(1, "qvel", 6, 0.01), (2, "qvel", 6, 0.0), (5, "qpos", 7, -0.199),
+                              (5, "qpos", 14, 0.199)], True),
+    "delayed_sleep": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="l1" pos="0 0 1" sleep="allowed"><joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+</worldbody>
+<actuator><general name="a1" joint="j1" {ACT}/></actuator>
+<sensor><jointpos joint="j1" delay="0.02" nsample="20"/><jointvel joint="j1" delay="0.02" nsample="20"/></sensor>
+</mujoco>""", 660, [], True),
+    "box_init_nosleep": (BOX_INIT, 5, [], False),
+    "box_on_table_first": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="b" pos="0 0 0.6495"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+<body name="table" pos="0 0 0.5"><geom type="box" size="0.5 0.5 0.05"/></body>
+</worldbody></mujoco>""", 100, [], True),
+    "joint_eq_sleep": (f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="a" pos="0 0 1"><joint name="ja" axis="0 1 0" damping="2"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body>
+<body name="b" pos="1 0 1"><joint name="jb" axis="0 1 0" damping="2"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="1"/></body>
+</worldbody>
+<equality><joint joint1="ja" joint2="jb"/></equality></mujoco>""", 1170, [(0, "qvel", 0, 0.5)], True),
+    "chain_beside_pendulum": (f"""<mujoco>{SLEEP_OPT}<worldbody>{CHAIN.format(spring="")}</worldbody></mujoco>""",
+                              2800, [(0, "qvel", 1, 1.5), (0, "qvel", 2, -1.0)], True),
+    "chain_sprung": ("""<mujoco><option timestep="0.002" sleep_tolerance="0.05"><flag sleep="enable"/></option>
+<worldbody>""" + CHAIN.format(spring=' stiffness="20" springref="1.2"') + "</worldbody></mujoco>",
+                     130, [(0, "qvel", 1, 1.5), (0, "qvel", 2, -1.0)], True),
+    "damped_sphere_Euler": (DAMPED_SPHERE.format(integ="Euler"), 100, [], True),
+    "damped_sphere_implicit": (DAMPED_SPHERE.format(integ="implicit"), 100, [], True),
+    "damped_sphere_implicitfast": (DAMPED_SPHERE.format(integ="implicitfast"), 100, [], True),
+})
+
+ISLANDS = f"""<mujoco>{SLEEP_OPT}
+<worldbody>{PLANE}
+<body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+<body name="h" pos="2 0 1"><joint name="jh" axis="0 1 0" limited="true" range="-0.5 0.5"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+</worldbody></mujoco>"""
+
+
+def islands():
+    m = mujoco.MjModel.from_xml_string(ISLANDS)
+    d = mujoco.MjData(m)
+    d.qpos[7] = 0.6
+    mujoco.mj_forward(m, d)
+    return {"xml": ISLANDS, "qpos": [[7, 0.6]], "nefc": int(d.nefc), "nisland": int(d.nisland),
+            "efc_island": ints(d.efc_island[:d.nefc]), "map_efc2iefc": ints(d.map_efc2iefc[:d.nefc]),
+            "map_iefc2efc": ints(d.map_iefc2efc[:d.nefc]), "island_nefc": ints(d.island_nefc[:d.nisland])}
+
+
 REFUSALS = {
     "initmix": f"""<mujoco>{SLEEP_OPT}
 <worldbody>{PLANE}
@@ -568,7 +701,7 @@ def trace_case(name, xml, nstep, sets, sleep, log_filter=False, passive_force=No
         m.opt.enableflags &= ~int(mujoco.mjtEnableBit.mjENBL_SLEEP)
     d = mujoco.MjData(m)
     reset = {"tree_asleep": ints(d.tree_asleep), "ncon": int(d.ncon), "nefc": int(d.nefc),
-             "nisland": int(d.nisland)}
+             "nisland": int(d.nisland), "qacc": floats(d.qacc)}
     log = []
     calls = [0]
 
@@ -707,6 +840,7 @@ def main():
     doc["tendon_equality_calls"] = tendon_equality_calls()
     doc["init_timestep"] = init_timestep()
     doc["init_mocap"] = init_mocap()
+    doc["islands"] = islands()
     write(os.path.join(sys.argv[1], "sleep.json"), doc)
     print(f"{len(trees)} tree, {len(lengths)} length, {len(runs)} run and {len(traces)} trace cases"
           f" -> {sys.argv[1]}")

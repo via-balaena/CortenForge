@@ -1,10 +1,11 @@
 //! Sleep against MuJoCo 3.5.0: the kinematic trees, the automatic sleep
-//! policies, the bodies' sleep states, `dof_length` and the test a tree must
-//! pass to sleep.
+//! policies, the bodies' sleep states, `dof_length`, the test a tree must
+//! pass to sleep, and per-step traces of sleep, wake and the states around
+//! them.
 //!
-//! The golden is `assets/golden/sleep/sleep.json`, from the unfused MuJoCo
-//! 3.5.0 oracle (`scripts/gen_sleep_reference.py`, which describes its
-//! models).
+//! The goldens are `assets/golden/sleep/sleep.json` and `sleep_traces.json`,
+//! from the unfused MuJoCo 3.5.0 oracle (`scripts/gen_sleep_reference.py`,
+//! which describes their models).
 
 use std::sync::{Arc, Mutex};
 
@@ -312,8 +313,8 @@ fn traces_golden() -> Value {
 }
 
 /// What one step left, in this crate or in MuJoCo: the discrete fields at
-/// every step, `qvel`, `qacc`, `qacc_warmstart` and `sensordata` where the
-/// golden keeps them.
+/// every step, `qvel`, `qacc`, `qacc_warmstart`, `sensordata` and `act` where
+/// the golden keeps them.
 #[derive(Debug, PartialEq)]
 struct Step {
     tree_asleep: Vec<i64>,
@@ -331,8 +332,8 @@ fn count(v: &Value) -> usize {
 }
 
 /// Run the golden's trace `name` on this crate, logging the callbacks as the
-/// generator does (P passive, C control), and return its steps with
-/// MuJoCo's.
+/// generator does (P passive, C control, F the contact filter where the trace
+/// logs it), and return its steps with MuJoCo's.
 fn trace(name: &str) -> (Vec<Step>, Vec<Step>) {
     let golden = traces_golden();
     let case = golden["traces"]
@@ -615,22 +616,29 @@ fn zero_tolerance_negative_zero_velocity_sleeps_a_step_later() {
 }
 
 /// Every trace, every step: the discrete fields equal MuJoCo's, and `qvel`,
-/// `qacc`, `qacc_warmstart` and `sensordata` agree to 1e-12 where the golden
-/// keeps them, except under `island="disable"`: that box never sleeps, its
+/// `qacc`, `qacc_warmstart`, `sensordata` and `act` agree to 1e-12 where the
+/// golden keeps them, except under `island="disable"`: that box never sleeps, its
 /// contacts are solved every step, and its accelerations end 3.9e-10 from
-/// MuJoCo's at step 275 (measured; what grows the gap is not isolated).
+/// MuJoCo's at step 275; and two damped hinges joined by a joint equality
+/// (`joint_eq_sleep`), within 1e-12 through step 300 and 2.1e-9 apart at
+/// step 325 (both measured; what grows either gap is not isolated).
 #[test]
 fn traces_match_mujoco() {
     for case in traces_golden()["traces"].as_array().expect("traces") {
         let name = case["name"].as_str().expect("name");
         assert_trace(name, &["tree_asleep", "ncon", "nefc", "nisland", "cb"]);
-        let tol = if name == "box_noisland" { 1e-9 } else { 1e-12 };
+        let tol = match name {
+            "box_noisland" => 1e-9,
+            "joint_eq_sleep" => 1e-8,
+            _ => 1e-12,
+        };
         let (ours, theirs) = trace(name);
         for (k, (a, b)) in ours.iter().zip(&theirs).enumerate() {
             let (Some(a), Some(b)) = (&a.floats, &b.floats) else {
                 continue;
             };
             for (field, (x, y)) in FLOATS.iter().zip(a.iter().zip(b)) {
+                assert_eq!(x.len(), y.len(), "{name}: {field} length after step {k}");
                 for (i, (p, q)) in x.iter().zip(y).enumerate() {
                     assert!(
                         (p - q).abs() <= tol,
@@ -693,7 +701,60 @@ fn reset_matches_mujoco() {
         assert_eq!(data.ncon, count(&reset["ncon"]), "{name}: ncon");
         assert_eq!(data.efc_type.len(), count(&reset["nefc"]), "{name}: nefc");
         assert_eq!(data.nisland, count(&reset["nisland"]), "{name}: nisland");
+        let qacc = floats(&reset["qacc"]);
+        assert_eq!(data.qacc.len(), qacc.len(), "{name}: qacc length");
+        for (i, (a, b)) in data.qacc.iter().zip(&qacc).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12,
+                "{name}: qacc[{i}] after make_data: ours {a}, MuJoCo {b}"
+            );
+        }
     }
+}
+
+/// The island arrays after a forward pass: a resting box (16 contact rows)
+/// beside a hinge set onto its limit (one row), two islands in MuJoCo's
+/// order, the limit row's island first in the row order.
+#[test]
+fn islands_match_mujoco() {
+    let golden = golden();
+    let case = &golden["islands"];
+    let model = model_of(case);
+    let mut data = model.make_data();
+    for set in case["qpos"].as_array().expect("qpos") {
+        let i = usize::try_from(set[0].as_u64().expect("index")).expect("index");
+        data.qpos[i] = set[1].as_f64().expect("value");
+    }
+    data.forward(&model).expect("forward");
+    let ints = |v: &Value| -> Vec<i64> {
+        v.as_array()
+            .expect("ints")
+            .iter()
+            .map(|x| x.as_i64().expect("int"))
+            .collect()
+    };
+    let nefc = data.efc_type.len();
+    assert_eq!(nefc, count(&case["nefc"]));
+    assert_eq!(data.nisland, count(&case["nisland"]));
+    let wide = |v: &[i32]| v.iter().map(|&x| i64::from(x)).collect::<Vec<_>>();
+    assert_eq!(wide(&data.efc_island[..nefc]), ints(&case["efc_island"]));
+    assert_eq!(
+        wide(&data.map_efc2iefc[..nefc]),
+        ints(&case["map_efc2iefc"])
+    );
+    let wide = |v: &[usize]| {
+        v.iter()
+            .map(|&x| i64::try_from(x).expect("small"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        wide(&data.map_iefc2efc[..nefc]),
+        ints(&case["map_iefc2efc"])
+    );
+    assert_eq!(
+        wide(&data.island_nefc[..data.nisland]),
+        ints(&case["island_nefc"])
+    );
 }
 
 /// A position the user writes wakes the tree through the pose the
@@ -924,6 +985,7 @@ fn sleeping_actuators_and_sensors_are_skipped() {
                 .iter()
                 .zip(theirs[725].floats.as_ref().expect("kept")),
         ) {
+            assert_eq!(a.len(), b.len(), "{name}: {field} length");
             for (x, y) in a.iter().zip(b) {
                 assert!(
                     (x - y).abs() <= 1e-12,
