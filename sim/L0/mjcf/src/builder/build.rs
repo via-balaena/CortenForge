@@ -557,10 +557,14 @@ fn compute_history_addresses(model: &mut Model) {
 }
 
 /// Apply the explicit `sleep=` body attributes to their trees (§16.0 step 2).
-/// `Model::compute_kinematic_trees` has resolved the automatic policies.
+/// `Model::compute_kinematic_trees` has resolved the automatic policies. An
+/// explicit `auto` is the default and changes nothing, as MuJoCo applies only
+/// a policy other than auto (`user_model.cc:3040`).
 fn apply_explicit_sleep_policies(model: &mut Model, body_sleep_policy: &[Option<SleepPolicy>]) {
     for (body_id, policy_opt) in body_sleep_policy.iter().enumerate().skip(1) {
-        if let Some(policy) = policy_opt {
+        if let Some(policy) = policy_opt
+            && *policy != SleepPolicy::Auto
+        {
             let tree = model.body_treeid[body_id];
             if tree < model.ntree {
                 let root_body = model.tree_body_adr[tree];
@@ -636,6 +640,45 @@ mod tests {
             model.try_make_data().err(),
             Some(sim_core::MakeDataError::Range(_))
         ));
+    }
+
+    /// An explicit `sleep="auto"` is the default, as in MuJoCo, which sets a
+    /// tree's policy only from a body whose policy is not auto
+    /// (`user_model.cc:3040`): MuJoCo 3.5.0 gives this model AUTO_NEVER,
+    /// AUTO_ALLOWED, NEVER, AUTO_NEVER, AUTO_NEVER (measured). An explicit
+    /// policy survives `recompute_derived`; a computed one follows an edit.
+    #[test]
+    fn an_explicit_auto_sleep_policy_is_the_default() {
+        use sim_core::SleepPolicy::{AutoAllowed, AutoNever, Never};
+        let mut model = load_model(
+            r#"<mujoco><option><flag sleep="enable"/></option><worldbody>
+<body name="a" sleep="auto"><joint name="ja" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+<body name="b" pos="1 0 0" sleep="auto"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+<body name="c" pos="2 0 0" sleep="never"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+<body name="d" pos="3 0 0"><joint name="jd" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+<body name="e" pos="4 0 0"><joint name="je" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+</worldbody>
+<tendon><fixed stiffness="1"><joint joint="jd" coef="1"/><joint joint="je" coef="1"/></fixed></tendon>
+<actuator><motor joint="ja"/></actuator></mujoco>"#,
+        )
+        .expect("loads");
+        assert_eq!(
+            model.tree_sleep_policy,
+            vec![AutoNever, AutoAllowed, Never, AutoNever, AutoNever]
+        );
+        let built = format!("{model:#?}");
+        model.recompute_derived().expect("recompute");
+        assert_eq!(
+            format!("{model:#?}"),
+            built,
+            "an unedited model is unchanged"
+        );
+        model.tendon_stiffness[0] = 0.0;
+        model.recompute_derived().expect("recompute");
+        assert_eq!(
+            model.tree_sleep_policy,
+            vec![AutoNever, AutoAllowed, Never, AutoAllowed, AutoAllowed]
+        );
     }
 
     #[test]

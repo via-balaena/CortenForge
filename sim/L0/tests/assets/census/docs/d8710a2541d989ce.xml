@@ -1,0 +1,9 @@
+<mujoco><option><flag sleep="enable"/></option><worldbody>
+<body name="a" sleep="auto"><joint name="ja" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+<body name="b" pos="1 0 0" sleep="auto"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+<body name="c" pos="2 0 0" sleep="never"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+<body name="d" pos="3 0 0"><joint name="jd" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+<body name="e" pos="4 0 0"><joint name="je" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1"/></body>
+</worldbody>
+<tendon><fixed stiffness="1"><joint joint="jd" coef="1"/><joint joint="je" coef="1"/></fixed></tendon>
+<actuator><motor joint="ja"/></actuator></mujoco>
