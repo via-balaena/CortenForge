@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
 use super::enums::{
-    Integrator, JointLayoutError, MIN_AWAKE, MakeDataError, MjJointType, RangeError, SleepPolicy,
-    SleepState, SolverType,
+    Integrator, JointLayoutError, MIN_AWAKE, MakeDataError, MjJointType, MjSensorType, RangeError,
+    ResetError, SleepPolicy, SleepState, SolverType,
 };
 use super::model::Model;
 
@@ -25,6 +25,34 @@ use crate::linalg::mj_solve_sparse_batch;
 use super::data::Data;
 use crate::forward::mj_fwd_position;
 use crate::island::{mj_update_sleep_arrays, reset_sleep_state};
+
+/// Why a model's history buffers cannot be initialised, shared by
+/// [`MakeDataError`] and [`ResetError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryRefusal {
+    /// History buffers with a timestep that is not positive.
+    InvalidTimestep,
+    /// A user or plugin sensor with a delay.
+    DelayedUserSensor(usize),
+}
+
+impl From<HistoryRefusal> for MakeDataError {
+    fn from(e: HistoryRefusal) -> Self {
+        match e {
+            HistoryRefusal::InvalidTimestep => Self::InvalidTimestep,
+            HistoryRefusal::DelayedUserSensor(sensor) => Self::DelayedUserSensor { sensor },
+        }
+    }
+}
+
+impl From<HistoryRefusal> for ResetError {
+    fn from(e: HistoryRefusal) -> Self {
+        match e {
+            HistoryRefusal::InvalidTimestep => Self::InvalidTimestep,
+            HistoryRefusal::DelayedUserSensor(sensor) => Self::DelayedUserSensor { sensor },
+        }
+    }
+}
 
 impl Model {
     /// Create an empty model with no bodies/joints.
@@ -567,14 +595,19 @@ impl Model {
     ///
     /// # Errors
     /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
-    /// [`MakeDataError::Range`] ([`Self::check_ranges`]), or
-    /// [`MakeDataError::PluginInit`] if a plugin's `init` returns an error.
+    /// [`MakeDataError::Range`] ([`Self::check_ranges`]), the history
+    /// buffers' refusals ([`MakeDataError::InvalidTimestep`],
+    /// [`MakeDataError::DelayedUserSensor`]), or [`MakeDataError::PluginInit`]
+    /// if a plugin's `init` returns an error.
     ///
     /// # Panics
     /// As [`Self::check_joint_layout`] says.
     pub fn try_make_data(&self) -> Result<Data, MakeDataError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
+        if let Some(refusal) = self.history_refusal() {
+            return Err(refusal.into());
+        }
         let mut data = self.allocate_data();
         for i in 0..self.nplugin {
             self.plugin_objects[i]
@@ -586,6 +619,27 @@ impl Model {
         }
         data.reset(self);
         Ok(data)
+    }
+
+    /// Why this model's history buffers cannot be initialised, if they
+    /// cannot: they need a positive timestep (MuJoCo `_resetData`,
+    /// `engine_io.c:1266-1270`, tests `nhistory && dt <= 0`), and a delayed
+    /// sample of a user or plugin sensor cannot be computed (MuJoCo's
+    /// `mj_computeSensor` has no such type and `mjERROR`s when it inserts
+    /// one, `engine_sensor.c:739-740`, `:858-859`, `:1316-1317`).
+    pub(crate) fn history_refusal(&self) -> Option<HistoryRefusal> {
+        if self.nhistory > 0 && self.timestep <= 0.0 {
+            return Some(HistoryRefusal::InvalidTimestep);
+        }
+        (0..self.nsensor)
+            .find(|&i| {
+                matches!(
+                    self.sensor_type[i],
+                    MjSensorType::User | MjSensorType::Plugin
+                ) && self.sensor_nsample[i] > 0
+                    && self.sensor_delay[i] > 0.0
+            })
+            .map(HistoryRefusal::DelayedUserSensor)
     }
 
     /// The `Data` that building a model derives values from (`acc0`,
@@ -622,26 +676,11 @@ impl Model {
             actuator_moment: vec![DVector::zeros(self.nv); self.nu],
             act_dot: DVector::zeros(self.na),
 
-            // Allocate and pre-populate history buffer
-            #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
+            // History buffers, as `_resetData` fills them
             history: {
-                let mut buf = vec![0.0f64; self.nhistory];
-                for i in 0..self.actuator_nsample.len() {
-                    let ns = self.actuator_nsample[i];
-                    if ns <= 0 {
-                        continue;
-                    }
-                    let adr = self.actuator_historyadr[i] as usize;
-                    let n = ns as usize;
-                    // metadata0 = 0.0 (already zero)
-                    // metadata1 = float(nsample - 1)
-                    buf[adr + 1] = (n - 1) as f64;
-                    // times = [-(n)*ts, -(n-1)*ts, ..., -ts]
-                    let ts = self.timestep;
-                    for k in 0..n {
-                        buf[adr + 2 + k] = -((n - k) as f64) * ts;
-                    }
-                    // values = all 0.0 (already zero)
+                let mut buf = vec![0.0; self.nhistory];
+                if self.nhistory > 0 {
+                    crate::history::init(self, &mut buf);
                 }
                 buf
             },

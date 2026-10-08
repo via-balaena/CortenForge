@@ -293,12 +293,19 @@ impl std::str::FromStr for InterpolationType {
     }
 }
 
-impl From<i32> for InterpolationType {
-    fn from(v: i32) -> Self {
+/// MuJoCo's integer code: 0 zero-order hold, 1 linear, 2 cubic. Another
+/// value is refused and returned: MuJoCo's buffer read takes any value
+/// other than 0 and 1 as cubic, so no mapping of it is the one a caller
+/// meant.
+impl TryFrom<i32> for InterpolationType {
+    type Error = i32;
+
+    fn try_from(v: i32) -> Result<Self, i32> {
         match v {
-            1 => Self::Linear,
-            2 => Self::Cubic,
-            _ => Self::Zoh, // 0 or any out-of-range: default to ZOH
+            0 => Ok(Self::Zoh),
+            1 => Ok(Self::Linear),
+            2 => Ok(Self::Cubic),
+            other => Err(other),
         }
     }
 }
@@ -957,6 +964,16 @@ pub enum ResetError {
         /// The number of keyframes in the model.
         nkeyframe: usize,
     },
+    /// The model has history buffers and a timestep that is not positive, so
+    /// their timestamps cannot be laid out (MuJoCo `_resetData`,
+    /// `engine_io.c:1266-1270`).
+    InvalidTimestep,
+    /// Sensor `sensor` is a user or plugin sensor with a delay, whose sample
+    /// cannot be computed when the state advances (MuJoCo `mjERROR`s there).
+    DelayedUserSensor {
+        /// The sensor.
+        sensor: usize,
+    },
 }
 
 impl std::fmt::Display for ResetError {
@@ -968,8 +985,18 @@ impl std::fmt::Display for ResetError {
                     "invalid keyframe index {index} (model has {nkeyframe} keyframes)"
                 )
             }
+            Self::InvalidTimestep => f.write_str(HISTORY_TIMESTEP),
+            Self::DelayedUserSensor { sensor } => write!(f, "{}", delayed_user_sensor(*sensor)),
         }
     }
+}
+
+/// The message of `InvalidTimestep` in [`ResetError`] and [`MakeDataError`].
+const HISTORY_TIMESTEP: &str = "history buffers require a positive timestep";
+
+/// The message of `DelayedUserSensor` in [`ResetError`] and [`MakeDataError`].
+fn delayed_user_sensor(sensor: usize) -> String {
+    format!("sensor {sensor} is a user or plugin sensor with a delay, which cannot be computed")
 }
 
 impl std::error::Error for ResetError {}
@@ -992,6 +1019,15 @@ pub enum MakeDataError {
         /// The plugin's message.
         message: String,
     },
+    /// The model has history buffers and a timestep that is not positive
+    /// (MuJoCo `_resetData`, `engine_io.c:1266-1270`).
+    InvalidTimestep,
+    /// Sensor `sensor` is a user or plugin sensor with a delay, whose sample
+    /// cannot be computed when the state advances (MuJoCo `mjERROR`s there).
+    DelayedUserSensor {
+        /// The sensor.
+        sensor: usize,
+    },
 }
 
 impl std::fmt::Display for MakeDataError {
@@ -1002,6 +1038,8 @@ impl std::fmt::Display for MakeDataError {
             Self::PluginInit { instance, message } => {
                 write!(f, "plugin init failed for instance {instance}: {message}")
             }
+            Self::InvalidTimestep => f.write_str(HISTORY_TIMESTEP),
+            Self::DelayedUserSensor { sensor } => write!(f, "{}", delayed_user_sensor(*sensor)),
         }
     }
 }
@@ -1011,7 +1049,9 @@ impl std::error::Error for MakeDataError {
         match self {
             Self::JointLayout(e) => Some(e),
             Self::Range(e) => Some(e),
-            Self::PluginInit { .. } => None,
+            Self::PluginInit { .. } | Self::InvalidTimestep | Self::DelayedUserSensor { .. } => {
+                None
+            }
         }
     }
 }

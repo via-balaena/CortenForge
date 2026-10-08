@@ -102,6 +102,9 @@ pub mod jacobian;
 // Integration dispatch (Euler, implicit tendon K/D, RK4)
 pub mod integrate;
 
+// Actuator and sensor history buffers (delays)
+pub(crate) mod history;
+
 // Inverse dynamics (§52)
 pub mod inverse;
 

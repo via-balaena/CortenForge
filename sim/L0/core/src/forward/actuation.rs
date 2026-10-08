@@ -460,15 +460,22 @@ pub fn mj_next_activation(
     act
 }
 
-/// The control input actuator `i` acts on: `data.ctrl[i]` clamped to its
-/// `ctrlrange` unless `DISABLE_CLAMPCTRL` is set. sim-mjcf gives an actuator
-/// without a control limit the range `(-inf, inf)`, which clamping leaves as
-/// is.
+/// The control input actuator `i` acts on: `data.ctrl[i]`, or for a delayed
+/// actuator its history buffer read at `time - actuator_delay[i]`, clamped to
+/// its `ctrlrange` unless `DISABLE_CLAMPCTRL` is set. sim-mjcf gives an
+/// actuator without a control limit the range `(-inf, inf)`, which clamping
+/// leaves as is.
 fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
-    if disabled(model, DISABLE_CLAMPCTRL) {
-        data.ctrl[i]
+    // MuJoCo tests the delay for non-zero (`engine_forward.c:304`).
+    let ctrl = if model.nhistory > 0 && model.actuator_delay[i] != 0.0 {
+        crate::history::read_ctrl(model, data, i, data.time)
     } else {
-        data.ctrl[i].clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1)
+        data.ctrl[i]
+    };
+    if disabled(model, DISABLE_CLAMPCTRL) {
+        ctrl
+    } else {
+        ctrl.clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1)
     }
 }
 

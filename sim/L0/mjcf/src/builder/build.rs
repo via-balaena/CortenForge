@@ -29,7 +29,7 @@ impl ModelBuilder {
         model.compute_ancestors();
         model.compute_implicit_params();
         model.compute_qld_csr_metadata();
-        compute_history_addresses(&mut model);
+        model.compute_history_addresses();
 
         // Tendon and actuator derived parameters. These build a `Data` and run
         // the pipeline on it (a muscle's length range is simulated), so a
@@ -513,49 +513,6 @@ impl ModelBuilder {
 //
 // These operate on a fully-assembled Model and cannot be `impl Model` methods
 // because `Model` is defined in sim-core, not sim-mjcf.
-
-/// Compute `actuator_historyadr`, `sensor_historyadr`, and `nhistory`.
-///
-/// Layout: actuators first (offset 0 → act_total), sensors after (act_total → nhistory).
-/// Must run BEFORE `compute_actuator_params()` because that calls `make_data()`
-/// which reads `actuator_historyadr` for history buffer pre-population.
-fn compute_history_addresses(model: &mut Model) {
-    // Actuator historyadr
-    let nu = model.actuator_nsample.len();
-    let mut act_historyadr = vec![-1i32; nu];
-    let mut offset: i32 = 0;
-    for (adr, &ns) in act_historyadr.iter_mut().zip(model.actuator_nsample.iter()) {
-        if ns > 0 {
-            *adr = offset;
-            offset += 2 * ns + 2;
-        }
-    }
-    model.actuator_historyadr = act_historyadr;
-
-    // Sensor historyadr (appends after actuators)
-    let nsens = model.sensor_nsample.len();
-    let mut sens_historyadr = vec![-1i32; nsens];
-    for (i, (adr, &ns)) in sens_historyadr
-        .iter_mut()
-        .zip(model.sensor_nsample.iter())
-        .enumerate()
-    {
-        if ns > 0 {
-            *adr = offset;
-            // nsample * (dim + 1) + 2 — generalized formula
-            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-            let dim = model.sensor_dim[i] as i32;
-            offset += ns * (dim + 1) + 2;
-        }
-    }
-    model.sensor_historyadr = sens_historyadr;
-
-    // `offset` is a non-negative running history-buffer count by construction.
-    #[allow(clippy::cast_sign_loss)]
-    {
-        model.nhistory = offset as usize;
-    }
-}
 
 /// Apply the explicit `sleep=` body attributes to their trees (§16.0 step 2).
 /// `Model::compute_kinematic_trees` has resolved the automatic policies. An

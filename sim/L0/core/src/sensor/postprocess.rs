@@ -120,6 +120,12 @@ pub fn mj_sensor_postprocess(model: &Model, data: &mut Data) {
         if cutoff <= 0.0 {
             continue;
         }
+        // A value read from the history buffer was clamped when it was
+        // computed, and an interpolated one is not clamped: MuJoCo applies the
+        // cutoff in `mj_computeSensor` only (`engine_sensor.c:1341-1342`).
+        if crate::history::sensor_reads_history(model, data, sensor_id) {
+            continue;
+        }
 
         let sensor_type = model.sensor_type[sensor_id];
 

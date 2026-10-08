@@ -6,7 +6,7 @@
 //! solve. `mj_sensor_postprocess` applies cutoff clamping.
 
 use crate::plugin::{PluginCapabilityBit, PluginStage};
-use crate::types::{Data, MjObjectType, MjSensorType, Model};
+use crate::types::{Data, MjObjectType, MjSensorDataType, MjSensorType, Model};
 
 use self::postprocess::apply_sensor_cutoff;
 
@@ -51,6 +51,18 @@ pub(crate) fn compute_plugin_sensors(model: &Model, data: &mut Data, stage: Plug
             }
         }
     }
+}
+
+/// Compute sensor `i` into `sensordata` and apply its cutoff, for a delayed
+/// sensor's sample when the state advances. MuJoCo `mj_computeSensor`
+/// (`engine_sensor.c:1322-1343`).
+pub(crate) fn compute_sensor(model: &Model, data: &mut Data, i: usize) {
+    match model.sensor_datatype[i] {
+        MjSensorDataType::Position => position::compute_pos_sensor(model, data, i),
+        MjSensorDataType::Velocity => velocity::compute_vel_sensor(model, data, i),
+        MjSensorDataType::Acceleration => acceleration::compute_acc_sensor(model, data, i),
+    }
+    apply_sensor_cutoff(model, data, i);
 }
 
 /// Map a sensor to the body it is attached to (if any).

@@ -33,7 +33,8 @@ pub(crate) fn eulerdamp_applies(model: &Model) -> bool {
 }
 
 impl Data {
-    /// Integration step after the acceleration stage: velocity, then position and time.
+    /// Integration step after the acceleration stage: history samples, then
+    /// velocity, then position and time.
     ///
     /// This is exposed as part of the split-step API ([`step1`](Self::step1) /
     /// [`step2`](Self::step2)). Under RK4, [`step`](Self::step) integrates with
@@ -63,6 +64,12 @@ impl Data {
     ///
     /// May panic if an array of `self` is shorter than `model` requires.
     pub fn integrate(&mut self, model: &Model) {
+        // History first, at the step's time, as MuJoCo's `mj_advance`
+        // (`engine_forward.c:837-884`): each buffered actuator's `ctrl`, then
+        // each buffered sensor's sample.
+        crate::history::advance_ctrl(model, self, self.time);
+        crate::history::advance_sensors(model, self);
+
         let h = model.timestep;
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
         // §16.27: Use indirection array for cache-friendly iteration over awake DOFs.

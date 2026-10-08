@@ -81,9 +81,15 @@ pub struct Data {
     /// and is required for correct RK4 integration of activation states.
     pub act_dot: DVector<f64>,
 
-    /// History buffer (actuators + sensors) (length `nhistory`).
-    /// Pre-populated with metadata + past timestamps + zero ctrl values.
-    /// MuJoCo: `mjData.history`.
+    /// History buffers (length `nhistory`): one per actuator or sensor with
+    /// `nsample > 0`, at its `historyadr`, laid out `[user, cursor,
+    /// times(n), values(n * dim)]`. `user` is a sensor's last compute tick in
+    /// interval mode; `cursor` is the physical index of the newest sample.
+    /// Made and reset with timestamps one timestep apart ending at
+    /// `-timestep` (an interval sensor's one period apart, rounded up to a
+    /// timestep) and values 0; a step inserts a sample of each buffered
+    /// actuator's `ctrl` and each buffered sensor. MuJoCo: `mjData.history`,
+    /// part of its physics state.
     pub history: Vec<f64>,
 
     // ==================== Mocap Bodies ====================
@@ -1111,13 +1117,33 @@ impl Data {
     /// this computes its kinematics and mass matrix only. With sleep enabled and
     /// no such tree, MuJoCo computes the kinematics, centres of mass, cameras
     /// and tendons (`engine_io.c:1453-1458`); this computes none of them.
+    ///
+    /// # Panics
+    /// With the [`ResetError`]'s message where [`Data::try_reset`] returns it.
+    // The documented panic: `try_reset` is the non-panicking form.
+    #[allow(clippy::panic)]
     pub fn reset(&mut self, model: &Model) {
+        self.try_reset(model).unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    /// [`Data::reset`], or the reason the model's history buffers cannot be
+    /// initialised, leaving `self` unchanged.
+    ///
+    /// # Errors
+    /// [`ResetError::InvalidTimestep`] when the model has history buffers and
+    /// a timestep that is not positive; [`ResetError::DelayedUserSensor`]
+    /// when a user or plugin sensor has a delay.
+    pub fn try_reset(&mut self, model: &Model) -> Result<(), ResetError> {
+        if let Some(refusal) = model.history_refusal() {
+            return Err(refusal.into());
+        }
         let mut fresh = model.allocate_data();
         std::mem::swap(&mut fresh.plugin_state, &mut self.plugin_state);
         std::mem::swap(&mut fresh.plugin_data, &mut self.plugin_data);
         *self = fresh;
         model.start_sleep(self);
         self.reset_plugins(model);
+        Ok(())
     }
 
     /// Run each plugin's `reset` on its slice of `plugin_state`.
@@ -1145,7 +1171,8 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// [`ResetError::InvalidKeyframeIndex`] if `keyframe_idx >= model.nkeyframe`.
+    /// [`ResetError::InvalidKeyframeIndex`] if `keyframe_idx >= model.nkeyframe`,
+    /// else what [`Data::try_reset`] returns.
     pub fn reset_to_keyframe(
         &mut self,
         model: &Model,
@@ -1158,7 +1185,7 @@ impl Data {
                 index: keyframe_idx,
                 nkeyframe: model.nkeyframe,
             })?;
-        self.reset(model);
+        self.try_reset(model)?;
         self.time = kf.time;
         self.qpos.copy_from(&kf.qpos);
         self.qvel.copy_from(&kf.qvel);

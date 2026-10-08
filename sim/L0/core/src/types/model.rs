@@ -618,11 +618,17 @@ pub struct Model {
 
     /// Time delay per sensor in seconds (length `nsensor`).
     /// MuJoCo: `sensor_delay`.  Default: 0.0.  Present for all sensors.
+    /// A sensor with a buffer and a delay above 0 reads its buffer at
+    /// `time - delay` instead of being computed. A user or plugin sensor
+    /// cannot have one: `try_make_data` and `try_reset` refuse it.
     pub sensor_delay: Vec<f64>,
 
     /// Sampling interval per sensor: `(period, phase)` (length `nsensor`).
     /// MuJoCo: `sensor_interval[2*i]` = period, `sensor_interval[2*i+1]` = phase.
-    /// Phase is always initialized to 0.0 by the compiler.
+    /// With a buffer and `period > 0`, the sensor is computed once a period
+    /// and read from its buffer between; the first tick is at `phase`, or at 0
+    /// when `phase` is 0. sim-mjcf reads `interval` as the period alone and
+    /// sets `phase` to 0.
     pub sensor_interval: Vec<(f64, f64)>,
 
     // ==================== Actuators (indexed by actuator_id) ====================
@@ -711,12 +717,16 @@ pub struct Model {
 
     /// Time delay per actuator in seconds (length `nu`).
     /// MuJoCo: `actuator_delay`.  Default: 0.0.  Present for all actuators.
+    /// A non-zero delay on an actuator with a buffer makes it act on the
+    /// control its buffer holds at `time - delay` (MuJoCo tests for non-zero,
+    /// so a negative delay reads the newest sample).
     pub actuator_delay: Vec<f64>,
 
     /// Total history buffer size (actuator + sensor contributions).
     /// MuJoCo: `nhistory`.
     /// Layout: actuators first (offset 0 → actuator_total), then sensors
     /// (actuator_total → nhistory). Formula per entity: nsample * (dim + 1) + 2.
+    /// [`Model::compute_history_addresses`] sets it.
     pub nhistory: usize,
 
     // ==================== Tendons (indexed by tendon_id) ====================

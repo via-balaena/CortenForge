@@ -380,6 +380,11 @@ impl BatchSim {
     /// also zeroes `qfrc_applied` and `xfrc_applied`.
     ///
     /// Returns `None` if `i >= len()`.
+    ///
+    /// # Panics
+    ///
+    /// Where [`Data::reset`] does: the model's history buffers cannot be
+    /// initialised ([`Data::try_reset`]).
     pub fn reset(&mut self, i: usize) -> Option<()> {
         // Destructure into disjoint field borrows so the model
         // reference (from `shared_model` or `per_env_models`) and the
@@ -403,6 +408,11 @@ impl BatchSim {
     /// Environments where `mask[i]` is false are untouched.
     /// If `mask.len() < len()`, unaddressed environments are untouched.
     /// If `mask.len() > len()`, excess entries are ignored.
+    ///
+    /// # Panics
+    ///
+    /// Where [`Data::reset`] does: the model's history buffers cannot be
+    /// initialised ([`Data::try_reset`]).
     pub fn reset_where(&mut self, mask: &[bool]) {
         let Self {
             shared_model,
@@ -422,6 +432,11 @@ impl BatchSim {
     }
 
     /// Reset all environments to initial state.
+    ///
+    /// # Panics
+    ///
+    /// Where [`Data::reset`] does: the model's history buffers cannot be
+    /// initialised ([`Data::try_reset`]).
     pub fn reset_all(&mut self) {
         let Self {
             shared_model,

@@ -36,6 +36,12 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     let h = model.timestep;
     let nv = model.nv;
 
+    // 0. Sensor history samples, at the step's start state (registry
+    // `D-HISTORY-RK4-SENSOR`): MuJoCo inserts them after the stages, from the
+    // last stage's kinematics, so its delayed position and acceleration
+    // sensors read values that are not the sensor's at the sample's time.
+    crate::history::advance_sensors(model, data);
+
     // 1. SAVE initial state
     data.rk4_qpos_saved.copy_from(&data.qpos);
     data.rk4_qvel[0].copy_from(&data.qvel);
@@ -147,7 +153,10 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         data.rk4_dX_acc[v] = acc_sum;
     }
 
-    // 4. ADVANCE from initial state
+    // 4. ADVANCE from initial state. The control history first, at the step's
+    // start time, with `ctrl` as the last stage's control callback left it
+    // (MuJoCo `mj_RungeKutta` → `mj_advance`, `engine_forward.c:1114-1121`).
+    crate::history::advance_ctrl(model, data, t0);
     // Note: qacc_warmstart is now saved at end of step() (§15.9), not here.
 
     // Restore initial velocity, then advance

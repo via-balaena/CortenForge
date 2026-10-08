@@ -109,6 +109,14 @@ pub mod activation_clamping;
 pub mod gravcomp;
 
 // ============================================================================
+// Actuator and Sensor Delays (history buffers)
+// ============================================================================
+
+/// Delays against MuJoCo 3.5.0's history buffers: delayed actuators and
+/// sensors, buffer initialisation, interval sensors, refusals.
+pub mod history;
+
+// ============================================================================
 // Body-Transmission Actuator Tests (§36 adhesion)
 // ============================================================================
 
