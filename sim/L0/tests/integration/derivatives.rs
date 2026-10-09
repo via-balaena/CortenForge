@@ -3847,3 +3847,48 @@ fn hybrid_activation_column_follows_the_activation_clamp() {
         }
     }
 }
+
+/// Under implicitfast the step's `D` holds a muscle gain's slope along its
+/// force-velocity curve (`mjd_actuator_vel`), and that slope moves with the
+/// velocity, so the analytic velocity columns miss a term: a model with a
+/// muscle gain takes finite differences there, as under implicit. The sweep
+/// covers `<muscle>`; this is the Hill-type gain, which it does not build. The
+/// state sits at the optimal fiber length (gainprm[4]): below a normalized
+/// length of 0.5 the active force-length factor is 0 (`hill_active_fl`), and
+/// with it the gain's slope.
+#[test]
+fn hybrid_hill_muscle_gain_under_implicitfast_matches_finite_differences() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.01" integrator="implicitfast"/>
+          <worldbody>
+            <body name="b">
+              <joint name="j" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.02" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general name="hill" joint="j" dyntype="hillmuscle"
+                     gainprm="0.75 1.05 500 200 1.0 0.0 10.0 0.0 35.0"
+                     dynprm="0.01 0.04 0.0"/>
+          </actuator>
+        </mujoco>"#,
+    )
+    .expect("load");
+    assert_eq!(model.actuator_gaintype[0], GainType::HillMuscle);
+    let mut data = model.make_data();
+    data.qpos[0] = 1.0;
+    data.qvel[0] = 2.0;
+    data.act[0] = 0.6;
+    data.ctrl[0] = 0.6;
+    data.forward(&model).expect("forward");
+    let config = DerivativeConfig::default();
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+    let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+    for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+        assert!(
+            (h - f).abs() <= 1e-6 + 1e-5 * h.abs().max(f.abs()),
+            "hybrid {h}, fd {f}"
+        );
+    }
+}

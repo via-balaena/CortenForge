@@ -2498,20 +2498,22 @@ pub fn mass_directional_derivative(
 ///   `−b·JᵀJ` in `qDeriv` is left uncancelled — and the position block omits the
 ///   tendon `JᵀJ` q-dependence of `M_impl`. (ISD's own `M_impl` is otherwise
 ///   v-independent, so joint-only chains need no correction.)
-/// - **Full Implicit with a Muscle/HillMuscle gain actuator.** The velocity-block
-///   second-order term `T = rne_vel(qacc_implicit)` captures only the Coriolis part of
-///   `∂D/∂v`; a force–velocity-curve gain is v-dependent and contributes a
-///   `∂D_actuator/∂v` that `T` misses. (Affine gain is constant in v ⇒ fine.)
+/// - **ImplicitFast or full Implicit with a Muscle/HillMuscle gain actuator.** The
+///   step's `D` holds the gain's slope along its force–velocity curve, which moves
+///   with v, so `∂v⁺/∂v` carries a `∂D_actuator/∂v` term. ImplicitFast's velocity
+///   block has no second-order term at all; full Implicit's
+///   `T = rne_vel(qacc_implicit)` captures only the Coriolis part of `∂D/∂v`.
+///   (Affine gain is constant in v ⇒ fine.)
 ///
-/// FD is exact in both cases. Euler and ImplicitFast never hit these terms, so
-/// they always return `false` here. This is the single source of truth shared by
+/// FD is exact in both cases. Euler never hits these terms, so it always returns
+/// `false` here. This is the single source of truth shared by
 /// `mjd_transition`'s `can_analytical` gate and the defensive FD return below, so a
 /// direct `mjd_transition_hybrid` caller is guarded identically.
 pub fn implicit_analytic_incomplete(model: &Model) -> bool {
     match model.integrator {
         Integrator::ImplicitSpringDamper => (0..model.ntendon)
             .any(|t| model.tendon_stiffness[t] > 0.0 || model.tendon_damping[t] > 0.0),
-        Integrator::Implicit => model
+        Integrator::ImplicitFast | Integrator::Implicit => model
             .actuator_gaintype
             .iter()
             .any(|g| matches!(g, GainType::Muscle | GainType::HillMuscle)),
@@ -2564,7 +2566,8 @@ pub fn mjd_transition_hybrid(
 
     // Defensive FD fallback for the implicit-Coriolis integrators on models whose
     // analytic path is incomplete (tendon-K/D under ISD, Muscle/HillMuscle gain under
-    // Implicit). `mjd_transition` already gates these to FD; this guards a direct call.
+    // ImplicitFast or Implicit). `mjd_transition` already gates these to FD; this
+    // guards a direct call.
     if implicit_analytic_incomplete(model) {
         return mjd_transition_fd(model, data, config);
     }

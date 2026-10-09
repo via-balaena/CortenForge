@@ -471,12 +471,6 @@ const KNOWN_GAPS: &[Gap] = &[
                 && matches!(c.trn, Trn::JointRoot | Trn::JointInParentRoot)
         },
     },
-    // A muscle's `D` depends on the velocity through its force-velocity
-    // curve.
-    Gap {
-        name: "muscle under implicitfast: velocity columns",
-        covers: |c| c.kind.name == MUSCLE && c.integrator == IMPLICITFAST,
-    },
 ];
 
 /// What one case gave.
@@ -494,8 +488,9 @@ enum Outcome {
         differs: Option<String>,
         /// The largest entry difference, when they agree.
         worst: f64,
-        /// No constraint row, no bad or clamped control: the hybrid's
-        /// analytic columns ran.
+        /// No constraint row, no bad or clamped control, and the hybrid did
+        /// not return pure finite differences' own matrices (it does for a
+        /// model it routes to them whole): the hybrid's analytic columns ran.
         analytic: bool,
         /// The force sat at its range, for the force-clamped state (true for
         /// the other states).
@@ -542,6 +537,13 @@ fn compare_all(hybrid: &TransitionMatrices, fd: &TransitionMatrices) -> Result<f
         _ => return Err("D present on one side only".into()),
     }
     Ok(worst)
+}
+
+fn same_bits(a: &DMatrix<f64>, b: &DMatrix<f64>) -> bool {
+    a.shape() == b.shape()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 /// The case's model and its state after a forward pass, or `None` when the
@@ -625,12 +627,15 @@ fn run(case: &Case) -> Outcome {
     let hybrid = mjd_transition_hybrid(&model, &data, &config);
     let fd = mjd_transition_fd(&model, &data, &config);
     let (lo, hi) = model.actuator_ctrlrange[0];
-    let analytic = data.efc_type.is_empty() && ctrl.is_finite() && (lo..=hi).contains(&ctrl);
+    let mut analytic = data.efc_type.is_empty() && ctrl.is_finite() && (lo..=hi).contains(&ctrl);
     let (differs, worst) = match (hybrid, fd) {
-        (Ok(h), Ok(f)) => match compare_all(&h, &f) {
-            Ok(worst) => (None, worst),
-            Err(e) => (Some(e), 0.0),
-        },
+        (Ok(h), Ok(f)) => {
+            analytic &= !same_bits(&h.A, &f.A) || !same_bits(&h.B, &f.B);
+            match compare_all(&h, &f) {
+                Ok(worst) => (None, worst),
+                Err(e) => (Some(e), 0.0),
+            }
+        }
         (Err(_), Err(_)) => return Outcome::Refused,
         (h, f) => (Some(format!("hybrid {:?}, fd {:?}", h.err(), f.err())), 0.0),
     };
