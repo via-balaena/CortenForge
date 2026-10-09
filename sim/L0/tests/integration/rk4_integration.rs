@@ -432,3 +432,40 @@ fn test_rk4_sensor_non_corruption() {
         assert_relative_eq!(data.sensordata[0], 0.5, epsilon = 1e-10);
     }
 }
+
+/// `mj_integrate_pos_explicit` takes a negative step on ball and free joints
+/// as on hinges: a step of `-h` undoes a step of `h`.
+#[test]
+fn integrate_pos_explicit_takes_a_negative_step() {
+    let model = load_model(
+        r#"<mujoco>
+          <worldbody>
+            <body name="f" pos="0 0 1">
+              <freejoint/>
+              <geom type="sphere" size="0.1" mass="1"/>
+              <body name="b" pos="0.3 0 0">
+                <joint type="ball"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let data = model.make_data();
+    let qvel = nalgebra::DVector::from_vec(vec![0.1, -0.2, 0.3, 0.7, -0.4, 0.3, -0.5, 0.2, 0.6]);
+    let mut forward = data.qpos.clone();
+    sim_core::mj_integrate_pos_explicit(&model, &mut forward, &data.qpos, &qvel, 0.01);
+    let mut back = forward.clone();
+    sim_core::mj_integrate_pos_explicit(&model, &mut back, &forward, &qvel, -0.01);
+    assert!(
+        (&forward - &data.qpos).amax() > 1e-3,
+        "the forward step moved the state"
+    );
+    for (k, (got, want)) in back.iter().zip(data.qpos.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-15,
+            "qpos[{k}] {got}, started at {want}"
+        );
+    }
+}

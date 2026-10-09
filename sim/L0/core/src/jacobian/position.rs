@@ -184,7 +184,7 @@ pub fn mj_integrate_pos_explicit(
                     qpos[qpos_adr + 3],
                 ));
 
-                let q_new = if angle > 1e-10 {
+                let q_new = if angle.abs() > 1e-10 {
                     let axis = omega / omega.norm();
                     let dq = UnitQuaternion::from_axis_angle(
                         &nalgebra::Unit::new_normalize(axis),
@@ -218,7 +218,7 @@ pub fn mj_integrate_pos_explicit(
                     qpos[qpos_adr + 6],
                 ));
 
-                let q_new = if angle > 1e-10 {
+                let q_new = if angle.abs() > 1e-10 {
                     let axis = omega / omega.norm();
                     let dq = UnitQuaternion::from_axis_angle(
                         &nalgebra::Unit::new_normalize(axis),
