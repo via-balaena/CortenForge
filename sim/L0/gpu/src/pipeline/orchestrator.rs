@@ -11,6 +11,7 @@
 )]
 
 use sim_core::types::{Data, MjJointType, Model};
+use sim_core::{DISABLE_DAMPER, DISABLE_EULERDAMP};
 
 use super::collision::GpuCollisionPipeline;
 use super::constraint::GpuConstraintPipeline;
@@ -159,9 +160,12 @@ impl GpuPhysicsPipeline {
         let eulerdamp = GpuEulerdampPipeline::new(&ctx, &model_bufs, &state_bufs);
         let integrate = GpuIntegratePipeline::new(&ctx, &model_bufs, &state_bufs);
 
-        // Eulerdamp runs only when the model actually has implicit damping;
-        // otherwise it is skipped so the undamped path is byte-identical.
-        let has_damping = (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
+        // Eulerdamp runs only when the CPU step's does (sim-core's
+        // `eulerdamp_applies`, MuJoCo `engine_forward.c:956`): neither eulerdamp
+        // nor dampers disabled, and some DOF damped. Otherwise it is skipped, so
+        // the undamped path is byte-identical.
+        let has_damping = model.disableflags & (DISABLE_EULERDAMP | DISABLE_DAMPER) == 0
+            && (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
 
         let nq = model.nq as u32;
         let nv = model.nv as u32;
