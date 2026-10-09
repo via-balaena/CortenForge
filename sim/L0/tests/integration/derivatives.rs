@@ -3986,6 +3986,32 @@ fn transition_a_column_at_a_time(
     (a, b)
 }
 
+/// Asserts that the finite-difference and hybrid transition matrices at `data`
+/// equal the ones taken a column at a time (to 1e-9 plus 1e-9 relative).
+#[allow(non_snake_case)]
+fn assert_transition_matches_a_column_at_a_time(what: &str, model: &Model, data: &sim_core::Data) {
+    let config = DerivativeConfig::default();
+    let (a, b) = transition_a_column_at_a_time(model, data, config.eps);
+    let fd = mjd_transition_fd(model, data, &config).expect("fd");
+    let hybrid = mjd_transition_hybrid(model, data, &config).expect("hybrid");
+    for (name, got, want) in [
+        ("fd A", &fd.A, &a),
+        ("fd B", &fd.B, &b),
+        ("hybrid A", &hybrid.A, &a),
+        ("hybrid B", &hybrid.B, &b),
+    ] {
+        for r in 0..want.nrows() {
+            for c in 0..want.ncols() {
+                let (g, w) = (got[(r, c)], want[(r, c)]);
+                assert!(
+                    (g - w).abs() <= 1e-9 + 1e-9 * w.abs(),
+                    "{what}: {name}[{r},{c}] {g}, a column at a time {w}"
+                );
+            }
+        }
+    }
+}
+
 /// Finite differences of the transition with sleep in play: each column starts
 /// from the state as the caller holds it, its sleep state included, so the
 /// matrices equal the ones taken a column at a time from fresh copies of the
@@ -4020,27 +4046,8 @@ fn transition_derivatives_take_each_column_from_the_sleep_state() {
         </mujoco>"#,
     )
     .expect("load");
-    let config = DerivativeConfig::default();
     let check = |what: &str, data: &sim_core::Data| {
-        let (a, b) = transition_a_column_at_a_time(&model, data, config.eps);
-        let fd = mjd_transition_fd(&model, data, &config).expect("fd");
-        let hybrid = mjd_transition_hybrid(&model, data, &config).expect("hybrid");
-        for (name, got, want) in [
-            ("fd A", &fd.A, &a),
-            ("fd B", &fd.B, &b),
-            ("hybrid A", &hybrid.A, &a),
-            ("hybrid B", &hybrid.B, &b),
-        ] {
-            for r in 0..want.nrows() {
-                for c in 0..want.ncols() {
-                    let (g, w) = (got[(r, c)], want[(r, c)]);
-                    assert!(
-                        (g - w).abs() <= 1e-9 + 1e-9 * w.abs(),
-                        "{what}: {name}[{r},{c}] {g}, a column at a time {w}"
-                    );
-                }
-            }
-        }
+        assert_transition_matches_a_column_at_a_time(what, &model, data);
     };
 
     // The second tree asleep, its motor driven.
@@ -4072,6 +4079,104 @@ fn transition_derivatives_take_each_column_from_the_sleep_state() {
     }
     let want: Vec<i32> = (-(1 + sim_core::MIN_AWAKE)..=-2).collect();
     assert_eq!(countdown, want);
+}
+
+/// A passive plugin with one state entry, which each step adds the timestep
+/// times the first joint's position to, and whose force pushes that joint back
+/// by twice the state: an integral term, whose force depends on the state the
+/// steps before it left.
+struct IntegralTerm;
+
+impl sim_core::plugin::Plugin for IntegralTerm {
+    fn name(&self) -> &'static str {
+        "test.integral_term"
+    }
+
+    fn capabilities(&self) -> sim_core::plugin::PluginCapabilities {
+        sim_core::plugin::PluginCapabilityBit::Passive.into()
+    }
+
+    fn nstate(&self, _model: &Model, _instance: usize) -> usize {
+        1
+    }
+
+    fn compute(
+        &self,
+        model: &Model,
+        data: &mut sim_core::Data,
+        instance: usize,
+        _capability: sim_core::plugin::PluginCapabilityBit,
+    ) {
+        data.qfrc_passive[0] -= 2.0 * data.plugin_state[model.plugin_stateadr[instance]];
+    }
+
+    fn advance(&self, model: &Model, data: &mut sim_core::Data, instance: usize) {
+        data.plugin_state[model.plugin_stateadr[instance]] += model.timestep * data.qpos[0];
+    }
+}
+
+/// Finite differences of the transition start each step from the plugin state
+/// the caller holds, as MuJoCo's `mjd_stepFD` restores `mjSTATE_FULLPHYSICS`,
+/// which holds `mjSTATE_PLUGIN` (`engine_derivative_fd.c:307`,
+/// `engine_support.c:167`): the matrices equal the ones taken a column at a
+/// time from fresh copies of the state. Sleep is disabled; with it enabled
+/// each step starts from a copy of the whole `Data`. Under Euler every hybrid
+/// column of this fixture is analytic; under full Implicit its position
+/// columns are finite differences.
+#[test]
+fn transition_derivatives_take_each_column_from_the_plugin_state() {
+    for integrator in ["Euler", "implicit"] {
+        check_transition_with_a_stateful_plugin(integrator);
+    }
+}
+
+fn check_transition_with_a_stateful_plugin(integrator: &str) {
+    let mut model = sim_mjcf::load_model(&format!(
+        r#"<mujoco>
+          <option timestep="0.01" integrator="{integrator}"/>
+          <worldbody>
+            <body pos="0 0 1">
+              <joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor name="m" joint="j"/>
+          </actuator>
+        </mujoco>"#
+    ))
+    .expect("load");
+    let plugin: std::sync::Arc<dyn sim_core::plugin::Plugin> = std::sync::Arc::new(IntegralTerm);
+    model.nplugin = 1;
+    model.npluginstate = 1;
+    model.plugin_capabilities.push(plugin.capabilities());
+    model
+        .plugin_needstage
+        .push(sim_core::plugin::PluginStage::Acc);
+    model.plugin_objects.push(plugin);
+    model.plugin_stateadr.push(0);
+    model.plugin_statenum.push(1);
+    model.plugin_name.push(None);
+    model.plugin_attradr.push(0);
+    model.plugin_attrnum.push(0);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.4;
+    data.ctrl[0] = 0.2;
+    data.plugin_state[0] = 0.3;
+    data.forward(&model).expect("forward");
+
+    // The fixture is the subject: a step advances the plugin's state, and
+    // that state moves the next step.
+    let mut stepped = data.clone();
+    stepped.step(&model).expect("step");
+    assert_eq!(stepped.plugin_state[0], 0.3 + 0.01 * stepped.qpos[0]);
+    let mut moved = data.clone();
+    moved.plugin_state[0] = 0.0;
+    moved.step(&model).expect("step");
+    assert_ne!(moved.qvel[0], stepped.qvel[0]);
+
+    assert_transition_matches_a_column_at_a_time(integrator, &model, &data);
 }
 
 /// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its

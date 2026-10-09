@@ -242,16 +242,15 @@ pub fn mjd_transition_fd(
 }
 
 /// Puts `scratch` back at the caller's state `nominal` before a
-/// finite-difference step, so no step depends on the ones before it
-/// (except through a plugin's state with sleep disabled, which this does not
-/// restore: the spec book's gap chapter, `41-what-planning-could-not-see.md`).
+/// finite-difference step, so no step depends on the ones before it.
 /// MuJoCo's `mjd_stepFD` restores `mjSTATE_FULLPHYSICS | mjSTATE_CTRL` and the
 /// warm start (`engine_derivative_fd.c:307`); with sleep disabled this
-/// restores qpos, qvel, act, ctrl, the warm start and the time. With sleep
-/// enabled a step also reads what a sleeping tree keeps from the step before
-/// it, its stored pose among them (a pose that differs wakes the tree,
-/// `forward/position.rs`), so the whole state is restored: from less, one
-/// column's wake reaches the next (registry `D-FD-SLEEP`;
+/// restores qpos, qvel, act, ctrl, the warm start, the time and the plugin
+/// state (`transition_derivatives_take_each_column_from_the_plugin_state`).
+/// With sleep enabled a step also reads what a sleeping tree keeps from the
+/// step before it, its stored pose among them (a pose that differs wakes the
+/// tree, `forward/position.rs`), so the whole state is restored: from less,
+/// one column's wake reaches the next (registry `D-FD-SLEEP`;
 /// `transition_derivatives_take_each_column_from_the_sleep_state`).
 fn restore(model: &Model, scratch: &mut Data, nominal: &Data) {
     if model.enableflags & ENABLE_SLEEP != 0 {
@@ -263,6 +262,7 @@ fn restore(model: &Model, scratch: &mut Data, nominal: &Data) {
         scratch.ctrl.copy_from(&nominal.ctrl);
         scratch.qacc_warmstart.copy_from(&nominal.qacc_warmstart);
         scratch.time = nominal.time;
+        scratch.plugin_state.copy_from_slice(&nominal.plugin_state);
     }
 }
 
