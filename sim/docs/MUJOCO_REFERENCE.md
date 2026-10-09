@@ -929,9 +929,10 @@ Cost: ~nv FD step() calls (position columns only) vs 2·(2nv+na+nu) for pure FD
 With an active constraint row in `data` (from the caller's last forward pass)
 it returns pure FD: its analytic columns hold no constraint-force derivative.
 It also returns pure FD when a step from `data` can change a tree's sleep
-state, and for the models `implicit_analytic_incomplete` names (a tendon
-spring or damper under implicitspringdamper; a muscle gain or fluid density
-under implicitfast and implicit).
+state, when an actuator's control is bad or outside a ctrlrange the step
+clamps it to, and for the models `implicit_analytic_incomplete` names (a
+tendon spring or damper under implicitspringdamper; a muscle gain or fluid
+density under implicitfast and implicit).
 ```
 
 ### 6.5 Public Dispatch: `mjd_transition()`
@@ -1011,7 +1012,7 @@ Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
 | `qfrc_constraint[nv]` | `DVector` | Contact + limit + equality forces |
 | `actuator_length[nu]` | `Vec<f64>` | Gear × transmission length |
 | `actuator_velocity[nu]` | `Vec<f64>` | Gear × transmission velocity |
-| `actuator_moment[nu]` | `Vec<DVector(nv)>` | Transmission moment arm vectors (Site/Body transmissions; used for force projection and velocity) |
+| `actuator_moment[nu]` | `Vec<DVector(nv)>` | Transmission moment arm vectors (Site, Body and slider-crank transmissions, and Joint on a ball or free joint; zero for Joint on a hinge or slide and for Tendon) |
 | `actuator_force[nu]` | `Vec<f64>` | Scalar actuator force (after gain/bias/clamp) |
 | `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
 | `contacts[ncon]` | `Vec<Contact>` | Active contact points |

@@ -32,8 +32,8 @@ use nalgebra::{DMatrix, DVector};
 /// - Centered: `2 · (2·nv + na + nu)` calls to `step()`.
 /// - Forward:  `1 + (2·nv + na + nu)` calls to `step()` (the `1` is for
 ///   the nominal `y_0 = f(x)` evaluation).
-/// - With sleep enabled, each column also copies the whole `Data` (about
-///   one step's cost, measured on a 30-link chain).
+/// - With sleep enabled, each perturbed step also starts from a copy of the
+///   whole `Data`.
 ///
 /// # Quaternion handling
 ///

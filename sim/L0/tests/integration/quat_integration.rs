@@ -36,7 +36,8 @@ fn matches_golden(ours: &[f64], mj: &[f64]) -> bool {
         })
 }
 
-/// Each spin's qpos at every checkpoint is MuJoCo's, bit for bit. The spin
+/// Each spin's qpos at every checkpoint is MuJoCo's, bit for bit (on the
+/// golden's platform). The spin
 /// is about a principal axis, so the gyroscopic force is 0 but for rounding,
 /// which leaves the other two velocities below 1e-16 in MuJoCo's golden and
 /// at other values that small here; the velocities are checked to 1e-15.
@@ -86,7 +87,7 @@ fn spins_integrate_as_mujoco() {
 }
 
 /// `mj_integrate_pos_explicit` on a ball joint gives MuJoCo's
-/// `mj_integratePos`, bit for bit.
+/// `mj_integratePos`, bit for bit (on the golden's platform).
 #[test]
 fn integrate_pos_explicit_matches_mujoco() {
     let model = sim_mjcf::load_model(

@@ -2573,7 +2573,7 @@ pub fn mass_directional_derivative(
 ///   quadratic in v, so its slope moves with v: the same missing `∂D/∂v` term.
 ///   (Viscosity alone is linear in v ⇒ fine.)
 ///
-/// FD is exact in both cases. Euler never hits these terms, so it always returns
+/// FD is exact in each case. Euler never hits these terms, so it always returns
 /// `false` here. This is the single source of truth shared by
 /// `mjd_transition`'s `can_analytical` gate and the defensive FD return below, so a
 /// direct `mjd_transition_hybrid` caller is guarded identically.
