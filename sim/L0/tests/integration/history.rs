@@ -524,10 +524,15 @@ fn history_reads_match_mujoco_3_5_0() {
                 Some(&[1.0, 2.0, 3.0, 4.0, 5.0]),
             )
             .expect("init 8");
-            let theirs = floats(&case["history_after_init"]);
-            for (j, (a, b)) in data.history.iter().zip(&theirs).enumerate() {
-                assert_eq!(a.to_bits(), b.to_bits(), "after init: history[{j}]");
-            }
+            // To the tolerance, not bit for bit: the other slots hold samples
+            // of controls computed with `f64::sin`, and bit for bit slot 7
+            // differed by 4 ULP on CI's Linux runner, not on macOS.
+            assert_close(
+                "after init: history",
+                &data.history,
+                &floats(&case["history_after_init"]),
+                &[],
+            );
         }
     }
 }
