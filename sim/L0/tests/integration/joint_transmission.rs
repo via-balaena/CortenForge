@@ -7,21 +7,21 @@
 //! gears, rotations below and past π, a quaternion off unit norm, a rotation
 //! where MuJoCo's form of the length rounds otherwise than an equal one, and
 //! (forward only) a free joint whose velocity products sum differently in
-//! another order; the model's
-//! actuator_acc0, the actuator's length, velocity, moment and force,
-//! qfrc_actuator, qacc and its actuatorpos and actuatorvel sensors after
-//! `forward`, and qpos and qvel over 10 steps
-//! under Euler and implicitfast. The transmission's quantities are compared bit
-//! for bit; qacc and the trajectories, which go through the mass matrix, to
-//! 1e-12.
+//! another order; the model's actuator_acc0, the actuator's length,
+//! velocity, moment and force, qfrc_actuator, qacc and its actuatorpos and
+//! actuatorvel sensors after `forward`, and qpos and qvel over 10 steps under
+//! Euler and implicitfast. The transmission's quantities are compared bit for
+//! bit (on the golden's platform; see `matches_golden`); qacc and the
+//! trajectories, which go through the mass matrix, to 1e-12.
 //!
 //! One known difference: MuJoCo's implicitfast step gathers `qDeriv` onto the
 //! mass matrix's sparsity pattern, which for a body MuJoCo calls simple (one
 //! box on a ball or free joint here) holds no entry between the joint's dofs,
 //! so it drops the cross terms a velocity actuator's moment puts in `qDeriv`;
-//! ours keeps them (the spec book's gap chapter,
-//! `docs/studies/a_double_dose_of_detail/src/41-what-planning-could-not-see.md`). Those cases must still differ, so the test
-//! fails when that changes.
+//! ours keeps them. The spec book's P30 entry
+//! (`docs/studies/a_double_dose_of_detail/src/20-rigid-physics.md`) ports
+//! MuJoCo's restriction; until then those cases must still differ, so the
+//! test fails when that changes.
 
 use serde_json::Value;
 
@@ -61,7 +61,7 @@ fn start(case: &Value, data: &mut sim_core::Data) {
 }
 
 /// The case's quantities after `forward` against MuJoCo's: the
-/// transmission's bit for bit, qacc to [`close`]. Returns the actuator's
+/// transmission's to [`matches_golden`], qacc to [`close`]. Returns the actuator's
 /// moment row as MuJoCo has it.
 fn check_forward(case: &Value, failures: &mut Vec<String>) -> Vec<f64> {
     let label = label(case);
@@ -105,7 +105,7 @@ fn check_forward(case: &Value, failures: &mut Vec<String>) -> Vec<f64> {
             floats(&f["sensordata"]),
         ),
     ] {
-        if !same_bits(&ours, &mj) {
+        if !matches_golden(&ours, &mj) {
             failures.push(format!("{label}: {name} {ours:?}, MuJoCo {mj:?}"));
         }
     }
@@ -162,8 +162,16 @@ fn ball_and_free_joint_transmissions_match_mujoco() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-fn same_bits(ours: &[f64], mj: &[f64]) -> bool {
-    ours.len() == mj.len() && ours.iter().zip(mj).all(|(a, b)| a.to_bits() == b.to_bits())
+/// Bit for bit on macOS arm64, where the golden was made. The values go
+/// through `sin`, `cos` and `atan2`, which another platform's libm may round
+/// otherwise by an ulp; there the comparison is to `1e-13 · max(1, |MuJoCo's|)`.
+fn matches_golden(ours: &[f64], mj: &[f64]) -> bool {
+    ours.len() == mj.len()
+        && ours.iter().zip(mj).all(|(a, b)| {
+            a.to_bits() == b.to_bits()
+                || (!cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                    && (a - b).abs() <= 1e-13 * b.abs().max(1.0))
+        })
 }
 
 /// Each entry within `1e-12 · max(1, |MuJoCo's|)`.

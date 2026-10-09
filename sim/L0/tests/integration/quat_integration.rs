@@ -1,4 +1,5 @@
-//! Quaternion integration against MuJoCo 3.5.0, bit for bit.
+//! Quaternion integration against MuJoCo 3.5.0, bit for bit (on the golden's
+//! platform; see `matches_golden`).
 //!
 //! The golden is `assets/golden/quat/quat.json`, from
 //! `scripts/gen_quat_reference.py` on the unfused oracle: a box on a free and
@@ -23,8 +24,16 @@ fn floats(v: &Value) -> Vec<f64> {
         .collect()
 }
 
-fn same_bits(ours: &[f64], mj: &[f64]) -> bool {
-    ours.len() == mj.len() && ours.iter().zip(mj).all(|(a, b)| a.to_bits() == b.to_bits())
+/// Bit for bit on macOS arm64, where the golden was made. The values go
+/// through `sin`, `cos` and `atan2`, which another platform's libm may round
+/// otherwise by an ulp; there the comparison is to `1e-13 · max(1, |MuJoCo's|)`.
+fn matches_golden(ours: &[f64], mj: &[f64]) -> bool {
+    ours.len() == mj.len()
+        && ours.iter().zip(mj).all(|(a, b)| {
+            a.to_bits() == b.to_bits()
+                || (!cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                    && (a - b).abs() <= 1e-13 * b.abs().max(1.0))
+        })
 }
 
 /// Each spin's qpos at every checkpoint is MuJoCo's, bit for bit. The spin
@@ -63,7 +72,7 @@ fn spins_integrate_as_mujoco() {
                 .iter()
                 .zip(&qvel)
                 .any(|(a, b)| (a - b).abs() > 1e-15);
-            if !same_bits(data.qpos.as_slice(), &qpos) || qvel_off {
+            if !matches_golden(data.qpos.as_slice(), &qpos) || qvel_off {
                 failures.push(format!(
                     "{label}, step {step}: qpos {:?} qvel {:?}, MuJoCo {qpos:?} {qvel:?}",
                     data.qpos.as_slice(),
@@ -100,7 +109,7 @@ fn integrate_pos_explicit_matches_mujoco() {
         let mut out = nalgebra::DVector::zeros(4);
         mj_integrate_pos_explicit(&model, &mut out, &qpos, &qvel, dt);
         let want = floats(&case["result"]);
-        if !same_bits(out.as_slice(), &want) {
+        if !matches_golden(out.as_slice(), &want) {
             failures.push(format!(
                 "{}: {:?}, MuJoCo {want:?}",
                 case["name"].as_str().expect("name"),
