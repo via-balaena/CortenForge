@@ -462,23 +462,31 @@ pub fn mj_next_activation(
     current_act: f64,
     act_dot: f64,
 ) -> f64 {
-    let mut act = current_act;
-
-    // Integration step
-    if model.actuator_dyntype[actuator_id] == ActuatorDynamics::FilterExact {
-        let tau = model.actuator_dynprm[actuator_id][0].max(1e-10);
-        act += act_dot * tau * (1.0 - (-model.timestep / tau).exp());
-    } else {
-        act += act_dot * model.timestep;
-    }
+    let act = unclamped_next_activation(model, actuator_id, current_act, act_dot);
 
     // Activation clamping (§34)
     if model.actuator_actlimited[actuator_id] {
         let range = model.actuator_actrange[actuator_id];
-        act = act.clamp(range.0, range.1);
+        act.clamp(range.0, range.1)
+    } else {
+        act
     }
+}
 
-    act
+/// The next activation before [`mj_next_activation`] clamps it to the
+/// actuator's `actrange`.
+pub fn unclamped_next_activation(
+    model: &Model,
+    actuator_id: usize,
+    current_act: f64,
+    act_dot: f64,
+) -> f64 {
+    if model.actuator_dyntype[actuator_id] == ActuatorDynamics::FilterExact {
+        let tau = model.actuator_dynprm[actuator_id][0].max(1e-10);
+        current_act + act_dot * tau * (1.0 - (-model.timestep / tau).exp())
+    } else {
+        current_act + act_dot * model.timestep
+    }
 }
 
 /// The control input actuator `i` acts on: `data.ctrl[i]`, or for a delayed

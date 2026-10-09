@@ -3800,3 +3800,50 @@ fn smooth_pos_matches_finite_differences_through_tendons() {
         failures.join("\n")
     );
 }
+
+/// The step clamps the next activation to its actrange, so the activation
+/// column of `A` is 0 where the next activation, before the clamp, falls
+/// outside it: the hybrid decides that with the step's own formula, the
+/// exact filter for `filterexact`, `act + h·act_dot` for an integrator. In
+/// each case the other formula would land on the other side of the bound (the
+/// integrator's `dynprm` is the time constant the exact filter would read).
+#[test]
+fn hybrid_activation_column_follows_the_activation_clamp() {
+    for (dynamics, act, ctrl) in [
+        (r#"dyntype="filterexact" dynprm="0.05""#, 1.05, 0.79),
+        (r#"dyntype="integrator" dynprm="0.05""#, 0.999, 0.105),
+    ] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.01"/>
+              <worldbody>
+                <body name="b">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <general joint="j" {dynamics} actlimited="true" actrange="-1 1"/>
+              </actuator>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        data.qvel[0] = 1.0;
+        data.act[0] = act;
+        data.ctrl[0] = ctrl;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig::default();
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        assert!(
+            fd.A[(2, 2)].abs() < 1e-9,
+            "{dynamics}: fd A[2,2] {}",
+            fd.A[(2, 2)]
+        );
+        for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+            assert!((h - f).abs() < 1e-6, "{dynamics}: hybrid {h}, fd {f}");
+        }
+    }
+}

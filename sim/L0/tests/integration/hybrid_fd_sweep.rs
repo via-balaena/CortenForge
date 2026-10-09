@@ -471,11 +471,6 @@ const KNOWN_GAPS: &[Gap] = &[
                 && matches!(c.trn, Trn::JointRoot | Trn::JointInParentRoot)
         },
     },
-    // The step clamps the next activation to its range.
-    Gap {
-        name: "activation past its range",
-        covers: |c| c.state == State::ActPastRange,
-    },
     // A muscle's `D` depends on the velocity through its force-velocity
     // curve.
     Gap {

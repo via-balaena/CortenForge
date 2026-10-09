@@ -1,5 +1,6 @@
 //! Integration-specific derivative logic.
 
+use crate::forward::unclamped_next_activation;
 use crate::linalg::cholesky_solve_in_place;
 use crate::types::{ActuatorDynamics, Data, Integrator, Model};
 use nalgebra::{DMatrix, DVector, Matrix3, UnitQuaternion, Vector3};
@@ -233,6 +234,17 @@ pub(super) fn compute_integration_derivatives(
                     // FD fallback handles this via the hybrid path.
                     dact_dact[(j, j)] = 1.0;
                     dact_dactdot[(j, j)] = h;
+                }
+            }
+            // The step clamps the next activation to its range
+            // (`mj_next_activation`): where it does, the activation does not
+            // move with the one it starts from.
+            if model.actuator_actlimited[i] {
+                let (lo, hi) = model.actuator_actrange[i];
+                let next = unclamped_next_activation(model, i, data.act[j], data.act_dot[j]);
+                if next < lo || next > hi {
+                    dact_dact[(j, j)] = 0.0;
+                    dact_dactdot[(j, j)] = 0.0;
                 }
             }
         }
