@@ -524,15 +524,22 @@ fn history_reads_match_mujoco_3_5_0() {
                 Some(&[1.0, 2.0, 3.0, 4.0, 5.0]),
             )
             .expect("init 8");
-            // To the tolerance, not bit for bit: the other slots hold samples
-            // of controls computed with `f64::sin`, and bit for bit slot 7
-            // differed by 4 ULP on CI's Linux runner, not on macOS.
-            assert_close(
-                "after init: history",
-                &data.history,
-                &floats(&case["history_after_init"]),
-                &[],
-            );
+            // Actuator 8's buffer holds what the init wrote, bit for bit; the
+            // others to the tolerance: their value slots hold samples of the
+            // controls, computed with `f64::sin`, and on CI's Linux runner
+            // slot 7 differed by 4 ULP (one ULP of sin(9.9)).
+            let theirs = floats(&case["history_after_init"]);
+            let adr = usize::try_from(model.actuator_historyadr[8]).expect("adr");
+            let n = usize::try_from(model.actuator_nsample[8]).expect("n");
+            let init = adr..adr + 2 + 2 * n;
+            for j in init.clone() {
+                assert_eq!(
+                    data.history[j].to_bits(),
+                    theirs[j].to_bits(),
+                    "after init: history[{j}]"
+                );
+            }
+            assert_close("after init: history", &data.history, &theirs, &[init]);
         }
     }
 }

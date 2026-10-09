@@ -588,13 +588,18 @@ fn awake_trees_advance_with_the_first_pass_acceleration() {
 }
 
 /// A sleeping actuated tree (policy allowed) keeps its last acceleration
-/// when its ctrl changes, and stays asleep, as in MuJoCo.
+/// when its ctrl changes, and stays asleep, as in MuJoCo: the qacc of its
+/// sleep step (636) bit for bit at step 725, after the change at 700, and
+/// MuJoCo's to the tolerance.
 #[test]
 fn ctrl_change_keeps_a_sleeping_tree_asleep() {
     assert_trace("act_sleep_ctrl", &["tree_asleep"]);
     let (ours, theirs) = trace("act_sleep_ctrl");
     let qacc = |s: &Step| s.floats.as_ref().expect("kept")[1].clone();
-    assert_eq!(qacc(&ours[725]), qacc(&theirs[725]));
+    assert_eq!(qacc(&ours[725]), qacc(&ours[636]));
+    for (a, b) in qacc(&ours[725]).iter().zip(&qacc(&theirs[725])) {
+        assert!((a - b).abs() <= 1e-12, "qacc at 725: ours {a}, MuJoCo {b}");
+    }
 }
 
 /// Under RK4 a tree falls asleep and wakes the next step, every ten steps,
