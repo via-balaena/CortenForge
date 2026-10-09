@@ -14,9 +14,10 @@ It writes joint_transmission.json, one entry per case: an actuator with a
 (a box in zero gravity), its kind (motor, position, velocity), its gear, the
 joint's position (one quaternion 1.5 times a unit one) and velocity; the
 model's actuator_acc0; then after mj_forward the actuator's length,
-velocity, moment (dense, one row) and force, qfrc_actuator and qacc; and qpos
-and qvel after each of 10 steps under Euler and under implicitfast. Its
-`forward_only` cases hold the forward quantities alone.
+velocity, moment (dense, one row) and force, qfrc_actuator, qacc and the
+actuatorpos and actuatorvel sensors; and qpos and qvel after each of 10
+steps under Euler and under implicitfast. Its `forward_only` cases hold the
+forward quantities alone.
 """
 import json
 import math
@@ -87,6 +88,10 @@ def xml(joint, trn, kind, gear, integrator):
   <actuator>
     {act}
   </actuator>
+  <sensor>
+    <actuatorpos actuator="a"/>
+    <actuatorvel actuator="a"/>
+  </sensor>
 </mujoco>"""
 
 
@@ -131,6 +136,7 @@ def case(name, joint, trn, gear, q, w, kind, v=(0.3, 0.1, -0.2), steps=True):
                 'actuator_force': floats(d.actuator_force),
                 'qfrc_actuator': floats(d.qfrc_actuator),
                 'qacc': floats(d.qacc),
+                'sensordata': floats(d.sensordata),
             }
             state(m, d, joint, q, w, v)
         if steps:

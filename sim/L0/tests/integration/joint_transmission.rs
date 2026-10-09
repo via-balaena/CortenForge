@@ -9,7 +9,8 @@
 //! (forward only) a free joint whose velocity products sum differently in
 //! another order; the model's
 //! actuator_acc0, the actuator's length, velocity, moment and force,
-//! qfrc_actuator and qacc after `forward`, and qpos and qvel over 10 steps
+//! qfrc_actuator, qacc and its actuatorpos and actuatorvel sensors after
+//! `forward`, and qpos and qvel over 10 steps
 //! under Euler and implicitfast. The transmission's quantities are compared bit
 //! for bit; qacc and the trajectories, which go through the mass matrix, to
 //! 1e-12.
@@ -97,6 +98,11 @@ fn check_forward(case: &Value, failures: &mut Vec<String>) -> Vec<f64> {
             "qfrc_actuator",
             data.qfrc_actuator.as_slice().to_vec(),
             floats(&f["qfrc_actuator"]),
+        ),
+        (
+            "actuatorpos and actuatorvel sensors",
+            data.sensordata.as_slice().to_vec(),
+            floats(&f["sensordata"]),
         ),
     ] {
         if !same_bits(&ours, &mj) {

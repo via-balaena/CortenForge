@@ -8,8 +8,8 @@ use super::geom_distance::geom_distance;
 use super::postprocess::{sensor_write, sensor_write3, sensor_write4, sensor_write6};
 use crate::types::flags::disabled;
 use crate::types::{
-    ActuatorTransmission, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjJointType, MjObjectType,
-    MjSensorDataType, MjSensorType, Model, SensorStage,
+    DISABLE_SENSOR, Data, ENABLE_SLEEP, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
+    Model, SensorStage,
 };
 use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
 
@@ -314,33 +314,9 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
         }
 
         MjSensorType::ActuatorPos if objid < model.nu => {
-            // Actuator position: transmission length = gear * joint_position.
-            // For joint-type transmissions, this is gear[0] * qpos[qpos_adr].
-            match model.actuator_trntype[objid] {
-                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
-                    let jnt_id = model.actuator_trnid[objid][0];
-                    if jnt_id < model.njnt {
-                        let qpos_adr = model.jnt_qpos_adr[jnt_id];
-                        let gear = model.actuator_gear[objid][0];
-                        sensor_write(&mut data.sensordata, adr, 0, gear * data.qpos[qpos_adr]);
-                    }
-                }
-                ActuatorTransmission::Tendon => {
-                    let tendon_id = model.actuator_trnid[objid][0];
-                    let value = if tendon_id < model.ntendon {
-                        data.ten_length[tendon_id] * model.actuator_gear[objid][0]
-                    } else {
-                        0.0
-                    };
-                    sensor_write(&mut data.sensordata, adr, 0, value);
-                }
-                ActuatorTransmission::Site
-                | ActuatorTransmission::Body
-                | ActuatorTransmission::SliderCrank => {
-                    // Length set by transmission function (runs before this).
-                    sensor_write(&mut data.sensordata, adr, 0, data.actuator_length[objid]);
-                }
-            }
+            // The transmission's length, which the position stage set before
+            // the sensors (MuJoCo `engine_sensor.c:568-570`).
+            sensor_write(&mut data.sensordata, adr, 0, data.actuator_length[objid]);
         }
 
         MjSensorType::TendonPos => {
