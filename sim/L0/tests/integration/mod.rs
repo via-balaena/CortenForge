@@ -151,6 +151,10 @@ pub mod validation;
 /// Derivative infrastructure tests: FD, analytical qDeriv, acceptance criteria 1–23.
 pub mod derivatives;
 
+/// The hybrid transition derivative against pure finite differences, swept
+/// over actuator kinds, transmissions, states, controls and integrators.
+pub mod hybrid_fd_sweep;
+
 // ============================================================================
 // Keyframe & Mocap Body Tests (§14)
 // ============================================================================
