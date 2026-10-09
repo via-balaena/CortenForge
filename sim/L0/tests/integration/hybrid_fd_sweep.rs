@@ -8,7 +8,7 @@
 //! `B`, `C` and `D`. Two blocks:
 //!
 //! - **structure:** every actuator kind on every transmission, with the root
-//!   body on a hinge, a slide or a ball joint, under each integrator, with
+//!   body on a hinge, a slide, a ball or a free joint, under each integrator, with
 //!   and without joint damping and stiffness, at a control inside its range;
 //! - **inputs:** every actuator kind under each state (actuation disabled,
 //!   its group disabled, its force clamped, its activation past its range)
@@ -150,16 +150,18 @@ enum Root {
     Hinge,
     Slide,
     Ball,
+    Free,
 }
 
 impl Root {
-    const ALL: [Self; 3] = [Self::Hinge, Self::Slide, Self::Ball];
+    const ALL: [Self; 4] = [Self::Hinge, Self::Slide, Self::Ball, Self::Free];
 
     fn name(self) -> &'static str {
         match self {
             Self::Hinge => "hinge root",
             Self::Slide => "slide root",
             Self::Ball => "ball root",
+            Self::Free => "free root",
         }
     }
 
@@ -172,6 +174,7 @@ impl Root {
                 format!(r#"<joint name="j1" type="slide" axis="0 0 1" range="-1 1"{springs}/>"#)
             }
             Self::Ball => format!(r#"<joint name="j1" type="ball"{springs}/>"#),
+            Self::Free => format!(r#"<joint name="j1" type="free"{springs}/>"#),
         }
     }
 }
@@ -216,8 +219,9 @@ impl Trn {
         }
     }
 
-    /// A ball joint takes a scalar gear: Rigid-loading refuses a nonzero
-    /// `gear[1..]` on one, as a stated limitation.
+    /// A ball or free joint takes a scalar gear: the forward pass applies
+    /// `gear[0]` to the joint's first dof only, where MuJoCo applies the
+    /// whole gear.
     fn attrs(self) -> &'static str {
         match self {
             Self::JointRoot => r#"joint="j1" gear="1.5""#,
@@ -237,20 +241,21 @@ impl Trn {
 
 /// Whether MuJoCo 3.5.0 loads this actuator: adhesion acts only through a
 /// body and only adhesion does; MuJoCo's schema refuses `site` on a
-/// `<muscle>`, and its length range does not converge for this muscle on a
-/// ball joint, a spatial tendon or a slider-crank.
+/// `<muscle>`, its length range does not converge for this muscle on a ball
+/// joint, a spatial tendon or a slider-crank, and on a free joint it is
+/// (0, 0), which MuJoCo refuses.
 fn mujoco_loads(kind: &Kind, trn: Trn, root: Root) -> bool {
     if (kind.name == ADHESION) != (trn == Trn::Body) {
         return false;
     }
     if kind.name == MUSCLE {
-        let on_ball_root =
-            root == Root::Ball && matches!(trn, Trn::JointRoot | Trn::JointInParentRoot);
+        let on_ball_or_free_root = matches!(root, Root::Ball | Root::Free)
+            && matches!(trn, Trn::JointRoot | Trn::JointInParentRoot);
         let refused = matches!(
             trn,
             Trn::Site | Trn::SiteRef | Trn::SliderCrank | Trn::SpatialTendon
         );
-        return !on_ball_root && !refused;
+        return !on_ball_or_free_root && !refused;
     }
     true
 }
@@ -460,14 +465,11 @@ const KNOWN_GAPS: &[Gap] = &[
     // The hybrid spreads the gear over every dof of the joint; the forward
     // pass applies it to the first.
     Gap {
-        name: "joint transmission on a ball joint",
+        name: "joint transmission on a ball or free joint",
         covers: |c| {
-            c.root == Root::Ball && matches!(c.trn, Trn::JointRoot | Trn::JointInParentRoot)
+            matches!(c.root, Root::Ball | Root::Free)
+                && matches!(c.trn, Trn::JointRoot | Trn::JointInParentRoot)
         },
-    },
-    Gap {
-        name: "implicitspringdamper with a ball-joint spring: position columns",
-        covers: |c| c.integrator == ISD && c.damped && c.root == Root::Ball,
     },
     // A spatial tendon's moment arm changes with the configuration.
     Gap {
@@ -576,17 +578,29 @@ fn nominal(case: &Case) -> Option<(Model, Data)> {
             data.qpos[q1] = 0.1;
             data.qvel[v1] = 0.7;
         }
-        Root::Ball => {
-            // 0.3 rad about (1, 1, 0)/√2.
+        Root::Ball | Root::Free => {
+            // A free joint's position first, then for both 0.3 rad about
+            // (1, 1, 0)/√2.
+            let (q, v) = if case.root == Root::Free {
+                data.qpos[q1] = 0.05;
+                data.qpos[q1 + 1] = -0.02;
+                data.qpos[q1 + 2] = 1.0;
+                data.qvel[v1] = 0.2;
+                data.qvel[v1 + 1] = -0.1;
+                data.qvel[v1 + 2] = 0.3;
+                (q1 + 3, v1 + 3)
+            } else {
+                (q1, v1)
+            };
             let (s, c) = (0.15_f64.sin(), 0.15_f64.cos());
             let k = s / 2.0_f64.sqrt();
-            data.qpos[q1] = c;
-            data.qpos[q1 + 1] = k;
-            data.qpos[q1 + 2] = k;
-            data.qpos[q1 + 3] = 0.0;
-            data.qvel[v1] = 0.7;
-            data.qvel[v1 + 1] = -0.4;
-            data.qvel[v1 + 2] = 0.3;
+            data.qpos[q] = c;
+            data.qpos[q + 1] = k;
+            data.qpos[q + 2] = k;
+            data.qpos[q + 3] = 0.0;
+            data.qvel[v] = 0.7;
+            data.qvel[v + 1] = -0.4;
+            data.qvel[v + 2] = 0.3;
         }
     }
     data.qpos[model.jnt_qpos_adr[1]] = 0.5;

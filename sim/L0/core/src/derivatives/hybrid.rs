@@ -761,6 +761,8 @@ pub fn mjd_smooth_pos(model: &Model, data: &mut Data) {
 ///
 /// Components:
 /// 1. Joint spring stiffness: −k for hinge/slide (diagonal), −k·∂subquat/∂q for ball/free
+///    (none under `ImplicitSpringDamper`, whose step applies no ball or free
+///    joint spring)
 /// 2. Tendon spring stiffness: −k · J^T · J
 ///
 /// Fluid, gravcomp, and flex passive forces are NOT included (deferred — AD-1).
@@ -772,11 +774,16 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
     }
 
     // 1. Joint spring stiffness: ∂qfrc_spring/∂qpos
+    let implicit_spring_damper = model.integrator == Integrator::ImplicitSpringDamper;
     if model.disableflags & DISABLE_SPRING == 0 {
         for jnt_id in 0..model.njnt {
             let dof_adr = model.jnt_dof_adr[jnt_id];
             let stiffness = model.jnt_stiffness[jnt_id];
-            if stiffness == 0.0 {
+            let multi_dof = matches!(
+                model.jnt_type[jnt_id],
+                MjJointType::Ball | MjJointType::Free
+            );
+            if stiffness == 0.0 || (implicit_spring_damper && multi_dof) {
                 continue;
             }
 
