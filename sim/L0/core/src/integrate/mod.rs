@@ -64,7 +64,7 @@ impl Data {
     /// # Integration Methods
     ///
     /// - **Euler**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`,
-    ///   or with a damped DOF eulerdamp's `(M + h·D)⁻¹ (qfrc_smooth +
+    ///   or where `eulerdamp_applies` eulerdamp's `(M + h·D)⁻¹ (qfrc_smooth +
     ///   qfrc_constraint)` in place of `qacc`), then integrates position using the
     ///   new velocity.
     ///

@@ -388,7 +388,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// **Joint damping (eulerdamp).** Under the Euler integrator MuJoCo solves the velocity
     /// update with the IMPLICIT factor `M_impl = M + Δt·D` (`D = implicit_damping`), not bare
     /// `M`. The unloaded `A` from `transition_derivatives` already accounts for this — sim-core
-    /// routes its Euler velocity solve through `M_impl` when any DOF is damped (see
+    /// routes its Euler velocity solve through `M_impl` where it takes eulerdamp (see
     /// `derivatives/hybrid.rs`). So the carry only adds the LOADED geometric stiffness, routed
     /// through the same `M_impl` (`∂(M_impl⁻¹·Jᵀw)/∂θ = geom_stiff / M_impl`), and the position
     /// rows follow the semi-implicit chain `θ' = θ + Δt·ω'`. `M_impl` is configuration-independent

@@ -910,7 +910,7 @@ joints use simple scalar chain rules (identity + h·I).
 
 ### 6.4 Hybrid FD+Analytical: `mjd_transition_hybrid()`
 
-Combines analytical velocity/activation columns with FD position columns:
+Combines analytical and FD columns (which ones: `mjd_transition_hybrid`'s doc):
 
 ```
 Velocity columns (analytical):
@@ -923,10 +923,8 @@ Activation columns (analytical):
   Integrator:           ∂act⁺/∂act = 1; no force-through-act derivative
   Muscle:               FD fallback (FLV curve gradients too complex)
 
-Position columns: FD (captures contact transitions, implicit spring ∂v/∂q)
 B matrix: analytical for DynType::None, FD for actuators with dynamics
 
-Cost: ~nv FD step() calls (position columns only) vs 1 + 2·(2nv+na+nu) for pure FD
 With an active constraint row in `data` (from the caller's last forward pass)
 it returns pure FD: its analytic columns hold no constraint-force derivative.
 It also returns pure FD in the other cases `mjd_transition_hybrid`'s doc
@@ -935,8 +933,9 @@ names.
 
 ### 6.5 Public Dispatch: `mjd_transition()`
 
-Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
-`DerivativeConfig.use_analytical`. Also available as `Data::transition_derivatives()`.
+Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` by
+`DerivativeConfig.use_analytical` and the model (`mjd_transition`'s doc). Also
+available as `Data::transition_derivatives()`.
 
 ### 6.6 Validation Utilities
 

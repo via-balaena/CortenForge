@@ -86,9 +86,9 @@ pub struct GpuPhysicsPipeline {
     // stage across envs via the env-strided shaders.
     n_env: u32,
 
-    /// Whether the eulerdamp stage runs: as the CPU step's (sim-core's
-    /// `eulerdamp_applies`), neither eulerdamp nor dampers disabled and some DOF
-    /// damped. It runs between the constraint stage and integration, solving
+    /// Whether the eulerdamp stage runs: neither eulerdamp nor dampers disabled
+    /// and some DOF damped positively (sim-core's `eulerdamp_applies`; sim-gpu has
+    /// no sleep). It runs between the constraint stage and integration, solving
     /// `(M + h·D)·qacc = qfrc_smooth − D·q̇ + qfrc_constraint`. When false it is
     /// skipped entirely, so the undamped trajectory is byte-identical to the
     /// pre-wiring pipeline.
@@ -162,10 +162,10 @@ impl GpuPhysicsPipeline {
         let eulerdamp = GpuEulerdampPipeline::new(&ctx, &model_bufs, &state_bufs);
         let integrate = GpuIntegratePipeline::new(&ctx, &model_bufs, &state_bufs);
 
-        // Eulerdamp runs only when the CPU step's does (sim-core's
-        // `eulerdamp_applies`, MuJoCo `engine_forward.c:956`): neither eulerdamp
-        // nor dampers disabled, and some DOF damped. Otherwise it is skipped, so
-        // the undamped path is byte-identical.
+        // Eulerdamp runs with neither eulerdamp nor dampers disabled and some DOF
+        // damped positively (sim-core's `eulerdamp_applies`, MuJoCo
+        // `engine_forward.c:956`). Otherwise it is skipped, so the undamped path is
+        // byte-identical.
         let has_damping = model.disableflags & (DISABLE_EULERDAMP | DISABLE_DAMPER) == 0
             && (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
 
