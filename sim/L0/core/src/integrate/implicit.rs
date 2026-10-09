@@ -128,7 +128,8 @@ pub fn accumulate_tendon_kd(
         let j = &ten_j[t];
         let k_active = tendon_active_stiffness(kt, ten_length[t], model.tendon_lengthspring[t]);
         // A negative stiffness or damping is folded in as given, as a joint's
-        // is: the passive pass leaves these forces to this solve.
+        // is: the passive pass leaves these forces to this solve, and a matrix
+        // they make indefinite fails its factorization (`CholeskyFailed`).
         let scale = h2 * k_active + h * bt;
         if scale == 0.0 {
             continue;

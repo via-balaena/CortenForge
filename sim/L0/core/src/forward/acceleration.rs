@@ -236,7 +236,7 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     }
 
     // Factorize M_impl in place (overwrites lower triangle with L where M_impl = L·L^T).
-    // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0).
+    // A negative stiffness or damping can make M_impl indefinite: refused.
     cholesky_in_place(&mut data.scratch_m_impl)?;
     data.scratch_v_new.copy_from(&data.scratch_rhs);
     cholesky_solve_in_place(&data.scratch_m_impl, &mut data.scratch_v_new);

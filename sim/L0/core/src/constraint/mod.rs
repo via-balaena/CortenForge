@@ -23,7 +23,7 @@ use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse}
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, DISABLE_WARMSTART, Data, ENABLE_SLEEP, Integrator,
-    MjJointType, Model, SolverType,
+    MjJointType, Model, SolverType, StepError,
 };
 
 use crate::constraint::assembly::assemble_unified_constraints;
@@ -210,7 +210,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
             _ => {
                 debug_assert!(
                     k == 0.0,
-                    "Ball/Free joint {jnt_id} has implicit_stiffness={k} > 0; \
+                    "Ball/Free joint {jnt_id} has nonzero implicit_stiffness={k}; \
                      compute_implicit_params should set this to 0.0"
                 );
             }
@@ -300,7 +300,12 @@ fn warmstart(model: &Model, data: &mut Data) -> bool {
 /// 3. Dispatch to configured solver (Newton, CG, PGS)
 /// 4. Map efc_force → qfrc_constraint via J^T
 /// 5. Extract qfrc_frictionloss from efc_force
-pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
+///
+/// # Errors
+///
+/// `StepError::CholeskyFailed` under implicitspringdamper when `M_impl` is not
+/// positive definite.
+pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), StepError> {
     data.qfrc_constraint.fill(0.0);
     data.qfrc_frictionloss.fill(0.0);
     data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
@@ -328,16 +333,13 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         let qfrc_impl = compute_qfrc_smooth_implicit(model, data);
 
         // qacc_smooth_impl = M_impl⁻¹ · qfrc_smooth_impl
+        // A negative stiffness or damping can make M_impl indefinite: refused,
+        // as the unconstrained solve refuses it (`mj_fwd_acceleration_implicit`).
         let mut m_impl_factor = m_impl.clone();
-        if cholesky_in_place(&mut m_impl_factor).is_err() {
-            // M_impl should always be SPD; if Cholesky fails, fall back to
-            // the base qacc_smooth (degrades gracefully).
-            qacc_smooth_impl = qacc_smooth.clone();
-        } else {
-            let mut qa = qfrc_impl.clone();
-            cholesky_solve_in_place(&m_impl_factor, &mut qa);
-            qacc_smooth_impl = qa;
-        }
+        cholesky_in_place(&mut m_impl_factor)?;
+        let mut qa = qfrc_impl.clone();
+        cholesky_solve_in_place(&m_impl_factor, &mut qa);
+        qacc_smooth_impl = qa;
         m_impl_owned = Some(m_impl);
         qfrc_impl_owned = Some(qfrc_impl);
     } else {
@@ -377,7 +379,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
 
     if nefc == 0 {
         data.qacc.copy_from(&qacc_smooth_impl);
-        return;
+        return Ok(());
     }
 
     // S4.11: Load warmstart data or cold-start before solver dispatch.
@@ -468,6 +470,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             }
         }
     }
+    Ok(())
 }
 
 /// Clear the constraint rows and the islands, keeping the contacts (MuJoCo's

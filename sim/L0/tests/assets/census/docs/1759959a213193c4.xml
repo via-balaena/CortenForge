@@ -1,0 +1,13 @@
+<mujoco>
+          <compiler angle="radian"/>
+          <option timestep="0.01" integrator="implicitspringdamper"/>
+          <worldbody>
+            <body pos="0 0 1">
+              <joint name="j" type="hinge" axis="0 1 0" range="-0.3 0.3"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t"><joint joint="j" coef="1"/></fixed>
+          </tendon>
+        </mujoco>

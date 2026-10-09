@@ -2522,6 +2522,61 @@ fn implicitspringdamper_takes_negative_stiffness_and_damping() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// implicitspringdamper refuses a step whose matrix a negative stiffness makes
+/// indefinite (`CholeskyFailed`), against an active joint limit (the Newton
+/// solve) as without one: a hinge with stiffness −600 at a 0.01 s step, on
+/// the joint or on a coefficient-1 tendon, set in code, where `M + h²·k < 0`;
+/// at −200, where it is positive, it steps.
+#[test]
+fn implicitspringdamper_refuses_an_indefinite_matrix() {
+    let loaded = load_model(
+        r#"<mujoco>
+          <compiler angle="radian"/>
+          <option timestep="0.01" integrator="implicitspringdamper"/>
+          <worldbody>
+            <body pos="0 0 1">
+              <joint name="j" type="hinge" axis="0 1 0" range="-0.3 0.3"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t"><joint joint="j" coef="1"/></fixed>
+          </tendon>
+        </mujoco>"#,
+    )
+    .expect("load");
+    for (k, refused) in [(-600.0, true), (-200.0, false)] {
+        for on in ["joint", "tendon"] {
+            // inside the range, and past its upper end
+            for start in [0.2, 0.35] {
+                let mut model = loaded.clone();
+                if on == "joint" {
+                    model.jnt_stiffness[0] = k;
+                } else {
+                    model.tendon_stiffness[0] = k;
+                }
+                model.compute_implicit_params();
+                let mut data = model.make_data();
+                data.qpos[0] = start;
+                let got = data.forward(&model);
+                let what = format!("stiffness {k} on the {on}, from {start}");
+                let m_impl = data.qM[(0, 0)] + 1e-4 * k;
+                assert_eq!(m_impl < 0.0, refused, "{what}: M + h²·k = {m_impl}");
+                if refused {
+                    assert_eq!(got, Err(sim_core::StepError::CholeskyFailed), "{what}");
+                } else {
+                    assert_eq!(got, Ok(()), "{what}");
+                    assert_eq!(
+                        data.efc_type.is_empty(),
+                        start < 0.3,
+                        "{what}: the limit's row"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Under implicitspringdamper a disabled spring or damper flag removes that
 /// force from the step, as it does from the passive pass: each flag gives
 /// the trajectory of the same model with that parameter at 0, on a joint and

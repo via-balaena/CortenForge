@@ -32,8 +32,8 @@ term in the mass matrix absorbs the stiffness implicitly.
 ```
 
 Where K and D are diagonal matrices of per-DOF spring stiffness and
-damping. The modified mass matrix is still SPD (M is SPD, D >= 0, K >= 0),
-so Cholesky factorization is used.
+damping. The modified mass matrix is SPD when D, K >= 0; Cholesky
+factorization is used.
 
 After solving for v_new: `qacc = (v_new - v_old) / h`, then position
 integration proceeds normally.

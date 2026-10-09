@@ -667,7 +667,8 @@ Where:
 Joint K/D are diagonal. Tendon K/D are non-diagonal rank-1 outer products
 `k·J^T·J` and `b·J^T·J`, accumulated via `accumulate_tendon_kd()` (DT-35).
 The modified matrix `M + h*D + h^2*K` is SPD when `M` is SPD and `D, K >= 0`
-(guaranteed because `J^T·J` is PSD). After solving, `qacc = (v_new - v_old) / h`
+(`J^T·J` being PSD); a negative stiffness or damping can make it indefinite,
+and the step then returns `CholeskyFailed`, constrained or not. After solving, `qacc = (v_new - v_old) / h`
 for consistency.
 
 **Implicit path (ImplicitFast — full Jacobian, Cholesky):**

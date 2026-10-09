@@ -539,7 +539,7 @@ impl Data {
 
         // One global solve; the islands are built in it but not solved
         // apart (`island/mod.rs`).
-        crate::constraint::mj_fwd_constraint(model, self);
+        crate::constraint::mj_fwd_constraint(model, self)?;
 
         // ImplicitFast/Implicit: always run mj_fwd_acceleration, even when
         // Newton succeeded: it solves M_hat = M − h·∂f/∂v for qacc_implicit,
