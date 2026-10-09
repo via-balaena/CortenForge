@@ -128,12 +128,14 @@ fn assert_damping_scope(model: &Model) {
 ///
 /// # Flags
 ///
-/// As the step: with dampers disabled `D` acts nowhere and the Jacobian is
-/// zero; with eulerdamp disabled it acts through the explicit force `−D·v`
-/// alone, so `∂v⁺/∂D_j = −h · v_j · (M⁻¹ column j)`, with the velocity
-/// before the step. With every dof undamped the step takes eulerdamp for any
-/// positive damping and not for a negative one, so it is not differentiable
-/// there; the Jacobian is the derivative from above, toward positive damping
+/// As the step (`eulerdamp_applies`): with dampers disabled `D` acts nowhere
+/// and the Jacobian is zero; where the step takes no eulerdamp (eulerdamp
+/// disabled, or no awake dof damped positively) it acts through the explicit
+/// force `−D·v` alone, so `∂v⁺/∂D_j = −h · v_j · (M⁻¹ column j)`, with the
+/// velocity before the step. With every dof undamped the step takes
+/// eulerdamp for any positive damping and not for a negative one, so it is
+/// not differentiable there; the Jacobian is the derivative from above,
+/// toward positive damping
 /// (`damping_jacobian_at_zero_damping_is_taken_from_above`).
 ///
 /// # Panics
@@ -176,9 +178,13 @@ pub fn mjd_damping_jacobian(model: &Model, data: &Data) -> Result<DampingJacobia
     if model.disableflags & DISABLE_DAMPER != 0 {
         return Ok(DampingJacobian { dxdD });
     }
-    // The explicit force −D·v gives −h·v_j; under eulerdamp the implicit
-    // matrix adds −h²·qacc_j, and the two sum to −h·v⁺_j (module doc).
-    let driver = if model.disableflags & DISABLE_EULERDAMP == 0 {
+    // The explicit force −D·v gives −h·v_j; where the step takes eulerdamp the
+    // implicit matrix adds −h²·qacc_j, and the two sum to −h·v⁺_j (module doc).
+    // With every dof undamped, the derivative from above (see Flags).
+    #[allow(clippy::float_cmp)] // exactly undamped
+    let undamped = model.implicit_damping.iter().all(|&d| d == 0.0);
+    let from_above = undamped && model.disableflags & DISABLE_EULERDAMP == 0;
+    let driver = if eulerdamp_applies(model, &d_pre) || from_above {
         v_plus
     } else {
         &data.qvel
@@ -1584,35 +1590,45 @@ mod tests {
 
     /// With one dof damped negatively beside a positive one, the Euler step
     /// still solves with `M + h·D`, every entry included (MuJoCo
-    /// `engine_forward.c:986-989`), and the channels follow it.
+    /// `engine_forward.c:986-989`); with every dof damped negatively it takes
+    /// no eulerdamp. The channels follow it.
     #[test]
     fn parameter_jacobians_take_damping_of_both_signs() {
-        let (mut model, start) = damped_pendulum();
-        model.jnt_damping = vec![0.5, -0.3];
-        model.compute_implicit_params();
-        let mut data = model.make_data();
-        data.qpos.copy_from(&start.qpos);
-        data.qvel.copy_from(&start.qvel);
-        data.forward(&model).unwrap();
-        for (what, analytic, fd) in [
+        for damping in [[0.5, -0.3], [-0.3, -0.2]] {
+            let (mut model, start) = damped_pendulum();
+            model.jnt_damping = damping.to_vec();
+            model.compute_implicit_params();
+            let mut data = model.make_data();
+            data.qpos.copy_from(&start.qpos);
+            data.qvel.copy_from(&start.qvel);
+            data.forward(&model).unwrap();
+            check_channels_against_fd(&format!("damping {damping:?}"), &model, &data);
+        }
+    }
+
+    fn check_channels_against_fd(what: &str, model: &Model, data: &Data) {
+        for (channel, analytic, fd) in [
             (
                 "damping",
-                mjd_damping_jacobian(&model, &data).unwrap().dxdD,
-                fd_damping_jacobian(&model, &data, 1e-6),
+                mjd_damping_jacobian(model, data).unwrap().dxdD,
+                fd_damping_jacobian(model, data, 1e-6),
             ),
             (
                 "mass",
-                mjd_mass_jacobian(&model, &data).unwrap().dxdm,
-                fd_mass_jacobian(&model, &data, 1e-6),
+                mjd_mass_jacobian(model, data).unwrap().dxdm,
+                fd_mass_jacobian(model, data, 1e-6),
             ),
             (
                 "inertia",
-                mjd_inertia_jacobian(&model, &data).unwrap().dxdI,
-                fd_inertia_jacobian(&model, &data, 1e-6),
+                mjd_inertia_jacobian(model, data).unwrap().dxdI,
+                fd_inertia_jacobian(model, data, 1e-6),
             ),
         ] {
             let (err, loc) = max_relative_error(&analytic, &fd, 1e-3);
-            assert!(err < 1e-5, "{what}: max_rel_err={err:.3e} at {loc:?}");
+            assert!(
+                err < 1e-5,
+                "{what}, {channel}: max_rel_err={err:.3e} at {loc:?}"
+            );
         }
     }
 
