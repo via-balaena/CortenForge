@@ -48,6 +48,11 @@
 //!
 //! For semi-implicit Euler with hinge/slide joints the position is integrated as
 //! `qpos⁺ = qpos + h·v⁺`, so the position-tangent row is simply `h · ∂v⁺/∂D`.
+//!
+//! With eulerdamp or dampers disabled the step solves with `M` alone
+//! (`eulerdamp_applies`, as MuJoCo's `engine_forward.c:956`), and so does
+//! every channel here; [`mjd_damping_jacobian`]'s Flags section gives the
+//! damping channel then.
 
 #![allow(non_snake_case)] // E_ii / M_impl follow the derivative-module notation.
 
@@ -56,10 +61,24 @@ use super::{DerivativeConfig, mjd_transition};
 use crate::dynamics::compute_body_spatial_inertia;
 use crate::dynamics::crba::mj_crba;
 use crate::dynamics::rne::mj_rne;
+use crate::integrate::eulerdamp_applies;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
-use crate::types::{Integrator, MjJointType, StepError};
+use crate::types::{DISABLE_DAMPER, DISABLE_EULERDAMP, Integrator, MjJointType, StepError};
 use crate::{Data, Model};
 use nalgebra::{DMatrix, DVector, Matrix6, Vector3};
+
+/// The matrix the Euler step solves for its acceleration, factored: `M + h·D`
+/// under eulerdamp, else `M`, as the step chooses (`eulerdamp_applies`).
+fn factor_euler_step_matrix(model: &Model, qm: &DMatrix<f64>) -> Result<DMatrix<f64>, StepError> {
+    let mut m = qm.clone();
+    if eulerdamp_applies(model) {
+        for i in 0..model.nv {
+            m[(i, i)] += model.timestep * model.implicit_damping[i];
+        }
+    }
+    cholesky_in_place(&mut m)?;
+    Ok(m)
+}
 
 /// Analytic single-step Jacobian of the next state w.r.t. per-DOF joint damping.
 ///
@@ -106,6 +125,13 @@ fn assert_damping_scope(model: &Model) {
 /// Reuses the same `M_impl = M + h·D` factor as the eulerdamp step and the
 /// Tier-1/2 transition derivatives.
 ///
+/// # Flags
+///
+/// As the step: with dampers disabled `D` acts nowhere and the Jacobian is
+/// zero; with eulerdamp disabled it acts through the explicit force `−D·v`
+/// alone, so `∂v⁺/∂D_j = −h · v_j · (M⁻¹ column j)`, with the velocity
+/// before the step.
+///
 /// # Panics
 ///
 /// Panics (in **all** build profiles, not just debug) unless the model is within
@@ -142,14 +168,19 @@ pub fn mjd_damping_jacobian(model: &Model, data: &Data) -> Result<DampingJacobia
     let mut d_pre = data.clone();
     d_pre.forward(model)?;
 
-    // M_impl = M + h·D (same diagonal modification as mj_fwd_acceleration_implicit).
-    let mut m_impl = d_pre.qM.clone();
-    for i in 0..nv {
-        m_impl[(i, i)] += h * model.implicit_damping[i];
-    }
-    cholesky_in_place(&mut m_impl)?;
-
     let mut dxdD = DMatrix::zeros(nx, nv);
+    if model.disableflags & DISABLE_DAMPER != 0 {
+        return Ok(DampingJacobian { dxdD });
+    }
+    // The explicit force −D·v gives −h·v_j; under eulerdamp the implicit
+    // matrix adds −h²·qacc_j, and the two sum to −h·v⁺_j (module doc).
+    let driver = if model.disableflags & DISABLE_EULERDAMP == 0 {
+        v_plus
+    } else {
+        &data.qvel
+    };
+    let m_impl = factor_euler_step_matrix(model, &d_pre.qM)?;
+
     let mut e_j = DVector::zeros(nv);
     for j in 0..nv {
         // col_j = M_impl⁻¹ · e_j  (j-th column of the inverse).
@@ -157,8 +188,8 @@ pub fn mjd_damping_jacobian(model: &Model, data: &Data) -> Result<DampingJacobia
         e_j[j] = 1.0;
         cholesky_solve_in_place(&m_impl, &mut e_j);
 
-        // Velocity row: ∂v⁺/∂D_j = −h · v⁺_j · (M_impl⁻¹ column j).
-        let scale = -h * v_plus[j];
+        // Velocity row: ∂v⁺/∂D_j = −h · driver_j · (M_impl⁻¹ column j).
+        let scale = -h * driver[j];
         for r in 0..nv {
             let dv = scale * e_j[r];
             dxdD[(nv + r, j)] = dv;
@@ -233,7 +264,8 @@ fn assert_mass_scope(model: &Model) {
 /// # Math
 ///
 /// The Euler eulerdamp step (`integrate`) is `v⁺ = v + h·M_impl⁻¹·F` with
-/// `M_impl = M + h·D` (`D = implicit_damping`; spring `K` enters Euler only as a
+/// `M_impl = M + h·D` (`M` with eulerdamp or dampers disabled, as the step;
+/// `D = implicit_damping`; spring `K` enters Euler only as a
 /// mass-independent explicit force, never `M_impl`) and `F = qfrc_smooth +
 /// qfrc_constraint`. Equivalently `v⁺ = M_impl⁻¹·(M·v + h·F)`, with
 /// `qacc = (v⁺ − v)/h`. Body mass `m_b` enters `M` (so `M·v` and `M_impl`) and
@@ -312,12 +344,8 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
     let mut d_op = data.clone();
     d_op.forward(model)?;
 
-    // M_impl = M + h·D (same factor as the eulerdamp step and Tier-1/2).
-    let mut m_impl = d_op.qM.clone();
-    for i in 0..nv {
-        m_impl[(i, i)] += h * model.implicit_damping[i];
-    }
-    cholesky_in_place(&mut m_impl)?;
+    // The step's matrix, M_impl = M + h·D under eulerdamp.
+    let m_impl = factor_euler_step_matrix(model, &d_op.qM)?;
 
     // Armature is mass-independent, so the ∂M/∂m CRBA pass must exclude it.
     let mut model_no_arm = model.clone();
@@ -511,12 +539,8 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
     let mut d_op = data.clone();
     d_op.forward(model)?;
 
-    // M_impl = M + h·D (same factor as the eulerdamp step and Tier-1/2).
-    let mut m_impl = d_op.qM.clone();
-    for i in 0..nv {
-        m_impl[(i, i)] += h * model.implicit_damping[i];
-    }
-    cholesky_in_place(&mut m_impl)?;
+    // The step's matrix, M_impl = M + h·D under eulerdamp.
+    let m_impl = factor_euler_step_matrix(model, &d_op.qM)?;
 
     // Armature is inertia-independent (added straight to the qM diagonal), so the
     // ∂M/∂I CRBA pass must exclude it.
@@ -702,12 +726,8 @@ pub fn mjd_friction_jacobian(model: &Model, data: &Data) -> Result<FrictionJacob
          constraint (no contacts, joint limits, or equality constraints)",
     );
 
-    // M_impl = M + h·D (same factor as the eulerdamp step and Tier-1/2).
-    let mut m_impl = d_op.qM.clone();
-    for i in 0..nv {
-        m_impl[(i, i)] += h * model.implicit_damping[i];
-    }
-    cholesky_in_place(&mut m_impl)?;
+    // The step's matrix, M_impl = M + h·D under eulerdamp.
+    let m_impl = factor_euler_step_matrix(model, &d_op.qM)?;
 
     let mut dxdf = DMatrix::zeros(nx, nv);
     let mut e_j = DVector::zeros(nv);
@@ -1493,6 +1513,69 @@ mod tests {
             err_partial > 1e-1,
             "implicit-only path must differ from the combined form: {err_partial:.3e}"
         );
+    }
+
+    /// The four channels follow the damper flags, as the step: with eulerdamp
+    /// disabled the step solves with `M` and damping acts through the explicit
+    /// force alone; with dampers disabled damping acts nowhere. Each channel
+    /// against central differences of the step, on the damped pendulum (with a
+    /// sliding friction loss for the friction channel).
+    #[test]
+    fn parameter_jacobians_follow_the_damper_flags() {
+        let fixture = |flag: u32, frictionloss: f64| {
+            let (mut model, start) = damped_pendulum();
+            model.disableflags |= flag;
+            model.dof_frictionloss = vec![frictionloss; model.nv];
+            model.compute_implicit_params();
+            let mut data = model.make_data();
+            data.qpos.copy_from(&start.qpos);
+            data.qvel.copy_from(&start.qvel);
+            data.forward(&model).unwrap();
+            (model, data)
+        };
+        let check = |what: &str, analytic: &DMatrix<f64>, fd: &DMatrix<f64>| {
+            let (err, loc) = max_relative_error(analytic, fd, 1e-3);
+            assert!(
+                err < 1e-5,
+                "{what}: max_rel_err={err:.3e} at {loc:?}\nanalytic=\n{analytic:.6}\nfd=\n{fd:.6}"
+            );
+            assert!(fd.amax() > 1e-3, "{what}: a live sensitivity");
+        };
+        for (name, flag) in [
+            ("eulerdamp disabled", DISABLE_EULERDAMP),
+            ("damper disabled", DISABLE_DAMPER),
+        ] {
+            let (model, data) = fixture(flag, 0.0);
+            let damping = mjd_damping_jacobian(&model, &data).unwrap().dxdD;
+            let fd = fd_damping_jacobian(&model, &data, 1e-6);
+            // Exact zeros: with dampers disabled the coefficient is read nowhere.
+            #[allow(clippy::float_cmp)]
+            if flag == DISABLE_DAMPER {
+                assert_eq!(fd.amax(), 0.0, "{name}: damping acts nowhere");
+                assert_eq!(damping.amax(), 0.0, "{name}: damping");
+            } else {
+                check(&format!("{name}: damping"), &damping, &fd);
+            }
+            let mass = mjd_mass_jacobian(&model, &data).unwrap().dxdm;
+            check(
+                &format!("{name}: mass"),
+                &mass,
+                &fd_mass_jacobian(&model, &data, 1e-6),
+            );
+            let inertia = mjd_inertia_jacobian(&model, &data).unwrap().dxdI;
+            check(
+                &format!("{name}: inertia"),
+                &inertia,
+                &fd_inertia_jacobian(&model, &data, 1e-6),
+            );
+            let (model, data) = fixture(flag, 0.05);
+            let friction = mjd_friction_jacobian(&model, &data).unwrap().dxdf;
+            check(
+                &format!("{name}: friction"),
+                &friction,
+                &fd_friction_jacobian(&model, &data, 1e-7),
+            );
+        }
     }
 
     // ---- friction (dof_frictionloss) single-step channel ----
