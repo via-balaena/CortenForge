@@ -467,17 +467,7 @@ struct Gap {
     covers: fn(&Case) -> bool,
 }
 
-const KNOWN_GAPS: &[Gap] = &[
-    // The hybrid spreads the gear over every dof of the joint; the forward
-    // pass applies it to the first.
-    Gap {
-        name: "joint transmission on a ball or free joint",
-        covers: |c| {
-            matches!(c.root, Root::Ball | Root::Free)
-                && matches!(c.trn, Trn::JointRoot | Trn::JointInParentRoot)
-        },
-    },
-];
+const KNOWN_GAPS: &[Gap] = &[];
 
 /// What one case gave.
 enum Outcome {

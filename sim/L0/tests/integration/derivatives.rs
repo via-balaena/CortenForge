@@ -4020,3 +4020,98 @@ fn transition_derivatives_take_each_column_from_the_sleep_state() {
     );
     check("a countdown ending", &data);
 }
+
+/// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its
+/// length moves with `q`: a ball joint's length is its rotation vector along
+/// the gear, whose Jacobian is the gear through the log map (the moment only
+/// at the identity); a free joint's length is 0. Checked against a central
+/// difference of the forces over the configuration, for a position actuator
+/// under a `joint` transmission (under `jointinparent` the moment also turns
+/// with `q`, a term `mjd_smooth_pos` leaves out, AD-1).
+#[test]
+fn smooth_pos_takes_ball_and_free_joint_transmissions() {
+    let mut failures = Vec::new();
+    for (root, gear, quat) in [
+        ("ball", "1.5 0.2 -0.3", [1.0, 0.0, 0.0, 0.0]),
+        (
+            "ball",
+            "1.5 0.2 -0.3",
+            [
+                0.988_771_077_936_042_4,
+                0.105_668_716_839_935_62,
+                0.105_668_716_839_935_62,
+                0.0,
+            ],
+        ),
+        (
+            "ball",
+            "1.5 0.2 -0.3",
+            [
+                -0.416_146_836_547_142_4,
+                0.396_849_932_157_833_9,
+                -0.793_699_864_315_667_7,
+                0.198_424_966_078_916_94,
+            ],
+        ),
+        (
+            "free",
+            "1.5 0.2 -0.3 0.4 -0.5 0.6",
+            [
+                0.988_771_077_936_042_4,
+                0.105_668_716_839_935_62,
+                0.105_668_716_839_935_62,
+                0.0,
+            ],
+        ),
+    ] {
+        let joint = if root == "ball" {
+            r#"<joint name="j" type="ball"/>"#
+        } else {
+            r#"<freejoint name="j"/>"#
+        };
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" gravity="0 0 0"/>
+              <worldbody>
+                <body name="box" pos="0 0 1">
+                  {joint}
+                  <geom type="box" size="0.1 0.2 0.3" mass="1"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <position joint="j" gear="{gear}" kp="20"/>
+              </actuator>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        let q = if root == "ball" { 0 } else { 3 };
+        data.qpos.as_mut_slice()[q..q + 4].copy_from_slice(&quat);
+        data.ctrl[0] = 0.3;
+        data.forward(&model).expect("forward");
+        let qacc = data.qacc.clone();
+        let mut analytic = data.clone();
+        mjd_smooth_pos(&model, &mut analytic);
+        let nv = model.nv;
+        let eps = 1e-6;
+        let force = |sign: f64, c: usize| {
+            let mut d = data.clone();
+            let mut dq = nalgebra::DVector::zeros(nv);
+            dq[c] = sign * eps;
+            mj_integrate_pos_explicit(&model, &mut d.qpos, &data.qpos, &dq, 1.0);
+            d.forward(&model).expect("forward");
+            &d.qfrc_passive + &d.qfrc_actuator - &d.qfrc_bias - &d.qM * &qacc
+        };
+        let mut worst = 0.0_f64;
+        for c in 0..nv {
+            let fd = (force(1.0, c) - force(-1.0, c)) / (2.0 * eps);
+            for r in 0..nv {
+                worst = worst.max((analytic.qDeriv_pos[(r, c)] - fd[r]).abs());
+            }
+        }
+        if worst.is_nan() || worst >= 1e-6 {
+            failures.push(format!("{root} at {quat:?}: worst {worst:e}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

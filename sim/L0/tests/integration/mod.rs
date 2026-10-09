@@ -53,6 +53,9 @@ pub mod rk4_integration;
 /// Quaternion integration against MuJoCo 3.5.0, bit for bit.
 pub mod quat_integration;
 
+/// Joint transmissions on ball and free joints against MuJoCo 3.5.0.
+pub mod joint_transmission;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================

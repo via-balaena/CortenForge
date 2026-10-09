@@ -16,8 +16,8 @@ use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::forward::{
-    MjStage, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl,
-    hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_gain_length,
+    MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
+    hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_gain_length,
     muscle_gain_velocity, norm3,
 };
 use crate::integrate::eulerdamp_applies;
@@ -28,6 +28,7 @@ use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse,
     mj_solve_sparse_batch,
 };
+use crate::quat::{normalize4, quat_to_vel};
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::validation::is_bad;
 use crate::types::{
@@ -332,7 +333,9 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         let trnid = model.actuator_trnid[i][0];
 
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                if !acts_through_moment(model, i) =>
+            {
                 let dof_adr = model.jnt_dof_adr[trnid];
                 // moment = gear, ∂V/∂qvel[dof] = gear
                 // ∂qfrc[dof]/∂qvel[dof] += gear² · ∂force/∂V
@@ -355,7 +358,9 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
                     }
                 }
             }
-            ActuatorTransmission::Site
+            ActuatorTransmission::Joint
+            | ActuatorTransmission::JointInParent
+            | ActuatorTransmission::Site
             | ActuatorTransmission::Body
             | ActuatorTransmission::SliderCrank => {
                 let moment = &data.actuator_moment[i];
@@ -1097,6 +1102,36 @@ fn hill_active_fl_deriv(norm_len: f64) -> f64 {
     fl * (-2.0 * x / w)
 }
 
+/// `∂(actuator_length)/∂q` of actuator `i`'s joint transmission on ball joint
+/// `jid`, over the joint's 3 tangent dofs. The length is the joint's rotation
+/// vector `φ` along the gear's first three entries (under `jointinparent` too:
+/// a rotation leaves its own axis fixed), and moving `q` by `δ` along its
+/// tangent moves `φ` by `J_r⁻¹(φ)·δ`, so the Jacobian is
+/// `J_r⁻¹(φ)ᵀ·g = g − ½ φ×g + c·φ×(φ×g)`,
+/// `c = 1/θ² − (1 + cos θ)/(2θ sin θ)` (`1/12 + θ²/720` near `θ = 0`).
+fn ball_length_jacobian(model: &Model, data: &Data, i: usize, jid: usize) -> [f64; 3] {
+    let qadr = model.jnt_qpos_adr[jid];
+    let mut quat = [
+        data.qpos[qadr],
+        data.qpos[qadr + 1],
+        data.qpos[qadr + 2],
+        data.qpos[qadr + 3],
+    ];
+    normalize4(&mut quat);
+    let phi = Vector3::from(quat_to_vel(&quat, 1.0));
+    let gear = &model.actuator_gear[i];
+    let g = Vector3::new(gear[0], gear[1], gear[2]);
+    let theta = phi.norm();
+    let c = if theta < 1e-4 {
+        1.0 / 12.0 + theta * theta / 720.0
+    } else {
+        1.0 / (theta * theta) - (1.0 + theta.cos()) / (2.0 * theta * theta.sin())
+    };
+    let phi_g = phi.cross(&g);
+    let jac = g - 0.5 * phi_g + c * phi.cross(&phi_g);
+    [jac.x, jac.y, jac.z]
+}
+
 /// Compute ∂(qfrc_actuator)/∂qpos and add to data.qDeriv_pos.
 ///
 /// For each actuator:
@@ -1105,10 +1140,15 @@ fn hill_active_fl_deriv(norm_len: f64) -> f64 {
 ///
 /// where ∂L/∂qpos = moment (the moment arm IS the length Jacobian).
 ///
+/// A joint transmission on a ball joint takes its length's Jacobian from
+/// [`ball_length_jacobian`], and one on a free joint (length 0) adds nothing.
+///
 /// The moment-arm term `(∂moment/∂qpos) · force` is added for a spatial
-/// tendon transmission; for site, body and slider-crank transmissions it is
-/// not, and the hybrid transition takes finite differences for the position
-/// columns of a model with one (AD-1).
+/// tendon transmission; for site, body and slider-crank transmissions and a
+/// `jointinparent` transmission on a ball or free joint it is not, and the
+/// hybrid transition takes finite differences for the position columns of a
+/// model with a site, body, slider-crank, ball or free joint transmission
+/// (AD-1).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
     // The actuators `mjd_actuator_vel` leaves out, against MuJoCo's transition
@@ -1193,7 +1233,9 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
         let trnid = model.actuator_trnid[i][0];
 
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                if !acts_through_moment(model, i) =>
+            {
                 let dof_adr = model.jnt_dof_adr[trnid];
                 data.qDeriv_pos[(dof_adr, dof_adr)] += gear * gear * dforce_dl;
             }
@@ -1209,6 +1251,23 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
                             continue;
                         }
                         data.qDeriv_pos[(r, c)] += scale * j[r] * j[c];
+                    }
+                }
+            }
+            // A ball joint's length is its rotation vector along the gear,
+            // whose Jacobian is not the moment (`ball_length_jacobian`); a free
+            // joint's length is 0. Under `jointinparent` the moment also turns
+            // with q, a term left out as for a site (AD-1).
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                if model.jnt_type[trnid] == MjJointType::Ball {
+                    let dl_dq = ball_length_jacobian(model, data, i, trnid);
+                    let dof_adr = model.jnt_dof_adr[trnid];
+                    let moment = &data.actuator_moment[i];
+                    for r in 0..3 {
+                        let m = moment[dof_adr + r];
+                        for (c, dl) in dl_dq.iter().enumerate() {
+                            data.qDeriv_pos[(dof_adr + r, dof_adr + c)] += dforce_dl * m * dl;
+                        }
                     }
                 }
             }
@@ -2834,13 +2893,11 @@ pub fn mjd_transition_hybrid(
             let gear = model.actuator_gear[actuator_idx][0];
             let trnid = model.actuator_trnid[actuator_idx][0];
             match model.actuator_trntype[actuator_idx] {
-                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                    if !acts_through_moment(model, actuator_idx) =>
+                {
                     if trnid < model.njnt {
-                        let dof_adr = model.jnt_dof_adr[trnid];
-                        let nv_jnt = model.jnt_type[trnid].nv();
-                        for k in 0..nv_jnt {
-                            dvdact[dof_adr + k] = h * gain * gear;
-                        }
+                        dvdact[model.jnt_dof_adr[trnid]] = h * gain * gear;
                     }
                 }
                 ActuatorTransmission::Tendon => {
@@ -2851,7 +2908,9 @@ pub fn mjd_transition_hybrid(
                         }
                     }
                 }
-                ActuatorTransmission::Site
+                ActuatorTransmission::Joint
+                | ActuatorTransmission::JointInParent
+                | ActuatorTransmission::Site
                 | ActuatorTransmission::Body
                 | ActuatorTransmission::SliderCrank => {
                     let moment = &data.actuator_moment[actuator_idx];
@@ -2913,14 +2972,10 @@ pub fn mjd_transition_hybrid(
         && model.viscosity == 0.0
         && !model.body_gravcomp.iter().any(|g| *g != 0.0)
         && model.nflex == 0
-        && !model.actuator_trntype.iter().any(|t| {
-            matches!(
-                t,
-                ActuatorTransmission::Site
-                    | ActuatorTransmission::Body
-                    | ActuatorTransmission::SliderCrank
-            )
-        })
+        // A moment row that moves with q (a site, body or slider-crank
+        // transmission, or a joint transmission on a ball or free joint)
+        // adds a moment-arm term the analytic columns leave out (AD-1).
+        && !(0..model.nu).any(|i| acts_through_moment(model, i))
         && !model.actuator_biastype.iter().any(|t| {
             // MillardMuscle's analytic position derivative is deferred (R-implicit-deriv).
             // The public `mjd_transition` already routes Millard models to full FD; this
@@ -3268,13 +3323,11 @@ pub fn mjd_transition_hybrid(
             let gear = model.actuator_gear[actuator_idx][0];
             let trnid = model.actuator_trnid[actuator_idx][0];
             match model.actuator_trntype[actuator_idx] {
-                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                    if !acts_through_moment(model, actuator_idx) =>
+                {
                     if trnid < model.njnt {
-                        let dof_adr = model.jnt_dof_adr[trnid];
-                        let nv_jnt = model.jnt_type[trnid].nv();
-                        for k in 0..nv_jnt {
-                            dvdctrl[dof_adr + k] = h * gain * gear;
-                        }
+                        dvdctrl[model.jnt_dof_adr[trnid]] = h * gain * gear;
                     }
                 }
                 ActuatorTransmission::Tendon => {
@@ -3285,7 +3338,9 @@ pub fn mjd_transition_hybrid(
                         }
                     }
                 }
-                ActuatorTransmission::Site
+                ActuatorTransmission::Joint
+                | ActuatorTransmission::JointInParent
+                | ActuatorTransmission::Site
                 | ActuatorTransmission::Body
                 | ActuatorTransmission::SliderCrank => {
                     let moment = &data.actuator_moment[actuator_idx];

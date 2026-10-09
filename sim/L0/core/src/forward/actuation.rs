@@ -6,9 +6,11 @@
 
 use super::muscle::muscle_activation_dynamics;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
+use crate::quat::{neg_quat, normalize4, quat_to_vel, rot_vec_quat};
 use crate::tendon::{accumulate_point_jacobian, apply_tendon_force, subquat};
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType, Model,
+    ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType,
+    MjJointType, Model,
 };
 use nalgebra::{DVector, Vector3};
 
@@ -392,9 +394,16 @@ pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
         match model.actuator_trntype[i] {
             ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                 let jid = model.actuator_trnid[i][0];
-                // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
-                if jid < model.njnt && model.jnt_type[jid].nv() == 1 {
+                if jid >= model.njnt {
+                    continue;
+                }
+                if model.jnt_type[jid].nv() == 1 {
                     data.actuator_length[i] = gear * data.qpos[model.jnt_qpos_adr[jid]];
+                } else {
+                    let moment = &mut data.actuator_moment[i];
+                    moment.fill(0.0);
+                    data.actuator_length[i] =
+                        ball_free_transmission(model, &data.qpos, i, jid, moment);
                 }
             }
             ActuatorTransmission::Tendon => {
@@ -410,6 +419,94 @@ pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
     }
 }
 
+/// Whether actuator `i` acts through its `actuator_moment` row: a site, body
+/// or slider-crank transmission, or a joint transmission on a ball or free
+/// joint, whose moment spans the joint's 3 or 6 dofs (MuJoCo
+/// `mj_transmission`, `engine_core_smooth.c:1298-1360`).
+pub fn acts_through_moment(model: &Model, i: usize) -> bool {
+    match model.actuator_trntype[i] {
+        ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            let jid = model.actuator_trnid[i][0];
+            jid < model.njnt && model.jnt_type[jid].nv() > 1
+        }
+        ActuatorTransmission::Tendon => false,
+        ActuatorTransmission::Site
+        | ActuatorTransmission::Body
+        | ActuatorTransmission::SliderCrank => true,
+    }
+}
+
+/// A joint transmission on ball or free joint `jid` as MuJoCo's
+/// (`mj_transmission`, `engine_core_smooth.c:1311-1360`): writes the moment
+/// over the joint's dofs into `moment` and returns the length. A ball joint's
+/// moment is its gear's first three entries, rotated into the parent frame by
+/// the joint's inverse rotation under `jointinparent`, and its length the
+/// rotation's axis-angle vector along that moment; a free joint's moment is
+/// the six gear entries, the rotational three rotated the same way, and its
+/// length 0.
+pub fn ball_free_transmission(
+    model: &Model,
+    qpos: &DVector<f64>,
+    i: usize,
+    jid: usize,
+    moment: &mut DVector<f64>,
+) -> f64 {
+    let gear = &model.actuator_gear[i];
+    let in_parent = model.actuator_trntype[i] == ActuatorTransmission::JointInParent;
+    let qadr = model.jnt_qpos_adr[jid];
+    let dof_adr = model.jnt_dof_adr[jid];
+    let joint_quat = |adr: usize| {
+        let mut quat = [qpos[adr], qpos[adr + 1], qpos[adr + 2], qpos[adr + 3]];
+        normalize4(&mut quat);
+        quat
+    };
+    if model.jnt_type[jid] == MjJointType::Ball {
+        let quat = joint_quat(qadr);
+        let axis = quat_to_vel(&quat, 1.0);
+        let gear_axis = if in_parent {
+            rot_vec_quat(&[gear[0], gear[1], gear[2]], &neg_quat(&quat))
+        } else {
+            [gear[0], gear[1], gear[2]]
+        };
+        moment.as_mut_slice()[dof_adr..dof_adr + 3].copy_from_slice(&gear_axis);
+        axis[0] * gear_axis[0] + axis[1] * gear_axis[1] + axis[2] * gear_axis[2]
+    } else {
+        let gear_axis = if in_parent {
+            rot_vec_quat(
+                &[gear[3], gear[4], gear[5]],
+                &neg_quat(&joint_quat(qadr + 3)),
+            )
+        } else {
+            [gear[3], gear[4], gear[5]]
+        };
+        moment.as_mut_slice()[dof_adr..dof_adr + 3].copy_from_slice(&gear[..3]);
+        moment.as_mut_slice()[dof_adr + 3..dof_adr + 6].copy_from_slice(&gear_axis);
+        0.0
+    }
+}
+
+/// `Σ row[k]·vec[k]` in MuJoCo's order (`mju_dotSparse`,
+/// `engine_util_sparse.h:159-185`): four partial sums over each block of four,
+/// joined as `(s0 + s2) + (s1 + s3)`, then the rest one by one.
+fn dot_sparse(row: &[f64], vec: &[f64]) -> f64 {
+    let n = row.len();
+    let (mut s0, mut s1, mut s2, mut s3) = (0.0, 0.0, 0.0, 0.0);
+    let mut i = 0;
+    while i + 4 <= n {
+        s0 += row[i] * vec[i];
+        s1 += row[i + 1] * vec[i + 1];
+        s2 += row[i + 2] * vec[i + 2];
+        s3 += row[i + 3] * vec[i + 3];
+        i += 4;
+    }
+    let mut res = (s0 + s2) + (s1 + s3);
+    while i < n {
+        res += row[i] * vec[i];
+        i += 1;
+    }
+    res
+}
+
 /// Compute each actuator's velocity, `actuator_velocity = gear *
 /// transmission_velocity`, in the velocity stage. Called after
 /// `mj_fwd_velocity()` (which provides `ten_velocity`).
@@ -419,10 +516,19 @@ pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
         match model.actuator_trntype[i] {
             ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                 let jid = model.actuator_trnid[i][0];
-                // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
-                if jid < model.njnt && model.jnt_type[jid].nv() == 1 {
-                    data.actuator_velocity[i] = gear * data.qvel[model.jnt_dof_adr[jid]];
+                if jid >= model.njnt {
+                    continue;
                 }
+                let dof_adr = model.jnt_dof_adr[jid];
+                let nv = model.jnt_type[jid].nv();
+                data.actuator_velocity[i] = if nv == 1 {
+                    gear * data.qvel[dof_adr]
+                } else {
+                    dot_sparse(
+                        &data.actuator_moment[i].as_slice()[dof_adr..dof_adr + nv],
+                        &data.qvel.as_slice()[dof_adr..dof_adr + nv],
+                    )
+                };
             }
             ActuatorTransmission::Tendon => {
                 let tid = model.actuator_trnid[i][0];
@@ -766,13 +872,11 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         let gear = model.actuator_gear[i][0];
         let trnid = model.actuator_trnid[i][0];
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                if !acts_through_moment(model, i) =>
+            {
                 if trnid < model.njnt {
-                    let dof_adr = model.jnt_dof_adr[trnid];
-                    let nv = model.jnt_type[trnid].nv();
-                    if nv > 0 {
-                        data.qfrc_actuator[dof_adr] += gear * force;
-                    }
+                    data.qfrc_actuator[model.jnt_dof_adr[trnid]] += gear * force;
                 }
             }
             ActuatorTransmission::Tendon => {
@@ -788,7 +892,9 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     );
                 }
             }
-            ActuatorTransmission::Site
+            ActuatorTransmission::Joint
+            | ActuatorTransmission::JointInParent
+            | ActuatorTransmission::Site
             | ActuatorTransmission::Body
             | ActuatorTransmission::SliderCrank => {
                 // Use cached moment vector from transmission function.

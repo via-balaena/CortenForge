@@ -259,8 +259,11 @@ pub fn build_actuator_moment(
         ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
             let jid = model.actuator_trnid[actuator_idx][0];
             if jid < model.njnt {
-                let dof_adr = model.jnt_dof_adr[jid];
-                j_vec[dof_adr] = gear;
+                if model.jnt_type[jid].nv() == 1 {
+                    j_vec[model.jnt_dof_adr[jid]] = gear;
+                } else {
+                    super::ball_free_transmission(model, &data.qpos, actuator_idx, jid, &mut j_vec);
+                }
             }
         }
         ActuatorTransmission::Tendon => {
