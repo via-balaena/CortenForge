@@ -3448,7 +3448,8 @@ fn transition_derivatives_leave_out_what_mujoco_does() {
 
 /// A bad control makes every actuator's input 0 for the pass, so MuJoCo's
 /// transition derivative has no control column and no position term from a
-/// gain: a NaN control on a motor beside a `kp="10"` position actuator. The
+/// gain: a NaN or infinite control on a motor beside a `kp="10"` position
+/// actuator (the same matrices for both). The
 /// analytic path and pure finite differences both give MuJoCo 3.5.0's
 /// `mjd_transitionFD` (unfused build, centered, eps 1e-6; Euler and
 /// implicitfast alike) at qpos 0.5, qvel 1.
@@ -3463,7 +3464,12 @@ fn transition_derivatives_with_a_bad_control_are_mujocos() {
         centered: true,
         ..DerivativeConfig::default()
     };
-    for integrator in ["Euler", "implicitfast"] {
+    for (integrator, bad) in [
+        ("Euler", f64::NAN),
+        ("implicitfast", f64::NAN),
+        ("Euler", f64::INFINITY),
+        ("implicitfast", f64::INFINITY),
+    ] {
         let xml = format!(
             r#"<mujoco>
               <option timestep="0.01" integrator="{integrator}"/>
@@ -3483,7 +3489,7 @@ fn transition_derivatives_with_a_bad_control_are_mujocos() {
         let mut data = model.make_data();
         data.qpos[0] = 0.5;
         data.qvel[0] = 1.0;
-        data.ctrl[0] = f64::NAN;
+        data.ctrl[0] = bad;
         data.ctrl[1] = 0.3;
         data.forward(&model).expect("forward");
         let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
@@ -3494,15 +3500,138 @@ fn transition_derivatives_with_a_bad_control_are_mujocos() {
                     let got = ours.A[(r, c)];
                     assert!(
                         (got - want).abs() < 1e-6,
-                        "{integrator}, {path}: A[{r},{c}] {got}, MuJoCo {want}"
+                        "{integrator}, ctrl {bad}, {path}: A[{r},{c}] {got}, MuJoCo {want}"
                     );
                     let got = ours.B[(r, c)];
                     assert!(
                         got.abs() < 1e-6,
-                        "{integrator}, {path}: B[{r},{c}] {got}, MuJoCo 0"
+                        "{integrator}, ctrl {bad}, {path}: B[{r},{c}] {got}, MuJoCo 0"
                     );
                 }
             }
         }
     }
+}
+
+/// A control its ctrlrange clamps: the forward pass acts on the clamped value
+/// and MuJoCo's finite differences nudge no control outside its range, so
+/// its control column is 0; under implicitfast its velocity derivative also
+/// reads the control as written. A hinge motor at ctrl 2 and an affine gain
+/// with a velocity term at ctrl 5, each with `ctrlrange="-1 1"`, at qpos 0.5,
+/// qvel 1. The analytic path and pure finite differences both give MuJoCo
+/// 3.5.0's `mjd_transitionFD` (unfused build, centered, eps 1e-6).
+#[test]
+fn transition_derivatives_with_a_clamped_control_are_mujocos() {
+    const P: f64 = 0.997_822_786_896_751_5;
+    let cases = [
+        (
+            "Euler",
+            r#"<motor joint="j" gear="1" ctrlrange="-1 1"/>"#,
+            2.0,
+            [[P, 0.01], [-0.217_721_311_424_057_26, 1.0]],
+        ),
+        (
+            "implicitfast",
+            r#"<motor joint="j" gear="1" ctrlrange="-1 1"/>"#,
+            2.0,
+            [[P, 0.01], [-0.217_721_311_424_057_26, 1.0]],
+        ),
+        (
+            "Euler",
+            r#"<general joint="j" gaintype="affine" gainprm="1 0 -2" ctrlrange="-1 1"/>"#,
+            5.0,
+            [
+                [P, 0.003_827_664_796_229_868],
+                [-0.217_721_311_090_990_35, 0.382_766_476_958_451_56],
+            ],
+        ),
+        (
+            "implicitfast",
+            r#"<general joint="j" gaintype="affine" gainprm="1 0 -2" ctrlrange="-1 1"/>"#,
+            5.0,
+            [
+                [0.999_467_174_800_372_5, 0.008_489_456_193_583_322],
+                [-0.053_282_520_728_892_28, 0.848_945_618_248_109_2],
+            ],
+        ),
+    ];
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+    for (integrator, actuator, ctrl, a) in cases {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="b">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                </body>
+              </worldbody>
+              <actuator>{actuator}</actuator>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        data.qvel[0] = 1.0;
+        data.ctrl[0] = ctrl;
+        data.forward(&model).expect("forward");
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        for (path, ours) in [("analytic", &hybrid), ("fd", &fd)] {
+            for (r, row) in a.iter().enumerate() {
+                for (c, &want) in row.iter().enumerate() {
+                    let got = ours.A[(r, c)];
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "{actuator}, {integrator}, {path}: A[{r},{c}] {got}, MuJoCo {want}"
+                    );
+                }
+                let got = ours.B[(r, 0)];
+                assert!(
+                    got.abs() < 1e-6,
+                    "{actuator}, {integrator}, {path}: B[{r},0] {got}, MuJoCo 0"
+                );
+            }
+        }
+    }
+}
+
+/// `mjd_smooth_pos` differentiates the force the forward pass computed: a
+/// direct actuator's input is its control clamped to its ctrlrange, and 0
+/// for every actuator when one control is bad. An affine gain with a length
+/// term beside a motor, on one hinge.
+#[test]
+fn smooth_pos_reads_the_control_the_forward_pass_acted_on() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.01"/>
+          <worldbody>
+            <body name="b">
+              <joint name="j" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general joint="j" gaintype="affine" gainprm="1 2 0" ctrlrange="-1 1"/>
+            <motor joint="j"/>
+          </actuator>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let qderiv_pos = |ctrl: [f64; 2]| {
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        data.ctrl[0] = ctrl[0];
+        data.ctrl[1] = ctrl[1];
+        data.forward(&model).expect("forward");
+        mjd_smooth_pos(&model, &mut data);
+        data.qDeriv_pos.clone()
+    };
+    assert_ne!(qderiv_pos([1.0, 0.0]), qderiv_pos([0.0, 0.0]));
+    assert_eq!(qderiv_pos([5.0, 0.0]), qderiv_pos([1.0, 0.0]));
+    assert_eq!(qderiv_pos([0.7, f64::NAN]), qderiv_pos([0.0, 0.0]));
 }

@@ -31,8 +31,9 @@ use crate::linalg::{
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::validation::is_bad;
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_ACTUATION, DISABLE_SPRING, Data,
-    ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError, TendonType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_ACTUATION, DISABLE_CLAMPCTRL,
+    DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError,
+    TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -993,14 +994,23 @@ fn hill_active_fl_deriv(norm_len: f64) -> f64 {
 /// `(∂moment/∂qpos) · force` is deferred for non-Joint transmissions (AD-1).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
-    // The actuators and inputs of `mjd_actuator_vel`; MuJoCo's transition
-    // derivative (finite differences) is the reference here
-    // (`transition_derivatives_leave_out_what_mujoco_does`).
+    // The actuators `mjd_actuator_vel` leaves out, against MuJoCo's transition
+    // derivative (finite differences: `transition_derivatives_leave_out_what_mujoco_does`).
+    // A direct actuator's input is the one the forward pass took (clamped,
+    // and 0 for every actuator when a control is bad), so this is the
+    // derivative of the force that pass computed.
+    let bad = (0..model.nu).any(|i| is_bad(actuator_ctrl_input(model, data, i)));
     for i in 0..model.nu {
         if actuator_left_out(model, data, i) {
             continue;
         }
-        let input = actuator_input(model, data, i);
+        let input = if model.actuator_dyntype[i] != ActuatorDynamics::None {
+            actuator_input(model, data, i)
+        } else if bad {
+            0.0
+        } else {
+            actuator_ctrl_input(model, data, i)
+        };
         let length = data.actuator_length[i];
 
         // Compute ∂gain/∂L
@@ -2431,10 +2441,16 @@ pub fn mjd_transition_hybrid(
     if !data.efc_type.is_empty() {
         return mjd_transition_fd(model, data, config);
     }
-    // A bad control makes every actuator's input 0 for the pass, which the
-    // analytic columns do not model (MuJoCo's derivative is all finite
-    // differences).
-    if (0..model.nu).any(|i| is_bad(actuator_ctrl_input(model, data, i))) {
+    // The analytic columns read each control as written. Where the forward
+    // pass acts on another value (a bad control makes every input 0, a
+    // ctrlrange clamps one), take finite differences, as MuJoCo's derivative
+    // is.
+    let clamps = !disabled(model, DISABLE_CLAMPCTRL);
+    if (0..model.nu).any(|i| {
+        let (lo, hi) = model.actuator_ctrlrange[i];
+        is_bad(actuator_ctrl_input(model, data, i))
+            || (clamps && !(lo..=hi).contains(&data.ctrl[i]))
+    }) {
         return mjd_transition_fd(model, data, config);
     }
 
