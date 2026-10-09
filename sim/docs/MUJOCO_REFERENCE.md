@@ -673,7 +673,7 @@ for consistency.
 **Implicit path (ImplicitFast — full Jacobian, Cholesky):**
 
 Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/∂(qvel)` via:
-1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + tendon damping J^T B J (sleep-filtered, §40c)
+1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + flex edge damping J^T B J + tendon damping J^T B J (all but the flex edges sleep-filtered, §40c)
 2. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
 
 Symmetrizes D, then solves `(M − h·D) · qacc_implicit = f` via dense Cholesky factorization.
@@ -876,8 +876,9 @@ qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias
 
 qDeriv = ∂(passive)/∂v + ∂(actuator)/∂v − ∂(bias)/∂v
 
-mjd_passive_vel():   fluid derivatives (§40a) + diagonal −damping[i] + tendon −b·J^T·J
-                     (all three loops sleep-filtered via §40c indirection)
+mjd_passive_vel():   fluid derivatives (§40a) + diagonal −damping[i] + flex edge −b·J^T·J
+                     + tendon −b·J^T·J (all but the flex edge loop sleep-filtered via
+                     §40c indirection, as MuJoCo's)
 mjd_actuator_vel():  affine gain/bias velocity terms via transmission
 mjd_rne_vel():       chain-rule derivative propagation through kinematic tree
                      Forward pass: Dcvel, Dcacc (6×nv per body)

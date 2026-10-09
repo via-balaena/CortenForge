@@ -1885,6 +1885,82 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
     }
 }
 
+/// Flex edge damping enters the implicit integrators' `D`, as MuJoCo's
+/// `mjd_passive_vel` adds it (`engine_derivative.c:1737-1758`): a two-vertex
+/// cable with its first vertex pinned, so the edge's `−b · JᵀJ` lies within
+/// the free vertex's three dofs, equality constraints disabled (our `<flex>`
+/// adds edge equalities). MuJoCo 3.5.0 (unfused build) steps the same cable
+/// as a jointless anchor body and a body with three slides and a 0.1 kg
+/// sphere under `<flex body="anchor v1">`, 20 steps of 0.002 s from qvel
+/// (0.4, 0.7, -0.5). Under full Implicit the step matches it. Under
+/// implicitfast MuJoCo also leaves out the entries between the free vertex's
+/// dofs, where its mass matrix holds none (the spec book's P30, ledger L92),
+/// so ours still differs there.
+#[test]
+fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
+    // (integrator, MuJoCo's qpos and qvel)
+    let want = [
+        (
+            "implicit",
+            [
+                0.007_261_547_381_082_979_5,
+                0.027_296_599_782_666_1,
+                -0.027_631_522_771_323_122,
+                -0.005_097_754_042_589_182,
+                0.651_313_078_673_987_8,
+                -0.848_158_658_375_726_2,
+            ],
+        ),
+        (
+            "implicitfast",
+            [
+                0.007_283_559_609_821_424,
+                0.027_259_878_113_901_508,
+                -0.027_595_712_846_750_085,
+                -0.003_620_500_160_959_234_2,
+                0.648_928_232_872_987_3,
+                -0.845_603_222_567_218_3,
+            ],
+        ),
+    ];
+    for (integrator, mujoco) in want {
+        let model = load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="{integrator}">
+                <flag equality="disable"/>
+              </option>
+              <deformable>
+                <flex name="c" dim="1" mass="0.2">
+                  <vertex pos="0 0 1  0.1 0 1"/>
+                  <element data="0 1"/>
+                  <pin id="0"/>
+                  <edge damping="3"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        ))
+        .expect("load");
+        assert_eq!((model.nv, model.nflexedge), (3, 1));
+        let mut data = model.make_data();
+        data.qvel.copy_from_slice(&[0.4, 0.7, -0.5]);
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        let got: Vec<f64> = data.qpos.iter().chain(data.qvel.iter()).copied().collect();
+        let off = got
+            .iter()
+            .zip(mujoco)
+            .map(|(g, w)| (g - w).abs())
+            .fold(0.0, f64::max);
+        if integrator == "implicit" {
+            assert!(off < 1e-12, "{integrator}: {got:?}, MuJoCo {mujoco:?}");
+        } else {
+            assert!(off > 1e-4, "{integrator} agrees with MuJoCo: P30's flip");
+        }
+    }
+}
+
 /// Under implicitspringdamper a disabled spring or damper flag removes that
 /// force from the step, as it does from the passive pass: each flag gives
 /// the trajectory of the same model with that parameter at 0, on a joint and

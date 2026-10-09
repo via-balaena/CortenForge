@@ -3987,9 +3987,14 @@ fn transition_a_column_at_a_time(
 }
 
 /// Asserts that the finite-difference and hybrid transition matrices at `data`
-/// equal the ones taken a column at a time (to 1e-9 plus 1e-9 relative).
+/// equal the ones taken a column at a time (to 1e-9 plus 1e-9 relative), and
+/// returns them (finite differences, hybrid).
 #[allow(non_snake_case)]
-fn assert_transition_matches_a_column_at_a_time(what: &str, model: &Model, data: &sim_core::Data) {
+fn assert_transition_matches_a_column_at_a_time(
+    what: &str,
+    model: &Model,
+    data: &sim_core::Data,
+) -> (sim_core::TransitionMatrices, sim_core::TransitionMatrices) {
     let config = DerivativeConfig::default();
     let (a, b) = transition_a_column_at_a_time(model, data, config.eps);
     let fd = mjd_transition_fd(model, data, &config).expect("fd");
@@ -4010,6 +4015,7 @@ fn assert_transition_matches_a_column_at_a_time(what: &str, model: &Model, data:
             }
         }
     }
+    (fd, hybrid)
 }
 
 /// Finite differences of the transition with sleep in play: each column starts
@@ -4177,6 +4183,51 @@ fn check_transition_with_a_stateful_plugin(integrator: &str) {
     assert_ne!(moved.qvel[0], stepped.qvel[0]);
 
     assert_transition_matches_a_column_at_a_time(integrator, &model, &data);
+}
+
+/// The hybrid's analytic velocity columns take flex edge damping, whose
+/// `−b · JᵀJ` `mjd_passive_vel` adds (MuJoCo `engine_derivative.c:1737-1758`):
+/// a four-vertex cable with edge damping, equality constraints disabled (our
+/// `<flex>` adds edge equalities, whose rows send the hybrid to pure finite
+/// differences), under each integrator, and with dampers disabled, where the
+/// passive pass applies none. Its position columns are finite differences (a
+/// flex model's always are).
+#[test]
+fn hybrid_velocity_columns_take_flex_edge_damping() {
+    for (integrator, damper) in [
+        ("Euler", "enable"),
+        ("implicitfast", "enable"),
+        ("implicit", "enable"),
+        ("implicitspringdamper", "enable"),
+        ("implicitfast", "disable"),
+    ] {
+        let what = format!("{integrator}, damper {damper}");
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="{integrator}">
+                <flag equality="disable" damper="{damper}"/>
+              </option>
+              <deformable>
+                <flex name="c" dim="1" mass="0.4">
+                  <vertex pos="0 0 1  0.1 0 1  0.2 0 1  0.3 0 1"/>
+                  <element data="0 1  1 2  2 3"/>
+                  <edge damping="3"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        ))
+        .expect("load");
+        assert_eq!((model.nv, model.nflexedge), (12, 3));
+        let mut data = model.make_data();
+        for (i, v) in data.qvel.iter_mut().enumerate() {
+            *v = [0.4, -0.7, 0.5, -0.2, 0.9, 0.3][i % 6] * (1.0 + 0.1 * i as f64);
+        }
+        data.forward(&model).expect("forward");
+        assert!(data.efc_type.is_empty());
+        let (fd, hybrid) = assert_transition_matches_a_column_at_a_time(&what, &model, &data);
+        assert_ne!(hybrid.A, fd.A, "{what}: the analytic columns ran");
+    }
 }
 
 /// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its

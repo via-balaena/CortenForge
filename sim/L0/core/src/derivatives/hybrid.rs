@@ -49,6 +49,10 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 ///   qfrc_passive\[i\] -= damping\[i\] · qvel\[i\]
 ///   ⇒ ∂/∂qvel\[i\] = −damping\[i\]  (diagonal)
 ///
+/// Flex edge damping, per non-rigid edge `e` of a flex with damping `b`:
+///   qfrc_passive += J_eᵀ · (−b · J_e · qvel)
+///   ⇒ ∂/∂qvel = −b · J_eᵀ · J_e   (over the edge's Jacobian, `flexedge_J`)
+///
 /// Tendon damping (explicit mode only):
 ///   qfrc_passive += J^T · (−b · J · qvel)
 ///   ⇒ ∂/∂qvel = −b · J^T · J   (rank-1 update per tendon)
@@ -74,6 +78,15 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 /// In `ImplicitSpringDamper` mode, tendon damping is handled implicitly via
 /// non-diagonal D matrices (DT-35), but the velocity derivative is still
 /// physically present and must be captured here.
+///
+/// # Sparsity
+///
+/// MuJoCo's `qDeriv` keeps a tendon's or a flex edge's `−b · JᵀJ` only
+/// between dofs on one branch of the tree (`addJTBJSparse`, `addJTBJ`), and
+/// its implicit steps use that. This keeps all of it, which the hybrid's
+/// analytic velocity columns read
+/// (`hybrid_velocity_columns_take_flex_edge_damping`); restricting the
+/// implicit steps' `D` is the spec book's P30.
 #[allow(non_snake_case)]
 pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     // As MuJoCo's (`engine_derivative.c:1692-1727`) and the passive pass:
@@ -106,7 +119,30 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
         data.qDeriv[(i, i)] += -model.implicit_damping[i];
     }
 
-    // 3. Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
+    // 3. Flex edge damping: −b · JᵀJ over each non-rigid edge's Jacobian,
+    // after the dofs and before the tendons, as MuJoCo's
+    // (`engine_derivative.c:1737-1758`).
+    for f in 0..model.nflex {
+        let neg_b = -model.flex_edgedamping[f];
+        if model.flex_rigid[f] || neg_b == 0.0 {
+            continue;
+        }
+        for e in model.flex_edgeadr[f]..model.flex_edgeadr[f] + model.flex_edgenum[f] {
+            if model.flexedge_rigid[e] {
+                continue;
+            }
+            let adr = model.flexedge_J_rowadr[e];
+            let row = adr..adr + model.flexedge_J_rownnz[e];
+            for a in row.clone() {
+                for c in row.clone() {
+                    let (k, p) = (model.flexedge_J_colind[a], model.flexedge_J_colind[c]);
+                    data.qDeriv[(k, p)] += data.flexedge_J[a] * neg_b * data.flexedge_J[c];
+                }
+            }
+        }
+    }
+
+    // 4. Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
     // DT-35: This runs for ALL integrators. In ImplicitSpringDamper mode the
     // tendon damping forces are folded into the implicit K/D matrices (not
     // skipped), so the velocity derivative is always physically present.
