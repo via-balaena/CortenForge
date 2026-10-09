@@ -1,0 +1,13 @@
+<mujoco>
+          <option timestep="0.01" integrator="Euler"/>
+          <worldbody>
+            <body>
+              <joint type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+              <body pos="0 0 -1">
+                <joint type="hinge" axis="0 1 0" damping="-0.3"/>
+                <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>

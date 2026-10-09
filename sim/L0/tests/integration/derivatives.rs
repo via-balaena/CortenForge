@@ -4425,6 +4425,35 @@ fn transition_derivatives_see_callbacks_and_plugins() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// The hybrid under Euler with one dof damped negatively beside a positive
+/// one: its velocity columns solve with `M + h·D`, every entry included, as
+/// the step does (`euler_damps_every_awake_dof_as_mujoco_3_5_0`).
+#[test]
+fn hybrid_takes_damping_of_both_signs_under_euler() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.01" integrator="Euler"/>
+          <worldbody>
+            <body>
+              <joint type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+              <body pos="0 0 -1">
+                <joint type="hinge" axis="0 1 0" damping="-0.3"/>
+                <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos.copy_from_slice(&[0.3, -0.2]);
+    data.qvel.copy_from_slice(&[0.7, -0.4]);
+    data.forward(&model).expect("forward");
+    let (fd, hybrid) = assert_transition_matches_a_column_at_a_time("mixed damping", &model, &data);
+    assert_ne!(hybrid.A, fd.A, "the analytic columns ran");
+}
+
 /// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its
 /// length moves with `q`: a ball joint's length is its rotation vector along
 /// the gear, whose Jacobian is the gear through the log map (the moment only

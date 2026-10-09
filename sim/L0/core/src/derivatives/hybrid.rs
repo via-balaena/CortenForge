@@ -2766,7 +2766,7 @@ pub fn mjd_transition_hybrid(
     //     no DOF is damped, `M_impl == M` and the bare-`M` fast path is kept, so the
     //     undamped result is byte-for-byte unchanged.
     let eulerdamp_active =
-        matches!(model.integrator, Integrator::Euler) && eulerdamp_applies(model);
+        matches!(model.integrator, Integrator::Euler) && eulerdamp_applies(model, data);
     let m_impl_euler = if eulerdamp_active {
         let mut mi = data_work.qM.clone();
         for i in 0..nv {

@@ -25,12 +25,20 @@ use euler::mj_integrate_pos;
 
 /// Whether an Euler step solves `(M + h·D)·qacc_new = qfrc_smooth +
 /// qfrc_constraint` for the acceleration it advances `qvel` with (eulerdamp):
-/// neither eulerdamp nor dampers disabled, and some DOF damped (an undamped
-/// model skips the refactorisation).
-pub(crate) fn eulerdamp_applies(model: &Model) -> bool {
-    model.disableflags & DISABLE_EULERDAMP == 0
-        && model.disableflags & DISABLE_DAMPER == 0
-        && model.implicit_damping.iter().any(|&d| d > 0.0)
+/// neither eulerdamp nor dampers disabled, and some awake DOF damped
+/// positively, as MuJoCo's `mj_Euler` (`engine_forward.c:956-963`; an
+/// undamped model skips the refactorisation).
+pub(crate) fn eulerdamp_applies(model: &Model, data: &Data) -> bool {
+    if model.disableflags & (DISABLE_EULERDAMP | DISABLE_DAMPER) != 0 {
+        return false;
+    }
+    if model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv {
+        data.dof_awake_ind[..data.nv_awake]
+            .iter()
+            .any(|&i| model.implicit_damping[i] > 0.0)
+    } else {
+        model.implicit_damping.iter().any(|&d| d > 0.0)
+    }
 }
 
 impl Data {
@@ -118,7 +126,7 @@ impl Data {
         let mut solved = (matches!(
             model.integrator,
             Integrator::Euler | Integrator::RungeKutta4
-        ) && eulerdamp_applies(model))
+        ) && eulerdamp_applies(model, self))
         .then(|| self.eulerdamp_acceleration(model));
         if crate::island::mj_sleep(model, self) > 0 {
             // The re-forward overwrites `qacc` and `qacc_implicit`.
@@ -176,12 +184,10 @@ impl Data {
         let saved_qld = self.qLD_data.clone();
         let saved_inv = self.qLD_diag_inv.clone();
 
-        // Add h·damp to mass matrix diagonal, then refactorize
+        // Add h·damp to the mass matrix diagonal, every DOF's whatever its
+        // sign (`engine_forward.c:986-989`), then refactorize
         for i in 0..model.nv {
-            let d = model.implicit_damping[i];
-            if d > 0.0 {
-                self.qM[(i, i)] += h * d;
-            }
+            self.qM[(i, i)] += h * model.implicit_damping[i];
         }
         mj_factor_sparse(model, self);
 
@@ -210,10 +216,7 @@ impl Data {
 
         // Restore original mass matrix diagonal and factorization
         for i in 0..model.nv {
-            let d = model.implicit_damping[i];
-            if d > 0.0 {
-                self.qM[(i, i)] -= h * d;
-            }
+            self.qM[(i, i)] -= h * model.implicit_damping[i];
         }
         self.qLD_data = saved_qld;
         self.qLD_diag_inv = saved_inv;

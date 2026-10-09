@@ -67,11 +67,12 @@ use crate::types::{DISABLE_DAMPER, DISABLE_EULERDAMP, Integrator, MjJointType, S
 use crate::{Data, Model};
 use nalgebra::{DMatrix, DVector, Matrix6, Vector3};
 
-/// The matrix the Euler step solves for its acceleration, factored: `M + h·D`
-/// under eulerdamp, else `M`, as the step chooses (`eulerdamp_applies`).
-fn factor_euler_step_matrix(model: &Model, qm: &DMatrix<f64>) -> Result<DMatrix<f64>, StepError> {
-    let mut m = qm.clone();
-    if eulerdamp_applies(model) {
+/// The matrix the Euler step from `data` solves for its acceleration,
+/// factored: `M + h·D` under eulerdamp, else `M`, as the step chooses
+/// (`eulerdamp_applies`).
+fn factor_euler_step_matrix(model: &Model, data: &Data) -> Result<DMatrix<f64>, StepError> {
+    let mut m = data.qM.clone();
+    if eulerdamp_applies(model, data) {
         for i in 0..model.nv {
             m[(i, i)] += model.timestep * model.implicit_damping[i];
         }
@@ -179,7 +180,7 @@ pub fn mjd_damping_jacobian(model: &Model, data: &Data) -> Result<DampingJacobia
     } else {
         &data.qvel
     };
-    let m_impl = factor_euler_step_matrix(model, &d_pre.qM)?;
+    let m_impl = factor_euler_step_matrix(model, &d_pre)?;
 
     let mut e_j = DVector::zeros(nv);
     for j in 0..nv {
@@ -345,7 +346,7 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
     d_op.forward(model)?;
 
     // The step's matrix, M_impl = M + h·D under eulerdamp.
-    let m_impl = factor_euler_step_matrix(model, &d_op.qM)?;
+    let m_impl = factor_euler_step_matrix(model, &d_op)?;
 
     // Armature is mass-independent, so the ∂M/∂m CRBA pass must exclude it.
     let mut model_no_arm = model.clone();
@@ -540,7 +541,7 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
     d_op.forward(model)?;
 
     // The step's matrix, M_impl = M + h·D under eulerdamp.
-    let m_impl = factor_euler_step_matrix(model, &d_op.qM)?;
+    let m_impl = factor_euler_step_matrix(model, &d_op)?;
 
     // Armature is inertia-independent (added straight to the qM diagonal), so the
     // ∂M/∂I CRBA pass must exclude it.
@@ -727,7 +728,7 @@ pub fn mjd_friction_jacobian(model: &Model, data: &Data) -> Result<FrictionJacob
     );
 
     // The step's matrix, M_impl = M + h·D under eulerdamp.
-    let m_impl = factor_euler_step_matrix(model, &d_op.qM)?;
+    let m_impl = factor_euler_step_matrix(model, &d_op)?;
 
     let mut dxdf = DMatrix::zeros(nx, nv);
     let mut e_j = DVector::zeros(nv);
@@ -1575,6 +1576,40 @@ mod tests {
                 &friction,
                 &fd_friction_jacobian(&model, &data, 1e-7),
             );
+        }
+    }
+
+    /// With one dof damped negatively beside a positive one, the Euler step
+    /// still solves with `M + h·D`, every entry included (MuJoCo
+    /// `engine_forward.c:986-989`), and the channels follow it.
+    #[test]
+    fn parameter_jacobians_take_damping_of_both_signs() {
+        let (mut model, start) = damped_pendulum();
+        model.jnt_damping = vec![0.5, -0.3];
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos.copy_from(&start.qpos);
+        data.qvel.copy_from(&start.qvel);
+        data.forward(&model).unwrap();
+        for (what, analytic, fd) in [
+            (
+                "damping",
+                mjd_damping_jacobian(&model, &data).unwrap().dxdD,
+                fd_damping_jacobian(&model, &data, 1e-6),
+            ),
+            (
+                "mass",
+                mjd_mass_jacobian(&model, &data).unwrap().dxdm,
+                fd_mass_jacobian(&model, &data, 1e-6),
+            ),
+            (
+                "inertia",
+                mjd_inertia_jacobian(&model, &data).unwrap().dxdI,
+                fd_inertia_jacobian(&model, &data, 1e-6),
+            ),
+        ] {
+            let (err, loc) = max_relative_error(&analytic, &fd, 1e-3);
+            assert!(err < 1e-5, "{what}: max_rel_err={err:.3e} at {loc:?}");
         }
     }
 

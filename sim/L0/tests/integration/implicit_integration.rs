@@ -1961,6 +1961,90 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
     }
 }
 
+/// Euler's eulerdamp adds `h·damping` to the mass matrix's diagonal for every
+/// awake dof, whatever its sign, once some awake dof is damped positively, as
+/// MuJoCo's `mj_Euler` (`engine_forward.c:956-989`): a double pendulum damped
+/// 0.5 and −0.3, and −0.5 and 0.3, from qpos (0.3, −0.2) and qvel (0.7, −0.4);
+/// and a pendulum damped −0.05 beside an asleep one damped 0.5, which steps
+/// explicitly, no awake dof being damped positively. MuJoCo 3.5.0 (unfused
+/// build), 20 steps of 0.01 s.
+#[test]
+fn euler_damps_every_awake_dof_as_mujoco_3_5_0() {
+    let check = |what: &str, xml: &str, start: [f64; 4], mujoco: [f64; 4]| {
+        let model = load_model(xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&start[..2]);
+        data.qvel.copy_from_slice(&start[2..]);
+        data.forward(&model).expect("forward");
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        let got = [data.qpos[0], data.qpos[1], data.qvel[0], data.qvel[1]];
+        for (k, (g, w)) in got.iter().zip(mujoco).enumerate() {
+            assert!((g - w).abs() < 1e-12, "{what}: state[{k}] {g}, MuJoCo {w}");
+        }
+    };
+    let double = |d0: &str, d1: &str| {
+        format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="Euler"/>
+              <worldbody>
+                <body>
+                  <joint type="hinge" axis="0 1 0" damping="{d0}"/>
+                  <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+                  <body pos="0 0 -1">
+                    <joint type="hinge" axis="0 1 0" damping="{d1}"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+                  </body>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        )
+    };
+    check(
+        "damped 0.5 and -0.3",
+        &double("0.5", "-0.3"),
+        [0.3, -0.2, 0.7, -0.4],
+        [
+            0.299_726_370_572_367_45,
+            0.029_814_322_298_336_155,
+            -0.652_946_111_342_797_9,
+            2.583_252_053_355_409,
+        ],
+    );
+    check(
+        "damped -0.5 and 0.3",
+        &double("-0.5", "0.3"),
+        [0.3, -0.2, 0.7, -0.4],
+        [
+            0.331_214_759_154_592_9,
+            -0.064_252_489_552_035_4,
+            -0.268_254_028_651_238_5,
+            1.367_842_510_508_819_9,
+        ],
+    );
+    check(
+        "damped -0.05 beside an asleep tree damped 0.5",
+        r#"<mujoco>
+          <option timestep="0.01" integrator="Euler"><flag sleep="enable"/></option>
+          <worldbody>
+            <body name="awake" pos="0 0 1">
+              <joint type="hinge" axis="0 1 0" damping="-0.05"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+            <body name="asleep" pos="1 0 1" sleep="init">
+              <joint type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </worldbody>
+        </mujoco>"#,
+        [0.4, 0.0, 0.7, 0.0],
+        [1.424_549_627_521_465_3, 0.0, 8.514_624_111_839_153, 0.0],
+    );
+}
+
 /// Under implicitspringdamper a disabled spring or damper flag removes that
 /// force from the step, as it does from the passive pass: each flag gives
 /// the trajectory of the same model with that parameter at 0, on a joint and
