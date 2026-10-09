@@ -671,6 +671,70 @@ fn analytic_state_jacobian_damped_matches_fd() {
     );
 }
 
+/// The analytic loaded state Jacobian (single hinge and chain) follows the step it
+/// differentiates: with the previous step's wrench still held in `xfrc_applied` (the
+/// unloaded transition must not see it; sim-core's hybrid takes an applied wrench's
+/// position dependence by finite differences) and under the damper and eulerdamp flags
+/// (the step then solves with `M` alone, `sim_core::integrate::eulerdamp_applies`).
+/// Against the FD `loaded_state_jacobian`.
+#[test]
+fn analytic_state_jacobian_follows_a_held_wrench_and_the_damper_flags() {
+    let hinge = |flag: &str| {
+        format!(
+            r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001">{flag}</option>
+  <worldbody>
+<body name="arm" pos="0 0 0.2">
+  <joint type="hinge" axis="0 1 0" damping="0.7"/>
+  <geom type="sphere" pos="0 0 -0.095" size="0.004" mass="0.2"/>
+</body>
+  </worldbody>
+</mujoco>"#
+        )
+    };
+    let chain = |flag: &str| {
+        format!(
+            r#"<mujoco><option gravity="0 0 -9.81" timestep="0.001">{flag}</option><worldbody>
+<body name="upper" pos="0 0 0.2"><joint type="hinge" axis="0 1 0" damping="0.5"/>
+<geom type="sphere" pos="0.01 0 -0.025" size="0.004" mass="0.3"/>
+<body name="lower" pos="0.02 0 -0.05"><joint type="hinge" axis="1 0.3 0" damping="0.5"/>
+<geom type="sphere" pos="0.015 0.01 -0.04" size="0.004" mass="0.4"/></body></body></worldbody></mujoco>"#
+        )
+    };
+    let mut failures = Vec::new();
+    for flag in [
+        "",
+        r#"<flag eulerdamp="disable"/>"#,
+        r#"<flag damper="disable"/>"#,
+    ] {
+        for (what, mjcf, body, nv) in [("hinge", hinge(flag), 1, 1), ("chain", chain(flag), 2, 2)] {
+            let model = load_model(&mjcf).expect("load");
+            let mut data = model.make_data();
+            let q0 = [0.3, -0.15];
+            let v0 = [0.4, 0.8];
+            for i in 0..nv {
+                data.qpos[i] = q0[i];
+                data.qvel[i] = v0[i];
+            }
+            data.forward(&model).expect("forward");
+            let mut c: StaggeredCoupling = StaggeredCoupling::new(
+                model, data, body, 0.005, 4, 0.1, 3.0e4, 1.0e-3, 3.0e4, 1.0e-2, 0.0,
+            );
+            // The previous step's wrench, as `articulated_grad` leaves it.
+            let held = SpatialVector::from_row_slice(&[0.2, -0.1, 0.3, 4.0, 2.0, 500.0]);
+            c.data.xfrc_applied[c.body] = xfrc_from_torque_force(&held);
+            let wrench = SpatialVector::from_row_slice(&[0.1, 0.2, 0.0, 5.0, -3.0, 800.0]);
+            let analytic = c.analytic_state_jacobian(&wrench).expect("analytic");
+            let fd = c.loaded_state_jacobian(&wrench);
+            let (err, loc) = sim_core::max_relative_error(&fd, &analytic, 1e-3);
+            if !err.is_finite() || err > 1e-6 {
+                failures.push(format!("{what} {flag}: rel {err:.3e} at {loc:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// The analytic UNDAMPED hinge **chain** `J_state`
 /// ([`StaggeredCoupling::chain_state_jacobian`]) is MACHINE-EXACT against the FD
 /// [`StaggeredCoupling::loaded_state_jacobian`] for arbitrary held wrenches (force AND

@@ -3,6 +3,7 @@
 //! Jacobians the articulated trajectory adjoints thread through.
 
 use crate::xfrc_from_torque_force;
+use sim_core::integrate::eulerdamp_applies;
 use sim_core::{
     DMatrix, DVector, MjJointType, SpatialVector, mass_directional_derivative,
     mj_differentiate_pos, mj_integrate_pos_explicit, mj_jac_point,
@@ -215,14 +216,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// This is the multi-DOF state carry. It is the *loaded* Jacobian (the wrench
     /// is held during the perturbation), so it includes the applied-force geometric
-    /// stiffness `∂(Jᵀw)/∂q` that `sim-core`'s unloaded `transition_derivatives`
-    /// drops — a real effect for an articulated body (zero for the free-body platen,
-    /// where `J = I`).
+    /// stiffness `∂(Jᵀw)/∂q` that `sim-core`'s `transition_derivatives` at a
+    /// wrench-free state leaves out — a real effect for an articulated body (zero for
+    /// the free-body platen, where `J = I`).
     ///
-    /// This is the **general fallback** path (any `nv`): the single-hinge AND the undamped
-    /// serial-hinge-chain scopes use the machine-exact analytic [`Self::analytic_state_jacobian`]
-    /// instead, while a free/quaternion joint or a DAMPED chain uses this FD form (FD-carry
-    /// precision ~1e-6). It is also the reference the analytic form is FD-validated against;
+    /// This is the **general fallback** path (any `nv`, where
+    /// [`Self::analytic_state_jacobian`] returns `None`), and the reference the analytic
+    /// form is FD-validated against;
     /// see `docs/keystone/geometric_stiffness_recon.md` and `docs/keystone/multilink_recon.md`.
     ///
     /// **Tangent-space FD (SO(3)-correct for quaternion joints).** When the body has a
@@ -232,9 +232,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// step via [`Self::loaded_state_jacobian_tangent`]'s [`mj_integrate_pos_explicit`]
     /// (`qpos ⊕ exp(±ε·e_c)`) and position ROWS difference via [`mj_differentiate_pos`]
     /// (the SO(3) log, the body-frame tangent at the nominal output). A purely Euclidean
-    /// body (`nq == nv`: hinge/slide/translation only — e.g. a damped chain or a
-    /// translation path) keeps the raw FD verbatim, BYTE-IDENTICAL. (The single hinge and
-    /// the undamped serial-hinge chain use the analytic Jacobian and never reach here.) See
+    /// body (`nq == nv`: hinge/slide/translation only — e.g. a translation path) keeps the
+    /// raw FD verbatim, BYTE-IDENTICAL. See
     /// `docs/keystone/quaternion_joints_recon.md`.
     pub(super) fn loaded_state_jacobian(&self, wrench: &SpatialVector) -> DMatrix<f64> {
         if self.model.nq != self.model.nv {
@@ -373,7 +372,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// loaded Jacobian's noise with the exact term (deterministic, no eps) — making the
     /// single-hinge articulated gradient machine-exact at every horizon (paired with the
     /// fully-fresh formulation; see `coupled_trajectory_material_gradient_articulated`
-    /// and `docs/keystone/moment_residual_recon.md`). The undamped multi-link chain is
+    /// and `docs/keystone/moment_residual_recon.md`). The multi-link chain is
     /// handled by [`Self::chain_state_jacobian`] (this method dispatches to it).
     ///
     /// For a single hinge the geometric stiffness is the closed form
@@ -416,22 +415,26 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         };
         let dt = self.model.timestep;
         let nv = self.model.nv; // == 1 (single_hinge), so the state block is 2×2
-        // Unloaded transition A at the current state. The real `step` re-forwards at
-        // `qpos`, so A's internal perturbations evaluate at the same fresh config the
-        // carry uses (`self.data`'s `xipos`/`qM` lag a step, but `step`/`forward` redo FK).
-        // A is (2·nv + na)²; take the [qpos; qvel] block (the carry's 2·nv × 2·nv state).
-        let a = self
-            .data
+        // A fresh scratch at `qpos`/`qvel` with the held control, no activation and NO
+        // applied force (the carry's state is `[qpos; qvel]`, as `scratch_state_step`'s):
+        // `self.data` carries the previous step's `xfrc_applied` (`step` does not clear
+        // it), whose `∂(Jᵀw)/∂q` sim-core's transition takes by finite differences (the
+        // hybrid's position columns, `hybrid_takes_an_applied_wrench`), so reading
+        // `self.data` would load `A` with the old wrench. The geometric stiffness is
+        // evaluated here too (matching the FD `loaded_state_jacobian` /
+        // `fresh_xfrc_column` eval point).
+        let mut scratch = self.model.make_data();
+        scratch.qpos.copy_from(&self.data.qpos);
+        scratch.qvel.copy_from(&self.data.qvel);
+        scratch.ctrl.copy_from(&self.data.ctrl);
+        scratch.forward(&self.model).expect("scratch forward");
+        // Unloaded transition A at that state; take the [qpos; qvel] block (the carry's
+        // 2·nv × 2·nv state) of the (2·nv + na)² matrix.
+        let a = scratch
             .transition_derivatives(&self.model, &sim_core::DerivativeConfig::default())
             .expect("unloaded transition derivatives")
             .A;
         let mut j = a.view((0, 0), (2 * nv, 2 * nv)).into_owned();
-        // Geometric stiffness at a fresh scratch forward at `qpos` (matching the FD
-        // `loaded_state_jacobian` / `fresh_xfrc_column` eval point).
-        let mut scratch = self.model.make_data();
-        scratch.qpos.copy_from(&self.data.qpos);
-        scratch.qvel.copy_from(&self.data.qvel);
-        scratch.forward(&self.model).expect("scratch forward");
         let jb = self.model.jnt_body[jnt];
         let axis = scratch.xquat[jb] * self.model.jnt_axis[jnt];
         let anchor = scratch.xpos[jb] + scratch.xquat[jb] * self.model.jnt_pos[jnt];
@@ -446,8 +449,13 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         // carry only patches the LOADED geometric stiffness onto the qpos column, routed
         // through the same `M_impl` (`∂(M_impl⁻¹·Jᵀw)/∂θ = geom_stiff / M_impl`); the
         // position rows follow the semi-implicit chain `θ' = θ + Δt·ω'`. `M_impl = M`
-        // when undamped, so the `D = 0` result is unchanged BYTE-FOR-BYTE.
-        let m_impl = m + dt * damp;
+        // when undamped, so the `D = 0` result is unchanged BYTE-FOR-BYTE; and `M` where
+        // the step takes no eulerdamp (`eulerdamp_applies`: a damper flag disabled).
+        let m_impl = if eulerdamp_applies(&self.model, &scratch) {
+            m + dt * damp
+        } else {
+            m
+        };
         let vel_corr = dt / m_impl * geom_stiff; // ∂qvel'/∂qpos correction
         j[(1, 0)] += vel_corr; // velocity row, qpos col
         j[(0, 0)] += dt * vel_corr; // position row, qpos col (semi-implicit chain)
@@ -497,7 +505,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     #[allow(clippy::expect_used)]
     fn chain_state_jacobian(&self, wrench: &SpatialVector) -> Option<DMatrix<f64>> {
         let model = &self.model;
-        // Scope guard: undamped serial HINGE chain spanning all DOFs, Euclidean (nq == nv),
+        // Scope guard: serial HINGE chain spanning all DOFs, Euclidean (nq == nv),
         // nv ≥ 2. Validated machine-exact for 2-link through (at least) 4-link spatial chains —
         // the sim-core Coriolis derivative (the `∂S/∂q` ancestor term AND the bias-acceleration
         // X_b transport that the multi-hop case needs) is now complete for any serial hinge
@@ -529,11 +537,9 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         let nv = model.nv;
 
         // Fresh scratch at `qpos`/`qvel` with the CONTACT WRENCH CLEARED (`xfrc_applied = 0`)
-        // but the held control copied — the UNLOADED operating point. `self.data` carries the
-        // previous step's `xfrc_applied` (sim-core's `step` does not clear it), which would
-        // poison the analytical transition's `∂(M·qacc)/∂q` term via the contaminated
-        // operating-point `qacc` (∂M/∂q ≠ 0 for a chain — harmless for a single hinge where
-        // ∂M/∂q = 0, which is why `analytic_state_jacobian` can read `self.data` directly).
+        // but the held control copied — the UNLOADED operating point, as the single-hinge
+        // carry takes it. `self.data` carries the previous step's `xfrc_applied` (sim-core's
+        // `step` does not clear it), which would load the transition with the old wrench.
         // A is the unloaded transition; the held contact wrench enters only through `addend`.
         let mut scratch = model.make_data();
         scratch.qpos.copy_from(&self.data.qpos);
@@ -598,8 +604,10 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
         // loaded term over the SAME M_impl — mirroring the single-hinge unification. `D = 0 ⇒
         // M_impl = M`, recovering the bare-M form BYTE-FOR-BYTE.
         let mut m_impl = scratch.qM.clone();
-        for i in 0..nv {
-            m_impl[(i, i)] += dt * model.implicit_damping[i];
+        if eulerdamp_applies(model, &scratch) {
+            for i in 0..nv {
+                m_impl[(i, i)] += dt * model.implicit_damping[i];
+            }
         }
         let m_inv = m_impl.try_inverse().expect("M_impl invertible");
         let jac = mj_jac_point(model, &scratch, self.body, &p); // 6×nv

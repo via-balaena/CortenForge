@@ -861,6 +861,9 @@ pub fn mjd_smooth_vel(model: &Model, data: &mut Data) {
 ///
 /// `qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias`
 ///
+/// It leaves out an applied wrench's `Jᵀw` (`xfrc_applied`), which
+/// `Data::qfrc_smooth` carries: the hybrid takes finite differences for it.
+///
 /// Populates position derivative storage with three analytical contributions:
 ///   1. ∂qfrc_passive/∂qpos via spring chain rules (joint + tendon)
 ///   2. ∂qfrc_actuator/∂qpos via gain/bias length derivatives
@@ -2665,7 +2668,9 @@ fn sleep_can_change(model: &Model, data: &Data) -> bool {
 
 /// Compute hybrid analytical+FD transition derivatives.
 ///
-/// Uses analytical `qDeriv` for velocity columns of A, FD for position columns.
+/// Takes columns analytically where it can and the rest by finite differences
+/// (`use_analytical_pos`, `act_fd_indices` and `ctrl_fd_indices` in its body
+/// decide which).
 /// It does not read `config.use_analytical`; [`mjd_transition`](super::mjd_transition)
 /// chooses between this and pure FD.
 ///
@@ -3061,6 +3066,14 @@ pub fn mjd_transition_hybrid(
         && model.viscosity == 0.0
         && !model.body_gravcomp.iter().any(|g| *g != 0.0)
         && model.nflex == 0
+        // An applied wrench's `Jᵀw` moves with q, a term the analytic columns
+        // leave out (`hybrid_takes_an_applied_wrench`); the world body's is
+        // never applied.
+        && data
+            .xfrc_applied
+            .iter()
+            .skip(1)
+            .all(crate::types::BodyWrench::is_zero)
         // A moment row that moves with q adds a moment-arm term the analytic
         // columns leave out (AD-1).
         && !(0..model.nu).any(|i| moment_moves_with_q(model, i))

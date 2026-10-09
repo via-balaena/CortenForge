@@ -72,17 +72,16 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// The wrench node and pose seam are analytic (FD-validated machine-exact vs the real
     /// contact readout, `tests/`). `J_state` is the machine-exact ANALYTIC carry for the
-    /// single hinge (`analytic_state_jacobian`) and the undamped serial-hinge chain
+    /// single hinge (`analytic_state_jacobian`) and the serial-hinge chain
     /// (`chain_state_jacobian` — the case-split geometric-stiffness Hessian `G`, the
     /// `∂M⁻¹/∂q` directional derivative `dMu`, and the unloaded transition `A` at the CLEAN
     /// `xfrc = 0` operating point; the chain `A` relies on the sim-core Coriolis derivative —
     /// the `∂S/∂q` ancestor term plus the bias-acceleration X_b transport for multi-hop chains).
     /// Free/quaternion joints use the FD `loaded_state_jacobian` (FD-carry).
     /// **Joint damping** is supported: the Euler `eulerdamp` wrench→velocity factor `G_vel`
-    /// is `Δt·(M + Δt·D)⁻¹·Jᵀ` ([`rigid_xfrc_column`](crate::rigid_xfrc_column), `D = implicit_damping`). The damped
-    /// single HINGE uses the ANALYTIC `J_state` (the `M → M_impl` correction reconciles the
-    /// unloaded `A`'s bare-`M` velocity rows with eulerdamp → machine-exact, ~1e-9); a DAMPED
-    /// chain falls back to the FD `loaded_state_jacobian` (damping-correct, FD-carry precision).
+    /// is `Δt·(M + Δt·D)⁻¹·Jᵀ` ([`rigid_xfrc_column`](crate::rigid_xfrc_column), `D = implicit_damping`; `M` where
+    /// the step takes no eulerdamp). A damped
+    /// single HINGE or chain takes the ANALYTIC `J_state` (`analytic_state_jacobian`).
     /// FD-gated under damping. Out
     /// of scope: stiffness-implicit / non-Euler integrators
     /// (`ImplicitSpringDamper`'s `M + Δt·D + Δt²·K`, RK4); the coupling's own free-platen
@@ -320,7 +319,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
             //   J_state = the FULL loaded single-step transition Jacobian
             //     ∂[qpos';qvel']/∂[qpos;qvel] (both blocks — incl the position-state
             //     coupling Δt·∂qvel'/∂qpos and the applied-force geometric stiffness
-            //     ∂(Jᵀw)/∂q that the unloaded `transition_derivatives` drops; zero for
+            //     ∂(Jᵀw)/∂q that `transition_derivatives` at a wrench-free state
+            //     leaves out; zero for
             //     the free body, real for the hinge). Single hinge OR serial-hinge chain
             //     (damped or undamped) ⇒ the machine-exact ANALYTIC carry
             //     (`analytic_state_jacobian`, which dispatches to `chain_state_jacobian` for
@@ -420,8 +420,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// **Scope.** The full grip wrench (force + off-COM moment) is routed — FD-gated against the
     /// full forward [`Self::coupled_trajectory_gripped_articulated`]. EUCLIDEAN joints
     /// (`nq == nv` — hinge/slide chains), flat normal, friction active, `rigid_damping = 0`.
-    /// `J_state` is the analytic single-hinge / undamped-chain carry (`analytic_state_jacobian`),
-    /// else the FD `loaded_state_jacobian` (damped chain / free / quaternion).
+    /// `J_state` is the analytic single-hinge / chain carry (`analytic_state_jacobian`),
+    /// else the FD `loaded_state_jacobian` (free / quaternion).
     ///
     /// Curvature-correct on a FINITE sphere collider ([`Self::with_sphere_collider`]): both the
     /// NORMAL wrench (`ContactWrenchTrajVjp`'s `f_mag·H`) and the FRICTION wrench

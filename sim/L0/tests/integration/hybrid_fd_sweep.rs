@@ -1,8 +1,8 @@
 //! The hybrid transition derivative against pure finite differences, swept
 //! over the inputs that decide what the forward pass acts on.
 //!
-//! [`mjd_transition_hybrid`] computes the velocity, activation and control
-//! columns of `A` and `B` analytically and the rest by finite differences;
+//! [`mjd_transition_hybrid`] computes the columns of `A` and `B` it can
+//! analytically and the rest by finite differences;
 //! [`mjd_transition_fd`] differences the whole step. On one model and state
 //! the two must agree to finite-difference accuracy, entry by entry, in `A`,
 //! `B`, `C` and `D`. Two blocks:
@@ -35,10 +35,11 @@
 //! against columns taken one at a time); a force no case carries: a callback,
 //! a plugin or a user actuator term (the hybrid takes finite differences for
 //! them, `transition_derivatives_see_callbacks_and_plugins`), or an applied
-//! `xfrc_applied` wrench, whose dependence on q the analytic position columns
-//! leave out (the spec book's gap chapter); and a gap the forward pass and the
-//! finite differences share, since finite differences are the reference here
-//! (they are compared with MuJoCo's in `derivatives.rs`).
+//! `xfrc_applied` wrench (the hybrid then takes its position columns by
+//! finite differences, `hybrid_takes_an_applied_wrench`); and a gap the
+//! forward pass and the finite differences share, since finite differences
+//! are the reference here (they are compared with MuJoCo's in
+//! `derivatives.rs`).
 
 use nalgebra::DMatrix;
 use sim_core::{

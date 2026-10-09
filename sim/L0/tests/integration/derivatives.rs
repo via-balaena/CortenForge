@@ -4575,6 +4575,45 @@ fn hybrid_takes_negative_tendon_stiffness_and_damping() {
     }
 }
 
+/// An applied wrench (`xfrc_applied`) adds `Jᵀw`, which moves with q: the
+/// hybrid takes its position columns by finite differences then, and agrees
+/// with them (its velocity columns stay analytic). A damped hinge with a force
+/// on its body, under Euler, implicitfast and implicitspringdamper; a force on
+/// the world body, which nothing applies, leaves the hybrid as with none.
+#[test]
+fn hybrid_takes_an_applied_wrench() {
+    for integrator in ["Euler", "implicitfast", "implicitspringdamper"] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="arm" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.xfrc_applied[1].force = nalgebra::Vector3::new(3.0, 0.0, 5.0);
+        data.forward(&model).expect("forward");
+        let (fd, hybrid) = assert_transition_matches_a_column_at_a_time(integrator, &model, &data);
+        assert_ne!(hybrid.A, fd.A, "{integrator}: the analytic columns ran");
+
+        let config = DerivativeConfig::default();
+        data.xfrc_applied[1] = sim_core::BodyWrench::default();
+        data.forward(&model).expect("forward");
+        let none = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        data.xfrc_applied[0].force = nalgebra::Vector3::new(3.0, 0.0, 5.0);
+        data.forward(&model).expect("forward");
+        let world = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        assert_eq!(world.A, none.A, "{integrator}: a force on the world body");
+    }
+}
+
 /// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its
 /// length moves with `q`: a ball joint's length is its rotation vector along
 /// the gear, whose Jacobian is the gear through the log map (the moment only

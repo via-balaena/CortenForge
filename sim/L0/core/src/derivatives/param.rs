@@ -1065,7 +1065,7 @@ mod tests {
         let state_err = (&analytic.terminal_state - &fd_terminal).amax();
         assert!(state_err < 1e-9, "terminal state mismatch: {state_err:.3e}");
 
-        // Gradient: analytic recursion (hybrid A, FD position columns) vs full
+        // Gradient: analytic recursion (hybrid A) vs full
         // central-FD of the rollout. Compounding over 60 steps; floor matches the
         // transition-harness convention.
         // Observed ~6e-9; 1e-6 is a meaningful regression guard with wide margin.

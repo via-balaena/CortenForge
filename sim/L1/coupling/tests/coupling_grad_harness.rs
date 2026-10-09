@@ -40,8 +40,8 @@
 //! - **passive Y-hinge arm** (`hinge_coupling`): `articulated-material` (the
 //!   moment-routed `Δt·M⁻¹·Jᵀ` carry, FD'd along the λ = 4μ tie);
 //! - **seeded serial arms** (`seeded_arm_coupling`): `material` on damped arms — a single
-//!   hinge (`damping=0.5`, analytic damped `J_state`) and a 2-link chain (per-joint damping,
-//!   off-diagonal FD `J_state`), the `M_impl = M + Δt·D` velocity coupling a damping-free
+//!   hinge (`damping=0.5`, analytic damped `J_state`) and a 2-link chain (per-joint damping),
+//!   the `M_impl = M + Δt·D` velocity coupling a damping-free
 //!   scene can't exercise — AND on undamped chains routed through the analytic chain
 //!   `J_state`: a 2-link (nv = 2, off-diagonal `M` + Coriolis) and a 3-link multi-hop chain
 //!   (nv = 3, the bias-acceleration transport a 2-link never reaches);
@@ -54,8 +54,7 @@
 //! - **actuated Y-hinge** (`actuated_hinge_coupling`) and **actuated 2-link damped chain**
 //!   (`actuated_chain_coupling`, the exo topology, `nv = 2`): `actuator` (real `<motor>` and
 //!   state-feedback `<position>`/`<velocity>`/PD servos, per-step control driving the arm
-//!   through the contact — the hinge machine-exact via its analytic `J_state`, the chain at
-//!   FD-`J_state` precision since the actuator force interacts with `∂M⁻¹/∂q`);
+//!   through the contact — the hinge machine-exact via its analytic `J_state`);
 //! - **curved `SphereSdf` collider** (`sphere_coupling` / `load_sphere_coupling` /
 //!   `sphere_articulated_coupling`): `material` (the `f_mag·H` curvature carry a plane
 //!   can't exercise) on the free platen and the articulated hinge (the curved wrench
@@ -407,8 +406,8 @@ fn actuated_hinge_coupling(actuator: &str) -> StaggeredCoupling {
 /// DISTAL joint `j1` carries a swappable `<actuator>` with direct authority on the contacting
 /// tip (`body = 2`). Unlike the single [`actuated_hinge_coupling`], the actuator force interacts
 /// with the configuration-dependent mass matrix (`∂M⁻¹/∂q`), so the loaded `J_state` must see
-/// `ctrl` — and a DAMPED chain has no analytic `J_state`, so it runs at FD-`loaded_state_jacobian`
-/// precision (the `chain·actuator` rows' 1e-5 tol, vs the hinge's machine-exact 1e-6). Joint
+/// `ctrl`. (Why the `chain·actuator` rows need a 1e-5 tolerance, against the hinge's 1e-6,
+/// is not isolated.) Joint
 /// damping settles the otherwise-swinging chain on the block. Seeded off-vertical
 /// (`qpos = [0.1, −0.05]`) so the tip engages.
 fn actuated_chain_coupling(actuator: &str) -> StaggeredCoupling {

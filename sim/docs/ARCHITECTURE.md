@@ -310,12 +310,11 @@ mjd_transition_fd():
   Pure FD Jacobians: A = ∂x⁺/∂x, B = ∂x⁺/∂u via centered/forward differences
   Tangent-space perturbation for quaternion joints (Ball, Free)
 mjd_transition_hybrid():
-  Analytical velocity/activation columns + FD position columns
+  Analytical columns where it can, FD for the rest (its doc says which)
   Euler: I + h·M⁻¹·qDeriv via sparse LDL
   Implicit: (M+hD+h²K)⁻¹·(M+h·(qDeriv+D)) via Cholesky
-  ~nv FD calls (position columns only) vs 2·(2nv+na+nu) for pure FD
 mjd_transition():
-  Public dispatch: FD-only or hybrid based on DerivativeConfig.use_analytical
+  Public dispatch: FD-only or hybrid
 ```
 
 **Integration methods** (`Integrator` enum):

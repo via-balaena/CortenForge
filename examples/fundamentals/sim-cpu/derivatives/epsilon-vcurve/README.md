@@ -29,8 +29,7 @@ on a log-log scale, with the minimum at the optimal epsilon.
 
 The reference is computed via `mjd_transition_hybrid()`, which uses analytical
 formulas for the velocity columns of the A matrix. This gives an
-epsilon-independent baseline for comparison. The position columns still use FD
-internally, but the velocity column comparison drives the V-curve shape.
+epsilon-independent baseline for comparison.
 
 For centered differences, the theoretical error is:
 

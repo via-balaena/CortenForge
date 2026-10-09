@@ -444,7 +444,7 @@ quaternion integration Jacobians, dispatch API).
 | `mjd_rne_vel` | `mjd_rne_vel()` | Coriolis matrix (hinge, ball, free joints) matches FD to `1e-5` | ✅ |
 | `mjData.qDeriv` | `Data.qDeriv` | Dense nv×nv (MuJoCo uses sparse) — values match | ✅ |
 | `mjd_quatIntegrate` | `mjd_quat_integrate()` | SO(3) Jacobians via Rodrigues formula (right Jacobian + adjoint) | ✅ |
-| `mjd_transitionFD` (hybrid) | `mjd_transition_hybrid()` | Analytical velocity/activation columns + FD position columns; matches pure FD | ✅ |
+| `mjd_transitionFD` (hybrid) | `mjd_transition_hybrid()` | Analytical columns where it can, FD for the rest; matches pure FD | ✅ |
 | `mjd_transition` (dispatch) | `mjd_transition()` | Public API dispatch (FD-only or hybrid based on config) | ✅ |
 
 **Validation utilities:** `validate_analytical_vs_fd()` compares hybrid vs pure FD

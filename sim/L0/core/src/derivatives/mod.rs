@@ -18,8 +18,8 @@
 //!   chain rules for `∂qpos/∂qvel` and `∂qpos/∂qpos` through Ball/Free joints.
 //!
 //! - **Phase D** (Step 9, Part 2): Hybrid FD+analytical transition derivatives.
-//!   Uses analytical `qDeriv` for velocity columns of A, FD only for position
-//!   columns. ~2× speedup over pure FD.
+//!   Analytical columns where it can, FD for the rest (`mjd_transition_hybrid`
+//!   says which).
 //!
 //! # Tangent-space convention
 //!

@@ -27,12 +27,8 @@ The hybrid method exploits the structure of the dynamics:
 x_{t+1} = f(x_t, u_t)
 ```
 
-Position columns of A (how next-state depends on current position) require
-FD because position perturbations change contact geometry. But velocity
-columns (how next-state depends on current velocity) flow through smooth
-force computation, which has analytical derivatives stored in `qDeriv`.
-Hybrid uses analytical for velocity, FD only for position — roughly halving
-the number of simulation steps needed.
+The hybrid takes the columns it can analytically and the rest by finite
+differences; `mjd_transition_hybrid`'s doc says which.
 
 | Parameter | Value |
 |-----------|-------|

@@ -65,8 +65,8 @@ from the MJCF `damping=` attr. **The gap is real; the fix is exactly `M → M + 
 - **Analytic damped single-hinge `J_state`** — ✅ DONE (2026-06-17): the `M → M_impl` correction
   reconciles the unloaded `A` with eulerdamp, machine-exact (rel ~1e-10 vs FD), FD fallback
   dropped for the single hinge. See §3 above.
-- **Analytic damped multi-link CHAIN `J_state`** — the 2-link+ damped chain still uses the FD
-  `J_state`; the analytic carry (Jacobian Hessian + `∂M⁻¹/∂q`) for nv > 1 is the open follow-on.
+- **Analytic damped multi-link CHAIN `J_state`** — `chain_state_jacobian` takes a damped chain
+  (`analytic_state_jacobian_follows_a_held_wrench_and_the_damper_flags` runs one).
 - **Actuator dynamics** — state-dependent actuator forces (velocity/position actuators
   fold into the implicit damping; torque/general actuators carry control gradients) — the
   direct on-ramp to the powered exo.

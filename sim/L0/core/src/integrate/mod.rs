@@ -23,12 +23,14 @@ use nalgebra::DVector;
 
 use euler::mj_integrate_pos;
 
-/// Whether an Euler step solves `(M + h·D)·qacc_new = qfrc_smooth +
-/// qfrc_constraint` for the acceleration it advances `qvel` with (eulerdamp):
-/// neither eulerdamp nor dampers disabled, and some awake DOF damped
-/// positively, as MuJoCo's `mj_Euler` (`engine_forward.c:956-963`; an
-/// undamped model skips the refactorisation).
-pub(crate) fn eulerdamp_applies(model: &Model, data: &Data) -> bool {
+/// Whether the Euler step from `data` takes eulerdamp, as MuJoCo's `mj_Euler`.
+///
+/// It does with neither eulerdamp nor dampers disabled and some awake DOF damped
+/// positively (`engine_forward.c:956-963`), solving `(M + h·D)·qacc_new =
+/// qfrc_smooth + qfrc_constraint` for the acceleration it advances `qvel` with;
+/// an undamped model skips the refactorisation.
+#[must_use]
+pub fn eulerdamp_applies(model: &Model, data: &Data) -> bool {
     if model.disableflags & (DISABLE_EULERDAMP | DISABLE_DAMPER) != 0 {
         return false;
     }
