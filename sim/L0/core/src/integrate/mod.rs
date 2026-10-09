@@ -180,9 +180,12 @@ impl Data {
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
         let use_dof_ind = sleep_enabled && self.nv_awake < model.nv;
 
-        // Save original factorization (restored after solve)
+        // Save the mass matrix's diagonal and its factorization (restored after
+        // the solve, so the step leaves `qM` as computed, as MuJoCo's factors a
+        // copy, `qH`)
         let saved_qld = self.qLD_data.clone();
         let saved_inv = self.qLD_diag_inv.clone();
+        let saved_diag: Vec<f64> = (0..model.nv).map(|i| self.qM[(i, i)]).collect();
 
         // Add h·damp to the mass matrix diagonal, every DOF's whatever its
         // sign (`engine_forward.c:986-989`), then refactorize
@@ -215,8 +218,8 @@ impl Data {
         );
 
         // Restore original mass matrix diagonal and factorization
-        for i in 0..model.nv {
-            self.qM[(i, i)] -= h * model.implicit_damping[i];
+        for (i, &m) in saved_diag.iter().enumerate() {
+            self.qM[(i, i)] = m;
         }
         self.qLD_data = saved_qld;
         self.qLD_diag_inv = saved_inv;

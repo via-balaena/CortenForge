@@ -2126,6 +2126,33 @@ fn euler_damps_every_awake_dof_as_mujoco_3_5_0() {
     );
 }
 
+/// Euler's eulerdamp leaves the mass matrix as the forward pass computed it,
+/// as MuJoCo's factors a copy (`qH`, `engine_forward.c:976-989`): a sleep
+/// step's re-forward reads `qM` without recomputing it. Damping 0.137 and
+/// 4.1085 on the two-link pendulum, where adding `h·d` and subtracting it
+/// again does not give the diagonal back.
+#[test]
+fn euler_eulerdamp_leaves_the_mass_matrix_as_computed() {
+    let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+    model.jnt_damping = vec![0.137, 4.1085];
+    model.compute_implicit_params();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.7;
+    data.qvel[1] = -0.4;
+    data.forward(&model).expect("forward");
+    let mass = data.qM.clone();
+    data.integrate(&model).expect("integrate");
+    for (i, (a, b)) in data.qM.iter().zip(mass.iter()).enumerate() {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "qM entry {i}: {a} after, {b} before"
+        );
+    }
+}
+
 /// Under implicitspringdamper a disabled spring or damper flag removes that
 /// force from the step, as it does from the passive pass: each flag gives
 /// the trajectory of the same model with that parameter at 0, on a joint and
