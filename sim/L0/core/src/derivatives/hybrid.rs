@@ -2713,20 +2713,22 @@ pub fn mjd_transition_hybrid(
 
             // Solve: M⁻¹ or (M−hD)⁻¹ or (M+hD+h²K)⁻¹
             match model.integrator {
+                // Under eulerdamp the step solves with M + h·D, as the
+                // velocity columns above.
                 Integrator::Euler => {
-                    // NOTE: under eulerdamp this bare-M solve is the same M_impl gap fixed
-                    // for the A matrix (dvdv/dvdq); the activation columns (na>0 non-muscle
-                    // stateful actuators) are a narrow, separately-gated path — deferred to
-                    // a follow-on with an actuated-damped fixture. See PR scope note.
-                    let (rowadr, rownnz, colind) = model.qld_csr();
-                    mj_solve_sparse(
-                        rowadr,
-                        rownnz,
-                        colind,
-                        &data_work.qLD_data,
-                        &data_work.qLD_diag_inv,
-                        &mut dvdact,
-                    );
+                    if let Some(ref mi) = m_impl_euler {
+                        cholesky_solve_in_place(mi, &mut dvdact);
+                    } else {
+                        let (rowadr, rownnz, colind) = model.qld_csr();
+                        mj_solve_sparse(
+                            rowadr,
+                            rownnz,
+                            colind,
+                            &data_work.qLD_data,
+                            &data_work.qLD_diag_inv,
+                            &mut dvdact,
+                        );
+                    }
                 }
                 Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdact);
@@ -3285,21 +3287,21 @@ pub fn mjd_transition_hybrid(
             }
 
             match model.integrator {
+                // Under eulerdamp the step solves with M + h·D.
                 Integrator::Euler => {
-                    // NOTE: under eulerdamp this bare-M solve has the same M_impl gap fixed
-                    // for the A matrix; the control columns (B = ∂next/∂ctrl) feed RL/control
-                    // Jacobians and want M_impl too. Deferred to a follow-on with an
-                    // actuated-damped gate (add_motor is not reachable from the damped
-                    // transition test, and the shared conformance matrix carries no actuators).
-                    let (rowadr, rownnz, colind) = model.qld_csr();
-                    mj_solve_sparse(
-                        rowadr,
-                        rownnz,
-                        colind,
-                        &data_work.qLD_data,
-                        &data_work.qLD_diag_inv,
-                        &mut dvdctrl,
-                    );
+                    if let Some(ref mi) = m_impl_euler {
+                        cholesky_solve_in_place(mi, &mut dvdctrl);
+                    } else {
+                        let (rowadr, rownnz, colind) = model.qld_csr();
+                        mj_solve_sparse(
+                            rowadr,
+                            rownnz,
+                            colind,
+                            &data_work.qLD_data,
+                            &data_work.qLD_diag_inv,
+                            &mut dvdctrl,
+                        );
+                    }
                 }
                 Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdctrl);

@@ -457,12 +457,6 @@ struct Gap {
 }
 
 const KNOWN_GAPS: &[Gap] = &[
-    // The Euler step solves `(M + h·D)·qacc = f` under joint damping; the
-    // control and activation columns solve with `M`.
-    Gap {
-        name: "Euler with joint damping: control and activation columns",
-        covers: |c| c.integrator == EULER && c.damped,
-    },
     // The hybrid spreads the gear over every dof of the joint; the forward
     // pass applies it to the first.
     Gap {
