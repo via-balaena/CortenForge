@@ -546,12 +546,14 @@ fn implicit_analytic_incomplete_classifies_regimes() {
             !implicit_analytic_incomplete(&m),
             "viscosity alone classification wrong for {integ:?}"
         );
-        m.density = 1.2;
-        assert_eq!(
-            implicit_analytic_incomplete(&m),
-            expect,
-            "fluid density classification wrong for {integ:?}"
-        );
+        for density in [1.2, -1.2] {
+            m.density = density;
+            assert_eq!(
+                implicit_analytic_incomplete(&m),
+                expect,
+                "fluid density {density} classification wrong for {integ:?}"
+            );
+        }
     }
     // Affine gain is v-constant ⇒ does NOT disqualify Implicit.
     let mut affine = Model::n_link_pendulum(1, 1.0, 1.0);

@@ -2569,7 +2569,7 @@ pub fn mass_directional_derivative(
 ///   `T = rne_vel(qacc_implicit)` captures only the Coriolis part of `∂D/∂v`.
 ///   (Affine gain is constant in v ⇒ fine.)
 /// - **ImplicitFast or full Implicit with fluid density.** `D` holds the fluid
-///   drag's slope (`mjd_fluid_vel`), and with `density > 0` the drag is
+///   drag's slope (`mjd_fluid_vel`), and with a nonzero `density` the drag is
 ///   quadratic in v, so its slope moves with v: the same missing `∂D/∂v` term.
 ///   (Viscosity alone is linear in v ⇒ fine.)
 ///
@@ -2582,7 +2582,7 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
         Integrator::ImplicitSpringDamper => (0..model.ntendon)
             .any(|t| model.tendon_stiffness[t] > 0.0 || model.tendon_damping[t] > 0.0),
         Integrator::ImplicitFast | Integrator::Implicit => {
-            model.density > 0.0
+            model.density != 0.0
                 || model
                     .actuator_gaintype
                     .iter()
