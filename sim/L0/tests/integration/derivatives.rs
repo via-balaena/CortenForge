@@ -4521,43 +4521,6 @@ fn hybrid_takes_damping_of_both_signs_under_euler() {
     assert_ne!(hybrid.A, fd.A, "the analytic columns ran");
 }
 
-/// A flex edge collapsed below 1e-10 has no direction: its Jacobian row is
-/// zero, not the last step's, so the edge damping `mjd_passive_vel` adds over
-/// it is zero too, as the passive pass applies no force there. A cable whose
-/// second vertex is moved onto the first after a forward pass.
-#[test]
-fn a_collapsed_flex_edge_has_no_jacobian() {
-    let model = sim_mjcf::load_model(
-        r#"<mujoco>
-          <option timestep="0.002"><flag equality="disable"/></option>
-          <deformable>
-            <flex name="c" dim="1" mass="0.2">
-              <vertex pos="0 0 1  0.1 0 1"/>
-              <element data="0 1"/>
-              <edge damping="3"/>
-              <contact contype="0" conaffinity="0"/>
-            </flex>
-          </deformable>
-        </mujoco>"#,
-    )
-    .expect("load");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    assert!(
-        data.flexedge_J.iter().any(|&j| j != 0.0),
-        "the edge had a Jacobian"
-    );
-    // Vertex 1's slides move it by (-0.1, 0, 0), onto vertex 0.
-    data.qpos[3] = -0.1;
-    data.forward(&model).expect("forward");
-    assert!(data.flexedge_length[0] < 1e-10);
-    assert!(
-        data.flexedge_J.iter().all(|&j| j == 0.0),
-        "{:?}",
-        data.flexedge_J
-    );
-}
-
 /// The hybrid with a spatial tendon of negative stiffness and damping (set in
 /// code; the loader refuses them, MuJoCo applies them) agrees with pure
 /// finite differences under Euler (analytic columns, the tendon's force

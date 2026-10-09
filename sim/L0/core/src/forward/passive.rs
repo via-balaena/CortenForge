@@ -519,11 +519,10 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             continue;
         }
 
-        // §42A-iii: Read pre-computed edge length and velocity from Data fields.
+        // §42A-iii: Read pre-computed edge length and velocity from Data fields
+        // (at any length, as MuJoCo's: `mj_flex_edge` gives a short edge a
+        // direction).
         let dist = data.flexedge_length[e];
-        if dist < 1e-10 {
-            continue;
-        }
 
         let rest_len = model.flexedge_length0[e];
 

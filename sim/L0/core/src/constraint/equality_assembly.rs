@@ -80,30 +80,9 @@ pub(super) fn assemble_equality_rows(
     for e in 0..model.nflexedge {
         let rest_len = model.flexedge_length0[e];
         let flex_id = model.flexedge_flexid[e];
+        // At any length, as MuJoCo's (`engine_core_constraint.c:626-640`):
+        // `mj_flex_edge` gives a short edge a direction.
         let dist = data.flexedge_length[e];
-
-        if dist < 1e-10 {
-            // Degenerate: zero-length edge, skip (fill zeros)
-            finalize_constraint_row(
-                model,
-                data,
-                nv,
-                row,
-                qacc_smooth,
-                model.flex_edge_solref[flex_id],
-                model.flex_edge_solimp[flex_id],
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                ConstraintType::FlexEdge,
-                1,
-                e,
-                [0.0; 5],
-                MJ_MINVAL,
-            );
-            continue;
-        }
 
         let pos_error = dist - rest_len; // positive = stretched, negative = compressed
 

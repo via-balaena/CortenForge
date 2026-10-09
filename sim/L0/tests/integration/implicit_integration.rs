@@ -2042,6 +2042,201 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
     }
 }
 
+/// A flex edge acts at any length, as MuJoCo's: `mj_flex_edge` takes its
+/// direction as `mju_normalize3` does, the x axis below `mjMINVAL`
+/// (`engine_util_blas.c:120-135`), and the passive pass and the edge's
+/// equality row skip no short edge. A two-vertex cable with its first vertex
+/// pinned and its second on it (the x axis) or 1e-12 from it along y (its
+/// own direction, below our old 1e-10 cut and above MuJoCo's 1e-15), or
+/// 0.1 along x and started on the first (a collapsed edge whose spring
+/// pushes), edge damping 3 and stiffness 50, equality constraints disabled;
+/// and that collapsed edge's equality row, enabled. MuJoCo 3.5.0
+/// (unfused build) steps the same cable as a jointless anchor body and a
+/// body with three slides and a 0.1 kg sphere under `<flex body="anchor
+/// v1">`, 20 steps of 0.002 s from qvel (0.4, 0.7, -0.5). The damping acts
+/// along that direction at the start; Euler and implicit match MuJoCo after
+/// 20 steps, and implicitfast
+/// still differs where MuJoCo leaves out the entries between the vertex's
+/// dofs (the spec book's P30).
+#[test]
+fn a_short_flex_edge_acts_as_mujoco_3_5_0() {
+    // (the second vertex, its start offset along x, MuJoCo's passive force
+    // at the start, integrator, MuJoCo's qpos and qvel after 20 steps)
+    let want = [
+        (
+            "0 0 1",
+            0.0,
+            [-1.2000000000000002, 0.0, 0.0],
+            "Euler",
+            [
+                0.007479567918052443,
+                0.01392472750701253,
+                -0.016456564334414274,
+                0.029924525696618576,
+                0.055710553158598394,
+                -0.3157061096300114,
+            ],
+        ),
+        (
+            "0 0 1",
+            0.0,
+            [-1.2000000000000002, 0.0, 0.0],
+            "implicit",
+            [
+                0.007732524455083571,
+                0.014343832864180022,
+                -0.016805531811847872,
+                0.03758344252205768,
+                0.06971728587841691,
+                -0.3284162960350603,
+            ],
+        ),
+        (
+            "0 0 1",
+            0.0,
+            [-1.2000000000000002, 0.0, 0.0],
+            "implicitfast",
+            [
+                0.007540952144636189,
+                0.014223960547312314,
+                -0.01650067490984604,
+                0.030921431149121582,
+                0.0661544761589378,
+                -0.3172783261654274,
+            ],
+        ),
+        (
+            "0 1e-12 1",
+            0.0,
+            [0.0, -2.0999999999999996, 0.0],
+            "Euler",
+            [
+                0.007945942580409752,
+                0.013071075542438988,
+                -0.016438795042464767,
+                0.031087363062085954,
+                0.051138712181568,
+                -0.31440367019372817,
+            ],
+        ),
+        (
+            "0 1e-12 1",
+            0.0,
+            [0.0, -2.0999999999999996, 0.0],
+            "implicit",
+            [
+                0.008183909285855882,
+                0.013511170988533466,
+                -0.016785702765593387,
+                0.03906395760850809,
+                0.064492382789314,
+                -0.3270838814917832,
+            ],
+        ),
+        (
+            "0 1e-12 1",
+            0.0,
+            [0.0, -2.0999999999999996, 0.0],
+            "implicitfast",
+            [
+                0.007993871855304018,
+                0.013380976654921667,
+                -0.016489434408862656,
+                0.032497379660584726,
+                0.060489652346513635,
+                -0.31633874958842506,
+            ],
+        ),
+        (
+            "0.1 0 1",
+            -0.1,
+            [3.8, 0.0, 0.0],
+            "Euler",
+            [
+                -0.07855206891815765,
+                0.0315410751203564,
+                -0.030885295042993248,
+                0.5060421334144196,
+                0.7441796079623814,
+                -0.9137659613905817,
+            ],
+        ),
+    ];
+    for (vertex, offset, passive, integrator, mujoco) in want {
+        let model = load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="{integrator}">
+                <flag equality="disable"/>
+              </option>
+              <deformable>
+                <flex name="c" dim="1" mass="0.2">
+                  <vertex pos="0 0 1  {vertex}"/>
+                  <element data="0 1"/>
+                  <pin id="0"/>
+                  <edge damping="3" stiffness="50"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let what = format!("vertex at {vertex}, {integrator}");
+        let mut data = model.make_data();
+        data.qpos[0] = offset;
+        data.qvel.copy_from_slice(&[0.4, 0.7, -0.5]);
+        data.forward(&model).expect("forward");
+        assert_eq!(data.qfrc_passive.as_slice(), &passive, "{what}");
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        let got: Vec<f64> = data.qpos.iter().chain(data.qvel.iter()).copied().collect();
+        assert!(got.iter().all(|x| x.is_finite()), "{what}: {got:?}");
+        let off = got
+            .iter()
+            .zip(mujoco)
+            .map(|(g, w)| (g - w).abs())
+            .fold(0.0, f64::max);
+        if integrator == "implicitfast" {
+            assert!(off > 1e-4, "{what} agrees with MuJoCo: P30's flip");
+        } else {
+            assert!(off < 1e-12, "{what}: {got:?}, MuJoCo {mujoco:?}");
+        }
+    }
+
+    // The collapsed edge's equality row: MuJoCo's position error is the
+    // length less the rest length, along the x axis.
+    let model = load_model(
+        r#"<mujoco>
+          <option timestep="0.002"/>
+          <deformable>
+            <flex name="c" dim="1" mass="0.2">
+              <vertex pos="0 0 1  0.1 0 1"/>
+              <element data="0 1"/>
+              <pin id="0"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+          <equality>
+            <flex flex="c"/>
+          </equality>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = -0.1;
+    data.forward(&model).expect("forward");
+    let row = (0..data.efc_type.len())
+        .find(|&i| data.efc_type[i] == sim_core::ConstraintType::FlexEdge)
+        .expect("the edge's equality row");
+    assert!(
+        (data.efc_pos[row] + 0.1).abs() < 1e-15,
+        "efc_pos {}",
+        data.efc_pos[row]
+    );
+    let j: Vec<f64> = (0..model.nv).map(|col| data.efc_J[(row, col)]).collect();
+    assert_eq!(j, [1.0, 0.0, 0.0]);
+}
+
 /// Euler's eulerdamp adds `h·damping` to the mass matrix's diagonal for every
 /// awake dof, whatever its sign, once some awake dof is damped positively, as
 /// MuJoCo's `mj_Euler` (`engine_forward.c:956-989`): a double pendulum damped

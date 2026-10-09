@@ -2467,7 +2467,8 @@ fn spec_a_t8_rigid_flex_skip() {
     }
 }
 
-/// T9: Zero-length edge → AC9
+/// T9: Zero-length edge → AC9. Its Jacobian and its equality row run along x,
+/// as MuJoCo's (`mju_normalize3`).
 #[test]
 #[allow(non_snake_case)]
 fn spec_a_t9_zero_length_edge() {
@@ -2495,14 +2496,26 @@ fn spec_a_t9_zero_length_edge() {
     assert!(len < 1e-10, "zero-length edge should have near-zero length");
     assert_eq!(data.flexedge_velocity[0], 0.0);
 
-    // J should remain zero (from reset, since dist < 1e-10 skips J)
+    // J runs along the x axis, as MuJoCo's: `mju_normalize3` gives a
+    // zero-length edge that direction (`a_short_flex_edge_acts_as_mujoco_3_5_0`).
     let rowadr = model.flexedge_J_rowadr[0];
     let rownnz = model.flexedge_J_rownnz[0];
+    assert_eq!(
+        &data.flexedge_J[rowadr..rowadr + rownnz],
+        &[-1.0, -0.0, -0.0, 1.0, 0.0, 0.0],
+        "zero-length J along x"
+    );
+    // The edge's equality row carries that Jacobian (MuJoCo's equality rows
+    // take the edge's at any length).
+    let row = (0..data.efc_type.len())
+        .find(|&i| data.efc_type[i] == sim_core::ConstraintType::FlexEdge)
+        .expect("the edge's equality row");
     for j in 0..rownnz {
+        let col = model.flexedge_J_colind[rowadr + j];
         assert_eq!(
-            data.flexedge_J[rowadr + j],
-            0.0,
-            "zero-length J should be 0"
+            data.efc_J[(row, col)].to_bits(),
+            data.flexedge_J[rowadr + j].to_bits(),
+            "equality row, dof {col}"
         );
     }
 }
