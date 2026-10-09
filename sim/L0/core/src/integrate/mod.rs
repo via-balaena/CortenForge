@@ -21,7 +21,7 @@ use crate::types::{
 };
 use nalgebra::DVector;
 
-use euler::{mj_integrate_pos, mj_normalize_quat};
+use euler::mj_integrate_pos;
 
 /// Whether an Euler step solves `(M + h·D)·qacc_new = qfrc_smooth +
 /// qfrc_constraint` for the acceleration it advances `qvel` with (eulerdamp):
@@ -148,11 +148,9 @@ impl Data {
             self.qvel[i] += acc[i] * h;
         }
 
-        // Update positions - quaternions need special handling!
+        // Positions; a quaternion is normalized before it turns, as MuJoCo's
+        // `mju_quatIntegrate` does, and not after.
         mj_integrate_pos(model, self, h);
-
-        // Normalize quaternions to prevent drift
-        mj_normalize_quat(model, self);
 
         // Advance time
         self.time += h;

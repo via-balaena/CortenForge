@@ -2,7 +2,6 @@
 //!
 //! Implements MuJoCo's `mj_RungeKutta` using the classic RK4 Butcher tableau.
 
-use crate::integrate::euler::mj_normalize_quat;
 use crate::jacobian::mj_integrate_pos_explicit;
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::{
@@ -246,8 +245,6 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     }
 
     // (§27F) Flex vertex positions now integrated by mj_integrate_pos_explicit above.
-
-    mj_normalize_quat(model, data);
 
     data.time = t0 + h;
     crate::integrate::advance_plugins(model, data);

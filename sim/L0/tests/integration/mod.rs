@@ -50,6 +50,9 @@ pub mod implicit_integration;
 /// correctness, contact handling, sensor non-corruption, warmstart preservation.
 pub mod rk4_integration;
 
+/// Quaternion integration against MuJoCo 3.5.0, bit for bit.
+pub mod quat_integration;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================
