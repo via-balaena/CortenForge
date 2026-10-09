@@ -3642,7 +3642,8 @@ fn smooth_pos_reads_the_control_the_forward_pass_acted_on() {
 /// qfrc_actuator − qfrc_bias − M·qacc` at the state's `qacc`. A spatial
 /// tendon's `J` moves with `q`, so its spring, its damper (`−b·J·qvel`) and
 /// an actuator's force (`gear·J·force`, the force reading `gear·J·qvel`
-/// under a velocity gain or bias) carry terms through `∂J/∂q`; a fixed
+/// under a velocity gain or bias, or held at its forcerange's bound, where
+/// the force itself has no derivative) carry terms through `∂J/∂q`; a fixed
 /// tendon's `J` is constant. With the spring or the damper disabled the
 /// step applies neither. Hinge and ball roots, Euler and implicitfast
 /// (implicitspringdamper applies tendon springs and dampers in its implicit
@@ -3672,6 +3673,10 @@ fn smooth_pos_matches_finite_differences_through_tendons() {
         (
             "velocity",
             r#"<velocity name="a" tendon="t" kv="2" gear="1.5"/>"#,
+        ),
+        (
+            "motor at its forcerange",
+            r#"<motor name="a" tendon="t" gear="1.5" forcelimited="true" forcerange="-0.2 0.2"/>"#,
         ),
     ];
     let mut failures = Vec::new();
@@ -3792,7 +3797,7 @@ fn smooth_pos_matches_finite_differences_through_tendons() {
             }
         }
     }
-    assert_eq!(cases, 192);
+    assert_eq!(cases, 240);
     assert!(
         failures.is_empty(),
         "{} of {cases} differ:\n{}",
@@ -3944,10 +3949,11 @@ fn transition_a_column_at_a_time(
 /// state (registry `D-FD-SLEEP`: MuJoCo's `mjd_transitionFD` carries one
 /// column's wake into the next). A nudge can wake a sleeping tree, and a step
 /// counts an awake tree down toward sleep, so both are checked: a tree asleep,
-/// and an awake tree whose countdown ends on this step (unactuated: an
-/// actuator keeps a tree under the auto policy awake). At either the hybrid
-/// takes pure finite differences: its analytic columns know nothing of a tree
-/// waking or going to sleep.
+/// and an awake tree at rest at each state of its countdown, the last
+/// included, from which the step puts it to sleep (unactuated: an actuator
+/// keeps a tree under the auto policy awake). In the tree asleep and at the
+/// countdown's last state the hybrid takes pure finite differences: its
+/// analytic columns know nothing of a tree waking or going to sleep.
 #[test]
 fn transition_derivatives_take_each_column_from_the_sleep_state() {
     let model = sim_mjcf::load_model(
@@ -4002,23 +4008,27 @@ fn transition_derivatives_take_each_column_from_the_sleep_state() {
     assert!(data.tree_asleep[0] < 0 && data.tree_asleep[1] >= 0);
     check("a tree asleep", &data);
 
-    // Both awake, the first at rest: step until its countdown is on its last
-    // step, so the step from the state puts it to sleep.
+    // Both awake, the first at rest: each state of its countdown, down to the
+    // last, from which the step puts it to sleep. `make_data`'s sleep pass
+    // (for the `sleep="init"` tree) has counted it down once; it starts over.
     let mut data = model.make_data();
     data.qvel[1] = 0.5;
-    for _ in 0..20 {
-        if data.tree_asleep[0] == -2 {
+    data.tree_asleep[0] = -(1 + sim_core::MIN_AWAKE);
+    data.forward(&model).expect("forward");
+    let mut countdown = Vec::new();
+    while countdown.len() < 20 {
+        let t = data.tree_asleep[0];
+        assert!(data.tree_asleep[1] < 0, "{:?}", data.tree_asleep);
+        countdown.push(t);
+        check(&format!("countdown at {t}"), &data);
+        if t == -2 {
             break;
         }
         data.step(&model).expect("step");
+        data.forward(&model).expect("forward");
     }
-    data.forward(&model).expect("forward");
-    assert!(
-        data.tree_asleep[0] == -2 && data.tree_asleep[1] < 0,
-        "{:?}",
-        data.tree_asleep
-    );
-    check("a countdown ending", &data);
+    let want: Vec<i32> = (-(1 + sim_core::MIN_AWAKE)..=-2).collect();
+    assert_eq!(countdown, want);
 }
 
 /// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its
@@ -4102,15 +4112,21 @@ fn smooth_pos_takes_ball_and_free_joint_transmissions() {
             d.forward(&model).expect("forward");
             &d.qfrc_passive + &d.qfrc_actuator - &d.qfrc_bias - &d.qM * &qacc
         };
+        // `f64::max` drops a NaN, so non-finite entries are counted apart.
         let mut worst = 0.0_f64;
+        let mut non_finite = false;
         for c in 0..nv {
             let fd = (force(1.0, c) - force(-1.0, c)) / (2.0 * eps);
             for r in 0..nv {
-                worst = worst.max((analytic.qDeriv_pos[(r, c)] - fd[r]).abs());
+                let d = (analytic.qDeriv_pos[(r, c)] - fd[r]).abs();
+                non_finite |= !d.is_finite();
+                worst = worst.max(d);
             }
         }
-        if worst.is_nan() || worst >= 1e-6 {
-            failures.push(format!("{root} at {quat:?}: worst {worst:e}"));
+        if non_finite || worst >= 1e-6 {
+            failures.push(format!(
+                "{root} at {quat:?}: worst {worst:e}, non-finite {non_finite}"
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

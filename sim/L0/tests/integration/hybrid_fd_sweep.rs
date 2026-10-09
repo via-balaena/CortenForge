@@ -718,8 +718,10 @@ fn input_cases() -> Vec<Case> {
 /// Runs every case, prints the report, and returns how many cases each known
 /// gap covered that differed. Panics if a case outside the known gaps
 /// differs, was refused, steps from its state into a reset, or did not hold
-/// its state.
-fn sweep(block: &str, cases: &[Case]) -> Vec<usize> {
+/// its state, or if fewer than `analytic_floor` agreeing cases ran the
+/// analytic columns: a hybrid that takes pure finite differences agrees with
+/// them by construction.
+fn sweep(block: &str, cases: &[Case], analytic_floor: usize) -> Vec<usize> {
     let mut failures = Vec::new();
     let mut known = vec![0_usize; KNOWN_GAPS.len()];
     let mut agree = 0_usize;
@@ -777,14 +779,22 @@ fn sweep(block: &str, cases: &[Case]) -> Vec<usize> {
         let _ = writeln!(report, "  {line}");
     }
     eprintln!("{report}");
-    assert!(failures.is_empty(), "{report}");
+    assert!(
+        failures.is_empty(),
+        "{block}: {} failures, listed in the report above",
+        failures.len()
+    );
+    assert!(
+        analytic >= analytic_floor,
+        "{block}: {analytic} cases through the analytic columns, {analytic_floor} before"
+    );
     known
 }
 
 #[test]
 fn hybrid_matches_finite_differences_across_actuators() {
-    let structure = sweep("structure", &structure_cases());
-    let inputs = sweep("inputs", &input_cases());
+    let structure = sweep("structure", &structure_cases(), 2384);
+    let inputs = sweep("inputs", &input_cases(), 2528);
     let stale: Vec<&str> = KNOWN_GAPS
         .iter()
         .zip(structure.iter().zip(&inputs))

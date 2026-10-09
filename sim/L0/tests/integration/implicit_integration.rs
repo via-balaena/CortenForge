@@ -1774,10 +1774,12 @@ fn implicit_derivative_reads_a_bad_control_as_mujoco_does() {
 /// and with springs and dampers both disabled no fluid damping, as MuJoCo's
 /// `mjd_passive_vel`, from which their `D` is built: a damped joint, a damped
 /// fixed tendon, and fluid drag, each disabled, step as the undamped
-/// pendulum. MuJoCo 3.5.0 (unfused build), 100 steps of 0.01 s from qpos
-/// (0.4, 0.5), qvel (0.7, 1).
+/// pendulum; with dampers disabled alone, the fluid's damping stays. MuJoCo
+/// 3.5.0 (unfused build), 100 steps of 0.01 s from qpos (0.4, 0.5), qvel
+/// (0.7, 1).
 #[test]
 fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
+    // (integrator, the undamped pendulum, the pendulum in the fluid)
     let want = [
         (
             "implicitfast",
@@ -1787,6 +1789,12 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
                 -3.134_657_773_312_144,
                 -7.174_094_209_398_988,
             ],
+            [
+                1.661_984_806_165_963_4,
+                -0.440_348_373_036_237_6,
+                -3.396_180_627_777_209,
+                0.476_088_771_322_649_6,
+            ],
         ),
         (
             "implicit",
@@ -1795,6 +1803,12 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
                 -0.843_825_266_360_795_4,
                 -2.536_796_710_855_464,
                 -7.776_376_028_023_399_6,
+            ],
+            [
+                1.699_687_455_711_101_7,
+                -0.545_613_897_062_408_9,
+                -3.187_443_143_028_527,
+                0.353_868_017_378_280_44,
             ],
         ),
     ];
@@ -1820,9 +1834,21 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
             "",
             r#" density="1.2" viscosity="0.5""#,
         ),
+        (
+            "joint damping in the fluid",
+            r#"<flag damper="disable"/>"#,
+            r#" damping="0.5""#,
+            "",
+            r#" density="1.2" viscosity="0.5""#,
+        ),
     ];
-    for (integrator, want) in want {
+    for (integrator, undamped, in_fluid) in want {
         for (name, flags, damping, tendon, fluid) in cases {
+            let want = if name.ends_with("in the fluid") {
+                in_fluid
+            } else {
+                undamped
+            };
             let model = sim_mjcf::load_model(&format!(
                 r#"<mujoco>
                   <option timestep="0.01" integrator="{integrator}"{fluid}>{flags}</option>
