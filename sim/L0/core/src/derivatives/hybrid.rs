@@ -153,7 +153,7 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
             continue;
         }
         let b = model.tendon_damping[t];
-        if b <= 0.0 {
+        if b == 0.0 {
             continue;
         }
         let j = &data.ten_J[t];
@@ -189,7 +189,7 @@ fn implicitfast_damping_moves_with_q(model: &Model) -> bool {
         return false;
     }
     let spatial = |t: usize| t < model.ntendon && model.tendon_type[t] == TendonType::Spatial;
-    let damped_tendon = (0..model.ntendon).any(|t| spatial(t) && model.tendon_damping[t] > 0.0);
+    let damped_tendon = (0..model.ntendon).any(|t| spatial(t) && model.tendon_damping[t] != 0.0);
     let velocity_actuator = (0..model.nu).any(|i| {
         model.actuator_trntype[i] == ActuatorTransmission::Tendon
             && spatial(model.actuator_trnid[i][0])
@@ -996,12 +996,12 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
     let mut tendon_dforce_dv = vec![0.0; model.ntendon];
     for t in 0..model.ntendon {
         let damping = model.tendon_damping[t];
-        if has_damper && damping > 0.0 {
+        if has_damper && damping != 0.0 {
             tendon_force[t] -= damping * data.ten_velocity[t];
             tendon_dforce_dv[t] -= damping;
         }
         let stiffness = model.tendon_stiffness[t];
-        if !has_spring || stiffness <= 0.0 {
+        if !has_spring || stiffness == 0.0 {
             continue;
         }
 
@@ -2625,7 +2625,7 @@ pub fn mass_directional_derivative(
 pub fn implicit_analytic_incomplete(model: &Model) -> bool {
     match model.integrator {
         Integrator::ImplicitSpringDamper => (0..model.ntendon)
-            .any(|t| model.tendon_stiffness[t] > 0.0 || model.tendon_damping[t] > 0.0),
+            .any(|t| model.tendon_stiffness[t] != 0.0 || model.tendon_damping[t] != 0.0),
         Integrator::ImplicitFast | Integrator::Implicit => {
             model.density != 0.0
                 || model

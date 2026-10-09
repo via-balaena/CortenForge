@@ -195,7 +195,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let k = isd_stiffness(model, dof_adr);
-        if k <= 0.0 {
+        if k == 0.0 {
             continue;
         }
         let q_eq = model.implicit_springref[dof_adr];
@@ -206,10 +206,10 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
                 qfrc[dof_adr] += -k * (q - q_eq) - h * k * v;
             }
             // Ball/Free: compute_implicit_params sets implicit_stiffness=0
-            // for these types, so the `k <= 0.0` guard above catches them.
+            // for these types, so the `k == 0.0` guard above catches them.
             _ => {
                 debug_assert!(
-                    k <= 0.0,
+                    k == 0.0,
                     "Ball/Free joint {jnt_id} has implicit_stiffness={k} > 0; \
                      compute_implicit_params should set this to 0.0"
                 );
@@ -220,7 +220,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     // Add joint damper forces: −D·v
     for i in 0..nv {
         let d = isd_damping(model, i);
-        if d > 0.0 {
+        if d != 0.0 {
             qfrc[i] += -d * data.qvel[i];
         }
     }
@@ -232,7 +232,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
             continue;
         }
         let kt = isd_tendon_stiffness(model, t);
-        if kt > 0.0 {
+        if kt != 0.0 {
             let displacement =
                 tendon_deadband_displacement(data.ten_length[t], model.tendon_lengthspring[t]);
             // Only apply spring force + velocity correction when OUTSIDE
@@ -240,7 +240,9 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
             // and the velocity correction h·K·v must also be zero.
             if displacement != 0.0 {
                 let velocity = data.ten_velocity[t]; // J · qvel
-                let f = -kt * (displacement + h * velocity);
+                // In the joint spring's order (above), so a coefficient-1 tendon
+                // rounds as the joint does.
+                let f = -kt * displacement - h * kt * velocity;
                 let j = &data.ten_J[t];
                 for dof in 0..nv {
                     if j[dof] != 0.0 {
@@ -251,7 +253,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
         }
         // Add tendon damper forces: −b · V projected via J^T
         let bt = isd_tendon_damping(model, t);
-        if bt > 0.0 {
+        if bt != 0.0 {
             let j = &data.ten_J[t];
             let velocity = data.ten_velocity[t]; // J · qvel
             let f = -bt * velocity;

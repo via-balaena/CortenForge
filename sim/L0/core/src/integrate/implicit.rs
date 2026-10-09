@@ -43,7 +43,7 @@ fn tendon_all_dofs_sleeping_fields(
 /// linearization at the current state).
 #[inline]
 pub fn tendon_active_stiffness(k: f64, length: f64, range: [f64; 2]) -> f64 {
-    if k <= 0.0 {
+    if k == 0.0 {
         return 0.0;
     }
     let [lower, upper] = range;
@@ -122,16 +122,15 @@ pub fn accumulate_tendon_kd(
         }
         let kt = isd_tendon_stiffness(model, t);
         let bt = isd_tendon_damping(model, t);
-        if kt <= 0.0 && bt <= 0.0 {
+        if kt == 0.0 && bt == 0.0 {
             continue;
         }
         let j = &ten_j[t];
         let k_active = tendon_active_stiffness(kt, ten_length[t], model.tendon_lengthspring[t]);
+        // A negative stiffness or damping is folded in as given, as a joint's
+        // is: the passive pass leaves these forces to this solve.
         let scale = h2 * k_active + h * bt;
-        // Defensive: skip if scale is non-positive. For valid models (k ≥ 0,
-        // b ≥ 0) this is unreachable when the above guard passes, but protects
-        // against pathological negative parameters that would break SPD.
-        if scale <= 0.0 {
+        if scale == 0.0 {
             continue;
         }
         // Rank-1 outer product: (h²·k_active + h·b) · J^T · J

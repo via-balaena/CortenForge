@@ -211,7 +211,7 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
             continue;
         }
         let kt = isd_tendon_stiffness(model, t);
-        if kt <= 0.0 {
+        if kt == 0.0 {
             continue;
         }
         let displacement =

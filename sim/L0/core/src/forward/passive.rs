@@ -419,10 +419,12 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let mut spring_force = 0.0;
         let mut damper_force = 0.0;
 
-        // S4.7b + S6: Deadband spring — gated on DISABLE_SPRING.
+        // S4.7b + S6: Deadband spring — gated on DISABLE_SPRING. A negative
+        // stiffness or damping applies as given, as MuJoCo's
+        // (`engine_passive.c:453-473` tests neither sign).
         if has_spring {
             let k = model.tendon_stiffness[t];
-            if k > 0.0 {
+            if k != 0.0 {
                 let [lower, upper] = model.tendon_lengthspring[t];
                 if length > upper {
                     spring_force += k * (upper - length);
@@ -435,7 +437,7 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         // S4.7b: Damper — gated on DISABLE_DAMPER.
         if has_damper {
             let b = model.tendon_damping[t];
-            if b > 0.0 {
+            if b != 0.0 {
                 damper_force -= b * velocity;
             }
         }

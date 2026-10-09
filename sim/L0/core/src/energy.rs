@@ -116,7 +116,7 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
         // Phase 3: Tendon spring PE — deadband spring matching passive.rs logic.
         for t in 0..model.ntendon {
             let k = model.tendon_stiffness[t];
-            if k <= 0.0 {
+            if k == 0.0 {
                 continue;
             }
 
