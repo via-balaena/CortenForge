@@ -1867,8 +1867,9 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
 /// (past `NV_SPARSE_THRESHOLD`, where the Newton solve assembles a sparse
 /// Hessian); and the hybrid transition derivative agrees with pure finite
 /// differences under each, on the two hinges (on the long chain the two
-/// differ by about 1e-4 with every flag enabled as well, ledger L93). implicitspringdamper is ours (MuJoCo has no
-/// such integrator), so the flags' meaning is the reference.
+/// differ by about 1e-4 with every flag enabled as well, the spec book's gap
+/// chapter, `41-what-planning-could-not-see.md`). implicitspringdamper is ours
+/// (MuJoCo has no such integrator), so the flags' meaning is the reference.
 #[test]
 fn implicitspringdamper_follows_the_spring_and_damper_flags() {
     let model_xml = |flag: &str, joint_prm: &str, tendon_prm: &str, limit: &str, more: &str| {

@@ -26,7 +26,8 @@
 > | Q103 | refuse where MuJoCo needs a hull; load the shell-without-collision case MuJoCo loads (Jon, 2026-10-07: no test can show our result right, A10 §5) |
 > | Q118 | load ASCII STL and > 200,000 faces under the lenient kind, each with a test that the result equals the binary/split form |
 > | Q122 | refuse, as MuJoCo (Jon, 2026-10-07: no right value exists, A11 §LR-3) |
-> | Q129, U12 | refused as stated limitations (non-scalar ball/free transmission; flex membrane modes we do not implement) |
+> | Q129 | MuJoCo's ball and free joint transmission, ported in Rigid-physics chunk 3a (ledger-L85), so nothing is refused |
+> | U12 | refused as a stated limitation (flex membrane modes we do not implement) |
 
 
 Every open question the 21 research sections raise, deduplicated, with the sections, the options, the sections' recommendation, and a class. Input: *A Double Dose of Detail* at `caa1c1c0`. Commit ids `P…`/`L…` refer to 20-rigid-physics.md and 22-rigid-loading.md; conflicts `C1…C11` are described there.
@@ -226,7 +227,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q126 | lengthrange error in `MjcfError` | A11 Q-LR5 | `LengthRange { actuator, source, at }` / `InvalidModel` | `LengthRange` | (b) | — |
 | Q127 | cf-design calls `set_length_range` | A11 Q-LR6 | yes / no | yes | (b) | — |
 | Q128 | geometry-limited case MuJoCo refuses | A11 §LR-3b | parity, listed | parity | (a) | lenient has nothing to load (our port computes the same) |
-| Q129 | ball/free joint transmission | A11 §6 item 1 | parity / stated-limitation refusal for non-scalar gear | none | **(c)** | no owner; LR-a creates a new ok→err unless it is fixed |
+| Q129 | ball/free joint transmission | A11 §6 item 1 | parity / stated-limitation refusal for non-scalar gear | none | **(c)** | fixed in Rigid-physics chunk 3a (ledger-L85): MuJoCo's transmission ported, so LR-a refuses nothing here |
 
 ## 13. The census gate
 

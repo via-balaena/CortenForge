@@ -18,7 +18,8 @@
 //! mass matrix's sparsity pattern, which for a body MuJoCo calls simple (one
 //! box on a ball or free joint here) holds no entry between the joint's dofs,
 //! so it drops the cross terms a velocity actuator's moment puts in `qDeriv`;
-//! ours keeps them (ledger L92). Those cases must still differ, so the test
+//! ours keeps them (the spec book's gap chapter,
+//! `docs/studies/a_double_dose_of_detail/src/41-what-planning-could-not-see.md`). Those cases must still differ, so the test
 //! fails when that changes.
 
 use serde_json::Value;
@@ -117,7 +118,7 @@ fn ball_and_free_joint_transmissions_match_mujoco() {
     for case in golden["cases"].as_array().expect("cases") {
         let mj_moment = check_forward(case, &mut failures);
         // A velocity actuator whose moment spans more than one dof: its
-        // `qDeriv` cross terms, which MuJoCo's implicitfast drops (L92).
+        // `qDeriv` cross terms, which MuJoCo's implicitfast drops.
         let known =
             case["kind"] == "velocity" && mj_moment.iter().filter(|m| **m != 0.0).count() > 1;
         let xml = case["xml"].as_str().expect("xml");
@@ -140,7 +141,7 @@ fn ball_and_free_joint_transmissions_match_mujoco() {
                     failures.push(format!("{}: {integrator} steps differ", label(case)))
                 }
                 (true, true) => failures.push(format!(
-                    "{}: implicitfast now agrees; L92's known difference is gone",
+                    "{}: implicitfast now agrees; the known difference is gone",
                     label(case)
                 )),
                 (true, false) => known_still_differ += 1,
