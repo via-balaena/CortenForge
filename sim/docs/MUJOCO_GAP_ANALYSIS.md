@@ -902,7 +902,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | Feature | MuJoCo | CortenForge | Status | Priority |
 |---------|--------|-------------|--------|----------|
 | Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (was in `sparse.rs`) | **Removed** (Phase 3 consolidation) | - |
-| Sleeping bodies | Native | `mj_sleep`, `mj_wake*`, `mj_island`, selective CRBA, partial LDL | **Implemented** (Phases A/B/C — 93 tests; [future_work_5 §16](./todo/future_work_5.md)) | - |
+| Sleeping bodies | Native | `mj_sleep`, `mj_wake*`, `mj_island`, selective CRBA, partial LDL | **Implemented** (Phases A/B/C; [future_work_5 §16](./todo/future_work_5.md)) | - |
 | Constraint islands | Auto | `mj_island` (from the constraint rows, in the pipeline) | **Implemented** (pipeline island discovery; global solve) | - |
 | **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Active** — `BatchSim::step_all()` uses `par_iter_mut` for cross-environment parallelism (`batch.rs`); see [future_work_3 #9](./todo/future_work_3.md) | - |
 | **GPU acceleration** | MuJoCo MJX (JAX) | Removed in workspace trim (2026-03-19) | **Future** — will be rebuilt when needed. See `sim/L0/gpu/` and `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md` | - |
@@ -990,10 +990,10 @@ GPU-collision-offload hybrid was removed once the architecture settled on
 pure-CPU-or-pure-GPU.) See `sim/L0/gpu/` and
 `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`.
 
-### Implementation Notes: Sleeping / Body Deactivation ✅ COMPLETE (Phases A/B/C — 93 tests)
+### Implementation Notes: Sleeping / Body Deactivation ✅ COMPLETE (Phases A/B/C)
 
 Tree-based sleeping system matching MuJoCo's `mj_checkSleep` / `mj_island` architecture.
-Three phases fully implemented with 93 integration tests in `sleeping.rs`.
+Three phases implemented, with integration tests in `sleeping.rs`.
 
 > **History:** An earlier sleeping implementation existed in the old World/Stepper architecture
 > (`Body::is_sleeping`, `put_to_sleep()`, `wake_up()`). It was removed during the Model/Data
@@ -1025,7 +1025,7 @@ Three phases fully implemented with 93 integration tests in `sleeping.rs`.
 `mj_wake_equality()`, `mj_island()`, `mj_update_sleep_arrays()`,
 `mj_factor_sparse_selective()`, `reset_sleep_state()`
 
-**Files:** `sim-core/src/island/` (implementation), `sim/L0/tests/integration/sleeping.rs` (93 tests),
+**Files:** `sim-core/src/island/` (implementation), `sim/L0/tests/integration/sleeping.rs`,
 `sim/L0/mjcf/src/builder/` (MJCF parsing for sleep attributes)
 
 ---

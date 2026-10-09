@@ -9,8 +9,8 @@ Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 It refuses any other interpreter, as gen_census_golden.py does: the PyPI wheel
 fuses multiply-adds.
 
-It writes sleep.json and sleep_traces.json. sleep.json's `trees` entry holds, for each model below, MuJoCo's
-kinematic-tree tables (ntree, body_treeid, tree_bodyadr, tree_bodynum,
+It writes sleep.json, and sleep_traces.json for the `traces` entry. Its
+`trees` entry holds, for each model below, MuJoCo's kinematic-tree tables (ntree, body_treeid, tree_bodyadr, tree_bodynum,
 tree_dofadr, tree_dofnum, dof_treeid, tendon_treenum, tendon_treeid), the
 resolved tree_sleep_policy by name, body_awake after mj_resetData and
 after one mj_step, with sleep enabled and with it disabled, and
@@ -50,7 +50,7 @@ boxes spun or moving at the tolerance, the tolerance 0 with a velocity of
 xfrc_applied, set to -0 at step 200, and A8's actuated damped hinge, whose
 tree the actuator keeps awake (automatic policy never).
 
-sleep_traces.json's `traces` entry holds, for each trace of TRACES (A8's fixtures), after
+Its `traces` entry holds, for each trace of TRACES (A8's fixtures), after
 each mj_step: tree_asleep, ncon, nefc, nisland and the callbacks that fired
 (P passive, C control); and qvel, qacc, qacc_warmstart, sensordata and act
 after the steps within 3 of a change of any tree's sleep state and every

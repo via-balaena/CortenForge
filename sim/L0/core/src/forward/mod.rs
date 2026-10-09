@@ -236,7 +236,7 @@ impl Data {
     /// actuator with an activation still acts on it), leaves `ctrl` as written
     /// and counts `Warning::BadCtrl` (matching MuJoCo). Under `implicit` and
     /// `implicitfast` the velocity derivative still reads it for an actuator
-    /// whose gain has a velocity term, as MuJoCo's does.
+    /// without dynamics whose gain has a velocity term, as MuJoCo's does.
     pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;

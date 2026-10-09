@@ -2708,11 +2708,11 @@ fn test_per_island_solve_equivalence() {
     </mujoco>
     "#;
 
-    // Run with islands enabled (Phase B path)
+    // Run with islands enabled
     let model_island = load_model(mjcf).expect("load model");
     let mut data_island = model_island.make_data();
 
-    // Run with DISABLE_ISLAND (Phase A global path)
+    // Run with DISABLE_ISLAND
     let mut model_global = load_model(mjcf).expect("load model");
     model_global.disableflags |= DISABLE_ISLAND;
     let mut data_global = model_global.make_data();
@@ -2793,14 +2793,8 @@ fn test_disable_island_bit_identical() {
         data_a.step(&model_a).expect("step A");
         data_b.step(&model_b).expect("step B");
 
-        for dof in 0..model_a.nv {
-            assert!(
-                (data_a.qpos[dof] - data_b.qpos[dof]).abs() < 1e-14,
-                "DISABLE_ISLAND diverged at step {step}, dof {dof}: A={}, B={}",
-                data_a.qpos[dof],
-                data_b.qpos[dof]
-            );
-        }
+        assert_eq!(data_a.qpos, data_b.qpos, "qpos at step {step}");
+        assert_eq!(data_a.qvel, data_b.qvel, "qvel at step {step}");
     }
 
     // Verify DISABLE_ISLAND keeps nisland = 0
@@ -3729,7 +3723,7 @@ fn test_island_solve_forces_match_global() {
 /// T87: two stacked bodies: one island, when they make one, spans every DOF,
 /// and the run stays finite (AC #58).
 #[test]
-fn test_single_island_uses_global_path() {
+fn test_single_island_spans_every_dof() {
     // Two stacked bodies — contacts between them form one connected island.
     let mjcf = r#"
     <mujoco model="single_island">
@@ -3815,15 +3809,8 @@ fn test_disable_island_phase_c_bit_identical() {
         data_b.step(&model_b).expect("step B");
 
         // Both use DISABLE_ISLAND → nisland=0.
-        for dof in 0..model_a.nv {
-            let diff = (data_a.qvel[dof] - data_b.qvel[dof]).abs();
-            assert!(
-                diff < 1e-12,
-                "DISABLE_ISLAND diverged at step {step}, dof {dof}: A={}, B={}",
-                data_a.qvel[dof],
-                data_b.qvel[dof]
-            );
-        }
+        assert_eq!(data_a.qpos, data_b.qpos, "qpos at step {step}");
+        assert_eq!(data_a.qvel, data_b.qvel, "qvel at step {step}");
     }
 
     // Verify DISABLE_ISLAND keeps nisland = 0

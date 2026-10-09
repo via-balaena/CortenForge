@@ -103,7 +103,8 @@ The lever arm cross-product `omega x r` is critical for correct Coriolis forces.
 
 Computes actuator-space length and velocity from transmission state. The
 lengths are set in the position stage (`mj_transmission_joint_tendon`,
-`mj_transmission_site`, `mj_transmission_body_dispatch`); the velocities
+`mj_transmission_site`, `mj_transmission_slidercrank`,
+`mj_transmission_body_dispatch`); the velocities
 after `mj_fwd_velocity()` (which populates `ten_velocity`), by
 `mj_actuator_velocity`.
 

@@ -834,8 +834,8 @@ pub enum Integrator {
 /// that pass (an actuator with an activation still acts on it), leaves `ctrl`
 /// as written and counts [`Warning::BadCtrl`], which `divergence_detected`
 /// does not read; under `implicit` and `implicitfast` the velocity derivative
-/// still reads it for an actuator whose gain has a velocity term. All as
-/// MuJoCo.
+/// still reads it for an actuator without dynamics whose gain has a velocity
+/// term. All as MuJoCo.
 ///
 /// [`Data::divergence_detected`]: crate::Data::divergence_detected
 /// [`Warning::BadCtrl`]: crate::Warning::BadCtrl

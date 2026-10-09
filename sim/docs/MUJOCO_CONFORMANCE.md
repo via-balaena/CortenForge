@@ -491,7 +491,7 @@ Use `"implicitspringdamper"` for the direct mass-matrix modification mode
 
 ### §16 — Sleeping / Body Deactivation
 
-**Status:** ✅ Complete (Phases A, B, C — 93 integration tests)
+**Status:** ✅ Complete (Phases A, B, C)
 
 Full tree-based sleeping/deactivation system matching MuJoCo's model, implemented
 in three phases with comprehensive test coverage.
@@ -525,7 +525,7 @@ in three phases with comprehensive test coverage.
 - Partial LDL: awake-identical, sleeping-preserved, solve-correct, SPD-preserved, multi-tree independence
 - API: `Data::sleep_state()`, `Data::tree_awake()`, `Data::nisland()`
 
-**Files:** `sim/L0/tests/integration/sleeping.rs` (93 tests), `sim/L0/core/src/island/` (sleep/wake/island implementation)
+**Files:** `sim/L0/tests/integration/sleeping.rs`, `sim/L0/core/src/island/` (sleep/wake/island implementation)
 
 ---
 
@@ -575,7 +575,7 @@ MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
 | `mj_jacDifPair()` helper | `compute_contact_normal_jacobian()` | J(b2) − J(b1) sign convention via `accumulate_point_jacobian()` | ✅ |
 | Body name → ID resolution | `builder/` body branch | Replaces former `ModelConversionError` with name lookup | ✅ |
 | Phase 3 force application | `mj_fwd_actuation()` Body arm | Moment-based `qfrc += m * force` (merged with Site arm) | ✅ |
-| Actuator velocity | `mj_actuator_velocity()` Body arm | `velocity = moment.dot(&qvel)`, length = 0 | ✅ |
+| Actuator velocity | `mj_actuator_velocity()` Body arm | `velocity = moment.dot(&qvel)` | ✅ |
 | Derivatives | `derivatives.rs` Body arm | Merged with Site: `qDeriv += dforce_dv * moment[r] * moment[c]` | ✅ |
 
 **Key MuJoCo conformance properties:**
