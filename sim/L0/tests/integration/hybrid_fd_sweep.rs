@@ -471,11 +471,6 @@ const KNOWN_GAPS: &[Gap] = &[
                 && matches!(c.trn, Trn::JointRoot | Trn::JointInParentRoot)
         },
     },
-    // A spatial tendon's moment arm changes with the configuration.
-    Gap {
-        name: "spatial tendon transmission: position columns",
-        covers: |c| c.trn == Trn::SpatialTendon,
-    },
     // Under the implicit integrators the step's `D` holds the gain's
     // velocity term times the control or activation.
     Gap {

@@ -3635,3 +3635,168 @@ fn smooth_pos_reads_the_control_the_forward_pass_acted_on() {
     assert_eq!(qderiv_pos([5.0, 0.0]), qderiv_pos([1.0, 0.0]));
     assert_eq!(qderiv_pos([0.7, f64::NAN]), qderiv_pos([0.0, 0.0]));
 }
+
+/// `mjd_smooth_pos` equals a central difference, over the configuration, of
+/// the forces the step applies through a tendon (and the hybrid transition's
+/// `A` equals pure finite differences of the step): `qfrc_passive +
+/// qfrc_actuator − qfrc_bias − M·qacc` at the state's `qacc`. A spatial
+/// tendon's `J` moves with `q`, so its spring, its damper (`−b·J·qvel`) and
+/// an actuator's force (`gear·J·force`, the force reading `gear·J·qvel`
+/// under a velocity gain or bias) carry terms through `∂J/∂q`; a fixed
+/// tendon's `J` is constant. With the spring or the damper disabled the
+/// step applies neither. Hinge and ball roots, Euler and implicitfast
+/// (implicitspringdamper applies tendon springs and dampers in its implicit
+/// solve, so `qfrc_passive` holds neither there).
+#[test]
+fn smooth_pos_matches_finite_differences_through_tendons() {
+    let tendons = [
+        (
+            "spatial",
+            r#"<spatial name="t"{prm}><site site="w"/><site site="s3"/></spatial>"#,
+        ),
+        (
+            "fixed",
+            r#"<fixed name="t"{prm}><joint joint="j2" coef="1"/><joint joint="j3" coef="-0.5"/></fixed>"#,
+        ),
+    ];
+    let actuators = [
+        ("none", ""),
+        (
+            "motor",
+            r#"<motor name="a" tendon="t" gear="1.5" ctrlrange="-1 1"/>"#,
+        ),
+        (
+            "damper",
+            r#"<damper name="a" tendon="t" kv="2" ctrlrange="0 1"/>"#,
+        ),
+        (
+            "velocity",
+            r#"<velocity name="a" tendon="t" kv="2" gear="1.5"/>"#,
+        ),
+    ];
+    let mut failures = Vec::new();
+    let mut cases = 0;
+    for root in ["hinge", "ball"] {
+        let joint = if root == "ball" {
+            r#"<joint name="j1" type="ball"/>"#
+        } else {
+            r#"<joint name="j1" type="hinge" axis="0 1 0" range="-2 2"/>"#
+        };
+        for integrator in ["Euler", "implicitfast"] {
+            for flags in [
+                "",
+                r#"<flag spring="disable"/>"#,
+                r#"<flag damper="disable"/>"#,
+            ] {
+                for (tendon, tendon_xml) in tendons {
+                    for prm in ["", r#" stiffness="3" springlength="0.3" damping="0.7""#] {
+                        for (actuator, actuator_xml) in actuators {
+                            let tendon_xml = tendon_xml.replace("{prm}", prm);
+                            let xml = format!(
+                                r#"<mujoco>
+  <compiler angle="radian"/>
+  <option timestep="0.01" integrator="{integrator}">{flags}</option>
+  <default><geom contype="0" conaffinity="0"/></default>
+  <worldbody>
+    <site name="w" pos="0.3 0.2 0.5"/>
+    <body name="b1" pos="0 0 1">
+      {joint}
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+      <body name="b2" pos="0.3 0 0">
+        <joint name="j2" type="hinge" axis="0 1 0" range="-2 2"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+        <body name="b3" pos="0.3 0 0">
+          <joint name="j3" type="slide" axis="1 0 0" range="-1 1"/>
+          <geom type="sphere" size="0.05" mass="0.5"/>
+          <site name="s3" pos="0 0 0.05"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>{tendon_xml}</tendon>
+  <actuator>{actuator_xml}</actuator>
+</mujoco>"#
+                            );
+                            let model = sim_mjcf::load_model(&xml).expect("load");
+                            let mut data = model.make_data();
+                            if root == "ball" {
+                                // 0.3 rad about (1, 1, 0)/√2.
+                                let (s, c) = (0.15_f64.sin(), 0.15_f64.cos());
+                                let k = s / 2.0_f64.sqrt();
+                                data.qpos.as_mut_slice()[..4].copy_from_slice(&[c, k, k, 0.0]);
+                                data.qvel.as_mut_slice()[..3].copy_from_slice(&[0.7, -0.4, 0.3]);
+                            } else {
+                                data.qpos[0] = 0.4;
+                                data.qvel[0] = 0.7;
+                            }
+                            data.qpos[model.jnt_qpos_adr[1]] = 0.5;
+                            data.qvel[model.jnt_dof_adr[1]] = 1.0;
+                            data.qpos[model.jnt_qpos_adr[2]] = 0.1;
+                            data.qvel[model.jnt_dof_adr[2]] = -0.5;
+                            if model.nu > 0 {
+                                data.ctrl[0] = 0.3;
+                            }
+                            data.forward(&model).expect("forward");
+                            let qacc = data.qacc.clone();
+                            let mut analytic = data.clone();
+                            mjd_smooth_pos(&model, &mut analytic);
+                            let nv = model.nv;
+                            let eps = 1e-6;
+                            let force = |sign: f64, c: usize| {
+                                let mut d = data.clone();
+                                let mut dq = nalgebra::DVector::zeros(nv);
+                                dq[c] = sign * eps;
+                                mj_integrate_pos_explicit(
+                                    &model,
+                                    &mut d.qpos,
+                                    &data.qpos,
+                                    &dq,
+                                    1.0,
+                                );
+                                d.forward(&model).expect("forward");
+                                &d.qfrc_passive + &d.qfrc_actuator - &d.qfrc_bias - &d.qM * &qacc
+                            };
+                            // `f64::max` drops a NaN, so non-finite entries are
+                            // counted apart.
+                            let mut worst = 0.0_f64;
+                            let mut non_finite = false;
+                            for c in 0..nv {
+                                let fd = (force(1.0, c) - force(-1.0, c)) / (2.0 * eps);
+                                for r in 0..nv {
+                                    let d = (analytic.qDeriv_pos[(r, c)] - fd[r]).abs();
+                                    non_finite |= !d.is_finite();
+                                    worst = worst.max(d);
+                                }
+                            }
+                            // The transition's A from the hybrid, against pure
+                            // finite differences of the step.
+                            let config = DerivativeConfig::default();
+                            let hybrid =
+                                mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+                            let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+                            let mut worst_a = 0.0_f64;
+                            for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+                                let excess = (h - f).abs() - 1e-5 * h.abs().max(f.abs());
+                                non_finite |= !excess.is_finite();
+                                worst_a = worst_a.max(excess);
+                            }
+                            cases += 1;
+                            if non_finite || worst >= 1e-6 || worst_a >= 1e-6 {
+                                failures.push(format!(
+                                    "{root} root, {integrator}, flags [{flags}], {tendon} tendon [{prm}], {actuator}: smooth_pos {worst:.3e}, transition A {worst_a:.3e}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 192);
+    assert!(
+        failures.is_empty(),
+        "{} of {cases} differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

@@ -132,6 +132,30 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     }
 }
 
+/// Whether the ImplicitFast step's `D` moves with `q`: it holds a spatial
+/// tendon's damping and the velocity terms of the actuators on one, times
+/// `JᵀJ`, and a spatial tendon's `J` moves with `q`. The analytic position
+/// columns hold no `∂D/∂q`, so they are taken by finite differences then.
+fn implicitfast_damping_moves_with_q(model: &Model) -> bool {
+    if model.integrator != Integrator::ImplicitFast {
+        return false;
+    }
+    let spatial = |t: usize| t < model.ntendon && model.tendon_type[t] == TendonType::Spatial;
+    let damped_tendon = (0..model.ntendon).any(|t| spatial(t) && model.tendon_damping[t] > 0.0);
+    let velocity_actuator = (0..model.nu).any(|i| {
+        model.actuator_trntype[i] == ActuatorTransmission::Tendon
+            && spatial(model.actuator_trnid[i][0])
+            && (matches!(
+                model.actuator_gaintype[i],
+                GainType::Muscle | GainType::HillMuscle
+            ) || (model.actuator_gaintype[i] == GainType::Affine
+                && model.actuator_gainprm[i][2] != 0.0)
+                || (model.actuator_biastype[i] == BiasType::Affine
+                    && model.actuator_biasprm[i][2] != 0.0))
+    });
+    damped_tendon || velocity_actuator
+}
+
 /// Whether MuJoCo's actuator derivatives leave actuator `i` out
 /// (`engine_derivative.c:1071-1099`): actuation disabled, its group disabled,
 /// asleep, or its force clamped by its forcerange.
@@ -169,6 +193,98 @@ fn actuator_input(model: &Model, data: &Data, i: usize) -> f64 {
 // Step 5 — mjd_actuator_vel: Actuator force velocity derivatives
 // ============================================================================
 
+/// `∂force/∂V` of actuator `i` at `input`, as `mjd_actuator_vel` takes it:
+/// the gain's velocity term times the input, where that term is nonzero,
+/// plus the bias's. `None` for a Millard muscle or a user gain or bias, whose
+/// derivatives are deferred.
+fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Option<f64> {
+    let length = data.actuator_length[i];
+    let velocity = data.actuator_velocity[i];
+    // ∂gain/∂V for this actuator
+    let dgain_dv = match model.actuator_gaintype[i] {
+        GainType::Fixed => 0.0,
+        GainType::Affine => model.actuator_gainprm[i][2],
+        GainType::Muscle => {
+            // gain = -F0 * FL(L_norm) * FV(V_norm)
+            // ∂gain/∂V = -F0 * FL(L_norm) * dFV/dV_norm * dV_norm/dV
+            let prm = &model.actuator_gainprm[i];
+            let lengthrange = model.actuator_lengthrange[i];
+            let f0 = prm[2];
+
+            let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
+            let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
+            let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
+
+            let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
+            let dfv_dnv = muscle_gain_velocity_deriv(norm_vel, prm[8]);
+            let dnv_dv = 1.0 / (l0 * prm[6]).max(1e-10);
+
+            -f0 * fl * dfv_dnv * dnv_dv
+        }
+        GainType::HillMuscle => {
+            // gain = -F0 * FL(L_norm) * FV(V_norm) * cos(α)
+            // ∂gain/∂V = -F0 * FL * dFV/dV_norm * dV_norm/dV * cos(α)
+            let prm = &model.actuator_gainprm[i];
+            let f0 = prm[2];
+            let optimal_fiber_length = prm[4];
+            let tendon_slack_length = prm[5];
+            let max_contraction_velocity = prm[6];
+            let pennation_angle = prm[7];
+
+            let cos_penn = pennation_angle.cos().max(1e-10);
+            let fiber_length = (length - tendon_slack_length) / cos_penn;
+            let norm_len = fiber_length / optimal_fiber_length.max(1e-10);
+            let norm_vel =
+                velocity / (cos_penn * optimal_fiber_length * max_contraction_velocity).max(1e-10);
+
+            let fl = hill_active_fl(norm_len);
+            let dfv_dnv = hill_force_velocity_deriv(norm_vel);
+            // dV_norm/dV: V_fiber = V/cos(α), V_norm = V_fiber/(L_opt*vmax)
+            // so dV_norm/dV = 1/(cos(α) * L_opt * vmax)
+            let dnv_dv =
+                1.0 / (cos_penn * optimal_fiber_length * max_contraction_velocity).max(1e-10);
+
+            -f0 * fl * dfv_dnv * dnv_dv * cos_penn
+        }
+        // MillardMuscle: the analytic Bézier FV-curve velocity-derivative (and the
+        // β·v̄ damping derivative) is deferred — omit this actuator from the implicit
+        // velocity-Jacobian (explicit integration is unaffected). See recon R-implicit-deriv.
+        GainType::MillardMuscle | GainType::User => return None,
+    };
+
+    // ∂bias/∂V for this actuator
+    // Muscle/HillMuscle bias (passive force) depends on length only, not velocity → 0.
+    let dbias_dv = match model.actuator_biastype[i] {
+        BiasType::Affine => model.actuator_biasprm[i][2],
+        BiasType::None | BiasType::Muscle | BiasType::HillMuscle => 0.0,
+        // MillardMuscle bias has a velocity-dependent damping term; its analytic
+        // derivative is deferred (skip — see the gain arm above).
+        BiasType::MillardMuscle | BiasType::User => return None,
+    };
+
+    // The gain term only when its velocity part is nonzero, as MuJoCo's:
+    // `mjd_actuator_vel` reads a bad control raw, and 0 * NaN would reach
+    // qDeriv.
+    let mut dforce_dv = dbias_dv;
+    if dgain_dv != 0.0 {
+        dforce_dv += dgain_dv * input;
+    }
+    Some(dforce_dv)
+}
+
+/// Actuator `i`'s input as the forward pass took it: its activation, or a
+/// direct actuator's control clamped to its ctrlrange, 0 for every actuator
+/// when one control is bad.
+fn forward_pass_input(model: &Model, data: &Data, i: usize, bad: bool) -> f64 {
+    if model.actuator_dyntype[i] != ActuatorDynamics::None {
+        actuator_input(model, data, i)
+    } else if bad {
+        0.0
+    } else {
+        actuator_ctrl_input(model, data, i)
+    }
+}
+
 /// Compute ∂(qfrc_actuator)/∂qvel and add to data.qDeriv.
 ///
 /// For each actuator:
@@ -193,78 +309,9 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
             continue;
         }
         let input = actuator_input(model, data, i);
-
-        let length = data.actuator_length[i];
-        let velocity = data.actuator_velocity[i];
-
-        // ∂gain/∂V for this actuator
-        let dgain_dv = match model.actuator_gaintype[i] {
-            GainType::Fixed => 0.0,
-            GainType::Affine => model.actuator_gainprm[i][2],
-            GainType::Muscle => {
-                // gain = -F0 * FL(L_norm) * FV(V_norm)
-                // ∂gain/∂V = -F0 * FL(L_norm) * dFV/dV_norm * dV_norm/dV
-                let prm = &model.actuator_gainprm[i];
-                let lengthrange = model.actuator_lengthrange[i];
-                let f0 = prm[2];
-
-                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
-                let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
-
-                let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
-                let dfv_dnv = muscle_gain_velocity_deriv(norm_vel, prm[8]);
-                let dnv_dv = 1.0 / (l0 * prm[6]).max(1e-10);
-
-                -f0 * fl * dfv_dnv * dnv_dv
-            }
-            GainType::HillMuscle => {
-                // gain = -F0 * FL(L_norm) * FV(V_norm) * cos(α)
-                // ∂gain/∂V = -F0 * FL * dFV/dV_norm * dV_norm/dV * cos(α)
-                let prm = &model.actuator_gainprm[i];
-                let f0 = prm[2];
-                let optimal_fiber_length = prm[4];
-                let tendon_slack_length = prm[5];
-                let max_contraction_velocity = prm[6];
-                let pennation_angle = prm[7];
-
-                let cos_penn = pennation_angle.cos().max(1e-10);
-                let fiber_length = (length - tendon_slack_length) / cos_penn;
-                let norm_len = fiber_length / optimal_fiber_length.max(1e-10);
-                let norm_vel = velocity
-                    / (cos_penn * optimal_fiber_length * max_contraction_velocity).max(1e-10);
-
-                let fl = hill_active_fl(norm_len);
-                let dfv_dnv = hill_force_velocity_deriv(norm_vel);
-                // dV_norm/dV: V_fiber = V/cos(α), V_norm = V_fiber/(L_opt*vmax)
-                // so dV_norm/dV = 1/(cos(α) * L_opt * vmax)
-                let dnv_dv =
-                    1.0 / (cos_penn * optimal_fiber_length * max_contraction_velocity).max(1e-10);
-
-                -f0 * fl * dfv_dnv * dnv_dv * cos_penn
-            }
-            // MillardMuscle: the analytic Bézier FV-curve velocity-derivative (and the
-            // β·v̄ damping derivative) is deferred — omit this actuator from the implicit
-            // velocity-Jacobian (explicit integration is unaffected). See recon R-implicit-deriv.
-            GainType::MillardMuscle | GainType::User => continue,
+        let Some(dforce_dv) = actuator_dforce_dv(model, data, i, input) else {
+            continue;
         };
-
-        // ∂bias/∂V for this actuator
-        // Muscle/HillMuscle bias (passive force) depends on length only, not velocity → 0.
-        let dbias_dv = match model.actuator_biastype[i] {
-            BiasType::Affine => model.actuator_biasprm[i][2],
-            BiasType::None | BiasType::Muscle | BiasType::HillMuscle => 0.0,
-            // MillardMuscle bias has a velocity-dependent damping term; its analytic
-            // derivative is deferred (skip — see the gain arm above).
-            BiasType::MillardMuscle | BiasType::User => continue,
-        };
-
-        // The gain term only when its velocity part is nonzero, as MuJoCo's: a
-        // bad control is read raw here, and 0 * NaN would reach qDeriv.
-        let mut dforce_dv = dbias_dv;
-        if dgain_dv != 0.0 {
-            dforce_dv += dgain_dv * input;
-        }
         if dforce_dv.abs() < 1e-30 {
             continue;
         }
@@ -781,7 +828,9 @@ pub fn mjd_smooth_pos(model: &Model, data: &mut Data) {
 /// 1. Joint spring stiffness: −k for hinge/slide (diagonal), −k·∂subquat/∂q for ball/free
 ///    (none under `ImplicitSpringDamper`, whose step applies no ball or free
 ///    joint spring)
-/// 2. Tendon spring stiffness: −k · J^T · J
+/// 2. Tendon spring and damper: −k · J^T · J, and for a spatial tendon the
+///    terms through its configuration-dependent J (unlike a joint's, a
+///    tendon damper's force −b·J·qvel depends on q)
 ///
 /// Fluid, gravcomp, and flex passive forces are NOT included (deferred — AD-1).
 #[allow(non_snake_case)]
@@ -866,21 +915,27 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // 2. Tendon spring stiffness: ∂(Jᵀ · k · (bound − length))/∂qpos.
-    //    qfrc = Jᵀ·f with f = k·(bound − length); the product rule gives
-    //      ∂qfrc/∂q = Jᵀ·∂f/∂q + (∂Jᵀ/∂q)·f = −k·Jᵀ·J + (∂Jᵀ/∂q)·f.
-    //    The first term (constant-J part) is exact below. The second is zero
-    //    for fixed tendons (constant J) but NONZERO for spatial tendons whose
-    //    routing geometry changes with q — previously dropped, leaving the
-    //    analytical columns silently wrong for an active spatial length-spring.
-    //    Added below via a targeted FD of `ten_J` (a closed-form tendon Hessian
-    //    over arbitrary site/geom/pulley wrap paths is intractable; FD of the
-    //    tendon Jacobian matches the codebase pattern for hard geometric
-    //    Jacobian-derivatives and is exact to FD precision).
-    let mut needs_jac_cross = false;
+    // 2. Tendon spring and damper, as the passive pass applies them: the
+    //    spring outside its deadband (not with DISABLE_SPRING), the damper
+    //    −b·V (not with DISABLE_DAMPER). qfrc = Jᵀ·f gives
+    //      ∂qfrc/∂q = Jᵀ·∂f/∂q + (∂Jᵀ/∂q)·f,
+    //    with ∂f/∂q = −k·J for the spring and −b·(∂J/∂q)·qvel for the damper.
+    //    The spring's −k·Jᵀ·J is below; the terms through ∂J/∂q, zero for a
+    //    fixed tendon (constant J), are added by
+    //    `add_spatial_tendon_jacobian_term` (a closed-form tendon Hessian over
+    //    arbitrary site/geom/pulley wrap paths is intractable).
+    let has_spring = model.disableflags & DISABLE_SPRING == 0;
+    let has_damper = model.disableflags & DISABLE_DAMPER == 0;
+    let mut tendon_force = vec![0.0; model.ntendon];
+    let mut tendon_dforce_dv = vec![0.0; model.ntendon];
     for t in 0..model.ntendon {
+        let damping = model.tendon_damping[t];
+        if has_damper && damping > 0.0 {
+            tendon_force[t] -= damping * data.ten_velocity[t];
+            tendon_dforce_dv[t] -= damping;
+        }
         let stiffness = model.tendon_stiffness[t];
-        if stiffness == 0.0 {
+        if !has_spring || stiffness <= 0.0 {
             continue;
         }
 
@@ -888,13 +943,12 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
         let [lower, upper] = model.tendon_lengthspring[t];
 
         // Only active when outside deadband
-        let active = (length < lower) || (length > upper);
-        if !active {
+        if length > upper {
+            tendon_force[t] += stiffness * (upper - length);
+        } else if length < lower {
+            tendon_force[t] += stiffness * (lower - length);
+        } else {
             continue;
-        }
-
-        if model.tendon_type[t] == TendonType::Spatial {
-            needs_jac_cross = true;
         }
 
         let j = &data.ten_J[t];
@@ -912,43 +966,67 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // Cross-term (∂Jᵀ/∂q)·f for active spatial-tendon length springs. Central-FD
-    // of `ten_J` w.r.t. each tangent DOF (recomputing tendon routing via
-    // `mj_fwd_position`), contracted with the spring force scalar `f`.
-    if needs_jac_cross {
-        const EPS: f64 = 1e-7;
-        let qpos0 = data.qpos.clone();
-        let mut scratch = data.clone();
-        let mut dir = DVector::zeros(nv);
-        for c in 0..nv {
-            dir[c] = 1.0;
-            mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, EPS);
-            mj_fwd_position(model, &mut scratch);
-            let j_plus: Vec<DVector<f64>> = (0..model.ntendon)
-                .map(|t| scratch.ten_J[t].clone())
-                .collect();
-            mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, -EPS);
-            mj_fwd_position(model, &mut scratch);
-            dir[c] = 0.0;
+    add_spatial_tendon_jacobian_term(model, data, &tendon_force, &tendon_dforce_dv);
+}
 
-            for (t, jp_t) in j_plus.iter().enumerate() {
-                if model.tendon_type[t] != TendonType::Spatial || model.tendon_stiffness[t] == 0.0 {
-                    continue;
-                }
-                let length = data.ten_length[t];
-                let [lower, upper] = model.tendon_lengthspring[t];
-                let f = if length > upper {
-                    model.tendon_stiffness[t] * (upper - length)
-                } else if length < lower {
-                    model.tendon_stiffness[t] * (lower - length)
-                } else {
-                    continue;
-                };
-                let jm_t = &scratch.ten_J[t];
-                for r in 0..nv {
-                    let djr = (jp_t[r] - jm_t[r]) / (2.0 * EPS);
-                    if djr != 0.0 {
+/// Add to `data.qDeriv_pos` the terms of `Σₜ Jₜᵀ·fₜ` that come through a
+/// spatial tendon's configuration-dependent `Jₜ` (a fixed tendon's is
+/// constant): `(∂Jₜᵀ/∂q)·fₜ` for the force `fₜ` in `tendon_force`, and
+/// `Jₜᵀ·gₜ·(∂Jₜ/∂q)·qvel` for a force that reads the tendon velocity
+/// `Jₜ·qvel`, with `gₜ = ∂fₜ/∂v` in `tendon_dforce_dv`. `∂J/∂q` is a central
+/// difference of `ten_J` along each tangent DOF, the routing recomputed by
+/// `mj_fwd_position`.
+fn add_spatial_tendon_jacobian_term(
+    model: &Model,
+    data: &mut Data,
+    tendon_force: &[f64],
+    tendon_dforce_dv: &[f64],
+) {
+    const EPS: f64 = 1e-7;
+    let acts = |t: usize| {
+        model.tendon_type[t] == TendonType::Spatial
+            && (tendon_force[t] != 0.0 || tendon_dforce_dv[t] != 0.0)
+    };
+    if !(0..model.ntendon).any(acts) {
+        return;
+    }
+    let nv = model.nv;
+    let qpos0 = data.qpos.clone();
+    let mut scratch = data.clone();
+    let mut dir = DVector::zeros(nv);
+    for c in 0..nv {
+        dir[c] = 1.0;
+        mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, EPS);
+        mj_fwd_position(model, &mut scratch);
+        let j_plus: Vec<DVector<f64>> = (0..model.ntendon)
+            .map(|t| scratch.ten_J[t].clone())
+            .collect();
+        mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, -EPS);
+        mj_fwd_position(model, &mut scratch);
+        dir[c] = 0.0;
+
+        for (t, jp_t) in j_plus.iter().enumerate() {
+            if !acts(t) {
+                continue;
+            }
+            let (f, g) = (tendon_force[t], tendon_dforce_dv[t]);
+            let jm_t = &scratch.ten_J[t];
+            // ∂(tendon velocity)/∂q_c = (∂J/∂q_c)·qvel.
+            let mut dvel = 0.0;
+            for r in 0..nv {
+                let djr = (jp_t[r] - jm_t[r]) / (2.0 * EPS);
+                if djr != 0.0 {
+                    if f != 0.0 {
                         data.qDeriv_pos[(r, c)] += f * djr;
+                    }
+                    dvel += djr * data.qvel[r];
+                }
+            }
+            if g != 0.0 && dvel != 0.0 {
+                for r in 0..nv {
+                    let jr = data.ten_J[t][r];
+                    if jr != 0.0 {
+                        data.qDeriv_pos[(r, c)] += jr * g * dvel;
                     }
                 }
             }
@@ -1015,8 +1093,10 @@ fn hill_active_fl_deriv(norm_len: f64) -> f64 {
 ///
 /// where ∂L/∂qpos = moment (the moment arm IS the length Jacobian).
 ///
-/// Only the force chain-rule term is computed — the moment-arm cross-term
-/// `(∂moment/∂qpos) · force` is deferred for non-Joint transmissions (AD-1).
+/// The moment-arm term `(∂moment/∂qpos) · force` is added for a spatial
+/// tendon transmission; for site, body and slider-crank transmissions it is
+/// not, and the hybrid transition takes finite differences for the position
+/// columns of a model with one (AD-1).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
     // The actuators `mjd_actuator_vel` leaves out, against MuJoCo's transition
@@ -1029,13 +1109,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
         if actuator_left_out(model, data, i) {
             continue;
         }
-        let input = if model.actuator_dyntype[i] != ActuatorDynamics::None {
-            actuator_input(model, data, i)
-        } else if bad {
-            0.0
-        } else {
-            actuator_ctrl_input(model, data, i)
-        };
+        let input = forward_pass_input(model, data, i, bad);
         let length = data.actuator_length[i];
 
         // Compute ∂gain/∂L
@@ -1145,6 +1219,29 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
             }
         }
     }
+
+    // A spatial tendon's moment arm moves with q: the force the pass applied
+    // (`gear · actuator_force`, 0 for an actuator it skipped) adds
+    // `(∂Jᵀ/∂q) · gear · force`, and a force that reads the actuator
+    // velocity `gear · J · qvel` adds `J · gear² · ∂force/∂V · (∂J/∂q) · qvel`.
+    let mut tendon_force = vec![0.0; model.ntendon];
+    let mut tendon_dforce_dv = vec![0.0; model.ntendon];
+    for i in 0..model.nu {
+        let t = model.actuator_trnid[i][0];
+        if model.actuator_trntype[i] != ActuatorTransmission::Tendon || t >= model.ntendon {
+            continue;
+        }
+        let gear = model.actuator_gear[i][0];
+        tendon_force[t] += gear * data.actuator_force[i];
+        if actuator_left_out(model, data, i) {
+            continue;
+        }
+        let input = forward_pass_input(model, data, i, bad);
+        if let Some(dforce_dv) = actuator_dforce_dv(model, data, i, input) {
+            tendon_dforce_dv[t] += gear * gear * dforce_dv;
+        }
+    }
+    add_spatial_tendon_jacobian_term(model, data, &tendon_force, &tendon_dforce_dv);
 }
 
 // ============================================================================
@@ -2815,7 +2912,8 @@ pub fn mjd_transition_hybrid(
         // Coriolis term IS handled there), FD position columns (exact). ISD is
         // unaffected — its `M_impl` is v-independent, so its position columns are
         // already analytic-exact.
-        && !matches!(model.integrator, Integrator::Implicit);
+        && !matches!(model.integrator, Integrator::Implicit)
+        && !implicitfast_damping_moves_with_q(model);
 
     // Save nominal state for FD perturbation loop (needed by activation/B matrix FD too)
     let qpos_0 = data.qpos.clone();
