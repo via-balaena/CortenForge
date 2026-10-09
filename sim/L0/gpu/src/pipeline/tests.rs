@@ -2425,6 +2425,8 @@ fn t33_step_applies_implicit_damping() {
 /// body, GPU against CPU over 200 steps under each flag.
 #[test]
 fn t33b_step_follows_the_damper_flags() {
+    // Measured on an M4 Pro: 2.0e-8 and 4.7e-7 here (f32), 2.1e-3 and 1.4 when
+    // the GPU ignored the flags.
     const TOL: f64 = 1e-5;
     let mut failures = Vec::new();
     for (name, flag) in [

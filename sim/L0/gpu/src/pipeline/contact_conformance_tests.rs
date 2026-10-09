@@ -631,8 +631,9 @@ fn run_rollout(
     let eulerdamp = GpuEulerdampPipeline::new(ctx, &model_buf, &state_buf);
     let integrate = GpuIntegratePipeline::new(ctx, &model_buf, &state_buf);
 
-    // Mirror the orchestrator: run the eulerdamp stage (between constraint and
-    // integration) only when the model has implicit damping.
+    // Run the eulerdamp stage (between constraint and integration) when a DOF is
+    // damped; no fixture here sets the damper flags the orchestrator's gate also
+    // reads.
     let has_damping = (0..nv).any(|i| model.implicit_damping[i] > 0.0);
 
     let count = contacts.len() as u32;

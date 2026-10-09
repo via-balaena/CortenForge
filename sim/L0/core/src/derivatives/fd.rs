@@ -242,7 +242,7 @@ pub fn mjd_transition_fd(
 }
 
 /// Puts `scratch` back at the caller's state `nominal` before a
-/// finite-difference step, so no step depends on the ones before it.
+/// finite-difference step.
 /// MuJoCo's `mjd_stepFD` restores `mjSTATE_FULLPHYSICS | mjSTATE_CTRL` and the
 /// warm start (`engine_derivative_fd.c:307`); with sleep disabled this
 /// restores qpos, qvel, act, ctrl, the warm start, the time and the plugin

@@ -339,7 +339,7 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
     let nbody = model.nbody;
     let h = model.timestep;
 
-    // Operating point: eulerdamp qacc from a real step, and the pose-dependent
+    // Operating point: the step's qacc from a real step, and the pose-dependent
     // forward state (cinert, cvel, subtree_*, qM) the perturbation passes reuse.
     let mut d_post = data.clone();
     d_post.step(model)?;
@@ -534,7 +534,7 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
     let nbody = model.nbody;
     let h = model.timestep;
 
-    // Operating point: eulerdamp qacc from a real step, and the pose-dependent
+    // Operating point: the step's qacc from a real step, and the pose-dependent
     // forward state (cinert, cvel, ximat, qM) the perturbation passes reuse.
     let mut d_post = data.clone();
     d_post.step(model)?;

@@ -611,8 +611,7 @@ pub struct Data {
     /// Dense nv × nv matrix. Populated by `mjd_smooth_vel()`.
     ///
     /// Components:
-    ///   ∂(qfrc_passive)/∂qvel  = diagonal damping + tendon damping J^T·b·J
-    ///                            (all integrators, including ImplicitSpringDamper per DT-35)
+    ///   ∂(qfrc_passive)/∂qvel  = the terms `mjd_passive_vel` adds
     ///   ∂(qfrc_actuator)/∂qvel = affine velocity-dependent gain/bias terms
     ///   −∂(qfrc_bias)/∂qvel    = −C(q,v) (Coriolis matrix)
     ///

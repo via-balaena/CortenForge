@@ -279,8 +279,8 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
 /// Implicit-fast forward acceleration: symmetric D, Cholesky factorization.
 ///
 /// Solves `(M − h·D) · qacc_implicit = qfrc_smooth + qfrc_constraint`
-/// where D = ∂(qfrc_smooth)/∂(qvel) is assembled from DOF damping, tendon
-/// damping, and actuator velocity derivatives (Coriolis terms skipped).
+/// where D = ∂(qfrc_smooth)/∂(qvel) is assembled by `mjd_passive_vel` and
+/// `mjd_actuator_vel` (Coriolis terms skipped).
 /// D is symmetrized: `D ← (D + D^T) / 2`.
 ///
 /// After return, `data.scratch_m_impl` holds the Cholesky factors (L where
@@ -297,7 +297,7 @@ fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<()
     let h = model.timestep;
 
     // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel)
-    //   Components: DOF damping + tendon damping J^T B J + actuator vel derivatives
+    //   Components: `mjd_passive_vel`'s and `mjd_actuator_vel`'s terms.
     //   Coriolis terms SKIPPED for implicitfast.
     data.qDeriv.fill(0.0);
     mjd_passive_vel(model, data);

@@ -86,10 +86,12 @@ pub struct GpuPhysicsPipeline {
     // stage across envs via the env-strided shaders.
     n_env: u32,
 
-    /// Whether any DOF has implicit damping. When true, the eulerdamp stage runs
-    /// between the constraint stage and integration, solving `(M + h·D)·qacc =
-    /// qfrc_smooth − D·q̇ + qfrc_constraint`. When false it is skipped entirely, so
-    /// the undamped trajectory is byte-identical to the pre-wiring pipeline.
+    /// Whether the eulerdamp stage runs: as the CPU step's (sim-core's
+    /// `eulerdamp_applies`), neither eulerdamp nor dampers disabled and some DOF
+    /// damped. It runs between the constraint stage and integration, solving
+    /// `(M + h·D)·qacc = qfrc_smooth − D·q̇ + qfrc_constraint`. When false it is
+    /// skipped entirely, so the undamped trajectory is byte-identical to the
+    /// pre-wiring pipeline.
     has_damping: bool,
 }
 
@@ -305,8 +307,8 @@ impl GpuPhysicsPipeline {
         self.constraint.encode(rec, &self.state_bufs);
         // Implicit joint damping (MuJoCo eulerdamp): re-solve qacc with the damped
         // matrix and the contact-coupled RHS, between the constraint stage (which
-        // writes qfrc_constraint) and integration. Skipped for undamped models so
-        // their trajectory is byte-identical.
+        // writes qfrc_constraint) and integration, where the CPU step takes it
+        // (`has_damping`).
         if self.has_damping {
             self.eulerdamp.encode(rec);
         }

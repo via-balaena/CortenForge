@@ -32,7 +32,11 @@
 //! forward differences (`centered: false`); a case the hybrid hands to finite
 //! differences whole, as it does a tree asleep, where the two are the same
 //! matrices (`derivatives.rs` checks finite differences at a sleep state
-//! against columns taken one at a time); and a gap the forward pass and the
+//! against columns taken one at a time); a force no case carries: a callback,
+//! a plugin or a user actuator term (the hybrid takes finite differences for
+//! them, `transition_derivatives_see_callbacks_and_plugins`), or an applied
+//! `xfrc_applied` wrench, whose dependence on q the analytic position columns
+//! leave out (the spec book's gap chapter); and a gap the forward pass and the
 //! finite differences share, since finite differences are the reference here
 //! (they are compared with MuJoCo's in `derivatives.rs`).
 

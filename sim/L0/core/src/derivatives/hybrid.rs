@@ -1196,8 +1196,7 @@ fn ball_length_jacobian(model: &Model, data: &Data, i: usize, jid: usize) -> [f6
 /// tendon transmission; for site, body and slider-crank transmissions and a
 /// `jointinparent` transmission on a ball or free joint it is not, and the
 /// hybrid transition takes finite differences for the position columns of a
-/// model with a site, body, slider-crank, ball or free joint transmission
-/// (AD-1).
+/// model with one of those (`moment_moves_with_q`; AD-1).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
     // The actuators `mjd_actuator_vel` leaves out, against MuJoCo's transition

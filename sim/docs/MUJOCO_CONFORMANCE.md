@@ -439,7 +439,7 @@ quaternion integration Jacobians, dispatch API).
 |-----------------|-------------|--------------|--------|
 | `mjd_transitionFD` (pure FD) | `mjd_transition_fd()` | FD convergence, centered vs forward, quaternion handling, contact sensitivity, integrator coverage | ✅ |
 | `mjd_smooth_vel` | `mjd_smooth_vel()` | Combined qDeriv matches FD of smooth forces to `1e-4` | ✅ |
-| `mjd_passive_vel` | `mjd_passive_vel()` | Diagonal damping exact, tendon damping matches FD to `1e-6` | ✅ |
+| `mjd_passive_vel` | `mjd_passive_vel()` | Diagonal damping exact, tendon damping matches FD to `1e-6`; flex edge damping through the hybrid (`hybrid_velocity_columns_take_flex_edge_damping`) | ✅ |
 | `mjd_actuator_vel` | `mjd_actuator_vel()` | Affine gain/bias velocity derivative matches FD to `1e-6` | ✅ |
 | `mjd_rne_vel` | `mjd_rne_vel()` | Coriolis matrix (hinge, ball, free joints) matches FD to `1e-5` | ✅ |
 | `mjData.qDeriv` | `Data.qDeriv` | Dense nv×nv (MuJoCo uses sparse) — values match | ✅ |

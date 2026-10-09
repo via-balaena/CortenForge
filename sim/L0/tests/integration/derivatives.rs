@@ -3054,8 +3054,6 @@ fn sensor_derivatives_at_current_state_match_mujoco_3_5_0() {
 
 /// Asking pure finite differences for sensor derivatives evaluates no extra
 /// forward pass: the passive callback fires as often with them as without.
-/// (The hybrid computes A and B analytically where it can, so its C and D
-/// need finite-difference columns it would otherwise not run.)
 #[test]
 fn sensor_derivatives_do_not_add_callbacks() {
     {
@@ -4126,9 +4124,7 @@ impl sim_core::plugin::Plugin for IntegralTerm {
 /// which holds `mjSTATE_PLUGIN` (`engine_derivative_fd.c:307`,
 /// `engine_support.c:167`): the matrices equal the ones taken a column at a
 /// time from fresh copies of the state. Sleep is disabled; with it enabled
-/// each step starts from a copy of the whole `Data`. Under Euler every hybrid
-/// column of this fixture is analytic; under full Implicit its position
-/// columns are finite differences.
+/// each step starts from a copy of the whole `Data`.
 #[test]
 fn transition_derivatives_take_each_column_from_the_plugin_state() {
     for integrator in ["Euler", "implicit"] {
