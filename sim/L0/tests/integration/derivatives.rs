@@ -3898,6 +3898,49 @@ fn hybrid_hill_muscle_gain_under_implicitfast_matches_finite_differences() {
     }
 }
 
+/// With fluid density the implicit integrators' `D` holds the quadratic
+/// drag's slope (`mjd_passive_vel`), which moves with the velocity, so the
+/// analytic velocity columns miss a term in `∂D/∂v`: such a model takes pure
+/// finite differences under implicitfast and implicit. Under Euler and
+/// implicitspringdamper the step applies the drag without `D`, and the
+/// analytic columns agree.
+#[test]
+fn hybrid_takes_finite_differences_in_a_dense_fluid_under_the_implicit_integrators() {
+    for integrator in ["Euler", "implicitspringdamper", "implicitfast", "implicit"] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}" density="1000"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                  <body name="b2" pos="0.3 0 0">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+                  </body>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qpos[1] = 0.5;
+        data.qvel[0] = 0.7;
+        data.qvel[1] = 1.0;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig::default();
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+            assert!(
+                (h - f).abs() <= 1e-6 + 1e-5 * h.abs().max(f.abs()),
+                "{integrator}: hybrid {h}, fd {f}"
+            );
+        }
+    }
+}
+
 /// The transition matrices a column at a time, each column from its own copy
 /// of `data` (centered differences), so no column sees another. The fixture
 /// must be hinges and slides only: the position rows are plain differences.

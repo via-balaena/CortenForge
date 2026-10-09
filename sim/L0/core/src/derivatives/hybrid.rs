@@ -2547,12 +2547,12 @@ pub fn mass_directional_derivative(
 // Step 9 — Phase D: mjd_transition_hybrid (hybrid analytical+FD)
 // ============================================================================
 
-/// Whether the implicit-Coriolis integrators' analytic transition derivative is
+/// Whether the implicit integrators' analytic transition derivative is
 /// INCOMPLETE for this model and must fall back to exact finite difference.
 ///
-/// The analytic paths for `ImplicitSpringDamper` and full `Implicit` are exact for
-/// articulated joint chains (the common case — joint K/D + rigid-body Coriolis), but
-/// each omits one class of term that only some models exercise:
+/// The analytic paths for `ImplicitSpringDamper`, `ImplicitFast` and full
+/// `Implicit` are exact for articulated joint chains (the common case — joint
+/// K/D + rigid-body Coriolis), but omit terms that only some models exercise:
 ///
 /// - **ImplicitSpringDamper with an active tendon spring/damper.** DT-35 folds the
 ///   tendon `h²·k·JᵀJ + h·b·JᵀJ` into `M_impl`'s LHS, but the analytic velocity block
@@ -2566,6 +2566,10 @@ pub fn mass_directional_derivative(
 ///   block has no second-order term at all; full Implicit's
 ///   `T = rne_vel(qacc_implicit)` captures only the Coriolis part of `∂D/∂v`.
 ///   (Affine gain is constant in v ⇒ fine.)
+/// - **ImplicitFast or full Implicit with fluid density.** `D` holds the fluid
+///   drag's slope (`mjd_fluid_vel`), and with `density > 0` the drag is
+///   quadratic in v, so its slope moves with v: the same missing `∂D/∂v` term.
+///   (Viscosity alone is linear in v ⇒ fine.)
 ///
 /// FD is exact in both cases. Euler never hits these terms, so it always returns
 /// `false` here. This is the single source of truth shared by
@@ -2575,10 +2579,13 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
     match model.integrator {
         Integrator::ImplicitSpringDamper => (0..model.ntendon)
             .any(|t| model.tendon_stiffness[t] > 0.0 || model.tendon_damping[t] > 0.0),
-        Integrator::ImplicitFast | Integrator::Implicit => model
-            .actuator_gaintype
-            .iter()
-            .any(|g| matches!(g, GainType::Muscle | GainType::HillMuscle)),
+        Integrator::ImplicitFast | Integrator::Implicit => {
+            model.density > 0.0
+                || model
+                    .actuator_gaintype
+                    .iter()
+                    .any(|g| matches!(g, GainType::Muscle | GainType::HillMuscle))
+        }
         _ => false,
     }
 }
@@ -2631,10 +2638,10 @@ pub fn mjd_transition_hybrid(
         config.eps
     );
 
-    // Defensive FD fallback for the implicit-Coriolis integrators on models whose
-    // analytic path is incomplete (tendon-K/D under ISD, Muscle/HillMuscle gain under
-    // ImplicitFast or Implicit). `mjd_transition` already gates these to FD; this
-    // guards a direct call.
+    // Defensive FD fallback for the implicit integrators on models whose analytic
+    // path is incomplete (tendon-K/D under ISD; a Muscle/HillMuscle gain or fluid
+    // density under ImplicitFast or Implicit). `mjd_transition` already gates
+    // these to FD; this guards a direct call.
     if implicit_analytic_incomplete(model) {
         return mjd_transition_fd(model, data, config);
     }
@@ -2774,7 +2781,8 @@ pub fn mjd_transition_hybrid(
             // implicit-Coriolis correction the bare closed form drops (the stiffness/damping
             // harness exposed it: off-diagonal `∂vᵢ⁺/∂vⱼ`, growing with chain length;
             // 1-DOF exact). Let `T[:,j] = (∂D/∂vⱼ)·qacc`. Only D's Coriolis part is
-            // v-dependent, and the Coriolis velocity-Jacobian is LINEAR in its evaluation
+            // v-dependent here (`implicit_analytic_incomplete` sends a model with
+            // another to FD), and the Coriolis velocity-Jacobian is LINEAR in its evaluation
             // velocity with a SYMMETRIC second derivative (mixed partials commute), so
             // `(∂D/∂vⱼ)·qacc` equals that same Jacobian evaluated at `qvel := qacc` — i.e.
             // `T = mjd_rne_vel(qacc)` (one extra analytic call; no second-derivative tensor).

@@ -286,8 +286,9 @@ pub fn mjd_transition(
             .any(|b| matches!(b, BiasType::MillardMuscle));
     let can_analytical = config.use_analytical
         && !has_millard
-        // The implicit integrators' analytic path is incomplete for tendon-K/D (ISD) or
-        // a Muscle/HillMuscle gain (ImplicitFast, Implicit); such models take exact FD.
+        // The implicit integrators' analytic path is incomplete for tendon-K/D (ISD), or
+        // a Muscle/HillMuscle gain or fluid density (ImplicitFast, Implicit); such models
+        // take exact FD.
         // See `implicit_analytic_incomplete`.
         && !hybrid::implicit_analytic_incomplete(model);
     if can_analytical {
