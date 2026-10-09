@@ -156,6 +156,18 @@ fn implicitfast_damping_moves_with_q(model: &Model) -> bool {
     damped_tendon || velocity_actuator
 }
 
+/// Whether actuator `i`'s gain has a velocity term the implicit integrators
+/// put into the step's `D`, times the actuator's input: the step's `D` then
+/// depends on the control or activation, which the analytic control and
+/// activation columns leave out.
+fn input_scales_implicit_damping(model: &Model, i: usize) -> bool {
+    matches!(
+        model.integrator,
+        Integrator::ImplicitFast | Integrator::Implicit
+    ) && model.actuator_gaintype[i] == GainType::Affine
+        && model.actuator_gainprm[i][2] != 0.0
+}
+
 /// Whether MuJoCo's actuator derivatives leave actuator `i` out
 /// (`engine_derivative.c:1071-1099`): actuation disabled, its group disabled,
 /// asleep, or its force clamped by its forcerange.
@@ -2763,10 +2775,12 @@ pub fn mjd_transition_hybrid(
                 | ActuatorDynamics::MillardMuscle
         );
         // Finite differences too for an actuator MuJoCo's derivatives leave
-        // out, and under `actearly` (its force reads the next activation).
+        // out, under `actearly` (its force reads the next activation), and
+        // where the implicit step's damping reads the activation.
         let fd_column = is_muscle
             || model.actuator_actearly[actuator_idx]
-            || actuator_left_out(model, data, actuator_idx);
+            || actuator_left_out(model, data, actuator_idx)
+            || input_scales_implicit_damping(model, actuator_idx);
 
         for k in 0..act_num {
             let j = act_adr + k;
@@ -3351,9 +3365,11 @@ pub fn mjd_transition_hybrid(
     let mut ctrl_fd_indices: Vec<usize> = Vec::new();
 
     for actuator_idx in 0..nu {
-        // An actuator MuJoCo's derivatives leave out takes finite differences.
+        // An actuator MuJoCo's derivatives leave out takes finite
+        // differences, as one whose control the implicit step's damping reads.
         let is_direct = matches!(model.actuator_dyntype[actuator_idx], ActuatorDynamics::None)
-            && !actuator_left_out(model, data, actuator_idx);
+            && !actuator_left_out(model, data, actuator_idx)
+            && !input_scales_implicit_damping(model, actuator_idx);
 
         if is_direct {
             // Analytical: ∂v⁺/∂ctrl = h · M⁻¹ · moment · gain

@@ -471,15 +471,6 @@ const KNOWN_GAPS: &[Gap] = &[
                 && matches!(c.trn, Trn::JointRoot | Trn::JointInParentRoot)
         },
     },
-    // Under the implicit integrators the step's `D` holds the gain's
-    // velocity term times the control or activation.
-    Gap {
-        name: "velocity-dependent gain under implicitfast and implicit: control and activation columns",
-        covers: |c| {
-            matches!(c.integrator, IMPLICITFAST | IMPLICIT)
-                && matches!(c.kind.name, "damper" | "filterexact affine")
-        },
-    },
     // The step clamps the next activation to its range.
     Gap {
         name: "activation past its range",
