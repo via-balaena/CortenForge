@@ -10,7 +10,10 @@
 
 use nalgebra::{DMatrix, DVector};
 
-use crate::integrate::implicit::{tendon_active_stiffness, tendon_all_dofs_sleeping};
+use crate::integrate::implicit::{
+    isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness, tendon_active_stiffness,
+    tendon_all_dofs_sleeping,
+};
 use crate::linalg::{cholesky_in_place, cholesky_rank1_update};
 use crate::types::{ConstraintState, ConstraintType, Data, ENABLE_SLEEP, Model, StepError};
 
@@ -289,7 +292,7 @@ impl SparseHessian {
 
             // Joint diagonal K/D
             for i in 0..nv {
-                let kd = h * model.implicit_damping[i] + h2 * model.implicit_stiffness[i];
+                let kd = h * isd_damping(model, i) + h2 * isd_stiffness(model, i);
                 if kd > 0.0
                     && let Some(idx) = self.find_entry(i, i)
                 {
@@ -303,8 +306,8 @@ impl SparseHessian {
                 if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
                     continue;
                 }
-                let kt = model.tendon_stiffness[t];
-                let bt = model.tendon_damping[t];
+                let kt = isd_tendon_stiffness(model, t);
+                let bt = isd_tendon_damping(model, t);
                 if kt <= 0.0 && bt <= 0.0 {
                     continue;
                 }

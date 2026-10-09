@@ -36,7 +36,10 @@ use crate::constraint::solver::newton::newton_solve;
 use crate::constraint::solver::noslip::noslip_postprocess;
 use crate::constraint::solver::pgs::pgs_solve_unified;
 
-use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
+use crate::integrate::implicit::{
+    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness,
+    tendon_all_dofs_sleeping,
+};
 use crate::island::mj_island;
 
 /// Compute the unconstrained acceleration (`qacc_smooth`) and smooth forces.
@@ -145,10 +148,8 @@ fn build_m_impl_for_newton(model: &Model, data: &Data) -> DMatrix<f64> {
     let mut m_impl = data.qM.clone();
 
     // Add diagonal joint K/D (matching mj_fwd_acceleration_implicit)
-    let k = &model.implicit_stiffness;
-    let d = &model.implicit_damping;
     for i in 0..nv {
-        m_impl[(i, i)] += h * d[i] + h2 * k[i];
+        m_impl[(i, i)] += h * isd_damping(model, i) + h2 * isd_stiffness(model, i);
     }
 
     // Add non-diagonal tendon K/D (shared helper)
@@ -193,7 +194,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     // where Δq = q − q_eq, so total = −K·(q − q_eq) − h·K·v
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
-        let k = model.implicit_stiffness[dof_adr];
+        let k = isd_stiffness(model, dof_adr);
         if k <= 0.0 {
             continue;
         }
@@ -218,7 +219,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
 
     // Add joint damper forces: −D·v
     for i in 0..nv {
-        let d = model.implicit_damping[i];
+        let d = isd_damping(model, i);
         if d > 0.0 {
             qfrc[i] += -d * data.qvel[i];
         }
@@ -230,7 +231,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
         if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
             continue;
         }
-        let kt = model.tendon_stiffness[t];
+        let kt = isd_tendon_stiffness(model, t);
         if kt > 0.0 {
             let displacement =
                 tendon_deadband_displacement(data.ten_length[t], model.tendon_lengthspring[t]);
@@ -249,7 +250,7 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
             }
         }
         // Add tendon damper forces: −b · V projected via J^T
-        let bt = model.tendon_damping[t];
+        let bt = isd_tendon_damping(model, t);
         if bt > 0.0 {
             let j = &data.ten_J[t];
             let velocity = data.ten_velocity[t]; // J · qvel

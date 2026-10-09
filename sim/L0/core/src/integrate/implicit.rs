@@ -7,7 +7,8 @@
 
 use nalgebra::{DMatrix, DVector};
 
-use crate::types::{Data, Model};
+use crate::types::flags::disabled;
+use crate::types::{DISABLE_DAMPER, DISABLE_SPRING, Data, Model};
 
 /// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
 pub fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
@@ -53,6 +54,46 @@ pub fn tendon_active_stiffness(k: f64, length: f64, range: [f64; 2]) -> f64 {
     }
 }
 
+/// The stiffness implicitspringdamper puts in its implicit solve at dof `i`:
+/// `implicit_stiffness[i]`, or 0 with springs disabled, when the passive pass
+/// applies no spring either.
+pub fn isd_stiffness(model: &Model, i: usize) -> f64 {
+    if disabled(model, DISABLE_SPRING) {
+        0.0
+    } else {
+        model.implicit_stiffness[i]
+    }
+}
+
+/// The damping implicitspringdamper puts in its implicit solve at dof `i`:
+/// `implicit_damping[i]`, or 0 with dampers disabled.
+pub fn isd_damping(model: &Model, i: usize) -> f64 {
+    if disabled(model, DISABLE_DAMPER) {
+        0.0
+    } else {
+        model.implicit_damping[i]
+    }
+}
+
+/// Tendon `t`'s stiffness in implicitspringdamper's solve, as
+/// [`isd_stiffness`].
+pub fn isd_tendon_stiffness(model: &Model, t: usize) -> f64 {
+    if disabled(model, DISABLE_SPRING) {
+        0.0
+    } else {
+        model.tendon_stiffness[t]
+    }
+}
+
+/// Tendon `t`'s damping in implicitspringdamper's solve, as [`isd_damping`].
+pub fn isd_tendon_damping(model: &Model, t: usize) -> f64 {
+    if disabled(model, DISABLE_DAMPER) {
+        0.0
+    } else {
+        model.tendon_damping[t]
+    }
+}
+
 /// Accumulate non-diagonal tendon K/D into a mass matrix (DT-35).
 ///
 /// For each tendon with nonzero stiffness or damping, adds the rank-1
@@ -79,8 +120,8 @@ pub fn accumulate_tendon_kd(
         if sleep_enabled && tendon_all_dofs_sleeping_fields(model, &ten_j[t], tree_awake) {
             continue;
         }
-        let kt = model.tendon_stiffness[t];
-        let bt = model.tendon_damping[t];
+        let kt = isd_tendon_stiffness(model, t);
+        let bt = isd_tendon_damping(model, t);
         if kt <= 0.0 && bt <= 0.0 {
             continue;
         }

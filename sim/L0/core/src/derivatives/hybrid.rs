@@ -21,6 +21,7 @@ use crate::forward::{
     muscle_gain_velocity, norm3,
 };
 use crate::integrate::eulerdamp_applies;
+use crate::integrate::implicit::isd_damping;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
@@ -2741,14 +2742,17 @@ pub fn mjd_transition_hybrid(
             // and since the joint damper is moved to the LHS, `∂f_ext/∂v = qDeriv + D`
             // (qDeriv carries the −D damper diagonal that cancels back out). M_impl has no
             // v-dependence, so there is no second-order term.
-            let d = &model.implicit_damping;
             let mut dvdv = DMatrix::zeros(nv, nv);
             for j in 0..nv {
                 let mut rhs = DVector::zeros(nv);
                 for i in 0..nv {
                     rhs[i] = data_work.qM[(i, j)]
                         + h * data_work.qDeriv[(i, j)]
-                        + if i == j { h * d[i] } else { 0.0 };
+                        + if i == j {
+                            h * isd_damping(model, i)
+                        } else {
+                            0.0
+                        };
                 }
                 cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs);
                 dvdv.column_mut(j).copy_from(&rhs);

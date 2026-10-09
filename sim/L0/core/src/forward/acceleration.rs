@@ -8,14 +8,19 @@ use crate::constraint::assembly::tendon_deadband_displacement;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
-use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
+use crate::integrate::implicit::{
+    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_stiffness,
+    tendon_all_dofs_sleeping,
+};
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_factor_in_place, lu_solve_factored,
     mj_solve_sparse,
 };
+use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, DISABLE_GRAVITY, Data, ENABLE_SLEEP, Integrator, Model, StepError,
+    ConstraintType, DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, Integrator, Model,
+    StepError,
 };
 use nalgebra::DVector;
 
@@ -111,9 +116,6 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     let h = model.timestep;
     let h2 = h * h;
 
-    // Use cached spring-damper parameters from Model (avoids allocation)
-    let k = &model.implicit_stiffness;
-    let d = &model.implicit_damping;
     let q_eq = &model.implicit_springref;
 
     // Build external forces into scratch buffer (avoids allocation).
@@ -159,7 +161,7 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     // Copy M into scratch, then modify diagonal from joint K/D
     data.scratch_m_impl.copy_from(&data.qM);
     for i in 0..model.nv {
-        data.scratch_m_impl[(i, i)] += h * d[i] + h2 * k[i];
+        data.scratch_m_impl[(i, i)] += h * isd_damping(model, i) + h2 * isd_stiffness(model, i);
     }
 
     // DT-35: Non-diagonal tendon stiffness and damping (Step 0 helper).
@@ -187,14 +189,17 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     }
 
     // Subtract h*K*(q - q_eq) for joint spring displacement using visitor
-    let mut spring_visitor = ImplicitSpringVisitor {
-        k,
-        q_eq,
-        h,
-        qpos: &data.qpos,
-        rhs: &mut data.scratch_rhs,
-    };
-    model.visit_joints(&mut spring_visitor);
+    // (none with springs disabled: `isd_stiffness`).
+    if !disabled(model, DISABLE_SPRING) {
+        let mut spring_visitor = ImplicitSpringVisitor {
+            k: &model.implicit_stiffness,
+            q_eq,
+            h,
+            qpos: &data.qpos,
+            rhs: &mut data.scratch_rhs,
+        };
+        model.visit_joints(&mut spring_visitor);
+    }
 
     // DT-35: Tendon spring displacement contribution to implicit RHS
     // RHS[dof] -= h · Σ_t k_t · J_t[dof] · deadband_disp(L_t)
@@ -205,7 +210,7 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
         if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
             continue;
         }
-        let kt = model.tendon_stiffness[t];
+        let kt = isd_tendon_stiffness(model, t);
         if kt <= 0.0 {
             continue;
         }

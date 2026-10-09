@@ -1858,3 +1858,128 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
         }
     }
 }
+
+/// Under implicitspringdamper a disabled spring or damper flag removes that
+/// force from the step, as it does from the passive pass: each flag gives
+/// the trajectory of the same model with that parameter at 0, on a joint and
+/// on a fixed tendon, free and against an active joint limit (whose Newton
+/// solve takes the same implicit matrix), on two hinges and with 60 more
+/// (past `NV_SPARSE_THRESHOLD`, where the Newton solve assembles a sparse
+/// Hessian); and the hybrid transition derivative agrees with pure finite
+/// differences under each, on the two hinges (on the long chain the two
+/// differ by about 1e-4 with every flag enabled as well, ledger L93). implicitspringdamper is ours (MuJoCo has no
+/// such integrator), so the flags' meaning is the reference.
+#[test]
+fn implicitspringdamper_follows_the_spring_and_damper_flags() {
+    let model_xml = |flag: &str, joint_prm: &str, tendon_prm: &str, limit: &str, more: &str| {
+        format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="implicitspringdamper">{flag}</option>
+              <worldbody>
+                <body name="a" pos="0 0 1">
+                  <joint name="j1" type="hinge" axis="0 1 0"{joint_prm}{limit}/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                  <body name="b" pos="0.3 0 0">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+                    {more}
+                  </body>
+                </body>
+              </worldbody>
+              <tendon>
+                <fixed name="t"{tendon_prm}><joint joint="j1" coef="1"/><joint joint="j2" coef="-0.5"/></fixed>
+              </tendon>
+            </mujoco>"#
+        )
+    };
+    let start = |xml: &str| {
+        let model = sim_mjcf::load_model(xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.qpos[1] = -0.3;
+        data.qvel[1] = 0.2;
+        (model, data)
+    };
+    let run = |xml: &str| {
+        let (model, mut data) = start(xml);
+        for _ in 0..50 {
+            data.step(&model).expect("step");
+        }
+        (data.qpos.clone(), data.qvel.clone())
+    };
+    let spring = r#" stiffness="20" springref="0.1""#;
+    let damper = r#" damping="0.8""#;
+    let both = format!("{spring}{damper}");
+    let tendon_spring = r#" stiffness="15" springlength="0.2""#;
+    let tendon_damper = r#" damping="0.6""#;
+    let tendon_both = format!("{tendon_spring}{tendon_damper}");
+    let more_hinges = r#"<body pos="0.05 0 0"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.01" mass="0.01" contype="0" conaffinity="0"/>"#
+        .repeat(60)
+        + &"</body>".repeat(60);
+    let mut failures = Vec::new();
+    for (size, more) in [("", ""), (" with 60 more hinges", more_hinges.as_str())] {
+        for limit in ["", r#" range="-0.3 0.3""#] {
+            for (what, flag, with, without) in [
+                (
+                    "joint spring",
+                    r#"<flag spring="disable"/>"#,
+                    (both.as_str(), ""),
+                    (damper, ""),
+                ),
+                (
+                    "joint damper",
+                    r#"<flag damper="disable"/>"#,
+                    (both.as_str(), ""),
+                    (spring, ""),
+                ),
+                (
+                    "tendon spring",
+                    r#"<flag spring="disable"/>"#,
+                    ("", tendon_both.as_str()),
+                    ("", tendon_damper),
+                ),
+                (
+                    "tendon damper",
+                    r#"<flag damper="disable"/>"#,
+                    ("", tendon_both.as_str()),
+                    ("", tendon_spring),
+                ),
+            ] {
+                let flagged_xml = model_xml(flag, with.0, with.1, limit, more);
+                let flagged = run(&flagged_xml);
+                let zeroed = run(&model_xml("", without.0, without.1, limit, more));
+                let (model, mut data) = start(&flagged_xml);
+                data.forward(&model).expect("forward");
+                assert_eq!(
+                    data.efc_type.is_empty(),
+                    limit.is_empty(),
+                    "{what}{limit}{size}: the limit's row"
+                );
+                if more.is_empty() {
+                    let config = sim_core::DerivativeConfig::default();
+                    let hybrid =
+                        sim_core::mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+                    let fd = sim_core::mjd_transition_fd(&model, &data, &config).expect("fd");
+                    for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+                        if (h - f).abs() > 1e-6 + 1e-5 * h.abs().max(f.abs()) {
+                            failures.push(format!(
+                                "{what}{limit}{size}: hybrid A {h}, finite differences {f}"
+                            ));
+                            break;
+                        }
+                    }
+                }
+                let worst = (&flagged.0 - &zeroed.0)
+                    .amax()
+                    .max((&flagged.1 - &zeroed.1).amax());
+                if worst > 1e-12 {
+                    failures.push(format!(
+                        "{what}{limit}{size}: {worst:e} from the model without it"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
