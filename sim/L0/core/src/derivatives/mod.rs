@@ -246,7 +246,8 @@ fn check_fd_integrator(model: &Model) -> Result<(), StepError> {
 ///
 /// When `config.use_analytical == true` and the model's analytic transition
 /// derivative is complete (not with a Millard muscle, nor in the cases
-/// `hybrid::implicit_analytic_incomplete` names), uses hybrid analytical+FD
+/// `hybrid::implicit_analytic_incomplete` or
+/// `hybrid::forces_outside_the_analytic_columns` names), uses hybrid analytical+FD
 /// (Phase D), which itself takes pure FD when `data` holds an active
 /// constraint row, a step from it can change a tree's sleep state, or an
 /// actuator's control is bad or outside a ctrlrange the step clamps it to;
@@ -290,7 +291,10 @@ pub fn mjd_transition(
         // a Muscle/HillMuscle gain or fluid density (ImplicitFast, Implicit); such models
         // take exact FD.
         // See `implicit_analytic_incomplete`.
-        && !hybrid::implicit_analytic_incomplete(model);
+        && !hybrid::implicit_analytic_incomplete(model)
+        // A callback, a user actuator term or a plugin force: no analytic
+        // derivative. See `forces_outside_the_analytic_columns`.
+        && !hybrid::forces_outside_the_analytic_columns(model);
     if can_analytical {
         mjd_transition_hybrid(model, data, config)
     } else {

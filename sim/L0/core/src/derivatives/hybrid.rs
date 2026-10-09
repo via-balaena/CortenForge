@@ -29,6 +29,7 @@ use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse,
     mj_solve_sparse_batch,
 };
+use crate::plugin::PluginCapabilityBit;
 use crate::quat::{normalize4, quat_to_vel};
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::validation::is_bad;
@@ -2637,6 +2638,23 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
     }
 }
 
+/// Whether the model holds a force the analytic columns cannot see: a
+/// passive or control callback, a user gain, bias or dynamics, or a plugin
+/// that computes passive or actuator forces. Their derivatives are unknown
+/// here, so `mjd_transition` and the hybrid take pure finite differences,
+/// as MuJoCo's transition derivative always does (`mjd_transitionFD`;
+/// `transition_derivatives_see_callbacks_and_plugins`).
+pub fn forces_outside_the_analytic_columns(model: &Model) -> bool {
+    model.cb_passive.is_some()
+        || model.cb_control.is_some()
+        || model.actuator_gaintype.contains(&GainType::User)
+        || model.actuator_biastype.contains(&BiasType::User)
+        || model.actuator_dyntype.contains(&ActuatorDynamics::User)
+        || model.plugin_capabilities.iter().any(|c| {
+            c.contains(PluginCapabilityBit::Passive) || c.contains(PluginCapabilityBit::Actuator)
+        })
+}
+
 /// Whether a step from `data` can change a tree's sleep state: sleep is
 /// enabled and a tree is asleep (a nudge to it can wake it) or on the last
 /// step of its countdown (`mj_sleep` counts a resting tree up to −1 and puts
@@ -2659,7 +2677,8 @@ fn sleep_can_change(model: &Model, data: &Data) -> bool {
 /// step from `data` can wake a tree or put one to sleep (a tree asleep, or one
 /// on the last step of its countdown), which the analytic columns do not see;
 /// when an actuator's control is bad or outside a ctrlrange the step clamps it
-/// to; and for the models `implicit_analytic_incomplete` names.
+/// to; and for the models `implicit_analytic_incomplete` and
+/// `forces_outside_the_analytic_columns` name.
 ///
 /// See module-level docs for the four-phase strategy.
 ///
@@ -2692,6 +2711,11 @@ pub fn mjd_transition_hybrid(
     // density under ImplicitFast or Implicit). `mjd_transition` already gates
     // these to FD; this guards a direct call.
     if implicit_analytic_incomplete(model) {
+        return mjd_transition_fd(model, data, config);
+    }
+    // A callback's, a user actuator term's or a plugin's force has no
+    // derivative in the analytic columns; pure FD sees it.
+    if forces_outside_the_analytic_columns(model) {
         return mjd_transition_fd(model, data, config);
     }
     // The analytic velocity columns hold no derivative of a constraint force,

@@ -4302,6 +4302,129 @@ fn hybrid_position_columns_under_ball_and_free_joint_transmissions() {
     }
 }
 
+/// A plugin with one capability, passive or actuator, whose force pushes the
+/// first joint back by three times its velocity.
+struct VelocityDrag(sim_core::plugin::PluginCapabilityBit);
+
+impl sim_core::plugin::Plugin for VelocityDrag {
+    fn name(&self) -> &'static str {
+        "test.velocity_drag"
+    }
+
+    fn capabilities(&self) -> sim_core::plugin::PluginCapabilities {
+        self.0.into()
+    }
+
+    fn compute(
+        &self,
+        _model: &Model,
+        data: &mut sim_core::Data,
+        _instance: usize,
+        capability: sim_core::plugin::PluginCapabilityBit,
+    ) {
+        let drag = -3.0 * data.qvel[0];
+        if capability == sim_core::plugin::PluginCapabilityBit::Passive {
+            data.qfrc_passive[0] += drag;
+        } else {
+            data.qfrc_actuator[0] += drag;
+        }
+    }
+}
+
+/// The transition derivative takes pure finite differences for a model with
+/// a force its analytic columns cannot see, as MuJoCo's (`mjd_transitionFD`)
+/// always does: a passive callback, a control callback, a user gain, bias or
+/// dynamics (set in code: the loader refuses `user`), and a passive or an
+/// actuator plugin, each reading the state. `mjd_transition` and the hybrid then equal pure
+/// finite differences bit for bit; without any of them the fixture takes
+/// the analytic columns.
+#[test]
+fn transition_derivatives_see_callbacks_and_plugins() {
+    fn add_plugin(m: &mut Model, capability: sim_core::plugin::PluginCapabilityBit) {
+        let plugin: std::sync::Arc<dyn sim_core::plugin::Plugin> =
+            std::sync::Arc::new(VelocityDrag(capability));
+        m.nplugin = 1;
+        m.plugin_capabilities.push(plugin.capabilities());
+        m.plugin_needstage.push(sim_core::plugin::PluginStage::Acc);
+        m.plugin_objects.push(plugin);
+        m.plugin_stateadr.push(0);
+        m.plugin_statenum.push(0);
+        m.plugin_name.push(None);
+        m.plugin_attradr.push(0);
+        m.plugin_attrnum.push(0);
+    }
+    let cases: [(&str, fn(&mut Model)); 8] = [
+        ("nothing added", |_| {}),
+        ("passive callback", |m| {
+            m.set_passive_callback(|_, d| d.qfrc_passive[0] -= 3.0 * d.qvel[0]);
+        }),
+        ("control callback", |m| {
+            m.set_control_callback(|_, d| d.ctrl[0] = -3.0 * d.qpos[0]);
+        }),
+        ("user gain", |m| {
+            m.actuator_gaintype[0] = GainType::User;
+            m.set_act_gain_callback(|_, d, i| 1.0 - 2.0 * d.actuator_velocity[i]);
+        }),
+        ("user bias", |m| {
+            m.actuator_biastype[0] = BiasType::User;
+            m.set_act_bias_callback(|_, d, i| -3.0 * d.actuator_length[i]);
+        }),
+        ("user dynamics", |m| {
+            m.actuator_dyntype[0] = ActuatorDynamics::User;
+            m.set_act_dyn_callback(|_, d, i| d.ctrl[i] - d.actuator_velocity[i]);
+        }),
+        ("passive plugin", |m| {
+            add_plugin(m, sim_core::plugin::PluginCapabilityBit::Passive);
+        }),
+        ("actuator plugin", |m| {
+            add_plugin(m, sim_core::plugin::PluginCapabilityBit::Actuator);
+        }),
+    ];
+    let mut failures = Vec::new();
+    for (what, add) in cases {
+        let mut model = sim_mjcf::load_model(
+            r#"<mujoco>
+              <option timestep="0.01"/>
+              <worldbody>
+                <body pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                        contype="0" conaffinity="0"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <general joint="j" dyntype="filter" dynprm="1"
+                         gaintype="affine" gainprm="1 0 0"
+                         biastype="affine" biasprm="0 0 0"/>
+              </actuator>
+            </mujoco>"#,
+        )
+        .expect("load");
+        add(&mut model);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.ctrl[0] = 0.3;
+        data.act[0] = 0.2;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig::default();
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        let dispatched = sim_core::mjd_transition(&model, &data, &config).expect("transition");
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let pure = |t: &sim_core::TransitionMatrices| t.A == fd.A && t.B == fd.B;
+        if what == "nothing added" {
+            assert!(!pure(&dispatched), "{what}: the analytic columns ran");
+        } else if !pure(&dispatched) || !pure(&hybrid) {
+            failures.push(format!(
+                "{what}: mjd_transition pure FD {}, the hybrid {}",
+                pure(&dispatched),
+                pure(&hybrid)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its
 /// length moves with `q`: a ball joint's length is its rotation vector along
 /// the gear, whose Jacobian is the gear through the log map (the moment only
