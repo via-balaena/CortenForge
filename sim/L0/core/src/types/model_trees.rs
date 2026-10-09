@@ -2,9 +2,9 @@
 //!
 //! Moved from sim-mjcf's builder so that every `Model` producer (the MJCF
 //! builder, the factories, the test fixtures, a hand-built model) gets them.
-//! MuJoCo computes these tables in `setFixed`, part of `mj_setConst`.
-
-use std::collections::{BTreeMap, BTreeSet};
+//! MuJoCo counts the trees when it compiles (`user_model.cc:3006-3013`) and
+//! computes the rest of these tables in `setFixed`, part of `mj_setConst`
+//! (3.5.0 `engine_setconst.c:106-276`).
 
 use super::enums::{ActuatorTransmission, SleepPolicy, WrapType};
 use super::model::Model;
@@ -12,21 +12,34 @@ use super::model::Model;
 impl Model {
     /// Compute the kinematic-tree tables and resolve automatic sleep policies.
     ///
+    /// A tree starts at every dof with no parent dof: a moving body whose
+    /// ancestors are all static. A body belongs to the tree of the body it is
+    /// welded to, so a static body, welded to the world, belongs to none
+    /// (`body_treeid` is `usize::MAX`), and every tree has a dof.
+    ///
     /// Writes `ntree`, `tree_body_adr`, `tree_body_num`, `tree_dof_adr`,
     /// `tree_dof_num`, `body_treeid`, `dof_treeid`, `tendon_treenum`, `tendon_tree`
-    /// and the automatic entries of `tree_sleep_policy`. Reads `body_rootid`,
-    /// `body_dof_adr`, `body_dof_num`, the actuator transmissions and the tendon
-    /// wraps. An explicit policy (`Never`, `Allowed`, `Init`) survives a recompute
-    /// when `ntree` is unchanged.
+    /// and the automatic entries of `tree_sleep_policy`. Reads `dof_parent`,
+    /// `body_weldid` (so it runs after [`Self::compute_ancestors`]),
+    /// `body_dof_adr`, `body_dof_num`, the actuator transmissions, the tendon
+    /// wraps and the flex vertex bodies. An explicit policy (`Never`, `Allowed`,
+    /// `Init`) survives a recompute when `ntree` is unchanged.
     pub fn compute_kinematic_trees(&mut self) {
-        let mut trees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for body_id in 1..self.nbody {
-            trees
-                .entry(self.body_rootid[body_id])
-                .or_default()
-                .push(body_id);
+        let mut ntree = 0;
+        self.dof_treeid = vec![0; self.nv];
+        for dof in 0..self.nv {
+            if self.dof_parent[dof].is_none() {
+                ntree += 1;
+            }
+            self.dof_treeid[dof] = ntree - 1;
         }
-        let ntree = trees.len();
+        self.body_treeid = vec![usize::MAX; self.nbody];
+        for body_id in 1..self.nbody {
+            let weld = self.body_weldid[body_id];
+            if self.body_dof_num[weld] > 0 {
+                self.body_treeid[body_id] = self.dof_treeid[self.body_dof_adr[weld]];
+            }
+        }
         let explicit: Vec<Option<SleepPolicy>> = if self.tree_sleep_policy.len() == ntree {
             self.tree_sleep_policy
                 .iter()
@@ -39,32 +52,27 @@ impl Model {
             vec![None; ntree]
         };
         self.ntree = ntree;
-        self.tree_body_adr = Vec::with_capacity(ntree);
-        self.tree_body_num = Vec::with_capacity(ntree);
-        self.tree_dof_adr = Vec::with_capacity(ntree);
-        self.tree_dof_num = Vec::with_capacity(ntree);
         self.tree_sleep_policy = vec![SleepPolicy::Auto; ntree];
-        self.body_treeid = vec![usize::MAX; self.nbody];
-        self.dof_treeid = vec![0; self.nv];
-        for (tree_idx, (_root, body_ids)) in trees.iter().enumerate() {
-            self.tree_body_adr.push(body_ids[0]);
-            self.tree_body_num.push(body_ids.len());
-            let mut min_dof = self.nv;
-            let mut total_dofs = 0usize;
-            for &bid in body_ids {
-                self.body_treeid[bid] = tree_idx;
-                let (start, count) = (self.body_dof_adr[bid], self.body_dof_num[bid]);
-                if count > 0 && start < min_dof {
-                    min_dof = start;
+        // The bodies of a tree, and its dofs, are contiguous and in tree order.
+        self.tree_body_adr = vec![0; ntree];
+        self.tree_body_num = vec![0; ntree];
+        for body_id in 1..self.nbody {
+            let tree = self.body_treeid[body_id];
+            if tree < ntree {
+                if self.tree_body_num[tree] == 0 {
+                    self.tree_body_adr[tree] = body_id;
                 }
-                total_dofs += count;
-                for dof in start..start + count {
-                    self.dof_treeid[dof] = tree_idx;
-                }
+                self.tree_body_num[tree] += 1;
             }
-            self.tree_dof_adr
-                .push(if total_dofs == 0 { 0 } else { min_dof });
-            self.tree_dof_num.push(total_dofs);
+        }
+        self.tree_dof_adr = vec![0; ntree];
+        self.tree_dof_num = vec![0; ntree];
+        for dof in 0..self.nv {
+            let tree = self.dof_treeid[dof];
+            if self.tree_dof_num[tree] == 0 {
+                self.tree_dof_adr[tree] = dof;
+            }
+            self.tree_dof_num[tree] += 1;
         }
         self.compute_tendon_trees();
         self.resolve_auto_sleep_policies();
@@ -90,29 +98,35 @@ impl Model {
         (bid > 0 && tree < self.ntree).then_some(tree)
     }
 
+    /// The trees tendon `tendon`'s wraps reach, each once, in the order of
+    /// its wraps (MuJoCo's `GetWrapBodyTreeId` over the wraps). A pulley
+    /// reaches none, nor does a wrap on a static body.
+    pub fn tendon_trees(&self, tendon: usize) -> impl Iterator<Item = usize> + '_ {
+        let mut seen = vec![false; self.ntree];
+        (self.tendon_adr[tendon]..self.tendon_adr[tendon] + self.tendon_num[tendon])
+            .filter_map(|w| self.wrap_body(w).and_then(|b| self.tree_of_body(b)))
+            .filter(move |&tree| !std::mem::replace(&mut seen[tree], true))
+    }
+
+    /// `tendon_treenum` and the first two of [`Self::tendon_trees`] in
+    /// `tendon_tree`, as MuJoCo keeps them.
     fn compute_tendon_trees(&mut self) {
         self.tendon_treenum = vec![0; self.ntendon];
         self.tendon_tree = vec![usize::MAX; 2 * self.ntendon];
         for t in 0..self.ntendon {
-            let mut set = BTreeSet::new();
-            for w in self.tendon_adr[t]..self.tendon_adr[t] + self.tendon_num[t] {
-                if let Some(tree) = self.wrap_body(w).and_then(|b| self.tree_of_body(b)) {
-                    set.insert(tree);
-                }
-            }
-            self.tendon_treenum[t] = set.len();
-            let mut it = set.iter();
-            if let Some(&a) = it.next() {
-                self.tendon_tree[2 * t] = a;
-            }
-            if let Some(&b) = it.next() {
-                self.tendon_tree[2 * t + 1] = b;
+            let trees: Vec<usize> = self.tendon_trees(t).collect();
+            self.tendon_treenum[t] = trees.len();
+            for (slot, &tree) in trees.iter().take(2).enumerate() {
+                self.tendon_tree[2 * t + slot] = tree;
             }
         }
     }
 
-    /// The automatic policies: a tree an actuator acts on, or that a passive
-    /// multi-tree tendon couples, is `AutoNever`; every other `Auto` tree is
+    /// The automatic policies (`engine_setconst.c:163-276`): a tree that holds
+    /// an actuator's joint, site (a slider-crank's crank site) or body, or a
+    /// wrap of an actuated tendon; every tree of a tendon that reaches more than
+    /// two trees, or two with stiffness or damping; and a tree that holds a
+    /// flex vertex body are `AutoNever`. Every other `Auto` tree is
     /// `AutoAllowed`.
     fn resolve_auto_sleep_policies(&mut self) {
         let mut never = vec![false; self.ntree];
@@ -130,16 +144,12 @@ impl Model {
                         .filter_map(|w| self.wrap_body(w))
                         .collect()
                 }
-                ActuatorTransmission::Site => (trnid[0] < self.nsite)
+                ActuatorTransmission::Site | ActuatorTransmission::SliderCrank => (trnid[0]
+                    < self.nsite)
                     .then(|| self.site_body[trnid[0]])
                     .into_iter()
                     .collect(),
                 ActuatorTransmission::Body => vec![trnid[0]],
-                ActuatorTransmission::SliderCrank => [trnid[0], trnid[1]]
-                    .into_iter()
-                    .filter(|&s| s < self.nsite)
-                    .map(|s| self.site_body[s])
-                    .collect(),
                 ActuatorTransmission::Tendon => vec![],
             };
             for bid in bodies {
@@ -149,18 +159,17 @@ impl Model {
             }
         }
         for t in 0..self.ntendon {
-            if self.tendon_treenum[t] < 2 {
-                continue;
-            }
-            if self.tendon_stiffness[t].abs() > 0.0
-                || self.tendon_damping[t].abs() > 0.0
-                || self.tendon_limited[t]
-            {
-                for k in [self.tendon_tree[2 * t], self.tendon_tree[2 * t + 1]] {
-                    if k < self.ntree {
-                        never[k] = true;
-                    }
+            let treenum = self.tendon_treenum[t];
+            let passive = self.tendon_stiffness[t] != 0.0 || self.tendon_damping[t] != 0.0;
+            if treenum > 2 || (treenum == 2 && passive) {
+                for tree in self.tendon_trees(t) {
+                    never[tree] = true;
                 }
+            }
+        }
+        for &body_id in &self.flexvert_bodyid {
+            if let Some(tree) = self.tree_of_body(body_id) {
+                never[tree] = true;
             }
         }
         for (policy, never) in self.tree_sleep_policy.iter_mut().zip(never) {

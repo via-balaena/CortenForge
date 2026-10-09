@@ -1,6 +1,6 @@
 # cortenforge-sim-types
 
-Foundation types for sim-core: body identity, pose, simulation configuration
+Foundation types for sim-core: body identity and pose
 
 In code, this crate is `sim_types`.
 

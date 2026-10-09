@@ -1,4 +1,4 @@
-//! Linear algebra utilities: Cholesky, LU, sparse solve, union-find.
+//! Linear algebra utilities: Cholesky, LU, sparse solve.
 //!
 //! Pure math routines with no pipeline state dependencies. Used by the
 //! forward dynamics pipeline (dense Cholesky for implicit integration,
@@ -7,53 +7,6 @@
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::types::StepError;
 use nalgebra::{DMatrix, DVector};
-
-// ============================================================================
-// Union-Find
-// ============================================================================
-
-/// Disjoint-set / union-find for Init-sleep validation (§16.24).
-///
-/// Path compression + union by rank. Used to group trees connected
-/// by equality constraints and multi-tree tendons.
-pub(crate) struct UnionFind {
-    parent: Vec<usize>,
-    rank: Vec<usize>,
-}
-
-impl UnionFind {
-    pub(crate) fn new(n: usize) -> Self {
-        Self {
-            parent: (0..n).collect(),
-            rank: vec![0; n],
-        }
-    }
-
-    pub(crate) fn find(&mut self, mut x: usize) -> usize {
-        while self.parent[x] != x {
-            self.parent[x] = self.parent[self.parent[x]]; // Path compression
-            x = self.parent[x];
-        }
-        x
-    }
-
-    pub(crate) fn union(&mut self, a: usize, b: usize) {
-        let ra = self.find(a);
-        let rb = self.find(b);
-        if ra == rb {
-            return;
-        }
-        // Union by rank
-        match self.rank[ra].cmp(&self.rank[rb]) {
-            std::cmp::Ordering::Less => self.parent[ra] = rb,
-            std::cmp::Ordering::Greater => self.parent[rb] = ra,
-            std::cmp::Ordering::Equal => {
-                self.parent[rb] = ra;
-                self.rank[ra] += 1;
-            }
-        }
-    }
-}
 
 // ============================================================================
 // Dense Cholesky

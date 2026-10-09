@@ -2,17 +2,12 @@
 //!
 //! Implements sleep eligibility, velocity thresholds, wake-on-contact,
 //! wake-on-tendon, wake-on-equality, and the circular-linked-list sleep
-//! cycle mechanism. Corresponds to MuJoCo's sleep logic in `engine_island.c`.
+//! cycle mechanism. Corresponds to MuJoCo's `engine_sleep.c`.
 
-use nalgebra::{UnitQuaternion, Vector3};
-
-use crate::dynamics::SpatialVector;
-use crate::linalg::UnionFind;
 use crate::types::{
-    Data, ENABLE_SLEEP, MIN_AWAKE, MjJointType, Model, SleepError, SleepPolicy, SleepState,
+    ActuatorTransmission, Data, ENABLE_SLEEP, EqualityType, MIN_AWAKE, MjObjectType, MjSensorType,
+    Model, SleepPolicy, SleepState,
 };
-
-use super::equality_trees;
 
 // ---------------------------------------------------------------------------
 // Data sleep query methods (§16.25)
@@ -21,9 +16,10 @@ use super::equality_trees;
 impl Data {
     /// Query the sleep state of a body.
     ///
-    /// Returns `SleepState::Static` for the world body (body 0),
-    /// `SleepState::Asleep` for sleeping bodies, `SleepState::Awake`
-    /// for active bodies.
+    /// Returns `SleepState::Static` for a body in no tree (the world and
+    /// the bodies welded to it, except under a mocap body),
+    /// `SleepState::Asleep` for the bodies of a sleeping tree and
+    /// `SleepState::Awake` for the rest.
     #[must_use]
     pub fn sleep_state(&self, body_id: usize) -> SleepState {
         self.body_sleep_state[body_id]
@@ -49,14 +45,15 @@ impl Data {
 }
 
 // ---------------------------------------------------------------------------
-// Sleep update (end-of-step)
+// Sleep update (in the advance)
 // ---------------------------------------------------------------------------
 
-/// Sleep update: check velocity thresholds, transition sleeping trees (§16.3).
+/// Sleep update: check velocity thresholds, transition sleeping trees (§16.3),
+/// as MuJoCo's `mj_sleep` (`engine_sleep.c:499-568`).
 ///
-/// Called at the end of `step()`, after integration completes and before
-/// the warmstart save. This is the central sleep state machine.
-/// Phase B sleep transition function (§16.12.2).
+/// Called in the advance (`Data::integrate`), after the activations and
+/// before the velocity update, as MuJoCo's `mj_advance` calls it. With
+/// constraint rows but no islands (`DISABLE_ISLAND`) no tree sleeps.
 ///
 /// Three-phase approach:
 /// 1. Countdown: awake trees that can sleep have their timer incremented
@@ -70,13 +67,16 @@ pub fn mj_sleep(model: &Model, data: &mut Data) -> usize {
     if model.enableflags & ENABLE_SLEEP == 0 {
         return 0;
     }
+    if !data.efc_type.is_empty() && data.nisland == 0 {
+        return 0;
+    }
 
     // Phase 1: Countdown for awake trees
     for t in 0..model.ntree {
         if data.tree_asleep[t] >= 0 {
             continue; // Already asleep
         }
-        if !tree_can_sleep(model, data, t) {
+        if !tree_can_sleep(model, data, t, model.sleep_tolerance) {
             data.tree_asleep[t] = -(1 + MIN_AWAKE); // Reset
             continue;
         }
@@ -118,167 +118,55 @@ pub fn mj_sleep(model: &Model, data: &mut Data) -> usize {
     nslept
 }
 
-/// Check if a tree is eligible to sleep (§16.12.2).
-///
-/// Returns `false` if policy forbids sleeping, external forces are applied,
-/// or any DOF velocity exceeds the sleep threshold.
-fn tree_can_sleep(model: &Model, data: &Data, tree: usize) -> bool {
-    // Policy check
-    if model.tree_sleep_policy[tree] == SleepPolicy::Never
-        || model.tree_sleep_policy[tree] == SleepPolicy::AutoNever
+/// Whether tree `tree` can sleep (MuJoCo `treeCanSleep`,
+/// `engine_sleep.c:125-152`): its policy allows it; no `xfrc_applied` of its
+/// bodies and no `qfrc_applied` of its dofs has a bit set, so `-0.0` blocks;
+/// and, with `tol` other than zero, `dof_length · |qvel|` is below `tol` for
+/// every dof, or, with `tol` zero, every `qvel` is `+0.0`.
+fn tree_can_sleep(model: &Model, data: &Data, tree: usize, tol: f64) -> bool {
+    if matches!(
+        model.tree_sleep_policy[tree],
+        SleepPolicy::Never | SleepPolicy::AutoNever
+    ) {
+        return false;
+    }
+    let bodies = model.tree_body_adr[tree]..model.tree_body_adr[tree] + model.tree_body_num[tree];
+    if bodies
+        .into_iter()
+        .any(|b| !data.xfrc_applied[b].is_zero_bytes())
     {
         return false;
     }
-
-    // External force check: xfrc_applied on any body in tree
-    let body_start = model.tree_body_adr[tree];
-    let body_end = body_start + model.tree_body_num[tree];
-    for body_id in body_start..body_end {
-        if !data.xfrc_applied[body_id].is_zero() {
-            return false;
-        }
+    let dofs = model.tree_dof_adr[tree]..model.tree_dof_adr[tree] + model.tree_dof_num[tree];
+    if dofs.clone().any(|d| data.qfrc_applied[d].to_bits() != 0) {
+        return false;
     }
-
-    // External force check: qfrc_applied on any DOF in tree
-    let dof_start = model.tree_dof_adr[tree];
-    let dof_end = dof_start + model.tree_dof_num[tree];
-    for dof in dof_start..dof_end {
-        if data.qfrc_applied[dof] != 0.0 {
-            return false;
-        }
+    if tol == 0.0 {
+        return dofs.into_iter().all(|d| data.qvel[d].to_bits() == 0);
     }
-
-    // Velocity threshold check
-    tree_velocity_below_threshold(model, data, tree)
+    // MuJoCo's `isSmaller` (`:110-121`) refuses once its running maximum
+    // reaches `tol`; every maximum before that is below `tol`, so it refuses
+    // exactly when one product reaches `tol` (a NaN never does).
+    !dofs
+        .into_iter()
+        .any(|d| model.dof_length[d] * data.qvel[d].abs() >= tol)
 }
 
-/// Check if all DOFs in a tree have velocities below the sleep threshold.
-fn tree_velocity_below_threshold(model: &Model, data: &Data, tree: usize) -> bool {
-    let dof_start = model.tree_dof_adr[tree];
-    let dof_end = dof_start + model.tree_dof_num[tree];
-    for dof in dof_start..dof_end {
-        if data.qvel[dof].abs() > model.sleep_tolerance * model.dof_length[dof] {
-            return false;
-        }
-    }
-    true // All DOFs below threshold (L∞ norm check)
-}
-
-/// Sleep a set of trees as a circular linked list (§16.12.1).
-///
-/// Creates a circular sleep cycle among the given trees, zeros all DOF-level
-/// and body-level arrays, and syncs xpos/xquat with post-integration qpos.
-/// For a single tree, this creates a self-link (Phase A compatible).
+/// Sleep a set of trees as a circular linked list (§16.12.1), as MuJoCo's
+/// `sleepTrees` (`engine_sleep.c:461-484`): each tree points at the next, and
+/// its `qvel` and `qacc` are zeroed. The forward pass the advance then runs
+/// recomputes the rest at the zeroed velocity.
 // `nbody`/`nv` model dimensions are usize but stored as i32 in mjData; bounded by realistic model sizes.
 #[allow(clippy::cast_possible_wrap)]
 fn sleep_trees(model: &Model, data: &mut Data, trees: &[usize]) {
     let n = trees.len();
-    if n == 0 {
-        return;
-    }
-
-    for i in 0..n {
-        let tree = trees[i];
-        let next = trees[(i + 1) % n];
-
-        // Create circular linked list
-        data.tree_asleep[tree] = next as i32;
-
-        // Zero DOF-level arrays
-        let dof_start = model.tree_dof_adr[tree];
-        let dof_end = dof_start + model.tree_dof_num[tree];
-        for dof in dof_start..dof_end {
+    for (i, &tree) in trees.iter().enumerate() {
+        data.tree_asleep[tree] = trees[(i + 1) % n] as i32;
+        let dofs = model.tree_dof_adr[tree]..model.tree_dof_adr[tree] + model.tree_dof_num[tree];
+        for dof in dofs {
             data.qvel[dof] = 0.0;
             data.qacc[dof] = 0.0;
-            data.qfrc_bias[dof] = 0.0;
-            data.qfrc_passive[dof] = 0.0;
-            data.qfrc_constraint[dof] = 0.0;
-            data.qfrc_actuator[dof] = 0.0; // §16.26.7: needed for policy relaxation
         }
-
-        // Zero body-level arrays
-        let body_start = model.tree_body_adr[tree];
-        let body_end = body_start + model.tree_body_num[tree];
-        for body_id in body_start..body_end {
-            data.cvel[body_id] = SpatialVector::zeros();
-            data.cacc_bias[body_id] = SpatialVector::zeros();
-            data.cfrc_bias[body_id] = SpatialVector::zeros();
-        }
-
-        // Sync xpos/xquat with post-integration qpos (§16.15 compatibility)
-        sync_tree_fk(model, data, tree);
-    }
-}
-
-/// Recompute FK for a single tree's bodies to sync xpos/xquat with current qpos.
-///
-/// Called after integration to prevent false positives in qpos change detection.
-fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
-    let body_start = model.tree_body_adr[tree];
-    let body_end = body_start + model.tree_body_num[tree];
-    for body_id in body_start..body_end {
-        let parent_id = model.body_parent[body_id];
-        let mut pos = data.xpos[parent_id];
-        let mut quat = data.xquat[parent_id];
-
-        // Apply body offset in parent frame
-        pos += quat * model.body_pos[body_id];
-        quat *= model.body_quat[body_id];
-
-        // Apply each joint
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
-        for jnt_id in jnt_start..jnt_end {
-            let qpos_adr = model.jnt_qpos_adr[jnt_id];
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    let angle = data.qpos[qpos_adr];
-                    let axis = model.jnt_axis[jnt_id];
-                    let anchor = model.jnt_pos[jnt_id];
-                    let world_anchor = pos + quat * anchor;
-                    let world_axis = quat * axis;
-                    let rot = if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
-                        UnitQuaternion::from_axis_angle(&unit_axis, angle)
-                    } else {
-                        UnitQuaternion::identity()
-                    };
-                    quat = rot * quat;
-                    pos = world_anchor + rot * (pos - world_anchor);
-                }
-                MjJointType::Slide => {
-                    let displacement = data.qpos[qpos_adr];
-                    let axis = model.jnt_axis[jnt_id];
-                    pos += quat * (axis * displacement);
-                }
-                MjJointType::Ball => {
-                    // Must normalize — integration can drift from unit norm.
-                    let q = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                        data.qpos[qpos_adr + 3],
-                    ));
-                    quat *= q;
-                }
-                MjJointType::Free => {
-                    pos = Vector3::new(
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                    );
-                    // Must normalize — integration can drift from unit norm.
-                    quat = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr + 3],
-                        data.qpos[qpos_adr + 4],
-                        data.qpos[qpos_adr + 5],
-                        data.qpos[qpos_adr + 6],
-                    ));
-                }
-            }
-        }
-        data.xpos[body_id] = pos;
-        data.xquat[body_id] = quat;
-        data.xmat[body_id] = quat.to_rotation_matrix().into_inner();
     }
 }
 
@@ -286,107 +174,160 @@ fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
 // Reset
 // ---------------------------------------------------------------------------
 
-/// Re-initialize all sleep state from model policies (§16.7).
-///
-/// Called when a `Data` is made or reset (through `Model::start_sleep`), so
-/// the sleep state matches the model's tree sleep policies.
+/// A fully awake tree's `tree_asleep` (MuJoCo's `kAwake`).
+pub const K_AWAKE: i32 = -(1 + MIN_AWAKE);
+
+/// Every tree fully awake, and the sleep arrays (§16.7): the state MuJoCo's
+/// `mj_resetData` starts from (`engine_io.c:1440`). `Model::start_sleep`
+/// then puts the trees that start asleep to sleep.
 pub fn reset_sleep_state(model: &Model, data: &mut Data) {
-    // First: set all trees to awake
-    for t in 0..model.ntree {
-        data.tree_asleep[t] = -(1 + MIN_AWAKE); // Fully awake
-    }
-
-    // Then: validate and create sleep cycles for Init trees
-    if let Err(e) = validate_init_sleep(model, data) {
-        // Log warning and degrade Init trees to awake (spec §16.24)
-        log::warn!("Init-sleep validation failed: {e}");
-    }
-
+    data.tree_asleep[..model.ntree].fill(K_AWAKE);
     mj_update_sleep_arrays(model, data);
-}
-
-/// Validate Init-sleep trees and create sleep cycles (§16.24).
-///
-/// Uses union-find over model-time adjacency (equality constraints +
-/// multi-tree tendons) to group Init trees. Creates circular sleep cycles
-/// per group. Returns an error if validation fails.
-fn validate_init_sleep(model: &Model, data: &mut Data) -> Result<(), SleepError> {
-    if model.enableflags & ENABLE_SLEEP == 0 {
-        return Ok(());
-    }
-
-    // Phase 1: Basic per-tree validation
-    for t in 0..model.ntree {
-        if model.tree_sleep_policy[t] != SleepPolicy::Init {
-            continue;
-        }
-        if model.tree_dof_num[t] == 0 {
-            return Err(SleepError::InitSleepInvalidTree { tree: t });
-        }
-    }
-
-    // Phase 2: Check for mixed Init/non-Init in statically-coupled groups
-    let mut uf = UnionFind::new(model.ntree);
-
-    // Equality constraint edges
-    for eq in 0..model.neq {
-        if !model.eq_active[eq] {
-            continue;
-        }
-        let (tree_a, tree_b) = equality_trees(model, eq);
-        if tree_a < model.ntree && tree_b < model.ntree && tree_a != tree_b {
-            uf.union(tree_a, tree_b);
-        }
-    }
-
-    // Multi-tree tendon edges
-    for t in 0..model.ntendon {
-        if model.tendon_treenum[t] == 2 {
-            let tree_a = model.tendon_tree[2 * t];
-            let tree_b = model.tendon_tree[2 * t + 1];
-            if tree_a < model.ntree && tree_b < model.ntree {
-                uf.union(tree_a, tree_b);
-            }
-        }
-    }
-
-    // Check each group for mixed Init/non-Init
-    let mut group_has_init = vec![false; model.ntree];
-    let mut group_has_noninit = vec![false; model.ntree];
-    for t in 0..model.ntree {
-        let root = uf.find(t);
-        if model.tree_sleep_policy[t] == SleepPolicy::Init {
-            group_has_init[root] = true;
-        } else {
-            group_has_noninit[root] = true;
-        }
-    }
-    for root in 0..model.ntree {
-        if group_has_init[root] && group_has_noninit[root] {
-            return Err(SleepError::InitSleepMixedIsland { group_root: root });
-        }
-    }
-
-    // Phase 3: Create sleep cycles for validated Init-sleep groups
-    // Group Init trees by their union-find root
-    let mut init_groups: std::collections::HashMap<usize, Vec<usize>> =
-        std::collections::HashMap::new();
-    for t in 0..model.ntree {
-        if model.tree_sleep_policy[t] == SleepPolicy::Init {
-            let root = uf.find(t);
-            init_groups.entry(root).or_default().push(t);
-        }
-    }
-    for trees in init_groups.values() {
-        sleep_trees(model, data, trees);
-    }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Derived sleep arrays
 // ---------------------------------------------------------------------------
+
+/// Whether constraint assembly filters sleeping objects: sleep enabled and
+/// some tree asleep (MuJoCo's `sleep_filter`, `engine_core_constraint.c:390`).
+pub fn constraint_sleep_filter(model: &Model, data: &Data) -> bool {
+    model.enableflags & ENABLE_SLEEP != 0 && data.ntree_awake < model.ntree
+}
+
+/// Whether dof `dof`'s tree is asleep (MuJoCo `mj_sleepState` of the dof's
+/// body, from the sleep arrays).
+pub fn dof_asleep(model: &Model, data: &Data, dof: usize) -> bool {
+    !data.tree_awake[model.dof_treeid[dof]]
+}
+
+/// Whether equality `eq` is asleep: neither of its objects awake, a static
+/// or missing object counting as not awake (MuJoCo `mj_equalitySleepState`,
+/// `engine_sleep.c:629-660`). A tendon is awake when one of its two trees is,
+/// static with none, and awake with more than two (`:572-594`).
+pub fn equality_asleep(model: &Model, data: &Data, eq: usize) -> bool {
+    let body_awake = |body: usize| data.body_sleep_state.get(body) == Some(&SleepState::Awake);
+    let tendon_awake = |t: usize| tendon_sleep_state(model, data, t) == SleepState::Awake;
+    let awake = |id: usize| -> bool {
+        match model.eq_type[eq] {
+            EqualityType::Connect | EqualityType::Weld => body_awake(id),
+            EqualityType::Joint => model.jnt_body.get(id).is_some_and(|&b| body_awake(b)),
+            EqualityType::Distance => model.geom_body.get(id).is_some_and(|&b| body_awake(b)),
+            EqualityType::Tendon => id < model.ntendon && tendon_awake(id),
+        }
+    };
+    !awake(model.eq_obj1id[eq]) && !awake(model.eq_obj2id[eq])
+}
+
+/// Tendon `t`'s sleep state (MuJoCo `mj_tendonSleepState`,
+/// `engine_sleep.c:572-594`): static with no tree, its tree's with one,
+/// awake when either of two is, awake with more than two.
+fn tendon_sleep_state(model: &Model, data: &Data, t: usize) -> SleepState {
+    let trees = &model.tendon_tree[2 * t..2 * t + 2];
+    let awake = match model.tendon_treenum[t] {
+        0 => return SleepState::Static,
+        1 => data.tree_awake[trees[0]],
+        2 => data.tree_awake[trees[0]] || data.tree_awake[trees[1]],
+        _ => true,
+    };
+    if awake {
+        SleepState::Awake
+    } else {
+        SleepState::Asleep
+    }
+}
+
+/// The sleep state of object `id` of type `objtype` (MuJoCo `mj_sleepState`,
+/// `engine_sleep.c:722-770`), `None` for no object. A plugin, which MuJoCo
+/// has no state for, counts as awake.
+fn object_sleep_state(
+    model: &Model,
+    data: &Data,
+    objtype: MjObjectType,
+    id: usize,
+) -> Option<SleepState> {
+    let body = |b: Option<&usize>| b.and_then(|&b| data.body_sleep_state.get(b).copied());
+    match objtype {
+        MjObjectType::None => None,
+        MjObjectType::Body | MjObjectType::XBody => body(Some(&id)),
+        MjObjectType::Joint => body(model.jnt_body.get(id)),
+        MjObjectType::Site => body(model.site_body.get(id)),
+        MjObjectType::Geom => body(model.geom_body.get(id)),
+        MjObjectType::Tendon => (id < model.ntendon).then(|| tendon_sleep_state(model, data, id)),
+        MjObjectType::Actuator => (id < model.nu).then(|| actuator_sleep_state(model, data, id)),
+        MjObjectType::Plugin => Some(SleepState::Awake),
+    }
+}
+
+/// Actuator `i`'s sleep state (MuJoCo `mj_actuatorSleepState`,
+/// `engine_sleep.c:597-626`): its joint's, site's, body's or tendon's; a
+/// slider-crank is awake when either site's body is, else asleep.
+fn actuator_sleep_state(model: &Model, data: &Data, i: usize) -> SleepState {
+    let trnid = model.actuator_trnid[i];
+    let state = |objtype, id| object_sleep_state(model, data, objtype, id);
+    let state = match model.actuator_trntype[i] {
+        ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            state(MjObjectType::Joint, trnid[0])
+        }
+        ActuatorTransmission::SliderCrank => {
+            let awake = |site| state(MjObjectType::Site, site) == Some(SleepState::Awake);
+            Some(if awake(trnid[0]) || awake(trnid[1]) {
+                SleepState::Awake
+            } else {
+                SleepState::Asleep
+            })
+        }
+        ActuatorTransmission::Tendon => state(MjObjectType::Tendon, trnid[0]),
+        ActuatorTransmission::Site => state(MjObjectType::Site, trnid[0]),
+        ActuatorTransmission::Body => state(MjObjectType::Body, trnid[0]),
+    };
+    state.unwrap_or(SleepState::Awake)
+}
+
+/// Whether actuator `i` is asleep, so the actuation skips it (MuJoCo
+/// `mj_fwdActuation`, `engine_forward.c:323`, `:394`).
+pub fn actuator_asleep(model: &Model, data: &Data, i: usize) -> bool {
+    actuator_sleep_state(model, data, i) == SleepState::Asleep
+}
+
+/// Whether sensor `i` is asleep, so the sensor stages skip it and it keeps
+/// its value (MuJoCo `mj_sensorSleepState`, `engine_sleep.c:664-718`): user,
+/// plugin and rangefinder sensors never; else by its object and reference
+/// object: with neither, awake; with one, asleep when that one is; with
+/// both, asleep when neither is awake.
+pub fn sensor_asleep(model: &Model, data: &Data, i: usize) -> bool {
+    if matches!(
+        model.sensor_type[i],
+        MjSensorType::User | MjSensorType::Plugin | MjSensorType::Rangefinder
+    ) {
+        return false;
+    }
+    let obj = object_sleep_state(model, data, model.sensor_objtype[i], model.sensor_objid[i]);
+    let reference = object_sleep_state(model, data, model.sensor_reftype[i], model.sensor_refid[i]);
+    match (obj, reference) {
+        (None, None) => false,
+        (Some(one), None) | (None, Some(one)) => one == SleepState::Asleep,
+        (Some(obj), Some(reference)) => obj != SleepState::Awake && reference != SleepState::Awake,
+    }
+}
+
+/// A body's state from its tree's (MuJoCo `mj_updateSleepInit`,
+/// `engine_sleep.c:62-82`): a body in no tree is `Static`, or `Awake` under a
+/// mocap root body.
+fn body_sleep_state(model: &Model, tree_awake: &[bool], body_id: usize) -> SleepState {
+    let tree = model.body_treeid[body_id];
+    if tree < model.ntree {
+        if tree_awake[tree] {
+            SleepState::Awake
+        } else {
+            SleepState::Asleep
+        }
+    } else if model.body_mocapid[model.body_rootid[body_id]].is_some() {
+        SleepState::Awake
+    } else {
+        SleepState::Static
+    }
+}
 
 /// Recompute derived sleep arrays from `tree_asleep` (§16.3, §16.17).
 ///
@@ -424,20 +365,11 @@ pub fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
     // Update per-body sleep states and build indirection arrays
     if model.body_treeid.len() == model.nbody {
         for body_id in 1..model.nbody {
-            let tree = model.body_treeid[body_id];
-            let awake = if tree < model.ntree {
-                data.tree_awake[tree]
-            } else {
-                true // No tree info → treat as awake
-            };
+            let state = body_sleep_state(model, &data.tree_awake, body_id);
+            data.body_sleep_state[body_id] = state;
+            let awake = state != SleepState::Asleep;
 
-            data.body_sleep_state[body_id] = if awake {
-                SleepState::Awake
-            } else {
-                SleepState::Asleep
-            };
-
-            // Include in body_awake_ind if awake
+            // Include in body_awake_ind if awake or static
             if awake && nbody_awake < data.body_awake_ind.len() {
                 data.body_awake_ind[nbody_awake] = body_id;
                 nbody_awake += 1;
@@ -461,7 +393,7 @@ pub fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
     for dof in 0..model.nv {
         let is_awake = if model.dof_treeid.len() > dof {
             let tree = model.dof_treeid[dof];
-            // Flex DOFs have tree == usize::MAX (no tree) → always awake
+            // Every dof is in a tree once the tree tables are computed
             tree >= model.ntree || data.tree_awake[tree]
         } else {
             // No tree info → treat as awake
@@ -478,122 +410,70 @@ pub fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
 }
 
 // ---------------------------------------------------------------------------
-// Wake detection
+// Wake detection (MuJoCo engine_sleep.c:191-455)
 // ---------------------------------------------------------------------------
 
-/// Check if any sleeping tree's qpos was externally modified (§16.15).
-///
-/// Reads `tree_qpos_dirty` flags set by `mj_fwd_position()` during FK,
-/// wakes affected trees, then clears all dirty flags.
-/// Returns `true` if any tree was newly woken.
-pub fn mj_check_qpos_changed(model: &Model, data: &mut Data) -> bool {
-    if model.enableflags & ENABLE_SLEEP == 0 {
-        return false;
-    }
-
-    let mut woke_any = false;
-    for t in 0..model.ntree {
-        if data.tree_qpos_dirty[t] && data.tree_asleep[t] >= 0 {
-            // Tree was sleeping but FK detected a pose change from external qpos modification.
-            mj_wake_tree(model, data, t);
-            woke_any = true;
-        }
-    }
-
-    // Clear all dirty flags (whether or not they triggered a wake)
-    data.tree_qpos_dirty.fill(false);
-
-    woke_any
-}
-
-/// Wake detection: check user-applied forces on sleeping bodies (§16.4).
-///
-/// Called at the start of `forward()`, before any pipeline stage.
-///
-/// Returns `true` if any tree was woken (caller must update sleep arrays).
+/// Wake what the user changed (MuJoCo `mj_wake`, `engine_sleep.c:240-275`):
+/// with sleep disabled, every sleeping tree; else a sleeping tree whose pose
+/// the kinematics found changed (`tree_qpos_dirty`, MuJoCo's mark in
+/// `tree_awake`) or that could no longer sleep at a tolerance of 0 (its
+/// policy, any bit of its applied forces or of its velocity). Runs after the
+/// kinematics, before the mass matrix, sleep enabled or not; clears the
+/// marks. The caller refreshes the sleep arrays when it returns `true`.
 pub fn mj_wake(model: &Model, data: &mut Data) -> bool {
+    let ntree = model.ntree;
+    let mut woke = false;
     if model.enableflags & ENABLE_SLEEP == 0 {
-        return false;
-    }
-
-    let mut woke_any = false;
-
-    // Check xfrc_applied (per-body Cartesian forces)
-    for body_id in 1..model.nbody {
-        if data.body_sleep_state[body_id] != SleepState::Asleep {
-            continue;
+        if data.tree_asleep[..ntree].iter().any(|&a| a >= 0) {
+            data.tree_asleep[..ntree].fill(K_AWAKE);
+            woke = true;
         }
-        // Bytewise nonzero check (matches MuJoCo: -0.0 wakes because sign bit is set).
-        if !data.xfrc_applied[body_id].is_zero_bytes() {
-            mj_wake_tree(model, data, model.body_treeid[body_id]);
-            woke_any = true;
+    } else {
+        for t in 0..ntree {
+            if data.tree_asleep[t] >= 0
+                && (data.tree_qpos_dirty[t] || !tree_can_sleep(model, data, t, 0.0))
+            {
+                woke |= mj_wake_tree(&mut data.tree_asleep, t, K_AWAKE) > 0;
+            }
         }
     }
-
-    // Check qfrc_applied (per-DOF generalized forces)
-    for dof in 0..model.nv {
-        let tree = model.dof_treeid[dof];
-        if !data.tree_awake[tree] && data.qfrc_applied[dof].to_bits() != 0 {
-            mj_wake_tree(model, data, tree);
-            woke_any = true;
-        }
-    }
-
-    woke_any
+    data.tree_qpos_dirty.fill(false);
+    woke
 }
 
-/// Wake detection after collision: check contacts between sleeping and awake bodies (§16.4).
-///
-/// Returns `true` if any tree was woken (triggers re-collision).
+/// Wake the sleeping trees an awake tree touches (MuJoCo `mj_wakeCollision`,
+/// `:279-329`): geom–geom contacts only, a static partner waking nothing; the
+/// woken cycle takes the awake tree's countdown. Reads the sleep arrays,
+/// which the caller refreshes when it returns `true`.
 pub fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
     if model.enableflags & ENABLE_SLEEP == 0 {
         return false;
     }
-
-    let mut woke_any = false;
-    for contact_idx in 0..data.ncon {
-        let contact = &data.contacts[contact_idx];
-        let (body1, body2) = contact.bodies(model);
-        let state1 = data.body_sleep_state[body1];
-        let state2 = data.body_sleep_state[body2];
-
-        // Wake sleeping body if partner is awake (not static — static bodies
-        // like the world/ground don't wake sleeping bodies).
-        let need_wake = match (state1, state2) {
-            (SleepState::Asleep, SleepState::Awake) => Some(body1),
-            (SleepState::Awake, SleepState::Asleep) => Some(body2),
-            _ => None,
+    let mut woke = false;
+    for c in 0..data.ncon {
+        let contact = &data.contacts[c];
+        if contact.flex_vertex.is_some() || contact.flex_vertex2.is_some() {
+            continue;
+        }
+        let tree_of = |geom: usize| {
+            Some(model.body_treeid[model.geom_body[geom]]).filter(|&t| t < model.ntree)
         };
-
-        if let Some(body_id) = need_wake {
-            let tree = model.body_treeid[body_id];
-            if tree < model.ntree {
-                mj_wake_tree(model, data, tree);
-                woke_any = true;
-            }
+        let (Some(tree1), Some(tree2)) = (tree_of(contact.geom1), tree_of(contact.geom2)) else {
+            continue;
+        };
+        let (awake1, awake2) = (data.tree_awake[tree1], data.tree_awake[tree2]);
+        if awake1 == awake2 {
+            continue;
         }
+        let (sleeping, awake) = if awake1 {
+            (tree2, tree1)
+        } else {
+            (tree1, tree2)
+        };
+        let wakeval = data.tree_asleep[awake];
+        woke |= mj_wake_tree(&mut data.tree_asleep, sleeping, wakeval) > 0;
     }
-    woke_any
-}
-
-/// Return the canonical (minimum) tree index in a sleep cycle (§16.10.3).
-///
-/// Used to identify whether two sleeping trees belong to the same cycle.
-// Body/joint indices stored as i32 in mjData are non-negative by construction.
-#[allow(clippy::cast_sign_loss)]
-fn mj_sleep_cycle(tree_asleep: &[i32], start: usize) -> usize {
-    if tree_asleep[start] < 0 {
-        return start; // Not asleep — return self
-    }
-    let mut min_tree = start;
-    let mut current = tree_asleep[start] as usize;
-    while current != start {
-        if current < min_tree {
-            min_tree = current;
-        }
-        current = tree_asleep[current] as usize;
-    }
-    min_tree
+    woke
 }
 
 /// Check if a tendon's limit constraint is active (§16.13.2).
@@ -609,142 +489,121 @@ fn tendon_limit_active(model: &Model, data: &Data, t: usize) -> bool {
     (length - limit_min) < margin || (limit_max - length) < margin
 }
 
-/// Wake sleeping trees coupled by multi-tree tendons with active limits (§16.13.2).
-///
-/// Returns `true` if any tree was woken.
-// Body/joint indices stored as i32 in mjData are non-negative by construction.
-#[allow(clippy::cast_sign_loss)]
+/// Wake the sleeping tree of a two-tree tendon at its limit whose other tree
+/// is awake (MuJoCo `mj_wakeTendon`, `:333-362`), with the awake tree's
+/// countdown. Reads the sleep arrays, which the caller refreshes when it
+/// returns `true`.
 pub fn mj_wake_tendon(model: &Model, data: &mut Data) -> bool {
     if model.enableflags & ENABLE_SLEEP == 0 {
         return false;
     }
-
-    let mut woke_any = false;
+    let mut woke = false;
     for t in 0..model.ntendon {
-        if model.tendon_treenum[t] != 2 {
+        if model.tendon_treenum[t] != 2 || !tendon_limit_active(model, data, t) {
             continue;
         }
-        if !tendon_limit_active(model, data, t) {
-            continue;
-        }
-
-        let tree_a = model.tendon_tree[2 * t];
-        let tree_b = model.tendon_tree[2 * t + 1];
-        if tree_a >= model.ntree || tree_b >= model.ntree {
-            continue;
-        }
-        let awake_a = data.tree_awake[tree_a];
-        let awake_b = data.tree_awake[tree_b];
-
-        match (awake_a, awake_b) {
-            (true, false) => {
-                mj_wake_tree(model, data, tree_b);
-                woke_any = true;
-            }
-            (false, true) => {
-                mj_wake_tree(model, data, tree_a);
-                woke_any = true;
-            }
-            (false, false) => {
-                // Both asleep in different cycles: merge by waking both
-                let cycle_a = mj_sleep_cycle(&data.tree_asleep, tree_a);
-                let cycle_b = mj_sleep_cycle(&data.tree_asleep, tree_b);
-                if cycle_a != cycle_b {
-                    mj_wake_tree(model, data, tree_a);
-                    mj_wake_tree(model, data, tree_b);
-                    woke_any = true;
-                }
-            }
-            _ => {} // Both awake — no action
+        let (tree1, tree2) = (model.tendon_tree[2 * t], model.tendon_tree[2 * t + 1]);
+        let (awake1, awake2) = (data.tree_awake[tree1], data.tree_awake[tree2]);
+        if awake1 != awake2 {
+            let (sleeping, awake) = if awake1 {
+                (tree2, tree1)
+            } else {
+                (tree1, tree2)
+            };
+            let wakeval = data.tree_asleep[awake];
+            woke |= mj_wake_tree(&mut data.tree_asleep, sleeping, wakeval) > 0;
         }
     }
-    woke_any
+    woke
 }
 
-/// Wake sleeping trees coupled by active equality constraints (§16.13.3).
-///
-/// Returns `true` if any tree was woken.
-// Body/joint indices stored as i32 in mjData are non-negative by construction.
-#[allow(clippy::cast_sign_loss)]
+/// Wake the trees an active connect, weld or joint equality couples to an
+/// awake tree, or two sleeping trees it couples across sleep cycles (MuJoCo
+/// `mj_wakeEquality`, `:366-455`), fully awake. A static object wakes
+/// nothing; other equality types are left out (MuJoCo refuses a tendon
+/// equality with sleep enabled, as [`Data::step`](crate::Data::step) does).
+/// Reads the sleep arrays, which the caller refreshes when it returns `true`.
 pub fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
     if model.enableflags & ENABLE_SLEEP == 0 {
         return false;
     }
-
-    let mut woke_any = false;
+    let ntree = model.ntree;
+    let tree_of_body = |body: usize| Some(model.body_treeid[body]).filter(|&t| t < ntree);
+    let mut woke = false;
     for eq in 0..model.neq {
         if !model.eq_active[eq] {
             continue;
         }
-
-        let (tree_a, tree_b) = equality_trees(model, eq);
-        if tree_a >= model.ntree || tree_b >= model.ntree || tree_a == tree_b {
-            continue; // Same tree or invalid — no cross-tree coupling
+        let (id1, id2) = (model.eq_obj1id[eq], model.eq_obj2id[eq]);
+        let (tree1, tree2) = match model.eq_type[eq] {
+            EqualityType::Connect | EqualityType::Weld => (tree_of_body(id1), tree_of_body(id2)),
+            EqualityType::Joint => {
+                let tree_of_joint = |j: usize| model.jnt_body.get(j).and_then(|&b| tree_of_body(b));
+                (tree_of_joint(id1), tree_of_joint(id2))
+            }
+            EqualityType::Distance | EqualityType::Tendon => continue,
+        };
+        // A static object, or one tree: nothing to wake
+        let (Some(tree1), Some(tree2)) = (tree1, tree2) else {
+            continue;
+        };
+        if tree1 == tree2 {
+            continue;
         }
-
-        let awake_a = data.tree_awake[tree_a];
-        let awake_b = data.tree_awake[tree_b];
-
-        match (awake_a, awake_b) {
-            (true, false) => {
-                mj_wake_tree(model, data, tree_b);
-                woke_any = true;
-            }
-            (false, true) => {
-                mj_wake_tree(model, data, tree_a);
-                woke_any = true;
-            }
+        match (data.tree_awake[tree1], data.tree_awake[tree2]) {
+            (true, true) => {}
             (false, false) => {
-                // Both asleep in different cycles: merge by waking both
-                let cycle_a = mj_sleep_cycle(&data.tree_asleep, tree_a);
-                let cycle_b = mj_sleep_cycle(&data.tree_asleep, tree_b);
-                if cycle_a != cycle_b {
-                    mj_wake_tree(model, data, tree_a);
-                    mj_wake_tree(model, data, tree_b);
-                    woke_any = true;
+                if mj_sleep_cycle(&data.tree_asleep, tree1)
+                    != mj_sleep_cycle(&data.tree_asleep, tree2)
+                {
+                    woke |= mj_wake_tree(&mut data.tree_asleep, tree1, K_AWAKE) > 0;
+                    woke |= mj_wake_tree(&mut data.tree_asleep, tree2, K_AWAKE) > 0;
                 }
             }
-            _ => {} // Both awake — no action
+            (false, true) => woke |= mj_wake_tree(&mut data.tree_asleep, tree1, K_AWAKE) > 0,
+            (true, false) => woke |= mj_wake_tree(&mut data.tree_asleep, tree2, K_AWAKE) > 0,
         }
     }
-    woke_any
+    woke
 }
 
-/// Wake a tree and its entire sleep cycle (§16.12.3).
-///
-/// Traverses the circular linked list to wake all trees in the sleeping
-/// island. Eagerly updates `tree_awake` and `body_sleep_state` so
-/// subsequent wake functions in the same pass see the updated state.
-// Body/joint indices stored as i32 in mjData are non-negative by construction.
+/// The smallest tree of the sleep cycle through `start` (MuJoCo
+/// `mj_sleepCycle`, `:156-187`), `start` itself for an awake tree.
+// Tree indices stored as i32 in mjData are non-negative by construction.
 #[allow(clippy::cast_sign_loss)]
-fn mj_wake_tree(model: &Model, data: &mut Data, tree: usize) {
-    if data.tree_awake[tree] {
-        return; // Already awake
+fn mj_sleep_cycle(tree_asleep: &[i32], start: usize) -> usize {
+    if tree_asleep[start] < 0 {
+        return start;
     }
-
-    if data.tree_asleep[tree] < 0 {
-        // Awake but tree_awake flag stale — just update the flag
-        data.tree_awake[tree] = true;
-        return;
+    let mut smallest = start;
+    let mut current = tree_asleep[start] as usize;
+    while current != start {
+        smallest = smallest.min(current);
+        current = tree_asleep[current] as usize;
     }
+    smallest
+}
 
-    // Traverse the sleep cycle, waking each tree
+/// Wake tree `tree` (MuJoCo `mj_wakeTree`, `:191-234`): an awake tree takes
+/// `wakeval` if that is lower; a sleeping one wakes with its whole cycle,
+/// each tree at `wakeval`. Returns the number woken. The sleep arrays are
+/// left to the caller.
+// Tree indices stored as i32 in mjData are non-negative by construction.
+#[allow(clippy::cast_sign_loss)]
+fn mj_wake_tree(tree_asleep: &mut [i32], tree: usize, wakeval: i32) -> usize {
+    if tree_asleep[tree] < 0 {
+        tree_asleep[tree] = tree_asleep[tree].min(wakeval);
+        return 0;
+    }
+    let mut woken = 0;
     let mut current = tree;
     loop {
-        let next = data.tree_asleep[current] as usize;
-        data.tree_asleep[current] = -(1 + MIN_AWAKE); // Fully awake
-        data.tree_awake[current] = true;
-
-        // Update body states
-        let body_start = model.tree_body_adr[current];
-        let body_end = body_start + model.tree_body_num[current];
-        for body_id in body_start..body_end {
-            data.body_sleep_state[body_id] = SleepState::Awake;
-        }
-
+        let next = tree_asleep[current] as usize;
+        tree_asleep[current] = wakeval;
+        woken += 1;
         current = next;
         if current == tree {
-            break; // Full cycle traversed
+            return woken;
         }
     }
 }

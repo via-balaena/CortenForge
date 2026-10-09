@@ -159,7 +159,7 @@ fn sleep_runs_on_factory_models() {
     }
 }
 
-/// RK4 + sleep (should warn and disable sleep).
+/// RK4 with sleep enabled (sleep stays enabled, as in MuJoCo).
 fn rk4_sleep_mjcf() -> &'static str {
     r#"
     <mujoco model="rk4_sleep">
@@ -493,8 +493,8 @@ fn test_sleep_zeros_velocity() {
             dof
         );
         assert_eq!(
-            data.qacc[dof], 0.0,
-            "sleeping DOF {} qacc should be zero",
+            data.qacc[dof], data.qacc_smooth[dof],
+            "sleeping DOF {} qacc is its last unconstrained acceleration",
             dof
         );
     }
@@ -707,18 +707,18 @@ fn test_sleep_init_policy() {
 }
 
 // ============================================================================
-// T11: test_rk4_sleep_warning (AC #7)
+// T11: test_rk4_keeps_sleep_enabled (AC #7)
 // ============================================================================
 
 #[test]
-fn test_rk4_sleep_warning() {
+fn test_rk4_keeps_sleep_enabled() {
     let model = load_model(rk4_sleep_mjcf()).expect("load model");
 
-    // RK4 + sleep → sleep should be disabled
+    // RK4 + sleep → sleep stays enabled, as MuJoCo runs it
     assert_eq!(
         model.enableflags & ENABLE_SLEEP,
-        0,
-        "sleep should be disabled with RK4 integrator"
+        ENABLE_SLEEP,
+        "sleep should stay enabled with the RK4 integrator"
     );
 }
 
@@ -1081,9 +1081,10 @@ fn test_dof_length_computation() {
         assert_relative_eq!(model.dof_length[dof], 1.0, epsilon = 1e-10);
     }
 
-    // Rotational DOFs (3,4,5): leaf body with no children → clamped to 1.0
+    // Rotational DOFs (3,4,5): the body's size, here the sphere's radius
+    // (MuJoCo 3.5.0: 0.1)
     for dof in 3..6 {
-        assert_relative_eq!(model.dof_length[dof], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(model.dof_length[dof], 0.1, epsilon = 1e-10);
     }
 
     // Hinge DOF
@@ -1102,8 +1103,8 @@ fn test_dof_length_computation() {
     "#;
     let model_hinge = load_model(mjcf_hinge).expect("load model");
     assert_eq!(model_hinge.nv, 1);
-    // Leaf body (no children): body_length clamped to 1.0
-    assert_relative_eq!(model_hinge.dof_length[0], 1.0, epsilon = 1e-10);
+    // The body's size: the sphere's radius (MuJoCo 3.5.0: 0.1)
+    assert_relative_eq!(model_hinge.dof_length[0], 0.1, epsilon = 1e-10);
 
     // Slide DOF
     let mjcf_slide = r#"
@@ -1273,10 +1274,8 @@ fn test_tendon_passive_mixed_sleep() {
 
 #[test]
 fn test_forward_skip_sensors_sleep() {
-    // RK4 disables sleep, so forward_skip_sensors is called in that path.
-    // This test verifies that the shared forward_core path works correctly.
-    // Since RK4 disables sleep, we just verify that forward() and step() work
-    // correctly with sleep enabled (non-RK4).
+    // forward() and step() through the shared forward_core with sleep
+    // enabled; sleep_parity.rs's rk4_sleeps_and_wakes_as_mujoco covers RK4.
     let model = load_model(free_body_sleep_mjcf()).expect("load model");
     let mut data = model.make_data();
 
@@ -1445,7 +1444,9 @@ fn test_wake_on_negative_zero() {
 
 #[test]
 fn test_dof_length_hinge_1m() {
-    // A hinge joint on a body with a 1-meter child should get dof_length ≈ 1.0
+    // A hinge joint on a body with a child welded 1 m away: the child is a
+    // body of its own, so the hinge's body keeps its own size, its sphere's
+    // radius (MuJoCo 3.5.0: 0.05)
     let mjcf = r#"
     <mujoco model="hinge_1m">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -1465,7 +1466,7 @@ fn test_dof_length_hinge_1m() {
     let model = load_model(mjcf).expect("load model");
 
     assert_eq!(model.nv, 1, "single hinge DOF");
-    assert_relative_eq!(model.dof_length[0], 1.0, epsilon = 1e-6);
+    assert_relative_eq!(model.dof_length[0], 0.05, epsilon = 1e-12);
 }
 
 // ============================================================================
@@ -1474,7 +1475,8 @@ fn test_dof_length_hinge_1m() {
 
 #[test]
 fn test_dof_length_hinge_01m() {
-    // A hinge joint on a body with a 0.1-meter child should get dof_length ≈ 0.1
+    // A hinge joint on a body with a child welded 0.1 m away: as above, the
+    // sphere's radius (MuJoCo 3.5.0: 0.05)
     let mjcf = r#"
     <mujoco model="hinge_01m">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -1494,7 +1496,7 @@ fn test_dof_length_hinge_01m() {
     let model = load_model(mjcf).expect("load model");
 
     assert_eq!(model.nv, 1, "single hinge DOF");
-    assert_relative_eq!(model.dof_length[0], 0.1, epsilon = 1e-6);
+    assert_relative_eq!(model.dof_length[0], 0.05, epsilon = 1e-12);
 }
 
 // ============================================================================
@@ -1533,7 +1535,8 @@ fn test_dof_length_slide() {
 
 #[test]
 fn test_dof_length_free_joint() {
-    // Free joint: translational DOFs (0,1,2) = 1.0; rotational DOFs (3,4,5) = body_length
+    // Free joint: translational DOFs (0,1,2) = 1.0; rotational DOFs (3,4,5) =
+    // the body's size, which the welded child does not enter
     let mjcf = r#"
     <mujoco model="free_dof_length">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -1563,87 +1566,14 @@ fn test_dof_length_free_joint() {
         );
     }
 
-    // Rotational DOFs (3,4,5) should be body_length ≈ 0.5 (child at 0.5m)
+    // Rotational DOFs (3,4,5): the sphere's radius (MuJoCo 3.5.0: 0.05)
     for dof in 3..6 {
         assert!(
-            (model.dof_length[dof] - 0.5).abs() < 1e-6,
-            "rotational dof_length[{dof}] should be ≈ 0.5, got {}",
+            (model.dof_length[dof] - 0.05).abs() < 1e-12,
+            "rotational dof_length[{dof}] should be 0.05, got {}",
             model.dof_length[dof]
         );
     }
-}
-
-// ============================================================================
-// T68: test_dof_length_nonuniform_threshold (§16.14)
-// ============================================================================
-
-#[test]
-fn test_dof_length_nonuniform_threshold() {
-    // Arm length should affect the effective sleep threshold.
-    // With sleep_tolerance = 1e-4:
-    //   1-meter arm: threshold = 1e-4 * 1.0 = 1e-4 rad/s
-    //   0.1-meter arm: threshold = 1e-4 * 0.1 = 1e-5 rad/s (tighter)
-    //
-    // Verify this by checking that dof_length differs for different arm lengths.
-
-    // 1-meter arm
-    let mjcf_1m = r#"
-    <mujoco model="arm_1m">
-        <option gravity="0 0 -9.81" timestep="0.002">
-            <flag sleep="enable"/>
-        </option>
-        <worldbody>
-            <body name="link1" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 1 0"/>
-                <geom type="sphere" size="0.05" mass="1.0"/>
-                <body name="tip" pos="1 0 0">
-                    <geom type="sphere" size="0.05" mass="0.5"/>
-                </body>
-            </body>
-        </worldbody>
-    </mujoco>
-    "#;
-    let model_1m = load_model(mjcf_1m).expect("load model");
-
-    // 0.1-meter arm
-    let mjcf_01m = r#"
-    <mujoco model="arm_01m">
-        <option gravity="0 0 -9.81" timestep="0.002">
-            <flag sleep="enable"/>
-        </option>
-        <worldbody>
-            <body name="link1" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 1 0"/>
-                <geom type="sphere" size="0.05" mass="1.0"/>
-                <body name="tip" pos="0.1 0 0">
-                    <geom type="sphere" size="0.05" mass="0.5"/>
-                </body>
-            </body>
-        </worldbody>
-    </mujoco>
-    "#;
-    let model_01m = load_model(mjcf_01m).expect("load model");
-
-    // dof_length should reflect the arm length
-    assert_relative_eq!(model_1m.dof_length[0], 1.0, epsilon = 1e-6);
-    assert_relative_eq!(model_01m.dof_length[0], 0.1, epsilon = 1e-6);
-
-    // The ratio should be 10:1
-    let ratio = model_1m.dof_length[0] / model_01m.dof_length[0];
-    assert_relative_eq!(ratio, 10.0, epsilon = 1e-3);
-
-    // Effective threshold difference: for sleep_tolerance=1e-4,
-    // 1m arm threshold = 1e-4, 0.1m arm threshold = 1e-5
-    let tol = 1e-4;
-    let threshold_1m = tol * model_1m.dof_length[0];
-    let threshold_01m = tol * model_01m.dof_length[0];
-    assert!(
-        threshold_1m > threshold_01m,
-        "shorter arm should have tighter threshold: {} vs {}",
-        threshold_1m,
-        threshold_01m
-    );
-    assert_relative_eq!(threshold_1m / threshold_01m, 10.0, epsilon = 1e-3);
 }
 
 // ============================================================================
@@ -1834,12 +1764,9 @@ fn test_qpos_dirty_flag_isolation() {
     data.qpos[2] += 0.5;
     data.forward(&model).expect("forward");
 
-    // After forward(), mj_check_qpos_changed should have cleared the dirty flags
+    // After forward(), mj_wake has read and cleared the dirty flags
     for &d in &data.tree_qpos_dirty {
-        assert!(
-            !d,
-            "tree_qpos_dirty should be cleared after mj_check_qpos_changed"
-        );
+        assert!(!d, "tree_qpos_dirty should be cleared by mj_wake");
     }
 
     // But the body should now be awake (the dirty flag was consumed to wake it)
@@ -1871,11 +1798,6 @@ fn test_make_data_island_array_sizes() {
     assert_eq!(data.map_idof2dof.len(), model.nv);
     assert_eq!(data.island_nefc.len(), model.ntree);
     assert_eq!(data.island_iefcadr.len(), model.ntree);
-
-    // Scratch arrays
-    assert_eq!(data.island_scratch_stack.len(), model.ntree);
-    assert_eq!(data.island_scratch_rownnz.len(), model.ntree);
-    assert_eq!(data.island_scratch_rowadr.len(), model.ntree);
 
     // qpos change detection
     assert_eq!(data.tree_qpos_dirty.len(), model.ntree);
@@ -2408,9 +2330,10 @@ fn test_sleep_cycle_single_tree() {
     );
 }
 
-/// T73: sleep_trees zeros all DOF-level and body-level arrays.
+/// T73: a tree asleep keeps the arrays of its last awake pass, as MuJoCo's:
+/// velocities 0, the acceleration and bias force the sleep step's pass left.
 #[test]
-fn test_sleep_trees_zeros_all_arrays() {
+fn test_sleep_trees_keep_their_last_awake_arrays() {
     let mjcf = free_body_sleep_mjcf();
     let model = load_model(mjcf).expect("load");
     let mut data = model.make_data();
@@ -2423,13 +2346,24 @@ fn test_sleep_trees_zeros_all_arrays() {
     let tree = model.body_treeid[1];
     assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
 
-    // Check DOF arrays are zeroed
+    // The DOF arrays are MuJoCo 3.5.0's on this model after 3000 steps
+    // (unfused oracle): velocity 0; the acceleration and bias force of the
+    // last awake pass, computed at zero velocity on the sleep step (free fall
+    // and its gravity force); no passive, constraint or actuator force.
     let dof_start = model.tree_dof_adr[tree];
     let dof_end = dof_start + model.tree_dof_num[tree];
+    let (qacc, qfrc_bias) = (
+        [0.0, 0.0, -9.81, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 9.81, 0.0, 0.0, 0.0],
+    );
     for dof in dof_start..dof_end {
         assert_eq!(data.qvel[dof], 0.0, "qvel[{dof}] should be 0");
-        assert_eq!(data.qacc[dof], 0.0, "qacc[{dof}] should be 0");
-        assert_eq!(data.qfrc_bias[dof], 0.0, "qfrc_bias[{dof}] should be 0");
+        assert_eq!(data.qacc[dof], qacc[dof - dof_start], "qacc[{dof}]");
+        assert_eq!(
+            data.qfrc_bias[dof],
+            qfrc_bias[dof - dof_start],
+            "qfrc_bias[{dof}]"
+        );
         assert_eq!(
             data.qfrc_passive[dof], 0.0,
             "qfrc_passive[{dof}] should be 0"
@@ -2444,7 +2378,7 @@ fn test_sleep_trees_zeros_all_arrays() {
         );
     }
 
-    // Check body arrays are zeroed
+    // The body velocity arrays: zero
     let body_start = model.tree_body_adr[tree];
     let body_end = body_start + model.tree_body_num[tree];
     for body_id in body_start..body_end {
@@ -2654,12 +2588,12 @@ fn test_init_sleep_valid() {
     );
 }
 
-/// T60: Mixed Init/non-Init in coupled group degrades gracefully.
-/// The spec says this should produce an error and degrade to awake.
+/// T60: A tree that starts asleep, joined by a connect to one that does not,
+/// cannot be put to sleep (its island is not all ready): making its `Data`
+/// is refused, as MuJoCo 3.5.0 refuses the model.
 #[test]
-fn test_init_sleep_mixed_island_warning() {
+fn test_init_sleep_mixed_island_refused() {
     // Two bodies connected by equality constraint: A is Init, B is not.
-    // The validation should detect the mixed group and degrade A to awake.
     let mjcf = r#"
     <mujoco model="init_mixed">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -2681,29 +2615,21 @@ fn test_init_sleep_mixed_island_warning() {
     </mujoco>
     "#;
     let model = load_model(mjcf).expect("load");
-    let data = model.make_data();
-
     let tree_a = model.body_treeid[1];
-    let tree_b = model.body_treeid[2];
-
-    // A has Init policy, B doesn't → mixed group → A should be degraded to awake
     assert_eq!(model.tree_sleep_policy[tree_a], SleepPolicy::Init);
-
-    // After degradation, A should be awake (Init trees in mixed groups
-    // don't get put to sleep)
-    assert!(
-        data.tree_asleep[tree_a] < 0,
-        "mixed Init tree A should be degraded to awake, got {}",
-        data.tree_asleep[tree_a]
-    );
-    assert!(
-        data.tree_asleep[tree_b] < 0,
-        "non-Init tree B should be awake, got {}",
-        data.tree_asleep[tree_b]
+    assert_eq!(
+        model.try_make_data().err(),
+        Some(sim_core::MakeDataError::InitSleep {
+            marked: 1,
+            slept: 0,
+            tree: tree_a,
+            root_body: 1,
+        })
     );
 }
 
-/// T76: Init-sleep validation uses model-time adjacency (union-find), not runtime islands.
+/// T76: two trees that start asleep, joined by an equality, sleep as one
+/// cycle: the reset's forward pass puts them in one island.
 #[test]
 fn test_init_sleep_validation_model_time() {
     // Two Init trees connected by equality constraint should form a sleep cycle.
@@ -2747,7 +2673,7 @@ fn test_init_sleep_validation_model_time() {
         "Init tree B should be asleep"
     );
 
-    // They should form a cycle: A→B, B→A (union-find grouped them)
+    // They should form a cycle: A→B, B→A (one island)
     let next_a = data.tree_asleep[tree_a] as usize;
     let next_b = data.tree_asleep[tree_b] as usize;
     assert_eq!(next_a, tree_b, "A should point to B in cycle");
@@ -2760,9 +2686,9 @@ fn test_init_sleep_validation_model_time() {
 
 #[test]
 fn test_per_island_solve_equivalence() {
-    // Per-island solve should produce equivalent results to global solve.
-    // We compare a scene with two independent bodies (each becomes its own
-    // island) against the same scene with DISABLE_ISLAND (global solve).
+    // Islands change no force (the solver is global): a scene with two
+    // independent bodies (each its own island) against the same scene with
+    // DISABLE_ISLAND.
     let mjcf = r#"
     <mujoco model="island_equivalence">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -2782,11 +2708,11 @@ fn test_per_island_solve_equivalence() {
     </mujoco>
     "#;
 
-    // Run with islands enabled (Phase B path)
+    // Run with islands enabled
     let model_island = load_model(mjcf).expect("load model");
     let mut data_island = model_island.make_data();
 
-    // Run with DISABLE_ISLAND (Phase A global path)
+    // Run with DISABLE_ISLAND
     let mut model_global = load_model(mjcf).expect("load model");
     model_global.disableflags |= DISABLE_ISLAND;
     let mut data_global = model_global.make_data();
@@ -2836,11 +2762,8 @@ fn test_per_island_solve_equivalence() {
 
 #[test]
 fn test_disable_island_bit_identical() {
-    // DISABLE_ISLAND should make the per-island solver fall through to the
-    // global solver, producing bit-identical results to a model where sleep
-    // is disabled entirely (which also uses the global solver and has no
-    // sleep-induced state changes). Both models disable sleep to isolate
-    // the solver path comparison.
+    // With sleep disabled, a run with DISABLE_ISLAND and one without are
+    // bit-identical.
     let mjcf = r#"
     <mujoco model="disable_island_test">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -2856,15 +2779,12 @@ fn test_disable_island_bit_identical() {
     </mujoco>
     "#;
 
-    // Model A: sleep disabled + DISABLE_ISLAND (global solver path,
-    // mj_fwd_constraint_islands sees nisland=0 → falls through)
+    // Model A: sleep disabled + DISABLE_ISLAND (no islands)
     let mut model_a = load_model(mjcf).expect("load model");
     model_a.disableflags |= DISABLE_ISLAND;
     let mut data_a = model_a.make_data();
 
-    // Model B: sleep disabled, no DISABLE_ISLAND flag
-    // Since sleep is disabled, mj_island() is never called, nisland stays 0,
-    // and mj_fwd_constraint_islands falls through to the global solver.
+    // Model B: sleep disabled, no DISABLE_ISLAND flag (islands built)
     let model_b = load_model(mjcf).expect("load model");
     let mut data_b = model_b.make_data();
 
@@ -2873,14 +2793,8 @@ fn test_disable_island_bit_identical() {
         data_a.step(&model_a).expect("step A");
         data_b.step(&model_b).expect("step B");
 
-        for dof in 0..model_a.nv {
-            assert!(
-                (data_a.qpos[dof] - data_b.qpos[dof]).abs() < 1e-14,
-                "DISABLE_ISLAND diverged at step {step}, dof {dof}: A={}, B={}",
-                data_a.qpos[dof],
-                data_b.qpos[dof]
-            );
-        }
+        assert_eq!(data_a.qpos, data_b.qpos, "qpos at step {step}");
+        assert_eq!(data_a.qvel, data_b.qvel, "qvel at step {step}");
     }
 
     // Verify DISABLE_ISLAND keeps nisland = 0
@@ -3340,8 +3254,8 @@ fn test_indirection_vel_integration_equivalence() {
                     "sleeping DOF {dof} qvel should be zero"
                 );
                 assert_eq!(
-                    data.qacc[dof], 0.0,
-                    "sleeping DOF {dof} qacc should be zero"
+                    data.qacc[dof], data.qacc_smooth[dof],
+                    "sleeping DOF {dof} qacc is its last unconstrained acceleration"
                 );
             }
         }
@@ -3502,16 +3416,17 @@ fn test_indirection_rne_gyroscopic_equivalence() {
     assert!(has_asleep, "need at least one sleeping tree for this test");
 
     // Step once more — mj_rne runs via indirection
+    let bias = data.qfrc_bias.clone();
     data.step(&model).expect("step");
 
-    // Sleeping DOFs must have zero qfrc_bias
+    // A sleeping DOF keeps its qfrc_bias (MuJoCo's mj_rne writes awake DOFs only)
     for dof in 0..model.nv {
         if dof < model.dof_treeid.len() {
             let tree = model.dof_treeid[dof];
             if tree < model.ntree && !data.tree_awake(tree) {
                 assert_eq!(
-                    data.qfrc_bias[dof], 0.0,
-                    "sleeping DOF {dof} qfrc_bias should be zero"
+                    data.qfrc_bias[dof], bias[dof],
+                    "sleeping DOF {dof} qfrc_bias should be kept"
                 );
             }
         }
@@ -3543,18 +3458,19 @@ fn test_rne_featherstone_sleeping_zero_contribution() {
         }
     }
 
-    // Step once — Featherstone runs over all bodies including sleeping.
-    // Sleeping bodies contribute zero because cvel=0 → zero bias forces.
+    // Step once — Featherstone runs over all bodies including sleeping;
+    // a sleeping DOF then keeps the qfrc_bias of its last awake pass.
+    let bias = data.qfrc_bias.clone();
     data.step(&model).expect("step");
 
-    // After Featherstone: sleeping DOFs' qfrc_bias must still be zero
+    // After Featherstone: sleeping DOFs' qfrc_bias is unchanged
     for dof in 0..model.nv {
         if dof < model.dof_treeid.len() {
             let tree = model.dof_treeid[dof];
             if tree < model.ntree && !data.tree_awake(tree) {
                 assert_eq!(
-                    data.qfrc_bias[dof], 0.0,
-                    "sleeping DOF {dof} qfrc_bias should be zero after Featherstone"
+                    data.qfrc_bias[dof], bias[dof],
+                    "sleeping DOF {dof} qfrc_bias should be kept after Featherstone"
                 );
             }
         }
@@ -3683,7 +3599,7 @@ fn test_energy_continuous_across_sleep_transition() {
 }
 
 // ============================================================================
-// T85–T88: Phase C2 — Island-Local Delassus Assembly (§16.28)
+// T85–T88: Phase C2 (§16.28) — islands on and off; the solver is global
 // ============================================================================
 
 /// MJCF fixture for two separated free bodies that form independent islands.
@@ -3711,29 +3627,34 @@ fn two_island_bodies_mjcf() -> &'static str {
     "#
 }
 
-/// T85: Island-local Delassus assembly produces equivalent constraint forces
-/// to the global assembly for two independent bodies (AC #55).
+/// T85: constraint forces with islands match those with DISABLE_ISLAND for
+/// two independent bodies (AC #55).
 #[test]
 fn test_island_delassus_equivalence() {
     let mjcf = two_island_bodies_mjcf();
 
-    // Run with islands enabled (uses island-local Delassus assembly)
+    // Run with islands enabled
     let model_island = load_model(mjcf).expect("load");
     let mut data_island = model_island.make_data();
 
-    // Run with DISABLE_ISLAND (uses global assembly path)
+    // Run with DISABLE_ISLAND
     let mut model_global = load_model(mjcf).expect("load");
     model_global.disableflags |= DISABLE_ISLAND;
     let mut data_global = model_global.make_data();
 
     let mut max_nisland = 0usize;
 
-    // Step 500 times — bodies fall, contact, and settle
+    // Step 500 times — bodies fall, contact, and settle. With islands
+    // disabled a tree with constraint rows cannot sleep (MuJoCo's mj_sleep),
+    // so the two runs are compared until the island run puts a tree to sleep.
     for step in 0..500 {
         data_island.step(&model_island).expect("island step");
         data_global.step(&model_global).expect("global step");
+        if data_island.tree_asleep.iter().any(|&a| a >= 0) {
+            break;
+        }
 
-        // Track maximum islands seen (islands clear when bodies sleep)
+        // Track maximum islands seen
         max_nisland = max_nisland.max(data_island.nisland);
 
         // Compare qfrc_constraint (contact + penalty forces)
@@ -3756,8 +3677,8 @@ fn test_island_delassus_equivalence() {
     );
 }
 
-/// T86: Contact forces from island-local solve match global solve for
-/// two independent free bodies step-by-step (AC #57).
+/// T86: accelerations and velocities with islands match those with
+/// DISABLE_ISLAND for two independent free bodies, step by step (AC #57).
 #[test]
 fn test_island_solve_forces_match_global() {
     let mjcf = two_island_bodies_mjcf();
@@ -3799,10 +3720,10 @@ fn test_island_solve_forces_match_global() {
     }
 }
 
-/// T87: When a single island spans all DOFs, the global fallback path
-/// activates (no island-local Cholesky extraction) (AC #58).
+/// T87: two stacked bodies: one island, when they make one, spans every DOF,
+/// and the run stays finite (AC #58).
 #[test]
-fn test_single_island_uses_global_path() {
+fn test_single_island_spans_every_dof() {
     // Two stacked bodies — contacts between them form one connected island.
     let mjcf = r#"
     <mujoco model="single_island">
@@ -3832,7 +3753,7 @@ fn test_single_island_uses_global_path() {
     }
 
     // With stacked bodies, all DOFs should be in one island (or zero islands
-    // if no contacts). When nisland == 1, the global fallback should activate.
+    // if no contacts).
     if data.nisland == 1 {
         assert_eq!(
             data.island_nv[0], model.nv,
@@ -3840,7 +3761,7 @@ fn test_single_island_uses_global_path() {
         );
     }
 
-    // Simulation should produce valid, finite results regardless of path
+    // Simulation should produce valid, finite results
     assert!(
         data.qacc.iter().all(|&v| v.is_finite()),
         "qacc contains non-finite values"
@@ -3851,8 +3772,8 @@ fn test_single_island_uses_global_path() {
     );
 }
 
-/// T88: DISABLE_ISLAND flag produces unchanged results after Phase C2
-/// modifications — the global solver path is untouched (AC #56).
+/// T88: with DISABLE_ISLAND, a run with sleep enabled matches one with sleep
+/// disabled (AC #56).
 #[test]
 fn test_disable_island_phase_c_bit_identical() {
     let mjcf = two_island_bodies_mjcf();
@@ -3887,17 +3808,9 @@ fn test_disable_island_phase_c_bit_identical() {
         data_a.step(&model_a).expect("step A");
         data_b.step(&model_b).expect("step B");
 
-        // Both use DISABLE_ISLAND → nisland=0 → global solver.
-        // With sleep disabled in B, sleep state won't diverge the comparison.
-        for dof in 0..model_a.nv {
-            let diff = (data_a.qvel[dof] - data_b.qvel[dof]).abs();
-            assert!(
-                diff < 1e-12,
-                "DISABLE_ISLAND diverged at step {step}, dof {dof}: A={}, B={}",
-                data_a.qvel[dof],
-                data_b.qvel[dof]
-            );
-        }
+        // Both use DISABLE_ISLAND → nisland=0.
+        assert_eq!(data_a.qpos, data_b.qpos, "qpos at step {step}");
+        assert_eq!(data_a.qvel, data_b.qvel, "qvel at step {step}");
     }
 
     // Verify DISABLE_ISLAND keeps nisland = 0
@@ -5078,10 +4991,12 @@ fn test_partial_ldl_multi_tree_independence() {
 
 /// T106: Solve with zero RHS for sleeping DOFs yields zero output (AC #72).
 ///
-/// After partial factorization, sleeping DOFs have zero qvel and qacc.
-/// Uses the three-tree free-body model where applied wrenches directly produce
-/// non-zero accelerations on free-joint DOFs. Verifies that sleeping trees' qacc
-/// stays zero while awake trees get non-zero qacc from the applied torque.
+/// After partial factorization, sleeping DOFs have zero qvel and keep their
+/// last unconstrained acceleration, as in MuJoCo. Uses the three-tree
+/// free-body model where applied wrenches directly produce non-zero
+/// accelerations on free-joint DOFs. Verifies that sleeping trees' qacc is
+/// unchanged by the partial solve while awake trees get non-zero qacc from
+/// the applied torque.
 #[test]
 fn test_partial_ldl_solve_zero_sleeping_rhs() {
     let model = load_model(three_tree_crba_mjcf()).expect("load model");
@@ -5096,10 +5011,13 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
         "all trees should be sleeping"
     );
 
-    // All sleeping — qvel and qacc should be zero
+    // All sleeping — qvel is zero, qacc the last unconstrained acceleration
     for d in 0..model.nv {
         assert_eq!(data.qvel[d], 0.0, "sleeping qvel[{d}] should be zero");
-        assert_eq!(data.qacc[d], 0.0, "sleeping qacc[{d}] should be zero");
+        assert_eq!(
+            data.qacc[d], data.qacc_smooth[d],
+            "sleeping qacc[{d}] is its last unconstrained acceleration"
+        );
     }
 
     // Wake tree 0 only (free-body sphere — a torque directly produces acceleration)
@@ -5111,7 +5029,7 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
         "tree 0 should be awake after force"
     );
 
-    // Sleeping trees (1 and 2) — qacc and qvel should be zero
+    // Sleeping trees (1 and 2) — qvel zero, qacc their last unconstrained one
     for t in 1..model.ntree {
         if data.tree_asleep[t] < 0 {
             continue; // skip if this tree also woke
@@ -5120,8 +5038,8 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
         let dof_count = model.tree_dof_num[t];
         for d in dof_start..dof_start + dof_count {
             assert_eq!(
-                data.qacc[d], 0.0,
-                "sleeping tree {t} qacc[{d}] should be zero after partial solve"
+                data.qacc[d], data.qacc_smooth[d],
+                "sleeping tree {t} qacc[{d}] after the partial solve"
             );
             assert_eq!(
                 data.qvel[d], 0.0,

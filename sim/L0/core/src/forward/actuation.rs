@@ -8,7 +8,7 @@ use super::muscle::muscle_activation_dynamics;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::tendon::{accumulate_point_jacobian, apply_tendon_force, subquat};
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, GainType, Model,
+    ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType, Model,
 };
 use nalgebra::{DVector, Vector3};
 
@@ -380,32 +380,53 @@ pub fn mj_transmission_slidercrank(model: &Model, data: &mut Data) {
     }
 }
 
-/// Compute actuator length and velocity from transmission state.
-///
-/// For each actuator, computes `actuator_length = gear * transmission_length`
-/// and `actuator_velocity = gear * transmission_velocity`.
-/// Called after `mj_fwd_velocity()` (which provides `ten_velocity`).
-pub fn mj_actuator_length(model: &Model, data: &mut Data) {
+/// Compute the length of each joint and tendon transmission,
+/// `actuator_length = gear * transmission_length`, in the position stage, as
+/// MuJoCo's `mj_transmission` does (`engine_core_smooth.c:1250`, called from
+/// `mj_fwdPosition` at `engine_forward.c:209`). Must run after
+/// `mj_fwd_position` (which provides `ten_length`). A pass that skips the
+/// position stage keeps the lengths it computed.
+pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
         let gear = model.actuator_gear[i][0];
         match model.actuator_trntype[i] {
             ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                 let jid = model.actuator_trnid[i][0];
-                if jid < model.njnt {
-                    // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
-                    let nv = model.jnt_type[jid].nv();
-                    if nv == 1 {
-                        let qadr = model.jnt_qpos_adr[jid];
-                        let dof_adr = model.jnt_dof_adr[jid];
-                        data.actuator_length[i] = gear * data.qpos[qadr];
-                        data.actuator_velocity[i] = gear * data.qvel[dof_adr];
-                    }
+                // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
+                if jid < model.njnt && model.jnt_type[jid].nv() == 1 {
+                    data.actuator_length[i] = gear * data.qpos[model.jnt_qpos_adr[jid]];
                 }
             }
             ActuatorTransmission::Tendon => {
                 let tid = model.actuator_trnid[i][0];
                 if tid < model.ntendon {
                     data.actuator_length[i] = gear * data.ten_length[tid];
+                }
+            }
+            ActuatorTransmission::Site
+            | ActuatorTransmission::SliderCrank
+            | ActuatorTransmission::Body => {}
+        }
+    }
+}
+
+/// Compute each actuator's velocity, `actuator_velocity = gear *
+/// transmission_velocity`, in the velocity stage. Called after
+/// `mj_fwd_velocity()` (which provides `ten_velocity`).
+pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
+    for i in 0..model.nu {
+        let gear = model.actuator_gear[i][0];
+        match model.actuator_trntype[i] {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                let jid = model.actuator_trnid[i][0];
+                // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
+                if jid < model.njnt && model.jnt_type[jid].nv() == 1 {
+                    data.actuator_velocity[i] = gear * data.qvel[model.jnt_dof_adr[jid]];
+                }
+            }
+            ActuatorTransmission::Tendon => {
+                let tid = model.actuator_trnid[i][0];
+                if tid < model.ntendon {
                     data.actuator_velocity[i] = gear * data.ten_velocity[tid];
                 }
             }
@@ -460,12 +481,32 @@ pub fn mj_next_activation(
     act
 }
 
+/// The control input actuator `i` acts on: `data.ctrl[i]`, or for a delayed
+/// actuator its history buffer read at `time - actuator_delay[i]`, clamped to
+/// its `ctrlrange` unless `DISABLE_CLAMPCTRL` is set. sim-mjcf gives an
+/// actuator without a control limit the range `(-inf, inf)`, which clamping
+/// leaves as is.
+pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
+    // MuJoCo tests the delay for non-zero (`engine_forward.c:304`).
+    let ctrl = if model.nhistory > 0 && model.actuator_delay[i] != 0.0 {
+        crate::history::read_ctrl(model, data, i, data.time)
+    } else {
+        data.ctrl[i]
+    };
+    if disabled(model, DISABLE_CLAMPCTRL) {
+        ctrl
+    } else {
+        ctrl.clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1)
+    }
+}
+
 /// Compute actuator forces from control inputs, activation dynamics, and muscle FLV curves.
 ///
 /// This function:
 /// 1. Computes activation derivatives (`data.act_dot`) without modifying `data.act`.
 /// 2. Computes actuator force using gain/bias (muscle FLV for muscles, raw input for others).
-/// 3. Clamps control inputs and output forces to their declared ranges.
+/// 3. Clamps a copy of the control inputs, and the output forces, to their
+///    declared ranges; `data.ctrl` is not written.
 /// 4. Maps actuator force to joint forces via the transmission.
 ///
 /// **Note**: `cb_control` is NOT invoked here. It fires after the velocity
@@ -485,30 +526,32 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
     data.qfrc_actuator.fill(0.0);
 
-    // S8d: Bad ctrl validation — zero all ctrl on first bad value.
-    for i in 0..model.nu {
-        if is_bad(data.ctrl[i]) {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-            mj_warning(data, Warning::BadCtrl, i as i32);
-            for j in 0..model.nu {
-                data.ctrl[j] = 0.0;
-            }
-            break;
-        }
+    // A bad input (after clamping) makes every actuator's control input 0
+    // for this pass, an actuator with an activation still acting on it;
+    // `ctrl` itself is left as written (MuJoCo `mj_fwdActuation`).
+    let bad = (0..model.nu).find(|&i| is_bad(actuator_ctrl_input(model, data, i)));
+    if let Some(i) = bad {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        mj_warning(data, Warning::BadCtrl, i as i32);
     }
 
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     for i in 0..model.nu {
         // S7d: Skip force computation for per-group disabled actuators.
         if actuator_disabled(model, i) {
             continue;
         }
+        // A sleeping actuator keeps its act_dot and acts with no force
+        // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394).
+        if sleep_enabled && crate::island::actuator_asleep(model, data, i) {
+            continue;
+        }
 
         // --- Phase 1: Activation dynamics (compute act_dot, do NOT integrate) ---
-        // S4.9: Skip ctrl clamping when DISABLE_CLAMPCTRL is set.
-        let ctrl = if disabled(model, DISABLE_CLAMPCTRL) {
-            data.ctrl[i]
+        let ctrl = if bad.is_some() {
+            0.0
         } else {
-            data.ctrl[i].clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1)
+            actuator_ctrl_input(model, data, i)
         };
 
         let input = match model.actuator_dyntype[i] {

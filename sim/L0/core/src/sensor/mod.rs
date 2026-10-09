@@ -6,7 +6,7 @@
 //! solve. `mj_sensor_postprocess` applies cutoff clamping.
 
 use crate::plugin::{PluginCapabilityBit, PluginStage};
-use crate::types::{Data, MjObjectType, MjSensorType, Model};
+use crate::types::{Data, MjSensorDataType, MjSensorType, Model};
 
 use self::postprocess::apply_sensor_cutoff;
 
@@ -53,41 +53,16 @@ pub(crate) fn compute_plugin_sensors(model: &Model, data: &mut Data, stage: Plug
     }
 }
 
-/// Map a sensor to the body it is attached to (if any).
-///
-/// Returns `None` for multi-body sensors (tendon, actuator) or world-relative
-/// sensors, which do not have a single owning body for sleep filtering.
-pub(crate) fn sensor_body_id(model: &Model, sensor_id: usize) -> Option<usize> {
-    let objid = model.sensor_objid[sensor_id];
-    match model.sensor_objtype[sensor_id] {
-        MjObjectType::Body | MjObjectType::XBody => Some(objid),
-        MjObjectType::Joint => {
-            if objid < model.njnt {
-                Some(model.jnt_body[objid])
-            } else {
-                None
-            }
-        }
-        MjObjectType::Geom => {
-            if objid < model.ngeom {
-                Some(model.geom_body[objid])
-            } else {
-                None
-            }
-        }
-        MjObjectType::Site => {
-            if objid < model.nsite {
-                Some(model.site_body[objid])
-            } else {
-                None
-            }
-        }
-        // Multi-body, actuated, plugin, or world-relative sensors — always compute
-        MjObjectType::Tendon
-        | MjObjectType::Actuator
-        | MjObjectType::Plugin
-        | MjObjectType::None => None,
+/// Compute sensor `i` into `sensordata` and apply its cutoff, for a delayed
+/// sensor's sample when the state advances. MuJoCo `mj_computeSensor`
+/// (`engine_sensor.c:1322-1343`).
+pub(crate) fn compute_sensor(model: &Model, data: &mut Data, i: usize) {
+    match model.sensor_datatype[i] {
+        MjSensorDataType::Position => position::compute_pos_sensor(model, data, i),
+        MjSensorDataType::Velocity => velocity::compute_vel_sensor(model, data, i),
+        MjSensorDataType::Acceleration => acceleration::compute_acc_sensor(model, data, i),
     }
+    apply_sensor_cutoff(model, data, i);
 }
 
 #[cfg(test)]

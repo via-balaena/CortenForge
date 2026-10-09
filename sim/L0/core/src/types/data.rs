@@ -11,6 +11,7 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 use super::body_wrench::BodyWrench;
 use super::enums::{ConstraintState, ConstraintType, ResetError, SleepState};
 use super::model::Model;
+use super::model_init::InitSleepRefusal;
 
 use super::contact_types::Contact;
 use super::enums::SolverStat;
@@ -81,9 +82,15 @@ pub struct Data {
     /// and is required for correct RK4 integration of activation states.
     pub act_dot: DVector<f64>,
 
-    /// History buffer (actuators + sensors) (length `nhistory`).
-    /// Pre-populated with metadata + past timestamps + zero ctrl values.
-    /// MuJoCo: `mjData.history`.
+    /// History buffers (length `nhistory`): one per actuator or sensor with
+    /// `nsample > 0`, at its `historyadr`, laid out `[user, cursor,
+    /// times(n), values(n * dim)]`. `user` is a sensor's last compute tick in
+    /// interval mode; `cursor` is the physical index of the newest sample.
+    /// Made and reset with timestamps one timestep apart ending at
+    /// `-timestep` (an interval sensor's one period apart, rounded up to a
+    /// timestep) and values 0; a step inserts a sample of each buffered
+    /// actuator's `ctrl` and each buffered sensor, an interval sensor's only
+    /// on its tick. MuJoCo: `mjData.history`, part of its physics state.
     pub history: Vec<f64>,
 
     // ==================== Mocap Bodies ====================
@@ -510,9 +517,11 @@ pub struct Data {
     pub island_nv: Vec<usize>,
     /// Start index in `map_idof2dof` for each island. Length: ≤ ntree.
     pub island_idofadr: Vec<usize>,
-    /// DOF → island-local DOF index. Length: nv.
+    /// DOF → its index in the island-ordered DOF list: each island's DOFs in
+    /// island order, then the DOFs in no island. Length: nv.
     pub map_dof2idof: Vec<i32>,
-    /// Island-local DOF → global DOF. Length: nv.
+    /// Island-ordered DOF index → DOF (the inverse of `map_dof2idof`).
+    /// Length: nv.
     pub map_idof2dof: Vec<usize>,
     /// Island index for each constraint row. Resized per step.
     pub efc_island: Vec<i32>,
@@ -520,27 +529,18 @@ pub struct Data {
     pub island_nefc: Vec<usize>,
     /// Start index in `map_iefc2efc` for each island. Length: ≤ ntree.
     pub island_iefcadr: Vec<usize>,
-    /// Global constraint row → island-local row. Resized per step.
+    /// Constraint row → its index in the island-ordered row list (each
+    /// island's rows in island order). Resized per step.
     pub map_efc2iefc: Vec<i32>,
-    /// Island-local row → global constraint row. Resized per step.
+    /// Island-ordered row index → constraint row. Resized per step.
     pub map_iefc2efc: Vec<usize>,
     /// Island assignment for each contact. Length: data.contacts.len(). Resized per step.
     /// -1 = not in any island (e.g., contact between two world-body geoms).
     pub contact_island: Vec<i32>,
 
-    // ==================== Island Scratch Space (§16.11) ====================
-    /// DFS stack for flood-fill. Length: ntree.
-    pub island_scratch_stack: Vec<usize>,
-    /// Per-tree edge counts (CSR rownnz). Length: ntree.
-    pub island_scratch_rownnz: Vec<usize>,
-    /// Per-tree CSR row pointers. Length: ntree.
-    pub island_scratch_rowadr: Vec<usize>,
-    /// CSR column indices (edge targets). Resized per step.
-    pub island_scratch_colind: Vec<usize>,
-
     // ==================== qpos Change Detection (§16.15) ====================
-    /// Per-tree dirty flag set by mj_kinematics1() when a sleeping body's
-    /// xpos/xquat changed. Read/cleared by mj_check_qpos_changed(). Length: ntree.
+    /// Per-tree dirty flag set by the kinematics when a sleeping body's
+    /// xpos/xquat changed; `mj_wake` reads and clears it. Length: ntree.
     pub tree_qpos_dirty: Vec<bool>,
 
     // ==================== Time ====================
@@ -870,11 +870,6 @@ impl Clone for Data {
             map_efc2iefc: self.map_efc2iefc.clone(),
             map_iefc2efc: self.map_iefc2efc.clone(),
             contact_island: self.contact_island.clone(),
-            // Island scratch
-            island_scratch_stack: self.island_scratch_stack.clone(),
-            island_scratch_rownnz: self.island_scratch_rownnz.clone(),
-            island_scratch_rowadr: self.island_scratch_rowadr.clone(),
-            island_scratch_colind: self.island_scratch_colind.clone(),
             // qpos change detection
             tree_qpos_dirty: self.tree_qpos_dirty.clone(),
             // Time
@@ -1106,18 +1101,51 @@ impl Data {
     /// `mj_resetData`: `_resetData` zeroes the whole `mjData` (MuJoCo 3.5.0
     /// `engine_io.c:1354`), keeps the plugin state and data, and calls each
     /// plugin's `reset` (`:1528-1541`). The `Data` is rebuilt rather than
-    /// cleared field by field, so a field added to `Data` is reset too. With a
-    /// tree that starts asleep, MuJoCo runs a full `mj_forward` at the reset;
-    /// this computes its kinematics and mass matrix only. With sleep enabled and
+    /// cleared field by field, so a field added to `Data` is reset too. With
+    /// sleep enabled and a tree whose policy is `Init`, a forward pass runs
+    /// and those trees are put to sleep, as in MuJoCo. With sleep enabled and
     /// no such tree, MuJoCo computes the kinematics, centres of mass, cameras
-    /// and tendons (`engine_io.c:1453-1458`); this computes none of them.
+    /// and tendons (`engine_io.c:1453-1458`); this computes none of them
+    /// (whether anything reads them before the first forward pass: not
+    /// measured).
+    ///
+    /// # Panics
+    /// With the [`ResetError`]'s message where [`Data::try_reset`] returns it.
+    // The documented panic: `try_reset` is the non-panicking form.
+    #[allow(clippy::panic)]
     pub fn reset(&mut self, model: &Model) {
+        self.try_reset(model).unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    /// [`Data::reset`], or the reason it cannot be made, leaving `self` as it
+    /// was (its plugin state as a refused reset's forward pass left it).
+    ///
+    /// # Errors
+    /// [`ResetError::InvalidTimestep`] when the model has history buffers and
+    /// a timestep that is not positive; [`ResetError::DelayedUserSensor`]
+    /// when a user or plugin sensor has a delay; [`ResetError::InitSleep`]
+    /// when a tree whose policy is `Init` cannot be put to sleep, and
+    /// [`ResetError::InitForward`] when the forward pass before that fails.
+    pub fn try_reset(&mut self, model: &Model) -> Result<(), ResetError> {
+        if let Some(refusal) = model.history_refusal() {
+            return Err(refusal.into());
+        }
+        Ok(self.reset_checked(model)?)
+    }
+
+    /// [`Data::try_reset`] after its history checks.
+    pub(crate) fn reset_checked(&mut self, model: &Model) -> Result<(), InitSleepRefusal> {
         let mut fresh = model.allocate_data();
         std::mem::swap(&mut fresh.plugin_state, &mut self.plugin_state);
         std::mem::swap(&mut fresh.plugin_data, &mut self.plugin_data);
+        if let Err(refusal) = model.start_sleep(&mut fresh) {
+            std::mem::swap(&mut fresh.plugin_state, &mut self.plugin_state);
+            std::mem::swap(&mut fresh.plugin_data, &mut self.plugin_data);
+            return Err(refusal);
+        }
         *self = fresh;
-        model.start_sleep(self);
         self.reset_plugins(model);
+        Ok(())
     }
 
     /// Run each plugin's `reset` on its slice of `plugin_state`.
@@ -1145,7 +1173,8 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// [`ResetError::InvalidKeyframeIndex`] if `keyframe_idx >= model.nkeyframe`.
+    /// [`ResetError::InvalidKeyframeIndex`] if `keyframe_idx >= model.nkeyframe`,
+    /// else what [`Data::try_reset`] returns.
     pub fn reset_to_keyframe(
         &mut self,
         model: &Model,
@@ -1158,7 +1187,7 @@ impl Data {
                 index: keyframe_idx,
                 nkeyframe: model.nkeyframe,
             })?;
-        self.reset(model);
+        self.try_reset(model)?;
         self.time = kf.time;
         self.qpos.copy_from(&kf.qpos);
         self.qvel.copy_from(&kf.qvel);

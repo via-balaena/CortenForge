@@ -1,0 +1,21 @@
+<mujoco>
+  <option timestep="0.01" gravity="0 0 0"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge" axis="0 0 1" damping="0.05"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
+      <site name="s" pos="0.3 0 0"/>
+    </body>
+  </worldbody>
+  <actuator><motor name="m" joint="j" gear="0.2"/></actuator>
+  <sensor>
+    <jointpos joint="j"/>
+    <jointpos joint="j" nsample="2" delay="0.01"/>
+    <framepos objtype="site" objname="s"/>
+    <framepos objtype="site" objname="s" nsample="2" delay="0.01"/>
+    <jointvel joint="j"/>
+    <jointvel joint="j" nsample="2" delay="0.01"/>
+    <accelerometer site="s"/>
+    <accelerometer site="s" nsample="2" delay="0.01"/>
+  </sensor>
+</mujoco>

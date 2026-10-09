@@ -39,9 +39,9 @@ impl<F: ?Sized> fmt::Debug for Callback<F> {
 /// Runs at the end of the passive-force computation in the velocity stage,
 /// after `qfrc_spring`, `qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid` and their
 /// sum `qfrc_passive` are written and before passive plugins. Add custom forces
-/// to `qfrc_passive`. It runs before [`CbControl`] in the same pass: actuator
-/// forces, `qfrc_bias`, constraint forces and `qacc` have not been computed for
-/// this pass yet.
+/// to `qfrc_passive`. It runs before [`CbControl`] in the same pass, so it
+/// reads `ctrl` as the caller left it; actuator forces, `qfrc_bias`,
+/// constraint forces and `qacc` have not been computed for this pass yet.
 ///
 /// # When it runs (as MuJoCo 3.5.0)
 ///
@@ -49,7 +49,8 @@ impl<F: ?Sized> fmt::Debug for Callback<F> {
 ///   with [`MjStage::None`] or [`MjStage::Pos`];
 /// - once per [`Data::step`] with Euler and the implicit integrators, four
 ///   times with RK4 (once per stage);
-/// - never in [`Data::step2`] or `forward_skip(MjStage::Vel, _)`;
+/// - never in [`Data::step2`] or `forward_skip(MjStage::Vel, _)`, but see the
+///   sleep step below;
 /// - never while both `DISABLE_SPRING` and `DISABLE_DAMPER` are set: passive
 ///   forces are skipped as a whole, callback and passive plugins included
 ///   (MuJoCo's `mj_passive` does the same), so a component that must always
@@ -60,8 +61,13 @@ impl<F: ?Sized> fmt::Debug for Callback<F> {
 ///   where MuJoCo's `mjd_transitionFD` skips the velocity stage (registry
 ///   `D-FD-CTRL-COLUMNS`), so B holds what it does with `ctrl`.
 ///
-/// Not matched: on the step that puts a tree to sleep, MuJoCo runs the forward
-/// pass once more (both callbacks fire twice); sim-core does not.
+/// On the step that puts a tree to sleep, the advance ([`Data::integrate`])
+/// runs the forward pass once more from the velocity stage, as MuJoCo's
+/// `mj_advance` does (`engine_forward.c:899-901`): both callbacks fire once
+/// more, so twice per Euler or implicit step, five times per RK4 step, and
+/// once in `step2`. The reset of a sleep-enabled model with a tree that
+/// starts asleep ([`Model::make_data`], [`Data::reset`]) runs a forward pass
+/// too, as MuJoCo's does, and both fire there.
 ///
 /// [`MjStage::None`]: crate::MjStage::None
 /// [`MjStage::Pos`]: crate::MjStage::Pos
@@ -72,7 +78,9 @@ pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 /// Runs after the velocity stage (after [`CbPassive`]) and before actuation.
 /// Set `ctrl` (or `qfrc_applied` / `xfrc_applied`) here. Positions,
 /// velocities, passive forces and the bias force `qfrc_bias` are this pass's,
-/// as in MuJoCo.
+/// as in MuJoCo. The actuation stage reads a clamped copy of `ctrl`, or a
+/// delayed actuator's buffer at `time - delay`; `ctrl` keeps what the
+/// callback wrote.
 ///
 /// Not matched: MuJoCo has also built this pass's constraint rows (`efc_*`)
 /// by then; sim-core builds them after the callback, so it reads the previous
@@ -87,7 +95,8 @@ pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 ///   time, so a state-dependent controller is re-evaluated (unless
 ///   `DISABLE_ACTUATION` is set);
 /// - once per [`Data::step1`], even with `DISABLE_ACTUATION` set (MuJoCo's
-///   `mj_step1` does not check the flag); never in [`Data::step2`];
+///   `mj_step1` does not check the flag); never in [`Data::step2`] but on a
+///   sleep step, and once more on every sleep step (see [`CbPassive`]);
 /// - inside the transition finite differences; never in
 ///   [`crate::mjd_inverse_fd`] (MuJoCo's `mjd_inverseFD` fires none).
 ///

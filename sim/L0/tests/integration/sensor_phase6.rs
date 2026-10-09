@@ -1445,14 +1445,14 @@ fn t29_acc_unaffected_by_reftype() {
 }
 
 // ============================================================================
-// T37: Sleeping primary body with awake reference → supplementary
+// T37: framepos relative to another free body
 // ============================================================================
 
 #[test]
-fn t37_sleeping_body_skips_sensor() {
-    // When primary body is asleep, sensor is skipped regardless of reference state.
-    // We test this by setting the primary body to asleep and verifying sensordata
-    // stays at its initial value (0.0).
+fn t37_framepos_relative_to_another_free_body() {
+    // A framepos on a site relative to another free body reads the relative
+    // position. Sleep's rule for such a sensor (asleep only when neither
+    // body is awake) is sleep_parity.rs's sensor_mix trace.
     let mjcf = r#"
         <mujoco model="t37">
             <option gravity="0 0 0"/>
@@ -1473,8 +1473,6 @@ fn t37_sleeping_body_skips_sensor() {
         </mujoco>
     "#;
 
-    // Just verify it loads and runs without panic — sleep-skip logic uses
-    // sensor_body_id which looks at the primary object, not the reference.
     let model = load_model(mjcf).expect("load");
     let mut data = model.make_data();
     data.forward(&model).expect("forward");

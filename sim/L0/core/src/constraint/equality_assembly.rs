@@ -28,8 +28,11 @@ pub(super) fn assemble_equality_rows(
     qacc_smooth: &DVector<f64>,
 ) {
     // --- Equality constraints (connect, weld, joint, distance, tendon) ---
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     for eq_id in 0..model.neq {
-        if !model.eq_active[eq_id] {
+        if !model.eq_active[eq_id]
+            || (sleep_filter && crate::island::equality_asleep(model, data, eq_id))
+        {
             continue;
         }
 

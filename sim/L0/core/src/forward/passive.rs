@@ -364,7 +364,8 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     let sleep_filter = sleep_enabled && data.nv_awake < model.nv;
 
     // Zero all passive force vectors (S4.7a).
-    // When sleep is active, only zero awake DOFs (sleeping DOFs stay zero from init/reset).
+    // When sleep is active, only zero awake DOFs: a sleeping DOF keeps the values of
+    // its last awake pass, as MuJoCo's mj_passive clears the awake DOFs only.
     if sleep_filter {
         for &dof in &data.dof_awake_ind[..data.nv_awake] {
             data.qfrc_passive[dof] = 0.0;

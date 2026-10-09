@@ -109,6 +109,14 @@ pub mod activation_clamping;
 pub mod gravcomp;
 
 // ============================================================================
+// Actuator and Sensor Delays (history buffers)
+// ============================================================================
+
+/// Delays against MuJoCo 3.5.0's history buffers: delayed actuators and
+/// sensors, buffer initialisation, interval sensors, refusals.
+pub mod history;
+
+// ============================================================================
 // Body-Transmission Actuator Tests (§36 adhesion)
 // ============================================================================
 
@@ -164,6 +172,10 @@ pub mod newton_solver;
 /// Sleep deactivation tests: tree enumeration, policies, wake detection,
 /// pipeline skip, sensor freezing, batch independence.
 pub mod sleeping;
+
+/// Sleep against MuJoCo 3.5.0: kinematic trees, automatic sleep policies and
+/// body sleep states.
+pub mod sleep_parity;
 
 // ============================================================================
 // Flex Solver Unification Tests (§6b)

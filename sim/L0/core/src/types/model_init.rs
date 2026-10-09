@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
 use super::enums::{
-    Integrator, JointLayoutError, MIN_AWAKE, MakeDataError, MjJointType, RangeError, SleepPolicy,
-    SleepState, SolverType,
+    ENABLE_SLEEP, Integrator, JointLayoutError, MakeDataError, MjJointType, MjSensorType,
+    RangeError, ResetError, SleepPolicy, SleepState, SolverType, StepError,
 };
 use super::model::Model;
 
@@ -19,12 +19,98 @@ use super::model::Model;
 use crate::dynamics::SpatialVector;
 use crate::dynamics::crba::{DEFAULT_MASS_FALLBACK, mj_crba};
 use crate::dynamics::factor::mj_factor_sparse;
+use crate::forward::MjStage;
 use crate::jacobian::mj_jac_body_com;
 use crate::linalg::mj_solve_sparse_batch;
 
 use super::data::Data;
 use crate::forward::mj_fwd_position;
-use crate::island::{mj_update_sleep_arrays, reset_sleep_state};
+use crate::island::{K_AWAKE, mj_sleep, mj_update_sleep_arrays, reset_sleep_state};
+
+/// Why a model's history buffers cannot be initialised, shared by
+/// [`MakeDataError`] and [`ResetError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryRefusal {
+    /// History buffers with a timestep that is not positive.
+    InvalidTimestep,
+    /// A user or plugin sensor with a delay.
+    DelayedUserSensor(usize),
+}
+
+impl From<HistoryRefusal> for MakeDataError {
+    fn from(e: HistoryRefusal) -> Self {
+        match e {
+            HistoryRefusal::InvalidTimestep => Self::InvalidTimestep,
+            HistoryRefusal::DelayedUserSensor(sensor) => Self::DelayedUserSensor { sensor },
+        }
+    }
+}
+
+impl From<HistoryRefusal> for ResetError {
+    fn from(e: HistoryRefusal) -> Self {
+        match e {
+            HistoryRefusal::InvalidTimestep => Self::InvalidTimestep,
+            HistoryRefusal::DelayedUserSensor(sensor) => Self::DelayedUserSensor { sensor },
+        }
+    }
+}
+
+/// Why the trees that start asleep could not be put to sleep, shared by
+/// [`MakeDataError`] and [`ResetError`] (see [`Model::start_sleep`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitSleepRefusal {
+    /// The forward pass before they sleep failed.
+    Forward(StepError),
+    /// `mj_sleep` put `slept` of the `marked` trees to sleep.
+    NotSlept {
+        /// The trees whose policy is `Init`.
+        marked: usize,
+        /// The trees put to sleep.
+        slept: usize,
+        /// The first `Init` tree left awake.
+        tree: usize,
+        /// That tree's root body.
+        root_body: usize,
+    },
+}
+
+impl From<InitSleepRefusal> for MakeDataError {
+    fn from(e: InitSleepRefusal) -> Self {
+        match e {
+            InitSleepRefusal::Forward(e) => Self::InitForward(e),
+            InitSleepRefusal::NotSlept {
+                marked,
+                slept,
+                tree,
+                root_body,
+            } => Self::InitSleep {
+                marked,
+                slept,
+                tree,
+                root_body,
+            },
+        }
+    }
+}
+
+impl From<InitSleepRefusal> for ResetError {
+    fn from(e: InitSleepRefusal) -> Self {
+        match e {
+            InitSleepRefusal::Forward(e) => Self::InitForward(e),
+            InitSleepRefusal::NotSlept {
+                marked,
+                slept,
+                tree,
+                root_body,
+            } => Self::InitSleep {
+                marked,
+                slept,
+                tree,
+                root_body,
+            },
+        }
+    }
+}
 
 impl Model {
     /// Create an empty model with no bodies/joints.
@@ -567,14 +653,21 @@ impl Model {
     ///
     /// # Errors
     /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
-    /// [`MakeDataError::Range`] ([`Self::check_ranges`]), or
-    /// [`MakeDataError::PluginInit`] if a plugin's `init` returns an error.
+    /// [`MakeDataError::Range`] ([`Self::check_ranges`]), the history
+    /// buffers' refusals ([`MakeDataError::InvalidTimestep`],
+    /// [`MakeDataError::DelayedUserSensor`]), [`MakeDataError::PluginInit`]
+    /// if a plugin's `init` returns an error, or the reset's refusal of the
+    /// trees that start asleep ([`MakeDataError::InitSleep`],
+    /// [`MakeDataError::InitForward`]).
     ///
     /// # Panics
     /// As [`Self::check_joint_layout`] says.
     pub fn try_make_data(&self) -> Result<Data, MakeDataError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
+        if let Some(refusal) = self.history_refusal() {
+            return Err(refusal.into());
+        }
         let mut data = self.allocate_data();
         for i in 0..self.nplugin {
             self.plugin_objects[i]
@@ -584,8 +677,29 @@ impl Model {
                     message,
                 })?;
         }
-        data.reset(self);
+        data.reset_checked(self)?;
         Ok(data)
+    }
+
+    /// Why this model's history buffers cannot be initialised, if they
+    /// cannot: they need a positive timestep (MuJoCo `_resetData`,
+    /// `engine_io.c:1266-1270`, tests `nhistory && dt <= 0`), and a delayed
+    /// sample of a user or plugin sensor cannot be computed (MuJoCo's
+    /// `mj_computeSensor` has no such type and `mjERROR`s when it inserts
+    /// one, `engine_sensor.c:739-740`, `:858-859`, `:1316-1317`).
+    pub(crate) fn history_refusal(&self) -> Option<HistoryRefusal> {
+        if self.nhistory > 0 && self.timestep <= 0.0 {
+            return Some(HistoryRefusal::InvalidTimestep);
+        }
+        (0..self.nsensor)
+            .find(|&i| {
+                matches!(
+                    self.sensor_type[i],
+                    MjSensorType::User | MjSensorType::Plugin
+                ) && self.sensor_nsample[i] > 0
+                    && self.sensor_delay[i] > 0.0
+            })
+            .map(HistoryRefusal::DelayedUserSensor)
     }
 
     /// The `Data` that building a model derives values from (`acc0`,
@@ -596,7 +710,9 @@ impl Model {
     /// layout or a range `try_make_data` refuses.
     pub(crate) fn make_data_for_derivation(&self) -> Data {
         let mut data = self.allocate_data();
-        self.start_sleep(&mut data);
+        // Every tree awake: MuJoCo derives with sleep disabled
+        // (`user_model.cc:5108-5113`).
+        reset_sleep_state(self, &mut data);
         data
     }
 
@@ -622,26 +738,11 @@ impl Model {
             actuator_moment: vec![DVector::zeros(self.nv); self.nu],
             act_dot: DVector::zeros(self.na),
 
-            // Allocate and pre-populate history buffer
-            #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
+            // History buffers, as `_resetData` fills them
             history: {
-                let mut buf = vec![0.0f64; self.nhistory];
-                for i in 0..self.actuator_nsample.len() {
-                    let ns = self.actuator_nsample[i];
-                    if ns <= 0 {
-                        continue;
-                    }
-                    let adr = self.actuator_historyadr[i] as usize;
-                    let n = ns as usize;
-                    // metadata0 = 0.0 (already zero)
-                    // metadata1 = float(nsample - 1)
-                    buf[adr + 1] = (n - 1) as f64;
-                    // times = [-(n)*ts, -(n-1)*ts, ..., -ts]
-                    let ts = self.timestep;
-                    for k in 0..n {
-                        buf[adr + 2 + k] = -((n - k) as f64) * ts;
-                    }
-                    // values = all 0.0 (already zero)
+                let mut buf = vec![0.0; self.nhistory];
+                if self.nhistory > 0 {
+                    crate::history::init(self, &mut buf);
                 }
                 buf
             },
@@ -804,70 +905,13 @@ impl Model {
             energy_initial_captured: false,
             solver_fwdinv: [0.0, 0.0],
 
-            // Sleep state (§16.7) — initialized from tree sleep policies.
-            // For models not built through MJCF (ntree == 0 or body_treeid not populated),
-            // all bodies start awake and sleep is effectively a no-op.
-            #[allow(clippy::needless_range_loop)]
-            tree_asleep: {
-                let mut v = vec![-(1 + MIN_AWAKE); self.ntree];
-                for t in 0..self.ntree {
-                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
-                        // `t < ntree ≤ nbody`, well below `i32::MAX`, so the wrap/truncation casts are exact.
-                        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-                        {
-                            v[t] = t as i32; // Start asleep (ntree ≤ nbody ≪ i32::MAX)
-                        }
-                    }
-                }
-                v
-            },
-            // Indexed loop reads `tree_sleep_policy[t]` and writes `v[t]` at the same index; iterator forms would obscure the parallel-array update.
-            #[allow(clippy::needless_range_loop)]
-            tree_awake: {
-                let mut v = vec![true; self.ntree];
-                for t in 0..self.ntree {
-                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
-                        v[t] = false;
-                    }
-                }
-                v
-            },
-            // Indexed loop reads `tree_sleep_policy[tree]` and writes `v[body_id]` after a tree-id lookup; iterator forms would obscure the indirect indexing.
-            #[allow(clippy::needless_range_loop)]
-            body_sleep_state: {
-                let mut v = vec![SleepState::Awake; self.nbody];
-                if self.nbody > 0 {
-                    v[0] = SleepState::Static; // World body
-                }
-                // Mark bodies in Init trees as Asleep (only if tree enumeration was run)
-                if self.body_treeid.len() == self.nbody {
-                    for body_id in 1..self.nbody {
-                        let tree = self.body_treeid[body_id];
-                        if tree < self.ntree && self.tree_sleep_policy[tree] == SleepPolicy::Init {
-                            v[body_id] = SleepState::Asleep;
-                        }
-                    }
-                }
-                v
-            },
-            ntree_awake: {
-                let mut count = self.ntree;
-                for t in 0..self.ntree {
-                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
-                        count -= 1;
-                    }
-                }
-                count
-            },
-            nv_awake: {
-                let mut count = self.nv;
-                for t in 0..self.ntree {
-                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
-                        count -= self.tree_dof_num[t];
-                    }
-                }
-                count
-            },
+            // Sleep state (§16.7): every tree awake; `Model::start_sleep` puts
+            // the trees that start asleep to sleep and fills the arrays.
+            tree_asleep: vec![K_AWAKE; self.ntree],
+            tree_awake: vec![true; self.ntree],
+            body_sleep_state: vec![SleepState::Awake; self.nbody],
+            ntree_awake: self.ntree,
+            nv_awake: self.nv,
 
             // Awake-index indirection arrays (§16.17).
             // Allocated to worst-case size; populated by mj_update_sleep_arrays().
@@ -894,12 +938,6 @@ impl Model {
             map_efc2iefc: Vec::new(),
             map_iefc2efc: Vec::new(),
             contact_island: Vec::new(),
-
-            // Island scratch space (§16.11)
-            island_scratch_stack: vec![0; self.ntree],
-            island_scratch_rownnz: vec![0; self.ntree],
-            island_scratch_rowadr: vec![0; self.ntree],
-            island_scratch_colind: Vec::new(),
 
             // qpos change detection (§16.15)
             tree_qpos_dirty: vec![false; self.ntree],
@@ -969,49 +1007,52 @@ impl Model {
         }
     }
 
-    /// Start the sleep state: trees that start asleep get their kinematics
-    /// and mass matrix first, as `make_data` has always computed them, then
-    /// every tree is put in the state its policy gives.
-    pub(crate) fn start_sleep(&self, data: &mut Data) {
-        // Run initial FK to populate body/geom/site positions from qpos0.
-        // This must happen BEFORE sleep gating takes effect so that Init-asleep
-        // bodies have correct world positions. We temporarily mark all bodies
-        // as Awake, run FK, then restore the Init-sleep state.
-        // Only needed when there are Init-asleep trees; other models get FK
-        // from their first forward()/step() call.
-        let has_init_asleep = (0..self.ntree).any(|t| data.tree_asleep[t] >= 0);
-        if has_init_asleep {
-            // Temporarily wake all bodies for FK + CRBA
-            let saved_body_sleep = data.body_sleep_state.clone();
-            let saved_tree_asleep = data.tree_asleep.clone();
-            let saved_tree_awake = data.tree_awake.clone();
-            for b in 1..self.nbody {
-                data.body_sleep_state[b] = SleepState::Awake;
-            }
-            for t in 0..self.ntree {
-                data.tree_awake[t] = true;
-                data.tree_asleep[t] = -(1 + MIN_AWAKE);
-            }
-            // Temporarily update awake-index arrays so CRBA's sleep_filter
-            // evaluates to false (all bodies awake).
-            mj_update_sleep_arrays(self, data);
-
-            // Run FK and CRBA to populate body positions and mass matrix.
-            // CRBA is required so that Init-asleep bodies have valid qM
-            // entries before selective CRBA (§16.29.3) begins preserving them.
-            mj_fwd_position(self, data);
-            mj_crba(self, data);
-
-            // Restore sleep states
-            data.body_sleep_state = saved_body_sleep;
-            data.tree_asleep = saved_tree_asleep;
-            data.tree_awake = saved_tree_awake;
-        }
-
-        // Initialize sleep state with union-find validation (§16.24).
-        // This replaces the inline Init-sleep self-links with proper
-        // island-aware sleep cycles.
+    /// Start the sleep state, as MuJoCo's `mj_resetData` (3.5.0
+    /// `engine_io.c:1440-1505`): every tree awake; then, with sleep enabled
+    /// and a tree whose policy is `Init`, a forward pass, those trees marked
+    /// ready, `mj_sleep`, and `qacc_smooth`, `qfrc_smooth` and the constraint
+    /// rows cleared. With sleep enabled and no such tree, MuJoCo's reset also
+    /// computes the kinematics, centres of mass, cameras and tendons
+    /// (`:1453-1458`); this computes none of them.
+    ///
+    /// # Errors
+    /// The forward pass's error, or the trees that start asleep that
+    /// `mj_sleep` could not put to sleep (a tree in an island with an awake
+    /// one): MuJoCo raises an error for both.
+    pub(crate) fn start_sleep(&self, data: &mut Data) -> Result<(), InitSleepRefusal> {
         reset_sleep_state(self, data);
+        let init = |t: &usize| self.tree_sleep_policy[*t] == SleepPolicy::Init;
+        let marked = (0..self.ntree).filter(init).count();
+        if self.enableflags & ENABLE_SLEEP == 0 || marked == 0 {
+            return Ok(());
+        }
+        // MuJoCo's reset runs `mj_forward`, which checks no timestep (a
+        // timestep at or below 0 is refused only with history buffers,
+        // before this) and raises on a tendon equality with sleep.
+        crate::forward::check::check_tendon_equality_sleep(self)
+            .map_err(InitSleepRefusal::Forward)?;
+        data.forward_skip_unchecked(self, MjStage::None, false)
+            .map_err(InitSleepRefusal::Forward)?;
+        for t in 0..self.ntree {
+            data.tree_asleep[t] = if init(&t) { -1 } else { K_AWAKE };
+        }
+        let slept = mj_sleep(self, data);
+        if slept != marked {
+            let tree = (0..self.ntree)
+                .find(|t| init(t) && data.tree_asleep[*t] < 0)
+                .unwrap_or(0);
+            return Err(InitSleepRefusal::NotSlept {
+                marked,
+                slept,
+                tree,
+                root_body: self.tree_body_adr[tree],
+            });
+        }
+        data.qacc_smooth.fill(0.0);
+        data.qfrc_smooth.fill(0.0);
+        crate::constraint::clear_constraint_rows(self, data);
+        mj_update_sleep_arrays(self, data);
+        Ok(())
     }
 
     /// Compute pre-computed kinematic data (ancestor lists and masks).
@@ -1342,47 +1383,51 @@ impl Model {
     }
 }
 
-/// Compute characteristic body length for dof_length normalization (§16.14.1).
-///
-/// For each body, compute the maximum extent from this body through the
-/// kinematic chain to any descendant. This gives a length scale that converts
-/// angular velocity [rad/s] to tip velocity [m/s] for the mechanism rooted
-/// at this body.
+/// Each body's size, MuJoCo's `setStat` at `qpos0` (3.5.0
+/// `engine_setconst.c:976-1025`): the largest distance from the body's centre
+/// of mass to the anchor of a joint of its own or of a child's; then the
+/// largest `rbound` plus the distance from the centre of mass to the geom, over
+/// its geoms with a finite positive `rbound` (a plane's is 0 in MuJoCo and
+/// infinite here); at least 1e-5. MuJoCo also takes the flex
+/// edge lengths at a flex vertex body; a flex vertex body here has slide
+/// joints only, whose dofs do not read the size, so that term is left out.
 fn compute_body_lengths(model: &Model) -> Vec<f64> {
-    let mut body_length = vec![0.0_f64; model.nbody];
-
-    // Backward pass: accumulate subtree extents from leaves to root
-    for body_id in (1..model.nbody).rev() {
-        let parent = model.body_parent[body_id];
-
-        // Distance from parent to this body (local position in parent frame)
-        let pos = &model.body_pos[body_id];
-        let dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
-
-        // This body's extent: own subtree extent + distance to parent
-        let child_extent = body_length[body_id] + dist;
-        body_length[parent] = body_length[parent].max(child_extent);
-    }
-
-    // Ensure minimum length (no normalization for tiny/zero-extent bodies)
-    for length in &mut body_length {
-        if *length < 1e-10 {
-            *length = 1.0;
+    let mut data = model.make_data_for_derivation();
+    mj_fwd_position(model, &mut data);
+    let mut size = vec![0.0_f64; model.nbody];
+    for jnt in 0..model.njnt {
+        let body = model.jnt_body[jnt];
+        for b in [body, model.body_parent[body]] {
+            size[b] = size[b].max((data.xipos[b] - data.xanchor[jnt]).norm());
         }
     }
-
-    body_length
+    for (b, body_size) in size.iter_mut().enumerate().skip(1) {
+        for g in model.body_geom_adr[b]..model.body_geom_adr[b] + model.body_geom_num[b] {
+            let rbound = model.geom_rbound[g];
+            if rbound > 0.0 && rbound.is_finite() {
+                *body_size = body_size.max(rbound + (data.xipos[b] - data.geom_xpos[g]).norm());
+            }
+        }
+        *body_size = body_size.max(1e-5);
+    }
+    size
 }
 
-/// Compute per-DOF mechanism lengths (§16.14.2).
+/// Each dof's length, MuJoCo's `dof_length` (`engine_setconst.c:1027-1043`).
 ///
-/// Rotational DOFs get the body length (converts rad/s to m/s at the tip).
-/// Translational DOFs keep 1.0 (already in m/s).
+/// A rotational dof (hinge, ball, a free joint's last three) takes its body's
+/// size (`compute_body_lengths`), a translational one 1. Sleep compares
+/// `dof_length · |qvel|` with the sleep tolerance.
 ///
-/// Called during model construction to replace the Phase A uniform 1.0.
+/// The sizes come from the kinematics at `qpos0`, so they need a model whose
+/// joint layout and ranges [`Model::try_make_data`] accepts; for another
+/// model, which cannot be stepped, every dof takes 1.
 pub fn compute_dof_lengths(model: &mut Model) {
+    model.dof_length = vec![1.0; model.nv];
+    if model.nv == 0 || model.check_joint_layout().is_err() || model.check_ranges().is_err() {
+        return;
+    }
     let body_length = compute_body_lengths(model);
-    model.dof_length.resize(model.nv, 1.0);
 
     // (§27F) All DOFs now have real joints — iterate all DOFs uniformly.
     for dof in 0..model.nv {
@@ -1401,6 +1446,51 @@ pub fn compute_dof_lengths(model: &mut Model) {
         } else {
             model.dof_length[dof] = 1.0; // translational: already in [m/s]
         }
+    }
+}
+
+#[cfg(test)]
+mod dof_length_tests {
+    use super::compute_dof_lengths;
+    use crate::types::Model;
+    use nalgebra::Vector3;
+
+    /// A plane on a moving body (MuJoCo refuses one; this crate takes it) has
+    /// an infinite bounding radius, so it does not size its body: the free
+    /// body's centre of mass is its joint anchor, which leaves MuJoCo's
+    /// floor, 1e-5.
+    #[test]
+    fn a_plane_does_not_size_its_body() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.add_ground_plane();
+        model.geom_body[0] = 1;
+        model.body_geom_num[0] = 0;
+        model.body_geom_adr[1] = 0;
+        model.body_geom_num[1] = 1;
+        model.compute_geom_bounding_radii();
+        assert!(model.geom_rbound[0].is_infinite());
+        compute_dof_lengths(&mut model);
+        assert_eq!(model.dof_length, vec![1.0, 1.0, 1.0, 1e-5, 1e-5, 1e-5]);
+    }
+
+    /// A geom with a bounding radius of 0 does not size its body either, as
+    /// MuJoCo takes only positive radii: a zero-radius sphere 0.3 from the
+    /// centre of mass leaves the floor.
+    #[test]
+    fn a_zero_radius_geom_does_not_size_its_body() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.add_ground_plane();
+        model.geom_type[0] = crate::types::GeomType::Sphere;
+        model.geom_size[0] = Vector3::zeros();
+        model.geom_pos[0] = Vector3::new(0.3, 0.0, 0.0);
+        model.geom_body[0] = 1;
+        model.body_geom_num[0] = 0;
+        model.body_geom_adr[1] = 0;
+        model.body_geom_num[1] = 1;
+        model.compute_geom_bounding_radii();
+        assert_eq!(model.geom_rbound[..1], [0.0]);
+        compute_dof_lengths(&mut model);
+        assert_eq!(model.dof_length, vec![1.0, 1.0, 1.0, 1e-5, 1e-5, 1e-5]);
     }
 }
 
@@ -1455,6 +1545,19 @@ mod joint_layout_tests {
                 joint: 0
             }))
         );
+    }
+
+    /// A model whose joint layout `try_make_data` refuses cannot be stepped,
+    /// so no body is sized: every `dof_length` is 1.
+    #[test]
+    fn a_refused_layout_takes_unit_dof_lengths() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        add_ball_joint(&mut m, b, "ball0");
+        hinge(&mut m, b, "h0");
+        finalize(&mut m);
+        super::compute_dof_lengths(&mut m);
+        assert_eq!(m.dof_length, vec![1.0; 4]);
     }
 
     /// MuJoCo refuses a ball followed by a rotation; this also refuses a ball

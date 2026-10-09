@@ -637,7 +637,7 @@ mod tests {
         let mut data = model.make_data();
 
         // Call integrate — plugin advance fires at end
-        data.integrate(&model);
+        data.integrate(&model).expect("integrate");
 
         assert_eq!(advance_count.load(Ordering::Relaxed), 1);
     }

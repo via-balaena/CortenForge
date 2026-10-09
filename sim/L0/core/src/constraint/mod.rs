@@ -37,21 +37,7 @@ use crate::constraint::solver::noslip::noslip_postprocess;
 use crate::constraint::solver::pgs::pgs_solve_unified;
 
 use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
-use crate::island::populate_efc_island;
-
-/// Island-aware constraint dispatch.
-///
-/// Currently routes directly to [`mj_fwd_constraint`] — island decomposition
-/// is not yet implemented; the unified solvers handle all constraint types
-/// globally.
-// Solver dispatch is inlined as a single function so the per-mode branching (CG / Newton / PGS / primal) reads end-to-end; cast lints are usize/i32 indexing already validated upstream.
-#[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
-pub(crate) fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
-    // §29: ALL solver types now route through unified constraint assembly + solver.
-    // Island decomposition is no longer needed — the unified solvers handle all
-    // constraint types (equality, friction, limits, contacts, flex) globally.
-    mj_fwd_constraint(model, data);
-}
+use crate::island::mj_island;
 
 /// Compute the unconstrained acceleration (`qacc_smooth`) and smooth forces.
 ///
@@ -121,6 +107,18 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
     );
 
     // Store on Data for solver access
+    // A dof whose tree is asleep keeps the values of its last awake pass:
+    // MuJoCo computes them over the awake dofs only (`mj_fwdAcceleration`,
+    // engine_forward.c:574-605). Its tree has no constraint rows, so its
+    // entries reach no row.
+    if model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < nv {
+        for dof in 0..nv {
+            if !data.tree_awake[model.dof_treeid[dof]] {
+                qfrc_smooth[dof] = data.qfrc_smooth[dof];
+                qacc_smooth[dof] = data.qacc_smooth[dof];
+            }
+        }
+    }
     data.qacc_smooth = qacc_smooth.clone();
     data.qfrc_smooth = qfrc_smooth.clone();
 
@@ -299,7 +297,7 @@ fn warmstart(model: &Model, data: &mut Data) -> bool {
 /// 3. Dispatch to configured solver (Newton, CG, PGS)
 /// 4. Map efc_force → qfrc_constraint via J^T
 /// 5. Extract qfrc_frictionloss from efc_force
-fn mj_fwd_constraint(model: &Model, data: &mut Data) {
+pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     data.qfrc_constraint.fill(0.0);
     data.qfrc_frictionloss.fill(0.0);
     data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
@@ -308,27 +306,7 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
 
     // Defence-in-depth: clear EFC arrays unconditionally so that toggling
     // DISABLE_CONSTRAINT mid-simulation does not leave stale constraint data.
-    data.efc_type.clear();
-    data.efc_force = DVector::zeros(0);
-    data.efc_b = DVector::zeros(0);
-    data.efc_J = DMatrix::zeros(0, model.nv);
-    data.efc_vel = DVector::zeros(0);
-    data.efc_aref = DVector::zeros(0);
-    data.efc_jar = DVector::zeros(0);
-    data.efc_pos.clear();
-    data.efc_margin.clear();
-    data.efc_solref.clear();
-    data.efc_solimp.clear();
-    data.efc_diagApprox.clear();
-    data.efc_R.clear();
-    data.efc_D.clear();
-    data.efc_imp.clear();
-    data.efc_floss.clear();
-    data.efc_mu.clear();
-    data.efc_dim.clear();
-    data.efc_id.clear();
-    data.efc_state.clear();
-    data.efc_cone_hessian.clear();
+    clear_constraint_rows(model, data);
 
     // Step 1: Shared qacc_smooth computation
     let (qacc_smooth, _qfrc_smooth) = compute_qacc_smooth(model, data);
@@ -390,9 +368,9 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     }
     let nefc = data.efc_type.len();
 
-    // Step 2b: Populate efc_island from constraint rows and island data.
-    // This must happen after assembly since mj_island runs before us with stale efc data.
-    populate_efc_island(model, data);
+    // Step 2b: The islands, from the rows just made (MuJoCo: `mj_island`
+    // after `mj_makeConstraint`).
+    mj_island(model, data);
 
     if nefc == 0 {
         data.qacc.copy_from(&qacc_smooth_impl);
@@ -469,26 +447,51 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         }
     }
 
-    // Step 6: Zero sleeping DOFs (§16.26.5)
-    //
-    // Sleeping trees must have zero qacc, qfrc_constraint, and qfrc_frictionloss.
-    // The solver may produce non-zero forces for constraints involving sleeping bodies
-    // (e.g., resting contact with the ground plane). We zero them here to maintain
-    // the sleeping invariant. This is simpler than filtering constraints during assembly.
+    // Step 6: Sleeping DOFs (§16.26.5). A dof whose tree is asleep takes its
+    // last unconstrained acceleration, as MuJoCo copies `qacc_smooth` into
+    // the dofs outside every island (engine_forward.c:670-676), and no
+    // constraint force. The sleep arrays decide, not `tree_asleep`, so the
+    // forward pass of a sleep step solves the trees that just slept.
     if model.enableflags & ENABLE_SLEEP != 0 {
-        for tree in 0..model.ntree {
-            if data.tree_asleep[tree] < 0 {
-                continue; // Awake
-            }
-            let dof_start = model.tree_dof_adr[tree];
-            let dof_end = dof_start + model.tree_dof_num[tree];
-            for dof in dof_start..dof_end {
-                data.qacc[dof] = 0.0;
+        for dof in 0..model.nv {
+            if model
+                .dof_treeid
+                .get(dof)
+                .is_some_and(|&t| !data.tree_awake[t])
+            {
+                data.qacc[dof] = data.qacc_smooth[dof];
                 data.qfrc_constraint[dof] = 0.0;
                 data.qfrc_frictionloss[dof] = 0.0;
             }
         }
     }
+}
+
+/// Clear the constraint rows and the islands, keeping the contacts (MuJoCo's
+/// `mj_clearEfc`, `engine_memory.h:71-83`).
+pub(crate) fn clear_constraint_rows(model: &Model, data: &mut Data) {
+    data.efc_type.clear();
+    data.efc_force = DVector::zeros(0);
+    data.efc_b = DVector::zeros(0);
+    data.efc_J = DMatrix::zeros(0, model.nv);
+    data.efc_vel = DVector::zeros(0);
+    data.efc_aref = DVector::zeros(0);
+    data.efc_jar = DVector::zeros(0);
+    data.efc_pos.clear();
+    data.efc_margin.clear();
+    data.efc_solref.clear();
+    data.efc_solimp.clear();
+    data.efc_diagApprox.clear();
+    data.efc_R.clear();
+    data.efc_D.clear();
+    data.efc_imp.clear();
+    data.efc_floss.clear();
+    data.efc_mu.clear();
+    data.efc_dim.clear();
+    data.efc_id.clear();
+    data.efc_state.clear();
+    data.efc_cone_hessian.clear();
+    data.nisland = 0;
 }
 
 /// Compute the velocity of a point on a body.

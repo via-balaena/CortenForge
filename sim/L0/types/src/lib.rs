@@ -4,8 +4,6 @@
 //!
 //! - [`BodyId`] - Unique identifier for rigid bodies
 //! - [`Pose`] - Position and orientation in 3D space
-//! - [`SimulationConfig`] - Timestep, solver, and gravity settings
-//! - [`Gravity`] - Gravity configuration
 //!
 //! # Layer 0
 //!
@@ -28,14 +26,11 @@
 //! # Example
 //!
 //! ```
-//! use sim_types::{Pose, SimulationConfig, Gravity};
+//! use sim_types::Pose;
 //! use nalgebra::Point3;
 //!
 //! let pose = Pose::from_position(Point3::new(0.0, 0.0, 1.0));
 //! assert_eq!(pose.position.z, 1.0);
-//!
-//! let config = SimulationConfig::with_timestep(0.001).gravity(Gravity::moon());
-//! assert!(config.validate().is_ok());
 //! ```
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
@@ -49,18 +44,11 @@
 )]
 
 mod body;
-mod config;
-mod error;
 
 pub use body::{BodyId, Pose};
-pub use config::{Gravity, SimulationConfig, SolverConfig};
-pub use error::SimError;
 
 // Re-export math types for convenience
 pub use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};
-
-/// Result type for simulation operations.
-pub type Result<T> = std::result::Result<T, SimError>;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]

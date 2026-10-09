@@ -11,7 +11,7 @@
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType,
-    MjSensorType, Model, SensorStage, SleepState,
+    MjSensorType, Model, SensorStage,
 };
 use nalgebra::Vector3;
 
@@ -19,7 +19,6 @@ use crate::dynamics::{object_acceleration, object_force};
 use crate::forward::mj_body_accumulators;
 
 use super::postprocess::{sensor_write, sensor_write3};
-use super::sensor_body_id;
 
 /// Compute acceleration-dependent sensor values.
 ///
@@ -37,7 +36,8 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
         return;
     }
 
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // MuJoCo skips a sleeping sensor while some body sleeps (`engine_sensor.c:1467-1475`).
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
 
     for sensor_id in 0..model.nsensor {
         // Skip non-acceleration sensors
@@ -45,231 +45,242 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
             continue;
         }
 
-        // §16.5d: Skip sensors on sleeping bodies
-        if sleep_enabled
-            && let Some(body_id) = sensor_body_id(model, sensor_id)
-            && data.body_sleep_state[body_id] == SleepState::Asleep
-        {
+        // §16.5d: a sleeping sensor keeps its value
+        if sleep_filter && crate::island::sensor_asleep(model, data, sensor_id) {
             continue;
         }
 
-        let adr = model.sensor_adr[sensor_id];
-        let objid = model.sensor_objid[sensor_id];
-
-        // Lazy gate: trigger mj_body_accumulators on demand for sensor types
-        // that read cacc/cfrc_int/cfrc_ext. Touch, ActuatorFrc, and limit
-        // sensors read efc_force directly and do NOT need body accumulators.
-        if !data.flg_rnepost {
-            match model.sensor_type[sensor_id] {
-                MjSensorType::Accelerometer
-                | MjSensorType::Force
-                | MjSensorType::Torque
-                | MjSensorType::FrameLinAcc
-                | MjSensorType::FrameAngAcc => {
-                    mj_body_accumulators(model, data);
-                }
-                MjSensorType::User
-                    if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
-                {
-                    mj_body_accumulators(model, data);
-                }
-                _ => {}
-            }
+        // MuJoCo `compute_or_read_sensor` (engine_sensor.c:1346-1388): a
+        // delayed sensor, or an interval sensor between ticks, reads its
+        // buffer instead.
+        if crate::history::sensor_reads_history(model, data, sensor_id) {
+            crate::history::read_sensor(model, data, sensor_id);
+            continue;
         }
-
-        match model.sensor_type[sensor_id] {
-            MjSensorType::Accelerometer => {
-                let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => (
-                        model.site_body[objid],
-                        data.site_xpos[objid],
-                        data.site_xmat[objid],
-                    ),
-                    MjObjectType::Body if objid < model.nbody => {
-                        (objid, data.xpos[objid], data.xmat[objid])
-                    }
-                    _ => {
-                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
-                        continue;
-                    }
-                };
-                let (_alpha, a_lin) =
-                    object_acceleration(data, body_id, &site_pos, Some(&site_mat));
-                sensor_write3(&mut data.sensordata, adr, &a_lin);
-            }
-
-            MjSensorType::Force => {
-                let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => (
-                        model.site_body[objid],
-                        data.site_xpos[objid],
-                        data.site_xmat[objid],
-                    ),
-                    MjObjectType::Body if objid < model.nbody => {
-                        (objid, data.xpos[objid], data.xmat[objid])
-                    }
-                    _ => {
-                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
-                        continue;
-                    }
-                };
-                // Force is translation-invariant — only torque shifts. The torque
-                // component is computed but discarded (minor wasted work, acceptable
-                // for API consistency with Torque arm which reads the same wrench).
-                let (_torque, force) = object_force(data, body_id, &site_pos, Some(&site_mat));
-                sensor_write3(&mut data.sensordata, adr, &force);
-            }
-
-            MjSensorType::Torque => {
-                let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => (
-                        model.site_body[objid],
-                        data.site_xpos[objid],
-                        data.site_xmat[objid],
-                    ),
-                    MjObjectType::Body if objid < model.nbody => {
-                        (objid, data.xpos[objid], data.xmat[objid])
-                    }
-                    _ => {
-                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
-                        continue;
-                    }
-                };
-                let (torque, _force) = object_force(data, body_id, &site_pos, Some(&site_mat));
-                sensor_write3(&mut data.sensordata, adr, &torque);
-            }
-
-            MjSensorType::Touch => {
-                // Touch sensor: sum of normal contact forces on all geoms of the
-                // sensor's body. MuJoCo: objid = site_id, resolves to body at
-                // runtime via site_bodyid[objid], then iterates ALL contacts
-                // checking geom_bodyid[con->geom[k]] == bodyid.
-                let body_id = if objid < model.nsite {
-                    model.site_body[objid]
-                } else {
-                    sensor_write(&mut data.sensordata, adr, 0, 0.0);
-                    continue;
-                };
-
-                let mut total_force = 0.0;
-                let nefc = data.efc_type.len();
-                let mut ei = 0;
-                while ei < nefc {
-                    let dim = data.efc_dim[ei];
-                    if matches!(
-                        data.efc_type[ei],
-                        ConstraintType::ContactElliptic
-                            | ConstraintType::ContactFrictionless
-                            | ConstraintType::ContactPyramidal
-                    ) {
-                        let ci = data.efc_id[ei];
-                        if ci < data.contacts.len() {
-                            let c = &data.contacts[ci];
-                            // Body-level match: check if either contact body matches
-                            // the sensor's body (MuJoCo: geom_bodyid[con->geom[k]] == bodyid)
-                            let (geom1_body, geom2_body) = c.bodies(model);
-                            if body_id == geom1_body || body_id == geom2_body {
-                                // Read normal force from efc_force.
-                                // NOTE: This reads efc_force directly, NOT via mj_contactForce().
-                                // For frictionless/elliptic contacts, efc_force[0] IS the normal
-                                // force. For pyramidal contacts, this sums facet projections —
-                                // ~75% of the true normal force (DT-118 tracks full conformance).
-                                if data.efc_type[ei] == ConstraintType::ContactPyramidal {
-                                    for k in 0..dim {
-                                        total_force += data.efc_force[ei + k];
-                                    }
-                                } else {
-                                    total_force += data.efc_force[ei];
-                                }
-                            }
-                        }
-                        ei += dim;
-                    } else {
-                        ei += 1;
-                    }
-                }
-                sensor_write(&mut data.sensordata, adr, 0, total_force);
-            }
-
-            MjSensorType::ActuatorFrc if objid < model.nu => {
-                // Scalar actuator force (transmission-independent).
-                // Matches MuJoCo: actuatorfrc sensor = actuator_force[objid].
-                sensor_write(&mut data.sensordata, adr, 0, data.actuator_force[objid]);
-            }
-
-            MjSensorType::JointLimitFrc if objid < data.jnt_limit_frc.len() => {
-                // Joint limit force: read cached constraint force magnitude.
-                // objid is the joint index (resolved by model builder).
-                sensor_write(&mut data.sensordata, adr, 0, data.jnt_limit_frc[objid]);
-            }
-
-            MjSensorType::TendonLimitFrc if objid < data.ten_limit_frc.len() => {
-                // Tendon limit force: read cached constraint force magnitude.
-                // objid is the tendon index (resolved by model builder).
-                sensor_write(&mut data.sensordata, adr, 0, data.ten_limit_frc[objid]);
-            }
-
-            MjSensorType::FrameLinAcc => {
-                let (body_id, obj_pos) = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => {
-                        (model.site_body[objid], data.site_xpos[objid])
-                    }
-                    MjObjectType::XBody if objid < model.nbody => (objid, data.xpos[objid]),
-                    MjObjectType::Body if objid < model.nbody => (objid, data.xipos[objid]),
-                    MjObjectType::Geom if objid < model.ngeom => {
-                        (model.geom_body[objid], data.geom_xpos[objid])
-                    }
-                    _ => {
-                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
-                        continue;
-                    }
-                };
-                let (_alpha, a_lin) = object_acceleration(data, body_id, &obj_pos, None);
-                sensor_write3(&mut data.sensordata, adr, &a_lin);
-            }
-
-            MjSensorType::FrameAngAcc => {
-                // Angular acceleration in world frame. Reads the angular
-                // component of cacc. Angular acceleration is reference-point-
-                // independent for a rigid body — no Coriolis correction needed.
-                let body_id = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => model.site_body[objid],
-                    MjObjectType::XBody | MjObjectType::Body if objid < model.nbody => objid,
-                    MjObjectType::Geom if objid < model.ngeom => model.geom_body[objid],
-                    _ => {
-                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
-                        continue;
-                    }
-                };
-
-                let cacc = data.cacc[body_id];
-                let alpha = Vector3::new(cacc[0], cacc[1], cacc[2]);
-                sensor_write3(&mut data.sensordata, adr, &alpha);
-            }
-
-            // DT-79: User-defined sensors at acceleration stage
-            MjSensorType::User
-                if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
-            {
-                if let Some(ref cb) = model.cb_sensor {
-                    (cb.0)(model, data, sensor_id, SensorStage::Acc);
-                }
-            }
-
-            // JointActuatorFrc: reads net actuator force at joint DOF.
-            // MuJoCo: mjSENS_JOINTACTFRC in mj_computeSensorAcc.
-            MjSensorType::JointActuatorFrc => {
-                let objid = model.sensor_objid[sensor_id];
-                let adr = model.sensor_adr[sensor_id];
-                let dof_adr = model.jnt_dof_adr[objid];
-                sensor_write(&mut data.sensordata, adr, 0, data.qfrc_actuator[dof_adr]);
-            }
-
-            // Skip position/velocity-dependent sensors
-            _ => {}
-        }
+        compute_acc_sensor(model, data, sensor_id);
     }
 
     // §66: Plugin sensor dispatch at acceleration stage
     super::compute_plugin_sensors(model, data, crate::plugin::PluginStage::Acc);
+}
+
+/// Compute acc-stage sensor `sensor_id` into `sensordata`, without its
+/// cutoff. MuJoCo `mj_computeSensorAcc`.
+// The per-sensor-type dispatch as one function, so the branching reads end-to-end.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
+    let adr = model.sensor_adr[sensor_id];
+    let objid = model.sensor_objid[sensor_id];
+
+    // Lazy gate: trigger mj_body_accumulators on demand for sensor types
+    // that read cacc/cfrc_int/cfrc_ext. Touch, ActuatorFrc, and limit
+    // sensors read efc_force directly and do NOT need body accumulators.
+    if !data.flg_rnepost {
+        match model.sensor_type[sensor_id] {
+            MjSensorType::Accelerometer
+            | MjSensorType::Force
+            | MjSensorType::Torque
+            | MjSensorType::FrameLinAcc
+            | MjSensorType::FrameAngAcc => {
+                mj_body_accumulators(model, data);
+            }
+            MjSensorType::User
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
+            {
+                mj_body_accumulators(model, data);
+            }
+            _ => {}
+        }
+    }
+
+    match model.sensor_type[sensor_id] {
+        MjSensorType::Accelerometer => {
+            let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
+                MjObjectType::Site if objid < model.nsite => (
+                    model.site_body[objid],
+                    data.site_xpos[objid],
+                    data.site_xmat[objid],
+                ),
+                MjObjectType::Body if objid < model.nbody => {
+                    (objid, data.xpos[objid], data.xmat[objid])
+                }
+                _ => {
+                    sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                    return;
+                }
+            };
+            let (_alpha, a_lin) = object_acceleration(data, body_id, &site_pos, Some(&site_mat));
+            sensor_write3(&mut data.sensordata, adr, &a_lin);
+        }
+
+        MjSensorType::Force => {
+            let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
+                MjObjectType::Site if objid < model.nsite => (
+                    model.site_body[objid],
+                    data.site_xpos[objid],
+                    data.site_xmat[objid],
+                ),
+                MjObjectType::Body if objid < model.nbody => {
+                    (objid, data.xpos[objid], data.xmat[objid])
+                }
+                _ => {
+                    sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                    return;
+                }
+            };
+            // Force is translation-invariant — only torque shifts. The torque
+            // component is computed but discarded (minor wasted work, acceptable
+            // for API consistency with Torque arm which reads the same wrench).
+            let (_torque, force) = object_force(data, body_id, &site_pos, Some(&site_mat));
+            sensor_write3(&mut data.sensordata, adr, &force);
+        }
+
+        MjSensorType::Torque => {
+            let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
+                MjObjectType::Site if objid < model.nsite => (
+                    model.site_body[objid],
+                    data.site_xpos[objid],
+                    data.site_xmat[objid],
+                ),
+                MjObjectType::Body if objid < model.nbody => {
+                    (objid, data.xpos[objid], data.xmat[objid])
+                }
+                _ => {
+                    sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                    return;
+                }
+            };
+            let (torque, _force) = object_force(data, body_id, &site_pos, Some(&site_mat));
+            sensor_write3(&mut data.sensordata, adr, &torque);
+        }
+
+        MjSensorType::Touch => {
+            // Touch sensor: sum of normal contact forces on all geoms of the
+            // sensor's body. MuJoCo: objid = site_id, resolves to body at
+            // runtime via site_bodyid[objid], then iterates ALL contacts
+            // checking geom_bodyid[con->geom[k]] == bodyid.
+            let body_id = if objid < model.nsite {
+                model.site_body[objid]
+            } else {
+                sensor_write(&mut data.sensordata, adr, 0, 0.0);
+                return;
+            };
+
+            let mut total_force = 0.0;
+            let nefc = data.efc_type.len();
+            let mut ei = 0;
+            while ei < nefc {
+                let dim = data.efc_dim[ei];
+                if matches!(
+                    data.efc_type[ei],
+                    ConstraintType::ContactElliptic
+                        | ConstraintType::ContactFrictionless
+                        | ConstraintType::ContactPyramidal
+                ) {
+                    let ci = data.efc_id[ei];
+                    if ci < data.contacts.len() {
+                        let c = &data.contacts[ci];
+                        // Body-level match: check if either contact body matches
+                        // the sensor's body (MuJoCo: geom_bodyid[con->geom[k]] == bodyid)
+                        let (geom1_body, geom2_body) = c.bodies(model);
+                        if body_id == geom1_body || body_id == geom2_body {
+                            // Read normal force from efc_force.
+                            // NOTE: This reads efc_force directly, NOT via mj_contactForce().
+                            // For frictionless/elliptic contacts, efc_force[0] IS the normal
+                            // force. For pyramidal contacts, this sums facet projections —
+                            // ~75% of the true normal force (DT-118 tracks full conformance).
+                            if data.efc_type[ei] == ConstraintType::ContactPyramidal {
+                                for k in 0..dim {
+                                    total_force += data.efc_force[ei + k];
+                                }
+                            } else {
+                                total_force += data.efc_force[ei];
+                            }
+                        }
+                    }
+                    ei += dim;
+                } else {
+                    ei += 1;
+                }
+            }
+            sensor_write(&mut data.sensordata, adr, 0, total_force);
+        }
+
+        MjSensorType::ActuatorFrc if objid < model.nu => {
+            // Scalar actuator force (transmission-independent).
+            // Matches MuJoCo: actuatorfrc sensor = actuator_force[objid].
+            sensor_write(&mut data.sensordata, adr, 0, data.actuator_force[objid]);
+        }
+
+        MjSensorType::JointLimitFrc if objid < data.jnt_limit_frc.len() => {
+            // Joint limit force: read cached constraint force magnitude.
+            // objid is the joint index (resolved by model builder).
+            sensor_write(&mut data.sensordata, adr, 0, data.jnt_limit_frc[objid]);
+        }
+
+        MjSensorType::TendonLimitFrc if objid < data.ten_limit_frc.len() => {
+            // Tendon limit force: read cached constraint force magnitude.
+            // objid is the tendon index (resolved by model builder).
+            sensor_write(&mut data.sensordata, adr, 0, data.ten_limit_frc[objid]);
+        }
+
+        MjSensorType::FrameLinAcc => {
+            let (body_id, obj_pos) = match model.sensor_objtype[sensor_id] {
+                MjObjectType::Site if objid < model.nsite => {
+                    (model.site_body[objid], data.site_xpos[objid])
+                }
+                MjObjectType::XBody if objid < model.nbody => (objid, data.xpos[objid]),
+                MjObjectType::Body if objid < model.nbody => (objid, data.xipos[objid]),
+                MjObjectType::Geom if objid < model.ngeom => {
+                    (model.geom_body[objid], data.geom_xpos[objid])
+                }
+                _ => {
+                    sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                    return;
+                }
+            };
+            let (_alpha, a_lin) = object_acceleration(data, body_id, &obj_pos, None);
+            sensor_write3(&mut data.sensordata, adr, &a_lin);
+        }
+
+        MjSensorType::FrameAngAcc => {
+            // Angular acceleration in world frame. Reads the angular
+            // component of cacc. Angular acceleration is reference-point-
+            // independent for a rigid body — no Coriolis correction needed.
+            let body_id = match model.sensor_objtype[sensor_id] {
+                MjObjectType::Site if objid < model.nsite => model.site_body[objid],
+                MjObjectType::XBody | MjObjectType::Body if objid < model.nbody => objid,
+                MjObjectType::Geom if objid < model.ngeom => model.geom_body[objid],
+                _ => {
+                    sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                    return;
+                }
+            };
+
+            let cacc = data.cacc[body_id];
+            let alpha = Vector3::new(cacc[0], cacc[1], cacc[2]);
+            sensor_write3(&mut data.sensordata, adr, &alpha);
+        }
+
+        // DT-79: User-defined sensors at acceleration stage
+        MjSensorType::User
+            if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
+        {
+            if let Some(ref cb) = model.cb_sensor {
+                (cb.0)(model, data, sensor_id, SensorStage::Acc);
+            }
+        }
+
+        // JointActuatorFrc: reads net actuator force at joint DOF.
+        // MuJoCo: mjSENS_JOINTACTFRC in mj_computeSensorAcc.
+        MjSensorType::JointActuatorFrc => {
+            let objid = model.sensor_objid[sensor_id];
+            let adr = model.sensor_adr[sensor_id];
+            let dof_adr = model.jnt_dof_adr[objid];
+            sensor_write(&mut data.sensordata, adr, 0, data.qfrc_actuator[dof_adr]);
+        }
+
+        // Skip position/velocity-dependent sensors
+        _ => {}
+    }
 }

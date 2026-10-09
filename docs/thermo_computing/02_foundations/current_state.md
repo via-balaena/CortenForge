@@ -34,9 +34,10 @@ review pass.*
   7. `Stochastic` orthogonal trait + `disable_stochastic()` RAII guard
      for FD/autograd contexts (Decision 7 added by doc review M2)
 
-  *Erratum (2026-10):* 0.10 removes `install`. `try_install` refuses a model
-  that already has a passive callback, and `install_per_env` panics on one
-  instead of clearing it.
+  *Erratum (2026-10):* 0.10 removes `install` and `install_per_env`.
+  `try_install` refuses a model that already has a passive callback;
+  `BatchSim::try_new_per_env` refuses one too (`PerEnvError::Install`) and
+  `new_per_env` panics on one, instead of clearing it.
 - **Doc review pass COMPLETE for must-fixes**. M1 (sampling-error
   tolerance wording), M2 (Decision 7 stochastic gating), M3 (Q5
   escalated to active recon), M4 (Welford reset + merge), M5 (trait

@@ -71,7 +71,7 @@
 // Core type definitions (enums, Model, Data, contacts, keyframes)
 pub mod types;
 
-// Linear algebra utilities (Cholesky, LU, sparse solve, union-find)
+// Linear algebra utilities (Cholesky, LU, sparse solve)
 pub mod linalg;
 
 // Dynamics computations (spatial algebra, CRBA, RNE, factorization)
@@ -101,6 +101,9 @@ pub mod jacobian;
 
 // Integration dispatch (Euler, implicit tendon K/D, RK4)
 pub mod integrate;
+
+// Actuator and sensor history buffers (delays)
+pub(crate) mod history;
 
 // Inverse dynamics (§52)
 pub mod inverse;
@@ -210,6 +213,7 @@ pub use types::{
     FlexSelfCollide,
     GainType,
     GeomType,
+    HistoryError,
     Integrator,
     InterpolationType,
     JointLayoutError,
@@ -233,7 +237,6 @@ pub use types::{
     // Model struct (extracted to types/model.rs)
     // Sensor callback stage
     SensorStage,
-    SleepError,
     SleepPolicy,
     SleepState,
     SolverStat,

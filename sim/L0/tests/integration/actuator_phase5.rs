@@ -214,6 +214,44 @@ fn test_lengthrange_muscle_unlimited_silently_fails() {
     assert_relative_eq!(hi, 0.0, epsilon = 1e-10);
 }
 
+/// The length range is simulated with sleep disabled, as MuJoCo's compiler
+/// clears `mjENBL_SLEEP` before it (`user_model.cc:5111-5112`). The
+/// simulation runs before sim-mjcf derives the kinematic trees. Two muscles
+/// MuJoCo 3.5.0 loads with sleep on: one on a hinge a joint equality ties to
+/// a limited hinge (a constraint row every simulated step), one on a spatial
+/// tendon. Both load here with sleep on; their ranges are (0, 0) with sleep
+/// on and off, where MuJoCo's are not (Rigid-loading L44), so the comparison
+/// pins the load, not the range.
+#[test]
+fn lengthrange_is_simulated_with_sleep_disabled() {
+    let models = [
+        r#"<worldbody>
+            <body pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+            <body pos="1 0 1"><joint name="k" type="hinge" axis="0 1 0" limited="true" range="-1 1"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+          </worldbody>
+          <equality><joint joint1="j" joint2="k"/></equality>
+          <actuator><muscle joint="j"/></actuator>"#,
+        r#"<worldbody><site name="s0" pos="0.3 0 1.5"/>
+            <body pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" limited="true" range="-1 1"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+              <site name="s1" pos="0.3 0 0"/></body>
+          </worldbody>
+          <tendon><spatial name="t"><site site="s0"/><site site="s1"/></spatial></tendon>
+          <actuator><muscle tendon="t"/></actuator>"#,
+    ];
+    for body in models {
+        let range = |sleep: &str| {
+            let xml = format!(
+                r#"<mujoco><option timestep="0.002"><flag sleep="{sleep}"/></option>{body}</mujoco>"#
+            );
+            load_model(&xml).expect("load").actuator_lengthrange
+        };
+        assert_eq!(range("enable"), range("disable"));
+    }
+}
+
 // ============================================================================
 // T9: Muscle on limited joint → LR from limits (useexisting skips sim)
 // ============================================================================

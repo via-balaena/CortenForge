@@ -18,7 +18,7 @@ are the source of truth), and body poses are computed via forward kinematics.
 ```
 sim/
 ├── L0/                    # Layer 0: Bevy-free simulation
-│   ├── types/             # sim-types — Foundation types (BodyId, Pose, config)
+│   ├── types/             # sim-types — Foundation types (BodyId, Pose)
 │   ├── core/              # sim-core — Pipeline, collision, integration
 │   ├── mjcf/              # sim-mjcf — MuJoCo format parser
 │   ├── urdf/              # sim-urdf — URDF parser
@@ -119,7 +119,7 @@ sim-core/src/
 │   ├── implicit.rs        # Implicit / ImplicitFast / ImplicitSpringDamper
 │   └── rk4.rs             # 4th-order Runge-Kutta
 ├── island/          # Sleep/wake + constraint islands
-│   ├── mod.rs             # mj_island (DFS flood-fill)
+│   ├── mod.rs             # mj_island (islands from the constraint rows)
 │   └── sleep.rs           # Sleep state machine, wake detection
 ├── collision/       # Collision detection pipeline
 │   ├── mod.rs             # mj_collision (broad + narrow dispatch)
@@ -161,9 +161,9 @@ sim-core/src/
 │   └── interpolation.rs   # Trilinear/tricubic grid interpolation
 ├── joint_visitor.rs # Joint visitor pattern + motion subspace
 ├── energy.rs        # Energy queries (potential + kinetic)
-├── linalg.rs        # Cholesky, LU, sparse solve, union-find
+├── linalg.rs        # Cholesky, LU, sparse solve
 ├── contact.rs       # ContactPoint, ContactManifold, ContactForce
-├── batch.rs         # BatchSim (N environments, one Model)
+├── batch.rs         # BatchSim (N environments, one Model or one each)
 ├── collision_shape.rs # CollisionShape enum, Aabb
 ├── convex_hull.rs   # Convex hull computation
 ├── gjk_epa.rs       # GJK/EPA for convex shapes
@@ -263,27 +263,22 @@ Each timestep executes these stages in order:
 
 ```
 forward():
-  Sleep        mj_wake                Check user forces on sleeping bodies
-               mj_wake_collision      Check contacts between sleeping/awake bodies
-               mj_wake_tendon         Tendons coupling sleeping ↔ awake trees
-               mj_wake_equality       Equality constraints to awake trees
-               mj_sleep               Sleep state machine (countdown → sleep transition)
-               mj_island              Island discovery (DFS flood-fill over constraints)
-  Position     mj_fwd_position       FK from qpos → body poses (skips sleeping bodies)
+  Position     mj_fwd_position       FK from qpos → body poses (skips sleeping bodies);
+                                     mj_wake after it, the other wake functions
+                                     (tendon, collision, equality) later in the stage
                mj_crba                Selective CRBA (skips sleeping subtrees)
                mj_fwd_tendon         Tendon lengths + Jacobians + wrap visualization data (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
                                      + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
                mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
-               mj_actuator_length     Actuator length/velocity from transmission
+               mj_actuator_velocity   Actuator velocities (lengths: position stage)
                mj_fwd_passive         Springs, dampers, flex bending + vertex damping;
                                       cb_passive, then passive plugins, at its end
                mj_rne                 Bias forces (Recursive Newton-Euler)
   Control      cb_control             Unless DISABLE_ACTUATION
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
   Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
-               mj_fwd_constraint_islands  Per-island block-diagonal solving (when islands > 1)
   Solve        mj_fwd_acceleration    qacc = M^-1 * f; the implicit integrators also solve:
                                       ImplicitFast: (M − h·D_sym) · qacc_implicit = f, Cholesky
                                         (D = passive + actuator vel)
@@ -291,7 +286,9 @@ forward():
                                         pivot (D includes Coriolis)
                                       ImplicitSpringDamper: qacc = (v_new − qvel) / h
 integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper; RK4 under step2()]:
-  Activation integration (act += dt * act_dot, muscle clamp to [0,1])
+  History samples, then activation integration (act += dt * act_dot, muscle clamp to [0,1])
+  The sleep step (mj_sleep): a tree put to sleep has its velocity and acceleration
+    zeroed, and the forward pass runs again from the velocity stage
   Semi-implicit Euler (velocity first, then position with new velocity)
   Quaternion integration on SO(3) for ball/free joints (skips sleeping joints)
 mj_runge_kutta() [RungeKutta4]:
@@ -299,7 +296,6 @@ mj_runge_kutta() [RungeKutta4]:
   Integrates activation alongside qpos/qvel with same RK4 weights
   Stage 0 reuses initial forward(); stages 1-3 call forward_skip_sensors()
   Uses mj_integrate_pos_explicit() for quaternion-safe position updates
-  Sleep is disabled for RK4 (warning emitted if both enabled)
 ```
 
 **Derivative computation** (optional, after `forward()`):
@@ -402,10 +398,9 @@ Supporting modules: `mid_phase.rs` (BVH construction and traversal),
 
 ### sim-types
 
-Foundation types with no physics logic. Minimal dependencies: nalgebra, thiserror.
+Foundation types with no physics logic. Minimal dependencies: nalgebra.
 
-`BodyId`, `Pose`, `Gravity`, `SimulationConfig`, `SolverConfig`,
-`SimError`.
+`BodyId`, `Pose`.
 
 ### sim-core
 
@@ -602,11 +597,13 @@ bodies are detected, grouped into islands, and excluded from computation.
 
 ### Architecture
 
-Bodies are organized into **kinematic trees** (connected components of the
-`body_parent` graph). Trees are the unit of sleep: all DOFs in a tree sleep
-or wake together. Trees are grouped into **constraint islands** via DFS
-flood-fill over contact/tendon/equality coupling. Islands are the unit of
-sleep *decisions*: if any tree in an island must wake, all trees wake.
+Bodies are organized into **kinematic trees**: a body welded to the world is
+static and in no tree; each other body belongs to the tree of its moving root.
+Trees are the unit of sleep: all DOFs in a tree sleep or wake together. Trees
+are grouped into **constraint islands** each pass from the constraint rows (the
+trees a row reaches are joined). An island sleeps when all its trees are ready,
+and a tree wakes with its whole cycle. `MUJOCO_REFERENCE.md` (Sleeping) has the
+detail.
 
 ### Sleep Policy
 
@@ -614,11 +611,11 @@ Per-tree policy resolved at model build time:
 
 | Policy | Source | Behavior |
 |--------|--------|----------|
-| `AutoNever` | Compiler: actuated tree or multi-tree tendon | Never sleeps |
-| `AutoAllowed` | Compiler: no actuators or coupling | May sleep |
+| `AutoNever` | Compiler: MuJoCo's automatic rules | Never sleeps |
+| `AutoAllowed` | Compiler: MuJoCo's automatic rules | May sleep |
 | `Never` | MJCF: `sleep="never"` | User override: never sleeps |
 | `Allowed` | MJCF: `sleep="allowed"` | User override: may sleep |
-| `Init` | MJCF: `sleep="init"` | Starts asleep; validated via union-find |
+| `Init` | MJCF: `sleep="init"` | Starts asleep; a model where it cannot sleep is refused |
 
 Enabled via `<option><flag sleep="enable"/>` (maps to `ENABLE_SLEEP` bit).
 
@@ -626,23 +623,24 @@ Enabled via `<option><flag sleep="enable"/>` (maps to `ENABLE_SLEEP` bit).
 
 Each tree tracks a countdown timer (`tree_asleep`):
 
-1. **Awake** (`tree_asleep < 0`): velocity checked each step against
-   `sleep_tolerance * dof_length[d]`. If all DOFs below threshold,
-   countdown advances toward `-1`.
-2. **Transition** (`tree_asleep == -1`): after `MIN_AWAKE` (10) consecutive
-   sub-threshold steps, tree enters sleep. Velocities, accelerations, and
-   force caches are zeroed.
-3. **Asleep** (`tree_asleep >= 0`): tree participates in sleep-cycle
-   linked list (Phase B). No computation until woken.
+1. **Awake** (`tree_asleep < 0`): each step a tree that can sleep (its
+   policy allows it, no applied force, `dof_length[d] * |qvel[d]|` below
+   `sleep_tolerance` for every DOF) counts toward `-1`; one that cannot starts
+   over at `-(1 + MIN_AWAKE)`.
+2. **Transition** (`tree_asleep == -1`): in the advance, an island whose
+   trees are all ready sleeps; their velocities and accelerations are zeroed
+   and the forward pass runs again from the velocity stage.
+3. **Asleep** (`tree_asleep >= 0`): the island's trees form a cycle; the
+   pipeline skips them until one wakes.
 
 ### Wake Detection
 
 Sleeping bodies are woken by:
-- **User forces**: nonzero `xfrc_applied` or `qfrc_applied` (bytewise check)
-- **Contact**: sleeping body contacts awake body
-- **Tendon**: active limited tendon coupling sleeping ↔ awake trees
-- **Equality**: active constraint to an awake tree
-- **qpos change**: external modification of sleeping body's `qpos`
+- **User input**: any bit of `xfrc_applied`, `qfrc_applied` or `qvel` set
+- **Contact**: a contact with an awake tree (the woken trees take its countdown)
+- **Tendon**: a tendon over two trees at its limit, one tree awake
+- **Equality**: an active connect, weld or joint equality to an awake tree
+- **qpos change**: a pose the kinematics finds changed
 
 Wake propagates to all trees in the same constraint island.
 
@@ -650,11 +648,13 @@ Wake propagates to all trees in the same constraint island.
 
 When sleep is enabled, pipeline stages skip sleeping bodies/DOFs:
 - FK: poses frozen (not recomputed)
-- Collision: narrow-phase skipped when both geoms are asleep
+- Collision: a pair skipped when both bodies sleep, or one sleeps and the
+  other is static
 - Velocity kinematics: sleeping DOFs skipped
 - Passive forces: skipped when all target DOFs are asleep
 - Position/velocity integration: sleeping joints skipped
-- Sensors: return frozen values (not zeroed)
+- Actuation: a sleeping actuator acts with no force and keeps its `act_dot`
+- Sensors: a sleeping sensor keeps its value
 
 ### Performance Optimizations (Phase C)
 
@@ -663,10 +663,7 @@ Three optimizations reduce work proportional to the awake fraction:
 1. **Awake-index iteration**: `body_awake_ind`, `dof_awake_ind`,
    `parent_awake_ind` arrays enable O(awake) loops instead of O(total)
    with per-body branch skipping.
-2. **Island-local Delassus**: when multiple islands exist,
-   `mj_fwd_constraint_islands` builds small per-island mass matrices
-   and solves independently via block-diagonal decomposition.
-3. **Selective CRBA + Partial LDL**: `mj_factor_sparse_selective`
+2. **Selective CRBA + Partial LDL**: `mj_factor_sparse_selective`
    skips sleeping subtrees in composite-inertia accumulation and
    factorizes only awake DOF blocks. Sleeping DOFs retain their
    last-awake `qM`/`qLD` values (tree independence guarantees no
@@ -685,9 +682,10 @@ Three optimizations reduce work proportional to the awake fraction:
 
 ### Tests
 
-93 integration tests in `sleeping.rs` covering all three phases:
+Integration tests in `sleeping.rs` cover all three phases:
 Phase A (per-tree sleeping), Phase B (island discovery + cross-tree coupling),
-Phase C (selective CRBA, partial LDL, awake-index iteration, island-local solving).
+Phase C (selective CRBA, partial LDL, awake-index iteration). The constraint
+solver is global: no island is solved apart.
 
 ## Design Principles
 

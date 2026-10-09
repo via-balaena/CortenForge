@@ -293,12 +293,19 @@ impl std::str::FromStr for InterpolationType {
     }
 }
 
-impl From<i32> for InterpolationType {
-    fn from(v: i32) -> Self {
+/// MuJoCo's integer code: 0 zero-order hold, 1 linear, 2 cubic. Another
+/// value is refused and returned: MuJoCo's buffer read takes any value
+/// other than 0 and 1 as cubic, so no mapping of it is the one a caller
+/// meant.
+impl TryFrom<i32> for InterpolationType {
+    type Error = i32;
+
+    fn try_from(v: i32) -> Result<Self, i32> {
         match v {
-            1 => Self::Linear,
-            2 => Self::Cubic,
-            _ => Self::Zoh, // 0 or any out-of-range: default to ZOH
+            0 => Ok(Self::Zoh),
+            1 => Ok(Self::Linear),
+            2 => Ok(Self::Cubic),
+            other => Err(other),
         }
     }
 }
@@ -625,7 +632,8 @@ pub enum SleepPolicy {
 /// Per-body sleep state for efficient pipeline gating (§16.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepState {
-    /// Body 0 (world) or body with no DOFs. Always computed, never sleeps.
+    /// A body in no kinematic tree: the world and every body welded to it,
+    /// except a body under a mocap body, which is `Awake`. Never sleeps.
     Static,
     /// Body is asleep. Position/velocity stages are skipped.
     Asleep,
@@ -673,7 +681,7 @@ pub const DISABLE_EULERDAMP: u32 = 1 << 15;
 pub const DISABLE_AUTORESET: u32 = 1 << 16;
 /// Fall back to libccd for convex collision.
 pub const DISABLE_NATIVECCD: u32 = 1 << 17;
-/// Skip island discovery → global solve.
+/// Skip island discovery (the constraint solve is global either way).
 pub const DISABLE_ISLAND: u32 = 1 << 18;
 
 // ── Enable flags (mjtEnableBit, mjNENABLE = 6) ──
@@ -817,10 +825,20 @@ pub enum Integrator {
     ImplicitFast,
 }
 
-/// Errors that can occur during a simulation step.
+/// Errors that stop a simulation step.
 ///
-/// Following Rust idioms, step() returns Result<(), StepError> instead of
-/// silently correcting issues. Users must handle failures explicitly.
+/// A bad state is not an error: a NaN, ±inf or |x| > 1e10 in `qpos`, `qvel`
+/// or `qacc` resets the `Data` (unless `DISABLE_AUTORESET` is set) and the
+/// step returns `Ok`; check [`Data::divergence_detected`]. A bad control
+/// (after clamping to `ctrlrange`) makes every actuator's control input 0 for
+/// that pass (an actuator with an activation still acts on it), leaves `ctrl`
+/// as written and counts [`Warning::BadCtrl`], which `divergence_detected`
+/// does not read; under `implicit` and `implicitfast` the velocity derivative
+/// still reads it for an actuator without dynamics whose gain has a velocity
+/// term. All as MuJoCo.
+///
+/// [`Data::divergence_detected`]: crate::Data::divergence_detected
+/// [`Warning::BadCtrl`]: crate::Warning::BadCtrl
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepError {
@@ -864,6 +882,17 @@ pub enum StepError {
         /// The model's noslip iterations.
         iterations: usize,
     },
+    /// Sleep is enabled and equality `eq`, a tendon equality, is active:
+    /// MuJoCo 3.5.0 raises an error in the position stage then ("tendon
+    /// equality does not yet support sleeping", `mj_wakeEquality`,
+    /// `engine_sleep.c:398-400`), so the calls that run that stage refuse it:
+    /// `step`, `step1`, `forward`, `forward_skip` from `MjStage::None`, the
+    /// transition finite differences and the reset that puts `Init` trees
+    /// to sleep.
+    TendonEqualityWithSleep {
+        /// The equality.
+        eq: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -898,46 +927,15 @@ impl std::fmt::Display for StepError {
                 "inverse finite-difference derivatives: noslip solver is not supported \
                  ({iterations} iterations)"
             ),
+            Self::TendonEqualityWithSleep { eq } => write!(
+                f,
+                "equality {eq}: tendon equality does not yet support sleeping"
+            ),
         }
     }
 }
 
 impl std::error::Error for StepError {}
-
-/// Errors during Init-sleep validation (§16.24).
-#[derive(Debug, Clone)]
-pub enum SleepError {
-    /// Init-sleep tree has no DOFs (cannot meaningfully sleep).
-    InitSleepInvalidTree {
-        /// The tree index that failed validation.
-        tree: usize,
-    },
-    /// Statically-coupled tree group contains a mix of Init and non-Init
-    /// trees. All trees connected by equality constraints or multi-tree
-    /// tendons must have the same Init policy.
-    InitSleepMixedIsland {
-        /// The union-find representative tree for the mixed group.
-        group_root: usize,
-    },
-}
-
-impl std::fmt::Display for SleepError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InitSleepInvalidTree { tree } => {
-                write!(f, "Init-sleep tree {tree} has no DOFs")
-            }
-            Self::InitSleepMixedIsland { group_root } => {
-                write!(
-                    f,
-                    "mixed Init/non-Init trees in coupled group (root={group_root})"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for SleepError {}
 
 /// Error returned by state reset operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -950,6 +948,34 @@ pub enum ResetError {
         /// The number of keyframes in the model.
         nkeyframe: usize,
     },
+    /// The model has history buffers and a timestep that is not positive, so
+    /// their timestamps cannot be laid out (MuJoCo `_resetData`,
+    /// `engine_io.c:1266-1270`).
+    InvalidTimestep,
+    /// Sensor `sensor` is a user or plugin sensor with a delay, whose sample
+    /// cannot be computed when the state advances (MuJoCo `mjERROR`s there).
+    DelayedUserSensor {
+        /// The sensor.
+        sensor: usize,
+    },
+    /// Of the `marked` trees whose policy is `Init`, `mj_sleep` put only
+    /// `slept` to sleep (one is in an island with an awake tree); `tree`,
+    /// rooted at `root_body`, is the first it did not (MuJoCo `_resetData`
+    /// raises an error, `engine_io.c:1472-1493`).
+    InitSleep {
+        /// The trees whose policy is `Init`.
+        marked: usize,
+        /// The trees `mj_sleep` put to sleep.
+        slept: usize,
+        /// The first `Init` tree left awake.
+        tree: usize,
+        /// That tree's root body.
+        root_body: usize,
+    },
+    /// The forward pass a reset runs before putting the `Init` trees to sleep
+    /// failed: a tendon equality with sleep, on which MuJoCo's reset raises
+    /// the same error, or an implicit factorization.
+    InitForward(StepError),
 }
 
 impl std::fmt::Display for ResetError {
@@ -961,8 +987,37 @@ impl std::fmt::Display for ResetError {
                     "invalid keyframe index {index} (model has {nkeyframe} keyframes)"
                 )
             }
+            Self::InvalidTimestep => f.write_str(HISTORY_TIMESTEP),
+            Self::DelayedUserSensor { sensor } => write!(f, "{}", delayed_user_sensor(*sensor)),
+            Self::InitSleep {
+                marked,
+                slept,
+                tree,
+                root_body,
+            } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
+            Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
         }
     }
+}
+
+/// The message of `InitSleep` in [`ResetError`] and [`MakeDataError`]:
+/// MuJoCo's (`engine_io.c:1490-1492`), with ids.
+fn init_sleep(marked: usize, slept: usize, tree: usize, root_body: usize) -> String {
+    format!(
+        "{marked} trees were marked as sleep='init' but only {slept} could be slept; body \
+         {root_body} is the root of tree {tree}, the first that could not be slept"
+    )
+}
+
+/// The message of `InitForward` in [`ResetError`] and [`MakeDataError`].
+const INIT_FORWARD: &str = "the forward pass before the sleep='init' trees sleep failed";
+
+/// The message of `InvalidTimestep` in [`ResetError`] and [`MakeDataError`].
+const HISTORY_TIMESTEP: &str = "history buffers require a positive timestep";
+
+/// The message of `DelayedUserSensor` in [`ResetError`] and [`MakeDataError`].
+fn delayed_user_sensor(sensor: usize) -> String {
+    format!("sensor {sensor} is a user or plugin sensor with a delay, which cannot be computed")
 }
 
 impl std::error::Error for ResetError {}
@@ -985,6 +1040,31 @@ pub enum MakeDataError {
         /// The plugin's message.
         message: String,
     },
+    /// The model has history buffers and a timestep that is not positive
+    /// (MuJoCo `_resetData`, `engine_io.c:1266-1270`).
+    InvalidTimestep,
+    /// Sensor `sensor` is a user or plugin sensor with a delay, whose sample
+    /// cannot be computed when the state advances (MuJoCo `mjERROR`s there).
+    DelayedUserSensor {
+        /// The sensor.
+        sensor: usize,
+    },
+    /// Of the `marked` trees whose policy is `Init`, `mj_sleep` put only
+    /// `slept` to sleep; see [`ResetError::InitSleep`]. MuJoCo refuses such a
+    /// model at compile, which makes a Data.
+    InitSleep {
+        /// The trees whose policy is `Init`.
+        marked: usize,
+        /// The trees `mj_sleep` put to sleep.
+        slept: usize,
+        /// The first `Init` tree left awake.
+        tree: usize,
+        /// That tree's root body.
+        root_body: usize,
+    },
+    /// The forward pass before the `Init` trees sleep failed; see
+    /// [`ResetError::InitForward`].
+    InitForward(StepError),
 }
 
 impl std::fmt::Display for MakeDataError {
@@ -995,6 +1075,15 @@ impl std::fmt::Display for MakeDataError {
             Self::PluginInit { instance, message } => {
                 write!(f, "plugin init failed for instance {instance}: {message}")
             }
+            Self::InvalidTimestep => f.write_str(HISTORY_TIMESTEP),
+            Self::DelayedUserSensor { sensor } => write!(f, "{}", delayed_user_sensor(*sensor)),
+            Self::InitSleep {
+                marked,
+                slept,
+                tree,
+                root_body,
+            } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
+            Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
         }
     }
 }
@@ -1004,7 +1093,11 @@ impl std::error::Error for MakeDataError {
         match self {
             Self::JointLayout(e) => Some(e),
             Self::Range(e) => Some(e),
-            Self::PluginInit { .. } => None,
+            Self::InitForward(e) => Some(e),
+            Self::PluginInit { .. }
+            | Self::InvalidTimestep
+            | Self::DelayedUserSensor { .. }
+            | Self::InitSleep { .. } => None,
         }
     }
 }
@@ -1020,6 +1113,91 @@ impl From<RangeError> for MakeDataError {
         Self::Range(e)
     }
 }
+
+/// Why a history-buffer call refuses.
+///
+/// The calls are [`Data::read_ctrl`](crate::Data::read_ctrl),
+/// [`Data::read_sensor`](crate::Data::read_sensor),
+/// [`Data::init_ctrl_history`](crate::Data::init_ctrl_history) and
+/// [`Data::init_sensor_history`](crate::Data::init_sensor_history). An index
+/// out of range, a missing buffer and times that do not increase are where
+/// MuJoCo 3.5.0's `mj_readCtrl`, `mj_readSensor`, `mj_initCtrlHistory` or
+/// `mj_initSensorHistory` raises `mjERROR`; a slice of the wrong length
+/// (MuJoCo's C takes no lengths; its Python binding checks them) and a
+/// `Data` of another shape (registry row `D-DATA-SHAPE`) are this API's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HistoryError {
+    /// The actuator index is not below `nu`.
+    InvalidActuator {
+        /// The index passed.
+        id: usize,
+        /// The model's `nu`.
+        nu: usize,
+    },
+    /// The sensor index is not below `nsensor`.
+    InvalidSensor {
+        /// The index passed.
+        id: usize,
+        /// The model's `nsensor`.
+        nsensor: usize,
+    },
+    /// The actuator or sensor has no history buffer (`nsample <= 0`).
+    NoBuffer,
+    /// A slice has another length than the buffer or the sensor needs.
+    WrongLength {
+        /// The length needed.
+        expected: usize,
+        /// The length passed.
+        actual: usize,
+    },
+    /// `times[index + 1]` is not above `times[index]` by at least `1e-15`.
+    TimesNotIncreasing {
+        /// The first index of the pair.
+        index: usize,
+    },
+    /// An array the call reads or writes (`history`, `ctrl`, `sensordata`)
+    /// does not have the length the model requires: the `Data` was made by
+    /// another model, or the caller resized it.
+    DataShapeMismatch {
+        /// The `Data` field.
+        field: &'static str,
+        /// The length the model requires.
+        expected: usize,
+        /// The field's length.
+        actual: usize,
+    },
+}
+
+impl std::fmt::Display for HistoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidActuator { id, nu } => write!(f, "invalid actuator id {id} (nu {nu})"),
+            Self::InvalidSensor { id, nsensor } => {
+                write!(f, "invalid sensor id {id} (nsensor {nsensor})")
+            }
+            Self::NoBuffer => f.write_str("no history buffer (nsample <= 0)"),
+            Self::WrongLength { expected, actual } => {
+                write!(f, "expected {expected} values, got {actual}")
+            }
+            Self::TimesNotIncreasing { index } => write!(
+                f,
+                "times must be strictly increasing, got times[{index}] >= times[{}]",
+                index + 1
+            ),
+            Self::DataShapeMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "data.{field} has length {actual}, the model requires {expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HistoryError {}
 
 /// Why [`Model::recompute_derived`](crate::Model::recompute_derived) refuses a model.
 ///

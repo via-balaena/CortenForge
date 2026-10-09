@@ -5,7 +5,9 @@
 use crate::integrate::euler::mj_normalize_quat;
 use crate::jacobian::mj_integrate_pos_explicit;
 use crate::types::flags::{actuator_disabled, disabled};
-use crate::types::{ActuatorDynamics, DISABLE_ACTUATION, Data, Model, StepError};
+use crate::types::{
+    ActuatorDynamics, DISABLE_ACTUATION, Data, ENABLE_SLEEP, Model, SleepState, StepError,
+};
 
 /// Standard 4-stage Runge-Kutta integration matching MuJoCo's `mj_RungeKutta`.
 ///
@@ -16,7 +18,8 @@ use crate::types::{ActuatorDynamics, DISABLE_ACTUATION, Data, Model, StepError};
 /// Uses the classic RK4 Butcher tableau. Stage 0 reuses qacc from the preceding
 /// `forward()` call. Stages 1-3 each call `forward_skip_sensors()` at trial
 /// states, which fires `cb_passive` and `cb_control` as `forward()` does, so
-/// both callbacks fire four times per step.
+/// both callbacks fire four times per step (five on a step that puts a tree to
+/// sleep, whose advance runs the forward pass once more).
 /// Position integration uses `mj_integrate_pos_explicit()` for quaternion correctness.
 ///
 /// After this function returns, derived quantities (xpos, contacts, forces, etc.)
@@ -35,6 +38,13 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
 
     let h = model.timestep;
     let nv = model.nv;
+
+    // 0. Sensor history samples, at the step's start state (registry
+    // `D-HISTORY-RK4-SENSOR`): MuJoCo inserts them after the stages, from the
+    // last stage's kinematics, velocities and forces, so its delayed sensors
+    // that read those read values that are not the sensor's at the sample's
+    // time.
+    crate::history::advance_sensors(model, data);
 
     // 1. SAVE initial state
     data.rk4_qpos_saved.copy_from(&data.qpos);
@@ -147,27 +157,15 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         data.rk4_dX_acc[v] = acc_sum;
     }
 
-    // 4. ADVANCE from initial state
-    // Note: qacc_warmstart is now saved at end of step() (§15.9), not here.
-
-    // Restore initial velocity, then advance
+    // 4. ADVANCE from the step's start state, as MuJoCo's `mj_RungeKutta`
+    // resets state and time and calls `mj_advance` (engine_forward.c:1113-1121):
+    // the control history at the start time, with `ctrl` as the last stage's
+    // control callback left it; the activations; the sleep step; velocity and
+    // position; time; plugins; warmstart.
+    data.time = t0;
+    data.qpos.copy_from(&data.rk4_qpos_saved);
     data.qvel.copy_from(&data.rk4_qvel[0]);
-    for v in 0..nv {
-        data.qvel[v] += h * data.rk4_dX_acc[v];
-    }
-
-    // Position on manifold from saved initial position
-    mj_integrate_pos_explicit(
-        model,
-        &mut data.qpos,
-        &data.rk4_qpos_saved,
-        &data.rk4_dX_vel,
-        h,
-    );
-
-    // (§27F) Flex vertex positions now integrated by mj_integrate_pos_explicit above.
-
-    mj_normalize_quat(model, data);
+    crate::history::advance_ctrl(model, data, t0);
 
     // Advance activation from saved initial state
     // S4.8: Disabled actuators get zero act_dot, freezing activation.
@@ -206,8 +204,56 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         }
     }
 
+    // The sleep step, at the start state (`rk4_dX_*` survive its forward
+    // pass). Its forward pass skips the position stage, so the poses it keeps
+    // are the last stage's: the next step's kinematics see a slept tree's
+    // poses change and wake it, as in MuJoCo.
+    if crate::island::mj_sleep(model, data) > 0 {
+        data.reforward_after_sleep(model)?;
+    }
+
+    // Velocity over the awake dofs
+    let use_dof_ind = model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv;
+    let nv_adv = if use_dof_ind { data.nv_awake } else { nv };
+    for idx in 0..nv_adv {
+        let v = if use_dof_ind {
+            data.dof_awake_ind[idx]
+        } else {
+            idx
+        };
+        data.qvel[v] += data.rk4_dX_acc[v] * h;
+    }
+
+    // Position on manifold from saved initial position, of the awake bodies:
+    // a sleeping body's joints keep the start state (MuJoCo integrates over
+    // `body_awake_ind`).
+    mj_integrate_pos_explicit(
+        model,
+        &mut data.qpos,
+        &data.rk4_qpos_saved,
+        &data.rk4_dX_vel,
+        h,
+    );
+    if model.enableflags & ENABLE_SLEEP != 0 {
+        for jnt in 0..model.njnt {
+            if data.body_sleep_state[model.jnt_body[jnt]] == SleepState::Asleep {
+                let adr = model.jnt_qpos_adr[jnt];
+                let n = model.jnt_type[jnt].nq();
+                data.qpos.as_mut_slice()[adr..adr + n]
+                    .copy_from_slice(&data.rk4_qpos_saved.as_slice()[adr..adr + n]);
+            }
+        }
+    }
+
+    // (§27F) Flex vertex positions now integrated by mj_integrate_pos_explicit above.
+
+    mj_normalize_quat(model, data);
+
     data.time = t0 + h;
     crate::integrate::advance_plugins(model, data);
+
+    // Save qacc for the next step's warmstart (§15.9), as `mj_advance` ends.
+    data.qacc_warmstart.copy_from(&data.qacc);
 
     Ok(())
 }

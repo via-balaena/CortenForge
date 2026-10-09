@@ -28,18 +28,18 @@ impl Model {
     /// | spatial tendon geometry, `qpos0` | spatial `tendon_length0` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
-    /// | `body_rootid`, `body_dof_*`, actuators, tendons | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |
-    /// | `body_pos`, the tree, joint types | `dof_length` | [`compute_dof_lengths`] |
+    /// | `dof_parent`, `body_dof_*`, `body_weldid`, actuators, tendons, flex vertex bodies | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |
+    /// | `qpos0` and what the position stage reads (body, joint and geom frames, `body_ipos`), `geom_rbound`, joint types | `dof_length` | [`compute_dof_lengths`] |
     /// | `body_gravcomp` | `ngravcomp`, the bodies with a positive value | this function |
+    /// | `actuator_nsample`, `sensor_nsample`, `sensor_dim` | `actuator_historyadr`, `sensor_historyadr`, `nhistory`, so `Data::history`'s length: make a new `Data` | [`Self::compute_history_addresses`] |
     ///
     /// Some inputs are consumed on the first computation: a damping ratio in
     /// `actuator_biasprm[2]` (as MuJoCo's `set0` consumes it), a muscle's
     /// `actuator_gainprm[2]` (MuJoCo resolves that one at each call instead)
     /// and a `tendon_lengthspring` of `[-1, -1]` are replaced by the values
     /// derived from them; a later edit of the input is not derived again. Not
-    /// recomputed here: the history buffers' addresses, which the MJCF builder
-    /// computes from `actuator_nsample` and `sensor_nsample`, and the tree's own
-    /// tables `body_rootid` and `dof_parent`, which an edit of the tree sets.
+    /// recomputed here: the tree's own tables `body_rootid` and `dof_parent`,
+    /// which an edit of the tree sets.
     ///
     /// # Errors
     /// The [`ModelError`] `check_joint_layout` or `check_ranges` finds; the
@@ -49,6 +49,8 @@ impl Model {
         self.check_ranges()?;
         // MuJoCo setFixed (engine_setconst.c:98-103).
         self.ngravcomp = self.body_gravcomp.iter().filter(|&&gc| gc > 0.0).count();
+        // Before the derivations below, which make a `Data` sized by `nhistory`.
+        self.compute_history_addresses();
         self.compute_ancestors();
         self.compute_implicit_params();
         self.compute_qld_csr_metadata();
@@ -61,6 +63,49 @@ impl Model {
         self.compute_kinematic_trees();
         compute_dof_lengths(self);
         Ok(())
+    }
+
+    /// Lay out the history buffers in `Data::history`: actuators first, then
+    /// sensors, each in index order, `2 + 2 n` entries for an actuator and
+    /// `2 + n + n dim` for a sensor with `n = nsample > 0`; the address is -1
+    /// without a buffer. Sets `actuator_historyadr`, `sensor_historyadr` and
+    /// `nhistory`, as MuJoCo's compiler does (`user_model.cc:3760-3770`,
+    /// `:3806-3819`, sizes `:2252-2264`).
+    pub fn compute_history_addresses(&mut self) {
+        let mut offset = 0;
+        self.actuator_historyadr = self
+            .actuator_nsample
+            .iter()
+            .map(|&n| {
+                if n <= 0 {
+                    return -1;
+                }
+                let adr = offset;
+                offset += 2 + 2 * n;
+                adr
+            })
+            .collect();
+        self.sensor_historyadr = self
+            .sensor_nsample
+            .iter()
+            .zip(&self.sensor_dim)
+            .map(|(&n, &dim)| {
+                if n <= 0 {
+                    return -1;
+                }
+                let adr = offset;
+                // MuJoCo stores sensor_dim and nhistory as ints
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                let dim = dim as i32;
+                offset += 2 + n + n * dim;
+                adr
+            })
+            .collect();
+        // a running sum of positive sizes
+        #[allow(clippy::cast_sign_loss)]
+        {
+            self.nhistory = offset as usize;
+        }
     }
 
     /// Pre-compute bounding volumes for all geoms (collision broad-phase).

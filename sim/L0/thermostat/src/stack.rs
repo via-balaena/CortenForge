@@ -17,8 +17,9 @@
 //!    [`PassiveStack::disable_stochastic`] and have every stochastic
 //!    component in the stack temporarily produce only its
 //!    deterministic forces.
-//! 4. Supports parallel-environment construction via
-//!    [`PassiveStack::install_per_env`], which builds N independent
+//! 4. Supports parallel-environment construction: `PassiveStack`
+//!    implements `sim_core::batch::PerEnvStack`, so
+//!    `BatchSim::try_new_per_env` builds N independent
 //!    `(Model, PassiveStack)` pairs from a user-supplied factory.
 //!    Each env needs its own stack, so a thermostat's step counter is
 //!    not shared; a stack returned for two envs is refused, and so is a
@@ -56,7 +57,7 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use sim_core::batch::{EnvBatch, PerEnvStack};
+use sim_core::batch::PerEnvStack;
 use sim_core::{DVector, Data, Model};
 
 use crate::component::{PassiveComponent, Stochastic};
@@ -107,7 +108,7 @@ impl PassiveStackBuilder {
 /// the `cb_passive` callback closure captures a clone of the `Arc`,
 /// and any caller that wants to call [`PassiveStack::disable_stochastic`]
 /// later retains its own `Arc` handle. Both `try_install` and
-/// `install_per_env` take `self: &Arc<Self>` (the standard
+/// `install_on` take `self: &Arc<Self>` (the standard
 /// idiomatic-Rust pattern for "method on an Arc-wrapped type that
 /// captures a clone of self into a callback") so the caller's handle
 /// is retained automatically — no manual `Arc::clone` boilerplate at
@@ -269,53 +270,19 @@ impl PassiveStack {
     }
 }
 
-/// `PassiveStack` implements sim-core's per-env batch construction.
-///
-/// `install_per_env` builds N independent `(Model, Arc<PassiveStack>)`
-/// pairs by invoking `build_one(i)` for each `i in 0..n`, installs the
-/// resulting stack onto each model via [`PassiveStack::try_install`], and
-/// returns an [`EnvBatch<PassiveStack>`] holding the N installed
-/// models and retained stack handles.
+/// `PassiveStack` implements sim-core's per-env batch construction:
+/// `BatchSim::try_new_per_env` calls [`PassiveStack::try_install`] on each
+/// env's model with the stack its factory returned, and refuses a stack
+/// returned for two envs.
 ///
 /// A component shared between two stacks (one `Arc` passed to both through
 /// [`PassiveStackBuilder::with_arc`]) is not detected, and shares its state.
-///
-/// # Panics
-///
-/// - If `build_one` returns, for env `i`, the same stack as for an earlier
-///   env.
-/// - If an env's stack refuses its model (see [`PassiveStack::try_install`]):
-///   a component refuses it, or `build_one` returned a model that already
-///   has a passive callback. Build each model fresh inside `build_one`.
 impl PerEnvStack for PassiveStack {
-    #[allow(clippy::panic)] // the documented refusal: the trait's signature has no error path
-    fn install_per_env<F>(self: &Arc<Self>, n: usize, mut build_one: F) -> EnvBatch<Self>
-    where
-        F: FnMut(usize) -> (Model, Arc<Self>),
-    {
-        // The prototype receiver (`&Arc<Self>`) is unused inside the
-        // body: the per-env stacks are built by `build_one`, not by
-        // cloning the prototype. The receiver exists so the call
-        // reads as `prototype.install_per_env(...)` at the call site
-        // and so future per-stack configuration can route through
-        // the prototype without breaking the signature.
-        let _ = self;
-        let mut models = Vec::with_capacity(n);
-        let mut stacks = Vec::with_capacity(n);
-        for i in 0..n {
-            let (mut model, stack) = build_one(i);
-            if let Some(earlier) = stacks.iter().position(|s| Arc::ptr_eq(s, &stack)) {
-                panic!(
-                    "install_per_env: env {i} got the stack of env {earlier}; each env needs its own"
-                );
-            }
-            if let Err(e) = stack.try_install(&mut model) {
-                panic!("install_per_env: env {i}: {e}");
-            }
-            models.push(model);
-            stacks.push(stack);
-        }
-        EnvBatch { models, stacks }
+    type Error = ThermostatError;
+
+    /// [`PassiveStack::try_install`].
+    fn install_on(self: &Arc<Self>, model: &mut Model) -> Result<(), ThermostatError> {
+        self.try_install(model)
     }
 }
 
@@ -573,22 +540,18 @@ mod tests {
     }
 
     #[test]
-    fn install_per_env_builds_n_envs_with_callbacks_set() {
-        // Prototype is unused (the chassis Decision-3 anchor pattern).
-        let prototype = PassiveStack::builder().with(DummyDeterministic).build();
-
-        let batch = prototype.install_per_env(3, |_i| {
+    fn new_per_env_builds_n_envs_with_callbacks_set() {
+        let batch = sim_core::BatchSim::new_per_env(3, |_i| {
             let model = sim_core::test_fixtures::sho_1d();
             let stack = PassiveStack::builder().with(DummyDeterministic).build();
             (model, stack)
         });
 
-        assert_eq!(batch.models.len(), 3);
-        assert_eq!(batch.stacks.len(), 3);
-        for (i, model) in batch.models.iter().enumerate() {
+        assert_eq!(batch.len(), 3);
+        for i in 0..3 {
             assert!(
-                model.cb_passive.is_some(),
-                "env {i} should have cb_passive set after install_per_env",
+                batch.model_of(i).unwrap().cb_passive.is_some(),
+                "env {i} should have cb_passive set by new_per_env",
             );
         }
     }
@@ -599,6 +562,8 @@ mod tests {
         Diagnose, DoubleWellPotential, ExternalField, LangevinThermostat, OscillatingField,
         PairwiseCoupling, RatchetPotential,
     };
+    use sim_core::BatchSim;
+    use sim_core::batch::PerEnvError;
 
     fn one(component: impl PassiveComponent) -> Arc<PassiveStack> {
         PassiveStack::builder().with(component).build()
@@ -768,33 +733,60 @@ mod tests {
         );
     }
 
-    /// `install_per_env` has no error path, so a refusal panics, naming the env.
+    /// A refused model is an error naming the env.
     #[test]
-    #[should_panic(expected = "install_per_env: env 1: DoubleWellPotential acts on DOF 2")]
-    fn install_per_env_panics_on_a_refused_model() {
-        let _batch = one(DummyDeterministic).install_per_env(2, |i| {
+    fn try_new_per_env_returns_a_refused_model() {
+        let err = BatchSim::try_new_per_env(2, |i| {
+            (chain(2), one(DoubleWellPotential::new(1.0, 1.0, 2 * i)))
+        });
+        assert!(
+            matches!(
+                err,
+                Err(PerEnvError::Install {
+                    env: 1,
+                    source: ThermostatError::DofOutOfRange { dof: 2, nv: 2, .. }
+                })
+            ),
+            "{:?}",
+            err.err()
+        );
+    }
+
+    /// `new_per_env` panics with the error's message.
+    #[test]
+    #[should_panic(expected = "BatchSim::new_per_env: env 1: DoubleWellPotential acts on DOF 2")]
+    fn new_per_env_panics_on_a_refused_model() {
+        let _batch = BatchSim::new_per_env(2, |i| {
             (chain(2), one(DoubleWellPotential::new(1.0, 1.0, 2 * i)))
         });
     }
 
     /// A stack returned for two envs is refused.
     #[test]
-    #[should_panic(expected = "install_per_env: env 1 got the stack of env 0")]
-    fn install_per_env_refuses_one_stack_for_two_envs() {
+    fn try_new_per_env_refuses_one_stack_for_two_envs() {
         let shared = one(DummyDeterministic);
-        let _batch =
-            one(DummyDeterministic).install_per_env(2, |_| (chain(1), Arc::clone(&shared)));
+        let err = BatchSim::try_new_per_env(2, |_| (chain(1), Arc::clone(&shared)));
+        assert_eq!(
+            err.err(),
+            Some(PerEnvError::SharedStack { env: 1, earlier: 0 })
+        );
     }
 
     /// A factory model that already has a passive callback is refused, not silently cleared.
     #[test]
-    #[should_panic(expected = "install_per_env: env 0: the model already has a passive callback")]
-    fn install_per_env_refuses_a_model_that_already_has_a_callback() {
-        let _batch = one(DummyDeterministic).install_per_env(1, |_| {
+    fn try_new_per_env_refuses_a_model_that_already_has_a_callback() {
+        let err = BatchSim::try_new_per_env(1, |_| {
             let mut model = chain(1);
             model.set_passive_callback(|_, _| {});
             (model, one(DummyDeterministic))
         });
+        assert_eq!(
+            err.err(),
+            Some(PerEnvError::Install {
+                env: 0,
+                source: ThermostatError::PassiveCallbackInstalled
+            })
+        );
     }
 
     #[test]

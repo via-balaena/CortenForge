@@ -13,8 +13,8 @@ pub use super::hill::{
 use super::fiber::build_actuator_moment;
 use crate::linalg::mj_solve_sparse;
 use crate::types::{
-    ActuatorTransmission, BiasType, GainType, LengthRangeError, LengthRangeMode, LengthRangeOpt,
-    Model,
+    ActuatorTransmission, BiasType, ENABLE_SLEEP, GainType, LengthRangeError, LengthRangeMode,
+    LengthRangeOpt, Model,
 };
 
 // ============================================================================
@@ -97,14 +97,12 @@ pub fn mj_set_length_range(model: &mut Model, opt: &LengthRangeOpt) {
             }
         }
 
-        // Step 4: Simulation-based estimation
-        // Convergence failure is not fatal — MuJoCo silently leaves the range
-        // at (0, 0) and returns success. Only instability (NaN) would be fatal,
-        // but we handle that within eval_length_range.
+        // Step 4: Simulation-based estimation. A run that does not converge
+        // leaves the range at (0, 0); MuJoCo refuses the model there ("did
+        // not converge", A11 §1), which Rigid-loading L44 ports.
         if let Ok(range) = eval_length_range(model, i, opt) {
             model.actuator_lengthrange[i] = range;
         }
-        // On Err: leave at (0, 0) — matches MuJoCo's silent failure behavior
     }
 }
 
@@ -113,9 +111,12 @@ pub fn mj_set_length_range(model: &mut Model, opt: &LengthRangeOpt) {
 /// Side 0: apply negative force → find minimum length.
 /// Side 1: apply positive force → find maximum length.
 ///
-/// Runs the full step1/step2 pipeline with gravity, contacts, and passive
-/// forces active — matching MuJoCo's `evalAct()` behavior exactly. MuJoCo does
-/// NOT disable gravity or contacts during length-range estimation.
+/// Runs the step1/step2 pipeline on a clone with the length-range timestep and
+/// sleep disabled, as MuJoCo's compiler disables sleep (`user_model.cc:5111-5112`);
+/// the run precedes sim-mjcf's kinematic trees. MuJoCo's `mjCModel::LengthRange`
+/// also replaces the disable flags, turning frictionloss, contacts, springs,
+/// dampers, gravity and actuation off for the run (`user_model.cc:2410-2411`);
+/// this keeps the model's own until Rigid-loading L44 ports that.
 fn eval_length_range(
     model: &Model,
     actuator_idx: usize,
@@ -128,10 +129,9 @@ fn eval_length_range(
         });
     }
 
-    // Clone model to set LR-specific timestep.
-    // IMPORTANT: Do NOT zero gravity or disable contacts — MuJoCo keeps them active.
     let mut lr_model = model.clone();
     lr_model.timestep = opt.timestep;
+    lr_model.enableflags &= !ENABLE_SLEEP;
 
     let mut lengthrange = [0.0f64; 2];
     let mut lmin_sides = [f64::MAX; 2];

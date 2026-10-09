@@ -382,7 +382,8 @@ impl VecEnvBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError`] if a required field is missing or `sub_steps` is 0.
+    /// Returns [`EnvError`] if a required field is missing, `sub_steps` is 0,
+    /// or the model's `Data` cannot be made ([`EnvError::MakeData`]).
     pub fn build(self) -> Result<VecEnv, EnvError> {
         let obs_space = self.obs_space.ok_or(EnvError::MissingField {
             field: "observation_space",
@@ -403,7 +404,7 @@ impl VecEnvBuilder {
             return Err(EnvError::ZeroSubSteps);
         }
 
-        let batch = BatchSim::new(Arc::clone(&self.model), self.n_envs);
+        let batch = BatchSim::try_new(Arc::clone(&self.model), self.n_envs)?;
 
         Ok(VecEnv {
             model: self.model,
@@ -835,5 +836,26 @@ mod tests {
             .build()
             .unwrap_err();
         assert!(matches!(err, EnvError::ZeroSubSteps));
+    }
+
+    /// A model `try_make_data` refuses is an error, not a panic.
+    #[test]
+    fn vec_env_build_returns_the_make_data_refusal() {
+        let mut model = sim_core::test_fixtures::pendulum_with_angle_sensor();
+        model.actuator_ctrlrange[0] = (1.0, -1.0);
+        let model = Arc::new(model);
+        let (obs, act) = make_spaces(&model);
+        let err = VecEnv::builder(model, 2)
+            .observation_space(obs)
+            .action_space(act)
+            .reward(|_m, _d| 0.0)
+            .done(|_m, _d| false)
+            .truncated(|_m, _d| false)
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            EnvError::MakeData(sim_core::MakeDataError::Range(_))
+        ));
     }
 }

@@ -1,0 +1,4 @@
+<mujoco><worldbody><body><joint name="j" type="hinge" axis="0 1 0"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor joint="j" ctrllimited="true" ctrlrange="-1 1"/><motor joint="j"/>
+<general joint="j" dyntype="filter" dynprm="0.2" ctrllimited="true" ctrlrange="-1 1"/></actuator></mujoco>

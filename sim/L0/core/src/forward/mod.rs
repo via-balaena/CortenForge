@@ -54,8 +54,9 @@ pub use muscle::{
 
 #[allow(unused_imports)]
 pub(crate) use actuation::{
-    mj_actuator_length, mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
-    mj_transmission_site, mj_transmission_slidercrank,
+    actuator_ctrl_input, mj_actuator_velocity, mj_fwd_actuation, mj_gravcomp_to_actuator,
+    mj_transmission_body_dispatch, mj_transmission_joint_tendon, mj_transmission_site,
+    mj_transmission_slidercrank,
 };
 #[allow(unused_imports)]
 pub(crate) use passive::mj_fwd_passive;
@@ -137,10 +138,13 @@ impl Data {
     /// # Errors
     ///
     /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
-    /// positive and finite, and `Err(StepError::DataShapeMismatch)` if `self`
-    /// was made by a model of other dimensions or an input array was resized.
+    /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self`
+    /// was made by a model of other dimensions or an input array was resized,
+    /// and `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
+    /// tendon equality is active.
     pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
+        check::check_tendon_equality_sleep(model)?;
 
         // Validate state before stepping
         check::mj_check_pos(model, self);
@@ -160,11 +164,11 @@ impl Data {
 
     /// Split-step phase 2: acceleration stage + integration.
     ///
-    /// Runs actuation, constraints, acc-sensors (no callback fires),
-    /// then integrates
-    /// velocities and positions with [`integrate`](Self::integrate): Euler
-    /// under Euler and RK4 (as MuJoCo's `mj_step2`), the integrator's own
-    /// velocity update otherwise; then the sleep update and warmstart save.
+    /// Runs actuation, constraints, acc-sensors (no callback fires but on a
+    /// step that puts a tree to sleep, whose advance runs the forward pass
+    /// once more), then advances with [`integrate`](Self::integrate): Euler under Euler
+    /// and RK4 (as MuJoCo's `mj_step2`), the integrator's own velocity update
+    /// otherwise, with the sleep step and the warmstart save inside it.
     ///
     /// Must be called after [`step1()`](Self::step1). The user may modify
     /// `ctrl`, `qfrc_applied`, `xfrc_applied`, etc. between step1 and step2
@@ -173,7 +177,8 @@ impl Data {
     /// # MuJoCo Equivalence
     ///
     /// Matches `mj_step2()` in `engine_forward.c`: actuation → acceleration
-    /// → constraints → integration → sleep → warmstart.
+    /// → constraints → the advance (history, activations, sleep, velocity,
+    /// position, time, warmstart).
     ///
     /// # Note
     ///
@@ -203,20 +208,8 @@ impl Data {
         // Validate accelerations
         check::mj_check_acc(model, self);
 
-        // The integrator's velocity update (as step() for non-RK4 integrators)
-        self.integrate(model);
-
-        // Sleep update (§16.12): Phase B island-aware sleep transition.
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-        if sleep_enabled {
-            crate::island::mj_sleep(model, self);
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
-
-        // Save qacc for next-step warmstart (§15.9).
-        self.qacc_warmstart.copy_from(&self.qacc);
-
-        Ok(())
+        // The advance (as step() for non-RK4 integrators)
+        self.integrate_unchecked(model)
     }
 
     /// Perform one simulation step.
@@ -233,12 +226,20 @@ impl Data {
     /// - The timestep is not positive and finite (`InvalidTimestep`)
     /// - `self` was made by a model of other dimensions, or an input array
     ///   was resized (`DataShapeMismatch`)
+    /// - Sleep is enabled and a tendon equality is active
+    ///   (`TendonEqualityWithSleep`)
     ///
     /// NaN/divergence in qpos, qvel, or qacc triggers auto-reset (matching
     /// MuJoCo). Disable with `DISABLE_AUTORESET`. Use `data.divergence_detected()`
-    /// to check if a reset occurred.
+    /// to check if a reset occurred. A bad control (after clamping to
+    /// `ctrlrange`) makes every actuator's control input 0 for that pass (an
+    /// actuator with an activation still acts on it), leaves `ctrl` as written
+    /// and counts `Warning::BadCtrl` (matching MuJoCo). Under `implicit` and
+    /// `implicitfast` the velocity derivative still reads it for an actuator
+    /// without dynamics whose gain has a velocity term, as MuJoCo's does.
     pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
+        check::check_tendon_equality_sleep(model)?;
 
         // Validate state before stepping — void, auto-resets internally.
         check::mj_check_pos(model, self);
@@ -250,7 +251,7 @@ impl Data {
                 // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
-                crate::integrate::rk4::mj_runge_kutta(model, self)?;
+                crate::integrate::rk4::mj_runge_kutta(model, self)
             }
             Integrator::Euler
             | Integrator::ImplicitSpringDamper
@@ -258,24 +259,9 @@ impl Data {
             | Integrator::Implicit => {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
-                self.integrate(model);
+                self.integrate_unchecked(model)
             }
         }
-
-        // Sleep update (§16.12): Phase B island-aware sleep transition.
-        // After integration and before warmstart save.
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-        if sleep_enabled {
-            crate::island::mj_sleep(model, self);
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
-
-        // Save qacc for next-step warmstart (§15.9).
-        // Done at the very end of step(), after integration, matching MuJoCo's
-        // mj_advance() which saves qacc_warmstart after the step completes.
-        self.qacc_warmstart.copy_from(&self.qacc);
-
-        Ok(())
     }
 
     /// Forward dynamics only (like `mj_forward`).
@@ -296,11 +282,14 @@ impl Data {
     ///
     /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
-    /// made by a model of other dimensions or an input array was resized, and
-    /// `Err(StepError::CholeskyFailed)` if using implicit integrator and the
-    /// modified mass matrix decomposition fails.
+    /// made by a model of other dimensions or an input array was resized,
+    /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
+    /// tendon equality is active, and `Err(StepError::CholeskyFailed)` if
+    /// using implicit integrator and the modified mass matrix decomposition
+    /// fails.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
+        check::check_tendon_equality_sleep(model)?;
         self.forward_core(model, true)
     }
 
@@ -342,14 +331,19 @@ impl Data {
     ///
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
-    /// was resized, or if implicit acceleration solver fails.
+    /// was resized, if `skipstage` is `MjStage::None` with sleep enabled and a
+    /// tendon equality active, or if implicit acceleration solver fails.
     pub fn forward_skip(
         &mut self,
         model: &Model,
         skipstage: MjStage,
         skipsensor: bool,
     ) -> Result<(), StepError> {
-        self.forward_skip_inner(model, skipstage, skipsensor, true)
+        check::check_step_inputs(model, self)?;
+        if skipstage == MjStage::None {
+            check::check_tendon_equality_sleep(model)?;
+        }
+        self.forward_skip_stages(model, skipstage, skipsensor, true)
     }
 
     /// [`Self::forward_skip`] without `cb_control`, for the inverse
@@ -362,18 +356,28 @@ impl Data {
         skipstage: MjStage,
         skipsensor: bool,
     ) -> Result<(), StepError> {
-        self.forward_skip_inner(model, skipstage, skipsensor, false)
+        check::check_step_inputs(model, self)?;
+        self.forward_skip_stages(model, skipstage, skipsensor, false)
     }
 
-    fn forward_skip_inner(
+    /// [`Self::forward_skip`] without its input checks, for the sleep step
+    /// of the advance, whose caller made them.
+    pub(crate) fn forward_skip_unchecked(
+        &mut self,
+        model: &Model,
+        skipstage: MjStage,
+        skipsensor: bool,
+    ) -> Result<(), StepError> {
+        self.forward_skip_stages(model, skipstage, skipsensor, true)
+    }
+
+    fn forward_skip_stages(
         &mut self,
         model: &Model,
         skipstage: MjStage,
         skipsensor: bool,
         control: bool,
     ) -> Result<(), StepError> {
-        check::check_step_inputs(model, self)?;
-
         let compute_sensors = !skipsensor;
 
         // MuJoCo mj_forwardSkip (engine_forward.c:1365-1411): the position
@@ -416,20 +420,18 @@ impl Data {
     /// Position stage: wake detection, forward kinematics, CRBA,
     /// transmissions, collision, position sensors and potential energy.
     fn forward_pos(&mut self, model: &Model, compute_sensors: bool) {
-        // Sleep is only active after the initial forward pass.
-        // The first forward (time == 0.0) must compute FK for all bodies
-        // to establish initial positions, even for Init-sleeping bodies.
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-
-        // ===== Pre-pipeline: Wake detection (§16.4) =====
-        // Must update sleep arrays after user-force wake so that
-        // body_awake_ind/dof_awake_ind are current before mj_crba (§16.29.3).
-        if sleep_enabled && crate::island::mj_wake(model, self) {
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
 
         // ========== Position Stage ==========
         position::mj_fwd_position(model, self);
+
+        // Wake what the user changed (§16.4), after the kinematics found a
+        // sleeping pose changed and before the mass matrix, as MuJoCo's
+        // `mj_kinematics` runs `mj_wake` (engine_core_smooth.c:236-241); with
+        // sleep disabled it wakes every sleeping tree.
+        if crate::island::mj_wake(model, self) {
+            crate::island::mj_update_sleep_arrays(model, self);
+        }
         crate::dynamics::flex::mj_flex(model, self);
         crate::dynamics::flex::mj_flex_edge(model, self);
 
@@ -439,11 +441,7 @@ impl Data {
         // stage) has a valid mass matrix.
         crate::dynamics::crba::mj_crba(model, self);
 
-        // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
-        if sleep_enabled && crate::island::mj_check_qpos_changed(model, self) {
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
-
+        actuation::mj_transmission_joint_tendon(model, self);
         actuation::mj_transmission_site(model, self);
         actuation::mj_transmission_slidercrank(model, self);
 
@@ -487,7 +485,7 @@ impl Data {
     /// then `mj_sensorVel` and `mj_energyVel` in `mj_forwardSkip`.
     fn forward_vel(&mut self, model: &Model, compute_sensors: bool) {
         velocity::mj_fwd_velocity(model, self);
-        actuation::mj_actuator_length(model, self);
+        actuation::mj_actuator_velocity(model, self);
         passive::mj_fwd_passive(model, self);
         crate::dynamics::rne::mj_rne(model, self);
         if compute_sensors {
@@ -532,8 +530,6 @@ impl Data {
     ///
     /// Returns `Err(StepError)` if implicit acceleration solver fails.
     fn forward_acc(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-
         // ========== Acceleration Stage ==========
         actuation::mj_fwd_actuation(model, self);
 
@@ -541,15 +537,9 @@ impl Data {
         // qfrc_gravcomp comes from the velocity stage's passive forces.
         actuation::mj_gravcomp_to_actuator(model, self);
 
-        // §16.11: Island discovery must run BEFORE constraint solve so that
-        // contact_island assignments are available for per-island partitioning.
-        if sleep_enabled {
-            crate::island::mj_island(model, self);
-        }
-
-        // §16.16: Per-island constraint solve when islands are active;
-        // falls back to global solve when DISABLE_ISLAND or no islands.
-        crate::constraint::mj_fwd_constraint_islands(model, self);
+        // One global solve; the islands are built in it but not solved
+        // apart (`island/mod.rs`).
+        crate::constraint::mj_fwd_constraint(model, self);
 
         // ImplicitFast/Implicit: always run mj_fwd_acceleration, even when
         // Newton succeeded: it solves M_hat = M − h·∂f/∂v for qacc_implicit,
@@ -608,8 +598,7 @@ impl Data {
         // Run inverse dynamics to populate qfrc_inverse
         self.inverse(model);
 
-        // solver_fwdinv[0]: constraint discrepancy (reserved — no per-island
-        // solver residual tracked yet).
+        // solver_fwdinv[0]: constraint discrepancy (not computed).
         self.solver_fwdinv[0] = 0.0;
 
         // solver_fwdinv[1]: applied force discrepancy.

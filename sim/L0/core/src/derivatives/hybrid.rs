@@ -16,8 +16,9 @@ use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::forward::{
-    MjStage, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, hill_force_velocity,
-    mj_fwd_position, muscle_gain_length, muscle_gain_velocity, norm3,
+    MjStage, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl,
+    hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_gain_length,
+    muscle_gain_velocity, norm3,
 };
 use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
@@ -27,9 +28,12 @@ use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse,
     mj_solve_sparse_batch,
 };
+use crate::types::flags::{actuator_disabled, disabled};
+use crate::types::validation::is_bad;
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType,
-    Integrator, MjJointType, Model, StepError, TendonType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_ACTUATION, DISABLE_CLAMPCTRL,
+    DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError,
+    TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -110,6 +114,39 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     }
 }
 
+/// Whether MuJoCo's actuator derivatives leave actuator `i` out
+/// (`engine_derivative.c:1071-1099`): actuation disabled, its group disabled,
+/// asleep, or its force clamped by its forcerange.
+fn actuator_left_out(model: &Model, data: &Data, i: usize) -> bool {
+    if disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i) {
+        return true;
+    }
+    if model.enableflags & ENABLE_SLEEP != 0
+        && data.ntree_awake < model.ntree
+        && crate::island::actuator_asleep(model, data, i)
+    {
+        return true;
+    }
+    // An unlimited force range is (-inf, inf) (MuJoCo's forcelimited 0).
+    let (lo, hi) = model.actuator_forcerange[i];
+    let force = data.actuator_force[i];
+    (lo > f64::NEG_INFINITY || hi < f64::INFINITY) && (force <= lo || force >= hi)
+}
+
+/// Actuator `i`'s input as MuJoCo's derivatives read it: the raw control with
+/// no dynamics, else the activation, the next one under `actearly` (as its
+/// force reads it).
+fn actuator_input(model: &Model, data: &Data, i: usize) -> f64 {
+    let adr = model.actuator_act_adr[i];
+    if model.actuator_dyntype[i] == ActuatorDynamics::None {
+        data.ctrl[i]
+    } else if model.actuator_actearly[i] {
+        mj_next_activation(model, i, data.act[adr], data.act_dot[adr])
+    } else {
+        data.act[adr]
+    }
+}
+
 // ============================================================================
 // Step 5 — mjd_actuator_vel: Actuator force velocity derivatives
 // ============================================================================
@@ -132,11 +169,12 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
 /// piecewise FLV curve gradient (force-velocity derivative).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
+    // As MuJoCo's `mjd_actuator_vel` (`engine_derivative.c:1066-1146`).
     for i in 0..model.nu {
-        let input = match model.actuator_dyntype[i] {
-            ActuatorDynamics::None => data.ctrl[i],
-            _ => data.act[model.actuator_act_adr[i]],
-        };
+        if actuator_left_out(model, data, i) {
+            continue;
+        }
+        let input = actuator_input(model, data, i);
 
         let length = data.actuator_length[i];
         let velocity = data.actuator_velocity[i];
@@ -203,7 +241,12 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
             BiasType::MillardMuscle | BiasType::User => continue,
         };
 
-        let dforce_dv = dgain_dv * input + dbias_dv;
+        // The gain term only when its velocity part is nonzero, as MuJoCo's: a
+        // bad control is read raw here, and 0 * NaN would reach qDeriv.
+        let mut dforce_dv = dbias_dv;
+        if dgain_dv != 0.0 {
+            dforce_dv += dgain_dv * input;
+        }
         if dforce_dv.abs() < 1e-30 {
             continue;
         }
@@ -951,10 +994,22 @@ fn hill_active_fl_deriv(norm_len: f64) -> f64 {
 /// `(∂moment/∂qpos) · force` is deferred for non-Joint transmissions (AD-1).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
+    // The actuators `mjd_actuator_vel` leaves out, against MuJoCo's transition
+    // derivative (finite differences: `transition_derivatives_leave_out_what_mujoco_does`).
+    // A direct actuator's input is the one the forward pass took (clamped,
+    // and 0 for every actuator when a control is bad), so this is the
+    // derivative of the force that pass computed.
+    let bad = (0..model.nu).any(|i| is_bad(actuator_ctrl_input(model, data, i)));
     for i in 0..model.nu {
-        let input = match model.actuator_dyntype[i] {
-            ActuatorDynamics::None => data.ctrl[i],
-            _ => data.act[model.actuator_act_adr[i]],
+        if actuator_left_out(model, data, i) {
+            continue;
+        }
+        let input = if model.actuator_dyntype[i] != ActuatorDynamics::None {
+            actuator_input(model, data, i)
+        } else if bad {
+            0.0
+        } else {
+            actuator_ctrl_input(model, data, i)
         };
         let length = data.actuator_length[i];
 
@@ -2341,6 +2396,12 @@ pub fn implicit_analytic_incomplete(model: &Model) -> bool {
 /// constraint-force derivative. It reads the constraint rows the caller's
 /// last forward pass left in `data`, as it reads the mass matrix.
 ///
+/// With sleep enabled, a step that puts a tree to sleep runs the forward pass
+/// again inside the step (see [`Data::integrate`]): pure finite differences
+/// step, so their sensor columns read that pass's sensors; the sensor-only
+/// columns here run forward passes without stepping and do not. The two can
+/// differ on that step (by reading the code; not measured).
+///
 /// See module-level docs for the four-phase strategy.
 ///
 /// # Panics
@@ -2378,6 +2439,18 @@ pub fn mjd_transition_hybrid(
     // or tendon limit, an equality, friction loss) they are wrong; pure FD is
     // exact there (hybrid_takes_finite_differences_under_an_active_constraint).
     if !data.efc_type.is_empty() {
+        return mjd_transition_fd(model, data, config);
+    }
+    // The analytic columns read each control as written. Where the forward
+    // pass acts on another value (a bad control makes every input 0, a
+    // ctrlrange clamps one), take finite differences, as MuJoCo's derivative
+    // is.
+    let clamps = !disabled(model, DISABLE_CLAMPCTRL);
+    if (0..model.nu).any(|i| {
+        let (lo, hi) = model.actuator_ctrlrange[i];
+        is_bad(actuator_ctrl_input(model, data, i))
+            || (clamps && !(lo..=hi).contains(&data.ctrl[i]))
+    }) {
         return mjd_transition_fd(model, data, config);
     }
 
@@ -2567,12 +2640,17 @@ pub fn mjd_transition_hybrid(
                 | ActuatorDynamics::HillMuscle
                 | ActuatorDynamics::MillardMuscle
         );
+        // Finite differences too for an actuator MuJoCo's derivatives leave
+        // out, and under `actearly` (its force reads the next activation).
+        let fd_column = is_muscle
+            || model.actuator_actearly[actuator_idx]
+            || actuator_left_out(model, data, actuator_idx);
 
         for k in 0..act_num {
             let j = act_adr + k;
             let state_col = 2 * nv + j;
 
-            if is_muscle {
+            if fd_column {
                 // FD fallback for this column
                 act_fd_indices.push(state_col);
                 continue;
@@ -2592,7 +2670,7 @@ pub fn mjd_transition_hybrid(
                 | GainType::HillMuscle
                 | GainType::MillardMuscle
                 | GainType::User => {
-                    // Muscle/HillMuscle/MillardMuscle: handled by the is_muscle FD path
+                    // Muscle/HillMuscle/MillardMuscle: handled by the fd_column path
                     // above (this arm is unreachable for them). User: no analytical
                     // derivative — fall back to FD.
                     act_fd_indices.push(state_col);
@@ -3148,7 +3226,9 @@ pub fn mjd_transition_hybrid(
     let mut ctrl_fd_indices: Vec<usize> = Vec::new();
 
     for actuator_idx in 0..nu {
-        let is_direct = matches!(model.actuator_dyntype[actuator_idx], ActuatorDynamics::None);
+        // An actuator MuJoCo's derivatives leave out takes finite differences.
+        let is_direct = matches!(model.actuator_dyntype[actuator_idx], ActuatorDynamics::None)
+            && !actuator_left_out(model, data, actuator_idx);
 
         if is_direct {
             // Analytical: ∂v⁺/∂ctrl = h · M⁻¹ · moment · gain

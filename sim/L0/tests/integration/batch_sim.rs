@@ -273,19 +273,6 @@ fn run_langevin_batch(
     gamma: f64,
     k_b_t: f64,
 ) -> Vec<(Vec<f64>, Vec<f64>)> {
-    // Prototype exists solely as the `PerEnvStack::install_per_env`
-    // receiver. Its contents don't reach any env (each env gets a
-    // fresh stack from the factory); the prototype Arc is discarded
-    // after `new_per_env` returns.
-    let prototype = PassiveStack::builder()
-        .with(LangevinThermostat::new(
-            DVector::from_element(1, gamma),
-            k_b_t,
-            master_seed,
-            0,
-        ))
-        .build();
-
     let factory = |env_idx: usize| {
         let model = load_model(SHO_1D_XML).expect("SHO MJCF loads");
         let stack = PassiveStack::builder()
@@ -299,7 +286,7 @@ fn run_langevin_batch(
         (model, stack)
     };
 
-    let mut batch = BatchSim::new_per_env(&prototype, n_envs, factory);
+    let mut batch = BatchSim::new_per_env(n_envs, factory);
     for _ in 0..n_steps {
         let errors = batch.step_all();
         for (env_idx, err) in errors.iter().enumerate() {

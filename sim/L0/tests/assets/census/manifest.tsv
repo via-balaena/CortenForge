@@ -1711,3 +1711,8 @@ dfbd8ab3086d2254	sim/L0/mjcf/src/builder/build.rs:692
 5e4e8d2ca3d251b7	sim/L0/mjcf/src/builder/build.rs:737
 c8c2d20d083f6cae	sim/L0/mjcf/src/builder/build.rs:731
 09fb49cd36bbbe3e	sim/L0/tests/integration/derivatives.rs:3289
+c71ecb680d6fae07	sim/L0/tests/integration/runtime_flags.rs:751
+b15cb449d8f72fad	sim/L0/tests/integration/history.rs:266
+bcbf72b425d3ab65	sim/L0/tests/integration/history.rs:361
+a4a69b6b5718a06d	sim/L0/tests/integration/step_inputs.rs:69
+c56b688091e5702d	sim/L0/tests/integration/derivatives.rs:3610

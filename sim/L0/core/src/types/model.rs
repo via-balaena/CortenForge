@@ -94,18 +94,20 @@ pub struct Model {
     pub tree_dof_adr: Vec<usize>,
     /// Number of DOFs in tree `t` (length `ntree`).
     pub tree_dof_num: Vec<usize>,
-    /// Tree index for each body (body 0 → `usize::MAX` sentinel, length `nbody`).
+    /// Tree index for each body; a static body (the world and every body
+    /// welded to it) has `usize::MAX`. Length `nbody`.
     pub body_treeid: Vec<usize>,
     /// Tree index for each DOF (length `nv`).
     pub dof_treeid: Vec<usize>,
     /// Per-tree sleep policy (computed at model build, length `ntree`).
     pub tree_sleep_policy: Vec<SleepPolicy>,
-    /// Per-DOF length scale for sleep threshold normalization (length `nv`).
-    /// Translational DOFs = 1.0; rotational DOFs = mechanism length estimate.
+    /// Per-DOF length scale for the sleep test (length `nv`): 1 for a
+    /// translational DOF, the size of its body for a rotational one (MuJoCo's
+    /// `dof_length`).
     pub dof_length: Vec<f64>,
-    /// Sleep velocity tolerance. Bodies with all DOF velocities below
-    /// `sleep_tolerance * dof_length[dof]` for `MIN_AWAKE` consecutive steps
-    /// are eligible for sleep. Default: `1e-4`. Units: `[m/s]`.
+    /// Sleep velocity tolerance. A tree whose DOFs all have
+    /// `dof_length[dof] * |qvel[dof]|` below it for `MIN_AWAKE` consecutive
+    /// steps is eligible for sleep (MuJoCo's `treeCanSleep`). Default: `1e-4`.
     pub sleep_tolerance: f64,
 
     // ==================== Body Tree (indexed by body_id, 0 = world) ====================
@@ -618,11 +620,19 @@ pub struct Model {
 
     /// Time delay per sensor in seconds (length `nsensor`).
     /// MuJoCo: `sensor_delay`.  Default: 0.0.  Present for all sensors.
+    /// A sensor with a buffer and a delay above 0 reads its buffer at
+    /// `time - delay` instead of being computed. `try_make_data` and
+    /// `try_reset` refuse a user or plugin sensor with a buffer and a delay.
     pub sensor_delay: Vec<f64>,
 
     /// Sampling interval per sensor: `(period, phase)` (length `nsensor`).
     /// MuJoCo: `sensor_interval[2*i]` = period, `sensor_interval[2*i+1]` = phase.
-    /// Phase is always initialized to 0.0 by the compiler.
+    /// With a buffer and `period > 0`, the sensor is computed once a period
+    /// and read from its buffer between. A reset records `phase` (or
+    /// `-period` when `phase` is 0) as its last tick, so it is first computed
+    /// one period after that (MuJoCo `_resetData`, `engine_io.c:1404`).
+    /// sim-mjcf reads a one-value `interval` as the period with `phase` 0 and
+    /// a two-value one as no interval, until Rigid-loading L48.
     pub sensor_interval: Vec<(f64, f64)>,
 
     // ==================== Actuators (indexed by actuator_id) ====================
@@ -711,12 +721,16 @@ pub struct Model {
 
     /// Time delay per actuator in seconds (length `nu`).
     /// MuJoCo: `actuator_delay`.  Default: 0.0.  Present for all actuators.
+    /// A non-zero delay on an actuator with a buffer makes it act on the
+    /// control its buffer holds at `time - delay` (MuJoCo tests for non-zero,
+    /// so a negative delay reads the newest sample).
     pub actuator_delay: Vec<f64>,
 
     /// Total history buffer size (actuator + sensor contributions).
     /// MuJoCo: `nhistory`.
     /// Layout: actuators first (offset 0 → actuator_total), then sensors
     /// (actuator_total → nhistory). Formula per entity: nsample * (dim + 1) + 2.
+    /// [`Model::compute_history_addresses`] sets it.
     pub nhistory: usize,
 
     // ==================== Tendons (indexed by tendon_id) ====================
@@ -768,13 +782,15 @@ pub struct Model {
     pub tendon_group: Vec<i32>,
     /// RGBA color per tendon [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
     pub tendon_rgba: Vec<[f64; 4]>,
-    /// Number of distinct kinematic trees spanned by each tendon (§16.10.1).
-    /// 0 = no bodies, 1 = single tree, 2 = two trees. Length: ntendon.
+    /// Number of distinct kinematic trees each tendon's wraps reach
+    /// (§16.10.1): 0 for none, else the count, which may exceed 2. Length:
+    /// ntendon.
     pub tendon_treenum: Vec<usize>,
     /// Packed tree indices for two-tree tendons (§16.10.1).
     /// For tendon t: `tendon_tree[2*t]` and `tendon_tree[2*t+1]`.
-    /// `tendon_tree[2*t]` is populated when `treenum >= 1`; `tendon_tree[2*t+1]`
-    /// is populated when `treenum == 2`. Unused slots are `usize::MAX`.
+    /// They hold the first and second trees in wrap order: `tendon_tree[2*t]`
+    /// when `treenum >= 1`, `tendon_tree[2*t+1]` when `treenum >= 2`. Unused
+    /// slots are `usize::MAX`.
     /// Length: 2 * ntendon.
     pub tendon_tree: Vec<usize>,
     /// Per-tendon inverse weight for diagonal approximation (length `ntendon`).

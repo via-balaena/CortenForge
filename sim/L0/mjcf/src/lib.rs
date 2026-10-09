@@ -178,7 +178,6 @@
 )]
 
 mod builder;
-mod config;
 mod defaults;
 mod error;
 mod include;
@@ -189,7 +188,6 @@ mod types;
 mod validation;
 
 // Re-export main types
-pub use config::ExtendedSolverConfig;
 pub use defaults::DefaultResolver;
 pub use error::{MjcfError, Result};
 pub use parser::parse_mjcf_str;

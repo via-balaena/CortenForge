@@ -1,6 +1,6 @@
 [package]
 name = "cortenforge-sim-types"
-description = "Foundation types for sim-core: body identity, pose, simulation configuration"
+description = "Foundation types for sim-core: body identity and pose"
 keywords = ["physics", "simulation", "robotics", "pose", "types"]
 categories = ["simulation", "science", "data-structures"]
 version.workspace = true
@@ -19,8 +19,6 @@ name = "sim_types"
 [dependencies]
 # Vector / matrix / isometry primitives for Pose, Transform, etc.
 nalgebra = { workspace = true }
-# Derive macros for SimConfigError and body-identity error types
-thiserror = { workspace = true }
 # Optional Serialize / Deserialize for persisted Model / Data snapshots
 serde = { workspace = true, optional = true }
 

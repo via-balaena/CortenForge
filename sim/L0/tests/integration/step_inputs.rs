@@ -8,8 +8,8 @@ use sim_core::{BodyWrench, Data, MjStage, Model, StepError};
 
 type EntryPoint = fn(&mut Data, &Model) -> Result<(), StepError>;
 
-/// The five `Result` entry points on `Data`.
-const ENTRY_POINTS: [(&str, EntryPoint); 5] = [
+/// The six `Result` entry points on `Data`.
+const ENTRY_POINTS: [(&str, EntryPoint); 6] = [
     ("step", |d, m| d.step(m)),
     ("step1", |d, m| d.step1(m)),
     ("step2", |d, m| d.step2(m)),
@@ -17,6 +17,7 @@ const ENTRY_POINTS: [(&str, EntryPoint); 5] = [
     ("forward_skip", |d, m| {
         d.forward_skip(m, MjStage::None, false)
     }),
+    ("integrate", |d, m| d.integrate(m)),
 ];
 
 fn pendulum(links: usize) -> Model {
@@ -56,6 +57,37 @@ fn step2_at_negative_timestep_does_not_run_time_backwards() {
     assert!(data.step2(&model).is_err());
     assert_eq!(data.time, 0.0);
     assert_eq!(data.qpos[0], 0.0);
+}
+
+/// `integrate` refuses before anything changes: the history buffers, the
+/// activations, velocities, positions and time are as they were. A hinge with
+/// a filtered actuator (an activation) and a delayed motor and sensor
+/// (history buffers), its timestep made negative after its `Data`.
+#[test]
+fn integrate_refuses_before_anything_changes() {
+    let mut model = sim_mjcf::load_model(
+        r#"<mujoco><option timestep="0.002"/><worldbody><body>
+<joint name="j" type="hinge" axis="0 1 0"/>
+<geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody>
+<actuator><general joint="j" dyntype="filter" dynprm="0.05"/>
+<motor joint="j" nsample="3" delay="0.002"/></actuator>
+<sensor><jointpos joint="j" nsample="3" delay="0.002"/></sensor></mujoco>"#,
+    )
+    .expect("load");
+    assert!(model.na > 0 && model.nhistory > 0);
+    let mut data = model.make_data();
+    data.qvel[0] = 1.0;
+    data.ctrl.fill(0.5);
+    data.forward(&model).expect("forward");
+    assert!(data.act_dot[0] != 0.0);
+    let before = data.clone();
+    model.timestep = -1e-3;
+    assert_eq!(data.integrate(&model), Err(StepError::InvalidTimestep));
+    assert_eq!(data.history, before.history);
+    assert_eq!(data.act, before.act);
+    assert_eq!(data.qvel, before.qvel);
+    assert_eq!(data.qpos, before.qpos);
+    assert_eq!(data.time, before.time);
 }
 
 /// A `Data` made by one model and used with another of other dimensions. Before the check,
