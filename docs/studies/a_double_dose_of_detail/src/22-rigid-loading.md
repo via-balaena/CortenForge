@@ -245,7 +245,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Implements:** A4 §8.4 (a plane's size as given; its positivity check is L18's `checksize`); `compute_fromto_pose(fromto, size, geom_type)` with `mjuu_z2quat(from − to)` (A14 §2.3); fromto resolved in a rotated frame's coordinates, after defaults (A20 §1A.3.6).
 - **Must-fail:** A4 §8.4's cases except the plane `size(3)` refusals (L18's); A14 §2.6 (capsule `geom_quat` literals; box frame with sizes; `framequat objtype="geom"` golden); `fromto_axis_is_from_minus_to` (A10 §2.4 #4); the `4eed75d1` literal (A20 §1A.3.6). A14's and A20's literals came from the fused arm64 wheel; they are regenerated from the unfused oracle.
 - **Flips:** plane `geom_size` changes in 282 docs ("whether any test asserts a plane's `geom_size` was not checked", A4 §8.4); `geom_quat` in 200 docs, trajectories in 21 (20 at ≤ 8.4e-14; the chaotic `equality-constraints/stress-test:388` validator still passes, two printed lines change) (A14 §2.4).
-- **Census:** `fromto` 156 of 166 flip alone; the rotated-frame pair 2/2 (A20 §1A.2). Chunk 2c added three capsule `fromto` docs, each `model:geom_quat;dyn:agree`: `c71ecb68` (`runtime_flags.rs:751`), `b15cb449` (`history.rs:266`), `a4a69b6b` (`step_inputs.rs:69`).
+- **Census:** `fromto` 156 of 166 flip alone; the rotated-frame pair 2/2 (A20 §1A.2). Chunk 2c added four capsule `fromto` docs, each `model:geom_quat;dyn:agree`: `c71ecb68` (`runtime_flags.rs:751`), `b15cb449` (`history.rs:266`), `a4a69b6b` (`step_inputs.rs:69`), `c56b6880` (`derivatives.rs:3610`).
 - **Breaking:** new pub `MjcfBody` fields (A4 §8.4).
 
 ### L15 · M9 · `fix(sim-mjcf): self-closing elements are not dropped`

@@ -1,0 +1,13 @@
+<mujoco>
+          <option timestep="0.01"/>
+          <worldbody>
+            <body name="b">
+              <joint name="j" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general joint="j" gaintype="affine" gainprm="1 2 0" ctrlrange="-1 1"/>
+            <motor joint="j"/>
+          </actuator>
+        </mujoco>
