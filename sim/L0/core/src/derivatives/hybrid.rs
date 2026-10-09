@@ -2569,7 +2569,7 @@ pub fn mass_directional_derivative(
 ///   `T = rne_vel(qacc_implicit)` captures only the Coriolis part of `∂D/∂v`.
 ///   (Affine gain is constant in v ⇒ fine.)
 /// - **ImplicitFast or full Implicit with fluid density.** `D` holds the fluid
-///   drag's slope (`mjd_fluid_vel`), and with a nonzero `density` the drag is
+///   drag's slope (`mjd_fluid_vel`), and with a `density` the drag can be
 ///   quadratic in v, so its slope moves with v: the same missing `∂D/∂v` term.
 ///   (Viscosity alone is linear in v ⇒ fine.)
 ///
@@ -2612,7 +2612,9 @@ fn sleep_can_change(model: &Model, data: &Data) -> bool {
 /// constraint-force derivative. It reads the constraint rows the caller's
 /// last forward pass left in `data`, as it reads the mass matrix. And when a
 /// step from `data` can wake a tree or put one to sleep (a tree asleep, or one
-/// on the last step of its countdown), which the analytic columns do not see.
+/// on the last step of its countdown), which the analytic columns do not see;
+/// when an actuator's control is bad or outside a ctrlrange the step clamps it
+/// to; and for the models `implicit_analytic_incomplete` names.
 ///
 /// See module-level docs for the four-phase strategy.
 ///

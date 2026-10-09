@@ -29,7 +29,8 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// # Cost
 ///
-/// - Centered: `2 · (2·nv + na + nu)` calls to `step()`.
+/// - Centered: `1 + 2 · (2·nv + na + nu)` calls to `step()` (the `1`, the
+///   nominal step, runs either way).
 /// - Forward:  `1 + (2·nv + na + nu)` calls to `step()` (the `1` is for
 ///   the nominal `y_0 = f(x)` evaluation).
 /// - With sleep enabled, each perturbed step also starts from a copy of the
@@ -241,7 +242,7 @@ pub fn mjd_transition_fd(
 }
 
 /// Puts `scratch` back at the caller's state `nominal` before a
-/// finite-difference column, so no column depends on the ones before it
+/// finite-difference step, so no step depends on the ones before it
 /// (except through a plugin's state with sleep disabled, which this does not
 /// restore: the spec book's gap chapter, `41-what-planning-could-not-see.md`).
 /// MuJoCo's `mjd_stepFD` restores `mjSTATE_FULLPHYSICS | mjSTATE_CTRL` and the

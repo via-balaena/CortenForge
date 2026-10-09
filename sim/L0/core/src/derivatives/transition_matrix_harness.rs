@@ -465,7 +465,7 @@ fn tendon_damped_isd_routes_to_fd_and_matches() {
     );
 }
 
-/// The gate `implicit_analytic_incomplete` must classify exactly the model classes
+/// The gate `implicit_analytic_incomplete` must classify the model classes
 /// whose ISD/Implicit analytic transition derivative is incomplete: tendon-K/D under
 /// ImplicitSpringDamper, and a Muscle/HillMuscle *gain* actuator or fluid density
 /// under ImplicitFast and full Implicit.

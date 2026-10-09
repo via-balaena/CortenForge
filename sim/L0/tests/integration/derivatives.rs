@@ -2699,7 +2699,7 @@ fn t12_cutoff_clamped_sensor_zero_derivatives() {
 
 /// Hybrid B matrix matches FD B for Joint-transmission motor actuators.
 /// Regression test for the actuator_moment dispatch bug (Joint transmissions
-/// never populate data.actuator_moment — the hybrid path must construct the
+/// on a hinge or slide never populate data.actuator_moment — the hybrid path must construct the
 /// moment inline from gear and jnt_dof_adr).
 #[test]
 fn test_hybrid_vs_fd_b_joint_motor() {

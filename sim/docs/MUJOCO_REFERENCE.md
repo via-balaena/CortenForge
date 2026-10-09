@@ -925,7 +925,7 @@ Activation columns (analytical):
 Position columns: FD (captures contact transitions, implicit spring ∂v/∂q)
 B matrix: analytical for DynType::None, FD for actuators with dynamics
 
-Cost: ~nv FD step() calls (position columns only) vs 2·(2nv+na+nu) for pure FD
+Cost: ~nv FD step() calls (position columns only) vs 1 + 2·(2nv+na+nu) for pure FD
 With an active constraint row in `data` (from the caller's last forward pass)
 it returns pure FD: its analytic columns hold no constraint-force derivative.
 It also returns pure FD when a step from `data` can change a tree's sleep

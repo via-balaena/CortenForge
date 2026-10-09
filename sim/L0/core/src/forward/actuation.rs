@@ -422,7 +422,7 @@ pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
 /// Whether actuator `i` acts through its `actuator_moment` row: a site, body
 /// or slider-crank transmission, or a joint transmission on a ball or free
 /// joint, whose moment spans the joint's 3 or 6 dofs (MuJoCo
-/// `mj_transmission`, `engine_core_smooth.c:1298-1360`).
+/// `mj_transmission`, `engine_core_smooth.c:1298-1375`).
 pub fn acts_through_moment(model: &Model, i: usize) -> bool {
     match model.actuator_trntype[i] {
         ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {

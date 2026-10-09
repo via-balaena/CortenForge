@@ -170,8 +170,7 @@ pub struct DerivativeConfig {
     /// Read by [`mjd_transition`]: when true and the model's analytic path is
     /// complete, velocity columns of A and simple actuator columns of B use
     /// analytical derivatives from `qDeriv` ([`mjd_transition_hybrid`], which
-    /// takes pure FD when `data` holds an active constraint row from the
-    /// caller's last forward pass); otherwise pure FD.
+    /// takes pure FD in the cases its doc names); otherwise pure FD.
     /// [`mjd_transition_hybrid`] called directly does not read it.
     ///
     /// Default: `true`.
@@ -357,8 +356,9 @@ pub fn max_relative_error(a: &DMatrix<f64>, b: &DMatrix<f64>, floor: f64) -> (f6
 ///
 /// Returns `(max_error_A, max_error_B)` — the max relative errors between
 /// pure-FD and hybrid A/B matrices. The caller checks against desired tolerance.
-/// With an active constraint row in `data` the hybrid takes pure FD, so this
-/// compares pure FD with itself and returns `(0, 0)`.
+/// Where [`mjd_transition`] takes pure FD (an active constraint row in `data`,
+/// and the other cases its doc names), this compares pure FD with itself and
+/// returns `(0, 0)`.
 ///
 /// # Errors
 ///
