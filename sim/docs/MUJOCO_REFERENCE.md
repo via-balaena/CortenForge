@@ -728,8 +728,8 @@ for each joint:
     if Free:
         qpos[0:3] += qvel[0:3] * h          # linear
         qpos[3:7] = quat_integrate(qvel[3:6], h)  # angular
-
-# 3. Normalize quaternions to prevent drift
+    # quat_integrate normalizes the quaternion before turning it
+    # (mju_quatIntegrate); the step does not renormalize after
 ```
 
 Position update uses the NEW velocity (step 1 output). This is what makes it
@@ -928,6 +928,10 @@ B matrix: analytical for DynType::None, FD for actuators with dynamics
 Cost: ~nv FD step() calls (position columns only) vs 2·(2nv+na+nu) for pure FD
 With an active constraint row in `data` (from the caller's last forward pass)
 it returns pure FD: its analytic columns hold no constraint-force derivative.
+It also returns pure FD when a step from `data` can change a tree's sleep
+state, and for the models `implicit_analytic_incomplete` names (a tendon
+spring or damper under implicitspringdamper; a muscle gain or fluid density
+under implicitfast and implicit).
 ```
 
 ### 6.5 Public Dispatch: `mjd_transition()`

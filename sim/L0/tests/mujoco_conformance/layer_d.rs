@@ -371,8 +371,8 @@ fn layer_d_quaternion_norm_ball_joint() {
 
 /// Quaternion norm for RK4 integrator.
 ///
-/// RK4 uses intermediate stages — verify the quaternion is properly
-/// renormalized after the full RK4 step.
+/// RK4 uses intermediate stages — verify the quaternion stays at unit norm
+/// after the full RK4 step.
 #[test]
 fn layer_d_quaternion_norm_rk4() {
     let xml = r#"

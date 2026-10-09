@@ -124,9 +124,10 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
         {
             // Ball joint quaternion [w, x, y, z]
             let qpos_adr = model.jnt_qpos_adr[objid];
-            // Read quaternion from qpos and normalize in locals
-            // (MuJoCo does mju_normalize4). Use 1e-10 threshold and
-            // identity reset to match our normalize_quaternion() convention.
+            // Read quaternion from qpos and normalize in locals. MuJoCo
+            // normalizes with `mju_normalize4`, which leaves a norm within
+            // 1e-15 of 1 as it is; this divides by any norm above 1e-10 (the
+            // spec book's P28 entry ports it with the kinematics).
             let (w, x, y, z) = (
                 data.qpos[qpos_adr],
                 data.qpos[qpos_adr + 1],

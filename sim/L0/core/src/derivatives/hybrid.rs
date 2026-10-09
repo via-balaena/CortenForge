@@ -306,9 +306,9 @@ fn forward_pass_input(model: &Model, data: &Data, i: usize, bad: bool) -> f64 {
 ///   ∂force/∂V = (∂gain/∂V) · input + (∂bias/∂V)
 ///
 /// The velocity V maps to qvel through the transmission:
-///   Joint:  `V = gear · qvel[dof_adr]`
+///   Joint on a hinge or slide: `V = gear · qvel[dof_adr]`
 ///   Tendon: V = gear · J · qvel
-///   Site:   V = moment^T · qvel
+///   Site, body, slider-crank, joint on a ball or free joint: V = moment^T · qvel
 ///
 /// Combined: ∂qfrc/∂qvel += moment · ∂force/∂V · moment^T
 ///
@@ -840,7 +840,9 @@ pub fn mjd_smooth_pos(model: &Model, data: &mut Data) {
     mjd_rne_pos(model, data);
 }
 
-/// Compute ∂(qfrc_passive)/∂qpos and add to data.qDeriv_pos.
+/// Compute ∂/∂qpos of the passive forces the step applies (`qfrc_passive`,
+/// and under `ImplicitSpringDamper` the joint springs its implicit solve
+/// applies) and add to data.qDeriv_pos.
 ///
 /// Components:
 /// 1. Joint spring stiffness: −k for hinge/slide (diagonal), −k·∂subquat/∂q for ball/free
@@ -2902,7 +2904,8 @@ pub fn mjd_transition_hybrid(
             };
 
             // ∂qfrc/∂act = moment · gain — dispatch by transmission type.
-            // Joint/Tendon transmissions don't populate data.actuator_moment.
+            // A joint transmission on a hinge or slide and a tendon one leave
+            // data.actuator_moment at zero; their moment is built here.
             let mut dvdact = DVector::zeros(nv);
             let gear = model.actuator_gear[actuator_idx][0];
             let trnid = model.actuator_trnid[actuator_idx][0];
@@ -2934,7 +2937,9 @@ pub fn mjd_transition_hybrid(
                 }
             }
 
-            // Solve: M⁻¹ or (M−hD)⁻¹ or (M+hD+h²K)⁻¹
+            // Solve with the step's matrix: M, or M + h·D under eulerdamp
+            // (Euler); M − h·D (implicitfast, implicit); M + h·D + h²·K
+            // (implicitspringdamper).
             match model.integrator {
                 // Under eulerdamp the step solves with M + h·D, as the
                 // velocity columns above.
@@ -3311,7 +3316,7 @@ pub fn mjd_transition_hybrid(
             && !input_scales_implicit_damping(model, actuator_idx);
 
         if is_direct {
-            // Analytical: ∂v⁺/∂ctrl = h · M⁻¹ · moment · gain
+            // Analytical: ∂v⁺/∂ctrl = h · (the step's matrix)⁻¹ · moment · gain
             let gain = match model.actuator_gaintype[actuator_idx] {
                 GainType::Fixed => model.actuator_gainprm[actuator_idx][0],
                 GainType::Affine => {
@@ -3331,8 +3336,8 @@ pub fn mjd_transition_hybrid(
             };
 
             // Build moment-scaled force vector, dispatching by transmission type.
-            // Joint/Tendon transmissions don't populate data.actuator_moment
-            // (it stays zero from init) — construct the moment inline instead.
+            // A joint transmission on a hinge or slide and a tendon one leave
+            // data.actuator_moment at zero; their moment is built inline here.
             let mut dvdctrl = DVector::zeros(nv);
             let gear = model.actuator_gear[actuator_idx][0];
             let trnid = model.actuator_trnid[actuator_idx][0];

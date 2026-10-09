@@ -1892,10 +1892,10 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
 /// solve takes the same implicit matrix), on two hinges and with 60 more
 /// (past `NV_SPARSE_THRESHOLD`, where the Newton solve assembles a sparse
 /// Hessian); and the hybrid transition derivative agrees with pure finite
-/// differences under each, on the two hinges (on the long chain the two
-/// differ by about 1e-4 with every flag enabled as well, the spec book's gap
-/// chapter, `41-what-planning-could-not-see.md`). implicitspringdamper is ours
-/// (MuJoCo has no such integrator), so the flags' meaning is the reference.
+/// differences under the joint flags on the two hinges, free, where its
+/// analytic columns run (a tendon spring or damper, or a limit row, sends it
+/// to pure finite differences whole). implicitspringdamper is ours (MuJoCo
+/// has no such integrator), so the flags' meaning is the reference.
 #[test]
 fn implicitspringdamper_follows_the_spring_and_damper_flags() {
     let model_xml = |flag: &str, joint_prm: &str, tendon_prm: &str, limit: &str, more: &str| {
@@ -1983,11 +1983,12 @@ fn implicitspringdamper_follows_the_spring_and_damper_flags() {
                     limit.is_empty(),
                     "{what}{limit}{size}: the limit's row"
                 );
-                if more.is_empty() {
+                if more.is_empty() && limit.is_empty() && with.1.is_empty() {
                     let config = sim_core::DerivativeConfig::default();
                     let hybrid =
                         sim_core::mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
                     let fd = sim_core::mjd_transition_fd(&model, &data, &config).expect("fd");
+                    assert_ne!(hybrid.A, fd.A, "{what}: the analytic columns ran");
                     for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
                         if (h - f).abs() > 1e-6 + 1e-5 * h.abs().max(f.abs()) {
                             failures.push(format!(

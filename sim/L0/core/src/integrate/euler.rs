@@ -1,9 +1,8 @@
-//! Euler position integration on SO(3) manifold + quaternion normalization.
+//! Euler position integration on SO(3) manifold.
 //!
 //! Implements MuJoCo's position integration step: each joint type gets its
 //! appropriate integration (scalar for hinge/slide, quaternion exponential map
-//! for ball/free). After integration, quaternions are renormalized to prevent
-//! numerical drift.
+//! for ball/free, normalized before each turn as `mju_quatIntegrate`).
 
 use nalgebra::{DVector, Vector3};
 

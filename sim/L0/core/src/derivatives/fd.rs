@@ -32,6 +32,8 @@ use nalgebra::{DMatrix, DVector};
 /// - Centered: `2 · (2·nv + na + nu)` calls to `step()`.
 /// - Forward:  `1 + (2·nv + na + nu)` calls to `step()` (the `1` is for
 ///   the nominal `y_0 = f(x)` evaluation).
+/// - With sleep enabled, each column also copies the whole `Data` (about
+///   one step's cost, measured on a 30-link chain).
 ///
 /// # Quaternion handling
 ///
@@ -239,7 +241,9 @@ pub fn mjd_transition_fd(
 }
 
 /// Puts `scratch` back at the caller's state `nominal` before a
-/// finite-difference column, so no column depends on the ones before it.
+/// finite-difference column, so no column depends on the ones before it
+/// (except through a plugin's state with sleep disabled, which this does not
+/// restore: the spec book's gap chapter, `41-what-planning-could-not-see.md`).
 /// MuJoCo's `mjd_stepFD` restores `mjSTATE_FULLPHYSICS | mjSTATE_CTRL` and the
 /// warm start (`engine_derivative_fd.c:307`); with sleep disabled this
 /// restores qpos, qvel, act, ctrl, the warm start and the time. With sleep

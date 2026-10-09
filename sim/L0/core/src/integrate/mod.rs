@@ -3,7 +3,7 @@
 //! Corresponds to MuJoCo's `engine_forward.c` integration section:
 //! `mj_Euler`, `mj_RungeKutta`, and implicit spring/damper helpers.
 //!
-//! - `euler`: Position integration on SO(3) manifold + quaternion normalization
+//! - `euler`: Position integration on SO(3) manifold
 //! - `implicit`: Tendon implicit stiffness/damping helpers (K/D accumulation)
 //! - `rk4`: Standard 4-stage Runge-Kutta integration
 

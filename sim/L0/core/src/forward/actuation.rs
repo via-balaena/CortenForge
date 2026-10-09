@@ -437,10 +437,11 @@ pub fn acts_through_moment(model: &Model, i: usize) -> bool {
 }
 
 /// A joint transmission on ball or free joint `jid` as MuJoCo's
-/// (`mj_transmission`, `engine_core_smooth.c:1311-1360`): writes the moment
+/// (`mj_transmission`, `engine_core_smooth.c:1311-1375`): writes the moment
 /// over the joint's dofs into `moment` and returns the length. A ball joint's
-/// moment is its gear's first three entries, rotated into the parent frame by
-/// the joint's inverse rotation under `jointinparent`, and its length the
+/// moment is its gear's first three entries, which under `jointinparent` are
+/// given in the parent frame and turned into the joint's by its inverse
+/// rotation, and its length the
 /// rotation's axis-angle vector along that moment; a free joint's moment is
 /// the six gear entries, the rotational three rotated the same way, and its
 /// length 0.

@@ -13,8 +13,8 @@
 //! - **inputs:** every actuator kind under each state (actuation disabled,
 //!   its group disabled, its force clamped, its activation past its range,
 //!   its tree asleep) and each control (inside, at and past its range, NaN,
-//!   infinite; limited and unlimited), on a hinge and on a site
-//!   transmission, under each integrator, with and without damping.
+//!   infinite; limited and unlimited), through a hinge, a site with a
+//!   refsite and a body, under each integrator, with and without damping.
 //!
 //! Every fixture is one MuJoCo 3.5.0 loads, with another integrator in place
 //! of `implicitspringdamper` (ours). A case may differ only inside a
@@ -22,7 +22,13 @@
 //! some case, so the list shrinks as the gaps are fixed. A case inside a
 //! listed class is not checked further.
 //!
-//! What it cannot see: a difference below the tolerance (a ULP-level one);
+//! What it cannot see: a difference below the tolerance (`ATOL` + `RTOL` × the
+//! larger magnitude, 1.1e-5 on an entry near 1); an entry NaN in both (as
+//! under the implicit integrators for a damper at a NaN control); a ball or
+//! free joint's gear past its first entry (each takes a scalar gear;
+//! `joint_transmission.rs` checks the whole gear against MuJoCo's forward pass
+//! and steps); an adhesion actuator's force and a body transmission's, since
+//! no geom collides and they have no contact to act through;
 //! forward differences (`centered: false`); a case the hybrid hands to finite
 //! differences whole, as it does a tree asleep, where the two are the same
 //! matrices (`derivatives.rs` checks finite differences at a sleep state
@@ -217,9 +223,7 @@ impl Trn {
         }
     }
 
-    /// A ball or free joint takes a scalar gear: the forward pass applies
-    /// `gear[0]` to the joint's first dof only, where MuJoCo applies the
-    /// whole gear.
+    /// A ball or free joint takes a scalar gear.
     fn attrs(self) -> &'static str {
         match self {
             Self::JointRoot => r#"joint="j1" gear="1.5""#,

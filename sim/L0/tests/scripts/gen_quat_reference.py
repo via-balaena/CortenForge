@@ -13,9 +13,9 @@ It writes quat.json:
 
 - `spins`: a box on a free joint and on a ball joint, in zero gravity, under
   Euler and RK4, from an angular velocity about the body's z axis, a principal
-  axis of the box, so the gyroscopic force is exactly 0 and the velocity
-  stays as set, and a start quaternion turned 0.3 rad about (1, 1, 0)/sqrt(2);
-  qpos and qvel after each step of `checkpoints`. Two speeds: 3.7e-9 rad/s (`slow`, an angle per step
+  axis of the box, so the gyroscopic force is 0 up to rounding, and a start
+  quaternion turned 0.3 rad about (1, 1, 0)/sqrt(2); qpos and qvel after each
+  step of `checkpoints`. Two speeds: 3.7e-9 rad/s (`slow`, an angle per step
   far below 1e-10) and 2.3 rad/s (`fast`).
 - `integrate_pos`: mj_integratePos on a ball joint, for each case's qpos
   (a quaternion, unit or not), qvel and dt: the qpos it returns.
