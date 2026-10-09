@@ -4230,6 +4230,78 @@ fn hybrid_velocity_columns_take_flex_edge_damping() {
     }
 }
 
+/// The hybrid's position columns are analytic under a `joint` transmission on
+/// a ball or free joint, whose moment is its gear whatever `q`, and finite
+/// differences under `jointinparent`, whose moment the joint's rotation turns
+/// (a term the analytic columns leave out, AD-1). A position actuator on a
+/// rotated, moving box; each agrees with pure finite differences to the
+/// sweep's tolerance (1e-6 plus 1e-5 relative).
+#[test]
+fn hybrid_position_columns_under_ball_and_free_joint_transmissions() {
+    for (root, gear) in [
+        ("ball", "1.5 0.2 -0.3"),
+        ("free", "1.5 0.2 -0.3 0.4 -0.5 0.6"),
+    ] {
+        for trn in ["joint", "jointinparent"] {
+            let what = format!("{root}, {trn}");
+            let joint = if root == "ball" {
+                r#"<joint name="j" type="ball"/>"#
+            } else {
+                r#"<freejoint name="j"/>"#
+            };
+            let model = sim_mjcf::load_model(&format!(
+                r#"<mujoco>
+                  <option timestep="0.002" gravity="0 0 0"/>
+                  <worldbody>
+                    <body name="box" pos="0 0 1">
+                      {joint}
+                      <geom type="box" size="0.1 0.2 0.3" mass="1"/>
+                    </body>
+                  </worldbody>
+                  <actuator>
+                    <position {trn}="j" gear="{gear}" kp="20"/>
+                  </actuator>
+                </mujoco>"#
+            ))
+            .expect("load");
+            let mut data = model.make_data();
+            let (q, v) = if root == "ball" { (0, 0) } else { (3, 3) };
+            data.qpos.as_mut_slice()[q..q + 4].copy_from_slice(&[
+                0.988_771_077_936_042_4,
+                0.105_668_716_839_935_62,
+                0.105_668_716_839_935_62,
+                0.0,
+            ]);
+            data.qvel.as_mut_slice()[v..v + 3].copy_from_slice(&[0.7, -0.4, 0.3]);
+            data.ctrl[0] = 0.3;
+            data.forward(&model).expect("forward");
+            assert!(data.efc_type.is_empty(), "{what}: no constraint rows");
+            let config = DerivativeConfig::default();
+            let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+            let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+            for (name, h, f) in [("A", &hybrid.A, &fd.A), ("B", &hybrid.B, &fd.B)] {
+                for r in 0..f.nrows() {
+                    for c in 0..f.ncols() {
+                        let (x, y) = (h[(r, c)], f[(r, c)]);
+                        assert!(
+                            (x - y).abs() <= 1e-6 + 1e-5 * x.abs().max(y.abs()),
+                            "{what}: {name}[{r},{c}] hybrid {x}, fd {y}"
+                        );
+                    }
+                }
+            }
+            let position_columns_analytic = (0..fd.A.nrows()).any(|r| {
+                (0..model.nv).any(|c| hybrid.A[(r, c)].to_bits() != fd.A[(r, c)].to_bits())
+            });
+            assert_eq!(
+                position_columns_analytic,
+                trn == "joint",
+                "{what}: the position columns analytic"
+            );
+        }
+    }
+}
+
 /// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its
 /// length moves with `q`: a ball joint's length is its rotation vector along
 /// the gear, whose Jacobian is the gear through the log map (the moment only

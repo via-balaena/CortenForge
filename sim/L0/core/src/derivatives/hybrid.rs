@@ -170,6 +170,15 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     }
 }
 
+/// Whether actuator `i`'s moment row moves with `q`: a site, body or
+/// slider-crank transmission, or `jointinparent` on a ball or free joint, whose
+/// moment the joint's rotation turns. A `joint` transmission's moment is its
+/// gear on any joint (`ball_free_transmission`); on a ball joint its length
+/// moves with `q`, which `mjd_actuator_pos` takes (`ball_length_jacobian`).
+fn moment_moves_with_q(model: &Model, i: usize) -> bool {
+    acts_through_moment(model, i) && model.actuator_trntype[i] != ActuatorTransmission::Joint
+}
+
 /// Whether the ImplicitFast step's `D` moves with `q`: it holds a spatial
 /// tendon's damping and the velocity terms of the actuators on one, times
 /// `JᵀJ`, and a spatial tendon's `J` moves with `q`. The analytic position
@@ -3029,10 +3038,9 @@ pub fn mjd_transition_hybrid(
         && model.viscosity == 0.0
         && !model.body_gravcomp.iter().any(|g| *g != 0.0)
         && model.nflex == 0
-        // A moment row that moves with q (a site, body or slider-crank
-        // transmission, or a joint transmission on a ball or free joint)
-        // adds a moment-arm term the analytic columns leave out (AD-1).
-        && !(0..model.nu).any(|i| acts_through_moment(model, i))
+        // A moment row that moves with q adds a moment-arm term the analytic
+        // columns leave out (AD-1).
+        && !(0..model.nu).any(|i| moment_moves_with_q(model, i))
         && !model.actuator_biastype.iter().any(|t| {
             // MillardMuscle's analytic position derivative is deferred (R-implicit-deriv).
             // The public `mjd_transition` already routes Millard models to full FD; this
