@@ -54,7 +54,11 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
 
             if dist < 1e-10 {
                 data.flexedge_velocity[e] = 0.0;
-                // J values remain zero (from reset)
+                // No direction: the row is zeroed, so nothing reads the last
+                // step's (the passive pass skips this edge's force, and
+                // `mjd_passive_vel` adds its damping over this row).
+                let rowadr = model.flexedge_J_rowadr[e];
+                data.flexedge_J[rowadr..rowadr + model.flexedge_J_rownnz[e]].fill(0.0);
                 continue;
             }
 
