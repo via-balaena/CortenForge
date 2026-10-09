@@ -131,7 +131,10 @@ fn assert_damping_scope(model: &Model) {
 /// As the step: with dampers disabled `D` acts nowhere and the Jacobian is
 /// zero; with eulerdamp disabled it acts through the explicit force `−D·v`
 /// alone, so `∂v⁺/∂D_j = −h · v_j · (M⁻¹ column j)`, with the velocity
-/// before the step.
+/// before the step. With every dof undamped the step takes eulerdamp for any
+/// positive damping and not for a negative one, so it is not differentiable
+/// there; the Jacobian is the derivative from above, toward positive damping
+/// (`damping_jacobian_at_zero_damping_is_taken_from_above`).
 ///
 /// # Panics
 ///
@@ -1611,6 +1614,42 @@ mod tests {
             let (err, loc) = max_relative_error(&analytic, &fd, 1e-3);
             assert!(err < 1e-5, "{what}: max_rel_err={err:.3e} at {loc:?}");
         }
+    }
+
+    /// With every dof undamped the damping channel is the derivative from
+    /// above: it matches a forward difference toward positive damping, and not
+    /// a backward one (the step takes eulerdamp for any positive damping).
+    #[test]
+    fn damping_jacobian_at_zero_damping_is_taken_from_above() {
+        let (mut model, start) = damped_pendulum();
+        model.jnt_damping = vec![0.0, 0.0];
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos.copy_from(&start.qpos);
+        data.qvel.copy_from(&start.qvel);
+        data.forward(&model).unwrap();
+        let analytic = mjd_damping_jacobian(&model, &data).unwrap().dxdD;
+        let one_sided = |eps: f64| {
+            let qpos_0 = data.qpos.clone();
+            let mut base = data.clone();
+            base.step(&model).unwrap();
+            let y0 = extract_state(&model, &base, &qpos_0);
+            let mut jac = DMatrix::zeros(analytic.nrows(), analytic.ncols());
+            for j in 0..model.nv {
+                let mut m = model.clone();
+                m.jnt_damping[j] += eps;
+                m.compute_implicit_params();
+                let mut d = data.clone();
+                d.step(&m).unwrap();
+                jac.column_mut(j)
+                    .copy_from(&((extract_state(&m, &d, &qpos_0) - &y0) / eps));
+            }
+            jac
+        };
+        let (above, _) = max_relative_error(&analytic, &one_sided(1e-7), 1e-3);
+        let (below, _) = max_relative_error(&analytic, &one_sided(-1e-7), 1e-3);
+        assert!(above < 1e-5, "against a forward difference: {above:.3e}");
+        assert!(below > 1e-3, "against a backward difference: {below:.3e}");
     }
 
     // ---- friction (dof_frictionloss) single-step channel ----

@@ -1895,7 +1895,8 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
 /// (0.4, 0.7, -0.5). Under full Implicit the step matches it. Under
 /// implicitfast MuJoCo also leaves out the entries between the free vertex's
 /// dofs, where its mass matrix holds none (the spec book's P30, ledger L92),
-/// so ours still differs there.
+/// so ours still differs there; and on a four-vertex cable with no vertex
+/// pinned, ours differs under both (below).
 #[test]
 fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
     // (integrator, MuJoCo's qpos and qvel)
@@ -1948,6 +1949,7 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
             data.step(&model).expect("step");
         }
         let got: Vec<f64> = data.qpos.iter().chain(data.qvel.iter()).copied().collect();
+        assert!(got.iter().all(|x| x.is_finite()), "{integrator}: {got:?}");
         let off = got
             .iter()
             .zip(mujoco)
@@ -1958,6 +1960,85 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
         } else {
             assert!(off > 1e-4, "{integrator} agrees with MuJoCo: P30's flip");
         }
+    }
+
+    // A four-vertex cable, no vertex pinned: each edge's term also couples
+    // two vertices' dofs, which MuJoCo's `qDeriv` (dofs on one branch) leaves
+    // out under both integrators (P30), so ours still differs under both.
+    // MuJoCo steps it as four bodies with three slides and a 0.1 kg sphere
+    // each under `<flex body=...>`; its qvel after 20 steps.
+    let cable = [
+        (
+            "implicit",
+            [
+                0.6856880643979151,
+                -0.5773510413674069,
+                0.19419144449115566,
+                0.30999783865220765,
+                0.7122901746865635,
+                0.1360778830478554,
+                0.22543716479346096,
+                -0.37193480713439336,
+                0.40173154805075045,
+                -0.8294968518449337,
+                1.333828690644867,
+                0.2785937761994604,
+            ],
+        ),
+        (
+            "implicitfast",
+            [
+                0.6891280644688601,
+                -0.5698090298511032,
+                0.19352632159518787,
+                0.3112662880609476,
+                0.7137379045968621,
+                0.1385168479708701,
+                0.2240481828170123,
+                -0.37441396889502304,
+                0.3981670018118946,
+                -0.8383243157894933,
+                1.3231217829665871,
+                0.2806133597937262,
+            ],
+        ),
+    ];
+    for (integrator, mujoco) in cable {
+        let model = load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="{integrator}">
+                <flag equality="disable"/>
+              </option>
+              <deformable>
+                <flex name="c" dim="1" mass="0.4">
+                  <vertex pos="0 0 1  0.1 0 1  0.2 0 1  0.3 0 1"/>
+                  <element data="0 1  1 2  2 3"/>
+                  <edge damping="3"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        ))
+        .expect("load");
+        assert_eq!((model.nv, model.nflexedge), (12, 3));
+        let mut data = model.make_data();
+        for (i, v) in data.qvel.iter_mut().enumerate() {
+            *v = [0.4, -0.7, 0.5, -0.2, 0.9, 0.3][i % 6] * (1.0 + 0.1 * i as f64);
+        }
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        assert!(data.qvel.iter().all(|x| x.is_finite()), "{integrator}");
+        let off = data
+            .qvel
+            .iter()
+            .zip(mujoco)
+            .map(|(g, w)| (g - w).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            off > 1e-4,
+            "four-vertex cable, {integrator}, agrees with MuJoCo: P30's flip"
+        );
     }
 }
 

@@ -4187,9 +4187,10 @@ fn check_transition_with_a_stateful_plugin(integrator: &str) {
 
 /// The hybrid's analytic velocity columns take flex edge damping, whose
 /// `−b · JᵀJ` `mjd_passive_vel` adds (MuJoCo `engine_derivative.c:1737-1758`):
-/// a four-vertex cable with edge damping, equality constraints disabled (our
-/// `<flex>` adds edge equalities, whose rows send the hybrid to pure finite
-/// differences), under each integrator, and with dampers disabled, where the
+/// a four-vertex cable with edge damping 3 and a three-vertex one with 7,
+/// equality constraints disabled (our `<flex>` adds edge equalities, whose
+/// rows send the hybrid to pure finite differences), under each integrator,
+/// and with dampers disabled, where the
 /// passive pass applies none. Its position columns are finite differences (a
 /// flex model's always are).
 #[test]
@@ -4214,11 +4215,17 @@ fn hybrid_velocity_columns_take_flex_edge_damping() {
                   <edge damping="3"/>
                   <contact contype="0" conaffinity="0"/>
                 </flex>
+                <flex name="d" dim="1" mass="0.3">
+                  <vertex pos="0 0 2  0.1 0 2  0.2 0 2"/>
+                  <element data="0 1  1 2"/>
+                  <edge damping="7"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
               </deformable>
             </mujoco>"#
         ))
         .expect("load");
-        assert_eq!((model.nv, model.nflexedge), (12, 3));
+        assert_eq!((model.nv, model.nflex, model.nflexedge), (21, 2, 5));
         let mut data = model.make_data();
         for (i, v) in data.qvel.iter_mut().enumerate() {
             *v = [0.4, -0.7, 0.5, -0.2, 0.9, 0.3][i % 6] * (1.0 + 0.1 * i as f64);
@@ -4299,6 +4306,49 @@ fn hybrid_position_columns_under_ball_and_free_joint_transmissions() {
                 "{what}: the position columns analytic"
             );
         }
+    }
+    // A tendon transmission and `jointinparent` on a hinge have no moment row
+    // that moves with q: their position columns are analytic too.
+    for act in [
+        r#"<position tendon="t" kp="20"/>"#,
+        r#"<position jointinparent="h" kp="20"/>"#,
+    ] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" gravity="0 0 0"/>
+              <worldbody>
+                <body name="arm" pos="0 0 1">
+                  <joint name="h" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                </body>
+              </worldbody>
+              <tendon>
+                <fixed name="t"><joint joint="h" coef="1.5"/></fixed>
+              </tendon>
+              <actuator>{act}</actuator>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.ctrl[0] = 0.3;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig::default();
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        for (name, h, f) in [("A", &hybrid.A, &fd.A), ("B", &hybrid.B, &fd.B)] {
+            for (x, y) in h.iter().zip(f.iter()) {
+                assert!(
+                    (x - y).abs() <= 1e-6 + 1e-5 * x.abs().max(y.abs()),
+                    "{act}: {name} hybrid {x}, fd {y}"
+                );
+            }
+        }
+        assert!(
+            (0..fd.A.nrows()).any(|r| hybrid.A[(r, 0)].to_bits() != fd.A[(r, 0)].to_bits()),
+            "{act}: the position column analytic"
+        );
     }
 }
 
