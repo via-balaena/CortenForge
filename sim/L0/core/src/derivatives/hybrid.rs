@@ -32,8 +32,8 @@ use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::validation::is_bad;
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_ACTUATION, DISABLE_CLAMPCTRL,
-    DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError,
-    TendonType,
+    DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model,
+    StepError, TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -59,6 +59,13 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 /// that merges `jnt_damping[jnt_id]` for Hinge/Slide joints and
 /// `dof_damping[dof_idx]` for Ball/Free joints.
 ///
+/// # Flags
+///
+/// Nothing is added with springs and dampers both disabled (the passive pass
+/// then applies no force, fluid included), and no damping with dampers
+/// disabled, as MuJoCo's. The implicit integrators build their `D` from
+/// this, so the flags reach the step too.
+///
 /// # Tendon damping
 ///
 /// Tendon damping derivatives (−b · J^T · J) are included for all integrators.
@@ -67,12 +74,23 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 /// physically present and must be captured here.
 #[allow(non_snake_case)]
 pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
+    // As MuJoCo's (`engine_derivative.c:1692-1727`) and the passive pass:
+    // nothing with springs and dampers both disabled, no damping with
+    // dampers disabled.
+    if disabled(model, DISABLE_SPRING) && disabled(model, DISABLE_DAMPER) {
+        return;
+    }
+
     // §40c: Sleep filtering — compute once, used by per-DOF and tendon loops.
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     let use_dof_ind = sleep_enabled && data.nv_awake < model.nv;
 
     // 1. Fluid derivatives (has its own internal body-level sleep filtering)
     mjd_fluid_vel(model, data);
+
+    if disabled(model, DISABLE_DAMPER) {
+        return;
+    }
 
     // 2. Per-DOF damping: diagonal entries.
     // §40c: Use dof_awake_ind indirection to skip sleeping DOFs.

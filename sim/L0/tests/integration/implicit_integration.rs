@@ -1769,3 +1769,92 @@ fn implicit_derivative_reads_a_bad_control_as_mujoco_does() {
         }
     }
 }
+
+/// With dampers disabled the implicit integrators apply no implicit damping,
+/// and with springs and dampers both disabled no fluid damping, as MuJoCo's
+/// `mjd_passive_vel`, from which their `D` is built: a damped joint, a damped
+/// fixed tendon, and fluid drag, each disabled, step as the undamped
+/// pendulum. MuJoCo 3.5.0 (unfused build), 100 steps of 0.01 s from qpos
+/// (0.4, 0.5), qvel (0.7, 1).
+#[test]
+fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
+    let want = [
+        (
+            "implicitfast",
+            [
+                1.724_388_073_197_010_5,
+                -0.693_977_473_939_949_1,
+                -3.134_657_773_312_144,
+                -7.174_094_209_398_988,
+            ],
+        ),
+        (
+            "implicit",
+            [
+                1.781_982_112_423_924_6,
+                -0.843_825_266_360_795_4,
+                -2.536_796_710_855_464,
+                -7.776_376_028_023_399_6,
+            ],
+        ),
+    ];
+    let cases = [
+        (
+            "joint damping",
+            r#"<flag damper="disable"/>"#,
+            r#" damping="0.5""#,
+            "",
+            "",
+        ),
+        (
+            "tendon damping",
+            r#"<flag damper="disable"/>"#,
+            "",
+            r#"<tendon><fixed damping="0.8"><joint joint="j" coef="1"/><joint joint="j2" coef="-0.5"/></fixed></tendon>"#,
+            "",
+        ),
+        (
+            "fluid",
+            r#"<flag spring="disable" damper="disable"/>"#,
+            "",
+            "",
+            r#" density="1.2" viscosity="0.5""#,
+        ),
+    ];
+    for (integrator, want) in want {
+        for (name, flags, damping, tendon, fluid) in cases {
+            let model = sim_mjcf::load_model(&format!(
+                r#"<mujoco>
+                  <option timestep="0.01" integrator="{integrator}"{fluid}>{flags}</option>
+                  <worldbody>
+                    <body name="b" pos="0 0 1">
+                      <joint name="j" type="hinge" axis="0 1 0"{damping}/>
+                      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                      <body name="b2" pos="0.3 0 0">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+                      </body>
+                    </body>
+                  </worldbody>
+                  {tendon}
+                </mujoco>"#
+            ))
+            .expect("load");
+            let mut data = model.make_data();
+            data.qpos[0] = 0.4;
+            data.qpos[1] = 0.5;
+            data.qvel[0] = 0.7;
+            data.qvel[1] = 1.0;
+            for _ in 0..100 {
+                data.step(&model).expect("step");
+            }
+            let got = [data.qpos[0], data.qpos[1], data.qvel[0], data.qvel[1]];
+            for (k, (g, w)) in got.iter().zip(want).enumerate() {
+                assert!(
+                    (g - w).abs() < 1e-12,
+                    "{name} disabled, {integrator}: state[{k}] {g}, MuJoCo {w}"
+                );
+            }
+        }
+    }
+}
