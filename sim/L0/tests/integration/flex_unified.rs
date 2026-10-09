@@ -3458,3 +3458,56 @@ fn specb_t15_mixed_bending_models() {
         );
     }
 }
+
+/// A cable's edge spring adds `½·k·(length0 − length)²` to the potential
+/// energy, as MuJoCo's (`engine_sensor.c:1701-1718`): a two-vertex cable with
+/// its first vertex pinned and its second 0.1 along x, started on the first
+/// (the edge collapsed from its rest length), edge stiffness 50, gravity
+/// disabled; MuJoCo 3.5.0 (unfused build) steps the same cable as a jointless
+/// anchor body and a body with three slides under `<flex body="anchor v1">`,
+/// 20 steps of 0.002 s from qvel (0.4, 0.7, -0.5). With the spring flag
+/// disabled it adds nothing, as MuJoCo's.
+#[test]
+fn a_cable_edge_spring_has_mujoco_3_5_0_potential_energy() {
+    let mut model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.002">
+            <flag equality="disable" gravity="disable" energy="enable"/>
+          </option>
+          <deformable>
+            <flex name="c" dim="1" mass="0.2">
+              <vertex pos="0 0 1  0.1 0 1"/>
+              <element data="0 1"/>
+              <pin id="0"/>
+              <edge damping="3" stiffness="50"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = -0.1;
+    data.qvel.copy_from_slice(&[0.4, 0.7, -0.5]);
+    data.forward(&model).expect("forward");
+    assert!(
+        (data.energy_potential - 0.25).abs() < 1e-15,
+        "at the start: {}",
+        data.energy_potential
+    );
+    for _ in 0..20 {
+        data.step(&model).expect("step");
+    }
+    data.forward(&model).expect("forward");
+    assert!(
+        (data.energy_potential - 0.073_097_771_781_000_03).abs() < 1e-12,
+        "after 20 steps: {}",
+        data.energy_potential
+    );
+
+    model.disableflags |= sim_core::DISABLE_SPRING;
+    let mut data = model.make_data();
+    data.qpos[0] = -0.1;
+    data.forward(&model).expect("forward");
+    assert_eq!(data.energy_potential, 0.0, "spring disabled");
+}

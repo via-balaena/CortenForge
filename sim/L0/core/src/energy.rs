@@ -1,7 +1,7 @@
 //! Energy queries — potential and kinetic energy computation.
 //!
-//! `mj_energy_pos` computes gravitational + joint spring + tendon spring potential
-//! energy (called after FK). `mj_energy_vel` computes kinetic energy from the mass
+//! `mj_energy_pos` computes gravitational + joint, tendon and cable spring
+//! potential energy (called after FK). `mj_energy_vel` computes kinetic energy from the mass
 //! matrix or body velocities (called after CRBA). `Data::total_energy()` returns
 //! the sum.
 
@@ -21,6 +21,8 @@ use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 ///   Ball/free: quaternion geodesic distance via `subquat()`.
 /// - Phase 3: Tendon spring PE — deadband spring with `[lower, upper]` rest range.
 ///   Displacement is zero inside the deadband, otherwise distance to nearest edge.
+/// - Phase 4: Edge spring PE of a dim-1 flex (a cable), from each non-rigid edge's
+///   rest length.
 pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
     let mut potential = 0.0;
 
@@ -134,6 +136,22 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
                 0.0 // inside deadband
             };
             potential += 0.5 * k * displacement * displacement;
+        }
+
+        // Phase 4: Edge spring PE of a dim-1 flex, as MuJoCo's
+        // (`engine_sensor.c:1701-1718`).
+        for f in 0..model.nflex {
+            let k = model.flex_edgestiffness[f];
+            if model.flex_rigid[f] || k == 0.0 || model.flex_dim[f] > 1 {
+                continue;
+            }
+            let adr = model.flex_edgeadr[f];
+            for e in adr..adr + model.flex_edgenum[f] {
+                if !model.flexedge_rigid[e] {
+                    let displacement = model.flexedge_length0[e] - data.flexedge_length[e];
+                    potential += 0.5 * k * displacement * displacement;
+                }
+            }
         }
     }
 
