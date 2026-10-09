@@ -11,8 +11,8 @@
 //!   body on a hinge, a slide, a ball or a free joint, under each integrator, with
 //!   and without joint damping and stiffness, at a control inside its range;
 //! - **inputs:** every actuator kind under each state (actuation disabled,
-//!   its group disabled, its force clamped, its activation past its range)
-//!   and each control (inside, at and past its range, NaN,
+//!   its group disabled, its force clamped, its activation past its range,
+//!   its tree asleep) and each control (inside, at and past its range, NaN,
 //!   infinite; limited and unlimited), on a hinge and on a site
 //!   transmission, under each integrator, with and without damping.
 //!
@@ -23,14 +23,12 @@
 //! listed class is not checked further.
 //!
 //! What it cannot see: a difference below the tolerance (a ULP-level one);
-//! forward differences (`centered: false`); a tree asleep at the state, where
-//! a position or velocity nudge wakes the tree (MuJoCo's `mj_wake`) and
-//! neither finite-difference pass restores the sleep state between columns
-//! (MuJoCo's `mjd_stepFD` restores the full physics state, the control and
-//! the warm start, which hold no sleep state), so the result depends on the
-//! order of the passes; and a gap the forward pass and the finite
-//! differences share, since finite differences are the reference here (they
-//! are compared with MuJoCo's in `derivatives.rs`).
+//! forward differences (`centered: false`); a case the hybrid hands to finite
+//! differences whole, as it does a tree asleep, where the two are the same
+//! matrices (`derivatives.rs` checks finite differences at a sleep state
+//! against columns taken one at a time); and a gap the forward pass and the
+//! finite differences share, since finite differences are the reference here
+//! (they are compared with MuJoCo's in `derivatives.rs`).
 
 use nalgebra::DMatrix;
 use sim_core::{
@@ -267,15 +265,17 @@ enum State {
     GroupOff,
     ForceClamped,
     ActPastRange,
+    Asleep,
 }
 
 impl State {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Plain,
         Self::ActuationOff,
         Self::GroupOff,
         Self::ForceClamped,
         Self::ActPastRange,
+        Self::Asleep,
     ];
 
     fn name(self) -> &'static str {
@@ -285,6 +285,7 @@ impl State {
             Self::GroupOff => "group disabled",
             Self::ForceClamped => "force clamped",
             Self::ActPastRange => "act past its range",
+            Self::Asleep => "tree asleep",
         }
     }
 }
@@ -384,8 +385,13 @@ impl Case {
         } else {
             ""
         };
-        let flags = if self.state == State::ActuationOff {
-            r#"<flag actuation="disable"/>"#
+        let flags = match self.state {
+            State::ActuationOff => r#"<flag actuation="disable"/>"#,
+            State::Asleep => r#"<flag sleep="enable"/>"#,
+            _ => "",
+        };
+        let sleep = if self.state == State::Asleep {
+            r#" sleep="init""#
         } else {
             ""
         };
@@ -419,7 +425,7 @@ impl Case {
   <worldbody>
     <site name="w" pos="0.3 0.2 0.5"/>
     <site name="slider" pos="0.3 0 0.6" zaxis="1 0 0"/>
-    <body name="b1" pos="0 0 1">
+    <body name="b1" pos="0 0 1"{sleep}>
       {root_joint}
       <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
       <body name="b2" pos="0.3 0 0">
@@ -492,8 +498,8 @@ enum Outcome {
         /// not return pure finite differences' own matrices (it does for a
         /// model it routes to them whole): the hybrid's analytic columns ran.
         analytic: bool,
-        /// The force sat at its range, for the force-clamped state (true for
-        /// the other states).
+        /// The state held: the force sat at its range for the force-clamped
+        /// state, a tree slept for the asleep one (true for the other states).
         held: bool,
     },
 }
@@ -590,6 +596,11 @@ fn nominal(case: &Case) -> Option<(Model, Data)> {
     data.qvel[model.jnt_dof_adr[1]] = 1.0;
     data.qpos[model.jnt_qpos_adr[2]] = 0.1;
     data.qvel[model.jnt_dof_adr[2]] = -0.5;
+    if case.state == State::Asleep {
+        // The tree holds still where `sleep="init"` put it to sleep.
+        data.qpos.copy_from(&model.qpos0);
+        data.qvel.fill(0.0);
+    }
     let act = if case.state == State::ActPastRange {
         1.5
     } else {
@@ -615,9 +626,10 @@ fn run(case: &Case) -> Outcome {
         return Outcome::StepWarns;
     }
     let ctrl = data.ctrl[0];
-    let held = case.state != State::ForceClamped
+    let held = (case.state != State::ForceClamped
         || !ctrl.is_finite()
-        || data.actuator_force[0].abs() == 0.01;
+        || data.actuator_force[0].abs() == 0.01)
+        && (case.state != State::Asleep || data.ntree_awake < model.ntree);
     let config = DerivativeConfig {
         eps: 1e-6,
         centered: true,

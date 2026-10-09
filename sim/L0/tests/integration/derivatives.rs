@@ -3892,3 +3892,131 @@ fn hybrid_hill_muscle_gain_under_implicitfast_matches_finite_differences() {
         );
     }
 }
+
+/// The transition matrices a column at a time, each column from its own copy
+/// of `data` (centered differences), so no column sees another. The fixture
+/// must be hinges and slides only: the position rows are plain differences.
+fn transition_a_column_at_a_time(
+    model: &Model,
+    data: &sim_core::Data,
+    eps: f64,
+) -> (nalgebra::DMatrix<f64>, nalgebra::DMatrix<f64>) {
+    assert_eq!(model.nq, model.nv, "hinges and slides only");
+    let (nv, na, nu) = (model.nv, model.na, model.nu);
+    let nx = 2 * nv + na;
+    let next = |nudge: &dyn Fn(&mut sim_core::Data)| -> nalgebra::DVector<f64> {
+        let mut d = data.clone();
+        nudge(&mut d);
+        d.step(model).expect("step");
+        let mut x = nalgebra::DVector::zeros(nx);
+        x.rows_mut(0, nv).copy_from(&(&d.qpos - &data.qpos));
+        x.rows_mut(nv, nv).copy_from(&d.qvel);
+        x.rows_mut(2 * nv, na).copy_from(&d.act);
+        x
+    };
+    let state = |i: usize, delta: f64| {
+        next(&move |d: &mut sim_core::Data| {
+            if i < nv {
+                d.qpos[i] += delta;
+            } else if i < 2 * nv {
+                d.qvel[i - nv] += delta;
+            } else {
+                d.act[i - 2 * nv] += delta;
+            }
+        })
+    };
+    let mut a = nalgebra::DMatrix::zeros(nx, nx);
+    for i in 0..nx {
+        a.set_column(i, &((state(i, eps) - state(i, -eps)) / (2.0 * eps)));
+    }
+    let mut b = nalgebra::DMatrix::zeros(nx, nu);
+    for j in 0..nu {
+        let plus = next(&move |d: &mut sim_core::Data| d.ctrl[j] += eps);
+        let minus = next(&move |d: &mut sim_core::Data| d.ctrl[j] -= eps);
+        b.set_column(j, &((plus - minus) / (2.0 * eps)));
+    }
+    (a, b)
+}
+
+/// Finite differences of the transition with sleep in play: each column starts
+/// from the state as the caller holds it, its sleep state included, so the
+/// matrices equal the ones taken a column at a time from fresh copies of the
+/// state (registry `D-FD-SLEEP`: MuJoCo's `mjd_transitionFD` carries one
+/// column's wake into the next). A nudge can wake a sleeping tree, and a step
+/// counts an awake tree down toward sleep, so both are checked: a tree asleep,
+/// and an awake tree whose countdown ends on this step (unactuated: an
+/// actuator keeps a tree under the auto policy awake). At either the hybrid
+/// takes pure finite differences: its analytic columns know nothing of a tree
+/// waking or going to sleep.
+#[test]
+fn transition_derivatives_take_each_column_from_the_sleep_state() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.002" gravity="0 0 0"><flag sleep="enable"/></option>
+          <worldbody>
+            <body name="awake" pos="0 0 1">
+              <joint name="j0" type="hinge" axis="0 1 0" damping="0.3"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+            <body name="asleep" pos="1 0 1" sleep="init">
+              <joint name="j1" type="hinge" axis="0 1 0" damping="0.3"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor name="m1" joint="j1"/>
+          </actuator>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let config = DerivativeConfig::default();
+    let check = |what: &str, data: &sim_core::Data| {
+        let (a, b) = transition_a_column_at_a_time(&model, data, config.eps);
+        let fd = mjd_transition_fd(&model, data, &config).expect("fd");
+        let hybrid = mjd_transition_hybrid(&model, data, &config).expect("hybrid");
+        for (name, got, want) in [
+            ("fd A", &fd.A, &a),
+            ("fd B", &fd.B, &b),
+            ("hybrid A", &hybrid.A, &a),
+            ("hybrid B", &hybrid.B, &b),
+        ] {
+            for r in 0..want.nrows() {
+                for c in 0..want.ncols() {
+                    let (g, w) = (got[(r, c)], want[(r, c)]);
+                    assert!(
+                        (g - w).abs() <= 1e-9 + 1e-9 * w.abs(),
+                        "{what}: {name}[{r},{c}] {g}, a column at a time {w}"
+                    );
+                }
+            }
+        }
+    };
+
+    // The second tree asleep, its motor driven.
+    let mut data = model.make_data();
+    data.qvel[0] = 0.5;
+    data.ctrl.fill(0.2);
+    data.forward(&model).expect("forward");
+    assert!(data.tree_asleep[0] < 0 && data.tree_asleep[1] >= 0);
+    check("a tree asleep", &data);
+
+    // Both awake, the first at rest: step until its countdown is on its last
+    // step, so the step from the state puts it to sleep.
+    let mut data = model.make_data();
+    data.qvel[1] = 0.5;
+    for _ in 0..20 {
+        if data.tree_asleep[0] == -2 {
+            break;
+        }
+        data.step(&model).expect("step");
+    }
+    data.forward(&model).expect("forward");
+    assert!(
+        data.tree_asleep[0] == -2 && data.tree_asleep[1] < 0,
+        "{:?}",
+        data.tree_asleep
+    );
+    check("a countdown ending", &data);
+}

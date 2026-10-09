@@ -249,7 +249,8 @@ fn check_fd_integrator(model: &Model) -> Result<(), StepError> {
 /// derivative is complete (not with a Millard muscle, nor in the cases
 /// `hybrid::implicit_analytic_incomplete` names), uses hybrid analytical+FD
 /// (Phase D), which itself takes pure FD when `data` holds an active
-/// constraint row; otherwise pure finite differences (Phase A). Both refuse
+/// constraint row or a step from it can change a tree's sleep state;
+/// otherwise pure finite differences (Phase A). Both refuse
 /// RK4, as MuJoCo's `mjd_transitionFD` does.
 ///
 /// The hybrid reads the constraint rows the caller's last forward pass left in
