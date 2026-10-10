@@ -6,7 +6,7 @@
 
 use super::muscle::muscle_activation_dynamics;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
-use crate::quat::{neg_quat, normalize4, quat_to_vel, rot_vec_quat};
+use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
 use crate::tendon::{accumulate_point_jacobian, apply_tendon_force, subquat};
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType,
@@ -456,13 +456,8 @@ pub fn ball_free_transmission(
     let in_parent = model.actuator_trntype[i] == ActuatorTransmission::JointInParent;
     let qadr = model.jnt_qpos_adr[jid];
     let dof_adr = model.jnt_dof_adr[jid];
-    let joint_quat = |adr: usize| {
-        let mut quat = [qpos[adr], qpos[adr + 1], qpos[adr + 2], qpos[adr + 3]];
-        normalize4(&mut quat);
-        quat
-    };
     if model.jnt_type[jid] == MjJointType::Ball {
-        let quat = joint_quat(qadr);
+        let quat = qpos_quat(qpos, qadr);
         let axis = quat_to_vel(&quat, 1.0);
         let gear_axis = if in_parent {
             rot_vec_quat(&[gear[0], gear[1], gear[2]], &neg_quat(&quat))
@@ -475,7 +470,7 @@ pub fn ball_free_transmission(
         let gear_axis = if in_parent {
             rot_vec_quat(
                 &[gear[3], gear[4], gear[5]],
-                &neg_quat(&joint_quat(qadr + 3)),
+                &neg_quat(&qpos_quat(qpos, qadr + 3)),
             )
         } else {
             [gear[3], gear[4], gear[5]]

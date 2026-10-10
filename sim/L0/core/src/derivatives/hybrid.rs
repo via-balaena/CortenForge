@@ -30,7 +30,7 @@ use crate::linalg::{
     mj_solve_sparse_batch,
 };
 use crate::plugin::PluginCapabilityBit;
-use crate::quat::{normalize4, quat_to_vel};
+use crate::quat::{qpos_quat, quat_to_vel};
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::validation::is_bad;
 use crate::types::{
@@ -1162,14 +1162,7 @@ fn hill_active_fl_deriv(norm_len: f64) -> f64 {
 /// `J_r⁻¹(φ)ᵀ·g = g − ½ φ×g + c·φ×(φ×g)`,
 /// `c = 1/θ² − (1 + cos θ)/(2θ sin θ)` (`1/12 + θ²/720` near `θ = 0`).
 fn ball_length_jacobian(model: &Model, data: &Data, i: usize, jid: usize) -> [f64; 3] {
-    let qadr = model.jnt_qpos_adr[jid];
-    let mut quat = [
-        data.qpos[qadr],
-        data.qpos[qadr + 1],
-        data.qpos[qadr + 2],
-        data.qpos[qadr + 3],
-    ];
-    normalize4(&mut quat);
+    let quat = qpos_quat(&data.qpos, model.jnt_qpos_adr[jid]);
     let phi = Vector3::from(quat_to_vel(&quat, 1.0));
     let gear = &model.actuator_gear[i];
     let g = Vector3::new(gear[0], gear[1], gear[2]);

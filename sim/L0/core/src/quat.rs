@@ -2,6 +2,7 @@
 //! step's rotations round as MuJoCo's do. Quaternions are `[w, x, y, z]`.
 
 use crate::constraint::impedance::MJ_MINVAL;
+use nalgebra::DVector;
 
 /// Scales `vec` to unit length and returns its length before (MuJoCo
 /// `mju_normalize3`, `engine_util_blas.c:120-135`). Below [`MJ_MINVAL`] it
@@ -35,6 +36,14 @@ pub fn normalize4(quat: &mut [f64; 4]) -> f64 {
         quat[3] *= inv;
     }
     norm
+}
+
+/// The quaternion at `qpos[adr..adr + 4]` (a ball joint's, or a free joint's
+/// rotation), normalized by [`normalize4`].
+pub fn qpos_quat(qpos: &DVector<f64>, adr: usize) -> [f64; 4] {
+    let mut quat = [qpos[adr], qpos[adr + 1], qpos[adr + 2], qpos[adr + 3]];
+    normalize4(&mut quat);
+    quat
 }
 
 /// The rotation by `angle` about the unit `axis` (MuJoCo
