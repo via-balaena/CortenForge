@@ -4,6 +4,7 @@
 //! associated body (created by `process_flex_bodies`); its `xpos` — computed
 //! by standard forward kinematics — IS the vertex world position.
 
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::types::{Data, Model};
 
 /// Compute flex vertex world positions from body FK.
@@ -49,21 +50,21 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
             let diff = data.flexvert_xpos[v1] - data.flexvert_xpos[v0];
             let dist = diff.norm();
 
-            // Always compute length — even for rigid flex (MuJoCo does).
+            // Always compute length, even for a rigid flex.
             data.flexedge_length[e] = dist;
-
-            if dist < 1e-10 {
-                data.flexedge_velocity[e] = 0.0;
-                // J values remain zero (from reset)
-                continue;
-            }
 
             // Rigid flex: length computed above, skip J + velocity
             if is_rigid {
                 continue;
             }
 
-            let vec = diff / dist; // unit edge direction
+            // Unit edge direction at any length: the x axis below `mjMINVAL`,
+            // as MuJoCo's `mju_normalize3` (`engine_util_blas.c:120-135`).
+            let vec = if dist < MJ_MINVAL {
+                Vector3::x()
+            } else {
+                diff / dist
+            };
 
             if skip_jacobian {
                 // Still compute velocity inline (cheaper than J path)

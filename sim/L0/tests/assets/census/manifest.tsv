@@ -1716,3 +1716,14 @@ b15cb449d8f72fad	sim/L0/tests/integration/history.rs:266
 bcbf72b425d3ab65	sim/L0/tests/integration/history.rs:361
 a4a69b6b5718a06d	sim/L0/tests/integration/step_inputs.rs:69
 c56b688091e5702d	sim/L0/tests/integration/derivatives.rs:3610
+c0aa2aebb96d22fc	sim/L0/tests/integration/rk4_integration.rs:491
+b9473c3886b661b4	sim/L0/tests/integration/derivatives.rs:3862
+3dba0717636f39a2	sim/L0/tests/integration/derivatives.rs:3954
+b6302b9e7d4fff9e	sim/L0/tests/integration/quat_integration.rs:84
+1b347ddebfd5b94f	sim/L0/tests/integration/derivatives.rs:4386
+57a509ecd412be07	sim/L0/tests/integration/derivatives.rs:4434
+e241d43671b34684	sim/L0/tests/integration/implicit_integration.rs:2028
+4cf178cda3f8e281	sim/L0/tests/integration/derivatives.rs:4464
+806c25494b472948	sim/L0/tests/integration/implicit_integration.rs:2209
+1759959a213193c4	sim/L0/tests/integration/implicit_integration.rs:2533
+ff94c82fc48f8ddf	sim/L0/tests/integration/flex_unified.rs:3472

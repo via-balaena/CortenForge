@@ -50,6 +50,12 @@ pub mod implicit_integration;
 /// correctness, contact handling, sensor non-corruption, warmstart preservation.
 pub mod rk4_integration;
 
+/// Quaternion integration against MuJoCo 3.5.0, bit for bit.
+pub mod quat_integration;
+
+/// Joint transmissions on ball and free joints against MuJoCo 3.5.0.
+pub mod joint_transmission;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================
@@ -150,6 +156,10 @@ pub mod validation;
 
 /// Derivative infrastructure tests: FD, analytical qDeriv, acceptance criteria 1–23.
 pub mod derivatives;
+
+/// The hybrid transition derivative against pure finite differences, swept
+/// over actuator kinds, transmissions, states, controls and integrators.
+pub mod hybrid_fd_sweep;
 
 // ============================================================================
 // Keyframe & Mocap Body Tests (§14)

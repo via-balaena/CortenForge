@@ -4,7 +4,10 @@
 //! [`crate::StaggeredCoupling`] share (mass inverse, `xfrc` response column,
 //! SO(3) right-Jacobian, twist basis, wrench assembly).
 
-use sim_core::{DMatrix, Data, Matrix3, Model, SpatialVector, mj_jac_point};
+use sim_core::integrate::eulerdamp_applies;
+use sim_core::{
+    DISABLE_DAMPER, DMatrix, Data, Integrator, Matrix3, Model, SpatialVector, mj_jac_point,
+};
 use sim_ml_chassis::Tensor;
 use sim_ml_chassis::autograd::VjpOp;
 use sim_soft::{FrictionVertexForce, RigidTwist, Vec3};
@@ -24,6 +27,36 @@ fn scatter_dfz_dxstar(factors: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64]
     }
 }
 
+/// `M_impl⁻¹`, with `M_impl = M + Δt·D` — the joint-space mass `M = data.qM` plus the
+/// implicit joint damping `D = model.implicit_damping` on the diagonal — where Euler
+/// takes eulerdamp (`sim_core::integrate::eulerdamp_applies`) and, under implicitfast
+/// and implicit, unless the damper is disabled; `M` otherwise. The shared implicit factor for
+/// the wrench response ([`rigid_xfrc_column`]) and the actuator-input response
+/// (`StaggeredCoupling::actuator_velocity_column`). `D = 0` ⇒ bare `M⁻¹`, exactly.
+///
+/// # Panics
+/// Panics if `M_impl` is singular (a malformed model).
+// expect_used: a singular mass matrix is a malformed-model programmer error
+// surfaced loudly, mirroring `rigid_step_probe`'s divergence-panic rationale.
+#[allow(clippy::expect_used)]
+#[must_use]
+pub(super) fn implicit_mass_inverse(model: &Model, data: &Data) -> DMatrix<f64> {
+    let mut m_impl = data.qM.clone();
+    let damps = if model.integrator == Integrator::Euler {
+        eulerdamp_applies(model, data)
+    } else {
+        model.disableflags & DISABLE_DAMPER == 0
+    };
+    if damps {
+        for i in 0..model.nv {
+            m_impl[(i, i)] += model.timestep * model.implicit_damping[i];
+        }
+    }
+    m_impl
+        .try_inverse()
+        .expect("implicit mass matrix M + Δt·D must be invertible")
+}
+
 /// The rigid engine's **multi-DOF** velocity response to an applied spatial force
 /// on `body` — the matrix successor to the scalar free-body `∂vz'/∂fz = dt/m`
 /// ([`StaggeredCoupling::rigid_vz_response`](crate::StaggeredCoupling::rigid_vz_response)).
@@ -34,7 +67,8 @@ fn scatter_dfz_dxstar(factors: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64]
 /// per wrench component, torque columns 0–2 and force columns 3–5. (`xfrc_applied`
 /// itself stores the force first: a [`sim_core::BodyWrench`].) `J_com` is the body's
 /// COM spatial Jacobian (`mj_jac_point` at `xipos`, rows 0–2 angular / 3–5 linear),
-/// and `Δt = model.timestep`. `M_impl = M + Δt·D` is the Euler `eulerdamp` matrix — the
+/// and `Δt = model.timestep`. `M_impl = M + Δt·D` is the Euler `eulerdamp` matrix (`M` where
+/// the step takes no eulerdamp, `implicit_mass_inverse`) — the
 /// joint-space mass `M = data.qM` plus the implicit joint **damping** `D =
 /// model.implicit_damping` on the diagonal (the integrator solves `(M + Δt·D)·qacc =
 /// F` then `qvel += Δt·qacc`, so the wrench reaches `qvel'` through `M_impl⁻¹`).
@@ -81,28 +115,6 @@ fn scatter_dfz_dxstar(factors: &[(usize, Vec3, f64)], cot: f64, slot: &mut [f64]
 /// # Panics
 /// Panics if `M` is singular (a degenerate model — should not occur for a
 /// well-posed mechanism).
-/// `M_impl⁻¹` where `M_impl = M + Δt·D` is the Euler `eulerdamp` matrix — the
-/// joint-space mass `M = data.qM` plus the implicit joint damping `D =
-/// model.implicit_damping` on the diagonal. The shared implicit factor for the
-/// wrench response ([`rigid_xfrc_column`]) and the actuator-input response
-/// (`StaggeredCoupling::actuator_velocity_column`). `D = 0` ⇒ bare `M⁻¹`, exactly.
-///
-/// # Panics
-/// Panics if `M_impl` is singular (a malformed model).
-// expect_used: a singular mass matrix is a malformed-model programmer error
-// surfaced loudly, mirroring `rigid_step_probe`'s divergence-panic rationale.
-#[allow(clippy::expect_used)]
-#[must_use]
-pub(super) fn implicit_mass_inverse(model: &Model, data: &Data) -> DMatrix<f64> {
-    let mut m_impl = data.qM.clone();
-    for i in 0..model.nv {
-        m_impl[(i, i)] += model.timestep * model.implicit_damping[i];
-    }
-    m_impl
-        .try_inverse()
-        .expect("implicit mass matrix M + Δt·D must be invertible")
-}
-
 // expect_used: a singular mass matrix is a malformed-model programmer error
 // surfaced loudly, mirroring `rigid_step_probe`'s divergence-panic rationale.
 #[allow(clippy::expect_used)]
@@ -1028,7 +1040,8 @@ impl VjpOp for ContactWrenchTrajVjp {
 /// state, `w = [τ; f]` is the contact **wrench** ([`ContactWrenchTrajVjp`]),
 /// `J_state` is the **loaded** single-step transition Jacobian `∂(state')/∂(state)`
 /// (with the contact wrench held — it includes the applied-force geometric/load
-/// stiffness `∂(Jᵀw)/∂q` that the unloaded `transition_derivatives` drops; computed
+/// stiffness `∂(Jᵀw)/∂q` that `transition_derivatives` at a wrench-free state leaves
+/// out; computed
 /// analytically for a single hinge, [`StaggeredCoupling::analytic_state_jacobian`](crate::StaggeredCoupling::analytic_state_jacobian),
 /// else by FD, [`StaggeredCoupling::loaded_state_jacobian`](crate::StaggeredCoupling::loaded_state_jacobian)), and `G = ∂(state')/∂w` is the
 /// 6-component wrench response. `G`'s VELOCITY rows are the full `nv × 6`

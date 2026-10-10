@@ -667,13 +667,14 @@ Where:
 Joint K/D are diagonal. Tendon K/D are non-diagonal rank-1 outer products
 `k·J^T·J` and `b·J^T·J`, accumulated via `accumulate_tendon_kd()` (DT-35).
 The modified matrix `M + h*D + h^2*K` is SPD when `M` is SPD and `D, K >= 0`
-(guaranteed because `J^T·J` is PSD). After solving, `qacc = (v_new - v_old) / h`
+(`J^T·J` being PSD); a negative stiffness or damping can make it indefinite,
+and the step then returns `CholeskyFailed`, constrained or not. After solving, `qacc = (v_new - v_old) / h`
 for consistency.
 
 **Implicit path (ImplicitFast — full Jacobian, Cholesky):**
 
 Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/∂(qvel)` via:
-1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + tendon damping J^T B J (sleep-filtered, §40c)
+1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + flex edge damping J^T B J + tendon damping J^T B J (all but the flex edges sleep-filtered, §40c)
 2. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
 
 Symmetrizes D, then solves `(M − h·D) · qacc_implicit = f` via dense Cholesky factorization.
@@ -728,8 +729,8 @@ for each joint:
     if Free:
         qpos[0:3] += qvel[0:3] * h          # linear
         qpos[3:7] = quat_integrate(qvel[3:6], h)  # angular
-
-# 3. Normalize quaternions to prevent drift
+    # quat_integrate normalizes the quaternion before turning it
+    # (mju_quatIntegrate); the step does not renormalize after
 ```
 
 Position update uses the NEW velocity (step 1 output). This is what makes it
@@ -876,8 +877,9 @@ qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias
 
 qDeriv = ∂(passive)/∂v + ∂(actuator)/∂v − ∂(bias)/∂v
 
-mjd_passive_vel():   fluid derivatives (§40a) + diagonal −damping[i] + tendon −b·J^T·J
-                     (all three loops sleep-filtered via §40c indirection)
+mjd_passive_vel():   fluid derivatives (§40a) + diagonal −damping[i] + flex edge −b·J^T·J
+                     + tendon −b·J^T·J (all but the flex edge loop sleep-filtered via
+                     §40c indirection, as MuJoCo's)
 mjd_actuator_vel():  affine gain/bias velocity terms via transmission
 mjd_rne_vel():       chain-rule derivative propagation through kinematic tree
                      Forward pass: Dcvel, Dcacc (6×nv per body)
@@ -909,7 +911,7 @@ joints use simple scalar chain rules (identity + h·I).
 
 ### 6.4 Hybrid FD+Analytical: `mjd_transition_hybrid()`
 
-Combines analytical velocity/activation columns with FD position columns:
+Combines analytical and FD columns (which ones: `mjd_transition_hybrid`'s doc):
 
 ```
 Velocity columns (analytical):
@@ -922,18 +924,19 @@ Activation columns (analytical):
   Integrator:           ∂act⁺/∂act = 1; no force-through-act derivative
   Muscle:               FD fallback (FLV curve gradients too complex)
 
-Position columns: FD (captures contact transitions, implicit spring ∂v/∂q)
 B matrix: analytical for DynType::None, FD for actuators with dynamics
 
-Cost: ~nv FD step() calls (position columns only) vs 2·(2nv+na+nu) for pure FD
 With an active constraint row in `data` (from the caller's last forward pass)
 it returns pure FD: its analytic columns hold no constraint-force derivative.
+It also returns pure FD in the other cases `mjd_transition_hybrid`'s doc
+names.
 ```
 
 ### 6.5 Public Dispatch: `mjd_transition()`
 
-Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
-`DerivativeConfig.use_analytical`. Also available as `Data::transition_derivatives()`.
+Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` by
+`DerivativeConfig.use_analytical` and the model (`mjd_transition`'s doc). Also
+available as `Data::transition_derivatives()`.
 
 ### 6.6 Validation Utilities
 
@@ -1007,7 +1010,7 @@ Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
 | `qfrc_constraint[nv]` | `DVector` | Contact + limit + equality forces |
 | `actuator_length[nu]` | `Vec<f64>` | Gear × transmission length |
 | `actuator_velocity[nu]` | `Vec<f64>` | Gear × transmission velocity |
-| `actuator_moment[nu]` | `Vec<DVector(nv)>` | Transmission moment arm vectors (Site/Body transmissions; used for force projection and velocity) |
+| `actuator_moment[nu]` | `Vec<DVector(nv)>` | Transmission moment arm vectors (Site, Body and slider-crank transmissions, and Joint on a ball or free joint; zero for Joint on a hinge or slide and for Tendon) |
 | `actuator_force[nu]` | `Vec<f64>` | Scalar actuator force (after gain/bias/clamp) |
 | `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
 | `contacts[ncon]` | `Vec<Contact>` | Active contact points |

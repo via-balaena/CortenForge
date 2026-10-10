@@ -1,0 +1,14 @@
+<mujoco>
+          <option timestep="0.01" integrator="implicitfast"/>
+          <worldbody>
+            <body name="b">
+              <joint name="j" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.02" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general name="hill" joint="j" dyntype="hillmuscle"
+                     gainprm="0.75 1.05 500 200 1.0 0.0 10.0 0.0 35.0"
+                     dynprm="0.01 0.04 0.0"/>
+          </actuator>
+        </mujoco>

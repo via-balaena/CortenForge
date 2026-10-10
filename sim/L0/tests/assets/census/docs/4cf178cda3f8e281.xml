@@ -1,0 +1,11 @@
+<mujoco>
+          <option timestep="0.002"><flag equality="disable"/></option>
+          <deformable>
+            <flex name="c" dim="1" mass="0.2">
+              <vertex pos="0 0 1  0.1 0 1"/>
+              <element data="0 1"/>
+              <edge damping="3"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+        </mujoco>

@@ -168,27 +168,43 @@ fn damped_xfrc_column_matches_fd() {
     </body>
   </worldbody>
 </mujoco>"#;
-    for (mjcf, body, seed, label) in [
-        (DAMPED_HINGE, 1usize, vec![(0usize, 0.3)], "hinge"),
-        (DAMPED_2LINK, 2, vec![(0, 0.1), (1, -0.05)], "2link"),
-    ] {
-        let model = sim_mjcf::load_model(mjcf).expect("damped model loads");
-        let mut data = model.make_data();
-        for (i, q) in seed {
-            data.qpos[i] = q;
+    // With either damper flag disabled Euler takes no eulerdamp, and the column is
+    // `Δt·M⁻¹·Jᵀ` (`sim_core::integrate::eulerdamp_applies`); implicitfast and implicit
+    // drop the damping only with the damper.
+    for integrator in ["Euler", "implicitfast", "implicit"] {
+        for flag in [
+            "",
+            r#"<flag eulerdamp="disable"/>"#,
+            r#"<flag damper="disable"/>"#,
+        ] {
+            for (mjcf, body, seed, label) in [
+                (DAMPED_HINGE, 1usize, vec![(0usize, 0.3)], "hinge"),
+                (DAMPED_2LINK, 2, vec![(0, 0.1), (1, -0.05)], "2link"),
+            ] {
+                let mjcf = mjcf.replace(
+                    r#"timestep="0.001"/>"#,
+                    &format!(r#"timestep="0.001" integrator="{integrator}">{flag}</option>"#),
+                );
+                let label = format!("{label} {integrator} {flag}");
+                let model = sim_mjcf::load_model(&mjcf).expect("damped model loads");
+                let mut data = model.make_data();
+                for (i, q) in seed {
+                    data.qpos[i] = q;
+                }
+                data.forward(&model).expect("forward");
+                assert!(
+                    model.implicit_damping.iter().any(|&d| d > 0.0),
+                    "{label}: damping must be live in the model"
+                );
+                let analytic = rigid_xfrc_column(&model, &data, body);
+                let fd = fd_column(&model, &data.qpos, &data.qvel, body, 1e-4);
+                let (err, _) = max_relative_error(&analytic, &fd, 1e-10);
+                assert!(
+                    err < 1e-6,
+                    "{label}: damped xfrc column Δt·(M+Δt·D)⁻¹·Jᵀ must match FD, got rel {err:.3e}"
+                );
+            }
         }
-        data.forward(&model).expect("forward");
-        assert!(
-            model.implicit_damping.iter().any(|&d| d > 0.0),
-            "{label}: damping must be live in the model"
-        );
-        let analytic = rigid_xfrc_column(&model, &data, body);
-        let fd = fd_column(&model, &data.qpos, &data.qvel, body, 1e-4);
-        let (err, _) = max_relative_error(&analytic, &fd, 1e-10);
-        assert!(
-            err < 1e-6,
-            "{label}: damped xfrc column Δt·(M+Δt·D)⁻¹·Jᵀ must match FD, got rel {err:.3e}"
-        );
     }
 }
 

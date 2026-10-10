@@ -1,0 +1,14 @@
+<mujoco>
+          <option timestep="0.002"/>
+          <deformable>
+            <flex name="c" dim="1" mass="0.2">
+              <vertex pos="0 0 1  0.1 0 1"/>
+              <element data="0 1"/>
+              <pin id="0"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+          <equality>
+            <flex flex="c"/>
+          </equality>
+        </mujoco>

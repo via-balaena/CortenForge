@@ -11,6 +11,7 @@
     clippy::cast_sign_loss
 )]
 
+use sim_core::DISABLE_DAMPER;
 use sim_core::types::Model;
 use wgpu::util::DeviceExt;
 
@@ -181,6 +182,11 @@ impl GpuModelBuffers {
             .collect();
 
         // ── Pack per-DOF data ────────────────────────────────────────
+        // With dampers disabled the step applies no damper force and no
+        // eulerdamp (sim-core's passive pass and `eulerdamp_applies`, MuJoCo
+        // `engine_passive.c:121`), so no damping is uploaded: both the smooth
+        // pass's damper force and the eulerdamp matrix read it.
+        let damper = model.disableflags & DISABLE_DAMPER == 0;
         let dofs_cpu: Vec<DofModelGpu> = (0..nv)
             .map(|dof| {
                 let jnt = model.dof_jnt[dof];
@@ -190,7 +196,11 @@ impl GpuModelBuffers {
                     body_id: model.dof_body[dof] as u32,
                     parent: model.dof_parent[dof].map_or(DOF_PARENT_NONE, |p| p as u32),
                     armature: (arm_jnt + arm_dof) as f32,
-                    damping: model.implicit_damping.get(dof).copied().unwrap_or(0.0) as f32,
+                    damping: if damper {
+                        model.implicit_damping.get(dof).copied().unwrap_or(0.0) as f32
+                    } else {
+                        0.0
+                    },
                 }
             })
             .collect();

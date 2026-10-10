@@ -465,9 +465,10 @@ fn tendon_damped_isd_routes_to_fd_and_matches() {
     );
 }
 
-/// The gate `implicit_analytic_incomplete` must classify exactly the model classes
+/// The gate `implicit_analytic_incomplete` must classify the model classes
 /// whose ISD/Implicit analytic transition derivative is incomplete: tendon-K/D under
-/// ImplicitSpringDamper, and a Muscle/HillMuscle *gain* actuator under full Implicit.
+/// ImplicitSpringDamper, and a Muscle/HillMuscle *gain* actuator or fluid density
+/// under ImplicitFast and full Implicit.
 /// Joint-only chains and the other integrators stay on the analytic path.
 #[test]
 fn implicit_analytic_incomplete_classifies_regimes() {
@@ -512,12 +513,13 @@ fn implicit_analytic_incomplete_classifies_regimes() {
         "stiff tendon must disqualify ISD"
     );
 
-    // Muscle/HillMuscle gain: incomplete ONLY under full Implicit.
+    // Muscle/HillMuscle gain: incomplete under ImplicitFast and full Implicit.
     for &gain in &[GainType::Muscle, GainType::HillMuscle] {
         for &(integ, expect) in &[
             (Integrator::Implicit, true),
             (Integrator::ImplicitSpringDamper, false),
-            (Integrator::ImplicitFast, false),
+            (Integrator::ImplicitFast, true),
+            (Integrator::Euler, false),
         ] {
             let mut m = Model::n_link_pendulum(1, 1.0, 1.0);
             m.integrator = integ;
@@ -526,6 +528,30 @@ fn implicit_analytic_incomplete_classifies_regimes() {
                 implicit_analytic_incomplete(&m),
                 expect,
                 "{gain:?} gain classification wrong for {integ:?}"
+            );
+        }
+    }
+    // Fluid density (quadratic drag): incomplete under ImplicitFast and full
+    // Implicit; viscosity alone (linear drag) is not.
+    for &(integ, expect) in &[
+        (Integrator::Implicit, true),
+        (Integrator::ImplicitFast, true),
+        (Integrator::ImplicitSpringDamper, false),
+        (Integrator::Euler, false),
+    ] {
+        let mut m = Model::n_link_pendulum(1, 1.0, 1.0);
+        m.integrator = integ;
+        m.viscosity = 0.5;
+        assert!(
+            !implicit_analytic_incomplete(&m),
+            "viscosity alone classification wrong for {integ:?}"
+        );
+        for density in [1.2, -1.2] {
+            m.density = density;
+            assert_eq!(
+                implicit_analytic_incomplete(&m),
+                expect,
+                "fluid density {density} classification wrong for {integ:?}"
             );
         }
     }

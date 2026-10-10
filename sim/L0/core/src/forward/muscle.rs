@@ -166,8 +166,6 @@ fn eval_length_range(
             }
 
             // 3. Build actuator moment vector (transmission Jacobian).
-            // Our codebase only populates data.actuator_moment for Site/Body
-            // transmissions. For Joint/Tendon, we must build it explicitly.
             // build_actuator_moment uses current data state (site_xmat, ten_J)
             // so it reflects the current configuration after step1.
             let j_vec = build_actuator_moment(&lr_model, &data, actuator_idx);

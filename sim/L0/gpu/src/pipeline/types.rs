@@ -178,8 +178,9 @@ pub struct DofModelGpu {
     /// Combined armature: `jnt_armature[jnt] + dof_armature[i]`.
     pub armature: f32,
     /// Implicit damping (`model.implicit_damping[i]`): `jnt_damping` for
-    /// hinge/slide, `dof_damping` for ball/free. Consumed by the eulerdamp solve
-    /// (`−D·q̇` force + `h·D` on the mass-matrix diagonal).
+    /// hinge/slide, `dof_damping` for ball/free; 0 with dampers disabled. Read by
+    /// the smooth pass's `−D·q̇` force and the eulerdamp solve's `h·D` on the
+    /// mass-matrix diagonal.
     pub damping: f32,
 }
 

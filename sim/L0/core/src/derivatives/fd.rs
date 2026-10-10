@@ -3,7 +3,7 @@
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::forward::MjStage;
 use crate::jacobian::{mj_differentiate_pos, mj_integrate_pos_explicit};
-use crate::types::{Data, Model, StepError};
+use crate::types::{Data, ENABLE_SLEEP, Model, StepError};
 use nalgebra::{DMatrix, DVector};
 
 // ============================================================================
@@ -29,9 +29,12 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// # Cost
 ///
-/// - Centered: `2 · (2·nv + na + nu)` calls to `step()`.
+/// - Centered: `1 + 2 · (2·nv + na + nu)` calls to `step()` (the `1`, the
+///   nominal step, runs either way).
 /// - Forward:  `1 + (2·nv + na + nu)` calls to `step()` (the `1` is for
 ///   the nominal `y_0 = f(x)` evaluation).
+/// - With sleep enabled, each perturbed step also starts from a copy of the
+///   whole `Data`.
 ///
 /// # Quaternion handling
 ///
@@ -86,12 +89,6 @@ pub fn mjd_transition_fd(
 
     // Phase 0 — Save nominal state and clone scratch.
     let mut scratch = data.clone();
-    let qpos_0 = data.qpos.clone();
-    let qvel_0 = data.qvel.clone();
-    let act_0 = data.act.clone();
-    let ctrl_0 = data.ctrl.clone();
-    let warmstart_0 = data.qacc_warmstart.clone();
-    let time_0 = data.time;
     // Compute nominal next state by stepping unperturbed.
     // MuJoCo always computes this unconditionally. We need it for:
     // - forward differencing (non-centered A/B columns)
@@ -101,19 +98,12 @@ pub fn mjd_transition_fd(
     // sensordata is then at the step's (here unperturbed) current state, the
     // state C and D differentiate, as MuJoCo's mjd_stepFD reads it.
     scratch.step(model)?;
-    let y_0 = extract_state(model, &scratch, &qpos_0);
+    let y_0 = extract_state(model, &scratch, &data.qpos);
     let sensor_0 = if compute_sensors {
         Some(scratch.sensordata.clone())
     } else {
         None
     };
-    // Restore scratch to nominal for subsequent perturbations.
-    scratch.qpos.copy_from(&qpos_0);
-    scratch.qvel.copy_from(&qvel_0);
-    scratch.act.copy_from(&act_0);
-    scratch.ctrl.copy_from(&ctrl_0);
-    scratch.qacc_warmstart.copy_from(&warmstart_0);
-    scratch.time = time_0;
 
     let mut A = DMatrix::zeros(nx, nx);
     let mut B = DMatrix::zeros(nx, nu);
@@ -131,22 +121,9 @@ pub fn mjd_transition_fd(
     // Phase 1 — State perturbation (A matrix + C sensor-state columns).
     for i in 0..nx {
         // Apply +eps perturbation
-        apply_state_perturbation(
-            model,
-            &mut scratch,
-            &qpos_0,
-            &qvel_0,
-            &act_0,
-            &ctrl_0,
-            &warmstart_0,
-            time_0,
-            i,
-            eps,
-            nv,
-            na,
-        );
+        perturb_state(model, &mut scratch, data, i, eps);
         scratch.step(model)?;
-        let y_plus = extract_state(model, &scratch, &qpos_0);
+        let y_plus = extract_state(model, &scratch, &data.qpos);
         let s_plus = if compute_sensors {
             Some(scratch.sensordata.clone())
         } else {
@@ -155,22 +132,9 @@ pub fn mjd_transition_fd(
 
         if config.centered {
             // Apply -eps perturbation
-            apply_state_perturbation(
-                model,
-                &mut scratch,
-                &qpos_0,
-                &qvel_0,
-                &act_0,
-                &ctrl_0,
-                &warmstart_0,
-                time_0,
-                i,
-                -eps,
-                nv,
-                na,
-            );
+            perturb_state(model, &mut scratch, data, i, -eps);
             scratch.step(model)?;
-            let y_minus = extract_state(model, &scratch, &qpos_0);
+            let y_minus = extract_state(model, &scratch, &data.qpos);
             let s_minus = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -204,20 +168,14 @@ pub fn mjd_transition_fd(
     // differencing based on which nudges are feasible.
     for j in 0..nu {
         let range = model.actuator_ctrlrange[j];
-        let nudge_fwd = in_ctrl_range(ctrl_0[j], ctrl_0[j] + eps, range);
-        let nudge_back =
-            (config.centered || !nudge_fwd) && in_ctrl_range(ctrl_0[j] - eps, ctrl_0[j], range);
+        let nudge_fwd = in_ctrl_range(data.ctrl[j], data.ctrl[j] + eps, range);
+        let nudge_back = (config.centered || !nudge_fwd)
+            && in_ctrl_range(data.ctrl[j] - eps, data.ctrl[j], range);
 
         let (y_plus, s_plus) = if nudge_fwd {
-            scratch.qpos.copy_from(&qpos_0);
-            scratch.qvel.copy_from(&qvel_0);
-            scratch.act.copy_from(&act_0);
-            scratch.ctrl.copy_from(&ctrl_0);
-            scratch.ctrl[j] += eps;
-            scratch.qacc_warmstart.copy_from(&warmstart_0);
-            scratch.time = time_0;
+            perturb_ctrl(model, &mut scratch, data, j, eps);
             scratch.step(model)?;
-            let yp = extract_state(model, &scratch, &qpos_0);
+            let yp = extract_state(model, &scratch, &data.qpos);
             let sp = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -229,15 +187,9 @@ pub fn mjd_transition_fd(
         };
 
         let (y_minus, s_minus) = if nudge_back {
-            scratch.qpos.copy_from(&qpos_0);
-            scratch.qvel.copy_from(&qvel_0);
-            scratch.act.copy_from(&act_0);
-            scratch.ctrl.copy_from(&ctrl_0);
-            scratch.ctrl[j] -= eps;
-            scratch.qacc_warmstart.copy_from(&warmstart_0);
-            scratch.time = time_0;
+            perturb_ctrl(model, &mut scratch, data, j, -eps);
             scratch.step(model)?;
-            let ym = extract_state(model, &scratch, &qpos_0);
+            let ym = extract_state(model, &scratch, &data.qpos);
             let sm = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -289,60 +241,64 @@ pub fn mjd_transition_fd(
     })
 }
 
-/// Apply a state perturbation at index `i` with magnitude `delta`.
-///
-/// Restores scratch to nominal state (including warmstart) first, then applies
-/// the perturbation:
-/// - `i < nv`: position tangent via `mj_integrate_pos_explicit`
-/// - `nv <= i < 2*nv`: velocity direct addition
-/// - `2*nv <= i < 2*nv+na`: activation direct addition
-///
-/// Warmstart is restored to prevent leakage between perturbation columns.
-/// MuJoCo's `mjd_stepFD` saves/restores `mjSTATE_WARMSTART` across each
-/// perturbation for the same reason.
-// Finite-difference helper takes the full per-call context (model, data, perturbation step, output Jacobian buffers).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn apply_state_perturbation(
+/// Puts `scratch` back at the caller's state `nominal` before a
+/// finite-difference step.
+/// MuJoCo's `mjd_stepFD` restores `mjSTATE_FULLPHYSICS | mjSTATE_CTRL` and the
+/// warm start (`engine_derivative_fd.c:307`); with sleep disabled this
+/// restores qpos, qvel, act, ctrl, the warm start, the time and the plugin
+/// state (`transition_derivatives_take_each_column_from_the_plugin_state`).
+/// With sleep enabled a step also reads what a sleeping tree keeps from the
+/// step before it, its stored pose among them (a pose that differs wakes the
+/// tree, `forward/position.rs`), so the whole state is restored: from less,
+/// one column's wake reaches the next (registry `D-FD-SLEEP`;
+/// `transition_derivatives_take_each_column_from_the_sleep_state`).
+fn restore(model: &Model, scratch: &mut Data, nominal: &Data) {
+    if model.enableflags & ENABLE_SLEEP != 0 {
+        scratch.clone_from(nominal);
+    } else {
+        scratch.qpos.copy_from(&nominal.qpos);
+        scratch.qvel.copy_from(&nominal.qvel);
+        scratch.act.copy_from(&nominal.act);
+        scratch.ctrl.copy_from(&nominal.ctrl);
+        scratch.qacc_warmstart.copy_from(&nominal.qacc_warmstart);
+        scratch.time = nominal.time;
+        scratch.plugin_state.copy_from_slice(&nominal.plugin_state);
+    }
+}
+
+/// Puts `scratch` at `nominal` with state coordinate `i` moved by `delta`: a
+/// position (`i < nv`) along its tangent through `mj_integrate_pos_explicit`,
+/// a velocity (`nv <= i < 2*nv`) or an activation (`2*nv <= i`) by addition.
+pub(super) fn perturb_state(
     model: &Model,
     scratch: &mut Data,
-    qpos_0: &DVector<f64>,
-    qvel_0: &DVector<f64>,
-    act_0: &DVector<f64>,
-    ctrl_0: &DVector<f64>,
-    warmstart_0: &DVector<f64>,
-    time_0: f64,
+    nominal: &Data,
     i: usize,
     delta: f64,
-    nv: usize,
-    na: usize,
 ) {
+    restore(model, scratch, nominal);
+    let nv = model.nv;
     if i < nv {
-        // Position tangent: mj_integrate_pos_explicit maps dq[i]=delta to coordinates.
-        // The velocity `dq` with `dt=1.0` produces a tangent-space displacement of
-        // exactly `delta` in direction `i`: qpos_out = qpos_0 ⊕ (1.0 · dq).
         let mut dq = DVector::zeros(nv);
         dq[i] = delta;
-        mj_integrate_pos_explicit(model, &mut scratch.qpos, qpos_0, &dq, 1.0);
-        scratch.qvel.copy_from(qvel_0);
-        scratch.act.copy_from(act_0);
+        mj_integrate_pos_explicit(model, &mut scratch.qpos, &nominal.qpos, &dq, 1.0);
     } else if i < 2 * nv {
-        // Velocity: direct addition
-        scratch.qpos.copy_from(qpos_0);
-        scratch.qvel.copy_from(qvel_0);
         scratch.qvel[i - nv] += delta;
-        scratch.act.copy_from(act_0);
     } else {
-        // Activation: direct addition
-        let act_idx = i - 2 * nv;
-        assert!(act_idx < na, "state index out of bounds");
-        scratch.qpos.copy_from(qpos_0);
-        scratch.qvel.copy_from(qvel_0);
-        scratch.act.copy_from(act_0);
-        scratch.act[act_idx] += delta;
+        scratch.act[i - 2 * nv] += delta;
     }
-    scratch.ctrl.copy_from(ctrl_0);
-    scratch.qacc_warmstart.copy_from(warmstart_0);
-    scratch.time = time_0;
+}
+
+/// Puts `scratch` at `nominal` with control `j` moved by `delta`.
+pub(super) fn perturb_ctrl(
+    model: &Model,
+    scratch: &mut Data,
+    nominal: &Data,
+    j: usize,
+    delta: f64,
+) {
+    restore(model, scratch, nominal);
+    scratch.ctrl[j] += delta;
 }
 
 /// Check if both values are within the given range.

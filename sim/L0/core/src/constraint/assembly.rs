@@ -11,8 +11,9 @@ use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::{
     MJ_MINVAL, ball_limit_axis_angle, compute_aref, compute_diag_approx_exact, compute_impedance,
-    compute_kbip, compute_regularization, normalize_quat4,
+    compute_kbip, compute_regularization,
 };
+use crate::quat::qpos_quat;
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintState, ConstraintType, DISABLE_CONTACT, DISABLE_EQUALITY, DISABLE_FRICTIONLOSS,
@@ -203,13 +204,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     }
                 }
                 MjJointType::Ball => {
-                    let adr = model.jnt_qpos_adr[jnt_id];
-                    let q = normalize_quat4([
-                        data.qpos[adr],
-                        data.qpos[adr + 1],
-                        data.qpos[adr + 2],
-                        data.qpos[adr + 3],
-                    ]);
+                    let q = qpos_quat(&data.qpos, model.jnt_qpos_adr[jnt_id]);
                     let (_, angle) = ball_limit_axis_angle(q);
                     let limit = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
                     let dist = limit - angle;
@@ -425,14 +420,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     }
                 }
                 MjJointType::Ball => {
-                    let qpos_adr = model.jnt_qpos_adr[jnt_id];
                     let dof_adr = model.jnt_dof_adr[jnt_id];
-                    let q = normalize_quat4([
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                        data.qpos[qpos_adr + 3],
-                    ]);
+                    let q = qpos_quat(&data.qpos, model.jnt_qpos_adr[jnt_id]);
                     let (unit_dir, angle) = ball_limit_axis_angle(q);
                     let limit = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
                     let dist = limit - angle;

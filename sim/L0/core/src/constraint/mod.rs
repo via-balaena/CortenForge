@@ -23,7 +23,7 @@ use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse}
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, DISABLE_WARMSTART, Data, ENABLE_SLEEP, Integrator,
-    MjJointType, Model, SolverType,
+    MjJointType, Model, SolverType, StepError,
 };
 
 use crate::constraint::assembly::assemble_unified_constraints;
@@ -36,7 +36,10 @@ use crate::constraint::solver::newton::newton_solve;
 use crate::constraint::solver::noslip::noslip_postprocess;
 use crate::constraint::solver::pgs::pgs_solve_unified;
 
-use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
+use crate::integrate::implicit::{
+    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness,
+    tendon_all_dofs_sleeping,
+};
 use crate::island::mj_island;
 
 /// Compute the unconstrained acceleration (`qacc_smooth`) and smooth forces.
@@ -145,10 +148,8 @@ fn build_m_impl_for_newton(model: &Model, data: &Data) -> DMatrix<f64> {
     let mut m_impl = data.qM.clone();
 
     // Add diagonal joint K/D (matching mj_fwd_acceleration_implicit)
-    let k = &model.implicit_stiffness;
-    let d = &model.implicit_damping;
     for i in 0..nv {
-        m_impl[(i, i)] += h * d[i] + h2 * k[i];
+        m_impl[(i, i)] += h * isd_damping(model, i) + h2 * isd_stiffness(model, i);
     }
 
     // Add non-diagonal tendon K/D (shared helper)
@@ -193,8 +194,8 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     // where Δq = q − q_eq, so total = −K·(q − q_eq) − h·K·v
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
-        let k = model.implicit_stiffness[dof_adr];
-        if k <= 0.0 {
+        let k = isd_stiffness(model, dof_adr);
+        if k == 0.0 {
             continue;
         }
         let q_eq = model.implicit_springref[dof_adr];
@@ -205,11 +206,11 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
                 qfrc[dof_adr] += -k * (q - q_eq) - h * k * v;
             }
             // Ball/Free: compute_implicit_params sets implicit_stiffness=0
-            // for these types, so the `k <= 0.0` guard above catches them.
+            // for these types, so the `k == 0.0` guard above catches them.
             _ => {
                 debug_assert!(
-                    k <= 0.0,
-                    "Ball/Free joint {jnt_id} has implicit_stiffness={k} > 0; \
+                    k == 0.0,
+                    "Ball/Free joint {jnt_id} has nonzero implicit_stiffness={k}; \
                      compute_implicit_params should set this to 0.0"
                 );
             }
@@ -218,8 +219,8 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
 
     // Add joint damper forces: −D·v
     for i in 0..nv {
-        let d = model.implicit_damping[i];
-        if d > 0.0 {
+        let d = isd_damping(model, i);
+        if d != 0.0 {
             qfrc[i] += -d * data.qvel[i];
         }
     }
@@ -230,8 +231,8 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
         if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
             continue;
         }
-        let kt = model.tendon_stiffness[t];
-        if kt > 0.0 {
+        let kt = isd_tendon_stiffness(model, t);
+        if kt != 0.0 {
             let displacement =
                 tendon_deadband_displacement(data.ten_length[t], model.tendon_lengthspring[t]);
             // Only apply spring force + velocity correction when OUTSIDE
@@ -239,7 +240,9 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
             // and the velocity correction h·K·v must also be zero.
             if displacement != 0.0 {
                 let velocity = data.ten_velocity[t]; // J · qvel
-                let f = -kt * (displacement + h * velocity);
+                // In the joint spring's order (above), so a coefficient-1 tendon
+                // rounds as the joint does.
+                let f = -kt * displacement - h * kt * velocity;
                 let j = &data.ten_J[t];
                 for dof in 0..nv {
                     if j[dof] != 0.0 {
@@ -249,8 +252,8 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
             }
         }
         // Add tendon damper forces: −b · V projected via J^T
-        let bt = model.tendon_damping[t];
-        if bt > 0.0 {
+        let bt = isd_tendon_damping(model, t);
+        if bt != 0.0 {
             let j = &data.ten_J[t];
             let velocity = data.ten_velocity[t]; // J · qvel
             let f = -bt * velocity;
@@ -297,7 +300,12 @@ fn warmstart(model: &Model, data: &mut Data) -> bool {
 /// 3. Dispatch to configured solver (Newton, CG, PGS)
 /// 4. Map efc_force → qfrc_constraint via J^T
 /// 5. Extract qfrc_frictionloss from efc_force
-pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
+///
+/// # Errors
+///
+/// `StepError::CholeskyFailed` under implicitspringdamper when `M_impl` is not
+/// positive definite.
+pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), StepError> {
     data.qfrc_constraint.fill(0.0);
     data.qfrc_frictionloss.fill(0.0);
     data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
@@ -325,16 +333,13 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         let qfrc_impl = compute_qfrc_smooth_implicit(model, data);
 
         // qacc_smooth_impl = M_impl⁻¹ · qfrc_smooth_impl
+        // A negative stiffness or damping can make M_impl indefinite: refused,
+        // as the unconstrained solve refuses it (`mj_fwd_acceleration_implicit`).
         let mut m_impl_factor = m_impl.clone();
-        if cholesky_in_place(&mut m_impl_factor).is_err() {
-            // M_impl should always be SPD; if Cholesky fails, fall back to
-            // the base qacc_smooth (degrades gracefully).
-            qacc_smooth_impl = qacc_smooth.clone();
-        } else {
-            let mut qa = qfrc_impl.clone();
-            cholesky_solve_in_place(&m_impl_factor, &mut qa);
-            qacc_smooth_impl = qa;
-        }
+        cholesky_in_place(&mut m_impl_factor)?;
+        let mut qa = qfrc_impl.clone();
+        cholesky_solve_in_place(&m_impl_factor, &mut qa);
+        qacc_smooth_impl = qa;
         m_impl_owned = Some(m_impl);
         qfrc_impl_owned = Some(qfrc_impl);
     } else {
@@ -374,7 +379,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
 
     if nefc == 0 {
         data.qacc.copy_from(&qacc_smooth_impl);
-        return;
+        return Ok(());
     }
 
     // S4.11: Load warmstart data or cold-start before solver dispatch.
@@ -465,6 +470,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             }
         }
     }
+    Ok(())
 }
 
 /// Clear the constraint rows and the islands, keeping the contacts (MuJoCo's

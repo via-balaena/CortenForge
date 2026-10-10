@@ -1769,3 +1769,937 @@ fn implicit_derivative_reads_a_bad_control_as_mujoco_does() {
         }
     }
 }
+
+/// With dampers disabled the implicit integrators apply no implicit damping,
+/// and with springs and dampers both disabled no fluid damping, as MuJoCo's
+/// `mjd_passive_vel`, from which their `D` is built: a damped joint, a damped
+/// fixed tendon, and fluid drag, each disabled, step as the undamped
+/// pendulum; with dampers disabled alone, the fluid's damping stays. MuJoCo
+/// 3.5.0 (unfused build), 100 steps of 0.01 s from qpos (0.4, 0.5), qvel
+/// (0.7, 1).
+#[test]
+fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
+    // (integrator, the undamped pendulum, the pendulum in the fluid)
+    let want = [
+        (
+            "implicitfast",
+            [
+                1.724_388_073_197_010_5,
+                -0.693_977_473_939_949_1,
+                -3.134_657_773_312_144,
+                -7.174_094_209_398_988,
+            ],
+            [
+                1.661_984_806_165_963_4,
+                -0.440_348_373_036_237_6,
+                -3.396_180_627_777_209,
+                0.476_088_771_322_649_6,
+            ],
+        ),
+        (
+            "implicit",
+            [
+                1.781_982_112_423_924_6,
+                -0.843_825_266_360_795_4,
+                -2.536_796_710_855_464,
+                -7.776_376_028_023_399_6,
+            ],
+            [
+                1.699_687_455_711_101_7,
+                -0.545_613_897_062_408_9,
+                -3.187_443_143_028_527,
+                0.353_868_017_378_280_44,
+            ],
+        ),
+    ];
+    let cases = [
+        (
+            "joint damping",
+            r#"<flag damper="disable"/>"#,
+            r#" damping="0.5""#,
+            "",
+            "",
+        ),
+        (
+            "tendon damping",
+            r#"<flag damper="disable"/>"#,
+            "",
+            r#"<tendon><fixed damping="0.8"><joint joint="j" coef="1"/><joint joint="j2" coef="-0.5"/></fixed></tendon>"#,
+            "",
+        ),
+        (
+            "fluid",
+            r#"<flag spring="disable" damper="disable"/>"#,
+            "",
+            "",
+            r#" density="1.2" viscosity="0.5""#,
+        ),
+        (
+            "joint damping in the fluid",
+            r#"<flag damper="disable"/>"#,
+            r#" damping="0.5""#,
+            "",
+            r#" density="1.2" viscosity="0.5""#,
+        ),
+    ];
+    for (integrator, undamped, in_fluid) in want {
+        for (name, flags, damping, tendon, fluid) in cases {
+            let want = if name.ends_with("in the fluid") {
+                in_fluid
+            } else {
+                undamped
+            };
+            let model = sim_mjcf::load_model(&format!(
+                r#"<mujoco>
+                  <option timestep="0.01" integrator="{integrator}"{fluid}>{flags}</option>
+                  <worldbody>
+                    <body name="b" pos="0 0 1">
+                      <joint name="j" type="hinge" axis="0 1 0"{damping}/>
+                      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                      <body name="b2" pos="0.3 0 0">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+                      </body>
+                    </body>
+                  </worldbody>
+                  {tendon}
+                </mujoco>"#
+            ))
+            .expect("load");
+            let mut data = model.make_data();
+            data.qpos[0] = 0.4;
+            data.qpos[1] = 0.5;
+            data.qvel[0] = 0.7;
+            data.qvel[1] = 1.0;
+            for _ in 0..100 {
+                data.step(&model).expect("step");
+            }
+            let got = [data.qpos[0], data.qpos[1], data.qvel[0], data.qvel[1]];
+            for (k, (g, w)) in got.iter().zip(want).enumerate() {
+                assert!(
+                    (g - w).abs() < 1e-12,
+                    "{name} disabled, {integrator}: state[{k}] {g}, MuJoCo {w}"
+                );
+            }
+        }
+    }
+}
+
+/// Flex edge damping enters the implicit integrators' `D`, as MuJoCo's
+/// `mjd_passive_vel` adds it (`engine_derivative.c:1737-1758`): a two-vertex
+/// cable with its first vertex pinned, so the edge's `−b · JᵀJ` lies within
+/// the free vertex's three dofs, equality constraints disabled (our `<flex>`
+/// adds edge equalities). MuJoCo 3.5.0 (unfused build) steps the same cable
+/// as a jointless anchor body and a body with three slides and a 0.1 kg
+/// sphere under `<flex body="anchor v1">`, 20 steps of 0.002 s from qvel
+/// (0.4, 0.7, -0.5). Under full Implicit the step matches it. Under
+/// implicitfast MuJoCo also leaves out the entries between the free vertex's
+/// dofs, where its mass matrix holds none (the spec book's P30, ledger L92),
+/// so ours still differs there; and on a four-vertex cable with no vertex
+/// pinned, ours differs under both (below).
+#[test]
+fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
+    // (integrator, MuJoCo's qpos and qvel)
+    let want = [
+        (
+            "implicit",
+            [
+                0.007_261_547_381_082_979_5,
+                0.027_296_599_782_666_1,
+                -0.027_631_522_771_323_122,
+                -0.005_097_754_042_589_182,
+                0.651_313_078_673_987_8,
+                -0.848_158_658_375_726_2,
+            ],
+        ),
+        (
+            "implicitfast",
+            [
+                0.007_283_559_609_821_424,
+                0.027_259_878_113_901_508,
+                -0.027_595_712_846_750_085,
+                -0.003_620_500_160_959_234_2,
+                0.648_928_232_872_987_3,
+                -0.845_603_222_567_218_3,
+            ],
+        ),
+    ];
+    for (integrator, mujoco) in want {
+        let model = load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="{integrator}">
+                <flag equality="disable"/>
+              </option>
+              <deformable>
+                <flex name="c" dim="1" mass="0.2">
+                  <vertex pos="0 0 1  0.1 0 1"/>
+                  <element data="0 1"/>
+                  <pin id="0"/>
+                  <edge damping="3"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        ))
+        .expect("load");
+        assert_eq!((model.nv, model.nflexedge), (3, 1));
+        let mut data = model.make_data();
+        data.qvel.copy_from_slice(&[0.4, 0.7, -0.5]);
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        let got: Vec<f64> = data.qpos.iter().chain(data.qvel.iter()).copied().collect();
+        assert!(got.iter().all(|x| x.is_finite()), "{integrator}: {got:?}");
+        let off = got
+            .iter()
+            .zip(mujoco)
+            .map(|(g, w)| (g - w).abs())
+            .fold(0.0, f64::max);
+        if integrator == "implicit" {
+            assert!(off < 1e-12, "{integrator}: {got:?}, MuJoCo {mujoco:?}");
+        } else {
+            assert!(off > 1e-4, "{integrator} agrees with MuJoCo: P30's flip");
+        }
+    }
+
+    // A four-vertex cable, no vertex pinned: each edge's term also couples
+    // two vertices' dofs, which MuJoCo's `qDeriv` (dofs on one branch) leaves
+    // out under both integrators (P30), so ours still differs under both.
+    // MuJoCo steps it as four bodies with three slides and a 0.1 kg sphere
+    // each under `<flex body=...>`; its qvel after 20 steps.
+    let cable = [
+        (
+            "implicit",
+            [
+                0.6856880643979151,
+                -0.5773510413674069,
+                0.19419144449115566,
+                0.30999783865220765,
+                0.7122901746865635,
+                0.1360778830478554,
+                0.22543716479346096,
+                -0.37193480713439336,
+                0.40173154805075045,
+                -0.8294968518449337,
+                1.333828690644867,
+                0.2785937761994604,
+            ],
+        ),
+        (
+            "implicitfast",
+            [
+                0.6891280644688601,
+                -0.5698090298511032,
+                0.19352632159518787,
+                0.3112662880609476,
+                0.7137379045968621,
+                0.1385168479708701,
+                0.2240481828170123,
+                -0.37441396889502304,
+                0.3981670018118946,
+                -0.8383243157894933,
+                1.3231217829665871,
+                0.2806133597937262,
+            ],
+        ),
+    ];
+    for (integrator, mujoco) in cable {
+        let model = load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="{integrator}">
+                <flag equality="disable"/>
+              </option>
+              <deformable>
+                <flex name="c" dim="1" mass="0.4">
+                  <vertex pos="0 0 1  0.1 0 1  0.2 0 1  0.3 0 1"/>
+                  <element data="0 1  1 2  2 3"/>
+                  <edge damping="3"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        ))
+        .expect("load");
+        assert_eq!((model.nv, model.nflexedge), (12, 3));
+        let mut data = model.make_data();
+        for (i, v) in data.qvel.iter_mut().enumerate() {
+            *v = [0.4, -0.7, 0.5, -0.2, 0.9, 0.3][i % 6] * (1.0 + 0.1 * i as f64);
+        }
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        assert!(data.qvel.iter().all(|x| x.is_finite()), "{integrator}");
+        let off = data
+            .qvel
+            .iter()
+            .zip(mujoco)
+            .map(|(g, w)| (g - w).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            off > 1e-4,
+            "four-vertex cable, {integrator}, agrees with MuJoCo: P30's flip"
+        );
+    }
+}
+
+/// A flex edge acts at any length, as MuJoCo's: `mj_flex_edge` takes its
+/// direction as `mju_normalize3` does, the x axis below `mjMINVAL`
+/// (`engine_util_blas.c:120-135`), and the passive pass and the edge's
+/// equality row skip no short edge. A two-vertex cable with its first vertex
+/// pinned and its second on it (the x axis) or 1e-12 from it along y (its
+/// own direction, below our old 1e-10 cut and above MuJoCo's 1e-15), or
+/// 0.1 along x and started on the first (a collapsed edge whose spring
+/// pushes), edge damping 3 and stiffness 50, equality constraints disabled;
+/// and that collapsed edge's equality row, enabled. MuJoCo 3.5.0
+/// (unfused build) steps the same cable as a jointless anchor body and a
+/// body with three slides and a 0.1 kg sphere under `<flex body="anchor
+/// v1">`, 20 steps of 0.002 s from qvel (0.4, 0.7, -0.5). The damping acts
+/// along that direction at the start; Euler and implicit match MuJoCo after
+/// 20 steps, and implicitfast
+/// still differs where MuJoCo leaves out the entries between the vertex's
+/// dofs (the spec book's P30).
+#[test]
+fn a_short_flex_edge_acts_as_mujoco_3_5_0() {
+    // (the second vertex, its start offset along x, MuJoCo's passive force
+    // at the start, integrator, MuJoCo's qpos and qvel after 20 steps)
+    let want = [
+        (
+            "0 0 1",
+            0.0,
+            [-1.2000000000000002, 0.0, 0.0],
+            "Euler",
+            [
+                0.007479567918052443,
+                0.01392472750701253,
+                -0.016456564334414274,
+                0.029924525696618576,
+                0.055710553158598394,
+                -0.3157061096300114,
+            ],
+        ),
+        (
+            "0 0 1",
+            0.0,
+            [-1.2000000000000002, 0.0, 0.0],
+            "implicit",
+            [
+                0.007732524455083571,
+                0.014343832864180022,
+                -0.016805531811847872,
+                0.03758344252205768,
+                0.06971728587841691,
+                -0.3284162960350603,
+            ],
+        ),
+        (
+            "0 0 1",
+            0.0,
+            [-1.2000000000000002, 0.0, 0.0],
+            "implicitfast",
+            [
+                0.007540952144636189,
+                0.014223960547312314,
+                -0.01650067490984604,
+                0.030921431149121582,
+                0.0661544761589378,
+                -0.3172783261654274,
+            ],
+        ),
+        (
+            "0 1e-12 1",
+            0.0,
+            [0.0, -2.0999999999999996, 0.0],
+            "Euler",
+            [
+                0.007945942580409752,
+                0.013071075542438988,
+                -0.016438795042464767,
+                0.031087363062085954,
+                0.051138712181568,
+                -0.31440367019372817,
+            ],
+        ),
+        (
+            "0 1e-12 1",
+            0.0,
+            [0.0, -2.0999999999999996, 0.0],
+            "implicit",
+            [
+                0.008183909285855882,
+                0.013511170988533466,
+                -0.016785702765593387,
+                0.03906395760850809,
+                0.064492382789314,
+                -0.3270838814917832,
+            ],
+        ),
+        (
+            "0 1e-12 1",
+            0.0,
+            [0.0, -2.0999999999999996, 0.0],
+            "implicitfast",
+            [
+                0.007993871855304018,
+                0.013380976654921667,
+                -0.016489434408862656,
+                0.032497379660584726,
+                0.060489652346513635,
+                -0.31633874958842506,
+            ],
+        ),
+        (
+            "0.1 0 1",
+            -0.1,
+            [3.8, 0.0, 0.0],
+            "Euler",
+            [
+                -0.07855206891815765,
+                0.0315410751203564,
+                -0.030885295042993248,
+                0.5060421334144196,
+                0.7441796079623814,
+                -0.9137659613905817,
+            ],
+        ),
+    ];
+    for (vertex, offset, passive, integrator, mujoco) in want {
+        let model = load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="{integrator}">
+                <flag equality="disable"/>
+              </option>
+              <deformable>
+                <flex name="c" dim="1" mass="0.2">
+                  <vertex pos="0 0 1  {vertex}"/>
+                  <element data="0 1"/>
+                  <pin id="0"/>
+                  <edge damping="3" stiffness="50"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let what = format!("vertex at {vertex}, {integrator}");
+        let mut data = model.make_data();
+        data.qpos[0] = offset;
+        data.qvel.copy_from_slice(&[0.4, 0.7, -0.5]);
+        data.forward(&model).expect("forward");
+        assert_eq!(data.qfrc_passive.as_slice(), &passive, "{what}");
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        let got: Vec<f64> = data.qpos.iter().chain(data.qvel.iter()).copied().collect();
+        assert!(got.iter().all(|x| x.is_finite()), "{what}: {got:?}");
+        let off = got
+            .iter()
+            .zip(mujoco)
+            .map(|(g, w)| (g - w).abs())
+            .fold(0.0, f64::max);
+        if integrator == "implicitfast" {
+            assert!(off > 1e-4, "{what} agrees with MuJoCo: P30's flip");
+        } else {
+            assert!(off < 1e-12, "{what}: {got:?}, MuJoCo {mujoco:?}");
+        }
+    }
+
+    // The collapsed edge's equality row: MuJoCo's position error is the
+    // length less the rest length, along the x axis.
+    let model = load_model(
+        r#"<mujoco>
+          <option timestep="0.002"/>
+          <deformable>
+            <flex name="c" dim="1" mass="0.2">
+              <vertex pos="0 0 1  0.1 0 1"/>
+              <element data="0 1"/>
+              <pin id="0"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+          <equality>
+            <flex flex="c"/>
+          </equality>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = -0.1;
+    data.forward(&model).expect("forward");
+    let row = (0..data.efc_type.len())
+        .find(|&i| data.efc_type[i] == sim_core::ConstraintType::FlexEdge)
+        .expect("the edge's equality row");
+    assert!(
+        (data.efc_pos[row] + 0.1).abs() < 1e-15,
+        "efc_pos {}",
+        data.efc_pos[row]
+    );
+    let j: Vec<f64> = (0..model.nv).map(|col| data.efc_J[(row, col)]).collect();
+    assert_eq!(j, [1.0, 0.0, 0.0]);
+}
+
+/// Euler's eulerdamp adds `h·damping` to the mass matrix's diagonal for every
+/// awake dof, whatever its sign, once some awake dof is damped positively, as
+/// MuJoCo's `mj_Euler` (`engine_forward.c:956-989`): a double pendulum damped
+/// 0.5 and −0.3, and −0.5 and 0.3, from qpos (0.3, −0.2) and qvel (0.7, −0.4);
+/// and a pendulum damped −0.05 beside an asleep one damped 0.5, which steps
+/// explicitly, no awake dof being damped positively. MuJoCo 3.5.0 (unfused
+/// build), 20 steps of 0.01 s.
+#[test]
+fn euler_damps_every_awake_dof_as_mujoco_3_5_0() {
+    let check = |what: &str, xml: &str, start: [f64; 4], mujoco: [f64; 4]| {
+        let model = load_model(xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&start[..2]);
+        data.qvel.copy_from_slice(&start[2..]);
+        data.forward(&model).expect("forward");
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        let got = [data.qpos[0], data.qpos[1], data.qvel[0], data.qvel[1]];
+        for (k, (g, w)) in got.iter().zip(mujoco).enumerate() {
+            assert!((g - w).abs() < 1e-12, "{what}: state[{k}] {g}, MuJoCo {w}");
+        }
+    };
+    let double = |d0: &str, d1: &str| {
+        format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="Euler"/>
+              <worldbody>
+                <body>
+                  <joint type="hinge" axis="0 1 0" damping="{d0}"/>
+                  <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+                  <body pos="0 0 -1">
+                    <joint type="hinge" axis="0 1 0" damping="{d1}"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+                  </body>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        )
+    };
+    check(
+        "damped 0.5 and -0.3",
+        &double("0.5", "-0.3"),
+        [0.3, -0.2, 0.7, -0.4],
+        [
+            0.299_726_370_572_367_45,
+            0.029_814_322_298_336_155,
+            -0.652_946_111_342_797_9,
+            2.583_252_053_355_409,
+        ],
+    );
+    check(
+        "damped -0.5 and 0.3",
+        &double("-0.5", "0.3"),
+        [0.3, -0.2, 0.7, -0.4],
+        [
+            0.331_214_759_154_592_9,
+            -0.064_252_489_552_035_4,
+            -0.268_254_028_651_238_5,
+            1.367_842_510_508_819_9,
+        ],
+    );
+    check(
+        "damped -0.05 beside an asleep tree damped 0.5",
+        r#"<mujoco>
+          <option timestep="0.01" integrator="Euler"><flag sleep="enable"/></option>
+          <worldbody>
+            <body name="awake" pos="0 0 1">
+              <joint type="hinge" axis="0 1 0" damping="-0.05"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+            <body name="asleep" pos="1 0 1" sleep="init">
+              <joint type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </worldbody>
+        </mujoco>"#,
+        [0.4, 0.0, 0.7, 0.0],
+        [1.424_549_627_521_465_3, 0.0, 8.514_624_111_839_153, 0.0],
+    );
+}
+
+/// Euler's eulerdamp leaves the mass matrix as the forward pass computed it,
+/// as MuJoCo's factors a copy (`qH`, `engine_forward.c:976-989`): a sleep
+/// step's re-forward reads `qM` without recomputing it. Damping 0.137 and
+/// 4.1085 on the two-link pendulum, where adding `h·d` and subtracting it
+/// again does not give the diagonal back.
+#[test]
+fn euler_eulerdamp_leaves_the_mass_matrix_as_computed() {
+    let mut model = sim_core::Model::n_link_pendulum(2, 1.0, 0.1);
+    model.jnt_damping = vec![0.137, 4.1085];
+    model.compute_implicit_params();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.7;
+    data.qvel[1] = -0.4;
+    data.forward(&model).expect("forward");
+    let mass = data.qM.clone();
+    data.integrate(&model).expect("integrate");
+    for (i, (a, b)) in data.qM.iter().zip(mass.iter()).enumerate() {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "qM entry {i}: {a} after, {b} before"
+        );
+    }
+}
+
+/// A tendon's negative stiffness and damping apply as given, as MuJoCo's
+/// passive pass (`engine_passive.c:453-473`) and `mjd_passive_vel` take them
+/// with no sign test: a fixed tendon over a double pendulum with stiffness −2
+/// and damping −0.5, set in code (the loader refuses negative tendon
+/// parameters; MuJoCo loads them). Its passive force and potential energy at
+/// the start, and the state after 20 steps of 0.01 s under Euler,
+/// implicitfast and implicit, against MuJoCo 3.5.0 (unfused build).
+#[test]
+fn negative_tendon_stiffness_and_damping_as_mujoco_3_5_0() {
+    // (integrator, MuJoCo's qpos and qvel after 20 steps)
+    let want = [
+        (
+            "Euler",
+            [
+                0.380_349_425_640_546_97,
+                -0.200_460_214_117_676_45,
+                0.065_810_556_359_295_34,
+                0.493_790_692_366_354_03,
+            ],
+        ),
+        (
+            "implicitfast",
+            [
+                0.378_236_262_371_655_3,
+                -0.194_525_680_796_944_1,
+                0.041_276_694_304_329_155,
+                0.562_331_216_908_440_5,
+            ],
+        ),
+        (
+            "implicit",
+            [
+                0.378_390_091_842_759_2,
+                -0.195_092_502_056_275_93,
+                0.042_525_152_966_527_81,
+                0.557_715_700_734_549_2,
+            ],
+        ),
+    ];
+    for (integrator, mujoco) in want {
+        let mut model = load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}">
+                <flag energy="enable"/>
+              </option>
+              <worldbody>
+                <body>
+                  <joint name="j0" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+                  <body pos="0 0 -1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+                  </body>
+                </body>
+              </worldbody>
+              <tendon>
+                <fixed name="t" stiffness="2" damping="0.5" springlength="0.1">
+                  <joint joint="j0" coef="1"/>
+                  <joint joint="j1" coef="-0.5"/>
+                </fixed>
+              </tendon>
+            </mujoco>"#
+        ))
+        .expect("load");
+        model.tendon_stiffness[0] = -2.0;
+        model.tendon_damping[0] = -0.5;
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&[0.3, -0.2]);
+        data.qvel.copy_from_slice(&[0.7, -0.4]);
+        data.forward(&model).expect("forward");
+        assert_eq!(
+            data.qfrc_passive.as_slice(),
+            &[1.05, -0.525],
+            "{integrator}"
+        );
+        assert!(
+            (data.energy_potential - -19.028_271_868_172_01).abs() < 1e-12,
+            "{integrator}: potential energy {}",
+            data.energy_potential
+        );
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        let got = [data.qpos[0], data.qpos[1], data.qvel[0], data.qvel[1]];
+        for (k, (g, w)) in got.iter().zip(mujoco).enumerate() {
+            assert!(
+                (g - w).abs() < 1e-12,
+                "{integrator}: state[{k}] {g}, MuJoCo {w}"
+            );
+        }
+    }
+}
+
+/// implicitspringdamper folds a negative stiffness or damping into its solve
+/// as given, a tendon's as a joint's: a fixed tendon with coefficient 1 on a
+/// hinge (its length the hinge's angle, in radians) and stiffness −20 about
+/// 0.1 and damping −0.8 steps exactly as the hinge with that stiffness about
+/// that reference and that damping, free, against an active joint limit (the
+/// Newton solve) and with 60 more hinges (its sparse Hessian). The values are
+/// set in code (the loader refuses a negative tendon stiffness or damping).
+#[test]
+fn implicitspringdamper_takes_negative_stiffness_and_damping() {
+    let model_xml = |limit: &str, more: &str| {
+        format!(
+            r#"<mujoco>
+              <compiler angle="radian"/>
+              <option timestep="0.002" integrator="implicitspringdamper"/>
+              <worldbody>
+                <body name="a" pos="0 0 1">
+                  <joint name="j1" type="hinge" axis="0 1 0" springref="0.1"{limit}/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                  <body name="b" pos="0.3 0 0">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+                    {more}
+                  </body>
+                </body>
+              </worldbody>
+              <tendon>
+                <fixed name="t" springlength="0.1"><joint joint="j1" coef="1"/></fixed>
+              </tendon>
+            </mujoco>"#
+        )
+    };
+    let more_hinges = r#"<body pos="0.05 0 0"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.01" mass="0.01" contype="0" conaffinity="0"/>"#
+        .repeat(60)
+        + &"</body>".repeat(60);
+    let run = |xml: &str, on_tendon: bool| {
+        let mut model = sim_mjcf::load_model(xml).expect("load");
+        if on_tendon {
+            model.tendon_stiffness[0] = -20.0;
+            model.tendon_damping[0] = -0.8;
+        } else {
+            model.jnt_stiffness[0] = -20.0;
+            model.jnt_damping[0] = -0.8;
+        }
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.qpos[1] = -0.3;
+        data.qvel[1] = 0.2;
+        data.forward(&model).expect("forward");
+        let rows = data.efc_type.len();
+        for _ in 0..50 {
+            data.step(&model).expect("step");
+        }
+        (data.qpos.clone(), data.qvel.clone(), rows)
+    };
+    let mut failures = Vec::new();
+    for (size, more) in [("", ""), (" with 60 more hinges", more_hinges.as_str())] {
+        for limit in ["", r#" range="-0.3 0.3""#] {
+            let xml = model_xml(limit, more);
+            let joint = run(&xml, false);
+            let tendon = run(&xml, true);
+            assert_eq!(
+                joint.2 > 0,
+                !limit.is_empty(),
+                "{limit}{size}: the limit's row"
+            );
+            let worst = (&joint.0 - &tendon.0)
+                .amax()
+                .max((&joint.1 - &tendon.1).amax());
+            if worst != 0.0 {
+                failures.push(format!(
+                    "{limit}{size}: the tendon form {worst:e} from the joint form"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// implicitspringdamper refuses a step whose matrix a negative stiffness makes
+/// indefinite (`CholeskyFailed`), against an active joint limit (the Newton
+/// solve) as without one: a hinge with stiffness −600 at a 0.01 s step, on
+/// the joint or on a coefficient-1 tendon, set in code, where `M + h²·k < 0`;
+/// at −200, where it is positive, it steps.
+#[test]
+fn implicitspringdamper_refuses_an_indefinite_matrix() {
+    let loaded = load_model(
+        r#"<mujoco>
+          <compiler angle="radian"/>
+          <option timestep="0.01" integrator="implicitspringdamper"/>
+          <worldbody>
+            <body pos="0 0 1">
+              <joint name="j" type="hinge" axis="0 1 0" range="-0.3 0.3"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t"><joint joint="j" coef="1"/></fixed>
+          </tendon>
+        </mujoco>"#,
+    )
+    .expect("load");
+    for (k, refused) in [(-600.0, true), (-200.0, false)] {
+        for on in ["joint", "tendon"] {
+            // inside the range, and past its upper end
+            for start in [0.2, 0.35] {
+                let mut model = loaded.clone();
+                if on == "joint" {
+                    model.jnt_stiffness[0] = k;
+                } else {
+                    model.tendon_stiffness[0] = k;
+                }
+                model.compute_implicit_params();
+                let mut data = model.make_data();
+                data.qpos[0] = start;
+                let got = data.forward(&model);
+                let what = format!("stiffness {k} on the {on}, from {start}");
+                let m_impl = data.qM[(0, 0)] + 1e-4 * k;
+                assert_eq!(m_impl < 0.0, refused, "{what}: M + h²·k = {m_impl}");
+                if refused {
+                    assert_eq!(got, Err(sim_core::StepError::CholeskyFailed), "{what}");
+                } else {
+                    assert_eq!(got, Ok(()), "{what}");
+                    assert_eq!(
+                        data.efc_type.is_empty(),
+                        start < 0.3,
+                        "{what}: the limit's row"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Under implicitspringdamper a disabled spring or damper flag removes that
+/// force from the step, as it does from the passive pass: each flag gives
+/// the trajectory of the same model with that parameter at 0, on a joint and
+/// on a fixed tendon, free and against an active joint limit (whose Newton
+/// solve takes the same implicit matrix), on two hinges and with 60 more
+/// (past `NV_SPARSE_THRESHOLD`, where the Newton solve assembles a sparse
+/// Hessian); and the hybrid transition derivative agrees with pure finite
+/// differences under the joint flags on the two hinges, free, where its
+/// analytic columns run (a tendon spring or damper, or a limit row, sends it
+/// to pure finite differences whole). implicitspringdamper is ours (MuJoCo
+/// has no such integrator), so the flags' meaning is the reference.
+#[test]
+fn implicitspringdamper_follows_the_spring_and_damper_flags() {
+    let model_xml = |flag: &str, joint_prm: &str, tendon_prm: &str, limit: &str, more: &str| {
+        format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="implicitspringdamper">{flag}</option>
+              <worldbody>
+                <body name="a" pos="0 0 1">
+                  <joint name="j1" type="hinge" axis="0 1 0"{joint_prm}{limit}/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                  <body name="b" pos="0.3 0 0">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+                    {more}
+                  </body>
+                </body>
+              </worldbody>
+              <tendon>
+                <fixed name="t"{tendon_prm}><joint joint="j1" coef="1"/><joint joint="j2" coef="-0.5"/></fixed>
+              </tendon>
+            </mujoco>"#
+        )
+    };
+    let start = |xml: &str| {
+        let model = sim_mjcf::load_model(xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.qpos[1] = -0.3;
+        data.qvel[1] = 0.2;
+        (model, data)
+    };
+    let run = |xml: &str| {
+        let (model, mut data) = start(xml);
+        for _ in 0..50 {
+            data.step(&model).expect("step");
+        }
+        (data.qpos.clone(), data.qvel.clone())
+    };
+    let spring = r#" stiffness="20" springref="0.1""#;
+    let damper = r#" damping="0.8""#;
+    let both = format!("{spring}{damper}");
+    let tendon_spring = r#" stiffness="15" springlength="0.2""#;
+    let tendon_damper = r#" damping="0.6""#;
+    let tendon_both = format!("{tendon_spring}{tendon_damper}");
+    let more_hinges = r#"<body pos="0.05 0 0"><joint type="hinge" axis="0 1 0"/><geom type="sphere" size="0.01" mass="0.01" contype="0" conaffinity="0"/>"#
+        .repeat(60)
+        + &"</body>".repeat(60);
+    let mut failures = Vec::new();
+    for (size, more) in [("", ""), (" with 60 more hinges", more_hinges.as_str())] {
+        for limit in ["", r#" range="-0.3 0.3""#] {
+            for (what, flag, with, without) in [
+                (
+                    "joint spring",
+                    r#"<flag spring="disable"/>"#,
+                    (both.as_str(), ""),
+                    (damper, ""),
+                ),
+                (
+                    "joint damper",
+                    r#"<flag damper="disable"/>"#,
+                    (both.as_str(), ""),
+                    (spring, ""),
+                ),
+                (
+                    "tendon spring",
+                    r#"<flag spring="disable"/>"#,
+                    ("", tendon_both.as_str()),
+                    ("", tendon_damper),
+                ),
+                (
+                    "tendon damper",
+                    r#"<flag damper="disable"/>"#,
+                    ("", tendon_both.as_str()),
+                    ("", tendon_spring),
+                ),
+            ] {
+                let flagged_xml = model_xml(flag, with.0, with.1, limit, more);
+                let flagged = run(&flagged_xml);
+                let zeroed = run(&model_xml("", without.0, without.1, limit, more));
+                let (model, mut data) = start(&flagged_xml);
+                data.forward(&model).expect("forward");
+                assert_eq!(
+                    data.efc_type.is_empty(),
+                    limit.is_empty(),
+                    "{what}{limit}{size}: the limit's row"
+                );
+                if more.is_empty() && limit.is_empty() && with.1.is_empty() {
+                    let config = sim_core::DerivativeConfig::default();
+                    let hybrid =
+                        sim_core::mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+                    let fd = sim_core::mjd_transition_fd(&model, &data, &config).expect("fd");
+                    assert_ne!(hybrid.A, fd.A, "{what}: the analytic columns ran");
+                    for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+                        if (h - f).abs() > 1e-6 + 1e-5 * h.abs().max(f.abs()) {
+                            failures.push(format!(
+                                "{what}{limit}{size}: hybrid A {h}, finite differences {f}"
+                            ));
+                            break;
+                        }
+                    }
+                }
+                let worst = (&flagged.0 - &zeroed.0)
+                    .amax()
+                    .max((&flagged.1 - &zeroed.1).amax());
+                if worst > 1e-12 {
+                    failures.push(format!(
+                        "{what}{limit}{size}: {worst:e} from the model without it"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -105,6 +105,9 @@ pub mod integrate;
 // Actuator and sensor history buffers (delays)
 pub(crate) mod history;
 
+/// Quaternion arithmetic as MuJoCo's.
+pub(crate) mod quat;
+
 // Inverse dynamics (§52)
 pub mod inverse;
 

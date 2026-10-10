@@ -11,6 +11,7 @@
 )]
 
 use sim_core::types::{Data, MjJointType, Model};
+use sim_core::{DISABLE_DAMPER, DISABLE_EULERDAMP};
 
 use super::collision::GpuCollisionPipeline;
 use super::constraint::GpuConstraintPipeline;
@@ -85,10 +86,12 @@ pub struct GpuPhysicsPipeline {
     // stage across envs via the env-strided shaders.
     n_env: u32,
 
-    /// Whether any DOF has implicit damping. When true, the eulerdamp stage runs
-    /// between the constraint stage and integration, solving `(M + h·D)·qacc =
-    /// qfrc_smooth − D·q̇ + qfrc_constraint`. When false it is skipped entirely, so
-    /// the undamped trajectory is byte-identical to the pre-wiring pipeline.
+    /// Whether the eulerdamp stage runs: neither eulerdamp nor dampers disabled
+    /// and some DOF damped positively (sim-core's `eulerdamp_applies`; sim-gpu has
+    /// no sleep). It runs between the constraint stage and integration, solving
+    /// `(M + h·D)·qacc = qfrc_smooth − D·q̇ + qfrc_constraint`. When false it is
+    /// skipped entirely, so the undamped trajectory is byte-identical to the
+    /// pre-wiring pipeline.
     has_damping: bool,
 }
 
@@ -159,9 +162,12 @@ impl GpuPhysicsPipeline {
         let eulerdamp = GpuEulerdampPipeline::new(&ctx, &model_bufs, &state_bufs);
         let integrate = GpuIntegratePipeline::new(&ctx, &model_bufs, &state_bufs);
 
-        // Eulerdamp runs only when the model actually has implicit damping;
-        // otherwise it is skipped so the undamped path is byte-identical.
-        let has_damping = (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
+        // Eulerdamp runs with neither eulerdamp nor dampers disabled and some DOF
+        // damped positively (sim-core's `eulerdamp_applies`, MuJoCo
+        // `engine_forward.c:956`). Otherwise it is skipped, so the undamped path is
+        // byte-identical.
+        let has_damping = model.disableflags & (DISABLE_EULERDAMP | DISABLE_DAMPER) == 0
+            && (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
 
         let nq = model.nq as u32;
         let nv = model.nv as u32;
@@ -301,8 +307,8 @@ impl GpuPhysicsPipeline {
         self.constraint.encode(rec, &self.state_bufs);
         // Implicit joint damping (MuJoCo eulerdamp): re-solve qacc with the damped
         // matrix and the contact-coupled RHS, between the constraint stage (which
-        // writes qfrc_constraint) and integration. Skipped for undamped models so
-        // their trajectory is byte-identical.
+        // writes qfrc_constraint) and integration, where the CPU step takes it
+        // (`has_damping`).
         if self.has_damping {
             self.eulerdamp.encode(rec);
         }

@@ -1,0 +1,15 @@
+<mujoco>
+              <option timestep="0.01"/>
+              <worldbody>
+                <body pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                        contype="0" conaffinity="0"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <general joint="j" dyntype="filter" dynprm="1"
+                         gaintype="affine" gainprm="1 0 0"
+                         biastype="affine" biasprm="0 0 0"/>
+              </actuator>
+            </mujoco>

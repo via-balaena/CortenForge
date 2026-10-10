@@ -54,9 +54,9 @@ pub use muscle::{
 
 #[allow(unused_imports)]
 pub(crate) use actuation::{
-    actuator_ctrl_input, mj_actuator_velocity, mj_fwd_actuation, mj_gravcomp_to_actuator,
-    mj_transmission_body_dispatch, mj_transmission_joint_tendon, mj_transmission_site,
-    mj_transmission_slidercrank,
+    acts_through_moment, actuator_ctrl_input, ball_free_transmission, mj_actuator_velocity,
+    mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
+    mj_transmission_joint_tendon, mj_transmission_site, mj_transmission_slidercrank,
 };
 #[allow(unused_imports)]
 pub(crate) use passive::mj_fwd_passive;
@@ -66,7 +66,7 @@ pub(crate) use velocity::mj_fwd_velocity;
 pub(crate) use velocity::mj_subtree_vel;
 
 // Re-exports for external consumers (derivatives.rs, collision/, constraint/, etc.)
-pub(crate) use actuation::mj_next_activation;
+pub(crate) use actuation::{mj_next_activation, unclamped_next_activation};
 pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
 pub(crate) use position::SweepAndPrune;
 pub(crate) use position::{
@@ -539,7 +539,7 @@ impl Data {
 
         // One global solve; the islands are built in it but not solved
         // apart (`island/mod.rs`).
-        crate::constraint::mj_fwd_constraint(model, self);
+        crate::constraint::mj_fwd_constraint(model, self)?;
 
         // ImplicitFast/Implicit: always run mj_fwd_acceleration, even when
         // Newton succeeded: it solves M_hat = M − h·∂f/∂v for qacc_implicit,

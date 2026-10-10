@@ -2419,6 +2419,64 @@ fn t33_step_applies_implicit_damping() {
     );
 }
 
+/// T33b: the damper force and the eulerdamp stage follow the damper flags, as
+/// the CPU step does (`eulerdamp_applies`): with eulerdamp disabled the damper
+/// force is explicit, with dampers disabled there is none. T33's damped free
+/// body, GPU against CPU over 200 steps under each flag.
+#[test]
+fn t33b_step_follows_the_damper_flags() {
+    // Measured on an M4 Pro: 2.0e-8 and 4.7e-7 here (f32), 2.1e-3 and 1.4 when
+    // the GPU ignored the flags.
+    const TOL: f64 = 1e-5;
+    let mut failures = Vec::new();
+    for (name, flag) in [
+        ("eulerdamp disabled", sim_core::DISABLE_EULERDAMP),
+        ("damper disabled", sim_core::DISABLE_DAMPER),
+    ] {
+        let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+        add_sdf_sphere_geom(&mut model, 1, 0.5, 12);
+        model.gravity = Vector3::zeros();
+        for i in 0..model.nv {
+            model.dof_damping[i] = 3.0;
+        }
+        model.disableflags |= flag;
+        model.compute_implicit_params();
+        let set_init = |d: &mut Data| {
+            d.qpos[2] = 5.0;
+            d.qpos[3] = 1.0;
+            for (i, v) in [0.8, -0.5, 0.3, 1.2, -0.7, 0.4].into_iter().enumerate() {
+                d.qvel[i] = v;
+            }
+        };
+
+        let mut gpu_data = model.make_data();
+        set_init(&mut gpu_data);
+        let Some(pipeline) = pipeline_or_skip("T33b", GpuPhysicsPipeline::new(&model, &gpu_data))
+        else {
+            return;
+        };
+        let mut cpu_data = model.make_data();
+        set_init(&mut cpu_data);
+        for _ in 0..200 {
+            pipeline.step(&model, std::slice::from_mut(&mut gpu_data), 1);
+            cpu_data.step(&model).expect("CPU step");
+        }
+        // `f64::max` drops a NaN, so non-finite differences are counted apart.
+        let diffs: Vec<f64> = (0..model.nv)
+            .map(|i| (gpu_data.qvel[i] - cpu_data.qvel[i]).abs())
+            .collect();
+        let non_finite = diffs.iter().any(|d| !d.is_finite());
+        let gpu_vs_cpu = diffs.into_iter().fold(0.0_f64, f64::max);
+        eprintln!("  T33b {name}: GPU↔CPU max|Δqvel|={gpu_vs_cpu:.3e}, non-finite {non_finite}");
+        if non_finite || gpu_vs_cpu >= TOL {
+            failures.push(format!(
+                "{name}: GPU↔CPU max|Δqvel|={gpu_vs_cpu:.3e}, non-finite {non_finite}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 // ── T32: Sustained multi-substep stress test ──────────────────────────
 
 #[test]

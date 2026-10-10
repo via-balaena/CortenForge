@@ -2699,7 +2699,7 @@ fn t12_cutoff_clamped_sensor_zero_derivatives() {
 
 /// Hybrid B matrix matches FD B for Joint-transmission motor actuators.
 /// Regression test for the actuator_moment dispatch bug (Joint transmissions
-/// never populate data.actuator_moment — the hybrid path must construct the
+/// on a hinge or slide never populate data.actuator_moment — the hybrid path must construct the
 /// moment inline from gear and jnt_dof_adr).
 #[test]
 fn test_hybrid_vs_fd_b_joint_motor() {
@@ -3054,8 +3054,6 @@ fn sensor_derivatives_at_current_state_match_mujoco_3_5_0() {
 
 /// Asking pure finite differences for sensor derivatives evaluates no extra
 /// forward pass: the passive callback fires as often with them as without.
-/// (The hybrid computes A and B analytically where it can, so its C and D
-/// need finite-difference columns it would otherwise not run.)
 #[test]
 fn sensor_derivatives_do_not_add_callbacks() {
     {
@@ -3634,4 +3632,1085 @@ fn smooth_pos_reads_the_control_the_forward_pass_acted_on() {
     assert_ne!(qderiv_pos([1.0, 0.0]), qderiv_pos([0.0, 0.0]));
     assert_eq!(qderiv_pos([5.0, 0.0]), qderiv_pos([1.0, 0.0]));
     assert_eq!(qderiv_pos([0.7, f64::NAN]), qderiv_pos([0.0, 0.0]));
+}
+
+/// `mjd_smooth_pos` equals a central difference, over the configuration, of
+/// the forces the step applies through a tendon (and the hybrid transition's
+/// `A` equals pure finite differences of the step): `qfrc_passive +
+/// qfrc_actuator − qfrc_bias − M·qacc` at the state's `qacc`. A spatial
+/// tendon's `J` moves with `q`, so its spring, its damper (`−b·J·qvel`) and
+/// an actuator's force (`gear·J·force`, the force reading `gear·J·qvel`
+/// under a velocity gain or bias, or held at its forcerange's bound, where
+/// the force itself has no derivative) carry terms through `∂J/∂q`; a fixed
+/// tendon's `J` is constant. With the spring or the damper disabled the
+/// step applies neither. The tendon's stiffness and damping positive and,
+/// set in code, negative. Hinge and ball roots, Euler and implicitfast
+/// (implicitspringdamper applies tendon springs and dampers in its implicit
+/// solve, so `qfrc_passive` holds neither there).
+#[test]
+fn smooth_pos_matches_finite_differences_through_tendons() {
+    let tendons = [
+        (
+            "spatial",
+            r#"<spatial name="t"{prm}><site site="w"/><site site="s3"/></spatial>"#,
+        ),
+        (
+            "fixed",
+            r#"<fixed name="t"{prm}><joint joint="j2" coef="1"/><joint joint="j3" coef="-0.5"/></fixed>"#,
+        ),
+    ];
+    let actuators = [
+        ("none", ""),
+        (
+            "motor",
+            r#"<motor name="a" tendon="t" gear="1.5" ctrlrange="-1 1"/>"#,
+        ),
+        (
+            "damper",
+            r#"<damper name="a" tendon="t" kv="2" ctrlrange="0 1"/>"#,
+        ),
+        (
+            "velocity",
+            r#"<velocity name="a" tendon="t" kv="2" gear="1.5"/>"#,
+        ),
+        (
+            "motor at its forcerange",
+            r#"<motor name="a" tendon="t" gear="1.5" forcelimited="true" forcerange="-0.2 0.2"/>"#,
+        ),
+    ];
+    let mut failures = Vec::new();
+    let mut cases = 0;
+    for root in ["hinge", "ball"] {
+        let joint = if root == "ball" {
+            r#"<joint name="j1" type="ball"/>"#
+        } else {
+            r#"<joint name="j1" type="hinge" axis="0 1 0" range="-2 2"/>"#
+        };
+        for integrator in ["Euler", "implicitfast"] {
+            for flags in [
+                "",
+                r#"<flag spring="disable"/>"#,
+                r#"<flag damper="disable"/>"#,
+            ] {
+                for (tendon, tendon_xml) in tendons {
+                    // "negated": the same parameters, negated in code after
+                    // loading (the loader refuses negative ones; MuJoCo
+                    // applies them, `engine_passive.c:453-473`).
+                    for prm in [
+                        "",
+                        r#" stiffness="3" springlength="0.3" damping="0.7""#,
+                        "negated",
+                    ] {
+                        for (actuator, actuator_xml) in actuators {
+                            let negated = prm == "negated";
+                            let tendon_xml = tendon_xml.replace(
+                                "{prm}",
+                                if negated {
+                                    r#" stiffness="3" springlength="0.3" damping="0.7""#
+                                } else {
+                                    prm
+                                },
+                            );
+                            let xml = format!(
+                                r#"<mujoco>
+  <compiler angle="radian"/>
+  <option timestep="0.01" integrator="{integrator}">{flags}</option>
+  <default><geom contype="0" conaffinity="0"/></default>
+  <worldbody>
+    <site name="w" pos="0.3 0.2 0.5"/>
+    <body name="b1" pos="0 0 1">
+      {joint}
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+      <body name="b2" pos="0.3 0 0">
+        <joint name="j2" type="hinge" axis="0 1 0" range="-2 2"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+        <body name="b3" pos="0.3 0 0">
+          <joint name="j3" type="slide" axis="1 0 0" range="-1 1"/>
+          <geom type="sphere" size="0.05" mass="0.5"/>
+          <site name="s3" pos="0 0 0.05"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>{tendon_xml}</tendon>
+  <actuator>{actuator_xml}</actuator>
+</mujoco>"#
+                            );
+                            let mut model = sim_mjcf::load_model(&xml).expect("load");
+                            if negated {
+                                model.tendon_stiffness[0] = -3.0;
+                                model.tendon_damping[0] = -0.7;
+                                model.compute_implicit_params();
+                            }
+                            let mut data = model.make_data();
+                            if root == "ball" {
+                                // 0.3 rad about (1, 1, 0)/√2.
+                                let (s, c) = (0.15_f64.sin(), 0.15_f64.cos());
+                                let k = s / 2.0_f64.sqrt();
+                                data.qpos.as_mut_slice()[..4].copy_from_slice(&[c, k, k, 0.0]);
+                                data.qvel.as_mut_slice()[..3].copy_from_slice(&[0.7, -0.4, 0.3]);
+                            } else {
+                                data.qpos[0] = 0.4;
+                                data.qvel[0] = 0.7;
+                            }
+                            data.qpos[model.jnt_qpos_adr[1]] = 0.5;
+                            data.qvel[model.jnt_dof_adr[1]] = 1.0;
+                            data.qpos[model.jnt_qpos_adr[2]] = 0.1;
+                            data.qvel[model.jnt_dof_adr[2]] = -0.5;
+                            if model.nu > 0 {
+                                data.ctrl[0] = 0.3;
+                            }
+                            data.forward(&model).expect("forward");
+                            let qacc = data.qacc.clone();
+                            let mut analytic = data.clone();
+                            mjd_smooth_pos(&model, &mut analytic);
+                            let nv = model.nv;
+                            let eps = 1e-6;
+                            let force = |sign: f64, c: usize| {
+                                let mut d = data.clone();
+                                let mut dq = nalgebra::DVector::zeros(nv);
+                                dq[c] = sign * eps;
+                                mj_integrate_pos_explicit(
+                                    &model,
+                                    &mut d.qpos,
+                                    &data.qpos,
+                                    &dq,
+                                    1.0,
+                                );
+                                d.forward(&model).expect("forward");
+                                &d.qfrc_passive + &d.qfrc_actuator - &d.qfrc_bias - &d.qM * &qacc
+                            };
+                            // `f64::max` drops a NaN, so non-finite entries are
+                            // counted apart.
+                            let mut worst = 0.0_f64;
+                            let mut non_finite = false;
+                            for c in 0..nv {
+                                let fd = (force(1.0, c) - force(-1.0, c)) / (2.0 * eps);
+                                for r in 0..nv {
+                                    let d = (analytic.qDeriv_pos[(r, c)] - fd[r]).abs();
+                                    non_finite |= !d.is_finite();
+                                    worst = worst.max(d);
+                                }
+                            }
+                            // The transition's A from the hybrid, against pure
+                            // finite differences of the step.
+                            let config = DerivativeConfig::default();
+                            let hybrid =
+                                mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+                            let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+                            let mut worst_a = 0.0_f64;
+                            for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+                                let excess = (h - f).abs() - 1e-5 * h.abs().max(f.abs());
+                                non_finite |= !excess.is_finite();
+                                worst_a = worst_a.max(excess);
+                            }
+                            cases += 1;
+                            if non_finite || worst >= 1e-6 || worst_a >= 1e-6 {
+                                failures.push(format!(
+                                    "{root} root, {integrator}, flags [{flags}], {tendon} tendon [{prm}], {actuator}: smooth_pos {worst:.3e}, transition A {worst_a:.3e}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 360);
+    assert!(
+        failures.is_empty(),
+        "{} of {cases} differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The step clamps the next activation to its actrange, so the activation
+/// column of `A` is 0 where the next activation, before the clamp, falls
+/// outside it: the hybrid decides that with the step's own formula, the
+/// exact filter for `filterexact`, `act + h·act_dot` for an integrator. In
+/// each case the other formula would land on the other side of the bound (the
+/// integrator's `dynprm` is the time constant the exact filter would read).
+#[test]
+fn hybrid_activation_column_follows_the_activation_clamp() {
+    for (dynamics, act, ctrl) in [
+        (r#"dyntype="filterexact" dynprm="0.05""#, 1.05, 0.79),
+        (r#"dyntype="integrator" dynprm="0.05""#, 0.999, 0.105),
+    ] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.01"/>
+              <worldbody>
+                <body name="b">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <general joint="j" {dynamics} actlimited="true" actrange="-1 1"/>
+              </actuator>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        data.qvel[0] = 1.0;
+        data.act[0] = act;
+        data.ctrl[0] = ctrl;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig::default();
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        assert!(
+            fd.A[(2, 2)].abs() < 1e-9,
+            "{dynamics}: fd A[2,2] {}",
+            fd.A[(2, 2)]
+        );
+        for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+            assert!((h - f).abs() < 1e-6, "{dynamics}: hybrid {h}, fd {f}");
+        }
+    }
+}
+
+/// Under implicitfast the step's `D` holds a muscle gain's slope along its
+/// force-velocity curve (`mjd_actuator_vel`), and that slope moves with the
+/// velocity, so the analytic velocity columns miss a term: a model with a
+/// muscle gain takes finite differences there, as under implicit. The sweep
+/// covers `<muscle>`; this is the Hill-type gain, which it does not build. The
+/// state sits at the optimal fiber length (gainprm[4]): below a normalized
+/// length of 0.5 the active force-length factor is 0 (`hill_active_fl`), and
+/// with it the gain's slope.
+#[test]
+fn hybrid_hill_muscle_gain_under_implicitfast_matches_finite_differences() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.01" integrator="implicitfast"/>
+          <worldbody>
+            <body name="b">
+              <joint name="j" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.02" mass="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general name="hill" joint="j" dyntype="hillmuscle"
+                     gainprm="0.75 1.05 500 200 1.0 0.0 10.0 0.0 35.0"
+                     dynprm="0.01 0.04 0.0"/>
+          </actuator>
+        </mujoco>"#,
+    )
+    .expect("load");
+    assert_eq!(model.actuator_gaintype[0], GainType::HillMuscle);
+    let mut data = model.make_data();
+    data.qpos[0] = 1.0;
+    data.qvel[0] = 2.0;
+    data.act[0] = 0.6;
+    data.ctrl[0] = 0.6;
+    data.forward(&model).expect("forward");
+    let config = DerivativeConfig::default();
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+    let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+    for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+        assert!(
+            (h - f).abs() <= 1e-6 + 1e-5 * h.abs().max(f.abs()),
+            "hybrid {h}, fd {f}"
+        );
+    }
+}
+
+/// With fluid density the implicit integrators' `D` holds the quadratic
+/// drag's slope (`mjd_passive_vel`), which moves with the velocity, so the
+/// analytic velocity columns miss a term in `∂D/∂v`: such a model takes pure
+/// finite differences under implicitfast and implicit. Under Euler and
+/// implicitspringdamper the step applies the drag without `D`, and the
+/// analytic columns agree.
+#[test]
+fn hybrid_takes_finite_differences_in_a_dense_fluid_under_the_implicit_integrators() {
+    for integrator in ["Euler", "implicitspringdamper", "implicitfast", "implicit"] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}" density="1000"/>
+              <worldbody>
+                <body name="b" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                  <body name="b2" pos="0.3 0 0">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+                  </body>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qpos[1] = 0.5;
+        data.qvel[0] = 0.7;
+        data.qvel[1] = 1.0;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig::default();
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+            assert!(
+                (h - f).abs() <= 1e-6 + 1e-5 * h.abs().max(f.abs()),
+                "{integrator}: hybrid {h}, fd {f}"
+            );
+        }
+    }
+}
+
+/// The transition matrices a column at a time, each column from its own copy
+/// of `data` (centered differences), so no column sees another. The fixture
+/// must be hinges and slides only: the position rows are plain differences.
+fn transition_a_column_at_a_time(
+    model: &Model,
+    data: &sim_core::Data,
+    eps: f64,
+) -> (nalgebra::DMatrix<f64>, nalgebra::DMatrix<f64>) {
+    assert_eq!(model.nq, model.nv, "hinges and slides only");
+    let (nv, na, nu) = (model.nv, model.na, model.nu);
+    let nx = 2 * nv + na;
+    let next = |nudge: &dyn Fn(&mut sim_core::Data)| -> nalgebra::DVector<f64> {
+        let mut d = data.clone();
+        nudge(&mut d);
+        d.step(model).expect("step");
+        let mut x = nalgebra::DVector::zeros(nx);
+        x.rows_mut(0, nv).copy_from(&(&d.qpos - &data.qpos));
+        x.rows_mut(nv, nv).copy_from(&d.qvel);
+        x.rows_mut(2 * nv, na).copy_from(&d.act);
+        x
+    };
+    let state = |i: usize, delta: f64| {
+        next(&move |d: &mut sim_core::Data| {
+            if i < nv {
+                d.qpos[i] += delta;
+            } else if i < 2 * nv {
+                d.qvel[i - nv] += delta;
+            } else {
+                d.act[i - 2 * nv] += delta;
+            }
+        })
+    };
+    let mut a = nalgebra::DMatrix::zeros(nx, nx);
+    for i in 0..nx {
+        a.set_column(i, &((state(i, eps) - state(i, -eps)) / (2.0 * eps)));
+    }
+    let mut b = nalgebra::DMatrix::zeros(nx, nu);
+    for j in 0..nu {
+        let plus = next(&move |d: &mut sim_core::Data| d.ctrl[j] += eps);
+        let minus = next(&move |d: &mut sim_core::Data| d.ctrl[j] -= eps);
+        b.set_column(j, &((plus - minus) / (2.0 * eps)));
+    }
+    (a, b)
+}
+
+/// Asserts that the finite-difference and hybrid transition matrices at `data`
+/// equal the ones taken a column at a time (to 1e-9 plus 1e-9 relative), and
+/// returns them (finite differences, hybrid).
+#[allow(non_snake_case)]
+fn assert_transition_matches_a_column_at_a_time(
+    what: &str,
+    model: &Model,
+    data: &sim_core::Data,
+) -> (sim_core::TransitionMatrices, sim_core::TransitionMatrices) {
+    let config = DerivativeConfig::default();
+    let (a, b) = transition_a_column_at_a_time(model, data, config.eps);
+    let fd = mjd_transition_fd(model, data, &config).expect("fd");
+    let hybrid = mjd_transition_hybrid(model, data, &config).expect("hybrid");
+    for (name, got, want) in [
+        ("fd A", &fd.A, &a),
+        ("fd B", &fd.B, &b),
+        ("hybrid A", &hybrid.A, &a),
+        ("hybrid B", &hybrid.B, &b),
+    ] {
+        for r in 0..want.nrows() {
+            for c in 0..want.ncols() {
+                let (g, w) = (got[(r, c)], want[(r, c)]);
+                assert!(
+                    (g - w).abs() <= 1e-9 + 1e-9 * w.abs(),
+                    "{what}: {name}[{r},{c}] {g}, a column at a time {w}"
+                );
+            }
+        }
+    }
+    (fd, hybrid)
+}
+
+/// Finite differences of the transition with sleep in play: each column starts
+/// from the state as the caller holds it, its sleep state included, so the
+/// matrices equal the ones taken a column at a time from fresh copies of the
+/// state (registry `D-FD-SLEEP`: MuJoCo's `mjd_transitionFD` carries one
+/// column's wake into the next). A nudge can wake a sleeping tree, and a step
+/// counts an awake tree down toward sleep, so both are checked: a tree asleep,
+/// and an awake tree at rest at each state of its countdown, the last
+/// included, from which the step puts it to sleep (unactuated: an actuator
+/// keeps a tree under the auto policy awake). In the tree asleep and at the
+/// countdown's last state the hybrid takes pure finite differences: its
+/// analytic columns know nothing of a tree waking or going to sleep.
+#[test]
+fn transition_derivatives_take_each_column_from_the_sleep_state() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.002" gravity="0 0 0"><flag sleep="enable"/></option>
+          <worldbody>
+            <body name="awake" pos="0 0 1">
+              <joint name="j0" type="hinge" axis="0 1 0" damping="0.3"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+            <body name="asleep" pos="1 0 1" sleep="init">
+              <joint name="j1" type="hinge" axis="0 1 0" damping="0.3"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor name="m1" joint="j1"/>
+          </actuator>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let check = |what: &str, data: &sim_core::Data| {
+        assert_transition_matches_a_column_at_a_time(what, &model, data);
+    };
+
+    // The second tree asleep, its motor driven.
+    let mut data = model.make_data();
+    data.qvel[0] = 0.5;
+    data.ctrl.fill(0.2);
+    data.forward(&model).expect("forward");
+    assert!(data.tree_asleep[0] < 0 && data.tree_asleep[1] >= 0);
+    check("a tree asleep", &data);
+
+    // Both awake, the first at rest: each state of its countdown, down to the
+    // last, from which the step puts it to sleep. `make_data`'s sleep pass
+    // (for the `sleep="init"` tree) has counted it down once; it starts over.
+    let mut data = model.make_data();
+    data.qvel[1] = 0.5;
+    data.tree_asleep[0] = -(1 + sim_core::MIN_AWAKE);
+    data.forward(&model).expect("forward");
+    let mut countdown = Vec::new();
+    while countdown.len() < 20 {
+        let t = data.tree_asleep[0];
+        assert!(data.tree_asleep[1] < 0, "{:?}", data.tree_asleep);
+        countdown.push(t);
+        check(&format!("countdown at {t}"), &data);
+        if t == -2 {
+            break;
+        }
+        data.step(&model).expect("step");
+        data.forward(&model).expect("forward");
+    }
+    let want: Vec<i32> = (-(1 + sim_core::MIN_AWAKE)..=-2).collect();
+    assert_eq!(countdown, want);
+}
+
+/// A passive plugin with one state entry, which each step adds the timestep
+/// times the first joint's position to, and whose force pushes that joint back
+/// by twice the state: an integral term, whose force depends on the state the
+/// steps before it left.
+struct IntegralTerm;
+
+impl sim_core::plugin::Plugin for IntegralTerm {
+    fn name(&self) -> &'static str {
+        "test.integral_term"
+    }
+
+    fn capabilities(&self) -> sim_core::plugin::PluginCapabilities {
+        sim_core::plugin::PluginCapabilityBit::Passive.into()
+    }
+
+    fn nstate(&self, _model: &Model, _instance: usize) -> usize {
+        1
+    }
+
+    fn compute(
+        &self,
+        model: &Model,
+        data: &mut sim_core::Data,
+        instance: usize,
+        _capability: sim_core::plugin::PluginCapabilityBit,
+    ) {
+        data.qfrc_passive[0] -= 2.0 * data.plugin_state[model.plugin_stateadr[instance]];
+    }
+
+    fn advance(&self, model: &Model, data: &mut sim_core::Data, instance: usize) {
+        data.plugin_state[model.plugin_stateadr[instance]] += model.timestep * data.qpos[0];
+    }
+}
+
+/// Finite differences of the transition start each step from the plugin state
+/// the caller holds, as MuJoCo's `mjd_stepFD` restores `mjSTATE_FULLPHYSICS`,
+/// which holds `mjSTATE_PLUGIN` (`engine_derivative_fd.c:307`,
+/// `engine_support.c:167`): the matrices equal the ones taken a column at a
+/// time from fresh copies of the state. Sleep is disabled; with it enabled
+/// each step starts from a copy of the whole `Data`.
+#[test]
+fn transition_derivatives_take_each_column_from_the_plugin_state() {
+    for integrator in ["Euler", "implicit"] {
+        check_transition_with_a_stateful_plugin(integrator);
+    }
+}
+
+fn check_transition_with_a_stateful_plugin(integrator: &str) {
+    let mut model = sim_mjcf::load_model(&format!(
+        r#"<mujoco>
+          <option timestep="0.01" integrator="{integrator}"/>
+          <worldbody>
+            <body pos="0 0 1">
+              <joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                    contype="0" conaffinity="0"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor name="m" joint="j"/>
+          </actuator>
+        </mujoco>"#
+    ))
+    .expect("load");
+    let plugin: std::sync::Arc<dyn sim_core::plugin::Plugin> = std::sync::Arc::new(IntegralTerm);
+    model.nplugin = 1;
+    model.npluginstate = 1;
+    model.plugin_capabilities.push(plugin.capabilities());
+    model
+        .plugin_needstage
+        .push(sim_core::plugin::PluginStage::Acc);
+    model.plugin_objects.push(plugin);
+    model.plugin_stateadr.push(0);
+    model.plugin_statenum.push(1);
+    model.plugin_name.push(None);
+    model.plugin_attradr.push(0);
+    model.plugin_attrnum.push(0);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.4;
+    data.ctrl[0] = 0.2;
+    data.plugin_state[0] = 0.3;
+    data.forward(&model).expect("forward");
+
+    // The fixture is the subject: a step advances the plugin's state, and
+    // that state moves the next step.
+    let mut stepped = data.clone();
+    stepped.step(&model).expect("step");
+    assert_eq!(stepped.plugin_state[0], 0.3 + 0.01 * stepped.qpos[0]);
+    let mut moved = data.clone();
+    moved.plugin_state[0] = 0.0;
+    moved.step(&model).expect("step");
+    assert_ne!(moved.qvel[0], stepped.qvel[0]);
+
+    assert_transition_matches_a_column_at_a_time(integrator, &model, &data);
+}
+
+/// The hybrid's analytic velocity columns take flex edge damping, whose
+/// `−b · JᵀJ` `mjd_passive_vel` adds (MuJoCo `engine_derivative.c:1737-1758`):
+/// a four-vertex cable with edge damping 3 and a three-vertex one with 7,
+/// equality constraints disabled (our `<flex>` adds edge equalities, whose
+/// rows send the hybrid to pure finite differences), under each integrator,
+/// and with dampers disabled, where the
+/// passive pass applies none. Its position columns are finite differences (a
+/// flex model's always are).
+#[test]
+fn hybrid_velocity_columns_take_flex_edge_damping() {
+    for (integrator, damper) in [
+        ("Euler", "enable"),
+        ("implicitfast", "enable"),
+        ("implicit", "enable"),
+        ("implicitspringdamper", "enable"),
+        ("implicitfast", "disable"),
+    ] {
+        let what = format!("{integrator}, damper {damper}");
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="{integrator}">
+                <flag equality="disable" damper="{damper}"/>
+              </option>
+              <deformable>
+                <flex name="c" dim="1" mass="0.4">
+                  <vertex pos="0 0 1  0.1 0 1  0.2 0 1  0.3 0 1"/>
+                  <element data="0 1  1 2  2 3"/>
+                  <edge damping="3"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+                <flex name="d" dim="1" mass="0.3">
+                  <vertex pos="0 0 2  0.1 0 2  0.2 0 2"/>
+                  <element data="0 1  1 2"/>
+                  <edge damping="7"/>
+                  <contact contype="0" conaffinity="0"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        ))
+        .expect("load");
+        assert_eq!((model.nv, model.nflex, model.nflexedge), (21, 2, 5));
+        let mut data = model.make_data();
+        for (i, v) in data.qvel.iter_mut().enumerate() {
+            *v = [0.4, -0.7, 0.5, -0.2, 0.9, 0.3][i % 6] * (1.0 + 0.1 * i as f64);
+        }
+        data.forward(&model).expect("forward");
+        assert!(data.efc_type.is_empty());
+        let (fd, hybrid) = assert_transition_matches_a_column_at_a_time(&what, &model, &data);
+        assert_ne!(hybrid.A, fd.A, "{what}: the analytic columns ran");
+    }
+}
+
+/// The hybrid's position columns are analytic under a `joint` transmission on
+/// a ball or free joint, whose moment is its gear whatever `q`, and finite
+/// differences under `jointinparent`, whose moment the joint's rotation turns
+/// (a term the analytic columns leave out, AD-1). A position actuator on a
+/// rotated, moving box; each agrees with pure finite differences to the
+/// sweep's tolerance (1e-6 plus 1e-5 relative).
+#[test]
+fn hybrid_position_columns_under_ball_and_free_joint_transmissions() {
+    for (root, gear) in [
+        ("ball", "1.5 0.2 -0.3"),
+        ("free", "1.5 0.2 -0.3 0.4 -0.5 0.6"),
+    ] {
+        for trn in ["joint", "jointinparent"] {
+            let what = format!("{root}, {trn}");
+            let joint = if root == "ball" {
+                r#"<joint name="j" type="ball"/>"#
+            } else {
+                r#"<freejoint name="j"/>"#
+            };
+            let model = sim_mjcf::load_model(&format!(
+                r#"<mujoco>
+                  <option timestep="0.002" gravity="0 0 0"/>
+                  <worldbody>
+                    <body name="box" pos="0 0 1">
+                      {joint}
+                      <geom type="box" size="0.1 0.2 0.3" mass="1"/>
+                    </body>
+                  </worldbody>
+                  <actuator>
+                    <position {trn}="j" gear="{gear}" kp="20"/>
+                  </actuator>
+                </mujoco>"#
+            ))
+            .expect("load");
+            let mut data = model.make_data();
+            let (q, v) = if root == "ball" { (0, 0) } else { (3, 3) };
+            data.qpos.as_mut_slice()[q..q + 4].copy_from_slice(&[
+                0.988_771_077_936_042_4,
+                0.105_668_716_839_935_62,
+                0.105_668_716_839_935_62,
+                0.0,
+            ]);
+            data.qvel.as_mut_slice()[v..v + 3].copy_from_slice(&[0.7, -0.4, 0.3]);
+            data.ctrl[0] = 0.3;
+            data.forward(&model).expect("forward");
+            assert!(data.efc_type.is_empty(), "{what}: no constraint rows");
+            let config = DerivativeConfig::default();
+            let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+            let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+            for (name, h, f) in [("A", &hybrid.A, &fd.A), ("B", &hybrid.B, &fd.B)] {
+                for r in 0..f.nrows() {
+                    for c in 0..f.ncols() {
+                        let (x, y) = (h[(r, c)], f[(r, c)]);
+                        assert!(
+                            (x - y).abs() <= 1e-6 + 1e-5 * x.abs().max(y.abs()),
+                            "{what}: {name}[{r},{c}] hybrid {x}, fd {y}"
+                        );
+                    }
+                }
+            }
+            let position_columns_analytic = (0..fd.A.nrows()).any(|r| {
+                (0..model.nv).any(|c| hybrid.A[(r, c)].to_bits() != fd.A[(r, c)].to_bits())
+            });
+            assert_eq!(
+                position_columns_analytic,
+                trn == "joint",
+                "{what}: the position columns analytic"
+            );
+        }
+    }
+    // A tendon transmission and `jointinparent` on a hinge have no moment row
+    // that moves with q: their position columns are analytic too.
+    for act in [
+        r#"<position tendon="t" kp="20"/>"#,
+        r#"<position jointinparent="h" kp="20"/>"#,
+    ] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" gravity="0 0 0"/>
+              <worldbody>
+                <body name="arm" pos="0 0 1">
+                  <joint name="h" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                </body>
+              </worldbody>
+              <tendon>
+                <fixed name="t"><joint joint="h" coef="1.5"/></fixed>
+              </tendon>
+              <actuator>{act}</actuator>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.ctrl[0] = 0.3;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig::default();
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        for (name, h, f) in [("A", &hybrid.A, &fd.A), ("B", &hybrid.B, &fd.B)] {
+            for (x, y) in h.iter().zip(f.iter()) {
+                assert!(
+                    (x - y).abs() <= 1e-6 + 1e-5 * x.abs().max(y.abs()),
+                    "{act}: {name} hybrid {x}, fd {y}"
+                );
+            }
+        }
+        assert!(
+            (0..fd.A.nrows()).any(|r| hybrid.A[(r, 0)].to_bits() != fd.A[(r, 0)].to_bits()),
+            "{act}: the position column analytic"
+        );
+    }
+}
+
+/// A plugin with one capability, passive or actuator, whose force pushes the
+/// first joint back by three times its velocity.
+struct VelocityDrag(sim_core::plugin::PluginCapabilityBit);
+
+impl sim_core::plugin::Plugin for VelocityDrag {
+    fn name(&self) -> &'static str {
+        "test.velocity_drag"
+    }
+
+    fn capabilities(&self) -> sim_core::plugin::PluginCapabilities {
+        self.0.into()
+    }
+
+    fn compute(
+        &self,
+        _model: &Model,
+        data: &mut sim_core::Data,
+        _instance: usize,
+        capability: sim_core::plugin::PluginCapabilityBit,
+    ) {
+        let drag = -3.0 * data.qvel[0];
+        if capability == sim_core::plugin::PluginCapabilityBit::Passive {
+            data.qfrc_passive[0] += drag;
+        } else {
+            data.qfrc_actuator[0] += drag;
+        }
+    }
+}
+
+/// The transition derivative takes pure finite differences for a model with
+/// a force its analytic columns cannot see, as MuJoCo's (`mjd_transitionFD`)
+/// always does: a passive callback, a control callback, a user gain, bias or
+/// dynamics (set in code: the loader refuses `user`), and a passive or an
+/// actuator plugin, each reading the state. `mjd_transition` and the hybrid then equal pure
+/// finite differences bit for bit; without any of them the fixture takes
+/// the analytic columns.
+#[test]
+fn transition_derivatives_see_callbacks_and_plugins() {
+    fn add_plugin(m: &mut Model, capability: sim_core::plugin::PluginCapabilityBit) {
+        let plugin: std::sync::Arc<dyn sim_core::plugin::Plugin> =
+            std::sync::Arc::new(VelocityDrag(capability));
+        m.nplugin = 1;
+        m.plugin_capabilities.push(plugin.capabilities());
+        m.plugin_needstage.push(sim_core::plugin::PluginStage::Acc);
+        m.plugin_objects.push(plugin);
+        m.plugin_stateadr.push(0);
+        m.plugin_statenum.push(0);
+        m.plugin_name.push(None);
+        m.plugin_attradr.push(0);
+        m.plugin_attrnum.push(0);
+    }
+    let cases: [(&str, fn(&mut Model)); 8] = [
+        ("nothing added", |_| {}),
+        ("passive callback", |m| {
+            m.set_passive_callback(|_, d| d.qfrc_passive[0] -= 3.0 * d.qvel[0]);
+        }),
+        ("control callback", |m| {
+            m.set_control_callback(|_, d| d.ctrl[0] = -3.0 * d.qpos[0]);
+        }),
+        ("user gain", |m| {
+            m.actuator_gaintype[0] = GainType::User;
+            m.set_act_gain_callback(|_, d, i| 1.0 - 2.0 * d.actuator_velocity[i]);
+        }),
+        ("user bias", |m| {
+            m.actuator_biastype[0] = BiasType::User;
+            m.set_act_bias_callback(|_, d, i| -3.0 * d.actuator_length[i]);
+        }),
+        ("user dynamics", |m| {
+            m.actuator_dyntype[0] = ActuatorDynamics::User;
+            m.set_act_dyn_callback(|_, d, i| d.ctrl[i] - d.actuator_velocity[i]);
+        }),
+        ("passive plugin", |m| {
+            add_plugin(m, sim_core::plugin::PluginCapabilityBit::Passive);
+        }),
+        ("actuator plugin", |m| {
+            add_plugin(m, sim_core::plugin::PluginCapabilityBit::Actuator);
+        }),
+    ];
+    let mut failures = Vec::new();
+    for (what, add) in cases {
+        let mut model = sim_mjcf::load_model(
+            r#"<mujoco>
+              <option timestep="0.01"/>
+              <worldbody>
+                <body pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"
+                        contype="0" conaffinity="0"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <general joint="j" dyntype="filter" dynprm="1"
+                         gaintype="affine" gainprm="1 0 0"
+                         biastype="affine" biasprm="0 0 0"/>
+              </actuator>
+            </mujoco>"#,
+        )
+        .expect("load");
+        add(&mut model);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.ctrl[0] = 0.3;
+        data.act[0] = 0.2;
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig::default();
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        let dispatched = sim_core::mjd_transition(&model, &data, &config).expect("transition");
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let pure = |t: &sim_core::TransitionMatrices| t.A == fd.A && t.B == fd.B;
+        if what == "nothing added" {
+            assert!(!pure(&dispatched), "{what}: the analytic columns ran");
+        } else if !pure(&dispatched) || !pure(&hybrid) {
+            failures.push(format!(
+                "{what}: mjd_transition pure FD {}, the hybrid {}",
+                pure(&dispatched),
+                pure(&hybrid)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The hybrid under Euler with one dof damped negatively beside a positive
+/// one: its velocity columns solve with `M + h·D`, every entry included, as
+/// the step does (`euler_damps_every_awake_dof_as_mujoco_3_5_0`).
+#[test]
+fn hybrid_takes_damping_of_both_signs_under_euler() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.01" integrator="Euler"/>
+          <worldbody>
+            <body>
+              <joint type="hinge" axis="0 1 0" damping="0.5"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+              <body pos="0 0 -1">
+                <joint type="hinge" axis="0 1 0" damping="-0.3"/>
+                <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos.copy_from_slice(&[0.3, -0.2]);
+    data.qvel.copy_from_slice(&[0.7, -0.4]);
+    data.forward(&model).expect("forward");
+    let (fd, hybrid) = assert_transition_matches_a_column_at_a_time("mixed damping", &model, &data);
+    assert_ne!(hybrid.A, fd.A, "the analytic columns ran");
+}
+
+/// The hybrid with a spatial tendon of negative stiffness and damping (set in
+/// code; the loader refuses them, MuJoCo applies them) agrees with pure
+/// finite differences under Euler (analytic columns, the tendon's force
+/// through its moving Jacobian), implicitfast (its damping moves with q, so
+/// the position columns are finite differences) and implicitspringdamper
+/// (whose tendon terms send it to finite differences whole).
+#[test]
+fn hybrid_takes_negative_tendon_stiffness_and_damping() {
+    for integrator in ["Euler", "implicitfast", "implicitspringdamper"] {
+        let mut model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+  <compiler angle="radian"/>
+  <option timestep="0.01" integrator="{integrator}"/>
+  <default><geom contype="0" conaffinity="0"/></default>
+  <worldbody>
+    <site name="w" pos="0.3 0.2 0.5"/>
+    <body name="b1" pos="0 0 1">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+      <body name="b2" pos="0.3 0 0">
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.7"/>
+        <site name="s2" pos="0.3 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="3" springlength="0.3" damping="0.7">
+      <site site="w"/><site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>"#
+        ))
+        .expect("load");
+        model.tendon_stiffness[0] = -3.0;
+        model.tendon_damping[0] = -0.7;
+        model.compute_implicit_params();
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&[0.4, 0.5]);
+        data.qvel.copy_from_slice(&[0.7, 1.0]);
+        data.forward(&model).expect("forward");
+        assert!(data.efc_type.is_empty(), "{integrator}: no constraint rows");
+        let config = DerivativeConfig::default();
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
+            assert!(
+                (h - f).abs() <= 1e-6 + 1e-5 * h.abs().max(f.abs()),
+                "{integrator}: hybrid A {h}, finite differences {f}"
+            );
+        }
+    }
+}
+
+/// An applied wrench (`xfrc_applied`) adds `Jᵀw`, which moves with q: the
+/// hybrid takes its position columns by finite differences then, and agrees
+/// with them (its velocity columns stay analytic). A damped hinge with a force
+/// on its body, under Euler, implicitfast and implicitspringdamper; a force on
+/// the world body, which nothing applies, leaves the hybrid as with none.
+#[test]
+fn hybrid_takes_an_applied_wrench() {
+    for integrator in ["Euler", "implicitfast", "implicitspringdamper"] {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.01" integrator="{integrator}"/>
+              <worldbody>
+                <body name="arm" pos="0 0 1">
+                  <joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qvel[0] = 0.7;
+        data.xfrc_applied[1].force = nalgebra::Vector3::new(3.0, 0.0, 5.0);
+        data.forward(&model).expect("forward");
+        let (fd, hybrid) = assert_transition_matches_a_column_at_a_time(integrator, &model, &data);
+        assert_ne!(hybrid.A, fd.A, "{integrator}: the analytic columns ran");
+
+        let config = DerivativeConfig::default();
+        data.xfrc_applied[1] = sim_core::BodyWrench::default();
+        data.forward(&model).expect("forward");
+        let none = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        data.xfrc_applied[0].force = nalgebra::Vector3::new(3.0, 0.0, 5.0);
+        data.forward(&model).expect("forward");
+        let world = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        assert_eq!(world.A, none.A, "{integrator}: a force on the world body");
+    }
+}
+
+/// `mjd_smooth_pos` takes a joint transmission on a ball or free joint as its
+/// length moves with `q`: a ball joint's length is its rotation vector along
+/// the gear, whose Jacobian is the gear through the log map (the moment only
+/// at the identity); a free joint's length is 0. Checked against a central
+/// difference of the forces over the configuration, for a position actuator
+/// under a `joint` transmission (under `jointinparent` the moment also turns
+/// with `q`, a term `mjd_smooth_pos` leaves out, AD-1).
+#[test]
+fn smooth_pos_takes_ball_and_free_joint_transmissions() {
+    let mut failures = Vec::new();
+    for (root, gear, quat) in [
+        ("ball", "1.5 0.2 -0.3", [1.0, 0.0, 0.0, 0.0]),
+        (
+            "ball",
+            "1.5 0.2 -0.3",
+            [
+                0.988_771_077_936_042_4,
+                0.105_668_716_839_935_62,
+                0.105_668_716_839_935_62,
+                0.0,
+            ],
+        ),
+        (
+            "ball",
+            "1.5 0.2 -0.3",
+            [
+                -0.416_146_836_547_142_4,
+                0.396_849_932_157_833_9,
+                -0.793_699_864_315_667_7,
+                0.198_424_966_078_916_94,
+            ],
+        ),
+        (
+            "free",
+            "1.5 0.2 -0.3 0.4 -0.5 0.6",
+            [
+                0.988_771_077_936_042_4,
+                0.105_668_716_839_935_62,
+                0.105_668_716_839_935_62,
+                0.0,
+            ],
+        ),
+    ] {
+        let joint = if root == "ball" {
+            r#"<joint name="j" type="ball"/>"#
+        } else {
+            r#"<freejoint name="j"/>"#
+        };
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002" gravity="0 0 0"/>
+              <worldbody>
+                <body name="box" pos="0 0 1">
+                  {joint}
+                  <geom type="box" size="0.1 0.2 0.3" mass="1"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <position joint="j" gear="{gear}" kp="20"/>
+              </actuator>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        let q = if root == "ball" { 0 } else { 3 };
+        data.qpos.as_mut_slice()[q..q + 4].copy_from_slice(&quat);
+        data.ctrl[0] = 0.3;
+        data.forward(&model).expect("forward");
+        let qacc = data.qacc.clone();
+        let mut analytic = data.clone();
+        mjd_smooth_pos(&model, &mut analytic);
+        let nv = model.nv;
+        let eps = 1e-6;
+        let force = |sign: f64, c: usize| {
+            let mut d = data.clone();
+            let mut dq = nalgebra::DVector::zeros(nv);
+            dq[c] = sign * eps;
+            mj_integrate_pos_explicit(&model, &mut d.qpos, &data.qpos, &dq, 1.0);
+            d.forward(&model).expect("forward");
+            &d.qfrc_passive + &d.qfrc_actuator - &d.qfrc_bias - &d.qM * &qacc
+        };
+        // `f64::max` drops a NaN, so non-finite entries are counted apart.
+        let mut worst = 0.0_f64;
+        let mut non_finite = false;
+        for c in 0..nv {
+            let fd = (force(1.0, c) - force(-1.0, c)) / (2.0 * eps);
+            for r in 0..nv {
+                let d = (analytic.qDeriv_pos[(r, c)] - fd[r]).abs();
+                non_finite |= !d.is_finite();
+                worst = worst.max(d);
+            }
+        }
+        if non_finite || worst >= 1e-6 {
+            failures.push(format!(
+                "{root} at {quat:?}: worst {worst:e}, non-finite {non_finite}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -7,7 +7,7 @@
 //! - Fluid derivative functions
 //! - Muscle derivative helpers
 
-use super::fd::{apply_state_perturbation, extract_state, in_ctrl_range, mjd_transition_fd};
+use super::fd::{extract_state, in_ctrl_range, mjd_transition_fd, perturb_ctrl, perturb_state};
 use super::integration::{compute_integration_derivatives, mjd_sub_quat, post_step_qvel};
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::constraint::impedance::MJ_MINVAL;
@@ -16,11 +16,12 @@ use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::forward::{
-    MjStage, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl,
-    hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_gain_length,
+    MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
+    hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_gain_length,
     muscle_gain_velocity, norm3,
 };
 use crate::integrate::eulerdamp_applies;
+use crate::integrate::implicit::isd_damping;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
@@ -28,12 +29,14 @@ use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse,
     mj_solve_sparse_batch,
 };
+use crate::plugin::PluginCapabilityBit;
+use crate::quat::{qpos_quat, quat_to_vel};
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::validation::is_bad;
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_ACTUATION, DISABLE_CLAMPCTRL,
-    DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model, StepError,
-    TendonType,
+    DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, GainType, Integrator, MjJointType, Model,
+    StepError, TendonType,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 
@@ -47,6 +50,10 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 ///   qfrc_passive\[i\] -= damping\[i\] · qvel\[i\]
 ///   ⇒ ∂/∂qvel\[i\] = −damping\[i\]  (diagonal)
 ///
+/// Flex edge damping, per non-rigid edge `e` of a flex with damping `b`:
+///   qfrc_passive += J_eᵀ · (−b · J_e · qvel)
+///   ⇒ ∂/∂qvel = −b · J_eᵀ · J_e   (over the edge's Jacobian, `flexedge_J`)
+///
 /// Tendon damping (explicit mode only):
 ///   qfrc_passive += J^T · (−b · J · qvel)
 ///   ⇒ ∂/∂qvel = −b · J^T · J   (rank-1 update per tendon)
@@ -59,20 +66,47 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3};
 /// that merges `jnt_damping[jnt_id]` for Hinge/Slide joints and
 /// `dof_damping[dof_idx]` for Ball/Free joints.
 ///
+/// # Flags
+///
+/// Nothing is added with springs and dampers both disabled (the passive pass
+/// then applies no force, fluid included), and no damping with dampers
+/// disabled, as MuJoCo's. The implicit integrators build their `D` from
+/// this, so the flags reach the step too.
+///
 /// # Tendon damping
 ///
 /// Tendon damping derivatives (−b · J^T · J) are included for all integrators.
 /// In `ImplicitSpringDamper` mode, tendon damping is handled implicitly via
 /// non-diagonal D matrices (DT-35), but the velocity derivative is still
 /// physically present and must be captured here.
+///
+/// # Sparsity
+///
+/// MuJoCo's `qDeriv` keeps a tendon's or a flex edge's `−b · JᵀJ` only
+/// between dofs on one branch of the tree (`addJTBJSparse`, `addJTBJ`), and
+/// its implicit steps use that. This keeps all of it, which the hybrid's
+/// analytic velocity columns read
+/// (`hybrid_velocity_columns_take_flex_edge_damping`); restricting the
+/// implicit steps' `D` is the spec book's P30.
 #[allow(non_snake_case)]
 pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
+    // As MuJoCo's (`engine_derivative.c:1692-1727`) and the passive pass:
+    // nothing with springs and dampers both disabled, no damping with
+    // dampers disabled.
+    if disabled(model, DISABLE_SPRING) && disabled(model, DISABLE_DAMPER) {
+        return;
+    }
+
     // §40c: Sleep filtering — compute once, used by per-DOF and tendon loops.
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     let use_dof_ind = sleep_enabled && data.nv_awake < model.nv;
 
     // 1. Fluid derivatives (has its own internal body-level sleep filtering)
     mjd_fluid_vel(model, data);
+
+    if disabled(model, DISABLE_DAMPER) {
+        return;
+    }
 
     // 2. Per-DOF damping: diagonal entries.
     // §40c: Use dof_awake_ind indirection to skip sleeping DOFs.
@@ -86,7 +120,30 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
         data.qDeriv[(i, i)] += -model.implicit_damping[i];
     }
 
-    // 3. Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
+    // 3. Flex edge damping: −b · JᵀJ over each non-rigid edge's Jacobian,
+    // after the dofs and before the tendons, as MuJoCo's
+    // (`engine_derivative.c:1737-1758`).
+    for f in 0..model.nflex {
+        let neg_b = -model.flex_edgedamping[f];
+        if model.flex_rigid[f] || neg_b == 0.0 {
+            continue;
+        }
+        for e in model.flex_edgeadr[f]..model.flex_edgeadr[f] + model.flex_edgenum[f] {
+            if model.flexedge_rigid[e] {
+                continue;
+            }
+            let adr = model.flexedge_J_rowadr[e];
+            let row = adr..adr + model.flexedge_J_rownnz[e];
+            for a in row.clone() {
+                for c in row.clone() {
+                    let (k, p) = (model.flexedge_J_colind[a], model.flexedge_J_colind[c]);
+                    data.qDeriv[(k, p)] += data.flexedge_J[a] * neg_b * data.flexedge_J[c];
+                }
+            }
+        }
+    }
+
+    // 4. Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
     // DT-35: This runs for ALL integrators. In ImplicitSpringDamper mode the
     // tendon damping forces are folded into the implicit K/D matrices (not
     // skipped), so the velocity derivative is always physically present.
@@ -96,7 +153,7 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
             continue;
         }
         let b = model.tendon_damping[t];
-        if b <= 0.0 {
+        if b == 0.0 {
             continue;
         }
         let j = &data.ten_J[t];
@@ -112,6 +169,51 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
             }
         }
     }
+}
+
+/// Whether actuator `i`'s moment row moves with `q`: a site, body or
+/// slider-crank transmission, or `jointinparent` on a ball or free joint, whose
+/// moment the joint's rotation turns. A `joint` transmission's moment is its
+/// gear on any joint (`ball_free_transmission`); on a ball joint its length
+/// moves with `q`, which `mjd_actuator_pos` takes (`ball_length_jacobian`).
+fn moment_moves_with_q(model: &Model, i: usize) -> bool {
+    acts_through_moment(model, i) && model.actuator_trntype[i] != ActuatorTransmission::Joint
+}
+
+/// Whether the ImplicitFast step's `D` moves with `q`: it holds a spatial
+/// tendon's damping and the velocity terms of the actuators on one, times
+/// `JᵀJ`, and a spatial tendon's `J` moves with `q`. The analytic position
+/// columns hold no `∂D/∂q`, so they are taken by finite differences then.
+fn implicitfast_damping_moves_with_q(model: &Model) -> bool {
+    if model.integrator != Integrator::ImplicitFast {
+        return false;
+    }
+    let spatial = |t: usize| t < model.ntendon && model.tendon_type[t] == TendonType::Spatial;
+    let damped_tendon = (0..model.ntendon).any(|t| spatial(t) && model.tendon_damping[t] != 0.0);
+    let velocity_actuator = (0..model.nu).any(|i| {
+        model.actuator_trntype[i] == ActuatorTransmission::Tendon
+            && spatial(model.actuator_trnid[i][0])
+            && (matches!(
+                model.actuator_gaintype[i],
+                GainType::Muscle | GainType::HillMuscle
+            ) || (model.actuator_gaintype[i] == GainType::Affine
+                && model.actuator_gainprm[i][2] != 0.0)
+                || (model.actuator_biastype[i] == BiasType::Affine
+                    && model.actuator_biasprm[i][2] != 0.0))
+    });
+    damped_tendon || velocity_actuator
+}
+
+/// Whether actuator `i`'s gain has a velocity term the implicit integrators
+/// put into the step's `D`, times the actuator's input: the step's `D` then
+/// depends on the control or activation, which the analytic control and
+/// activation columns leave out.
+fn input_scales_implicit_damping(model: &Model, i: usize) -> bool {
+    matches!(
+        model.integrator,
+        Integrator::ImplicitFast | Integrator::Implicit
+    ) && model.actuator_gaintype[i] == GainType::Affine
+        && model.actuator_gainprm[i][2] != 0.0
 }
 
 /// Whether MuJoCo's actuator derivatives leave actuator `i` out
@@ -151,6 +253,98 @@ fn actuator_input(model: &Model, data: &Data, i: usize) -> f64 {
 // Step 5 — mjd_actuator_vel: Actuator force velocity derivatives
 // ============================================================================
 
+/// `∂force/∂V` of actuator `i` at `input`, as `mjd_actuator_vel` takes it:
+/// the gain's velocity term times the input, where that term is nonzero,
+/// plus the bias's. `None` for a Millard muscle or a user gain or bias, whose
+/// derivatives are deferred.
+fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Option<f64> {
+    let length = data.actuator_length[i];
+    let velocity = data.actuator_velocity[i];
+    // ∂gain/∂V for this actuator
+    let dgain_dv = match model.actuator_gaintype[i] {
+        GainType::Fixed => 0.0,
+        GainType::Affine => model.actuator_gainprm[i][2],
+        GainType::Muscle => {
+            // gain = -F0 * FL(L_norm) * FV(V_norm)
+            // ∂gain/∂V = -F0 * FL(L_norm) * dFV/dV_norm * dV_norm/dV
+            let prm = &model.actuator_gainprm[i];
+            let lengthrange = model.actuator_lengthrange[i];
+            let f0 = prm[2];
+
+            let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
+            let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
+            let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
+
+            let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
+            let dfv_dnv = muscle_gain_velocity_deriv(norm_vel, prm[8]);
+            let dnv_dv = 1.0 / (l0 * prm[6]).max(1e-10);
+
+            -f0 * fl * dfv_dnv * dnv_dv
+        }
+        GainType::HillMuscle => {
+            // gain = -F0 * FL(L_norm) * FV(V_norm) * cos(α)
+            // ∂gain/∂V = -F0 * FL * dFV/dV_norm * dV_norm/dV * cos(α)
+            let prm = &model.actuator_gainprm[i];
+            let f0 = prm[2];
+            let optimal_fiber_length = prm[4];
+            let tendon_slack_length = prm[5];
+            let max_contraction_velocity = prm[6];
+            let pennation_angle = prm[7];
+
+            let cos_penn = pennation_angle.cos().max(1e-10);
+            let fiber_length = (length - tendon_slack_length) / cos_penn;
+            let norm_len = fiber_length / optimal_fiber_length.max(1e-10);
+            let norm_vel =
+                velocity / (cos_penn * optimal_fiber_length * max_contraction_velocity).max(1e-10);
+
+            let fl = hill_active_fl(norm_len);
+            let dfv_dnv = hill_force_velocity_deriv(norm_vel);
+            // dV_norm/dV: V_fiber = V/cos(α), V_norm = V_fiber/(L_opt*vmax)
+            // so dV_norm/dV = 1/(cos(α) * L_opt * vmax)
+            let dnv_dv =
+                1.0 / (cos_penn * optimal_fiber_length * max_contraction_velocity).max(1e-10);
+
+            -f0 * fl * dfv_dnv * dnv_dv * cos_penn
+        }
+        // MillardMuscle: the analytic Bézier FV-curve velocity-derivative (and the
+        // β·v̄ damping derivative) is deferred — omit this actuator from the implicit
+        // velocity-Jacobian (explicit integration is unaffected). See recon R-implicit-deriv.
+        GainType::MillardMuscle | GainType::User => return None,
+    };
+
+    // ∂bias/∂V for this actuator
+    // Muscle/HillMuscle bias (passive force) depends on length only, not velocity → 0.
+    let dbias_dv = match model.actuator_biastype[i] {
+        BiasType::Affine => model.actuator_biasprm[i][2],
+        BiasType::None | BiasType::Muscle | BiasType::HillMuscle => 0.0,
+        // MillardMuscle bias has a velocity-dependent damping term; its analytic
+        // derivative is deferred (skip — see the gain arm above).
+        BiasType::MillardMuscle | BiasType::User => return None,
+    };
+
+    // The gain term only when its velocity part is nonzero, as MuJoCo's:
+    // `mjd_actuator_vel` reads a bad control raw, and 0 * NaN would reach
+    // qDeriv.
+    let mut dforce_dv = dbias_dv;
+    if dgain_dv != 0.0 {
+        dforce_dv += dgain_dv * input;
+    }
+    Some(dforce_dv)
+}
+
+/// Actuator `i`'s input as the forward pass took it: its activation, or a
+/// direct actuator's control clamped to its ctrlrange, 0 for every actuator
+/// when one control is bad.
+fn forward_pass_input(model: &Model, data: &Data, i: usize, bad: bool) -> f64 {
+    if model.actuator_dyntype[i] != ActuatorDynamics::None {
+        actuator_input(model, data, i)
+    } else if bad {
+        0.0
+    } else {
+        actuator_ctrl_input(model, data, i)
+    }
+}
+
 /// Compute ∂(qfrc_actuator)/∂qvel and add to data.qDeriv.
 ///
 /// For each actuator:
@@ -158,9 +352,9 @@ fn actuator_input(model: &Model, data: &Data, i: usize) -> f64 {
 ///   ∂force/∂V = (∂gain/∂V) · input + (∂bias/∂V)
 ///
 /// The velocity V maps to qvel through the transmission:
-///   Joint:  `V = gear · qvel[dof_adr]`
+///   Joint on a hinge or slide: `V = gear · qvel[dof_adr]`
 ///   Tendon: V = gear · J · qvel
-///   Site:   V = moment^T · qvel
+///   Site, body, slider-crank, joint on a ball or free joint: V = moment^T · qvel
 ///
 /// Combined: ∂qfrc/∂qvel += moment · ∂force/∂V · moment^T
 ///
@@ -175,78 +369,9 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
             continue;
         }
         let input = actuator_input(model, data, i);
-
-        let length = data.actuator_length[i];
-        let velocity = data.actuator_velocity[i];
-
-        // ∂gain/∂V for this actuator
-        let dgain_dv = match model.actuator_gaintype[i] {
-            GainType::Fixed => 0.0,
-            GainType::Affine => model.actuator_gainprm[i][2],
-            GainType::Muscle => {
-                // gain = -F0 * FL(L_norm) * FV(V_norm)
-                // ∂gain/∂V = -F0 * FL(L_norm) * dFV/dV_norm * dV_norm/dV
-                let prm = &model.actuator_gainprm[i];
-                let lengthrange = model.actuator_lengthrange[i];
-                let f0 = prm[2];
-
-                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
-                let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
-
-                let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
-                let dfv_dnv = muscle_gain_velocity_deriv(norm_vel, prm[8]);
-                let dnv_dv = 1.0 / (l0 * prm[6]).max(1e-10);
-
-                -f0 * fl * dfv_dnv * dnv_dv
-            }
-            GainType::HillMuscle => {
-                // gain = -F0 * FL(L_norm) * FV(V_norm) * cos(α)
-                // ∂gain/∂V = -F0 * FL * dFV/dV_norm * dV_norm/dV * cos(α)
-                let prm = &model.actuator_gainprm[i];
-                let f0 = prm[2];
-                let optimal_fiber_length = prm[4];
-                let tendon_slack_length = prm[5];
-                let max_contraction_velocity = prm[6];
-                let pennation_angle = prm[7];
-
-                let cos_penn = pennation_angle.cos().max(1e-10);
-                let fiber_length = (length - tendon_slack_length) / cos_penn;
-                let norm_len = fiber_length / optimal_fiber_length.max(1e-10);
-                let norm_vel = velocity
-                    / (cos_penn * optimal_fiber_length * max_contraction_velocity).max(1e-10);
-
-                let fl = hill_active_fl(norm_len);
-                let dfv_dnv = hill_force_velocity_deriv(norm_vel);
-                // dV_norm/dV: V_fiber = V/cos(α), V_norm = V_fiber/(L_opt*vmax)
-                // so dV_norm/dV = 1/(cos(α) * L_opt * vmax)
-                let dnv_dv =
-                    1.0 / (cos_penn * optimal_fiber_length * max_contraction_velocity).max(1e-10);
-
-                -f0 * fl * dfv_dnv * dnv_dv * cos_penn
-            }
-            // MillardMuscle: the analytic Bézier FV-curve velocity-derivative (and the
-            // β·v̄ damping derivative) is deferred — omit this actuator from the implicit
-            // velocity-Jacobian (explicit integration is unaffected). See recon R-implicit-deriv.
-            GainType::MillardMuscle | GainType::User => continue,
+        let Some(dforce_dv) = actuator_dforce_dv(model, data, i, input) else {
+            continue;
         };
-
-        // ∂bias/∂V for this actuator
-        // Muscle/HillMuscle bias (passive force) depends on length only, not velocity → 0.
-        let dbias_dv = match model.actuator_biastype[i] {
-            BiasType::Affine => model.actuator_biasprm[i][2],
-            BiasType::None | BiasType::Muscle | BiasType::HillMuscle => 0.0,
-            // MillardMuscle bias has a velocity-dependent damping term; its analytic
-            // derivative is deferred (skip — see the gain arm above).
-            BiasType::MillardMuscle | BiasType::User => continue,
-        };
-
-        // The gain term only when its velocity part is nonzero, as MuJoCo's: a
-        // bad control is read raw here, and 0 * NaN would reach qDeriv.
-        let mut dforce_dv = dbias_dv;
-        if dgain_dv != 0.0 {
-            dforce_dv += dgain_dv * input;
-        }
         if dforce_dv.abs() < 1e-30 {
             continue;
         }
@@ -255,7 +380,9 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         let trnid = model.actuator_trnid[i][0];
 
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                if !acts_through_moment(model, i) =>
+            {
                 let dof_adr = model.jnt_dof_adr[trnid];
                 // moment = gear, ∂V/∂qvel[dof] = gear
                 // ∂qfrc[dof]/∂qvel[dof] += gear² · ∂force/∂V
@@ -278,7 +405,9 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
                     }
                 }
             }
-            ActuatorTransmission::Site
+            ActuatorTransmission::Joint
+            | ActuatorTransmission::JointInParent
+            | ActuatorTransmission::Site
             | ActuatorTransmission::Body
             | ActuatorTransmission::SliderCrank => {
                 let moment = &data.actuator_moment[i];
@@ -732,6 +861,9 @@ pub fn mjd_smooth_vel(model: &Model, data: &mut Data) {
 ///
 /// `qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias`
 ///
+/// It leaves out an applied wrench's `Jᵀw` (`xfrc_applied`), which
+/// `Data::qfrc_smooth` carries: the hybrid takes finite differences for it.
+///
 /// Populates position derivative storage with three analytical contributions:
 ///   1. ∂qfrc_passive/∂qpos via spring chain rules (joint + tendon)
 ///   2. ∂qfrc_actuator/∂qpos via gain/bias length derivatives
@@ -757,11 +889,17 @@ pub fn mjd_smooth_pos(model: &Model, data: &mut Data) {
     mjd_rne_pos(model, data);
 }
 
-/// Compute ∂(qfrc_passive)/∂qpos and add to data.qDeriv_pos.
+/// Compute ∂/∂qpos of the passive forces the step applies (`qfrc_passive`,
+/// and under `ImplicitSpringDamper` the joint springs its implicit solve
+/// applies) and add to data.qDeriv_pos.
 ///
 /// Components:
 /// 1. Joint spring stiffness: −k for hinge/slide (diagonal), −k·∂subquat/∂q for ball/free
-/// 2. Tendon spring stiffness: −k · J^T · J
+///    (none under `ImplicitSpringDamper`, whose step applies no ball or free
+///    joint spring)
+/// 2. Tendon spring and damper: −k · J^T · J, and for a spatial tendon the
+///    terms through its configuration-dependent J (unlike a joint's, a
+///    tendon damper's force −b·J·qvel depends on q)
 ///
 /// Fluid, gravcomp, and flex passive forces are NOT included (deferred — AD-1).
 #[allow(non_snake_case)]
@@ -772,11 +910,16 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
     }
 
     // 1. Joint spring stiffness: ∂qfrc_spring/∂qpos
+    let implicit_spring_damper = model.integrator == Integrator::ImplicitSpringDamper;
     if model.disableflags & DISABLE_SPRING == 0 {
         for jnt_id in 0..model.njnt {
             let dof_adr = model.jnt_dof_adr[jnt_id];
             let stiffness = model.jnt_stiffness[jnt_id];
-            if stiffness == 0.0 {
+            let multi_dof = matches!(
+                model.jnt_type[jnt_id],
+                MjJointType::Ball | MjJointType::Free
+            );
+            if stiffness == 0.0 || (implicit_spring_damper && multi_dof) {
                 continue;
             }
 
@@ -841,21 +984,27 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // 2. Tendon spring stiffness: ∂(Jᵀ · k · (bound − length))/∂qpos.
-    //    qfrc = Jᵀ·f with f = k·(bound − length); the product rule gives
-    //      ∂qfrc/∂q = Jᵀ·∂f/∂q + (∂Jᵀ/∂q)·f = −k·Jᵀ·J + (∂Jᵀ/∂q)·f.
-    //    The first term (constant-J part) is exact below. The second is zero
-    //    for fixed tendons (constant J) but NONZERO for spatial tendons whose
-    //    routing geometry changes with q — previously dropped, leaving the
-    //    analytical columns silently wrong for an active spatial length-spring.
-    //    Added below via a targeted FD of `ten_J` (a closed-form tendon Hessian
-    //    over arbitrary site/geom/pulley wrap paths is intractable; FD of the
-    //    tendon Jacobian matches the codebase pattern for hard geometric
-    //    Jacobian-derivatives and is exact to FD precision).
-    let mut needs_jac_cross = false;
+    // 2. Tendon spring and damper, as the passive pass applies them: the
+    //    spring outside its deadband (not with DISABLE_SPRING), the damper
+    //    −b·V (not with DISABLE_DAMPER). qfrc = Jᵀ·f gives
+    //      ∂qfrc/∂q = Jᵀ·∂f/∂q + (∂Jᵀ/∂q)·f,
+    //    with ∂f/∂q = −k·J for the spring and −b·(∂J/∂q)·qvel for the damper.
+    //    The spring's −k·Jᵀ·J is below; the terms through ∂J/∂q, zero for a
+    //    fixed tendon (constant J), are added by
+    //    `add_spatial_tendon_jacobian_term` (a closed-form tendon Hessian over
+    //    arbitrary site/geom/pulley wrap paths is intractable).
+    let has_spring = model.disableflags & DISABLE_SPRING == 0;
+    let has_damper = model.disableflags & DISABLE_DAMPER == 0;
+    let mut tendon_force = vec![0.0; model.ntendon];
+    let mut tendon_dforce_dv = vec![0.0; model.ntendon];
     for t in 0..model.ntendon {
+        let damping = model.tendon_damping[t];
+        if has_damper && damping != 0.0 {
+            tendon_force[t] -= damping * data.ten_velocity[t];
+            tendon_dforce_dv[t] -= damping;
+        }
         let stiffness = model.tendon_stiffness[t];
-        if stiffness == 0.0 {
+        if !has_spring || stiffness == 0.0 {
             continue;
         }
 
@@ -863,13 +1012,12 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
         let [lower, upper] = model.tendon_lengthspring[t];
 
         // Only active when outside deadband
-        let active = (length < lower) || (length > upper);
-        if !active {
+        if length > upper {
+            tendon_force[t] += stiffness * (upper - length);
+        } else if length < lower {
+            tendon_force[t] += stiffness * (lower - length);
+        } else {
             continue;
-        }
-
-        if model.tendon_type[t] == TendonType::Spatial {
-            needs_jac_cross = true;
         }
 
         let j = &data.ten_J[t];
@@ -887,43 +1035,67 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // Cross-term (∂Jᵀ/∂q)·f for active spatial-tendon length springs. Central-FD
-    // of `ten_J` w.r.t. each tangent DOF (recomputing tendon routing via
-    // `mj_fwd_position`), contracted with the spring force scalar `f`.
-    if needs_jac_cross {
-        const EPS: f64 = 1e-7;
-        let qpos0 = data.qpos.clone();
-        let mut scratch = data.clone();
-        let mut dir = DVector::zeros(nv);
-        for c in 0..nv {
-            dir[c] = 1.0;
-            mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, EPS);
-            mj_fwd_position(model, &mut scratch);
-            let j_plus: Vec<DVector<f64>> = (0..model.ntendon)
-                .map(|t| scratch.ten_J[t].clone())
-                .collect();
-            mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, -EPS);
-            mj_fwd_position(model, &mut scratch);
-            dir[c] = 0.0;
+    add_spatial_tendon_jacobian_term(model, data, &tendon_force, &tendon_dforce_dv);
+}
 
-            for (t, jp_t) in j_plus.iter().enumerate() {
-                if model.tendon_type[t] != TendonType::Spatial || model.tendon_stiffness[t] == 0.0 {
-                    continue;
-                }
-                let length = data.ten_length[t];
-                let [lower, upper] = model.tendon_lengthspring[t];
-                let f = if length > upper {
-                    model.tendon_stiffness[t] * (upper - length)
-                } else if length < lower {
-                    model.tendon_stiffness[t] * (lower - length)
-                } else {
-                    continue;
-                };
-                let jm_t = &scratch.ten_J[t];
-                for r in 0..nv {
-                    let djr = (jp_t[r] - jm_t[r]) / (2.0 * EPS);
-                    if djr != 0.0 {
+/// Add to `data.qDeriv_pos` the terms of `Σₜ Jₜᵀ·fₜ` that come through a
+/// spatial tendon's configuration-dependent `Jₜ` (a fixed tendon's is
+/// constant): `(∂Jₜᵀ/∂q)·fₜ` for the force `fₜ` in `tendon_force`, and
+/// `Jₜᵀ·gₜ·(∂Jₜ/∂q)·qvel` for a force that reads the tendon velocity
+/// `Jₜ·qvel`, with `gₜ = ∂fₜ/∂v` in `tendon_dforce_dv`. `∂J/∂q` is a central
+/// difference of `ten_J` along each tangent DOF, the routing recomputed by
+/// `mj_fwd_position`.
+fn add_spatial_tendon_jacobian_term(
+    model: &Model,
+    data: &mut Data,
+    tendon_force: &[f64],
+    tendon_dforce_dv: &[f64],
+) {
+    const EPS: f64 = 1e-7;
+    let acts = |t: usize| {
+        model.tendon_type[t] == TendonType::Spatial
+            && (tendon_force[t] != 0.0 || tendon_dforce_dv[t] != 0.0)
+    };
+    if !(0..model.ntendon).any(acts) {
+        return;
+    }
+    let nv = model.nv;
+    let qpos0 = data.qpos.clone();
+    let mut scratch = data.clone();
+    let mut dir = DVector::zeros(nv);
+    for c in 0..nv {
+        dir[c] = 1.0;
+        mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, EPS);
+        mj_fwd_position(model, &mut scratch);
+        let j_plus: Vec<DVector<f64>> = (0..model.ntendon)
+            .map(|t| scratch.ten_J[t].clone())
+            .collect();
+        mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos0, &dir, -EPS);
+        mj_fwd_position(model, &mut scratch);
+        dir[c] = 0.0;
+
+        for (t, jp_t) in j_plus.iter().enumerate() {
+            if !acts(t) {
+                continue;
+            }
+            let (f, g) = (tendon_force[t], tendon_dforce_dv[t]);
+            let jm_t = &scratch.ten_J[t];
+            // ∂(tendon velocity)/∂q_c = (∂J/∂q_c)·qvel.
+            let mut dvel = 0.0;
+            for r in 0..nv {
+                let djr = (jp_t[r] - jm_t[r]) / (2.0 * EPS);
+                if djr != 0.0 {
+                    if f != 0.0 {
                         data.qDeriv_pos[(r, c)] += f * djr;
+                    }
+                    dvel += djr * data.qvel[r];
+                }
+            }
+            if g != 0.0 && dvel != 0.0 {
+                for r in 0..nv {
+                    let jr = data.ten_J[t][r];
+                    if jr != 0.0 {
+                        data.qDeriv_pos[(r, c)] += jr * g * dvel;
                     }
                 }
             }
@@ -982,6 +1154,29 @@ fn hill_active_fl_deriv(norm_len: f64) -> f64 {
     fl * (-2.0 * x / w)
 }
 
+/// `∂(actuator_length)/∂q` of actuator `i`'s joint transmission on ball joint
+/// `jid`, over the joint's 3 tangent dofs. The length is the joint's rotation
+/// vector `φ` along the gear's first three entries (under `jointinparent` too:
+/// a rotation leaves its own axis fixed), and moving `q` by `δ` along its
+/// tangent moves `φ` by `J_r⁻¹(φ)·δ`, so the Jacobian is
+/// `J_r⁻¹(φ)ᵀ·g = g − ½ φ×g + c·φ×(φ×g)`,
+/// `c = 1/θ² − (1 + cos θ)/(2θ sin θ)` (`1/12 + θ²/720` near `θ = 0`).
+fn ball_length_jacobian(model: &Model, data: &Data, i: usize, jid: usize) -> [f64; 3] {
+    let quat = qpos_quat(&data.qpos, model.jnt_qpos_adr[jid]);
+    let phi = Vector3::from(quat_to_vel(&quat, 1.0));
+    let gear = &model.actuator_gear[i];
+    let g = Vector3::new(gear[0], gear[1], gear[2]);
+    let theta = phi.norm();
+    let c = if theta < 1e-4 {
+        1.0 / 12.0 + theta * theta / 720.0
+    } else {
+        1.0 / (theta * theta) - (1.0 + theta.cos()) / (2.0 * theta * theta.sin())
+    };
+    let phi_g = phi.cross(&g);
+    let jac = g - 0.5 * phi_g + c * phi.cross(&phi_g);
+    [jac.x, jac.y, jac.z]
+}
+
 /// Compute ∂(qfrc_actuator)/∂qpos and add to data.qDeriv_pos.
 ///
 /// For each actuator:
@@ -990,8 +1185,14 @@ fn hill_active_fl_deriv(norm_len: f64) -> f64 {
 ///
 /// where ∂L/∂qpos = moment (the moment arm IS the length Jacobian).
 ///
-/// Only the force chain-rule term is computed — the moment-arm cross-term
-/// `(∂moment/∂qpos) · force` is deferred for non-Joint transmissions (AD-1).
+/// A joint transmission on a ball joint takes its length's Jacobian from
+/// [`ball_length_jacobian`], and one on a free joint (length 0) adds nothing.
+///
+/// The moment-arm term `(∂moment/∂qpos) · force` is added for a spatial
+/// tendon transmission; for site, body and slider-crank transmissions and a
+/// `jointinparent` transmission on a ball or free joint it is not, and the
+/// hybrid transition takes finite differences for the position columns of a
+/// model with one of those (`moment_moves_with_q`; AD-1).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
     // The actuators `mjd_actuator_vel` leaves out, against MuJoCo's transition
@@ -1004,13 +1205,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
         if actuator_left_out(model, data, i) {
             continue;
         }
-        let input = if model.actuator_dyntype[i] != ActuatorDynamics::None {
-            actuator_input(model, data, i)
-        } else if bad {
-            0.0
-        } else {
-            actuator_ctrl_input(model, data, i)
-        };
+        let input = forward_pass_input(model, data, i, bad);
         let length = data.actuator_length[i];
 
         // Compute ∂gain/∂L
@@ -1082,7 +1277,9 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
         let trnid = model.actuator_trnid[i][0];
 
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                if !acts_through_moment(model, i) =>
+            {
                 let dof_adr = model.jnt_dof_adr[trnid];
                 data.qDeriv_pos[(dof_adr, dof_adr)] += gear * gear * dforce_dl;
             }
@@ -1098,6 +1295,23 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
                             continue;
                         }
                         data.qDeriv_pos[(r, c)] += scale * j[r] * j[c];
+                    }
+                }
+            }
+            // A ball joint's length is its rotation vector along the gear,
+            // whose Jacobian is not the moment (`ball_length_jacobian`); a free
+            // joint's length is 0. Under `jointinparent` the moment also turns
+            // with q, a term left out as for a site (AD-1).
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                if model.jnt_type[trnid] == MjJointType::Ball {
+                    let dl_dq = ball_length_jacobian(model, data, i, trnid);
+                    let dof_adr = model.jnt_dof_adr[trnid];
+                    let moment = &data.actuator_moment[i];
+                    for r in 0..3 {
+                        let m = moment[dof_adr + r];
+                        for (c, dl) in dl_dq.iter().enumerate() {
+                            data.qDeriv_pos[(dof_adr + r, dof_adr + c)] += dforce_dl * m * dl;
+                        }
                     }
                 }
             }
@@ -1120,6 +1334,31 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
             }
         }
     }
+
+    // A spatial tendon's moment arm moves with q: the force the pass applied
+    // (`gear · actuator_force`, 0 for an actuator it skipped, the bound for
+    // one its forcerange holds, which `actuator_left_out` leaves out of the
+    // force's own derivative only) adds `(∂Jᵀ/∂q) · gear · force`, and a
+    // force that reads the actuator velocity `gear · J · qvel` adds
+    // `J · gear² · ∂force/∂V · (∂J/∂q) · qvel`.
+    let mut tendon_force = vec![0.0; model.ntendon];
+    let mut tendon_dforce_dv = vec![0.0; model.ntendon];
+    for i in 0..model.nu {
+        let t = model.actuator_trnid[i][0];
+        if model.actuator_trntype[i] != ActuatorTransmission::Tendon || t >= model.ntendon {
+            continue;
+        }
+        let gear = model.actuator_gear[i][0];
+        tendon_force[t] += gear * data.actuator_force[i];
+        if actuator_left_out(model, data, i) {
+            continue;
+        }
+        let input = forward_pass_input(model, data, i, bad);
+        if let Some(dforce_dv) = actuator_dforce_dv(model, data, i, input) {
+            tendon_dforce_dv[t] += gear * gear * dforce_dv;
+        }
+    }
+    add_spatial_tendon_jacobian_term(model, data, &tendon_force, &tendon_dforce_dv);
 }
 
 // ============================================================================
@@ -2351,12 +2590,12 @@ pub fn mass_directional_derivative(
 // Step 9 — Phase D: mjd_transition_hybrid (hybrid analytical+FD)
 // ============================================================================
 
-/// Whether the implicit-Coriolis integrators' analytic transition derivative is
+/// Whether the implicit integrators' analytic transition derivative is
 /// INCOMPLETE for this model and must fall back to exact finite difference.
 ///
-/// The analytic paths for `ImplicitSpringDamper` and full `Implicit` are exact for
-/// articulated joint chains (the common case — joint K/D + rigid-body Coriolis), but
-/// each omits one class of term that only some models exercise:
+/// The analytic paths for `ImplicitSpringDamper`, `ImplicitFast` and full
+/// `Implicit` are exact for articulated joint chains (the common case — joint
+/// K/D + rigid-body Coriolis), but omit terms that only some models exercise:
 ///
 /// - **ImplicitSpringDamper with an active tendon spring/damper.** DT-35 folds the
 ///   tendon `h²·k·JᵀJ + h·b·JᵀJ` into `M_impl`'s LHS, but the analytic velocity block
@@ -2364,43 +2603,79 @@ pub fn mass_directional_derivative(
 ///   `−b·JᵀJ` in `qDeriv` is left uncancelled — and the position block omits the
 ///   tendon `JᵀJ` q-dependence of `M_impl`. (ISD's own `M_impl` is otherwise
 ///   v-independent, so joint-only chains need no correction.)
-/// - **Full Implicit with a Muscle/HillMuscle gain actuator.** The velocity-block
-///   second-order term `T = rne_vel(qacc_implicit)` captures only the Coriolis part of
-///   `∂D/∂v`; a force–velocity-curve gain is v-dependent and contributes a
-///   `∂D_actuator/∂v` that `T` misses. (Affine gain is constant in v ⇒ fine.)
+/// - **ImplicitFast or full Implicit with a Muscle/HillMuscle gain actuator.** The
+///   step's `D` holds the gain's slope along its force–velocity curve, which moves
+///   with v, so `∂v⁺/∂v` carries a `∂D_actuator/∂v` term. ImplicitFast's velocity
+///   block has no second-order term at all; full Implicit's
+///   `T = rne_vel(qacc_implicit)` captures only the Coriolis part of `∂D/∂v`.
+///   (Affine gain is constant in v ⇒ fine.)
+/// - **ImplicitFast or full Implicit with fluid density.** `D` holds the fluid
+///   drag's slope (`mjd_fluid_vel`), and with a `density` the drag can be
+///   quadratic in v, so its slope moves with v: the same missing `∂D/∂v` term.
+///   (Viscosity alone is linear in v ⇒ fine.)
 ///
-/// FD is exact in both cases. Euler and ImplicitFast never hit these terms, so
-/// they always return `false` here. This is the single source of truth shared by
+/// FD is exact in each case. Euler never hits these terms, so it always returns
+/// `false` here. This is the single source of truth shared by
 /// `mjd_transition`'s `can_analytical` gate and the defensive FD return below, so a
 /// direct `mjd_transition_hybrid` caller is guarded identically.
 pub fn implicit_analytic_incomplete(model: &Model) -> bool {
     match model.integrator {
         Integrator::ImplicitSpringDamper => (0..model.ntendon)
-            .any(|t| model.tendon_stiffness[t] > 0.0 || model.tendon_damping[t] > 0.0),
-        Integrator::Implicit => model
-            .actuator_gaintype
-            .iter()
-            .any(|g| matches!(g, GainType::Muscle | GainType::HillMuscle)),
+            .any(|t| model.tendon_stiffness[t] != 0.0 || model.tendon_damping[t] != 0.0),
+        Integrator::ImplicitFast | Integrator::Implicit => {
+            model.density != 0.0
+                || model
+                    .actuator_gaintype
+                    .iter()
+                    .any(|g| matches!(g, GainType::Muscle | GainType::HillMuscle))
+        }
         _ => false,
     }
 }
 
+/// Whether the model holds a force the analytic columns cannot see: a
+/// passive or control callback, a user gain, bias or dynamics, or a plugin
+/// that computes passive or actuator forces. Their derivatives are unknown
+/// here, so `mjd_transition` and the hybrid take pure finite differences,
+/// as MuJoCo's transition derivative always does (`mjd_transitionFD`;
+/// `transition_derivatives_see_callbacks_and_plugins`).
+pub fn forces_outside_the_analytic_columns(model: &Model) -> bool {
+    model.cb_passive.is_some()
+        || model.cb_control.is_some()
+        || model.actuator_gaintype.contains(&GainType::User)
+        || model.actuator_biastype.contains(&BiasType::User)
+        || model.actuator_dyntype.contains(&ActuatorDynamics::User)
+        || model.plugin_capabilities.iter().any(|c| {
+            c.contains(PluginCapabilityBit::Passive) || c.contains(PluginCapabilityBit::Actuator)
+        })
+}
+
+/// Whether a step from `data` can change a tree's sleep state: sleep is
+/// enabled and a tree is asleep (a nudge to it can wake it) or on the last
+/// step of its countdown (`mj_sleep` counts a resting tree up to −1 and puts
+/// it to sleep there, so from −2 one step does both).
+fn sleep_can_change(model: &Model, data: &Data) -> bool {
+    model.enableflags & ENABLE_SLEEP != 0
+        && data.tree_asleep[..model.ntree].iter().any(|&t| t >= -2)
+}
+
 /// Compute hybrid analytical+FD transition derivatives.
 ///
-/// Uses analytical `qDeriv` for velocity columns of A, FD for position columns.
+/// Takes columns analytically where it can and the rest by finite differences
+/// (`use_analytical_pos`, `act_fd_indices` and `ctrl_fd_indices` in its body
+/// decide which).
 /// It does not read `config.use_analytical`; [`mjd_transition`](super::mjd_transition)
 /// chooses between this and pure FD.
 ///
 /// It returns pure FD instead when `data` has an active constraint row (a
 /// contact, a limit, an equality, friction loss): the analytic columns hold no
 /// constraint-force derivative. It reads the constraint rows the caller's
-/// last forward pass left in `data`, as it reads the mass matrix.
-///
-/// With sleep enabled, a step that puts a tree to sleep runs the forward pass
-/// again inside the step (see [`Data::integrate`]): pure finite differences
-/// step, so their sensor columns read that pass's sensors; the sensor-only
-/// columns here run forward passes without stepping and do not. The two can
-/// differ on that step (by reading the code; not measured).
+/// last forward pass left in `data`, as it reads the mass matrix. And when a
+/// step from `data` can wake a tree or put one to sleep (a tree asleep, or one
+/// on the last step of its countdown), which the analytic columns do not see;
+/// when an actuator's control is bad or outside a ctrlrange the step clamps it
+/// to; and for the models `implicit_analytic_incomplete` and
+/// `forces_outside_the_analytic_columns` name.
 ///
 /// See module-level docs for the four-phase strategy.
 ///
@@ -2428,10 +2703,16 @@ pub fn mjd_transition_hybrid(
         config.eps
     );
 
-    // Defensive FD fallback for the implicit-Coriolis integrators on models whose
-    // analytic path is incomplete (tendon-K/D under ISD, Muscle/HillMuscle gain under
-    // Implicit). `mjd_transition` already gates these to FD; this guards a direct call.
+    // Defensive FD fallback for the implicit integrators on models whose analytic
+    // path is incomplete (tendon-K/D under ISD; a Muscle/HillMuscle gain or fluid
+    // density under ImplicitFast or Implicit). `mjd_transition` already gates
+    // these to FD; this guards a direct call.
     if implicit_analytic_incomplete(model) {
+        return mjd_transition_fd(model, data, config);
+    }
+    // A callback's, a user actuator term's or a plugin's force has no
+    // derivative in the analytic columns; pure FD sees it.
+    if forces_outside_the_analytic_columns(model) {
         return mjd_transition_fd(model, data, config);
     }
     // The analytic velocity columns hold no derivative of a constraint force,
@@ -2439,6 +2720,12 @@ pub fn mjd_transition_hybrid(
     // or tendon limit, an equality, friction loss) they are wrong; pure FD is
     // exact there (hybrid_takes_finite_differences_under_an_active_constraint).
     if !data.efc_type.is_empty() {
+        return mjd_transition_fd(model, data, config);
+    }
+    // The analytic columns know nothing of a tree waking or going to sleep;
+    // pure FD takes each column from the state's own sleep state
+    // (transition_derivatives_take_each_column_from_the_sleep_state).
+    if sleep_can_change(model, data) {
         return mjd_transition_fd(model, data, config);
     }
     // The analytic columns read each control as written. Where the forward
@@ -2476,7 +2763,7 @@ pub fn mjd_transition_hybrid(
     //     no DOF is damped, `M_impl == M` and the bare-`M` fast path is kept, so the
     //     undamped result is byte-for-byte unchanged.
     let eulerdamp_active =
-        matches!(model.integrator, Integrator::Euler) && eulerdamp_applies(model);
+        matches!(model.integrator, Integrator::Euler) && eulerdamp_applies(model, data);
     let m_impl_euler = if eulerdamp_active {
         let mut mi = data_work.qM.clone();
         for i in 0..nv {
@@ -2534,14 +2821,17 @@ pub fn mjd_transition_hybrid(
             // and since the joint damper is moved to the LHS, `∂f_ext/∂v = qDeriv + D`
             // (qDeriv carries the −D damper diagonal that cancels back out). M_impl has no
             // v-dependence, so there is no second-order term.
-            let d = &model.implicit_damping;
             let mut dvdv = DMatrix::zeros(nv, nv);
             for j in 0..nv {
                 let mut rhs = DVector::zeros(nv);
                 for i in 0..nv {
                     rhs[i] = data_work.qM[(i, j)]
                         + h * data_work.qDeriv[(i, j)]
-                        + if i == j { h * d[i] } else { 0.0 };
+                        + if i == j {
+                            h * isd_damping(model, i)
+                        } else {
+                            0.0
+                        };
                 }
                 cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs);
                 dvdv.column_mut(j).copy_from(&rhs);
@@ -2561,7 +2851,8 @@ pub fn mjd_transition_hybrid(
             // implicit-Coriolis correction the bare closed form drops (the stiffness/damping
             // harness exposed it: off-diagonal `∂vᵢ⁺/∂vⱼ`, growing with chain length;
             // 1-DOF exact). Let `T[:,j] = (∂D/∂vⱼ)·qacc`. Only D's Coriolis part is
-            // v-dependent, and the Coriolis velocity-Jacobian is LINEAR in its evaluation
+            // v-dependent here (`implicit_analytic_incomplete` sends a model with
+            // another to FD), and the Coriolis velocity-Jacobian is LINEAR in its evaluation
             // velocity with a SYMMETRIC second derivative (mixed partials commute), so
             // `(∂D/∂vⱼ)·qacc` equals that same Jacobian evaluated at `qvel := qacc` — i.e.
             // `T = mjd_rne_vel(qacc)` (one extra analytic call; no second-derivative tensor).
@@ -2641,10 +2932,12 @@ pub fn mjd_transition_hybrid(
                 | ActuatorDynamics::MillardMuscle
         );
         // Finite differences too for an actuator MuJoCo's derivatives leave
-        // out, and under `actearly` (its force reads the next activation).
+        // out, under `actearly` (its force reads the next activation), and
+        // where the implicit step's damping reads the activation.
         let fd_column = is_muscle
             || model.actuator_actearly[actuator_idx]
-            || actuator_left_out(model, data, actuator_idx);
+            || actuator_left_out(model, data, actuator_idx)
+            || input_scales_implicit_damping(model, actuator_idx);
 
         for k in 0..act_num {
             let j = act_adr + k;
@@ -2679,18 +2972,17 @@ pub fn mjd_transition_hybrid(
             };
 
             // ∂qfrc/∂act = moment · gain — dispatch by transmission type.
-            // Joint/Tendon transmissions don't populate data.actuator_moment.
+            // A joint transmission on a hinge or slide and a tendon one leave
+            // data.actuator_moment at zero; their moment is built here.
             let mut dvdact = DVector::zeros(nv);
             let gear = model.actuator_gear[actuator_idx][0];
             let trnid = model.actuator_trnid[actuator_idx][0];
             match model.actuator_trntype[actuator_idx] {
-                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                    if !acts_through_moment(model, actuator_idx) =>
+                {
                     if trnid < model.njnt {
-                        let dof_adr = model.jnt_dof_adr[trnid];
-                        let nv_jnt = model.jnt_type[trnid].nv();
-                        for k in 0..nv_jnt {
-                            dvdact[dof_adr + k] = h * gain * gear;
-                        }
+                        dvdact[model.jnt_dof_adr[trnid]] = h * gain * gear;
                     }
                 }
                 ActuatorTransmission::Tendon => {
@@ -2701,7 +2993,9 @@ pub fn mjd_transition_hybrid(
                         }
                     }
                 }
-                ActuatorTransmission::Site
+                ActuatorTransmission::Joint
+                | ActuatorTransmission::JointInParent
+                | ActuatorTransmission::Site
                 | ActuatorTransmission::Body
                 | ActuatorTransmission::SliderCrank => {
                     let moment = &data.actuator_moment[actuator_idx];
@@ -2711,22 +3005,26 @@ pub fn mjd_transition_hybrid(
                 }
             }
 
-            // Solve: M⁻¹ or (M−hD)⁻¹ or (M+hD+h²K)⁻¹
+            // Solve with the step's matrix: M, or M + h·D under eulerdamp
+            // (Euler); M − h·D (implicitfast, implicit); M + h·D + h²·K
+            // (implicitspringdamper).
             match model.integrator {
+                // Under eulerdamp the step solves with M + h·D, as the
+                // velocity columns above.
                 Integrator::Euler => {
-                    // NOTE: under eulerdamp this bare-M solve is the same M_impl gap fixed
-                    // for the A matrix (dvdv/dvdq); the activation columns (na>0 non-muscle
-                    // stateful actuators) are a narrow, separately-gated path — deferred to
-                    // a follow-on with an actuated-damped fixture. See PR scope note.
-                    let (rowadr, rownnz, colind) = model.qld_csr();
-                    mj_solve_sparse(
-                        rowadr,
-                        rownnz,
-                        colind,
-                        &data_work.qLD_data,
-                        &data_work.qLD_diag_inv,
-                        &mut dvdact,
-                    );
+                    if let Some(ref mi) = m_impl_euler {
+                        cholesky_solve_in_place(mi, &mut dvdact);
+                    } else {
+                        let (rowadr, rownnz, colind) = model.qld_csr();
+                        mj_solve_sparse(
+                            rowadr,
+                            rownnz,
+                            colind,
+                            &data_work.qLD_data,
+                            &data_work.qLD_diag_inv,
+                            &mut dvdact,
+                        );
+                    }
                 }
                 Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdact);
@@ -2761,14 +3059,17 @@ pub fn mjd_transition_hybrid(
         && model.viscosity == 0.0
         && !model.body_gravcomp.iter().any(|g| *g != 0.0)
         && model.nflex == 0
-        && !model.actuator_trntype.iter().any(|t| {
-            matches!(
-                t,
-                ActuatorTransmission::Site
-                    | ActuatorTransmission::Body
-                    | ActuatorTransmission::SliderCrank
-            )
-        })
+        // An applied wrench's `Jᵀw` moves with q, a term the analytic columns
+        // leave out (`hybrid_takes_an_applied_wrench`); the world body's is
+        // never applied.
+        && data
+            .xfrc_applied
+            .iter()
+            .skip(1)
+            .all(crate::types::BodyWrench::is_zero)
+        // A moment row that moves with q adds a moment-arm term the analytic
+        // columns leave out (AD-1).
+        && !(0..model.nu).any(|i| moment_moves_with_q(model, i))
         && !model.actuator_biastype.iter().any(|t| {
             // MillardMuscle's analytic position derivative is deferred (R-implicit-deriv).
             // The public `mjd_transition` already routes Millard models to full FD; this
@@ -2788,15 +3089,9 @@ pub fn mjd_transition_hybrid(
         // Coriolis term IS handled there), FD position columns (exact). ISD is
         // unaffected — its `M_impl` is v-independent, so its position columns are
         // already analytic-exact.
-        && !matches!(model.integrator, Integrator::Implicit);
+        && !matches!(model.integrator, Integrator::Implicit)
+        && !implicitfast_damping_moves_with_q(model);
 
-    // Save nominal state for FD perturbation loop (needed by activation/B matrix FD too)
-    let qpos_0 = data.qpos.clone();
-    let qvel_0 = data.qvel.clone();
-    let act_0 = data.act.clone();
-    let ctrl_0 = data.ctrl.clone();
-    let warmstart_0 = data.qacc_warmstart.clone();
-    let time_0 = data.time;
     let mut scratch = data.clone();
     let ns = model.nsensordata;
     let compute_sensors = config.compute_sensor_derivatives && ns > 0;
@@ -2806,9 +3101,8 @@ pub fn mjd_transition_hybrid(
     // - forward differencing (non-centered A/B columns)
     // - clamped control differencing fallback (centered mode where one
     //   direction is infeasible due to actuator_ctrlrange boundary)
-    scratch.qacc_warmstart.copy_from(&warmstart_0);
     scratch.step(model)?;
-    let y_0 = extract_state(model, &scratch, &qpos_0);
+    let y_0 = extract_state(model, &scratch, &data.qpos);
 
     // For implicit integrators, save the acceleration the nominal step advanced
     // qvel with: the analytical position derivative uses it as the operating
@@ -2824,12 +3118,6 @@ pub fn mjd_transition_hybrid(
     } else {
         None
     };
-    scratch.qpos.copy_from(&qpos_0);
-    scratch.qvel.copy_from(&qvel_0);
-    scratch.act.copy_from(&act_0);
-    scratch.ctrl.copy_from(&ctrl_0);
-    scratch.qacc_warmstart.copy_from(&warmstart_0);
-    scratch.time = time_0;
 
     let mut c_mat = if compute_sensors {
         Some(DMatrix::zeros(ns, nx))
@@ -2936,38 +3224,12 @@ pub fn mjd_transition_hybrid(
         // Sensor C position columns — need FD since analytical doesn't capture sensor outputs.
         if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
             for i in 0..nv {
-                apply_state_perturbation(
-                    model,
-                    &mut scratch,
-                    &qpos_0,
-                    &qvel_0,
-                    &act_0,
-                    &ctrl_0,
-                    &warmstart_0,
-                    time_0,
-                    i,
-                    eps,
-                    nv,
-                    na,
-                );
+                perturb_state(model, &mut scratch, data, i, eps);
                 scratch.forward_skip(model, MjStage::None, false)?;
                 let s_plus = scratch.sensordata.clone();
 
                 if config.centered {
-                    apply_state_perturbation(
-                        model,
-                        &mut scratch,
-                        &qpos_0,
-                        &qvel_0,
-                        &act_0,
-                        &ctrl_0,
-                        &warmstart_0,
-                        time_0,
-                        i,
-                        -eps,
-                        nv,
-                        na,
-                    );
+                    perturb_state(model, &mut scratch, data, i, -eps);
                     scratch.forward_skip(model, MjStage::None, false)?;
                     let s_minus = scratch.sensordata.clone();
                     let scol = (&s_plus - &s_minus) / (2.0 * eps);
@@ -2981,22 +3243,9 @@ pub fn mjd_transition_hybrid(
     } else {
         // Position FD columns (0..nv) — piggyback sensor recording
         for i in 0..nv {
-            apply_state_perturbation(
-                model,
-                &mut scratch,
-                &qpos_0,
-                &qvel_0,
-                &act_0,
-                &ctrl_0,
-                &warmstart_0,
-                time_0,
-                i,
-                eps,
-                nv,
-                na,
-            );
+            perturb_state(model, &mut scratch, data, i, eps);
             scratch.step(model)?;
-            let y_plus = extract_state(model, &scratch, &qpos_0);
+            let y_plus = extract_state(model, &scratch, &data.qpos);
             let s_plus = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3004,22 +3253,9 @@ pub fn mjd_transition_hybrid(
             };
 
             if config.centered {
-                apply_state_perturbation(
-                    model,
-                    &mut scratch,
-                    &qpos_0,
-                    &qvel_0,
-                    &act_0,
-                    &ctrl_0,
-                    &warmstart_0,
-                    time_0,
-                    i,
-                    -eps,
-                    nv,
-                    na,
-                );
+                perturb_state(model, &mut scratch, data, i, -eps);
                 scratch.step(model)?;
-                let y_minus = extract_state(model, &scratch, &qpos_0);
+                let y_minus = extract_state(model, &scratch, &data.qpos);
                 let s_minus = if compute_sensors {
                     Some(scratch.sensordata.clone())
                 } else {
@@ -3052,38 +3288,12 @@ pub fn mjd_transition_hybrid(
     if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
         for i in 0..nv {
             let state_col = nv + i;
-            apply_state_perturbation(
-                model,
-                &mut scratch,
-                &qpos_0,
-                &qvel_0,
-                &act_0,
-                &ctrl_0,
-                &warmstart_0,
-                time_0,
-                state_col,
-                eps,
-                nv,
-                na,
-            );
+            perturb_state(model, &mut scratch, data, state_col, eps);
             scratch.forward_skip(model, MjStage::None, false)?;
             let s_plus = scratch.sensordata.clone();
 
             if config.centered {
-                apply_state_perturbation(
-                    model,
-                    &mut scratch,
-                    &qpos_0,
-                    &qvel_0,
-                    &act_0,
-                    &ctrl_0,
-                    &warmstart_0,
-                    time_0,
-                    state_col,
-                    -eps,
-                    nv,
-                    na,
-                );
+                perturb_state(model, &mut scratch, data, state_col, -eps);
                 scratch.forward_skip(model, MjStage::None, false)?;
                 let s_minus = scratch.sensordata.clone();
                 let scol = (&s_plus - &s_minus) / (2.0 * eps);
@@ -3113,38 +3323,12 @@ pub fn mjd_transition_hybrid(
                     continue; // FD column — sensor recording handled in piggybacked FD below
                 }
                 // Sensor-only FD for analytical activation column
-                apply_state_perturbation(
-                    model,
-                    &mut scratch,
-                    &qpos_0,
-                    &qvel_0,
-                    &act_0,
-                    &ctrl_0,
-                    &warmstart_0,
-                    time_0,
-                    state_col,
-                    eps,
-                    nv,
-                    na,
-                );
+                perturb_state(model, &mut scratch, data, state_col, eps);
                 scratch.forward_skip(model, MjStage::None, false)?;
                 let s_plus = scratch.sensordata.clone();
 
                 if config.centered {
-                    apply_state_perturbation(
-                        model,
-                        &mut scratch,
-                        &qpos_0,
-                        &qvel_0,
-                        &act_0,
-                        &ctrl_0,
-                        &warmstart_0,
-                        time_0,
-                        state_col,
-                        -eps,
-                        nv,
-                        na,
-                    );
+                    perturb_state(model, &mut scratch, data, state_col, -eps);
                     scratch.forward_skip(model, MjStage::None, false)?;
                     let s_minus = scratch.sensordata.clone();
                     let scol = (&s_plus - &s_minus) / (2.0 * eps);
@@ -3159,22 +3343,9 @@ pub fn mjd_transition_hybrid(
 
     // Muscle activation FD fallback columns — piggyback sensor recording
     for &state_col in &act_fd_indices {
-        apply_state_perturbation(
-            model,
-            &mut scratch,
-            &qpos_0,
-            &qvel_0,
-            &act_0,
-            &ctrl_0,
-            &warmstart_0,
-            time_0,
-            state_col,
-            eps,
-            nv,
-            na,
-        );
+        perturb_state(model, &mut scratch, data, state_col, eps);
         scratch.step(model)?;
-        let y_plus = extract_state(model, &scratch, &qpos_0);
+        let y_plus = extract_state(model, &scratch, &data.qpos);
         let s_plus = if compute_sensors {
             Some(scratch.sensordata.clone())
         } else {
@@ -3182,22 +3353,9 @@ pub fn mjd_transition_hybrid(
         };
 
         if config.centered {
-            apply_state_perturbation(
-                model,
-                &mut scratch,
-                &qpos_0,
-                &qvel_0,
-                &act_0,
-                &ctrl_0,
-                &warmstart_0,
-                time_0,
-                state_col,
-                -eps,
-                nv,
-                na,
-            );
+            perturb_state(model, &mut scratch, data, state_col, -eps);
             scratch.step(model)?;
-            let y_minus = extract_state(model, &scratch, &qpos_0);
+            let y_minus = extract_state(model, &scratch, &data.qpos);
             let s_minus = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3226,12 +3384,14 @@ pub fn mjd_transition_hybrid(
     let mut ctrl_fd_indices: Vec<usize> = Vec::new();
 
     for actuator_idx in 0..nu {
-        // An actuator MuJoCo's derivatives leave out takes finite differences.
+        // An actuator MuJoCo's derivatives leave out takes finite
+        // differences, as one whose control the implicit step's damping reads.
         let is_direct = matches!(model.actuator_dyntype[actuator_idx], ActuatorDynamics::None)
-            && !actuator_left_out(model, data, actuator_idx);
+            && !actuator_left_out(model, data, actuator_idx)
+            && !input_scales_implicit_damping(model, actuator_idx);
 
         if is_direct {
-            // Analytical: ∂v⁺/∂ctrl = h · M⁻¹ · moment · gain
+            // Analytical: ∂v⁺/∂ctrl = h · (the step's matrix)⁻¹ · moment · gain
             let gain = match model.actuator_gaintype[actuator_idx] {
                 GainType::Fixed => model.actuator_gainprm[actuator_idx][0],
                 GainType::Affine => {
@@ -3251,19 +3411,17 @@ pub fn mjd_transition_hybrid(
             };
 
             // Build moment-scaled force vector, dispatching by transmission type.
-            // Joint/Tendon transmissions don't populate data.actuator_moment
-            // (it stays zero from init) — construct the moment inline instead.
+            // A joint transmission on a hinge or slide and a tendon one leave
+            // data.actuator_moment at zero; their moment is built inline here.
             let mut dvdctrl = DVector::zeros(nv);
             let gear = model.actuator_gear[actuator_idx][0];
             let trnid = model.actuator_trnid[actuator_idx][0];
             match model.actuator_trntype[actuator_idx] {
-                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
+                    if !acts_through_moment(model, actuator_idx) =>
+                {
                     if trnid < model.njnt {
-                        let dof_adr = model.jnt_dof_adr[trnid];
-                        let nv_jnt = model.jnt_type[trnid].nv();
-                        for k in 0..nv_jnt {
-                            dvdctrl[dof_adr + k] = h * gain * gear;
-                        }
+                        dvdctrl[model.jnt_dof_adr[trnid]] = h * gain * gear;
                     }
                 }
                 ActuatorTransmission::Tendon => {
@@ -3274,7 +3432,9 @@ pub fn mjd_transition_hybrid(
                         }
                     }
                 }
-                ActuatorTransmission::Site
+                ActuatorTransmission::Joint
+                | ActuatorTransmission::JointInParent
+                | ActuatorTransmission::Site
                 | ActuatorTransmission::Body
                 | ActuatorTransmission::SliderCrank => {
                     let moment = &data.actuator_moment[actuator_idx];
@@ -3285,21 +3445,21 @@ pub fn mjd_transition_hybrid(
             }
 
             match model.integrator {
+                // Under eulerdamp the step solves with M + h·D.
                 Integrator::Euler => {
-                    // NOTE: under eulerdamp this bare-M solve has the same M_impl gap fixed
-                    // for the A matrix; the control columns (B = ∂next/∂ctrl) feed RL/control
-                    // Jacobians and want M_impl too. Deferred to a follow-on with an
-                    // actuated-damped gate (add_motor is not reachable from the damped
-                    // transition test, and the shared conformance matrix carries no actuators).
-                    let (rowadr, rownnz, colind) = model.qld_csr();
-                    mj_solve_sparse(
-                        rowadr,
-                        rownnz,
-                        colind,
-                        &data_work.qLD_data,
-                        &data_work.qLD_diag_inv,
-                        &mut dvdctrl,
-                    );
+                    if let Some(ref mi) = m_impl_euler {
+                        cholesky_solve_in_place(mi, &mut dvdctrl);
+                    } else {
+                        let (rowadr, rownnz, colind) = model.qld_csr();
+                        mj_solve_sparse(
+                            rowadr,
+                            rownnz,
+                            colind,
+                            &data_work.qLD_data,
+                            &data_work.qLD_diag_inv,
+                            &mut dvdctrl,
+                        );
+                    }
                 }
                 Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdctrl);
@@ -3338,18 +3498,20 @@ pub fn mjd_transition_hybrid(
             }
             // Sensor-only FD for this analytical B column
             let range = model.actuator_ctrlrange[actuator_idx];
-            let nudge_fwd = in_ctrl_range(ctrl_0[actuator_idx], ctrl_0[actuator_idx] + eps, range);
+            let nudge_fwd = in_ctrl_range(
+                data.ctrl[actuator_idx],
+                data.ctrl[actuator_idx] + eps,
+                range,
+            );
             let nudge_back = (config.centered || !nudge_fwd)
-                && in_ctrl_range(ctrl_0[actuator_idx] - eps, ctrl_0[actuator_idx], range);
+                && in_ctrl_range(
+                    data.ctrl[actuator_idx] - eps,
+                    data.ctrl[actuator_idx],
+                    range,
+                );
 
             let s_plus = if nudge_fwd {
-                scratch.qpos.copy_from(&qpos_0);
-                scratch.qvel.copy_from(&qvel_0);
-                scratch.act.copy_from(&act_0);
-                scratch.ctrl.copy_from(&ctrl_0);
-                scratch.ctrl[actuator_idx] += eps;
-                scratch.qacc_warmstart.copy_from(&warmstart_0);
-                scratch.time = time_0;
+                perturb_ctrl(model, &mut scratch, data, actuator_idx, eps);
                 scratch.forward_skip(model, MjStage::None, false)?;
                 Some(scratch.sensordata.clone())
             } else {
@@ -3357,13 +3519,7 @@ pub fn mjd_transition_hybrid(
             };
 
             let s_minus = if nudge_back {
-                scratch.qpos.copy_from(&qpos_0);
-                scratch.qvel.copy_from(&qvel_0);
-                scratch.act.copy_from(&act_0);
-                scratch.ctrl.copy_from(&ctrl_0);
-                scratch.ctrl[actuator_idx] -= eps;
-                scratch.qacc_warmstart.copy_from(&warmstart_0);
-                scratch.time = time_0;
+                perturb_ctrl(model, &mut scratch, data, actuator_idx, -eps);
                 scratch.forward_skip(model, MjStage::None, false)?;
                 Some(scratch.sensordata.clone())
             } else {
@@ -3384,20 +3540,14 @@ pub fn mjd_transition_hybrid(
     let nx = 2 * nv + na;
     for &j in &ctrl_fd_indices {
         let range = model.actuator_ctrlrange[j];
-        let nudge_fwd = in_ctrl_range(ctrl_0[j], ctrl_0[j] + eps, range);
-        let nudge_back =
-            (config.centered || !nudge_fwd) && in_ctrl_range(ctrl_0[j] - eps, ctrl_0[j], range);
+        let nudge_fwd = in_ctrl_range(data.ctrl[j], data.ctrl[j] + eps, range);
+        let nudge_back = (config.centered || !nudge_fwd)
+            && in_ctrl_range(data.ctrl[j] - eps, data.ctrl[j], range);
 
         let (y_plus, s_plus) = if nudge_fwd {
-            scratch.qpos.copy_from(&qpos_0);
-            scratch.qvel.copy_from(&qvel_0);
-            scratch.act.copy_from(&act_0);
-            scratch.ctrl.copy_from(&ctrl_0);
-            scratch.qacc_warmstart.copy_from(&warmstart_0);
-            scratch.ctrl[j] += eps;
-            scratch.time = time_0;
+            perturb_ctrl(model, &mut scratch, data, j, eps);
             scratch.step(model)?;
-            let yp = extract_state(model, &scratch, &qpos_0);
+            let yp = extract_state(model, &scratch, &data.qpos);
             let sp = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3409,15 +3559,9 @@ pub fn mjd_transition_hybrid(
         };
 
         let (y_minus, s_minus) = if nudge_back {
-            scratch.qpos.copy_from(&qpos_0);
-            scratch.qvel.copy_from(&qvel_0);
-            scratch.act.copy_from(&act_0);
-            scratch.ctrl.copy_from(&ctrl_0);
-            scratch.qacc_warmstart.copy_from(&warmstart_0);
-            scratch.ctrl[j] -= eps;
-            scratch.time = time_0;
+            perturb_ctrl(model, &mut scratch, data, j, -eps);
             scratch.step(model)?;
-            let ym = extract_state(model, &scratch, &qpos_0);
+            let ym = extract_state(model, &scratch, &data.qpos);
             let sm = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {

@@ -18,8 +18,8 @@
 //!   chain rules for `∂qpos/∂qvel` and `∂qpos/∂qpos` through Ball/Free joints.
 //!
 //! - **Phase D** (Step 9, Part 2): Hybrid FD+analytical transition derivatives.
-//!   Uses analytical `qDeriv` for velocity columns of A, FD only for position
-//!   columns. ~2× speedup over pure FD.
+//!   Analytical columns where it can, FD for the rest (`mjd_transition_hybrid`
+//!   says which).
 //!
 //! # Tangent-space convention
 //!
@@ -170,8 +170,7 @@ pub struct DerivativeConfig {
     /// Read by [`mjd_transition`]: when true and the model's analytic path is
     /// complete, velocity columns of A and simple actuator columns of B use
     /// analytical derivatives from `qDeriv` ([`mjd_transition_hybrid`], which
-    /// takes pure FD when `data` holds an active constraint row from the
-    /// caller's last forward pass); otherwise pure FD.
+    /// takes pure FD in the cases its doc names); otherwise pure FD.
     /// [`mjd_transition_hybrid`] called directly does not read it.
     ///
     /// Default: `true`.
@@ -247,9 +246,12 @@ fn check_fd_integrator(model: &Model) -> Result<(), StepError> {
 ///
 /// When `config.use_analytical == true` and the model's analytic transition
 /// derivative is complete (not with a Millard muscle, nor in the cases
-/// `hybrid::implicit_analytic_incomplete` names), uses hybrid analytical+FD
+/// `hybrid::implicit_analytic_incomplete` or
+/// `hybrid::forces_outside_the_analytic_columns` names), uses hybrid analytical+FD
 /// (Phase D), which itself takes pure FD when `data` holds an active
-/// constraint row; otherwise pure finite differences (Phase A). Both refuse
+/// constraint row, a step from it can change a tree's sleep state, or an
+/// actuator's control is bad or outside a ctrlrange the step clamps it to;
+/// otherwise pure finite differences (Phase A). Both refuse
 /// RK4, as MuJoCo's `mjd_transitionFD` does.
 ///
 /// The hybrid reads the constraint rows the caller's last forward pass left in
@@ -285,9 +287,14 @@ pub fn mjd_transition(
             .any(|b| matches!(b, BiasType::MillardMuscle));
     let can_analytical = config.use_analytical
         && !has_millard
-        // ISD/Implicit analytic is incomplete for tendon-K/D (ISD) or Muscle/HillMuscle
-        // gain (Implicit); such models take exact FD. See `implicit_analytic_incomplete`.
-        && !hybrid::implicit_analytic_incomplete(model);
+        // The implicit integrators' analytic path is incomplete for tendon-K/D (ISD), or
+        // a Muscle/HillMuscle gain or fluid density (ImplicitFast, Implicit); such models
+        // take exact FD.
+        // See `implicit_analytic_incomplete`.
+        && !hybrid::implicit_analytic_incomplete(model)
+        // A callback, a user actuator term or a plugin force: no analytic
+        // derivative. See `forces_outside_the_analytic_columns`.
+        && !hybrid::forces_outside_the_analytic_columns(model);
     if can_analytical {
         mjd_transition_hybrid(model, data, config)
     } else {
@@ -353,8 +360,9 @@ pub fn max_relative_error(a: &DMatrix<f64>, b: &DMatrix<f64>, floor: f64) -> (f6
 ///
 /// Returns `(max_error_A, max_error_B)` — the max relative errors between
 /// pure-FD and hybrid A/B matrices. The caller checks against desired tolerance.
-/// With an active constraint row in `data` the hybrid takes pure FD, so this
-/// compares pure FD with itself and returns `(0, 0)`.
+/// Where [`mjd_transition`] takes pure FD (an active constraint row in `data`,
+/// and the other cases its doc names), this compares pure FD with itself and
+/// returns `(0, 0)`.
 ///
 /// # Errors
 ///

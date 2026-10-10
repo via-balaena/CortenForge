@@ -162,18 +162,6 @@ pub fn compute_aref(k: f64, b: f64, imp: f64, pos: f64, margin: f64, vel: f64) -
     -b * vel - k * imp * (pos - margin)
 }
 
-/// Normalize a quaternion [w, x, y, z]. Returns identity if norm < 1e-10.
-/// Matches MuJoCo's mju_normalize4 and our normalize_quaternion() convention.
-#[inline]
-pub fn normalize_quat4(q: [f64; 4]) -> [f64; 4] {
-    let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-    if norm > 1e-10 {
-        [q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm]
-    } else {
-        [1.0, 0.0, 0.0, 0.0] // identity
-    }
-}
-
 /// Compute ball joint limit quantities from a unit quaternion [w, x, y, z].
 /// Returns `(unit_dir, angle)` where:
 ///   - `angle = |theta| >= 0` (unsigned rotation magnitude)
@@ -729,7 +717,7 @@ mod ball_limit_tests {
     #[test]
     fn test_ball_limit_axis_angle_near_zero_quaternion() {
         // A quaternion with near-zero norm (degenerate) should be caught by
-        // normalize_quat4 (returns identity) before reaching ball_limit_axis_angle.
+        // `quat::normalize4` (returns identity) before reaching ball_limit_axis_angle.
         // But ball_limit_axis_angle itself should also handle near-zero sin_half
         // gracefully -- returning angle = 0 and an arbitrary direction.
         let q = [1.0, 1e-15, 1e-15, 1e-15]; // Nearly identity, sin_half ~ 1.7e-15

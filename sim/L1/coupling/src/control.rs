@@ -153,13 +153,12 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// in its scratch steps (set above, before the carry) — `coupled_trajectory_actuated_z`
     /// drops a `ctrl`-blind scratch from ≈5e-5 to ~1e-8. (Single hinge: the analytic
     /// `J_state` already captures a servo's `ctrl`-independent slope and a motor leaves it
-    /// unchanged — machine-exact. An UNDAMPED chain likewise has an analytic `J_state`
+    /// unchanged — machine-exact. A chain likewise has an analytic `J_state`
     /// (`chain_state_jacobian`, which copies `ctrl` into its clean scratch so the
-    /// servo state-feedback enters `A`); a DAMPED chain — as in these actuator tests — keeps
-    /// the FD `loaded_state_jacobian` ⇒ FD-carry precision.)
+    /// servo state-feedback enters `A`).)
     /// Joint damping IS supported (via `M_impl`). Follow-ons: muscles (`act`-state,
-    /// nonlinear gain), quaternion (ball/free) joints, the analytic DAMPED chain carry
-    /// (machine-exact `nv > 1` under damping), and the actuator+design gradient on one tape. See
+    /// nonlinear gain), quaternion (ball/free) joints, and the actuator+design gradient on
+    /// one tape. See
     /// `docs/keystone/actuator_dynamics_recon.md`.
     ///
     /// # Panics

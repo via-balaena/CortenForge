@@ -11,9 +11,8 @@ system identification, and any control design workflow.
   each state/control component, steps the simulation, measures differences.
   Works with every integrator but RK4 (refused, as MuJoCo refuses it), captures
   contact transitions naturally.
-- **`mjd_transition_hybrid`** — hybrid analytical+FD. Uses analytical
-  velocity derivatives (from `qDeriv`) for velocity columns of A, FD only
-  for position columns. ~2x faster than pure FD.
+- **`mjd_transition_hybrid`** — hybrid analytical+FD: analytical columns
+  where it can, FD for the rest.
 - **`mjd_transition`** — auto-dispatch (hybrid when available, else FD).
 - **`mjd_inverse_fd`** — FD Jacobians of inverse dynamics (DfDq, DfDv, DfDa).
 - **`DerivativeConfig`** — controls epsilon, centered vs forward differences,

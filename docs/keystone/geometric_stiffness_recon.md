@@ -20,7 +20,7 @@ The rigid `step` consumes `xfrc_applied[body]` as a spatial wrench `w = [τ; f]`
 body COM, mapping it to generalized force `Jᵀw` (`mj_apply_ft`, `J = mj_jac_point` at
 `xipos`, rows 0–2 angular, 3–5 linear). The LOADED single-step transition Jacobian
 `J_state = ∂[qpos';qvel']/∂[qpos;qvel]` (wrench held) differs from the UNLOADED dense
-`A` (`transition_derivatives`, which drops the applied wrench) by exactly the applied
+`A` (`transition_derivatives` at a wrench-free state) by exactly the applied
 wrench's **geometric/load stiffness**:
 
 ```

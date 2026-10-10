@@ -1,7 +1,7 @@
 //! Hybrid vs FD — Analytical+FD Comparison
 //!
-//! Compares `mjd_transition_hybrid()` (analytical velocity derivatives + FD
-//! position columns) against pure `mjd_transition_fd()`. Same output, lower
+//! Compares `mjd_transition_hybrid()` (analytical columns where it can, FD
+//! for the rest) against pure `mjd_transition_fd()`. Same output, lower
 //! cost. A 3-link pendulum at non-trivial angles shows the two methods agree
 //! to < 1e-4 relative error while hybrid is faster.
 //!

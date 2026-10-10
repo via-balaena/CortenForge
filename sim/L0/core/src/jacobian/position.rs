@@ -7,6 +7,7 @@
 //! Corresponds to the position integration sections of MuJoCo's
 //! `engine_util_spatial.c`.
 
+use crate::quat::quat_integrate;
 use crate::types::{MjJointType, Model};
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 
@@ -173,32 +174,18 @@ pub fn mj_integrate_pos_explicit(
             }
 
             MjJointType::Ball => {
-                // Quaternion integration
-                let omega = Vector3::new(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]);
-                let angle = omega.norm() * dt;
-
-                let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                let mut quat = [
                     qpos[qpos_adr],
                     qpos[qpos_adr + 1],
                     qpos[qpos_adr + 2],
                     qpos[qpos_adr + 3],
-                ));
-
-                let q_new = if angle > 1e-10 {
-                    let axis = omega / omega.norm();
-                    let dq = UnitQuaternion::from_axis_angle(
-                        &nalgebra::Unit::new_normalize(axis),
-                        angle,
-                    );
-                    q_old * dq
-                } else {
-                    q_old
-                };
-
-                qpos_out[qpos_adr] = q_new.w;
-                qpos_out[qpos_adr + 1] = q_new.i;
-                qpos_out[qpos_adr + 2] = q_new.j;
-                qpos_out[qpos_adr + 3] = q_new.k;
+                ];
+                quat_integrate(
+                    &mut quat,
+                    [qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]],
+                    dt,
+                );
+                qpos_out.as_mut_slice()[qpos_adr..qpos_adr + 4].copy_from_slice(&quat);
             }
 
             MjJointType::Free => {
@@ -207,32 +194,18 @@ pub fn mj_integrate_pos_explicit(
                 qpos_out[qpos_adr + 1] = qpos[qpos_adr + 1] + qvel[dof_adr + 1] * dt;
                 qpos_out[qpos_adr + 2] = qpos[qpos_adr + 2] + qvel[dof_adr + 2] * dt;
 
-                // Quaternion integration
-                let omega = Vector3::new(qvel[dof_adr + 3], qvel[dof_adr + 4], qvel[dof_adr + 5]);
-                let angle = omega.norm() * dt;
-
-                let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                let mut quat = [
                     qpos[qpos_adr + 3],
                     qpos[qpos_adr + 4],
                     qpos[qpos_adr + 5],
                     qpos[qpos_adr + 6],
-                ));
-
-                let q_new = if angle > 1e-10 {
-                    let axis = omega / omega.norm();
-                    let dq = UnitQuaternion::from_axis_angle(
-                        &nalgebra::Unit::new_normalize(axis),
-                        angle,
-                    );
-                    q_old * dq
-                } else {
-                    q_old
-                };
-
-                qpos_out[qpos_adr + 3] = q_new.w;
-                qpos_out[qpos_adr + 4] = q_new.i;
-                qpos_out[qpos_adr + 5] = q_new.j;
-                qpos_out[qpos_adr + 6] = q_new.k;
+                ];
+                quat_integrate(
+                    &mut quat,
+                    [qvel[dof_adr + 3], qvel[dof_adr + 4], qvel[dof_adr + 5]],
+                    dt,
+                );
+                qpos_out.as_mut_slice()[qpos_adr + 3..qpos_adr + 7].copy_from_slice(&quat);
             }
         }
     }

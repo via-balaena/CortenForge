@@ -10,7 +10,10 @@
 
 use nalgebra::{DMatrix, DVector};
 
-use crate::integrate::implicit::{tendon_active_stiffness, tendon_all_dofs_sleeping};
+use crate::integrate::implicit::{
+    isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness, tendon_active_stiffness,
+    tendon_all_dofs_sleeping,
+};
 use crate::linalg::{cholesky_in_place, cholesky_rank1_update};
 use crate::types::{ConstraintState, ConstraintType, Data, ENABLE_SLEEP, Model, StepError};
 
@@ -166,14 +169,14 @@ impl SparseHessian {
         }
 
         // DT-35: Tendon K/D sparsity (ImplicitSpringDamper only).
-        // Conservative: includes entries for all tendons with k > 0 or b > 0,
+        // Conservative: includes entries for all tendons with k or b nonzero,
         // regardless of deadband state. Actual values use deadband-aware k_active.
         if implicit_sd {
             let mut nz: Vec<usize> = Vec::with_capacity(8);
             for t in 0..model.ntendon {
                 let kt = model.tendon_stiffness[t];
                 let bt = model.tendon_damping[t];
-                if kt <= 0.0 && bt <= 0.0 {
+                if kt == 0.0 && bt == 0.0 {
                     continue;
                 }
                 let j = &data.ten_J[t];
@@ -289,8 +292,8 @@ impl SparseHessian {
 
             // Joint diagonal K/D
             for i in 0..nv {
-                let kd = h * model.implicit_damping[i] + h2 * model.implicit_stiffness[i];
-                if kd > 0.0
+                let kd = h * isd_damping(model, i) + h2 * isd_stiffness(model, i);
+                if kd != 0.0
                     && let Some(idx) = self.find_entry(i, i)
                 {
                     self.vals[idx] += kd;
@@ -303,16 +306,16 @@ impl SparseHessian {
                 if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
                     continue;
                 }
-                let kt = model.tendon_stiffness[t];
-                let bt = model.tendon_damping[t];
-                if kt <= 0.0 && bt <= 0.0 {
+                let kt = isd_tendon_stiffness(model, t);
+                let bt = isd_tendon_damping(model, t);
+                if kt == 0.0 && bt == 0.0 {
                     continue;
                 }
                 let j = &data.ten_J[t];
                 let k_active =
                     tendon_active_stiffness(kt, data.ten_length[t], model.tendon_lengthspring[t]);
                 let scale = h2 * k_active + h * bt;
-                if scale <= 0.0 {
+                if scale == 0.0 {
                     continue;
                 }
                 nz.clear();

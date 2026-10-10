@@ -58,12 +58,15 @@ pub struct Data {
     pub qfrc_actuator: DVector<f64>,
 
     /// Actuator length (gear * transmission_length, length `nu`).
-    /// For Joint transmission: `gear * qpos[qpos_adr]` (hinge/slide only).
+    /// For Joint transmission on a hinge or slide: `gear * qpos[qpos_adr]`; on a
+    /// ball joint, the rotation's axis-angle vector along the moment; on a
+    /// free joint, 0.
     /// For Tendon transmission: `gear * ten_length[tendon_id]`.
     pub actuator_length: Vec<f64>,
 
     /// Actuator velocity (gear * transmission_velocity, length `nu`).
-    /// For Joint transmission: `gear * qvel[dof_adr]` (hinge/slide only).
+    /// For Joint transmission on a hinge or slide: `gear * qvel[dof_adr]`; on a
+    /// ball or free joint, `actuator_moment · qvel`.
     /// For Tendon transmission: `gear * ten_velocity[tendon_id]`.
     pub actuator_velocity: Vec<f64>,
 
@@ -72,7 +75,9 @@ pub struct Data {
     pub actuator_force: Vec<f64>,
 
     /// Actuator moment vectors (length `nu`, each nv-dimensional).
-    /// Populated for Site transmissions by `mj_transmission_site`.
+    /// Populated for Site, Body and slider-crank transmissions and for Joint
+    /// transmissions on a ball or free joint; zero for a Joint transmission
+    /// on a hinge or slide and for a Tendon transmission.
     /// Maps scalar actuator force to generalized forces: `qfrc += moment * force`.
     pub actuator_moment: Vec<DVector<f64>>,
 
@@ -606,8 +611,7 @@ pub struct Data {
     /// Dense nv × nv matrix. Populated by `mjd_smooth_vel()`.
     ///
     /// Components:
-    ///   ∂(qfrc_passive)/∂qvel  = diagonal damping + tendon damping J^T·b·J
-    ///                            (all integrators, including ImplicitSpringDamper per DT-35)
+    ///   ∂(qfrc_passive)/∂qvel  = the terms `mjd_passive_vel` adds
     ///   ∂(qfrc_actuator)/∂qvel = affine velocity-dependent gain/bias terms
     ///   −∂(qfrc_bias)/∂qvel    = −C(q,v) (Coriolis matrix)
     ///
