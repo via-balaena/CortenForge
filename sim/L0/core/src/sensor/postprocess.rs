@@ -57,7 +57,7 @@ pub fn apply_sensor_cutoff(model: &Model, data: &mut Data, sensor_id: usize) {
         return;
     }
     let sensor_type = model.sensor_type[sensor_id];
-    if matches!(sensor_type, MjSensorType::Touch | MjSensorType::GeomFromTo) {
+    if sensor_type == MjSensorType::GeomFromTo {
         return;
     }
     let data_kind = sensor_type.data_kind();
@@ -90,8 +90,6 @@ pub fn apply_sensor_cutoff(model: &Model, data: &mut Data, sensor_id: usize) {
 /// two-layer dispatch:
 ///
 /// **Layer 1 — explicit type exemptions:**
-/// - `Touch` (`mjSENS_CONTACT`): cutoff ignored entirely. MuJoCo does not
-///   clamp touch sensor values; cutoff has no effect on touch sensors.
 /// - `GeomFromTo` (`mjSENS_GEOMFROMTO`): cutoff is consumed during evaluation
 ///   as the `mj_geomDistance()` search radius, not as a value clamp.
 ///
@@ -131,7 +129,9 @@ pub fn mj_sensor_postprocess(model: &Model, data: &mut Data) {
 
         // Layer 1: explicit type exemptions.
         // MuJoCo: `if (type == mjSENS_CONTACT || type == mjSENS_GEOMFROMTO) return;`
-        if matches!(sensor_type, MjSensorType::Touch | MjSensorType::GeomFromTo) {
+        // sim-core has no contact sensor (`mjSENS_CONTACT`); touch is
+        // `mjSENS_TOUCH`, which MuJoCo clamps.
+        if sensor_type == MjSensorType::GeomFromTo {
             continue;
         }
 

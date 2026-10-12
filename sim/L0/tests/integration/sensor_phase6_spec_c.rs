@@ -401,6 +401,63 @@ fn t12_geomfromto_cutoff_exemption() {
     assert_relative_eq!(data.sensordata[adr + 5], 0.0, epsilon = 1e-10);
 }
 
+/// A touch sensor's cutoff clamps it from above, as MuJoCo's: `apply_cutoff`
+/// exempts only `mjSENS_CONTACT` and `mjSENS_GEOMFROMTO`
+/// (`engine_sensor.c:71-74`), and a touch sensor's datatype is positive. A
+/// sphere of mass 1 resting on a plane, with three touch sensors on one site:
+/// cutoff 1; cutoff 1 delayed two steps, whose samples are clamped when
+/// computed; and no cutoff. MuJoCo 3.5.0 (unfused build) reads the values
+/// below after each step.
+#[test]
+fn a_touch_sensor_is_clamped_by_its_cutoff_as_mujoco_3_5_0() {
+    let model = load_model(
+        r#"<mujoco>
+          <option timestep="0.002"/>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <body pos="0 0 0.1">
+              <freejoint/>
+              <geom type="sphere" size="0.1" mass="1"/>
+              <site name="s" type="sphere" size="0.12"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <touch name="clamped" site="s" cutoff="1"/>
+            <touch name="delayed" site="s" cutoff="1" nsample="3" delay="0.004"/>
+            <touch name="raw" site="s"/>
+          </sensor>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    // (step, clamped, delayed, no cutoff), MuJoCo 3.5.0.
+    let mujoco = [
+        (1, 0.0, 0.0, 0.0),
+        (2, 1.0, 0.0, 10.777_640_927_216_81),
+        (3, 1.0, 0.0, 10.678_504_760_336_603),
+        (4, 1.0, 1.0, 10.592_442_392_195_542),
+        (5, 1.0, 1.0, 10.517_055_007_914_808),
+        (10, 1.0, 1.0, 10.246_730_401_012_398),
+        (50, 1.0, 1.0, 9.810_330_579_159_986),
+        (100, 1.0, 1.0, 9.809_982_435_958_046),
+    ];
+    let mut checked = 0;
+    for step in 1..=100 {
+        data.step(&model).expect("step");
+        if let Some(&(_, clamped, delayed, raw)) = mujoco.iter().find(|row| row.0 == step) {
+            assert_eq!(data.sensordata[0], clamped, "clamped after step {step}");
+            assert_eq!(data.sensordata[1], delayed, "delayed after step {step}");
+            assert!(
+                (data.sensordata[2] - raw).abs() < 1e-12,
+                "no cutoff after step {step}: {}",
+                data.sensordata[2]
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, mujoco.len());
+}
+
 // ============================================================================
 // T13: GeomDist postprocess clamp → AC13
 // ============================================================================
