@@ -3511,3 +3511,69 @@ fn a_cable_edge_spring_has_mujoco_3_5_0_potential_energy() {
     data.forward(&model).expect("forward");
     assert_eq!(data.energy_potential, 0.0, "spring disabled");
 }
+
+/// The cable's edge spring skips a rigid flex, a rigid edge and a flex of
+/// dim above 1, as MuJoCo's (`engine_sensor.c:1701-1718`): a three-vertex
+/// cable, its first vertex pinned and both edges stretched, edge stiffness
+/// 50, gravity disabled. Each skip is set on the loaded model, since
+/// MuJoCo's compiler marks every edge of a rigid flex rigid and refuses an
+/// edge stiffness on a flex of dim above 1. MuJoCo 3.5.0 (unfused build)
+/// gives the four energies on the same cable as a jointless anchor body and
+/// two bodies with three slides under `<flex body="anchor v1 v2">`, with the
+/// same fields set after loading.
+#[test]
+fn a_cable_edge_spring_skips_rigid_flexes_rigid_edges_and_dim_above_1() {
+    let model = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.002">
+            <flag equality="disable" gravity="disable" energy="enable"/>
+          </option>
+          <deformable>
+            <flex name="c" dim="1" mass="0.2">
+              <vertex pos="0 0 1  0.1 0 1  0.2 0 1"/>
+              <element data="0 1  1 2"/>
+              <pin id="0"/>
+              <edge stiffness="50"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let energy = |model: &sim_core::Model| {
+        let mut data = model.make_data();
+        data.qpos
+            .copy_from_slice(&[0.02, 0.0, 0.0, 0.02, 0.03, 0.0]);
+        data.forward(model).expect("forward");
+        data.energy_potential
+    };
+
+    let as_loaded = energy(&model);
+    assert!(
+        (as_loaded - 0.010_484_674_554_472_492).abs() < 1e-15,
+        "as loaded: {as_loaded}"
+    );
+
+    // Found by its vertices: sim-mjcf lists a flex's edges in an order that
+    // differs between processes (Rigid-loading L02 takes MuJoCo's order).
+    let first_edge = model
+        .flexedge_vert
+        .iter()
+        .position(|&[a, b]| (a, b) == (0, 1) || (a, b) == (1, 0))
+        .expect("edge 0-1");
+    let mut rigid_edge = model.clone();
+    rigid_edge.flexedge_rigid[first_edge] = true;
+    let rigid_edge = energy(&rigid_edge);
+    assert!(
+        (rigid_edge - 0.000_484_674_554_472_487_2).abs() < 1e-15,
+        "first edge rigid: {rigid_edge}"
+    );
+
+    let mut rigid_flex = model.clone();
+    rigid_flex.flex_rigid[0] = true;
+    assert_eq!(energy(&rigid_flex), 0.0, "flex rigid");
+
+    let mut dim_2 = model.clone();
+    dim_2.flex_dim[0] = 2;
+    assert_eq!(energy(&dim_2), 0.0, "flex of dim 2");
+}
