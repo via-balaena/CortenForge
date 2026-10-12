@@ -225,21 +225,11 @@ fn a_multi_joint_body_accelerates_as_its_joints_split_over_bodies() {
 }
 
 /// The analytic transition derivative agrees with finite differences, A and B
-/// entry by entry. Not on `hinge_slide`, `hinge_offset_hinge` and `hinge_ball`:
-/// a joint that moves the body's origin before a later joint of the body has a
-/// position derivative of its own that differs (ledger-L36, P25).
+/// entry by entry, on every case.
 #[test]
 fn multi_joint_bodies_have_the_finite_difference_transition_derivative() {
     let golden = golden();
-    let cases = [
-        "hinge_hinge",
-        "slide_hinge",
-        "slide_ball",
-        "six",
-        "hinge_hinge_under_hinge",
-    ];
-    for name in cases {
-        let case = &golden["cases"][name];
+    for (name, case) in golden["cases"].as_object().expect("cases") {
         // `mjd_transition` refuses RK4.
         for integrator in ["Euler", "implicit", "implicitfast"] {
             let model = load_model(case["xml"][integrator].as_str().expect("xml")).expect("load");

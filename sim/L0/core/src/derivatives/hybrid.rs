@@ -1435,14 +1435,21 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             dof_lin[dof_adr + d] = Vector3::new(s[(3, d)], s[(4, d)], s[(5, d)]);
         }
     }
-    // The translational position-DOFs of a single body (used to inject the
-    // `∂r/∂q = dof_lin` transport term wherever the rotational `axis×r` term is
-    // applied for that body itself). For a Hinge/Slide/Ball the linear subspace
-    // is either zero or a pure lever (Hinge `â×r`), so only genuine prismatic
-    // DOFs (Slide, Free-linear) contribute — detected by a nonzero `dof_lin`
-    // with zero `dof_axis` (no rotation).
-    let is_translational =
-        |k: usize| -> bool { dof_axis[k].norm_squared() == 0.0 && dof_lin[k].norm_squared() > 0.0 };
+    // The DOFs that move their own body's origin: for body b's own DOF k,
+    // `dof_lin[k] = ∂xpos[b]/∂q_k` — a slide's axis, a free joint's linear DOFs,
+    // and a hinge's lever `â×(xpos − anchor)`, nonzero when the hinge is off the
+    // origin (a ball and a free joint's angular DOFs turn about it, `[R; 0]`).
+    // What is referenced at the origin and not carried by DOF k moves with it:
+    // the transported parent velocity and acceleration, the lever to the parent
+    // (`∂r/∂q_k = dof_lin[k]`), and the subspaces of the body's joints before
+    // k's (`origin_shift`).
+    let moves_origin = |k: usize| -> bool { dof_lin[k].norm_squared() > 0.0 };
+    // `[0; ω(v) × dof_lin[k]]`: the motion vector `v`, not carried by DOF `k`,
+    // referenced at the origin `k` moves.
+    let origin_shift = |v: &SpatialVector, k: usize| -> SpatialVector {
+        let w = Vector3::new(v[0], v[1], v[2]).cross(&dof_lin[k]);
+        SpatialVector::new(0.0, 0.0, 0.0, w.x, w.y, w.z)
+    };
 
     // A Free joint sets its body's world pose ABSOLUTELY (`position.rs` overwrites
     // `pos`/`quat` from qpos, discarding the parent frame). So a free body's frame —
@@ -1687,7 +1694,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[body_id];
             for k in bd0..bd0 + model.body_dof_num[body_id] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let contrib = omega_p.cross(&dof_lin[k]);
                     data.deriv_Dcvel_pos[body_id][(3, k)] += contrib.x;
                     data.deriv_Dcvel_pos[body_id][(4, k)] += contrib.y;
@@ -1737,17 +1744,26 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         }
         let vj_rotating: SpatialVector = vj_contrib.iter().sum();
 
-        // Derivative w.r.t. each perturbing angular DOF on this body.
+        // Derivative w.r.t. each perturbing DOF on this body.
         // Perturbing q_k rotates the body's frame from joint k ONWARD (the
         // PARTIAL-frame construction in forward kinematics) — so it only
-        // affects the subspaces of joints applied at-or-after k on this body
+        // turns the subspaces of joints applied at-or-after k on this body
         // (`jid2 ≥ k`), NOT the earlier ones. The j = k self-term contributes
-        // the linear lever `â_k×(â_k×r)` (angular `â_k×â_k = 0`).
+        // the linear lever `â_k×(â_k×r)` (angular `â_k×â_k = 0`). A DOF that
+        // moves the origin shifts the earlier joints' velocity, which it does not
+        // carry (`origin_shift`).
         for (i, jid) in (js..je).enumerate() {
             let vj_from_k: SpatialVector = vj_contrib[i..].iter().sum();
+            let vj_before: SpatialVector = vj_contrib[..i].iter().sum();
             let da = model.jnt_dof_adr[jid];
             let nd = model.jnt_type[jid].nv();
             for d in 0..nd {
+                if moves_origin(da + d) {
+                    let shift = origin_shift(&vj_before, da + d);
+                    for row in 0..6 {
+                        data.deriv_Dcvel_pos[body_id][(row, da + d)] += shift[row];
+                    }
+                }
                 let axis = dof_axis[da + d];
                 if axis.norm_squared() == 0.0 {
                     continue; // Pure translational DOF — no body rotation
@@ -1843,7 +1859,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[b];
             for k in bd0..bd0 + model.body_dof_num[b] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let contrib = omega_acc_p.cross(&dof_lin[k]);
                     data.deriv_Dcacc_pos[b][(3, k)] += contrib.x;
                     data.deriv_Dcacc_pos[b][(4, k)] += contrib.y;
@@ -1879,14 +1895,22 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         }
         let sj_qacc_rotating: SpatialVector = sa_contrib.iter().sum();
 
-        // Same-body angular DOFs. As in the Part B velocity subspace: perturbing
-        // q_k only rotates joints applied at-or-after k on this body (partial
-        // frame), so cross with the suffix sum `Σ_{jid2 ≥ k} S·qacc`.
+        // Same-body DOFs. As in the Part B velocity subspace: perturbing q_k
+        // only rotates joints applied at-or-after k on this body (partial
+        // frame), so cross with the suffix sum `Σ_{jid2 ≥ k} S·qacc`; a DOF that
+        // moves the origin shifts the earlier joints' `S·qacc` (`origin_shift`).
         for (i, jid) in (js..je).enumerate() {
             let sa_from_k: SpatialVector = sa_contrib[i..].iter().sum();
+            let sa_before: SpatialVector = sa_contrib[..i].iter().sum();
             let da = model.jnt_dof_adr[jid];
             let nd = model.jnt_type[jid].nv();
             for d in 0..nd {
+                if moves_origin(da + d) {
+                    let shift = origin_shift(&sa_before, da + d);
+                    for row in 0..6 {
+                        data.deriv_Dcacc_pos[b][(row, da + d)] += shift[row];
+                    }
+                }
                 let axis = dof_axis[da + d];
                 if axis.norm_squared() == 0.0 {
                     continue;
@@ -2029,7 +2053,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[b];
             for k in bd0..bd0 + model.body_dof_num[b] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let torque = dof_lin[k].cross(&f_lin);
                     data.deriv_Dcfrc_pos[pid][(0, k)] += torque.x;
                     data.deriv_Dcfrc_pos[pid][(1, k)] += torque.y;
@@ -2069,16 +2093,42 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         let cfrc = cfrc_a[bid];
 
         // Iterate over all angular DOFs on this body and ancestors. Same-body:
-        // ∂S_j/∂q_k ≠ 0 only when joint `k` is applied at-or-before `j` (partial
-        // frame), so skip later same-body joints (`kid > jid`); ancestors are
-        // unrestricted. The kid == jid self-term gives the linear lever.
+        // joint `k` turns S_j only when applied at-or-before `j` (partial frame);
+        // a later one (`kid > jid`) only shifts it when it moves the origin.
+        // Ancestors are unrestricted. The kid == jid self-term gives the linear
+        // lever.
         let mut anc = bid;
         while anc != 0 {
             let anc_js = model.body_jnt_adr[anc];
             let anc_je = anc_js + model.body_jnt_num[anc];
             for kid in anc_js..anc_je {
                 if anc == bid && kid > jid {
-                    continue; // later same-body joint does not rotate S_jid
+                    // A later same-body joint does not turn S_jid; one that moves
+                    // the origin moves the point S_jid is referenced at.
+                    let da_k = model.jnt_dof_adr[kid];
+                    for d in 0..model.jnt_type[kid].nv() {
+                        if !moves_origin(da_k + d) {
+                            continue;
+                        }
+                        for dd in 0..nd_j {
+                            // Skip Free linear DOFs (no angular part to shift)
+                            if model.jnt_type[jid] == MjJointType::Free && dd < 3 {
+                                continue;
+                            }
+                            let s_jdd = SpatialVector::new(
+                                s_j[(0, dd)],
+                                s_j[(1, dd)],
+                                s_j[(2, dd)],
+                                s_j[(3, dd)],
+                                s_j[(4, dd)],
+                                s_j[(5, dd)],
+                            );
+                            let ds = origin_shift(&s_jdd, da_k + d);
+                            let proj: f64 = (0..6).map(|row| ds[row] * cfrc[row]).sum();
+                            data.qDeriv_pos[(da_j + dd, da_k + d)] -= proj;
+                        }
+                    }
+                    continue;
                 }
                 let da_k = model.jnt_dof_adr[kid];
                 let nd_k = model.jnt_type[kid].nv();
@@ -2178,7 +2228,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[b];
             for k in bd0..bd0 + model.body_dof_num[b] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let contrib = omega_acc_p.cross(&dof_lin[k]);
                     data.deriv_Dcacc_pos[b][(3, k)] += contrib.x;
                     data.deriv_Dcacc_pos[b][(4, k)] += contrib.y;
@@ -2250,6 +2300,20 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 vj_contrib.push(v);
             }
             let v_j: SpatialVector = vj_contrib.iter().sum();
+            // A same-body DOF that moves the origin shifts the velocity of the
+            // joints before it: `vt ×_m origin_shift(Σ_{jid2 < k} S·qvel)`.
+            for (i, jid) in (js..je).enumerate() {
+                let vj_before: SpatialVector = vj_contrib[..i].iter().sum();
+                let da = model.jnt_dof_adr[jid];
+                for d in 0..model.jnt_type[jid].nv() {
+                    if moves_origin(da + d) {
+                        let contrib = spatial_cross_motion(vt, origin_shift(&vj_before, da + d));
+                        for row in 0..6 {
+                            data.deriv_Dcacc_pos[b][(row, da + d)] += contrib[row];
+                        }
+                    }
+                }
+            }
             if v_j.norm_squared() > 0.0 {
                 // SAME BODY + ANCESTORS (`anc = b`). Perturbing an angular DOF `k`
                 // on body `b` ITSELF rotates `b`'s frame. For an ANCESTOR `k` the
@@ -2301,7 +2365,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         // `v_i = S_i·qvel_i` (see the operating point). With the convention of the
         // block above (`∂v_i/∂q_m = s_ang_m ×_m v_i` for every joint of the body
         // when `m` is an ancestor's angular dof, for the joints at or after `m`'s
-        // when `m` is the body's own), `∂P/∂q_m = Σ_{k<j} ∂v_k ×_m v_j + v_k ×_m ∂v_j`.
+        // when `m` is the body's own, and `origin_shift(v_i, m)` for the joints
+        // before an own `m` that moves the origin),
+        // `∂P/∂q_m = Σ_{k<j} ∂v_k ×_m v_j + v_k ×_m ∂v_j`.
         // A body with one joint has no such product.
         if je - js > 1 {
             let joint_velocity = |jid: usize, rotating_only: bool| {
@@ -2330,8 +2396,10 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     let first = if anc == b { kid - js } else { 0 };
                     let da_k = model.jnt_dof_adr[kid];
                     for dk in 0..model.jnt_type[kid].nv() {
-                        let axis_k = dof_axis[da_k + dk];
-                        if axis_k.norm_squared() == 0.0 {
+                        let k = da_k + dk;
+                        let axis_k = dof_axis[k];
+                        let shifts = anc == b && moves_origin(k);
+                        if axis_k.norm_squared() == 0.0 && !shifts {
                             continue;
                         }
                         let s_ang_k =
@@ -2342,6 +2410,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                             .map(|(i, vi)| {
                                 if i >= first {
                                     spatial_cross_motion(s_ang_k, *vi)
+                                } else if shifts {
+                                    origin_shift(vi, k)
                                 } else {
                                     SpatialVector::zeros()
                                 }
@@ -2529,7 +2599,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[b];
             for k in bd0..bd0 + model.body_dof_num[b] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let torque = dof_lin[k].cross(&f_lin);
                     data.deriv_Dcfrc_pos[pid][(0, k)] += torque.x;
                     data.deriv_Dcfrc_pos[pid][(1, k)] += torque.y;
@@ -2572,7 +2642,32 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             let anc_je = anc_js + model.body_jnt_num[anc];
             for kid in anc_js..anc_je {
                 if anc == bid && kid > jid {
-                    continue; // later same-body joint does not rotate S_jid (partial frame)
+                    // A later same-body joint does not turn S_jid; one that moves
+                    // the origin moves the point S_jid is referenced at.
+                    let da_k = model.jnt_dof_adr[kid];
+                    for d in 0..model.jnt_type[kid].nv() {
+                        if !moves_origin(da_k + d) {
+                            continue;
+                        }
+                        for dd in 0..nd_j {
+                            // Skip Free linear DOFs (no angular part to shift)
+                            if model.jnt_type[jid] == MjJointType::Free && dd < 3 {
+                                continue;
+                            }
+                            let s_jdd = SpatialVector::new(
+                                s_j[(0, dd)],
+                                s_j[(1, dd)],
+                                s_j[(2, dd)],
+                                s_j[(3, dd)],
+                                s_j[(4, dd)],
+                                s_j[(5, dd)],
+                            );
+                            let ds = origin_shift(&s_jdd, da_k + d);
+                            let proj: f64 = (0..6).map(|row| ds[row] * cfrc[row]).sum();
+                            data.qDeriv_pos[(da_j + dd, da_k + d)] -= proj;
+                        }
+                    }
+                    continue;
                 }
                 let da_k = model.jnt_dof_adr[kid];
                 let nd_k = model.jnt_type[kid].nv();
