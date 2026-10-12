@@ -174,7 +174,8 @@ pub struct Data {
 
     // ==================== RNE Intermediate Quantities ====================
     /// Body bias accelerations for RNE (Coriolis/centrifugal).
-    /// `a_bias[i] = X[i] @ a_bias[parent] + v[i] ×_m S[i] @ qdot[i]`
+    /// `a_bias[i] = X[i] @ a_bias[parent] + Σ_j v_j ×_m S_j @ qdot_j` over body
+    /// `i`'s joints `j`, `v_j` the body's velocity before joint `j`.
     pub cacc_bias: Vec<SpatialVector>,
     /// Body forces for RNE backward pass.
     /// `f[i] = I[i] @ a_bias[i] + v[i] ×* (I[i] @ v[i])`

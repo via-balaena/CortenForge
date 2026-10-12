@@ -161,6 +161,10 @@ pub mod derivatives;
 /// over actuator kinds, transmissions, states, controls and integrators.
 pub mod hybrid_fd_sweep;
 
+/// Bodies carrying two or more joints against MuJoCo 3.5.0: the velocity
+/// products, the body accumulators, four integrators and the derivatives.
+pub mod multi_joint_bias;
+
 // ============================================================================
 // Keyframe & Mocap Body Tests (§14)
 // ============================================================================

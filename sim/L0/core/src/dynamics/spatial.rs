@@ -226,8 +226,8 @@ pub fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f6
 /// current reference point to the target).
 ///
 /// Pure-translation motion transport: angular unchanged, linear += angular × r.
-/// Used to bring a parent body's spatial velocity to a child's origin in the
-/// Featherstone velocity-product term `c[i] = X_b(v[parent]) ×_m (S·qdot)`.
+/// Used to bring a parent body's spatial velocity to a child's origin, where
+/// the velocity products of the child's joints start (`mj_rne`).
 #[inline]
 #[must_use]
 pub fn transport_motion_spatial(m: SpatialVector, r: &Vector3<f64>) -> SpatialVector {

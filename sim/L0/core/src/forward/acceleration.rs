@@ -595,6 +595,11 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
 
+        // The body's velocity before each joint, as `mj_rne`'s bias pass
+        // (`dynamics/rne.rs`): the parent velocity transported to this body's
+        // origin, then each earlier joint's S·qvel.
+        let mut v_partial = transport_motion_spatial(data.cvel[parent_id], &r);
+
         for jnt_id in jnt_start..jnt_end {
             let dof_adr = model.jnt_dof_adr[jnt_id];
             let s = &joint_subspaces[jnt_id];
@@ -607,20 +612,16 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Coriolis acceleration c[i] = v[i] ×_m (S·qvel) = X_b(v[parent]) ×_m
-            // (S·qvel). cvel is referenced at each body's xpos, so the raw cvel[parent]
-            // (at the parent origin) drops the lever [0; ω_parent×r]; transport it to
-            // this body's origin instead. (Same fix as `mj_rne`'s bias-acceleration
-            // forward pass; vanishes for ≤2-link chains but matters for non-parallel
-            // ≥3-link chains.)
+            // Coriolis acceleration c = v ×_m (S·qvel), v the velocity before this
+            // joint (`v_partial`).
             let mut v_joint = SpatialVector::zeros();
             for d in 0..nv {
                 for row in 0..6 {
                     v_joint[row] += s[(row, d)] * data.qvel[dof_adr + d];
                 }
             }
-            let v_parent_at_body = transport_motion_spatial(data.cvel[parent_id], &r);
-            acc += spatial_cross_motion(v_parent_at_body, v_joint);
+            acc += spatial_cross_motion(v_partial, v_joint);
+            v_partial += v_joint;
         }
 
         data.cacc[body_id] = acc;

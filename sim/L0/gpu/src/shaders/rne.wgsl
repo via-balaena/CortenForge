@@ -227,30 +227,46 @@ fn rne_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
     var a_lin = pa_lin + cross(pa_ang, r);
 
     // Parent velocity, TRANSPORTED to this body's origin. cvel is referenced at
-    // each body's xpos, so the velocity-product term c[i] = v[i] ×_m (S·qdot) =
-    // X_b(v[parent]) ×_m (S·qdot) must use the transported parent velocity (angular
-    // unchanged, linear += ω_parent × r) — the raw parent value at the parent origin
-    // drops the [0; ω_parent×r] lever and corrupts non-parallel ≥3-link Coriolis.
+    // each body's xpos, so the velocity products below start from the transported
+    // parent velocity (angular unchanged, linear += ω_parent × r) — the raw parent
+    // value at the parent origin drops the [0; ω_parent×r] lever and corrupts
+    // non-parallel ≥3-link Coriolis.
     // (Mirrors the CPU `transport_motion_spatial` in dynamics/spatial.rs; r is the
     // same parent→child offset used for the bias-acceleration transport above.)
-    let vp_ang = body_cvel[(env_body_off + parent) * 2u + 0u].xyz;
-    let vp_lin = body_cvel[(env_body_off + parent) * 2u + 1u].xyz + cross(vp_ang, r);
+    var vp_ang = body_cvel[(env_body_off + parent) * 2u + 0u].xyz;
+    var vp_lin = body_cvel[(env_body_off + parent) * 2u + 1u].xyz + cross(vp_ang, r);
 
-    // Velocity-product acceleration from each DOF on this body
-    // c[i] = X_b(v[parent]) ×_m (S[i] @ qdot[i])
+    // Velocity-product acceleration from each joint on this body:
+    // c = v ×_m (S @ qdot), v the body's velocity before the joint. v starts at
+    // the transported parent velocity and takes each joint's S @ qdot after its
+    // product, as MuJoCo's mj_comVel; a joint's dofs (a ball's 3, a free joint's
+    // 6) share the velocity before it.
     let dof_start = body.dof_adr;
     let dof_count = body.dof_num;
-    for (var d = 0u; d < dof_count; d++) {
-        let dof_idx = env_dof_off + dof_start + d;
-        let qv = qvel[dof_idx];
-        let vj_ang = cdof[dof_idx * 2u + 0u].xyz * qv;
-        let vj_lin = cdof[dof_idx * 2u + 1u].xyz * qv;
+    for (var j = 0u; j < body.jnt_num; j++) {
+        let jnt = joints[body.jnt_adr + j];
+        var nd = 1u;
+        if (jnt.jtype == JNT_FREE) {
+            nd = 6u;
+        } else if (jnt.jtype == JNT_BALL) {
+            nd = 3u;
+        }
+        var vj_ang = vec3<f32>(0.0, 0.0, 0.0);
+        var vj_lin = vec3<f32>(0.0, 0.0, 0.0);
+        for (var d = 0u; d < nd; d++) {
+            let dof_idx = env_dof_off + jnt.dof_adr + d;
+            let qv = qvel[dof_idx];
+            vj_ang += cdof[dof_idx * 2u + 0u].xyz * qv;
+            vj_lin += cdof[dof_idx * 2u + 1u].xyz * qv;
+        }
 
-        // spatial_cross_motion(vt, v_joint):
-        //   result.angular = ω_parent × vj_ang
-        //   result.linear  = ω_parent × vj_lin + vt_lin × vj_ang
+        // spatial_cross_motion(v, v_joint):
+        //   result.angular = ω × vj_ang
+        //   result.linear  = ω × vj_lin + v_lin × vj_ang
         a_ang += cross(vp_ang, vj_ang);
         a_lin += cross(vp_ang, vj_lin) + cross(vp_lin, vj_ang);
+        vp_ang += vj_ang;
+        vp_lin += vj_lin;
     }
 
     // Free joint correction: subtract ω × v_linear
