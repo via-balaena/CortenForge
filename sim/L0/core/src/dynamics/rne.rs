@@ -267,17 +267,7 @@ fn rne_bias(model: &Model, data: &mut Data) {
             // Without this, the backward pass produces a spurious m*(ω × v)
             // force on the translational DOFs.
             if model.jnt_type[jnt_id] == MjJointType::Free {
-                let omega_world = nalgebra::Vector3::new(
-                    data.cvel[body_id][0],
-                    data.cvel[body_id][1],
-                    data.cvel[body_id][2],
-                );
-                let v_world = nalgebra::Vector3::new(
-                    data.qvel[dof_adr],
-                    data.qvel[dof_adr + 1],
-                    data.qvel[dof_adr + 2],
-                );
-                let correction = omega_world.cross(&v_world);
+                let correction = free_joint_velocity_product(data, body_id, dof_adr);
                 a_bias[3] -= correction.x;
                 a_bias[4] -= correction.y;
                 a_bias[5] -= correction.z;
@@ -412,4 +402,25 @@ pub fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
     }
 
     has_gravcomp
+}
+
+/// `ω × v` of a body's free joint: its world angular velocity crossed with
+/// the joint's world-frame linear velocity. MuJoCo takes a free joint's
+/// rotational velocity products with the translational velocity already in
+/// the body velocity (`mj_comVel`, `engine_core_smooth.c:2301-2321`), so a
+/// body acceleration referenced at the origin, `[α; a_O − ω×v_O]`, holds
+/// `−ω×v` in its linear part. `mj_rne`'s bias pass and the body accumulators
+/// (`mj_body_accumulators`) both subtract it.
+pub fn free_joint_velocity_product(data: &Data, body_id: usize, dof_adr: usize) -> Vector3<f64> {
+    let omega = Vector3::new(
+        data.cvel[body_id][0],
+        data.cvel[body_id][1],
+        data.cvel[body_id][2],
+    );
+    let v = Vector3::new(
+        data.qvel[dof_adr],
+        data.qvel[dof_adr + 1],
+        data.qvel[dof_adr + 2],
+    );
+    omega.cross(&v)
 }

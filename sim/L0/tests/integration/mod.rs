@@ -301,6 +301,10 @@ pub mod name_lookup;
 /// Body force accumulator tests: cacc, cfrc_int, cfrc_ext.
 pub mod body_accumulators;
 
+/// Body accumulators and the sensors that read them against MuJoCo 3.5.0's
+/// `mj_rnePostConstraint`.
+pub mod accumulator_parity;
+
 // ============================================================================
 // §52 Inverse Dynamics Tests
 // ============================================================================

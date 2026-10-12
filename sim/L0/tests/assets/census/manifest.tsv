@@ -1730,3 +1730,5 @@ ff94c82fc48f8ddf	sim/L0/tests/integration/flex_unified.rs:3472
 a803b3088b1e8616	sim/L0/tests/integration/flex_unified.rs:3527
 08831202fd91471b	sim/L0/tests/integration/sensor_phase6_spec_c.rs:414
 8715b1f63ae1339b	sim/L0/tests/integration/derivatives.rs:2088
+1ef9c65d5832b8e6	sim/L0/tests/integration/accumulator_parity.rs:189
+6594c42e913ed1f9	sim/L0/tests/integration/accumulator_parity.rs:153

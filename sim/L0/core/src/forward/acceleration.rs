@@ -5,6 +5,7 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
+use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
@@ -19,8 +20,8 @@ use crate::linalg::{
 };
 use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, Integrator, Model,
-    StepError,
+    ConstraintType, DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, EqualityType, Integrator,
+    MjJointType, Model, StepError,
 };
 use nalgebra::DVector;
 
@@ -417,8 +418,14 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
 #[allow(clippy::needless_range_loop)] // jnt_id indexes both joint_subspaces and model arrays
 pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // ===== Step 1: cfrc_ext = xfrc_applied + contact/constraint forces =====
-    for b in 0..model.nbody {
+    // As MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2477-2622`):
+    // its loop over applied wrenches starts at body 1, so one applied to the
+    // world body reaches nothing; an applied force acts at the centre of mass,
+    // and cfrc_ext holds it at the body's origin, its torque moved there.
+    data.cfrc_ext[0] = SpatialVector::zeros();
+    for b in 1..model.nbody {
         let (t, f) = (data.xfrc_applied[b].torque, data.xfrc_applied[b].force);
+        let t = t + (data.xipos[b] - data.xpos[b]).cross(&f);
         data.cfrc_ext[b] = SpatialVector::new(t.x, t.y, t.z, f.x, f.y, f.z);
     }
 
@@ -539,7 +546,8 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                     continue;
                 }
                 let bf = sign * f;
-                let r = cp - data.xipos[body_id];
+                // About the body's origin, where cfrc_ext is held.
+                let r = cp - data.xpos[body_id];
                 let torque = r.cross(&bf);
                 data.cfrc_ext[body_id][0] += torque.x;
                 data.cfrc_ext[body_id][1] += torque.y;
@@ -548,6 +556,63 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                 data.cfrc_ext[body_id][4] += bf.y;
                 data.cfrc_ext[body_id][5] += bf.z;
             }
+        }
+    }
+
+    // Connect and weld forces (`engine_core_smooth.c:2562-2622`): the rows'
+    // force, and a weld's torque, act at each body's anchor, `+` on body1 and
+    // `−` on body2. MuJoCo's anchors: a connect's `eq_data[0..3]` on body1 and
+    // `[3..6]` on body2, a weld's the other way round, as the rows' Jacobians.
+    {
+        let nefc = data.efc_type.len();
+        let mut i = 0;
+        while i < nefc {
+            if data.efc_type[i] != ConstraintType::Equality {
+                i += 1;
+                continue;
+            }
+            let eq_id = data.efc_id[i];
+            let weld = match model.eq_type[eq_id] {
+                EqualityType::Connect => false,
+                EqualityType::Weld => true,
+                EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => {
+                    i += 1;
+                    continue;
+                }
+            };
+            let f = nalgebra::Vector3::new(
+                data.efc_force[i],
+                data.efc_force[i + 1],
+                data.efc_force[i + 2],
+            );
+            let t = if weld {
+                nalgebra::Vector3::new(
+                    data.efc_force[i + 3],
+                    data.efc_force[i + 4],
+                    data.efc_force[i + 5],
+                )
+            } else {
+                nalgebra::Vector3::zeros()
+            };
+            let ed = &model.eq_data[eq_id];
+            let lo = nalgebra::Vector3::new(ed[0], ed[1], ed[2]);
+            let hi = nalgebra::Vector3::new(ed[3], ed[4], ed[5]);
+            let (anchor1, anchor2) = if weld { (hi, lo) } else { (lo, hi) };
+            for (body, anchor, sign) in [
+                (model.eq_obj1id[eq_id], anchor1, 1.0_f64),
+                (model.eq_obj2id[eq_id], anchor2, -1.0_f64),
+            ] {
+                if body == 0 {
+                    continue;
+                }
+                let lever = data.xquat[body] * anchor;
+                let torque = t + lever.cross(&f);
+                for k in 0..3 {
+                    data.cfrc_ext[body][k] += sign * torque[k];
+                    data.cfrc_ext[body][3 + k] += sign * f[k];
+                }
+            }
+            i += if weld { 6 } else { 3 };
         }
     }
 
@@ -622,6 +687,13 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
             }
             acc += spatial_cross_motion(v_partial, v_joint);
             v_partial += v_joint;
+            // A free joint's term, as `mj_rne`'s bias pass.
+            if model.jnt_type[jnt_id] == MjJointType::Free {
+                let c = free_joint_velocity_product(data, body_id, dof_adr);
+                acc[3] -= c.x;
+                acc[4] -= c.y;
+                acc[5] -= c.z;
+            }
         }
 
         data.cacc[body_id] = acc;

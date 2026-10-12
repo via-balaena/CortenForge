@@ -674,9 +674,10 @@ pub struct Data {
     /// accumulated into parent.
     pub cfrc_int: Vec<SpatialVector>,
     /// Per-body external forces in world frame (length `nbody`), laid out
-    /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`).
-    /// `xfrc_applied` + contact/constraint solver forces, converted to spatial
-    /// force at body CoM. Populated by `mj_body_accumulators()`.
+    /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`):
+    /// `xfrc_applied` and the contact, connect and weld forces, referenced at
+    /// the body's origin `xpos` like `cacc` and `cfrc_int`; the world body's is
+    /// zero. Populated by `mj_body_accumulators()`.
     pub cfrc_ext: Vec<SpatialVector>,
     /// Lazy flag: `mj_body_accumulators()` has been called this step.
     /// Cleared after constraint solve (before sensors), set by
