@@ -13,7 +13,7 @@ use crate::constraint::equality::{
 use crate::constraint::impedance::{MJ_MINVAL, compute_diag_approx_bodyweight};
 use crate::types::{ConstraintType, Data, EqualityType, Model};
 
-use super::assembly::finalize_constraint_row;
+use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp};
 
 /// Assemble equality constraint rows (Phase 3a) and flex edge-length constraints (Phase 3a').
 ///
@@ -47,6 +47,12 @@ pub(super) fn assemble_equality_rows(
         let sr = model.eq_solref[eq_id];
         let si = model.eq_solimp[eq_id];
         let nrows = rows.j_rows.nrows();
+        // A connect's 3 rows and a weld's 6 take one impedance, at the norm of
+        // their violation (MuJoCo `getposdim`); each row keeps its own `pos`.
+        let shared_violation = match model.eq_type[eq_id] {
+            EqualityType::Connect | EqualityType::Weld => Some(mju_norm(&rows.pos[..nrows])),
+            EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => None,
+        };
 
         for r in 0..nrows {
             // Copy J row
@@ -55,7 +61,7 @@ pub(super) fn assemble_equality_rows(
             }
             let bw =
                 compute_diag_approx_bodyweight(model, data, ConstraintType::Equality, eq_id, r);
-            finalize_constraint_row(
+            finalize_constraint_row_imp(
                 model,
                 data,
                 nv,
@@ -72,6 +78,7 @@ pub(super) fn assemble_equality_rows(
                 eq_id,
                 [0.0; 5],
                 bw,
+                shared_violation.unwrap_or_else(|| rows.pos[r].abs()),
             );
         }
     }
@@ -114,6 +121,49 @@ pub(super) fn assemble_equality_rows(
             e,        // id (edge index)
             [0.0; 5], // mu (no friction on edge constraints)
             MJ_MINVAL,
+        );
+    }
+}
+
+/// `‖v‖` in MuJoCo's order (`mju_norm` = `sqrt(mju_dot)`,
+/// `engine_util_blas.c:698-765`): four interleaved sums of squares, added as
+/// `(r0 + r2) + (r1 + r3)`, then the remaining one to three left to right.
+fn mju_norm(v: &[f64]) -> f64 {
+    let n = v.len();
+    let (mut r0, mut r1, mut r2, mut r3) = (0.0, 0.0, 0.0, 0.0);
+    let mut i = 0;
+    while i + 4 <= n {
+        r0 += v[i] * v[i];
+        r1 += v[i + 1] * v[i + 1];
+        r2 += v[i + 2] * v[i + 2];
+        r3 += v[i + 3] * v[i + 3];
+        i += 4;
+    }
+    let mut sum = (r0 + r2) + (r1 + r3);
+    match n - i {
+        3 => sum += v[i] * v[i] + v[i + 1] * v[i + 1] + v[i + 2] * v[i + 2],
+        2 => sum += v[i] * v[i] + v[i + 1] * v[i + 1],
+        1 => sum += v[i] * v[i],
+        _ => {}
+    }
+    sum.sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mju_norm;
+
+    /// A weld's six violations where MuJoCo's summation order differs from
+    /// a left-to-right sum in the last place: MuJoCo 3.5.0's `mju_norm` gives
+    /// 0.013731086045903286; summed left to right, 0.01373108604590329.
+    #[test]
+    fn mju_norm_sums_in_mujoco_order() {
+        let v = [
+            -0.006_066, -0.005_913, 0.002_481, 0.008_006, 0.006_809, -0.000_411,
+        ];
+        assert_eq!(
+            mju_norm(&v).to_bits(),
+            0.013_731_086_045_903_286_f64.to_bits()
         );
     }
 }

@@ -1291,12 +1291,11 @@ fn implicitspringdamper_integrate_adds_h_qacc_to_the_current_qvel() {
 }
 
 /// A hinged capsule and a free box joined by a connect, under implicitfast
-/// and PGS: 500 steps against MuJoCo 3.5.0 (unfused build) at 1e-12. Needs
-/// the connect impedance fix, Rigid-physics P26 (spec book
-/// `docs/studies/a_double_dose_of_detail`, chapter 20). Before it, `qvel` is
-/// 1.4e-8 off at step 10 and 8.4e-3 at step 100.
+/// and PGS: 500 steps against MuJoCo 3.5.0 (unfused build) at 1e-12. With an
+/// impedance per connect row (before Rigid-physics P26, spec book
+/// `docs/studies/a_double_dose_of_detail`, chapter 20), `qvel` was 1.4e-8 off
+/// at step 10 and 8.4e-3 at step 100.
 #[test]
-#[ignore = "known gap until Rigid-physics P26 (connect impedance): qvel off MuJoCo from step 10"]
 fn connect_under_implicitfast_pgs_matches_mujoco_3_5_0() {
     let xml = r#"<mujoco model="conn_free2_implicitfast_PGS">
   <option timestep="0.002" integrator="implicitfast" solver="PGS"/>

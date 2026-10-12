@@ -29,6 +29,21 @@ pub const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
 /// Minimum value to prevent division by zero (matches MuJoCo's mjMINVAL).
 pub const MJ_MINVAL: f64 = 1e-15;
 
+/// `a` to the power `b`, as MuJoCo's `power()` (`engine_core_constraint.c:1400-1409`):
+/// exactly `a` for 1 and `a*a` for 2 (the default), which `powf` need not give.
+#[inline]
+// MuJoCo compares the power exactly (`engine_core_constraint.c:1403-1405`).
+#[allow(clippy::float_cmp)]
+fn mj_power(a: f64, b: f64) -> f64 {
+    if b == 1.0 {
+        a
+    } else if b == 2.0 {
+        a * a
+    } else {
+        a.powf(b)
+    }
+}
+
 /// Compute impedance from solimp parameters and constraint violation (§15.1).
 ///
 /// Maps violation distance through a configurable sigmoid curve defined by
@@ -89,12 +104,12 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
         x
     } else if x <= midpoint {
         // Lower half: y = a * x^p where a = 1 / midpoint^(p-1)
-        let a = 1.0 / midpoint.powf(power - 1.0);
-        a * x.powf(power)
+        let a = 1.0 / mj_power(midpoint, power - 1.0);
+        a * mj_power(x, power)
     } else {
         // Upper half: y = 1 - b * (1-x)^p where b = 1 / (1-midpoint)^(p-1)
-        let b = 1.0 / (1.0 - midpoint).powf(power - 1.0);
-        1.0 - b * (1.0 - x).powf(power)
+        let b = 1.0 / mj_power(1.0 - midpoint, power - 1.0);
+        1.0 - b * mj_power(1.0 - x, power)
     };
 
     // Interpolate: d = d0 + y * (d_width - d0)
@@ -529,6 +544,29 @@ mod impedance_tests {
         //   d = 0.9 + 0.5 * (0.95 - 0.9) = 0.925
         let d = compute_impedance(DEFAULT, 0.0005);
         assert_relative_eq!(d, 0.925, epsilon = 1e-3);
+    }
+
+    /// MuJoCo's `power()` returns `a*a` for 2 and `a` for 1
+    /// (`engine_core_constraint.c:1400-1409`), which `pow` need not equal: at
+    /// these two points, one on each branch of the sigmoid, libm's `pow(·, 2)`
+    /// moves the impedance by one unit in the last place on macOS (Linux not
+    /// measured). The values are MuJoCo's `getimpedance` arithmetic (`:1413-1461`).
+    #[test]
+    fn impedance_squares_as_mujoco_power() {
+        // Opaque, as a model's solimp is: a constant power lets the compiler
+        // fold `powf(x, 2.0)` into `x*x`.
+        let solimp = std::hint::black_box([0.9, 0.95, 1.0, 0.5, 2.0]);
+        for (violation, mujoco) in [
+            (0.43254, 0.918_709_085_16),
+            (0.50964, 0.925_954_707_039_999_9),
+        ] {
+            let imp = compute_impedance(solimp, violation);
+            assert_eq!(
+                imp.to_bits(),
+                f64::to_bits(mujoco),
+                "at {violation}: {imp} against {mujoco}"
+            );
+        }
     }
 
     #[test]

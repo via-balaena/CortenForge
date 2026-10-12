@@ -35,6 +35,10 @@ pub mod collision_performance;
 /// Equality constraint tests: connect, weld, joint coupling.
 pub mod equality_constraints;
 
+/// Constraint impedance against MuJoCo 3.5.0: one impedance from the norm of
+/// a connect's or a weld's violation, and a row's from `pos - margin`.
+pub mod impedance_parity;
+
 // ============================================================================
 // Implicit Integration Tests (spring-damper stability)
 // ============================================================================
