@@ -297,3 +297,31 @@ fn quat_springs_and_ballquat_match_mujoco_bit_for_bit() {
         );
     }
 }
+
+/// framequat on a site, a geom, a body and an xbody, alone and against a
+/// reference site or geom, at two states of a turned free body: MuJoCo's
+/// `get_xquat` multiplies the body's `xquat` by the object's local quaternion
+/// (`engine_sensor.c:122-144`), so a site's or a geom's quaternion with
+/// w < 0 keeps that sign; one converted from `site_xmat` or `geom_xmat` took
+/// the other.
+#[test]
+fn frame_quat_sensors_match_mujoco_3_5_0() {
+    let case = &golden()["cases"]["frame_quats"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    for (k, state) in case["states"]
+        .as_array()
+        .expect("states")
+        .iter()
+        .enumerate()
+    {
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&floats(&state["qpos"]));
+        data.forward(&model).expect("forward");
+        assert_close(
+            &format!("frame_quats state {k} sensordata"),
+            data.sensordata.as_slice(),
+            &floats(&state["sensordata"]),
+            TOL,
+        );
+    }
+}

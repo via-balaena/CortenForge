@@ -30,6 +30,12 @@ each joint's `xanchor` and `xaxis` in the frame before it turns. The cases:
   `qpos_spring` set to quaternions not of unit length, at two states;
   `qfrc_spring` and the sensor (`engine_passive.c:155-161`,
   `engine_sensor.c:572-575`).
+- frame_quats: framequat sensors on a site, a geom, a body and an xbody,
+  alone and against a site and a geom as reference frames, on a turned free
+  body at two states, one where the site's and the geom's quaternions have
+  w < 0: MuJoCo's `get_xquat` multiplies the body's `xquat` by the object's
+  local quaternion (`engine_sensor.c:122-144`) and a reference frame's
+  conjugate by the object's (`:632-651`); the sensordata.
 """
 import json
 import os
@@ -301,6 +307,43 @@ def quat_springs():
     return {"xml": QUAT_SPRINGS, "qpos_spring": spring, "states": states}
 
 
+FRAME_QUATS = """<mujoco model="frame_quats">
+  <worldbody>
+    <body name="f" pos="0 0 1" quat="0.3 0.5 0.6 0.55">
+      <freejoint/>
+      <inertial pos="0.01 -0.02 0.0" quat="0.9 0.1 0.3 0.2" mass="2" diaginertia="0.03 0.02 0.015"/>
+      <geom name="g" type="box" size="0.1 0.08 0.05" pos="0.02 0 0" quat="0.25 0.8 0.2 0.5"
+            contype="0" conaffinity="0"/>
+      <site name="s" pos="0.05 0.02 0.01" quat="0.2 0.9 0.1 0.3"/>
+      <site name="r" pos="-0.03 0.01 0" quat="0.1 -0.4 0.7 0.5"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <framequat objtype="site" objname="s"/>
+    <framequat objtype="geom" objname="g"/>
+    <framequat objtype="body" objname="f"/>
+    <framequat objtype="xbody" objname="f"/>
+    <framequat objtype="site" objname="s" reftype="site" refname="r"/>
+    <framequat objtype="geom" objname="g" reftype="geom" refname="g"/>
+    <framequat objtype="body" objname="f" reftype="site" refname="r"/>
+  </sensor>
+</mujoco>"""
+
+
+def frame_quats():
+    m = mujoco.MjModel.from_xml_string(FRAME_QUATS)
+    states = []
+    for quat in ([0.3, 0.5, 0.6, 0.55], [0.9, -0.2, 0.3, 0.1]):
+        d = mujoco.MjData(m)
+        d.qpos[0:3] = [0.1, -0.2, 1.0]
+        d.qpos[3:7] = np.array(quat) / np.linalg.norm(quat)
+        mujoco.mj_forward(m, d)
+        states.append({"qpos": floats(d.qpos), "sensordata": floats(d.sensordata)})
+    if not any(st["sensordata"][0] < 0 for st in states):
+        sys.exit("frame_quats: no state has a site quaternion with w < 0")
+    return {"xml": FRAME_QUATS, "states": states}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -314,6 +357,7 @@ def main():
         "frames": frames(),
         "dof_length": dof_lengths(),
         "quat_springs": quat_springs(),
+        "frame_quats": frame_quats(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "kinematics.json"), "w", encoding="utf-8") as f:
