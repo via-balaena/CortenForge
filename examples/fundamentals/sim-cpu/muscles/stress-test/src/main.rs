@@ -22,7 +22,7 @@
 )]
 
 use sim_core::forward::{
-    hill_active_fl, hill_force_velocity, hill_passive_fl, muscle_activation_dynamics,
+    hill_active_fl, hill_force_velocity, hill_passive_fl, muscle_activation_dynamics, muscle_f0,
     muscle_gain_length, muscle_gain_velocity, muscle_passive_force,
 };
 
@@ -537,7 +537,7 @@ fn check_d1_mujoco_isometric() -> (u32, u32) {
     }
 
     let force = data.actuator_force[0];
-    let f0 = model.actuator_gainprm[0][2]; // resolved F0
+    let f0 = muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]);
 
     // At steady state: activation≈1, force should be dominated by -F0*FL*FV
     // The exact value depends on joint position (which changes as muscle acts),
@@ -730,7 +730,7 @@ fn check_e1_hill_isometric_zero_penn() -> (u32, u32) {
     data.forward(&model).expect("forward");
 
     let force = data.actuator_force[0];
-    let f0 = model.actuator_gainprm[0][2]; // should be 1000
+    let f0 = muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]); // should be 1000
 
     // At optimal length: FL(1.0)=1.0, FV(0.0)=1.0, cos(0)=1.0
     // force = gain * act + bias = (-F0*FL*FV*cos) * 1.0 + (-F0*FP*cos)
@@ -794,7 +794,7 @@ fn check_e3_hill_passive() -> (u32, u32) {
     data.forward(&model).expect("forward");
 
     let force = data.actuator_force[0];
-    let f0 = model.actuator_gainprm[0][2];
+    let f0 = muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]);
     // Expected: bias = -F0 * FP(1.3) * cos(0), FP(1.3) from exponential curve
     let expected_fp = hill_passive_fl(1.3);
 
@@ -811,11 +811,12 @@ fn check_e3_hill_passive() -> (u32, u32) {
 fn check_e4_hill_f0_auto() -> (u32, u32) {
     let model = sim_mjcf::load_model(HILL_AUTO_F0_MJCF).expect("parse");
 
-    let f0 = model.actuator_gainprm[0][2];
+    let stored = model.actuator_gainprm[0][2];
     let acc0 = model.actuator_acc0[0];
     let scale = model.actuator_gainprm[0][3]; // 200
+    let f0 = muscle_f0(&model.actuator_gainprm[0], acc0);
 
-    // F0 = scale / acc0
+    // The model keeps -1, as MuJoCo's does; each call resolves F0 = scale / acc0
     let expected = scale / acc0;
     let err = (f0 - expected).abs();
 
@@ -823,14 +824,14 @@ fn check_e4_hill_f0_auto() -> (u32, u32) {
     let t = 2;
 
     p += u32::from(check(
-        "E4a F0 auto-resolved positive",
-        f0 > 0.0,
-        &format!("F0={f0:.6} (must be positive)"),
+        "E4a F0 stays -1 in the model",
+        stored == -1.0,
+        &format!("gainprm[2]={stored:.6} (must be -1)"),
     ));
 
     p += u32::from(check(
-        "E4b F0 = scale/acc0",
-        err < 1e-6,
+        "E4b F0 resolves to scale/acc0",
+        f0 > 0.0 && err < 1e-6,
         &format!("F0={f0:.6}, scale/acc0={expected:.6}, err={err:.2e}"),
     ));
 

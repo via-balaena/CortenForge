@@ -142,7 +142,10 @@ fn setup(
         "  Model: {} bodies, {} joints, {} actuators",
         model.nbody, model.njnt, model.nu
     );
-    println!("  F0 (auto): {:.1} N\n", model.actuator_gainprm[0][2]);
+    println!(
+        "  F0 (auto): {:.1} N\n",
+        sim_core::forward::muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0])
+    );
 
     let mat_upper = materials.add(MetalPreset::CastIron.material());
     let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
