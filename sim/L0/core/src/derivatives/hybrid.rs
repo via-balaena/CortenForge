@@ -4330,7 +4330,7 @@ fn mjd_ellipsoid_fluid(model: &Model, data: &mut Data, body_id: usize) {
         let torque_d = mjd_viscous_torque(&s, c_ang, c_slender, beta, rho, &w);
         add_to_quadrant(&mut big_b, &torque_d, 0, 0);
 
-        // Symmetrize for ImplicitFast (Cholesky requires SPD)
+        // Symmetrize for ImplicitFast
         if is_implicitfast {
             for i in 0..6 {
                 for j in (i + 1)..6 {

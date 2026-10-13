@@ -159,7 +159,7 @@ impl ModelBuilder {
         self.actuator_user_raw.push(actuator.user.clone());
 
         // §34 S5: Muscle default actrange [0, 1] when actlimited is not set. MuJoCo
-        // leaves a <muscle> unlimited; the spec book's Q101 schedules parity for it.
+        // leaves a <muscle> unlimited.
         // Hill/Millard (CortenForge extensions) use the same default: activation ∈ [0, 1].
         if (actuator.actuator_type == MjcfActuatorType::Muscle
             || dyntype == ActuatorDynamics::HillMuscle

@@ -1300,7 +1300,7 @@ Focus: Internal solver improvements for better performance.
 
 1. ~~**Sparse matrix operations**: CSR/CSC matrices for constraint Jacobians~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation — `sparse.rs` deleted, never used by pipeline)
 2. ~~**Warm starting**: Initialize from previous frame's solution~~ ✅ (pipeline PGS has its own warm starting)
-3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ — Standalone removed (`integrators.rs` deleted in FUTURE_WORK C1); **re-implemented** as pipeline `Integrator::ImplicitFast` + `Integrator::Implicit` (asymmetric D + Coriolis, LU) in §13
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms~~ — Standalone removed (`integrators.rs` deleted in FUTURE_WORK C1); **re-implemented** as pipeline `Integrator::ImplicitFast` + `Integrator::Implicit` (asymmetric D + Coriolis, LU) in §13
 
 **Implemented:**
 

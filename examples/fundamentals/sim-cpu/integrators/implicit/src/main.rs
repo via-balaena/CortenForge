@@ -2,7 +2,7 @@
 //!
 //! Single undamped pendulum integrated with the full implicit method. Includes
 //! Coriolis velocity derivatives and uses LU factorization (asymmetric D matrix).
-//! Maximum accuracy among the implicit variants. Unconditionally stable.
+//! Unconditionally stable.
 //!
 //! Validates:
 //! - Energy drift < 0.5% over 15s (stable, slight dissipation OK)
@@ -55,7 +55,6 @@ use sim_core::validation::{Check, print_report};
 //   Properties:
 //   - Unconditionally stable (large timesteps won't explode)
 //   - Includes ALL velocity-dependent forces (Coriolis, gyroscopic)
-//   - Best for: maximum accuracy with implicit stability
 //
 // Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicit_full)
 

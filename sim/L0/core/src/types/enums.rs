@@ -839,7 +839,7 @@ pub enum Integrator {
     /// Implicit Euler for diagonal per-DOF spring/damper forces.
     ImplicitSpringDamper,
     /// Full implicit integration with asymmetric D and LU factorization.
-    /// Includes Coriolis velocity derivatives for maximum accuracy.
+    /// Includes Coriolis velocity derivatives.
     Implicit,
     /// Implicit integration without the Coriolis velocity derivatives.
     ImplicitFast,
