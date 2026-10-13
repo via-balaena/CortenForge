@@ -2,6 +2,7 @@
 //!
 //! Implements MuJoCo's `mj_RungeKutta` using the classic RK4 Butcher tableau.
 
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::forward::MjStage;
 use crate::jacobian::mj_integrate_pos_explicit;
 use crate::types::flags::{actuator_disabled, disabled};
@@ -120,21 +121,15 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         // 2e. Activation trial state: act = act_saved + h * Σ A[(i-1)*3+j] * act_dot[j],
         // whatever the actuator's dynamics, and unclamped, as MuJoCo's stages
         // (engine_forward.c:1086-1089); the advance alone takes the exact
-        // filter and the range.
-        // S4.8: Disabled actuators get zero act_dot, freezing activation.
+        // filter and the range. A disabled actuator's act_dot too: it acts
+        // with no force, and the advance leaves its activation (S4.8).
         for act_i in 0..model.nu {
             let act_adr = model.actuator_act_adr[act_i];
-            let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, act_i);
             for k in 0..model.actuator_act_num[act_i] {
                 let a = act_adr + k;
                 let mut sum = 0.0;
                 for j in 0..3 {
-                    let ad = if is_disabled {
-                        0.0
-                    } else {
-                        data.rk4_act_dot[j][a]
-                    };
-                    sum += RK4_A[(i - 1) * 3 + j] * ad;
+                    sum += RK4_A[(i - 1) * 3 + j] * data.rk4_act_dot[j][a];
                 }
                 data.act[a] = data.rk4_act_saved[a] + h * sum;
             }
@@ -199,7 +194,7 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
                 .sum();
             match model.actuator_dyntype[act_i] {
                 ActuatorDynamics::FilterExact => {
-                    let tau = model.actuator_dynprm[act_i][0].max(1e-10);
+                    let tau = model.actuator_dynprm[act_i][0].max(MJ_MINVAL);
                     data.act[a] =
                         data.rk4_act_saved[a] + dact_combined * tau * (1.0 - (-h / tau).exp());
                 }

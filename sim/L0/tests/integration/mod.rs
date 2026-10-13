@@ -209,6 +209,10 @@ pub mod rk4_parity;
 /// from `biasprm`, the clamps.
 pub mod muscle_parity;
 
+/// Activations against MuJoCo 3.5.0: a disabled actuator's `act_dot`, the
+/// filter's time constant.
+pub mod activation_parity;
+
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
 // ============================================================================

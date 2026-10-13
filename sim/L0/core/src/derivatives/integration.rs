@@ -1,5 +1,6 @@
 //! Integration-specific derivative logic.
 
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::forward::unclamped_next_activation;
 use crate::linalg::cholesky_solve_in_place;
 use crate::types::{ActuatorDynamics, Data, Integrator, Model};
@@ -193,12 +194,12 @@ pub(super) fn compute_integration_derivatives(
             let j = act_adr + k;
             match model.actuator_dyntype[i] {
                 ActuatorDynamics::Filter => {
-                    let tau = model.actuator_dynprm[i][0].max(1e-10);
+                    let tau = model.actuator_dynprm[i][0].max(MJ_MINVAL);
                     dact_dact[(j, j)] = 1.0 - h / tau;
                     dact_dactdot[(j, j)] = h;
                 }
                 ActuatorDynamics::FilterExact => {
-                    let tau = model.actuator_dynprm[i][0].max(1e-10);
+                    let tau = model.actuator_dynprm[i][0].max(MJ_MINVAL);
                     dact_dact[(j, j)] = (-h / tau).exp();
                     dact_dactdot[(j, j)] = tau * (1.0 - (-h / tau).exp());
                 }

@@ -564,7 +564,7 @@ pub fn unclamped_next_activation(
     act_dot: f64,
 ) -> f64 {
     if model.actuator_dyntype[actuator_id] == ActuatorDynamics::FilterExact {
-        let tau = model.actuator_dynprm[actuator_id][0].max(1e-10);
+        let tau = model.actuator_dynprm[actuator_id][0].max(MIN_VAL);
         current_act + act_dot * tau * (1.0 - (-model.timestep / tau).exp())
     } else {
         current_act + act_dot * model.timestep
@@ -627,10 +627,6 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     for i in 0..model.nu {
-        // S7d: Skip force computation for per-group disabled actuators.
-        if actuator_disabled(model, i) {
-            continue;
-        }
         // A sleeping actuator keeps its act_dot and acts with no force
         // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394).
         if sleep_enabled && crate::island::actuator_asleep(model, data, i) {
@@ -666,7 +662,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 // Filter uses Euler integration, FilterExact uses exact integration.
                 // Both compute the same act_dot here; the difference is in integrate().
                 let act_adr = model.actuator_act_adr[i];
-                let tau = model.actuator_dynprm[i][0].max(1e-10);
+                let tau = model.actuator_dynprm[i][0].max(MIN_VAL);
                 data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
                 if model.actuator_actearly[i] {
                     mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
@@ -700,6 +696,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 }
             }
         };
+
+        // S7d: a per-group disabled actuator has its act_dot, as MuJoCo's
+        // (whose act_dot loop has no disabled check, engine_forward.c:321-372),
+        // and no force; the advance leaves its activation.
+        if actuator_disabled(model, i) {
+            continue;
+        }
 
         // --- Phase 2: Force generation (gain * input + bias) ---
         let length = data.actuator_length[i];
