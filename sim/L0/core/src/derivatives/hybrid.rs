@@ -15,6 +15,7 @@ use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
+use crate::forward::solve_implicit;
 use crate::forward::{
     MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
     hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_gain_length,
@@ -26,8 +27,7 @@ use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
 use crate::linalg::{
-    cholesky_in_place, cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse,
-    mj_solve_sparse_batch,
+    cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse, mj_solve_sparse_batch,
 };
 use crate::plugin::PluginCapabilityBit;
 use crate::quat::{qpos_quat, quat_to_vel};
@@ -2931,8 +2931,8 @@ pub fn mjd_transition_hybrid(
     let nx = 2 * nv + na;
 
     // 1. Populate qDeriv analytically on a cloned working copy.
-    //    The clone preserves qLD_data/qLD_diag_inv, scratch_m_impl, qM — all
-    //    unmodified by mjd_smooth_vel.
+    //    The clone preserves qLD_data/qLD_diag_inv, qH/qHDiagInv, qLU,
+    //    scratch_m_impl, qM — all unmodified by mjd_smooth_vel.
     let mut data_work = data.clone();
     mjd_smooth_vel(model, &mut data_work);
 
@@ -3041,11 +3041,7 @@ pub fn mjd_transition_hybrid(
             let mut dvdv = DMatrix::identity(nv, nv);
             for j in 0..nv {
                 let mut col = data_work.qDeriv.column(j).clone_owned();
-                lu_solve_factored(
-                    &data_work.scratch_m_impl,
-                    &data_work.scratch_lu_piv,
-                    &mut col,
-                );
+                solve_implicit(model, &data_work, &mut col);
                 for i in 0..nv {
                     dvdv[(i, j)] += h * col[i];
                 }
@@ -3060,11 +3056,7 @@ pub fn mjd_transition_hybrid(
             mjd_rne_vel(model, &mut dq);
             for j in 0..nv {
                 let mut col = dq.qDeriv.column(j).clone_owned();
-                lu_solve_factored(
-                    &data_work.scratch_m_impl,
-                    &data_work.scratch_lu_piv,
-                    &mut col,
-                );
+                solve_implicit(model, &data_work, &mut col);
                 for i in 0..nv {
                     dvdv[(i, j)] += h * h * col[i];
                 }
@@ -3074,12 +3066,12 @@ pub fn mjd_transition_hybrid(
         // Refused at entry (check_fd_transition_inputs).
         Integrator::RungeKutta4 => unreachable!(),
         Integrator::ImplicitFast => {
-            // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
-            // scratch_m_impl holds Cholesky factors of (M − h·D) from forward pass
+            // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv, with the factor of
+            // M − h·D the forward pass left in `qH`
             let mut dvdv = DMatrix::identity(nv, nv);
             for j in 0..nv {
                 let mut col = data_work.qDeriv.column(j).clone_owned();
-                cholesky_solve_in_place(&data_work.scratch_m_impl, &mut col);
+                solve_implicit(model, &data_work, &mut col);
                 for i in 0..nv {
                     dvdv[(i, j)] += h * col[i];
                 }
@@ -3208,15 +3200,11 @@ pub fn mjd_transition_hybrid(
                         );
                     }
                 }
-                Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
+                Integrator::ImplicitSpringDamper => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdact);
                 }
-                Integrator::Implicit => {
-                    lu_solve_factored(
-                        &data_work.scratch_m_impl,
-                        &data_work.scratch_lu_piv,
-                        &mut dvdact,
-                    );
+                Integrator::ImplicitFast | Integrator::Implicit => {
+                    solve_implicit(model, &data_work, &mut dvdact);
                 }
                 // RK4 is refused at entry (check_fd_transition_inputs).
                 Integrator::RungeKutta4 => unreachable!(),
@@ -3378,7 +3366,7 @@ pub fn mjd_transition_hybrid(
                 let mut dvdq = DMatrix::zeros(nv, nv);
                 for j in 0..nv {
                     let mut col = data_work.qDeriv_pos.column(j).clone_owned();
-                    cholesky_solve_in_place(&data_work.scratch_m_impl, &mut col);
+                    solve_implicit(model, &data_work, &mut col);
                     for i in 0..nv {
                         dvdq[(i, j)] = h * col[i];
                     }
@@ -3643,15 +3631,11 @@ pub fn mjd_transition_hybrid(
                         );
                     }
                 }
-                Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
+                Integrator::ImplicitSpringDamper => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdctrl);
                 }
-                Integrator::Implicit => {
-                    lu_solve_factored(
-                        &data_work.scratch_m_impl,
-                        &data_work.scratch_lu_piv,
-                        &mut dvdctrl,
-                    );
+                Integrator::ImplicitFast | Integrator::Implicit => {
+                    solve_implicit(model, &data_work, &mut dvdctrl);
                 }
                 // RK4 is refused at entry (check_fd_transition_inputs).
                 Integrator::RungeKutta4 => unreachable!(),

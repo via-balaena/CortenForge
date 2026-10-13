@@ -41,6 +41,7 @@ mod velocity;
 pub(crate) use acceleration::mj_body_accumulators;
 #[allow(unused_imports)]
 pub(crate) use acceleration::mj_fwd_acceleration;
+pub(crate) use acceleration::solve_implicit;
 // Public re-exports: stable mathematical functions for muscle curves and dynamics.
 // Used by examples and external consumers for direct curve evaluation.
 pub use actuation::{hill_active_fl, hill_force_velocity, hill_passive_fl};

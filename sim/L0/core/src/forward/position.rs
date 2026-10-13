@@ -8,7 +8,7 @@ use crate::collision::narrow::GEOM_EPSILON;
 use crate::dynamics::compute_body_spatial_inertia;
 use crate::quat;
 use crate::tendon::mj_fwd_tendon;
-use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SleepState};
+use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SameFrame, SleepState};
 use cf_geometry::Aabb;
 use nalgebra::{DVector, Matrix3, Matrix6, Point3, Quaternion, UnitQuaternion, Vector3};
 
@@ -59,6 +59,7 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             body_id,
             &model.body_ipos[body_id],
             &model.body_iquat[body_id],
+            sameframe(&model.body_sameframe, body_id),
         );
         data.xipos[body_id] = xipos;
         data.ximat[body_id] = ximat;
@@ -84,6 +85,7 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             model.geom_body[geom_id],
             &model.geom_pos[geom_id],
             &model.geom_quat[geom_id],
+            sameframe(&model.geom_sameframe, geom_id),
         );
         data.geom_xpos[geom_id] = xpos;
         data.geom_xmat[geom_id] = xmat;
@@ -96,6 +98,7 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             model.site_body[site_id],
             &model.site_pos[site_id],
             &model.site_quat[site_id],
+            sameframe(&model.site_sameframe, site_id),
         );
         data.site_xpos[site_id] = xpos;
         data.site_xmat[site_id] = xmat;
@@ -224,23 +227,39 @@ fn free_pose(qpos: &DVector<f64>, qadr: usize) -> ([f64; 3], [f64; 4]) {
 
 /// The world position, orientation and rotation matrix of a frame at `pos`,
 /// `quat` in body `body_id`'s frame (MuJoCo `mj_local2Global`,
-/// `engine_core_util.c:844-885`). MuJoCo copies the body's frame or its
-/// inertial frame for a frame within 1e-6 of it (`*_sameframe`); computed
-/// here, a frame equal to one exactly comes out the same, which
-/// `kinematics_match_mujoco_bit_for_bit` checks on geoms at the inertial
-/// frame and on a site and an inertial frame at the body's rotation.
+/// `engine_core_util.c:844-885`): the position and the matrix are copied
+/// from the body's frame or its inertial frame where `same` says the frame
+/// is that one, as MuJoCo does. The quaternion, which MuJoCo does not store,
+/// is computed whatever `same` says, as MuJoCo's `framequat` sensor computes
+/// a site's.
 fn local_to_global(
     data: &Data,
     body_id: usize,
     pos: &Vector3<f64>,
     quat: &UnitQuaternion<f64>,
+    same: SameFrame,
 ) -> (Vector3<f64>, [f64; 4], Matrix3<f64>) {
-    let xpos = add3(
-        &mul_mat_vec3(&data.xmat[body_id], &(*pos).into()),
-        &data.xpos[body_id].into(),
-    );
+    let xpos = match same {
+        SameFrame::Body => data.xpos[body_id],
+        SameFrame::Inertia => data.xipos[body_id],
+        SameFrame::None | SameFrame::BodyRot | SameFrame::InertiaRot => Vector3::from(add3(
+            &mul_mat_vec3(&data.xmat[body_id], &(*pos).into()),
+            &data.xpos[body_id].into(),
+        )),
+    };
     let xquat = quat::mul_quat(&quat_array(&data.xquat[body_id]), &quat_array(quat));
-    (Vector3::from(xpos), xquat, mat3(&quat::quat_to_mat(&xquat)))
+    let xmat = match same {
+        SameFrame::Body | SameFrame::BodyRot => data.xmat[body_id],
+        SameFrame::Inertia | SameFrame::InertiaRot => data.ximat[body_id],
+        SameFrame::None => mat3(&quat::quat_to_mat(&xquat)),
+    };
+    (xpos, xquat, xmat)
+}
+
+/// Entry `i` of a `*_sameframe` array; [`SameFrame::None`], which computes
+/// the frame, for a model built without [`Model::compute_simple_bodies`].
+fn sameframe(flags: &[SameFrame], i: usize) -> SameFrame {
+    flags.get(i).copied().unwrap_or_default()
 }
 
 /// A row-major 3×3 matrix.

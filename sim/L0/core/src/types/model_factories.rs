@@ -7,7 +7,7 @@
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
-use super::enums::{GeomType, MjJointType};
+use super::enums::{GeomType, MjJointType, SameFrame};
 use super::model::Model;
 use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
 
@@ -459,6 +459,8 @@ impl Model {
         self.geom_name.push(Some("ground".into()));
         self.geom_rbound.push(0.0);
         self.geom_aabb.push([0.0, 0.0, 0.0, 1e6, 1e6, 1e6]);
+        // At the world's origin, unturned: the world's frame.
+        self.geom_sameframe.push(SameFrame::Body);
         self.geom_mesh.push(None);
         self.geom_hfield.push(None);
         self.geom_shape.push(None);
@@ -542,9 +544,12 @@ mod tests {
         check("dof_solref", m.dof_solref.len(), m.nv);
         check("dof_solimp", m.dof_solimp.len(), m.nv);
         check("dof_invweight0", m.dof_invweight0.len(), m.nv);
+        check("dof_simplenum", m.dof_simplenum.len(), m.nv);
         check("body_treeid", m.body_treeid.len(), m.nbody);
         check("body_parent", m.body_parent.len(), m.nbody);
         check("body_rootid", m.body_rootid.len(), m.nbody);
+        check("body_sameframe", m.body_sameframe.len(), m.nbody);
+        check("body_simple", m.body_simple.len(), m.nbody);
         check("body_jnt_adr", m.body_jnt_adr.len(), m.nbody);
         check("body_jnt_num", m.body_jnt_num.len(), m.nbody);
         check("body_dof_adr", m.body_dof_adr.len(), m.nbody);
@@ -589,6 +594,7 @@ mod tests {
         check("geom_fluid", m.geom_fluid.len(), m.ngeom);
         check("geom_name", m.geom_name.len(), m.ngeom);
         check("geom_rbound", m.geom_rbound.len(), m.ngeom);
+        check("geom_sameframe", m.geom_sameframe.len(), m.ngeom);
         check("geom_aabb", m.geom_aabb.len(), m.ngeom);
         check("geom_mesh", m.geom_mesh.len(), m.ngeom);
         check("geom_hfield", m.geom_hfield.len(), m.ngeom);
@@ -606,6 +612,7 @@ mod tests {
         check("site_group", m.site_group.len(), m.nsite);
         check("site_rgba", m.site_rgba.len(), m.nsite);
         check("site_user", m.site_user.len(), m.nsite);
+        check("site_sameframe", m.site_sameframe.len(), m.nsite);
         check("tendon_range", m.tendon_range.len(), m.ntendon);
         check("tendon_limited", m.tendon_limited.len(), m.ntendon);
         check("tendon_stiffness", m.tendon_stiffness.len(), m.ntendon);

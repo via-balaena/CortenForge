@@ -214,6 +214,8 @@ fn kinematics_match_mujoco_bit_for_bit() {
     model.geom_quat = to_quats(&floats(&fields["geom_quat"]));
     model.site_pos = to_vec3s(&floats(&fields["site_pos"]));
     model.site_quat = to_quats(&floats(&fields["site_quat"]));
+    // The copied frames follow the frames, as MuJoCo's compiler derives them.
+    model.compute_simple_bodies();
     let mut data = model.make_data();
     data.qpos.copy_from_slice(&floats(&case["qpos"]));
     data.mocap_pos = to_vec3s(&floats(&case["mocap_pos"]));

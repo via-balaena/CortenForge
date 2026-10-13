@@ -986,13 +986,19 @@ fn test_implicitfast_tendon_spring_explicit() {
     }
 }
 
-/// AC-16: Cholesky failure on positive velocity feedback (KA #7).
-/// Strong positive velocity feedback causes ImplicitFast (Cholesky) to fail,
-/// while Implicit (LU) succeeds.
+/// AC-16: strong positive velocity feedback (an affine velocity gain of 1000
+/// at ctrl 10 on a hinge) makes `M − h·D` negative. MuJoCo 3.5.0 (unfused
+/// build) steps it under both implicit integrators: implicitfast's
+/// `mj_factorI` checks no pivot, and implicit's LU takes the negative one.
+/// qvel after one step from qvel 1. Before, implicitfast refused it
+/// (`CholeskyFailed`).
 #[test]
-fn test_cholesky_failure_positive_velocity_feedback() {
-    let base_mjcf = |integrator: &str| {
-        format!(
+fn positive_velocity_feedback_steps_as_mujoco_3_5_0() {
+    for (integrator, mujoco) in [
+        ("implicitfast", -4.000_160_006_412_123_4e-5),
+        ("implicit", -4.000_160_006_389_919e-5),
+    ] {
+        let model = load_model(&format!(
             r#"
             <mujoco model="pos_feedback">
                 <option timestep="0.01" integrator="{integrator}" gravity="0 0 0"/>
@@ -1008,33 +1014,18 @@ fn test_cholesky_failure_positive_velocity_feedback() {
                 </actuator>
             </mujoco>
             "#
-        )
-    };
-
-    let model_fast = load_model(&base_mjcf("implicitfast")).unwrap();
-    let model_full = load_model(&base_mjcf("implicit")).unwrap();
-
-    let mut data_fast = model_fast.make_data();
-    let mut data_full = model_full.make_data();
-
-    // Large positive ctrl makes dforce_dv > 0 via gainprm[2]=1000
-    data_fast.ctrl[0] = 10.0;
-    data_fast.qvel[0] = 1.0;
-    data_full.ctrl[0] = 10.0;
-    data_full.qvel[0] = 1.0;
-
-    let result_fast = data_fast.step(&model_fast);
-    let result_full = data_full.step(&model_full);
-
-    assert_eq!(
-        result_fast,
-        Err(sim_core::StepError::CholeskyFailed),
-        "ImplicitFast should fail with CholeskyFailed for positive velocity feedback"
-    );
-    assert!(
-        result_full.is_ok(),
-        "Implicit (LU) should succeed for positive velocity feedback"
-    );
+        ))
+        .unwrap();
+        let mut data = model.make_data();
+        data.ctrl[0] = 10.0;
+        data.qvel[0] = 1.0;
+        data.step(&model).expect("step");
+        assert!(
+            (data.qvel[0] - mujoco).abs() < 1e-12,
+            "{integrator}: qvel {}, MuJoCo {mujoco}",
+            data.qvel[0]
+        );
+    }
 }
 
 /// AC-9: Analytical vs FD derivative consistency for ImplicitFast.
@@ -1891,11 +1882,10 @@ fn implicit_steps_follow_the_spring_and_damper_flags_as_mujoco_3_5_0() {
 /// adds edge equalities). MuJoCo 3.5.0 (unfused build) steps the same cable
 /// as a jointless anchor body and a body with three slides and a 0.1 kg
 /// sphere under `<flex body="anchor v1">`, 20 steps of 0.002 s from qvel
-/// (0.4, 0.7, -0.5). Under full Implicit the step matches it. Under
-/// implicitfast MuJoCo also leaves out the entries between the free vertex's
-/// dofs, where its mass matrix holds none (the spec book's P30, ledger L92),
-/// so ours still differs there; and on a four-vertex cable with no vertex
-/// pinned, ours differs under both (below).
+/// (0.4, 0.7, -0.5). Both steps match it: under implicitfast MuJoCo leaves
+/// out the entries between the free vertex's dofs, where its mass matrix
+/// holds none, and so does ours; and on a four-vertex cable with no vertex
+/// pinned both leave out what couples two vertices (below).
 #[test]
 fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
     // (integrator, MuJoCo's qpos and qvel)
@@ -1954,16 +1944,12 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
             .zip(mujoco)
             .map(|(g, w)| (g - w).abs())
             .fold(0.0, f64::max);
-        if integrator == "implicit" {
-            assert!(off < 1e-12, "{integrator}: {got:?}, MuJoCo {mujoco:?}");
-        } else {
-            assert!(off > 1e-4, "{integrator} agrees with MuJoCo: P30's flip");
-        }
+        assert!(off < 1e-12, "{integrator}: {got:?}, MuJoCo {mujoco:?}");
     }
 
     // A four-vertex cable, no vertex pinned: each edge's term also couples
-    // two vertices' dofs, which MuJoCo's `qDeriv` (dofs on one branch) leaves
-    // out under both integrators (P30), so ours still differs under both.
+    // two vertices' dofs, which both integrators leave out, as MuJoCo's do
+    // (dofs on two branches).
     // MuJoCo steps it as four bodies with three slides and a 0.1 kg sphere
     // each under `<flex body=...>`; its qvel after 20 steps.
     let cable = [
@@ -2035,8 +2021,9 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
             .map(|(g, w)| (g - w).abs())
             .fold(0.0, f64::max);
         assert!(
-            off > 1e-4,
-            "four-vertex cable, {integrator}, agrees with MuJoCo: P30's flip"
+            off < 1e-12,
+            "four-vertex cable, {integrator}: {:?}, MuJoCo {mujoco:?}",
+            data.qvel
         );
     }
 }
@@ -2053,10 +2040,8 @@ fn implicit_steps_take_flex_edge_damping_as_mujoco_3_5_0() {
 /// (unfused build) steps the same cable as a jointless anchor body and a
 /// body with three slides and a 0.1 kg sphere under `<flex body="anchor
 /// v1">`, 20 steps of 0.002 s from qvel (0.4, 0.7, -0.5). The damping acts
-/// along that direction at the start; Euler and implicit match MuJoCo after
-/// 20 steps, and implicitfast
-/// still differs where MuJoCo leaves out the entries between the vertex's
-/// dofs (the spec book's P30).
+/// along that direction at the start, and the three integrators match MuJoCo
+/// after 20 steps.
 #[test]
 fn a_short_flex_edge_acts_as_mujoco_3_5_0() {
     // (the second vertex, its start offset along x, MuJoCo's passive force
@@ -2195,11 +2180,7 @@ fn a_short_flex_edge_acts_as_mujoco_3_5_0() {
             .zip(mujoco)
             .map(|(g, w)| (g - w).abs())
             .fold(0.0, f64::max);
-        if integrator == "implicitfast" {
-            assert!(off > 1e-4, "{what} agrees with MuJoCo: P30's flip");
-        } else {
-            assert!(off < 1e-12, "{what}: {got:?}, MuJoCo {mujoco:?}");
-        }
+        assert!(off < 1e-12, "{what}: {got:?}, MuJoCo {mujoco:?}");
     }
 
     // The collapsed edge's equality row: MuJoCo's position error is the

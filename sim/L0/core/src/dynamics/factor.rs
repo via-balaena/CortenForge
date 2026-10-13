@@ -5,6 +5,7 @@
 //! the sparse layout. Corresponds to `mj_factorI` in MuJoCo's
 //! `engine_util_sparse.c`.
 
+use crate::linalg::dot_sparse;
 use crate::types::{Data, ENABLE_SLEEP, Model};
 
 impl Model {
@@ -234,6 +235,86 @@ pub fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
     }
 
     data.qLD_valid = true;
+}
+
+/// Factor `mat`, a matrix on a tree pattern whose row `k` holds, in
+/// ascending columns, `k`'s ancestors and then `k` itself (`Model::M_*`), as
+/// `L'·D·L` in place: MuJoCo 3.5.0's `mj_factorI`
+/// (`engine_core_smooth.c:1991-2015`), operation for operation. From the
+/// last row up, each row updates its ancestors' rows by its own entries
+/// before it is divided by its diagonal, whose inverse goes to `diag_inv`. No
+/// pivot is checked: a negative one factors as it comes, and a zero one gives
+/// infinities, as in MuJoCo. `index` lists the rows to factor (MuJoCo's awake
+/// dofs); every row when `None`.
+pub fn mj_factor_i(
+    mat: &mut [f64],
+    diag_inv: &mut [f64],
+    rownnz: &[usize],
+    rowadr: &[usize],
+    colind: &[usize],
+    index: Option<&[usize]>,
+) {
+    let n = index.map_or(rownnz.len(), <[usize]>::len);
+    for j in (0..n).rev() {
+        let k = index.map_or(j, |ix| ix[j]);
+        let start = rowadr[k];
+        let diag = rownnz[k] - 1;
+        let inv_d = 1.0 / mat[start + diag];
+        diag_inv[k] = inv_d;
+        // A row's ancestors come before it: rows are stored in dof order.
+        let (above, row_k) = mat.split_at_mut(start);
+        for adr in (0..diag).rev() {
+            let i = colind[start + adr];
+            let scale = -row_k[adr] * inv_d;
+            let row_i = &mut above[rowadr[i]..rowadr[i] + rownnz[i]];
+            for (x, v) in row_i.iter_mut().zip(row_k.iter()) {
+                *x += v * scale;
+            }
+        }
+        for x in &mut row_k[..diag] {
+            *x *= inv_d;
+        }
+    }
+}
+
+/// Solve `L'·D·L·x = b` in place with [`mj_factor_i`]'s factor: MuJoCo
+/// 3.5.0's `mj_solveLD` (`engine_core_smooth.c:2131-2214`) for one vector:
+/// `x ← L⁻ᵀ·x`, each row with a non-zero entry scattered to its ancestors,
+/// then `x ← D⁻¹·x`, then `x ← L⁻¹·x`, each row's sum taken as
+/// [`dot_sparse`] takes it. `index` as [`mj_factor_i`]'s.
+pub fn mj_solve_ld(
+    x: &mut [f64],
+    mat: &[f64],
+    diag_inv: &[f64],
+    rownnz: &[usize],
+    rowadr: &[usize],
+    colind: &[usize],
+    index: Option<&[usize]>,
+) {
+    let n = index.map_or(rownnz.len(), <[usize]>::len);
+    let row = |k: usize| index.map_or(k, |ix| ix[k]);
+    for k in (0..n).rev() {
+        let i = row(k);
+        let x_i = x[i];
+        if rownnz[i] == 1 || x_i == 0.0 {
+            continue;
+        }
+        for adr in rowadr[i]..rowadr[i] + rownnz[i] - 1 {
+            x[colind[adr]] -= mat[adr] * x_i;
+        }
+    }
+    for k in 0..n {
+        let i = row(k);
+        x[i] *= diag_inv[i];
+    }
+    for k in 0..n {
+        let i = row(k);
+        let (adr, d) = (rowadr[i], rownnz[i] - 1);
+        if d > 0 {
+            let sum = dot_sparse(&mat[adr..adr + d], |t| x[colind[adr + t]]);
+            x[i] -= sum;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -572,5 +653,253 @@ mod sparse_factorization_tests {
                 );
             }
         }
+    }
+}
+
+/// MuJoCo 3.5.0's own factors (unfused build), from
+/// `scripts/gen_implicit_reference.py`'s `factor` case: a hinge–hinge–ball
+/// chain with a hinge off its root, after one step under implicitfast and
+/// under implicit, the inputs MuJoCo factored and what it made of them.
+#[cfg(test)]
+#[allow(clippy::unreadable_literal, clippy::expect_used)]
+mod mujoco_factor_tests {
+    use super::{mj_factor_i, mj_solve_ld};
+    use crate::linalg::{lu_factor_sparse, lu_solve_sparse};
+    use crate::types::StepError;
+
+    // implicitfast: M's pattern
+    const M_ROWNNZ: [usize; 6] = [1, 2, 3, 4, 5, 2];
+    const M_ROWADR: [usize; 6] = [0, 1, 3, 6, 10, 15];
+    const M_COLIND: [usize; 17] = [0, 0, 1, 0, 1, 2, 0, 1, 2, 3, 0, 1, 2, 3, 4, 0, 5];
+    const QH_IN: [f64; 17] = [
+        0.3185262992163552,
+        0.0006530479446890686,
+        0.08218841172669453,
+        0.016734050001405636,
+        0.00349468013468013,
+        0.004073333333333321,
+        0.005750755837432276,
+        -0.010253602693602676,
+        -0.00012000000000000205,
+        0.004606666666666655,
+        0.0074397118874488495,
+        6.45117845117835e-05,
+        0.000959999999999997,
+        0.00031999999999999954,
+        0.0013533333333333316,
+        8.673617379884035e-19,
+        0.013383333333333323,
+    ];
+    const QH: [f64; 17] = [
+        0.23300582721760135,
+        0.0007078978910017373,
+        0.05680628467720641,
+        3.4946805310635383,
+        0.7910524795470573,
+        0.0033657743889327703,
+        0.8809557919545797,
+        -2.2663546656762543,
+        -0.07658242068870592,
+        0.004531001642036113,
+        5.497324054765167,
+        0.04766880628949526,
+        0.7093596059113287,
+        0.2364532019704433,
+        0.0013533333333333316,
+        6.480909623823693e-17,
+        0.013383333333333323,
+    ];
+    const QH_DIAG_INV: [f64; 6] = [
+        4.291738159261193,
+        17.603686030205232,
+        297.108446510309,
+        220.70175184280583,
+        738.9162561576364,
+        74.71980074719806,
+    ];
+    const Y: [f64; 6] = [0.7, -1.3, 0.4, 2.1, -0.9, 1.6];
+    const X: [f64; 6] = [
+        -2.746575156457358,
+        53.21763556472989,
+        328.64887090375686,
+        658.6391252241617,
+        -1041.3302016767364,
+        119.5516811955169,
+    ];
+    // implicit: D's pattern
+    const D_ROWNNZ: [usize; 6] = [6, 5, 5, 5, 5, 2];
+    const D_ROWADR: [usize; 6] = [0, 6, 11, 16, 21, 26];
+    const D_DIAG: [usize; 6] = [0, 1, 2, 3, 4, 1];
+    const D_COLIND: [usize; 28] = [
+        0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 5,
+    ];
+    const QLU_IN: [f64; 28] = [
+        0.3183006743717101,
+        0.0014665918070532386,
+        0.01677126476286876,
+        0.005428790371425388,
+        0.007599069927127666,
+        4.253305988839993e-05,
+        -0.00017838854249614363,
+        0.08228542540557082,
+        0.003404284598352916,
+        -0.01033646203421335,
+        4.6451713735106315e-06,
+        0.016654366232482974,
+        0.003597464223195896,
+        0.004065833333333321,
+        -0.00018392459360537197,
+        0.0009814903147158834,
+        0.005977300644448057,
+        -0.010270496484305133,
+        -6.460873972796534e-05,
+        0.004605046666666655,
+        0.00035283459510958455,
+        0.007435138357274059,
+        9.652735387901272e-05,
+        0.0009595096852841106,
+        0.0003011854048904144,
+        0.0013624533333333314,
+        -4.253305988839818e-05,
+        0.013383333333333323,
+    ];
+    const QLU: [f64; 28] = [
+        0.2328009214818817,
+        0.0057328456367309304,
+        3.4894730046927607,
+        0.8281182823276995,
+        5.577490062383307,
+        0.003178061760029885,
+        -0.0003068327352869337,
+        0.056675743626740396,
+        0.8025558395201723,
+        -2.2834940938545305,
+        0.0034094168657842505,
+        0.011657017662023057,
+        0.002616207404909691,
+        0.003346891364883099,
+        -0.08855524459571222,
+        0.7203845377328285,
+        0.0040518225618672195,
+        -0.010295494177062488,
+        -0.0003130930019247949,
+        0.0045270486701206505,
+        0.2589700406445126,
+        0.007435138357274059,
+        9.652735387901272e-05,
+        0.0009595096852841106,
+        0.0003011854048904144,
+        0.0013624533333333314,
+        -4.253305988839818e-05,
+        0.013383333333333323,
+    ];
+
+    fn assert_bits(what: &str, got: &[f64], want: &[f64]) {
+        assert_eq!(got.len(), want.len(), "{what}: length");
+        for (i, (a, b)) in got.iter().zip(want).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "{what}[{i}]: {a}, MuJoCo {b}");
+        }
+    }
+
+    /// `mj_factorI` on M's pattern: the factor and its inverse diagonal, bit
+    /// for bit; a row with four ancestors among them.
+    #[test]
+    fn mj_factor_i_is_mujocos() {
+        let mut qh = QH_IN;
+        let mut diag_inv = [0.0; 6];
+        mj_factor_i(
+            &mut qh,
+            &mut diag_inv,
+            &M_ROWNNZ,
+            &M_ROWADR,
+            &M_COLIND,
+            None,
+        );
+        assert_bits("qH", &qh, &QH);
+        assert_bits("qHDiagInv", &diag_inv, &QH_DIAG_INV);
+    }
+
+    /// `mj_solveLD` with that factor (MuJoCo's `mj_solveM` after `mj_factorM`
+    /// of the same input), bit for bit.
+    #[test]
+    fn mj_solve_ld_is_mujocos() {
+        let mut x = Y;
+        mj_solve_ld(
+            &mut x,
+            &QH,
+            &QH_DIAG_INV,
+            &M_ROWNNZ,
+            &M_ROWADR,
+            &M_COLIND,
+            None,
+        );
+        assert_bits("x", &x, &X);
+    }
+
+    /// `mju_factorLUSparse` on D's pattern, bit for bit; and its solve undoes
+    /// the product with the input (MuJoCo's solve is not callable from its
+    /// Python bindings).
+    #[test]
+    fn lu_factor_sparse_is_mujocos() {
+        let mut lu = QLU_IN;
+        lu_factor_sparse(&mut lu, &D_ROWNNZ, &D_ROWADR, &D_COLIND, None).expect("factor");
+        assert_bits("qLU", &lu, &QLU);
+
+        let mut y = [0.0; 6];
+        for (i, yi) in y.iter_mut().enumerate() {
+            for adr in D_ROWADR[i]..D_ROWADR[i] + D_ROWNNZ[i] {
+                *yi += QLU_IN[adr] * X[D_COLIND[adr]];
+            }
+        }
+        let mut x = [0.0; 6];
+        lu_solve_sparse(
+            &mut x, &lu, &y, &D_ROWNNZ, &D_ROWADR, &D_DIAG, &D_COLIND, None,
+        );
+        for (a, b) in x.iter().zip(X) {
+            assert!((a - b).abs() <= 1e-9 * b.abs(), "{a}, expected {b}");
+        }
+    }
+
+    /// A pivot below mjMINVAL in magnitude is refused, where MuJoCo stops
+    /// with "diagonal element too small" (`engine_util_solve.c:788-790`); a
+    /// negative one above it is not.
+    #[test]
+    fn lu_factor_sparse_refuses_a_pivot_below_mjminval() {
+        let one = |v: f64| lu_factor_sparse(&mut [v], &[1], &[0], &[0], None);
+        assert_eq!(one(9e-16), Err(StepError::LuSingular));
+        assert_eq!(one(-9e-16), Err(StepError::LuSingular));
+        assert_eq!(one(-2e-15), Ok(()));
+    }
+
+    /// With an index (the awake dofs), only those rows are factored: row 5,
+    /// left out, keeps its input, and row 4, which row 5's elimination does
+    /// not reach, comes out as factored whole.
+    #[test]
+    fn mj_factor_i_takes_only_the_indexed_rows() {
+        let mut whole = QH_IN;
+        let mut whole_inv = [0.0; 6];
+        mj_factor_i(
+            &mut whole,
+            &mut whole_inv,
+            &M_ROWNNZ,
+            &M_ROWADR,
+            &M_COLIND,
+            None,
+        );
+        let mut part = QH_IN;
+        let mut part_inv = [0.0; 6];
+        let index = [0, 1, 2, 3, 4];
+        mj_factor_i(
+            &mut part,
+            &mut part_inv,
+            &M_ROWNNZ,
+            &M_ROWADR,
+            &M_COLIND,
+            Some(&index),
+        );
+        let row5 = M_ROWADR[5]..M_ROWADR[5] + M_ROWNNZ[5];
+        assert_bits("row 5 left out", &part[row5.clone()], &QH_IN[row5]);
+        assert_eq!(part_inv[5].to_bits(), 0.0_f64.to_bits());
+        assert_bits("row 4", &part[10..15], &whole[10..15]);
     }
 }

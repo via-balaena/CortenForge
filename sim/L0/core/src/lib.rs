@@ -237,6 +237,7 @@ pub use types::{
     NUM_WARNINGS,
     RangeError,
     ResetError,
+    SameFrame,
     // Model struct (extracted to types/model.rs)
     // Sensor callback stage
     SensorStage,

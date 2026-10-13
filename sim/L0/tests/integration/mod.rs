@@ -46,6 +46,10 @@ pub mod impedance_parity;
 /// Implicit spring-damper integration tests: stability, accuracy, convergence.
 pub mod implicit_integration;
 
+/// The implicit integrators against MuJoCo 3.5.0: `M − h·∂f/∂v` on MuJoCo's
+/// patterns and its factors, and the simple bodies and copied frames.
+pub mod implicit_parity;
+
 // ============================================================================
 // RK4 Integration Tests (True 4-stage Runge-Kutta)
 // ============================================================================

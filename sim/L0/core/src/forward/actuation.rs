@@ -6,6 +6,7 @@
 
 use super::muscle::muscle_activation_dynamics;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
+use crate::linalg::dot_sparse;
 use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
 use crate::tendon::{accumulate_point_jacobian, apply_tendon_force, subquat};
 use crate::types::{
@@ -481,28 +482,6 @@ pub fn ball_free_transmission(
     }
 }
 
-/// `Σ row[k]·vec[k]` in MuJoCo's order (`mju_dotSparse`,
-/// `engine_util_sparse.h:159-185`): four partial sums over each block of four,
-/// joined as `(s0 + s2) + (s1 + s3)`, then the rest one by one.
-fn dot_sparse(row: &[f64], vec: &[f64]) -> f64 {
-    let n = row.len();
-    let (mut s0, mut s1, mut s2, mut s3) = (0.0, 0.0, 0.0, 0.0);
-    let mut i = 0;
-    while i + 4 <= n {
-        s0 += row[i] * vec[i];
-        s1 += row[i + 1] * vec[i + 1];
-        s2 += row[i + 2] * vec[i + 2];
-        s3 += row[i + 3] * vec[i + 3];
-        i += 4;
-    }
-    let mut res = (s0 + s2) + (s1 + s3);
-    while i < n {
-        res += row[i] * vec[i];
-        i += 1;
-    }
-    res
-}
-
 /// Compute each actuator's velocity, `actuator_velocity = gear *
 /// transmission_velocity`, in the velocity stage. Called after
 /// `mj_fwd_velocity()` (which provides `ten_velocity`).
@@ -522,7 +501,7 @@ pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
                 } else {
                     dot_sparse(
                         &data.actuator_moment[i].as_slice()[dof_adr..dof_adr + nv],
-                        &data.qvel.as_slice()[dof_adr..dof_adr + nv],
+                        |k| data.qvel[dof_adr + k],
                     )
                 };
             }

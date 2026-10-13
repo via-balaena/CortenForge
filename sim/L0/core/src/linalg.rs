@@ -1,12 +1,38 @@
-//! Linear algebra utilities: Cholesky, LU, sparse solve.
+//! Linear algebra utilities: Cholesky, sparse solve, the sparse LU of the
+//! implicit integrator.
 //!
 //! Pure math routines with no pipeline state dependencies. Used by the
 //! forward dynamics pipeline (dense Cholesky for implicit integration,
 //! sparse solve for explicit/Newton paths) and analytical derivatives.
 
+use std::cmp::Ordering;
+
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::types::StepError;
 use nalgebra::{DMatrix, DVector};
+
+/// `Σ vec1[k]·vec2(k)` in MuJoCo's order (`mju_dotSparse`,
+/// `engine_util_sparse.h:159-185`): four partial sums over each block of
+/// four, joined as `(s0 + s2) + (s1 + s3)`, then the rest one by one.
+/// `vec2(k)` is the entry of the other vector that pairs with `vec1[k]`.
+pub(crate) fn dot_sparse(vec1: &[f64], vec2: impl Fn(usize) -> f64) -> f64 {
+    let n = vec1.len();
+    let (mut s0, mut s1, mut s2, mut s3) = (0.0, 0.0, 0.0, 0.0);
+    let mut i = 0;
+    while i + 4 <= n {
+        s0 += vec1[i] * vec2(i);
+        s1 += vec1[i + 1] * vec2(i + 1);
+        s2 += vec1[i + 2] * vec2(i + 2);
+        s3 += vec1[i + 3] * vec2(i + 3);
+        i += 4;
+    }
+    let mut res = (s0 + s2) + (s1 + s3);
+    while i < n {
+        res += vec1[i] * vec2(i);
+        i += 1;
+    }
+    res
+}
 
 // ============================================================================
 // Dense Cholesky
@@ -294,78 +320,107 @@ pub(crate) fn mj_solve_sparse_batch(
 }
 
 // ============================================================================
-// LU Factorization
+// Sparse LU on the dof tree (MuJoCo's qLU)
 // ============================================================================
 
-/// Factor A = P·L·U in place. Stores L (unit lower) and U (upper) in `a`.
-/// Stores pivot permutation in `piv`. O(n³/3).
+/// Factor `lu`, a matrix on a pattern holding, in ascending columns, every
+/// pair of dofs on one branch (`Model::D_*`), as `(U + I)·L` in place: MuJoCo
+/// 3.5.0's `mju_factorLUSparse` (`engine_util_solve.c:763-847`), from the last
+/// row up, with no pivoting and, on a tree's pattern, no fill-in. `index`
+/// lists the rows to factor (MuJoCo's awake dofs); every row when `None`.
 ///
 /// # Errors
 ///
-/// Returns `Err(StepError::LuSingular)` if any pivot magnitude is below `1e-30`.
-pub(crate) fn lu_factor_in_place(a: &mut DMatrix<f64>, piv: &mut [usize]) -> Result<(), StepError> {
-    let n = a.nrows();
-    for k in 0..n {
-        // Partial pivot: find max |a[i,k]| for i in k..n
-        let mut max_val = a[(k, k)].abs();
-        let mut max_row = k;
-        for i in (k + 1)..n {
-            let v = a[(i, k)].abs();
-            if v > max_val {
-                max_val = v;
-                max_row = i;
-            }
-        }
-        if max_val < 1e-30 {
+/// [`StepError::LuSingular`] at a diagonal smaller than mjMINVAL in
+/// magnitude, where MuJoCo stops with an error.
+pub(crate) fn lu_factor_sparse(
+    lu: &mut [f64],
+    rownnz: &[usize],
+    rowadr: &[usize],
+    colind: &[usize],
+    index: Option<&[usize]>,
+) -> Result<(), StepError> {
+    let n = index.map_or(rownnz.len(), <[usize]>::len);
+    let row = |r: usize| index.map_or(r, |ix| ix[r]);
+    let mut remaining: Vec<usize> = (0..n).map(|r| rownnz[row(r)]).collect();
+    for r in (0..n).rev() {
+        let i = row(r);
+        remaining[r] -= 1;
+        let ii = rowadr[i] + remaining[r];
+        debug_assert_eq!(
+            colind[ii], i,
+            "row {i}: the last entry left is not its diagonal"
+        );
+        if lu[ii].abs() < MJ_MINVAL {
             return Err(StepError::LuSingular);
         }
-        piv[k] = max_row;
-
-        if max_row != k {
-            for j in 0..n {
-                let tmp = a[(k, j)];
-                a[(k, j)] = a[(max_row, j)];
-                a[(max_row, j)] = tmp;
+        for c in (0..r).rev() {
+            let j = row(c);
+            let ji = rowadr[j] + remaining[c] - 1;
+            if colind[ji] != i {
+                continue;
             }
-        }
-
-        for i in (k + 1)..n {
-            a[(i, k)] /= a[(k, k)];
-            for j in (k + 1)..n {
-                a[(i, j)] -= a[(i, k)] * a[(k, j)];
+            remaining[c] -= 1;
+            lu[ji] /= lu[ii];
+            let lu_ji = lu[ji];
+            // Row j's columns left of `ji` hold row i's left of its diagonal:
+            // both are the dofs on one branch with them, below i.
+            let (mut icnt, mut jcnt) = (rowadr[i], rowadr[j]);
+            while jcnt < rowadr[j] + remaining[c] {
+                match colind[icnt].cmp(&colind[jcnt]) {
+                    Ordering::Equal => {
+                        lu[jcnt] -= lu[icnt] * lu_ji;
+                        icnt += 1;
+                        jcnt += 1;
+                    }
+                    Ordering::Greater => jcnt += 1,
+                    Ordering::Less => {
+                        debug_assert!(false, "rows {i} and {j}: the factor would need fill-in");
+                        icnt += 1;
+                    }
+                }
             }
         }
     }
     Ok(())
 }
 
-/// Solve P·L·U·x = b using pre-computed factors. Non-destructive on `a`/`piv`.
-/// Can be called multiple times for different RHS vectors.
-// Indexed loop mutates parallel matrix entries at the same `(i, j)`; iterator forms would obscure the per-element update.
-#[allow(clippy::needless_range_loop)]
-pub(crate) fn lu_solve_factored(a: &DMatrix<f64>, piv: &[usize], x: &mut DVector<f64>) {
-    let n = a.nrows();
-
-    // Apply row permutation to RHS
+/// Solve `M·res = vec` with [`lu_factor_sparse`]'s factor of `M`: MuJoCo
+/// 3.5.0's `mju_solveLUSparse` (`engine_util_solve.c:851-883`), `(U + I)`
+/// from the last row up, then `L` from the first, each row's sum taken as
+/// [`dot_sparse`] takes it. `diag` is each row's diagonal position
+/// (`Model::D_diag`); `index` as [`lu_factor_sparse`]'s.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lu_solve_sparse(
+    res: &mut [f64],
+    lu: &[f64],
+    vec: &[f64],
+    rownnz: &[usize],
+    rowadr: &[usize],
+    diag: &[usize],
+    colind: &[usize],
+    index: Option<&[usize]>,
+) {
+    let n = index.map_or(rownnz.len(), <[usize]>::len);
+    let row = |k: usize| index.map_or(k, |ix| ix[k]);
+    for k in (0..n).rev() {
+        let i = row(k);
+        res[i] = vec[i];
+        let adr = rowadr[i] + diag[i] + 1;
+        let nnz = rowadr[i] + rownnz[i] - adr;
+        if nnz > 0 {
+            let sum = dot_sparse(&lu[adr..adr + nnz], |t| res[colind[adr + t]]);
+            res[i] -= sum;
+        }
+    }
     for k in 0..n {
-        if piv[k] != k {
-            x.swap_rows(k, piv[k]);
+        let i = row(k);
+        let (adr, d) = (rowadr[i], diag[i]);
+        if d > 0 {
+            let sum = dot_sparse(&lu[adr..adr + d], |t| res[colind[adr + t]]);
+            res[i] -= sum;
         }
-    }
-
-    // Forward substitution (L·y = Pb)
-    for i in 1..n {
-        for k in 0..i {
-            x[i] -= a[(i, k)] * x[k];
-        }
-    }
-
-    // Back substitution (U·x = y)
-    for i in (0..n).rev() {
-        for k in (i + 1)..n {
-            x[i] -= a[(i, k)] * x[k];
-        }
-        x[i] /= a[(i, i)];
+        res[i] /= lu[adr + d];
     }
 }
 

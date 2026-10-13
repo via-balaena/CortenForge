@@ -629,6 +629,27 @@ pub enum SleepPolicy {
     Init,
 }
 
+/// Whether a frame is its body's frame or the body's inertial frame (MuJoCo
+/// `mjtSameFrame`).
+///
+/// Two frames are one to within 1e-6 in each component. The kinematics copy
+/// such a frame rather than compute it, as MuJoCo's `mj_local2Global` does. A
+/// body's own inertial frame is compared with the body's frame only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SameFrame {
+    /// Neither: computed from the body's frame.
+    #[default]
+    None,
+    /// The body's frame.
+    Body,
+    /// The body's inertial frame.
+    Inertia,
+    /// The body's orientation, at another position.
+    BodyRot,
+    /// The inertial frame's orientation, at another position.
+    InertiaRot,
+}
+
 /// Per-body sleep state for efficient pipeline gating (§16.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepState {

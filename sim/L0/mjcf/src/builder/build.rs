@@ -27,6 +27,8 @@ impl ModelBuilder {
 
         // Structural pre-computation
         model.compute_ancestors();
+        model.compute_simple_bodies();
+        model.compute_dof_patterns();
         model.compute_implicit_params();
         model.compute_qld_csr_metadata();
         model.compute_history_addresses();
@@ -185,6 +187,21 @@ impl ModelBuilder {
             qLD_rownnz: vec![],
             qLD_colind: vec![],
             qLD_nnz: 0,
+
+            // Simple bodies and dof–dof patterns (computed by
+            // compute_simple_bodies and compute_dof_patterns)
+            body_sameframe: vec![],
+            geom_sameframe: vec![],
+            site_sameframe: vec![],
+            body_simple: vec![],
+            dof_simplenum: vec![],
+            M_rownnz: vec![],
+            M_rowadr: vec![],
+            M_colind: vec![],
+            D_rownnz: vec![],
+            D_rowadr: vec![],
+            D_diag: vec![],
+            D_colind: vec![],
 
             geom_type: self.geom_type,
             geom_body: self.geom_body,

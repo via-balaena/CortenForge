@@ -15,7 +15,7 @@ use crate::plugin::{Plugin, PluginCapabilities, PluginStage};
 use super::enums::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, FlexBendingType,
     FlexSelfCollide, GainType, GeomType, Integrator, InterpolationType, MjJointType, MjObjectType,
-    MjSensorDataType, MjSensorType, SleepPolicy, SolverType, TendonType, WrapType,
+    MjSensorDataType, MjSensorType, SameFrame, SleepPolicy, SolverType, TendonType, WrapType,
 };
 
 // Imports from sibling modules
@@ -264,6 +264,43 @@ pub struct Model {
     pub qLD_colind: Vec<usize>,
     /// Total number of non-zeros across all rows (including diagonals).
     pub qLD_nnz: usize,
+
+    // ==================== Simple bodies and dof–dof patterns (derived) ====================
+    // [`Self::compute_simple_bodies`] and [`Self::compute_dof_patterns`].
+    /// Whether each body's inertial frame is its frame or has its orientation
+    /// (length `nbody`; MuJoCo `body_sameframe`).
+    pub body_sameframe: Vec<SameFrame>,
+    /// Whether each geom's frame is its body's frame or inertial frame
+    /// (length `ngeom`; MuJoCo `geom_sameframe`).
+    pub geom_sameframe: Vec<SameFrame>,
+    /// Whether each site's frame is its body's frame or inertial frame
+    /// (length `nsite`; MuJoCo `site_sameframe`).
+    pub site_sameframe: Vec<SameFrame>,
+    /// 0 for a body whose block of the mass matrix need not be diagonal; 2
+    /// for a simple body whose joints are all slides; 1 for another simple
+    /// body (length `nbody`; MuJoCo `body_simple`).
+    pub body_simple: Vec<u8>,
+    /// Per dof: 0 if its body is not simple, else the number of dofs from it
+    /// to the next dof of a body that is not (length `nv`; MuJoCo
+    /// `dof_simplenum`).
+    pub dof_simplenum: Vec<usize>,
+    /// Entries per row of the mass matrix's lower triangle as MuJoCo stores
+    /// it, a simple dof's row holding only its diagonal (length `nv`):
+    /// `Data::qH`'s layout.
+    pub M_rownnz: Vec<usize>,
+    /// Start of each row in `M_colind` (length `nv`).
+    pub M_rowadr: Vec<usize>,
+    /// Columns of each row, ascending, the diagonal last.
+    pub M_colind: Vec<usize>,
+    /// Entries per row of the pattern holding every pair of dofs on one
+    /// branch, both triangles (length `nv`): `Data::qLU`'s layout.
+    pub D_rownnz: Vec<usize>,
+    /// Start of each row in `D_colind` (length `nv`).
+    pub D_rowadr: Vec<usize>,
+    /// Position of each row's diagonal within the row (length `nv`).
+    pub D_diag: Vec<usize>,
+    /// Columns of each row, ascending.
+    pub D_colind: Vec<usize>,
 
     // ==================== Geoms (indexed by geom_id) ====================
     /// Geometry type.

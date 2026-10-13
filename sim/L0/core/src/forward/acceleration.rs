@@ -5,6 +5,7 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
+use crate::dynamics::factor::{mj_factor_i, mj_solve_ld};
 use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
@@ -15,8 +16,7 @@ use crate::integrate::implicit::{
 };
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
-    cholesky_in_place, cholesky_solve_in_place, lu_factor_in_place, lu_solve_factored,
-    mj_solve_sparse,
+    cholesky_in_place, cholesky_solve_in_place, lu_factor_sparse, lu_solve_sparse, mj_solve_sparse,
 };
 use crate::types::flags::disabled;
 use crate::types::{
@@ -46,7 +46,8 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
                 mj_fwd_acceleration_explicit(model, data);
             }
             if matches!(model.integrator, Integrator::ImplicitFast) {
-                mj_fwd_acceleration_implicitfast(model, data)
+                mj_fwd_acceleration_implicitfast(model, data);
+                Ok(())
             } else {
                 mj_fwd_acceleration_implicit_full(model, data)
             }
@@ -277,113 +278,164 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
     // Ball and Free joints have no springs (k = 0), so default no-ops are correct.
 }
 
-/// Implicit-fast forward acceleration: symmetric D, Cholesky factorization.
-///
-/// Solves `(M − h·D) · qacc_implicit = qfrc_smooth + qfrc_constraint`
-/// where D = ∂(qfrc_smooth)/∂(qvel) is assembled by `mjd_passive_vel` and
-/// `mjd_actuator_vel` (Coriolis terms skipped).
-/// D is symmetrized: `D ← (D + D^T) / 2`.
-///
-/// After return, `data.scratch_m_impl` holds the Cholesky factors (L where
-/// M−hD = L·L^T), available for derivative column solves in
-/// `mjd_transition_hybrid`.
-///
-/// # Errors
-///
-/// Returns `Err(StepError::CholeskyFailed)` if `M − h·D` is not positive
-/// definite (can happen with positive velocity feedback actuators, see KA#7).
-fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<(), StepError> {
+/// Implicit-fast forward acceleration: solves
+/// `(M − h·D) · qacc_implicit = qfrc_smooth + qfrc_constraint`, D being
+/// `∂(qfrc_smooth)/∂(qvel)` without the RNE's terms (`mjd_passive_vel`,
+/// `mjd_actuator_vel`), as MuJoCo 3.5.0's `mj_implicitSkip` does
+/// (`engine_forward.c:1180-1190`, `:1292-1294`, `:1302-1309`). `M − h·D` is
+/// taken on the mass matrix's pattern (`Model::M_*`: its lower triangle, a
+/// simple dof's row its diagonal only), which leaves out what D couples
+/// beyond it, a tendon's damping across two branches among them (MuJoCo
+/// documents it, `doc/computation/index.rst:544-546`). It goes into
+/// `Data::qH`, factored as `L'·D·L` over the awake dofs by MuJoCo's
+/// `mj_factorI`, which checks no pivot: an `M − h·D` that is not positive
+/// definite steps as MuJoCo's does. A sleeping dof's `qacc_implicit` is 0.
+fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) {
     use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel};
 
-    let h = model.timestep;
-
-    // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel)
-    //   Components: `mjd_passive_vel`'s and `mjd_actuator_vel`'s terms.
-    //   Coriolis terms SKIPPED for implicitfast.
     data.qDeriv.fill(0.0);
     mjd_passive_vel(model, data);
     mjd_actuator_vel(model, data);
 
-    // Step 2: Symmetrize D ← (D + D^T) / 2
+    // qH = M + qDeriv·(−h) on M's pattern: MuJoCo gathers qDeriv's lower
+    // entries there (`mapD2M`), then adds M (`mju_addScl`).
+    let neg_h = -model.timestep;
     for i in 0..model.nv {
-        for j in (i + 1)..model.nv {
-            let avg = 0.5 * (data.qDeriv[(i, j)] + data.qDeriv[(j, i)]);
-            data.qDeriv[(i, j)] = avg;
-            data.qDeriv[(j, i)] = avg;
+        for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
+            let j = model.M_colind[adr];
+            data.qH[adr] = data.qM[(i, j)] + data.qDeriv[(i, j)] * neg_h;
         }
     }
 
-    // Step 3: Form M_hat = M − h·D into scratch_m_impl
-    data.scratch_m_impl.copy_from(&data.qM);
-    for i in 0..model.nv {
-        for j in 0..model.nv {
-            data.scratch_m_impl[(i, j)] -= h * data.qDeriv[(i, j)];
-        }
-    }
-
-    // Step 4: RHS = qfrc_smooth + qfrc_constraint
-    // (qfrc_smooth includes DT-21 xfrc_applied projection)
-    data.scratch_rhs.copy_from(&data.qfrc_smooth);
-    data.scratch_rhs += &data.qfrc_constraint;
-
-    // Step 5: Solve (M − h·D) · qacc_implicit = rhs via dense Cholesky
-    cholesky_in_place(&mut data.scratch_m_impl)?;
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
+    mj_factor_i(
+        &mut data.qH,
+        &mut data.qHDiagInv,
+        &model.M_rownnz,
+        &model.M_rowadr,
+        &model.M_colind,
+        index,
+    );
+    implicit_rhs(model, data);
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
     data.qacc_implicit.copy_from(&data.scratch_rhs);
-    cholesky_solve_in_place(&data.scratch_m_impl, &mut data.qacc_implicit);
-
-    Ok(())
+    mj_solve_ld(
+        data.qacc_implicit.as_mut_slice(),
+        &data.qH,
+        &data.qHDiagInv,
+        &model.M_rownnz,
+        &model.M_rowadr,
+        &model.M_colind,
+        index,
+    );
 }
 
-/// Full implicit forward acceleration: asymmetric D, LU factorization.
-///
-/// Same as `mj_fwd_acceleration_implicitfast` but includes Coriolis velocity
-/// derivatives (`mjd_rne_vel`), does NOT symmetrize D, and uses LU
-/// factorization instead of Cholesky.
-///
-/// After return, `data.scratch_m_impl` holds the LU factors and
-/// `data.scratch_lu_piv` holds the pivot permutation, available for
-/// derivative column solves in `mjd_transition_hybrid`.
+/// Full implicit forward acceleration: as
+/// [`mj_fwd_acceleration_implicitfast`] with the RNE's velocity derivative
+/// (`mjd_rne_vel`) in D, on the pattern of every pair of dofs on one branch
+/// (`Model::D_*`, both triangles; MuJoCo's `mj_implicitSkip`,
+/// `engine_forward.c:1168-1178`, `:1288-1291`, `:1297-1301`): `M − h·D` goes
+/// into `Data::qLU`, factored as `(U + I)·L` over the awake dofs by MuJoCo's
+/// `mju_factorLUSparse`, without pivoting. A sleeping dof's
+/// `qacc_implicit` is 0.
 ///
 /// # Errors
 ///
-/// Returns `Err(StepError::LuSingular)` if any pivot magnitude is below
-/// `1e-30` during LU factorization.
+/// [`StepError::LuSingular`] when a diagonal of the factor is smaller than
+/// mjMINVAL in magnitude, where MuJoCo stops with an error.
 fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(), StepError> {
     use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel, mjd_rne_vel};
 
-    let h = model.timestep;
-
-    // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel) — ALL components
     data.qDeriv.fill(0.0);
     mjd_passive_vel(model, data);
     mjd_actuator_vel(model, data);
     mjd_rne_vel(model, data);
 
-    // Step 2: No symmetrization — D is asymmetric (Coriolis terms break symmetry)
-
-    // Step 3: Form M_hat = M − h·D into scratch_m_impl
-    data.scratch_m_impl.copy_from(&data.qM);
+    // qLU = M + qDeriv·(−h) on D's pattern: MuJoCo gathers M there, 0 where
+    // M's pattern holds no entry (`mapM2D`), then adds qDeriv
+    // (`mju_addToScl`).
+    let neg_h = -model.timestep;
     for i in 0..model.nv {
-        for j in 0..model.nv {
-            data.scratch_m_impl[(i, j)] -= h * data.qDeriv[(i, j)];
+        for adr in model.D_rowadr[i]..model.D_rowadr[i] + model.D_rownnz[i] {
+            let j = model.D_colind[adr];
+            let in_m = i == j || model.dof_simplenum[i.max(j)] == 0;
+            let m = if in_m { data.qM[(i, j)] } else { 0.0 };
+            data.qLU[adr] = m + data.qDeriv[(i, j)] * neg_h;
         }
     }
 
-    // Step 4: RHS = qfrc_smooth + qfrc_constraint
-    // (qfrc_smooth includes DT-21 xfrc_applied projection)
-    data.scratch_rhs.copy_from(&data.qfrc_smooth);
-    data.scratch_rhs += &data.qfrc_constraint;
-
-    // Step 5: Factor (M − h·D) = P·L·U, then solve for qacc_implicit
-    lu_factor_in_place(&mut data.scratch_m_impl, &mut data.scratch_lu_piv)?;
-    data.qacc_implicit.copy_from(&data.scratch_rhs);
-    lu_solve_factored(
-        &data.scratch_m_impl,
-        &data.scratch_lu_piv,
-        &mut data.qacc_implicit,
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
+    lu_factor_sparse(
+        &mut data.qLU,
+        &model.D_rownnz,
+        &model.D_rowadr,
+        &model.D_colind,
+        index,
+    )?;
+    implicit_rhs(model, data);
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
+    data.qacc_implicit.fill(0.0);
+    lu_solve_sparse(
+        data.qacc_implicit.as_mut_slice(),
+        &data.qLU,
+        data.scratch_rhs.as_slice(),
+        &model.D_rownnz,
+        &model.D_rowadr,
+        &model.D_diag,
+        &model.D_colind,
+        index,
     );
-
     Ok(())
+}
+
+/// Whether the implicit integrators work over the awake dofs only, as
+/// MuJoCo's do: sleep enabled and a tree asleep.
+fn awake_dofs(model: &Model, data: &Data) -> bool {
+    model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv
+}
+
+/// `scratch_rhs = qfrc_smooth + qfrc_constraint` at the awake dofs, 0 at the
+/// others (MuJoCo's `qfrc` in `mj_implicitSkip`).
+fn implicit_rhs(model: &Model, data: &mut Data) {
+    if awake_dofs(model, data) {
+        data.scratch_rhs.fill(0.0);
+        for &i in &data.dof_awake_ind[..data.nv_awake] {
+            data.scratch_rhs[i] = data.qfrc_smooth[i] + data.qfrc_constraint[i];
+        }
+    } else {
+        data.scratch_rhs.copy_from(&data.qfrc_smooth);
+        data.scratch_rhs += &data.qfrc_constraint;
+    }
+}
+
+/// Solves `(M − h·D)·x = b` in place, `b` given in `x`, with the factor the
+/// implicit or implicitfast acceleration stage left in `data` (`qH` or
+/// `qLU`), over every dof: for the analytic derivatives, which take their
+/// columns with every tree awake.
+pub fn solve_implicit(model: &Model, data: &Data, x: &mut DVector<f64>) {
+    if model.integrator == Integrator::Implicit {
+        let b = x.clone();
+        lu_solve_sparse(
+            x.as_mut_slice(),
+            &data.qLU,
+            b.as_slice(),
+            &model.D_rownnz,
+            &model.D_rowadr,
+            &model.D_diag,
+            &model.D_colind,
+            None,
+        );
+    } else {
+        mj_solve_ld(
+            x.as_mut_slice(),
+            &data.qH,
+            &data.qHDiagInv,
+            &model.M_rownnz,
+            &model.M_rowadr,
+            &model.M_colind,
+            None,
+        );
+    }
 }
 
 /// Compute per-body accelerations and forces after forward dynamics (§51).

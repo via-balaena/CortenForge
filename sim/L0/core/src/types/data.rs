@@ -263,6 +263,17 @@ pub struct Data {
     /// Whether sparse factorization is valid and should be used.
     /// Set to true after `mj_factor_sparse()` is called.
     pub qLD_valid: bool,
+    /// `M − h·∂f/∂v` on the mass matrix's pattern, factored as `L'·D·L` by
+    /// the implicitfast integrator (MuJoCo `qH`; layout `Model::M_*`, length
+    /// `model.M_colind.len()`).
+    pub qH: Vec<f64>,
+    /// The inverse of `qH`'s diagonal factor (length `nv`; MuJoCo
+    /// `qHDiagInv`).
+    pub qHDiagInv: Vec<f64>,
+    /// `M − h·∂f/∂v` on the pattern of the pairs of dofs on one branch,
+    /// factored as `(U + I)·L` by the implicit integrator (MuJoCo `qLU`;
+    /// layout `Model::D_*`, length `model.D_colind.len()`).
+    pub qLU: Vec<f64>,
 
     // ==================== Body and Composite Inertia (for Featherstone CRBA/RNE) ====================
     /// Body spatial inertia in world frame (before composite accumulation).
@@ -556,7 +567,8 @@ pub struct Data {
     pub time: f64,
 
     // ==================== Scratch Buffers (for allocation-free stepping) ====================
-    /// Scratch matrix for implicit integration: M + h*D + h²*K.
+    /// Scratch matrix for the implicit spring-damper integrator:
+    /// `M + h·D + h²·K`, then its Cholesky factor.
     /// Pre-allocated to avoid O(n²) allocation per step.
     pub scratch_m_impl: DMatrix<f64>,
     /// Scratch vector for force accumulation (length `nv`).
@@ -571,10 +583,6 @@ pub struct Data {
     /// `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)` (length `nv`). MuJoCo
     /// keeps it in a stack local of `mj_implicitSkip` (`engine_forward.c:1134`).
     pub(crate) qacc_implicit: DVector<f64>,
-    /// Pivot permutation for LU factorization in `Integrator::Implicit` (length `nv`).
-    /// Stores row swap indices from partial pivoting. Persists after forward pass
-    /// for reuse by derivative column solves in `mjd_transition_hybrid`.
-    pub scratch_lu_piv: Vec<usize>,
 
     // ==================== RK4 Scratch Buffers ====================
     // State and rate buffers for 4-stage Runge-Kutta integration.
@@ -779,6 +787,9 @@ impl Clone for Data {
             qLD_data: self.qLD_data.clone(),
             qLD_diag_inv: self.qLD_diag_inv.clone(),
             qLD_valid: self.qLD_valid,
+            qH: self.qH.clone(),
+            qHDiagInv: self.qHDiagInv.clone(),
+            qLU: self.qLU.clone(),
             // Body/composite inertia
             cinert: self.cinert.clone(),
             crb_inertia: self.crb_inertia.clone(),
@@ -888,7 +899,6 @@ impl Clone for Data {
             scratch_rhs: self.scratch_rhs.clone(),
             scratch_v_new: self.scratch_v_new.clone(),
             qacc_implicit: self.qacc_implicit.clone(),
-            scratch_lu_piv: self.scratch_lu_piv.clone(),
             // RK4 scratch
             rk4_qpos_saved: self.rk4_qpos_saved.clone(),
             rk4_qpos_stage: self.rk4_qpos_stage.clone(),
