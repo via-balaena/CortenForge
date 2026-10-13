@@ -117,8 +117,10 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
             tail[i - 1][v] = head[0][v] + h * data.rk4_dX_acc[v];
         }
 
-        // 2e. Activation trial state: act = act_saved + h_eff * Σ A[(i-1)*3+j] * act_dot[j]
-        // where h_eff depends on dynamics type (Euler vs FilterExact).
+        // 2e. Activation trial state: act = act_saved + h * Σ A[(i-1)*3+j] * act_dot[j],
+        // whatever the actuator's dynamics, and unclamped, as MuJoCo's stages
+        // (engine_forward.c:1086-1089); the advance alone takes the exact
+        // filter and the range.
         // S4.8: Disabled actuators get zero act_dot, freezing activation.
         for act_i in 0..model.nu {
             let act_adr = model.actuator_act_adr[act_i];
@@ -134,22 +136,7 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
                     };
                     sum += RK4_A[(i - 1) * 3 + j] * ad;
                 }
-                match model.actuator_dyntype[act_i] {
-                    ActuatorDynamics::FilterExact => {
-                        let tau = model.actuator_dynprm[act_i][0].max(1e-10);
-                        data.act[a] = data.rk4_act_saved[a] + sum * tau * (1.0 - (-h / tau).exp());
-                    }
-                    _ => {
-                        data.act[a] = data.rk4_act_saved[a] + h * sum;
-                    }
-                }
-            }
-            // §34: Clamp activation to actrange for trial state (replaces muscle-only [0,1])
-            if model.actuator_actlimited[act_i] {
-                let range = model.actuator_actrange[act_i];
-                for k in 0..model.actuator_act_num[act_i] {
-                    data.act[act_adr + k] = data.act[act_adr + k].clamp(range.0, range.1);
-                }
+                data.act[a] = data.rk4_act_saved[a] + h * sum;
             }
         }
 

@@ -202,6 +202,9 @@ pub mod sleep_parity;
 /// Sleep under RK4: a sleeping tree stays asleep (registry `D-RK4-SLEEP`).
 pub mod rk4_sleep;
 
+/// RK4 against MuJoCo 3.5.0: the activations of the stages.
+pub mod rk4_parity;
+
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
 // ============================================================================
