@@ -25,7 +25,7 @@ impl Model {
     /// | `dof_parent` | the sparse factor's layout (`qLD_*`), so `Data::qLD_data`'s length: make a new `Data` | [`Self::compute_qld_csr_metadata`] |
     /// | masses, inertias, body poses, `qpos0`, joint axes | `body_subtreemass`, `body_invweight0`, `dof_invweight0`, `tendon_invweight0`, `stat_meaninertia` | [`Self::compute_invweight0`], [`Self::compute_stat_meaninertia`] |
     /// | gears, transmissions, joint and tendon ranges, masses | `actuator_lengthrange`, `actuator_acc0` | [`Self::compute_actuator_params`] |
-    /// | spatial tendon geometry, `qpos0` | spatial `tendon_length0` | [`Self::compute_spatial_tendon_length0`] |
+    /// | spatial tendon geometry, `qpos0`, `qpos_spring` | spatial `tendon_length0`, `tendon_lengthspring` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
     /// | `dof_parent`, `body_dof_*`, `body_weldid`, actuators, tendons, flex vertex bodies | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |

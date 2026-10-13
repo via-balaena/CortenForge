@@ -104,7 +104,7 @@
 110676bf88258907	agree
 1131fef0a9fb8172	agree
 1158ea65d4d4ee98	e1:t0:con_frame
-11976cd3f27cf755	model:geom_quat;dyn:e1:t0:sensordata
+11976cd3f27cf755	model:geom_quat;dyn:agree
 119b1a59221d6b85	agree
 11beabb117c3d1e6	model:body_mass;dyn:e1:t0:ncon
 11c09d44bd2ef843	mj-refuses
@@ -222,7 +222,7 @@
 24ae2bdf505a738b	agree
 24c88e86e8b6f27f	e1:t0:con_zero
 24ca4e64709df92c	agree
-251c59049dab062a	model:geom_quat;dyn:e1:t0:qfrc_passive
+251c59049dab062a	model:geom_quat;dyn:agree
 2525a05126a05da3	e1:t0:con_zero
 2529ce5bef3785f7	e1:state@30
 254c1b2c0f82fb2a	mj-refuses

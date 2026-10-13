@@ -2128,10 +2128,8 @@ fn test_40b_t10_wrap_xpos_conformance() {
         assert_eq!(data.wrap_obj[adr + 2], geom_id);
     }
 
-    // Model H: collinear degenerate
-    // Note: collinear case has undefined wrapping plane. MuJoCo and our implementation
-    // may choose different perpendicular directions, yielding different tangent positions
-    // but identical tendon lengths. We verify structural properties instead of exact positions.
+    // Model H: collinear. The wrapping plane is MuJoCo's (`tendon_parity.rs`
+    // compares the tangent points with MuJoCo's); here, their structure.
     {
         let model = load_model(MODEL_H).expect("load failed");
         let mut data = model.make_data();

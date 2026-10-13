@@ -3,6 +3,8 @@
 //! Pure geometry: no Model/Data dependencies. Used by `tendon/spatial.rs`
 //! for the 3D wrapping path computations in `mj_fwd_tendon_spatial`.
 
+use crate::constraint::impedance::MJ_MINVAL;
+use crate::quat::normalize3;
 use nalgebra::{Vector2, Vector3};
 use std::f64::consts::PI;
 
@@ -134,25 +136,32 @@ fn compute_tangent_pair_2d(
 ///
 /// Returns `(axis0, axis1)` where `axis0 = normalize(p1)` and `axis1` is
 /// perpendicular to `axis0` in the plane containing `(origin, p1, p2)`.
-/// Handles the collinear degenerate case (`p1`, `O`, `p2` collinear) by
-/// constructing an arbitrary perpendicular plane through `p1`.
+/// When `p1`, the origin and `p2` lie on one line (`|p1 × p2| < mjMINVAL`),
+/// the plane is MuJoCo's: its normal is `axis0 × a`, where `a` is 1 in every
+/// component but one, which is 0: y's if `|axis0.y|` exceeds both other
+/// components' magnitudes, z's if `|axis0.z|` does, x's otherwise; a normal
+/// shorter than mjMINVAL is the x axis (`mju_wrap`, 3.5.0
+/// `engine_util_misc.c:302-340`; `mju_normalize3`).
 fn sphere_wrapping_plane(p1: Vector3<f64>, p2: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-    let mut plane_normal = p1.cross(&p2);
-    if plane_normal.norm() < 1e-10 * p1.norm() * p2.norm() {
-        // Degenerate: p1, origin, p2 are collinear.
-        // Construct an arbitrary perpendicular via the least-aligned cardinal axis.
-        let u = p1.normalize();
-        let min_axis = if u.x.abs() <= u.y.abs() && u.x.abs() <= u.z.abs() {
-            Vector3::x()
-        } else if u.y.abs() <= u.z.abs() {
-            Vector3::y()
-        } else {
-            Vector3::z()
-        };
-        plane_normal = u.cross(&min_axis);
-    }
-    plane_normal = plane_normal.normalize();
     let axis0 = p1.normalize();
+    let mut plane_normal = p1.cross(&p2);
+    if plane_normal.norm() < MJ_MINVAL {
+        let a = axis0.abs();
+        let zero_at = if a.y > a.x && a.y > a.z {
+            1
+        } else if a.z > a.x && a.z > a.y {
+            2
+        } else {
+            0
+        };
+        let mut second = Vector3::new(1.0, 1.0, 1.0);
+        second[zero_at] = 0.0;
+        let mut normal: [f64; 3] = axis0.cross(&second).into();
+        normalize3(&mut normal);
+        plane_normal = Vector3::from(normal);
+    } else {
+        plane_normal = plane_normal.normalize();
+    }
     let axis1 = plane_normal.cross(&axis0).normalize();
     (axis0, axis1)
 }

@@ -309,6 +309,10 @@ pub mod accumulator_parity;
 /// the off-centre ball, `xanchor`/`xaxis`, and its arithmetic.
 pub mod kinematics_parity;
 
+/// Tendons against MuJoCo 3.5.0: the spring length at `qpos_spring`, and the
+/// plane of a sphere wrap whose points lie on a line through its centre.
+pub mod tendon_parity;
+
 // ============================================================================
 // §52 Inverse Dynamics Tests
 // ============================================================================
