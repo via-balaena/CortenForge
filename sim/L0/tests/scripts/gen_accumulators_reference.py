@@ -43,10 +43,11 @@ the body's root) to the body's origin xpos, where sim-core keeps it:
   vertical slide (condim 4, elliptic), so that both of the contact's bodies
   move; the centres are on one vertical, so the contact frame is the plane
   cases' (a normal off the axes takes another frame here, which P42 ports).
-- contact_two_contacts: the same with two contacts, a free body of two
-  spheres on the plane (condim 4, pyramidal), each sphere's friction above the
-  plane's, so that each contact's rows decode with its own point and friction
-  (MuJoCo takes the larger friction of a pair).
+- contact_two_contacts: two free spheres stacked on the plane (pyramidal),
+  at rest under applied torques; `distinct` refuses it unless its two
+  contacts differ in bodies, condim and each friction component the second
+  decodes, and every facet pair carries a friction force. Both normals are
+  +z (P42 ports MuJoCo's frame for any other).
 - connect_two_bodies, weld_two_bodies: a connect and a weld between two
   moving bodies (a hinged body and a hinge-and-slide one; a hinged body and
   a free one), out of their constraint, with force and torque sensors on
@@ -202,18 +203,25 @@ CONTACT_TWO = """<mujoco model="contact_two_bodies">
 TWO_CONTACTS = """<mujoco model="contact_two_contacts">
   <option cone="pyramidal"/>
   <worldbody>
-    <geom type="plane" size="2 2 0.1" condim="4" friction="0.3 0.01 0.005"/>
-    <body name="pair" pos="0 0 0.098">
+    <geom type="plane" size="2 2 0.1" condim="3" friction="0.3 0.01 0.005"/>
+    <body name="low" pos="0 0 0.098">
       <freejoint/>
-      <geom type="sphere" size="0.1" pos="0.12 0 0" condim="4" friction="0.8 0.05 0.02"/>
-      <geom type="sphere" size="0.1" pos="-0.12 0.03 0.001" condim="4" friction="0.6 0.03 0.01"/>
+      <geom type="sphere" size="0.1" condim="4" friction="0.5 0.02 0.008"/>
       <inertial pos="0.02 -0.01 0.01" mass="1.2" diaginertia="0.01 0.012 0.014"/>
-      <site name="s" pos="0.03 0.02 -0.01"/>
+      <site name="sl" pos="0.03 0.02 -0.01"/>
+    </body>
+    <body name="top" pos="0 0 0.296">
+      <freejoint/>
+      <geom type="sphere" size="0.1" condim="6" friction="0.9 0.06 0.03"/>
+      <inertial pos="0.01 0.02 -0.01" mass="0.8" diaginertia="0.006 0.007 0.008"/>
+      <site name="st" pos="-0.02 0.03 0.01"/>
     </body>
   </worldbody>
   <sensor>
-    <force site="s"/>
-    <torque site="s"/>
+    <force site="sl"/>
+    <torque site="sl"/>
+    <force site="st"/>
+    <torque site="st"/>
   </sensor>
 </mujoco>"""
 
@@ -294,6 +302,31 @@ def cfrc_ext_at_origin(m, d):
     return out
 
 
+def distinct(name, xml, xfrc):
+    """Exit unless the case's second contact decodes otherwise with any of the
+    first's bodies, condim or friction components, and every facet pair of
+    both carries a friction force (`mju_decodePyramid`,
+    `engine_util_misc.c:1142-1159`)."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    for b, w in xfrc.items():
+        d.xfrc_applied[b] = w
+    mujoco.mj_forward(m, d)
+    if d.ncon != 2:
+        sys.exit(f"{name}: not two contacts")
+    c0, c1 = d.contact[0], d.contact[1]
+    bodies = [(m.geom_bodyid[c.geom1], m.geom_bodyid[c.geom2]) for c in (c0, c1)]
+    if bodies[0] == bodies[1] or c0.dim == c1.dim:
+        sys.exit(f"{name}: the contacts share their bodies or their condim")
+    for k in range(c1.dim - 1):
+        if c0.friction[k] == c1.friction[k]:
+            sys.exit(f"{name}: friction component {k} is the same at both contacts")
+    for i, c in enumerate((c0, c1)):
+        rows = d.efc_force[c.efc_address:c.efc_address + 2 * (c.dim - 1)]
+        if (abs(rows[0::2] - rows[1::2]) < 1e-6).any():
+            sys.exit(f"{name}: a facet pair of contact {i} carries no friction force")
+
+
 def state(xml, qpos=None, qvel=None, xfrc=None, steps=(), solve=False):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -352,15 +385,9 @@ def main():
             cases[f"contact_c{condim}_{cone}"] = state(
                 contact_on_plane(condim, cone), qvel=[0.2, -0.1, 0.0, 0.3, -0.2, 1.5],
                 xfrc={1: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
-    cases["contact_two_contacts"] = state(TWO_CONTACTS, qvel=[0.2, -0.1, 0.0, 0.3, -0.2, 1.5],
-                                          xfrc={1: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
-    if len(cases["contact_two_contacts"]["contacts"]) != 2:
-        sys.exit("contact_two_contacts: not two contacts")
-    m2 = mujoco.MjModel.from_xml_string(TWO_CONTACTS)
-    d2 = mujoco.MjData(m2)
-    mujoco.mj_forward(m2, d2)
-    if d2.ncon != 2 or (d2.contact[0].friction == d2.contact[1].friction).all():
-        sys.exit("contact_two_contacts: the two contacts' friction is the same")
+    torques = {1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.5], 2: [0.0, 0.0, 0.0, 0.05, -0.08, 0.2]}
+    distinct("contact_two_contacts", TWO_CONTACTS, torques)
+    cases["contact_two_contacts"] = state(TWO_CONTACTS, xfrc=torques, solve=True)
     cases["contact_two_bodies"] = state(CONTACT_TWO, qvel=[0.1, 0.2, -0.1, 0.0, 0.3, -0.2, 1.5],
                                         xfrc={2: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
     doc = {"oracle": marker, "cases": finite_or_string(cases)}

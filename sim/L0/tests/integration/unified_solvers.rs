@@ -1458,6 +1458,16 @@ fn test_s32_decode_pyramid_force_recovery() {
     );
 }
 
+/// A frictionless contact (`dim` 1) decodes to its one row, as
+/// `mju_decodePyramid` (`engine_util_misc.c:1144-1147`).
+#[test]
+fn decode_pyramid_frictionless_is_its_row() {
+    let mu = [0.5, 0.3, 0.005, 0.001, 0.001];
+    let (f_normal, f_friction) = sim_core::decode_pyramid(&[5.0], &mu, 1);
+    assert_eq!(f_normal.to_bits(), 5.0_f64.to_bits());
+    assert!(f_friction.is_empty());
+}
+
 /// §32 AC6: R scaling — all pyramidal facet rows have identical R = 2·μ_reg²·R_first_facet.
 /// Also verifies the Rpy formula: with impratio=1, Rpy = 2·friction[0]²·R_first_facet.
 #[test]

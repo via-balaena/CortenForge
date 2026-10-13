@@ -19,9 +19,11 @@ use crate::types::{ConstraintType, Data, Model};
 /// Matches MuJoCo's `mju_decodePyramid`:
 /// - `f_normal = Σ f_facet[k]` (sum of all facets)
 /// - `f_friction[d] = μ[d] · (f_pos[d] - f_neg[d])` for each friction direction
+/// - `dim` 1: `f_normal` is the contact's one row (`engine_util_misc.c:1144-1147`)
 ///
-/// `facet_forces` is a slice of `2*(dim-1)` facet force values for one contact.
-/// `mu` is the 5-element friction array. `dim` is condim (NOT number of facets).
+/// `facet_forces` is a slice of `2*(dim-1)` facet force values for one contact
+/// (one at `dim` 1). `mu` is the 5-element friction array. `dim` is condim (NOT
+/// number of facets).
 ///
 /// Returns `(normal_force, friction_forces)` where `friction_forces` has `dim-1` elements.
 #[must_use]
@@ -35,6 +37,10 @@ pub fn decode_pyramid(facet_forces: &[f64], mu: &[f64; 5], dim: usize) -> (f64, 
 /// buffer: the normal force in `out[0]` and the friction forces in
 /// `out[1..dim]`.
 pub fn decode_pyramid_into(facet_forces: &[f64], mu: &[f64; 5], dim: usize, out: &mut [f64]) {
+    if dim == 1 {
+        out[0] = facet_forces[0];
+        return;
+    }
     let n_facets = 2 * (dim - 1);
     debug_assert_eq!(facet_forces.len(), n_facets);
 
