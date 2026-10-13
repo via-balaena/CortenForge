@@ -690,7 +690,7 @@ pub struct Data {
     pub cfrc_int: Vec<SpatialVector>,
     /// Per-body external forces in world frame (length `nbody`), laid out
     /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`):
-    /// `xfrc_applied` and the contact, connect and weld forces, referenced at
+    /// `xfrc_applied` and the contact (but not a flex's), connect and weld forces, referenced at
     /// the body's origin `xpos` like `cacc` and `cfrc_int`; the world body's is
     /// zero. Populated by `mj_body_accumulators()`.
     pub cfrc_ext: Vec<SpatialVector>,

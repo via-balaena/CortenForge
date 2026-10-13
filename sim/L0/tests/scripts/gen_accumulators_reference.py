@@ -8,7 +8,7 @@ Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 
 It refuses any other interpreter, as gen_census_golden.py does.
 
-MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2477-2681`) fills
+MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2492-2683`) fills
 cfrc_ext (applied wrenches, contacts, connects and welds), cacc and cfrc_int,
 which the acceleration-stage sensors read. Each case writes its XML, a state,
 and after mj_forward and mj_rnePostConstraint the sensordata and every
@@ -29,13 +29,24 @@ the body's root) to the body's origin xpos, where sim-core keeps it:
 - contact_torque: a free, frictionless sphere (condim 1 on both geoms:
   MuJoCo takes the larger; geom off its body's origin, the centre of mass
   elsewhere) 5 mm into a plane: cfrc_ext holds the contact's torque about
-  the body's origin. (On a slide alone the contact force differs: MuJoCo's
-  body_invweight0 for a body with no rotational dof is not sim-core's,
-  ledger L112.)
+  the body's origin.
 - applied_wrench: a body on a ball joint, its centre of mass off its
   origin, with an xfrc_applied wrench; force and torque at its origin.
 - world_wrench: applied_wrench with an xfrc_applied wrench on the world body
   too, which MuJoCo leaves out of cfrc_ext (its loop starts at body 1).
+- contact_c{3,4,6}_{pyramidal,elliptic}: a free sphere (geom and centre of
+  mass off its origin) 2 mm into a plane, spinning and rolling, with an
+  applied wrench, under each cone and condim 3, 4 and 6; it also records
+  MuJoCo's contacts (pos, frame, dim), efc_force and qacc, which the test
+  writes into sim-core's Data so that cfrc_ext reads MuJoCo's solve.
+- contact_two_bodies: the same, a sphere on a larger sphere held by a
+  vertical slide (condim 4, elliptic), so that both of the contact's bodies
+  move; the centres are on one vertical, so the contact frame is the plane
+  cases' (a normal off the axes takes another frame here, which P42 ports).
+- connect_two_bodies, weld_two_bodies: a connect and a weld between two
+  moving bodies (a hinged body and a hinge-and-slide one; a hinged body and
+  a free one), out of their constraint, with force and torque sensors on
+  both, and the sensordata after steps 1, 10 and 100.
 """
 import json
 import os
@@ -141,6 +152,100 @@ APPLIED = """<mujoco model="applied_wrench">
   </sensor>
 </mujoco>"""
 
+def contact_on_plane(condim, cone):
+    return f"""<mujoco model="contact_c{condim}_{cone}">
+  <option cone="{cone}"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1" condim="{condim}" friction="0.8 0.05 0.02"/>
+    <body name="ball" pos="0 0 0.098">
+      <freejoint/>
+      <geom type="sphere" size="0.1" pos="0.01 0 0" condim="{condim}" friction="0.8 0.05 0.02"/>
+      <inertial pos="0.02 -0.01 0.01" mass="1.2" diaginertia="0.01 0.012 0.014"/>
+      <site name="s" pos="0.03 0.02 -0.01"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <force site="s"/>
+    <torque site="s"/>
+  </sensor>
+</mujoco>"""
+
+
+CONTACT_TWO = """<mujoco model="contact_two_bodies">
+  <option cone="elliptic"/>
+  <worldbody>
+    <body name="base" pos="0 0 0.5">
+      <joint type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.3" condim="4" friction="0.8 0.05 0.02"/>
+      <site name="sb" pos="0.1 0.05 0"/>
+    </body>
+    <body name="ball" pos="0 0 0.898" quat="0.95 0.1 0.2 0.1">
+      <freejoint/>
+      <geom type="sphere" size="0.1" condim="4" friction="0.8 0.05 0.02"/>
+      <inertial pos="0.02 -0.01 0.01" mass="1.2" diaginertia="0.01 0.012 0.014"/>
+      <site name="s" pos="0.03 0.02 -0.01"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <force site="s"/>
+    <torque site="s"/>
+    <force site="sb"/>
+    <torque site="sb"/>
+  </sensor>
+</mujoco>"""
+
+
+CONNECT_TWO = """<mujoco model="connect_two_bodies">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="ha" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+      <site name="sa" pos="0.1 0 0.01"/>
+    </body>
+    <body name="b" pos="0.6 0 1" quat="0.95 0.1 0.2 0.1">
+      <joint name="hb" type="hinge" axis="1 0 1"/>
+      <joint name="sb" type="slide" axis="0 0 1"/>
+      <geom type="capsule" fromto="0 0.01 0 -0.3 0.01 0" size="0.02" mass="0.7" contype="0" conaffinity="0"/>
+      <site name="sb" pos="-0.1 0.01 0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="a" body2="b" anchor="0.3 0 0"/>
+  </equality>
+  <sensor>
+    <force site="sa"/>
+    <torque site="sa"/>
+    <force site="sb"/>
+    <torque site="sb"/>
+  </sensor>
+</mujoco>"""
+
+WELD_TWO = """<mujoco model="weld_two_bodies">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="ha" type="hinge" axis="0 1 0"/>
+      <geom type="box" size="0.1 0.05 0.03" pos="0.1 0 0" mass="1" contype="0" conaffinity="0"/>
+      <site name="sa" pos="0.1 0 0.01"/>
+    </body>
+    <body name="b" pos="0.5 0.1 1.1" quat="0.95 0.1 0.2 0.1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.05 0.05" pos="0.02 0.01 0" mass="0.7" contype="0" conaffinity="0"/>
+      <site name="sb" pos="-0.03 0.01 0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="a" body2="b" anchor="0.2 0.05 -0.02" solimp="0.85 0.95 0.02 0.3 2.5"/>
+  </equality>
+  <sensor>
+    <force site="sa"/>
+    <torque site="sa"/>
+    <force site="sb"/>
+    <torque site="sb"/>
+  </sensor>
+</mujoco>"""
+
 WRENCH = [0.3, -0.7, 1.1, 0.05, 0.02, -0.04]          # force, torque
 WORLD_WRENCH = [2.0, 3.0, -1.0, 0.5, -0.4, 0.3]
 
@@ -166,14 +271,16 @@ def cfrc_ext_at_origin(m, d):
     return out
 
 
-def state(xml, qpos=None, qvel=None, xfrc=None, steps=()):
+def state(xml, qpos=None, qvel=None, xfrc=None, steps=(), solve=False):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
     if qpos is not None:
-        for i, v in qpos.items():
+        for i, v in (qpos.items() if isinstance(qpos, dict) else ()):
             d.qpos[i] = v
     if qvel is not None:
         d.qvel[:] = qvel
+    if qpos is not None and isinstance(qpos, list):
+        d.qpos[:] = qpos
     for b, w in (xfrc or {}).items():
         d.xfrc_applied[b] = w
     mujoco.mj_forward(m, d)
@@ -182,6 +289,13 @@ def state(xml, qpos=None, qvel=None, xfrc=None, steps=()):
     out = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
            "xfrc_applied": {str(b): w for b, w in (xfrc or {}).items()},
            "sensordata": floats(d.sensordata), "cfrc_ext": cfrc_ext_at_origin(m, d)}
+    if solve:
+        if d.ncon == 0:
+            sys.exit("solve: no contact")
+        out["contacts"] = [{"pos": floats(c.pos), "frame": floats(c.frame), "dim": int(c.dim),
+                            "efc_address": int(c.efc_address)} for c in d.contact[:d.ncon]]
+        out["efc_force"] = floats(d.efc_force)
+        out["qacc"] = floats(d.qacc)
     if steps:
         traj = {}
         for step in range(1, max(steps) + 1):
@@ -205,7 +319,18 @@ def main():
         "contact_torque": state(CONTACT_TORQUE),
         "applied_wrench": state(APPLIED, xfrc={1: WRENCH}),
         "world_wrench": state(APPLIED, xfrc={0: WORLD_WRENCH, 1: WRENCH}),
+        "connect_two_bodies": state(CONNECT_TWO, qpos=[0.2, -0.3, 0.05], qvel=[0.3, -0.5, 0.2],
+                                    steps=(1, 10, 100)),
+        "weld_two_bodies": state(WELD_TWO, qpos=[0.05, 0.51, 0.09, 1.12, 0.94, 0.12, 0.21, 0.12],
+                                 qvel=[0.3, 0.1, -0.2, 0.3, 0.4, -0.1, 0.2], steps=(1, 10, 100)),
     }
+    for condim in (3, 4, 6):
+        for cone in ("pyramidal", "elliptic"):
+            cases[f"contact_c{condim}_{cone}"] = state(
+                contact_on_plane(condim, cone), qvel=[0.2, -0.1, 0.0, 0.3, -0.2, 1.5],
+                xfrc={1: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
+    cases["contact_two_bodies"] = state(CONTACT_TWO, qvel=[0.1, 0.2, -0.1, 0.0, 0.3, -0.2, 1.5],
+                                        xfrc={2: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "accumulators.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))

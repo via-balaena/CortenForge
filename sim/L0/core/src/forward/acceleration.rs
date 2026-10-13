@@ -438,6 +438,27 @@ pub fn solve_implicit(model: &Model, data: &Data, x: &mut DVector<f64>) {
     }
 }
 
+/// One contact's force and torque in its frame, from its constraint rows:
+/// MuJoCo's `mj_contactForce` (`engine_core_util.c:891-908`). A pyramidal
+/// contact's edges decode as `mju_decodePyramid` (`engine_util_misc.c:1142-1159`):
+/// the normal force is their sum, each other component its pair's difference
+/// times its friction coefficient. An elliptic contact's rows are its
+/// components.
+fn contact_force(rows: &[f64], mu: &[f64; 5], dim: usize, pyramidal: bool) -> [f64; 6] {
+    let mut f = [0.0; 6];
+    if pyramidal && dim > 1 {
+        for &p in &rows[..2 * (dim - 1)] {
+            f[0] += p;
+        }
+        for i in 0..dim - 1 {
+            f[i + 1] = (rows[2 * i] - rows[2 * i + 1]) * mu[i];
+        }
+    } else {
+        f[..dim].copy_from_slice(&rows[..dim]);
+    }
+    f
+}
+
 /// Compute per-body accelerations and forces after forward dynamics (§51).
 ///
 /// Populates `data.cacc`, `data.cfrc_int`, and `data.cfrc_ext`:
@@ -458,7 +479,7 @@ pub fn solve_implicit(model: &Model, data: &Data, x: &mut DVector<f64>) {
 ///
 /// # MuJoCo Equivalence
 ///
-/// Matches `mj_rnePostConstraint()` in `engine_forward.c`.
+/// MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2492-2683`).
 ///
 /// # Convention Difference
 ///
@@ -470,7 +491,7 @@ pub fn solve_implicit(model: &Model, data: &Data, x: &mut DVector<f64>) {
 #[allow(clippy::needless_range_loop)] // jnt_id indexes both joint_subspaces and model arrays
 pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // ===== Step 1: cfrc_ext = xfrc_applied + contact/constraint forces =====
-    // As MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2477-2622`):
+    // As MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2503-2517`):
     // its loop over applied wrenches starts at body 1, so one applied to the
     // world body reaches nothing; an applied force acts at the centre of mass,
     // and cfrc_ext holds it at the body's origin, its torque moved there.
@@ -481,132 +502,63 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         data.cfrc_ext[b] = SpatialVector::new(t.x, t.y, t.z, f.x, f.y, f.z);
     }
 
-    // §51 Fix B: Add contact forces to cfrc_ext.
-    // Per-contact accumulation: gather all efc rows belonging to each contact,
-    // reconstruct the 3D world-frame force, and distribute to both bodies.
-    //
-    // Iterate contacts and find their efc rows by scanning efc_type/efc_id.
-    // We build a per-contact force by summing: for each efc row with this
-    // contact's id, the row contributes f * direction to the world-frame force.
-    // Direction is reconstructed from the contact frame:
-    //   - Frictionless: direction = normal
-    //   - Pyramidal pairs: (n ± μ·t_d), net = (f⁺+f⁻)·n + (f⁺-f⁻)·μ·t_d
-    //   - Elliptic: row 0 = normal, rows 1+ = tangent directions
+    // Contact forces (`engine_core_smooth.c:2519-2560`): each contact's force
+    // and torque in its own frame, as `mj_contactForce` decodes them
+    // (`engine_core_util.c:891-908`), turned to the world and moved from the
+    // contact point to the body's origin, `−` on body1 and `+` on body2. A
+    // contact that involves a flex adds nothing: MuJoCo's loop skips it.
     {
         let nefc = data.efc_type.len();
-        // Build per-contact force from efc rows.
-        // For efficiency, scan efc rows once and accumulate per contact.
-        let mut contact_force: Vec<nalgebra::Vector3<f64>> =
-            vec![nalgebra::Vector3::zeros(); data.ncon];
-
         let mut row = 0;
         while row < nefc {
-            match data.efc_type[row] {
-                ConstraintType::ContactFrictionless => {
-                    let ci = data.efc_id[row];
-                    if ci < data.ncon {
-                        contact_force[ci] += data.efc_force[row] * data.contacts[ci].normal;
-                    }
-                    row += 1;
-                }
-                ConstraintType::ContactPyramidal => {
-                    let ci = data.efc_id[row];
-                    if ci < data.ncon {
-                        let contact = &data.contacts[ci];
-                        let n = contact.normal;
-                        // Count rows for this contact (all consecutive pyramidal rows with same id)
-                        let start = row;
-                        while row < nefc
-                            && data.efc_type[row] == ConstraintType::ContactPyramidal
-                            && data.efc_id[row] == ci
-                        {
-                            row += 1;
-                        }
-                        let nrows = row - start;
-                        // Pyramidal rows come in pairs per tangent direction:
-                        // pair 0: n + μ₁·t1, n - μ₁·t1
-                        // pair 1: n + μ₂·t2, n - μ₂·t2
-                        let tangents = [contact.frame[0], contact.frame[1]];
-                        let mut pair_idx = 0;
-                        let mut r = start;
-                        while r + 1 < start + nrows && pair_idx < 2 {
-                            let f_pos = data.efc_force[r];
-                            let f_neg = data.efc_force[r + 1];
-                            let mu_d = contact.mu[pair_idx];
-                            // f_pos * (n + μ·t) + f_neg * (n - μ·t)
-                            // = (f_pos + f_neg) * n + (f_pos - f_neg) * μ * t
-                            contact_force[ci] += (f_pos + f_neg) * n;
-                            contact_force[ci] += (f_pos - f_neg) * mu_d * tangents[pair_idx];
-                            r += 2;
-                            pair_idx += 1;
-                        }
-                    } else {
-                        row += 1;
-                    }
-                }
-                ConstraintType::ContactElliptic => {
-                    let ci = data.efc_id[row];
-                    if ci < data.ncon {
-                        let contact = &data.contacts[ci];
-                        // Elliptic: row 0 = normal, rows 1+ = tangent
-                        contact_force[ci] += data.efc_force[row] * contact.normal;
-                        row += 1;
-                        // Tangent rows
-                        let tangents = [contact.frame[0], contact.frame[1]];
-                        let mut t_idx = 0;
-                        while row < nefc
-                            && data.efc_type[row] == ConstraintType::ContactElliptic
-                            && data.efc_id[row] == ci
-                            && t_idx < 2
-                        {
-                            contact_force[ci] += data.efc_force[row] * tangents[t_idx];
-                            row += 1;
-                            t_idx += 1;
-                        }
-                        // Skip any remaining rows (torsional/rolling)
-                        while row < nefc
-                            && data.efc_type[row] == ConstraintType::ContactElliptic
-                            && data.efc_id[row] == ci
-                        {
-                            row += 1;
-                        }
-                    } else {
-                        row += 1;
-                    }
-                }
+            let pyramidal = match data.efc_type[row] {
+                ConstraintType::ContactPyramidal => true,
+                ConstraintType::ContactFrictionless | ConstraintType::ContactElliptic => false,
                 _ => {
                     row += 1;
-                }
-            }
-        }
-
-        // Distribute per-contact forces to bodies as 6D spatial wrenches.
-        for ci in 0..data.ncon {
-            let f = contact_force[ci];
-            if f.norm_squared() == 0.0 {
-                continue;
-            }
-            let contact = &data.contacts[ci];
-            let (body1, body2) = contact.bodies(model);
-            let cp = contact.pos;
-
-            // Force on body2 = +f, force on body1 = -f (Newton's third law).
-            // Contact normal points from geom1 toward geom2, and positive
-            // constraint force pushes bodies apart → force on body2 is along +normal.
-            for (body_id, sign) in [(body2, 1.0_f64), (body1, -1.0_f64)] {
-                if body_id == 0 {
                     continue;
                 }
-                let bf = sign * f;
-                // About the body's origin, where cfrc_ext is held.
-                let r = cp - data.xpos[body_id];
-                let torque = r.cross(&bf);
-                data.cfrc_ext[body_id][0] += torque.x;
-                data.cfrc_ext[body_id][1] += torque.y;
-                data.cfrc_ext[body_id][2] += torque.z;
-                data.cfrc_ext[body_id][3] += bf.x;
-                data.cfrc_ext[body_id][4] += bf.y;
-                data.cfrc_ext[body_id][5] += bf.z;
+            };
+            let nrows = data.efc_dim[row];
+            let (ci, adr) = (data.efc_id[row], row);
+            row += nrows;
+            let contact = &data.contacts[ci];
+            if contact.flex_vertex.is_some() || contact.flex_vertex2.is_some() {
+                continue;
+            }
+            let lfrc = contact_force(
+                &data.efc_force.as_slice()[adr..adr + nrows],
+                &contact.mu,
+                contact.dim,
+                pyramidal,
+            );
+            // The contact frame's rows are the normal and the two tangents;
+            // `mju_mulMatTVec3` turns each half to the world.
+            let frame = [contact.normal, contact.frame[0], contact.frame[1]];
+            let to_world = |v: &[f64]| {
+                nalgebra::Vector3::from_fn(|k, _| {
+                    frame[0][k] * v[0] + frame[1][k] * v[1] + frame[2][k] * v[2]
+                })
+            };
+            let torque = to_world(&lfrc[3..6]);
+            let force = to_world(&lfrc[0..3]);
+            let (body1, body2) = contact.bodies(model);
+            for (body, add) in [(body1, false), (body2, true)] {
+                if body == 0 {
+                    continue;
+                }
+                // `mju_transformSpatial` of a force: the torque less the lever
+                // from the contact point to the new point, crossed with the force.
+                let t = torque - (data.xpos[body] - contact.pos).cross(&force);
+                for k in 0..3 {
+                    if add {
+                        data.cfrc_ext[body][k] += t[k];
+                        data.cfrc_ext[body][3 + k] += force[k];
+                    } else {
+                        data.cfrc_ext[body][k] -= t[k];
+                        data.cfrc_ext[body][3 + k] -= force[k];
+                    }
+                }
             }
         }
     }
