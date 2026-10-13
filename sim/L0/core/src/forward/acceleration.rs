@@ -5,7 +5,7 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
-use crate::constraint::solver::decode_pyramid;
+use crate::constraint::solver::decode_pyramid_into;
 use crate::dynamics::factor::{mj_factor_i, mj_solve_ld};
 use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
@@ -443,14 +443,12 @@ pub fn solve_implicit(model: &Model, data: &Data, x: &mut DVector<f64>) {
 
 /// One contact's force and torque in its frame, from its constraint rows:
 /// MuJoCo's `mj_contactForce` (`engine_core_util.c:891-908`). A pyramidal
-/// contact's edges decode as [`decode_pyramid`] (`mju_decodePyramid`); an
-/// elliptic or frictionless contact's rows are its components.
+/// contact's edges decode as `mju_decodePyramid`; an elliptic or
+/// frictionless contact's rows are its components.
 fn contact_force(rows: &[f64], mu: &[f64; 5], dim: usize, pyramidal: bool) -> [f64; 6] {
     let mut f = [0.0; 6];
     if pyramidal && dim > 1 {
-        let (normal, friction) = decode_pyramid(rows, mu, dim);
-        f[0] = normal;
-        f[1..dim].copy_from_slice(&friction);
+        decode_pyramid_into(rows, mu, dim, &mut f);
     } else {
         f[..dim].copy_from_slice(&rows[..dim]);
     }

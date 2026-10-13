@@ -153,16 +153,18 @@ fn quat_integrate_jacobians_match_mujoco() {
 /// (relative above 1): a hinge driven by a filter, and by an exact filter,
 /// with a time constant of 1e-12 (above mjMINVAL, so used as it is), under
 /// Euler, implicit and implicitfast, the exact filter also at a timestep of
-/// 1e-11, where its decay over a step is e^-10, and a filter with 1e-16,
-/// raised to mjMINVAL; and a free body driven by a motor at its site,
-/// its control at the lower end of its range, by forward and by centred
-/// differences (a forward column, and a centred one at a control's lower
-/// bound, difference the nominal next state with the perturbed one).
+/// 1e-11, where its decay over a step is e^-10, a filter with 1e-16, raised
+/// to mjMINVAL, and an exact filter with 1e-16 at a timestep of 1e-15, where
+/// the raised time constant makes the decay e^-1; and a free body driven by
+/// a motor at its site, its control at the lower end of its range, by
+/// forward and by centred differences (a forward column, and a centred one
+/// at a control's lower bound, difference the nominal next state with the
+/// perturbed one).
 #[test]
 fn actuated_transitions_match_mujoco_fd() {
     let g = golden();
     let cases = g["cases"]["actuated"].as_object().expect("actuated");
-    assert_eq!(cases.len(), 10);
+    assert_eq!(cases.len(), 11);
     for (name, case) in cases {
         let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();

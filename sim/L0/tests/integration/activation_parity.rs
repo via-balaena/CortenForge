@@ -90,7 +90,8 @@ fn group_disabled_actuator_has_its_act_dot() {
 /// 1e-12 is used as it is: `act_dot` 1e12, and after one step a filter's
 /// activation 2e9 and an exact filter's 1; under RK4, whose stages take no
 /// exact filter, the exact filter's runs away (-3.3e26), MuJoCo's too. One of
-/// 1e-16 is raised to 1e-15: `act_dot` 1e15.
+/// 1e-16 is raised to 1e-15: `act_dot` 1e15, and under RK4 the exact filter's
+/// activation -3.3e35 after a step (its gear 0).
 #[test]
 fn filter_time_constant_floor_is_mjminval() {
     assert_matches_mujoco("tiny_tau");
@@ -98,6 +99,7 @@ fn filter_time_constant_floor_is_mjminval() {
     assert_matches_mujoco("tiny_tau_exact_RK4");
     assert_matches_mujoco("tau_floor");
     assert_matches_mujoco("tau_floor_exact");
+    assert_matches_mujoco("tau_floor_exact_RK4");
 }
 
 /// Muscle activation dynamics blend the two time constants through the

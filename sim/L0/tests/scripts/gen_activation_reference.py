@@ -24,7 +24,9 @@ Fixtures:
 - tiny_tau: a filter with tau 1e-12;
 - tiny_tau_exact: an exact filter with tau 1e-12, under Euler and under RK4;
 - tau_floor, tau_floor_exact: a filter and an exact filter with tau 1e-16,
-  below mjMINVAL, which MuJoCo raises to it;
+  below mjMINVAL, which MuJoCo raises to it; the exact filter also under RK4,
+  with a gear of 0 (with a gear of 1 its velocity, about 2e34 after a step,
+  is 2.5e-9 relative from MuJoCo's, which has not been isolated);
 - muscle_smooth: muscle dynamics with a smoothing width of 0.3, 60 steps,
   whose activation passes through the width (mju_muscleDynamics,
   engine_util_misc.c:733-770: the sigmoid of dctrl / width + 0.5);
@@ -81,6 +83,8 @@ FIXTURES = {
                                dyn='dyntype="filter" dynprm="1e-16"'), 1),
     "tau_floor_exact": (HINGE.format(integrator="Euler", disable="", group=0,
                                      dyn='dyntype="filterexact" dynprm="1e-16"'), 1),
+    "tau_floor_exact_RK4": (HINGE.format(integrator="RK4", disable="", group=0,
+                                         dyn='gear="0" dyntype="filterexact" dynprm="1e-16"'), 1),
 }
 
 

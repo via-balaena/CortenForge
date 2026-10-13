@@ -26,6 +26,15 @@ use crate::types::{ConstraintType, Data, Model};
 /// Returns `(normal_force, friction_forces)` where `friction_forces` has `dim-1` elements.
 #[must_use]
 pub fn decode_pyramid(facet_forces: &[f64], mu: &[f64; 5], dim: usize) -> (f64, Vec<f64>) {
+    let mut out = [0.0; 6];
+    decode_pyramid_into(facet_forces, mu, dim, &mut out);
+    (out[0], out[1..dim].to_vec())
+}
+
+/// [`decode_pyramid`] into `out`, as `mju_decodePyramid` writes its caller's
+/// buffer: the normal force in `out[0]` and the friction forces in
+/// `out[1..dim]`.
+pub fn decode_pyramid_into(facet_forces: &[f64], mu: &[f64; 5], dim: usize, out: &mut [f64]) {
     let n_facets = 2 * (dim - 1);
     debug_assert_eq!(facet_forces.len(), n_facets);
 
@@ -33,15 +42,11 @@ pub fn decode_pyramid(facet_forces: &[f64], mu: &[f64; 5], dim: usize) -> (f64, 
     for &f in &facet_forces[..n_facets] {
         f_normal += f;
     }
+    out[0] = f_normal;
 
-    let mut f_friction = Vec::with_capacity(dim - 1);
-    for d in 0..(dim - 1) {
-        let f_pos = facet_forces[2 * d];
-        let f_neg = facet_forces[2 * d + 1];
-        f_friction.push(mu[d] * (f_pos - f_neg));
+    for (d, pair) in facet_forces[..n_facets].chunks_exact(2).enumerate() {
+        out[1 + d] = mu[d] * (pair[0] - pair[1]);
     }
-
-    (f_normal, f_friction)
 }
 
 /// Map efc_force → qfrc_constraint via J^T · efc_force.

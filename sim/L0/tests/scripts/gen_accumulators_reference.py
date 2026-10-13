@@ -43,9 +43,10 @@ the body's root) to the body's origin xpos, where sim-core keeps it:
   vertical slide (condim 4, elliptic), so that both of the contact's bodies
   move; the centres are on one vertical, so the contact frame is the plane
   cases' (a normal off the axes takes another frame here, which P42 ports).
-- contact_two_contacts: the same with two contacts, a free body with two
-  spheres on the plane (condim 4, pyramidal), so that each contact's rows
-  decode with its own frame, point and friction.
+- contact_two_contacts: the same with two contacts, a free body of two
+  spheres on the plane (condim 4, pyramidal), each sphere's friction above the
+  plane's, so that each contact's rows decode with its own point and friction
+  (MuJoCo takes the larger friction of a pair).
 - connect_two_bodies, weld_two_bodies: a connect and a weld between two
   moving bodies (a hinged body and a hinge-and-slide one; a hinged body and
   a free one), out of their constraint, with force and torque sensors on
@@ -201,7 +202,7 @@ CONTACT_TWO = """<mujoco model="contact_two_bodies">
 TWO_CONTACTS = """<mujoco model="contact_two_contacts">
   <option cone="pyramidal"/>
   <worldbody>
-    <geom type="plane" size="2 2 0.1" condim="4" friction="0.8 0.05 0.02"/>
+    <geom type="plane" size="2 2 0.1" condim="4" friction="0.3 0.01 0.005"/>
     <body name="pair" pos="0 0 0.098">
       <freejoint/>
       <geom type="sphere" size="0.1" pos="0.12 0 0" condim="4" friction="0.8 0.05 0.02"/>
@@ -355,6 +356,11 @@ def main():
                                           xfrc={1: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
     if len(cases["contact_two_contacts"]["contacts"]) != 2:
         sys.exit("contact_two_contacts: not two contacts")
+    m2 = mujoco.MjModel.from_xml_string(TWO_CONTACTS)
+    d2 = mujoco.MjData(m2)
+    mujoco.mj_forward(m2, d2)
+    if d2.ncon != 2 or (d2.contact[0].friction == d2.contact[1].friction).all():
+        sys.exit("contact_two_contacts: the two contacts' friction is the same")
     cases["contact_two_bodies"] = state(CONTACT_TWO, qvel=[0.1, 0.2, -0.1, 0.0, 0.3, -0.2, 1.5],
                                         xfrc={2: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
     doc = {"oracle": marker, "cases": finite_or_string(cases)}

@@ -55,7 +55,7 @@ clamped quantities, and record qpos and qvel.
 Each fixture isolates one difference: auto_force the resolution of the force
 (its range is wide and its gain and bias parameters equal), bias_from_biasprm
 the bias's parameters, narrow_range the clamps (its forces are explicit),
-tiny_acc0 the stored acc0, acc0_order its summation order, tiny_fv and
+tiny_acc0 the acc0 floor, acc0_order its summation order, tiny_fv and
 flat_lmax their clamps, zero_force a comparison.
 """
 

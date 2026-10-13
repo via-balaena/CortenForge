@@ -849,11 +849,11 @@ mod tests {
         let dynprm = &model.actuator_dynprm[0];
 
         let k1 = muscle_activation_dynamics(1.0, 0.0, dynprm);
-        let act1 = (0.0 + 0.5 * dt * k1).clamp(0.0, 1.0);
+        let act1 = 0.0 + 0.5 * dt * k1;
         let k2 = muscle_activation_dynamics(1.0, act1, dynprm);
-        let act2 = (0.0 + 0.5 * dt * k2).clamp(0.0, 1.0);
+        let act2 = 0.0 + 0.5 * dt * k2;
         let k3 = muscle_activation_dynamics(1.0, act2, dynprm);
-        let act3 = (0.0 + dt * k3).clamp(0.0, 1.0);
+        let act3 = 0.0 + dt * k3;
         let k4 = muscle_activation_dynamics(1.0, act3, dynprm);
 
         let act_expected = 0.0 + dt * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0;

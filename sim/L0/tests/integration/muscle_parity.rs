@@ -99,7 +99,7 @@ fn muscle_clamps_use_mjminval() {
 /// (`engine_setconst.c:776`), `test_acc0_no_dofs` and
 /// `test_muscle_acc0_spatial_tendon` pin (an `acc0` of 0).
 #[test]
-fn tiny_acc0_is_stored_unclamped() {
+fn tiny_acc0_force_uses_mjminval() {
     assert_matches_mujoco("tiny_acc0", 0.0);
 }
 

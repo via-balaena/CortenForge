@@ -21,10 +21,12 @@ so a quaternion joint's position rows are tangents at the next state
   the old 1e-10 floor and above mjMINVAL, so MuJoCo uses it as it is), under
   Euler, implicit and implicitfast (centred), the exact filter also at a
   timestep of 1e-11, where its decay over a step, exp(-h/tau), is e^-10 and
-  not 0, and a filter with 1e-16, which MuJoCo raises to mjMINVAL; and a free body driven by a
-  motor at its site, its control at the lower end of its range, forward
-  and centred (a forward column, and a centred one at a control's lower
-  bound, difference the nominal next state with the perturbed one).
+  not 0, a filter with 1e-16, which MuJoCo raises to mjMINVAL, and an exact
+  filter with 1e-16 at a timestep of 1e-15, where the raised time constant
+  makes the decay e^-1; and a free body driven by a motor at its site, its
+  control at the lower end of its range, forward and centred (a forward
+  column, and a centred one at a control's lower bound, difference the
+  nominal next state with the perturbed one).
 - differentiate: a model with a hinge, a slide, a ball and a free joint, and
   pairs of positions: a 1e-12 rad rotation, a rotation past pi between them,
   quaternions not of unit length, and a pair whose free joint moves, at dt
@@ -268,6 +270,9 @@ def main():
             "filter_floor": actuated(FILTER.format(timestep=0.002, integrator="Euler",
                                                    dyntype="filter", tau=1e-16),
                                      [0.3], [0.2], [0.1], [0.5], True),
+            "filterexact_floor": actuated(FILTER.format(timestep=1e-15, integrator="Euler",
+                                                        dyntype="filterexact", tau=1e-16),
+                                          [0.3], [0.2], [0.1], [0.5], True),
             "motor_free_forward": actuated(MOTOR_FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],
                                            [0.2, -0.1, 0.3, 0.9, -0.6, 0.7], [], [0.0], False),
             "motor_free_centred": actuated(MOTOR_FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],

@@ -429,7 +429,7 @@ mod tests {
 
     /// The floor on the smoothing width and on the time constant is mjMINVAL
     /// (1e-15), not 1e-10: MuJoCo 3.5.0's `mju_muscleDynamics`, bit for bit. A
-    /// width of 1e-12 or 1e-14 blends and one of 1e-16 switches; a time
+    /// width of 1e-12, 1e-14 or 1e-15 blends and one of 1e-16 switches; a time
     /// constant of 1.25e-13 is used as it is and one of 5e-17 (`dynprm[0]`
     /// 1e-16 at activation 0) is raised to 1e-15.
     #[test]
@@ -440,6 +440,9 @@ mod tests {
         let prm = [0.01, 0.04, 1e-14, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let act_dot = muscle_activation_dynamics(0.5 + 2e-15, 0.5, &prm);
         assert_eq!(act_dot.to_bits(), 1.274_150_622_079_462_5e-13_f64.to_bits());
+        let prm = [0.01, 0.04, 1e-15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(1e-17, 0.0, &prm);
+        assert_eq!(act_dot.to_bits(), 2.433_437_872_433_217_5e-16_f64.to_bits());
         let prm = [0.01, 0.04, 1e-16, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let act_dot = muscle_activation_dynamics(1e-17, 0.0, &prm);
         assert_eq!(act_dot.to_bits(), 2e-15_f64.to_bits());
