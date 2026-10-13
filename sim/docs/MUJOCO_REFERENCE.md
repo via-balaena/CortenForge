@@ -264,7 +264,7 @@ stored unclamped.
                 qfrc_actuator[dof] += actuator_moment[i][dof] * force
 ```
 
-### Model Build: `compute_muscle_params()`
+### Model Build: `compute_actuator_params()`
 
 Called after `compute_ancestors()` and `compute_implicit_params()`, for each
 muscle actuator:

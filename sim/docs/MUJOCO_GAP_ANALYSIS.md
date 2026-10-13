@@ -533,8 +533,9 @@ matching `mju_muscleGain`, `mju_muscleBias`, and `mju_muscleDynamics` from
   time constants: `τ_act_eff = τ_act * (0.5 + 1.5*act)`,
   `τ_deact_eff = τ_deact / (0.5 + 1.5*act)`
 - `sigmoid()` — quintic C2-continuous smoothstep for optional smooth blending
-- `compute_muscle_params()` — build-time computation of `lengthrange`, `acc0`,
-  and auto-resolved `F0 = scale / acc0`
+- `compute_actuator_params()` — build-time computation of `lengthrange` and
+  `acc0`; a negative `F0` is resolved as `scale / max(mjMINVAL, acc0)` at each
+  call (`muscle_f0`)
 
 Model fields: `actuator_dynprm[3]`, `actuator_gainprm[9]`, `actuator_biasprm[9]`,
 `actuator_lengthrange`, `actuator_acc0`. Data fields: `actuator_length`,
