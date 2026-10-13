@@ -407,7 +407,8 @@ fn t12_geomfromto_cutoff_exemption() {
 /// sphere of mass 1 resting on a plane, with three touch sensors on one site:
 /// cutoff 1; cutoff 1 delayed two steps, whose samples are clamped when
 /// computed; and no cutoff. MuJoCo 3.5.0 (unfused build) reads the values
-/// below after each step.
+/// below after each step (`scripts/gen_touch_cutoff_reference.py` prints
+/// them).
 #[test]
 fn a_touch_sensor_is_clamped_by_its_cutoff_as_mujoco_3_5_0() {
     let model = load_model(

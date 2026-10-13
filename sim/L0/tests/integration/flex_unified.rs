@@ -3520,7 +3520,8 @@ fn a_cable_edge_spring_has_mujoco_3_5_0_potential_energy() {
 /// edge stiffness on a flex of dim above 1. MuJoCo 3.5.0 (unfused build)
 /// gives the four energies on the same cable as a jointless anchor body and
 /// two bodies with three slides under `<flex body="anchor v1 v2">`, with the
-/// same fields set after loading.
+/// same fields set after loading (`scripts/gen_cable_energy_reference.py`
+/// prints them).
 #[test]
 fn a_cable_edge_spring_skips_rigid_flexes_rigid_edges_and_dim_above_1() {
     let model = sim_mjcf::load_model(
