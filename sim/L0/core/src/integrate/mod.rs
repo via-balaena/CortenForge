@@ -108,16 +108,19 @@ impl Data {
         // Integrate activation per actuator via mj_next_activation() (§34).
         // Handles both integration (Euler/FilterExact) and actlimited clamping.
         // MuJoCo order: activation → sleep → velocity → position.
-        // S4.8: Per-actuator disable gating — disabled actuators get act_dot=0,
-        // freezing activation state without zeroing it.
-        for i in 0..model.nu {
-            let act_adr = model.actuator_act_adr[i];
-            let act_num = model.actuator_act_num[i];
-            let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i);
-            for k in 0..act_num {
-                let j = act_adr + k;
-                let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
-                self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
+        // With actuation disabled the activations are left as they are, not
+        // clamped either; a disabled actuator's advances with act_dot = 0
+        // (`mj_advance`, `engine_forward.c:886-895`).
+        if !disabled(model, DISABLE_ACTUATION) {
+            for i in 0..model.nu {
+                let act_adr = model.actuator_act_adr[i];
+                let act_num = model.actuator_act_num[i];
+                let is_disabled = actuator_disabled(model, i);
+                for k in 0..act_num {
+                    let j = act_adr + k;
+                    let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
+                    self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
+                }
             }
         }
 

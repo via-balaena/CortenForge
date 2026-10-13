@@ -173,41 +173,45 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     data.time = t0;
     data.qpos.copy_from(&data.rk4_qpos_saved);
     data.qvel.copy_from(&data.rk4_qvel[0]);
+    data.act.copy_from(&data.rk4_act_saved);
     crate::history::advance_ctrl(model, data, t0);
 
-    // Advance activation from saved initial state
-    // S4.8: Disabled actuators get zero act_dot, freezing activation.
-    for act_i in 0..model.nu {
-        let act_adr = model.actuator_act_adr[act_i];
-        let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, act_i);
-        for k in 0..model.actuator_act_num[act_i] {
-            let a = act_adr + k;
-            let dact_combined: f64 = (0..4)
-                .map(|j| {
-                    let ad = if is_disabled {
-                        0.0
-                    } else {
-                        data.rk4_act_dot[j][a]
-                    };
-                    RK4_B[j] * ad
-                })
-                .sum();
-            match model.actuator_dyntype[act_i] {
-                ActuatorDynamics::FilterExact => {
-                    let tau = model.actuator_dynprm[act_i][0].max(MJ_MINVAL);
-                    data.act[a] =
-                        data.rk4_act_saved[a] + dact_combined * tau * (1.0 - (-h / tau).exp());
-                }
-                _ => {
-                    data.act[a] = data.rk4_act_saved[a] + h * dact_combined;
+    // Advance activation from saved initial state. With actuation disabled
+    // the activations stay where they were, not clamped either; a disabled
+    // actuator's advance with act_dot = 0 (`mj_advance`, `engine_forward.c:886-895`).
+    if !disabled(model, DISABLE_ACTUATION) {
+        for act_i in 0..model.nu {
+            let act_adr = model.actuator_act_adr[act_i];
+            let is_disabled = actuator_disabled(model, act_i);
+            for k in 0..model.actuator_act_num[act_i] {
+                let a = act_adr + k;
+                let dact_combined: f64 = (0..4)
+                    .map(|j| {
+                        let ad = if is_disabled {
+                            0.0
+                        } else {
+                            data.rk4_act_dot[j][a]
+                        };
+                        RK4_B[j] * ad
+                    })
+                    .sum();
+                match model.actuator_dyntype[act_i] {
+                    ActuatorDynamics::FilterExact => {
+                        let tau = model.actuator_dynprm[act_i][0].max(MJ_MINVAL);
+                        data.act[a] =
+                            data.rk4_act_saved[a] + dact_combined * tau * (1.0 - (-h / tau).exp());
+                    }
+                    _ => {
+                        data.act[a] = data.rk4_act_saved[a] + h * dact_combined;
+                    }
                 }
             }
-        }
-        // §34: Clamp activation to actrange (replaces muscle-only [0,1])
-        if model.actuator_actlimited[act_i] {
-            let range = model.actuator_actrange[act_i];
-            for k in 0..model.actuator_act_num[act_i] {
-                data.act[act_adr + k] = data.act[act_adr + k].clamp(range.0, range.1);
+            // §34: Clamp activation to actrange (replaces muscle-only [0,1])
+            if model.actuator_actlimited[act_i] {
+                let range = model.actuator_actrange[act_i];
+                for k in 0..model.actuator_act_num[act_i] {
+                    data.act[act_adr + k] = data.act[act_adr + k].clamp(range.0, range.1);
+                }
             }
         }
     }

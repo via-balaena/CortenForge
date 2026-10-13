@@ -112,3 +112,36 @@ fn muscle_activation_smoothing_matches_mujoco_3_5_0() {
 fn muscle_time_constant_is_clamped_at_mjminval() {
     assert_matches_mujoco("muscle_tiny_tau");
 }
+
+/// With actuation disabled as a whole, MuJoCo's `mj_advance` leaves the
+/// activations where they are, unclamped (`engine_forward.c:886-895`), and
+/// `act_dot` keeps the value last written: a limited filter (actrange 0.5 1)
+/// at activation 0 stays at 0 under Euler, RK4 and implicitfast. Under RK4
+/// the stages advance it with that `act_dot` and the step restores it.
+#[test]
+fn actuation_disabled_leaves_activations_alone() {
+    let golden = golden();
+    for case in golden["actuation_off"].as_array().expect("actuation_off") {
+        let name = case["name"].as_str().expect("name");
+        let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.ctrl[0] = 1.0;
+        data.forward(&model).expect("forward");
+        model.disableflags |= sim_core::DISABLE_ACTUATION;
+        for (k, step) in case["steps"].as_array().expect("steps").iter().enumerate() {
+            data.step(&model).expect("step");
+            for (field, got) in [
+                ("act", data.act.as_slice()),
+                ("act_dot", data.act_dot.as_slice()),
+                ("qpos", data.qpos.as_slice()),
+                ("qvel", data.qvel.as_slice()),
+            ] {
+                assert_close(
+                    &format!("{name}: {field} after step {k}"),
+                    got,
+                    &floats(&step[field]),
+                );
+            }
+        }
+    }
+}

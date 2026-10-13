@@ -28,6 +28,14 @@ Fixtures:
   engine_util_misc.c:752-770: the sigmoid of dctrl / width + 0.5);
 - muscle_tiny_tau: muscle dynamics with an activation time constant of
   1e-13, which MuJoCo clamps at mjMINVAL (:769).
+
+It also writes, under "actuation_off", a limited filter (actrange 0.5 1,
+activation 0) under Euler, RK4 and implicitfast: a forward pass with a
+control of 1 (act_dot 5), then actuation disabled as a whole and `nstep`
+steps. MuJoCo's mj_advance leaves the activations alone, unclamped
+(engine_forward.c:886-895), and mj_fwdActuation returns before writing
+act_dot (:289-292), so the RK4 stages advance the activation with the stale
+act_dot and mj_RungeKutta restores it before the advance (:1118).
 """
 
 import json
@@ -83,6 +91,32 @@ def fixture(name, xml, nstep):
     return out
 
 
+LIMITED = """<mujoco><option timestep="0.002" integrator="{integrator}"/>
+<worldbody>
+<body name="l" pos="0 0 1"><joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
+</worldbody>
+<actuator><general name="a" joint="j" gainprm="1" dyntype="filter" dynprm="0.2"
+  actlimited="true" actrange="0.5 1"/></actuator></mujoco>"""
+
+
+def actuation_off(integrator, nstep=3):
+    xml = LIMITED.format(integrator=integrator)
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.ctrl[0] = 1.0
+    mujoco.mj_forward(m, d)
+    if d.act_dot[0] == 0:
+        sys.exit("actuation_off: act_dot is 0 before actuation is disabled")
+    m.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_ACTUATION
+    out = {"name": f"actuation_off_{integrator}", "xml": xml, "nstep": nstep, "steps": []}
+    for _ in range(nstep):
+        mujoco.mj_step(m, d)
+        out["steps"].append({"act": floats(d.act), "act_dot": floats(d.act_dot),
+                             "qpos": floats(d.qpos), "qvel": floats(d.qvel)})
+    return out
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -94,7 +128,8 @@ def main():
         sys.exit(__doc__)
     marker = oracle()
     doc = {"oracle": marker,
-           "fixtures": finite_or_string([fixture(name, *f) for name, f in FIXTURES.items()])}
+           "fixtures": finite_or_string([fixture(name, *f) for name, f in FIXTURES.items()]),
+           "actuation_off": finite_or_string([actuation_off(i) for i in ("Euler", "RK4", "implicitfast")])}
     write(os.path.join(sys.argv[1], "activation.json"), doc)
     print(f"{len(FIXTURES)} fixtures -> {sys.argv[1]}")
 
