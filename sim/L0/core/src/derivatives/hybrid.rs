@@ -2925,8 +2925,9 @@ pub fn mjd_transition_hybrid(
     // 1b. Eulerdamp factor. The real Euler step applies joint damping IMPLICITLY:
     //     it solves `(M + h·D)·qacc_new = F` and `qvel += h·qacc_new` (see
     //     `integrate/mod.rs`), so the analytic velocity columns must route through
-    //     `M_impl = M + h·D`, NOT bare `M`. (The `Implicit*` integrators carry their
-    //     own `scratch_m_impl`; the explicit Euler path does not, so build it here.)
+    //     `M_impl = M + h·D`, NOT bare `M`. (The implicit spring-damper integrator
+    //     builds its own `scratch_m_impl`; the explicit Euler path does not, so
+    //     build it here.)
     //     Gated identically to the step (DISABLE_EULERDAMP / DISABLE_DAMPER). When
     //     no DOF is damped, `M_impl == M` and the bare-`M` fast path is kept, so the
     //     undamped result is byte-for-byte unchanged.

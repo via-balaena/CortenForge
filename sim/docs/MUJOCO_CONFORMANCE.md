@@ -463,10 +463,10 @@ CortenForge uses dense `DMatrix<f64>` (target models have nv < 100).
 Two additional integrator variants that use the full velocity-derivative Jacobian `qDeriv`
 instead of `ImplicitSpringDamper`'s direct mass-matrix modification approach:
 
-| Integrator | D Assembly | Symmetrize | Factorization | MuJoCo Equivalent |
-|------------|-----------|------------|---------------|-------------------|
-| `ImplicitFast` | passive + actuator vel | Yes | Cholesky | `mjINT_IMPLICITFAST` |
-| `Implicit` | passive + actuator vel + Coriolis | No | LU (partial pivot) | `mjINT_IMPLICIT` |
+| Integrator | D Assembly | MuJoCo Equivalent |
+|------------|-----------|-------------------|
+| `ImplicitFast` | passive + actuator vel | `mjINT_IMPLICITFAST` |
+| `Implicit` | passive + actuator vel + Coriolis | `mjINT_IMPLICIT` |
 
 **Verification:** 19 tests in `integration/implicit_integration.rs` covering:
 - Tendon-coupled damping stability (AC-1)

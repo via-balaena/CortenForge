@@ -184,11 +184,9 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                         // the sensor's body (MuJoCo: geom_bodyid[con->geom[k]] == bodyid)
                         let (geom1_body, geom2_body) = c.bodies(model);
                         if body_id == geom1_body || body_id == geom2_body {
-                            // Read normal force from efc_force.
-                            // NOTE: This reads efc_force directly, NOT via mj_contactForce().
-                            // For frictionless/elliptic contacts, efc_force[0] IS the normal
-                            // force. For pyramidal contacts, this sums facet projections —
-                            // ~75% of the true normal force (DT-118 tracks full conformance).
+                            // The normal force, as `mj_contactForce` decodes it: an
+                            // elliptic or frictionless contact's first row, a pyramidal
+                            // contact's facets summed (`mju_decodePyramid`).
                             if data.efc_type[ei] == ConstraintType::ContactPyramidal {
                                 for k in 0..dim {
                                     total_force += data.efc_force[ei + k];

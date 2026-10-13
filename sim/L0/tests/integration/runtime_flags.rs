@@ -1131,7 +1131,7 @@ fn ac41_actuation_plus_pergroup_orthogonality() {
     assert!(data3.actuator_force[0].abs() > 0.0, "motor1 active");
     assert!(data3.actuator_force[1].abs() > 0.0, "motor2 active");
 
-    // Case 4: Per-group disable freezes activation (act_dot = 0 for disabled group)
+    // Case 4: Per-group disable freezes activation (the advance takes act_dot = 0)
     let mut model4 = load_model(two_group_filter_actuator_mjcf()).expect("load");
     let mut data4 = model4.make_data();
     data4.ctrl[0] = 1.0;

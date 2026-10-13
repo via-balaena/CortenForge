@@ -1275,7 +1275,7 @@ fn test_tendon_passive_mixed_sleep() {
 #[test]
 fn test_forward_skip_sensors_sleep() {
     // forward() and step() through the shared forward_core with sleep
-    // enabled; sleep_parity.rs's rk4_sleeps_and_wakes_as_mujoco covers RK4.
+    // enabled; sleep_parity.rs's rk4_sleeps_as_mujoco_and_stays_asleep covers RK4.
     let model = load_model(free_body_sleep_mjcf()).expect("load model");
     let mut data = model.make_data();
 

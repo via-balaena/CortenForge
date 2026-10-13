@@ -10,8 +10,8 @@ the actual math the engine executes.
 |------------|--------|-----------|------|---------------|
 | **Euler** | Semi-implicit (symplectic) | Conditional | 1 eval | LDL (CRBA) |
 | **RK4** | 4th-order Runge-Kutta | Good for smooth | 4 evals | None |
-| **Implicit** | Full backward Euler + Coriolis | Unconditional | 1 eval + LU | LU (asymmetric) |
-| **ImplicitFast** | Backward Euler, no Coriolis | Unconditional | 1 eval + Cholesky | Cholesky (symmetric) |
+| **Implicit** | Full backward Euler + Coriolis | Unconditional | 1 eval + LU | Sparse LU |
+| **ImplicitFast** | Backward Euler, no Coriolis | Unconditional | 1 eval + LDL | LDL on M's pattern |
 | **ImplicitSpringDamper** | Velocity-level, diagonal K/D | Unconditional (springs) | 1 eval + Cholesky | Cholesky |
 
 ## Examples

@@ -55,7 +55,7 @@ pub fn muscle_gain_velocity(velocity: f64, fvmax: f64) -> f64 {
 }
 
 /// Passive force curve: zero below `L = 1.0`, quadratic onset, linear beyond midpoint.
-/// [`muscle_bias`] scales it by the force as MuJoCo does, in MuJoCo's order.
+/// [`muscle_bias`] computes the same curve times the force, in MuJoCo's order.
 #[must_use]
 pub fn muscle_passive_force(length: f64, lmax: f64, fpmax: f64) -> f64 {
     let b = 0.5 * (1.0 + lmax);
@@ -102,7 +102,7 @@ pub fn muscle_gain(len: f64, vel: f64, lengthrange: (f64, f64), acc0: f64, prm: 
 }
 
 /// A muscle's passive force (MuJoCo `mju_muscleBias`,
-/// `engine_util_misc.c:697-725`), `prm` its `biasprm`.
+/// `engine_util_misc.c:697-729`), `prm` its `biasprm`.
 #[must_use]
 pub fn muscle_bias(len: f64, lengthrange: (f64, f64), acc0: f64, prm: &[f64; 9]) -> f64 {
     let force = muscle_f0(prm, acc0);
@@ -145,7 +145,7 @@ pub fn sigmoid(x: f64) -> f64 {
 /// When `tausmooth` is at least mjMINVAL, uses quintic sigmoid to blend
 /// between `tau_act` and `tau_deact` instead of a hard switch at
 /// `ctrl == act`. MuJoCo's `mju_muscleDynamics` and
-/// `mju_muscleDynamicsTimescale` (`engine_util_misc.c:731-770`).
+/// `mju_muscleDynamicsTimescale` (`engine_util_misc.c:733-770`).
 #[must_use]
 pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f64 {
     let ctrl_clamped = ctrl.clamp(0.0, 1.0);

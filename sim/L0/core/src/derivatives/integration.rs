@@ -50,7 +50,7 @@ pub(super) fn post_step_qvel(
 // which `f64::midpoint` would round otherwise.
 #[allow(clippy::many_single_char_names, clippy::manual_midpoint)]
 pub fn mjd_quat_integrate(
-    _quat: &UnitQuaternion<f64>,
+    _quat: &UnitQuaternion<f64>, // unread: MuJoCo's Jacobians do not depend on it
     omega: &Vector3<f64>,
     h: f64,
 ) -> (Matrix3<f64>, Matrix3<f64>) {
@@ -140,9 +140,7 @@ pub(super) fn compute_integration_derivatives(
             }
             crate::types::MjJointType::Ball => {
                 // θ = ω'·h uses the velocity the step integrates qpos with,
-                // qvel_{t+1} (semi-implicit), not the pre-step qvel: J_l⁻¹(θ) is
-                // evaluated at that angle (only quaternion joints have a
-                // θ-dependent block).
+                // qvel_{t+1} (semi-implicit), not the pre-step qvel.
                 let v = qvel_next;
                 let omega = Vector3::new(v[dof_adr], v[dof_adr + 1], v[dof_adr + 2]);
                 let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(

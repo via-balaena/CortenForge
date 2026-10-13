@@ -1097,7 +1097,7 @@ fn t15_implicitfast_b_symmetric() {
     let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
     let (model, data) = setup(IMPLICITFAST_SPHERE, &qvel);
 
-    // ImplicitFast path: forward() populates qDeriv and symmetrizes it
+    // ImplicitFast path: forward() populates qDeriv
     // We can check by running mjd_smooth_vel on an implicitfast model
     let mut work = data.clone();
     work.qDeriv.fill(0.0);

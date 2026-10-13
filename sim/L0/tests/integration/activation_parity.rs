@@ -99,7 +99,7 @@ fn filter_time_constant_is_clamped_at_mjminval() {
 
 /// Muscle activation dynamics blend the two time constants through the
 /// sigmoid of `dctrl / width + 0.5` (`mju_muscleDynamics`,
-/// `engine_util_misc.c:752-770`): a width of 0.3, 60 steps from rest, the
+/// `engine_util_misc.c:733-770`): a width of 0.3, 60 steps from rest, the
 /// activation passing through the width.
 #[test]
 fn muscle_activation_smoothing_matches_mujoco_3_5_0() {

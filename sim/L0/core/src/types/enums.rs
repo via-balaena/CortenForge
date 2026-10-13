@@ -863,11 +863,12 @@ pub enum Integrator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepError {
-    /// Cholesky decomposition failed in implicit integration.
-    /// This indicates the modified mass matrix (M + h*D + h²*K) is not positive definite,
-    /// likely due to negative stiffness/damping or numerical instability.
+    /// Cholesky decomposition failed under the implicit spring-damper
+    /// integrator: the modified mass matrix (M + h*D + h²*K) is not positive
+    /// definite.
     CholeskyFailed,
-    /// LU decomposition failed (zero pivot in M − h·D).
+    /// Under the implicit integrator, a diagonal of `M − h·D`'s LU factor is
+    /// below mjMINVAL in magnitude.
     LuSingular,
     /// `model.timestep` is not positive and finite: zero, negative, NaN or infinite.
     InvalidTimestep,

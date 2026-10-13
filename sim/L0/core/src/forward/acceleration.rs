@@ -29,8 +29,10 @@ use nalgebra::DVector;
 ///
 /// # Errors
 ///
-/// Returns `Err(StepError::CholeskyFailed)` if using implicit integration
-/// and the modified mass matrix (M + h*D + h²*K) is not positive definite.
+/// `Err(StepError::CholeskyFailed)` under the implicit spring-damper
+/// integrator when its modified mass matrix (M + h*D + h²*K) is not positive
+/// definite, and `Err(StepError::LuSingular)` under the implicit integrator
+/// when a diagonal of its factor is below mjMINVAL in magnitude.
 pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> {
     if model.nv == 0 {
         return Ok(());

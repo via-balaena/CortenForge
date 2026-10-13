@@ -18,8 +18,8 @@ No window — headless analysis. The output is the table.
 |-----------|--------|-------|
 | **Euler** | Semi-implicit (symplectic) Euler | 1st |
 | **RK4** | Classic 4-stage Runge-Kutta | 4th |
-| **Implicit** | Full implicit with Coriolis, LU factorization | 1st (L-stable) |
-| **ImplicitFast** | Symmetric D, no Coriolis, Cholesky | 1st (L-stable) |
+| **Implicit** | Full implicit with Coriolis, sparse LU | 1st (L-stable) |
+| **ImplicitFast** | No Coriolis, on the mass matrix's pattern | 1st (L-stable) |
 | **ImplicitSpringDamper** | Diagonal spring/damper, Cholesky | 1st (L-stable) |
 
 ## What to expect

@@ -154,7 +154,7 @@ for i in range(nu):
         input = act[act_adr[i]]       # use CURRENT activation for force
 
     elif dyntype[i] in (Filter, FilterExact):
-        act_dot[act_adr[i]] = (ctrl_clamped - act[act_adr[i]]) / max(tau, 1e-10)
+        act_dot[act_adr[i]] = (ctrl_clamped - act[act_adr[i]]) / max(tau, mjMINVAL)
         input = act[act_adr[i]]
         # Filter uses Euler integration, FilterExact uses exact discrete integration.
         # Both compute the same act_dot here; the difference is in integrate().
@@ -178,16 +178,16 @@ def muscle_activation_dynamics(ctrl, act, dynprm):
 
     dctrl = ctrl_c - act
 
-    if tausmooth < 1e-10:
+    if tausmooth < mjMINVAL:
         tau = tau_act if dctrl > 0 else tau_deact    # hard switch
     else:
         tau = tau_deact + (tau_act - tau_deact) * sigmoid(dctrl / tausmooth + 0.5)
 
-    return dctrl / max(tau, 1e-10)
+    return dctrl / max(tau, mjMINVAL)
 ```
 
-Where `sigmoid(x) = x³(6x² - 15x + 10)` is the quintic C2-continuous
-smoothstep matching MuJoCo's `mju_sigmoid`.
+Where `sigmoid(x) = x³(3x(2x − 5) + 10)` is the quintic C2-continuous
+smoothstep, MuJoCo's `mju_sigmoid` in its arithmetic.
 
 Default `dynprm` for muscles: `[tau_act=0.01, tau_deact=0.04, tausmooth=0.0]`.
 
@@ -201,9 +201,9 @@ Default `dynprm` for muscles: `[tau_act=0.01, tau_deact=0.04, tausmooth=0.0]`.
         gain = gainprm[i][0] + gainprm[i][1]*length[i] + gainprm[i][2]*velocity[i]
     elif gaintype[i] == Muscle:
         prm = gainprm[i]
-        L0 = (lengthrange[i][1] - lengthrange[i][0]) / max(prm[1] - prm[0], 1e-10)
-        norm_len = prm[0] + (actuator_length[i] - lengthrange[i][0]) / max(L0, 1e-10)
-        norm_vel = actuator_velocity[i] / max(L0 * prm[6], 1e-10)  # prm[6] = vmax
+        L0 = (lengthrange[i][1] - lengthrange[i][0]) / max(prm[1] - prm[0], mjMINVAL)
+        norm_len = prm[0] + (actuator_length[i] - lengthrange[i][0]) / max(L0, mjMINVAL)
+        norm_vel = actuator_velocity[i] / max(L0 * prm[6], mjMINVAL)  # prm[6] = vmax
 
         FL = muscle_gain_length(norm_len, lmin=prm[4], lmax=prm[5])
         FV = muscle_gain_velocity(norm_vel, fvmax=prm[8])
@@ -215,6 +215,7 @@ Default `dynprm` for muscles: `[tau_act=0.01, tau_deact=0.04, tausmooth=0.0]`.
     elif biastype[i] == Affine:
         bias = biasprm[i][0] + biasprm[i][1]*length[i] + biasprm[i][2]*velocity[i]
     elif biastype[i] == Muscle:
+        prm = biasprm[i]   # F0, the lengths and fpmax from biasprm (mju_muscleBias)
         FP = muscle_passive_force(norm_len, lmax=prm[5], fpmax=prm[7])
         bias = -F0 * FP
 
@@ -236,10 +237,11 @@ with `fpmax * 0.5` at midpoint.
 These match MuJoCo's `mju_muscleGain` and `mju_muscleBias` in
 `engine_util_misc.c` exactly.
 
-**F0 (peak isometric force):** Auto-computed at model build time when
-`gainprm[2] < 0`: `F0 = scale / acc0`, where `acc0 = ‖M⁻¹J‖₂` is the
-acceleration produced by unit actuator force, computed via the sparse
-L^T D L factorization from CRBA at `qpos0`.
+**F0 (peak isometric force):** `prm[2]`, or, where that is negative,
+`prm[3] / max(mjMINVAL, acc0)`, resolved at each call (`muscle_f0`); the
+model keeps the negative value, as MuJoCo's does. `acc0 = ‖M⁻¹J‖₂`, the
+acceleration produced by unit actuator force, is computed at `qpos0` and
+stored unclamped.
 
 ### Phase 3: Transmission (Force → Generalized Forces)
 
@@ -270,9 +272,8 @@ muscle actuator:
 1. **`actuator_lengthrange`** — computed from tendon limits (if limited) or
    joint range sums (fixed tendons), gear-scaled with sign awareness.
 2. **`actuator_acc0`** — forward pass at `qpos0` → CRBA → sparse solve:
-   `acc0 = ‖M⁻¹J‖₂` where J is the gear-scaled transmission moment vector.
-3. **F0 resolution** — when `gainprm[2] < 0` (auto-compute):
-   `F0 = gainprm[3] / acc0` (scale / acc0). `biasprm[2]` synced to match.
+   `acc0 = ‖M⁻¹J‖₂` where J is the gear-scaled transmission moment vector,
+   unclamped.
 
 ---
 
@@ -671,22 +672,24 @@ The modified matrix `M + h*D + h^2*K` is SPD when `M` is SPD and `D, K >= 0`
 and the step then returns `CholeskyFailed`, constrained or not. After solving, `qacc = (v_new - v_old) / h`
 for consistency.
 
-**Implicit path (ImplicitFast — full Jacobian, Cholesky):**
+**Implicit path (ImplicitFast — no Coriolis derivatives):**
 
 Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/∂(qvel)` via:
 1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + flex edge damping J^T B J + tendon damping J^T B J (all but the flex edges sleep-filtered, §40c)
 2. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
 
-Symmetrizes D, then solves `(M − h·D) · qacc_implicit = f` via dense Cholesky factorization.
-Skips Coriolis derivatives (`mjd_rne_vel`). Returns `StepError::CholeskyFailed` if
-`M − h·D` is not positive definite (e.g., strong positive velocity feedback).
+Solves `(M − h·D) · qacc_implicit = f` with `M − h·D` taken on the mass
+matrix's sparsity pattern (a simple dof's row its diagonal only), factored as
+MuJoCo's `mj_factorI`, which checks no pivot (`mj_implicitSkip`,
+`engine_forward.c:1128-1353`). Skips Coriolis derivatives (`mjd_rne_vel`).
 
-**Implicit path (Implicit — full Jacobian, LU):**
+**Implicit path (Implicit — LU):**
 
-Same as ImplicitFast but also includes Coriolis velocity derivatives via `mjd_rne_vel()`.
-Does NOT symmetrize D (Coriolis terms break symmetry). Uses LU factorization with
-partial pivoting instead of Cholesky. Returns `StepError::LuSingular` if any pivot
-magnitude is below `1e-30`.
+Same as ImplicitFast but also includes Coriolis velocity derivatives via
+`mjd_rne_vel()`, with `M − h·D` on the pattern of every pair of dofs on one
+branch, factored as MuJoCo's `mju_factorLUSparse` without pivoting. Returns
+`StepError::LuSingular` where a diagonal of the factor is below mjMINVAL in
+magnitude.
 
 Both ImplicitFast and Implicit solve for an acceleration (not `v_new` directly),
 kept in the crate-private `qacc_implicit`; the integration step updates velocity via
@@ -704,17 +707,18 @@ Activation uses `act_dot` (computed by `mj_fwd_actuation()` without modifying
 
 **Semi-implicit Euler (default, `Integrator::Euler`):**
 ```python
-# 0. Integrate activation (per actuator, then clamp muscles)
+# 0. Integrate activation (per actuator, then clamp to actrange);
+#    skipped with actuation disabled, act_dot 0 for a disabled actuator
 for i in range(nu):
     for k in range(actuator_act_num[i]):
         j = act_adr[i] + k
         if dyntype[i] == FilterExact:
-            tau = max(dynprm[i][0], 1e-10)
+            tau = max(dynprm[i][0], mjMINVAL)
             act[j] += act_dot[j] * tau * (1 - exp(-h / tau))   # exact discrete
         else:
             act[j] += h * act_dot[j]                            # Euler
-    if dyntype[i] == Muscle:
-        act[act_adr[i]:act_adr[i]+act_num[i]] = clamp(act[...], 0, 1)
+    if actlimited[i]:
+        act[act_adr[i]:act_adr[i]+act_num[i]] = clamp(act[...], actrange[i])
 
 # 1. Update velocity FIRST using current acceleration
 qvel += qacc * h
@@ -736,8 +740,8 @@ for each joint:
 Position update uses the NEW velocity (step 1 output). This is what makes it
 semi-implicit and provides energy stability that plain Euler lacks.
 
-Muscle activations are clamped to `[0, 1]` after integration to enforce the
-physiological range.
+An activation with `actlimited` is clamped to its `actrange` after
+integration (`mj_nextActivation`).
 
 **GPU path:** The `sim-gpu` crate was removed in workspace trim
 (2026-03-19), then re-introduced via PR #143 with the GPU physics
@@ -787,16 +791,10 @@ for i in [1, 2, 3]:
     rk4_qvel[i] = rk4_qvel[0] + h * dX_acc   # velocity at this stage
     qvel = rk4_qvel[i]                        # set Data.qvel
 
-    # Advance activation trial state from saved initial activation
-    for each actuator act_i:
-        for each activation slot a owned by act_i:
-            weighted = sum(A[i-1][j] * rk4_act_dot[j][a] for j in 0..3)
-            if dyntype[act_i] == FilterExact:
-                tau = max(dynprm[act_i][0], 1e-10)
-                act[a] = act_saved[a] + weighted * tau * (1 - exp(-h / tau))
-            else:
-                act[a] = act_saved[a] + h * weighted
-    clamp_muscle_activations(act, 0, 1)
+    # Advance activation trial state from saved initial activation, every
+    # dyntype alike and unclamped, as MuJoCo's stages (engine_forward.c:1079-1089)
+    for each activation slot a:
+        act[a] = act_saved[a] + h * sum(A[i-1][j] * rk4_act_dot[j][a] for j in 0..3)
 
     forward_skip_sensors()               # full pipeline minus sensors
     rk4_qacc[i] = qacc                   # acceleration from dynamics
@@ -811,11 +809,11 @@ for each actuator act_i:
     for each activation slot a owned by act_i:
         combined = sum(B[j] * rk4_act_dot[j][a] for j in 0..4)
         if dyntype[act_i] == FilterExact:
-            tau = max(dynprm[act_i][0], 1e-10)
+            tau = max(dynprm[act_i][0], mjMINVAL)
             act[a] = act_saved[a] + combined * tau * (1 - exp(-h / tau))
         else:
             act[a] = act_saved[a] + h * combined
-clamp_muscle_activations(act, 0, 1)
+clamp each actlimited activation to its actrange   # all skipped with actuation disabled
 
 efc_lambda = efc_lambda_saved            # restore warmstart
 ```

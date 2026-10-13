@@ -33,7 +33,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - **3E GPU Pipeline** (#67–71): GPU FK (10b), broad-phase (10c), narrow-phase (10d), constraint solver (10e), full GPU step (10f)
 
 ### Fully Implemented (in pipeline)
-- Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (symmetric D, Cholesky), Implicit (asymmetric D + Coriolis, LU)
+- Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (D without Coriolis), Implicit (D with Coriolis)
 - Constraint solver: PGS (Gauss-Seidel, MuJoCo-aligned — no SOR) + CG (primal Polak-Ribiere, shares mj_sol_primal with Newton) + Newton (reduced primal, default, matching MuJoCo), Warm Starting via `qacc_warmstart`
 - Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture, `contact_param()` with element-wise max friction, `geom/@priority` gating, `solmix`-weighted solver param mixing, margin/gap broadphase + narrow-phase + constraint assembly)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
@@ -130,14 +130,14 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | RK4 | Supported | `RungeKutta4` | **Implemented** (true 4-stage RK4 via `mj_runge_kutta()`; see [future_work_1 #8](./todo/future_work_1.md) ✅) | - | - |
 | Explicit Euler | Supported | - | Not implemented (removed standalone-only code) | - | - |
 | Velocity Verlet | - | - | Not implemented (removed standalone-only code) | - | - |
-| Implicit-in-velocity | Core feature | - | **Implemented** (`Implicit` — full D with Coriolis, LU factorization) | - | - |
-| Implicit-fast (no Coriolis) | Optimization | - | **Implemented** (`ImplicitFast` — symmetric D, Cholesky factorization) | - | - |
+| Implicit-in-velocity | Core feature | - | **Implemented** (`Implicit` — D with Coriolis) | - | - |
+| Implicit-fast (no Coriolis) | Optimization | - | **Implemented** (`ImplicitFast` — D without Coriolis) | - | - |
 
 > The pipeline uses a single `Integrator` enum (`integrate/mod.rs`)
 > with five variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
 > `ImplicitSpringDamper` (spring/damper implicit Euler with joint diagonal + tendon non-diagonal K/D),
-> `ImplicitFast` (symmetric D, Cholesky), and `Implicit` (asymmetric D
-> with Coriolis, LU). A standalone trait-based integrator system was
+> `ImplicitFast` (D without Coriolis), and `Implicit` (D
+> with Coriolis). A standalone trait-based integrator system was
 > removed in FUTURE_WORK C1.
 
 ### Implementation Notes: Implicit Integration ✅ COMPLETED
@@ -151,15 +151,15 @@ Three implicit integrator variants are implemented:
   accumulated via `accumulate_tendon_kd()` (DT-35)
 - MJCF: `integrator="implicitspringdamper"`
 
-**`ImplicitFast` (full Jacobian, Cholesky):**
+**`ImplicitFast` (no Coriolis derivatives):**
 - Solves: `(M − h·D)·qacc_implicit = qfrc_smooth + qfrc_constraint` (`qacc` keeps the explicit acceleration)
 - D = ∂(qfrc_smooth)/∂(qvel) via `mjd_passive_vel` + `mjd_actuator_vel`
-- D is symmetrized: `D ← (D + D^T)/2`, then Cholesky factorization
+- `M − h·D` on the mass matrix's sparsity pattern, factored as MuJoCo's `mj_factorI`
 - MJCF: `integrator="implicitfast"`
 
-**`Implicit` (full Jacobian, LU):**
+**`Implicit` (with Coriolis derivatives):**
 - Same as ImplicitFast but includes Coriolis derivatives (`mjd_rne_vel`)
-- D is asymmetric, solved via LU with partial pivoting
+- `M − h·D` on the pattern of every pair of dofs on one branch, factored as MuJoCo's `mju_factorLUSparse`, without pivoting
 - MJCF: `integrator="implicit"`
 
 **Usage:**

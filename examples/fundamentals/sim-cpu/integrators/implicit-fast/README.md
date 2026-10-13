@@ -1,10 +1,8 @@
-# ImplicitFast — Symmetric D, Cholesky Factorization
+# ImplicitFast — Implicit Without Coriolis
 
-A faster variant of the full implicit integrator. Assembles the same
-velocity derivative matrix D but **skips Coriolis terms** and
-**symmetrizes** D before solving. This allows Cholesky factorization
-(cheaper than LU) while keeping the stability benefits of implicit
-integration.
+A variant of the full implicit integrator. Assembles the same velocity
+derivative matrix D but **skips Coriolis terms**, and takes `M - h*D` on
+the mass matrix's sparsity pattern.
 
 ## What you see
 
@@ -24,26 +22,23 @@ On a single hinge pendulum, Coriolis is a scalar and both methods agree.
 ## How it works
 
 ```
-(M - h*D_sym) * a = qfrc_smooth + qfrc_constraint
+(M - h*D) * a = qfrc_smooth + qfrc_constraint
 qvel <- qvel + h * a
 ```
 
 `a` is the acceleration the step advances `qvel` with; `data.qacc` keeps the
 explicit acceleration, as in MuJoCo.
 
-Where D_sym = (D + D^T) / 2 is the symmetrized Jacobian, excluding
-Coriolis terms. The symmetry guarantee means M - h*D_sym is SPD
-(assuming D doesn't dominate M), so Cholesky factorization can be used.
-
-Cholesky is roughly 2x faster than LU for dense matrices and avoids
-pivoting. The tradeoff: skipping Coriolis makes this slightly less
-accurate on spinning multi-body systems.
+Where D excludes Coriolis terms and `M - h*D` is taken on the mass
+matrix's pattern (its lower triangle; a simple dof's row its diagonal
+only), factored as `L'*D*L` with no pivot check, as MuJoCo's
+`mj_factorI`.
 
 ## Parameters
 
 | Parameter | Value |
 |-----------|-------|
-| Integrator | ImplicitFast (symmetric D, Cholesky) |
+| Integrator | ImplicitFast |
 | Timestep | 0.005 s |
 | Body mass | 1.0 kg |
 | Arm length | 0.5 m (CoM at 0.25 m) |

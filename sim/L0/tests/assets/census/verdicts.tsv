@@ -810,7 +810,7 @@
 8080b9e3eb5c2534	agree
 80859c8b9a5bff71	model:geom_quat;dyn:agree
 809ac3f334a5fc73	both-refuse
-809fc2ad17ccbc42	e1:t0:sensordata
+809fc2ad17ccbc42	e1:t0:sensordata	divergence=D-STATIC-ACCELEROMETER
 80da5a6e93ad3d8a	agree
 8118725707e1de2a	agree
 81678be07e627aee	mj-refuses

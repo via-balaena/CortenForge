@@ -25,7 +25,9 @@ use crate::types::{
 ///
 /// A tree asleep at the step's start is held there through the stages and the
 /// advance, and a step that puts a tree to sleep evaluates its forward pass
-/// again from the position stage (registry `D-RK4-SLEEP`).
+/// again from the position stage (registry `D-RK4-SLEEP`), so collision and a
+/// contact filter callback run once more on that step than in MuJoCo, whose
+/// pass starts from the velocity stage.
 ///
 /// After this function returns, derived quantities (xpos, contacts, forces, etc.)
 /// are stage 3's, as MuJoCo's, and do NOT correspond to the final (qpos, qvel)

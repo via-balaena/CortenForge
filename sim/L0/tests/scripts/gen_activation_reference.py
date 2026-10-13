@@ -25,9 +25,9 @@ Fixtures:
 - tiny_tau_exact: an exact filter with tau 1e-12, under Euler and under RK4;
 - muscle_smooth: muscle dynamics with a smoothing width of 0.3, 60 steps,
   whose activation passes through the width (mju_muscleDynamics,
-  engine_util_misc.c:752-770: the sigmoid of dctrl / width + 0.5);
+  engine_util_misc.c:733-770: the sigmoid of dctrl / width + 0.5);
 - muscle_tiny_tau: muscle dynamics with an activation time constant of
-  1e-13, which MuJoCo clamps at mjMINVAL (:769).
+  1e-13, which MuJoCo clamps at mjMINVAL (:768).
 
 It also writes, under "actuation_off", a limited filter (actrange 0.5 1,
 activation 0) under Euler, RK4 and implicitfast: a forward pass with a

@@ -287,9 +287,11 @@ impl Data {
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
     /// made by a model of other dimensions or an input array was resized,
     /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active, and `Err(StepError::CholeskyFailed)` if
-    /// using implicit integrator and the modified mass matrix decomposition
-    /// fails.
+    /// tendon equality is active, `Err(StepError::CholeskyFailed)` under the
+    /// implicit spring-damper integrator when its modified mass matrix is not
+    /// positive definite, and `Err(StepError::LuSingular)` under the implicit
+    /// integrator when a diagonal of its factor is below mjMINVAL in
+    /// magnitude.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;

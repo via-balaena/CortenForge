@@ -79,7 +79,7 @@ fn connect_impedance_is_shared_across_rows() {
     assert_close("qacc", data.qacc.as_slice(), &floats(&case["qacc"]), TOL);
 }
 
-/// A box on a hinge welded to the world, started 0.3 rad from its weld pose,
+/// A box on a hinge welded to the world, started 0.008 rad from its weld pose,
 /// under Euler, implicit and implicitfast.
 #[test]
 fn weld_matches_mujoco_3_5_0() {

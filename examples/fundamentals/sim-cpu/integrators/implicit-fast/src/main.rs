@@ -40,25 +40,16 @@ use sim_core::validation::{Check, print_report};
 //        D = D_joint + D_tendon + D_actuator
 //        (no mjd_rne_vel call — saves O(nv²) work)
 //
-//   2. Symmetrize: D ← (D + Dᵀ) / 2
-//      (without Coriolis, D is nearly symmetric; forcing symmetry
-//       enables cheaper Cholesky instead of LU)
+//   2. Form the system matrix on the mass matrix's sparsity pattern
+//      (its lower triangle; a simple dof's row its diagonal only):
+//        M_hat = M - h · D
 //
-//   3. Form SPD system matrix:
-//        M_hat = M - h · D    (symmetric positive definite)
+//   3. Factor it as L'·D·L with no pivot check (MuJoCo's mj_factorI),
+//      then backsolve for the acceleration a
 //
-//   4. Solve via Cholesky factorization:
-//        M_hat = L · Lᵀ,  then backsolve for the acceleration a
-//
-//   5. Update (data.qacc keeps the explicit acceleration, as in MuJoCo):
+//   4. Update (data.qacc keeps the explicit acceleration, as in MuJoCo):
 //        qvel  ←  qvel + h · a
 //        qpos  ←  manifold_integrate(qpos, h, qvel)
-//
-//   Properties:
-//   - Stable like full implicit, but cheaper (Cholesky vs LU)
-//   - Skipping Coriolis: negligible error for most articulated systems
-//   - Cholesky: O(nv³/3) — roughly half the cost of LU
-//   - Best for: real-time implicit integration where Coriolis is small
 //
 // Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicitfast)
 
