@@ -862,8 +862,7 @@ fn check_26_ball_hybrid_vs_fd() -> (u32, u32) {
     // Use floor=1e-6 to avoid false alarms from FD noise on near-zero
     // entries. Extreme inertia ratios (e.g. diaginertia 0.1/0.1/0.001)
     // produce coupling entries of order 1e-10 where sign differences
-    // inflate max_relative_error to ~1.0 with a tight floor. See the
-    // inline comment in mjd_quat_integrate (integration.rs) for details.
+    // inflate max_relative_error to ~1.0 with a tight floor.
     let (err, _) = max_relative_error(&fd.A, &hyb.A, 1e-6);
     let p = check(
         "Ball: hybrid vs FD A (floor=1e-6)",

@@ -902,12 +902,11 @@ fn chain_state_jacobian_damped_matches_fd() {
 /// integrator's `≈ Δt·I` (NOT zero — the bug the lossy `sqrt(1−w²)+acos` log map in
 /// `mj_differentiate_pos` produced when a tiny FD rotation's `w` rounded to 1; fixed
 /// to the vector-norm + atan2 form), and the position-VELOCITY and velocity-rows
-/// match sim-core's analytic transition `A`. (The position-POSITION block legitimately
-/// differs from `A`: this carry measures the output tangent at the nominal `qpos'`
-/// (`mj_differentiate_pos`, the convention `jz`/`J_r` consume), whereas
-/// `transition_derivatives` references it at `q_old` — a different, internally
-/// consistent tangent. The end-to-end flat `ball·material[μ]` trajectory row of
-/// `tests/coupling_grad_harness.rs` validates the full convention-consistent composition.)
+/// match sim-core's analytic transition `A`. (This carry measures the output tangent at
+/// the nominal `qpos'` (`mj_differentiate_pos`, the convention `jz`/`J_r` consume), as
+/// `transition_derivatives` does since Rigid-physics P31. The end-to-end flat
+/// `ball·material[μ]` trajectory row of `tests/coupling_grad_harness.rs` validates the
+/// full composition.)
 #[test]
 fn loaded_state_jacobian_ball_velocity_block_matches_analytic() {
     const BALL_MJCF: &str = r#"<mujoco>
@@ -935,7 +934,7 @@ fn loaded_state_jacobian_ball_velocity_block_matches_analytic() {
     //  (2) the position-velocity block's DIAGONAL is ≈ Δt — the integrator's `J_r ≈ I`.
     //      This is the atan2-log-map regression guard: the lossy `sqrt(1−w²)+acos` form
     //      returned ZERO here (a tiny FD rotation's `w` rounds to 1). The off-diagonals
-    //      are O(Δt²) and convention-dependent (see the doc), so are not compared.
+    //      are O(Δt²) and are not compared.
     let loaded = c.loaded_state_jacobian(&SpatialVector::zeros());
     let a = c
         .data

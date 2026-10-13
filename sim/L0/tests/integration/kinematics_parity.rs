@@ -137,9 +137,10 @@ fn slide_ref_fk() {
 
 /// A ball joint whose `pos` is off its body's origin turns the body about
 /// that anchor, alone and below a hinge, as MuJoCo's: the pose, the
-/// trajectory, and the velocity rows of the transition's A against MuJoCo's
-/// finite differences (centred, eps 1e-6). Before, the ball turned the body
-/// about its origin.
+/// trajectory, and the transition's A against MuJoCo's finite differences
+/// (centred, eps 1e-6). Before, the ball turned the body about its origin;
+/// and A's position rows were 6.0e-4 off, the quaternion's tangent taken at
+/// the step's start (spec book P31, ledger L115).
 #[test]
 fn offset_ball_matches_mujoco() {
     for name in ["offset_ball", "chain_offball"] {
@@ -162,9 +163,6 @@ fn offset_ball_matches_mujoco() {
             1e-15,
         );
 
-        // The velocity rows: the position rows differ from MuJoCo's by up to
-        // 6.0e-4 here, as much with sim-core's own finite differences, where
-        // the integration's quaternion tangent is not MuJoCo's (spec book P31).
         let config = DerivativeConfig {
             eps: 1e-6,
             centered: true,
@@ -175,7 +173,7 @@ fn offset_ball_matches_mujoco() {
             .A;
         let want = floats(&case["A"]);
         let nx = a.nrows();
-        for r in model.nv..nx {
+        for r in 0..nx {
             let row: Vec<f64> = (0..nx).map(|c| a[(r, c)]).collect();
             assert_close(
                 &format!("{name} A row {r}"),

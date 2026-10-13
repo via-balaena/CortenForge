@@ -136,8 +136,8 @@ pub fn rigid_xfrc_column(model: &Model, data: &Data, body: usize) -> DMatrix<f64
 /// `log(q'⁻¹ · q'(φ+δφ)) = J_r(φ)·δφ`. This is the position-row factor the multi-DOF
 /// carry needs for a quaternion joint (the body-frame tangent convention
 /// [`sim_core::mj_differentiate_pos`] reads, which the FD [`StaggeredCoupling::loaded_state_jacobian`](crate::StaggeredCoupling::loaded_state_jacobian)
-/// also uses), as distinct from the `h·I` / left-Jacobian forms
-/// [`sim_core::mjd_quat_integrate`] returns for its own (tangent-at-`q_old`) convention.
+/// also uses); [`sim_core::mjd_quat_integrate`] takes the same convention, its velocity
+/// block `h` times this.
 /// Reduces to `I` as `θ → 0` (the linear / hinge limit). FD-validated against the real
 /// quaternion step in `tests/`.
 pub(super) fn right_jacobian_so3(phi: Vec3) -> Matrix3<f64> {

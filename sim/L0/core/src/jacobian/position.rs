@@ -7,27 +7,21 @@
 //! Corresponds to the position integration sections of MuJoCo's
 //! `engine_util_spatial.c`.
 
-use crate::quat::quat_integrate;
+use crate::quat::{quat_integrate, sub_quat};
 use crate::types::{MjJointType, Model};
-use nalgebra::{DVector, UnitQuaternion, Vector3};
+use nalgebra::DVector;
 
-/// Compute velocity from position difference: `qvel` = `mj_differentiatePos(qpos2 - qpos1) / dt`.
+/// The velocity that moves `qpos1` to `qpos2` in time `dt`, as MuJoCo 3.5.0's
+/// `mj_differentiatePos` computes it (`engine_support.c:608-638`).
 ///
-/// This function computes the velocity that would move from `qpos1` to `qpos2` in time `dt`.
-/// For quaternions (ball/free joints), it uses the proper SO(3) velocity rather than
-/// naive quaternion subtraction.
+/// A hinge's,
+/// a slide's and a free joint's position `(qpos2 − qpos1)/dt`, and a ball's
+/// and a free joint's rotation `mju_subQuat(q2, q1)` (the rotation vector of
+/// `q1⁻¹·q2`, its angle taken in (−π, π]) times `1/dt`, the quaternions as
+/// given. The tangent is at `qpos1`, in the body frame: for unit quaternions,
+/// `qpos1` integrated by the result over `dt` is `qpos2`.
 ///
-/// # Arguments
-///
-/// * `model` - The model containing joint definitions
-/// * `qvel` - Output velocity vector (length `nv`)
-/// * `qpos1` - Start position
-/// * `qpos2` - End position
-/// * `dt` - Time difference
-///
-/// # `MuJoCo` Equivalence
-///
-/// This matches `MuJoCo`'s `mj_differentiatePos` function.
+/// `dt` is not checked: 0 gives non-finite velocities, as MuJoCo's does.
 pub fn mj_differentiate_pos(
     model: &Model,
     qvel: &mut DVector<f64>,
@@ -35,106 +29,26 @@ pub fn mj_differentiate_pos(
     qpos2: &DVector<f64>,
     dt: f64,
 ) {
-    if dt.abs() < 1e-10 {
-        qvel.fill(0.0);
-        return;
-    }
-
-    let dt_inv = 1.0 / dt;
-
+    let quat = |q: &DVector<f64>, adr: usize| [q[adr], q[adr + 1], q[adr + 2], q[adr + 3]];
     for jnt_id in 0..model.njnt {
-        let qpos_adr = model.jnt_qpos_adr[jnt_id];
-        let dof_adr = model.jnt_dof_adr[jnt_id];
-
+        let mut padr = model.jnt_qpos_adr[jnt_id];
+        let mut vadr = model.jnt_dof_adr[jnt_id];
         match model.jnt_type[jnt_id] {
             MjJointType::Hinge | MjJointType::Slide => {
-                // Scalar: simple finite difference
-                qvel[dof_adr] = (qpos2[qpos_adr] - qpos1[qpos_adr]) * dt_inv;
+                qvel[vadr] = (qpos2[padr] - qpos1[padr]) / dt;
             }
-
-            MjJointType::Ball => {
-                // Quaternion velocity: compute angular velocity from q1 to q2
-                // Right-multiply convention: q2 = q1 * q_delta  =>  q_delta = q1^-1 * q2
-                // angular velocity = log(q_delta) / dt  (body-frame, consistent with integrate)
-                let q1 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                    qpos1[qpos_adr],
-                    qpos1[qpos_adr + 1],
-                    qpos1[qpos_adr + 2],
-                    qpos1[qpos_adr + 3],
-                ));
-                let q2 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                    qpos2[qpos_adr],
-                    qpos2[qpos_adr + 1],
-                    qpos2[qpos_adr + 2],
-                    qpos2[qpos_adr + 3],
-                ));
-
-                // q_delta = q1.inverse() * q2  (right convention)
-                let q_delta = q1.inverse() * q2;
-
-                // Extract the rotation vector (the SO(3) log). Read sin(θ/2) from the
-                // vector-part norm DIRECTLY — NOT sqrt(1−w²), which loses all precision
-                // when w rounds to ±1 for a tiny rotation (e.g. a `θ ~ 1e-9` FD
-                // difference makes `1−w² ~ 1e-18` underflow to 0, falsely returning zero
-                // velocity) — and recover the angle via atan2 (stable near 0 and π,
-                // unlike acos). Matches MuJoCo's `mju_quat2Vel`.
-                //
-                // The `> 1e-10` guard only divides-by-zero-protects the exact `q1 == q2`
-                // case: `sin(θ/2) = 1e-10` is a half-angle floor ~2e-10 rad — far above
-                // f64 eps (~2e-16) yet orders below any real FD step (~1e-6…1e-8), so a
-                // genuine FD rotation is never clipped (this is what the lossy `sqrt(1−w²)`
-                // form silently violated).
-                let vec = Vector3::new(q_delta.i, q_delta.j, q_delta.k);
-                let sin_half = vec.norm();
-                if sin_half > 1e-10 {
-                    let angle = 2.0 * sin_half.atan2(q_delta.w);
-                    let omega = vec * (angle / sin_half * dt_inv);
-                    qvel[dof_adr] = omega.x;
-                    qvel[dof_adr + 1] = omega.y;
-                    qvel[dof_adr + 2] = omega.z;
-                } else {
-                    qvel[dof_adr] = 0.0;
-                    qvel[dof_adr + 1] = 0.0;
-                    qvel[dof_adr + 2] = 0.0;
+            kind @ (MjJointType::Free | MjJointType::Ball) => {
+                if kind == MjJointType::Free {
+                    for i in 0..3 {
+                        qvel[vadr + i] = (qpos2[padr + i] - qpos1[padr + i]) / dt;
+                    }
+                    padr += 3;
+                    vadr += 3;
                 }
-            }
-
-            MjJointType::Free => {
-                // Linear velocity: simple finite difference
-                qvel[dof_adr] = (qpos2[qpos_adr] - qpos1[qpos_adr]) * dt_inv;
-                qvel[dof_adr + 1] = (qpos2[qpos_adr + 1] - qpos1[qpos_adr + 1]) * dt_inv;
-                qvel[dof_adr + 2] = (qpos2[qpos_adr + 2] - qpos1[qpos_adr + 2]) * dt_inv;
-
-                // Angular velocity from quaternion difference (right convention)
-                let q1 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                    qpos1[qpos_adr + 3],
-                    qpos1[qpos_adr + 4],
-                    qpos1[qpos_adr + 5],
-                    qpos1[qpos_adr + 6],
-                ));
-                let q2 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                    qpos2[qpos_adr + 3],
-                    qpos2[qpos_adr + 4],
-                    qpos2[qpos_adr + 5],
-                    qpos2[qpos_adr + 6],
-                ));
-
-                let q_delta = q1.inverse() * q2;
-                // Robust log map: sin(θ/2) from the vector-part norm directly + atan2
-                // (see the Ball branch — sqrt(1−w²)+acos underflows to zero for a tiny
-                // rotation, which silently zeroed the FD position-velocity Jacobian).
-                let vec = Vector3::new(q_delta.i, q_delta.j, q_delta.k);
-                let sin_half = vec.norm();
-                if sin_half > 1e-10 {
-                    let angle = 2.0 * sin_half.atan2(q_delta.w);
-                    let omega = vec * (angle / sin_half * dt_inv);
-                    qvel[dof_adr + 3] = omega.x;
-                    qvel[dof_adr + 4] = omega.y;
-                    qvel[dof_adr + 5] = omega.z;
-                } else {
-                    qvel[dof_adr + 3] = 0.0;
-                    qvel[dof_adr + 4] = 0.0;
-                    qvel[dof_adr + 5] = 0.0;
+                let rotation = sub_quat(&quat(qpos2, padr), &quat(qpos1, padr));
+                let inv_dt = 1.0 / dt;
+                for i in 0..3 {
+                    qvel[vadr + i] = rotation[i] * inv_dt;
                 }
             }
         }

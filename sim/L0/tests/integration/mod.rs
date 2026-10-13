@@ -317,6 +317,10 @@ pub mod kinematics_parity;
 /// plane of a sphere wrap whose points lie on a line through its centre.
 pub mod tendon_parity;
 
+/// Transition derivatives on quaternion joints against MuJoCo 3.5.0: the
+/// finite differences' tangent convention and `mjd_quatIntegrate`.
+pub mod quaternion_transition;
+
 // ============================================================================
 // §52 Inverse Dynamics Tests
 // ============================================================================

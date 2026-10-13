@@ -7,7 +7,10 @@
 //! - Fluid derivative functions
 //! - Muscle derivative helpers
 
-use super::fd::{extract_state, in_ctrl_range, mjd_transition_fd, perturb_ctrl, perturb_state};
+use super::fd::{
+    NextState, clamped_state_diff, in_ctrl_range, mjd_transition_fd, perturb_ctrl, perturb_state,
+    state_diff,
+};
 use super::integration::{compute_integration_derivatives, mjd_sub_quat, post_step_qvel};
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::constraint::impedance::MJ_MINVAL;
@@ -3272,7 +3275,7 @@ pub fn mjd_transition_hybrid(
     // - clamped control differencing fallback (centered mode where one
     //   direction is infeasible due to actuator_ctrlrange boundary)
     scratch.step(model)?;
-    let y_0 = extract_state(model, &scratch, &data.qpos);
+    let y_0 = NextState::of(&scratch);
 
     // For implicit integrators, save the acceleration the nominal step advanced
     // qvel with: the analytical position derivative uses it as the operating
@@ -3415,7 +3418,7 @@ pub fn mjd_transition_hybrid(
         for i in 0..nv {
             perturb_state(model, &mut scratch, data, i, eps);
             scratch.step(model)?;
-            let y_plus = extract_state(model, &scratch, &data.qpos);
+            let y_plus = NextState::of(&scratch);
             let s_plus = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3425,22 +3428,24 @@ pub fn mjd_transition_hybrid(
             if config.centered {
                 perturb_state(model, &mut scratch, data, i, -eps);
                 scratch.step(model)?;
-                let y_minus = extract_state(model, &scratch, &data.qpos);
+                let y_minus = NextState::of(&scratch);
                 let s_minus = if compute_sensors {
                     Some(scratch.sensordata.clone())
                 } else {
                     None
                 };
-                let col = (&y_plus - &y_minus) / (2.0 * eps);
-                a_mat.column_mut(i).copy_from(&col);
+                a_mat
+                    .column_mut(i)
+                    .copy_from(&state_diff(model, &y_minus, &y_plus, 2.0 * eps));
 
                 if let (Some(c), Some(sp), Some(sm)) = (&mut c_mat, &s_plus, &s_minus) {
                     let scol = (sp - sm) / (2.0 * eps);
                     c.column_mut(i).copy_from(&scol);
                 }
             } else {
-                let col = (&y_plus - &y_0) / eps;
-                a_mat.column_mut(i).copy_from(&col);
+                a_mat
+                    .column_mut(i)
+                    .copy_from(&state_diff(model, &y_0, &y_plus, eps));
 
                 if let (Some(c), Some(sp), Some(s0)) = (&mut c_mat, &s_plus, &sensor_0) {
                     let scol = (sp - s0) / eps;
@@ -3515,7 +3520,7 @@ pub fn mjd_transition_hybrid(
     for &state_col in &act_fd_indices {
         perturb_state(model, &mut scratch, data, state_col, eps);
         scratch.step(model)?;
-        let y_plus = extract_state(model, &scratch, &data.qpos);
+        let y_plus = NextState::of(&scratch);
         let s_plus = if compute_sensors {
             Some(scratch.sensordata.clone())
         } else {
@@ -3525,22 +3530,24 @@ pub fn mjd_transition_hybrid(
         if config.centered {
             perturb_state(model, &mut scratch, data, state_col, -eps);
             scratch.step(model)?;
-            let y_minus = extract_state(model, &scratch, &data.qpos);
+            let y_minus = NextState::of(&scratch);
             let s_minus = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
                 None
             };
-            let col = (&y_plus - &y_minus) / (2.0 * eps);
-            a_mat.column_mut(state_col).copy_from(&col);
+            a_mat
+                .column_mut(state_col)
+                .copy_from(&state_diff(model, &y_minus, &y_plus, 2.0 * eps));
 
             if let (Some(c), Some(sp), Some(sm)) = (&mut c_mat, &s_plus, &s_minus) {
                 let scol = (sp - sm) / (2.0 * eps);
                 c.column_mut(state_col).copy_from(&scol);
             }
         } else {
-            let col = (&y_plus - &y_0) / eps;
-            a_mat.column_mut(state_col).copy_from(&col);
+            a_mat
+                .column_mut(state_col)
+                .copy_from(&state_diff(model, &y_0, &y_plus, eps));
 
             if let (Some(c), Some(sp), Some(s0)) = (&mut c_mat, &s_plus, &sensor_0) {
                 let scol = (sp - s0) / eps;
@@ -3713,7 +3720,7 @@ pub fn mjd_transition_hybrid(
         let (y_plus, s_plus) = if nudge_fwd {
             perturb_ctrl(model, &mut scratch, data, j, eps);
             scratch.step(model)?;
-            let yp = extract_state(model, &scratch, &data.qpos);
+            let yp = NextState::of(&scratch);
             let sp = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3727,7 +3734,7 @@ pub fn mjd_transition_hybrid(
         let (y_minus, s_minus) = if nudge_back {
             perturb_ctrl(model, &mut scratch, data, j, -eps);
             scratch.step(model)?;
-            let ym = extract_state(model, &scratch, &data.qpos);
+            let ym = NextState::of(&scratch);
             let sm = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3738,13 +3745,13 @@ pub fn mjd_transition_hybrid(
             (None, None)
         };
 
-        let col = match (&y_plus, &y_minus) {
-            (Some(yp), Some(ym)) => (yp - ym) / (2.0 * eps),
-            (Some(yp), None) => (yp - &y_0) / eps,
-            (None, Some(ym)) => (&y_0 - ym) / eps,
-            (None, None) => DVector::zeros(nx),
-        };
-        b_mat.column_mut(j).copy_from(&col);
+        b_mat.column_mut(j).copy_from(&clamped_state_diff(
+            model,
+            &y_0,
+            y_plus.as_ref(),
+            y_minus.as_ref(),
+            eps,
+        ));
 
         // Sensor D column (piggybacked — same clamped differencing)
         if let (Some(d), Some(s0)) = (&mut d_mat, &sensor_0) {
