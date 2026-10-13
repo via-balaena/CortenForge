@@ -1019,6 +1019,9 @@ fn t13b_qfrc_bias_gravity_rotated_free_body() {
     // subtree COM differ from the joint anchor, so gravity exerts a non-zero
     // torque whose body-frame vs world-frame projection actually diverges.
     model.body_ipos[1] = Vector3::new(0.08, -0.12, 0.05);
+    // The CPU copies the body's frame for an inertial frame derived as that
+    // frame (`body_sameframe`), as MuJoCo does: derive it again.
+    model.recompute_derived().expect("recompute");
 
     let mut data = model.make_data();
     data.qpos[2] = 5.0;

@@ -390,7 +390,7 @@ pub(crate) fn lu_factor_sparse(
 /// from the last row up, then `L` from the first, each row's sum taken as
 /// [`dot_sparse`] takes it. `diag` is each row's diagonal position
 /// (`Model::D_diag`); `index` as [`lu_factor_sparse`]'s.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // `mju_solveLUSparse`'s arguments, one for one
 pub(crate) fn lu_solve_sparse(
     res: &mut [f64],
     lu: &[f64],

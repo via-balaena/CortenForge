@@ -1527,6 +1527,7 @@ mod dof_length_tests {
         model.body_geom_num[0] = 0;
         model.body_geom_adr[1] = 0;
         model.body_geom_num[1] = 1;
+        model.compute_simple_bodies();
         model.compute_geom_bounding_radii();
         assert_eq!(model.geom_rbound[..1], [0.0]);
         compute_dof_lengths(&mut model);
