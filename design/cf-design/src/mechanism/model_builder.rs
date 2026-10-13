@@ -1296,6 +1296,32 @@ mod tests {
         );
     }
 
+    /// The builder derives what `Model::recompute_derived` derives from the
+    /// same fields: the simple bodies, the frames copied from their body's,
+    /// and the mass matrix's and the implicit step's dof patterns.
+    #[test]
+    fn derived_fields_match_recompute_derived() {
+        let model = two_part_mechanism().to_model(2.0, 2.0).unwrap();
+        let mut again = model.clone();
+        again.recompute_derived().unwrap();
+        assert_eq!(model.body_sameframe, again.body_sameframe);
+        assert_eq!(model.geom_sameframe, again.geom_sameframe);
+        assert_eq!(model.site_sameframe, again.site_sameframe);
+        assert_eq!(model.body_simple, again.body_simple);
+        assert_eq!(model.dof_simplenum, again.dof_simplenum);
+        for (got, want) in [
+            (&model.M_rownnz, &again.M_rownnz),
+            (&model.M_rowadr, &again.M_rowadr),
+            (&model.M_colind, &again.M_colind),
+            (&model.D_rownnz, &again.D_rownnz),
+            (&model.D_rowadr, &again.D_rowadr),
+            (&model.D_diag, &again.D_diag),
+            (&model.D_colind, &again.D_colind),
+        ] {
+            assert_eq!(got, want);
+        }
+    }
+
     // ── 1. Model dimensions ────────────────────────────────────────
 
     #[test]

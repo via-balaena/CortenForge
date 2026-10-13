@@ -132,6 +132,69 @@ fn implicit_cross_branch_tendon_damping() {
     }
 }
 
+/// Two hinged arms off one free body, joined by a damped fixed tendon and a
+/// damped spatial tendon: D's pattern pairs every dof of the free body with
+/// both arms' but leaves out the pair of the two arms, sibling branches of
+/// one tree (MuJoCo's `D_rownnz`, `D_rowadr`, `D_diag`, `D_colind`), and the
+/// implicit and implicitfast steps leave out the tendons' damping between
+/// them.
+#[test]
+fn implicit_sibling_branches_leave_out_their_cross_terms() {
+    let g = golden();
+    for integrator in ["implicit", "implicitfast"] {
+        let case = &g["cases"]["sibling_branches"][integrator];
+        let model = load(case);
+        let d = &case["D"];
+        for (field, got) in [
+            ("D_rownnz", &model.D_rownnz),
+            ("D_rowadr", &model.D_rowadr),
+            ("D_diag", &model.D_diag),
+            ("D_colind", &model.D_colind),
+        ] {
+            assert_eq!(got, &ints(&d[field]), "{integrator}: {field}");
+        }
+        let mut data = model.make_data();
+        data.qpos
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qpos"]));
+        data.qvel
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qvel"]));
+        assert_trajectory(integrator, &model, &mut data, &case["traj"]);
+    }
+}
+
+/// A sphere whose geom and centre of mass are off its body's origin, held
+/// by one vertical slide 5 mm into a plane (ledger L112): the body is not
+/// simple, so its `body_invweight0` is MuJoCo's (1/3, 1/3), not the short
+/// form's (1, 0), and the contact's force, whose `R` reads it, is MuJoCo's.
+#[test]
+fn slide_held_sphere_contact_matches_mujoco_3_5_0() {
+    let case = &golden()["cases"]["slide_contact"];
+    let model = load(case);
+    let invweight: Vec<f64> = model.body_invweight0.iter().flatten().copied().collect();
+    assert_close(
+        "body_invweight0",
+        &invweight,
+        &floats(&case["body_invweight0"]),
+        TOL,
+    );
+    assert_close(
+        "dof_invweight0",
+        &model.dof_invweight0,
+        &floats(&case["dof_invweight0"]),
+        TOL,
+    );
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_close(
+        "efc_force",
+        data.efc_force.as_slice(),
+        &floats(&case["efc_force"]),
+        TOL,
+    );
+}
+
 /// A double pendulum whose fixed tendon has stiffness −2 and damping −50, set
 /// in code (the loader refuses negative tendon parameters; MuJoCo loads
 /// them): under implicitfast `M − h·D` is not positive definite (one diagonal

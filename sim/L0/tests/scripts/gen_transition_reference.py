@@ -16,11 +16,20 @@ so a quaternion joint's position rows are tangents at the next state
 - transitions: a ball pendulum, a hinge with a ball pendulum below it, and a
   free body, each spinning, without contact: the state and
   `mjd_transitionFD`'s A (centred, eps 1e-6), read on a copy of the data.
+- actuated: `mjd_transitionFD`'s A and B with actuators: a hinge driven
+  by a filter, and by an exact filter, whose time constant, 1e-12, MuJoCo
+  clamps at mjMINVAL, under Euler, implicit and implicitfast (centred), and
+  the exact filter at a timestep of 1e-11, where its decay over a step,
+  exp(-h/tau), is e^-10 and not 0; and a free body driven by a
+  motor at its site, its control at the lower end of its range, forward
+  and centred (a forward column, and a centred one at a control's lower
+  bound, difference the nominal next state with the perturbed one).
 - differentiate: a model with a hinge, a slide, a ball and a free joint, and
   pairs of positions: a 1e-12 rad rotation, a rotation past pi between them,
-  quaternions not of unit length, at dt 0.002, 2e-6 and 7e-4 (where a
-  hinge's division by dt rounds otherwise than a product with 1/dt):
-  `mj_differentiatePos`.
+  quaternions not of unit length, and a pair whose free joint moves, at dt
+  0.002, 2e-6 and 7e-4 (where a division by dt rounds otherwise than a
+  product with 1/dt, on a hinge or a slide and on the free joint's
+  position, each): `mj_differentiatePos`.
 - quat_integrate: `mjd_quatIntegrate`'s Dquat and Dvel for velocities and
   scales above and below its Taylor threshold (|scale*vel| = 1/32) and at 0.
 """
@@ -90,6 +99,34 @@ JOINTS = """<mujoco model="joints">
 </mujoco>"""
 
 
+FILTER = """<mujoco model="filter_tau">
+  <option timestep="{timestep}" integrator="{integrator}"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <joint name="j" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <general joint="j" gainprm="1" dyntype="{dyntype}" dynprm="1e-12"/>
+  </actuator>
+</mujoco>"""
+
+MOTOR_FREE = """<mujoco model="motor_free">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.06 0.03" mass="1" contype="0" conaffinity="0"/>
+      <site name="s" pos="0.05 0.02 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor site="s" gear="1 0.5 0 0 0 0.2" ctrllimited="true" ctrlrange="0 1"/>
+  </actuator>
+</mujoco>"""
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -120,6 +157,29 @@ def transition(xml, qpos, qvel):
     mujoco.mjd_transitionFD(m, fd, 1e-6, 1, a, None, None, None)
     state["A"] = floats(a)
     return state
+
+
+def actuated(xml, qpos, qvel, act, ctrl, centered):
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qpos[:], d.qvel[:], d.ctrl[:] = qpos, qvel, ctrl
+    if m.na:
+        d.act[:] = act
+    for j in range(m.njnt):
+        if m.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE:
+            a = m.jnt_qposadr[j] + 3
+            d.qpos[a:a + 4] = unit(d.qpos[a:a + 4])
+    mujoco.mj_forward(m, d)
+    nx = 2 * m.nv + m.na
+    a, b = np.zeros((nx, nx)), np.zeros((nx, m.nu))
+    fd = mujoco.MjData(m)
+    fd.qpos[:], fd.qvel[:], fd.ctrl[:] = d.qpos, d.qvel, d.ctrl
+    if m.na:
+        fd.act[:] = d.act
+    mujoco.mj_forward(m, fd)
+    mujoco.mjd_transitionFD(m, fd, 1e-6, int(centered), a, b, None, None)
+    return {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel), "act": floats(d.act),
+            "ctrl": floats(d.ctrl), "centered": centered, "A": floats(a), "B": floats(b)}
 
 
 def differentiate():
@@ -153,18 +213,22 @@ def differentiate():
     q1[2:6] *= 1.1
     q2[9:13] = 0.9 * turned(base[9:13], [0.2, 0.7, 0.1], 0.3)
     pairs["not_unit"] = (q1, q2)
+    q2 = base.copy()
+    q2[6:9] += [0.0123, -0.0456, 0.0789]
+    pairs["free_moves"] = (base, q2)
     out = {"xml": JOINTS, "cases": []}
-    told = False
+    told = {"hinge_slide": False, "free": False}
     for name, (q1, q2) in pairs.items():
         for dt in (0.002, 2e-6, 7e-4):
             # a test of a division by dt tells it from a product with 1/dt
-            told |= any((q2[i] - q1[i]) / dt != (q2[i] - q1[i]) * (1.0 / dt) for i in (0, 1, 6, 7, 8))
+            for cls, idx in (("hinge_slide", (0, 1)), ("free", (6, 7, 8))):
+                told[cls] |= any((q2[i] - q1[i]) / dt != (q2[i] - q1[i]) * (1.0 / dt) for i in idx)
             v = np.zeros(m.nv)
             mujoco.mj_differentiatePos(m, v, dt, q1, q2)
             out["cases"].append({"name": name, "dt": dt, "qpos1": floats(q1), "qpos2": floats(q2),
                                  "qvel": floats(v)})
-    if not told:
-        sys.exit("differentiate: every division by dt rounds as a product with 1/dt")
+    if not all(told.values()):
+        sys.exit(f"differentiate: a class whose divisions by dt all round as products: {told}")
     return out
 
 
@@ -192,6 +256,18 @@ def main():
             "hinge_ball": transition(HINGE_BALL, [0.3, 0.8, -0.3, 0.4, 0.2], [0.7, -0.4, 0.6, 0.5]),
             "free": transition(FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],
                                [0.2, -0.1, 0.3, 0.9, -0.6, 0.7]),
+        },
+        "actuated": {
+            **{f"{t}_{i}": actuated(FILTER.format(timestep=0.002, integrator=i, dyntype=t),
+                                    [0.3], [0.2], [0.1], [0.5], True)
+               for t in ("filter", "filterexact") for i in ("Euler", "implicit", "implicitfast")},
+            "filterexact_short_step": actuated(FILTER.format(timestep=1e-11, integrator="Euler",
+                                                             dyntype="filterexact"),
+                                               [0.3], [0.2], [0.1], [0.5], True),
+            "motor_free_forward": actuated(MOTOR_FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],
+                                           [0.2, -0.1, 0.3, 0.9, -0.6, 0.7], [], [0.0], False),
+            "motor_free_centred": actuated(MOTOR_FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],
+                                           [0.2, -0.1, 0.3, 0.9, -0.6, 0.7], [], [0.0], True),
         },
         "differentiate": differentiate(),
         "quat_integrate": quat_integrate(),

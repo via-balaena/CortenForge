@@ -147,3 +147,50 @@ fn quat_integrate_jacobians_match_mujoco() {
         assert_bits(&format!("{what} h·Dvel"), &rows(&domega), &want);
     }
 }
+
+/// A and B with actuators, from sim-core's finite differences and its hybrid
+/// derivatives, against MuJoCo's `mjd_transitionFD` (eps 1e-6), within 1e-8
+/// (relative above 1): a hinge driven by a filter, and by an exact filter,
+/// whose time constant, 1e-12, is clamped at mjMINVAL, under Euler, implicit
+/// and implicitfast, and the exact filter at a timestep of 1e-11, where its
+/// decay over a step is e^-10; and a free body driven by a motor at its site,
+/// its control at the lower end of its range, by forward and by centred
+/// differences (a forward column, and a centred one at a control's lower
+/// bound, difference the nominal next state with the perturbed one).
+#[test]
+fn actuated_transitions_match_mujoco_fd() {
+    let g = golden();
+    let cases = g["cases"]["actuated"].as_object().expect("actuated");
+    assert_eq!(cases.len(), 9);
+    for (name, case) in cases {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&floats(&case["qpos"]));
+        data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        data.act.copy_from_slice(&floats(&case["act"]));
+        data.ctrl.copy_from_slice(&floats(&case["ctrl"]));
+        data.forward(&model).expect("forward");
+        let config = DerivativeConfig {
+            centered: case["centered"].as_bool().expect("centered"),
+            ..DerivativeConfig::default()
+        };
+        let fd = mjd_transition_fd(&model, &data, &config).expect("fd");
+        let hybrid = mjd_transition_hybrid(&model, &data, &config).expect("hybrid");
+        for (method, d) in [("FD", &fd), ("hybrid", &hybrid)] {
+            for (matrix, m, want) in [("A", &d.A, &case["A"]), ("B", &d.B, &case["B"])] {
+                let got: Vec<f64> = (0..m.nrows())
+                    .flat_map(|r| (0..m.ncols()).map(move |c| (r, c)))
+                    .map(|(r, c)| m[(r, c)])
+                    .collect();
+                let want = floats(want);
+                assert_eq!(got.len(), want.len(), "{name} {method} {matrix}: size");
+                for (i, (a, b)) in got.iter().zip(&want).enumerate() {
+                    assert!(
+                        (a - b).abs() <= 1e-8 * b.abs().max(1.0),
+                        "{name} {method} {matrix}[{i}]: {a}, MuJoCo {b}"
+                    );
+                }
+            }
+        }
+    }
+}

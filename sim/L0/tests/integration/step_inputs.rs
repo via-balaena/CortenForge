@@ -142,7 +142,7 @@ fn invalid_timestep_says_what_it_is() {
 /// the model's length and the grown one.
 #[test]
 fn every_checked_array_is_named() {
-    let grow: [(&str, fn(&mut Data)); 24] = [
+    let grow: [(&str, fn(&mut Data)); 26] = [
         ("qpos", |d| d.qpos = DVector::zeros(d.qpos.len() + 1)),
         ("qvel", |d| d.qvel = DVector::zeros(d.qvel.len() + 1)),
         ("act", |d| d.act = DVector::zeros(d.act.len() + 1)),
@@ -168,6 +168,8 @@ fn every_checked_array_is_named() {
         ("flexedge_length", |d| d.flexedge_length.push(0.0)),
         ("flexedge_J", |d| d.flexedge_J.push(0.0)),
         ("qLD_data", |d| d.qLD_data.push(0.0)),
+        ("qH", |d| d.qH.push(0.0)),
+        ("qLU", |d| d.qLU.push(0.0)),
         ("sensordata", |d| {
             d.sensordata = DVector::zeros(d.sensordata.len() + 1);
         }),

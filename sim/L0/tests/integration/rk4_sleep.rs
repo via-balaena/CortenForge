@@ -164,6 +164,39 @@ fn rk4_sleep_step_does_not_disturb_awake_sensors() {
     assert!(theirs > 0.1, "MuJoCo's: {theirs}");
 }
 
+/// While the box sleeps, the pendulum beside it, awake and accelerating,
+/// steps as it does with the box never sleeping: its `qpos` and `qvel` bit
+/// for bit, from the box's sleep step to 30 steps after it. (The held dofs
+/// are the box's alone.)
+#[test]
+fn rk4_awake_tree_steps_as_if_nothing_slept() {
+    let two = &golden()["two_trees"];
+    let step = count(&two["step"]);
+    let sleeping = load_model(two["xml_sleeps"].as_str().expect("xml")).expect("load");
+    let never = load_model(two["xml_never"].as_str().expect("xml")).expect("load");
+    let keep = |k: usize| k >= step;
+    let (asleep, slept) = run(&sleeping, step + 31, keep);
+    let (_, awake) = run(&never, step + 31, keep);
+    assert_eq!(transitions(&asleep), [step]);
+    assert_eq!(slept.len(), 31);
+    let pendulum = sleeping.jnt_qpos_adr[1];
+    let dof = sleeping.jnt_dof_adr[1];
+    for (k, (a, b)) in slept.iter().zip(&awake).enumerate() {
+        assert_eq!(
+            a.qpos[pendulum], b.qpos[pendulum],
+            "qpos {k} steps after the sleep step"
+        );
+        assert_eq!(
+            a.qvel[dof], b.qvel[dof],
+            "qvel {k} steps after the sleep step"
+        );
+    }
+    assert!(
+        awake.iter().any(|d| d.qvel[dof].abs() > 0.1),
+        "the pendulum swings"
+    );
+}
+
 /// The sleep step evaluates the forward pass again at the step's start
 /// state, the slept tree's velocity zeroed and its activation advanced: after
 /// the actuated hinge's sleep step its actuator force, accelerometer and

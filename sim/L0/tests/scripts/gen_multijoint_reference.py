@@ -40,16 +40,22 @@ GEOM = ('<geom type="box" size="0.12 0.05 0.03" pos="0.1 0.04 -0.02" mass="1.3" 
         'quat="0.943714364147489 0.12767944069578063 0.14487812541736914 0.2685358227515692"/>')
 
 
+# A motor at a site on the body, its gear in all six directions, at a control
+# of 0: it adds no force, and gives the transition's B a column.
+SITE = '<site name="s" pos="0.05 -0.02 0.03"/>'
+MOTOR = '<actuator><motor site="s" gear="1 0.5 -0.3 0.2 -0.4 0.1"/></actuator>'
+
+
 def model_xml(joints, integrator="Euler", parent=None):
     """A body carrying `joints` (MJCF joint elements), under `parent` if given."""
     if parent is None:
-        inner = f'<body name="b" pos="0 0 0.5">{joints}{GEOM}</body>'
+        inner = f'<body name="b" pos="0 0 0.5">{joints}{GEOM}{SITE}</body>'
     else:
         inner = (f'<body name="p" pos="0 0 0.5">{parent}'
                  '<geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.4"/>'
-                 f'<body name="b" pos="0.2 0 0">{joints}{GEOM}</body></body>')
+                 f'<body name="b" pos="0.2 0 0">{joints}{GEOM}{SITE}</body></body>')
     return (f'<mujoco><option timestep="0.002" integrator="{integrator}"/>'
-            f'<worldbody>{inner}</worldbody></mujoco>')
+            f'<worldbody>{inner}</worldbody>{MOTOR}</mujoco>')
 
 
 def split_xml(joints, integrator="Euler"):
@@ -66,16 +72,14 @@ def split_xml(joints, integrator="Euler"):
 H0 = '<joint type="hinge" axis="1 0 0" damping="0.05"/>'
 H1 = '<joint type="hinge" axis="0 1 0" damping="0.05"/>'
 H2 = '<joint type="hinge" axis="0.3 0.4 0.866" damping="0.05"/>'
-# Off the body's origin: turning it moves the origin, whose position derivative
-# sim-core's analytic derivative does not follow (ledger-L36, P25).
+# Off the body's origin.
 H1_OFF = '<joint type="hinge" axis="0 1 0" pos="0.05 0.02 0" damping="0.05"/>'
 # A hinge through the ball's centre would repeat one of the ball's rotations.
 H0_OFF = '<joint type="hinge" axis="1 0 0" pos="0 0.05 0.03" damping="0.05"/>'
 S0 = '<joint type="slide" axis="1 0 0" damping="0.05"/>'
 S1 = '<joint type="slide" axis="0 0.6 0.8" damping="0.05"/>'
 S2 = '<joint type="slide" axis="0 0 1" damping="0.05"/>'
-# At the body's origin: sim-core rotates a ball about the body origin, MuJoCo about
-# its anchor (`engine_core_smooth.c:329-337`), the off-centre ball of P28.
+# At the body's origin.
 B0 = '<joint type="ball" damping="0.05"/>'
 
 CASES = {

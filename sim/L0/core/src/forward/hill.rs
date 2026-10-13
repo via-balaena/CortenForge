@@ -183,6 +183,16 @@ mod tests {
     use super::*;
     use crate::forward::actuation::{hill_active_fl, hill_force_velocity, hill_passive_fl};
 
+    /// A NaN length gives no active force: MuJoCo's length curve tests
+    /// `lmin <= L && L <= lmax`, false for NaN, and `mju_muscleGain` returns
+    /// -0.0 there (MuJoCo 3.5.0, measured).
+    #[test]
+    fn nan_length_has_no_active_force() {
+        let prm = [0.75, 1.05, 300.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2];
+        let gain = muscle_gain(f64::NAN, 0.1, (-1.0, 1.0), 1.0, &prm);
+        assert_eq!(gain.to_bits(), (-0.0_f64).to_bits());
+    }
+
     // ---- AC #3: FL curve shape ----
     #[test]
     fn test_fl_curve_shape() {

@@ -225,7 +225,8 @@ fn a_multi_joint_body_accelerates_as_its_joints_split_over_bodies() {
 }
 
 /// The analytic transition derivative agrees with finite differences, A and B
-/// entry by entry, on every case.
+/// entry by entry, on every case: B's column is a motor's at a site on the
+/// multi-joint body, at a control of 0.
 #[test]
 fn multi_joint_bodies_have_the_finite_difference_transition_derivative() {
     let golden = golden();
@@ -243,6 +244,7 @@ fn multi_joint_bodies_have_the_finite_difference_transition_derivative() {
                 mjd_transition(&model, &data, &config).expect("derivative")
             };
             let (fd, analytic) = (derivative(false), derivative(true));
+            assert_eq!(fd.B.ncols(), 1, "{name}: B has the motor's column");
             let a = (&fd.A - &analytic.A).amax();
             let b = (&fd.B - &analytic.B).amax();
             assert!(

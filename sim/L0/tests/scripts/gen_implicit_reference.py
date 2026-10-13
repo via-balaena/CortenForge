@@ -21,6 +21,10 @@ comes from the compiler (`body_simple`, `dof_simplenum`, `*_sameframe`,
   and 100 from a moving start.
 - cross_branch: two hinged arms off the world joined by a damped fixed
   tendon, under implicit and implicitfast: the trajectory.
+- sibling_branches: two hinged arms off one free body joined by a damped
+  fixed tendon and a damped spatial tendon, under implicit and
+  implicitfast: the trajectory, and D's pattern, which leaves out the pairs
+  of dofs on sibling branches of one tree.
 - negative_damping: a double pendulum with a fixed tendon whose stiffness is
   -2 and damping -50 (set at runtime; the loader refuses them), so M - h*D is
   not positive definite under implicitfast: the state after 1 and 20 steps.
@@ -45,7 +49,12 @@ Each trajectory also records the factor its first step left (`qH` and
   near (1e-7) and off their body's frame and inertial frame: the flags, the
   two patterns, the model's frame fields, every pose `mj_kinematics` writes
   at a moved state, and `body_invweight0` and `dof_invweight0`
-  (`engine_setconst.c:620-700`, which reads `body_simple`).
+  (`engine_setconst.c:620-700`, which reads `body_simple`); one slide's
+  axis is 1e-6 off x, so its body is not simple.
+- slide_contact: a sphere whose geom and centre of mass are off its body's
+  origin, held by one vertical slide 5 mm into a plane (ledger L112): the
+  body's `body_invweight0` and `dof_invweight0` and the contact's force
+  after mj_forward.
 """
 import json
 import os
@@ -242,12 +251,58 @@ FLAGS = """<mujoco model="flags">
         <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
       </body>
     </body>
+    <body name="near_axis_slide" pos="10 0 0">
+      <joint type="slide" axis="1 1e-6 0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+    </body>
     <body name="mount" pos="9 0 0">
       <geom type="box" size="0.1 0.1 0.1" contype="0" conaffinity="0"/>
       <body name="on_mount" pos="0 0 -0.5">
         <joint type="slide" axis="0 0 1"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
       </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+
+SIBLING_BRANCHES = """<mujoco model="sibling_branches">
+  <option timestep="0.002" integrator="{integrator}"/>
+  <worldbody>
+    <body name="root" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.05" mass="2" contype="0" conaffinity="0"/>
+      <body name="l" pos="0.15 0 0">
+        <joint name="jl" type="hinge" axis="0 1 0" damping="0.1"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.5" contype="0" conaffinity="0"/>
+        <site name="sl" pos="0.2 0 0"/>
+      </body>
+      <body name="r" pos="-0.15 0 0">
+        <joint name="jr" type="hinge" axis="1 0 0" damping="0.1"/>
+        <geom type="capsule" fromto="0 0 0 -0.2 0 0" size="0.02" mass="0.5" contype="0" conaffinity="0"/>
+        <site name="sr" pos="-0.2 0 0.05"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed damping="3">
+      <joint joint="jl" coef="1"/>
+      <joint joint="jr" coef="-0.6"/>
+    </fixed>
+    <spatial damping="2">
+      <site site="sl"/>
+      <site site="sr"/>
+    </spatial>
+  </tendon>
+</mujoco>"""
+
+SLIDE_CONTACT = """<mujoco model="slide_contact">
+  <worldbody>
+    <geom type="plane" size="1 1 0.1" condim="1"/>
+    <body name="ball" pos="0 0 0.095">
+      <joint type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.1" pos="0.02 0 0" condim="1"/>
+      <inertial pos="0.03 0 0.02" mass="1" diaginertia="0.004 0.005 0.006"/>
     </body>
   </worldbody>
 </mujoco>"""
@@ -431,6 +486,30 @@ def sleeping():
     return out
 
 
+def sibling_branches():
+    out = {}
+    for integrator in ("implicit", "implicitfast"):
+        xml = SIBLING_BRANCHES.format(integrator=integrator)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        d.qpos[7:9] = [0.3, -0.4]
+        d.qvel[:] = [0.2, -0.1, 0.3, 0.5, -0.4, 0.6, 1.2, -0.9]
+        out[integrator] = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
+                           "D": {k: ints(getattr(m, k)) for k in ("D_rownnz", "D_rowadr", "D_diag", "D_colind")},
+                           "traj": trajectory(m, d, integrator)}
+    return out
+
+
+def slide_contact():
+    m = mujoco.MjModel.from_xml_string(SLIDE_CONTACT)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    if d.ncon != 1:
+        sys.exit(f"slide_contact: {d.ncon} contacts")
+    return {"xml": SLIDE_CONTACT, "body_invweight0": floats(m.body_invweight0),
+            "dof_invweight0": floats(m.dof_invweight0), "efc_force": floats(d.efc_force)}
+
+
 def flags():
     m = mujoco.MjModel.from_xml_string(FLAGS)
     d = mujoco.MjData(m)
@@ -460,6 +539,8 @@ def flags():
     negated = m.site("negated_inertia_rot").id
     if derived["site_sameframe"][negated] != 4:
         sys.exit("flags: a quaternion negated is not taken as the inertial frame's")
+    if derived["body_simple"][m.body("near_axis_slide").id] != 0:
+        sys.exit("flags: a slide 1e-6 off an axis is taken as aligned")
     if kinds != {0, 1, 2, 3, 4} or set(derived["body_simple"]) != {0, 1, 2}:
         sys.exit(f"flags: not every kind, {kinds} {set(derived['body_simple'])}")
     invweight = {k: floats(getattr(m, k)) for k in ("body_invweight0", "dof_invweight0")}
@@ -479,6 +560,8 @@ def main():
         "factor": factor(),
         "sleeping": sleeping(),
         "flags": flags(),
+        "sibling_branches": sibling_branches(),
+        "slide_contact": slide_contact(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "implicit.json"), "w", encoding="utf-8") as f:
