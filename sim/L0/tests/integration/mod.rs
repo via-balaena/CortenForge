@@ -305,6 +305,10 @@ pub mod body_accumulators;
 /// `mj_rnePostConstraint`.
 pub mod accumulator_parity;
 
+/// Forward kinematics against MuJoCo 3.5.0's `mj_kinematics`: `qpos − qpos0`,
+/// the off-centre ball, `xanchor`/`xaxis`, and its arithmetic.
+pub mod kinematics_parity;
+
 // ============================================================================
 // §52 Inverse Dynamics Tests
 // ============================================================================

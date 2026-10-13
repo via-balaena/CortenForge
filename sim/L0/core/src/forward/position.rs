@@ -6,10 +6,11 @@
 
 use crate::collision::narrow::GEOM_EPSILON;
 use crate::dynamics::compute_body_spatial_inertia;
+use crate::quat;
 use crate::tendon::mj_fwd_tendon;
 use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SleepState};
 use cf_geometry::Aabb;
-use nalgebra::{Matrix3, Matrix6, Point3, UnitQuaternion, Vector3};
+use nalgebra::{DVector, Matrix3, Matrix6, Point3, Quaternion, UnitQuaternion, Vector3};
 
 /// Forward kinematics: compute body poses from qpos.
 ///
@@ -26,113 +27,10 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
     // Process bodies in order (assumes topological sort: parent before child),
     // sleeping ones included.
     for body_id in 1..model.nbody {
-        let parent_id = model.body_parent[body_id];
-
-        // Determine body pose: mocap bodies use mocap arrays, regular bodies
-        // use parent frame + body offset + joints.
-        let (pos, quat) = if let Some(&Some(mocap_idx)) = model.body_mocapid.get(body_id) {
-            // Mocap body: replace body_pos/body_quat with mocap arrays.
-            // Parent is always world (origin), so xpos = mocap_pos, xquat = mocap_quat.
-            //
-            // Renormalize quaternion (matching MuJoCo's mju_normalize4 in
-            // mj_kinematics1). Users set mocap_quat between steps; floating-point
-            // arithmetic can cause drift from unit norm.
-            let mquat = UnitQuaternion::new_normalize(data.mocap_quat[mocap_idx].into_inner());
-            (data.mocap_pos[mocap_idx], mquat)
-        } else {
-            // Regular body: parent frame + body offset + joints.
-            let mut pos = data.xpos[parent_id];
-            let mut quat = data.xquat[parent_id];
-
-            // Apply body offset in parent frame
-            pos += quat * model.body_pos[body_id];
-            quat *= model.body_quat[body_id];
-
-            // Apply each joint for this body
-            let jnt_start = model.body_jnt_adr[body_id];
-            let jnt_end = jnt_start + model.body_jnt_num[body_id];
-
-            for jnt_id in jnt_start..jnt_end {
-                let qpos_adr = model.jnt_qpos_adr[jnt_id];
-
-                match model.jnt_type[jnt_id] {
-                    MjJointType::Hinge => {
-                        let angle = data.qpos[qpos_adr];
-                        let axis = model.jnt_axis[jnt_id];
-                        let anchor = model.jnt_pos[jnt_id];
-
-                        // Transform anchor to current frame
-                        let world_anchor = pos + quat * anchor;
-
-                        // Rotate around axis
-                        let world_axis = quat * axis;
-
-                        // Store the partial-frame axis/anchor (BEFORE this joint
-                        // and any later same-body joint rotates them) — the
-                        // motion subspace must not over-rotate an earlier
-                        // joint's axis by the later joints' DOFs.
-                        data.xanchor[jnt_id] = world_anchor;
-                        data.xaxis[jnt_id] = world_axis;
-
-                        // Safety: use try_new_normalize to handle degenerate cases
-                        let rot =
-                            if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
-                                UnitQuaternion::from_axis_angle(&unit_axis, angle)
-                            } else {
-                                // Degenerate axis - no rotation (should not happen with valid model)
-                                UnitQuaternion::identity()
-                            };
-                        quat = rot * quat;
-
-                        // Adjust position for rotation around anchor
-                        pos = world_anchor + rot * (pos - world_anchor);
-                    }
-                    MjJointType::Slide => {
-                        let displacement = data.qpos[qpos_adr];
-                        let axis = model.jnt_axis[jnt_id];
-                        let world_axis = quat * axis;
-                        data.xanchor[jnt_id] = pos;
-                        data.xaxis[jnt_id] = world_axis;
-                        pos += world_axis * displacement;
-                    }
-                    MjJointType::Ball => {
-                        // qpos stores quaternion [w, x, y, z]
-                        // Must normalize — integration can drift from unit norm.
-                        let q = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-                            data.qpos[qpos_adr],
-                            data.qpos[qpos_adr + 1],
-                            data.qpos[qpos_adr + 2],
-                            data.qpos[qpos_adr + 3],
-                        ));
-                        // Ball anchor = body origin in the partial frame; the
-                        // angular subspace block is read from `xquat[body]` (the
-                        // single-/last-joint-on-body assumption asserted in
-                        // `joint_motion_subspace`). `xaxis` stays zero.
-                        data.xanchor[jnt_id] = pos;
-                        quat *= q;
-                    }
-                    MjJointType::Free => {
-                        // qpos stores [x, y, z, qw, qx, qy, qz]
-                        pos = Vector3::new(
-                            data.qpos[qpos_adr],
-                            data.qpos[qpos_adr + 1],
-                            data.qpos[qpos_adr + 2],
-                        );
-                        // Must normalize — integration can drift from unit norm.
-                        quat = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-                            data.qpos[qpos_adr + 3],
-                            data.qpos[qpos_adr + 4],
-                            data.qpos[qpos_adr + 5],
-                            data.qpos[qpos_adr + 6],
-                        ));
-                        // Free anchor = body origin; angular block from `xquat`.
-                        data.xanchor[jnt_id] = pos;
-                    }
-                }
-            }
-
-            (pos, quat)
-        };
+        let (pos, xquat) = body_pose(model, data, body_id);
+        let pos = Vector3::from(pos);
+        let quat =
+            UnitQuaternion::new_unchecked(Quaternion::new(xquat[0], xquat[1], xquat[2], xquat[3]));
 
         // §16.15: qpos change detection — if this body was sleeping and its
         // computed pose differs from the stored pose (exact bitwise match),
@@ -153,13 +51,17 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
         // Store computed pose (shared path for both mocap and regular bodies)
         data.xpos[body_id] = pos;
         data.xquat[body_id] = quat;
-        data.xmat[body_id] = quat.to_rotation_matrix().into_inner();
+        data.xmat[body_id] = mat3(&quat::quat_to_mat(&xquat));
 
         // Compute inertial frame position (shared)
-        data.xipos[body_id] = pos + quat * model.body_ipos[body_id];
-        data.ximat[body_id] = (quat * model.body_iquat[body_id])
-            .to_rotation_matrix()
-            .into_inner();
+        let (xipos, _, ximat) = local_to_global(
+            data,
+            body_id,
+            &model.body_ipos[body_id],
+            &model.body_iquat[body_id],
+        );
+        data.xipos[body_id] = xipos;
+        data.ximat[body_id] = ximat;
 
         // Compute body spatial inertia in world frame (cinert, shared).
         // MuJoCo does NOT zero mass for mocap bodies, and neither do we.
@@ -177,26 +79,28 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
 
     // Update geom poses
     for geom_id in 0..model.ngeom {
-        let body_id = model.geom_body[geom_id];
-        let body_pos = data.xpos[body_id];
-        let body_quat = data.xquat[body_id];
-
-        data.geom_xpos[geom_id] = body_pos + body_quat * model.geom_pos[geom_id];
-        data.geom_xmat[geom_id] = (body_quat * model.geom_quat[geom_id])
-            .to_rotation_matrix()
-            .into_inner();
+        let (xpos, _, xmat) = local_to_global(
+            data,
+            model.geom_body[geom_id],
+            &model.geom_pos[geom_id],
+            &model.geom_quat[geom_id],
+        );
+        data.geom_xpos[geom_id] = xpos;
+        data.geom_xmat[geom_id] = xmat;
     }
 
     // Update site poses
     for site_id in 0..model.nsite {
-        let body_id = model.site_body[site_id];
-        let body_pos = data.xpos[body_id];
-        let body_quat = data.xquat[body_id];
-
-        data.site_xpos[site_id] = body_pos + body_quat * model.site_pos[site_id];
-        let site_world_quat = body_quat * model.site_quat[site_id];
-        data.site_xmat[site_id] = site_world_quat.to_rotation_matrix().into_inner();
-        data.site_xquat[site_id] = site_world_quat;
+        let (xpos, xquat, xmat) = local_to_global(
+            data,
+            model.site_body[site_id],
+            &model.site_pos[site_id],
+            &model.site_quat[site_id],
+        );
+        data.site_xpos[site_id] = xpos;
+        data.site_xmat[site_id] = xmat;
+        data.site_xquat[site_id] =
+            UnitQuaternion::new_unchecked(Quaternion::new(xquat[0], xquat[1], xquat[2], xquat[3]));
     }
 
     // Tendon kinematics (after site poses, before subtree COM)
@@ -227,6 +131,137 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             data.subtree_com[body_id] = data.xipos[body_id];
         }
     }
+}
+
+/// The world pose of body `body_id` (`[x, y, z]`, `[w, x, y, z]`) from its
+/// parent's, its offset (or its mocap pose) and its joints, in MuJoCo 3.5.0's
+/// arithmetic (`mj_kinematics1`, `engine_core_smooth.c:40-187`). Writes its
+/// joints' `xanchor` and `xaxis`: each joint's anchor and axis in the frame
+/// before it turns, as MuJoCo's.
+///
+/// A hinge or a slide moves by `qpos − qpos0`; a hinge or a ball turns about
+/// its anchor, so a `jnt_pos` off the body origin moves the origin. A free
+/// joint, alone on its body, sets the pose from `qpos`.
+fn body_pose(model: &Model, data: &mut Data, body_id: usize) -> ([f64; 3], [f64; 4]) {
+    let jnt_adr = model.body_jnt_adr[body_id];
+    let jnt_num = model.body_jnt_num[body_id];
+    let (xpos, mut xquat) = if jnt_num == 1 && model.jnt_type[jnt_adr] == MjJointType::Free {
+        let pose = free_pose(&data.qpos, model.jnt_qpos_adr[jnt_adr]);
+        data.xanchor[jnt_adr] = Vector3::from(pose.0);
+        data.xaxis[jnt_adr] = model.jnt_axis[jnt_adr];
+        pose
+    } else {
+        let (body_pos, body_quat) = match model.body_mocapid.get(body_id) {
+            Some(&Some(mocap)) => {
+                let mut quat = quat_array(&data.mocap_quat[mocap]);
+                quat::normalize4(&mut quat);
+                (data.mocap_pos[mocap].into(), quat)
+            }
+            _ => (
+                model.body_pos[body_id].into(),
+                quat_array(&model.body_quat[body_id]),
+            ),
+        };
+        let parent = model.body_parent[body_id];
+        let (mut xpos, mut xquat) = if parent == 0 {
+            (body_pos, body_quat)
+        } else {
+            (
+                add3(
+                    &mul_mat_vec3(&data.xmat[parent], &body_pos),
+                    &data.xpos[parent].into(),
+                ),
+                quat::mul_quat(&quat_array(&data.xquat[parent]), &body_quat),
+            )
+        };
+        for jnt_id in jnt_adr..jnt_adr + jnt_num {
+            let qadr = model.jnt_qpos_adr[jnt_id];
+            let jnt_axis: [f64; 3] = model.jnt_axis[jnt_id].into();
+            let jnt_pos: [f64; 3] = model.jnt_pos[jnt_id].into();
+            let xaxis = quat::rot_vec_quat(&jnt_axis, &xquat);
+            let xanchor = add3(&quat::rot_vec_quat(&jnt_pos, &xquat), &xpos);
+            match model.jnt_type[jnt_id] {
+                MjJointType::Slide => {
+                    let displacement = data.qpos[qadr] - model.qpos0[qadr];
+                    for i in 0..3 {
+                        xpos[i] += xaxis[i] * displacement;
+                    }
+                }
+                jnt_type @ (MjJointType::Hinge | MjJointType::Ball) => {
+                    let local = if jnt_type == MjJointType::Ball {
+                        quat::qpos_quat(&data.qpos, qadr)
+                    } else {
+                        quat::axis_angle_to_quat(&jnt_axis, data.qpos[qadr] - model.qpos0[qadr])
+                    };
+                    xquat = quat::mul_quat(&xquat, &local);
+                    let offset = quat::rot_vec_quat(&jnt_pos, &xquat);
+                    xpos = [
+                        xanchor[0] - offset[0],
+                        xanchor[1] - offset[1],
+                        xanchor[2] - offset[2],
+                    ];
+                }
+                // MuJoCo refuses a free joint that shares its body; this
+                // one sets the pose from `qpos` as a lone one does.
+                MjJointType::Free => (xpos, xquat) = free_pose(&data.qpos, qadr),
+            }
+            data.xanchor[jnt_id] = Vector3::from(xanchor);
+            data.xaxis[jnt_id] = Vector3::from(xaxis);
+        }
+        (xpos, xquat)
+    };
+    quat::normalize4(&mut xquat);
+    (xpos, xquat)
+}
+
+/// A free joint's pose from `qpos[qadr..qadr + 7]`, its quaternion normalized.
+fn free_pose(qpos: &DVector<f64>, qadr: usize) -> ([f64; 3], [f64; 4]) {
+    (
+        [qpos[qadr], qpos[qadr + 1], qpos[qadr + 2]],
+        quat::qpos_quat(qpos, qadr + 3),
+    )
+}
+
+/// The world position, orientation and rotation matrix of a frame at `pos`,
+/// `quat` in body `body_id`'s frame (MuJoCo `mj_local2Global`,
+/// `engine_core_util.c:844-885`). MuJoCo copies the body's frame or its
+/// inertial frame for a frame within 1e-6 of it (`*_sameframe`); computed
+/// here, a frame equal to one exactly comes out the same, which
+/// `kinematics_match_mujoco_bit_for_bit` checks on geoms at the inertial
+/// frame and on a site and an inertial frame at the body's rotation.
+fn local_to_global(
+    data: &Data,
+    body_id: usize,
+    pos: &Vector3<f64>,
+    quat: &UnitQuaternion<f64>,
+) -> (Vector3<f64>, [f64; 4], Matrix3<f64>) {
+    let xpos = add3(
+        &mul_mat_vec3(&data.xmat[body_id], &(*pos).into()),
+        &data.xpos[body_id].into(),
+    );
+    let xquat = quat::mul_quat(&quat_array(&data.xquat[body_id]), &quat_array(quat));
+    (Vector3::from(xpos), xquat, mat3(&quat::quat_to_mat(&xquat)))
+}
+
+/// A row-major 3×3 matrix.
+fn mat3(m: &[f64; 9]) -> Matrix3<f64> {
+    Matrix3::new(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8])
+}
+
+/// `[w, x, y, z]` of a unit quaternion.
+fn quat_array(q: &UnitQuaternion<f64>) -> [f64; 4] {
+    [q.w, q.i, q.j, q.k]
+}
+
+fn add3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+/// `mat · vec`, each row summed left to right (MuJoCo `mji_mulMatVec3`,
+/// `engine_inline.h:137-141`).
+fn mul_mat_vec3(mat: &Matrix3<f64>, vec: &[f64; 3]) -> [f64; 3] {
+    let row = |r: usize| mat[(r, 0)] * vec[0] + mat[(r, 1)] * vec[1] + mat[(r, 2)] * vec[2];
+    [row(0), row(1), row(2)]
 }
 
 // ============================================================================

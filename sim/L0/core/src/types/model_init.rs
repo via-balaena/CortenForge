@@ -1450,6 +1450,32 @@ pub fn compute_dof_lengths(model: &mut Model) {
 }
 
 #[cfg(test)]
+mod derivation_data_tests {
+    use crate::island::K_AWAKE;
+    use crate::types::{ENABLE_SLEEP, Model, SleepPolicy};
+    use nalgebra::Vector3;
+
+    /// The derivations run with every tree awake, as MuJoCo derives with
+    /// sleep disabled (`user_model.cc:5108-5113`), on a model whose tree a
+    /// `Data` starts asleep (ledger L80).
+    #[test]
+    fn derivation_data_keeps_a_tree_that_starts_asleep_awake() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.enableflags |= ENABLE_SLEEP;
+        model.tree_sleep_policy[0] = SleepPolicy::Init;
+        let data = model.make_data();
+        assert!(
+            data.tree_asleep[0] >= 0,
+            "the fixture's tree starts asleep, tree_asleep {:?}",
+            data.tree_asleep
+        );
+        let derivation = model.make_data_for_derivation();
+        assert_eq!(derivation.tree_asleep, vec![K_AWAKE; model.ntree]);
+        assert_eq!(derivation.ntree_awake, model.ntree);
+    }
+}
+
+#[cfg(test)]
 mod dof_length_tests {
     use super::compute_dof_lengths;
     use crate::types::Model;

@@ -23,6 +23,12 @@ const UNIFORM_ALIGN: u64 = 256;
 ///
 /// Owns 4 compute pipelines (one per entry point), a shared pipeline
 /// layout (4 bind groups), and pre-allocated bind groups + uniform buffer.
+///
+/// It validates nothing: it turns a ball joint about its body's origin, not
+/// about its `jnt_pos` as sim-core does. [`GpuPhysicsPipeline`] refuses
+/// every joint but a free one.
+///
+/// [`GpuPhysicsPipeline`]: crate::pipeline::GpuPhysicsPipeline
 pub struct GpuFkPipeline {
     // Pipelines (one per entry point)
     fk_forward_pipeline: wgpu::ComputePipeline,

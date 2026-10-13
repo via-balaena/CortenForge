@@ -124,7 +124,7 @@ fn rne_bias(model: &Model, data: &mut Data) {
                 data.qfrc_bias[dof_adr] += gravity_force.dot(&axis);
             }
             MjJointType::Ball => {
-                let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                let jpos = data.xanchor[jnt_id];
                 let r = subtree_com - jpos;
                 let torque = r.cross(&gravity_force);
                 let body_torque = data.xquat[jnt_body].inverse() * torque;

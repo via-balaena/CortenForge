@@ -145,77 +145,62 @@ fn test_rk4_euler_consistency_small_h() {
 // AC #4: Energy conservation
 // ============================================================================
 
+/// The largest relative energy drift of the RK4 pendulum over 1 s at step `h`.
+fn max_energy_drift(h: f64, initial_angle: f64) -> f64 {
+    let model = load_model(&pendulum_mjcf(h, "RK4")).expect("Failed to load pendulum model");
+    let mut data = model.make_data();
+    data.qpos[0] = initial_angle;
+    data.qvel[0] = 0.0;
+
+    // Get initial energy using total_energy() (requires forward() to populate)
+    data.forward(&model).expect("forward failed");
+    let e0 = data.total_energy();
+    assert!(
+        e0.is_finite() && e0.abs() > 1e-15,
+        "Initial energy should be nonzero, got {e0}"
+    );
+
+    let mut max_drift = 0.0_f64;
+    for _ in 0..(1.0 / h).round() as usize {
+        data.step(&model).expect("step failed");
+        // After RK4 step(), derived quantities are stale from stage 3.
+        // Need a fresh forward() for accurate energy.
+        data.forward(&model).expect("forward failed");
+        let drift = ((data.total_energy() - e0) / e0).abs();
+        max_drift = max_drift.max(drift);
+    }
+    max_drift
+}
+
 /// RK4 energy drift should be < 1e-10 relative to initial energy at h=0.001.
 /// Additionally, halving h should reduce drift by ~32×–64× (O(h⁵)–O(h⁶)).
+/// The order is taken at h = 0.02 and 0.01, where the drift (about 2e-9 and
+/// 6e-11) is far above rounding; at 0.001 it is about 2e-15, rounding itself.
 #[test]
 fn test_rk4_energy_conservation() {
     let initial_angle = 0.3; // moderate angle
 
     // --- Test 1: Absolute energy drift at h=0.001 ---
-    let h_fine = 0.001;
-    let n_fine = 1000; // 1.0 s simulated time
-
-    let mjcf_fine = pendulum_mjcf(h_fine, "RK4");
-    let model_fine = load_model(&mjcf_fine).expect("Failed to load pendulum model");
-    let mut data_fine = model_fine.make_data();
-    data_fine.qpos[0] = initial_angle;
-    data_fine.qvel[0] = 0.0;
-
-    // Get initial energy using total_energy() (requires forward() to populate)
-    data_fine.forward(&model_fine).expect("forward failed");
-    let e0_fine = data_fine.total_energy();
+    let drift = max_energy_drift(0.001, initial_angle);
     assert!(
-        e0_fine.is_finite() && e0_fine.abs() > 1e-15,
-        "Initial energy should be nonzero, got {e0_fine}"
-    );
-
-    let mut max_drift_fine = 0.0_f64;
-    for _ in 0..n_fine {
-        data_fine.step(&model_fine).expect("step failed");
-        // After RK4 step(), derived quantities are stale from stage 3.
-        // Need a fresh forward() for accurate energy.
-        data_fine.forward(&model_fine).expect("forward failed");
-        let e = data_fine.total_energy();
-        let drift = ((e - e0_fine) / e0_fine).abs();
-        max_drift_fine = max_drift_fine.max(drift);
-    }
-
-    assert!(
-        max_drift_fine < 1e-10,
-        "RK4 energy drift at h={h_fine} should be < 1e-10, got {max_drift_fine:.2e}"
+        drift < 1e-10,
+        "RK4 energy drift at h=0.001 should be < 1e-10, got {drift:.2e}"
     );
 
     // --- Test 2: Order-of-convergence of energy drift ---
-    let h_coarse = 0.002;
-    let n_coarse = 500; // same simulated time (1.0 s)
-
-    let mjcf_coarse = pendulum_mjcf(h_coarse, "RK4");
-    let model_coarse = load_model(&mjcf_coarse).expect("Failed to load model");
-    let mut data_coarse = model_coarse.make_data();
-    data_coarse.qpos[0] = initial_angle;
-    data_coarse.qvel[0] = 0.0;
-
-    data_coarse.forward(&model_coarse).expect("forward failed");
-    let e0_coarse = data_coarse.total_energy();
-
-    let mut max_drift_coarse = 0.0_f64;
-    for _ in 0..n_coarse {
-        data_coarse.step(&model_coarse).expect("step failed");
-        data_coarse.forward(&model_coarse).expect("forward failed");
-        let e = data_coarse.total_energy();
-        let drift = ((e - e0_coarse) / e0_coarse).abs();
-        max_drift_coarse = max_drift_coarse.max(drift);
-    }
-
+    let max_drift_coarse = max_energy_drift(0.02, initial_angle);
+    let max_drift_fine = max_energy_drift(0.01, initial_angle);
+    assert!(
+        max_drift_fine > 1e-13,
+        "the finer drift ({max_drift_fine:.2e}) must stay above rounding for its ratio to mean anything"
+    );
     // Halving h should reduce energy drift by ~32×–64× (O(h⁵)–O(h⁶))
-    if max_drift_fine > 1e-16 {
-        let drift_ratio = max_drift_coarse / max_drift_fine;
-        assert!(
-            drift_ratio > 16.0,
-            "Energy drift should decrease by ~32×–64× when halving h, got {drift_ratio:.1}× \
-             (drift_coarse={max_drift_coarse:.2e}, drift_fine={max_drift_fine:.2e})"
-        );
-    }
+    let drift_ratio = max_drift_coarse / max_drift_fine;
+    assert!(
+        drift_ratio > 16.0,
+        "Energy drift should decrease by ~32×–64× when halving h, got {drift_ratio:.1}× \
+         (drift_coarse={max_drift_coarse:.2e}, drift_fine={max_drift_fine:.2e})"
+    );
 }
 
 // ============================================================================

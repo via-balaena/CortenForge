@@ -116,7 +116,7 @@ pub struct BodyModelGpu {
 /// Layout matches WGSL `JointModel` exactly.
 /// ```text
 /// offset  0: jtype, qpos_adr, dof_adr, body_id   (4 × u32 = 16 bytes)
-/// offset 16: axis                                   (vec4<f32> = 16 bytes)
+/// offset 16: axis  (xyz; w = qpos0 of a hinge/slide) (vec4<f32> = 16 bytes)
 /// offset 32: pos                                    (vec4<f32> = 16 bytes)
 /// ```
 #[repr(C)]

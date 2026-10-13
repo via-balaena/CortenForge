@@ -1438,7 +1438,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // The DOFs that move their own body's origin: for body b's own DOF k,
     // `dof_lin[k] = ∂xpos[b]/∂q_k` — a slide's axis, a free joint's linear DOFs,
     // and a hinge's lever `â×(xpos − anchor)`, nonzero when the hinge is off the
-    // origin (a ball and a free joint's angular DOFs turn about it, `[R; 0]`).
+    // origin (a free joint's angular DOFs turn about it, `[R; 0]`, and a ball's
+    // when its anchor is the origin).
     // What is referenced at the origin and not carried by DOF k moves with it:
     // the transported parent velocity and acceleration, the lever to the parent
     // (`∂r/∂q_k = dof_lin[k]`), and the subspaces of the body's joints before
@@ -1716,7 +1717,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         //
         // This handles multi-joint bodies (cross-derivatives between joints on the
         // same body) and also single-joint cases correctly. All joint types have
-        // orientation-dependent axes (Ball/Free use body-frame S=[R;0]).
+        // orientation-dependent axes (a ball's and a free joint's angular
+        // columns are the body frame's, `R`).
         let js = model.body_jnt_adr[body_id];
         let je = js + model.body_jnt_num[body_id];
 
@@ -2084,7 +2086,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // When an angular DOF on the same body or any ancestor body is perturbed,
     // it rotates the body, changing the joint subspace S. Unified loop over
     // all perturbing angular DOFs (same-body + ancestors).
-    // With body-frame convention, Ball/Free S=[R;0] depends on q (∂S/∂q ≠ 0).
+    // With body-frame convention, a ball's or a free joint's angular S (`R`)
+    // depends on q (∂S/∂q ≠ 0).
     for jid in 0..model.njnt {
         let bid = model.jnt_body[jid];
         let da_j = model.jnt_dof_adr[jid];
@@ -2628,7 +2631,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
     // Part B projection derivative: (∂S/∂q)^T · cfrc_B
     // Same unified ancestor structure as Part A projection derivative.
-    // With body-frame convention, Ball/Free S=[R;0] depends on q (∂S/∂q ≠ 0).
+    // With body-frame convention, a ball's or a free joint's angular S (`R`)
+    // depends on q (∂S/∂q ≠ 0).
     for jid in 0..model.njnt {
         let bid = model.jnt_body[jid];
         let da_j = model.jnt_dof_adr[jid];

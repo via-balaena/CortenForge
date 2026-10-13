@@ -6,6 +6,7 @@
 
 use super::geom_distance::geom_distance;
 use super::postprocess::{sensor_write, sensor_write3, sensor_write4, sensor_write6};
+use crate::quat;
 use crate::types::flags::disabled;
 use crate::types::{
     DISABLE_SENSOR, Data, ENABLE_SLEEP, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
@@ -122,32 +123,10 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
         MjSensorType::BallQuat
             if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball =>
         {
-            // Ball joint quaternion [w, x, y, z]
-            let qpos_adr = model.jnt_qpos_adr[objid];
-            // Read quaternion from qpos and normalize in locals. MuJoCo
-            // normalizes with `mju_normalize4`, which leaves a norm within
-            // 1e-15 of 1 as it is; this divides by any norm above 1e-10 (the
-            // spec book's P28 entry ports it with the kinematics).
-            let (w, x, y, z) = (
-                data.qpos[qpos_adr],
-                data.qpos[qpos_adr + 1],
-                data.qpos[qpos_adr + 2],
-                data.qpos[qpos_adr + 3],
-            );
-            let norm = (w * w + x * x + y * y + z * z).sqrt();
-            if norm > 1e-10 {
-                sensor_write4(
-                    &mut data.sensordata,
-                    adr,
-                    w / norm,
-                    x / norm,
-                    y / norm,
-                    z / norm,
-                );
-            } else {
-                // Degenerate — reset to identity [w=1, x=0, y=0, z=0]
-                sensor_write4(&mut data.sensordata, adr, 1.0, 0.0, 0.0, 0.0);
-            }
+            // Ball joint quaternion [w, x, y, z], normalized as MuJoCo's
+            // (`mju_normalize4`, `engine_sensor.c:572-575`).
+            let q = quat::qpos_quat(&data.qpos, model.jnt_qpos_adr[objid]);
+            sensor_write4(&mut data.sensordata, adr, q[0], q[1], q[2], q[3]);
         }
 
         MjSensorType::FramePos => {

@@ -175,10 +175,12 @@ pub(crate) fn joint_motion_subspace(
         MjJointType::Ball => {
             // Ball joint: 3 angular DOFs in body-local frame.
             // qvel is body-frame angular velocity; S maps body-frame → world-frame.
-            // S = [R; 0] where R = xquat rotation matrix.
-            // Matches MuJoCo's cdof: axis rotated to world frame.
+            // S = [R; R × r] where R = `xmat[body]` and r runs from the anchor
+            // to the body origin (zero unless `jnt_pos ≠ 0`).
+            // Matches MuJoCo's cdof, whose axes are `xmat`'s columns
+            // (`engine_core_smooth.c:328-337`).
             //
-            // `xquat[body]` is the body's FINAL orientation, which is the
+            // `xmat[body]` is the body's FINAL orientation, which is the
             // correct subspace frame only when no later joint on the same body
             // rotates it — i.e. this ball is the last (typically only) joint on
             // its body. Every real/tested model satisfies this; a ball followed
@@ -188,10 +190,15 @@ pub(crate) fn joint_motion_subspace(
                 "ball joint {jnt_id} is not the last joint on its body — angular \
                  subspace would over-rotate (see joint_motion_subspace)"
             );
-            let rot = data.xquat[body_id].to_rotation_matrix().into_inner();
+            let rot = data.xmat[body_id];
+            let r = data.xpos[body_id] - data.xanchor[jnt_id];
             for i in 0..3 {
                 for j in 0..3 {
                     s[(j, i)] = rot[(j, i)];
+                }
+                let lin = rot.column(i).cross(&r);
+                for j in 0..3 {
+                    s[(3 + j, i)] = lin[j];
                 }
             }
         }
@@ -211,7 +218,7 @@ pub(crate) fn joint_motion_subspace(
             }
             // Angular DOFs (3-5): body-local angular velocity → world-frame spatial angular
             // S = [R; 0] for the angular block, matching MuJoCo's cdof convention.
-            let rot = data.xquat[body_id].to_rotation_matrix().into_inner();
+            let rot = data.xmat[body_id];
             for i in 0..3 {
                 for j in 0..3 {
                     s[(j, 3 + i)] = rot[(j, i)];

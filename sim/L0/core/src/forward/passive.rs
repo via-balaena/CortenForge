@@ -10,13 +10,13 @@ use crate::dynamics::rne::mj_gravcomp;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::{JointContext, JointVisitor};
+use crate::quat;
 use crate::tendon::apply_tendon_force;
-use crate::tendon::subquat;
 use crate::types::{
     DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, FlexBendingType, GeomType, Integrator,
     MjJointType, Model, SleepState,
 };
-use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Vector3};
 
 /// Euclidean norm of a 3-element slice.
 #[inline]
@@ -903,6 +903,20 @@ impl PassiveForceVisitor<'_> {
             && self.data.body_sleep_state[self.model.jnt_body[ctx.jnt_id]] == SleepState::Asleep
     }
 
+    /// The rotation of the quaternion at `qpos[adr..adr + 4]` from its spring
+    /// reference, as MuJoCo's: `qpos`'s normalized, `qpos_spring`'s as it is
+    /// (`engine_passive.c:155-161`).
+    fn spring_rotation(&self, adr: usize) -> [f64; 3] {
+        let spring = &self.model.qpos_spring;
+        let reference = [
+            spring[adr],
+            spring[adr + 1],
+            spring[adr + 2],
+            spring[adr + 3],
+        ];
+        quat::sub_quat(&quat::qpos_quat(&self.data.qpos, adr), &reference)
+    }
+
     /// Process a 1-DOF joint (Hinge or Slide) with spring and damper.
     /// S4.7-prereq: writes to `qfrc_spring`/`qfrc_damper` instead of `qfrc_passive`.
     #[inline]
@@ -961,37 +975,13 @@ impl PassiveForceVisitor<'_> {
                         // Quat starts at qpos_adr + 3, rotational DOFs at dof_adr + 3.
                         let quat_adr = ctx.qpos_adr + 3;
                         let rot_dof_adr = ctx.dof_adr + 3;
-                        let q_cur = UnitQuaternion::new_normalize(Quaternion::new(
-                            self.data.qpos[quat_adr],
-                            self.data.qpos[quat_adr + 1],
-                            self.data.qpos[quat_adr + 2],
-                            self.data.qpos[quat_adr + 3],
-                        ));
-                        let q_spring = UnitQuaternion::new_normalize(Quaternion::new(
-                            self.model.qpos_spring[quat_adr],
-                            self.model.qpos_spring[quat_adr + 1],
-                            self.model.qpos_spring[quat_adr + 2],
-                            self.model.qpos_spring[quat_adr + 3],
-                        ));
-                        let dif = subquat(&q_cur, &q_spring);
+                        let dif = self.spring_rotation(quat_adr);
                         self.data.qfrc_spring[rot_dof_adr] -= stiffness * dif[0];
                         self.data.qfrc_spring[rot_dof_adr + 1] -= stiffness * dif[1];
                         self.data.qfrc_spring[rot_dof_adr + 2] -= stiffness * dif[2];
                     }
                     MjJointType::Ball => {
-                        let q_cur = UnitQuaternion::new_normalize(Quaternion::new(
-                            self.data.qpos[ctx.qpos_adr],
-                            self.data.qpos[ctx.qpos_adr + 1],
-                            self.data.qpos[ctx.qpos_adr + 2],
-                            self.data.qpos[ctx.qpos_adr + 3],
-                        ));
-                        let q_spring = UnitQuaternion::new_normalize(Quaternion::new(
-                            self.model.qpos_spring[ctx.qpos_adr],
-                            self.model.qpos_spring[ctx.qpos_adr + 1],
-                            self.model.qpos_spring[ctx.qpos_adr + 2],
-                            self.model.qpos_spring[ctx.qpos_adr + 3],
-                        ));
-                        let dif = subquat(&q_cur, &q_spring);
+                        let dif = self.spring_rotation(ctx.qpos_adr);
                         self.data.qfrc_spring[ctx.dof_adr] -= stiffness * dif[0];
                         self.data.qfrc_spring[ctx.dof_adr + 1] -= stiffness * dif[1];
                         self.data.qfrc_spring[ctx.dof_adr + 2] -= stiffness * dif[2];

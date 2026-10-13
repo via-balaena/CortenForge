@@ -80,6 +80,37 @@ pub fn quat_integrate(quat: &mut [f64; 4], vel: [f64; 3], scale: f64) {
     *quat = mul_quat(quat, &rotation);
 }
 
+/// The rotation matrix of the unit `quat`, row-major (MuJoCo `mju_quat2Mat`,
+/// `engine_util_spatial.c:145-183`): the identity for the identity.
+// MuJoCo tests for the identity exactly, so the comparison is too.
+#[allow(clippy::float_cmp)]
+pub fn quat_to_mat(quat: &[f64; 4]) -> [f64; 9] {
+    if quat[0] == 1.0 && quat[1] == 0.0 && quat[2] == 0.0 && quat[3] == 0.0 {
+        return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    }
+    let q00 = quat[0] * quat[0];
+    let q01 = quat[0] * quat[1];
+    let q02 = quat[0] * quat[2];
+    let q03 = quat[0] * quat[3];
+    let q11 = quat[1] * quat[1];
+    let q12 = quat[1] * quat[2];
+    let q13 = quat[1] * quat[3];
+    let q22 = quat[2] * quat[2];
+    let q23 = quat[2] * quat[3];
+    let q33 = quat[3] * quat[3];
+    [
+        q00 + q11 - q22 - q33,
+        2.0 * (q12 - q03),
+        2.0 * (q13 + q02),
+        2.0 * (q12 + q03),
+        q00 - q11 + q22 - q33,
+        2.0 * (q23 - q01),
+        2.0 * (q13 - q02),
+        2.0 * (q23 + q01),
+        q00 - q11 - q22 + q33,
+    ]
+}
+
 /// The conjugate of `quat` (MuJoCo `mju_negQuat`, `engine_util_spatial.c:57-62`).
 pub fn neg_quat(quat: &[f64; 4]) -> [f64; 4] {
     [quat[0], -quat[1], -quat[2], -quat[3]]
@@ -103,6 +134,12 @@ pub fn rot_vec_quat(vec: &[f64; 3], quat: &[f64; 4]) -> [f64; 3] {
         vec[1] + 2.0 * (quat[3] * tmp[0] - quat[1] * tmp[2]),
         vec[2] + 2.0 * (quat[1] * tmp[1] - quat[2] * tmp[0]),
     ]
+}
+
+/// The rotation from `qb` to `qa` as a 3D velocity over unit time, so that
+/// `qb · quat(res) = qa` (MuJoCo `mji_subQuat`, `engine_inline.h:314-322`).
+pub fn sub_quat(qa: &[f64; 4], qb: &[f64; 4]) -> [f64; 3] {
+    quat_to_vel(&mul_quat(&neg_quat(qb), qa), 1.0)
 }
 
 /// The angular velocity that turns the identity into the unit `quat` over

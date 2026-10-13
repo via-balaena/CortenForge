@@ -829,3 +829,74 @@ fn gpu_batched_forward_matches_cpu() {
         fails.join("\n  ")
     );
 }
+
+/// One body on one hinge (`pendulum_basic`) or one slide along x (`sho_1d`),
+/// its `qpos0` set as an MJCF `ref="30"` or `ref="0.3"` would.
+fn ref_joint_model(slide: bool) -> Model {
+    let mut model = if slide {
+        sim_core::test_fixtures::sho_1d()
+    } else {
+        sim_core::test_fixtures::pendulum_basic()
+    };
+    assert_eq!(model.nbody, 2);
+    model.qpos0[0] = if slide {
+        0.3
+    } else {
+        std::f64::consts::FRAC_PI_6
+    };
+    model
+}
+
+/// GPU forward kinematics of `model` at `qpos0`: body 1's position and its
+/// quaternion `(x, y, z, w)`.
+fn gpu_pose_at_qpos0(ctx: &GpuContext, model: &Model) -> ([f32; 4], [f32; 4]) {
+    let data = model.make_data();
+    assert_eq!(data.qpos.as_slice(), model.qpos0.as_slice());
+    let model_buf = GpuModelBuffers::upload(ctx, model);
+    let state = GpuStateBuffers::new(ctx, &model_buf, &data);
+    let fk = GpuFkPipeline::new(ctx, &model_buf, &state);
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("fk at qpos0"),
+        });
+    fk.dispatch(ctx, &model_buf, &state, &mut encoder);
+    ctx.queue.submit([encoder.finish()]);
+    let xpos = read_buffer::<[f32; 4]>(ctx, &state.body_xpos, model.nbody);
+    let xquat = read_buffer::<[f32; 4]>(ctx, &state.body_xquat, model.nbody);
+    (xpos[1], xquat[1])
+}
+
+/// A hinge whose `qpos0` is 30° leaves its body at the body's own pose at
+/// `qpos0`: the shader turns it by `qpos − qpos0`, as sim-core and MuJoCo's
+/// `mj_kinematics1` (`engine_core_smooth.c:137`).
+#[test]
+fn gpu_fk_hinge_ref_is_identity_at_qpos0() {
+    let ctx = gpu_or_skip!();
+    let model = ref_joint_model(false);
+    assert_eq!(model.body_quat[1], nalgebra::UnitQuaternion::identity());
+    let (_, xquat) = gpu_pose_at_qpos0(&ctx, &model);
+    for (k, want) in [0.0, 0.0, 0.0, 1.0].into_iter().enumerate() {
+        check_one(xquat[k], want, &format!("xquat[{k}]"));
+    }
+}
+
+/// A slide whose `qpos0` is 0.3 leaves its body at the body's own position at
+/// `qpos0`: the shader moves it by `qpos − qpos0`, as sim-core and MuJoCo's
+/// `mj_kinematics1` (`engine_core_smooth.c:125`).
+#[test]
+fn gpu_fk_slide_ref_is_at_rest_at_qpos0() {
+    let ctx = gpu_or_skip!();
+    let model = ref_joint_model(true);
+    let (xpos, _) = gpu_pose_at_qpos0(&ctx, &model);
+    for k in 0..3 {
+        check_one(xpos[k], model.body_pos[1][k] as f32, &format!("xpos[{k}]"));
+    }
+}
+
+fn check_one(gpu: f32, want: f32, what: &str) {
+    assert!(
+        (gpu - want).abs() < TOL_KINEMATIC,
+        "{what}: GPU {gpu}, expected {want}"
+    );
+}

@@ -2051,6 +2051,21 @@ fn t28_model_validation() {
     eprintln!("  T28 passed: model validation works");
 }
 
+/// `GpuPhysicsPipeline` refuses a ball joint, before it asks for an adapter:
+/// the GPU kinematics turn a ball about its body's origin, where sim-core
+/// turns it about its `jnt_pos` (divergence row D-GPU-BALL).
+#[test]
+fn gpu_pipeline_refuses_a_ball_joint() {
+    let mut model = Model::spherical_pendulum(0.5, 1.0);
+    model.jnt_pos[0] = Vector3::new(0.0, 0.0, 0.2);
+    let data = model.make_data();
+    match GpuPhysicsPipeline::new(&model, &data) {
+        Err(GpuPipelineError::UnsupportedJointType(0, MjJointType::Ball)) => {}
+        Err(e) => panic!("a ball joint should be refused as unsupported, got: {e}"),
+        Ok(_) => panic!("a ball joint should be refused, but was accepted"),
+    }
+}
+
 // ── T29: Single substep via orchestrator ──────────────────────────────
 
 #[test]

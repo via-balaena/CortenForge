@@ -129,8 +129,10 @@ pub struct Data {
     /// rotate an earlier joint's anchor (the `joint_motion_subspace` bug fix).
     pub xanchor: Vec<Vector3<f64>>,
     /// Joint axes in world frame (length `njnt`), in the same partial frame as
-    /// [`Self::xanchor`]. Meaningful for hinge/slide; zero for ball/free (their
-    /// motion subspace is the body's rotation block, read from [`Self::xquat`]).
+    /// [`Self::xanchor`]: each joint's `jnt_axis` turned into it, except a free
+    /// joint's, which is its `jnt_axis` unturned (MuJoCo `mj_kinematics1`). A
+    /// ball's and a free joint's motion subspace reads the body's rotation,
+    /// [`Self::xmat`], not this.
     pub xaxis: Vec<Vector3<f64>>,
 
     // Geom poses (for collision detection)
