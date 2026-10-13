@@ -21,8 +21,8 @@ use crate::dynamics::spatial::{
 use crate::forward::solve_implicit;
 use crate::forward::{
     MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
-    hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_gain_length,
-    muscle_gain_velocity, norm3,
+    hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_f0,
+    muscle_gain_length, muscle_gain_velocity, norm3,
 };
 use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::isd_damping;
@@ -268,27 +268,26 @@ fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Optio
         GainType::Fixed => 0.0,
         GainType::Affine => model.actuator_gainprm[i][2],
         GainType::Muscle => {
-            // gain = -F0 * FL(L_norm) * FV(V_norm)
-            // ∂gain/∂V = -F0 * FL(L_norm) * dFV/dV_norm * dV_norm/dV
+            // MuJoCo's `mjd_muscleGain_vel` (engine_derivative.c:781-826):
+            // -F0 · FL(L_norm) · dFV/dV_norm / max(mjMINVAL, L0 · vmax).
             let prm = &model.actuator_gainprm[i];
             let lengthrange = model.actuator_lengthrange[i];
-            let f0 = prm[2];
+            let f0 = muscle_f0(prm, model.actuator_acc0[i]);
 
-            let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-            let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
-            let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
+            let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(MJ_MINVAL);
+            let norm_len = prm[0] + (length - lengthrange.0) / l0.max(MJ_MINVAL);
+            let norm_vel = velocity / (l0 * prm[6]).max(MJ_MINVAL);
 
             let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
             let dfv_dnv = muscle_gain_velocity_deriv(norm_vel, prm[8]);
-            let dnv_dv = 1.0 / (l0 * prm[6]).max(1e-10);
 
-            -f0 * fl * dfv_dnv * dnv_dv
+            -f0 * fl * dfv_dnv / (l0 * prm[6]).max(MJ_MINVAL)
         }
         GainType::HillMuscle => {
             // gain = -F0 * FL(L_norm) * FV(V_norm) * cos(α)
             // ∂gain/∂V = -F0 * FL * dFV/dV_norm * dV_norm/dV * cos(α)
             let prm = &model.actuator_gainprm[i];
-            let f0 = prm[2];
+            let f0 = muscle_f0(prm, model.actuator_acc0[i]);
             let optimal_fiber_length = prm[4];
             let tendon_slack_length = prm[5];
             let max_contraction_velocity = prm[6];
@@ -1121,8 +1120,8 @@ fn add_spatial_tendon_jacobian_term(
 /// Derivative of the MuJoCo piecewise-quadratic active FL curve w.r.t.
 /// normalized length. Returns `dFL/dL_norm`.
 fn muscle_active_fl_deriv(length: f64, lmin: f64, lmax: f64) -> f64 {
-    const EPS: f64 = 1e-10;
-    if length < lmin || length > lmax {
+    const EPS: f64 = MJ_MINVAL;
+    if !(lmin <= length && length <= lmax) {
         return 0.0;
     }
     let a = 0.5 * (lmin + 1.0);
@@ -1228,22 +1227,23 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
                 model.actuator_gainprm[i][1]
             }
             GainType::Muscle => {
-                // gain = -F0 * FL(L_norm) * FV(V_norm)
+                // gain = -F0 * FL(L_norm) * FV(V_norm), the force and the
+                // clamps as `muscle_gain`'s
                 // ∂gain/∂L = -F0 * dFL/dL_norm * dL_norm/dL * FV(V_norm)
                 let prm = &model.actuator_gainprm[i];
                 let lengthrange = model.actuator_lengthrange[i];
-                let f0 = prm[2];
-                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
-                let norm_vel = data.actuator_velocity[i] / (l0 * prm[6]).max(1e-10);
+                let f0 = muscle_f0(prm, model.actuator_acc0[i]);
+                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(MJ_MINVAL);
+                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(MJ_MINVAL);
+                let norm_vel = data.actuator_velocity[i] / (l0 * prm[6]).max(MJ_MINVAL);
                 let dfl_dnl = muscle_active_fl_deriv(norm_len, prm[4], prm[5]);
                 let fv = muscle_gain_velocity(norm_vel, prm[8]);
-                let dnl_dl = 1.0 / l0.max(1e-10);
+                let dnl_dl = 1.0 / l0.max(MJ_MINVAL);
                 -f0 * dfl_dnl * dnl_dl * fv
             }
             GainType::HillMuscle => {
                 let prm = &model.actuator_gainprm[i];
-                let f0 = prm[2];
+                let f0 = muscle_f0(prm, model.actuator_acc0[i]);
                 let optimal_fiber_length = prm[4];
                 let tendon_slack_length = prm[5];
                 let max_contraction_velocity = prm[6];
@@ -4439,7 +4439,7 @@ fn muscle_gain_velocity_deriv(velocity: f64, fvmax: f64) -> f64 {
         2.0 * (velocity + 1.0)
     } else if velocity <= y {
         // FV = fvmax - (y-v)^2/y → dFV/dv = 2(y-v)/y
-        let y_safe = y.max(1e-10);
+        let y_safe = y.max(MJ_MINVAL);
         2.0 * (y - velocity) / y_safe
     } else {
         // FV = fvmax, flat

@@ -7,7 +7,8 @@
 
 // Re-export hill.rs — muscle curves and activation dynamics.
 pub use super::hill::{
-    muscle_activation_dynamics, muscle_gain_length, muscle_gain_velocity, muscle_passive_force,
+    muscle_activation_dynamics, muscle_bias, muscle_f0, muscle_gain, muscle_gain_length,
+    muscle_gain_velocity, muscle_passive_force,
 };
 
 use super::fiber::build_actuator_moment;

@@ -50,7 +50,8 @@ pub use millard::{
     millard_active_gain, millard_isometric_path_force, millard_passive_bias, millard_path_force,
 };
 pub use muscle::{
-    muscle_activation_dynamics, muscle_gain_length, muscle_gain_velocity, muscle_passive_force,
+    muscle_activation_dynamics, muscle_bias, muscle_f0, muscle_gain, muscle_gain_length,
+    muscle_gain_velocity, muscle_passive_force,
 };
 
 #[allow(unused_imports)]

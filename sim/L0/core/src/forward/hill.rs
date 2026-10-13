@@ -4,68 +4,119 @@
 //! FV curve, passive force, and activation dynamics. Corresponds to
 //! `engine_util_misc.c` (mju_muscleGain, mju_muscleBias).
 
+use crate::constraint::impedance::MJ_MINVAL;
+
 // ============================================================================
 // MuJoCo Muscle Force-Length-Velocity Curves
 // ============================================================================
 // These implement MuJoCo's exact piecewise-quadratic muscle curves from
 // engine_util_misc.c: mju_muscleGain (FL, FV) and mju_muscleBias (FP).
 
-/// Active force-length curve: piecewise quadratic bump.
-/// Returns 0 outside `[lmin, lmax]`, peak 1.0 at `L = 1.0`.
+/// Active force-length curve: piecewise quadratic bump (MuJoCo
+/// `mju_muscleGainLength`, `engine_util_misc.c:627-649`).
+/// Returns 0 outside `[lmin, lmax]` (and for a NaN length), peak 1.0 at `L = 1.0`.
 #[must_use]
 pub fn muscle_gain_length(length: f64, lmin: f64, lmax: f64) -> f64 {
-    const EPS: f64 = 1e-10;
-    if length < lmin || length > lmax {
-        return 0.0;
-    }
-    let a = 0.5 * (lmin + 1.0); // midpoint of [lmin, 1]
-    let b = 0.5 * (1.0 + lmax); // midpoint of [1, lmax]
+    if lmin <= length && length <= lmax {
+        let a = 0.5 * (lmin + 1.0); // midpoint of [lmin, 1]
+        let b = 0.5 * (1.0 + lmax); // midpoint of [1, lmax]
 
-    if length <= a {
-        let x = (length - lmin) / (a - lmin).max(EPS);
-        0.5 * x * x
-    } else if length <= 1.0 {
-        let x = (1.0 - length) / (1.0 - a).max(EPS);
-        1.0 - 0.5 * x * x
-    } else if length <= b {
-        let x = (length - 1.0) / (b - 1.0).max(EPS);
-        1.0 - 0.5 * x * x
-    } else {
-        let x = (lmax - length) / (lmax - b).max(EPS);
-        0.5 * x * x
+        return if length <= a {
+            let x = (length - lmin) / (a - lmin).max(MJ_MINVAL);
+            0.5 * x * x
+        } else if length <= 1.0 {
+            let x = (1.0 - length) / (1.0 - a).max(MJ_MINVAL);
+            1.0 - 0.5 * x * x
+        } else if length <= b {
+            let x = (length - 1.0) / (b - 1.0).max(MJ_MINVAL);
+            1.0 - 0.5 * x * x
+        } else {
+            let x = (lmax - length) / (lmax - b).max(MJ_MINVAL);
+            0.5 * x * x
+        };
     }
+    0.0
 }
 
 /// Force-velocity curve: piecewise quadratic.
 /// `velocity` is normalized by `L0 * vmax` so `V = -1` is max shortening.
 #[must_use]
 pub fn muscle_gain_velocity(velocity: f64, fvmax: f64) -> f64 {
-    const EPS: f64 = 1e-10;
     let y = fvmax - 1.0;
     if velocity <= -1.0 {
         0.0
     } else if velocity <= 0.0 {
         (velocity + 1.0) * (velocity + 1.0)
     } else if velocity <= y {
-        fvmax - (y - velocity) * (y - velocity) / y.max(EPS)
+        fvmax - (y - velocity) * (y - velocity) / y.max(MJ_MINVAL)
     } else {
         fvmax
     }
 }
 
 /// Passive force curve: zero below `L = 1.0`, quadratic onset, linear beyond midpoint.
+/// [`muscle_bias`] scales it by the force as MuJoCo does, in MuJoCo's order.
 #[must_use]
 pub fn muscle_passive_force(length: f64, lmax: f64, fpmax: f64) -> f64 {
-    const EPS: f64 = 1e-10;
     let b = 0.5 * (1.0 + lmax);
     if length <= 1.0 {
         0.0
     } else if length <= b {
-        let x = (length - 1.0) / (b - 1.0).max(EPS);
+        let x = (length - 1.0) / (b - 1.0).max(MJ_MINVAL);
         fpmax * 0.5 * x * x
     } else {
-        let x = (length - b) / (b - 1.0).max(EPS);
+        let x = (length - b) / (b - 1.0).max(MJ_MINVAL);
         fpmax * (0.5 + x)
+    }
+}
+
+/// A muscle's peak force: `prm[2]`, or `prm[3] / max(mjMINVAL, acc0)` where
+/// that is negative.
+///
+/// MuJoCo leaves a negative force in the model and resolves it at each call
+/// (`engine_util_misc.c:665-667`, `:708-710`). `prm` is the actuator's
+/// `gainprm` for its gain and its `biasprm` for its bias.
+#[must_use]
+pub fn muscle_f0(prm: &[f64; 9], acc0: f64) -> f64 {
+    if prm[2] < 0.0 {
+        prm[3] / acc0.max(MJ_MINVAL)
+    } else {
+        prm[2]
+    }
+}
+
+/// The optimal length `L0` of a muscle and its normalized length at `len`.
+fn muscle_length(len: f64, lengthrange: (f64, f64), prm: &[f64; 9]) -> (f64, f64) {
+    let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(MJ_MINVAL);
+    (l0, prm[0] + (len - lengthrange.0) / l0.max(MJ_MINVAL))
+}
+
+/// A muscle's active force per unit input (MuJoCo `mju_muscleGain`,
+/// `engine_util_misc.c:653-693`), `prm` its `gainprm`.
+#[must_use]
+pub fn muscle_gain(len: f64, vel: f64, lengthrange: (f64, f64), acc0: f64, prm: &[f64; 9]) -> f64 {
+    let force = muscle_f0(prm, acc0);
+    let (l0, length) = muscle_length(len, lengthrange, prm);
+    let velocity = vel / (l0 * prm[6]).max(MJ_MINVAL);
+    -force * muscle_gain_length(length, prm[4], prm[5]) * muscle_gain_velocity(velocity, prm[8])
+}
+
+/// A muscle's passive force (MuJoCo `mju_muscleBias`,
+/// `engine_util_misc.c:697-725`), `prm` its `biasprm`.
+#[must_use]
+pub fn muscle_bias(len: f64, lengthrange: (f64, f64), acc0: f64, prm: &[f64; 9]) -> f64 {
+    let force = muscle_f0(prm, acc0);
+    let (_, length) = muscle_length(len, lengthrange, prm);
+    let (lmax, fpmax) = (prm[5], prm[7]);
+    let b = 0.5 * (1.0 + lmax);
+    if length <= 1.0 {
+        0.0
+    } else if length <= b {
+        let x = (length - 1.0) / (b - 1.0).max(MJ_MINVAL);
+        -force * fpmax * 0.5 * x * x
+    } else {
+        let x = (length - b) / (b - 1.0).max(MJ_MINVAL);
+        -force * fpmax * (0.5 + x)
     }
 }
 

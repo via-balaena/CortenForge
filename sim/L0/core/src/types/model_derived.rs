@@ -36,10 +36,9 @@ impl Model {
     /// | `actuator_nsample`, `sensor_nsample`, `sensor_dim` | `actuator_historyadr`, `sensor_historyadr`, `nhistory`, so `Data::history`'s length: make a new `Data` | [`Self::compute_history_addresses`] |
     ///
     /// Some inputs are consumed on the first computation: a damping ratio in
-    /// `actuator_biasprm[2]` (as MuJoCo's `set0` consumes it), a muscle's
-    /// `actuator_gainprm[2]` (MuJoCo resolves that one at each call instead)
-    /// and a `tendon_lengthspring` of `[-1, -1]` are replaced by the values
-    /// derived from them; a later edit of the input is not derived again. Not
+    /// `actuator_biasprm[2]` (as MuJoCo's `set0` consumes it) and a
+    /// `tendon_lengthspring` of `[-1, -1]` are replaced by the values derived
+    /// from them; a later edit of the input is not derived again. Not
     /// recomputed here: the tree's own tables `body_rootid` and `dof_parent`,
     /// which an edit of the tree sets.
     ///

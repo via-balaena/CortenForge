@@ -205,6 +205,10 @@ pub mod rk4_sleep;
 /// RK4 against MuJoCo 3.5.0: the activations of the stages.
 pub mod rk4_parity;
 
+/// Muscles against MuJoCo 3.5.0: the force resolved at each call, the bias
+/// from `biasprm`, the clamps.
+pub mod muscle_parity;
+
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
 // ============================================================================

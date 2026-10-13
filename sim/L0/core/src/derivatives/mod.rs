@@ -78,6 +78,8 @@ pub use param::{
 };
 
 // Crate-internal re-exports
+#[cfg(test)]
+pub(crate) use hybrid::mjd_actuator_pos;
 pub(crate) use hybrid::{mjd_actuator_vel, mjd_rne_vel};
 
 use crate::types::{BiasType, Data, GainType, Integrator, Model, StepError};
