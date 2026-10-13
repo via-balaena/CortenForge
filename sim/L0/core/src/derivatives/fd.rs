@@ -40,7 +40,7 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// Position perturbations operate in tangent space (dimension `nv`) via
 /// `mj_integrate_pos_explicit()`. The perturbed next states are differenced
-/// with each other, as MuJoCo's `mjd_stepFD` does ([`state_diff`]), so a
+/// with each other, as MuJoCo's `mjd_stepFD` does (its `stateDiff`), so a
 /// quaternion joint's position rows are tangents at the next state.
 ///
 /// # Contact handling
