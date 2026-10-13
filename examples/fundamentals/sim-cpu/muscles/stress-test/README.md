@@ -15,7 +15,7 @@ dynamic behavior. Exits with code 1 if any check fails.
 | 4 | A: Activation | Boundary act=0 | 1e-10 |
 | 5 | A: Activation | Boundary act=1 | 1e-10 |
 | 6 | A: Activation | Ctrl clamping (1.5 == 1.0) | 1e-15 |
-| 7 | A: Activation | Smooth blend (tausmooth=0.2) | 1e-3 |
+| 7 | A: Activation | Smooth blend (tausmooth=0.2), MuJoCo 3.5.0's value | exact |
 | 8–12 | B: MuJoCo FL | 5 pinned values (0.5, 0.75, 1.0, 1.3, 1.6) | 1e-10 |
 | 13–14 | B: MuJoCo FL | Outside range (0.3, 1.8) = 0 | exact |
 | 15–18 | B: MuJoCo FV | 4 pinned values (-1.0, -0.5, 0.0, 0.4) | 1e-10 |

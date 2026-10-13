@@ -1,6 +1,6 @@
 # Implicit — Full Implicit with Coriolis
 
-The most accurate implicit integrator. Assembles the full velocity
+Assembles the full velocity
 derivative matrix D (including Coriolis terms from `mjd_rne_vel`), then
 solves `(M - h*D) * a = rhs` via LU factorization for the acceleration `a`
 the step advances `qvel` with (`data.qacc` keeps the explicit acceleration,
@@ -38,8 +38,7 @@ velocity, including:
 - Coriolis velocity derivatives (mjd_rne_vel)
 
 D is asymmetric (Coriolis breaks symmetry), so LU factorization is used
-instead of Cholesky. This is the most expensive implicit variant but also
-the most accurate for systems with significant Coriolis coupling.
+instead of Cholesky.
 
 ## Parameters
 

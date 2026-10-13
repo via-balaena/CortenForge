@@ -211,6 +211,21 @@ impl Model {
             qLD_colind: vec![],
             qLD_nnz: 0,
 
+            // Simple bodies and dof–dof patterns (computed by
+            // compute_simple_bodies and compute_dof_patterns)
+            body_sameframe: vec![],
+            geom_sameframe: vec![],
+            site_sameframe: vec![],
+            body_simple: vec![],
+            dof_simplenum: vec![],
+            M_rownnz: vec![],
+            M_rowadr: vec![],
+            M_colind: vec![],
+            D_rownnz: vec![],
+            D_rowadr: vec![],
+            D_diag: vec![],
+            D_colind: vec![],
+
             // Geoms (empty)
             geom_type: vec![],
             geom_body: vec![],
@@ -822,6 +837,11 @@ impl Model {
             qLD_diag_inv: vec![0.0; self.nv],
             qLD_valid: false,
 
+            // The implicit integrators' factors (MuJoCo qH, qHDiagInv, qLU)
+            qH: vec![0.0; self.M_colind.len()],
+            qHDiagInv: vec![0.0; self.nv],
+            qLU: vec![0.0; self.D_colind.len()],
+
             // Body spatial inertias (computed once in FK, used by CRBA and RNE)
             cinert: vec![Matrix6::zeros(); self.nbody],
             // Composite rigid body inertias (for Featherstone CRBA)
@@ -951,7 +971,6 @@ impl Model {
             scratch_rhs: DVector::zeros(self.nv),
             scratch_v_new: DVector::zeros(self.nv),
             qacc_implicit: DVector::zeros(self.nv),
-            scratch_lu_piv: vec![0; self.nv],
 
             // RK4 scratch buffers
             rk4_qpos_saved: DVector::zeros(self.nq),
@@ -962,6 +981,7 @@ impl Model {
             rk4_dX_acc: DVector::zeros(self.nv),
             rk4_act_saved: DVector::zeros(self.na),
             rk4_act_dot: std::array::from_fn(|_| DVector::zeros(self.na)),
+            rk4_dof_asleep: vec![false; self.nv],
 
             // Derivative scratch buffers (for mjd_smooth_vel / mjd_rne_vel)
             qDeriv: DMatrix::zeros(self.nv, self.nv),
@@ -1152,13 +1172,17 @@ impl Model {
     ///
     /// - `body_invweight0[b]` = operational-space inverse inertia at body COM:
     ///   `[0]` = avg translational diagonal of `J·M⁻¹·J^T` (6×6),
-    ///   `[1]` = avg rotational diagonal
-    /// - `dof_invweight0[d]` = avg diagonal of `M⁻¹` subblock for that joint's DOFs
+    ///   `[1]` = avg rotational diagonal; for a simple body whose joints are
+    ///   all slides (`body_simple` 2), `[1/mass, 0]`, as MuJoCo's
+    ///   (`engine_setconst.c:628-635`)
+    /// - `dof_invweight0[d]` = avg diagonal of `M⁻¹` subblock for that joint's DOFs;
+    ///   `1/mass` on such a body, its armature left out, as MuJoCo's (`:663-673`)
     /// - `tendon_invweight0[t]` = `J_tendon · M⁻¹ · J_tendon^T` (full quadratic form,
     ///   matching MuJoCo's `setInertia()` in `engine_setconst.c`)
     ///
-    /// Must be called after `compute_qld_csr_metadata()`, body_mass, body_inertia,
-    /// dof_body, dof_jnt, jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
+    /// Must be called after `compute_qld_csr_metadata()` and
+    /// `compute_simple_bodies()`, and once body_mass, body_inertia, dof_body,
+    /// dof_jnt, jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
     pub fn compute_invweight0(&mut self) {
         const MIN_VAL: f64 = 1e-15; // mjMINVAL
 
@@ -1192,29 +1216,15 @@ impl Model {
         let rownnz = self.qLD_rownnz.clone();
         let colind = self.qLD_colind.clone();
 
-        // --- Detect slide-only bodies (MuJoCo's body_simple == 2) ---
-        // Bodies where ALL joints are slide type get the simple formula: [1/mass, 0]
-        // instead of the general J·M⁻¹·J^T approach which averages the 3×3 diagonal
-        // and incorrectly divides the single-axis contribution by 3.
-        let body_slide_only: Vec<bool> = (0..self.nbody)
-            .map(|b| {
-                if b == 0 {
-                    return false;
-                }
-                let joints_for_body: Vec<_> = (0..self.njnt)
-                    .filter(|&jnt_id| self.jnt_body[jnt_id] == b)
-                    .collect();
-                !joints_for_body.is_empty()
-                    && joints_for_body
-                        .iter()
-                        .all(|&jnt_id| self.jnt_type[jnt_id] == MjJointType::Slide)
-            })
+        // A simple body whose joints are all slides (MuJoCo's `body_simple`
+        // 2) takes MuJoCo's short form (`engine_setconst.c:628-635`).
+        let slides_only: Vec<bool> = (0..self.nbody)
+            .map(|b| self.body_simple.get(b) == Some(&2))
             .collect();
 
         // --- body_invweight0: avg diagonal of J_com · M⁻¹ · J_com^T (6×6) ---
-        for (i, &is_slide_only) in body_slide_only.iter().enumerate().skip(1) {
-            // body_simple == 2: slider-only body → simple formula
-            if is_slide_only {
+        for (i, &slides) in slides_only.iter().enumerate().skip(1) {
+            if slides {
                 self.body_invweight0[i] = [1.0 / self.body_mass[i].max(MIN_VAL), 0.0];
                 continue;
             }
@@ -1260,6 +1270,11 @@ impl Model {
         for jnt_id in 0..self.njnt {
             let dof_adr = self.jnt_dof_adr[jnt_id];
             let jnt_type = self.jnt_type[jnt_id];
+            let body = self.jnt_body[jnt_id];
+            if slides_only[body] {
+                self.dof_invweight0[dof_adr] = 1.0 / self.body_mass[body].max(MIN_VAL);
+                continue;
+            }
 
             let dnum = match jnt_type {
                 MjJointType::Free => 6,
@@ -1450,6 +1465,32 @@ pub fn compute_dof_lengths(model: &mut Model) {
 }
 
 #[cfg(test)]
+mod derivation_data_tests {
+    use crate::island::K_AWAKE;
+    use crate::types::{ENABLE_SLEEP, Model, SleepPolicy};
+    use nalgebra::Vector3;
+
+    /// The derivations run with every tree awake, as MuJoCo derives with
+    /// sleep disabled (`user_model.cc:5108-5113`), on a model whose tree a
+    /// `Data` starts asleep (ledger L80).
+    #[test]
+    fn derivation_data_keeps_a_tree_that_starts_asleep_awake() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.enableflags |= ENABLE_SLEEP;
+        model.tree_sleep_policy[0] = SleepPolicy::Init;
+        let data = model.make_data();
+        assert!(
+            data.tree_asleep[0] >= 0,
+            "the fixture's tree starts asleep, tree_asleep {:?}",
+            data.tree_asleep
+        );
+        let derivation = model.make_data_for_derivation();
+        assert_eq!(derivation.tree_asleep, vec![K_AWAKE; model.ntree]);
+        assert_eq!(derivation.ntree_awake, model.ntree);
+    }
+}
+
+#[cfg(test)]
 mod dof_length_tests {
     use super::compute_dof_lengths;
     use crate::types::Model;
@@ -1487,6 +1528,7 @@ mod dof_length_tests {
         model.body_geom_num[0] = 0;
         model.body_geom_adr[1] = 0;
         model.body_geom_num[1] = 1;
+        model.compute_simple_bodies();
         model.compute_geom_bounding_radii();
         assert_eq!(model.geom_rbound[..1], [0.0]);
         compute_dof_lengths(&mut model);

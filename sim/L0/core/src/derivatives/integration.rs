@@ -1,5 +1,6 @@
 //! Integration-specific derivative logic.
 
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::forward::unclamped_next_activation;
 use crate::linalg::cholesky_solve_in_place;
 use crate::types::{ActuatorDynamics, Data, Integrator, Model};
@@ -31,74 +32,63 @@ pub(super) fn post_step_qvel(
 // Phase C: Analytical integration derivatives
 // ============================================================================
 
-/// Quaternion integration derivatives on SO(3).
+/// Quaternion integration derivatives on SO(3), as MuJoCo 3.5.0's
+/// `mjd_quatIntegrate` computes them (`engine_derivative.c:262-314`).
 ///
-/// Given `q_new = q_old · exp(ω·h/2)`, computes two 3×3 tangent-space Jacobians:
+/// For `q_new = q_old · exp(ω·h)` (`mju_quatIntegrate`), each tangent at its
+/// own quaternion (the body frame):
 ///
-/// - `dqnew_dqold = exp(−[ω·h]×)` — adjoint representation (rotation by −ω·h)
-/// - `dqnew_domega = h · J_r(ω·h)` — h times the right Jacobian of SO(3)
+/// - `dqnew_dqold = exp(−[ω·h]×)`;
+/// - `dqnew_domega = h · J_r(ω·h)`, `h` times the right Jacobian of SO(3):
+///   MuJoCo's `Dvel` is the Jacobian with respect to the scaled velocity
+///   `ω·h`, this one with respect to `ω`.
 ///
-/// When `θ = ‖ω‖·h < 1e-8`, both Jacobians use small-angle limits (I and h·I).
+/// Below a rotation of 1/32 rad the coefficients come from MuJoCo's
+/// sixth-order Taylor series.
 #[must_use]
-#[allow(non_snake_case)]
+// MuJoCo's names: s, x and the coefficients a, b, c, d; and its `(1 + …) / 2`,
+// which `f64::midpoint` would round otherwise.
+#[allow(clippy::many_single_char_names, clippy::manual_midpoint)]
 pub fn mjd_quat_integrate(
-    _quat: &UnitQuaternion<f64>,
+    _quat: &UnitQuaternion<f64>, // unread: MuJoCo's Jacobians do not depend on it
     omega: &Vector3<f64>,
     h: f64,
 ) -> (Matrix3<f64>, Matrix3<f64>) {
-    let theta_vec = omega * h; // ω·h = θ
-    let theta = theta_vec.norm(); // ‖ω‖·h
+    let s = [h * omega.x, h * omega.y, h * omega.z];
+    #[rustfmt::skip]
+    let eye = [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+    ];
+    #[rustfmt::skip]
+    let cross = [
+        0.0,   s[2], -s[1],
+        -s[2], 0.0,  s[0],
+        s[1],  -s[0], 0.0,
+    ];
+    let outer: [f64; 9] = std::array::from_fn(|k| s[k / 3] * s[k % 3]);
 
-    if theta < 1e-8 {
-        // Small-angle limits: J_l^{-1}(0) = I, velocity = h·I
-        return (Matrix3::identity(), Matrix3::identity() * h);
-    }
-
-    let theta2 = theta * theta;
-
-    // Skew-symmetric matrix [θ]×  where θ = ω·h
-    let skew_theta = Matrix3::new(
-        0.0,
-        -theta_vec.z,
-        theta_vec.y,
-        theta_vec.z,
-        0.0,
-        -theta_vec.x,
-        -theta_vec.y,
-        theta_vec.x,
-        0.0,
-    );
-    let skew_theta_sq = skew_theta * skew_theta;
-
-    let sin_theta = theta.sin();
-    let cos_theta = theta.cos();
-
-    // Position Jacobian: J_l^{-1}(θ) — the inverse left Jacobian of SO(3).
-    //
-    // Right-multiply integration: q_new = q_old * exp(θ)
-    // FD tangent convention: both input and output tangent measured from q_0.
-    //   η = log(q_0^{-1} · q_next) = log(exp(ξ) · exp(θ)) using BCH
-    //   ∂η/∂ξ|_{ξ=0} = J_l^{-1}(θ)
-    //
-    // J_l^{-1}(θ) = I − ½·[θ]× + α·[θ]×²
-    //   where α = 1/θ² − (1+cosθ)/(2θ·sinθ)  →  1/12 as θ → 0
-    let alpha = 1.0 / theta2 - (1.0 + cos_theta) / (2.0 * theta * sin_theta);
-    let dqnew_dqold = Matrix3::identity() - skew_theta * 0.5 + skew_theta_sq * alpha;
-
-    // Velocity Jacobian: h·I for the FD tangent convention.
-    //   η = log(q_old⁻¹ · q_old · exp(h·ω)) = log(exp(h·ω)) = h·ω  (exact)
-    //   ∂η/∂ω = h·I
-    //
-    // Note: one might expect h·J_r⁻¹(h·ω) here, but that applies when the
-    // output tangent is measured from a DIFFERENT reference (the nominal
-    // output). Here both input and output tangent are at q_old, and q_old
-    // cancels, giving h·I exactly. Verified against FD for ball joints with
-    // extreme inertia ratios (100:1) — agreement to 1.5e-4 with floor=1e-6.
-    // Apparent errors of ~1.0 with floor=1e-10 are false alarms from FD
-    // noise on near-zero entries (see test_ball_joint_hybrid_vs_fd_a).
-    let dqnew_domega = Matrix3::identity() * h;
-
-    (dqnew_dqold, dqnew_domega)
+    // a = cos(x), b = sin(x)/x, c = (1 − cos(x))/x², d = (x − sin(x))/x³
+    let xx = s[0] * s[0] + s[1] * s[1] + s[2] * s[2];
+    let x = xx.sqrt();
+    let a = x.cos();
+    let (b, c, d) = if x.abs() > 1.0 / 32.0 {
+        let b = x.sin() / x;
+        (b, (1.0 - a) / xx, (1.0 - b) / xx)
+    } else {
+        (
+            1.0 + xx / 6.0 * (xx / 20.0 * (1.0 - xx / 42.0) - 1.0),
+            (1.0 + xx / 12.0 * (xx / 30.0 * (1.0 - xx / 56.0) - 1.0)) / 2.0,
+            (1.0 + xx / 20.0 * (xx / 42.0 * (1.0 - xx / 72.0) - 1.0)) / 6.0,
+        )
+    };
+    let dquat: [f64; 9] = std::array::from_fn(|k| a * eye[k] + b * cross[k] + c * outer[k]);
+    let dvel: [f64; 9] = std::array::from_fn(|k| b * eye[k] + c * cross[k] + d * outer[k]);
+    (
+        Matrix3::from_row_slice(&dquat),
+        Matrix3::from_row_slice(&dvel.map(|v| h * v)),
+    )
 }
 
 /// Integration Jacobian blocks for one Euler or ImplicitSpringDamper step.
@@ -150,9 +140,7 @@ pub(super) fn compute_integration_derivatives(
             }
             crate::types::MjJointType::Ball => {
                 // θ = ω'·h uses the velocity the step integrates qpos with,
-                // qvel_{t+1} (semi-implicit), not the pre-step qvel: J_l⁻¹(θ) is
-                // evaluated at that angle (only quaternion joints have a
-                // θ-dependent block).
+                // qvel_{t+1} (semi-implicit), not the pre-step qvel.
                 let v = qvel_next;
                 let omega = Vector3::new(v[dof_adr], v[dof_adr + 1], v[dof_adr + 2]);
                 let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
@@ -204,12 +192,12 @@ pub(super) fn compute_integration_derivatives(
             let j = act_adr + k;
             match model.actuator_dyntype[i] {
                 ActuatorDynamics::Filter => {
-                    let tau = model.actuator_dynprm[i][0].max(1e-10);
+                    let tau = model.actuator_dynprm[i][0].max(MJ_MINVAL);
                     dact_dact[(j, j)] = 1.0 - h / tau;
                     dact_dactdot[(j, j)] = h;
                 }
                 ActuatorDynamics::FilterExact => {
-                    let tau = model.actuator_dynprm[i][0].max(1e-10);
+                    let tau = model.actuator_dynprm[i][0].max(MJ_MINVAL);
                     dact_dact[(j, j)] = (-h / tau).exp();
                     dact_dactdot[(j, j)] = tau * (1.0 - (-h / tau).exp());
                 }

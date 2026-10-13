@@ -129,8 +129,10 @@ pub struct Data {
     /// rotate an earlier joint's anchor (the `joint_motion_subspace` bug fix).
     pub xanchor: Vec<Vector3<f64>>,
     /// Joint axes in world frame (length `njnt`), in the same partial frame as
-    /// [`Self::xanchor`]. Meaningful for hinge/slide; zero for ball/free (their
-    /// motion subspace is the body's rotation block, read from [`Self::xquat`]).
+    /// [`Self::xanchor`]: each joint's `jnt_axis` turned into it, except a free
+    /// joint's, which is its `jnt_axis` unturned (MuJoCo `mj_kinematics1`). A
+    /// ball's and a free joint's motion subspace reads the body's rotation,
+    /// [`Self::xmat`], not this.
     pub xaxis: Vec<Vector3<f64>>,
 
     // Geom poses (for collision detection)
@@ -174,7 +176,8 @@ pub struct Data {
 
     // ==================== RNE Intermediate Quantities ====================
     /// Body bias accelerations for RNE (Coriolis/centrifugal).
-    /// `a_bias[i] = X[i] @ a_bias[parent] + v[i] ×_m S[i] @ qdot[i]`
+    /// `a_bias[i] = X[i] @ a_bias[parent] + Σ_j v_j ×_m S_j @ qdot_j` over body
+    /// `i`'s joints `j`, `v_j` the body's velocity before joint `j`.
     pub cacc_bias: Vec<SpatialVector>,
     /// Body forces for RNE backward pass.
     /// `f[i] = I[i] @ a_bias[i] + v[i] ×* (I[i] @ v[i])`
@@ -260,6 +263,17 @@ pub struct Data {
     /// Whether sparse factorization is valid and should be used.
     /// Set to true after `mj_factor_sparse()` is called.
     pub qLD_valid: bool,
+    /// `M − h·∂f/∂v` on the mass matrix's pattern, factored as `L'·D·L` by
+    /// the implicitfast integrator (MuJoCo `qH`; layout `Model::M_*`, length
+    /// `model.M_colind.len()`).
+    pub qH: Vec<f64>,
+    /// The inverse of `qH`'s diagonal factor (length `nv`; MuJoCo
+    /// `qHDiagInv`).
+    pub qHDiagInv: Vec<f64>,
+    /// `M − h·∂f/∂v` on the pattern of the pairs of dofs on one branch,
+    /// factored as `(U + I)·L` by the implicit integrator (MuJoCo `qLU`;
+    /// layout `Model::D_*`, length `model.D_colind.len()`).
+    pub qLU: Vec<f64>,
 
     // ==================== Body and Composite Inertia (for Featherstone CRBA/RNE) ====================
     /// Body spatial inertia in world frame (before composite accumulation).
@@ -399,7 +413,8 @@ pub struct Data {
     /// Per-row friction coefficients. For contacts: [mu1, mu2, ...] from geom.
     /// For non-contacts: [0; 5].
     pub efc_mu: Vec<[f64; 5]>,
-    /// Per-row condim of parent contact (1 for non-contact rows).
+    /// Per-row condim of parent contact (for a pyramidal contact, its facet
+    /// count; 1 for non-contact rows).
     pub efc_dim: Vec<usize>,
     /// Per-row source object index (joint ID for LimitJoint, tendon ID for
     /// LimitTendon, equality ID for Equality, contact index for Contact*,
@@ -553,7 +568,8 @@ pub struct Data {
     pub time: f64,
 
     // ==================== Scratch Buffers (for allocation-free stepping) ====================
-    /// Scratch matrix for implicit integration: M + h*D + h²*K.
+    /// Scratch matrix for the implicit spring-damper integrator:
+    /// `M + h·D + h²·K`, then its Cholesky factor.
     /// Pre-allocated to avoid O(n²) allocation per step.
     pub scratch_m_impl: DMatrix<f64>,
     /// Scratch vector for force accumulation (length `nv`).
@@ -568,10 +584,6 @@ pub struct Data {
     /// `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)` (length `nv`). MuJoCo
     /// keeps it in a stack local of `mj_implicitSkip` (`engine_forward.c:1134`).
     pub(crate) qacc_implicit: DVector<f64>,
-    /// Pivot permutation for LU factorization in `Integrator::Implicit` (length `nv`).
-    /// Stores row swap indices from partial pivoting. Persists after forward pass
-    /// for reuse by derivative column solves in `mjd_transition_hybrid`.
-    pub scratch_lu_piv: Vec<usize>,
 
     // ==================== RK4 Scratch Buffers ====================
     // State and rate buffers for 4-stage Runge-Kutta integration.
@@ -605,6 +617,11 @@ pub struct Data {
 
     /// RK4 stage activation derivatives: `act_dot` at each stage (4 buffers, each length na).
     pub rk4_act_dot: [DVector<f64>; 4],
+
+    /// RK4: the dofs of the trees asleep at the step's start (length nv),
+    /// held at the start state through the stages and the advance (registry
+    /// `D-RK4-SLEEP`).
+    pub(crate) rk4_dof_asleep: Vec<bool>,
 
     // ==================== Derivative Scratch Buffers ====================
     /// Analytical derivative of smooth forces w.r.t. velocity: ∂(qfrc_smooth)/∂qvel.
@@ -673,9 +690,10 @@ pub struct Data {
     /// accumulated into parent.
     pub cfrc_int: Vec<SpatialVector>,
     /// Per-body external forces in world frame (length `nbody`), laid out
-    /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`).
-    /// `xfrc_applied` + contact/constraint solver forces, converted to spatial
-    /// force at body CoM. Populated by `mj_body_accumulators()`.
+    /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`):
+    /// `xfrc_applied` and the contact (but not a flex's), connect and weld forces, referenced at
+    /// the body's origin `xpos` like `cacc` and `cfrc_int`; the world body's is
+    /// zero. Populated by `mj_body_accumulators()`.
     pub cfrc_ext: Vec<SpatialVector>,
     /// Lazy flag: `mj_body_accumulators()` has been called this step.
     /// Cleared after constraint solve (before sensors), set by
@@ -775,6 +793,9 @@ impl Clone for Data {
             qLD_data: self.qLD_data.clone(),
             qLD_diag_inv: self.qLD_diag_inv.clone(),
             qLD_valid: self.qLD_valid,
+            qH: self.qH.clone(),
+            qHDiagInv: self.qHDiagInv.clone(),
+            qLU: self.qLU.clone(),
             // Body/composite inertia
             cinert: self.cinert.clone(),
             crb_inertia: self.crb_inertia.clone(),
@@ -884,7 +905,6 @@ impl Clone for Data {
             scratch_rhs: self.scratch_rhs.clone(),
             scratch_v_new: self.scratch_v_new.clone(),
             qacc_implicit: self.qacc_implicit.clone(),
-            scratch_lu_piv: self.scratch_lu_piv.clone(),
             // RK4 scratch
             rk4_qpos_saved: self.rk4_qpos_saved.clone(),
             rk4_qpos_stage: self.rk4_qpos_stage.clone(),
@@ -894,6 +914,7 @@ impl Clone for Data {
             rk4_dX_acc: self.rk4_dX_acc.clone(),
             rk4_act_saved: self.rk4_act_saved.clone(),
             rk4_act_dot: self.rk4_act_dot.clone(),
+            rk4_dof_asleep: self.rk4_dof_asleep.clone(),
             // Derivative scratch buffers
             qDeriv: self.qDeriv.clone(),
             deriv_Dcvel: self.deriv_Dcvel.clone(),

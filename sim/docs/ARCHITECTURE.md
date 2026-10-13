@@ -280,13 +280,14 @@ forward():
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
   Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
   Solve        mj_fwd_acceleration    qacc = M^-1 * f; the implicit integrators also solve:
-                                      ImplicitFast: (M − h·D_sym) · qacc_implicit = f, Cholesky
-                                        (D = passive + actuator vel)
-                                      Implicit: (M − h·D) · qacc_implicit = f, LU with partial
-                                        pivot (D includes Coriolis)
+                                      ImplicitFast: (M − h·D) · qacc_implicit = f on M's
+                                        pattern (D = passive + actuator vel)
+                                      Implicit: (M − h·D) · qacc_implicit = f, sparse LU
+                                        (D includes Coriolis)
                                       ImplicitSpringDamper: qacc = (v_new − qvel) / h
 integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper; RK4 under step2()]:
-  History samples, then activation integration (act += dt * act_dot, muscle clamp to [0,1])
+  History samples, then activation integration (clamped to actrange where
+  actlimited; skipped with actuation disabled)
   The sleep step (mj_sleep): a tree put to sleep has its velocity and acceleration
     zeroed, and the forward pass runs again from the velocity stage
   Semi-implicit Euler (velocity first, then position with new velocity)
@@ -325,10 +326,8 @@ mjd_transition():
 - `ImplicitSpringDamper` — unconditionally stable for stiff springs/dampers; solves
   `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)` where D/K include
   both joint diagonal and tendon non-diagonal `J^T·J` coupling (DT-35)
-- `Implicit` — full implicit with asymmetric D (includes Coriolis velocity derivatives)
-  and LU factorization with partial pivoting; maximum accuracy
-- `ImplicitFast` — fast implicit with symmetric D (skips Coriolis terms) and Cholesky
-  factorization; faster than `Implicit` with nearly identical results for most models
+- `Implicit` — full implicit with D including Coriolis velocity derivatives, sparse LU
+- `ImplicitFast` — implicit with D skipping Coriolis terms, on the mass matrix's pattern
 
 **Constraint enforcement (unified):**
 All constraint types (equality, friction loss, limits, contacts, flex edge) are
@@ -539,8 +538,9 @@ MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
 `actuator_gainprm`, `actuator_biasprm`, and `actuator_dynprm` per actuator.
 `<general>` actuators support explicit `gaintype`, `biastype`, `dyntype`,
 `gainprm`, `biasprm`, `dynprm` attributes with default class inheritance.
-Muscle parameters are parsed and transferred; `compute_muscle_params()`
-resolves `lengthrange`, `acc0`, and auto-computes `F0` at model build time.
+Muscle parameters are parsed and transferred; `compute_actuator_params()`
+resolves `lengthrange` and `acc0`; a negative `F0` stays in the model and is
+resolved at each call (`muscle_f0`).
 `<flex>` and `<flexcomp>` elements are parsed via `parse_flex()` /
 `parse_flexcomp()` and processed by `process_flex()` in `builder/flex.rs`,
 which computes edge/hinge topology, bending stiffness from material properties,

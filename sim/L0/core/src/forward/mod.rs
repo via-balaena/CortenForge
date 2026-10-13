@@ -41,15 +41,18 @@ mod velocity;
 pub(crate) use acceleration::mj_body_accumulators;
 #[allow(unused_imports)]
 pub(crate) use acceleration::mj_fwd_acceleration;
+pub(crate) use acceleration::solve_implicit;
 // Public re-exports: stable mathematical functions for muscle curves and dynamics.
 // Used by examples and external consumers for direct curve evaluation.
 pub use actuation::{hill_active_fl, hill_force_velocity, hill_passive_fl};
+pub(crate) use hill::muscle_length;
 pub use millard::{
     MillardCurves, MillardMuscleParams, SmoothSegmentedFunction, default_millard_curves,
     millard_active_gain, millard_isometric_path_force, millard_passive_bias, millard_path_force,
 };
 pub use muscle::{
-    muscle_activation_dynamics, muscle_gain_length, muscle_gain_velocity, muscle_passive_force,
+    muscle_activation_dynamics, muscle_bias, muscle_f0, muscle_gain, muscle_gain_length,
+    muscle_gain_velocity, muscle_passive_force,
 };
 
 #[allow(unused_imports)]
@@ -191,7 +194,7 @@ impl Data {
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
     /// was resized, or if forward acceleration computation fails (e.g.,
-    /// Cholesky failure in implicit integrator).
+    /// `CholeskyFailed` under the implicit spring-damper integrator).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
 
@@ -221,8 +224,10 @@ impl Data {
     /// # Errors
     ///
     /// Returns `Err(StepError)` if:
-    /// - Cholesky decomposition fails (implicit integrator only)
-    /// - LU decomposition fails (implicit integrator only)
+    /// - the implicit spring-damper integrator's matrix is not positive
+    ///   definite (`CholeskyFailed`)
+    /// - under the implicit integrator, a diagonal of the LU factor is below
+    ///   mjMINVAL in magnitude (`LuSingular`)
     /// - The timestep is not positive and finite (`InvalidTimestep`)
     /// - `self` was made by a model of other dimensions, or an input array
     ///   was resized (`DataShapeMismatch`)
@@ -284,9 +289,11 @@ impl Data {
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
     /// made by a model of other dimensions or an input array was resized,
     /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active, and `Err(StepError::CholeskyFailed)` if
-    /// using implicit integrator and the modified mass matrix decomposition
-    /// fails.
+    /// tendon equality is active, `Err(StepError::CholeskyFailed)` under the
+    /// implicit spring-damper integrator when its modified mass matrix is not
+    /// positive definite, and `Err(StepError::LuSingular)` under the implicit
+    /// integrator when a diagonal of its factor is below mjMINVAL in
+    /// magnitude.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;

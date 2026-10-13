@@ -5,6 +5,9 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
+use crate::constraint::solver::decode_pyramid_into;
+use crate::dynamics::factor::{mj_factor_i, mj_solve_ld};
+use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
@@ -14,13 +17,12 @@ use crate::integrate::implicit::{
 };
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
-    cholesky_in_place, cholesky_solve_in_place, lu_factor_in_place, lu_solve_factored,
-    mj_solve_sparse,
+    cholesky_in_place, cholesky_solve_in_place, lu_factor_sparse, lu_solve_sparse, mj_solve_sparse,
 };
 use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, Integrator, Model,
-    StepError,
+    ConstraintType, DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, EqualityType, Integrator,
+    MjJointType, Model, StepError,
 };
 use nalgebra::DVector;
 
@@ -28,8 +30,10 @@ use nalgebra::DVector;
 ///
 /// # Errors
 ///
-/// Returns `Err(StepError::CholeskyFailed)` if using implicit integration
-/// and the modified mass matrix (M + h*D + h²*K) is not positive definite.
+/// `Err(StepError::CholeskyFailed)` under the implicit spring-damper
+/// integrator when its modified mass matrix (M + h*D + h²*K) is not positive
+/// definite, and `Err(StepError::LuSingular)` under the implicit integrator
+/// when a diagonal of its factor is below mjMINVAL in magnitude.
 pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> {
     if model.nv == 0 {
         return Ok(());
@@ -45,7 +49,8 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
                 mj_fwd_acceleration_explicit(model, data);
             }
             if matches!(model.integrator, Integrator::ImplicitFast) {
-                mj_fwd_acceleration_implicitfast(model, data)
+                mj_fwd_acceleration_implicitfast(model, data);
+                Ok(())
             } else {
                 mj_fwd_acceleration_implicit_full(model, data)
             }
@@ -276,113 +281,178 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
     // Ball and Free joints have no springs (k = 0), so default no-ops are correct.
 }
 
-/// Implicit-fast forward acceleration: symmetric D, Cholesky factorization.
-///
-/// Solves `(M − h·D) · qacc_implicit = qfrc_smooth + qfrc_constraint`
-/// where D = ∂(qfrc_smooth)/∂(qvel) is assembled by `mjd_passive_vel` and
-/// `mjd_actuator_vel` (Coriolis terms skipped).
-/// D is symmetrized: `D ← (D + D^T) / 2`.
-///
-/// After return, `data.scratch_m_impl` holds the Cholesky factors (L where
-/// M−hD = L·L^T), available for derivative column solves in
-/// `mjd_transition_hybrid`.
-///
-/// # Errors
-///
-/// Returns `Err(StepError::CholeskyFailed)` if `M − h·D` is not positive
-/// definite (can happen with positive velocity feedback actuators, see KA#7).
-fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<(), StepError> {
+/// Implicit-fast forward acceleration: solves
+/// `(M − h·D) · qacc_implicit = qfrc_smooth + qfrc_constraint`, D being
+/// `∂(qfrc_smooth)/∂(qvel)` without the RNE's terms (`mjd_passive_vel`,
+/// `mjd_actuator_vel`), as MuJoCo 3.5.0's `mj_implicitSkip` does
+/// (`engine_forward.c:1180-1190`, `:1292-1294`, `:1302-1309`). `M − h·D` is
+/// taken on the mass matrix's pattern (`Model::M_*`: its lower triangle, a
+/// simple dof's row its diagonal only), which leaves out what D couples
+/// beyond it, a tendon's damping across two branches among them (MuJoCo
+/// documents it, `doc/computation/index.rst:544-546`). It goes into
+/// `Data::qH`, factored as `L'·D·L` over the awake dofs by MuJoCo's
+/// `mj_factorI`, which checks no pivot: an `M − h·D` that is not positive
+/// definite steps as MuJoCo's does. A sleeping dof's `qacc_implicit` is 0.
+fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) {
     use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel};
 
-    let h = model.timestep;
-
-    // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel)
-    //   Components: `mjd_passive_vel`'s and `mjd_actuator_vel`'s terms.
-    //   Coriolis terms SKIPPED for implicitfast.
     data.qDeriv.fill(0.0);
     mjd_passive_vel(model, data);
     mjd_actuator_vel(model, data);
 
-    // Step 2: Symmetrize D ← (D + D^T) / 2
+    // qH = M + qDeriv·(−h) on M's pattern: MuJoCo gathers qDeriv's lower
+    // entries there (`mapD2M`), then adds M (`mju_addScl`).
+    let neg_h = -model.timestep;
     for i in 0..model.nv {
-        for j in (i + 1)..model.nv {
-            let avg = 0.5 * (data.qDeriv[(i, j)] + data.qDeriv[(j, i)]);
-            data.qDeriv[(i, j)] = avg;
-            data.qDeriv[(j, i)] = avg;
+        for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
+            let j = model.M_colind[adr];
+            data.qH[adr] = data.qM[(i, j)] + data.qDeriv[(i, j)] * neg_h;
         }
     }
 
-    // Step 3: Form M_hat = M − h·D into scratch_m_impl
-    data.scratch_m_impl.copy_from(&data.qM);
-    for i in 0..model.nv {
-        for j in 0..model.nv {
-            data.scratch_m_impl[(i, j)] -= h * data.qDeriv[(i, j)];
-        }
-    }
-
-    // Step 4: RHS = qfrc_smooth + qfrc_constraint
-    // (qfrc_smooth includes DT-21 xfrc_applied projection)
-    data.scratch_rhs.copy_from(&data.qfrc_smooth);
-    data.scratch_rhs += &data.qfrc_constraint;
-
-    // Step 5: Solve (M − h·D) · qacc_implicit = rhs via dense Cholesky
-    cholesky_in_place(&mut data.scratch_m_impl)?;
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
+    mj_factor_i(
+        &mut data.qH,
+        &mut data.qHDiagInv,
+        &model.M_rownnz,
+        &model.M_rowadr,
+        &model.M_colind,
+        index,
+    );
+    implicit_rhs(model, data);
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
     data.qacc_implicit.copy_from(&data.scratch_rhs);
-    cholesky_solve_in_place(&data.scratch_m_impl, &mut data.qacc_implicit);
-
-    Ok(())
+    mj_solve_ld(
+        data.qacc_implicit.as_mut_slice(),
+        &data.qH,
+        &data.qHDiagInv,
+        &model.M_rownnz,
+        &model.M_rowadr,
+        &model.M_colind,
+        index,
+    );
 }
 
-/// Full implicit forward acceleration: asymmetric D, LU factorization.
-///
-/// Same as `mj_fwd_acceleration_implicitfast` but includes Coriolis velocity
-/// derivatives (`mjd_rne_vel`), does NOT symmetrize D, and uses LU
-/// factorization instead of Cholesky.
-///
-/// After return, `data.scratch_m_impl` holds the LU factors and
-/// `data.scratch_lu_piv` holds the pivot permutation, available for
-/// derivative column solves in `mjd_transition_hybrid`.
+/// Full implicit forward acceleration: as
+/// [`mj_fwd_acceleration_implicitfast`] with the RNE's velocity derivative
+/// (`mjd_rne_vel`) in D, on the pattern of every pair of dofs on one branch
+/// (`Model::D_*`, both triangles; MuJoCo's `mj_implicitSkip`,
+/// `engine_forward.c:1168-1178`, `:1288-1291`, `:1297-1301`): `M − h·D` goes
+/// into `Data::qLU`, factored as `(U + I)·L` over the awake dofs by MuJoCo's
+/// `mju_factorLUSparse`, without pivoting. A sleeping dof's
+/// `qacc_implicit` is 0.
 ///
 /// # Errors
 ///
-/// Returns `Err(StepError::LuSingular)` if any pivot magnitude is below
-/// `1e-30` during LU factorization.
+/// [`StepError::LuSingular`] when a diagonal of the factor is smaller than
+/// mjMINVAL in magnitude, where MuJoCo stops with an error.
 fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(), StepError> {
     use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel, mjd_rne_vel};
 
-    let h = model.timestep;
-
-    // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel) — ALL components
     data.qDeriv.fill(0.0);
     mjd_passive_vel(model, data);
     mjd_actuator_vel(model, data);
     mjd_rne_vel(model, data);
 
-    // Step 2: No symmetrization — D is asymmetric (Coriolis terms break symmetry)
-
-    // Step 3: Form M_hat = M − h·D into scratch_m_impl
-    data.scratch_m_impl.copy_from(&data.qM);
+    // qLU = M + qDeriv·(−h) on D's pattern: MuJoCo gathers M there, 0 where
+    // M's pattern holds no entry (`mapM2D`), then adds qDeriv
+    // (`mju_addToScl`).
+    let neg_h = -model.timestep;
     for i in 0..model.nv {
-        for j in 0..model.nv {
-            data.scratch_m_impl[(i, j)] -= h * data.qDeriv[(i, j)];
+        for adr in model.D_rowadr[i]..model.D_rowadr[i] + model.D_rownnz[i] {
+            let j = model.D_colind[adr];
+            let in_m = i == j || model.dof_simplenum[i.max(j)] == 0;
+            let m = if in_m { data.qM[(i, j)] } else { 0.0 };
+            data.qLU[adr] = m + data.qDeriv[(i, j)] * neg_h;
         }
     }
 
-    // Step 4: RHS = qfrc_smooth + qfrc_constraint
-    // (qfrc_smooth includes DT-21 xfrc_applied projection)
-    data.scratch_rhs.copy_from(&data.qfrc_smooth);
-    data.scratch_rhs += &data.qfrc_constraint;
-
-    // Step 5: Factor (M − h·D) = P·L·U, then solve for qacc_implicit
-    lu_factor_in_place(&mut data.scratch_m_impl, &mut data.scratch_lu_piv)?;
-    data.qacc_implicit.copy_from(&data.scratch_rhs);
-    lu_solve_factored(
-        &data.scratch_m_impl,
-        &data.scratch_lu_piv,
-        &mut data.qacc_implicit,
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
+    lu_factor_sparse(
+        &mut data.qLU,
+        &model.D_rownnz,
+        &model.D_rowadr,
+        &model.D_colind,
+        index,
+    )?;
+    implicit_rhs(model, data);
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
+    data.qacc_implicit.fill(0.0);
+    lu_solve_sparse(
+        data.qacc_implicit.as_mut_slice(),
+        &data.qLU,
+        data.scratch_rhs.as_slice(),
+        &model.D_rownnz,
+        &model.D_rowadr,
+        &model.D_diag,
+        &model.D_colind,
+        index,
     );
-
     Ok(())
+}
+
+/// Whether the implicit integrators work over the awake dofs only, as
+/// MuJoCo's do: sleep enabled and a tree asleep.
+fn awake_dofs(model: &Model, data: &Data) -> bool {
+    model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv
+}
+
+/// `scratch_rhs = qfrc_smooth + qfrc_constraint` at the awake dofs, 0 at the
+/// others (MuJoCo's `qfrc` in `mj_implicitSkip`).
+fn implicit_rhs(model: &Model, data: &mut Data) {
+    if awake_dofs(model, data) {
+        data.scratch_rhs.fill(0.0);
+        for &i in &data.dof_awake_ind[..data.nv_awake] {
+            data.scratch_rhs[i] = data.qfrc_smooth[i] + data.qfrc_constraint[i];
+        }
+    } else {
+        data.scratch_rhs.copy_from(&data.qfrc_smooth);
+        data.scratch_rhs += &data.qfrc_constraint;
+    }
+}
+
+/// Solves `(M − h·D)·x = b` in place, `b` given in `x`, with the factor the
+/// implicit or implicitfast acceleration stage left in `data` (`qH` or
+/// `qLU`), over every dof: for the analytic derivatives, which take their
+/// columns with every tree awake.
+pub fn solve_implicit(model: &Model, data: &Data, x: &mut DVector<f64>) {
+    if model.integrator == Integrator::Implicit {
+        let b = x.clone();
+        lu_solve_sparse(
+            x.as_mut_slice(),
+            &data.qLU,
+            b.as_slice(),
+            &model.D_rownnz,
+            &model.D_rowadr,
+            &model.D_diag,
+            &model.D_colind,
+            None,
+        );
+    } else {
+        mj_solve_ld(
+            x.as_mut_slice(),
+            &data.qH,
+            &data.qHDiagInv,
+            &model.M_rownnz,
+            &model.M_rowadr,
+            &model.M_colind,
+            None,
+        );
+    }
+}
+
+/// One contact's force and torque in its frame, from its constraint rows:
+/// MuJoCo's `mj_contactForce` (`engine_core_util.c:891-908`). A pyramidal
+/// contact's edges decode as `mju_decodePyramid`; an elliptic or
+/// frictionless contact's rows are its components.
+fn contact_force(rows: &[f64], mu: &[f64; 5], dim: usize, pyramidal: bool) -> [f64; 6] {
+    let mut f = [0.0; 6];
+    if pyramidal {
+        decode_pyramid_into(rows, mu, dim, &mut f);
+    } else {
+        f[..dim].copy_from_slice(&rows[..dim]);
+    }
+    f
 }
 
 /// Compute per-body accelerations and forces after forward dynamics (§51).
@@ -405,7 +475,7 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
 ///
 /// # MuJoCo Equivalence
 ///
-/// Matches `mj_rnePostConstraint()` in `engine_forward.c`.
+/// MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2492-2683`).
 ///
 /// # Convention Difference
 ///
@@ -417,137 +487,132 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
 #[allow(clippy::needless_range_loop)] // jnt_id indexes both joint_subspaces and model arrays
 pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // ===== Step 1: cfrc_ext = xfrc_applied + contact/constraint forces =====
-    for b in 0..model.nbody {
+    // As MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2503-2517`):
+    // its loop over applied wrenches starts at body 1, so one applied to the
+    // world body reaches nothing; an applied force acts at the centre of mass,
+    // and cfrc_ext holds it at the body's origin, its torque moved there.
+    data.cfrc_ext[0] = SpatialVector::zeros();
+    for b in 1..model.nbody {
         let (t, f) = (data.xfrc_applied[b].torque, data.xfrc_applied[b].force);
+        let t = t + (data.xipos[b] - data.xpos[b]).cross(&f);
         data.cfrc_ext[b] = SpatialVector::new(t.x, t.y, t.z, f.x, f.y, f.z);
     }
 
-    // §51 Fix B: Add contact forces to cfrc_ext.
-    // Per-contact accumulation: gather all efc rows belonging to each contact,
-    // reconstruct the 3D world-frame force, and distribute to both bodies.
-    //
-    // Iterate contacts and find their efc rows by scanning efc_type/efc_id.
-    // We build a per-contact force by summing: for each efc row with this
-    // contact's id, the row contributes f * direction to the world-frame force.
-    // Direction is reconstructed from the contact frame:
-    //   - Frictionless: direction = normal
-    //   - Pyramidal pairs: (n ± μ·t_d), net = (f⁺+f⁻)·n + (f⁺-f⁻)·μ·t_d
-    //   - Elliptic: row 0 = normal, rows 1+ = tangent directions
+    // Contact forces (`engine_core_smooth.c:2519-2560`): each contact's force
+    // and torque in its own frame, as `mj_contactForce` decodes them
+    // (`engine_core_util.c:891-908`), turned to the world and moved from the
+    // contact point to the body's origin, `−` on body1 and `+` on body2. A
+    // contact that involves a flex adds nothing: MuJoCo's loop skips it.
     {
         let nefc = data.efc_type.len();
-        // Build per-contact force from efc rows.
-        // For efficiency, scan efc rows once and accumulate per contact.
-        let mut contact_force: Vec<nalgebra::Vector3<f64>> =
-            vec![nalgebra::Vector3::zeros(); data.ncon];
-
         let mut row = 0;
         while row < nefc {
-            match data.efc_type[row] {
-                ConstraintType::ContactFrictionless => {
-                    let ci = data.efc_id[row];
-                    if ci < data.ncon {
-                        contact_force[ci] += data.efc_force[row] * data.contacts[ci].normal;
-                    }
-                    row += 1;
-                }
-                ConstraintType::ContactPyramidal => {
-                    let ci = data.efc_id[row];
-                    if ci < data.ncon {
-                        let contact = &data.contacts[ci];
-                        let n = contact.normal;
-                        // Count rows for this contact (all consecutive pyramidal rows with same id)
-                        let start = row;
-                        while row < nefc
-                            && data.efc_type[row] == ConstraintType::ContactPyramidal
-                            && data.efc_id[row] == ci
-                        {
-                            row += 1;
-                        }
-                        let nrows = row - start;
-                        // Pyramidal rows come in pairs per tangent direction:
-                        // pair 0: n + μ₁·t1, n - μ₁·t1
-                        // pair 1: n + μ₂·t2, n - μ₂·t2
-                        let tangents = [contact.frame[0], contact.frame[1]];
-                        let mut pair_idx = 0;
-                        let mut r = start;
-                        while r + 1 < start + nrows && pair_idx < 2 {
-                            let f_pos = data.efc_force[r];
-                            let f_neg = data.efc_force[r + 1];
-                            let mu_d = contact.mu[pair_idx];
-                            // f_pos * (n + μ·t) + f_neg * (n - μ·t)
-                            // = (f_pos + f_neg) * n + (f_pos - f_neg) * μ * t
-                            contact_force[ci] += (f_pos + f_neg) * n;
-                            contact_force[ci] += (f_pos - f_neg) * mu_d * tangents[pair_idx];
-                            r += 2;
-                            pair_idx += 1;
-                        }
-                    } else {
-                        row += 1;
-                    }
-                }
-                ConstraintType::ContactElliptic => {
-                    let ci = data.efc_id[row];
-                    if ci < data.ncon {
-                        let contact = &data.contacts[ci];
-                        // Elliptic: row 0 = normal, rows 1+ = tangent
-                        contact_force[ci] += data.efc_force[row] * contact.normal;
-                        row += 1;
-                        // Tangent rows
-                        let tangents = [contact.frame[0], contact.frame[1]];
-                        let mut t_idx = 0;
-                        while row < nefc
-                            && data.efc_type[row] == ConstraintType::ContactElliptic
-                            && data.efc_id[row] == ci
-                            && t_idx < 2
-                        {
-                            contact_force[ci] += data.efc_force[row] * tangents[t_idx];
-                            row += 1;
-                            t_idx += 1;
-                        }
-                        // Skip any remaining rows (torsional/rolling)
-                        while row < nefc
-                            && data.efc_type[row] == ConstraintType::ContactElliptic
-                            && data.efc_id[row] == ci
-                        {
-                            row += 1;
-                        }
-                    } else {
-                        row += 1;
-                    }
-                }
+            let pyramidal = match data.efc_type[row] {
+                ConstraintType::ContactPyramidal => true,
+                ConstraintType::ContactFrictionless | ConstraintType::ContactElliptic => false,
                 _ => {
                     row += 1;
+                    continue;
+                }
+            };
+            let nrows = data.efc_dim[row];
+            let (ci, adr) = (data.efc_id[row], row);
+            row += nrows;
+            let contact = &data.contacts[ci];
+            if contact.flex_vertex.is_some() || contact.flex_vertex2.is_some() {
+                continue;
+            }
+            let lfrc = contact_force(
+                &data.efc_force.as_slice()[adr..adr + nrows],
+                &contact.mu,
+                contact.dim,
+                pyramidal,
+            );
+            // The contact frame's rows are the normal and the two tangents;
+            // `mju_mulMatTVec3` turns each half to the world.
+            let frame = [contact.normal, contact.frame[0], contact.frame[1]];
+            let to_world = |v: &[f64]| {
+                nalgebra::Vector3::from_fn(|k, _| {
+                    frame[0][k] * v[0] + frame[1][k] * v[1] + frame[2][k] * v[2]
+                })
+            };
+            let torque = to_world(&lfrc[3..6]);
+            let force = to_world(&lfrc[0..3]);
+            let (body1, body2) = contact.bodies(model);
+            for (body, add) in [(body1, false), (body2, true)] {
+                if body == 0 {
+                    continue;
+                }
+                // `mju_transformSpatial` of a force: the torque less the lever
+                // from the contact point to the new point, crossed with the force.
+                let t = torque - (data.xpos[body] - contact.pos).cross(&force);
+                for k in 0..3 {
+                    if add {
+                        data.cfrc_ext[body][k] += t[k];
+                        data.cfrc_ext[body][3 + k] += force[k];
+                    } else {
+                        data.cfrc_ext[body][k] -= t[k];
+                        data.cfrc_ext[body][3 + k] -= force[k];
+                    }
                 }
             }
         }
+    }
 
-        // Distribute per-contact forces to bodies as 6D spatial wrenches.
-        for ci in 0..data.ncon {
-            let f = contact_force[ci];
-            if f.norm_squared() == 0.0 {
+    // Connect and weld forces (`engine_core_smooth.c:2562-2622`): the rows'
+    // force, and a weld's torque, act at each body's anchor, `+` on body1 and
+    // `−` on body2. MuJoCo's anchors: a connect's `eq_data[0..3]` on body1 and
+    // `[3..6]` on body2, a weld's the other way round, as the rows' Jacobians.
+    {
+        let nefc = data.efc_type.len();
+        let mut i = 0;
+        while i < nefc {
+            if data.efc_type[i] != ConstraintType::Equality {
+                i += 1;
                 continue;
             }
-            let contact = &data.contacts[ci];
-            let (body1, body2) = contact.bodies(model);
-            let cp = contact.pos;
-
-            // Force on body2 = +f, force on body1 = -f (Newton's third law).
-            // Contact normal points from geom1 toward geom2, and positive
-            // constraint force pushes bodies apart → force on body2 is along +normal.
-            for (body_id, sign) in [(body2, 1.0_f64), (body1, -1.0_f64)] {
-                if body_id == 0 {
+            let eq_id = data.efc_id[i];
+            let weld = match model.eq_type[eq_id] {
+                EqualityType::Connect => false,
+                EqualityType::Weld => true,
+                EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => {
+                    i += 1;
                     continue;
                 }
-                let bf = sign * f;
-                let r = cp - data.xipos[body_id];
-                let torque = r.cross(&bf);
-                data.cfrc_ext[body_id][0] += torque.x;
-                data.cfrc_ext[body_id][1] += torque.y;
-                data.cfrc_ext[body_id][2] += torque.z;
-                data.cfrc_ext[body_id][3] += bf.x;
-                data.cfrc_ext[body_id][4] += bf.y;
-                data.cfrc_ext[body_id][5] += bf.z;
+            };
+            let f = nalgebra::Vector3::new(
+                data.efc_force[i],
+                data.efc_force[i + 1],
+                data.efc_force[i + 2],
+            );
+            let t = if weld {
+                nalgebra::Vector3::new(
+                    data.efc_force[i + 3],
+                    data.efc_force[i + 4],
+                    data.efc_force[i + 5],
+                )
+            } else {
+                nalgebra::Vector3::zeros()
+            };
+            let ed = &model.eq_data[eq_id];
+            let lo = nalgebra::Vector3::new(ed[0], ed[1], ed[2]);
+            let hi = nalgebra::Vector3::new(ed[3], ed[4], ed[5]);
+            let (anchor1, anchor2) = if weld { (hi, lo) } else { (lo, hi) };
+            for (body, anchor, sign) in [
+                (model.eq_obj1id[eq_id], anchor1, 1.0_f64),
+                (model.eq_obj2id[eq_id], anchor2, -1.0_f64),
+            ] {
+                if body == 0 {
+                    continue;
+                }
+                let lever = data.xquat[body] * anchor;
+                let torque = t + lever.cross(&f);
+                for k in 0..3 {
+                    data.cfrc_ext[body][k] += sign * torque[k];
+                    data.cfrc_ext[body][3 + k] += sign * f[k];
+                }
             }
+            i += if weld { 6 } else { 3 };
         }
     }
 
@@ -595,6 +660,11 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
 
+        // The body's velocity before each joint, as `mj_rne`'s bias pass
+        // (`dynamics/rne.rs`): the parent velocity transported to this body's
+        // origin, then each earlier joint's S·qvel.
+        let mut v_partial = transport_motion_spatial(data.cvel[parent_id], &r);
+
         for jnt_id in jnt_start..jnt_end {
             let dof_adr = model.jnt_dof_adr[jnt_id];
             let s = &joint_subspaces[jnt_id];
@@ -607,20 +677,23 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Coriolis acceleration c[i] = v[i] ×_m (S·qvel) = X_b(v[parent]) ×_m
-            // (S·qvel). cvel is referenced at each body's xpos, so the raw cvel[parent]
-            // (at the parent origin) drops the lever [0; ω_parent×r]; transport it to
-            // this body's origin instead. (Same fix as `mj_rne`'s bias-acceleration
-            // forward pass; vanishes for ≤2-link chains but matters for non-parallel
-            // ≥3-link chains.)
+            // Coriolis acceleration c = v ×_m (S·qvel), v the velocity before this
+            // joint (`v_partial`).
             let mut v_joint = SpatialVector::zeros();
             for d in 0..nv {
                 for row in 0..6 {
                     v_joint[row] += s[(row, d)] * data.qvel[dof_adr + d];
                 }
             }
-            let v_parent_at_body = transport_motion_spatial(data.cvel[parent_id], &r);
-            acc += spatial_cross_motion(v_parent_at_body, v_joint);
+            acc += spatial_cross_motion(v_partial, v_joint);
+            v_partial += v_joint;
+            // A free joint's term, as `mj_rne`'s bias pass.
+            if model.jnt_type[jnt_id] == MjJointType::Free {
+                let c = free_joint_velocity_product(data, body_id, dof_adr);
+                acc[3] -= c.x;
+                acc[4] -= c.y;
+                acc[5] -= c.z;
+            }
         }
 
         data.cacc[body_id] = acc;

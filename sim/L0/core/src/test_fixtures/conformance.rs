@@ -395,6 +395,102 @@ fn damp_all(m: &mut Model, d: f64) {
     }
 }
 
+/// Build the CPU-only cases in which a joint moves its body's origin.
+///
+/// A slide, or a hinge off the origin, moves everything referenced at the
+/// origin — the transported parent velocity and acceleration, the lever to the
+/// parent, and the subspaces of the body's earlier joints (ledger-L36a, P25).
+/// sim-gpu does not run these.
+#[must_use]
+pub fn origin_moving_conformance_matrix() -> Vec<ConformanceCase> {
+    let mut cases = Vec::new();
+    let ax = [
+        Vector3::new(0.0, 1.0, 0.0),
+        Vector3::new(1.0, 0.3, 0.0).normalize(),
+        Vector3::new(0.2, 1.0, 0.1).normalize(),
+    ];
+    let l = 0.4;
+    let range = (-3.0, 3.0);
+
+    {
+        // hinge_then_slide_root: one body, a hinge then a slide.
+        let mut m = Model::empty();
+        let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_hinge_joint(&mut m, b, "h0", ax[0], 0.0, 0.0, 0.0, false, range);
+        add_slide_joint(&mut m, b, "s1", ax[1], 0.0, 0.0, 0.0);
+        finalize(&mut m);
+        cases.push(ConformanceCase {
+            name: "hinge_then_slide_root",
+            model: m,
+            qpos: vec![0.3, 0.1],
+            qvel: vec![0.8, -0.5],
+        });
+    }
+    {
+        // offset_hinge_child: one joint per body; the child's hinge is off its
+        // origin, under a moving parent.
+        let mut m = Model::empty();
+        let b0 = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_hinge_joint(&mut m, b0, "h0", ax[0], 0.0, 0.0, 0.0, false, range);
+        let b1 = link_body(&mut m, b0, "l1", Vector3::new(0.0, 0.0, -l), l);
+        let j1 = add_hinge_joint(&mut m, b1, "h1", ax[1], 0.0, 0.0, 0.0, false, range);
+        m.jnt_pos[j1] = Vector3::new(0.06, -0.04, 0.1);
+        finalize(&mut m);
+        cases.push(ConformanceCase {
+            name: "offset_hinge_child",
+            model: m,
+            qpos: vec![0.3, -0.4],
+            qvel: vec![0.8, -0.6],
+        });
+    }
+    {
+        // hinge_then_offset_hinge: one body, a hinge then a hinge off the origin.
+        let mut m = Model::empty();
+        let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        add_hinge_joint(&mut m, b, "h0", ax[0], 0.0, 0.0, 0.0, false, range);
+        let j1 = add_hinge_joint(&mut m, b, "h1", ax[1], 0.0, 0.0, 0.0, false, range);
+        m.jnt_pos[j1] = Vector3::new(0.0, 0.0, 0.3);
+        finalize(&mut m);
+        cases.push(ConformanceCase {
+            name: "hinge_then_offset_hinge",
+            model: m,
+            qpos: vec![0.3, -0.2],
+            qvel: vec![0.8, 0.4],
+        });
+    }
+    {
+        // chain3_offset: three bodies, every hinge off its origin, the leaf
+        // carrying a hinge then a slide.
+        let mut m = Model::empty();
+        let b0 = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
+        let j0 = add_hinge_joint(&mut m, b0, "h0", ax[0], 0.0, 0.0, 0.0, false, range);
+        m.jnt_pos[j0] = Vector3::new(0.05, 0.0, 0.04);
+        let b1 = link_body(&mut m, b0, "l1", Vector3::new(0.0, 0.0, -l), l);
+        let j1 = add_hinge_joint(&mut m, b1, "h1", ax[1], 0.0, 0.0, 0.0, false, range);
+        m.jnt_pos[j1] = Vector3::new(-0.03, 0.05, 0.02);
+        let b2 = link_body(&mut m, b1, "l2", Vector3::new(0.0, 0.0, -l), l);
+        let j2 = add_hinge_joint(&mut m, b2, "h2", ax[2], 0.0, 0.0, 0.0, false, range);
+        m.jnt_pos[j2] = Vector3::new(0.02, -0.04, 0.06);
+        add_slide_joint(&mut m, b2, "s3", ax[0], 0.0, 0.0, 0.0);
+        finalize(&mut m);
+        cases.push(ConformanceCase {
+            name: "chain3_offset",
+            model: m,
+            qpos: vec![0.3, -0.4, 0.25, 0.08],
+            qvel: vec![0.8, -0.6, 0.5, -0.3],
+        });
+    }
+    // The factory body behind sim-gpu's T5b/T10b/T15c: an offset hinge, a
+    // slide and an offset hinge on one body.
+    cases.push(ConformanceCase {
+        name: "multi_joint_body",
+        model: Model::multi_joint_body(),
+        qpos: vec![0.4, 0.15, -0.3],
+        qvel: vec![0.8, -0.5, 0.6],
+    });
+    cases
+}
+
 /// Build the damped-integration conformance matrix.
 ///
 /// The Slice-1 topologies but with nonzero joint/DOF damping, for comparing a

@@ -97,7 +97,7 @@ struct JointModel {
     qpos_adr: u32,
     dof_adr: u32,
     body_id: u32,
-    axis: vec4<f32>,
+    axis: vec4<f32>,  // xyz = axis, w = qpos0 of a hinge or a slide
     pos: vec4<f32>,
 };
 
@@ -211,7 +211,7 @@ fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
                     qpos[qa + 4u], qpos[qa + 5u], qpos[qa + 6u], qpos[qa + 3u]
                 ));
             } else if (jnt.jtype == JNT_HINGE) {
-                let angle = qpos[qa];
+                let angle = qpos[qa] - jnt.axis.w;
                 let world_axis = quat_rotate(quat, jnt.axis.xyz);
                 let world_anchor = pos + quat_rotate(quat, jnt.pos.xyz);
 
@@ -243,7 +243,7 @@ fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let world_axis = quat_rotate(quat, jnt.axis.xyz);
                 // Partial-frame axis (anchor unused by the slide subspace).
                 part_axis[ji] = world_axis;
-                pos += world_axis * qpos[qa];
+                pos += world_axis * (qpos[qa] - jnt.axis.w);
             }
         }
 

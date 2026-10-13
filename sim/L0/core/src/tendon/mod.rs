@@ -42,37 +42,45 @@ pub(crate) fn mj_fwd_tendon(model: &Model, data: &mut Data) {
 }
 
 impl Model {
-    /// Compute `tendon_length0` for spatial tendons via FK at `qpos0`.
-    ///
-    /// 1. Sets `tendon_length0[t] = ten_length[t]` from the FK result.
-    /// 2. Defaults `lengthspring` to `tendon_length0` when stiffness > 0.
+    /// Compute `tendon_length0` for spatial tendons from the kinematics at
+    /// `qpos0`, and replace a spatial tendon's `tendon_lengthspring` of
+    /// `[-1, -1]` with its length at `qpos_spring`, as MuJoCo's `set0` and
+    /// `setSpring` do (3.5.0 `engine_setconst.c:1069-1084`). Fixed tendons:
+    /// [`Self::compute_fixed_tendon_lengths`].
     ///
     /// Must be called after `compute_implicit_params()` and before
-    /// `compute_actuator_params()` (which needs valid `tendon_length0` for all types).
+    /// `compute_actuator_params()`.
     ///
     /// Note: Rule 9 (sidesite outside wrapping geometry) is retired — sidesites
     /// inside wrapping geometry are now handled by the `wrap_inside` algorithm (§39).
     pub fn compute_spatial_tendon_length0(&mut self) {
+        let spatial: Vec<usize> = (0..self.ntendon)
+            .filter(|&t| self.tendon_type[t] == TendonType::Spatial)
+            .collect();
         // Early return if no spatial tendons — avoid unnecessary FK + Data allocation.
-        let has_spatial = (0..self.ntendon).any(|t| self.tendon_type[t] == TendonType::Spatial);
-        if !has_spatial {
+        if spatial.is_empty() {
             return;
         }
 
         let mut data = self.make_data_for_derivation();
-        mj_fwd_position(self, &mut data); // runs FK + mj_fwd_tendon
+        mj_fwd_position(self, &mut data); // runs FK + mj_fwd_tendon at qpos0
+        for &t in &spatial {
+            self.tendon_length0[t] = data.ten_length[t];
+        }
 
-        // Compute tendon_length0 and default lengthspring for spatial tendons.
-        for t in 0..self.ntendon {
-            if self.tendon_type[t] == TendonType::Spatial {
-                self.tendon_length0[t] = data.ten_length[t];
-                // S3: Replace sentinel [-1, -1] with computed length at qpos0
-                // Sentinel is an exact literal, never a computed float.
-                #[allow(clippy::float_cmp)]
-                if self.tendon_lengthspring[t] == [-1.0, -1.0] {
-                    self.tendon_lengthspring[t] = [data.ten_length[t], data.ten_length[t]];
-                }
-            }
+        // The sentinel is an exact literal, never a computed float.
+        #[allow(clippy::float_cmp)]
+        let unset: Vec<usize> = spatial
+            .into_iter()
+            .filter(|&t| self.tendon_lengthspring[t] == [-1.0, -1.0])
+            .collect();
+        if unset.is_empty() {
+            return;
+        }
+        data.qpos.as_mut_slice().copy_from_slice(&self.qpos_spring);
+        mj_fwd_position(self, &mut data);
+        for t in unset {
+            self.tendon_lengthspring[t] = [data.ten_length[t], data.ten_length[t]];
         }
     }
 }

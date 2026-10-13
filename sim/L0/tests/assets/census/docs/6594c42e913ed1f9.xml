@@ -1,0 +1,17 @@
+<mujoco>
+          <worldbody>
+            <body name="welded" pos="0 0 1">
+              <geom type="box" size="0.1 0.1 0.1" mass="1" contype="0" conaffinity="0"/>
+              <site name="s_welded" pos="0.05 0 0" quat="0.9 0.1 0.3 0.2"/>
+            </body>
+            <body name="hinged" pos="1 0 1">
+              <joint type="hinge" axis="0 0 1"/>
+              <geom type="box" size="0.1 0.1 0.1" mass="1" contype="0" conaffinity="0"/>
+              <site name="s_hinged" pos="0.05 0 0" quat="0.9 0.1 0.3 0.2"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <accelerometer site="s_welded"/>
+            <accelerometer site="s_hinged"/>
+          </sensor>
+        </mujoco>

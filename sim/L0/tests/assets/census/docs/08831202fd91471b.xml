@@ -1,0 +1,16 @@
+<mujoco>
+          <option timestep="0.002"/>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <body pos="0 0 0.1">
+              <freejoint/>
+              <geom type="sphere" size="0.1" mass="1"/>
+              <site name="s" type="sphere" size="0.12"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <touch name="clamped" site="s" cutoff="1"/>
+            <touch name="delayed" site="s" cutoff="1" nsample="3" delay="0.004"/>
+            <touch name="raw" site="s"/>
+          </sensor>
+        </mujoco>

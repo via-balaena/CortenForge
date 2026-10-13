@@ -1,8 +1,7 @@
-//! ImplicitFast Integrator — Symmetric D, Cholesky Factorization
+//! ImplicitFast Integrator — Implicit Without Coriolis
 //!
 //! Single undamped pendulum integrated with the implicit-fast method. Same as
-//! full Implicit but skips Coriolis terms and uses Cholesky (not LU) for better
-//! performance. Unconditionally stable.
+//! full Implicit but skips Coriolis terms. Unconditionally stable.
 //!
 //! Validates:
 //! - Energy drift < 0.5% over 15s (stable, slight dissipation OK)
@@ -34,31 +33,22 @@ use sim_core::validation::{Check, print_report};
 
 // ── What the engine computes (implicit fast) ───────────────────────────────
 //
-//   Simplified backward Euler — skips Coriolis for speed:
+//   Simplified backward Euler — skips Coriolis:
 //
 //   1. Assemble damping Jacobian (Coriolis EXCLUDED):
 //        D = D_joint + D_tendon + D_actuator
-//        (no mjd_rne_vel call — saves O(nv²) work)
+//        (no mjd_rne_vel call)
 //
-//   2. Symmetrize: D ← (D + Dᵀ) / 2
-//      (without Coriolis, D is nearly symmetric; forcing symmetry
-//       enables cheaper Cholesky instead of LU)
+//   2. Form the system matrix on the mass matrix's sparsity pattern
+//      (its lower triangle; a simple dof's row its diagonal only):
+//        M_hat = M - h · D
 //
-//   3. Form SPD system matrix:
-//        M_hat = M - h · D    (symmetric positive definite)
+//   3. Factor it as L'·D·L with no pivot check (MuJoCo's mj_factorI),
+//      then backsolve for the acceleration a
 //
-//   4. Solve via Cholesky factorization:
-//        M_hat = L · Lᵀ,  then backsolve for the acceleration a
-//
-//   5. Update (data.qacc keeps the explicit acceleration, as in MuJoCo):
+//   4. Update (data.qacc keeps the explicit acceleration, as in MuJoCo):
 //        qvel  ←  qvel + h · a
 //        qpos  ←  manifold_integrate(qpos, h, qvel)
-//
-//   Properties:
-//   - Stable like full implicit, but cheaper (Cholesky vs LU)
-//   - Skipping Coriolis: negligible error for most articulated systems
-//   - Cholesky: O(nv³/3) — roughly half the cost of LU
-//   - Best for: real-time implicit integration where Coriolis is small
 //
 // Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicitfast)
 
@@ -96,7 +86,7 @@ const M_G_D: f64 = 1.0 * 9.81 * 0.25;
 
 fn main() {
     println!("=== CortenForge: {INTEGRATOR_NAME} Integrator ===");
-    println!("  Symmetric D, no Coriolis — Cholesky factorization");
+    println!("  No Coriolis, on the mass matrix's pattern");
     println!("  dt = 0.005, zero damping, released from horizontal");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 

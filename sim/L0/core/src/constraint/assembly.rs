@@ -69,6 +69,53 @@ pub fn finalize_constraint_row(
     mu_val: [f64; 5],
     bw_diag: f64,
 ) {
+    let imp_violation = (pos - margin).abs();
+    finalize_constraint_row_imp(
+        model,
+        data,
+        nv,
+        row,
+        qacc_smooth,
+        solref,
+        solimp,
+        pos,
+        margin,
+        vel,
+        floss,
+        ctype,
+        dim_val,
+        id_val,
+        mu_val,
+        bw_diag,
+        imp_violation,
+    );
+}
+
+/// [`finalize_constraint_row`] with the violation the impedance is taken at
+/// given apart from the row's own: a connect's and a weld's rows share one
+/// impedance, at the norm of their violation (MuJoCo `getposdim`,
+/// `engine_core_constraint.c:1365-1398`).
+// The same per-row state as `finalize_constraint_row`, plus the violation.
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_constraint_row_imp(
+    model: &Model,
+    data: &mut Data,
+    nv: usize,
+    row: &mut usize,
+    qacc_smooth: &DVector<f64>,
+    solref: [f64; 2],
+    solimp: [f64; 5],
+    pos: f64,
+    margin: f64,
+    vel: f64,
+    floss: f64,
+    ctype: ConstraintType,
+    dim_val: usize,
+    id_val: usize,
+    mu_val: [f64; 5],
+    bw_diag: f64,
+    imp_violation: f64,
+) {
     data.efc_type.push(ctype);
     data.efc_pos.push(pos);
     data.efc_margin.push(margin);
@@ -81,8 +128,7 @@ pub fn finalize_constraint_row(
     data.efc_id.push(id_val);
 
     // Impedance
-    let violation = (pos - margin).abs();
-    let imp = compute_impedance(solimp, violation);
+    let imp = compute_impedance(solimp, imp_violation);
     data.efc_imp.push(imp);
 
     // diagApprox: exact M⁻¹ solve or O(1) bodyweight approximation (DT-39)

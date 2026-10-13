@@ -23,9 +23,11 @@ impl Model {
     /// | `jnt_stiffness`, `jnt_damping` (hinge, slide), `dof_damping` (ball, free), `qpos_spring` | `implicit_stiffness`, `implicit_damping`, `implicit_springref` | [`Self::compute_implicit_params`] |
     /// | the body and joint tree (`body_parent`, `body_jnt_*`, `body_dof_*`) | `body_ancestor_joints`, `body_ancestor_mask`, `body_weldid` | [`Self::compute_ancestors`] |
     /// | `dof_parent` | the sparse factor's layout (`qLD_*`), so `Data::qLD_data`'s length: make a new `Data` | [`Self::compute_qld_csr_metadata`] |
+    /// | body, inertial, joint, geom and site frames, joint types | `body_sameframe`, `geom_sameframe`, `site_sameframe`, `body_simple`, `dof_simplenum` | [`Self::compute_simple_bodies`] |
+    /// | `dof_parent`, `dof_simplenum` | the implicit integrators' layouts (`M_*`, `D_*`), so `Data::qH`'s and `Data::qLU`'s lengths: make a new `Data` | [`Self::compute_dof_patterns`] |
     /// | masses, inertias, body poses, `qpos0`, joint axes | `body_subtreemass`, `body_invweight0`, `dof_invweight0`, `tendon_invweight0`, `stat_meaninertia` | [`Self::compute_invweight0`], [`Self::compute_stat_meaninertia`] |
     /// | gears, transmissions, joint and tendon ranges, masses | `actuator_lengthrange`, `actuator_acc0` | [`Self::compute_actuator_params`] |
-    /// | spatial tendon geometry, `qpos0` | spatial `tendon_length0` | [`Self::compute_spatial_tendon_length0`] |
+    /// | spatial tendon geometry, `qpos0`, `qpos_spring` | spatial `tendon_length0`, `tendon_lengthspring` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
     /// | `dof_parent`, `body_dof_*`, `body_weldid`, actuators, tendons, flex vertex bodies | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |
@@ -34,10 +36,9 @@ impl Model {
     /// | `actuator_nsample`, `sensor_nsample`, `sensor_dim` | `actuator_historyadr`, `sensor_historyadr`, `nhistory`, so `Data::history`'s length: make a new `Data` | [`Self::compute_history_addresses`] |
     ///
     /// Some inputs are consumed on the first computation: a damping ratio in
-    /// `actuator_biasprm[2]` (as MuJoCo's `set0` consumes it), a muscle's
-    /// `actuator_gainprm[2]` (MuJoCo resolves that one at each call instead)
-    /// and a `tendon_lengthspring` of `[-1, -1]` are replaced by the values
-    /// derived from them; a later edit of the input is not derived again. Not
+    /// `actuator_biasprm[2]` (as MuJoCo's `set0` consumes it) and a
+    /// `tendon_lengthspring` of `[-1, -1]` are replaced by the values derived
+    /// from them; a later edit of the input is not derived again. Not
     /// recomputed here: the tree's own tables `body_rootid` and `dof_parent`,
     /// which an edit of the tree sets.
     ///
@@ -52,6 +53,8 @@ impl Model {
         // Before the derivations below, which make a `Data` sized by `nhistory`.
         self.compute_history_addresses();
         self.compute_ancestors();
+        self.compute_simple_bodies();
+        self.compute_dof_patterns();
         self.compute_implicit_params();
         self.compute_qld_csr_metadata();
         self.compute_spatial_tendon_length0();

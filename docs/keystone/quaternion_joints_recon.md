@@ -118,6 +118,9 @@ measure the output qpos' tangent at the NOMINAL output `q'` (the body-frame `q'�
 which is what `jz`/`jlin` consume. `mjd_quat_integrate` / `transition_derivatives.A` use a
 DIFFERENT, internally-consistent convention (output tangent referenced at `q_old`), so their
 position-POSITION blocks legitimately DIFFER from the FD carry — do NOT "reconcile" them.
+*(2026-10-12: no longer so. Rigid-physics P31 gave `mjd_quat_integrate` and
+`transition_derivatives.A` MuJoCo's convention, the output tangent at the next state — the
+convention above.)*
 
 ## 7. PR2 SHIPPED (2026-06-15) — free joint (SE(3), nq=7, nv=6) machine-exact; TEST-ONLY
 

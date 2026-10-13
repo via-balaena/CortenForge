@@ -922,7 +922,9 @@ pub fn update_muscle_meshes(
 
         // Tension-driven color: blue (rest) → red (peak force)
         if i < model.nu {
-            let f0 = model.actuator_gainprm[i][2].max(1.0);
+            let f0 =
+                sim_core::forward::muscle_f0(&model.actuator_gainprm[i], model.actuator_acc0[i])
+                    .max(1.0);
             let tension = (data.actuator_force[i].abs() / f0).clamp(0.0, 1.0) as f32;
             if let Some(mat) = materials.get_mut(&mat_handle.0) {
                 mat.base_color = bevy::prelude::Color::srgb(

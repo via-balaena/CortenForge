@@ -629,6 +629,27 @@ pub enum SleepPolicy {
     Init,
 }
 
+/// Whether a frame is its body's frame or the body's inertial frame (MuJoCo
+/// `mjtSameFrame`).
+///
+/// Two frames are one to within 1e-6 in each component. The kinematics copy
+/// such a frame rather than compute it, as MuJoCo's `mj_local2Global` does. A
+/// body's own inertial frame is compared with the body's frame only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SameFrame {
+    /// Neither: computed from the body's frame.
+    #[default]
+    None,
+    /// The body's frame.
+    Body,
+    /// The body's inertial frame.
+    Inertia,
+    /// The body's orientation, at another position.
+    BodyRot,
+    /// The inertial frame's orientation, at another position.
+    InertiaRot,
+}
+
 /// Per-body sleep state for efficient pipeline gating (§16.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepState {
@@ -818,10 +839,9 @@ pub enum Integrator {
     /// Implicit Euler for diagonal per-DOF spring/damper forces.
     ImplicitSpringDamper,
     /// Full implicit integration with asymmetric D and LU factorization.
-    /// Includes Coriolis velocity derivatives for maximum accuracy.
+    /// Includes Coriolis velocity derivatives.
     Implicit,
-    /// Fast implicit integration with symmetric D and Cholesky factorization.
-    /// Skips Coriolis velocity derivatives for performance.
+    /// Implicit integration without the Coriolis velocity derivatives.
     ImplicitFast,
 }
 
@@ -842,11 +862,12 @@ pub enum Integrator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepError {
-    /// Cholesky decomposition failed in implicit integration.
-    /// This indicates the modified mass matrix (M + h*D + h²*K) is not positive definite,
-    /// likely due to negative stiffness/damping or numerical instability.
+    /// Cholesky decomposition failed under the implicit spring-damper
+    /// integrator: the modified mass matrix (M + h*D + h²*K) is not positive
+    /// definite.
     CholeskyFailed,
-    /// LU decomposition failed (zero pivot in M − h·D).
+    /// Under the implicit integrator, a diagonal of `M − h·D`'s LU factor is
+    /// below mjMINVAL in magnitude.
     LuSingular,
     /// `model.timestep` is not positive and finite: zero, negative, NaN or infinite.
     InvalidTimestep,

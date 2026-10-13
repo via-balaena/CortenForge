@@ -11,9 +11,10 @@ use crate::constraint::equality::{
     extract_tendon_equality_jacobian, extract_weld_jacobian,
 };
 use crate::constraint::impedance::{MJ_MINVAL, compute_diag_approx_bodyweight};
+use crate::linalg::mju_norm;
 use crate::types::{ConstraintType, Data, EqualityType, Model};
 
-use super::assembly::finalize_constraint_row;
+use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp};
 
 /// Assemble equality constraint rows (Phase 3a) and flex edge-length constraints (Phase 3a').
 ///
@@ -47,6 +48,12 @@ pub(super) fn assemble_equality_rows(
         let sr = model.eq_solref[eq_id];
         let si = model.eq_solimp[eq_id];
         let nrows = rows.j_rows.nrows();
+        // A connect's 3 rows and a weld's 6 take one impedance, at the norm of
+        // their violation (MuJoCo `getposdim`); each row keeps its own `pos`.
+        let shared_violation = match model.eq_type[eq_id] {
+            EqualityType::Connect | EqualityType::Weld => Some(mju_norm(&rows.pos[..nrows])),
+            EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => None,
+        };
 
         for r in 0..nrows {
             // Copy J row
@@ -55,7 +62,7 @@ pub(super) fn assemble_equality_rows(
             }
             let bw =
                 compute_diag_approx_bodyweight(model, data, ConstraintType::Equality, eq_id, r);
-            finalize_constraint_row(
+            finalize_constraint_row_imp(
                 model,
                 data,
                 nv,
@@ -72,6 +79,7 @@ pub(super) fn assemble_equality_rows(
                 eq_id,
                 [0.0; 5],
                 bw,
+                shared_violation.unwrap_or_else(|| rows.pos[r].abs()),
             );
         }
     }

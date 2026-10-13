@@ -76,7 +76,7 @@ pub fn mj_jac(
                 }
                 MjJointType::Ball => {
                     let rot = data.xquat[jnt_body].to_rotation_matrix();
-                    let anchor = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let anchor = data.xanchor[jnt_id];
                     let r = point - anchor;
                     for i in 0..3 {
                         let omega = rot * Vector3::ith(i, 1.0);
@@ -254,7 +254,7 @@ pub(crate) fn mj_apply_ft(
                     qfrc[dof] += axis.dot(force);
                 }
                 MjJointType::Ball => {
-                    let anchor = xpos[jnt_body] + xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let anchor = xanchor[jnt_id];
                     let r = point - anchor;
                     // Body-frame axes (matching MuJoCo's cdof convention for ball joints,
                     // same as accumulate_point_jacobian)

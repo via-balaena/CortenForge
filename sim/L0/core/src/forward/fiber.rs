@@ -1,7 +1,7 @@
 //! Fiber length computation and actuator parameter setup.
 //!
-//! Houses `Model::compute_actuator_params` (resolves `lengthrange`, `acc0`,
-//! `dampratio`, and `F0` for all actuators) and `build_actuator_moment` (builds
+//! Houses `Model::compute_actuator_params` (resolves `lengthrange`, `acc0` and
+//! `dampratio` for all actuators) and `build_actuator_moment` (builds
 //! the transmission Jacobian vector for a single actuator). Corresponds to
 //! `engine_setconst.c` (set0, mj_setLengthRange).
 
@@ -9,11 +9,11 @@ use crate::dynamics::crba::mj_crba;
 use crate::forward::position::mj_fwd_position;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::linalg::mj_solve_sparse;
-use crate::types::{ActuatorDynamics, ActuatorTransmission, LengthRangeOpt, Model, TendonType};
+use crate::types::{ActuatorTransmission, LengthRangeOpt, Model, TendonType};
 use nalgebra::{DVector, Vector3};
 
 impl Model {
-    /// Compute actuator parameters: lengthrange, acc0, dampratio, and F0.
+    /// Compute actuator parameters: lengthrange, acc0 and dampratio.
     ///
     /// For each actuator:
     ///   1. Computes `actuator_lengthrange` from tendon/joint limits (gear-scaled).
@@ -21,7 +21,9 @@ impl Model {
     ///      `acc0 = ||M^{-1} * moment||` for **every** actuator (not just muscles).
     ///   3. Converts positive `biasprm[2]` (dampratio) to negative damping for
     ///      position-like actuators using reflected inertia.
-    ///   4. Resolves muscle `F0` (gainprm\[2\]) when `force < 0`: `F0 = scale / acc0`.
+    ///
+    /// A muscle's negative force stays in the model, as MuJoCo's does:
+    /// [`muscle_f0`](crate::forward::muscle_f0) resolves it at each call.
     ///
     /// Must be called after `compute_ancestors()` and `compute_implicit_params()`,
     /// and after all tendon/actuator fields are populated.
@@ -156,8 +158,9 @@ impl Model {
                 &mut x,
             );
 
-            // acc0 = ||M^{-1} J||_2
-            self.actuator_acc0[i] = x.norm().max(1e-10);
+            // acc0 = ||M^{-1} J||_2, unclamped, in MuJoCo's order
+            // (`engine_setconst.c:776`); its readers clamp it at mjMINVAL.
+            self.actuator_acc0[i] = crate::linalg::mju_norm(x.as_slice());
 
             moment_vecs.push(j_vec);
         }
@@ -206,7 +209,7 @@ impl Model {
 
         // --- Phase 3b: Simulation-based lengthrange for actuators that need it ---
         // Must run AFTER Phase 2 (acc0) because the muscle force model in
-        // mj_fwd_actuation uses F0 = scale / acc0 during the simulation.
+        // mj_fwd_actuation resolves F0 = scale / acc0 during the simulation.
         // With acc0 = 0, F0 would be ~2e17, causing massive passive muscle
         // forces and numerical instability.
         //
@@ -219,24 +222,6 @@ impl Model {
         // mj_set_length_range never fails — individual actuator convergence
         // failures are silently skipped (matching MuJoCo's behavior).
         super::muscle::mj_set_length_range(self, &lr_opt);
-
-        // --- Phase 4: Resolve muscle F0 ---
-        for i in 0..self.nu {
-            if !matches!(
-                self.actuator_dyntype[i],
-                ActuatorDynamics::Muscle
-                    | ActuatorDynamics::HillMuscle
-                    | ActuatorDynamics::MillardMuscle
-            ) {
-                continue;
-            }
-            if self.actuator_gainprm[i][2] < 0.0 {
-                // force < 0 means auto-compute: F0 = scale / acc0
-                self.actuator_gainprm[i][2] = self.actuator_gainprm[i][3] / self.actuator_acc0[i];
-                // Sync biasprm (MuJoCo layout: muscles share gain/bias parameters)
-                self.actuator_biasprm[i][2] = self.actuator_gainprm[i][2];
-            }
-        }
     }
 }
 
@@ -423,7 +408,7 @@ pub fn build_actuator_moment(
 mod tests {
     use super::*;
     use crate::forward::actuation::mj_fwd_actuation;
-    use crate::forward::hill::muscle_activation_dynamics;
+    use crate::forward::hill::{muscle_activation_dynamics, muscle_f0};
     use crate::types::{
         ActuatorDynamics, ActuatorTransmission, BiasType, GainType, Integrator, LengthRangeMode,
         MjJointType, Model,
@@ -591,7 +576,7 @@ mod tests {
         // Run one forward pass to populate actuator_force
         data.forward(&model).expect("forward failed");
 
-        let f0 = model.actuator_gainprm[0][2]; // resolved F0
+        let f0 = muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]);
         assert!(f0 > 0.0, "F0 should be positive, got {}", f0);
 
         let expected = -f0; // at optimal, FL=FV=1, FP=0, act=1 => force = -F0
@@ -753,7 +738,7 @@ mod tests {
 
         data.forward(&model).expect("forward failed");
 
-        let f0 = model.actuator_gainprm[0][2];
+        let f0 = muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]);
         // Without clamping, force would be ~ -F0 (which is large negative)
         // With forcerange = (-100, 0), it should be clamped to -100 if |F0| > 100
         if f0 > 100.0 {
@@ -816,25 +801,16 @@ mod tests {
     }
 
     // ---- AC #14: F0 auto-computation ----
+    /// A muscle's force of -1 stays in the model, as MuJoCo's does, and
+    /// resolves to `scale / acc0` at each call.
     #[test]
-    fn test_f0_auto_computation() {
+    fn test_f0_resolved_at_each_call() {
         let model = build_muscle_model_joint(1.0);
         let acc0 = model.actuator_acc0[0];
-        let f0 = model.actuator_gainprm[0][2]; // was -1.0, should be resolved
+        assert_eq!(model.actuator_gainprm[0][2], -1.0);
         let scale = model.actuator_gainprm[0][3]; // 200.0
-
-        assert!(
-            f0 > 0.0,
-            "F0 should be resolved to positive value, got {}",
-            f0
-        );
-        let expected_f0 = scale / acc0;
-        assert!(
-            (f0 - expected_f0).abs() < 1e-6,
-            "F0 should be scale/acc0 = {}, got {}",
-            expected_f0,
-            f0
-        );
+        assert!(acc0 > 0.0);
+        assert_eq!(muscle_f0(&model.actuator_gainprm[0], acc0), scale / acc0);
     }
 
     #[test]
@@ -873,11 +849,11 @@ mod tests {
         let dynprm = &model.actuator_dynprm[0];
 
         let k1 = muscle_activation_dynamics(1.0, 0.0, dynprm);
-        let act1 = (0.0 + 0.5 * dt * k1).clamp(0.0, 1.0);
+        let act1 = 0.0 + 0.5 * dt * k1;
         let k2 = muscle_activation_dynamics(1.0, act1, dynprm);
-        let act2 = (0.0 + 0.5 * dt * k2).clamp(0.0, 1.0);
+        let act2 = 0.0 + 0.5 * dt * k2;
         let k3 = muscle_activation_dynamics(1.0, act2, dynprm);
-        let act3 = (0.0 + dt * k3).clamp(0.0, 1.0);
+        let act3 = 0.0 + dt * k3;
         let k4 = muscle_activation_dynamics(1.0, act3, dynprm);
 
         let act_expected = 0.0 + dt * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0;
@@ -1166,7 +1142,7 @@ mod tests {
     // ---- S1 supplementary: acc0 with nv=0 ----
     #[test]
     fn test_acc0_no_dofs() {
-        // Model with nu=1 but nv=0 → acc0 should not panic and remain 0 (or clamp)
+        // Model with nu=1 but nv=0 → acc0 should not panic and remain 0
         let mut model = Model::empty();
         model.nbody = 1;
         model.body_parent = vec![0];
@@ -1222,12 +1198,9 @@ mod tests {
         model.compute_qld_csr_metadata();
         model.compute_actuator_params();
 
-        // acc0 with nv=0: norm of empty vector = 0, clamped to 1e-10
-        assert!(
-            model.actuator_acc0[0] <= 1e-9,
-            "acc0 with nv=0 should be ~0 (clamped to 1e-10), got {}",
-            model.actuator_acc0[0]
-        );
+        // acc0 with nv=0: the norm of an empty vector, 0, as MuJoCo's
+        // (`engine_setconst.c:780`)
+        assert_eq!(model.actuator_acc0[0], 0.0);
     }
 
     // ---- T13: Multi-body acc0 + dampratio conformance → AC14 ----
@@ -1711,26 +1684,88 @@ mod tests {
             -1.0, // auto-compute F0
             0.10, 0.20, 10.0, 0.0, 35.0, 1.0,
         );
-        // compute_actuator_params() ran during build_hill_model
-        assert!(
-            model.actuator_gainprm[0][2] > 0.0,
-            "F0 should be auto-computed to positive value, got {}",
-            model.actuator_gainprm[0][2]
-        );
-        // biasprm[2] should be synced
+        // compute_actuator_params() ran during build_hill_model and left
+        // the force as it was; it resolves to scale / acc0 = 200 / acc0.
+        assert_eq!(model.actuator_gainprm[0][2], -1.0);
         assert_eq!(
-            model.actuator_biasprm[0][2], model.actuator_gainprm[0][2],
-            "biasprm[2] should be synced with gainprm[2]"
+            muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]),
+            200.0 / model.actuator_acc0[0]
         );
-        // F0 = scale / acc0 = 200 / acc0
-        let expected_f0 = 200.0 / model.actuator_acc0[0];
-        assert!(
-            (model.actuator_gainprm[0][2] - expected_f0).abs() < 1e-10,
-            "F0 = {}, expected {} (200/acc0={})",
-            model.actuator_gainprm[0][2],
-            expected_f0,
-            model.actuator_acc0[0]
+    }
+
+    /// A Hill muscle's force of -1 resolves at each call: its gain and its
+    /// passive force equal, bit for bit, those of the same muscle with the
+    /// resolved force written in, past the optimal fiber length (where the
+    /// passive force is not 0).
+    #[test]
+    fn test_hill_force_resolves_auto_f0_at_each_call() {
+        let auto = build_hill_model(-1.0, 0.10, 0.20, 10.0, 0.0, 35.0, 1.0);
+        let mut explicit = auto.clone();
+        explicit.actuator_gainprm[0][2] =
+            muscle_f0(&auto.actuator_gainprm[0], auto.actuator_acc0[0]);
+        let force = |model: &Model| {
+            let mut data = model.make_data();
+            let mt_length = 1.3 * 0.10 + 0.20;
+            data.qpos[0] = mt_length;
+            data.actuator_length[0] = mt_length;
+            data.actuator_velocity[0] = 0.0;
+            data.act[0] = 0.5;
+            data.ctrl[0] = 0.5;
+            mj_fwd_actuation(model, &mut data);
+            data.actuator_force[0]
+        };
+        let mut no_passive = explicit.clone();
+        no_passive.actuator_biastype[0] = BiasType::None;
+        assert_ne!(
+            force(&explicit),
+            force(&no_passive),
+            "the passive force is 0"
         );
+        assert_eq!(force(&auto), force(&explicit));
+    }
+
+    /// The actuator derivatives resolve a force of -1 at each call too: the
+    /// velocity and position derivatives of a Hill muscle and of a muscle,
+    /// off the optimal length and shortening, equal bit for bit those of the
+    /// same actuator with the resolved force written in.
+    #[test]
+    fn test_muscle_derivatives_resolve_auto_f0_at_each_call() {
+        use crate::derivatives::{mjd_actuator_pos, mjd_actuator_vel};
+        let hill = build_hill_model(-1.0, 0.10, 0.20, 10.0, 0.0, 35.0, 1.0);
+        let muscle = build_muscle_model_joint(1.0);
+        for (name, auto, length, velocity) in [
+            ("hill", hill, 0.20 + 0.9 * 0.10, -0.1 * 0.10 * 10.0),
+            (
+                "muscle",
+                muscle.clone(),
+                {
+                    let lr = muscle.actuator_lengthrange[0];
+                    lr.0 + 0.4 * (lr.1 - lr.0)
+                },
+                -0.05,
+            ),
+        ] {
+            let f0 = muscle_f0(&auto.actuator_gainprm[0], auto.actuator_acc0[0]);
+            let mut explicit = auto.clone();
+            explicit.actuator_gainprm[0][2] = f0;
+            explicit.actuator_biasprm[0][2] = f0;
+            let derivatives = |model: &Model| {
+                let mut data = model.make_data();
+                data.actuator_length[0] = length;
+                data.actuator_velocity[0] = velocity;
+                data.act[0] = 0.5;
+                data.ctrl[0] = 0.5;
+                mjd_actuator_vel(model, &mut data);
+                mjd_actuator_pos(model, &mut data);
+                (data.qDeriv.clone(), data.qDeriv_pos.clone())
+            };
+            let (vel, pos) = derivatives(&explicit);
+            assert!(
+                vel[(0, 0)] != 0.0 && pos[(0, 0)] != 0.0,
+                "{name}: {vel} {pos}"
+            );
+            assert_eq!(derivatives(&auto), (vel, pos), "{name}");
+        }
     }
 
     // ---- T6: Dynamics dispatch equivalence (AC6) ----

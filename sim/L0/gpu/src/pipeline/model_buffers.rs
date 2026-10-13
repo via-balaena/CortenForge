@@ -12,7 +12,7 @@
 )]
 
 use sim_core::DISABLE_DAMPER;
-use sim_core::types::Model;
+use sim_core::types::{MjJointType, Model};
 use wgpu::util::DeviceExt;
 
 use super::types::{
@@ -66,6 +66,12 @@ impl GpuModelBuffers {
     ///
     /// Computes `body_depth` and `max_depth` from `body_parent`, packs
     /// all per-element fields into struct arrays, and uploads.
+    ///
+    /// It validates nothing: a model [`GpuPhysicsPipeline`] refuses uploads
+    /// too, and the sub-pipelines that read it turn a ball joint about its
+    /// body's origin, not about its `jnt_pos` as sim-core does.
+    ///
+    /// [`GpuPhysicsPipeline`]: crate::pipeline::GpuPhysicsPipeline
     #[must_use]
     // One-shot static-data upload: each body/joint/geom/dof field array is
     // packed and uploaded in one linear pass. Splitting into per-field
@@ -135,12 +141,20 @@ impl GpuModelBuffers {
             .map(|j| {
                 let axis = &model.jnt_axis[j];
                 let jpos = &model.jnt_pos[j];
+                // A hinge or a slide moves by `qpos − qpos0` (MuJoCo
+                // `mj_kinematics1`); a ball's or a free joint's qpos0 is a pose.
+                let qpos0 = match model.jnt_type[j] {
+                    MjJointType::Hinge | MjJointType::Slide => {
+                        model.qpos0[model.jnt_qpos_adr[j]] as f32
+                    }
+                    MjJointType::Ball | MjJointType::Free => 0.0,
+                };
                 JointModelGpu {
                     jtype: jnt_type_to_gpu(model.jnt_type[j]),
                     qpos_adr: model.jnt_qpos_adr[j] as u32,
                     dof_adr: model.jnt_dof_adr[j] as u32,
                     body_id: model.jnt_body[j] as u32,
-                    axis: [axis.x as f32, axis.y as f32, axis.z as f32, 0.0],
+                    axis: [axis.x as f32, axis.y as f32, axis.z as f32, qpos0],
                     pos: [jpos.x as f32, jpos.y as f32, jpos.z as f32, 0.0],
                 }
             })

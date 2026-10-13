@@ -4,68 +4,119 @@
 //! FV curve, passive force, and activation dynamics. Corresponds to
 //! `engine_util_misc.c` (mju_muscleGain, mju_muscleBias).
 
+use crate::constraint::impedance::MJ_MINVAL;
+
 // ============================================================================
 // MuJoCo Muscle Force-Length-Velocity Curves
 // ============================================================================
 // These implement MuJoCo's exact piecewise-quadratic muscle curves from
 // engine_util_misc.c: mju_muscleGain (FL, FV) and mju_muscleBias (FP).
 
-/// Active force-length curve: piecewise quadratic bump.
-/// Returns 0 outside `[lmin, lmax]`, peak 1.0 at `L = 1.0`.
+/// Active force-length curve: piecewise quadratic bump (MuJoCo
+/// `mju_muscleGainLength`, `engine_util_misc.c:627-649`).
+/// Returns 0 outside `[lmin, lmax]` (and for a NaN length), peak 1.0 at `L = 1.0`.
 #[must_use]
 pub fn muscle_gain_length(length: f64, lmin: f64, lmax: f64) -> f64 {
-    const EPS: f64 = 1e-10;
-    if length < lmin || length > lmax {
-        return 0.0;
-    }
-    let a = 0.5 * (lmin + 1.0); // midpoint of [lmin, 1]
-    let b = 0.5 * (1.0 + lmax); // midpoint of [1, lmax]
+    if lmin <= length && length <= lmax {
+        let a = 0.5 * (lmin + 1.0); // midpoint of [lmin, 1]
+        let b = 0.5 * (1.0 + lmax); // midpoint of [1, lmax]
 
-    if length <= a {
-        let x = (length - lmin) / (a - lmin).max(EPS);
-        0.5 * x * x
-    } else if length <= 1.0 {
-        let x = (1.0 - length) / (1.0 - a).max(EPS);
-        1.0 - 0.5 * x * x
-    } else if length <= b {
-        let x = (length - 1.0) / (b - 1.0).max(EPS);
-        1.0 - 0.5 * x * x
-    } else {
-        let x = (lmax - length) / (lmax - b).max(EPS);
-        0.5 * x * x
+        return if length <= a {
+            let x = (length - lmin) / (a - lmin).max(MJ_MINVAL);
+            0.5 * x * x
+        } else if length <= 1.0 {
+            let x = (1.0 - length) / (1.0 - a).max(MJ_MINVAL);
+            1.0 - 0.5 * x * x
+        } else if length <= b {
+            let x = (length - 1.0) / (b - 1.0).max(MJ_MINVAL);
+            1.0 - 0.5 * x * x
+        } else {
+            let x = (lmax - length) / (lmax - b).max(MJ_MINVAL);
+            0.5 * x * x
+        };
     }
+    0.0
 }
 
 /// Force-velocity curve: piecewise quadratic.
 /// `velocity` is normalized by `L0 * vmax` so `V = -1` is max shortening.
 #[must_use]
 pub fn muscle_gain_velocity(velocity: f64, fvmax: f64) -> f64 {
-    const EPS: f64 = 1e-10;
     let y = fvmax - 1.0;
     if velocity <= -1.0 {
         0.0
     } else if velocity <= 0.0 {
         (velocity + 1.0) * (velocity + 1.0)
     } else if velocity <= y {
-        fvmax - (y - velocity) * (y - velocity) / y.max(EPS)
+        fvmax - (y - velocity) * (y - velocity) / y.max(MJ_MINVAL)
     } else {
         fvmax
     }
 }
 
 /// Passive force curve: zero below `L = 1.0`, quadratic onset, linear beyond midpoint.
+/// [`muscle_bias`] computes the same curve times the force, in MuJoCo's order.
 #[must_use]
 pub fn muscle_passive_force(length: f64, lmax: f64, fpmax: f64) -> f64 {
-    const EPS: f64 = 1e-10;
     let b = 0.5 * (1.0 + lmax);
     if length <= 1.0 {
         0.0
     } else if length <= b {
-        let x = (length - 1.0) / (b - 1.0).max(EPS);
+        let x = (length - 1.0) / (b - 1.0).max(MJ_MINVAL);
         fpmax * 0.5 * x * x
     } else {
-        let x = (length - b) / (b - 1.0).max(EPS);
+        let x = (length - b) / (b - 1.0).max(MJ_MINVAL);
         fpmax * (0.5 + x)
+    }
+}
+
+/// A muscle's peak force: `prm[2]`, or `prm[3] / max(mjMINVAL, acc0)` where
+/// that is negative.
+///
+/// MuJoCo leaves a negative force in the model and resolves it at each call
+/// (`engine_util_misc.c:665-667`, `:708-710`). `prm` is the actuator's
+/// `gainprm` for its gain and its `biasprm` for its bias.
+#[must_use]
+pub fn muscle_f0(prm: &[f64; 9], acc0: f64) -> f64 {
+    if prm[2] < 0.0 {
+        prm[3] / acc0.max(MJ_MINVAL)
+    } else {
+        prm[2]
+    }
+}
+
+/// The optimal length `L0` of a muscle and its normalized length at `len`.
+pub fn muscle_length(len: f64, lengthrange: (f64, f64), prm: &[f64; 9]) -> (f64, f64) {
+    let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(MJ_MINVAL);
+    (l0, prm[0] + (len - lengthrange.0) / l0.max(MJ_MINVAL))
+}
+
+/// A muscle's active force per unit input (MuJoCo `mju_muscleGain`,
+/// `engine_util_misc.c:653-693`), `prm` its `gainprm`.
+#[must_use]
+pub fn muscle_gain(len: f64, vel: f64, lengthrange: (f64, f64), acc0: f64, prm: &[f64; 9]) -> f64 {
+    let force = muscle_f0(prm, acc0);
+    let (l0, length) = muscle_length(len, lengthrange, prm);
+    let velocity = vel / (l0 * prm[6]).max(MJ_MINVAL);
+    -force * muscle_gain_length(length, prm[4], prm[5]) * muscle_gain_velocity(velocity, prm[8])
+}
+
+/// A muscle's passive force (MuJoCo `mju_muscleBias`,
+/// `engine_util_misc.c:697-729`), `prm` its `biasprm`.
+#[must_use]
+pub fn muscle_bias(len: f64, lengthrange: (f64, f64), acc0: f64, prm: &[f64; 9]) -> f64 {
+    let force = muscle_f0(prm, acc0);
+    let (_, length) = muscle_length(len, lengthrange, prm);
+    let (lmax, fpmax) = (prm[5], prm[7]);
+    let b = 0.5 * (1.0 + lmax);
+    if length <= 1.0 {
+        0.0
+    } else if length <= b {
+        let x = (length - 1.0) / (b - 1.0).max(MJ_MINVAL);
+        -force * fpmax * 0.5 * x * x
+    } else {
+        let x = (length - b) / (b - 1.0).max(MJ_MINVAL);
+        -force * fpmax * (0.5 + x)
     }
 }
 
@@ -73,7 +124,8 @@ pub fn muscle_passive_force(length: f64, lmax: f64, fpmax: f64) -> f64 {
 // Muscle Activation Dynamics
 // ============================================================================
 
-/// Quintic smoothstep (C2-continuous Hermite), matching MuJoCo's `mju_sigmoid`.
+/// Quintic smoothstep (C2-continuous Hermite): MuJoCo's `mju_sigmoid`
+/// (`engine_util_misc.c:1888-1900`), in its arithmetic.
 pub fn sigmoid(x: f64) -> f64 {
     if x <= 0.0 {
         return 0.0;
@@ -81,7 +133,7 @@ pub fn sigmoid(x: f64) -> f64 {
     if x >= 1.0 {
         return 1.0;
     }
-    x * x * x * (6.0 * x * x - 15.0 * x + 10.0)
+    x * x * x * (3.0 * x * (2.0 * x - 5.0) + 10.0)
 }
 
 /// Compute d(act)/dt for muscle activation dynamics.
@@ -90,8 +142,10 @@ pub fn sigmoid(x: f64) -> f64 {
 ///   `tau_act_eff   = tau_act   * (0.5 + 1.5 * act)`
 ///   `tau_deact_eff = tau_deact / (0.5 + 1.5 * act)`
 ///
-/// When `tausmooth > 0`, uses quintic sigmoid to blend between `tau_act` and
-/// `tau_deact` instead of a hard switch at `ctrl == act`.
+/// When `tausmooth` is at least mjMINVAL, uses quintic sigmoid to blend
+/// between `tau_act` and `tau_deact` instead of a hard switch at
+/// `ctrl == act`. MuJoCo's `mju_muscleDynamics` and
+/// `mju_muscleDynamicsTimescale` (`engine_util_misc.c:733-770`).
 #[must_use]
 pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f64 {
     let ctrl_clamped = ctrl.clamp(0.0, 1.0);
@@ -105,16 +159,15 @@ pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f6
     let dctrl = ctrl_clamped - act;
 
     // Select time constant
-    let tau = if tausmooth < 1e-10 {
+    let tau = if tausmooth < MJ_MINVAL {
         // Hard switch
         if dctrl > 0.0 { tau_act } else { tau_deact }
     } else {
-        // Smooth blending via quintic sigmoid
-        // MuJoCo: x = 0.5*(dctrl/smoothing_width + 1)
-        tau_deact + (tau_act - tau_deact) * sigmoid(0.5 * (dctrl / tausmooth + 1.0))
+        // Smooth blending via quintic sigmoid, centred at dctrl = 0
+        tau_deact + (tau_act - tau_deact) * sigmoid(dctrl / tausmooth + 0.5)
     };
 
-    dctrl / tau.max(1e-10)
+    dctrl / tau.max(MJ_MINVAL)
 }
 
 #[cfg(test)]
@@ -129,6 +182,16 @@ pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f6
 mod tests {
     use super::*;
     use crate::forward::actuation::{hill_active_fl, hill_force_velocity, hill_passive_fl};
+
+    /// A NaN length gives no active force: MuJoCo's length curve tests
+    /// `lmin <= L && L <= lmax`, false for NaN, and `mju_muscleGain` returns
+    /// -0.0 there (MuJoCo 3.5.0, measured).
+    #[test]
+    fn nan_length_has_no_active_force() {
+        let prm = [0.75, 1.05, 300.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2];
+        let gain = muscle_gain(f64::NAN, 0.1, (-1.0, 1.0), 1.0, &prm);
+        assert_eq!(gain.to_bits(), (-0.0_f64).to_bits());
+    }
 
     // ---- AC #3: FL curve shape ----
     #[test]
@@ -352,18 +415,55 @@ mod tests {
     }
 
     // ---- T2: Activation dynamics — smooth blend (AC2) ----
+    /// MuJoCo 3.5.0's `mju_muscleDynamics` on the same inputs, bit for bit:
+    /// the sigmoid's argument is `dctrl / tausmooth + 0.5` (here 0.75).
     #[test]
     fn test_hill_activation_smooth_blend() {
         let prm = [0.01, 0.04, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let act_dot = muscle_activation_dynamics(0.55, 0.5, &prm);
-        // V7: act_clamped=0.5, tau_act=0.01×1.25=0.0125, tau_deact=0.04/1.25=0.032
-        // dctrl=0.05, x=0.5*(0.05/0.2+1)=0.625
-        // S(0.625)=0.625^3*(0.625*(6*0.625-15)+10)
-        // tau=0.032+(0.0125-0.032)*S(0.625)
-        // act_dot=0.05/tau
-        assert!(
-            (act_dot - 2.798_737).abs() < 1e-3,
-            "smooth blend act_dot = {act_dot}, expected ≈ 2.798_737"
+        assert_eq!(act_dot.to_bits(), 3.443_868_971_547_727_f64.to_bits());
+        let prm = [0.01, 0.04, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.3, 0.7, &prm);
+        assert_eq!(act_dot.to_bits(), (-15.499_999_999_999_996_f64).to_bits());
+    }
+
+    /// The floor on the smoothing width and on the time constant is mjMINVAL
+    /// (1e-15), not 1e-10: MuJoCo 3.5.0's `mju_muscleDynamics`, bit for bit. A
+    /// width of 1e-12, 1e-14 or 1e-15 blends and one of 1e-16 or of the double
+    /// below 1e-15 switches; a time
+    /// constant of 1.25e-13 is used as it is and one of 5e-17 (`dynprm[0]`
+    /// 1e-16 at activation 0) is raised to 1e-15.
+    #[test]
+    fn activation_floors_are_mjminval() {
+        let prm = [0.01, 0.04, 1e-12, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.5 + 1e-13, 0.5, &prm);
+        assert_eq!(act_dot.to_bits(), 5.352_395_624_003_173e-12_f64.to_bits());
+        let prm = [0.01, 0.04, 1e-14, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.5 + 2e-15, 0.5, &prm);
+        assert_eq!(act_dot.to_bits(), 1.274_150_622_079_462_5e-13_f64.to_bits());
+        let prm = [0.01, 0.04, 1e-15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(1e-17, 0.0, &prm);
+        assert_eq!(act_dot.to_bits(), 2.433_437_872_433_217_5e-16_f64.to_bits());
+        for width in [1e-16, 9.999_999_999_999_999e-16] {
+            let prm = [0.01, 0.04, width, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+            let act_dot = muscle_activation_dynamics(1e-17, 0.0, &prm);
+            assert_eq!(act_dot.to_bits(), 2e-15_f64.to_bits(), "width {width:e}");
+        }
+        let prm = [1e-13, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.55, 0.5, &prm);
+        assert_eq!(act_dot.to_bits(), 400_000_000_000.000_37_f64.to_bits());
+        let prm = [1e-16, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(1.0, 0.0, &prm);
+        assert_eq!(act_dot.to_bits(), 999_999_999_999_999.9_f64.to_bits());
+    }
+
+    /// MuJoCo 3.5.0's `mju_sigmoid` at a point where `6x² − 15x + 10`
+    /// rounds otherwise.
+    #[test]
+    fn sigmoid_is_mujocos() {
+        assert_eq!(
+            sigmoid(0.763_774_618_976_614).to_bits(),
+            0.910_475_655_329_874_8_f64.to_bits()
         );
     }
 }

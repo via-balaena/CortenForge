@@ -2080,6 +2080,45 @@ fn test_pos_deriv_multi_joint_body() {
     );
 }
 
+/// A child body's one hinge off its origin, under a moving parent: turning the
+/// hinge moves the child's origin, so the parent velocity transported there
+/// and the lever back to the parent move with it (ledger-L36a, P25).
+#[test]
+fn test_pos_deriv_offset_hinge_under_a_moving_parent() {
+    let mjcf = r#"
+        <mujoco model="offset_hinge_child">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j0" type="hinge" axis="1 0 0"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.6"/>
+                    <body name="b2" pos="0 0 -0.4">
+                        <joint name="j1" type="hinge" axis="0 1 0" pos="0.06 -0.04 0.1"/>
+                        <geom type="box" size="0.05 0.03 0.08" pos="0.04 0.02 -0.1" mass="0.5"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.4;
+    data.qvel[0] = 0.8;
+    data.qvel[1] = -0.6;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    let analytical = analytical_dqacc_dqpos(&model, &data);
+    let fd = fd_dqacc_dqpos(&model, &data, 1e-5);
+    let err = max_relative_error(&analytical, &fd, 1e-6);
+    assert!(
+        err < 1e-4,
+        "Offset hinge under a moving parent: dqacc/dqpos max relative error {err} exceeds 1e-4"
+    );
+}
+
 // T_supp8: Sleeping bodies — derivatives correct after forward pass
 #[test]
 fn test_pos_deriv_sleeping_body() {

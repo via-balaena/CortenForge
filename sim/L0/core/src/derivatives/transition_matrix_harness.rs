@@ -25,7 +25,9 @@
 #![allow(clippy::expect_used)]
 
 use super::{DerivativeConfig, max_relative_error, mjd_transition_fd};
-use crate::test_fixtures::conformance::{ConformanceCase, dynamics_conformance_matrix};
+use crate::test_fixtures::conformance::{
+    ConformanceCase, dynamics_conformance_matrix, origin_moving_conformance_matrix,
+};
 use crate::types::{Data, Integrator, Model};
 
 /// The conformance matrix this harness sweeps. Construction lives in the shared
@@ -93,13 +95,25 @@ fn known_limit(_name: &str) -> Option<f64> {
 /// must be machine-exact; listed cases are regression-guarded at their bound.
 #[test]
 fn analytical_transition_matches_fd_across_joint_matrix() {
+    assert_analytic_matches_fd(matrix());
+}
+
+/// The same assertion where a joint moves its body's origin: a slide, or a
+/// hinge off the origin, on a body or ahead of a later joint of it
+/// (CPU-only; see [`origin_moving_conformance_matrix`]).
+#[test]
+fn analytical_transition_matches_fd_where_a_joint_moves_its_body_origin() {
+    assert_analytic_matches_fd(origin_moving_conformance_matrix());
+}
+
+fn assert_analytic_matches_fd(cases: Vec<ConformanceCase>) {
     // Floor matches the legacy regression: ignore the `~Δt` position↔velocity
     // entries whose FD noise dominates the relative metric.
     const FLOOR: f64 = 1e-3;
     const MACHINE_TOL: f64 = 1e-5;
 
     let mut failures = Vec::new();
-    for case in matrix() {
+    for case in cases {
         let data = forward_at(&case.model, &case.qpos, &case.qvel);
 
         let analytic = data

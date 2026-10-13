@@ -1,9 +1,5 @@
 //! Stress test — headless validation of the muscle actuator system.
 //!
-//! 24 checks covering: activation dynamics (7), MuJoCo curve pinning (4),
-//! Hill curve pinning (3), MuJoCo full-pipeline force (2), HillMuscle
-//! full-pipeline force (5), dynamic behavior (3).
-//!
 //! Run: `cargo run -p example-muscle-stress-test --release`
 
 #![allow(
@@ -22,7 +18,7 @@
 )]
 
 use sim_core::forward::{
-    hill_active_fl, hill_force_velocity, hill_passive_fl, muscle_activation_dynamics,
+    hill_active_fl, hill_force_velocity, hill_passive_fl, muscle_activation_dynamics, muscle_f0,
     muscle_gain_length, muscle_gain_velocity, muscle_passive_force,
 };
 
@@ -169,13 +165,14 @@ fn check_a6_ctrl_clamping() -> (u32, u32) {
 fn check_a7_smooth_blend() -> (u32, u32) {
     let dynprm = [0.01, 0.04, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let act_dot = muscle_activation_dynamics(0.55, 0.5, &dynprm);
-    // Precomputed from spec equations
-    let err = (act_dot - 2.798_737).abs();
+    // MuJoCo 3.5.0's mju_muscleDynamics on the same inputs
+    let expected = 3.443_868_971_547_727;
+    let err = (act_dot - expected).abs();
 
     let p = check(
         "A7 Smooth blend",
-        err < 1e-3,
-        &format!("act_dot={act_dot:.6}, expected≈2.798737, err={err:.2e}"),
+        err == 0.0,
+        &format!("act_dot={act_dot:.15}, MuJoCo {expected:.15}, err={err:.2e}"),
     );
     (u32::from(p), 1)
 }
@@ -537,7 +534,7 @@ fn check_d1_mujoco_isometric() -> (u32, u32) {
     }
 
     let force = data.actuator_force[0];
-    let f0 = model.actuator_gainprm[0][2]; // resolved F0
+    let f0 = muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]);
 
     // At steady state: activation≈1, force should be dominated by -F0*FL*FV
     // The exact value depends on joint position (which changes as muscle acts),
@@ -730,7 +727,7 @@ fn check_e1_hill_isometric_zero_penn() -> (u32, u32) {
     data.forward(&model).expect("forward");
 
     let force = data.actuator_force[0];
-    let f0 = model.actuator_gainprm[0][2]; // should be 1000
+    let f0 = muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]); // should be 1000
 
     // At optimal length: FL(1.0)=1.0, FV(0.0)=1.0, cos(0)=1.0
     // force = gain * act + bias = (-F0*FL*FV*cos) * 1.0 + (-F0*FP*cos)
@@ -794,7 +791,7 @@ fn check_e3_hill_passive() -> (u32, u32) {
     data.forward(&model).expect("forward");
 
     let force = data.actuator_force[0];
-    let f0 = model.actuator_gainprm[0][2];
+    let f0 = muscle_f0(&model.actuator_gainprm[0], model.actuator_acc0[0]);
     // Expected: bias = -F0 * FP(1.3) * cos(0), FP(1.3) from exponential curve
     let expected_fp = hill_passive_fl(1.3);
 
@@ -811,11 +808,12 @@ fn check_e3_hill_passive() -> (u32, u32) {
 fn check_e4_hill_f0_auto() -> (u32, u32) {
     let model = sim_mjcf::load_model(HILL_AUTO_F0_MJCF).expect("parse");
 
-    let f0 = model.actuator_gainprm[0][2];
+    let stored = model.actuator_gainprm[0][2];
     let acc0 = model.actuator_acc0[0];
     let scale = model.actuator_gainprm[0][3]; // 200
+    let f0 = muscle_f0(&model.actuator_gainprm[0], acc0);
 
-    // F0 = scale / acc0
+    // The model keeps -1, as MuJoCo's does; each call resolves F0 = scale / acc0
     let expected = scale / acc0;
     let err = (f0 - expected).abs();
 
@@ -823,14 +821,14 @@ fn check_e4_hill_f0_auto() -> (u32, u32) {
     let t = 2;
 
     p += u32::from(check(
-        "E4a F0 auto-resolved positive",
-        f0 > 0.0,
-        &format!("F0={f0:.6} (must be positive)"),
+        "E4a F0 stays -1 in the model",
+        stored == -1.0,
+        &format!("gainprm[2]={stored:.6} (must be -1)"),
     ));
 
     p += u32::from(check(
-        "E4b F0 = scale/acc0",
-        err < 1e-6,
+        "E4b F0 resolves to scale/acc0",
+        f0 > 0.0 && err < 1e-6,
         &format!("F0={f0:.6}, scale/acc0={expected:.6}, err={err:.2e}"),
     ));
 

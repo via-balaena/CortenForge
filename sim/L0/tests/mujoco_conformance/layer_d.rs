@@ -194,7 +194,9 @@ fn layer_d_energy_conservation_rk4() {
 }
 
 /// Energy drift convergence: halving timestep should reduce drift by ~32×
-/// for RK4 (energy error is O(h⁵) for symplectic-like behavior).
+/// for RK4 (energy error is O(h⁵) for symplectic-like behavior). Taken at
+/// h = 0.02 and 0.01, where the drift (about 2e-9 and 6e-11) is far above
+/// rounding; at 0.001 it is about 2e-15, rounding itself.
 #[test]
 fn layer_d_energy_drift_convergence() {
     fn max_energy_drift(h: f64, n: usize) -> f64 {
@@ -231,18 +233,20 @@ fn layer_d_energy_drift_convergence() {
         max_drift
     }
 
-    let drift_coarse = max_energy_drift(0.002, 500); // 1.0s
-    let drift_fine = max_energy_drift(0.001, 1000); // 1.0s
+    let drift_coarse = max_energy_drift(0.02, 50); // 1.0s
+    let drift_fine = max_energy_drift(0.01, 100); // 1.0s
+    assert!(
+        drift_fine > 1e-13,
+        "the finer drift ({drift_fine:.2e}) must stay above rounding for its ratio to mean anything"
+    );
 
     // Halving h should reduce drift by at least 16×
-    if drift_fine > 1e-16 {
-        let ratio = drift_coarse / drift_fine;
-        assert!(
-            ratio > 16.0,
-            "Energy drift should decrease by ~32× when halving h, got {ratio:.1}× \
-             (coarse={drift_coarse:.2e}, fine={drift_fine:.2e})"
-        );
-    }
+    let ratio = drift_coarse / drift_fine;
+    assert!(
+        ratio > 16.0,
+        "Energy drift should decrease by ~32× when halving h, got {ratio:.1}× \
+         (coarse={drift_coarse:.2e}, fine={drift_fine:.2e})"
+    );
 }
 
 /// Euler integrator should dissipate energy for a damped system.

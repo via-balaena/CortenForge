@@ -388,7 +388,7 @@ pub fn accumulate_point_jacobian(
                     ten_j[dof] += scale * direction.dot(&axis);
                 }
                 MjJointType::Ball => {
-                    let jpos = xpos[jnt_body] + xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let jpos = xanchor[jnt_id];
                     let r = point - jpos;
                     let rot = xquat[jnt_body].to_rotation_matrix();
                     for i in 0..3 {

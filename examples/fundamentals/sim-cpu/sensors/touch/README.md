@@ -6,8 +6,7 @@ Contact force measurement via the touch sensor.
 
 - `<touch>` sums normal contact forces on all geoms of the sensor's body
 - Acceleration-stage sensor (reads constraint forces from solver)
-- `condim="1"` (frictionless, normal-only) avoids pyramidal friction approximation
-  which would report ~75% of the true normal force
+- `condim="1"` (frictionless, normal-only)
 - Positive data kind: touch is always >= 0
 - 1-second visual pause before the drop
 

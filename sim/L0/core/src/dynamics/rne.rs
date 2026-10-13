@@ -124,7 +124,7 @@ fn rne_bias(model: &Model, data: &mut Data) {
                 data.qfrc_bias[dof_adr] += gravity_force.dot(&axis);
             }
             MjJointType::Ball => {
-                let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                let jpos = data.xanchor[jnt_id];
                 let r = subtree_com - jpos;
                 let torque = r.cross(&gravity_force);
                 let body_torque = data.xquat[jnt_body].inverse() * torque;
@@ -199,7 +199,9 @@ fn rne_bias(model: &Model, data: &mut Data) {
     // 2. The velocity-product c[i] = v[i] ×_m v_joint, which captures
     //    centripetal and Coriolis accelerations
     //
-    // Note: v[i] is the FULL body velocity (already computed in mj_fwd_velocity)
+    // On a body with several joints, v[i] is the body's velocity over the
+    // joints before joint i, as MuJoCo's `mj_comVel` steps it
+    // (`engine_core_smooth.c:2285-2336`).
 
     // Pre-compute all joint motion subspaces once for RNE (same optimization as CRBA)
     let joint_subspaces: Vec<_> = (0..model.njnt)
@@ -226,10 +228,15 @@ fn rne_bias(model: &Model, data: &mut Data) {
 
         // Add velocity-product acceleration from joints on this body
         // c[i] = v[i] ×_m (S[i] @ qdot[i])
-        // This uses the BODY velocity (not parent), as per Featherstone
 
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+        // The parent velocity transported to this body's origin (cvel is
+        // referenced at each body's xpos; the raw cvel[parent], at the parent
+        // origin, drops the lever [0; ω_parent×r]), then each joint's S·qdot
+        // after its velocity product is taken.
+        let mut v_partial = transport_motion_spatial(data.cvel[parent_id], &r);
 
         for jnt_id in jnt_start..jnt_end {
             let dof_adr = model.jnt_dof_adr[jnt_id];
@@ -244,20 +251,12 @@ fn rne_bias(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Velocity-product acceleration: Featherstone's bias term
-            // c[i] = v[i] ×_m (S·qdot). Since v[i] = X_b(v[parent]) + S·qdot and
-            // (S·qdot) ×_m (S·qdot) = 0, this equals X_b(v[parent]) ×_m (S·qdot),
-            // where X_b(v[parent]) is the parent velocity transported to body i's
-            // origin (cvel is referenced at each body's xpos). The raw cvel[parent],
-            // referenced at the PARENT origin, drops the lever [0; ω_parent×r] — a
-            // term that vanishes for single/two-link chains by geometry but corrupts
-            // the Coriolis force on a non-parallel ≥3-link chain (first nonzero at the
-            // leaf, which the backward pass cannot reach). Using the transported
-            // velocity (vs. cvel[body] = transported + S·qdot) avoids cancellation
-            // noise at the root, where it is identically zero. Validated against
-            // MuJoCo by the forward-conformance harness.
-            let v_parent_at_body = transport_motion_spatial(data.cvel[parent_id], &r);
-            a_bias += spatial_cross_motion(v_parent_at_body, v_joint);
+            // Velocity-product acceleration: c = v ×_m (S·qdot), v the velocity
+            // before this joint. The joint's own S·qdot crosses itself to zero, so
+            // it joins v only after its product, as MuJoCo's (`:2331-2335`; a
+            // ball's three dofs share the velocity before it, `:2315-2321`).
+            a_bias += spatial_cross_motion(v_partial, v_joint);
+            v_partial += v_joint;
 
             // Free joint correction: the spatial acceleration convention uses
             // a_spatial = [α; a_O - ω × v_O], but the free joint's translational
@@ -268,17 +267,7 @@ fn rne_bias(model: &Model, data: &mut Data) {
             // Without this, the backward pass produces a spurious m*(ω × v)
             // force on the translational DOFs.
             if model.jnt_type[jnt_id] == MjJointType::Free {
-                let omega_world = nalgebra::Vector3::new(
-                    data.cvel[body_id][0],
-                    data.cvel[body_id][1],
-                    data.cvel[body_id][2],
-                );
-                let v_world = nalgebra::Vector3::new(
-                    data.qvel[dof_adr],
-                    data.qvel[dof_adr + 1],
-                    data.qvel[dof_adr + 2],
-                );
-                let correction = omega_world.cross(&v_world);
+                let correction = free_joint_velocity_product(data, body_id, dof_adr);
                 a_bias[3] -= correction.x;
                 a_bias[4] -= correction.y;
                 a_bias[5] -= correction.z;
@@ -413,4 +402,25 @@ pub fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
     }
 
     has_gravcomp
+}
+
+/// `ω × v` of a body's free joint: its world angular velocity crossed with
+/// the joint's world-frame linear velocity. MuJoCo takes a free joint's
+/// rotational velocity products with the translational velocity already in
+/// the body velocity (`mj_comVel`, `engine_core_smooth.c:2301-2321`), so a
+/// body acceleration referenced at the origin, `[α; a_O − ω×v_O]`, holds
+/// `−ω×v` in its linear part. `mj_rne`'s bias pass and the body accumulators
+/// (`mj_body_accumulators`) both subtract it.
+pub fn free_joint_velocity_product(data: &Data, body_id: usize, dof_adr: usize) -> Vector3<f64> {
+    let omega = Vector3::new(
+        data.cvel[body_id][0],
+        data.cvel[body_id][1],
+        data.cvel[body_id][2],
+    );
+    let v = Vector3::new(
+        data.qvel[dof_adr],
+        data.qvel[dof_adr + 1],
+        data.qvel[dof_adr + 2],
+    );
+    omega.cross(&v)
 }

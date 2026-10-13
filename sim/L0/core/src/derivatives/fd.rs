@@ -39,8 +39,9 @@ use nalgebra::{DMatrix, DVector};
 /// # Quaternion handling
 ///
 /// Position perturbations operate in tangent space (dimension `nv`) via
-/// `mj_integrate_pos_explicit()`. Output differences use
-/// `mj_differentiate_pos()` to map back to tangent space.
+/// `mj_integrate_pos_explicit()`. The perturbed next states are differenced
+/// with each other, as MuJoCo's `mjd_stepFD` does (its `stateDiff`), so a
+/// quaternion joint's position rows are tangents at the next state.
 ///
 /// # Contact handling
 ///
@@ -98,7 +99,7 @@ pub fn mjd_transition_fd(
     // sensordata is then at the step's (here unperturbed) current state, the
     // state C and D differentiate, as MuJoCo's mjd_stepFD reads it.
     scratch.step(model)?;
-    let y_0 = extract_state(model, &scratch, &data.qpos);
+    let y_0 = NextState::of(&scratch);
     let sensor_0 = if compute_sensors {
         Some(scratch.sensordata.clone())
     } else {
@@ -123,7 +124,7 @@ pub fn mjd_transition_fd(
         // Apply +eps perturbation
         perturb_state(model, &mut scratch, data, i, eps);
         scratch.step(model)?;
-        let y_plus = extract_state(model, &scratch, &data.qpos);
+        let y_plus = NextState::of(&scratch);
         let s_plus = if compute_sensors {
             Some(scratch.sensordata.clone())
         } else {
@@ -134,30 +135,25 @@ pub fn mjd_transition_fd(
             // Apply -eps perturbation
             perturb_state(model, &mut scratch, data, i, -eps);
             scratch.step(model)?;
-            let y_minus = extract_state(model, &scratch, &data.qpos);
+            let y_minus = NextState::of(&scratch);
             let s_minus = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
                 None
             };
 
-            // Central difference: (y+ - y-) / (2·eps)
-            let col = (&y_plus - &y_minus) / (2.0 * eps);
-            A.column_mut(i).copy_from(&col);
-
-            // Sensor column
+            // Centred: (y+ − y−) / (2·eps)
+            A.column_mut(i)
+                .copy_from(&state_diff(model, &y_minus, &y_plus, 2.0 * eps));
             if let (Some(c_mat), Some(sp), Some(sm)) = (&mut C, &s_plus, &s_minus) {
-                let scol = (sp - sm) / (2.0 * eps);
-                c_mat.column_mut(i).copy_from(&scol);
+                c_mat.column_mut(i).copy_from(&diff(sm, sp, 2.0 * eps));
             }
         } else {
-            // Forward difference: (y+ - y0) / eps
-            let col = (&y_plus - &y_0) / eps;
-            A.column_mut(i).copy_from(&col);
-
+            // Forward: (y+ − y0) / eps
+            A.column_mut(i)
+                .copy_from(&state_diff(model, &y_0, &y_plus, eps));
             if let (Some(c_mat), Some(sp), Some(s0)) = (&mut C, &s_plus, &sensor_0) {
-                let scol = (sp - s0) / eps;
-                c_mat.column_mut(i).copy_from(&scol);
+                c_mat.column_mut(i).copy_from(&diff(s0, sp, eps));
             }
         }
     }
@@ -175,7 +171,7 @@ pub fn mjd_transition_fd(
         let (y_plus, s_plus) = if nudge_fwd {
             perturb_ctrl(model, &mut scratch, data, j, eps);
             scratch.step(model)?;
-            let yp = extract_state(model, &scratch, &data.qpos);
+            let yp = NextState::of(&scratch);
             let sp = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -189,7 +185,7 @@ pub fn mjd_transition_fd(
         let (y_minus, s_minus) = if nudge_back {
             perturb_ctrl(model, &mut scratch, data, j, -eps);
             scratch.step(model)?;
-            let ym = extract_state(model, &scratch, &data.qpos);
+            let ym = NextState::of(&scratch);
             let sm = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -201,20 +197,21 @@ pub fn mjd_transition_fd(
         };
 
         // State B column (clamped differencing)
-        let col = match (&y_plus, &y_minus) {
-            (Some(yp), Some(ym)) => (yp - ym) / (2.0 * eps),
-            (Some(yp), None) => (yp - &y_0) / eps,
-            (None, Some(ym)) => (&y_0 - ym) / eps,
-            (None, None) => DVector::zeros(nx),
-        };
-        B.column_mut(j).copy_from(&col);
+        B.column_mut(j).copy_from(&clamped_state_diff(
+            model,
+            &y_0,
+            y_plus.as_ref(),
+            y_minus.as_ref(),
+            eps,
+        ));
 
-        // Sensor D column (same clamped differencing)
+        // Sensor D column (the same clamping; centred, the difference MuJoCo
+        // takes reversed, registry D-FD-CENTERED-D-SIGN)
         if let (Some(d_mat), Some(s0)) = (&mut D, &sensor_0) {
             let scol = match (&s_plus, &s_minus) {
-                (Some(sp), Some(sm)) => (sp - sm) / (2.0 * eps),
-                (Some(sp), None) => (sp - s0) / eps,
-                (None, Some(sm)) => (s0 - sm) / eps,
+                (Some(sp), Some(sm)) => diff(sm, sp, 2.0 * eps),
+                (Some(sp), None) => diff(s0, sp, eps),
+                (None, Some(sm)) => diff(sm, s0, eps),
                 (None, None) => DVector::zeros(ns),
             };
             d_mat.column_mut(j).copy_from(&scol);
@@ -305,6 +302,72 @@ pub(super) fn perturb_ctrl(
 /// Matches MuJoCo's `inRange()` in `engine_derivative_fd.c`.
 pub(super) fn in_ctrl_range(x1: f64, x2: f64, range: (f64, f64)) -> bool {
     x1 >= range.0 && x1 <= range.1 && x2 >= range.0 && x2 <= range.1
+}
+
+/// A step's output whole, as MuJoCo's `mjd_stepFD` reads it
+/// (`getState(mjSTATE_PHYSICS)`, `engine_derivative_fd.c:37-42`).
+pub(super) struct NextState {
+    qpos: DVector<f64>,
+    qvel: DVector<f64>,
+    act: DVector<f64>,
+}
+
+impl NextState {
+    pub(super) fn of(data: &Data) -> Self {
+        Self {
+            qpos: data.qpos.clone(),
+            qvel: data.qvel.clone(),
+            act: data.act.clone(),
+        }
+    }
+}
+
+/// `(x2 − x1)/h` as MuJoCo's `diff` computes it, `(1/h)·(x2 − x1)`
+/// (`engine_derivative_fd.c:46-51`).
+pub(super) fn diff(x1: &DVector<f64>, x2: &DVector<f64>, h: f64) -> DVector<f64> {
+    let inv_h = 1.0 / h;
+    x2.zip_map(x1, |b, a| inv_h * (b - a))
+}
+
+/// `(s2 − s1)/h` in the state's tangent space, as MuJoCo's `stateDiff`
+/// (`engine_derivative_fd.c:55-64`): with a quaternion joint (`nq ≠ nv`) the
+/// positions through [`mj_differentiate_pos`], each a tangent at `s1`'s
+/// position, the rest by [`diff`]; without one, all by [`diff`].
+pub(super) fn state_diff(model: &Model, s1: &NextState, s2: &NextState, h: f64) -> DVector<f64> {
+    let (nv, na) = (model.nv, model.na);
+    let mut ds = DVector::zeros(2 * nv + na);
+    if model.nq == nv {
+        ds.rows_mut(0, nv).copy_from(&diff(&s1.qpos, &s2.qpos, h));
+    } else {
+        let mut dq = DVector::zeros(nv);
+        mj_differentiate_pos(model, &mut dq, &s1.qpos, &s2.qpos, h);
+        ds.rows_mut(0, nv).copy_from(&dq);
+    }
+    ds.rows_mut(nv, nv).copy_from(&diff(&s1.qvel, &s2.qvel, h));
+    if na > 0 {
+        ds.rows_mut(2 * nv, na)
+            .copy_from(&diff(&s1.act, &s2.act, h));
+    }
+    ds
+}
+
+/// A control column's state difference, as MuJoCo's `clampedStateDiff`
+/// (`engine_derivative_fd.c:87-102`): forward from the nominal output `s`, or
+/// backward to it, where only one nudge stays in the control range;
+/// centred where both do; zeros where neither does.
+pub(super) fn clamped_state_diff(
+    model: &Model,
+    s: &NextState,
+    plus: Option<&NextState>,
+    minus: Option<&NextState>,
+    h: f64,
+) -> DVector<f64> {
+    match (plus, minus) {
+        (Some(p), None) => state_diff(model, s, p, h),
+        (None, Some(m)) => state_diff(model, m, s, h),
+        (Some(p), Some(m)) => state_diff(model, m, p, 2.0 * h),
+        (None, None) => DVector::zeros(2 * model.nv + model.na),
+    }
 }
 
 /// Extract state vector in tangent space from simulation data.

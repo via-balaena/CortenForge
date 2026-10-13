@@ -6,6 +6,7 @@
 
 use super::muscle::muscle_activation_dynamics;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
+use crate::linalg::dot_sparse;
 use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
 use crate::tendon::{accumulate_point_jacobian, apply_tendon_force, subquat};
 use crate::types::{
@@ -22,13 +23,14 @@ use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL, DISABLE_GRAVITY};
 use super::millard::{
     MillardMuscleParams, default_millard_curves, millard_active_gain, millard_passive_bias,
 };
-use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force};
+use super::muscle::{muscle_bias, muscle_f0, muscle_gain};
 
 /// Map an actuator's `gainprm` (the HillMuscle/MillardMuscle layout) to the Millard
-/// parameter struct: `[2]`=F0, `[4]`=L0, `[5]`=Lts, `[6]`=vmax, `[7]`=pennation.
-fn millard_params(prm: &[f64; 9]) -> MillardMuscleParams {
+/// parameter struct: `[2]`=F0 (resolved by [`muscle_f0`] with `acc0`), `[4]`=L0,
+/// `[5]`=Lts, `[6]`=vmax, `[7]`=pennation.
+fn millard_params(prm: &[f64; 9], acc0: f64) -> MillardMuscleParams {
     MillardMuscleParams {
-        f0: prm[2],
+        f0: muscle_f0(prm, acc0),
         l0: prm[4],
         lts: prm[5],
         vmax: prm[6],
@@ -481,28 +483,6 @@ pub fn ball_free_transmission(
     }
 }
 
-/// `Σ row[k]·vec[k]` in MuJoCo's order (`mju_dotSparse`,
-/// `engine_util_sparse.h:159-185`): four partial sums over each block of four,
-/// joined as `(s0 + s2) + (s1 + s3)`, then the rest one by one.
-fn dot_sparse(row: &[f64], vec: &[f64]) -> f64 {
-    let n = row.len();
-    let (mut s0, mut s1, mut s2, mut s3) = (0.0, 0.0, 0.0, 0.0);
-    let mut i = 0;
-    while i + 4 <= n {
-        s0 += row[i] * vec[i];
-        s1 += row[i + 1] * vec[i + 1];
-        s2 += row[i + 2] * vec[i + 2];
-        s3 += row[i + 3] * vec[i + 3];
-        i += 4;
-    }
-    let mut res = (s0 + s2) + (s1 + s3);
-    while i < n {
-        res += row[i] * vec[i];
-        i += 1;
-    }
-    res
-}
-
 /// Compute each actuator's velocity, `actuator_velocity = gear *
 /// transmission_velocity`, in the velocity stage. Called after
 /// `mj_fwd_velocity()` (which provides `ten_velocity`).
@@ -522,7 +502,7 @@ pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
                 } else {
                     dot_sparse(
                         &data.actuator_moment[i].as_slice()[dof_adr..dof_adr + nv],
-                        &data.qvel.as_slice()[dof_adr..dof_adr + nv],
+                        |k| data.qvel[dof_adr + k],
                     )
                 };
             }
@@ -584,7 +564,7 @@ pub fn unclamped_next_activation(
     act_dot: f64,
 ) -> f64 {
     if model.actuator_dyntype[actuator_id] == ActuatorDynamics::FilterExact {
-        let tau = model.actuator_dynprm[actuator_id][0].max(1e-10);
+        let tau = model.actuator_dynprm[actuator_id][0].max(MIN_VAL);
         current_act + act_dot * tau * (1.0 - (-model.timestep / tau).exp())
     } else {
         current_act + act_dot * model.timestep
@@ -647,10 +627,6 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     for i in 0..model.nu {
-        // S7d: Skip force computation for per-group disabled actuators.
-        if actuator_disabled(model, i) {
-            continue;
-        }
         // A sleeping actuator keeps its act_dot and acts with no force
         // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394).
         if sleep_enabled && crate::island::actuator_asleep(model, data, i) {
@@ -686,7 +662,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 // Filter uses Euler integration, FilterExact uses exact integration.
                 // Both compute the same act_dot here; the difference is in integrate().
                 let act_adr = model.actuator_act_adr[i];
-                let tau = model.actuator_dynprm[i][0].max(1e-10);
+                let tau = model.actuator_dynprm[i][0].max(MIN_VAL);
                 data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
                 if model.actuator_actearly[i] {
                     mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
@@ -721,6 +697,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             }
         };
 
+        // S7d: a per-group disabled actuator has its act_dot, as MuJoCo's
+        // (whose act_dot loop has no disabled check, engine_forward.c:321-372),
+        // and no force; the advance leaves its activation.
+        if actuator_disabled(model, i) {
+            continue;
+        }
+
         // --- Phase 2: Force generation (gain * input + bias) ---
         let length = data.actuator_length[i];
         let velocity = data.actuator_velocity[i];
@@ -732,24 +715,17 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     + model.actuator_gainprm[i][1] * length
                     + model.actuator_gainprm[i][2] * velocity
             }
-            GainType::Muscle => {
-                // Muscle gain = -F0 * FL(L) * FV(V)
-                let prm = &model.actuator_gainprm[i];
-                let lengthrange = model.actuator_lengthrange[i];
-                let f0 = prm[2]; // resolved by compute_actuator_params()
-
-                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
-                let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
-
-                let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
-                let fv = muscle_gain_velocity(norm_vel, prm[8]);
-                -f0 * fl * fv
-            }
+            GainType::Muscle => muscle_gain(
+                length,
+                velocity,
+                model.actuator_lengthrange[i],
+                model.actuator_acc0[i],
+                &model.actuator_gainprm[i],
+            ),
             GainType::HillMuscle => {
                 // Hill-type active force: -F0 × FL(L_norm) × FV(V_norm) × cos(α)
                 let prm = &model.actuator_gainprm[i];
-                let f0 = prm[2]; // resolved by compute_actuator_params()
+                let f0 = muscle_f0(prm, model.actuator_acc0[i]);
                 let optimal_fiber_length = prm[4];
                 let tendon_slack_length = prm[5];
                 let max_contraction_velocity = prm[6];
@@ -777,7 +753,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 // as HillMuscle; `length`/`velocity` are the MTU length/lengthening rate.
                 millard_active_gain(
                     default_millard_curves(),
-                    millard_params(&model.actuator_gainprm[i]),
+                    millard_params(&model.actuator_gainprm[i], model.actuator_acc0[i]),
                     length,
                     velocity,
                 )
@@ -798,21 +774,16 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     + model.actuator_biasprm[i][1] * length
                     + model.actuator_biasprm[i][2] * velocity
             }
-            BiasType::Muscle => {
-                let prm = &model.actuator_gainprm[i]; // muscle uses gainprm for both
-                let lengthrange = model.actuator_lengthrange[i];
-                let f0 = prm[2];
-
-                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
-
-                let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
-                -f0 * fp
-            }
+            BiasType::Muscle => muscle_bias(
+                length,
+                model.actuator_lengthrange[i],
+                model.actuator_acc0[i],
+                &model.actuator_biasprm[i],
+            ),
             BiasType::HillMuscle => {
                 // Hill-type passive force: -F0 × FP(L_norm) × cos(α)
                 let prm = &model.actuator_gainprm[i]; // HillMuscle shares gainprm layout
-                let f0 = prm[2];
+                let f0 = muscle_f0(prm, model.actuator_acc0[i]);
                 let optimal_fiber_length = prm[4];
                 let tendon_slack_length = prm[5];
                 let pennation_angle = prm[7];
@@ -828,7 +799,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 // Millard2012 passive + fiber-damping bias (shares gainprm layout).
                 millard_passive_bias(
                     default_millard_curves(),
-                    millard_params(&model.actuator_gainprm[i]),
+                    millard_params(&model.actuator_gainprm[i], model.actuator_acc0[i]),
                     length,
                     velocity,
                 )

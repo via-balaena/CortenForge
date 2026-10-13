@@ -463,12 +463,12 @@ CortenForge uses dense `DMatrix<f64>` (target models have nv < 100).
 Two additional integrator variants that use the full velocity-derivative Jacobian `qDeriv`
 instead of `ImplicitSpringDamper`'s direct mass-matrix modification approach:
 
-| Integrator | D Assembly | Symmetrize | Factorization | MuJoCo Equivalent |
-|------------|-----------|------------|---------------|-------------------|
-| `ImplicitFast` | passive + actuator vel | Yes | Cholesky | `mjINT_IMPLICITFAST` |
-| `Implicit` | passive + actuator vel + Coriolis | No | LU (partial pivot) | `mjINT_IMPLICIT` |
+| Integrator | D Assembly | MuJoCo Equivalent |
+|------------|-----------|-------------------|
+| `ImplicitFast` | passive + actuator vel | `mjINT_IMPLICITFAST` |
+| `Implicit` | passive + actuator vel + Coriolis | `mjINT_IMPLICIT` |
 
-**Verification:** 19 tests in `integration/implicit_integration.rs` covering:
+**Verification:** tests in `integration/implicit_integration.rs` covering:
 - Tendon-coupled damping stability (AC-1)
 - Actuator velocity stability (AC-2)
 - Zero-damping equivalence with Euler (AC-4)
@@ -476,7 +476,7 @@ instead of `ImplicitSpringDamper`'s direct mass-matrix modification approach:
 - Tendon spring explicit treatment (AC-8)
 - Analytical vs FD derivative consistency — ImplicitFast (AC-9)
 - Analytical vs FD derivative consistency — Implicit (AC-10)
-- Cholesky failure on positive velocity feedback (AC-16)
+- Positive velocity feedback steps as MuJoCo's, under both implicit integrators (AC-16)
 - Diagonal regression — existing ImplicitSpringDamper tests pass (AC-3)
 
 **Breaking change:** MJCF string `"implicit"` now maps to the full `Implicit` variant.

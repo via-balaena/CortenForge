@@ -108,16 +108,19 @@ impl Data {
         // Integrate activation per actuator via mj_next_activation() (§34).
         // Handles both integration (Euler/FilterExact) and actlimited clamping.
         // MuJoCo order: activation → sleep → velocity → position.
-        // S4.8: Per-actuator disable gating — disabled actuators get act_dot=0,
-        // freezing activation state without zeroing it.
-        for i in 0..model.nu {
-            let act_adr = model.actuator_act_adr[i];
-            let act_num = model.actuator_act_num[i];
-            let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i);
-            for k in 0..act_num {
-                let j = act_adr + k;
-                let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
-                self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
+        // With actuation disabled the activations are left as they are, not
+        // clamped either; a disabled actuator's advances with act_dot = 0
+        // (`mj_advance`, `engine_forward.c:886-895`).
+        if !disabled(model, DISABLE_ACTUATION) {
+            for i in 0..model.nu {
+                let act_adr = model.actuator_act_adr[i];
+                let act_num = model.actuator_act_num[i];
+                let is_disabled = actuator_disabled(model, i);
+                for k in 0..act_num {
+                    let j = act_adr + k;
+                    let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
+                    self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
+                }
             }
         }
 
@@ -138,7 +141,7 @@ impl Data {
                     _ => self.qacc.clone(),
                 });
             }
-            self.reforward_after_sleep(model)?;
+            self.reforward_after_sleep(model, MjStage::Pos)?;
         }
         let acc = match (&solved, model.integrator) {
             (Some(acc), _) => acc,
@@ -229,13 +232,19 @@ impl Data {
     }
 
     /// The rest of `mj_advance`'s sleep block (`engine_forward.c:898-905`),
-    /// after `mj_sleep` put a tree to sleep: the forward pass from the
-    /// velocity stage, sensors and `cb_control` included, while the sleep
-    /// arrays still list the slept trees as awake, so their velocity- and
-    /// acceleration-stage quantities are computed at the zeroed velocity;
+    /// after `mj_sleep` put a tree to sleep: the forward pass after
+    /// `skipstage`, sensors and `cb_control` included, while the sleep arrays
+    /// still list the slept trees as awake, so their quantities from that
+    /// stage on are computed as an awake tree's, with the zeroed velocity;
     /// then the sleep arrays.
-    pub(crate) fn reforward_after_sleep(&mut self, model: &Model) -> Result<(), StepError> {
-        self.forward_skip_unchecked(model, MjStage::Pos, false)?;
+    /// MuJoCo skips the position stage (`MjStage::Pos`); RK4 here does not
+    /// (registry `D-RK4-SLEEP`).
+    pub(crate) fn reforward_after_sleep(
+        &mut self,
+        model: &Model,
+        skipstage: MjStage,
+    ) -> Result<(), StepError> {
+        self.forward_skip_unchecked(model, skipstage, false)?;
         crate::island::mj_update_sleep_arrays(model, self);
         Ok(())
     }

@@ -813,20 +813,15 @@ fn test_tendon_length0() {
 // Test 13: Model build — muscle acc0 (Model G)
 // ============================================================================
 
-/// Test 13: compute_actuator_params() for spatial tendon — acc0 is non-zero.
+/// Test 13: compute_actuator_params() for spatial tendon. The tendon runs
+/// straight along both links at `qpos0`, so its moment is zero there and
+/// `acc0` is 0, as MuJoCo 3.5.0 stores it (unclamped; its readers clamp it
+/// at mjMINVAL).
 #[test]
 fn test_muscle_acc0_spatial_tendon() {
     let model = load_model(MODEL_G).expect("Failed to load Model G");
-
-    // Muscle actuator should have non-zero actuator_acc0.
-    // For a 2-site straight spatial tendon the acc0 value may be very small
-    // but must still be computed (not left at exactly 0.0).
     assert_eq!(model.nu, 1);
-    assert!(
-        model.actuator_acc0[0] != 0.0,
-        "Expected non-zero actuator_acc0 for muscle on spatial tendon, got {}",
-        model.actuator_acc0[0]
-    );
+    assert_eq!(model.actuator_acc0[0], 0.0);
 }
 
 // ============================================================================
@@ -2128,10 +2123,8 @@ fn test_40b_t10_wrap_xpos_conformance() {
         assert_eq!(data.wrap_obj[adr + 2], geom_id);
     }
 
-    // Model H: collinear degenerate
-    // Note: collinear case has undefined wrapping plane. MuJoCo and our implementation
-    // may choose different perpendicular directions, yielding different tangent positions
-    // but identical tendon lengths. We verify structural properties instead of exact positions.
+    // Model H: collinear. The wrapping plane is MuJoCo's (`tendon_parity.rs`
+    // compares the tangent points with MuJoCo's); here, their structure.
     {
         let model = load_model(MODEL_H).expect("load failed");
         let mut data = model.make_data();

@@ -7,7 +7,10 @@
 //! - Fluid derivative functions
 //! - Muscle derivative helpers
 
-use super::fd::{extract_state, in_ctrl_range, mjd_transition_fd, perturb_ctrl, perturb_state};
+use super::fd::{
+    NextState, clamped_state_diff, in_ctrl_range, mjd_transition_fd, perturb_ctrl, perturb_state,
+    state_diff,
+};
 use super::integration::{compute_integration_derivatives, mjd_sub_quat, post_step_qvel};
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::constraint::impedance::MJ_MINVAL;
@@ -15,10 +18,11 @@ use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
+use crate::forward::solve_implicit;
 use crate::forward::{
     MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
-    hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_gain_length,
-    muscle_gain_velocity, norm3,
+    hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_f0,
+    muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
 };
 use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::isd_damping;
@@ -26,8 +30,7 @@ use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
 use crate::linalg::{
-    cholesky_in_place, cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse,
-    mj_solve_sparse_batch,
+    cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse, mj_solve_sparse_batch,
 };
 use crate::plugin::PluginCapabilityBit;
 use crate::quat::{qpos_quat, quat_to_vel};
@@ -265,27 +268,25 @@ fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Optio
         GainType::Fixed => 0.0,
         GainType::Affine => model.actuator_gainprm[i][2],
         GainType::Muscle => {
-            // gain = -F0 * FL(L_norm) * FV(V_norm)
-            // ∂gain/∂V = -F0 * FL(L_norm) * dFV/dV_norm * dV_norm/dV
+            // MuJoCo's `mjd_muscleGain_vel` (engine_derivative.c:781-826):
+            // -F0 · FL(L_norm) · dFV/dV_norm / max(mjMINVAL, L0 · vmax).
             let prm = &model.actuator_gainprm[i];
             let lengthrange = model.actuator_lengthrange[i];
-            let f0 = prm[2];
+            let f0 = muscle_f0(prm, model.actuator_acc0[i]);
 
-            let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-            let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
-            let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
+            let (l0, norm_len) = muscle_length(length, lengthrange, prm);
+            let norm_vel = velocity / (l0 * prm[6]).max(MJ_MINVAL);
 
             let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
             let dfv_dnv = muscle_gain_velocity_deriv(norm_vel, prm[8]);
-            let dnv_dv = 1.0 / (l0 * prm[6]).max(1e-10);
 
-            -f0 * fl * dfv_dnv * dnv_dv
+            -f0 * fl * dfv_dnv / (l0 * prm[6]).max(MJ_MINVAL)
         }
         GainType::HillMuscle => {
             // gain = -F0 * FL(L_norm) * FV(V_norm) * cos(α)
             // ∂gain/∂V = -F0 * FL * dFV/dV_norm * dV_norm/dV * cos(α)
             let prm = &model.actuator_gainprm[i];
-            let f0 = prm[2];
+            let f0 = muscle_f0(prm, model.actuator_acc0[i]);
             let optimal_fiber_length = prm[4];
             let tendon_slack_length = prm[5];
             let max_contraction_velocity = prm[6];
@@ -608,12 +609,12 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
 
         // Snapshot the TRANSPORTED parent velocity Jacobian `∂vt/∂qvel = X_b·Dcvel[parent]`
         // before this body's own joint subspace is added below. The velocity-product
-        // term differentiates `vt = X_b(cvel[parent])` (the parent velocity transported
-        // to this body's origin), NOT `cvel[body] = vt + S·qvel`; using `vt` keeps the
-        // term identically zero at the root (where cvel[parent]=0) instead of relying on
-        // a `(S·qvel)×_m(S·qvel)` cancellation that leaves floating-point noise.
-        let dvt = data.deriv_Dcvel[body_id].clone();
-        let vt = transport_motion_spatial(data.cvel[parent_id], &r);
+        // term differentiates `vt`, the body's velocity before each joint: the parent
+        // velocity transported to this body's origin, then each earlier joint's
+        // `S·qvel` (see `mj_rne`). `vt` and `dvt` advance after each joint below, as
+        // MuJoCo's running `Dcvel` (`mjd_comVel_vel_dense`, `engine_derivative.c:329-372`).
+        let mut dvt = data.deriv_Dcvel[body_id].clone();
+        let mut vt = transport_motion_spatial(data.cvel[parent_id], &r);
 
         // For each joint of this body
         let jnt_start = model.body_jnt_adr[body_id];
@@ -664,7 +665,7 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
             }
 
             // The forward velocity-product term is `crossMotion(vt, v_joint)` with
-            // `vt = X_b(cvel[parent])` (see `mj_rne`). Its qvel-derivative:
+            // `vt` the velocity before this joint (see `mj_rne`). Its qvel-derivative:
             // Term 1 (direct, ∂v_joint): crossMotion(vt, S[:, d])
             for d in 0..ndof {
                 let s_col = SpatialVector::new(
@@ -733,6 +734,14 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
                     data.deriv_Dcacc[body_id][(3, dof_adr + i)] -= cross.x;
                     data.deriv_Dcacc[body_id][(4, dof_adr + i)] -= cross.y;
                     data.deriv_Dcacc[body_id][(5, dof_adr + i)] -= cross.z;
+                }
+            }
+
+            // The next joint's velocity product takes this joint's velocity too.
+            vt += v_joint;
+            for d in 0..ndof {
+                for row in 0..6 {
+                    dvt[(row, dof_adr + d)] += s[(row, d)];
                 }
             }
         }
@@ -1110,8 +1119,8 @@ fn add_spatial_tendon_jacobian_term(
 /// Derivative of the MuJoCo piecewise-quadratic active FL curve w.r.t.
 /// normalized length. Returns `dFL/dL_norm`.
 fn muscle_active_fl_deriv(length: f64, lmin: f64, lmax: f64) -> f64 {
-    const EPS: f64 = 1e-10;
-    if length < lmin || length > lmax {
+    const EPS: f64 = MJ_MINVAL;
+    if !(lmin <= length && length <= lmax) {
         return 0.0;
     }
     let a = 0.5 * (lmin + 1.0);
@@ -1217,22 +1226,22 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
                 model.actuator_gainprm[i][1]
             }
             GainType::Muscle => {
-                // gain = -F0 * FL(L_norm) * FV(V_norm)
+                // gain = -F0 * FL(L_norm) * FV(V_norm), the force and the
+                // clamps as `muscle_gain`'s
                 // ∂gain/∂L = -F0 * dFL/dL_norm * dL_norm/dL * FV(V_norm)
                 let prm = &model.actuator_gainprm[i];
                 let lengthrange = model.actuator_lengthrange[i];
-                let f0 = prm[2];
-                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
-                let norm_vel = data.actuator_velocity[i] / (l0 * prm[6]).max(1e-10);
+                let f0 = muscle_f0(prm, model.actuator_acc0[i]);
+                let (l0, norm_len) = muscle_length(length, lengthrange, prm);
+                let norm_vel = data.actuator_velocity[i] / (l0 * prm[6]).max(MJ_MINVAL);
                 let dfl_dnl = muscle_active_fl_deriv(norm_len, prm[4], prm[5]);
                 let fv = muscle_gain_velocity(norm_vel, prm[8]);
-                let dnl_dl = 1.0 / l0.max(1e-10);
+                let dnl_dl = 1.0 / l0.max(MJ_MINVAL);
                 -f0 * dfl_dnl * dnl_dl * fv
             }
             GainType::HillMuscle => {
                 let prm = &model.actuator_gainprm[i];
-                let f0 = prm[2];
+                let f0 = muscle_f0(prm, model.actuator_acc0[i]);
                 let optimal_fiber_length = prm[4];
                 let tendon_slack_length = prm[5];
                 let max_contraction_velocity = prm[6];
@@ -1427,14 +1436,22 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             dof_lin[dof_adr + d] = Vector3::new(s[(3, d)], s[(4, d)], s[(5, d)]);
         }
     }
-    // The translational position-DOFs of a single body (used to inject the
-    // `∂r/∂q = dof_lin` transport term wherever the rotational `axis×r` term is
-    // applied for that body itself). For a Hinge/Slide/Ball the linear subspace
-    // is either zero or a pure lever (Hinge `â×r`), so only genuine prismatic
-    // DOFs (Slide, Free-linear) contribute — detected by a nonzero `dof_lin`
-    // with zero `dof_axis` (no rotation).
-    let is_translational =
-        |k: usize| -> bool { dof_axis[k].norm_squared() == 0.0 && dof_lin[k].norm_squared() > 0.0 };
+    // The DOFs that move their own body's origin: for body b's own DOF k,
+    // `dof_lin[k] = ∂xpos[b]/∂q_k` — a slide's axis, a free joint's linear DOFs,
+    // and a hinge's lever `â×(xpos − anchor)`, nonzero when the hinge is off the
+    // origin (a free joint's angular DOFs turn about it, `[R; 0]`, and a ball's
+    // when its anchor is the origin).
+    // What is referenced at the origin and not carried by DOF k moves with it:
+    // the transported parent velocity and acceleration, the lever to the parent
+    // (`∂r/∂q_k = dof_lin[k]`), and the subspaces of the body's joints before
+    // k's (`origin_shift`).
+    let moves_origin = |k: usize| -> bool { dof_lin[k].norm_squared() > 0.0 };
+    // `[0; ω(v) × dof_lin[k]]`: the motion vector `v`, not carried by DOF `k`,
+    // referenced at the origin `k` moves.
+    let origin_shift = |v: &SpatialVector, k: usize| -> SpatialVector {
+        let w = Vector3::new(v[0], v[1], v[2]).cross(&dof_lin[k]);
+        SpatialVector::new(0.0, 0.0, 0.0, w.x, w.y, w.z)
+    };
 
     // A Free joint sets its body's world pose ABSOLUTELY (`position.rs` overwrites
     // `pos`/`quat` from qpos, discarding the parent frame). So a free body's frame —
@@ -1535,8 +1552,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
     // ==================== Part B operating point ====================
     // Coriolis/gyroscopic RNEA — matches `mj_rne`'s bias-acceleration recursion EXACTLY:
-    // `a_B[b] = X_b(a_B[parent]) + X_b(cvel[parent]) ×_m (S·qvel)` (X_b motion transport:
-    // angular unchanged, linear += α_parent × r). The velocity-product uses the parent
+    // `a_B[b] = X_b(a_B[parent]) + Σ_j v_<j ×_m (S_j·qvel_j)` (X_b motion transport:
+    // angular unchanged, linear += α_parent × r), `v_<j` the body's velocity before
+    // joint j: `vt` plus the earlier joints' `S·qvel`. The velocity-product uses the parent
     // velocity TRANSPORTED to this body's origin `vt = X_b(cvel[parent])`; the raw
     // `cvel[parent]` at the parent origin drops the `[0; ω_parent×r] ×_m (S·qvel)` lever
     // and corrupts a non-parallel ≥3-link chain (see `mj_rne`). The X_b transport of the
@@ -1559,6 +1577,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         cacc_b[b] = acc;
         let js = model.body_jnt_adr[b];
         let je = js + model.body_jnt_num[b];
+        let mut v_partial = transport_motion_spatial(data.cvel[pid], &r);
         for jid in js..je {
             let da = model.jnt_dof_adr[jid];
             let s = &joint_subspaces[jid];
@@ -1569,7 +1588,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     vj[row] += s[(row, d)] * data.qvel[da + d];
                 }
             }
-            cacc_b[b] += spatial_cross_motion(transport_motion_spatial(data.cvel[pid], &r), vj);
+            cacc_b[b] += spatial_cross_motion(v_partial, vj);
+            v_partial += vj;
 
             // Free-joint correction: the spatial-acceleration convention is
             // `a = [α; a_O − ω×v_O]`, but a free joint's translational DOFs carry
@@ -1676,7 +1696,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[body_id];
             for k in bd0..bd0 + model.body_dof_num[body_id] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let contrib = omega_p.cross(&dof_lin[k]);
                     data.deriv_Dcvel_pos[body_id][(3, k)] += contrib.x;
                     data.deriv_Dcvel_pos[body_id][(4, k)] += contrib.y;
@@ -1698,7 +1718,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         //
         // This handles multi-joint bodies (cross-derivatives between joints on the
         // same body) and also single-joint cases correctly. All joint types have
-        // orientation-dependent axes (Ball/Free use body-frame S=[R;0]).
+        // orientation-dependent axes (a ball's and a free joint's angular
+        // columns are the body frame's, `R`).
         let js = model.body_jnt_adr[body_id];
         let je = js + model.body_jnt_num[body_id];
 
@@ -1726,17 +1747,26 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         }
         let vj_rotating: SpatialVector = vj_contrib.iter().sum();
 
-        // Derivative w.r.t. each perturbing angular DOF on this body.
+        // Derivative w.r.t. each perturbing DOF on this body.
         // Perturbing q_k rotates the body's frame from joint k ONWARD (the
         // PARTIAL-frame construction in forward kinematics) — so it only
-        // affects the subspaces of joints applied at-or-after k on this body
+        // turns the subspaces of joints applied at-or-after k on this body
         // (`jid2 ≥ k`), NOT the earlier ones. The j = k self-term contributes
-        // the linear lever `â_k×(â_k×r)` (angular `â_k×â_k = 0`).
+        // the linear lever `â_k×(â_k×r)` (angular `â_k×â_k = 0`). A DOF that
+        // moves the origin shifts the earlier joints' velocity, which it does not
+        // carry (`origin_shift`).
         for (i, jid) in (js..je).enumerate() {
             let vj_from_k: SpatialVector = vj_contrib[i..].iter().sum();
+            let vj_before: SpatialVector = vj_contrib[..i].iter().sum();
             let da = model.jnt_dof_adr[jid];
             let nd = model.jnt_type[jid].nv();
             for d in 0..nd {
+                if moves_origin(da + d) {
+                    let shift = origin_shift(&vj_before, da + d);
+                    for row in 0..6 {
+                        data.deriv_Dcvel_pos[body_id][(row, da + d)] += shift[row];
+                    }
+                }
                 let axis = dof_axis[da + d];
                 if axis.norm_squared() == 0.0 {
                     continue; // Pure translational DOF — no body rotation
@@ -1832,7 +1862,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[b];
             for k in bd0..bd0 + model.body_dof_num[b] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let contrib = omega_acc_p.cross(&dof_lin[k]);
                     data.deriv_Dcacc_pos[b][(3, k)] += contrib.x;
                     data.deriv_Dcacc_pos[b][(4, k)] += contrib.y;
@@ -1868,14 +1898,22 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         }
         let sj_qacc_rotating: SpatialVector = sa_contrib.iter().sum();
 
-        // Same-body angular DOFs. As in the Part B velocity subspace: perturbing
-        // q_k only rotates joints applied at-or-after k on this body (partial
-        // frame), so cross with the suffix sum `Σ_{jid2 ≥ k} S·qacc`.
+        // Same-body DOFs. As in the Part B velocity subspace: perturbing q_k
+        // only rotates joints applied at-or-after k on this body (partial
+        // frame), so cross with the suffix sum `Σ_{jid2 ≥ k} S·qacc`; a DOF that
+        // moves the origin shifts the earlier joints' `S·qacc` (`origin_shift`).
         for (i, jid) in (js..je).enumerate() {
             let sa_from_k: SpatialVector = sa_contrib[i..].iter().sum();
+            let sa_before: SpatialVector = sa_contrib[..i].iter().sum();
             let da = model.jnt_dof_adr[jid];
             let nd = model.jnt_type[jid].nv();
             for d in 0..nd {
+                if moves_origin(da + d) {
+                    let shift = origin_shift(&sa_before, da + d);
+                    for row in 0..6 {
+                        data.deriv_Dcacc_pos[b][(row, da + d)] += shift[row];
+                    }
+                }
                 let axis = dof_axis[da + d];
                 if axis.norm_squared() == 0.0 {
                     continue;
@@ -2018,7 +2056,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[b];
             for k in bd0..bd0 + model.body_dof_num[b] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let torque = dof_lin[k].cross(&f_lin);
                     data.deriv_Dcfrc_pos[pid][(0, k)] += torque.x;
                     data.deriv_Dcfrc_pos[pid][(1, k)] += torque.y;
@@ -2049,7 +2087,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // When an angular DOF on the same body or any ancestor body is perturbed,
     // it rotates the body, changing the joint subspace S. Unified loop over
     // all perturbing angular DOFs (same-body + ancestors).
-    // With body-frame convention, Ball/Free S=[R;0] depends on q (∂S/∂q ≠ 0).
+    // With body-frame convention, a ball's or a free joint's angular S (`R`)
+    // depends on q (∂S/∂q ≠ 0).
     for jid in 0..model.njnt {
         let bid = model.jnt_body[jid];
         let da_j = model.jnt_dof_adr[jid];
@@ -2058,16 +2097,38 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         let cfrc = cfrc_a[bid];
 
         // Iterate over all angular DOFs on this body and ancestors. Same-body:
-        // ∂S_j/∂q_k ≠ 0 only when joint `k` is applied at-or-before `j` (partial
-        // frame), so skip later same-body joints (`kid > jid`); ancestors are
-        // unrestricted. The kid == jid self-term gives the linear lever.
+        // joint `k` turns S_j only when applied at-or-before `j` (partial frame);
+        // a later one (`kid > jid`) only shifts it when it moves the origin.
+        // Ancestors are unrestricted. The kid == jid self-term gives the linear
+        // lever.
         let mut anc = bid;
         while anc != 0 {
             let anc_js = model.body_jnt_adr[anc];
             let anc_je = anc_js + model.body_jnt_num[anc];
             for kid in anc_js..anc_je {
                 if anc == bid && kid > jid {
-                    continue; // later same-body joint does not rotate S_jid
+                    // A later same-body joint does not turn S_jid; one that moves
+                    // the origin moves the point S_jid is referenced at.
+                    let da_k = model.jnt_dof_adr[kid];
+                    for d in 0..model.jnt_type[kid].nv() {
+                        if !moves_origin(da_k + d) {
+                            continue;
+                        }
+                        for dd in 0..nd_j {
+                            let s_jdd = SpatialVector::new(
+                                s_j[(0, dd)],
+                                s_j[(1, dd)],
+                                s_j[(2, dd)],
+                                s_j[(3, dd)],
+                                s_j[(4, dd)],
+                                s_j[(5, dd)],
+                            );
+                            let ds = origin_shift(&s_jdd, da_k + d);
+                            let proj: f64 = (0..6).map(|row| ds[row] * cfrc[row]).sum();
+                            data.qDeriv_pos[(da_j + dd, da_k + d)] -= proj;
+                        }
+                    }
+                    continue;
                 }
                 let da_k = model.jnt_dof_adr[kid];
                 let nd_k = model.jnt_type[kid].nv();
@@ -2111,10 +2172,12 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         data.deriv_Dcfrc_pos[b].fill(0.0);
     }
 
-    // Part B acceleration: a_B[b] = X_b(a_B[parent]) + vt ×_m S·qvel, vt = X_b(cvel[parent])
+    // Part B acceleration: a_B[b] = X_b(a_B[parent]) + vt ×_m S·qvel + P, vt = X_b(cvel[parent]),
+    // P = Σ_{k<j} v_k ×_m v_j over the body's joints (the same-body products, see the operating point)
     // ∂a_B/∂q = X_b(∂a_B[parent]/∂q) + a_B[parent]_ang × (axis × r)  (X_b transport + its deriv)
     //         + (∂vt/∂q) ×_m v_joint  (Term C, ∂vt/∂q = dvt_pos[b])
     //         + vt ×_m (∂S/∂q · qvel)  (ancestor/same-body ∂S/∂q, added per-body below)
+    //         + ∂P/∂q  (added per-body below)
     // The velocity-product uses the TRANSPORTED parent velocity vt (matching `mj_rne` and the
     // Part B operating point above) — NOT cvel[b] = vt + S·qvel — so the term stays exactly
     // zero at the root instead of differentiating a cancelling `(S·qvel)×_m(S·qvel)`.
@@ -2165,7 +2228,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[b];
             for k in bd0..bd0 + model.body_dof_num[b] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let contrib = omega_acc_p.cross(&dof_lin[k]);
                     data.deriv_Dcacc_pos[b][(3, k)] += contrib.x;
                     data.deriv_Dcacc_pos[b][(4, k)] += contrib.y;
@@ -2237,6 +2300,20 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 vj_contrib.push(v);
             }
             let v_j: SpatialVector = vj_contrib.iter().sum();
+            // A same-body DOF that moves the origin shifts the velocity of the
+            // joints before it: `vt ×_m origin_shift(Σ_{jid2 < k} S·qvel)`.
+            for (i, jid) in (js..je).enumerate() {
+                let vj_before: SpatialVector = vj_contrib[..i].iter().sum();
+                let da = model.jnt_dof_adr[jid];
+                for d in 0..model.jnt_type[jid].nv() {
+                    if moves_origin(da + d) {
+                        let contrib = spatial_cross_motion(vt, origin_shift(&vj_before, da + d));
+                        for row in 0..6 {
+                            data.deriv_Dcacc_pos[b][(row, da + d)] += contrib[row];
+                        }
+                    }
+                }
+            }
             if v_j.norm_squared() > 0.0 {
                 // SAME BODY + ANCESTORS (`anc = b`). Perturbing an angular DOF `k`
                 // on body `b` ITSELF rotates `b`'s frame. For an ANCESTOR `k` the
@@ -2280,6 +2357,75 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     }
                     anc = model.body_parent[anc];
                 }
+            }
+        }
+
+        // Same-body velocity products. A joint's velocity product also takes the
+        // velocity of the body's earlier joints: `P = Σ_{k<j} v_k ×_m v_j`,
+        // `v_i = S_i·qvel_i` (see the operating point). With the convention of the
+        // block above (`∂v_i/∂q_m = s_ang_m ×_m v_i` for every joint of the body
+        // when `m` is an ancestor's angular dof, for the joints at or after `m`'s
+        // when `m` is the body's own, and `origin_shift(v_i, m)` for the joints
+        // before an own `m` that moves the origin),
+        // `∂P/∂q_m = Σ_{k<j} ∂v_k ×_m v_j + v_k ×_m ∂v_j`.
+        // A body with one joint has no such product, and a free joint is its
+        // body's only joint (`Model::check_joint_layout`).
+        if je - js > 1 {
+            let joint_velocity = |jid: usize| {
+                let da = model.jnt_dof_adr[jid];
+                let s = &joint_subspaces[jid];
+                let mut v = SpatialVector::zeros();
+                for d in 0..model.jnt_type[jid].nv() {
+                    for row in 0..6 {
+                        v[row] += s[(row, d)] * data.qvel[da + d];
+                    }
+                }
+                v
+            };
+            let v: Vec<SpatialVector> = (js..je).map(joint_velocity).collect();
+            let mut anc = b;
+            while anc != 0 {
+                let anc_js = model.body_jnt_adr[anc];
+                let anc_je = anc_js + model.body_jnt_num[anc];
+                for kid in anc_js..anc_je {
+                    // The first of this body's joints that dof `m` turns.
+                    let first = if anc == b { kid - js } else { 0 };
+                    let da_k = model.jnt_dof_adr[kid];
+                    for dk in 0..model.jnt_type[kid].nv() {
+                        let k = da_k + dk;
+                        let axis_k = dof_axis[k];
+                        let shifts = anc == b && moves_origin(k);
+                        if axis_k.norm_squared() == 0.0 && !shifts {
+                            continue;
+                        }
+                        let s_ang_k =
+                            SpatialVector::new(axis_k[0], axis_k[1], axis_k[2], 0.0, 0.0, 0.0);
+                        let dv: Vec<SpatialVector> = v
+                            .iter()
+                            .enumerate()
+                            .map(|(i, vi)| {
+                                if i >= first {
+                                    spatial_cross_motion(s_ang_k, *vi)
+                                } else if shifts {
+                                    origin_shift(vi, k)
+                                } else {
+                                    SpatialVector::zeros()
+                                }
+                            })
+                            .collect();
+                        let mut dp = SpatialVector::zeros();
+                        for later in 1..v.len() {
+                            for earlier in 0..later {
+                                dp += spatial_cross_motion(dv[earlier], v[later]);
+                                dp += spatial_cross_motion(v[earlier], dv[later]);
+                            }
+                        }
+                        for row in 0..6 {
+                            data.deriv_Dcacc_pos[b][(row, da_k + dk)] += dp[row];
+                        }
+                    }
+                }
+                anc = model.body_parent[anc];
             }
         }
 
@@ -2446,7 +2592,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
             let bd0 = model.body_dof_adr[b];
             for k in bd0..bd0 + model.body_dof_num[b] {
-                if is_translational(k) {
+                if moves_origin(k) {
                     let torque = dof_lin[k].cross(&f_lin);
                     data.deriv_Dcfrc_pos[pid][(0, k)] += torque.x;
                     data.deriv_Dcfrc_pos[pid][(1, k)] += torque.y;
@@ -2475,7 +2621,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
     // Part B projection derivative: (∂S/∂q)^T · cfrc_B
     // Same unified ancestor structure as Part A projection derivative.
-    // With body-frame convention, Ball/Free S=[R;0] depends on q (∂S/∂q ≠ 0).
+    // With body-frame convention, a ball's or a free joint's angular S (`R`)
+    // depends on q (∂S/∂q ≠ 0).
     for jid in 0..model.njnt {
         let bid = model.jnt_body[jid];
         let da_j = model.jnt_dof_adr[jid];
@@ -2489,7 +2636,28 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             let anc_je = anc_js + model.body_jnt_num[anc];
             for kid in anc_js..anc_je {
                 if anc == bid && kid > jid {
-                    continue; // later same-body joint does not rotate S_jid (partial frame)
+                    // A later same-body joint does not turn S_jid; one that moves
+                    // the origin moves the point S_jid is referenced at.
+                    let da_k = model.jnt_dof_adr[kid];
+                    for d in 0..model.jnt_type[kid].nv() {
+                        if !moves_origin(da_k + d) {
+                            continue;
+                        }
+                        for dd in 0..nd_j {
+                            let s_jdd = SpatialVector::new(
+                                s_j[(0, dd)],
+                                s_j[(1, dd)],
+                                s_j[(2, dd)],
+                                s_j[(3, dd)],
+                                s_j[(4, dd)],
+                                s_j[(5, dd)],
+                            );
+                            let ds = origin_shift(&s_jdd, da_k + d);
+                            let proj: f64 = (0..6).map(|row| ds[row] * cfrc[row]).sum();
+                            data.qDeriv_pos[(da_j + dd, da_k + d)] -= proj;
+                        }
+                    }
+                    continue;
                 }
                 let da_k = model.jnt_dof_adr[kid];
                 let nd_k = model.jnt_type[kid].nv();
@@ -2749,16 +2917,17 @@ pub fn mjd_transition_hybrid(
     let nx = 2 * nv + na;
 
     // 1. Populate qDeriv analytically on a cloned working copy.
-    //    The clone preserves qLD_data/qLD_diag_inv, scratch_m_impl, qM — all
-    //    unmodified by mjd_smooth_vel.
+    //    The clone preserves qLD_data/qLD_diag_inv, qH/qHDiagInv, qLU,
+    //    scratch_m_impl, qM — all unmodified by mjd_smooth_vel.
     let mut data_work = data.clone();
     mjd_smooth_vel(model, &mut data_work);
 
     // 1b. Eulerdamp factor. The real Euler step applies joint damping IMPLICITLY:
     //     it solves `(M + h·D)·qacc_new = F` and `qvel += h·qacc_new` (see
     //     `integrate/mod.rs`), so the analytic velocity columns must route through
-    //     `M_impl = M + h·D`, NOT bare `M`. (The `Implicit*` integrators carry their
-    //     own `scratch_m_impl`; the explicit Euler path does not, so build it here.)
+    //     `M_impl = M + h·D`, NOT bare `M`. (The implicit spring-damper integrator
+    //     builds its own `scratch_m_impl`; the explicit Euler path does not, so
+    //     build it here.)
     //     Gated identically to the step (DISABLE_EULERDAMP / DISABLE_DAMPER). When
     //     no DOF is damped, `M_impl == M` and the bare-`M` fast path is kept, so the
     //     undamped result is byte-for-byte unchanged.
@@ -2859,11 +3028,7 @@ pub fn mjd_transition_hybrid(
             let mut dvdv = DMatrix::identity(nv, nv);
             for j in 0..nv {
                 let mut col = data_work.qDeriv.column(j).clone_owned();
-                lu_solve_factored(
-                    &data_work.scratch_m_impl,
-                    &data_work.scratch_lu_piv,
-                    &mut col,
-                );
+                solve_implicit(model, &data_work, &mut col);
                 for i in 0..nv {
                     dvdv[(i, j)] += h * col[i];
                 }
@@ -2878,11 +3043,7 @@ pub fn mjd_transition_hybrid(
             mjd_rne_vel(model, &mut dq);
             for j in 0..nv {
                 let mut col = dq.qDeriv.column(j).clone_owned();
-                lu_solve_factored(
-                    &data_work.scratch_m_impl,
-                    &data_work.scratch_lu_piv,
-                    &mut col,
-                );
+                solve_implicit(model, &data_work, &mut col);
                 for i in 0..nv {
                     dvdv[(i, j)] += h * h * col[i];
                 }
@@ -2892,12 +3053,12 @@ pub fn mjd_transition_hybrid(
         // Refused at entry (check_fd_transition_inputs).
         Integrator::RungeKutta4 => unreachable!(),
         Integrator::ImplicitFast => {
-            // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
-            // scratch_m_impl holds Cholesky factors of (M − h·D) from forward pass
+            // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv, with the factor of
+            // M − h·D the forward pass left in `qH`
             let mut dvdv = DMatrix::identity(nv, nv);
             for j in 0..nv {
                 let mut col = data_work.qDeriv.column(j).clone_owned();
-                cholesky_solve_in_place(&data_work.scratch_m_impl, &mut col);
+                solve_implicit(model, &data_work, &mut col);
                 for i in 0..nv {
                     dvdv[(i, j)] += h * col[i];
                 }
@@ -3026,15 +3187,11 @@ pub fn mjd_transition_hybrid(
                         );
                     }
                 }
-                Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
+                Integrator::ImplicitSpringDamper => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdact);
                 }
-                Integrator::Implicit => {
-                    lu_solve_factored(
-                        &data_work.scratch_m_impl,
-                        &data_work.scratch_lu_piv,
-                        &mut dvdact,
-                    );
+                Integrator::ImplicitFast | Integrator::Implicit => {
+                    solve_implicit(model, &data_work, &mut dvdact);
                 }
                 // RK4 is refused at entry (check_fd_transition_inputs).
                 Integrator::RungeKutta4 => unreachable!(),
@@ -3102,7 +3259,7 @@ pub fn mjd_transition_hybrid(
     // - clamped control differencing fallback (centered mode where one
     //   direction is infeasible due to actuator_ctrlrange boundary)
     scratch.step(model)?;
-    let y_0 = extract_state(model, &scratch, &data.qpos);
+    let y_0 = NextState::of(&scratch);
 
     // For implicit integrators, save the acceleration the nominal step advanced
     // qvel with: the analytical position derivative uses it as the operating
@@ -3196,7 +3353,7 @@ pub fn mjd_transition_hybrid(
                 let mut dvdq = DMatrix::zeros(nv, nv);
                 for j in 0..nv {
                     let mut col = data_work.qDeriv_pos.column(j).clone_owned();
-                    cholesky_solve_in_place(&data_work.scratch_m_impl, &mut col);
+                    solve_implicit(model, &data_work, &mut col);
                     for i in 0..nv {
                         dvdq[(i, j)] = h * col[i];
                     }
@@ -3245,7 +3402,7 @@ pub fn mjd_transition_hybrid(
         for i in 0..nv {
             perturb_state(model, &mut scratch, data, i, eps);
             scratch.step(model)?;
-            let y_plus = extract_state(model, &scratch, &data.qpos);
+            let y_plus = NextState::of(&scratch);
             let s_plus = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3255,22 +3412,24 @@ pub fn mjd_transition_hybrid(
             if config.centered {
                 perturb_state(model, &mut scratch, data, i, -eps);
                 scratch.step(model)?;
-                let y_minus = extract_state(model, &scratch, &data.qpos);
+                let y_minus = NextState::of(&scratch);
                 let s_minus = if compute_sensors {
                     Some(scratch.sensordata.clone())
                 } else {
                     None
                 };
-                let col = (&y_plus - &y_minus) / (2.0 * eps);
-                a_mat.column_mut(i).copy_from(&col);
+                a_mat
+                    .column_mut(i)
+                    .copy_from(&state_diff(model, &y_minus, &y_plus, 2.0 * eps));
 
                 if let (Some(c), Some(sp), Some(sm)) = (&mut c_mat, &s_plus, &s_minus) {
                     let scol = (sp - sm) / (2.0 * eps);
                     c.column_mut(i).copy_from(&scol);
                 }
             } else {
-                let col = (&y_plus - &y_0) / eps;
-                a_mat.column_mut(i).copy_from(&col);
+                a_mat
+                    .column_mut(i)
+                    .copy_from(&state_diff(model, &y_0, &y_plus, eps));
 
                 if let (Some(c), Some(sp), Some(s0)) = (&mut c_mat, &s_plus, &sensor_0) {
                     let scol = (sp - s0) / eps;
@@ -3345,7 +3504,7 @@ pub fn mjd_transition_hybrid(
     for &state_col in &act_fd_indices {
         perturb_state(model, &mut scratch, data, state_col, eps);
         scratch.step(model)?;
-        let y_plus = extract_state(model, &scratch, &data.qpos);
+        let y_plus = NextState::of(&scratch);
         let s_plus = if compute_sensors {
             Some(scratch.sensordata.clone())
         } else {
@@ -3355,22 +3514,24 @@ pub fn mjd_transition_hybrid(
         if config.centered {
             perturb_state(model, &mut scratch, data, state_col, -eps);
             scratch.step(model)?;
-            let y_minus = extract_state(model, &scratch, &data.qpos);
+            let y_minus = NextState::of(&scratch);
             let s_minus = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
                 None
             };
-            let col = (&y_plus - &y_minus) / (2.0 * eps);
-            a_mat.column_mut(state_col).copy_from(&col);
+            a_mat
+                .column_mut(state_col)
+                .copy_from(&state_diff(model, &y_minus, &y_plus, 2.0 * eps));
 
             if let (Some(c), Some(sp), Some(sm)) = (&mut c_mat, &s_plus, &s_minus) {
                 let scol = (sp - sm) / (2.0 * eps);
                 c.column_mut(state_col).copy_from(&scol);
             }
         } else {
-            let col = (&y_plus - &y_0) / eps;
-            a_mat.column_mut(state_col).copy_from(&col);
+            a_mat
+                .column_mut(state_col)
+                .copy_from(&state_diff(model, &y_0, &y_plus, eps));
 
             if let (Some(c), Some(sp), Some(s0)) = (&mut c_mat, &s_plus, &sensor_0) {
                 let scol = (sp - s0) / eps;
@@ -3461,15 +3622,11 @@ pub fn mjd_transition_hybrid(
                         );
                     }
                 }
-                Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
+                Integrator::ImplicitSpringDamper => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdctrl);
                 }
-                Integrator::Implicit => {
-                    lu_solve_factored(
-                        &data_work.scratch_m_impl,
-                        &data_work.scratch_lu_piv,
-                        &mut dvdctrl,
-                    );
+                Integrator::ImplicitFast | Integrator::Implicit => {
+                    solve_implicit(model, &data_work, &mut dvdctrl);
                 }
                 // RK4 is refused at entry (check_fd_transition_inputs).
                 Integrator::RungeKutta4 => unreachable!(),
@@ -3547,7 +3704,7 @@ pub fn mjd_transition_hybrid(
         let (y_plus, s_plus) = if nudge_fwd {
             perturb_ctrl(model, &mut scratch, data, j, eps);
             scratch.step(model)?;
-            let yp = extract_state(model, &scratch, &data.qpos);
+            let yp = NextState::of(&scratch);
             let sp = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3561,7 +3718,7 @@ pub fn mjd_transition_hybrid(
         let (y_minus, s_minus) = if nudge_back {
             perturb_ctrl(model, &mut scratch, data, j, -eps);
             scratch.step(model)?;
-            let ym = extract_state(model, &scratch, &data.qpos);
+            let ym = NextState::of(&scratch);
             let sm = if compute_sensors {
                 Some(scratch.sensordata.clone())
             } else {
@@ -3572,13 +3729,13 @@ pub fn mjd_transition_hybrid(
             (None, None)
         };
 
-        let col = match (&y_plus, &y_minus) {
-            (Some(yp), Some(ym)) => (yp - ym) / (2.0 * eps),
-            (Some(yp), None) => (yp - &y_0) / eps,
-            (None, Some(ym)) => (&y_0 - ym) / eps,
-            (None, None) => DVector::zeros(nx),
-        };
-        b_mat.column_mut(j).copy_from(&col);
+        b_mat.column_mut(j).copy_from(&clamped_state_diff(
+            model,
+            &y_0,
+            y_plus.as_ref(),
+            y_minus.as_ref(),
+            eps,
+        ));
 
         // Sensor D column (piggybacked — same clamped differencing)
         if let (Some(d), Some(s0)) = (&mut d_mat, &sensor_0) {
@@ -4173,7 +4330,7 @@ fn mjd_ellipsoid_fluid(model: &Model, data: &mut Data, body_id: usize) {
         let torque_d = mjd_viscous_torque(&s, c_ang, c_slender, beta, rho, &w);
         add_to_quadrant(&mut big_b, &torque_d, 0, 0);
 
-        // Symmetrize for ImplicitFast (Cholesky requires SPD)
+        // Symmetrize for ImplicitFast
         if is_implicitfast {
             for i in 0..6 {
                 for j in (i + 1)..6 {
@@ -4266,7 +4423,7 @@ fn muscle_gain_velocity_deriv(velocity: f64, fvmax: f64) -> f64 {
         2.0 * (velocity + 1.0)
     } else if velocity <= y {
         // FV = fvmax - (y-v)^2/y → dFV/dv = 2(y-v)/y
-        let y_safe = y.max(1e-10);
+        let y_safe = y.max(MJ_MINVAL);
         2.0 * (y - velocity) / y_safe
     } else {
         // FV = fvmax, flat

@@ -158,9 +158,8 @@ impl ModelBuilder {
         self.actuator_delay.push(delay);
         self.actuator_user_raw.push(actuator.user.clone());
 
-        // §34 S5: Muscle default actrange — MuJoCo defaults muscles to actlimited=true,
-        // actrange=[0,1] when actlimited is not explicitly set. This preserves the
-        // hardcoded [0,1] clamping behavior that muscles have always had.
+        // §34 S5: Muscle default actrange [0, 1] when actlimited is not set. MuJoCo
+        // leaves a <muscle> unlimited.
         // Hill/Millard (CortenForge extensions) use the same default: activation ∈ [0, 1].
         if (actuator.actuator_type == MjcfActuatorType::Muscle
             || dyntype == ActuatorDynamics::HillMuscle

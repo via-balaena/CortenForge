@@ -35,12 +35,20 @@ pub mod collision_performance;
 /// Equality constraint tests: connect, weld, joint coupling.
 pub mod equality_constraints;
 
+/// Constraint impedance against MuJoCo 3.5.0: one impedance from the norm of
+/// a connect's or a weld's violation, and a row's from `pos - margin`.
+pub mod impedance_parity;
+
 // ============================================================================
 // Implicit Integration Tests (spring-damper stability)
 // ============================================================================
 
 /// Implicit spring-damper integration tests: stability, accuracy, convergence.
 pub mod implicit_integration;
+
+/// The implicit integrators against MuJoCo 3.5.0: `M − h·∂f/∂v` on MuJoCo's
+/// patterns and its factors, and the simple bodies and copied frames.
+pub mod implicit_parity;
 
 // ============================================================================
 // RK4 Integration Tests (True 4-stage Runge-Kutta)
@@ -161,6 +169,10 @@ pub mod derivatives;
 /// over actuator kinds, transmissions, states, controls and integrators.
 pub mod hybrid_fd_sweep;
 
+/// Bodies carrying two or more joints against MuJoCo 3.5.0: the velocity
+/// products, the body accumulators, four integrators and the derivatives.
+pub mod multi_joint_bias;
+
 // ============================================================================
 // Keyframe & Mocap Body Tests (§14)
 // ============================================================================
@@ -186,6 +198,20 @@ pub mod sleeping;
 /// Sleep against MuJoCo 3.5.0: kinematic trees, automatic sleep policies and
 /// body sleep states.
 pub mod sleep_parity;
+
+/// Sleep under RK4: a sleeping tree stays asleep (registry `D-RK4-SLEEP`).
+pub mod rk4_sleep;
+
+/// RK4 against MuJoCo 3.5.0: the activations of the stages.
+pub mod rk4_parity;
+
+/// Muscles against MuJoCo 3.5.0: the force resolved at each call, the bias
+/// from `biasprm`, the clamps.
+pub mod muscle_parity;
+
+/// Activations against MuJoCo 3.5.0: a disabled actuator's `act_dot`, the
+/// filter's time constant.
+pub mod activation_parity;
 
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
@@ -292,6 +318,22 @@ pub mod name_lookup;
 
 /// Body force accumulator tests: cacc, cfrc_int, cfrc_ext.
 pub mod body_accumulators;
+
+/// Body accumulators and the sensors that read them against MuJoCo 3.5.0's
+/// `mj_rnePostConstraint`.
+pub mod accumulator_parity;
+
+/// Forward kinematics against MuJoCo 3.5.0's `mj_kinematics`: `qpos − qpos0`,
+/// the off-centre ball, `xanchor`/`xaxis`, and its arithmetic.
+pub mod kinematics_parity;
+
+/// Tendons against MuJoCo 3.5.0: the spring length at `qpos_spring`, and the
+/// plane of a sphere wrap whose points lie on a line through its centre.
+pub mod tendon_parity;
+
+/// Transition derivatives on quaternion joints against MuJoCo 3.5.0: the
+/// finite differences' tangent convention and `mjd_quatIntegrate`.
+pub mod quaternion_transition;
 
 // ============================================================================
 // §52 Inverse Dynamics Tests

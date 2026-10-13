@@ -102,8 +102,7 @@ pub fn compute_flex_contact_jacobian(
                             j[(row, dof_adr)] += sign * direction.dot(&axis);
                         }
                         MjJointType::Ball => {
-                            let jpos =
-                                data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                            let jpos = data.xanchor[jnt_id];
                             let r = contact.pos - jpos;
                             let rot = data.xquat[jnt_body].to_rotation_matrix();
                             for i in 0..3 {
@@ -282,8 +281,7 @@ pub fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -
                             j[(row, dof_adr)] += sign * direction.dot(&axis);
                         }
                         MjJointType::Ball => {
-                            let jpos =
-                                data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                            let jpos = data.xanchor[jnt_id];
                             let r = stabilize_lever_arm(contact.pos - jpos, &normal);
                             let rot = data.xquat[jnt_body].to_rotation_matrix();
                             for i in 0..3 {

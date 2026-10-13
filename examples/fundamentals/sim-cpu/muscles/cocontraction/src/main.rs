@@ -200,7 +200,7 @@ fn setup(
     for i in 0..model.nu {
         let name = model.actuator_name[i].as_deref().unwrap_or("?");
         let gear = model.actuator_gear[i][0];
-        let f0 = model.actuator_gainprm[i][2];
+        let f0 = sim_core::forward::muscle_f0(&model.actuator_gainprm[i], model.actuator_acc0[i]);
         println!("  actuator[{i}] '{name}': gear={gear:.0}, F0={f0:.1}");
     }
     println!();

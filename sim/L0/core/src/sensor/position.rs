@@ -6,6 +6,7 @@
 
 use super::geom_distance::geom_distance;
 use super::postprocess::{sensor_write, sensor_write3, sensor_write4, sensor_write6};
+use crate::quat;
 use crate::types::flags::disabled;
 use crate::types::{
     DISABLE_SENSOR, Data, ENABLE_SLEEP, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
@@ -30,24 +31,25 @@ fn get_ref_pos_mat(
     }
 }
 
-/// Resolve quaternion for a reference object.
-/// Mirrors MuJoCo's `get_xquat()` dispatch.
-fn get_ref_quat(
-    model: &Model,
-    data: &Data,
-    reftype: MjObjectType,
-    refid: usize,
-) -> UnitQuaternion<f64> {
-    match reftype {
-        MjObjectType::XBody if refid < model.nbody => data.xquat[refid],
-        MjObjectType::Body if refid < model.nbody => data.xquat[refid] * model.body_iquat[refid],
-        MjObjectType::Site if refid < model.nsite => UnitQuaternion::from_rotation_matrix(
-            &nalgebra::Rotation3::from_matrix_unchecked(data.site_xmat[refid]),
+/// An object's global orientation, as MuJoCo's `get_xquat`
+/// (`engine_sensor.c:122-144`): its body's `xquat` times its local
+/// quaternion, by `mju_mulQuat`.
+fn object_xquat(model: &Model, data: &Data, objtype: MjObjectType, objid: usize) -> [f64; 4] {
+    let q = |u: &UnitQuaternion<f64>| [u.w, u.i, u.j, u.k];
+    match objtype {
+        MjObjectType::XBody if objid < model.nbody => q(&data.xquat[objid]),
+        MjObjectType::Body if objid < model.nbody => {
+            quat::mul_quat(&q(&data.xquat[objid]), &q(&model.body_iquat[objid]))
+        }
+        MjObjectType::Geom if objid < model.ngeom => quat::mul_quat(
+            &q(&data.xquat[model.geom_body[objid]]),
+            &q(&model.geom_quat[objid]),
         ),
-        MjObjectType::Geom if refid < model.ngeom => UnitQuaternion::from_rotation_matrix(
-            &nalgebra::Rotation3::from_matrix_unchecked(data.geom_xmat[refid]),
+        MjObjectType::Site if objid < model.nsite => quat::mul_quat(
+            &q(&data.xquat[model.site_body[objid]]),
+            &q(&model.site_quat[objid]),
         ),
-        _ => UnitQuaternion::identity(),
+        _ => [1.0, 0.0, 0.0, 0.0],
     }
 }
 
@@ -122,32 +124,10 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
         MjSensorType::BallQuat
             if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball =>
         {
-            // Ball joint quaternion [w, x, y, z]
-            let qpos_adr = model.jnt_qpos_adr[objid];
-            // Read quaternion from qpos and normalize in locals. MuJoCo
-            // normalizes with `mju_normalize4`, which leaves a norm within
-            // 1e-15 of 1 as it is; this divides by any norm above 1e-10 (the
-            // spec book's P28 entry ports it with the kinematics).
-            let (w, x, y, z) = (
-                data.qpos[qpos_adr],
-                data.qpos[qpos_adr + 1],
-                data.qpos[qpos_adr + 2],
-                data.qpos[qpos_adr + 3],
-            );
-            let norm = (w * w + x * x + y * y + z * z).sqrt();
-            if norm > 1e-10 {
-                sensor_write4(
-                    &mut data.sensordata,
-                    adr,
-                    w / norm,
-                    x / norm,
-                    y / norm,
-                    z / norm,
-                );
-            } else {
-                // Degenerate — reset to identity [w=1, x=0, y=0, z=0]
-                sensor_write4(&mut data.sensordata, adr, 1.0, 0.0, 0.0, 0.0);
-            }
+            // Ball joint quaternion [w, x, y, z], normalized as MuJoCo's
+            // (`mju_normalize4`, `engine_sensor.c:572-575`).
+            let q = quat::qpos_quat(&data.qpos, model.jnt_qpos_adr[objid]);
+            sensor_write4(&mut data.sensordata, adr, q[0], q[1], q[2], q[3]);
         }
 
         MjSensorType::FramePos => {
@@ -175,48 +155,28 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
         }
 
         MjSensorType::FrameQuat => {
-            // Orientation of site/body/geom as quaternion [w, x, y, z]
-            let quat = match model.sensor_objtype[sensor_id] {
-                MjObjectType::Site if objid < model.nsite => {
-                    // Compute site quaternion from rotation matrix
-                    let mat = data.site_xmat[objid];
-                    UnitQuaternion::from_rotation_matrix(
-                        &nalgebra::Rotation3::from_matrix_unchecked(mat),
-                    )
-                }
-                MjObjectType::XBody if objid < model.nbody => data.xquat[objid],
-                MjObjectType::Body if objid < model.nbody => {
-                    // MuJoCo: mulQuat(xquat[body], body_iquat[body])
-                    data.xquat[objid] * model.body_iquat[objid]
-                }
-                MjObjectType::Geom if objid < model.ngeom => {
-                    let mat = data.geom_xmat[objid];
-                    UnitQuaternion::from_rotation_matrix(
-                        &nalgebra::Rotation3::from_matrix_unchecked(mat),
-                    )
-                }
-                _ => UnitQuaternion::identity(),
-            };
-            // Reference-frame transform: q_relative = q_ref^{-1} * q_obj
-            if model.sensor_reftype[sensor_id] == MjObjectType::None {
-                sensor_write4(&mut data.sensordata, adr, quat.w, quat.i, quat.j, quat.k);
+            // MuJoCo `mjSENS_FRAMEQUAT` (`engine_sensor.c:632-651`): the
+            // object's quaternion, or the reference frame's conjugate times it.
+            let obj = object_xquat(model, data, model.sensor_objtype[sensor_id], objid);
+            let quat = if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                obj
             } else {
-                let ref_quat = get_ref_quat(
+                let refquat = object_xquat(
                     model,
                     data,
                     model.sensor_reftype[sensor_id],
                     model.sensor_refid[sensor_id],
                 );
-                let relative = ref_quat.inverse() * quat;
-                sensor_write4(
-                    &mut data.sensordata,
-                    adr,
-                    relative.w,
-                    relative.i,
-                    relative.j,
-                    relative.k,
-                );
-            }
+                quat::mul_quat(&quat::neg_quat(&refquat), &obj)
+            };
+            sensor_write4(
+                &mut data.sensordata,
+                adr,
+                quat[0],
+                quat[1],
+                quat[2],
+                quat[3],
+            );
         }
 
         MjSensorType::FrameXAxis | MjSensorType::FrameYAxis | MjSensorType::FrameZAxis => {

@@ -111,10 +111,16 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
                         data.qvel[dof_adr + 1],
                         data.qvel[dof_adr + 2],
                     );
-                    let world_omega = data.xquat[body_id] * omega;
+                    let world_omega = data.xmat[body_id] * omega;
                     vel[0] += world_omega.x;
                     vel[1] += world_omega.y;
                     vel[2] += world_omega.z;
+                    // The ball turns about its anchor, which moves the body
+                    // origin when the two differ (`jnt_pos ≠ 0`).
+                    let lin = world_omega.cross(&(data.xpos[body_id] - data.xanchor[jnt_id]));
+                    vel[3] += lin.x;
+                    vel[4] += lin.y;
+                    vel[5] += lin.z;
                 }
                 MjJointType::Free => {
                     // 6-DOF: linear (world frame) + angular (body-local → world)
@@ -127,7 +133,7 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
                         data.qvel[dof_adr + 4],
                         data.qvel[dof_adr + 5],
                     );
-                    let omega_world = data.xquat[body_id] * omega_local;
+                    let omega_world = data.xmat[body_id] * omega_local;
                     vel[0] += omega_world.x;
                     vel[1] += omega_world.y;
                     vel[2] += omega_world.z;
