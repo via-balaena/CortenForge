@@ -2,6 +2,7 @@
 //!
 //! Implements MuJoCo's `mj_RungeKutta` using the classic RK4 Butcher tableau.
 
+use crate::forward::MjStage;
 use crate::jacobian::mj_integrate_pos_explicit;
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::{
@@ -21,9 +22,13 @@ use crate::types::{
 /// sleep, whose advance runs the forward pass once more).
 /// Position integration uses `mj_integrate_pos_explicit()` for quaternion correctness.
 ///
+/// A tree asleep at the step's start is held there through the stages and the
+/// advance, and a step that puts a tree to sleep evaluates its forward pass
+/// again from the position stage (registry `D-RK4-SLEEP`).
+///
 /// After this function returns, derived quantities (xpos, contacts, forces, etc.)
-/// are stale from stage 3 and do NOT correspond to the final (qpos, qvel) state.
-/// This matches MuJoCo's behavior.
+/// are stage 3's, as MuJoCo's, and do NOT correspond to the final (qpos, qvel)
+/// state; on a step that puts a tree to sleep they are the step's start state's.
 #[allow(clippy::needless_range_loop)] // explicit indexing across parallel arrays (Butcher tableau)
 pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     // Butcher tableau
@@ -53,6 +58,22 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     data.rk4_act_dot[0].copy_from(&data.act_dot);
     let t0 = data.time;
 
+    // The trees asleep at the step's start stay there: their dofs take no
+    // acceleration in the stages or the advance, so they keep the zero
+    // velocity a sleeping tree has (the step's first forward pass woke any
+    // other) and their positions. MuJoCo's stages move them with the stale
+    // acceleration a sleeping dof keeps, and the stage's forward pass then
+    // wakes the tree (registry `D-RK4-SLEEP`). A tree woken during a stage is
+    // held until the step ends.
+    let hold = model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < nv;
+    if hold {
+        data.rk4_dof_asleep.fill(true);
+        for idx in 0..data.nv_awake {
+            let v = data.dof_awake_ind[idx];
+            data.rk4_dof_asleep[v] = false;
+        }
+    }
+
     // 2. FOR i = 1, 2, 3:
     for i in 1..4usize {
         // 2a. Weighted velocity: dX_vel[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * X[j].qvel[v]
@@ -72,6 +93,9 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
                 sum += RK4_A[(i - 1) * 3 + j] * data.rk4_qacc[j][v];
             }
             data.rk4_dX_acc[v] = sum;
+        }
+        if hold {
+            hold_asleep_dofs(data);
         }
 
         // 2c. Position (manifold): integrate from saved initial position
@@ -155,6 +179,9 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         data.rk4_dX_vel[v] = vel_sum;
         data.rk4_dX_acc[v] = acc_sum;
     }
+    if hold {
+        hold_asleep_dofs(data);
+    }
 
     // 4. ADVANCE from the step's start state, as MuJoCo's `mj_RungeKutta`
     // resets state and time and calls `mj_advance` (engine_forward.c:1113-1121):
@@ -204,11 +231,12 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     }
 
     // The sleep step, at the start state (`rk4_dX_*` survive its forward
-    // pass). Its forward pass skips the position stage, so the poses it keeps
-    // are the last stage's: the next step's kinematics see a slept tree's
-    // poses change and wake it, as in MuJoCo.
+    // pass). Its forward pass starts from the position stage, so the poses
+    // and all that follows from them are the start state's. MuJoCo's skips
+    // that stage and keeps the last stage's poses, which the next step's
+    // kinematics find changed, waking the tree (registry `D-RK4-SLEEP`).
     if crate::island::mj_sleep(model, data) > 0 {
-        data.reforward_after_sleep(model)?;
+        data.reforward_after_sleep(model, MjStage::None)?;
     }
 
     // Velocity over the awake dofs
@@ -253,4 +281,13 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     data.qacc_warmstart.copy_from(&data.qacc);
 
     Ok(())
+}
+
+/// Zero the weighted acceleration of the dofs held asleep.
+fn hold_asleep_dofs(data: &mut Data) {
+    for (v, &asleep) in data.rk4_dof_asleep.iter().enumerate() {
+        if asleep {
+            data.rk4_dX_acc[v] = 0.0;
+        }
+    }
 }

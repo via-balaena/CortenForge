@@ -199,6 +199,9 @@ pub mod sleeping;
 /// body sleep states.
 pub mod sleep_parity;
 
+/// Sleep under RK4: a sleeping tree stays asleep (registry `D-RK4-SLEEP`).
+pub mod rk4_sleep;
+
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
 // ============================================================================

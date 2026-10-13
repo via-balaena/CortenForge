@@ -617,6 +617,11 @@ pub struct Data {
     /// RK4 stage activation derivatives: `act_dot` at each stage (4 buffers, each length na).
     pub rk4_act_dot: [DVector<f64>; 4],
 
+    /// RK4: the dofs of the trees asleep at the step's start (length nv),
+    /// held at the start state through the stages and the advance (registry
+    /// `D-RK4-SLEEP`).
+    pub(crate) rk4_dof_asleep: Vec<bool>,
+
     // ==================== Derivative Scratch Buffers ====================
     /// Analytical derivative of smooth forces w.r.t. velocity: ∂(qfrc_smooth)/∂qvel.
     /// Dense nv × nv matrix. Populated by `mjd_smooth_vel()`.
@@ -908,6 +913,7 @@ impl Clone for Data {
             rk4_dX_acc: self.rk4_dX_acc.clone(),
             rk4_act_saved: self.rk4_act_saved.clone(),
             rk4_act_dot: self.rk4_act_dot.clone(),
+            rk4_dof_asleep: self.rk4_dof_asleep.clone(),
             // Derivative scratch buffers
             qDeriv: self.qDeriv.clone(),
             deriv_Dcvel: self.deriv_Dcvel.clone(),

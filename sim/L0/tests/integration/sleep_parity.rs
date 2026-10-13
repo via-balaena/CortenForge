@@ -438,7 +438,12 @@ fn trace(name: &str) -> (Vec<Step>, Vec<Step>) {
 /// `tree_asleep`, `ncon`, `nefc`, `nisland` or `cb`.
 fn assert_trace(name: &str, fields: &[&str]) {
     let (ours, theirs) = trace(name);
-    for (k, (a, b)) in ours.iter().zip(&theirs).enumerate() {
+    assert_steps(name, &ours, &theirs, fields);
+}
+
+/// [`assert_trace`] over the steps given.
+fn assert_steps(name: &str, ours: &[Step], theirs: &[Step], fields: &[&str]) {
+    for (k, (a, b)) in ours.iter().zip(theirs).enumerate() {
         for &field in fields {
             let (x, y) = match field {
                 "tree_asleep" => (
@@ -602,12 +607,26 @@ fn ctrl_change_keeps_a_sleeping_tree_asleep() {
     }
 }
 
-/// Under RK4 a tree falls asleep and wakes the next step, every ten steps,
-/// as in MuJoCo: the re-forward skips the position stage, so the stored
-/// poses are the last stage's and the next step's kinematics differ.
+fn asleep(step: &Step) -> bool {
+    step.tree_asleep.iter().any(|&a| a >= 0)
+}
+
+/// Under RK4 a resting box falls asleep at MuJoCo's step, with MuJoCo's
+/// callbacks through it, and stays asleep, where MuJoCo's wakes the next step
+/// and sleeps and wakes every ten steps (registry `D-RK4-SLEEP`;
+/// `rk4_sleep.rs`).
 #[test]
-fn rk4_sleeps_and_wakes_as_mujoco() {
-    assert_trace("box_rest_RK4", &["tree_asleep", "cb"]);
+fn rk4_sleeps_as_mujoco_and_stays_asleep() {
+    let (ours, theirs) = trace("box_rest_RK4");
+    let first = theirs.iter().position(asleep).expect("MuJoCo's box sleeps");
+    assert_steps(
+        "box_rest_RK4",
+        &ours[..=first],
+        &theirs[..=first],
+        &["tree_asleep", "cb"],
+    );
+    assert!(ours[first..].iter().all(asleep));
+    assert!(!asleep(&theirs[first + 1]));
 }
 
 /// With a tolerance of 0 and a velocity of -0.0, MuJoCo's first test sees
@@ -626,19 +645,36 @@ fn zero_tolerance_negative_zero_velocity_sleeps_a_step_later() {
 /// contacts are solved every step, and its accelerations end 3.9e-10 from
 /// MuJoCo's at step 275; and two damped hinges joined by a joint equality
 /// (`joint_eq_sleep`), within 1e-12 through step 300 and 2.1e-9 apart at
-/// step 325 (both measured; what grows either gap is not isolated).
+/// step 325 (both measured; what grows either gap is not isolated). Under
+/// RK4, through MuJoCo's first sleep step, and its floats before it: from
+/// there MuJoCo's re-forward reads the last stage's positions and wakes the
+/// tree, where this crate's reads the step's start and keeps the tree asleep
+/// (registry `D-RK4-SLEEP`; `rk4_sleep.rs`).
 #[test]
 fn traces_match_mujoco() {
     for case in traces_golden()["traces"].as_array().expect("traces") {
         let name = case["name"].as_str().expect("name");
-        assert_trace(name, &["tree_asleep", "ncon", "nefc", "nisland", "cb"]);
+        let (ours, theirs) = trace(name);
+        let rk4 = case["xml"]
+            .as_str()
+            .expect("xml")
+            .contains(r#"integrator="RK4""#);
+        let (end, floats_end) = match theirs.iter().position(asleep) {
+            Some(first) if rk4 => (first + 1, first),
+            _ => (theirs.len(), theirs.len()),
+        };
+        assert_steps(
+            name,
+            &ours[..end],
+            &theirs[..end],
+            &["tree_asleep", "ncon", "nefc", "nisland", "cb"],
+        );
         let tol = match name {
             "box_noisland" => 1e-9,
             "joint_eq_sleep" => 1e-8,
             _ => 1e-12,
         };
-        let (ours, theirs) = trace(name);
-        for (k, (a, b)) in ours.iter().zip(&theirs).enumerate() {
+        for (k, (a, b)) in ours[..floats_end].iter().zip(&theirs).enumerate() {
             let (Some(a), Some(b)) = (&a.floats, &b.floats) else {
                 continue;
             };
@@ -1031,30 +1067,6 @@ fn slider_crank_on_a_static_site_follows_its_crank() {
         Some(1075)
     );
     assert_trace("slider_static", &["tree_asleep"]);
-}
-
-/// Under RK4 the sleep step's second forward pass skips the position stage,
-/// so a joint actuator's length is the last RK4 stage's, as MuJoCo computes
-/// it in `mj_transmission` (`engine_forward.c:209`), not the step's start
-/// state the advance restored: the hinge that sleeps at step 637 reads
-/// MuJoCo's actuator force, accelerometer and acceleration there.
-#[test]
-fn rk4_sleep_step_keeps_the_last_stage_actuator_length() {
-    let (ours, theirs) = trace("act_sleep_RK4");
-    assert_eq!(theirs.iter().position(|s| s.tree_asleep[0] >= 0), Some(637));
-    let (a, b) = (
-        ours[637].floats.as_ref().expect("kept"),
-        theirs[637].floats.as_ref().expect("kept"),
-    );
-    for (field, (x, y)) in FLOATS.iter().zip(a.iter().zip(b)) {
-        assert_eq!(x.len(), y.len(), "{field}");
-        for (p, q) in x.iter().zip(y) {
-            assert!(
-                (p - q).abs() <= 1e-12,
-                "{field} after step 637: ours {p}, MuJoCo {q}"
-            );
-        }
-    }
 }
 
 /// Under implicitfast a sleeping actuator adds no term to the velocity

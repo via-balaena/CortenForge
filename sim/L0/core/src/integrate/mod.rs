@@ -138,7 +138,7 @@ impl Data {
                     _ => self.qacc.clone(),
                 });
             }
-            self.reforward_after_sleep(model)?;
+            self.reforward_after_sleep(model, MjStage::Pos)?;
         }
         let acc = match (&solved, model.integrator) {
             (Some(acc), _) => acc,
@@ -229,13 +229,19 @@ impl Data {
     }
 
     /// The rest of `mj_advance`'s sleep block (`engine_forward.c:898-905`),
-    /// after `mj_sleep` put a tree to sleep: the forward pass from the
-    /// velocity stage, sensors and `cb_control` included, while the sleep
-    /// arrays still list the slept trees as awake, so their velocity- and
-    /// acceleration-stage quantities are computed at the zeroed velocity;
+    /// after `mj_sleep` put a tree to sleep: the forward pass after
+    /// `skipstage`, sensors and `cb_control` included, while the sleep arrays
+    /// still list the slept trees as awake, so their quantities from that
+    /// stage on are computed as an awake tree's, with the zeroed velocity;
     /// then the sleep arrays.
-    pub(crate) fn reforward_after_sleep(&mut self, model: &Model) -> Result<(), StepError> {
-        self.forward_skip_unchecked(model, MjStage::Pos, false)?;
+    /// MuJoCo skips the position stage (`MjStage::Pos`); RK4 here does not
+    /// (registry `D-RK4-SLEEP`).
+    pub(crate) fn reforward_after_sleep(
+        &mut self,
+        model: &Model,
+        skipstage: MjStage,
+    ) -> Result<(), StepError> {
+        self.forward_skip_unchecked(model, skipstage, false)?;
         crate::island::mj_update_sleep_arrays(model, self);
         Ok(())
     }

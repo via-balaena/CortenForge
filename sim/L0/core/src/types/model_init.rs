@@ -981,6 +981,7 @@ impl Model {
             rk4_dX_acc: DVector::zeros(self.nv),
             rk4_act_saved: DVector::zeros(self.na),
             rk4_act_dot: std::array::from_fn(|_| DVector::zeros(self.na)),
+            rk4_dof_asleep: vec![false; self.nv],
 
             // Derivative scratch buffers (for mjd_smooth_vel / mjd_rne_vel)
             qDeriv: DMatrix::zeros(self.nv, self.nv),
