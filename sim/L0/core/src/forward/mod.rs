@@ -45,6 +45,7 @@ pub(crate) use acceleration::solve_implicit;
 // Public re-exports: stable mathematical functions for muscle curves and dynamics.
 // Used by examples and external consumers for direct curve evaluation.
 pub use actuation::{hill_active_fl, hill_force_velocity, hill_passive_fl};
+pub(crate) use hill::muscle_length;
 pub use millard::{
     MillardCurves, MillardMuscleParams, SmoothSegmentedFunction, default_millard_curves,
     millard_active_gain, millard_isometric_path_force, millard_passive_bias, millard_path_force,

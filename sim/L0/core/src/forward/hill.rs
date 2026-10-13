@@ -86,7 +86,7 @@ pub fn muscle_f0(prm: &[f64; 9], acc0: f64) -> f64 {
 }
 
 /// The optimal length `L0` of a muscle and its normalized length at `len`.
-fn muscle_length(len: f64, lengthrange: (f64, f64), prm: &[f64; 9]) -> (f64, f64) {
+pub fn muscle_length(len: f64, lengthrange: (f64, f64), prm: &[f64; 9]) -> (f64, f64) {
     let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(MJ_MINVAL);
     (l0, prm[0] + (len - lengthrange.0) / l0.max(MJ_MINVAL))
 }

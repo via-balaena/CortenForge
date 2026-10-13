@@ -22,7 +22,7 @@ use crate::forward::solve_implicit;
 use crate::forward::{
     MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
     hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_f0,
-    muscle_gain_length, muscle_gain_velocity, norm3,
+    muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
 };
 use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::isd_damping;
@@ -274,8 +274,7 @@ fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Optio
             let lengthrange = model.actuator_lengthrange[i];
             let f0 = muscle_f0(prm, model.actuator_acc0[i]);
 
-            let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(MJ_MINVAL);
-            let norm_len = prm[0] + (length - lengthrange.0) / l0.max(MJ_MINVAL);
+            let (l0, norm_len) = muscle_length(length, lengthrange, prm);
             let norm_vel = velocity / (l0 * prm[6]).max(MJ_MINVAL);
 
             let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
@@ -1233,8 +1232,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
                 let prm = &model.actuator_gainprm[i];
                 let lengthrange = model.actuator_lengthrange[i];
                 let f0 = muscle_f0(prm, model.actuator_acc0[i]);
-                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(MJ_MINVAL);
-                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(MJ_MINVAL);
+                let (l0, norm_len) = muscle_length(length, lengthrange, prm);
                 let norm_vel = data.actuator_velocity[i] / (l0 * prm[6]).max(MJ_MINVAL);
                 let dfl_dnl = muscle_active_fl_deriv(norm_len, prm[4], prm[5]);
                 let fv = muscle_gain_velocity(norm_vel, prm[8]);
@@ -2117,10 +2115,6 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                             continue;
                         }
                         for dd in 0..nd_j {
-                            // Skip Free linear DOFs (no angular part to shift)
-                            if model.jnt_type[jid] == MjJointType::Free && dd < 3 {
-                                continue;
-                            }
                             let s_jdd = SpatialVector::new(
                                 s_j[(0, dd)],
                                 s_j[(1, dd)],
@@ -2374,25 +2368,21 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
         // when `m` is the body's own, and `origin_shift(v_i, m)` for the joints
         // before an own `m` that moves the origin),
         // `∂P/∂q_m = Σ_{k<j} ∂v_k ×_m v_j + v_k ×_m ∂v_j`.
-        // A body with one joint has no such product.
+        // A body with one joint has no such product, and a free joint is its
+        // body's only joint (`Model::check_joint_layout`).
         if je - js > 1 {
-            let joint_velocity = |jid: usize, rotating_only: bool| {
+            let joint_velocity = |jid: usize| {
                 let da = model.jnt_dof_adr[jid];
                 let s = &joint_subspaces[jid];
                 let mut v = SpatialVector::zeros();
                 for d in 0..model.jnt_type[jid].nv() {
-                    // A free joint's linear subspace is fixed in the world frame.
-                    if rotating_only && model.jnt_type[jid] == MjJointType::Free && d < 3 {
-                        continue;
-                    }
                     for row in 0..6 {
                         v[row] += s[(row, d)] * data.qvel[da + d];
                     }
                 }
                 v
             };
-            let v: Vec<SpatialVector> = (js..je).map(|jid| joint_velocity(jid, false)).collect();
-            let v_rot: Vec<SpatialVector> = (js..je).map(|jid| joint_velocity(jid, true)).collect();
+            let v: Vec<SpatialVector> = (js..je).map(joint_velocity).collect();
             let mut anc = b;
             while anc != 0 {
                 let anc_js = model.body_jnt_adr[anc];
@@ -2410,7 +2400,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                         }
                         let s_ang_k =
                             SpatialVector::new(axis_k[0], axis_k[1], axis_k[2], 0.0, 0.0, 0.0);
-                        let dv: Vec<SpatialVector> = v_rot
+                        let dv: Vec<SpatialVector> = v
                             .iter()
                             .enumerate()
                             .map(|(i, vi)| {
@@ -2424,19 +2414,16 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                             })
                             .collect();
                         let mut dp = SpatialVector::zeros();
-                        for j in 1..v.len() {
-                            for k in 0..j {
-                                dp += spatial_cross_motion(dv[k], v[j]);
-                                dp += spatial_cross_motion(v[k], dv[j]);
+                        for later in 1..v.len() {
+                            for earlier in 0..later {
+                                dp += spatial_cross_motion(dv[earlier], v[later]);
+                                dp += spatial_cross_motion(v[earlier], dv[later]);
                             }
                         }
                         for row in 0..6 {
                             data.deriv_Dcacc_pos[b][(row, da_k + dk)] += dp[row];
                         }
                     }
-                }
-                if is_free_body(b) {
-                    break;
                 }
                 anc = model.body_parent[anc];
             }
@@ -2657,10 +2644,6 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                             continue;
                         }
                         for dd in 0..nd_j {
-                            // Skip Free linear DOFs (no angular part to shift)
-                            if model.jnt_type[jid] == MjJointType::Free && dd < 3 {
-                                continue;
-                            }
                             let s_jdd = SpatialVector::new(
                                 s_j[(0, dd)],
                                 s_j[(1, dd)],
