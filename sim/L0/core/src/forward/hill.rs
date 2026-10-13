@@ -124,7 +124,8 @@ pub fn muscle_bias(len: f64, lengthrange: (f64, f64), acc0: f64, prm: &[f64; 9])
 // Muscle Activation Dynamics
 // ============================================================================
 
-/// Quintic smoothstep (C2-continuous Hermite), matching MuJoCo's `mju_sigmoid`.
+/// Quintic smoothstep (C2-continuous Hermite): MuJoCo's `mju_sigmoid`
+/// (`engine_util_misc.c:1888-1900`), in its arithmetic.
 pub fn sigmoid(x: f64) -> f64 {
     if x <= 0.0 {
         return 0.0;
@@ -132,7 +133,7 @@ pub fn sigmoid(x: f64) -> f64 {
     if x >= 1.0 {
         return 1.0;
     }
-    x * x * x * (6.0 * x * x - 15.0 * x + 10.0)
+    x * x * x * (3.0 * x * (2.0 * x - 5.0) + 10.0)
 }
 
 /// Compute d(act)/dt for muscle activation dynamics.
@@ -141,8 +142,10 @@ pub fn sigmoid(x: f64) -> f64 {
 ///   `tau_act_eff   = tau_act   * (0.5 + 1.5 * act)`
 ///   `tau_deact_eff = tau_deact / (0.5 + 1.5 * act)`
 ///
-/// When `tausmooth > 0`, uses quintic sigmoid to blend between `tau_act` and
-/// `tau_deact` instead of a hard switch at `ctrl == act`.
+/// When `tausmooth` is at least mjMINVAL, uses quintic sigmoid to blend
+/// between `tau_act` and `tau_deact` instead of a hard switch at
+/// `ctrl == act`. MuJoCo's `mju_muscleDynamics` and
+/// `mju_muscleDynamicsTimescale` (`engine_util_misc.c:731-770`).
 #[must_use]
 pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f64 {
     let ctrl_clamped = ctrl.clamp(0.0, 1.0);
@@ -156,16 +159,15 @@ pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f6
     let dctrl = ctrl_clamped - act;
 
     // Select time constant
-    let tau = if tausmooth < 1e-10 {
+    let tau = if tausmooth < MJ_MINVAL {
         // Hard switch
         if dctrl > 0.0 { tau_act } else { tau_deact }
     } else {
-        // Smooth blending via quintic sigmoid
-        // MuJoCo: x = 0.5*(dctrl/smoothing_width + 1)
-        tau_deact + (tau_act - tau_deact) * sigmoid(0.5 * (dctrl / tausmooth + 1.0))
+        // Smooth blending via quintic sigmoid, centred at dctrl = 0
+        tau_deact + (tau_act - tau_deact) * sigmoid(dctrl / tausmooth + 0.5)
     };
 
-    dctrl / tau.max(1e-10)
+    dctrl / tau.max(MJ_MINVAL)
 }
 
 #[cfg(test)]
@@ -403,18 +405,38 @@ mod tests {
     }
 
     // ---- T2: Activation dynamics — smooth blend (AC2) ----
+    /// MuJoCo 3.5.0's `mju_muscleDynamics` on the same inputs, bit for bit:
+    /// the sigmoid's argument is `dctrl / tausmooth + 0.5` (here 0.75).
     #[test]
     fn test_hill_activation_smooth_blend() {
         let prm = [0.01, 0.04, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let act_dot = muscle_activation_dynamics(0.55, 0.5, &prm);
-        // V7: act_clamped=0.5, tau_act=0.01×1.25=0.0125, tau_deact=0.04/1.25=0.032
-        // dctrl=0.05, x=0.5*(0.05/0.2+1)=0.625
-        // S(0.625)=0.625^3*(0.625*(6*0.625-15)+10)
-        // tau=0.032+(0.0125-0.032)*S(0.625)
-        // act_dot=0.05/tau
-        assert!(
-            (act_dot - 2.798_737).abs() < 1e-3,
-            "smooth blend act_dot = {act_dot}, expected ≈ 2.798_737"
+        assert_eq!(act_dot.to_bits(), 3.443_868_971_547_727_f64.to_bits());
+        let prm = [0.01, 0.04, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.3, 0.7, &prm);
+        assert_eq!(act_dot.to_bits(), (-15.499_999_999_999_996_f64).to_bits());
+    }
+
+    /// A smoothing width below 1e-10 but above mjMINVAL still blends, and a
+    /// time constant below 1e-10 clamps at mjMINVAL: MuJoCo 3.5.0's
+    /// `mju_muscleDynamics`, bit for bit.
+    #[test]
+    fn activation_clamps_at_mjminval() {
+        let prm = [0.01, 0.04, 1e-12, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.5 + 1e-13, 0.5, &prm);
+        assert_eq!(act_dot.to_bits(), 5.352_395_624_003_173e-12_f64.to_bits());
+        let prm = [1e-13, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.55, 0.5, &prm);
+        assert_eq!(act_dot.to_bits(), 400_000_000_000.000_37_f64.to_bits());
+    }
+
+    /// MuJoCo 3.5.0's `mju_sigmoid` at a point where `6x² − 15x + 10`
+    /// rounds otherwise.
+    #[test]
+    fn sigmoid_is_mujocos() {
+        assert_eq!(
+            sigmoid(0.763_774_618_976_614).to_bits(),
+            0.910_475_655_329_874_8_f64.to_bits()
         );
     }
 }

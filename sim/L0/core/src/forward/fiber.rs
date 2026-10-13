@@ -158,8 +158,9 @@ impl Model {
                 &mut x,
             );
 
-            // acc0 = ||M^{-1} J||_2
-            self.actuator_acc0[i] = x.norm().max(1e-10);
+            // acc0 = ||M^{-1} J||_2, unclamped, in MuJoCo's order
+            // (`engine_setconst.c:776`); its readers clamp it at mjMINVAL.
+            self.actuator_acc0[i] = crate::linalg::mju_norm(x.as_slice());
 
             moment_vecs.push(j_vec);
         }
@@ -1197,12 +1198,9 @@ mod tests {
         model.compute_qld_csr_metadata();
         model.compute_actuator_params();
 
-        // acc0 with nv=0: norm of empty vector = 0, clamped to 1e-10
-        assert!(
-            model.actuator_acc0[0] <= 1e-9,
-            "acc0 with nv=0 should be ~0 (clamped to 1e-10), got {}",
-            model.actuator_acc0[0]
-        );
+        // acc0 with nv=0: the norm of an empty vector, 0, as MuJoCo's
+        // (`engine_setconst.c:780`)
+        assert_eq!(model.actuator_acc0[0], 0.0);
     }
 
     // ---- T13: Multi-body acc0 + dampratio conformance → AC14 ----

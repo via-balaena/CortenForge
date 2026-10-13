@@ -25,11 +25,19 @@ Fixtures:
   past the optimal length, where the passive force is not 0;
 - narrow_range: both forces 300 and a lengthrange 1e-12 wide, so that the
   optimal length is 3.3e-12, at states 1e-13 from the range's end, one
-  moving at 1e-12, a normalized velocity of 0.2.
+  moving at 1e-12, a normalized velocity of 0.2;
+- tiny_acc0: auto_force with a gear of 1e-18, so that acc0 is 3.1e-17:
+  MuJoCo stores acc0 unclamped (engine_setconst.c:776) and clamps it at
+  mjMINVAL where the force is resolved;
+- acc0_order: a muscle on a fixed tendon over five slides, each on its own
+  body, whose acc0 MuJoCo's `mju_norm` (four interleaved sums,
+  engine_util_blas.c:698-765) gives 1.754197806780044 and a sum of squares
+  left to right 1.7541978067800443.
 
 Each fixture isolates one difference: auto_force the resolution of the force
 (its range is wide and its gain and bias parameters equal), bias_from_biasprm
-the bias's parameters, narrow_range the clamps (its forces are explicit).
+the bias's parameters, narrow_range the clamps (its forces are explicit),
+tiny_acc0 the stored acc0, acc0_order its summation order.
 """
 
 import json
@@ -51,6 +59,16 @@ HINGE = """<mujoco>
   gainprm="0.75 1.05 {gain} 200 0.5 1.6 1.5 1.3 1.2" biasprm="0.75 1.05 {bias} 200 0.5 1.6 1.5 1.3 1.2"
   lengthrange="{lr}"/></actuator></mujoco>"""
 
+SLIDES = """<mujoco>
+<worldbody>
+""" + "".join(f"""<body pos="{i} 0 0"><joint name="s{i}" type="slide" axis="1 0 0"/>
+  <geom type="sphere" size="0.1" mass="{mass}"/></body>
+""" for i, mass in enumerate([1.78, 0.703, 2.276, 0.631, 2.018])) + """</worldbody>
+<tendon><fixed name="t">""" + "".join(f'<joint joint="s{i}" coef="{c}"/>' for i, c in enumerate([1.107, 0.622, 2.023, 0.403, 1.7])) + """</fixed></tendon>
+<actuator><general name="m" tendon="t" gaintype="muscle" biastype="muscle" dyntype="none"
+  gainprm="0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2" biasprm="0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2"
+  lengthrange="-1 1"/></actuator></mujoco>"""
+
 FIXTURES = {
     "auto_force": (HINGE.format(gain=-1, bias=-1, lr="-1 1"),
                    [(0.0, 0.0, 0.6), (0.2, 0.3, 0.6), (-0.4, -0.5, 1.0), (0.7, 0.1, 0.3)]),
@@ -58,6 +76,9 @@ FIXTURES = {
                           [(0.5, 0.0, 0.6), (0.8, 0.2, 0.6), (0.95, -0.1, 0.2)]),
     "narrow_range": (HINGE.format(gain=300, bias=300, lr="0 1e-12"),
                      [(1e-13, 0.0, 0.6), (3e-13, 0.0, 0.6), (5e-13, 0.0, 1.0), (1e-13, 1e-12, 0.6)]),
+    "tiny_acc0": (HINGE.format(gain=-1, bias=-1, lr="-1 1").replace('dyntype="none"', 'dyntype="none" gear="1e-18"'),
+                  [(0.0, 0.0, 0.6), (0.2, 0.3, 0.6)]),
+    "acc0_order": (SLIDES, [(0.0, 0.0, 0.6), (0.3, 0.2, 0.6)]),
 }
 
 

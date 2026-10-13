@@ -34,6 +34,30 @@ pub(crate) fn dot_sparse(vec1: &[f64], vec2: impl Fn(usize) -> f64) -> f64 {
     res
 }
 
+/// `‖v‖` in MuJoCo's order (`mju_norm` = `sqrt(mju_dot)`,
+/// `engine_util_blas.c:698-765`): four interleaved sums of squares, added as
+/// `(r0 + r2) + (r1 + r3)`, then the remaining one to three left to right.
+pub(crate) fn mju_norm(v: &[f64]) -> f64 {
+    let n = v.len();
+    let (mut r0, mut r1, mut r2, mut r3) = (0.0, 0.0, 0.0, 0.0);
+    let mut i = 0;
+    while i + 4 <= n {
+        r0 += v[i] * v[i];
+        r1 += v[i + 1] * v[i + 1];
+        r2 += v[i + 2] * v[i + 2];
+        r3 += v[i + 3] * v[i + 3];
+        i += 4;
+    }
+    let mut sum = (r0 + r2) + (r1 + r3);
+    match n - i {
+        3 => sum += v[i] * v[i] + v[i + 1] * v[i + 1] + v[i + 2] * v[i + 2],
+        2 => sum += v[i] * v[i] + v[i + 1] * v[i + 1],
+        1 => sum += v[i] * v[i],
+        _ => {}
+    }
+    sum.sqrt()
+}
+
 // ============================================================================
 // Dense Cholesky
 // ============================================================================
@@ -496,5 +520,35 @@ mod cholesky_tests {
         cholesky_solve_in_place(&m, &mut x);
         // 4 * x = 6 => x = 1.5
         assert_relative_eq!(x[0], 1.5, epsilon = 1e-15);
+    }
+}
+
+#[cfg(test)]
+mod mju_norm_tests {
+    use super::mju_norm;
+
+    /// A weld's six violations where MuJoCo's summation order differs from
+    /// a left-to-right sum in the last place: MuJoCo 3.5.0's `mju_norm` gives
+    /// 0.013731086045903286; summed left to right, 0.013731086045903288.
+    /// And a connect's three, where `a² + (b² + c²)` gives
+    /// 0.0003823124437736077 and MuJoCo's order 0.00038231244377360775.
+    #[test]
+    fn mju_norm_sums_in_mujoco_order() {
+        let v = [
+            -0.006_066, -0.005_913, 0.002_481, 0.008_006, 0.006_809, -0.000_411,
+        ];
+        assert_eq!(
+            mju_norm(&v).to_bits(),
+            0.013_731_086_045_903_286_f64.to_bits()
+        );
+        let v = [
+            -4.012_437_229_592_179e-5,
+            -1.493_753_111_448_576_4e-4,
+            -3.496_281_679_618_837_6e-4,
+        ];
+        assert_eq!(
+            mju_norm(&v).to_bits(),
+            0.000_382_312_443_773_607_75_f64.to_bits()
+        );
     }
 }

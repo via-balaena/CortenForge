@@ -90,3 +90,32 @@ fn general_biastype_muscle_reads_biasprm() {
 fn muscle_clamps_use_mjminval() {
     assert_matches_mujoco("narrow_range", 1e-12);
 }
+
+/// A muscle's `acc0` is stored unclamped, 3.1e-17 here (a gear of 1e-18), and
+/// clamped at mjMINVAL where its force is resolved (`engine_setconst.c:776`,
+/// `engine_util_misc.c:666`); a clamp at 1e-10 where it is stored made the
+/// force 5e5 times too small.
+#[test]
+fn tiny_acc0_is_stored_unclamped() {
+    assert_matches_mujoco("tiny_acc0", 0.0);
+}
+
+/// A muscle's `acc0` sums its squares in MuJoCo's order (`mju_norm`, four
+/// interleaved sums): over five slides, 1.754197806780044 where a sum left to
+/// right gives 1.7541978067800443.
+#[test]
+fn acc0_sums_in_mujoco_order() {
+    let golden = golden();
+    let case = golden["fixtures"]
+        .as_array()
+        .expect("fixtures")
+        .iter()
+        .find(|c| c["name"] == "acc0_order")
+        .expect("acc0_order");
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    assert_eq!(
+        model.actuator_acc0[0].to_bits(),
+        num(&case["acc0"]).to_bits()
+    );
+    assert_matches_mujoco("acc0_order", 0.0);
+}

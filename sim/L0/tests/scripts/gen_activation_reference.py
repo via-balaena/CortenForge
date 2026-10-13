@@ -22,7 +22,12 @@ Fixtures:
 - disabled: a filter (tau 0.2) in group 2, with `actuatorgroupdisable="2"`,
   under Euler and under RK4;
 - tiny_tau: a filter with tau 1e-12;
-- tiny_tau_exact: an exact filter with tau 1e-12, under Euler and under RK4.
+- tiny_tau_exact: an exact filter with tau 1e-12, under Euler and under RK4;
+- muscle_smooth: muscle dynamics with a smoothing width of 0.3, 60 steps,
+  whose activation passes through the width (mju_muscleDynamics,
+  engine_util_misc.c:752-770: the sigmoid of dctrl / width + 0.5);
+- muscle_tiny_tau: muscle dynamics with an activation time constant of
+  1e-13, which MuJoCo clamps at mjMINVAL (:769).
 """
 
 import json
@@ -53,6 +58,10 @@ FIXTURES = {
                                     dyn='dyntype="filterexact" dynprm="1e-12"'), 1),
     "tiny_tau_exact_RK4": (HINGE.format(integrator="RK4", disable="", group=0,
                                         dyn='dyntype="filterexact" dynprm="1e-12"'), 1),
+    "muscle_smooth": (HINGE.format(integrator="Euler", disable="", group=0,
+                                   dyn='dyntype="muscle" dynprm="0.01 0.04 0.3"'), 60),
+    "muscle_tiny_tau": (HINGE.format(integrator="Euler", disable="", group=0,
+                                     dyn='dyntype="muscle" dynprm="1e-13 0.04 0"'), 1),
 }
 
 

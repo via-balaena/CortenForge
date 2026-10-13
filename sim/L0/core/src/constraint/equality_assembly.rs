@@ -11,6 +11,7 @@ use crate::constraint::equality::{
     extract_tendon_equality_jacobian, extract_weld_jacobian,
 };
 use crate::constraint::impedance::{MJ_MINVAL, compute_diag_approx_bodyweight};
+use crate::linalg::mju_norm;
 use crate::types::{ConstraintType, Data, EqualityType, Model};
 
 use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp};
@@ -121,49 +122,6 @@ pub(super) fn assemble_equality_rows(
             e,        // id (edge index)
             [0.0; 5], // mu (no friction on edge constraints)
             MJ_MINVAL,
-        );
-    }
-}
-
-/// `‖v‖` in MuJoCo's order (`mju_norm` = `sqrt(mju_dot)`,
-/// `engine_util_blas.c:698-765`): four interleaved sums of squares, added as
-/// `(r0 + r2) + (r1 + r3)`, then the remaining one to three left to right.
-fn mju_norm(v: &[f64]) -> f64 {
-    let n = v.len();
-    let (mut r0, mut r1, mut r2, mut r3) = (0.0, 0.0, 0.0, 0.0);
-    let mut i = 0;
-    while i + 4 <= n {
-        r0 += v[i] * v[i];
-        r1 += v[i + 1] * v[i + 1];
-        r2 += v[i + 2] * v[i + 2];
-        r3 += v[i + 3] * v[i + 3];
-        i += 4;
-    }
-    let mut sum = (r0 + r2) + (r1 + r3);
-    match n - i {
-        3 => sum += v[i] * v[i] + v[i + 1] * v[i + 1] + v[i + 2] * v[i + 2],
-        2 => sum += v[i] * v[i] + v[i + 1] * v[i + 1],
-        1 => sum += v[i] * v[i],
-        _ => {}
-    }
-    sum.sqrt()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::mju_norm;
-
-    /// A weld's six violations where MuJoCo's summation order differs from
-    /// a left-to-right sum in the last place: MuJoCo 3.5.0's `mju_norm` gives
-    /// 0.013731086045903286; summed left to right, 0.01373108604590329.
-    #[test]
-    fn mju_norm_sums_in_mujoco_order() {
-        let v = [
-            -0.006_066, -0.005_913, 0.002_481, 0.008_006, 0.006_809, -0.000_411,
-        ];
-        assert_eq!(
-            mju_norm(&v).to_bits(),
-            0.013_731_086_045_903_286_f64.to_bits()
         );
     }
 }

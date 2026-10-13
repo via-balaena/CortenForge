@@ -96,3 +96,19 @@ fn filter_time_constant_is_clamped_at_mjminval() {
     assert_matches_mujoco("tiny_tau_exact");
     assert_matches_mujoco("tiny_tau_exact_RK4");
 }
+
+/// Muscle activation dynamics blend the two time constants through the
+/// sigmoid of `dctrl / width + 0.5` (`mju_muscleDynamics`,
+/// `engine_util_misc.c:752-770`): a width of 0.3, 60 steps from rest, the
+/// activation passing through the width.
+#[test]
+fn muscle_activation_smoothing_matches_mujoco_3_5_0() {
+    assert_matches_mujoco("muscle_smooth");
+}
+
+/// A muscle's activation time constant of 1e-13 is clamped at mjMINVAL, not
+/// 1e-10: `act_dot` 2e13.
+#[test]
+fn muscle_time_constant_is_clamped_at_mjminval() {
+    assert_matches_mujoco("muscle_tiny_tau");
+}
