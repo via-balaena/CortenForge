@@ -453,7 +453,7 @@ Each constraint below is a dependency note from a section; the order above satis
 - **Readers of `actuator_gainprm[i][2]`** as the resolved F0 (`git grep`): `examples/fundamentals/sim-cpu/muscles/forearm-flexion/src/main.rs:145`, `muscles/cocontraction/src/main.rs:203`, `muscles/stress-test/src/main.rs:540`, `:733`, `:797`, `:814` (a validator). `sim/L1/bevy/src/model_data.rs:925` reads it for the muscle colour (`.max(1.0)`). They read −1 where F0 was not given, so each calls `muscle_f0`, made `pub` for them. Not run.
 
 ### P34 · A18 P1 · `fix(sim-core): Newton and CG run MuJoCo's primal solver`
-- **Before it:** four commits open chunk 3c, ledger-L119, L117, L114 and L118, in that order (their owner lines in chapter 41).
+- **Before it:** four commits open chunk 3c, ledger-L119 (with L121), L117, L114 and L118, in that order (their owner lines in chapter 41).
 - **Closes:** census Newton (9 docs) and CG (ledger-L44) clusters (A16 §2; A18 §1).
 - **Implements:** A18 §4 (one primal solver for Newton and CG; no PGS fallback; `SolverStat` in MuJoCo's shape; `newton_solved` crate-private per A18 Q2); un-ignore the 24 `golden_flags` tests; `docs/KNOWN_GAPS.md` Gap 1 (A18 §13).
 - **Must-fail:** the 24 `golden_flags` tests; `chol_update_minus_removes_row`, `newton_matches_mujoco_3_5_0_iterates`, `newton_has_no_pgs_fallback`, `cg_matches_mujoco_3_5_0`, `cg_keeps_its_iterate`, `solver_niter_cleared_without_rows` (A18 §10).
