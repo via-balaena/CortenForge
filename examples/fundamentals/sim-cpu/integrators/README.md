@@ -23,7 +23,7 @@ the actual math the engine executes.
 | [`euler/`](euler/) | Bevy | Semi-implicit Euler — visible energy drift at dt=0.005 |
 | [`rk4/`](rk4/) | Bevy | 4th-order Runge-Kutta — near-zero energy drift |
 | [`implicit/`](implicit/) | Bevy | Full implicit with Coriolis — unconditionally stable |
-| [`implicit-fast/`](implicit-fast/) | Bevy | Simplified implicit, no Coriolis — Cholesky instead of LU |
+| [`implicit-fast/`](implicit-fast/) | Bevy | Simplified implicit, no Coriolis |
 | [`implicit-spring-damper/`](implicit-spring-damper/) | Bevy | Diagonal spring/damper implicit treatment |
 
 ## Run

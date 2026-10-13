@@ -44,9 +44,9 @@ use sim_core::validation::{Check, print_report};
 //   2. Form system matrix (asymmetric due to Coriolis):
 //        M_hat = M - h · D
 //
-//   3. Solve via LU factorization (P·L·U decomposition):
+//   3. Solve by sparse LU without pivoting (MuJoCo's mju_factorLUSparse),
+//      on the pattern of every pair of dofs on one branch:
 //        M_hat · a = qfrc_smooth + qfrc_constraint
-//        Requires pivoting since M_hat is not symmetric
 //
 //   4. Update (data.qacc keeps the explicit acceleration, as in MuJoCo):
 //        qvel  ←  qvel + h · a
@@ -55,7 +55,6 @@ use sim_core::validation::{Check, print_report};
 //   Properties:
 //   - Unconditionally stable (large timesteps won't explode)
 //   - Includes ALL velocity-dependent forces (Coriolis, gyroscopic)
-//   - LU factorization: O(nv³) — most expensive integrator
 //   - Best for: maximum accuracy with implicit stability
 //
 // Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicit_full)

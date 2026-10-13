@@ -286,7 +286,8 @@ forward():
                                         (D includes Coriolis)
                                       ImplicitSpringDamper: qacc = (v_new − qvel) / h
 integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper; RK4 under step2()]:
-  History samples, then activation integration (act += dt * act_dot, muscle clamp to [0,1])
+  History samples, then activation integration (act += dt * act_dot, clamped to actrange where
+  actlimited; skipped with actuation disabled)
   The sleep step (mj_sleep): a tree put to sleep has its velocity and acceleration
     zeroed, and the forward pass runs again from the velocity stage
   Semi-implicit Euler (velocity first, then position with new velocity)

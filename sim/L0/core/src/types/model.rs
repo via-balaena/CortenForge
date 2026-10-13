@@ -276,9 +276,9 @@ pub struct Model {
     /// Whether each site's frame is its body's frame or inertial frame
     /// (length `nsite`; MuJoCo `site_sameframe`).
     pub site_sameframe: Vec<SameFrame>,
-    /// 0 for a body whose block of the mass matrix need not be diagonal; 2
-    /// for a simple body whose joints are all slides; 1 for another simple
-    /// body (length `nbody`; MuJoCo `body_simple`).
+    /// 0 for a body that is not simple; 2 for a simple body whose joints are
+    /// all slides; 1 for another simple body (length `nbody`; MuJoCo
+    /// `body_simple`).
     pub body_simple: Vec<u8>,
     /// Per dof: 0 if its body is not simple, else the number of dofs from it
     /// to the next dof of a body that is not (length `nv`; MuJoCo

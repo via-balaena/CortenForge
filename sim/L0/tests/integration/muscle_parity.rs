@@ -77,8 +77,8 @@ fn general_muscle_f0_matches_mujoco_3_5_0() {
 }
 
 /// A muscle bias reads its own `biasprm`: the gain's force 300, the bias's
-/// 100, past the optimal length; with a control of 0 the force is the
-/// passive force alone, multiplied in MuJoCo's order.
+/// 100, at ten states, nine past the optimal length; with a control of 0 the
+/// force is the passive force alone, multiplied in MuJoCo's order.
 #[test]
 fn general_biastype_muscle_reads_biasprm() {
     assert_matches_mujoco("bias_from_biasprm", 0.0);
@@ -92,10 +92,12 @@ fn muscle_clamps_use_mjminval() {
     assert_matches_mujoco("narrow_range", 0.0);
 }
 
-/// A muscle's `acc0` is stored unclamped, 3.1e-17 here (a gear of 1e-18), and
-/// clamped at mjMINVAL where its force is resolved (`engine_setconst.c:776`,
-/// `engine_util_misc.c:666`); a clamp at 1e-10 where it is stored made the
-/// force 5e5 times too small.
+/// A muscle's `acc0` of 3.1e-17 (a gear of 1e-18) is raised to mjMINVAL
+/// where its force is resolved (`engine_util_misc.c:666`); a clamp at 1e-10
+/// where it was stored made the force 1e5 times too small. This pins an
+/// `acc0` at or below mjMINVAL; that it is stored unclamped
+/// (`engine_setconst.c:776`), `test_acc0_no_dofs` and
+/// `test_muscle_acc0_spatial_tendon` pin (an `acc0` of 0).
 #[test]
 fn tiny_acc0_is_stored_unclamped() {
     assert_matches_mujoco("tiny_acc0", 0.0);

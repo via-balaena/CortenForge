@@ -194,7 +194,7 @@ impl Data {
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
     /// was resized, or if forward acceleration computation fails (e.g.,
-    /// Cholesky failure in implicit integrator).
+    /// `CholeskyFailed` under the implicit spring-damper integrator).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
 
@@ -224,8 +224,10 @@ impl Data {
     /// # Errors
     ///
     /// Returns `Err(StepError)` if:
-    /// - Cholesky decomposition fails (implicit integrator only)
-    /// - LU decomposition fails (implicit integrator only)
+    /// - the implicit spring-damper integrator's matrix is not positive
+    ///   definite (`CholeskyFailed`)
+    /// - under the implicit integrator, a diagonal of the LU factor is below
+    ///   mjMINVAL in magnitude (`LuSingular`)
     /// - The timestep is not positive and finite (`InvalidTimestep`)
     /// - `self` was made by a model of other dimensions, or an input array
     ///   was resized (`DataShapeMismatch`)

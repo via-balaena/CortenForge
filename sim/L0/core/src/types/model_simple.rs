@@ -1,7 +1,7 @@
 //! Simple bodies and the dof–dof sparsity patterns, as MuJoCo 3.5.0's
 //! compiler derives them: which frames equal their body's frame or inertial
-//! frame (`*_sameframe`), which bodies' block of the mass matrix is diagonal
-//! (`body_simple`, `dof_simplenum`), and the patterns of the mass matrix and
+//! frame (`*_sameframe`), which bodies are simple (`body_simple`,
+//! `dof_simplenum`), and the patterns of the mass matrix and
 //! of the velocity derivative that the implicit integrators factor
 //! (`mj_makeDofDofSparse`).
 
@@ -48,8 +48,8 @@ impl Model {
     /// A body is simple when its inertial frame is its frame, it is a root
     /// (or the child of a jointless child of the world), it has no child, and
     /// its joints are at its origin, each slide and hinge along a coordinate
-    /// axis, with at most one hinge or ball and none before another joint;
-    /// then its block of the mass matrix is diagonal. `body_simple` is 2 for a
+    /// axis, with at most one hinge or ball and none before another joint.
+    /// `body_simple` is 2 for a
     /// simple body whose joints are all slides, 1 for another simple body
     /// with a joint, and also 1 for a simple body with none. MuJoCo also
     /// demotes a body that a tendon with armature passes over; sim-core has

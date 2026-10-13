@@ -41,9 +41,9 @@ Fixtures:
   velocities between 0 and 5e-11, where the force-velocity curve divides by
   max(mjMINVAL, fvmax - 1);
 - flat_lmax: explicit forces and an lmax of 1 + 1e-10, so that the length
-  curve's and the passive force's midpoint is 5e-11 past 1, at normalized
-  lengths 1 + 3e-11 and 1 + 2e-10, where both divide by
-  max(mjMINVAL, b - 1);
+  curve's and the passive force's midpoint b is 5e-11 past 1, at normalized
+  lengths 1 + 3e-11, where both divide by max(mjMINVAL, b - 1), and
+  1 + 2e-10, past lmax, where only the passive force's linear branch does;
 - zero_force: both forces 0, which MuJoCo leaves at 0 (only a negative
   force is resolved from acc0).
 
@@ -55,8 +55,8 @@ clamped quantities, and record qpos and qvel.
 Each fixture isolates one difference: auto_force the resolution of the force
 (its range is wide and its gain and bias parameters equal), bias_from_biasprm
 the bias's parameters, narrow_range the clamps (its forces are explicit),
-tiny_acc0 the stored acc0, acc0_order its summation order, tiny_fv,
-flat_lmax and zero_force one clamp or comparison each.
+tiny_acc0 the stored acc0, acc0_order its summation order, tiny_fv and
+flat_lmax their clamps, zero_force a comparison.
 """
 
 import json

@@ -267,7 +267,7 @@ stored unclamped.
 ### Model Build: `compute_actuator_params()`
 
 Called after `compute_ancestors()` and `compute_implicit_params()`, for each
-muscle actuator:
+actuator:
 
 1. **`actuator_lengthrange`** — computed from tendon limits (if limited) or
    joint range sums (fixed tendons), gear-scaled with sign awareness.
@@ -827,7 +827,6 @@ Key details:
   quaternion exponential map for ball/free joints
 - Activation is integrated with the same Butcher tableau as `qpos`/`qvel`,
   reconstructed from `act_saved` at each trial stage (never accumulated)
-- Muscle activations clamped to `[0, 1]` at each trial stage and final
 - `efc_lambda` (warmstart cache) is saved before RK4 and restored afterward
   so intermediate stage contact solutions don't corrupt the warmstart
 - All RK4 activation buffers (`rk4_act_saved`, `rk4_act_dot`) are pre-allocated

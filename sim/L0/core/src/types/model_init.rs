@@ -1217,7 +1217,7 @@ impl Model {
         let colind = self.qLD_colind.clone();
 
         // A simple body whose joints are all slides (MuJoCo's `body_simple`
-        // 2): its block of the mass matrix is its mass on the diagonal.
+        // 2) takes MuJoCo's short form (`engine_setconst.c:628-635`).
         let slides_only: Vec<bool> = (0..self.nbody)
             .map(|b| self.body_simple.get(b) == Some(&2))
             .collect();

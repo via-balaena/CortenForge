@@ -1,8 +1,7 @@
-//! ImplicitFast Integrator — Symmetric D, Cholesky Factorization
+//! ImplicitFast Integrator — Implicit Without Coriolis
 //!
 //! Single undamped pendulum integrated with the implicit-fast method. Same as
-//! full Implicit but skips Coriolis terms and uses Cholesky (not LU) for better
-//! performance. Unconditionally stable.
+//! full Implicit but skips Coriolis terms. Unconditionally stable.
 //!
 //! Validates:
 //! - Energy drift < 0.5% over 15s (stable, slight dissipation OK)
@@ -87,7 +86,7 @@ const M_G_D: f64 = 1.0 * 9.81 * 0.25;
 
 fn main() {
     println!("=== CortenForge: {INTEGRATOR_NAME} Integrator ===");
-    println!("  Symmetric D, no Coriolis — Cholesky factorization");
+    println!("  No Coriolis, on the mass matrix's pattern");
     println!("  dt = 0.005, zero damping, released from horizontal");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 

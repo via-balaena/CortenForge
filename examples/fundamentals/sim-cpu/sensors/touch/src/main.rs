@@ -2,8 +2,7 @@
 //!
 //! A sphere hovers at z=4.0 for 1 second, then drops onto a ground plane.
 //! Touch sensor on the sphere reports the sum of normal contact forces.
-//! Uses `condim="1"` (frictionless normal-only contact) to avoid the pyramidal
-//! friction approximation which would read ~75% of the true normal force.
+//! Uses `condim="1"` (frictionless normal-only contact).
 //!
 //! Two phases after the drop:
 //! 1. Free-fall (t < 0.7s): touch == 0.0 (no contact)
@@ -71,9 +70,8 @@ const MJCF: &str = r#"
 //   1. Iterate all active constraints (efc_type, efc_force)
 //   2. For each contact constraint where either geom belongs to this body:
 //        - Frictionless/Elliptic: add efc_force[normal] (pure normal component)
-//        - Pyramidal: add all efc_force[0..dim] (facet projections ≈ 75% of true
-//          normal — this is why we use condim="1" in this example to get exact
-//          normal force instead of the pyramidal approximation)
+//        - Pyramidal: add all efc_force[0..dim] (the facets' sum, the normal
+//          force as mju_decodePyramid decodes it)
 //   3. Output: scalar = total summed normal force
 //
 //   Touch reads directly from efc_force (constraint solver output), so it's

@@ -1142,7 +1142,7 @@ mod tests {
     // ---- S1 supplementary: acc0 with nv=0 ----
     #[test]
     fn test_acc0_no_dofs() {
-        // Model with nu=1 but nv=0 → acc0 should not panic and remain 0 (or clamp)
+        // Model with nu=1 but nv=0 → acc0 should not panic and remain 0
         let mut model = Model::empty();
         model.nbody = 1;
         model.body_parent = vec![0];
