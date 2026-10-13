@@ -447,7 +447,7 @@ pub fn solve_implicit(model: &Model, data: &Data, x: &mut DVector<f64>) {
 /// frictionless contact's rows are its components.
 fn contact_force(rows: &[f64], mu: &[f64; 5], dim: usize, pyramidal: bool) -> [f64; 6] {
     let mut f = [0.0; 6];
-    if pyramidal && dim > 1 {
+    if pyramidal {
         decode_pyramid_into(rows, mu, dim, &mut f);
     } else {
         f[..dim].copy_from_slice(&rows[..dim]);

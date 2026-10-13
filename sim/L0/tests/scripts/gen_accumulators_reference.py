@@ -44,9 +44,7 @@ the body's root) to the body's origin xpos, where sim-core keeps it:
   move; the centres are on one vertical, so the contact frame is the plane
   cases' (a normal off the axes takes another frame here, which P42 ports).
 - contact_two_contacts: two free spheres stacked on the plane (pyramidal),
-  at rest under applied torques; `distinct` refuses it unless its two
-  contacts differ in bodies, condim and each friction component the second
-  decodes, and every facet pair carries a friction force. Both normals are
+  at rest under applied torques, held apart by `distinct`. Both normals are
   +z (P42 ports MuJoCo's frame for any other).
 - connect_two_bodies, weld_two_bodies: a connect and a weld between two
   moving bodies (a hinged body and a hinge-and-slide one; a hinged body and
@@ -302,32 +300,32 @@ def cfrc_ext_at_origin(m, d):
     return out
 
 
-def distinct(name, xml, xfrc):
-    """Exit unless the case's second contact decodes otherwise with any of the
-    first's bodies, condim or friction components, and every facet pair of
-    both carries a friction force (`mju_decodePyramid`,
-    `engine_util_misc.c:1142-1159`)."""
-    m = mujoco.MjModel.from_xml_string(xml)
-    d = mujoco.MjData(m)
-    for b, w in xfrc.items():
-        d.xfrc_applied[b] = w
-    mujoco.mj_forward(m, d)
+def distinct(m, d):
+    """Exit unless contact 1's wrench changes by more than 1e-9 with any of
+    contact 0's friction components or its point, the two differ in bodies
+    and condim, and every facet pair of both carries a friction force
+    (`mju_decodePyramid`, `engine_util_misc.c:1142-1159`)."""
     if d.ncon != 2:
-        sys.exit(f"{name}: not two contacts")
+        sys.exit("distinct: not two contacts")
     c0, c1 = d.contact[0], d.contact[1]
     bodies = [(m.geom_bodyid[c.geom1], m.geom_bodyid[c.geom2]) for c in (c0, c1)]
     if bodies[0] == bodies[1] or c0.dim == c1.dim:
-        sys.exit(f"{name}: the contacts share their bodies or their condim")
+        sys.exit("distinct: the contacts share their bodies or their condim")
+    rows = [d.efc_force[c.efc_address:c.efc_address + 2 * (c.dim - 1)] for c in (c0, c1)]
+    for i, r in enumerate(rows):
+        if (abs(r[0::2] - r[1::2]) < 1e-6).any():
+            sys.exit(f"distinct: a facet pair of contact {i} carries no friction force")
+    pair = rows[1][0::2] - rows[1][1::2]
     for k in range(c1.dim - 1):
-        if c0.friction[k] == c1.friction[k]:
-            sys.exit(f"{name}: friction component {k} is the same at both contacts")
-    for i, c in enumerate((c0, c1)):
-        rows = d.efc_force[c.efc_address:c.efc_address + 2 * (c.dim - 1)]
-        if (abs(rows[0::2] - rows[1::2]) < 1e-6).any():
-            sys.exit(f"{name}: a facet pair of contact {i} carries no friction force")
+        if abs((c1.friction[k] - c0.friction[k]) * pair[k]) <= 1e-9:
+            sys.exit(f"distinct: contact 0's friction component {k} decodes contact 1 alike")
+    local = np.concatenate([[rows[1].sum()], c1.friction[:2] * pair[:2]])
+    force = c1.frame.reshape(3, 3).T @ local
+    if np.linalg.norm(np.cross(c1.pos - c0.pos, force)) <= 1e-9:
+        sys.exit("distinct: contact 1's force has the same torque at contact 0's point")
 
 
-def state(xml, qpos=None, qvel=None, xfrc=None, steps=(), solve=False):
+def state(xml, qpos=None, qvel=None, xfrc=None, steps=(), solve=False, check=None):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
     if qpos is not None:
@@ -342,6 +340,8 @@ def state(xml, qpos=None, qvel=None, xfrc=None, steps=(), solve=False):
     mujoco.mj_forward(m, d)
     mujoco.mj_rnePostConstraint(m, d)
     stable(d, "state")
+    if check:
+        check(m, d)
     out = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
            "xfrc_applied": {str(b): w for b, w in (xfrc or {}).items()},
            "sensordata": floats(d.sensordata), "cfrc_ext": cfrc_ext_at_origin(m, d)}
@@ -386,8 +386,7 @@ def main():
                 contact_on_plane(condim, cone), qvel=[0.2, -0.1, 0.0, 0.3, -0.2, 1.5],
                 xfrc={1: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
     torques = {1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.5], 2: [0.0, 0.0, 0.0, 0.05, -0.08, 0.2]}
-    distinct("contact_two_contacts", TWO_CONTACTS, torques)
-    cases["contact_two_contacts"] = state(TWO_CONTACTS, xfrc=torques, solve=True)
+    cases["contact_two_contacts"] = state(TWO_CONTACTS, xfrc=torques, solve=True, check=distinct)
     cases["contact_two_bodies"] = state(CONTACT_TWO, qvel=[0.1, 0.2, -0.1, 0.0, 0.3, -0.2, 1.5],
                                         xfrc={2: [1.0, 0.5, 0.0, 0.02, -0.01, 0.3]}, solve=True)
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
