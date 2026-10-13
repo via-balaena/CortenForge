@@ -126,7 +126,7 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `integrators/euler` | `example-integrator-euler` | Working | Semi-implicit Euler, visible drift |
 | `integrators/rk4` | `example-integrator-rk4` | Working | 4th-order Runge-Kutta, near-perfect |
 | `integrators/implicit` | `example-integrator-implicit` | Working | Full implicit, L-stable |
-| `integrators/implicit-fast` | `example-integrator-implicit-fast` | Working | Symmetric D, no Coriolis |
+| `integrators/implicit-fast` | `example-integrator-implicit-fast` | Working | Simplified implicit, no Coriolis |
 | `integrators/implicit-spring-damper` | `example-integrator-implicit-spring-damper` | Working | Diagonal spring/damper path |
 
 ### Solvers

@@ -33,11 +33,11 @@ use sim_core::validation::{Check, print_report};
 
 // ── What the engine computes (implicit fast) ───────────────────────────────
 //
-//   Simplified backward Euler — skips Coriolis for speed:
+//   Simplified backward Euler — skips Coriolis:
 //
 //   1. Assemble damping Jacobian (Coriolis EXCLUDED):
 //        D = D_joint + D_tendon + D_actuator
-//        (no mjd_rne_vel call — saves O(nv²) work)
+//        (no mjd_rne_vel call)
 //
 //   2. Form the system matrix on the mass matrix's sparsity pattern
 //      (its lower triangle; a simple dof's row its diagonal only):

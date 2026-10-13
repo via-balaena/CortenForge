@@ -1,9 +1,5 @@
 //! Stress test — headless validation of the muscle actuator system.
 //!
-//! 24 checks covering: activation dynamics (7), MuJoCo curve pinning (4),
-//! Hill curve pinning (3), MuJoCo full-pipeline force (2), HillMuscle
-//! full-pipeline force (5), dynamic behavior (3).
-//!
 //! Run: `cargo run -p example-muscle-stress-test --release`
 
 #![allow(

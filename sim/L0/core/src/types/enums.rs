@@ -841,8 +841,7 @@ pub enum Integrator {
     /// Full implicit integration with asymmetric D and LU factorization.
     /// Includes Coriolis velocity derivatives for maximum accuracy.
     Implicit,
-    /// Fast implicit integration with symmetric D and Cholesky factorization.
-    /// Skips Coriolis velocity derivatives for performance.
+    /// Implicit integration without the Coriolis velocity derivatives.
     ImplicitFast,
 }
 

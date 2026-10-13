@@ -468,7 +468,7 @@ instead of `ImplicitSpringDamper`'s direct mass-matrix modification approach:
 | `ImplicitFast` | passive + actuator vel | `mjINT_IMPLICITFAST` |
 | `Implicit` | passive + actuator vel + Coriolis | `mjINT_IMPLICIT` |
 
-**Verification:** 19 tests in `integration/implicit_integration.rs` covering:
+**Verification:** tests in `integration/implicit_integration.rs` covering:
 - Tendon-coupled damping stability (AC-1)
 - Actuator velocity stability (AC-2)
 - Zero-damping equivalence with Euler (AC-4)

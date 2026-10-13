@@ -413,7 +413,8 @@ pub struct Data {
     /// Per-row friction coefficients. For contacts: [mu1, mu2, ...] from geom.
     /// For non-contacts: [0; 5].
     pub efc_mu: Vec<[f64; 5]>,
-    /// Per-row condim of parent contact (1 for non-contact rows).
+    /// Per-row condim of parent contact (for a pyramidal contact, its facet
+    /// count; 1 for non-contact rows).
     pub efc_dim: Vec<usize>,
     /// Per-row source object index (joint ID for LimitJoint, tendon ID for
     /// LimitTendon, equality ID for Equality, contact index for Contact*,

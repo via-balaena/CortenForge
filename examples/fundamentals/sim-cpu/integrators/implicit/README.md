@@ -38,8 +38,7 @@ velocity, including:
 - Coriolis velocity derivatives (mjd_rne_vel)
 
 D is asymmetric (Coriolis breaks symmetry), so LU factorization is used
-instead of Cholesky. This is the most expensive implicit variant but also
-the most accurate for systems with significant Coriolis coupling.
+instead of Cholesky.
 
 ## Parameters
 

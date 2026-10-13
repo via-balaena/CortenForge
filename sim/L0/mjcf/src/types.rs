@@ -24,7 +24,7 @@ pub enum MjcfIntegrator {
     RK4,
     /// Full implicit integration (asymmetric D, LU factorization).
     Implicit,
-    /// Implicit-fast (symmetric D, Cholesky; skips Coriolis terms).
+    /// Implicit-fast (skips Coriolis terms).
     ImplicitFast,
     /// Legacy diagonal-only implicit for per-DOF spring/damper forces.
     ImplicitSpringDamper,
