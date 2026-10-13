@@ -5,6 +5,7 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
+use crate::constraint::solver::decode_pyramid;
 use crate::dynamics::factor::{mj_factor_i, mj_solve_ld};
 use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
@@ -442,19 +443,14 @@ pub fn solve_implicit(model: &Model, data: &Data, x: &mut DVector<f64>) {
 
 /// One contact's force and torque in its frame, from its constraint rows:
 /// MuJoCo's `mj_contactForce` (`engine_core_util.c:891-908`). A pyramidal
-/// contact's edges decode as `mju_decodePyramid` (`engine_util_misc.c:1142-1159`):
-/// the normal force is their sum, each other component its pair's difference
-/// times its friction coefficient. An elliptic contact's rows are its
-/// components.
+/// contact's edges decode as [`decode_pyramid`] (`mju_decodePyramid`); an
+/// elliptic or frictionless contact's rows are its components.
 fn contact_force(rows: &[f64], mu: &[f64; 5], dim: usize, pyramidal: bool) -> [f64; 6] {
     let mut f = [0.0; 6];
     if pyramidal && dim > 1 {
-        for &p in &rows[..2 * (dim - 1)] {
-            f[0] += p;
-        }
-        for i in 0..dim - 1 {
-            f[i + 1] = (rows[2 * i] - rows[2 * i + 1]) * mu[i];
-        }
+        let (normal, friction) = decode_pyramid(rows, mu, dim);
+        f[0] = normal;
+        f[1..dim].copy_from_slice(&friction);
     } else {
         f[..dim].copy_from_slice(&rows[..dim]);
     }

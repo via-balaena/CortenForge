@@ -55,6 +55,7 @@
 08703d36a33412c8	mj-refuses
 08831202fd91471b	e1:t0:con_zero
 089520333bf2646a	agree
+0899e0a9d40dd42e	mj-refuses
 08c152bc51cf2b6a	mj-refuses
 08d8952840bdfbbf	agree
 08efe56133152147	mj-refuses
@@ -383,6 +384,7 @@
 3d74e2e3ed3240ae	mj-refuses
 3da30282740cffe1	agree
 3dba0717636f39a2	model:geom_quat;dyn:agree
+3dc82d1fffaa4c91	e1:t0:sensordata	divergence=D-STATIC-ACCELEROMETER
 3df752217951424e	e1:s1:qfrc_passive
 3e109bc2de81d878	both-refuse
 3e49fd5e5305a6c7	mj-refuses

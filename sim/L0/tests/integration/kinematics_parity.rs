@@ -299,7 +299,7 @@ fn quat_springs_and_ballquat_match_mujoco_bit_for_bit() {
 }
 
 /// framequat on a site, a geom, a body and an xbody, alone and against a
-/// reference site or geom, at two states of a turned free body: MuJoCo's
+/// reference site or another geom, at two states of a turned free body: MuJoCo's
 /// `get_xquat` multiplies the body's `xquat` by the object's local quaternion
 /// (`engine_sensor.c:122-144`), so a site's or a geom's quaternion with
 /// w < 0 keeps that sign; one converted from `site_xmat` or `geom_xmat` took

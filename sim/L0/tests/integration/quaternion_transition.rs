@@ -151,9 +151,10 @@ fn quat_integrate_jacobians_match_mujoco() {
 /// A and B with actuators, from sim-core's finite differences and its hybrid
 /// derivatives, against MuJoCo's `mjd_transitionFD` (eps 1e-6), within 1e-8
 /// (relative above 1): a hinge driven by a filter, and by an exact filter,
-/// whose time constant, 1e-12, is clamped at mjMINVAL, under Euler, implicit
-/// and implicitfast, and the exact filter at a timestep of 1e-11, where its
-/// decay over a step is e^-10; and a free body driven by a motor at its site,
+/// with a time constant of 1e-12 (above mjMINVAL, so used as it is), under
+/// Euler, implicit and implicitfast, the exact filter also at a timestep of
+/// 1e-11, where its decay over a step is e^-10, and a filter with 1e-16,
+/// raised to mjMINVAL; and a free body driven by a motor at its site,
 /// its control at the lower end of its range, by forward and by centred
 /// differences (a forward column, and a centred one at a control's lower
 /// bound, difference the nominal next state with the perturbed one).
@@ -161,7 +162,7 @@ fn quat_integrate_jacobians_match_mujoco() {
 fn actuated_transitions_match_mujoco_fd() {
     let g = golden();
     let cases = g["cases"]["actuated"].as_object().expect("actuated");
-    assert_eq!(cases.len(), 9);
+    assert_eq!(cases.len(), 10);
     for (name, case) in cases {
         let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();

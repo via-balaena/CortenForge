@@ -17,10 +17,11 @@ so a quaternion joint's position rows are tangents at the next state
   free body, each spinning, without contact: the state and
   `mjd_transitionFD`'s A (centred, eps 1e-6), read on a copy of the data.
 - actuated: `mjd_transitionFD`'s A and B with actuators: a hinge driven
-  by a filter, and by an exact filter, whose time constant, 1e-12, MuJoCo
-  clamps at mjMINVAL, under Euler, implicit and implicitfast (centred), and
-  the exact filter at a timestep of 1e-11, where its decay over a step,
-  exp(-h/tau), is e^-10 and not 0; and a free body driven by a
+  by a filter, and by an exact filter, with a time constant of 1e-12 (under
+  the old 1e-10 floor and above mjMINVAL, so MuJoCo uses it as it is), under
+  Euler, implicit and implicitfast (centred), the exact filter also at a
+  timestep of 1e-11, where its decay over a step, exp(-h/tau), is e^-10 and
+  not 0, and a filter with 1e-16, which MuJoCo raises to mjMINVAL; and a free body driven by a
   motor at its site, its control at the lower end of its range, forward
   and centred (a forward column, and a centred one at a control's lower
   bound, difference the nominal next state with the perturbed one).
@@ -108,7 +109,7 @@ FILTER = """<mujoco model="filter_tau">
     </body>
   </worldbody>
   <actuator>
-    <general joint="j" gainprm="1" dyntype="{dyntype}" dynprm="1e-12"/>
+    <general joint="j" gainprm="1" dyntype="{dyntype}" dynprm="{tau}"/>
   </actuator>
 </mujoco>"""
 
@@ -258,12 +259,15 @@ def main():
                                [0.2, -0.1, 0.3, 0.9, -0.6, 0.7]),
         },
         "actuated": {
-            **{f"{t}_{i}": actuated(FILTER.format(timestep=0.002, integrator=i, dyntype=t),
+            **{f"{t}_{i}": actuated(FILTER.format(timestep=0.002, integrator=i, dyntype=t, tau=1e-12),
                                     [0.3], [0.2], [0.1], [0.5], True)
                for t in ("filter", "filterexact") for i in ("Euler", "implicit", "implicitfast")},
             "filterexact_short_step": actuated(FILTER.format(timestep=1e-11, integrator="Euler",
-                                                             dyntype="filterexact"),
+                                                             dyntype="filterexact", tau=1e-12),
                                                [0.3], [0.2], [0.1], [0.5], True),
+            "filter_floor": actuated(FILTER.format(timestep=0.002, integrator="Euler",
+                                                   dyntype="filter", tau=1e-16),
+                                     [0.3], [0.2], [0.1], [0.5], True),
             "motor_free_forward": actuated(MOTOR_FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],
                                            [0.2, -0.1, 0.3, 0.9, -0.6, 0.7], [], [0.0], False),
             "motor_free_centred": actuated(MOTOR_FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],

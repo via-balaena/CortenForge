@@ -86,15 +86,18 @@ fn group_disabled_actuator_has_its_act_dot() {
     assert_matches_mujoco("disabled_RK4");
 }
 
-/// A filter's time constant of 1e-12 is clamped at mjMINVAL, not 1e-10:
-/// `act_dot` 1e12, and after one step a filter's activation 2e9 and an exact
-/// filter's 1; under RK4, whose stages take no exact filter, the exact
-/// filter's runs away (-3.3e26), MuJoCo's too.
+/// A filter's time constant has MuJoCo's floor, mjMINVAL, not 1e-10. One of
+/// 1e-12 is used as it is: `act_dot` 1e12, and after one step a filter's
+/// activation 2e9 and an exact filter's 1; under RK4, whose stages take no
+/// exact filter, the exact filter's runs away (-3.3e26), MuJoCo's too. One of
+/// 1e-16 is raised to 1e-15: `act_dot` 1e15.
 #[test]
-fn filter_time_constant_is_clamped_at_mjminval() {
+fn filter_time_constant_floor_is_mjminval() {
     assert_matches_mujoco("tiny_tau");
     assert_matches_mujoco("tiny_tau_exact");
     assert_matches_mujoco("tiny_tau_exact_RK4");
+    assert_matches_mujoco("tau_floor");
+    assert_matches_mujoco("tau_floor_exact");
 }
 
 /// Muscle activation dynamics blend the two time constants through the
@@ -106,11 +109,13 @@ fn muscle_activation_smoothing_matches_mujoco_3_5_0() {
     assert_matches_mujoco("muscle_smooth");
 }
 
-/// A muscle's activation time constant of 1e-13 is clamped at mjMINVAL, not
-/// 1e-10: `act_dot` 2e13.
+/// A muscle's activation time constant has MuJoCo's floor, mjMINVAL, not
+/// 1e-10: 5e-14 is used as it is (`act_dot` 2e13), 5e-17 is raised to 1e-15
+/// (`act_dot` 1e15).
 #[test]
-fn muscle_time_constant_is_clamped_at_mjminval() {
+fn muscle_time_constant_floor_is_mjminval() {
     assert_matches_mujoco("muscle_tiny_tau");
+    assert_matches_mujoco("muscle_tau_floor");
 }
 
 /// With actuation disabled as a whole, MuJoCo's `mj_advance` leaves the

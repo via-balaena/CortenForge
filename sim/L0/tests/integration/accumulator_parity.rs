@@ -139,7 +139,8 @@ fn contact_torque_is_taken_about_the_origin() {
 }
 
 /// A free sphere 2 mm into a plane, spinning and rolling, with condim 3, 4
-/// and 6. With MuJoCo's `efc_force` and `qacc` written in, `cfrc_ext` and the
+/// and 6, and a free body resting on two spheres (two contacts, each decoded
+/// with its own frame, point and friction). With MuJoCo's `efc_force` and `qacc` written in, `cfrc_ext` and the
 /// force and torque sensors read MuJoCo's: each contact decoded as
 /// `mj_contactForce` (`engine_core_util.c:891-908`), every pyramid edge in the
 /// normal force and the torsional and rolling components as torques.
@@ -148,6 +149,7 @@ fn pyramidal_contact_wrench_decodes_as_mj_contact_force() {
     for condim in [3, 4, 6] {
         assert_decoded(&format!("contact_c{condim}_pyramidal"));
     }
+    assert_decoded("contact_two_contacts");
 }
 
 /// The same under the elliptic cone, and a contact whose two bodies both move

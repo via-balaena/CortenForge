@@ -169,13 +169,14 @@ fn check_a6_ctrl_clamping() -> (u32, u32) {
 fn check_a7_smooth_blend() -> (u32, u32) {
     let dynprm = [0.01, 0.04, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let act_dot = muscle_activation_dynamics(0.55, 0.5, &dynprm);
-    // Precomputed from spec equations
-    let err = (act_dot - 2.798_737).abs();
+    // MuJoCo 3.5.0's mju_muscleDynamics on the same inputs
+    let expected = 3.443_868_971_547_727;
+    let err = (act_dot - expected).abs();
 
     let p = check(
         "A7 Smooth blend",
-        err < 1e-3,
-        &format!("act_dot={act_dot:.6}, expected≈2.798737, err={err:.2e}"),
+        err == 0.0,
+        &format!("act_dot={act_dot:.15}, MuJoCo {expected:.15}, err={err:.2e}"),
     );
     (u32::from(p), 1)
 }

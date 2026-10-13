@@ -23,11 +23,16 @@ Fixtures:
   under Euler and under RK4;
 - tiny_tau: a filter with tau 1e-12;
 - tiny_tau_exact: an exact filter with tau 1e-12, under Euler and under RK4;
+- tau_floor, tau_floor_exact: a filter and an exact filter with tau 1e-16,
+  below mjMINVAL, which MuJoCo raises to it;
 - muscle_smooth: muscle dynamics with a smoothing width of 0.3, 60 steps,
   whose activation passes through the width (mju_muscleDynamics,
   engine_util_misc.c:733-770: the sigmoid of dctrl / width + 0.5);
 - muscle_tiny_tau: muscle dynamics with an activation time constant of
-  1e-13, which MuJoCo clamps at mjMINVAL (:768).
+  1e-13 (5e-14 at activation 0), under the old 1e-10 floor and above
+  mjMINVAL, which MuJoCo uses as it is (:768);
+- muscle_tau_floor: the same with 1e-16 (5e-17 at activation 0), which MuJoCo
+  raises to mjMINVAL.
 
 It also writes, under "actuation_off", a limited filter (actrange 0.5 1,
 activation 0) under Euler, RK4 and implicitfast: a forward pass with a
@@ -70,6 +75,12 @@ FIXTURES = {
                                    dyn='dyntype="muscle" dynprm="0.01 0.04 0.3"'), 60),
     "muscle_tiny_tau": (HINGE.format(integrator="Euler", disable="", group=0,
                                      dyn='dyntype="muscle" dynprm="1e-13 0.04 0"'), 1),
+    "muscle_tau_floor": (HINGE.format(integrator="Euler", disable="", group=0,
+                                      dyn='dyntype="muscle" dynprm="1e-16 0.04 0"'), 1),
+    "tau_floor": (HINGE.format(integrator="Euler", disable="", group=0,
+                               dyn='dyntype="filter" dynprm="1e-16"'), 1),
+    "tau_floor_exact": (HINGE.format(integrator="Euler", disable="", group=0,
+                                     dyn='dyntype="filterexact" dynprm="1e-16"'), 1),
 }
 
 

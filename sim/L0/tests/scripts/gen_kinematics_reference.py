@@ -31,11 +31,11 @@ each joint's `xanchor` and `xaxis` in the frame before it turns. The cases:
   `qfrc_spring` and the sensor (`engine_passive.c:155-161`,
   `engine_sensor.c:572-575`).
 - frame_quats: framequat sensors on a site, a geom, a body and an xbody,
-  alone and against a site and a geom as reference frames, on a turned free
-  body at two states, one where the site's and the geom's quaternions have
-  w < 0: MuJoCo's `get_xquat` multiplies the body's `xquat` by the object's
-  local quaternion (`engine_sensor.c:122-144`) and a reference frame's
-  conjugate by the object's (`:632-651`); the sensordata.
+  alone and against a site and another geom as reference frames, on a
+  turned free body at two states, one where the site's and the geom's
+  quaternions have w < 0: MuJoCo's `get_xquat` multiplies the body's `xquat`
+  by the object's local quaternion (`engine_sensor.c:122-144`) and a
+  reference frame's conjugate by the object's (`:632-651`); the sensordata.
 """
 import json
 import os
@@ -316,6 +316,8 @@ FRAME_QUATS = """<mujoco model="frame_quats">
             contype="0" conaffinity="0"/>
       <site name="s" pos="0.05 0.02 0.01" quat="0.2 0.9 0.1 0.3"/>
       <site name="r" pos="-0.03 0.01 0" quat="0.1 -0.4 0.7 0.5"/>
+      <geom name="g2" type="sphere" size="0.02" pos="-0.05 0 0.02" quat="0.6 -0.3 0.2 0.7"
+            contype="0" conaffinity="0" mass="0"/>
     </body>
   </worldbody>
   <sensor>
@@ -324,7 +326,7 @@ FRAME_QUATS = """<mujoco model="frame_quats">
     <framequat objtype="body" objname="f"/>
     <framequat objtype="xbody" objname="f"/>
     <framequat objtype="site" objname="s" reftype="site" refname="r"/>
-    <framequat objtype="geom" objname="g" reftype="geom" refname="g"/>
+    <framequat objtype="geom" objname="g" reftype="geom" refname="g2"/>
     <framequat objtype="body" objname="f" reftype="site" refname="r"/>
   </sensor>
 </mujoco>"""
@@ -339,8 +341,8 @@ def frame_quats():
         d.qpos[3:7] = np.array(quat) / np.linalg.norm(quat)
         mujoco.mj_forward(m, d)
         states.append({"qpos": floats(d.qpos), "sensordata": floats(d.sensordata)})
-    if not any(st["sensordata"][0] < 0 for st in states):
-        sys.exit("frame_quats: no state has a site quaternion with w < 0")
+    if not any(st["sensordata"][0] < 0 and st["sensordata"][4] < 0 for st in states):
+        sys.exit("frame_quats: no state where the site's and the geom's quaternions have w < 0")
     return {"xml": FRAME_QUATS, "states": states}
 
 
