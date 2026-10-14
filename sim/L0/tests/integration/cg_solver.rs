@@ -383,7 +383,9 @@ fn test_cg_convergence_detection() {
 fn test_cg_one_iteration_keeps_its_iterate() {
     // AC #8(b): 10-box stack with SolverType::CG, solver_iterations=1, solver_tolerance=1e-15.
     // CG stops at its one iteration and keeps that iterate, as MuJoCo's, with
-    // non-zero constraint forces; it hands nothing to PGS.
+    // non-zero constraint forces; it hands nothing to PGS, and does not make
+    // the acceleration again from the forces: one iteration leaves
+    // M·(qacc − qacc_smooth) away from the constraint force J'·f.
     let mjcf = box_stack_mjcf(10);
     let mut model = load_model(&mjcf).expect("load");
     model.solver_type = SolverType::CG;
@@ -402,6 +404,11 @@ fn test_cg_one_iteration_keeps_its_iterate() {
     assert!(
         qfrc_norm > 1e-6,
         "CG's iterate should carry non-zero constraint forces, got norm {qfrc_norm:.2e}"
+    );
+    let residual = (&data.qM * (&data.qacc - &data.qacc_smooth) - &data.qfrc_constraint).norm();
+    assert!(
+        residual > 1e-3 * qfrc_norm,
+        "the kept iterate: M·(qacc − qacc_smooth) {residual:.2e} from J'·f"
     );
 }
 

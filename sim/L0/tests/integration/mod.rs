@@ -184,7 +184,7 @@ pub mod keyframes;
 // Newton Solver Tests (§15 Phase A + B)
 // ============================================================================
 
-/// Newton solver integration tests: convergence, warmstart, fallbacks.
+/// Newton solver integration tests: convergence, warmstart, the iteration cap.
 pub mod newton_solver;
 
 // ============================================================================
@@ -230,7 +230,8 @@ pub mod flex_equality_rows;
 pub mod primal_solver_parity;
 
 /// The Jacobians against MuJoCo 3.5.0: `mj_jac` from MuJoCo's `cdof`,
-/// `mj_applyFT`, gravity compensation.
+/// `mj_applyFT`, gravity compensation, a contact's rows, connect and weld
+/// rows, the spatial tendons' Jacobians, and the kinetic energy.
 pub mod jacobian_parity;
 
 // ============================================================================

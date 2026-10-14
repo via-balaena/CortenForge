@@ -15,8 +15,11 @@ point's offset from that centre; `mj_applyFT` (`engine_support.c:446-501`)
 multiplies its transposes with a force and a torque. The fixture: a hinge
 off its body's origin, a ball off its body's origin below it, a body with a
 slide and a hinge below that, a jointless body welded to it (its Jacobian
-takes its weld body's dofs, `body_weldid`), and a free body, at a moved
-state. Each case
+takes its weld body's dofs, `body_weldid`), a massless jointless body on the
+first (its subtree centre of mass is its own `xipos`, the mass below
+mjMINVAL), and a free body carrying a jointless body of 1e-12 kg with a child
+of 1e-12 kg (a subtree of 2e-12 kg, above mjMINVAL, normalized by its mass),
+at a moved state. Each case
 records the model's frame and mass fields, which the test writes into
 sim-core's model: the loader rounds a normalized axis or quaternion
 otherwise than MuJoCo's compiler (Rigid-loading's), and the comparison is
@@ -54,7 +57,7 @@ of the Jacobians alone. The cases:
   ball joint below it and a free sphere, one with a pulley (divisor 3), the
   other through two sites on the arm (a segment on one body, which adds
   nothing), and a third through those two sites alone (its Jacobian 0):
-  `ten_length` and `ten_J` (`mj_tendon`, `engine_core_smooth.c:1054-1088`:
+  `ten_length` and `ten_J` (`mj_tendon`, `engine_core_smooth.c:1054-1098`:
   each segment between different bodies adds its Jacobians' difference
   projected on its normalized direction, scaled by 1/divisor).
 """
@@ -86,10 +89,19 @@ FIXTURE = """<mujoco model="jacobian">
           </body>
         </body>
       </body>
+      <body name="m0" pos="0.02 0.03 -0.05">
+        <site name="s0"/>
+      </body>
     </body>
     <body name="f" pos="1 0 1"{gc3}>
       <freejoint/>
       <geom type="box" size="0.1 0.06 0.03" pos="0.02 0.01 0" mass="2"/>
+      <body name="l" pos="0.05 0 0.02">
+        <geom type="sphere" size="0.01" pos="0.01 0 0" mass="1e-12"/>
+        <body name="l2" pos="0.02 0.01 0">
+          <geom type="sphere" size="0.01" pos="0 0.01 0" mass="1e-12"/>
+        </body>
+      </body>
     </body>
   </worldbody>
 </mujoco>"""
@@ -291,6 +303,8 @@ def main():
     jac, apply_ft = [], []
     if m.body_weldid[m.body("w").id] != m.body("c").id:
         sys.exit("jac: w is not welded to c")
+    if m.body_subtreemass[m.body("m0").id] != 0 or not 1e-15 < m.body_subtreemass[m.body("l").id] < 1e-10:
+        sys.exit("jac: m0 not massless or l not between mjMINVAL and 1e-10")
     for b in range(1, m.nbody):
         point = d.xipos[b] + OFFSET
         jacp, jacr = np.zeros((3, m.nv)), np.zeros((3, m.nv))

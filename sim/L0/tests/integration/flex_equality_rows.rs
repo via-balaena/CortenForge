@@ -117,3 +117,76 @@ fn flex_rows_join_every_edge_s_trees() {
     assert_eq!(data.nisland, 1);
     assert!(data.tree_island[..model.ntree].iter().all(|&i| i == 0));
 }
+
+/// A flex equality is never asleep (MuJoCo's `mj_sleepState` gives a flex no
+/// other state, `engine_sleep.c:755-756`): with sleep enabled, the grid keeps
+/// its 14 rows on a step where a box beside it has fallen asleep.
+#[test]
+fn flex_rows_stay_while_another_tree_sleeps() {
+    let xml = PINNED_GRID
+        .replace(
+            r#"<option gravity="0 0 -9.81" timestep="0.001"/>"#,
+            r#"<option gravity="0 0 -9.81" timestep="0.001"><flag sleep="enable"/></option>"#,
+        )
+        .replace(
+            "</deformable>",
+            r#"</deformable>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1" pos="0 0 -2"/>
+    <body name="box" pos="3 0 -1.9">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+    </body>
+  </worldbody>"#,
+        );
+    let model = load_model(&xml).expect("load");
+    let box_body = (0..model.nbody)
+        .find(|&b| model.body_name[b].as_deref() == Some("box"))
+        .expect("the box");
+    let box_tree = model.body_treeid[box_body];
+    let mut data = model.make_data();
+    let mut asleep_steps = 0;
+    for _ in 0..2000 {
+        data.step(&model).expect("step");
+        if !data.tree_awake[box_tree] {
+            asleep_steps += 1;
+            assert_eq!(flex_rows(&model, &data).len(), 14, "the grid's rows");
+        }
+    }
+    assert!(asleep_steps > 0, "the box falls asleep");
+}
+
+/// A flex's rows follow its equality's `solref`: with it set to (0.05, 0.5),
+/// each row's reference acceleration is `−B·vel − K·imp·pos` with
+/// `K = 1/(dmax²·0.05²·0.5²)` and `B = 2/(dmax·0.05)`.
+#[test]
+fn flex_rows_take_the_equality_s_solref() {
+    let mut model = load_model(PINNED_GRID).expect("load");
+    let eq = flex_equality(&model);
+    model.eq_solref[eq] = [0.05, 0.5];
+    let mut data = model.make_data();
+    for _ in 0..20 {
+        data.step(&model).expect("step");
+    }
+    data.forward(&model).expect("forward");
+    let dmax = model.eq_solimp[eq][1];
+    let (k, b) = (
+        1.0 / (dmax * dmax * 0.05 * 0.05 * 0.5 * 0.5),
+        2.0 / (dmax * 0.05),
+    );
+    let rows = flex_rows(&model, &data);
+    assert_eq!(rows.len(), 14);
+    let mut moving = 0;
+    for r in rows {
+        let want = -b * data.efc_vel[r] - k * data.efc_imp[r] * data.efc_pos[r];
+        assert!(
+            (data.efc_aref[r] - want).abs() <= 1e-9 * want.abs().max(1.0),
+            "row {r}: aref {}, from the solref {want}",
+            data.efc_aref[r]
+        );
+        if want.abs() > 1e-6 {
+            moving += 1;
+        }
+    }
+    assert!(moving > 0, "some edge is stretched or moving");
+}

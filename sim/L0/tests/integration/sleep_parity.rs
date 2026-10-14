@@ -641,12 +641,9 @@ fn zero_tolerance_negative_zero_velocity_sleeps_a_step_later() {
 
 /// Every trace, every step: the discrete fields equal MuJoCo's, and `qvel`,
 /// `qacc`, `qacc_warmstart`, `sensordata` and `act` agree to 1e-12 where the
-/// golden keeps them, except under `island="disable"`: that box never sleeps, its
-/// contacts are solved every step, and its accelerations end 3.9e-10 from
-/// MuJoCo's at step 275; and two damped hinges joined by a joint equality
-/// (`joint_eq_sleep`), within 1e-12 through step 300 and 2.1e-9 apart at
-/// step 325 (both measured; what grows either gap is not isolated). Under
-/// RK4, through MuJoCo's first sleep step, and its floats before it: from
+/// golden keeps them, the box under `island="disable"` and the two hinges
+/// joined by a joint equality (`joint_eq_sleep`) included. Under RK4,
+/// through MuJoCo's first sleep step, and its floats before it: from
 /// there MuJoCo's re-forward reads the last stage's positions and wakes the
 /// tree, where this crate's reads the step's start and keeps the tree asleep
 /// (registry `D-RK4-SLEEP`; `rk4_sleep.rs`).
@@ -669,11 +666,7 @@ fn traces_match_mujoco() {
             &theirs[..end],
             &["tree_asleep", "ncon", "nefc", "nisland", "cb"],
         );
-        let tol = match name {
-            "box_noisland" => 1e-9,
-            "joint_eq_sleep" => 1e-8,
-            _ => 1e-12,
-        };
+        let tol = 1e-12;
         for (k, (a, b)) in ours[..floats_end].iter().zip(&theirs).enumerate() {
             let (Some(a), Some(b)) = (&a.floats, &b.floats) else {
                 continue;

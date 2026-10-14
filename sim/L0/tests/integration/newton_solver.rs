@@ -1543,20 +1543,18 @@ fn test_newton_equality_connect_bounded_error() {
         .map(|(i, _)| i)
         .collect();
 
-    if eq_rows.len() >= 3 {
-        let err_norm: f64 = eq_rows
-            .iter()
-            .take(3)
-            .map(|&i| data.efc_pos[i] * data.efc_pos[i])
-            .sum::<f64>()
-            .sqrt();
+    assert_eq!(eq_rows.len(), 3, "the connect's three rows");
+    let err_norm: f64 = eq_rows
+        .iter()
+        .map(|&i| data.efc_pos[i] * data.efc_pos[i])
+        .sum::<f64>()
+        .sqrt();
 
-        // Soft constraint, but error should be bounded
-        assert!(
-            err_norm < 0.1,
-            "Connect constraint position error should be small, norm={err_norm:.6}"
-        );
-    }
+    // Soft constraint, but error should be bounded
+    assert!(
+        err_norm < 0.1,
+        "Connect constraint position error should be small, norm={err_norm:.6}"
+    );
 }
 
 // ============================================================================
