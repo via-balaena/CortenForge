@@ -241,7 +241,7 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
 
 /// Add a straight segment's term to tendon `t`'s Jacobian, as MuJoCo 3.5.0's
 /// `mj_tendon` does for consecutive points on different bodies
-/// (`engine_core_smooth.c:1054-1088`): the segment's direction, near point
+/// (`engine_core_smooth.c:1054-1098`): the segment's direction, near point
 /// `p0` (on `b0`) to far point `p1` (on `b1`), normalized as
 /// `mju_normalize3`; the points' Jacobians' difference, far minus near
 /// ([`mj_jac`]), projected on it as `mju_mulMatTVec` projects (a zero

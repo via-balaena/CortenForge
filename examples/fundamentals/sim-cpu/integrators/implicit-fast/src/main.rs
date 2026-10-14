@@ -50,7 +50,8 @@ use sim_core::validation::{Check, print_report};
 //        qvel  ←  qvel + h · a
 //        qpos  ←  manifold_integrate(qpos, h, qvel)
 //
-// Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicitfast)
+// Source: sim/L0/core/src/forward/acceleration.rs (mj_implicit_factor and
+// mj_implicit_solve, which integrate() runs)
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 

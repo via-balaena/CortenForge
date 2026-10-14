@@ -116,18 +116,18 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
     (qacc_smooth, qfrc_smooth)
 }
 
-/// Build the implicit-modified mass matrix for Newton solver (DT-35).
+/// Build the implicit-modified mass matrix for the constraint solvers (DT-35).
 ///
 /// Returns `M + h·D_jnt + h²·K_jnt + h·D_ten + h²·K_ten` — joint diagonal
 /// K/D plus tendon non-diagonal K/D. Called once per step in
 /// `mj_fwd_constraint` when `ImplicitSpringDamper` is active. The returned
-/// matrix replaces `data.qM` in all Newton computations.
+/// matrix replaces `data.qM` in Newton's, CG's and PGS's computations.
 ///
 /// Uses `accumulate_tendon_kd` for the tendon contribution,
 /// guaranteeing identical mass matrix modification as the non-Newton path
 /// in `mj_fwd_acceleration_implicit`.
 #[must_use]
-fn build_m_impl_for_newton(model: &Model, data: &Data) -> DMatrix<f64> {
+fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
     let h = model.timestep;
     let h2 = h * h;
     let nv = model.nv;
@@ -299,7 +299,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     let qacc_smooth_impl: DVector<f64>;
 
     if implicit_sd {
-        let m_impl = build_m_impl_for_newton(model, data);
+        let m_impl = build_m_impl(model, data);
         let qfrc_impl = compute_qfrc_smooth_implicit(model, data);
 
         // qacc_smooth_impl = M_impl⁻¹ · qfrc_smooth_impl

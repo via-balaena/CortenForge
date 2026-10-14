@@ -1177,7 +1177,12 @@ impl Model {
     ///   first, since an edge's Jacobian is made only then
     /// - `flexedge_invweight0[e]` as MuJoCo's (`engine_setconst.c:716-750`): 0
     ///   for a rigid edge, `(1/m₁ + 1/m₂)/2` when both vertex bodies are simple
-    ///   with slides only (`body_simple` 2), else `J_edge · M⁻¹ · J_edgeᵀ`
+    ///   with slides only (`body_simple` 2), else `J_edge · M⁻¹ · J_edgeᵀ`;
+    ///   MuJoCo's while every vertex body hangs from the world or all from one
+    ///   body: the edge Jacobian takes a vertex's own dofs alone, and an edge
+    ///   is rigid when both its vertices have no mass (`flexedge_rigid`), so
+    ///   with vertex bodies on different moving bodies the two differ (book
+    ///   Rigid-loading L10, rule (c))
     ///
     /// Must be called after `compute_simple_bodies()` and
     /// `compute_dof_patterns()`, and once body_mass, body_inertia, dof_body,

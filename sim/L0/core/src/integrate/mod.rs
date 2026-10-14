@@ -77,8 +77,8 @@ impl Data {
     ///   `mj_advance`; `qacc` keeps the explicit one, as in MuJoCo.
     ///
     /// - **ImplicitSpringDamper**: `qvel += qacc * h`, where `qacc` is the
-    ///   implicit acceleration the acceleration stage (or a Newton solve)
-    ///   computed.
+    ///   implicit acceleration the acceleration stage (or the constraint
+    ///   solver, over `M_impl`) computed.
     ///
     /// # Errors
     ///
@@ -86,7 +86,7 @@ impl Data {
     /// finite, `StepError::DataShapeMismatch` if `self` was made by a model
     /// of other dimensions or an input array was resized, and
     /// `StepError::LuSingular` under the implicit integrator when a diagonal
-    /// of its factor is below mjMINVAL in magnitude, all before anything
+    /// of its factor is below mjMINVAL in magnitude, all before the state
     /// changes; and the error of the forward pass a sleep step runs (the
     /// implicit spring-damper's factorization), which leaves the history
     /// samples inserted, the activations advanced, the slept trees asleep
@@ -161,12 +161,13 @@ impl Data {
         ) && eulerdamp_applies(model, self))
         .then(|| self.eulerdamp_acceleration(model));
         if crate::island::mj_sleep(model, self) > 0 {
-            // The re-forward overwrites `qacc` and `qacc_implicit`.
-            if solved.is_none() {
-                solved = Some(match model.integrator {
-                    Integrator::Implicit | Integrator::ImplicitFast => self.qacc_implicit.clone(),
-                    _ => self.qacc.clone(),
-                });
+            // The re-forward overwrites `qacc` (not `qacc_implicit`).
+            let implicit = matches!(
+                model.integrator,
+                Integrator::Implicit | Integrator::ImplicitFast
+            );
+            if solved.is_none() && !implicit {
+                solved = Some(self.qacc.clone());
             }
             self.reforward_after_sleep(model, MjStage::Pos)?;
         }
@@ -204,7 +205,7 @@ impl Data {
     }
 
     /// Eulerdamp's acceleration, as MuJoCo 3.5.0's `mj_EulerSkip`
-    /// (`engine_forward.c:976-1001`): `M + h·diag(damping)` on the mass
+    /// (`engine_forward.c:976-1004`): `M + h·diag(damping)` on the mass
     /// matrix's pattern, every awake dof's damping whatever its sign, goes
     /// into `qH`, factored as `L'·D·L` over the awake dofs (`qHDiagInv` its
     /// diagonal's inverse); then `(M + h·D)·qacc = qfrc_smooth +

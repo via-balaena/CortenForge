@@ -1192,10 +1192,9 @@ fn test_implicit_derivative_consistency() {
 /// over-sized accelerations (base M instead of M_hat = M + h·damping),
 /// causing velocity explosion (77K rad/s within 10ms).
 ///
-/// The fix: `forward_acc()` always runs `mj_fwd_acceleration_implicitfast()`
-/// for ImplicitFast, even when Newton succeeded. This applies the
-/// velocity-derivative mass correction to `qacc_implicit`, the acceleration
-/// the step integrates.
+/// The fix: under ImplicitFast `integrate()` solves `M − h·D` for
+/// `qacc_implicit` (`mj_implicit_solve`, as MuJoCo's `mj_implicitSkip`),
+/// whatever the constraint solver left, and the step integrates that.
 #[test]
 fn test_implicitfast_connect_ball_chain_stability() {
     let mjcf = r#"

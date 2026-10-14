@@ -11,7 +11,7 @@ use crate::types::StepError;
 use nalgebra::{DMatrix, DVector};
 
 /// `Σ vec1[k]·vec2[k]` in MuJoCo's order (`mju_dot`,
-/// `engine_util_blas.c:704-768`): four partial sums over each block of
+/// `engine_util_blas.c:704-766`): four partial sums over each block of
 /// four, joined as `(s0 + s2) + (s1 + s3)`, then the remaining one to three
 /// products summed and added at once.
 pub(crate) fn mju_dot(vec1: &[f64], vec2: &[f64]) -> f64 {

@@ -563,19 +563,11 @@ impl Data {
         // apart (`island/mod.rs`).
         crate::constraint::mj_fwd_constraint(model, self)?;
 
-        // ImplicitFast/Implicit: always run mj_fwd_acceleration, even when
-        // the primal solver left its iterate: it solves M_hat = M − h·∂f/∂v
-        // for qacc_implicit, the acceleration `integrate` advances qvel with,
-        // which provides the implicit velocity-derivative stabilization that
-        // prevents divergence in stiff-constraint + light-body systems (e.g.,
-        // connect constraints on ball-joint chains). qacc keeps the explicit
-        // acceleration. ImplicitSpringDamper does NOT need this — the primal
-        // solver already solves over M_impl (build_m_impl_for_newton()).
-        let needs_implicit_qacc = matches!(
-            model.integrator,
-            Integrator::ImplicitFast | Integrator::Implicit
-        );
-        if !self.primal_qacc || needs_implicit_qacc {
+        // The primal solver's iterate is the acceleration (MuJoCo's
+        // `mj_fwdConstraint`); after PGS or noslip it is made from the forces.
+        // Under implicit and implicitfast, `integrate` factors M − h·D and
+        // solves for the acceleration it advances qvel with.
+        if !self.primal_qacc {
             acceleration::mj_fwd_acceleration(model, self)?;
         }
 

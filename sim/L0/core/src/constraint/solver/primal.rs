@@ -1,7 +1,7 @@
 //! The primal solver Newton and CG share: MuJoCo 3.5.0's `mj_solPrimal`
-//! (`engine_solver.c:1811-1969`), with the warmstart it starts from
-//! (`warmstart`, `engine_forward.c:611-683`), its constraint update
-//! (`mj_constraintUpdate_impl`, `engine_core_constraint.c:2394-2585`), its line
+//! (`engine_solver.c:1811-1968`), with the warmstart it starts from
+//! (`warmstart`, `engine_forward.c:611-687`), its constraint update
+//! (`mj_constraintUpdate_impl`, `engine_core_constraint.c:2394-2587`), its line
 //! search (`PrimalPrepare`, `PrimalEval`, `updateBracket`, `PrimalSearch`,
 //! `engine_solver.c:1075-1512`) and Newton's Hessian (`MakeHessian`,
 //! `FactorizeHessian`, `HessianCone`, `HessianIncremental`, `:1516-1808`),
@@ -11,7 +11,9 @@
 //! At MuJoCo's sparse size (`nv ≥ 60`, `mj_isSparse`,
 //! `engine_core_util.c:32-39`) Newton factors its Hessian with
 //! [`SparseHessian`], made anew at every iteration where MuJoCo updates its
-//! sparse factor: the same matrix, rounded otherwise.
+//! sparse factor: the same matrix, rounded otherwise. There MuJoCo also takes
+//! `J·v`, `J'·f` and `J·aref` as sparse products, which sim-core takes dense,
+//! so CG as well rounds otherwise.
 
 use nalgebra::{DMatrix, DVector};
 
@@ -109,7 +111,7 @@ type ConeHessian = [f64; 36];
 
 /// Update each row's state, force and cost at `jar = J·qacc − aref`, as
 /// MuJoCo's `mj_constraintUpdate_impl` does
-/// (`engine_core_constraint.c:2394-2585`), and return the cost. With `cone_h`,
+/// (`engine_core_constraint.c:2394-2587`), and return the cost. With `cone_h`,
 /// each contact in the cone state gets its cone Hessian (MuJoCo's
 /// `flg_coneHessian`), indexed by contact.
 // One function so the per-kind branches read as MuJoCo's do; single-letter
@@ -170,6 +172,9 @@ fn constraint_update(
             continue;
         }
         // Contact with an elliptic cone, mapped to the regular dual cone.
+        // μ here is friction[0]; MuJoCo's is friction[0]·√(R[i+1]/R[i])
+        // (`engine_core_constraint.c:1540`), the same at impratio 1, where it
+        // sets R[i+1] = R[i]. The elliptic rows' R, and this μ, are book P38's.
         let dim = rows.dim[i];
         let mu = rows.mu[i][0];
         let friction = &rows.mu[i];
@@ -387,7 +392,7 @@ impl Primal {
     }
 
     /// Choose the starting acceleration as MuJoCo's `warmstart` does
-    /// (`engine_forward.c:611-683`), for the primal solvers: the warmstart
+    /// (`engine_forward.c:611-687`), for the primal solvers: the warmstart
     /// unless the unconstrained acceleration costs less (a tie keeps the
     /// warmstart), then `qacc_smooth` in every dof outside the islands;
     /// `qacc_smooth` alone with warmstart disabled.
@@ -490,6 +495,7 @@ impl Primal {
             self.quad[q + 2] = jv[i] * d[i] * jv[i];
             let next = if self.rows.ty[i] == ConstraintType::ContactElliptic {
                 let dim = self.rows.dim[i];
+                // μ as in `constraint_update` (book P38).
                 let mu = self.rows.mu[i][0];
                 let friction = &self.rows.mu[i];
                 for j in 1..dim {
@@ -565,6 +571,7 @@ impl Primal {
                 continue;
             }
             if rows.ty[i] == ConstraintType::ContactElliptic {
+                // μ as in `constraint_update` (book P38).
                 let mu = rows.mu[i][0];
                 let (u0, v0, uu, uv, vv, dm) =
                     (quad[3], quad[4], quad[5], quad[6], quad[7], quad[8]);
@@ -884,7 +891,7 @@ impl Primal {
 }
 
 /// Solve the constraint rows with MuJoCo's primal solver, Newton when
-/// `newton`, else CG (`mj_solPrimal`, `engine_solver.c:1811-1969`, monolithic),
+/// `newton`, else CG (`mj_solPrimal`, `engine_solver.c:1811-1968`, monolithic),
 /// from MuJoCo's warmstart; `efc_b` first, as `mj_fwdConstraint` makes it.
 ///
 /// Leaves the iterate in `qacc`, and `efc_force`, `efc_state`, `efc_jar`,

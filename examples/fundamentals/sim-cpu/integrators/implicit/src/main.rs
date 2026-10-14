@@ -56,7 +56,8 @@ use sim_core::validation::{Check, print_report};
 //   - Unconditionally stable (large timesteps won't explode)
 //   - Includes ALL velocity-dependent forces (Coriolis, gyroscopic)
 //
-// Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicit_full)
+// Source: sim/L0/core/src/forward/acceleration.rs (mj_implicit_factor and
+// mj_implicit_solve, which integrate() runs)
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 

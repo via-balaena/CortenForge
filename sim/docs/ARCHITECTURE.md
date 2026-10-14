@@ -279,13 +279,12 @@ forward():
   Control      cb_control             Unless DISABLE_ACTUATION
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
   Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
-  Solve        mj_fwd_acceleration    qacc = M^-1 * f; the implicit integrators also solve:
-                                      ImplicitFast: (M − h·D) · qacc_implicit = f on M's
-                                        pattern (D = passive + actuator vel)
-                                      Implicit: (M − h·D) · qacc_implicit = f, sparse LU
-                                        (D includes Coriolis)
+  Solve        mj_fwd_acceleration    qacc = M^-1 * f;
                                       ImplicitSpringDamper: qacc = (v_new − qvel) / h
 integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper; RK4 under step2()]:
+  ImplicitFast / Implicit first (MuJoCo's mj_implicitSkip):
+    ImplicitFast: (M − h·D) · qacc_implicit = f on M's pattern (D = passive + actuator vel)
+    Implicit: (M − h·D) · qacc_implicit = f, sparse LU (D includes Coriolis)
   History samples, then activation integration (clamped to actrange where
   actlimited; skipped with actuation disabled)
   The sleep step (mj_sleep): a tree put to sleep has its velocity and acceleration

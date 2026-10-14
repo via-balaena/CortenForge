@@ -27,9 +27,10 @@ Data::step():
         cb_control          — unless DISABLE_ACTUATION
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
      d. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
-     e. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one);
-                              implicit and implicitfast also solve for qacc_implicit
-  2a. integrate()          — Activation integration + the integrator's velocity update
+     e. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one)
+  2a. integrate()          — Under implicit and implicitfast, first M − h·D factored
+                              and qacc_implicit solved (MuJoCo's mj_implicitSkip);
+                              then activation integration + the integrator's velocity update
                               (under RK4, only step2() calls it, for the Euler step)
                               (skips sleeping joints for position/velocity integration)
   2b. mj_runge_kutta()     — True 4-stage RK4 with Butcher tableau, including
@@ -444,7 +445,7 @@ Note: in `ImplicitSpringDamper` mode, `ten_force[t]` is always computed for
 diagnostic purposes, but the explicit `qfrc_passive` application is skipped —
 the forces are instead handled implicitly via non-diagonal `K_tendon = k·J^T·J`
 and `D_tendon = b·J^T·J` matrices in `mj_fwd_acceleration_implicit()` and
-`build_m_impl_for_newton()` (see DT-35).
+`build_m_impl()` (see DT-35).
 
 ### 4.4 Constraint Forces (`mj_fwd_constraint`)
 
@@ -615,7 +616,11 @@ The modified matrix `M + h*D + h^2*K` is SPD when `M` is SPD and `D, K >= 0`
 and the step then returns `CholeskyFailed`, constrained or not. After solving, `qacc = (v_new - v_old) / h`
 for consistency.
 
-**Implicit path (ImplicitFast — no Coriolis derivatives):**
+**Implicit path (ImplicitFast — no Coriolis derivatives):** run by
+`integrate()`, not by this stage (`mj_implicit_factor`, `mj_implicit_solve`):
+MuJoCo factors in `mj_implicitSkip`, which `mj_step` runs after `mj_forward`,
+so a `forward` leaves `qDeriv`, `qH`, `qLU` and `qacc_implicit` as the last
+step left them.
 
 Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/∂(qvel)` via:
 1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + flex edge damping J^T B J + tendon damping J^T B J (all but the flex edges sleep-filtered, §40c)
@@ -704,7 +709,7 @@ uses the new velocity, identical to step 2 above.
 
 Activation integration is identical to Euler (step 0 above). Velocity is
 updated in the integration step via `qvel += h * qacc_implicit`, the implicit
-acceleration solved in Stage 4.
+acceleration it solves first (§4.8).
 Position update uses the new velocity, identical to step 2 above.
 
 **Runge-Kutta 4 (`Integrator::RungeKutta4`):**

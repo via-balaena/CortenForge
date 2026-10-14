@@ -123,7 +123,7 @@ pub fn mul_quat_axis(quat: &[f64; 4], axis: &[f64; 3]) -> [f64; 4] {
 }
 
 /// `mat · vec`, each row summed left to right (MuJoCo `mji_mulMatVec3`,
-/// `engine_inline.h:137-141`; `mju_mulMatVec3`, `engine_util_blas.c:158-166`).
+/// `engine_inline.h:137-141`; `mju_mulMatVec3`, `engine_util_blas.c:158-167`).
 pub fn mul_mat_vec3(mat: &Matrix3<f64>, vec: &[f64; 3]) -> [f64; 3] {
     let row = |r: usize| mat[(r, 0)] * vec[0] + mat[(r, 1)] * vec[1] + mat[(r, 2)] * vec[2];
     [row(0), row(1), row(2)]

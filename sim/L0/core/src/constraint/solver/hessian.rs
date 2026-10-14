@@ -201,7 +201,7 @@ impl SparseHessian {
     /// Fill CSC values with `H = M + Σ_{Quadratic} D_i·J_i'·J_i` plus each
     /// cone's `J_c'·H_c·J_c`. DT-35: When `implicit_sd` is true, also adds
     /// joint diagonal K/D and tendon non-diagonal K/D to match
-    /// `build_m_impl_for_newton`.
+    /// `build_m_impl`.
     // Each term reads as its own block; splitting it would scatter one sum.
     // Rows are read across parallel arrays at one index.
     #[allow(
@@ -238,7 +238,7 @@ impl SparseHessian {
         }
 
         // DT-35: Add joint diagonal K/D and tendon non-diagonal K/D for
-        // ImplicitSpringDamper. This matches build_m_impl_for_newton.
+        // ImplicitSpringDamper. This matches build_m_impl.
         if implicit_sd {
             let h = model.timestep;
             let h2 = h * h;

@@ -24,7 +24,7 @@ impl Model {
     /// | the body and joint tree (`body_parent`, `body_jnt_*`, `body_dof_*`) | `body_ancestor_joints`, `body_ancestor_mask`, `body_weldid` | [`Self::compute_ancestors`] |
     /// | body, inertial, joint, geom and site frames, joint types | `body_sameframe`, `geom_sameframe`, `site_sameframe`, `body_simple`, `dof_simplenum` | [`Self::compute_simple_bodies`] |
     /// | `dof_parent`, `dof_simplenum` | the mass matrix's pattern and the implicit integrator's (`M_*`, `D_*`), so the lengths of `Data::qLD_data`, `Data::qH` and `Data::qLU`: make a new `Data` | [`Self::compute_dof_patterns`] |
-    /// | masses, inertias, body poses, `qpos0`, joint axes | `body_subtreemass`, `body_invweight0`, `dof_invweight0`, `tendon_invweight0`, `stat_meaninertia` | [`Self::compute_invweight0`], [`Self::compute_stat_meaninertia`] |
+    /// | masses, inertias, body poses, `qpos0`, joint axes, flex equalities | `body_subtreemass`, `body_invweight0`, `dof_invweight0`, `tendon_invweight0`, `flex_edgeequality`, `flexedge_invweight0`, `stat_meaninertia` | [`Self::compute_invweight0`], [`Self::compute_stat_meaninertia`] |
     /// | gears, transmissions, joint and tendon ranges, masses | `actuator_lengthrange`, `actuator_acc0` | [`Self::compute_actuator_params`] |
     /// | spatial tendon geometry, `qpos0`, `qpos_spring` | spatial `tendon_length0`, `tendon_lengthspring` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |

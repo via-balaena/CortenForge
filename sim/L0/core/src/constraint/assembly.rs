@@ -172,7 +172,7 @@ pub fn finalize_constraint_row_imp(
 /// 6. Contacts
 ///
 /// A constraint other than a contact whose Jacobian rows are all zero adds no
-/// rows (MuJoCo's dense `mj_addConstraint`, `engine_core_constraint.c:236-327`):
+/// rows (MuJoCo's dense `mj_addConstraint`, `engine_core_constraint.c:237-329`):
 /// the counting pass counts it, and the arrays are cut to the rows made.
 ///
 /// `qacc_smooth` is the unconstrained acceleration (M⁻¹ · qfrc_smooth), needed for efc_b.
@@ -644,7 +644,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 }
 
 /// Whether the `size` rows of `efc_J` from `row` are all zero: MuJoCo's empty
-/// guard (`mj_addConstraint`, `engine_core_constraint.c:254-262`), under which
+/// guard (`mj_addConstraint`, `engine_core_constraint.c:257-265`), under which
 /// a constraint other than a contact adds no rows.
 pub(super) fn jacobian_rows_empty(data: &Data, row: usize, size: usize) -> bool {
     (row..row + size).all(|r| data.efc_J.row(r).iter().all(|&x| x == 0.0))

@@ -52,7 +52,7 @@ use sim_core::validation::{Check, print_report};
 //     6. Polak-Ribière direction update:
 //          β = grad·(mgrad - mgrad_old) / (grad_old · mgrad_old)
 //          search = -mgrad + β · search
-//     7. Convergence: if improvement < tol AND |grad| < tol, stop
+//     7. Convergence: if improvement < tol OR |grad| < tol, stop
 //
 //   Properties:
 //   - Superlinear convergence for well-conditioned problems

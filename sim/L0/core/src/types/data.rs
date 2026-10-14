@@ -171,7 +171,8 @@ pub struct Data {
     // ==================== Velocities (computed from qvel) ====================
     /// Body spatial velocities (length `nbody`): (angular, linear).
     pub cvel: Vec<SpatialVector>,
-    /// DOF velocities in Cartesian space (length `nv`).
+    /// MuJoCo's dof motion axes (`cdof`, length `nv`). The CPU leaves them
+    /// 0: `mj_jac` builds MuJoCo's from the kinematics (ledger-L123).
     pub cdof: Vec<SpatialVector>,
 
     // ==================== RNE Intermediate Quantities ====================
@@ -434,9 +435,9 @@ pub struct Data {
     /// zeroed); CG and Newton fill all fields. Cleared with no rows.
     pub solver_stat: Vec<SolverStat>,
 
-    /// Per-step mean inertia: `trace(qM) / nv`. More accurate than the
-    /// model-level constant for configuration-dependent inertia.
-    /// Updated at the start of each Newton solve from the current `qM`.
+    /// Per-step mean inertia: `trace(qM) / nv`, set at each constraint
+    /// solve from the current `qM`. PGS and noslip scale by it; the primal
+    /// solver takes the model's `stat_meaninertia`, as MuJoCo's does.
     pub stat_meaninertia: f64,
 
     // ==================== Sensors ====================

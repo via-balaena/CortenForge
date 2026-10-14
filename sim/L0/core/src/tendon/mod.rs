@@ -20,7 +20,7 @@ use crate::forward::mj_fwd_position;
 /// For spatial tendons: 3D pairwise routing via `mj_fwd_tendon_spatial()`,
 /// with wrap visualization data (`wrap_xpos`/`wrap_obj`, §40b).
 ///
-/// Called from mj_fwd_position() after site transforms, before subtree COM.
+/// Called from mj_fwd_position() after site transforms and the subtree COM.
 pub(crate) fn mj_fwd_tendon(model: &Model, data: &mut Data) {
     if model.ntendon == 0 {
         return;

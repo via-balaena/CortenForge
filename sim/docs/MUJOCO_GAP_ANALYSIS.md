@@ -51,7 +51,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Recently Implemented (previously stubs)
 - Pyramidal friction cones ✅ — `ContactPyramidal` type, 2*(dim-1) facet rows with combined Jacobians `J_normal ± μ·J_friction`, R scaling `Rpy = 2·μ²·R_first_facet`, `decode_pyramid()` force recovery, model default changed to `cone: 0` (MuJoCo default), 13 tests ([future_work_8 #32](./todo/future_work_8.md))
 - Site-transmission actuators ✅ — 6D gear, refsite, `mj_jac_site()`, `mj_transmission_site()`, `subquat()`, common-ancestor DOF zeroing, `ActuatorFrc` sensor fix, 23 integration tests + 9 unit tests ([future_work_2 #5](./todo/future_work_2.md))
-- Spatial tendon pipeline ✅ — 3D routing with `mj_fwd_tendon_spatial()`, sphere/cylinder wrapping, sidesite disambiguation, `wrap_inside` inverse wrapping (§39), wrap visualization data (`wrap_xpos`/`wrap_obj`/`ten_wrapadr`/`ten_wrapnum`, §40b), pulley divisors, free-joint Jacobians, `accumulate_point_jacobian()`, 31 acceptance tests verified against MuJoCo 3.4.0 + 13 wrap_inside tests against MuJoCo 3.5.0 + 15 wrap visualization tests ([future_work_2 #4](./todo/future_work_2.md), [future_work_10 §39, §40b](./todo/future_work_10.md))
+- Spatial tendon pipeline ✅ — 3D routing with `mj_fwd_tendon_spatial()`, sphere/cylinder wrapping, sidesite disambiguation, `wrap_inside` inverse wrapping (§39), wrap visualization data (`wrap_xpos`/`wrap_obj`/`ten_wrapadr`/`ten_wrapnum`, §40b), pulley divisors, free-joint Jacobians, segment Jacobians through `mj_jac` (MuJoCo's `mj_tendon`), 31 acceptance tests verified against MuJoCo 3.4.0 + 13 wrap_inside tests against MuJoCo 3.5.0 + 15 wrap visualization tests ([future_work_2 #4](./todo/future_work_2.md), [future_work_10 §39, §40b](./todo/future_work_10.md))
 - General gain/bias actuator force model ✅ — all 8 shortcut types expanded to gain/bias/dynamics, `force = gain * input + bias`, GainType/BiasType dispatch, FilterExact integration ([future_work_1 #12](./todo/future_work_1.md))
 - Muscle pipeline ✅ — MuJoCo FLV curves, activation dynamics, act_dot architecture, RK4 integration ([future_work_1 #5](./todo/future_work_1.md))
 - Activation dynamics ✅ — Filter, FilterExact, Integrator, Muscle types all functional; `data.act` integrated by Euler/RK4
@@ -71,7 +71,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Universal, Planar, Cylindrical joints in sim-constraint — CortenForge extensions, not MuJoCo joint types (not in pipeline `MjJointType`)
 
 ### Removed (Phase 3 Consolidation — standalone crate code only)
-- Standalone Newton solver (`sim-constraint/src/newton.rs` — deleted; replaced by pipeline-native `newton_solve()` in `constraint/solve.rs`)
+- Standalone Newton solver (`sim-constraint/src/newton.rs` — deleted; replaced by the pipeline-native primal solver, `constraint/solver/primal.rs`)
 - Standalone constraint island discovery (`sim-constraint/src/islands.rs` — deleted; replaced by pipeline-native `mj_island()` DFS flood-fill in `island/`)
 - Standalone sparse Jacobian operations (`sim-constraint/src/sparse.rs` — deleted)
 - Standalone PGS (`sim-constraint/src/pgs.rs` — deleted; pipeline PGS in `constraint/solve.rs` is MuJoCo-aligned pure Gauss-Seidel)
@@ -98,7 +98,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Analytical derivatives (complete) | Part 1: `mjd_transition_fd()`, `mjd_smooth_vel()`, `mjd_passive_vel`, `mjd_actuator_vel`, `mjd_rne_vel`. Part 2: `mjd_quat_integrate()`, `mjd_transition_hybrid()`, `mjd_transition()` dispatch, `validate_analytical_vs_fd()`, `fd_convergence_check()` — 30+ tests, all passing | [future_work_4 §12](./todo/future_work_4.md) |
 | Sleeping / Body Deactivation | Tree-based sleeping (Phases A/B/C): islands from the constraint rows, selective CRBA, partial LDL, awake-index iteration; global constraint solve | [future_work_5 §16](./todo/future_work_5.md) |
 | `<include>` + `<compiler>` element | Pre-parse XML expansion (recursive, duplicate detection); `<compiler>` with angle/eulerseq/meshdir/texturedir/assetdir/autolimits/inertiafromgeom/boundmass/boundinertia/balanceinertia/settotalmass/strippath/discardvisual/fusestatic/coordinate/exactmeshinertia; section merging for duplicate top-level elements; URDF converter defaults; exact mesh inertia via signed tetrahedron decomposition (Mirtich 1996), full 3×3 tensor accumulation with geom orientation + eigendecomposition | [§13](#13-model-format), [future_work_6 §18](./todo/future_work_6.md), [future_work_7 §23](./todo/future_work_7.md) |
-| Flex Solver Unification (§6B) | Unified flex architecture: vertex DOFs in `qpos`/`qvel`, `FlexEdge` constraint rows, passive bending forces, `mj_collision_flex()`, `mj_crba_flex()`, MJCF `<flex>`/`<flexcomp>` parsing — 21 acceptance tests. Deleted `sim-deformable` crate. | [§11](#11-deformables-flex), [future_work_6b](./todo/future_work_6b_precursor_to_7.md) |
+| Flex Solver Unification (§6B) | Unified flex architecture: vertex DOFs in `qpos`/`qvel`, flex edge rows (a flex equality's), passive bending forces, `mj_collision_flex()`, `mj_crba_flex()`, MJCF `<flex>`/`<flexcomp>` parsing — 21 acceptance tests. Deleted `sim-deformable` crate. | [§11](#11-deformables-flex), [future_work_6b](./todo/future_work_6b_precursor_to_7.md) |
 | Contact Parameters (#24–27) | Unified `contact_param()` with element-wise max friction (#24), `geom/@priority` gating (#25), `solmix`-weighted solver param mixing (#26), margin/gap runtime effect — broadphase AABB expansion, narrow-phase activation thresholds, `includemargin` in constraint assembly, sign convention fix (`pos = -depth`) (#27) | [§3](#3-contact-physics), [future_work_7 §24–27](./todo/future_work_7.md) |
 | Body-transmission actuators (§36) | `ActuatorTransmission::Body` for adhesion: `compute_contact_normal_jacobian()` (J(b2)−J(b1)), `mj_transmission_body()` (negated average moment arms), `mj_transmission_body_dispatch()`, model builder body name resolution, derivatives merged with Site arm — 13 integration tests (AC1–AC14) | [§7](#7-actuators), [future_work_9 §36](./todo/future_work_9.md) |
 | Ball joint limits (§38) | Rotation cone limit via quaternion logarithm map: `quat::normalize4()` (MuJoCo `mju_normalize4`), `ball_limit_axis_angle()` (MuJoCo `mju_quat2Vel` + `mju_normalize3`), `dist = max(range) - angle`, Jacobian `-sign(θ)·axis` on 3 angular DOFs, single constraint row per ball joint; free joint limits silently ignored — 30 tests (8 unit + 22 integration) | [future_work_10 §38](./todo/future_work_10.md) |
@@ -288,7 +288,6 @@ MuJoCo uses contact dimensionality (`condim`) to specify which friction componen
 **Implemented (February 2026):**
 - `compute_efc_offsets()` — Per-contact row offsets for variable-dimension system
 - `compute_contact_jacobian()` — Returns `dim×nv` matrix with angular rows for condim ≥ 4
-- `add_angular_jacobian()` — Helper for torsional/rolling Jacobian rows
 - `apply_contact_torque()` — Maps world torque to generalized forces via angular Jacobian transpose
 - `compute_block_jacobi_preconditioner()` — Variable `dim×dim` blocks
 - PGS and CG solvers updated for variable-dimension indexing
@@ -694,11 +693,11 @@ let obs = touch.read_as_observation(&contacts, 0.001);
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
 | Fixed tendons | Yes | `FixedTendon` | ✅ **Pipeline** — `mj_fwd_tendon_fixed()`, full kinematics/actuation/passive/constraints | - | - |
-| Spatial tendons | Yes | `SpatialTendon` | ✅ **Pipeline** — `mj_fwd_tendon_spatial()`, 3D routing, Jacobian via `accumulate_point_jacobian()`, wrap visualization data (`wrap_xpos`/`wrap_obj`, §40b), passive/constraints/actuation | - | - |
+| Spatial tendons | Yes | `SpatialTendon` | ✅ **Pipeline** — `mj_fwd_tendon_spatial()`, 3D routing, Jacobian via `mj_jac`, wrap visualization data (`wrap_xpos`/`wrap_obj`, §40b), passive/constraints/actuation | - | - |
 | Wrapping (sphere/cylinder) | Yes | `sphere_wrap`, `cylinder_wrap` | ✅ **Pipeline** — dual-candidate tangent selection, sidesite disambiguation, helical arc length, `wrap_inside` inverse wrapping (§39) | - | - |
 | Pulley systems | Yes | Pulley divisor | ✅ **Pipeline** — `WrapType::Pulley` pair-skip, length/Jacobian scaling by divisor | - | - |
 
-> **Both fixed and spatial tendons are fully integrated into the pipeline.** The model builder (`process_tendons()`) converts MJCF `<tendon><fixed>` and `<tendon><spatial>` elements into pipeline Model arrays. `mj_fwd_tendon()` computes tendon lengths and Jacobians in `mj_fwd_position()` (fixed via linear coupling, spatial via 3D pairwise routing with `accumulate_point_jacobian()`), tendon velocities in `mj_fwd_velocity()`, passive forces (spring/damper/friction) in `mj_fwd_passive()`, limit constraints in `mj_fwd_constraint()`, and actuation via J^T mapping in `mj_fwd_actuation()`. Spatial tendons support sphere and cylinder wrapping (`sphere_wrap`, `cylinder_wrap`), sidesite disambiguation, `wrap_inside` inverse wrapping (§39), wrap visualization data (`wrap_xpos`/`wrap_obj`/`ten_wrapadr`/`ten_wrapnum`, §40b), pulley divisors, and free-joint Jacobians. All tendon sensor types (TendonPos/TendonVel/ActuatorPos/ActuatorVel) read live tendon data. See [future_work_1 #4](./todo/future_work_1.md), [future_work_2 #4](./todo/future_work_2.md).
+> **Both fixed and spatial tendons are fully integrated into the pipeline.** The model builder (`process_tendons()`) converts MJCF `<tendon><fixed>` and `<tendon><spatial>` elements into pipeline Model arrays. `mj_fwd_tendon()` computes tendon lengths and Jacobians in `mj_fwd_position()` (fixed via linear coupling, spatial via 3D pairwise routing with `mj_jac`), tendon velocities in `mj_fwd_velocity()`, passive forces (spring/damper/friction) in `mj_fwd_passive()`, limit constraints in `mj_fwd_constraint()`, and actuation via J^T mapping in `mj_fwd_actuation()`. Spatial tendons support sphere and cylinder wrapping (`sphere_wrap`, `cylinder_wrap`), sidesite disambiguation, `wrap_inside` inverse wrapping (§39), wrap visualization data (`wrap_xpos`/`wrap_obj`/`ten_wrapadr`/`ten_wrapnum`, §40b), pulley divisors, and free-joint Jacobians. All tendon sensor types (TendonPos/TendonVel/ActuatorPos/ActuatorVel) read live tendon data. See [future_work_1 #4](./todo/future_work_1.md), [future_work_2 #4](./todo/future_work_2.md).
 
 ### Implementation Notes: Tendons ✅ COMPLETED (fixed + spatial tendons in pipeline; sim-tendon crate standalone)
 
@@ -1284,7 +1283,7 @@ MJB binary format support added to `sim-mjcf` crate (requires `mjb` feature):
 
 ### ⚠️ Phase 2: Solver Improvements (built then partially removed)
 
-1. ~~**Newton solver**: For faster convergence~~ ✅ Standalone removed → ✅ **Reimplemented** (pipeline-native `newton_solve()` — reduced primal formulation, §15)
+1. ~~**Newton solver**: For faster convergence~~ ✅ Standalone removed → ✅ **Reimplemented** (the pipeline-native primal solver, MuJoCo's `mj_solPrimal`, §15)
 2. ~~**Constraint islands**: For performance~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation) → ✅ **Reimplemented** (pipeline-native `mj_island()` as part of sleeping system; global solve)
 3. ~~**Sleeping**: Deactivate stationary bodies~~ ✅ **Pipeline** (tree-based sleeping with island discovery, selective CRBA, partial LDL; [future_work_5 §16](./todo/future_work_5.md))
 4. ~~**GJK/EPA**: For convex mesh collision~~ ✅
@@ -1634,7 +1633,7 @@ Focus: Large standalone features, each potentially its own PR.
 | Feature | Section | Complexity | Status | Notes |
 |---------|---------|------------|--------|-------|
 | ~~Height field collision~~ | §4 Collision, §5 Geoms | High | ✅ COMPLETED | Terrain simulation |
-| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Pipeline CG in `constraint/solve.rs` (`cg_solve_contacts()`); `CGSolver` in sim-constraint remains standalone joint-space solver (see FUTURE_WORK #3 ✅) |
+| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | CG in the primal solver (`constraint/solver/primal.rs`); `CGSolver` in sim-constraint remains standalone joint-space solver (see FUTURE_WORK #3 ✅) |
 | ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ **COMPLETED** | Pipeline `EqualityType::Tendon` + `extract_tendon_equality_jacobian()` in unified solver; two-tendon polynomial coupling + single-tendon lock (§37) |
 | ~~Flex edge constraints~~ | §10 Equality, §11 Deformables | Low | ✅ **COMPLETED** | Unified flex equality rows (`EqualityType::Flex`) in `assemble_unified_constraints()` (§6B) |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
@@ -1690,7 +1689,6 @@ let forces = network.compute_all_forces(&get_position, &get_velocity, dt);
 **Flex Edge Constraints (`sim-core/src/constraint/`) — ✅ Pipeline-integrated (§6B):**
 - `EqualityType::Flex`: one equality row per non-rigid edge
 - Edge-length constraints as rows in unified Jacobian (`assemble_unified_constraints()`)
-- Penalty path via `apply_flex_edge_constraints()` for PGS/CG solvers
 - Bending as passive forces in `mj_fwd_passive()` (Bridson et al. 2003 dihedral gradient)
 - Material-derived stiffness (Young's modulus → solref for edges, Kirchhoff-Love for bending)
 

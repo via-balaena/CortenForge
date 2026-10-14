@@ -1137,7 +1137,7 @@ power-law interpolation of `violation / width`. Clamped to [0.0001, 0.9999].
 
 **Actual:** ~390 lines WGSL. Entry point: `newton_solve`.
 **Pattern:** Single workgroup (256 threads), all iterations in one dispatch.
-**Reference:** CPU `newton.rs:newton_solve()`, `primal.rs`
+**Reference:** CPU `primal.rs` (the GPU solver was written against its predecessor, `newton.rs`, since deleted)
 
 **Fixed-config solver:** hardcoded backtracking line search (candidates
 `{1.0, 0.5, 0.25}`), bounded by `max_iter`, converges on no-progress (none of

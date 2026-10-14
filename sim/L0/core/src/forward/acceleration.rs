@@ -269,7 +269,7 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
 
 /// The implicit integrators' factor of `M − h·D`: the factorization of
 /// MuJoCo 3.5.0's `mj_implicitSkip` (`engine_forward.c:1166-1196`,
-/// `:1286-1309`), which runs in the integrator. `forward` leaves it, as
+/// `:1288-1295`), which runs in the integrator. `forward` leaves it, as
 /// `mj_forward` does.
 ///
 /// Under implicitfast D is `∂(qfrc_smooth)/∂(qvel)` without the RNE's terms
@@ -347,7 +347,7 @@ pub fn mj_implicit_factor(model: &Model, data: &mut Data) -> Result<(), StepErro
 /// `qacc_implicit = (M − h·D)⁻¹·(qfrc_smooth + qfrc_constraint)` with the
 /// factor in `data` ([`mj_implicit_factor`]'s), over the awake dofs, a
 /// sleeping dof's entry 0: the solve of MuJoCo 3.5.0's `mj_implicitSkip`
-/// (`engine_forward.c:1311-1323`).
+/// (`engine_forward.c:1297-1310`).
 pub fn mj_implicit_solve(model: &Model, data: &mut Data) {
     implicit_rhs(model, data);
     let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);

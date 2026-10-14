@@ -44,8 +44,8 @@ use sim_core::validation::{Check, print_report};
 //   Hessian assembly:
 //     H = M + Σ_{active rows i} Dᵢ · Jᵢᵀ · Jᵢ
 //     (Dᵢ = impedance-scaled constraint weight)
-//     Dense path (nv ≤ 60): Cholesky factorization, rank-1 incremental updates
-//     Sparse path (nv > 60): LDL^T with elimination tree
+//     Dense path (nv < 60): Cholesky factorization, rank-1 incremental updates
+//     Sparse path (nv ≥ 60): LDL^T with elimination tree, made anew each iteration
 //
 //   Main loop (for iter = 0..max_iters):
 //     1. Gradient: grad = M·qacc - qfrc_smooth - Jᵀ·efc_force
@@ -66,7 +66,7 @@ use sim_core::validation::{Check, print_report};
 //   - At its iteration cap it keeps its last iterate, as MuJoCo's does
 //   - Best for: precision-critical contact scenarios, complex friction cones
 //
-// Source: sim/L0/core/src/constraint/solver/newton.rs, hessian.rs, primal.rs
+// Source: sim/L0/core/src/constraint/solver/primal.rs, hessian.rs
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 

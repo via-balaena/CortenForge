@@ -68,11 +68,15 @@ pub fn mj_mul_m_to(model: &Model, data: &Data, vec: &[f64], res: &mut [f64]) {
 ///
 /// `y` is given in `x`, each `nv` entries of it one vector, and solved with
 /// the factor [`mj_factor_m`] left, over every row.
+///
+/// # Panics
+///
+/// If the length of `x` is not a multiple of `nv`.
 pub fn mj_solve_m(model: &Model, data: &Data, x: &mut [f64]) {
     if model.nv == 0 {
         return;
     }
-    debug_assert_eq!(x.len() % model.nv, 0, "x holds whole vectors");
+    assert_eq!(x.len() % model.nv, 0, "x holds whole vectors");
     for v in x.chunks_exact_mut(model.nv) {
         mj_solve_ld(
             v,
