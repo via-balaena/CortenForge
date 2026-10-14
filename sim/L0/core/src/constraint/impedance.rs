@@ -178,38 +178,15 @@ pub fn compute_aref(k: f64, b: f64, imp: f64, pos: f64, margin: f64, vel: f64) -
     -b * vel - k * imp * (pos - margin)
 }
 
-/// Compute ball joint limit quantities from a unit quaternion [w, x, y, z].
-/// Returns `(unit_dir, angle)` where:
-///   - `angle = |theta| >= 0` (unsigned rotation magnitude)
-///   - `unit_dir = sign(theta) * axis` (Jacobian direction)
-///
-/// When `angle < 1e-10` (near-identity), returns `(Vector3::z(), 0.0)`.
-/// The unit_dir value is arbitrary in this case — the caller must not use it
-/// because `dist = limit - 0 > 0` means no constraint is instantiated.
-///
-/// Matches MuJoCo's `mju_quat2Vel(angleAxis, q, 1)` followed by
-/// `value = mju_normalize3(angleAxis)`.
+/// A ball joint limit's direction and angle from a unit quaternion
+/// `[w, x, y, z]`, as MuJoCo's: `mju_quat2Vel(angleAxis, q, 1)`, then
+/// `value = mju_normalize3(angleAxis)` (`engine_core_constraint.c:824-828`).
+/// Returns `(unit_dir, angle)`: `angle = |theta|`, and `unit_dir` the axis
+/// times the sign of `theta`, the x axis below mjMINVAL (`mju_normalize3`).
 pub fn ball_limit_axis_angle(q: [f64; 4]) -> (Vector3<f64>, f64) {
-    // Step 1: mju_quat2Vel with dt=1
-    let v = Vector3::new(q[1], q[2], q[3]);
-    let sin_half = v.norm();
-
-    // Guard: near-identity → angle ≈ 0, axis undefined.
-    if sin_half < 1e-10 {
-        return (Vector3::z(), 0.0);
-    }
-
-    let axis = v / sin_half; // unit rotation axis
-    let mut theta = 2.0 * sin_half.atan2(q[0]);
-    if theta > std::f64::consts::PI {
-        theta -= 2.0 * std::f64::consts::PI;
-    }
-
-    // Step 2: |theta * axis| = |theta|, direction = sign(theta) * axis.
-    let angle = theta.abs();
-    let unit_dir = if theta >= 0.0 { axis } else { -axis };
-
-    (unit_dir, angle)
+    let mut angle_axis = crate::quat::quat_to_vel(&q, 1.0);
+    let angle = crate::quat::normalize3(&mut angle_axis);
+    (Vector3::from(angle_axis), angle)
 }
 
 /// Compute exact diagonal approximation of A = J·M⁻¹·J^T for one row (§15.12 step 2).
@@ -676,9 +653,10 @@ mod ball_limit_tests {
     #[test]
     fn test_ball_limit_axis_angle_identity() {
         let q = [1.0, 0.0, 0.0, 0.0];
-        let (_, angle) = ball_limit_axis_angle(q);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
         assert!(angle < 1e-10, "identity should have zero rotation angle");
-        // unit_dir is arbitrary (z-axis default) -- not asserted
+        // MuJoCo's `mju_normalize3` gives the x axis below mjMINVAL.
+        assert_eq!(unit_dir, Vector3::x());
     }
 
     #[test]
@@ -712,16 +690,16 @@ mod ball_limit_tests {
 
     #[test]
     fn test_ball_limit_axis_angle_near_zero_quaternion() {
-        // A quaternion with near-zero norm (degenerate) should be caught by
-        // `quat::normalize4` (returns identity) before reaching ball_limit_axis_angle.
-        // But ball_limit_axis_angle itself should also handle near-zero sin_half
-        // gracefully -- returning angle = 0 and an arbitrary direction.
-        let q = [1.0, 1e-15, 1e-15, 1e-15]; // Nearly identity, sin_half ~ 1.7e-15
-        let (_, angle) = ball_limit_axis_angle(q);
+        // Nearly the identity, sin_half ~ 1.7e-15, above mjMINVAL: the angle is
+        // tiny and the direction is the rotation's own axis, as MuJoCo's.
+        let q = [1.0, 1e-15, 1e-15, 1e-15];
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
         assert!(
             angle < 1e-10,
             "near-zero sin_half should produce angle ~ 0: got {angle}"
         );
-        // unit_dir is arbitrary (z-axis default) -- not asserted
+        assert_relative_eq!(unit_dir.x, 1.0 / 3.0_f64.sqrt(), epsilon = 1e-12);
+        assert_relative_eq!(unit_dir.y, unit_dir.x);
+        assert_relative_eq!(unit_dir.z, unit_dir.x);
     }
 }

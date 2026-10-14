@@ -9,7 +9,7 @@ Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 It refuses any other interpreter, as gen_census_golden.py does.
 
 A constraint other than a contact whose Jacobian rows are all zero adds no rows
-(`mj_addConstraint`, `engine_core_constraint.c:236-327`). The cases, each after
+(`mj_addConstraint`, `engine_core_constraint.c:237-329`). The cases, each after
 mj_forward from qpos0 and rest:
 
 - weld_static: census doc 0ee0d13e (`builder/equality.rs:551`), a weld between two
@@ -20,7 +20,13 @@ mj_forward from qpos0 and rest:
   friction loss and a range it exceeds, one shorter than its range, beside a hinge
   with friction loss: only the hinge's friction row is made.
 
-Each records nefc and efc_type.
+Each records nefc and efc_type. A ball joint's limit always has a row inside its
+margin, its direction never all zero: below mjMINVAL `mju_normalize3` makes it the
+x axis (`engine_core_constraint.c:824-828`). The cases ball_identity (a hanging
+ball joint at the identity, a limit of 0.01 degree inside a margin of 0.02) and
+ball_tiny (the same at a rotation of about 9.2e-12 rad, above mjMINVAL, so the
+row takes the rotation's own axis) also record efc_J, efc_pos and qacc; the
+generator refuses either unless it has one limit row.
 """
 import json
 import os
@@ -78,6 +84,29 @@ TENDON_STATIC = """<mujoco model="tendon_static">
 </mujoco>"""
 
 
+BALL_LIMIT = """<mujoco model="ball_limit">
+  <worldbody>
+    <body name="b" pos="0 0 1">
+      <joint name="j" type="ball" range="0 0.01" margin="0.02"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0.1 -0.3" size="0.02" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+
+def ball_case(quat):
+    m = mujoco.MjModel.from_xml_string(BALL_LIMIT)
+    d = mujoco.MjData(m)
+    d.qpos[:] = quat
+    mujoco.mj_forward(m, d)
+    if d.nefc != 1 or d.efc_type[0] != int(mujoco.mjtConstraint.mjCNSTR_LIMIT_JOINT):
+        sys.exit(f"ball_limit: {d.nefc} rows, not one limit row")
+    return {"xml": BALL_LIMIT, "qpos": [float(x) for x in d.qpos], "nefc": int(d.nefc),
+            "efc_type": [int(t) for t in d.efc_type[:d.nefc]],
+            "efc_J": [float(x) for x in d.efc_J[:d.nefc * m.nv]],
+            "efc_pos": [float(x) for x in d.efc_pos[:d.nefc]], "qacc": [float(x) for x in d.qacc]}
+
+
 def case(xml):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -93,6 +122,8 @@ def main():
         "weld_static": case(WELD_STATIC),
         "connect_static": case(CONNECT_STATIC),
         "tendon_static": case(TENDON_STATIC),
+        "ball_identity": ball_case([1.0, 0.0, 0.0, 0.0]),
+        "ball_tiny": ball_case([1.0, 1e-12, 2e-12, 4e-12]),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "empty_rows.json"), "w", encoding="utf-8") as f:

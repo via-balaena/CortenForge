@@ -1,6 +1,6 @@
 //! A constraint other than a contact whose Jacobian rows are all zero adds no
 //! rows, against MuJoCo 3.5.0 (`mj_addConstraint`,
-//! `engine_core_constraint.c:236-327`).
+//! `engine_core_constraint.c:237-329`).
 //!
 //! The golden is `assets/golden/empty_rows/empty_rows.json`, from the unfused
 //! MuJoCo 3.5.0 oracle (`scripts/gen_empty_rows_reference.py`, which describes
@@ -27,6 +27,30 @@ fn nefc(case: &Value) -> usize {
     usize::try_from(case["nefc"].as_u64().expect("nefc")).expect("fits")
 }
 
+/// Every row array the counting pass sized holds the rows made, `n`.
+fn assert_row_arrays(name: &str, data: &sim_core::Data, n: usize) {
+    for (what, len) in [
+        ("efc_type", data.efc_type.len()),
+        ("efc_J", data.efc_J.nrows()),
+        ("efc_vel", data.efc_vel.len()),
+        ("efc_aref", data.efc_aref.len()),
+        ("efc_force", data.efc_force.len()),
+        ("efc_jar", data.efc_jar.len()),
+        ("efc_b", data.efc_b.len()),
+        ("efc_state", data.efc_state.len()),
+    ] {
+        assert_eq!(len, n, "{name}: {what}");
+    }
+}
+
+fn floats(v: &Value) -> Vec<f64> {
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| x.as_f64().expect("number"))
+        .collect()
+}
+
 /// A weld between two bodies without dofs, and a connect from such a body to
 /// the world, make no rows (census docs 0ee0d13e, f85c405a).
 #[test]
@@ -35,8 +59,7 @@ fn empty_equality_adds_no_rows() {
     for name in ["weld_static", "connect_static"] {
         let case = &g["cases"][name];
         let data = forward(case);
-        assert_eq!(data.efc_type.len(), nefc(case), "{name}: nefc");
-        assert_eq!(data.efc_J.nrows(), nefc(case), "{name}: efc_J rows");
+        assert_row_arrays(name, &data, nefc(case));
     }
 }
 
@@ -47,7 +70,7 @@ fn empty_equality_adds_no_rows() {
 fn empty_tendon_rows_are_not_made() {
     let case = &golden()["cases"]["tendon_static"];
     let data = forward(case);
-    assert_eq!(data.efc_type.len(), nefc(case), "nefc");
+    assert_row_arrays("tendon_static", &data, nefc(case));
     assert_eq!(
         data.efc_type,
         [ConstraintType::FrictionLoss],
@@ -96,4 +119,44 @@ fn empty_flex_edge_rows_are_not_made() {
         verts == (1, 2) || verts == (2, 1),
         "the row's edge is the one to the free vertex, got {verts:?}"
     );
+}
+
+/// A ball joint's limit inside its margin makes its row whatever the
+/// rotation: at the identity its direction is MuJoCo's x axis
+/// (`mju_normalize3` below mjMINVAL), and at a rotation of about 9.2e-12 rad
+/// the rotation's own axis. `efc_J` and `efc_pos` bit for bit, `qacc` within
+/// 1e-12.
+#[test]
+fn ball_limit_rows_take_mujocos_direction() {
+    let g = golden();
+    for name in ["ball_identity", "ball_tiny"] {
+        let case = &g["cases"][name];
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&floats(&case["qpos"]));
+        data.forward(&model).expect("forward");
+        assert_row_arrays(name, &data, nefc(case));
+        assert_eq!(data.efc_type, [ConstraintType::LimitJoint], "{name}");
+        let want_j = floats(&case["efc_J"]);
+        for (k, want) in want_j.iter().enumerate() {
+            let got = data.efc_J[(0, k)];
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "{name} efc_J[{k}]: {got:e}, MuJoCo {want:e}"
+            );
+        }
+        let (got, want) = (data.efc_pos[0], floats(&case["efc_pos"])[0]);
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "{name} efc_pos: {got:e}, MuJoCo {want:e}"
+        );
+        for (k, (got, want)) in data.qacc.iter().zip(floats(&case["qacc"])).enumerate() {
+            assert!(
+                (got - want).abs() <= 1e-12,
+                "{name} qacc[{k}]: {got:e}, MuJoCo {want:e}"
+            );
+        }
+    }
 }
