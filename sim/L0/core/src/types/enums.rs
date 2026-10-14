@@ -995,7 +995,8 @@ pub enum ResetError {
     },
     /// The forward pass a reset runs before putting the `Init` trees to sleep
     /// failed: a tendon equality with sleep, on which MuJoCo's reset raises
-    /// the same error, or an implicit factorization.
+    /// the same error, or the implicit spring-damper integrator's
+    /// factorization.
     InitForward(StepError),
 }
 

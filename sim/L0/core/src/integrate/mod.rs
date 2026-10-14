@@ -12,7 +12,9 @@ pub(crate) mod implicit;
 pub(crate) mod rk4;
 
 use crate::dynamics::factor::{mj_factor_i, mj_solve_ld};
-use crate::forward::{MjStage, awake_dofs, check, mj_next_activation};
+use crate::forward::{
+    MjStage, awake_dofs, check, mj_implicit_factor, mj_implicit_solve, mj_next_activation,
+};
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::{
     DISABLE_ACTUATION, DISABLE_DAMPER, DISABLE_EULERDAMP, Data, ENABLE_SLEEP, Integrator, Model,
@@ -70,8 +72,9 @@ impl Data {
     ///   new velocity.
     ///
     /// - **Implicit, ImplicitFast**: `qvel += qacc_implicit * h`, the acceleration
-    ///   `(M − h·∂f/∂v)⁻¹ f` the acceleration stage solved for; `qacc` keeps the
-    ///   explicit one, as in MuJoCo.
+    ///   `(M − h·∂f/∂v)⁻¹ f`, factored and solved for first, before the history
+    ///   and the activations advance, as MuJoCo's `mj_implicitSkip` does before
+    ///   `mj_advance`; `qacc` keeps the explicit one, as in MuJoCo.
     ///
     /// - **ImplicitSpringDamper**: `qvel += qacc * h`, where `qacc` is the
     ///   implicit acceleration the acceleration stage (or a Newton solve)
@@ -80,13 +83,16 @@ impl Data {
     /// # Errors
     ///
     /// `StepError::InvalidTimestep` if the timestep is not positive and
-    /// finite and `StepError::DataShapeMismatch` if `self` was made by a
-    /// model of other dimensions or an input array was resized, both before
-    /// anything changes; and the error of the forward pass a sleep step runs
-    /// (an implicit factorization), which leaves the history samples inserted,
-    /// the activations advanced, the slept trees asleep with their velocities
-    /// zeroed but the sleep arrays not updated for them, and positions and
-    /// time not advanced. MuJoCo's forward pass has no failure there.
+    /// finite, `StepError::DataShapeMismatch` if `self` was made by a model
+    /// of other dimensions or an input array was resized, and
+    /// `StepError::LuSingular` under the implicit integrator when a diagonal
+    /// of its factor is below mjMINVAL in magnitude, all before anything
+    /// changes; and the error of the forward pass a sleep step runs (the
+    /// implicit spring-damper's factorization), which leaves the history
+    /// samples inserted, the activations advanced, the slept trees asleep
+    /// with their velocities zeroed but the sleep arrays not updated for
+    /// them, and positions and time not advanced. MuJoCo's forward pass has
+    /// no failure there.
     pub fn integrate(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         self.integrate_unchecked(model)
@@ -95,6 +101,28 @@ impl Data {
     /// [`Self::integrate`] without its input checks, for `step` and `step2`,
     /// which make them first.
     pub(crate) fn integrate_unchecked(&mut self, model: &Model) -> Result<(), StepError> {
+        self.integrate_skip_unchecked(model, false)
+    }
+
+    /// [`Self::integrate_unchecked`]; with `skipfactor` the implicit
+    /// integrators solve with the factor `self` holds, as MuJoCo's
+    /// `mj_implicitSkip` with `skipfactor` (`engine_forward.c:1166`), which
+    /// `mj_stepSkip` takes from the velocity stage (`engine_derivative_fd.c:140`).
+    pub(crate) fn integrate_skip_unchecked(
+        &mut self,
+        model: &Model,
+        skipfactor: bool,
+    ) -> Result<(), StepError> {
+        if matches!(
+            model.integrator,
+            Integrator::Implicit | Integrator::ImplicitFast
+        ) {
+            if !skipfactor {
+                mj_implicit_factor(model, self)?;
+            }
+            mj_implicit_solve(model, self);
+        }
+
         // History first, at the step's time, as MuJoCo's `mj_advance`
         // (`engine_forward.c:837-884`): each buffered actuator's `ctrl`, then
         // each buffered sensor's sample.

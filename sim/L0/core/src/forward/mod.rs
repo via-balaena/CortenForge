@@ -41,7 +41,7 @@ mod velocity;
 pub(crate) use acceleration::mj_body_accumulators;
 #[allow(unused_imports)]
 pub(crate) use acceleration::mj_fwd_acceleration;
-pub(crate) use acceleration::{awake_dofs, solve_implicit};
+pub(crate) use acceleration::{awake_dofs, mj_implicit_factor, mj_implicit_solve, solve_implicit};
 // Public re-exports: stable mathematical functions for muscle curves and dynamics.
 // Used by examples and external consumers for direct curve evaluation.
 pub use actuation::{hill_active_fl, hill_force_velocity, hill_passive_fl};
@@ -243,6 +243,20 @@ impl Data {
     /// `implicitfast` the velocity derivative still reads it for an actuator
     /// without dynamics whose gain has a velocity term, as MuJoCo's does.
     pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
+        self.step_skip_factor(model, false)
+    }
+
+    /// [`Self::step`]; with `skipfactor` the implicit integrators solve with
+    /// the factor `self` holds, as MuJoCo's `mj_stepSkip` from the velocity
+    /// stage does (`engine_derivative_fd.c:113-150`), through
+    /// `mj_implicitSkip`'s `skipfactor`: the finite-difference transitions
+    /// step their control and activation columns so. The position and
+    /// velocity stages run in full (MuJoCo skips them).
+    pub(crate) fn step_skip_factor(
+        &mut self,
+        model: &Model,
+        skipfactor: bool,
+    ) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;
 
@@ -264,7 +278,7 @@ impl Data {
             | Integrator::Implicit => {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
-                self.integrate_unchecked(model)
+                self.integrate_skip_unchecked(model, skipfactor)
             }
         }
     }
@@ -289,11 +303,10 @@ impl Data {
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
     /// made by a model of other dimensions or an input array was resized,
     /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active, `Err(StepError::CholeskyFailed)` under the
-    /// implicit spring-damper integrator when its modified mass matrix is not
-    /// positive definite, and `Err(StepError::LuSingular)` under the implicit
-    /// integrator when a diagonal of its factor is below mjMINVAL in
-    /// magnitude.
+    /// tendon equality is active, and `Err(StepError::CholeskyFailed)` under
+    /// the implicit spring-damper integrator when its modified mass matrix is
+    /// not positive definite. The implicit and implicitfast integrators'
+    /// factor is the integrator's (`integrate`), not this pass's.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;
@@ -339,7 +352,8 @@ impl Data {
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
     /// was resized, if `skipstage` is `MjStage::None` with sleep enabled and a
-    /// tendon equality active, or if implicit acceleration solver fails.
+    /// tendon equality active, or if the implicit spring-damper integrator's
+    /// factorization fails (`CholeskyFailed`).
     pub fn forward_skip(
         &mut self,
         model: &Model,
@@ -535,7 +549,8 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// Returns `Err(StepError)` if implicit acceleration solver fails.
+    /// Returns `Err(StepError::CholeskyFailed)` if the implicit spring-damper
+    /// integrator's factorization fails.
     fn forward_acc(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
         // ========== Acceleration Stage ==========
         actuation::mj_fwd_actuation(model, self);

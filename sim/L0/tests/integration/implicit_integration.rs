@@ -883,8 +883,15 @@ fn test_implicit_vs_implicitfast_coriolis_delta() {
     mjd_smooth_vel(&model_full, &mut data_full);
     let qderiv_full = data_full.qDeriv.clone();
 
-    // For implicitfast, qDeriv was computed during forward (no Coriolis)
-    let qderiv_fast = data_fast.qDeriv.clone();
+    // For implicitfast, the D its step factors (no Coriolis): the step's
+    // factor computes it, as MuJoCo's mj_implicitSkip; forward does not.
+    let mut stepped_fast = data_fast.clone();
+    stepped_fast.step(&model_fast).unwrap();
+    let qderiv_fast = stepped_fast.qDeriv.clone();
+    assert!(
+        qderiv_fast.iter().any(|&x| x != 0.0),
+        "the implicitfast step filled qDeriv"
+    );
 
     // Non-spherical inertia box should produce non-zero gyroscopic Coriolis
     let mut max_qderiv_diff = 0.0_f64;

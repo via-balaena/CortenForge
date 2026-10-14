@@ -247,16 +247,20 @@ fn implicit_integrators_factor_the_awake_dofs() {
         data.qvel
             .as_mut_slice()
             .copy_from_slice(&floats(&case["qvel"]));
-        let inv_before = data.qHDiagInv.clone();
         data.step(&model).expect("step");
         let want = &case["traj"]["factor"];
         if model.integrator == Integrator::Implicit {
             assert_close("qLU", &data.qLU, &floats(&want["qLU"]), TOL);
         } else {
             assert_close("qH", &data.qH, &floats(&want["qH"]), TOL);
-            let want_inv = floats(&want["qHDiagInv"]);
-            assert_close("qHDiagInv awake", &data.qHDiagInv[..2], &want_inv[..2], TOL);
-            assert_eq!(data.qHDiagInv[2..], inv_before[2..], "qHDiagInv asleep");
+            // The sleeping entries are MuJoCo's 0: no forward pass (that of
+            // `make_data` included) factors.
+            assert_close(
+                "qHDiagInv",
+                &data.qHDiagInv,
+                &floats(&want["qHDiagInv"]),
+                TOL,
+            );
         }
         for _ in 2..=10 {
             data.step(&model).expect("step");

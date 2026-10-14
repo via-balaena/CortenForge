@@ -563,8 +563,9 @@ pub struct Data {
     /// from which it computes `qacc = (v_new - v_old) / h`.
     pub scratch_v_new: DVector<f64>,
     /// The acceleration Implicit and ImplicitFast advance `qvel` with,
-    /// `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)` (length `nv`). MuJoCo
-    /// keeps it in a stack local of `mj_implicitSkip` (`engine_forward.c:1134`).
+    /// `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)` (length `nv`),
+    /// written by `integrate`. MuJoCo keeps it in a stack local of
+    /// `mj_implicitSkip` (`engine_forward.c:1134`).
     pub(crate) qacc_implicit: DVector<f64>,
 
     // ==================== RK4 Scratch Buffers ====================
