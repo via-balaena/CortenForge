@@ -20,8 +20,9 @@ use nalgebra::{DMatrix, DVector, Vector3};
 /// through the joint's anchor is `[axis; axis × (com − anchor)]` (a hinge's
 /// axis, a ball's or a free joint's the columns of the body's `xmat`), a
 /// translation `[0; axis]` (a slide's axis, a free joint's the coordinate
-/// axes). sim-core's own `Data::cdof` is taken about another point (ledger
-/// L123); this one is built from the kinematics, which equal MuJoCo's.
+/// axes). sim-core takes its own motion subspace about the body's origin
+/// (`joint_motion_subspace`) and does not fill `Data::cdof` (ledger L123);
+/// this one is built from the kinematics, which equal MuJoCo's.
 fn mujoco_cdof(model: &Model, data: &Data, dof: usize) -> [f64; 6] {
     let jnt = model.dof_jnt[dof];
     let body = model.jnt_body[jnt];
@@ -49,7 +50,7 @@ fn mujoco_cdof(model: &Model, data: &Data, dof: usize) -> [f64; 6] {
 /// `body_weldid`'s) to the root, `jacr` is the dof's angular part and `jacp`
 /// its linear part plus the angular part × (`point` − the tree's subtree
 /// centre of mass), with MuJoCo's `cdof` (built from the kinematics;
-/// sim-core's `Data::cdof` is taken about another point, ledger L123).
+/// sim-core keeps no `cdof` in that frame, ledger L123).
 #[must_use]
 #[allow(clippy::similar_names)] // jacp/jacr are canonical MuJoCo names
 pub fn mj_jac(
