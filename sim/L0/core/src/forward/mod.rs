@@ -248,7 +248,7 @@ impl Data {
 
     /// [`Self::step`]; with `skipfactor` the implicit integrators solve with
     /// the factor `self` holds, as MuJoCo's `mj_stepSkip` from the velocity
-    /// stage does (`engine_derivative_fd.c:113-150`), through
+    /// stage does (`engine_derivative_fd.c:113-148`), through
     /// `mj_implicitSkip`'s `skipfactor`: the finite-difference transitions
     /// step their control and activation columns so. The position and
     /// velocity stages run in full (MuJoCo skips them).

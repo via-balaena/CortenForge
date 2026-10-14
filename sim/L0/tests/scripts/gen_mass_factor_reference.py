@@ -14,7 +14,7 @@ the awake rows of `d.M` into `d.qLD` and runs `mj_factorI` over them; a
 sleeping row keeps what it held. `mj_solveM` solves with that factor over
 every row (`mj_solveLD`, `:2131-2224`). Euler with dof damping factors
 `M + h·diag(damping)` the same way into `d.qH` (`mj_EulerSkip`,
-`engine_forward.c:943-1009`). The cases:
+`engine_forward.c:943-1013`). The cases:
 
 - chain: a hinge-hinge-ball chain with a hinge off its root, no damping:
   after mj_forward at a moved state, `d.M` and the factor `d.qLD` and

@@ -836,7 +836,7 @@ fn test_noslip_processes_all_contacts_regardless_of_state() {
 /// After a primal solve, noslip changes the friction forces, so the
 /// acceleration is made from the forces afterwards: `M·qacc = qfrc_smooth +
 /// qfrc_constraint`, as MuJoCo's noslip leaves it (`dualFinish`,
-/// `engine_solver.c:70-78`), under Newton and CG. Kept as the solver's
+/// `engine_solver.c:70-77`), under Newton and CG. Kept as the solver's
 /// iterate, the acceleration would answer the forces before noslip.
 #[test]
 fn noslip_acceleration_comes_from_its_forces() {

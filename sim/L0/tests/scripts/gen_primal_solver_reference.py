@@ -67,8 +67,8 @@ started from `warmstart` (`engine_forward.c:611-687`). Every case disables islan
   outputs bit for bit, whatever the stages before it round. The elliptic condim-3
   variant also runs under CG with `ls_iterations` 1, and under CG and Newton with
   `tolerance` 1e-300 and iterations capped at 40: a mutant of the line search's exit
-  at its iteration cap is caught only by the first, one of its midpoint exit only by
-  CG's second. (sim-mjcf refuses a `tolerance` of 0, which MuJoCo takes.)
+  at its iteration cap is caught by the first, one of its midpoint exit by CG's
+  second. (sim-mjcf refuses a `tolerance` of 0, which MuJoCo takes.)
 """
 import json
 import os

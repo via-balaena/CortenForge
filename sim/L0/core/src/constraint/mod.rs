@@ -154,7 +154,7 @@ fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
     m_impl
 }
 
-/// Compute implicit-corrected smooth forces for Newton solver (DT-35).
+/// Compute implicit-corrected smooth forces (DT-35).
 ///
 /// In ImplicitSpringDamper mode, qfrc_passive excludes spring/damper forces.
 /// This function computes the RHS forces that, together with M_impl in the

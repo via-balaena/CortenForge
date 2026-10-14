@@ -807,7 +807,7 @@ pub enum ConstraintState {
 }
 
 /// One solver iteration's statistics, MuJoCo's `mjSolverStat`
-/// (`mjdata.h`), as its `saveStats` records them (`engine_solver.c:38-66`).
+/// (`mjdata.h`), as its `saveStats` records them (`engine_solver.c:38-65`).
 ///
 /// Newton and CG fill every field; PGS fills `improvement` only.
 /// `Data::solver_stat` holds one per iteration, `Data::solver_niter` long.

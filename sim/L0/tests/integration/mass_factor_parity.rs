@@ -2,7 +2,7 @@
 //! mass matrix's own pattern, a simple dof's row its diagonal only
 //! (`mj_factorM`, `engine_core_smooth.c:1961-1986`), solved as `mj_solveM`
 //! solves (`:2131-2224`), and Euler's damped factor in `qH`
-//! (`mj_EulerSkip`, `engine_forward.c:943-1009`).
+//! (`mj_EulerSkip`, `engine_forward.c:943-1013`).
 //!
 //! The golden is `assets/golden/mass_factor/mass_factor.json`, from the
 //! unfused MuJoCo 3.5.0 oracle (`scripts/gen_mass_factor_reference.py`, which
