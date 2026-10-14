@@ -40,6 +40,19 @@ fn frame_rows(j: &mut DMatrix<f64>, row0: usize, frame: &[Vector3<f64>], jacdif:
     }
 }
 
+/// A contact's normal row (1×nv): `normal · (Jp(b2) − Jp(b1))` at the
+/// contact point, as MuJoCo's adhesion transmission projects an excluded
+/// contact's Jacobian difference (`mju_mulMatMat(jac, con->frame, jacdifp,
+/// 1, 3, NV)`, `engine_core_smooth.c:1684-1690`).
+#[must_use]
+pub fn compute_contact_normal_row(model: &Model, data: &Data, contact: &Contact) -> DMatrix<f64> {
+    let (b1, b2) = contact_sides(model, contact);
+    let jacdif = mj_jac(model, data, b2, &contact.pos).0 - mj_jac(model, data, b1, &contact.pos).0;
+    let mut j = DMatrix::zeros(1, model.nv);
+    frame_rows(&mut j, 0, &[contact.normal], &jacdif);
+    j
+}
+
 /// A contact's `dim`×nv Jacobian, in the contact frame: MuJoCo 3.5.0's.
 ///
 /// The translational Jacobians of the contact point on the two sides'

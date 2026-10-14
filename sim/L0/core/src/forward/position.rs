@@ -108,10 +108,9 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             UnitQuaternion::new_unchecked(Quaternion::new(xquat[0], xquat[1], xquat[2], xquat[3]));
     }
 
-    // Tendon kinematics (after site poses, before subtree COM)
-    mj_fwd_tendon(model, data);
-
-    // ========== Compute subtree mass and COM (for O(n) RNE gravity) ==========
+    // ========== Subtree mass and COM, before the tendons (MuJoCo's `mj_comPos`
+    // precedes `mj_tendon`, `engine_forward.c:140-145`; a spatial tendon's
+    // Jacobian reads `subtree_com`) ==========
     // Initialize with each body's own mass and COM
     for body_id in 0..model.nbody {
         data.subtree_mass[body_id] = model.body_mass[body_id];
@@ -139,6 +138,9 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             data.subtree_com[body_id] *= 1.0 / data.subtree_mass[body_id];
         }
     }
+
+    // Tendon kinematics (after site poses and the subtree COM)
+    mj_fwd_tendon(model, data);
 }
 
 /// The world pose of body `body_id` (`[x, y, z]`, `[w, x, y, z]`) from its

@@ -5,10 +5,11 @@
 //! actuation portion of `engine_forward.c`.
 
 use super::muscle::muscle_activation_dynamics;
+use crate::constraint::jacobian::compute_contact_normal_row;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::linalg::dot_sparse;
 use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
-use crate::tendon::{accumulate_point_jacobian, apply_tendon_force, subquat};
+use crate::tendon::{apply_tendon_force, subquat};
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType,
     MjJointType, Model,
@@ -197,50 +198,15 @@ pub fn mj_transmission_site(model: &Model, data: &mut Data) {
     }
 }
 
-/// Compute contact normal Jacobian difference: `n^T · (J_p(b2) - J_p(b1))`.
-///
-/// `b1` is the body of `geom1`, `b2` is the body of `geom2`. Follows MuJoCo's
-/// `mj_jacDifPair(b1, b2)` convention which computes `J(b2) - J(b1)` (second
-/// argument minus first). The contact normal points from `geom[0]` toward
-/// `geom[1]`.
+/// A contact's normal Jacobian row, `n · (Jp(b2) − Jp(b1))` at the contact
+/// point (the normal points from `geom[0]` toward `geom[1]`), as a vector.
 fn compute_contact_normal_jacobian(model: &Model, data: &Data, contact: &Contact) -> DVector<f64> {
-    let nv = model.nv;
-    let b1 = model.geom_body[contact.geom1];
-    let b2 = model.geom_body[contact.geom2];
-    let point = &contact.pos;
-    let normal = &contact.normal;
-
-    let mut j_normal = DVector::zeros(nv);
-
-    // Walk kinematic chain for body2 (+1 contribution)
-    // MuJoCo convention: jacdifp = J(b2) - J(b1)
-    accumulate_point_jacobian(
-        model,
-        &data.xpos,
-        &data.xquat,
-        &data.xaxis,
-        &data.xanchor,
-        &mut j_normal,
-        b2,
-        point,
-        normal,
-        1.0,
-    );
-    // Walk kinematic chain for body1 (-1 contribution)
-    accumulate_point_jacobian(
-        model,
-        &data.xpos,
-        &data.xquat,
-        &data.xaxis,
-        &data.xanchor,
-        &mut j_normal,
-        b1,
-        point,
-        normal,
-        -1.0,
-    );
-
-    j_normal
+    DVector::from_iterator(
+        model.nv,
+        compute_contact_normal_row(model, data, contact)
+            .iter()
+            .copied(),
+    )
 }
 
 /// Compute adhesion moment arm for a single body-transmission actuator.

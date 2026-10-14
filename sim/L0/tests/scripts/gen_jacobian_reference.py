@@ -42,6 +42,13 @@ of the Jacobians alone. The cases:
   and `efc_pos` (`mj_instantiateEquality`: the anchors placed by
   `mju_mulMatVec3`, the Jacobians' difference, a weld's orientation error
   and its rotational rows through `mju_mulQuat` and `mju_mulQuatAxis`).
+- tendons: two spatial tendons through sites on a hinged arm, a box on a
+  ball joint below it and a free sphere, one with a pulley (divisor 3), the
+  other through two sites on the arm (a segment on one body, which adds
+  nothing), and a third through those two sites alone (its Jacobian 0):
+  `ten_length` and `ten_J` (`mj_tendon`, `engine_core_smooth.c:1054-1088`:
+  each segment between different bodies adds its Jacobians' difference
+  projected on its normalized direction, scaled by 1/divisor).
 """
 import json
 import os
@@ -131,6 +138,49 @@ EQUALITIES = """<mujoco model="equalities">
 </mujoco>"""
 
 
+TENDONS = """<mujoco model="tendons">
+  <option><flag contact="disable"/></option>
+  <worldbody>
+    <site name="w" pos="0.2 -0.1 1.4"/>
+    <body name="p" pos="0 0 1" quat="0.9 0.2 0.1 0.3">
+      <joint type="hinge" axis="0.2 1 0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="0.4"/>
+      <site name="sp" pos="0.15 0.02 0.01"/>
+      <site name="sp2" pos="0.25 -0.02 0.0"/>
+      <body name="q" pos="0.3 0 0">
+        <joint type="ball"/>
+        <geom type="box" size="0.05 0.03 0.02" pos="0.05 0 0" mass="0.3"/>
+        <site name="sq" pos="0.08 -0.01 0.02"/>
+      </body>
+    </body>
+    <body name="r" pos="0.4 0.1 1.1">
+      <freejoint/>
+      <geom type="sphere" size="0.04" mass="0.2"/>
+      <site name="sr" pos="0.01 0.03 -0.02"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial>
+      <site site="w"/>
+      <site site="sp"/>
+      <site site="sq"/>
+      <pulley divisor="3"/>
+      <site site="sq"/>
+      <site site="sr"/>
+    </spatial>
+    <spatial>
+      <site site="sp"/>
+      <site site="sp2"/>
+      <site site="sr"/>
+    </spatial>
+    <spatial>
+      <site site="sp"/>
+      <site site="sp2"/>
+    </spatial>
+  </tendon>
+</mujoco>"""
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -209,6 +259,18 @@ def main():
         sys.exit(f"equalities: nefc {ed.nefc}, ncon {ed.ncon}")
     equalities = {"xml": EQUALITIES, "model": fields(em), "qpos": floats(ed.qpos),
                   "eq_data": floats(em.eq_data), "efc_J": floats(ed.efc_J), "efc_pos": floats(ed.efc_pos)}
+    tm = mujoco.MjModel.from_xml_string(TENDONS)
+    td = mujoco.MjData(tm)
+    td.qpos[:] = ed.qpos
+    mujoco.mj_forward(tm, td)
+    if mujoco.mj_isSparse(tm):
+        sys.exit("tendons: a sparse Jacobian")
+    ten_j = np.asarray(td.ten_J).reshape(tm.ntendon, tm.nv)
+    if not (np.all(np.abs(ten_j[:2]).sum(axis=1) > 0) and not np.any(ten_j[2])):
+        sys.exit(f"tendons: not the Jacobians meant, {np.abs(ten_j).sum(axis=1)}")
+    tendons = {"xml": TENDONS, "model": fields(tm), "qpos": floats(td.qpos),
+               "site_xpos": floats(td.site_xpos), "ten_length": floats(td.ten_length),
+               "ten_J": floats(ten_j)}
     cases = {"jac": {"xml": xml, "model": fields(m), "qpos": floats(d.qpos),
                      "subtree_com": floats(d.subtree_com), "bodies": jac},
              "apply_ft": {"xml": xml, "model": fields(m), "qpos": floats(d.qpos), "bodies": apply_ft},
@@ -216,7 +278,8 @@ def main():
                           "qfrc_gravcomp": floats(gd.qfrc_gravcomp)},
              "contacts": {"xml": CONTACTS, "model": fields(cm), "qpos": floats(cd.qpos),
                           "nv": int(cm.nv), "contacts": contacts},
-             "equalities": equalities}
+             "equalities": equalities,
+             "tendons": tendons}
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "jacobian.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))

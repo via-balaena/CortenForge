@@ -5,7 +5,9 @@
 //! tendon force application.
 
 use super::wrap_math::{WrapResult, cylinder_wrap, sphere_wrap};
-use crate::types::{Data, GeomType, MjJointType, Model, TendonType, WrapType};
+use crate::jacobian::mj_jac;
+use crate::quat::normalize3;
+use crate::types::{Data, GeomType, Model, TendonType, WrapType};
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 
 /// Spatial tendon kinematics for a single tendon.
@@ -13,7 +15,7 @@ use nalgebra::{DVector, UnitQuaternion, Vector3};
 /// Computes tendon length as the sum of straight-line segment distances (and
 /// wrapping arcs when geom wrapping is active), with optional pulley divisor
 /// scaling. Populates `data.ten_J[t]` with the tendon Jacobian via
-/// `accumulate_point_jacobian`.
+/// `add_segment_jacobian`.
 ///
 /// Algorithm follows MuJoCo's pairwise loop over the wrap array
 /// (`engine_core_smooth.c`, function `mj_tendon`).
@@ -95,33 +97,7 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
             // Length: accumulated unconditionally (matching MuJoCo).
             total_length += dist / divisor;
             // Jacobian: guarded by distance threshold to avoid bogus direction.
-            if dist > 1e-10 && body0 != body1 {
-                let dir = diff / dist;
-                accumulate_point_jacobian(
-                    model,
-                    &data.xpos,
-                    &data.xquat,
-                    &data.xaxis,
-                    &data.xanchor,
-                    &mut data.ten_J[t],
-                    body1,
-                    &p1,
-                    &dir,
-                    1.0 / divisor,
-                );
-                accumulate_point_jacobian(
-                    model,
-                    &data.xpos,
-                    &data.xquat,
-                    &data.xaxis,
-                    &data.xanchor,
-                    &mut data.ten_J[t],
-                    body0,
-                    &p0,
-                    &dir,
-                    -1.0 / divisor,
-                );
-            }
+            add_segment_jacobian(model, data, t, body0, &p0, body1, &p1, divisor);
 
             j += 1; // advance to site1 (it becomes type0 on next iteration)
         } else if type1 == WrapType::Geom {
@@ -202,65 +178,13 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                     total_length += (dist1 + arc_length + dist3) / divisor;
 
                     // Sub-segment 1: p0 (body0) → t1 (geom_body)
-                    if dist1 > 1e-10 && body0 != geom_body {
-                        let dir1 = d1 / dist1;
-                        accumulate_point_jacobian(
-                            model,
-                            &data.xpos,
-                            &data.xquat,
-                            &data.xaxis,
-                            &data.xanchor,
-                            &mut data.ten_J[t],
-                            geom_body,
-                            &t1,
-                            &dir1,
-                            1.0 / divisor,
-                        );
-                        accumulate_point_jacobian(
-                            model,
-                            &data.xpos,
-                            &data.xquat,
-                            &data.xaxis,
-                            &data.xanchor,
-                            &mut data.ten_J[t],
-                            body0,
-                            &p0,
-                            &dir1,
-                            -1.0 / divisor,
-                        );
-                    }
+                    add_segment_jacobian(model, data, t, body0, &p0, geom_body, &t1, divisor);
 
                     // Sub-segment 2: t1 → t2 (arc on geom surface)
                     // Both endpoints on geom_body → Jacobian difference is zero.
 
                     // Sub-segment 3: t2 (geom_body) → p1 (body1)
-                    if dist3 > 1e-10 && geom_body != body1 {
-                        let dir3 = d3 / dist3;
-                        accumulate_point_jacobian(
-                            model,
-                            &data.xpos,
-                            &data.xquat,
-                            &data.xaxis,
-                            &data.xanchor,
-                            &mut data.ten_J[t],
-                            body1,
-                            &p1,
-                            &dir3,
-                            1.0 / divisor,
-                        );
-                        accumulate_point_jacobian(
-                            model,
-                            &data.xpos,
-                            &data.xquat,
-                            &data.xaxis,
-                            &data.xanchor,
-                            &mut data.ten_J[t],
-                            geom_body,
-                            &t2,
-                            &dir3,
-                            -1.0 / divisor,
-                        );
-                    }
+                    add_segment_jacobian(model, data, t, geom_body, &t2, body1, &p1, divisor);
                 }
                 WrapResult::NoWrap => {
                     // §40b: store 1 point: site0 only (straight line, no tangent points)
@@ -279,33 +203,7 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                     let diff = p1 - p0;
                     let dist = diff.norm();
                     total_length += dist / divisor;
-                    if dist > 1e-10 && body0 != body1 {
-                        let dir = diff / dist;
-                        accumulate_point_jacobian(
-                            model,
-                            &data.xpos,
-                            &data.xquat,
-                            &data.xaxis,
-                            &data.xanchor,
-                            &mut data.ten_J[t],
-                            body1,
-                            &p1,
-                            &dir,
-                            1.0 / divisor,
-                        );
-                        accumulate_point_jacobian(
-                            model,
-                            &data.xpos,
-                            &data.xquat,
-                            &data.xaxis,
-                            &data.xanchor,
-                            &mut data.ten_J[t],
-                            body0,
-                            &p0,
-                            &dir,
-                            -1.0 / divisor,
-                        );
-                    }
+                    add_segment_jacobian(model, data, t, body0, &p0, body1, &p1, divisor);
                 }
             }
 
@@ -341,79 +239,40 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
     data.ten_length[t] = total_length;
 }
 
-/// Walk the kinematic chain from `body_id` to root, accumulating each joint's
-/// velocity contribution into the tendon Jacobian row `ten_j`.
-///
-/// For each joint on the chain, projects the joint's velocity contribution
-/// through `direction` and scales by `scale`. This is the same kinematic chain
-/// walk as `compute_contact_jacobian`'s `add_body_jacobian` closure, but
-/// operating on a `DVector<f64>` (1×nv) instead of a `DMatrix` row.
-///
-/// Uses body-frame axes (`R*e_i`) for free joint angular DOFs, matching
-/// MuJoCo's `cdof` convention.
-// Spatial tendon segment update takes the full per-segment context (sites, wraps, output buffers).
+/// Add a straight segment's term to tendon `t`'s Jacobian, as MuJoCo 3.5.0's
+/// `mj_tendon` does for consecutive points on different bodies
+/// (`engine_core_smooth.c:1054-1088`): the segment's direction, near point
+/// `p0` (on `b0`) to far point `p1` (on `b1`), normalized as
+/// `mju_normalize3`; the points' Jacobians' difference, far minus near
+/// ([`mj_jac`]), projected on it as `mju_mulMatTVec` projects (a zero
+/// component skipped); added scaled by `1 / divisor`.
+// The segment's ends and the tendon it belongs to.
 #[allow(clippy::too_many_arguments)]
-pub fn accumulate_point_jacobian(
+fn add_segment_jacobian(
     model: &Model,
-    xpos: &[Vector3<f64>],
-    xquat: &[UnitQuaternion<f64>],
-    xaxis: &[Vector3<f64>],
-    xanchor: &[Vector3<f64>],
-    ten_j: &mut DVector<f64>,
-    body_id: usize,
-    point: &Vector3<f64>,
-    direction: &Vector3<f64>,
-    scale: f64,
+    data: &mut Data,
+    t: usize,
+    b0: usize,
+    p0: &Vector3<f64>,
+    b1: usize,
+    p1: &Vector3<f64>,
+    divisor: f64,
 ) {
-    if body_id == 0 {
-        return; // world body has no DOFs
+    if b0 == b1 {
+        return;
     }
-
-    let mut current = body_id;
-    while current != 0 {
-        let jnt_start = model.body_jnt_adr[current];
-        let jnt_end = jnt_start + model.body_jnt_num[current];
-        for jnt_id in jnt_start..jnt_end {
-            let dof = model.jnt_dof_adr[jnt_id];
-            let jnt_body = model.jnt_body[jnt_id];
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    let axis = xaxis[jnt_id];
-                    let jpos = xanchor[jnt_id];
-                    let r = point - jpos;
-                    ten_j[dof] += scale * direction.dot(&axis.cross(&r));
-                }
-                MjJointType::Slide => {
-                    let axis = xaxis[jnt_id];
-                    ten_j[dof] += scale * direction.dot(&axis);
-                }
-                MjJointType::Ball => {
-                    let jpos = xanchor[jnt_id];
-                    let r = point - jpos;
-                    let rot = xquat[jnt_body].to_rotation_matrix();
-                    for i in 0..3 {
-                        let omega = rot * Vector3::ith(i, 1.0);
-                        ten_j[dof + i] += scale * direction.dot(&omega.cross(&r));
-                    }
-                }
-                MjJointType::Free => {
-                    // Translational DOFs: direction projects directly.
-                    ten_j[dof] += scale * direction.x;
-                    ten_j[dof + 1] += scale * direction.y;
-                    ten_j[dof + 2] += scale * direction.z;
-                    // Rotational DOFs: body-frame axes (R*e_i), matching MuJoCo's
-                    // cdof convention.
-                    let jpos = xpos[jnt_body];
-                    let r = point - jpos;
-                    let rot = xquat[jnt_body].to_rotation_matrix();
-                    for i in 0..3 {
-                        let omega = rot * Vector3::ith(i, 1.0);
-                        ten_j[dof + 3 + i] += scale * direction.dot(&omega.cross(&r));
-                    }
-                }
+    let mut dif = [p1.x - p0.x, p1.y - p0.y, p1.z - p0.z];
+    normalize3(&mut dif);
+    let jacdif = mj_jac(model, data, b1, p1).0 - mj_jac(model, data, b0, p0).0;
+    let scl = 1.0 / divisor;
+    for i in 0..model.nv {
+        let mut tmp = 0.0;
+        for r in 0..3 {
+            if dif[r] != 0.0 {
+                tmp += jacdif[(r, i)] * dif[r];
             }
         }
-        current = model.body_parent[current];
+        data.ten_J[t][i] += tmp * scl;
     }
 }
 

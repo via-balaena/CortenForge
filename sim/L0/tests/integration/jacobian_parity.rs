@@ -229,3 +229,26 @@ fn equality_rows_match_mujoco_3_5_0_bit_for_bit() {
     assert_bits("efc_J", &row_major(&data.efc_J), &floats(&case["efc_J"]));
     assert_bits("efc_pos", &data.efc_pos, &floats(&case["efc_pos"]));
 }
+
+/// Spatial tendons through sites on a hinged arm, a box on a ball joint
+/// below it and a free sphere, one with a pulley: `ten_J` bit for bit with
+/// MuJoCo's (each segment between different bodies adds its Jacobians'
+/// difference projected on its normalized direction, scaled by 1/divisor).
+#[test]
+fn spatial_tendon_jacobians_match_mujoco_3_5_0_bit_for_bit() {
+    let case = &golden()["cases"]["tendons"];
+    let (_, data) = at_state(case);
+    let sites: Vec<f64> = data
+        .site_xpos
+        .iter()
+        .flat_map(|p| [p.x, p.y, p.z])
+        .collect();
+    assert_bits("site_xpos", &sites, &floats(&case["site_xpos"]));
+    assert_bits("ten_length", &data.ten_length, &floats(&case["ten_length"]));
+    let ten_j: Vec<f64> = data
+        .ten_J
+        .iter()
+        .flat_map(|row| row.iter().copied())
+        .collect();
+    assert_bits("ten_J", &ten_j, &floats(&case["ten_J"]));
+}

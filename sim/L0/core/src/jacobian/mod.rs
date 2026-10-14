@@ -214,7 +214,6 @@ pub fn mj_apply_ft(
 mod jac_site_tests {
     use super::*;
     use crate::forward::mj_fwd_position;
-    use crate::tendon::accumulate_point_jacobian;
     use crate::types::{GeomType, Model};
     use approx::assert_relative_eq;
     use nalgebra::DVector;
@@ -307,10 +306,10 @@ mod jac_site_tests {
         (model, data)
     }
 
-    /// mj_jac_site translational column for hinge must agree with
-    /// accumulate_point_jacobian for the same direction projection.
+    /// A hinge's site Jacobian: its translational column is the world axis ×
+    /// (site − anchor), its rotational column the world axis.
     #[test]
-    fn jac_site_agrees_with_accumulate_hinge() {
+    fn jac_site_hinge_is_axis_cross_lever() {
         let (model, data) = make_single_joint_site_model(
             MjJointType::Hinge,
             Vector3::y(),
@@ -320,26 +319,9 @@ mod jac_site_tests {
         );
 
         let (jac_t, jac_r) = mj_jac_site(&model, &data, 0);
-
-        // For each cardinal direction, accumulate_point_jacobian projecting
-        // onto that direction should agree with the corresponding row of jac_t.
-        for dir_idx in 0..3 {
-            let direction = Vector3::ith(dir_idx, 1.0);
-            let mut ten_j = DVector::zeros(model.nv);
-            accumulate_point_jacobian(
-                &model,
-                &data.xpos,
-                &data.xquat,
-                &data.xaxis,
-                &data.xanchor,
-                &mut ten_j,
-                model.site_body[0],
-                &data.site_xpos[0],
-                &direction,
-                1.0,
-            );
-
-            assert_relative_eq!(jac_t[(dir_idx, 0)], ten_j[0], epsilon = 1e-12);
+        let lever = data.xaxis[0].cross(&(data.site_xpos[0] - data.xanchor[0]));
+        for k in 0..3 {
+            assert_relative_eq!(jac_t[(k, 0)], lever[k], epsilon = 1e-12);
         }
 
         // Rotational Jacobian for hinge: should be the world-frame joint axis.
@@ -395,59 +377,6 @@ mod jac_site_tests {
                 assert_relative_eq!(jac_pos[(i, k)], fd_p[i], epsilon = 1e-6);
                 assert_relative_eq!(jac_rot[(i, k)], fd_r[i], epsilon = 1e-6);
             }
-        }
-    }
-
-    /// The tendon path's `accumulate_point_jacobian` must agree with `mj_jac`
-    /// (FD-verified above) on a MULTI-JOINT body: `accumulate` projects the
-    /// point Jacobian onto a direction, so `accumulate[k] == direction·jacp[:,k]`.
-    /// Guards the tendon subsystem reads the same partial-frame source.
-    #[test]
-    fn accumulate_agrees_with_mj_jac_multi_joint() {
-        use crate::test_fixtures::builders::{add_body, add_hinge_joint, finalize};
-
-        let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
-        let ax1 = Vector3::new(0.2, 1.0, 0.1).normalize();
-        let mut m = Model::empty();
-        let b = add_body(
-            &mut m,
-            0,
-            "l0",
-            Vector3::zeros(),
-            1.0,
-            Vector3::new(0.02, 0.03, 0.04),
-            Vector3::new(0.01, -0.02, -0.15),
-        );
-        add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
-        add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
-        finalize(&mut m);
-
-        let mut data = m.make_data();
-        data.qpos.as_mut_slice().copy_from_slice(&[0.3, -0.35]);
-        mj_fwd_position(&m, &mut data);
-
-        let point = data.xpos[b] + data.xquat[b] * Vector3::new(0.1, -0.05, -0.2);
-        let (jacp, _) = mj_jac(&m, &data, b, &point);
-        let direction = Vector3::new(0.4, -0.7, 0.6).normalize();
-
-        let mut ten_j = DVector::zeros(m.nv);
-        accumulate_point_jacobian(
-            &m,
-            &data.xpos,
-            &data.xquat,
-            &data.xaxis,
-            &data.xanchor,
-            &mut ten_j,
-            b,
-            &point,
-            &direction,
-            1.0,
-        );
-        for k in 0..2 {
-            let expected = jacp[(0, k)] * direction.x
-                + jacp[(1, k)] * direction.y
-                + jacp[(2, k)] * direction.z;
-            assert_relative_eq!(ten_j[k], expected, epsilon = 1e-12);
         }
     }
 
