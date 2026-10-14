@@ -348,6 +348,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Flips:** without the rewrites, `flex_unified::ac5_edge_constraint_stiffness`, `ac20_bending_stability_clamp`, `flex_flex_collision::t09_full_forward_step_no_panic` (A13 §3.6, `ISO_FLEX=2`).
 - **Census:** on L10's rewritten flex docs, not measured. "Item 3's MJCF side … was not prototyped" (A13 §7).
 - **Breaking:** behaviour: a flex no equality names has no edge rows. The Model changes are the physics commit's.
+- **Also (ledger-L126):** refuse an active flex equality with sleep enabled, as MuJoCo's position stage does (`mj_wakeEquality`, `engine_sleep.c:401-403`). P36a left it out: its builder gives every flex an equality, so refusing would refuse documents MuJoCo runs (`sleep_parity::static_body_is_not_a_tree`'s flex case, measured).
 
 ### L32 · A9 F3 · `feat(sim-mjcf): flex elastic2d — bending only when asked, as MuJoCo`
 - **Closes:** A9 item 2b; DT-86 rows; U12 (stated limitation).
