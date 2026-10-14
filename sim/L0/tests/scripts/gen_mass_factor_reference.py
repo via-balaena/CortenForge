@@ -18,9 +18,12 @@ every row (`mj_solveLD`, `:2131-2224`). Euler with dof damping factors
 
 - chain: a hinge-hinge-ball chain with a hinge off its root, no damping:
   after mj_forward at a moved state, `d.M` and the factor `d.qLD` and
-  `d.qLDiagInv` made of it, and `mj_solveM` of a vector `y`. sim-core's
-  mass matrix rounds otherwise than MuJoCo's here, so the test factors
-  MuJoCo's.
+  `d.qLDiagInv` made of it, and `mj_solveM` of a vector `y` and of a vector
+  `y2`, the first of a seeded sequence whose solve rounds otherwise when a
+  row's sum is taken left to right instead of in `mju_dotSparse`'s order (the
+  generator checks a Python replica of `mj_solveLD` against MuJoCo's on each).
+  sim-core's mass matrix rounds otherwise than MuJoCo's here, so the test
+  factors MuJoCo's.
 - eulerdamp: the chain with dof damping, under Euler: `d.qH` and
   `d.qHDiagInv` after the first step, and qpos and qvel after steps 1, 10
   and 100.
@@ -30,7 +33,9 @@ every row (`mj_solveLD`, `:2131-2224`). Euler with dof damping factors
 - two_slides: a simple body with two slides along one axis and one across
   it, under Euler. MuJoCo stores the body's block of the mass matrix as its
   diagonal only, though the two slides couple: after mj_forward, `d.M`,
-  `d.qLD`, `d.qLDiagInv` and `d.qacc`; then qvel after steps 1 and 10.
+  `d.qLD`, `d.qLDiagInv`, `d.qacc` and the full `d.qM` (`mj_fullM`); then
+  qvel after steps 1 and 10; and with an applied force, `mj_inverse`'s
+  `qfrc_inverse` after `mj_forward`.
 - sleeping: two double pendulums, one asleep from the start
   (`sleep="init"`), under Euler: after 10 steps, `d.M` and `d.qLD` and
   `d.qLDiagInv`, whose awake rows are the factor of that `d.M` and whose
@@ -158,8 +163,63 @@ def chain():
     y = np.array([0.7, -1.3, 0.4, 2.1, -0.9, 1.6])
     x = np.zeros(m.nv)
     mujoco.mj_solveM(m, d, x.reshape(1, -1), y.reshape(1, -1))
+    y2, x2 = summation_order_vector(m, d)
     return {"xml": xml, "qpos": qpos, "qvel": qvel, "M": floats(d.M), "qLD": floats(d.qLD),
-            "qLDiagInv": floats(d.qLDiagInv), "y": floats(y), "x": floats(x)}
+            "qLDiagInv": floats(d.qLDiagInv), "y": floats(y), "x": floats(x),
+            "y2": floats(y2), "x2": floats(x2)}
+
+
+def solve_ld(m, d, y, dot):
+    """mj_solveLD on d.qLD in Python, each row's sum by `dot`."""
+    adr, nnz, col = list(m.M_rowadr), list(m.M_rownnz), list(m.M_colind)
+    qld, inv, x = list(d.qLD), list(d.qLDiagInv), list(y)
+    for i in reversed(range(m.nv)):
+        if nnz[i] == 1 or x[i] == 0.0:
+            continue
+        for k in range(adr[i], adr[i] + nnz[i] - 1):
+            x[col[k]] -= qld[k] * x[i]
+    for i in range(m.nv):
+        x[i] *= inv[i]
+    for i in range(m.nv):
+        n = nnz[i] - 1
+        if n > 0:
+            x[i] -= dot(qld[adr[i]:adr[i] + n], [x[col[k]] for k in range(adr[i], adr[i] + n)])
+    return x
+
+
+def dot_sparse(a, b):
+    """mju_dotSparse's order: four interleaved sums, (s0+s2)+(s1+s3), then the rest."""
+    s, n, i = [0.0] * 4, len(a), 0
+    while i + 4 <= n:
+        for k in range(4):
+            s[k] += a[i + k] * b[i + k]
+        i += 4
+    r = (s[0] + s[2]) + (s[1] + s[3])
+    for k in range(i, n):
+        r += a[k] * b[k]
+    return r
+
+
+def left_to_right(a, b):
+    r = 0.0
+    for u, v in zip(a, b):
+        r += u * v
+    return r
+
+
+def summation_order_vector(m, d):
+    """A vector whose mj_solveM rounds otherwise when a row's sum is taken left to
+    right: the first of a seeded sequence. The replica must give MuJoCo's x."""
+    rng = np.random.default_rng(3)
+    for _ in range(100):
+        y = rng.uniform(-3.0, 3.0, m.nv)
+        x = np.zeros(m.nv)
+        mujoco.mj_solveM(m, d, x.reshape(1, -1), y.reshape(1, -1))
+        if solve_ld(m, d, y, dot_sparse) != floats(x):
+            sys.exit("chain: the replica of mj_solveLD does not give MuJoCo's x")
+        if solve_ld(m, d, y, left_to_right) != floats(x):
+            return y, x
+    sys.exit("chain: no vector tells the two orders apart")
 
 
 def eulerdamp():
@@ -183,7 +243,16 @@ def two_slides():
     d.qvel[:] = [0.3, -0.2, 0.1]
     qvel = floats(d.qvel)
     case = {"xml": TWO_SLIDES, "qvel": qvel, "forward": forward(m, d)}
+    full = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(m, full, d.qM)
+    case["forward"]["qM"] = floats(full)
     case["traj"] = trajectory(m, d, "two_slides", (1, 10))
+    inv = mujoco.MjData(m)
+    inv.qvel[:] = qvel
+    inv.qfrc_applied[:] = [0.3, -0.1, 0.2]
+    mujoco.mj_forward(m, inv)
+    mujoco.mj_inverse(m, inv)
+    case["inverse"] = {"qfrc_applied": floats(inv.qfrc_applied), "qfrc_inverse": floats(inv.qfrc_inverse)}
     return case
 
 

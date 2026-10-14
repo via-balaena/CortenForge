@@ -191,6 +191,13 @@ pub fn mj_crba(model: &Model, data: &mut Data) {
         // Diagonal: M[i,i] = cdof[i]^T * buf
         data.qM[(dof_i, dof_i)] = cdof[dof_i].dot(&buf);
 
+        // A simple dof's row is its diagonal alone: MuJoCo's mass matrix has
+        // no other entry there (`mj_crb`, `engine_core_smooth.c:1864-1869`),
+        // so two slides of one body on one axis are not coupled.
+        if model.dof_simplenum.get(dof_i).is_some_and(|&n| n > 0) {
+            continue;
+        }
+
         // Walk dof_parent chain for off-diagonal entries.
         // All ancestors are in the same awake tree (per-tree invariant),
         // so no sleep check is needed in the ancestor walk.

@@ -88,8 +88,9 @@ fn set_m(model: &Model, data: &mut Data, m: &[f64]) {
 
 /// MuJoCo's mass matrix of a hinge-hinge-ball chain with a hinge off its
 /// root, factored and solved here: its `qLD`, `qLDiagInv` and `mj_solveM`
-/// bit for bit. (sim-core's own mass matrix of the chain rounds otherwise
-/// than MuJoCo's, so the test factors MuJoCo's.)
+/// bit for bit, of two vectors, the second one whose solve rounds otherwise
+/// when a row's sum is taken left to right. (sim-core's own mass matrix of
+/// the chain rounds otherwise than MuJoCo's, so the test factors MuJoCo's.)
 #[test]
 fn mass_matrix_factor_and_solve_match_mujoco_3_5_0() {
     let case = &golden()["cases"]["chain"];
@@ -103,9 +104,11 @@ fn mass_matrix_factor_and_solve_match_mujoco_3_5_0() {
         &data.qLD_diag_inv,
         &floats(&case["qLDiagInv"]),
     );
-    let mut x = floats(&case["y"]);
-    mj_solve_m(&model, &data, &mut x);
-    assert_bits("chain mj_solveM", &x, &floats(&case["x"]));
+    for (y, want) in [("y", "x"), ("y2", "x2")] {
+        let mut x = floats(&case[y]);
+        mj_solve_m(&model, &data, &mut x);
+        assert_bits(&format!("chain mj_solveM of {y}"), &x, &floats(&case[want]));
+    }
 }
 
 /// With a tree asleep, the factor is made over the awake rows: they become
@@ -198,7 +201,10 @@ fn euler_damping_factor_leaves_the_sleeping_rows_as_mujoco_3_5_0() {
 
 /// A simple body with two slides along one axis: MuJoCo keeps its block of
 /// the mass matrix diagonal, so each slide accelerates under its own mass
-/// and armature (ledger L118).
+/// and armature (ledger L118). The whole `qM` is MuJoCo's (`mj_fullM`), the
+/// two slides uncoupled, so what reads it densely reads MuJoCo's: with an
+/// applied force, `inverse` after `forward` gives MuJoCo's `qfrc_inverse`
+/// bit for bit, the applied force to rounding.
 #[test]
 fn two_slides_on_one_axis_step_as_mujoco_3_5_0() {
     let case = &golden()["cases"]["two_slides"];
@@ -220,6 +226,23 @@ fn two_slides_on_one_axis_step_as_mujoco_3_5_0() {
         "two_slides qacc",
         data.qacc.as_slice(),
         &floats(&want["qacc"]),
+    );
+    assert_bits(
+        "two_slides qM",
+        data.qM.transpose().as_slice(),
+        &floats(&want["qM"]),
+    );
+
+    let inverse = &case["inverse"];
+    let (model, mut data) = start(case);
+    data.qfrc_applied
+        .copy_from_slice(&floats(&inverse["qfrc_applied"]));
+    data.forward(&model).expect("forward");
+    data.inverse(&model);
+    assert_bits(
+        "two_slides qfrc_inverse",
+        data.qfrc_inverse.as_slice(),
+        &floats(&inverse["qfrc_inverse"]),
     );
 
     let (model, mut data) = start(case);

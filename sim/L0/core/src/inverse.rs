@@ -9,6 +9,7 @@
 //!
 //! Matches `mj_inverse()` in `engine_forward.c`.
 
+use crate::dynamics::factor::mj_mul_m;
 use crate::forward::mj_body_accumulators;
 use crate::types::{Data, Model};
 
@@ -45,10 +46,13 @@ impl Data {
         // Compute body-level accumulators (§51)
         mj_body_accumulators(model, self);
 
-        // qfrc_inverse = M * qacc + qfrc_bias - qfrc_passive - qfrc_constraint
-        self.qM.mul_to(&self.qacc, &mut self.qfrc_inverse);
-        self.qfrc_inverse += &self.qfrc_bias;
-        self.qfrc_inverse -= &self.qfrc_passive;
-        self.qfrc_inverse -= &self.qfrc_constraint;
+        // qfrc_inverse = qfrc_bias + (M·qacc − qfrc_passive − qfrc_constraint),
+        // summed as MuJoCo's `mj_inverseSkip` does, `M·qacc` by `mj_mulM`
+        // (`engine_inverse.c:235-241`).
+        let ma = mj_mul_m(model, self, self.qacc.as_slice());
+        for i in 0..model.nv {
+            self.qfrc_inverse[i] =
+                self.qfrc_bias[i] + (ma[i] - self.qfrc_passive[i] - self.qfrc_constraint[i]);
+        }
     }
 }

@@ -33,7 +33,11 @@ so a quaternion joint's position rows are tangents at the next state
   step from the velocity stage (`mj_stepSkip`, `engine_derivative_fd.c:350`),
   whose `mj_implicitSkip` keeps the nominal step's factor (`:140`); the
   generator refuses the case unless that B differs from one whose columns
-  factor (full `mj_step`s) by more than 1e-4.
+  factor (full `mj_step`s) by more than 1e-4. And a simple body with two slides
+  along one axis and one across, each damped, two of them driven by motors, under
+  Euler (centred): MuJoCo's mass matrix leaves the two slides uncoupled (`mj_crb`,
+  a simple dof's row its diagonal alone); the generator refuses the case unless
+  the body is simple and its pattern diagonal.
 - differentiate: a model with a hinge, a slide, a ball and a free joint, and
   pairs of positions: a 1e-12 rad rotation, a rotation past pi between them,
   quaternions not of unit length, and a pair whose free joint moves, at dt
@@ -152,6 +156,22 @@ AFFINE_SITE = """<mujoco model="affine_site">
   </worldbody>
   <actuator>
     <general site="s" gear="1 0.5 0 0 0.2 0" gaintype="affine" gainprm="2 0 -3"/>
+  </actuator>
+</mujoco>"""
+
+TWO_SLIDES_DAMPED = """<mujoco model="two_slides_damped">
+  <option timestep="0.002" integrator="Euler" gravity="2 0 -9.81"/>
+  <worldbody>
+    <body name="slider" pos="0 0 1">
+      <joint name="s0" type="slide" axis="1 0 0" armature="0.1" damping="0.5"/>
+      <joint name="s1" type="slide" axis="1 0 0" armature="0.2" damping="0.3"/>
+      <joint name="s2" type="slide" axis="0 0 1" damping="0.4"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="s0" gear="1"/>
+    <motor joint="s2" gear="1"/>
   </actuator>
 </mujoco>"""
 
@@ -312,6 +332,13 @@ def quat_integrate():
     return out
 
 
+def two_slides_damped():
+    m = mujoco.MjModel.from_xml_string(TWO_SLIDES_DAMPED)
+    if m.body_simple[1] != 2 or list(m.M_rownnz) != [1, 1, 1]:
+        sys.exit(f"two_slides_damped: {list(m.body_simple)} {list(m.M_rownnz)}")
+    return actuated(TWO_SLIDES_DAMPED, [0.0, 0.0, 0.0], [0.3, -0.2, 0.1], [], [0.4, -0.3], True)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -341,6 +368,7 @@ def main():
             "motor_free_centred": actuated(MOTOR_FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],
                                            [0.2, -0.1, 0.3, 0.9, -0.6, 0.7], [], [0.0], True),
             **{f"affine_site_{i}": affine_site(i) for i in ("implicit", "implicitfast")},
+            "two_slides_damped": two_slides_damped(),
         },
         "differentiate": differentiate(),
         "quat_integrate": quat_integrate(),
