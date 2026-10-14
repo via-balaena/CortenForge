@@ -35,7 +35,7 @@ slightest perturbation causes the upper ball to slide off. In simulation, IEEE
 
 The contact rows are MuJoCo's (`mj_contactJacobian`), with no step that
 projects a contact's lever arm onto its normal; an earlier version had one, and
-held the stack indefinitely. The SDF collision still zeroes sub-physical
+held the stack. The SDF collision still zeroes sub-physical
 lateral components of the separation direction (`sdf/operations.rs`); that
 alone does not hold the stack.
 

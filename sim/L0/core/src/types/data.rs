@@ -229,9 +229,8 @@ pub struct Data {
     pub xfrc_applied: Vec<BodyWrench>,
 
     // ==================== Mass Matrix ====================
-    /// Joint-space inertia matrix (`nv` x `nv`).
-    /// For small systems (nv <= 32), dense storage is used.
-    /// For large systems, only lower triangle is filled (sparse via qLD).
+    /// Joint-space inertia matrix (`nv` x `nv`), both triangles filled, on
+    /// MuJoCo's pattern: a simple dof's row holds its diagonal alone.
     pub qM: DMatrix<f64>,
 
     // ==================== The mass matrix's factor ====================

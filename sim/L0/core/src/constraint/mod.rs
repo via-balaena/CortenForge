@@ -124,7 +124,7 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
 /// matrix replaces `data.qM` in Newton's, CG's and PGS's computations.
 ///
 /// Uses `accumulate_tendon_kd` for the tendon contribution,
-/// guaranteeing identical mass matrix modification as the non-Newton path
+/// guaranteeing identical mass matrix modification as the path
 /// in `mj_fwd_acceleration_implicit`.
 #[must_use]
 fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
@@ -159,7 +159,7 @@ fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
 /// In ImplicitSpringDamper mode, qfrc_passive excludes spring/damper forces.
 /// This function computes the RHS forces that, together with M_impl in the
 /// Hessian, produce the correct unconstrained acceleration matching the
-/// non-Newton implicit path.
+/// implicit path.
 ///
 /// From the equivalence derivation:
 ///   a = M_impl⁻¹ · (f_ext − D·v − K·(Δq + h·v))

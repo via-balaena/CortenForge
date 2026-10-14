@@ -7,7 +7,7 @@
 //!
 //! # MuJoCo Equivalence
 //!
-//! Matches `mj_inverse()` in `engine_forward.c`.
+//! Matches `mj_inverse()`.
 
 use crate::dynamics::factor::mj_mul_m;
 use crate::forward::mj_body_accumulators;

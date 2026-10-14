@@ -74,7 +74,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Standalone Newton solver (`sim-constraint/src/newton.rs` — deleted; replaced by the pipeline-native primal solver, `constraint/solver/primal.rs`)
 - Standalone constraint island discovery (`sim-constraint/src/islands.rs` — deleted; replaced by pipeline-native `mj_island()` DFS flood-fill in `island/`)
 - Standalone sparse Jacobian operations (`sim-constraint/src/sparse.rs` — deleted)
-- Standalone PGS (`sim-constraint/src/pgs.rs` — deleted; pipeline PGS in `constraint/solve.rs` is MuJoCo-aligned pure Gauss-Seidel)
+- Standalone PGS (`sim-constraint/src/pgs.rs` — deleted)
 - Standalone island-parallel constraint solving (`sim-constraint/src/parallel.rs` — deleted; the solver is global)
 
 ### ✅ Recently Completed (January–February 2026)
@@ -98,7 +98,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Analytical derivatives (complete) | Part 1: `mjd_transition_fd()`, `mjd_smooth_vel()`, `mjd_passive_vel`, `mjd_actuator_vel`, `mjd_rne_vel`. Part 2: `mjd_quat_integrate()`, `mjd_transition_hybrid()`, `mjd_transition()` dispatch, `validate_analytical_vs_fd()`, `fd_convergence_check()` — 30+ tests, all passing | [future_work_4 §12](./todo/future_work_4.md) |
 | Sleeping / Body Deactivation | Tree-based sleeping (Phases A/B/C): islands from the constraint rows, selective CRBA, partial LDL, awake-index iteration; global constraint solve | [future_work_5 §16](./todo/future_work_5.md) |
 | `<include>` + `<compiler>` element | Pre-parse XML expansion (recursive, duplicate detection); `<compiler>` with angle/eulerseq/meshdir/texturedir/assetdir/autolimits/inertiafromgeom/boundmass/boundinertia/balanceinertia/settotalmass/strippath/discardvisual/fusestatic/coordinate/exactmeshinertia; section merging for duplicate top-level elements; URDF converter defaults; exact mesh inertia via signed tetrahedron decomposition (Mirtich 1996), full 3×3 tensor accumulation with geom orientation + eigendecomposition | [§13](#13-model-format), [future_work_6 §18](./todo/future_work_6.md), [future_work_7 §23](./todo/future_work_7.md) |
-| Flex Solver Unification (§6B) | Unified flex architecture: vertex DOFs in `qpos`/`qvel`, flex edge rows (a flex equality's), passive bending forces, `mj_collision_flex()`, `mj_crba_flex()`, MJCF `<flex>`/`<flexcomp>` parsing — 21 acceptance tests. Deleted `sim-deformable` crate. | [§11](#11-deformables-flex), [future_work_6b](./todo/future_work_6b_precursor_to_7.md) |
+| Flex Solver Unification (§6B) | Unified flex architecture: vertex DOFs in `qpos`/`qvel`, flex edge rows (a flex equality's), passive bending forces, `mj_collision_flex()`, MJCF `<flex>`/`<flexcomp>` parsing — 21 acceptance tests. Deleted `sim-deformable` crate. | [§11](#11-deformables-flex), [future_work_6b](./todo/future_work_6b_precursor_to_7.md) |
 | Contact Parameters (#24–27) | Unified `contact_param()` with element-wise max friction (#24), `geom/@priority` gating (#25), `solmix`-weighted solver param mixing (#26), margin/gap runtime effect — broadphase AABB expansion, narrow-phase activation thresholds, `includemargin` in constraint assembly, sign convention fix (`pos = -depth`) (#27) | [§3](#3-contact-physics), [future_work_7 §24–27](./todo/future_work_7.md) |
 | Body-transmission actuators (§36) | `ActuatorTransmission::Body` for adhesion: `compute_contact_normal_jacobian()` (J(b2)−J(b1)), `mj_transmission_body()` (negated average moment arms), `mj_transmission_body_dispatch()`, model builder body name resolution, derivatives merged with Site arm — 13 integration tests (AC1–AC14) | [§7](#7-actuators), [future_work_9 §36](./todo/future_work_9.md) |
 | Ball joint limits (§38) | Rotation cone limit via quaternion logarithm map: `quat::normalize4()` (MuJoCo `mju_normalize4`), `ball_limit_axis_angle()` (MuJoCo `mju_quat2Vel` + `mju_normalize3`), `dist = max(range) - angle`, Jacobian `-sign(θ)·axis` on 3 angular DOFs, single constraint row per ball joint; free joint limits silently ignored — 30 tests (8 unit + 22 integration) | [future_work_10 §38](./todo/future_work_10.md) |
@@ -286,10 +286,7 @@ MuJoCo uses contact dimensionality (`condim`) to specify which friction componen
 - **condim 6**: condim 4 + 2D rolling friction (rolling resistance) — angular Jacobian rows 4-5
 
 **Implemented (February 2026):**
-- `compute_efc_offsets()` — Per-contact row offsets for variable-dimension system
 - `compute_contact_jacobian()` — Returns `dim×nv` matrix with angular rows for condim ≥ 4
-- `apply_contact_torque()` — Maps world torque to generalized forces via angular Jacobian transpose
-- `compute_block_jacobi_preconditioner()` — Variable `dim×dim` blocks
 - PGS and CG solvers updated for variable-dimension indexing
 
 **Torsional Friction (condim ≥ 4):**

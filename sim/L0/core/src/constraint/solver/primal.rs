@@ -3,8 +3,8 @@
 //! (`warmstart`, `engine_forward.c:611-687`), its constraint update
 //! (`mj_constraintUpdate_impl`, `engine_core_constraint.c:2394-2587`), its line
 //! search (`PrimalPrepare`, `PrimalEval`, `updateBracket`, `PrimalSearch`,
-//! `engine_solver.c:1075-1512`) and Newton's Hessian (`MakeHessian`,
-//! `FactorizeHessian`, `HessianCone`, `HessianIncremental`, `:1516-1808`),
+//! `engine_solver.c:1075-1511`) and Newton's Hessian (`MakeHessian`,
+//! `FactorizeHessian`, `HessianCone`, `HessianIncremental`, `:1516-1807`),
 //! operation for operation on MuJoCo's dense path. It solves over every
 //! constraint row at once (MuJoCo's monolithic case, `island` −1).
 //!
@@ -12,7 +12,7 @@
 //! `engine_core_util.c:32-39`) Newton factors its Hessian with
 //! [`SparseHessian`], made anew at every iteration where MuJoCo updates its
 //! sparse factor: the same matrix, rounded otherwise. There MuJoCo also takes
-//! `J·v`, `J'·f` and `J·aref` as sparse products, which sim-core takes dense,
+//! `J·v` and `J'·f` as sparse products, which sim-core takes dense,
 //! so CG as well rounds otherwise.
 
 use nalgebra::{DMatrix, DVector};
@@ -57,7 +57,7 @@ impl PrimalMass<'_> {
 
     /// Add `M` to the lower triangle and the diagonal of the dense row-major
     /// `nv × nv` matrix `h`; on the tree, as `mju_addToSymSparse` adds
-    /// (`engine_util_sparse.c:217-236`, `flg_upper` 0).
+    /// (`engine_util_sparse.c:217-235`, `flg_upper` 0).
     fn add_to_lower(&self, model: &Model, data: &Data, h: &mut [f64]) {
         let nv = model.nv;
         match self {
@@ -381,7 +381,7 @@ impl Primal {
     }
 
     /// `efc_b = J·qacc_smooth − aref`, as `mj_fwdConstraint` makes it
-    /// (`engine_forward.c:755-757`).
+    /// (`engine_forward.c:755-756`).
     fn efc_b(&self) -> Vec<f64> {
         let mut b = vec![0.0; self.nefc];
         mul_mat_vec(&self.j, &self.qacc_smooth, &mut b, self.nv);
@@ -477,7 +477,7 @@ impl Primal {
 
     /// The Gauss term's and each row's quadratic in the step along `search`,
     /// and each elliptic contact's cone terms (`PrimalPrepare`,
-    /// `engine_solver.c:1075-1148`). A contact's cone terms go in the slots
+    /// `engine_solver.c:1075-1147`). A contact's cone terms go in the slots
     /// of its second and third rows.
     // Single-letter names (`d`, `q`, `u`, `v`) are MuJoCo's own.
     #[allow(clippy::many_single_char_names)]
@@ -618,7 +618,7 @@ impl Primal {
 
     /// Replace `p` by the candidate on its side of the minimum that comes
     /// closest, and evaluate the Newton step from it into `next`
-    /// (`updateBracket`, `engine_solver.c:1298-1325`). Returns whether `p`
+    /// (`updateBracket`, `engine_solver.c:1298-1324`). Returns whether `p`
     /// changed.
     fn update_bracket(&mut self, p: &mut Pnt, candidates: &[Pnt; 3], next: &mut Pnt) -> bool {
         let mut updated = false;
@@ -636,7 +636,7 @@ impl Primal {
         updated
     }
 
-    /// The step along `search` (`PrimalSearch`, `engine_solver.c:1328-1512`):
+    /// The step along `search` (`PrimalSearch`, `engine_solver.c:1328-1511`):
     /// a Newton step from 0, Newton steps on one side until the slope
     /// changes sign, then a bracketed search over three candidates; the
     /// first point whose slope is under the scaled tolerance, else the best
@@ -842,7 +842,7 @@ impl Primal {
     /// Update the factor for the rows whose quadratic state changed: a
     /// rank-one update with `√D·J` for each row that entered it, a downdate
     /// for each that left; made anew when an update loses rank; then the
-    /// cones (`HessianIncremental`, `engine_solver.c:1746-1808`). Sparse:
+    /// cones (`HessianIncremental`, `engine_solver.c:1746-1807`). Sparse:
     /// made anew, with MuJoCo's update count.
     // Rows are read across parallel arrays at one index, as MuJoCo's loop does.
     #[allow(clippy::needless_range_loop)]

@@ -3,7 +3,7 @@
 //! [`SparseHessian`] holds `H = M + J'·D·J` plus the cone contacts'
 //! contributions in CSC storage, factored as `L·D·L'`. MuJoCo factors and
 //! updates its own sparse Hessian (`MakeHessian`, `FactorizeHessian`,
-//! `HessianIncremental`, `engine_solver.c:1516-1808`); this one is made anew
+//! `HessianIncremental`, `engine_solver.c:1516-1807`); this one is made anew
 //! at each solver iteration, the same matrix rounded otherwise.
 
 use crate::constraint::impedance::MJ_MINVAL;
