@@ -175,6 +175,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L10 · M14 part + C7 · `feat(sim-mjcf): <flex body= vertex= element=> with MuJoCo's meaning; in-tree docs declare their vertex bodies` — cross-layer (sim-core: one deletion)
 - **Split from M14** (A4 §9 commit 6 bundles six unrelated forms; each touches different elements). R4's draft.
+- **Also (ledger-L125):** a vertex pinned to a moving body becomes reachable here; its passive flex force then goes to its body as MuJoCo's does (`mj_applyFT`, `engine_passive.c:394-408`), with a must-fail against MuJoCo.
 - **Also** (ledger-L63): in 73 flex docs the per-joint arrays `jnt_name`, `jnt_margin`, `jnt_solref`, `jnt_solimp`, `jnt_group`, `jnt_actgravcomp`, `jnt_user` are empty, and in 77 `body_gravcomp` and `body_user` are short: the flex child form's generated bodies and joints skip those pushes. Run the per-element length check of sim-core's factory test (`factory_models_size_every_per_element_array`) over the loadable census docs; 0 short is the gate.
 - **Closes:** C7 / Q81 (MuJoCo's flex meaning; A4-Q1's "same meaning" is superseded); A6 §1.10 / A20 §1B.3 C4 (`vertex=`/`element=` ignored today); U07 (an empty `element` loads a 1-vertex flex; MuJoCo refuses).
 - **Now.**

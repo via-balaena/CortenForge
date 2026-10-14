@@ -36,8 +36,8 @@ The decision is to fix every census cluster (01-decisions, second round). Each c
 | NEW-PAIRCOUNT (2) | 1 after P45 | `f8879911` | solver termination; agrees with `iterations=1000 tolerance=1e-15` on both sides (A21 §9) | isolate at P45 |
 | Newton (9) | 3 after P34's 6 | `a0ff89f4` | box–plane corners at the late-onset step; agrees with the box–plane rule (A18 §2.5) | P43 |
 | | | `c31a6ac0` | the plane–capsule axis hint (A18 §2.5); not measured with P42 | isolate at P42 |
-| | | `87d99b20` | step 29; no formulation difference found; in MuJoCo itself a 1-ulp change of one `qpos` entry moves the plane contacts by 1.0e-12 (A18 §2.5, Q6) | isolate at P34 |
-| CG (2) | 1 after P34 | `60c23753` | line-search evaluation count; emulating FMA gives MuJoCo's 51, and the trajectory still first differs at step 32 (A18 §3.3, §3.4) | isolate at P34 |
+| | | `87d99b20` | step 29; no formulation difference found; in MuJoCo itself a 1-ulp change of one `qpos` entry moves the plane contacts by 1.0e-12 (A18 §2.5, Q6); after P34 its state first differs at the step-30 checkpoint (`e1:state@30`), not isolated | isolate at P43 |
+| CG (2) | 1 after P34 | `60c23753` | line-search evaluation count; emulating FMA gives MuJoCo's 51, and the trajectory still first differs at step 32 (A18 §3.3, §3.4); P34 ports MuJoCo's line search; the census verdict, before P34 and after, is `e1:t0:con_zero`, a contact at distance zero on one side only (A8 §9 O1, which P43 closes), reported before any later difference | isolate at P43 |
 | ACCEL (8) | 1 after P27's 7 | `809fc2ad` | MuJoCo reads 0 on a world-welded body (A19 §1.4); Q43: keep ours under the wrong-value rule, with its test | P27 (`divergence=` row) |
 | late onset (6) | 1 after P43's 5 | `28695e44` | box–box contact normals differ by 3.0e-3 (A18 §5.4; U17) | isolate at P46 |
 

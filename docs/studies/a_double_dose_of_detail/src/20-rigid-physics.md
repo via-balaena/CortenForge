@@ -499,6 +499,7 @@ Each constraint below is a dependency note from a section; the order above satis
 
 ### P38 · A18 P5 · `fix(sim-core): elliptic friction rows take MuJoCo's impratio and friction-ratio R; diagApprox from R`
 - **Closes:** census doc `2cb92700` (A18 §6.2).
+- **Also:** the primal solver's elliptic μ (`primal.rs`: `constraint_update`, `prepare`, `eval`) is friction[0]; MuJoCo's `con->mu` is friction[0]·√(R[i+1]/R[i]) (`engine_core_constraint.c:1540`), so with impratio in R it changes too (chunk 3c's review, on MuJoCo's own inputs at impratio 10: Newton 6 iterations for MuJoCo's 7).
 - **Must-fail:** `elliptic_friction_rows_as_mujoco`, `diag_approx_as_mujoco` (A18 §10).
 - **Census:** 2 corpus docs change bits (A18 §6.2).
 
@@ -536,6 +537,7 @@ Each constraint below is a dependency note from a section; the order above satis
 ### P43 · A21 R3 (I) + A18 §5 · `fix(sim-core): contacts listed at dist ≤ margin get constraint rows only below margin − gap`
 - **Merged:** A18 §5's box–plane per-corner rule (A21 §8 ports `mjc_PlaneBox` in I; A18 §5.4: the rule "should land with or after L41's zero-distance fix", where L41 is ledger-L41).
 - **Closes:** ledger-L41 (census L41 14 docs, L41list 30, incl. "box–plane corners at dist +0.35") (A16 §2); A8 §9 O1 (zero-distance contacts); A18 §5 late onset.
+- **Also (ledger-L124):** with the excluded contacts listed, port MuJoCo's whole `mjTRN_BODY` case in `mj_transmission_body` (`engine_core_smooth.c:1621-1731`), with a must-fail against MuJoCo.
 - **Must-fail:** `i_sphere_touching_plane`, `i_box_plane_gap`, `i_static_pair` (A21 §8); A18's plane–box test on `830708de` (A18 §10).
 - **Flips:** `cg_solver::test_cg_single_contact_direct` (A21 §8, measured before P34 replaced CG).
 - **Census:** L41list 29/30, L41 3/14, NEW-LATE +3 (A21 §2). On A18's base the box–plane rule alone brought 5 of 6 late-onset docs, `a0ff89f4`, `1a42c10c`, `74908604` to agree; 18 corpus docs change bits (A18 §5.3).
