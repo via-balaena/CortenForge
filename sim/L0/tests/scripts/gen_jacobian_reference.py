@@ -30,6 +30,12 @@ of the Jacobians alone. The cases:
   a vector that is not 0 (so the order of the two additions shows).
 - gravcomp: the fixture with gravity compensation on every body (0.7, 1, 0.4,
   1.3): `qfrc_gravcomp` after mj_forward.
+- contacts: a tilted free box on a plane (condim 3), and a hinged arm whose
+  capsule (condim 6) and the sphere on a ball joint below it (condim 4)
+  touch the plane, with an elliptic cone, so that a contact's `efc_J` rows
+  are its Jacobian's rows (`mj_contactJacobian` and `mj_instantiateContact`,
+  `engine_core_constraint.c:907-1087`): for each contact, its geoms,
+  position, frame and dimension, and those rows.
 """
 import json
 import os
@@ -73,6 +79,26 @@ OFFSET = np.array([0.03, -0.02, 0.05])
 FORCE = np.array([1.3, -0.7, 2.1])
 TORQUE = np.array([0.4, 0.9, -0.6])
 QFRC0 = np.array([0.37, -1.21, 0.0043, 2.9, -0.61, 1.7e-3, 0.88, -3.1, 0.25, 1.9, -0.47, 0.031])
+
+
+CONTACTS = """<mujoco model="contacts">
+  <option cone="elliptic"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="2 2 0.1"/>
+    <body name="box" pos="0 0 0.09" quat="0.98 0.1 0.15 0.05">
+      <freejoint/>
+      <geom type="box" size="0.1 0.07 0.05" mass="1"/>
+    </body>
+    <body name="arm" pos="0.6 0 0.4">
+      <joint type="hinge" axis="0 1 0" pos="0 0 0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 -0.36" size="0.04" condim="6" mass="0.5"/>
+      <body name="ball" pos="0.3 0 -0.36">
+        <joint type="ball"/>
+        <geom type="sphere" size="0.06" pos="0.05 0 -0.02" condim="4" mass="0.3"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
 
 
 def floats(a):
@@ -122,11 +148,31 @@ def main():
     gd = moved(gm)
     if not np.any(gd.qfrc_gravcomp):
         sys.exit("gravcomp: qfrc_gravcomp is 0")
+    cm = mujoco.MjModel.from_xml_string(CONTACTS)
+    cd = mujoco.MjData(cm)
+    cd.qpos[7] = 0.15
+    cd.qpos[8:12] = [0.95, 0.1, -0.2, 0.15]
+    cd.qpos[8:12] /= np.linalg.norm(cd.qpos[8:12])
+    mujoco.mj_forward(cm, cd)
+    if mujoco.mj_isSparse(cm):
+        sys.exit("contacts: a sparse Jacobian")
+    efc_j = np.asarray(cd.efc_J).reshape(cd.nefc, cm.nv)
+    contacts = []
+    for i in range(cd.ncon):
+        c = cd.contact[i]
+        a = c.efc_address
+        contacts.append({"geom": [int(c.geom[0]), int(c.geom[1])], "pos": floats(c.pos),
+                         "frame": floats(c.frame), "dim": int(c.dim),
+                         "efc_J": floats(efc_j[a:a + c.dim])})
+    if sorted({c["dim"] for c in contacts}) != [3, 4, 6]:
+        sys.exit(f"contacts: dims {[c['dim'] for c in contacts]}")
     cases = {"jac": {"xml": xml, "model": fields(m), "qpos": floats(d.qpos),
                      "subtree_com": floats(d.subtree_com), "bodies": jac},
              "apply_ft": {"xml": xml, "model": fields(m), "qpos": floats(d.qpos), "bodies": apply_ft},
              "gravcomp": {"xml": gxml, "model": fields(gm), "qpos": floats(gd.qpos),
-                          "qfrc_gravcomp": floats(gd.qfrc_gravcomp)}}
+                          "qfrc_gravcomp": floats(gd.qfrc_gravcomp)},
+             "contacts": {"xml": CONTACTS, "model": fields(cm), "qpos": floats(cd.qpos),
+                          "nv": int(cm.nv), "contacts": contacts}}
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "jacobian.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))

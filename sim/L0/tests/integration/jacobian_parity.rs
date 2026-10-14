@@ -1,6 +1,7 @@
 //! The Jacobians against MuJoCo 3.5.0: `mj_jac` built from MuJoCo's `cdof`
-//! about the subtree centre of mass (`engine_core_util.c:172-220`), and
-//! `mj_applyFT`'s transposes (`engine_support.c:446-501`).
+//! about the subtree centre of mass (`engine_core_util.c:172-220`),
+//! `mj_applyFT`'s transposes (`engine_support.c:446-501`), and a contact's
+//! rows (`mj_contactJacobian`, `engine_core_constraint.c:907-1087`).
 //!
 //! The golden is `assets/golden/jacobian/jacobian.json`, from the unfused
 //! MuJoCo 3.5.0 oracle (`scripts/gen_jacobian_reference.py`, which describes
@@ -8,7 +9,7 @@
 
 use nalgebra::{DVector, Quaternion, UnitQuaternion, Vector3};
 use serde_json::Value;
-use sim_core::{Data, Model, mj_apply_ft, mj_jac};
+use sim_core::{Contact, Data, Model, compute_contact_jacobian, mj_apply_ft, mj_jac};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -150,4 +151,56 @@ fn gravity_compensation_matches_mujoco_3_5_0_bit_for_bit() {
         data.qfrc_gravcomp.as_slice(),
         &floats(&case["qfrc_gravcomp"]),
     );
+}
+
+/// A contact's Jacobian rows in its frame, for MuJoCo's own contacts (their
+/// geoms, position, frame and dimension written into a sim-core contact):
+/// a free box on a plane (condim 3), a hinged capsule (6) and a sphere on a
+/// ball joint below it (4), each row bit for bit with MuJoCo's `efc_J`
+/// (an elliptic cone, whose rows are the Jacobian's).
+#[test]
+fn contact_jacobians_match_mujoco_3_5_0_bit_for_bit() {
+    let case = &golden()["cases"]["contacts"];
+    let (model, data) = at_state(case);
+    for (i, c) in case["contacts"]
+        .as_array()
+        .expect("contacts")
+        .iter()
+        .enumerate()
+    {
+        let geom: Vec<usize> = c["geom"]
+            .as_array()
+            .expect("geom")
+            .iter()
+            .map(|g| usize::try_from(g.as_u64().expect("geom")).expect("fits"))
+            .collect();
+        let frame = floats(&c["frame"]);
+        let dim = usize::try_from(c["dim"].as_u64().expect("dim")).expect("fits");
+        let contact = Contact {
+            pos: vec3(&c["pos"]),
+            normal: Vector3::from_column_slice(&frame[0..3]),
+            depth: 0.0,
+            geom1: geom[0],
+            geom2: geom[1],
+            friction: 1.0,
+            dim,
+            includemargin: 0.0,
+            mu: [1.0, 1.0, 0.005, 0.0001, 0.0001],
+            solref: [0.02, 1.0],
+            solreffriction: [0.0, 0.0],
+            solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            frame: [
+                Vector3::from_column_slice(&frame[3..6]),
+                Vector3::from_column_slice(&frame[6..9]),
+            ],
+            flex_vertex: None,
+            flex_vertex2: None,
+        };
+        let j = compute_contact_jacobian(&model, &data, &contact);
+        assert_bits(
+            &format!("contact {i} (dim {dim})"),
+            &row_major(&j),
+            &floats(&c["efc_J"]),
+        );
+    }
 }

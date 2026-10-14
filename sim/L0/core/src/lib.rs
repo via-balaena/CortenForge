@@ -277,6 +277,9 @@ pub use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 // Pyramidal force recovery (§32) — extracted to constraint/solver
 pub use constraint::solver::decode_pyramid;
 
+// A contact's Jacobian rows in its frame (MuJoCo's mj_contactJacobian)
+pub use constraint::jacobian::compute_contact_jacobian;
+
 pub use jacobian::{
     // Utility functions for position/velocity differentiation
     mj_apply_ft,
