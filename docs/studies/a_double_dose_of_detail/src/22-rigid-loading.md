@@ -280,6 +280,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** mjcf-H3; ball-then-slide refused (01-decisions consequences). **Implements:** A5 §3.3 (`check_joint_layout` before `build()`).
 - **Must-fail:** the 12 `Err` cases and 5 `Ok` cases of A5 §3.3 (main before Rigid: 8 panic, 4 load; since P11 all 12 load, chunk 2b's review).
 - **Flips:** none (A5 §3.3). The sim-core side (C8) is Rigid-physics' (20-rigid-physics.md).
+- **Also (ledger-L136):** the refusal's row in the divergences table (`sim/docs/MUJOCO_CONFORMANCE.md`): MuJoCo 3.5.0 loads a ball followed by a slide.
 
 ### L20 · M17 + A14 + A19 · `feat(sim-mjcf): joint axis too small is an error; ball and free axes are (0,0,1)`
 - **Merged:** A14 §5's M17 addition and A19 §6's builder row — force ball/free `jnt_axis = (0,0,1)` before the "axis too small" check.
@@ -330,6 +331,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 ### L28 · M24 · `fix(sim-mjcf): timestep > 1 loads`
 - **Closes:** P-L24, sim-mjcf half (drop the `> 1` rule; keep ≤ 0 / non-finite as stricter).
 - **Must-fail:** `timestep="1.5"` loads (A5 §3.9). **Flips:** `validation.rs:862-867`.
+- **Also (ledger-L131):** `tolerance="0"` and `iterations="0"` load, as MuJoCo's do; the option checks refuse them today. A must-fail against MuJoCo.
 
 ### L29 · A9 F1 · `fix(sim-mjcf): dim-3 flex elements oriented as MuJoCo`
 - **Closes:** the known divergence "dim-3 tet re-orientation" (01-decisions).
