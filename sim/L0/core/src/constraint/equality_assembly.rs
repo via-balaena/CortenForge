@@ -14,7 +14,7 @@ use crate::constraint::impedance::{MJ_MINVAL, compute_diag_approx_bodyweight};
 use crate::linalg::mju_norm;
 use crate::types::{ConstraintType, Data, EqualityType, Model};
 
-use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp};
+use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp, jacobian_rows_empty};
 
 /// Assemble equality constraint rows (Phase 3a) and flex edge-length constraints (Phase 3a').
 ///
@@ -44,6 +44,12 @@ pub(super) fn assemble_equality_rows(
             EqualityType::Distance => extract_distance_jacobian(model, data, eq_id),
             EqualityType::Tendon => extract_tendon_equality_jacobian(model, data, eq_id),
         };
+
+        // All rows empty (two bodies without dofs, say): no rows, as MuJoCo's
+        // `mj_addConstraint`.
+        if rows.j_rows.iter().all(|&x| x == 0.0) {
+            continue;
+        }
 
         let sr = model.eq_solref[eq_id];
         let si = model.eq_solimp[eq_id];
@@ -100,6 +106,10 @@ pub(super) fn assemble_equality_rows(
         for j in 0..rownnz {
             let col = model.flexedge_J_colind[rowadr + j];
             data.efc_J[(*row, col)] = data.flexedge_J[rowadr + j];
+        }
+        // An edge between two vertices without dofs has an empty row.
+        if jacobian_rows_empty(data, *row, 1) {
+            continue;
         }
 
         // Velocity error: read from pre-computed Data field

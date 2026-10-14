@@ -171,6 +171,10 @@ pub fn finalize_constraint_row_imp(
 /// 5. Tendon limits (potentially active only)
 /// 6. Contacts
 ///
+/// A constraint other than a contact whose Jacobian rows are all zero adds no
+/// rows (MuJoCo's dense `mj_addConstraint`, `engine_core_constraint.c:236-327`):
+/// the counting pass counts it, and the arrays are cut to the rows made.
+///
 /// `qacc_smooth` is the unconstrained acceleration (M⁻¹ · qfrc_smooth), needed for efc_b.
 pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DVector<f64>) {
     let nv = model.nv;
@@ -376,6 +380,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             for col in 0..nv {
                 data.efc_J[(row, col)] = data.ten_J[t][col];
             }
+            if jacobian_rows_empty(data, row, 1) {
+                continue;
+            }
             let vel = data.ten_velocity[t];
             let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
             finalize_constraint_row(
@@ -528,6 +535,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 for col in 0..nv {
                     data.efc_J[(row, col)] = data.ten_J[t][col];
                 }
+            }
+            if dist_lower < margin && !jacobian_rows_empty(data, row, 1) {
                 finalize_constraint_row(
                     model,
                     data,
@@ -554,6 +563,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 for col in 0..nv {
                     data.efc_J[(row, col)] = -data.ten_J[t][col];
                 }
+            }
+            if dist_upper < margin && !jacobian_rows_empty(data, row, 1) {
                 finalize_constraint_row(
                     model,
                     data,
@@ -587,7 +598,12 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     };
     let _ = pyramidal_ranges; // suppress unused warning when contacts disabled
 
-    debug_assert_eq!(row, nefc, "Row count mismatch in constraint assembly");
+    // The count includes constraints whose rows turned out empty.
+    debug_assert!(row <= nefc, "Row count mismatch in constraint assembly");
+    if row < nefc {
+        truncate_rows(data, row);
+    }
+    let nefc = row;
 
     // === Phase 4: Count ne/nf for solver dispatch (§29.4) ===
     // Ordering: [0..ne) = equality+flex, [ne..ne+nf) = friction, [ne+nf..nefc) = limits+contacts
@@ -621,6 +637,24 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     );
 
     data.efc_cost = 0.0;
+}
+
+/// Whether the `size` rows of `efc_J` from `row` are all zero: MuJoCo's empty
+/// guard (`mj_addConstraint`, `engine_core_constraint.c:254-262`), under which
+/// a constraint other than a contact adds no rows.
+pub(super) fn jacobian_rows_empty(data: &Data, row: usize, size: usize) -> bool {
+    (row..row + size).all(|r| data.efc_J.row(r).iter().all(|&x| x == 0.0))
+}
+
+/// Cut the arrays the counting pass sized to the `nefc` rows made.
+fn truncate_rows(data: &mut Data, nefc: usize) {
+    data.efc_J = data.efc_J.rows(0, nefc).into_owned();
+    data.efc_vel = data.efc_vel.rows(0, nefc).into_owned();
+    data.efc_aref = data.efc_aref.rows(0, nefc).into_owned();
+    data.efc_force = data.efc_force.rows(0, nefc).into_owned();
+    data.efc_jar = data.efc_jar.rows(0, nefc).into_owned();
+    data.efc_b = data.efc_b.rows(0, nefc).into_owned();
+    data.efc_state.truncate(nefc);
 }
 
 #[cfg(test)]

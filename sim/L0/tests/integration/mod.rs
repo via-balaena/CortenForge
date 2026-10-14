@@ -217,6 +217,10 @@ pub mod activation_parity;
 /// pattern, Euler's damped factor, a sleeping tree's rows.
 pub mod mass_factor_parity;
 
+/// Constraints without rows against MuJoCo 3.5.0: an all-zero Jacobian adds
+/// none.
+pub mod empty_rows_parity;
+
 /// The Jacobians against MuJoCo 3.5.0: `mj_jac` from MuJoCo's `cdof`,
 /// `mj_applyFT`, gravity compensation.
 pub mod jacobian_parity;
