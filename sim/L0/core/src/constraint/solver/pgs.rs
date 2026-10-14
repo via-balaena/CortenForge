@@ -18,6 +18,7 @@ use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::factor::mj_solve_m;
+use crate::linalg::cholesky_solve_in_place;
 use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
 
 /// Precomputed data for sparse PGS iteration.
@@ -37,12 +38,19 @@ struct SparsePgsData {
     b_eff: Vec<f64>,
 }
 
-/// Prepare sparse PGS data structures.
+/// Prepare sparse PGS data structures. `m_impl_factor` is the Cholesky
+/// factor of the implicit spring-damper integrator's `M_impl`, which then
+/// takes the mass matrix's place.
 ///
 /// Cost: O(nefc × nv²) for the sparse LDL solves + O(nefc × nv) for
 /// diagonal and bias precomputation. Avoids the O(nefc² × nv) cost of
 /// building the full Delassus matrix.
-fn prepare_sparse_pgs(model: &Model, data: &Data, qacc_smooth: &DVector<f64>) -> SparsePgsData {
+fn prepare_sparse_pgs(
+    model: &Model,
+    data: &Data,
+    qacc_smooth: &DVector<f64>,
+    m_impl_factor: Option<&DMatrix<f64>>,
+) -> SparsePgsData {
     let nefc = data.efc_type.len();
     let nv = model.nv;
 
@@ -53,7 +61,10 @@ fn prepare_sparse_pgs(model: &Model, data: &Data, qacc_smooth: &DVector<f64>) ->
         for r in 0..nv {
             buf[r] = data.efc_J[(col, r)];
         }
-        mj_solve_m(model, data, buf.as_mut_slice());
+        match m_impl_factor {
+            Some(factor) => cholesky_solve_in_place(factor, &mut buf),
+            None => mj_solve_m(model, data, buf.as_mut_slice()),
+        }
         for r in 0..nv {
             minv_jt[(r, col)] = buf[r];
         }
@@ -170,6 +181,10 @@ fn compute_ar_block(
 ///
 /// AR subblocks for elliptic contacts are computed on-the-fly from
 /// `J_block × minv_jt_block` (O(dim² × nv) per block).
+///
+/// Under the implicit spring-damper integrator `m_impl_factor` is the
+/// Cholesky factor of `M_impl`, which takes the mass matrix's place, as it
+/// does for Newton and CG.
 // PGS solver inlined as a single function so the elliptic / pyramidal / friction-loss branching and the per-row update loop read end-to-end; single-letter names follow the published PGS notation.
 #[allow(
     clippy::many_single_char_names,
@@ -177,7 +192,7 @@ fn compute_ar_block(
     clippy::suspicious_operation_groupings,
     clippy::too_many_lines
 )]
-pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
+pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&DMatrix<f64>>) {
     let nefc = data.efc_type.len();
     if nefc == 0 {
         return;
@@ -188,7 +203,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
     let qfrc_smooth = data.qfrc_smooth.clone();
 
     // Prepare sparse data structures (O(nefc × nv²) — no nefc×nefc matrix)
-    let sp = prepare_sparse_pgs(model, data, &qacc_smooth);
+    let sp = prepare_sparse_pgs(model, data, &qacc_smooth, m_impl_factor);
 
     // Initialize efc arrays for classification
     data.efc_state.resize(nefc, ConstraintState::Quadratic);
@@ -477,7 +492,8 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
             lineslope: 0.0,
             nactive: 0,
             nchange: 0,
-            nline: 0,
+            neval: 0,
+            nupdate: 0,
         });
 
         iter += 1;

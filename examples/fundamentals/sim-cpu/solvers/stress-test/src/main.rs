@@ -71,7 +71,8 @@ struct SolverResult {
     max_drift_mm: f64,
     max_depth_mm: f64,
     energy_drift_pct: f64,
-    fallback_count: Option<usize>,
+    /// Steps that used the whole iteration budget.
+    capped: usize,
 }
 
 fn run_solver(name: &'static str, mjcf_solver: &str) -> SolverResult {
@@ -93,9 +94,7 @@ fn run_solver(name: &'static str, mjcf_solver: &str) -> SolverResult {
     // Energy at settled state (post-transient baseline)
     let mut energy_settled: Option<f64> = None;
 
-    // Newton fallback tracking
-    let track_fallback = mjcf_solver == "Newton";
-    let mut fallback_count: usize = 0;
+    let mut capped: usize = 0;
 
     for step in 0..STEPS {
         data.step(&model).expect("step should succeed");
@@ -131,9 +130,8 @@ fn run_solver(name: &'static str, mjcf_solver: &str) -> SolverResult {
             }
         }
 
-        // Newton fallback detection
-        if track_fallback && !data.newton_solved {
-            fallback_count += 1;
+        if data.solver_niter >= model.solver_iterations {
+            capped += 1;
         }
     }
 
@@ -152,11 +150,7 @@ fn run_solver(name: &'static str, mjcf_solver: &str) -> SolverResult {
         max_drift_mm: max_drift * 1000.0,
         max_depth_mm: max_depth * 1000.0,
         energy_drift_pct,
-        fallback_count: if track_fallback {
-            Some(fallback_count)
-        } else {
-            None
-        },
+        capped,
     }
 }
 
@@ -173,13 +167,11 @@ fn main() {
     println!("=== Solver Stress Test (t = {SIM_TIME}s, dt = {DT}) ===\n");
     println!(
         "  {:<12} {:>10} {:>10} {:>12} {:>14} {:>12} {:>10}",
-        "Solver", "Avg iter", "Max iter", "Drift(mm)", "Max depth(mm)", "E drift(%)", "Fallback"
+        "Solver", "Avg iter", "Max iter", "Drift(mm)", "Max depth(mm)", "E drift(%)", "At cap"
     );
     println!("  {}", "\u{2500}".repeat(82));
     for r in &results {
-        let fallback = r
-            .fallback_count
-            .map_or_else(|| "n/a".to_string(), |n| format!("{n}/{STEPS}"));
+        let capped = format!("{}/{STEPS}", r.capped);
         println!(
             "  {:<12} {:>10.1} {:>10} {:>12.3} {:>14.4} {:>+12.4}% {:>10}",
             r.name,
@@ -188,7 +180,7 @@ fn main() {
             r.max_drift_mm,
             r.max_depth_mm,
             r.energy_drift_pct,
-            fallback,
+            capped,
         );
     }
     println!();

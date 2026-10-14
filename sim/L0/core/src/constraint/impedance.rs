@@ -231,8 +231,7 @@ pub fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: 
         // Fallback: use dense M and solve via Cholesky
         // Build a copy of qM and factor it
         let mut m_copy = data.qM.clone();
-        // Cholesky failure means M is singular; w will be approximate.
-        // The Newton solver detects and handles this via PGS fallback.
+        // Cholesky failure means M is singular: the floor below.
         if cholesky_in_place(&mut m_copy).is_err() {
             return MJ_MINVAL;
         }

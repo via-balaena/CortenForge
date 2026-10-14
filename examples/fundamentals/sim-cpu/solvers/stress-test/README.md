@@ -22,28 +22,28 @@ No window — headless analysis. The output is the table.
 | **CG** | Conjugate Gradient (primal, M^-1 preconditioner) | Superlinear |
 | **Newton** | Newton (primal, H^-1 preconditioner, line search) | Quadratic |
 
-**Fallback behavior:** Newton and CG fall back to PGS on non-convergence.
-When Newton falls back, PGS overwrites `solver_niter`/`solver_stat` — the
-original Newton stats are lost. Detect Newton fallbacks via
-`data.newton_solved == false`.
+**No fallback:** no solver falls back to another. A solver that reaches its
+iteration budget keeps its last iterate, as MuJoCo's do; the "At cap"
+column counts those steps.
 
 ## What to expect
 
 ```
 === Solver Stress Test (t = 5s, dt = 0.002) ===
 
-  Solver       Avg iter  Max iter  Drift(mm)  Max depth(mm)  E drift(%)  Fallback
-  ────────────────────────────────────────────────────────────────────────────────
-  PGS            47.4       100      0.000       0.0256      +0.0000%    n/a
-  CG             31.1       100      0.000       0.0256      -0.0000%    n/a
-  Newton          0.2         2      0.000       0.0256      -0.0000%    0/2500
+  Solver         Avg iter   Max iter    Drift(mm)  Max depth(mm)   E drift(%)     At cap
+  ──────────────────────────────────────────────────────────────────────────────────
+  PGS                47.4        100        0.000         0.0256      +0.0000%    83/2500
+  CG                  1.1          3        0.000         0.0256      -0.0000%     0/2500
+  Newton              0.2          2        0.000         0.0256      -0.0000%     0/2500
 ```
 
 **Key insight:** Newton converges in 0-2 iterations on this simple scene
-(quadratic convergence near the solution). CG needs ~31 iterations with its
-M^-1 preconditioner. PGS needs ~47 iterations with coordinate-wise descent.
-All three produce an identical, rock-solid stack — the difference is purely
-in how fast they get there.
+(quadratic convergence near the solution), CG in 1-3 with its M^-1
+preconditioner. PGS needs ~47 iterations with coordinate-wise descent and
+uses its whole budget on 83 of the 2500 steps. All three produce an
+identical, rock-solid stack — the difference is purely in how fast they get
+there.
 
 ## Scene
 
@@ -71,7 +71,7 @@ minimize initial transient.
 | Stack drift | `data.qpos[2]` | Max z-displacement of box_a after 0.5s settling |
 | Max depth | `data.contacts[i].depth` | Max penetration depth (post-settling) |
 | Energy drift | `data.total_energy()` | Drift from settled energy baseline |
-| Fallback | `data.newton_solved` | Steps where Newton fell back to PGS |
+| At cap | `data.solver_niter` | Steps that used the whole iteration budget |
 
 ## Validation (7 checks)
 

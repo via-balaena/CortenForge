@@ -8,7 +8,7 @@ a ground plane — to isolate solver behavior from scene complexity.
 | Solver | Method | Iterations (this scene) |
 |--------|--------|------------------------|
 | **PGS** | Projected Gauss-Seidel (dual-space, iterative) | ~47 |
-| **CG** | Conjugate Gradient (primal, M^-1 preconditioner) | ~31 |
+| **CG** | Conjugate Gradient (primal, M^-1 preconditioner) | ~1 |
 | **Newton** | Full Newton (primal, H^-1, line search) | ~0 |
 
 All three produce identical results — a rock-solid stack. The difference
@@ -23,7 +23,7 @@ contact problem in 0-2 iterations that PGS needs ~47 for.
 | `comparison-visual/` | Bevy | 3 stacks side by side, HUD with live iteration counts |
 | `pgs/` | Bevy | Single PGS stack with solver HUD |
 | `cg/` | Bevy | Single CG stack with solver HUD |
-| `newton/` | Bevy | Single Newton stack with solver HUD + fallback status |
+| `newton/` | Bevy | Single Newton stack with solver HUD + how Newton stopped |
 
 ## Run
 

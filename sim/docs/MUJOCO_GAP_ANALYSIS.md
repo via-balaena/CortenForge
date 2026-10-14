@@ -189,13 +189,13 @@ data.step(&model).expect("step");
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| PGS (Gauss-Seidel) | Supported (pure GS, no SOR) | `pgs_solve_contacts()` in pipeline | **Implemented** (MuJoCo-aligned) | - | - |
-| Newton solver | Default, 2-5 iterations | `newton_solve()` in pipeline | **Implemented** (reduced primal formulation, §15; [future_work_5](./todo/future_work_5.md) ✅) | - | - |
-| Conjugate Gradient | Supported | `cg_solve_contacts()` in pipeline (PGD+BB, named "CG") | **Implemented** ([future_work_1 #3](./todo/future_work_1.md) ✅) | - | - |
+| PGS (Gauss-Seidel) | Supported (pure GS, no SOR) | `pgs_solve_unified()` in pipeline | **Implemented** (MuJoCo-aligned) | - | - |
+| Newton solver | Default | `mj_sol_primal()` (MuJoCo's `mj_solPrimal`) | **Implemented** (MuJoCo's primal solver, operation for operation) | - | - |
+| Conjugate Gradient | Supported | `mj_sol_primal()` (MuJoCo's `mj_solPrimal`, Polak-Ribière) | **Implemented** (MuJoCo's primal solver, operation for operation) | - | - |
 | Constraint islands | Auto-detected | `mj_island()` (from the constraint rows) | **Implemented** (replaced old `islands.rs` with pipeline-native island discovery; the solver is global) | - | - |
 | Warm starting | Supported | `qacc_warmstart`-based warmstart (universal for all solvers) | **Implemented** | - | - |
 
-> **Note:** The pipeline has four solver variants in `SolverType` enum (`constraint/solve.rs`): **Newton** (reduced primal formulation, §15 — quadratic convergence in 2-5 iterations, falls back to PGS on Cholesky failure), **PGS** (pure Gauss-Seidel, ω=1.0 — MuJoCo-aligned, no SOR), **CG** (preconditioned PGD with Barzilai-Borwein step size, falls back to PGS on non-convergence), and **CGStrict** (same as CG but returns zero forces instead of PGS fallback — used in tests to detect convergence regressions). All share `assemble_contact_system()` for Delassus assembly. PGS matches MuJoCo's `mj_solPGS` — pure GS with no SOR (verified against `engine_solver.c`; `mjOption` has no `sor` field). `CGSolver` in `sim-constraint/src/cg.rs` remains a standalone joint-space solver unrelated to the pipeline contact solvers.
+> **Note:** The pipeline has three solvers in the `SolverType` enum (`types/enums.rs`): **Newton** and **CG**, MuJoCo's primal solver (`constraint/solver/primal.rs`, `mj_solPrimal`: Newton directions from the factored Hessian, CG's Polak-Ribière directions preconditioned by M⁻¹), whose iterate is the acceleration, and **PGS** (`constraint/solver/pgs.rs`, pure Gauss-Seidel, ω=1.0). No solver falls back to another: at its iteration cap a solver keeps its last iterate, as MuJoCo's. PGS matches MuJoCo's `mj_solPGS` — pure GS with no SOR (verified against `engine_solver.c`; `mjOption` has no `sor` field).
 
 ### Implementation Notes: Newton Solver ✅ IMPLEMENTED (pipeline-native, §15)
 
@@ -203,24 +203,26 @@ data.step(&model).expect("step");
 > removed in Phase 3 consolidation (dead code — never called by pipeline). A ground-up
 > pipeline-native Newton solver was then implemented as §15 in the pipeline.
 
-The pipeline Newton solver (`newton_solve()` in `constraint/solve.rs`) uses a reduced primal
-formulation operating on the unified constraint Jacobian (equality, friction loss, limits, contacts):
+The pipeline Newton solver is MuJoCo's `mj_solPrimal` with Newton directions (`mj_sol_primal()` in
+`constraint/solver/primal.rs`), ported operation for operation on MuJoCo's dense path; CG is the same
+solver with Polak-Ribière directions:
 
-- **Reduced primal formulation**: Optimizes over constraint forces directly
-- **Phase A**: Assemble unified constraint system (Jacobian, residuals, cost)
-- **Phase B**: Newton iterations with Cholesky factorization of Hessian
-- **Phase C**: Per-step meaninertia scaling for configuration-dependent conditioning
-- Falls back to PGS on Cholesky failure or non-convergence
-- Typically converges in 2-5 iterations (quadratic convergence)
-- Selected via `<option solver="Newton"/>` in MJCF
+- **Primal formulation**: minimizes the cost over the acceleration, on the unified constraint rows
+  (equality, friction loss, limits, contacts)
+- **Hessian**: `M + J'·D·J` plus the cones' contributions, factored by `mju_cholFactor` and updated by
+  `mju_cholUpdate` as rows change state; at MuJoCo's sparse size (`nv ≥ 60`) a sparse factor
+  (`SparseHessian`), made anew at each iteration
+- **Scale**: `1/(meaninertia·nv)`, the model's mean inertia
+- No fallback: at its iteration cap it keeps its last iterate, as MuJoCo's
+- Selected via `<option solver="Newton"/>` in MJCF (the default)
 
-**Files:** `sim-core/src/constraint/solve.rs` (`newton_solve()`, `SolverType::Newton`); see [future_work_5 §15](./todo/future_work_5.md) ✅
+**Files:** `sim-core/src/constraint/solver/primal.rs`, `constraint/solver/hessian.rs`; tests `sim/L0/tests/integration/primal_solver_parity.rs`
 
 ### Implementation Notes: PGS (Gauss-Seidel) Solver ⚠️ REMOVED from sim-constraint; reimplemented in pipeline
 
 > The standalone `PGSSolver` in `sim-constraint/src/pgs.rs` was **deleted in Phase 3 consolidation**. That solver included an SOR (Successive Over-Relaxation) parameter — this was a design error based on the incorrect assumption that MuJoCo uses SOR in its PGS. Verification against MuJoCo source (`engine_solver.c`, `mj_solPGS`) confirms MuJoCo uses pure Gauss-Seidel with no SOR blending; `mjOption` has no `sor` field and `<option>` has no `sor` attribute.
 
-The pipeline PGS in `constraint/solve.rs` (`pgs_solve_contacts()`) correctly uses pure Gauss-Seidel (ω=1.0), matching MuJoCo's implementation. SOR was considered as future work (§17) but was dropped after the MuJoCo source verification.
+The pipeline PGS in `constraint/solver/pgs.rs` (`pgs_solve_unified()`) correctly uses pure Gauss-Seidel (ω=1.0), matching MuJoCo's implementation. SOR was considered as future work (§17) but was dropped after the MuJoCo source verification.
 
 **Files:** `sim-constraint/src/pgs.rs` (removed in Phase 3 consolidation)
 

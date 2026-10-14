@@ -423,13 +423,15 @@ pub struct Data {
     /// Number of friction loss constraint rows (DOF + tendon).
     /// These occupy `efc_*[ne..ne+nf)`.
     pub nf: usize,
-    /// Whether Newton solver computed qacc directly this step.
-    /// When true, mj_fwd_acceleration should be skipped.
-    pub newton_solved: bool,
+    /// Whether `qacc` is the primal solver's iterate this step (Newton or CG
+    /// solved rows and no noslip pass changed the forces after). When true,
+    /// the forward pass keeps it instead of making the acceleration from the
+    /// forces.
+    pub(crate) primal_qacc: bool,
 
     /// Per-iteration solver statistics (length `solver_niter` after solve).
     /// Populated by all 3 solvers: PGS fills `improvement` only (other fields
-    /// zeroed); CG and Newton fill all fields.
+    /// zeroed); CG and Newton fill all fields. Cleared with no rows.
     pub solver_stat: Vec<SolverStat>,
 
     /// Per-step mean inertia: `trace(qM) / nv`. More accurate than the
@@ -836,7 +838,7 @@ impl Clone for Data {
             ncone: self.ncone,
             ne: self.ne,
             nf: self.nf,
-            newton_solved: self.newton_solved,
+            primal_qacc: self.primal_qacc,
             solver_stat: self.solver_stat.clone(),
             stat_meaninertia: self.stat_meaninertia,
             // Sensors

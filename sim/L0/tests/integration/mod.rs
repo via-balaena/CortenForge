@@ -225,6 +225,10 @@ pub mod empty_rows_parity;
 /// edge, `flexedge_invweight0` as the diagonal approximation.
 pub mod flex_equality_rows;
 
+/// Newton and CG against MuJoCo 3.5.0's primal solver: bit for bit given its
+/// inputs, and through the pipeline.
+pub mod primal_solver_parity;
+
 /// The Jacobians against MuJoCo 3.5.0: `mj_jac` from MuJoCo's `cdof`,
 /// `mj_applyFT`, gravity compensation.
 pub mod jacobian_parity;

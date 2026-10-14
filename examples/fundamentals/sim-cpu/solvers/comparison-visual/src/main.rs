@@ -5,7 +5,7 @@
 //! per solver shows Newton converging in 0-2 iterations while PGS needs ~47.
 //!
 //! - **PGS** (left) — Projected Gauss-Seidel, ~47 iterations
-//! - **CG** (center) — Conjugate Gradient, ~31 iterations
+//! - **CG** (center) — Conjugate Gradient, ~1 iteration
 //! - **Newton** (right) — Full Newton, ~0 iterations
 //!
 //! Run with: `cargo run -p example-solver-comparison-visual --release`

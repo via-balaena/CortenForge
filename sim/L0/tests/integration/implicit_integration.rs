@@ -2693,3 +2693,109 @@ fn implicitspringdamper_follows_the_spring_and_damper_flags() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Under implicitspringdamper Newton, CG and PGS solve one problem, over
+/// `M + h·D + h²·K`: a spring pushing a hinge into its limit gives one
+/// acceleration with each, converged (ledger L104). The parent gave CG and
+/// PGS the mass matrix alone: 75 apart at k = 100. implicitspringdamper is
+/// ours (MuJoCo has no such integrator), so the solvers' agreement is the
+/// reference.
+#[test]
+fn implicitspringdamper_solvers_agree() {
+    let xml = |solver: &str| {
+        format!(
+            r#"<mujoco>
+              <option integrator="implicitspringdamper" solver="{solver}" timestep="0.01"
+                      iterations="1000" tolerance="1e-15">
+                <flag gravity="disable"/>
+              </option>
+              <worldbody>
+                <body>
+                  <joint type="hinge" axis="0 1 0" limited="true" range="-0.5 0.5"
+                         stiffness="100" springref="1" damping="0.5"/>
+                  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        )
+    };
+    let qacc = |solver: &str| {
+        let model = sim_mjcf::load_model(&xml(solver)).expect("load");
+        let mut data = model.make_data();
+        data.qpos[0] = 0.52;
+        data.forward(&model).expect("forward");
+        assert_eq!(data.efc_type.len(), 1, "{solver}: the limit's row");
+        data.qacc[0]
+    };
+    let newton = qacc("Newton");
+    for solver in ["CG", "PGS"] {
+        let other = qacc(solver);
+        assert!(
+            (other - newton).abs() <= 1e-12 * newton.abs(),
+            "{solver} {other}, Newton {newton}"
+        );
+    }
+}
+
+/// Past `NV_SPARSE_THRESHOLD` Newton's sparse Hessian under
+/// implicitspringdamper holds a stiff tendon's coupling between two trees,
+/// outside the mass matrix's pattern: with one row and no state change the
+/// problem is quadratic, so one Newton step is the converged answer (ledger
+/// L106). Without the tendon in the pattern the step lands 897 away and the
+/// solve does not converge in 100 iterations (measured).
+#[test]
+fn sparse_hessian_holds_a_tendon_across_trees() {
+    let chain = |name: &str, y: f64| {
+        let mut open = String::new();
+        for i in 0..31 {
+            let pos = if i == 0 {
+                format!("0 {y} 1")
+            } else {
+                "0.1 0 0".to_string()
+            };
+            let limit = if i == 1 {
+                r#" limited="true" range="-0.1 0.1""#
+            } else {
+                ""
+            };
+            open += &format!(
+                r#"<body pos="{pos}"><joint name="{name}{i}" type="hinge" axis="0 1 0"{limit}/>
+                   <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.01" mass="0.1"/>"#
+            );
+        }
+        open + &"</body>".repeat(31)
+    };
+    let solve = |iterations: usize| {
+        let xml = format!(
+            r#"<mujoco>
+              <option integrator="implicitspringdamper" solver="Newton" iterations="{iterations}"
+                      tolerance="1e-15" timestep="0.002"/>
+              <worldbody>{}{}</worldbody>
+              <tendon>
+                <fixed stiffness="500" damping="2">
+                  <joint joint="a5" coef="1"/><joint joint="b20" coef="-1"/>
+                </fixed>
+              </tendon>
+            </mujoco>"#,
+            chain("a", 0.0),
+            chain("b", 1.0)
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        assert!(model.nv >= 60, "the sparse path");
+        let mut data = model.make_data();
+        data.qpos[1] = 0.2;
+        data.qpos[5] = 0.3;
+        data.forward(&model).expect("forward");
+        assert_eq!(data.efc_type.len(), 1, "the limit's row");
+        (data.qacc.clone(), data.solver_niter)
+    };
+    let (one, _) = solve(1);
+    let (converged, niter) = solve(100);
+    assert!(niter <= 2, "converged in {niter} iterations");
+    let scale = converged.amax();
+    let gap = (&one - &converged).amax();
+    assert!(
+        gap <= 1e-10 * scale,
+        "one step {gap:e} from converged (|qacc| {scale:e})"
+    );
+}

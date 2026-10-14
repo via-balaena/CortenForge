@@ -902,7 +902,7 @@ impl Model {
             ncone: 0,
             ne: 0,
             nf: 0,
-            newton_solved: false,
+            primal_qacc: false,
             solver_stat: Vec::new(),
             stat_meaninertia: 1.0,
 

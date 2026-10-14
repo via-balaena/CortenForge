@@ -167,7 +167,8 @@ fn test_pgs_solver_stat_populated() {
         );
         assert_eq!(stat.gradient, 0.0, "PGS gradient should be 0");
         assert_eq!(stat.lineslope, 0.0, "PGS lineslope should be 0");
-        assert_eq!(stat.nline, 0, "PGS nline should be 0");
+        assert_eq!(stat.neval, 0, "PGS neval should be 0");
+        assert_eq!(stat.nupdate, 0, "PGS nupdate should be 0");
     }
 
     // Last entry's improvement should be below tolerance (convergence criterion)

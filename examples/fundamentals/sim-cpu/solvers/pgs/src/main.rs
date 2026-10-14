@@ -63,7 +63,6 @@ use sim_core::validation::{Check, print_report};
 //   - Always converges (guaranteed for convex LCP)
 //   - Linear convergence rate — needs more iterations than CG/Newton
 //   - O(nefc · nv) per iteration (sparse matrix-vector products)
-//   - Robust fallback: CG and Newton fall back to PGS on failure
 //
 // Source: sim/L0/core/src/constraint/solver/pgs.rs
 

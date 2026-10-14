@@ -41,7 +41,8 @@ enum NoslipRowKind {
 /// This matches MuJoCo's `mj_solNoSlip`.
 ///
 /// Called after any solver (Newton, PGS, CG) when `model.noslip_iterations > 0`.
-/// Also called after Newton's PGS fallback path. Matches MuJoCo's `mj_solNoSlip`.
+/// Matches MuJoCo's `mj_solNoSlip`. Leaves `efc_force` and `qfrc_constraint`;
+/// the forward pass makes the acceleration from them (`mj_fwd_acceleration`).
 ///
 /// Processes two row ranges (NOT equality rows):
 /// 1. Friction-loss rows: PGS update with interval clamping [-floss, +floss]
@@ -438,14 +439,4 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
             data.qfrc_constraint[col] += data.efc_J[(i_row, col)] * force;
         }
     }
-
-    // 7. Recompute qacc = M⁻¹ · (qfrc_smooth + qfrc_constraint)
-    let mut qacc = DVector::zeros(nv);
-    for k in 0..nv {
-        qacc[k] = data.qfrc_applied[k] + data.qfrc_actuator[k] + data.qfrc_passive[k]
-            - data.qfrc_bias[k]
-            + data.qfrc_constraint[k];
-    }
-    mj_solve_m(model, data, qacc.as_mut_slice());
-    data.qacc = qacc;
 }

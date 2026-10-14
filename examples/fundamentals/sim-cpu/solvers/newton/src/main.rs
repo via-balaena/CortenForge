@@ -2,8 +2,9 @@
 //!
 //! Two boxes stacked on a ground plane, solved with Newton (primal-space,
 //! H^-1 preconditioner, line search). The HUD shows per-step iteration
-//! count, fallback status, and max contact penetration. Newton converges
-//! in 0-2 iterations on this simple scene (quadratic convergence).
+//! count, whether Newton stopped on its tolerance or at its iteration cap,
+//! and max contact penetration. Newton converges in 0-2 iterations on this
+//! simple scene (quadratic convergence).
 //!
 //! Validates:
 //! - Stack stable: `box_a` z-drift < 1mm over 5s
@@ -62,7 +63,7 @@ use sim_core::validation::{Check, print_report};
 //   Properties:
 //   - Quadratic convergence near solution → fewest iterations (0-2 here)
 //   - Most expensive per-iteration (Hessian assembly + factorization)
-//   - Falls back to PGS if Cholesky fails or max iterations exceeded
+//   - At its iteration cap it keeps its last iterate, as MuJoCo's does
 //   - Best for: precision-critical contact scenarios, complex friction cones
 //
 // Source: sim/L0/core/src/constraint/solver/newton.rs, hessian.rs, primal.rs
@@ -122,10 +123,12 @@ fn main() {
             ValidationHarness::new()
                 .report_at(5.0)
                 .print_every(1.0)
-                .display(|_m, d| {
+                .display(|m, d| {
                     format!(
-                        "iter={} ncon={} solved={}",
-                        d.solver_niter, d.ncon, d.newton_solved
+                        "iter={} ncon={} capped={}",
+                        d.solver_niter,
+                        d.ncon,
+                        d.solver_niter >= m.solver_iterations
                     )
                 }),
         )
@@ -195,18 +198,18 @@ fn setup(
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
-fn update_hud(_model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
+fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section(SOLVER_NAME);
 
     hud.raw(format!("iter: {}", data.solver_niter));
     hud.raw(format!("contacts: {}", data.ncon));
     hud.raw(format!(
-        "solved: {}",
-        if data.newton_solved {
-            "yes"
+        "stopped: {}",
+        if data.solver_niter < model.solver_iterations {
+            "tolerance"
         } else {
-            "FALLBACK"
+            "AT CAP"
         }
     ));
 
@@ -227,13 +230,14 @@ struct SolverValidation {
     reported: bool,
     total_iter: usize,
     steps: usize,
-    fallbacks: usize,
+    capped: usize,
     rest_z: Option<f64>,
     max_drift: f64,
     settled: bool,
 }
 
 fn solver_diagnostics(
+    model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
     harness: Res<ValidationHarness>,
     mut val: ResMut<SolverValidation>,
@@ -241,8 +245,8 @@ fn solver_diagnostics(
     val.total_iter += data.solver_niter;
     val.steps += 1;
 
-    if !data.newton_solved {
-        val.fallbacks += 1;
+    if data.solver_niter >= model.solver_iterations {
+        val.capped += 1;
     }
 
     let box_a_z = data.qpos[2];
@@ -277,8 +281,8 @@ fn solver_diagnostics(
                 name: "Newton converges fast: avg iter <= 5",
                 pass: avg_iter <= 5.0,
                 detail: format!(
-                    "avg = {avg_iter:.1}, fallbacks = {}/{}",
-                    val.fallbacks, val.steps
+                    "avg = {avg_iter:.1}, at the iteration cap = {}/{}",
+                    val.capped, val.steps
                 ),
             },
         ];

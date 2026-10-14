@@ -44,8 +44,8 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
             // MuJoCo leaves the explicit acceleration in qacc (mj_fwdConstraint,
             // engine_forward.c:747-750) and factors and solves M − h·D only in
             // the integrator (mj_implicitSkip, :1128; `mj_implicit_factor`).
-            // After a Newton solve qacc is already its result.
-            if !data.newton_solved {
+            // After a primal solve qacc is already its iterate.
+            if !data.primal_qacc {
                 mj_fwd_acceleration_explicit(model, data);
             }
             Ok(())

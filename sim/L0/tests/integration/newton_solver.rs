@@ -3,7 +3,7 @@
 //! These tests verify the Newton solver implementation:
 //! - Unified constraint assembly
 //! - Exact 1D Newton line search convergence
-//! - PGS fallback on failure / implicit integrators
+//! - Implicit integrators
 //! - Warmstart behavior
 //! - Zero-constraint degenerate case
 //! - Energy stability
@@ -126,11 +126,11 @@ fn test_newton_zero_constraints() {
 }
 
 // ============================================================================
-// AC4: Implicit integrator falls through to PGS (no crash)
+// AC4: Newton under the implicit integrator steps (no crash)
 // ============================================================================
 
 #[test]
-fn test_newton_implicit_fallback() {
+fn test_newton_implicit_steps() {
     let (model, mut data) = model_from_mjcf(
         r#"
         <mujoco model="implicit_guard">
@@ -148,7 +148,7 @@ fn test_newton_implicit_fallback() {
 
     assert_eq!(model.solver_type, sim_core::SolverType::Newton);
 
-    // Should not crash — Newton falls through to PGS for implicit
+    // Should not crash
     for _ in 0..10 {
         data.step(&model)
             .expect("implicit + Newton should not crash");
@@ -183,17 +183,15 @@ fn test_newton_unified_constraint_fields() {
     data.qpos[0] = 1.5;
     data.step(&model).expect("step should succeed");
 
-    // If Newton ran, it should have populated efc_* fields
-    if data.newton_solved {
-        assert!(
-            !data.efc_type.is_empty(),
-            "Newton should populate efc_type for joint limits"
-        );
-        assert!(
-            !data.efc_state.is_empty(),
-            "Newton should populate efc_state"
-        );
-    }
+    // Newton populates the efc_* fields
+    assert!(
+        !data.efc_type.is_empty(),
+        "Newton should populate efc_type for joint limits"
+    );
+    assert!(
+        !data.efc_state.is_empty(),
+        "Newton should populate efc_state"
+    );
 }
 
 // ============================================================================
@@ -1445,15 +1443,12 @@ fn test_newton_equality_weld() {
         "Welded bodies should stay close, distance={dist:.6}"
     );
 
-    // Newton should have populated efc fields (weld = 6 constraint rows)
-    if data.newton_solved {
-        // Weld produces 6 rows
-        assert!(
-            data.efc_type.len() >= 6,
-            "Weld should produce at least 6 constraint rows, got {}",
-            data.efc_type.len()
-        );
-    }
+    // Newton populates the efc fields (weld = 6 constraint rows)
+    assert!(
+        data.efc_type.len() >= 6,
+        "Weld should produce at least 6 constraint rows, got {}",
+        data.efc_type.len()
+    );
 }
 
 // ============================================================================
@@ -1538,30 +1533,29 @@ fn test_newton_equality_connect_bounded_error() {
     // The constraint violation should be small. efc_pos stores the
     // constraint position error. For a connect constraint (3 rows),
     // the error vector should be near zero.
-    if data.newton_solved && !data.efc_pos.is_empty() {
-        // Find equality constraint rows
-        let eq_rows: Vec<usize> = data
-            .efc_type
+    assert!(!data.efc_pos.is_empty(), "the connect constraint has rows");
+    // Find equality constraint rows
+    let eq_rows: Vec<usize> = data
+        .efc_type
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| **t == sim_core::ConstraintType::Equality)
+        .map(|(i, _)| i)
+        .collect();
+
+    if eq_rows.len() >= 3 {
+        let err_norm: f64 = eq_rows
             .iter()
-            .enumerate()
-            .filter(|(_, t)| **t == sim_core::ConstraintType::Equality)
-            .map(|(i, _)| i)
-            .collect();
+            .take(3)
+            .map(|&i| data.efc_pos[i] * data.efc_pos[i])
+            .sum::<f64>()
+            .sqrt();
 
-        if eq_rows.len() >= 3 {
-            let err_norm: f64 = eq_rows
-                .iter()
-                .take(3)
-                .map(|&i| data.efc_pos[i] * data.efc_pos[i])
-                .sum::<f64>()
-                .sqrt();
-
-            // Soft constraint, but error should be bounded
-            assert!(
-                err_norm < 0.1,
-                "Connect constraint position error should be small, norm={err_norm:.6}"
-            );
-        }
+        // Soft constraint, but error should be bounded
+        assert!(
+            err_norm < 0.1,
+            "Connect constraint position error should be small, norm={err_norm:.6}"
+        );
     }
 }
 
@@ -1623,13 +1617,13 @@ fn test_newton_warmstart_effectiveness() {
 }
 
 // ============================================================================
-// Strengthen: implicit fallback produces correct gravity acceleration
+// Strengthen: Newton under the implicit integrator, free fall
 // ============================================================================
 
 #[test]
-fn test_newton_implicit_fallback_correct_physics() {
-    // Newton + implicit falls back to PGS. The free body should still
-    // experience correct gravitational acceleration.
+fn test_newton_implicit_free_fall() {
+    // A free body under Newton and the implicit integrator, with no rows to
+    // solve, falls at gravity's acceleration.
     let (model, mut data) = model_from_mjcf(
         r#"
         <mujoco model="implicit_physics">
@@ -1648,7 +1642,6 @@ fn test_newton_implicit_fallback_correct_physics() {
 
     data.step(&model).unwrap();
 
-    // Even through PGS fallback, free-fall acceleration should be -9.81
     assert_relative_eq!(data.qacc[2], -9.81, epsilon = 0.5);
 }
 
@@ -1877,22 +1870,20 @@ fn test_mujoco_reference_joint_limit() {
     data.qpos[0] = 1.5; // Beyond limit of 1.0
     data.step(&model).unwrap();
 
-    if data.newton_solved {
-        // Joint should be pushed back toward range by the limit force.
-        // qacc should be negative (restoring toward the limit).
-        assert!(
-            data.qacc[0] < 0.0,
-            "Acceleration should push joint back into limit, got qacc={:.4}",
-            data.qacc[0]
-        );
+    // Joint should be pushed back toward range by the limit force.
+    // qacc should be negative (restoring toward the limit).
+    assert!(
+        data.qacc[0] < 0.0,
+        "Acceleration should push joint back into limit, got qacc={:.4}",
+        data.qacc[0]
+    );
 
-        // Constraint force should be non-zero (limit is active)
-        assert!(
-            data.qfrc_constraint[0].abs() > 0.1,
-            "Limit constraint force should be non-zero, got {:.4}",
-            data.qfrc_constraint[0]
-        );
-    }
+    // Constraint force should be non-zero (limit is active)
+    assert!(
+        data.qfrc_constraint[0].abs() > 0.1,
+        "Limit constraint force should be non-zero, got {:.4}",
+        data.qfrc_constraint[0]
+    );
 }
 
 // ============================================================================

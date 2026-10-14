@@ -1,670 +1,1039 @@
-//! Shared CG/Newton primal infrastructure.
+//! The primal solver Newton and CG share: MuJoCo 3.5.0's `mj_solPrimal`
+//! (`engine_solver.c:1811-1969`), with the warmstart it starts from
+//! (`warmstart`, `engine_forward.c:611-683`), its constraint update
+//! (`mj_constraintUpdate_impl`, `engine_core_constraint.c:2394-2585`), its line
+//! search (`PrimalPrepare`, `PrimalEval`, `updateBracket`, `PrimalSearch`,
+//! `engine_solver.c:1075-1512`) and Newton's Hessian (`MakeHessian`,
+//! `FactorizeHessian`, `HessianCone`, `HessianIncremental`, `:1516-1808`),
+//! operation for operation on MuJoCo's dense path. It solves over every
+//! constraint row at once (MuJoCo's monolithic case, `island` −1).
 //!
-//! Contains gradient+search computation, precomputed quadratic line-search
-//! structures (`PrimalQuad`, `PrimalPoint`), and the three-phase exact Newton
-//! line search (`primal_prepare`, `primal_eval`, `primal_search`).
-//! Also provides `evaluate_cost_at` for warmstart comparison.
-//!
-//! Corresponds to the shared primal routines in MuJoCo's `engine_solver.c`
-//! (§15.4–15.5).
+//! At MuJoCo's sparse size (`nv ≥ 60`, `mj_isSparse`,
+//! `engine_core_util.c:32-39`) Newton factors its Hessian with
+//! [`SparseHessian`], made anew at every iteration where MuJoCo updates its
+//! sparse factor: the same matrix, rounded otherwise.
 
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::constraint::solver::hessian::SparseHessian;
-use crate::linalg::cholesky_solve_in_place;
-use crate::types::{ConstraintType, Data, Model};
+use crate::constraint::solver::hessian::{NV_SPARSE_THRESHOLD, SparseHessian};
+use crate::dynamics::factor::{mj_mul_m_to, mj_solve_m};
+use crate::linalg::{
+    cholesky_solve_in_place, mju_chol_factor, mju_chol_solve, mju_chol_update, mju_dot, mju_norm,
+};
+use crate::types::flags::disabled;
+use crate::types::{
+    ConstraintState, ConstraintType, DISABLE_WARMSTART, Data, Integrator, Model, SolverStat,
+    StepError,
+};
 
-/// Compute gradient and preconditioned search direction (PrimalUpdateGradient, §15.4).
-///
-/// Returns (grad, search) where:
-/// - `qfrc_constraint = J^T · efc_force`
-/// - `grad = Ma - qfrc_smooth - qfrc_constraint`
-/// - `search = -H⁻¹ · grad` (via Cholesky solve)
-pub fn compute_gradient_and_search(
-    data: &Data,
-    nv: usize,
-    ma: &DVector<f64>,
-    qfrc_smooth: &DVector<f64>,
-    chol_l: &DMatrix<f64>,
-) -> (DVector<f64>, DVector<f64>) {
-    let nefc = data.efc_type.len();
-
-    // qfrc_constraint = J^T · efc_force
-    let mut qfrc_constraint = DVector::<f64>::zeros(nv);
-    for i in 0..nefc {
-        let f = data.efc_force[i];
-        if f == 0.0 {
-            continue;
-        }
-        for col in 0..nv {
-            qfrc_constraint[col] += data.efc_J[(i, col)] * f;
-        }
-    }
-
-    // grad = Ma - qfrc_smooth - qfrc_constraint
-    let mut grad = DVector::<f64>::zeros(nv);
-    for k in 0..nv {
-        grad[k] = ma[k] - qfrc_smooth[k] - qfrc_constraint[k];
-    }
-
-    // search = -H⁻¹ · grad = -solve(L, grad)
-    let mut search = grad.clone();
-    cholesky_solve_in_place(chol_l, &mut search);
-    for k in 0..nv {
-        search[k] = -search[k];
-    }
-
-    (grad, search)
+/// The mass matrix the primal solver minimises over.
+pub enum PrimalMass<'a> {
+    /// `qM` on the mass matrix's pattern, solved with its `L'·D·L` factor:
+    /// MuJoCo's.
+    Tree,
+    /// The implicit spring-damper integrator's `M + h·D + h²·K` (an extension
+    /// of this crate's) and its Cholesky factor.
+    Implicit {
+        m: &'a DMatrix<f64>,
+        factor: &'a DMatrix<f64>,
+    },
 }
 
-/// Sparse variant of `compute_gradient_and_search` using `SparseHessian::solve`.
-pub fn compute_gradient_and_search_sparse(
-    data: &Data,
-    nv: usize,
-    ma: &DVector<f64>,
-    qfrc_smooth: &DVector<f64>,
-    sparse_h: &SparseHessian,
-) -> (DVector<f64>, DVector<f64>) {
-    let nefc = data.efc_type.len();
-
-    // qfrc_constraint = J^T · efc_force
-    let mut qfrc_constraint = DVector::<f64>::zeros(nv);
-    for i in 0..nefc {
-        let f = data.efc_force[i];
-        if f == 0.0 {
-            continue;
-        }
-        for col in 0..nv {
-            qfrc_constraint[col] += data.efc_J[(i, col)] * f;
-        }
-    }
-
-    // grad = Ma - qfrc_smooth - qfrc_constraint
-    let mut grad = DVector::<f64>::zeros(nv);
-    for k in 0..nv {
-        grad[k] = ma[k] - qfrc_smooth[k] - qfrc_constraint[k];
-    }
-
-    // search = -H⁻¹ · grad via sparse LDL^T solve
-    let mut search = grad.clone();
-    sparse_h.solve(&mut search);
-    for k in 0..nv {
-        search[k] = -search[k];
-    }
-
-    (grad, search)
-}
-
-// ==========================================================================
-// Phase B: Exact 1D Newton line search infrastructure (§15.5)
-// ==========================================================================
-
-/// Precomputed quadratic polynomials for fast 1D cost evaluation along search direction.
-///
-/// For constraint i: cost(alpha) depends on `jar_trial = jar + alpha * jv`
-/// For the Gauss regularisation: cost is exactly quadratic in alpha.
-pub struct PrimalQuad {
-    /// Per-constraint quadratic coefficients.
-    /// For Quadratic/Equality rows:   [0.5*D*jar², D*jar*jv, 0.5*D*jv²]
-    /// For LinearPos:                  [+floss*jar - 0.5*R*floss², +floss*jv, 0]
-    /// For LinearNeg:                  [-floss*jar - 0.5*R*floss², -floss*jv, 0]
-    /// For Satisfied:                  [0, 0, 0]
-    /// For Contact rows: use raw values, re-classify per alpha in primal_eval.
-    pub quad: Vec<[f64; 3]>,
-
-    /// Per-elliptic-cone extra coefficients.
-    /// Each entry: [U0, V0, UU, UV, VV, Dm] for the rescaled cone decomposition.
-    /// Indexed by sequential cone index (not efc row).
-    pub cone_quad: Vec<[f64; 6]>,
-
-    /// Mapping from sequential cone index to the starting efc row and dim.
-    pub cone_map: Vec<(usize, usize)>,
-
-    /// Gauss term quadratic: [constant, linear, quadratic].
-    /// `cost_gauss(alpha) = quad_gauss[0] + alpha*quad_gauss[1] + alpha²*quad_gauss[2]`
-    pub quad_gauss: [f64; 3],
-
-    /// Norm of the search direction ||search||.
-    pub snorm: f64,
-}
-
-/// A point on the 1D cost curve, evaluated at step size `alpha`.
-#[derive(Debug, Clone, Copy)]
-pub struct PrimalPoint {
-    /// Step size.
-    pub alpha: f64,
-    /// [dcost/dalpha, d²cost/dalpha²]
-    pub deriv: [f64; 2],
-}
-
-/// Precompute quadratic polynomial coefficients for the 1D line search (§15.5).
-///
-/// Called once per Newton iteration before entering the line search. The
-/// precomputed coefficients allow O(nefc) cost+derivative evaluation at each
-/// trial alpha without any matrix-vector products.
-// Primal step takes the full per-iteration state (J, M, b, lambda, x, work buffers); single-letter names follow the published primal-method notation.
-#[allow(clippy::many_single_char_names, clippy::too_many_arguments)]
-pub fn primal_prepare(
-    data: &Data,
-    _nv: usize,
-    qacc: &DVector<f64>,
-    qacc_smooth: &DVector<f64>,
-    ma: &DVector<f64>,
-    qfrc_smooth: &DVector<f64>,
-    search: &DVector<f64>,
-    mv: &DVector<f64>,
-    jv: &DVector<f64>,
-) -> PrimalQuad {
-    let nefc = data.efc_type.len();
-    let mut quad = vec![[0.0_f64; 3]; nefc];
-    let mut cone_quad = Vec::new();
-    let mut cone_map = Vec::new();
-
-    let mut i = 0;
-    while i < nefc {
-        let jar_i = data.efc_jar[i];
-        let d_i = data.efc_D[i];
-        let jv_i = jv[i];
-
-        if data.efc_type[i] == ConstraintType::ContactElliptic {
-            let dim = data.efc_dim[i];
-            let mu = data.efc_mu[i][0];
-
-            // Per-row quadratic (for bottom zone / per-component evaluation)
-            for j in 0..dim {
-                let jar_j = data.efc_jar[i + j];
-                let d_j = data.efc_D[i + j];
-                let jv_j = jv[i + j];
-                quad[i + j] = [
-                    0.5 * d_j * jar_j * jar_j,
-                    d_j * jar_j * jv_j,
-                    0.5 * d_j * jv_j * jv_j,
-                ];
-            }
-
-            // Cone-specific: rescale to circular cone space
-            let u0 = jar_i * mu;
-            let v0 = jv_i * mu;
-            let mut uu = 0.0;
-            let mut uv = 0.0;
-            let mut vv = 0.0;
-
-            for j in 1..dim {
-                let friction_j = data.efc_mu[i][j - 1];
-                let uj = data.efc_jar[i + j] * friction_j;
-                let vj = jv[i + j] * friction_j;
-                uu += uj * uj;
-                uv += uj * vj;
-                vv += vj * vj;
-            }
-
-            let dm = d_i / (mu * mu * (1.0 + mu * mu));
-            cone_quad.push([u0, v0, uu, uv, vv, dm]);
-            cone_map.push((i, dim));
-
-            i += dim;
-        } else {
-            // Scalar constraint: store raw D·jar quadratic
-            quad[i] = [
-                0.5 * d_i * jar_i * jar_i,
-                d_i * jar_i * jv_i,
-                0.5 * d_i * jv_i * jv_i,
-            ];
-            i += 1;
-        }
-    }
-
-    // Gauss quadratic: cost(alpha) = G0 + alpha*G1 + alpha²*G2
-    // G0 = 0.5 * (Ma - qfrc_smooth) · (qacc - qacc_smooth)  [already in data.efc_cost - constraint_cost]
-    // G1 = search · Ma - qfrc_smooth · search = search · (Ma - qfrc_smooth)
-    // G2 = 0.5 * search · Mv
-    let nv = search.len();
-    let mut g1 = 0.0;
-    let mut g2 = 0.0;
-    for k in 0..nv {
-        g1 += search[k] * (ma[k] - qfrc_smooth[k]);
-        g2 += search[k] * mv[k];
-    }
-    g2 *= 0.5;
-
-    // G0 = 0.5 * (Ma - qfrc_smooth) · (qacc - qacc_smooth)
-    // Exact since Gauss cost is purely quadratic in qacc (linear in alpha).
-    let mut g0 = 0.0;
-    for k in 0..nv {
-        g0 += (ma[k] - qfrc_smooth[k]) * (qacc[k] - qacc_smooth[k]);
-    }
-    g0 *= 0.5;
-
-    let snorm: f64 = search.iter().map(|x| x * x).sum::<f64>().sqrt();
-
-    PrimalQuad {
-        quad,
-        cone_quad,
-        cone_map,
-        quad_gauss: [g0, g1, g2],
-        snorm,
-    }
-}
-
-/// Evaluate cost, first derivative, and second derivative at alpha along the search direction.
-///
-/// Uses precomputed `PrimalQuad` coefficients for O(nefc) evaluation without
-/// matrix-vector products. This is the inner loop of `PrimalSearch`.
-// Single-letter names (a, b, c, x, y, z) follow the published primal-method notation.
-#[allow(clippy::many_single_char_names)]
-pub fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> PrimalPoint {
-    let nefc = data.efc_type.len();
-    let mut deriv = [0.0_f64; 2];
-
-    // Batch quadratic accumulator for simple constraints and bottom-zone cones
-    let mut quad_total = [0.0_f64; 3];
-
-    let mut cone_idx = 0;
-    let mut i = 0;
-    while i < nefc {
-        match data.efc_type[i] {
-            ConstraintType::Equality => {
-                // Always quadratic
-                quad_total[0] += pq.quad[i][0];
-                quad_total[1] += pq.quad[i][1];
-                quad_total[2] += pq.quad[i][2];
-                i += 1;
-            }
-
-            ConstraintType::FrictionLoss => {
-                let floss = data.efc_floss[i];
-                let r_i = data.efc_R[i];
-                let threshold = r_i * floss;
-                // Trial jar at alpha
-                let jar_trial = data.efc_jar[i] + alpha * jv[i];
-
-                if jar_trial >= threshold {
-                    // LinearPos
-                    deriv[0] += floss * jv[i];
-                    // deriv[1] += 0 (linear)
-                } else if jar_trial <= -threshold {
-                    // LinearNeg
-                    deriv[0] += -floss * jv[i];
-                    // deriv[1] += 0
-                } else {
-                    // Quadratic
-                    quad_total[0] += pq.quad[i][0];
-                    quad_total[1] += pq.quad[i][1];
-                    quad_total[2] += pq.quad[i][2];
+impl PrimalMass<'_> {
+    /// `res = M·vec`; on the tree, as `mju_mulSymVecSparse` multiplies.
+    fn mul(&self, model: &Model, data: &Data, vec: &[f64], res: &mut [f64]) {
+        match self {
+            Self::Tree => mj_mul_m_to(model, data, vec, res),
+            Self::Implicit { m, .. } => {
+                for (r, out) in res.iter_mut().enumerate() {
+                    *out = mju_dot(m.column(r).as_slice(), vec);
                 }
-                i += 1;
             }
+        }
+    }
 
-            ConstraintType::LimitJoint
-            | ConstraintType::LimitTendon
-            | ConstraintType::ContactFrictionless
-            | ConstraintType::ContactPyramidal => {
-                // Re-classify at trial alpha
-                let jar_trial = data.efc_jar[i] + alpha * jv[i];
-                if jar_trial < 0.0 {
-                    // Quadratic (active)
-                    quad_total[0] += pq.quad[i][0];
-                    quad_total[1] += pq.quad[i][1];
-                    quad_total[2] += pq.quad[i][2];
-                }
-                // else: Satisfied — zero cost
-                i += 1;
-            }
-
-            ConstraintType::ContactElliptic => {
-                let dim = data.efc_dim[i];
-                let mu = data.efc_mu[i][0];
-                let cq = &pq.cone_quad[cone_idx];
-                let (_, _) = pq.cone_map[cone_idx];
-                cone_idx += 1;
-
-                // Compute N(alpha) and T(alpha) in rescaled cone space
-                let n_alpha = cq[0] + alpha * cq[1]; // U0 + alpha*V0
-                let t_sq = (cq[2] + alpha * (2.0 * cq[3] + alpha * cq[4])).max(0.0); // UU + 2*alpha*UV + alpha²*VV
-                let t_alpha = t_sq.sqrt();
-                let dm = cq[5];
-
-                let t_min = MJ_MINVAL;
-
-                if n_alpha >= mu * t_alpha || (t_alpha < t_min && n_alpha >= 0.0) {
-                    // Top zone: satisfied, zero cost
-                } else if mu * n_alpha + t_alpha <= 0.0 || (t_alpha < t_min && n_alpha < 0.0) {
-                    // Bottom zone: per-row quadratic
-                    for j in 0..dim {
-                        quad_total[0] += pq.quad[i + j][0];
-                        quad_total[1] += pq.quad[i + j][1];
-                        quad_total[2] += pq.quad[i + j][2];
+    /// Add `M` to the lower triangle and the diagonal of the dense row-major
+    /// `nv × nv` matrix `h`; on the tree, as `mju_addToSymSparse` adds
+    /// (`engine_util_sparse.c:217-236`, `flg_upper` 0).
+    fn add_to_lower(&self, model: &Model, data: &Data, h: &mut [f64]) {
+        let nv = model.nv;
+        match self {
+            Self::Tree => {
+                for i in 0..nv {
+                    for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
+                        let j = model.M_colind[adr];
+                        h[i * nv + j] += data.qM[(i, j)];
                     }
-                } else {
-                    // Middle zone: cone cost
-                    let nmt = n_alpha - mu * t_alpha;
-
-                    // First derivative: d(cost)/d(alpha)
-                    // d(N)/d(alpha) = V0
-                    // d(T)/d(alpha) = (UV + alpha*VV) / T (when T > 0)
-                    let n1 = cq[1]; // V0
-                    let t1 = if t_alpha > t_min {
-                        (cq[3] + alpha * cq[4]) / t_alpha
-                    } else {
-                        0.0
-                    };
-                    let nmt1 = n1 - mu * t1; // d(N-mu*T)/d(alpha)
-                    deriv[0] += dm * nmt * nmt1;
-
-                    // Second derivative: d²(cost)/d(alpha)²
-                    // d²(T)/d(alpha)² = (VV - t1²) / T (when T > 0)
-                    let t2 = if t_alpha > t_min {
-                        (cq[4] - t1 * t1) / t_alpha
-                    } else {
-                        0.0
-                    };
-                    deriv[1] += dm * (nmt1 * nmt1 + nmt * (-mu * t2));
                 }
-
-                i += dim;
+            }
+            Self::Implicit { m, .. } => {
+                for i in 0..nv {
+                    for j in 0..=i {
+                        h[i * nv + j] += m[(i, j)];
+                    }
+                }
             }
         }
     }
 
-    // Evaluate batched quadratic total
-    let q_d1 = quad_total[1] + 2.0 * alpha * quad_total[2];
-    let q_d2 = 2.0 * quad_total[2];
-    deriv[0] += q_d1;
-    deriv[1] += q_d2;
-
-    // Add Gauss term (exactly quadratic in alpha)
-    deriv[0] += pq.quad_gauss[1] + 2.0 * alpha * pq.quad_gauss[2];
-    deriv[1] += 2.0 * pq.quad_gauss[2];
-
-    PrimalPoint { alpha, deriv }
+    /// `x ← M⁻¹·x`; on the tree, as `mj_solveLD` solves.
+    fn solve(&self, model: &Model, data: &Data, x: &mut [f64]) {
+        match self {
+            Self::Tree => mj_solve_m(model, data, x),
+            Self::Implicit { factor, .. } => {
+                let mut v = DVector::from_column_slice(x);
+                cholesky_solve_in_place(factor, &mut v);
+                x.copy_from_slice(v.as_slice());
+            }
+        }
+    }
 }
 
-/// Three-phase exact Newton line search (§15.5 PrimalSearch).
-///
-/// Finds the step size `alpha` that minimizes the 1D cost along the search
-/// direction. Uses the precomputed `PrimalQuad` from `primal_prepare` and
-/// evaluates via `primal_eval`.
-///
-/// # Phases
-/// 1. **Initial Newton step** from alpha=0. If derivative is small enough, done.
-/// 2. **Bracket search**: step in the direction of the initial derivative until
-///    the derivative sign changes, establishing a bracket [lo, hi].
-/// 3. **Bracketed refinement**: three candidates (Newton from lo, Newton from hi,
-///    midpoint). Pick the best converged candidate, or tighten the bracket.
-///
-/// Returns the optimal alpha, or 0.0 if no improvement is possible.
-// Single-letter names follow the published primal-method notation.
-#[allow(clippy::many_single_char_names)]
-pub fn primal_search(
-    data: &Data,
-    pq: &PrimalQuad,
-    jv: &[f64],
-    tolerance: f64,
-    ls_tolerance: f64,
-    max_ls_iter: usize,
-    scale: f64,
-) -> (f64, usize) {
-    let mut neval: usize = 0;
-
-    // Gradient tolerance for convergence
-    let gtol = tolerance * ls_tolerance * pq.snorm / scale.max(MJ_MINVAL);
-    if gtol <= 0.0 || pq.snorm < MJ_MINVAL {
-        return (0.0, neval);
-    }
-
-    // Phase 1: Initial Newton step from alpha=0
-    let p0 = primal_eval(data, pq, jv, 0.0);
-    neval += 1;
-
-    // Check if gradient at 0 is already small (unconstrained minimum at 0)
-    if p0.deriv[0].abs() < gtol {
-        return (0.0, neval);
-    }
-
-    // Newton step: alpha1 = -f'(0) / f''(0)
-    let alpha1 = if p0.deriv[1] > MJ_MINVAL {
-        -p0.deriv[0] / p0.deriv[1]
-    } else {
-        // Hessian too small; take unit step in descent direction
-        if p0.deriv[0] < 0.0 { 1.0 } else { -1.0 }
-    };
-
-    // Guard: step must be positive (descent direction)
-    if alpha1 <= 0.0 {
-        return (0.0, neval);
-    }
-
-    let p1 = primal_eval(data, pq, jv, alpha1);
-    neval += 1;
-
-    // Check convergence at p1
-    if p1.deriv[0].abs() < gtol {
-        return (alpha1, neval);
-    }
-
-    // Phase 2: One-sided bracket search
-    // Determine search direction based on sign of p1's derivative
-    let mut lo;
-    let mut hi;
-    if p1.deriv[0] < 0.0 {
-        // Derivative still negative — minimum is to the right of p1
-        lo = p1;
-        hi = p1; // will be updated
-        let mut step = alpha1; // step size doubles each iteration
-        for _ in 0..max_ls_iter {
-            step *= 2.0;
-            let trial = lo.alpha + step;
-            let pt = primal_eval(data, pq, jv, trial);
-            neval += 1;
-            if pt.deriv[0].abs() < gtol {
-                return (pt.alpha, neval);
-            }
-            if pt.deriv[0] > 0.0 {
-                // Derivative changed sign — bracket found: [lo, pt]
-                hi = pt;
-                break;
-            }
-            // Still negative — continue stepping right
-            lo = pt;
-            step = pt.alpha - lo.alpha; // geometric increase
-        }
-        // If hi was never updated (loop exhausted), return best we have
-        if hi.alpha <= lo.alpha {
-            return (lo.alpha, neval);
-        }
-    } else {
-        // Derivative positive at p1 — minimum is between 0 and p1
-        lo = p0;
-        hi = p1;
-    }
-
-    // Phase 3: Bracketed refinement
-    for _ in 0..max_ls_iter {
-        // Bracket width check
-        let width = hi.alpha - lo.alpha;
-        if width < MJ_MINVAL {
-            break;
-        }
-
-        // Three candidates:
-        // 1. Newton step from lo
-        let c1 = if lo.deriv[1] > MJ_MINVAL {
-            let a = lo.alpha - lo.deriv[0] / lo.deriv[1];
-            if a > lo.alpha && a < hi.alpha {
-                Some(a)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // 2. Newton step from hi
-        let c2 = if hi.deriv[1] > MJ_MINVAL {
-            let a = hi.alpha - hi.deriv[0] / hi.deriv[1];
-            if a > lo.alpha && a < hi.alpha {
-                Some(a)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // 3. Midpoint
-        let mid = 0.5 * (lo.alpha + hi.alpha);
-
-        // Evaluate all candidates, pick the best
-        let mut best = None;
-        let mut best_deriv_abs = f64::MAX;
-
-        for alpha in [c1, c2, Some(mid)].into_iter().flatten() {
-            let pt = primal_eval(data, pq, jv, alpha);
-            neval += 1;
-            if pt.deriv[0].abs() < gtol {
-                return (pt.alpha, neval);
-            }
-            if pt.deriv[0].abs() < best_deriv_abs {
-                best_deriv_abs = pt.deriv[0].abs();
-                best = Some(pt);
-            }
-        }
-
-        // Tighten the bracket using the best candidate
-        if let Some(pt) = best {
-            if pt.deriv[0] < 0.0 {
-                lo = pt;
-            } else {
-                hi = pt;
-            }
-        } else {
-            break;
-        }
-    }
-
-    // Return the endpoint with smaller |derivative|
-    let alpha = if lo.deriv[0].abs() < hi.deriv[0].abs() {
-        lo.alpha
-    } else {
-        hi.alpha
-    };
-    (alpha, neval)
+/// The constraint rows' data the update and the line search read
+/// (`mjPrimalContext`'s efc arrays).
+struct Rows {
+    ne: usize,
+    nf: usize,
+    d: Vec<f64>,
+    r: Vec<f64>,
+    floss: Vec<f64>,
+    ty: Vec<ConstraintType>,
+    dim: Vec<usize>,
+    mu: Vec<[f64; 5]>,
+    id: Vec<usize>,
 }
 
-/// Evaluate total cost (Gauss + constraint) at a trial acceleration.
-///
-/// Does not modify any data fields — purely evaluative.
-/// Used by warmstart comparison in `newton_solve`.
-/// DT-35: `m_eff` is `M_impl` when `ImplicitSpringDamper` is active.
-// Single-letter names follow the published primal-method notation.
-#[allow(clippy::many_single_char_names)]
-pub fn evaluate_cost_at(
-    data: &Data,
-    model: &Model,
-    qacc_trial: &DVector<f64>,
-    qacc_smooth: &DVector<f64>,
-    qfrc_smooth: &DVector<f64>,
-    m_eff: &DMatrix<f64>,
+/// A contact's cone Hessian, row-major `dim × dim` (`mjContact::H`).
+type ConeHessian = [f64; 36];
+
+/// Update each row's state, force and cost at `jar = J·qacc − aref`, as
+/// MuJoCo's `mj_constraintUpdate_impl` does
+/// (`engine_core_constraint.c:2394-2585`), and return the cost. With `cone_h`,
+/// each contact in the cone state gets its cone Hessian (MuJoCo's
+/// `flg_coneHessian`), indexed by contact.
+// One function so the per-kind branches read as MuJoCo's do; single-letter
+// names (`s`, `n`, `t`, `u`) are MuJoCo's own.
+#[allow(clippy::many_single_char_names, clippy::too_many_lines)]
+fn constraint_update(
+    rows: &Rows,
+    jar: &[f64],
+    state: &mut [ConstraintState],
+    force: &mut [f64],
+    mut cone_h: Option<&mut [ConeHessian]>,
 ) -> f64 {
-    let nv = model.nv;
-    let nefc = data.efc_type.len();
-
-    // Compute jar_trial = J · qacc_trial - aref
-    let mut jar_trial = DVector::<f64>::zeros(nefc);
+    let nefc = jar.len();
+    let mut s = 0.0;
+    if nefc == 0 {
+        return 0.0;
+    }
     for i in 0..nefc {
-        let mut j_dot_qacc = 0.0;
-        for col in 0..nv {
-            j_dot_qacc += data.efc_J[(i, col)] * qacc_trial[col];
-        }
-        jar_trial[i] = j_dot_qacc - data.efc_aref[i];
+        force[i] = -rows.d[i] * jar[i];
     }
-
-    // Compute Ma_trial = M_eff · qacc_trial
-    let mut ma_trial = DVector::<f64>::zeros(nv);
-    for r in 0..nv {
-        for c in 0..nv {
-            ma_trial[r] += m_eff[(r, c)] * qacc_trial[c];
-        }
-    }
-
-    // Gauss term: ½·(Ma_trial - qfrc_smooth)·(qacc_trial - qacc_smooth)
-    let mut cost_gauss = 0.0;
-    for k in 0..nv {
-        cost_gauss += (ma_trial[k] - qfrc_smooth[k]) * (qacc_trial[k] - qacc_smooth[k]);
-    }
-    cost_gauss *= 0.5;
-
-    // Constraint cost
-    let mut constraint_cost = 0.0;
     let mut i = 0;
     while i < nefc {
-        let ctype = data.efc_type[i];
-        let jar = jar_trial[i];
-        let d = data.efc_D[i];
-        let r = data.efc_R[i];
-
-        match ctype {
-            ConstraintType::Equality => {
-                constraint_cost += 0.5 * d * jar * jar;
-                i += 1;
+        // Equality.
+        if i < rows.ne {
+            s += 0.5 * rows.d[i] * jar[i] * jar[i];
+            state[i] = ConstraintState::Quadratic;
+            i += 1;
+            continue;
+        }
+        // Friction loss.
+        if i < rows.ne + rows.nf {
+            let (r, f) = (rows.r[i], rows.floss[i]);
+            if jar[i] <= -r * f {
+                s += -0.5 * r * f * f - f * jar[i];
+                force[i] = f;
+                state[i] = ConstraintState::LinearNeg;
+            } else if jar[i] >= r * f {
+                s += -0.5 * r * f * f + f * jar[i];
+                force[i] = -f;
+                state[i] = ConstraintState::LinearPos;
+            } else {
+                s += 0.5 * rows.d[i] * jar[i] * jar[i];
+                state[i] = ConstraintState::Quadratic;
             }
-            ConstraintType::FrictionLoss => {
-                let floss = data.efc_floss[i];
-                let threshold = r * floss;
-                if jar >= threshold {
-                    constraint_cost += floss * jar - 0.5 * r * floss * floss;
-                } else if jar <= -threshold {
-                    constraint_cost += -floss * jar - 0.5 * r * floss * floss;
-                } else {
-                    constraint_cost += 0.5 * d * jar * jar;
-                }
-                i += 1;
+            i += 1;
+            continue;
+        }
+        // Limit or contact.
+        if rows.ty[i] != ConstraintType::ContactElliptic {
+            if jar[i] >= 0.0 {
+                force[i] = 0.0;
+                state[i] = ConstraintState::Satisfied;
+            } else {
+                s += 0.5 * rows.d[i] * jar[i] * jar[i];
+                state[i] = ConstraintState::Quadratic;
             }
-            ConstraintType::LimitJoint
-            | ConstraintType::LimitTendon
-            | ConstraintType::ContactFrictionless
-            | ConstraintType::ContactPyramidal => {
-                if jar < 0.0 {
-                    constraint_cost += 0.5 * d * jar * jar;
-                }
-                i += 1;
+            i += 1;
+            continue;
+        }
+        // Contact with an elliptic cone, mapped to the regular dual cone.
+        let dim = rows.dim[i];
+        let mu = rows.mu[i][0];
+        let friction = &rows.mu[i];
+        let mut u = [0.0; 6];
+        u[0] = jar[i] * mu;
+        for j in 1..dim {
+            u[j] = jar[i + j] * friction[j - 1];
+        }
+        let n = u[0];
+        let t = mju_norm(&u[1..dim]);
+        if n >= mu * t || (t <= 0.0 && n >= 0.0) {
+            force[i..i + dim].fill(0.0);
+            state[i] = ConstraintState::Satisfied;
+        } else if mu * n + t <= 0.0 || (t <= 0.0 && n < 0.0) {
+            for j in 0..dim {
+                s += 0.5 * rows.d[i + j] * jar[i + j] * jar[i + j];
             }
-            ConstraintType::ContactElliptic => {
-                let dim = data.efc_dim[i];
-                let mu = data.efc_mu[i][0];
-
-                let u0 = jar_trial[i] * mu;
-                let n = u0;
-                let mut t_sq = 0.0;
+            state[i] = ConstraintState::Quadratic;
+        } else {
+            let dm = rows.d[i] / (mu * mu * (1.0 + mu * mu));
+            let nmt = n - mu * t;
+            s += 0.5 * dm * nmt * nmt;
+            force[i] = -dm * nmt * mu;
+            for j in 1..dim {
+                force[i + j] = -force[i] / t * u[j] * friction[j - 1];
+            }
+            state[i] = ConstraintState::Cone;
+            if let Some(cones) = cone_h.as_deref_mut() {
+                let h = &mut cones[rows.id[i]];
+                // First row (1, −μ/T·U), the upper block μN/T³·U·U', then
+                // (μ² − μN/T) on the diagonal; both sides times
+                // diag(μ, friction) and Dm; the lower triangle mirrored.
+                let mut scl = -mu / t;
+                h[0] = 1.0;
                 for j in 1..dim {
-                    let friction_j = data.efc_mu[i][j - 1];
-                    let uj = jar_trial[i + j] * friction_j;
-                    t_sq += uj * uj;
+                    h[j] = scl * u[j];
                 }
-                let t = t_sq.sqrt();
-                let t_min = MJ_MINVAL;
-
-                if n >= mu * t || (t < t_min && n >= 0.0) {
-                    // Top → zero cost
-                } else if mu * n + t <= 0.0 || (t < t_min && n < 0.0) {
-                    // Bottom → per-row quadratic
-                    for j in 0..dim {
-                        let jar_j = jar_trial[i + j];
-                        let d_j = data.efc_D[i + j];
-                        constraint_cost += 0.5 * d_j * jar_j * jar_j;
+                scl = mu * n / (t * t * t);
+                for k in 1..dim {
+                    for j in k..dim {
+                        h[k * dim + j] = scl * u[j] * u[k];
                     }
-                } else {
-                    // Middle → cone cost
-                    let d_normal = data.efc_D[i];
-                    let dm = d_normal / (mu * mu * (1.0 + mu * mu));
-                    let n_minus_mu_t = n - mu * t;
-                    constraint_cost += 0.5 * dm * n_minus_mu_t * n_minus_mu_t;
                 }
-                i += dim;
+                scl = mu * mu - mu * n / t;
+                for j in 1..dim {
+                    h[j * (dim + 1)] += scl;
+                }
+                for k in 0..dim {
+                    scl = dm * if k == 0 { mu } else { friction[k - 1] };
+                    for j in k..dim {
+                        h[k * dim + j] *= scl * if j == 0 { mu } else { friction[j - 1] };
+                    }
+                }
+                for k in 0..dim {
+                    for j in k + 1..dim {
+                        h[j * dim + k] = h[k * dim + j];
+                    }
+                }
+            }
+        }
+        for j in 1..dim {
+            state[i + j] = state[i];
+        }
+        i += dim;
+    }
+    s
+}
+
+/// `res = mat·vec` for a dense row-major `nr × nc` matrix (`mju_mulMatVec`,
+/// `engine_util_blas.c:785-789`).
+fn mul_mat_vec(mat: &[f64], vec: &[f64], res: &mut [f64], nc: usize) {
+    for (r, out) in res.iter_mut().enumerate() {
+        *out = mju_dot(&mat[r * nc..(r + 1) * nc], vec);
+    }
+}
+
+/// `res = mat'·vec` for a dense row-major `nr × nc` matrix (`mju_mulMatTVec`,
+/// `engine_util_blas.c:793-802`).
+fn mul_mat_t_vec(mat: &[f64], vec: &[f64], res: &mut [f64], nc: usize) {
+    res.fill(0.0);
+    for (r, &v) in vec.iter().enumerate() {
+        if v != 0.0 {
+            for (out, m) in res.iter_mut().zip(&mat[r * nc..(r + 1) * nc]) {
+                *out += m * v;
+            }
+        }
+    }
+}
+
+/// A line-search point (`mjPrimalPnt`).
+#[derive(Debug, Clone, Copy, Default)]
+struct Pnt {
+    /// The step size along `search`.
+    alpha: f64,
+    /// The cost at `alpha`.
+    cost: f64,
+    /// The cost's first and second derivatives in `alpha`.
+    deriv: [f64; 2],
+}
+
+/// The solver's state (`mjPrimalContext`): the rows, the dof arrays and the
+/// work arrays, MuJoCo's dense `efc_J` among them (row-major).
+struct Primal {
+    newton: bool,
+    nv: usize,
+    nefc: usize,
+    rows: Rows,
+    j: Vec<f64>,
+    aref: Vec<f64>,
+    state: Vec<ConstraintState>,
+    force: Vec<f64>,
+    cone_h: Vec<ConeHessian>,
+    qfrc_smooth: Vec<f64>,
+    qacc_smooth: Vec<f64>,
+    qfrc_constraint: Vec<f64>,
+    qacc: Vec<f64>,
+    jaref: Vec<f64>,
+    jv: Vec<f64>,
+    ma: Vec<f64>,
+    mv: Vec<f64>,
+    grad: Vec<f64>,
+    mgrad: Vec<f64>,
+    search: Vec<f64>,
+    /// Each row's cost along `search` while quadratic, `quad[0] + α·quad[1] +
+    /// α²·quad[2]`, 3 per row: `[jaref·D·jaref/2, jv·D·jaref, jv·D·jv/2]`; an
+    /// elliptic contact's first row sums its rows', and its cone terms take
+    /// the slots of its second and third rows.
+    quad: Vec<f64>,
+    /// Newton: each row's `D` while quadratic, else 0.
+    hd: Vec<f64>,
+    /// Newton, dense: the Hessian's factor, and with cones the factor of the
+    /// Hessian with their contributions.
+    l: Vec<f64>,
+    lcone: Vec<f64>,
+    /// Newton, sparse: the Hessian with its cones, factored.
+    sparse: Option<SparseHessian>,
+    cost: f64,
+    /// The Gauss term along `search`: `quad_gauss[0] + α·quad_gauss[1] +
+    /// α²·quad_gauss[2]`.
+    quad_gauss: [f64; 3],
+    scale: f64,
+    nactive: usize,
+    ncone: usize,
+    nupdate: usize,
+    ls_iter: usize,
+    ls_slope: f64,
+}
+
+impl Primal {
+    fn new(model: &Model, data: &Data, qfrc_smooth: &DVector<f64>, newton: bool) -> Self {
+        let (nv, nefc) = (model.nv, data.efc_type.len());
+        let mut j = vec![0.0; nefc * nv];
+        for r in 0..nefc {
+            for c in 0..nv {
+                j[r * nv + c] = data.efc_J[(r, c)];
+            }
+        }
+        let dense_newton = newton && nv < NV_SPARSE_THRESHOLD;
+        Self {
+            newton,
+            nv,
+            nefc,
+            rows: Rows {
+                ne: data.ne,
+                nf: data.nf,
+                d: data.efc_D.clone(),
+                r: data.efc_R.clone(),
+                floss: data.efc_floss.clone(),
+                ty: data.efc_type.clone(),
+                dim: data.efc_dim.clone(),
+                mu: data.efc_mu.clone(),
+                id: data.efc_id.clone(),
+            },
+            j,
+            aref: data.efc_aref.as_slice().to_vec(),
+            state: vec![ConstraintState::Satisfied; nefc],
+            force: vec![0.0; nefc],
+            cone_h: vec![[0.0; 36]; data.contacts.len()],
+            qfrc_smooth: qfrc_smooth.as_slice().to_vec(),
+            qacc_smooth: data.qacc_smooth.as_slice().to_vec(),
+            qfrc_constraint: vec![0.0; nv],
+            qacc: data.qacc.as_slice().to_vec(),
+            jaref: vec![0.0; nefc],
+            jv: vec![0.0; nefc],
+            ma: vec![0.0; nv],
+            mv: vec![0.0; nv],
+            grad: vec![0.0; nv],
+            mgrad: vec![0.0; nv],
+            search: vec![0.0; nv],
+            quad: vec![0.0; nefc * 3],
+            hd: vec![0.0; if newton { nefc } else { 0 }],
+            l: vec![0.0; if dense_newton { nv * nv } else { 0 }],
+            lcone: vec![0.0; if dense_newton { nv * nv } else { 0 }],
+            sparse: None,
+            cost: 0.0,
+            quad_gauss: [0.0; 3],
+            scale: 0.0,
+            nactive: 0,
+            ncone: 0,
+            nupdate: 0,
+            ls_iter: 0,
+            ls_slope: 1.0,
+        }
+    }
+
+    /// `efc_b = J·qacc_smooth − aref`, as `mj_fwdConstraint` makes it
+    /// (`engine_forward.c:755-757`).
+    fn efc_b(&self) -> Vec<f64> {
+        let mut b = vec![0.0; self.nefc];
+        mul_mat_vec(&self.j, &self.qacc_smooth, &mut b, self.nv);
+        for (b, a) in b.iter_mut().zip(&self.aref) {
+            *b -= a;
+        }
+        b
+    }
+
+    /// Choose the starting acceleration as MuJoCo's `warmstart` does
+    /// (`engine_forward.c:611-683`), for the primal solvers: the warmstart
+    /// unless the unconstrained acceleration costs less (a tie keeps the
+    /// warmstart), then `qacc_smooth` in every dof outside the islands;
+    /// `qacc_smooth` alone with warmstart disabled.
+    fn warmstart(&mut self, model: &Model, data: &Data, mass: &PrimalMass<'_>, efc_b: &[f64]) {
+        let nv = self.nv;
+        if disabled(model, DISABLE_WARMSTART) {
+            self.qacc.copy_from_slice(&self.qacc_smooth);
+            return;
+        }
+        let warm = data.qacc_warmstart.as_slice();
+        self.qacc.copy_from_slice(warm);
+        let mut jar = vec![0.0; self.nefc];
+        mul_mat_vec(&self.j, warm, &mut jar, nv);
+        for (x, a) in jar.iter_mut().zip(&self.aref) {
+            *x -= a;
+        }
+        let mut cost_warmstart =
+            constraint_update(&self.rows, &jar, &mut self.state, &mut self.force, None);
+        let mut ma = vec![0.0; nv];
+        mass.mul(model, data, warm, &mut ma);
+        for i in 0..nv {
+            cost_warmstart += 0.5 * (ma[i] - self.qfrc_smooth[i]) * (warm[i] - self.qacc_smooth[i]);
+        }
+        let cost_smooth =
+            constraint_update(&self.rows, efc_b, &mut self.state, &mut self.force, None);
+        if cost_warmstart > cost_smooth {
+            self.qacc.copy_from_slice(&self.qacc_smooth);
+        }
+        if data.nisland > 0 {
+            let last = data.nisland - 1;
+            let nidof = data.island_idofadr[last] + data.island_nv[last];
+            for &dof in &data.map_idof2dof[nidof..nv] {
+                self.qacc[dof] = self.qacc_smooth[dof];
             }
         }
     }
 
-    cost_gauss + constraint_cost
+    /// Update the rows' states and forces, `qfrc_constraint` and the cost
+    /// (`PrimalUpdateConstraint`, `engine_solver.c:1010-1043`).
+    fn update_constraint(&mut self, cone_hessian: bool) {
+        let cones = cone_hessian.then_some(&mut self.cone_h[..]);
+        self.cost = constraint_update(
+            &self.rows,
+            &self.jaref,
+            &mut self.state,
+            &mut self.force,
+            cones,
+        );
+        mul_mat_t_vec(&self.j, &self.force, &mut self.qfrc_constraint, self.nv);
+        self.nactive = 0;
+        self.ncone = 0;
+        for s in &self.state {
+            self.nactive += usize::from(*s != ConstraintState::Satisfied);
+            self.ncone += usize::from(*s == ConstraintState::Cone);
+        }
+        let mut gauss = 0.0;
+        for i in 0..self.nv {
+            gauss +=
+                0.5 * (self.ma[i] - self.qfrc_smooth[i]) * (self.qacc[i] - self.qacc_smooth[i]);
+        }
+        self.quad_gauss[0] = gauss;
+        self.cost += gauss;
+    }
+
+    /// `grad = M·qacc − qfrc_smooth − qfrc_constraint` and its preconditioned
+    /// form: `H⁻¹·grad` for Newton, `M⁻¹·grad` for CG
+    /// (`PrimalUpdateGradient`, `engine_solver.c:1047-1071`).
+    fn update_gradient(&mut self, model: &Model, data: &Data, mass: &PrimalMass<'_>) {
+        for i in 0..self.nv {
+            self.grad[i] = self.ma[i] - self.qfrc_smooth[i] - self.qfrc_constraint[i];
+        }
+        self.mgrad.copy_from_slice(&self.grad);
+        if !self.newton {
+            mass.solve(model, data, &mut self.mgrad);
+        } else if let Some(sparse) = &self.sparse {
+            sparse.solve(&mut self.mgrad);
+        } else {
+            let l = if self.ncone > 0 { &self.lcone } else { &self.l };
+            mju_chol_solve(l, &mut self.mgrad, self.nv);
+        }
+    }
+
+    /// The Gauss term's and each row's quadratic in the step along `search`,
+    /// and each elliptic contact's cone terms (`PrimalPrepare`,
+    /// `engine_solver.c:1075-1148`). A contact's cone terms go in the slots
+    /// of its second and third rows.
+    // Single-letter names (`d`, `q`, `u`, `v`) are MuJoCo's own.
+    #[allow(clippy::many_single_char_names)]
+    fn prepare(&mut self) {
+        self.quad_gauss[1] =
+            mju_dot(&self.search, &self.ma) - mju_dot(&self.qfrc_smooth, &self.search);
+        self.quad_gauss[2] = 0.5 * mju_dot(&self.search, &self.mv);
+        let (jv, jaref, d) = (&self.jv, &self.jaref, &self.rows.d);
+        let mut i = 0;
+        while i < self.nefc {
+            let q = 3 * i;
+            let dj0 = d[i] * jaref[i];
+            self.quad[q] = jaref[i] * dj0;
+            self.quad[q + 1] = jv[i] * dj0;
+            self.quad[q + 2] = jv[i] * d[i] * jv[i];
+            let next = if self.rows.ty[i] == ConstraintType::ContactElliptic {
+                let dim = self.rows.dim[i];
+                let mu = self.rows.mu[i][0];
+                let friction = &self.rows.mu[i];
+                for j in 1..dim {
+                    let djj = d[i + j] * jaref[i + j];
+                    self.quad[q] += jaref[i + j] * djj;
+                    self.quad[q + 1] += jv[i + j] * djj;
+                    self.quad[q + 2] += jv[i + j] * d[i + j] * jv[i + j];
+                }
+                let (mut u, mut v) = ([0.0; 6], [0.0; 6]);
+                u[0] = jaref[i] * mu;
+                v[0] = jv[i] * mu;
+                for j in 1..dim {
+                    u[j] = jaref[i + j] * friction[j - 1];
+                    v[j] = jv[i + j] * friction[j - 1];
+                }
+                let (mut uu, mut uv, mut vv) = (0.0, 0.0, 0.0);
+                for j in 1..dim {
+                    uu += u[j] * u[j];
+                    uv += u[j] * v[j];
+                    vv += v[j] * v[j];
+                }
+                self.quad[q + 3] = u[0];
+                self.quad[q + 4] = v[0];
+                self.quad[q + 5] = uu;
+                self.quad[q + 6] = uv;
+                self.quad[q + 7] = vv;
+                self.quad[q + 8] = d[i] / ((mu * mu) * (1.0 + (mu * mu)));
+                i + dim
+            } else {
+                i + 1
+            };
+            self.quad[q] *= 0.5;
+            self.quad[q + 2] *= 0.5;
+            i = next;
+        }
+    }
+
+    /// The cost along `search` at `alpha` and its first two derivatives
+    /// (`PrimalEval`, `engine_solver.c:1160-1294`); counts the evaluation.
+    // Single-letter names (`f`, `x`, `n`, `t`) are MuJoCo's own.
+    #[allow(clippy::many_single_char_names)]
+    fn eval(&mut self, alpha: f64) -> Pnt {
+        let rows = &self.rows;
+        let mut cost = 0.0;
+        let mut deriv = [0.0, 0.0];
+        let mut total = self.quad_gauss;
+        let add = |total: &mut [f64; 3], q: &[f64]| {
+            total[0] += q[0];
+            total[1] += q[1];
+            total[2] += q[2];
+        };
+        let mut i = 0;
+        while i < self.nefc {
+            let quad = &self.quad[3 * i..];
+            if i < rows.ne {
+                add(&mut total, quad);
+                i += 1;
+                continue;
+            }
+            if i < rows.ne + rows.nf {
+                let (start, dir) = (self.jaref[i], self.jv[i]);
+                let x = start + alpha * dir;
+                let f = rows.floss[i];
+                let rf = rows.r[i] * f;
+                if -rf < x && x < rf {
+                    add(&mut total, quad);
+                } else if x <= -rf {
+                    add(&mut total, &[f * (-0.5 * rf - start), -f * dir, 0.0]);
+                } else {
+                    add(&mut total, &[f * (-0.5 * rf + start), f * dir, 0.0]);
+                }
+                i += 1;
+                continue;
+            }
+            if rows.ty[i] == ConstraintType::ContactElliptic {
+                let mu = rows.mu[i][0];
+                let (u0, v0, uu, uv, vv, dm) =
+                    (quad[3], quad[4], quad[5], quad[6], quad[7], quad[8]);
+                let n = u0 + alpha * v0;
+                let tsqr = uu + alpha * (2.0 * uv + alpha * vv);
+                if tsqr <= 0.0 {
+                    if n < 0.0 {
+                        add(&mut total, quad);
+                    }
+                } else {
+                    let t = tsqr.sqrt();
+                    if n >= mu * t {
+                        // Top zone: no cost.
+                    } else if mu * n + t <= 0.0 {
+                        add(&mut total, quad);
+                    } else {
+                        let n1 = v0;
+                        let t1 = (uv + alpha * vv) / t;
+                        let t2 = vv / t - (uv + alpha * vv) * t1 / (t * t);
+                        cost += 0.5 * dm * (n - mu * t) * (n - mu * t);
+                        deriv[0] += dm * (n - mu * t) * (n1 - mu * t1);
+                        deriv[1] +=
+                            dm * ((n1 - mu * t1) * (n1 - mu * t1) + (n - mu * t) * (-mu * t2));
+                    }
+                }
+                i += rows.dim[i];
+            } else {
+                if self.jaref[i] + alpha * self.jv[i] < 0.0 {
+                    add(&mut total, quad);
+                }
+                i += 1;
+            }
+        }
+        cost += alpha * alpha * total[2] + alpha * total[1] + total[0];
+        deriv[0] += 2.0 * alpha * total[2] + total[1];
+        deriv[1] += 2.0 * total[2];
+        if deriv[1] <= 0.0 {
+            log::warn!("Linesearch objective is not convex");
+            deriv[1] = MJ_MINVAL;
+        }
+        self.ls_iter += 1;
+        Pnt { alpha, cost, deriv }
+    }
+
+    /// Replace `p` by the candidate on its side of the minimum that comes
+    /// closest, and evaluate the Newton step from it into `next`
+    /// (`updateBracket`, `engine_solver.c:1298-1325`). Returns whether `p`
+    /// changed.
+    fn update_bracket(&mut self, p: &mut Pnt, candidates: &[Pnt; 3], next: &mut Pnt) -> bool {
+        let mut updated = false;
+        for c in candidates {
+            if (p.deriv[0] < 0.0 && c.deriv[0] < 0.0 && p.deriv[0] < c.deriv[0])
+                || (p.deriv[0] > 0.0 && c.deriv[0] > 0.0 && p.deriv[0] > c.deriv[0])
+            {
+                *p = *c;
+                updated = true;
+            }
+        }
+        if updated {
+            *next = self.eval(p.alpha - p.deriv[0] / p.deriv[1]);
+        }
+        updated
+    }
+
+    /// The step along `search` (`PrimalSearch`, `engine_solver.c:1328-1512`):
+    /// a Newton step from 0, Newton steps on one side until the slope
+    /// changes sign, then a bracketed search over three candidates; the
+    /// first point whose slope is under the scaled tolerance, else the best
+    /// bracket end, else 0. Sets `ls_slope`.
+    fn line_search(
+        &mut self,
+        model: &Model,
+        data: &Data,
+        mass: &PrimalMass<'_>,
+        tolerance: f64,
+        ls_iterations: usize,
+    ) -> f64 {
+        self.ls_iter = 0;
+        self.ls_slope = 1.0;
+        let snorm = mju_norm(&self.search);
+        if snorm < MJ_MINVAL {
+            return 0.0;
+        }
+        let gtol = tolerance * snorm / self.scale;
+        let slopescl = self.scale / snorm;
+        mass.mul(model, data, &self.search, &mut self.mv);
+        mul_mat_vec(&self.j, &self.search, &mut self.jv, self.nv);
+        self.prepare();
+
+        let p0 = self.eval(0.0);
+        let mut p1 = self.eval(p0.alpha - p0.deriv[0] / p0.deriv[1]);
+        if p1.deriv[0].abs() < gtol {
+            self.ls_slope = p1.deriv[0].abs() * slopescl;
+            return p1.alpha;
+        }
+
+        // One-sided search.
+        let dir = if p1.deriv[0] < 0.0 { 1.0 } else { -1.0 };
+        let mut p2 = p0;
+        while p1.deriv[0] * dir <= -gtol && self.ls_iter < ls_iterations {
+            p2 = p1;
+            p1 = self.eval(p1.alpha - p1.deriv[0] / p1.deriv[1]);
+            if p1.deriv[0].abs() < gtol {
+                self.ls_slope = p1.deriv[0].abs() * slopescl;
+                return p1.alpha;
+            }
+        }
+        if self.ls_iter >= ls_iterations {
+            self.ls_slope = p1.deriv[0].abs() * slopescl;
+            return p1.alpha;
+        }
+
+        // Bracketed search.
+        let mut p2next = p1;
+        let mut p1next = self.eval(p1.alpha - p1.deriv[0] / p1.deriv[1]);
+        while self.ls_iter < ls_iterations {
+            let pmid = self.eval(0.5 * (p1.alpha + p2.alpha));
+            let candidates = [p1next, p2next, pmid];
+            let mut best: Option<Pnt> = None;
+            for c in candidates {
+                if c.deriv[0].abs() < gtol && best.is_none_or(|b| c.cost < b.cost) {
+                    best = Some(c);
+                }
+            }
+            if let Some(b) = best {
+                self.ls_slope = b.deriv[0].abs() * slopescl;
+                return b.alpha;
+            }
+            let b1 = self.update_bracket(&mut p1, &candidates, &mut p1next);
+            let b2 = self.update_bracket(&mut p2, &candidates, &mut p2next);
+            if !b1 && !b2 {
+                self.ls_slope = pmid.deriv[0].abs() * slopescl;
+                return pmid.alpha;
+            }
+        }
+
+        // The bracket end with the lower cost, if it improves on 0.
+        if p1.cost <= p2.cost && p1.cost < p0.cost {
+            self.ls_slope = p1.deriv[0].abs() * slopescl;
+            p1.alpha
+        } else if p2.cost <= p1.cost && p2.cost < p0.cost {
+            self.ls_slope = p2.deriv[0].abs() * slopescl;
+            p2.alpha
+        } else {
+            0.0
+        }
+    }
+
+    /// Newton: each row's `D` while quadratic, else 0.
+    fn hessian_d(&mut self) {
+        for i in 0..self.nefc {
+            self.hd[i] = if self.state[i] == ConstraintState::Quadratic {
+                self.rows.d[i]
+            } else {
+                0.0
+            };
+        }
+    }
+
+    /// The cone contacts as (first row, dim, Hessian), for the sparse
+    /// Hessian.
+    fn cones(&self) -> Vec<(usize, usize, ConeHessian)> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.nefc {
+            if self.state[i] == ConstraintState::Cone {
+                let dim = self.rows.dim[i];
+                out.push((i, dim, self.cone_h[self.rows.id[i]]));
+                i += dim;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Make the Hessian `M + J'·D·J` and factor it (`MakeHessian` and
+    /// `FactorizeHessian`, `engine_solver.c:1516-1670`): dense, `D` over the
+    /// quadratic rows into the lower triangle (`mju_sqrMatTD_impl`), `M`
+    /// added, factored with mjMINVAL for the smallest diagonal, then the
+    /// cones added (`HessianCone`); sparse, [`SparseHessian`] with the cones.
+    fn factorize_hessian(
+        &mut self,
+        model: &Model,
+        data: &Data,
+        mass: &PrimalMass<'_>,
+    ) -> Result<(), StepError> {
+        let nv = self.nv;
+        self.hessian_d();
+        if nv >= NV_SPARSE_THRESHOLD {
+            let implicit = model.integrator == Integrator::ImplicitSpringDamper;
+            let cones = self.cones();
+            match &mut self.sparse {
+                Some(h) => h.refactor(model, data, implicit, &self.state, &cones)?,
+                None => {
+                    self.sparse = Some(SparseHessian::assemble(
+                        model,
+                        data,
+                        nv,
+                        implicit,
+                        &self.state,
+                        &cones,
+                    )?);
+                }
+            }
+        } else {
+            self.l.fill(0.0);
+            for r in 0..self.nefc {
+                let dr = self.hd[r];
+                if dr == 0.0 {
+                    continue;
+                }
+                let row = &self.j[r * nv..(r + 1) * nv];
+                for i in 0..nv {
+                    let tmp = row[i];
+                    if tmp != 0.0 {
+                        let scl = tmp * dr;
+                        for (h, j) in self.l[i * nv..=i * nv + i].iter_mut().zip(row) {
+                            *h += j * scl;
+                        }
+                    }
+                }
+            }
+            mass.add_to_lower(model, data, &mut self.l);
+            mju_chol_factor(&mut self.l, nv, MJ_MINVAL);
+            if self.ncone > 0 {
+                self.hessian_cone();
+            }
+        }
+        self.nupdate = self.nefc;
+        Ok(())
+    }
+
+    /// Dense: the factor with each cone's contribution `J'·H·J` added by
+    /// rank-one updates of `H`'s factor columns (`HessianCone`,
+    /// `engine_solver.c:1674-1742`).
+    fn hessian_cone(&mut self) {
+        let nv = self.nv;
+        self.lcone.copy_from_slice(&self.l);
+        let mut ltj = vec![0.0; 6 * nv];
+        let mut i = 0;
+        while i < self.nefc {
+            if self.state[i] != ConstraintState::Cone {
+                i += 1;
+                continue;
+            }
+            let dim = self.rows.dim[i];
+            let mut local = self.cone_h[self.rows.id[i]];
+            mju_chol_factor(&mut local[..dim * dim], dim, MJ_MINVAL);
+            ltj[..dim * nv].fill(0.0);
+            for r in 0..dim {
+                let row = &self.j[(i + r) * nv..(i + r + 1) * nv];
+                for c in 0..=r {
+                    let scl = local[r * dim + c];
+                    for (out, j) in ltj[c * nv..(c + 1) * nv].iter_mut().zip(row) {
+                        *out += j * scl;
+                    }
+                }
+            }
+            for r in 0..dim {
+                mju_chol_update(&mut self.lcone, &mut ltj[r * nv..(r + 1) * nv], nv, true);
+            }
+            self.nupdate += dim;
+            i += dim;
+        }
+    }
+
+    /// Update the factor for the rows whose quadratic state changed: a
+    /// rank-one update with `√D·J` for each row that entered it, a downdate
+    /// for each that left; made anew when an update loses rank; then the
+    /// cones (`HessianIncremental`, `engine_solver.c:1746-1808`). Sparse:
+    /// made anew, with MuJoCo's update count.
+    // Rows are read across parallel arrays at one index, as MuJoCo's loop does.
+    #[allow(clippy::needless_range_loop)]
+    fn hessian_incremental(
+        &mut self,
+        model: &Model,
+        data: &Data,
+        mass: &PrimalMass<'_>,
+        old_state: &[ConstraintState],
+    ) -> Result<(), StepError> {
+        let nv = self.nv;
+        self.nupdate = 0;
+        if nv >= NV_SPARSE_THRESHOLD {
+            let quad = ConstraintState::Quadratic;
+            let changed = old_state
+                .iter()
+                .zip(&self.state)
+                .filter(|(o, n)| (**o == quad) != (**n == quad))
+                .count();
+            self.factorize_hessian(model, data, mass)?;
+            self.nupdate = changed + self.cones().iter().map(|c| c.1).sum::<usize>();
+            return Ok(());
+        }
+        let mut vec = vec![0.0; nv];
+        for i in 0..self.nefc {
+            let was = old_state[i] == ConstraintState::Quadratic;
+            let is = self.state[i] == ConstraintState::Quadratic;
+            if was == is {
+                continue;
+            }
+            let s = self.rows.d[i].sqrt();
+            for (v, j) in vec.iter_mut().zip(&self.j[i * nv..(i + 1) * nv]) {
+                *v = j * s;
+            }
+            let rank = mju_chol_update(&mut self.l, &mut vec, nv, is);
+            self.nupdate += 1;
+            if rank < nv {
+                return self.factorize_hessian(model, data, mass);
+            }
+        }
+        if self.ncone > 0 {
+            self.hessian_cone();
+        }
+        Ok(())
+    }
+}
+
+/// Solve the constraint rows with MuJoCo's primal solver, Newton when
+/// `newton`, else CG (`mj_solPrimal`, `engine_solver.c:1811-1969`, monolithic),
+/// from MuJoCo's warmstart; `efc_b` first, as `mj_fwdConstraint` makes it.
+///
+/// Leaves the iterate in `qacc`, and `efc_force`, `efc_state`, `efc_jar`,
+/// `efc_cost`, `qfrc_constraint`, the cone Hessians, `solver_niter` and
+/// `solver_stat`, one per iteration. `mass` and `qfrc_smooth` are the
+/// problem's (the implicit spring-damper integrator's are its own).
+///
+/// # Errors
+///
+/// `StepError::CholeskyFailed` when the sparse Hessian has a diagonal under
+/// mjMINVAL, where MuJoCo stops with "rank-deficient sparse Hessian".
+// The driver reads as `mj_solPrimal` does, start to end.
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+pub fn mj_sol_primal(
+    model: &Model,
+    data: &mut Data,
+    mass: &PrimalMass<'_>,
+    qfrc_smooth: &DVector<f64>,
+    newton: bool,
+) -> Result<(), StepError> {
+    let mut ctx = Primal::new(model, data, qfrc_smooth, newton);
+    let (nv, nefc) = (ctx.nv, ctx.nefc);
+    let efc_b = ctx.efc_b();
+    ctx.warmstart(model, data, mass, &efc_b);
+    data.efc_b = DVector::from_vec(efc_b);
+
+    let cone_hessian = newton && model.cone == 1;
+    let mut gradold = vec![0.0; if newton { 0 } else { nv }];
+    let mut mgradold = vec![0.0; if newton { 0 } else { nv }];
+    let mut mgraddif = vec![0.0; if newton { 0 } else { nv }];
+
+    mass.mul(model, data, &ctx.qacc.clone(), &mut ctx.ma);
+    let mut jaref = vec![0.0; nefc];
+    mul_mat_vec(&ctx.j, &ctx.qacc, &mut jaref, nv);
+    for (x, a) in jaref.iter_mut().zip(&ctx.aref) {
+        *x -= a;
+    }
+    ctx.jaref = jaref;
+
+    ctx.update_constraint(cone_hessian);
+    if newton {
+        ctx.factorize_hessian(model, data, mass)?;
+    }
+    ctx.update_gradient(model, data, mass);
+    for (s, g) in ctx.search.iter_mut().zip(&ctx.mgrad) {
+        *s = g * -1.0;
+    }
+    ctx.scale = 1.0 / (model.stat_meaninertia * nv.max(1) as f64);
+
+    let tolerance = model.solver_tolerance;
+    let mut stats = Vec::new();
+    while stats.len() < model.solver_iterations {
+        let alpha = ctx.line_search(
+            model,
+            data,
+            mass,
+            tolerance * model.ls_tolerance,
+            model.ls_iterations,
+        );
+        if alpha == 0.0 {
+            break;
+        }
+        for i in 0..nv {
+            ctx.qacc[i] += ctx.search[i] * alpha;
+            ctx.ma[i] += ctx.mv[i] * alpha;
+        }
+        for i in 0..nefc {
+            ctx.jaref[i] += ctx.jv[i] * alpha;
+        }
+        if !newton {
+            gradold.copy_from_slice(&ctx.grad);
+            mgradold.copy_from_slice(&ctx.mgrad);
+        }
+        let old_state = ctx.state.clone();
+        let old_cost = ctx.cost;
+
+        ctx.update_constraint(cone_hessian);
+        if newton {
+            ctx.hessian_incremental(model, data, mass, &old_state)?;
+        }
+        ctx.update_gradient(model, data, mass);
+
+        let nchange = old_state
+            .iter()
+            .zip(&ctx.state)
+            .filter(|(o, n)| o != n)
+            .count();
+        let improvement = ctx.scale * (old_cost - ctx.cost);
+        let gradient = ctx.scale * mju_norm(&ctx.grad);
+        stats.push(SolverStat {
+            improvement,
+            gradient,
+            lineslope: ctx.ls_slope,
+            nactive: ctx.nactive,
+            nchange,
+            neval: ctx.ls_iter,
+            nupdate: ctx.nupdate,
+        });
+        if improvement < tolerance || gradient < tolerance {
+            break;
+        }
+
+        if newton {
+            for (s, g) in ctx.search.iter_mut().zip(&ctx.mgrad) {
+                *s = g * -1.0;
+            }
+        } else {
+            // Polak-Ribière.
+            for i in 0..nv {
+                mgraddif[i] = ctx.mgrad[i] - mgradold[i];
+            }
+            let mut beta =
+                mju_dot(&ctx.grad, &mgraddif) / MJ_MINVAL.max(mju_dot(&gradold, &mgradold));
+            if beta < 0.0 {
+                beta = 0.0;
+            }
+            for i in 0..nv {
+                ctx.search[i] = -ctx.mgrad[i] + beta * ctx.search[i];
+            }
+        }
+    }
+
+    // Write back. A cone contact's Hessian is kept while it is in the cone.
+    data.qacc = DVector::from_vec(ctx.qacc);
+    data.qfrc_constraint = DVector::from_vec(ctx.qfrc_constraint);
+    data.efc_force = DVector::from_vec(ctx.force);
+    data.efc_jar = DVector::from_vec(ctx.jaref);
+    data.efc_cost = ctx.cost;
+    data.ncone = 0;
+    for h in &mut data.efc_cone_hessian {
+        *h = None;
+    }
+    let mut i = 0;
+    while i < nefc {
+        let dim = data.efc_dim[i];
+        if ctx.state[i] == ConstraintState::Cone {
+            let ci = data.efc_id[i];
+            let h = &ctx.cone_h[ci];
+            data.efc_cone_hessian[ci] = Some(DMatrix::from_row_slice(dim, dim, &h[..dim * dim]));
+            data.ncone += 1;
+        }
+        i += if data.efc_type[i] == ConstraintType::ContactElliptic {
+            dim
+        } else {
+            1
+        };
+    }
+    data.efc_state = ctx.state;
+    data.solver_niter = stats.len();
+    data.solver_stat = stats;
+    Ok(())
 }

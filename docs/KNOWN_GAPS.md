@@ -13,35 +13,18 @@ reason string), the evidence for the root cause, and status.
 
 ---
 
-## Gap 1 — Golden-flag `qacc` constraint-solve residual
+## Gap 1 — closed 2026-10-14: golden-flag `qacc` constraint-solve residual
 
-**Tests:** `sim/L0/tests/integration/golden_flags.rs` — 24 of the 26
-MuJoCo-3.4.0 golden-flag conformance tests (`golden_baseline` +
-`golden_disable_*` / `golden_enable_*`).
+**Tests:** `sim/L0/tests/integration/golden_flags.rs`, all 26 MuJoCo-3.4.0
+golden-flag tests; 24 of them were `#[ignore]`d with a `qacc` residual of
+~2e-3 at step 0–2 (measured 2026-07-05) against `TOLERANCE = 1e-8`.
 
-**Symptom (measured 2026-07-05):** each failing test reports a `qacc` mismatch
-at step 0–2, dof 0, with a **uniform absolute residual of ~2e-3** (full range
-observed: `3.5e-5` … `2.2e-3`) against `TOLERANCE = 1e-8`. On values of
-`qacc ≈ 20–130` this is a relative error of ~2e-5.
-
-**Root cause — the constraint solve.** Two flags make the residual vanish
-(both drop below `1e-8`, and are therefore **no longer `#[ignore]`d**):
-
-- `golden_disable_constraint` — disabling the constraint solver entirely.
-- `golden_disable_frictionloss` — disabling the frictionloss term.
-
-So the residual lives in the constraint / friction solve path, not the base
-articulated-body dynamics.
-
-**History:** the `ignore` strings previously claimed `qacc diff ~1.69` (and
-per-flag values up to `~25.9`). The gap has since shrunk ~1000× to the uniform
-~2e-3 above; the old magnitudes were stale. Reason strings now point here
-instead of hard-coding a number that re-rots.
-
-**Status:** open. Reaching `1e-8` likely requires bit-level matching of
-MuJoCo's constraint solver (PGS/Newton iteration order, warm-start, impedance
-arithmetic) and may be aspirational at that tolerance. Not scheduled — belongs
-to the professional-tier engine track, not SDK tightening.
+**Closed by** Newton and CG becoming MuJoCo's primal solver (book P34): all 26
+pass at `1e-8`, none is ignored. The residual came from Newton: removing a row
+from its Hessian's factor added it again, and an unconverged solve fell back to
+PGS. Fixing the removal alone made them pass (A18 §1, measured on the planning
+prototype). Given MuJoCo's own inputs the solver now matches MuJoCo 3.5.0 bit
+for bit (`integration/primal_solver_parity.rs`).
 
 ---
 

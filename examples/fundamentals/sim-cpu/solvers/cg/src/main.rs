@@ -58,9 +58,9 @@ use sim_core::validation::{Check, print_report};
 //   - Superlinear convergence for well-conditioned problems
 //   - M⁻¹ preconditioning leverages existing mass-matrix factorization
 //   - No Hessian assembly (cheaper per-iteration than Newton)
-//   - Falls back to PGS if line search fails
+//   - At its iteration cap it keeps its last iterate, as MuJoCo's does
 //
-// Source: sim/L0/core/src/constraint/solver/cg.rs
+// Source: sim/L0/core/src/constraint/solver/primal.rs
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 

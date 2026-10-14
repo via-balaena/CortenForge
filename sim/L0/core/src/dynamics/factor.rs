@@ -44,6 +44,12 @@ pub fn mj_factor_m(model: &Model, data: &mut Data) {
 #[must_use]
 pub fn mj_mul_m(model: &Model, data: &Data, vec: &[f64]) -> DVector<f64> {
     let mut res = DVector::zeros(model.nv);
+    mj_mul_m_to(model, data, vec, res.as_mut_slice());
+    res
+}
+
+/// [`mj_mul_m`] into `res` (`nv` long).
+pub fn mj_mul_m_to(model: &Model, data: &Data, vec: &[f64], res: &mut [f64]) {
     for i in 0..model.nv {
         let adr = model.M_rowadr[i];
         let diag = model.M_rownnz[i] - 1;
@@ -55,7 +61,6 @@ pub fn mj_mul_m(model: &Model, data: &Data, vec: &[f64]) -> DVector<f64> {
             res[j] += val * vec[i];
         }
     }
-    res
 }
 
 /// Solve `M·x = y` in place as MuJoCo 3.5.0's `mj_solveM` does

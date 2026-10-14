@@ -1,98 +1,40 @@
-//! Newton Hessian assembly, factorization, and incremental updates.
+//! Newton's sparse Hessian, for models of MuJoCo's sparse size.
 //!
-//! Contains the dense Hessian assembly (`assemble_hessian`), the sparse
-//! Hessian (`SparseHessian`) with CSC storage and LDL^T factorization,
-//! incremental rank-1 Cholesky updates (`hessian_incremental`), and
-//! cone Hessian augmentation (`hessian_cone`).
-//!
-//! Corresponds to the Hessian infrastructure in MuJoCo's `engine_solver.c`
-//! (§15.6–15.7).
+//! [`SparseHessian`] holds `H = M + J'·D·J` plus the cone contacts'
+//! contributions in CSC storage, factored as `L·D·L'`. MuJoCo factors and
+//! updates its own sparse Hessian (`MakeHessian`, `FactorizeHessian`,
+//! `HessianIncremental`, `engine_solver.c:1516-1808`); this one is made anew
+//! at each solver iteration, the same matrix rounded otherwise.
 
-use nalgebra::{DMatrix, DVector};
-
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::integrate::implicit::{
     isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness, tendon_active_stiffness,
     tendon_all_dofs_sleeping,
 };
-use crate::linalg::{cholesky_in_place, cholesky_rank1_update};
-use crate::types::{ConstraintState, ConstraintType, Data, ENABLE_SLEEP, Model, StepError};
+use crate::types::{ConstraintState, Data, ENABLE_SLEEP, Model, StepError};
 
-/// DOF count above which Newton switches from dense O(nv³) Cholesky to
-/// sparse LDL^T. At nv ≈ 60, sparse becomes competitive with dense.
+/// The dof count from which Newton factors a sparse Hessian: MuJoCo's
+/// `mj_isSparse` (`engine_core_util.c:32-39`) under its default automatic
+/// Jacobian, `nv ≥ 60`.
 pub const NV_SPARSE_THRESHOLD: usize = 60;
 
-/// Assemble the Newton Hessian and factor via Cholesky.
-///
-/// Phase A: H = M_eff + Σ_{Quadratic rows} D_i · J_i^T · J_i
-/// (No cone Hessian in Phase A — cone rows are treated as Quadratic per-row.)
-///
-/// DT-35: `m_eff` is `M_impl` when `ImplicitSpringDamper` is active,
-/// `data.qM` otherwise. The Hessian starts from `m_eff` so that tendon K/D
-/// contributions are included in the Newton system.
-///
-/// Returns the Cholesky factor L (lower triangular) such that H = L · L^T,
-/// or an error if the Hessian is not positive definite.
-pub fn assemble_hessian(
-    data: &Data,
-    nv: usize,
-    m_eff: &DMatrix<f64>,
-) -> Result<DMatrix<f64>, StepError> {
-    let nefc = data.efc_type.len();
+/// A cone contact's first row, its dim and its cone Hessian (row-major).
+pub type Cone = (usize, usize, [f64; 36]);
 
-    // Start with effective mass matrix (M or M_impl)
-    let mut h = DMatrix::<f64>::zeros(nv, nv);
-    for r in 0..nv {
-        for c in 0..nv {
-            h[(r, c)] = m_eff[(r, c)];
-        }
-    }
-
-    // Add Σ_{Quadratic rows} D_i · J_i^T · J_i
-    for i in 0..nefc {
-        if data.efc_state[i] != ConstraintState::Quadratic {
-            continue;
-        }
-        let d_i = data.efc_D[i];
-        // Rank-1 update: H += D_i · j_i · j_i^T
-        for r in 0..nv {
-            let j_r = data.efc_J[(i, r)];
-            if j_r == 0.0 {
-                continue;
-            }
-            let d_j_r = d_i * j_r;
-            for c in r..nv {
-                let j_c = data.efc_J[(i, c)];
-                if j_c == 0.0 {
-                    continue;
-                }
-                let val = d_j_r * j_c;
-                h[(r, c)] += val;
-                if r != c {
-                    h[(c, r)] += val;
-                }
-            }
-        }
-    }
-
-    // Cholesky factorize in-place
-    cholesky_in_place(&mut h)?;
-    Ok(h)
-}
-
-// ============================================================================
-// Sparse Hessian path (Phase C): for large systems (nv > NV_SPARSE_THRESHOLD)
-// ============================================================================
-
-/// Sparse Hessian H = M + J^T·D·J in CSC lower-triangle format with
-/// cached symbolic/numeric LDL^T factorization.
+/// Sparse Hessian `H = M + J'·D·J + Σ J_c'·H_c·J_c` in CSC lower-triangle
+/// format with cached symbolic/numeric `L·D·L'` factorization.
 ///
 /// The sparsity pattern comes from:
 /// - M: tree sparsity via `dof_parent` (entry (i,j) iff j is ancestor of i)
-/// - J^T·D·J: couples DOFs that share constraint rows
+/// - J'·J over every constraint row, whatever its state, as MuJoCo's pattern
+///   (`mju_sqrMatTDSparseCount` over all rows), so a row that becomes
+///   quadratic or a cone later in the solve has its entries
+/// - under the implicit spring-damper integrator, each stiff or damped
+///   tendon's `J'·J`
 ///
 /// Symbolic factorization (elimination tree + L structure) is computed once
-/// per `assemble` call. Numeric factorization is recomputed each Newton
-/// iteration via `factor()`. Solve is forward/diagonal/back substitution.
+/// per `assemble` call; numeric factorization at each `refactor`. Solve is
+/// forward/diagonal/back substitution.
 pub struct SparseHessian {
     nv: usize,
     /// CSC column pointers for lower triangle of H (length nv+1).
@@ -126,6 +68,8 @@ impl SparseHessian {
         data: &Data,
         nv: usize,
         implicit_sd: bool,
+        state: &[ConstraintState],
+        cones: &[Cone],
     ) -> Result<Self, StepError> {
         let nefc = data.efc_type.len();
 
@@ -145,13 +89,9 @@ impl SparseHessian {
             }
         }
 
-        // J^T·D·J sparsity: for each Quadratic constraint row, the outer product
-        // of its non-zero J entries determines fill. We conservatively include all
-        // non-zero pairs.
+        // J'·J sparsity: every row's outer product of its non-zero J entries,
+        // whatever the row's state (MuJoCo's pattern).
         for r in 0..nefc {
-            if data.efc_state[r] != ConstraintState::Quadratic {
-                continue;
-            }
             // Collect non-zero column indices in this J row
             let mut nz_cols: Vec<usize> = Vec::new();
             for col in 0..nv {
@@ -224,7 +164,7 @@ impl SparseHessian {
         };
 
         // --- Step 3: Fill numeric values ---
-        h.fill_numeric(model, data, nv, nefc, implicit_sd);
+        h.fill_numeric(model, data, nv, nefc, implicit_sd, state, cones);
 
         // --- Step 4: Symbolic factorization ---
         h.symbolic_factor();
@@ -235,23 +175,33 @@ impl SparseHessian {
         Ok(h)
     }
 
-    /// Refactor with updated numeric values (same sparsity pattern).
-    /// Used when constraint states change but sparsity doesn't.
+    /// Refactor with updated numeric values (same sparsity pattern), for new
+    /// constraint states and cones.
     pub fn refactor(
         &mut self,
         model: &Model,
         data: &Data,
         implicit_sd: bool,
+        state: &[ConstraintState],
+        cones: &[Cone],
     ) -> Result<(), StepError> {
         let nv = self.nv;
         let nefc = data.efc_type.len();
-        self.fill_numeric(model, data, nv, nefc, implicit_sd);
+        self.fill_numeric(model, data, nv, nefc, implicit_sd, state, cones);
         self.numeric_factor()
     }
 
-    /// Fill CSC values with H = M + Σ_{Quadratic} D_i · J_i^T · J_i.
-    /// DT-35: When `implicit_sd` is true, also adds joint diagonal K/D and
-    /// tendon non-diagonal K/D to match `build_m_impl_for_newton`.
+    /// Fill CSC values with `H = M + Σ_{Quadratic} D_i·J_i'·J_i` plus each
+    /// cone's `J_c'·H_c·J_c`. DT-35: When `implicit_sd` is true, also adds
+    /// joint diagonal K/D and tendon non-diagonal K/D to match
+    /// `build_m_impl_for_newton`.
+    // Each term reads as its own block; splitting it would scatter one sum.
+    // Rows are read across parallel arrays at one index.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::needless_range_loop
+    )]
     fn fill_numeric(
         &mut self,
         model: &Model,
@@ -259,6 +209,8 @@ impl SparseHessian {
         nv: usize,
         nefc: usize,
         implicit_sd: bool,
+        state: &[ConstraintState],
+        cones: &[Cone],
     ) {
         // Zero all values
         self.vals.iter_mut().for_each(|v| *v = 0.0);
@@ -340,7 +292,7 @@ impl SparseHessian {
         // in the inner loop — reduces J^T·D·J fill from O(nefc·nv²) to
         // O(nefc·nnz_per_row²) where nnz_per_row is typically << nv.
         for r in 0..nefc {
-            if data.efc_state[r] != ConstraintState::Quadratic {
+            if state[r] != ConstraintState::Quadratic {
                 continue;
             }
             let d_r = data.efc_D[r];
@@ -359,6 +311,36 @@ impl SparseHessian {
                     // Lower triangle: col_b >= col_a
                     if let Some(idx) = self.find_entry(col_a, col_b) {
                         self.vals[idx] += d_j_a * j_b;
+                    }
+                }
+            }
+        }
+
+        // Each cone: J_c'·H_c·J_c over its rows' non-zero columns.
+        for &(row, dim, ref hc) in cones {
+            let mut cols: Vec<usize> = (0..nv)
+                .filter(|&c| (0..dim).any(|a| data.efc_J[(row + a, c)] != 0.0))
+                .collect();
+            cols.sort_unstable();
+            // w = H_c·J_c on those columns.
+            let w: Vec<Vec<f64>> = (0..dim)
+                .map(|a| {
+                    cols.iter()
+                        .map(|&c| {
+                            (0..dim)
+                                .map(|b| hc[a * dim + b] * data.efc_J[(row + b, c)])
+                                .sum()
+                        })
+                        .collect()
+                })
+                .collect();
+            for (pi, &col_a) in cols.iter().enumerate() {
+                for (qi, &col_b) in cols.iter().enumerate().skip(pi) {
+                    let val: f64 = (0..dim)
+                        .map(|a| data.efc_J[(row + a, col_a)] * w[a][qi])
+                        .sum();
+                    if let Some(idx) = self.find_entry(col_a, col_b) {
+                        self.vals[idx] += val;
                     }
                 }
             }
@@ -533,9 +515,10 @@ impl SparseHessian {
                 }
             }
 
-            // Extract D[j] = y[j]
+            // Extract D[j] = y[j]. Below mjMINVAL MuJoCo stops ("rank-deficient
+            // sparse Hessian").
             let dj = y[j];
-            if dj <= 0.0 {
+            if dj < MJ_MINVAL {
                 // Clean up work arrays before returning error
                 for k in h_start..h_end {
                     let i = self.row_idx[k];
@@ -574,7 +557,9 @@ impl SparseHessian {
     }
 
     /// Solve L·D·L^T · x = b in place.
-    pub fn solve(&self, x: &mut DVector<f64>) {
+    // Substitution reads and writes `x` at the factor's row indices.
+    #[allow(clippy::needless_range_loop)]
+    pub fn solve(&self, x: &mut [f64]) {
         let n = self.nv;
 
         // Forward substitution: L · y = b
@@ -608,120 +593,4 @@ impl SparseHessian {
             }
         }
     }
-}
-
-/// Incrementally update the Cholesky factor when constraint states change.
-///
-/// Instead of reassembling the full Hessian and re-factoring, uses rank-1
-/// updates and downdates to modify the existing Cholesky factor L:
-/// - Old state != Quadratic AND new state == Quadratic → rank-1 update (add D_i · J_i^T · J_i)
-/// - Old state == Quadratic AND new state != Quadratic → rank-1 downdate (remove D_i · J_i^T · J_i)
-///
-/// Falls back to full `assemble_hessian` if a downdate fails (would make H non-PD).
-// Indexed loop mutates parallel arrays at the same index; iterator forms would obscure the per-row update.
-#[allow(clippy::needless_range_loop)]
-pub fn hessian_incremental(
-    data: &Data,
-    nv: usize,
-    chol_l: &mut DMatrix<f64>,
-    old_states: &[ConstraintState],
-    m_eff: &DMatrix<f64>,
-) -> Result<(), StepError> {
-    let nefc = data.efc_type.len();
-
-    for i in 0..nefc {
-        let was_quad = old_states[i] == ConstraintState::Quadratic;
-        let is_quad = data.efc_state[i] == ConstraintState::Quadratic;
-
-        if was_quad == is_quad {
-            continue; // No change for this row
-        }
-
-        let d_i = data.efc_D[i];
-        let sqrt_d = d_i.sqrt();
-
-        // Build the rank-1 vector: v = sqrt(D_i) · J_i
-        let mut v: Vec<f64> = (0..nv).map(|col| sqrt_d * data.efc_J[(i, col)]).collect();
-
-        if !was_quad && is_quad {
-            // Became Quadratic → rank-1 update (add)
-            cholesky_rank1_update(chol_l, &mut v)?;
-        } else {
-            // Was Quadratic, now isn't → rank-1 downdate (remove)
-            // For downdate: negate the vector before calling the update
-            // If this fails, fall back to full reassembly
-            for x in &mut v {
-                *x = -*x;
-            }
-            if cholesky_rank1_update(chol_l, &mut v).is_err() {
-                // Downdate failed — full reassembly
-                *chol_l = assemble_hessian(data, nv, m_eff)?;
-                return Ok(());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Produce L_cone from L by adding cone Hessian contributions via rank-1 updates.
-///
-/// For each cone-state contact with a stored `efc_cone_hessian[ci]`:
-/// 1. Factor the local dim×dim H_c via Cholesky → L_local
-/// 2. For each column k of L_local, build `v = L_local[:,k]^T * J_contact` (nv vector)
-/// 3. Apply rank-1 update to L_cone with v
-///
-/// Returns the modified Cholesky factor, or falls back to full `assemble_hessian` if
-/// any update fails.
-pub fn hessian_cone(
-    data: &Data,
-    nv: usize,
-    chol_l: &DMatrix<f64>,
-) -> Result<DMatrix<f64>, StepError> {
-    let mut l_cone = chol_l.clone();
-
-    for (ci, hc_opt) in data.efc_cone_hessian.iter().enumerate() {
-        let Some(hc) = hc_opt else {
-            continue;
-        };
-
-        let dim = hc.nrows();
-
-        // Find the starting efc row for this contact.
-        // Scan efc_id to find the first row with id == ci and type == ContactElliptic.
-        let Some(efc_start) = data
-            .efc_id
-            .iter()
-            .position(|&id| id == ci && data.efc_type[id] == ConstraintType::ContactElliptic)
-        else {
-            continue;
-        };
-
-        // Factor H_c via Cholesky: H_c = L_local · L_local^T
-        let mut l_local = hc.clone();
-        if cholesky_in_place(&mut l_local).is_err() {
-            // H_c not PD — skip this cone (degenerate)
-            continue;
-        }
-
-        // For each column k of L_local, compute v = sum_j L_local[j,k] * J[efc_start+j, :]
-        // Then rank-1 update L_cone with v
-        for k in 0..dim {
-            let mut v = vec![0.0_f64; nv];
-            for j in k..dim {
-                // L_local is lower triangular, so L_local[j,k] = 0 for j < k
-                let ljk = l_local[(j, k)];
-                if ljk == 0.0 {
-                    continue;
-                }
-                let efc_row = efc_start + j;
-                for (col, v_col) in v.iter_mut().enumerate() {
-                    *v_col += ljk * data.efc_J[(efc_row, col)];
-                }
-            }
-            cholesky_rank1_update(&mut l_cone, &mut v)?;
-        }
-    }
-
-    Ok(l_cone)
 }
