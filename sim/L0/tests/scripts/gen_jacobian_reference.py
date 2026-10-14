@@ -36,6 +36,12 @@ of the Jacobians alone. The cases:
   are its Jacobian's rows (`mj_contactJacobian` and `mj_instantiateContact`,
   `engine_core_constraint.c:907-1087`): for each contact, its geoms,
   position, frame and dimension, and those rows.
+- equalities: a connect between a box on a ball joint (below a hinged
+  arm) and a free sphere, a weld between the sphere and the arm, and a
+  weld of the box to the world, at a moved state, collisions off: `efc_J`
+  and `efc_pos` (`mj_instantiateEquality`: the anchors placed by
+  `mju_mulMatVec3`, the Jacobians' difference, a weld's orientation error
+  and its rotational rows through `mju_mulQuat` and `mju_mulQuatAxis`).
 """
 import json
 import os
@@ -98,6 +104,30 @@ CONTACTS = """<mujoco model="contacts">
       </body>
     </body>
   </worldbody>
+</mujoco>"""
+
+
+EQUALITIES = """<mujoco model="equalities">
+  <option><flag contact="disable"/></option>
+  <worldbody>
+    <body name="p" pos="0 0 1" quat="0.9 0.2 0.1 0.3">
+      <joint type="hinge" axis="0.2 1 0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="0.4"/>
+      <body name="q" pos="0.3 0 0">
+        <joint type="ball"/>
+        <geom type="box" size="0.05 0.03 0.02" pos="0.05 0 0" mass="0.3"/>
+      </body>
+    </body>
+    <body name="r" pos="0.4 0.1 1.1">
+      <freejoint/>
+      <geom type="sphere" size="0.04" mass="0.2"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="q" body2="r" anchor="0.1 0.02 -0.01"/>
+    <weld body1="r" body2="p"/>
+    <weld body1="q"/>
+  </equality>
 </mujoco>"""
 
 
@@ -166,13 +196,27 @@ def main():
                          "efc_J": floats(efc_j[a:a + c.dim])})
     if sorted({c["dim"] for c in contacts}) != [3, 4, 6]:
         sys.exit(f"contacts: dims {[c['dim'] for c in contacts]}")
+    em = mujoco.MjModel.from_xml_string(EQUALITIES)
+    ed = mujoco.MjData(em)
+    ed.qpos[0] = 0.3
+    ed.qpos[1:5] = [0.9, -0.2, 0.3, 0.1]
+    ed.qpos[1:5] /= np.linalg.norm(ed.qpos[1:5])
+    ed.qpos[5:8] = [0.42, 0.12, 1.07]
+    ed.qpos[8:12] = [0.8, 0.1, -0.3, 0.5]
+    ed.qpos[8:12] /= np.linalg.norm(ed.qpos[8:12])
+    mujoco.mj_forward(em, ed)
+    if ed.nefc != 15 or ed.ncon != 0:
+        sys.exit(f"equalities: nefc {ed.nefc}, ncon {ed.ncon}")
+    equalities = {"xml": EQUALITIES, "model": fields(em), "qpos": floats(ed.qpos),
+                  "eq_data": floats(em.eq_data), "efc_J": floats(ed.efc_J), "efc_pos": floats(ed.efc_pos)}
     cases = {"jac": {"xml": xml, "model": fields(m), "qpos": floats(d.qpos),
                      "subtree_com": floats(d.subtree_com), "bodies": jac},
              "apply_ft": {"xml": xml, "model": fields(m), "qpos": floats(d.qpos), "bodies": apply_ft},
              "gravcomp": {"xml": gxml, "model": fields(gm), "qpos": floats(gd.qpos),
                           "qfrc_gravcomp": floats(gd.qfrc_gravcomp)},
              "contacts": {"xml": CONTACTS, "model": fields(cm), "qpos": floats(cd.qpos),
-                          "nv": int(cm.nv), "contacts": contacts}}
+                          "nv": int(cm.nv), "contacts": contacts},
+             "equalities": equalities}
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "jacobian.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))

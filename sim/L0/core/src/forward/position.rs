@@ -8,6 +8,7 @@ use crate::collision::narrow::GEOM_EPSILON;
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::compute_body_spatial_inertia;
 use crate::quat;
+use crate::quat::mul_mat_vec3;
 use crate::tendon::mj_fwd_tendon;
 use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SameFrame, SleepState};
 use cf_geometry::Aabb;
@@ -278,13 +279,6 @@ fn quat_array(q: &UnitQuaternion<f64>) -> [f64; 4] {
 
 fn add3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-/// `mat · vec`, each row summed left to right (MuJoCo `mji_mulMatVec3`,
-/// `engine_inline.h:137-141`).
-fn mul_mat_vec3(mat: &Matrix3<f64>, vec: &[f64; 3]) -> [f64; 3] {
-    let row = |r: usize| mat[(r, 0)] * vec[0] + mat[(r, 1)] * vec[1] + mat[(r, 2)] * vec[2];
-    [row(0), row(1), row(2)]
 }
 
 // ============================================================================

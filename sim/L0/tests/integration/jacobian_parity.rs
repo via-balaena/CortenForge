@@ -56,7 +56,13 @@ fn vec3s(v: &Value) -> Vec<Vector3<f64>> {
 /// The case's model with MuJoCo's frame and mass fields written in (the
 /// loader rounds a normalized axis or quaternion otherwise), at its state.
 fn at_state(case: &Value) -> (Model, Data) {
-    let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    at_state_of(
+        load_model(case["xml"].as_str().expect("xml")).expect("load"),
+        case,
+    )
+}
+
+fn at_state_of(mut model: Model, case: &Value) -> (Model, Data) {
     let f = &case["model"];
     let quats = |v: &Value| -> Vec<UnitQuaternion<f64>> {
         floats(v)
@@ -203,4 +209,23 @@ fn contact_jacobians_match_mujoco_3_5_0_bit_for_bit() {
             &floats(&c["efc_J"]),
         );
     }
+}
+
+/// Connect and weld rows: a connect between a box on a ball joint (below a
+/// hinged arm) and a free sphere, a weld between the sphere and the arm, a
+/// weld of the box to the world, at a moved state, `efc_J` and `efc_pos`
+/// bit for bit with MuJoCo's. MuJoCo's `eq_data` (its compiler's anchors
+/// and `relpose`) is written in, as the frames are.
+#[test]
+fn equality_rows_match_mujoco_3_5_0_bit_for_bit() {
+    let case = &golden()["cases"]["equalities"];
+    let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let eq_data = floats(&case["eq_data"]);
+    for (eq, chunk) in model.eq_data.iter_mut().zip(eq_data.chunks(11)) {
+        eq.copy_from_slice(chunk);
+    }
+    let (_, data) = at_state_of(model, case);
+    assert_eq!(data.efc_J.nrows(), 15, "the equality rows alone");
+    assert_bits("efc_J", &row_major(&data.efc_J), &floats(&case["efc_J"]));
+    assert_bits("efc_pos", &data.efc_pos, &floats(&case["efc_pos"]));
 }

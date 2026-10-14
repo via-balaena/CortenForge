@@ -2,7 +2,7 @@
 //! step's rotations round as MuJoCo's do. Quaternions are `[w, x, y, z]`.
 
 use crate::constraint::impedance::MJ_MINVAL;
-use nalgebra::DVector;
+use nalgebra::{DVector, Matrix3};
 
 /// Scales `vec` to unit length and returns its length before (MuJoCo
 /// `mju_normalize3`, `engine_util_blas.c:120-135`). Below [`MJ_MINVAL`] it
@@ -109,6 +109,24 @@ pub fn quat_to_mat(quat: &[f64; 4]) -> [f64; 9] {
         2.0 * (q23 + q01),
         q00 - q11 - q22 + q33,
     ]
+}
+
+/// The product of `quat` and the pure quaternion `[0, axis]` (MuJoCo
+/// `mju_mulQuatAxis`, `engine_util_spatial.c:81-92`).
+pub fn mul_quat_axis(quat: &[f64; 4], axis: &[f64; 3]) -> [f64; 4] {
+    [
+        -quat[1] * axis[0] - quat[2] * axis[1] - quat[3] * axis[2],
+        quat[0] * axis[0] + quat[2] * axis[2] - quat[3] * axis[1],
+        quat[0] * axis[1] + quat[3] * axis[0] - quat[1] * axis[2],
+        quat[0] * axis[2] + quat[1] * axis[1] - quat[2] * axis[0],
+    ]
+}
+
+/// `mat · vec`, each row summed left to right (MuJoCo `mji_mulMatVec3`,
+/// `engine_inline.h:137-141`; `mju_mulMatVec3`, `engine_util_blas.c:158-166`).
+pub fn mul_mat_vec3(mat: &Matrix3<f64>, vec: &[f64; 3]) -> [f64; 3] {
+    let row = |r: usize| mat[(r, 0)] * vec[0] + mat[(r, 1)] * vec[1] + mat[(r, 2)] * vec[2];
+    [row(0), row(1), row(2)]
 }
 
 /// The conjugate of `quat` (MuJoCo `mju_negQuat`, `engine_util_spatial.c:57-62`).
