@@ -156,14 +156,16 @@ fn flex_rows_stay_while_another_tree_sleeps() {
     assert!(asleep_steps > 0, "the box falls asleep");
 }
 
-/// A flex's rows follow its equality's `solref`: with it set to (0.05, 0.5),
-/// each row's reference acceleration is `−B·vel − K·imp·pos` with
-/// `K = 1/(dmax²·0.05²·0.5²)` and `B = 2/(dmax·0.05)`.
+/// A flex's rows follow its equality's `solref` and `solimp`: with them set
+/// to (0.05, 0.5) and (0.7, 0.8, 0.002, 0.5, 2), each row's impedance lies
+/// in [0.7, 0.8] and its reference acceleration is `−B·vel − K·imp·pos` with
+/// `K = 1/(0.8²·0.05²·0.5²)` and `B = 2/(0.8·0.05)`.
 #[test]
 fn flex_rows_take_the_equality_s_solref() {
     let mut model = load_model(PINNED_GRID).expect("load");
     let eq = flex_equality(&model);
     model.eq_solref[eq] = [0.05, 0.5];
+    model.eq_solimp[eq] = [0.7, 0.8, 0.002, 0.5, 2.0];
     let mut data = model.make_data();
     for _ in 0..20 {
         data.step(&model).expect("step");
@@ -178,6 +180,11 @@ fn flex_rows_take_the_equality_s_solref() {
     assert_eq!(rows.len(), 14);
     let mut moving = 0;
     for r in rows {
+        assert!(
+            (0.7..=0.8).contains(&data.efc_imp[r]),
+            "row {r}: impedance {} outside the equality's [0.7, 0.8]",
+            data.efc_imp[r]
+        );
         let want = -b * data.efc_vel[r] - k * data.efc_imp[r] * data.efc_pos[r];
         assert!(
             (data.efc_aref[r] - want).abs() <= 1e-9 * want.abs().max(1.0),

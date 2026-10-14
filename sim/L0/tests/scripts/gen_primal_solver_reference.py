@@ -65,9 +65,10 @@ started from `warmstart` (`engine_forward.c:611-687`). Every case disables islan
   `efc_D`, `efc_R`) and its outputs (`qacc`, `efc_force`, each iteration's
   statistics), so a test can hand the solver MuJoCo's own inputs and compare its
   outputs bit for bit, whatever the stages before it round. The elliptic condim-3
-  variant also runs with `ls_iterations` 1 and 2 and with `tolerance` 1e-300 (40
-  iterations), which reach the line search's exits that the default options do not.
-  (sim-mjcf refuses a `tolerance` of 0, which MuJoCo takes.)
+  variant also runs under CG with `ls_iterations` 1, and under CG and Newton with
+  `tolerance` 1e-300 and iterations capped at 40: a mutant of the line search's exit
+  at its iteration cap is caught only by the first, one of its midpoint exit only by
+  CG's second. (sim-mjcf refuses a `tolerance` of 0, which MuJoCo takes.)
 """
 import json
 import os
@@ -431,11 +432,12 @@ def main():
                 MIXED_ROWS.format(solver=solver, cone=cone, condim=condim), MIXED_QVEL)
         same[f"{solver}_elliptic_6_rolling"] = same_input(
             MIXED_ROWS.format(solver=solver, cone="elliptic", condim=6), ROLLING_QVEL)
-        for tag, opt in (("ls1", 'ls_iterations="1"'), ("ls2", 'ls_iterations="2"'),
-                         ("tiny_tol", 'tolerance="1e-300" iterations="40"')):
-            xml = MIXED_ROWS.format(solver=solver, cone="elliptic", condim=3).replace(
-                f'solver="{solver}"', f'solver="{solver}" {opt}')
-            same[f"{solver}_elliptic_3_{tag}"] = same_input(xml, MIXED_QVEL)
+    for solver, tag, opt in (("CG", "ls1", 'ls_iterations="1"'),
+                             ("CG", "tiny_tol", 'tolerance="1e-300" iterations="40"'),
+                             ("Newton", "tiny_tol", 'tolerance="1e-300" iterations="40"')):
+        xml = MIXED_ROWS.format(solver=solver, cone="elliptic", condim=3).replace(
+            f'solver="{solver}"', f'solver="{solver}" {opt}')
+        same[f"{solver}_elliptic_3_{tag}"] = same_input(xml, MIXED_QVEL)
     cases["same_input"] = same
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "primal_solver.json"), "w", encoding="utf-8") as f:

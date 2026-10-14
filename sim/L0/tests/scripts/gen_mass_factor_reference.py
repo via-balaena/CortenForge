@@ -21,7 +21,10 @@ every row (`mj_solveLD`, `:2131-2224`). Euler with dof damping factors
   `d.qLDiagInv` made of it, and `mj_solveM` of a vector `y` and of a vector
   `y2`, the first of a seeded sequence whose solve rounds otherwise when a
   row's sum is taken left to right instead of in `mju_dotSparse`'s order (the
-  generator checks a Python replica of `mj_solveLD` against MuJoCo's on each).
+  generator checks a Python replica of `mj_solveLD` against MuJoCo's on each);
+  and `mj_inverse` at that state of an acceleration whose `mj_mulM` product rounds
+  otherwise than the dense row-by-row one (the first of a seeded sequence), with
+  what it reads (`qacc`, `qfrc_bias`, `qfrc_passive`; no constraint rows).
   sim-core's mass matrix rounds otherwise than MuJoCo's here, so the test
   factors MuJoCo's.
 - eulerdamp: the chain with dof damping, under Euler: `d.qH` and
@@ -34,8 +37,9 @@ every row (`mj_solveLD`, `:2131-2224`). Euler with dof damping factors
   it, under Euler. MuJoCo stores the body's block of the mass matrix as its
   diagonal only, though the two slides couple: after mj_forward, `d.M`,
   `d.qLD`, `d.qLDiagInv`, `d.qacc` and the full `d.qM` (`mj_fullM`); then
-  qvel after steps 1 and 10; and with an applied force, `mj_inverse`'s
-  `qfrc_inverse` after `mj_forward`.
+  qvel after steps 1 and 10; with an applied force, `mj_inverse`'s
+  `qfrc_inverse` after `mj_forward`; and the full `d.qM` with the across slide
+  first, so the last simple dof is one of the two along the axis.
 - sleeping: two double pendulums, one asleep from the start
   (`sleep="init"`), under Euler: after 10 steps, `d.M` and `d.qLD` and
   `d.qLDiagInv`, whose awake rows are the factor of that `d.M` and whose
@@ -166,7 +170,41 @@ def chain():
     y2, x2 = summation_order_vector(m, d)
     return {"xml": xml, "qpos": qpos, "qvel": qvel, "M": floats(d.M), "qLD": floats(d.qLD),
             "qLDiagInv": floats(d.qLDiagInv), "y": floats(y), "x": floats(x),
-            "y2": floats(y2), "x2": floats(x2)}
+            "y2": floats(y2), "x2": floats(x2), "inverse": chain_inverse(m, d)}
+
+
+def chain_inverse(m, d):
+    """`mj_inverse` at the chain's state (after `mj_forward`, no constraint rows, so
+    `qfrc_inverse = qfrc_bias + (M·qacc − qfrc_passive)`) of an acceleration `qacc`: the
+    first of a seeded sequence whose `M·qacc` by `mj_mulM` rounds otherwise than the
+    dense row-by-row product; with what it reads."""
+    if d.nefc != 0:
+        sys.exit(f"chain: {d.nefc} constraint rows")
+    full = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(m, full, d.qM)
+    rng = np.random.default_rng(5)
+    for _ in range(100):
+        qacc = rng.uniform(-3.0, 3.0, m.nv)
+        dense = []
+        for i in range(m.nv):
+            s = 0.0
+            for j in range(m.nv):
+                s += full[i][j] * qacc[j]
+            dense.append(s)
+        mulm = np.zeros(m.nv)
+        mujoco.mj_mulM(m, d, mulm, qacc)
+        if dense != floats(mulm):
+            break
+    else:
+        sys.exit("chain: no acceleration tells the two products apart")
+    out = {"qacc": floats(qacc), "qfrc_bias": floats(d.qfrc_bias),
+           "qfrc_passive": floats(d.qfrc_passive)}
+    inv = mujoco.MjData(m)
+    mujoco.mj_copyData(inv, m, d)
+    inv.qacc[:] = qacc
+    mujoco.mj_inverse(m, inv)
+    out["qfrc_inverse"] = floats(inv.qfrc_inverse)
+    return out
 
 
 def solve_ld(m, d, y, dot):
@@ -253,6 +291,19 @@ def two_slides():
     mujoco.mj_forward(m, inv)
     mujoco.mj_inverse(m, inv)
     case["inverse"] = {"qfrc_applied": floats(inv.qfrc_applied), "qfrc_inverse": floats(inv.qfrc_inverse)}
+    # The across slide first, so the last simple dof is one of the coupled pair.
+    last = TWO_SLIDES.replace(
+        '<joint type="slide" axis="1 0 0" armature="0.1"/>\n      <joint type="slide" axis="1 0 0" armature="0.2"/>\n      <joint type="slide" axis="0 0 1"/>',
+        '<joint type="slide" axis="0 0 1"/>\n      <joint type="slide" axis="1 0 0" armature="0.1"/>\n      <joint type="slide" axis="1 0 0" armature="0.2"/>')
+    assert last != TWO_SLIDES
+    lm = mujoco.MjModel.from_xml_string(last)
+    if lm.body_simple[1] != 2 or list(lm.M_rownnz) != [1, 1, 1]:
+        sys.exit(f"two_slides_last: {list(lm.body_simple)} {list(lm.M_rownnz)}")
+    ld = mujoco.MjData(lm)
+    mujoco.mj_forward(lm, ld)
+    lfull = np.zeros((lm.nv, lm.nv))
+    mujoco.mj_fullM(lm, lfull, ld.qM)
+    case["parallel_last"] = {"xml": last, "qM": floats(lfull)}
     return case
 
 

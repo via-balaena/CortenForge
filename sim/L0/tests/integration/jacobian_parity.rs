@@ -307,7 +307,7 @@ fn mass_product_and_kinetic_energy_match_mujoco_3_5_0_bit_for_bit() {
 /// contact's normal row takes that body's dof columns through `mj_jac`, so
 /// the row's hinge column is the vertex's height moving with the hinge (by
 /// central differences, 1e-7) and its own vertical slide's column is 1.
-/// Checked against the rule: MuJoCo refuses this crate's `<flex body>`.
+/// Checked against the rule: MuJoCo refuses this crate's `<flex>` form.
 #[test]
 fn flex_vertex_contact_row_moves_with_its_parent() {
     let xml = r#"<mujoco>

@@ -34,9 +34,8 @@ fn quat_from_axis_angle_deg(axis: [f64; 3], angle_deg: f64) -> [f64; 4] {
     [half.cos(), axis[0] * s, axis[1] * s, axis[2] * s]
 }
 
-/// Extract rotation angle (radians) from quaternion at qpos[offset..offset+4].
-/// Reimplements the ball limit's quaternion normalization and
-/// `ball_limit_axis_angle` for integration tests.
+/// Extract rotation angle (radians) from quaternion at qpos[offset..offset+4],
+/// for integration tests.
 fn extract_ball_angle(qpos: &[f64], offset: usize) -> f64 {
     let (w, x, y, z) = (
         qpos[offset],
