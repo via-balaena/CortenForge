@@ -263,7 +263,8 @@ pub use types::{
 pub use reset::mj_reset_data;
 
 // The mass matrix's factor and solve (MuJoCo's mj_factorM and mj_solveM)
-pub use dynamics::factor::{mj_factor_m, mj_solve_m};
+pub use dynamics::factor::{mj_factor_m, mj_mul_m, mj_solve_m};
+pub use energy::mj_energy_vel;
 
 // Spatial algebra types (extracted to dynamics/spatial.rs)
 pub use dynamics::SpatialVector;

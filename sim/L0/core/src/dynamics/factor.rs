@@ -1,11 +1,12 @@
-//! The mass matrix's `L'·D·L` factor and its solve, as MuJoCo 3.5.0's
-//! `mj_factorM`, `mj_factorI`, `mj_solveM` and `mj_solveLD`
-//! (`engine_core_smooth.c:1961-2224`), on the mass matrix's own pattern
-//! (`Model::M_*`).
+//! The mass matrix's `L'·D·L` factor, its solve and its product, as MuJoCo
+//! 3.5.0's `mj_factorM`, `mj_factorI`, `mj_solveM`, `mj_solveLD`
+//! (`engine_core_smooth.c:1961-2224`) and `mj_mulM`, on the mass matrix's
+//! own pattern (`Model::M_*`).
 
 use crate::forward::awake_dofs;
 use crate::linalg::dot_sparse;
 use crate::types::{Data, Model};
+use nalgebra::DVector;
 
 /// Factor the mass matrix as MuJoCo 3.5.0's `mj_factorM` does
 /// (`engine_core_smooth.c:1961-1986`).
@@ -32,6 +33,29 @@ pub fn mj_factor_m(model: &Model, data: &mut Data) {
         index,
     );
     data.qLD_valid = true;
+}
+
+/// `M·vec`, as MuJoCo 3.5.0's `mj_mulM` multiplies (`engine_support.c:386-388`).
+///
+/// `qM` is read on the mass matrix's pattern (a simple dof's row its
+/// diagonal only) and multiplied as `mju_mulSymVecSparse` does
+/// (`engine_util_sparse.c:240-265`): each row's diagonal term, then its
+/// entries from the diagonal down, each added to its row and its column.
+#[must_use]
+pub fn mj_mul_m(model: &Model, data: &Data, vec: &[f64]) -> DVector<f64> {
+    let mut res = DVector::zeros(model.nv);
+    for i in 0..model.nv {
+        let adr = model.M_rowadr[i];
+        let diag = model.M_rownnz[i] - 1;
+        res[i] = data.qM[(i, i)] * vec[i];
+        for k in (0..diag).rev() {
+            let j = model.M_colind[adr + k];
+            let val = data.qM[(i, j)];
+            res[i] += val * vec[j];
+            res[j] += val * vec[i];
+        }
+    }
+    res
 }
 
 /// Solve `M·x = y` in place as MuJoCo 3.5.0's `mj_solveM` does

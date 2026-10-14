@@ -10,6 +10,31 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::types::StepError;
 use nalgebra::{DMatrix, DVector};
 
+/// `Σ vec1[k]·vec2[k]` in MuJoCo's order (`mju_dot`,
+/// `engine_util_blas.c:704-768`): four partial sums over each block of
+/// four, joined as `(s0 + s2) + (s1 + s3)`, then the remaining one to three
+/// products summed and added at once.
+pub(crate) fn mju_dot(vec1: &[f64], vec2: &[f64]) -> f64 {
+    let n = vec1.len();
+    let (mut s0, mut s1, mut s2, mut s3) = (0.0, 0.0, 0.0, 0.0);
+    let mut i = 0;
+    while i + 4 <= n {
+        s0 += vec1[i] * vec2[i];
+        s1 += vec1[i + 1] * vec2[i + 1];
+        s2 += vec1[i + 2] * vec2[i + 2];
+        s3 += vec1[i + 3] * vec2[i + 3];
+        i += 4;
+    }
+    let mut res = (s0 + s2) + (s1 + s3);
+    match n - i {
+        3 => res += vec1[i] * vec2[i] + vec1[i + 1] * vec2[i + 1] + vec1[i + 2] * vec2[i + 2],
+        2 => res += vec1[i] * vec2[i] + vec1[i + 1] * vec2[i + 1],
+        1 => res += vec1[i] * vec2[i],
+        _ => {}
+    }
+    res
+}
+
 /// `Σ vec1[k]·vec2(k)` in MuJoCo's order (`mju_dotSparse`,
 /// `engine_util_sparse.h:159-185`): four partial sums over each block of
 /// four, joined as `(s0 + s2) + (s1 + s3)`, then the rest one by one.

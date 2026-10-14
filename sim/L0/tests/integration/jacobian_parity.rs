@@ -9,7 +9,9 @@
 
 use nalgebra::{DVector, Quaternion, UnitQuaternion, Vector3};
 use serde_json::Value;
-use sim_core::{Contact, Data, Model, compute_contact_jacobian, mj_apply_ft, mj_jac};
+use sim_core::{
+    Contact, Data, Model, compute_contact_jacobian, mj_apply_ft, mj_energy_vel, mj_jac, mj_mul_m,
+};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -251,4 +253,32 @@ fn spatial_tendon_jacobians_match_mujoco_3_5_0_bit_for_bit() {
         .flat_map(|row| row.iter().copied())
         .collect();
     assert_bits("ten_J", &ten_j, &floats(&case["ten_J"]));
+}
+
+/// MuJoCo's mass matrix of a chain of seven hinges written into `qM`, times
+/// `qvel` (`mj_mulM`) and the kinetic energy from it (`mj_energyVel`), bit
+/// for bit, at velocities that make the order of each sum show (the
+/// generator checks that). sim-core's own mass matrix rounds otherwise, as
+/// the mass factor golden shows.
+#[test]
+fn mass_product_and_kinetic_energy_match_mujoco_3_5_0_bit_for_bit() {
+    let case = &golden()["cases"]["energy"];
+    let (model, mut data) = at_state(case);
+    data.qvel.copy_from_slice(&floats(&case["qvel"]));
+    let m = floats(&case["M"]);
+    for i in 0..model.nv {
+        let row = model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i];
+        for (&j, &v) in model.M_colind[row.clone()].iter().zip(&m[row]) {
+            data.qM[(i, j)] = v;
+            data.qM[(j, i)] = v;
+        }
+    }
+    let mqvel = mj_mul_m(&model, &data, data.qvel.as_slice());
+    assert_bits("mj_mulM", mqvel.as_slice(), &floats(&case["mul_m"]));
+    mj_energy_vel(&model, &mut data);
+    assert_bits(
+        "energy_kinetic",
+        &[data.energy_kinetic],
+        &[case["energy_kinetic"].as_f64().expect("energy")],
+    );
 }

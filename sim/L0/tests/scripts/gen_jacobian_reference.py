@@ -30,6 +30,14 @@ of the Jacobians alone. The cases:
   a vector that is not 0 (so the order of the two additions shows).
 - gravcomp: the fixture with gravity compensation on every body (0.7, 1, 0.4,
   1.3): `qfrc_gravcomp` after mj_forward.
+- energy: a chain of seven hinges (rows of the mass matrix with up to six
+  off-diagonals; 7 dofs, so `mju_dot` takes its three-term remainder) at
+  velocities from 1e-3 to 250: its `d.M`, `mj_mulM` of `qvel`
+  (`mju_mulSymVecSparse` on the mass matrix's pattern) and `mj_energyVel`'s
+  kinetic energy (`0.5·mju_dot(M·qvel, qvel)`). The generator refuses the
+  case unless the product with its off-diagonals taken in the other order,
+  a dot product summed left to right, and `mju_dot` with its remainder
+  added term by term each round otherwise.
 - contacts: a tilted free box on a plane (condim 3), and a hinged arm whose
   capsule (condim 6) and the sphere on a ball joint below it (condim 4)
   touch the plane, with an elliptic cone, so that a contact's `efc_J` rows
@@ -181,6 +189,75 @@ TENDONS = """<mujoco model="tendons">
 </mujoco>"""
 
 
+ENERGY_CHAIN = """<mujoco model="energy_chain">
+  <worldbody>
+    <body pos="0 0 1">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.21 0.02 -0.03" size="0.02" mass="1.3"/>
+      <body pos="0.21 0.02 -0.03">
+        <joint type="hinge" axis="1 0.2 0"/>
+        <geom type="capsule" fromto="0 0 0 0.17 -0.04 0.02" size="0.02" mass="0.9"/>
+        <body pos="0.17 -0.04 0.02">
+          <joint type="hinge" axis="0 0.3 1"/>
+          <geom type="capsule" fromto="0 0 0 0.13 0.05 0.04" size="0.02" mass="0.7"/>
+          <body pos="0.13 0.05 0.04">
+            <joint type="hinge" axis="0.4 1 0.1"/>
+            <geom type="capsule" fromto="0 0 0 0.11 0.01 -0.06" size="0.02" mass="0.45"/>
+            <body pos="0.11 0.01 -0.06">
+              <joint type="hinge" axis="1 0 0.5"/>
+              <geom type="capsule" fromto="0 0 0 0.09 -0.03 0.02" size="0.02" mass="0.31"/>
+              <body pos="0.09 -0.03 0.02">
+                <joint type="hinge" axis="0.2 0.1 1"/>
+                <geom type="capsule" fromto="0 0 0 0.07 0.02 0.03" size="0.015" mass="0.17"/>
+                <body pos="0.07 0.02 0.03">
+                  <joint type="hinge" axis="0 1 0.7"/>
+                  <geom type="sphere" size="0.03" pos="0.02 0.01 0" mass="0.11"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+
+def sym_mul(m_on_pattern, vec, rownnz, rowadr, colind, reverse=True):
+    """mju_mulSymVecSparse replayed; reverse=False walks the off-diagonals upward."""
+    n = len(vec)
+    res = [0.0] * n
+    for i in range(n):
+        adr, diag = rowadr[i], rownnz[i] - 1
+        res[i] = m_on_pattern[adr + diag] * vec[i]
+        ks = range(diag - 1, -1, -1) if reverse else range(diag)
+        for k in ks:
+            j, val = colind[adr + k], m_on_pattern[adr + k]
+            res[i] += val * vec[j]
+            res[j] += val * vec[i]
+    return res
+
+
+def mju_dot(a, b, split_remainder=False):
+    n, i = len(a), 0
+    s = [0.0, 0.0, 0.0, 0.0]
+    while i + 4 <= n:
+        for k in range(4):
+            s[k] += a[i + k] * b[i + k]
+        i += 4
+    res = (s[0] + s[2]) + (s[1] + s[3])
+    rest = [a[i + k] * b[i + k] for k in range(n - i)]
+    if split_remainder:
+        for x in rest:
+            res += x
+    elif rest:
+        tot = rest[0]
+        for x in rest[1:]:
+            tot += x
+        res += tot
+    return res
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -246,6 +323,30 @@ def main():
                          "efc_J": floats(efc_j[a:a + c.dim])})
     if sorted({c["dim"] for c in contacts}) != [3, 4, 6]:
         sys.exit(f"contacts: dims {[c['dim'] for c in contacts]}")
+    vm = mujoco.MjModel.from_xml_string(ENERGY_CHAIN)
+    vd = mujoco.MjData(vm)
+    vd.qpos[:] = [0.3, -0.5, 0.7, -0.2, 0.9, -0.4, 0.6]
+    vd.qvel[:] = [3.1, -1e-3, 250.0, 0.7, -42.0, 1e-2, 9.0]
+    mujoco.mj_forward(vm, vd)
+    mqvel = np.zeros(vm.nv)
+    mujoco.mj_mulM(vm, vd, mqvel, vd.qvel)
+    mujoco.mj_energyVel(vm, vd)
+    pattern = (list(vd.M), list(vd.qvel), list(vm.M_rownnz), list(vm.M_rowadr), list(vm.M_colind))
+    if sym_mul(*pattern) != list(mqvel):
+        sys.exit("energy: the replayed product is not MuJoCo's")
+    if sym_mul(*pattern, reverse=False) == list(mqvel):
+        sys.exit("energy: the off-diagonals' order does not show")
+    if 0.5 * mju_dot(list(mqvel), list(vd.qvel)) != vd.energy[1]:
+        sys.exit("energy: the replayed dot is not MuJoCo's")
+    plain = 0.0
+    for a, b in zip(mqvel, vd.qvel):
+        plain += a * b
+    if 0.5 * plain == vd.energy[1]:
+        sys.exit("energy: a left-to-right dot rounds alike")
+    if 0.5 * mju_dot(list(mqvel), list(vd.qvel), split_remainder=True) == vd.energy[1]:
+        sys.exit("energy: the remainder's order does not show")
+    energy = {"xml": ENERGY_CHAIN, "model": fields(vm), "qpos": floats(vd.qpos), "qvel": floats(vd.qvel),
+              "M": floats(vd.M), "mul_m": floats(mqvel), "energy_kinetic": float(vd.energy[1])}
     em = mujoco.MjModel.from_xml_string(EQUALITIES)
     ed = mujoco.MjData(em)
     ed.qpos[0] = 0.3
@@ -279,7 +380,8 @@ def main():
              "contacts": {"xml": CONTACTS, "model": fields(cm), "qpos": floats(cd.qpos),
                           "nv": int(cm.nv), "contacts": contacts},
              "equalities": equalities,
-             "tendons": tendons}
+             "tendons": tendons,
+             "energy": energy}
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "jacobian.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
