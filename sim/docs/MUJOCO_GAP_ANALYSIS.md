@@ -796,7 +796,7 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 | Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (unified solver rows for all solver types) | - |
 | Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
 | Tendon coupling | Yes | Pipeline `EqualityType::Tendon` + `extract_tendon_equality_jacobian()` | **Implemented** (unified solver rows for all solver types; two-tendon polynomial coupling + single-tendon lock) | - |
-| Flex (edge length) | Yes | `FlexEdge` in `ConstraintType` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`; see [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅) | - |
+| Flex (edge length) | Yes | `EqualityType::Flex` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`; see [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅) | - |
 
 ### Implementation Notes: Connect (Ball) Constraint ✅ COMPLETED
 
@@ -873,7 +873,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | 1D (cable) | Yes | `<flexcomp type="cable">` | ✅ **Pipeline** (unified flex architecture) | - | - |
 | 2D (shell) | Yes | `<flexcomp type="grid">` | ✅ **Pipeline** (unified flex architecture) | - | - |
 | 3D (solid) | Yes | `<flexcomp type="box">` | ✅ **Pipeline** (unified flex architecture) | - | - |
-| Edge-length constraints | Yes (`mjEQ_FLEX`) | `FlexEdge` in `ConstraintType` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`) | - | - |
+| Edge-length constraints | Yes (`mjEQ_FLEX`) | `EqualityType::Flex` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`) | - | - |
 | Bending (dihedral) | Yes (passive forces) | Passive spring-damper in `mj_fwd_passive()` | ✅ **Pipeline** (Bridson et al. 2003 gradient) | - | - |
 | Flex-rigid collision | Yes | `mj_collision_flex()` → regular `Contact` entries | ✅ **Pipeline** (brute-force O(V×G) vertex-vs-geom) | - | - |
 | Flex-flex collision | Yes | Not implemented | **Deferred** (self-collision for cloth) | Low | High |
@@ -886,7 +886,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | `<flexcomp mass="...">` attribute | Yes (total mass → per-vertex) | ~~Non-standard `density` extension~~ → `mass` attr parsed, uniform `mass/npnt` distribution | ✅ **Done** — [#27E](./todo/future_work_7.md) | - | - |
 | Body-coupled flex vertex CRBA + FK | Yes (vertices ARE bodies; `mj_crb`/`mj_rne` have zero flex code) | ~~`flexvert_bodyid` stored but dead; diagonal `m*I₃` blocks only~~ → Vertices promoted to real bodies with 3 slide joints; standard CRBA/RNE/FK handles all flex physics | ✅ **Done** — [#27F](./todo/future_work_7.md) | - | - |
 
-> ✅ **Unified flex architecture (§6B).** Flex vertex DOFs are appended to `qpos`/`qvel`/`qacc` after rigid DOFs. Edge constraints enter the unified Jacobian as `FlexEdge` rows. Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `builder/`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
+> ✅ **Unified flex architecture (§6B).** Flex vertex DOFs are appended to `qpos`/`qvel`/`qacc` after rigid DOFs. Edge constraints enter the unified Jacobian as a flex equality's rows (`EqualityType::Flex`). Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `builder/`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
 >
 > **Key pipeline functions:** `mj_collision_flex()`, `mj_flex()` (FK → xpos), `apply_flex_edge_constraints()`. Post-§27F: `mj_crba_flex()`, `mj_factor_flex()`, `mj_fwd_position_flex()`, and `mj_integrate_pos_flex()` have been **deleted** — flex vertices are now real bodies with 3 slide joints, so the standard CRBA/RNE/FK/integration handles everything.
 >
@@ -1634,7 +1634,7 @@ Focus: Large standalone features, each potentially its own PR.
 | ~~Height field collision~~ | §4 Collision, §5 Geoms | High | ✅ COMPLETED | Terrain simulation |
 | ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Pipeline CG in `constraint/solve.rs` (`cg_solve_contacts()`); `CGSolver` in sim-constraint remains standalone joint-space solver (see FUTURE_WORK #3 ✅) |
 | ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ **COMPLETED** | Pipeline `EqualityType::Tendon` + `extract_tendon_equality_jacobian()` in unified solver; two-tendon polynomial coupling + single-tendon lock (§37) |
-| ~~Flex edge constraints~~ | §10 Equality, §11 Deformables | Low | ✅ **COMPLETED** | Unified `FlexEdge` constraint rows in `assemble_unified_constraints()` (§6B) |
+| ~~Flex edge constraints~~ | §10 Equality, §11 Deformables | Low | ✅ **COMPLETED** | Unified flex equality rows (`EqualityType::Flex`) in `assemble_unified_constraints()` (§6B) |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
 | ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
 | ~~Multi-threading~~ | §12 Performance | Medium | ✅ **Active** | Island-parallel solving removed in Phase 3; `BatchSim::step_all()` now uses rayon `par_iter_mut` for cross-environment parallelism; see [future_work_3 #9](./todo/future_work_3.md) |
@@ -1686,7 +1686,7 @@ let forces = network.compute_all_forces(&get_position, &get_velocity, dt);
 ```
 
 **Flex Edge Constraints (`sim-core/src/constraint/`) — ✅ Pipeline-integrated (§6B):**
-- `FlexEdge` variant in `ConstraintType` enum
+- `EqualityType::Flex`: one equality row per non-rigid edge
 - Edge-length constraints as rows in unified Jacobian (`assemble_unified_constraints()`)
 - Penalty path via `apply_flex_edge_constraints()` for PGS/CG solvers
 - Bending as passive forces in `mj_fwd_passive()` (Bridson et al. 2003 dihedral gradient)

@@ -417,8 +417,8 @@ pub struct Data {
     pub efc_cone_hessian: Vec<Option<DMatrix<f64>>>,
     /// Number of contacts currently in the Cone state.
     pub ncone: usize,
-    /// Number of equality constraint rows (Equality + FlexEdge).
-    /// These occupy `efc_*[0..ne)`.
+    /// Number of equality constraint rows (a flex equality's edge rows among
+    /// them). These occupy `efc_*[0..ne)`.
     pub ne: usize,
     /// Number of friction loss constraint rows (DOF + tendon).
     /// These occupy `efc_*[ne..ne+nf)`.

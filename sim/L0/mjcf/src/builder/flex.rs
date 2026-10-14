@@ -12,7 +12,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
 use crate::types::MjcfFlex;
-use sim_core::{FlexSelfCollide, MjJointType};
+use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
 /// Number of coefficients per bending element in the discrete thin-shell model.
 /// Each edge hinge stores a 4×4 symmetric matrix (16 entries) + 1 rest-angle scalar = 17 values.
@@ -127,8 +127,18 @@ impl ModelBuilder {
                 self.nflexelem += 1;
             }
 
-            // Compute solref from material properties
+            // The flex's edge equality, with the edge solref and the flex's
+            // solimp: every flex holds its edges until the parser reads
+            // `<equality><flex>` (Rigid-loading L31).
             let edge_solref = compute_edge_solref(flex);
+            self.eq_type.push(EqualityType::Flex);
+            self.eq_obj1id.push(flex_id);
+            self.eq_obj2id.push(usize::MAX);
+            self.eq_data.push([0.0; 11]);
+            self.eq_active.push(true);
+            self.eq_solref.push(edge_solref);
+            self.eq_solimp.push(flex.solimp);
+            self.eq_name.push(None);
             let k_bend = compute_bend_stiffness_from_material(flex);
             let b_bend = compute_bend_damping_from_material(flex, k_bend);
 
@@ -145,8 +155,6 @@ impl ModelBuilder {
             self.flex_solmix.push(flex.solmix);
             self.flex_solref.push(flex.solref);
             self.flex_solimp.push(flex.solimp);
-            self.flex_edge_solref.push(edge_solref);
-            self.flex_edge_solimp.push(flex.solimp);
             self.flex_bend_stiffness.push(k_bend);
             self.flex_bend_damping.push(b_bend);
             self.flex_young.push(flex.young);

@@ -259,8 +259,8 @@ impl ModelBuilder {
             flex_passive: self.flex_passive,
             flex_edgestiffness: self.flex_edgestiffness,
             flex_edgedamping: self.flex_edgedamping,
-            flex_edge_solref: self.flex_edge_solref,
-            flex_edge_solimp: self.flex_edge_solimp,
+            // Derived by compute_invweight0 below.
+            flex_edgeequality: vec![],
             flex_bend_stiffness: self.flex_bend_stiffness,
             flex_bend_damping: self.flex_bend_damping,
             flex_density: self.flex_density,
@@ -279,6 +279,8 @@ impl ModelBuilder {
             flexedge_crosssection,
             flexedge_flexid: self.flexedge_flexid,
             flexedge_rigid: self.flexedge_rigid,
+            // Derived by compute_invweight0 below.
+            flexedge_invweight0: vec![],
             flexedge_flap: self.flexedge_flap,
             flex_bending: self.flex_bending,
             flexedge_J_rownnz: self.flexedge_J_rownnz,

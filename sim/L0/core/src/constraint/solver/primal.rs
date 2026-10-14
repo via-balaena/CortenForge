@@ -264,7 +264,7 @@ pub fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> Prim
     let mut i = 0;
     while i < nefc {
         match data.efc_type[i] {
-            ConstraintType::Equality | ConstraintType::FlexEdge => {
+            ConstraintType::Equality => {
                 // Always quadratic
                 quad_total[0] += pq.quad[i][0];
                 quad_total[1] += pq.quad[i][1];
@@ -605,7 +605,7 @@ pub fn evaluate_cost_at(
         let r = data.efc_R[i];
 
         match ctype {
-            ConstraintType::Equality | ConstraintType::FlexEdge => {
+            ConstraintType::Equality => {
                 constraint_cost += 0.5 * d * jar * jar;
                 i += 1;
             }

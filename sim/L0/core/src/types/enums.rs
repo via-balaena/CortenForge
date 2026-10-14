@@ -354,6 +354,10 @@ pub enum EqualityType {
     /// |p1 - p2| = d (removes 1 DOF).
     /// `eq_obj1id`/`eq_obj2id` store geom IDs (not body IDs).
     Distance,
+    /// Flex: holds each non-rigid edge of flex `eq_obj1id` at its rest
+    /// length, one row per edge (MuJoCo's `mjEQ_FLEX`); `eq_obj2id` is
+    /// `usize::MAX`.
+    Flex,
 }
 
 /// `MuJoCo` sensor type.
@@ -766,7 +770,7 @@ pub enum SolverType {
 /// in `PrimalUpdateConstraint` (§15.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConstraintType {
-    /// Equality constraint (connect, weld, joint, distance).
+    /// Equality constraint (connect, weld, joint, tendon, distance, flex).
     Equality,
     /// DOF or tendon friction loss (Huber cost).
     FrictionLoss,
@@ -782,8 +786,6 @@ pub enum ConstraintType {
     ContactPyramidal,
     /// Contact with elliptic friction cone (condim ≥ 3 and cone == elliptic).
     ContactElliptic,
-    /// Flex edge-length constraint (soft equality, matches MuJoCo's mjEQ_FLEX).
-    FlexEdge,
 }
 
 /// Constraint state per scalar row, determined by `PrimalUpdateConstraint`.

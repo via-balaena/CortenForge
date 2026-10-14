@@ -378,6 +378,15 @@ pub fn compute_diag_approx_bodyweight(
                             MJ_MINVAL
                         }
                     }
+                    // The edge of the `row_offset`-th row: MuJoCo's walk over the
+                    // non-rigid edges (`engine_core_constraint.c:1153-1165`).
+                    EqualityType::Flex => {
+                        let f = model.eq_obj1id[id];
+                        (model.flex_edgeadr[f]..model.flex_edgeadr[f] + model.flex_edgenum[f])
+                            .filter(|&e| !model.flexedge_rigid[e])
+                            .nth(row_offset)
+                            .map_or(MJ_MINVAL, |e| model.flexedge_invweight0[e])
+                    }
                     EqualityType::Distance => {
                         let g1 = model.eq_obj1id[id];
                         let g2 = model.eq_obj2id[id];
@@ -432,8 +441,6 @@ pub fn compute_diag_approx_bodyweight(
                 MJ_MINVAL
             }
         }
-        // Flex edge constraints: use vertex body translational weight
-        ConstraintType::FlexEdge => MJ_MINVAL,
     }
 }
 

@@ -164,7 +164,7 @@ pub fn finalize_constraint_row_imp(
 /// Populates all `efc_*` fields on Data, plus `ne`/`nf` counts.
 ///
 /// Row ordering (§29.4):
-/// 1. Equality constraints (connect, weld, joint, distance) + FlexEdge → `ne` rows
+/// 1. Equality constraints (connect, weld, joint, tendon, distance, flex) → `ne` rows
 /// 2. DOF friction loss + tendon friction loss → `nf` rows
 /// 3. Joint limits + tendon limits + contacts
 /// 4. Joint limits (potentially active only)
@@ -209,11 +209,15 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 EqualityType::Connect => 3,
                 EqualityType::Weld => 6,
                 EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => 1,
+                // One per non-rigid edge (`engine_core_constraint.c:616-624`).
+                EqualityType::Flex => {
+                    let f = model.eq_obj1id[eq_id];
+                    let edges =
+                        model.flex_edgeadr[f]..model.flex_edgeadr[f] + model.flex_edgenum[f];
+                    edges.filter(|&e| !model.flexedge_rigid[e]).count()
+                }
             };
         }
-
-        // Flex edge-length constraints (1 row per edge) — in equality block
-        nefc += model.nflexedge;
     }
 
     // DOF friction loss (S4.5: gated on DISABLE_FRICTIONLOSS)
@@ -611,7 +615,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     data.nf = 0;
     for i in 0..nefc {
         match data.efc_type[i] {
-            ConstraintType::Equality | ConstraintType::FlexEdge => data.ne += 1,
+            ConstraintType::Equality => data.ne += 1,
             ConstraintType::FrictionLoss => data.nf += 1,
             _ => {}
         }
@@ -621,7 +625,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
         data.efc_type
             .iter()
             .take(data.ne)
-            .all(|t| matches!(t, ConstraintType::Equality | ConstraintType::FlexEdge)),
+            .all(|t| matches!(t, ConstraintType::Equality)),
         "Non-equality row found within equality block [0..{})",
         data.ne,
     );

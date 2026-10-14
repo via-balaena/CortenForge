@@ -2338,7 +2338,7 @@ fn spec_a_t6_constraint_jacobian_scatter() {
     // Forward populates flexedge_J; step triggers constraint assembly.
     data.forward(&model).expect("forward");
 
-    // Verify flexedge_J was computed (J needed because solref != [0,0])
+    // Verify flexedge_J was computed (the flex's equality needs it)
     for e in 0..model.nflexedge {
         let rowadr = model.flexedge_J_rowadr[e];
         let rownnz = model.flexedge_J_rownnz[e];
@@ -2350,7 +2350,7 @@ fn spec_a_t6_constraint_jacobian_scatter() {
     }
 
     // Now run a step to trigger constraint assembly, which scatters
-    // flexedge_J into efc_J rows for FlexEdge constraints.
+    // flexedge_J into the flex equality's efc_J rows.
     data.step(&model).expect("step failed");
 
     // After step, efc_J has been populated. Verify that for each edge with
@@ -2359,34 +2359,38 @@ fn spec_a_t6_constraint_jacobian_scatter() {
     // Re-forward to get fresh J values matching the post-step state.
     data.forward(&model).expect("forward");
 
-    // Find FlexEdge constraint rows in efc_type and verify efc_J scatter.
-    for i in 0..data.efc_type.len() {
-        if data.efc_type[i] == sim_core::ConstraintType::FlexEdge {
-            let e = data.efc_id[i];
-            let rowadr = model.flexedge_J_rowadr[e];
-            let rownnz = model.flexedge_J_rownnz[e];
+    // The flex equality's rows, one per non-rigid edge in edge order: verify
+    // the efc_J scatter.
+    let flex_rows = (0..data.efc_type.len()).filter(|&i| {
+        data.efc_type[i] == sim_core::ConstraintType::Equality
+            && model.eq_type[data.efc_id[i]] == sim_core::EqualityType::Flex
+    });
+    let edges = (0..model.nflexedge).filter(|&e| !model.flexedge_rigid[e]);
+    assert_eq!(flex_rows.clone().count(), edges.clone().count());
+    for (i, e) in flex_rows.zip(edges) {
+        let rowadr = model.flexedge_J_rowadr[e];
+        let rownnz = model.flexedge_J_rownnz[e];
 
-            // Verify efc_J has flexedge_J values at colind positions
-            for j in 0..rownnz {
-                let col = model.flexedge_J_colind[rowadr + j];
-                let expected = data.flexedge_J[rowadr + j];
-                let actual = data.efc_J[(i, col)];
+        // Verify efc_J has flexedge_J values at colind positions
+        for j in 0..rownnz {
+            let col = model.flexedge_J_colind[rowadr + j];
+            let expected = data.flexedge_J[rowadr + j];
+            let actual = data.efc_J[(i, col)];
+            assert_eq!(
+                actual, expected,
+                "efc_J[({i},{col})] = {actual} != flexedge_J = {expected} for edge {e}"
+            );
+        }
+
+        // Verify no other columns are non-zero (only colind positions)
+        for col in 0..model.nv {
+            let is_colind = (0..rownnz).any(|j| model.flexedge_J_colind[rowadr + j] == col);
+            if !is_colind {
                 assert_eq!(
-                    actual, expected,
-                    "efc_J[({i},{col})] = {actual} != flexedge_J = {expected} for edge {e}"
+                    data.efc_J[(i, col)],
+                    0.0,
+                    "efc_J[({i},{col})] should be 0 (not a colind position)"
                 );
-            }
-
-            // Verify no other columns are non-zero (only colind positions)
-            for col in 0..model.nv {
-                let is_colind = (0..rownnz).any(|j| model.flexedge_J_colind[rowadr + j] == col);
-                if !is_colind {
-                    assert_eq!(
-                        data.efc_J[(i, col)],
-                        0.0,
-                        "efc_J[({i},{col})] should be 0 (not a colind position)"
-                    );
-                }
             }
         }
     }
@@ -2508,7 +2512,10 @@ fn spec_a_t9_zero_length_edge() {
     // The edge's equality row carries that Jacobian (MuJoCo's equality rows
     // take the edge's at any length).
     let row = (0..data.efc_type.len())
-        .find(|&i| data.efc_type[i] == sim_core::ConstraintType::FlexEdge)
+        .find(|&i| {
+            data.efc_type[i] == sim_core::ConstraintType::Equality
+                && model.eq_type[data.efc_id[i]] == sim_core::EqualityType::Flex
+        })
         .expect("the edge's equality row");
     for j in 0..rownnz {
         let col = model.flexedge_J_colind[rowadr + j];

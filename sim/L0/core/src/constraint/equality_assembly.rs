@@ -1,7 +1,7 @@
-//! Equality constraint row assembly — connect, weld, joint, distance, tendon,
-//! and flex edge-length constraints.
+//! Equality constraint row assembly — connect, weld, joint, distance, tendon
+//! and flex equalities.
 //!
-//! Populates equality and flex-edge rows in the unified `efc_*` arrays.
+//! Populates the equality rows in the unified `efc_*` arrays.
 //! Called from [`super::assembly::assemble_unified_constraints`] during Phase 3a.
 
 use nalgebra::DVector;
@@ -10,17 +10,17 @@ use crate::constraint::equality::{
     extract_connect_jacobian, extract_distance_jacobian, extract_joint_equality_jacobian,
     extract_tendon_equality_jacobian, extract_weld_jacobian,
 };
-use crate::constraint::impedance::{MJ_MINVAL, compute_diag_approx_bodyweight};
+use crate::constraint::impedance::compute_diag_approx_bodyweight;
 use crate::linalg::mju_norm;
 use crate::types::{ConstraintType, Data, EqualityType, Model};
 
-use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp, jacobian_rows_empty};
+use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp};
 
-/// Assemble equality constraint rows (Phase 3a) and flex edge-length constraints (Phase 3a').
+/// Assemble equality constraint rows (Phase 3a), in equality order.
 ///
 /// Populates efc_J, efc_type, efc_pos, efc_margin, efc_vel, and all impedance
-/// fields for each equality constraint and flex edge. Increments `row` for each
-/// row written.
+/// fields for each equality constraint. Increments `row` for each row
+/// written.
 pub(super) fn assemble_equality_rows(
     model: &Model,
     data: &mut Data,
@@ -28,7 +28,6 @@ pub(super) fn assemble_equality_rows(
     row: &mut usize,
     qacc_smooth: &DVector<f64>,
 ) {
-    // --- Equality constraints (connect, weld, joint, distance, tendon) ---
     let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     for eq_id in 0..model.neq {
         if !model.eq_active[eq_id]
@@ -38,6 +37,10 @@ pub(super) fn assemble_equality_rows(
         }
 
         let rows = match model.eq_type[eq_id] {
+            EqualityType::Flex => {
+                assemble_flex_equality_rows(model, data, nv, row, qacc_smooth, eq_id);
+                continue;
+            }
             EqualityType::Connect => extract_connect_jacobian(model, data, eq_id),
             EqualityType::Weld => extract_weld_jacobian(model, data, eq_id),
             EqualityType::Joint => extract_joint_equality_jacobian(model, data, eq_id),
@@ -58,7 +61,10 @@ pub(super) fn assemble_equality_rows(
         // their violation (MuJoCo `getposdim`); each row keeps its own `pos`.
         let shared_violation = match model.eq_type[eq_id] {
             EqualityType::Connect | EqualityType::Weld => Some(mju_norm(&rows.pos[..nrows])),
-            EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => None,
+            EqualityType::Joint
+            | EqualityType::Distance
+            | EqualityType::Tendon
+            | EqualityType::Flex => None,
         };
 
         for r in 0..nrows {
@@ -89,49 +95,52 @@ pub(super) fn assemble_equality_rows(
             );
         }
     }
+}
 
-    // --- Flex edge-length constraints (equality block) ---
-    for e in 0..model.nflexedge {
-        let rest_len = model.flexedge_length0[e];
-        let flex_id = model.flexedge_flexid[e];
-        // At any length, as MuJoCo's (`engine_core_constraint.c:626-640`):
-        // `mj_flex_edge` gives a short edge a direction.
-        let dist = data.flexedge_length[e];
-
-        let pos_error = dist - rest_len; // positive = stretched, negative = compressed
-
-        // §42A-i: Scatter pre-computed edge Jacobian into dense efc_J row.
-        let rowadr = model.flexedge_J_rowadr[e];
-        let rownnz = model.flexedge_J_rownnz[e];
-        for j in 0..rownnz {
-            let col = model.flexedge_J_colind[rowadr + j];
-            data.efc_J[(*row, col)] = data.flexedge_J[rowadr + j];
-        }
-        // An edge between two vertices without dofs has an empty row.
-        if jacobian_rows_empty(data, *row, 1) {
+/// A flex equality's rows: one per non-rigid edge of flex `eq_obj1id`, at its
+/// length's departure from the rest length, with the equality's `solref` and
+/// `solimp` and the edge's `flexedge_invweight0` as the diagonal
+/// approximation (MuJoCo `engine_core_constraint.c:616-643`, `:1153-1165`).
+/// A non-rigid edge has a vertex with dofs and a unit direction, so its row
+/// is never empty.
+fn assemble_flex_equality_rows(
+    model: &Model,
+    data: &mut Data,
+    nv: usize,
+    row: &mut usize,
+    qacc_smooth: &DVector<f64>,
+    eq_id: usize,
+) {
+    let f = model.eq_obj1id[eq_id];
+    for e in model.flex_edgeadr[f]..model.flex_edgeadr[f] + model.flex_edgenum[f] {
+        if model.flexedge_rigid[e] {
             continue;
         }
-
-        // Velocity error: read from pre-computed Data field
-        let vel_error = data.flexedge_velocity[e];
-
+        // At any length, as MuJoCo's: `mj_flex_edge` gives a short edge a
+        // direction.
+        let pos = data.flexedge_length[e] - model.flexedge_length0[e];
+        let rowadr = model.flexedge_J_rowadr[e];
+        for k in rowadr..rowadr + model.flexedge_J_rownnz[e] {
+            data.efc_J[(*row, model.flexedge_J_colind[k])] = data.flexedge_J[k];
+        }
+        let vel = data.flexedge_velocity[e];
         finalize_constraint_row(
             model,
             data,
             nv,
             row,
             qacc_smooth,
-            model.flex_edge_solref[flex_id],
-            model.flex_edge_solimp[flex_id],
-            pos_error,
-            0.0, // margin
-            vel_error,
-            0.0, // friction loss
-            ConstraintType::FlexEdge,
-            1,        // dim
-            e,        // id (edge index)
-            [0.0; 5], // mu (no friction on edge constraints)
-            MJ_MINVAL,
+            model.eq_solref[eq_id],
+            model.eq_solimp[eq_id],
+            pos,
+            0.0,
+            vel,
+            0.0,
+            ConstraintType::Equality,
+            1,
+            eq_id,
+            [0.0; 5],
+            model.flexedge_invweight0[e],
         );
     }
 }

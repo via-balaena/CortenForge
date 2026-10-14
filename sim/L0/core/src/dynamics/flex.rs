@@ -36,10 +36,10 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
         // Per-flex skip conditions (evaluated once per flex, not per edge)
         let is_rigid = model.flex_rigid[f];
         let skip_jacobian = is_rigid
-            || (model.flex_edgestiffness[f] == 0.0
+            || (model.flex_edgeequality.get(f) != Some(&true)
+                && model.flex_edgestiffness[f] == 0.0
                 && model.flex_edgedamping[f] == 0.0
-                && model.flex_bend_damping[f] == 0.0
-                && model.flex_edge_solref[f] == [0.0, 0.0]);
+                && model.flex_bend_damping[f] == 0.0);
 
         // Iterate over edges belonging to this flex
         let edge_start = model.flex_edgeadr[f];

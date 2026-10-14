@@ -562,7 +562,10 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
             let weld = match model.eq_type[eq_id] {
                 EqualityType::Connect => false,
                 EqualityType::Weld => true,
-                EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => {
+                EqualityType::Joint
+                | EqualityType::Distance
+                | EqualityType::Tendon
+                | EqualityType::Flex => {
                     i += 1;
                     continue;
                 }

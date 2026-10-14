@@ -80,7 +80,6 @@ fn type_name(ct: &ConstraintType) -> &'static str {
         ConstraintType::ContactFrictionless => "ContactFrictionless",
         ConstraintType::ContactPyramidal => "ContactPyramidal",
         ConstraintType::ContactElliptic => "ContactElliptic",
-        ConstraintType::FlexEdge => "FlexEdge",
     }
 }
 

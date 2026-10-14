@@ -2213,7 +2213,10 @@ fn a_short_flex_edge_acts_as_mujoco_3_5_0() {
     data.qpos[0] = -0.1;
     data.forward(&model).expect("forward");
     let row = (0..data.efc_type.len())
-        .find(|&i| data.efc_type[i] == sim_core::ConstraintType::FlexEdge)
+        .find(|&i| {
+            data.efc_type[i] == sim_core::ConstraintType::Equality
+                && model.eq_type[data.efc_id[i]] == sim_core::EqualityType::Flex
+        })
         .expect("the edge's equality row");
     assert!(
         (data.efc_pos[row] + 0.1).abs() < 1e-15,

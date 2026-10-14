@@ -214,6 +214,9 @@ pub fn equality_asleep(model: &Model, data: &Data, eq: usize) -> bool {
             EqualityType::Joint => model.jnt_body.get(id).is_some_and(|&b| body_awake(b)),
             EqualityType::Distance => model.geom_body.get(id).is_some_and(|&b| body_awake(b)),
             EqualityType::Tendon => id < model.ntendon && tendon_awake(id),
+            // MuJoCo gives a flex no sleep state but awake (`mj_sleepState`,
+            // `engine_sleep.c:755-756`).
+            EqualityType::Flex => true,
         }
     };
     !awake(model.eq_obj1id[eq]) && !awake(model.eq_obj2id[eq])
@@ -541,7 +544,7 @@ pub fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
                 let tree_of_joint = |j: usize| model.jnt_body.get(j).and_then(|&b| tree_of_body(b));
                 (tree_of_joint(id1), tree_of_joint(id2))
             }
-            EqualityType::Distance | EqualityType::Tendon => continue,
+            EqualityType::Distance | EqualityType::Tendon | EqualityType::Flex => continue,
         };
         // A static object, or one tree: nothing to wake
         let (Some(tree1), Some(tree2)) = (tree1, tree2) else {

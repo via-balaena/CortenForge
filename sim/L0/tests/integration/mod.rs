@@ -221,6 +221,10 @@ pub mod mass_factor_parity;
 /// none.
 pub mod empty_rows_parity;
 
+/// A flex's edge rows from a flex equality, as MuJoCo's: one per non-rigid
+/// edge, `flexedge_invweight0` as the diagonal approximation.
+pub mod flex_equality_rows;
+
 /// The Jacobians against MuJoCo 3.5.0: `mj_jac` from MuJoCo's `cdof`,
 /// `mj_applyFT`, gravity compensation.
 pub mod jacobian_parity;

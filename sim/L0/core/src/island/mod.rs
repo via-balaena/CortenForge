@@ -49,8 +49,8 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
     }
 
     // Edges (`findEdges`): one constraint per run of rows with the same type
-    // and id. (MuJoCo reads each row of a flex equality, whose rows share an
-    // id; a flex edge row here has its own.)
+    // and id, except a flex equality, whose rows each join their own trees
+    // (`engine_island.c:327-333`).
     let mut adjacent: Vec<Vec<usize>> = vec![Vec::new(); ntree];
     let mut add_edge = |a: Option<usize>, b: Option<usize>| match (a, b) {
         (Some(a), Some(b)) => {
@@ -66,7 +66,8 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
     let mut previous = None;
     for row in 0..nefc {
         let key = (data.efc_type[row], data.efc_id[row]);
-        if previous == Some(key) {
+        let flex = key.0 == ConstraintType::Equality && model.eq_type[key.1] == EqualityType::Flex;
+        if previous == Some(key) && !flex {
             continue;
         }
         previous = Some(key);

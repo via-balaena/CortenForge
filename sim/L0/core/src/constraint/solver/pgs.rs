@@ -434,7 +434,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
 
                 // Project per constraint type
                 match ctype {
-                    ConstraintType::Equality | ConstraintType::FlexEdge => {}
+                    ConstraintType::Equality => {}
                     ConstraintType::FrictionLoss => {
                         let fl = data.efc_floss[i];
                         data.efc_force[i] = data.efc_force[i].clamp(-fl, fl);
@@ -551,7 +551,7 @@ pub fn classify_constraint_states(
         let r = data.efc_R[i];
 
         match ctype {
-            ConstraintType::Equality | ConstraintType::FlexEdge => {
+            ConstraintType::Equality => {
                 data.efc_state[i] = ConstraintState::Quadratic;
                 data.efc_force[i] = -d * jar;
                 constraint_cost += 0.5 * d * jar * jar;

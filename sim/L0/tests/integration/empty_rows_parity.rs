@@ -56,8 +56,10 @@ fn empty_tendon_rows_are_not_made() {
     assert_eq!(data.efc_id, [0], "on dof 0");
 }
 
-/// An edge between two pinned vertices has no dofs, so its row is empty and
-/// is not made; the edge from the second pinned vertex to the free one is.
+/// An edge between two pinned vertices has no dofs (a rigid edge): the flex
+/// equality makes no row for it (MuJoCo skips rigid edges,
+/// `engine_core_constraint.c:620-624`); the edge from the second pinned
+/// vertex to the free one gets its row.
 #[test]
 fn empty_flex_edge_rows_are_not_made() {
     let model = load_model(
@@ -78,14 +80,20 @@ fn empty_flex_edge_rows_are_not_made() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
     let edge_rows: Vec<usize> = (0..data.efc_type.len())
-        .filter(|&r| data.efc_type[r] == ConstraintType::FlexEdge)
-        .map(|r| data.efc_id[r])
+        .filter(|&r| {
+            data.efc_type[r] == ConstraintType::Equality
+                && model.eq_type[data.efc_id[r]] == sim_core::EqualityType::Flex
+        })
         .collect();
     assert_eq!(edge_rows.len(), 1, "one edge row: {edge_rows:?}");
-    let e = edge_rows[0];
+    let e = model
+        .flexedge_rigid
+        .iter()
+        .position(|&r| !r)
+        .expect("a non-rigid edge");
     let verts = (model.flexedge_vert[e][0], model.flexedge_vert[e][1]);
     assert!(
         verts == (1, 2) || verts == (2, 1),
-        "the row is the edge to the free vertex, got {verts:?}"
+        "the row's edge is the one to the free vertex, got {verts:?}"
     );
 }
