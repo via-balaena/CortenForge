@@ -1,5 +1,5 @@
 //! Newton and CG against MuJoCo 3.5.0's primal solver (`mj_solPrimal`,
-//! `engine_solver.c:1811-1969`, from `warmstart`, `engine_forward.c:611-683`),
+//! `engine_solver.c:1811-1968`, from `warmstart`, `engine_forward.c:611-687`),
 //! with islands disabled, so MuJoCo solves every row at once as sim-core does.
 //!
 //! The golden is `assets/golden/primal_solver/primal_solver.json`, from the
@@ -79,17 +79,19 @@ fn assert_stat_counts(what: &str, got: &[SolverStat], want: &Value) {
 /// MuJoCo's, and qpos and qvel at each checkpoint up to `through` are within
 /// `tol` of MuJoCo's.
 fn assert_trajectory(what: &str, case: &Value, through: usize, tol: f64) {
-    step_and_compare(what, case, through, tol, true);
+    step_and_compare(what, case, through, tol, usize::MAX);
 }
 
-/// [`assert_trajectory`], the iteration counts compared when `iterations`.
-fn step_and_compare(what: &str, case: &Value, through: usize, tol: f64, iterations: bool) {
+/// [`assert_trajectory`], the iteration counts compared through step
+/// `counts_through`; stepping stops after the later of the two.
+fn step_and_compare(what: &str, case: &Value, through: usize, tol: f64, counts_through: usize) {
     let (model, mut data) = start(case);
     let niter = usizes(&case["niter"]);
-    for (k, &want) in niter.iter().enumerate() {
+    let last = through.max(counts_through);
+    for (k, &want) in niter.iter().enumerate().take(last) {
         let step = k + 1;
         data.step(&model).expect("step");
-        if iterations {
+        if step <= counts_through {
             assert_eq!(data.solver_niter, want, "{what}: iterations at step {step}");
         }
         if step <= through
@@ -359,10 +361,10 @@ fn euler_damping_reads_the_awake_dofs_as_mujoco_3_5_0() {
 /// An arm on a limited hinge with friction loss, a ball connected to its tip,
 /// a sphere sliding and spinning on a plane: every kind of row. Newton and
 /// CG, pyramidal and elliptic (condim 3): the first forward's iteration,
-/// evaluation and update counts and acceleration are MuJoCo's, and 200 steps
-/// keep MuJoCo's iteration count at every step and its state through step 50.
-/// (Past step 140 the elliptic CG run grows as MuJoCo's own run does under a
-/// 1-ulp change of a starting velocity: both reach 1e-6 by step 200.) At
+/// evaluation and update counts and acceleration are MuJoCo's, each step's
+/// iteration count is MuJoCo's through step 140 and the state through step
+/// 50. (Past step 140 the elliptic CG run grows as MuJoCo's own run does under
+/// a 1-ulp change of a starting velocity: both reach 1e-6 by step 200.) At
 /// condim 6 the first forward: the torsional and rolling rows' R differ from
 /// MuJoCo's after it (book P38).
 #[test]
@@ -381,7 +383,7 @@ fn every_row_kind_steps_as_mujoco_3_5_0() {
             1e-12,
         );
         if !name.ends_with("_6") {
-            assert_trajectory(name, case, 50, 1e-12);
+            step_and_compare(name, case, 50, 1e-12, 140);
         }
     }
 }
@@ -390,13 +392,28 @@ fn every_row_kind_steps_as_mujoco_3_5_0() {
 /// cone: 60 dofs, MuJoCo's sparse size. Its Hessian factor, with the cones'
 /// contributions, is made anew at each iteration where MuJoCo updates its
 /// own (the same matrix, rounded otherwise): 50 steps, each with MuJoCo's
-/// iteration count, the state within 1e-12.
+/// iteration count, the state within 1e-12. Then two of the spheres in
+/// contact with each other, so an elliptic contact couples two trees and its
+/// cone term pairs columns of different rows: the first forward's iteration,
+/// evaluation and update counts are MuJoCo's, and 100 steps keep its
+/// iteration count and its state within 1e-12.
 #[test]
 fn sparse_newton_steps_as_mujoco_3_5_0() {
-    let case = &golden()["cases"]["sparse_spheres"];
+    let g = golden();
+    let case = &g["cases"]["sparse_spheres"];
     let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     assert_eq!(model.nv, 60, "MuJoCo's sparse size");
     assert_trajectory("sparse_spheres", case, 50, 1e-12);
+    for name in ["sparse_pair", "sparse_stack"] {
+        let case = &g["cases"][name];
+        let (model, mut data) = start(case);
+        assert_eq!(model.nv, 60, "{name}: MuJoCo's sparse size");
+        data.forward(&model).expect("forward");
+        let first = &case["forward"];
+        assert_eq!(data.efc_type.len(), count(&first["nefc"]), "{name}: nefc");
+        assert_stat_counts(name, &data.solver_stat, &first["stats"]);
+        assert_trajectory(name, case, 100, 1e-12);
+    }
 }
 
 /// A pendulum swinging free beside a sphere sliding and spinning on a plane,
@@ -406,11 +423,11 @@ fn sparse_newton_steps_as_mujoco_3_5_0() {
 /// `engine_forward.c:670-676`). Newton and CG, 100 steps within 1e-12 of
 /// MuJoCo's. Started at its warmstart value instead, CG's pendulum dof takes
 /// part in the line search: 2.5e-7 off (measured). (The iteration counts are
-/// not compared: MuJoCo adds noslip's to them, sim-core does not; ledger.)
+/// not compared: MuJoCo adds noslip's to them, sim-core does not; ledger L129.)
 #[test]
 fn warmstart_starts_the_dofs_outside_the_islands_unconstrained() {
     let g = golden();
     for (solver, case) in g["cases"]["warmstart_islands"].as_object().expect("cases") {
-        step_and_compare(solver, case, 100, 1e-12, false);
+        step_and_compare(solver, case, 100, 1e-12, 0);
     }
 }

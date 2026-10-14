@@ -11,7 +11,7 @@ use crate::integrate::implicit::{
     isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness, tendon_active_stiffness,
     tendon_all_dofs_sleeping,
 };
-use crate::types::{ConstraintState, Data, ENABLE_SLEEP, Model, StepError};
+use crate::types::{ConstraintState, ConstraintType, Data, ENABLE_SLEEP, Model, StepError};
 
 /// The dof count from which Newton factors a sparse Hessian: MuJoCo's
 /// `mj_isSparse` (`engine_core_util.c:32-39`) under its default automatic
@@ -26,9 +26,10 @@ pub type Cone = (usize, usize, [f64; 36]);
 ///
 /// The sparsity pattern comes from:
 /// - M: tree sparsity via `dof_parent` (entry (i,j) iff j is ancestor of i)
-/// - J'·J over every constraint row, whatever its state, as MuJoCo's pattern
-///   (`mju_sqrMatTDSparseCount` over all rows), so a row that becomes
-///   quadratic or a cone later in the solve has its entries
+/// - J'·J over every constraint row, whatever its state, an elliptic
+///   contact's rows together, as MuJoCo's pattern (`mju_sqrMatTDSparseCount`
+///   over all rows), so a row that becomes quadratic or a cone later in the
+///   solve has its entries
 /// - under the implicit spring-damper integrator, each stiff or damped
 ///   tendon's `J'·J`
 ///
@@ -74,8 +75,8 @@ impl SparseHessian {
         let nefc = data.efc_type.len();
 
         // --- Step 1: Determine sparsity pattern ---
-        // Use a dense boolean mask per column (acceptable since this is O(nv²) and
-        // we only enter the sparse path when nv > 60 where this is ~3600 entries).
+        // A dense boolean mask per column: O(nv²), from 3,600 entries at the
+        // sparse size up.
         let mut has_entry = vec![vec![false; nv]; nv]; // has_entry[col][row], row >= col
 
         // M sparsity: tree structure from dof_parent
@@ -89,16 +90,21 @@ impl SparseHessian {
             }
         }
 
-        // J'·J sparsity: every row's outer product of its non-zero J entries,
-        // whatever the row's state (MuJoCo's pattern).
-        for r in 0..nefc {
-            // Collect non-zero column indices in this J row
-            let mut nz_cols: Vec<usize> = Vec::new();
-            for col in 0..nv {
-                if data.efc_J[(r, col)] != 0.0 {
-                    nz_cols.push(col);
-                }
-            }
+        // J'·J sparsity, whatever each row's state (MuJoCo's pattern): the
+        // outer product of a row's non-zero columns, an elliptic contact's
+        // rows taken together, since its cone term `J_c'·H_c·J_c` pairs a
+        // column of one row with a column of another (MuJoCo gives every row
+        // of a contact one pattern, `engine_solver.c:1698`).
+        let mut r = 0;
+        while r < nefc {
+            let rows = if data.efc_type[r] == ConstraintType::ContactElliptic {
+                data.efc_dim[r]
+            } else {
+                1
+            };
+            let nz_cols: Vec<usize> = (0..nv)
+                .filter(|&col| (r..r + rows).any(|k| data.efc_J[(k, col)] != 0.0))
+                .collect();
             // Mark all pairs (lower triangle)
             for &ci in &nz_cols {
                 for &cj in &nz_cols {
@@ -106,6 +112,7 @@ impl SparseHessian {
                     has_entry[lo][hi] = true;
                 }
             }
+            r += rows;
         }
 
         // DT-35: Tendon K/D sparsity (ImplicitSpringDamper only).
@@ -220,17 +227,12 @@ impl SparseHessian {
         // robots where depth << nv.
         for i in 0..nv {
             // Diagonal
-            if let Some(idx) = self.find_entry(i, i) {
-                self.vals[idx] += data.qM[(i, i)];
-            }
+            self.add(i, i, data.qM[(i, i)]);
             // Off-diagonal: walk ancestors
             let mut p = model.dof_parent[i];
             while let Some(j) = p {
                 // M[i,j] non-zero, j < i (ancestor). Store in lower triangle: col=j, row=i.
-                let m_val = data.qM[(i, j)];
-                if let Some(idx) = self.find_entry(j, i) {
-                    self.vals[idx] += m_val;
-                }
+                self.add(j, i, data.qM[(i, j)]);
                 p = model.dof_parent[j];
             }
         }
@@ -245,10 +247,8 @@ impl SparseHessian {
             // Joint diagonal K/D
             for i in 0..nv {
                 let kd = h * isd_damping(model, i) + h2 * isd_stiffness(model, i);
-                if kd != 0.0
-                    && let Some(idx) = self.find_entry(i, i)
-                {
-                    self.vals[idx] += kd;
+                if kd != 0.0 {
+                    self.add(i, i, kd);
                 }
             }
 
@@ -279,9 +279,7 @@ impl SparseHessian {
                 for (ai, &(col_a, j_a)) in nz.iter().enumerate() {
                     let s_j_a = scale * j_a;
                     for &(col_b, j_b) in &nz[ai..] {
-                        if let Some(idx) = self.find_entry(col_a, col_b) {
-                            self.vals[idx] += s_j_a * j_b;
-                        }
+                        self.add(col_a, col_b, s_j_a * j_b);
                     }
                 }
             }
@@ -309,9 +307,7 @@ impl SparseHessian {
                 let d_j_a = d_r * j_a;
                 for &(col_b, j_b) in &nz_cols[ai..] {
                     // Lower triangle: col_b >= col_a
-                    if let Some(idx) = self.find_entry(col_a, col_b) {
-                        self.vals[idx] += d_j_a * j_b;
-                    }
+                    self.add(col_a, col_b, d_j_a * j_b);
                 }
             }
         }
@@ -339,23 +335,30 @@ impl SparseHessian {
                     let val: f64 = (0..dim)
                         .map(|a| data.efc_J[(row + a, col_a)] * w[a][qi])
                         .sum();
-                    if let Some(idx) = self.find_entry(col_a, col_b) {
-                        self.vals[idx] += val;
-                    }
+                    self.add(col_a, col_b, val);
                 }
             }
         }
     }
 
-    /// Find the CSC index for entry (col, row) where row >= col.
-    fn find_entry(&self, col: usize, row: usize) -> Option<usize> {
+    /// Add `value` to the stored entry (col, row), row ≥ col.
+    ///
+    /// # Panics
+    ///
+    /// If the pattern lacks the entry: [`Self::assemble`] lays out every
+    /// entry the fill writes, so a miss is a bug in the pattern.
+    fn add(&mut self, col: usize, row: usize, value: f64) {
         let start = self.col_ptr[col];
         let end = self.col_ptr[col + 1];
         // Binary search in the sorted row indices for this column
-        self.row_idx[start..end]
-            .binary_search(&row)
-            .ok()
-            .map(|offset| start + offset)
+        let found = self.row_idx[start..end].binary_search(&row);
+        assert!(
+            found.is_ok(),
+            "the sparse Hessian's pattern lacks entry ({row}, {col})"
+        );
+        if let Ok(offset) = found {
+            self.vals[start + offset] += value;
+        }
     }
 
     /// Compute elimination tree from the CSC sparsity pattern.

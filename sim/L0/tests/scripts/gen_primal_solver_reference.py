@@ -8,8 +8,8 @@ Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 
 It refuses any other interpreter, as gen_census_golden.py does.
 
-Newton and CG are one solver in MuJoCo, `mj_solPrimal` (`engine_solver.c:1811-1969`),
-started from `warmstart` (`engine_forward.c:611-683`). Every case disables islands
+Newton and CG are one solver in MuJoCo, `mj_solPrimal` (`engine_solver.c:1811-1968`),
+started from `warmstart` (`engine_forward.c:611-687`). Every case disables islands
 (`<flag island="disable"/>`), so MuJoCo solves all rows at once, scaled by
 `1/(meaninertia·nv)`: the path sim-core runs. The cases:
 
@@ -50,6 +50,13 @@ started from `warmstart` (`engine_forward.c:611-683`). Every case disables islan
 - sparse_spheres: ten free spheres sliding and spinning on a plane under Newton with
   an elliptic cone, 60 dofs: MuJoCo's sparse Hessian (`mj_isSparse`, nv >= 60). qpos
   and qvel after steps 1, 10 and 50, and each step's iteration count.
+- sparse_pair and sparse_stack: ten spheres again, two of them in contact with each
+  other (sparse_pair: the second overlaps the first by 1 mm, sliding along y and
+  spinning; sparse_stack: the second rests on the first, which slides along x), so an
+  elliptic contact couples two trees and its cone term pairs columns of different rows:
+  the first forward's statistics, qpos and qvel after steps 1, 10, 50 and 100, and each
+  step's iteration count. The generator refuses either unless that contact is in the
+  cone at the first forward.
 - same_input: for newton_box, cg_connect and each mixed_rows variant (the condim-6
   ones also with the sphere rolling about x and y, so all five tangential components
   are nonzero), the first forward's solver inputs as mj_fwdConstraint hands them to
@@ -57,7 +64,10 @@ started from `warmstart` (`engine_forward.c:611-683`). Every case disables islan
   `d.qLDiagInv`, `qacc_smooth`, `qfrc_smooth`, the dense `efc_J`, `efc_aref`,
   `efc_D`, `efc_R`) and its outputs (`qacc`, `efc_force`, each iteration's
   statistics), so a test can hand the solver MuJoCo's own inputs and compare its
-  outputs bit for bit, whatever the stages before it round.
+  outputs bit for bit, whatever the stages before it round. The elliptic condim-3
+  variant also runs with `ls_iterations` 1 and 2 and with `tolerance` 1e-300 (40
+  iterations), which reach the line search's exits that the default options do not.
+  (sim-mjcf refuses a `tolerance` of 0, which MuJoCo takes.)
 """
 import json
 import os
@@ -177,6 +187,30 @@ SPARSE_SPHERES = """<mujoco model="sparse_spheres">
     SPHERE.format(x=0.5 * (i % 5), y=0.5 * (i // 5), condim=3) for i in range(10)))
 # Each sphere slides along x at 0.3·(1 + i mod 3) and spins about z.
 SPARSE_QVEL = [v for i in range(10) for v in (0.3 * (1 + i % 3), 0.1, 0, 0, 0, 2.0 + i)]
+
+TOP = """    <body pos="0 0 0.2985">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1" condim="3"/>
+    </body>"""
+SPARSE_OTHERS = [SPHERE.format(x=1.0 + 0.5 * (i % 4), y=0.5 * (i // 4), condim=3) for i in range(8)]
+TWO_TREES = """<mujoco model="{name}">
+  <option timestep="0.002" solver="Newton" cone="elliptic">
+    <flag island="disable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="10 10 0.1"/>
+{bodies}
+  </worldbody>
+</mujoco>"""
+SPARSE_PAIR_XML = TWO_TREES.format(name="sparse_pair", bodies="\n".join(
+    [SPHERE.format(x=0.0, y=0.0, condim=3), SPHERE.format(x=0.199, y=0.0, condim=3)] + SPARSE_OTHERS))
+# The second sphere slides along y and spins about z against the first; the others
+# slide on the plane.
+SPARSE_PAIR_QVEL = [0, 0, 0, 0, 0, 0, 0, 0.8, 0, 0, 0, 5.0] + [v for _ in range(8) for v in (0.3, 0.1, 0, 0, 0, 2.0)]
+SPARSE_STACK_XML = TWO_TREES.format(name="sparse_stack", bodies="\n".join(
+    [SPHERE.format(x=0.0, y=0.0, condim=3), TOP] + SPARSE_OTHERS))
+# The lower sphere slides along x under the upper one.
+SPARSE_STACK_QVEL = [0.5, 0, 0, 0, 0, 0] + [0.0] * 54
 
 EULERDAMP_ASLEEP = """<mujoco model="eulerdamp_asleep">
   <option timestep="0.002" solver="{solver}" iterations="{iterations}">
@@ -349,6 +383,27 @@ def same_input(xml, qvel, start=None):
             "qacc": floats(d.qacc), "efc_force": floats(d.efc_force[:n]), "stats": stats(m, d)}
 
 
+def two_tree_cone(xml, qvel):
+    """trajectory() of a sparse case whose first forward has a contact between two
+    bodies in the cone, with that forward's statistics; refuses any other."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[:] = qvel
+    mujoco.mj_forward(m, d)
+    assert mujoco.mj_isSparse(m) and m.nv >= 60, "MuJoCo's sparse path"
+    cone = int(mujoco.mjtConstraintState.mjCNSTRSTATE_CONE)
+    coupled = [
+        i for i in range(d.nefc)
+        if d.efc_type[i] == int(mujoco.mjtConstraint.mjCNSTR_CONTACT_ELLIPTIC)
+        and d.efc_state[i] == cone
+        and all(m.geom_bodyid[g] > 0 for g in d.contact[d.efc_id[i]].geom)
+    ]
+    assert coupled, "a contact between two bodies in the cone at the first forward"
+    case = trajectory(xml, qvel, 100, (1, 10, 50, 100))
+    case["forward"] = {"stats": stats(m, d), "nefc": int(d.nefc)}
+    return case
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -363,6 +418,8 @@ def main():
                                                    100, (1, 10, 50, 100))
                               for solver in ("Newton", "CG")},
         "sparse_spheres": trajectory(SPARSE_SPHERES, SPARSE_QVEL, 50, (1, 10, 50)),
+        "sparse_pair": two_tree_cone(SPARSE_PAIR_XML, SPARSE_PAIR_QVEL),
+        "sparse_stack": two_tree_cone(SPARSE_STACK_XML, SPARSE_STACK_QVEL),
         "eulerdamp_asleep": few_iterations(EULERDAMP_ASLEEP, (("CG", 1), ("CG", 3), ("Newton", 1))),
         "mixed_rows": mixed_rows(),
     }
@@ -374,6 +431,11 @@ def main():
                 MIXED_ROWS.format(solver=solver, cone=cone, condim=condim), MIXED_QVEL)
         same[f"{solver}_elliptic_6_rolling"] = same_input(
             MIXED_ROWS.format(solver=solver, cone="elliptic", condim=6), ROLLING_QVEL)
+        for tag, opt in (("ls1", 'ls_iterations="1"'), ("ls2", 'ls_iterations="2"'),
+                         ("tiny_tol", 'tolerance="1e-300" iterations="40"')):
+            xml = MIXED_ROWS.format(solver=solver, cone="elliptic", condim=3).replace(
+                f'solver="{solver}"', f'solver="{solver}" {opt}')
+            same[f"{solver}_elliptic_3_{tag}"] = same_input(xml, MIXED_QVEL)
     cases["same_input"] = same
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "primal_solver.json"), "w", encoding="utf-8") as f:
