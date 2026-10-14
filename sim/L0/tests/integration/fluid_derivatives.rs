@@ -1106,9 +1106,14 @@ fn t15_implicitfast_b_symmetric() {
     // The symmetrization in our B matrix happens inside mjd_ellipsoid_fluid
     // per-geom. Let's verify the analytical B is symmetric by running the implicit
     // integrator path directly.
-    let (model2, data2) = setup(IMPLICITFAST_SPHERE, &qvel);
-    // forward() was already called, and for implicitfast it fills qDeriv.
-    // data2.qDeriv should be symmetric after the implicitfast path.
+    let (model2, mut data2) = setup(IMPLICITFAST_SPHERE, &qvel);
+    // The step's implicitfast factor fills qDeriv (as MuJoCo's
+    // mj_implicitSkip); forward does not.
+    data2.step(&model2).expect("step");
+    assert!(
+        data2.qDeriv.iter().any(|&x| x != 0.0),
+        "T15: the step filled qDeriv"
+    );
     for i in 0..model2.nv {
         for j in (i + 1)..model2.nv {
             assert!(
@@ -1131,7 +1136,10 @@ fn t15_implicitfast_b_symmetric() {
 #[test]
 fn t16_implicit_b_asymmetric() {
     let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
-    let (model, data) = setup(ELLIPSOID_BASIC, &qvel);
+    let (model, mut data) = setup(ELLIPSOID_BASIC, &qvel);
+    // The step's implicit factor fills qDeriv (as MuJoCo's mj_implicitSkip);
+    // forward does not.
+    data.step(&model).expect("step");
 
     // For the full implicit path, B is NOT symmetrized.
     // Added-mass gyroscopic cross-product derivatives produce O(1) asymmetry.

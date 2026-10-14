@@ -652,15 +652,7 @@ fn test_noslip_residual_uses_efc_b() {
         for col in 0..nv {
             minv_j[col] = data.efc_J[(row, col)];
         }
-        let (rowadr, rownnz, colind) = model.qld_csr();
-        sim_core::mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &data.qLD_data,
-            &data.qLD_diag_inv,
-            &mut minv_j,
-        );
+        sim_core::mj_solve_m(&model, &data, minv_j.as_mut_slice());
 
         // Residual = efc_b[row] + Σ_j (J[j] · minv_j) * efc_force[j]
         let mut residual = data.efc_b[row];
@@ -839,4 +831,40 @@ fn test_noslip_processes_all_contacts_regardless_of_state() {
         data.qacc.iter().all(|x| x.is_finite()),
         "noslip should remain stable over many steps"
     );
+}
+
+/// After a primal solve, noslip changes the friction forces, so the
+/// acceleration is made from the forces afterwards: `M·qacc = qfrc_smooth +
+/// qfrc_constraint`, as MuJoCo's noslip leaves it (`dualFinish`,
+/// `engine_solver.c:70-77`), under Newton and CG. Kept as the solver's
+/// iterate, the acceleration would answer the forces before noslip.
+#[test]
+fn noslip_acceleration_comes_from_its_forces() {
+    for solver in ["Newton", "CG"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.002" solver="{solver}" cone="elliptic" noslip_iterations="10"/>
+              <worldbody>
+                <geom type="plane" size="5 5 0.1"/>
+                <body pos="0 0 0.0995">
+                  <freejoint/>
+                  <geom type="box" size="0.1 0.1 0.1" mass="1" friction="0.5 0.005 0.0001"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qvel[0] = 0.8;
+        data.qvel[5] = 3.0;
+        data.forward(&model).expect("forward");
+        assert!(data.ncon > 0, "{solver}: in contact");
+        let ma = sim_core::mj_mul_m(&model, &data, data.qacc.as_slice());
+        let rhs = &data.qfrc_smooth + &data.qfrc_constraint;
+        let gap = (&ma - &rhs).amax();
+        assert!(
+            gap <= 1e-9 * rhs.amax(),
+            "{solver}: M·qacc is {gap:e} from qfrc_smooth + qfrc_constraint"
+        );
+    }
 }

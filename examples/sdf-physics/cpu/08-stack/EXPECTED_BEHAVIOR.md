@@ -38,9 +38,6 @@ This example exercises:
   SDF evaluation. Unlike sphere-sphere (step 07), cube faces need
   multiple contact points for stability — the octree provides these.
 
-The lever arm stabilization fix in `jacobian.rs` ensures that the wide
-contact patches on flat faces don't cause solver instability.
-
 ## Pass criteria (automated at t ≥ 5s)
 
 - Each cube z within 2mm of expected height

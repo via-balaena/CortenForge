@@ -73,10 +73,10 @@ Input: *A Double Dose of Detail* at `caa1c1c0` — Parts 0–3 (`00`–`41`) and
 | P31 | A19 R4 | `fix(sim-core): transition derivatives use MuJoCo's tangent convention for quaternion joints` | behaviour (public fns) | P13, P14, P25 |
 | P32 | A19 R5 | `fix(sim-core): RK4 keeps a sleeping tree asleep` | behaviour | P20–P22, P10 |
 | P33 | A20 R3-P1 | `fix(sim-core): muscle force stays -1 in the Model, resolved per call as MuJoCo` (cross-crate) | behaviour | P01 |
-| P34 | A18 P1 | `fix(sim-core): Newton and CG run MuJoCo's primal solver` | **yes** | P08, P07 |
-| P35 | A18 P2 | `feat(sim-core): constraint islands solved separately, as MuJoCo` | behaviour | P34, P11 |
 | P36 | A18 P3 | `fix(sim-core): a constraint with an all-zero Jacobian adds no rows (MuJoCo mj_addConstraint)` | behaviour | — |
 | P36a | A13 D3 core (from Rigid-loading L31) | `feat(sim-core): flex edge rows only through a flex equality, as MuJoCo` (cross-layer) | **yes** | P11, P30, P36 |
+| P34 | A18 P1 | `fix(sim-core): Newton and CG run MuJoCo's primal solver` | **yes** | P08, P07, P36, P36a |
+| P35 | A18 P2 | `feat(sim-core): constraint islands solved separately, as MuJoCo` | behaviour | P34, P11 |
 | P37 | A18 P4 | `fix(sim-core): solref and solreffriction format checks as MuJoCo getsolparam` | behaviour | — |
 | P38 | A18 P5 | `fix(sim-core): elliptic friction rows take MuJoCo's impratio and friction-ratio R; diagApprox from R` | behaviour | — |
 | P39 | A18 P6 | `feat: weld torquescale` (cross-layer) | behaviour | — |
@@ -122,6 +122,7 @@ Each constraint below is a dependency note from a section; the order above satis
 18. **P48 → P49 → P50 → P51; P52 after P48, P11 and P42** (A17 §12: A17 C3 without A17 C2 turns `mod.rs:1367` and three mesh-collision validator checks red, measured; P52's bitwise test needs P42's renormalised normal, A17 §2.3).
 19. **"The MJCF harness baseline is taken at the head of the core series"** (A13 §4); P24 and P26 change trajectories, so both sit in this PR (A13 §4: D1 "belongs in the core series").
 20. **P11, P30, P36 → P36a.** `flexedge_invweight0` is derived in `recompute_derived` (A13 §3.5) and its fast branch tests MuJoCo's simple-body flag (`engine_setconst.c:733`), which P30 derives; P36 drops zero-Jacobian rows first (A18 §14). P36a is Rigid-loading L31's core rule; L31 keeps the parse and the doc rewrites.
+21. **P36, P36a → P34** (chunk 3c, measured on P34's built port): without the PGS fallback P34 deletes, the flex edge rows' diagonal approximation of mjMINVAL (D ≈ 1e15) made Newton's factor lose rank: 3 corpus docs went non-finite or failed and 2 tests failed. P36a's `flexedge_invweight0` gives those rows MuJoCo's softness; neither P36 nor P36a needs P34.
 
 ## Commits
 
@@ -453,7 +454,7 @@ Each constraint below is a dependency note from a section; the order above satis
 - **Readers of `actuator_gainprm[i][2]`** as the resolved F0 (`git grep`): `examples/fundamentals/sim-cpu/muscles/forearm-flexion/src/main.rs:145`, `muscles/cocontraction/src/main.rs:203`, `muscles/stress-test/src/main.rs:540`, `:733`, `:797`, `:814` (a validator). `sim/L1/bevy/src/model_data.rs:925` reads it for the muscle colour (`.max(1.0)`). They read −1 where F0 was not given, so each calls `muscle_f0`, made `pub` for them. Not run.
 
 ### P34 · A18 P1 · `fix(sim-core): Newton and CG run MuJoCo's primal solver`
-- **Before it:** four commits open chunk 3c, ledger-L119 (with L121), L117, L114 and L118, in that order (their owner lines in chapter 41).
+- **Before it:** ledger-L119, L117 and L114 open chunk 3c, L114 in several commits; L118 needed no commit and L121 moved to ledger-L123 (their owner lines in chapter 41).
 - **Closes:** census Newton (9 docs) and CG (ledger-L44) clusters (A16 §2; A18 §1).
 - **Implements:** A18 §4 (one primal solver for Newton and CG; no PGS fallback; `SolverStat` in MuJoCo's shape; `newton_solved` crate-private per A18 Q2); un-ignore the 24 `golden_flags` tests; `docs/KNOWN_GAPS.md` Gap 1 (A18 §13).
 - **Must-fail:** the 24 `golden_flags` tests; `chol_update_minus_removes_row`, `newton_matches_mujoco_3_5_0_iterates`, `newton_has_no_pgs_fallback`, `cg_matches_mujoco_3_5_0`, `cg_keeps_its_iterate`, `solver_niter_cleared_without_rows` (A18 §10).
@@ -498,6 +499,7 @@ Each constraint below is a dependency note from a section; the order above satis
 
 ### P38 · A18 P5 · `fix(sim-core): elliptic friction rows take MuJoCo's impratio and friction-ratio R; diagApprox from R`
 - **Closes:** census doc `2cb92700` (A18 §6.2).
+- **Also:** the primal solver's elliptic μ (`primal.rs`: `constraint_update`, `prepare`, `eval`) is friction[0]; MuJoCo's `con->mu` is friction[0]·√(R[i+1]/R[i]) (`engine_core_constraint.c:1540`), so with impratio in R it changes too (chunk 3c's review, on MuJoCo's own inputs at impratio 10: Newton 6 iterations for MuJoCo's 7).
 - **Must-fail:** `elliptic_friction_rows_as_mujoco`, `diag_approx_as_mujoco` (A18 §10).
 - **Census:** 2 corpus docs change bits (A18 §6.2).
 
@@ -535,8 +537,9 @@ Each constraint below is a dependency note from a section; the order above satis
 ### P43 · A21 R3 (I) + A18 §5 · `fix(sim-core): contacts listed at dist ≤ margin get constraint rows only below margin − gap`
 - **Merged:** A18 §5's box–plane per-corner rule (A21 §8 ports `mjc_PlaneBox` in I; A18 §5.4: the rule "should land with or after L41's zero-distance fix", where L41 is ledger-L41).
 - **Closes:** ledger-L41 (census L41 14 docs, L41list 30, incl. "box–plane corners at dist +0.35") (A16 §2); A8 §9 O1 (zero-distance contacts); A18 §5 late onset.
+- **Also (ledger-L124):** with the excluded contacts listed, port MuJoCo's whole `mjTRN_BODY` case in `mj_transmission_body` (`engine_core_smooth.c:1621-1731`), with a must-fail against MuJoCo.
 - **Must-fail:** `i_sphere_touching_plane`, `i_box_plane_gap`, `i_static_pair` (A21 §8); A18's plane–box test on `830708de` (A18 §10).
-- **Flips:** `cg_solver.rs:307` `test_cg_single_contact_direct` (A21 §8).
+- **Flips:** `cg_solver::test_cg_single_contact_direct` (A21 §8, measured before P34 replaced CG).
 - **Census:** L41list 29/30, L41 3/14, NEW-LATE +3 (A21 §2). On A18's base the box–plane rule alone brought 5 of 6 late-onset docs, `a0ff89f4`, `1a42c10c`, `74908604` to agree; 18 corpus docs change bits (A18 §5.3).
 - **Breaking:** `ncon` now counts excluded contacts; `Contact::is_excluded` is additive (A21 §11). The `contacts_*` helpers count them too (Q71).
 - **Note:** excluded contacts make no rows, so they join no island of P22's row partition (Q28, Q30), and A21 §8's separate `island/mod.rs` edit is not needed. After P22–P23 five init-sleep census docs still differ: `a6e04a3c`, `d72ea476` (`e1:t0:nefc`), `7ad5a27c` (`e1:t0:con_zero`), `e6ea68ac` (`e1:t0:con_frame`), `f9ec5b23` (`e1:s1:qfrc_constraint`). On `a6e04a3c` the first forward pass after the census's initial velocity gives 4 contacts in both and 0 rows in MuJoCo against 16 here: the box rests at distance 0 (the doc's census golden, `e1` step 0: 4 contacts at distance 0.0, `nefc` 0). The other four were not isolated here; A8 put `7ad5a27c`'s `ncon` difference at a contact at distance exactly 0 (A8's sleep-enabled corpus).

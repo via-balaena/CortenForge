@@ -126,18 +126,17 @@ fn mj_inertia_box_fluid(model: &Model, data: &mut Data, body_id: usize) {
 
     // 5. Rotate to world frame and apply at body CoM
     let bfrc = rotate_spatial_to_world(&data.ximat[body_id], &lfrc);
+    let mut qfrc = std::mem::take(&mut data.qfrc_fluid);
     mj_apply_ft(
         model,
-        &data.xpos,
-        &data.xquat,
-        &data.xaxis,
-        &data.xanchor,
+        data,
         &Vector3::new(bfrc[3], bfrc[4], bfrc[5]),
         &Vector3::new(bfrc[0], bfrc[1], bfrc[2]),
         &data.xipos[body_id],
         body_id,
-        &mut data.qfrc_fluid,
+        &mut qfrc,
     );
+    data.qfrc_fluid = qfrc;
 }
 
 /// Ellipsoid fluid model (advanced, per-geom).
@@ -268,18 +267,17 @@ fn mj_ellipsoid_fluid(model: &Model, data: &mut Data, body_id: usize) {
             *val *= interaction_coef;
         }
         let bfrc = rotate_spatial_to_world(&data.geom_xmat[gid], &lfrc);
+        let mut qfrc = std::mem::take(&mut data.qfrc_fluid);
         mj_apply_ft(
             model,
-            &data.xpos,
-            &data.xquat,
-            &data.xaxis,
-            &data.xanchor,
+            data,
             &Vector3::new(bfrc[3], bfrc[4], bfrc[5]),
             &Vector3::new(bfrc[0], bfrc[1], bfrc[2]),
             &data.geom_xpos[gid],
             body_id,
-            &mut data.qfrc_fluid,
+            &mut qfrc,
         );
+        data.qfrc_fluid = qfrc;
     }
 }
 

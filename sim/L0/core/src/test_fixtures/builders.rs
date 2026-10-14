@@ -804,7 +804,7 @@ pub(super) fn set_options(
 ///
 /// A fixture built with a joint layout `check_joint_layout` refuses, for the
 /// tests of that refusal, gets only `compute_ancestors`,
-/// `compute_implicit_params` and `compute_qld_csr_metadata`.
+/// `compute_implicit_params` and `compute_dof_patterns`.
 ///
 /// # Panics
 /// Panics if `recompute_derived` refuses one of the fixture's ranges.
@@ -832,7 +832,7 @@ pub fn finalize(model: &mut Model) {
     } else {
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
     }
     rebuild_name_indices(model);
 }

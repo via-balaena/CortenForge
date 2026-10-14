@@ -946,22 +946,21 @@ fn diagnose_sdf_sphere_gap() {
         ins!("ngeom", vec![pa.ngeom as f64], vec![pb.ngeom as f64]);
         ins!("ntree", vec![pa.ntree as f64], vec![pb.ntree as f64]);
 
-        // Sparse LDL
-        ins!("qLD_nnz", vec![pa.qLD_nnz as f64], vec![pb.qLD_nnz as f64]);
+        // The mass matrix's pattern
         ins!(
-            "qLD_rowadr",
-            pa.qLD_rowadr.iter().map(|&x| x as f64).collect(),
-            pb.qLD_rowadr.iter().map(|&x| x as f64).collect()
+            "M_rowadr",
+            pa.M_rowadr.iter().map(|&x| x as f64).collect(),
+            pb.M_rowadr.iter().map(|&x| x as f64).collect()
         );
         ins!(
-            "qLD_rownnz",
-            pa.qLD_rownnz.iter().map(|&x| x as f64).collect(),
-            pb.qLD_rownnz.iter().map(|&x| x as f64).collect()
+            "M_rownnz",
+            pa.M_rownnz.iter().map(|&x| x as f64).collect(),
+            pb.M_rownnz.iter().map(|&x| x as f64).collect()
         );
         ins!(
-            "qLD_colind",
-            pa.qLD_colind.iter().map(|&x| x as f64).collect(),
-            pb.qLD_colind.iter().map(|&x| x as f64).collect()
+            "M_colind",
+            pa.M_colind.iter().map(|&x| x as f64).collect(),
+            pb.M_colind.iter().map(|&x| x as f64).collect()
         );
 
         // Vectors

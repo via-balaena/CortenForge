@@ -17,7 +17,8 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::linalg::mj_solve_sparse;
+use crate::dynamics::factor::mj_solve_m;
+use crate::linalg::cholesky_solve_in_place;
 use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
 
 /// Precomputed data for sparse PGS iteration.
@@ -37,31 +38,33 @@ struct SparsePgsData {
     b_eff: Vec<f64>,
 }
 
-/// Prepare sparse PGS data structures.
+/// Prepare sparse PGS data structures. `m_impl_factor` is the Cholesky
+/// factor of the implicit spring-damper integrator's `M_impl`, which then
+/// takes the mass matrix's place.
 ///
 /// Cost: O(nefc × nv²) for the sparse LDL solves + O(nefc × nv) for
 /// diagonal and bias precomputation. Avoids the O(nefc² × nv) cost of
 /// building the full Delassus matrix.
-fn prepare_sparse_pgs(model: &Model, data: &Data, qacc_smooth: &DVector<f64>) -> SparsePgsData {
+fn prepare_sparse_pgs(
+    model: &Model,
+    data: &Data,
+    qacc_smooth: &DVector<f64>,
+    m_impl_factor: Option<&DMatrix<f64>>,
+) -> SparsePgsData {
     let nefc = data.efc_type.len();
     let nv = model.nv;
 
     // Compute M⁻¹ · J^T column by column via sparse LDL
-    let (rowadr, rownnz, colind) = model.qld_csr();
     let mut minv_jt = DMatrix::zeros(nv, nefc);
     for col in 0..nefc {
         let mut buf = DVector::zeros(nv);
         for r in 0..nv {
             buf[r] = data.efc_J[(col, r)];
         }
-        mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &data.qLD_data,
-            &data.qLD_diag_inv,
-            &mut buf,
-        );
+        match m_impl_factor {
+            Some(factor) => cholesky_solve_in_place(factor, &mut buf),
+            None => mj_solve_m(model, data, buf.as_mut_slice()),
+        }
         for r in 0..nv {
             minv_jt[(r, col)] = buf[r];
         }
@@ -178,6 +181,10 @@ fn compute_ar_block(
 ///
 /// AR subblocks for elliptic contacts are computed on-the-fly from
 /// `J_block × minv_jt_block` (O(dim² × nv) per block).
+///
+/// Under the implicit spring-damper integrator `m_impl_factor` is the
+/// Cholesky factor of `M_impl`, which takes the mass matrix's place, as it
+/// does for Newton and CG.
 // PGS solver inlined as a single function so the elliptic / pyramidal / friction-loss branching and the per-row update loop read end-to-end; single-letter names follow the published PGS notation.
 #[allow(
     clippy::many_single_char_names,
@@ -185,7 +192,7 @@ fn compute_ar_block(
     clippy::suspicious_operation_groupings,
     clippy::too_many_lines
 )]
-pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
+pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&DMatrix<f64>>) {
     let nefc = data.efc_type.len();
     if nefc == 0 {
         return;
@@ -196,7 +203,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
     let qfrc_smooth = data.qfrc_smooth.clone();
 
     // Prepare sparse data structures (O(nefc × nv²) — no nefc×nefc matrix)
-    let sp = prepare_sparse_pgs(model, data, &qacc_smooth);
+    let sp = prepare_sparse_pgs(model, data, &qacc_smooth, m_impl_factor);
 
     // Initialize efc arrays for classification
     data.efc_state.resize(nefc, ConstraintState::Quadratic);
@@ -442,7 +449,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
 
                 // Project per constraint type
                 match ctype {
-                    ConstraintType::Equality | ConstraintType::FlexEdge => {}
+                    ConstraintType::Equality => {}
                     ConstraintType::FrictionLoss => {
                         let fl = data.efc_floss[i];
                         data.efc_force[i] = data.efc_force[i].clamp(-fl, fl);
@@ -485,7 +492,8 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
             lineslope: 0.0,
             nactive: 0,
             nchange: 0,
-            nline: 0,
+            neval: 0,
+            nupdate: 0,
         });
 
         iter += 1;
@@ -559,7 +567,7 @@ pub fn classify_constraint_states(
         let r = data.efc_R[i];
 
         match ctype {
-            ConstraintType::Equality | ConstraintType::FlexEdge => {
+            ConstraintType::Equality => {
                 data.efc_state[i] = ConstraintState::Quadratic;
                 data.efc_force[i] = -d * jar;
                 constraint_cost += 0.5 * d * jar * jar;

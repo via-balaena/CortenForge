@@ -105,7 +105,7 @@ from deformation gradients.
 
 | Regime | Model | Mechanism | Use Case |
 |--------|-------|-----------|----------|
-| Small strain | Linear elastic (current) | Constraint row (`FlexEdge`) | Robotics, stiff bodies, MuJoCo conformance |
+| Small strain | Linear elastic (current) | Constraint row (flex equality) | Robotics, stiff bodies, MuJoCo conformance |
 | Large strain | Neo-Hookean / SVK | Passive force from strain energy | Soft tissue, surgical simulation, rubber |
 | Hyperelastic | Mooney-Rivlin, Ogden | Passive force from strain energy invariants | Biomechanics, material characterization |
 

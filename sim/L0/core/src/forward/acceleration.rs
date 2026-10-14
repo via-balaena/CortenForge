@@ -6,7 +6,7 @@
 
 use crate::constraint::assembly::tendon_deadband_displacement;
 use crate::constraint::solver::decode_pyramid_into;
-use crate::dynamics::factor::{mj_factor_i, mj_solve_ld};
+use crate::dynamics::factor::{mj_factor_i, mj_solve_ld, mj_solve_m};
 use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
@@ -17,7 +17,7 @@ use crate::integrate::implicit::{
 };
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
-    cholesky_in_place, cholesky_solve_in_place, lu_factor_sparse, lu_solve_sparse, mj_solve_sparse,
+    cholesky_in_place, cholesky_solve_in_place, lu_factor_sparse, lu_solve_sparse,
 };
 use crate::types::flags::disabled;
 use crate::types::{
@@ -32,8 +32,7 @@ use nalgebra::DVector;
 ///
 /// `Err(StepError::CholeskyFailed)` under the implicit spring-damper
 /// integrator when its modified mass matrix (M + h*D + h²*K) is not positive
-/// definite, and `Err(StepError::LuSingular)` under the implicit integrator
-/// when a diagonal of its factor is below mjMINVAL in magnitude.
+/// definite.
 pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> {
     if model.nv == 0 {
         return Ok(());
@@ -43,17 +42,13 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
         Integrator::ImplicitSpringDamper => mj_fwd_acceleration_implicit(model, data),
         Integrator::ImplicitFast | Integrator::Implicit => {
             // MuJoCo leaves the explicit acceleration in qacc (mj_fwdConstraint,
-            // engine_forward.c:747-750) and solves M − h·D only in the integrator
-            // (mj_implicitSkip, :1128). After a Newton solve qacc is already its result.
-            if !data.newton_solved {
+            // engine_forward.c:747-750) and factors and solves M − h·D only in
+            // the integrator (mj_implicitSkip, :1128; `mj_implicit_factor`).
+            // After a primal solve qacc is already its iterate.
+            if !data.primal_qacc {
                 mj_fwd_acceleration_explicit(model, data);
             }
-            if matches!(model.integrator, Integrator::ImplicitFast) {
-                mj_fwd_acceleration_implicitfast(model, data);
-                Ok(())
-            } else {
-                mj_fwd_acceleration_implicit_full(model, data)
-            }
+            Ok(())
         }
         Integrator::Euler | Integrator::RungeKutta4 => {
             // qacc is always computed explicitly for Euler/RK4.
@@ -76,17 +71,9 @@ fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
     let mut qfrc_total = data.qfrc_smooth.clone();
     qfrc_total += &data.qfrc_constraint;
 
-    // Solve M * qacc = qfrc_total using sparse L^T D L factorization from mj_crba
-    data.qacc.copy_from(&qfrc_total);
-    let (rowadr, rownnz, colind) = model.qld_csr();
-    mj_solve_sparse(
-        rowadr,
-        rownnz,
-        colind,
-        &data.qLD_data,
-        &data.qLD_diag_inv,
-        &mut data.qacc,
-    );
+    // Solve M * qacc = qfrc_total with the factor mj_crba left
+    mj_solve_m(model, data, qfrc_total.as_mut_slice());
+    data.qacc = qfrc_total;
 }
 
 /// Implicit forward acceleration for springs and dampers.
@@ -148,18 +135,17 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
             continue;
         }
         let point = data.xipos[body_id];
+        let mut qfrc = std::mem::take(&mut data.scratch_force);
         crate::jacobian::mj_apply_ft(
             model,
-            &data.xpos,
-            &data.xquat,
-            &data.xaxis,
-            &data.xanchor,
+            data,
             &wrench.force,
             &wrench.torque,
             &point,
             body_id,
-            &mut data.scratch_force,
+            &mut qfrc,
         );
+        data.scratch_force = qfrc;
     }
 
     // Build modified mass matrix: M_impl = M + h*D_jnt + h²*K_jnt
@@ -281,119 +267,120 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
     // Ball and Free joints have no springs (k = 0), so default no-ops are correct.
 }
 
-/// Implicit-fast forward acceleration: solves
-/// `(M − h·D) · qacc_implicit = qfrc_smooth + qfrc_constraint`, D being
-/// `∂(qfrc_smooth)/∂(qvel)` without the RNE's terms (`mjd_passive_vel`,
-/// `mjd_actuator_vel`), as MuJoCo 3.5.0's `mj_implicitSkip` does
-/// (`engine_forward.c:1180-1190`, `:1292-1294`, `:1302-1309`). `M − h·D` is
-/// taken on the mass matrix's pattern (`Model::M_*`: its lower triangle, a
-/// simple dof's row its diagonal only), which leaves out what D couples
-/// beyond it, a tendon's damping across two branches among them (MuJoCo
-/// documents it, `doc/computation/index.rst:544-546`). It goes into
-/// `Data::qH`, factored as `L'·D·L` over the awake dofs by MuJoCo's
-/// `mj_factorI`, which checks no pivot: an `M − h·D` that is not positive
-/// definite steps as MuJoCo's does. A sleeping dof's `qacc_implicit` is 0.
-fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) {
-    use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel};
-
-    data.qDeriv.fill(0.0);
-    mjd_passive_vel(model, data);
-    mjd_actuator_vel(model, data);
-
-    // qH = M + qDeriv·(−h) on M's pattern: MuJoCo gathers qDeriv's lower
-    // entries there (`mapD2M`), then adds M (`mju_addScl`).
-    let neg_h = -model.timestep;
-    for i in 0..model.nv {
-        for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
-            let j = model.M_colind[adr];
-            data.qH[adr] = data.qM[(i, j)] + data.qDeriv[(i, j)] * neg_h;
-        }
-    }
-
-    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
-    mj_factor_i(
-        &mut data.qH,
-        &mut data.qHDiagInv,
-        &model.M_rownnz,
-        &model.M_rowadr,
-        &model.M_colind,
-        index,
-    );
-    implicit_rhs(model, data);
-    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
-    data.qacc_implicit.copy_from(&data.scratch_rhs);
-    mj_solve_ld(
-        data.qacc_implicit.as_mut_slice(),
-        &data.qH,
-        &data.qHDiagInv,
-        &model.M_rownnz,
-        &model.M_rowadr,
-        &model.M_colind,
-        index,
-    );
-}
-
-/// Full implicit forward acceleration: as
-/// [`mj_fwd_acceleration_implicitfast`] with the RNE's velocity derivative
-/// (`mjd_rne_vel`) in D, on the pattern of every pair of dofs on one branch
-/// (`Model::D_*`, both triangles; MuJoCo's `mj_implicitSkip`,
-/// `engine_forward.c:1168-1178`, `:1288-1291`, `:1297-1301`): `M − h·D` goes
-/// into `Data::qLU`, factored as `(U + I)·L` over the awake dofs by MuJoCo's
-/// `mju_factorLUSparse`, without pivoting. A sleeping dof's
-/// `qacc_implicit` is 0.
+/// The implicit integrators' factor of `M − h·D`: the factorization of
+/// MuJoCo 3.5.0's `mj_implicitSkip` (`engine_forward.c:1166-1196`,
+/// `:1288-1295`), which runs in the integrator. `forward` leaves it, as
+/// `mj_forward` does.
+///
+/// Under implicitfast D is `∂(qfrc_smooth)/∂(qvel)` without the RNE's terms
+/// (`mjd_passive_vel`, `mjd_actuator_vel`), and `M − h·D` is taken on the
+/// mass matrix's pattern (`Model::M_*`: its lower triangle, a simple dof's
+/// row its diagonal only), which leaves out what D couples beyond it, a
+/// tendon's damping across two branches among them (MuJoCo documents it,
+/// `doc/computation/index.rst:544-546`). It goes into `Data::qH`, factored
+/// as `L'·D·L` by MuJoCo's `mj_factorI`, which checks no pivot: an `M − h·D`
+/// that is not positive definite steps as MuJoCo's does. Under implicit D
+/// takes the RNE's velocity derivative (`mjd_rne_vel`) too, on the pattern
+/// of every pair of dofs on one branch (`Model::D_*`, both triangles), into
+/// `Data::qLU`, factored as `(U + I)·L` by `mju_factorLUSparse`, without
+/// pivoting. Both over the awake dofs; `Data::qDeriv` holds D after it.
 ///
 /// # Errors
 ///
-/// [`StepError::LuSingular`] when a diagonal of the factor is smaller than
-/// mjMINVAL in magnitude, where MuJoCo stops with an error.
-fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(), StepError> {
+/// [`StepError::LuSingular`] under implicit when a diagonal of the factor is
+/// smaller than mjMINVAL in magnitude, where MuJoCo stops with an error.
+pub fn mj_implicit_factor(model: &Model, data: &mut Data) -> Result<(), StepError> {
     use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel, mjd_rne_vel};
 
     data.qDeriv.fill(0.0);
     mjd_passive_vel(model, data);
     mjd_actuator_vel(model, data);
-    mjd_rne_vel(model, data);
-
-    // qLU = M + qDeriv·(−h) on D's pattern: MuJoCo gathers M there, 0 where
-    // M's pattern holds no entry (`mapM2D`), then adds qDeriv
-    // (`mju_addToScl`).
-    let neg_h = -model.timestep;
-    for i in 0..model.nv {
-        for adr in model.D_rowadr[i]..model.D_rowadr[i] + model.D_rownnz[i] {
-            let j = model.D_colind[adr];
-            let in_m = i == j || model.dof_simplenum[i.max(j)] == 0;
-            let m = if in_m { data.qM[(i, j)] } else { 0.0 };
-            data.qLU[adr] = m + data.qDeriv[(i, j)] * neg_h;
-        }
+    if model.integrator == Integrator::Implicit {
+        mjd_rne_vel(model, data);
     }
-
+    let neg_h = -model.timestep;
     let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
-    lu_factor_sparse(
-        &mut data.qLU,
-        &model.D_rownnz,
-        &model.D_rowadr,
-        &model.D_colind,
-        index,
-    )?;
-    implicit_rhs(model, data);
-    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
-    data.qacc_implicit.fill(0.0);
-    lu_solve_sparse(
-        data.qacc_implicit.as_mut_slice(),
-        &data.qLU,
-        data.scratch_rhs.as_slice(),
-        &model.D_rownnz,
-        &model.D_rowadr,
-        &model.D_diag,
-        &model.D_colind,
-        index,
-    );
-    Ok(())
+    match model.integrator {
+        Integrator::ImplicitFast => {
+            // qH = M + qDeriv·(−h) on M's pattern: MuJoCo gathers qDeriv's
+            // lower entries there (`mapD2M`), then adds M (`mju_addScl`).
+            for i in 0..model.nv {
+                for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
+                    let j = model.M_colind[adr];
+                    data.qH[adr] = data.qM[(i, j)] + data.qDeriv[(i, j)] * neg_h;
+                }
+            }
+            mj_factor_i(
+                &mut data.qH,
+                &mut data.qHDiagInv,
+                &model.M_rownnz,
+                &model.M_rowadr,
+                &model.M_colind,
+                index,
+            );
+            Ok(())
+        }
+        Integrator::Implicit => {
+            // qLU = M + qDeriv·(−h) on D's pattern: MuJoCo gathers M there, 0
+            // where M's pattern holds no entry (`mapM2D`), then adds qDeriv
+            // (`mju_addToScl`).
+            for i in 0..model.nv {
+                for adr in model.D_rowadr[i]..model.D_rowadr[i] + model.D_rownnz[i] {
+                    let j = model.D_colind[adr];
+                    let in_m = i == j || model.dof_simplenum[i.max(j)] == 0;
+                    let m = if in_m { data.qM[(i, j)] } else { 0.0 };
+                    data.qLU[adr] = m + data.qDeriv[(i, j)] * neg_h;
+                }
+            }
+            lu_factor_sparse(
+                &mut data.qLU,
+                &model.D_rownnz,
+                &model.D_rowadr,
+                &model.D_colind,
+                index,
+            )
+        }
+        _ => Ok(()),
+    }
 }
 
-/// Whether the implicit integrators work over the awake dofs only, as
-/// MuJoCo's do: sleep enabled and a tree asleep.
-fn awake_dofs(model: &Model, data: &Data) -> bool {
+/// `qacc_implicit = (M − h·D)⁻¹·(qfrc_smooth + qfrc_constraint)` with the
+/// factor in `data` ([`mj_implicit_factor`]'s), over the awake dofs, a
+/// sleeping dof's entry 0: the solve of MuJoCo 3.5.0's `mj_implicitSkip`
+/// (`engine_forward.c:1297-1310`).
+pub fn mj_implicit_solve(model: &Model, data: &mut Data) {
+    implicit_rhs(model, data);
+    let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
+    if model.integrator == Integrator::Implicit {
+        data.qacc_implicit.fill(0.0);
+        lu_solve_sparse(
+            data.qacc_implicit.as_mut_slice(),
+            &data.qLU,
+            data.scratch_rhs.as_slice(),
+            &model.D_rownnz,
+            &model.D_rowadr,
+            &model.D_diag,
+            &model.D_colind,
+            index,
+        );
+    } else {
+        data.qacc_implicit.copy_from(&data.scratch_rhs);
+        mj_solve_ld(
+            data.qacc_implicit.as_mut_slice(),
+            &data.qH,
+            &data.qHDiagInv,
+            &model.M_rownnz,
+            &model.M_rowadr,
+            &model.M_colind,
+            index,
+        );
+    }
+}
+
+/// Whether MuJoCo's sleep filter is on: sleep enabled and a tree asleep. The
+/// mass matrix's factor, Euler's damped one and the implicit integrators'
+/// then work over the awake dofs only.
+pub fn awake_dofs(model: &Model, data: &Data) -> bool {
     model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv
 }
 
@@ -575,7 +562,10 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
             let weld = match model.eq_type[eq_id] {
                 EqualityType::Connect => false,
                 EqualityType::Weld => true,
-                EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => {
+                EqualityType::Joint
+                | EqualityType::Distance
+                | EqualityType::Tendon
+                | EqualityType::Flex => {
                     i += 1;
                     continue;
                 }

@@ -166,8 +166,6 @@ pub fn separation_direction(pose_a: &Pose, pose_b: &Pose) -> Option<Vector3<f64>
 /// Zeroing components below `1e-6 * max_component` ensures the tangent frame
 /// remains symmetric. The threshold is far above machine epsilon (2.2e-16)
 /// but far below any physical significance (~0.00006° of tilt).
-///
-/// See `sim/docs/PYRAMIDAL_FRICTION_INSTABILITY.md` for the full analysis.
 pub fn stabilize_direction(dir: Vector3<f64>) -> Vector3<f64> {
     let max_abs = dir.x.abs().max(dir.y.abs()).max(dir.z.abs());
     if max_abs < 1e-15 {

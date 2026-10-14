@@ -171,7 +171,8 @@ pub struct Data {
     // ==================== Velocities (computed from qvel) ====================
     /// Body spatial velocities (length `nbody`): (angular, linear).
     pub cvel: Vec<SpatialVector>,
-    /// DOF velocities in Cartesian space (length `nv`).
+    /// MuJoCo's dof motion axes (`cdof`, length `nv`). The CPU leaves them
+    /// 0: `mj_jac` builds MuJoCo's from the kinematics (ledger-L123).
     pub cdof: Vec<SpatialVector>,
 
     // ==================== RNE Intermediate Quantities ====================
@@ -228,43 +229,24 @@ pub struct Data {
     pub xfrc_applied: Vec<BodyWrench>,
 
     // ==================== Mass Matrix ====================
-    /// Joint-space inertia matrix (`nv` x `nv`).
-    /// For small systems (nv <= 32), dense storage is used.
-    /// For large systems, only lower triangle is filled (sparse via qLD).
+    /// Joint-space inertia matrix (`nv` x `nv`), both triangles filled, on
+    /// MuJoCo's pattern: a simple dof's row holds its diagonal alone.
     pub qM: DMatrix<f64>,
 
-    // ==================== Sparse L^T D L Factorization ====================
-    // Computed in mj_crba() via mj_factor_sparse(). Exploits tree sparsity from
-    // dof_parent for O(nv) factorization and solve vs O(nv³) for dense Cholesky.
-    // Reused by mj_fwd_acceleration_explicit() and pgs_solve_contacts().
-    //
-    /// Sparse L^T D L factorization exploiting tree structure.
-    /// M = L^T D L where L is unit lower triangular and D is diagonal.
-    /// For tree-structured robots, this achieves O(n) factorization and solve.
-    ///
-    /// Layout matches MuJoCo's combined format — each CSR row stores:
-    /// - Off-diagonal L entries at positions `0..rownnz[i]-1`
-    /// - Diagonal D\[i,i\] at position `rownnz[i]-1` (last element)
-    ///
-    /// The sparsity pattern is determined by the kinematic tree:
-    /// `L\[i,j\]` is non-zero only if DOF j is an ancestor of DOF i.
-    ///
-    /// Use `data.qld_diag(model, i)` to read D\[i,i\] from the CSR data.
-    ///
-    /// Flat CSR value buffer (off-diagonal L + diagonal D).
-    /// Layout defined by `Model::qLD_rowadr`/`qLD_rownnz`/`qLD_colind`.
-    /// Length: `model.qLD_nnz`.
+    // ==================== The mass matrix's factor ====================
+    /// `M = L'·D·L` on the mass matrix's pattern (MuJoCo `qLD`; layout
+    /// `Model::M_*`, length `model.M_colind.len()`): row `i` holds `L`'s
+    /// entries at `i`'s ancestors, then `D[i]` last (`data.qld_diag(model,
+    /// i)`). Written by `mj_crba` through [`crate::mj_factor_m`]; solved
+    /// with by [`crate::mj_solve_m`].
     pub qLD_data: Vec<f64>,
-    /// Precomputed inverse diagonal: `qLD_diag_inv[i] = 1.0 / D\[i,i\]`.
-    /// Computed during `mj_factor_sparse()`. Used by `mj_solve_sparse()` to
-    /// replace division with multiplication (matching MuJoCo's `qLDiagInv`).
-    /// Length: `nv`.
+    /// `1 / D[i]` (MuJoCo `qLDiagInv`, length `nv`).
     pub qLD_diag_inv: Vec<f64>,
-    /// Whether sparse factorization is valid and should be used.
-    /// Set to true after `mj_factor_sparse()` is called.
+    /// Whether `qLD_data` holds a factor ([`crate::mj_factor_m`] sets it).
     pub qLD_valid: bool,
     /// `M − h·∂f/∂v` on the mass matrix's pattern, factored as `L'·D·L` by
-    /// the implicitfast integrator (MuJoCo `qH`; layout `Model::M_*`, length
+    /// the implicitfast integrator, or `M + h·diag(damping)` by Euler with a
+    /// damped dof (MuJoCo `qH`; layout `Model::M_*`, length
     /// `model.M_colind.len()`).
     pub qH: Vec<f64>,
     /// The inverse of `qH`'s diagonal factor (length `nv`; MuJoCo
@@ -435,24 +417,26 @@ pub struct Data {
     pub efc_cone_hessian: Vec<Option<DMatrix<f64>>>,
     /// Number of contacts currently in the Cone state.
     pub ncone: usize,
-    /// Number of equality constraint rows (Equality + FlexEdge).
-    /// These occupy `efc_*[0..ne)`.
+    /// Number of equality constraint rows (a flex equality's edge rows among
+    /// them). These occupy `efc_*[0..ne)`.
     pub ne: usize,
     /// Number of friction loss constraint rows (DOF + tendon).
     /// These occupy `efc_*[ne..ne+nf)`.
     pub nf: usize,
-    /// Whether Newton solver computed qacc directly this step.
-    /// When true, mj_fwd_acceleration should be skipped.
-    pub newton_solved: bool,
+    /// Whether `qacc` is the primal solver's iterate this step (Newton or CG
+    /// solved rows and no noslip pass changed the forces after). When true,
+    /// the forward pass keeps it instead of making the acceleration from the
+    /// forces.
+    pub(crate) primal_qacc: bool,
 
     /// Per-iteration solver statistics (length `solver_niter` after solve).
     /// Populated by all 3 solvers: PGS fills `improvement` only (other fields
-    /// zeroed); CG and Newton fill all fields.
+    /// zeroed); CG and Newton fill all fields. Cleared with no rows.
     pub solver_stat: Vec<SolverStat>,
 
-    /// Per-step mean inertia: `trace(qM) / nv`. More accurate than the
-    /// model-level constant for configuration-dependent inertia.
-    /// Updated at the start of each Newton solve from the current `qM`.
+    /// Per-step mean inertia: `trace(qM) / nv`, set at each constraint
+    /// solve from the current `qM`. PGS and noslip scale by it; the primal
+    /// solver takes the model's `stat_meaninertia`, as MuJoCo's does.
     pub stat_meaninertia: f64,
 
     // ==================== Sensors ====================
@@ -581,8 +565,9 @@ pub struct Data {
     /// from which it computes `qacc = (v_new - v_old) / h`.
     pub scratch_v_new: DVector<f64>,
     /// The acceleration Implicit and ImplicitFast advance `qvel` with,
-    /// `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)` (length `nv`). MuJoCo
-    /// keeps it in a stack local of `mj_implicitSkip` (`engine_forward.c:1134`).
+    /// `(M − h·∂f/∂v)⁻¹ (qfrc_smooth + qfrc_constraint)` (length `nv`),
+    /// written by `integrate`. MuJoCo keeps it in a stack local of
+    /// `mj_implicitSkip` (`engine_forward.c:1134`).
     pub(crate) qacc_implicit: DVector<f64>,
 
     // ==================== RK4 Scratch Buffers ====================
@@ -853,7 +838,7 @@ impl Clone for Data {
             ncone: self.ncone,
             ne: self.ne,
             nf: self.nf,
-            newton_solved: self.newton_solved,
+            primal_qacc: self.primal_qacc,
             solver_stat: self.solver_stat.clone(),
             stat_meaninertia: self.stat_meaninertia,
             // Sensors
@@ -944,14 +929,12 @@ impl Clone for Data {
 
 #[allow(non_snake_case)] // qLD matches MuJoCo naming convention
 impl Data {
-    /// Read the diagonal entry `D\[i,i\]` from the sparse LDL factorization.
-    ///
-    /// Reads from `qLD_data[rowadr[i] + rownnz[i] - 1]` (last element of CSR row).
+    /// Read the diagonal entry `D\[i,i\]` of the mass matrix's factor, the
+    /// last entry of row `i` (`Model::M_*`).
     #[inline]
     #[must_use]
     pub fn qld_diag(&self, model: &Model, i: usize) -> f64 {
-        let (rowadr, rownnz, _) = model.qld_csr();
-        self.qLD_data[rowadr[i] + rownnz[i] - 1]
+        self.qLD_data[model.M_rowadr[i] + model.M_rownnz[i] - 1]
     }
 
     /// Typed accessor for warning statistics.

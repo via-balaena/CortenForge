@@ -4468,7 +4468,7 @@ fn test_selective_crba_qld_awake_matches_full() {
     data_ref.step(&model_ref).expect("ref step");
 
     // Compare qLD for awake DOFs
-    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let (rowadr, rownnz) = (&model.M_rowadr, &model.M_rownnz);
     for t in 0..model.ntree {
         if data.tree_asleep[t] >= 0 {
             continue; // Skip sleeping trees
@@ -4580,7 +4580,7 @@ fn test_partial_ldl_awake_identical() {
     assert!(data.tree_asleep[1] >= 0, "tree 1 should be sleeping");
 
     // Compare qLD for awake DOFs (tree 0) — should be bit-identical
-    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let (rowadr, rownnz) = (&model.M_rowadr, &model.M_rownnz);
     let dof_start = model.tree_dof_adr[0];
     let dof_count = model.tree_dof_num[0];
     for d in dof_start..dof_start + dof_count {
@@ -4627,7 +4627,7 @@ fn test_partial_ldl_sleeping_preserved() {
     let tree = slept_tree.expect("a tree should have gone to sleep");
 
     // Record qLD entries for the sleeping tree's DOFs
-    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let (rowadr, rownnz) = (&model.M_rowadr, &model.M_rownnz);
     let dof_start = model.tree_dof_adr[tree];
     let dof_count = model.tree_dof_num[tree];
     let saved_diag: Vec<f64> = (dof_start..dof_start + dof_count)
@@ -4675,7 +4675,7 @@ fn test_partial_ldl_sleeping_preserved() {
     }
 }
 
-/// T101: mj_solve_sparse with partial qLD produces correct qacc for awake DOFs (AC #72).
+/// T101: mj_solve_m with partial qLD produces correct qacc for awake DOFs (AC #72).
 ///
 /// Compares qacc from sleep-enabled and sleep-disabled models after partial sleep.
 /// Awake DOFs' accelerations should match (sleeping DOFs have zero qacc in both).
@@ -4748,7 +4748,7 @@ fn test_partial_ldl_wake_recomputes() {
     }
 
     // Record sleeping tree 1's qLD as "stale"
-    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let (rowadr, rownnz) = (&model.M_rowadr, &model.M_rownnz);
     let dof_start_b = model.tree_dof_adr[1];
     let dof_count_b = model.tree_dof_num[1];
     let _stale_diag: Vec<f64> = (dof_start_b..dof_start_b + dof_count_b)
@@ -4828,7 +4828,7 @@ fn test_partial_ldl_all_awake_noop() {
     assert_eq!(data.nv_awake, model.nv, "all DOFs should be awake");
 
     // qLD must be bit-identical
-    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let (rowadr, rownnz) = (&model.M_rowadr, &model.M_rownnz);
     for d in 0..model.nv {
         assert_eq!(
             data.qld_diag(&model, d),
@@ -4927,7 +4927,7 @@ fn test_partial_ldl_multi_tree_independence() {
     );
 
     // Record tree 1's (middle tree) qLD entries
-    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let (rowadr, rownnz) = (&model.M_rowadr, &model.M_rownnz);
     let dof_start_b = model.tree_dof_adr[1];
     let dof_count_b = model.tree_dof_num[1];
     let saved_diag_b: Vec<f64> = (dof_start_b..dof_start_b + dof_count_b)

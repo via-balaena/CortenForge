@@ -101,7 +101,7 @@ pub fn isd_tendon_damping(model: &Model, t: usize) -> f64 {
 /// deadband-aware `k_active` (zero inside deadband, `k` outside).
 ///
 /// Shared by `mj_fwd_acceleration_implicit` (Step 2) and
-/// `build_m_impl_for_newton` (Step 2b). Both call sites must produce
+/// `build_m_impl` (Step 2b). Both call sites must produce
 /// identical mass matrix modifications — factoring this out guarantees it.
 ///
 /// **Sleep guard:** Skips tendons whose target DOFs are all sleeping,

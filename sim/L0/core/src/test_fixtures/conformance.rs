@@ -892,12 +892,24 @@ pub fn contact_damped_case() -> ContactConformanceCase {
     contact_fixture("contact_pyramidal_damped", 3, 0.8, 0.005, 2.0, 1, 2.0)
 }
 
+/// Whether the last forward pass solved its rows with Newton and stopped on
+/// its tolerance or with no step left to take, not at its iteration cap.
+fn newton_converged(model: &Model, data: &crate::types::Data) -> bool {
+    let tol = model.solver_tolerance;
+    model.solver_type == SolverType::Newton
+        && (data.solver_niter < model.solver_iterations
+            || data
+                .solver_stat
+                .last()
+                .is_some_and(|s| s.improvement < tol || s.gradient < tol))
+}
+
 /// Compute the CPU reference for a contact conformance case.
 ///
 /// One standard `forward()` runs analytic collision → constraint assembly →
-/// solve in a single, fully self-consistent pass (the production path, so
-/// `qacc = qacc_smooth + M⁻¹·qfrc_constraint` holds exactly). The generated
-/// contacts are captured for identical GPU injection.
+/// solve in a single pass (the production path: one solve gives `qacc` and
+/// `qfrc_constraint`). The generated contacts are captured for identical GPU
+/// injection.
 ///
 /// # Panics
 ///
@@ -915,14 +927,14 @@ pub fn contact_constraint_oracle(case: &ContactConformanceCase) -> ConstraintOra
     data.forward(model).expect("contact oracle: forward");
 
     // The GPU↔CPU comparison only holds because this oracle uses the SAME solver
-    // as the GPU (Newton) — and Newton silently falls back to PGS on
-    // CholeskyFailed / MaxIterationsExceeded. If that happens the reference is an
-    // under-converged PGS result, not the Newton optimum the GPU computes, so a
-    // future fixture would compare against the wrong value. Fail loudly instead.
+    // as the GPU (Newton) and solves to its optimum. Newton stops at its
+    // iteration cap with its last iterate; a reference that stopped there is
+    // not the optimum the GPU computes, so a future fixture would compare
+    // against the wrong value. Fail loudly instead.
     assert!(
-        data.newton_solved,
-        "contact oracle did not converge via Newton (silent PGS fallback) — \
-         the GPU↔CPU solve comparison would be against the wrong reference"
+        newton_converged(model, &data),
+        "contact oracle did not converge via Newton (stopped at its iteration \
+         cap) — the GPU↔CPU solve comparison would be against the wrong reference"
     );
 
     ConstraintOracle {
@@ -1024,15 +1036,14 @@ pub fn contact_rollout_oracle(
         data.step2(model).expect("rollout oracle: step2");
 
         // Same contract as the single-step oracle: the GPU↔CPU comparison only
-        // holds if EVERY step's reference came from Newton (the GPU's solver).
-        // Newton silently falls back to PGS on CholeskyFailed / MaxIterations; a
-        // step that fell back would carry an under-converged PGS reference the
-        // GPU-Newton trajectory cannot match. Fail loudly rather than report it
-        // as drift.
+        // holds if EVERY step's reference is Newton's optimum (the GPU's
+        // solver). A step that stopped at the iteration cap would carry an
+        // under-converged reference the GPU-Newton trajectory cannot match.
+        // Fail loudly rather than report it as drift.
         assert!(
-            data.newton_solved,
-            "rollout oracle: step did not converge via Newton (silent PGS \
-             fallback) — the reference would be against the wrong solver"
+            newton_converged(model, &data),
+            "rollout oracle: step did not converge via Newton (stopped at its \
+             iteration cap) — the reference would be against the wrong solve"
         );
 
         steps.push(RolloutStep {

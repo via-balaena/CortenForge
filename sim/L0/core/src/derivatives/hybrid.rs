@@ -8,30 +8,29 @@
 //! - Muscle derivative helpers
 
 use super::fd::{
-    NextState, clamped_state_diff, in_ctrl_range, mjd_transition_fd, perturb_ctrl, perturb_state,
-    state_diff,
+    NextState, NominalFactor, clamped_state_diff, in_ctrl_range, mjd_transition_fd, perturb_ctrl,
+    perturb_state, state_diff,
 };
 use super::integration::{compute_integration_derivatives, mjd_sub_quat, post_step_qvel};
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::dynamics::factor::mj_solve_m;
 use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
-use crate::forward::solve_implicit;
 use crate::forward::{
     MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
     hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_f0,
     muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
 };
+use crate::forward::{mj_implicit_factor, mj_implicit_solve, solve_implicit};
 use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::isd_damping;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
-use crate::linalg::{
-    cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse, mj_solve_sparse_batch,
-};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
 use crate::plugin::PluginCapabilityBit;
 use crate::quat::{qpos_quat, quat_to_vel};
 use crate::types::flags::{actuator_disabled, disabled};
@@ -2916,10 +2915,19 @@ pub fn mjd_transition_hybrid(
     let nu = model.nu;
     let nx = 2 * nv + na;
 
-    // 1. Populate qDeriv analytically on a cloned working copy.
-    //    The clone preserves qLD_data/qLD_diag_inv, qH/qHDiagInv, qLU,
+    // 1. Populate qDeriv analytically on a cloned working copy, after the
+    //    implicit integrators' factor of M − h·D and the acceleration the
+    //    step integrates (`qacc_implicit`), which the integrator computes and
+    //    `forward` does not. The clone preserves qLD_data/qLD_diag_inv,
     //    scratch_m_impl, qM — all unmodified by mjd_smooth_vel.
     let mut data_work = data.clone();
+    if matches!(
+        model.integrator,
+        Integrator::Implicit | Integrator::ImplicitFast
+    ) {
+        mj_implicit_factor(model, &mut data_work)?;
+        mj_implicit_solve(model, &mut data_work);
+    }
     mjd_smooth_vel(model, &mut data_work);
 
     // 1b. Eulerdamp factor. The real Euler step applies joint damping IMPLICITLY:
@@ -2946,7 +2954,7 @@ pub fn mjd_transition_hybrid(
 
     // 2. Compute integration derivatives (pure function), at the velocity the
     //    step integrates positions with.
-    let qvel_next = post_step_qvel(model, data, m_impl_euler.as_ref());
+    let qvel_next = post_step_qvel(model, &data_work, m_impl_euler.as_ref());
     let integ = compute_integration_derivatives(model, data, &qvel_next);
 
     // 3. Allocate output.
@@ -2968,15 +2976,7 @@ pub fn mjd_transition_hybrid(
                 }
             } else {
                 // Bare-M batch solve (undamped fast path; byte-identical to before).
-                let (rowadr, rownnz, colind) = model.qld_csr();
-                mj_solve_sparse_batch(
-                    rowadr,
-                    rownnz,
-                    colind,
-                    &data_work.qLD_data,
-                    &data_work.qLD_diag_inv,
-                    &mut minv_qderiv,
-                );
+                mj_solve_m(model, &data_work, minv_qderiv.as_mut_slice());
             }
             let mut dvdv = DMatrix::identity(nv, nv);
             dvdv += h * &minv_qderiv;
@@ -3054,7 +3054,7 @@ pub fn mjd_transition_hybrid(
         Integrator::RungeKutta4 => unreachable!(),
         Integrator::ImplicitFast => {
             // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv, with the factor of
-            // M − h·D the forward pass left in `qH`
+            // M − h·D `mj_implicit_factor` left in `data_work.qH`
             let mut dvdv = DMatrix::identity(nv, nv);
             for j in 0..nv {
                 let mut col = data_work.qDeriv.column(j).clone_owned();
@@ -3176,15 +3176,7 @@ pub fn mjd_transition_hybrid(
                     if let Some(ref mi) = m_impl_euler {
                         cholesky_solve_in_place(mi, &mut dvdact);
                     } else {
-                        let (rowadr, rownnz, colind) = model.qld_csr();
-                        mj_solve_sparse(
-                            rowadr,
-                            rownnz,
-                            colind,
-                            &data_work.qLD_data,
-                            &data_work.qLD_diag_inv,
-                            &mut dvdact,
-                        );
+                        mj_solve_m(model, &data_work, dvdact.as_mut_slice());
                     }
                 }
                 Integrator::ImplicitSpringDamper => {
@@ -3260,6 +3252,7 @@ pub fn mjd_transition_hybrid(
     //   direction is infeasible due to actuator_ctrlrange boundary)
     scratch.step(model)?;
     let y_0 = NextState::of(&scratch);
+    let factor = NominalFactor::of(&scratch);
 
     // For implicit integrators, save the acceleration the nominal step advanced
     // qvel with: the analytical position derivative uses it as the operating
@@ -3322,15 +3315,7 @@ pub fn mjd_transition_hybrid(
                         dvdq.column_mut(j).copy_from(&col);
                     }
                 } else {
-                    let (rowadr, rownnz, colind) = model.qld_csr();
-                    mj_solve_sparse_batch(
-                        rowadr,
-                        rownnz,
-                        colind,
-                        &data_work.qLD_data,
-                        &data_work.qLD_diag_inv,
-                        &mut dvdq,
-                    );
+                    mj_solve_m(model, &data_work, dvdq.as_mut_slice());
                 }
                 dvdq *= h;
                 dvdq
@@ -3500,10 +3485,11 @@ pub fn mjd_transition_hybrid(
         }
     }
 
-    // Muscle activation FD fallback columns — piggyback sensor recording
+    // Muscle activation FD fallback columns, each step with the nominal
+    // factor — piggyback sensor recording
     for &state_col in &act_fd_indices {
         perturb_state(model, &mut scratch, data, state_col, eps);
-        scratch.step(model)?;
+        factor.step(model, &mut scratch)?;
         let y_plus = NextState::of(&scratch);
         let s_plus = if compute_sensors {
             Some(scratch.sensordata.clone())
@@ -3513,7 +3499,7 @@ pub fn mjd_transition_hybrid(
 
         if config.centered {
             perturb_state(model, &mut scratch, data, state_col, -eps);
-            scratch.step(model)?;
+            factor.step(model, &mut scratch)?;
             let y_minus = NextState::of(&scratch);
             let s_minus = if compute_sensors {
                 Some(scratch.sensordata.clone())
@@ -3611,15 +3597,7 @@ pub fn mjd_transition_hybrid(
                     if let Some(ref mi) = m_impl_euler {
                         cholesky_solve_in_place(mi, &mut dvdctrl);
                     } else {
-                        let (rowadr, rownnz, colind) = model.qld_csr();
-                        mj_solve_sparse(
-                            rowadr,
-                            rownnz,
-                            colind,
-                            &data_work.qLD_data,
-                            &data_work.qLD_diag_inv,
-                            &mut dvdctrl,
-                        );
+                        mj_solve_m(model, &data_work, dvdctrl.as_mut_slice());
                     }
                 }
                 Integrator::ImplicitSpringDamper => {
@@ -3693,7 +3671,8 @@ pub fn mjd_transition_hybrid(
         }
     }
 
-    // FD for non-analytical B columns — piggyback sensor recording
+    // FD for non-analytical B columns, each step with the nominal factor —
+    // piggyback sensor recording
     let nx = 2 * nv + na;
     for &j in &ctrl_fd_indices {
         let range = model.actuator_ctrlrange[j];
@@ -3703,7 +3682,7 @@ pub fn mjd_transition_hybrid(
 
         let (y_plus, s_plus) = if nudge_fwd {
             perturb_ctrl(model, &mut scratch, data, j, eps);
-            scratch.step(model)?;
+            factor.step(model, &mut scratch)?;
             let yp = NextState::of(&scratch);
             let sp = if compute_sensors {
                 Some(scratch.sensordata.clone())
@@ -3717,7 +3696,7 @@ pub fn mjd_transition_hybrid(
 
         let (y_minus, s_minus) = if nudge_back {
             perturb_ctrl(model, &mut scratch, data, j, -eps);
-            scratch.step(model)?;
+            factor.step(model, &mut scratch)?;
             let ym = NextState::of(&scratch);
             let sm = if compute_sensors {
                 Some(scratch.sensordata.clone())

@@ -623,18 +623,13 @@ fn contact_diffs(ours: &[&[Value]], mj: &[&[Value]], out: &mut Vec<(&'static str
     ]);
 }
 
-/// Constraint-row counts with a flex edge counted as an equality (ours keeps
-/// a separate kind). The golden already merges MuJoCo's two friction-loss kinds.
+/// Constraint-row counts by kind. The golden already merges MuJoCo's two
+/// friction-loss kinds.
 fn row_counts(c: &Value) -> BTreeMap<String, i64> {
     let mut out = BTreeMap::new();
     if let Value::Object(o) = c {
         for (k, v) in o {
-            let kind = if k == "FlexEdge" {
-                "Equality"
-            } else {
-                k.as_str()
-            };
-            *out.entry(kind.to_string()).or_insert(0) += v.as_i64().unwrap_or(0);
+            *out.entry(k.clone()).or_insert(0) += v.as_i64().unwrap_or(0);
         }
     }
     out

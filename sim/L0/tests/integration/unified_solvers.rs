@@ -201,7 +201,7 @@ fn test_friction_loss_force_scales_with_floss() {
 
 #[test]
 fn test_compute_qacc_smooth_no_behavioral_change() {
-    // Verify that factoring compute_qacc_smooth() out of newton_solve()
+    // Verify that factoring compute_qacc_smooth() out of the Newton solver
     // didn't break Newton convergence.
     let (model, mut data) = model_from_mjcf(
         r#"

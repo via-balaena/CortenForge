@@ -5,8 +5,10 @@
 //! MuJoCo's `engine_core_smooth.c`.
 
 use crate::collision::narrow::GEOM_EPSILON;
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::compute_body_spatial_inertia;
 use crate::quat;
+use crate::quat::mul_mat_vec3;
 use crate::tendon::mj_fwd_tendon;
 use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SameFrame, SleepState};
 use cf_geometry::Aabb;
@@ -106,10 +108,9 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             UnitQuaternion::new_unchecked(Quaternion::new(xquat[0], xquat[1], xquat[2], xquat[3]));
     }
 
-    // Tendon kinematics (after site poses, before subtree COM)
-    mj_fwd_tendon(model, data);
-
-    // ========== Compute subtree mass and COM (for O(n) RNE gravity) ==========
+    // ========== Subtree mass and COM, before the tendons (MuJoCo's `mj_comPos`
+    // precedes `mj_tendon`, `engine_forward.c:140-145`; a spatial tendon's
+    // Jacobian reads `subtree_com`) ==========
     // Initialize with each body's own mass and COM
     for body_id in 0..model.nbody {
         data.subtree_mass[body_id] = model.body_mass[body_id];
@@ -126,14 +127,20 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
         data.subtree_com[parent_id] += child_weighted_com;
     }
 
-    // Convert weighted sum to actual COM
+    // Convert weighted sum to actual COM as `mj_comPos` normalizes it
+    // (`engine_core_smooth.c:274-284`): a subtree with less than mjMINVAL of
+    // mass takes the body's own centre of mass; another is scaled by the
+    // reciprocal of its mass.
     for body_id in 0..model.nbody {
-        if data.subtree_mass[body_id] > 1e-10 {
-            data.subtree_com[body_id] /= data.subtree_mass[body_id];
-        } else {
+        if data.subtree_mass[body_id] < MJ_MINVAL {
             data.subtree_com[body_id] = data.xipos[body_id];
+        } else {
+            data.subtree_com[body_id] *= 1.0 / data.subtree_mass[body_id];
         }
     }
+
+    // Tendon kinematics (after site poses and the subtree COM)
+    mj_fwd_tendon(model, data);
 }
 
 /// The world pose of body `body_id` (`[x, y, z]`, `[w, x, y, z]`) from its
@@ -274,13 +281,6 @@ fn quat_array(q: &UnitQuaternion<f64>) -> [f64; 4] {
 
 fn add3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-/// `mat · vec`, each row summed left to right (MuJoCo `mji_mulMatVec3`,
-/// `engine_inline.h:137-141`).
-fn mul_mat_vec3(mat: &Matrix3<f64>, vec: &[f64; 3]) -> [f64; 3] {
-    let row = |r: usize| mat[(r, 0)] * vec[0] + mat[(r, 1)] * vec[1] + mat[(r, 2)] * vec[2];
-    [row(0), row(1), row(2)]
 }
 
 // ============================================================================

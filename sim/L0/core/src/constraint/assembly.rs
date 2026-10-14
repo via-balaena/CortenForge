@@ -164,12 +164,16 @@ pub fn finalize_constraint_row_imp(
 /// Populates all `efc_*` fields on Data, plus `ne`/`nf` counts.
 ///
 /// Row ordering (§29.4):
-/// 1. Equality constraints (connect, weld, joint, distance) + FlexEdge → `ne` rows
+/// 1. Equality constraints (connect, weld, joint, tendon, distance, flex) → `ne` rows
 /// 2. DOF friction loss + tendon friction loss → `nf` rows
 /// 3. Joint limits + tendon limits + contacts
 /// 4. Joint limits (potentially active only)
 /// 5. Tendon limits (potentially active only)
 /// 6. Contacts
+///
+/// A constraint other than a contact whose Jacobian rows are all zero adds no
+/// rows (MuJoCo's dense `mj_addConstraint`, `engine_core_constraint.c:237-329`):
+/// the counting pass counts it, and the arrays are cut to the rows made.
 ///
 /// `qacc_smooth` is the unconstrained acceleration (M⁻¹ · qfrc_smooth), needed for efc_b.
 pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DVector<f64>) {
@@ -205,11 +209,15 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 EqualityType::Connect => 3,
                 EqualityType::Weld => 6,
                 EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => 1,
+                // One per non-rigid edge (`engine_core_constraint.c:616-624`).
+                EqualityType::Flex => {
+                    let f = model.eq_obj1id[eq_id];
+                    let edges =
+                        model.flex_edgeadr[f]..model.flex_edgeadr[f] + model.flex_edgenum[f];
+                    edges.filter(|&e| !model.flexedge_rigid[e]).count()
+                }
             };
         }
-
-        // Flex edge-length constraints (1 row per edge) — in equality block
-        nefc += model.nflexedge;
     }
 
     // DOF friction loss (S4.5: gated on DISABLE_FRICTIONLOSS)
@@ -376,6 +384,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             for col in 0..nv {
                 data.efc_J[(row, col)] = data.ten_J[t][col];
             }
+            if jacobian_rows_empty(data, row, 1) {
+                continue;
+            }
             let vel = data.ten_velocity[t];
             let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
             finalize_constraint_row(
@@ -528,6 +539,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 for col in 0..nv {
                     data.efc_J[(row, col)] = data.ten_J[t][col];
                 }
+            }
+            if dist_lower < margin && !jacobian_rows_empty(data, row, 1) {
                 finalize_constraint_row(
                     model,
                     data,
@@ -554,6 +567,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 for col in 0..nv {
                     data.efc_J[(row, col)] = -data.ten_J[t][col];
                 }
+            }
+            if dist_upper < margin && !jacobian_rows_empty(data, row, 1) {
                 finalize_constraint_row(
                     model,
                     data,
@@ -587,7 +602,12 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     };
     let _ = pyramidal_ranges; // suppress unused warning when contacts disabled
 
-    debug_assert_eq!(row, nefc, "Row count mismatch in constraint assembly");
+    // The count includes constraints whose rows turned out empty.
+    debug_assert!(row <= nefc, "Row count mismatch in constraint assembly");
+    if row < nefc {
+        truncate_rows(data, row);
+    }
+    let nefc = row;
 
     // === Phase 4: Count ne/nf for solver dispatch (§29.4) ===
     // Ordering: [0..ne) = equality+flex, [ne..ne+nf) = friction, [ne+nf..nefc) = limits+contacts
@@ -595,7 +615,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     data.nf = 0;
     for i in 0..nefc {
         match data.efc_type[i] {
-            ConstraintType::Equality | ConstraintType::FlexEdge => data.ne += 1,
+            ConstraintType::Equality => data.ne += 1,
             ConstraintType::FrictionLoss => data.nf += 1,
             _ => {}
         }
@@ -605,7 +625,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
         data.efc_type
             .iter()
             .take(data.ne)
-            .all(|t| matches!(t, ConstraintType::Equality | ConstraintType::FlexEdge)),
+            .all(|t| matches!(t, ConstraintType::Equality)),
         "Non-equality row found within equality block [0..{})",
         data.ne,
     );
@@ -621,6 +641,24 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     );
 
     data.efc_cost = 0.0;
+}
+
+/// Whether the `size` rows of `efc_J` from `row` are all zero: MuJoCo's empty
+/// guard (`mj_addConstraint`, `engine_core_constraint.c:257-265`), under which
+/// a constraint other than a contact adds no rows.
+pub(super) fn jacobian_rows_empty(data: &Data, row: usize, size: usize) -> bool {
+    (row..row + size).all(|r| data.efc_J.row(r).iter().all(|&x| x == 0.0))
+}
+
+/// Cut the arrays the counting pass sized to the `nefc` rows made.
+fn truncate_rows(data: &mut Data, nefc: usize) {
+    data.efc_J = data.efc_J.rows(0, nefc).into_owned();
+    data.efc_vel = data.efc_vel.rows(0, nefc).into_owned();
+    data.efc_aref = data.efc_aref.rows(0, nefc).into_owned();
+    data.efc_force = data.efc_force.rows(0, nefc).into_owned();
+    data.efc_jar = data.efc_jar.rows(0, nefc).into_owned();
+    data.efc_b = data.efc_b.rows(0, nefc).into_owned();
+    data.efc_state.truncate(nefc);
 }
 
 #[cfg(test)]
@@ -689,7 +727,7 @@ mod spec_b_margin_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -804,7 +842,7 @@ mod spec_b_margin_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Set angle to 0.97 rad about Z: dist = 1.0 - 0.97 = 0.03 < 0.05
@@ -923,7 +961,7 @@ mod dt23_friction_solref_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -987,7 +1025,7 @@ mod dt23_friction_solref_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -1051,7 +1089,7 @@ mod dt23_friction_solref_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -1379,7 +1417,7 @@ mod dt33_tendon_margin_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         (model, ten_length)
     }
@@ -1645,7 +1683,7 @@ mod dt33_tendon_margin_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // All tendons at length = -0.95 (lower dist = 0.05)

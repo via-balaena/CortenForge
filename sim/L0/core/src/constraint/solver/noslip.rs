@@ -8,7 +8,7 @@ use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::qcqp;
-use crate::linalg::mj_solve_sparse;
+use crate::dynamics::factor::mj_solve_m;
 use crate::types::{ConstraintType, Data, Model};
 
 /// Tag for each noslip row, used to select the correct projection.
@@ -41,7 +41,8 @@ enum NoslipRowKind {
 /// This matches MuJoCo's `mj_solNoSlip`.
 ///
 /// Called after any solver (Newton, PGS, CG) when `model.noslip_iterations > 0`.
-/// Also called after Newton's PGS fallback path. Matches MuJoCo's `mj_solNoSlip`.
+/// Matches MuJoCo's `mj_solNoSlip`. Leaves `efc_force` and `qfrc_constraint`;
+/// the forward pass makes the acceleration from them (`mj_fwd_acceleration`).
 ///
 /// Processes two row ranges (NOT equality rows):
 /// 1. Friction-loss rows: PGS update with interval clamping [-floss, +floss]
@@ -154,15 +155,7 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
         for col in 0..nv {
             minv_ji[col] = data.efc_J[(row_i, col)];
         }
-        let (rowadr, rownnz, colind) = model.qld_csr();
-        mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &data.qLD_data,
-            &data.qLD_diag_inv,
-            &mut minv_ji,
-        );
+        mj_solve_m(model, data, minv_ji.as_mut_slice());
 
         // Start from efc_b (constraint bias, fixed at assembly)
         let mut b_i = data.efc_b[row_i];
@@ -446,20 +439,4 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
             data.qfrc_constraint[col] += data.efc_J[(i_row, col)] * force;
         }
     }
-
-    // 7. Recompute qacc = M⁻¹ · (qfrc_smooth + qfrc_constraint)
-    for k in 0..nv {
-        data.qacc[k] = data.qfrc_applied[k] + data.qfrc_actuator[k] + data.qfrc_passive[k]
-            - data.qfrc_bias[k]
-            + data.qfrc_constraint[k];
-    }
-    let (rowadr, rownnz, colind) = model.qld_csr();
-    mj_solve_sparse(
-        rowadr,
-        rownnz,
-        colind,
-        &data.qLD_data,
-        &data.qLD_diag_inv,
-        &mut data.qacc,
-    );
 }

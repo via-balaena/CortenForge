@@ -354,6 +354,10 @@ pub enum EqualityType {
     /// |p1 - p2| = d (removes 1 DOF).
     /// `eq_obj1id`/`eq_obj2id` store geom IDs (not body IDs).
     Distance,
+    /// Flex: holds each non-rigid edge of flex `eq_obj1id` at its rest
+    /// length, one row per edge (MuJoCo's `mjEQ_FLEX`); `eq_obj2id` is
+    /// `usize::MAX`.
+    Flex,
 }
 
 /// `MuJoCo` sensor type.
@@ -739,18 +743,16 @@ pub enum SolverType {
     /// Delassus matrix AR = J·M⁻¹·J^T + diag(R). Handles all constraint types
     /// with per-type projection (bilateral, box, unilateral, friction cone).
     /// First-order (linear convergence): under-converged at the default 100
-    /// iterations on stiff/weakly-coupled DOFs. Retained as the universal
-    /// fallback for the CG and Newton solvers.
+    /// iterations on stiff/weakly-coupled DOFs.
     PGS,
-    /// Primal Polak-Ribiere conjugate gradient (matches MuJoCo's `mj_solCG`).
-    /// Shares `mj_sol_primal` infrastructure with Newton: same constraint
-    /// evaluation, line search, and cost function. Uses M⁻¹ preconditioner
-    /// instead of Newton's H⁻¹, and PR direction instead of Newton direction.
+    /// Primal Polak-Ribiere conjugate gradient, MuJoCo's `mj_solCG`: the
+    /// primal solver Newton shares (`mj_solPrimal`), preconditioned by M⁻¹,
+    /// directions by Polak-Ribière. Its iterate is the acceleration.
     CG,
-    /// Newton solver with analytical second-order derivatives (§15 of spec).
-    /// Primal solver operating on accelerations with H⁻¹ preconditioner.
-    /// Converges in 2-3 iterations vs PGS's 20+. Falls back to PGS
-    /// on Cholesky failure or non-convergence.
+    /// Newton, MuJoCo's `mj_solNewton`: the primal solver CG shares
+    /// (`mj_solPrimal`), preconditioned by the Hessian `M + J'·D·J` (plus the
+    /// cones'). Its iterate is the acceleration; at its iteration cap it keeps
+    /// the last, as MuJoCo's.
     ///
     /// Default solver, matching MuJoCo (Newton has been MuJoCo's default since
     /// 2.0). The GPU pipeline is hardwired to Newton, so this keeps a
@@ -766,7 +768,7 @@ pub enum SolverType {
 /// in `PrimalUpdateConstraint` (§15.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConstraintType {
-    /// Equality constraint (connect, weld, joint, distance).
+    /// Equality constraint (connect, weld, joint, tendon, distance, flex).
     Equality,
     /// DOF or tendon friction loss (Huber cost).
     FrictionLoss,
@@ -782,8 +784,6 @@ pub enum ConstraintType {
     ContactPyramidal,
     /// Contact with elliptic friction cone (condim ≥ 3 and cone == elliptic).
     ContactElliptic,
-    /// Flex edge-length constraint (soft equality, matches MuJoCo's mjEQ_FLEX).
-    FlexEdge,
 }
 
 /// Constraint state per scalar row, determined by `PrimalUpdateConstraint`.
@@ -806,25 +806,30 @@ pub enum ConstraintState {
     Cone,
 }
 
-/// Per-iteration Newton solver statistics, matching MuJoCo's `mjSolverStat`.
+/// One solver iteration's statistics, MuJoCo's `mjSolverStat`
+/// (`mjdata.h`), as its `saveStats` records them (`engine_solver.c:38-65`).
 ///
-/// Populated by `newton_solve()` during each outer iteration. The array
-/// `data.solver_stat` has length `data.solver_niter` after convergence.
+/// Newton and CG fill every field; PGS fills `improvement` only.
+/// `Data::solver_stat` holds one per iteration, `Data::solver_niter` long.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SolverStat {
-    /// Scaled cost improvement: `scale * (old_cost - new_cost)`.
+    /// Cost decrease over the iteration, scaled: `scale · (old − new)`.
     pub improvement: f64,
-    /// Scaled gradient norm: `scale * ||grad||`.
+    /// Norm of the gradient after the iteration, scaled: `scale · ‖grad‖`.
     pub gradient: f64,
-    /// Directional derivative along search direction at step start:
-    /// `grad^T · search / ||search||`. Negative means descent.
+    /// The line search's slope at the step it took, `|∂cost/∂α| · scale /
+    /// ‖search‖`; 1 when it computed none.
     pub lineslope: f64,
-    /// Number of active constraints (state == Quadratic or Cone).
+    /// Constraint rows not satisfied (Quadratic, Linear or Cone).
     pub nactive: usize,
-    /// Number of constraint state transitions this iteration.
+    /// Constraint rows whose state changed this iteration.
     pub nchange: usize,
-    /// Number of line search evaluations this iteration.
-    pub nline: usize,
+    /// Line-search cost evaluations this iteration.
+    pub neval: usize,
+    /// Cholesky factor updates this iteration (Newton): one per row that
+    /// entered or left the quadratic state, one per row of each cone, or the
+    /// row count when the factor was made anew.
+    pub nupdate: usize,
 }
 
 /// Integration method.
@@ -995,7 +1000,8 @@ pub enum ResetError {
     },
     /// The forward pass a reset runs before putting the `Init` trees to sleep
     /// failed: a tendon equality with sleep, on which MuJoCo's reset raises
-    /// the same error, or an implicit factorization.
+    /// the same error, or the implicit spring-damper integrator's
+    /// factorization.
     InitForward(StepError),
 }
 

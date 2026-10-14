@@ -30,7 +30,6 @@ impl ModelBuilder {
         model.compute_simple_bodies();
         model.compute_dof_patterns();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
         model.compute_history_addresses();
 
         // Tendon and actuator derived parameters. These build a `Data` and run
@@ -182,12 +181,6 @@ impl ModelBuilder {
             dof_solimp: self.dof_solimp,
             dof_invweight0: vec![0.0; self.nv], // Computed by compute_invweight0()
 
-            // Sparse LDL CSR metadata (computed below via compute_qld_csr_metadata)
-            qLD_rowadr: vec![],
-            qLD_rownnz: vec![],
-            qLD_colind: vec![],
-            qLD_nnz: 0,
-
             // Simple bodies and dof–dof patterns (computed by
             // compute_simple_bodies and compute_dof_patterns)
             body_sameframe: vec![],
@@ -266,8 +259,8 @@ impl ModelBuilder {
             flex_passive: self.flex_passive,
             flex_edgestiffness: self.flex_edgestiffness,
             flex_edgedamping: self.flex_edgedamping,
-            flex_edge_solref: self.flex_edge_solref,
-            flex_edge_solimp: self.flex_edge_solimp,
+            // Derived by compute_invweight0 below.
+            flex_edgeequality: vec![],
             flex_bend_stiffness: self.flex_bend_stiffness,
             flex_bend_damping: self.flex_bend_damping,
             flex_density: self.flex_density,
@@ -286,6 +279,8 @@ impl ModelBuilder {
             flexedge_crosssection,
             flexedge_flexid: self.flexedge_flexid,
             flexedge_rigid: self.flexedge_rigid,
+            // Derived by compute_invweight0 below.
+            flexedge_invweight0: vec![],
             flexedge_flap: self.flexedge_flap,
             flex_bending: self.flex_bending,
             flexedge_J_rownnz: self.flexedge_J_rownnz,

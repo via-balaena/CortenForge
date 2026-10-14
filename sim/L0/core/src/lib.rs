@@ -262,8 +262,9 @@ pub use types::{
 
 pub use reset::mj_reset_data;
 
-// LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
-pub use linalg::mj_solve_sparse;
+// The mass matrix's factor and solve (MuJoCo's mj_factorM and mj_solveM)
+pub use dynamics::factor::{mj_factor_m, mj_mul_m, mj_solve_m};
+pub use energy::mj_energy_vel;
 
 // Spatial algebra types (extracted to dynamics/spatial.rs)
 pub use dynamics::SpatialVector;
@@ -277,8 +278,12 @@ pub use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 // Pyramidal force recovery (§32) — extracted to constraint/solver
 pub use constraint::solver::decode_pyramid;
 
+// A contact's Jacobian rows in its frame (MuJoCo's mj_contactJacobian)
+pub use constraint::jacobian::compute_contact_jacobian;
+
 pub use jacobian::{
     // Utility functions for position/velocity differentiation
+    mj_apply_ft,
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
     // Jacobian infrastructure (§40a derivative tests)

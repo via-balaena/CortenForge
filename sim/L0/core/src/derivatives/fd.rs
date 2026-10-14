@@ -100,6 +100,7 @@ pub fn mjd_transition_fd(
     // state C and D differentiate, as MuJoCo's mjd_stepFD reads it.
     scratch.step(model)?;
     let y_0 = NextState::of(&scratch);
+    let factor = NominalFactor::of(&scratch);
     let sensor_0 = if compute_sensors {
         Some(scratch.sensordata.clone())
     } else {
@@ -119,11 +120,19 @@ pub fn mjd_transition_fd(
         None
     };
 
-    // Phase 1 — State perturbation (A matrix + C sensor-state columns).
+    // Phase 1 — State perturbation (A matrix + C sensor-state columns). An
+    // activation column steps with the nominal factor.
+    let step = |scratch: &mut Data, i: usize| {
+        if i < 2 * nv {
+            scratch.step(model)
+        } else {
+            factor.step(model, scratch)
+        }
+    };
     for i in 0..nx {
         // Apply +eps perturbation
         perturb_state(model, &mut scratch, data, i, eps);
-        scratch.step(model)?;
+        step(&mut scratch, i)?;
         let y_plus = NextState::of(&scratch);
         let s_plus = if compute_sensors {
             Some(scratch.sensordata.clone())
@@ -134,7 +143,7 @@ pub fn mjd_transition_fd(
         if config.centered {
             // Apply -eps perturbation
             perturb_state(model, &mut scratch, data, i, -eps);
-            scratch.step(model)?;
+            step(&mut scratch, i)?;
             let y_minus = NextState::of(&scratch);
             let s_minus = if compute_sensors {
                 Some(scratch.sensordata.clone())
@@ -158,7 +167,8 @@ pub fn mjd_transition_fd(
         }
     }
 
-    // Phase 2 — Control perturbation (B matrix + D sensor-control columns).
+    // Phase 2 — Control perturbation (B matrix + D sensor-control columns),
+    // each step with the nominal factor.
     // Matches MuJoCo's mjd_stepFD control clamping: only nudge within
     // actuator_ctrlrange. Uses forward-only, backward-only, or centered
     // differencing based on which nudges are feasible.
@@ -170,7 +180,7 @@ pub fn mjd_transition_fd(
 
         let (y_plus, s_plus) = if nudge_fwd {
             perturb_ctrl(model, &mut scratch, data, j, eps);
-            scratch.step(model)?;
+            factor.step(model, &mut scratch)?;
             let yp = NextState::of(&scratch);
             let sp = if compute_sensors {
                 Some(scratch.sensordata.clone())
@@ -184,7 +194,7 @@ pub fn mjd_transition_fd(
 
         let (y_minus, s_minus) = if nudge_back {
             perturb_ctrl(model, &mut scratch, data, j, -eps);
-            scratch.step(model)?;
+            factor.step(model, &mut scratch)?;
             let ym = NextState::of(&scratch);
             let sm = if compute_sensors {
                 Some(scratch.sensordata.clone())
@@ -236,6 +246,38 @@ pub fn mjd_transition_fd(
         C: c_result,
         D: d_result,
     })
+}
+
+/// The implicit integrators' factor the nominal step left (`qH`,
+/// `qHDiagInv`, `qLU`). MuJoCo's transition steps its control and activation
+/// columns from the velocity stage (`mj_stepSkip(m, d, mjSTAGE_VEL, …)`,
+/// `engine_derivative_fd.c:350`, `:365`, `:393`, `:405`), whose
+/// `mj_implicitSkip` solves with the factor in `d` (`:140`): the nominal
+/// step's, since those columns come before every column that factors. So a
+/// velocity derivative that moves with the control is not in MuJoCo's B,
+/// nor one that moves with the activation in its A.
+pub(super) struct NominalFactor {
+    qh: Vec<f64>,
+    qh_diag_inv: Vec<f64>,
+    qlu: Vec<f64>,
+}
+
+impl NominalFactor {
+    pub(super) fn of(data: &Data) -> Self {
+        Self {
+            qh: data.qH.clone(),
+            qh_diag_inv: data.qHDiagInv.clone(),
+            qlu: data.qLU.clone(),
+        }
+    }
+
+    /// Steps `scratch` with this factor.
+    pub(super) fn step(&self, model: &Model, scratch: &mut Data) -> Result<(), StepError> {
+        scratch.qH.copy_from_slice(&self.qh);
+        scratch.qHDiagInv.copy_from_slice(&self.qh_diag_inv);
+        scratch.qLU.copy_from_slice(&self.qlu);
+        scratch.step_skip_factor(model, true)
+    }
 }
 
 /// Puts `scratch` back at the caller's state `nominal` before a

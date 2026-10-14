@@ -26,7 +26,18 @@ so a quaternion joint's position rows are tangents at the next state
   makes the decay e^-1; and a free body driven by a motor at its site, its
   control at the lower end of its range, forward and centred (a forward
   column, and a centred one at a control's lower bound, difference the
-  nominal next state with the perturbed one).
+  nominal next state with the perturbed one); and a hinge with a ball
+  pendulum below it, driven at a site by an actuator whose gain has a
+  velocity term (affine), under implicit and implicitfast (centred). Its
+  velocity derivative moves with the control, and MuJoCo's control columns
+  step from the velocity stage (`mj_stepSkip`, `engine_derivative_fd.c:350`),
+  whose `mj_implicitSkip` keeps the nominal step's factor (`:140`); the
+  generator refuses the case unless that B differs from one whose columns
+  factor (full `mj_step`s) by more than 1e-4. And a simple body with two slides
+  along one axis and one across, each damped, two of them driven by motors, under
+  Euler (centred): MuJoCo's mass matrix leaves the two slides uncoupled (`mj_crb`,
+  a simple dof's row its diagonal alone); the generator refuses the case unless
+  the body is simple and its pattern diagonal.
 - differentiate: a model with a hinge, a slide, a ball and a free joint, and
   pairs of positions: a 1e-12 rad rotation, a rotation past pi between them,
   quaternions not of unit length, and a pair whose free joint moves, at dt
@@ -130,6 +141,43 @@ MOTOR_FREE = """<mujoco model="motor_free">
 </mujoco>"""
 
 
+AFFINE_SITE = """<mujoco model="affine_site">
+  <option timestep="0.002" integrator="{integrator}"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <joint type="hinge" axis="0 1 0" damping="0.05"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.03" mass="0.6" contype="0" conaffinity="0"/>
+      <body pos="0.2 0 0">
+        <joint type="ball" damping="0.05"/>
+        <geom type="capsule" fromto="0 0 0 0.1 0.05 -0.3" size="0.03" mass="0.8" contype="0" conaffinity="0"/>
+        <site name="s" pos="0.05 0.02 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general site="s" gear="1 0.5 0 0 0.2 0" gaintype="affine" gainprm="2 0 -3"/>
+  </actuator>
+</mujoco>"""
+
+TWO_SLIDES_DAMPED = """<mujoco model="two_slides_damped">
+  <option timestep="0.002" integrator="Euler" gravity="2 0 -9.81"/>
+  <worldbody>
+    <body name="slider" pos="0 0 1">
+      <joint name="s0" type="slide" axis="1 0 0" armature="0.1" damping="0.5"/>
+      <joint name="s1" type="slide" axis="1 0 0" armature="0.2" damping="0.3"/>
+      <joint name="s2" type="slide" axis="0 0 1" damping="0.4"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="s0" gear="1"/>
+    <motor joint="s2" gear="1"/>
+  </actuator>
+</mujoco>"""
+
+AFFINE_QPOS = [0.3, 0.8, -0.3, 0.4, 0.2]
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -183,6 +231,41 @@ def actuated(xml, qpos, qvel, act, ctrl, centered):
     mujoco.mjd_transitionFD(m, fd, 1e-6, int(centered), a, b, None, None)
     return {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel), "act": floats(d.act),
             "ctrl": floats(d.ctrl), "centered": centered, "A": floats(a), "B": floats(b)}
+
+
+def refactoring_b(xml, qpos, qvel, ctrl, eps=1e-6):
+    """B by centred differences of full `mj_step`s, each of which factors."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    nx = 2 * m.nv + m.na
+    b = np.zeros((nx, m.nu))
+
+    def next_state(u):
+        d = mujoco.MjData(m)
+        d.qpos[:], d.qvel[:], d.ctrl[:] = qpos, qvel, u
+        mujoco.mj_step(m, d)
+        return d
+
+    for i in range(m.nu):
+        up, um = np.array(ctrl, dtype=float), np.array(ctrl, dtype=float)
+        up[i] += eps
+        um[i] -= eps
+        dp, dm = next_state(up), next_state(um)
+        dq = np.zeros(m.nv)
+        mujoco.mj_differentiatePos(m, dq, 2 * eps, dm.qpos, dp.qpos)
+        b[:m.nv, i] = dq
+        b[m.nv:2 * m.nv, i] = (dp.qvel - dm.qvel) / (2 * eps)
+    return b
+
+
+def affine_site(integrator):
+    xml = AFFINE_SITE.format(integrator=integrator)
+    qpos = list(AFFINE_QPOS[:1]) + list(unit(AFFINE_QPOS[1:]))
+    case = actuated(xml, qpos, [0.7, -0.4, 0.6, 0.5], [], [0.5], True)
+    b = np.array(case["B"]).reshape(-1, 1)
+    gap = np.max(np.abs(b - refactoring_b(xml, qpos, [0.7, -0.4, 0.6, 0.5], [0.5])))
+    if gap <= 1e-4:
+        sys.exit(f"affine_site {integrator}: B does not tell the nominal factor apart ({gap})")
+    return case
 
 
 def differentiate():
@@ -249,6 +332,13 @@ def quat_integrate():
     return out
 
 
+def two_slides_damped():
+    m = mujoco.MjModel.from_xml_string(TWO_SLIDES_DAMPED)
+    if m.body_simple[1] != 2 or list(m.M_rownnz) != [1, 1, 1]:
+        sys.exit(f"two_slides_damped: {list(m.body_simple)} {list(m.M_rownnz)}")
+    return actuated(TWO_SLIDES_DAMPED, [0.0, 0.0, 0.0], [0.3, -0.2, 0.1], [], [0.4, -0.3], True)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -277,6 +367,8 @@ def main():
                                            [0.2, -0.1, 0.3, 0.9, -0.6, 0.7], [], [0.0], False),
             "motor_free_centred": actuated(MOTOR_FREE, [0.1, -0.2, 1.0, 0.7, 0.3, -0.5, 0.4],
                                            [0.2, -0.1, 0.3, 0.9, -0.6, 0.7], [], [0.0], True),
+            **{f"affine_site_{i}": affine_site(i) for i in ("implicit", "implicitfast")},
+            "two_slides_damped": two_slides_damped(),
         },
         "differentiate": differentiate(),
         "quat_integrate": quat_integrate(),

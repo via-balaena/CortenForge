@@ -909,9 +909,9 @@ fn recompute_derived_restores_the_structural_fields() {
             m.body_ancestor_joints,
             m.body_ancestor_mask,
             m.body_weldid,
-            m.qLD_rowadr,
-            m.qLD_rownnz,
-            m.qLD_colind,
+            m.M_rowadr,
+            m.M_rownnz,
+            m.M_colind,
             m.ntree,
             m.tree_body_adr,
             m.tree_dof_num,
@@ -927,9 +927,9 @@ fn recompute_derived_restores_the_structural_fields() {
     cleared.body_ancestor_joints.clear();
     cleared.body_ancestor_mask.clear();
     cleared.body_weldid.fill(0);
-    cleared.qLD_rowadr.clear();
-    cleared.qLD_rownnz.clear();
-    cleared.qLD_colind.clear();
+    cleared.M_rowadr.clear();
+    cleared.M_rownnz.clear();
+    cleared.M_colind.clear();
     cleared.ntree = 0;
     cleared.tree_body_adr.clear();
     cleared.tree_dof_num.clear();

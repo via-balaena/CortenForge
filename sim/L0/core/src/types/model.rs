@@ -244,27 +244,6 @@ pub struct Model {
     /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
     pub dof_invweight0: Vec<f64>,
 
-    // ==================== Sparse LDL CSR Metadata (immutable, computed once at build) =====
-    // The sparsity pattern of the LDL factorization is determined by `dof_parent` chains
-    // and is invariant across simulation steps. Column indices and row layout are computed
-    // once; only the values in `Data::qLD_data` change each step.
-    //
-    // Each row stores off-diagonal entries (ancestors) followed by the diagonal (self-index)
-    // as the last element, matching MuJoCo's `mj_factorI` layout.
-    /// Starting address of row k's entries in `Data::qLD_data` (length `nv`).
-    pub qLD_rowadr: Vec<usize>,
-    /// Total non-zeros in row k, including diagonal (length `nv`).
-    /// `rownnz[i] - 1` = off-diagonal count = depth of DOF k in `dof_parent` tree.
-    /// `rownnz[i] >= 1` always (at minimum the diagonal entry).
-    pub qLD_rownnz: Vec<usize>,
-    /// Column indices for flat CSR storage (length `qLD_nnz`).
-    /// `qLD_colind[qLD_rowadr[k] + j]` = column of j-th entry in row k.
-    /// Off-diagonals sorted ascending (ancestors from root toward DOF k),
-    /// followed by self-index `k` as the last element (diagonal).
-    pub qLD_colind: Vec<usize>,
-    /// Total number of non-zeros across all rows (including diagonals).
-    pub qLD_nnz: usize,
-
     // ==================== Simple bodies and dof–dof patterns (derived) ====================
     // [`Self::compute_simple_bodies`] and [`Self::compute_dof_patterns`].
     /// Whether each body's inertial frame is its frame or has its orientation
@@ -444,13 +423,11 @@ pub struct Model {
     /// Per-flex: passive edge damping coefficient (from `<edge damping="..."/>`).
     /// Used in passive force path (spring-damper), not constraint solver.
     pub flex_edgedamping: Vec<f64>,
-    /// Per-flex: edge constraint solref. Uses flex-level solref (from
-    /// `<contact solref="..."/>`). MuJoCo derives this from eq_solref on the
-    /// parent equality constraint; our architecture uses flex.solref as the
-    /// default, which matches MuJoCo when no explicit equality override exists.
-    pub flex_edge_solref: Vec<[f64; 2]>,
-    /// Per-flex: edge constraint solimp.
-    pub flex_edge_solimp: Vec<[f64; 5]>,
+    /// Per-flex: whether a flex equality names the flex, so its edges get
+    /// constraint rows and Jacobians (MuJoCo's `flex_edgeequality`, set at
+    /// compile, `user_model.cc:3432-3446`). Derived by
+    /// [`Self::compute_invweight0`].
+    pub flex_edgeequality: Vec<bool>,
     /// Per-flex: bending stiffness (passive spring, N·m/rad).
     /// Derived from Young's modulus, thickness, and Poisson ratio.
     /// dim=2 (shell): D = E·t³ / (12·(1−ν²))  (Kirchhoff-Love plate theory).
@@ -505,6 +482,10 @@ pub struct Model {
     /// Per-edge: true if BOTH endpoint vertices have invmass == 0.
     /// Pre-computed at build time. Rigid edges are skipped in passive force loops.
     pub flexedge_rigid: Vec<bool>,
+    /// Per-edge: inverse weight at `qpos0`, the diagonal approximation of
+    /// the edge's constraint row (MuJoCo's `flexedge_invweight0`,
+    /// `engine_setconst.c:716-750`). Derived by [`Self::compute_invweight0`].
+    pub flexedge_invweight0: Vec<f64>,
     /// Per-edge flap vertices: opposite vertices in adjacent triangles forming
     /// the diamond stencil. `flexedge_flap[e][0]` = opposite vertex in tri 1,
     /// `flexedge_flap[e][1]` = opposite vertex in tri 2 (-1 for boundary edges).
@@ -850,9 +831,10 @@ pub struct Model {
     // ==================== Equality Constraints (indexed by eq_id) ====================
     /// Number of equality constraints.
     pub neq: usize,
-    /// Equality constraint type (Connect, Weld, Joint, Tendon, Distance).
+    /// Equality constraint type (Connect, Weld, Joint, Tendon, Distance, Flex).
     pub eq_type: Vec<EqualityType>,
-    /// First object ID (body for Connect/Weld, joint for Joint, geom for Distance).
+    /// First object ID (body for Connect/Weld, joint for Joint, geom for
+    /// Distance, flex for Flex).
     pub eq_obj1id: Vec<usize>,
     /// Second object ID (body/joint/geom, or `usize::MAX` for world origin in Distance).
     pub eq_obj2id: Vec<usize>,
@@ -1226,13 +1208,6 @@ pub enum LengthRangeError {
 }
 
 impl Model {
-    /// Returns CSR metadata for the sparse LDL factorization: `(rowadr, rownnz, colind)`.
-    #[inline]
-    #[must_use]
-    pub fn qld_csr(&self) -> (&[usize], &[usize], &[usize]) {
-        (&self.qLD_rowadr, &self.qLD_rownnz, &self.qLD_colind)
-    }
-
     /// Get reference position for specified joint (from qpos0).
     ///
     /// Returns `None` if `jnt_id` is out of bounds.

@@ -91,7 +91,7 @@ pub fn check_data_shape(model: &Model, data: &Data) -> Result<(), StepError> {
             data.flexedge_J.len(),
             model.flexedge_J_colind.len(),
         ),
-        ("qLD_data", data.qLD_data.len(), model.qLD_nnz),
+        ("qLD_data", data.qLD_data.len(), model.M_colind.len()),
         ("qH", data.qH.len(), model.M_colind.len()),
         ("qLU", data.qLU.len(), model.D_colind.len()),
         ("sensordata", data.sensordata.len(), model.nsensordata),

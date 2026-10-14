@@ -184,7 +184,7 @@ pub mod keyframes;
 // Newton Solver Tests (§15 Phase A + B)
 // ============================================================================
 
-/// Newton solver integration tests: convergence, warmstart, fallbacks.
+/// Newton solver integration tests: convergence, warmstart, the iteration cap.
 pub mod newton_solver;
 
 // ============================================================================
@@ -212,6 +212,27 @@ pub mod muscle_parity;
 /// Activations against MuJoCo 3.5.0: a disabled actuator's `act_dot`, the
 /// filter's time constant.
 pub mod activation_parity;
+
+/// The mass matrix's factor and solve against MuJoCo 3.5.0: on its own
+/// pattern, Euler's damped factor, a sleeping tree's rows.
+pub mod mass_factor_parity;
+
+/// Constraints without rows against MuJoCo 3.5.0: an all-zero Jacobian adds
+/// none.
+pub mod empty_rows_parity;
+
+/// A flex's edge rows from a flex equality, as MuJoCo's: one per non-rigid
+/// edge, `flexedge_invweight0` as the diagonal approximation.
+pub mod flex_equality_rows;
+
+/// Newton and CG against MuJoCo 3.5.0's primal solver: bit for bit given its
+/// inputs, and through the pipeline.
+pub mod primal_solver_parity;
+
+/// The Jacobians against MuJoCo 3.5.0: `mj_jac` from MuJoCo's `cdof`,
+/// `mj_applyFT`, gravity compensation, a contact's rows, connect and weld
+/// rows, the spatial tendons' Jacobians, and the kinetic energy.
+pub mod jacobian_parity;
 
 // ============================================================================
 // Flex Solver Unification Tests (§6b)

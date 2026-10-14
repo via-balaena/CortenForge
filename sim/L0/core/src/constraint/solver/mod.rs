@@ -1,12 +1,11 @@
-//! Constraint solver dispatch and shared infrastructure.
+//! Constraint solvers and shared infrastructure.
 //!
-//! Routes to the configured solver algorithm (PGS, CG, Newton) and provides
-//! shared post-solve operations (Delassus regularization, qfrc recovery,
-//! friction pyramid decoding). Corresponds to MuJoCo's `engine_solver.c`.
+//! The primal solver Newton and CG share (`primal`, with Newton's sparse
+//! Hessian in `hessian`), PGS, noslip, and the shared post-solve operations
+//! (qfrc recovery, friction pyramid decoding). Corresponds to MuJoCo's
+//! `engine_solver.c`.
 
-pub mod cg;
 pub mod hessian;
-pub mod newton;
 pub mod noslip;
 pub mod pgs;
 pub mod primal;

@@ -1735,3 +1735,6 @@ a803b3088b1e8616	sim/L0/tests/integration/flex_unified.rs:3527
 b7b1d868a3f151e4	sim/L0/tests/integration/fluid_derivatives.rs:1395
 0899e0a9d40dd42e	sim/L0/tests/integration/accumulator_parity.rs:247
 3dc82d1fffaa4c91	sim/L0/tests/integration/accumulator_parity.rs:316
+4e343cd7a2836314	sim/L0/tests/integration/empty_rows_parity.rs:64
+6dab2f507783c394	sim/L0/tests/integration/flex_equality_rows.rs:16
+91563743601ec523	sim/L0/tests/integration/jacobian_parity.rs:313

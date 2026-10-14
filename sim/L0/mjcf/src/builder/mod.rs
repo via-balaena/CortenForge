@@ -724,8 +724,6 @@ pub struct ModelBuilder {
     pub(crate) flex_solmix: Vec<f64>,
     pub(crate) flex_solref: Vec<[f64; 2]>,
     pub(crate) flex_solimp: Vec<[f64; 5]>,
-    pub(crate) flex_edge_solref: Vec<[f64; 2]>,
-    pub(crate) flex_edge_solimp: Vec<[f64; 5]>,
     pub(crate) flex_bend_stiffness: Vec<f64>,
     pub(crate) flex_bend_damping: Vec<f64>,
     pub(crate) flex_young: Vec<f64>,

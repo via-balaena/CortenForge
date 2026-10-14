@@ -10,18 +10,18 @@ use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
 use super::enums::{
-    ENABLE_SLEEP, Integrator, JointLayoutError, MakeDataError, MjJointType, MjSensorType,
-    RangeError, ResetError, SleepPolicy, SleepState, SolverType, StepError,
+    ENABLE_SLEEP, EqualityType, Integrator, JointLayoutError, MakeDataError, MjJointType,
+    MjSensorType, RangeError, ResetError, SleepPolicy, SleepState, SolverType, StepError,
 };
 use super::model::Model;
 
 // Types from dynamics module (Phase 7 extraction)
 use crate::dynamics::SpatialVector;
 use crate::dynamics::crba::{DEFAULT_MASS_FALLBACK, mj_crba};
-use crate::dynamics::factor::mj_factor_sparse;
+use crate::dynamics::factor::mj_solve_m;
 use crate::forward::MjStage;
 use crate::jacobian::mj_jac_body_com;
-use crate::linalg::mj_solve_sparse_batch;
+use crate::linalg::mju_dot;
 
 use super::data::Data;
 use crate::forward::mj_fwd_position;
@@ -205,12 +205,6 @@ impl Model {
             dof_solimp: vec![],
             dof_invweight0: vec![],
 
-            // Sparse LDL CSR metadata (empty — populated by compute_qld_csr_metadata)
-            qLD_rowadr: vec![],
-            qLD_rownnz: vec![],
-            qLD_colind: vec![],
-            qLD_nnz: 0,
-
             // Simple bodies and dof–dof patterns (computed by
             // compute_simple_bodies and compute_dof_patterns)
             body_sameframe: vec![],
@@ -281,8 +275,7 @@ impl Model {
             flex_passive: vec![],
             flex_edgestiffness: vec![],
             flex_edgedamping: vec![],
-            flex_edge_solref: vec![],
-            flex_edge_solimp: vec![],
+            flex_edgeequality: vec![],
             flex_bend_stiffness: vec![],
             flex_bend_damping: vec![],
             flex_density: vec![],
@@ -301,6 +294,7 @@ impl Model {
             flexedge_crosssection: vec![],
             flexedge_flexid: vec![],
             flexedge_rigid: vec![],
+            flexedge_invweight0: vec![],
             flexedge_flap: vec![],
             flex_bending: vec![],
             flexedge_J_rownnz: vec![],
@@ -832,8 +826,8 @@ impl Model {
             // Mass matrix (dense)
             qM: DMatrix::zeros(self.nv, self.nv),
 
-            // Mass matrix (sparse L^T D L — computed in mj_crba via mj_factor_sparse)
-            qLD_data: vec![0.0; self.qLD_nnz],
+            // Mass matrix (sparse L^T D L — computed in mj_crba via mj_factor_m)
+            qLD_data: vec![0.0; self.M_colind.len()],
             qLD_diag_inv: vec![0.0; self.nv],
             qLD_valid: false,
 
@@ -908,7 +902,7 @@ impl Model {
             ncone: 0,
             ne: 0,
             nf: 0,
-            newton_solved: false,
+            primal_qacc: false,
             solver_stat: Vec::new(),
             stat_meaninertia: 1.0,
 
@@ -1179,9 +1173,19 @@ impl Model {
     ///   `1/mass` on such a body, its armature left out, as MuJoCo's (`:663-673`)
     /// - `tendon_invweight0[t]` = `J_tendon · M⁻¹ · J_tendon^T` (full quadratic form,
     ///   matching MuJoCo's `setInertia()` in `engine_setconst.c`)
+    /// - `flex_edgeequality[f]`: whether a flex equality names flex `f`, set
+    ///   first, since an edge's Jacobian is made only then
+    /// - `flexedge_invweight0[e]` as MuJoCo's (`engine_setconst.c:716-750`): 0
+    ///   for a rigid edge, `(1/m₁ + 1/m₂)/2` when both vertex bodies are simple
+    ///   with slides only (`body_simple` 2), else `J_edge · M⁻¹ · J_edgeᵀ`;
+    ///   MuJoCo's while every vertex body hangs from the world or all from one
+    ///   body: the edge Jacobian takes a vertex's own dofs alone, and an edge
+    ///   is rigid when both its vertices have no mass (`flexedge_rigid`), so
+    ///   with vertex bodies on different moving bodies the two differ (book
+    ///   Rigid-loading L10, rule (c))
     ///
-    /// Must be called after `compute_qld_csr_metadata()` and
-    /// `compute_simple_bodies()`, and once body_mass, body_inertia, dof_body,
+    /// Must be called after `compute_simple_bodies()` and
+    /// `compute_dof_patterns()`, and once body_mass, body_inertia, dof_body,
     /// dof_jnt, jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
     pub fn compute_invweight0(&mut self) {
         const MIN_VAL: f64 = 1e-15; // mjMINVAL
@@ -1197,6 +1201,13 @@ impl Model {
         // --- Initialize invweight arrays (world body and static bodies stay [0,0]) ---
         self.body_invweight0 = vec![[0.0; 2]; self.nbody];
         self.dof_invweight0 = vec![0.0; self.nv];
+        self.flexedge_invweight0 = vec![0.0; self.nflexedge];
+        self.flex_edgeequality = (0..self.nflex)
+            .map(|f| {
+                (0..self.neq)
+                    .any(|eq| self.eq_type[eq] == EqualityType::Flex && self.eq_obj1id[eq] == f)
+            })
+            .collect();
 
         if self.nv == 0 {
             // No DOFs: all bodies are static, invweight stays zero.
@@ -1205,16 +1216,14 @@ impl Model {
         }
 
         // --- MuJoCo algorithm: invweight via M⁻¹ at qpos0 ---
-        // Create temporary Data, run FK + CRBA + factor to get factored M.
+        // Create temporary Data, run FK, the flex edges (their Jacobians for
+        // a flex an equality names) and CRBA (which factors M) with every
+        // tree awake.
         let mut data = self.make_data_for_derivation();
         mj_fwd_position(self, &mut data);
+        crate::dynamics::flex::mj_flex(self, &mut data);
+        crate::dynamics::flex::mj_flex_edge(self, &mut data);
         mj_crba(self, &mut data);
-        mj_factor_sparse(self, &mut data);
-        // Clone CSR metadata to avoid borrow conflict (self.qld_csr() borrows self
-        // immutably, but we need to mutate self.body_invweight0 / self.dof_invweight0).
-        let rowadr = self.qLD_rowadr.clone();
-        let rownnz = self.qLD_rownnz.clone();
-        let colind = self.qLD_colind.clone();
 
         // A simple body whose joints are all slides (MuJoCo's `body_simple`
         // 2) takes MuJoCo's short form (`engine_setconst.c:628-635`).
@@ -1240,14 +1249,7 @@ impl Model {
 
             // Solve M · W = J^T for W = M⁻¹ · J^T (nv × 6)
             let mut jt = jac.transpose();
-            mj_solve_sparse_batch(
-                &rowadr,
-                &rownnz,
-                &colind,
-                &data.qLD_data,
-                &data.qLD_diag_inv,
-                &mut jt,
-            );
+            mj_solve_m(self, &data, jt.as_mut_slice());
 
             // A = J · W = J · M⁻¹ · J^T (6×6)
             let a = &jac * &jt;
@@ -1289,14 +1291,7 @@ impl Model {
             }
 
             // Solve M · W = selector → W columns are M⁻¹ columns at DOF positions
-            mj_solve_sparse_batch(
-                &rowadr,
-                &rownnz,
-                &colind,
-                &data.qLD_data,
-                &data.qLD_diag_inv,
-                &mut rhs,
-            );
+            mj_solve_m(self, &data, rhs.as_mut_slice());
 
             // Extract diagonal: rhs[(dof_adr+k, k)] = M⁻¹[dof_adr+k, dof_adr+k]
             match jnt_type {
@@ -1327,6 +1322,29 @@ impl Model {
             }
         }
 
+        // --- flexedge_invweight0 (`engine_setconst.c:716-750`) ---
+        for e in 0..self.nflexedge {
+            let [v1, v2] = self.flexedge_vert[e];
+            let (b1, b2) = (self.flexvert_bodyid[v1], self.flexvert_bodyid[v2]);
+            self.flexedge_invweight0[e] = if self.flexedge_rigid[e] {
+                0.0
+            } else if slides_only[b1] && slides_only[b2] {
+                // MuJoCo's expression, operation for operation.
+                #[allow(clippy::manual_midpoint)]
+                let w = (1.0 / self.body_mass[b1] + 1.0 / self.body_mass[b2]) / 2.0;
+                w
+            } else {
+                let mut j = vec![0.0; self.nv];
+                let adr = self.flexedge_J_rowadr[e];
+                for k in adr..adr + self.flexedge_J_rownnz[e] {
+                    j[self.flexedge_J_colind[k]] = data.flexedge_J[k];
+                }
+                let mut w = j.clone();
+                mj_solve_m(self, &data, &mut w);
+                mju_dot(&j, &w)
+            };
+        }
+
         // --- tendon_invweight0 ---
         // MuJoCo ref: setInertia() in engine_setconst.c
         // For each tendon: invweight0 = J_tendon · M⁻¹ · J_tendon^T
@@ -1350,14 +1368,7 @@ impl Model {
             rhs.column_mut(0).copy_from(j_tendon);
 
             // Solve M · w = J_tendon → w = M⁻¹ · J_tendon
-            mj_solve_sparse_batch(
-                &rowadr,
-                &rownnz,
-                &colind,
-                &data.qLD_data,
-                &data.qLD_diag_inv,
-                &mut rhs,
-            );
+            mj_solve_m(self, &data, rhs.as_mut_slice());
 
             // tendon_invweight0 = J_tendon · M⁻¹ · J_tendon^T
             let w = j_tendon.dot(&rhs.column(0));

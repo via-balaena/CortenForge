@@ -1,14 +1,14 @@
 //! SDF Physics 07 — Pair
 //!
 //! Two `Solid::sphere(5.0)` bodies. The lower one rests on the ground, the
-//! upper one starts just above it and settles onto it. First test of
-//! SDF-vs-SDF collision with surface-tracing multi-contact.
+//! upper one starts just above it, settles onto it, and rolls off: ball on
+//! ball is an unstable equilibrium. First test of SDF-vs-SDF collision with
+//! surface-tracing multi-contact.
 //!
-//! Verifies:
-//! - Upper body settles on top of the lower body (no tunneling)
-//! - Both reach a stable stacked configuration
-//! - Lower sphere rests on ground (SDF-plane, proven in step 04)
-//! - Upper sphere rests on lower sphere (SDF-SDF surface-tracing)
+//! Verifies, from t = 5 s:
+//! - Both spheres on the ground (SDF-plane, proven in step 04)
+//! - The spheres apart, the upper one fallen off the lower one
+//! - Neither bouncing, contacts active
 //!
 //! Interactive: press Space to nudge the upper ball sideways.
 //!
@@ -185,7 +185,7 @@ fn track_pair(data: Res<PhysicsData>, mut tracker: ResMut<PairTracker>) {
 
     if t >= 5.0 && !tracker.settled && !tracker.nudged {
         tracker.settled = true;
-        let gap = z_upper - z_lower;
+        let apart = (data.0.qpos[7] - data.0.qpos[0]).hypot(data.0.qpos[8] - data.0.qpos[1]);
 
         eprintln!();
         check(
@@ -193,12 +193,15 @@ fn track_pair(data: Res<PhysicsData>, mut tracker: ResMut<PairTracker>) {
             (z_lower - RADIUS).abs() < 1.0,
         );
         check(
-            &format!("upper z ≈ {} (got {z_upper:.3})", 3.0 * RADIUS),
-            3.0f64.mul_add(-RADIUS, z_upper).abs() < 2.0,
+            &format!("upper z ≈ {RADIUS:.0}, fallen (got {z_upper:.3})"),
+            (z_upper - RADIUS).abs() < 1.0,
         );
         check(
-            &format!("gap ≈ {} mm (got {gap:.3})", 2.0 * RADIUS),
-            2.0f64.mul_add(-RADIUS, gap).abs() < 2.0,
+            &format!(
+                "centres ≥ {} mm apart horizontally (got {apart:.1})",
+                2.0 * RADIUS
+            ),
+            apart >= 2.0 * RADIUS,
         );
         check(
             &format!("|vz_lower| < 1.0 (got {vz_lower:.3})"),

@@ -1,15 +1,39 @@
-//! Linear algebra utilities: Cholesky, sparse solve, the sparse LU of the
-//! implicit integrator.
+//! Linear algebra utilities: Cholesky, the sparse dot product, the sparse
+//! LU of the implicit integrator.
 //!
-//! Pure math routines with no pipeline state dependencies. Used by the
-//! forward dynamics pipeline (dense Cholesky for implicit integration,
-//! sparse solve for explicit/Newton paths) and analytical derivatives.
+//! Pure math routines with no pipeline state dependencies. The mass
+//! matrix's factor and solve are `dynamics::factor`'s.
 
 use std::cmp::Ordering;
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::types::StepError;
 use nalgebra::{DMatrix, DVector};
+
+/// `Σ vec1[k]·vec2[k]` in MuJoCo's order (`mju_dot`,
+/// `engine_util_blas.c:704-766`): four partial sums over each block of
+/// four, joined as `(s0 + s2) + (s1 + s3)`, then the remaining one to three
+/// products summed and added at once.
+pub(crate) fn mju_dot(vec1: &[f64], vec2: &[f64]) -> f64 {
+    let n = vec1.len();
+    let (mut s0, mut s1, mut s2, mut s3) = (0.0, 0.0, 0.0, 0.0);
+    let mut i = 0;
+    while i + 4 <= n {
+        s0 += vec1[i] * vec2[i];
+        s1 += vec1[i + 1] * vec2[i + 1];
+        s2 += vec1[i + 2] * vec2[i + 2];
+        s3 += vec1[i + 3] * vec2[i + 3];
+        i += 4;
+    }
+    let mut res = (s0 + s2) + (s1 + s3);
+    match n - i {
+        3 => res += vec1[i] * vec2[i] + vec1[i + 1] * vec2[i + 1] + vec1[i + 2] * vec2[i + 2],
+        2 => res += vec1[i] * vec2[i] + vec1[i + 1] * vec2[i + 1],
+        1 => res += vec1[i] * vec2[i],
+        _ => {}
+    }
+    res
+}
 
 /// `Σ vec1[k]·vec2(k)` in MuJoCo's order (`mju_dotSparse`,
 /// `engine_util_sparse.h:159-185`): four partial sums over each block of
@@ -117,230 +141,88 @@ pub(crate) fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
     }
 }
 
-/// Dense Cholesky rank-1 update: given L such that L·L^T = H, compute L' in-place
-/// such that L'·L'^T = H + v·v^T.
-///
-/// Uses the Linpack DCHUD algorithm (Givens rotations). O(n²).
-/// The vector `v` is used as workspace and modified.
-///
-/// Returns `Err(StepError::CholeskyFailed)` if the diagonal becomes non-positive.
-// Single-letter names (a, b, c, x, y) follow the standard linear-algebra notation; the multiply-add expression is left as `a*b + c` for clarity against the published formula.
-#[allow(clippy::many_single_char_names, clippy::imprecise_flops)]
-pub(crate) fn cholesky_rank1_update(l: &mut DMatrix<f64>, v: &mut [f64]) -> Result<(), StepError> {
-    let n = l.nrows();
-    debug_assert_eq!(v.len(), n);
-
+/// Factor the dense row-major `n × n` matrix `mat` as `L·L'` in place, as
+/// MuJoCo 3.5.0's `mju_cholFactor` does (`engine_util_solve.c:33-62`): `L`
+/// in the lower triangle, the upper triangle left as it was. A diagonal below
+/// `mindiag` is replaced by `mindiag`; the count of the others is returned (the
+/// rank).
+pub(crate) fn mju_chol_factor(mat: &mut [f64], n: usize, mindiag: f64) -> usize {
+    let mut rank = n;
     for j in 0..n {
-        let a = l[(j, j)];
-        let b = v[j];
-        let r = (a * a + b * b).sqrt();
-        if r <= 0.0 {
-            return Err(StepError::CholeskyFailed);
+        let mut tmp = mat[j * (n + 1)];
+        if j > 0 {
+            tmp -= mju_dot(&mat[j * n..j * n + j], &mat[j * n..j * n + j]);
         }
-        let c = a / r;
-        let s = b / r;
-        l[(j, j)] = r;
-
-        // Apply Givens rotation to remaining entries in column j and v
-        for i in (j + 1)..n {
-            let t = l[(i, j)];
-            l[(i, j)] = c * t + s * v[i];
-            v[i] = -s * t + c * v[i];
+        if tmp < mindiag {
+            tmp = mindiag;
+            rank -= 1;
+        }
+        mat[j * (n + 1)] = tmp.sqrt();
+        let inv = 1.0 / mat[j * (n + 1)];
+        for i in j + 1..n {
+            let dot = mju_dot(&mat[i * n..i * n + j], &mat[j * n..j * n + j]);
+            mat[i * n + j] = (mat[i * n + j] - dot) * inv;
         }
     }
-    Ok(())
+    rank
 }
 
-/// Dense Cholesky rank-1 downdate: given L such that L·L^T = H, compute L' in-place
-/// such that L'·L'^T = H - v·v^T.
-///
-/// Uses the Linpack DCHDD algorithm (forward solve + reverse Givens). O(n²).
-/// The vector `v` is used as workspace and modified.
-///
-/// Returns `Err(StepError::CholeskyFailed)` if the result would be indefinite.
-// Single-letter names follow the standard linear-algebra notation; the multiply-add form is left as `a*b + c` for clarity against the published formula. (`dead_code` retained for symmetry with the active variant.)
-#[allow(dead_code, clippy::many_single_char_names, clippy::imprecise_flops)]
-pub(crate) fn cholesky_rank1_downdate(
-    l: &mut DMatrix<f64>,
-    v: &mut [f64],
-) -> Result<(), StepError> {
-    let n = l.nrows();
-    debug_assert_eq!(v.len(), n);
-
-    // Step 1: Forward solve L·p = v, store p in v
-    for j in 0..n {
-        for k in 0..j {
-            v[j] -= l[(j, k)] * v[k];
+/// Solve `L·L'·x = b` in place with [`mju_chol_factor`]'s factor, as MuJoCo
+/// 3.5.0's `mju_cholSolve` does (`engine_util_solve.c:66-92`). `x` holds `b`
+/// on entry.
+pub(crate) fn mju_chol_solve(mat: &[f64], x: &mut [f64], n: usize) {
+    for i in 0..n {
+        if i > 0 {
+            let dot = mju_dot(&mat[i * n..i * n + i], &x[..i]);
+            x[i] -= dot;
         }
-        if l[(j, j)].abs() < MJ_MINVAL {
-            return Err(StepError::CholeskyFailed);
-        }
-        v[j] /= l[(j, j)];
+        x[i] /= mat[i * (n + 1)];
     }
-
-    // Step 2: Check positive-definiteness: alpha² = 1 - ||p||² > 0
-    let p_norm_sq: f64 = v.iter().map(|x| x * x).sum();
-    let alpha_sq = 1.0 - p_norm_sq;
-    if alpha_sq <= 0.0 {
-        return Err(StepError::CholeskyFailed);
-    }
-    let mut alpha = alpha_sq.sqrt();
-
-    // Step 3: Reverse Givens rotations to produce L'
-    for j in (0..n).rev() {
-        let a = alpha;
-        let b = v[j];
-        let r = (a * a + b * b).sqrt();
-        if r <= 0.0 {
-            return Err(StepError::CholeskyFailed);
+    for i in (0..n).rev() {
+        for j in i + 1..n {
+            x[i] -= mat[j * n + i] * x[j];
         }
-        let c = a / r;
-        let s = b / r;
-        alpha = r;
-
-        // Update column j of L
-        for i in (j + 1)..n {
-            let t = l[(i, j)];
-            // Accumulate the p-vector contribution back
-            l[(i, j)] = (t - s * v[i]) / c;
-            v[i] = c * v[i] - s * t;
-        }
-
-        // Update diagonal
-        l[(j, j)] *= c;
-        if l[(j, j)] <= 0.0 {
-            return Err(StepError::CholeskyFailed);
-        }
-    }
-
-    Ok(())
-}
-
-// ============================================================================
-// Sparse Triangular Solve
-// ============================================================================
-
-/// Solve `L^T D L x = b` using the sparse factorization from `mj_factor_sparse`.
-///
-/// Matches MuJoCo's `mj_solveLD`:
-/// - Off-diagonal entries at positions `0..rownnz[i]-1`
-/// - Diagonal phase uses precomputed `qld_diag_inv[i]` (multiply, not divide)
-///
-/// On entry `x` contains `b`; on exit `x` contains the solution.
-/// Zero allocations — operates entirely on borrowed data.
-#[allow(non_snake_case)]
-pub fn mj_solve_sparse(
-    rowadr: &[usize],
-    rownnz: &[usize],
-    colind: &[usize],
-    qld_data: &[f64],
-    qld_diag_inv: &[f64],
-    x: &mut DVector<f64>,
-) {
-    let nv = x.len();
-
-    // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors).
-    // Off-diagonal entries only: positions 0..rownnz[i]-1.
-    // Zero-skip: if x[i] == 0 the scatter is a no-op (MuJoCo: `if ((x_i = x[i]))`).
-    // Diagonal-only skip: rownnz == 1 means no off-diagonals (MuJoCo: `if (rownnz[i] == 1)`).
-    for i in (0..nv).rev() {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let xi = x[i];
-        if xi == 0.0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for k in 0..nnz_offdiag {
-            x[colind[start + k]] -= qld_data[start + k] * xi;
-        }
-    }
-
-    // Phase 2: Solve D z = y (multiply by precomputed inverse, matching MuJoCo's diaginv).
-    for i in 0..nv {
-        x[i] *= qld_diag_inv[i];
-    }
-
-    // Phase 3: Solve L w = z (gather from ancestors)
-    // Off-diagonal entries only: positions 0..rownnz[i]-1.
-    // Diagonal-only skip: rownnz == 1 means no off-diagonals (MuJoCo: `if (rownnz[i] == 1)`).
-    for i in 0..nv {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for k in 0..nnz_offdiag {
-            x[i] -= qld_data[start + k] * x[colind[start + k]];
-        }
+        x[i] /= mat[i * (n + 1)];
     }
 }
 
-/// Batch solve `L^T D L X = B` for multiple right-hand sides simultaneously.
-///
-/// Matches MuJoCo's `mj_solveLD` with `n > 1`: the outer loop sweeps CSR metadata
-/// once per DOF, the inner loop iterates across `n` vectors. This gives O(1) CSR
-/// metadata loads vs O(n) for `n` separate `mj_solve_sparse` calls.
-///
-/// `x` is an nv × n column-major matrix (nalgebra `DMatrix`). Each column is an
-/// independent RHS; on exit each column contains the corresponding solution.
-///
-/// Includes zero-skip in L^T phase (per-vector) and diagonal-only row skip.
-#[allow(non_snake_case)]
-pub(crate) fn mj_solve_sparse_batch(
-    rowadr: &[usize],
-    rownnz: &[usize],
-    colind: &[usize],
-    qld_data: &[f64],
-    qld_diag_inv: &[f64],
-    x: &mut DMatrix<f64>,
-) {
-    let nv = x.nrows();
-    let n = x.ncols();
-
-    // Phase 1: Solve L^T Y = B (scatter across all vectors).
-    for i in (0..nv).rev() {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for v in 0..n {
-            let xi = x[(i, v)];
-            if xi == 0.0 {
-                continue;
+/// Update [`mju_chol_factor`]'s factor in place to that of `L·L' + x·x'`
+/// (`plus`) or `L·L' − x·x'`, as MuJoCo 3.5.0's `mju_cholUpdate` does
+/// (`engine_util_solve.c:96-136`). `x` is overwritten. A new diagonal square
+/// below mjMINVAL is replaced by mjMINVAL; the count of the others is returned
+/// (the rank).
+// Single-letter names are mju_cholUpdate's own.
+#[allow(clippy::many_single_char_names)]
+pub(crate) fn mju_chol_update(mat: &mut [f64], x: &mut [f64], n: usize, plus: bool) -> usize {
+    let mut rank = n;
+    for k in 0..n {
+        if x[k] != 0.0 {
+            let lkk = mat[k * (n + 1)];
+            let mut tmp = lkk * lkk + if plus { x[k] * x[k] } else { -x[k] * x[k] };
+            if tmp < MJ_MINVAL {
+                tmp = MJ_MINVAL;
+                rank -= 1;
             }
-            for k in 0..nnz_offdiag {
-                x[(colind[start + k], v)] -= qld_data[start + k] * xi;
+            let r = tmp.sqrt();
+            let c = r / lkk;
+            let cinv = 1.0 / c;
+            let s = x[k] / lkk;
+            mat[k * (n + 1)] = r;
+            if plus {
+                for i in k + 1..n {
+                    mat[i * n + k] = (mat[i * n + k] + s * x[i]) * cinv;
+                }
+            } else {
+                for i in k + 1..n {
+                    mat[i * n + k] = (mat[i * n + k] - s * x[i]) * cinv;
+                }
+            }
+            for i in k + 1..n {
+                x[i] = c * x[i] - s * mat[i * n + k];
             }
         }
     }
-
-    // Phase 2: Solve D Z = Y (multiply by precomputed inverse).
-    for i in 0..nv {
-        let inv_di = qld_diag_inv[i];
-        for v in 0..n {
-            x[(i, v)] *= inv_di;
-        }
-    }
-
-    // Phase 3: Solve L W = Z (gather across all vectors).
-    for i in 0..nv {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for v in 0..n {
-            let mut acc = 0.0;
-            for k in 0..nnz_offdiag {
-                acc += qld_data[start + k] * x[(colind[start + k], v)];
-            }
-            x[(i, v)] -= acc;
-        }
-    }
+    rank
 }
 
 // ============================================================================
@@ -520,6 +402,72 @@ mod cholesky_tests {
         cholesky_solve_in_place(&m, &mut x);
         // 4 * x = 6 => x = 1.5
         assert_relative_eq!(x[0], 1.5, epsilon = 1e-15);
+    }
+
+    /// `H` row-major, factored by `mju_chol_factor`.
+    fn row_major_factor(h: &DMatrix<f64>) -> Vec<f64> {
+        let n = h.nrows();
+        let mut l: Vec<f64> = (0..n * n).map(|k| h[(k / n, k % n)]).collect();
+        assert_eq!(mju_chol_factor(&mut l, n, MJ_MINVAL), n, "full rank");
+        l
+    }
+
+    /// `L·L'` from a row-major factor's lower triangle.
+    fn product(l: &[f64], n: usize) -> DMatrix<f64> {
+        DMatrix::from_fn(n, n, |i, j| {
+            (0..=i.min(j)).map(|k| l[i * n + k] * l[j * n + k]).sum()
+        })
+    }
+
+    /// `mju_chol_update` removes a row from the factor: updating the factor of
+    /// `H` with `−v·v'` gives the factor of `H − v·v'`, and with `+v·v'` that
+    /// of `H + v·v'`, as MuJoCo's `mju_cholUpdate` (`flg_plus` 0 and 1). (The
+    /// parent's Newton removed a row by negating `v` and adding it, which adds
+    /// it again.) `v` is half the factor's first column, so `H − v·v'` is
+    /// positive definite.
+    #[test]
+    fn chol_update_minus_removes_row() {
+        for n in 2..=6 {
+            let h = random_spd(n, 7 + n as u64);
+            let l0 = row_major_factor(&h);
+            let v = DVector::from_fn(n, |i, _| 0.5 * l0[i * n]);
+            let tol = 1e-14 * h.amax();
+            for (plus, want) in [
+                (false, &h - &v * v.transpose()),
+                (true, &h + &v * v.transpose()),
+            ] {
+                let mut l = l0.clone();
+                let mut x: Vec<f64> = v.iter().copied().collect();
+                assert_eq!(mju_chol_update(&mut l, &mut x, n, plus), n, "full rank");
+                let got = product(&l, n);
+                for i in 0..n {
+                    for j in 0..n {
+                        assert!(
+                            (got[(i, j)] - want[(i, j)]).abs() <= tol,
+                            "n {n}, plus {plus}: [{i},{j}] {:e} vs {:e}",
+                            got[(i, j)],
+                            want[(i, j)]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// `mju_chol_solve` with `mju_chol_factor`'s factor solves `H·x = b`.
+    #[test]
+    fn chol_solve_solves() {
+        for n in 1..=7 {
+            let h = random_spd(n, 99 + n as u64);
+            let l = row_major_factor(&h);
+            let b: Vec<f64> = (0..n).map(|i| (i as f64 + 1.0) * 0.3).collect();
+            let mut x = b.clone();
+            mju_chol_solve(&l, &mut x, n);
+            let hx = &h * DVector::from_column_slice(&x);
+            for i in 0..n {
+                assert!((hx[i] - b[i]).abs() <= 1e-13, "n {n}: row {i}");
+            }
+        }
     }
 }
 

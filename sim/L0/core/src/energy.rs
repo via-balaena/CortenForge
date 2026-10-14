@@ -2,10 +2,12 @@
 //!
 //! `mj_energy_pos` computes gravitational + joint, tendon and cable spring
 //! potential energy (called after FK). `mj_energy_vel` computes kinetic energy from the mass
-//! matrix or body velocities (called after CRBA). `Data::total_energy()` returns
-//! the sum.
+//! matrix (called after CRBA), as MuJoCo's `mj_energyVel`. `Data::total_energy()`
+//! returns the sum.
 
+use crate::dynamics::factor::mj_mul_m;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
+use crate::linalg::mju_dot;
 use crate::tendon::subquat;
 use crate::types::{
     DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, MjJointType, Model, SleepState,
@@ -158,59 +160,15 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
     data.energy_potential = potential;
 }
 
-/// Compute kinetic energy from mass matrix and velocities.
+/// The kinetic energy `0.5 · qvel' · M · qvel`, as MuJoCo 3.5.0's
+/// `mj_energyVel` computes it (`engine_sensor.c:1727-1739`).
 ///
-/// `E_k` = 0.5 * qvel^T * M * qvel
-///
-/// This must be called AFTER `mj_crba()` has computed the mass matrix.
-/// However, for the `forward()` pipeline we call it after velocity FK
-/// but before CRBA. We use an approximation based on body velocities
-/// when M is not yet available.
-pub(crate) fn mj_energy_vel(model: &Model, data: &mut Data) {
-    // If mass matrix is available and computed, use exact formula
-    // E_k = 0.5 * qvel^T * M * qvel
-    let kinetic = if data.qM.nrows() == model.nv && model.nv > 0 {
-        let m_qvel = &data.qM * &data.qvel;
-        0.5 * data.qvel.dot(&m_qvel)
-    } else {
-        // Fallback: compute from body velocities directly (König's theorem)
-        // E_k = 0.5 * Σ (m_i * |v_com_i|² + ω_i^T * I_i * ω_i)
-        let mut energy = 0.0;
-        for body_id in 1..model.nbody {
-            let mass = model.body_mass[body_id];
-            let inertia = model.body_inertia[body_id];
-
-            // Extract linear and angular velocity from spatial velocity
-            let omega = Vector3::new(
-                data.cvel[body_id][0],
-                data.cvel[body_id][1],
-                data.cvel[body_id][2],
-            );
-            let v_origin = Vector3::new(
-                data.cvel[body_id][3],
-                data.cvel[body_id][4],
-                data.cvel[body_id][5],
-            );
-
-            // Shift from body origin (xpos) to body COM (xipos)
-            let com_offset = data.xipos[body_id] - data.xpos[body_id];
-            let v_com = v_origin + omega.cross(&com_offset);
-
-            // Translational kinetic energy: 0.5 * m * |v_com|²
-            energy += 0.5 * mass * v_com.norm_squared();
-
-            // Rotational kinetic energy: 0.5 * ω^T * I * ω
-            // Using diagonal inertia in body frame (approximation - should transform)
-            let omega_body = data.xquat[body_id].inverse() * omega;
-            energy += 0.5
-                * (inertia.x * omega_body.x.powi(2)
-                    + inertia.y * omega_body.y.powi(2)
-                    + inertia.z * omega_body.z.powi(2));
-        }
-        energy
-    };
-
-    data.energy_kinetic = kinetic;
+/// `M · qvel` comes from [`mj_mul_m`], then its dot product with `qvel` is
+/// summed in `mju_dot`'s order. Run after the position stage, which
+/// computes `qM`.
+pub fn mj_energy_vel(model: &Model, data: &mut Data) {
+    let m_qvel = mj_mul_m(model, data, data.qvel.as_slice());
+    data.energy_kinetic = 0.5 * mju_dot(m_qvel.as_slice(), data.qvel.as_slice());
 }
 
 impl Data {
@@ -291,7 +249,7 @@ mod spec_b_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -354,7 +312,7 @@ mod spec_b_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -416,7 +374,7 @@ mod spec_b_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -846,7 +804,7 @@ mod spec_b_tests {
         model.body_ancestor_mask = vec![vec![]; 3];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Free joint: displace [1,0,0] in position

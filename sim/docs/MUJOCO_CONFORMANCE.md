@@ -542,7 +542,7 @@ solver) has been deleted.
 | Model data extension | `flex_*` fields, `nq_rigid`/`nv_rigid` | AC9 (rigid regression), AC10 (MJCF round-trip) | ✅ |
 | Mass + LDL | `mj_crba_flex()`, `mj_factor_flex()` | AC8 (pinned vertices) | ✅ |
 | Collision | `mj_collision_flex()` (brute-force O(V×G)) | AC2 (flex-rigid contact) | ✅ |
-| Edge constraints | `FlexEdge` in unified Jacobian + penalty path | AC5 (edge stiffness) | ✅ |
+| Edge constraints | flex equality rows (`EqualityType::Flex`) in unified Jacobian + penalty path | AC5 (edge stiffness) | ✅ |
 | Bending | Passive spring-damper in `mj_fwd_passive()` | AC6 (bending stiffness), AC20 (stability clamp) | ✅ |
 | Integration | `mj_integrate_pos_flex()`, gravity, damping | AC1 (cloth drape), AC3 (solid compression) | ✅ |
 | MJCF parsing | `<flex>`, `<flexcomp>` | AC10–AC15 (parsing, flexcomp types) | ✅ |
@@ -564,7 +564,9 @@ solver) has been deleted.
 
 ### §36 — Body-Transmission Actuators (Adhesion)
 
-**Status:** ✅ Complete (A+ grade — MuJoCo conformance + code quality)
+**Status:** ✅ Complete, but for two contact cases: MuJoCo weights a pyramidal contact's facet rows
+and adds an excluded contact in the gap, where sim-core takes each contact's normal row (ledger-L124,
+book P43).
 
 Body transmission (`ActuatorTransmission::Body`) for adhesion actuators, matching
 MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
@@ -572,7 +574,7 @@ MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
 | MuJoCo Function | CortenForge | Verification | Status |
 |-----------------|-------------|--------------|--------|
 | `mj_transmission()` (mjTRN_BODY case) | `mj_transmission_body()` | Contact normal Jacobian moment arms, negated average, no gear | ✅ |
-| `mj_jacDifPair()` helper | `compute_contact_normal_jacobian()` | J(b2) − J(b1) sign convention via `accumulate_point_jacobian()` | ✅ |
+| `mj_jacDifPair()` helper | `compute_contact_normal_jacobian()` | J(b2) − J(b1) sign convention via the contact Jacobian's normal row (`compute_contact_normal_row`, through `mj_jac`) | ✅ |
 | Body name → ID resolution | `builder/` body branch | Replaces former `ModelConversionError` with name lookup | ✅ |
 | Phase 3 force application | `mj_fwd_actuation()` Body arm | Moment-based `qfrc += m * force` (merged with Site arm) | ✅ |
 | Actuator velocity | `mj_actuator_velocity()` Body arm | `velocity = moment.dot(&qvel)` | ✅ |

@@ -12,27 +12,45 @@ mod position;
 pub use position::{mj_differentiate_pos, mj_integrate_pos_explicit};
 
 use crate::types::{Data, MjJointType, Model};
-use nalgebra::{DMatrix, DVector, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, DVector, Vector3};
 
-/// Compute the full body Jacobian at a world-frame point: 3×nv translational and
-/// 3×nv rotational.
+/// MuJoCo's motion dof `dof` in the global frame centred at its tree's
+/// subtree centre of mass, `[angular; linear]`, as `mj_comPos` builds `cdof`
+/// (`engine_core_smooth.c:298-350`, `mju_dofCom`): a rotation about `axis`
+/// through the joint's anchor is `[axis; axis × (com − anchor)]` (a hinge's
+/// axis, a ball's or a free joint's the columns of the body's `xmat`), a
+/// translation `[0; axis]` (a slide's axis, a free joint's the coordinate
+/// axes). sim-core takes its own motion subspace about the body's origin
+/// (`joint_motion_subspace`) and does not fill `Data::cdof` (ledger L123);
+/// this one is built from the kinematics, which equal MuJoCo's.
+fn mujoco_cdof(model: &Model, data: &Data, dof: usize) -> [f64; 6] {
+    let jnt = model.dof_jnt[dof];
+    let body = model.jnt_body[jnt];
+    let k = dof - model.jnt_dof_adr[jnt];
+    let rotation = |axis: Vector3<f64>| {
+        let offset = data.subtree_com[model.body_rootid[body]] - data.xanchor[jnt];
+        let lin = axis.cross(&offset);
+        [axis.x, axis.y, axis.z, lin.x, lin.y, lin.z]
+    };
+    let translation = |axis: Vector3<f64>| [0.0, 0.0, 0.0, axis.x, axis.y, axis.z];
+    match model.jnt_type[jnt] {
+        MjJointType::Hinge => rotation(data.xaxis[jnt]),
+        MjJointType::Slide => translation(data.xaxis[jnt]),
+        MjJointType::Ball => rotation(data.xmat[body].column(k).into_owned()),
+        MjJointType::Free if k < 3 => translation(Vector3::ith(k, 1.0)),
+        MjJointType::Free => rotation(data.xmat[body].column(k - 3).into_owned()),
+    }
+}
+
+/// The translational (`jacp`) and rotational (`jacr`) Jacobians, 3×nv each,
+/// of a world-frame point attached to `body_id`: MuJoCo 3.5.0's `mj_jac`
+/// (`engine_core_util.c:172-220`).
 ///
-/// Canonical equivalent of MuJoCo's `mj_jac(m, d, jacp, jacr, point, body)`.
-/// Walks the kinematic chain from `body_id` to root, accumulating per-joint
-/// contributions for each joint type:
-///
-/// | Joint type | `jacp` column(s)             | `jacr` column(s)         |
-/// |------------|------------------------------|--------------------------|
-/// | Hinge      | `axis × r`                   | `axis`                   |
-/// | Slide      | `axis`                       | `0`                      |
-/// | Ball       | `(R·eᵢ) × r` for `i∈0..3`   | `R·eᵢ`                  |
-/// | Free trans | `I₃`                         | `0`                      |
-/// | Free rot   | `(R·eᵢ) × r` for `i∈0..3`   | `R·eᵢ`                  |
-///
-/// where `r = point − anchor`, `R` is the body orientation, and `axis` is the
-/// world-frame joint axis.
-///
-/// Returns `(jacp, jacr)` — both 3×nv dense matrices.
+/// For each dof on the chain from the last one moving the body (its
+/// `body_weldid`'s) to the root, `jacr` is the dof's angular part and `jacp`
+/// its linear part plus the angular part × (`point` − the tree's subtree
+/// centre of mass), with MuJoCo's `cdof` (built from the kinematics;
+/// sim-core keeps no `cdof` in that frame, ledger L123).
 #[must_use]
 #[allow(clippy::similar_names)] // jacp/jacr are canonical MuJoCo names
 pub fn mj_jac(
@@ -43,72 +61,21 @@ pub fn mj_jac(
 ) -> (DMatrix<f64>, DMatrix<f64>) {
     let mut jacp = DMatrix::zeros(3, model.nv);
     let mut jacr = DMatrix::zeros(3, model.nv);
-
-    let mut current = body_id;
-    while current != 0 {
-        let jnt_start = model.body_jnt_adr[current];
-        let jnt_end = jnt_start + model.body_jnt_num[current];
-
-        for jnt_id in jnt_start..jnt_end {
-            let dof = model.jnt_dof_adr[jnt_id];
-            let jnt_body = model.jnt_body[jnt_id];
-
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    // Partial-frame world axis/anchor (set in forward kinematics)
-                    // so a multi-joint body's earlier joint is not rotated by the
-                    // later ones. Single source of truth shared with RNE/velocity.
-                    let axis = data.xaxis[jnt_id];
-                    let anchor = data.xanchor[jnt_id];
-                    let r = point - anchor;
-                    let cross = axis.cross(&r);
-                    for k in 0..3 {
-                        jacp[(k, dof)] += cross[k];
-                        jacr[(k, dof)] += axis[k];
-                    }
-                }
-                MjJointType::Slide => {
-                    let axis = data.xaxis[jnt_id];
-                    for k in 0..3 {
-                        jacp[(k, dof)] += axis[k];
-                    }
-                    // No rotational contribution.
-                }
-                MjJointType::Ball => {
-                    let rot = data.xquat[jnt_body].to_rotation_matrix();
-                    let anchor = data.xanchor[jnt_id];
-                    let r = point - anchor;
-                    for i in 0..3 {
-                        let omega = rot * Vector3::ith(i, 1.0);
-                        let cross = omega.cross(&r);
-                        for k in 0..3 {
-                            jacp[(k, dof + i)] += cross[k];
-                            jacr[(k, dof + i)] += omega[k];
-                        }
-                    }
-                }
-                MjJointType::Free => {
-                    // Translational DOFs (dof+0..dof+3): identity columns.
-                    for i in 0..3 {
-                        jacp[(i, dof + i)] += 1.0;
-                    }
-                    // Rotational DOFs (dof+3..dof+6).
-                    let rot = data.xquat[jnt_body].to_rotation_matrix();
-                    let r = point - data.xpos[jnt_body];
-                    for i in 0..3 {
-                        let omega = rot * Vector3::ith(i, 1.0);
-                        let cross = omega.cross(&r);
-                        for k in 0..3 {
-                            jacp[(k, dof + 3 + i)] += cross[k];
-                            jacr[(k, dof + 3 + i)] += omega[k];
-                        }
-                    }
-                }
-            }
-        }
-        current = model.body_parent[current];
+    let offset = point - data.subtree_com[model.body_rootid[body_id]];
+    let body = model.body_weldid[body_id];
+    if body == 0 {
+        return (jacp, jacr);
     }
-
+    let mut dof = Some(model.body_dof_adr[body] + model.body_dof_num[body] - 1);
+    while let Some(i) = dof {
+        let c = mujoco_cdof(model, data, i);
+        let tmp = Vector3::new(c[0], c[1], c[2]).cross(&offset);
+        for k in 0..3 {
+            jacr[(k, i)] = c[k];
+            jacp[(k, i)] = c[3 + k] + tmp[k];
+        }
+        dof = model.dof_parent[i];
+    }
     (jacp, jacr)
 }
 
@@ -211,76 +178,31 @@ pub(crate) fn mj_jac_geom(model: &Model, data: &Data, geom_id: usize) -> DMatrix
     mj_jac_point(model, data, body_id, &data.geom_xpos[geom_id])
 }
 
-/// Project a Cartesian force + torque at a world-frame point on a body into
-/// generalized forces via the Jacobian transpose: `qfrc += J_p^T * force + J_r^T * torque`.
+/// Add a force and a torque at a world-frame point on `body_id` to `qfrc` as
+/// generalized forces: MuJoCo 3.5.0's `mj_applyFT` (`engine_support.c:446-501`).
 ///
-/// General-purpose utility matching MuJoCo's `mj_applyFT()`. Walks the kinematic
-/// chain from `body_id` to root, accumulating per-DOF contributions without
-/// materializing the full Jacobian. Follows the same chain-walk and axis conventions
-/// as `accumulate_point_jacobian()`.
-// Jacobian assembly takes the full per-row context (model, data, body/site indices, output buffers).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn mj_apply_ft(
+/// `Jpᵀ·force` is added, then `Jrᵀ·torque`, with [`mj_jac`]'s Jacobians, each
+/// product summed as `mju_mulMatTVec` sums it (a zero component skipped).
+pub fn mj_apply_ft(
     model: &Model,
-    xpos: &[Vector3<f64>],
-    xquat: &[UnitQuaternion<f64>],
-    xaxis: &[Vector3<f64>],
-    xanchor: &[Vector3<f64>],
+    data: &Data,
     force: &Vector3<f64>,
     torque: &Vector3<f64>,
     point: &Vector3<f64>,
     body_id: usize,
     qfrc: &mut DVector<f64>,
 ) {
-    if body_id == 0 {
-        return;
-    }
-    let mut current = body_id;
-    while current != 0 {
-        let jnt_start = model.body_jnt_adr[current];
-        let jnt_end = jnt_start + model.body_jnt_num[current];
-        for jnt_id in jnt_start..jnt_end {
-            let dof = model.jnt_dof_adr[jnt_id];
-            let jnt_body = model.jnt_body[jnt_id];
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    let axis = xaxis[jnt_id];
-                    let anchor = xanchor[jnt_id];
-                    let r = point - anchor;
-                    qfrc[dof] += axis.cross(&r).dot(force) + axis.dot(torque);
-                }
-                MjJointType::Slide => {
-                    let axis = xaxis[jnt_id];
-                    qfrc[dof] += axis.dot(force);
-                }
-                MjJointType::Ball => {
-                    let anchor = xanchor[jnt_id];
-                    let r = point - anchor;
-                    // Body-frame axes (matching MuJoCo's cdof convention for ball joints,
-                    // same as accumulate_point_jacobian)
-                    let rot = xquat[jnt_body].to_rotation_matrix();
-                    for i in 0..3 {
-                        let omega = rot * Vector3::ith(i, 1.0);
-                        qfrc[dof + i] += omega.cross(&r).dot(force) + omega.dot(torque);
-                    }
-                }
-                MjJointType::Free => {
-                    // Translation DOFs (0,1,2): world-frame x,y,z
-                    qfrc[dof] += force[0];
-                    qfrc[dof + 1] += force[1];
-                    qfrc[dof + 2] += force[2];
-                    // Rotation DOFs (3,4,5): body-frame axes (cdof convention)
-                    let anchor = xpos[jnt_body];
-                    let r = point - anchor;
-                    let rot = xquat[jnt_body].to_rotation_matrix();
-                    for i in 0..3 {
-                        let omega = rot * Vector3::ith(i, 1.0);
-                        qfrc[dof + 3 + i] += omega.cross(&r).dot(force) + omega.dot(torque);
-                    }
+    let (jac_point, jac_rot) = mj_jac(model, data, body_id, point);
+    for (jac, v) in [(&jac_point, force), (&jac_rot, torque)] {
+        for i in 0..model.nv {
+            let mut q = 0.0;
+            for r in 0..3 {
+                if v[r] != 0.0 {
+                    q += jac[(r, i)] * v[r];
                 }
             }
+            qfrc[i] += q;
         }
-        current = model.body_parent[current];
     }
 }
 
@@ -293,10 +215,10 @@ pub(crate) fn mj_apply_ft(
 mod jac_site_tests {
     use super::*;
     use crate::forward::mj_fwd_position;
-    use crate::tendon::accumulate_point_jacobian;
     use crate::types::{GeomType, Model};
     use approx::assert_relative_eq;
     use nalgebra::DVector;
+    use nalgebra::UnitQuaternion;
 
     /// Build a minimal Model + Data for a single-joint body with a site.
     fn make_single_joint_site_model(
@@ -356,7 +278,7 @@ mod jac_site_tests {
         // DOFs
         model.dof_body = vec![1; nv];
         model.dof_jnt = vec![0; nv];
-        model.dof_parent = vec![None; nv];
+        model.dof_parent = (0..nv).map(|i| i.checked_sub(1)).collect();
         model.dof_armature = vec![0.0; nv];
         model.dof_damping = vec![0.0; nv];
         model.dof_frictionloss = vec![0.0; nv];
@@ -376,7 +298,7 @@ mod jac_site_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         data.qpos[0] = qpos_val;
@@ -385,10 +307,10 @@ mod jac_site_tests {
         (model, data)
     }
 
-    /// mj_jac_site translational column for hinge must agree with
-    /// accumulate_point_jacobian for the same direction projection.
+    /// A hinge's site Jacobian: its translational column is the world axis ×
+    /// (site − anchor), its rotational column the world axis.
     #[test]
-    fn jac_site_agrees_with_accumulate_hinge() {
+    fn jac_site_hinge_is_axis_cross_lever() {
         let (model, data) = make_single_joint_site_model(
             MjJointType::Hinge,
             Vector3::y(),
@@ -398,26 +320,9 @@ mod jac_site_tests {
         );
 
         let (jac_t, jac_r) = mj_jac_site(&model, &data, 0);
-
-        // For each cardinal direction, accumulate_point_jacobian projecting
-        // onto that direction should agree with the corresponding row of jac_t.
-        for dir_idx in 0..3 {
-            let direction = Vector3::ith(dir_idx, 1.0);
-            let mut ten_j = DVector::zeros(model.nv);
-            accumulate_point_jacobian(
-                &model,
-                &data.xpos,
-                &data.xquat,
-                &data.xaxis,
-                &data.xanchor,
-                &mut ten_j,
-                model.site_body[0],
-                &data.site_xpos[0],
-                &direction,
-                1.0,
-            );
-
-            assert_relative_eq!(jac_t[(dir_idx, 0)], ten_j[0], epsilon = 1e-12);
+        let lever = data.xaxis[0].cross(&(data.site_xpos[0] - data.xanchor[0]));
+        for k in 0..3 {
+            assert_relative_eq!(jac_t[(k, 0)], lever[k], epsilon = 1e-12);
         }
 
         // Rotational Jacobian for hinge: should be the world-frame joint axis.
@@ -476,59 +381,6 @@ mod jac_site_tests {
         }
     }
 
-    /// The tendon path's `accumulate_point_jacobian` must agree with `mj_jac`
-    /// (FD-verified above) on a MULTI-JOINT body: `accumulate` projects the
-    /// point Jacobian onto a direction, so `accumulate[k] == direction·jacp[:,k]`.
-    /// Guards the tendon subsystem reads the same partial-frame source.
-    #[test]
-    fn accumulate_agrees_with_mj_jac_multi_joint() {
-        use crate::test_fixtures::builders::{add_body, add_hinge_joint, finalize};
-
-        let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
-        let ax1 = Vector3::new(0.2, 1.0, 0.1).normalize();
-        let mut m = Model::empty();
-        let b = add_body(
-            &mut m,
-            0,
-            "l0",
-            Vector3::zeros(),
-            1.0,
-            Vector3::new(0.02, 0.03, 0.04),
-            Vector3::new(0.01, -0.02, -0.15),
-        );
-        add_hinge_joint(&mut m, b, "h0", ax0, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
-        add_hinge_joint(&mut m, b, "h1", ax1, 0.0, 0.0, 0.0, false, (-3.0, 3.0));
-        finalize(&mut m);
-
-        let mut data = m.make_data();
-        data.qpos.as_mut_slice().copy_from_slice(&[0.3, -0.35]);
-        mj_fwd_position(&m, &mut data);
-
-        let point = data.xpos[b] + data.xquat[b] * Vector3::new(0.1, -0.05, -0.2);
-        let (jacp, _) = mj_jac(&m, &data, b, &point);
-        let direction = Vector3::new(0.4, -0.7, 0.6).normalize();
-
-        let mut ten_j = DVector::zeros(m.nv);
-        accumulate_point_jacobian(
-            &m,
-            &data.xpos,
-            &data.xquat,
-            &data.xaxis,
-            &data.xanchor,
-            &mut ten_j,
-            b,
-            &point,
-            &direction,
-            1.0,
-        );
-        for k in 0..2 {
-            let expected = jacp[(0, k)] * direction.x
-                + jacp[(1, k)] * direction.y
-                + jacp[(2, k)] * direction.z;
-            assert_relative_eq!(ten_j[k], expected, epsilon = 1e-12);
-        }
-    }
-
     /// For a slide joint, translational Jacobian is the axis; rotational is zero.
     #[test]
     fn jac_site_slide_joint() {
@@ -568,6 +420,7 @@ mod mj_jac_tests {
     use crate::types::{GeomType, Model};
     use approx::assert_relative_eq;
     use nalgebra::DVector;
+    use nalgebra::UnitQuaternion;
 
     // =========================================================================
     // Helper: single-joint body (world → body1 with one joint, optional site)
@@ -626,7 +479,7 @@ mod mj_jac_tests {
 
         model.dof_body = vec![1; nv];
         model.dof_jnt = vec![0; nv];
-        model.dof_parent = vec![None; nv];
+        model.dof_parent = (0..nv).map(|i| i.checked_sub(1)).collect();
         model.dof_armature = vec![0.0; nv];
         model.dof_damping = vec![0.0; nv];
         model.dof_frictionloss = vec![0.0; nv];
@@ -645,7 +498,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         data.qpos[0] = qpos_val;
@@ -742,7 +595,7 @@ mod mj_jac_tests {
 
         model.dof_body = vec![1; 3];
         model.dof_jnt = vec![0; 3];
-        model.dof_parent = vec![None; 3];
+        model.dof_parent = vec![None, Some(0), Some(1)];
         model.dof_armature = vec![0.0; 3];
         model.dof_damping = vec![0.0; 3];
         model.dof_frictionloss = vec![0.0; 3];
@@ -762,7 +615,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Apply a small rotation: 30° about Z
@@ -855,7 +708,7 @@ mod mj_jac_tests {
 
         model.dof_body = vec![1; 6];
         model.dof_jnt = vec![0; 6];
-        model.dof_parent = vec![None; 6];
+        model.dof_parent = vec![None, Some(0), Some(1), Some(2), Some(3), Some(4)];
         model.dof_armature = vec![0.0; 6];
         model.dof_damping = vec![0.0; 6];
         model.dof_frictionloss = vec![0.0; 6];
@@ -875,7 +728,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Non-identity orientation: 45° about Z
@@ -1096,7 +949,16 @@ mod mj_jac_tests {
 
         model.dof_body = vec![1, 1, 1, 1, 1, 1, 2, 3];
         model.dof_jnt = vec![0, 0, 0, 0, 0, 0, 1, 2];
-        model.dof_parent = vec![None, None, None, None, None, None, Some(5), Some(6)];
+        model.dof_parent = vec![
+            None,
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+        ];
         model.dof_armature = vec![0.0; 8];
         model.dof_damping = vec![0.0; 8];
         model.dof_frictionloss = vec![0.0; 8];
@@ -1116,7 +978,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 4];
         model.body_ancestor_mask = vec![vec![]; 4];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Set some non-trivial configuration
@@ -1228,14 +1090,14 @@ mod mj_jac_tests {
         model.dof_jnt = vec![0, 0, 0, 0, 0, 0, 1, 1, 1];
         model.dof_parent = vec![
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
             Some(5),
-            Some(5),
-            Some(5),
+            Some(6),
+            Some(7),
         ];
         model.dof_armature = vec![0.0; 9];
         model.dof_damping = vec![0.0; 9];
@@ -1257,7 +1119,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 3];
         model.body_ancestor_mask = vec![vec![]; 3];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Non-identity configuration
@@ -1396,7 +1258,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 3];
         model.body_ancestor_mask = vec![vec![]; 3];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         data.qpos[0] = 0.3; // hinge1 angle

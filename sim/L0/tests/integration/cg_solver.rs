@@ -138,7 +138,7 @@ fn test_cg_stability_box_stack() {
     let mjcf = box_stack_mjcf(2);
 
     let mut model_cg = load_model(&mjcf).expect("load CG");
-    model_cg.solver_type = SolverType::CG; // CG with PGS fallback
+    model_cg.solver_type = SolverType::CG;
 
     let mut data_cg = model_cg.make_data();
 
@@ -183,7 +183,7 @@ fn test_cg_friction_slide_similarity() {
     let mut data_pgs = model_pgs.make_data();
 
     let mut model_cg = load_model(&mjcf).expect("load CG");
-    model_cg.solver_type = SolverType::CG; // CG with PGS fallback
+    model_cg.solver_type = SolverType::CG;
     let mut data_cg = model_cg.make_data();
 
     for _ in 0..200 {
@@ -377,12 +377,15 @@ fn test_cg_convergence_detection() {
 }
 
 // ---------------------------------------------------------------------------
-// AC #8: CG fallback to PGS
+// AC #8: CG held to one iteration keeps its iterate
 // ---------------------------------------------------------------------------
 #[test]
-fn test_cg_fallback() {
+fn test_cg_one_iteration_keeps_its_iterate() {
     // AC #8(b): 10-box stack with SolverType::CG, solver_iterations=1, solver_tolerance=1e-15.
-    // CG should fail and fall back to PGS, producing non-zero constraint forces.
+    // CG stops at its one iteration and keeps that iterate, as MuJoCo's, with
+    // non-zero constraint forces; it hands nothing to PGS, and does not make
+    // the acceleration again from the forces: one iteration leaves
+    // M·(qacc − qacc_smooth) away from the constraint force J'·f.
     let mjcf = box_stack_mjcf(10);
     let mut model = load_model(&mjcf).expect("load");
     model.solver_type = SolverType::CG;
@@ -395,16 +398,18 @@ fn test_cg_fallback() {
         data.step(&model).expect("step");
     }
 
-    if data.contacts.len() >= 2 {
-        // PGS fallback should produce non-zero forces
-        let qfrc_norm = data.qfrc_constraint.norm();
-        assert!(
-            qfrc_norm > 1e-6,
-            "CG fallback to PGS should produce non-zero constraint forces, got norm {qfrc_norm:.2e}"
-        );
-        // solver_niter reflects PGS iterations (should be > 0)
-        // PGS always runs to completion, so niter should be meaningful
-    }
+    assert!(data.contacts.len() >= 2, "the stack is in contact");
+    assert_eq!(data.solver_niter, 1, "CG's one iteration");
+    let qfrc_norm = data.qfrc_constraint.norm();
+    assert!(
+        qfrc_norm > 1e-6,
+        "CG's iterate should carry non-zero constraint forces, got norm {qfrc_norm:.2e}"
+    );
+    let residual = (&data.qM * (&data.qacc - &data.qacc_smooth) - &data.qfrc_constraint).norm();
+    assert!(
+        residual > 1e-3 * qfrc_norm,
+        "the kept iterate: M·(qacc − qacc_smooth) {residual:.2e} from J'·f"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +422,7 @@ fn test_cg_warmstart() {
     // because the contact configuration is stable.
     let mjcf = box_stack_mjcf(3);
     let mut model = load_model(&mjcf).expect("load");
-    model.solver_type = SolverType::CG; // CG with PGS fallback for robustness
+    model.solver_type = SolverType::CG;
     let mut data = model.make_data();
 
     let mut iter_history: Vec<usize> = Vec::new();

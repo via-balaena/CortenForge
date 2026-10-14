@@ -52,15 +52,15 @@ use sim_core::validation::{Check, print_report};
 //     6. Polak-Ribière direction update:
 //          β = grad·(mgrad - mgrad_old) / (grad_old · mgrad_old)
 //          search = -mgrad + β · search
-//     7. Convergence: if improvement < tol AND |grad| < tol, stop
+//     7. Convergence: if improvement < tol OR |grad| < tol, stop
 //
 //   Properties:
 //   - Superlinear convergence for well-conditioned problems
 //   - M⁻¹ preconditioning leverages existing mass-matrix factorization
 //   - No Hessian assembly (cheaper per-iteration than Newton)
-//   - Falls back to PGS if line search fails
+//   - At its iteration cap it keeps its last iterate, as MuJoCo's does
 //
-// Source: sim/L0/core/src/constraint/solver/cg.rs
+// Source: sim/L0/core/src/constraint/solver/primal.rs
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 

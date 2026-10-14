@@ -143,11 +143,24 @@ impl Model {
     /// Lay out MuJoCo's two dof–dof sparsity patterns from `dof_parent` and
     /// `dof_simplenum` (`mj_makeDofDofSparse`, 3.5.0 `engine_io.c:695-781`):
     /// the mass matrix's lower triangle, a simple dof's row holding its
-    /// diagonal only (`M_*`, `qH`'s layout), and every pair of dofs on one
-    /// branch, both triangles (`D_*`, `qLU`'s layout). Each row's columns
-    /// ascend.
+    /// diagonal only (`M_*`, the layout of `qLD_data` and `qH`), and every
+    /// pair of dofs on one branch, both triangles (`D_*`, `qLU`'s layout).
+    /// Each row's columns ascend. An empty `dof_simplenum` (a model built by
+    /// hand without [`Self::compute_simple_bodies`]) lays out every row as a
+    /// body that is not simple.
+    ///
+    /// # Panics
+    ///
+    /// If `dof_simplenum` is neither empty nor of length `nv`.
     #[allow(non_snake_case)]
     pub fn compute_dof_patterns(&mut self) {
+        assert!(
+            self.dof_simplenum.is_empty() || self.dof_simplenum.len() == self.nv,
+            "dof_simplenum has {} entries for {} dofs",
+            self.dof_simplenum.len(),
+            self.nv
+        );
+        let simple = |i: usize| self.dof_simplenum.get(i).is_some_and(|&n| n > 0);
         let ancestors = |i: usize| {
             let mut out = Vec::new();
             let mut p = self.dof_parent[i];
@@ -161,11 +174,7 @@ impl Model {
 
         let mut M_rows: Vec<Vec<usize>> = (0..self.nv)
             .map(|i| {
-                let mut row = if self.dof_simplenum[i] == 0 {
-                    ancestors(i)
-                } else {
-                    Vec::new()
-                };
+                let mut row = if simple(i) { Vec::new() } else { ancestors(i) };
                 row.push(i);
                 row
             })

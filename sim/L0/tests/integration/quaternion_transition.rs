@@ -159,12 +159,18 @@ fn quat_integrate_jacobians_match_mujoco() {
 /// a motor at its site, its control at the lower end of its range, by
 /// forward and by centred differences (a forward column, and a centred one
 /// at a control's lower bound, difference the nominal next state with the
-/// perturbed one).
+/// perturbed one); and a hinge with a ball pendulum below it, driven at a
+/// site by a gain with a velocity term, under implicit and implicitfast,
+/// whose control columns step with the nominal step's factor of `M − h·D`,
+/// as MuJoCo's (`mj_stepSkip` from the velocity stage); and a simple body
+/// with two damped slides along one axis and one across, driven by motors,
+/// under Euler, whose mass matrix leaves the two slides uncoupled, as
+/// MuJoCo's.
 #[test]
 fn actuated_transitions_match_mujoco_fd() {
     let g = golden();
     let cases = g["cases"]["actuated"].as_object().expect("actuated");
-    assert_eq!(cases.len(), 11);
+    assert_eq!(cases.len(), 14);
     for (name, case) in cases {
         let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();

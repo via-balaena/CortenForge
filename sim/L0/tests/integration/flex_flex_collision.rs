@@ -800,3 +800,45 @@ fn t14_zero_element_flex_no_panic() {
         "zero-element flex must produce no flex-flex contacts"
     );
 }
+
+// ============================================================================
+// T15: A flex-flex contact's Jacobian takes each vertex's body → AC12, AC13
+// ============================================================================
+
+/// A flex-flex contact's rows difference the two vertices' bodies'
+/// Jacobians, as MuJoCo's `mj_jacDifPair` does: the normal row is `+n` on
+/// the first vertex's three slide dofs and `−n` on the second's, 0
+/// elsewhere, and a torsional or rolling row is 0 (a vertex has no
+/// rotational dof).
+#[test]
+fn t15_flex_flex_contact_jacobian_takes_each_vertex_body() {
+    let model = load_model(&two_overlapping_grids_mjcf(1, 3, 2, 1)).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let contact = data
+        .contacts
+        .iter()
+        .find(|c| c.flex_vertex.is_some() && c.flex_vertex2.is_some())
+        .expect("a flex-flex contact");
+    let (v1, v2) = (contact.flex_vertex.unwrap(), contact.flex_vertex2.unwrap());
+    let j = sim_core::compute_contact_jacobian(&model, &data, contact);
+    assert_eq!((j.nrows(), j.ncols()), (contact.dim, model.nv));
+    let (dof1, dof2) = (model.flexvert_dofadr[v1], model.flexvert_dofadr[v2]);
+    for c in 0..model.nv {
+        let want = if (dof1..dof1 + 3).contains(&c) {
+            contact.normal[c - dof1]
+        } else if (dof2..dof2 + 3).contains(&c) {
+            -contact.normal[c - dof2]
+        } else {
+            0.0
+        };
+        assert!(
+            (j[(0, c)] - want).abs() < 1e-12,
+            "J[0,{c}]: {}, expected {want}",
+            j[(0, c)]
+        );
+    }
+    for r in 3..contact.dim {
+        assert!((0..model.nv).all(|c| j[(r, c)] == 0.0), "row {r} is 0");
+    }
+}

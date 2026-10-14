@@ -267,8 +267,6 @@ impl ModelBuilder {
             flex_solmix: vec![],
             flex_solref: vec![],
             flex_solimp: vec![],
-            flex_edge_solref: vec![],
-            flex_edge_solimp: vec![],
             flex_bend_stiffness: vec![],
             flex_bend_damping: vec![],
             flex_young: vec![],

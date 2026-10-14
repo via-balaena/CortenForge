@@ -175,6 +175,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 
 ### L10 · M14 part + C7 · `feat(sim-mjcf): <flex body= vertex= element=> with MuJoCo's meaning; in-tree docs declare their vertex bodies` — cross-layer (sim-core: one deletion)
 - **Split from M14** (A4 §9 commit 6 bundles six unrelated forms; each touches different elements). R4's draft.
+- **Also (ledger-L125):** a pinned vertex's passive flex force goes to its body as MuJoCo's does (`mj_applyFT`, `engine_passive.c:394-408`), with a must-fail against MuJoCo.
 - **Also** (ledger-L63): in 73 flex docs the per-joint arrays `jnt_name`, `jnt_margin`, `jnt_solref`, `jnt_solimp`, `jnt_group`, `jnt_actgravcomp`, `jnt_user` are empty, and in 77 `body_gravcomp` and `body_user` are short: the flex child form's generated bodies and joints skip those pushes. Run the per-element length check of sim-core's factory test (`factory_models_size_every_per_element_array`) over the loadable census docs; 0 short is the gate.
 - **Closes:** C7 / Q81 (MuJoCo's flex meaning; A4-Q1's "same meaning" is superseded); A6 §1.10 / A20 §1B.3 C4 (`vertex=`/`element=` ignored today); U07 (an empty `element` loads a 1-vertex flex; MuJoCo refuses).
 - **Now.**
@@ -194,7 +195,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
      - (b) `vertex=` omitted, or every offset zero;
      - (c) each vertex body has no joints, or exactly 3 slides on axes x, y, z in that order, with an unrotated frame and a parent that is world or has no dofs.
 
-     Rule (c) is where sim-core's flex assumption is checked: the flex Jacobian maps a vertex's 3 dofs straight onto world x, y, z (`constraint/jacobian.rs:62-74`, `:194-202`), and the vertex position is its body's `xpos` (`dynamics/flex.rs:15-18`).
+     Rule (c) is where sim-core's flex assumption is checked: the flex edge Jacobian (`mj_flex_edge`, `dynamics/flex.rs`) and the passive flex forces (`mj_fwd_passive` and `apply_bridson_bending`, `forward/passive.rs`, through `flexvert_dofadr`) map a vertex's 3 dofs straight onto world x, y, z, and the vertex position is its body's `xpos` (`dynamics/flex.rs:15-18`). The contact rows no longer assume it: since Rigid-physics chunk 3c (ledger-L114) they take `mj_jac` at the vertex body.
   3. **Flexcomp.** `<deformable><flexcomp>` keeps generating bodies; `create_flex_vertex_body` becomes flexcomp-only and gives each slide it creates the flex's `flex_damping` as joint damping, in place of the vertex damping step 4 deletes (`passive.rs:474-490`).
   4. **Doc rewrites** (A20 §1B.4, stage S4), R4's counts: the 92 `<flex>` elements with `<vertex>` children (`flex_unified.rs` 59, `flex_flex_collision.rs` 25, `mjcf/src/parser/tests.rs` 4, `deformable_friction_dt25.rs` 3, `runtime_flags.rs` 1), and 7 that Rigid-physics chunk 3a added (`derivatives.rs` 2, `implicit_integration.rs` 4, `flex_unified.rs` 1; with `mass`, four with `<pin>`); the 7 `format!` templates (A4 §7); the living markdown that describes `<flex>` as a direct vertex/element specification (`sim/docs/ARCHITECTURE.md:476`, `MUJOCO_CONFORMANCE.md:96`, `MUJOCO_GAP_ANALYSIS.md:1109`; the historical `sim/docs/todo/**` stay).
      - For each vertex, a `<body name="<flex>_v<i>" pos="<vertex i>">` at the end of `<worldbody>`, in vertex order, which keeps today's body ids. It holds 3 slides (none if pinned) and `<inertial pos="0 0 0" mass="<today's lumped mass>" diaginertia="1e-15 1e-15 1e-15"/>` (MuJoCo's `mjMINVAL`); the masses come from today's `compute_vertex_masses`.
@@ -279,6 +280,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** mjcf-H3; ball-then-slide refused (01-decisions consequences). **Implements:** A5 §3.3 (`check_joint_layout` before `build()`).
 - **Must-fail:** the 12 `Err` cases and 5 `Ok` cases of A5 §3.3 (main before Rigid: 8 panic, 4 load; since P11 all 12 load, chunk 2b's review).
 - **Flips:** none (A5 §3.3). The sim-core side (C8) is Rigid-physics' (20-rigid-physics.md).
+- **Also (ledger-L136):** the refusal's row in the divergences table (`sim/docs/MUJOCO_CONFORMANCE.md`): MuJoCo 3.5.0 loads a ball followed by a slide.
 
 ### L20 · M17 + A14 + A19 · `feat(sim-mjcf): joint axis too small is an error; ball and free axes are (0,0,1)`
 - **Merged:** A14 §5's M17 addition and A19 §6's builder row — force ball/free `jnt_axis = (0,0,1)` before the "axis too small" check.
@@ -329,6 +331,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 ### L28 · M24 · `fix(sim-mjcf): timestep > 1 loads`
 - **Closes:** P-L24, sim-mjcf half (drop the `> 1` rule; keep ≤ 0 / non-finite as stricter).
 - **Must-fail:** `timestep="1.5"` loads (A5 §3.9). **Flips:** `validation.rs:862-867`.
+- **Also (ledger-L131):** `tolerance="0"` and `iterations="0"` load, as MuJoCo's do; the option checks refuse them today. A must-fail against MuJoCo.
 
 ### L29 · A9 F1 · `fix(sim-mjcf): dim-3 flex elements oriented as MuJoCo`
 - **Closes:** the known divergence "dim-3 tet re-orientation" (01-decisions).
@@ -348,6 +351,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Flips:** without the rewrites, `flex_unified::ac5_edge_constraint_stiffness`, `ac20_bending_stability_clamp`, `flex_flex_collision::t09_full_forward_step_no_panic` (A13 §3.6, `ISO_FLEX=2`).
 - **Census:** on L10's rewritten flex docs, not measured. "Item 3's MJCF side … was not prototyped" (A13 §7).
 - **Breaking:** behaviour: a flex no equality names has no edge rows. The Model changes are the physics commit's.
+- **Also (ledger-L126):** refuse an active flex equality with sleep enabled, as MuJoCo's position stage does (`mj_wakeEquality`, `engine_sleep.c:401-403`). P36a left it out: its builder gives every flex an equality, so refusing would refuse documents MuJoCo runs (`sleep_parity::static_body_is_not_a_tree`'s flex case, measured).
 
 ### L32 · A9 F3 · `feat(sim-mjcf): flex elastic2d — bending only when asked, as MuJoCo`
 - **Closes:** A9 item 2b; DT-86 rows; U12 (stated limitation).
