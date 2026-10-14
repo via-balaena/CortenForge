@@ -86,10 +86,7 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
         let point = data.xipos[body_id];
         mj_apply_ft(
             model,
-            &data.xpos,
-            &data.xquat,
-            &data.xaxis,
-            &data.xanchor,
+            data,
             &wrench.force,
             &wrench.torque,
             &point,

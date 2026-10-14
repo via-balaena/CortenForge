@@ -135,18 +135,17 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
             continue;
         }
         let point = data.xipos[body_id];
+        let mut qfrc = std::mem::take(&mut data.scratch_force);
         crate::jacobian::mj_apply_ft(
             model,
-            &data.xpos,
-            &data.xquat,
-            &data.xaxis,
-            &data.xanchor,
+            data,
             &wrench.force,
             &wrench.torque,
             &point,
             body_id,
-            &mut data.scratch_force,
+            &mut qfrc,
         );
+        data.scratch_force = qfrc;
     }
 
     // Build modified mass matrix: M_impl = M + h*D_jnt + h²*K_jnt

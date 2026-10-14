@@ -5,6 +5,7 @@
 //! MuJoCo's `engine_core_smooth.c`.
 
 use crate::collision::narrow::GEOM_EPSILON;
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::compute_body_spatial_inertia;
 use crate::quat;
 use crate::tendon::mj_fwd_tendon;
@@ -126,12 +127,15 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
         data.subtree_com[parent_id] += child_weighted_com;
     }
 
-    // Convert weighted sum to actual COM
+    // Convert weighted sum to actual COM as `mj_comPos` normalizes it
+    // (`engine_core_smooth.c:274-284`): a subtree with less than mjMINVAL of
+    // mass takes the body's own centre of mass; another is scaled by the
+    // reciprocal of its mass.
     for body_id in 0..model.nbody {
-        if data.subtree_mass[body_id] > 1e-10 {
-            data.subtree_com[body_id] /= data.subtree_mass[body_id];
-        } else {
+        if data.subtree_mass[body_id] < MJ_MINVAL {
             data.subtree_com[body_id] = data.xipos[body_id];
+        } else {
+            data.subtree_com[body_id] *= 1.0 / data.subtree_mass[body_id];
         }
     }
 }

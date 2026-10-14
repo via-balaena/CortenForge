@@ -477,7 +477,7 @@ mod contact_jac_free_joint_tests {
 
         model.dof_body = vec![1; 6];
         model.dof_jnt = vec![0; 6];
-        model.dof_parent = vec![None; 6];
+        model.dof_parent = vec![None, Some(0), Some(1), Some(2), Some(3), Some(4)];
         model.dof_armature = vec![0.0; 6];
         model.dof_damping = vec![0.0; 6];
         model.dof_frictionloss = vec![0.0; 6];
@@ -571,7 +571,20 @@ mod contact_jac_free_joint_tests {
         // --- DOF metadata (12 DOFs: 6 per free joint) ---
         model.dof_body = vec![1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2];
         model.dof_jnt = vec![0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1];
-        model.dof_parent = vec![None; 12];
+        model.dof_parent = vec![
+            None,
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            None,
+            Some(6),
+            Some(7),
+            Some(8),
+            Some(9),
+            Some(10),
+        ];
         model.dof_armature = vec![0.0; 12];
         model.dof_damping = vec![0.0; 12];
         model.dof_frictionloss = vec![0.0; 12];

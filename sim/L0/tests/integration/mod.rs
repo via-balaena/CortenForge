@@ -217,6 +217,10 @@ pub mod activation_parity;
 /// pattern, Euler's damped factor, a sleeping tree's rows.
 pub mod mass_factor_parity;
 
+/// The Jacobians against MuJoCo 3.5.0: `mj_jac` from MuJoCo's `cdof`,
+/// `mj_applyFT`, gravity compensation.
+pub mod jacobian_parity;
+
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
 // ============================================================================

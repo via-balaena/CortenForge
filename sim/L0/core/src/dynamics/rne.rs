@@ -387,18 +387,9 @@ pub fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
         let zero_torque = Vector3::zeros();
         let point = data.xipos[b];
         // Project through Jacobian to generalized forces
-        mj_apply_ft(
-            model,
-            &data.xpos,
-            &data.xquat,
-            &data.xaxis,
-            &data.xanchor,
-            &force,
-            &zero_torque,
-            &point,
-            b,
-            &mut data.qfrc_gravcomp,
-        );
+        let mut qfrc = std::mem::take(&mut data.qfrc_gravcomp);
+        mj_apply_ft(model, data, &force, &zero_torque, &point, b, &mut qfrc);
+        data.qfrc_gravcomp = qfrc;
     }
 
     has_gravcomp

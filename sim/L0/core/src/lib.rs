@@ -279,6 +279,7 @@ pub use constraint::solver::decode_pyramid;
 
 pub use jacobian::{
     // Utility functions for position/velocity differentiation
+    mj_apply_ft,
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
     // Jacobian infrastructure (§40a derivative tests)
