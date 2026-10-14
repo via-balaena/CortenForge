@@ -233,38 +233,20 @@ pub struct Data {
     /// For large systems, only lower triangle is filled (sparse via qLD).
     pub qM: DMatrix<f64>,
 
-    // ==================== Sparse L^T D L Factorization ====================
-    // Computed in mj_crba() via mj_factor_sparse(). Exploits tree sparsity from
-    // dof_parent for O(nv) factorization and solve vs O(nv³) for dense Cholesky.
-    // Reused by mj_fwd_acceleration_explicit() and pgs_solve_contacts().
-    //
-    /// Sparse L^T D L factorization exploiting tree structure.
-    /// M = L^T D L where L is unit lower triangular and D is diagonal.
-    /// For tree-structured robots, this achieves O(n) factorization and solve.
-    ///
-    /// Layout matches MuJoCo's combined format — each CSR row stores:
-    /// - Off-diagonal L entries at positions `0..rownnz[i]-1`
-    /// - Diagonal D\[i,i\] at position `rownnz[i]-1` (last element)
-    ///
-    /// The sparsity pattern is determined by the kinematic tree:
-    /// `L\[i,j\]` is non-zero only if DOF j is an ancestor of DOF i.
-    ///
-    /// Use `data.qld_diag(model, i)` to read D\[i,i\] from the CSR data.
-    ///
-    /// Flat CSR value buffer (off-diagonal L + diagonal D).
-    /// Layout defined by `Model::qLD_rowadr`/`qLD_rownnz`/`qLD_colind`.
-    /// Length: `model.qLD_nnz`.
+    // ==================== The mass matrix's factor ====================
+    /// `M = L'·D·L` on the mass matrix's pattern (MuJoCo `qLD`; layout
+    /// `Model::M_*`, length `model.M_colind.len()`): row `i` holds `L`'s
+    /// entries at `i`'s ancestors, then `D[i]` last (`data.qld_diag(model,
+    /// i)`). Written by `mj_crba` through [`crate::mj_factor_m`]; solved
+    /// with by [`crate::mj_solve_m`].
     pub qLD_data: Vec<f64>,
-    /// Precomputed inverse diagonal: `qLD_diag_inv[i] = 1.0 / D\[i,i\]`.
-    /// Computed during `mj_factor_sparse()`. Used by `mj_solve_sparse()` to
-    /// replace division with multiplication (matching MuJoCo's `qLDiagInv`).
-    /// Length: `nv`.
+    /// `1 / D[i]` (MuJoCo `qLDiagInv`, length `nv`).
     pub qLD_diag_inv: Vec<f64>,
-    /// Whether sparse factorization is valid and should be used.
-    /// Set to true after `mj_factor_sparse()` is called.
+    /// Whether `qLD_data` holds a factor ([`crate::mj_factor_m`] sets it).
     pub qLD_valid: bool,
     /// `M − h·∂f/∂v` on the mass matrix's pattern, factored as `L'·D·L` by
-    /// the implicitfast integrator (MuJoCo `qH`; layout `Model::M_*`, length
+    /// the implicitfast integrator, or `M + h·diag(damping)` by Euler with a
+    /// damped dof (MuJoCo `qH`; layout `Model::M_*`, length
     /// `model.M_colind.len()`).
     pub qH: Vec<f64>,
     /// The inverse of `qH`'s diagonal factor (length `nv`; MuJoCo
@@ -944,14 +926,12 @@ impl Clone for Data {
 
 #[allow(non_snake_case)] // qLD matches MuJoCo naming convention
 impl Data {
-    /// Read the diagonal entry `D\[i,i\]` from the sparse LDL factorization.
-    ///
-    /// Reads from `qLD_data[rowadr[i] + rownnz[i] - 1]` (last element of CSR row).
+    /// Read the diagonal entry `D\[i,i\]` of the mass matrix's factor, the
+    /// last entry of row `i` (`Model::M_*`).
     #[inline]
     #[must_use]
     pub fn qld_diag(&self, model: &Model, i: usize) -> f64 {
-        let (rowadr, rownnz, _) = model.qld_csr();
-        self.qLD_data[rowadr[i] + rownnz[i] - 1]
+        self.qLD_data[model.M_rowadr[i] + model.M_rownnz[i] - 1]
     }
 
     /// Typed accessor for warning statistics.

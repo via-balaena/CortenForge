@@ -18,8 +18,9 @@ pub(crate) mod solver;
 
 use nalgebra::{DMatrix, DVector, Vector3};
 
+use crate::dynamics::factor::mj_solve_m;
 use crate::jacobian::mj_apply_ft;
-use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, DISABLE_WARMSTART, Data, ENABLE_SLEEP, Integrator,
@@ -99,15 +100,7 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
 
     // qacc_smooth = M⁻¹ · qfrc_smooth (via sparse LDL solve)
     let mut qacc_smooth = qfrc_smooth.clone();
-    let (rowadr, rownnz, colind) = model.qld_csr();
-    mj_solve_sparse(
-        rowadr,
-        rownnz,
-        colind,
-        &data.qLD_data,
-        &data.qLD_diag_inv,
-        &mut qacc_smooth,
-    );
+    mj_solve_m(model, data, qacc_smooth.as_mut_slice());
 
     // Store on Data for solver access
     // A dof whose tree is asleep keeps the values of its last awake pass:

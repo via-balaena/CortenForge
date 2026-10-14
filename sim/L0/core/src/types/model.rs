@@ -244,27 +244,6 @@ pub struct Model {
     /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
     pub dof_invweight0: Vec<f64>,
 
-    // ==================== Sparse LDL CSR Metadata (immutable, computed once at build) =====
-    // The sparsity pattern of the LDL factorization is determined by `dof_parent` chains
-    // and is invariant across simulation steps. Column indices and row layout are computed
-    // once; only the values in `Data::qLD_data` change each step.
-    //
-    // Each row stores off-diagonal entries (ancestors) followed by the diagonal (self-index)
-    // as the last element, matching MuJoCo's `mj_factorI` layout.
-    /// Starting address of row k's entries in `Data::qLD_data` (length `nv`).
-    pub qLD_rowadr: Vec<usize>,
-    /// Total non-zeros in row k, including diagonal (length `nv`).
-    /// `rownnz[i] - 1` = off-diagonal count = depth of DOF k in `dof_parent` tree.
-    /// `rownnz[i] >= 1` always (at minimum the diagonal entry).
-    pub qLD_rownnz: Vec<usize>,
-    /// Column indices for flat CSR storage (length `qLD_nnz`).
-    /// `qLD_colind[qLD_rowadr[k] + j]` = column of j-th entry in row k.
-    /// Off-diagonals sorted ascending (ancestors from root toward DOF k),
-    /// followed by self-index `k` as the last element (diagonal).
-    pub qLD_colind: Vec<usize>,
-    /// Total number of non-zeros across all rows (including diagonals).
-    pub qLD_nnz: usize,
-
     // ==================== Simple bodies and dof–dof patterns (derived) ====================
     // [`Self::compute_simple_bodies`] and [`Self::compute_dof_patterns`].
     /// Whether each body's inertial frame is its frame or has its orientation
@@ -1226,13 +1205,6 @@ pub enum LengthRangeError {
 }
 
 impl Model {
-    /// Returns CSR metadata for the sparse LDL factorization: `(rowadr, rownnz, colind)`.
-    #[inline]
-    #[must_use]
-    pub fn qld_csr(&self) -> (&[usize], &[usize], &[usize]) {
-        (&self.qLD_rowadr, &self.qLD_rownnz, &self.qLD_colind)
-    }
-
     /// Get reference position for specified joint (from qpos0).
     ///
     /// Returns `None` if `jnt_id` is out of bounds.

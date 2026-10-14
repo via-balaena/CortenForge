@@ -376,7 +376,7 @@ mod jac_site_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         data.qpos[0] = qpos_val;
@@ -645,7 +645,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         data.qpos[0] = qpos_val;
@@ -762,7 +762,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Apply a small rotation: 30° about Z
@@ -875,7 +875,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Non-identity orientation: 45° about Z
@@ -1116,7 +1116,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 4];
         model.body_ancestor_mask = vec![vec![]; 4];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Set some non-trivial configuration
@@ -1257,7 +1257,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 3];
         model.body_ancestor_mask = vec![vec![]; 3];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Non-identity configuration
@@ -1396,7 +1396,7 @@ mod mj_jac_tests {
         model.body_ancestor_joints = vec![vec![]; 3];
         model.body_ancestor_mask = vec![vec![]; 3];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         data.qpos[0] = 0.3; // hinge1 angle

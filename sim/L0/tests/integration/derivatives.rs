@@ -6,7 +6,7 @@
 use approx::assert_relative_eq;
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_GRAVITY, DISABLE_SPRING,
-    DerivativeConfig, GainType, Integrator, Model, mj_integrate_pos_explicit, mj_solve_sparse,
+    DerivativeConfig, GainType, Integrator, Model, mj_integrate_pos_explicit, mj_solve_m,
     mjd_smooth_pos, mjd_smooth_vel, mjd_transition_fd, mjd_transition_hybrid,
     validate_analytical_vs_fd,
 };
@@ -1377,17 +1377,9 @@ fn fd_dqacc_dqpos(model: &Model, data: &sim_core::Data, eps: f64) -> nalgebra::D
 fn analytical_dqacc_dqpos(model: &Model, data: &sim_core::Data) -> nalgebra::DMatrix<f64> {
     let nv = model.nv;
     let mut result = nalgebra::DMatrix::zeros(nv, nv);
-    let (rowadr, rownnz, colind) = model.qld_csr();
     for col in 0..nv {
         let mut x = data.qDeriv_pos.column(col).clone_owned();
-        mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &data.qLD_data,
-            &data.qLD_diag_inv,
-            &mut x,
-        );
+        mj_solve_m(model, data, x.as_mut_slice());
         result.column_mut(col).copy_from(&x);
     }
     result
@@ -1423,7 +1415,7 @@ fn test_pos_deriv_slide_spring() {
     model.qpos_spring = vec![0.0];
     model.compute_ancestors();
     model.compute_implicit_params();
-    model.compute_qld_csr_metadata();
+    model.compute_dof_patterns();
     let mut data = model.make_data();
     data.qpos[0] = 0.3;
     data.forward(&model).unwrap();
@@ -2001,7 +1993,7 @@ fn test_pos_deriv_zero_mass_body() {
     model.dof_armature[1] = 0.01;
     model.compute_ancestors();
     model.compute_implicit_params();
-    model.compute_qld_csr_metadata();
+    model.compute_dof_patterns();
 
     let mut data = model.make_data();
     data.qpos[0] = 0.3;

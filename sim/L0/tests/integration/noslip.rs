@@ -652,15 +652,7 @@ fn test_noslip_residual_uses_efc_b() {
         for col in 0..nv {
             minv_j[col] = data.efc_J[(row, col)];
         }
-        let (rowadr, rownnz, colind) = model.qld_csr();
-        sim_core::mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &data.qLD_data,
-            &data.qLD_diag_inv,
-            &mut minv_j,
-        );
+        sim_core::mj_solve_m(&model, &data, minv_j.as_mut_slice());
 
         // Residual = efc_b[row] + Σ_j (J[j] · minv_j) * efc_force[j]
         let mut residual = data.efc_b[row];

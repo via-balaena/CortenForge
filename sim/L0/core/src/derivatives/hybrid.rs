@@ -14,6 +14,7 @@ use super::fd::{
 use super::integration::{compute_integration_derivatives, mjd_sub_quat, post_step_qvel};
 use super::{DerivativeConfig, TransitionMatrices};
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::dynamics::factor::mj_solve_m;
 use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
@@ -29,9 +30,7 @@ use crate::integrate::implicit::isd_damping;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
-use crate::linalg::{
-    cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse, mj_solve_sparse_batch,
-};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
 use crate::plugin::PluginCapabilityBit;
 use crate::quat::{qpos_quat, quat_to_vel};
 use crate::types::flags::{actuator_disabled, disabled};
@@ -2968,15 +2967,7 @@ pub fn mjd_transition_hybrid(
                 }
             } else {
                 // Bare-M batch solve (undamped fast path; byte-identical to before).
-                let (rowadr, rownnz, colind) = model.qld_csr();
-                mj_solve_sparse_batch(
-                    rowadr,
-                    rownnz,
-                    colind,
-                    &data_work.qLD_data,
-                    &data_work.qLD_diag_inv,
-                    &mut minv_qderiv,
-                );
+                mj_solve_m(model, &data_work, minv_qderiv.as_mut_slice());
             }
             let mut dvdv = DMatrix::identity(nv, nv);
             dvdv += h * &minv_qderiv;
@@ -3176,15 +3167,7 @@ pub fn mjd_transition_hybrid(
                     if let Some(ref mi) = m_impl_euler {
                         cholesky_solve_in_place(mi, &mut dvdact);
                     } else {
-                        let (rowadr, rownnz, colind) = model.qld_csr();
-                        mj_solve_sparse(
-                            rowadr,
-                            rownnz,
-                            colind,
-                            &data_work.qLD_data,
-                            &data_work.qLD_diag_inv,
-                            &mut dvdact,
-                        );
+                        mj_solve_m(model, &data_work, dvdact.as_mut_slice());
                     }
                 }
                 Integrator::ImplicitSpringDamper => {
@@ -3322,15 +3305,7 @@ pub fn mjd_transition_hybrid(
                         dvdq.column_mut(j).copy_from(&col);
                     }
                 } else {
-                    let (rowadr, rownnz, colind) = model.qld_csr();
-                    mj_solve_sparse_batch(
-                        rowadr,
-                        rownnz,
-                        colind,
-                        &data_work.qLD_data,
-                        &data_work.qLD_diag_inv,
-                        &mut dvdq,
-                    );
+                    mj_solve_m(model, &data_work, dvdq.as_mut_slice());
                 }
                 dvdq *= h;
                 dvdq
@@ -3611,15 +3586,7 @@ pub fn mjd_transition_hybrid(
                     if let Some(ref mi) = m_impl_euler {
                         cholesky_solve_in_place(mi, &mut dvdctrl);
                     } else {
-                        let (rowadr, rownnz, colind) = model.qld_csr();
-                        mj_solve_sparse(
-                            rowadr,
-                            rownnz,
-                            colind,
-                            &data_work.qLD_data,
-                            &data_work.qLD_diag_inv,
-                            &mut dvdctrl,
-                        );
+                        mj_solve_m(model, &data_work, dvdctrl.as_mut_slice());
                     }
                 }
                 Integrator::ImplicitSpringDamper => {

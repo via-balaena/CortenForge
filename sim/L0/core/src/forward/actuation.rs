@@ -1040,7 +1040,7 @@ mod millard_engine_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
         model.compute_actuator_params();
         model
     }

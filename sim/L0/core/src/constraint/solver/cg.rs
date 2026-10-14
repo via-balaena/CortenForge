@@ -13,7 +13,7 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::newton::recover_newton;
 use crate::constraint::solver::pgs::classify_constraint_states;
 use crate::constraint::solver::primal::{evaluate_cost_at, primal_prepare, primal_search};
-use crate::linalg::mj_solve_sparse;
+use crate::dynamics::factor::mj_solve_m;
 use crate::types::{ConstraintState, Data, Model, SolverStat};
 
 /// Primal CG solver operating on all constraint types in acceleration space.
@@ -94,7 +94,6 @@ pub fn cg_solve_unified(model: &Model, data: &mut Data) -> bool {
     classify_constraint_states(model, data, &qacc, &qacc_smooth, &qfrc_smooth);
 
     // CG-specific: compute gradient and M⁻¹ preconditioned direction
-    let (rowadr, rownnz, colind) = model.qld_csr();
 
     // grad = Ma - qfrc_smooth - J^T · efc_force
     let mut qfrc_constraint_local = DVector::<f64>::zeros(nv);
@@ -113,14 +112,7 @@ pub fn cg_solve_unified(model: &Model, data: &mut Data) -> bool {
 
     // M⁻¹ preconditioner: mgrad = M⁻¹ · grad
     let mut mgrad = grad.clone();
-    mj_solve_sparse(
-        rowadr,
-        rownnz,
-        colind,
-        &data.qLD_data,
-        &data.qLD_diag_inv,
-        &mut mgrad,
-    );
+    mj_solve_m(model, data, mgrad.as_mut_slice());
 
     // Initial search = -mgrad (steepest descent for first iteration)
     let mut search = -mgrad.clone();
@@ -241,14 +233,7 @@ pub fn cg_solve_unified(model: &Model, data: &mut Data) -> bool {
 
         // 6. M⁻¹ preconditioner
         mgrad = grad.clone();
-        mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &data.qLD_data,
-            &data.qLD_diag_inv,
-            &mut mgrad,
-        );
+        mj_solve_m(model, data, mgrad.as_mut_slice());
 
         // 7. Polak-Ribiere direction update
         // iter 0: pure steepest descent (beta=0).

@@ -291,7 +291,7 @@ mod spec_b_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -354,7 +354,7 @@ mod spec_b_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -416,7 +416,7 @@ mod spec_b_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -846,7 +846,7 @@ mod spec_b_tests {
         model.body_ancestor_mask = vec![vec![]; 3];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Free joint: displace [1,0,0] in position

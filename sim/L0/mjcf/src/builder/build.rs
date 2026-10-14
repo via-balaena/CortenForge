@@ -30,7 +30,6 @@ impl ModelBuilder {
         model.compute_simple_bodies();
         model.compute_dof_patterns();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
         model.compute_history_addresses();
 
         // Tendon and actuator derived parameters. These build a `Data` and run
@@ -181,12 +180,6 @@ impl ModelBuilder {
             dof_solref: self.dof_solref,
             dof_solimp: self.dof_solimp,
             dof_invweight0: vec![0.0; self.nv], // Computed by compute_invweight0()
-
-            // Sparse LDL CSR metadata (computed below via compute_qld_csr_metadata)
-            qLD_rowadr: vec![],
-            qLD_rownnz: vec![],
-            qLD_colind: vec![],
-            qLD_nnz: 0,
 
             // Simple bodies and dof–dof patterns (computed by
             // compute_simple_bodies and compute_dof_patterns)

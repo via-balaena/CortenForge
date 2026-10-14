@@ -6,9 +6,9 @@
 //! `engine_setconst.c` (set0, mj_setLengthRange).
 
 use crate::dynamics::crba::mj_crba;
+use crate::dynamics::factor::mj_solve_m;
 use crate::forward::position::mj_fwd_position;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
-use crate::linalg::mj_solve_sparse;
 use crate::types::{ActuatorTransmission, LengthRangeOpt, Model, TendonType};
 use nalgebra::{DVector, Vector3};
 
@@ -148,15 +148,7 @@ impl Model {
 
             // Solve M * x = J using the sparse L^T D L factorization from CRBA.
             let mut x = j_vec.clone();
-            let (rowadr, rownnz, colind) = self.qld_csr();
-            mj_solve_sparse(
-                rowadr,
-                rownnz,
-                colind,
-                &data.qLD_data,
-                &data.qLD_diag_inv,
-                &mut x,
-            );
+            mj_solve_m(self, &data, x.as_mut_slice());
 
             // acc0 = ||M^{-1} J||_2, unclamped, in MuJoCo's order
             // (`engine_setconst.c:776`); its readers clamp it at mjMINVAL.
@@ -501,7 +493,7 @@ mod tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
         model.compute_actuator_params();
 
         model
@@ -673,7 +665,7 @@ mod tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         data.ctrl[0] = 0.5;
@@ -968,7 +960,7 @@ mod tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
         model.compute_actuator_params();
 
         model
@@ -1195,7 +1187,7 @@ mod tests {
         model.body_ancestor_mask = vec![vec![]];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
         model.compute_actuator_params();
 
         // acc0 with nv=0: the norm of an empty vector, 0, as MuJoCo's
@@ -1335,7 +1327,7 @@ mod tests {
         model.body_ancestor_mask = vec![vec![]; 3];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
         model.compute_actuator_params();
 
         model
@@ -1480,7 +1472,7 @@ mod tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         // Run Phase 2 manually to get acc0 (needed by simulation)
         model.compute_actuator_params();
@@ -1607,7 +1599,7 @@ mod tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
         model.compute_actuator_params();
 
         model

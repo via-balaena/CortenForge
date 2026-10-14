@@ -10,7 +10,7 @@ use crate::dynamics::shift_spatial_inertia;
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::types::{Data, ENABLE_SLEEP, Model, SleepState};
 
-use super::factor::mj_factor_sparse_selective;
+use super::factor::mj_factor_m;
 
 /// Minimum inertia/mass threshold for numerical stability.
 ///
@@ -242,13 +242,9 @@ pub fn mj_crba(model: &Model, data: &mut Data) {
         }
     }
 
-    // Phase 5b: Sparse L^T D L factorization
-    // ============================================================
-    // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
-    // Reused in mj_fwd_acceleration_explicit() and pgs_solve_contacts().
-    // C3b: Selective factorization skips sleeping DOFs when sleep is enabled.
-    // Sleeping DOFs' qLD entries are preserved from their last awake step.
-    mj_factor_sparse_selective(model, data);
+    // Phase 5b: M = L'·D·L on M's pattern (MuJoCo's mj_factorM): the awake
+    // rows only when a tree sleeps, a sleeping row keeping its factor.
+    mj_factor_m(model, data);
 
     // Phase 5c: (§27F) Flex DOFs now handled by standard sparse factorization above.
 

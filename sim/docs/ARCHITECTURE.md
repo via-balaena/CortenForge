@@ -662,9 +662,9 @@ Three optimizations reduce work proportional to the awake fraction:
 1. **Awake-index iteration**: `body_awake_ind`, `dof_awake_ind`,
    `parent_awake_ind` arrays enable O(awake) loops instead of O(total)
    with per-body branch skipping.
-2. **Selective CRBA + Partial LDL**: `mj_factor_sparse_selective`
-   skips sleeping subtrees in composite-inertia accumulation and
-   factorizes only awake DOF blocks. Sleeping DOFs retain their
+2. **Selective CRBA + partial factor**: `mj_crba` skips sleeping
+   subtrees in composite-inertia accumulation, and `mj_factor_m`
+   factors only the awake rows. Sleeping DOFs retain their
    last-awake `qM`/`qLD` values (tree independence guarantees no
    cross-contamination).
 

@@ -18,10 +18,9 @@ use super::model::Model;
 // Types from dynamics module (Phase 7 extraction)
 use crate::dynamics::SpatialVector;
 use crate::dynamics::crba::{DEFAULT_MASS_FALLBACK, mj_crba};
-use crate::dynamics::factor::mj_factor_sparse;
+use crate::dynamics::factor::mj_solve_m;
 use crate::forward::MjStage;
 use crate::jacobian::mj_jac_body_com;
-use crate::linalg::mj_solve_sparse_batch;
 
 use super::data::Data;
 use crate::forward::mj_fwd_position;
@@ -204,12 +203,6 @@ impl Model {
             dof_solref: vec![],
             dof_solimp: vec![],
             dof_invweight0: vec![],
-
-            // Sparse LDL CSR metadata (empty — populated by compute_qld_csr_metadata)
-            qLD_rowadr: vec![],
-            qLD_rownnz: vec![],
-            qLD_colind: vec![],
-            qLD_nnz: 0,
 
             // Simple bodies and dof–dof patterns (computed by
             // compute_simple_bodies and compute_dof_patterns)
@@ -832,8 +825,8 @@ impl Model {
             // Mass matrix (dense)
             qM: DMatrix::zeros(self.nv, self.nv),
 
-            // Mass matrix (sparse L^T D L — computed in mj_crba via mj_factor_sparse)
-            qLD_data: vec![0.0; self.qLD_nnz],
+            // Mass matrix (sparse L^T D L — computed in mj_crba via mj_factor_m)
+            qLD_data: vec![0.0; self.M_colind.len()],
             qLD_diag_inv: vec![0.0; self.nv],
             qLD_valid: false,
 
@@ -1180,8 +1173,8 @@ impl Model {
     /// - `tendon_invweight0[t]` = `J_tendon · M⁻¹ · J_tendon^T` (full quadratic form,
     ///   matching MuJoCo's `setInertia()` in `engine_setconst.c`)
     ///
-    /// Must be called after `compute_qld_csr_metadata()` and
-    /// `compute_simple_bodies()`, and once body_mass, body_inertia, dof_body,
+    /// Must be called after `compute_simple_bodies()` and
+    /// `compute_dof_patterns()`, and once body_mass, body_inertia, dof_body,
     /// dof_jnt, jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
     pub fn compute_invweight0(&mut self) {
         const MIN_VAL: f64 = 1e-15; // mjMINVAL
@@ -1205,16 +1198,11 @@ impl Model {
         }
 
         // --- MuJoCo algorithm: invweight via M⁻¹ at qpos0 ---
-        // Create temporary Data, run FK + CRBA + factor to get factored M.
+        // Create temporary Data, run FK + CRBA (which factors M) with every
+        // tree awake.
         let mut data = self.make_data_for_derivation();
         mj_fwd_position(self, &mut data);
         mj_crba(self, &mut data);
-        mj_factor_sparse(self, &mut data);
-        // Clone CSR metadata to avoid borrow conflict (self.qld_csr() borrows self
-        // immutably, but we need to mutate self.body_invweight0 / self.dof_invweight0).
-        let rowadr = self.qLD_rowadr.clone();
-        let rownnz = self.qLD_rownnz.clone();
-        let colind = self.qLD_colind.clone();
 
         // A simple body whose joints are all slides (MuJoCo's `body_simple`
         // 2) takes MuJoCo's short form (`engine_setconst.c:628-635`).
@@ -1240,14 +1228,7 @@ impl Model {
 
             // Solve M · W = J^T for W = M⁻¹ · J^T (nv × 6)
             let mut jt = jac.transpose();
-            mj_solve_sparse_batch(
-                &rowadr,
-                &rownnz,
-                &colind,
-                &data.qLD_data,
-                &data.qLD_diag_inv,
-                &mut jt,
-            );
+            mj_solve_m(self, &data, jt.as_mut_slice());
 
             // A = J · W = J · M⁻¹ · J^T (6×6)
             let a = &jac * &jt;
@@ -1289,14 +1270,7 @@ impl Model {
             }
 
             // Solve M · W = selector → W columns are M⁻¹ columns at DOF positions
-            mj_solve_sparse_batch(
-                &rowadr,
-                &rownnz,
-                &colind,
-                &data.qLD_data,
-                &data.qLD_diag_inv,
-                &mut rhs,
-            );
+            mj_solve_m(self, &data, rhs.as_mut_slice());
 
             // Extract diagonal: rhs[(dof_adr+k, k)] = M⁻¹[dof_adr+k, dof_adr+k]
             match jnt_type {
@@ -1350,14 +1324,7 @@ impl Model {
             rhs.column_mut(0).copy_from(j_tendon);
 
             // Solve M · w = J_tendon → w = M⁻¹ · J_tendon
-            mj_solve_sparse_batch(
-                &rowadr,
-                &rownnz,
-                &colind,
-                &data.qLD_data,
-                &data.qLD_diag_inv,
-                &mut rhs,
-            );
+            mj_solve_m(self, &data, rhs.as_mut_slice());
 
             // tendon_invweight0 = J_tendon · M⁻¹ · J_tendon^T
             let w = j_tendon.dot(&rhs.column(0));

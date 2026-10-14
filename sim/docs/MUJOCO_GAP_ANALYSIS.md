@@ -1019,12 +1019,12 @@ Three phases implemented, with integration tests in `sleeping.rs`.
 **Phase C — Performance optimization:**
 - Awake-index indirection: `body_awake_ind`, `dof_awake_ind`, `parent_awake_ind` for O(awake) loops
 - Selective CRBA: skip sleeping subtrees in composite-inertia accumulation
-- Partial LDL: `mj_factor_sparse_selective` factorizes only awake DOF blocks;
+- Partial factor: `mj_factor_m` factors only the awake rows;
   sleeping DOFs retain last-awake `qM`/`qLD` values (tree independence)
 
 **Key functions:** `mj_sleep()`, `mj_wake()`, `mj_wake_collision()`, `mj_wake_tendon()`,
 `mj_wake_equality()`, `mj_island()`, `mj_update_sleep_arrays()`,
-`mj_factor_sparse_selective()`, `reset_sleep_state()`
+`mj_factor_m()`, `reset_sleep_state()`
 
 **Files:** `sim-core/src/island/` (implementation), `sim/L0/tests/integration/sleeping.rs`,
 `sim/L0/mjcf/src/builder/` (MJCF parsing for sleep attributes)

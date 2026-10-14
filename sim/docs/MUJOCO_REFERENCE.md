@@ -321,68 +321,33 @@ for i in range(njnt):
 M[dof,dof] += armature[dof]
 ```
 
-**Phase 5 — Sparse L^T D L factorization (`mj_factor_sparse`):**
+**Phase 5 — `L'·D·L` factor on the mass matrix's pattern (`mj_factor_m`):**
 
-Exploits kinematic tree sparsity via `dof_parent` for O(Σ depth(i)²)
-factorization vs O(nv³) dense Cholesky. Uses flat CSR storage matching
-MuJoCo's `mj_factorI`: immutable sparsity metadata in Model
-(`qLD_rowadr`, `qLD_rownnz`, `qLD_colind`) and factored values in Data
-(`qLD_data` with unified diagonal layout, `qLD_diag_inv` for precomputed
-reciprocals).
-
-**Unified diagonal layout:** The diagonal element D[i,i] is stored as the
-last element of each CSR row: `qLD_data[rowadr[i] + rownnz[i] - 1]`.
-Off-diagonal L entries occupy `qLD_data[rowadr[i]..rowadr[i]+rownnz[i]-1]`.
-During factorization, `qLD_diag_inv[i] = 1.0 / D[i,i]` is precomputed so
-that the solve phase uses multiply (`x[i] *= diag_inv[i]`) instead of
-divide, avoiding per-DOF division in the hot path.
-
-The inner loop uses bulk row updates (MuJoCo's `mju_addToScl` pattern)
-instead of per-element column search, exploiting the ancestor row superset
-property: if DOF `j` is ancestor of DOF `i`, then `ancestors(j) ⊆ ancestors(i)`
-and `row_i[0..nnz_j]` has identical column indices to `row_j[0..nnz_j]`.
-
-When sleep is enabled with sleeping trees, `mj_factor_sparse_selective`
-dispatches to partial factorization that skips sleeping DOFs entirely
-(C3b, §16.29.5). Tree independence guarantees no cross-contamination.
+As MuJoCo's `mj_factorM` and `mj_factorI`. The pattern is `Model::M_*`:
+row `i` holds `i`'s ancestors in ascending order, then `i` itself, except
+that a simple dof's row holds its diagonal only. `Data::qLD_data` takes
+that layout, `D[i]` last in its row; `qLD_diag_inv[i] = 1/D[i]`. With
+sleep enabled and a tree asleep, only the awake rows are copied and
+factored; a sleeping row keeps its values.
 
 ```python
-# CSR metadata (immutable, computed once at model build):
-# rowadr[i] = start address of row i in qLD_data
-# rownnz[i] = total entries in row i (off-diagonal L entries + 1 diagonal)
-# colind[rowadr[i]..rowadr[i]+rownnz[i]] = ancestor column indices
-#
-# Unified diagonal layout:
-#   off-diagonal L entries: qLD_data[rowadr[i] .. rowadr[i]+rownnz[i]-1]
-#   diagonal D[i,i]:        qLD_data[rowadr[i] + rownnz[i] - 1]
+# copy M's entries on the pattern (awake rows only under sleep)
+for i in rows:
+    for adr in row(i):
+        qLD[adr] = M[i, colind[adr]]
 
-# Phase 1: Copy M's sparse entries into qLD working storage
-for i in range(nv):
-    # Off-diagonal entries
-    for k in range(rownnz[i] - 1):
-        qLD_data[rowadr[i]+k] = M[i, colind[rowadr[i]+k]]
-    # Diagonal as last element
-    qLD_data[rowadr[i] + rownnz[i] - 1] = M[i,i]
-
-# Phase 2: Eliminate from leaves to root (bulk row update)
-for i in range(nv-1, -1, -1):
-    diag_i = rowadr[i] + rownnz[i] - 1       # index of D[i,i] in qLD_data
-    di = qLD_data[diag_i]
-    inv_di = 1.0 / di
-    diag_inv[i] = inv_di                       # precompute for solve phase
-    n_offdiag = rownnz[i] - 1                  # number of off-diagonal entries
-    for k in range(n_offdiag):
-        qLD_data[rowadr[i]+k] *= inv_di        # Normalize L entries
-    for a in range(n_offdiag-1, -1, -1):       # deep-to-shallow
-        j = colind[rowadr[i]+a]
-        lij = qLD_data[rowadr[i]+a]
-        diag_j = rowadr[j] + rownnz[j] - 1
-        qLD_data[diag_j] -= lij * lij * di     # Update D[j,j]
-        # Bulk update: row_j[0..n_offdiag_j] += scale * row_i[0..a]
-        # (ancestor superset property guarantees aligned columns)
-        scale = -lij * di
-        for k in range(a):
-            qLD_data[rowadr[j]+k] += scale * qLD_data[rowadr[i]+k]
+# mj_factorI: from the last row up, update the ancestors' rows, then scale
+for k in reversed(rows):
+    d = rownnz[k] - 1                          # D[k] at rowadr[k] + d
+    inv_d = 1 / qLD[rowadr[k] + d]
+    diag_inv[k] = inv_d
+    for adr in reversed(range(d)):
+        i = colind[rowadr[k] + adr]
+        scale = -qLD[rowadr[k] + adr] * inv_d
+        for t in range(rownnz[i]):             # row i's columns are row k's first ones
+            qLD[rowadr[i] + t] += qLD[rowadr[k] + t] * scale
+    for adr in range(d):
+        qLD[rowadr[k] + adr] *= inv_d
 ```
 
 ### 4.2 Recursive Newton-Euler (`mj_rne`)
@@ -625,32 +590,10 @@ qfrc_total = qfrc_applied + qfrc_actuator + qfrc_passive + qfrc_constraint - qfr
 qacc = M^-1 @ qfrc_total
 ```
 
-Solved via `mj_solve_sparse` using the sparse L^T D L factorization from CRBA.
-The solve applies L^T, D^{-1}, then L in three passes — each O(nv) for tree-sparse L.
-The D^{-1} pass uses the precomputed `diag_inv[i]` via multiply (`x[i] *= diag_inv[i]`)
-rather than divide, since the reciprocals were cached during factorization.
-
-```python
-# mj_solve_sparse(rowadr, rownnz, colind, qLD_data, diag_inv, x):
-#
-# Phase 1: L^T solve (forward, i = nv-1 down to 0)
-for i in range(nv-1, -1, -1):
-    n_offdiag = rownnz[i] - 1
-    for k in range(n_offdiag):
-        j = colind[rowadr[i]+k]
-        x[j] -= qLD_data[rowadr[i]+k] * x[i]
-
-# Phase 2: D^{-1} solve (multiply by precomputed reciprocal)
-for i in range(nv):
-    x[i] *= diag_inv[i]       # NOT x[i] /= D[i] — division precomputed
-
-# Phase 3: L solve (backward, i = 0 up to nv-1)
-for i in range(nv):
-    n_offdiag = rownnz[i] - 1
-    for k in range(n_offdiag):
-        j = colind[rowadr[i]+k]
-        x[i] -= qLD_data[rowadr[i]+k] * x[j]
-```
+Solved via `mj_solve_m` (MuJoCo's `mj_solveM` and `mj_solveLD`) with the
+factor CRBA left, over every row: `x ← L⁻ᵀ·x`, each row with a non-zero
+entry scattered to its ancestors; `x ← D⁻¹·x` by `diag_inv`; `x ← L⁻¹·x`,
+each row's sum taken in `mju_dotSparse`'s order.
 
 **Implicit path (ImplicitSpringDamper):**
 
@@ -1104,16 +1047,10 @@ When `ENABLE_SLEEP` is set, pipeline stages use awake-index indirection
 - Phase 3 (build M): only computes mass matrix entries for awake DOFs
 - Sleeping DOFs retain their last-awake `qM` entries
 
-`mj_factor_sparse_selective`: dispatches to partial factorization:
-```python
-if nv_awake < nv:
-    # Only factorize awake DOF blocks
-    for i in awake_dofs (leaves to root):
-        # Same elimination as mj_factor_sparse, but restricted to awake DOFs
-        # Tree independence guarantees no cross-contamination
-else:
-    mj_factor_sparse(model, data)  # full factorization
-```
+`mj_factor_m` (MuJoCo's `mj_factorM`): with a tree asleep, copies and
+factors the awake rows only (`dof_awake_ind`); a sleeping row keeps its
+values. A dof's ancestors are in its tree, so an awake row reads no
+sleeping one.
 
 ### Constraint Solving
 

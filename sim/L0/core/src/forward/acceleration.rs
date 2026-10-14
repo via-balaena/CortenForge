@@ -6,7 +6,7 @@
 
 use crate::constraint::assembly::tendon_deadband_displacement;
 use crate::constraint::solver::decode_pyramid_into;
-use crate::dynamics::factor::{mj_factor_i, mj_solve_ld};
+use crate::dynamics::factor::{mj_factor_i, mj_solve_ld, mj_solve_m};
 use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
@@ -17,7 +17,7 @@ use crate::integrate::implicit::{
 };
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
-    cholesky_in_place, cholesky_solve_in_place, lu_factor_sparse, lu_solve_sparse, mj_solve_sparse,
+    cholesky_in_place, cholesky_solve_in_place, lu_factor_sparse, lu_solve_sparse,
 };
 use crate::types::flags::disabled;
 use crate::types::{
@@ -76,17 +76,9 @@ fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
     let mut qfrc_total = data.qfrc_smooth.clone();
     qfrc_total += &data.qfrc_constraint;
 
-    // Solve M * qacc = qfrc_total using sparse L^T D L factorization from mj_crba
-    data.qacc.copy_from(&qfrc_total);
-    let (rowadr, rownnz, colind) = model.qld_csr();
-    mj_solve_sparse(
-        rowadr,
-        rownnz,
-        colind,
-        &data.qLD_data,
-        &data.qLD_diag_inv,
-        &mut data.qacc,
-    );
+    // Solve M * qacc = qfrc_total with the factor mj_crba left
+    mj_solve_m(model, data, qfrc_total.as_mut_slice());
+    data.qacc = qfrc_total;
 }
 
 /// Implicit forward acceleration for springs and dampers.
@@ -391,9 +383,10 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
     Ok(())
 }
 
-/// Whether the implicit integrators work over the awake dofs only, as
-/// MuJoCo's do: sleep enabled and a tree asleep.
-fn awake_dofs(model: &Model, data: &Data) -> bool {
+/// Whether MuJoCo's sleep filter is on: sleep enabled and a tree asleep. The
+/// mass matrix's factor, Euler's damped one and the implicit integrators'
+/// then work over the awake dofs only.
+pub fn awake_dofs(model: &Model, data: &Data) -> bool {
     model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv
 }
 

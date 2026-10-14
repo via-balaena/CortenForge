@@ -17,7 +17,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::linalg::mj_solve_sparse;
+use crate::dynamics::factor::mj_solve_m;
 use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
 
 /// Precomputed data for sparse PGS iteration.
@@ -47,21 +47,13 @@ fn prepare_sparse_pgs(model: &Model, data: &Data, qacc_smooth: &DVector<f64>) ->
     let nv = model.nv;
 
     // Compute M⁻¹ · J^T column by column via sparse LDL
-    let (rowadr, rownnz, colind) = model.qld_csr();
     let mut minv_jt = DMatrix::zeros(nv, nefc);
     for col in 0..nefc {
         let mut buf = DVector::zeros(nv);
         for r in 0..nv {
             buf[r] = data.efc_J[(col, r)];
         }
-        mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &data.qLD_data,
-            &data.qLD_diag_inv,
-            &mut buf,
-        );
+        mj_solve_m(model, data, buf.as_mut_slice());
         for r in 0..nv {
             minv_jt[(r, col)] = buf[r];
         }

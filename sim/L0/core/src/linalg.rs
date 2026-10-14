@@ -1,9 +1,8 @@
-//! Linear algebra utilities: Cholesky, sparse solve, the sparse LU of the
-//! implicit integrator.
+//! Linear algebra utilities: Cholesky, the sparse dot product, the sparse
+//! LU of the implicit integrator.
 //!
-//! Pure math routines with no pipeline state dependencies. Used by the
-//! forward dynamics pipeline (dense Cholesky for implicit integration,
-//! sparse solve for explicit/Newton paths) and analytical derivatives.
+//! Pure math routines with no pipeline state dependencies. The mass
+//! matrix's factor and solve are `dynamics::factor`'s.
 
 use std::cmp::Ordering;
 
@@ -214,133 +213,6 @@ pub(crate) fn cholesky_rank1_downdate(
     }
 
     Ok(())
-}
-
-// ============================================================================
-// Sparse Triangular Solve
-// ============================================================================
-
-/// Solve `L^T D L x = b` using the sparse factorization from `mj_factor_sparse`.
-///
-/// Matches MuJoCo's `mj_solveLD`:
-/// - Off-diagonal entries at positions `0..rownnz[i]-1`
-/// - Diagonal phase uses precomputed `qld_diag_inv[i]` (multiply, not divide)
-///
-/// On entry `x` contains `b`; on exit `x` contains the solution.
-/// Zero allocations — operates entirely on borrowed data.
-#[allow(non_snake_case)]
-pub fn mj_solve_sparse(
-    rowadr: &[usize],
-    rownnz: &[usize],
-    colind: &[usize],
-    qld_data: &[f64],
-    qld_diag_inv: &[f64],
-    x: &mut DVector<f64>,
-) {
-    let nv = x.len();
-
-    // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors).
-    // Off-diagonal entries only: positions 0..rownnz[i]-1.
-    // Zero-skip: if x[i] == 0 the scatter is a no-op (MuJoCo: `if ((x_i = x[i]))`).
-    // Diagonal-only skip: rownnz == 1 means no off-diagonals (MuJoCo: `if (rownnz[i] == 1)`).
-    for i in (0..nv).rev() {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let xi = x[i];
-        if xi == 0.0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for k in 0..nnz_offdiag {
-            x[colind[start + k]] -= qld_data[start + k] * xi;
-        }
-    }
-
-    // Phase 2: Solve D z = y (multiply by precomputed inverse, matching MuJoCo's diaginv).
-    for i in 0..nv {
-        x[i] *= qld_diag_inv[i];
-    }
-
-    // Phase 3: Solve L w = z (gather from ancestors)
-    // Off-diagonal entries only: positions 0..rownnz[i]-1.
-    // Diagonal-only skip: rownnz == 1 means no off-diagonals (MuJoCo: `if (rownnz[i] == 1)`).
-    for i in 0..nv {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for k in 0..nnz_offdiag {
-            x[i] -= qld_data[start + k] * x[colind[start + k]];
-        }
-    }
-}
-
-/// Batch solve `L^T D L X = B` for multiple right-hand sides simultaneously.
-///
-/// Matches MuJoCo's `mj_solveLD` with `n > 1`: the outer loop sweeps CSR metadata
-/// once per DOF, the inner loop iterates across `n` vectors. This gives O(1) CSR
-/// metadata loads vs O(n) for `n` separate `mj_solve_sparse` calls.
-///
-/// `x` is an nv × n column-major matrix (nalgebra `DMatrix`). Each column is an
-/// independent RHS; on exit each column contains the corresponding solution.
-///
-/// Includes zero-skip in L^T phase (per-vector) and diagonal-only row skip.
-#[allow(non_snake_case)]
-pub(crate) fn mj_solve_sparse_batch(
-    rowadr: &[usize],
-    rownnz: &[usize],
-    colind: &[usize],
-    qld_data: &[f64],
-    qld_diag_inv: &[f64],
-    x: &mut DMatrix<f64>,
-) {
-    let nv = x.nrows();
-    let n = x.ncols();
-
-    // Phase 1: Solve L^T Y = B (scatter across all vectors).
-    for i in (0..nv).rev() {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for v in 0..n {
-            let xi = x[(i, v)];
-            if xi == 0.0 {
-                continue;
-            }
-            for k in 0..nnz_offdiag {
-                x[(colind[start + k], v)] -= qld_data[start + k] * xi;
-            }
-        }
-    }
-
-    // Phase 2: Solve D Z = Y (multiply by precomputed inverse).
-    for i in 0..nv {
-        let inv_di = qld_diag_inv[i];
-        for v in 0..n {
-            x[(i, v)] *= inv_di;
-        }
-    }
-
-    // Phase 3: Solve L W = Z (gather across all vectors).
-    for i in 0..nv {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for v in 0..n {
-            let mut acc = 0.0;
-            for k in 0..nnz_offdiag {
-                acc += qld_data[start + k] * x[(colind[start + k], v)];
-            }
-            x[(i, v)] -= acc;
-        }
-    }
 }
 
 // ============================================================================

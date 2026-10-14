@@ -262,8 +262,8 @@ pub use types::{
 
 pub use reset::mj_reset_data;
 
-// LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
-pub use linalg::mj_solve_sparse;
+// The mass matrix's factor and solve (MuJoCo's mj_factorM and mj_solveM)
+pub use dynamics::factor::{mj_factor_m, mj_solve_m};
 
 // Spatial algebra types (extracted to dynamics/spatial.rs)
 pub use dynamics::SpatialVector;

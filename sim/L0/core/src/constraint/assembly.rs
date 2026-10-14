@@ -689,7 +689,7 @@ mod spec_b_margin_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -804,7 +804,7 @@ mod spec_b_margin_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // Set angle to 0.97 rad about Z: dist = 1.0 - 0.97 = 0.03 < 0.05
@@ -923,7 +923,7 @@ mod dt23_friction_solref_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -987,7 +987,7 @@ mod dt23_friction_solref_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -1051,7 +1051,7 @@ mod dt23_friction_solref_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         model
     }
@@ -1379,7 +1379,7 @@ mod dt33_tendon_margin_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         (model, ten_length)
     }
@@ -1645,7 +1645,7 @@ mod dt33_tendon_margin_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         // All tendons at length = -0.95 (lower dist = 0.05)

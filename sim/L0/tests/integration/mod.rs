@@ -213,6 +213,10 @@ pub mod muscle_parity;
 /// filter's time constant.
 pub mod activation_parity;
 
+/// The mass matrix's factor and solve against MuJoCo 3.5.0: on its own
+/// pattern, Euler's damped factor, a sleeping tree's rows.
+pub mod mass_factor_parity;
+
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
 // ============================================================================

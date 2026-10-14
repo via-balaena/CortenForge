@@ -12,7 +12,7 @@ pub use super::hill::{
 };
 
 use super::fiber::build_actuator_moment;
-use crate::linalg::mj_solve_sparse;
+use crate::dynamics::factor::mj_solve_m;
 use crate::types::{
     ActuatorTransmission, BiasType, ENABLE_SLEEP, GainType, LengthRangeError, LengthRangeMode,
     LengthRangeOpt, Model,
@@ -172,15 +172,7 @@ fn eval_length_range(
             let j_vec = build_actuator_moment(&lr_model, &data, actuator_idx);
 
             let mut x = j_vec.clone();
-            let (rowadr, rownnz, colind) = lr_model.qld_csr();
-            mj_solve_sparse(
-                rowadr,
-                rownnz,
-                colind,
-                &data.qLD_data,
-                &data.qLD_diag_inv,
-                &mut x,
-            );
+            mj_solve_m(&lr_model, &data, x.as_mut_slice());
             let nrm = x.norm().max(1e-15);
 
             // qfrc_applied = sign * accel * moment / ||M^{-1} moment||

@@ -507,7 +507,7 @@ mod contact_jac_free_joint_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let mut data = model.make_data();
         mj_fwd_position(&model, &mut data);
@@ -601,11 +601,11 @@ mod contact_jac_free_joint_tests {
         model.qpos0[10] = 1.0; // body 2: identity quaternion w-component
         model.timestep = 0.001;
 
-        // --- Ancestor metadata (required by compute_qld_csr_metadata → make_data) ---
+        // --- Ancestor metadata (required by compute_dof_patterns → make_data) ---
         model.body_ancestor_joints = vec![vec![]; 3];
         model.body_ancestor_mask = vec![vec![]; 3];
         model.compute_ancestors();
-        model.compute_qld_csr_metadata();
+        model.compute_dof_patterns();
 
         let data = model.make_data();
         (model, data)

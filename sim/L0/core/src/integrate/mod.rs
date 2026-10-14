@@ -11,9 +11,8 @@ pub(crate) mod euler;
 pub(crate) mod implicit;
 pub(crate) mod rk4;
 
-use crate::dynamics::factor::mj_factor_sparse;
-use crate::forward::{MjStage, check, mj_next_activation};
-use crate::linalg::mj_solve_sparse;
+use crate::dynamics::factor::{mj_factor_i, mj_solve_ld};
+use crate::forward::{MjStage, awake_dofs, check, mj_next_activation};
 use crate::types::flags::{actuator_disabled, disabled};
 use crate::types::{
     DISABLE_ACTUATION, DISABLE_DAMPER, DISABLE_EULERDAMP, Data, ENABLE_SLEEP, Integrator, Model,
@@ -176,58 +175,44 @@ impl Data {
         Ok(())
     }
 
-    /// Eulerdamp's acceleration: MuJoCo 3.x solves
-    /// `(M + h·D)·qacc_new = qfrc_smooth + qfrc_constraint` (`mj_EulerSkip`),
-    /// which handles the mass matrix's off-diagonal coupling in multi-DOF
-    /// systems. `qM` and its factorization are restored afterwards.
+    /// Eulerdamp's acceleration, as MuJoCo 3.5.0's `mj_EulerSkip`
+    /// (`engine_forward.c:976-1001`): `M + h·diag(damping)` on the mass
+    /// matrix's pattern, every awake dof's damping whatever its sign, goes
+    /// into `qH`, factored as `L'·D·L` over the awake dofs (`qHDiagInv` its
+    /// diagonal's inverse); then `(M + h·D)·qacc = qfrc_smooth +
+    /// qfrc_constraint` is solved over the awake dofs, a sleeping dof's
+    /// entry 0.
     fn eulerdamp_acceleration(&mut self, model: &Model) -> DVector<f64> {
         let h = model.timestep;
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-        let use_dof_ind = sleep_enabled && self.nv_awake < model.nv;
-
-        // Save the mass matrix's diagonal and its factorization (restored after
-        // the solve, so the step leaves `qM` as computed, as MuJoCo's factors a
-        // copy, `qH`)
-        let saved_qld = self.qLD_data.clone();
-        let saved_inv = self.qLD_diag_inv.clone();
-        let saved_diag: Vec<f64> = (0..model.nv).map(|i| self.qM[(i, i)]).collect();
-
-        // Add h·damp to the mass matrix diagonal, every DOF's whatever its
-        // sign (`engine_forward.c:986-989`), then refactorize
-        for i in 0..model.nv {
-            self.qM[(i, i)] += h * model.implicit_damping[i];
-        }
-        mj_factor_sparse(model, self);
-
-        // RHS = total force = qfrc_smooth + qfrc_constraint
+        let index = awake_dofs(model, self).then(|| &self.dof_awake_ind[..self.nv_awake]);
+        let rows = index.map_or(model.nv, <[usize]>::len);
         let mut rhs = DVector::zeros(model.nv);
-        let nv = if use_dof_ind { self.nv_awake } else { model.nv };
-        for idx in 0..nv {
-            let i = if use_dof_ind {
-                self.dof_awake_ind[idx]
-            } else {
-                idx
-            };
+        for k in 0..rows {
+            let i = index.map_or(k, |ix| ix[k]);
+            let end = model.M_rowadr[i] + model.M_rownnz[i];
+            for adr in model.M_rowadr[i]..end {
+                self.qH[adr] = self.qM[(i, model.M_colind[adr])];
+            }
+            self.qH[end - 1] += h * model.implicit_damping[i];
             rhs[i] = self.qfrc_smooth[i] + self.qfrc_constraint[i];
         }
-
-        // Solve: (M + h·D) · qacc_new = rhs
-        let (rowadr, rownnz, colind) = model.qld_csr();
-        mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &self.qLD_data,
-            &self.qLD_diag_inv,
-            &mut rhs,
+        mj_factor_i(
+            &mut self.qH,
+            &mut self.qHDiagInv,
+            &model.M_rownnz,
+            &model.M_rowadr,
+            &model.M_colind,
+            index,
         );
-
-        // Restore original mass matrix diagonal and factorization
-        for (i, &m) in saved_diag.iter().enumerate() {
-            self.qM[(i, i)] = m;
-        }
-        self.qLD_data = saved_qld;
-        self.qLD_diag_inv = saved_inv;
+        mj_solve_ld(
+            rhs.as_mut_slice(),
+            &self.qH,
+            &self.qHDiagInv,
+            &model.M_rownnz,
+            &model.M_rowadr,
+            &model.M_colind,
+            index,
+        );
         rhs
     }
 

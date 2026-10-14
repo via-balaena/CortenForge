@@ -22,9 +22,8 @@ impl Model {
     /// |---|---|---|
     /// | `jnt_stiffness`, `jnt_damping` (hinge, slide), `dof_damping` (ball, free), `qpos_spring` | `implicit_stiffness`, `implicit_damping`, `implicit_springref` | [`Self::compute_implicit_params`] |
     /// | the body and joint tree (`body_parent`, `body_jnt_*`, `body_dof_*`) | `body_ancestor_joints`, `body_ancestor_mask`, `body_weldid` | [`Self::compute_ancestors`] |
-    /// | `dof_parent` | the sparse factor's layout (`qLD_*`), so `Data::qLD_data`'s length: make a new `Data` | [`Self::compute_qld_csr_metadata`] |
     /// | body, inertial, joint, geom and site frames, joint types | `body_sameframe`, `geom_sameframe`, `site_sameframe`, `body_simple`, `dof_simplenum` | [`Self::compute_simple_bodies`] |
-    /// | `dof_parent`, `dof_simplenum` | the implicit integrators' layouts (`M_*`, `D_*`), so `Data::qH`'s and `Data::qLU`'s lengths: make a new `Data` | [`Self::compute_dof_patterns`] |
+    /// | `dof_parent`, `dof_simplenum` | the mass matrix's pattern and the implicit integrator's (`M_*`, `D_*`), so the lengths of `Data::qLD_data`, `Data::qH` and `Data::qLU`: make a new `Data` | [`Self::compute_dof_patterns`] |
     /// | masses, inertias, body poses, `qpos0`, joint axes | `body_subtreemass`, `body_invweight0`, `dof_invweight0`, `tendon_invweight0`, `stat_meaninertia` | [`Self::compute_invweight0`], [`Self::compute_stat_meaninertia`] |
     /// | gears, transmissions, joint and tendon ranges, masses | `actuator_lengthrange`, `actuator_acc0` | [`Self::compute_actuator_params`] |
     /// | spatial tendon geometry, `qpos0`, `qpos_spring` | spatial `tendon_length0`, `tendon_lengthspring` | [`Self::compute_spatial_tendon_length0`] |
@@ -56,7 +55,6 @@ impl Model {
         self.compute_simple_bodies();
         self.compute_dof_patterns();
         self.compute_implicit_params();
-        self.compute_qld_csr_metadata();
         self.compute_spatial_tendon_length0();
         self.compute_actuator_params();
         self.compute_stat_meaninertia();

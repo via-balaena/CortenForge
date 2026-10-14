@@ -7,6 +7,7 @@
 
 use nalgebra::{DVector, Vector3};
 
+use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
 use crate::types::{ConstraintType, Data, Model};
 
@@ -225,8 +226,7 @@ pub fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: 
     }
 
     if data.qLD_valid {
-        // Use sparse LDL: forward/back substitution
-        mj_solve_sparse_vec(model, data, &mut w);
+        mj_solve_m(model, data, w.as_mut_slice());
     } else {
         // Fallback: use dense M and solve via Cholesky
         // Build a copy of qM and factor it
@@ -245,54 +245,6 @@ pub fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: 
         result += j_row[i] * w[i];
     }
     result.max(MJ_MINVAL)
-}
-
-/// Solve M·x = b using the sparse LDL factorization (in-place).
-///
-/// Forward substitution: L^T · z = b, then D · y = z, then L · x = y.
-/// Matches the tree-sparse structure from mj_factor_sparse.
-///
-/// `rownnz[i]` includes diagonal (last element); off-diagonal count = `rownnz[i] - 1`.
-pub fn mj_solve_sparse_vec(model: &Model, data: &Data, x: &mut DVector<f64>) {
-    let nv = model.nv;
-    let (rowadr, rownnz, colind) = model.qld_csr();
-
-    // Forward substitution: solve L^T * z = x (L is unit lower triangular)
-    // Process from leaves to root (high index to low)
-    // Zero-skip + diagonal-only skip matching MuJoCo's mj_solveLD.
-    for i in (0..nv).rev() {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let xi = x[i];
-        if xi == 0.0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for k in 0..nnz_offdiag {
-            x[colind[start + k]] -= data.qLD_data[start + k] * xi;
-        }
-    }
-
-    // Diagonal solve: z = z * D^-1 (multiply by precomputed inverse, matching MuJoCo).
-    for i in 0..nv {
-        x[i] *= data.qLD_diag_inv[i];
-    }
-
-    // Back substitution: solve L * x = z
-    // Process from root to leaves (low index to high)
-    // Diagonal-only skip: rownnz == 1 means no off-diagonals.
-    for i in 0..nv {
-        let nnz_offdiag = rownnz[i] - 1;
-        if nnz_offdiag == 0 {
-            continue;
-        }
-        let start = rowadr[i];
-        for k in 0..nnz_offdiag {
-            x[i] -= data.qLD_data[start + k] * x[colind[start + k]];
-        }
-    }
 }
 
 /// Compute body-weight diagonal approximation for a constraint row (DT-39).
