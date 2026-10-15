@@ -4,7 +4,7 @@
 //! production lines (see MARGIN WARNING in STRUCTURAL_REFACTOR_EXECUTION.md).
 
 use nalgebra::{UnitQuaternion, Vector3};
-use sim_core::{Integrator, SolverType};
+use sim_core::{Integrator, JacobianType, SolverType};
 use std::collections::{HashMap, HashSet};
 
 use super::ModelBuilder;
@@ -153,6 +153,7 @@ impl ModelBuilder {
             regularization: 1e-6,
             friction_smoothing: 1000.0,
             cone: 0,
+            jacobian: JacobianType::Auto,
             ls_iterations: 50,
             ls_tolerance: 0.01,
             noslip_iterations: 0,

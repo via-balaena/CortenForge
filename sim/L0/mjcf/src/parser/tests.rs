@@ -711,7 +711,7 @@ fn test_option_default_values() {
     assert_eq!(opt.ls_iterations, 50);
     assert_eq!(opt.ccd_iterations, 35);
     assert_eq!(opt.cone, MjcfConeType::Pyramidal);
-    assert_eq!(opt.jacobian, MjcfJacobianType::Dense);
+    assert_eq!(opt.jacobian, MjcfJacobianType::Auto);
     assert_relative_eq!(opt.impratio, 1.0, epsilon = 1e-10);
     assert_relative_eq!(opt.density, 0.0, epsilon = 1e-10);
     assert!(opt.flag.contact);

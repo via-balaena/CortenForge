@@ -475,6 +475,15 @@ def main():
         "eulerdamp_asleep": few_iterations(EULERDAMP_ASLEEP, (("CG", 1), ("CG", 3), ("Newton", 1))),
         "mixed_rows": mixed_rows(),
         "noslip_rows": noslip_rows(),
+        "jacobian_option": {
+            "sparse_small": trajectory(
+                MIXED_ROWS.format(solver="Newton", cone="elliptic", condim=3).replace(
+                    'solver="Newton"', 'solver="Newton" jacobian="sparse"'),
+                MIXED_QVEL, 200, (1, 10, 50, 200)),
+            "dense_large": trajectory(
+                SPARSE_SPHERES.replace('solver="Newton"', 'solver="Newton" jacobian="dense"'),
+                SPARSE_QVEL, 50, (1, 10, 50)),
+        },
     }
     same = {"newton_box": same_input(NEWTON_BOX.format(iterations=100), None, census_start),
             "cg_connect": same_input(CG_CONNECT, None, census_start)}

@@ -10,8 +10,9 @@ use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
 use super::enums::{
-    ENABLE_SLEEP, EqualityType, Integrator, JointLayoutError, MakeDataError, MjJointType,
-    MjSensorType, RangeError, ResetError, SleepPolicy, SleepState, SolverType, StepError,
+    ENABLE_SLEEP, EqualityType, Integrator, JacobianType, JointLayoutError, MakeDataError,
+    MjJointType, MjSensorType, RangeError, ResetError, SleepPolicy, SleepState, SolverType,
+    StepError,
 };
 use super::model::Model;
 
@@ -441,6 +442,7 @@ impl Model {
             regularization: 1e-6,         // PGS constraint softness
             friction_smoothing: 1000.0,   // tanh transition sharpness
             cone: 0,                      // Pyramidal friction cone (MuJoCo default)
+            jacobian: JacobianType::Auto, // MuJoCo's default
             stat_meaninertia: 1.0,        // Default (computed at model build from CRBA)
             ls_iterations: 50,            // Newton line search iterations
             ls_tolerance: 0.01,           // Newton line search gradient tolerance
@@ -853,6 +855,7 @@ impl Model {
             ten_velocity: vec![0.0; self.ntendon],
             ten_force: vec![0.0; self.ntendon],
             ten_J: vec![DVector::zeros(self.nv); self.ntendon],
+            ten_J_rownnz: vec![0; self.ntendon],
 
             // Tendon wrap visualization data
             wrap_xpos: vec![Vector3::zeros(); self.nwrap * 2],

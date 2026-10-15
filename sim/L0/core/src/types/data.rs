@@ -299,6 +299,12 @@ pub struct Data {
     /// Tendon Jacobian: d(length)/d(qpos) (sparse, length varies).
     /// Maps tendon length changes to joint velocities.
     pub ten_J: Vec<DVector<f64>>,
+    /// Each tendon's dof chain length, MuJoCo's sparse `ten_J_rownnz`: the
+    /// dofs its Jacobian row spans whatever their values (a fixed tendon's
+    /// joints'; the merged chains of a spatial tendon's segments' bodies).
+    /// Filled at every size; the constraint rows read it at the sparse one
+    /// ([`Model::is_sparse`]).
+    pub ten_J_rownnz: Vec<usize>,
 
     /// Tendon wrap path point positions in world frame.
     /// Flat storage: `wrap_xpos[ten_wrapadr[t] .. ten_wrapadr[t] + ten_wrapnum[t]]`
@@ -795,6 +801,7 @@ impl Clone for Data {
             ten_velocity: self.ten_velocity.clone(),
             ten_force: self.ten_force.clone(),
             ten_J: self.ten_J.clone(),
+            ten_J_rownnz: self.ten_J_rownnz.clone(),
             // Tendon wrap visualization
             wrap_xpos: self.wrap_xpos.clone(),
             wrap_obj: self.wrap_obj.clone(),

@@ -13,11 +13,6 @@ use crate::integrate::implicit::{
 };
 use crate::types::{ConstraintState, ConstraintType, Data, ENABLE_SLEEP, Model, StepError};
 
-/// The dof count from which Newton factors a sparse Hessian: MuJoCo's
-/// `mj_isSparse` (`engine_core_util.c:32-39`) under its default automatic
-/// Jacobian, `nv ≥ 60`.
-pub const NV_SPARSE_THRESHOLD: usize = 60;
-
 /// A cone contact's first row, its dim and its cone Hessian (row-major).
 pub type Cone = (usize, usize, [f64; 36]);
 

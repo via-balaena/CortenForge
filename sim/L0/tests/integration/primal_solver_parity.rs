@@ -517,3 +517,37 @@ fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
     }
     assert!(off.is_empty(), "{off:#?}");
 }
+
+/// `<option jacobian>` picks the solver's path as MuJoCo's `mj_isSparse`
+/// (ledger L130): ten spheres at 60 dofs under `jacobian="dense"` take the
+/// dense Hessian, and their first step is MuJoCo's bit for bit (by the dof
+/// count alone, the sparse path, 5.6e-17 off: measured); 50 steps then keep
+/// MuJoCo's iteration counts within 1e-12. mixed_rows at 13 dofs under
+/// `jacobian="sparse"` steps 200 with MuJoCo's iteration counts within 1e-12
+/// (2.3e-15 measured, either path).
+#[test]
+fn the_jacobian_option_picks_the_solvers_path() {
+    let g = golden();
+    let cases = &g["cases"]["jacobian_option"];
+    let dense = &cases["dense_large"];
+    let (model, mut data) = start(dense);
+    assert_eq!(model.nv, 60, "the automatic sparse size");
+    assert!(!model.is_sparse(), "jacobian dense");
+    data.step(&model).expect("step");
+    let first = &dense["traj"]["1"];
+    assert_bits(
+        "dense_large qpos at 1",
+        data.qpos.as_slice(),
+        &floats(&first["qpos"]),
+    );
+    assert_bits(
+        "dense_large qvel at 1",
+        data.qvel.as_slice(),
+        &floats(&first["qvel"]),
+    );
+    assert_trajectory("dense_large", dense, 50, 1e-12);
+    let sparse = &cases["sparse_small"];
+    let (model, _) = start(sparse);
+    assert!(model.is_sparse(), "jacobian sparse at {} dofs", model.nv);
+    assert_trajectory("sparse_small", sparse, 200, 1e-12);
+}

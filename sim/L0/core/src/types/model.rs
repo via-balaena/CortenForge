@@ -14,8 +14,9 @@ use crate::plugin::{Plugin, PluginCapabilities, PluginStage};
 // Imports from sibling modules
 use super::enums::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, FlexBendingType,
-    FlexSelfCollide, GainType, GeomType, Integrator, InterpolationType, MjJointType, MjObjectType,
-    MjSensorDataType, MjSensorType, SameFrame, SleepPolicy, SolverType, TendonType, WrapType,
+    FlexSelfCollide, GainType, GeomType, Integrator, InterpolationType, JacobianType, MjJointType,
+    MjObjectType, MjSensorDataType, MjSensorType, SameFrame, SleepPolicy, SolverType, TendonType,
+    WrapType,
 };
 
 // Imports from sibling modules
@@ -895,6 +896,9 @@ pub struct Model {
     pub friction_smoothing: f64,
     /// Friction cone type: 0=pyramidal, 1=elliptic.
     pub cone: u8,
+    /// The constraint Jacobian's layout (`<option jacobian>`); see
+    /// [`Self::is_sparse`].
+    pub jacobian: JacobianType,
 
     // Newton solver parameters (§15)
     /// Mean inertia: trace(M) / nv at qpos0. Used by Newton solver for scaling.
@@ -1208,6 +1212,18 @@ pub enum LengthRangeError {
 }
 
 impl Model {
+    /// Whether the constraint pipeline takes its sparse path, MuJoCo's
+    /// `mj_isSparse` (`engine_core_util.c:32-39`): a sparse Jacobian, or the
+    /// automatic one from 60 dofs.
+    #[must_use]
+    pub fn is_sparse(&self) -> bool {
+        match self.jacobian {
+            JacobianType::Dense => false,
+            JacobianType::Sparse => true,
+            JacobianType::Auto => self.nv >= 60,
+        }
+    }
+
     /// Get reference position for specified joint (from qpos0).
     ///
     /// Returns `None` if `jnt_id` is out of bounds.

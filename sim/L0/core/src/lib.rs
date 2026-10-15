@@ -219,6 +219,7 @@ pub use types::{
     HistoryError,
     Integrator,
     InterpolationType,
+    JacobianType,
     JointLayoutError,
     // Keyframe (extracted to types/keyframe.rs)
     Keyframe,

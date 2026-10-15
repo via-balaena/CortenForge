@@ -127,11 +127,11 @@ impl MjcfSolverType {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum MjcfJacobianType {
     /// Dense Jacobian matrix.
-    #[default]
     Dense,
     /// Sparse Jacobian matrix (better for large systems).
     Sparse,
     /// Automatic selection based on sparsity.
+    #[default]
     Auto,
 }
 

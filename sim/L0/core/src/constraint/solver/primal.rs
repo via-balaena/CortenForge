@@ -18,7 +18,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::constraint::solver::hessian::{NV_SPARSE_THRESHOLD, SparseHessian};
+use crate::constraint::solver::hessian::SparseHessian;
 use crate::dynamics::factor::{mj_mul_m_to, mj_solve_m};
 use crate::linalg::{
     cholesky_solve_in_place, mju_chol_factor, mju_chol_solve, mju_chol_update, mju_dot, mju_norm,
@@ -332,7 +332,7 @@ impl Primal {
                 j[r * nv + c] = data.efc_J[(r, c)];
             }
         }
-        let dense_newton = newton && nv < NV_SPARSE_THRESHOLD;
+        let dense_newton = newton && !model.is_sparse();
         Self {
             newton,
             nv,
@@ -761,7 +761,7 @@ impl Primal {
     ) -> Result<(), StepError> {
         let nv = self.nv;
         self.hessian_d();
-        if nv >= NV_SPARSE_THRESHOLD {
+        if model.is_sparse() {
             let implicit = model.integrator == Integrator::ImplicitSpringDamper;
             let cones = self.cones();
             match &mut self.sparse {
@@ -855,7 +855,7 @@ impl Primal {
     ) -> Result<(), StepError> {
         let nv = self.nv;
         self.nupdate = 0;
-        if nv >= NV_SPARSE_THRESHOLD {
+        if model.is_sparse() {
             let quad = ConstraintState::Quadratic;
             let changed = old_state
                 .iter()

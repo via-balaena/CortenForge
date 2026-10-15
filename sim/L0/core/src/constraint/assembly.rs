@@ -171,9 +171,10 @@ pub fn finalize_constraint_row_imp(
 /// 5. Tendon limits (potentially active only)
 /// 6. Contacts
 ///
-/// A constraint other than a contact whose Jacobian rows are all zero adds no
-/// rows (MuJoCo's dense `mj_addConstraint`, `engine_core_constraint.c:237-329`):
-/// the counting pass counts it, and the arrays are cut to the rows made.
+/// A constraint other than a contact adds no rows when its Jacobian rows are
+/// all zero, or at the sparse size when its dof chain is empty (MuJoCo's
+/// `mj_addConstraint`, `engine_core_constraint.c:237-329`): the counting pass
+/// counts it, and the arrays are cut to the rows made.
 ///
 /// `qacc_smooth` is the unconstrained acceleration (M⁻¹ · qfrc_smooth), needed for efc_b.
 pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DVector<f64>) {
@@ -384,7 +385,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             for col in 0..nv {
                 data.efc_J[(row, col)] = data.ten_J[t][col];
             }
-            if jacobian_rows_empty(data, row, 1) {
+            if constraint_rows_empty(model, data, row, 1, data.ten_J_rownnz[t] == 0) {
                 continue;
             }
             let vel = data.ten_velocity[t];
@@ -540,7 +541,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     data.efc_J[(row, col)] = data.ten_J[t][col];
                 }
             }
-            if dist_lower < margin && !jacobian_rows_empty(data, row, 1) {
+            if dist_lower < margin
+                && !constraint_rows_empty(model, data, row, 1, data.ten_J_rownnz[t] == 0)
+            {
                 finalize_constraint_row(
                     model,
                     data,
@@ -568,7 +571,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     data.efc_J[(row, col)] = -data.ten_J[t][col];
                 }
             }
-            if dist_upper < margin && !jacobian_rows_empty(data, row, 1) {
+            if dist_upper < margin
+                && !constraint_rows_empty(model, data, row, 1, data.ten_J_rownnz[t] == 0)
+            {
                 finalize_constraint_row(
                     model,
                     data,
@@ -643,11 +648,23 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     data.efc_cost = 0.0;
 }
 
-/// Whether the `size` rows of `efc_J` from `row` are all zero: MuJoCo's empty
-/// guard (`mj_addConstraint`, `engine_core_constraint.c:257-265`), under which
-/// a constraint other than a contact adds no rows.
-pub(super) fn jacobian_rows_empty(data: &Data, row: usize, size: usize) -> bool {
-    (row..row + size).all(|r| data.efc_J.row(r).iter().all(|&x| x == 0.0))
+/// Whether a constraint other than a contact adds no rows, MuJoCo's empty
+/// guard (`mj_addConstraint`, `engine_core_constraint.c:255-283`): at the
+/// dense size when its `size` rows of `efc_J` from `row` are all zero, at
+/// the sparse size ([`Model::is_sparse`]) when its dof chain is empty,
+/// whatever its values.
+fn constraint_rows_empty(
+    model: &Model,
+    data: &Data,
+    row: usize,
+    size: usize,
+    chain_empty: bool,
+) -> bool {
+    if model.is_sparse() {
+        chain_empty
+    } else {
+        (row..row + size).all(|r| data.efc_J.row(r).iter().all(|&x| x == 0.0))
+    }
 }
 
 /// Cut the arrays the counting pass sized to the `nefc` rows made.

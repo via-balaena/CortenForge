@@ -761,6 +761,20 @@ pub enum SolverType {
     Newton,
 }
 
+/// The constraint Jacobian's layout, MuJoCo's `mjtJacobian` (`<option
+/// jacobian>`): it decides whether the constraint pipeline takes its sparse
+/// path ([`Model::is_sparse`](crate::Model::is_sparse)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum JacobianType {
+    /// Dense at every size.
+    Dense,
+    /// Sparse at every size.
+    Sparse,
+    /// Dense below 60 dofs, sparse from 60 (MuJoCo's default).
+    #[default]
+    Auto,
+}
+
 /// Constraint type annotation per row in the unified constraint system.
 ///
 /// Each scalar row of the constraint Jacobian (`efc_J`) is tagged with one

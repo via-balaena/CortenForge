@@ -48,9 +48,15 @@ pub(super) fn assemble_equality_rows(
             EqualityType::Tendon => extract_tendon_equality_jacobian(model, data, eq_id),
         };
 
-        // All rows empty (two bodies without dofs, say): no rows, as MuJoCo's
-        // `mj_addConstraint`.
-        if rows.j_rows.iter().all(|&x| x == 0.0) {
+        // No rows when they are all zero, or at the sparse size when the
+        // dof chain is empty (two bodies without dofs, say), as MuJoCo's
+        // `mj_addConstraint` (`engine_core_constraint.c:255-283`).
+        let empty = if model.is_sparse() {
+            equality_chain_empty(model, data, eq_id)
+        } else {
+            rows.j_rows.iter().all(|&x| x == 0.0)
+        };
+        if empty {
             continue;
         }
 
@@ -94,6 +100,26 @@ pub(super) fn assemble_equality_rows(
                 shared_violation.unwrap_or_else(|| rows.pos[r].abs()),
             );
         }
+    }
+}
+
+/// Whether equality `eq_id`'s dof chain is empty, as MuJoCo forms it at the
+/// sparse size (`mj_instantiateEquality`, `engine_core_constraint.c:375-687`):
+/// the two bodies' merged chain for a connect or a weld (`mj_jacDifPair`),
+/// and for this crate's distance equality its geoms' bodies'; its tendons'
+/// for a tendon equality; a joint equality's always holds a dof.
+fn equality_chain_empty(model: &Model, data: &Data, eq_id: usize) -> bool {
+    let (obj1, obj2) = (model.eq_obj1id[eq_id], model.eq_obj2id[eq_id]);
+    let welded = |body: usize| model.body_weldid[body] == 0;
+    match model.eq_type[eq_id] {
+        EqualityType::Connect | EqualityType::Weld => welded(obj1) && welded(obj2),
+        EqualityType::Distance => {
+            welded(model.geom_body[obj1]) && (obj2 == usize::MAX || welded(model.geom_body[obj2]))
+        }
+        EqualityType::Tendon => {
+            data.ten_J_rownnz[obj1] == 0 && (obj2 == usize::MAX || data.ten_J_rownnz[obj2] == 0)
+        }
+        EqualityType::Joint | EqualityType::Flex => false,
     }
 }
 
