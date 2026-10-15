@@ -12,7 +12,7 @@ Newton and CG are one solver in MuJoCo, `mj_solPrimal` (`engine_solver.c:1811-19
 started from `warmstart` (`engine_forward.c:611-687`). It refuses a trajectory MuJoCo
 resets (`unstable`). A case with islands disabled (`<flag island="disable"/>`)
 or noslip on is solved over every row at once, scaled by `1/(meaninertia·nv)`;
-eulerdamp_asleep and statistics_cap's Newton case are solved island by island. The
+eulerdamp_asleep and statistics_cap's island cases are solved island by island. The
 cases:
 
 - newton_box: census doc 406a1991 (`collision_plane.rs:1076`), a box on a tilted

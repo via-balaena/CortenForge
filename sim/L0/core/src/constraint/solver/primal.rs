@@ -215,11 +215,13 @@ impl Subproblem {
         }
     }
 
-    /// The rows in no island, without dofs. Every row MuJoCo makes is in an
-    /// island; sim-core's partition reads a row's nonzero Jacobian entries,
-    /// so a row whose entries are all zero is in none: a coef-0 fixed
-    /// tendon's at the sparse size, or a contact's between two static geoms
-    /// under a `<pair>`, which MuJoCo does not make there (ledger L148).
+    /// The rows in no island, without dofs. The partition takes a geom
+    /// contact's, connect's, weld's or joint limit's trees from its bodies or
+    /// joint, and any other row's from its nonzero Jacobian entries
+    /// (`row_tree_pair` and `row_trees` in `island`). Rows in none include a
+    /// coef-0 fixed tendon's at the sparse size, which MuJoCo puts in an
+    /// island (ledger L143), and a contact between two static geoms under a
+    /// `<pair>`, which MuJoCo does not make at the sparse size (ledger L148).
     fn outside(data: &Data) -> Self {
         let rows = (0..data.efc_type.len())
             .filter(|&r| data.efc_island.get(r).is_none_or(|&i| i < 0))

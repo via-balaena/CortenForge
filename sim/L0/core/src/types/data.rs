@@ -447,8 +447,7 @@ pub struct Data {
     pub solver_stat: Vec<SolverStat>,
 
     /// Per-step mean inertia: `trace(qM) / nv`, set at each constraint
-    /// solve from the current `qM`. PGS scales by it; the primal solver and
-    /// noslip take the model's `stat_meaninertia`, as MuJoCo's do.
+    /// solve from the current `qM`. PGS scales by it.
     pub stat_meaninertia: f64,
 
     // ==================== Sensors ====================

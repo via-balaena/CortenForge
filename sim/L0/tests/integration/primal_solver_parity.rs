@@ -687,9 +687,8 @@ fn noslip_counts_the_rows_it_leaves_active() {
 /// position too on macOS arm64, where the golden was made (a quaternion
 /// passes through `sin` and `cos`, which another platform's libm may round
 /// otherwise; there within 1e-13). 50 steps then keep MuJoCo's iteration
-/// counts within 1e-12. mixed_rows at 13 dofs under `jacobian="sparse"`
-/// steps 200 with MuJoCo's iteration counts within 1e-12 (2.3e-15
-/// measured, either path).
+/// counts. mixed_rows at 13 dofs under `jacobian="sparse"` steps 200 with
+/// MuJoCo's iteration counts.
 #[test]
 fn the_jacobian_option_picks_the_solvers_path() {
     let g = golden();
