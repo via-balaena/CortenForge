@@ -662,11 +662,14 @@ fn noslip_counts_the_rows_it_leaves_active() {
 
 /// `<option jacobian>` picks the solver's path as MuJoCo's `mj_isSparse`
 /// (ledger L130): ten spheres at 60 dofs under `jacobian="dense"` take the
-/// dense Hessian, and their first step is MuJoCo's bit for bit (by the dof
-/// count alone, the sparse path, 5.6e-17 off: measured); 50 steps then keep
-/// MuJoCo's iteration counts within 1e-12. mixed_rows at 13 dofs under
-/// `jacobian="sparse"` steps 200 with MuJoCo's iteration counts within 1e-12
-/// (2.3e-15 measured, either path).
+/// dense Hessian, and their first step's velocity is MuJoCo's bit for bit
+/// (by the dof count alone, the sparse path, it is not: measured); their
+/// position too on macOS arm64, where the golden was made (a quaternion
+/// passes through `sin` and `cos`, which another platform's libm may round
+/// otherwise; there within 1e-13). 50 steps then keep MuJoCo's iteration
+/// counts within 1e-12. mixed_rows at 13 dofs under `jacobian="sparse"`
+/// steps 200 with MuJoCo's iteration counts within 1e-12 (2.3e-15
+/// measured, either path).
 #[test]
 fn the_jacobian_option_picks_the_solvers_path() {
     let g = golden();
@@ -678,20 +681,51 @@ fn the_jacobian_option_picks_the_solvers_path() {
     data.step(&model).expect("step");
     let first = &dense["traj"]["1"];
     assert_bits(
-        "dense_large qpos at 1",
-        data.qpos.as_slice(),
-        &floats(&first["qpos"]),
-    );
-    assert_bits(
         "dense_large qvel at 1",
         data.qvel.as_slice(),
         &floats(&first["qvel"]),
     );
+    let qpos = floats(&first["qpos"]);
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        assert_bits("dense_large qpos at 1", data.qpos.as_slice(), &qpos);
+    } else {
+        assert_close("dense_large qpos at 1", data.qpos.as_slice(), &qpos, 1e-13);
+    }
     assert_trajectory("dense_large", dense, 50, 1e-12);
     let sparse = &cases["sparse_small"];
     let (model, _) = start(sparse);
     assert!(model.is_sparse(), "jacobian sparse at {} dofs", model.nv);
     assert_trajectory("sparse_small", sparse, 200, 1e-12);
+}
+
+/// The rows' solve makes `efc_b` from the rows it is given, as
+/// `mj_fwd_constraint` does when the solve starts (`engine_forward.c:755-756`):
+/// with every row's `efc_aref` moved by 1 after the forward pass, `efc_b`
+/// is J·`qacc_smooth` − `efc_aref` for the moved references.
+#[test]
+fn the_rows_solve_makes_efc_b_from_its_inputs() {
+    let g = golden();
+    for name in ["Newton_pyramidal_3", "CG_elliptic_3"] {
+        let case = &g["cases"]["same_input"][name];
+        let (model, mut data) = start(case);
+        data.forward(&model).expect("forward");
+        for aref in data.efc_aref.iter_mut() {
+            *aref += 1.0;
+        }
+        let newton = case["newton"].as_bool().expect("newton");
+        sim_core::constraint::mj_sol_primal_rows(&model, &mut data, newton).expect("solve");
+        for r in 0..data.efc_type.len() {
+            let jv: f64 = (0..model.nv)
+                .map(|c| data.efc_J[(r, c)] * data.qacc_smooth[c])
+                .sum();
+            let want = jv - data.efc_aref[r];
+            assert!(
+                (data.efc_b[r] - want).abs() <= 1e-12 * want.abs().max(1.0),
+                "{name} efc_b[{r}]: {:e}, J·qacc_smooth − aref {want:e}",
+                data.efc_b[r]
+            );
+        }
+    }
 }
 
 /// [`step_and_compare`] with each step's island count MuJoCo's as well.

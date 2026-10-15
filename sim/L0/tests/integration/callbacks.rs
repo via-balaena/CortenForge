@@ -746,6 +746,41 @@ fn control_callback_reads_this_pass_constraint_rows() {
     );
 }
 
+/// As MuJoCo 3.5.0 (measured with `mjcb_passive`): the rows and their
+/// islands are made in the position stage, before the passive forces, so
+/// the passive callback sees this pass's rows: at 0.12 rad the upper
+/// limit's row, efc_pos -0.01999999999999999, in one island; none once the
+/// joint is moved free; and after `step1` at -0.13 rad the lower limit's,
+/// efc_pos -0.03.
+#[test]
+fn passive_callback_reads_this_pass_constraint_rows() {
+    let mut model = logged_hinge("Euler");
+    model.jnt_limited[0] = true;
+    model.jnt_range[0] = (-0.1, 0.1);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = Arc::clone(&seen);
+    model.set_passive_callback(move |_, d| {
+        s.lock().expect("seen").push((d.efc_pos.clone(), d.nisland));
+    });
+    let mut data = model.make_data();
+    data.qpos[0] = 0.12;
+    data.qvel[0] = 0.3;
+    data.forward(&model).expect("forward");
+    data.qpos[0] = 0.0;
+    data.forward(&model).expect("forward");
+    data.qpos[0] = -0.13;
+    data.step1(&model).expect("step1");
+    let seen = seen.lock().expect("seen").clone();
+    assert_eq!(
+        seen,
+        vec![
+            (vec![-0.019_999_999_999_999_99], 1),
+            (vec![], 0),
+            (vec![-0.03], 1),
+        ]
+    );
+}
+
 /// The thermostat's ctrl-temperature channel is read as written, before the
 /// actuation stage runs, even when another channel holds a bad value.
 #[test]
