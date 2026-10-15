@@ -2,7 +2,6 @@
 //!
 //! Runs a modified PGS pass on friction force rows only, without
 //! regularization, using the current normal forces as fixed cone limits.
-//! This matches MuJoCo's `mj_solNoSlip`.
 
 use nalgebra::{DMatrix, DVector};
 
@@ -41,14 +40,14 @@ enum NoslipRowKind {
 /// Runs a modified PGS pass on friction force rows only, without
 /// regularization, using the current normal forces as fixed cone limits:
 /// MuJoCo's `mj_solNoSlip` in its sweeps, counts, statistics and states. Its
-/// residuals come from a dense J·M⁻¹·Jᵀ rather than MuJoCo's `efc_AR`, so it
+/// residuals come from a dense J·M⁻¹·Jᵀ rather than MuJoCo's `efc_AR`, and it
 /// rounds otherwise (ledger L142).
 ///
 /// Called after any solver (Newton, PGS, CG) when `model.noslip_iterations > 0`.
-/// Leaves `efc_force` and `qfrc_constraint`;
-/// the forward pass makes the acceleration from them (`mj_fwd_acceleration`).
-/// Its sweeps are counted in `solver_niter` and each one's statistics are
-/// appended to `solver_stat` after the solver's, and `efc_state` is left as
+/// Leaves `efc_force` and `qfrc_constraint`; the forward pass makes the
+/// acceleration from them (`mj_fwd_acceleration`). Its sweeps are counted in
+/// `solver_niter`, their statistics appended to `solver_stat` after the
+/// solver's while there are fewer than 200, and `efc_state` is left as
 /// [`dual_state`] classifies the final forces (`engine_solver.c:556`,
 /// `:716-741`).
 ///

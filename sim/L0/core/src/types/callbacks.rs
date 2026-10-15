@@ -87,9 +87,8 @@ pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 ///
 /// The constraint rows (`efc_*`) and their islands are this pass's too, with
 /// their velocities and reference accelerations; `efc_b` and the forces
-/// are the acceleration stage's, still to come: `efc_force` reads 0 (MuJoCo
-/// leaves it uninitialised), and `qfrc_constraint` still holds the previous
-/// pass's.
+/// are the acceleration stage's, still to come: `qfrc_constraint` still
+/// holds the previous pass's.
 ///
 /// # When it runs (as MuJoCo 3.5.0)
 ///

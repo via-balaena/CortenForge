@@ -481,10 +481,8 @@ fn mj_state(state: ConstraintState) -> usize {
 /// statistics. The first forward's iteration, active-row and change counts
 /// and the rows' states are MuJoCo's, each statistic's improvement,
 /// gradient and line slope within 1e-12 of the case's largest or of 1
-/// (noslip's gradient and slope are 0; the improvements 2.8e-16 of the
-/// largest measured), and each
-/// step's iteration count through the steps recorded (200, or 50 for the
-/// one-iteration cases). The
+/// (noslip's gradient and slope are 0), and each step's iteration count
+/// through the steps recorded (200, or 50 for the one-iteration cases). The
 /// elliptic contacts hold inside their cones: sliding, noslip leaves a
 /// contact on the cone's edge, where the zone turns on the last bit, and the
 /// forces reaching noslip already differ from MuJoCo's by a few ulps

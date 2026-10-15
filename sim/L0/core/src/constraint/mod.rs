@@ -52,7 +52,7 @@ use crate::island::mj_island;
 fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector<f64>) {
     let nv = model.nv;
 
-    // Per-step meaninertia: trace(qM) / nv (more accurate than model-level constant)
+    // Per-step meaninertia: trace(qM) / nv
     if nv > 0 {
         let mut trace = 0.0_f64;
         for i in 0..nv {

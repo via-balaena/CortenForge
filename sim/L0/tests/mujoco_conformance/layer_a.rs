@@ -256,8 +256,6 @@ fn layer_a_forward_inverse_formula() {
 // 2. Islands On and Off
 // ============================================================================
 
-/// Islands change no result beyond floating-point tolerance.
-///
 /// Two independent free bodies on a plane, each its own island, against a run
 /// with DISABLE_ISLAND. Both must agree within floating-point tolerance.
 #[test]

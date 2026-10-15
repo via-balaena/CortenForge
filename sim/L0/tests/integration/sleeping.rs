@@ -2686,9 +2686,8 @@ fn test_init_sleep_validation_model_time() {
 
 #[test]
 fn test_per_island_solve_equivalence() {
-    // Islands change no force beyond the test's tolerance: a scene with two
-    // independent bodies (each its own island) against the same scene with
-    // DISABLE_ISLAND.
+    // A scene with two independent bodies (each its own island) against the
+    // same scene with DISABLE_ISLAND.
     let mjcf = r#"
     <mujoco model="island_equivalence">
         <option gravity="0 0 -9.81" timestep="0.002">
