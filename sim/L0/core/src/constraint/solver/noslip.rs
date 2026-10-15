@@ -200,8 +200,9 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
         })
         .collect();
 
-    // Convergence scaling (matches CG/Newton: 1/(meaninertia * max(1, nv)))
-    let conv_scale = 1.0 / (data.stat_meaninertia * (1.0_f64).max(nv as f64));
+    // The statistics' scale, MuJoCo's: the model's mean inertia
+    // (`engine_solver.c:550`).
+    let conv_scale = 1.0 / (model.stat_meaninertia * (1.0_f64).max(nv as f64));
 
     // The rows' states before the first sweep, as MuJoCo's `dualState`.
     let mut state = std::mem::take(&mut data.efc_state);

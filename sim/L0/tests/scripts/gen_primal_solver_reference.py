@@ -376,6 +376,29 @@ NOSLIP_BOX = """<mujoco model="noslip_box">
 # The box's four contacts hold: their friction blocks couple the two tangents.
 NOSLIP_BOX_QVEL = [0.05, 0.02, 0, 0, 0, 0.1, 0.5]
 
+NOSLIP_ARM = """<mujoco model="noslip_arm">
+  <option timestep="0.002" solver="{solver}" noslip_iterations="20"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body pos="0 0 0.5">
+      <joint type="hinge" axis="0 1 0" frictionloss="0.2"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+      <body pos="0.3 0 0">
+        <joint type="hinge" axis="0 1 0" frictionloss="0.2"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+        <body pos="0.3 0 0">
+          <joint type="hinge" axis="0 1 0" frictionloss="0.2"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="1" condim="3"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+# Bent away from qpos0, so the mass matrix's mean diagonal (0.1996) is not
+# the model's mean inertia (0.2988), which scales the statistics.
+NOSLIP_ARM_QPOS = [0.3, -1.2, 0.8]
+NOSLIP_ARM_QVEL = [0.5, -0.3, 0.2]
+
 
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
@@ -540,14 +563,20 @@ def mixed_rows():
     return out
 
 
-def noslip_case(xml, qvel, nstep=200, checkpoints=(1, 10, 50, 200)):
-    case = trajectory(xml, qvel, nstep, checkpoints)
+def noslip_case(xml, qvel, nstep=200, checkpoints=(1, 10, 50, 200), qpos=None):
+    def begin(m, d):
+        d.qpos[:] = m.qpos0 if qpos is None else qpos
+        d.qvel[:] = qvel
+
+    case = trajectory(xml, qvel, nstep, checkpoints, begin if qpos is not None else None)
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
-    d.qvel[:] = qvel
+    begin(m, d)
     mujoco.mj_forward(m, d)
     case["forward"] = {"stats": stats(m, d), "nefc": int(d.nefc),
                        "efc_state": [int(x) for x in d.efc_state[:d.nefc]]}
+    if qpos is not None:
+        case["qpos"] = floats(qpos)
     return case
 
 
@@ -565,6 +594,8 @@ def noslip_rows():
         out[f"{solver}_box_elliptic"] = noslip_case(
             NOSLIP_BOX.format(solver=solver, cone="elliptic", iterations=10, tolerance="1e-6"),
             NOSLIP_BOX_QVEL)
+        out[f"{solver}_arm_bent"] = noslip_case(NOSLIP_ARM.format(solver=solver), NOSLIP_ARM_QVEL,
+                                                qpos=NOSLIP_ARM_QPOS)
     return out
 
 

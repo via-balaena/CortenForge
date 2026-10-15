@@ -45,6 +45,9 @@ fn count(v: &Value) -> usize {
 fn start(case: &Value) -> (Model, Data) {
     let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let mut data = model.make_data();
+    if let Some(qpos) = case.get("qpos") {
+        data.qpos.copy_from_slice(&floats(qpos));
+    }
     data.qvel.copy_from_slice(&floats(&case["qvel"]));
     (model, data)
 }
@@ -462,8 +465,10 @@ fn mj_state(state: ConstraintState) -> usize {
 /// (ledger L129): an equality, a friction-loss row and a contact, pyramidal
 /// and elliptic, noslip on, Newton and CG; and a box resting on a plane,
 /// elliptic, whose contacts' friction blocks couple their two tangents, so a
-/// sweep's cost change is MuJoCo's `costChange` over the whole block. The
-/// first forward's iteration, active-row and change counts and the rows'
+/// sweep's cost change is MuJoCo's `costChange` over the whole block; and a
+/// three-link arm with friction loss, bent away from `qpos0` so its mass
+/// matrix's mean diagonal is not the model's mean inertia, which scales the
+/// statistics. The first forward's iteration, active-row and change counts and the rows'
 /// states are MuJoCo's, each statistic's improvement within 1e-12 of the
 /// case's largest (2.8e-16 measured), and each step's iteration count
 /// through the steps recorded (200, or 50 for the one-iteration cases). The
