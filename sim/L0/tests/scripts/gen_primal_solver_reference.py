@@ -673,14 +673,14 @@ def statistics_cap():
     """Past mjNSOLVER (200) iterations. A negative tolerance stops no solver
     early, so CG and Newton run to `iterations` (300) unless the line search
     finds no step, noslip runs its 250 sweeps and PGS its 300 iterations; the
-    first forward's counts and kept statistics: CG over every row, Newton by
-    island (over every row it stops after 3 iterations). PGS's statistics are
+    first forward's counts and kept statistics: CG over every row and by island,
+    Newton by island (over every row it stops after 3 iterations). PGS's statistics are
     not MuJoCo's (ledger L132): its count only."""
     out = {}
     for solver in ("CG", "Newton", "PGS"):
         whole = MIXED_ROWS.format(solver=solver, cone="pyramidal", condim=3).replace(
             f'solver="{solver}"', f'solver="{solver}" tolerance="-1" iterations="300"')
-        runs = {"CG": [("whole", whole)],
+        runs = {"CG": [("whole", whole), ("islands", with_islands(whole))],
                 "Newton": [("islands", with_islands(whole))],
                 "PGS": [("whole", whole), ("noslip", MIXED_ROWS.format(
                     solver="CG", cone="pyramidal", condim=3).replace(

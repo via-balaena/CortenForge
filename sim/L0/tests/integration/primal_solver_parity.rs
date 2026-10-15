@@ -181,6 +181,15 @@ fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
         }
     }
     data.efc_aref.copy_from_slice(&floats(&case["efc_aref"]));
+    // sim-core's own regularization is MuJoCo's bit for bit, but in the
+    // condim-6 cases, whose torsional and rolling rows take P38's.
+    if !name.contains("_6") {
+        assert_bits(
+            &format!("{name} efc_R"),
+            &data.efc_R,
+            &floats(&case["efc_R"]),
+        );
+    }
     data.efc_D.copy_from_slice(&floats(&case["efc_D"]));
     data.efc_R.copy_from_slice(&floats(&case["efc_R"]));
     data.qacc_warmstart.fill(0.0);
@@ -551,9 +560,9 @@ fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
 /// Past 200 iterations MuJoCo counts an iteration but keeps no statistic
 /// (`mjNSOLVER`, `saveStats`; ledger L140): of a solve over every row, of
 /// each island, and of noslip's sweeps after the solver's. Mixed rows with a
-/// negative tolerance, so no solver stops early: CG over every row, Newton
-/// by island (over every row it stops after 3 iterations),
-/// noslip's 250 sweeps and PGS's 300 iterations. The
+/// negative tolerance: CG over every row and by island, Newton by island
+/// (over every row it stops after 3 iterations), noslip's 250 sweeps and
+/// PGS's 300 iterations. The
 /// first forward's iteration count and kept statistics are MuJoCo's, each
 /// improvement within 1e-12 of the case's largest; PGS's count only (its
 /// statistics are not MuJoCo's, ledger L132). sim-mjcf refuses a tolerance

@@ -417,11 +417,12 @@ pub fn compute_diag_approx_bodyweight(
 
 /// Compute regularization R and constraint stiffness D from impedance and diagApprox (§15.1).
 ///
-/// R = max(mjMINVAL, (1 - imp) / imp * diagApprox)
+/// R = max(mjMINVAL, (1 - imp) · diagApprox / imp), in MuJoCo's order of
+/// operations (`mj_makeImpedance`, `engine_core_constraint.c:1484`)
 /// D = 1 / R
 #[inline]
 pub fn compute_regularization(imp: f64, diag_approx: f64) -> (f64, f64) {
-    let r = ((1.0 - imp) / imp * diag_approx).max(MJ_MINVAL);
+    let r = ((1.0 - imp) * diag_approx / imp).max(MJ_MINVAL);
     let d = 1.0 / r;
     (r, d)
 }
