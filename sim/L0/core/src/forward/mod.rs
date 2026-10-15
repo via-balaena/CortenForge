@@ -9,15 +9,15 @@
 //! As MuJoCo 3.5.0's `mj_forwardSkip`:
 //!
 //! - **`forward_pos()`**: position stage (wake detection, FK, CRBA,
-//!   transmissions, collision, position sensors, potential energy);
+//!   transmissions, collision, the constraint rows and their islands,
+//!   position sensors, potential energy);
 //! - **`forward_vel()`**: velocity stage (velocity FK, actuator lengths and
 //!   velocities, passive forces with `cb_passive` and passive plugins, the
-//!   bias force `qfrc_bias` (RNE), velocity sensors, kinetic energy);
+//!   rows' velocities and reference accelerations, the bias force
+//!   `qfrc_bias` (RNE), velocity sensors, kinetic energy);
 //! - `cb_control`, unless `DISABLE_ACTUATION` is set;
-//! - **`forward_acc()`**: acceleration stage (actuation, constraints,
-//!   acceleration, body accumulators, acceleration sensors). MuJoCo builds the
-//!   constraint rows in its position and velocity stages; sim-core builds them
-//!   here, after `cb_control`.
+//! - **`forward_acc()`**: acceleration stage (actuation, the constraint
+//!   solve, acceleration, body accumulators, acceleration sensors).
 //!
 //! `step1()` runs the first two and `cb_control` (whatever the flag);
 //! `step2()` runs `forward_acc()` and integrates.
@@ -485,6 +485,10 @@ impl Data {
             crate::island::mj_update_sleep_arrays(model, self);
         }
 
+        // The constraint rows and their islands, after the wakes, as
+        // MuJoCo's `mj_fwdPosition` (`engine_forward.c:203-206`).
+        crate::constraint::mj_make_constraint(model, self);
+
         // §36: Body transmission — requires contacts from mj_collision()
         actuation::mj_transmission_body_dispatch(model, self);
 
@@ -500,14 +504,17 @@ impl Data {
     }
 
     /// Velocity stage: velocity FK, actuator lengths and velocities, passive
-    /// forces (`cb_passive` and passive plugins fire at their end), the bias
+    /// forces (`cb_passive` and passive plugins fire at their end), the
+    /// constraint rows' velocities and reference accelerations, the bias
     /// force, velocity sensors and kinetic energy. MuJoCo: `mj_fwdVelocity`
-    /// (engine_forward.c:221-259: `mj_passive` at :250, `mj_rne` at :254),
-    /// then `mj_sensorVel` and `mj_energyVel` in `mj_forwardSkip`.
+    /// (engine_forward.c:221-259: `mj_passive` at :250,
+    /// `mj_referenceConstraint` at :251, `mj_rne` at :254), then
+    /// `mj_sensorVel` and `mj_energyVel` in `mj_forwardSkip`.
     fn forward_vel(&mut self, model: &Model, compute_sensors: bool) {
         velocity::mj_fwd_velocity(model, self);
         actuation::mj_actuator_velocity(model, self);
         passive::mj_fwd_passive(model, self);
+        crate::constraint::mj_reference_constraint(model, self);
         crate::dynamics::rne::mj_rne(model, self);
         if compute_sensors {
             crate::sensor::mj_sensor_vel(model, self);
@@ -559,8 +566,8 @@ impl Data {
         // qfrc_gravcomp comes from the velocity stage's passive forces.
         actuation::mj_gravcomp_to_actuator(model, self);
 
-        // One global solve; the islands are built in it but not solved
-        // apart (`island/mod.rs`).
+        // One global solve over the rows the position stage made; their
+        // islands are not solved apart (`island/mod.rs`).
         crate::constraint::mj_fwd_constraint(model, self)?;
 
         // The primal solver's iterate is the acceleration (MuJoCo's

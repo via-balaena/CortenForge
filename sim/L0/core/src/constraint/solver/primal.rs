@@ -380,17 +380,6 @@ impl Primal {
         }
     }
 
-    /// `efc_b = J·qacc_smooth − aref`, as `mj_fwdConstraint` makes it
-    /// (`engine_forward.c:755-756`).
-    fn efc_b(&self) -> Vec<f64> {
-        let mut b = vec![0.0; self.nefc];
-        mul_mat_vec(&self.j, &self.qacc_smooth, &mut b, self.nv);
-        for (b, a) in b.iter_mut().zip(&self.aref) {
-            *b -= a;
-        }
-        b
-    }
-
     /// Choose the starting acceleration as MuJoCo's `warmstart` does
     /// (`engine_forward.c:611-687`), for the primal solvers: the warmstart
     /// unless the unconstrained acceleration costs less (a tie keeps the
@@ -892,7 +881,7 @@ impl Primal {
 
 /// Solve the constraint rows with MuJoCo's primal solver, Newton when
 /// `newton`, else CG (`mj_solPrimal`, `engine_solver.c:1811-1968`, monolithic),
-/// from MuJoCo's warmstart; `efc_b` first, as `mj_fwdConstraint` makes it.
+/// from MuJoCo's warmstart, which reads `efc_b`.
 ///
 /// Leaves the iterate in `qacc`, and `efc_force`, `efc_state`, `efc_jar`,
 /// `efc_cost`, `qfrc_constraint`, the cone Hessians, `solver_niter` and
@@ -914,9 +903,7 @@ pub fn mj_sol_primal(
 ) -> Result<(), StepError> {
     let mut ctx = Primal::new(model, data, qfrc_smooth, newton);
     let (nv, nefc) = (ctx.nv, ctx.nefc);
-    let efc_b = ctx.efc_b();
-    ctx.warmstart(model, data, mass, &efc_b);
-    data.efc_b = DVector::from_vec(efc_b);
+    ctx.warmstart(model, data, mass, data.efc_b.as_slice());
 
     let cone_hessian = newton && model.cone == 1;
     let mut gradold = vec![0.0; if newton { 0 } else { nv }];

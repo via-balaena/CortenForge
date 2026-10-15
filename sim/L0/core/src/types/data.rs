@@ -342,8 +342,9 @@ pub struct Data {
     /// Non-zeros in constraint Jacobian.
     pub solver_nnz: usize,
     // ==================== Unified Constraint System (Newton solver, §15) ====================
-    // These fields are populated by `assemble_unified_constraints()` and consumed
-    // by the Newton solver loop. For PGS/CG solvers, they remain empty (zero-length).
+    // The rows are made in the position stage, their velocities and reference
+    // accelerations in the velocity stage, `efc_b` and the forces by the
+    // solve in the acceleration stage, as MuJoCo's.
     /// Friction loss component of qfrc_passive (length nv). Separated from
     /// qfrc_passive for Newton solver which treats friction loss as explicit
     /// constraint rows (§15.0 approach b).
@@ -356,8 +357,8 @@ pub struct Data {
     /// Computed once per step by `compute_qacc_smooth()`, used by all solvers.
     pub qfrc_smooth: DVector<f64>,
 
-    /// Constraint bias: J·qacc_smooth − aref (length nefc). Computed during
-    /// assembly, consumed by warmstart cost comparison (§15.8 INITIALIZE).
+    /// Constraint bias: J·qacc_smooth − aref (length nefc). Made when the
+    /// solve starts, consumed by warmstart cost comparison (§15.8 INITIALIZE).
     /// Persists in Data for diagnostic access (matches MuJoCo's d->efc_b),
     /// but is NOT updated by the solver loop.
     pub efc_b: DVector<f64>,

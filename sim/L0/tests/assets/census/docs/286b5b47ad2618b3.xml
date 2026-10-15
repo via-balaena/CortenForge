@@ -1,0 +1,4 @@
+<mujoco><worldbody>
+<body><joint name="a" type="hinge" axis="0 1 0" frictionloss="0.1"/><geom type="sphere" size="0.1" mass="1"/></body>
+<body pos="1 0 0"><joint name="b" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1" mass="1"/></body>
+</worldbody><equality><joint joint1="a" joint2="b"/></equality></mujoco>

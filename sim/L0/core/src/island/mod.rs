@@ -26,11 +26,10 @@ pub(crate) use sleep::{
 /// that never ran [`Model::compute_kinematic_trees`]); with sleep enabled or
 /// not.
 ///
-/// Runs after constraint assembly. MuJoCo makes the rows, then the islands,
-/// in the position stage; this crate makes the rows in the acceleration
-/// stage, from the same positions, so the partition is the same. The
-/// block-diagonal copies of the mass matrix and the Jacobian MuJoCo's island
-/// solver takes are not made: the solver here is global.
+/// Runs after the rows are made, in the position stage, as MuJoCo's
+/// (`mj_fwdPosition`). The block-diagonal copies of the mass matrix and the
+/// Jacobian MuJoCo's island solver takes are not made: the solver here is
+/// global.
 // Tree, dof and row indices are usize stored as i32 in mjData's arrays, bounded by realistic model sizes.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub(crate) fn mj_island(model: &Model, data: &mut Data) {

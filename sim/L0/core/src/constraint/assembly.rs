@@ -159,8 +159,10 @@ pub fn finalize_constraint_row_imp(
 /// `mj_addConstraint`, `engine_core_constraint.c:237-329`): the counting pass
 /// counts it, and the arrays are cut to the rows made.
 ///
-/// `qacc_smooth` is the unconstrained acceleration (M⁻¹ · qfrc_smooth), needed for efc_b.
-pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DVector<f64>) {
+/// The rows' velocities and reference accelerations are the velocity
+/// stage's ([`crate::constraint::mj_reference_constraint`]), `efc_b` the
+/// solve's; until then they are 0.
+pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
     let nv = model.nv;
 
     // === Phase 1: Count rows ===
@@ -299,12 +301,14 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     data.efc_type = Vec::with_capacity(nefc);
     data.efc_pos = Vec::with_capacity(nefc);
     data.efc_margin = Vec::with_capacity(nefc);
+    data.efc_vel = DVector::zeros(nefc);
     data.efc_solref = Vec::with_capacity(nefc);
     data.efc_solimp = Vec::with_capacity(nefc);
     data.efc_diagApprox = Vec::with_capacity(nefc);
     data.efc_R = Vec::with_capacity(nefc);
     data.efc_D = Vec::with_capacity(nefc);
     data.efc_imp = Vec::with_capacity(nefc);
+    data.efc_aref = DVector::zeros(nefc);
     data.efc_floss = Vec::with_capacity(nefc);
     data.efc_mu = Vec::with_capacity(nefc);
     data.efc_dim = Vec::with_capacity(nefc);
@@ -312,6 +316,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     data.efc_state = vec![ConstraintState::Quadratic; nefc];
     data.efc_force = DVector::zeros(nefc);
     data.efc_jar = DVector::zeros(nefc);
+    data.efc_b = DVector::zeros(nefc);
     data.efc_cone_hessian = vec![None; data.contacts.len()];
     data.ncone = 0;
 
@@ -572,12 +577,6 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     }
     let nefc = row;
 
-    // Every row's velocity and reference acceleration, then
-    // `efc_b = J·qacc_smooth − aref` (MuJoCo `mj_fwdConstraint`,
-    // `engine_forward.c:755-756`).
-    crate::constraint::mj_reference_constraint(model, data);
-    data.efc_b = crate::constraint::mul_jac_vec(data, qacc_smooth.as_slice()) - &data.efc_aref;
-
     // === Phase 4: Count ne/nf for solver dispatch (§29.4) ===
     // Ordering: [0..ne) = equality+flex, [ne..ne+nf) = friction, [ne+nf..nefc) = limits+contacts
     data.ne = 0;
@@ -634,8 +633,11 @@ fn constraint_rows_empty(
 /// Cut the arrays the counting pass sized to the `nefc` rows made.
 fn truncate_rows(data: &mut Data, nefc: usize) {
     data.efc_J = data.efc_J.rows(0, nefc).into_owned();
+    data.efc_vel = data.efc_vel.rows(0, nefc).into_owned();
+    data.efc_aref = data.efc_aref.rows(0, nefc).into_owned();
     data.efc_force = data.efc_force.rows(0, nefc).into_owned();
     data.efc_jar = data.efc_jar.rows(0, nefc).into_owned();
+    data.efc_b = data.efc_b.rows(0, nefc).into_owned();
     data.efc_state.truncate(nefc);
 }
 
@@ -717,8 +719,7 @@ mod spec_b_margin_tests {
         let mut data = model.make_data();
         data.qpos[0] = -1.5; // violates lower limit
 
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         let nefc = data.efc_margin.len();
         // Should have at least 1 constraint (lower limit violated)
@@ -744,8 +745,7 @@ mod spec_b_margin_tests {
         let mut data = model.make_data();
         data.qpos[0] = -0.95; // inside limit but within margin: dist = -0.95 - (-1.0) = 0.05 < 0.1
 
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         let nefc = data.efc_margin.len();
         assert!(nefc >= 1, "nefc = {nefc}, expected >= 1 (pre-activated)");
@@ -830,8 +830,7 @@ mod spec_b_margin_tests {
         data.qpos[2] = 0.0;
         data.qpos[3] = half.sin(); // z
 
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         let nefc = data.efc_margin.len();
         assert!(
@@ -859,8 +858,7 @@ mod spec_b_margin_tests {
         let mut data = model.make_data();
         data.qpos[0] = 0.0; // within margin of both limits
 
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         let nefc = data.efc_margin.len();
         assert_eq!(nefc, 0, "DISABLE_LIMIT: nefc should be 0, got {nefc}");
@@ -1090,8 +1088,7 @@ mod dt23_friction_solref_tests {
 
         // Also verify they flow through assembly
         let mut data = model.make_data();
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         // Ball joint with frictionloss=1.0 on each DOF → 3 friction rows
         let friction_rows: Vec<usize> = data
@@ -1134,8 +1131,7 @@ mod dt23_friction_solref_tests {
 
         // Verify through assembly
         let mut data = model.make_data();
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         let friction_rows: Vec<usize> = data
             .efc_type
@@ -1174,8 +1170,7 @@ mod dt23_friction_solref_tests {
 
         // Assembly should use it
         let mut data = model.make_data();
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         let friction_rows: Vec<usize> = data
             .efc_type
@@ -1200,8 +1195,7 @@ mod dt23_friction_solref_tests {
         let model = build_hinge_friction_model(1.0, custom_solref, custom_solimp);
 
         let mut data = model.make_data();
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         let friction_rows: Vec<usize> = data
             .efc_type
@@ -1227,7 +1221,7 @@ mod dt23_friction_solref_tests {
         // Also verify: frictionloss=0 → no friction row
         let model_no_fl = build_hinge_friction_model(0.0, custom_solref, custom_solimp);
         let mut data_no_fl = model_no_fl.make_data();
-        assemble_unified_constraints(&model_no_fl, &mut data_no_fl, &qacc_smooth);
+        assemble_unified_constraints(&model_no_fl, &mut data_no_fl);
         let fl_count = data_no_fl
             .efc_type
             .iter()
@@ -1276,8 +1270,7 @@ mod dt23_friction_solref_tests {
         data.ten_velocity[0] = 0.0;
         data.ten_length[0] = 0.0;
 
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         // Should have exactly 1 friction row (tendon friction, no DOF friction)
         let friction_rows: Vec<usize> = data
@@ -1406,8 +1399,7 @@ mod dt33_tendon_margin_tests {
         data.ten_J[0][0] = 1.0; // simple 1-DOF tendon
         data.ten_velocity[0] = 0.0;
 
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(model, &mut data);
         data
     }
 
@@ -1674,8 +1666,7 @@ mod dt33_tendon_margin_tests {
             data.ten_velocity[t] = 0.0;
         }
 
-        let qacc_smooth = DVector::zeros(model.nv);
-        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+        assemble_unified_constraints(&model, &mut data);
 
         let limit_rows: Vec<usize> = data
             .efc_type
