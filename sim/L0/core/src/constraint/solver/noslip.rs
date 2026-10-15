@@ -9,7 +9,7 @@ use nalgebra::{DMatrix, DVector};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::qcqp;
 use crate::dynamics::factor::mj_solve_m;
-use crate::linalg::cholesky_solve_in_place;
+use crate::linalg::{cholesky_solve_in_place, mju_dot};
 use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
 
 /// Tag for each noslip row, used to select the correct projection.
@@ -269,27 +269,26 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
                         residuals.push(res);
                     }
 
+                    // Friction-friction subblock Ac and bias bc
+                    let mut ac_flat = vec![0.0_f64; group_len * group_len];
+                    let mut bc = vec![0.0_f64; group_len];
+                    for j in 0..group_len {
+                        for k in 0..group_len {
+                            ac_flat[j * group_len + k] = a_sub[(group_start + j, group_start + k)];
+                        }
+                        // bc[j] = res[j] - Σ Ac[j,k] * old[k]
+                        bc[j] = residuals[j];
+                        for k in 0..group_len {
+                            bc[j] -= ac_flat[j * group_len + k] * old_forces[k];
+                        }
+                    }
+
                     if fn_abs < MJ_MINVAL {
                         // Zero normal force: zero all friction
                         for local_j in 0..group_len {
                             f[group_start + local_j] = 0.0;
                         }
                     } else {
-                        // Build friction-friction subblock Ac and bias bc
-                        let mut ac_flat = vec![0.0_f64; group_len * group_len];
-                        let mut bc = vec![0.0_f64; group_len];
-                        for j in 0..group_len {
-                            for k in 0..group_len {
-                                ac_flat[j * group_len + k] =
-                                    a_sub[(group_start + j, group_start + k)];
-                            }
-                            // bc[j] = res[j] - Σ Ac[j,k] * old[k]
-                            bc[j] = residuals[j];
-                            for k in 0..group_len {
-                                bc[j] -= ac_flat[j * group_len + k] * old_forces[k];
-                            }
-                        }
-
                         // QCQP dispatch
                         let (fric_result, active) = if group_len == 2 {
                             let ac2 = [[ac_flat[0], ac_flat[1]], [ac_flat[2], ac_flat[3]]];
@@ -330,13 +329,12 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
                         }
                     }
 
-                    // Accumulate cost improvement for the whole group
-                    for local_j in 0..group_len {
-                        let idx = group_start + local_j;
-                        let delta = f[idx] - old_forces[local_j];
-                        improvement -=
-                            0.5 * delta * delta * a_sub[(idx, idx)] + delta * residuals[local_j];
-                    }
+                    improvement -= cost_change(
+                        &ac_flat,
+                        &mut f[group_start..group_start + group_len],
+                        &old_forces,
+                        &residuals,
+                    );
 
                     fi += group_len;
                     continue;
@@ -472,6 +470,26 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
     }
 }
 
+/// MuJoCo's `costChange` (`engine_solver.c:207-228`) for a block of more
+/// than one row (an elliptic contact's friction): the change in the dual
+/// cost of moving its forces from `old` to `force`, ½·δᵀ·A·δ + δ·res for
+/// δ = `force` − `old`, `a` the block row by row and `res` its residual at
+/// `old`. A rise above 1e-10 restores `old` and counts as none.
+fn cost_change(a: &[f64], force: &mut [f64], old: &[f64], res: &[f64]) -> f64 {
+    let dim = force.len();
+    let delta: Vec<f64> = force.iter().zip(old).map(|(f, o)| f - o).collect();
+    let mut quad = 0.0;
+    for (i, &di) in delta.iter().enumerate() {
+        quad += di * mju_dot(&a[i * dim..(i + 1) * dim], &delta);
+    }
+    let change = 0.5 * quad + mju_dot(&delta, res);
+    if change > 1e-10 {
+        force.copy_from_slice(old);
+        return 0.0;
+    }
+    change
+}
+
 /// Each row's state from its force alone, MuJoCo's `dualState`
 /// (`engine_solver.c:233-310`); returns the rows not satisfied. Equality rows
 /// are quadratic; a friction-loss row is linear at its bound, the side
@@ -528,4 +546,28 @@ fn dual_state(data: &Data, state: &mut [ConstraintState]) -> usize {
         i += dim;
     }
     nactive
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::cost_change;
+
+    /// A move that lowers the dual cost is kept and counts its change, the
+    /// block's cross terms included; one that raises it by more than 1e-10
+    /// is undone and counts as none (MuJoCo's `costChange`). Exact in binary.
+    #[test]
+    fn cost_change_keeps_a_fall_and_undoes_a_rise() {
+        let a = [2.0, 0.5, 0.5, 1.0];
+        let (old, res) = ([0.0, 0.0], [-1.0, 0.0]);
+        // δ = (0.5, −0.5): ½·δᵀAδ = ½·0.5, δ·res = −0.5 (the diagonal alone
+        // would give ½·0.75).
+        let mut force = [0.5, -0.5];
+        assert_eq!(cost_change(&a, &mut force, &old, &res), -0.25);
+        assert_eq!(force, [0.5, -0.5]);
+        // δ = (−0.5, 0): ½·0.5 + 0.5, a rise.
+        let mut force = [-0.5, 0.0];
+        assert_eq!(cost_change(&a, &mut force, &old, &res), 0.0);
+        assert_eq!(force, old);
+    }
 }

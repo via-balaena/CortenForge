@@ -358,6 +358,25 @@ NOSLIP_WITHOUT_ITS_ROWS = """<mujoco model="noslip_without_its_rows">
 </mujoco>"""
 
 
+NOSLIP_BOX = """<mujoco model="noslip_box">
+  <option timestep="0.002" solver="{solver}" cone="{cone}" noslip_iterations="{iterations}"
+          noslip_tolerance="{tolerance}"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body pos="0 0 0.099">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1" condim="3" friction="0.8 0.02 0.001"/>
+    </body>
+    <body pos="1 0 0.5">
+      <joint type="hinge" axis="0 1 0" frictionloss="0.3" damping="0.5"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+# The box's four contacts hold: their friction blocks couple the two tangents.
+NOSLIP_BOX_QVEL = [0.05, 0.02, 0, 0, 0, 0.1, 0.5]
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -543,6 +562,9 @@ def noslip_rows():
         out[f"{solver}_pyramidal_one_iteration"] = noslip_case(
             mixed("pyramidal", ' iterations="1"'), NOSLIP_STICK_QVEL, 50, (1, 10, 50))
         out[f"{solver}_limit_only"] = noslip_case(NOSLIP_WITHOUT_ITS_ROWS.format(solver=solver), [0.5])
+        out[f"{solver}_box_elliptic"] = noslip_case(
+            NOSLIP_BOX.format(solver=solver, cone="elliptic", iterations=10, tolerance="1e-6"),
+            NOSLIP_BOX_QVEL)
     return out
 
 

@@ -460,14 +460,17 @@ fn mj_state(state: ConstraintState) -> usize {
 /// Noslip counts its sweeps in `solver_niter`, records their statistics after
 /// the solver's and leaves each row's state as MuJoCo's `dualState` gives it
 /// (ledger L129): an equality, a friction-loss row and a contact, pyramidal
-/// and elliptic, noslip on, Newton and CG. The first forward's iteration,
-/// active-row and change counts and the rows' states are MuJoCo's, each
-/// statistic's improvement within 1e-12 of the case's largest (2.8e-16
-/// measured; the smallest differ by up to 8e-3 relative), and each step's
-/// iteration count through 200 steps. The elliptic contact holds
-/// inside its cone: sliding, noslip leaves it on the cone's edge, where the
-/// zone turns on the last bit, and the forces reaching noslip already differ
-/// from MuJoCo's by a few ulps (measured).
+/// and elliptic, noslip on, Newton and CG; and a box resting on a plane,
+/// elliptic, whose contacts' friction blocks couple their two tangents, so a
+/// sweep's cost change is MuJoCo's `costChange` over the whole block. The
+/// first forward's iteration, active-row and change counts and the rows'
+/// states are MuJoCo's, each statistic's improvement within 1e-12 of the
+/// case's largest (2.8e-16 measured), and each step's iteration count
+/// through the steps recorded (200, or 50 for the one-iteration cases). The
+/// elliptic contacts hold inside their cones: sliding, noslip leaves a
+/// contact on the cone's edge, where the zone turns on the last bit, and the
+/// forces reaching noslip already differ from MuJoCo's by a few ulps
+/// (measured).
 #[test]
 fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
     let g = golden();
