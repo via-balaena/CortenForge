@@ -39,11 +39,13 @@ enum NoslipRowKind {
 /// Noslip post-processor: suppresses residual contact slip (§15.10).
 ///
 /// Runs a modified PGS pass on friction force rows only, without
-/// regularization, using the current normal forces as fixed cone limits.
-/// This matches MuJoCo's `mj_solNoSlip`.
+/// regularization, using the current normal forces as fixed cone limits:
+/// MuJoCo's `mj_solNoSlip` in its sweeps, counts, statistics and states. Its
+/// residuals come from a dense J·M⁻¹·Jᵀ rather than MuJoCo's `efc_AR`, so it
+/// rounds otherwise (ledger L142).
 ///
 /// Called after any solver (Newton, PGS, CG) when `model.noslip_iterations > 0`.
-/// Matches MuJoCo's `mj_solNoSlip`. Leaves `efc_force` and `qfrc_constraint`;
+/// Leaves `efc_force` and `qfrc_constraint`;
 /// the forward pass makes the acceleration from them (`mj_fwd_acceleration`).
 /// Its sweeps are counted in `solver_niter` and each one's statistics are
 /// appended to `solver_stat` after the solver's, and `efc_state` is left as
@@ -169,7 +171,7 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
             None => mj_solve_m(model, data, minv_ji.as_mut_slice()),
         }
 
-        // Start from efc_b (constraint bias, fixed at assembly)
+        // Start from efc_b (the constraint bias the solve started from)
         let mut b_i = data.efc_b[row_i];
 
         // Dot against ALL nefc rows

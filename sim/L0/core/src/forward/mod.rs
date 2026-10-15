@@ -97,10 +97,11 @@ use crate::types::{
 pub enum MjStage {
     /// No stage completed — run full pipeline.
     None = 0,
-    /// Position stage complete — skip FK, collision, CRBA.
+    /// Position stage complete — skip FK, CRBA, collision and the constraint
+    /// rows and islands (the rows held are solved).
     Pos = 1,
-    /// Velocity stage complete — skip FK, collision, CRBA, velocity FK and
-    /// passive forces (`cb_passive` included).
+    /// Velocity stage complete — skip the position stage, velocity FK,
+    /// passive forces (`cb_passive` included) and the rows' references.
     Vel = 2,
 }
 
@@ -290,12 +291,14 @@ impl Data {
     /// accelerations and all body poses are updated.
     ///
     /// Pipeline stages follow `MuJoCo`'s `mj_forward`:
-    /// 1. Position stage: FK, position-dependent sensors, potential energy
+    /// 1. Position stage: FK, CRBA, collision, the constraint rows and their
+    ///    islands, position-dependent sensors, potential energy
     /// 2. Velocity stage: velocity FK, passive forces (`cb_passive` fires at
-    ///    their end), the bias force, velocity-dependent sensors, kinetic
-    ///    energy
+    ///    their end), the rows' velocities and reference accelerations, the
+    ///    bias force, velocity-dependent sensors, kinetic energy
     /// 3. `cb_control`, unless `DISABLE_ACTUATION` is set
-    /// 4. Acceleration stage: actuation, constraints, acc-dependent sensors
+    /// 4. Acceleration stage: actuation, the constraint solve (`efc_b`, the
+    ///    forces), acc-dependent sensors
     ///
     /// # Errors
     ///
@@ -334,9 +337,10 @@ impl Data {
     ///
     /// * `skipstage` — which stages to skip:
     ///   - [`MjStage::None`]: run full pipeline (equivalent to `forward()`)
-    ///   - [`MjStage::Pos`]: skip position stage (FK, collision, CRBA)
-    ///   - [`MjStage::Vel`]: skip position and velocity stages, passive forces
-    ///     and `cb_passive` included
+    ///   - [`MjStage::Pos`]: skip the position stage (FK, CRBA, collision, the
+    ///     constraint rows: the rows held are solved)
+    ///   - [`MjStage::Vel`]: skip the position and velocity stages, passive
+    ///     forces, `cb_passive` and the rows' references included
     /// * `skipsensor` — when `true`, skip all sensor evaluation.
     ///
     /// `cb_control` fires whatever `skipstage` is, unless `DISABLE_ACTUATION`
@@ -439,7 +443,8 @@ impl Data {
     }
 
     /// Position stage: wake detection, forward kinematics, CRBA,
-    /// transmissions, collision, position sensors and potential energy.
+    /// transmissions, collision, the constraint rows and their islands,
+    /// position sensors and potential energy.
     fn forward_pos(&mut self, model: &Model, compute_sensors: bool) {
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 

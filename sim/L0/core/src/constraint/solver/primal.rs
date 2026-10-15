@@ -8,11 +8,12 @@
 //! operation for operation on MuJoCo's dense path. With islands it solves
 //! each island apart, over its own dofs and rows in island order and
 //! scaled by its own inertia, as `mj_fwdConstraint` does
-//! (`engine_forward.c:762-797`); otherwise every row at once (MuJoCo's
+//! (`engine_forward.c:762-799`); otherwise every row at once (MuJoCo's
 //! monolithic case, `island` −1).
 //!
-//! At MuJoCo's sparse size (`nv ≥ 60`, `mj_isSparse`,
-//! `engine_core_util.c:32-39`) Newton factors its Hessian with
+//! At MuJoCo's sparse size (`Model::is_sparse`, MuJoCo's `mj_isSparse`,
+//! `engine_core_util.c:32-39`: `jacobian="sparse"`, or 60 dofs under the
+//! default) Newton factors its Hessian with
 //! [`SparseHessian`], made anew at every iteration where MuJoCo updates its
 //! sparse factor: the same matrix, rounded otherwise. There MuJoCo also takes
 //! `J·v` and `J'·f` as sparse products, which sim-core takes dense,
@@ -69,7 +70,7 @@ enum Mass<'a> {
 
 /// `M` and its factor `qLD` on a solve's dofs, in its numbering: for an
 /// island, the block MuJoCo copies into `iM` and `iLD`
-/// (`mju_blockDiagSparse`, `engine_island.c:503-509`); for every dof, `qM`
+/// (`mju_blockDiagSparse`, `engine_island.c:519-524`); for every dof, `qM`
 /// and `qLD` as they are.
 struct TreeMass {
     rownnz: Vec<usize>,
@@ -1180,7 +1181,7 @@ impl Primal<'_> {
 
 /// Solve the constraint rows with MuJoCo's primal solver, Newton when
 /// `newton`, else CG, from MuJoCo's warmstart, which reads `efc_b`
-/// (`mj_fwdConstraint`, `engine_forward.c:754-797`).
+/// (`mj_fwdConstraint`, `engine_forward.c:754-799`).
 ///
 /// With islands (enabled, at least one, no noslip; and the tree's mass, not
 /// the implicit spring-damper integrator's, whose tendon terms join trees the

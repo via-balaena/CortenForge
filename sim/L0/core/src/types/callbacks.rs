@@ -42,6 +42,9 @@ impl<F: ?Sized> fmt::Debug for Callback<F> {
 /// to `qfrc_passive`. It runs before [`CbControl`] in the same pass, so it
 /// reads `ctrl` as the caller left it; actuator forces, `qfrc_bias`,
 /// constraint forces and `qacc` have not been computed for this pass yet.
+/// The constraint rows (`efc_*`) and their islands are this pass's; their
+/// references, `efc_b` and their forces are made later in the pass, and
+/// `qfrc_constraint` still holds the previous pass's.
 ///
 /// # When it runs (as MuJoCo 3.5.0)
 ///
@@ -84,7 +87,9 @@ pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 ///
 /// The constraint rows (`efc_*`) and their islands are this pass's too, with
 /// their velocities and reference accelerations; `efc_b` and the forces
-/// are the acceleration stage's, still to come.
+/// are the acceleration stage's, still to come: `efc_force` reads 0 (MuJoCo
+/// leaves it uninitialised), and `qfrc_constraint` still holds the previous
+/// pass's.
 ///
 /// # When it runs (as MuJoCo 3.5.0)
 ///

@@ -10,9 +10,10 @@ It refuses any other interpreter, as gen_census_golden.py does.
 
 Newton and CG are one solver in MuJoCo, `mj_solPrimal` (`engine_solver.c:1811-1968`),
 started from `warmstart` (`engine_forward.c:611-687`). It refuses a trajectory MuJoCo
-resets (`unstable`). Every case but the islands_* ones disables islands
-(`<flag island="disable"/>`), so MuJoCo solves all rows at once, scaled by
-`1/(meaninertia·nv)`. The cases:
+resets (`unstable`). A case with islands disabled (`<flag island="disable"/>`)
+or noslip on is solved over every row at once, scaled by `1/(meaninertia·nv)`;
+eulerdamp_asleep, the islands_* cases and statistics_cap's Newton case are solved
+island by island. The cases:
 
 - newton_box: census doc 406a1991 (`collision_plane.rs:1076`), a box on a tilted
   plane with no gravity, at the census start (qpos0, qvel_i = 0.1·(1 + i mod 3)):
@@ -62,7 +63,11 @@ resets (`unstable`). Every case but the islands_* ones disables islands
   And the pyramidal scene with the puck slow and the solver stopped after one iteration:
   noslip then changes rows' states on its first sweep (MuJoCo's nchange 1 under Newton,
   2 under CG), which it does in no other case here; its trajectory to step 50 only
-  (MuJoCo's CG run resets at step 95, its acceleration unstable).
+  (MuJoCo's CG run resets at step 95, its acceleration unstable). And a box resting on
+  a plane, elliptic (box_elliptic: its contacts' friction blocks couple their two
+  tangents, so a sweep's cost change is `costChange` over the block), and a three-link
+  arm with friction loss started bent away from qpos0 (arm_bent: its mass matrix's mean
+  diagonal is not the model's mean inertia, which scales the statistics).
 - sparse_spheres: ten free spheres sliding and spinning on a plane under Newton with
   an elliptic cone, 60 dofs: MuJoCo's sparse Hessian (`mj_isSparse`, nv >= 60). qpos
   and qvel after steps 1, 10 and 50, and each step's iteration count.
@@ -87,10 +92,11 @@ resets (`unstable`). Every case but the islands_* ones disables islands
   second. (sim-mjcf refuses a `tolerance` of 0, which MuJoCo takes.)
 
 With islands enabled, MuJoCo solves each island apart (`mj_solNewton_island`,
-`mj_solCG_island`, `engine_forward.c:768-797`), scaled by 1/Σ diag of its mass
+`mj_solCG_island`, `engine_forward.c:768-799`), scaled by 1/Σ diag of its mass
 matrix (`engine_solver.c:1861-1872`), and keeps each island's iteration count and
 statistics, for the first mjNISLAND (20) islands only (`saveStats`,
-`engine_solver.c:38-64`; `:1946-1951`). A case's `niter` is then the sum of
+`engine_solver.c:38-64`; `:1946-1951`), at most mjNSOLVER (200) statistics each
+(`:50-52`). A case's `niter` is then the sum of
 `solver_niter` per step, and `stats` the islands' statistics in island order,
 with `niter` per island:
 
@@ -105,15 +111,23 @@ with `niter` per island:
 - islands_friction_hold: an arm on a hinge whose friction loss holds it against
   gravity, one island, under Newton and CG: the first forward's efc_force and
   efc_state, with islands enabled and disabled. MuJoCo copies an island's forces
-  back but not its rows' states (`engine_forward.c:794-797`), so with islands its
-  efc_state is the warmstart's, made at qacc_smooth (`:631-660`).
+  back but not its rows' states (`engine_forward.c:796-798`), so with islands its
+  efc_state is the warmstart's, made at qacc_smooth (`:662`).
 - same_input_islands: same_input for each mixed_rows variant with islands enabled.
 - islands_zero_row: at jacobian="sparse", a hinge with friction loss beside a second
   hinge under a fixed tendon of coef 0 with friction loss and a range its length 0
   exceeds, so the tendon's two rows are all zero but their dof chain is the second
   hinge: MuJoCo's partition reads the chain (`treeNext`, `engine_island.c:148-162`)
   and makes two islands. Newton and CG: the first forward's island count, efc_force,
-  efc_state and qacc, and each step's iteration count for 20 steps.
+  efc_state and qacc, and each step's iteration count for 20 steps; and both again
+  with the warmstart disabled, where MuJoCo writes no efc_state: each row's state from
+  its island's solve (iefc_state) and each step's iteration count per island.
+- statistics_cap: runs past mjNSOLVER (200) iterations (see `statistics_cap`).
+- islands_review: islands whose mass matrix couples their dofs (a two-link arm; a free
+  body whose centre of mass is off its origin), under CG and at the sparse size under
+  Newton, and noslip on with islands enabled, Newton and CG: the first forward's
+  statistics and acceleration, qpos and qvel after steps 1, 10, 50 and the last, and
+  each step's iteration and island counts.
 """
 import json
 import os

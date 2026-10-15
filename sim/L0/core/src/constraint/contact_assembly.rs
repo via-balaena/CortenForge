@@ -109,9 +109,8 @@ pub(super) fn assemble_contact_rows(
             //
             // All four impedance fields are rewritten together to keep each row's
             // (imp, diagApprox, R, D) tuple self-consistent. The solver consumes R/D
-            // and conformance dumps read diagApprox; efc_imp has no runtime reader
-            // today, but is kept in sync so R = (1-imp)/imp·diagApprox still holds if
-            // anything recomputes it — leaving it stale would be a silent trap.
+            // and conformance dumps read diagApprox; the reference pass
+            // (`mj_reference_constraint`) reads efc_imp for each row's aref.
             if is_elliptic {
                 let imp_n = data.efc_imp[normal_row];
                 let diag_n = data.efc_diagApprox[normal_row];

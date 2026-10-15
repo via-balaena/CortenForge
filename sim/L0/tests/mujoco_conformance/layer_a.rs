@@ -6,7 +6,7 @@
 //!
 //! Categories:
 //! 1. Forward/inverse equivalence (multiple joint types)
-//! 2. Islands on and off (the solver is global)
+//! 2. Islands on and off
 //! 3. Determinism (same input → bit-identical output)
 //! 4. Integrator energy ordering (implicit < semi-implicit < Euler drift)
 //! 5. Sparse/dense mass matrix equivalence
@@ -256,7 +256,7 @@ fn layer_a_forward_inverse_formula() {
 // 2. Islands On and Off
 // ============================================================================
 
-/// Islands change no result (the solver is global).
+/// Islands change no result beyond floating-point tolerance.
 ///
 /// Two independent free bodies on a plane, each its own island, against a run
 /// with DISABLE_ISLAND. Both must agree within floating-point tolerance.

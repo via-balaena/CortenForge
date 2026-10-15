@@ -44,8 +44,9 @@ use sim_core::validation::{Check, print_report};
 //   Hessian assembly:
 //     H = M + Σ_{active rows i} Dᵢ · Jᵢᵀ · Jᵢ
 //     (Dᵢ = impedance-scaled constraint weight)
-//     Dense path (nv < 60): Cholesky factorization, rank-1 incremental updates
-//     Sparse path (nv ≥ 60): LDL^T with elimination tree, made anew each iteration
+//     Dense path: Cholesky factorization, rank-1 incremental updates
+//     Sparse path (Model::is_sparse: jacobian="sparse", or nv ≥ 60 under the
+//     default): LDL^T with elimination tree, made anew each iteration
 //
 //   Main loop (for iter = 0..max_iters):
 //     1. Gradient: grad = M·qacc - qfrc_smooth - Jᵀ·efc_force

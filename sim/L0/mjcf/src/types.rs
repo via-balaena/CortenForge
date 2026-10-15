@@ -130,7 +130,7 @@ pub enum MjcfJacobianType {
     Dense,
     /// Sparse Jacobian matrix (better for large systems).
     Sparse,
-    /// Automatic selection based on sparsity.
+    /// Sparse from 60 dofs, MuJoCo's default (`mj_isSparse`).
     #[default]
     Auto,
 }
@@ -444,7 +444,7 @@ pub struct MjcfOption {
     /// Friction cone type (default: Pyramidal).
     pub cone: MjcfConeType,
 
-    /// Jacobian computation type (default: Dense).
+    /// Jacobian computation type (default: Auto, as MuJoCo).
     pub jacobian: MjcfJacobianType,
 
     /// Ratio of frictional-to-normal constraint impedance (default: 1.0).

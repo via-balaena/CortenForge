@@ -270,15 +270,17 @@ forward():
                mj_fwd_tendon         Tendon lengths + Jacobians + wrap visualization data (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
                                      + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
+               mj_make_constraint     Constraint rows and their islands (mj_island), after the wakes
                mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
                mj_actuator_velocity   Actuator velocities (lengths: position stage)
                mj_fwd_passive         Springs, dampers, flex bending + vertex damping;
                                       cb_passive, then passive plugins, at its end
+               mj_reference_constraint  The rows' velocities (J·qvel) and reference accelerations
                mj_rne                 Bias forces (Recursive Newton-Euler)
   Control      cb_control             Unless DISABLE_ACTUATION
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
-  Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
+  Constraints  mj_fwd_constraint      efc_b, then the PGS/CG/Newton solve (CG and Newton by island)
   Solve        mj_fwd_acceleration    qacc = M^-1 * f;
                                       ImplicitSpringDamper: qacc = (v_new − qvel) / h
 integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper; RK4 under step2()]:
@@ -330,8 +332,9 @@ mjd_transition():
 
 **Constraint enforcement (unified):**
 All constraint types (equality, friction loss, limits, contacts, flex edge) are
-routed through unified solver rows assembled by `assemble_unified_constraints()`.
-Every solver operates on the same constraint Jacobian + RHS, selectable via
+routed through unified solver rows assembled by `assemble_unified_constraints()`
+in the position stage. Every solver operates on the same constraint Jacobian and
+`efc_b`, made when the solve starts, selectable via
 `<option solver="Newton"/>` in MJCF or `model.solver_type = SolverType::Newton`:
 - **PGS** — Dual-space Gauss-Seidel on regularized Delassus matrix AR
 - **CG** — Primal Polak-Ribiere conjugate gradient sharing `mj_sol_primal` with
@@ -683,17 +686,19 @@ Three optimizations reduce work proportional to the awake fraction:
 
 Integration tests in `sleeping.rs` cover all three phases:
 Phase A (per-tree sleeping), Phase B (island discovery + cross-tree coupling),
-Phase C (selective CRBA, partial LDL, awake-index iteration). The constraint
-solver is global: no island is solved apart.
+Phase C (selective CRBA, partial LDL, awake-index iteration). Newton and CG
+solve each island apart, unless noslip is on or under implicitspringdamper;
+PGS and noslip solve every row at once.
 
 ## Design Principles
 
 ### Contact Solver
 
 The pipeline supports three constraint solvers selectable via `model.solver_type`.
-All solvers share `assemble_unified_constraints()` which builds a unified constraint
-Jacobian + RHS for ALL constraint types (equality, friction loss, limits, contacts,
-flex edge). There is no separate contact-only assembly path.
+All solvers share the rows `assemble_unified_constraints()` makes in the position
+stage, a unified constraint Jacobian for ALL constraint types (equality, friction
+loss, limits, contacts, flex edge); `efc_b` is made when the solve starts. There is
+no separate contact-only assembly path.
 
 - **PGS** — Dual-space Gauss-Seidel on regularized Delassus
   matrix AR. Uses per-row inline elliptic friction cone projection inside the GS
@@ -704,8 +709,11 @@ flex edge). There is no separate contact-only assembly path.
   solver `mj_solPrimal`, ported operation for operation
   (`constraint/solver/primal.rs`): CG preconditioned by M^-1 with Polak-Ribière
   directions, Newton by the Hessian, factored densely and updated row by row
-  below 60 dofs, as a sparse LDL factor from 60. Their iterate is the
-  acceleration; neither falls back to another solver.
+  below MuJoCo's sparse size (`Model::is_sparse`: `jacobian="sparse"`, or 60
+  dofs under the default), as a sparse LDL factor at it. With islands enabled
+  each island is solved apart, unless noslip is on or under
+  implicitspringdamper. Their iterate is the acceleration; neither
+  falls back to another solver.
 
 **Variable Contact Dimensions (condim):**
 - condim 1: Normal force only (frictionless contact)

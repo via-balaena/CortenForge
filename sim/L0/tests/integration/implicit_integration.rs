@@ -2571,8 +2571,8 @@ fn implicitspringdamper_refuses_an_indefinite_matrix() {
 /// the trajectory of the same model with that parameter at 0, on a joint and
 /// on a fixed tendon, free and against an active joint limit (whose Newton
 /// solve takes the same implicit matrix), on two hinges and with 60 more
-/// (past `NV_SPARSE_THRESHOLD`, where the Newton solve assembles a sparse
-/// Hessian); and the hybrid transition derivative agrees with pure finite
+/// (at MuJoCo's sparse size, `Model::is_sparse`, where the Newton solve
+/// assembles a sparse Hessian); and the hybrid transition derivative agrees with pure finite
 /// differences under the joint flags on the two hinges, free, where its
 /// analytic columns run (a tendon spring or damper, or a limit row, sends it
 /// to pure finite differences whole). implicitspringdamper is ours (MuJoCo
@@ -2736,7 +2736,7 @@ fn implicitspringdamper_solvers_agree() {
     }
 }
 
-/// Past `NV_SPARSE_THRESHOLD` Newton's sparse Hessian under
+/// At MuJoCo's sparse size Newton's sparse Hessian under
 /// implicitspringdamper holds a stiff tendon's coupling between two trees,
 /// outside the mass matrix's pattern: with one row and no state change the
 /// problem is quadratic, so one Newton step is the converged answer (ledger

@@ -1,7 +1,7 @@
 //! Newton and CG against MuJoCo 3.5.0's primal solver (`mj_solPrimal`,
 //! `engine_solver.c:1811-1968`, from `warmstart`, `engine_forward.c:611-687`):
 //! with islands disabled, every row at once; with islands (the `islands_*`
-//! cases), each island apart (`engine_forward.c:762-797`).
+//! cases), each island apart (`engine_forward.c:762-799`).
 //!
 //! The golden is `assets/golden/primal_solver/primal_solver.json`, from the
 //! unfused MuJoCo 3.5.0 oracle (`scripts/gen_primal_solver_reference.py`, which
@@ -747,7 +747,7 @@ fn step_islands_and_compare(
 
 /// mixed_rows' arm and ball, and its puck, with islands enabled (MuJoCo's
 /// default): two islands, each solved apart over its own dofs and rows,
-/// scaled by its own inertia (`mj_fwdConstraint`, `engine_forward.c:762-797`;
+/// scaled by its own inertia (`mj_fwdConstraint`, `engine_forward.c:762-799`;
 /// book P35). Newton and CG, pyramidal and elliptic (condim 3 and 6): the
 /// first forward's island count, each island's iteration, active-row,
 /// change, evaluation and update counts in island order and the
@@ -930,8 +930,8 @@ fn islands_past_the_twentieth_are_solved_but_not_counted() {
 
 /// Not matched (registry `D-ISLAND-EFC-STATE`, wrong-value): MuJoCo copies
 /// each island's forces back but not its rows' states
-/// (`engine_forward.c:794-797`), so with islands its `efc_state` is the
-/// warmstart's, made at `qacc_smooth` (`:631-660`). An arm whose hinge
+/// (`engine_forward.c:796-798`), so with islands its `efc_state` is the
+/// warmstart's, made at `qacc_smooth` (`:662`). An arm whose hinge
 /// friction loss (5) holds it against gravity, one island, Newton and CG:
 /// MuJoCo's force is −1.32435, inside the friction band, and its state with
 /// islands is LinearPos, the state of a row at −5; without islands it is
