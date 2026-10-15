@@ -550,10 +550,13 @@ def newton_box():
 
 
 def unstable(m, d, k):
-    """Refuse a run MuJoCo reset: a bad acceleration resets mjData and warns
-    (`mj_checkAcc`, `engine_forward.c`), so the steps after it are not the run's."""
-    if d.warning[mujoco.mjtWarning.mjWARN_BADQACC].number:
-        sys.exit(f"{m.names.split(b'\0')[0].decode()}: MuJoCo reset at step {k}")
+    """Refuse a run MuJoCo reset: a bad position, velocity or acceleration
+    resets mjData and warns (`mj_checkPos`, `mj_checkVel`, `mj_checkAcc`,
+    `engine_forward.c`), so the steps after it are not the run's."""
+    for w in (mujoco.mjtWarning.mjWARN_BADQPOS, mujoco.mjtWarning.mjWARN_BADQVEL,
+              mujoco.mjtWarning.mjWARN_BADQACC):
+        if d.warning[w].number:
+            sys.exit(f"{m.names.split(b'\0')[0].decode()}: MuJoCo reset at step {k} ({w.name})")
 
 
 def trajectory(xml, qvel, nstep, checkpoints, start=None):

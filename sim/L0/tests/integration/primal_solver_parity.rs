@@ -468,10 +468,13 @@ fn mj_state(state: ConstraintState) -> usize {
 /// sweep's cost change is MuJoCo's `costChange` over the whole block; and a
 /// three-link arm with friction loss, bent away from `qpos0` so its mass
 /// matrix's mean diagonal is not the model's mean inertia, which scales the
-/// statistics. The first forward's iteration, active-row and change counts and the rows'
-/// states are MuJoCo's, each statistic's improvement within 1e-12 of the
-/// case's largest (2.8e-16 measured), and each step's iteration count
-/// through the steps recorded (200, or 50 for the one-iteration cases). The
+/// statistics. The first forward's iteration, active-row and change counts
+/// and the rows' states are MuJoCo's, each statistic's improvement,
+/// gradient and line slope within 1e-12 of the case's largest or of 1
+/// (noslip's gradient and slope are 0; the improvements 2.8e-16 of the
+/// largest measured), and each
+/// step's iteration count through the steps recorded (200, or 50 for the
+/// one-iteration cases). The
 /// elliptic contacts hold inside their cones: sliding, noslip leaves a
 /// contact on the cone's edge, where the zone turns on the last bit, and the
 /// forces reaching noslip already differ from MuJoCo's by a few ulps
@@ -514,14 +517,19 @@ fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
                 off.push(format!("{name} {what}: {ours:?}, MuJoCo {mujoco:?}"));
             }
         }
-        let want = floats(&stats["improvement"]);
-        let scale = want.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
-        for (k, (s, w)) in data.solver_stat.iter().zip(&want).enumerate() {
-            if (s.improvement - w).abs() > 1e-12 * scale {
-                off.push(format!(
-                    "{name} improvement {k}: {:e}, MuJoCo {w:e}",
-                    s.improvement
-                ));
+        let real =
+            |f: fn(&SolverStat) -> f64| -> Vec<f64> { data.solver_stat.iter().map(f).collect() };
+        for (what, ours, key) in [
+            ("improvement", real(|s| s.improvement), "improvement"),
+            ("gradient", real(|s| s.gradient), "gradient"),
+            ("lineslope", real(|s| s.lineslope), "lineslope"),
+        ] {
+            let want = floats(&stats[key]);
+            let scale = want.iter().fold(1.0_f64, |m, x| m.max(x.abs()));
+            for (k, (s, w)) in ours.iter().zip(&want).enumerate() {
+                if (s - w).abs() > 1e-12 * scale {
+                    off.push(format!("{name} {what} {k}: {s:e}, MuJoCo {w:e}"));
+                }
             }
         }
         let (model, mut data) = start(case);
@@ -616,6 +624,40 @@ fn statistics_past_the_200th_are_counted_not_kept() {
         }
     }
     assert!(off.is_empty(), "{off:#?}");
+}
+
+/// Noslip's active-row count is `dualState`'s: every row not satisfied, a
+/// contact in the cone counting each of its rows (`engine_solver.c:233-310`).
+/// noslip_rows' box sliding at 1 m/s and spinning, elliptic, noslip on:
+/// after each of 200 steps the last statistic's count is the rows the step
+/// leaves not satisfied, and some steps leave a contact in the cone (7 of
+/// 200 measured; noslip leaves a sliding contact on the cone's edge, where
+/// the zone turns on the last bit). The count follows whichever zone it is.
+#[test]
+fn noslip_counts_the_rows_it_leaves_active() {
+    let g = golden();
+    for solver in ["Newton", "CG"] {
+        let case = &g["cases"]["noslip_rows"][format!("{solver}_box_elliptic").as_str()];
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qvel
+            .copy_from_slice(&[1.0, 0.3, 0.0, 0.0, 0.0, 2.0, 0.5]);
+        let mut cone_steps = 0;
+        for step in 1..=200 {
+            data.step(&model).expect("step");
+            let active = data
+                .efc_state
+                .iter()
+                .filter(|&&s| s != ConstraintState::Satisfied)
+                .count();
+            let last = data.solver_stat.last().expect("a statistic");
+            assert_eq!(last.nactive, active, "{solver} step {step}: nactive");
+            if data.efc_state.contains(&ConstraintState::Cone) {
+                cone_steps += 1;
+            }
+        }
+        assert!(cone_steps > 0, "{solver}: a contact in the cone");
+    }
 }
 
 /// `<option jacobian>` picks the solver's path as MuJoCo's `mj_isSparse`

@@ -220,6 +220,41 @@ CONNECT_TO_ARM = """<mujoco model="connect_to_arm">
 </mujoco>"""
 
 
+JOINT_EQUALITY = """<mujoco model="joint_equality">
+  <option jacobian="sparse"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <joint name="h1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body pos="1 0 1">
+      <joint name="h2" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality><joint joint1="h1" joint2="h2"/></equality>
+</mujoco>"""
+
+# A tendon equality between a tendon whose chain is empty (between two world
+# sites) and one over a hinge: its chain is the hinge's.
+TENDON_EQUALITY_HALF_STATIC = """<mujoco model="tendon_equality_half_static">
+  <option jacobian="sparse"/>
+  <worldbody>
+    <site name="s1" pos="0 0 1"/>
+    <site name="s2" pos="1 0 1"/>
+    <body pos="0 0 2">
+      <joint name="h" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="still"><site site="s1"/><site site="s2"/></spatial>
+    <fixed name="moving"><joint joint="h" coef="1"/></fixed>
+  </tendon>
+  <equality><tendon tendon1="still" tendon2="moving"/></equality>
+</mujoco>"""
+
+
 def sparse(xml):
     head, rest = xml.split(">", 1)
     return head + '>\n  <option jacobian="sparse"/>' + rest
@@ -277,6 +312,8 @@ def main():
         "connect_static_sparse": case(sparse(CONNECT_STATIC)),
         "tendon_static_sparse": case(sparse(TENDON_STATIC)),
         "connect_to_arm_sparse": case(CONNECT_TO_ARM),
+        "joint_equality_sparse": case(JOINT_EQUALITY),
+        "tendon_equality_half_static_sparse": case(TENDON_EQUALITY_HALF_STATIC),
         "tendon_chains": tendon_chains(),
     }
     for kind in CHAIN_CONSTRAINTS:

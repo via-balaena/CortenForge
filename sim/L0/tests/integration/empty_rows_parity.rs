@@ -195,12 +195,17 @@ fn tendon_chains_are_mujocos_sparse_rows() {
 
 /// This crate's distance equality, which MuJoCo 3.5.0 lacks, takes its
 /// geoms' bodies' chain at the sparse size, as a connect takes its bodies':
-/// between two geoms on bodies without dofs it makes no row under
-/// `jacobian="sparse"`, as its zero rows make none at the dense size.
+/// between two geoms on bodies without dofs, or from one such geom to the
+/// world (no `geom2`), it makes no row under `jacobian="sparse"`, as its
+/// zero rows make none at the dense size.
 #[test]
 fn a_distance_equality_between_static_geoms_makes_no_row_at_the_sparse_size() {
-    let model = load_model(
-        r#"<mujoco>
+    for (name, geom2) in [
+        ("distance_static", r#" geom2="g2""#),
+        ("distance_to_world", ""),
+    ] {
+        let model = load_model(&format!(
+            r#"<mujoco>
           <option jacobian="sparse"/>
           <worldbody>
             <body pos="0 0 1"><geom name="g1" type="sphere" size="0.1" mass="1"/></body>
@@ -210,14 +215,15 @@ fn a_distance_equality_between_static_geoms_makes_no_row_at_the_sparse_size() {
               <geom type="sphere" size="0.1" mass="1"/>
             </body>
           </worldbody>
-          <equality><distance geom1="g1" geom2="g2" distance="0.5"/></equality>
-        </mujoco>"#,
-    )
-    .expect("load");
-    assert!(model.is_sparse(), "jacobian sparse");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    assert_row_arrays("distance_static", &data, 0);
+          <equality><distance geom1="g1"{geom2} distance="0.5"/></equality>
+        </mujoco>"#
+        ))
+        .expect("load");
+        assert!(model.is_sparse(), "{name}: jacobian sparse");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_row_arrays(name, &data, 0);
+    }
 }
 
 /// A ball joint's limit inside its margin makes its row whatever the
