@@ -17,6 +17,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::primal::MJ_NSOLVER;
 use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::cholesky_solve_in_place;
 use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
@@ -486,15 +487,18 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
 
         improvement *= scale;
 
-        solver_stats.push(SolverStat {
-            improvement,
-            gradient: 0.0,
-            lineslope: 0.0,
-            nactive: 0,
-            nchange: 0,
-            neval: 0,
-            nupdate: 0,
-        });
+        // The first mjNSOLVER kept, as MuJoCo's `saveStats`.
+        if iter < MJ_NSOLVER {
+            solver_stats.push(SolverStat {
+                improvement,
+                gradient: 0.0,
+                lineslope: 0.0,
+                nactive: 0,
+                nchange: 0,
+                neval: 0,
+                nupdate: 0,
+            });
+        }
 
         iter += 1;
 

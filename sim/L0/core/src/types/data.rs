@@ -338,7 +338,8 @@ pub struct Data {
 
     // ==================== Solver State ====================
     /// Iterations used in last constraint solve; solved island by island,
-    /// the first 20 islands' summed, the islands MuJoCo counts (`mjNISLAND`).
+    /// the first 20 islands' summed, the islands MuJoCo counts (`mjNISLAND`);
+    /// then noslip's sweeps.
     pub solver_niter: usize,
     /// Non-zeros in constraint Jacobian.
     pub solver_nnz: usize,
@@ -437,11 +438,12 @@ pub struct Data {
     /// forces.
     pub(crate) primal_qacc: bool,
 
-    /// Per-iteration solver statistics (length `solver_niter` after solve),
-    /// solved island by island those of the islands `solver_niter` counts, in
-    /// island order. Populated by all 3 solvers: PGS fills `improvement` only
-    /// (other fields zeroed); CG and Newton fill all fields. Cleared with no
-    /// rows.
+    /// Per-iteration solver statistics, as MuJoCo keeps them: the first 200
+    /// (`mjNSOLVER`) of a solve's iterations, or solved island by island of
+    /// each island `solver_niter` counts, in island order; then noslip's
+    /// sweeps while there are fewer than 200. PGS fills `improvement` only
+    /// (other fields zeroed); CG and Newton fill all fields; noslip
+    /// `improvement`, `nactive` and `nchange`. Cleared with no rows.
     pub solver_stat: Vec<SolverStat>,
 
     /// Per-step mean inertia: `trace(qM) / nv`, set at each constraint

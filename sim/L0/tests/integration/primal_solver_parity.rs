@@ -540,6 +540,84 @@ fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
     assert!(off.is_empty(), "{off:#?}");
 }
 
+/// Past 200 iterations MuJoCo counts an iteration but keeps no statistic
+/// (`mjNSOLVER`, `saveStats`; ledger L140): of a solve over every row, of
+/// each island, and of noslip's sweeps after the solver's. Mixed rows with a
+/// negative tolerance, so no solver stops early: CG over every row, Newton
+/// by island (over every row it stops after 3 iterations),
+/// noslip's 250 sweeps and PGS's 300 iterations. The
+/// first forward's iteration count and kept statistics are MuJoCo's, each
+/// improvement within 1e-12 of the case's largest; PGS's count only (its
+/// statistics are not MuJoCo's, ledger L132). sim-mjcf refuses a tolerance
+/// that is not positive (ledger L131), so the document loads without it and
+/// the model takes MuJoCo's.
+#[test]
+fn statistics_past_the_200th_are_counted_not_kept() {
+    const TOLERANCE: &str = r#" tolerance="-1""#;
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["statistics_cap"].as_object().expect("cases") {
+        let xml = case["xml"].as_str().expect("xml");
+        let mut model = load_model(&xml.replace(TOLERANCE, "")).expect("load");
+        if xml.contains(TOLERANCE) {
+            model.solver_tolerance = -1.0;
+        }
+        let mut data = model.make_data();
+        data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        data.forward(&model).expect("forward");
+        let stats = &case["stats"];
+        let per_island = match &stats["niter"] {
+            Value::Array(_) => usizes(&stats["niter"]),
+            one => vec![count(one)],
+        };
+        let niter: usize = per_island.iter().sum();
+        let kept: usize = per_island.iter().map(|&n| n.min(200)).sum();
+        assert!(
+            niter > 200,
+            "{name}: MuJoCo's {niter} iterations reach past 200"
+        );
+        if data.solver_niter != niter {
+            off.push(format!(
+                "{name} niter: {}, MuJoCo {niter}",
+                data.solver_niter
+            ));
+        }
+        if data.solver_stat.len() != kept {
+            off.push(format!(
+                "{name} kept: {}, MuJoCo {kept}",
+                data.solver_stat.len()
+            ));
+        }
+        if stats.get("improvement").is_none() {
+            continue;
+        }
+        let field = |f: fn(&SolverStat) -> usize| -> Vec<usize> {
+            data.solver_stat.iter().map(f).collect()
+        };
+        for (what, ours, mujoco) in [
+            ("nactive", field(|s| s.nactive), usizes(&stats["nactive"])),
+            ("nchange", field(|s| s.nchange), usizes(&stats["nchange"])),
+            ("neval", field(|s| s.neval), usizes(&stats["neval"])),
+            ("nupdate", field(|s| s.nupdate), usizes(&stats["nupdate"])),
+        ] {
+            if ours != mujoco {
+                off.push(format!("{name} {what} differs"));
+            }
+        }
+        let want = floats(&stats["improvement"]);
+        let scale = want.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        for (k, (s, w)) in data.solver_stat.iter().zip(&want).enumerate() {
+            if (s.improvement - w).abs() > 1e-12 * scale {
+                off.push(format!(
+                    "{name} improvement {k}: {:e}, MuJoCo {w:e}",
+                    s.improvement
+                ));
+            }
+        }
+    }
+    assert!(off.is_empty(), "{off:#?}");
+}
+
 /// `<option jacobian>` picks the solver's path as MuJoCo's `mj_isSparse`
 /// (ledger L130): ten spheres at 60 dofs under `jacobian="dense"` take the
 /// dense Hessian, and their first step is MuJoCo's bit for bit (by the dof

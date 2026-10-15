@@ -37,6 +37,11 @@ use crate::types::{
 /// later island is solved but not counted.
 const MJ_NISLAND: usize = 20;
 
+/// The statistics MuJoCo keeps of a solve, or of an island's (`mjNSOLVER`;
+/// `saveStats`, `engine_solver.c:50-52`): a later iteration is counted but
+/// not recorded.
+pub const MJ_NSOLVER: usize = 200;
+
 /// The mass matrix the primal solver minimises over.
 pub enum PrimalMass<'a> {
     /// `qM` on the mass matrix's pattern, solved with its `L'·D·L` factor:
@@ -1183,7 +1188,8 @@ impl Primal<'_> {
 /// iterate over its own dofs and rows, scaled by 1/Σ diag of its mass matrix
 /// (`mj_solPrimal`, `engine_solver.c:1861-1872`); `solver_niter` sums the
 /// first [`MJ_NISLAND`] islands' iterations and `solver_stat` holds their
-/// statistics in island order, as MuJoCo records them. A dof outside every
+/// statistics in island order, the first [`MJ_NSOLVER`] of each, as MuJoCo
+/// records them. A dof outside every
 /// island keeps the warmstart's `qacc_smooth`; a row outside every island
 /// takes the force and state at its residual `efc_b`, which its zero
 /// Jacobian makes its solution's. Otherwise every row at once, scaled by
@@ -1233,6 +1239,7 @@ pub fn mj_sol_primal(
         data.efc_cost = ctx.cost;
         data.solver_niter = stats.len();
         data.solver_stat = stats;
+        data.solver_stat.truncate(MJ_NSOLVER);
         return Ok(());
     }
 
@@ -1251,7 +1258,7 @@ pub fn mj_sol_primal(
         data.efc_cost += ictx.cost;
         if island < MJ_NISLAND {
             data.solver_niter += stats.len();
-            data.solver_stat.extend(stats);
+            data.solver_stat.extend(stats.into_iter().take(MJ_NSOLVER));
         }
     }
     // A row in no island has a zero Jacobian (the partition reads its

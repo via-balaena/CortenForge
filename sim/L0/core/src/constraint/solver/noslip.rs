@@ -7,6 +7,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::primal::MJ_NSOLVER;
 use crate::constraint::solver::qcqp;
 use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::{cholesky_solve_in_place, mju_dot};
@@ -439,15 +440,19 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
         let nactive = dual_state(data, &mut state);
         let nchange = old_state.iter().zip(&state).filter(|(a, b)| a != b).count();
         let improvement = improvement * conv_scale;
-        data.solver_stat.push(SolverStat {
-            improvement,
-            gradient: 0.0,
-            lineslope: 0.0,
-            nactive,
-            nchange,
-            neval: 0,
-            nupdate: 0,
-        });
+        // Kept after the solver's while there are fewer than mjNSOLVER
+        // (`engine_solver.c:728-729`).
+        if data.solver_niter + iter_num < MJ_NSOLVER {
+            data.solver_stat.push(SolverStat {
+                improvement,
+                gradient: 0.0,
+                lineslope: 0.0,
+                nactive,
+                nchange,
+                neval: 0,
+                nupdate: 0,
+            });
+        }
         iter_num += 1;
 
         // Cost-based convergence (matches MuJoCo's CG/Newton pattern)

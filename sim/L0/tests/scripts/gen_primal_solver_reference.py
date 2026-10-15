@@ -408,7 +408,7 @@ def stats(m, d):
     n = int(d.solver_niter[0])
     keys = ("improvement", "gradient", "lineslope", "nactive", "nchange", "neval", "nupdate")
     out = {k: [] for k in keys}
-    for s in d.solver[:n]:
+    for s in d.solver[:min(n, MJNSOLVER)]:
         out["improvement"].append(float(s.improvement))
         out["gradient"].append(float(s.gradient))
         out["lineslope"].append(float(s.lineslope))
@@ -599,6 +599,39 @@ def noslip_rows():
     return out
 
 
+def statistics_cap():
+    """Past mjNSOLVER (200) iterations. A negative tolerance stops no solver
+    early, so CG and Newton run to `iterations` (300) unless the line search
+    finds no step, noslip runs its 250 sweeps and PGS its 300 iterations; the
+    first forward's counts and kept statistics: CG over every row, Newton by
+    island (over every row it stops after 3 iterations). PGS's statistics are
+    not MuJoCo's (ledger L132): its count only."""
+    out = {}
+    for solver in ("CG", "Newton", "PGS"):
+        whole = MIXED_ROWS.format(solver=solver, cone="pyramidal", condim=3).replace(
+            f'solver="{solver}"', f'solver="{solver}" tolerance="-1" iterations="300"')
+        runs = {"CG": [("whole", whole)],
+                "Newton": [("islands", with_islands(whole))],
+                "PGS": [("whole", whole), ("noslip", MIXED_ROWS.format(
+                    solver="CG", cone="pyramidal", condim=3).replace(
+                    'solver="CG"', 'solver="CG" noslip_iterations="250" noslip_tolerance="-1"'))]}[solver]
+        for tag, xml in runs:
+            m = mujoco.MjModel.from_xml_string(xml)
+            d = mujoco.MjData(m)
+            d.qvel[:] = MIXED_QVEL
+            mujoco.mj_forward(m, d)
+            name = f"{solver}_{tag}" if tag != "noslip" else "noslip"
+            if solver == "PGS" and tag == "whole":
+                case = {"niter": int(d.solver_niter[0])}
+            elif tag == "islands":
+                case = island_stats(m, d)
+            else:
+                case = stats(m, d)
+            assert (sum(case["niter"]) if tag == "islands" else case["niter"]) > MJNSOLVER, name
+            out[name] = {"xml": xml, "qvel": floats(d.qvel), "stats": case}
+    return out
+
+
 def same_input(xml, qvel, start=None):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -758,6 +791,7 @@ def main():
             case["nisland"] = int(d.nisland)
             same_islands[f"{solver}_{cone}_{condim}"] = case
     cases["same_input_islands"] = same_islands
+    cases["statistics_cap"] = statistics_cap()
     cases["islands_zero_row"] = {solver: zero_row(solver) for solver in ("Newton", "CG")}
     for solver in ("Newton", "CG"):
         cases["islands_zero_row"][f"{solver}_coldstart"] = zero_row(solver, warmstart=False)
