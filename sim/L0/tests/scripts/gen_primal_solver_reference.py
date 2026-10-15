@@ -603,19 +603,31 @@ def friction_hold(solver):
     return out
 
 
-def zero_row(solver):
+def zero_row(solver, warmstart=True):
+    """Without the warmstart MuJoCo writes no row's `efc_state` (`warmstart`,
+    `engine_forward.c`), so the case records each row's state from its
+    island's solve (`iefc_state`) instead."""
     xml = ZERO_ROW.format(solver=solver)
+    if not warmstart:
+        xml = xml.replace('jacobian="sparse"/>',
+                          'jacobian="sparse">\n    <flag warmstart="disable"/>\n  </option>')
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
     mujoco.mj_forward(m, d)
     assert mujoco.mj_isSparse(m) and d.nefc == 3, "three rows at the sparse size"
     out = {"xml": xml, "qvel": floats(d.qvel), "nisland": int(d.nisland), "nefc": int(d.nefc),
-           "efc_force": floats(d.efc_force[:d.nefc]),
-           "efc_state": [int(x) for x in d.efc_state[:d.nefc]], "qacc": floats(d.qacc),
-           "niter": []}
+           "efc_force": floats(d.efc_force[:d.nefc]), "qacc": floats(d.qacc), "niter": []}
+    if warmstart:
+        out["efc_state"] = [int(x) for x in d.efc_state[:d.nefc]]
+    else:
+        assert "warmstart" in xml, "the flag is in the document"
+        out["solve_state"] = [int(d.iefc_state[d.map_efc2iefc[r]]) for r in range(d.nefc)]
+        out["island_niter"] = []
     for _ in range(20):
         mujoco.mj_step(m, d)
         out["niter"].append(int(sum(d.solver_niter)))
+        if not warmstart:
+            out["island_niter"].append([int(n) for n in d.solver_niter[:d.nisland]])
     return out
 
 
@@ -694,6 +706,8 @@ def main():
             same_islands[f"{solver}_{cone}_{condim}"] = case
     cases["same_input_islands"] = same_islands
     cases["islands_zero_row"] = {solver: zero_row(solver) for solver in ("Newton", "CG")}
+    for solver in ("Newton", "CG"):
+        cases["islands_zero_row"][f"{solver}_coldstart"] = zero_row(solver, warmstart=False)
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "primal_solver.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))

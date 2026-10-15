@@ -1184,8 +1184,9 @@ impl Primal<'_> {
 /// (`mj_solPrimal`, `engine_solver.c:1861-1872`); `solver_niter` sums the
 /// first [`MJ_NISLAND`] islands' iterations and `solver_stat` holds their
 /// statistics in island order, as MuJoCo records them. A dof outside every
-/// island keeps the warmstart's `qacc_smooth`, a row outside every island
-/// the warmstart's force and state. Otherwise every row at once, scaled by
+/// island keeps the warmstart's `qacc_smooth`; a row outside every island
+/// takes the force and state at its residual `efc_b`, which its zero
+/// Jacobian makes its solution's. Otherwise every row at once, scaled by
 /// 1/(`stat_meaninertia`·max(1, nv)) (`mj_solPrimal`'s island −1).
 ///
 /// Leaves the iterate in `qacc`, and `efc_force`, `efc_state`, `efc_jar`,
@@ -1235,13 +1236,8 @@ pub fn mj_sol_primal(
         return Ok(());
     }
 
-    // Each island from the warmstart's iterate; every row first takes the
-    // warmstart's force and state at `qacc_smooth`, and `efc_b` as its
-    // residual, which a row in no island keeps.
+    // Each island from the warmstart's iterate.
     data.qacc.as_mut_slice().copy_from_slice(&ctx.qacc);
-    data.efc_force.as_mut_slice().copy_from_slice(&ctx.force);
-    data.efc_state.clone_from(&ctx.state);
-    data.efc_jar.copy_from(&data.efc_b);
     data.efc_cost = 0.0;
     data.solver_niter = 0;
     data.solver_stat.clear();
@@ -1258,6 +1254,9 @@ pub fn mj_sol_primal(
             data.solver_stat.extend(stats);
         }
     }
+    // A row in no island has a zero Jacobian (the partition reads its
+    // nonzero entries), so its residual is `efc_b` at every iterate: its
+    // force and state are made there, with the warmstart or without.
     let outside = Subproblem::outside(data);
     if !outside.rows.is_empty() {
         let tree = TreeMass::new(model, data, &outside);
@@ -1266,6 +1265,7 @@ pub fn mj_sol_primal(
             *jar = data.efc_b[row];
         }
         octx.update_constraint(false);
+        octx.write_back(data);
         data.efc_cost += octx.cost;
     }
     Ok(())

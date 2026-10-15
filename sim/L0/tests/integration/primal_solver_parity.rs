@@ -707,15 +707,18 @@ fn island_rows_keep_their_solves_states() {
 
 /// At jacobian="sparse", a hinge with friction loss beside a second hinge
 /// under a fixed tendon of coef 0 with friction loss and a range its length
-/// exceeds: the tendon's two rows are all zero. A row in no island keeps the
-/// warmstart's force and state, made at `qacc_smooth` (for a zero row, its
-/// solution's): every row's force and state, and the acceleration, are
-/// MuJoCo's. Not matched (ledger L143): MuJoCo's partition reads a row's dof
-/// chain (`treeNext`, `engine_island.c:148-162`), so the tendon's rows make
-/// the second hinge an island (2 islands, 2 iterations a step); sim-core's
-/// reads the nonzero entries, so they are in none (1 island, 1 iteration).
+/// exceeds: the tendon's two rows are all zero. A row in no island takes the
+/// force and state at its residual `efc_b`, with the warmstart and without:
+/// every row's force and the acceleration are MuJoCo's, and every row's
+/// state is MuJoCo's `efc_state` (with the warmstart) or its island solve's
+/// (without, where MuJoCo writes no `efc_state`). Not matched (ledger L143):
+/// MuJoCo's partition reads a row's dof chain (`treeNext`,
+/// `engine_island.c:148-162`), so the tendon's rows make the second hinge an
+/// island (2 islands; with the warmstart 2 iterations a step, without it the
+/// first island's 1 and the second's 0 or 1); sim-core's reads the nonzero
+/// entries, so they are in none (1 island, 1 iteration).
 #[test]
-fn a_row_in_no_island_keeps_the_warmstarts_force() {
+fn a_row_in_no_island_takes_its_force_at_its_residual() {
     let g = golden();
     for (solver, case) in g["cases"]["islands_zero_row"].as_object().expect("cases") {
         let (model, mut data) = start(case);
@@ -733,7 +736,8 @@ fn a_row_in_no_island_keeps_the_warmstarts_force() {
             &floats(&case["efc_force"]),
         );
         let states: Vec<usize> = data.efc_state.iter().map(|&s| mj_state(s)).collect();
-        assert_eq!(states, usizes(&case["efc_state"]), "{solver}: efc_state");
+        let want = case.get("efc_state").unwrap_or(&case["solve_state"]);
+        assert_eq!(states, usizes(want), "{solver}: efc_state");
         assert_close(
             &format!("{solver} qacc"),
             data.qacc.as_slice(),
@@ -742,12 +746,22 @@ fn a_row_in_no_island_keeps_the_warmstarts_force() {
         );
         for (k, &want) in usizes(&case["niter"]).iter().enumerate() {
             data.step(&model).expect("step");
-            assert_eq!(
-                (data.solver_niter, want),
-                (1, 2),
-                "{solver}: iterations at step {}, ours and MuJoCo's",
-                k + 1
-            );
+            match case.get("island_niter") {
+                // Without the warmstart, MuJoCo's second island (the tendon's
+                // rows) takes 0 or 1 iterations a step: compare its first.
+                Some(per_island) => assert_eq!(
+                    data.solver_niter,
+                    count(&per_island[k][0]),
+                    "{solver}: iterations at step {}, MuJoCo's first island's",
+                    k + 1
+                ),
+                None => assert_eq!(
+                    (data.solver_niter, want),
+                    (1, 2),
+                    "{solver}: iterations at step {}, ours and MuJoCo's",
+                    k + 1
+                ),
+            }
         }
     }
 }
