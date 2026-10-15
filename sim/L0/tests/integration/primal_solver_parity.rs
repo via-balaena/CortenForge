@@ -10,7 +10,7 @@
 //! round otherwise than MuJoCo's in places, and use libm.
 
 use serde_json::Value;
-use sim_core::{Data, Model, SolverStat};
+use sim_core::{ConstraintState, Data, Model, SolverStat};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -422,12 +422,98 @@ fn sparse_newton_steps_as_mujoco_3_5_0() {
 /// pendulum's dof at its unconstrained acceleration (`warmstart`,
 /// `engine_forward.c:670-676`). Newton and CG, 100 steps within 1e-12 of
 /// MuJoCo's. Started at its warmstart value instead, CG's pendulum dof takes
-/// part in the line search: 2.5e-7 off (measured). (The iteration counts are
-/// not compared: MuJoCo adds noslip's to them, sim-core does not; ledger L129.)
+/// part in the line search: 2.5e-7 off (measured). Each step's iteration
+/// count, noslip's sweeps included, is MuJoCo's.
 #[test]
 fn warmstart_starts_the_dofs_outside_the_islands_unconstrained() {
     let g = golden();
     for (solver, case) in g["cases"]["warmstart_islands"].as_object().expect("cases") {
-        step_and_compare(solver, case, 100, 1e-12, 0);
+        assert_trajectory(solver, case, 100, 1e-12);
     }
+}
+
+/// MuJoCo's `mjtConstraintState` value of a row's state.
+fn mj_state(state: ConstraintState) -> usize {
+    match state {
+        ConstraintState::Satisfied => 0,
+        ConstraintState::Quadratic => 1,
+        ConstraintState::LinearNeg => 2,
+        ConstraintState::LinearPos => 3,
+        ConstraintState::Cone => 4,
+    }
+}
+
+/// Noslip counts its sweeps in `solver_niter`, records their statistics after
+/// the solver's and leaves each row's state as MuJoCo's `dualState` gives it
+/// (ledger L129): an equality, a friction-loss row and a contact, pyramidal
+/// and elliptic, noslip on, Newton and CG. The first forward's iteration,
+/// active-row and change counts and the rows' states are MuJoCo's, each
+/// statistic's improvement within 1e-12 of the case's largest (2.8e-16
+/// measured; the smallest differ by up to 8e-3 relative), and each step's
+/// iteration count through 200 steps. The elliptic contact holds
+/// inside its cone: sliding, noslip leaves it on the cone's edge, where the
+/// zone turns on the last bit, and the forces reaching noslip already differ
+/// from MuJoCo's by a few ulps (measured).
+#[test]
+fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["noslip_rows"].as_object().expect("cases") {
+        let (model, mut data) = start(case);
+        data.forward(&model).expect("forward");
+        let first = &case["forward"];
+        let stats = &first["stats"];
+        let field = |f: fn(&SolverStat) -> usize| -> Vec<usize> {
+            data.solver_stat.iter().map(f).collect()
+        };
+        let checks = [
+            (
+                "nefc",
+                vec![data.efc_type.len()],
+                vec![count(&first["nefc"])],
+            ),
+            (
+                "niter",
+                vec![data.solver_niter],
+                vec![count(&stats["niter"])],
+            ),
+            ("nactive", field(|s| s.nactive), usizes(&stats["nactive"])),
+            ("nchange", field(|s| s.nchange), usizes(&stats["nchange"])),
+            ("neval", field(|s| s.neval), usizes(&stats["neval"])),
+            ("nupdate", field(|s| s.nupdate), usizes(&stats["nupdate"])),
+            (
+                "efc_state",
+                data.efc_state.iter().map(|&s| mj_state(s)).collect(),
+                usizes(&first["efc_state"]),
+            ),
+        ];
+        for (what, ours, mujoco) in checks {
+            if ours != mujoco {
+                off.push(format!("{name} {what}: {ours:?}, MuJoCo {mujoco:?}"));
+            }
+        }
+        let want = floats(&stats["improvement"]);
+        let scale = want.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        for (k, (s, w)) in data.solver_stat.iter().zip(&want).enumerate() {
+            if (s.improvement - w).abs() > 1e-12 * scale {
+                off.push(format!(
+                    "{name} improvement {k}: {:e}, MuJoCo {w:e}",
+                    s.improvement
+                ));
+            }
+        }
+        let (model, mut data) = start(case);
+        for (k, want) in usizes(&case["niter"]).into_iter().enumerate() {
+            data.step(&model).expect("step");
+            if data.solver_niter != want {
+                let got = data.solver_niter;
+                off.push(format!(
+                    "{name} step {}: {got} iterations, MuJoCo {want}",
+                    k + 1
+                ));
+                break;
+            }
+        }
+    }
+    assert!(off.is_empty(), "{off:#?}");
 }

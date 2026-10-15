@@ -47,6 +47,20 @@ started from `warmstart` (`engine_forward.c:611-687`). Every case disables islan
   `engine_forward.c:762-765`), from a warmstart that starts the pendulum's dof at
   `qacc_smooth` (`:670-676`); Newton and CG: qpos and qvel after steps 1, 10, 50 and
   100.
+- noslip_rows: mixed_rows' scene at condim 3, pyramidal and elliptic, Newton and CG, with
+  noslip_iterations 10: noslip sweeps a friction-loss row and a contact's friction rows,
+  counts its sweeps in `solver_niter`, appends their statistics after the solver's and
+  leaves `efc_state` as `dualState` (`engine_solver.c:556`, `:716-741`); the first
+  forward's statistics and rows' states, qpos and qvel after steps 1, 10, 50 and 200,
+  and each step's iteration count. Under the elliptic cone the puck starts at a tenth of
+  its speed, so its friction stays inside the cone (by 0.84 of mu*N, measured): sliding,
+  noslip leaves it on the cone's edge, where `dualState`'s zone is set by the last bit
+  (MuJoCo's own Newton run puts it in the cone and its CG run outside). And a hinge held
+  at its limit with noslip on and no friction row: MuJoCo still sweeps (twice: the first
+  sweep's improvement is the cost correction over every row, `engine_solver.c:563-567`).
+  And the pyramidal scene with the puck slow and the solver stopped after one iteration:
+  noslip then changes rows' states on its first sweep (MuJoCo's nchange 1 under Newton,
+  2 under CG), which it does in no other case here.
 - sparse_spheres: ten free spheres sliding and spinning on a plane under Newton with
   an elliptic cone, 60 dofs: MuJoCo's sparse Hessian (`mj_isSparse`, nv >= 60). qpos
   and qvel after steps 1, 10 and 50, and each step's iteration count.
@@ -260,6 +274,18 @@ MIXED_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 0, 0, 3.0]
 # ... and rolls about x and y too, so a condim-6 contact's five tangential
 # components are all nonzero.
 ROLLING_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 1.0, -0.7, 3.0]
+# ... and with the sphere at a tenth of that speed, so its friction holds inside the cone.
+NOSLIP_STICK_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.05, 0.02, 0, 0, 0, 3.0]
+
+NOSLIP_WITHOUT_ITS_ROWS = """<mujoco model="noslip_without_its_rows">
+  <option timestep="0.002" solver="{solver}" noslip_iterations="10"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <joint type="hinge" axis="0 1 0" limited="true" range="-0.3 -0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>"""
 
 
 def floats(a):
@@ -364,6 +390,31 @@ def mixed_rows():
     return out
 
 
+def noslip_case(xml, qvel):
+    case = trajectory(xml, qvel, 200, (1, 10, 50, 200))
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[:] = qvel
+    mujoco.mj_forward(m, d)
+    case["forward"] = {"stats": stats(m, d), "nefc": int(d.nefc),
+                       "efc_state": [int(x) for x in d.efc_state[:d.nefc]]}
+    return case
+
+
+def noslip_rows():
+    out = {}
+    for solver in ("Newton", "CG"):
+        def mixed(cone, options=""):
+            return MIXED_ROWS.format(solver=solver, cone=cone, condim=3).replace(
+                f'solver="{solver}"', f'solver="{solver}" noslip_iterations="10"{options}')
+        out[f"{solver}_pyramidal"] = noslip_case(mixed("pyramidal"), MIXED_QVEL)
+        out[f"{solver}_elliptic"] = noslip_case(mixed("elliptic"), NOSLIP_STICK_QVEL)
+        out[f"{solver}_pyramidal_one_iteration"] = noslip_case(
+            mixed("pyramidal", ' iterations="1"'), NOSLIP_STICK_QVEL)
+        out[f"{solver}_limit_only"] = noslip_case(NOSLIP_WITHOUT_ITS_ROWS.format(solver=solver), [0.5])
+    return out
+
+
 def same_input(xml, qvel, start=None):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -423,6 +474,7 @@ def main():
         "sparse_stack": two_tree_cone(SPARSE_STACK_XML, SPARSE_STACK_QVEL),
         "eulerdamp_asleep": few_iterations(EULERDAMP_ASLEEP, (("CG", 1), ("CG", 3), ("Newton", 1))),
         "mixed_rows": mixed_rows(),
+        "noslip_rows": noslip_rows(),
     }
     same = {"newton_box": same_input(NEWTON_BOX.format(iterations=100), None, census_start),
             "cg_connect": same_input(CG_CONNECT, None, census_start)}

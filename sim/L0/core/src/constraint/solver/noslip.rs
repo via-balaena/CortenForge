@@ -10,7 +10,7 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::qcqp;
 use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::cholesky_solve_in_place;
-use crate::types::{ConstraintType, Data, Model};
+use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
 
 /// Tag for each noslip row, used to select the correct projection.
 #[derive(Clone, Copy)]
@@ -44,6 +44,10 @@ enum NoslipRowKind {
 /// Called after any solver (Newton, PGS, CG) when `model.noslip_iterations > 0`.
 /// Matches MuJoCo's `mj_solNoSlip`. Leaves `efc_force` and `qfrc_constraint`;
 /// the forward pass makes the acceleration from them (`mj_fwd_acceleration`).
+/// Its sweeps are counted in `solver_niter` and each one's statistics are
+/// appended to `solver_stat` after the solver's, and `efc_state` is left as
+/// [`dual_state`] classifies the final forces (`engine_solver.c:556`,
+/// `:716-741`).
 ///
 /// Processes two row ranges (NOT equality rows):
 /// 1. Friction-loss rows: PGS update with interval clamping [-floss, +floss]
@@ -126,10 +130,9 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
         }
     }
 
+    // No early return without noslip rows: MuJoCo's sweep still runs, and
+    // is counted and recorded.
     let n = noslip_rows.len();
-    if n == 0 {
-        return;
-    }
 
     // =========================================================================
     // 2. Build noslip Delassus submatrix A (UNREGULARIZED) and effective bias.
@@ -200,18 +203,23 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
     // Convergence scaling (matches CG/Newton: 1/(meaninertia * max(1, nv)))
     let conv_scale = 1.0 / (data.stat_meaninertia * (1.0_f64).max(nv as f64));
 
+    // The rows' states before the first sweep, as MuJoCo's `dualState`.
+    let mut state = std::mem::take(&mut data.efc_state);
+    dual_state(data, &mut state);
+
     // =========================================================================
     // 4. PGS iterations with per-type projection
     // =========================================================================
-    for iter_num in 0..noslip_iter {
+    let mut iter_num = 0;
+    while iter_num < noslip_iter {
         let mut improvement = 0.0_f64;
 
         // Iter-0 cost correction: account for regularization cost removed by
-        // unregularized noslip pass. Matches MuJoCo's mj_solNoSlip iter==0 branch.
+        // unregularized noslip pass, over every row as MuJoCo's mj_solNoSlip
+        // iter==0 branch (`engine_solver.c:563-567`).
         if iter_num == 0 {
-            for fi in 0..n {
-                let row = noslip_rows[fi];
-                improvement += 0.5 * f[fi] * f[fi] * data.efc_R[row];
+            for row in 0..nefc {
+                improvement += 0.5 * data.efc_force[row] * data.efc_force[row] * data.efc_R[row];
             }
         }
 
@@ -423,20 +431,35 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
             }
         }
 
+        // The sweep's forces, then the rows' states from them and the sweep's
+        // statistics after the solver's (`engine_solver.c:716-729`).
+        for (fi, &row) in noslip_rows.iter().enumerate() {
+            data.efc_force[row] = f[fi];
+        }
+        let old_state = state.clone();
+        let nactive = dual_state(data, &mut state);
+        let nchange = old_state.iter().zip(&state).filter(|(a, b)| a != b).count();
+        let improvement = improvement * conv_scale;
+        data.solver_stat.push(SolverStat {
+            improvement,
+            gradient: 0.0,
+            lineslope: 0.0,
+            nactive,
+            nchange,
+            neval: 0,
+            nupdate: 0,
+        });
+        iter_num += 1;
+
         // Cost-based convergence (matches MuJoCo's CG/Newton pattern)
-        if improvement * conv_scale < noslip_tol {
+        if improvement < noslip_tol {
             break;
         }
     }
+    data.efc_state = state;
+    data.solver_niter += iter_num;
 
-    // =========================================================================
-    // 5. Write back updated forces
-    // =========================================================================
-    for (fi, &row) in noslip_rows.iter().enumerate() {
-        data.efc_force[row] = f[fi];
-    }
-
-    // 6. Recompute qfrc_constraint = J^T · efc_force
+    // 5. Recompute qfrc_constraint = J^T · efc_force
     data.qfrc_constraint.fill(0.0);
     for i_row in 0..nefc {
         let force = data.efc_force[i_row];
@@ -447,4 +470,62 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
             data.qfrc_constraint[col] += data.efc_J[(i_row, col)] * force;
         }
     }
+}
+
+/// Each row's state from its force alone, MuJoCo's `dualState`
+/// (`engine_solver.c:233-310`); returns the rows not satisfied. Equality rows
+/// are quadratic; a friction-loss row is linear at its bound, the side
+/// opposite the primal's; a limit or non-elliptic contact row is quadratic
+/// while its force is positive; an elliptic contact's rows take its zone in
+/// the regular cone.
+fn dual_state(data: &Data, state: &mut [ConstraintState]) -> usize {
+    let (ne, nf, nefc) = (data.ne, data.nf, data.efc_type.len());
+    let force = &data.efc_force;
+    let mut nactive = ne + nf;
+    state[..ne].fill(ConstraintState::Quadratic);
+    for i in ne..ne + nf {
+        let floss = data.efc_floss[i];
+        state[i] = if force[i] <= -floss {
+            ConstraintState::LinearPos
+        } else if force[i] >= floss {
+            ConstraintState::LinearNeg
+        } else {
+            ConstraintState::Quadratic
+        };
+    }
+    let mut i = ne + nf;
+    while i < nefc {
+        if data.efc_type[i] != ConstraintType::ContactElliptic {
+            if force[i] <= 0.0 {
+                state[i] = ConstraintState::Satisfied;
+            } else {
+                state[i] = ConstraintState::Quadratic;
+                nactive += 1;
+            }
+            i += 1;
+            continue;
+        }
+        // μ here is friction[0]; MuJoCo's `con->mu` is friction[0]·√(R[i+1]/R[i])
+        // (`engine_core_constraint.c:1540`), as in `constraint_update` (book P38).
+        let dim = data.efc_dim[i];
+        let friction = &data.efc_mu[i];
+        let mu = friction[0];
+        let n = force[i] / mu;
+        let t = (1..dim)
+            .map(|j| (force[i + j] / friction[j - 1]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let zone = if mu * n >= t {
+            ConstraintState::Satisfied
+        } else if n + mu * t <= 0.0 {
+            nactive += dim;
+            ConstraintState::Quadratic
+        } else {
+            nactive += dim;
+            ConstraintState::Cone
+        };
+        state[i..i + dim].fill(zone);
+        i += dim;
+    }
+    nactive
 }
