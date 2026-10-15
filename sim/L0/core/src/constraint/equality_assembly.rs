@@ -4,8 +4,6 @@
 //! Populates the equality rows in the unified `efc_*` arrays.
 //! Called from [`super::assembly::assemble_unified_constraints`] during Phase 3a.
 
-use nalgebra::DVector;
-
 use crate::constraint::equality::{
     extract_connect_jacobian, extract_distance_jacobian, extract_joint_equality_jacobian,
     extract_tendon_equality_jacobian, extract_weld_jacobian,
@@ -18,16 +16,10 @@ use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp};
 
 /// Assemble equality constraint rows (Phase 3a), in equality order.
 ///
-/// Populates efc_J, efc_type, efc_pos, efc_margin, efc_vel, and all impedance
+/// Populates efc_J, efc_type, efc_pos, efc_margin, and all impedance
 /// fields for each equality constraint. Increments `row` for each row
 /// written.
-pub(super) fn assemble_equality_rows(
-    model: &Model,
-    data: &mut Data,
-    nv: usize,
-    row: &mut usize,
-    qacc_smooth: &DVector<f64>,
-) {
+pub(super) fn assemble_equality_rows(model: &Model, data: &mut Data, nv: usize, row: &mut usize) {
     let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     for eq_id in 0..model.neq {
         if !model.eq_active[eq_id]
@@ -38,7 +30,7 @@ pub(super) fn assemble_equality_rows(
 
         let rows = match model.eq_type[eq_id] {
             EqualityType::Flex => {
-                assemble_flex_equality_rows(model, data, nv, row, qacc_smooth, eq_id);
+                assemble_flex_equality_rows(model, data, nv, row, eq_id);
                 continue;
             }
             EqualityType::Connect => extract_connect_jacobian(model, data, eq_id),
@@ -85,12 +77,10 @@ pub(super) fn assemble_equality_rows(
                 data,
                 nv,
                 row,
-                qacc_smooth,
                 sr,
                 si,
                 rows.pos[r],
                 0.0,
-                rows.vel[r],
                 0.0,
                 ConstraintType::Equality,
                 1,
@@ -134,7 +124,6 @@ fn assemble_flex_equality_rows(
     data: &mut Data,
     nv: usize,
     row: &mut usize,
-    qacc_smooth: &DVector<f64>,
     eq_id: usize,
 ) {
     let f = model.eq_obj1id[eq_id];
@@ -149,18 +138,15 @@ fn assemble_flex_equality_rows(
         for k in rowadr..rowadr + model.flexedge_J_rownnz[e] {
             data.efc_J[(*row, model.flexedge_J_colind[k])] = data.flexedge_J[k];
         }
-        let vel = data.flexedge_velocity[e];
         finalize_constraint_row(
             model,
             data,
             nv,
             row,
-            qacc_smooth,
             model.eq_solref[eq_id],
             model.eq_solimp[eq_id],
             pos,
             0.0,
-            vel,
             0.0,
             ConstraintType::Equality,
             1,

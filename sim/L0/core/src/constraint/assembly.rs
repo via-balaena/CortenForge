@@ -10,8 +10,8 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::{
-    MJ_MINVAL, ball_limit_axis_angle, compute_aref, compute_diag_approx_exact, compute_impedance,
-    compute_kbip, compute_regularization,
+    MJ_MINVAL, ball_limit_axis_angle, compute_diag_approx_exact, compute_impedance,
+    compute_regularization,
 };
 use crate::quat::qpos_quat;
 use crate::types::flags::disabled;
@@ -41,12 +41,13 @@ pub fn tendon_deadband_displacement(length: f64, range: [f64; 2]) -> f64 {
     }
 }
 
-/// Populate per-row metadata and compute impedance, KBIP, aref, diagApprox, R, D.
+/// Populate per-row metadata and compute impedance, diagApprox, R, D.
 ///
 /// This is the shared finalizer called for every constraint row after the
-/// Jacobian, position error, and velocity error have been written into the
-/// `efc_*` arrays. It pushes type/pos/margin/vel/solref/solimp/floss/mu/dim/id,
-/// computes impedance and regularization, then writes `efc_aref` and `efc_b`.
+/// Jacobian and position error have been written into the `efc_*` arrays. It
+/// pushes type/pos/margin/solref/solimp/floss/mu/dim/id and computes
+/// impedance and regularization. The velocity and the reference acceleration
+/// are every row's at once ([`crate::constraint::mj_reference_constraint`]).
 ///
 /// Increments `*row` by 1 on completion.
 // Assembly takes the full per-iteration constraint state (model, data, J/M/b/lambda buffers, output sink); bundling would obscure the math against the analytical references.
@@ -56,12 +57,10 @@ pub fn finalize_constraint_row(
     data: &mut Data,
     nv: usize,
     row: &mut usize,
-    qacc_smooth: &DVector<f64>,
     solref: [f64; 2],
     solimp: [f64; 5],
     pos: f64,
     margin: f64,
-    vel: f64,
     floss: f64,
     ctype: ConstraintType,
     dim_val: usize,
@@ -75,12 +74,10 @@ pub fn finalize_constraint_row(
         data,
         nv,
         row,
-        qacc_smooth,
         solref,
         solimp,
         pos,
         margin,
-        vel,
         floss,
         ctype,
         dim_val,
@@ -102,12 +99,10 @@ pub fn finalize_constraint_row_imp(
     data: &mut Data,
     nv: usize,
     row: &mut usize,
-    qacc_smooth: &DVector<f64>,
     solref: [f64; 2],
     solimp: [f64; 5],
     pos: f64,
     margin: f64,
-    vel: f64,
     floss: f64,
     ctype: ConstraintType,
     dim_val: usize,
@@ -119,7 +114,6 @@ pub fn finalize_constraint_row_imp(
     data.efc_type.push(ctype);
     data.efc_pos.push(pos);
     data.efc_margin.push(margin);
-    data.efc_vel[*row] = vel;
     data.efc_solref.push(solref);
     data.efc_solimp.push(solimp);
     data.efc_floss.push(floss);
@@ -144,17 +138,6 @@ pub fn finalize_constraint_row_imp(
     let (r_val, d_val) = compute_regularization(imp, diag);
     data.efc_R.push(r_val);
     data.efc_D.push(d_val);
-
-    // KBIP + aref
-    let (k, b) = compute_kbip(model, solref, solimp);
-    data.efc_aref[*row] = compute_aref(k, b, imp, pos, margin, vel);
-
-    // efc_b = J_row · qacc_smooth - aref
-    let mut j_dot_qacc = 0.0;
-    for col in 0..nv {
-        j_dot_qacc += data.efc_J[(*row, col)] * qacc_smooth[col];
-    }
-    data.efc_b[*row] = j_dot_qacc - data.efc_aref[*row];
 
     *row += 1;
 }
@@ -316,14 +299,12 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     data.efc_type = Vec::with_capacity(nefc);
     data.efc_pos = Vec::with_capacity(nefc);
     data.efc_margin = Vec::with_capacity(nefc);
-    data.efc_vel = DVector::zeros(nefc);
     data.efc_solref = Vec::with_capacity(nefc);
     data.efc_solimp = Vec::with_capacity(nefc);
     data.efc_diagApprox = Vec::with_capacity(nefc);
     data.efc_R = Vec::with_capacity(nefc);
     data.efc_D = Vec::with_capacity(nefc);
     data.efc_imp = Vec::with_capacity(nefc);
-    data.efc_aref = DVector::zeros(nefc);
     data.efc_floss = Vec::with_capacity(nefc);
     data.efc_mu = Vec::with_capacity(nefc);
     data.efc_dim = Vec::with_capacity(nefc);
@@ -331,7 +312,6 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     data.efc_state = vec![ConstraintState::Quadratic; nefc];
     data.efc_force = DVector::zeros(nefc);
     data.efc_jar = DVector::zeros(nefc);
-    data.efc_b = DVector::zeros(nefc);
     data.efc_cone_hessian = vec![None; data.contacts.len()];
     data.ncone = 0;
 
@@ -341,7 +321,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 
     // --- 3a: Equality constraints + flex edges (S4.4: gated on DISABLE_EQUALITY) ---
     if !equality_disabled {
-        assemble_equality_rows(model, data, nv, &mut row, qacc_smooth);
+        assemble_equality_rows(model, data, nv, &mut row);
     }
 
     // --- 3b: DOF friction loss (S4.5: gated on DISABLE_FRICTIONLOSS) ---
@@ -353,19 +333,16 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             }
             // Jacobian: 1×nv with 1.0 at dof_idx
             data.efc_J[(row, dof_idx)] = 1.0;
-            let vel = data.qvel[dof_idx];
             let bw = model.dof_invweight0.get(dof_idx).copied().unwrap_or(0.0);
             finalize_constraint_row(
                 model,
                 data,
                 nv,
                 &mut row,
-                qacc_smooth,
                 model.dof_solref[dof_idx],
                 model.dof_solimp[dof_idx],
                 0.0,
                 0.0,
-                vel,
                 fl,
                 ConstraintType::FrictionLoss,
                 1,
@@ -388,19 +365,16 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             if constraint_rows_empty(model, data, row, 1, data.ten_J_rownnz[t] == 0) {
                 continue;
             }
-            let vel = data.ten_velocity[t];
             let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
             finalize_constraint_row(
                 model,
                 data,
                 nv,
                 &mut row,
-                qacc_smooth,
                 model.tendon_solref_fri[t],
                 model.tendon_solimp_fri[t],
                 0.0,
                 0.0,
-                vel,
                 fl,
                 ConstraintType::FrictionLoss,
                 1,
@@ -422,7 +396,6 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     let (limit_min, limit_max) = model.jnt_range[jnt_id];
                     let dof_adr = model.jnt_dof_adr[jnt_id];
                     let q = data.qpos[model.jnt_qpos_adr[jnt_id]];
-                    let qdot = data.qvel[dof_adr];
                     let sr = model.jnt_solref[jnt_id];
                     let si = model.jnt_solimp[jnt_id];
                     let margin = model.jnt_margin[jnt_id];
@@ -438,12 +411,10 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             data,
                             nv,
                             &mut row,
-                            qacc_smooth,
                             sr,
                             si,
                             dist_lower,
                             margin,
-                            qdot,
                             0.0,
                             ConstraintType::LimitJoint,
                             1,
@@ -462,12 +433,10 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             data,
                             nv,
                             &mut row,
-                            qacc_smooth,
                             sr,
                             si,
                             dist_upper,
                             margin,
-                            -qdot,
                             0.0,
                             ConstraintType::LimitJoint,
                             1,
@@ -490,22 +459,16 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                         data.efc_J[(row, dof_adr + 1)] = -unit_dir.y;
                         data.efc_J[(row, dof_adr + 2)] = -unit_dir.z;
 
-                        let vel = -(unit_dir.x * data.qvel[dof_adr]
-                            + unit_dir.y * data.qvel[dof_adr + 1]
-                            + unit_dir.z * data.qvel[dof_adr + 2]);
-
                         let bw = model.dof_invweight0.get(dof_adr).copied().unwrap_or(0.0);
                         finalize_constraint_row(
                             model,
                             data,
                             nv,
                             &mut row,
-                            qacc_smooth,
                             model.jnt_solref[jnt_id],
                             model.jnt_solimp[jnt_id],
                             dist,
                             margin,
-                            vel,
                             0.0,
                             ConstraintType::LimitJoint,
                             1,
@@ -528,7 +491,6 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             }
             let (limit_min, limit_max) = model.tendon_range[t];
             let length = data.ten_length[t];
-            let vel = data.ten_velocity[t];
             let sr = model.tendon_solref_lim[t];
             let si = model.tendon_solimp_lim[t];
             let margin = model.tendon_margin[t];
@@ -549,12 +511,10 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     data,
                     nv,
                     &mut row,
-                    qacc_smooth,
                     sr,
                     si,
                     dist_lower,
                     margin,
-                    vel,
                     0.0,
                     ConstraintType::LimitTendon,
                     1,
@@ -579,12 +539,10 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     data,
                     nv,
                     &mut row,
-                    qacc_smooth,
                     sr,
                     si,
                     dist_upper,
                     margin,
-                    -vel,
                     0.0,
                     ConstraintType::LimitTendon,
                     1,
@@ -601,7 +559,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     let pyramidal_ranges = if contact_disabled {
         Vec::new()
     } else {
-        let ranges = assemble_contact_rows(model, data, nv, &mut row, qacc_smooth, &contacts);
+        let ranges = assemble_contact_rows(model, data, nv, &mut row, &contacts);
         postprocess_pyramidal_r_scaling(model, data, &contacts, &ranges);
         ranges
     };
@@ -613,6 +571,12 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
         truncate_rows(data, row);
     }
     let nefc = row;
+
+    // Every row's velocity and reference acceleration, then
+    // `efc_b = J·qacc_smooth − aref` (MuJoCo `mj_fwdConstraint`,
+    // `engine_forward.c:755-756`).
+    crate::constraint::mj_reference_constraint(model, data);
+    data.efc_b = crate::constraint::mul_jac_vec(data, qacc_smooth.as_slice()) - &data.efc_aref;
 
     // === Phase 4: Count ne/nf for solver dispatch (§29.4) ===
     // Ordering: [0..ne) = equality+flex, [ne..ne+nf) = friction, [ne+nf..nefc) = limits+contacts
@@ -670,11 +634,8 @@ fn constraint_rows_empty(
 /// Cut the arrays the counting pass sized to the `nefc` rows made.
 fn truncate_rows(data: &mut Data, nefc: usize) {
     data.efc_J = data.efc_J.rows(0, nefc).into_owned();
-    data.efc_vel = data.efc_vel.rows(0, nefc).into_owned();
-    data.efc_aref = data.efc_aref.rows(0, nefc).into_owned();
     data.efc_force = data.efc_force.rows(0, nefc).into_owned();
     data.efc_jar = data.efc_jar.rows(0, nefc).into_owned();
-    data.efc_b = data.efc_b.rows(0, nefc).into_owned();
     data.efc_state.truncate(nefc);
 }
 

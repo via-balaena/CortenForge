@@ -16,11 +16,12 @@ pub(crate) mod impedance;
 pub(crate) mod jacobian;
 pub(crate) mod solver;
 
-use nalgebra::{DMatrix, DVector, Vector3};
+use nalgebra::{DMatrix, DVector};
 
+use crate::constraint::impedance::{compute_aref, compute_kbip};
 use crate::dynamics::factor::mj_solve_m;
 use crate::jacobian::mj_apply_ft;
-use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mju_dot};
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, Data, ENABLE_SLEEP, Integrator, MjJointType, Model,
@@ -449,26 +450,37 @@ pub(crate) fn clear_constraint_rows(model: &Model, data: &mut Data) {
     data.nisland = 0;
 }
 
-/// Compute the velocity of a point on a body.
-pub(crate) fn compute_point_velocity(
-    data: &Data,
-    body_id: usize,
-    point: Vector3<f64>,
-) -> Vector3<f64> {
-    if body_id == 0 {
-        return Vector3::zeros(); // World is stationary
-    }
+/// `J·vec` over the constraint rows, as MuJoCo's dense `mj_mulJacVec`
+/// (`engine_core_constraint.c:333-349`): each row's `mju_dot` with `vec`.
+/// At the sparse size MuJoCo takes it as a sparse product, which rounds
+/// otherwise.
+pub(crate) fn mul_jac_vec(data: &Data, vec: &[f64]) -> DVector<f64> {
+    let rows = data.efc_J.transpose();
+    DVector::from_iterator(
+        rows.ncols(),
+        rows.column_iter().map(|row| mju_dot(row.as_slice(), vec)),
+    )
+}
 
-    // Get body velocity (linear and angular)
-    let cvel = &data.cvel[body_id];
-    let v_linear = Vector3::new(cvel[3], cvel[4], cvel[5]);
-    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
-
-    // Point velocity = v_body + omega × r
-    let body_pos = data.xpos[body_id];
-    let r = point - body_pos;
-
-    v_linear + omega.cross(&r)
+/// Every row's velocity `J·qvel` and reference acceleration
+/// `aref = −B·vel − K·imp·(pos − margin)`, as MuJoCo's
+/// `mj_referenceConstraint` (`engine_core_constraint.c:2375-2387`), with `K`
+/// and `B` from the row's `solref` and `solimp` as `mj_makeImpedance` makes
+/// them.
+pub(crate) fn mj_reference_constraint(model: &Model, data: &mut Data) {
+    data.efc_vel = mul_jac_vec(data, data.qvel.as_slice());
+    let aref = (0..data.efc_type.len()).map(|i| {
+        let (k, b) = compute_kbip(model, data.efc_solref[i], data.efc_solimp[i]);
+        compute_aref(
+            k,
+            b,
+            data.efc_imp[i],
+            data.efc_pos[i],
+            data.efc_margin[i],
+            data.efc_vel[i],
+        )
+    });
+    data.efc_aref = DVector::from_iterator(data.efc_type.len(), aref);
 }
 
 /// Solve the constraint rows `data` holds with MuJoCo's primal solver,
