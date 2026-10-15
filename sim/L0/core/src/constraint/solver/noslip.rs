@@ -577,5 +577,15 @@ mod tests {
         let mut force = [-0.5, 0.0];
         assert_eq!(cost_change(&a, &mut force, &old, &res), 0.0);
         assert_eq!(force, old);
+        // With no residual, δ = (d, 0) changes the cost by d²: a rise of 2⁻³⁴
+        // (under 1e-10) is kept and counted, one of 2⁻³² (over it) undone.
+        let still = [0.0, 0.0];
+        let small = 2f64.powi(-17);
+        let mut force = [small, 0.0];
+        assert_eq!(cost_change(&a, &mut force, &old, &still), 2f64.powi(-34));
+        assert_eq!(force, [small, 0.0]);
+        let mut force = [2.0 * small, 0.0];
+        assert_eq!(cost_change(&a, &mut force, &old, &still), 0.0);
+        assert_eq!(force, old);
     }
 }
