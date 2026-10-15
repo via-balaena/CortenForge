@@ -9,6 +9,7 @@ use nalgebra::{DMatrix, DVector};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::qcqp;
 use crate::dynamics::factor::mj_solve_m;
+use crate::linalg::cholesky_solve_in_place;
 use crate::types::{ConstraintType, Data, Model};
 
 /// Tag for each noslip row, used to select the correct projection.
@@ -50,13 +51,17 @@ enum NoslipRowKind {
 ///
 /// All noslip processing uses the UNREGULARIZED Delassus matrix A (without R).
 /// This matches MuJoCo's flg_subR=1 in ARdiaginv() and residual().
+///
+/// Under the implicit spring-damper integrator `m_impl_factor` is the
+/// Cholesky factor of `M_impl`, which takes the mass matrix's place, as it
+/// does for Newton, CG and PGS.
 // Single-letter names follow the Delassus-matrix notation; cast lints are usize → f64 for residual norms; indexed loops mutate parallel multiplier arrays at the same row index.
 #[allow(
     clippy::many_single_char_names,
     clippy::cast_precision_loss,
     clippy::needless_range_loop
 )]
-pub fn noslip_postprocess(model: &Model, data: &mut Data) {
+pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<&DMatrix<f64>>) {
     let nv = model.nv;
     let nefc = data.efc_type.len();
     let noslip_iter = model.noslip_iterations;
@@ -155,7 +160,10 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
         for col in 0..nv {
             minv_ji[col] = data.efc_J[(row_i, col)];
         }
-        mj_solve_m(model, data, minv_ji.as_mut_slice());
+        match m_impl_factor {
+            Some(factor) => cholesky_solve_in_place(factor, &mut minv_ji),
+            None => mj_solve_m(model, data, minv_ji.as_mut_slice()),
+        }
 
         // Start from efc_b (constraint bias, fixed at assembly)
         let mut b_i = data.efc_b[row_i];

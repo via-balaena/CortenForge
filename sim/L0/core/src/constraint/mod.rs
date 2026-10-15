@@ -378,7 +378,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     // acceleration is made from the forces afterwards (`mj_fwd_acceleration`),
     // not taken from the primal iterate.
     if model.noslip_iterations > 0 {
-        noslip_postprocess(model, data);
+        noslip_postprocess(model, data, m_impl_owned.as_ref().map(|(_, f)| f));
         data.primal_qacc = false;
     }
 

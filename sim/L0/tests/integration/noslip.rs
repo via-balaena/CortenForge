@@ -868,3 +868,57 @@ fn noslip_acceleration_comes_from_its_forces() {
         );
     }
 }
+
+/// Under implicitspringdamper noslip solves over `M_impl`, the matrix the
+/// acceleration is made with (ledger L128): a sphere rolling down an incline
+/// without slipping, its free joint damped so `M_impl` is not `M`. Noslip
+/// leaves a friction row inside its cone with no unregularized residual,
+/// `J·qacc − aref = 0`; over `M` it left one of the order of `h·D` against
+/// `M`. Each solver.
+#[test]
+fn noslip_under_implicitspringdamper_solves_over_m_impl() {
+    let mut off = Vec::new();
+    for solver in ["Newton", "CG", "PGS"] {
+        let xml = format!(
+            r#"<mujoco>
+              <option timestep="0.002" integrator="implicitspringdamper" solver="{solver}"
+                      cone="elliptic" noslip_iterations="100" noslip_tolerance="1e-15"/>
+              <worldbody>
+                <geom type="plane" size="5 5 0.1" euler="20 0 0"/>
+                <body pos="0 -0.034 0.0935">
+                  <joint type="free" damping="10"/>
+                  <geom type="sphere" size="0.1" mass="1" friction="1 0.005 0.0001"/>
+                </body>
+              </worldbody>
+            </mujoco>"#
+        );
+        let model = sim_mjcf::load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        for _ in 0..20 {
+            data.step(&model).expect("step");
+        }
+        data.forward(&model).expect("forward");
+        let i = (0..data.efc_type.len())
+            .find(|&i| data.efc_type[i] == ConstraintType::ContactElliptic)
+            .unwrap_or_else(|| panic!("{solver}: in contact"));
+        let (normal, mu) = (data.efc_force[i], data.efc_mu[i]);
+        let tangent = (1..data.efc_dim[i])
+            .map(|j| (data.efc_force[i + j] / mu[j - 1]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(tangent < 0.5 * normal, "{solver}: friction inside its cone");
+        for r in i + 1..i + data.efc_dim[i] {
+            let jqacc: f64 = (0..model.nv)
+                .map(|c| data.efc_J[(r, c)] * data.qacc[c])
+                .sum();
+            let residual = jqacc - data.efc_aref[r];
+            if residual.abs() > 1e-9 {
+                off.push(format!("{solver} row {r}: {residual:e}"));
+            }
+        }
+    }
+    assert!(
+        off.is_empty(),
+        "friction rows' residual J·qacc − aref: {off:?}"
+    );
+}
