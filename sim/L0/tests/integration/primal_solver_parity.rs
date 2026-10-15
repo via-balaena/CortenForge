@@ -11,7 +11,7 @@
 //! round otherwise than MuJoCo's in places, and use libm.
 
 use serde_json::Value;
-use sim_core::{ConstraintState, Data, Model, SolverStat};
+use sim_core::{ConstraintState, DISABLE_ISLAND, Data, Model, SolverStat};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -699,6 +699,108 @@ fn islands_iterate_as_mujoco() {
     }
 }
 
+/// Islands whose mass matrix couples their dofs (a two-link arm; a free body
+/// whose centre of mass is off its origin), dense under CG and at the sparse
+/// size under Newton (beside ten spheres), so an island's scale reads the
+/// diagonal of a block with entries off it; and noslip on with islands
+/// enabled, where MuJoCo solves every row at once (`mj_fwdConstraint`'s
+/// condition, `engine_forward.c:763-766`). The first forward's island count,
+/// iteration counts and acceleration, each step's island and iteration
+/// counts, and the state within 1e-12 through step 50 are MuJoCo's.
+#[test]
+fn islands_with_coupled_dofs_or_noslip_step_as_mujoco() {
+    let g = golden();
+    for (name, case) in g["cases"]["islands_review"].as_object().expect("cases") {
+        let (model, mut data) = start(case);
+        data.forward(&model).expect("forward");
+        let first = &case["forward"];
+        assert_eq!(data.nisland, count(&first["nisland"]), "{name}: islands");
+        assert!(data.nisland > 1, "{name}: more than one island");
+        assert_stat_counts(name, &data.solver_stat, &first["stats"]);
+        assert_close(
+            &format!("{name} qacc"),
+            data.qacc.as_slice(),
+            &floats(&first["qacc"]),
+            1e-12,
+        );
+        let steps = usizes(&case["niter"]).len();
+        step_islands_and_compare(name, case, 50, 1e-12, steps);
+    }
+}
+
+/// Solving island by island leaves what solving every row at once leaves,
+/// to the solvers' tolerance: each row's residual (`efc_jar`), the cost
+/// (`efc_cost`), and the cone Hessians and their count, one for each contact
+/// in the cone. mixed_rows'
+/// elliptic variants (its sliding puck's contact in the cone), the first
+/// forward, each run with islands and with `DISABLE_ISLAND`. (Not the
+/// zero-row document: there, with every row at once, MuJoCo's solve and
+/// this one both stop after one iteration at an acceleration far from the
+/// islands' (measured).)
+#[test]
+fn island_solves_leave_the_whole_solves_residuals_cost_and_cone_hessians() {
+    let g = golden();
+    let close = |what: &str, a: &[f64], b: &[f64]| {
+        assert_eq!(a.len(), b.len(), "{what}: length");
+        let scale = b.iter().fold(1.0_f64, |m, x| m.max(x.abs()));
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert!(
+                (x - y).abs() <= 1e-6 * scale,
+                "{what}[{i}]: {x:e}, whole {y:e}"
+            );
+        }
+    };
+    for key in ["Newton_elliptic_3", "CG_elliptic_3"] {
+        let what = format!("islands_mixed/{key}");
+        let case = &g["cases"]["islands_mixed"][key];
+        let (model, mut data) = start(case);
+        data.forward(&model).expect("forward");
+        let mut whole_model = model.clone();
+        whole_model.disableflags |= DISABLE_ISLAND;
+        let mut whole = whole_model.make_data();
+        whole.qvel.copy_from_slice(&floats(&case["qvel"]));
+        whole.forward(&whole_model).expect("forward");
+        assert!(
+            data.nisland > 0 && whole.nisland == 0,
+            "{what}: islands on and off"
+        );
+        close(
+            &format!("{what} efc_jar"),
+            data.efc_jar.as_slice(),
+            whole.efc_jar.as_slice(),
+        );
+        close(
+            &format!("{what} efc_cost"),
+            &[data.efc_cost],
+            &[whole.efc_cost],
+        );
+        assert_eq!(data.ncone, whole.ncone, "{what}: cone contacts");
+        assert!(data.ncone > 0, "{what}: a contact in the cone");
+        let mut in_cone: Vec<usize> = (0..data.efc_type.len())
+            .filter(|&r| data.efc_state[r] == ConstraintState::Cone)
+            .map(|r| data.efc_id[r])
+            .collect();
+        in_cone.dedup();
+        assert_eq!(data.ncone, in_cone.len(), "{what}: contacts in the cone");
+        let kept = data.efc_cone_hessian.iter().flatten().count();
+        assert_eq!(kept, data.ncone, "{what}: cone Hessians kept");
+        for (c, (a, b)) in data
+            .efc_cone_hessian
+            .iter()
+            .zip(&whole.efc_cone_hessian)
+            .enumerate()
+        {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    close(&format!("{what} cone {c}"), a.as_slice(), b.as_slice())
+                }
+                (None, None) => {}
+                _ => panic!("{what}: contact {c}'s cone Hessian kept by one solve only"),
+            }
+        }
+    }
+}
+
 /// [`primal_solver_matches_mujoco_3_5_0_bit_for_bit_given_its_inputs`] with
 /// islands: each mixed_rows variant's two islands solved apart from MuJoCo's
 /// inputs give MuJoCo's statistics, in island order, its acceleration and
@@ -829,6 +931,14 @@ fn a_row_in_no_island_takes_its_force_at_its_residual() {
             data.qacc.as_slice(),
             &floats(&case["qacc"]),
             1e-12,
+        );
+        // The cost holds the rows in no island: the tendon limit's ½·D·jar²
+        // (its R is 1e-15) outweighs the rest by far.
+        let limit = data.efc_D[2] * data.efc_jar[2] * data.efc_jar[2] / 2.0;
+        assert!(
+            (data.efc_cost - limit).abs() <= 1e-9 * limit,
+            "{solver}: efc_cost {:e}, the limit row's {limit:e}",
+            data.efc_cost
         );
         for (k, &want) in usizes(&case["niter"]).iter().enumerate() {
             data.step(&model).expect("step");

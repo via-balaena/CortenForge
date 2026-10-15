@@ -400,6 +400,59 @@ NOSLIP_ARM_QPOS = [0.3, -1.2, 0.8]
 NOSLIP_ARM_QVEL = [0.5, -0.3, 0.2]
 
 
+COUPLED = """<mujoco model="coupled">
+  <option timestep="0.002" solver="{solver}"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body pos="-1 0 1">
+      <joint type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+      <body pos="0.3 0 0">
+        <joint type="hinge" axis="0 1 0" limited="true" range="0.05 0.1"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+      </body>
+    </body>
+    <body pos="1 0 0.0995">
+      <freejoint/>
+      <geom type="sphere" size="0.1" pos="0.05 0 0" mass="1"/>
+      <geom type="sphere" size="0.02" pos="-0.05 0 0.05" mass="0.3" contype="0" conaffinity="0"/>
+    </body>{spheres}
+  </worldbody>
+</mujoco>"""
+# A two-link arm, whose mass matrix couples its hinges, starts below its
+# second hinge's range; a free body whose centre of mass is off its origin,
+# so its mass matrix couples its translation and rotation, slides and spins
+# on the plane: two islands from the first forward.
+COUPLED_QVEL = [2.0, 0, 0.5, 0.2, 0, 0, 0, 3.0]
+COUPLED_SPHERES = "".join(
+    f'\n    <body pos="{0.5 * i} 3 0.0995"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>'
+    for i in range(10))
+
+NOSLIP_ISLANDS = """<mujoco model="noslip_islands">
+  <option timestep="0.002" solver="{solver}" cone="pyramidal" noslip_iterations="5"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body pos="-1 0 1">
+      <joint type="hinge" axis="0 1 0" limited="true" range="-0.2 0.2" frictionloss="0.05"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body pos="1 0 0.0995">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1" condim="4"/>
+    </body>
+    <body pos="2 0 2">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+    <body pos="3 0 0.0995">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="2" condim="4"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+NOSLIP_ISLANDS_QVEL = [1.0, 0.5, 0.2, 0, 0, 0, 1.0, 0, 0, 0, 0, 0, 0, 0.3, 0, 0, 0, 0, -2.0]
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -792,6 +845,16 @@ def main():
             same_islands[f"{solver}_{cone}_{condim}"] = case
     cases["same_input_islands"] = same_islands
     cases["statistics_cap"] = statistics_cap()
+    cases["islands_review"] = {
+        "coupled_CG": island_trajectory(COUPLED.format(solver="CG", spheres=""), COUPLED_QVEL,
+                                        200, (1, 10, 50, 200)),
+        "coupled_sparse_Newton": island_trajectory(
+            COUPLED.format(solver="Newton", spheres=COUPLED_SPHERES), COUPLED_QVEL + [0.0] * 60,
+            100, (1, 10, 50, 100)),
+    }
+    for solver in ("Newton", "CG"):
+        cases["islands_review"][f"noslip_{solver}"] = island_trajectory(
+            NOSLIP_ISLANDS.format(solver=solver), NOSLIP_ISLANDS_QVEL, 200, (1, 10, 50, 200))
     cases["islands_zero_row"] = {solver: zero_row(solver) for solver in ("Newton", "CG")}
     for solver in ("Newton", "CG"):
         cases["islands_zero_row"][f"{solver}_coldstart"] = zero_row(solver, warmstart=False)
