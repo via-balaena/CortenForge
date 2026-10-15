@@ -92,7 +92,7 @@ impl TreeMass {
             for k in adr..adr + model.M_rownnz[dof] {
                 // An ancestor is in the dof's tree, so in the solve.
                 let col = model.M_colind[k];
-                t.colind.push(sub.local[col]);
+                t.colind.push(sub.local(data, col));
                 t.m.push(data.qM[(dof, col)]);
                 t.ld.push(data.qLD_data[k]);
             }
@@ -182,48 +182,56 @@ impl Mass<'_> {
 struct Subproblem {
     dofs: Vec<usize>,
     rows: Vec<usize>,
-    /// Each dof's place in `dofs`, `usize::MAX` for a dof not in it.
-    local: Vec<usize>,
+    /// An island's first place in MuJoCo's island dof order
+    /// (`island_idofadr`): a dof's place in `dofs` is its `map_dof2idof`
+    /// less it. `None` for every dof, where a dof is its own place, and for
+    /// no dof.
+    idofadr: Option<usize>,
 }
 
 impl Subproblem {
-    fn new(nv: usize, dofs: Vec<usize>, rows: Vec<usize>) -> Self {
-        let mut local = vec![usize::MAX; nv];
-        for (l, &dof) in dofs.iter().enumerate() {
-            local[dof] = l;
-        }
-        Self { dofs, rows, local }
-    }
-
     fn whole(model: &Model, data: &Data) -> Self {
-        Self::new(
-            model.nv,
-            (0..model.nv).collect(),
-            (0..data.efc_type.len()).collect(),
-        )
+        Self {
+            dofs: (0..model.nv).collect(),
+            rows: (0..data.efc_type.len()).collect(),
+            idofadr: None,
+        }
     }
 
-    fn island(model: &Model, data: &Data, island: usize) -> Self {
-        let dofs =
-            data.island_idofadr[island]..data.island_idofadr[island] + data.island_nv[island];
+    fn island(data: &Data, island: usize) -> Self {
+        let adr = data.island_idofadr[island];
         let rows =
             data.island_iefcadr[island]..data.island_iefcadr[island] + data.island_nefc[island];
-        Self::new(
-            model.nv,
-            data.map_idof2dof[dofs].to_vec(),
-            data.map_iefc2efc[rows].to_vec(),
-        )
+        Self {
+            dofs: data.map_idof2dof[adr..adr + data.island_nv[island]].to_vec(),
+            rows: data.map_iefc2efc[rows].to_vec(),
+            idofadr: Some(adr),
+        }
     }
 
     /// The rows in no island, without dofs. Every row MuJoCo makes is in an
     /// island; sim-core's partition reads a row's nonzero Jacobian entries,
     /// so a row whose entries are all zero (a coef-0 fixed tendon's at the
     /// sparse size) is in none.
-    fn outside(model: &Model, data: &Data) -> Self {
+    fn outside(data: &Data) -> Self {
         let rows = (0..data.efc_type.len())
             .filter(|&r| data.efc_island.get(r).is_none_or(|&i| i < 0))
             .collect();
-        Self::new(model.nv, Vec::new(), rows)
+        Self {
+            dofs: Vec::new(),
+            rows,
+            idofadr: None,
+        }
+    }
+
+    /// The place in `dofs` of `dof`, a dof of the subproblem.
+    // An island's dof has a place in MuJoCo's island order, never −1.
+    #[allow(clippy::cast_sign_loss)]
+    fn local(&self, data: &Data, dof: usize) -> usize {
+        match self.idofadr {
+            None => dof,
+            Some(adr) => data.map_dof2idof[dof] as usize - adr,
+        }
     }
 }
 
@@ -485,7 +493,7 @@ impl<'a> Primal<'a> {
         let parent = sub
             .dofs
             .iter()
-            .map(|&dof| model.dof_parent[dof].map(|p| sub.local[p]))
+            .map(|&dof| model.dof_parent[dof].map(|p| sub.local(data, p)))
             .collect();
         let gather_rows = |a: &[f64]| sub.rows.iter().map(|&r| a[r]).collect::<Vec<_>>();
         let gather_dofs = |a: &[f64]| sub.dofs.iter().map(|&d| a[d]).collect::<Vec<_>>();
@@ -1238,7 +1246,7 @@ pub fn mj_sol_primal(
     data.solver_niter = 0;
     data.solver_stat.clear();
     for island in 0..data.nisland {
-        let sub = Subproblem::island(model, data, island);
+        let sub = Subproblem::island(data, island);
         let tree = TreeMass::new(model, data, &sub);
         let scale = 1.0 / tree.trace();
         let mut ictx = Primal::new(model, data, sub, Mass::Tree(tree), qfrc_smooth, newton);
@@ -1250,7 +1258,7 @@ pub fn mj_sol_primal(
             data.solver_stat.extend(stats);
         }
     }
-    let outside = Subproblem::outside(model, data);
+    let outside = Subproblem::outside(data);
     if !outside.rows.is_empty() {
         let tree = TreeMass::new(model, data, &outside);
         let mut octx = Primal::new(model, data, outside, Mass::Tree(tree), qfrc_smooth, newton);
