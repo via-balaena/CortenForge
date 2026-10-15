@@ -500,6 +500,7 @@ Each constraint below is a dependency note from a section; the order above satis
 ### P38 · A18 P5 · `fix(sim-core): elliptic friction rows take MuJoCo's impratio and friction-ratio R; diagApprox from R`
 - **Closes:** census doc `2cb92700` (A18 §6.2).
 - **Also:** the primal solver's elliptic μ (`primal.rs`: `constraint_update`, `prepare`, `eval`) and noslip's (`noslip.rs`: `dual_state`, ledger-L129) are friction[0]; MuJoCo's `con->mu` is friction[0]·√(R[i+1]/R[i]) (`engine_core_constraint.c:1540`), so with impratio in R they change too (chunk 3c's review, on MuJoCo's own inputs at impratio 10: Newton 6 iterations for MuJoCo's 7).
+- **Also (ledger-L145):** isolate, at the start, why an elliptic contact of condim 4 or 6 with spin is far from MuJoCo's at the first forward; re-measure after the commit.
 - **Must-fail:** `elliptic_friction_rows_as_mujoco`, `diag_approx_as_mujoco` (A18 §10).
 - **Census:** 2 corpus docs change bits (A18 §6.2).
 
