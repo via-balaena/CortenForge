@@ -452,6 +452,7 @@ impl ModelBuilder {
             regularization: self.regularization,
             friction_smoothing: self.friction_smoothing,
             cone: self.cone,
+            jacobian: self.jacobian,
             stat_meaninertia: 1.0, // Computed post-build in Step 3
             ls_iterations: self.ls_iterations,
             ls_tolerance: self.ls_tolerance,

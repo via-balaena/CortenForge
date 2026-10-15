@@ -18,15 +18,17 @@ Data::step():
         mj_crba             — Mass matrix (selective CRBA, skips sleeping subtrees)
         mj_fwd_tendon       — Tendon lengths + Jacobians + wrap visualization data
         mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
+        mj_make_constraint  — Constraint rows and their islands, after the wakes
         mj_transmission_body_dispatch — Body transmission moment arms (§36, requires contacts)
      b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
         mj_actuator_velocity — Actuator velocities (lengths are set in the position stage)
         mj_fwd_passive      — Spring and damper forces (skips sleeping DOFs);
                               cb_passive, then passive plugins, at its end
+        mj_reference_constraint — The rows' velocities (J·qvel) and reference accelerations
         mj_rne              — Bias forces (Recursive Newton-Euler)
         cb_control          — unless DISABLE_ACTUATION
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
-     d. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
+     d. mj_fwd_constraint  — efc_b, then PGS/CG/Newton over the rows (CG and Newton by island)
      e. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one)
   2a. integrate()          — Under implicit and implicitfast, first M − h·D factored
                               and qacc_implicit solved (MuJoCo's mj_implicitSkip);
@@ -449,8 +451,9 @@ and `D_tendon = b·J^T·J` matrices in `mj_fwd_acceleration_implicit()` and
 
 ### 4.4 Constraint Forces (`mj_fwd_constraint`)
 
-All constraint types use unified solver-based constraint rows assembled in
-`assemble_unified_constraints()`, then solved by PGS, CG, or Newton:
+All constraint types use unified solver-based constraint rows, made in the
+position stage (`assemble_unified_constraints()`), then solved here by PGS, CG,
+or Newton:
 
 1. **Equality constraints** — connect, weld, joint coupling, tendon coupling, distance
 2. **Friction loss** — velocity-dependent friction (joint + tendon)
@@ -1059,8 +1062,9 @@ sleeping one.
 
 ### Constraint Solving
 
-The solver is global: the islands are built but not solved apart
-(`island/mod.rs`).
+Newton and CG solve each island apart (`constraint/solver/primal.rs`), as
+MuJoCo's `mj_fwdConstraint`, unless noslip is on or under implicitspringdamper
+(MuJoCo has no such integrator); PGS and noslip solve every row at once.
 
 ---
 

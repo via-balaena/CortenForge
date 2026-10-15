@@ -16,11 +16,12 @@ pub(crate) mod impedance;
 pub(crate) mod jacobian;
 pub(crate) mod solver;
 
-use nalgebra::{DMatrix, DVector, Vector3};
+use nalgebra::{DMatrix, DVector};
 
+use crate::constraint::impedance::{compute_aref, compute_kbip};
 use crate::dynamics::factor::mj_solve_m;
 use crate::jacobian::mj_apply_ft;
-use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mju_dot};
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, Data, ENABLE_SLEEP, Integrator, MjJointType, Model,
@@ -51,7 +52,7 @@ use crate::island::mj_island;
 fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector<f64>) {
     let nv = model.nv;
 
-    // Per-step meaninertia: trace(qM) / nv (more accurate than model-level constant)
+    // Per-step meaninertia: trace(qM) / nv
     if nv > 0 {
         let mut trace = 0.0_f64;
         for i in 0..nv {
@@ -256,13 +257,30 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     qfrc
 }
 
-/// Unified constraint pipeline (§29).
+/// Make the constraint rows and their islands at this pass's positions, as
+/// MuJoCo's position stage does (`mj_makeConstraint` then `mj_island`,
+/// `engine_forward.c:204-205`): none with `DISABLE_CONSTRAINT`
+/// (`engine_core_constraint.c:2042-2049`). Their velocities and reference
+/// accelerations are the velocity stage's ([`mj_reference_constraint`]).
+pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
+    clear_constraint_rows(model, data);
+    data.ne = 0;
+    data.nf = 0;
+    if !disabled(model, DISABLE_CONSTRAINT) {
+        assemble_unified_constraints(model, data);
+    }
+    mj_island(model, data);
+}
+
+/// Unified constraint pipeline (§29), over the rows the position stage made
+/// ([`mj_make_constraint`]).
 ///
 /// Pipeline:
 /// 1. Compute qacc_smooth (unconstrained acceleration)
-/// 2. Assemble ALL constraints into efc_* arrays
+/// 2. `efc_b = J·qacc_smooth − aref`
 /// 3. Dispatch to configured solver: Newton and CG to MuJoCo's primal solver,
-///    whose iterate is the acceleration; PGS. No solver falls back to
+///    island by island where MuJoCo's is, whose iterate is the acceleration;
+///    PGS. No solver falls back to
 ///    another (MuJoCo, `engine_forward.c:739-830`).
 /// 4. Map efc_force → qfrc_constraint via J^T
 /// 5. Extract qfrc_frictionloss from efc_force
@@ -282,10 +300,6 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
     data.primal_qacc = false;
 
-    // Defence-in-depth: clear EFC arrays unconditionally so that toggling
-    // DISABLE_CONSTRAINT mid-simulation does not leave stale constraint data.
-    clear_constraint_rows(model, data);
-
     // Step 1: Shared qacc_smooth computation
     let (qacc_smooth, _qfrc_smooth) = compute_qacc_smooth(model, data);
 
@@ -293,7 +307,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
 
     // DT-35: For ImplicitSpringDamper, precompute the implicit-modified
     // quantities that Newton needs. Also recompute qacc_smooth using M_impl
-    // so the constraint assembly sees the correct unconstrained motion.
+    // so efc_b sees the correct unconstrained motion.
     let m_impl_owned: Option<(DMatrix<f64>, DMatrix<f64>)>;
     let qfrc_impl_owned: Option<DVector<f64>>;
     let qacc_smooth_impl: DVector<f64>;
@@ -313,7 +327,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
         m_impl_owned = Some((m_impl, m_impl_factor));
         qfrc_impl_owned = Some(qfrc_impl);
     } else {
-        qacc_smooth_impl = qacc_smooth.clone();
+        qacc_smooth_impl = qacc_smooth;
         m_impl_owned = None;
         qfrc_impl_owned = None;
     }
@@ -327,26 +341,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
         }
     }
 
-    // Use implicit-corrected qacc_smooth for constraint assembly when
-    // ImplicitSpringDamper is active, so efc_b sees the correct
-    // unconstrained motion including spring/damper effects.
-    let qacc_for_assembly = if implicit_sd {
-        &qacc_smooth_impl
-    } else {
-        &qacc_smooth
-    };
-
-    // Step 2: Assemble ALL constraints (universal for all solver types)
-    // S4.3: Skip assembly entirely when constraints are disabled.
-    if !disabled(model, DISABLE_CONSTRAINT) {
-        assemble_unified_constraints(model, data, qacc_for_assembly);
-    }
     let nefc = data.efc_type.len();
-
-    // Step 2b: The islands, from the rows just made (MuJoCo: `mj_island`
-    // after `mj_makeConstraint`).
-    mj_island(model, data);
-
     if nefc == 0 {
         // MuJoCo clears the iteration count with no rows (`mj_fwdConstraint`,
         // engine_forward.c:747-752).
@@ -355,6 +350,11 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
         data.solver_stat.clear();
         return Ok(());
     }
+
+    // Step 2: `efc_b`, with the implicit-corrected qacc_smooth under
+    // ImplicitSpringDamper (MuJoCo `mj_fwdConstraint`,
+    // `engine_forward.c:755-756`).
+    data.efc_b = mul_jac_vec(data, data.qacc_smooth.as_slice()) - &data.efc_aref;
 
     let qfrc_eff: DVector<f64> = qfrc_impl_owned.unwrap_or_else(|| data.qfrc_smooth.clone());
 
@@ -378,7 +378,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     // acceleration is made from the forces afterwards (`mj_fwd_acceleration`),
     // not taken from the primal iterate.
     if model.noslip_iterations > 0 {
-        noslip_postprocess(model, data);
+        noslip_postprocess(model, data, m_impl_owned.as_ref().map(|(_, f)| f));
         data.primal_qacc = false;
     }
 
@@ -449,32 +449,44 @@ pub(crate) fn clear_constraint_rows(model: &Model, data: &mut Data) {
     data.nisland = 0;
 }
 
-/// Compute the velocity of a point on a body.
-pub(crate) fn compute_point_velocity(
-    data: &Data,
-    body_id: usize,
-    point: Vector3<f64>,
-) -> Vector3<f64> {
-    if body_id == 0 {
-        return Vector3::zeros(); // World is stationary
-    }
+/// `J·vec` over the constraint rows, as MuJoCo's dense `mj_mulJacVec`
+/// (`engine_core_constraint.c:333-349`): each row's `mju_dot` with `vec`.
+/// At the sparse size MuJoCo takes it as a sparse product, which rounds
+/// otherwise.
+pub(crate) fn mul_jac_vec(data: &Data, vec: &[f64]) -> DVector<f64> {
+    let rows = data.efc_J.transpose();
+    DVector::from_iterator(
+        rows.ncols(),
+        rows.column_iter().map(|row| mju_dot(row.as_slice(), vec)),
+    )
+}
 
-    // Get body velocity (linear and angular)
-    let cvel = &data.cvel[body_id];
-    let v_linear = Vector3::new(cvel[3], cvel[4], cvel[5]);
-    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
-
-    // Point velocity = v_body + omega × r
-    let body_pos = data.xpos[body_id];
-    let r = point - body_pos;
-
-    v_linear + omega.cross(&r)
+/// Every row's velocity `J·qvel` and reference acceleration
+/// `aref = −B·vel − K·imp·(pos − margin)`, as MuJoCo's
+/// `mj_referenceConstraint` (`engine_core_constraint.c:2375-2387`), with `K`
+/// and `B` from the row's `solref` and `solimp` as `mj_makeImpedance` makes
+/// them.
+pub(crate) fn mj_reference_constraint(model: &Model, data: &mut Data) {
+    data.efc_vel = mul_jac_vec(data, data.qvel.as_slice());
+    let aref = (0..data.efc_type.len()).map(|i| {
+        let (k, b) = compute_kbip(model, data.efc_solref[i], data.efc_solimp[i]);
+        compute_aref(
+            k,
+            b,
+            data.efc_imp[i],
+            data.efc_pos[i],
+            data.efc_margin[i],
+            data.efc_vel[i],
+        )
+    });
+    data.efc_aref = DVector::from_iterator(data.efc_type.len(), aref);
 }
 
 /// Solve the constraint rows `data` holds with MuJoCo's primal solver,
 /// Newton when `newton`, else CG, from MuJoCo's warmstart, over `qM` and its
-/// factor (MuJoCo's case): what [`mj_fwd_constraint`] runs once the rows are
-/// made. For tests that give the solver MuJoCo's own inputs.
+/// factor (MuJoCo's case), `efc_b` made first: what [`mj_fwd_constraint`]
+/// runs once the rows are made. For tests that give the solver MuJoCo's own
+/// inputs.
 ///
 /// # Errors
 ///
@@ -482,6 +494,7 @@ pub(crate) fn compute_point_velocity(
 /// under mjMINVAL.
 #[doc(hidden)]
 pub fn mj_sol_primal_rows(model: &Model, data: &mut Data, newton: bool) -> Result<(), StepError> {
+    data.efc_b = mul_jac_vec(data, data.qacc_smooth.as_slice()) - &data.efc_aref;
     let qfrc_smooth = data.qfrc_smooth.clone();
     mj_sol_primal(model, data, &PrimalMass::Tree, &qfrc_smooth, newton)
 }

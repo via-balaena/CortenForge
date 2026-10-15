@@ -4,8 +4,6 @@
 //! Populates the equality rows in the unified `efc_*` arrays.
 //! Called from [`super::assembly::assemble_unified_constraints`] during Phase 3a.
 
-use nalgebra::DVector;
-
 use crate::constraint::equality::{
     extract_connect_jacobian, extract_distance_jacobian, extract_joint_equality_jacobian,
     extract_tendon_equality_jacobian, extract_weld_jacobian,
@@ -18,16 +16,10 @@ use super::assembly::{finalize_constraint_row, finalize_constraint_row_imp};
 
 /// Assemble equality constraint rows (Phase 3a), in equality order.
 ///
-/// Populates efc_J, efc_type, efc_pos, efc_margin, efc_vel, and all impedance
+/// Populates efc_J, efc_type, efc_pos, efc_margin, and all impedance
 /// fields for each equality constraint. Increments `row` for each row
 /// written.
-pub(super) fn assemble_equality_rows(
-    model: &Model,
-    data: &mut Data,
-    nv: usize,
-    row: &mut usize,
-    qacc_smooth: &DVector<f64>,
-) {
+pub(super) fn assemble_equality_rows(model: &Model, data: &mut Data, nv: usize, row: &mut usize) {
     let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     for eq_id in 0..model.neq {
         if !model.eq_active[eq_id]
@@ -38,7 +30,7 @@ pub(super) fn assemble_equality_rows(
 
         let rows = match model.eq_type[eq_id] {
             EqualityType::Flex => {
-                assemble_flex_equality_rows(model, data, nv, row, qacc_smooth, eq_id);
+                assemble_flex_equality_rows(model, data, nv, row, eq_id);
                 continue;
             }
             EqualityType::Connect => extract_connect_jacobian(model, data, eq_id),
@@ -48,9 +40,15 @@ pub(super) fn assemble_equality_rows(
             EqualityType::Tendon => extract_tendon_equality_jacobian(model, data, eq_id),
         };
 
-        // All rows empty (two bodies without dofs, say): no rows, as MuJoCo's
-        // `mj_addConstraint`.
-        if rows.j_rows.iter().all(|&x| x == 0.0) {
+        // No rows when they are all zero, or at the sparse size when the
+        // dof chain is empty (two bodies without dofs, say), as MuJoCo's
+        // `mj_addConstraint` (`engine_core_constraint.c:255-283`).
+        let empty = if model.is_sparse() {
+            equality_chain_empty(model, data, eq_id)
+        } else {
+            rows.j_rows.iter().all(|&x| x == 0.0)
+        };
+        if empty {
             continue;
         }
 
@@ -79,12 +77,10 @@ pub(super) fn assemble_equality_rows(
                 data,
                 nv,
                 row,
-                qacc_smooth,
                 sr,
                 si,
                 rows.pos[r],
                 0.0,
-                rows.vel[r],
                 0.0,
                 ConstraintType::Equality,
                 1,
@@ -94,6 +90,26 @@ pub(super) fn assemble_equality_rows(
                 shared_violation.unwrap_or_else(|| rows.pos[r].abs()),
             );
         }
+    }
+}
+
+/// Whether equality `eq_id`'s dof chain is empty, as MuJoCo forms it at the
+/// sparse size (`mj_instantiateEquality`, `engine_core_constraint.c:375-687`):
+/// the two bodies' merged chain for a connect or a weld (`mj_jacDifPair`),
+/// and for this crate's distance equality its geoms' bodies'; its tendons'
+/// for a tendon equality; a joint equality's always holds a dof.
+fn equality_chain_empty(model: &Model, data: &Data, eq_id: usize) -> bool {
+    let (obj1, obj2) = (model.eq_obj1id[eq_id], model.eq_obj2id[eq_id]);
+    let welded = |body: usize| model.body_weldid[body] == 0;
+    match model.eq_type[eq_id] {
+        EqualityType::Connect | EqualityType::Weld => welded(obj1) && welded(obj2),
+        EqualityType::Distance => {
+            welded(model.geom_body[obj1]) && (obj2 == usize::MAX || welded(model.geom_body[obj2]))
+        }
+        EqualityType::Tendon => {
+            data.ten_J_rownnz[obj1] == 0 && (obj2 == usize::MAX || data.ten_J_rownnz[obj2] == 0)
+        }
+        EqualityType::Joint | EqualityType::Flex => false,
     }
 }
 
@@ -108,7 +124,6 @@ fn assemble_flex_equality_rows(
     data: &mut Data,
     nv: usize,
     row: &mut usize,
-    qacc_smooth: &DVector<f64>,
     eq_id: usize,
 ) {
     let f = model.eq_obj1id[eq_id];
@@ -123,18 +138,15 @@ fn assemble_flex_equality_rows(
         for k in rowadr..rowadr + model.flexedge_J_rownnz[e] {
             data.efc_J[(*row, model.flexedge_J_colind[k])] = data.flexedge_J[k];
         }
-        let vel = data.flexedge_velocity[e];
         finalize_constraint_row(
             model,
             data,
             nv,
             row,
-            qacc_smooth,
             model.eq_solref[eq_id],
             model.eq_solimp[eq_id],
             pos,
             0.0,
-            vel,
             0.0,
             ConstraintType::Equality,
             1,

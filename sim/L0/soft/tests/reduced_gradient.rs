@@ -846,6 +846,9 @@ impl Stat {
 /// its legal travel rather than to a round number.
 const R_SWEEP: [usize; 5] = [10, 20, 40, 80, 104];
 
+/// Passes over the sweep's trajectories; each rank's time is its fastest pass.
+const TIMING_ROUNDS: usize = 5;
+
 /// **R1.3, part 1 — the control that must run before any basis enrichment.**
 ///
 /// R1.2 found the reduced gradient 21.5–186x less accurate than the state, and traced it
@@ -904,37 +907,64 @@ fn adjoint_gap_across_basis_sizes() {
         })
         .collect();
 
+    let bases: Vec<PodBasis> = R_SWEEP.iter().map(|&rank| fit_at(&r, &set, rank)).collect();
+    let solvers: Vec<_> = bases
+        .iter()
+        .map(|basis| ReducedNewtonSolver::new(&r.solver, basis, &r.x_rest))
+        .collect();
+
     // Wall time matters here even though R1's gates are accuracy-only: raising `r` is
     // only a usable answer if the reduced model is still FASTER than the oracle at that
     // rank. `ΦᵀAΦ` grows as `O(n·r²)`, so there is a rank beyond which the knob defeats
     // its own purpose. Measured, not extrapolated — cost estimates have missed every
     // time they were tried in this arc.
-    let oracle_start = Instant::now();
-    let _ = run_full(&r, t, STEPS);
-    let oracle_ms = oracle_start.elapsed().as_secs_f64() * 1e3;
+    //
+    // Each time is the fastest of `TIMING_ROUNDS` passes, a round timing every rank and
+    // the oracle in turn, all on one thread of a pool of their own. Timed on the global
+    // pool while this file's other tests ran, one pass each read 1.06x for the growth
+    // below on a CI runner, with r=80 slower than r=104; under 12 busy loops on a
+    // 12-core machine that statistic failed 2 runs of 3, and so did the fastest of 5
+    // interleaved passes on the global pool. On one thread of their own the fastest of
+    // 5 read 1.45, 1.31 and 1.50 there, and 1.40–1.43 unloaded. What compresses the
+    // growth on a contended machine has not been isolated.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .expect("a one-thread pool builds");
+    let (oracle_ms, ms) = pool.install(|| {
+        let mut oracle_ms = f64::INFINITY;
+        let mut ms = vec![f64::INFINITY; R_SWEEP.len()];
+        for _ in 0..TIMING_ROUNDS {
+            let oracle_start = Instant::now();
+            let _ = run_full(&r, t, STEPS);
+            oracle_ms = oracle_ms.min(oracle_start.elapsed().as_secs_f64() * 1e3);
+            for (reduced, fastest) in solvers.iter().zip(&mut ms) {
+                let traj_start = Instant::now();
+                let n_modes = reduced.n_modes();
+                let (mut q, mut qdot) = (vec![0.0; n_modes], vec![0.0; n_modes]);
+                for step_idx in 1..=STEPS {
+                    let th = theta_at(&r, t, step_idx);
+                    let st = reduced
+                        .step(&q, &qdot, &Tensor::from_slice(&th, &[th.len()]), DT)
+                        .expect("reduced step converges");
+                    q = st.q;
+                    qdot = st.qdot;
+                }
+                *fastest = fastest.min(traj_start.elapsed().as_secs_f64() * 1e3);
+            }
+        }
+        (oracle_ms, ms)
+    });
 
     let mut disp_err = Vec::new();
     let mut sum_x_adj = Vec::new();
     let mut face_z_grad = Vec::new();
-    let mut ms = Vec::new();
 
-    for &rank in &R_SWEEP {
-        let basis = fit_at(&r, &set, rank);
-        let reduced = ReducedNewtonSolver::new(&r.solver, &basis, &r.x_rest);
+    for (k, (&rank, (basis, reduced))) in R_SWEEP.iter().zip(bases.iter().zip(&solvers)).enumerate()
+    {
         let disp = basis.projection_error(&u_or);
         let energy = basis.retained_energy_fraction();
-
-        let traj_start = Instant::now();
-        let (mut q, mut qdot) = (vec![0.0; rank], vec![0.0; rank]);
-        for step_idx in 1..=STEPS {
-            let th = theta_at(&r, t, step_idx);
-            let st = reduced
-                .step(&q, &qdot, &Tensor::from_slice(&th, &[th.len()]), DT)
-                .expect("reduced step converges");
-            q = st.q;
-            qdot = st.qdot;
-        }
-        let reduced_ms = traj_start.elapsed().as_secs_f64() * 1e3;
+        let reduced_ms = ms[k];
 
         let mut line = format!(
             "R1.3 r={rank:>3}: displacement projection {disp:.3e} (retained energy \
@@ -976,7 +1006,6 @@ fn adjoint_gap_across_basis_sizes() {
         disp_err.push(disp);
         sum_x_adj.push(adj_proj[0]);
         face_z_grad.push(grad_rel[1]);
-        ms.push(reduced_ms);
     }
 
     // A nested basis cannot get worse at the forward problem as modes are added.
@@ -1027,7 +1056,8 @@ fn adjoint_gap_across_basis_sizes() {
     // across the change, so rank still does not fix the adjoint; it is only the
     // COST half of finding 2 that died.
     //
-    // Bounded two-sided, piloted at 1.47/1.49/1.49:
+    // Bounded two-sided, piloted at 1.47/1.49/1.49 (on the global pool; one thread of
+    // its own reads 1.40–1.43, and the layout before §2j 2.61–2.62 there):
     //   * above 2.0 ⇒ `ΦᵀAΦ` is dominating again, i.e. the layout regressed
     //     (the pre-change reading was 2.87x);
     //   * below 1.25 ⇒ rank has stopped costing anything at all, which on an
@@ -1039,10 +1069,11 @@ fn adjoint_gap_across_basis_sizes() {
     assert!(
         (1.25..2.0).contains(&growth),
         "the reduced trajectory grew {growth:.2}x from r=40 to the rank ceiling, outside \
-         the piloted 1.25–2.0 band (measured 1.47–1.49x after recon §2j's layout change, \
-         2.87x before it). Above the band, `ΦᵀAΦ` dominates again and the layout has \
-         regressed; below it, rank costs nothing and the measurement is suspect. Either \
-         way §14's break-even needs re-measuring, not the bound widening."
+         the piloted 1.25–2.0 band (measured on one thread 1.40–1.43x after recon §2j's \
+         layout change, 2.61–2.62x before it). Above the band, `ΦᵀAΦ` dominates again \
+         and the layout has regressed; below it, rank costs nothing and the measurement \
+         is suspect. Either way §14's break-even needs re-measuring, not the bound \
+         widening."
     );
 }
 

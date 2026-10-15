@@ -5,32 +5,18 @@
 //! of the unified constraint arrays.
 //! Corresponds to equality machinery in MuJoCo's `engine_core_constraint.c` (§15).
 
-use nalgebra::{DMatrix, DVector, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, UnitQuaternion, Vector3};
 
-use crate::constraint::compute_point_velocity;
 use crate::jacobian::mj_jac;
 use crate::quat::{mul_mat_vec3, mul_quat, mul_quat_axis, neg_quat};
 use crate::types::{Data, Model};
 
-/// Compute constraint velocity as J * qvel (matching MuJoCo's `mj_referenceConstraint`).
-///
-/// This guarantees consistency between the Jacobian and the velocity used in
-/// Baumgarte stabilization, unlike computing velocity from cvel which can diverge.
-fn compute_jqvel(j: &DMatrix<f64>, qvel: &DVector<f64>, nrows: usize, nv: usize) -> Vec<f64> {
-    let mut vel = vec![0.0; nrows];
-    for r in 0..nrows {
-        for c in 0..nv {
-            vel[r] += j[(r, c)] * qvel[c];
-        }
-    }
-    vel
-}
-
 // =============================================================================
 // Equality Constraint Jacobian Extraction (§15, Step 5)
 //
-// These functions extract explicit Jacobian rows, position violations, and
-// velocities from equality constraints. Used by the unified constraint
+// These functions extract explicit Jacobian rows and position violations
+// from equality constraints; the rows' velocities are `J·qvel`
+// (`crate::constraint::mj_reference_constraint`). Used by the unified constraint
 // assembly for all solver types (PGS, CG, Newton).
 // =============================================================================
 
@@ -40,8 +26,6 @@ pub struct EqualityConstraintRows {
     pub j_rows: DMatrix<f64>,
     /// Per-row constraint violation (signed).
     pub pos: Vec<f64>,
-    /// Per-row constraint velocity (J·qvel).
-    pub vel: Vec<f64>,
 }
 
 /// The world point of each body's anchor, as MuJoCo's equalities place it
@@ -73,11 +57,9 @@ pub fn extract_connect_jacobian(
     let pos2 = anchor_point(data, body2, &eq_data[3..6]);
     let pos_error = pos1 - pos2;
     let j = mj_jac(model, data, body1, &pos1).0 - mj_jac(model, data, body2, &pos2).0;
-    let vel = compute_jqvel(&j, &data.qvel, 3, model.nv);
     EqualityConstraintRows {
         j_rows: j,
         pos: vec![pos_error.x, pos_error.y, pos_error.z],
-        vel,
     }
 }
 
@@ -114,7 +96,6 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
             j[(3 + k, col)] = 0.5 * q3[1 + k];
         }
     }
-    let vel = compute_jqvel(&j, &data.qvel, 6, nv);
     EqualityConstraintRows {
         j_rows: j,
         pos: vec![
@@ -125,7 +106,6 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
             err[2],
             err[3],
         ],
-        vel,
     }
 }
 
@@ -171,7 +151,6 @@ pub fn extract_joint_equality_jacobian(
     let qpos1_adr = model.jnt_qpos_adr[joint1_id];
     let dof1_adr = model.jnt_dof_adr[joint1_id];
     let q1 = data.qpos[qpos1_adr];
-    let qd1 = data.qvel[dof1_adr];
 
     let mut j = DMatrix::zeros(1, nv);
 
@@ -181,14 +160,11 @@ pub fn extract_joint_equality_jacobian(
         let qpos2_adr = model.jnt_qpos_adr[joint2_id];
         let dof2_adr = model.jnt_dof_adr[joint2_id];
         let q2 = data.qpos[qpos2_adr];
-        let qd2 = data.qvel[dof2_adr];
 
         // poly(q2) = Σ eq_data[k]·q2ᵏ ; poly'(q2) = Σ k·eq_data[k]·q2ᵏ⁻¹ (degree ≤ 10).
         let (q1_target, dpoly_dq2) = eval_poly_and_deriv(eq_data, q2);
-        let qd1_target = dpoly_dq2 * qd2;
 
         let pos_error = q1 - q1_target;
-        let vel_error = qd1 - qd1_target;
 
         // Jacobian: d(q1 - poly(q2))/d_qvel = +1 at dof1, -poly'(q2) at dof2
         j[(0, dof1_adr)] = 1.0;
@@ -197,12 +173,10 @@ pub fn extract_joint_equality_jacobian(
         EqualityConstraintRows {
             j_rows: j,
             pos: vec![pos_error],
-            vel: vec![vel_error],
         }
     } else {
         // Single-joint: lock q1 to c0
         let pos_error = q1 - c0;
-        let vel_error = qd1;
 
         // Jacobian: d(q1 - c0)/d_qvel = +1 at dof1
         j[(0, dof1_adr)] = 1.0;
@@ -210,7 +184,6 @@ pub fn extract_joint_equality_jacobian(
         EqualityConstraintRows {
             j_rows: j,
             pos: vec![pos_error],
-            vel: vec![vel_error],
         }
     }
 }
@@ -262,32 +235,25 @@ pub fn extract_tendon_equality_jacobian(
             + 4.0 * eq_data[4] * dif * dif * dif;
 
         // Jacobian: J_tendon1 - deriv * J_tendon2
-        // Velocity: J · qvel (computed alongside Jacobian)
-        let mut vel_error = 0.0;
         for d in 0..nv {
             j[(0, d)] = j1[d] - deriv * j2[d];
-            vel_error += j[(0, d)] * data.qvel[d];
         }
 
         EqualityConstraintRows {
             j_rows: j,
             pos: vec![pos_error],
-            vel: vec![vel_error],
         }
     } else {
         // Single-tendon mode: (L1 - L1_0) - data[0] = 0
         let pos_error = (l1 - l1_0) - eq_data[0];
 
-        let mut vel_error = 0.0;
         for d in 0..nv {
             j[(0, d)] = j1[d];
-            vel_error += j[(0, d)] * data.qvel[d];
         }
 
         EqualityConstraintRows {
             j_rows: j,
             pos: vec![pos_error],
-            vel: vec![vel_error],
         }
     }
 }
@@ -333,7 +299,6 @@ pub fn extract_distance_jacobian(
         return EqualityConstraintRows {
             j_rows: DMatrix::zeros(1, nv),
             pos: vec![0.0],
-            vel: vec![0.0],
         };
     };
 
@@ -343,23 +308,9 @@ pub fn extract_distance_jacobian(
     add_body_point_jacobian_row(&mut j, 0, &direction, body1, p1, 1.0, model, data);
     add_body_point_jacobian_row(&mut j, 0, &direction, body2, p2, -1.0, model, data);
 
-    // Velocity: relative velocity projected onto direction
-    let v1 = if body1 != 0 {
-        compute_point_velocity(data, body1, p1)
-    } else {
-        Vector3::zeros()
-    };
-    let v2 = if body2 != 0 {
-        compute_point_velocity(data, body2, p2)
-    } else {
-        Vector3::zeros()
-    };
-    let vel_error = (v1 - v2).dot(&direction);
-
     EqualityConstraintRows {
         j_rows: j,
         pos: vec![scalar_error],
-        vel: vec![vel_error],
     }
 }
 

@@ -299,6 +299,12 @@ pub struct Data {
     /// Tendon Jacobian: d(length)/d(qpos) (sparse, length varies).
     /// Maps tendon length changes to joint velocities.
     pub ten_J: Vec<DVector<f64>>,
+    /// Each tendon's dof chain length, MuJoCo's sparse `ten_J_rownnz`: the
+    /// dofs its Jacobian row spans whatever their values (a fixed tendon's
+    /// joints'; the merged chains of a spatial tendon's segments' bodies).
+    /// Filled at every size; the constraint rows read it at the sparse one
+    /// ([`Model::is_sparse`]).
+    pub ten_J_rownnz: Vec<usize>,
 
     /// Tendon wrap path point positions in world frame.
     /// Flat storage: `wrap_xpos[ten_wrapadr[t] .. ten_wrapadr[t] + ten_wrapnum[t]]`
@@ -331,13 +337,16 @@ pub struct Data {
     pub ncon: usize,
 
     // ==================== Solver State ====================
-    /// Iterations used in last constraint solve.
+    /// Iterations used in last constraint solve; solved island by island,
+    /// the first 20 islands' summed, the islands MuJoCo counts (`mjNISLAND`);
+    /// then noslip's sweeps.
     pub solver_niter: usize,
     /// Non-zeros in constraint Jacobian.
     pub solver_nnz: usize,
     // ==================== Unified Constraint System (Newton solver, §15) ====================
-    // These fields are populated by `assemble_unified_constraints()` and consumed
-    // by the Newton solver loop. For PGS/CG solvers, they remain empty (zero-length).
+    // The rows are made in the position stage, their velocities and reference
+    // accelerations in the velocity stage, `efc_b` and the forces by the
+    // solve in the acceleration stage, as MuJoCo's.
     /// Friction loss component of qfrc_passive (length nv). Separated from
     /// qfrc_passive for Newton solver which treats friction loss as explicit
     /// constraint rows (§15.0 approach b).
@@ -350,8 +359,8 @@ pub struct Data {
     /// Computed once per step by `compute_qacc_smooth()`, used by all solvers.
     pub qfrc_smooth: DVector<f64>,
 
-    /// Constraint bias: J·qacc_smooth − aref (length nefc). Computed during
-    /// assembly, consumed by warmstart cost comparison (§15.8 INITIALIZE).
+    /// Constraint bias: J·qacc_smooth − aref (length nefc). Made when the
+    /// solve starts, consumed by warmstart cost comparison (§15.8 INITIALIZE).
     /// Persists in Data for diagnostic access (matches MuJoCo's d->efc_b),
     /// but is NOT updated by the solver loop.
     pub efc_b: DVector<f64>,
@@ -429,14 +438,16 @@ pub struct Data {
     /// forces.
     pub(crate) primal_qacc: bool,
 
-    /// Per-iteration solver statistics (length `solver_niter` after solve).
-    /// Populated by all 3 solvers: PGS fills `improvement` only (other fields
-    /// zeroed); CG and Newton fill all fields. Cleared with no rows.
+    /// Per-iteration solver statistics, as MuJoCo keeps them: the first 200
+    /// (`mjNSOLVER`) of a solve's iterations, or solved island by island of
+    /// each island `solver_niter` counts, in island order; then noslip's
+    /// sweeps while there are fewer than 200. PGS fills `improvement` only
+    /// (other fields zeroed); CG and Newton fill all fields; noslip
+    /// `improvement`, `nactive` and `nchange`. Cleared with no rows.
     pub solver_stat: Vec<SolverStat>,
 
     /// Per-step mean inertia: `trace(qM) / nv`, set at each constraint
-    /// solve from the current `qM`. PGS and noslip scale by it; the primal
-    /// solver takes the model's `stat_meaninertia`, as MuJoCo's does.
+    /// solve from the current `qM`. PGS scales by it.
     pub stat_meaninertia: f64,
 
     // ==================== Sensors ====================
@@ -795,6 +806,7 @@ impl Clone for Data {
             ten_velocity: self.ten_velocity.clone(),
             ten_force: self.ten_force.clone(),
             ten_J: self.ten_J.clone(),
+            ten_J_rownnz: self.ten_J_rownnz.clone(),
             // Tendon wrap visualization
             wrap_xpos: self.wrap_xpos.clone(),
             wrap_obj: self.wrap_obj.clone(),

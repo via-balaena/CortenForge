@@ -1,6 +1,6 @@
 //! A constraint other than a contact whose Jacobian rows are all zero adds no
-//! rows, against MuJoCo 3.5.0 (`mj_addConstraint`,
-//! `engine_core_constraint.c:237-329`).
+//! rows, and at the sparse size one whose dof chain is empty, against MuJoCo
+//! 3.5.0 (`mj_addConstraint`, `engine_core_constraint.c:237-329`).
 //!
 //! The golden is `assets/golden/empty_rows/empty_rows.json`, from the unfused
 //! MuJoCo 3.5.0 oracle (`scripts/gen_empty_rows_reference.py`, which describes
@@ -119,6 +119,111 @@ fn empty_flex_edge_rows_are_not_made() {
         verts == (1, 2) || verts == (2, 1),
         "the row's edge is the one to the free vertex, got {verts:?}"
     );
+}
+
+/// The row type for MuJoCo's `mjtConstraint` value, for the kinds these
+/// cases make (a dof's and a tendon's friction loss are one type here).
+fn row_type(mj: &Value) -> ConstraintType {
+    match mj.as_u64().expect("type") {
+        0 => ConstraintType::Equality,
+        1 | 2 => ConstraintType::FrictionLoss,
+        4 => ConstraintType::LimitTendon,
+        other => panic!("no such row in these cases: {other}"),
+    }
+}
+
+/// At the sparse size (`<option jacobian="sparse">`, or the default from 60
+/// dofs) a constraint other than a contact adds no rows only when its dof
+/// chain is empty, whatever its values (ledger L130): a connect, a weld and a
+/// fixed tendon of coef 0, each between or on two jointless children of one
+/// hinged body, make MuJoCo's rows at 61 and 60 dofs and, under
+/// `jacobian="sparse"`, at 1 (3, 6, and a friction-loss and a limit row);
+/// under `jacobian="dense"`, or the default at 59 dofs or 1, none; a tendon
+/// equality on that tendon likewise. At the sparse size a spatial tendon from
+/// the world to a hinged arm keeps its friction-loss row, a connect from a
+/// body without dofs to a hinged arm its rows, and the static weld, connect
+/// and tendons above still make none.
+#[test]
+fn the_sparse_size_keeps_a_constraint_whose_chain_is_not_empty() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"].as_object().expect("cases") {
+        if !(name.starts_with("chain_") || name.ends_with("_sparse")) {
+            continue;
+        }
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        if let Some(nv) = case["nv"].as_u64() {
+            assert_eq!(model.nv as u64, nv, "{name}: the fixture's dofs");
+        }
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let mujoco: Vec<ConstraintType> = case["efc_type"]
+            .as_array()
+            .expect("efc_type")
+            .iter()
+            .map(row_type)
+            .collect();
+        if data.efc_type != mujoco {
+            off.push(format!(
+                "{name}: rows {:?}, MuJoCo {mujoco:?}",
+                data.efc_type
+            ));
+        }
+    }
+    assert!(off.is_empty(), "{off:#?}");
+}
+
+/// Each tendon's dof chain is MuJoCo's sparse `ten_J_rownnz`: a fixed tendon
+/// over two hinges, one of coef 0 (2), spatial tendons from the world to the
+/// second of two hinged bodies, from the first to a slider, from the first to
+/// the second (2 each), and from the slider to the second (3); a fixed tendon
+/// naming one hinge twice (1).
+#[test]
+fn tendon_chains_are_mujocos_sparse_rows() {
+    let case = &golden()["cases"]["tendon_chains"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let mujoco: Vec<usize> = case["ten_J_rownnz"]
+        .as_array()
+        .expect("ten_J_rownnz")
+        .iter()
+        .map(|x| usize::try_from(x.as_u64().expect("count")).expect("fits"))
+        .collect();
+    assert_eq!(data.ten_J_rownnz, mujoco);
+}
+
+/// This crate's distance equality, which MuJoCo 3.5.0 lacks, takes its
+/// geoms' bodies' chain at the sparse size, as a connect takes its bodies':
+/// between two geoms on bodies without dofs, or from one such geom to the
+/// world (no `geom2`), it makes no row under `jacobian="sparse"`, as its
+/// zero rows make none at the dense size.
+#[test]
+fn a_distance_equality_between_static_geoms_makes_no_row_at_the_sparse_size() {
+    for (name, geom2) in [
+        ("distance_static", r#" geom2="g2""#),
+        ("distance_to_world", ""),
+    ] {
+        let model = load_model(&format!(
+            r#"<mujoco>
+          <option jacobian="sparse"/>
+          <worldbody>
+            <body pos="0 0 1"><geom name="g1" type="sphere" size="0.1" mass="1"/></body>
+            <body pos="0 0 2"><geom name="g2" type="sphere" size="0.1" mass="1"/></body>
+            <body pos="1 0 2">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+          </worldbody>
+          <equality><distance geom1="g1"{geom2} distance="0.5"/></equality>
+        </mujoco>"#
+        ))
+        .expect("load");
+        assert!(model.is_sparse(), "{name}: jacobian sparse");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_row_arrays(name, &data, 0);
+    }
 }
 
 /// A ball joint's limit inside its margin makes its row whatever the

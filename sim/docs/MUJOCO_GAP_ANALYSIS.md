@@ -41,7 +41,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping; **Site transmissions** (6D gear, refsite, Jacobian-based wrench projection, common-ancestor zeroing); **Body transmission** (adhesion: contact normal Jacobian moment arms, negated average, `mj_transmission_body()` + `compute_contact_normal_jacobian()`, [future_work_9 §36](./todo/future_work_9.md) ✅)
 - Sensors (32 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, JointLimitFrc, TendonLimitFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim)
 - Derivatives (complete): FD transition Jacobians (`mjd_transition_fd`), analytical velocity derivatives (`mjd_smooth_vel` → `Data.qDeriv`), hybrid FD+analytical transition Jacobians (`mjd_transition_hybrid`), SO(3) quaternion integration Jacobians (`mjd_quat_integrate`), public dispatch API (`mjd_transition`), validation utilities
-- Sleeping / Body Deactivation (complete): Tree-based sleeping with islands from the constraint rows, selective CRBA, partial LDL factorization, awake-index iteration; the constraint solver is global ([future_work_5 §16](./todo/future_work_5.md))
+- Sleeping / Body Deactivation (complete): Tree-based sleeping with islands from the constraint rows, selective CRBA, partial LDL factorization, awake-index iteration; Newton and CG solve each island apart ([future_work_5 §16](./todo/future_work_5.md))
 - Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` with Option<T> pattern wired into `builder/` for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair) with 91+ defaultable fields across four-stage pipeline (types → parser → merge → apply); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
 
 ### Placeholder / Stub (in pipeline)
@@ -75,7 +75,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Standalone constraint island discovery (`sim-constraint/src/islands.rs` — deleted; replaced by pipeline-native `mj_island()` DFS flood-fill in `island/`)
 - Standalone sparse Jacobian operations (`sim-constraint/src/sparse.rs` — deleted)
 - Standalone PGS (`sim-constraint/src/pgs.rs` — deleted)
-- Standalone island-parallel constraint solving (`sim-constraint/src/parallel.rs` — deleted; the solver is global)
+- Standalone island-parallel constraint solving (`sim-constraint/src/parallel.rs` — deleted; islands are solved apart, one after another)
 
 ### ✅ Recently Completed (January–February 2026)
 
@@ -96,7 +96,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | GPU acceleration | Removed in workspace trim (2026-03-19); rebuild when needed | [§12](#12-performance-optimizations) |
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 | Analytical derivatives (complete) | Part 1: `mjd_transition_fd()`, `mjd_smooth_vel()`, `mjd_passive_vel`, `mjd_actuator_vel`, `mjd_rne_vel`. Part 2: `mjd_quat_integrate()`, `mjd_transition_hybrid()`, `mjd_transition()` dispatch, `validate_analytical_vs_fd()`, `fd_convergence_check()` — 30+ tests, all passing | [future_work_4 §12](./todo/future_work_4.md) |
-| Sleeping / Body Deactivation | Tree-based sleeping (Phases A/B/C): islands from the constraint rows, selective CRBA, partial LDL, awake-index iteration; global constraint solve | [future_work_5 §16](./todo/future_work_5.md) |
+| Sleeping / Body Deactivation | Tree-based sleeping (Phases A/B/C): islands from the constraint rows, selective CRBA, partial LDL, awake-index iteration; Newton and CG solve each island apart | [future_work_5 §16](./todo/future_work_5.md) |
 | `<include>` + `<compiler>` element | Pre-parse XML expansion (recursive, duplicate detection); `<compiler>` with angle/eulerseq/meshdir/texturedir/assetdir/autolimits/inertiafromgeom/boundmass/boundinertia/balanceinertia/settotalmass/strippath/discardvisual/fusestatic/coordinate/exactmeshinertia; section merging for duplicate top-level elements; URDF converter defaults; exact mesh inertia via signed tetrahedron decomposition (Mirtich 1996), full 3×3 tensor accumulation with geom orientation + eigendecomposition | [§13](#13-model-format), [future_work_6 §18](./todo/future_work_6.md), [future_work_7 §23](./todo/future_work_7.md) |
 | Flex Solver Unification (§6B) | Unified flex architecture: vertex DOFs in `qpos`/`qvel`, flex edge rows (a flex equality's), passive bending forces, `mj_collision_flex()`, MJCF `<flex>`/`<flexcomp>` parsing — 21 acceptance tests. Deleted `sim-deformable` crate. | [§11](#11-deformables-flex), [future_work_6b](./todo/future_work_6b_precursor_to_7.md) |
 | Contact Parameters (#24–27) | Unified `contact_param()` with element-wise max friction (#24), `geom/@priority` gating (#25), `solmix`-weighted solver param mixing (#26), margin/gap runtime effect — broadphase AABB expansion, narrow-phase activation thresholds, `includemargin` in constraint assembly, sign convention fix (`pos = -depth`) (#27) | [§3](#3-contact-physics), [future_work_7 §24–27](./todo/future_work_7.md) |
@@ -192,7 +192,7 @@ data.step(&model).expect("step");
 | PGS (Gauss-Seidel) | Supported (pure GS, no SOR) | `pgs_solve_unified()` in pipeline | **Implemented** (MuJoCo-aligned) | - | - |
 | Newton solver | Default | `mj_sol_primal()` (MuJoCo's `mj_solPrimal`) | **Implemented** (MuJoCo's primal solver, operation for operation) | - | - |
 | Conjugate Gradient | Supported | `mj_sol_primal()` (MuJoCo's `mj_solPrimal`, Polak-Ribière) | **Implemented** (MuJoCo's primal solver, operation for operation) | - | - |
-| Constraint islands | Auto-detected | `mj_island()` (from the constraint rows) | **Implemented** (replaced old `islands.rs` with pipeline-native island discovery; the solver is global) | - | - |
+| Constraint islands | Auto-detected | `mj_island()` (from the constraint rows) | **Implemented** (replaced old `islands.rs` with pipeline-native island discovery; Newton and CG solve each island apart) | - | - |
 | Warm starting | Supported | `qacc_warmstart`-based warmstart (universal for all solvers) | **Implemented** | - | - |
 
 > **Note:** The pipeline has three solvers in the `SolverType` enum (`types/enums.rs`): **Newton** and **CG**, MuJoCo's primal solver (`constraint/solver/primal.rs`, `mj_solPrimal`: Newton directions from the factored Hessian, CG's Polak-Ribière directions preconditioned by M⁻¹), whose iterate is the acceleration, and **PGS** (`constraint/solver/pgs.rs`, pure Gauss-Seidel, ω=1.0). No solver falls back to another: at its iteration cap a solver keeps its last iterate, as MuJoCo's. PGS matches MuJoCo's `mj_solPGS` — pure GS with no SOR (verified against `engine_solver.c`; `mjOption` has no `sor` field).
@@ -210,9 +210,11 @@ solver with Polak-Ribière directions:
 - **Primal formulation**: minimizes the cost over the acceleration, on the unified constraint rows
   (equality, friction loss, limits, contacts)
 - **Hessian**: `M + J'·D·J` plus the cones' contributions, factored by `mju_cholFactor` and updated by
-  `mju_cholUpdate` as rows change state; at MuJoCo's sparse size (`nv ≥ 60`) a sparse factor
-  (`SparseHessian`), made anew at each iteration
-- **Scale**: `1/(meaninertia·nv)`, the model's mean inertia
+  `mju_cholUpdate` as rows change state; at MuJoCo's sparse size (`Model::is_sparse`:
+  `jacobian="sparse"`, or 60 dofs under the default) a sparse factor (`SparseHessian`),
+  made anew at each iteration
+- **Scale**: over every row, `1/(meaninertia·nv)`, the model's mean inertia; with
+  islands, each island's 1/Σ of its mass matrix's diagonal
 - No fallback: at its iteration cap it keeps its last iterate, as MuJoCo's
 - Selected via `<option solver="Newton"/>` in MJCF (the default)
 
@@ -235,7 +237,8 @@ The pipeline PGS in `constraint/solver/pgs.rs` (`pgs_solve_unified()`) correctly
 **Current implementation** (`mj_island()` in `island/`):
 - Islands from the constraint rows, as MuJoCo's (trees connected by contacts, tendons, or equality constraints)
 - Produces island arrays: `tree_island`, `island_ntree`, `dof_island`, `contact_island`, `efc_island`, etc.
-- The constraint solver is global: no island is solved apart
+- Newton and CG solve each island apart, as MuJoCo's `mj_fwdConstraint`, unless noslip
+  is on or under implicitspringdamper
 - Controlled by `DISABLE_ISLAND` flag (disable via `<flag island="disable"/>`)
 
 **Files:** `sim-core/src/island/` (`mj_island`),
@@ -902,7 +905,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 |---------|--------|-------------|--------|----------|
 | Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (was in `sparse.rs`) | **Removed** (Phase 3 consolidation) | - |
 | Sleeping bodies | Native | `mj_sleep`, `mj_wake*`, `mj_island`, selective CRBA, partial LDL | **Implemented** (Phases A/B/C; [future_work_5 §16](./todo/future_work_5.md)) | - |
-| Constraint islands | Auto | `mj_island` (from the constraint rows, in the pipeline) | **Implemented** (pipeline island discovery; global solve) | - |
+| Constraint islands | Auto | `mj_island` (from the constraint rows, in the pipeline) | **Implemented** (pipeline island discovery; Newton and CG by island) | - |
 | **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Active** — `BatchSim::step_all()` uses `par_iter_mut` for cross-environment parallelism (`batch.rs`); see [future_work_3 #9](./todo/future_work_3.md) | - |
 | **GPU acceleration** | MuJoCo MJX (JAX) | Removed in workspace trim (2026-03-19) | **Future** — will be rebuilt when needed. See `sim/L0/gpu/` and `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md` | - |
 | SIMD | Likely | `sim-simd` crate | **Partial** (only `find_max_dot()` is used by sim-core GJK; all other batch ops have zero callers outside benchmarks) | - |
@@ -1281,7 +1284,7 @@ MJB binary format support added to `sim-mjcf` crate (requires `mjb` feature):
 ### ⚠️ Phase 2: Solver Improvements (built then partially removed)
 
 1. ~~**Newton solver**: For faster convergence~~ ✅ Standalone removed → ✅ **Reimplemented** (the pipeline-native primal solver, MuJoCo's `mj_solPrimal`, §15)
-2. ~~**Constraint islands**: For performance~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation) → ✅ **Reimplemented** (pipeline-native `mj_island()` as part of sleeping system; global solve)
+2. ~~**Constraint islands**: For performance~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation) → ✅ **Reimplemented** (pipeline-native `mj_island()` as part of sleeping system; Newton and CG by island)
 3. ~~**Sleeping**: Deactivate stationary bodies~~ ✅ **Pipeline** (tree-based sleeping with island discovery, selective CRBA, partial LDL; [future_work_5 §16](./todo/future_work_5.md))
 4. ~~**GJK/EPA**: For convex mesh collision~~ ✅
 

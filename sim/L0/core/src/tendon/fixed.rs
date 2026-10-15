@@ -30,6 +30,7 @@ pub fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
     data.ten_J[t].fill(0.0);
 
     let mut length = 0.0;
+    let mut chain = Vec::with_capacity(num);
     for w in adr..(adr + num) {
         debug_assert_eq!(model.wrap_type[w], WrapType::Joint);
         let dof_adr = model.wrap_objid[w];
@@ -49,8 +50,13 @@ pub fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
         // Jacobian: dL/dqvel at dof_adr = coef (velocity space).
         if dof_adr < model.nv {
             data.ten_J[t][dof_adr] += coef;
+            chain.push(dof_adr);
         }
     }
 
     data.ten_length[t] = length;
+    // Each joint's dof, a zero `coef` included, as MuJoCo's sparse row.
+    chain.sort_unstable();
+    chain.dedup();
+    data.ten_J_rownnz[t] = chain.len();
 }

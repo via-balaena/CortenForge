@@ -706,24 +706,79 @@ fn passive_callback_runs_before_the_bias_force() {
     assert!((seen[1] + 2.4525).abs() < 1e-12, "{seen:?}");
 }
 
-/// Not matched (registry `D-CONTROL-CONSTRAINT-ROWS`): MuJoCo builds the
-/// constraint rows before `mjcb_control`, so its callback sees this pass's
-/// (measured: 1 row at the limit, then 0 after the joint is moved free);
-/// sim-core builds them after the callback, which sees the previous pass's.
+/// As MuJoCo 3.5.0 (measured): the constraint rows are made in the position
+/// stage and their references in the velocity stage, both before
+/// `mjcb_control`, so the callback sees this pass's rows: at 0.12 rad with
+/// qvel 0.3 the upper limit's row, efc_pos -0.01999999999999999, efc_vel
+/// -0.3, efc_aref 84.21052631578945; then none once the joint is moved
+/// free.
 #[test]
-fn control_callback_reads_the_previous_pass_constraint_rows() {
+fn control_callback_reads_this_pass_constraint_rows() {
     let mut model = logged_hinge("Euler");
     model.jnt_limited[0] = true;
     model.jnt_range[0] = (-0.1, 0.1);
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let s = Arc::clone(&seen);
-    model.set_control_callback(move |_, d| s.lock().expect("seen").push(d.efc_type.len()));
+    model.set_control_callback(move |_, d| {
+        s.lock().expect("seen").push((
+            d.efc_pos.clone(),
+            d.efc_vel.as_slice().to_vec(),
+            d.efc_aref.as_slice().to_vec(),
+        ));
+    });
     let mut data = model.make_data();
     data.qpos[0] = 0.12;
+    data.qvel[0] = 0.3;
     data.forward(&model).expect("forward");
     data.qpos[0] = 0.0;
     data.forward(&model).expect("forward");
-    assert_eq!(*seen.lock().expect("seen"), vec![0, 1]);
+    let seen = seen.lock().expect("seen").clone();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                vec![-0.019_999_999_999_999_99],
+                vec![-0.3],
+                vec![84.210_526_315_789_45]
+            ),
+            (vec![], vec![], vec![]),
+        ]
+    );
+}
+
+/// As MuJoCo 3.5.0 (measured with `mjcb_passive`): the rows and their
+/// islands are made in the position stage, before the passive forces, so
+/// the passive callback sees this pass's rows: at 0.12 rad the upper
+/// limit's row, efc_pos -0.01999999999999999, in one island; none once the
+/// joint is moved free; and after `step1` at -0.13 rad the lower limit's,
+/// efc_pos -0.03.
+#[test]
+fn passive_callback_reads_this_pass_constraint_rows() {
+    let mut model = logged_hinge("Euler");
+    model.jnt_limited[0] = true;
+    model.jnt_range[0] = (-0.1, 0.1);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = Arc::clone(&seen);
+    model.set_passive_callback(move |_, d| {
+        s.lock().expect("seen").push((d.efc_pos.clone(), d.nisland));
+    });
+    let mut data = model.make_data();
+    data.qpos[0] = 0.12;
+    data.qvel[0] = 0.3;
+    data.forward(&model).expect("forward");
+    data.qpos[0] = 0.0;
+    data.forward(&model).expect("forward");
+    data.qpos[0] = -0.13;
+    data.step1(&model).expect("step1");
+    let seen = seen.lock().expect("seen").clone();
+    assert_eq!(
+        seen,
+        vec![
+            (vec![-0.019_999_999_999_999_99], 1),
+            (vec![], 0),
+            (vec![-0.03], 1),
+        ]
+    );
 }
 
 /// The thermostat's ctrl-temperature channel is read as written, before the

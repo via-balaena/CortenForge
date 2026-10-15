@@ -1,0 +1,12 @@
+<mujoco>
+          <option jacobian="sparse"/>
+          <worldbody>
+            <body pos="0 0 1"><geom name="g1" type="sphere" size="0.1" mass="1"/></body>
+            <body pos="0 0 2"><geom name="g2" type="sphere" size="0.1" mass="1"/></body>
+            <body pos="1 0 2">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+          </worldbody>
+          <equality><distance geom1="g1" geom2="g2" distance="0.5"/></equality>
+        </mujoco>

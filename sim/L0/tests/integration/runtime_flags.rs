@@ -323,6 +323,27 @@ fn ac9_constraint_disable() {
     }
 }
 
+/// As MuJoCo 3.5.0 (measured): `mj_makeConstraint` clears the row counts
+/// before it reads `DISABLE_CONSTRAINT`, so a joint equality's row and a
+/// friction loss's (ne 1, nf 1) leave none counted once constraints are
+/// disabled between two passes.
+#[test]
+fn disabling_constraints_mid_run_clears_the_row_counts() {
+    let mut model = load_model(
+        r#"<mujoco><worldbody>
+<body><joint name="a" type="hinge" axis="0 1 0" frictionloss="0.1"/><geom type="sphere" size="0.1" mass="1"/></body>
+<body pos="1 0 0"><joint name="b" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1" mass="1"/></body>
+</worldbody><equality><joint joint1="a" joint2="b"/></equality></mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!((data.ne, data.nf, data.efc_type.len()), (1, 1, 2));
+    model.disableflags |= DISABLE_CONSTRAINT;
+    data.forward(&model).expect("forward");
+    assert_eq!((data.ne, data.nf, data.efc_type.len()), (0, 0, 0));
+}
+
 // ============================================================================
 // AC10: Passive top-level gating — both spring+damper disabled skips all
 // ============================================================================

@@ -5,7 +5,7 @@
 //! tendon force application.
 
 use super::wrap_math::{WrapResult, cylinder_wrap, sphere_wrap};
-use crate::jacobian::mj_jac;
+use crate::jacobian::{mark_merged_chain, mj_jac};
 use crate::quat::normalize3;
 use crate::types::{Data, GeomType, Model, TendonType, WrapType};
 use nalgebra::{DVector, UnitQuaternion, Vector3};
@@ -25,6 +25,7 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
     let adr = model.tendon_adr[t];
     let num = model.tendon_num[t];
     data.ten_J[t].fill(0.0);
+    let mut chain = vec![false; model.nv];
     let mut total_length = 0.0;
     let mut divisor: f64 = 1.0;
 
@@ -97,7 +98,7 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
             // Length: accumulated unconditionally (matching MuJoCo).
             total_length += dist / divisor;
             // Jacobian: guarded by distance threshold to avoid bogus direction.
-            add_segment_jacobian(model, data, t, body0, &p0, body1, &p1, divisor);
+            add_segment_jacobian(model, data, t, &mut chain, body0, &p0, body1, &p1, divisor);
 
             j += 1; // advance to site1 (it becomes type0 on next iteration)
         } else if type1 == WrapType::Geom {
@@ -178,13 +179,17 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                     total_length += (dist1 + arc_length + dist3) / divisor;
 
                     // Sub-segment 1: p0 (body0) → t1 (geom_body)
-                    add_segment_jacobian(model, data, t, body0, &p0, geom_body, &t1, divisor);
+                    add_segment_jacobian(
+                        model, data, t, &mut chain, body0, &p0, geom_body, &t1, divisor,
+                    );
 
                     // Sub-segment 2: t1 → t2 (arc on geom surface)
                     // Both endpoints on geom_body → Jacobian difference is zero.
 
                     // Sub-segment 3: t2 (geom_body) → p1 (body1)
-                    add_segment_jacobian(model, data, t, geom_body, &t2, body1, &p1, divisor);
+                    add_segment_jacobian(
+                        model, data, t, &mut chain, geom_body, &t2, body1, &p1, divisor,
+                    );
                 }
                 WrapResult::NoWrap => {
                     // §40b: store 1 point: site0 only (straight line, no tangent points)
@@ -203,7 +208,9 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
                     let diff = p1 - p0;
                     let dist = diff.norm();
                     total_length += dist / divisor;
-                    add_segment_jacobian(model, data, t, body0, &p0, body1, &p1, divisor);
+                    add_segment_jacobian(
+                        model, data, t, &mut chain, body0, &p0, body1, &p1, divisor,
+                    );
                 }
             }
 
@@ -237,6 +244,7 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
     }
 
     data.ten_length[t] = total_length;
+    data.ten_J_rownnz[t] = chain.iter().filter(|&&c| c).count();
 }
 
 /// Add a straight segment's term to tendon `t`'s Jacobian, as MuJoCo 3.5.0's
@@ -245,13 +253,15 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
 /// `p0` (on `b0`) to far point `p1` (on `b1`), normalized as
 /// `mju_normalize3`; the points' Jacobians' difference, far minus near
 /// ([`mj_jac`]), projected on it as `mju_mulMatTVec` projects (a zero
-/// component skipped); added scaled by `1 / divisor`.
+/// component skipped); added scaled by `1 / divisor`. The two bodies' merged
+/// chain joins the tendon's `chain` (MuJoCo's sparse row, `:1063-1082`).
 // The segment's ends and the tendon it belongs to.
 #[allow(clippy::too_many_arguments)]
 fn add_segment_jacobian(
     model: &Model,
     data: &mut Data,
     t: usize,
+    chain: &mut [bool],
     b0: usize,
     p0: &Vector3<f64>,
     b1: usize,
@@ -261,6 +271,7 @@ fn add_segment_jacobian(
     if b0 == b1 {
         return;
     }
+    mark_merged_chain(model, b0, b1, chain);
     let mut dif = [p1.x - p0.x, p1.y - p0.y, p1.z - p0.z];
     normalize3(&mut dif);
     let jacdif = mj_jac(model, data, b1, p1).0 - mj_jac(model, data, b0, p0).0;

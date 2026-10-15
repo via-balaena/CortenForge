@@ -2686,9 +2686,8 @@ fn test_init_sleep_validation_model_time() {
 
 #[test]
 fn test_per_island_solve_equivalence() {
-    // Islands change no force (the solver is global): a scene with two
-    // independent bodies (each its own island) against the same scene with
-    // DISABLE_ISLAND.
+    // A scene with two independent bodies (each its own island) against the
+    // same scene with DISABLE_ISLAND.
     let mjcf = r#"
     <mujoco model="island_equivalence">
         <option gravity="0 0 -9.81" timestep="0.002">
@@ -3599,7 +3598,7 @@ fn test_energy_continuous_across_sleep_transition() {
 }
 
 // ============================================================================
-// T85–T88: Phase C2 (§16.28) — islands on and off; the solver is global
+// T85–T88: Phase C2 (§16.28) — islands on and off
 // ============================================================================
 
 /// MJCF fixture for two separated free bodies that form independent islands.

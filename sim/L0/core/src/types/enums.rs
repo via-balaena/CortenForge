@@ -706,7 +706,7 @@ pub const DISABLE_EULERDAMP: u32 = 1 << 15;
 pub const DISABLE_AUTORESET: u32 = 1 << 16;
 /// Fall back to libccd for convex collision.
 pub const DISABLE_NATIVECCD: u32 = 1 << 17;
-/// Skip island discovery (the constraint solve is global either way).
+/// Skip island discovery.
 pub const DISABLE_ISLAND: u32 = 1 << 18;
 
 // ── Enable flags (mjtEnableBit, mjNENABLE = 6) ──
@@ -761,6 +761,20 @@ pub enum SolverType {
     Newton,
 }
 
+/// The constraint Jacobian's layout, MuJoCo's `mjtJacobian` (`<option
+/// jacobian>`): it decides whether the constraint pipeline takes its sparse
+/// path ([`Model::is_sparse`](crate::Model::is_sparse)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum JacobianType {
+    /// Dense at every size.
+    Dense,
+    /// Sparse at every size.
+    Sparse,
+    /// Dense below 60 dofs, sparse from 60 (MuJoCo's default).
+    #[default]
+    Auto,
+}
+
 /// Constraint type annotation per row in the unified constraint system.
 ///
 /// Each scalar row of the constraint Jacobian (`efc_J`) is tagged with one
@@ -810,7 +824,6 @@ pub enum ConstraintState {
 /// (`mjdata.h`), as its `saveStats` records them (`engine_solver.c:38-65`).
 ///
 /// Newton and CG fill every field; PGS fills `improvement` only.
-/// `Data::solver_stat` holds one per iteration, `Data::solver_niter` long.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SolverStat {
     /// Cost decrease over the iteration, scaled: `scale · (old − new)`.

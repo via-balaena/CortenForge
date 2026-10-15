@@ -35,8 +35,8 @@ use sim_core::{
     DISABLE_REFSAFE, DISABLE_SENSOR, DISABLE_SPRING, DISABLE_WARMSTART, ENABLE_ENERGY,
     ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_MULTICCD, ENABLE_OVERRIDE, ENABLE_SLEEP,
     EqualityType, FlexBendingType, FlexSelfCollide, GainType, GeomType, Integrator,
-    InterpolationType, Keyframe, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model,
-    SleepPolicy, SolverType, TendonType, WrapType,
+    InterpolationType, JacobianType, Keyframe, MjJointType, MjObjectType, MjSensorDataType,
+    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -45,8 +45,8 @@ use std::sync::Arc;
 use crate::defaults::DefaultResolver;
 use crate::error::{MjcfError, Result};
 use crate::types::{
-    MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfKeyframe, MjcfModel, MjcfOption,
-    MjcfSolverType,
+    MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe,
+    MjcfModel, MjcfOption, MjcfSolverType,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -606,6 +606,7 @@ pub struct ModelBuilder {
     pub(crate) regularization: f64,
     pub(crate) friction_smoothing: f64,
     pub(crate) cone: u8,
+    pub(crate) jacobian: JacobianType,
     pub(crate) ls_iterations: usize,
     pub(crate) ls_tolerance: f64,
     pub(crate) noslip_iterations: usize,
@@ -806,6 +807,11 @@ impl ModelBuilder {
         self.cone = match option.cone {
             MjcfConeType::Pyramidal => 0,
             MjcfConeType::Elliptic => 1,
+        };
+        self.jacobian = match option.jacobian {
+            MjcfJacobianType::Dense => JacobianType::Dense,
+            MjcfJacobianType::Sparse => JacobianType::Sparse,
+            MjcfJacobianType::Auto => JacobianType::Auto,
         };
         self.magnetic = option.magnetic;
         self.wind = option.wind;

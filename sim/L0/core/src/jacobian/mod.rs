@@ -178,6 +178,23 @@ pub(crate) fn mj_jac_geom(model: &Model, data: &Data, geom_id: usize) -> DMatrix
     mj_jac_point(model, data, body_id, &data.geom_xpos[geom_id])
 }
 
+/// Mark the dofs of bodies `b1` and `b2`'s merged chain, MuJoCo's
+/// `mj_mergeChain` (`engine_core_util.c:55-91`): the dofs from each body's
+/// weld body up to the world. A body welded to the world adds none.
+pub(crate) fn mark_merged_chain(model: &Model, b1: usize, b2: usize, chain: &mut [bool]) {
+    for body in [b1, b2] {
+        let weld = model.body_weldid[body];
+        if weld == 0 {
+            continue;
+        }
+        let mut dof = Some(model.body_dof_adr[weld] + model.body_dof_num[weld] - 1);
+        while let Some(d) = dof {
+            chain[d] = true;
+            dof = model.dof_parent[d];
+        }
+    }
+}
+
 /// Add a force and a torque at a world-frame point on `body_id` to `qfrc` as
 /// generalized forces: MuJoCo 3.5.0's `mj_applyFT` (`engine_support.c:446-501`).
 ///

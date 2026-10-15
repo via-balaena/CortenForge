@@ -5,8 +5,6 @@
 //! pyramidal R-scaling post-processing. Called from
 //! [`super::assembly::assemble_unified_constraints`] during Phase 3f.
 
-use nalgebra::DVector;
-
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::jacobian::compute_contact_jacobian;
 use crate::types::{ConstraintType, Contact, Data, Model};
@@ -29,7 +27,6 @@ pub(super) fn assemble_contact_rows(
     data: &mut Data,
     nv: usize,
     row: &mut usize,
-    qacc_smooth: &DVector<f64>,
     contacts: &[Contact],
 ) -> Vec<(usize, usize, usize)> {
     let mut pyramidal_ranges: Vec<(usize, usize, usize)> = Vec::new();
@@ -54,7 +51,6 @@ pub(super) fn assemble_contact_rows(
                 data,
                 nv,
                 row,
-                qacc_smooth,
                 &cj,
                 contact,
                 ci,
@@ -93,30 +89,10 @@ pub(super) fn assemble_contact_rows(
                     sr_normal
                 };
 
-                // vel: J_row · qvel
-                let mut vel = 0.0;
-                for col in 0..nv {
-                    vel += cj[(r, col)] * data.qvel[col];
-                }
-
                 // row 0 = normal (translational), rows 1+ = friction (rotational)
                 let bw_c = if r == 0 { bw_contact[0] } else { bw_contact[1] };
                 finalize_constraint_row(
-                    model,
-                    data,
-                    nv,
-                    row,
-                    qacc_smooth,
-                    sr,
-                    si,
-                    pos,
-                    margin_r,
-                    vel,
-                    0.0,
-                    ctype,
-                    dim,
-                    ci,
-                    contact.mu,
+                    model, data, nv, row, sr, si, pos, margin_r, 0.0, ctype, dim, ci, contact.mu,
                     bw_c,
                 );
             }
@@ -133,9 +109,8 @@ pub(super) fn assemble_contact_rows(
             //
             // All four impedance fields are rewritten together to keep each row's
             // (imp, diagApprox, R, D) tuple self-consistent. The solver consumes R/D
-            // and conformance dumps read diagApprox; efc_imp has no runtime reader
-            // today, but is kept in sync so R = (1-imp)/imp·diagApprox still holds if
-            // anything recomputes it — leaving it stale would be a silent trap.
+            // and conformance dumps read diagApprox; the reference pass
+            // (`mj_reference_constraint`) reads efc_imp for each row's aref.
             if is_elliptic {
                 let imp_n = data.efc_imp[normal_row];
                 let diag_n = data.efc_diagApprox[normal_row];
@@ -260,7 +235,6 @@ fn assemble_pyramidal_contact(
     data: &mut Data,
     nv: usize,
     row: &mut usize,
-    qacc_smooth: &DVector<f64>,
     cj: &nalgebra::DMatrix<f64>,
     contact: &Contact,
     ci: usize,
@@ -289,21 +263,15 @@ fn assemble_pyramidal_contact(
         for col in 0..nv {
             data.efc_J[(*row, col)] = cj[(0, col)] + mu_d * cj[(d, col)];
         }
-        let mut vel = 0.0;
-        for col in 0..nv {
-            vel += data.efc_J[(*row, col)] * data.qvel[col];
-        }
         finalize_constraint_row(
             model,
             data,
             nv,
             row,
-            qacc_smooth,
             sr_normal,
             si,
             pos,
             margin,
-            vel,
             0.0,
             ConstraintType::ContactPyramidal,
             n_facets,
@@ -316,21 +284,15 @@ fn assemble_pyramidal_contact(
         for col in 0..nv {
             data.efc_J[(*row, col)] = cj[(0, col)] - mu_d * cj[(d, col)];
         }
-        let mut vel = 0.0;
-        for col in 0..nv {
-            vel += data.efc_J[(*row, col)] * data.qvel[col];
-        }
         finalize_constraint_row(
             model,
             data,
             nv,
             row,
-            qacc_smooth,
             sr_normal,
             si,
             pos,
             margin,
-            vel,
             0.0,
             ConstraintType::ContactPyramidal,
             n_facets,

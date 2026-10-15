@@ -509,7 +509,7 @@ in three phases with comprehensive test coverage.
 | All-awake bit-identity | Sleep-enabled model with all bodies awake matches pre-sleep code bit-identically | ✅ |
 | Selective CRBA correctness | Awake DOFs' `qM` entries match full CRBA; sleeping DOFs' `qM` preserved | ✅ |
 | Partial LDL correctness | Awake DOFs' `qLD` matches full factorization; sleeping `qLD` preserved; SPD preserved | ✅ |
-| Islands on and off | Forces with islands match those with `DISABLE_ISLAND` (the solver is global) | ✅ |
+| Islands on and off | Forces with islands match those with `DISABLE_ISLAND` within the test's tolerance | ✅ |
 | Energy continuity | Total energy continuous across sleep/wake transitions | ✅ |
 | Indirection equivalence | Awake-index loops match branch-per-body/DOF loops bit-identically | ✅ |
 | Per-function bit-identity | Each pipeline function individually bit-identical when all bodies awake | ✅ |

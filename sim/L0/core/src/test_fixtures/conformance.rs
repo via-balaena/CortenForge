@@ -984,12 +984,14 @@ pub struct RolloutStep {
 ///    `forward()` to generate the contact set via analytic collision.
 /// 2. Captures that contact set as FROZEN (the full `Vec<Contact>` plus
 ///    [`ContactSpec`]s for identical GPU injection).
-/// 3. Loops `nsteps`: `step1` (position/velocity stage, including collision —
-///    discarded) → overwrite `data.contacts`/`data.ncon` with the frozen set →
-///    `step2` (acceleration stage over the injected set + integration). Because
-///    `step2`'s acceleration stage does not re-run collision, overwriting between
-///    the two stages injects the frozen set; the constraint assembly rebuilds all
-///    `efc` rows from `data.contacts` each step, so cloning frozen contacts is safe.
+/// 3. Loops `nsteps`: `step1` (position/velocity stage, including collision and
+///    the constraint rows made from its contacts — discarded) → overwrite
+///    `data.contacts`/`data.ncon` with the frozen set → remake the rows from it
+///    (`mj_make_constraint`, then their references, `mj_reference_constraint`)
+///    → `step2` (acceleration stage over those rows + integration). The rows
+///    are the position stage's, as MuJoCo's (`mj_fwdPosition`), so contacts
+///    overwritten after `step1` reach the solve only through rows remade from
+///    them.
 ///
 /// Returns the frozen [`ContactSpec`]s (for the GPU to inject identically) and the
 /// per-step CPU reference states.
@@ -1026,13 +1028,17 @@ pub fn contact_rollout_oracle(
 
     let mut steps = Vec::with_capacity(nsteps);
     for _ in 0..nsteps {
-        // Position/velocity stage (regenerates contacts via collision — discarded).
+        // Position/velocity stage (regenerates contacts via collision, and makes
+        // the constraint rows from them — both discarded).
         data.step1(model).expect("rollout oracle: step1");
-        // Inject the frozen contact set; the acceleration stage (step2) assembles
-        // constraints from it without re-running collision.
+        // Inject the frozen contact set and remake the rows, their islands and
+        // their references from it, as the position and velocity stages make
+        // them from collision's contacts.
         data.contacts.clone_from(&frozen_contacts);
         data.ncon = frozen_ncon;
-        // Acceleration stage over the injected contacts + integration.
+        crate::constraint::mj_make_constraint(model, &mut data);
+        crate::constraint::mj_reference_constraint(model, &mut data);
+        // Acceleration stage over the injected contacts' rows + integration.
         data.step2(model).expect("rollout oracle: step2");
 
         // Same contract as the single-step oracle: the GPU↔CPU comparison only
