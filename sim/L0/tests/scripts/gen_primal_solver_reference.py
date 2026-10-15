@@ -9,7 +9,8 @@ Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
 It refuses any other interpreter, as gen_census_golden.py does.
 
 Newton and CG are one solver in MuJoCo, `mj_solPrimal` (`engine_solver.c:1811-1968`),
-started from `warmstart` (`engine_forward.c:611-687`). Every case disables islands
+started from `warmstart` (`engine_forward.c:611-687`). It refuses a trajectory MuJoCo
+resets (`unstable`). Every case disables islands
 (`<flag island="disable"/>`), so MuJoCo solves all rows at once, scaled by
 `1/(meaninertia·nv)`: the path sim-core runs. The cases:
 
@@ -60,7 +61,8 @@ started from `warmstart` (`engine_forward.c:611-687`). Every case disables islan
   sweep's improvement is the cost correction over every row, `engine_solver.c:563-567`).
   And the pyramidal scene with the puck slow and the solver stopped after one iteration:
   noslip then changes rows' states on its first sweep (MuJoCo's nchange 1 under Newton,
-  2 under CG), which it does in no other case here.
+  2 under CG), which it does in no other case here; its trajectory to step 50 only
+  (MuJoCo's CG run resets at step 95, its acceleration unstable).
 - sparse_spheres: ten free spheres sliding and spinning on a plane under Newton with
   an elliptic cone, 60 dofs: MuJoCo's sparse Hessian (`mj_isSparse`, nv >= 60). qpos
   and qvel after steps 1, 10 and 50, and each step's iteration count.
@@ -331,6 +333,13 @@ def newton_box():
     return out
 
 
+def unstable(m, d, k):
+    """Refuse a run MuJoCo reset: a bad acceleration resets mjData and warns
+    (`mj_checkAcc`, `engine_forward.c`), so the steps after it are not the run's."""
+    if d.warning[mujoco.mjtWarning.mjWARN_BADQACC].number:
+        sys.exit(f"{m.names.split(b'\0')[0].decode()}: MuJoCo reset at step {k}")
+
+
 def trajectory(xml, qvel, nstep, checkpoints, start=None):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -342,6 +351,7 @@ def trajectory(xml, qvel, nstep, checkpoints, start=None):
     out = {"xml": xml, "qvel": floats(d.qvel), "niter": [], "traj": {}}
     for k in range(1, nstep + 1):
         mujoco.mj_step(m, d)
+        unstable(m, d, k)
         out["niter"].append(int(d.solver_niter[0]))
         if k in checkpoints:
             out["traj"][str(k)] = {"qpos": floats(d.qpos), "qvel": floats(d.qvel)}
@@ -390,8 +400,8 @@ def mixed_rows():
     return out
 
 
-def noslip_case(xml, qvel):
-    case = trajectory(xml, qvel, 200, (1, 10, 50, 200))
+def noslip_case(xml, qvel, nstep=200, checkpoints=(1, 10, 50, 200)):
+    case = trajectory(xml, qvel, nstep, checkpoints)
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
     d.qvel[:] = qvel
@@ -410,7 +420,7 @@ def noslip_rows():
         out[f"{solver}_pyramidal"] = noslip_case(mixed("pyramidal"), MIXED_QVEL)
         out[f"{solver}_elliptic"] = noslip_case(mixed("elliptic"), NOSLIP_STICK_QVEL)
         out[f"{solver}_pyramidal_one_iteration"] = noslip_case(
-            mixed("pyramidal", ' iterations="1"'), NOSLIP_STICK_QVEL)
+            mixed("pyramidal", ' iterations="1"'), NOSLIP_STICK_QVEL, 50, (1, 10, 50))
         out[f"{solver}_limit_only"] = noslip_case(NOSLIP_WITHOUT_ITS_ROWS.format(solver=solver), [0.5])
     return out
 
