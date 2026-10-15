@@ -1,6 +1,7 @@
 //! Newton and CG against MuJoCo 3.5.0's primal solver (`mj_solPrimal`,
-//! `engine_solver.c:1811-1968`, from `warmstart`, `engine_forward.c:611-687`),
-//! with islands disabled, so MuJoCo solves every row at once as sim-core does.
+//! `engine_solver.c:1811-1968`, from `warmstart`, `engine_forward.c:611-687`):
+//! with islands disabled, every row at once; with islands (the `islands_*`
+//! cases), each island apart (`engine_forward.c:762-797`).
 //!
 //! The golden is `assets/golden/primal_solver/primal_solver.json`, from the
 //! unfused MuJoCo 3.5.0 oracle (`scripts/gen_primal_solver_reference.py`, which
@@ -62,9 +63,14 @@ fn assert_bits(what: &str, got: &[f64], want: &[f64]) {
     }
 }
 
-/// The counts of each iteration's statistics, and the iteration count.
+/// The counts of each iteration's statistics, and the iteration count (with
+/// islands, MuJoCo's per island, summed).
 fn assert_stat_counts(what: &str, got: &[SolverStat], want: &Value) {
-    assert_eq!(got.len(), count(&want["niter"]), "{what}: iterations");
+    let niter = match want["niter"].as_array() {
+        Some(per_island) => per_island.iter().map(count).sum(),
+        None => count(&want["niter"]),
+    };
+    assert_eq!(got.len(), niter, "{what}: iterations");
     let field = |name: &str, f: fn(&SolverStat) -> usize| {
         let ours: Vec<usize> = got.iter().map(f).collect();
         assert_eq!(ours, usizes(&want[name]), "{what}: {name}");
@@ -122,84 +128,92 @@ fn step_and_compare(what: &str, case: &Value, through: usize, tol: f64, counts_t
 fn primal_solver_matches_mujoco_3_5_0_bit_for_bit_given_its_inputs() {
     let g = golden();
     for (name, case) in g["cases"]["same_input"].as_object().expect("cases") {
-        let (model, mut data) = start(case);
-        data.forward(&model).expect("forward");
-        assert_eq!(
-            model.M_rowadr,
-            usizes(&case["M_rowadr"]),
-            "{name}: M_rowadr"
-        );
-        assert_eq!(
-            model.M_rownnz,
-            usizes(&case["M_rownnz"]),
-            "{name}: M_rownnz"
-        );
-        assert_eq!(
-            model.M_colind,
-            usizes(&case["M_colind"]),
-            "{name}: M_colind"
-        );
-        let nefc = data.efc_type.len();
-        assert_eq!(nefc, floats(&case["efc_D"]).len(), "{name}: nefc");
-
-        let m = floats(&case["M"]);
-        for i in 0..model.nv {
-            let row = model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i];
-            for (&j, &value) in model.M_colind[row.clone()].iter().zip(&m[row]) {
-                data.qM[(i, j)] = value;
-                data.qM[(j, i)] = value;
-            }
-        }
-        data.qLD_data.copy_from_slice(&floats(&case["qLD"]));
-        data.qLD_diag_inv
-            .copy_from_slice(&floats(&case["qLDiagInv"]));
-        data.qacc_smooth
-            .copy_from_slice(&floats(&case["qacc_smooth"]));
-        data.qfrc_smooth
-            .copy_from_slice(&floats(&case["qfrc_smooth"]));
-        let j = floats(&case["efc_J"]);
-        for r in 0..nefc {
-            for c in 0..model.nv {
-                data.efc_J[(r, c)] = j[r * model.nv + c];
-            }
-        }
-        data.efc_aref.copy_from_slice(&floats(&case["efc_aref"]));
-        data.efc_D.copy_from_slice(&floats(&case["efc_D"]));
-        data.efc_R.copy_from_slice(&floats(&case["efc_R"]));
-        data.qacc_warmstart.fill(0.0);
-
-        let newton = case["newton"].as_bool().expect("newton");
-        sim_core::constraint::mj_sol_primal_rows(&model, &mut data, newton).expect("solve");
-
-        let stats = &case["stats"];
-        assert_stat_counts(name, &data.solver_stat, stats);
-        let field = |f: fn(&SolverStat) -> f64| data.solver_stat.iter().map(f).collect::<Vec<_>>();
-        assert_bits(
-            &format!("{name} improvement"),
-            &field(|s| s.improvement),
-            &floats(&stats["improvement"]),
-        );
-        assert_bits(
-            &format!("{name} gradient"),
-            &field(|s| s.gradient),
-            &floats(&stats["gradient"]),
-        );
-        assert_bits(
-            &format!("{name} lineslope"),
-            &field(|s| s.lineslope),
-            &floats(&stats["lineslope"]),
-        );
-        assert_bits(
-            &format!("{name} qacc"),
-            data.qacc.as_slice(),
-            &floats(&case["qacc"]),
-        );
-        assert_bits(
-            &format!("{name} efc_force"),
-            data.efc_force.as_slice(),
-            &floats(&case["efc_force"]),
-        );
+        solve_given_mujocos_inputs(name, case);
     }
+}
+
+/// Hands the solver the case's MuJoCo inputs after a forward pass and
+/// compares its statistics, acceleration and forces with MuJoCo's, bit for
+/// bit; returns the data.
+fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
+    let (model, mut data) = start(case);
+    data.forward(&model).expect("forward");
+    assert_eq!(
+        model.M_rowadr,
+        usizes(&case["M_rowadr"]),
+        "{name}: M_rowadr"
+    );
+    assert_eq!(
+        model.M_rownnz,
+        usizes(&case["M_rownnz"]),
+        "{name}: M_rownnz"
+    );
+    assert_eq!(
+        model.M_colind,
+        usizes(&case["M_colind"]),
+        "{name}: M_colind"
+    );
+    let nefc = data.efc_type.len();
+    assert_eq!(nefc, floats(&case["efc_D"]).len(), "{name}: nefc");
+
+    let m = floats(&case["M"]);
+    for i in 0..model.nv {
+        let row = model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i];
+        for (&j, &value) in model.M_colind[row.clone()].iter().zip(&m[row]) {
+            data.qM[(i, j)] = value;
+            data.qM[(j, i)] = value;
+        }
+    }
+    data.qLD_data.copy_from_slice(&floats(&case["qLD"]));
+    data.qLD_diag_inv
+        .copy_from_slice(&floats(&case["qLDiagInv"]));
+    data.qacc_smooth
+        .copy_from_slice(&floats(&case["qacc_smooth"]));
+    data.qfrc_smooth
+        .copy_from_slice(&floats(&case["qfrc_smooth"]));
+    let j = floats(&case["efc_J"]);
+    for r in 0..nefc {
+        for c in 0..model.nv {
+            data.efc_J[(r, c)] = j[r * model.nv + c];
+        }
+    }
+    data.efc_aref.copy_from_slice(&floats(&case["efc_aref"]));
+    data.efc_D.copy_from_slice(&floats(&case["efc_D"]));
+    data.efc_R.copy_from_slice(&floats(&case["efc_R"]));
+    data.qacc_warmstart.fill(0.0);
+
+    let newton = case["newton"].as_bool().expect("newton");
+    sim_core::constraint::mj_sol_primal_rows(&model, &mut data, newton).expect("solve");
+
+    let stats = &case["stats"];
+    assert_stat_counts(name, &data.solver_stat, stats);
+    let field = |f: fn(&SolverStat) -> f64| data.solver_stat.iter().map(f).collect::<Vec<_>>();
+    assert_bits(
+        &format!("{name} improvement"),
+        &field(|s| s.improvement),
+        &floats(&stats["improvement"]),
+    );
+    assert_bits(
+        &format!("{name} gradient"),
+        &field(|s| s.gradient),
+        &floats(&stats["gradient"]),
+    );
+    assert_bits(
+        &format!("{name} lineslope"),
+        &field(|s| s.lineslope),
+        &floats(&stats["lineslope"]),
+    );
+    assert_bits(
+        &format!("{name} qacc"),
+        data.qacc.as_slice(),
+        &floats(&case["qacc"]),
+    );
+    assert_bits(
+        &format!("{name} efc_force"),
+        data.efc_force.as_slice(),
+        &floats(&case["efc_force"]),
+    );
+    data
 }
 
 /// Census doc 406a1991, a box on a tilted plane, at the census start: three
@@ -550,4 +564,190 @@ fn the_jacobian_option_picks_the_solvers_path() {
     let (model, _) = start(sparse);
     assert!(model.is_sparse(), "jacobian sparse at {} dofs", model.nv);
     assert_trajectory("sparse_small", sparse, 200, 1e-12);
+}
+
+/// [`step_and_compare`] with each step's island count MuJoCo's as well.
+fn step_islands_and_compare(
+    what: &str,
+    case: &Value,
+    through: usize,
+    tol: f64,
+    counts_through: usize,
+) {
+    let (model, mut data) = start(case);
+    let nisland = usizes(&case["nisland"]);
+    for (k, &want) in nisland.iter().enumerate().take(counts_through) {
+        data.step(&model).expect("step");
+        assert_eq!(data.nisland, want, "{what}: islands at step {}", k + 1);
+    }
+    step_and_compare(what, case, through, tol, counts_through);
+}
+
+/// mixed_rows' arm and ball, and its puck, with islands enabled (MuJoCo's
+/// default): two islands, each solved apart over its own dofs and rows,
+/// scaled by its own inertia (`mj_fwdConstraint`, `engine_forward.c:762-797`;
+/// book P35). Newton and CG, pyramidal and elliptic (condim 3 and 6): the
+/// first forward's island count, each island's iteration, active-row,
+/// change, evaluation and update counts in island order and the
+/// acceleration are MuJoCo's; each step's island count and iteration count
+/// are MuJoCo's, and the state within 1e-12 through step 50.
+#[test]
+fn islands_iterate_as_mujoco() {
+    let g = golden();
+    for (name, case) in g["cases"]["islands_mixed"].as_object().expect("cases") {
+        let (model, mut data) = start(case);
+        data.forward(&model).expect("forward");
+        let first = &case["forward"];
+        assert_eq!(data.nisland, count(&first["nisland"]), "{name}: islands");
+        assert_eq!(data.efc_type.len(), count(&first["nefc"]), "{name}: nefc");
+        assert_stat_counts(name, &data.solver_stat, &first["stats"]);
+        assert_close(
+            &format!("{name} qacc"),
+            data.qacc.as_slice(),
+            &floats(&first["qacc"]),
+            1e-12,
+        );
+        if !name.ends_with("_6") {
+            step_islands_and_compare(name, case, 50, 1e-12, 200);
+        }
+    }
+}
+
+/// [`primal_solver_matches_mujoco_3_5_0_bit_for_bit_given_its_inputs`] with
+/// islands: each mixed_rows variant's two islands solved apart from MuJoCo's
+/// inputs give MuJoCo's statistics, in island order, its acceleration and
+/// its forces bit for bit.
+#[test]
+fn islands_match_mujoco_3_5_0_bit_for_bit_given_their_inputs() {
+    let g = golden();
+    for (name, case) in g["cases"]["same_input_islands"].as_object().expect("cases") {
+        let data = solve_given_mujocos_inputs(name, case);
+        assert_eq!(data.nisland, count(&case["nisland"]), "{name}: islands");
+    }
+}
+
+/// sparse_spheres, sparse_pair and sparse_stack with islands enabled: at
+/// MuJoCo's sparse size each island's Hessian is factored over its own
+/// dofs. The first forward's counts are MuJoCo's, and each step's island
+/// and iteration counts and the state within 1e-12 through the case.
+#[test]
+fn sparse_islands_step_as_mujoco() {
+    let g = golden();
+    for (name, case) in g["cases"]["islands_sparse"].as_object().expect("cases") {
+        let (model, mut data) = start(case);
+        assert!(model.is_sparse(), "{name}: MuJoCo's sparse size");
+        data.forward(&model).expect("forward");
+        let first = &case["forward"];
+        assert_eq!(data.nisland, count(&first["nisland"]), "{name}: islands");
+        assert_stat_counts(name, &data.solver_stat, &first["stats"]);
+        let steps = usizes(&case["niter"]).len();
+        step_islands_and_compare(name, case, steps, 1e-12, steps);
+    }
+}
+
+/// 22 spheres on vertical slides falling onto a plane, each its own island:
+/// MuJoCo counts the iterations and keeps the statistics of its first 20
+/// islands (`mjNISLAND`, `engine_solver.c:1946-1951`) and solves all 22. The
+/// first forward's counts and each step's are MuJoCo's (20), and the state
+/// of every slider within 1e-12 through 50 steps.
+#[test]
+fn islands_past_the_twentieth_are_solved_but_not_counted() {
+    let g = golden();
+    for (solver, case) in g["cases"]["islands_many"].as_object().expect("cases") {
+        let (model, mut data) = start(case);
+        data.forward(&model).expect("forward");
+        let first = &case["forward"];
+        assert_eq!(data.nisland, 22, "{solver}: islands");
+        assert_eq!(count(&first["nisland"]), 22, "{solver}: MuJoCo's islands");
+        assert_stat_counts(solver, &data.solver_stat, &first["stats"]);
+        step_islands_and_compare(solver, case, 50, 1e-12, 50);
+    }
+}
+
+/// Not matched (registry `D-ISLAND-EFC-STATE`, wrong-value): MuJoCo copies
+/// each island's forces back but not its rows' states
+/// (`engine_forward.c:794-797`), so with islands its `efc_state` is the
+/// warmstart's, made at `qacc_smooth` (`:631-660`). An arm whose hinge
+/// friction loss (5) holds it against gravity, one island, Newton and CG:
+/// MuJoCo's force is −1.32435, inside the friction band, and its state with
+/// islands is LinearPos, the state of a row at −5; without islands it is
+/// Quadratic. Ours is Quadratic either way, with MuJoCo's force.
+#[test]
+fn island_rows_keep_their_solves_states() {
+    let g = golden();
+    for (solver, cases) in g["cases"]["islands_friction_hold"]
+        .as_object()
+        .expect("cases")
+    {
+        for (tag, case) in cases.as_object().expect("cases") {
+            let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+            let mut data = model.make_data();
+            data.forward(&model).expect("forward");
+            let what = format!("{solver} {tag}");
+            assert_eq!(data.nisland, count(&case["nisland"]), "{what}: islands");
+            assert_close(
+                &format!("{what} efc_force"),
+                data.efc_force.as_slice(),
+                &floats(&case["efc_force"]),
+                1e-12,
+            );
+            let floss = model.dof_frictionloss[0];
+            assert!(data.efc_force[0].abs() < floss, "{what}: inside the band");
+            assert_eq!(data.efc_state, [ConstraintState::Quadratic], "{what}");
+            let mujoco = usizes(&case["efc_state"]);
+            let want = if tag == "islands" {
+                ConstraintState::LinearPos
+            } else {
+                ConstraintState::Quadratic
+            };
+            assert_eq!(mujoco, [mj_state(want)], "{what}: MuJoCo's state");
+        }
+    }
+}
+
+/// At jacobian="sparse", a hinge with friction loss beside a second hinge
+/// under a fixed tendon of coef 0 with friction loss and a range its length
+/// exceeds: the tendon's two rows are all zero. A row in no island keeps the
+/// warmstart's force and state, made at `qacc_smooth` (for a zero row, its
+/// solution's): every row's force and state, and the acceleration, are
+/// MuJoCo's. Not matched (ledger L143): MuJoCo's partition reads a row's dof
+/// chain (`treeNext`, `engine_island.c:148-162`), so the tendon's rows make
+/// the second hinge an island (2 islands, 2 iterations a step); sim-core's
+/// reads the nonzero entries, so they are in none (1 island, 1 iteration).
+#[test]
+fn a_row_in_no_island_keeps_the_warmstarts_force() {
+    let g = golden();
+    for (solver, case) in g["cases"]["islands_zero_row"].as_object().expect("cases") {
+        let (model, mut data) = start(case);
+        assert!(model.is_sparse(), "{solver}: the sparse size");
+        data.forward(&model).expect("forward");
+        assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{solver}: nefc");
+        assert_eq!(
+            (data.nisland, count(&case["nisland"])),
+            (1, 2),
+            "{solver}: islands, ours and MuJoCo's"
+        );
+        assert_bits(
+            &format!("{solver} efc_force"),
+            data.efc_force.as_slice(),
+            &floats(&case["efc_force"]),
+        );
+        let states: Vec<usize> = data.efc_state.iter().map(|&s| mj_state(s)).collect();
+        assert_eq!(states, usizes(&case["efc_state"]), "{solver}: efc_state");
+        assert_close(
+            &format!("{solver} qacc"),
+            data.qacc.as_slice(),
+            &floats(&case["qacc"]),
+            1e-12,
+        );
+        for (k, &want) in usizes(&case["niter"]).iter().enumerate() {
+            data.step(&model).expect("step");
+            assert_eq!(
+                (data.solver_niter, want),
+                (1, 2),
+                "{solver}: iterations at step {}, ours and MuJoCo's",
+                k + 1
+            );
+        }
+    }
 }

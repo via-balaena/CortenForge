@@ -16,11 +16,32 @@ use crate::types::{ConstraintState, ConstraintType, Data, ENABLE_SLEEP, Model, S
 /// A cone contact's first row, its dim and its cone Hessian (row-major).
 pub type Cone = (usize, usize, [f64; 36]);
 
+/// The problem a sparse Hessian is made for: one solve's dofs and rows,
+/// every one or one island's, in the solve's own numbering.
+pub struct SparseInputs<'a> {
+    pub model: &'a Model,
+    pub data: &'a Data,
+    /// Each dof's dof in the model.
+    pub dofs: &'a [usize],
+    /// Each dof's parent dof.
+    pub parent: &'a [Option<usize>],
+    /// The rows' Jacobian over these dofs, row-major.
+    pub j: &'a [f64],
+    /// Each row's `D`.
+    pub d: &'a [f64],
+    /// Each row's type and dim.
+    pub ty: &'a [ConstraintType],
+    pub dim: &'a [usize],
+    /// The implicit spring-damper integrator's terms, which only a solve over
+    /// every dof takes.
+    pub implicit_sd: bool,
+}
+
 /// Sparse Hessian `H = M + J'·D·J + Σ J_c'·H_c·J_c` in CSC lower-triangle
 /// format with cached symbolic/numeric `L·D·L'` factorization.
 ///
 /// The sparsity pattern comes from:
-/// - M: tree sparsity via `dof_parent` (entry (i,j) iff j is ancestor of i)
+/// - M: tree sparsity via the dofs' parents (entry (i,j) iff j is ancestor of i)
 /// - J'·J over every constraint row, whatever its state, an elliptic
 ///   contact's rows together, as MuJoCo's pattern (`mju_sqrMatTDSparseCount`
 ///   over all rows), so a row that becomes quadratic or a cone later in the
@@ -52,7 +73,7 @@ pub struct SparseHessian {
 }
 
 impl SparseHessian {
-    /// Build the sparse Hessian from Model/Data. Computes:
+    /// Build the sparse Hessian of `inputs`. Computes:
     /// 1. Sparsity pattern of H = M + J^T·D·J (CSC lower triangle)
     /// 2. Numeric values
     /// 3. Symbolic factorization (elimination tree + L structure)
@@ -60,28 +81,27 @@ impl SparseHessian {
     // Indexed loop mutates parallel arrays at the same index; iterator forms would obscure the per-row update.
     #[allow(clippy::needless_range_loop)]
     pub fn assemble(
-        model: &Model,
-        data: &Data,
-        nv: usize,
-        implicit_sd: bool,
+        inputs: &SparseInputs<'_>,
         state: &[ConstraintState],
         cones: &[Cone],
     ) -> Result<Self, StepError> {
-        let nefc = data.efc_type.len();
+        let (nv, nefc) = (inputs.dofs.len(), inputs.d.len());
+        debug_assert!(!inputs.implicit_sd || nv == inputs.model.nv, "every dof");
+        let j = inputs.j;
 
         // --- Step 1: Determine sparsity pattern ---
         // A dense boolean mask per column: O(nv²), from 3,600 entries at the
         // sparse size up.
         let mut has_entry = vec![vec![false; nv]; nv]; // has_entry[col][row], row >= col
 
-        // M sparsity: tree structure from dof_parent
+        // M sparsity: tree structure from the dofs' parents
         for i in 0..nv {
             has_entry[i][i] = true; // diagonal always present
-            let mut p = model.dof_parent[i];
-            while let Some(j) = p {
-                // M[i,j] is non-zero (j < i since j is ancestor)
-                has_entry[j][i] = true; // lower triangle: row=i, col=j
-                p = model.dof_parent[j];
+            let mut p = inputs.parent[i];
+            while let Some(a) = p {
+                // M[i,a] is non-zero (a < i since a is ancestor)
+                has_entry[a][i] = true; // lower triangle: row=i, col=a
+                p = inputs.parent[a];
             }
         }
 
@@ -92,13 +112,13 @@ impl SparseHessian {
         // of a contact one pattern, `engine_solver.c:1698`).
         let mut r = 0;
         while r < nefc {
-            let rows = if data.efc_type[r] == ConstraintType::ContactElliptic {
-                data.efc_dim[r]
+            let rows = if inputs.ty[r] == ConstraintType::ContactElliptic {
+                inputs.dim[r]
             } else {
                 1
             };
             let nz_cols: Vec<usize> = (0..nv)
-                .filter(|&col| (r..r + rows).any(|k| data.efc_J[(k, col)] != 0.0))
+                .filter(|&col| (r..r + rows).any(|k| j[k * nv + col] != 0.0))
                 .collect();
             // Mark all pairs (lower triangle)
             for &ci in &nz_cols {
@@ -113,7 +133,8 @@ impl SparseHessian {
         // DT-35: Tendon K/D sparsity (ImplicitSpringDamper only).
         // Conservative: includes entries for all tendons with k or b nonzero,
         // regardless of deadband state. Actual values use deadband-aware k_active.
-        if implicit_sd {
+        if inputs.implicit_sd {
+            let (model, data) = (inputs.model, inputs.data);
             let mut nz: Vec<usize> = Vec::with_capacity(8);
             for t in 0..model.ntendon {
                 let kt = model.tendon_stiffness[t];
@@ -121,10 +142,10 @@ impl SparseHessian {
                 if kt == 0.0 && bt == 0.0 {
                     continue;
                 }
-                let j = &data.ten_J[t];
+                let ten_j = &data.ten_J[t];
                 nz.clear();
                 for dof in 0..nv {
-                    if j[dof] != 0.0 {
+                    if ten_j[dof] != 0.0 {
                         nz.push(dof);
                     }
                 }
@@ -166,7 +187,7 @@ impl SparseHessian {
         };
 
         // --- Step 3: Fill numeric values ---
-        h.fill_numeric(model, data, nv, nefc, implicit_sd, state, cones);
+        h.fill_numeric(inputs, state, cones);
 
         // --- Step 4: Symbolic factorization ---
         h.symbolic_factor();
@@ -181,15 +202,11 @@ impl SparseHessian {
     /// constraint states and cones.
     pub fn refactor(
         &mut self,
-        model: &Model,
-        data: &Data,
-        implicit_sd: bool,
+        inputs: &SparseInputs<'_>,
         state: &[ConstraintState],
         cones: &[Cone],
     ) -> Result<(), StepError> {
-        let nv = self.nv;
-        let nefc = data.efc_type.len();
-        self.fill_numeric(model, data, nv, nefc, implicit_sd, state, cones);
+        self.fill_numeric(inputs, state, cones);
         self.numeric_factor()
     }
 
@@ -199,42 +216,37 @@ impl SparseHessian {
     /// `build_m_impl`.
     // Each term reads as its own block; splitting it would scatter one sum.
     // Rows are read across parallel arrays at one index.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        clippy::needless_range_loop
-    )]
+    #[allow(clippy::too_many_lines, clippy::needless_range_loop)]
     fn fill_numeric(
         &mut self,
-        model: &Model,
-        data: &Data,
-        nv: usize,
-        nefc: usize,
-        implicit_sd: bool,
+        inputs: &SparseInputs<'_>,
         state: &[ConstraintState],
         cones: &[Cone],
     ) {
+        let (nv, nefc) = (self.nv, inputs.d.len());
+        let (data, dofs, j) = (inputs.data, inputs.dofs, inputs.j);
         // Zero all values
         self.vals.iter_mut().for_each(|v| *v = 0.0);
 
-        // Add M using tree sparsity: only walk (i, ancestor) pairs via dof_parent.
-        // This is O(nv · depth) instead of O(nv²) — much cheaper for tree-structured
-        // robots where depth << nv.
+        // Add M using tree sparsity: only walk (i, ancestor) pairs via the
+        // parents. This is O(nv · depth) instead of O(nv²) — much cheaper for
+        // tree-structured robots where depth << nv.
         for i in 0..nv {
             // Diagonal
-            self.add(i, i, data.qM[(i, i)]);
+            self.add(i, i, data.qM[(dofs[i], dofs[i])]);
             // Off-diagonal: walk ancestors
-            let mut p = model.dof_parent[i];
-            while let Some(j) = p {
-                // M[i,j] non-zero, j < i (ancestor). Store in lower triangle: col=j, row=i.
-                self.add(j, i, data.qM[(i, j)]);
-                p = model.dof_parent[j];
+            let mut p = inputs.parent[i];
+            while let Some(a) = p {
+                // M[i,a] non-zero, a < i (ancestor). Store in lower triangle: col=a, row=i.
+                self.add(a, i, data.qM[(dofs[i], dofs[a])]);
+                p = inputs.parent[a];
             }
         }
 
         // DT-35: Add joint diagonal K/D and tendon non-diagonal K/D for
         // ImplicitSpringDamper. This matches build_m_impl.
-        if implicit_sd {
+        if inputs.implicit_sd {
+            let model = inputs.model;
             let h = model.timestep;
             let h2 = h * h;
             let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
@@ -258,7 +270,7 @@ impl SparseHessian {
                 if kt == 0.0 && bt == 0.0 {
                     continue;
                 }
-                let j = &data.ten_J[t];
+                let ten_j = &data.ten_J[t];
                 let k_active =
                     tendon_active_stiffness(kt, data.ten_length[t], model.tendon_lengthspring[t]);
                 let scale = h2 * k_active + h * bt;
@@ -267,8 +279,8 @@ impl SparseHessian {
                 }
                 nz.clear();
                 for dof in 0..nv {
-                    if j[dof] != 0.0 {
-                        nz.push((dof, j[dof]));
+                    if ten_j[dof] != 0.0 {
+                        nz.push((dof, ten_j[dof]));
                     }
                 }
                 for (ai, &(col_a, j_a)) in nz.iter().enumerate() {
@@ -288,11 +300,11 @@ impl SparseHessian {
             if state[r] != ConstraintState::Quadratic {
                 continue;
             }
-            let d_r = data.efc_D[r];
+            let d_r = inputs.d[r];
             // Collect non-zero columns for this J row
             let mut nz_cols: Vec<(usize, f64)> = Vec::new();
             for col in 0..nv {
-                let j_val = data.efc_J[(r, col)];
+                let j_val = j[r * nv + col];
                 if j_val != 0.0 {
                     nz_cols.push((col, j_val));
                 }
@@ -310,7 +322,7 @@ impl SparseHessian {
         // Each cone: J_c'·H_c·J_c over its rows' non-zero columns.
         for &(row, dim, ref hc) in cones {
             let mut cols: Vec<usize> = (0..nv)
-                .filter(|&c| (0..dim).any(|a| data.efc_J[(row + a, c)] != 0.0))
+                .filter(|&c| (0..dim).any(|a| j[(row + a) * nv + c] != 0.0))
                 .collect();
             cols.sort_unstable();
             // w = H_c·J_c on those columns.
@@ -319,7 +331,7 @@ impl SparseHessian {
                     cols.iter()
                         .map(|&c| {
                             (0..dim)
-                                .map(|b| hc[a * dim + b] * data.efc_J[(row + b, c)])
+                                .map(|b| hc[a * dim + b] * j[(row + b) * nv + c])
                                 .sum()
                         })
                         .collect()
@@ -327,9 +339,7 @@ impl SparseHessian {
                 .collect();
             for (pi, &col_a) in cols.iter().enumerate() {
                 for (qi, &col_b) in cols.iter().enumerate().skip(pi) {
-                    let val: f64 = (0..dim)
-                        .map(|a| data.efc_J[(row + a, col_a)] * w[a][qi])
-                        .sum();
+                    let val: f64 = (0..dim).map(|a| j[(row + a) * nv + col_a] * w[a][qi]).sum();
                     self.add(col_a, col_b, val);
                 }
             }

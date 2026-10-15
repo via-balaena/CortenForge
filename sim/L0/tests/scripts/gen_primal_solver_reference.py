@@ -10,9 +10,9 @@ It refuses any other interpreter, as gen_census_golden.py does.
 
 Newton and CG are one solver in MuJoCo, `mj_solPrimal` (`engine_solver.c:1811-1968`),
 started from `warmstart` (`engine_forward.c:611-687`). It refuses a trajectory MuJoCo
-resets (`unstable`). Every case disables islands
+resets (`unstable`). Every case but the islands_* ones disables islands
 (`<flag island="disable"/>`), so MuJoCo solves all rows at once, scaled by
-`1/(meaninertia·nv)`: the path sim-core runs. The cases:
+`1/(meaninertia·nv)`. The cases:
 
 - newton_box: census doc 406a1991 (`collision_plane.rs:1076`), a box on a tilted
   plane with no gravity, at the census start (qpos0, qvel_i = 0.1·(1 + i mod 3)):
@@ -85,6 +85,35 @@ resets (`unstable`). Every case disables islands
   `tolerance` 1e-300 and iterations capped at 40: a mutant of the line search's exit
   at its iteration cap is caught by the first, one of its midpoint exit by CG's
   second. (sim-mjcf refuses a `tolerance` of 0, which MuJoCo takes.)
+
+With islands enabled, MuJoCo solves each island apart (`mj_solNewton_island`,
+`mj_solCG_island`, `engine_forward.c:768-797`), scaled by 1/Σ diag of its mass
+matrix (`engine_solver.c:1861-1872`), and keeps each island's iteration count and
+statistics, for the first mjNISLAND (20) islands only (`saveStats`,
+`engine_solver.c:38-64`; `:1946-1951`). A case's `niter` is then the sum of
+`solver_niter` per step, and `stats` the islands' statistics in island order,
+with `niter` per island:
+
+- islands_mixed: each mixed_rows variant with islands enabled, two islands (the arm
+  and ball; the puck): qpos and qvel after steps 1, 10, 50 and 200, each step's
+  iteration count and island count, and the first forward's statistics.
+- islands_sparse: sparse_spheres, sparse_pair and sparse_stack with islands enabled
+  (MuJoCo's sparse path, island by island).
+- islands_many: 22 spheres on vertical slides falling onto a plane, each its own
+  island, under Newton and CG: the first forward's island count and statistics,
+  and each step's iteration count for 50 steps; MuJoCo counts the first 20.
+- islands_friction_hold: an arm on a hinge whose friction loss holds it against
+  gravity, one island, under Newton and CG: the first forward's efc_force and
+  efc_state, with islands enabled and disabled. MuJoCo copies an island's forces
+  back but not its rows' states (`engine_forward.c:794-797`), so with islands its
+  efc_state is the warmstart's, made at qacc_smooth (`:631-660`).
+- same_input_islands: same_input for each mixed_rows variant with islands enabled.
+- islands_zero_row: at jacobian="sparse", a hinge with friction loss beside a second
+  hinge under a fixed tendon of coef 0 with friction loss and a range its length 0
+  exceeds, so the tendon's two rows are all zero but their dof chain is the second
+  hinge: MuJoCo's partition reads the chain (`treeNext`, `engine_island.c:148-162`)
+  and makes two islands. Newton and CG: the first forward's island count, efc_force,
+  efc_state and qacc, and each step's iteration count for 20 steps.
 """
 import json
 import os
@@ -279,6 +308,45 @@ ROLLING_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 1.0, -0.7, 3.0]
 # ... and with the sphere at a tenth of that speed, so its friction holds inside the cone.
 NOSLIP_STICK_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.05, 0.02, 0, 0, 0, 3.0]
 
+MANY_ISLANDS = """<mujoco model="many_islands">
+  <option timestep="0.002" solver="{{solver}}"/>
+  <worldbody>
+    <geom type="plane" size="20 20 0.1"/>
+{bodies}
+  </worldbody>
+</mujoco>""".format(bodies="\n".join(
+    f'    <body pos="{0.5 * i} 0 0.0995"><joint type="slide" axis="0 0 1"/>'
+    '<geom type="sphere" size="0.1" mass="1" condim="1"/></body>' for i in range(22)))
+# Each slider falls at its own speed.
+MANY_QVEL = [-0.1 * (1 + i % 4) for i in range(22)]
+
+FRICTION_HOLD = """<mujoco model="friction_hold">
+  <option timestep="0.002" solver="{solver}"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <joint type="hinge" axis="0 1 0" frictionloss="5"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+ZERO_ROW = """<mujoco model="zero_row">
+  <option timestep="0.002" solver="{solver}" jacobian="sparse"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <joint name="a" type="hinge" axis="0 1 0" frictionloss="0.2"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body pos="1 0 1">
+      <joint name="b" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" frictionloss="0.3" limited="true" range="-1 -0.5"><joint joint="b" coef="0"/></fixed>
+  </tendon>
+</mujoco>"""
+
 NOSLIP_WITHOUT_ITS_ROWS = """<mujoco model="noslip_without_its_rows">
   <option timestep="0.002" solver="{solver}" noslip_iterations="10"/>
   <worldbody>
@@ -308,6 +376,59 @@ def stats(m, d):
         out["nupdate"].append(int(s.nupdate))
     out["niter"] = n
     return out
+
+
+MJNISLAND = 20
+MJNSOLVER = 200
+
+
+def island_stats(m, d):
+    """Each recorded island's statistics, in island order, and its iteration count."""
+    keys = ("improvement", "gradient", "lineslope", "nactive", "nchange", "neval", "nupdate")
+    out = {k: [] for k in keys}
+    out["niter"] = []
+    for k in range(min(int(d.nisland), MJNISLAND)):
+        n = int(d.solver_niter[k])
+        out["niter"].append(n)
+        for s in d.solver[k * MJNSOLVER:k * MJNSOLVER + min(n, MJNSOLVER)]:
+            out["improvement"].append(float(s.improvement))
+            out["gradient"].append(float(s.gradient))
+            out["lineslope"].append(float(s.lineslope))
+            out["nactive"].append(int(s.nactive))
+            out["nchange"].append(int(s.nchange))
+            out["neval"].append(int(s.neval))
+            out["nupdate"].append(int(s.nupdate))
+    return out
+
+
+def island_trajectory(xml, qvel, nstep, checkpoints):
+    """trajectory() with islands: each step's iteration count summed over the
+    islands, its island count, and the first forward's island statistics."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[:] = qvel
+    mujoco.mj_forward(m, d)
+    forward = {"stats": island_stats(m, d), "nisland": int(d.nisland), "nefc": int(d.nefc),
+               "qacc": floats(d.qacc), "efc_force": floats(d.efc_force[:d.nefc])}
+    d = mujoco.MjData(m)
+    d.qvel[:] = qvel
+    out = {"xml": xml, "qvel": floats(d.qvel), "niter": [], "nisland": [], "traj": {},
+           "forward": forward}
+    for k in range(1, nstep + 1):
+        mujoco.mj_step(m, d)
+        unstable(m, d, k)
+        out["niter"].append(int(sum(d.solver_niter)))
+        out["nisland"].append(int(d.nisland))
+        if k in checkpoints:
+            out["traj"][str(k)] = {"qpos": floats(d.qpos), "qvel": floats(d.qvel)}
+    return out
+
+
+def with_islands(xml):
+    """The document with islands enabled, MuJoCo's default."""
+    flag = '>\n    <flag island="disable"/>\n  </option>'
+    assert xml.count(flag) == 1, "one island flag"
+    return xml.replace(flag, '/>')
 
 
 def census_start(m, d):
@@ -466,6 +587,38 @@ def two_tree_cone(xml, qvel):
     return case
 
 
+def friction_hold(solver):
+    out = {}
+    for tag, xml in (("islands", FRICTION_HOLD.format(solver=solver)),
+                     ("no_islands", FRICTION_HOLD.format(solver=solver).replace(
+                         f'solver="{solver}"/>',
+                         f'solver="{solver}">\n    <flag island="disable"/>\n  </option>'))):
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        out[tag] = {"xml": xml, "nisland": int(d.nisland), "nefc": int(d.nefc),
+                    "efc_force": floats(d.efc_force[:d.nefc]),
+                    "efc_state": [int(x) for x in d.efc_state[:d.nefc]],
+                    "efc_R": floats(d.efc_R[:d.nefc]), "qacc": floats(d.qacc)}
+    return out
+
+
+def zero_row(solver):
+    xml = ZERO_ROW.format(solver=solver)
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    assert mujoco.mj_isSparse(m) and d.nefc == 3, "three rows at the sparse size"
+    out = {"xml": xml, "qvel": floats(d.qvel), "nisland": int(d.nisland), "nefc": int(d.nefc),
+           "efc_force": floats(d.efc_force[:d.nefc]),
+           "efc_state": [int(x) for x in d.efc_state[:d.nefc]], "qacc": floats(d.qacc),
+           "niter": []}
+    for _ in range(20):
+        mujoco.mj_step(m, d)
+        out["niter"].append(int(sum(d.solver_niter)))
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -510,6 +663,37 @@ def main():
             f'solver="{solver}"', f'solver="{solver}" {opt}')
         same[f"{solver}_elliptic_3_{tag}"] = same_input(xml, MIXED_QVEL)
     cases["same_input"] = same
+    cases["islands_mixed"] = {
+        f"{solver}_{cone}_{condim}": island_trajectory(
+            with_islands(MIXED_ROWS.format(solver=solver, cone=cone, condim=condim)),
+            MIXED_QVEL, 200, (1, 10, 50, 200))
+        for solver in ("Newton", "CG")
+        for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6))}
+    cases["islands_sparse"] = {
+        "sparse_spheres": island_trajectory(with_islands(SPARSE_SPHERES), SPARSE_QVEL, 50, (1, 10, 50)),
+        "sparse_pair": island_trajectory(with_islands(SPARSE_PAIR_XML), SPARSE_PAIR_QVEL, 100,
+                                         (1, 10, 50, 100)),
+        "sparse_stack": island_trajectory(with_islands(SPARSE_STACK_XML), SPARSE_STACK_QVEL, 100,
+                                          (1, 10, 50, 100)),
+    }
+    cases["islands_many"] = {
+        solver: island_trajectory(MANY_ISLANDS.format(solver=solver), MANY_QVEL, 50, (1, 10, 50))
+        for solver in ("Newton", "CG")}
+    cases["islands_friction_hold"] = {solver: friction_hold(solver) for solver in ("Newton", "CG")}
+    same_islands = {}
+    for solver in ("Newton", "CG"):
+        for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6)):
+            case = same_input(with_islands(MIXED_ROWS.format(solver=solver, cone=cone, condim=condim)),
+                              MIXED_QVEL)
+            m = mujoco.MjModel.from_xml_string(case["xml"])
+            d = mujoco.MjData(m)
+            d.qvel[:] = MIXED_QVEL
+            mujoco.mj_forward(m, d)
+            case["stats"] = island_stats(m, d)
+            case["nisland"] = int(d.nisland)
+            same_islands[f"{solver}_{cone}_{condim}"] = case
+    cases["same_input_islands"] = same_islands
+    cases["islands_zero_row"] = {solver: zero_row(solver) for solver in ("Newton", "CG")}
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "primal_solver.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))

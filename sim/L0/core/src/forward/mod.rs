@@ -566,8 +566,8 @@ impl Data {
         // qfrc_gravcomp comes from the velocity stage's passive forces.
         actuation::mj_gravcomp_to_actuator(model, self);
 
-        // One global solve over the rows the position stage made; their
-        // islands are not solved apart (`island/mod.rs`).
+        // The solve over the rows the position stage made, Newton's and CG's
+        // island by island as MuJoCo's (`constraint/solver/primal.rs`).
         crate::constraint::mj_fwd_constraint(model, self)?;
 
         // The primal solver's iterate is the acceleration (MuJoCo's

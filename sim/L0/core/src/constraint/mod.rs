@@ -279,7 +279,8 @@ pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
 /// 1. Compute qacc_smooth (unconstrained acceleration)
 /// 2. `efc_b = J·qacc_smooth − aref`
 /// 3. Dispatch to configured solver: Newton and CG to MuJoCo's primal solver,
-///    whose iterate is the acceleration; PGS. No solver falls back to
+///    island by island where MuJoCo's is, whose iterate is the acceleration;
+///    PGS. No solver falls back to
 ///    another (MuJoCo, `engine_forward.c:739-830`).
 /// 4. Map efc_force → qfrc_constraint via J^T
 /// 5. Extract qfrc_frictionloss from efc_force
