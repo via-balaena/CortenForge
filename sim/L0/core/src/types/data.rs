@@ -62,6 +62,8 @@ pub struct Data {
     /// ball joint, the rotation's axis-angle vector along the moment; on a
     /// free joint, 0.
     /// For Tendon transmission: `gear * ten_length[tendon_id]`.
+    /// A sleeping actuator's keeps its last value while some dof sleeps, as
+    /// MuJoCo's `mj_transmission` skips it.
     pub actuator_length: Vec<f64>,
 
     /// Actuator velocity (gear * transmission_velocity, length `nu`).
@@ -77,7 +79,8 @@ pub struct Data {
     /// Actuator moment vectors (length `nu`, each nv-dimensional).
     /// Populated for Site, Body and slider-crank transmissions and for Joint
     /// transmissions on a ball or free joint; zero for a Joint transmission
-    /// on a hinge or slide and for a Tendon transmission.
+    /// on a hinge or slide and for a Tendon transmission, and for a sleeping
+    /// actuator while some dof sleeps.
     /// Maps scalar actuator force to generalized forces: `qfrc += moment * force`.
     pub actuator_moment: Vec<DVector<f64>>,
 
@@ -156,10 +159,12 @@ pub struct Data {
 
     // ==================== Flex Edge Pre-computed Fields ====================
     /// Pre-computed edge lengths (Euclidean distance between endpoints).
-    /// Length `nflexedge`. Computed after `mj_flex()` syncs `flexvert_xpos`.
+    /// Length `nflexedge`. Computed after `mj_flex()` syncs `flexvert_xpos`;
+    /// a rigid flex's are not (0 from the reset), as MuJoCo's `mj_flex`.
     pub flexedge_length: Vec<f64>,
     /// Pre-computed edge elongation velocities (rate of length change).
-    /// Length `nflexedge`. Computed after `mj_flex()` from `flexvert_xpos` and `qvel`.
+    /// Length `nflexedge`. Computed after `mj_flex()` from `flexvert_xpos` and `qvel`;
+    /// a rigid flex's are not.
     pub flexedge_velocity: Vec<f64>,
     /// Sparse edge Jacobian values (CSR data array).
     /// Length `total_nnz` (sum of `model.flexedge_J_rownnz`).
@@ -289,10 +294,12 @@ pub struct Data {
 
     // ==================== Tendon State ====================
     /// Current tendon lengths (length `ntendon`).
-    /// Computed from wrap path through kinematics.
+    /// Computed from wrap path through kinematics; 0 for a tendon on trees
+    /// that all sleep, while some tree sleeps (MuJoCo's `mj_tendon`; a
+    /// tendon on no tree is computed).
     pub ten_length: Vec<f64>,
     /// Tendon velocities (length `ntendon`).
-    /// Computed as J_tendon @ qvel.
+    /// Computed as J_tendon @ qvel (0 for a sleeping tendon, whose row is 0).
     pub ten_velocity: Vec<f64>,
     /// Tendon forces from springs/limits (length `ntendon`).
     pub ten_force: Vec<f64>,

@@ -1,8 +1,9 @@
-//! Regression guard — elliptic contact friction rows must inherit the normal
-//! row's regularization (R/D).
+//! Regression guard — elliptic contact friction rows' regularization (R/D).
 //!
-//! MuJoCo computes ONE impedance per contact (from the normal/penetration) and
-//! applies the same imp/diagApprox/R/D to every condim row. A prior bug derived
+//! MuJoCo computes ONE impedance per contact (from the normal/penetration),
+//! and gives its friction rows R[1] = R[0]/impratio and R[j+1] = R[1]·f₀²/f_j²
+//! (`mj_makeImpedance`), so at impratio 1 and equal sliding frictions, as this
+//! file's contact has, every condim-3 row shares the normal row's R and D. A prior bug derived
 //! each elliptic friction row's `R` from its own (tangential) `diagApprox`, whose
 //! exact `J·M⁻¹·Jᵀ` carries a lever-arm term (≈ r²/I) that MuJoCo omits. That left
 //! elliptic friction rows ~10³× too soft, starving tangential grip: a fast oblique
@@ -65,8 +66,9 @@ fn elliptic_rows(data: &sim_core::Data) -> (usize, Vec<usize>) {
     (normal, friction)
 }
 
-/// The invariant that regressed: every condim row shares the normal row's R and D.
-/// Must hold in both diagApprox modes (exact `M⁻¹` and DT-39 invweight).
+/// What regressed: on this contact (condim 3, impratio 1, equal sliding
+/// frictions) every condim row shares the normal row's R and D. Must hold in
+/// both diagApprox modes (exact `M⁻¹` and DT-39 invweight).
 #[test]
 fn elliptic_friction_rows_share_normal_regularization() {
     for bodyweight in [false, true] {

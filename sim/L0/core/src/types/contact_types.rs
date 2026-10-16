@@ -70,11 +70,14 @@ pub struct Contact {
     ///
     /// Only meaningful for elliptic contacts from explicit `<pair>` definitions.
     /// `[0.0, 0.0]` is the sentinel meaning "use `solref`" (MuJoCo convention).
-    /// Auto-generated contacts always have `[0.0, 0.0]`.
+    /// Auto-generated contacts have `[0.0, 0.0]`, but under `ENABLE_OVERRIDE`
+    /// `o_solref`.
     ///
     /// When nonzero **and** the constraint is `ContactElliptic` with `row > 0`
     /// (friction row), the KBIP computation uses `solreffriction` instead of
-    /// `solref` for the B (damping) term. K is always 0 for friction rows.
+    /// `solref` for the B (damping) term. K is always 0 for friction rows. A
+    /// mixed one (one value positive, the other not) is taken as `[0.0, 0.0]`
+    /// when the rows are made, as MuJoCo's `getsolparam`.
     pub solreffriction: [f64; 2],
     /// Solver impedance parameters (from geom pair).
     pub solimp: [f64; 5],

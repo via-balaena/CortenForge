@@ -27,7 +27,7 @@ These are tracked in `future_work_15.md` (full descriptions) and `ROADMAP_V1.md`
 
 | §DT | Origin | Description | Priority |
 |-----|--------|-------------|----------|
-| DT-118 | Phase 6 Spec A | `mj_contactForce()` — touch sensor force reconstruction via full contact force vector | Low |
+| ~~DT-118~~ | Phase 6 Spec A | ~~`mj_contactForce()` — touch sensor force reconstruction via full contact force vector~~ **Done** — the touch sensor adds each contact's decoded normal force (Rigid-physics chunk 3d-2, ledger L122). | Low |
 | DT-119 | Phase 6 Spec A | Ray-geom intersection filter for touch sensor. Depends on DT-118. | Low |
 | DT-120 | Phase 6 Spec B | `MjObjectType::Camera` — frame sensor camera support (reftype="camera" currently warns + ignores) | Low |
 | DT-121 | Phase 6 Spec C | `InsideSite` sensor (`mjSENS_INSIDESITE`) — MuJoCo 3.x sensor type not yet supported | Low |

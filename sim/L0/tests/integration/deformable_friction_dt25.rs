@@ -293,9 +293,10 @@ fn dt25_exact_diag_approx_handles_flex_asymmetric_jacobian() {
             "diagApprox[{i}] = {diag} should be finite"
         );
 
-        // R should also be valid
+        // R should also be valid (a pyramidal facet's may be below mjMINVAL,
+        // as MuJoCo's, but not 0)
         let r = data.efc_R[i];
-        assert!(r >= mj_minval, "efc_R[{i}] = {r} should be >= MJ_MINVAL");
+        assert!(r > 0.0, "efc_R[{i}] = {r} should be positive");
         assert!(r.is_finite(), "efc_R[{i}] = {r} should be finite");
     }
 }

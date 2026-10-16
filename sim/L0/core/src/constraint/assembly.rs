@@ -172,8 +172,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
     let frictionloss_disabled = disabled(model, DISABLE_FRICTIONLOSS);
     let limit_disabled = disabled(model, DISABLE_LIMIT);
     // Rows of sleeping equalities, dof friction and joint limits are not made
-    // (MuJoCo `engine_core_constraint.c:389-413, 700-716, 767-783`); tendon
-    // friction and limit rows are.
+    // (MuJoCo `engine_core_constraint.c:389-413, 700-716, 767-783`); a
+    // sleeping tendon's friction and limit rows are dropped as empty, its row
+    // 0 (`mj_fwd_tendon`).
     let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     let asleep_dofs: Vec<bool> = if sleep_filter {
         (0..nv)

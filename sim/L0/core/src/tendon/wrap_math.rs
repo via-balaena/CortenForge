@@ -1,5 +1,5 @@
 //! A spatial tendon's wrap over a sphere or a cylinder, as MuJoCo 3.5.0's
-//! `mju_wrap` (`engine_util_misc.c:281-412`) and the 2D wraps it calls,
+//! `mju_wrap` (`engine_util_misc.c:281-417`) and the 2D wraps it calls,
 //! operation for operation, so the wrap points and lengths round as
 //! MuJoCo's. Pure geometry: no `Model`/`Data`. Used by
 //! `tendon/spatial.rs`'s `mj_fwd_tendon_spatial`.
@@ -33,7 +33,7 @@ pub struct Wrap {
 /// The wrap of the segment `x0`–`x1` over a geom at `xpos` with rotation
 /// `xmat` and `radius`, `side` its sidesite's position (all in the world
 /// frame); `None` where the segment does not wrap (MuJoCo `mju_wrap`,
-/// `engine_util_misc.c:281-412`). The points go to the geom's frame; a
+/// `engine_util_misc.c:281-417`). The points go to the geom's frame; a
 /// sphere's 2D frame is the plane through its centre and the two points
 /// (MuJoCo's plane where they lie on one line through it), a cylinder's its
 /// x and y axes. A sidesite inside the geom (`‖s‖ < radius`, 3D) wraps
@@ -158,7 +158,7 @@ fn sphere_plane(p0: &[f64; 3], p1: &[f64; 3]) -> [[f64; 3]; 2] {
 
 /// The wrap of the 2D segment `end[0..2]`–`end[2..4]` around a circle of
 /// `radius` at the origin: its two tangent points and the arc between them,
-/// or `None` (MuJoCo `wrap_circle`, `engine_util_misc.c:78-155`). No wrap
+/// or `None` (MuJoCo `wrap_circle`, `engine_util_misc.c:78-152`). No wrap
 /// where an end is inside the circle, the ends are within mjMINVAL (squared)
 /// of each other, or the segment's nearest point to the origin is outside
 /// the circle (and, with a `side`, on its side). Of the two tangent pairs,
@@ -258,14 +258,15 @@ fn is_intersect(p1: &[f64], p2: &[f64], p3: &[f64], p4: &[f64]) -> bool {
 
 /// The one point where the 2D segment `end[0..2]`–`end[2..4]` touches a
 /// circle of `radius` at the origin when it wraps inside it, or `None`
-/// (MuJoCo `wrap_inside`, `engine_util_misc.c:158-278`). No wrap where an
+/// (MuJoCo `wrap_inside`, `engine_util_misc.c:158-271`). No wrap where an
 /// end is on or inside the circle, the circle or an end's distance is below
 /// mjMINVAL, the segment crosses the circle, or the ends point opposite ways
 /// (cos G < −1 + mjMINVAL). Newton's method solves
 /// `asin(A z) + asin(B z) − 2 asin(z) + G = 0` (`A`, `B` the radius over the
 /// ends' distances, `G` the angle between them) from z = 1 − 1e-7, at most 20
-/// iterations to |f| ≤ 1e-6; the point is the nearer-turning end's direction
-/// rotated by asin(z) − asin(A z) (or B), at `radius`. Where the ends nearly
+/// iterations to |f| ≤ 1e-6; the point is the first end's direction
+/// rotated by asin(z) − asin(A z) where end0 × end1 > 0, else the second's
+/// by asin(z) − asin(B z) (`engine_util_misc.c:257-263`), at `radius`. Where the ends nearly
 /// align, the start is past the root, or Newton fails, the point is the ends'
 /// midpoint's direction at `radius`.
 // MuJoCo's names: A, B, G, z, f, df.

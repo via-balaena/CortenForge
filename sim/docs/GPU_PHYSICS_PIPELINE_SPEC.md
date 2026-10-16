@@ -234,14 +234,15 @@ that reference `array<GeomModel>` (currently `fk.wgsl`, `aabb.wgsl`,
 `sdf_sdf_narrow.wgsl`, `sdf_plane_narrow.wgsl`) must use the 96-byte struct
 definition for correct array stride.
 
-**DofModel struct** (16 bytes, 16-byte aligned) — added in Session 2:
+**DofModel struct** (20 bytes, five 4-byte fields, array stride 20) — added in Session 2:
 
 | Field | Type | Notes |
 |---|---|---|
 | `body_id` | u32 | Body that owns this DOF (`model.dof_body[i]`). |
 | `parent` | u32 | Parent DOF in kinematic tree (0xFFFFFFFF = none). |
 | `armature` | f32 | Combined `jnt_armature[jnt] + dof_armature[i]`, pre-computed at upload. |
-| `_pad` | u32 | Alignment padding. |
+| `damping` | f32 | Implicit damping (`model.implicit_damping[i]`). |
+| `simple` | u32 | 1 if the dof's body is simple (`model.dof_simplenum[i] > 0`): the CRBA writes its row of `qM` as the diagonal alone. |
 
 | GPU buffer | Rust type | WGSL type | Bind group |
 |---|---|---|---|

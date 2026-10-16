@@ -264,14 +264,16 @@ Each timestep executes these stages in order:
 ```
 forward():
   Position     mj_fwd_position       FK from qpos → body poses (skips sleeping bodies);
-                                     mj_wake after it, the other wake functions
-                                     (tendon, collision, equality) later in the stage
+                                     mj_wake inside it, after the bodies' poses, the
+                                     other wake functions (tendon, collision,
+                                     equality) later in the stage
                mj_crba                Selective CRBA (skips sleeping subtrees)
                mj_fwd_tendon         Tendon lengths + Jacobians + wrap visualization data (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
                                      + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
                mj_make_constraint     Constraint rows and their islands (mj_island), after the wakes
-               mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)
+               mj_transmission_*      Actuator lengths and moments, after the wakes
+                                     (body: from the contacts, §36)
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
                mj_actuator_velocity   Actuator velocities (lengths: position stage)
                mj_fwd_passive         Springs, dampers, flex bending + vertex damping;

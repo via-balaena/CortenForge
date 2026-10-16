@@ -130,9 +130,8 @@ impl Model {
 
         // --- Phase 2: Forward pass at qpos0 for acc0 (ALL actuators) ---
         // FK populates cinert (body spatial inertias) and tendon Jacobians (ten_J).
-        // CRBA builds M and factors it (L^T D L). For fixed tendons, J is constructed
-        // from wrap_objid/wrap_prm (constant). For spatial tendons, J is read from
-        // data.ten_J[tid] (populated by mj_fwd_tendon_spatial during FK).
+        // CRBA builds M and factors it (L^T D L). A tendon's J, fixed or spatial,
+        // is read from data.ten_J[tid] (made by mj_fwd_tendon during FK).
         let mut data = self.make_data_for_derivation(); // qpos = qpos0
         mj_fwd_position(self, &mut data); // FK: cinert from qpos0
         mj_crba(self, &mut data); // Mass matrix M + sparse factorization

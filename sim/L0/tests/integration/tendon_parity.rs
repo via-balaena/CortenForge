@@ -3,7 +3,11 @@
 //! a tendon over a sphere whose two points lie on a line through its centre
 //! wraps in MuJoCo's plane (`mju_wrap`, `engine_util_misc.c:302-340`), and a
 //! wrap over a sphere or a cylinder, with or without a sidesite, inside or
-//! around, gives MuJoCo's length, Jacobian and wrap points bit for bit.
+//! around, at the edges of `mju_wrap`'s tests too, gives MuJoCo's length,
+//! Jacobian and wrap points bit for bit (on the golden's platform: see
+//! [`Tol::Golden`]); a tendon's velocity is summed as MuJoCo's at both sizes,
+//! a fixed tendon naming a joint twice keeps MuJoCo's row, and a tendon
+//! motor's force is MuJoCo's.
 //!
 //! The golden is `assets/golden/tendon/tendon.json`, from the unfused MuJoCo
 //! 3.5.0 oracle (`scripts/gen_tendon_reference.py`, which describes its
@@ -260,7 +264,7 @@ fn near_collinear_sphere_wrap_keeps_its_plane() {
 /// (an inside wrap), at 17 configurations where each tendon wraps and where
 /// it does not: each tendon's length, velocity, Jacobian and wrap points
 /// are MuJoCo's bit for bit (`mju_wrap`, `wrap_circle`, `wrap_inside`,
-/// `engine_util_misc.c:36-412`), and so with `jacobian="sparse"`, whose
+/// `engine_util_misc.c:36-417`), and so with `jacobian="sparse"`, whose
 /// velocity MuJoCo sums over each tendon's chain. Before, a sphere's tangent
 /// points came from 3D formulae and a cylinder's from another 2D one: of 200
 /// such configurations, the wrap points of 4 to 169 per tendon differed (by

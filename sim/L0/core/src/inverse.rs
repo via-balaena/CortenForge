@@ -29,7 +29,9 @@ impl Data {
     ///
     /// At the `qacc` a forward pass solved for, the constraint force is the
     /// solve's (to its tolerance), and `qfrc_inverse` equals
-    /// `qfrc_applied + qfrc_actuator + J^T * xfrc_applied`.
+    /// `qfrc_applied + qfrc_actuator + J^T * xfrc_applied`, but under
+    /// `ImplicitSpringDamper`, whose springs and dampers the step applies
+    /// implicitly, outside `qfrc_passive`.
     ///
     /// Also calls `mj_body_accumulators()` to populate `cacc`, `cfrc_int`, `cfrc_ext`.
     ///

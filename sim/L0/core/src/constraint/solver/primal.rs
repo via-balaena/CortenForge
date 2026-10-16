@@ -297,7 +297,9 @@ impl Rows {
 /// `qfrc_constraint` is 0; else each row's state and force as
 /// `mj_constraintUpdate` makes them at `jar = J·qacc − aref` (no cone
 /// Hessian, no cost kept), and `qfrc_constraint = J'·force` (`mj_mulJacTVec`,
-/// `engine_core_constraint.c:2592-2598`), over every row in row order.
+/// `engine_core_constraint.c:2592-2598`), over every row in row order. Here
+/// `J·qacc` and `J'·force` are dense products; at MuJoCo's sparse size its
+/// are sparse, so the last bits can differ there.
 pub fn mj_inv_constraint(data: &mut Data) {
     let (nv, nefc) = (data.qacc.len(), data.efc_type.len());
     if nefc == 0 {
