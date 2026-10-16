@@ -50,6 +50,13 @@ the other not) by the default (0.02, 1), and a mixed `solreffriction` by
   `solreflimit` is mixed each way ("0.05 -2", "-500 2"); qpos and qvel after
   steps 1, 10, 100 and 300. The generator refuses it unless both limit rows'
   K and B are the default's.
+- mixed_solref_rows: a mixed solref on each other row kind: a free box's
+  weld ("0.05 -2"), a connect ("-100 5"), a joint equality ("0.03 0"), two
+  hinges' friction loss ("0.02 -1", "-50 -2"), a fixed tendon's limit
+  ("-200 3") and friction loss ("0.03 -1"), a contact whose two geoms'
+  solref mix (solmix) to a mixed one, and override's o_solref ("0.03 -1");
+  qpos and qvel after steps 1, 10, 50, 100 and 200. The generator refuses a
+  scene during which MuJoCo warns of no replacement.
 
 `getimpedance` (`:1413-1461`) takes the curve as flat when `solimp[0] ==
 solimp[1]` or `solimp[2] <= mjMINVAL`, and as linear when `solimp[4] == 1`,
@@ -89,10 +96,22 @@ then D = 1/R, and every row's diagApprox = R*imp/(1-imp) (`:1570-1578`):
   solreffriction="0.08 0.6">`, elliptic), started sliding and spinning
   (from rest its friction rows have no velocity); qpos and qvel after steps
   1, 10, 50 and 100.
+- aniso_rows: the sphere under a `<pair>` of condim 6 whose two sliding
+  frictions differ (0.8, 0.4), impratio 2.5, sliding, spinning and rolling,
+  under Newton, CG and PGS: the first forward's rows and mu as above, and
+  under PGS qpos and qvel after steps 1, 10, 50 and 100. The generator
+  refuses it unless the second tangent's R is not the first's.
 - diag_approx: census docs a0ff89f4 and 406a1991 (boxes into a plane,
   pyramidal), from qpos0, and 60c23753 (frictionless, a sphere at distance
   0 from its plane at qpos0, so without rows) moved 1 mm into the plane;
-  after mj_forward, every row's efc_diagApprox and efc_R.
+  and every_row_kind, a scene with equality, friction-loss (dof and tendon),
+  limit and elliptic contact rows, at its state; and frictionloss_rows,
+  mixed_solref_rows' two hinges with friction loss, given a velocity, whose
+  rows' diagApprox, remade from R, are not their dofs' invweight0 (an ulp
+  apart); after mj_forward, every row's efc_diagApprox and efc_R. The
+  generator refuses every_row_kind unless each of those kinds makes a
+  row, and frictionloss_rows unless one row's diagApprox is not its dof's
+  invweight0.
 
 A weld's rotational error and rotational Jacobian rows are scaled by its
 torquescale, `eq_data[10]` (`:482`, `:510`, `:530`):
@@ -520,6 +539,219 @@ def pair_condim6():
             "traj": trajectory(xml, {}, "pair_condim6", [1, 10, 50, 100], PAIR_CONDIM6_QVEL)}
 
 
+MIXED_SOLREF_ROWS = {
+    "weld": ("""<mujoco model="weld_box">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="box" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.06 0.04" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="box" solref="0.05 -2" />
+  </equality>
+</mujoco>""",
+               [0, 0, 1, 0.9950041652780258, 0.026681602917391797, 0.05336320583478359, 0.08004480875217539], [0.1, 0, 0, 0.5, -0.3, 0.8]),
+    "connect": ("""<mujoco model="conn">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="h" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0.35 0 1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.04 0.03" mass="2" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="a" body2="b" anchor="0.3 0 0" solref="-100 5"/>
+  </equality>
+</mujoco>""",
+               [0.01, 0.35, 0, 1, 1, 0, 0, 0], None),
+    "joint": ("""<mujoco model="jointeq">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0 1 1">
+      <joint name="j2" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <joint joint1="j1" joint2="j2" polycoef="0 1 0 0 0" solref="0.03 0"/>
+  </equality>
+</mujoco>""",
+               [0.1, -0.1], None),
+    "frictionloss": ("""<mujoco model="floss">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="j1" type="hinge" axis="0 1 0" frictionloss="0.3" solreffriction="0.02 -1"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0 1 1">
+      <joint name="j2" type="hinge" axis="0 1 0" frictionloss="0.3" solreffriction="-50 -2"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>""",
+               None, [1.0, 1.0]),
+    "tendon": ("""<mujoco model="tendon">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0 1 1">
+      <joint name="j2" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t1" limited="true" range="-0.2 0.2" solreflimit="-200 3" frictionloss="0.2" solreffriction="0.03 -1">
+      <joint joint="j1" coef="1"/>
+      <joint joint="j2" coef="0.5"/>
+    </fixed>
+  </tendon>
+</mujoco>""",
+               None, [0.8, 0.4]),
+    "solmix": ("""<mujoco model="solmix">
+  <option timestep="0.002" cone="elliptic"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" solref="0.02 1" solmix="1" condim="3"/>
+    <body name="ball" pos="0 0 0.099">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1" solref="-1000 5" solmix="1" condim="3"/>
+    </body>
+  </worldbody>
+</mujoco>""",
+               None, [0.3, -0.2, 0, 0.5, -0.4, 0.8]),
+    "override": ("""<mujoco model="override">
+  <option timestep="0.002" cone="elliptic" o_solref="0.03 -1">
+    <flag override="enable"/>
+  </option>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <body name="ball" pos="0 0 0.099">
+      <freejoint/>
+      <geom name="sphere" type="sphere" size="0.1" mass="1" condim="4"/>
+    </body>
+  </worldbody>
+</mujoco>""",
+               None, [0.3, -0.2, 0, 0.5, -0.4, 0.8]),
+}
+
+
+ANISO = """<mujoco model="pair">
+  <option timestep="0.002" cone="elliptic" impratio="2.5" solver="PGS"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <body name="ball" pos="0 0 0.099">
+      <freejoint/>
+      <geom name="sphere" type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+  <contact>
+    <pair geom1="floor" geom2="sphere" condim="6" friction="0.8 0.4 0.02 0.003 0.001" solref="0.02 1"/>
+  </contact>
+</mujoco>"""
+ANISO_QVEL = [0.3, -0.2, 0.0, 0.5, -0.4, 0.8]
+
+
+EVERY_ROW_KIND = """<mujoco model="every">
+  <compiler angle="radian"/>
+  <option timestep="0.002" cone="elliptic" impratio="2"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="4"/>
+    <body name="a" pos="0 0 1">
+      <joint name="j1" type="hinge" axis="0 1 0" limited="true" range="-0.1 0.1" frictionloss="0.2"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+      <body name="a2" pos="0.3 0 0">
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+      </body>
+    </body>
+    <body name="b" pos="1 0 1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.04 0.03" mass="2" contype="0" conaffinity="0"/>
+    </body>
+    <body name="c" pos="-1 0 1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.04 0.03" mass="2" contype="0" conaffinity="0"/>
+    </body>
+    <body name="ball" pos="0 2 0.099">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1" condim="4"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" limited="true" range="-0.05 0.05" frictionloss="0.1">
+      <joint joint="j1" coef="1"/>
+      <joint joint="j2" coef="1"/>
+    </fixed>
+  </tendon>
+  <equality>
+    <connect body1="a2" body2="b" anchor="0.3 0 0"/>
+    <weld body1="c"/>
+    <joint joint1="j2" polycoef="0.05 0 0 0 0"/>
+  </equality>
+</mujoco>"""
+EVERY_ROW_KIND_STATE = ([0.12, 0.03, 1.01, 0, 1, 1, 0, 0, 0, -1, 0.01, 1, 0.9996875162757026, 0.0, 0.0, 0.024997395914712332, 0, 2, 0.099, 1, 0, 0, 0],
+                        [0.5, -0.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.1, 0, 0, 0.3, 0, 0, 0, 0, 0.5])
+
+
+def mixed_solref_rows(warned):
+    """MIXED_SOLREF_ROWS, each a row kind with a mixed solref: qpos and qvel
+    after steps 1, 10, 50, 100 and 200. It refuses a scene unless MuJoCo
+    warns, during it, that it replaces a mixed solref or solreffriction."""
+    out = {}
+    for name, (xml, qpos, qvel) in MIXED_SOLREF_ROWS.items():
+        before = len(warned)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        if qpos is not None:
+            d.qpos[:] = qpos
+        if qvel is not None:
+            d.qvel[:] = qvel
+        traj = {}
+        for step in range(1, 201):
+            mujoco.mj_step(m, d)
+            if step in (1, 10, 50, 100, 200):
+                traj[str(step)] = {"qpos": floats(d.qpos), "qvel": floats(d.qvel)}
+        stable(d, name)
+        if not any("replacing with default" in w for w in warned[before:]):
+            sys.exit(f"{name}: MuJoCo replaced no mixed solref")
+        out[name] = {"xml": xml, "qpos": qpos, "qvel": qvel, "traj": traj}
+    return out
+
+
+def aniso_rows():
+    """ANISO under Newton, CG and PGS: the first forward's rows as rows()
+    gives them, and under PGS qpos and qvel after steps 1, 10, 50 and 100.
+    It refuses the scene unless the second tangent's R is not the first's."""
+    out = {}
+    for solver in ("Newton", "CG", "PGS"):
+        xml = ANISO.replace('solver="PGS"', f'solver="{solver}"')
+        assert solver == "PGS" or xml != ANISO
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        d.qvel[:] = ANISO_QVEL
+        mujoco.mj_forward(m, d)
+        stable(d, f"aniso {solver}")
+        assert d.ncon == 1 and d.nefc == 6, (d.ncon, d.nefc)
+        if d.efc_R[2] == d.efc_R[1]:
+            sys.exit("aniso: the tangents' R are equal")
+        out[solver] = {"xml": xml, "qvel": ANISO_QVEL, **rows(m, d)}
+    out["PGS"]["traj"] = trajectory(out["PGS"]["xml"], {}, "aniso PGS", [1, 10, 50, 100], ANISO_QVEL)
+    return out
+
+
 # Each doc's height offset of its free joint (qpos[2]) from qpos0.
 DIAG_APPROX_DOCS = {"a0ff89f48fc8fcc9": 0.0, "406a1991539e1cc2": 0.0, "60c23753e7d2ea34": -0.001}
 
@@ -535,6 +767,33 @@ def diag_approx():
         assert d.nefc > 0, doc
         out[doc] = {"xml": xml, "dz": dz, "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
                     "efc_R": floats(d.efc_R[:d.nefc])}
+    m = mujoco.MjModel.from_xml_string(EVERY_ROW_KIND)
+    d = mujoco.MjData(m)
+    d.qpos[:], d.qvel[:] = EVERY_ROW_KIND_STATE
+    mujoco.mj_forward(m, d)
+    kinds = {int(t) for t in d.efc_type[:d.nefc]}
+    want = {mujoco.mjtConstraint.mjCNSTR_EQUALITY, mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF,
+            mujoco.mjtConstraint.mjCNSTR_FRICTION_TENDON, mujoco.mjtConstraint.mjCNSTR_LIMIT_JOINT,
+            mujoco.mjtConstraint.mjCNSTR_CONTACT_ELLIPTIC}
+    if not {int(k) for k in want} <= kinds:
+        sys.exit(f"every_row_kind: rows {sorted(kinds)}")
+    out["every_row_kind"] = {"xml": EVERY_ROW_KIND, "qpos": EVERY_ROW_KIND_STATE[0],
+                             "qvel": EVERY_ROW_KIND_STATE[1],
+                             "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
+                             "efc_R": floats(d.efc_R[:d.nefc])}
+    xml, _, qvel = MIXED_SOLREF_ROWS["frictionloss"]
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[:] = qvel
+    mujoco.mj_forward(m, d)
+    remade = [i for i in range(d.nefc)
+              if d.efc_type[i] == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+              and d.efc_diagApprox[i] != m.dof_invweight0[d.efc_id[i]]]
+    if not remade:
+        sys.exit("frictionloss_rows: no row's diagApprox is not its dof's invweight0")
+    out["frictionloss_rows"] = {"xml": xml, "qpos": floats(d.qpos), "qvel": qvel,
+                                "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
+                                "efc_R": floats(d.efc_R[:d.nefc])}
     return out
 
 
@@ -608,6 +867,8 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
+    warned = []
+    mujoco.set_mju_user_warning(warned.append)
     cases = {
         "connect_rows": connect_rows(),
         "weld_hinge": {
@@ -623,11 +884,13 @@ def main():
         "mixed_solreffriction_own_solref": mixed_solreffriction(OWN_SOLREF,
                                                                 "mixed_solreffriction_own_solref"),
         "mixed_solref_limit": mixed_solref_limit(),
+        "mixed_solref_rows": mixed_solref_rows(warned),
         "impedance_edges": impedance_edges(),
         "elliptic_rows": elliptic_rows(),
         "impratio": impratio(),
         "impratio_noslip": impratio_noslip(),
         "pair_condim6": pair_condim6(),
+        "aniso_rows": aniso_rows(),
         "diag_approx": diag_approx(),
         "weld_torquescale": weld_torquescale(),
     }

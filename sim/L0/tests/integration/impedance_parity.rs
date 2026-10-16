@@ -187,6 +187,29 @@ fn mixed_solref_uses_default() {
     assert_eq!(end.efc_solref, [[0.02, 1.0]; 2], "the limit rows' solref");
 }
 
+/// A mixed solref on each other row kind: a weld, a connect, a joint
+/// equality, two hinges' friction loss, a fixed tendon's limit and friction
+/// loss, a contact whose geoms' solref mix (solmix) to a mixed one, and
+/// override's `o_solref`. MuJoCo replaces each by the default
+/// (`getsolparam`, `engine_core_constraint.c:1334-1338`); 200 steps at TOL.
+#[test]
+fn mixed_solref_on_every_row_kind_uses_the_default() {
+    for (name, case) in golden()["cases"]["mixed_solref_rows"]
+        .as_object()
+        .expect("cases")
+    {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        if !case["qpos"].is_null() {
+            data.qpos.copy_from_slice(&floats(&case["qpos"]));
+        }
+        if !case["qvel"].is_null() {
+            data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        }
+        assert_trajectory(name, &model, data, &case["traj"], TOL);
+    }
+}
+
 /// Three limited hinges past their limits, each solimplimit at one of
 /// `getimpedance`'s tests, which compare exactly
 /// (`engine_core_constraint.c:1416`, `:1439`): a width of 1e-11, above
@@ -318,9 +341,11 @@ fn rows_differ(what: &str, data: &Data, rows: &Value, out: &mut Vec<String>) {
 /// and regularized cone μ are MuJoCo's. MuJoCo's elliptic friction rows take
 /// R[1] = R[0]/impratio and R[j+1] = R[1]·f₀²/f_j² (a torsional row 4·10⁴
 /// times the normal's at the default friction, a rolling one 10⁸ times), and
-/// μ = f₀·√(R[1]/R[0]) (`engine_core_constraint.c:1536-1548`). Then census
-/// doc 2cb92700 (`<pair condim="6" solreffriction="0.08 0.6">`), started
-/// sliding and spinning, steps as MuJoCo's for 100 steps.
+/// μ = f₀·√(R[1]/R[0]) (`engine_core_constraint.c:1536-1548`). The same at a
+/// `<pair>` of condim 6 whose two sliding frictions differ (0.8, 0.4),
+/// impratio 2.5, under Newton, CG and PGS, and under PGS 100 steps. Then
+/// census doc 2cb92700 (`<pair condim="6" solreffriction="0.08 0.6">`),
+/// started sliding and spinning, steps as MuJoCo's for 100 steps.
 #[test]
 fn elliptic_friction_rows_as_mujoco() {
     let g = golden();
@@ -332,6 +357,22 @@ fn elliptic_friction_rows_as_mujoco() {
     for (name, case) in g["cases"]["impratio"].as_object().expect("cases") {
         let (_, data) = forward_case(case);
         rows_differ(name, &data, &case["forward"], &mut out);
+    }
+    for (name, case) in g["cases"]["aniso_rows"].as_object().expect("cases") {
+        let (model, data) = forward_case(case);
+        rows_differ(&format!("aniso {name}"), &data, case, &mut out);
+        if !case["traj"].is_null() {
+            let mut data = model.make_data();
+            data.qvel.copy_from_slice(&floats(&case["qvel"]));
+            out.extend(trajectory_differs(
+                &format!("aniso {name}"),
+                &model,
+                data,
+                &case["traj"],
+                TOL,
+                None,
+            ));
+        }
     }
     let case = &g["cases"]["pair_condim6"];
     let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
@@ -351,7 +392,11 @@ fn elliptic_friction_rows_as_mujoco() {
 /// Every row's diagApprox is made from its R, `R·imp/(1 − imp)`, as
 /// MuJoCo's (`engine_core_constraint.c:1575-1578`): census docs a0ff89f4 and
 /// 406a1991 (boxes into a plane, pyramidal) and 60c23753 (frictionless,
-/// moved 1 mm into its plane), and the elliptic sphere's rows.
+/// moved 1 mm into its plane), a scene with equality, friction-loss, limit
+/// and elliptic contact rows, two hinges with friction loss whose rows'
+/// diagApprox is an ulp from their dofs' invweight0 (the friction-loss and
+/// limit rows bit for bit on the golden's platform), and the elliptic
+/// sphere's rows.
 #[test]
 fn diag_approx_as_mujoco() {
     let g = golden();
@@ -359,7 +404,12 @@ fn diag_approx_as_mujoco() {
     for (name, case) in g["cases"]["diag_approx"].as_object().expect("cases") {
         let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();
-        data.qpos[2] += case["dz"].as_f64().expect("dz");
+        if case["qpos"].is_null() {
+            data.qpos[2] += case["dz"].as_f64().expect("dz");
+        } else {
+            data.qpos.copy_from_slice(&floats(&case["qpos"]));
+            data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        }
         data.forward(&model).expect("forward");
         let checks = [
             differs(
@@ -371,6 +421,29 @@ fn diag_approx_as_mujoco() {
             differs("efc_R", &data.efc_R, &floats(&case["efc_R"]), 1e-12),
         ];
         out.extend(checks.into_iter().flatten().map(|d| format!("{name}: {d}")));
+        // The friction-loss and limit rows' diagApprox, made from R, is
+        // within an ulp of the one it is made from: bit for bit on macOS
+        // arm64, where the golden was made, else within 1e-13.
+        let want = floats(&case["efc_diagApprox"]);
+        for (i, kind) in data.efc_type.iter().enumerate() {
+            if !matches!(
+                kind,
+                ConstraintType::FrictionLoss
+                    | ConstraintType::LimitJoint
+                    | ConstraintType::LimitTendon
+            ) {
+                continue;
+            }
+            let (a, b) = (data.efc_diagApprox[i], want[i]);
+            if a.to_bits() != b.to_bits()
+                && (cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                    || (a - b).abs() > 1e-13 * b.abs().max(1.0))
+            {
+                out.push(format!(
+                    "{name}: efc_diagApprox[{i}] ({kind:?}): {a}, expected {b}"
+                ));
+            }
+        }
     }
     for (name, case) in g["cases"]["elliptic_rows"].as_object().expect("cases") {
         let (_, data) = forward_case(case);
