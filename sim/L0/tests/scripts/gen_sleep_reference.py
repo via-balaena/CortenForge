@@ -130,6 +130,20 @@ asleep tendons read 0 and their rows are not made, and a sleeping tendon's
 wrap path keeps its address and count while the next tendon's path takes
 that address.
 
+Its `woken_site`, `woken_free` and `woken_crank` entries hold, for a tree
+asleep from the reset (sleep="init") carrying actuators (a site motor and a
+position actuator on a slide; a free-joint and a ball-joint motor; a
+slider-crank) and struck by a sphere given a velocity, after each mj_step
+until ten past the step the tree wakes: tree_awake, qpos, qvel,
+qfrc_actuator, actuator_length and every actuator's moment row (dense),
+with the actuators that act through their row (site, slider-crank, body,
+or a free or ball joint) and the step the tree woke. MuJoCo's
+`mj_transmission` runs after the position stage's wakes
+(`engine_forward.c:194-209`), so on the step a contact wakes the tree its
+actuators act. It refuses an entry with no tree asleep at the reset, whose
+tree does not wake within 1000 steps, or whose actuators give no force on
+the step it wakes.
+
 Its `refusals` entry holds the message MuJoCo raises for each model of
 REFUSALS: two models whose init-asleep tree cannot sleep (A8's initmix,
 joined by a connect, and initmix_contact, resting on an awake sphere), at
@@ -712,6 +726,115 @@ def dense_ten_j(m, d):
     return floats(rows.ravel())
 
 
+WAKE_OPT = '<option timestep="0.002" gravity="0 0 0"><flag sleep="enable"/></option>'
+
+WOKEN_SITE = f"""<mujoco>{WAKE_OPT}
+<worldbody>
+<body name="a" pos="0 0 0" sleep="init">
+  <joint name="ja" type="slide" axis="1 0 0" ref="0.3"/>
+  <geom name="ga" type="sphere" size="0.1" mass="1"/>
+  <site name="sa" pos="0 0 0"/>
+</body>
+<body name="b" pos="0.5013 0 0">
+  <joint name="jb" type="slide" axis="1 0 0"/>
+  <geom name="gb" type="sphere" size="0.1" mass="1"/>
+</body>
+</worldbody>
+<actuator>
+  <motor name="m_site" site="sa" gear="1 0 0 0 0 0"/>
+  <position name="p_joint" joint="ja" kp="10"/>
+</actuator>
+</mujoco>"""
+
+WOKEN_FREE = f"""<mujoco>{WAKE_OPT}
+<worldbody>
+<body name="a" pos="0 0 0" sleep="init">
+  <freejoint name="fa"/>
+  <geom name="ga" type="sphere" size="0.1" mass="1"/>
+</body>
+<body name="c" pos="0 1 0" sleep="init">
+  <joint name="bc" type="ball"/>
+  <geom name="gc" type="sphere" size="0.1" mass="1"/>
+</body>
+<body name="b" pos="0.5013 0 0">
+  <joint name="jb" type="slide" axis="1 0 0"/>
+  <geom name="gb" type="sphere" size="0.1" mass="1"/>
+</body>
+<body name="e" pos="0 1.5013 0">
+  <joint name="je" type="slide" axis="0 1 0"/>
+  <geom name="ge" type="sphere" size="0.1" mass="1"/>
+</body>
+</worldbody>
+<actuator>
+  <motor name="m_free" joint="fa" gear="0 1 0 0 0 1"/>
+  <motor name="m_ball" joint="bc" gear="0 0 1"/>
+</actuator>
+</mujoco>"""
+
+WOKEN_CRANK = f"""<mujoco>{WAKE_OPT}
+<worldbody>
+<body name="a" pos="0 0 0" sleep="init">
+  <joint name="ja" type="hinge" axis="0 0 1"/>
+  <geom name="ga" type="sphere" size="0.1" mass="1"/>
+  <site name="crank" pos="0.03 0.04 0"/>
+</body>
+<site name="slider" pos="-0.3 0 0" zaxis="1 0 0"/>
+<body name="b" pos="0.5013 0 0">
+  <joint name="jb" type="slide" axis="1 0 0"/>
+  <geom name="gb" type="sphere" size="0.1" mass="1"/>
+</body>
+</worldbody>
+<actuator>
+  <motor name="m_crank" cranksite="crank" slidersite="slider" cranklength="0.4" gear="1.3"/>
+</actuator>
+</mujoco>"""
+
+WOKEN = {
+    "woken_site": (WOKEN_SITE, [0.0, -2.0], [1.0, 0.0]),
+    "woken_free": (WOKEN_FREE, [0.0] * 9 + [-2.0, -2.0], [1.0, 1.0]),
+    "woken_crank": (WOKEN_CRANK, [0.0, -2.0], [1.0]),
+}
+
+
+def woken(name):
+    """WOKEN[name], its actuated tree asleep from the reset, struck by a
+    sphere given `qvel`, with `ctrl`: after each mj_step until ten past the
+    step the tree wakes, tree_awake, qpos, qvel, qfrc_actuator,
+    actuator_length and every actuator's moment row (dense)."""
+    xml, qvel, ctrl = WOKEN[name]
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[:] = qvel
+    d.ctrl[:] = ctrl
+    rows = (mujoco.mjtTrn.mjTRN_SITE, mujoco.mjtTrn.mjTRN_SLIDERCRANK, mujoco.mjtTrn.mjTRN_BODY)
+    through = [i for i in range(m.nu)
+               if m.actuator_trntype[i] in rows
+               or (m.actuator_trntype[i] == mujoco.mjtTrn.mjTRN_JOINT
+                   and m.jnt_type[m.actuator_trnid[i, 0]] in (mujoco.mjtJoint.mjJNT_FREE,
+                                                              mujoco.mjtJoint.mjJNT_BALL))]
+    out = {"xml": xml, "qvel": floats(d.qvel), "ctrl": floats(d.ctrl),
+           "moment_actuators": through, "steps": []}
+    if all(d.tree_awake):
+        sys.exit(f"{name}: no tree asleep at the reset")
+    woke = None
+    k = 0
+    while woke is None or k < woke + 10:
+        k += 1
+        if k > 1000:
+            sys.exit(f"{name}: no tree woke in 1000 steps")
+        mujoco.mj_step(m, d)
+        if woke is None and all(d.tree_awake):
+            woke = k
+            if not np.any(d.qfrc_actuator):
+                sys.exit(f"{name}: no actuator force on the step the tree wakes")
+        out["steps"].append({"tree_awake": ints(d.tree_awake), "qpos": floats(d.qpos),
+                             "qvel": floats(d.qvel), "qfrc_actuator": floats(d.qfrc_actuator),
+                             "actuator_length": floats(d.actuator_length),
+                             "actuator_moment": dense_moment(m, d)})
+    out["woke"] = woke
+    return out
+
+
 def islands():
     m = mujoco.MjModel.from_xml_string(ISLANDS)
     d = mujoco.MjData(m)
@@ -982,6 +1105,8 @@ def main():
     doc["sleeping_tendons"] = sleeping_tendons(SLEEPING_TENDONS)
     doc["sleeping_tendons_sparse"] = sleeping_tendons(SLEEPING_TENDONS_SPARSE)
     doc["tendon_woken"] = tendon_woken()
+    for name in WOKEN:
+        doc[name] = woken(name)
     write(os.path.join(sys.argv[1], "sleep.json"), doc)
     print(f"{len(trees)} tree, {len(lengths)} length, {len(runs)} run and {len(traces)} trace cases"
           f" -> {sys.argv[1]}")

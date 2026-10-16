@@ -1167,6 +1167,88 @@ fn sleeping_tendons_as_mujoco(name: &str, case: &Value) {
     }
 }
 
+/// Trees asleep from the reset (sleep="init") carrying actuators, each
+/// struck by a sphere given a velocity: a site motor and a position
+/// actuator on a slide; a free-joint and a ball-joint motor; a
+/// slider-crank. MuJoCo's `mj_transmission` runs after the position
+/// stage's wakes (`engine_forward.c:194-209`), so on the step a contact
+/// wakes a tree its actuators act. After each step until ten past the wake:
+/// the trees' states, and `qfrc_actuator`, `actuator_length`, the moment rows
+/// of the actuators that act through one, `qpos` and `qvel` within
+/// TOLERANCE·max(1, |MuJoCo's|).
+#[test]
+fn actuators_on_a_tree_a_contact_wakes_act() {
+    const TOLERANCE: f64 = 1e-12;
+    let golden = golden();
+    for name in ["woken_site", "woken_free", "woken_crank"] {
+        let case = &golden[name];
+        let model = model_of(case);
+        let mut data = model.make_data();
+        data.qvel
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qvel"]));
+        data.ctrl
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["ctrl"]));
+        let through: Vec<usize> = case["moment_actuators"]
+            .as_array()
+            .expect("moment_actuators")
+            .iter()
+            .map(|x| usize::try_from(x.as_u64().expect("index")).expect("index"))
+            .collect();
+        let nv = model.nv;
+        for (k, want) in case["steps"].as_array().expect("steps").iter().enumerate() {
+            data.step(&model).expect("step");
+            let step = k + 1;
+            let awake: Vec<bool> = want["tree_awake"]
+                .as_array()
+                .expect("tree_awake")
+                .iter()
+                .map(|a| a.as_i64().expect("int") != 0)
+                .collect();
+            assert_eq!(data.tree_awake, awake, "{name} step {step}: tree_awake");
+            let moments: Vec<f64> = floats(&want["actuator_moment"]);
+            let mut fields: Vec<(String, Vec<f64>, Vec<f64>)> = vec![
+                (
+                    "qfrc_actuator".into(),
+                    data.qfrc_actuator.as_slice().to_vec(),
+                    floats(&want["qfrc_actuator"]),
+                ),
+                (
+                    "actuator_length".into(),
+                    data.actuator_length.as_slice().to_vec(),
+                    floats(&want["actuator_length"]),
+                ),
+                (
+                    "qpos".into(),
+                    data.qpos.as_slice().to_vec(),
+                    floats(&want["qpos"]),
+                ),
+                (
+                    "qvel".into(),
+                    data.qvel.as_slice().to_vec(),
+                    floats(&want["qvel"]),
+                ),
+            ];
+            for &i in &through {
+                fields.push((
+                    format!("actuator_moment[{i}]"),
+                    data.actuator_moment[i].as_slice().to_vec(),
+                    moments[i * nv..(i + 1) * nv].to_vec(),
+                ));
+            }
+            for (field, ours, theirs) in fields {
+                for (j, (a, b)) in ours.iter().zip(&theirs).enumerate() {
+                    assert!(
+                        (a - b).abs() <= TOLERANCE * b.abs().max(1.0),
+                        "{name} step {step}: {field}[{j}] {a}, MuJoCo {b}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// A tree asleep from the reset (sleep="init") carrying a damped fixed
 /// tendon, given a velocity: the forward's kinematics wake the tree before
 /// the tendon is made (`mj_kinematics` runs `mj_wake` between its body and

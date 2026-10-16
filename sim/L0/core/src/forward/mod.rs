@@ -9,7 +9,7 @@
 //! As MuJoCo 3.5.0's `mj_forwardSkip`:
 //!
 //! - **`forward_pos()`**: position stage (wake detection, FK, CRBA,
-//!   transmissions, collision, the constraint rows and their islands,
+//!   collision, the constraint rows and their islands, transmissions,
 //!   position sensors, potential energy);
 //! - **`forward_vel()`**: velocity stage (velocity FK, actuator lengths and
 //!   velocities, passive forces with `cb_passive` and passive plugins, the
@@ -451,9 +451,9 @@ impl Data {
         self.forward_acc(model, compute_sensors)
     }
 
-    /// Position stage: wake detection, forward kinematics, CRBA,
-    /// transmissions, collision, the constraint rows and their islands,
-    /// position sensors and potential energy.
+    /// Position stage: wake detection, forward kinematics, CRBA, collision,
+    /// the constraint rows and their islands, transmissions, position
+    /// sensors and potential energy.
     fn forward_pos(&mut self, model: &Model, compute_sensors: bool) {
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
@@ -469,10 +469,6 @@ impl Data {
         // position stage; we do the same so that mj_energy_vel (velocity
         // stage) has a valid mass matrix.
         crate::dynamics::crba::mj_crba(model, self);
-
-        actuation::mj_transmission_joint_tendon(model, self);
-        actuation::mj_transmission_site(model, self);
-        actuation::mj_transmission_slidercrank(model, self);
 
         // §16.13.2: Tendon wake — multi-tree tendons with active limits
         if sleep_enabled && crate::island::mj_wake_tendon(model, self) {
@@ -497,7 +493,12 @@ impl Data {
         // MuJoCo's `mj_fwdPosition` (`engine_forward.c:203-206`).
         crate::constraint::mj_make_constraint(model, self);
 
-        // §36: Body transmission — requires contacts from mj_collision()
+        // The transmissions, after the wakes, as MuJoCo's `mj_transmission`
+        // (`engine_forward.c:209`): an actuator on a tree this pass woke
+        // is not skipped as asleep. A body transmission reads the contacts.
+        actuation::mj_transmission_joint_tendon(model, self);
+        actuation::mj_transmission_site(model, self);
+        actuation::mj_transmission_slidercrank(model, self);
         actuation::mj_transmission_body_dispatch(model, self);
 
         if compute_sensors {
