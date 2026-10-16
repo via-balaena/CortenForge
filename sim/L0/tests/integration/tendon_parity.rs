@@ -325,3 +325,71 @@ fn fixed_tendon_velocity_as_mujoco() {
         }
     }
 }
+
+/// A fixed tendon naming joint a twice (coefficients 1, then 2) and joint b
+/// once, with stiffness, damping and a motor: MuJoCo's dense Jacobian row
+/// assigns each joint's coefficient, so a's is 2, its sparse row adds them,
+/// 3 (`engine_core_smooth.c:961-976`), and the forces go through that row;
+/// the length adds every entry at both sizes. The motor's acc0 within TOL
+/// (its moment is the row); the length, row, velocity, passive and actuator
+/// forces after `mj_forward` bit for bit, and the trajectory. Before, the
+/// row added them at both sizes, the forces took every coefficient, and the
+/// moment for acc0 the last.
+#[test]
+fn fixed_tendon_naming_a_joint_twice_as_mujoco() {
+    let g = golden();
+    for name in ["fixed_repeated", "fixed_repeated_sparse"] {
+        let case = &g["cases"][name];
+        let model = load(case);
+        assert_close(
+            &format!("{name} actuator_acc0"),
+            &model.actuator_acc0,
+            &floats(&case["actuator_acc0"]),
+            TOL,
+        );
+        let mut data = model.make_data();
+        data.qpos
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qpos"]));
+        data.qvel
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qvel"]));
+        data.ctrl
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["ctrl"]));
+        data.forward(&model).expect("forward");
+        let want = &case["forward"];
+        let what = |field: &str| format!("{name} {field}");
+        assert_close(
+            &what("ten_length"),
+            &[data.ten_length[0]],
+            &[want["ten_length"].as_f64().expect("number")],
+            0.0,
+        );
+        assert_close(
+            &what("ten_J"),
+            data.ten_J[0].as_slice(),
+            &floats(&want["ten_J"]),
+            0.0,
+        );
+        assert_close(
+            &what("ten_velocity"),
+            &[data.ten_velocity[0]],
+            &[want["ten_velocity"].as_f64().expect("number")],
+            0.0,
+        );
+        assert_close(
+            &what("qfrc_passive"),
+            data.qfrc_passive.as_slice(),
+            &floats(&want["qfrc_passive"]),
+            0.0,
+        );
+        assert_close(
+            &what("qfrc_actuator"),
+            data.qfrc_actuator.as_slice(),
+            &floats(&want["qfrc_actuator"]),
+            0.0,
+        );
+        assert_trajectory(name, &model, &mut data, &case["traj"]);
+    }
+}

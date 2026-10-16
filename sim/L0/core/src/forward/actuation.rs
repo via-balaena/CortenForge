@@ -816,10 +816,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 let tendon_id = trnid;
                 if tendon_id < model.ntendon {
                     apply_tendon_force(
-                        model,
                         &data.ten_J[tendon_id],
-                        model.tendon_type[tendon_id],
-                        tendon_id,
                         gear * force,
                         &mut data.qfrc_actuator,
                     );

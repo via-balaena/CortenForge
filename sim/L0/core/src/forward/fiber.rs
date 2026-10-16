@@ -246,24 +246,11 @@ pub fn build_actuator_moment(
         ActuatorTransmission::Tendon => {
             let tid = model.actuator_trnid[actuator_idx][0];
             if tid < model.ntendon {
-                match model.tendon_type[tid] {
-                    TendonType::Fixed => {
-                        let adr = model.tendon_adr[tid];
-                        let num = model.tendon_num[tid];
-                        for w in adr..(adr + num) {
-                            let dof_adr = model.wrap_objid[w];
-                            let coef = model.wrap_prm[w];
-                            if dof_adr < model.nv {
-                                j_vec[dof_adr] = gear * coef;
-                            }
-                        }
-                    }
-                    TendonType::Spatial => {
-                        // Configuration-dependent J — use ten_J from FK at qpos0.
-                        for dof in 0..model.nv {
-                            j_vec[dof] = gear * data.ten_J[tid][dof];
-                        }
-                    }
+                // The tendon's Jacobian row from the caller's position stage,
+                // a fixed tendon's as a spatial one's (MuJoCo's moment is
+                // `gear · ten_J`, `mj_transmission`).
+                for dof in 0..model.nv {
+                    j_vec[dof] = gear * data.ten_J[tid][dof];
                 }
             }
         }

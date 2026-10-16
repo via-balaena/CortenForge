@@ -53,6 +53,13 @@ The cases:
 - fixed_velocity, fixed_velocity_sparse: a fixed tendon over six hinges
   of a chain with coefficients that are not round, dense and sparse; its
   velocity at ten velocities from a seeded generator.
+- fixed_repeated, fixed_repeated_sparse: a fixed tendon that names joint a
+  twice (coefficients 1, then 2) and joint b once, with stiffness, damping
+  and a motor, dense and sparse. MuJoCo's dense Jacobian row assigns each
+  joint's coefficient (a's is 2), its sparse row adds them (3)
+  (`engine_core_smooth.c:961-976`); the length adds every entry at both.
+  The motor's acc0; the length, Jacobian row, velocity, passive and
+  actuator forces after mj_forward, and the trajectory.
 - inside_fallback: a sphere and a cylinder at the origin, each with a
   sidesite inside it, and tendons between world sites a and 2a on six rays
   from the origin: the ends point one way (cos G within mjMINVAL of 1), so
@@ -252,6 +259,25 @@ FIXED_VELOCITY_SPARSE = FIXED_VELOCITY.replace('<mujoco model="fixed_velocity">'
                                                '<mujoco model="fixed_velocity">\n  <option jacobian="sparse"/>', 1)
 assert FIXED_VELOCITY_SPARSE != FIXED_VELOCITY
 
+FIXED_REPEATED = """<mujoco model="fixed_repeated">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="b1"><joint name="a" type="hinge" axis="0 1 0" damping="0.1"/><geom type="capsule" size="0.03" fromto="0 0 0 0.3 0 0" mass="1"/>
+    <body name="b2" pos="0.3 0 0"><joint name="b" type="hinge" axis="0 1 0" damping="0.1"/><geom type="capsule" size="0.03" fromto="0 0 0 0.3 0 0" mass="1"/>
+    </body></body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" stiffness="0.5" damping="0.1" springlength="0.1">
+      <joint joint="a" coef="1"/><joint joint="b" coef="0.5"/><joint joint="a" coef="2"/>
+    </fixed>
+  </tendon>
+  <actuator><motor tendon="t"/></actuator>
+</mujoco>"""
+
+FIXED_REPEATED_SPARSE = FIXED_REPEATED.replace('<option timestep="0.002"/>',
+                                               '<option timestep="0.002" jacobian="sparse"/>', 1)
+assert FIXED_REPEATED_SPARSE != FIXED_REPEATED
+
 RAYS = ((0.2, 0.1, 0.05), (-0.13, 0.07, 0.11), (0.03, -0.17, 0.09), (0.11, 0.13, -0.07),
         (-0.05, -0.09, -0.16), (0.17, -0.02, 0.12))
 
@@ -397,6 +423,26 @@ def fixed_velocity(xml):
     return {"xml": xml, "configs": configs}
 
 
+def fixed_repeated(xml):
+    """`xml`'s motor's acc0 (from its moment, the tendon's row at qpos0); the
+    tendon at qpos (0.3, -0.2), qvel (0.7, 0.4) and ctrl 0.8: its length,
+    Jacobian row and velocity, the passive and actuator forces after
+    mj_forward; then the trajectory."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qpos[:] = [0.3, -0.2]
+    d.qvel[:] = [0.7, 0.4]
+    d.ctrl[:] = [0.8]
+    out = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel), "ctrl": floats(d.ctrl),
+           "actuator_acc0": floats(m.actuator_acc0)}
+    mujoco.mj_forward(m, d)
+    out["forward"] = {"ten_length": float(d.ten_length[0]), "ten_J": ten_j(m, d, 0),
+                      "ten_velocity": float(d.ten_velocity[0]), "qfrc_passive": floats(d.qfrc_passive),
+                      "qfrc_actuator": floats(d.qfrc_actuator)}
+    out["traj"] = trajectory(m, d, "fixed_repeated")
+    return out
+
+
 def near(xml):
     """The sphere-wrap example with its far site 1e-12 off the line. The site
     sits 0.1 from its body's origin: MuJoCo copies the body's frame for a site
@@ -457,6 +503,8 @@ def main():
         "fixed_velocity": fixed_velocity(FIXED_VELOCITY),
         "fixed_velocity_sparse": fixed_velocity(FIXED_VELOCITY_SPARSE),
         "inside_fallback": sphere_wrap(INSIDE_FALLBACK, "inside_fallback", [], False),
+        "fixed_repeated": fixed_repeated(FIXED_REPEATED),
+        "fixed_repeated_sparse": fixed_repeated(FIXED_REPEATED_SPARSE),
     }
     check_planes(cases)
     out = {"oracle": marker, "cases": finite_or_string(cases)}

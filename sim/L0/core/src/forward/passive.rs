@@ -454,25 +454,11 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         if !implicit_mode {
             // Map tendon spring force to joint forces via J^T.
             if spring_force != 0.0 {
-                apply_tendon_force(
-                    model,
-                    &data.ten_J[t],
-                    model.tendon_type[t],
-                    t,
-                    spring_force,
-                    &mut data.qfrc_spring,
-                );
+                apply_tendon_force(&data.ten_J[t], spring_force, &mut data.qfrc_spring);
             }
             // Map tendon damper force to joint forces via J^T.
             if damper_force != 0.0 {
-                apply_tendon_force(
-                    model,
-                    &data.ten_J[t],
-                    model.tendon_type[t],
-                    t,
-                    damper_force,
-                    &mut data.qfrc_damper,
-                );
+                apply_tendon_force(&data.ten_J[t], damper_force, &mut data.qfrc_damper);
             }
         }
     }

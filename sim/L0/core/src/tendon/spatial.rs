@@ -7,7 +7,7 @@
 use super::wrap_math::{Wrap, WrapShape, mju_wrap};
 use crate::jacobian::{mark_merged_chain, mj_jac};
 use crate::quat::normalize3;
-use crate::types::{Data, GeomType, Model, TendonType, WrapType};
+use crate::types::{Data, GeomType, Model, WrapType};
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 
 /// Spatial tendon kinematics for a single tendon.
@@ -269,39 +269,14 @@ fn add_segment_jacobian(
     }
 }
 
-/// Map a scalar tendon force to generalized forces via J^T.
-///
-/// For `TendonType::Fixed`, uses the sparse wrap-array pattern (DOF addresses
-/// and coefficients stored in `wrap_objid`/`wrap_prm`). For
-/// `TendonType::Spatial`, uses the dense Jacobian row `ten_j` computed by
-/// `mj_fwd_tendon_spatial()`.
-pub fn apply_tendon_force(
-    model: &Model,
-    ten_j: &DVector<f64>,
-    tendon_type: TendonType,
-    t: usize,
-    force: f64,
-    target: &mut DVector<f64>,
-) {
-    match tendon_type {
-        TendonType::Fixed => {
-            let adr = model.tendon_adr[t];
-            let num = model.tendon_num[t];
-            for w in adr..(adr + num) {
-                let dof_adr = model.wrap_objid[w];
-                let coef = model.wrap_prm[w];
-                if dof_adr < model.nv {
-                    target[dof_adr] += coef * force;
-                }
-            }
-        }
-        TendonType::Spatial => {
-            for dof in 0..model.nv {
-                let j = ten_j[dof];
-                if j != 0.0 {
-                    target[dof] += j * force;
-                }
-            }
+/// Map a scalar tendon force to generalized forces via the tendon's
+/// Jacobian row `ten_j` (`target += ten_j · force`, a zero entry skipped), as
+/// MuJoCo applies a tendon's forces through `ten_J` for a fixed tendon as for
+/// a spatial one.
+pub fn apply_tendon_force(ten_j: &DVector<f64>, force: f64, target: &mut DVector<f64>) {
+    for (dof, &j) in ten_j.iter().enumerate() {
+        if j != 0.0 {
+            target[dof] += j * force;
         }
     }
 }
