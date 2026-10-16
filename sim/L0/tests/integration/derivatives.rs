@@ -4806,10 +4806,11 @@ fn a_sleeping_tendon_adds_no_position_derivative() {
 }
 
 /// An awake spatial tendon whose row is 0 at this state (its site moves
-/// square to it), its spring engaged, with sleep enabled and every tree
-/// awake: its term through ∂J/∂q stays, `qDeriv_pos` bit for bit the same
-/// model's with sleep disabled, and −1.8 within 1e-6 (a central
-/// difference of `qfrc_passive` gives −1.7999999997, the review measured).
+/// square to it), its spring engaged, with sleep enabled, every tree awake
+/// and then the other tree asleep from the reset: its term through ∂J/∂q
+/// stays, `qDeriv_pos` bit for bit the same model's with sleep disabled,
+/// and −1.8 within 1e-6 (MuJoCo's central difference of `qfrc_passive`
+/// gives −1.7999999997 at both, measured on the oracle).
 #[test]
 fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
     let xml = r#"
@@ -4833,15 +4834,22 @@ fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
         </spatial>
       </tendon>
     </mujoco>"#;
-    let derivative = |sleep: bool| {
+    let b_asleep = xml.replace(
+        r#"<body name="b" pos="1 0 1">"#,
+        r#"<body name="b" pos="1 0 1" sleep="init">"#,
+    );
+    assert_ne!(b_asleep, xml, "the second tree's body");
+    let derivative = |xml: &str, sleep: bool, awake: [bool; 2]| {
         let mut model = sim_mjcf::load_model(xml).expect("load");
         if !sleep {
             model.enableflags &= !sim_core::ENABLE_SLEEP;
         }
         let mut data = model.make_data();
-        data.qvel[1] = 0.3;
+        if awake[1] {
+            data.qvel[1] = 0.3;
+        }
         data.forward(&model).expect("forward");
-        assert!(data.tree_awake.iter().all(|&a| a), "every tree awake");
+        assert_eq!(data.tree_awake.as_slice(), awake, "the trees awake");
         assert!(
             data.ten_J[0].iter().all(|&x| x == 0.0),
             "the tendon's row is 0"
@@ -4849,15 +4857,23 @@ fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
         mjd_smooth_pos(&model, &mut data);
         data.qDeriv_pos.clone()
     };
-    let (on, off) = (derivative(true), derivative(false));
-    assert_eq!(
-        on.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
-        off.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
-        "qDeriv_pos with sleep enabled and disabled"
-    );
-    assert!(
-        (on[(0, 0)] + 1.8).abs() < 1e-6,
-        "qDeriv_pos[0][0] {}",
-        on[(0, 0)]
-    );
+    let off = derivative(xml, false, [true; 2]);
+    for (name, on) in [
+        ("every tree awake", derivative(xml, true, [true; 2])),
+        (
+            "the other tree asleep",
+            derivative(&b_asleep, true, [true, false]),
+        ),
+    ] {
+        assert_eq!(
+            on.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            off.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            "{name}: qDeriv_pos with sleep enabled and disabled"
+        );
+        assert!(
+            (on[(0, 0)] + 1.8).abs() < 1e-6,
+            "{name}: qDeriv_pos[0][0] {}",
+            on[(0, 0)]
+        );
+    }
 }
