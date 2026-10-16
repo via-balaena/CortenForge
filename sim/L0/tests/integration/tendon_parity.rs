@@ -393,3 +393,39 @@ fn fixed_tendon_naming_a_joint_twice_as_mujoco() {
         assert_trajectory(name, &model, &mut data, &case["traj"]);
     }
 }
+
+/// Motors with gears 1.37 and −2.71 on a spatial and a fixed tendon, at ten
+/// states: `qfrc_actuator` is MuJoCo's bit for bit, whose moment is the
+/// tendon's row scaled by the gear (`mj_transmission`), then times the force
+/// (`mj_fwdActuation`). Before, the row times the gear-scaled force: 9 of
+/// the 10 differed, by up to 4.4e-16.
+#[test]
+fn tendon_motor_force_as_mujoco() {
+    let g = golden();
+    let case = &g["cases"]["tendon_motors"];
+    let model = load(case);
+    for (k, config) in case["configs"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .enumerate()
+    {
+        let mut data = model.make_data();
+        data.qpos
+            .as_mut_slice()
+            .copy_from_slice(&floats(&config["qpos"]));
+        data.qvel
+            .as_mut_slice()
+            .copy_from_slice(&floats(&config["qvel"]));
+        data.ctrl
+            .as_mut_slice()
+            .copy_from_slice(&floats(&config["ctrl"]));
+        data.forward(&model).expect("forward");
+        assert_close(
+            &format!("tendon_motors configuration {k} qfrc_actuator"),
+            data.qfrc_actuator.as_slice(),
+            &floats(&config["qfrc_actuator"]),
+            0.0,
+        );
+    }
+}

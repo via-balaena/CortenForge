@@ -9,7 +9,7 @@ use crate::constraint::jacobian::compute_contact_normal_row;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::linalg::dot_sparse;
 use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
-use crate::tendon::{apply_tendon_force, subquat};
+use crate::tendon::subquat;
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType,
     MjJointType, Model,
@@ -815,11 +815,14 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             ActuatorTransmission::Tendon => {
                 let tendon_id = trnid;
                 if tendon_id < model.ntendon {
-                    apply_tendon_force(
-                        &data.ten_J[tendon_id],
-                        gear * force,
-                        &mut data.qfrc_actuator,
-                    );
+                    // MuJoCo's moment is the tendon's row scaled by the gear
+                    // (`mj_transmission`), then times the force
+                    // (`mj_fwdActuation`); a zero entry is skipped.
+                    for (dof, &j) in data.ten_J[tendon_id].iter().enumerate() {
+                        if j != 0.0 {
+                            data.qfrc_actuator[dof] += j * gear * force;
+                        }
+                    }
                 }
             }
             ActuatorTransmission::Joint

@@ -60,6 +60,10 @@ The cases:
   (`engine_core_smooth.c:961-976`); the length adds every entry at both.
   The motor's acc0; the length, Jacobian row, velocity, passive and
   actuator forces after mj_forward, and the trajectory.
+- tendon_motors: motors with gears 1.37 and -2.71 on a spatial and a fixed
+  tendon; qfrc_actuator at ten states from a seeded generator. MuJoCo's
+  moment is the tendon's row scaled by the gear (`mj_transmission`), then
+  times the force.
 - inside_fallback: a sphere and a cylinder at the origin, each with a
   sidesite inside it, and tendons between world sites a and 2a on six rays
   from the origin: the ends point one way (cos G within mjMINVAL of 1), so
@@ -278,6 +282,23 @@ FIXED_REPEATED_SPARSE = FIXED_REPEATED.replace('<option timestep="0.002"/>',
                                                '<option timestep="0.002" jacobian="sparse"/>', 1)
 assert FIXED_REPEATED_SPARSE != FIXED_REPEATED
 
+TENDON_MOTORS = """<mujoco model="tendon_motors">
+  <option gravity="0 0 0"/>
+  <worldbody>
+    <body name="a" pos="-0.25 0.05 0.02"><joint name="ja" type="hinge" axis="0 0 1"/><joint name="ja2" type="slide" axis="0.3 1 0.2"/>
+      <geom type="sphere" size="0.01" mass="0.1"/><site name="a0" pos="0.02 0.01 0"/></body>
+    <body name="b" pos="0.25 -0.03 -0.01"><joint name="jb" type="ball"/>
+      <geom type="sphere" size="0.01" mass="0.1"/><site name="b0" pos="0.01 -0.02 0.03"/>
+      <body pos="0.1 0 0"><joint name="jc" type="hinge" axis="0.3 1 0.2"/><geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="c0" pos="0.03 0.01 0"/></body></body>
+  </worldbody>
+  <tendon>
+    <spatial name="s"><site site="a0"/><site site="b0"/><site site="c0"/></spatial>
+    <fixed name="f"><joint joint="ja" coef="0.37"/><joint joint="ja2" coef="-1.13"/><joint joint="jc" coef="0.71"/></fixed>
+  </tendon>
+  <actuator><motor tendon="s" gear="1.37"/><motor tendon="f" gear="-2.71"/></actuator>
+</mujoco>"""
+
 RAYS = ((0.2, 0.1, 0.05), (-0.13, 0.07, 0.11), (0.03, -0.17, 0.09), (0.11, 0.13, -0.07),
         (-0.05, -0.09, -0.16), (0.17, -0.02, 0.12))
 
@@ -443,6 +464,29 @@ def fixed_repeated(xml):
     return out
 
 
+def tendon_motors():
+    """TENDON_MOTORS at ten states (qpos, qvel, ctrl) from a seeded
+    generator: qfrc_actuator after mj_forward."""
+    m = mujoco.MjModel.from_xml_string(TENDON_MOTORS)
+    d = mujoco.MjData(m)
+    rng = np.random.default_rng(151)
+    configs = []
+    for _ in range(10):
+        qpos = m.qpos0.copy()
+        qpos[0] = rng.uniform(-2, 2)
+        qpos[1] = rng.uniform(-0.1, 0.1)
+        q = rng.normal(size=4)
+        qpos[2:6] = q / np.linalg.norm(q)
+        qpos[6] = rng.uniform(-1, 1)
+        d.qpos[:] = qpos
+        d.qvel[:] = rng.normal(size=m.nv)
+        d.ctrl[:] = rng.uniform(-1, 1, size=m.nu)
+        mujoco.mj_forward(m, d)
+        configs.append({"qpos": floats(d.qpos), "qvel": floats(d.qvel), "ctrl": floats(d.ctrl),
+                        "qfrc_actuator": floats(d.qfrc_actuator)})
+    return {"xml": TENDON_MOTORS, "configs": configs}
+
+
 def near(xml):
     """The sphere-wrap example with its far site 1e-12 off the line. The site
     sits 0.1 from its body's origin: MuJoCo copies the body's frame for a site
@@ -505,6 +549,7 @@ def main():
         "inside_fallback": sphere_wrap(INSIDE_FALLBACK, "inside_fallback", [], False),
         "fixed_repeated": fixed_repeated(FIXED_REPEATED),
         "fixed_repeated_sparse": fixed_repeated(FIXED_REPEATED_SPARSE),
+        "tendon_motors": tendon_motors(),
     }
     check_planes(cases)
     out = {"oracle": marker, "cases": finite_or_string(cases)}
