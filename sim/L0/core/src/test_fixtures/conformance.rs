@@ -1346,4 +1346,43 @@ mod tests {
              the damped GPU conformance test would not discriminate the eulerdamp path"
         );
     }
+
+    /// The fixtures sim-gpu's tests take for three CPU rules (ledger L133)
+    /// hold what their docs say, on the CPU: the light chain's subtree weighs
+    /// between mjMINVAL and 1e-10 and its centre of mass is 0.25 or more from
+    /// its first body's; the slider is simple and its `qM` uncoupled; the
+    /// contact's arm from the body's origin is 3.09 long and 2e-6 off the
+    /// normal, within 1e-6 of its length.
+    #[test]
+    fn cpu_rule_fixtures_hold_what_their_docs_say() {
+        let forward = |case: &super::ConformanceCase| {
+            let mut data = case.model.make_data();
+            data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+            data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+            data.forward(&case.model).expect("fixture forward");
+            data
+        };
+
+        let data = forward(&super::light_subtree_case());
+        let mass = data.subtree_mass[1];
+        assert!(mass > 1e-15 && mass < 1e-10, "subtree mass {mass:e}");
+        assert!((data.subtree_com[1] - data.xipos[1]).norm() > 0.25);
+
+        let case = super::two_slides_case();
+        assert!(case.model.dof_simplenum.iter().all(|&n| n > 0));
+        let data = forward(&case);
+        assert_eq!((data.qM[(0, 1)], data.qM[(1, 0)]), (0.0, 0.0));
+
+        let case = super::contact_lever_arm_case();
+        let mut data = case.model.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+        data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+        data.forward(&case.model).expect("fixture forward");
+        let contact = &data.contacts[0];
+        let arm = contact.pos - data.xpos[1];
+        let off = (arm - contact.normal * arm.dot(&contact.normal)).norm();
+        assert!((arm.norm() - 3.09).abs() < 1e-9, "arm {}", arm.norm());
+        assert!((off - 2e-6).abs() < 1e-12, "off the normal by {off:e}");
+        assert!(off < 1e-6 * arm.norm());
+    }
 }
