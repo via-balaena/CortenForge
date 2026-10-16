@@ -230,10 +230,10 @@ fn assert_wrap(name: &str, case: &Value, tol: Tol) {
 /// the x axis where that cross product is 0 (a line along (0, 1, 1)). Before,
 /// the plane held the axis least aligned with that direction: the sphere-wrap
 /// example's tendon velocity read 0 at the start, against MuJoCo's
-/// 0.007071067811865478 (A20 §1A.3.9, U11). Bit for bit, but the tie case
-/// within TOL: its hinge's axis "1 -1 0" loads 1 ulp off MuJoCo's (ledger
-/// L146), which puts one `ten_J` entry 1 ulp off; with MuJoCo's axis written
-/// in, it is bit for bit too (measured).
+/// 0.007071067811865478 (A20 §1A.3.9, U11). As MuJoCo's ([`Tol::Golden`]),
+/// but the tie case within TOL: its hinge's axis "1 -1 0" loads 1 ulp off
+/// MuJoCo's (ledger L146), which puts one `ten_J` entry 1 ulp off; with
+/// MuJoCo's axis written in, it is bit for bit too (measured).
 #[test]
 fn collinear_sphere_wrap_takes_mujocos_plane() {
     let g = golden();
@@ -270,7 +270,7 @@ fn near_collinear_sphere_wrap_keeps_its_plane() {
 /// such configurations, the wrap points of 4 to 169 per tendon differed (by
 /// up to 2.8e-16), the lengths of 3 to 79 (by up to 3.1e-15).
 #[test]
-fn wraps_as_mujoco_bit_for_bit() {
+fn wraps_as_mujoco() {
     let g = golden();
     for name in ["wraps", "wraps_sparse"] {
         assert_configs(name, &g["cases"][name]);
