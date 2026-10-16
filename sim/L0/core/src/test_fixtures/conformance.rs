@@ -892,16 +892,24 @@ pub fn contact_damped_case() -> ContactConformanceCase {
     contact_fixture("contact_pyramidal_damped", 3, 0.8, 0.005, 2.0, 1, 2.0)
 }
 
-/// A two-body hinged chain lighter than 1e-10.
+/// Two-body hinged chains lighter than 1e-10, about mjMINVAL (1e-15).
 ///
-/// Each body weighs 1e-12, the second 0.6 along x from the first, so the
-/// subtree is lighter than 1e-10 but heavier than mjMINVAL. Its centre of
-/// mass is the two bodies' (MuJoCo's `mj_comPos` scales by the reciprocal
-/// of the mass and takes the body's own centre of mass only below
-/// mjMINVAL), not its first body's.
+/// Each body weighs 1e-12, 1e-14 or 1e-16, the second 0.6 along x from the
+/// first, so the first two subtrees are heavier than mjMINVAL and the third
+/// lighter. MuJoCo's `mj_comPos` scales by the reciprocal of the mass and
+/// takes the body's own centre of mass only below mjMINVAL: the first two
+/// chains' centre of mass is the two bodies', not the first body's; the
+/// third's is the first body's.
 #[must_use]
-pub fn light_subtree_case() -> ConformanceCase {
-    let tiny = 1e-12;
+pub fn light_subtree_cases() -> Vec<ConformanceCase> {
+    vec![
+        light_subtree("light_subtree", 1e-12),
+        light_subtree("light_subtree_1e-14", 1e-14),
+        light_subtree("light_subtree_1e-16", 1e-16),
+    ]
+}
+
+fn light_subtree(name: &'static str, tiny: f64) -> ConformanceCase {
     let mut m = Model::empty();
     let a = add_body(
         &mut m,
@@ -945,7 +953,7 @@ pub fn light_subtree_case() -> ConformanceCase {
     );
     finalize(&mut m);
     ConformanceCase {
-        name: "light_subtree",
+        name,
         model: m,
         qpos: vec![0.3, -0.4],
         qvel: vec![0.5, 0.2],
@@ -1364,8 +1372,10 @@ mod tests {
 
     /// The fixtures sim-gpu's tests take for single CPU rules (ledger L133's
     /// three, and the pyramidal facets' R) hold what their docs say, on the
-    /// CPU: the light chain's subtree weighs between mjMINVAL and 1e-10 and its
-    /// centre of mass is 0.25 or more from its first body's; the slider is
+    /// CPU: the light chains' subtrees weigh between mjMINVAL and 1e-10, and
+    /// between mjMINVAL and 1e-13, and their centre of mass is 0.25 or more
+    /// from the first body's; the lightest's is below mjMINVAL and its centre
+    /// of mass the first body's; the slider is
     /// simple and its `qM` uncoupled; the contact's arm from the body's origin
     /// is 3.09 long and 2e-6 off the normal, within 1e-6 of its length; the
     /// tiny facets' R is between 1e-17 and 1e-16.
@@ -1379,10 +1389,20 @@ mod tests {
             data
         };
 
-        let data = forward(&super::light_subtree_case());
+        let cases = super::light_subtree_cases();
+        let (light, lighter, below) = (&cases[0], &cases[1], &cases[2]);
+        let data = forward(light);
         let mass = data.subtree_mass[1];
         assert!(mass > 1e-15 && mass < 1e-10, "subtree mass {mass:e}");
         assert!((data.subtree_com[1] - data.xipos[1]).norm() > 0.25);
+        let data = forward(lighter);
+        let mass = data.subtree_mass[1];
+        assert!(mass > 1e-15 && mass < 1e-13, "subtree mass {mass:e}");
+        assert!((data.subtree_com[1] - data.xipos[1]).norm() > 0.25);
+        let data = forward(below);
+        let mass = data.subtree_mass[1];
+        assert!(mass > 0.0 && mass < 1e-15, "subtree mass {mass:e}");
+        assert_eq!(data.subtree_com[1], data.xipos[1], "below mjMINVAL");
 
         let case = super::two_slides_case();
         assert!(case.model.dof_simplenum.iter().all(|&n| n > 0));

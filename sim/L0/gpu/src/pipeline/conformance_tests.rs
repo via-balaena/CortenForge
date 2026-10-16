@@ -48,7 +48,7 @@ use nalgebra::{DVector, Vector3};
 
 use sim_core::mj_integrate_pos_explicit;
 use sim_core::test_fixtures::conformance::{
-    ConformanceCase, damped_conformance_matrix, dynamics_conformance_matrix, light_subtree_case,
+    ConformanceCase, damped_conformance_matrix, dynamics_conformance_matrix, light_subtree_cases,
     two_slides_case,
 };
 use sim_core::types::{Data, MjJointType, Model};
@@ -560,21 +560,36 @@ fn case_against_cpu(ctx: &GpuContext, case: &ConformanceCase) -> (Data, Failures
 
 /// A subtree lighter than 1e-10 takes its centre of mass as the CPU's
 /// (`mj_comPos`): scaled by the reciprocal of its mass, the body's own only
-/// below mjMINVAL. The fixture's two 1e-12 bodies put the chain's centre of
-/// mass 0.3 from its first body's (asserted), so a rule that took the body's
-/// own below 1e-10 diverges by that.
+/// below mjMINVAL. The fixtures' chains of 1e-12 and of 1e-14 bodies put
+/// their centre of mass 0.25 or more from the first body's (asserted), so a
+/// rule that took the body's own below 1e-10, or below 1e-13, diverges by
+/// that; the chain of 1e-16 bodies is below mjMINVAL, where the CPU takes
+/// the body's own (asserted), so one that took it only at 0 diverges.
 #[test]
 fn gpu_light_subtree_com_matches_cpu() {
     let ctx = gpu_or_skip!();
-    let case = light_subtree_case();
-    let (data, fails) = case_against_cpu(&ctx, &case);
-    assert!(
-        (data.subtree_com[1] - data.xipos[1]).norm() > 0.25,
-        "the fixture's subtree centre of mass is its first body's"
-    );
+    let mut fails = Failures::new();
+    for (k, case) in light_subtree_cases().iter().enumerate() {
+        let (data, case_fails) = case_against_cpu(&ctx, case);
+        let off = (data.subtree_com[1] - data.xipos[1]).norm();
+        if k < 2 {
+            assert!(
+                off > 0.25,
+                "{}: its subtree's centre of mass is its first body's",
+                case.name
+            );
+        } else {
+            assert_eq!(
+                off, 0.0,
+                "{}: its subtree's centre of mass is not its first body's",
+                case.name
+            );
+        }
+        fails.extend(case_fails);
+    }
     assert!(
         fails.is_empty(),
-        "GPU↔CPU on a light subtree: {} divergence(s):\n  {}",
+        "GPU↔CPU on light subtrees: {} divergence(s):\n  {}",
         fails.len(),
         fails.join("\n  ")
     );
