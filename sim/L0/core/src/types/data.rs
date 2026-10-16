@@ -485,10 +485,13 @@ pub struct Data {
 
     /// §52: Forward/inverse comparison (diagnostic, matches MuJoCo `solver_fwdinv[2]`).
     ///
-    /// - `[0]`: Constraint discrepancy L2 norm (reserved, 0.0 for now).
+    /// - `[0]`: Constraint discrepancy — `‖qfrc_constraint - its inverse‖`, the change in the
+    ///   constraint force when it is remade from `qacc`.
     /// - `[1]`: Applied force discrepancy — `‖qfrc_inverse - (qfrc_applied + qfrc_actuator + J^T*xfrc)‖`.
     ///
-    /// Populated when `ENABLE_FWDINV` is set; otherwise `[0.0, 0.0]`.
+    /// Written by `step` and `step2` after their forward pass when `ENABLE_FWDINV` is set (both
+    /// 0 with no constraint rows), as MuJoCo's `mj_step` and `mj_step2`; a forward pass alone
+    /// leaves it. `[0.0, 0.0]` from `make_data`.
     pub solver_fwdinv: [f64; 2],
 
     // ==================== Sleep State (§16.1) ====================

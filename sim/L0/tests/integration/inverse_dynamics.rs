@@ -211,7 +211,8 @@ fn inverse_formula_explicit() {
     }
 }
 
-/// T9/G23: ENABLE_FWDINV flag triggers compare_fwd_inv() during forward().
+/// T9/G23: with ENABLE_FWDINV a step runs compare_fwd_inv() after its
+/// forward pass.
 ///
 /// On this model with no constraint rows, enabled or not, solver_fwdinv is
 /// [0, 0] and no inverse runs, as MuJoCo's `mj_compareFwdInv`; the
@@ -259,7 +260,7 @@ fn enable_fwdinv_flag() {
         "solver_fwdinv should be [0,0] without ENABLE_FWDINV"
     );
 
-    // --- With ENABLE_FWDINV: solver_fwdinv[1] should be populated ---
+    // --- With ENABLE_FWDINV, a step ---
     let mut model_on = sim_mjcf::load_model(xml).expect("load");
     model_on.enableflags |= ENABLE_FWDINV;
 
@@ -267,13 +268,14 @@ fn enable_fwdinv_flag() {
     data_on.qpos[0] = 0.5;
     data_on.ctrl[0] = 3.0;
     data_on.qfrc_applied[0] = 1.0;
-    data_on.forward(&model_on).expect("forward");
+    data_on.step(&model_on).expect("step");
 
     // This model has no constraint rows, so MuJoCo's `mj_compareFwdInv`
     // returns both statistics as 0 before any inverse, and `qfrc_inverse`
     // stays as it was (`engine_inverse.c:266-270`; measured on the oracle on
-    // this model: [0, 0] and qfrc_inverse 0). Before, the comparison ran an
-    // inverse on any model and this test asserted `qfrc_inverse` nonzero.
+    // this model after `mj_step`: [0, 0] and qfrc_inverse 0). Before, the
+    // comparison ran an inverse on any model and this test asserted
+    // `qfrc_inverse` nonzero.
     assert!(data_on.efc_type.is_empty(), "no constraint rows");
     assert_eq!(data_on.solver_fwdinv, [0.0, 0.0], "solver_fwdinv");
     assert!(

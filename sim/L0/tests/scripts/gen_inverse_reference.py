@@ -21,13 +21,23 @@ state (qpos, qvel):
   qfrc_constraint and efc_state; and mjd_inverseFD (forward differences,
   eps 1e-6, no actuation), DfDq, DfDv and DfDa, row-major as MuJoCo
   writes them.
-- limit_fwdinv, contact_fwdinv, free_fwdinv: the limit and contact cases,
-  the contact one with a wrench on the box (xfrc_applied), and a damped
-  three-hinge chain with no rows, with the fwdinv flag enabled: their state (qpos,
-  qvel, qacc_warmstart, time), then after mj_forward solver_fwdinv (both 0
-  with no rows), efc_force, qfrc_constraint and efc_state
-  (`mj_compareFwdInv`, `engine_inverse.c:262-302`, puts back the forward's
-  qfrc_constraint and efc_force, not efc_state).
+- limit_fwdinv, contact_fwdinv, free_fwdinv, pgs_fwdinv, floss_fwdinv,
+  noslip_fwdinv, rk4_fwdinv, with the fwdinv flag enabled: the limit and
+  contact cases, the contact one with a wrench on the box (xfrc_applied);
+  a damped three-hinge chain with no rows; the box under PGS at 4
+  iterations, settled 100 steps, where the inverse's constraint force is
+  not the forward's; the limit case with friction loss on both hinges and
+  the elliptic box with 5 noslip iterations, where the inverse's row states
+  are not the forward's; and the PGS box under RK4.
+  Their state (qpos, qvel, qacc_warmstart, time), then from it, each on a
+  fresh MjData: after mj_forward, solver_fwdinv (mj_forward does not
+  compare); after mj_step, which runs `mj_compareFwdInv`
+  (`engine_inverse.c:262-302`) after its forward pass and mj_checkAcc
+  (`engine_forward.c:1431-1434`), solver_fwdinv and efc_state (the
+  comparison puts back the forward's qfrc_constraint and efc_force, not
+  efc_state). It refuses the file unless the PGS case's solver_fwdinv[0]
+  and the RK4 case's are above 1e-6 and the friction-loss and noslip
+  cases' states after mj_step differ from those after mj_forward.
 """
 import json
 import os
@@ -138,33 +148,47 @@ FREE = """<mujoco model="free">
 </mujoco>"""
 
 
-def fwdinv(name, xfrc=None):
-    """Case `name` with the fwdinv flag enabled, at its state, with `xfrc`
-    (body, wrench) applied: after mj_forward, solver_fwdinv, efc_force,
-    qfrc_constraint and efc_state."""
-    xml, qpos, qvel, _ = CASES[name] if name in CASES else (FREE, [0.4, -0.7, 1.1], [0.3, -0.2, 0.5], None)
-    on = xml.replace('<option timestep="0.002"', '<option timestep="0.002" fwdinv_flag', 1)
-    on = on.replace(' fwdinv_flag/>', '>\n    <flag fwdinv="enable"/>\n  </option>', 1)
-    on = on.replace(' fwdinv_flag cone="pyramidal"/>',
-                    ' cone="pyramidal">\n    <flag fwdinv="enable"/>\n  </option>', 1)
-    assert 'fwdinv="enable"' in on and 'fwdinv_flag' not in on, on
+FLOSS = LIMIT.replace('damping="0.2"/>', 'damping="0.2" frictionloss="0.3"/>', 1).replace(
+    '<joint name="h2" type="hinge" axis="0 1 0"/>',
+    '<joint name="h2" type="hinge" axis="0 1 0" frictionloss="0.05"/>', 1)
+assert FLOSS.count("frictionloss") == 2, FLOSS
+
+
+def fwdinv(xml, qpos, qvel, xfrc=None, opt=""):
+    """`xml` with the fwdinv flag enabled (and `opt` added to its option),
+    at its state, with `xfrc` (body, wrench) applied: after mj_forward,
+    solver_fwdinv (and, not written, efc_state); after mj_step,
+    solver_fwdinv and efc_state."""
+    assert xml.count("<option ") == 1, xml
+    start = xml.index("<option ")
+    end = xml.index("/>", start)
+    on = xml[:end] + opt + '>\n    <flag fwdinv="enable"/>\n  </option>' + xml[end + 2:]
     m = mujoco.MjModel.from_xml_string(on)
     reached = state(m, qpos, qvel)
     before = {"qpos": floats(reached.qpos), "qvel": floats(reached.qvel),
               "qacc_warmstart": floats(reached.qacc_warmstart), "time": float(reached.time)}
-    # The forward on a fresh MjData from that state, as the test runs it.
-    d = mujoco.MjData(m)
-    d.qpos[:] = before["qpos"]
-    d.qvel[:] = before["qvel"]
-    d.qacc_warmstart[:] = before["qacc_warmstart"]
-    d.time = before["time"]
     if xfrc is not None:
-        d.xfrc_applied[xfrc[0]] = xfrc[1]
         before["xfrc_applied"] = [xfrc[0], list(xfrc[1])]
+
+    def at_state():
+        # A fresh MjData at that state, as the test makes one.
+        d = mujoco.MjData(m)
+        d.qpos[:] = before["qpos"]
+        d.qvel[:] = before["qvel"]
+        d.qacc_warmstart[:] = before["qacc_warmstart"]
+        d.time = before["time"]
+        if xfrc is not None:
+            d.xfrc_applied[xfrc[0]] = xfrc[1]
+        return d
+
+    d = at_state()
     mujoco.mj_forward(m, d)
-    return {"xml": on, **before, "solver_fwdinv": floats(d.solver_fwdinv),
-            "efc_force": floats(d.efc_force), "qfrc_constraint": floats(d.qfrc_constraint),
-            "efc_state": ints(d.efc_state)}
+    forward = {"solver_fwdinv": floats(d.solver_fwdinv)}
+    forward_states = ints(d.efc_state)
+    d = at_state()
+    mujoco.mj_step(m, d)
+    step = {"solver_fwdinv": floats(d.solver_fwdinv), "efc_state": ints(d.efc_state)}
+    return {"xml": on, **before, "after_forward": forward, "after_step": step}, forward_states
 
 
 def main():
@@ -172,9 +196,25 @@ def main():
         sys.exit(__doc__)
     marker = oracle()
     cases = {name: case(*args) for name, args in CASES.items()}
-    cases["limit_fwdinv"] = fwdinv("limit")
-    cases["contact_fwdinv"] = fwdinv("contact", (1, [0.3, -0.2, 0.5, 0.01, 0.02, -0.03]))
-    cases["free_fwdinv"] = fwdinv("free")
+    limit, contact = CASES["limit"], CASES["contact"]
+    pgs = ' solver="PGS" iterations="4"'
+    forward_states = {}
+    for name, args, kwargs in [
+        ("limit_fwdinv", (limit[0], limit[1], limit[2]), {}),
+        ("contact_fwdinv", (contact[0], None, None, (1, [0.3, -0.2, 0.5, 0.01, 0.02, -0.03])), {}),
+        ("free_fwdinv", (FREE, [0.4, -0.7, 1.1], [0.3, -0.2, 0.5]), {}),
+        ("pgs_fwdinv", (contact[0], None, None), {"opt": pgs}),
+        ("floss_fwdinv", (FLOSS, limit[1], limit[2]), {}),
+        ("noslip_fwdinv", (CASES["elliptic"][0], None, None), {"opt": ' noslip_iterations="5"'}),
+        ("rk4_fwdinv", (contact[0], None, None), {"opt": pgs + ' integrator="RK4"'}),
+    ]:
+        cases[name], forward_states[name] = fwdinv(*args, **kwargs)
+    for name in ("pgs_fwdinv", "rk4_fwdinv"):
+        if not cases[name]["after_step"]["solver_fwdinv"][0] > 1e-6:
+            sys.exit(f"{name}: solver_fwdinv[0] {cases[name]['after_step']['solver_fwdinv']}")
+    for name in ("floss_fwdinv", "noslip_fwdinv"):
+        if cases[name]["after_step"]["efc_state"] == forward_states[name]:
+            sys.exit(f"{name}: the inverse's states are the forward's {forward_states[name]}")
     out = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "inverse.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"))

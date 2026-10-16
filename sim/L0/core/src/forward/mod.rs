@@ -211,6 +211,9 @@ impl Data {
 
         // Validate accelerations
         check::mj_check_acc(model, self);
+        if enabled(model, ENABLE_FWDINV) {
+            self.compare_fwd_inv(model);
+        }
 
         // The advance (as step() for non-RK4 integrators)
         self.integrate_unchecked(model)
@@ -271,6 +274,9 @@ impl Data {
                 // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
+                if enabled(model, ENABLE_FWDINV) {
+                    self.compare_fwd_inv(model);
+                }
                 crate::integrate::rk4::mj_runge_kutta(model, self)
             }
             Integrator::Euler
@@ -279,6 +285,9 @@ impl Data {
             | Integrator::Implicit => {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
+                if enabled(model, ENABLE_FWDINV) {
+                    self.compare_fwd_inv(model);
+                }
                 self.integrate_skip_unchecked(model, skipfactor)
             }
         }
@@ -590,11 +599,6 @@ impl Data {
             crate::sensor::mj_sensor_postprocess(model, self);
         }
 
-        // §52: Forward/inverse comparison (diagnostic only).
-        if enabled(model, ENABLE_FWDINV) {
-            self.compare_fwd_inv(model);
-        }
-
         Ok(())
     }
 
@@ -610,6 +614,11 @@ impl Data {
     ///
     /// The forward's `qfrc_constraint` and `efc_force` are put back;
     /// `efc_state` keeps the inverse's, as MuJoCo's does.
+    ///
+    /// A step runs it after its forward pass and `mj_check_acc`, as MuJoCo's
+    /// `mj_step`, `mj_step2` and `mj_stepSkip` (`engine_forward.c:1431-1434`,
+    /// `:1500-1503`; `engine_derivative_fd.c:122-125`); a forward pass alone
+    /// does not. `ENABLE_INVDISCRETE` is not read.
     fn compare_fwd_inv(&mut self, model: &Model) {
         self.solver_fwdinv = [0.0, 0.0];
         if self.efc_type.is_empty() {
