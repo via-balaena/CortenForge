@@ -2462,11 +2462,13 @@ fn spec_a_t8_rigid_flex_skip() {
         assert_eq!(data.flexedge_velocity[e], 0.0);
     }
 
-    // Length should still be computed (non-zero for spatially separated vertices)
+    // MuJoCo's `mj_flex` skips a rigid flex, so its lengths stay 0
+    // (`engine_core_smooth.c:677-680`; measured on the oracle, a flexcomp
+    // with every vertex pinned: lengths 0). Before, sim-core computed them.
     for e in 0..model.nflexedge {
-        assert!(
-            data.flexedge_length[e] > 0.0,
-            "rigid flex edge length should still be computed"
+        assert_eq!(
+            data.flexedge_length[e], 0.0,
+            "a rigid flex's edge lengths are not computed"
         );
     }
 }

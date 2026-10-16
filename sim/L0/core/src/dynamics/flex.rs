@@ -24,7 +24,8 @@ pub fn mj_flex(model: &Model, data: &mut Data) {
 ///
 /// Called after `mj_flex()` populates `flexvert_xpos`, before
 /// `mj_fwd_passive()`. Length and J share the direction normalization
-/// step (no double computation).
+/// step (no double computation). A rigid flex is skipped, as MuJoCo's: its
+/// lengths, Jacobian and velocities stay as they were.
 ///
 /// MuJoCo ref: `mj_flex()` in `engine_core_smooth.c` (J computation),
 /// `mj_fwdVelocity()` in `engine_forward.c` (velocity = J * qvel).
@@ -33,13 +34,17 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
     use nalgebra::Vector3;
 
     for f in 0..model.nflex {
-        // Per-flex skip conditions (evaluated once per flex, not per edge)
-        let is_rigid = model.flex_rigid[f];
-        let skip_jacobian = is_rigid
-            || (model.flex_edgeequality.get(f) != Some(&true)
-                && model.flex_edgestiffness[f] == 0.0
-                && model.flex_edgedamping[f] == 0.0
-                && model.flex_bend_damping[f] == 0.0);
+        // A rigid flex's edges make no force: MuJoCo's `mj_flex` skips the
+        // flex, so its lengths stay as they were, 0 from the reset
+        // (`engine_core_smooth.c:677-680`; MuJoCo's interpolated flexes too,
+        // which sim-core does not build).
+        if model.flex_rigid[f] {
+            continue;
+        }
+        let skip_jacobian = model.flex_edgeequality.get(f) != Some(&true)
+            && model.flex_edgestiffness[f] == 0.0
+            && model.flex_edgedamping[f] == 0.0
+            && model.flex_bend_damping[f] == 0.0;
 
         // Iterate over edges belonging to this flex
         let edge_start = model.flex_edgeadr[f];
@@ -49,14 +54,7 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
             let [v0, v1] = model.flexedge_vert[e];
             let diff = data.flexvert_xpos[v1] - data.flexvert_xpos[v0];
             let dist = diff.norm();
-
-            // Always compute length, even for a rigid flex.
             data.flexedge_length[e] = dist;
-
-            // Rigid flex: length computed above, skip J + velocity
-            if is_rigid {
-                continue;
-            }
 
             // Unit edge direction at any length: the x axis below `mjMINVAL`,
             // as MuJoCo's `mju_normalize3` (`engine_util_blas.c:120-135`).
