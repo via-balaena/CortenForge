@@ -28,10 +28,37 @@ fn floats(v: &Value) -> Vec<f64> {
         .collect()
 }
 
-fn assert_close(what: &str, got: &[f64], want: &[f64], tol: f64) {
+/// A comparison's tolerance.
+#[derive(Clone, Copy)]
+enum Tol {
+    /// Within this absolute tolerance.
+    Abs(f64),
+    /// Bit for bit on macOS arm64, where the golden was made. The values go
+    /// through `sin`, `cos`, `acos` and `asin` (a body's rotation, a wrap's
+    /// angles), which another platform's libm may round otherwise by an
+    /// ulp; there the comparison is to `1e-13 · max(1, |MuJoCo's|)`.
+    Golden,
+}
+
+impl From<f64> for Tol {
+    fn from(tol: f64) -> Self {
+        Self::Abs(tol)
+    }
+}
+
+fn assert_close(what: &str, got: &[f64], want: &[f64], tol: impl Into<Tol>) {
+    let tol = tol.into();
     assert_eq!(got.len(), want.len(), "{what}: length");
     for (i, (a, b)) in got.iter().zip(want).enumerate() {
-        assert!((a - b).abs() <= tol, "{what}[{i}]: {a}, expected {b}");
+        let close = match tol {
+            Tol::Abs(tol) => (a - b).abs() <= tol,
+            Tol::Golden => {
+                a.to_bits() == b.to_bits()
+                    || (!cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                        && (a - b).abs() <= 1e-13 * b.abs().max(1.0))
+            }
+        };
+        assert!(close, "{what}[{i}]: {a}, expected {b}");
     }
 }
 
@@ -128,7 +155,7 @@ fn spatial_lengthspring_at_springref() {
 
 /// Compares each tendon's length, velocity, Jacobian and wrap points after
 /// `data`'s `mj_forward` with MuJoCo's `want` within `tol`.
-fn assert_tendons(name: &str, model: &Model, data: &Data, want: &Value, tol: f64) {
+fn assert_tendons(name: &str, model: &Model, data: &Data, want: &Value, tol: Tol) {
     let tendons = want.as_array().expect("array");
     assert_eq!(tendons.len(), model.ntendon, "{name}: tendons");
     for (t, want) in tendons.iter().enumerate() {
@@ -179,7 +206,7 @@ fn assert_tendons(name: &str, model: &Model, data: &Data, want: &Value, tol: f64
 /// Runs `mj_forward` from the case's velocity and compares each tendon's
 /// length, velocity, Jacobian and wrap points with MuJoCo's within `tol`
 /// ([`assert_tendons`]), then the trajectory where the case has one.
-fn assert_wrap(name: &str, case: &Value, tol: f64) {
+fn assert_wrap(name: &str, case: &Value, tol: Tol) {
     let model = load(case);
     let mut data = model.make_data();
     data.qvel
@@ -207,10 +234,10 @@ fn assert_wrap(name: &str, case: &Value, tol: f64) {
 fn collinear_sphere_wrap_takes_mujocos_plane() {
     let g = golden();
     for (name, tol) in [
-        ("sphere_wrap", 0.0),
-        ("sphere_wrap_tie", TOL),
-        ("sphere_wrap_ties", 0.0),
-        ("collinear_slides", 0.0),
+        ("sphere_wrap", Tol::Golden),
+        ("sphere_wrap_tie", Tol::Abs(TOL)),
+        ("sphere_wrap_ties", Tol::Golden),
+        ("collinear_slides", Tol::Golden),
     ] {
         assert_wrap(name, &g["cases"][name], tol);
     }
@@ -224,7 +251,7 @@ fn near_collinear_sphere_wrap_keeps_its_plane() {
     assert_wrap(
         "sphere_wrap_near",
         &golden()["cases"]["sphere_wrap_near"],
-        0.0,
+        Tol::Golden,
     );
 }
 
@@ -269,7 +296,7 @@ fn assert_configs(name: &str, case: &Value) {
             &model,
             &data,
             &config["forward"],
-            0.0,
+            Tol::Golden,
         );
     }
 }
@@ -284,7 +311,7 @@ fn inside_wrap_falls_back_as_mujoco() {
     assert_wrap(
         "inside_fallback",
         &golden()["cases"]["inside_fallback"],
-        0.0,
+        Tol::Golden,
     );
 }
 
@@ -425,7 +452,7 @@ fn tendon_motor_force_as_mujoco() {
             &format!("tendon_motors configuration {k} qfrc_actuator"),
             data.qfrc_actuator.as_slice(),
             &floats(&config["qfrc_actuator"]),
-            0.0,
+            Tol::Golden,
         );
     }
 }
