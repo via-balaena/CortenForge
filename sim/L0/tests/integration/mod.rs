@@ -352,9 +352,14 @@ pub mod accumulator_parity;
 /// the off-centre ball, `xanchor`/`xaxis`, and its arithmetic.
 pub mod kinematics_parity;
 
-/// Tendons against MuJoCo 3.5.0: the spring length at `qpos_spring`, and the
-/// plane of a sphere wrap whose points lie on a line through its centre.
+/// Tendons against MuJoCo 3.5.0: the spring length at `qpos_spring`, the
+/// wraps over spheres and cylinders, the velocities, a fixed tendon naming a
+/// joint twice, and the force of a tendon motor.
 pub mod tendon_parity;
+
+/// The touch sensor against MuJoCo 3.5.0: each contact's normal force,
+/// decoded from its rows, then added.
+pub mod touch_parity;
 
 /// Transition derivatives on quaternion joints against MuJoCo 3.5.0: the
 /// finite differences' tangent convention and `mjd_quatIntegrate`.
