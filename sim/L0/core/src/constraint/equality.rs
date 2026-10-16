@@ -69,8 +69,9 @@ pub fn extract_connect_jacobian(
 /// orientation error the axis part of `neg(q2) · q1 · relpose`
 /// (`eq_data[6..10]`), and each column of the rotational Jacobians'
 /// difference corrected to `0.5 · neg(q2) · [0, column] · q1 · relpose`
-/// (`mju_mulQuatAxis`, `mju_mulQuat`). (MuJoCo then scales the rotational
-/// rows by `torquescale`, spec book P39.)
+/// (`mju_mulQuatAxis`, `mju_mulQuat`). The rotational error and rows are
+/// then scaled by the weld's `torquescale`, `eq_data[10]`
+/// (`engine_core_constraint.c:482`, `:510`, `:530`).
 pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> EqualityConstraintRows {
     let (body1, body2) = (model.eq_obj1id[eq_id], model.eq_obj2id[eq_id]);
     let eq_data = &model.eq_data[eq_id];
@@ -83,6 +84,7 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
     let rot_dif = rot1 - rot2;
 
     let relpose = [eq_data[6], eq_data[7], eq_data[8], eq_data[9]];
+    let torquescale = eq_data[10];
     let quat = mul_quat(&quat_array(&data.xquat[body1]), &relpose);
     let quat1 = neg_quat(&quat_array(&data.xquat[body2]));
     let err = mul_quat(&quat1, &quat);
@@ -93,7 +95,7 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
         let axis = [rot_dif[(0, col)], rot_dif[(1, col)], rot_dif[(2, col)]];
         let q3 = mul_quat(&mul_quat_axis(&quat1, &axis), &quat);
         for k in 0..3 {
-            j[(3 + k, col)] = 0.5 * q3[1 + k];
+            j[(3 + k, col)] = 0.5 * q3[1 + k] * torquescale;
         }
     }
     EqualityConstraintRows {
@@ -102,9 +104,9 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
             pos_error.x,
             pos_error.y,
             pos_error.z,
-            err[1],
-            err[2],
-            err[3],
+            err[1] * torquescale,
+            err[2] * torquescale,
+            err[3] * torquescale,
         ],
     }
 }

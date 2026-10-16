@@ -1740,3 +1740,4 @@ b7b1d868a3f151e4	sim/L0/tests/integration/fluid_derivatives.rs:1395
 91563743601ec523	sim/L0/tests/integration/jacobian_parity.rs:313
 919e85c20123d9ff	sim/L0/tests/integration/empty_rows_parity.rs:203
 286b5b47ad2618b3	sim/L0/tests/integration/runtime_flags.rs:333
+0289228fc53453cc	sim/L0/mjcf/src/builder/equality.rs:525

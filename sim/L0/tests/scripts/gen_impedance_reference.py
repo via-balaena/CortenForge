@@ -93,6 +93,17 @@ then D = 1/R, and every row's diagApprox = R*imp/(1-imp) (`:1570-1578`):
   pyramidal), from qpos0, and 60c23753 (frictionless, a sphere at distance
   0 from its plane at qpos0, so without rows) moved 1 mm into the plane;
   after mj_forward, every row's efc_diagApprox and efc_R.
+
+A weld's rotational error and rotational Jacobian rows are scaled by its
+torquescale, `eq_data[10]` (`:482`, `:510`, `:530`):
+
+- weld_torquescale: a free box welded to the world, soft (solref "0.05 1"),
+  started turned 0.2 rad about (1, 2, 3) and spinning, at torquescale 0,
+  0.5 and 2; and two free boxes welded to each other at 0.3, the second
+  started turned; qpos and qvel after steps 1, 10, 100 and 500. The
+  generator refuses a case unless MuJoCo's `eq_data[10]` is its
+  torquescale. sim-mjcf reads no `torquescale` until Rigid-loading's L41, so
+  the test writes it into `eq_data[10]` after loading.
 """
 import hashlib
 import json
@@ -527,6 +538,72 @@ def diag_approx():
     return out
 
 
+def weld_box_xml(torquescale):
+    return f"""<mujoco model="weld_box_ts">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="box" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.06 0.04" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="box" solref="0.05 1" torquescale="{torquescale}"/>
+  </equality>
+</mujoco>"""
+
+
+WELD_PAIR_XML = """<mujoco model="weld_pair_ts">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.06 0.04" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0.3 0 1">
+      <freejoint/>
+      <geom type="box" size="0.05 0.05 0.05" mass="0.5" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="a" body2="b" solref="0.05 1" torquescale="0.3"/>
+  </equality>
+</mujoco>"""
+
+
+def turned(axis, angle):
+    a = np.array(axis, dtype=float)
+    a /= np.linalg.norm(a)
+    return [float(np.cos(angle / 2))] + [float(x) for x in np.sin(angle / 2) * a]
+
+
+def weld_torquescale():
+    """Each case: its free joint at quat_adr (the box, or the pair's second box) turned and spinning."""
+    out = {}
+    cases = [(f"box_ts_{ts}", weld_box_xml(ts), ts, 3) for ts in ("0", "0.5", "2")]
+    cases.append(("pair_ts_0.3", WELD_PAIR_XML, "0.3", 10))
+    for name, xml, ts, quat_adr in cases:
+        m = mujoco.MjModel.from_xml_string(xml)
+        assert m.neq == 1 and float(m.eq_data[0, 10]) == float(ts), m.eq_data[0]
+        qpos = [float(x) for x in m.qpos0]
+        qpos[quat_adr:quat_adr + 4] = turned([1, 2, 3], 0.2)
+        # A free joint's angular velocity follows its 3 linear dofs: dofs (quat_adr - 3) / 7 * 6 + 3.
+        dof = (quat_adr - 3) // 7 * 6 + 3
+        qvel = [0.0] * m.nv
+        qvel[dof:dof + 3] = [0.5, -0.3, 0.8]
+        d = mujoco.MjData(m)
+        d.qpos[:] = qpos
+        d.qvel[:] = qvel
+        traj = {}
+        for step in range(1, 501):
+            mujoco.mj_step(m, d)
+            if step in (1, 10, 100, 500):
+                traj[str(step)] = {"qpos": floats(d.qpos), "qvel": floats(d.qvel)}
+        stable(d, name)
+        out[name] = {"xml": xml, "torquescale": float(ts), "qpos": qpos, "qvel": qvel, "traj": traj}
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -552,6 +629,7 @@ def main():
         "impratio_noslip": impratio_noslip(),
         "pair_condim6": pair_condim6(),
         "diag_approx": diag_approx(),
+        "weld_torquescale": weld_torquescale(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "impedance.json"), "w", encoding="utf-8") as f:

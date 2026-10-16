@@ -485,3 +485,31 @@ fn noslip_states_take_the_regularized_cone_mu() {
     }
     assert!(out.is_empty(), "{} differ:\n{}", out.len(), out.join("\n"));
 }
+
+/// A free box welded to the world, started turned and spinning, at
+/// torquescale 0, 0.5 and 2, and two free boxes welded to each other at 0.3:
+/// MuJoCo scales the weld's rotational error and rotational Jacobian rows by
+/// `eq_data[10]` (`engine_core_constraint.c:482`, `:510`, `:530`); 500 steps
+/// within 1e-12. sim-mjcf reads no `torquescale` until Rigid-loading's L41,
+/// so the test writes it into `eq_data[10]` after loading.
+#[test]
+fn weld_torquescale_matches_mujoco() {
+    let g = golden();
+    let mut out = Vec::new();
+    for (name, case) in g["cases"]["weld_torquescale"].as_object().expect("cases") {
+        let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        model.eq_data[0][10] = case["torquescale"].as_f64().expect("torquescale");
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&floats(&case["qpos"]));
+        data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        out.extend(trajectory_differs(
+            name,
+            &model,
+            data,
+            &case["traj"],
+            TOL,
+            None,
+        ));
+    }
+    assert!(out.is_empty(), "{} differ:\n{}", out.len(), out.join("\n"));
+}

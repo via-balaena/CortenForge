@@ -140,6 +140,8 @@ impl ModelBuilder {
     ///   `[0..3]` = anchor in body2's local frame (user-specified `anchor` attr)
     ///   `[3..6]` = anchor in body1's local frame (auto-computed)
     ///   `[6..10]` = relpose quaternion `[w,x,y,z]` = `neg(q1_ref) * q2_ref`
+    ///   `[10]` = torquescale, MuJoCo's default 1 (`user_init.c:307`); the
+    ///   attribute itself is not read yet (spec book, Rigid-loading L41)
     ///
     /// MuJoCo convention: the `anchor` XML attribute is in body2's frame.
     /// Body1's anchor is auto-computed so both anchor points map to the same
@@ -194,6 +196,7 @@ impl ModelBuilder {
             data[8] = rel_quat.j;
             data[9] = rel_quat.k;
         }
+        data[10] = 1.0;
 
         let eq_defaults = self
             .resolver
@@ -513,6 +516,28 @@ mod tests {
         let world_via_a = nalgebra::Vector3::new(1.0, 0.0, 0.0) + anchor1;
         let world_via_b = nalgebra::Vector3::new(0.0, 1.0, 0.0) + anchor2;
         assert_relative_eq!((world_via_a - world_via_b).norm(), 0.0, epsilon = 1e-12);
+    }
+
+    /// A weld's torquescale, `eq_data[10]`, is MuJoCo's default 1
+    /// (`user_init.c:307`): its rotational rows keep their full weight.
+    #[test]
+    fn weld_torquescale_defaults_to_one() {
+        let xml = r#"
+            <mujoco model="m">
+                <worldbody>
+                    <body name="a" pos="0 0 1">
+                        <freejoint/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld body1="a"/>
+                </equality>
+            </mujoco>
+        "#;
+        let model = load_model(xml).expect("load");
+        assert_eq!(model.eq_type[0], EqualityType::Weld);
+        assert_eq!(model.eq_data[0][10].to_bits(), 1.0_f64.to_bits());
     }
 
     /// Weld with explicit `relpose` packs the user-supplied quaternion into
