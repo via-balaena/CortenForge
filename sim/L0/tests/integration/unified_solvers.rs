@@ -1158,10 +1158,13 @@ fn test_s31_condim6_solreffriction_all_friction_rows() {
     );
 }
 
-/// §31 coverage: one component zero — solreffriction="0.1 0.0" is nonzero
-/// (the `||` check: either component nonzero triggers use of solreffriction).
+/// §31 coverage: one component zero — solreffriction="0.1 0.0" is mixed
+/// (one value positive, the other not), so MuJoCo replaces it by (0, 0) and
+/// the friction rows take solref (`getsolparam`,
+/// `engine_core_constraint.c:1345-1349`). Its trajectory against MuJoCo is
+/// `impedance_parity::mixed_solreffriction_uses_solref`.
 #[test]
-fn test_s31_one_component_zero_still_activates() {
+fn test_s31_mixed_solreffriction_falls_back_to_solref() {
     let (model, mut data) = model_from_mjcf(
         r#"
         <mujoco model="s31_one_zero">
@@ -1187,18 +1190,18 @@ fn test_s31_one_component_zero_still_activates() {
         data.step(&model).expect("step");
     }
 
-    // Find elliptic contact group and verify friction rows use solreffriction
+    // Find elliptic contact group and verify friction rows use solref
     for i in 0..data.efc_type.len() {
         if data.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
             let dim = data.efc_dim[i];
             // Normal: solref
             assert_eq!(data.efc_solref[i], [0.02, 1.0], "normal row: solref");
-            // Friction: solreffriction=[0.1, 0.0] (NOT [0.02, 1.0])
+            // Friction: solref, the mixed [0.1, 0.0] replaced
             for j in 1..dim {
                 assert_eq!(
                     data.efc_solref[i + j],
-                    [0.1, 0.0],
-                    "friction row {j}: one-component-zero solreffriction must activate"
+                    [0.02, 1.0],
+                    "friction row {j}: a mixed solreffriction falls back to solref"
                 );
             }
             return; // pass

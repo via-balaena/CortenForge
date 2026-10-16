@@ -3,7 +3,8 @@
 //! MuJoCo takes one impedance for all rows of a connect (3) or a weld (6),
 //! from the norm of their violation (`getposdim`,
 //! `engine_core_constraint.c:1365-1398`), and a row's impedance from
-//! `pos - margin` (`getimpedance`, `:1413-1461`). The golden is
+//! `pos - margin` (`getimpedance`, `:1413-1461`), and replaces a mixed
+//! `solref` or `solreffriction` (`getsolparam`, `:1291-1362`). The golden is
 //! `assets/golden/impedance/impedance.json`, from the unfused MuJoCo 3.5.0
 //! oracle (`scripts/gen_impedance_reference.py`, which describes its cases).
 
@@ -33,8 +34,9 @@ fn assert_close(what: &str, got: &[f64], want: &[f64], tol: f64) {
     }
 }
 
-/// qpos and qvel at the golden's checkpoints, stepping `model` from `data`.
-fn assert_trajectory(what: &str, model: &Model, mut data: Data, traj: &Value, tol: f64) {
+/// qpos and qvel at the golden's checkpoints, stepping `model` from `data`;
+/// returns the data at the last checkpoint.
+fn assert_trajectory(what: &str, model: &Model, mut data: Data, traj: &Value, tol: f64) -> Data {
     let checkpoints = traj.as_object().expect("checkpoints");
     let last = checkpoints
         .keys()
@@ -57,6 +59,7 @@ fn assert_trajectory(what: &str, model: &Model, mut data: Data, traj: &Value, to
             );
         }
     }
+    data
 }
 
 /// A hinged capsule and a free box joined by a connect, the hinge turned
@@ -134,4 +137,47 @@ fn a_limit_takes_its_impedance_inside_the_margin() {
         &[want("efc_imp")],
         1e-15,
     );
+}
+
+/// Census doc d81df1fa, a sphere sliding on a plane under an elliptic cone
+/// whose `<pair>` gives `solreffriction="0.1 0.0"`: one value positive, the
+/// other not. MuJoCo replaces it by (0, 0), so the friction rows take the
+/// pair's `solref` (`getsolparam`, `engine_core_constraint.c:1345-1349`;
+/// `mj_makeImpedance`, `:1489-1491`).
+///
+/// The second case gives the pair `solref="0.05 1"`, not the default, and
+/// `solreffriction="-0.1 0.5"`, mixed the other way: there a mixed
+/// solreffriction replaced by the default solref, not by (0, 0), would show.
+#[test]
+fn mixed_solreffriction_uses_solref() {
+    for name in ["mixed_solreffriction", "mixed_solreffriction_own_solref"] {
+        let case = &golden()["cases"][name];
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        assert_trajectory(name, &model, data, &case["traj"], TOL);
+    }
+}
+
+/// Two hinged arms falling onto their limits, whose `solreflimit` is mixed
+/// each way ("0.05 -2", "-500 2"): MuJoCo replaces it by the default
+/// (0.02, 1) (`getsolparam`, `engine_core_constraint.c:1334-1338`), which the
+/// limit rows then hold.
+#[test]
+fn mixed_solref_uses_default() {
+    let case = &golden()["cases"]["mixed_solref_limit"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let end = assert_trajectory(
+        "mixed solref limit",
+        &model,
+        model.make_data(),
+        &case["traj"],
+        TOL,
+    );
+    assert_eq!(
+        end.efc_type,
+        [ConstraintType::LimitJoint; 2],
+        "two limit rows"
+    );
+    assert_eq!(end.efc_solref, [[0.02, 1.0]; 2], "the limit rows' solref");
 }

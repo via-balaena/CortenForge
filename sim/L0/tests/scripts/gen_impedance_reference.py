@@ -30,7 +30,28 @@ the norm of their violation (`getposdim`, `engine_core_constraint.c:1366-1395`;
   upper limit row is 0.08 from the limit and 0.02 inside the margin: the
   row's efc_pos and efc_imp (an impedance takes `pos - margin`,
   `getimpedance`, `:1413-1461`).
+
+`getsolparam` (`:1291-1362`) replaces a mixed `solref` (one value positive,
+the other not) by the default (0.02, 1), and a mixed `solreffriction` by
+(0, 0), under which an elliptic contact's friction rows take `solref`:
+
+- mixed_solreffriction: census doc d81df1fa (`unified_solvers.rs`'s
+  `<pair solreffriction="0.1 0.0">`, elliptic), started sliding (qvel
+  0.5, -0.2 along the plane): a friction row's solref reaches it only through
+  B times the row's velocity, which is 0 from rest. qpos and qvel after steps
+  1, 10, 50 and 100. The generator refuses it unless the friction rows' B is
+  the normal row's and their velocity is not 0.
+- mixed_solreffriction_own_solref: the same sphere, its `<pair>` giving
+  `solref="0.05 1"` (not the default) and `solreffriction="-0.1 0.5"`, mixed
+  the other way; the same checkpoints and refusals. With a default solref, a
+  mixed solreffriction replaced by the default solref instead of by (0, 0)
+  gives the same rows; here it does not.
+- mixed_solref_limit: two hinged arms falling onto their limits, whose
+  `solreflimit` is mixed each way ("0.05 -2", "-500 2"); qpos and qvel after
+  steps 1, 10, 100 and 300. The generator refuses it unless both limit rows'
+  K and B are the default's.
 """
+import hashlib
 import json
 import os
 import re
@@ -112,16 +133,18 @@ def stable(d, what):
             sys.exit(f"{what}: MuJoCo warned {w.name}")
 
 
-def trajectory(xml, qpos0_offset, what):
+def trajectory(xml, qpos0_offset, what, checkpoints=CHECKPOINTS, qvel=None):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
     d.qpos[:] = m.qpos0
     for i, v in qpos0_offset.items():
         d.qpos[i] += v
+    if qvel is not None:
+        d.qvel[:] = qvel
     out = {}
-    for step in range(1, CHECKPOINTS[-1] + 1):
+    for step in range(1, checkpoints[-1] + 1):
         mujoco.mj_step(m, d)
-        if step in CHECKPOINTS:
+        if step in checkpoints:
             out[str(step)] = {"qpos": floats(d.qpos), "qvel": floats(d.qvel)}
     stable(d, what)
     return out
@@ -187,6 +210,85 @@ def limit_margin():
             "efc_margin": float(d.efc_margin[i]), "efc_imp": float(d.efc_KBIP[i, 2])}
 
 
+CENSUS_DOCS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "census", "docs")
+
+MIXED_SOLREFFRICTION_DOC = "d81df1fabe5612c1"
+
+SLIDING = [0.5, -0.2, 0.0, 0.0, 0.0, 0.0]
+
+
+OWN_SOLREF = """<mujoco model="mixed_solreffriction_own_solref">
+  <option gravity="0 0 -9.81" timestep="0.002" solver="Newton" cone="elliptic"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <body name="ball" pos="0 0 0.1">
+      <joint type="free"/>
+      <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <contact>
+    <pair geom1="floor" geom2="sphere" condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+          solref="0.05 1.0" solreffriction="-0.1 0.5"/>
+  </contact>
+</mujoco>"""
+
+
+def census_doc(doc):
+    with open(os.path.join(CENSUS_DOCS, doc + ".xml"), encoding="utf-8") as f:
+        xml = f.read()
+    assert hashlib.sha256(xml.encode()).hexdigest()[:16] == doc
+    return xml
+
+
+def mixed_solreffriction(xml, what):
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[:] = SLIDING
+    friction_vel = 0.0
+    for _ in range(100):
+        mujoco.mj_step(m, d)
+        elliptic = [i for i in range(d.nefc) if d.efc_type[i] == mujoco.mjtConstraint.mjCNSTR_CONTACT_ELLIPTIC]
+        if elliptic:
+            assert len(elliptic) == 3, elliptic
+            # efc_KBIP holds K, B, imp, impP per row (mjdata.h): the friction rows take solref's B.
+            b = [float(d.efc_KBIP[i, 1]) for i in elliptic]
+            assert b[0] > 0 and b[1] == b[0] and b[2] == b[0], b
+            friction_vel = max(friction_vel, *(abs(float(d.efc_vel[i])) for i in elliptic[1:]))
+    assert friction_vel > 1e-3, friction_vel
+    return {"xml": xml, "qvel": SLIDING, "traj": trajectory(xml, {}, what, [1, 10, 50, 100], SLIDING)}
+
+
+MIXED_SOLREF_LIMIT = """<mujoco model="mixed_solref_limit">
+  <compiler angle="radian"/>
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="h" type="hinge" axis="0 1 0" limited="true" range="-0.3 0.3" solreflimit="0.05 -2"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="arm2" pos="0 1 1">
+      <joint name="h2" type="hinge" axis="0 1 0" limited="true" range="-0.2 0.2" solreflimit="-500 2"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+
+def mixed_solref_limit():
+    m = mujoco.MjModel.from_xml_string(MIXED_SOLREF_LIMIT)
+    d = mujoco.MjData(m)
+    for _ in range(300):
+        mujoco.mj_step(m, d)
+    assert d.nefc == 2, d.nefc
+    # The default solref (0.02, 1) at dmax 0.95 (`mj_makeImpedance`, standard format).
+    k, b = 1 / (0.95 * 0.95 * 0.02 * 0.02 * 1 * 1), 2 / (0.95 * 0.02)
+    for i in range(2):
+        assert d.efc_type[i] == mujoco.mjtConstraint.mjCNSTR_LIMIT_JOINT, d.efc_type[i]
+        assert (float(d.efc_KBIP[i, 0]), float(d.efc_KBIP[i, 1])) == (k, b), d.efc_KBIP[i]
+    return {"xml": MIXED_SOLREF_LIMIT,
+            "traj": trajectory(MIXED_SOLREF_LIMIT, {}, "mixed_solref_limit", [1, 10, 100, 300])}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -201,6 +303,11 @@ def main():
         },
         "cable": cable(),
         "limit_margin": limit_margin(),
+        "mixed_solreffriction": mixed_solreffriction(census_doc(MIXED_SOLREFFRICTION_DOC),
+                                                     "mixed_solreffriction"),
+        "mixed_solreffriction_own_solref": mixed_solreffriction(OWN_SOLREF,
+                                                                "mixed_solreffriction_own_solref"),
+        "mixed_solref_limit": mixed_solref_limit(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "impedance.json"), "w", encoding="utf-8") as f:

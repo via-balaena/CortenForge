@@ -30,6 +30,39 @@ pub const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
 /// Minimum value to prevent division by zero (matches MuJoCo's mjMINVAL).
 pub const MJ_MINVAL: f64 = 1e-15;
 
+/// Whether a `solref` or a `solreffriction` mixes MuJoCo's two formats,
+/// standard (both values positive) and direct (neither): one value positive,
+/// the other not (`getsolparam`, `engine_core_constraint.c:1335`, `:1346`).
+fn is_mixed(reference: [f64; 2]) -> bool {
+    (reference[0] > 0.0) != (reference[1] > 0.0)
+}
+
+/// A row's `solref` as MuJoCo's `getsolparam` takes it
+/// (`engine_core_constraint.c:1334-1338`): a mixed one is replaced by
+/// [`DEFAULT_SOLREF`], with MuJoCo's warning. MuJoCo warns once per
+/// constraint, this once per row.
+pub fn checked_solref(solref: [f64; 2]) -> [f64; 2] {
+    if is_mixed(solref) {
+        log::warn!("mixed solref format, replacing with default");
+        DEFAULT_SOLREF
+    } else {
+        solref
+    }
+}
+
+/// A contact's `solreffriction` as `getsolparam` takes it
+/// (`engine_core_constraint.c:1345-1349`): a mixed one is replaced by
+/// (0, 0), its default, under which an elliptic contact's friction rows take
+/// `solref` (`mj_makeImpedance`, `:1489-1491`).
+pub fn checked_solreffriction(solreffriction: [f64; 2]) -> [f64; 2] {
+    if is_mixed(solreffriction) {
+        log::warn!("solreffriction values should have the same sign, replacing with default");
+        [0.0, 0.0]
+    } else {
+        solreffriction
+    }
+}
+
 /// `a` to the power `b`, as MuJoCo's `power()` (`engine_core_constraint.c:1400-1409`):
 /// exactly `a` for 1 and `a*a` for 2 (the default), which `powf` need not give.
 #[inline]

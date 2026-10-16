@@ -10,7 +10,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::{
-    MJ_MINVAL, ball_limit_axis_angle, compute_diag_approx_exact, compute_impedance,
+    MJ_MINVAL, ball_limit_axis_angle, checked_solref, compute_diag_approx_exact, compute_impedance,
     compute_regularization,
 };
 use crate::quat::qpos_quat;
@@ -45,7 +45,8 @@ pub fn tendon_deadband_displacement(length: f64, range: [f64; 2]) -> f64 {
 ///
 /// This is the shared finalizer called for every constraint row after the
 /// Jacobian and position error have been written into the `efc_*` arrays. It
-/// pushes type/pos/margin/solref/solimp/floss/mu/dim/id and computes
+/// pushes type/pos/margin/solref/solimp/floss/mu/dim/id, the solref as
+/// MuJoCo's `getsolparam` checks it ([`checked_solref`]), and computes
 /// impedance and regularization. The velocity and the reference acceleration
 /// are every row's at once ([`crate::constraint::mj_reference_constraint`]).
 ///
@@ -114,7 +115,7 @@ pub fn finalize_constraint_row_imp(
     data.efc_type.push(ctype);
     data.efc_pos.push(pos);
     data.efc_margin.push(margin);
-    data.efc_solref.push(solref);
+    data.efc_solref.push(checked_solref(solref));
     data.efc_solimp.push(solimp);
     data.efc_floss.push(floss);
     data.efc_mu.push(mu_val);

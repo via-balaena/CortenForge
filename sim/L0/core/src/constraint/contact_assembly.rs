@@ -5,7 +5,7 @@
 //! pyramidal R-scaling post-processing. Called from
 //! [`super::assembly::assemble_unified_constraints`] during Phase 3f.
 
-use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::impedance::{MJ_MINVAL, checked_solreffriction};
 use crate::constraint::jacobian::compute_contact_jacobian;
 use crate::types::{ConstraintType, Contact, Data, Model};
 
@@ -36,6 +36,7 @@ pub(super) fn assemble_contact_rows(
         let cj = compute_contact_jacobian(model, data, contact);
 
         let sr_normal = contact.solref;
+        let sr_friction = checked_solreffriction(contact.solreffriction);
         let si = contact.solimp;
         // includemargin = margin - gap, computed at contact creation.
         let margin = contact.includemargin;
@@ -69,8 +70,8 @@ pub(super) fn assemble_contact_rows(
             };
 
             // §31: solreffriction selection for elliptic friction rows.
-            let has_solreffriction = is_elliptic
-                && (contact.solreffriction[0] != 0.0 || contact.solreffriction[1] != 0.0);
+            let has_solreffriction =
+                is_elliptic && (sr_friction[0] != 0.0 || sr_friction[1] != 0.0);
 
             let normal_row = *row;
             for r in 0..dim {
@@ -84,7 +85,7 @@ pub(super) fn assemble_contact_rows(
 
                 // §31: select solref for this row.
                 let sr = if r > 0 && has_solreffriction {
-                    contact.solreffriction
+                    sr_friction
                 } else {
                     sr_normal
                 };
