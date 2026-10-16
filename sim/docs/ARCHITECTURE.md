@@ -659,7 +659,8 @@ When sleep is enabled, pipeline stages skip sleeping bodies/DOFs:
 - Tendons: a tendon over one sleeping tree, or two both asleep, has length and
   Jacobian 0, no rows
 - Transmission: a sleeping actuator keeps its length, its moment row 0
-- Passive forces: skipped when all target DOFs are asleep
+- Passive forces: sleeping joints and bodies skipped; a tendon skipped when
+  asleep, or static while a tree sleeps
 - Position/velocity integration: sleeping joints skipped
 - Actuation: a sleeping actuator acts with no force and keeps its `act_dot`
 - Sensors: a sleeping sensor keeps its value

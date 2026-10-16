@@ -229,6 +229,12 @@ pub fn tendon_asleep(model: &Model, data: &Data, t: usize) -> bool {
     tendon_sleep_state(model, data, t) == SleepState::Asleep
 }
 
+/// Whether tendon `t` is awake ([`tendon_sleep_state`]): neither asleep nor
+/// static.
+pub fn tendon_awake(model: &Model, data: &Data, t: usize) -> bool {
+    tendon_sleep_state(model, data, t) == SleepState::Awake
+}
+
 /// Tendon `t`'s sleep state (MuJoCo `mj_tendonSleepState`,
 /// `engine_sleep.c:572-594`): static with no tree, its tree's with one,
 /// awake when either of two is, awake with more than two.

@@ -7,7 +7,6 @@
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::object_velocity_local;
 use crate::dynamics::rne::mj_gravcomp;
-use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::{JointContext, JointVisitor};
 use crate::quat;
@@ -408,8 +407,12 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
     // Tendon passive forces: spring + damper (S4.7-prereq: separate arrays).
     for t in 0..model.ntendon {
-        // §16.5a': Skip tendon if ALL target DOFs are sleeping
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+        // A sleeping or static tendon applies none while a tree sleeps, as
+        // MuJoCo's `mj_springdamper` (`engine_passive.c:123`, `:446-451`).
+        if crate::island::constraint_sleep_filter(model, data)
+            && !crate::island::tendon_awake(model, data, t)
+        {
+            data.ten_force[t] = 0.0;
             continue;
         }
         let length = data.ten_length[t];

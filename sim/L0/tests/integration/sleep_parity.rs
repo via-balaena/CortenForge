@@ -1289,3 +1289,149 @@ fn a_tendon_on_a_tree_the_forward_wakes_is_made() {
         "qfrc_passive"
     );
 }
+
+/// A spatial tendon from a world site to a tree's site, its spring engaged,
+/// whose row is 0 at this state (the site moves square to it), beside a
+/// second tree; energy enabled.
+const ZERO_ROW_TENDON: &str = r#"
+<mujoco>
+  <option gravity="0 0 0"><flag sleep="enable" energy="enable"/></option>
+  <worldbody>
+    <site name="w" pos="0.3 0.5 1"/>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+      <site name="sa" pos="0.3 0 0"/>
+    </body>
+    <body name="b" pos="1 0 1">
+      <joint name="jb" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="50" springlength="0.2 0.3">
+      <site site="w"/><site site="sa"/>
+    </spatial>
+  </tendon>
+</mujoco>"#;
+
+/// A spatial tendon between two world sites (on no tree: static), its
+/// spring engaged, beside two trees; energy enabled.
+const STATIC_TENDON: &str = r#"
+<mujoco>
+  <option gravity="0 0 0"><flag sleep="enable" energy="enable"/></option>
+  <worldbody>
+    <site name="w" pos="0.3 0.5 1"/>
+    <site name="w2" pos="0 -0.5 2"/>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="1 0 1">
+      <joint name="jb" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="50" springlength="0.2 0.3"><site site="w"/><site site="w2"/></spatial>
+  </tendon>
+</mujoco>"#;
+
+/// `xml` with tree `b` asleep from the reset, or with sleep disabled, and
+/// `ten_force` set to 7 before a forward pass, so a force the pass does not
+/// make shows.
+fn forward_tendon_scene(xml: &str, b_asleep: bool, sleep: bool) -> sim_core::Data {
+    let xml = if b_asleep {
+        let out = xml.replace(
+            r#"<body name="b" pos="1 0 1">"#,
+            r#"<body name="b" pos="1 0 1" sleep="init">"#,
+        );
+        assert_ne!(out, xml, "tree b's body");
+        out
+    } else {
+        xml.to_owned()
+    };
+    let mut model = load_model(&xml).expect("load");
+    if !sleep {
+        model.enableflags &= !ENABLE_SLEEP;
+    }
+    let mut data = model.make_data();
+    data.ten_force[0] = 7.0;
+    data.forward(&model).expect("forward");
+    let awake = if b_asleep {
+        vec![true, false]
+    } else {
+        vec![true, true]
+    };
+    assert_eq!(data.tree_awake, awake, "tree_awake");
+    data
+}
+
+/// A tendon's spring energy where MuJoCo's `mj_energyPos` adds it: every
+/// tendon awake by its trees, and, while no body sleeps, a static one too
+/// (`engine_sensor.c:1631`, `:1679-1682`). On the zero-row scene, with
+/// every tree awake, with tree b asleep and with sleep disabled,
+/// `energy_potential` is MuJoCo's 1.0; on the static one, MuJoCo's
+/// 32.81475155779856 with every tree awake and with sleep disabled, and 0
+/// with tree b asleep (measured on the oracle). Before, a tendon whose row
+/// reached no awake dof was left out whenever sleep was enabled: 0 on the
+/// zero-row scene, 0 on the static one with every tree awake.
+#[test]
+fn a_tendon_spring_energy_is_skipped_as_mujoco() {
+    for (name, xml, want) in [
+        ("zero row", ZERO_ROW_TENDON, [1.0, 1.0, 1.0]),
+        (
+            "static",
+            STATIC_TENDON,
+            [32.81475155779856, 0.0, 32.81475155779856],
+        ),
+    ] {
+        for ((state, b_asleep, sleep), want) in [
+            ("every tree awake", false, true),
+            ("tree b asleep", true, true),
+            ("sleep disabled", false, false),
+        ]
+        .into_iter()
+        .zip(want)
+        {
+            let got = forward_tendon_scene(xml, b_asleep, sleep).energy_potential;
+            assert!(
+                (got - want).abs() <= 1e-12 * f64::max(1.0, want),
+                "{name}, {state}: energy_potential {got}, MuJoCo's {want}"
+            );
+        }
+    }
+}
+
+/// `ten_force` is the force the passive pass applies: made for a tendon it
+/// does not skip, whatever its row, and 0 for one it skips (a static tendon
+/// while a tree sleeps, as MuJoCo's `mj_springdamper` skips it,
+/// `engine_passive.c:123`, `:446-451`). On the zero-row scene with sleep
+/// enabled, with every tree awake and with tree b asleep, it is the same
+/// model's with sleep disabled, bit for bit; on the static one, so
+/// with every tree awake, and 0 with tree b asleep. Before, a tendon whose
+/// row reached no awake dof was skipped whenever sleep was enabled and
+/// kept the force it held (7 here).
+#[test]
+fn ten_force_is_the_force_the_passive_pass_applies() {
+    for (name, xml) in [("zero row", ZERO_ROW_TENDON), ("static", STATIC_TENDON)] {
+        let off = forward_tendon_scene(xml, false, false).ten_force[0];
+        assert!(
+            off != 7.0 && off != 0.0,
+            "{name}: sleep disabled, a force is made"
+        );
+        let awake = forward_tendon_scene(xml, false, true).ten_force[0];
+        assert_eq!(
+            awake.to_bits(),
+            off.to_bits(),
+            "{name}, every tree awake: ten_force {awake}"
+        );
+        let asleep = forward_tendon_scene(xml, true, true).ten_force[0];
+        let want = if name == "static" { 0.0 } else { off };
+        assert_eq!(
+            asleep.to_bits(),
+            want.to_bits(),
+            "{name}, tree b asleep: ten_force {asleep}"
+        );
+    }
+}

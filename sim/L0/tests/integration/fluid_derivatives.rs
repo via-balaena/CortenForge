@@ -2749,7 +2749,7 @@ const SLEEP_DAMPED_2HINGE_ALL_ASLEEP: &str = r#"<mujoco>
 </mujoco>"#;
 
 /// Single sleeping tree with tendon, no joint damping, no fluid.
-/// Both joints belong to the same sleeping tree → tendon_all_dofs_sleeping returns true.
+/// Both joints belong to the same sleeping tree → the tendon is asleep.
 const SLEEP_TENDON_ALL_ASLEEP: &str = r#"<mujoco>
     <option density="0" viscosity="0" integrator="implicit">
         <flag sleep="enable"/>
@@ -2773,8 +2773,8 @@ const SLEEP_TENDON_ALL_ASLEEP: &str = r#"<mujoco>
 </mujoco>"#;
 
 /// Two separate trees, tendon spans both, both start asleep (coupled group
-/// requires uniform sleep="init"). T56 wakes body 1 at runtime so
-/// tendon_all_dofs_sleeping returns false; T57 leaves both asleep.
+/// requires uniform sleep="init"). T56 wakes body 1 at runtime so the
+/// tendon is awake; T57 leaves both asleep, and the tendon with them.
 const SLEEP_TENDON_CROSS_TREE: &str = r#"<mujoco>
     <option density="0" viscosity="0" integrator="implicit">
         <flag sleep="enable"/>
@@ -2951,7 +2951,7 @@ fn t54_per_dof_damping_all_sleeping_zero() {
 // ============================================================================
 
 /// Both joints in one sleeping tree with tendon damping=5.0.
-/// tendon_all_dofs_sleeping is true → tendon damping skipped → qDeriv is zero.
+/// The tendon is asleep (its one tree is) → tendon damping skipped → qDeriv is zero.
 #[test]
 fn t55_tendon_all_asleep_skipped() {
     let model = load_model(SLEEP_TENDON_ALL_ASLEEP).expect("should load");
@@ -2989,7 +2989,7 @@ fn t55_tendon_all_asleep_skipped() {
 // ============================================================================
 
 /// Both bodies start asleep. Wake body 1 via xfrc_applied so j1 is awake, j2
-/// sleeping → tendon_all_dofs_sleeping is false → tendon NOT skipped.
+/// sleeping → the tendon is awake (one of its two trees is) → tendon NOT skipped.
 /// For a fixed tendon with coefs [0.7, 0.3] and damping 5.0:
 ///   qDeriv += -5.0 * J^T * J
 /// Expected: qDeriv[(0,0)] = -5.0*0.7*0.7 = -2.45
@@ -3050,7 +3050,7 @@ fn t56_tendon_cross_tree_not_skipped() {
 // ============================================================================
 
 /// Both bodies sleeping, cross-tree tendon with damping=5.0.
-/// tendon_all_dofs_sleeping is true → tendon skipped → qDeriv is zero.
+/// The tendon is asleep (both its trees are) → tendon skipped → qDeriv is zero.
 #[test]
 fn t57_tendon_cross_tree_all_asleep_skipped() {
     let model = load_model(SLEEP_TENDON_CROSS_TREE).expect("should load");

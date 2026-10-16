@@ -27,7 +27,6 @@ use crate::forward::{
 use crate::forward::{mj_implicit_factor, mj_implicit_solve, solve_implicit};
 use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::isd_damping;
-use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
@@ -150,8 +149,12 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     // tendon damping forces are folded into the implicit K/D matrices (not
     // skipped), so the velocity derivative is always physically present.
     for t in 0..model.ntendon {
-        // §40c: Skip tendon if ALL target DOFs are sleeping.
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+        // A sleeping tendon adds no damping, as MuJoCo's `mjd_passive_vel`
+        // (`engine_derivative.c:1698`, `:1763-1770`): one in one sleeping
+        // tree, or two both asleep; a static one is kept, its row 0.
+        if crate::island::constraint_sleep_filter(model, data)
+            && crate::island::tendon_asleep(model, data, t)
+        {
             continue;
         }
         let b = model.tendon_damping[t];

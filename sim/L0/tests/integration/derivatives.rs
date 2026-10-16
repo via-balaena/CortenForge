@@ -4877,3 +4877,56 @@ fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
         );
     }
 }
+
+/// A spatial tendon between an awake tree's site and a sleeping tree's,
+/// whose row is 0 on the awake dof and 0.3 on the sleeping one, with a
+/// damping set after loading (MuJoCo refuses a tree asleep at load beside a
+/// damped two-tree tendon): the tendon is awake, so `mjd_passive_vel` keeps
+/// its −b·JᵀJ, as MuJoCo's skips only a tendon in one sleeping tree or two
+/// (`engine_derivative.c:1698`, `:1763-1770`). `qDeriv` is MuJoCo's
+/// [[0, 0], [0, −0.2700000000000001]] within 1e-15 (measured on the oracle,
+/// at the state of an implicit `mj_step`). Before, a tendon whose row
+/// reached no awake dof was skipped: `qDeriv` 0.
+#[test]
+fn a_damped_tendon_on_an_awake_and_a_sleeping_tree_keeps_its_velocity_derivative() {
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 0" integrator="implicit"><flag sleep="enable"/></option>
+      <worldbody>
+        <body name="a" pos="0 0 1">
+          <joint name="ja" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sa" pos="0.3 0 0"/>
+        </body>
+        <body name="b" pos="1 0 0.7" sleep="init">
+          <joint name="jb" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 0.3" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sb" pos="0 0 0.3"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t" springlength="0.2 0.3"><site site="sa"/><site site="sb"/></spatial>
+      </tendon>
+    </mujoco>"#;
+    let mut model = sim_mjcf::load_model(xml).expect("load");
+    model.tendon_damping[0] = 3.0;
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!(data.tree_awake, [true, false], "tree a awake, b asleep");
+    assert_eq!(
+        data.ten_J[0].as_slice(),
+        [0.0, 0.30000000000000004],
+        "the tendon's row"
+    );
+    mjd_smooth_vel(&model, &mut data);
+    let want = [[0.0, 0.0], [0.0, -0.2700000000000001]];
+    for (r, row) in want.iter().enumerate() {
+        for (c, &w) in row.iter().enumerate() {
+            let got = data.qDeriv[(r, c)];
+            assert!(
+                (got - w).abs() <= 1e-15,
+                "qDeriv[{r}][{c}] {got}, MuJoCo's {w}"
+            );
+        }
+    }
+}
