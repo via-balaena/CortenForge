@@ -48,7 +48,8 @@ use nalgebra::{DVector, Vector3};
 
 use sim_core::mj_integrate_pos_explicit;
 use sim_core::test_fixtures::conformance::{
-    ConformanceCase, damped_conformance_matrix, dynamics_conformance_matrix,
+    ConformanceCase, damped_conformance_matrix, dynamics_conformance_matrix, light_subtree_case,
+    two_slides_case,
 };
 use sim_core::types::{Data, MjJointType, Model};
 
@@ -537,6 +538,65 @@ fn gpu_dynamics_matches_cpu_across_joint_matrix() {
     assert!(
         fails.is_empty(),
         "GPU↔CPU dynamics conformance found {} NEW divergence(s) (not on the known allowlist):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+/// One case through FK → CRBA → velocity-FK → RNE on the GPU against
+/// `data.forward()` at its operating point, every field of
+/// `compare_env_fields`; returns the CPU data and the divergences.
+fn case_against_cpu(ctx: &GpuContext, case: &ConformanceCase) -> (Data, Failures) {
+    let model = &case.model;
+    let mut data = model.make_data();
+    data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+    data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+    data.forward(model).expect("CPU forward");
+    let state = run_through_rne(ctx, model, &data);
+    let mut fails = Failures::new();
+    compare_env_fields(&mut fails, ctx, &state, &data, model, case.name, 0, 1);
+    (data, fails)
+}
+
+/// A subtree lighter than 1e-10 takes its centre of mass as the CPU's
+/// (`mj_comPos`): scaled by the reciprocal of its mass, the body's own only
+/// below mjMINVAL. The fixture's two 1e-12 bodies put the chain's centre of
+/// mass 0.3 from its first body's (asserted), so a rule that took the body's
+/// own below 1e-10 diverges by that.
+#[test]
+fn gpu_light_subtree_com_matches_cpu() {
+    let ctx = gpu_or_skip!();
+    let case = light_subtree_case();
+    let (data, fails) = case_against_cpu(&ctx, &case);
+    assert!(
+        (data.subtree_com[1] - data.xipos[1]).norm() > 0.25,
+        "the fixture's subtree centre of mass is its first body's"
+    );
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU on a light subtree: {} divergence(s):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+/// A simple body's two slides on one axis: each slide's row of `qM` is its
+/// diagonal alone, as the CPU's (`mj_crb`), so the GPU's mass matrix does not
+/// couple them (the CPU's off-diagonal is 0, asserted; the coupled one is the
+/// body's mass).
+#[test]
+fn gpu_simple_body_mass_matrix_matches_cpu() {
+    let ctx = gpu_or_skip!();
+    let case = two_slides_case();
+    assert!(
+        case.model.dof_simplenum.iter().all(|&n| n > 0),
+        "the fixture's body is simple"
+    );
+    let (data, fails) = case_against_cpu(&ctx, &case);
+    assert_eq!(data.qM[(0, 1)], 0.0, "the CPU couples the slides");
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU on a simple body's two slides: {} divergence(s):\n  {}",
         fails.len(),
         fails.join("\n  ")
     );

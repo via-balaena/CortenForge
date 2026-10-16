@@ -30,6 +30,7 @@ struct DofModel {
     parent: u32,
     armature: f32,
     damping: f32,
+    simple: u32,
 };
 
 // Group 1: force inputs (read-only)

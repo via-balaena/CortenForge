@@ -162,11 +162,12 @@ pub struct GeomModelGpu {
     pub _pad: [u32; 2],
 }
 
-/// Per-DOF static model data. 16 bytes, 16-byte aligned.
+/// Per-DOF static model data. 20 bytes.
 ///
 /// Layout matches WGSL `DofModel` exactly.
 /// ```text
-/// offset 0: body_id, parent, armature, damping  (2 × u32 + 2 × f32 = 16 bytes)
+/// offset 0:  body_id, parent, armature, damping  (2 × u32 + 2 × f32)
+/// offset 16: simple                              (u32)
 /// ```
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -182,6 +183,9 @@ pub struct DofModelGpu {
     /// the smooth pass's `−D·q̇` force and the eulerdamp solve's `h·D` on the
     /// mass-matrix diagonal.
     pub damping: f32,
+    /// 1 if the dof's body is simple (`model.dof_simplenum[i] > 0`), else 0:
+    /// the CRBA writes a simple dof's row of `qM` as its diagonal alone.
+    pub simple: u32,
 }
 
 /// Per-dispatch FK parameters. 32 bytes, 16-byte aligned.

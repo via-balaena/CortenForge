@@ -61,7 +61,7 @@ const _: () = ();
 
 use sim_core::test_fixtures::conformance::{
     ConstraintOracle, ContactConformanceCase, ContactSpec, RolloutStep, contact_conformance_matrix,
-    contact_constraint_oracle, contact_damped_case, contact_rollout_oracle,
+    contact_constraint_oracle, contact_damped_case, contact_lever_arm_case, contact_rollout_oracle,
 };
 use sim_core::types::{Data, Model};
 
@@ -415,6 +415,47 @@ fn gpu_constraint_matches_cpu_on_injected_contacts() {
         "GPU↔CPU contact conformance found {} NEW divergence(s) (not on the known \
          allowlist):\n  {}",
         fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+/// A contact whose arm from the body's origin lies within 1e-6 of its length
+/// along the normal: the GPU's Jacobian row takes the arm as it is, as the
+/// CPU's (`mj_jac` through `mj_contactJacobian`), entry by entry within
+/// 1e-8 + 1e-6·|CPU|. The fixture's arm is 2e-6 off the normal, so the
+/// normal row's entry for the rotation about y is about 2e-6 (asserted),
+/// where an arm projected onto the normal gives 0.
+#[test]
+fn gpu_contact_lever_arm_matches_cpu() {
+    let ctx = gpu_or_skip!();
+    let case = contact_lever_arm_case();
+    let model = &case.model;
+    let nv = model.nv;
+    let oracle = contact_constraint_oracle(&case);
+
+    let mut data = model.make_data();
+    data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+    data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+    data.forward(model).expect("CPU forward (state setup)");
+    assert_eq!(data.efc_J.nrows(), 1, "condim 1 makes one row");
+    let cpu: Vec<f64> = data.efc_J.row(0).iter().copied().collect();
+    assert!(
+        cpu[4].abs() > 1e-6,
+        "the fixture's arm is on the normal: {cpu:?}"
+    );
+
+    let state = run_constraint_stage(&ctx, model, &data, &gpu_contacts(&oracle.contacts));
+    let gpu = read_buffer::<f32>(&ctx, &state.efc_j, nv);
+    let mut fails = Failures::new();
+    for k in 0..nv {
+        let (g, c) = (gpu[k], cpu[k] as f32);
+        if !((g - c).abs() < 1e-8 + 1e-6 * c.abs()) {
+            fails.push(format!("efc_J[0][{k}]: GPU {g:e} CPU {c:e}"));
+        }
+    }
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU contact Jacobian with an arm near the normal:\n  {}",
         fails.join("\n  ")
     );
 }

@@ -151,24 +151,6 @@ fn compute_tangent_frame(normal: vec3<f32>) -> array<vec3<f32>, 2> {
     return array<vec3<f32>, 2>(t1, t2);
 }
 
-// ── Helper: lever arm stabilisation ─────────────────────────────────
-
-/// If the component of r perpendicular to the contact normal is
-/// sub-physically small, project r onto the normal axis to avoid
-/// numerical noise in the torque arm.
-fn stabilize_lever_arm(r: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    let r_len = length(r);
-    let r_along_n = dot(r, normal) * normal;
-    let r_perp = r - r_along_n;
-    let perp_len = length(r_perp);
-
-    let threshold = 1e-6 * max(r_len, 1e-10);
-    if perp_len < threshold {
-        return r_along_n;
-    }
-    return r;
-}
-
 // ── Helper: read one PipelineContact from raw f32 buffer ────────────
 
 struct ContactData {
@@ -241,8 +223,8 @@ fn write_jacobian_body(
     // so index them at env_id·nbody; `bodies` is shared model data (bare index).
     let dof_adr = bodies[body_id].dof_adr;
     let body_off = env_id * params.nbody + body_id;
-    let r_raw = contact_pt - body_xpos[body_off].xyz;
-    let r = stabilize_lever_arm(r_raw, normal);
+    // The arm as it is, as the CPU's Jacobian (`mj_jac`) takes it.
+    let r = contact_pt - body_xpos[body_off].xyz;
     let rot = quat_to_mat3(body_xquat[body_off]);
 
     let base = row * params.nv;

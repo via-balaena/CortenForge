@@ -215,6 +215,7 @@ impl GpuModelBuffers {
                     } else {
                         0.0
                     },
+                    simple: u32::from(model.dof_simplenum.get(dof).is_some_and(|&n| n > 0)),
                 }
             })
             .collect();

@@ -892,6 +892,112 @@ pub fn contact_damped_case() -> ContactConformanceCase {
     contact_fixture("contact_pyramidal_damped", 3, 0.8, 0.005, 2.0, 1, 2.0)
 }
 
+/// A two-body hinged chain lighter than 1e-10.
+///
+/// Each body weighs 1e-12, the second 0.6 along x from the first, so the
+/// subtree is lighter than 1e-10 but heavier than mjMINVAL. Its centre of
+/// mass is the two bodies' (MuJoCo's `mj_comPos` scales by the reciprocal
+/// of the mass and takes the body's own centre of mass only below
+/// mjMINVAL), not its first body's.
+#[must_use]
+pub fn light_subtree_case() -> ConformanceCase {
+    let tiny = 1e-12;
+    let mut m = Model::empty();
+    let a = add_body(
+        &mut m,
+        0,
+        "a",
+        Vector3::zeros(),
+        tiny,
+        Vector3::repeat(tiny),
+        Vector3::zeros(),
+    );
+    add_hinge_joint(
+        &mut m,
+        a,
+        "ha",
+        Vector3::y(),
+        0.0,
+        0.0,
+        0.0,
+        false,
+        (-3.0, 3.0),
+    );
+    let b = add_body(
+        &mut m,
+        a,
+        "b",
+        Vector3::new(0.6, 0.0, 0.0),
+        tiny,
+        Vector3::repeat(tiny),
+        Vector3::zeros(),
+    );
+    add_hinge_joint(
+        &mut m,
+        b,
+        "hb",
+        Vector3::y(),
+        0.0,
+        0.0,
+        0.0,
+        false,
+        (-3.0, 3.0),
+    );
+    finalize(&mut m);
+    ConformanceCase {
+        name: "light_subtree",
+        model: m,
+        qpos: vec![0.3, -0.4],
+        qvel: vec![0.5, 0.2],
+    }
+}
+
+/// A simple body with two slides along its x axis.
+///
+/// The body is a root whose inertial frame is its frame. Each slide's row
+/// of the mass matrix is its diagonal alone (MuJoCo's `mj_crb`), so `qM`
+/// does not couple the two.
+#[must_use]
+pub fn two_slides_case() -> ConformanceCase {
+    let mut m = Model::empty();
+    let b = add_body(
+        &mut m,
+        0,
+        "slider",
+        Vector3::zeros(),
+        1.1,
+        Vector3::new(0.1, 0.2, 0.3),
+        Vector3::zeros(),
+    );
+    add_slide_joint(&mut m, b, "s0", Vector3::x(), 0.0, 0.0, 0.0);
+    add_slide_joint(&mut m, b, "s1", Vector3::x(), 0.0, 0.0, 0.0);
+    finalize(&mut m);
+    ConformanceCase {
+        name: "two_slides",
+        model: m,
+        qpos: vec![0.2, -0.1],
+        qvel: vec![0.7, -0.3],
+    }
+}
+
+/// A contact whose lever arm lies within 1e-6 of its length of the normal.
+///
+/// `contact_normal_only` with its sphere 3 below the body's origin and
+/// 2e-6 along x, the body raised by 3: the arm from the origin to the
+/// contact point (3.09 long) is 2e-6 off the normal. (An offset below 1e-6
+/// is no offset: MuJoCo's compiler takes the geom's frame as its body's,
+/// `kFrameEps`.)
+#[must_use]
+pub fn contact_lever_arm_case() -> ContactConformanceCase {
+    let mut case = contact_fixture("contact_lever_arm", 1, 0.0, 0.005, 1.0, 1, 0.0);
+    let sphere = case.model.ngeom - 1;
+    case.model.geom_pos[sphere] = Vector3::new(2e-6, 0.0, -3.0);
+    // The geom's frame is no longer its body's (`geom_sameframe`).
+    case.model.compute_simple_bodies();
+    case.qpos[2] += 3.0;
+    case
+}
+
 /// Whether the last forward pass solved its rows with Newton and stopped on
 /// its tolerance or with no step left to take, not at its iteration cap.
 fn newton_converged(model: &Model, data: &crate::types::Data) -> bool {

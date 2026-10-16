@@ -62,6 +62,8 @@ const JNT_BALL: u32  = 1u;
 const JNT_HINGE: u32 = 2u;
 const JNT_SLIDE: u32 = 3u;
 const MOCAP_NONE: u32 = 0xFFFFFFFFu;
+/// MuJoCo's `mjMINVAL`.
+const MJ_MINVAL: f32 = 1e-15;
 
 // ── Packed struct types ───────────────────────────────────────────────
 
@@ -422,11 +424,14 @@ fn fk_subtree_normalize(@builtin(global_invocation_id) gid: vec3<u32>) {
     let env_id = gid.y;
     if (body_id >= params.nbody || env_id >= params.n_env) { return; }
 
+    // As the CPU's (MuJoCo `mj_comPos`): a subtree of less than mjMINVAL of
+    // mass takes the body's own centre of mass; another is scaled by the
+    // reciprocal of its mass.
     let idx = env_id * params.nbody + body_id;
     let m = subtree_mass[idx];
-    if (m > 1e-10) {
-        subtree_com[idx] = subtree_com[idx] / m;
-    } else {
+    if (m < MJ_MINVAL) {
         subtree_com[idx] = body_xipos[idx];
+    } else {
+        subtree_com[idx] = subtree_com[idx] * (1.0 / m);
     }
 }
