@@ -45,6 +45,14 @@ fn distance(ours: &[f64], want: &[f64]) -> f64 {
 
 const CHANNELS: [&str; 6] = ["qpos", "qvel", "qacc", "sensordata", "energy", "fwdinv"];
 
+/// Each channel's distance from MuJoCo's, here and in the generator.
+const TOLERANCE: f64 = 1e-8;
+
+/// A flagged run must be further than this from its baseline, here and in
+/// the generator: a sim-core that ignored the flag is then more than
+/// `TOLERANCE` from MuJoCo's flagged run.
+const REFUSE_BELOW: f64 = 1e-5;
+
 fn channel(data: &Data, name: &str) -> Vec<f64> {
     match name {
         "qpos" => data.qpos.as_slice().to_vec(),
@@ -58,15 +66,21 @@ fn channel(data: &Data, name: &str) -> Vec<f64> {
 }
 
 /// The case's scene stepped from `make_data`, every ctrl at the case's,
-/// once without the flag and once with it: each step's channels within the
-/// golden's tolerance of MuJoCo's, `nisland`, the iterations and each
-/// warning's count equal. First, the golden's flagged run is more than its
-/// `refuse_below` from its baseline (the generator's refusal, checked here
-/// too), so a sim-core that ignored the flag would fail the flagged run.
+/// once without the flag and once with it: each step's channels within
+/// `TOLERANCE` of MuJoCo's, `nisland`, the iterations and each warning's
+/// count equal. First, the golden was written with this file's two
+/// constants, and its flagged run is more than `REFUSE_BELOW` from its
+/// baseline (the generator's refusal, checked here too), so a sim-core
+/// that ignored the flag would fail the flagged run.
 fn check(name: &str, kind: &str, flag: u32) {
     let g = golden();
-    let tolerance = g["tolerance"].as_f64().expect("tolerance");
-    let refuse_below = g["refuse_below"].as_f64().expect("refuse_below");
+    assert_eq!(g["tolerance"].as_f64(), Some(TOLERANCE), "golden tolerance");
+    assert_eq!(
+        g["refuse_below"].as_f64(),
+        Some(REFUSE_BELOW),
+        "golden refuse_below"
+    );
+    let (tolerance, refuse_below) = (TOLERANCE, REFUSE_BELOW);
     let case = &g["cases"][name];
     assert_eq!(case["kind"], kind, "{name}: kind");
     let (baseline, flagged) = (

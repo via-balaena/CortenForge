@@ -28,22 +28,30 @@ tell the flag ignored. The cases:
   and runs the forward again, and with the flag continues from the bad
   state (`mj_checkAcc`, engine_forward.c:92-112). The run must raise the
   bad-qacc warning.
-- sensor (disable): the sensors are not computed, so sensordata stays 0.
+- sensor (disable): the sensors are not computed, so sensordata stays 0;
+  the scene gains a velocity sensor (jointvel) and an acceleration one
+  (accelerometer), so each stage's gate is reached.
 - energy (enable): the energy is computed.
 - fwdinv (enable): CG at 2 iterations, so the forward's constraint force is
   not the one its qacc implies and the comparison's statistics are not 0.
 - override (enable): the option's o_margin, o_solref, o_solimp and
-  o_friction take the contacts' place.
+  o_friction take the contacts' place; the scene gains a static sphere
+  0.015 below the arm's sphere, which only o_margin's 0.02 makes a contact
+  of (in the broadphase and the narrowphase), and a static sphere 0.015
+  below the forearm's that collides only through a `<pair>`, whose
+  parameters o_* replace.
 - island (disable) and warmstart (disable): CG at 2 iterations, so the
   island split and the warmstart change the force the solve stops at.
 - sleep (enable): the free ball starts asleep (sleep="init").
 
 Not here:
-- midphase: no scene was found where it moves MuJoCo's trajectory
-  (flag_golden_test.xml, and two multi-geom bodies on multi-geom static
-  bodies over 50 steps, one under PGS at 3 iterations: bit-equal); MuJoCo
-  sorts the midphase's contacts into the all-to-all order
-  (engine_collision_driver.c:235).
+- midphase: no rigid-body scene was found where it moves MuJoCo's
+  trajectory (flag_golden_test.xml, and two multi-geom bodies on
+  multi-geom static bodies over 50 steps, one under PGS at 3 iterations:
+  bit-equal); MuJoCo sorts a body pair's midphase contacts into the
+  all-to-all order (engine_collision_driver.c:235, :360-371). Flex
+  self-collision it does not sort (:446-472), and sim-core's does not read
+  the flag (ledger L158).
 - nativeccd and multiccd: they change convex pairs MuJoCo collides through
   mjc_Convex, which sim-core does not collide as MuJoCo before the book's
   P50, whose tests compare them.
@@ -97,13 +105,38 @@ def with_ball_asleep(xml):
     return out
 
 
+def with_sensors(xml):
+    old = '<jointpos name="hinge1_pos" joint="hinge1"/>'
+    new = (old + '\n    <jointvel name="hinge1_vel" joint="hinge1"/>'
+           '\n    <accelerometer name="tip_acc" site="tip"/>')
+    out = xml.replace(old, new, 1)
+    assert out != xml, "flag_golden_test.xml's sensor changed"
+    return out
+
+
+def with_near_misses(xml):
+    # Static spheres 0.015 below the arm's sphere (world pos 0.12 0 1.5,
+    # radius 0.05) and the forearm's (0.15 0 1.5, radius 0.04); the second
+    # collides only through its pair.
+    old = '    <!-- Free-floating ball slightly penetrating floor'
+    new = ('    <geom name="near" type="sphere" size="0.05" pos="0.12 0 1.385"/>\n'
+           '    <geom name="paired" type="sphere" size="0.04" pos="0.15 0 1.405"'
+           ' contype="0" conaffinity="0"/>\n' + old)
+    out = xml.replace(old, new, 1)
+    old = '  <!-- Fixed tendon coupling hinge1 and hinge2'
+    new = ('  <contact>\n    <pair geom1="forearm_geom" geom2="paired"/>\n  </contact>\n\n' + old)
+    out2 = out.replace(old, new, 1)
+    assert out != xml and out2 != out, "flag_golden_test.xml's layout changed"
+    return out2
+
+
 def cases(canon):
     cg2 = with_options(canon, 'solver="CG" iterations="2"')
-    override = with_options(canon, 'o_margin="0.02" o_solref="0.05 0.8" '
+    override = with_options(with_near_misses(canon), 'o_margin="0.02" o_solref="0.05 0.8" '
                             'o_solimp="0.8 0.9 0.01 0.5 2" o_friction="0.4 0.4 0.01 0.001 0.001"')
     return {
         "autoreset": (SLIDE, "disable", 1.0),
-        "sensor": (canon, "disable", 2.0),
+        "sensor": (with_sensors(canon), "disable", 2.0),
         "energy": (canon, "enable", 2.0),
         "fwdinv": (cg2, "enable", 2.0),
         "override": (override, "enable", 2.0),
