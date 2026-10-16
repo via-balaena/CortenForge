@@ -4750,7 +4750,8 @@ fn smooth_pos_takes_ball_and_free_joint_transmissions() {
 /// spring stretched past its length when awake: asleep, the tendon has no
 /// length or row and the passive forces apply none of its spring
 /// (2245432b), so `mjd_smooth_pos` adds no term of it either: `qDeriv_pos`
-/// is the same model's with the spring's stiffness 0, bit for bit.
+/// is the same model's with the spring's stiffness 0, bit for bit. With
+/// sleep disabled (the tree awake) the two differ.
 #[test]
 fn a_sleeping_tendon_adds_no_position_derivative() {
     let xml = r#"
@@ -4774,22 +4775,89 @@ fn a_sleeping_tendon_adds_no_position_derivative() {
         </spatial>
       </tendon>
     </mujoco>"#;
-    let derivative = |stiffness: f64| {
+    let derivative = |stiffness: f64, sleep: bool| {
         let mut model = sim_mjcf::load_model(xml).expect("load");
         model.tendon_stiffness[0] = stiffness;
+        if !sleep {
+            model.enableflags &= !sim_core::ENABLE_SLEEP;
+        }
         let mut data = model.make_data();
         data.qvel[1] = 0.3;
         data.forward(&model).expect("forward");
-        assert!(
-            !data.tree_awake[0] && data.tree_awake[1],
-            "tree a asleep, b awake"
-        );
-        assert_eq!(data.ten_length[0], 0.0, "the sleeping tendon has no length");
+        if sleep {
+            assert!(
+                !data.tree_awake[0] && data.tree_awake[1],
+                "tree a asleep, b awake"
+            );
+            assert_eq!(data.ten_length[0], 0.0, "the sleeping tendon has no length");
+        }
         mjd_smooth_pos(&model, &mut data);
         data.qDeriv_pos
             .iter()
             .map(|x| x.to_bits())
             .collect::<Vec<_>>()
     };
-    assert_eq!(derivative(50.0), derivative(0.0), "qDeriv_pos");
+    assert_eq!(derivative(50.0, true), derivative(0.0, true), "qDeriv_pos");
+    assert_ne!(
+        derivative(50.0, false),
+        derivative(0.0, false),
+        "awake, the spring's term shows"
+    );
+}
+
+/// An awake spatial tendon whose row is 0 at this state (its site moves
+/// square to it), its spring engaged, with sleep enabled and every tree
+/// awake: its term through ∂J/∂q stays, `qDeriv_pos` bit for bit the same
+/// model's with sleep disabled, and −1.8 within 1e-6 (a central
+/// difference of `qfrc_passive` gives −1.7999999997, the review measured).
+#[test]
+fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 0"><flag sleep="enable"/></option>
+      <worldbody>
+        <site name="w" pos="0.3 0.5 1"/>
+        <body name="a" pos="0 0 1">
+          <joint name="ja" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sa" pos="0.3 0 0"/>
+        </body>
+        <body name="b" pos="1 0 1">
+          <joint name="jb" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t" stiffness="50" springlength="0.2 0.3">
+          <site site="w"/><site site="sa"/>
+        </spatial>
+      </tendon>
+    </mujoco>"#;
+    let derivative = |sleep: bool| {
+        let mut model = sim_mjcf::load_model(xml).expect("load");
+        if !sleep {
+            model.enableflags &= !sim_core::ENABLE_SLEEP;
+        }
+        let mut data = model.make_data();
+        data.qvel[1] = 0.3;
+        data.forward(&model).expect("forward");
+        assert!(data.tree_awake.iter().all(|&a| a), "every tree awake");
+        assert!(
+            data.ten_J[0].iter().all(|&x| x == 0.0),
+            "the tendon's row is 0"
+        );
+        mjd_smooth_pos(&model, &mut data);
+        data.qDeriv_pos.clone()
+    };
+    let (on, off) = (derivative(true), derivative(false));
+    assert_eq!(
+        on.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+        off.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+        "qDeriv_pos with sleep enabled and disabled"
+    );
+    assert!(
+        (on[(0, 0)] + 1.8).abs() < 1e-6,
+        "qDeriv_pos[0][0] {}",
+        on[(0, 0)]
+    );
 }

@@ -1003,13 +1003,15 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
     //    arbitrary site/geom/pulley wrap paths is intractable).
     let has_spring = model.disableflags & DISABLE_SPRING == 0;
     let has_damper = model.disableflags & DISABLE_DAMPER == 0;
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     let mut tendon_force = vec![0.0; model.ntendon];
     let mut tendon_dforce_dv = vec![0.0; model.ntendon];
     for t in 0..model.ntendon {
-        // A tendon the passive forces skip (`forward/passive.rs`) adds no
-        // derivative: asleep, its length and row are 0.
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+        // A sleeping tendon adds no derivative: `mj_fwd_tendon` skips it by
+        // the same rule, so its length and row are 0 and the passive forces
+        // apply none of its spring. (Its row being 0 is not the test: an
+        // awake tendon's can be 0 too, and its spring's ∂J/∂q term is not.)
+        if sleep_filter && crate::island::tendon_asleep(model, data, t) {
             continue;
         }
         let damping = model.tendon_damping[t];
