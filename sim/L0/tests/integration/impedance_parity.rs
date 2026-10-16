@@ -3,7 +3,8 @@
 //! MuJoCo takes one impedance for all rows of a connect (3) or a weld (6),
 //! from the norm of their violation (`getposdim`,
 //! `engine_core_constraint.c:1365-1398`), and a row's impedance from
-//! `pos - margin` (`getimpedance`, `:1413-1461`), and replaces a mixed
+//! `pos - margin` (`getimpedance`, `:1413-1461`, whose flat and linear
+//! tests compare exactly), and replaces a mixed
 //! `solref` or `solreffriction` (`getsolparam`, `:1291-1362`). The golden is
 //! `assets/golden/impedance/impedance.json`, from the unfused MuJoCo 3.5.0
 //! oracle (`scripts/gen_impedance_reference.py`, which describes its cases).
@@ -180,4 +181,35 @@ fn mixed_solref_uses_default() {
         "two limit rows"
     );
     assert_eq!(end.efc_solref, [[0.02, 1.0]; 2], "the limit rows' solref");
+}
+
+/// Three limited hinges past their limits, each solimplimit at one of
+/// `getimpedance`'s tests, which compare exactly
+/// (`engine_core_constraint.c:1416`, `:1439`): a width of 1e-11, above
+/// mjMINVAL, so the curve is not flat and saturates at `solimp[1]`;
+/// `solimp[0]` and `solimp[1]` 5e-13 apart; and a power of 1 + 1e-13, not
+/// linear. Each row's impedance is MuJoCo's, bit for bit.
+#[test]
+fn impedance_flat_and_linear_tests_are_exact() {
+    let case = &golden()["cases"]["impedance_edges"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos.copy_from_slice(&floats(&case["qpos"]));
+    data.forward(&model).expect("forward");
+    assert_eq!(
+        data.efc_type,
+        [ConstraintType::LimitJoint; 3],
+        "three limit rows"
+    );
+    let want = floats(&case["efc_imp"]);
+    let differ: Vec<String> = data
+        .efc_imp
+        .iter()
+        .zip(&want)
+        .enumerate()
+        .filter(|(_, (got, want))| got.to_bits() != want.to_bits())
+        .map(|(i, (got, want))| format!("row {i}: {got}, expected {want}"))
+        .collect();
+    assert!(differ.is_empty(), "efc_imp differs: {differ:?}");
+    assert_close("qacc", data.qacc.as_slice(), &floats(&case["qacc"]), TOL);
 }

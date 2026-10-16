@@ -50,6 +50,18 @@ the other not) by the default (0.02, 1), and a mixed `solreffriction` by
   `solreflimit` is mixed each way ("0.05 -2", "-500 2"); qpos and qvel after
   steps 1, 10, 100 and 300. The generator refuses it unless both limit rows'
   K and B are the default's.
+
+`getimpedance` (`:1413-1461`) takes the curve as flat when `solimp[0] ==
+solimp[1]` or `solimp[2] <= mjMINVAL`, and as linear when `solimp[4] == 1`,
+each compared exactly (`:1416`, `:1439`):
+
+- impedance_edges: three limited hinges, each past its limit, whose
+  solimplimit sits at one of those tests: a width of 1e-11 (above mjMINVAL,
+  so not flat: past the width it saturates at solimp[1]), solimp[0] and
+  solimp[1] 5e-13 apart, and a power of 1 + 1e-13; after mj_forward, each
+  limit row's efc_imp and qacc. The generator refuses it unless each
+  impedance differs from what a tolerance at those tests gives: the flat
+  midpoint for the first two, the linear curve for the third.
 """
 import hashlib
 import json
@@ -289,6 +301,42 @@ def mixed_solref_limit():
             "traj": trajectory(MIXED_SOLREF_LIMIT, {}, "mixed_solref_limit", [1, 10, 100, 300])}
 
 
+IMPEDANCE_EDGES = {
+    "narrow_width": [0.9, 0.95, 1e-11, 0.5, 2.0],
+    "near_flat": [0.9, 0.9000000000005, 0.01, 0.5, 2.0],
+    "near_linear": [0.9, 0.95, 0.01, 0.5, 1.0000000000001],
+}
+
+
+def impedance_edges():
+    bodies = "\n".join(
+        f"""    <body name="b{k}" pos="{k} 0 1">
+      <joint name="{name}" type="hinge" axis="0 1 0" limited="true" range="-0.1 0.1"
+             solimplimit="{' '.join(repr(x) for x in si)}"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>"""
+        for k, (name, si) in enumerate(IMPEDANCE_EDGES.items()))
+    xml = ('<mujoco model="impedance_edges">\n  <compiler angle="radian"/>\n  <worldbody>\n'
+           + bodies + "\n  </worldbody>\n</mujoco>")
+    qpos = [0.103, 0.104, 0.104]
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qpos[:] = qpos
+    mujoco.mj_forward(m, d)
+    stable(d, "impedance_edges")
+    assert d.nefc == 3 and list(d.efc_id) == [0, 1, 2], (d.nefc, d.efc_id)
+    imp = [float(d.efc_KBIP[i, 2]) for i in range(3)]
+    for i, si in enumerate(IMPEDANCE_EDGES.values()):
+        assert [float(x) for x in m.jnt_solimp[i]] == si, m.jnt_solimp[i]
+    flat = [0.5 * (si[0] + si[1]) for si in IMPEDANCE_EDGES.values()]
+    assert imp[0] == IMPEDANCE_EDGES["narrow_width"][1] and imp[0] != flat[0], imp
+    assert imp[1] != flat[1], imp
+    x = abs(d.efc_pos[2] - d.efc_margin[2]) / 0.01
+    si = IMPEDANCE_EDGES["near_linear"]
+    assert 0 < x < 1 and imp[2] != si[0] + x * (si[1] - si[0]), (x, imp)
+    return {"xml": xml, "qpos": qpos, "efc_imp": imp, "qacc": floats(d.qacc)}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -308,6 +356,7 @@ def main():
         "mixed_solreffriction_own_solref": mixed_solreffriction(OWN_SOLREF,
                                                                 "mixed_solreffriction_own_solref"),
         "mixed_solref_limit": mixed_solref_limit(),
+        "impedance_edges": impedance_edges(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "impedance.json"), "w", encoding="utf-8") as f:

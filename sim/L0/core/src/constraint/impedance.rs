@@ -86,18 +86,19 @@ fn mj_power(a: f64, b: f64) -> f64 {
 /// - At full width: returns d_width
 /// - In between: smooth transition via power-law sigmoid
 ///
+/// The curve is flat when `d0 == d_width` or `width <= mjMINVAL`, and
+/// linear when `power == 1`, each compared exactly, as MuJoCo's
+/// `getimpedance` (`engine_core_constraint.c:1416`, `:1439`).
+///
 /// # Returns
 /// Impedance value in (0, 1), clamped to [MIN_IMPEDANCE, MAX_IMPEDANCE].
 #[inline]
+// MuJoCo compares the flat and linear cases exactly.
+#[allow(clippy::float_cmp)]
 pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
     // MuJoCo clamps impedance to [mjMINIMP, mjMAXIMP] = [0.0001, 0.9999]
     const MJ_MIN_IMP: f64 = 0.0001;
     const MJ_MAX_IMP: f64 = 0.9999;
-    // Threshold for treating floating-point values as equal
-    const EPS: f64 = 1e-12;
-    // Minimum width to avoid division by zero (MuJoCo uses mjMINVAL ≈ 1e-15,
-    // we use a wider margin since f64 precision is ~1e-16)
-    const MIN_WIDTH: f64 = 1e-10;
 
     debug_assert!(
         violation >= 0.0,
@@ -114,8 +115,8 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
     let midpoint = solimp[3].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
     let power = solimp[4].max(1.0);
 
-    // Flat function: d0 ≈ d_width or width is negligible
-    if (d0 - d_width).abs() < EPS || width <= MIN_WIDTH {
+    // Flat function
+    if d0 == d_width || width <= MJ_MINVAL {
         return 0.5 * (d0 + d_width);
     }
 
@@ -133,8 +134,8 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
     }
 
     // Compute sigmoid y(x) ∈ [0, 1]
-    let y = if (power - 1.0).abs() < EPS {
-        // Linear case (power ≈ 1): y = x regardless of midpoint
+    let y = if power == 1.0 {
+        // Linear case: y = x regardless of midpoint
         x
     } else if x <= midpoint {
         // Lower half: y = a * x^p where a = 1 / midpoint^(p-1)
