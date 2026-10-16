@@ -4745,3 +4745,51 @@ fn smooth_pos_takes_ball_and_free_joint_transmissions() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A spatial tendon from a world site to a tree asleep from the reset, its
+/// spring stretched past its length when awake: asleep, the tendon has no
+/// length or row and the passive forces apply none of its spring
+/// (2245432b), so `mjd_smooth_pos` adds no term of it either: `qDeriv_pos`
+/// is the same model's with the spring's stiffness 0, bit for bit.
+#[test]
+fn a_sleeping_tendon_adds_no_position_derivative() {
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 0"><flag sleep="enable"/></option>
+      <worldbody>
+        <site name="w" pos="0 0.5 1.4"/>
+        <body name="a" pos="0 0 1" sleep="init">
+          <joint name="ja" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sa" pos="0.3 0 0"/>
+        </body>
+        <body name="b" pos="1 0 1">
+          <joint name="jb" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t" stiffness="50" springlength="0.2 0.3">
+          <site site="w"/><site site="sa"/>
+        </spatial>
+      </tendon>
+    </mujoco>"#;
+    let derivative = |stiffness: f64| {
+        let mut model = sim_mjcf::load_model(xml).expect("load");
+        model.tendon_stiffness[0] = stiffness;
+        let mut data = model.make_data();
+        data.qvel[1] = 0.3;
+        data.forward(&model).expect("forward");
+        assert!(
+            !data.tree_awake[0] && data.tree_awake[1],
+            "tree a asleep, b awake"
+        );
+        assert_eq!(data.ten_length[0], 0.0, "the sleeping tendon has no length");
+        mjd_smooth_pos(&model, &mut data);
+        data.qDeriv_pos
+            .iter()
+            .map(|x| x.to_bits())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(derivative(50.0), derivative(0.0), "qDeriv_pos");
+}
