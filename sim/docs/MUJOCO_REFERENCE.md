@@ -15,8 +15,8 @@ Data::step():
   1. forward()
      a. mj_fwd_position    — Forward kinematics (skips sleeping bodies);
                               the wake functions run in this stage (see Sleeping)
+        mj_fwd_tendon       — Tendon lengths + Jacobians + wrap visualization data (inside mj_fwd_position)
         mj_crba             — Mass matrix (selective CRBA, skips sleeping subtrees)
-        mj_fwd_tendon       — Tendon lengths + Jacobians + wrap visualization data
         mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
         mj_make_constraint  — Constraint rows and their islands, after the wakes
         mj_transmission_*   — Actuator lengths and moments, after the wakes (body: from the contacts, §36)

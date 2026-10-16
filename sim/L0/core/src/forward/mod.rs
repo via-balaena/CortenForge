@@ -557,7 +557,7 @@ impl Data {
     /// Acceleration stage of the forward pipeline.
     ///
     /// Runs actuation, constraint solve, forward acceleration, body
-    /// accumulators, acc-sensors, and forward/inverse comparison. (CRBA runs
+    /// accumulators and acc-sensors. (CRBA runs
     /// in the position stage, passive forces and RNE in the velocity stage.)
     ///
     /// §53: This is the second half of the pipeline, used by both

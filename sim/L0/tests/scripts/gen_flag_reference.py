@@ -48,10 +48,10 @@ Not here:
 - midphase: no rigid-body scene was found where it moves MuJoCo's
   trajectory (flag_golden_test.xml, and two multi-geom bodies on
   multi-geom static bodies over 50 steps, one under PGS at 3 iterations:
-  bit-equal); MuJoCo sorts a body pair's midphase contacts into the
-  all-to-all order (engine_collision_driver.c:235, :360-371). Flex
-  self-collision it does not sort (:446-472), and sim-core's does not read
-  the flag (ledger L158).
+  bit-equal); MuJoCo sorts the midphase's contacts into the all-to-all
+  order (engine_collision_driver.c:235, :360-371), but not a flex's
+  self-collision's (:446-472), and sim-core's does not read the flag
+  (ledger L158).
 - nativeccd and multiccd: they change convex pairs MuJoCo collides through
   mjc_Convex, which sim-core does not collide as MuJoCo before the book's
   P50, whose tests compare them.

@@ -4748,8 +4748,8 @@ fn smooth_pos_takes_ball_and_free_joint_transmissions() {
 
 /// A spatial tendon from a world site to a tree asleep from the reset, its
 /// spring stretched past its length when awake: asleep, the tendon has no
-/// length or row and the passive forces apply none of its spring
-/// (2245432b), so `mjd_smooth_pos` adds no term of it either: `qDeriv_pos`
+/// length or row and the passive forces apply none of its spring, as
+/// MuJoCo's, so `mjd_smooth_pos` adds no term of it either: `qDeriv_pos`
 /// is the same model's with the spring's stiffness 0, bit for bit. With
 /// sleep disabled (the tree awake) the two differ.
 #[test]

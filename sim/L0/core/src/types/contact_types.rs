@@ -68,7 +68,6 @@ pub struct Contact {
     pub solref: [f64; 2],
     /// Solver reference for friction directions (§31).
     ///
-    /// Only meaningful for elliptic contacts from explicit `<pair>` definitions.
     /// `[0.0, 0.0]` is the sentinel meaning "use `solref`" (MuJoCo convention).
     /// Auto-generated contacts have `[0.0, 0.0]`, but under `ENABLE_OVERRIDE`
     /// `o_solref`.

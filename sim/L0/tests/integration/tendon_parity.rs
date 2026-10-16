@@ -263,7 +263,7 @@ fn near_collinear_sphere_wrap_keeps_its_plane() {
 /// sidesite, one with a sidesite outside it and one with a sidesite inside it
 /// (an inside wrap), at 17 configurations where each tendon wraps and where
 /// it does not: each tendon's length, velocity, Jacobian and wrap points
-/// are MuJoCo's bit for bit (`mju_wrap`, `wrap_circle`, `wrap_inside`,
+/// are MuJoCo's ([`Tol::Golden`]; `mju_wrap`, `wrap_circle`, `wrap_inside`,
 /// `engine_util_misc.c:36-417`), and so with `jacobian="sparse"`, whose
 /// velocity MuJoCo sums over each tendon's chain. Before, a sphere's tangent
 /// points came from 3D formulae and a cylinder's from another 2D one: of 200
@@ -278,7 +278,7 @@ fn wraps_as_mujoco_bit_for_bit() {
 }
 
 /// Runs `mj_forward` at each of the case's configurations and compares each
-/// tendon's state with MuJoCo's bit for bit ([`assert_tendons`]).
+/// tendon's state with MuJoCo's ([`assert_tendons`], [`Tol::Golden`]).
 fn assert_configs(name: &str, case: &Value) {
     let model = load(case);
     for (k, config) in case["configs"]
@@ -323,7 +323,7 @@ fn wrap_edges_as_mujoco() {
 /// and of a cylinder, each with a sidesite inside it: the ends point one way
 /// (cos G within mjMINVAL of 1), so each wraps inside at the ends'
 /// midpoint's direction scaled to the radius, as MuJoCo's `wrap_inside`
-/// falls back (`engine_util_misc.c:195-210`), bit for bit.
+/// falls back (`engine_util_misc.c:195-210`) ([`Tol::Golden`]).
 #[test]
 fn inside_wrap_falls_back_as_mujoco() {
     assert_wrap(
@@ -374,7 +374,7 @@ fn fixed_tendon_velocity_as_mujoco() {
 /// A fixed tendon naming joint a twice (coefficients 1, then 2) and joint b
 /// once, with stiffness, damping and a motor: MuJoCo's dense Jacobian row
 /// assigns each joint's coefficient, so a's is 2, its sparse row adds them,
-/// 3 (`engine_core_smooth.c:961-976`), and the forces go through that row;
+/// 3 (`engine_core_smooth.c:979-982`, `:971-976`), and the forces go through that row;
 /// the length adds every entry at both sizes. The motor's acc0 within TOL
 /// (its moment is the row); the length, row, velocity, passive and actuator
 /// forces after `mj_forward` bit for bit, and the trajectory. Before, the
@@ -440,7 +440,7 @@ fn fixed_tendon_naming_a_joint_twice_as_mujoco() {
 }
 
 /// Motors with gears 1.37 and −2.71 on a spatial and a fixed tendon, at ten
-/// states: `qfrc_actuator` is MuJoCo's bit for bit, whose moment is the
+/// states: `qfrc_actuator` is MuJoCo's ([`Tol::Golden`]), whose moment is the
 /// tendon's row scaled by the gear (`mj_transmission`), then times the force
 /// (`mj_fwdActuation`). Before, the row times the gear-scaled force: 9 of
 /// the 10 differed, by up to 4.4e-16.

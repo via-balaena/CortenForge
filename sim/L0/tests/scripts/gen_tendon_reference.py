@@ -57,7 +57,7 @@ The cases:
   twice (coefficients 1, then 2) and joint b once, with stiffness, damping
   and a motor, dense and sparse. MuJoCo's dense Jacobian row assigns each
   joint's coefficient (a's is 2), its sparse row adds them (3)
-  (`engine_core_smooth.c:961-976`); the length adds every entry at both.
+  (`engine_core_smooth.c:979-982`, `:971-976`); the length adds every entry at both.
   The motor's acc0; the length, Jacobian row, velocity, passive and
   actuator forces after mj_forward, and the trajectory.
 - tendon_motors: motors with gears 1.37 and -2.71 on a spatial and a fixed
