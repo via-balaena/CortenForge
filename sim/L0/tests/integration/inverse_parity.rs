@@ -82,9 +82,11 @@ fn set_state(case: &Value, data: &mut Data) {
 /// A hinge held past its limit carrying a second hinge, and a box resting on
 /// a plane under the pyramidal and the elliptic cone: at MuJoCo's forward
 /// `qacc` and at it shifted, `inverse()` gives MuJoCo's constraint force,
-/// row states and `qfrc_constraint` bit for bit, and `qfrc_inverse` within
-/// 1e-12: the forward's `qfrc_bias` differs from MuJoCo's in 1 entry of the
-/// hinges' and 3 of the box's (ledger L154). Before, `inverse()` kept the
+/// row states and `qfrc_constraint` bit for bit, `qfrc_inverse` within
+/// 1e-12 (the forward's `qfrc_bias` differs from MuJoCo's in 1 entry of the
+/// hinges' and 3 of the box's, ledger L154), and the body accumulators'
+/// `cfrc_ext` within 1e-12·max(1, |MuJoCo's|), made from the inverse's force
+/// (MuJoCo's `mj_rnePostConstraint` after `mj_inverse`). Before, `inverse()` kept the
 /// forward solve's force: at the shifted `qacc` the limit's force was the
 /// forward's 136.48 where MuJoCo's is remade from `qacc`.
 #[test]
@@ -138,6 +140,20 @@ fn inverse_takes_the_constraint_force_from_qacc() {
                     "{}[{k}]: {a}, MuJoCo {b}",
                     what("qfrc_inverse")
                 );
+            }
+            // The body accumulators come from the inverse's force.
+            for b in 0..model.nbody {
+                for (k, (x, y)) in data.cfrc_ext[b]
+                    .iter()
+                    .zip(floats(&want["cfrc_ext"][b]))
+                    .enumerate()
+                {
+                    assert!(
+                        (x - y).abs() <= 1e-12 * y.abs().max(1.0),
+                        "{}[{b}][{k}]: {x}, MuJoCo {y}",
+                        what("cfrc_ext")
+                    );
+                }
             }
         }
     }
