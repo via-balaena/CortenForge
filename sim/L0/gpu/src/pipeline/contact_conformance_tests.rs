@@ -463,7 +463,7 @@ fn gpu_contact_lever_arm_matches_cpu() {
 
 /// A pyramidal contact whose facets' R is below mjMINVAL on the CPU (about
 /// 5e-17, `efc_d` about 1.9e16): the GPU keeps every row's R at 1e-15 or
-/// more, so its `efc_d` is 1e15, and its `qacc` is the CPU's, as the sweep
+/// more, so its `efc_d` is 1e15 (asserted), and its `qacc` is the CPU's, as the sweep
 /// above compares them. Two channels are expected to differ, and fail the
 /// test if they match:
 /// - `efc_d`: the GPU's floor on R. Without it (the CPU's R) this case's
@@ -505,6 +505,16 @@ fn gpu_tiny_pyramidal_facet_keeps_its_r_floor() {
         "GPU↔CPU pyramidal contact with facet R below mjMINVAL:\n  {}",
         fails.join("\n  ")
     );
+    // The floor's value: each facet's D is 1/1e-15 (within f32 division).
+    for (i, d) in read_buffer::<f32>(&ctx, &state.efc_d, oracle.n_rows)
+        .iter()
+        .enumerate()
+    {
+        assert!(
+            (d - 1e15).abs() <= 1e-6 * 1e15,
+            "facet {i}'s efc_d {d:e}, the floor's 1e15"
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────

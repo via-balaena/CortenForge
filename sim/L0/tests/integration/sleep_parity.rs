@@ -1238,6 +1238,11 @@ fn actuators_on_a_tree_a_contact_wakes_act() {
                 ));
             }
             for (field, ours, theirs) in fields {
+                assert_eq!(
+                    ours.len(),
+                    theirs.len(),
+                    "{name} step {step}: {field}'s length"
+                );
                 for (j, (a, b)) in ours.iter().zip(&theirs).enumerate() {
                     assert!(
                         (a - b).abs() <= TOLERANCE * b.abs().max(1.0),
