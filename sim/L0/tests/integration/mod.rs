@@ -376,6 +376,9 @@ pub mod inverse_dynamics;
 /// `mjd_inverseFD`, and the fwdinv comparison.
 pub mod inverse_parity;
 
+/// Runtime flags against MuJoCo 3.5.0, each on a scene the flag changes.
+pub mod flag_parity;
+
 // ============================================================================
 // DT-79 User Callback Tests
 // ============================================================================
