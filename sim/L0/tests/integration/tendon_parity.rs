@@ -301,6 +301,20 @@ fn assert_configs(name: &str, case: &Value) {
     }
 }
 
+/// Six scenes at the edges of `mju_wrap`'s tests, from a review's sweep of
+/// them: an end on the surface, a segment grazing it, a radius of 1e-14
+/// (axis-aligned and turned) and of 1e-15 (turned), a cylinder wrap near
+/// π; in each a sphere and a cylinder in the world, wrapped with and
+/// without a sidesite. Each tendon's length,
+/// Jacobian and wrap points are MuJoCo's ([`Tol::Golden`]).
+#[test]
+fn wrap_edges_as_mujoco() {
+    let g = golden();
+    for (name, case) in g["cases"]["wrap_edges"].as_object().expect("cases") {
+        assert_wrap(name, case, Tol::Golden);
+    }
+}
+
 /// Tendons between sites a and 2a on six rays from the centre of a sphere
 /// and of a cylinder, each with a sidesite inside it: the ends point one way
 /// (cos G within mjMINVAL of 1), so each wraps inside at the ends'

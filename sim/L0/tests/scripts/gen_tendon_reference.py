@@ -69,6 +69,14 @@ The cases:
   from the origin: the ends point one way (cos G within mjMINVAL of 1), so
   each inside wrap takes the ends' midpoint's direction at the radius
   (`wrap_inside`'s fallback, `engine_util_misc.c:195-210`).
+- wrap_edges: six scenes at the edges of `mju_wrap`'s tests, from a
+  review's sweep of them: an end on the surface; a segment grazing it; a
+  radius of 1e-14, axis-aligned and turned; a cylinder wrap near pi; a
+  radius of 1e-15, turned. Each
+  a sphere and a cylinder in the world with sites x0, x1 and a sidesite,
+  four tendons over them (with and without the sidesite); each tendon's
+  state after mj_forward. It refuses a scene with a length not finite
+  (MuJoCo's `acos` gives NaN past |cos| 1 on some grazing segments).
 """
 import json
 import os
@@ -317,6 +325,64 @@ INSIDE_FALLBACK = """<mujoco model="inside_fallback">
 </mujoco>"""
 
 
+WRAP_EDGES = {
+    "on_surface_0": dict(x0=(0.1, 0.0, 0.0), x1=(-0.5, 0.01, 0.02),
+                xpos=(0.0, 0.0, 0.0), quat=None,
+                r=0.1, side=(0.0, 0.3, 0.0)),
+    "graze_0.0": dict(x0=(0.5, 0.1, 0.0), x1=(-0.5, 0.1, 0.0),
+                xpos=(0.0, 0.0, 0.0), quat=None,
+                r=0.1, side=(0.0, 0.3, 0.0)),
+    "radius_1e-14": dict(x0=(0.5, 0.0, 0.0), x1=(-0.5, 1e-17, 0.0),
+                xpos=(0.0, 0.0, 0.0), quat=None,
+                r=1e-14, side=(0.0, 0.3, 0.0)),
+    "near_pi_z_1e-09": dict(x0=(0.10000000010000001, 0.0, 0.1), x1=(-0.10000000010000001, 1e-07, -0.1),
+                xpos=(0.0, 0.0, 0.0), quat=None,
+                r=0.1, side=(0.0, 0.3, 0.0)),
+    "rot_radius_1e-15": dict(x0=(-2.124136895180067, 0.5135682598534345, 0.01719912620783659), x1=(-1.5076145515219104, 0.2287729267604888, -0.7168252725819669),
+                xpos=(-1.8158757233509886, 0.3711705933069616, -0.34981307318706517), quat=(-0.4192038564751245, 0.12651859502581073, 0.8963697322326629, -0.06915544061187426),
+                r=1e-15, side=(-1.765225396303986, 0.6586969353948451, -0.4188286292276643)),
+    "rot_radius_1e-14": dict(x0=(1.9970641950622972, 0.1704844136589891, 2.1744182408273915), x1=(2.1723690524171575, -0.6113447126940592, 2.772758799517692),
+                xpos=(2.084716623739727, -0.22043014951753503, 2.473588520172542), quat=(0.6397294299222246, -0.055622188144259406, 0.41141144188066814, 0.6468330960665971),
+                r=1e-14, side=(1.8227075602838276, -0.1733222787061681, 2.611907351770347)),
+}
+
+
+def wrap_edge_xml(name, x0, x1, xpos, quat, r, side):
+    """A sphere and a cylinder of radius r at xpos, turned by quat, with
+    sites x0, x1 and side in the world: four tendons from x0 to x1 over
+    each, with no sidesite and with side."""
+    def v(p):
+        return " ".join(repr(float(c)) for c in p)
+    turn = "" if quat is None else f' quat="{v(quat)}"'
+    return f"""<mujoco model="wrap_edge_{name}">
+  <worldbody>
+    <geom name="gs" type="sphere" size="{r!r}" pos="{v(xpos)}"{turn} contype="0" conaffinity="0"/>
+    <geom name="gc" type="cylinder" size="{r!r} 0.3" pos="{v(xpos)}"{turn} contype="0" conaffinity="0"/>
+    <site name="x0" pos="{v(x0)}"/>
+    <site name="x1" pos="{v(x1)}"/>
+    <site name="side" pos="{v(side)}"/>
+  </worldbody>
+  <tendon>
+    <spatial name="s_none"><site site="x0"/><geom geom="gs"/><site site="x1"/></spatial>
+    <spatial name="s_side"><site site="x0"/><geom geom="gs" sidesite="side"/><site site="x1"/></spatial>
+    <spatial name="c_none"><site site="x0"/><geom geom="gc"/><site site="x1"/></spatial>
+    <spatial name="c_side"><site site="x0"/><geom geom="gc" sidesite="side"/><site site="x1"/></spatial>
+  </tendon>
+</mujoco>"""
+
+
+def wrap_edges():
+    """WRAP_EDGES as scenes: each tendon's state after mj_forward. It refuses
+    a scene with a tendon whose length is not finite."""
+    out = {}
+    for name, spec in WRAP_EDGES.items():
+        case = sphere_wrap(wrap_edge_xml(name, **spec), name, [], False)
+        if not all(np.isfinite(t["ten_length"]) for t in case["forward"]):
+            sys.exit(f"wrap_edges {name}: a length is not finite")
+        out[name] = case
+    return out
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -550,6 +616,7 @@ def main():
         "fixed_repeated": fixed_repeated(FIXED_REPEATED),
         "fixed_repeated_sparse": fixed_repeated(FIXED_REPEATED_SPARSE),
         "tendon_motors": tendon_motors(),
+        "wrap_edges": wrap_edges(),
     }
     check_planes(cases)
     out = {"oracle": marker, "cases": finite_or_string(cases)}
