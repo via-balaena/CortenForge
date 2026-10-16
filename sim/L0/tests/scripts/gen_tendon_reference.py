@@ -38,6 +38,19 @@ The cases:
   is 0.
 - collinear_slides: two sites on either side of a sphere on one line, each on
   a slide across it, at qpos0.
+- wraps: a sphere and a cylinder on a moving body, each wrapped by three
+  tendons between sites on two other moving bodies: one with no sidesite,
+  one with a sidesite outside the geom, one with a sidesite inside it (an
+  inside wrap); each tendon's length, velocity, Jacobian and wrap points
+  after mj_forward at configurations drawn from a seeded generator, the
+  first four where each tendon wraps and the first four where it does not.
+  The joints' axes are ones whose normalisation sim-mjcf rounds as MuJoCo
+  does (ledger L146).
+- inside_fallback: a sphere and a cylinder at the origin, each with a
+  sidesite inside it, and tendons between world sites a and 2a on six rays
+  from the origin: the ends point one way (cos G within mjMINVAL of 1), so
+  each inside wrap takes the ends' midpoint's direction at the radius
+  (`wrap_inside`'s fallback, `engine_util_misc.c:195-210`).
 """
 import json
 import os
@@ -168,6 +181,63 @@ COLLINEAR_SLIDES = """<mujoco model="collinear_slides">
 </mujoco>"""
 
 
+WRAPS = """<mujoco model="wraps">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0"/>
+  <worldbody>
+    <body name="w" pos="0.01 -0.02 0.03" quat="0.9 0.1 -0.3 0.2">
+      <joint name="jw" type="hinge" axis="0.3 1 0.2"/>
+      <joint name="jw2" type="slide" axis="0.3 -0.7 1.1"/>
+      <geom name="ball" type="sphere" size="0.1" mass="1" contype="0" conaffinity="0"/>
+      <geom name="cyl" type="cylinder" size="0.08 0.3" pos="0.6 0 0" quat="0.8 0.3 0.4 -0.2" mass="1" contype="0" conaffinity="0"/>
+      <site name="ss_out" pos="0 0.3 0.05"/>
+      <site name="ss_in" pos="0.01 0.02 -0.03"/>
+      <site name="cs_out" pos="0.6 0.25 0.05"/>
+      <site name="cs_in" pos="0.61 0.01 0.1"/>
+    </body>
+    <body name="a" pos="-0.25 0.05 0.02">
+      <joint name="ja" type="hinge" axis="0 0 1"/>
+      <joint name="ja2" type="slide" axis="0.3 1 0.2"/>
+      <geom type="sphere" size="0.01" mass="0.1" contype="0" conaffinity="0"/>
+      <site name="a0" pos="0.02 0.01 0"/>
+      <site name="ca0" pos="0.62 -0.03 0.1"/>
+    </body>
+    <body name="b" pos="0.25 -0.03 -0.01">
+      <joint name="jb" type="ball"/>
+      <geom type="sphere" size="0.01" mass="0.1" contype="0" conaffinity="0"/>
+      <site name="b0" pos="0.01 -0.02 0.03"/>
+      <site name="cb0" pos="0.55 0.04 -0.12"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="s_none"><site site="a0"/><geom geom="ball"/><site site="b0"/></spatial>
+    <spatial name="s_out"><site site="a0"/><geom geom="ball" sidesite="ss_out"/><site site="b0"/></spatial>
+    <spatial name="s_in"><site site="a0"/><geom geom="ball" sidesite="ss_in"/><site site="b0"/></spatial>
+    <spatial name="c_none"><site site="ca0"/><geom geom="cyl"/><site site="cb0"/></spatial>
+    <spatial name="c_out"><site site="ca0"/><geom geom="cyl" sidesite="cs_out"/><site site="cb0"/></spatial>
+    <spatial name="c_in"><site site="ca0"/><geom geom="cyl" sidesite="cs_in"/><site site="cb0"/></spatial>
+  </tendon>
+</mujoco>"""
+
+
+RAYS = ((0.2, 0.1, 0.05), (-0.13, 0.07, 0.11), (0.03, -0.17, 0.09), (0.11, 0.13, -0.07),
+        (-0.05, -0.09, -0.16), (0.17, -0.02, 0.12))
+
+INSIDE_FALLBACK = """<mujoco model="inside_fallback">
+  <worldbody>
+    <geom name="ball" type="sphere" size="0.1" contype="0" conaffinity="0"/>
+    <geom name="cyl" type="cylinder" size="0.08 0.3" contype="0" conaffinity="0"/>
+    <site name="in_s" pos="0.01 -0.02 0.03"/>
+    <site name="in_c" pos="0.02 0.01 -0.04"/>
+""" + "".join(f'    <site name="a{i}" pos="{x} {y} {z}"/>\n    <site name="b{i}" pos="{2 * x} {2 * y} {2 * z}"/>\n'
+              for i, (x, y, z) in enumerate(RAYS)) + """  </worldbody>
+  <tendon>
+""" + "".join(f'    <spatial name="s{i}"><site site="a{i}"/><geom geom="ball" sidesite="in_s"/><site site="b{i}"/></spatial>\n'
+              f'    <spatial name="c{i}"><site site="a{i}"/><geom geom="cyl" sidesite="in_c"/><site site="b{i}"/></spatial>\n'
+              for i in range(len(RAYS))) + """  </tendon>
+</mujoco>"""
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -238,6 +308,35 @@ def sphere_wrap(xml, what, qvel, steps):
     return out
 
 
+def wraps():
+    """WRAPS at configurations from a seeded generator: for each tendon the
+    first four where it wraps and the first four where it does not."""
+    m = mujoco.MjModel.from_xml_string(WRAPS)
+    d = mujoco.MjData(m)
+    rng = np.random.default_rng(135)
+    drawn = []
+    for _ in range(200):
+        qpos = m.qpos0.copy()
+        qpos[0] = rng.uniform(-3, 3)
+        qpos[1] = rng.uniform(-0.15, 0.15)
+        qpos[2] = rng.uniform(-3, 3)
+        qpos[3] = rng.uniform(-0.2, 0.2)
+        q = rng.normal(size=4)
+        qpos[4:8] = q / np.linalg.norm(q)
+        d.qpos[:] = qpos
+        d.qvel[:] = rng.normal(size=m.nv)
+        mujoco.mj_forward(m, d)
+        drawn.append({"qpos": floats(d.qpos), "qvel": floats(d.qvel), "forward": wrap_state(m, d)})
+    keep = set()
+    for t in range(m.ntendon):
+        for wrapped in (True, False):
+            hits = [k for k, c in enumerate(drawn) if (len(c["forward"][t]["wrap_obj"]) == 4) == wrapped]
+            if len(hits) < 4:
+                sys.exit(f"wraps: tendon {t} wrapped={wrapped} at {len(hits)} configurations")
+            keep.update(hits[:4])
+    return {"xml": WRAPS, "configs": [drawn[k] for k in sorted(keep)]}
+
+
 def near(xml):
     """The sphere-wrap example with its far site 1e-12 off the line. The site
     sits 0.1 from its body's origin: MuJoCo copies the body's frame for a site
@@ -267,6 +366,9 @@ def check_planes(cases):
             cross = np.linalg.norm(np.cross(p[0], p[1]))
             if (cross < 1e-15) != on_line:
                 sys.exit(f"{name} tendon {t}: |p0 x p1| = {cross}")
+    for t, tendon in enumerate(cases["inside_fallback"]["forward"]):
+        if tendon["wrap_obj"][1:3] != [t % 2, t % 2]:
+            sys.exit(f"inside_fallback tendon {t}: no inside wrap, {tendon['wrap_obj']}")
     tie = cases["sphere_wrap_tie"]["xml"]
     m = mujoco.MjModel.from_xml_string(tie)
     d = mujoco.MjData(m)
@@ -290,6 +392,8 @@ def main():
         "sphere_wrap_tie": sphere_wrap(SPHERE_WRAP_TIE, "sphere_wrap_tie", [0.3], True),
         "sphere_wrap_ties": sphere_wrap(SPHERE_WRAP_TIES, "sphere_wrap_ties", [], False),
         "collinear_slides": sphere_wrap(COLLINEAR_SLIDES, "collinear_slides", [0.0, 0.0], False),
+        "wraps": wraps(),
+        "inside_fallback": sphere_wrap(INSIDE_FALLBACK, "inside_fallback", [], False),
     }
     check_planes(cases)
     out = {"oracle": marker, "cases": finite_or_string(cases)}

@@ -1,7 +1,9 @@
 //! Tendons against MuJoCo 3.5.0: a tendon's spring length of `[-1, -1]` is
 //! its length at `qpos_spring` (`setSpring`, `engine_setconst.c:1069-1084`),
-//! and a tendon over a sphere whose two points lie on a line through its
-//! centre wraps in MuJoCo's plane (`mju_wrap`, `engine_util_misc.c:302-340`).
+//! a tendon over a sphere whose two points lie on a line through its centre
+//! wraps in MuJoCo's plane (`mju_wrap`, `engine_util_misc.c:302-340`), and a
+//! wrap over a sphere or a cylinder, with or without a sidesite, inside or
+//! around, gives MuJoCo's length, Jacobian and wrap points bit for bit.
 //!
 //! The golden is `assets/golden/tendon/tendon.json`, from the unfused MuJoCo
 //! 3.5.0 oracle (`scripts/gen_tendon_reference.py`, which describes its
@@ -124,17 +126,11 @@ fn spatial_lengthspring_at_springref() {
     }
 }
 
-/// Runs `mj_forward` from the case's velocity and compares each tendon's
-/// length, velocity, Jacobian and wrap points with MuJoCo's, then the
-/// trajectory where the case has one.
-fn assert_wrap(name: &str, case: &Value) {
-    let model = load(case);
-    let mut data = model.make_data();
-    data.qvel
-        .as_mut_slice()
-        .copy_from_slice(&floats(&case["qvel"]));
-    data.forward(&model).expect("forward");
-    let tendons = case["forward"].as_array().expect("array");
+/// Compares each tendon's length, Jacobian and wrap points after `data`'s
+/// `mj_forward` with MuJoCo's `want` within `tol`, and its velocity within
+/// TOL.
+fn assert_tendons(name: &str, model: &Model, data: &Data, want: &Value, tol: f64) {
+    let tendons = want.as_array().expect("array");
     assert_eq!(tendons.len(), model.ntendon, "{name}: tendons");
     for (t, want) in tendons.iter().enumerate() {
         let what = |field: &str| format!("{name} tendon {t} {field}");
@@ -142,7 +138,7 @@ fn assert_wrap(name: &str, case: &Value) {
             &what("ten_length"),
             &[data.ten_length[t]],
             &[want["ten_length"].as_f64().expect("number")],
-            TOL,
+            tol,
         );
         assert_close(
             &what("ten_velocity"),
@@ -154,7 +150,7 @@ fn assert_wrap(name: &str, case: &Value) {
             &what("ten_J"),
             data.ten_J[t].as_slice(),
             &floats(&want["ten_J"]),
-            TOL,
+            tol,
         );
         let (adr, num) = (data.ten_wrapadr[t], data.ten_wrapnum[t]);
         let obj: Vec<i64> = data.wrap_obj[adr..adr + num]
@@ -176,9 +172,23 @@ fn assert_wrap(name: &str, case: &Value) {
             &what("wrap_xpos"),
             &points,
             &floats(&want["wrap_xpos"]),
-            TOL,
+            tol,
         );
     }
+}
+
+/// Runs `mj_forward` from the case's velocity and compares each tendon's
+/// length, Jacobian and wrap points with MuJoCo's within `tol`, and its
+/// velocity within TOL ([`assert_tendons`]), then the trajectory where the
+/// case has one.
+fn assert_wrap(name: &str, case: &Value, tol: f64) {
+    let model = load(case);
+    let mut data = model.make_data();
+    data.qvel
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qvel"]));
+    data.forward(&model).expect("forward");
+    assert_tendons(name, &model, &data, &case["forward"], tol);
     if !case["traj"].is_null() {
         assert_trajectory(name, &model, &mut data, &case["traj"]);
     }
@@ -191,24 +201,83 @@ fn assert_wrap(name: &str, case: &Value) {
 /// the x axis where that cross product is 0 (a line along (0, 1, 1)). Before,
 /// the plane held the axis least aligned with that direction: the sphere-wrap
 /// example's tendon velocity read 0 at the start, against MuJoCo's
-/// 0.007071067811865478 (A20 §1A.3.9, U11).
+/// 0.007071067811865478 (A20 §1A.3.9, U11). Bit for bit, but the tie case
+/// within TOL: its hinge's axis "1 -1 0" loads 1 ulp off MuJoCo's (ledger
+/// L146), which puts one `ten_J` entry 1 ulp off; with MuJoCo's axis written
+/// in, it is bit for bit too (measured).
 #[test]
 fn collinear_sphere_wrap_takes_mujocos_plane() {
     let g = golden();
-    for name in [
-        "sphere_wrap",
-        "sphere_wrap_tie",
-        "sphere_wrap_ties",
-        "collinear_slides",
+    for (name, tol) in [
+        ("sphere_wrap", 0.0),
+        ("sphere_wrap_tie", TOL),
+        ("sphere_wrap_ties", 0.0),
+        ("collinear_slides", 0.0),
     ] {
-        assert_wrap(name, &g["cases"][name]);
+        assert_wrap(name, &g["cases"][name], tol);
     }
 }
 
 /// The same example with one point 1e-12 off that line: MuJoCo takes the
 /// plane through the three points, as |p0 × p1| = 2e-13 is above mjMINVAL.
-/// Before, a cut-off of 1e-10 |p0| |p1| took it for a line.
+/// Before, a cut-off of 1e-10 |p0| |p1| took it for a line. Bit for bit.
 #[test]
 fn near_collinear_sphere_wrap_keeps_its_plane() {
-    assert_wrap("sphere_wrap_near", &golden()["cases"]["sphere_wrap_near"]);
+    assert_wrap(
+        "sphere_wrap_near",
+        &golden()["cases"]["sphere_wrap_near"],
+        0.0,
+    );
+}
+
+/// A sphere and a cylinder on a moving body, each wrapped by a tendon with no
+/// sidesite, one with a sidesite outside it and one with a sidesite inside it
+/// (an inside wrap), at 17 configurations where each tendon wraps and where
+/// it does not: each tendon's length, Jacobian and wrap points are MuJoCo's
+/// bit for bit, its velocity within TOL (`mju_wrap`, `wrap_circle`,
+/// `wrap_inside`, `engine_util_misc.c:36-412`). Before, a sphere's tangent
+/// points came from 3D formulae and a cylinder's from another 2D one: of 200
+/// such configurations, the wrap points of 4 to 169 per tendon differed (by
+/// up to 2.8e-16), the lengths of 3 to 79 (by up to 3.1e-15).
+#[test]
+fn wraps_as_mujoco_bit_for_bit() {
+    let g = golden();
+    let case = &g["cases"]["wraps"];
+    let model = load(case);
+    for (k, config) in case["configs"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .enumerate()
+    {
+        let mut data = model.make_data();
+        data.qpos
+            .as_mut_slice()
+            .copy_from_slice(&floats(&config["qpos"]));
+        data.qvel
+            .as_mut_slice()
+            .copy_from_slice(&floats(&config["qvel"]));
+        data.forward(&model).expect("forward");
+        assert_tendons(
+            &format!("wraps configuration {k}"),
+            &model,
+            &data,
+            &config["forward"],
+            0.0,
+        );
+    }
+}
+
+/// Tendons between sites a and 2a on six rays from the centre of a sphere
+/// and of a cylinder, each with a sidesite inside it: the ends point one way
+/// (cos G within mjMINVAL of 1), so each wraps inside at the ends'
+/// midpoint's direction scaled to the radius, as MuJoCo's `wrap_inside`
+/// falls back (`engine_util_misc.c:195-210`), bit for bit.
+#[test]
+fn inside_wrap_falls_back_as_mujoco() {
+    assert_wrap(
+        "inside_fallback",
+        &golden()["cases"]["inside_fallback"],
+        0.0,
+    );
 }
