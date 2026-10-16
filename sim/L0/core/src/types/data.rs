@@ -305,6 +305,11 @@ pub struct Data {
     /// Filled at every size; the constraint rows read it at the sparse one
     /// ([`Model::is_sparse`]).
     pub ten_J_rownnz: Vec<usize>,
+    /// Each tendon's dof chain, MuJoCo's sparse `ten_J_colind`: tendon `t`'s
+    /// dofs in increasing order at `ten_J_colind[t·nv .. t·nv +
+    /// ten_J_rownnz[t]]` (length `ntendon·nv`). Filled at every size; the
+    /// tendon velocity reads it at the sparse one.
+    pub ten_J_colind: Vec<usize>,
 
     /// Tendon wrap path point positions in world frame.
     /// Flat storage: `wrap_xpos[ten_wrapadr[t] .. ten_wrapadr[t] + ten_wrapnum[t]]`
@@ -807,6 +812,7 @@ impl Clone for Data {
             ten_force: self.ten_force.clone(),
             ten_J: self.ten_J.clone(),
             ten_J_rownnz: self.ten_J_rownnz.clone(),
+            ten_J_colind: self.ten_J_colind.clone(),
             // Tendon wrap visualization
             wrap_xpos: self.wrap_xpos.clone(),
             wrap_obj: self.wrap_obj.clone(),

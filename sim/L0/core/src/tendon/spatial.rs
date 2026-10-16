@@ -220,7 +220,13 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
     }
 
     data.ten_length[t] = total_length;
-    data.ten_J_rownnz[t] = chain.iter().filter(|&&c| c).count();
+    let adr = t * model.nv;
+    let mut nnz = 0;
+    for dof in (0..model.nv).filter(|&dof| chain[dof]) {
+        data.ten_J_colind[adr + nnz] = dof;
+        nnz += 1;
+    }
+    data.ten_J_rownnz[t] = nnz;
 }
 
 /// Add a straight segment's term to tendon `t`'s Jacobian, as MuJoCo 3.5.0's

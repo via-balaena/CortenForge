@@ -126,9 +126,8 @@ fn spatial_lengthspring_at_springref() {
     }
 }
 
-/// Compares each tendon's length, Jacobian and wrap points after `data`'s
-/// `mj_forward` with MuJoCo's `want` within `tol`, and its velocity within
-/// TOL.
+/// Compares each tendon's length, velocity, Jacobian and wrap points after
+/// `data`'s `mj_forward` with MuJoCo's `want` within `tol`.
 fn assert_tendons(name: &str, model: &Model, data: &Data, want: &Value, tol: f64) {
     let tendons = want.as_array().expect("array");
     assert_eq!(tendons.len(), model.ntendon, "{name}: tendons");
@@ -144,7 +143,7 @@ fn assert_tendons(name: &str, model: &Model, data: &Data, want: &Value, tol: f64
             &what("ten_velocity"),
             &[data.ten_velocity[t]],
             &[want["ten_velocity"].as_f64().expect("number")],
-            TOL,
+            tol,
         );
         assert_close(
             &what("ten_J"),
@@ -178,9 +177,8 @@ fn assert_tendons(name: &str, model: &Model, data: &Data, want: &Value, tol: f64
 }
 
 /// Runs `mj_forward` from the case's velocity and compares each tendon's
-/// length, Jacobian and wrap points with MuJoCo's within `tol`, and its
-/// velocity within TOL ([`assert_tendons`]), then the trajectory where the
-/// case has one.
+/// length, velocity, Jacobian and wrap points with MuJoCo's within `tol`
+/// ([`assert_tendons`]), then the trajectory where the case has one.
 fn assert_wrap(name: &str, case: &Value, tol: f64) {
     let model = load(case);
     let mut data = model.make_data();
@@ -233,16 +231,24 @@ fn near_collinear_sphere_wrap_keeps_its_plane() {
 /// A sphere and a cylinder on a moving body, each wrapped by a tendon with no
 /// sidesite, one with a sidesite outside it and one with a sidesite inside it
 /// (an inside wrap), at 17 configurations where each tendon wraps and where
-/// it does not: each tendon's length, Jacobian and wrap points are MuJoCo's
-/// bit for bit, its velocity within TOL (`mju_wrap`, `wrap_circle`,
-/// `wrap_inside`, `engine_util_misc.c:36-412`). Before, a sphere's tangent
+/// it does not: each tendon's length, velocity, Jacobian and wrap points
+/// are MuJoCo's bit for bit (`mju_wrap`, `wrap_circle`, `wrap_inside`,
+/// `engine_util_misc.c:36-412`), and so with `jacobian="sparse"`, whose
+/// velocity MuJoCo sums over each tendon's chain. Before, a sphere's tangent
 /// points came from 3D formulae and a cylinder's from another 2D one: of 200
 /// such configurations, the wrap points of 4 to 169 per tendon differed (by
 /// up to 2.8e-16), the lengths of 3 to 79 (by up to 3.1e-15).
 #[test]
 fn wraps_as_mujoco_bit_for_bit() {
     let g = golden();
-    let case = &g["cases"]["wraps"];
+    for name in ["wraps", "wraps_sparse"] {
+        assert_configs(name, &g["cases"][name]);
+    }
+}
+
+/// Runs `mj_forward` at each of the case's configurations and compares each
+/// tendon's state with MuJoCo's bit for bit ([`assert_tendons`]).
+fn assert_configs(name: &str, case: &Value) {
     let model = load(case);
     for (k, config) in case["configs"]
         .as_array()
@@ -259,7 +265,7 @@ fn wraps_as_mujoco_bit_for_bit() {
             .copy_from_slice(&floats(&config["qvel"]));
         data.forward(&model).expect("forward");
         assert_tendons(
-            &format!("wraps configuration {k}"),
+            &format!("{name} configuration {k}"),
             &model,
             &data,
             &config["forward"],
@@ -280,4 +286,42 @@ fn inside_wrap_falls_back_as_mujoco() {
         &golden()["cases"]["inside_fallback"],
         0.0,
     );
+}
+
+/// A fixed tendon over six hinges with coefficients that are not round, at
+/// ten velocities: its velocity is MuJoCo's bit for bit, `mju_dot` over
+/// every dof at the dense size, `mju_dotSparse` over its chain with
+/// `jacobian="sparse"` (`engine_forward.c:232-238`). MuJoCo's two differ in
+/// 3 of the 10. Before, both were nalgebra's dot.
+#[test]
+fn fixed_tendon_velocity_as_mujoco() {
+    let g = golden();
+    for name in ["fixed_velocity", "fixed_velocity_sparse"] {
+        let case = &g["cases"][name];
+        let model = load(case);
+        for (k, config) in case["configs"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .enumerate()
+        {
+            let mut data = model.make_data();
+            data.qvel
+                .as_mut_slice()
+                .copy_from_slice(&floats(&config["qvel"]));
+            data.forward(&model).expect("forward");
+            assert_close(
+                &format!("{name} configuration {k} ten_J"),
+                data.ten_J[0].as_slice(),
+                &floats(&config["ten_J"]),
+                0.0,
+            );
+            assert_close(
+                &format!("{name} configuration {k} ten_velocity"),
+                &[data.ten_velocity[0]],
+                &floats(&config["ten_velocity"]),
+                0.0,
+            );
+        }
+    }
 }

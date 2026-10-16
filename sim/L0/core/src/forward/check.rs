@@ -78,6 +78,11 @@ pub fn check_data_shape(model: &Model, data: &Data) -> Result<(), StepError> {
         ("geom_xpos", data.geom_xpos.len(), model.ngeom),
         ("site_xpos", data.site_xpos.len(), model.nsite),
         ("ten_length", data.ten_length.len(), model.ntendon),
+        (
+            "ten_J_colind",
+            data.ten_J_colind.len(),
+            model.ntendon * model.nv,
+        ),
         ("wrap_xpos", data.wrap_xpos.len(), 2 * model.nwrap),
         ("eq_violation", data.eq_violation.len(), 6 * model.neq),
         ("flexvert_xpos", data.flexvert_xpos.len(), model.nflexvert),

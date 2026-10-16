@@ -46,6 +46,13 @@ The cases:
   first four where each tendon wraps and the first four where it does not.
   The joints' axes are ones whose normalisation sim-mjcf rounds as MuJoCo
   does (ledger L146).
+- wraps_sparse: wraps with `jacobian="sparse"`, so the tendons' velocity
+  is MuJoCo's sparse product over each tendon's chain
+  (`mju_mulMatVecSparse`, `engine_forward.c:232-235`), at the same
+  configurations.
+- fixed_velocity, fixed_velocity_sparse: a fixed tendon over six hinges
+  of a chain with coefficients that are not round, dense and sparse; its
+  velocity at ten velocities from a seeded generator.
 - inside_fallback: a sphere and a cylinder at the origin, each with a
   sidesite inside it, and tendons between world sites a and 2a on six rays
   from the origin: the ends point one way (cos G within mjMINVAL of 1), so
@@ -220,6 +227,31 @@ WRAPS = """<mujoco model="wraps">
 </mujoco>"""
 
 
+WRAPS_SPARSE = WRAPS.replace('<option gravity="0 0 0"/>', '<option gravity="0 0 0" jacobian="sparse"/>', 1)
+assert WRAPS_SPARSE != WRAPS
+
+FIXED_VELOCITY = """<mujoco model="fixed_velocity">
+  <worldbody>
+    <body name="b1"><joint name="j1" type="hinge" axis="0 1 0"/><geom type="capsule" size="0.02" fromto="0 0 0 0.1 0 0" mass="0.1"/>
+    <body name="b2" pos="0.1 0 0"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="capsule" size="0.02" fromto="0 0 0 0.1 0 0" mass="0.1"/>
+    <body name="b3" pos="0.1 0 0"><joint name="j3" type="hinge" axis="0 1 0"/><geom type="capsule" size="0.02" fromto="0 0 0 0.1 0 0" mass="0.1"/>
+    <body name="b4" pos="0.1 0 0"><joint name="j4" type="hinge" axis="0 1 0"/><geom type="capsule" size="0.02" fromto="0 0 0 0.1 0 0" mass="0.1"/>
+    <body name="b5" pos="0.1 0 0"><joint name="j5" type="hinge" axis="0 1 0"/><geom type="capsule" size="0.02" fromto="0 0 0 0.1 0 0" mass="0.1"/>
+    <body name="b6" pos="0.1 0 0"><joint name="j6" type="hinge" axis="0 1 0"/><geom type="capsule" size="0.02" fromto="0 0 0 0.1 0 0" mass="0.1"/>
+    </body></body></body></body></body></body>
+  </worldbody>
+  <tendon>
+    <fixed name="t">
+      <joint joint="j1" coef="0.37"/><joint joint="j2" coef="-1.13"/><joint joint="j3" coef="0.71"/>
+      <joint joint="j4" coef="2.9"/><joint joint="j5" coef="-0.23"/><joint joint="j6" coef="1.7"/>
+    </fixed>
+  </tendon>
+</mujoco>"""
+
+FIXED_VELOCITY_SPARSE = FIXED_VELOCITY.replace('<mujoco model="fixed_velocity">',
+                                               '<mujoco model="fixed_velocity">\n  <option jacobian="sparse"/>', 1)
+assert FIXED_VELOCITY_SPARSE != FIXED_VELOCITY
+
 RAYS = ((0.2, 0.1, 0.05), (-0.13, 0.07, 0.11), (0.03, -0.17, 0.09), (0.11, 0.13, -0.07),
         (-0.05, -0.09, -0.16), (0.17, -0.02, 0.12))
 
@@ -285,13 +317,25 @@ def lengthspring_of(name):
     return {"xml": xml, "tendon_lengthspring": floats(m.tendon_lengthspring)}
 
 
+def ten_j(m, d, t):
+    """Tendon t's Jacobian row, dense: at the sparse size MuJoCo keeps
+    `ten_J` compressed, the row's values at `ten_J_rowadr[t]` for the dofs
+    `ten_J_colind` lists."""
+    if not mujoco.mj_isSparse(m):
+        return floats(d.ten_J[t])
+    row = np.zeros(m.nv)
+    adr, nnz = d.ten_J_rowadr[t], d.ten_J_rownnz[t]
+    row[d.ten_J_colind.ravel()[adr:adr + nnz]] = d.ten_J.ravel()[adr:adr + nnz]
+    return floats(row)
+
+
 def wrap_state(m, d):
     """Each tendon's length, velocity, Jacobian row and wrap points."""
     out = []
     for t in range(m.ntendon):
         adr, num = d.ten_wrapadr[t], d.ten_wrapnum[t]
         out.append({"ten_length": float(d.ten_length[t]), "ten_velocity": float(d.ten_velocity[t]),
-                    "ten_J": floats(d.ten_J[t]),
+                    "ten_J": ten_j(m, d, t),
                     "wrap_obj": [int(x) for x in d.wrap_obj.ravel()[adr:adr + num]],
                     "wrap_xpos": floats(d.wrap_xpos.reshape(-1, 3)[adr:adr + num])})
     return out
@@ -308,10 +352,11 @@ def sphere_wrap(xml, what, qvel, steps):
     return out
 
 
-def wraps():
-    """WRAPS at configurations from a seeded generator: for each tendon the
-    first four where it wraps and the first four where it does not."""
-    m = mujoco.MjModel.from_xml_string(WRAPS)
+def wraps(xml):
+    """`xml` (WRAPS or its sparse copy) at configurations from a seeded
+    generator: for each tendon the first four where it wraps and the first
+    four where it does not."""
+    m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
     rng = np.random.default_rng(135)
     drawn = []
@@ -334,7 +379,22 @@ def wraps():
             if len(hits) < 4:
                 sys.exit(f"wraps: tendon {t} wrapped={wrapped} at {len(hits)} configurations")
             keep.update(hits[:4])
-    return {"xml": WRAPS, "configs": [drawn[k] for k in sorted(keep)]}
+    return {"xml": xml, "configs": [drawn[k] for k in sorted(keep)]}
+
+
+def fixed_velocity(xml):
+    """`xml`'s fixed tendon's velocity at ten velocities from a seeded
+    generator, at qpos0."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    rng = np.random.default_rng(149)
+    configs = []
+    for _ in range(10):
+        d.qvel[:] = rng.normal(size=m.nv)
+        mujoco.mj_forward(m, d)
+        configs.append({"qvel": floats(d.qvel), "ten_velocity": floats(d.ten_velocity),
+                        "ten_J": ten_j(m, d, 0)})
+    return {"xml": xml, "configs": configs}
 
 
 def near(xml):
@@ -392,7 +452,10 @@ def main():
         "sphere_wrap_tie": sphere_wrap(SPHERE_WRAP_TIE, "sphere_wrap_tie", [0.3], True),
         "sphere_wrap_ties": sphere_wrap(SPHERE_WRAP_TIES, "sphere_wrap_ties", [], False),
         "collinear_slides": sphere_wrap(COLLINEAR_SLIDES, "collinear_slides", [0.0, 0.0], False),
-        "wraps": wraps(),
+        "wraps": wraps(WRAPS),
+        "wraps_sparse": wraps(WRAPS_SPARSE),
+        "fixed_velocity": fixed_velocity(FIXED_VELOCITY),
+        "fixed_velocity_sparse": fixed_velocity(FIXED_VELOCITY_SPARSE),
         "inside_fallback": sphere_wrap(INSIDE_FALLBACK, "inside_fallback", [], False),
     }
     check_planes(cases)

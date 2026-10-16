@@ -58,5 +58,7 @@ pub fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
     // Each joint's dof, a zero `coef` included, as MuJoCo's sparse row.
     chain.sort_unstable();
     chain.dedup();
+    let adr = t * model.nv;
+    data.ten_J_colind[adr..adr + chain.len()].copy_from_slice(&chain);
     data.ten_J_rownnz[t] = chain.len();
 }

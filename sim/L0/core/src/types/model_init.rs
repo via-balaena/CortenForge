@@ -856,6 +856,7 @@ impl Model {
             ten_force: vec![0.0; self.ntendon],
             ten_J: vec![DVector::zeros(self.nv); self.ntendon],
             ten_J_rownnz: vec![0; self.ntendon],
+            ten_J_colind: vec![0; self.ntendon * self.nv],
 
             // Tendon wrap visualization data
             wrap_xpos: vec![Vector3::zeros(); self.nwrap * 2],
