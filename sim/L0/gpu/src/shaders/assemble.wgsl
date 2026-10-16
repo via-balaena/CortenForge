@@ -341,15 +341,17 @@ fn compute_D_aref(
     let diag = max(bw, 1e-15);
 
     // ── Regularisation ──
-    var R = max((1.0 - imp) / imp * diag, 1e-15);
+    var R = max((1.0 - imp) * diag / imp, 1e-15);
 
-    // Pyramidal facet R-override (§32, matches CPU
-    // postprocess_pyramidal_r_scaling): every facet's R is replaced with
-    // Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio). All facets of a contact
-    // share the same bodyweight + impedance, so the per-row override here is
-    // equivalent to CPU's override-by-first-facet.
+    // Pyramidal facet R (the CPU's `regularize_cones`, MuJoCo's
+    // `mj_makeImpedance`): every facet's R is Rpy = 2·mu_reg²·R, with
+    // R1 = R/impratio and mu_reg = mu·√(R1/R). All facets of a contact share
+    // the same bodyweight + impedance, so the per-row R here is the CPU's R
+    // of the contact's first facet. Unlike the CPU's, it is kept at 1e-15 or
+    // more, as every other row's is: see `gpu_tiny_pyramidal_facet_keeps_its_r_floor`.
     if is_pyramidal {
-        let mu_reg = mu * sqrt(1.0 / params.impratio);
+        let r1 = R / max(params.impratio, 1e-15);
+        let mu_reg = mu * sqrt(r1 / R);
         R = max(2.0 * mu_reg * mu_reg * R, 1e-15);
     }
 
@@ -511,7 +513,7 @@ fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
                                     normal, mu_torsion, facet_sign, true);
 
                 // Diagonal/R-scaling uses mu_slide (mu[0]) for ALL pyramidal
-                // facets — CPU postprocess_pyramidal_r_scaling and bw_py both key
+                // facets — the CPU's `regularize_cones` and bw_py both key
                 // off mu[0], NOT the per-direction coefficient. Only the Jacobian
                 // above uses mu_torsion.
                 compute_D_aref(env_id, row, contact.depth, body1, body2, true, mu_slide);

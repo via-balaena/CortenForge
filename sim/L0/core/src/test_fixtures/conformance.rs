@@ -732,10 +732,10 @@ pub struct ConstraintOracle {
 /// Build a contact conformance fixture: a free rigid body with `n_contacts`
 /// sphere geoms penetrating a ground plane.
 ///
-/// `impratio` and `mu` are set so the **pyramidal** cases unambiguously expose
-/// the GPU R-scaling defect: CPU computes `Rpy = 2·mu_reg²·R[first]` with
-/// `mu_reg = mu·√(1/impratio)`, while the GPU does not apply that facet scaling
-/// — the gap is well above tolerance for `mu ≠ 1`, `impratio ≠ 1`.
+/// `impratio` and `mu` are set so the **pyramidal** cases see the facet
+/// R-scaling: `Rpy = 2·mu_reg²·R[first]` with `mu_reg = mu·√(R[1]/R[first])`
+/// and `R[1] = R[first]/impratio`, which is not `R[first]` unless
+/// `2·mu²/impratio = 1`.
 /// `diagapprox_bodyweight` is enabled so the *base* diagonal matches the GPU's
 /// bodyweight approximation (a documented MuJoCo option, not a port bug),
 /// leaving R-scaling as the sole `efc_d` divergence. `mu_torsion` sets the
@@ -863,7 +863,7 @@ fn contact_fixture(
 /// - `contact_torsional` (condim=4, 6 rows): adds the torsional facet pair. Its
 ///   `efc_d` R-scaling exposes whether the GPU uses `mu[0]` (slide) or `mu[2]`
 ///   (torsion) for the facet `mu_reg` — CPU uses `mu[0]` for ALL facets
-///   (`postprocess_pyramidal_r_scaling`), so the torsional R-override must too.
+///   (`regularize_cones`), so the torsional R-override must too.
 #[must_use]
 pub fn contact_conformance_matrix() -> Vec<ContactConformanceCase> {
     vec![
@@ -995,6 +995,21 @@ pub fn contact_lever_arm_case() -> ContactConformanceCase {
     // The geom's frame is no longer its body's (`geom_sameframe`).
     case.model.compute_simple_bodies();
     case.qpos[2] += 3.0;
+    case
+}
+
+/// A pyramidal contact whose facets' R is below mjMINVAL.
+///
+/// `contact_pyramidal` with friction 1e-5 and its body 1e5 times heavier:
+/// each facet's R, `2·mu_reg²·R[first]`, is about 5e-17, which MuJoCo's
+/// `mj_makeImpedance` does not clamp.
+#[must_use]
+pub fn contact_tiny_facet_case() -> ContactConformanceCase {
+    let mut case = contact_fixture("contact_tiny_facet", 3, 1e-5, 0.005, 2.0, 1, 0.0);
+    case.model.body_mass[1] *= 1e5;
+    case.model.body_inertia[1] *= 1e5;
+    finalize(&mut case.model);
+    case.model.compute_invweight0();
     case
 }
 
@@ -1347,12 +1362,13 @@ mod tests {
         );
     }
 
-    /// The fixtures sim-gpu's tests take for three CPU rules (ledger L133)
-    /// hold what their docs say, on the CPU: the light chain's subtree weighs
-    /// between mjMINVAL and 1e-10 and its centre of mass is 0.25 or more from
-    /// its first body's; the slider is simple and its `qM` uncoupled; the
-    /// contact's arm from the body's origin is 3.09 long and 2e-6 off the
-    /// normal, within 1e-6 of its length.
+    /// The fixtures sim-gpu's tests take for single CPU rules (ledger L133's
+    /// three, and the pyramidal facets' R) hold what their docs say, on the
+    /// CPU: the light chain's subtree weighs between mjMINVAL and 1e-10 and its
+    /// centre of mass is 0.25 or more from its first body's; the slider is
+    /// simple and its `qM` uncoupled; the contact's arm from the body's origin
+    /// is 3.09 long and 2e-6 off the normal, within 1e-6 of its length; the
+    /// tiny facets' R is between 1e-17 and 1e-16.
     #[test]
     fn cpu_rule_fixtures_hold_what_their_docs_say() {
         let forward = |case: &super::ConformanceCase| {
@@ -1384,5 +1400,17 @@ mod tests {
         assert!((arm.norm() - 3.09).abs() < 1e-9, "arm {}", arm.norm());
         assert!((off - 2e-6).abs() < 1e-12, "off the normal by {off:e}");
         assert!(off < 1e-6 * arm.norm());
+
+        let case = super::contact_tiny_facet_case();
+        let mut data = case.model.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+        data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+        data.forward(&case.model).expect("fixture forward");
+        assert_eq!(data.efc_R.len(), 4, "condim 3 makes four facets");
+        assert!(
+            data.efc_R.iter().all(|&r| r > 1e-17 && r < 1e-16),
+            "facet R {:?}",
+            data.efc_R
+        );
     }
 }

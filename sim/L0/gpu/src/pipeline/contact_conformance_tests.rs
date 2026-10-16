@@ -62,6 +62,7 @@ const _: () = ();
 use sim_core::test_fixtures::conformance::{
     ConstraintOracle, ContactConformanceCase, ContactSpec, RolloutStep, contact_conformance_matrix,
     contact_constraint_oracle, contact_damped_case, contact_lever_arm_case, contact_rollout_oracle,
+    contact_tiny_facet_case,
 };
 use sim_core::types::{Data, Model};
 
@@ -120,8 +121,8 @@ fn known_contact_divergence(case: &str, channel: &str) -> Option<&'static str> {
     // path (assembly + solve) conforms across condim=1/3/4:
     //
     // - **assembly** (efc_d/efc_aref/n_rows): the pyramidal facet R-override
-    //   (Rpy = 2·mu_reg²·R, mu_reg = mu·√(1/impratio), mu = mu[0] for ALL facets
-    //   including torsional) is ported (PR-2), so every row matches.
+    //   (Rpy = 2·mu_reg²·R, mu_reg = mu·√(R1/R) with R1 = R/impratio, mu = mu[0]
+    //   for ALL facets including torsional) is ported (PR-2), so every row matches.
     // - **solve** (qacc/qfrc_constraint): PR-3 fixed the PHASE-1 Hessian stride bug.
     //   The last `contact_torsional` DOF5 (spin-axis) ~8.6% residual was NOT a GPU
     //   bug — the GPU's Newton/Gauss-Newton solver reaches the exact constraint-QP
@@ -456,6 +457,52 @@ fn gpu_contact_lever_arm_matches_cpu() {
     assert!(
         fails.is_empty(),
         "GPU↔CPU contact Jacobian with an arm near the normal:\n  {}",
+        fails.join("\n  ")
+    );
+}
+
+/// A pyramidal contact whose facets' R is below mjMINVAL on the CPU (about
+/// 5e-17, `efc_d` about 1.9e16): the GPU keeps every row's R at 1e-15 or
+/// more, so its `efc_d` is 1e15, and its `qacc` is the CPU's, as the sweep
+/// above compares them. Two channels are expected to differ, and fail the
+/// test if they match:
+/// - `efc_d`: the GPU's floor on R. Without it (the CPU's R) this case's
+///   f32 solve is not the CPU's (measured: `qacc[3]` 71.2 where the CPU's
+///   is −0.0024).
+/// - `qfrc_constraint`: the GPU makes each row's force as `-D·jar` from an
+///   f32 `jar` (`newton_solve.wgsl`'s finalize); here it reads 0 (measured;
+///   without the floor, up to 2.9e11 off). Why is not isolated.
+#[test]
+fn gpu_tiny_pyramidal_facet_keeps_its_r_floor() {
+    let ctx = gpu_or_skip!();
+    let case = contact_tiny_facet_case();
+    let model = &case.model;
+    let oracle = contact_constraint_oracle(&case);
+
+    let mut data = model.make_data();
+    data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+    data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+    data.forward(model).expect("CPU forward (state setup)");
+
+    let state = run_constraint_stage(&ctx, model, &data, &gpu_contacts(&oracle.contacts));
+    let mut fails = Failures::new();
+    compare_constraint_env(
+        &mut fails,
+        &ctx,
+        &state,
+        &oracle,
+        model.nv,
+        case.name,
+        0,
+        |ch| match ch {
+            "efc_d" => Some("the GPU keeps a facet's R at 1e-15 or more"),
+            "qfrc_constraint" => Some("the GPU's force here, not isolated"),
+            _ => None,
+        },
+    );
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU pyramidal contact with facet R below mjMINVAL:\n  {}",
         fails.join("\n  ")
     );
 }
