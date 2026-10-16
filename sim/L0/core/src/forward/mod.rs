@@ -598,45 +598,59 @@ impl Data {
         Ok(())
     }
 
-    /// Compare forward and inverse dynamics (§52, `ENABLE_FWDINV`).
+    /// Compare forward and inverse dynamics (§52, `ENABLE_FWDINV`), as
+    /// MuJoCo's `mj_compareFwdInv` (`engine_inverse.c:262-302`): with no
+    /// constraint rows both statistics are 0; else the inverse from the
+    /// acceleration stage, sensors skipped (MuJoCo's
+    /// `mj_inverseSkip(mjSTAGE_VEL, 1)`), gives
+    /// - `solver_fwdinv[0]`: `‖qfrc_constraint − its inverse‖`, the change
+    ///   in the constraint force when it is remade from `qacc`;
+    /// - `solver_fwdinv[1]`: `‖qfrc_applied + qfrc_actuator + Jᵀ·xfrc_applied
+    ///   − qfrc_inverse‖`.
     ///
-    /// Runs `inverse()` and computes two L2 norms matching MuJoCo's
-    /// `mj_compareFwdInv()`:
-    /// - `solver_fwdinv[0]`: constraint force discrepancy (reserved, 0.0).
-    /// - `solver_fwdinv[1]`: `‖qfrc_inverse - fwd_applied‖` where
-    ///   `fwd_applied = qfrc_smooth + qfrc_bias - qfrc_passive`.
-    ///
-    /// After G22, `qfrc_inverse = qfrc_applied + qfrc_actuator + J^T*xfrc`,
-    /// so `solver_fwdinv[1]` measures the round-trip residual of applied forces.
-    ///
-    /// This is purely diagnostic — no physics effect.
+    /// The forward's `qfrc_constraint` and `efc_force` are put back;
+    /// `efc_state` keeps the inverse's, as MuJoCo's does.
     fn compare_fwd_inv(&mut self, model: &Model) {
-        if model.nv == 0 {
+        self.solver_fwdinv = [0.0, 0.0];
+        if self.efc_type.is_empty() {
             return;
         }
 
-        // Run inverse dynamics to populate qfrc_inverse
-        self.inverse(model);
-
-        // solver_fwdinv[0]: constraint discrepancy (not computed).
-        self.solver_fwdinv[0] = 0.0;
-
-        // solver_fwdinv[1]: applied force discrepancy.
-        // Forward: M*qacc = qfrc_smooth + qfrc_constraint
-        //   where qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive
-        //                       - qfrc_bias + J^T*xfrc_applied
-        // Inverse: qfrc_inverse = M*qacc + qfrc_bias - qfrc_passive - qfrc_constraint
-        //        = qfrc_applied + qfrc_actuator + J^T*xfrc_applied
-        //
-        // So the comparison vector is: qfrc_smooth + qfrc_bias - qfrc_passive
-        //   = qfrc_applied + qfrc_actuator + J^T*xfrc_applied
-        // And we compute ‖qfrc_inverse - comparison‖₂.
-        let mut sum_sq = 0.0_f64;
-        for i in 0..model.nv {
-            let fwd = self.qfrc_smooth[i] + self.qfrc_bias[i] - self.qfrc_passive[i];
-            let diff = self.qfrc_inverse[i] - fwd;
-            sum_sq += diff * diff;
+        // qforce = qfrc_applied + qfrc_actuator + Jᵀ·xfrc_applied
+        // (`mju_add`, `mj_xfrcAccumulate`).
+        let mut qforce = &self.qfrc_applied + &self.qfrc_actuator;
+        for body_id in 1..model.nbody {
+            let wrench = self.xfrc_applied[body_id];
+            if wrench.is_zero() {
+                continue;
+            }
+            let point = self.xipos[body_id];
+            crate::jacobian::mj_apply_ft(
+                model,
+                self,
+                &wrench.force,
+                &wrench.torque,
+                &point,
+                body_id,
+                &mut qforce,
+            );
         }
-        self.solver_fwdinv[1] = sum_sq.sqrt();
+
+        let qfrc_constraint = self.qfrc_constraint.clone();
+        let efc_force = self.efc_force.clone();
+        crate::constraint::solver::primal::mj_inv_constraint(self);
+        self.inverse_sum(model);
+
+        let dif: Vec<f64> = (0..model.nv)
+            .map(|i| qfrc_constraint[i] - self.qfrc_constraint[i])
+            .collect();
+        self.solver_fwdinv[0] = crate::linalg::mju_norm(&dif);
+        let dif: Vec<f64> = (0..model.nv)
+            .map(|i| qforce[i] - self.qfrc_inverse[i])
+            .collect();
+        self.solver_fwdinv[1] = crate::linalg::mju_norm(&dif);
+
+        self.qfrc_constraint = qfrc_constraint;
+        self.efc_force = efc_force;
     }
 }

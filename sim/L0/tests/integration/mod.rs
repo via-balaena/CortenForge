@@ -372,6 +372,10 @@ pub mod quaternion_transition;
 /// Inverse dynamics tests: round-trip, gravity-only, free body.
 pub mod inverse_dynamics;
 
+/// Inverse dynamics against MuJoCo 3.5.0: the constraint force from `qacc`,
+/// `mjd_inverseFD`, and the fwdinv comparison.
+pub mod inverse_parity;
+
 // ============================================================================
 // DT-79 User Callback Tests
 // ============================================================================

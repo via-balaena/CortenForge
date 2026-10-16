@@ -22,6 +22,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::mul_jac_vec;
 use crate::constraint::solver::hessian::{SparseHessian, SparseInputs};
 use crate::dynamics::factor::mj_solve_ld;
 use crate::linalg::{
@@ -260,6 +261,69 @@ struct Rows {
     /// for any other row.
     mu: Vec<f64>,
     id: Vec<usize>,
+}
+
+impl Rows {
+    /// The rows `rows` of `data`, in that order.
+    fn of(data: &Data, rows: &[usize]) -> Self {
+        let gather = |a: &[f64]| rows.iter().map(|&r| a[r]).collect::<Vec<_>>();
+        let count = |ty: ConstraintType| rows.iter().filter(|&&r| data.efc_type[r] == ty).count();
+        Self {
+            ne: count(ConstraintType::Equality),
+            nf: count(ConstraintType::FrictionLoss),
+            d: gather(&data.efc_D),
+            r: gather(&data.efc_R),
+            floss: gather(&data.efc_floss),
+            ty: rows.iter().map(|&r| data.efc_type[r]).collect(),
+            dim: rows.iter().map(|&r| data.efc_dim[r]).collect(),
+            friction: rows.iter().map(|&r| data.efc_mu[r]).collect(),
+            mu: rows
+                .iter()
+                .map(|&r| {
+                    if data.efc_type[r] == ConstraintType::ContactElliptic {
+                        data.contacts[data.efc_id[r]].regularized_mu
+                    } else {
+                        0.0
+                    }
+                })
+                .collect(),
+            id: rows.iter().map(|&r| data.efc_id[r]).collect(),
+        }
+    }
+}
+
+/// The constraint force inverse dynamics takes, as MuJoCo's
+/// `mj_invConstraint` (`engine_inverse.c:157-180`): with no rows,
+/// `qfrc_constraint` is 0; else each row's state and force as
+/// `mj_constraintUpdate` makes them at `jar = J·qacc − aref` (no cone
+/// Hessian, no cost kept), and `qfrc_constraint = J'·force` (`mj_mulJacTVec`,
+/// `engine_core_constraint.c:2592-2598`), over every row in row order.
+pub fn mj_inv_constraint(data: &mut Data) {
+    let (nv, nefc) = (data.qacc.len(), data.efc_type.len());
+    if nefc == 0 {
+        data.qfrc_constraint.fill(0.0);
+        return;
+    }
+    let all: Vec<usize> = (0..nefc).collect();
+    let rows = Rows::of(data, &all);
+    let mut jar = mul_jac_vec(data, data.qacc.as_slice());
+    for (x, a) in jar.iter_mut().zip(data.efc_aref.iter()) {
+        *x -= a;
+    }
+    let mut state = vec![ConstraintState::Satisfied; nefc];
+    let mut force = vec![0.0; nefc];
+    constraint_update(&rows, jar.as_slice(), &mut state, &mut force, None);
+    let mut j = vec![0.0; nefc * nv];
+    for r in 0..nefc {
+        for c in 0..nv {
+            j[r * nv + c] = data.efc_J[(r, c)];
+        }
+    }
+    let mut qfrc = vec![0.0; nv];
+    mul_mat_t_vec(&j, &force, &mut qfrc, nv);
+    data.efc_state = state;
+    data.efc_force.as_mut_slice().copy_from_slice(&force);
+    data.qfrc_constraint.as_mut_slice().copy_from_slice(&qfrc);
 }
 
 /// A contact's cone Hessian, row-major `dim × dim` (`mjContact::H`).
@@ -507,30 +571,7 @@ impl<'a> Primal<'a> {
             .collect();
         let gather_rows = |a: &[f64]| sub.rows.iter().map(|&r| a[r]).collect::<Vec<_>>();
         let gather_dofs = |a: &[f64]| sub.dofs.iter().map(|&d| a[d]).collect::<Vec<_>>();
-        let count =
-            |ty: ConstraintType| sub.rows.iter().filter(|&&r| data.efc_type[r] == ty).count();
-        let rows = Rows {
-            ne: count(ConstraintType::Equality),
-            nf: count(ConstraintType::FrictionLoss),
-            d: gather_rows(&data.efc_D),
-            r: gather_rows(&data.efc_R),
-            floss: gather_rows(&data.efc_floss),
-            ty: sub.rows.iter().map(|&r| data.efc_type[r]).collect(),
-            dim: sub.rows.iter().map(|&r| data.efc_dim[r]).collect(),
-            friction: sub.rows.iter().map(|&r| data.efc_mu[r]).collect(),
-            mu: sub
-                .rows
-                .iter()
-                .map(|&r| {
-                    if data.efc_type[r] == ConstraintType::ContactElliptic {
-                        data.contacts[data.efc_id[r]].regularized_mu
-                    } else {
-                        0.0
-                    }
-                })
-                .collect(),
-            id: sub.rows.iter().map(|&r| data.efc_id[r]).collect(),
-        };
+        let rows = Rows::of(data, &sub.rows);
         let dense_newton = newton && !model.is_sparse();
         Self {
             newton,
