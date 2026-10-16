@@ -656,7 +656,8 @@ When sleep is enabled, pipeline stages skip sleeping bodies/DOFs:
 - Collision: a pair skipped when both bodies sleep, or one sleeps and the
   other is static
 - Velocity kinematics: sleeping DOFs skipped
-- Tendons: a tendon whose trees all sleep has length and Jacobian 0, no rows
+- Tendons: a tendon over one sleeping tree, or two both asleep, has length and
+  Jacobian 0, no rows
 - Transmission: a sleeping actuator keeps its length, its moment row 0
 - Passive forces: skipped when all target DOFs are asleep
 - Position/velocity integration: sleeping joints skipped

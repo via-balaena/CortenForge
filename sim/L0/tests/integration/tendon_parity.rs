@@ -249,7 +249,8 @@ fn collinear_sphere_wrap_takes_mujocos_plane() {
 
 /// The same example with one point 1e-12 off that line: MuJoCo takes the
 /// plane through the three points, as |p0 × p1| = 2e-13 is above mjMINVAL.
-/// Before, a cut-off of 1e-10 |p0| |p1| took it for a line. Bit for bit.
+/// Before, a cut-off of 1e-10 |p0| |p1| took it for a line. As MuJoCo's
+/// ([`Tol::Golden`]).
 #[test]
 fn near_collinear_sphere_wrap_keeps_its_plane() {
     assert_wrap(
@@ -374,8 +375,8 @@ fn fixed_tendon_velocity_as_mujoco() {
 /// A fixed tendon naming joint a twice (coefficients 1, then 2) and joint b
 /// once, with stiffness, damping and a motor: MuJoCo's dense Jacobian row
 /// assigns each joint's coefficient, so a's is 2, its sparse row adds them,
-/// 3 (`engine_core_smooth.c:979-982`, `:971-976`), and the forces go through that row;
-/// the length adds every entry at both sizes. The motor's acc0 within TOL
+/// 3 (`engine_core_smooth.c:979-982`, `:971-976`), and the forces go through
+/// that row; the length adds every entry at both sizes. The motor's acc0 within TOL
 /// (its moment is the row); the length, row, velocity, passive and actuator
 /// forces after `mj_forward` bit for bit, and the trajectory. Before, the
 /// row added them at both sizes, the forces took every coefficient, and the

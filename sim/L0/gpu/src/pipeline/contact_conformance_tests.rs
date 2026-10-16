@@ -463,8 +463,8 @@ fn gpu_contact_lever_arm_matches_cpu() {
 
 /// A pyramidal contact whose facets' R is below mjMINVAL on the CPU (about
 /// 5e-17, `efc_d` about 1.9e16): the GPU keeps every row's R at 1e-15 or
-/// more, so its `efc_d` is 1e15 (asserted), and its `qacc` is the CPU's, as the sweep
-/// above compares them. Two channels are expected to differ, and fail the
+/// more, so its `efc_d` is 1e15 (asserted), and its `qacc` is the CPU's, as
+/// the sweep above compares them. Two channels are expected to differ, and fail the
 /// test if they match:
 /// - `efc_d`: the GPU's floor on R. Without it (the CPU's R) this case's
 ///   f32 solve is not the CPU's (measured: `qacc[3]` 71.2 where the CPU's

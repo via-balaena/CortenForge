@@ -51,8 +51,8 @@ pub fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
 
         // Jacobian: dL/dqvel at dof_adr = coef (velocity space). MuJoCo's
         // dense row assigns each joint's coefficient, so a joint named twice
-        // keeps its last; its sparse row adds them (`mju_combineSparse`,
-        // `engine_core_smooth.c:961-976`).
+        // keeps its last (`engine_core_smooth.c:979-982`); its sparse row
+        // adds them (`mju_combineSparse`, `:971-976`).
         if dof_adr < model.nv {
             if model.is_sparse() {
                 data.ten_J[t][dof_adr] += coef;
