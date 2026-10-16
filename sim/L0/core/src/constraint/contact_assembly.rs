@@ -1,9 +1,10 @@
 //! Contact constraint row assembly — frictionless, elliptic, and pyramidal
 //! friction cone handling.
 //!
-//! Populates contact rows in the unified `efc_*` arrays and performs
-//! pyramidal R-scaling post-processing. Called from
-//! [`super::assembly::assemble_unified_constraints`] during Phase 3f.
+//! Populates contact rows in the unified `efc_*` arrays, then makes the
+//! friction cones' R and regularized μ as MuJoCo's `mj_makeImpedance` does.
+//! Called from [`super::assembly::assemble_unified_constraints`] during
+//! Phase 3f.
 
 use crate::constraint::impedance::{MJ_MINVAL, checked_solreffriction};
 use crate::constraint::jacobian::compute_contact_jacobian;
@@ -18,8 +19,8 @@ use super::assembly::finalize_constraint_row;
 /// - **Elliptic** (cone == 1, μ ≥ 1e-10): dim rows per contact
 /// - **Frictionless** (μ < 1e-10): dim rows per contact
 ///
-/// Returns pyramidal ranges `(start_row, n_facets, contact_idx)` for R-scaling
-/// post-processing.
+/// Returns the first row and the contact index of each pyramidal or
+/// elliptic contact, for [`regularize_cones`].
 // Contact assembly takes the full per-iteration contact state (model, data, J/M, contact lists, output buffers).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn assemble_contact_rows(
@@ -28,8 +29,8 @@ pub(super) fn assemble_contact_rows(
     nv: usize,
     row: &mut usize,
     contacts: &[Contact],
-) -> Vec<(usize, usize, usize)> {
-    let mut pyramidal_ranges: Vec<(usize, usize, usize)> = Vec::new();
+) -> Vec<(usize, usize)> {
+    let mut cones: Vec<(usize, usize)> = Vec::new();
 
     for (ci, contact) in contacts.iter().enumerate() {
         let dim = contact.dim;
@@ -48,18 +49,8 @@ pub(super) fn assemble_contact_rows(
 
         if is_pyramidal {
             assemble_pyramidal_contact(
-                model,
-                data,
-                nv,
-                row,
-                &cj,
-                contact,
-                ci,
-                sr_normal,
-                si,
-                margin,
-                bw_contact,
-                &mut pyramidal_ranges,
+                model, data, nv, row, &cj, contact, ci, sr_normal, si, margin, bw_contact,
+                &mut cones,
             );
         } else {
             // Elliptic or frictionless: emit dim rows.
@@ -98,61 +89,43 @@ pub(super) fn assemble_contact_rows(
                 );
             }
 
-            // Elliptic cone: MuJoCo computes ONE impedance per contact (from the
-            // normal/penetration) and applies the same imp/diagApprox/R/D to every
-            // condim row. Our per-row `finalize_constraint_row` instead derives the
-            // friction rows' R from their own (tangential) diagApprox, which carries
-            // a lever-arm term (≈ r²/I) MuJoCo omits — leaving elliptic friction rows
-            // ~10³× too soft and starving tangential grip in fast contacts.
-            // Overwrite the friction rows to inherit the normal row's regularization.
-            // (aref/efc_b are unaffected: friction rows have pos=margin=0, so their
-            // reference acceleration has no impedance-dependent term.)
-            //
-            // All four impedance fields are rewritten together to keep each row's
-            // (imp, diagApprox, R, D) tuple self-consistent. The solver consumes R/D
-            // and conformance dumps read diagApprox; the reference pass
-            // (`mj_reference_constraint`) reads efc_imp for each row's aref.
+            // An elliptic contact's rows share the normal row's impedance: MuJoCo
+            // gives a contact one position, its distance (`getposdim`,
+            // `engine_core_constraint.c:1366-1397`). Their R is made from the
+            // normal row's in `regularize_cones`.
             if is_elliptic {
                 let imp_n = data.efc_imp[normal_row];
-                let diag_n = data.efc_diagApprox[normal_row];
-                let r_n = data.efc_R[normal_row];
-                let d_n = data.efc_D[normal_row];
-                for fr in (normal_row + 1)..(normal_row + dim) {
-                    data.efc_imp[fr] = imp_n;
-                    data.efc_diagApprox[fr] = diag_n;
-                    data.efc_R[fr] = r_n;
-                    data.efc_D[fr] = d_n;
-                }
+                data.efc_imp[normal_row + 1..normal_row + dim].fill(imp_n);
+                cones.push((normal_row, ci));
             }
         }
     }
 
-    pyramidal_ranges
+    cones
 }
 
-/// Post-process R scaling for pyramidal contacts (§32).
-///
-/// MuJoCo's mj_makeImpedance computes R per-row from each row's own diagApprox,
-/// then overrides all facet rows with `Rpy = 2 · μ_reg² · R[first_facet]`.
-pub(super) fn postprocess_pyramidal_r_scaling(
-    model: &Model,
-    data: &mut Data,
-    contacts: &[Contact],
-    pyramidal_ranges: &[(usize, usize, usize)],
-) {
-    for &(start_row, n_facets, ci) in pyramidal_ranges {
-        let contact = &contacts[ci];
-
-        // Use R already computed by finalize_constraint_row for the first facet row.
-        let r_first_facet = data.efc_R[start_row];
-
-        // μ_reg = friction[0] · √(1/impratio)
-        let mu_reg = contact.mu[0] * (1.0 / model.impratio).sqrt();
-        let rpy = (2.0 * mu_reg * mu_reg * r_first_facet).max(MJ_MINVAL);
-
-        for row_idx in start_row..start_row + n_facets {
-            data.efc_R[row_idx] = rpy;
-            data.efc_D[row_idx] = 1.0 / rpy;
+/// The friction cones' R and regularized μ, the second pass of MuJoCo's
+/// `mj_makeImpedance` (`engine_core_constraint.c:1527-1568`), over each
+/// pyramidal or elliptic contact `(first row, contact index)`, its rows' R
+/// first made from each row's own diagApprox: `R[1] = R[0]/impratio`, and the
+/// regularized cone's `μ = friction[0]·√(R[1]/R[0])`, written to the contact.
+/// An elliptic contact's other rows take `R[j+1] = R[1]·friction[0]²/friction[j]²`,
+/// a pyramidal contact's every facet `2·μ²·R[0]`. The rows' D and diagApprox
+/// are then made from their R ([`super::assembly::assemble_unified_constraints`]).
+pub(super) fn regularize_cones(model: &Model, data: &mut Data, cones: &[(usize, usize)]) {
+    for &(i, ci) in cones {
+        let (friction, dim) = (data.contacts[ci].mu, data.contacts[ci].dim);
+        data.efc_R[i + 1] = data.efc_R[i] / model.impratio.max(MJ_MINVAL);
+        let mu = friction[0] * (data.efc_R[i + 1] / data.efc_R[i]).sqrt();
+        data.contacts[ci].regularized_mu = mu;
+        if data.efc_type[i] == ConstraintType::ContactElliptic {
+            for j in 1..dim - 1 {
+                data.efc_R[i + j + 1] =
+                    data.efc_R[i + 1] * friction[0] * friction[0] / (friction[j] * friction[j]);
+            }
+        } else {
+            let rpy = 2.0 * mu * mu * data.efc_R[i];
+            data.efc_R[i..i + 2 * (dim - 1)].fill(rpy);
         }
     }
 }
@@ -243,7 +216,7 @@ fn assemble_pyramidal_contact(
     si: [f64; 5],
     margin: f64,
     bw_contact: [f64; 2],
-    pyramidal_ranges: &mut Vec<(usize, usize, usize)>,
+    cones: &mut Vec<(usize, usize)>,
 ) {
     let dim = contact.dim;
     let n_facets = 2 * (dim - 1);
@@ -303,5 +276,5 @@ fn assemble_pyramidal_contact(
         );
     }
 
-    pyramidal_ranges.push((start_row, n_facets, ci));
+    cones.push((start_row, ci));
 }

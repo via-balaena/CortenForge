@@ -461,6 +461,7 @@ pub fn make_contact_from_geoms(
         solimp,
         frame: (t1, t2).into(),
         flex_vertex: None,
+        regularized_mu: 0.0,
         flex_vertex2: None,
     }
 }

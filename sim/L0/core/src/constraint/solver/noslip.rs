@@ -530,11 +530,9 @@ fn dual_state(data: &Data, state: &mut [ConstraintState]) -> usize {
             i += 1;
             continue;
         }
-        // μ here is friction[0]; MuJoCo's `con->mu` is friction[0]·√(R[i+1]/R[i])
-        // (`engine_core_constraint.c:1540`), as in `constraint_update` (book P38).
         let dim = data.efc_dim[i];
         let friction = &data.efc_mu[i];
-        let mu = friction[0];
+        let mu = data.contacts[data.efc_id[i]].regularized_mu;
         let n = force[i] / mu;
         let t = (1..dim)
             .map(|j| (force[i + j] / friction[j - 1]).powi(2))

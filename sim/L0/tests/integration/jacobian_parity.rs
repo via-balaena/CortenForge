@@ -222,6 +222,7 @@ fn contact_jacobians_match_mujoco_3_5_0_bit_for_bit() {
                 Vector3::from_column_slice(&frame[6..9]),
             ],
             flex_vertex: None,
+            regularized_mu: 0.0,
             flex_vertex2: None,
         };
         let j = compute_contact_jacobian(&model, &data, &contact);

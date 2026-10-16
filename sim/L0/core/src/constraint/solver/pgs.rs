@@ -613,16 +613,10 @@ pub fn classify_constraint_states(
             }
 
             ConstraintType::ContactElliptic => {
-                // NOTE: known conformance gap — `model.impratio` is not applied to
-                // the elliptic cone here. MuJoCo scales the friction-to-normal
-                // impedance ratio by impratio (μ_reg = μ·√(1/impratio), as the
-                // pyramidal path already does in contact_assembly.rs). This branch
-                // uses the raw μ, so results are exact at the default impratio=1 but
-                // diverge for impratio≠1 (measured ≈3% in roll-fraction at 10×).
-                // Not on the critical path (Cross sim-to-real uses impratio=1);
-                // deferred as its own focused change.
+                // The regularized cone's μ (MuJoCo `mj_constraintUpdate_impl`,
+                // `engine_core_constraint.c:2481`).
                 let dim = data.efc_dim[i];
-                let mu = data.efc_mu[i][0];
+                let mu = data.contacts[data.efc_id[i]].regularized_mu;
 
                 let u0 = data.efc_jar[i] * mu;
                 let n = u0;

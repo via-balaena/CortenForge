@@ -20,7 +20,7 @@ use crate::types::{
     DISABLE_LIMIT, Data, EqualityType, MjJointType, Model,
 };
 
-use super::contact_assembly::{assemble_contact_rows, postprocess_pyramidal_r_scaling};
+use super::contact_assembly::{assemble_contact_rows, regularize_cones};
 use super::equality_assembly::assemble_equality_rows;
 
 /// Compute the deadband displacement for a tendon (DT-35).
@@ -562,14 +562,10 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
 
     // --- 3f: Contacts (S4.1 Site 2: defense-in-depth guard on DISABLE_CONTACT) ---
     let contacts = data.contacts.clone(); // Clone to avoid borrow conflict
-    let pyramidal_ranges = if contact_disabled {
-        Vec::new()
-    } else {
-        let ranges = assemble_contact_rows(model, data, nv, &mut row, &contacts);
-        postprocess_pyramidal_r_scaling(model, data, &contacts, &ranges);
-        ranges
-    };
-    let _ = pyramidal_ranges; // suppress unused warning when contacts disabled
+    if !contact_disabled {
+        let cones = assemble_contact_rows(model, data, nv, &mut row, &contacts);
+        regularize_cones(model, data, &cones);
+    }
 
     // The count includes constraints whose rows turned out empty.
     debug_assert!(row <= nefc, "Row count mismatch in constraint assembly");
@@ -577,6 +573,14 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
         truncate_rows(data, row);
     }
     let nefc = row;
+
+    // D = 1/R, and every row's diagApprox made from its R, so that
+    // R = (1 − imp)/imp·diagApprox holds (MuJoCo's `mj_makeImpedance`,
+    // `engine_core_constraint.c:1570-1578`).
+    for i in 0..nefc {
+        data.efc_D[i] = 1.0 / data.efc_R[i];
+        data.efc_diagApprox[i] = data.efc_R[i] * data.efc_imp[i] / (1.0 - data.efc_imp[i]);
+    }
 
     // === Phase 4: Count ne/nf for solver dispatch (§29.4) ===
     // Ordering: [0..ne) = equality+flex, [ne..ne+nf) = friction, [ne+nf..nefc) = limits+contacts

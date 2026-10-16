@@ -62,6 +62,37 @@ each compared exactly (`:1416`, `:1439`):
   limit row's efc_imp and qacc. The generator refuses it unless each
   impedance differs from what a tolerance at those tests gives: the flat
   midpoint for the first two, the linear curve for the third.
+
+`mj_makeImpedance` (`:1465-1579`) gives each row R = (1-imp)/imp *
+diagApprox, then for a pyramidal or elliptic contact R[1] = R[0]/impratio
+and the regularized cone's mu = friction[0]*sqrt(R[1]/R[0]) (`:1536-1540`);
+an elliptic contact's other rows R[j+1] = R[1]*friction[0]^2/friction[j]^2
+(`:1544-1548`), a pyramidal contact's rows all 2*mu^2*R[0] (`:1553-1562`);
+then D = 1/R, and every row's diagApprox = R*imp/(1-imp) (`:1570-1578`):
+
+- elliptic_rows: one sphere 1 mm into a plane, Newton, elliptic, at condim
+  3, 4 and 6, sliding (qvel 0.05, 0.02) and also spinning (0.1 about the
+  normal); after mj_forward, efc_R, efc_D, efc_diagApprox, efc_force, qacc
+  and the contact's mu.
+- impratio: impratio 10, the sphere sliding, spinning and rolling, at
+  condim 3 and 6 under an elliptic cone (Newton, CG, PGS) and a pyramidal
+  one (Newton); the first forward's rows and mu as above, qpos and qvel
+  after steps 1, 10, 100 and 300, each step's solver_niter, and at each of
+  those checkpoints MuJoCo's own
+  1-ulp spread: the largest change of qpos when one starting velocity is
+  moved by 1 ulp, over the six.
+- impratio_noslip: the impratio sphere, elliptic, Newton, condim 3 and 6,
+  noslip_iterations 10; after mj_forward, solver_niter, each statistic's
+  nactive and nchange, and every row's efc_state: noslip's `dualState`
+  takes the regularized cone's mu (`engine_solver.c:233-310`).
+- pair_condim6: census doc 2cb92700 (`<pair condim="6"
+  solreffriction="0.08 0.6">`, elliptic), started sliding and spinning
+  (from rest its friction rows have no velocity); qpos and qvel after steps
+  1, 10, 50 and 100.
+- diag_approx: census docs a0ff89f4 and 406a1991 (boxes into a plane,
+  pyramidal), from qpos0, and 60c23753 (frictionless, a sphere at distance
+  0 from its plane at qpos0, so without rows) moved 1 mm into the plane;
+  after mj_forward, every row's efc_diagApprox and efc_R.
 """
 import hashlib
 import json
@@ -337,6 +368,165 @@ def impedance_edges():
     return {"xml": xml, "qpos": qpos, "efc_imp": imp, "qacc": floats(d.qacc)}
 
 
+def sphere_xml(condim, cone, solver, impratio=None, noslip=None):
+    option = f' impratio="{impratio}"' if impratio is not None else ""
+    option += f' noslip_iterations="{noslip}"' if noslip is not None else ""
+    return f"""<mujoco model="sphere_c{condim}_{cone}_{solver}">
+  <option timestep="0.002" solver="{solver}" cone="{cone}"{option}/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" condim="{condim}"/>
+    <body name="ball" pos="0 0 0.099">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="1" condim="{condim}"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+
+def rows(m, d):
+    """The first forward's rows, as mj_makeImpedance leaves them."""
+    out = {k: floats(getattr(d, k)[:d.nefc]) for k in ("efc_R", "efc_D", "efc_diagApprox", "efc_force")}
+    out["qacc"] = floats(d.qacc)
+    out["mu"] = float(d.contact[0].mu)
+    return out
+
+
+ELLIPTIC_QVEL = {"slide": [0.05, 0.02, 0.0, 0.0, 0.0, 0.0], "spin": [0.05, 0.02, 0.0, 0.0, 0.0, 0.1]}
+
+
+def elliptic_rows():
+    out = {}
+    for condim in (3, 4, 6):
+        for label, qvel in ELLIPTIC_QVEL.items():
+            xml = sphere_xml(condim, "elliptic", "Newton")
+            m = mujoco.MjModel.from_xml_string(xml)
+            d = mujoco.MjData(m)
+            d.qvel[:] = qvel
+            mujoco.mj_forward(m, d)
+            stable(d, f"elliptic c{condim} {label}")
+            assert d.ncon == 1 and d.nefc == condim, (d.ncon, d.nefc)
+            out[f"c{condim}_{label}"] = {"xml": xml, "qvel": qvel, **rows(m, d)}
+    return out
+
+
+IMPRATIO_QVEL = [0.3, -0.2, 0.0, 0.5, -0.4, 0.8]
+IMPRATIO_STEPS = [1, 10, 100, 300]
+
+
+def step_niter(xml, qvel, nstep):
+    """solver_niter after each of the first `nstep` steps."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[:] = qvel
+    out = []
+    for _ in range(nstep):
+        mujoco.mj_step(m, d)
+        out.append(int(d.solver_niter[0]))
+    return out
+
+
+def ulp_spread(xml, qvel, checkpoints):
+    """At each checkpoint, the largest change of qpos over the six runs whose
+    starting qvel has one entry moved up by 1 ulp."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    def run(v):
+        d = mujoco.MjData(m)
+        d.qvel[:] = v
+        out = {}
+        for step in range(1, checkpoints[-1] + 1):
+            mujoco.mj_step(m, d)
+            if step in checkpoints:
+                out[step] = d.qpos.copy()
+        return out
+    base = run(qvel)
+    spread = {step: 0.0 for step in checkpoints}
+    for i in range(len(qvel)):
+        v = np.array(qvel, dtype=float)
+        v[i] = np.nextafter(v[i], np.inf)
+        for step, q in run(v).items():
+            spread[step] = max(spread[step], float(np.abs(q - base[step]).max()))
+    return {str(step): s for step, s in spread.items()}
+
+
+def impratio():
+    out = {}
+    for cone, solvers in (("elliptic", ("Newton", "CG", "PGS")), ("pyramidal", ("Newton",))):
+        for condim in (3, 6):
+            for solver in solvers:
+                xml = sphere_xml(condim, cone, solver, impratio=10)
+                m = mujoco.MjModel.from_xml_string(xml)
+                d = mujoco.MjData(m)
+                d.qvel[:] = IMPRATIO_QVEL
+                mujoco.mj_forward(m, d)
+                stable(d, f"impratio {cone} c{condim} {solver}")
+                first = rows(m, d)
+                # The regularized cone is narrower than the friction's: mu = friction[0]*sqrt(1/impratio).
+                assert 0 < first["mu"] < 1, first["mu"]
+                out[f"{cone}_c{condim}_{solver}"] = {
+                    "xml": xml, "qvel": IMPRATIO_QVEL, "forward": first,
+                    "traj": trajectory(xml, {}, f"impratio {cone} c{condim} {solver}", IMPRATIO_STEPS,
+                                       IMPRATIO_QVEL),
+                    "niter": step_niter(xml, IMPRATIO_QVEL, IMPRATIO_STEPS[-1]),
+                    "ulp_spread": ulp_spread(xml, IMPRATIO_QVEL, IMPRATIO_STEPS)}
+    return out
+
+
+def impratio_noslip():
+    out = {}
+    for condim in (3, 6):
+        xml = sphere_xml(condim, "elliptic", "Newton", impratio=10, noslip=10)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        d.qvel[:] = IMPRATIO_QVEL
+        mujoco.mj_forward(m, d)
+        stable(d, f"impratio noslip c{condim}")
+        n = int(d.solver_niter[0])
+        assert d.nefc == condim and n > 0, (d.nefc, n)
+        out[f"c{condim}"] = {"xml": xml, "qvel": IMPRATIO_QVEL, "niter": n,
+                             "nactive": [int(s.nactive) for s in d.solver[:n]],
+                             "nchange": [int(s.nchange) for s in d.solver[:n]],
+                             "efc_state": [int(s) for s in d.efc_state[:d.nefc]]}
+    return out
+
+
+PAIR_CONDIM6_DOC = "2cb92700e75eb1ae"
+PAIR_CONDIM6_QVEL = [0.5, -0.2, 0.0, 0.3, -0.3, 0.8]
+
+
+def pair_condim6():
+    xml = census_doc(PAIR_CONDIM6_DOC)
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[:] = PAIR_CONDIM6_QVEL
+    moved = 0.0
+    for _ in range(100):
+        mujoco.mj_step(m, d)
+        if d.nefc:
+            assert d.nefc == 6, d.nefc
+            moved = max(moved, *(abs(float(v)) for v in d.efc_vel[3:6]))
+    assert moved > 1e-3, moved
+    return {"xml": xml, "qvel": PAIR_CONDIM6_QVEL,
+            "traj": trajectory(xml, {}, "pair_condim6", [1, 10, 50, 100], PAIR_CONDIM6_QVEL)}
+
+
+# Each doc's height offset of its free joint (qpos[2]) from qpos0.
+DIAG_APPROX_DOCS = {"a0ff89f48fc8fcc9": 0.0, "406a1991539e1cc2": 0.0, "60c23753e7d2ea34": -0.001}
+
+
+def diag_approx():
+    out = {}
+    for doc, dz in DIAG_APPROX_DOCS.items():
+        xml = census_doc(doc)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        d.qpos[2] += dz
+        mujoco.mj_forward(m, d)
+        assert d.nefc > 0, doc
+        out[doc] = {"xml": xml, "dz": dz, "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
+                    "efc_R": floats(d.efc_R[:d.nefc])}
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -357,6 +547,11 @@ def main():
                                                                 "mixed_solreffriction_own_solref"),
         "mixed_solref_limit": mixed_solref_limit(),
         "impedance_edges": impedance_edges(),
+        "elliptic_rows": elliptic_rows(),
+        "impratio": impratio(),
+        "impratio_noslip": impratio_noslip(),
+        "pair_condim6": pair_condim6(),
+        "diag_approx": diag_approx(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "impedance.json"), "w", encoding="utf-8") as f:

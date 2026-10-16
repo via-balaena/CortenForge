@@ -391,9 +391,9 @@ fn euler_damping_reads_the_awake_dofs_as_mujoco_3_5_0() {
 /// evaluation and update counts and acceleration are MuJoCo's, each step's
 /// iteration count is MuJoCo's through step 140 and the state through step
 /// 50. (Past step 140 the elliptic CG run grows as MuJoCo's own run does under
-/// a 1-ulp change of a starting velocity: both reach 1e-6 by step 200.) At
-/// condim 6 the first forward: the torsional and rolling rows' R differ from
-/// MuJoCo's after it (book P38).
+/// a 1-ulp change of a starting velocity: both reach 1e-6 by step 200.) The
+/// same at condim 6, whose torsional and rolling rows take their R from the
+/// normal row's by the friction ratios.
 #[test]
 fn every_row_kind_steps_as_mujoco_3_5_0() {
     let g = golden();
@@ -409,9 +409,7 @@ fn every_row_kind_steps_as_mujoco_3_5_0() {
             &floats(&first["qacc"]),
             1e-12,
         );
-        if !name.ends_with("_6") {
-            step_and_compare(name, case, 50, 1e-12, 140);
-        }
+        step_and_compare(name, case, 50, 1e-12, 140);
     }
 }
 

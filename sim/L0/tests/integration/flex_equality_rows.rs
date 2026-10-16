@@ -11,6 +11,9 @@
 use sim_core::{ConstraintType, EqualityType, Model, mj_solve_m};
 use sim_mjcf::load_model;
 
+/// MuJoCo's `mjMINVAL`.
+const MJ_MINVAL: f64 = 1e-15;
+
 /// A 3×3 cloth grid with its first three vertices pinned: 16 edges, the 2
 /// between pinned vertices rigid (A13 §3.3).
 const PINNED_GRID: &str = r#"<mujoco>
@@ -58,9 +61,11 @@ fn flex_rows_only_with_edge_equality() {
     assert_eq!(flex_rows(&model, &data).len(), 0);
 }
 
-/// Each flex row's diagonal approximation is its edge's
+/// Each flex row's diagonal approximation is made as its edge's
 /// `flexedge_invweight0`: `(1/m₁ + 1/m₂)/2` when both vertex bodies are
-/// simple with slides only, else `J·M⁻¹·Jᵀ` at `qpos0`.
+/// simple with slides only, else `J·M⁻¹·Jᵀ` at `qpos0`. `mj_makeImpedance`
+/// makes the row's R from it, then remakes the diagApprox from that R
+/// (`engine_core_constraint.c:1484`, `:1575-1578`).
 #[test]
 fn flex_edge_diag_approx_is_invweight0() {
     let model = load_model(PINNED_GRID).expect("load");
@@ -95,10 +100,17 @@ fn flex_edge_diag_approx_is_invweight0() {
             "edge {e}: flexedge_invweight0 {} vs {want}",
             model.flexedge_invweight0[e]
         );
+        let imp = data.efc_imp[r];
+        let r_want = ((1.0 - imp) * model.flexedge_invweight0[e] / imp).max(MJ_MINVAL);
+        assert_eq!(
+            data.efc_R[r].to_bits(),
+            r_want.to_bits(),
+            "row {r}, edge {e}: R"
+        );
         assert_eq!(
             data.efc_diagApprox[r].to_bits(),
-            model.flexedge_invweight0[e].to_bits(),
-            "row {r}, edge {e}"
+            (r_want * imp / (1.0 - imp)).to_bits(),
+            "row {r}, edge {e}: diagApprox"
         );
     }
     assert!(simple > 0, "the grid has edges between free vertices");

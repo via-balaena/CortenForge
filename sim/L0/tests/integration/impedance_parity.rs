@@ -5,12 +5,16 @@
 //! `engine_core_constraint.c:1365-1398`), and a row's impedance from
 //! `pos - margin` (`getimpedance`, `:1413-1461`, whose flat and linear
 //! tests compare exactly), and replaces a mixed
-//! `solref` or `solreffriction` (`getsolparam`, `:1291-1362`). The golden is
+//! `solref` or `solreffriction` (`getsolparam`, `:1291-1362`). A pyramidal or
+//! elliptic contact's rows then take R from the normal row's, by impratio and
+//! the friction ratios, and the regularized cone's μ from their R; every
+//! row's diagApprox is remade from its R (`mj_makeImpedance`,
+//! `:1465-1579`). The golden is
 //! `assets/golden/impedance/impedance.json`, from the unfused MuJoCo 3.5.0
 //! oracle (`scripts/gen_impedance_reference.py`, which describes its cases).
 
 use serde_json::Value;
-use sim_core::{ConstraintType, Data, Model};
+use sim_core::{ConstraintState, ConstraintType, Data, Model};
 use sim_mjcf::load_model;
 
 const TOL: f64 = 1e-12;
@@ -212,4 +216,272 @@ fn impedance_flat_and_linear_tests_are_exact() {
         .collect();
     assert!(differ.is_empty(), "efc_imp differs: {differ:?}");
     assert_close("qacc", data.qacc.as_slice(), &floats(&case["qacc"]), TOL);
+}
+
+/// `|got − want|` over `max(1, |want|)`: R reaches 5e6 on a rolling row.
+fn relative(got: f64, want: f64) -> f64 {
+    (got - want).abs() / want.abs().max(1.0)
+}
+
+/// The first entry of `got` farther than `tol` (relative) from `want`, or a
+/// length that differs.
+fn differs(what: &str, got: &[f64], want: &[f64], tol: f64) -> Option<String> {
+    if got.len() != want.len() {
+        return Some(format!(
+            "{what}: {} values, expected {}",
+            got.len(),
+            want.len()
+        ));
+    }
+    got.iter()
+        .zip(want)
+        .enumerate()
+        .find(|(_, (a, b))| relative(**a, **b) > tol)
+        .map(|(i, (a, b))| format!("{what}[{i}]: {a}, expected {b}"))
+}
+
+/// The first checkpoint whose qpos or qvel is farther than `tol` from the
+/// golden's, stepping `model` from `data`; with `niter`, also the first step
+/// whose iteration count is not MuJoCo's.
+fn trajectory_differs(
+    what: &str,
+    model: &Model,
+    mut data: Data,
+    traj: &Value,
+    tol: f64,
+    niter: Option<&Value>,
+) -> Option<String> {
+    let checkpoints = traj.as_object().expect("checkpoints");
+    let last = checkpoints
+        .keys()
+        .map(|k| k.parse::<usize>().expect("step"))
+        .max()
+        .expect("a checkpoint");
+    for step in 1..=last {
+        if let Err(e) = data.step(model) {
+            return Some(format!("{what} step {step}: {e}"));
+        }
+        if let Some(n) = niter.and_then(|n| n[step - 1].as_u64())
+            && data.solver_niter as u64 != n
+        {
+            return Some(format!(
+                "{what} step {step} niter: {}, expected {n}",
+                data.solver_niter
+            ));
+        }
+        if let Some(c) = checkpoints.get(&step.to_string()) {
+            let q = differs("qpos", data.qpos.as_slice(), &floats(&c["qpos"]), tol);
+            let v = differs("qvel", data.qvel.as_slice(), &floats(&c["qvel"]), tol);
+            if let Some(d) = q.or(v) {
+                return Some(format!("{what} step {step} {d}"));
+            }
+        }
+    }
+    None
+}
+
+/// A model from a golden case, its qvel set, after a forward.
+fn forward_case(case: &Value) -> (Model, Data) {
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qvel.copy_from_slice(&floats(&case["qvel"]));
+    data.forward(&model).expect("forward");
+    (model, data)
+}
+
+/// A first forward's rows against `rows`: R, D and the forces, qacc, and the
+/// contact's regularized cone μ.
+fn rows_differ(what: &str, data: &Data, rows: &Value, out: &mut Vec<String>) {
+    let checks = [
+        differs("efc_R", &data.efc_R, &floats(&rows["efc_R"]), 1e-12),
+        differs("efc_D", &data.efc_D, &floats(&rows["efc_D"]), 1e-12),
+        differs(
+            "efc_force",
+            data.efc_force.as_slice(),
+            &floats(&rows["efc_force"]),
+            1e-12,
+        ),
+        differs("qacc", data.qacc.as_slice(), &floats(&rows["qacc"]), 1e-12),
+        differs(
+            "mu",
+            &[data.contacts[0].regularized_mu],
+            &[rows["mu"].as_f64().expect("mu")],
+            1e-15,
+        ),
+    ];
+    out.extend(checks.into_iter().flatten().map(|d| format!("{what}: {d}")));
+}
+
+/// A sphere 1 mm into a plane under an elliptic cone at condim 3, 4 and 6,
+/// sliding and also spinning, and at impratio 10, sliding, spinning and
+/// rolling, elliptic and pyramidal: the first forward's R, D, forces, qacc
+/// and regularized cone μ are MuJoCo's. MuJoCo's elliptic friction rows take
+/// R[1] = R[0]/impratio and R[j+1] = R[1]·f₀²/f_j² (a torsional row 4·10⁴
+/// times the normal's at the default friction, a rolling one 10⁸ times), and
+/// μ = f₀·√(R[1]/R[0]) (`engine_core_constraint.c:1536-1548`). Then census
+/// doc 2cb92700 (`<pair condim="6" solreffriction="0.08 0.6">`), started
+/// sliding and spinning, steps as MuJoCo's for 100 steps.
+#[test]
+fn elliptic_friction_rows_as_mujoco() {
+    let g = golden();
+    let mut out = Vec::new();
+    for (name, case) in g["cases"]["elliptic_rows"].as_object().expect("cases") {
+        let (_, data) = forward_case(case);
+        rows_differ(name, &data, case, &mut out);
+    }
+    for (name, case) in g["cases"]["impratio"].as_object().expect("cases") {
+        let (_, data) = forward_case(case);
+        rows_differ(name, &data, &case["forward"], &mut out);
+    }
+    let case = &g["cases"]["pair_condim6"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qvel.copy_from_slice(&floats(&case["qvel"]));
+    out.extend(trajectory_differs(
+        "pair_condim6",
+        &model,
+        data,
+        &case["traj"],
+        TOL,
+        None,
+    ));
+    assert!(out.is_empty(), "{} differ:\n{}", out.len(), out.join("\n"));
+}
+
+/// Every row's diagApprox is made from its R, `R·imp/(1 − imp)`, as
+/// MuJoCo's (`engine_core_constraint.c:1575-1578`): census docs a0ff89f4 and
+/// 406a1991 (boxes into a plane, pyramidal) and 60c23753 (frictionless,
+/// moved 1 mm into its plane), and the elliptic sphere's rows.
+#[test]
+fn diag_approx_as_mujoco() {
+    let g = golden();
+    let mut out = Vec::new();
+    for (name, case) in g["cases"]["diag_approx"].as_object().expect("cases") {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qpos[2] += case["dz"].as_f64().expect("dz");
+        data.forward(&model).expect("forward");
+        let checks = [
+            differs(
+                "efc_diagApprox",
+                &data.efc_diagApprox,
+                &floats(&case["efc_diagApprox"]),
+                1e-12,
+            ),
+            differs("efc_R", &data.efc_R, &floats(&case["efc_R"]), 1e-12),
+        ];
+        out.extend(checks.into_iter().flatten().map(|d| format!("{name}: {d}")));
+    }
+    for (name, case) in g["cases"]["elliptic_rows"].as_object().expect("cases") {
+        let (_, data) = forward_case(case);
+        let d = differs(
+            "efc_diagApprox",
+            &data.efc_diagApprox,
+            &floats(&case["efc_diagApprox"]),
+            1e-12,
+        );
+        out.extend(d.map(|d| format!("{name}: {d}")));
+    }
+    assert!(out.is_empty(), "{} differ:\n{}", out.len(), out.join("\n"));
+}
+
+/// The sphere at impratio 10, sliding, spinning and rolling, at condim 3 and
+/// 6 under an elliptic cone (Newton, CG, PGS) and a pyramidal one (Newton):
+/// 300 steps within 1e-9 of MuJoCo's, the book's tolerance (A18 §10), where
+/// the regularized cone μ = f₀·√(R[1]/R[0]) is not f₀. A checkpoint is
+/// compared only where MuJoCo's own 1-ulp spread there (the golden's: the
+/// largest change of qpos when one starting velocity moves by 1 ulp) is
+/// below that tolerance, and each case keeps at least three. Each of the 300
+/// steps' iteration counts is MuJoCo's.
+#[test]
+fn impratio_steps_as_mujoco() {
+    const IMPRATIO_TOL: f64 = 1e-9;
+    let g = golden();
+    let mut out = Vec::new();
+    for (name, case) in g["cases"]["impratio"].as_object().expect("cases") {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        let spread = &case["ulp_spread"];
+        let kept: serde_json::Map<String, Value> = case["traj"]
+            .as_object()
+            .expect("traj")
+            .iter()
+            .filter(|(step, _)| spread[step.as_str()].as_f64().expect("spread") < IMPRATIO_TOL)
+            .map(|(step, c)| (step.clone(), c.clone()))
+            .collect();
+        assert!(
+            kept.len() >= 3,
+            "{name}: {} checkpoints compared",
+            kept.len()
+        );
+        out.extend(trajectory_differs(
+            name,
+            &model,
+            data,
+            &Value::Object(kept),
+            IMPRATIO_TOL,
+            Some(&case["niter"]),
+        ));
+    }
+    assert!(out.is_empty(), "{} differ:\n{}", out.len(), out.join("\n"));
+}
+
+/// MuJoCo's `mjtConstraintState` code of a row's state.
+fn mj_state(state: ConstraintState) -> u64 {
+    match state {
+        ConstraintState::Satisfied => 0,
+        ConstraintState::Quadratic => 1,
+        ConstraintState::LinearNeg => 2,
+        ConstraintState::LinearPos => 3,
+        ConstraintState::Cone => 4,
+    }
+}
+
+/// The impratio sphere, elliptic, Newton, at condim 3 and 6, noslip on:
+/// noslip's `dualState` sorts the rows by the regularized cone's μ
+/// (`engine_solver.c:272`), so the first forward's iteration count, each
+/// statistic's active and changed rows, and every row's state are MuJoCo's.
+#[test]
+fn noslip_states_take_the_regularized_cone_mu() {
+    let g = golden();
+    let mut out = Vec::new();
+    for (name, case) in g["cases"]["impratio_noslip"].as_object().expect("cases") {
+        let (_, data) = forward_case(case);
+        let ints = |v: &Value| -> Vec<u64> {
+            v.as_array()
+                .expect("array")
+                .iter()
+                .map(|x| x.as_u64().expect("count"))
+                .collect()
+        };
+        let checks = [
+            (
+                "niter",
+                vec![data.solver_niter as u64],
+                vec![case["niter"].as_u64().expect("niter")],
+            ),
+            (
+                "nactive",
+                data.solver_stat.iter().map(|s| s.nactive as u64).collect(),
+                ints(&case["nactive"]),
+            ),
+            (
+                "nchange",
+                data.solver_stat.iter().map(|s| s.nchange as u64).collect(),
+                ints(&case["nchange"]),
+            ),
+            (
+                "efc_state",
+                data.efc_state.iter().map(|&s| mj_state(s)).collect(),
+                ints(&case["efc_state"]),
+            ),
+        ];
+        for (what, ours, mujoco) in checks {
+            if ours != mujoco {
+                out.push(format!("{name} {what}: {ours:?}, MuJoCo {mujoco:?}"));
+            }
+        }
+    }
+    assert!(out.is_empty(), "{} differ:\n{}", out.len(), out.join("\n"));
 }
