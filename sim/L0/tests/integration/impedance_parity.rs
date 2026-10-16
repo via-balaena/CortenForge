@@ -215,7 +215,10 @@ fn mixed_solref_on_every_row_kind_uses_the_default() {
 /// (`engine_core_constraint.c:1416`, `:1439`): a width of 1e-11, above
 /// mjMINVAL, so the curve is not flat and saturates at `solimp[1]`;
 /// `solimp[0]` and `solimp[1]` 5e-13 apart; and a power of 1 + 1e-13, not
-/// linear. Each row's impedance is MuJoCo's, bit for bit.
+/// linear. Each row's impedance is MuJoCo's, bit for bit on macOS arm64,
+/// where the golden was made; elsewhere within 1 ulp, as the last row's
+/// power goes through `powf`, which another libm may round otherwise (the
+/// tolerances these tests replaced moved it by 4 ulps).
 #[test]
 fn impedance_flat_and_linear_tests_are_exact() {
     let case = &golden()["cases"]["impedance_edges"];
@@ -234,7 +237,10 @@ fn impedance_flat_and_linear_tests_are_exact() {
         .iter()
         .zip(&want)
         .enumerate()
-        .filter(|(_, (got, want))| got.to_bits() != want.to_bits())
+        .filter(|(_, (got, want))| {
+            let ulps = got.to_bits().abs_diff(want.to_bits());
+            ulps > u64::from(!cfg!(all(target_os = "macos", target_arch = "aarch64")))
+        })
         .map(|(i, (got, want))| format!("row {i}: {got}, expected {want}"))
         .collect();
     assert!(differ.is_empty(), "efc_imp differs: {differ:?}");
