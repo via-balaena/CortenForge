@@ -1079,3 +1079,126 @@ fn sleeping_actuator_adds_no_implicit_derivative() {
         qvel(&theirs)
     );
 }
+
+/// A damped hinge chain at rest, which sleeps, carrying a fixed and a
+/// spatial tendon, each with friction loss and a limit, beside a swinging
+/// hinge and a tendon between two world sites (on no tree: static, not
+/// asleep), dense and sparse: after each step until five past the first
+/// with a tree asleep, the trees' states, each tendon's length and Jacobian
+/// row bit for bit, and the row count are MuJoCo's. MuJoCo's `mj_tendon`
+/// clears every tendon and skips a sleeping one
+/// (`engine_core_smooth.c:928-947`), so the asleep tendons read 0 and make
+/// no rows; a sleeping tendon's wrap path keeps its address and count, which
+/// the next tendon's path then takes, and the wrap arrays are MuJoCo's too.
+/// A motor on the chain's spatial tendon and one on its site: MuJoCo's
+/// transmission skips a sleeping actuator, which keeps its length and has
+/// no moment (`engine_core_smooth.c:1279-1290`); both lengths and the site
+/// motor's moment row are MuJoCo's. Before, the tendons kept their length
+/// and row and made their two friction-loss rows.
+#[test]
+fn sleeping_tendons_have_no_length_row_or_constraint() {
+    let golden = golden();
+    for name in ["sleeping_tendons", "sleeping_tendons_sparse"] {
+        sleeping_tendons_as_mujoco(name, &golden[name]);
+    }
+}
+
+fn sleeping_tendons_as_mujoco(name: &str, case: &Value) {
+    let model = model_of(case);
+    let mut data = model.make_data();
+    data.qvel
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qvel"]));
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    for (k, want) in case["steps"].as_array().expect("steps").iter().enumerate() {
+        data.step(&model).expect("step");
+        let step = k + 1;
+        let awake: Vec<bool> = want["tree_awake"]
+            .as_array()
+            .expect("tree_awake")
+            .iter()
+            .map(|a| a.as_i64().expect("int") != 0)
+            .collect();
+        assert_eq!(data.tree_awake, awake, "{name} step {step}: tree_awake");
+        assert_eq!(
+            bits(&data.ten_length),
+            bits(&floats(&want["ten_length"])),
+            "{name} step {step}: ten_length {:?}",
+            data.ten_length
+        );
+        let rows: Vec<f64> = data.ten_J.iter().flat_map(|r| r.iter().copied()).collect();
+        assert_eq!(
+            bits(&rows),
+            bits(&floats(&want["ten_J"])),
+            "{name} step {step}: ten_J {rows:?}"
+        );
+        assert_eq!(
+            data.efc_type.len(),
+            count(&want["nefc"]),
+            "{name} step {step}: nefc"
+        );
+        assert_eq!(
+            bits(&data.actuator_length),
+            bits(&floats(&want["actuator_length"])),
+            "{name} step {step}: actuator_length {:?}",
+            data.actuator_length
+        );
+        // The site motor's row; a tendon transmission's `actuator_moment`
+        // is zero here by design (its force reads `ten_J`), MuJoCo's the
+        // gear-scaled row while awake.
+        let nv = model.nv;
+        assert_eq!(
+            bits(data.actuator_moment[1].as_slice()),
+            bits(&floats(&want["actuator_moment"])[nv..2 * nv]),
+            "{name} step {step}: the site motor's actuator_moment"
+        );
+        for (field, ours) in [
+            ("ten_wrapadr", &data.ten_wrapadr),
+            ("ten_wrapnum", &data.ten_wrapnum),
+        ] {
+            let theirs: Vec<usize> = want[field]
+                .as_array()
+                .expect(field)
+                .iter()
+                .map(|x| usize::try_from(x.as_u64().expect("count")).expect("count"))
+                .collect();
+            assert_eq!(ours, &theirs, "{name} step {step}: {field}");
+        }
+    }
+}
+
+/// A tree asleep from the reset (sleep="init") carrying a damped fixed
+/// tendon, given a velocity: the forward's kinematics wake the tree before
+/// the tendon is made (`mj_kinematics` runs `mj_wake` between its body and
+/// geom passes, `engine_core_smooth.c:236-241`), so the tendon's row,
+/// velocity and damper force are MuJoCo's bit for bit (census doc
+/// e7609717 is this, under implicit).
+#[test]
+fn a_tendon_on_a_tree_the_forward_wakes_is_made() {
+    let golden = golden();
+    let case = &golden["tendon_woken"];
+    let model = model_of(case);
+    let mut data = model.make_data();
+    assert_eq!(data.tree_awake, vec![false], "asleep from the reset");
+    data.qvel
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qvel"]));
+    data.forward(&model).expect("forward");
+    assert_eq!(data.tree_awake, vec![true], "tree_awake");
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(
+        bits(data.ten_J[0].as_slice()),
+        bits(&floats(&case["ten_J"])),
+        "ten_J"
+    );
+    assert_eq!(
+        bits(&data.ten_velocity),
+        bits(&floats(&case["ten_velocity"])),
+        "ten_velocity"
+    );
+    assert_eq!(
+        bits(data.qfrc_passive.as_slice()),
+        bits(&floats(&case["qfrc_passive"])),
+        "qfrc_passive"
+    );
+}

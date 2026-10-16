@@ -93,7 +93,9 @@ pub fn hill_passive_fl(norm_len: f64) -> f64 {
 /// `mj_sensor_pos` (which reads `actuator_length`).
 pub fn mj_transmission_site(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
-        if model.actuator_trntype[i] != ActuatorTransmission::Site {
+        if model.actuator_trntype[i] != ActuatorTransmission::Site
+            || transmission_skips_asleep(model, data, i)
+        {
             continue;
         }
 
@@ -264,7 +266,9 @@ fn mj_transmission_body(model: &Model, data: &mut Data, actuator_id: usize) {
 /// (which reads `actuator_length`).
 pub fn mj_transmission_body_dispatch(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
-        if model.actuator_trntype[i] == ActuatorTransmission::Body {
+        if model.actuator_trntype[i] == ActuatorTransmission::Body
+            && !transmission_skips_asleep(model, data, i)
+        {
             mj_transmission_body(model, data, i);
         }
     }
@@ -285,7 +289,9 @@ pub fn mj_transmission_body_dispatch(model: &Model, data: &mut Data) {
 /// MuJoCo equivalent: `mjTRN_SLIDERCRANK` case in `mj_transmission()`.
 pub fn mj_transmission_slidercrank(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
-        if model.actuator_trntype[i] != ActuatorTransmission::SliderCrank {
+        if model.actuator_trntype[i] != ActuatorTransmission::SliderCrank
+            || transmission_skips_asleep(model, data, i)
+        {
             continue;
         }
 
@@ -355,9 +361,13 @@ pub fn mj_transmission_slidercrank(model: &Model, data: &mut Data) {
 /// MuJoCo's `mj_transmission` does (`engine_core_smooth.c:1250`, called from
 /// `mj_fwdPosition` at `engine_forward.c:209`). Must run after
 /// `mj_fwd_position` (which provides `ten_length`). A pass that skips the
-/// position stage keeps the lengths it computed.
+/// position stage keeps the lengths it computed. A sleeping actuator keeps
+/// its length ([`transmission_skips_asleep`]).
 pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
+        if transmission_skips_asleep(model, data, i) {
+            continue;
+        }
         let gear = model.actuator_gear[i][0];
         match model.actuator_trntype[i] {
             ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
@@ -385,6 +395,20 @@ pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
             | ActuatorTransmission::Body => {}
         }
     }
+}
+
+/// Whether the transmission skips actuator `i`, as MuJoCo's `mj_transmission`
+/// skips a sleeping actuator while some dof sleeps
+/// (`engine_core_smooth.c:1279-1290`): its length keeps its last value and
+/// its moment is empty (MuJoCo's `rownnz` 0), so its row is cleared here.
+fn transmission_skips_asleep(model: &Model, data: &mut Data, i: usize) -> bool {
+    let asleep = model.enableflags & ENABLE_SLEEP != 0
+        && data.nv_awake < model.nv
+        && crate::island::actuator_asleep(model, data, i);
+    if asleep {
+        data.actuator_moment[i].fill(0.0);
+    }
+    asleep
 }
 
 /// Whether actuator `i` acts through its `actuator_moment` row: a site, body

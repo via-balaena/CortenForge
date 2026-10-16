@@ -112,6 +112,24 @@ Its `islands` entry holds, for the resting box beside a hinge set onto its
 limit, after mj_forward, nefc, nisland, efc_island, map_efc2iefc,
 map_iefc2efc and island_nefc.
 
+Its `sleeping_tendons` entry holds, for a damped hinge chain at rest (it
+sleeps) carrying a fixed and a spatial tendon, each with friction loss
+and a limit, beside a swinging hinge, and a spatial tendon between two
+world sites (on no tree: static, not asleep), after each mj_step until
+five past the first with a tree asleep: tree_awake, ten_length, ten_J,
+nefc, efc_type, ten_wrapadr, ten_wrapnum, and the actuator lengths and
+moment rows of a motor on the chain's spatial tendon and one on its site
+(MuJoCo's `mj_transmission` skips a sleeping actuator, which keeps its
+length and has no moment); `sleeping_tendons_sparse` the same with
+`jacobian="sparse"`. Its `tendon_woken` entry holds, for a tree that
+starts asleep (sleep="init") carrying a damped fixed tendon, given a
+velocity, tree_awake, ten_J, ten_velocity and qfrc_passive after
+mj_forward: the kinematics wake the tree before the tendon is made. MuJoCo's `mj_tendon` clears every tendon's length and Jacobian
+row and skips a sleeping tendon (`engine_core_smooth.c:928-947`), so the
+asleep tendons read 0 and their rows are not made, and a sleeping tendon's
+wrap path keeps its address and count while the next tendon's path takes
+that address.
+
 Its `refusals` entry holds the message MuJoCo raises for each model of
 REFUSALS: two models whose init-asleep tree cannot sleep (A8's initmix,
 joined by a connect, and initmix_contact, resting on an awake sphere), at
@@ -596,6 +614,104 @@ ISLANDS = f"""<mujoco>{SLEEP_OPT}
 </worldbody></mujoco>"""
 
 
+SLEEPING_TENDONS = f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="still" pos="0 0 1" sleep="allowed"><joint name="h1" type="hinge" axis="0 1 0" damping="5" range="-1 1" limited="true"/>
+  <geom type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="1" contype="0" conaffinity="0"/>
+  <site name="s1" pos="0.05 0 -0.1"/><site name="s2" pos="0.05 0 -0.35"/>
+  <body name="still2" pos="0 0 -0.4"><joint name="h2" type="hinge" axis="0 1 0" damping="5"/>
+    <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="0.5" contype="0" conaffinity="0"/>
+    <site name="s3" pos="0.04 0 -0.2"/></body></body>
+<site name="w0" pos="0.1 0 1.1"/><site name="w1" pos="0.3 0.2 1.4"/>
+<body name="swing" pos="1 0 1"><joint name="h3" type="hinge" axis="0 1 0"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1" contype="0" conaffinity="0"/></body>
+</worldbody>
+<tendon>
+<fixed name="tf" frictionloss="0.5" limited="true" range="-0.5 0.5"><joint joint="h1" coef="1"/><joint joint="h2" coef="-0.5"/></fixed>
+<spatial name="ts" frictionloss="0.3" limited="true" range="0 2"><site site="w0"/><site site="s1"/><site site="s2"/><site site="s3"/></spatial>
+<spatial name="tw"><site site="w0"/><site site="w1"/></spatial>
+</tendon>
+<actuator><motor tendon="ts" gear="1.5"/><motor site="s3" gear="0 0 1 0 0 0"/></actuator>
+</mujoco>"""
+
+TENDON_WOKEN = f"""<mujoco>{SLEEP_OPT}
+<worldbody>
+<body name="l1" pos="0 0 1" sleep="init"><joint name="j1" type="hinge" axis="0 1 0"/>
+  <geom type="sphere" size="0.1" mass="1"/>
+  <body name="l2" pos="0 0 -0.5"><joint name="j2" type="hinge" axis="0 1 0"/><geom type="sphere" size="0.1" mass="0.5"/></body></body>
+</worldbody>
+<tendon><fixed name="t0" damping="5"><joint joint="j1" coef="0.7"/><joint joint="j2" coef="0.3"/></fixed></tendon>
+</mujoco>"""
+
+SLEEPING_TENDONS_SPARSE = SLEEPING_TENDONS.replace('<option timestep="0.002">', '<option timestep="0.002" jacobian="sparse">', 1)
+assert SLEEPING_TENDONS_SPARSE != SLEEPING_TENDONS
+
+
+def sleeping_tendons(xml):
+    """`xml` (SLEEPING_TENDONS or its sparse copy) from qvel 3 on the swinging
+    hinge: each step's tree_awake, ten_length, ten_J (dense rows), nefc and
+    efc_type up to 5 steps past the first step with a tree asleep."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qvel[2] = 3.0
+    out = {"xml": xml, "qvel": floats(d.qvel), "steps": []}
+    first = None
+    k = 0
+    while first is None or k < first + 5:
+        k += 1
+        if k > 1000:
+            sys.exit("sleeping_tendons: no tree fell asleep in 1000 steps")
+        mujoco.mj_step(m, d)
+        if first is None and not all(d.tree_awake):
+            first = k
+        out["steps"].append({"tree_awake": ints(d.tree_awake), "ten_length": floats(d.ten_length),
+                             "ten_J": dense_ten_j(m, d), "nefc": int(d.nefc),
+                             "efc_type": ints(d.efc_type), "ten_wrapadr": ints(d.ten_wrapadr),
+                             "ten_wrapnum": ints(d.ten_wrapnum),
+                             "actuator_length": floats(d.actuator_length),
+                             "actuator_moment": dense_moment(m, d)})
+    if out["steps"][-1]["nefc"] != 0:
+        sys.exit("sleeping_tendons: the asleep tendons' rows remain")
+    return out
+
+
+def dense_moment(m, d):
+    """Every actuator's moment row, dense (MuJoCo keeps it compressed:
+    `moment_rowadr`, `moment_rownnz`, `moment_colind`)."""
+    rows = np.zeros((m.nu, m.nv))
+    for i in range(m.nu):
+        adr, nnz = d.moment_rowadr[i], d.moment_rownnz[i]
+        rows[i, d.moment_colind[adr:adr + nnz]] = d.actuator_moment[adr:adr + nnz]
+    return floats(rows.ravel())
+
+
+def tendon_woken():
+    """TENDON_WOKEN, its tree asleep from the reset, given qvel (0.1, 0.2):
+    tree_awake, ten_J, ten_velocity and qfrc_passive after mj_forward, which
+    wakes the tree in its kinematics before the tendon (`mj_kinematics`,
+    `engine_core_smooth.c:236-241`)."""
+    m = mujoco.MjModel.from_xml_string(TENDON_WOKEN)
+    d = mujoco.MjData(m)
+    asleep = ints(d.tree_asleep)
+    d.qvel[:] = [0.1, 0.2]
+    mujoco.mj_forward(m, d)
+    return {"xml": TENDON_WOKEN, "tree_asleep_reset": asleep, "qvel": floats(d.qvel),
+            "tree_awake": ints(d.tree_awake), "ten_J": floats(d.ten_J.ravel()),
+            "ten_velocity": floats(d.ten_velocity), "qfrc_passive": floats(d.qfrc_passive)}
+
+
+def dense_ten_j(m, d):
+    """Every tendon's Jacobian row, dense: at the sparse size MuJoCo keeps
+    `ten_J` compressed (`ten_J_rowadr`, `ten_J_rownnz`, `ten_J_colind`)."""
+    if not mujoco.mj_isSparse(m):
+        return floats(d.ten_J.ravel())
+    rows = np.zeros((m.ntendon, m.nv))
+    for t in range(m.ntendon):
+        adr, nnz = d.ten_J_rowadr[t], d.ten_J_rownnz[t]
+        rows[t, d.ten_J_colind.ravel()[adr:adr + nnz]] = d.ten_J.ravel()[adr:adr + nnz]
+    return floats(rows.ravel())
+
+
 def islands():
     m = mujoco.MjModel.from_xml_string(ISLANDS)
     d = mujoco.MjData(m)
@@ -863,6 +979,9 @@ def main():
     doc["init_timestep"] = init_timestep()
     doc["init_mocap"] = init_mocap()
     doc["islands"] = islands()
+    doc["sleeping_tendons"] = sleeping_tendons(SLEEPING_TENDONS)
+    doc["sleeping_tendons_sparse"] = sleeping_tendons(SLEEPING_TENDONS_SPARSE)
+    doc["tendon_woken"] = tendon_woken()
     write(os.path.join(sys.argv[1], "sleep.json"), doc)
     print(f"{len(trees)} tree, {len(lengths)} length, {len(runs)} run and {len(traces)} trace cases"
           f" -> {sys.argv[1]}")

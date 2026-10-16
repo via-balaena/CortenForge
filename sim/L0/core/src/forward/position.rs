@@ -17,7 +17,9 @@ use nalgebra::{DVector, Matrix3, Matrix6, Point3, Quaternion, UnitQuaternion, Ve
 /// Forward kinematics: compute body poses from qpos.
 ///
 /// This traverses the kinematic tree from root to leaves, computing
-/// the world-frame position and orientation of each body.
+/// the world-frame position and orientation of each body; then wakes the
+/// trees the user changed (`island::mj_wake`), then computes the geoms',
+/// sites' and subtree centres of mass, and the tendons.
 pub fn mj_fwd_position(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
@@ -79,6 +81,16 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
 
     // World body has zero inertia
     data.cinert[0] = Matrix6::zeros();
+
+    // Wake what the user changed (§16.4) after the bodies' poses, which find
+    // a sleeping pose changed, and before the geoms', sites' and tendons', as
+    // MuJoCo's `mj_kinematics` runs `mj_wake` between `mj_kinematics1` and
+    // `mj_kinematics2` (`engine_core_smooth.c:236-241`), so a tendon on a
+    // tree this pass wakes is computed; with sleep disabled it wakes every
+    // sleeping tree.
+    if crate::island::mj_wake(model, data) {
+        crate::island::mj_update_sleep_arrays(model, data);
+    }
 
     // Update geom poses
     for geom_id in 0..model.ngeom {

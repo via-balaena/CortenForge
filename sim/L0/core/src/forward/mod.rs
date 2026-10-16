@@ -449,15 +449,9 @@ impl Data {
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
         // ========== Position Stage ==========
+        // The kinematics wake what the user changed (`mj_wake`), before the
+        // tendons and the mass matrix.
         position::mj_fwd_position(model, self);
-
-        // Wake what the user changed (§16.4), after the kinematics found a
-        // sleeping pose changed and before the mass matrix, as MuJoCo's
-        // `mj_kinematics` runs `mj_wake` (engine_core_smooth.c:236-241); with
-        // sleep disabled it wakes every sleeping tree.
-        if crate::island::mj_wake(model, self) {
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
         crate::dynamics::flex::mj_flex(model, self);
         crate::dynamics::flex::mj_flex_edge(model, self);
 
