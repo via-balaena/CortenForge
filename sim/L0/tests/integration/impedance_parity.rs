@@ -511,12 +511,14 @@ fn mj_state(state: ConstraintState) -> u64 {
     }
 }
 
-/// The impratio sphere, elliptic, Newton, at condim 3 and 6, noslip on:
-/// noslip's `dualState` sorts the rows by the regularized cone's μ
-/// (`engine_solver.c:272`), so the first forward's iteration count, each
-/// statistic's active and changed rows, and every row's state are MuJoCo's.
+/// The impratio sphere, elliptic, Newton, at condim 3 and 6, noslip on: the
+/// first forward's iteration count, each statistic's active and changed
+/// rows, and every row's state are MuJoCo's, under the rows' R and the
+/// cone's μ that impratio sets. Noslip's `dualState` sorts the rows by that
+/// μ (`engine_solver.c:272`); this does not pin it there: with friction[0]
+/// in its place the test still passes (a mutant run).
 #[test]
-fn noslip_states_take_the_regularized_cone_mu() {
+fn noslip_under_impratio_as_mujoco() {
     let g = golden();
     let mut out = Vec::new();
     for (name, case) in g["cases"]["impratio_noslip"].as_object().expect("cases") {
