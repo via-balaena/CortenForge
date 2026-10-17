@@ -136,7 +136,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q65 | mesh polygons + mesh multi-contact in Rigid-physics | A17 Q4 | port / ledger row | port (C3 without it reddens a test) | (b) | — |
 | Q66 | `<flag nativeccd="disable">` | A17 Q5 | refuse / port MPR / silent no-op | refuse | (a) | stated limitation; the rule forbids the silent no-op |
 | Q67 | non-square height-field cells | A17 Q6 | `HeightFieldData` gains x/y spacing / refuse dx ≠ dy | spacing | **(c)** | a public change in a published crate vs a limitation |
-| Q68 | `mod.rs:1602` (mesh with no hull) | A17 §10 | MuJoCo's no-graph semantics / keep "no hull → none" as a deviation | not stated | (a) | parity; keeping it is a deviation outside the four kinds |
+| Q68 | `mod.rs:1546` (mesh with no hull) | A17 §10 | MuJoCo's no-graph semantics / keep "no hull → none" as a deviation | not stated | (a) | parity; keeping it is a deviation outside the four kinds |
 | Q69 | MuJoCo's broadphase culls touching pairs | A21 Q1 | port `mj_broadphase` / keep ours, "lenient" | keep ours | **(c)** | MuJoCo does not refuse; outside the four kinds |
 | Q70 | capsule–cylinder routing | A21 Q3 | via EPA now / analytic / with the CCD port | with the CCD port | (b) | A17 C3 does it (P50) |
 | Q71 | `contacts_*` helpers count excluded contacts | A21 Q4 | count all / filter | count all | (b) | — |
@@ -243,7 +243,7 @@ Measured defects or gaps a section handed off and no section's commit list picke
 |---|---|---|---|---|---|
 | U01 | a limit sensor on an unlimited joint loads; MuJoCo refuses (`mjcf_sensors.rs:221`) | A6 §5.1, §5.3 | (a) | NO-ROW refusal kind; parity | L21 |
 | U02 | `step2` under an RK4 model ignores eulerdamp (qvel 2.6e-2 after 20 steps) | A7 §8 F2 | (a) | MuJoCo's `mj_step2` calls `mj_Euler` | P08a |
-| U03 | collision calls the unbounded `UnitQuaternion::from_matrix` (`narrow.rs:175-176`, `mesh_collide.rs:144-145`, `hfield.rs:82,86,111`, `flex_narrow.rs:165,210,224`); a NaN `geom_xmat` "not traced" | A5 §4.6 | (b) | same mechanism as the H1 hang | — |
+| U03 | collision calls the unbounded `UnitQuaternion::from_matrix` (`narrow.rs:174-175`, `mesh_collide.rs:144-145`, `hfield.rs:82,86,111`, `flex_narrow.rs:165,210,224`); a NaN `geom_xmat` "not traced" | A5 §4.6 | (b) | same mechanism as the H1 hang | — |
 | U04 | muscle force clamps use 1e-10, MuJoCo `mjMINVAL` 1e-15 | A11 §6 item 2 | (a) | parity | P33 |
 | U05 | `BiasType::Muscle` reads `gainprm`, MuJoCo `biasprm` | A11 §6 item 3 | (a) | parity | P33 |
 | U06 | a flex doc plus any `gravcomp` body panics at `rne.rs:357` | A20 §1B.5 | (a) | MuJoCo loads it | L10a |
