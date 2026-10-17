@@ -145,9 +145,9 @@ fn quat_to_mat3(q: vec4<f32>) -> mat3x3<f32> {
 /// Not the CPU's frame: the CPU completes a contact's frame as MuJoCo's
 /// `mju_makeFrame` (sim-core's `make_frame`: the first tangent (0, 1, 0) or
 /// (0, 0, 1) by the normal's y, less its part along the normal; the second
-/// the normal × the first). The two agree up to a multiple of 90° only for an
-/// axis-aligned normal (35° apart about (0.5, 0.5, 0.71)), and the pyramid's
-/// facets follow the frame (ledger L180).
+/// the normal × the first). The two differ for most normals (35° apart about
+/// (0.5, 0.5, 0.71)), and the pyramid's facets follow the frame (ledger
+/// L180).
 fn compute_tangent_frame(normal: vec3<f32>) -> array<vec3<f32>, 2> {
     // Choose reference axis that is not nearly parallel to the normal.
     let ref_axis = select(vec3<f32>(1.0, 0.0, 0.0),

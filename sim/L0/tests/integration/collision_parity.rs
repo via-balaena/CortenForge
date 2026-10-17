@@ -266,8 +266,7 @@ fn flex_contacts_follow_the_body_contacts_as_mujoco() {
 /// The flex beside a static body holding two planes and a far sphere:
 /// MuJoCo lists the first plane's vertex contacts (vertices 0 to 8), then
 /// the second's (6 to 8), each geom's in turn; ours, which collides a flex
-/// vertex by vertex, places them so (a flex contact's key within its body
-/// pair is its geom, then its vertex).
+/// vertex by vertex, places them so.
 #[test]
 fn flex_contacts_follow_each_plane_in_turn_as_mujoco() {
     flex_lists_as_mujoco(

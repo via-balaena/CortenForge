@@ -63,7 +63,10 @@ Where `X_joint[i]` depends on joint type:
 Two-mechanism architecture:
 
 **Mechanism 1 (automatic pipeline):**
-- Broad phase: sweep-and-prune on AABBs
+- Broad phase: MuJoCo's `mj_broadphase`: bodies swept and pruned, their geoms'
+  bounding spheres projected on the rows of `mju_eig3`'s matrix of the geoms'
+  positions' covariance, the bounds cast to `f32`; then each geom pair through
+  the bounding-sphere filter
 - Filters (in order): body-pair excludes (`contact_excludes`), explicit pair-set
   suppression (`contact_pair_set`), same-body, parent-child,
   contype/conaffinity bitmasks

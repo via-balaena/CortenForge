@@ -3494,7 +3494,7 @@ mod tests {
         // -4.32%, the kinetic energy read at the pin (half the mass times
         // `cvel`'s linear part squared) to -5.77%, a 30% velocity kick at
         // step 100 to +5.59%, and a socket left free under gravity
-        // compensation to -7.54% (to step 450 it read -1.12% and passed: the
+        // compensation to -6.77% (to step 450 it read -1.12% and passed: the
         // longer window is what sees the weld removed). Dropping only the
         // velocity's ω × r part, the rotation kept, reads -1.46% and passes.
         assert!(

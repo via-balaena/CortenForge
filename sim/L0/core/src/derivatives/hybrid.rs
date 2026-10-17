@@ -862,7 +862,7 @@ pub fn mjd_smooth_vel(model: &Model, data: &mut Data) {
 }
 
 /// [`mjd_smooth_vel`], the RNE's term only with `flg_bias`, as MuJoCo's
-/// `mjd_smooth_vel` (`engine_derivative.c:1784-1809`): the implicit
+/// `mjd_smooth_vel` (`engine_derivative.c:1792-1812`): the implicit
 /// integrators' factor and the discrete inverse dynamics take it with
 /// `flg_bias` under implicit, without it under implicitfast. Every row is
 /// cleared first (MuJoCo clears the awake rows only, registry

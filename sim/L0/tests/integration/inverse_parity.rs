@@ -506,8 +506,8 @@ fn inverse_takes_no_drift_baseline() {
 /// Jᵀ·xfrc_applied` (0 here), call after call, within 1e-12, whatever
 /// acceleration the dof keeps. MuJoCo's `mj_rne` writes the awake dofs only
 /// (`engine_core_smooth.c:2481-2484`) and its sum adds to `qfrc_inverse` at
-/// every dof (`engine_inverse.c:238-241`), so a sleeping dof's grows by
-/// `M·qacc` at the acceleration it keeps. Two states (each MuJoCo's: `qacc`
+/// every dof (`engine_inverse.c:238-241`), so a sleeping dof's grows call
+/// by call. Two states (each MuJoCo's: `qacc`
 /// and `qfrc_bias` after the forward pass within 1e-12):
 /// - every tree asleep after 3,000 steps from rest (a box resting on a plane
 ///   and a damped hanging arm): MuJoCo's value grows, −19.62, −39.24,

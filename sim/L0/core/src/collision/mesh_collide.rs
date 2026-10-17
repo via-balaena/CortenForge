@@ -393,8 +393,7 @@ pub fn collide_with_mesh(
 ///      mesh frame, at the centre of mass along the principal axes; sim-mjcf keeps
 ///      a mesh in its authored frame (book Rigid-loading L35), where `geom_rbound`
 ///      is about the authored origin and spaces a mesh authored off its centre of
-///      mass too far apart. The half-diagonal is MuJoCo's radius where the box's
-///      centre is the centre of mass and its axes are principal (ledger L176)
+///      mass too far apart (ledger L176)
 /// 3. Return 1–3 contacts with individual depths.
 ///
 /// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`), consistent with

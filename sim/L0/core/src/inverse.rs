@@ -157,8 +157,8 @@ impl Data {
     /// forces applied there ([`applied_forces`]). MuJoCo's starts from
     /// `mj_rne`'s bias written into `qfrc_inverse` at the awake dofs only
     /// (`mj_rne`, `engine_core_smooth.c:2481-2484`) and adds the sum at every
-    /// dof, so a sleeping dof's grows by `M·qacc` at the acceleration it keeps
-    /// (registry `D-INVERSE-SLEEP`).
+    /// dof, so a sleeping dof's grows call by call (registry
+    /// `D-INVERSE-SLEEP`).
     pub(crate) fn inverse_sum(&mut self, model: &Model) {
         let ma = mj_mul_m(model, self, self.qacc.as_slice());
         let applied = enabled(model, ENABLE_SLEEP).then(|| applied_forces(model, self));

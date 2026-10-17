@@ -290,9 +290,7 @@ fn sweep_and_prune(aamm: &[[f64; 6]]) -> Vec<(usize, usize)> {
 /// the symmetric `mat` by Jacobi rotations accumulated in a quaternion, the
 /// eigenvalues sorted in decreasing order, as the columns of a row-major
 /// matrix (the quaternion's, `mju_quat2Mat`). The broadphase takes its rows
-/// as its axes, as MuJoCo's `mj_broadphase` does: a row is not, in general,
-/// an eigenvector (`diag(0, 0, 2/3)` gives row 0 (0, −1, 0) and column 0
-/// (0, 0, 1)).
+/// as its axes, as MuJoCo's `mj_broadphase` does.
 fn eig3(mat: &[f64; 9]) -> [f64; 9] {
     const EIG_EPS: f64 = MJ_MINVAL * 1000.0;
     let mut quat = [1.0, 0.0, 0.0, 0.0];

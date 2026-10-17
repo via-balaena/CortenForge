@@ -73,8 +73,9 @@ The cases:
 - wrap_edges: six scenes at the edges of `mju_wrap`'s tests, from a
   review's sweep of them: an end on the surface; a segment grazing it; a
   radius of 1e-14, axis-aligned and turned; a cylinder wrap near pi; a
-  radius of 1e-15, turned; a segment exactly tangent to the sphere, whose
-  cosine is 1 and which MuJoCo takes the long way round. Each
+  radius of 1e-15, turned; a segment tangent to the sphere whose tangent
+  directions' cosine is exactly 1 and which MuJoCo takes the long way round.
+  Each
   a sphere and a cylinder in the world with sites x0, x1 and a sidesite,
   four tendons over them (with and without the sidesite); each tendon's
   state after mj_forward. It refuses a scene with a length not finite
@@ -353,10 +354,10 @@ WRAP_EDGES = {
     "rot_radius_1e-14": dict(x0=(1.9970641950622972, 0.1704844136589891, 2.1744182408273915), x1=(2.1723690524171575, -0.6113447126940592, 2.772758799517692),
                 xpos=(2.084716623739727, -0.22043014951753503, 2.473588520172542), quat=(0.6397294299222246, -0.055622188144259406, 0.41141144188066814, 0.6468330960665971),
                 r=1e-14, side=(1.8227075602838276, -0.1733222787061681, 2.611907351770347)),
-    # A segment exactly tangent to the sphere whose cosine is exactly 1 and
-    # whose cross product's sign asks for the long way round: MuJoCo's length
-    # is the straight segment's plus 2 pi r, finite (the chunk 3e-1 review's
-    # fix-diff search).
+    # A segment tangent to the sphere whose tangent directions' cosine is
+    # exactly 1 and whose cross product's sign asks for the long way round:
+    # MuJoCo's length is the straight segment's plus 2 pi r, finite (the chunk
+    # 3e-1 review's fix-diff search).
     "tangent_long_way": dict(x0=(0.25630755772194524, -0.25596568494771627, -0.1189541478111005),
                 x1=(0.28955104644264124, 0.016706109745594777, 0.2028893005753183),
                 xpos=(0.0, 0.0, 0.0), quat=None, r=0.3, side=(0.0, 0.9, 0.0)),
