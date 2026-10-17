@@ -327,10 +327,13 @@ fn wrap_edges_as_mujoco() {
 /// length is NaN (`engine_util_misc.c:55-71`; the golden holds "nan").
 /// Ours clamps the cosine (registry `D-WRAP-ACOS`): the length is finite, the
 /// straight segment's between the tendon's ends, as for a path that only
-/// touches the sphere, to within the arc the clamp drops. The clamp acts
-/// where the computed cosine is at least 1 while the true one is 1 − θ²/2;
-/// with the dot of the two unit directions within 4 ulps of 1, θ ≤ √(8ε),
-/// 4.2e-8 (the chunk 3e-1 review measured at most 1.67e-8 over 7,200 grazing
+/// touches the sphere, to within the arc the clamp drops, and never the long
+/// way round (a third segment, turned, whose cross product's sign asks for it:
+/// before, its length was the straight segment's plus 2πr). The bound is the
+/// radius times √(8ε), 4.2e-8: the clamp acts where the computed cosine is at
+/// least 1 while the true one is 1 − θ²/2, so θ ≤ √(8ε) if the dot of the two
+/// unit directions rounds within 4 ulps of 1 there, an assumption, not
+/// derived (the chunk 3e-1 review measured at most 1.67e-8 over 7,200 grazing
 /// segments). Everything else, the cylinder tendons' lengths included, is
 /// MuJoCo's ([`Tol::Golden`]).
 #[test]

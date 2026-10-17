@@ -73,14 +73,16 @@ The cases:
 - wrap_edges: six scenes at the edges of `mju_wrap`'s tests, from a
   review's sweep of them: an end on the surface; a segment grazing it; a
   radius of 1e-14, axis-aligned and turned; a cylinder wrap near pi; a
-  radius of 1e-15, turned. Each
+  radius of 1e-15, turned; a segment exactly tangent to the sphere, whose
+  cosine is 1 and which MuJoCo takes the long way round. Each
   a sphere and a cylinder in the world with sites x0, x1 and a sidesite,
   four tendons over them (with and without the sidesite); each tendon's
   state after mj_forward. It refuses a scene with a length not finite
   (MuJoCo's `acos` gives NaN past |cos| 1 on some grazing segments).
-- grazing: two scenes from the same sweep, as wrap_edges, whose segment
+- grazing: three scenes from the same sweep, as wrap_edges, whose segment
   grazes the sphere (ends at +-1.5 r at y = r(1 - 1e-16); ends at +-100 r
-  at y = r(1 - 1e-9)): the directions of the sphere wrap's two tangent
+  at y = r(1 - 1e-9)), and a turned one from a later sweep whose cross
+  product's sign asks for the long way round: the directions of the sphere wrap's two tangent
   points round to a cosine past 1, so MuJoCo's `length_circle` takes `acos`
   of it and the sphere tendons' length is NaN (`engine_util_misc.c:55-71`).
   It refuses a scene where every length is finite.
@@ -351,6 +353,13 @@ WRAP_EDGES = {
     "rot_radius_1e-14": dict(x0=(1.9970641950622972, 0.1704844136589891, 2.1744182408273915), x1=(2.1723690524171575, -0.6113447126940592, 2.772758799517692),
                 xpos=(2.084716623739727, -0.22043014951753503, 2.473588520172542), quat=(0.6397294299222246, -0.055622188144259406, 0.41141144188066814, 0.6468330960665971),
                 r=1e-14, side=(1.8227075602838276, -0.1733222787061681, 2.611907351770347)),
+    # A segment exactly tangent to the sphere whose cosine is exactly 1 and
+    # whose cross product's sign asks for the long way round: MuJoCo's length
+    # is the straight segment's plus 2 pi r, finite (the chunk 3e-1 review's
+    # fix-diff search).
+    "tangent_long_way": dict(x0=(0.25630755772194524, -0.25596568494771627, -0.1189541478111005),
+                x1=(0.28955104644264124, 0.016706109745594777, 0.2028893005753183),
+                xpos=(0.0, 0.0, 0.0), quat=None, r=0.3, side=(0.0, 0.9, 0.0)),
 }
 
 GRAZING = {
@@ -359,6 +368,12 @@ GRAZING = {
                        xpos=(0.0, 0.0, 0.0), quat=None, r=0.1, side=(0.0, 0.3, 0.0)),
     "graze_far": dict(x0=(10.0, 0.09999999990000001, 0.0), x1=(-10.0, 0.09999999990000001, 0.0),
                       xpos=(0.0, 0.0, 0.0), quat=None, r=0.1, side=(0.0, 0.3, 0.0)),
+    # From the chunk 3e-1 review's fix-diff sweep: a turned segment whose
+    # tangent points' cosine rounds past 1 where the cross product's sign asks
+    # for the long way round.
+    "graze_long_way": dict(x0=(-0.12769157502356432, -0.10294111566287134, 1.2196727556762417),
+                           x1=(-0.4914131996808746, 0.4695072280006616, -1.7701901216169733),
+                           xpos=(0.0, 0.0, 0.0), quat=None, r=0.3, side=(0.0, 0.9, 0.0)),
 }
 
 
