@@ -182,7 +182,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-107 | T2 | Runtime interpolation logic -- `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators and sensors. | 10g |
 | DT-108 | T1 | `dyntype` enum gating interpolation eligibility -- restrict which `ActuatorDynamics` variants may use history buffer | 10g |
 | DT-110 | T1 | `actuator_plugin` model array -- per-actuator plugin ID (`int[nu]`, -1 sentinel). Plugin system dependency satisfied. | 10g |
-| DT-118 | T2 | `mj_contactForce()` -- touch sensor force reconstruction via full contact force vector | 10h |
+| DT-118 | T2 | ~~`mj_contactForce()` -- touch sensor force reconstruction via full contact force vector~~ **Done** -- the touch sensor adds each contact's decoded normal force (Rigid-physics chunk 3d-2, ledger L122) | 10h |
 | DT-119 | T2 | Ray-geom intersection filter for touch sensor. Depends on DT-118. | 10h |
 | DT-120 | T1 | `MjObjectType::Camera` -- frame sensor camera support (reftype="camera" currently warns + ignores) | 10h |
 | DT-121 | T1 | `InsideSite` sensor (`mjSENS_INSIDESITE`) -- MuJoCo 3.x sensor type not yet supported | 10h |
@@ -191,7 +191,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-124 | T1 | Muscle sentinel detection for `<general dyntype="muscle">` path (`gainprm[0]==1` quirk). Known conformance divergence. | 10b |
 | DT-125 | T2 | `mj_setConst()` runtime `qpos_spring` recomputation -- currently `qpos_spring` is set at build time and static | ROADMAP_V1 |
 | DT-126 | T1 | Camera user data (`cam_user`/`nuser_cam`) -- per-camera user data (8th element type for `user` attribute) | 10b |
-| DT-127 | T1 | Mixed-sign `solref` validation -- `(solref[0] > 0) ^ (solref[1] > 0)` triggers MuJoCo warning and default replacement. Not validated in CortenForge. | 10c |
+| DT-127 | T1 | ~~Mixed-sign `solref` validation -- `(solref[0] > 0) ^ (solref[1] > 0)` triggers MuJoCo warning and default replacement. Not validated in CortenForge.~~ **Done** -- Rigid-physics chunk 3d-2 (book P37) | 10c |
 | DT-135 | T1 | `needhull_` collision-only hull trigger -- compute convex hulls only for meshes used in collision. Conformance-neutral. | ROADMAP_V1 |
 | DT-139 | T1 | `exactmeshinertia` attribute full removal -- match MuJoCo 3.5.0 schema rejection (currently parsed + warn) | ROADMAP_V1 |
 | DT-144 | T2 | Prism-based hfield collision for flex vertices -- currently uses point-sampling. MuJoCo uses prism-based GJK. | 10i |

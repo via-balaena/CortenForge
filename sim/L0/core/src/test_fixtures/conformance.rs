@@ -732,10 +732,10 @@ pub struct ConstraintOracle {
 /// Build a contact conformance fixture: a free rigid body with `n_contacts`
 /// sphere geoms penetrating a ground plane.
 ///
-/// `impratio` and `mu` are set so the **pyramidal** cases unambiguously expose
-/// the GPU R-scaling defect: CPU computes `Rpy = 2·mu_reg²·R[first]` with
-/// `mu_reg = mu·√(1/impratio)`, while the GPU does not apply that facet scaling
-/// — the gap is well above tolerance for `mu ≠ 1`, `impratio ≠ 1`.
+/// `impratio` and `mu` are set so the **pyramidal** cases see the facet
+/// R-scaling: `Rpy = 2·mu_reg²·R[first]` with `mu_reg = mu·√(R[1]/R[first])`
+/// and `R[1] = R[first]/impratio`, which is not `R[first]` unless
+/// `2·mu²/impratio = 1`.
 /// `diagapprox_bodyweight` is enabled so the *base* diagonal matches the GPU's
 /// bodyweight approximation (a documented MuJoCo option, not a port bug),
 /// leaving R-scaling as the sole `efc_d` divergence. `mu_torsion` sets the
@@ -863,7 +863,7 @@ fn contact_fixture(
 /// - `contact_torsional` (condim=4, 6 rows): adds the torsional facet pair. Its
 ///   `efc_d` R-scaling exposes whether the GPU uses `mu[0]` (slide) or `mu[2]`
 ///   (torsion) for the facet `mu_reg` — CPU uses `mu[0]` for ALL facets
-///   (`postprocess_pyramidal_r_scaling`), so the torsional R-override must too.
+///   (`regularize_cones`), so the torsional R-override must too.
 #[must_use]
 pub fn contact_conformance_matrix() -> Vec<ContactConformanceCase> {
     vec![
@@ -890,6 +890,135 @@ pub fn contact_conformance_matrix() -> Vec<ContactConformanceCase> {
 #[must_use]
 pub fn contact_damped_case() -> ContactConformanceCase {
     contact_fixture("contact_pyramidal_damped", 3, 0.8, 0.005, 2.0, 1, 2.0)
+}
+
+/// Two-body hinged chains lighter than 1e-10, about mjMINVAL (1e-15).
+///
+/// Each body weighs 1e-12, 1e-14 or 1e-16, the second 0.6 along x from the
+/// first, so the first two subtrees are heavier than mjMINVAL and the third
+/// lighter. MuJoCo's `mj_comPos` scales by the reciprocal of the mass and
+/// takes the body's own centre of mass only below mjMINVAL: the first two
+/// chains' centre of mass is the two bodies', not the first body's; the
+/// third's is the first body's.
+#[must_use]
+pub fn light_subtree_cases() -> Vec<ConformanceCase> {
+    vec![
+        light_subtree("light_subtree", 1e-12),
+        light_subtree("light_subtree_1e-14", 1e-14),
+        light_subtree("light_subtree_1e-16", 1e-16),
+    ]
+}
+
+fn light_subtree(name: &'static str, tiny: f64) -> ConformanceCase {
+    let mut m = Model::empty();
+    let a = add_body(
+        &mut m,
+        0,
+        "a",
+        Vector3::zeros(),
+        tiny,
+        Vector3::repeat(tiny),
+        Vector3::zeros(),
+    );
+    add_hinge_joint(
+        &mut m,
+        a,
+        "ha",
+        Vector3::y(),
+        0.0,
+        0.0,
+        0.0,
+        false,
+        (-3.0, 3.0),
+    );
+    let b = add_body(
+        &mut m,
+        a,
+        "b",
+        Vector3::new(0.6, 0.0, 0.0),
+        tiny,
+        Vector3::repeat(tiny),
+        Vector3::zeros(),
+    );
+    add_hinge_joint(
+        &mut m,
+        b,
+        "hb",
+        Vector3::y(),
+        0.0,
+        0.0,
+        0.0,
+        false,
+        (-3.0, 3.0),
+    );
+    finalize(&mut m);
+    ConformanceCase {
+        name,
+        model: m,
+        qpos: vec![0.3, -0.4],
+        qvel: vec![0.5, 0.2],
+    }
+}
+
+/// A simple body with two slides along its x axis.
+///
+/// The body is a root whose inertial frame is its frame. Each slide's row
+/// of the mass matrix is its diagonal alone (MuJoCo's `mj_crb`), so `qM`
+/// does not couple the two.
+#[must_use]
+pub fn two_slides_case() -> ConformanceCase {
+    let mut m = Model::empty();
+    let b = add_body(
+        &mut m,
+        0,
+        "slider",
+        Vector3::zeros(),
+        1.1,
+        Vector3::new(0.1, 0.2, 0.3),
+        Vector3::zeros(),
+    );
+    add_slide_joint(&mut m, b, "s0", Vector3::x(), 0.0, 0.0, 0.0);
+    add_slide_joint(&mut m, b, "s1", Vector3::x(), 0.0, 0.0, 0.0);
+    finalize(&mut m);
+    ConformanceCase {
+        name: "two_slides",
+        model: m,
+        qpos: vec![0.2, -0.1],
+        qvel: vec![0.7, -0.3],
+    }
+}
+
+/// A contact whose lever arm lies within 1e-6 of its length of the normal.
+///
+/// `contact_normal_only` with its sphere 3 below the body's origin and
+/// 2e-6 along x, the body raised by 3: the arm from the origin to the
+/// contact point (3.09 long) is 2e-6 off the normal. (An offset below 1e-6
+/// is no offset: MuJoCo's compiler takes the geom's frame as its body's,
+/// `kFrameEps`.)
+#[must_use]
+pub fn contact_lever_arm_case() -> ContactConformanceCase {
+    let mut case = contact_fixture("contact_lever_arm", 1, 0.0, 0.005, 1.0, 1, 0.0);
+    let sphere = case.model.ngeom - 1;
+    case.model.geom_pos[sphere] = Vector3::new(2e-6, 0.0, -3.0);
+    // The geom's frame is no longer its body's (`geom_sameframe`).
+    case.model.compute_simple_bodies();
+    case.qpos[2] += 3.0;
+    case
+}
+
+/// A pyramidal contact whose facets' R is below mjMINVAL.
+///
+/// `contact_pyramidal` with friction 1e-5 and its body 1e5 times heavier:
+/// each facet's R, `2·mu_reg²·R[first]`, is about 5e-17, which MuJoCo's
+/// `mj_makeImpedance` does not clamp.
+#[must_use]
+pub fn contact_tiny_facet_case() -> ContactConformanceCase {
+    let mut case = contact_fixture("contact_tiny_facet", 3, 1e-5, 0.005, 2.0, 1, 0.0);
+    case.model.body_mass[1] *= 1e5;
+    case.model.body_inertia[1] *= 1e5;
+    finalize(&mut case.model);
+    case.model.compute_invweight0();
+    case
 }
 
 /// Whether the last forward pass solved its rows with Newton and stopped on
@@ -1238,6 +1367,70 @@ mod tests {
             max_diff > 5e-4,
             "damping barely perturbs the rollout (max |Δqvel| vs undamped = {max_diff:.2e}); \
              the damped GPU conformance test would not discriminate the eulerdamp path"
+        );
+    }
+
+    /// The fixtures sim-gpu's tests take for single CPU rules (ledger L133's
+    /// three, and the pyramidal facets' R) hold what their docs say, on the
+    /// CPU: the light chains' subtrees weigh between mjMINVAL and 1e-10, and
+    /// between mjMINVAL and 1e-13, and their centre of mass is 0.25 or more
+    /// from the first body's; the lightest's is below mjMINVAL and its centre
+    /// of mass the first body's; the slider is
+    /// simple and its `qM` uncoupled; the contact's arm from the body's origin
+    /// is 3.09 long and 2e-6 off the normal, within 1e-6 of its length; the
+    /// tiny facets' R is between 1e-17 and 1e-16.
+    #[test]
+    fn cpu_rule_fixtures_hold_what_their_docs_say() {
+        let forward = |case: &super::ConformanceCase| {
+            let mut data = case.model.make_data();
+            data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+            data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+            data.forward(&case.model).expect("fixture forward");
+            data
+        };
+
+        let cases = super::light_subtree_cases();
+        let (light, lighter, below) = (&cases[0], &cases[1], &cases[2]);
+        let data = forward(light);
+        let mass = data.subtree_mass[1];
+        assert!(mass > 1e-15 && mass < 1e-10, "subtree mass {mass:e}");
+        assert!((data.subtree_com[1] - data.xipos[1]).norm() > 0.25);
+        let data = forward(lighter);
+        let mass = data.subtree_mass[1];
+        assert!(mass > 1e-15 && mass < 1e-13, "subtree mass {mass:e}");
+        assert!((data.subtree_com[1] - data.xipos[1]).norm() > 0.25);
+        let data = forward(below);
+        let mass = data.subtree_mass[1];
+        assert!(mass > 0.0 && mass < 1e-15, "subtree mass {mass:e}");
+        assert_eq!(data.subtree_com[1], data.xipos[1], "below mjMINVAL");
+
+        let case = super::two_slides_case();
+        assert!(case.model.dof_simplenum.iter().all(|&n| n > 0));
+        let data = forward(&case);
+        assert_eq!((data.qM[(0, 1)], data.qM[(1, 0)]), (0.0, 0.0));
+
+        let case = super::contact_lever_arm_case();
+        let mut data = case.model.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+        data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+        data.forward(&case.model).expect("fixture forward");
+        let contact = &data.contacts[0];
+        let arm = contact.pos - data.xpos[1];
+        let off = (arm - contact.normal * arm.dot(&contact.normal)).norm();
+        assert!((arm.norm() - 3.09).abs() < 1e-9, "arm {}", arm.norm());
+        assert!((off - 2e-6).abs() < 1e-12, "off the normal by {off:e}");
+        assert!(off < 1e-6 * arm.norm());
+
+        let case = super::contact_tiny_facet_case();
+        let mut data = case.model.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&case.qpos);
+        data.qvel.as_mut_slice().copy_from_slice(&case.qvel);
+        data.forward(&case.model).expect("fixture forward");
+        assert_eq!(data.efc_R.len(), 4, "condim 3 makes four facets");
+        assert!(
+            data.efc_R.iter().all(|&r| r > 1e-17 && r < 1e-16),
+            "facet R {:?}",
+            data.efc_R
         );
     }
 }

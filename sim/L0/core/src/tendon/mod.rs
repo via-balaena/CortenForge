@@ -16,9 +16,16 @@ use crate::forward::mj_fwd_position;
 
 /// Compute tendon lengths and Jacobians from current joint state.
 ///
-/// For fixed tendons: `L = Σ coef_i * qpos[dof_adr_i]`, `J[dof_adr_i] = coef_i`.
+/// For fixed tendons: `L = Σ coef_i * qpos[dof_adr_i]`, `J[dof_adr_i] = coef_i`
+/// (a joint named twice: the dense row keeps its last coefficient, the
+/// sparse row adds them, as MuJoCo's `mj_tendon`).
 /// For spatial tendons: 3D pairwise routing via `mj_fwd_tendon_spatial()`,
 /// with wrap visualization data (`wrap_xpos`/`wrap_obj`, §40b).
+///
+/// As MuJoCo's `mj_tendon` (`engine_core_smooth.c:928-950`), every tendon's
+/// length, Jacobian row and chain are cleared first, and a sleeping tendon
+/// is skipped while some tree sleeps: its length and row stay 0, so it
+/// makes no constraint rows, and its wrap path keeps its last address.
 ///
 /// Called from mj_fwd_position() after site transforms and the subtree COM.
 pub(crate) fn mj_fwd_tendon(model: &Model, data: &mut Data) {
@@ -26,8 +33,18 @@ pub(crate) fn mj_fwd_tendon(model: &Model, data: &mut Data) {
         return;
     }
 
+    data.ten_length.fill(0.0);
+    for row in &mut data.ten_J {
+        row.fill(0.0);
+    }
+    data.ten_J_rownnz.fill(0);
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
+
     let mut wrapcount: usize = 0;
     for t in 0..model.ntendon {
+        if sleep_filter && crate::island::tendon_asleep(model, data, t) {
+            continue;
+        }
         match model.tendon_type[t] {
             TendonType::Fixed => {
                 data.ten_wrapadr[t] = wrapcount;

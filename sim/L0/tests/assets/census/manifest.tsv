@@ -1740,3 +1740,11 @@ b7b1d868a3f151e4	sim/L0/tests/integration/fluid_derivatives.rs:1395
 91563743601ec523	sim/L0/tests/integration/jacobian_parity.rs:313
 919e85c20123d9ff	sim/L0/tests/integration/empty_rows_parity.rs:203
 286b5b47ad2618b3	sim/L0/tests/integration/runtime_flags.rs:333
+0289228fc53453cc	sim/L0/mjcf/src/builder/equality.rs:525
+6342adaf75be64c3	sim/L0/tests/integration/derivatives.rs:4756
+24c46590c3958932	sim/L0/tests/integration/derivatives.rs:4815
+7f69344f29005a00	sim/L0/tests/integration/sleep_parity.rs:1320
+aa8cad299762278f	sim/L0/tests/integration/derivatives.rs:4892
+fcdd943a686639d0	sim/L0/tests/integration/sleep_parity.rs:1296
+7c973d9ff749f189	sim/L0/tests/integration/sleep_parity.rs:1444
+c5548f6e8037d9a3	sim/L0/tests/integration/sleep_parity.rs:1495

@@ -15,11 +15,11 @@ Data::step():
   1. forward()
      a. mj_fwd_position    — Forward kinematics (skips sleeping bodies);
                               the wake functions run in this stage (see Sleeping)
+        mj_fwd_tendon       — Tendon lengths + Jacobians + wrap visualization data (inside mj_fwd_position)
         mj_crba             — Mass matrix (selective CRBA, skips sleeping subtrees)
-        mj_fwd_tendon       — Tendon lengths + Jacobians + wrap visualization data
         mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
         mj_make_constraint  — Constraint rows and their islands, after the wakes
-        mj_transmission_body_dispatch — Body transmission moment arms (§36, requires contacts)
+        mj_transmission_*   — Actuator lengths and moments, after the wakes (body: from the contacts, §36)
      b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
         mj_actuator_velocity — Actuator velocities (lengths are set in the position stage)
         mj_fwd_passive      — Spring and damper forces (skips sleeping DOFs);
@@ -256,8 +256,8 @@ stored unclamped.
     if transmission[i] == Joint:
         qfrc_actuator[dof_adr] += gear * force
     elif transmission[i] == Tendon:
-        for w in tendon_wrap_range:
-            qfrc_actuator[wrap_objid[w]] += gear * wrap_prm[w] * force  # J^T
+        for dof where ten_J[t][dof] != 0:
+            qfrc_actuator[dof] += (ten_J[t][dof] * gear) * force  # moment^T
     elif transmission[i] == Site:
         J = mj_jac_site(model, data, site_id)   # 6×nv Jacobian
         qfrc_actuator += gear . J^T * force      # 6D wrench projection
@@ -441,9 +441,9 @@ ten_force[t] = frc_spring
                - damping * ten_velocity
                - frictionloss * tanh(ten_velocity * friction_smoothing)
 
-qfrc_passive[dof] += coef * ten_force    # for each wrap entry
+qfrc_passive[dof] += ten_J[t][dof] * ten_force    # J^T
 ```
-Note: in `ImplicitSpringDamper` mode, `ten_force[t]` is always computed for
+Note: in `ImplicitSpringDamper` mode, `ten_force[t]` is computed for
 diagnostic purposes, but the explicit `qfrc_passive` application is skipped —
 the forces are instead handled implicitly via non-diagonal `K_tendon = k·J^T·J`
 and `D_tendon = b·J^T·J` matrices in `mj_fwd_acceleration_implicit()` and
@@ -1043,6 +1043,8 @@ When `ENABLE_SLEEP` is set, pipeline stages use awake-index indirection
 | FK (`mj_fwd_position`) | Sleeping bodies: poses frozen, not recomputed |
 | Collision (`mj_collision`) | Both bodies asleep, or one asleep and the other static: pair skipped |
 | Velocity (`mj_fwd_velocity`) | Sleeping DOFs: spatial velocity not updated |
+| Tendons (`mj_fwd_tendon`) | A tendon whose trees all sleep: length and Jacobian 0, no rows made |
+| Transmission | A sleeping actuator: length kept, moment row 0 |
 | Passive forces (`mj_fwd_passive`) | Sleeping DOFs: spring/damper/friction skipped |
 | Integration | Sleeping joints: qpos/qvel not updated |
 | Actuation | A sleeping actuator: no force, its `act_dot` kept |

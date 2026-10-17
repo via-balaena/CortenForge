@@ -36,7 +36,9 @@ pub mod collision_performance;
 pub mod equality_constraints;
 
 /// Constraint impedance against MuJoCo 3.5.0: one impedance from the norm of
-/// a connect's or a weld's violation, and a row's from `pos - margin`.
+/// a connect's or a weld's violation, a row's from `pos - margin`, solref's
+/// format checks, the impedance's exact tests, the cones' R and μ, every
+/// row's diagApprox from its R, and a weld's torquescale.
 pub mod impedance_parity;
 
 // ============================================================================
@@ -195,8 +197,8 @@ pub mod newton_solver;
 /// pipeline skip, sensor freezing, batch independence.
 pub mod sleeping;
 
-/// Sleep against MuJoCo 3.5.0: kinematic trees, automatic sleep policies and
-/// body sleep states.
+/// Sleep against MuJoCo 3.5.0: kinematic trees, automatic sleep policies,
+/// body sleep states, sleeping tendons and actuators, and a woken tree's.
 pub mod sleep_parity;
 
 /// Sleep under RK4: a sleeping tree stays asleep (registry `D-RK4-SLEEP`).
@@ -226,7 +228,7 @@ pub mod empty_rows_parity;
 pub mod reference_rows_parity;
 
 /// A flex's edge rows from a flex equality, as MuJoCo's: one per non-rigid
-/// edge, `flexedge_invweight0` as the diagonal approximation.
+/// edge, R from `flexedge_invweight0` and the diagonal approximation from R.
 pub mod flex_equality_rows;
 
 /// Newton and CG against MuJoCo 3.5.0's primal solver: bit for bit given its
@@ -255,7 +257,8 @@ pub mod unified_solvers;
 /// Phase 13 Spec B — PGS early termination, solver_stat, Newton regression.
 pub mod pgs_spec_b;
 
-/// Regression: elliptic contact friction rows inherit normal-row regularization.
+/// Regression: elliptic contact friction rows' regularization, the normal
+/// row's at impratio 1 and equal sliding frictions.
 pub mod elliptic_friction_regularization;
 
 // ============================================================================
@@ -352,9 +355,14 @@ pub mod accumulator_parity;
 /// the off-centre ball, `xanchor`/`xaxis`, and its arithmetic.
 pub mod kinematics_parity;
 
-/// Tendons against MuJoCo 3.5.0: the spring length at `qpos_spring`, and the
-/// plane of a sphere wrap whose points lie on a line through its centre.
+/// Tendons against MuJoCo 3.5.0: the spring length at `qpos_spring`, the
+/// wraps over spheres and cylinders, the velocities, a fixed tendon naming a
+/// joint twice, and the force of a tendon motor.
 pub mod tendon_parity;
+
+/// The touch sensor against MuJoCo 3.5.0: each contact's normal force,
+/// decoded from its rows, then added.
+pub mod touch_parity;
 
 /// Transition derivatives on quaternion joints against MuJoCo 3.5.0: the
 /// finite differences' tangent convention and `mjd_quatIntegrate`.
@@ -366,6 +374,13 @@ pub mod quaternion_transition;
 
 /// Inverse dynamics tests: round-trip, gravity-only, free body.
 pub mod inverse_dynamics;
+
+/// Inverse dynamics against MuJoCo 3.5.0: the constraint force from `qacc`,
+/// `mjd_inverseFD`, and the fwdinv comparison.
+pub mod inverse_parity;
+
+/// Runtime flags against MuJoCo 3.5.0, each on a scene the flag changes.
+pub mod flag_parity;
 
 // ============================================================================
 // DT-79 User Callback Tests

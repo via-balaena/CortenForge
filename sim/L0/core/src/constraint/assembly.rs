@@ -10,7 +10,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::{
-    MJ_MINVAL, ball_limit_axis_angle, compute_diag_approx_exact, compute_impedance,
+    MJ_MINVAL, ball_limit_axis_angle, checked_solref, compute_diag_approx_exact, compute_impedance,
     compute_regularization,
 };
 use crate::quat::qpos_quat;
@@ -20,7 +20,7 @@ use crate::types::{
     DISABLE_LIMIT, Data, EqualityType, MjJointType, Model,
 };
 
-use super::contact_assembly::{assemble_contact_rows, postprocess_pyramidal_r_scaling};
+use super::contact_assembly::{assemble_contact_rows, regularize_cones};
 use super::equality_assembly::assemble_equality_rows;
 
 /// Compute the deadband displacement for a tendon (DT-35).
@@ -45,7 +45,8 @@ pub fn tendon_deadband_displacement(length: f64, range: [f64; 2]) -> f64 {
 ///
 /// This is the shared finalizer called for every constraint row after the
 /// Jacobian and position error have been written into the `efc_*` arrays. It
-/// pushes type/pos/margin/solref/solimp/floss/mu/dim/id and computes
+/// pushes type/pos/margin/solref/solimp/floss/mu/dim/id, the solref as
+/// MuJoCo's `getsolparam` checks it ([`checked_solref`]), and computes
 /// impedance and regularization. The velocity and the reference acceleration
 /// are every row's at once ([`crate::constraint::mj_reference_constraint`]).
 ///
@@ -114,7 +115,7 @@ pub fn finalize_constraint_row_imp(
     data.efc_type.push(ctype);
     data.efc_pos.push(pos);
     data.efc_margin.push(margin);
-    data.efc_solref.push(solref);
+    data.efc_solref.push(checked_solref(solref));
     data.efc_solimp.push(solimp);
     data.efc_floss.push(floss);
     data.efc_mu.push(mu_val);
@@ -171,8 +172,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
     let frictionloss_disabled = disabled(model, DISABLE_FRICTIONLOSS);
     let limit_disabled = disabled(model, DISABLE_LIMIT);
     // Rows of sleeping equalities, dof friction and joint limits are not made
-    // (MuJoCo `engine_core_constraint.c:389-413, 700-716, 767-783`); tendon
-    // friction and limit rows are.
+    // (MuJoCo `engine_core_constraint.c:389-413, 700-716, 767-783`); a
+    // sleeping tendon's friction and limit rows are dropped as empty, its row
+    // 0 (`mj_fwd_tendon`).
     let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     let asleep_dofs: Vec<bool> = if sleep_filter {
         (0..nv)
@@ -561,14 +563,10 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
 
     // --- 3f: Contacts (S4.1 Site 2: defense-in-depth guard on DISABLE_CONTACT) ---
     let contacts = data.contacts.clone(); // Clone to avoid borrow conflict
-    let pyramidal_ranges = if contact_disabled {
-        Vec::new()
-    } else {
-        let ranges = assemble_contact_rows(model, data, nv, &mut row, &contacts);
-        postprocess_pyramidal_r_scaling(model, data, &contacts, &ranges);
-        ranges
-    };
-    let _ = pyramidal_ranges; // suppress unused warning when contacts disabled
+    if !contact_disabled {
+        let cones = assemble_contact_rows(model, data, nv, &mut row, &contacts);
+        regularize_cones(model, data, &cones);
+    }
 
     // The count includes constraints whose rows turned out empty.
     debug_assert!(row <= nefc, "Row count mismatch in constraint assembly");
@@ -576,6 +574,14 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
         truncate_rows(data, row);
     }
     let nefc = row;
+
+    // D = 1/R, and every row's diagApprox made from its R, so that
+    // R = (1 − imp)/imp·diagApprox holds (MuJoCo's `mj_makeImpedance`,
+    // `engine_core_constraint.c:1570-1578`).
+    for i in 0..nefc {
+        data.efc_D[i] = 1.0 / data.efc_R[i];
+        data.efc_diagApprox[i] = data.efc_R[i] * data.efc_imp[i] / (1.0 - data.efc_imp[i]);
+    }
 
     // === Phase 4: Count ne/nf for solver dispatch (§29.4) ===
     // Ordering: [0..ne) = equality+flex, [ne..ne+nf) = friction, [ne+nf..nefc) = limits+contacts

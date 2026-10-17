@@ -4,10 +4,10 @@
 //! `engine_core_smooth.c`, including Jacobian accumulation and
 //! tendon force application.
 
-use super::wrap_math::{WrapResult, cylinder_wrap, sphere_wrap};
+use super::wrap_math::{Wrap, WrapShape, mju_wrap};
 use crate::jacobian::{mark_merged_chain, mj_jac};
 use crate::quat::normalize3;
-use crate::types::{Data, GeomType, Model, TendonType, WrapType};
+use crate::types::{Data, GeomType, Model, WrapType};
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 
 /// Spatial tendon kinematics for a single tendon.
@@ -113,105 +113,81 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
             let p1 = data.site_xpos[id1];
             let body1 = model.site_body[id1];
 
-            // Transform site positions into geom-local frame
-            let geom_pos = data.geom_xpos[geom_id];
-            let geom_mat = data.geom_xmat[geom_id];
-            let p0_local = geom_mat.transpose() * (p0 - geom_pos);
-            let p1_local = geom_mat.transpose() * (p1 - geom_pos);
-
-            // Resolve sidesite (if specified) in geom-local frame
-            #[allow(clippy::if_not_else)] // Matches spec pseudocode ordering (§4.3).
-            let sidesite_local = if model.wrap_sidesite[adr + j + 1] != usize::MAX {
-                let ss_id = model.wrap_sidesite[adr + j + 1];
-                Some(geom_mat.transpose() * (data.site_xpos[ss_id] - geom_pos))
-            } else {
-                None
-            };
-
-            // Dispatch to wrapping geometry
-            let wrap_result = match model.geom_type[geom_id] {
-                GeomType::Sphere => sphere_wrap(
-                    p0_local,
-                    p1_local,
-                    model.geom_size[geom_id].x,
-                    sidesite_local,
-                ),
-                GeomType::Cylinder => cylinder_wrap(
-                    p0_local,
-                    p1_local,
-                    model.geom_size[geom_id].x,
-                    sidesite_local,
-                ),
+            let shape = match model.geom_type[geom_id] {
+                GeomType::Sphere => WrapShape::Sphere,
+                GeomType::Cylinder => WrapShape::Cylinder,
                 _ => unreachable!("wrapping geom type validated at model build"),
             };
+            let sidesite = model.wrap_sidesite[adr + j + 1];
+            let side = (sidesite != usize::MAX).then(|| data.site_xpos[sidesite]);
+            let wrap = mju_wrap(
+                &p0,
+                &p1,
+                &data.geom_xpos[geom_id],
+                &data.geom_xmat[geom_id],
+                model.geom_size[geom_id].x,
+                shape,
+                side.as_ref(),
+            );
 
-            match wrap_result {
-                WrapResult::Wrapped {
-                    tangent_point_1,
-                    tangent_point_2,
-                    arc_length,
-                } => {
-                    // Transform tangent points back to world frame
-                    let t1 = geom_pos + geom_mat * tangent_point_1;
-                    let t2 = geom_pos + geom_mat * tangent_point_2;
+            if let Some(Wrap {
+                points: [t1, t2],
+                length: arc_length,
+            }) = wrap
+            {
+                // §40b: store 3 points: site0, tangent₁, tangent₂
+                debug_assert!(
+                    *wrapcount + 2 < data.wrap_xpos.len(),
+                    "wrap path overflow: wrapcount+2={} >= capacity={}",
+                    *wrapcount + 2,
+                    data.wrap_xpos.len()
+                );
+                data.wrap_xpos[*wrapcount] = p0;
+                data.wrap_obj[*wrapcount] = -1;
+                data.wrap_xpos[*wrapcount + 1] = t1;
+                data.wrap_obj[*wrapcount + 1] = geom_id as i32;
+                data.wrap_xpos[*wrapcount + 2] = t2;
+                data.wrap_obj[*wrapcount + 2] = geom_id as i32;
+                data.ten_wrapnum[t] += 3;
+                *wrapcount += 3;
 
-                    // §40b: store 3 points: site0, tangent₁, tangent₂
-                    debug_assert!(
-                        *wrapcount + 2 < data.wrap_xpos.len(),
-                        "wrap path overflow: wrapcount+2={} >= capacity={}",
-                        *wrapcount + 2,
-                        data.wrap_xpos.len()
-                    );
-                    data.wrap_xpos[*wrapcount] = p0;
-                    data.wrap_obj[*wrapcount] = -1;
-                    data.wrap_xpos[*wrapcount + 1] = t1;
-                    data.wrap_obj[*wrapcount + 1] = geom_id as i32;
-                    data.wrap_xpos[*wrapcount + 2] = t2;
-                    data.wrap_obj[*wrapcount + 2] = geom_id as i32;
-                    data.ten_wrapnum[t] += 3;
-                    *wrapcount += 3;
+                // 3 sub-segments: [p0→t1, t1→t2 (arc), t2→p1]
+                let d1 = t1 - p0;
+                let dist1 = d1.norm();
+                let d3 = p1 - t2;
+                let dist3 = d3.norm();
+                total_length += (dist1 + arc_length + dist3) / divisor;
 
-                    // 3 sub-segments: [p0→t1, t1→t2 (arc), t2→p1]
-                    let d1 = t1 - p0;
-                    let dist1 = d1.norm();
-                    let d3 = p1 - t2;
-                    let dist3 = d3.norm();
-                    total_length += (dist1 + arc_length + dist3) / divisor;
+                // Sub-segment 1: p0 (body0) → t1 (geom_body)
+                add_segment_jacobian(
+                    model, data, t, &mut chain, body0, &p0, geom_body, &t1, divisor,
+                );
 
-                    // Sub-segment 1: p0 (body0) → t1 (geom_body)
-                    add_segment_jacobian(
-                        model, data, t, &mut chain, body0, &p0, geom_body, &t1, divisor,
-                    );
+                // Sub-segment 2: t1 → t2 (arc on geom surface)
+                // Both endpoints on geom_body → Jacobian difference is zero.
 
-                    // Sub-segment 2: t1 → t2 (arc on geom surface)
-                    // Both endpoints on geom_body → Jacobian difference is zero.
+                // Sub-segment 3: t2 (geom_body) → p1 (body1)
+                add_segment_jacobian(
+                    model, data, t, &mut chain, geom_body, &t2, body1, &p1, divisor,
+                );
+            } else {
+                // §40b: store 1 point: site0 only (straight line, no tangent points)
+                debug_assert!(
+                    *wrapcount < data.wrap_xpos.len(),
+                    "wrap path overflow: wrapcount={} >= capacity={}",
+                    *wrapcount,
+                    data.wrap_xpos.len()
+                );
+                data.wrap_xpos[*wrapcount] = p0;
+                data.wrap_obj[*wrapcount] = -1;
+                data.ten_wrapnum[t] += 1;
+                *wrapcount += 1;
 
-                    // Sub-segment 3: t2 (geom_body) → p1 (body1)
-                    add_segment_jacobian(
-                        model, data, t, &mut chain, geom_body, &t2, body1, &p1, divisor,
-                    );
-                }
-                WrapResult::NoWrap => {
-                    // §40b: store 1 point: site0 only (straight line, no tangent points)
-                    debug_assert!(
-                        *wrapcount < data.wrap_xpos.len(),
-                        "wrap path overflow: wrapcount={} >= capacity={}",
-                        *wrapcount,
-                        data.wrap_xpos.len()
-                    );
-                    data.wrap_xpos[*wrapcount] = p0;
-                    data.wrap_obj[*wrapcount] = -1;
-                    data.ten_wrapnum[t] += 1;
-                    *wrapcount += 1;
-
-                    // No wrapping — straight segment p0 → p1
-                    let diff = p1 - p0;
-                    let dist = diff.norm();
-                    total_length += dist / divisor;
-                    add_segment_jacobian(
-                        model, data, t, &mut chain, body0, &p0, body1, &p1, divisor,
-                    );
-                }
+                // No wrapping — straight segment p0 → p1
+                let diff = p1 - p0;
+                let dist = diff.norm();
+                total_length += dist / divisor;
+                add_segment_jacobian(model, data, t, &mut chain, body0, &p0, body1, &p1, divisor);
             }
 
             j += 2; // advance past the geom to site1 (becomes type0 next)
@@ -244,7 +220,13 @@ pub fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount
     }
 
     data.ten_length[t] = total_length;
-    data.ten_J_rownnz[t] = chain.iter().filter(|&&c| c).count();
+    let adr = t * model.nv;
+    let mut nnz = 0;
+    for dof in (0..model.nv).filter(|&dof| chain[dof]) {
+        data.ten_J_colind[adr + nnz] = dof;
+        nnz += 1;
+    }
+    data.ten_J_rownnz[t] = nnz;
 }
 
 /// Add a straight segment's term to tendon `t`'s Jacobian, as MuJoCo 3.5.0's
@@ -287,39 +269,14 @@ fn add_segment_jacobian(
     }
 }
 
-/// Map a scalar tendon force to generalized forces via J^T.
-///
-/// For `TendonType::Fixed`, uses the sparse wrap-array pattern (DOF addresses
-/// and coefficients stored in `wrap_objid`/`wrap_prm`). For
-/// `TendonType::Spatial`, uses the dense Jacobian row `ten_j` computed by
-/// `mj_fwd_tendon_spatial()`.
-pub fn apply_tendon_force(
-    model: &Model,
-    ten_j: &DVector<f64>,
-    tendon_type: TendonType,
-    t: usize,
-    force: f64,
-    target: &mut DVector<f64>,
-) {
-    match tendon_type {
-        TendonType::Fixed => {
-            let adr = model.tendon_adr[t];
-            let num = model.tendon_num[t];
-            for w in adr..(adr + num) {
-                let dof_adr = model.wrap_objid[w];
-                let coef = model.wrap_prm[w];
-                if dof_adr < model.nv {
-                    target[dof_adr] += coef * force;
-                }
-            }
-        }
-        TendonType::Spatial => {
-            for dof in 0..model.nv {
-                let j = ten_j[dof];
-                if j != 0.0 {
-                    target[dof] += j * force;
-                }
-            }
+/// Map a scalar tendon force to generalized forces via the tendon's
+/// Jacobian row `ten_j` (`target += ten_j · force`, a zero entry skipped), as
+/// MuJoCo applies a tendon's forces through `ten_J` for a fixed tendon as for
+/// a spatial one.
+pub fn apply_tendon_force(ten_j: &DVector<f64>, force: f64, target: &mut DVector<f64>) {
+    for (dof, &j) in ten_j.iter().enumerate() {
+        if j != 0.0 {
+            target[dof] += j * force;
         }
     }
 }

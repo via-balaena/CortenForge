@@ -27,7 +27,6 @@ use crate::forward::{
 use crate::forward::{mj_implicit_factor, mj_implicit_solve, solve_implicit};
 use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::isd_damping;
-use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
@@ -150,8 +149,12 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     // tendon damping forces are folded into the implicit K/D matrices (not
     // skipped), so the velocity derivative is always physically present.
     for t in 0..model.ntendon {
-        // §40c: Skip tendon if ALL target DOFs are sleeping.
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+        // A sleeping tendon adds no damping, as MuJoCo's `mjd_passive_vel`
+        // (`engine_derivative.c:1698`, `:1763-1770`): one in one sleeping
+        // tree, or two both asleep; a static one is kept, its row 0.
+        if crate::island::constraint_sleep_filter(model, data)
+            && crate::island::tendon_asleep(model, data, t)
+        {
             continue;
         }
         let b = model.tendon_damping[t];
@@ -1003,9 +1006,17 @@ pub fn mjd_passive_pos(model: &Model, data: &mut Data) {
     //    arbitrary site/geom/pulley wrap paths is intractable).
     let has_spring = model.disableflags & DISABLE_SPRING == 0;
     let has_damper = model.disableflags & DISABLE_DAMPER == 0;
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     let mut tendon_force = vec![0.0; model.ntendon];
     let mut tendon_dforce_dv = vec![0.0; model.ntendon];
     for t in 0..model.ntendon {
+        // A sleeping tendon adds no derivative: `mj_fwd_tendon` skips it by
+        // the same rule, so its length and row are 0 and the passive forces
+        // apply none of its spring. (Its row being 0 is not the test: an
+        // awake tendon's can be 0 too, and its spring's ∂J/∂q term is not.)
+        if sleep_filter && crate::island::tendon_asleep(model, data, t) {
+            continue;
+        }
         let damping = model.tendon_damping[t];
         if has_damper && damping != 0.0 {
             tendon_force[t] -= damping * data.ten_velocity[t];

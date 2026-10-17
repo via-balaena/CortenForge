@@ -4745,3 +4745,188 @@ fn smooth_pos_takes_ball_and_free_joint_transmissions() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A spatial tendon from a world site to a tree asleep from the reset, its
+/// spring stretched past its length when awake: asleep, the tendon has no
+/// length or row and the passive forces apply none of its spring, as
+/// MuJoCo's, so `mjd_smooth_pos` adds no term of it either: `qDeriv_pos`
+/// is the same model's with the spring's stiffness 0, bit for bit. With
+/// sleep disabled (the tree awake) the two differ.
+#[test]
+fn a_sleeping_tendon_adds_no_position_derivative() {
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 0"><flag sleep="enable"/></option>
+      <worldbody>
+        <site name="w" pos="0 0.5 1.4"/>
+        <body name="a" pos="0 0 1" sleep="init">
+          <joint name="ja" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sa" pos="0.3 0 0"/>
+        </body>
+        <body name="b" pos="1 0 1">
+          <joint name="jb" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t" stiffness="50" springlength="0.2 0.3">
+          <site site="w"/><site site="sa"/>
+        </spatial>
+      </tendon>
+    </mujoco>"#;
+    let derivative = |stiffness: f64, sleep: bool| {
+        let mut model = sim_mjcf::load_model(xml).expect("load");
+        model.tendon_stiffness[0] = stiffness;
+        if !sleep {
+            model.enableflags &= !sim_core::ENABLE_SLEEP;
+        }
+        let mut data = model.make_data();
+        data.qvel[1] = 0.3;
+        data.forward(&model).expect("forward");
+        if sleep {
+            assert!(
+                !data.tree_awake[0] && data.tree_awake[1],
+                "tree a asleep, b awake"
+            );
+            assert_eq!(data.ten_length[0], 0.0, "the sleeping tendon has no length");
+        }
+        mjd_smooth_pos(&model, &mut data);
+        data.qDeriv_pos
+            .iter()
+            .map(|x| x.to_bits())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(derivative(50.0, true), derivative(0.0, true), "qDeriv_pos");
+    assert_ne!(
+        derivative(50.0, false),
+        derivative(0.0, false),
+        "awake, the spring's term shows"
+    );
+}
+
+/// An awake spatial tendon whose row is 0 at this state (its site moves
+/// square to it), its spring engaged, with sleep enabled, every tree awake
+/// and then the other tree asleep from the reset: its term through ∂J/∂q
+/// stays, `qDeriv_pos` bit for bit the same model's with sleep disabled,
+/// and −1.8 within 1e-6 (MuJoCo's central difference of `qfrc_passive`
+/// gives −1.7999999997 at both, measured on the oracle).
+#[test]
+fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 0"><flag sleep="enable"/></option>
+      <worldbody>
+        <site name="w" pos="0.3 0.5 1"/>
+        <body name="a" pos="0 0 1">
+          <joint name="ja" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sa" pos="0.3 0 0"/>
+        </body>
+        <body name="b" pos="1 0 1">
+          <joint name="jb" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t" stiffness="50" springlength="0.2 0.3">
+          <site site="w"/><site site="sa"/>
+        </spatial>
+      </tendon>
+    </mujoco>"#;
+    let b_asleep = xml.replace(
+        r#"<body name="b" pos="1 0 1">"#,
+        r#"<body name="b" pos="1 0 1" sleep="init">"#,
+    );
+    assert_ne!(b_asleep, xml, "the second tree's body");
+    let derivative = |xml: &str, sleep: bool, awake: [bool; 2]| {
+        let mut model = sim_mjcf::load_model(xml).expect("load");
+        if !sleep {
+            model.enableflags &= !sim_core::ENABLE_SLEEP;
+        }
+        let mut data = model.make_data();
+        if awake[1] {
+            data.qvel[1] = 0.3;
+        }
+        data.forward(&model).expect("forward");
+        assert_eq!(data.tree_awake.as_slice(), awake, "the trees awake");
+        assert!(
+            data.ten_J[0].iter().all(|&x| x == 0.0),
+            "the tendon's row is 0"
+        );
+        mjd_smooth_pos(&model, &mut data);
+        data.qDeriv_pos.clone()
+    };
+    let off = derivative(xml, false, [true; 2]);
+    for (name, on) in [
+        ("every tree awake", derivative(xml, true, [true; 2])),
+        (
+            "the other tree asleep",
+            derivative(&b_asleep, true, [true, false]),
+        ),
+    ] {
+        assert_eq!(
+            on.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            off.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            "{name}: qDeriv_pos with sleep enabled and disabled"
+        );
+        assert!(
+            (on[(0, 0)] + 1.8).abs() < 1e-6,
+            "{name}: qDeriv_pos[0][0] {}",
+            on[(0, 0)]
+        );
+    }
+}
+
+/// A spatial tendon between an awake tree's site and a sleeping tree's,
+/// whose row is 0 on the awake dof and 0.3 on the sleeping one, with a
+/// damping set after loading (MuJoCo refuses a tree asleep at load beside a
+/// damped two-tree tendon): the tendon is awake, so `mjd_passive_vel` keeps
+/// its −b·JᵀJ, as MuJoCo's skips only a tendon in one sleeping tree or two
+/// (`engine_derivative.c:1698`, `:1763-1770`). `qDeriv` is MuJoCo's
+/// [[0, 0], [0, −0.2700000000000001]] within 1e-15 (measured on the oracle,
+/// at the state of an implicit `mj_step`). Before, a tendon whose row
+/// reached no awake dof was skipped: `qDeriv` 0.
+#[test]
+fn a_damped_tendon_on_an_awake_and_a_sleeping_tree_keeps_its_velocity_derivative() {
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 0" integrator="implicit"><flag sleep="enable"/></option>
+      <worldbody>
+        <body name="a" pos="0 0 1">
+          <joint name="ja" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sa" pos="0.3 0 0"/>
+        </body>
+        <body name="b" pos="1 0 0.7" sleep="init">
+          <joint name="jb" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 0.3" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sb" pos="0 0 0.3"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t" springlength="0.2 0.3"><site site="sa"/><site site="sb"/></spatial>
+      </tendon>
+    </mujoco>"#;
+    let mut model = sim_mjcf::load_model(xml).expect("load");
+    model.tendon_damping[0] = 3.0;
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!(data.tree_awake, [true, false], "tree a awake, b asleep");
+    assert_eq!(
+        data.ten_J[0].as_slice(),
+        [0.0, 0.30000000000000004],
+        "the tendon's row"
+    );
+    mjd_smooth_vel(&model, &mut data);
+    let want = [[0.0, 0.0], [0.0, -0.2700000000000001]];
+    for (r, row) in want.iter().enumerate() {
+        for (c, &w) in row.iter().enumerate() {
+            let got = data.qDeriv[(r, c)];
+            assert!(
+                (got - w).abs() <= 1e-15,
+                "qDeriv[{r}][{c}] {got}, MuJoCo's {w}"
+            );
+        }
+    }
+}

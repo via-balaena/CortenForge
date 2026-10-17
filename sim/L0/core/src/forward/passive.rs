@@ -7,7 +7,6 @@
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::object_velocity_local;
 use crate::dynamics::rne::mj_gravcomp;
-use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::{JointContext, JointVisitor};
 use crate::quat;
@@ -352,6 +351,8 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     // callback and passive plugins still run, unless springs and dampers are
     // both disabled (:658-661).
     if model.nv == 0 {
+        // No tendon force is made: `ten_force` is the force the pass applies.
+        data.ten_force.fill(0.0);
         if model.disableflags & DISABLE_SPRING == 0 || model.disableflags & DISABLE_DAMPER == 0 {
             mj_passive_user(model, data);
         }
@@ -362,8 +363,9 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     let sleep_filter = sleep_enabled && data.nv_awake < model.nv;
 
     // Zero all passive force vectors (S4.7a).
-    // When sleep is active, only zero awake DOFs: a sleeping DOF keeps the values of
-    // its last awake pass, as MuJoCo's mj_passive clears the awake DOFs only.
+    // When sleep is active, only zero awake DOFs, as MuJoCo's mj_passive
+    // (`engine_passive.c:645-649`): a sleeping DOF keeps what it held, and an
+    // awake tendon over it adds its force there on every pass.
     if sleep_filter {
         for &dof in &data.dof_awake_ind[..data.nv_awake] {
             data.qfrc_passive[dof] = 0.0;
@@ -383,8 +385,9 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     // No longer computed in passive forces.
 
     // S4.7a: When both spring AND damper are disabled, skip all sub-functions.
-    // Force vectors are already zeroed above.
+    // Force vectors are already zeroed above, and no tendon force is made.
     if model.disableflags & DISABLE_SPRING != 0 && model.disableflags & DISABLE_DAMPER != 0 {
+        data.ten_force.fill(0.0);
         return;
     }
 
@@ -408,8 +411,12 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
     // Tendon passive forces: spring + damper (S4.7-prereq: separate arrays).
     for t in 0..model.ntendon {
-        // §16.5a': Skip tendon if ALL target DOFs are sleeping
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+        // A sleeping or static tendon applies none while a tree sleeps, as
+        // MuJoCo's `mj_springdamper` (`engine_passive.c:123`, `:446-451`).
+        if crate::island::constraint_sleep_filter(model, data)
+            && !crate::island::tendon_awake(model, data, t)
+        {
+            data.ten_force[t] = 0.0;
             continue;
         }
         let length = data.ten_length[t];
@@ -447,32 +454,18 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
         // NOTE: In ImplicitSpringDamper mode, tendon spring/damper forces are
         // handled implicitly in mj_fwd_acceleration_implicit() via non-diagonal
-        // K_tendon and D_tendon matrices (DT-35). ten_force[t] is always populated
+        // K_tendon and D_tendon matrices (DT-35). ten_force[t] is populated
         // for diagnostic purposes, but the explicit force application is
         // skipped to avoid double-counting, matching the joint spring/damper pattern.
 
         if !implicit_mode {
             // Map tendon spring force to joint forces via J^T.
             if spring_force != 0.0 {
-                apply_tendon_force(
-                    model,
-                    &data.ten_J[t],
-                    model.tendon_type[t],
-                    t,
-                    spring_force,
-                    &mut data.qfrc_spring,
-                );
+                apply_tendon_force(&data.ten_J[t], spring_force, &mut data.qfrc_spring);
             }
             // Map tendon damper force to joint forces via J^T.
             if damper_force != 0.0 {
-                apply_tendon_force(
-                    model,
-                    &data.ten_J[t],
-                    model.tendon_type[t],
-                    t,
-                    damper_force,
-                    &mut data.qfrc_damper,
-                );
+                apply_tendon_force(&data.ten_J[t], damper_force, &mut data.qfrc_damper);
             }
         }
     }

@@ -264,14 +264,17 @@ Each timestep executes these stages in order:
 ```
 forward():
   Position     mj_fwd_position       FK from qpos → body poses (skips sleeping bodies);
-                                     mj_wake after it, the other wake functions
-                                     (tendon, collision, equality) later in the stage
+                                     mj_wake inside it, after the bodies' poses, the
+                                     other wake functions (tendon, collision,
+                                     equality) later in the stage
+               mj_fwd_tendon         Tendon lengths + Jacobians + wrap visualization data (fixed + spatial),
+                                     inside mj_fwd_position
                mj_crba                Selective CRBA (skips sleeping subtrees)
-               mj_fwd_tendon         Tendon lengths + Jacobians + wrap visualization data (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
                                      + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
                mj_make_constraint     Constraint rows and their islands (mj_island), after the wakes
-               mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)
+               mj_transmission_*      Actuator lengths and moments, after the wakes
+                                     (body: from the contacts, §36)
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
                mj_actuator_velocity   Actuator velocities (lengths: position stage)
                mj_fwd_passive         Springs, dampers, flex bending + vertex damping;
@@ -653,7 +656,11 @@ When sleep is enabled, pipeline stages skip sleeping bodies/DOFs:
 - Collision: a pair skipped when both bodies sleep, or one sleeps and the
   other is static
 - Velocity kinematics: sleeping DOFs skipped
-- Passive forces: skipped when all target DOFs are asleep
+- Tendons: a tendon over one sleeping tree, or two both asleep, has length and
+  Jacobian 0, no rows
+- Transmission: a sleeping actuator keeps its length, its moment row 0
+- Passive forces: sleeping joints and bodies skipped; a tendon skipped when
+  asleep, or static while a tree sleeps
 - Position/velocity integration: sleeping joints skipped
 - Actuation: a sleeping actuator acts with no force and keeps its `act_dot`
 - Sensors: a sleeping sensor keeps its value

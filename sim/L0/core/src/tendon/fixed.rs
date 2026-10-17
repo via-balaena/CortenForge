@@ -18,6 +18,8 @@ use crate::types::{Data, Model, WrapType};
 ///
 /// The Jacobian is constant (configuration-independent):
 ///   `J_t[dof_adr_w] = coef_w`
+/// (a joint named twice: its last `coef` at the dense size, their sum at the
+/// sparse one, as MuJoCo's).
 ///
 /// `wrap_objid[w]` stores the DOF address (`jnt_dof_adr`) for the joint.
 /// For length, we look up the joint's qpos address via `dof_jnt` → `jnt_qpos_adr`.
@@ -47,9 +49,16 @@ pub fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
             }
         }
 
-        // Jacobian: dL/dqvel at dof_adr = coef (velocity space).
+        // Jacobian: dL/dqvel at dof_adr = coef (velocity space). MuJoCo's
+        // dense row assigns each joint's coefficient, so a joint named twice
+        // keeps its last (`engine_core_smooth.c:979-982`); its sparse row
+        // adds them (`mju_combineSparse`, `:971-976`).
         if dof_adr < model.nv {
-            data.ten_J[t][dof_adr] += coef;
+            if model.is_sparse() {
+                data.ten_J[t][dof_adr] += coef;
+            } else {
+                data.ten_J[t][dof_adr] = coef;
+            }
             chain.push(dof_adr);
         }
     }
@@ -58,5 +67,7 @@ pub fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
     // Each joint's dof, a zero `coef` included, as MuJoCo's sparse row.
     chain.sort_unstable();
     chain.dedup();
+    let adr = t * model.nv;
+    data.ten_J_colind[adr..adr + chain.len()].copy_from_slice(&chain);
     data.ten_J_rownnz[t] = chain.len();
 }

@@ -57,7 +57,11 @@ observable effect on qacc.
 | `enable_multiccd_qacc.npy` | ENABLE_MULTICCD | no |
 | `enable_sleep_qacc.npy` | ENABLE_SLEEP | no |
 
-Flags with "no" difference produce qacc identical to baseline. This is expected:
+Flags with "no" difference produce qacc within the tests' 1e-8 of the
+baseline's (identical for ten; `disable_island` and `disable_warmstart` differ
+by under 1e-12), so their tests cannot tell the flag ignored
+(`golden_flags::goldens_within_tolerance_of_the_baseline` pins the list). This
+is expected:
 - DISABLE_SENSOR: sensors don't affect dynamics
 - DISABLE_WARMSTART: solver converges to same solution
 - DISABLE_MIDPHASE: broadphase produces same contacts for this model
@@ -65,6 +69,16 @@ Flags with "no" difference produce qacc identical to baseline. This is expected:
 - DISABLE_NATIVECCD: no convex-convex collisions (sphere-plane only)
 - DISABLE_ISLAND: same solver result regardless of island decomposition
 - ENABLE_*: optional features that either don't affect qacc or aren't triggered
+
+## 3.5.0 goldens
+
+`flags_3_5_0.json`, from the unfused MuJoCo 3.5.0 oracle
+(`gen_flag_reference.py`, whose docstring holds its run line and cases), gives
+eight of those flags (autoreset, sensor, energy, fwdinv, override, island,
+warmstart, sleep) a scene each changes, run without the flag and with it; the
+generator refuses a case whose flagged run is within 1e-5 of its baseline.
+The test is `integration/flag_parity.rs`. The 3.4.0 files above stay as they
+are.
 
 ## Format
 

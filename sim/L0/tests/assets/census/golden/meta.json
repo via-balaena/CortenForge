@@ -15,7 +15,7 @@
  "oracle": {
   "commit": "881544c0c58dc2e95fbd132a5ec90b99e012b6f7",
   "flags": "-ffp-contract=off",
-  "libraries_sha256": "fbe17aab3572a691e0a6d02736f0d051e17fa4ed3c3bd27d2cdefe82bb73289a",
+  "libraries_sha256": "deedce8820444baf84a6d81acec28d36f9bda93eee94218289528d8974349269",
   "mujoco": "3.5.0",
   "platform": "Darwin-arm64"
  },

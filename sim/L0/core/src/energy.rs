@@ -6,7 +6,6 @@
 //! returns the sum.
 
 use crate::dynamics::factor::mj_mul_m;
-use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::linalg::mju_dot;
 use crate::tendon::subquat;
 use crate::types::{
@@ -124,7 +123,12 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
                 continue;
             }
 
-            if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+            // A sleeping or static tendon adds none while a body sleeps, as
+            // MuJoCo's `mj_energyPos` (`engine_sensor.c:1631`, `:1679-1682`).
+            if sleep_enabled
+                && data.nbody_awake < model.nbody
+                && !crate::island::tendon_awake(model, data, t)
+            {
                 continue;
             }
 

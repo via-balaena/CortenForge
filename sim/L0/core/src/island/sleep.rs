@@ -189,8 +189,11 @@ pub fn reset_sleep_state(model: &Model, data: &mut Data) {
 // Derived sleep arrays
 // ---------------------------------------------------------------------------
 
-/// Whether constraint assembly filters sleeping objects: sleep enabled and
-/// some tree asleep (MuJoCo's `sleep_filter`, `engine_core_constraint.c:390`).
+/// Whether constraint assembly, the tendons, the passive pass's
+/// spring-dampers and `mjd_passive_vel` filter sleeping objects: sleep
+/// enabled and some tree asleep (MuJoCo's `sleep_filter`,
+/// `engine_core_constraint.c:390`, `engine_core_smooth.c:939-940`,
+/// `engine_passive.c:123`, `engine_derivative.c:1698`).
 pub fn constraint_sleep_filter(model: &Model, data: &Data) -> bool {
     model.enableflags & ENABLE_SLEEP != 0 && data.ntree_awake < model.ntree
 }
@@ -220,6 +223,18 @@ pub fn equality_asleep(model: &Model, data: &Data, eq: usize) -> bool {
         }
     };
     !awake(model.eq_obj1id[eq]) && !awake(model.eq_obj2id[eq])
+}
+
+/// Whether tendon `t` is asleep: one tree, asleep, or two, both asleep
+/// ([`tendon_sleep_state`]); a tendon with no tree is static, not asleep.
+pub fn tendon_asleep(model: &Model, data: &Data, t: usize) -> bool {
+    tendon_sleep_state(model, data, t) == SleepState::Asleep
+}
+
+/// Whether tendon `t` is awake ([`tendon_sleep_state`]): neither asleep nor
+/// static.
+pub fn tendon_awake(model: &Model, data: &Data, t: usize) -> bool {
+    tendon_sleep_state(model, data, t) == SleepState::Awake
 }
 
 /// Tendon `t`'s sleep state (MuJoCo `mj_tendonSleepState`,

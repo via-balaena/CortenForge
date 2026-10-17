@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use sim_core::{
-    BodyWrench, ENABLE_SLEEP, MakeDataError, MjStage, Model, ResetError, SleepPolicy, SleepState,
-    StepError,
+    BodyWrench, DISABLE_DAMPER, DISABLE_SPRING, ENABLE_SLEEP, MakeDataError, MjStage, Model,
+    ResetError, SleepPolicy, SleepState, StepError,
 };
 use sim_mjcf::load_model;
 
@@ -1077,5 +1077,472 @@ fn sleeping_actuator_adds_no_implicit_derivative() {
         "qvel[1] after step 75: ours {}, MuJoCo {}",
         qvel(&ours),
         qvel(&theirs)
+    );
+}
+
+/// A damped hinge chain at rest, which sleeps, carrying a fixed and a
+/// spatial tendon, each with friction loss and a limit, beside a swinging
+/// hinge and a tendon between two world sites (on no tree: static, not
+/// asleep), dense and sparse: after each step until five past the first
+/// with a tree asleep, the trees' states, each tendon's length and Jacobian
+/// row bit for bit, and the row count are MuJoCo's. MuJoCo's `mj_tendon`
+/// clears every tendon and skips a sleeping one
+/// (`engine_core_smooth.c:928-947`), so the asleep tendons read 0 and make
+/// no rows; a sleeping tendon's wrap path keeps its address and count, which
+/// the next tendon's path then takes, and the wrap arrays are MuJoCo's too.
+/// A motor on the chain's spatial tendon and one on its site: MuJoCo's
+/// transmission skips a sleeping actuator, which keeps its length and has
+/// no moment (`engine_core_smooth.c:1279-1290`); both lengths and the site
+/// motor's moment row are MuJoCo's. Before, the tendons kept their length
+/// and row and made their two friction-loss rows.
+#[test]
+fn sleeping_tendons_have_no_length_row_or_constraint() {
+    let golden = golden();
+    for name in ["sleeping_tendons", "sleeping_tendons_sparse"] {
+        sleeping_tendons_as_mujoco(name, &golden[name]);
+    }
+}
+
+fn sleeping_tendons_as_mujoco(name: &str, case: &Value) {
+    let model = model_of(case);
+    let mut data = model.make_data();
+    data.qvel
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qvel"]));
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    for (k, want) in case["steps"].as_array().expect("steps").iter().enumerate() {
+        data.step(&model).expect("step");
+        let step = k + 1;
+        let awake: Vec<bool> = want["tree_awake"]
+            .as_array()
+            .expect("tree_awake")
+            .iter()
+            .map(|a| a.as_i64().expect("int") != 0)
+            .collect();
+        assert_eq!(data.tree_awake, awake, "{name} step {step}: tree_awake");
+        assert_eq!(
+            bits(&data.ten_length),
+            bits(&floats(&want["ten_length"])),
+            "{name} step {step}: ten_length {:?}",
+            data.ten_length
+        );
+        let rows: Vec<f64> = data.ten_J.iter().flat_map(|r| r.iter().copied()).collect();
+        assert_eq!(
+            bits(&rows),
+            bits(&floats(&want["ten_J"])),
+            "{name} step {step}: ten_J {rows:?}"
+        );
+        assert_eq!(
+            data.efc_type.len(),
+            count(&want["nefc"]),
+            "{name} step {step}: nefc"
+        );
+        assert_eq!(
+            bits(&data.actuator_length),
+            bits(&floats(&want["actuator_length"])),
+            "{name} step {step}: actuator_length {:?}",
+            data.actuator_length
+        );
+        // The site motor's row; a tendon transmission's `actuator_moment`
+        // is zero here by design (its force reads `ten_J`), MuJoCo's the
+        // gear-scaled row while awake.
+        let nv = model.nv;
+        assert_eq!(
+            bits(data.actuator_moment[1].as_slice()),
+            bits(&floats(&want["actuator_moment"])[nv..2 * nv]),
+            "{name} step {step}: the site motor's actuator_moment"
+        );
+        for (field, ours) in [
+            ("ten_wrapadr", &data.ten_wrapadr),
+            ("ten_wrapnum", &data.ten_wrapnum),
+        ] {
+            let theirs: Vec<usize> = want[field]
+                .as_array()
+                .expect(field)
+                .iter()
+                .map(|x| usize::try_from(x.as_u64().expect("count")).expect("count"))
+                .collect();
+            assert_eq!(ours, &theirs, "{name} step {step}: {field}");
+        }
+    }
+}
+
+/// Trees asleep from the reset (sleep="init") carrying actuators, each
+/// struck by a sphere given a velocity: a site motor and a position
+/// actuator on a slide; a free-joint and a ball-joint motor; a
+/// slider-crank. MuJoCo's `mj_transmission` runs after the position
+/// stage's wakes (`engine_forward.c:194-209`), so on the step a contact
+/// wakes a tree its actuators act. After each step until ten past the wake:
+/// the trees' states, and `qfrc_actuator`, `actuator_length`, the moment rows
+/// of the actuators that act through one, `qpos` and `qvel` within
+/// TOLERANCE·max(1, |MuJoCo's|).
+#[test]
+fn actuators_on_a_tree_a_contact_wakes_act() {
+    const TOLERANCE: f64 = 1e-12;
+    let golden = golden();
+    for name in ["woken_site", "woken_free", "woken_crank"] {
+        let case = &golden[name];
+        let model = model_of(case);
+        let mut data = model.make_data();
+        data.qvel
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qvel"]));
+        data.ctrl
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["ctrl"]));
+        let through: Vec<usize> = case["moment_actuators"]
+            .as_array()
+            .expect("moment_actuators")
+            .iter()
+            .map(|x| usize::try_from(x.as_u64().expect("index")).expect("index"))
+            .collect();
+        let nv = model.nv;
+        for (k, want) in case["steps"].as_array().expect("steps").iter().enumerate() {
+            data.step(&model).expect("step");
+            let step = k + 1;
+            let awake: Vec<bool> = want["tree_awake"]
+                .as_array()
+                .expect("tree_awake")
+                .iter()
+                .map(|a| a.as_i64().expect("int") != 0)
+                .collect();
+            assert_eq!(data.tree_awake, awake, "{name} step {step}: tree_awake");
+            let moments: Vec<f64> = floats(&want["actuator_moment"]);
+            let mut fields: Vec<(String, Vec<f64>, Vec<f64>)> = vec![
+                (
+                    "qfrc_actuator".into(),
+                    data.qfrc_actuator.as_slice().to_vec(),
+                    floats(&want["qfrc_actuator"]),
+                ),
+                (
+                    "actuator_length".into(),
+                    data.actuator_length.as_slice().to_vec(),
+                    floats(&want["actuator_length"]),
+                ),
+                (
+                    "qpos".into(),
+                    data.qpos.as_slice().to_vec(),
+                    floats(&want["qpos"]),
+                ),
+                (
+                    "qvel".into(),
+                    data.qvel.as_slice().to_vec(),
+                    floats(&want["qvel"]),
+                ),
+            ];
+            for &i in &through {
+                fields.push((
+                    format!("actuator_moment[{i}]"),
+                    data.actuator_moment[i].as_slice().to_vec(),
+                    moments[i * nv..(i + 1) * nv].to_vec(),
+                ));
+            }
+            for (field, ours, theirs) in fields {
+                assert_eq!(
+                    ours.len(),
+                    theirs.len(),
+                    "{name} step {step}: {field}'s length"
+                );
+                for (j, (a, b)) in ours.iter().zip(&theirs).enumerate() {
+                    assert!(
+                        (a - b).abs() <= TOLERANCE * b.abs().max(1.0),
+                        "{name} step {step}: {field}[{j}] {a}, MuJoCo {b}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A tree asleep from the reset (sleep="init") carrying a damped fixed
+/// tendon, given a velocity: the forward's kinematics wake the tree before
+/// the tendon is made (`mj_kinematics` runs `mj_wake` between its body and
+/// geom passes, `engine_core_smooth.c:236-241`), so the tendon's row,
+/// velocity and damper force are MuJoCo's bit for bit (census doc
+/// e7609717 is this, under implicit).
+#[test]
+fn a_tendon_on_a_tree_the_forward_wakes_is_made() {
+    let golden = golden();
+    let case = &golden["tendon_woken"];
+    let model = model_of(case);
+    let mut data = model.make_data();
+    assert_eq!(data.tree_awake, vec![false], "asleep from the reset");
+    data.qvel
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qvel"]));
+    data.forward(&model).expect("forward");
+    assert_eq!(data.tree_awake, vec![true], "tree_awake");
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(
+        bits(data.ten_J[0].as_slice()),
+        bits(&floats(&case["ten_J"])),
+        "ten_J"
+    );
+    assert_eq!(
+        bits(&data.ten_velocity),
+        bits(&floats(&case["ten_velocity"])),
+        "ten_velocity"
+    );
+    assert_eq!(
+        bits(data.qfrc_passive.as_slice()),
+        bits(&floats(&case["qfrc_passive"])),
+        "qfrc_passive"
+    );
+}
+
+/// A spatial tendon from a world site to a tree's site, its spring engaged,
+/// whose row is 0 at this state (the site moves square to it), beside a
+/// second tree; energy enabled.
+const ZERO_ROW_TENDON: &str = r#"
+<mujoco>
+  <option gravity="0 0 0"><flag sleep="enable" energy="enable"/></option>
+  <worldbody>
+    <site name="w" pos="0.3 0.5 1"/>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+      <site name="sa" pos="0.3 0 0"/>
+    </body>
+    <body name="b" pos="1 0 1">
+      <joint name="jb" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="50" springlength="0.2 0.3">
+      <site site="w"/><site site="sa"/>
+    </spatial>
+  </tendon>
+</mujoco>"#;
+
+/// A spatial tendon between two world sites (on no tree: static), its
+/// spring engaged, beside two trees; energy enabled.
+const STATIC_TENDON: &str = r#"
+<mujoco>
+  <option gravity="0 0 0"><flag sleep="enable" energy="enable"/></option>
+  <worldbody>
+    <site name="w" pos="0.3 0.5 1"/>
+    <site name="w2" pos="0 -0.5 2"/>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="1 0 1">
+      <joint name="jb" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="50" springlength="0.2 0.3"><site site="w"/><site site="w2"/></spatial>
+  </tendon>
+</mujoco>"#;
+
+/// `xml` with tree `b` asleep from the reset, or with sleep disabled, and
+/// `ten_force` set to 7 before a forward pass, so a force the pass does not
+/// make shows.
+fn forward_tendon_scene(xml: &str, b_asleep: bool, sleep: bool) -> sim_core::Data {
+    let xml = if b_asleep {
+        let out = xml.replace(
+            r#"<body name="b" pos="1 0 1">"#,
+            r#"<body name="b" pos="1 0 1" sleep="init">"#,
+        );
+        assert_ne!(out, xml, "tree b's body");
+        out
+    } else {
+        xml.to_owned()
+    };
+    let mut model = load_model(&xml).expect("load");
+    if !sleep {
+        model.enableflags &= !ENABLE_SLEEP;
+    }
+    let mut data = model.make_data();
+    data.ten_force[0] = 7.0;
+    data.forward(&model).expect("forward");
+    let awake = if b_asleep {
+        vec![true, false]
+    } else {
+        vec![true, true]
+    };
+    assert_eq!(data.tree_awake, awake, "tree_awake");
+    data
+}
+
+/// A tendon's spring energy where MuJoCo's `mj_energyPos` adds it: every
+/// tendon awake by its trees, and, while no body sleeps, a static one too
+/// (`engine_sensor.c:1631`, `:1679-1682`). On the zero-row scene, with
+/// every tree awake, with tree b asleep and with sleep disabled,
+/// `energy_potential` is MuJoCo's 1.0; on the static one, MuJoCo's
+/// 32.81475155779856 with every tree awake and with sleep disabled, and 0
+/// with tree b asleep (measured on the oracle). Before, a tendon whose row
+/// reached no awake dof was left out whenever sleep was enabled: 0 on the
+/// zero-row scene, 0 on the static one with every tree awake.
+#[test]
+fn a_tendon_spring_energy_is_skipped_as_mujoco() {
+    for (name, xml, want) in [
+        ("zero row", ZERO_ROW_TENDON, [1.0, 1.0, 1.0]),
+        (
+            "static",
+            STATIC_TENDON,
+            [32.81475155779856, 0.0, 32.81475155779856],
+        ),
+    ] {
+        for ((state, b_asleep, sleep), want) in [
+            ("every tree awake", false, true),
+            ("tree b asleep", true, true),
+            ("sleep disabled", false, false),
+        ]
+        .into_iter()
+        .zip(want)
+        {
+            let got = forward_tendon_scene(xml, b_asleep, sleep).energy_potential;
+            assert!(
+                (got - want).abs() <= 1e-12 * f64::max(1.0, want),
+                "{name}, {state}: energy_potential {got}, MuJoCo's {want}"
+            );
+        }
+    }
+}
+
+/// `ten_force` is the force the passive pass applies: made for a tendon it
+/// does not skip, whatever its row, and 0 for one it skips (a static tendon
+/// while a tree sleeps, as MuJoCo's `mj_springdamper` skips it,
+/// `engine_passive.c:123`, `:446-451`). On the zero-row scene with sleep
+/// enabled, with every tree awake and with tree b asleep, it is the same
+/// model's with sleep disabled, bit for bit; on the static one it is too
+/// with every tree awake, and is 0 with tree b asleep. Before, a tendon
+/// whose row reached no awake dof was skipped whenever sleep was enabled
+/// and kept the force it held (7 here).
+#[test]
+fn ten_force_is_the_force_the_passive_pass_applies() {
+    for (name, xml) in [("zero row", ZERO_ROW_TENDON), ("static", STATIC_TENDON)] {
+        let off = forward_tendon_scene(xml, false, false).ten_force[0];
+        assert!(
+            off != 7.0 && off != 0.0,
+            "{name}: sleep disabled, a force is made"
+        );
+        let awake = forward_tendon_scene(xml, false, true).ten_force[0];
+        assert_eq!(
+            awake.to_bits(),
+            off.to_bits(),
+            "{name}, every tree awake: ten_force {awake}"
+        );
+        let asleep = forward_tendon_scene(xml, true, true).ten_force[0];
+        let want = if name == "static" { 0.0 } else { off };
+        assert_eq!(
+            asleep.to_bits(),
+            want.to_bits(),
+            "{name}, tree b asleep: ten_force {asleep}"
+        );
+    }
+}
+
+/// A fixed tendon over tree a's joint (coefficient 0) and tree b's
+/// (coefficient 1), its spring stretched by 0.2 at the reset, tree b asleep
+/// from it. The stiffness is 0 here: MuJoCo refuses a tree asleep at load
+/// beside a two-tree tendon with stiffness or damping, so it is set after
+/// loading; energy enabled.
+const ONE_SIDED_TENDON: &str = r#"
+<mujoco>
+  <option gravity="0 0 0"><flag sleep="enable" energy="enable"/></option>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="1 0 1" sleep="init">
+      <joint name="jb" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.2"><joint joint="ja" coef="0"/><joint joint="jb" coef="1"/></fixed>
+  </tendon>
+</mujoco>"#;
+
+/// An awake tendon whose row reaches only a sleeping dof applies its force
+/// there, as MuJoCo's `mj_springdamper` (`engine_passive.c:446-451`, the
+/// tendon awake with one of its two trees), and the sleeping dof's
+/// `qfrc_spring`, which the pass does not clear (`:645-649`), gains it on
+/// every pass: MuJoCo's 10 after `mj_makeData`, then 20, 30 and 40 after
+/// three forwards, with `qfrc_passive` 10, summed over the awake dofs only
+/// (`:677`), and `energy_potential` 1.0 (measured on the oracle; 10 and 1.0
+/// with sleep disabled). Before, a tendon whose row reached no awake dof
+/// was skipped: no force at the sleeping dof, and no energy.
+#[test]
+fn an_awake_tendon_over_a_sleeping_dof_applies_its_force_there_as_mujoco() {
+    let mut model = load_model(ONE_SIDED_TENDON).expect("load");
+    model.tendon_stiffness[0] = 50.0;
+    let mut data = model.make_data();
+    assert_eq!(data.tree_awake, [true, false], "tree a awake, b asleep");
+    assert_eq!(data.qfrc_spring.as_slice(), [0.0, 10.0], "after make_data");
+    for want in [20.0, 30.0, 40.0] {
+        data.forward(&model).expect("forward");
+        assert_eq!(data.ten_J[0].as_slice(), [0.0, 1.0], "the tendon's row");
+        assert_eq!(data.qfrc_spring.as_slice(), [0.0, want], "qfrc_spring");
+        assert_eq!(data.qfrc_passive.as_slice(), [0.0, 10.0], "qfrc_passive");
+        assert_eq!(data.energy_potential, 1.0, "energy_potential");
+    }
+    model.enableflags &= !ENABLE_SLEEP;
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    data.forward(&model).expect("forward");
+    assert_eq!(data.qfrc_spring.as_slice(), [0.0, 10.0], "sleep disabled");
+    assert_eq!(data.energy_potential, 1.0, "sleep disabled");
+}
+
+/// A spatial tendon between two world sites in a model with no dofs, its
+/// spring engaged; energy enabled.
+const NO_DOF_TENDON: &str = r#"
+<mujoco>
+  <option><flag energy="enable"/></option>
+  <worldbody>
+    <site name="w" pos="0.3 0.5 1"/>
+    <site name="w2" pos="0 -0.5 2"/>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="50" springlength="0.2 0.3"><site site="w"/><site site="w2"/></spatial>
+  </tendon>
+</mujoco>"#;
+
+/// Where the passive pass makes no tendon force, `ten_force` is 0: with
+/// springs and dampers both disabled, and in a model with no dofs, where
+/// the pass returns before its tendons. `ten_force` is set to 7 before the
+/// forward. The no-dof model's `energy_potential` is MuJoCo's
+/// 32.81475155779856 (measured on the oracle). Before, both returns left
+/// `ten_force` as it was (7 here).
+#[test]
+fn ten_force_is_0_where_the_passive_pass_makes_no_force() {
+    for sleep in [true, false] {
+        let mut model = load_model(ZERO_ROW_TENDON).expect("load");
+        model.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+        if !sleep {
+            model.enableflags &= !ENABLE_SLEEP;
+        }
+        let mut data = model.make_data();
+        data.ten_force[0] = 7.0;
+        data.forward(&model).expect("forward");
+        assert_eq!(
+            data.ten_force[0].to_bits(),
+            0.0_f64.to_bits(),
+            "springs and dampers disabled, sleep {sleep}: ten_force {}",
+            data.ten_force[0]
+        );
+    }
+    let model = load_model(NO_DOF_TENDON).expect("load");
+    assert_eq!((model.nv, model.ntendon), (0, 1), "no dofs, one tendon");
+    let mut data = model.make_data();
+    data.ten_force[0] = 7.0;
+    data.forward(&model).expect("forward");
+    assert_eq!(
+        data.ten_force[0].to_bits(),
+        0.0_f64.to_bits(),
+        "no dofs: ten_force {}",
+        data.ten_force[0]
+    );
+    let want = 32.81475155779856;
+    assert!(
+        (data.energy_potential - want).abs() <= 1e-12 * want,
+        "no dofs: energy_potential {}, MuJoCo's {want}",
+        data.energy_potential
     );
 }

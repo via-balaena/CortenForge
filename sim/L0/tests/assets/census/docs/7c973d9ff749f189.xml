@@ -1,0 +1,16 @@
+<mujoco>
+  <option gravity="0 0 0"><flag sleep="enable" energy="enable"/></option>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="1 0 1" sleep="init">
+      <joint name="jb" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.2"><joint joint="ja" coef="0"/><joint joint="jb" coef="1"/></fixed>
+  </tendon>
+</mujoco>

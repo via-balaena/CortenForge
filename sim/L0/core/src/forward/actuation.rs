@@ -9,7 +9,7 @@ use crate::constraint::jacobian::compute_contact_normal_row;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::linalg::dot_sparse;
 use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
-use crate::tendon::{apply_tendon_force, subquat};
+use crate::tendon::subquat;
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType,
     MjJointType, Model,
@@ -93,7 +93,9 @@ pub fn hill_passive_fl(norm_len: f64) -> f64 {
 /// `mj_sensor_pos` (which reads `actuator_length`).
 pub fn mj_transmission_site(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
-        if model.actuator_trntype[i] != ActuatorTransmission::Site {
+        if model.actuator_trntype[i] != ActuatorTransmission::Site
+            || transmission_skips_asleep(model, data, i)
+        {
             continue;
         }
 
@@ -264,7 +266,9 @@ fn mj_transmission_body(model: &Model, data: &mut Data, actuator_id: usize) {
 /// (which reads `actuator_length`).
 pub fn mj_transmission_body_dispatch(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
-        if model.actuator_trntype[i] == ActuatorTransmission::Body {
+        if model.actuator_trntype[i] == ActuatorTransmission::Body
+            && !transmission_skips_asleep(model, data, i)
+        {
             mj_transmission_body(model, data, i);
         }
     }
@@ -285,7 +289,9 @@ pub fn mj_transmission_body_dispatch(model: &Model, data: &mut Data) {
 /// MuJoCo equivalent: `mjTRN_SLIDERCRANK` case in `mj_transmission()`.
 pub fn mj_transmission_slidercrank(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
-        if model.actuator_trntype[i] != ActuatorTransmission::SliderCrank {
+        if model.actuator_trntype[i] != ActuatorTransmission::SliderCrank
+            || transmission_skips_asleep(model, data, i)
+        {
             continue;
         }
 
@@ -355,9 +361,13 @@ pub fn mj_transmission_slidercrank(model: &Model, data: &mut Data) {
 /// MuJoCo's `mj_transmission` does (`engine_core_smooth.c:1250`, called from
 /// `mj_fwdPosition` at `engine_forward.c:209`). Must run after
 /// `mj_fwd_position` (which provides `ten_length`). A pass that skips the
-/// position stage keeps the lengths it computed.
+/// position stage keeps the lengths it computed. A sleeping actuator keeps
+/// its length ([`transmission_skips_asleep`]).
 pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
+        if transmission_skips_asleep(model, data, i) {
+            continue;
+        }
         let gear = model.actuator_gear[i][0];
         match model.actuator_trntype[i] {
             ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
@@ -385,6 +395,20 @@ pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
             | ActuatorTransmission::Body => {}
         }
     }
+}
+
+/// Whether the transmission skips actuator `i`, as MuJoCo's `mj_transmission`
+/// skips a sleeping actuator while some dof sleeps
+/// (`engine_core_smooth.c:1279-1290`): its length keeps its last value and
+/// its moment is empty (MuJoCo's `rownnz` 0), so its row is cleared here.
+fn transmission_skips_asleep(model: &Model, data: &mut Data, i: usize) -> bool {
+    let asleep = model.enableflags & ENABLE_SLEEP != 0
+        && data.nv_awake < model.nv
+        && crate::island::actuator_asleep(model, data, i);
+    if asleep {
+        data.actuator_moment[i].fill(0.0);
+    }
+    asleep
 }
 
 /// Whether actuator `i` acts through its `actuator_moment` row: a site, body
@@ -815,14 +839,14 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             ActuatorTransmission::Tendon => {
                 let tendon_id = trnid;
                 if tendon_id < model.ntendon {
-                    apply_tendon_force(
-                        model,
-                        &data.ten_J[tendon_id],
-                        model.tendon_type[tendon_id],
-                        tendon_id,
-                        gear * force,
-                        &mut data.qfrc_actuator,
-                    );
+                    // MuJoCo's moment is the tendon's row scaled by the gear
+                    // (`mj_transmission`), then times the force
+                    // (`mj_fwdActuation`); a zero entry is skipped.
+                    for (dof, &j) in data.ten_J[tendon_id].iter().enumerate() {
+                        if j != 0.0 {
+                            data.qfrc_actuator[dof] += j * gear * force;
+                        }
+                    }
                 }
             }
             ActuatorTransmission::Joint

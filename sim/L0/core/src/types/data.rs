@@ -62,6 +62,8 @@ pub struct Data {
     /// ball joint, the rotation's axis-angle vector along the moment; on a
     /// free joint, 0.
     /// For Tendon transmission: `gear * ten_length[tendon_id]`.
+    /// A sleeping actuator's keeps its last value while some dof sleeps, as
+    /// MuJoCo's `mj_transmission` skips it.
     pub actuator_length: Vec<f64>,
 
     /// Actuator velocity (gear * transmission_velocity, length `nu`).
@@ -77,7 +79,8 @@ pub struct Data {
     /// Actuator moment vectors (length `nu`, each nv-dimensional).
     /// Populated for Site, Body and slider-crank transmissions and for Joint
     /// transmissions on a ball or free joint; zero for a Joint transmission
-    /// on a hinge or slide and for a Tendon transmission.
+    /// on a hinge or slide and for a Tendon transmission, and for a sleeping
+    /// actuator while some dof sleeps.
     /// Maps scalar actuator force to generalized forces: `qfrc += moment * force`.
     pub actuator_moment: Vec<DVector<f64>>,
 
@@ -156,10 +159,12 @@ pub struct Data {
 
     // ==================== Flex Edge Pre-computed Fields ====================
     /// Pre-computed edge lengths (Euclidean distance between endpoints).
-    /// Length `nflexedge`. Computed after `mj_flex()` syncs `flexvert_xpos`.
+    /// Length `nflexedge`. Computed after `mj_flex()` syncs `flexvert_xpos`;
+    /// a rigid flex's are not (0 from the reset), as MuJoCo's `mj_flex`.
     pub flexedge_length: Vec<f64>,
     /// Pre-computed edge elongation velocities (rate of length change).
-    /// Length `nflexedge`. Computed after `mj_flex()` from `flexvert_xpos` and `qvel`.
+    /// Length `nflexedge`. Computed after `mj_flex()` from `flexvert_xpos` and `qvel`;
+    /// a rigid flex's are not.
     pub flexedge_velocity: Vec<f64>,
     /// Sparse edge Jacobian values (CSR data array).
     /// Length `total_nnz` (sum of `model.flexedge_J_rownnz`).
@@ -289,12 +294,17 @@ pub struct Data {
 
     // ==================== Tendon State ====================
     /// Current tendon lengths (length `ntendon`).
-    /// Computed from wrap path through kinematics.
+    /// Computed from wrap path through kinematics; 0 for a tendon on trees
+    /// that all sleep, while some tree sleeps (MuJoCo's `mj_tendon`; a
+    /// tendon on no tree is computed).
     pub ten_length: Vec<f64>,
     /// Tendon velocities (length `ntendon`).
-    /// Computed as J_tendon @ qvel.
+    /// Computed as J_tendon @ qvel (0 for a sleeping tendon, whose row is 0).
     pub ten_velocity: Vec<f64>,
-    /// Tendon forces from springs/limits (length `ntendon`).
+    /// Tendon forces from the passive pass's spring and damper (length
+    /// `ntendon`); 0 for a tendon it skips (asleep, or static while a tree
+    /// sleeps), and for every tendon when it makes none (springs and dampers
+    /// both disabled, or no dofs).
     pub ten_force: Vec<f64>,
     /// Tendon Jacobian: d(length)/d(qpos) (sparse, length varies).
     /// Maps tendon length changes to joint velocities.
@@ -305,6 +315,11 @@ pub struct Data {
     /// Filled at every size; the constraint rows read it at the sparse one
     /// ([`Model::is_sparse`]).
     pub ten_J_rownnz: Vec<usize>,
+    /// Each tendon's dof chain, MuJoCo's sparse `ten_J_colind`: tendon `t`'s
+    /// dofs in increasing order at `ten_J_colind[t·nv .. t·nv +
+    /// ten_J_rownnz[t]]` (length `ntendon·nv`). Filled at every size; the
+    /// tendon velocity reads it at the sparse one.
+    pub ten_J_colind: Vec<usize>,
 
     /// Tendon wrap path point positions in world frame.
     /// Flat storage: `wrap_xpos[ten_wrapadr[t] .. ten_wrapadr[t] + ten_wrapnum[t]]`
@@ -480,10 +495,13 @@ pub struct Data {
 
     /// §52: Forward/inverse comparison (diagnostic, matches MuJoCo `solver_fwdinv[2]`).
     ///
-    /// - `[0]`: Constraint discrepancy L2 norm (reserved, 0.0 for now).
+    /// - `[0]`: Constraint discrepancy — `‖qfrc_constraint - its inverse‖`, the change in the
+    ///   constraint force when it is remade from `qacc`.
     /// - `[1]`: Applied force discrepancy — `‖qfrc_inverse - (qfrc_applied + qfrc_actuator + J^T*xfrc)‖`.
     ///
-    /// Populated when `ENABLE_FWDINV` is set; otherwise `[0.0, 0.0]`.
+    /// Written by `step` and `step2` after their forward pass when `ENABLE_FWDINV` is set (both
+    /// 0 with no constraint rows), as MuJoCo's `mj_step` and `mj_step2`; a forward pass alone
+    /// leaves it. `[0.0, 0.0]` from `make_data`.
     pub solver_fwdinv: [f64; 2],
 
     // ==================== Sleep State (§16.1) ====================
@@ -807,6 +825,7 @@ impl Clone for Data {
             ten_force: self.ten_force.clone(),
             ten_J: self.ten_J.clone(),
             ten_J_rownnz: self.ten_J_rownnz.clone(),
+            ten_J_colind: self.ten_J_colind.clone(),
             // Tendon wrap visualization
             wrap_xpos: self.wrap_xpos.clone(),
             wrap_obj: self.wrap_obj.clone(),

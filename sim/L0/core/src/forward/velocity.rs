@@ -4,6 +4,7 @@
 //! Corresponds to MuJoCo's velocity-stage of `engine_core_smooth.c`.
 
 use crate::dynamics::SpatialVector;
+use crate::linalg::{dot_sparse, mju_dot};
 use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model};
 use nalgebra::Vector3;
 
@@ -144,9 +145,21 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
         data.cvel[body_id] = vel;
     }
 
-    // Tendon velocities: v_t = J_t · qvel
+    // Tendon velocities, `ten_J · qvel`: at the sparse size over each
+    // tendon's chain (`mju_mulMatVecSparse`, `mju_dotSparse`), at the dense
+    // one over every dof (`mju_mulMatVec`, `mju_dot`), as MuJoCo's
+    // `mj_fwdVelocity` (`engine_forward.c:232-238`).
+    let nv = model.nv;
+    let mut row = Vec::with_capacity(nv);
     for t in 0..model.ntendon {
-        data.ten_velocity[t] = data.ten_J[t].dot(&data.qvel);
+        data.ten_velocity[t] = if model.is_sparse() {
+            let colind = &data.ten_J_colind[t * nv..t * nv + data.ten_J_rownnz[t]];
+            row.clear();
+            row.extend(colind.iter().map(|&dof| data.ten_J[t][dof]));
+            dot_sparse(&row, |k| data.qvel[colind[k]])
+        } else {
+            mju_dot(data.ten_J[t].as_slice(), data.qvel.as_slice())
+        };
     }
 }
 

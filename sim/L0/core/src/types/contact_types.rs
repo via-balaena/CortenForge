@@ -68,16 +68,24 @@ pub struct Contact {
     pub solref: [f64; 2],
     /// Solver reference for friction directions (§31).
     ///
-    /// Only meaningful for elliptic contacts from explicit `<pair>` definitions.
     /// `[0.0, 0.0]` is the sentinel meaning "use `solref`" (MuJoCo convention).
-    /// Auto-generated contacts always have `[0.0, 0.0]`.
+    /// Auto-generated contacts have `[0.0, 0.0]`, but under `ENABLE_OVERRIDE`
+    /// `o_solref`.
     ///
     /// When nonzero **and** the constraint is `ContactElliptic` with `row > 0`
     /// (friction row), the KBIP computation uses `solreffriction` instead of
-    /// `solref` for the B (damping) term. K is always 0 for friction rows.
+    /// `solref` for the B (damping) term. K is always 0 for friction rows. A
+    /// mixed one (one value positive, the other not) is taken as `[0.0, 0.0]`
+    /// when the rows are made, as MuJoCo's `getsolparam`.
     pub solreffriction: [f64; 2],
     /// Solver impedance parameters (from geom pair).
     pub solimp: [f64; 5],
+    /// Friction of the regularized cone, `mu[0]·√(R[1]/R[0])` over the
+    /// contact's first two rows, set when its rows are made; 0 until then,
+    /// and for a contact without friction rows (MuJoCo's `mjContact::mu`, 0
+    /// from collision, `engine_collision_driver.c:1422`, set by
+    /// `mj_makeImpedance`, `engine_core_constraint.c:1540`).
+    pub regularized_mu: f64,
     /// Contact frame tangent vectors (orthogonal to normal).
     /// `frame[0..3]` = t1, `frame[3..6]` = t2 (for friction cone).
     pub frame: [Vector3<f64>; 2],
@@ -222,6 +230,7 @@ impl Contact {
             solimp,
             frame: (t1, t2).into(),
             flex_vertex: None,
+            regularized_mu: 0.0,
             flex_vertex2: None,
         }
     }
@@ -318,6 +327,7 @@ impl Contact {
             solimp,
             frame: (t1, t2).into(),
             flex_vertex: None,
+            regularized_mu: 0.0,
             flex_vertex2: None,
         }
     }

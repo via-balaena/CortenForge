@@ -234,14 +234,15 @@ that reference `array<GeomModel>` (currently `fk.wgsl`, `aabb.wgsl`,
 `sdf_sdf_narrow.wgsl`, `sdf_plane_narrow.wgsl`) must use the 96-byte struct
 definition for correct array stride.
 
-**DofModel struct** (16 bytes, 16-byte aligned) — added in Session 2:
+**DofModel struct** (20 bytes, five 4-byte fields, array stride 20) — added in Session 2:
 
 | Field | Type | Notes |
 |---|---|---|
 | `body_id` | u32 | Body that owns this DOF (`model.dof_body[i]`). |
 | `parent` | u32 | Parent DOF in kinematic tree (0xFFFFFFFF = none). |
 | `armature` | f32 | Combined `jnt_armature[jnt] + dof_armature[i]`, pre-computed at upload. |
-| `_pad` | u32 | Alignment padding. |
+| `damping` | f32 | Implicit damping (`model.implicit_damping[i]`). |
+| `simple` | u32 | 1 if the dof's body is simple (`model.dof_simplenum[i] > 0`): the CRBA writes its row of `qM` as the diagonal alone. |
 
 | GPU buffer | Rust type | WGSL type | Bind group |
 |---|---|---|---|
@@ -722,8 +723,9 @@ A separate backward tree scan accumulates weighted COM:
 Phase 1 (per-body): subtree_mass[b] = mass[b];
                      weighted_com[b] = mass[b] × xipos[b]
 Phase 2 (backward): accumulate into parent (see §7.3 for f32 workaround)
-Phase 3 (per-body): subtree_com[b] = weighted_com[b] / subtree_mass[b]
-                     Guard: if subtree_mass < 1e-10, use xipos[b]
+Phase 3 (per-body): subtree_com[b] = weighted_com[b] × (1 / subtree_mass[b])
+                     Guard: if subtree_mass < mjMINVAL (1e-15), use xipos[b]
+                     (the CPU's rule, MuJoCo's mj_comPos)
 ```
 
 ### 8.2 `crba.wgsl` — Composite Rigid Body Algorithm — COMPLETE (Session 2)
@@ -784,6 +786,8 @@ buf_linear  = cross(ω, mh) + m · v
 
 Off-diagonal entries use the `dof_parent` walk with spatial force
 transport at body boundaries (`buf.angular += cross(r, buf.linear)`).
+A simple dof (`dofs[i].simple`, the CPU's `dof_simplenum > 0`) has none:
+its row is its diagonal alone, as the CPU's `mj_crba` (MuJoCo's `mj_crb`).
 Verified against CPU `crba.rs:196-225`.
 
 For flat trees (hockey), all DOFs share the same body so no cross-body
@@ -1119,7 +1123,7 @@ emit `PipelineContact` with plane normal as contact normal.
 **Jacobian (free joints only):**
 - Translational DOFs: `J[dof+0..3] = sign × facet_dir`
 - Angular DOFs: `J[dof+3+i] = sign × dot(facet_dir, cross(R·eᵢ, r))`
-- `r = stabilize_lever_arm(contact_point - body_xpos, normal)` — projects out sub-physical perpendicular drift
+- `r = contact_point - body_xpos`, as it is (the CPU's Jacobian projects no arm onto the normal)
 - Pyramidal facets: `facet_dir = normal ± mu × tangent_d`
 - Torsional facets: translational = normal; angular adds `± mu_torsion × dot(normal, omega_i)`
 

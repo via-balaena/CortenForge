@@ -450,8 +450,10 @@ pub(super) fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>)
 /// Finite-difference derivatives of inverse dynamics.
 ///
 /// Contains the Jacobians of `qfrc_inverse` with respect to position,
-/// velocity, and acceleration. `DfDa` approximately equals the mass
-/// matrix `M` (since `qfrc_inverse = M*qacc + bias - passive - constraint`).
+/// velocity, and acceleration. `DfDa` is the mass matrix `M` less the
+/// derivative of `qfrc_constraint`, which `inverse()` remakes from `qacc`
+/// (`qfrc_inverse = M*qacc + bias - passive - constraint`): a row in its
+/// quadratic zone adds its `J'·D·J`.
 ///
 /// # MuJoCo Equivalence
 ///
@@ -466,8 +468,8 @@ pub struct InverseDynamicsDerivatives {
     pub DfDq: DMatrix<f64>,
     /// `∂qfrc_inverse/∂qvel` (nv × nv).
     pub DfDv: DMatrix<f64>,
-    /// `∂qfrc_inverse/∂qacc` (nv × nv).
-    /// Approximately equals the mass matrix M.
+    /// `∂qfrc_inverse/∂qacc` (nv × nv): the mass matrix M less the
+    /// constraint force's derivative (above).
     pub DfDa: DMatrix<f64>,
 }
 
@@ -495,10 +497,9 @@ pub struct InverseDynamicsDerivatives {
 /// `mj_inverseSkip`, which fires none (`engine_inverse.c:184-245`), so
 /// `ctrl` is read as the caller left it.
 ///
-/// MuJoCo's `mj_inverseSkip` computes the constraint force from `qacc`
-/// (`mj_invConstraint`, `engine_inverse.c:223`); `inverse()` subtracts the
-/// one the forward solve found. With an active constraint the two
-/// differ.
+/// Each `inverse()` remakes the constraint force from that column's
+/// `qacc`, as MuJoCo's `mj_inverseSkip` does (`mj_invConstraint`,
+/// `engine_inverse.c:223`).
 ///
 /// # Cost
 ///

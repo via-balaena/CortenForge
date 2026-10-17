@@ -1,0 +1,82 @@
+//! The touch sensor against MuJoCo 3.5.0: for each contact of its site's
+//! body, in contact order, MuJoCo adds the normal force `mj_contactForce`
+//! decodes for that contact (a pyramidal contact's facets summed first,
+//! `mju_decodePyramid`), skipping one not above 0 (`engine_sensor.c:887-930`).
+//! MuJoCo also skips a contact whose normal's ray misses the site's zone
+//! (`mju_rayGeom`), which sim-core does not test (ledger L150); these sites
+//! enclose their bodies, so every contact is in the zone.
+//!
+//! The golden is `assets/golden/touch/touch.json`, from the unfused MuJoCo
+//! 3.5.0 oracle (`scripts/gen_touch_reference.py`, which describes its
+//! cases).
+
+use serde_json::Value;
+use sim_core::sensor::mj_sensor_acc;
+use sim_mjcf::load_model;
+
+fn golden() -> Value {
+    serde_json::from_str(include_str!("../assets/golden/touch/touch.json"))
+        .expect("touch golden parses")
+}
+
+fn floats(v: &Value) -> Vec<f64> {
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| x.as_f64().expect("number"))
+        .collect()
+}
+
+/// A free box resting on a plane (four contacts) beside a resting sphere
+/// (one), each with a touch sensor on a site enclosing it, at condim 1, 3,
+/// 4 and 6 under the pyramidal cone and condim 3 under the elliptic one: at
+/// 20 of MuJoCo's states, with MuJoCo's `efc_force` written in place of the
+/// solve's and the acceleration sensors rerun, both readings are MuJoCo's
+/// bit for bit, so the sensor is compared apart from the solve; and at a
+/// 21st, the sphere's contact rows' forces negated, whose normal force below
+/// 0 MuJoCo does not add (its touch reads 0). Before, the
+/// sensor added each pyramidal facet to its running total: at 268 such
+/// states, the box's reading differed at 129, 156 and 169 for condim 3, 4
+/// and 6, and at none for condim 1 or the elliptic cone.
+#[test]
+fn touch_sums_each_contact_as_mujoco() {
+    let g = golden();
+    for (name, case) in g["cases"].as_object().expect("cases") {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        for state in case["states"].as_array().expect("states") {
+            let step = &state["step"];
+            let mut data = model.make_data();
+            data.qpos
+                .as_mut_slice()
+                .copy_from_slice(&floats(&state["qpos"]));
+            data.qvel
+                .as_mut_slice()
+                .copy_from_slice(&floats(&state["qvel"]));
+            data.qacc_warmstart
+                .as_mut_slice()
+                .copy_from_slice(&floats(&state["qacc_warmstart"]));
+            data.time = state["time"].as_f64().expect("time");
+            data.forward(&model).expect("forward");
+            let force = floats(&state["efc_force"]);
+            assert_eq!(
+                data.contacts.len(),
+                usize::try_from(state["ncon"].as_u64().expect("ncon")).expect("ncon"),
+                "{name} step {step}: contacts"
+            );
+            assert_eq!(
+                data.efc_force.len(),
+                force.len(),
+                "{name} step {step}: rows"
+            );
+            data.efc_force.as_mut_slice().copy_from_slice(&force);
+            mj_sensor_acc(&model, &mut data);
+            let want = floats(&state["sensordata"]);
+            for (k, (a, b)) in data.sensordata.iter().zip(&want).enumerate() {
+                assert!(
+                    a.to_bits() == b.to_bits(),
+                    "{name} step {step}: touch {k}: {a}, MuJoCo {b}"
+                );
+            }
+        }
+    }
+}

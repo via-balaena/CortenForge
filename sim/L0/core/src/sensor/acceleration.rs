@@ -15,6 +15,7 @@ use crate::types::{
 };
 use nalgebra::Vector3;
 
+use crate::constraint::solver::decode_pyramid_into;
 use crate::dynamics::{object_acceleration, object_force};
 use crate::forward::mj_body_accumulators;
 
@@ -184,15 +185,27 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                         // the sensor's body (MuJoCo: geom_bodyid[con->geom[k]] == bodyid)
                         let (geom1_body, geom2_body) = c.bodies(model);
                         if body_id == geom1_body || body_id == geom2_body {
-                            // The normal force, as `mj_contactForce` decodes it: an
-                            // elliptic or frictionless contact's first row, a pyramidal
-                            // contact's facets summed (`mju_decodePyramid`).
-                            if data.efc_type[ei] == ConstraintType::ContactPyramidal {
-                                for k in 0..dim {
-                                    total_force += data.efc_force[ei + k];
-                                }
+                            // This contact's normal force, as `mj_contactForce`
+                            // decodes it: an elliptic or frictionless contact's first
+                            // row, a pyramidal contact's facets summed first
+                            // (`mju_decodePyramid`); added when above 0
+                            // (`engine_sensor.c:906-926`). MuJoCo also skips a
+                            // contact whose normal misses the site's zone (ledger
+                            // L150).
+                            let normal = if data.efc_type[ei] == ConstraintType::ContactPyramidal {
+                                let mut decoded = [0.0; 6];
+                                decode_pyramid_into(
+                                    &data.efc_force.as_slice()[ei..ei + dim],
+                                    &c.mu,
+                                    c.dim,
+                                    &mut decoded,
+                                );
+                                decoded[0]
                             } else {
-                                total_force += data.efc_force[ei];
+                                data.efc_force[ei]
+                            };
+                            if normal > 0.0 {
+                                total_force += normal;
                             }
                         }
                     }

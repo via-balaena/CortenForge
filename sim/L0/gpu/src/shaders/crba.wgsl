@@ -59,6 +59,7 @@ struct DofModel {
     parent: u32,
     armature: f32,
     damping: f32,
+    simple: u32,
 };
 
 // ── Bindings ──────────────────────────────────────────────────────────
@@ -298,6 +299,10 @@ fn crba_mass_matrix(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Diagonal: M[i,i] = cdof[i]^T · buf + armature
     let diag = dot(cdof_i_ang, buf[0]) + dot(cdof_i_lin, buf[1]) + dof.armature;
     qM[env_qm_off + dof_i * params.nv + dof_i] = diag;
+
+    // A simple dof's row is its diagonal alone, as the CPU's `mj_crba`
+    // (MuJoCo `mj_crb`), so two slides of one body on one axis are not coupled.
+    if dof.simple != 0u { return; }
 
     // Off-diagonal: walk dof_parent chain with spatial force transport
     var current_body = body_i;

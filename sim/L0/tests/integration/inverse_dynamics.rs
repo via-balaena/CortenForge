@@ -211,10 +211,12 @@ fn inverse_formula_explicit() {
     }
 }
 
-/// T9/G23: ENABLE_FWDINV flag triggers compare_fwd_inv() during forward().
+/// T9/G23: with ENABLE_FWDINV a step runs compare_fwd_inv() after its
+/// forward pass.
 ///
-/// When enabled, solver_fwdinv[1] is populated with the round-trip residual.
-/// When disabled, solver_fwdinv stays at [0, 0].
+/// On this model with no constraint rows, enabled or not, solver_fwdinv is
+/// [0, 0] and no inverse runs, as MuJoCo's `mj_compareFwdInv`; the
+/// statistics with rows are `inverse_parity.rs`'s.
 #[test]
 fn enable_fwdinv_flag() {
     use sim_core::ENABLE_FWDINV;
@@ -258,7 +260,7 @@ fn enable_fwdinv_flag() {
         "solver_fwdinv should be [0,0] without ENABLE_FWDINV"
     );
 
-    // --- With ENABLE_FWDINV: solver_fwdinv[1] should be populated ---
+    // --- With ENABLE_FWDINV, a step ---
     let mut model_on = sim_mjcf::load_model(xml).expect("load");
     model_on.enableflags |= ENABLE_FWDINV;
 
@@ -266,23 +268,19 @@ fn enable_fwdinv_flag() {
     data_on.qpos[0] = 0.5;
     data_on.ctrl[0] = 3.0;
     data_on.qfrc_applied[0] = 1.0;
-    data_on.forward(&model_on).expect("forward");
+    data_on.step(&model_on).expect("step");
 
-    // solver_fwdinv[1] is the L2 norm of (qfrc_inverse - fwd_applied).
-    // For a well-formed round-trip this should be very small (near zero).
+    // This model has no constraint rows, so MuJoCo's `mj_compareFwdInv`
+    // returns both statistics as 0 before any inverse, and `qfrc_inverse`
+    // stays as it was (`engine_inverse.c:266-270`; measured on the oracle on
+    // this model after `mj_step`: [0, 0] and qfrc_inverse 0). Before, the
+    // comparison ran an inverse on any model and this test asserted
+    // `qfrc_inverse` nonzero.
+    assert!(data_on.efc_type.is_empty(), "no constraint rows");
+    assert_eq!(data_on.solver_fwdinv, [0.0, 0.0], "solver_fwdinv");
     assert!(
-        data_on.solver_fwdinv[1] < 1e-6,
-        "solver_fwdinv[1] should be near-zero for consistent fwd/inv, got {}",
-        data_on.solver_fwdinv[1]
-    );
-
-    // qfrc_inverse should have been populated (nonzero with gravity + applied force)
-    let inv_norm: f64 = (0..model_on.nv)
-        .map(|i| data_on.qfrc_inverse[i].powi(2))
-        .sum::<f64>()
-        .sqrt();
-    assert!(
-        inv_norm > 0.1,
-        "qfrc_inverse should be nonzero when ENABLE_FWDINV is set, got norm={inv_norm}"
+        data_on.qfrc_inverse.iter().all(|&x| x == 0.0),
+        "qfrc_inverse not computed: {:?}",
+        data_on.qfrc_inverse.as_slice()
     );
 }

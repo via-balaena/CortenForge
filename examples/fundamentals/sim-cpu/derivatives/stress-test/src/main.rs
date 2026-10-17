@@ -161,7 +161,12 @@ fn pendulum_with_damping() -> Model {
     sim_mjcf::load_model(mjcf).expect("MJCF should parse")
 }
 
-/// Build a model with contact (box on plane).
+/// Contact damping of [`contact_model`], the same at every stiffness.
+const CONTACT_DAMPING: f64 = 50.0;
+
+/// Build a model with contact (box on plane), its solref in direct format
+/// (`-stiffness -damping`, both negative: MuJoCo replaces a mixed solref by the
+/// default).
 fn contact_model(stiffness: f64) -> Model {
     let mjcf = format!(
         r#"
@@ -175,12 +180,12 @@ fn contact_model(stiffness: f64) -> Model {
           <freejoint name="free"/>
           <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
           <geom name="cube" type="box" size="0.1 0.1 0.1"
-                solref="{} 1.0" rgba="0.8 0.3 0.3 1"/>
+                solref="{} {}" rgba="0.8 0.3 0.3 1"/>
         </body>
       </worldbody>
     </mujoco>
     "#,
-        -stiffness
+        -stiffness, -CONTACT_DAMPING
     );
     sim_mjcf::load_model(&mjcf).expect("MJCF should parse")
 }

@@ -295,6 +295,7 @@ pub fn make_contact_flex_rigid(
         // indexing would panic loudly if a malformed model violated this.
         // No additional validation needed (Phase 8 DT-25 audit decision).
         flex_vertex: Some(vertex_idx),
+        regularized_mu: 0.0,
         flex_vertex2: None,
     }
 }
@@ -343,6 +344,7 @@ pub fn make_contact_flex_self(
         solimp,
         frame: (t1, t2).into(),
         flex_vertex: Some(vertex1),
+        regularized_mu: 0.0,
         flex_vertex2: Some(vertex2),
     }
 }
@@ -396,6 +398,7 @@ pub fn make_contact_flex_flex(
         solimp,
         frame: (t1, t2).into(),
         flex_vertex: Some(vertex1),
+        regularized_mu: 0.0,
         flex_vertex2: Some(vertex2),
     }
 }

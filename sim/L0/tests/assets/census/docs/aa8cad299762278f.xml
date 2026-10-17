@@ -1,0 +1,18 @@
+<mujoco>
+      <option gravity="0 0 0" integrator="implicit"><flag sleep="enable"/></option>
+      <worldbody>
+        <body name="a" pos="0 0 1">
+          <joint name="ja" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sa" pos="0.3 0 0"/>
+        </body>
+        <body name="b" pos="1 0 0.7" sleep="init">
+          <joint name="jb" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 0.3" size="0.02" mass="1" contype="0" conaffinity="0"/>
+          <site name="sb" pos="0 0 0.3"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t" springlength="0.2 0.3"><site site="sa"/><site site="sb"/></spatial>
+      </tendon>
+    </mujoco>

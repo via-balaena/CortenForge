@@ -436,27 +436,18 @@ pub fn model_diff(ours: &Value, mj: &Value) -> Vec<String> {
     for f in ["eq_type", "eq_obj1id", "eq_obj2id", "eq_active"] {
         d.exact(f);
     }
-    // A weld's data is 11 numbers on both sides, but ours never writes the last
-    // (MuJoCo's torque scale), so ours is compared with that number taken as 1.
-    let eq_data_differs = (0..neq).any(|e| match str_at(&mj["eq_type"], e) {
-        "Weld" => {
-            let mut o = arr(&row_head(&ours["eq_data"], e, 10)).to_vec();
-            o.push(Value::from(1.0));
-            scaled(&Value::Array(o), &row_head(&mj["eq_data"], e, 11)) > TOLERANCE
-        }
-        kind => {
-            let n = match kind {
-                "Connect" => 6,
-                "Joint" | "Tendon" => 5,
-                "Distance" => 1,
-                "Flex" | "FlexVert" => 0,
-                _ => 11,
-            };
-            scaled(
-                &row_head(&ours["eq_data"], e, n),
-                &row_head(&mj["eq_data"], e, n),
-            ) > TOLERANCE
-        }
+    let eq_data_differs = (0..neq).any(|e| {
+        let n = match str_at(&mj["eq_type"], e) {
+            "Connect" => 6,
+            "Joint" | "Tendon" => 5,
+            "Distance" => 1,
+            "Flex" | "FlexVert" => 0,
+            _ => 11,
+        };
+        scaled(
+            &row_head(&ours["eq_data"], e, n),
+            &row_head(&mj["eq_data"], e, n),
+        ) > TOLERANCE
     });
     if eq_data_differs {
         d.fields.push("eq_data".to_string());

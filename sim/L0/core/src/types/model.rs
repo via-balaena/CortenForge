@@ -841,7 +841,11 @@ pub struct Model {
     pub eq_obj2id: Vec<usize>,
     /// Constraint parameters (meaning depends on type).
     /// - Connect: anchor point in body1 frame [x, y, z]
-    /// - Weld: relative pose [x, y, z, qw, qx, qy, qz] + torque scale
+    /// - Weld: the anchor in body2's frame in `[0..3]`, in body1's in `[3..6]`,
+    ///   the relative orientation `[qw, qx, qy, qz]` in `[6..10]`, and the
+    ///   torque scale in `[10]` (MuJoCo's `torquescale`, which scales the
+    ///   rotational error and rows; the MJCF builder writes 1, MuJoCo's
+    ///   default)
     /// - Joint: polycoef[0..11] for polynomial coupling (degree ≤ 10; trailing zeros
     ///   give a lower degree, e.g. a quartic uses [0..5])
     /// - Tendon: polycoef[0..5] for polynomial coupling

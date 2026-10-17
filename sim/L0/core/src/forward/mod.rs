@@ -9,7 +9,7 @@
 //! As MuJoCo 3.5.0's `mj_forwardSkip`:
 //!
 //! - **`forward_pos()`**: position stage (wake detection, FK, CRBA,
-//!   transmissions, collision, the constraint rows and their islands,
+//!   collision, the constraint rows and their islands, transmissions,
 //!   position sensors, potential energy);
 //! - **`forward_vel()`**: velocity stage (velocity FK, actuator lengths and
 //!   velocities, passive forces with `cb_passive` and passive plugins, the
@@ -211,6 +211,9 @@ impl Data {
 
         // Validate accelerations
         check::mj_check_acc(model, self);
+        if enabled(model, ENABLE_FWDINV) {
+            self.compare_fwd_inv(model);
+        }
 
         // The advance (as step() for non-RK4 integrators)
         self.integrate_unchecked(model)
@@ -271,6 +274,9 @@ impl Data {
                 // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
+                if enabled(model, ENABLE_FWDINV) {
+                    self.compare_fwd_inv(model);
+                }
                 crate::integrate::rk4::mj_runge_kutta(model, self)
             }
             Integrator::Euler
@@ -279,6 +285,9 @@ impl Data {
             | Integrator::Implicit => {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
+                if enabled(model, ENABLE_FWDINV) {
+                    self.compare_fwd_inv(model);
+                }
                 self.integrate_skip_unchecked(model, skipfactor)
             }
         }
@@ -442,22 +451,16 @@ impl Data {
         self.forward_acc(model, compute_sensors)
     }
 
-    /// Position stage: wake detection, forward kinematics, CRBA,
-    /// transmissions, collision, the constraint rows and their islands,
-    /// position sensors and potential energy.
+    /// Position stage: wake detection, forward kinematics, CRBA, collision,
+    /// the constraint rows and their islands, transmissions, position
+    /// sensors and potential energy.
     fn forward_pos(&mut self, model: &Model, compute_sensors: bool) {
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
         // ========== Position Stage ==========
+        // The kinematics wake what the user changed (`mj_wake`), before the
+        // tendons and the mass matrix.
         position::mj_fwd_position(model, self);
-
-        // Wake what the user changed (§16.4), after the kinematics found a
-        // sleeping pose changed and before the mass matrix, as MuJoCo's
-        // `mj_kinematics` runs `mj_wake` (engine_core_smooth.c:236-241); with
-        // sleep disabled it wakes every sleeping tree.
-        if crate::island::mj_wake(model, self) {
-            crate::island::mj_update_sleep_arrays(model, self);
-        }
         crate::dynamics::flex::mj_flex(model, self);
         crate::dynamics::flex::mj_flex_edge(model, self);
 
@@ -466,10 +469,6 @@ impl Data {
         // position stage; we do the same so that mj_energy_vel (velocity
         // stage) has a valid mass matrix.
         crate::dynamics::crba::mj_crba(model, self);
-
-        actuation::mj_transmission_joint_tendon(model, self);
-        actuation::mj_transmission_site(model, self);
-        actuation::mj_transmission_slidercrank(model, self);
 
         // §16.13.2: Tendon wake — multi-tree tendons with active limits
         if sleep_enabled && crate::island::mj_wake_tendon(model, self) {
@@ -494,7 +493,12 @@ impl Data {
         // MuJoCo's `mj_fwdPosition` (`engine_forward.c:203-206`).
         crate::constraint::mj_make_constraint(model, self);
 
-        // §36: Body transmission — requires contacts from mj_collision()
+        // The transmissions, after the wakes, as MuJoCo's `mj_transmission`
+        // (`engine_forward.c:209`): an actuator on a tree this pass woke
+        // is not skipped as asleep. A body transmission reads the contacts.
+        actuation::mj_transmission_joint_tendon(model, self);
+        actuation::mj_transmission_site(model, self);
+        actuation::mj_transmission_slidercrank(model, self);
         actuation::mj_transmission_body_dispatch(model, self);
 
         if compute_sensors {
@@ -553,8 +557,8 @@ impl Data {
     /// Acceleration stage of the forward pipeline.
     ///
     /// Runs actuation, constraint solve, forward acceleration, body
-    /// accumulators, acc-sensors, and forward/inverse comparison. (CRBA runs
-    /// in the position stage, passive forces and RNE in the velocity stage.)
+    /// accumulators and acc-sensors. (CRBA runs in the position stage,
+    /// passive forces and RNE in the velocity stage.)
     ///
     /// §53: This is the second half of the pipeline, used by both
     /// `forward_core()` and `step2()`.
@@ -596,53 +600,67 @@ impl Data {
             crate::sensor::mj_sensor_postprocess(model, self);
         }
 
-        // §52: Forward/inverse comparison (diagnostic only).
-        if enabled(model, ENABLE_FWDINV) {
-            self.compare_fwd_inv(model);
-        }
-
         Ok(())
     }
 
-    /// Compare forward and inverse dynamics (§52, `ENABLE_FWDINV`).
+    /// Compare forward and inverse dynamics (§52, `ENABLE_FWDINV`), as
+    /// MuJoCo's `mj_compareFwdInv` (`engine_inverse.c:262-302`): with no
+    /// constraint rows both statistics are 0; else the inverse from the
+    /// acceleration stage, sensors skipped (MuJoCo's
+    /// `mj_inverseSkip(mjSTAGE_VEL, 1)`), gives
+    /// - `solver_fwdinv[0]`: `‖qfrc_constraint − its inverse‖`, the change
+    ///   in the constraint force when it is remade from `qacc`;
+    /// - `solver_fwdinv[1]`: `‖qfrc_applied + qfrc_actuator + Jᵀ·xfrc_applied
+    ///   − qfrc_inverse‖`.
     ///
-    /// Runs `inverse()` and computes two L2 norms matching MuJoCo's
-    /// `mj_compareFwdInv()`:
-    /// - `solver_fwdinv[0]`: constraint force discrepancy (reserved, 0.0).
-    /// - `solver_fwdinv[1]`: `‖qfrc_inverse - fwd_applied‖` where
-    ///   `fwd_applied = qfrc_smooth + qfrc_bias - qfrc_passive`.
+    /// The forward's `qfrc_constraint` and `efc_force` are put back;
+    /// `efc_state` keeps the inverse's, as MuJoCo's does.
     ///
-    /// After G22, `qfrc_inverse = qfrc_applied + qfrc_actuator + J^T*xfrc`,
-    /// so `solver_fwdinv[1]` measures the round-trip residual of applied forces.
-    ///
-    /// This is purely diagnostic — no physics effect.
+    /// A step runs it after its forward pass and `mj_check_acc`, as MuJoCo's
+    /// `mj_step`, `mj_step2` and `mj_stepSkip` (`engine_forward.c:1431-1434`,
+    /// `:1500-1503`; `engine_derivative_fd.c:122-125`); a forward pass alone
+    /// does not. `ENABLE_INVDISCRETE` is not read.
     fn compare_fwd_inv(&mut self, model: &Model) {
-        if model.nv == 0 {
+        self.solver_fwdinv = [0.0, 0.0];
+        if self.efc_type.is_empty() {
             return;
         }
 
-        // Run inverse dynamics to populate qfrc_inverse
-        self.inverse(model);
-
-        // solver_fwdinv[0]: constraint discrepancy (not computed).
-        self.solver_fwdinv[0] = 0.0;
-
-        // solver_fwdinv[1]: applied force discrepancy.
-        // Forward: M*qacc = qfrc_smooth + qfrc_constraint
-        //   where qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive
-        //                       - qfrc_bias + J^T*xfrc_applied
-        // Inverse: qfrc_inverse = M*qacc + qfrc_bias - qfrc_passive - qfrc_constraint
-        //        = qfrc_applied + qfrc_actuator + J^T*xfrc_applied
-        //
-        // So the comparison vector is: qfrc_smooth + qfrc_bias - qfrc_passive
-        //   = qfrc_applied + qfrc_actuator + J^T*xfrc_applied
-        // And we compute ‖qfrc_inverse - comparison‖₂.
-        let mut sum_sq = 0.0_f64;
-        for i in 0..model.nv {
-            let fwd = self.qfrc_smooth[i] + self.qfrc_bias[i] - self.qfrc_passive[i];
-            let diff = self.qfrc_inverse[i] - fwd;
-            sum_sq += diff * diff;
+        // qforce = qfrc_applied + qfrc_actuator + Jᵀ·xfrc_applied
+        // (`mju_add`, `mj_xfrcAccumulate`).
+        let mut qforce = &self.qfrc_applied + &self.qfrc_actuator;
+        for body_id in 1..model.nbody {
+            let wrench = self.xfrc_applied[body_id];
+            if wrench.is_zero() {
+                continue;
+            }
+            let point = self.xipos[body_id];
+            crate::jacobian::mj_apply_ft(
+                model,
+                self,
+                &wrench.force,
+                &wrench.torque,
+                &point,
+                body_id,
+                &mut qforce,
+            );
         }
-        self.solver_fwdinv[1] = sum_sq.sqrt();
+
+        let qfrc_constraint = self.qfrc_constraint.clone();
+        let efc_force = self.efc_force.clone();
+        crate::constraint::solver::primal::mj_inv_constraint(self);
+        self.inverse_sum(model);
+
+        let dif: Vec<f64> = (0..model.nv)
+            .map(|i| qfrc_constraint[i] - self.qfrc_constraint[i])
+            .collect();
+        self.solver_fwdinv[0] = crate::linalg::mju_norm(&dif);
+        let dif: Vec<f64> = (0..model.nv)
+            .map(|i| qforce[i] - self.qfrc_inverse[i])
+            .collect();
+        self.solver_fwdinv[1] = crate::linalg::mju_norm(&dif);
+
+        self.qfrc_constraint = qfrc_constraint;
+        self.efc_force = efc_force;
     }
 }
