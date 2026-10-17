@@ -1021,8 +1021,9 @@ fn t28_box_sphere_distance() {
 /// the free sphere's). A distance sensor naming the world takes the world's
 /// geoms from `geom_body`, so the free sphere is not one of them: on a world
 /// sphere 0.95 from a box that a free sphere overlaps by 0.05, the sensor
-/// reads the same after the call as before, bit for bit (sim-core does not
-/// take a plane's distance, DT-122, so the added plane adds none). Before, it
+/// reads the same after the call as before, bit for bit (sim-core's geom
+/// distance skips a plane, `geom_distance.rs`, so the added plane adds
+/// none). Before, it
 /// walked the widened range and read the free sphere's −0.05.
 #[test]
 fn distance_from_the_world_reads_the_worlds_geoms_after_add_ground_plane() {

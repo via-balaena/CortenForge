@@ -307,10 +307,12 @@ fn assert_configs(name: &str, case: &Value) {
     }
 }
 
-/// Six scenes at the edges of `mju_wrap`'s tests, from a review's sweep of
-/// them: an end on the surface, a segment grazing it, a radius of 1e-14
+/// Scenes at the edges of `mju_wrap`'s tests, from reviews' sweeps of them:
+/// an end on the surface, a segment grazing it, a radius of 1e-14
 /// (axis-aligned and turned) and of 1e-15 (turned), a cylinder wrap near
-/// π; in each a sphere and a cylinder in the world, wrapped with and
+/// π, a segment tangent to the sphere whose tangent directions' cosine is
+/// exactly 1, which MuJoCo's sphere wrap takes the long way round (ledger
+/// L185); in each a sphere and a cylinder in the world, wrapped with and
 /// without a sidesite. Each tendon's length,
 /// Jacobian and wrap points are MuJoCo's ([`Tol::Golden`]).
 #[test]
@@ -321,15 +323,15 @@ fn wrap_edges_as_mujoco() {
     }
 }
 
-/// Two segments grazing a sphere, from the same sweep: the directions of the
+/// Segments grazing a sphere, from the same sweeps: the directions of the
 /// sphere wrap's two tangent points round to a cosine past 1, and MuJoCo's
 /// `length_circle` takes `acos` of it unclamped, so its sphere tendons'
 /// length is NaN (`engine_util_misc.c:55-71`; the golden holds "nan").
 /// Ours clamps the cosine (registry `D-WRAP-ACOS`): the length is finite, the
 /// straight segment's between the tendon's ends, as for a path that only
 /// touches the sphere, to within the arc the clamp drops, and never the long
-/// way round (a third segment, turned, whose cross product's sign asks for it:
-/// before, its length was the straight segment's plus 2πr). The bound is the
+/// way round (on the one whose cross product's sign asks for it, before, the
+/// straight segment's plus 2πr). The bound is the
 /// radius times √(8ε), 4.2e-8: the clamp acts where the computed cosine is at
 /// least 1 while the true one is 1 − θ²/2, so θ ≤ √(8ε) if the dot of the two
 /// unit directions rounds within 4 ulps of 1 there, an assumption, not

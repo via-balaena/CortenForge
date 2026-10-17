@@ -389,11 +389,12 @@ pub fn collide_with_mesh(
 ///    - Have `depth > -margin` (within margin of plane)
 ///    - Are at least `0.3 * rbound` away from the primary contact (prevents clustering),
 ///      `rbound` the half-diagonal of the mesh's box. MuJoCo's `addplanemesh` takes
-///      `geom_rbound` (`engine_collision_convex.c:1018`, `:1103`, `:1129`), in its
-///      mesh frame, at the centre of mass along the principal axes; sim-mjcf keeps
-///      a mesh in its authored frame (book Rigid-loading L35), where `geom_rbound`
-///      is about the authored origin and spaces a mesh authored off its centre of
-///      mass too far apart (ledger L176)
+///      `geom_rbound` (`engine_collision_convex.c:1018`, `:1103`, `:1129`), the norm
+///      of each axis's larger bound of the mesh's box in its mesh frame, at the
+///      centre of mass along the principal axes (`user_objects.cc:3443-3449`): the
+///      half-diagonal where the authored box is that box. sim-mjcf keeps a mesh in
+///      its authored frame (book Rigid-loading L35), where `geom_rbound` is about
+///      the authored origin (ledger L176)
 /// 3. Return 1–3 contacts with individual depths.
 ///
 /// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`), consistent with

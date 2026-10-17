@@ -70,8 +70,8 @@ The cases:
   from the origin: the ends point one way (cos G within mjMINVAL of 1), so
   each inside wrap takes the ends' midpoint's direction at the radius
   (`wrap_inside`'s fallback, `engine_util_misc.c:195-210`).
-- wrap_edges: six scenes at the edges of `mju_wrap`'s tests, from a
-  review's sweep of them: an end on the surface; a segment grazing it; a
+- wrap_edges: scenes at the edges of `mju_wrap`'s tests, from reviews'
+  sweeps of them: an end on the surface; a segment grazing it; a
   radius of 1e-14, axis-aligned and turned; a cylinder wrap near pi; a
   radius of 1e-15, turned; a segment tangent to the sphere whose tangent
   directions' cosine is exactly 1 and which MuJoCo takes the long way round.
@@ -80,10 +80,10 @@ The cases:
   four tendons over them (with and without the sidesite); each tendon's
   state after mj_forward. It refuses a scene with a length not finite
   (MuJoCo's `acos` gives NaN past |cos| 1 on some grazing segments).
-- grazing: three scenes from the same sweep, as wrap_edges, whose segment
-  grazes the sphere (ends at +-1.5 r at y = r(1 - 1e-16); ends at +-100 r
-  at y = r(1 - 1e-9)), and a turned one from a later sweep whose cross
-  product's sign asks for the long way round: the directions of the sphere wrap's two tangent
+- grazing: scenes, as wrap_edges, whose segment grazes the sphere (two
+  from the same sweep, ends at +-1.5 r at y = r(1 - 1e-16) and at +-100 r
+  at y = r(1 - 1e-9); one from a later sweep, whose cross product's sign
+  asks for the long way round): the directions of the sphere wrap's two tangent
   points round to a cosine past 1, so MuJoCo's `length_circle` takes `acos`
   of it and the sphere tendons' length is NaN (`engine_util_misc.c:55-71`).
   It refuses a scene where every length is finite.
