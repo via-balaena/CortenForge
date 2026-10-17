@@ -363,6 +363,28 @@ fn i_static_pair() {
     includes_as_mujoco("static_pair");
 }
 
+/// An upright ellipsoid at distance 0, and two in a plane's margin 0.125 and
+/// gap 0.0625, at distance 0 and at exactly the margin: each listed, as
+/// MuJoCo's `mjc_PlaneConvex` lists at `dist ≤ margin`
+/// (`engine_collision_convex.c:1056`), the first and the last excluded.
+/// Before, the plane–ellipsoid test was strict and listed neither.
+#[test]
+fn i_ellipsoid_touching_plane_and_at_the_margin() {
+    includes_as_mujoco("ellipsoid_touching_plane");
+    includes_as_mujoco("ellipsoid_at_margin");
+}
+
+/// Three upright cylinders turned by 1e-12, 3e-11 and 3e-9 about x, 0.001
+/// into a plane: their rim points as MuJoCo's, which takes the rim's
+/// direction from the axis while its length squared is at least mjMINVAL²
+/// (`mjc_PlaneCylinder`, `engine_collision_primitive.c:115`). Before, below a
+/// length of 1e-10 the cylinder's x axis was taken, so the first two
+/// cylinders' points were turned 90° about the axis (0.1 off).
+#[test]
+fn i_cylinders_nearly_upright() {
+    includes_as_mujoco("cylinders_nearly_upright");
+}
+
 /// Census document 830708de: a box dropped on a plane, tumbling under the
 /// census's first excitation, lands on one corner, then two, then three:
 /// MuJoCo lists each corner by its own distance (`mjc_PlaneBox`), where the

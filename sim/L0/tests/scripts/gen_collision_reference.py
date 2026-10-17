@@ -323,7 +323,13 @@ def frame_cases():
 # engine_core_constraint.c:996-1019): a sphere, an upright cylinder and a box
 # resting on a plane at distance 0; a box tilted 10 degrees within a plane's
 # margin 0.1 and gap 0.08, two of its corners in the gap; an explicit pair
-# of two static spheres (nv 0).
+# of two static spheres (nv 0); an upright ellipsoid at distance 0, and two in
+# a plane's margin 0.125 and gap 0.0625, one at distance 0 and one at exactly
+# the margin (`mjc_PlaneConvex` lists at dist <= margin,
+# engine_collision_convex.c:1056); and three upright cylinders turned by 1e-12,
+# 3e-11 and 3e-9 about x, 0.001 into a plane (`mjc_PlaneCylinder` takes the
+# rim's direction from the axis while its length squared is at least
+# mjMINVAL^2, engine_collision_primitive.c:115).
 INCLUSION_XML = {
     "sphere_touching_plane": """<mujoco><worldbody><geom type="plane" size="2 2 0.1"/>
 <body pos="0 0 0.1"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>""",
@@ -336,6 +342,15 @@ INCLUSION_XML = {
     "static_pair": """<mujoco><worldbody><geom name="a" type="sphere" size="0.1"/>
 <body pos="0.15 0 0"><geom name="b" type="sphere" size="0.1"/></body></worldbody>
 <contact><pair geom1="a" geom2="b"/></contact></mujoco>""",
+    "ellipsoid_touching_plane": """<mujoco><worldbody><geom type="plane" size="5 5 0.1"/>
+<body pos="0 0 0.25"><freejoint/><geom type="ellipsoid" size="0.5 0.375 0.25"/></body></worldbody></mujoco>""",
+    "ellipsoid_at_margin": """<mujoco><worldbody><geom type="plane" size="5 5 0.1" margin="0.125" gap="0.0625"/>
+<body pos="0 0 0.25"><freejoint/><geom type="ellipsoid" size="0.5 0.375 0.25"/></body>
+<body pos="2 0 0.375"><freejoint/><geom type="ellipsoid" size="0.5 0.375 0.25"/></body></worldbody></mujoco>""",
+    "cylinders_nearly_upright": """<mujoco><worldbody><geom type="plane" size="5 5 0.1"/>
+<body pos="0 0 0.149" quat="1 1e-12 0 0"><freejoint/><geom type="cylinder" size="0.1 0.15"/></body>
+<body pos="1 0 0.149" quat="1 3e-11 0 0"><freejoint/><geom type="cylinder" size="0.1 0.15"/></body>
+<body pos="2 0 0.149" quat="1 3e-9 0 0"><freejoint/><geom type="cylinder" size="0.1 0.15"/></body></worldbody></mujoco>""",
 }
 
 
@@ -357,6 +372,14 @@ def inclusion_cases():
         sys.exit("inclusion: the box does not have two corners in the gap")
     if out["static_pair"]["nefc"] != 0:
         sys.exit("inclusion: the static pair has rows")
+    touching = out["ellipsoid_touching_plane"]["contacts"]
+    if len(touching) != 1 or touching[0]["dist"] != 0 or touching[0]["exclude"] != 1:
+        sys.exit("inclusion: the ellipsoid at distance 0 is not listed and excluded")
+    at_margin = out["ellipsoid_at_margin"]["contacts"]
+    if [(c["dist"], c["exclude"]) for c in at_margin] != [(0.0, 0), (0.125, 1)]:
+        sys.exit(f"inclusion: the ellipsoids in the margin: {at_margin}")
+    if len(out["cylinders_nearly_upright"]["contacts"]) != 9:
+        sys.exit("inclusion: the cylinders do not list three rim points each")
     return out
 
 

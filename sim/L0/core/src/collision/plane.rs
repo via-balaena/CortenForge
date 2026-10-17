@@ -1,6 +1,7 @@
 //! Collision detection against infinite planes (sphere, box, capsule, cylinder, ellipsoid).
 
 use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::quat::mul_mat_vec3;
 use crate::types::{Contact, GeomType, Model, make_frame};
 use nalgebra::{Matrix3, Vector3};
@@ -268,10 +269,11 @@ fn collide_cylinder_plane_impl(
     // Radial direction: projection of -normal onto the plane perpendicular to axis,
     // scaled to radius. This gives the rim offset that pushes deepest into the plane.
     let raw_vec = -plane_normal - axis * (-prjaxis); // -normal + axis * prjaxis
-    let vec_len = raw_vec.norm();
+    let len_sqr = raw_vec.dot(&raw_vec);
 
-    let vec = if vec_len > GEOM_EPSILON {
-        raw_vec * (radius / vec_len)
+    // MuJoCo's test (`mjc_PlaneCylinder`, `engine_collision_primitive.c:115`).
+    let vec = if len_sqr >= MJ_MINVAL * MJ_MINVAL {
+        raw_vec * (radius / len_sqr.sqrt())
     } else {
         // Axis is parallel to normal (disk is parallel to plane).
         // Use cylinder's local X-axis as fallback radial direction.
@@ -444,7 +446,9 @@ fn collide_ellipsoid_plane_impl(
     let signed_dist = plane_normal.dot(&world_support) - plane_d;
     let depth = -signed_dist; // Positive = penetrating
 
-    if depth <= -margin {
+    // Listed at `dist ≤ margin`, as MuJoCo's `mjc_PlaneConvex`
+    // (`engine_collision_convex.c:1056`).
+    if depth < -margin {
         return vec![];
     }
 
