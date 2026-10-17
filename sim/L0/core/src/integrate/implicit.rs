@@ -104,8 +104,10 @@ pub fn isd_tendon_damping(model: &Model, t: usize) -> f64 {
 /// `build_m_impl` (Step 2b). Both call sites must produce
 /// identical mass matrix modifications — factoring this out guarantees it.
 ///
-/// **Sleep guard:** Skips tendons whose target DOFs are all sleeping,
-/// matching the guards in `mj_fwd_passive` and `mjd_passive_vel`.
+/// **Sleep guard:** Skips a tendon whose row reaches no awake dof
+/// ([`tendon_all_dofs_sleeping`]), as the other ImplicitSpringDamper paths
+/// do; `mj_fwd_passive` and `mjd_passive_vel` skip by the tendon's sleep
+/// state instead.
 pub fn accumulate_tendon_kd(
     matrix: &mut DMatrix<f64>,
     model: &Model,

@@ -189,9 +189,11 @@ pub fn reset_sleep_state(model: &Model, data: &mut Data) {
 // Derived sleep arrays
 // ---------------------------------------------------------------------------
 
-/// Whether constraint assembly and the tendons filter sleeping objects:
-/// sleep enabled and some tree asleep (MuJoCo's `sleep_filter`,
-/// `engine_core_constraint.c:390`, `engine_core_smooth.c:939-940`).
+/// Whether constraint assembly, the tendons, the passive pass's
+/// spring-dampers and `mjd_passive_vel` filter sleeping objects: sleep
+/// enabled and some tree asleep (MuJoCo's `sleep_filter`,
+/// `engine_core_constraint.c:390`, `engine_core_smooth.c:939-940`,
+/// `engine_passive.c:123`, `engine_derivative.c:1698`).
 pub fn constraint_sleep_filter(model: &Model, data: &Data) -> bool {
     model.enableflags & ENABLE_SLEEP != 0 && data.ntree_awake < model.ntree
 }

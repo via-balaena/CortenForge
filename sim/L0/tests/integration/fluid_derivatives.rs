@@ -2947,7 +2947,7 @@ fn t54_per_dof_damping_all_sleeping_zero() {
 }
 
 // ============================================================================
-// T55: Tendon — all target DOFs sleeping → tendon skipped
+// T55: Tendon — asleep with its one tree → tendon skipped
 // ============================================================================
 
 /// Both joints in one sleeping tree with tendon damping=5.0.
