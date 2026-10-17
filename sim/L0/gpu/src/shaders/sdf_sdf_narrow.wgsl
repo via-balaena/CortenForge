@@ -320,6 +320,8 @@ fn sdf_sdf_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
         let dst_dist = dst_trilinear(dst_local, dst_gm);
 
         // 10. Contact test
+        // Not the CPU's test (see `sdf_plane_narrow.wgsl`'s contact test;
+        // ledger L180).
         if dst_dist >= params.contact_margin {
             continue;
         }
@@ -331,7 +333,9 @@ fn sdf_sdf_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
 
-        // 12. Normal convention — matches CPU exactly
+        // 12. Normal convention — the CPU's where the geoms' indices rise
+        // with their bodies': the CPU lists a pair as MuJoCo's, equal types in
+        // the order tested, its normal from the first (ledger L180).
         var normal_world = (dst_pose * vec4<f32>(dst_grad, 0.0)).xyz;
         if params.flip_normal == 0u {
             normal_world = -normal_world;

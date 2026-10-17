@@ -231,7 +231,11 @@ fn sdf_plane_narrow(@builtin(global_invocation_id) gid: vec3<u32>) {
         // 9. Signed distance to plane (positive = above plane)
         let dist = dot(plane_normal, world) - plane_offset;
 
-        // 10. Contact test
+        // 10. Contact test. Not the CPU's: the CPU lists a contact at
+        // dist <= margin, the margin the two geoms' sum, and makes
+        // no rows for one at or past margin - gap; this lists below the larger
+        // of the two margins, reads no gap, and every contact makes rows
+        // (ledger L180).
         if dist >= params.contact_margin {
             continue;
         }

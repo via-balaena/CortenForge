@@ -141,6 +141,13 @@ fn quat_to_mat3(q: vec4<f32>) -> mat3x3<f32> {
 
 /// Compute orthonormal tangent vectors from a contact normal.
 /// Returns [t1, t2] such that {normal, t1, t2} form a right-handed frame.
+///
+/// Not the CPU's frame: the CPU completes a contact's frame as MuJoCo's
+/// `mju_makeFrame` (sim-core's `make_frame`: the first tangent (0, 1, 0) or
+/// (0, 0, 1) by the normal's y, less its part along the normal; the second
+/// the normal × the first). The two agree up to a multiple of 90° only for an
+/// axis-aligned normal (35° apart about (0.5, 0.5, 0.71)), and the pyramid's
+/// facets follow the frame (ledger L180).
 fn compute_tangent_frame(normal: vec3<f32>) -> array<vec3<f32>, 2> {
     // Choose reference axis that is not nearly parallel to the normal.
     let ref_axis = select(vec3<f32>(1.0, 0.0, 0.0),
@@ -419,6 +426,10 @@ fn assemble_constraints(@builtin(global_invocation_id) gid: vec3<u32>) {
     // We swap body indices so body1 = lower (world), body2 = higher (free
     // body). The normal stays unchanged because it already points from
     // the lower-index body toward the higher-index body.
+    //
+    // The CPU lists such a contact with the plane first (MuJoCo's type
+    // order, a plane's `mjtGeom` the lowest), its normal from the plane;
+    // the GPU keeps (SDF, plane) (ledger L180).
     var normal = contact.normal;
     var body1 = g1.body_id;
     var body2 = g2.body_id;
