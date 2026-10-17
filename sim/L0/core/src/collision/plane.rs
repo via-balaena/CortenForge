@@ -1,7 +1,7 @@
 //! Collision detection against infinite planes (sphere, box, capsule, cylinder, ellipsoid).
 
 use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
-use crate::types::{Contact, GeomType, Model};
+use crate::types::{Contact, GeomType, Model, make_frame};
 use nalgebra::{Matrix3, Vector3};
 
 /// Collision between a plane and another geometry.
@@ -169,7 +169,7 @@ pub fn collide_with_plane(
 
                 if penetration > -margin {
                     let contact_pos = end - plane_normal * f64::midpoint(radius, dist);
-                    contacts.push(make_contact_from_geoms(
+                    let mut contact = make_contact_from_geoms(
                         model,
                         contact_pos,
                         plane_normal,
@@ -177,7 +177,11 @@ pub fn collide_with_plane(
                         plane_geom,
                         other_geom,
                         margin,
-                    ));
+                    );
+                    // MuJoCo's frame takes the capsule's axis as its first
+                    // tangent (`mjc_PlaneCapsule`, `engine_collision_primitive.c:80-85`).
+                    (contact.normal, contact.frame) = make_frame(&plane_normal, &axis);
+                    contacts.push(contact);
                 }
             }
             contacts

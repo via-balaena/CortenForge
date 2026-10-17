@@ -12,7 +12,7 @@
 //! Each contact lists the geom of the lower `mjtGeom` first, equal types in
 //! the order tested.
 
-use crate::types::{Contact, DISABLE_MIDPHASE, Model, compute_tangent_frame, disabled};
+use crate::types::{Contact, DISABLE_MIDPHASE, Model, disabled};
 
 /// Where a contact falls in MuJoCo's list; contacts sort by it, stably.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -125,14 +125,55 @@ fn type_ordered(model: &Model, tested: (usize, usize)) -> (usize, usize) {
 }
 
 /// List `contact` with the geoms `(geom1, geom2)`: if the collision function
-/// listed them the other way round, swap them and turn the normal round, the
-/// tangent frame rebuilt from it.
+/// listed them the other way round, swap them and turn the normal round with
+/// the second tangent, keeping the first. By reading `mju_makeFrame`, that
+/// is the frame it builds from the reversed normal, bit for bit, and the
+/// normal is normalised once, as MuJoCo's.
 fn list_as(contact: &mut Contact, (geom1, geom2): (usize, usize)) {
     if geom1 != geom2 && (contact.geom1, contact.geom2) == (geom2, geom1) {
         contact.geom1 = geom1;
         contact.geom2 = geom2;
         contact.normal = -contact.normal;
-        let (t1, t2) = compute_tangent_frame(&contact.normal);
-        contact.frame = (t1, t2).into();
+        contact.frame[1] = -contact.frame[1];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
+    use crate::types::make_frame;
+    use nalgebra::Vector3;
+
+    /// A swapped contact turns its normal and second tangent round and keeps
+    /// the first: the frame `make_frame` builds from the reversed normal, bit
+    /// for bit, without normalising the normal a second time (which moves
+    /// the last bit of (0, 1, 1)'s unit normal).
+    #[test]
+    fn swapped_contact_is_normalised_once() {
+        let raw = Vector3::new(0.0, 1.0, 1.0);
+        let mut contact = Contact::with_condim(
+            Vector3::zeros(),
+            raw,
+            0.01,
+            1,
+            0,
+            1.0,
+            0.005,
+            0.0001,
+            3,
+            DEFAULT_SOLREF,
+            DEFAULT_SOLIMP,
+        );
+        list_as(&mut contact, (0, 1));
+        assert_eq!((contact.geom1, contact.geom2), (0, 1));
+        let (normal, frame) = make_frame(&-raw, &Vector3::zeros());
+        assert_eq!(contact.normal, normal);
+        assert_eq!(contact.frame, frame);
+        assert_ne!(
+            make_frame(&contact.normal, &Vector3::zeros()).0,
+            contact.normal,
+            "normalising the unit normal again must move it, or this test cannot see it"
+        );
     }
 }

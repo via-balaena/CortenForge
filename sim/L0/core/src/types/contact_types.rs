@@ -2,12 +2,13 @@
 //!
 //! Contains [`ContactPair`] (explicit pair overrides from MJCF `<pair>`),
 //! [`Contact`] (detected contact point for constraint generation),
-//! and the [`compute_tangent_frame`] helper.
+//! and the [`make_frame`] helper.
 
 use nalgebra::Vector3;
 
 use super::model::Model;
 use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
+use crate::quat::normalize3;
 
 /// Explicit contact pair: geom indices + per-pair overrides.
 /// All fields are fully resolved at build time (no Options).
@@ -209,8 +210,9 @@ impl Contact {
         // Safety: ensure depth is finite
         let depth = if depth.is_finite() { depth } else { 0.0 };
 
-        // Compute tangent frame from normal (handles NaN/zero normals internally)
-        let (t1, t2) = compute_tangent_frame(&normal);
+        // The normal normalised and the frame completed, as MuJoCo's
+        // mj_setContact (handles NaN/zero normals internally).
+        let (normal, frame) = make_frame(&normal, &Vector3::zeros());
 
         Self {
             pos,
@@ -232,7 +234,7 @@ impl Contact {
             solref,
             solreffriction: [0.0, 0.0],
             solimp,
-            frame: (t1, t2).into(),
+            frame,
             flex_vertex: None,
             regularized_mu: 0.0,
             flex_vertex2: None,
@@ -286,8 +288,9 @@ impl Contact {
         // Safety: ensure depth is finite
         let depth = if depth.is_finite() { depth } else { 0.0 };
 
-        // Compute tangent frame from normal
-        let (t1, t2) = compute_tangent_frame(&normal);
+        // The normal normalised and the frame completed, as MuJoCo's
+        // mj_setContact.
+        let (normal, frame) = make_frame(&normal, &Vector3::zeros());
 
         // Contact dimension is determined directly by condim
         // The friction coefficients determine the cone shape, not the structure
@@ -329,7 +332,7 @@ impl Contact {
             solref,
             solreffriction: [0.0, 0.0],
             solimp,
-            frame: (t1, t2).into(),
+            frame,
             flex_vertex: None,
             regularized_mu: 0.0,
             flex_vertex2: None,
@@ -337,45 +340,93 @@ impl Contact {
     }
 }
 
-/// Compute orthonormal tangent frame from contact normal.
+/// The contact frame as MuJoCo's `mju_makeFrame` completes it
+/// (`engine_util_spatial.c:508-534`), which `mj_setContact` calls for every
+/// contact (`engine_collision_driver.c:1418`): the normal normalised as
+/// `mju_normalize3`; the first tangent `hint` if its squared length is at
+/// least 0.25, else `(0, 1, 0)` when the normal's `y` lies in (−0.5, 0.5)
+/// and `(0, 0, 1)` otherwise, made orthogonal to the normal and normalised;
+/// the second the normal × the first. Returns the normal and the tangents.
 ///
-/// Returns (t1, t2) where t1, t2, normal form a right-handed orthonormal basis.
-/// Matches MuJoCo's `mju_makeFrame` convention: pick the axis with the smallest
-/// absolute normal component, then `t1 = normalize(n × axis)`, `t2 = n × t1`.
-///
-/// Handles degenerate cases (zero/NaN normal) by returning a default frame.
-#[inline]
+/// MuJoCo stops on a normal shorter than 0.5 ("xaxis of contact frame
+/// undefined"). A normal that is not finite or is shorter than 1e-10 is kept
+/// as given, with the tangents `(1, 0, 0)` and `(0, 1, 0)`; one of length
+/// 1e-10 to 0.5 is normalised (registry `D-FRAME-UNDEFINED`).
 #[must_use]
-pub fn compute_tangent_frame(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-    // Safety check: handle zero/NaN normals
-    let normal_len = normal.norm();
-    if !normal_len.is_finite() || normal_len < 1e-10 {
-        return (Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+pub fn make_frame(normal: &Vector3<f64>, hint: &Vector3<f64>) -> (Vector3<f64>, [Vector3<f64>; 2]) {
+    let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let mut n = [normal.x, normal.y, normal.z];
+    let length = dot(&n, &n).sqrt();
+    if !length.is_finite() || length < 1e-10 {
+        return (*normal, [Vector3::x(), Vector3::y()]);
     }
-
-    let n = normal / normal_len;
-
-    // MuJoCo convention: find axis with smallest |n| component
-    let mut min_idx = 0;
-    if n[1].abs() < n[min_idx].abs() {
-        min_idx = 1;
-    }
-    if n[2].abs() < n[min_idx].abs() {
-        min_idx = 2;
-    }
-    let mut axis = Vector3::zeros();
-    axis[min_idx] = 1.0;
-
-    // t1 = normalize(n × axis)
-    let t1_raw = n.cross(&axis);
-    let t1_norm = t1_raw.norm();
-    let t1 = if t1_norm > 1e-10 {
-        t1_raw / t1_norm
+    normalize3(&mut n);
+    let h = [hint.x, hint.y, hint.z];
+    let mut t1 = if dot(&h, &h) < 0.25 {
+        if n[1] < 0.5 && n[1] > -0.5 {
+            [0.0, 1.0, 0.0]
+        } else {
+            [0.0, 0.0, 1.0]
+        }
     } else {
-        Vector3::new(1.0, 0.0, 0.0)
+        h
     };
+    // The seed less its part along the normal, MuJoCo's operations in order.
+    let along = dot(&n, &t1);
+    t1 = [
+        t1[0] - n[0] * along,
+        t1[1] - n[1] * along,
+        t1[2] - n[2] * along,
+    ];
+    normalize3(&mut t1);
+    let t2 = [
+        n[1] * t1[2] - n[2] * t1[1],
+        n[2] * t1[0] - n[0] * t1[2],
+        n[0] * t1[1] - n[1] * t1[0],
+    ];
+    (Vector3::from(n), [Vector3::from(t1), Vector3::from(t2)])
+}
 
-    // t2 = n × t1
-    let t2 = n.cross(&t1);
-    (t1, t2)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MuJoCo's `mj_setContact` normalises the normal a collision function
+    /// wrote (`mju_makeFrame`): (0, 1, 1) is stored as
+    /// (0, 0.7071067811865475, 0.7071067811865475).
+    #[test]
+    fn contact_normal_is_normalised_as_mj_setcontact() {
+        let c = Contact::with_condim(
+            Vector3::zeros(),
+            Vector3::new(0.0, 1.0, 1.0),
+            0.01,
+            0,
+            1,
+            1.0,
+            0.005,
+            0.0001,
+            3,
+            DEFAULT_SOLREF,
+            DEFAULT_SOLIMP,
+        );
+        assert_eq!(
+            c.normal,
+            Vector3::new(0.0, 0.707_106_781_186_547_5, 0.707_106_781_186_547_5)
+        );
+        assert_eq!(
+            c.frame,
+            make_frame(&Vector3::new(0.0, 1.0, 1.0), &Vector3::zeros()).1
+        );
+    }
+
+    /// Registry `D-FRAME-UNDEFINED`: where MuJoCo stops, a zero or non-finite
+    /// normal is kept, with the tangents (1, 0, 0) and (0, 1, 0).
+    #[test]
+    fn an_undefined_normal_keeps_the_default_frame() {
+        for normal in [Vector3::zeros(), Vector3::new(f64::NAN, 0.0, 1.0)] {
+            let (n, frame) = make_frame(&normal, &Vector3::zeros());
+            assert!(n == normal || n.x.is_nan(), "{n:?}");
+            assert_eq!(frame, [Vector3::x(), Vector3::y()]);
+        }
+    }
 }

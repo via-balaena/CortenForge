@@ -23,7 +23,7 @@ engine_collision_convex.c:807-812). Each case holds:
   with no contact.
 
 `order` holds MuJoCo's contact list after mj_forward (each contact's geoms
-as listed, normal, `dist` and `dim`) for scenes that show its order
+as listed, normal, tangents, `dist` and `dim`) for scenes that show its order
 (engine_collision_driver.c:226-470): a body of two geoms (a box and a
 sphere) against two single-sphere bodies, a sphere on a plane and a sphere
 against a box, with the midphase on and off (`bodies`,
@@ -37,6 +37,13 @@ between two spheres: MuJoCo lists the plane's flex contacts after its
 sphere contacts (a body-flex pair's signature is past every body pair's of
 the same first body), and the flex's vertex positions and elements. It
 refuses scenes that do not show that.
+
+`frame` holds MuJoCo's contact frames after mj_forward (all nine entries,
+the normal first, then the two tangents: `mju_makeFrame` from
+`mj_setContact`, engine_util_spatial.c:508-534) for two spheres along x,
+two spheres along a diagonal whose normal's y is past 0.5, and a
+horizontal capsule on a plane, whose frame takes the capsule's axis as its
+first tangent (mjc_PlaneCapsule's hint).
 """
 
 import json
@@ -196,7 +203,8 @@ def contact_list(xml):
     mujoco.mj_forward(m, d)
     return {"xml": xml, "contacts": [
         {"geom": [int(c.geom[0]), int(c.geom[1])], "normal": floats(c.frame[:3]),
-         "dist": float(c.dist), "dim": int(c.dim)} for c in d.contact[:d.ncon]]}
+         "tangents": floats(c.frame[3:]), "dist": float(c.dist), "dim": int(c.dim)}
+        for c in d.contact[:d.ncon]]}
 
 
 def flex_list(xml):
@@ -248,6 +256,40 @@ def order_cases():
     return cases
 
 
+# Contact frames (mju_makeFrame from mj_setContact): two spheres along x
+# (the default tangent (0,1,0)); two spheres along a diagonal with |n_y| >=
+# 0.5 (the default (0,0,1)); and a horizontal capsule on a plane (its axis,
+# the hint mjc_PlaneCapsule sets).
+FRAME_XML = {
+    "sphere_sphere_x": """<mujoco><option><flag gravity="disable"/></option><worldbody>
+<body pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/></body>
+<body pos="0.19 0 1"><freejoint/><geom type="sphere" size="0.1"/></body>
+</worldbody></mujoco>""",
+    "sphere_sphere_diagonal": """<mujoco><option><flag gravity="disable"/></option><worldbody>
+<body pos="0 0 1"><freejoint/><geom type="sphere" size="0.1"/></body>
+<body pos="0.03 0.15 1.11"><freejoint/><geom type="sphere" size="0.1"/></body>
+</worldbody></mujoco>""",
+    "plane_capsule": """<mujoco><option><flag gravity="disable"/></option><worldbody>
+<geom type="plane" size="2 2 0.1"/>
+<body pos="0 0 0.095" euler="0 0 30"><freejoint/><geom type="capsule" size="0.1 0.3" euler="0 90 0"/></body>
+</worldbody></mujoco>""",
+}
+
+
+def frame_cases():
+    out = {}
+    for name, xml in FRAME_XML.items():
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        if d.ncon == 0:
+            sys.exit(f"frame: {name} has no contact")
+        out[name] = {"xml": xml, "contacts": [
+            {"geom": [int(c.geom[0]), int(c.geom[1])], "frame": floats(c.frame),
+             "dist": float(c.dist)} for c in d.contact[:d.ncon]]}
+    return out
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -260,10 +302,12 @@ def main():
     marker = oracle()
     doc = {"oracle": marker,
            "rest": finite_or_string({name: case(*c) for name, c in CASES.items()}),
-           "order": finite_or_string(order_cases())}
+           "order": finite_or_string(order_cases()),
+           "frame": finite_or_string(frame_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
-    print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases -> {sys.argv[1]}")
+    print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "
+          f"{len(doc['frame'])} frame cases -> {sys.argv[1]}")
 
 
 if __name__ == "__main__":

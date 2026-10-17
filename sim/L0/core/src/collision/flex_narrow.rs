@@ -10,7 +10,7 @@ use crate::gjk_epa::gjk_epa_contact;
 use crate::heightfield::heightfield_sphere_contact;
 use crate::mesh::mesh_sphere_contact;
 use crate::sdf::sdf_sphere_contact;
-use crate::types::{Contact, DISABLE_MIDPHASE, GeomType, Model, compute_tangent_frame, disabled};
+use crate::types::{Contact, DISABLE_MIDPHASE, GeomType, Model, disabled, make_frame};
 use cf_geometry::Shape;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector2, Vector3};
 use sim_types::Pose;
@@ -265,7 +265,7 @@ pub fn make_contact_flex_rigid(
     );
     let includemargin = margin - gap;
 
-    let (t1, t2) = compute_tangent_frame(&normal);
+    let (normal, frame) = make_frame(&normal, &Vector3::zeros());
 
     let dim: usize = match condim {
         1 => 1,
@@ -289,7 +289,7 @@ pub fn make_contact_flex_rigid(
         solref,
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
-        frame: (t1, t2).into(),
+        frame,
         // Safety: vertex_idx comes from iterating 0..model.nflexvert in
         // mj_collision_flex, so it is always in-bounds. Rust's bounds-checked
         // indexing would panic loudly if a malformed model violated this.
@@ -321,7 +321,7 @@ pub fn make_contact_flex_self(
     let margin = assign_margin(model, 2.0 * model.flex_margin[flex_id]);
     let includemargin = margin - gap;
 
-    let (t1, t2) = compute_tangent_frame(&normal);
+    let (normal, frame) = make_frame(&normal, &Vector3::zeros());
 
     let dim: usize = match condim {
         1 => 1,
@@ -342,7 +342,7 @@ pub fn make_contact_flex_self(
         solref,
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
-        frame: (t1, t2).into(),
+        frame,
         flex_vertex: Some(vertex1),
         regularized_mu: 0.0,
         flex_vertex2: Some(vertex2),
@@ -375,7 +375,7 @@ pub fn make_contact_flex_flex(
     );
     let includemargin = margin - gap;
 
-    let (t1, t2) = compute_tangent_frame(&normal);
+    let (normal, frame) = make_frame(&normal, &Vector3::zeros());
 
     let dim: usize = match condim {
         1 => 1,
@@ -396,7 +396,7 @@ pub fn make_contact_flex_flex(
         solref,
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
-        frame: (t1, t2).into(),
+        frame,
         flex_vertex: Some(vertex1),
         regularized_mu: 0.0,
         flex_vertex2: Some(vertex2),

@@ -123,7 +123,8 @@ fn box_cylinder_ellipsoid_rest_on_convex_mesh_slab_as_mujoco() {
 }
 
 /// Our contacts after `forward` against MuJoCo's list: the same geoms in the
-/// same order, each normal and distance within `tol`, the same dimension.
+/// same order, each normal, tangent and distance within `tol`, the same
+/// dimension.
 fn lists_as_mujoco(name: &str, tol: f64) {
     let case = &golden()["order"][name];
     let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
@@ -142,12 +143,20 @@ fn lists_as_mujoco(name: &str, tol: f64) {
     assert_eq!(ours, theirs, "{name}: contact geoms in order");
     for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
         let normal = floats(&w["normal"]);
+        let tangents = floats(&w["tangents"]);
         for i in 0..3 {
             assert!(
                 (c.normal[i] - normal[i]).abs() <= tol,
                 "{name}: contact {k} normal {:?}, MuJoCo {normal:?}",
                 c.normal
             );
+            for (t, ours) in c.frame.iter().enumerate() {
+                assert!(
+                    (ours[i] - tangents[3 * t + i]).abs() <= tol,
+                    "{name}: contact {k} tangent {t} {ours:?}, MuJoCo {:?}",
+                    &tangents[3 * t..3 * t + 3]
+                );
+            }
         }
         let dist = w["dist"].as_f64().expect("dist");
         assert!(
@@ -233,4 +242,59 @@ fn flex_contacts_follow_the_body_contacts_as_mujoco() {
             c.depth
         );
     }
+}
+
+/// The frames' bound: `make_frame` is MuJoCo's arithmetic, so the frames
+/// differ only where the collision functions' normals or the kinematics'
+/// axes do. Measured: 0, 1.1e-16 (the diagonal's sphere–sphere normal) and 0.
+const FRAME_TOL: f64 = 1e-15;
+
+/// Our contact frames after `forward` against MuJoCo's: the same contacts in
+/// order, the normal and both tangents within `tol` (MuJoCo's `mju_makeFrame`,
+/// which `mj_setContact` runs on every contact).
+fn frames_as_mujoco(name: &str, tol: f64) {
+    let case = &golden()["frame"][name];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let want = case["contacts"].as_array().expect("contacts");
+    assert_eq!(data.ncon, want.len(), "{name}: contacts");
+    for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
+        let geom = floats(&w["geom"]);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let listed = (geom[0] as usize, geom[1] as usize);
+        assert_eq!((c.geom1, c.geom2), listed, "{name}: contact {k} geoms");
+        let frame = floats(&w["frame"]);
+        for (part, ours) in [c.normal, c.frame[0], c.frame[1]].iter().enumerate() {
+            for i in 0..3 {
+                let theirs = frame[3 * part + i];
+                assert!(
+                    (ours[i] - theirs).abs() <= tol,
+                    "{name}: contact {k} frame row {part} {ours:?}, MuJoCo {:?}",
+                    &frame[3 * part..3 * part + 3]
+                );
+            }
+        }
+    }
+}
+
+/// Two spheres along x: MuJoCo's first tangent is (0, 1, 0)
+/// (`mju_makeFrame`'s default for a normal whose y lies in (−0.5, 0.5)).
+#[test]
+fn f_sphere_sphere_x() {
+    frames_as_mujoco("sphere_sphere_x", FRAME_TOL);
+}
+
+/// Two spheres along a diagonal whose normal's y is past 0.5: MuJoCo's
+/// first tangent starts from (0, 0, 1).
+#[test]
+fn f_sphere_sphere_diagonal() {
+    frames_as_mujoco("sphere_sphere_diagonal", FRAME_TOL);
+}
+
+/// A horizontal capsule on a plane: `mjc_PlaneCapsule` passes the capsule's
+/// axis as the first tangent (`engine_collision_primitive.c:80-85`).
+#[test]
+fn f_plane_capsule() {
+    frames_as_mujoco("plane_capsule", FRAME_TOL);
 }
