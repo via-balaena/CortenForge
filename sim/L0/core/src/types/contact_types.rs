@@ -45,7 +45,11 @@ pub struct Contact {
     pub normal: Vector3<f64>,
     /// Penetration depth (positive = penetrating).
     pub depth: f64,
-    /// First geometry ID.
+    /// First geometry ID. A contact between two geoms lists them in
+    /// MuJoCo's order (`mj_collideGeoms`): the lower MuJoCo geom type first
+    /// (plane, hfield, sphere, capsule, ellipsoid, cylinder, box, mesh, sdf),
+    /// for equal types the lower body's geom first (an explicit pair whose
+    /// geoms share a body: as declared).
     pub geom1: usize,
     /// Second geometry ID.
     pub geom2: usize,

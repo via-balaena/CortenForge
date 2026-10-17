@@ -14,6 +14,7 @@ pub(crate) mod flex_self;
 pub(crate) mod hfield;
 pub(crate) mod mesh_collide;
 pub(crate) mod narrow;
+mod order;
 pub(crate) mod pair_convex;
 pub(crate) mod pair_cylinder;
 mod pairs;
@@ -27,14 +28,15 @@ pub(crate) mod sdf_collide;
 
 use crate::forward::{SweepAndPrune, aabb_from_geom_aabb};
 use crate::types::{
-    DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
-    GeomType, Model, SleepState, disabled, enabled,
+    Contact, DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE,
+    ENABLE_SLEEP, GeomType, Model, SleepState, disabled, enabled,
 };
 use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 
 use self::hfield::collide_hfield_multi;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
+use self::order::{ListPlace, Lister, flex_place, pair_place};
 use self::pairs::{mj_collide_flex_flex, mj_collision_flex, mj_collision_flex_self};
 
 // ============================================================================
@@ -472,6 +474,8 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // Unconditional reset (S4.1 — matches MuJoCo's mj_collision).
     data.contacts.clear();
     data.ncon = 0;
+    // Each rigid contact's place in MuJoCo's list, as it is made.
+    let mut places: Vec<ListPlace> = Vec::new();
 
     // S4.1: Skip collision detection when contacts or constraints are disabled.
     let nbodyflex = model.nbody + model.nflex;
@@ -521,6 +525,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         let candidates = sap.query_pairs();
 
         let sleep_enabled = enabled(model, ENABLE_SLEEP);
+        let lister = Lister::new(model);
 
         // Process candidate pairs
         // The SAP already filtered to only AABB-overlapping pairs
@@ -568,7 +573,8 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             if is_hfield_pair {
                 let hf_contacts =
                     collide_hfield_multi(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-                for contact in hf_contacts {
+                for mut contact in hf_contacts {
+                    places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
                     data.contacts.push(contact);
                     data.ncon += 1;
                 }
@@ -576,7 +582,8 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 // Midphase BVH culling is active for mesh pairs and gated by
                 // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
                 let contacts = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-                for contact in contacts {
+                for mut contact in contacts {
+                    places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
                     data.contacts.push(contact);
                     data.ncon += 1;
                 }
@@ -584,7 +591,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         }
 
         // Mechanism 2: explicit contact pairs (bypass kinematic + bitmask filters)
-        for pair in &model.contact_pairs {
+        for (pair_id, pair) in model.contact_pairs.iter().enumerate() {
             let geom1 = pair.geom1;
             let geom2 = pair.geom2;
 
@@ -631,6 +638,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                         contact.mu = assign_friction(model, &contact.mu);
                         contact.friction = contact.mu[0];
                     }
+                    places.push(pair_place(model, &mut contact, pair_id));
                     data.contacts.push(contact);
                     data.ncon += 1;
                 }
@@ -645,6 +653,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                         contact.mu = assign_friction(model, &contact.mu);
                         contact.friction = contact.mu[0];
                     }
+                    places.push(pair_place(model, &mut contact, pair_id));
                     data.contacts.push(contact);
                     data.ncon += 1;
                 }
@@ -661,11 +670,18 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // Mechanism 5: flex-flex cross-object collision
     mj_collide_flex_flex(model, data);
 
-    // Sort contacts by (geom1, geom2) to match MuJoCo's deterministic ordering.
-    // MuJoCo assigns contact IDs in geom-pair order; our SAP may produce pairs
-    // in a different traversal order. Stable sort preserves per-pair insertion
-    // order (relevant for multi-contact geom pairs like heightfields).
-    data.contacts.sort_by_key(|a| (a.geom1, a.geom2));
+    // List the contacts as MuJoCo does (`order`); the sort is stable, so a
+    // pair's contacts keep the order its collision function made them in.
+    places.extend(
+        data.contacts[places.len()..]
+            .iter()
+            .map(|c| flex_place(model, c)),
+    );
+    let mut listed: Vec<(ListPlace, Contact)> =
+        places.into_iter().zip(data.contacts.drain(..)).collect();
+    listed.sort_by_key(|(place, _)| *place);
+    data.contacts
+        .extend(listed.into_iter().map(|(_, contact)| contact));
 }
 
 /// Compute local-frame AABB from geom type and size (fallback for programmatic models).

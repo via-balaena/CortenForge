@@ -21,6 +21,22 @@ engine_collision_convex.c:807-812). Each case holds:
   point of the body is deepest, and `contacts`, MuJoCo's contacts after
   mj_forward there (`pos`, the frame's normal and `dist`). It refuses a pose
   with no contact.
+
+`order` holds MuJoCo's contact list after mj_forward (each contact's geoms
+as listed, normal, `dist` and `dim`) for scenes that show its order
+(engine_collision_driver.c:226-470): a body of two geoms (a box and a
+sphere) against two single-sphere bodies, a sphere on a plane and a sphere
+against a box, with the midphase on and off (`bodies`,
+`bodies_no_midphase`), the same with four `<pair>`s (`pairs`,
+`pairs_no_midphase`), and a sphere on a box (`sphere_box`). MuJoCo lists
+the lower geom type first; the body pairs by signature, a pair ahead of the
+broadphase's contacts at its signature; within a pair of bodies not both
+single-geom, by the listed geoms under the midphase, by the first body's
+geoms in turn without it. `flex` holds a 3 x 3 flex grid on a plane
+between two spheres: MuJoCo lists the plane's flex contacts after its
+sphere contacts (a body-flex pair's signature is past every body pair's of
+the same first body), and the flex's vertex positions and elements. It
+refuses scenes that do not show that.
 """
 
 import json
@@ -132,6 +148,106 @@ def case(slab, body):
             "pose": floats(p.qpos), "contacts": contacts}
 
 
+# The contact list's order. World: a plane (geom 0). Body A: a box (1) and a
+# sphere (2); body B, a sphere (3) above, and body C, a sphere (4) below,
+# each touching both of A's geoms; body D, a sphere (5) on the plane; body E,
+# a box (6) beside D.
+ORDER_XML = """<mujoco><option><flag gravity="disable"{flags}/></option><worldbody>
+<geom name="floor" type="plane" size="2 2 0.1"/>
+<body name="A" pos="0 0 0.3"><freejoint/>
+  <geom name="Abox" type="box" size="0.05 0.05 0.05" pos="-0.1 0 0"/>
+  <geom name="Asph" type="sphere" size="0.05" pos="0.1 0 0"/>
+</body>
+<body name="B" pos="0 0 0.405"><freejoint/><geom name="Bsph" type="sphere" size="0.1"/></body>
+<body name="C" pos="0 0 0.195"><freejoint/><geom name="Csph" type="sphere" size="0.1"/></body>
+<body name="D" pos="0.5 0 0.045"><freejoint/><geom name="Dsph" type="sphere" size="0.05"/></body>
+<body name="E" pos="0.5 0.095 0.06"><freejoint/><geom name="Ebox" type="box" size="0.05 0.05 0.05"/></body>
+</worldbody>{pairs}</mujoco>"""
+# Written against MuJoCo's compiled order: each pair names the geom of the
+# higher body first (the compiler swaps them), out of signature order (the
+# compiler sorts them); the floor pairs and B-C are outside the
+# broadphase's pairs, within their margins. The A-B pair is declared sixth,
+# so its index exceeds the broadphase's A-B contact's geom ids and only its
+# signature's rule lists it first.
+ORDER_PAIRS = """<contact><pair geom1="Ebox" geom2="Dsph" condim="1"/>
+<pair geom1="Csph" geom2="floor" margin="0.2" condim="1"/><pair geom1="Csph" geom2="Bsph" margin="0.05" condim="1"/>
+<pair geom1="Abox" geom2="floor" margin="0.3" condim="1"/><pair geom1="Asph" geom2="floor" margin="0.3" condim="1"/>
+<pair geom1="Bsph" geom2="Asph" condim="1"/><pair geom1="Bsph" geom2="floor" margin="0.4" condim="1"/></contact>"""
+# A 3 x 3 flex grid on a plane between two spheres, the flex declared
+# between their bodies. The plane is on a static body: sim-core skips a
+# vertex's contacts with geoms on its body's parent, the world here
+# (ledger L171).
+FLEX_XML = """<mujoco><option><flag gravity="disable"/></option><worldbody>
+<body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/></body>
+<body name="ball" pos="0.8 0 0.045"><freejoint/><geom name="ball" type="sphere" size="0.05"/></body>
+<flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.05 0.05 0.05" pos="0 0 0.005" radius="0.01"
+  dim="2" mass="0.1"><contact selfcollide="none"/></flexcomp>
+<body name="ball2" pos="-0.8 0 0.045"><freejoint/><geom name="ball2" type="sphere" size="0.05"/></body>
+</worldbody></mujoco>"""
+SPHERE_BOX_XML = """<mujoco><option><flag gravity="disable"/></option><worldbody>
+<geom name="box" type="box" size="0.2 0.2 0.05"/>
+<body name="ball" pos="0.03 -0.02 0.14"><freejoint/><geom name="ball" type="sphere" size="0.1"/></body>
+</worldbody></mujoco>"""
+
+
+def contact_list(xml):
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    return {"xml": xml, "contacts": [
+        {"geom": [int(c.geom[0]), int(c.geom[1])], "normal": floats(c.frame[:3]),
+         "dist": float(c.dist), "dim": int(c.dim)} for c in d.contact[:d.ncon]]}
+
+
+def flex_list(xml):
+    """MuJoCo's list for FLEX_XML: each contact's geoms (-1 for the flex
+    side), flex vertex (-1 for a geom side) and `dist`; with the flex's
+    vertex positions and elements, from which a test builds the same flex in
+    its own form."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    if m.nflex != 1:
+        sys.exit("order: the flex scene has no flex")
+    adr, num = int(m.flex_elemadr[0]), int(m.flex_elemnum[0])
+    dim = int(m.flex_dim[0])
+    elem = m.flex_elem[int(m.flex_elemdataadr[0]):int(m.flex_elemdataadr[0]) + num * (dim + 1)]
+    return {"xml": xml,
+            "flexvert_xpos": floats(d.flexvert_xpos),
+            "flex_elem": [int(e) for e in elem],
+            "contacts": [{"geom": [int(c.geom[0]), int(c.geom[1])],
+                          "vert": [int(c.vert[0]), int(c.vert[1])],
+                          "dist": float(c.dist)} for c in d.contact[:d.ncon]]}
+
+
+def order_cases():
+    off = ' midphase="disable"'
+    cases = {
+        "bodies": contact_list(ORDER_XML.format(flags="", pairs="")),
+        "bodies_no_midphase": contact_list(ORDER_XML.format(flags=off, pairs="")),
+        "pairs": contact_list(ORDER_XML.format(flags="", pairs=ORDER_PAIRS)),
+        "pairs_no_midphase": contact_list(ORDER_XML.format(flags=off, pairs=ORDER_PAIRS)),
+        "sphere_box": contact_list(SPHERE_BOX_XML),
+        "flex": flex_list(FLEX_XML),
+    }
+    # The fixture must show what it is for: a multi-geom body pair whose
+    # midphase order differs from the index order, and a pair contact placed
+    # by its signature ahead of a broadphase one.
+    mid = [tuple(c["geom"]) for c in cases["bodies"]["contacts"]]
+    flat = [tuple(c["geom"]) for c in cases["bodies_no_midphase"]["contacts"]]
+    if mid == flat:
+        sys.exit("order: midphase does not reorder the multi-geom body pairs")
+    listed = [tuple(c["geom"]) for c in cases["pairs"]["contacts"]]
+    if listed.index((2, 3)) > listed.index((3, 1)):
+        sys.exit("order: the A-B pair is not listed ahead of the broadphase's A-B contact")
+    if cases["sphere_box"]["contacts"][0]["geom"] != [1, 0]:
+        sys.exit("order: MuJoCo does not list the sphere first")
+    flex = [c["vert"][1] >= 0 for c in cases["flex"]["contacts"]]
+    if not (any(flex) and flex == sorted(flex) and not flex[0]):
+        sys.exit("order: the flex contacts do not follow the rigid ones")
+    return cases
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -143,10 +259,11 @@ def main():
         sys.exit(__doc__)
     marker = oracle()
     doc = {"oracle": marker,
-           "rest": finite_or_string({name: case(*c) for name, c in CASES.items()})}
+           "rest": finite_or_string({name: case(*c) for name, c in CASES.items()}),
+           "order": finite_or_string(order_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
-    print(f"{len(CASES)} rest cases -> {sys.argv[1]}")
+    print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases -> {sys.argv[1]}")
 
 
 if __name__ == "__main__":

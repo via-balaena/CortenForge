@@ -346,7 +346,10 @@ pub struct Data {
     pub eq_force: Vec<f64>,
 
     // ==================== Contacts ====================
-    /// Active contacts (pre-allocated with capacity).
+    /// Active contacts (pre-allocated with capacity), in the order MuJoCo's
+    /// `mj_collision` lists them: by body (or flex) pair, an explicit pair's
+    /// contacts ahead of the broadphase's for the same bodies, each flex's
+    /// collisions with itself last.
     pub contacts: Vec<Contact>,
     /// Number of active contacts (`contacts.len()` but tracked explicitly).
     pub ncon: usize,

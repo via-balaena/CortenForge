@@ -120,6 +120,23 @@ pub enum GeomType {
 }
 
 impl GeomType {
+    /// MuJoCo's `mjtGeom` value: a contact lists the geom of the lower one
+    /// first (`mj_collideGeoms`, `engine_collision_driver.c:1475-1480`).
+    #[must_use]
+    pub(crate) const fn mjtgeom(self) -> u8 {
+        match self {
+            Self::Plane => 0,
+            Self::Hfield => 1,
+            Self::Sphere => 2,
+            Self::Capsule => 3,
+            Self::Ellipsoid => 4,
+            Self::Cylinder => 5,
+            Self::Box => 6,
+            Self::Mesh => 7,
+            Self::Sdf => 8,
+        }
+    }
+
     /// Compute the bounding sphere radius for a geometry from its type and size.
     ///
     /// This is the canonical implementation used by both:

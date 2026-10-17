@@ -336,10 +336,16 @@ fn sphere_capsule_endpoint_contact() {
         contact.depth
     );
 
-    // Normal should point along +Z
+    // MuJoCo lists the sphere first (the lower geom type), so the normal
+    // points from it into the capsule: −Z.
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
     assert!(
-        contact.normal.z > 0.99,
-        "Normal should point +Z, got {:?}",
+        contact.normal.z < -0.99,
+        "Normal should point −Z, got {:?}",
         contact.normal
     );
 }
@@ -554,10 +560,16 @@ fn sphere_box_face_contact() {
         contact.depth
     );
 
-    // Normal should point along +X
+    // MuJoCo lists the sphere first (the lower geom type), so the normal
+    // points from it into the box: −X.
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
     assert!(
-        contact.normal.x > 0.99,
-        "Normal should point +X, got {:?}",
+        contact.normal.x < -0.99,
+        "Normal should point −X, got {:?}",
         contact.normal
     );
 }
@@ -919,10 +931,16 @@ fn cylinder_sphere_side_contact() {
         contact.depth
     );
 
-    // Normal should point along +X
+    // MuJoCo lists the sphere first (the lower geom type), so the normal
+    // points from it into the cylinder: −X.
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
     assert!(
-        contact.normal.x > 0.99,
-        "Normal should point +X, got {:?}",
+        contact.normal.x < -0.99,
+        "Normal should point −X, got {:?}",
         contact.normal
     );
 }
@@ -964,10 +982,16 @@ fn cylinder_sphere_cap_contact() {
         contact.depth
     );
 
-    // Normal should point along +Z
+    // MuJoCo lists the sphere first (the lower geom type), so the normal
+    // points from it into the cylinder: −Z.
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
     assert!(
-        contact.normal.z > 0.99,
-        "Normal should point +Z, got {:?}",
+        contact.normal.z < -0.99,
+        "Normal should point −Z, got {:?}",
         contact.normal
     );
 }
