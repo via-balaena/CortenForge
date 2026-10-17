@@ -6,7 +6,7 @@
 use approx::assert_relative_eq;
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_GRAVITY, DISABLE_SPRING,
-    DerivativeConfig, GainType, Integrator, Model, mj_integrate_pos_explicit, mj_solve_m,
+    DerivativeConfig, GainType, Integrator, MjStage, Model, mj_integrate_pos_explicit, mj_solve_m,
     mjd_smooth_pos, mjd_smooth_vel, mjd_transition_fd, mjd_transition_hybrid,
     validate_analytical_vs_fd,
 };
@@ -4889,6 +4889,32 @@ fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
 /// reached no awake dof was skipped: `qDeriv` 0.
 #[test]
 fn a_damped_tendon_on_an_awake_and_a_sleeping_tree_keeps_its_velocity_derivative() {
+    let model = tendon_over_a_sleeping_tree();
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!(data.tree_awake, [true, false], "tree a awake, b asleep");
+    assert_eq!(
+        data.ten_J[0].as_slice(),
+        [0.0, 0.30000000000000004],
+        "the tendon's row"
+    );
+    mjd_smooth_vel(&model, &mut data);
+    let want = [[0.0, 0.0], [0.0, -0.2700000000000001]];
+    for (r, row) in want.iter().enumerate() {
+        for (c, &w) in row.iter().enumerate() {
+            let got = data.qDeriv[(r, c)];
+            assert!(
+                (got - w).abs() <= 1e-15,
+                "qDeriv[{r}][{c}] {got}, MuJoCo's {w}"
+            );
+        }
+    }
+}
+
+/// The fixture above, a hinge on each of two trees, the second asleep from
+/// the reset, and a spatial tendon between them whose damping is set after
+/// loading, under the implicit integrator.
+fn tendon_over_a_sleeping_tree() -> Model {
     let xml = r#"
     <mujoco>
       <option gravity="0 0 0" integrator="implicit"><flag sleep="enable"/></option>
@@ -4910,23 +4936,37 @@ fn a_damped_tendon_on_an_awake_and_a_sleeping_tree_keeps_its_velocity_derivative
     </mujoco>"#;
     let mut model = sim_mjcf::load_model(xml).expect("load");
     model.tendon_damping[0] = 3.0;
+    model
+}
+
+/// The fixture above stepped under the implicit integrator: after each of
+/// four steps, with tree b asleep throughout, `qDeriv` at b's row is the
+/// derivative of the damping force the passive pass computes at b's dof (the
+/// awake tendon's), as finite differences of `qfrc_damper` at the step's
+/// start state give it, within 1e-8: −0.27 each step. MuJoCo's
+/// `mjd_smooth_vel` clears the awake rows only (`engine_derivative.c:1793-1800`),
+/// so its sleeping row adds −0.27 every step: −0.27, −0.54, −0.81, −1.08
+/// (measured on the oracle). Registry `D-QDERIV-SLEEP`.
+#[test]
+fn a_sleeping_dofs_velocity_derivative_is_its_damping_forces_at_every_step() {
+    let model = tendon_over_a_sleeping_tree();
     let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    assert_eq!(data.tree_awake, [true, false], "tree a awake, b asleep");
-    assert_eq!(
-        data.ten_J[0].as_slice(),
-        [0.0, 0.30000000000000004],
-        "the tendon's row"
-    );
-    mjd_smooth_vel(&model, &mut data);
-    let want = [[0.0, 0.0], [0.0, -0.2700000000000001]];
-    for (r, row) in want.iter().enumerate() {
-        for (c, &w) in row.iter().enumerate() {
-            let got = data.qDeriv[(r, c)];
-            assert!(
-                (got - w).abs() <= 1e-15,
-                "qDeriv[{r}][{c}] {got}, MuJoCo's {w}"
-            );
-        }
+    let eps = 1e-6;
+    for step in 0..4 {
+        let mut probe = data.clone();
+        probe.forward(&model).expect("forward");
+        let f0 = probe.qfrc_damper[1];
+        probe.qvel[1] += eps;
+        probe
+            .forward_skip(&model, MjStage::Pos, true)
+            .expect("forward_skip");
+        let fd = (probe.qfrc_damper[1] - f0) / eps;
+        data.step(&model).expect("step");
+        assert_eq!(data.tree_awake, [true, false], "step {step}: b asleep");
+        let got = data.qDeriv[(1, 1)];
+        assert!(
+            (got - fd).abs() <= 1e-8,
+            "step {step}: qDeriv[1][1] {got}, the damping force's {fd}"
+        );
     }
 }
