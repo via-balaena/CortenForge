@@ -124,7 +124,11 @@ pub struct Model {
     pub body_dof_adr: Vec<usize>,
     /// Number of DOFs for this body.
     pub body_dof_num: Vec<usize>,
-    /// First geom index for this body.
+    /// First geom index for this body: its geoms are `body_geom_adr` to
+    /// `body_geom_adr + body_geom_num` where they are numbered together (an
+    /// MJCF-loaded model's are). Collision takes each body's geoms from
+    /// `geom_body`, so a model built in code that numbers them otherwise
+    /// (`add_ground_plane` on a world that holds geoms) collides them all.
     pub body_geom_adr: Vec<usize>,
     /// Number of geoms attached to this body.
     pub body_geom_num: Vec<usize>,

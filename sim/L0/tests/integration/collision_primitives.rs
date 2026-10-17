@@ -1881,3 +1881,44 @@ fn a_contact_normal_shorter_than_half_refuses_the_step() {
         }
     }
 }
+
+/// `Model::add_ground_plane` on a model whose world already holds a geom
+/// appends the plane after the other bodies' geoms, so the world's geoms are
+/// not numbered together; collision takes each body's geoms from `geom_body`,
+/// so every geom still collides, each pair once: on a floor 1 below, a
+/// sphere and a box overlapping each other and the added plane, the plane
+/// with the sphere (1 contact) and with the box (its 4 lower corners), and
+/// the sphere with the box (1). Before, the broadphase walked the world's
+/// widened range, `body_geom_adr..+body_geom_num` (geoms 0 and 1): the added
+/// plane never collided and the sphere–box pair was listed twice (2
+/// contacts).
+#[test]
+fn add_ground_plane_after_world_geoms_collides_every_geom_once() {
+    let mut model = load_model(
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="5 5 0.1" pos="0 0 -1"/>
+<body pos="0 0 0.05"><freejoint/><geom type="sphere" size="0.1"/></body>
+<body pos="0.15 0 0.05"><freejoint/><geom type="box" size="0.1 0.1 0.1"/></body>
+</worldbody></mujoco>"#,
+    )
+    .expect("load");
+    model.add_ground_plane();
+    let ground = model.ngeom - 1;
+    assert_eq!((model.body_geom_adr[0], model.body_geom_num[0]), (0, 2));
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let mut pairs: Vec<(usize, usize)> = data.contacts[..data.ncon]
+        .iter()
+        .map(|c| (c.geom1, c.geom2))
+        .collect();
+    pairs.sort_unstable();
+    let mut want = vec![
+        (ground, 1),
+        (ground, 2),
+        (ground, 2),
+        (ground, 2),
+        (ground, 2),
+        (1, 2),
+    ];
+    want.sort_unstable();
+    assert_eq!(pairs, want, "contacts (geom1, geom2)");
+}

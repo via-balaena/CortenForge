@@ -32,7 +32,7 @@ use crate::types::{
     ENABLE_SLEEP, GeomType, Model, SleepState, disabled, enabled,
 };
 
-use self::broadphase::{body_pairs, filter_sphere};
+use self::broadphase::{BodyGeoms, body_pairs, filter_sphere};
 use self::hfield::collide_hfield_multi;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
 use self::order::{ListPlace, Lister, flex_place, pair_place};
@@ -471,16 +471,15 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         // order, a repeated pair once (`engine_collision_driver.c:307-312`);
         // within a pair, the first body's geoms in turn against the second's.
         // A sleeping body is dropped there, with the body-level filters.
-        let body_geoms =
-            |b: usize| model.body_geom_adr[b]..model.body_geom_adr[b] + model.body_geom_num[b];
+        let body_geoms = BodyGeoms::new(model);
         let mut previous = None;
-        for (body1, body2) in body_pairs(model, data) {
+        for (body1, body2) in body_pairs(model, data, &body_geoms) {
             if previous == Some((body1, body2)) {
                 continue;
             }
             previous = Some((body1, body2));
-            for geom1 in body_geoms(body1) {
-                for geom2 in body_geoms(body2) {
+            for &geom1 in body_geoms.of(body1) {
+                for &geom2 in body_geoms.of(body2) {
                     // Affinity check: exclusions, explicit pairs, weld groups,
                     // contype/conaffinity.
                     if !check_collision_affinity(model, geom1, geom2) {

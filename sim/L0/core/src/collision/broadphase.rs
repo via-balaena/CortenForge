@@ -17,9 +17,43 @@ use crate::types::{
     disabled, enabled,
 };
 
+/// Each body's geoms in index order, from `geom_body`: the ranges
+/// `body_geom_adr` and `body_geom_num` give where a body's geoms are numbered
+/// together, as MuJoCo's always are and sim-mjcf's are. A model built in code
+/// may number them otherwise: `Model::add_ground_plane` appends a world geom
+/// after the other bodies' and widens the world's range over them.
+pub(super) struct BodyGeoms {
+    start: Vec<usize>,
+    geoms: Vec<usize>,
+}
+
+impl BodyGeoms {
+    pub(super) fn new(model: &Model) -> Self {
+        let mut start = vec![0; model.nbody + 1];
+        for &body in &model.geom_body {
+            start[body + 1] += 1;
+        }
+        for body in 0..model.nbody {
+            start[body + 1] += start[body];
+        }
+        let mut next = start.clone();
+        let mut geoms = vec![0; model.geom_body.len()];
+        for (geom, &body) in model.geom_body.iter().enumerate() {
+            geoms[next[body]] = geom;
+            next[body] += 1;
+        }
+        Self { start, geoms }
+    }
+
+    /// Body `body`'s geoms, in index order.
+    pub(super) fn of(&self, body: usize) -> &[usize] {
+        &self.geoms[self.start[body]..self.start[body + 1]]
+    }
+}
+
 /// The pairs of bodies MuJoCo's broadphase passes on, each `(lower,
 /// higher)`, in signature order; a pair may repeat, as in MuJoCo's list.
-pub(super) fn body_pairs(model: &Model, data: &Data) -> Vec<(usize, usize)> {
+pub(super) fn body_pairs(model: &Model, data: &Data, geoms: &BodyGeoms) -> Vec<(usize, usize)> {
     let nbody = model.nbody;
     let filterparent = !disabled(model, DISABLE_FILTERPARENT);
     let sleep_filter = enabled(model, ENABLE_SLEEP) && data.nbody_awake < nbody;
@@ -48,8 +82,8 @@ pub(super) fn body_pairs(model: &Model, data: &Data) -> Vec<(usize, usize)> {
         if !can_collide(b1) {
             continue;
         }
-        let world_like =
-            (b1 == 0 && model.body_geom_num[0] > 0) || (weld(b1) == 0 && has_plane(model, b1));
+        let world_like = (b1 == 0 && !geoms.of(0).is_empty())
+            || (weld(b1) == 0 && has_plane(model, geoms.of(b1)));
         if !world_like {
             continue;
         }
@@ -106,7 +140,7 @@ pub(super) fn body_pairs(model: &Model, data: &Data) -> Vec<(usize, usize)> {
     if bodies.len() > 1 {
         let aamm: Vec<[f64; 6]> = bodies
             .iter()
-            .map(|&b| body_aamm(model, data, b, &frame))
+            .map(|&b| body_aamm(model, data, geoms.of(b), &frame))
             .collect();
         for (i1, i2) in sweep_and_prune(&aamm) {
             let (b1, b2) = (bodies[i1], bodies[i2]);
@@ -141,9 +175,8 @@ fn filter_body_pair(
         || (filterparent && weld1 != 0 && weld2 != 0 && (weld1 == parent2 || weld2 == parent1))
 }
 
-fn has_plane(model: &Model, body: usize) -> bool {
-    let start = model.body_geom_adr[body];
-    (start..start + model.body_geom_num[body]).any(|g| model.geom_type[g] == GeomType::Plane)
+fn has_plane(model: &Model, geoms: &[usize]) -> bool {
+    geoms.iter().any(|&g| model.geom_type[g] == GeomType::Plane)
 }
 
 /// A geom's bounding radius as MuJoCo's: 0 for a plane (sim-core's is
@@ -172,10 +205,9 @@ fn update_cov(cov: &mut [f64; 9], p: &[f64; 3], center: &[f64; 3]) {
 /// A body's bounds along the three rows of `frame`, `[min; 3, max; 3]`: over
 /// its geoms, each centre's projection less and plus its bounding radius and
 /// margin (`makeAAMM`, `engine_collision_driver.c:853-932`).
-fn body_aamm(model: &Model, data: &Data, body: usize, frame: &[f64; 9]) -> [f64; 6] {
-    let start = model.body_geom_adr[body];
+fn body_aamm(model: &Model, data: &Data, geoms: &[usize], frame: &[f64; 9]) -> [f64; 6] {
     let mut aamm = [0.0; 6];
-    for (i, geom) in (start..start + model.body_geom_num[body]).enumerate() {
+    for (i, &geom) in geoms.iter().enumerate() {
         let margin = if enabled(model, ENABLE_OVERRIDE) {
             0.5 * model.o_margin
         } else {
