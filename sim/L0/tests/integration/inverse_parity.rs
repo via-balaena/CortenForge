@@ -10,7 +10,9 @@
 //! its cases).
 
 use serde_json::Value;
-use sim_core::{ConstraintState, Data, DerivativeConfig, Model, StepError, mjd_inverse_fd};
+use sim_core::{
+    ConstraintState, Data, DerivativeConfig, Model, StepError, mjd_inverse_fd, mjd_transition_fd,
+};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -780,5 +782,55 @@ fn the_inverse_finite_differences_refuse_the_discrete_inverse_as_inverse_does() 
             Err(e) => assert_eq!(e, want, "{:?}", model.integrator),
             Ok(_) => panic!("{:?}: mjd_inverse_fd ran with the flag", model.integrator),
         }
+    }
+}
+
+/// With fwdinv and invdiscrete under implicit and implicitfast, the
+/// transition finite differences are those without the flags: the
+/// comparison's discrete inverse writes `M − h·qDeriv` unfactored into the
+/// integrator's matrix, and the comparison puts the forward pass's factor
+/// back before the control columns' steps solve with it (they skip the
+/// factor, as MuJoCo's `mj_stepSkip` from the velocity stage). A and B
+/// (pure finite differences, eps 1e-6, forward) are bit for bit those with
+/// no flag, on the discrete chain at its row state. MuJoCo's comparison
+/// leaves the matrix written: its B moves by more than 1 with the two flags
+/// (the golden: about 8e3 under implicit, 7e3 under implicitfast). Registry
+/// `D-FWDINV-FACTOR`.
+#[test]
+fn the_fwdinv_comparison_leaves_the_transition_derivatives_as_they_are() {
+    let g = golden();
+    for name in ["implicit", "implicitfast"] {
+        let case = &g["cases"]["discrete"][name];
+        let mujoco = &case["transition_B"];
+        let moved = floats(&mujoco["both"])
+            .iter()
+            .zip(floats(&mujoco["none"]))
+            .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+        assert!(moved > 1.0, "{name}: MuJoCo's B moved by {moved}");
+        let config = DerivativeConfig {
+            eps: 1e-6,
+            centered: false,
+            use_analytical: false,
+            ..Default::default()
+        };
+        let mut matrices = Vec::new();
+        for flags in [0, sim_core::ENABLE_FWDINV | sim_core::ENABLE_INVDISCRETE] {
+            let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+            model.enableflags |= flags;
+            let mut data = model.make_data();
+            set_state(case, &mut data);
+            data.ctrl
+                .as_mut_slice()
+                .copy_from_slice(&floats(&case["ctrl"]));
+            data.forward(&model).expect("forward");
+            let t = mjd_transition_fd(&model, &data, &config).expect("mjd_transition_fd");
+            matrices.push((bits(t.A.as_slice()), bits(t.B.as_slice()), t.B.clone()));
+        }
+        assert_eq!(matrices[0].0, matrices[1].0, "{name}: A with both flags");
+        assert_eq!(
+            matrices[0].1, matrices[1].1,
+            "{name}: B with both flags {}, without {}",
+            matrices[1].2, matrices[0].2
+        );
     }
 }

@@ -84,10 +84,15 @@ state (qpos, qvel):
   with both flags, mj_step's runs until a step's forward pass makes a
   constraint row, since the comparison returns before the inverse when
   there is none (`engine_inverse.c:267-270`): qpos after each step that
-  ran, and the step that stopped. It refuses the case unless the flag
-  moves qfrc_inverse under each integrator but Euler with eulerdamp off,
-  which it must leave bit for bit, and unless from rest a step runs
-  before one stops.
+  ran, and the step that stopped. Under implicit and implicitfast, also
+  mjd_transitionFD's B (eps 1e-6, forward differences) at the state with no
+  flag and with fwdinv and invdiscrete both: mj_compareFwdInv's
+  mj_discreteAcc leaves M - h*qDeriv unfactored in qLU or qH, and the
+  control columns' mj_stepSkip solves with it (mj_implicitSkip's
+  skipfactor). It refuses the case unless the flag moves qfrc_inverse under
+  each integrator but Euler with eulerdamp off, which it must leave bit for
+  bit, unless from rest a step runs before one stops, and unless the two
+  flags move B by more than 1.
 - wake_gap: the same with margin 0.02 and gap 0.02 on the ball's geom and
   the ball 0.01 from the box: the contact is listed (dist <= margin) and
   excluded (dist >= margin - gap), so `mj_nc` skips it and mj_inverse runs;
@@ -443,6 +448,26 @@ DISCRETE = """<mujoco model="discrete">
 DISCRETE_STATE = ([0.3, 0.25, -0.4], [1.1, -0.7, 0.9], [0.5, -1.2, 0.8])
 
 
+def transition_b(xml, qpos, qvel, ctrl):
+    """mjd_transitionFD's B (forward differences, eps 1e-6), row-major, at the
+    state with no flag and with fwdinv and invdiscrete both."""
+    both = mujoco.mjtEnableBit.mjENBL_FWDINV | mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+    out = {}
+    for label, flags in (("none", 0), ("both", both)):
+        m = mujoco.MjModel.from_xml_string(xml)
+        m.opt.enableflags |= flags
+        d = mujoco.MjData(m)
+        d.qpos[:] = qpos
+        d.qvel[:] = qvel
+        d.ctrl[:] = ctrl
+        mujoco.mj_forward(m, d)
+        a = np.zeros((2 * m.nv + m.na, 2 * m.nv + m.na))
+        b = np.zeros((2 * m.nv + m.na, m.nu))
+        mujoco.mjd_transitionFD(m, d, 1e-6, 0, a, b, None, None)
+        out[label] = floats(b.ravel())
+    return out
+
+
 def discrete():
     """The discrete chain under each integrator, mj_inverse with and without
     invdiscrete; under RK4 the errors."""
@@ -482,6 +507,12 @@ def discrete():
             sys.exit(f"discrete {name}: the flag {'moved' if moved else 'left'} qfrc_inverse")
         out[name] = {"xml": xml, "qpos": qpos, "qvel": qvel, "ctrl": [0.25], "qacc": floats(qacc),
                      "nefc": int(d.nefc), **runs}
+        if integrator in ("implicit", "implicitfast"):
+            out[name]["transition_B"] = transition_b(xml, qpos, qvel, [0.25])
+            moved = np.abs(np.array(out[name]["transition_B"]["both"]) -
+                           np.array(out[name]["transition_B"]["none"])).max()
+            if not moved > 1:
+                sys.exit(f"discrete {name}: fwdinv and invdiscrete move B by {moved}")
     xml = DISCRETE.format(integrator="RK4", extra="")
     m = mujoco.MjModel.from_xml_string(xml)
     m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_INVDISCRETE

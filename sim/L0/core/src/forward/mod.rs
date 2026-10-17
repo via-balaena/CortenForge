@@ -78,8 +78,8 @@ pub(crate) use position::{
 
 use crate::types::flags::{disabled, enabled};
 use crate::types::{
-    DISABLE_ACTUATION, Data, ENABLE_ENERGY, ENABLE_FWDINV, ENABLE_SLEEP, Integrator, Model,
-    StepError,
+    DISABLE_ACTUATION, Data, ENABLE_ENERGY, ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_SLEEP,
+    Integrator, Model, StepError,
 };
 
 /// Pipeline stage for skip-stage forward dispatch.
@@ -640,7 +640,9 @@ impl Data {
     ///   − qfrc_inverse‖`.
     ///
     /// The forward's `qfrc_constraint` and `efc_force` are put back;
-    /// `efc_state` keeps the inverse's, as MuJoCo's does.
+    /// `efc_state` keeps the inverse's, as MuJoCo's does. With
+    /// `ENABLE_INVDISCRETE` so is the implicit integrators' factor, which
+    /// MuJoCo's leaves overwritten (registry `D-FWDINV-FACTOR`).
     ///
     /// A step runs it after its forward pass and `mj_check_acc`, as MuJoCo's
     /// `mj_step`, `mj_step2` and `mj_stepSkip` (`engine_forward.c:1431-1434`,
@@ -680,7 +682,18 @@ impl Data {
 
         let qfrc_constraint = self.qfrc_constraint.clone();
         let efc_force = self.efc_force.clone();
+        // The discrete inverse writes the implicit integrators' matrix,
+        // `M − h·qDeriv`, unfactored, into `qLU` or `qH`, where a step that
+        // skips the factor solves (the transition finite differences'
+        // control columns): the forward pass's factor is put back. MuJoCo's
+        // comparison leaves it written (registry `D-FWDINV-FACTOR`).
+        let factor =
+            enabled(model, ENABLE_INVDISCRETE).then(|| (self.qLU.clone(), self.qH.clone()));
         self.inverse_acc(model, false);
+        if let Some((qlu, qh)) = factor {
+            self.qLU = qlu;
+            self.qH = qh;
+        }
 
         let dif: Vec<f64> = (0..model.nv)
             .map(|i| qfrc_constraint[i] - self.qfrc_constraint[i])
