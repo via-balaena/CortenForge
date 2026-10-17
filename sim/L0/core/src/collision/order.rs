@@ -13,6 +13,7 @@
 //! the order tested.
 
 use crate::types::{Contact, DISABLE_MIDPHASE, Model, disabled};
+use nalgebra::Vector3;
 
 /// Where a contact falls in MuJoCo's list; contacts sort by it, stably.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -125,16 +126,24 @@ fn type_ordered(model: &Model, tested: (usize, usize)) -> (usize, usize) {
 }
 
 /// List `contact` with the geoms `(geom1, geom2)`: if the collision function
-/// listed them the other way round, swap them and turn the normal round with
-/// the second tangent, keeping the first. By reading `mju_makeFrame`, that
-/// is the frame it builds from the reversed normal, bit for bit, and the
-/// normal is normalised once, as MuJoCo's.
+/// listed them the other way round, swap them, turn the normal round, keep
+/// the first tangent and take the second as the reversed normal × the
+/// first, `make_frame`'s product: the frame `mju_makeFrame` builds from the
+/// reversed normal, bit for bit (the first tangent's seed and its part along
+/// the normal do not change sign; negating the second tangent instead would
+/// turn a 0 it builds as +0 into −0), with the normal normalised once, as
+/// MuJoCo's.
 fn list_as(contact: &mut Contact, (geom1, geom2): (usize, usize)) {
     if geom1 != geom2 && (contact.geom1, contact.geom2) == (geom2, geom1) {
         contact.geom1 = geom1;
         contact.geom2 = geom2;
         contact.normal = -contact.normal;
-        contact.frame[1] = -contact.frame[1];
+        let (n, t1) = (contact.normal, contact.frame[0]);
+        contact.frame[1] = Vector3::new(
+            n.y * t1.z - n.z * t1.y,
+            n.z * t1.x - n.x * t1.z,
+            n.x * t1.y - n.y * t1.x,
+        );
     }
 }
 
@@ -143,12 +152,12 @@ mod tests {
     use super::*;
     use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
     use crate::types::make_frame;
-    use nalgebra::Vector3;
 
-    /// A swapped contact turns its normal and second tangent round and keeps
-    /// the first: the frame `make_frame` builds from the reversed normal, bit
-    /// for bit, without normalising the normal a second time (which moves
-    /// the last bit of (0, 1, 1)'s unit normal).
+    /// A swapped contact turns its normal round, keeps the first tangent and
+    /// rebuilds the second: the frame `make_frame` builds from the reversed
+    /// normal, bit for bit, the signs of its zeros included ((0, 1, 1)'s
+    /// second tangent has two), without normalising the normal a second time
+    /// (which moves the last bit of (0, 1, 1)'s unit normal).
     #[test]
     fn swapped_contact_is_normalised_once() {
         let raw = Vector3::new(0.0, 1.0, 1.0);
@@ -168,8 +177,14 @@ mod tests {
         list_as(&mut contact, (0, 1));
         assert_eq!((contact.geom1, contact.geom2), (0, 1));
         let (normal, frame) = make_frame(&-raw, &Vector3::zeros());
-        assert_eq!(contact.normal, normal);
-        assert_eq!(contact.frame, frame);
+        let bits = |v: &Vector3<f64>| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        assert_eq!(bits(&contact.normal), bits(&normal));
+        assert_eq!(bits(&contact.frame[0]), bits(&frame[0]));
+        assert_eq!(bits(&contact.frame[1]), bits(&frame[1]));
+        assert!(
+            frame[1].iter().any(|&x| x == 0.0),
+            "the second tangent has no 0, so this test cannot see its sign"
+        );
         assert_ne!(
             make_frame(&contact.normal, &Vector3::zeros()).0,
             contact.normal,

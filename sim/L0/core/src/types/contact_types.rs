@@ -404,6 +404,29 @@ pub fn make_frame(normal: &Vector3<f64>, hint: &Vector3<f64>) -> (Vector3<f64>, 
 mod tests {
     use super::*;
 
+    /// `mju_makeFrame` seeds the first tangent with (0, 1, 0) only while the
+    /// normal's `y` lies strictly inside (−0.5, 0.5): (1, ±1, √2), whose
+    /// unit normal's `y` is ±0.5 exactly, is seeded with (0, 0, 1), so its
+    /// frame is the one (0, 0, 1) given as the hint builds, bit for bit.
+    #[test]
+    fn a_normal_at_y_half_seeds_the_z_axis() {
+        for y in [1.0, -1.0] {
+            let normal = Vector3::new(1.0, y, 2.0_f64.sqrt());
+            let (unit, frame) = make_frame(&normal, &Vector3::zeros());
+            assert_eq!(unit.y.to_bits(), (0.5 * y).to_bits(), "the unit normal's y");
+            let (_, seeded) = make_frame(&normal, &Vector3::z());
+            let bits = |v: &Vector3<f64>| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            for k in 0..2 {
+                assert_eq!(bits(&frame[k]), bits(&seeded[k]), "y {y}: tangent {k}");
+            }
+            let (_, other) = make_frame(&normal, &Vector3::y());
+            assert_ne!(
+                frame[0], other[0],
+                "y {y}: the (0, 1, 0) seed gives the same"
+            );
+        }
+    }
+
     /// MuJoCo's `mj_setContact` normalises the normal a collision function
     /// wrote (`mju_makeFrame`): (0, 1, 1) is stored as
     /// (0, 0.7071067811865475, 0.7071067811865475).
