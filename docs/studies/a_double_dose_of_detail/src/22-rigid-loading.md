@@ -202,7 +202,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
      - For each vertex, a `<body name="<flex>_v<i>" pos="<vertex i>">` at the end of `<worldbody>`, in vertex order, which keeps today's body ids. It holds 3 slides (none if pinned) and `<inertial pos="0 0 0" mass="<today's lumped mass>" diaginertia="1e-15 1e-15 1e-15"/>` (MuJoCo's `mjMINVAL`); the masses come from today's `compute_vertex_masses`.
      - The flex becomes `<flex body="…" element="…">`, with no `vertex`. In the templates, `{sqrt3_2}` moves into `pos`.
      - The `node=` docs (`flex_unified.rs:1264,1322,1398,1447`): the node bodies become the 3-slide vertex bodies. This moves the geom mass onto the vertices; the effect on the tests' tolerances was not checked. `:1362` becomes a refusal test.
-     - The `body="0"` tests (`builder/mod.rs:1353,1387`) get 4 named pinned bodies.
+     - The `body="0"` tests (`builder/mod.rs:1356,1390`) get 4 named pinned bodies.
      - **Damping per slide:** where a test relies on today's absolute vertex damping, `damping="d"` goes on each slide; by reading, `passive.rs:486-488` has the same form as joint damping (not measured). Then `passive.rs:474-490` is deleted (the sim-core part), which leaves `<elasticity damping>` its MuJoCo meaning (`:569`; `engine_passive.c:265`). By reading, the deleted loop also damps flexcomp-generated vertices (it runs over every flex vertex, `passive.rs:476-489`); what the deletion does to them is not yet measured (guard below).
 - **Must-fail** (not run).
   - `flex_body_names_existing_bodies`: 3 declared 3-slide bodies + `<flex body="a b c" element="0 1 2">` → nbody 4, nflexvert 3, `flexvert_bodyid` = the ids of a, b, c. Main: `nflexvert` = 0 (A20 §1B.2).
@@ -247,7 +247,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Implements:** A4 §8.4 (a plane's size as given; its positivity check is L18's `checksize`); `compute_fromto_pose(fromto, size, geom_type)` with `mjuu_z2quat(from − to)` (A14 §2.3); fromto resolved in a rotated frame's coordinates, after defaults (A20 §1A.3.6).
 - **Must-fail:** A4 §8.4's cases except the plane `size(3)` refusals (L18's); A14 §2.6 (capsule `geom_quat` literals; box frame with sizes; `framequat objtype="geom"` golden); `fromto_axis_is_from_minus_to` (A10 §2.4 #4); the `4eed75d1` literal (A20 §1A.3.6). A14's and A20's literals came from the fused arm64 wheel; they are regenerated from the unfused oracle.
 - **Flips:** plane `geom_size` changes in 282 docs ("whether any test asserts a plane's `geom_size` was not checked", A4 §8.4); `geom_quat` in 200 docs, trajectories in 21 (20 at ≤ 8.4e-14; the chaotic `equality-constraints/stress-test:388` validator still passes, two printed lines change) (A14 §2.4).
-- **Census:** `fromto` 156 of 166 flip alone; the rotated-frame pair 2/2 (A20 §1A.2). Chunk 2c added four capsule `fromto` docs, each `model:geom_quat;dyn:agree`: `c71ecb68` (`runtime_flags.rs:751`), `b15cb449` (`history.rs:266`), `a4a69b6b` (`step_inputs.rs:69`), `c56b6880` (`derivatives.rs:3610`).
+- **Census:** `fromto` 156 of 166 flip alone; the rotated-frame pair 2/2 (A20 §1A.2). Chunk 2c added four capsule `fromto` docs, each `model:geom_quat;dyn:agree`: `c71ecb68` (`runtime_flags.rs:751`), `b15cb449` (`history.rs:266`), `a4a69b6b` (`step_inputs.rs:71`), `c56b6880` (`derivatives.rs:3610`).
 - **Breaking:** new pub `MjcfBody` fields (A4 §8.4).
 
 ### L15 · M9 · `fix(sim-mjcf): self-closing elements are not dropped`
@@ -366,7 +366,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Implements:** A10 §2.4 (MuJoCo's geom selection, one-geom copy, orientation alternatives through `resolve_orientation`, mesh principal frame from unit-density eig3); the fromto part is in L14. `inertiagrouprange` is implemented here (A10 Q2.3; C2).
 - **Must-fail:** `single_geom_body_copies_geom_frame`, `geom_euler_rotates_body_inertia` (A10 §2.4).
 - **Flips:** `fluid_derivatives.rs:1391` t23 only if before L22 (A10 §7); here it is after.
-- **Census:** `636fc5d5` flips (A20 §1A.2); outlier `collision_primitives.rs:1279` moves 0.189 (A10 §2.3).
+- **Census:** `636fc5d5` flips (A20 §1A.2); outlier `capsule_box_face_2_contacts` (`collision_primitives.rs:1302`) moves 0.189 (A10 §2.3).
 
 ### L34 · A20 R3-L1 · `fix(sim-mjcf): plane and hfield geoms have MuJoCo's volume; zero-volume mass is zero`
 - **Implements:** A20 §1A.3.1 (plane volume 0; hfield the box of its size; an explicit mass with volume ≤ 1e-14 → 0) and **Q46** (parity): a body with no mass gets MuJoCo's inertial pose, its parent-frame pose copied into `ipos`/`iquat` (`user_objects.cc:2443-2446`).
@@ -385,6 +385,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
   - sim-gpu `pipeline/tests.rs`: no mesh geom (`mesh=`, `type="mesh"`, `GeomType::Mesh`, `mesh_data`: 0 hits); not a reader.
   - cf-design-tests load meshes through sim-mjcf (`l4_physics.rs:128-129`); what they assert about a mesh geom's pose was not checked.
 - **Breaking:** the `MeshInertia` default; the meaning of a mesh geom's `geom_pos`/`geom_quat` and of `TriangleMeshData` vertices (Q63, listed as a 0.10 break).
+- **Also (ledger-L176):** with the mesh frame MuJoCo's, `geom_rbound` is MuJoCo's: the collision golden's `bounds` case then compares the mesh's radius too, and the plane–mesh spacing (`mesh_collide.rs`) takes `geom_rbound` in place of the box's half-diagonal, with the bounds pyramid added to the `plane_mesh` golden (MuJoCo lists 2 of its corners, the half-diagonal 3).
 
 ### L36 · A10 MH5 · `fix(sim-mjcf): STL vertices deduplicated as MuJoCo; non-finite vertices refused; left-handed scale; binary STL by size` — cross-crate (mesh-io)
 - **Closes:** the known divergence "STL vertex deduplication" (01-decisions); the NaN-STL hang (A10 §1); Q108 (11-settled #14: mesh-io STEP keys sorted).
@@ -434,7 +435,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **One commit.** It could split into an additive core (`Model::set_length_range`, `LengthRangeError`, MuJoCo's mode filter; called by nothing) and a switch (the `LengthRangeOpt` default, the builder's call after `builder.build()`, `compute_actuator_params` no longer setting lengthrange) (R5; not measured).
 - **Closes:** A5-Q4 (explicit `lengthrange` honoured; 11-settled); ledger-L37 (A16 §2); A6 §5.3's NO-ROW "lengthrange did not converge" — the 4 docs are refused with MuJoCo's message (Q122).
 - **Implements:** A11 §2 LR-1 + LR-2 (`LengthRangeOpt` default `uselimit = false`; `Model::set_length_range`; MuJoCo's mode filter; raw `uselimit` copy; called after `builder.build()`). **Q129** needs nothing here: Rigid-physics chunk 3a ported MuJoCo's ball and free joint transmission (ledger-L85).
-- **cf-design (Q127):** `mechanism/model_builder.rs:940` calls `compute_actuator_params`, whose lengthrange side effect goes away; it calls `set_length_range` after it (A11 §5, Q-LR6).
+- **cf-design (Q127):** `mechanism/model_builder.rs:945` calls `compute_actuator_params`, whose lengthrange side effect goes away; it calls `set_length_range` after it (A11 §5, Q-LR6).
 - **Keep the skip:** `build()` skips the derivations on a joint layout or a range `try_make_data` refuses (P11 and chunk 2b's review), because the length-range simulation steps the model and a backwards range panicked in `f64::clamp` while loading; `set_length_range` after `build()` runs under the same check (`a_backwards_range_loads_and_make_data_refuses_it`). `Model::recompute_derived`'s doc table lists `actuator_lengthrange` under `compute_actuator_params`: move it.
 - **Must-fail:** T1–T7, T9–T12 (A11 §3); and ledger-L116's fixture (`41-what-planning-could-not-see.md`): `actuator_lengthrange` [-0.8014134585340036, 0.20141345853400375] as MuJoCo's, (0, 0) at Rigid-physics P29 and P33. It needs the fixed tendons' lengths derived before the simulation (ledger-L116) and LR-1's flags: the order alone gave [-0.8000000000000003, 0.2000000069525929] before P33 and (0, 0) after it, whose muscle force acts in the run until the flags turn actuation off (measured in Rigid-physics chunk 3b).
 - **Flips:** `fiber.rs:535` `test_muscle_force_at_optimal_length`, `:1831` `test_hill_lengthrange_mode_filter`, `:1375` `test_lengthrange_simulation_motor_mode_all`; `builder/actuator.rs:967`; `activation_clamping.rs:213`, `:229`, `:255` (template `:65-85`); `actuator_phase5.rs:193`, `:125`, `:225`; `phase7_spec_a.rs:270` (A11 §4).
