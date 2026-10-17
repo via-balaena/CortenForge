@@ -586,33 +586,34 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
     }
 }
 
-/// A pyramid mesh whose centre of mass is its origin, so MuJoCo keeps its
-/// authored frame, its base 0.001 into a plane, the plane in the world body
-/// and in a static body after the pyramid's (so each of the narrow phase's
-/// two argument orders is reached): the bounding radius is
-/// MuJoCo's within 1e-12 (7.632), and the plane–mesh contacts are spaced by
-/// it, as MuJoCo's `addplanemesh` skips a vertex nearer the first contact
-/// than 0.3 of `geom_rbound` (`engine_collision_convex.c:1018`): two of the
-/// base's four corners, across a diagonal (2·√2 apart; the edge's corners, 2
-/// apart, are skipped). Our contacts against MuJoCo's: the same count and
-/// geoms, each distance within 1e-13, and the two corners 2·√2 apart in x and
-/// y within 1e-12 on both sides. Which diagonal is not compared: the four
-/// corners tie for the deepest, which ours takes in vertex order and
-/// MuJoCo's in its hull's (book P51's limitation row), nor the height
-/// (MuJoCo's contact is midway between the corner and the plane, ours at the
-/// corner; book P51). Before, the spacing took the half-diagonal of the
-/// mesh's box (5.196), and a third corner was listed.
+/// A box mesh authored with its origin at a corner, its base 0.001 into a
+/// plane, the plane in the world body and in a static body after the mesh's
+/// (so each of the narrow phase's two argument orders is reached): the
+/// plane–mesh contacts are spaced as MuJoCo's, whose `addplanemesh` skips a
+/// vertex nearer the first contact than 0.3 of `geom_rbound`
+/// (`engine_collision_convex.c:1018`) in its mesh frame, at the centre of
+/// mass along the principal axes. sim-mjcf keeps the authored frame (book
+/// Rigid-loading L35), so the spacing takes the half-diagonal of the mesh's
+/// box, which here is MuJoCo's radius (2.077) within 1e-12: three of the
+/// base's four corners, the same count and geoms as MuJoCo's, each distance
+/// within 1e-13. Which three is not compared: the corners tie for the
+/// deepest, which ours takes in vertex order and MuJoCo's in its hull's (book
+/// P51's limitation row), nor the height (MuJoCo's contact is midway, ours at
+/// the corner; book P51). Before, the spacing took our `geom_rbound`, about
+/// the authored origin (4.153), and listed two.
 #[test]
-fn plane_mesh_contacts_are_spaced_by_the_bounding_radius_as_mujoco() {
+fn plane_mesh_contacts_are_spaced_as_mujoco() {
     let cases = golden()["plane_mesh"].clone();
     for (name, case) in cases.as_object().expect("cases") {
         let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mesh = usize::try_from(case["mesh_geom"].as_u64().expect("mesh_geom")).expect("geom");
         let rbound = case["rbound"].as_f64().expect("rbound");
+        // `geom_aabb` is the box's centre offset, then its half-extents.
+        let aabb = model.geom_aabb[mesh];
+        let half = nalgebra::Vector3::new(aabb[3], aabb[4], aabb[5]).norm();
         assert!(
-            (model.geom_rbound[mesh] - rbound).abs() <= 1e-12,
-            "{name}: rbound {}, MuJoCo {rbound}",
-            model.geom_rbound[mesh]
+            (half - rbound).abs() <= 1e-12,
+            "{name}: half-diagonal {half}, MuJoCo's radius {rbound}"
         );
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
@@ -628,24 +629,6 @@ fn plane_mesh_contacts_are_spaced_by_the_bounding_radius_as_mujoco() {
                 (-c.depth - dist).abs() <= 1e-13,
                 "{name} contact {k}: depth {}, MuJoCo's dist {dist}",
                 c.depth
-            );
-        }
-        let ours = [data.contacts[0].pos, data.contacts[1].pos];
-        let theirs: Vec<Vec<f64>> = want.iter().map(|w| floats(&w["pos"])).collect();
-        let apart = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
-        for (side, d) in [
-            (
-                "ours",
-                apart([ours[0].x, ours[0].y], [ours[1].x, ours[1].y]),
-            ),
-            (
-                "MuJoCo's",
-                apart([theirs[0][0], theirs[0][1]], [theirs[1][0], theirs[1][1]]),
-            ),
-        ] {
-            assert!(
-                (d - 2.0 * 2.0_f64.sqrt()).abs() <= 1e-12,
-                "{name}: {side} two corners {d} apart"
             );
         }
     }

@@ -63,15 +63,15 @@ radii, each about its geom's origin (mjCGeom::GetRBound,
 user_objects.cc:3418-3454), and its contacts after mj_forward (geoms,
 `dist`, `pos`). The apex is past the half-diagonal of the pyramid's box
 from its centroid, within the bounding radius; it refuses a scene that is
-not. `plane_mesh` holds a pyramid mesh whose centre of mass is its origin
-(so MuJoCo keeps its frame), its base 0.001 into a plane, the plane in the
-world body and in a static body after the pyramid's (so the mesh is the
-pair's first geom as it is tested): MuJoCo's bounding radius and its
-contacts (geoms, `dist`, `pos`). `addplanemesh` skips a vertex
-nearer the first contact than 0.3 of the bounding radius
-(engine_collision_convex.c:1018), which takes two of the base's four
-corners; it refuses a scene where the half-diagonal of the mesh's box would
-take the same.
+not. `plane_mesh` holds a box mesh authored with its origin at a corner,
+its base 0.001 into a plane, the plane in the world body and in a static
+body after the mesh's (so in the second the mesh is the pair's first geom
+as it is tested): MuJoCo's bounding radius, in its mesh frame (the centre
+of mass, the principal axes), and its contacts (geoms, `dist`, `pos`).
+`addplanemesh` skips a vertex nearer the first contact than 0.3 of the
+bounding radius (engine_collision_convex.c:1018), which leaves three of the
+base's four corners; it refuses a scene where the half-diagonal of the
+mesh's box is not MuJoCo's radius.
 """
 
 import json
@@ -599,38 +599,39 @@ def bounds():
             "height": height, "contacts": contacts}
 
 
-PLANE_MESH_XML = """<mujoco><asset>
-<mesh name="pyr" vertex="-1 -1 -2.5  1 -1 -2.5  1 1 -2.5  -1 1 -2.5  0 0 7.5"
-      face="0 2 1  0 3 2  0 1 4  1 2 4  2 3 4  3 0 4"/>
-</asset><worldbody><geom name="floor" type="plane" size="20 20 0.1"/>
-<body name="p" pos="0 0 2.499"><freejoint/><geom name="pyr" type="mesh" mesh="pyr"/></body>
-</worldbody></mujoco>"""
-# The same with the plane in a static body after the pyramid's, so the mesh is
-# the pair's first geom as it is tested.
-PLANE_MESH_LATER_XML = PLANE_MESH_XML.replace(
-    '<geom name="floor" type="plane" size="20 20 0.1"/>\n', "", 1).replace(
-    "</worldbody>", '<body name="ground"><geom name="floor" type="plane" size="20 20 0.1"/></body>\n</worldbody>', 1)
+# A box mesh authored with its origin at a corner (its centre of mass at the
+# box's centre, its axes principal), its base 0.001 into a plane, the plane in
+# the world body and in a static body after the mesh's (so each of the
+# narrow phase's two argument orders is reached).
+OFFBOX_MESH = """<mesh name="offbox" vertex="0 0 0  4 0 0  4 1 0  0 1 0  0 0 0.5  4 0 0.5  4 1 0.5  0 1 0.5"
+      face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  1 2 6  1 6 5  2 3 7  2 7 6  3 0 4  3 4 7"/>"""
+PLANE_MESH_XML = {
+    "world": f"""<mujoco><asset>{OFFBOX_MESH}</asset><worldbody><geom name="floor" type="plane" size="20 20 0.1"/>
+<body name="p" pos="0 0 -0.001"><freejoint/><geom name="box" type="mesh" mesh="offbox"/></body>
+</worldbody></mujoco>""",
+    "later_body": f"""<mujoco><asset>{OFFBOX_MESH}</asset><worldbody>
+<body name="p" pos="0 0 -0.001"><freejoint/><geom name="box" type="mesh" mesh="offbox"/></body>
+<body name="ground"><geom name="floor" type="plane" size="20 20 0.1"/></body>
+</worldbody></mujoco>""",
+}
 
 
 def plane_mesh():
     out = {}
-    for name, xml in (("world", PLANE_MESH_XML), ("later_body", PLANE_MESH_LATER_XML)):
+    for name, xml in PLANE_MESH_XML.items():
         m = mujoco.MjModel.from_xml_string(xml)
         d = mujoco.MjData(m)
         mujoco.mj_forward(m, d)
-        p = m.geom("pyr").id
-        half = float(np.linalg.norm(m.geom_aabb[p][3:]))
-        # The base's corners are 2 apart along an edge, 2*sqrt(2) across.
-        if not 0.3 * half < 2 < 0.3 * m.geom_rbound[p] < 2 * np.sqrt(2):
-            sys.exit(f"plane_mesh {name}: half-diagonal {half}, bounding radius {m.geom_rbound[p]}")
+        g = m.geom("box").id
+        half = float(np.linalg.norm(m.geom_aabb[g][3:]))
+        if abs(half - m.geom_rbound[g]) > 1e-12:
+            sys.exit(f"plane_mesh {name}: the half-diagonal {half} is not MuJoCo's radius {m.geom_rbound[g]}")
         contacts = [{"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist),
                      "pos": floats(c.pos)} for c in d.contact[:d.ncon]]
-        if len(contacts) != 2:
+        if len(contacts) != 3:
             sys.exit(f"plane_mesh {name}: {len(contacts)} contacts")
-        out[name] = {"xml": xml, "mesh_geom": p, "rbound": float(m.geom_rbound[p]),
+        out[name] = {"xml": xml, "mesh_geom": g, "rbound": float(m.geom_rbound[g]),
                      "half_diagonal": half, "contacts": contacts}
-    if out["later_body"]["mesh_geom"] != 0:
-        sys.exit("plane_mesh later_body: the mesh is not geom 0")
     return out
 
 

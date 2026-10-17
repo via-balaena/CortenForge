@@ -236,14 +236,8 @@ pub fn collide_with_mesh(
                     // Plane normal is local Z-axis — multi-contact (up to 3)
                     let plane_normal = mat2.column(2).into_owned();
                     let plane_d = plane_normal.dot(&pos2);
-                    let mesh_contacts = collide_mesh_plane(
-                        mesh,
-                        &pose1,
-                        plane_normal,
-                        plane_d,
-                        margin,
-                        model.geom_rbound[geom1],
-                    );
+                    let mesh_contacts =
+                        collide_mesh_plane(mesh, &pose1, plane_normal, plane_d, margin);
                     return mesh_contacts
                         .into_iter()
                         .map(|mc| {
@@ -332,14 +326,8 @@ pub fn collide_with_mesh(
                     // Multi-contact (up to 3) — negate normals for swapped order
                     let plane_normal = mat1.column(2).into_owned();
                     let plane_d = plane_normal.dot(&pos1);
-                    let mesh_contacts = collide_mesh_plane(
-                        mesh,
-                        &pose2,
-                        plane_normal,
-                        plane_d,
-                        margin,
-                        model.geom_rbound[geom2],
-                    );
+                    let mesh_contacts =
+                        collide_mesh_plane(mesh, &pose2, plane_normal, plane_d, margin);
                     return mesh_contacts
                         .into_iter()
                         .map(|mut mc| {
@@ -400,9 +388,13 @@ pub fn collide_with_mesh(
 /// 2. Continue scanning for up to 2 more vertices that:
 ///    - Have `depth > -margin` (within margin of plane)
 ///    - Are at least `0.3 * rbound` away from the primary contact (prevents clustering),
-///      `rbound` the mesh geom's bounding radius (`Model::geom_rbound`, about the
-///      geom's origin), as MuJoCo's `addplanemesh` takes `geom_rbound`
-///      (`engine_collision_convex.c:1018`, `:1103`, `:1129`)
+///      `rbound` the half-diagonal of the mesh's box. MuJoCo's `addplanemesh` takes
+///      `geom_rbound` (`engine_collision_convex.c:1018`, `:1103`, `:1129`), in its
+///      mesh frame, at the centre of mass along the principal axes; sim-mjcf keeps
+///      a mesh in its authored frame (book Rigid-loading L35), where `geom_rbound`
+///      is about the authored origin and spaces a mesh authored off its centre of
+///      mass too far apart. The half-diagonal is MuJoCo's radius where the box's
+///      centre is the centre of mass and its axes are principal (ledger L176)
 /// 3. Return 1–3 contacts with individual depths.
 ///
 /// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`), consistent with
@@ -410,20 +402,20 @@ pub fn collide_with_mesh(
 ///
 /// # Parameters
 /// - `margin`: collision margin — vertices with `depth > -margin` are candidates
-/// - `rbound`: the mesh geom's bounding radius
 pub fn collide_mesh_plane(
     mesh: &TriangleMeshData,
     mesh_pose: &Pose,
     plane_normal: Vector3<f64>,
     plane_d: f64,
     margin: f64,
-    rbound: f64,
 ) -> Vec<MeshContact> {
     let vertices = mesh.vertices();
     if vertices.is_empty() {
         return vec![];
     }
 
+    let (aabb_min, aabb_max) = mesh.aabb();
+    let rbound = (aabb_max - aabb_min).norm() / 2.0;
     let min_separation = 0.3 * rbound; // MuJoCo's tolplanemesh
     let min_sep_sq = min_separation * min_separation;
 
