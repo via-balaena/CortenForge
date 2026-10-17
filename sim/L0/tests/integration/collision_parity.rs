@@ -181,22 +181,29 @@ fn o_sphere_box_order() {
 /// are not both single-geom, the midphase's order by the listed geoms
 /// (`engine_collision_driver.c:226-256`, `:290-370`), or with the midphase
 /// disabled, the first body's geoms in turn against the second's.
+/// And three explicit pairs within one body (two spheres, two capsules, a
+/// capsule with a sphere), each declared higher geom first: MuJoCo keeps a
+/// same-body pair in its declared order (the compiler puts the lower body's
+/// geom first only between two bodies), so (2, 1), (4, 3), (1, 3).
 #[test]
 fn contacts_in_mujoco_body_pair_order() {
-    for name in ["bodies", "bodies_no_midphase", "pairs", "pairs_no_midphase"] {
+    for name in [
+        "bodies",
+        "bodies_no_midphase",
+        "pairs",
+        "pairs_no_midphase",
+        "pairs_same_body",
+    ] {
         lists_as_mujoco(name, 1e-12);
     }
 }
 
-/// A 3 × 3 flex grid on a plane between two spheres: MuJoCo lists the
-/// plane's contacts with the spheres first, then its contacts with the
-/// flex's vertices (a body–flex pair's signature is past every body pair's
-/// of the same first body). sim-mjcf does not load MuJoCo's `<flexcomp>` in
-/// a body (ledger L152), so the same flex is built in sim-mjcf's
-/// `<deformable><flex>` form from MuJoCo's vertex positions and elements.
-#[test]
-fn flex_contacts_follow_the_body_contacts_as_mujoco() {
-    let case = &golden()["order"]["flex"];
+/// MuJoCo's list for an `order` flex case against ours: sim-mjcf does not
+/// load MuJoCo's `<flexcomp>` in a body (ledger L152), so the same flex is
+/// built in sim-mjcf's `<deformable><flex>` form from MuJoCo's vertex
+/// positions and elements, beside `bodies`, the case's other bodies.
+fn flex_lists_as_mujoco(name: &str, bodies: &str) {
+    let case = &golden()["order"][name];
     let join = |v: Vec<String>| v.join(" ");
     let pos = join(
         floats(&case["flexvert_xpos"])
@@ -212,9 +219,7 @@ fn flex_contacts_follow_the_body_contacts_as_mujoco() {
     );
     let xml = format!(
         r#"<mujoco><option><flag gravity="disable"/></option><worldbody>
-<body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/></body>
-<body name="ball" pos="0.8 0 0.045"><freejoint/><geom name="ball" type="sphere" size="0.05"/></body>
-<body name="ball2" pos="-0.8 0 0.045"><freejoint/><geom name="ball2" type="sphere" size="0.05"/></body>
+{bodies}
 </worldbody><deformable><flex name="cloth" dim="2" radius="0.01" mass="0.1">
 <contact selfcollide="none"/><vertex pos="{pos}"/><element data="{elem}"/></flex></deformable></mujoco>"#
     );
@@ -222,7 +227,7 @@ fn flex_contacts_follow_the_body_contacts_as_mujoco() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
     let want = case["contacts"].as_array().expect("contacts");
-    assert_eq!(data.ncon, want.len(), "contacts");
+    assert_eq!(data.ncon, want.len(), "{name}: contacts");
     for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
         let (geom, vert) = (floats(&w["geom"]), floats(&w["vert"]));
         let ours = match c.flex_vertex {
@@ -234,14 +239,45 @@ fn flex_contacts_follow_the_body_contacts_as_mujoco() {
         } else {
             format!("geoms ({}, {})", geom[0], geom[1])
         };
-        assert_eq!(ours, theirs, "contact {k}");
+        assert_eq!(ours, theirs, "{name}: contact {k}");
         let dist = w["dist"].as_f64().expect("dist");
         assert!(
             (-c.depth - dist).abs() <= 1e-12,
-            "contact {k}: depth {}, MuJoCo's dist {dist}",
+            "{name}: contact {k}: depth {}, MuJoCo's dist {dist}",
             c.depth
         );
     }
+}
+
+/// A 3 × 3 flex grid on a plane between two spheres: MuJoCo lists the
+/// plane's contacts with the spheres first, then its contacts with the
+/// flex's vertices (a body–flex pair's signature is past every body pair's
+/// of the same first body).
+#[test]
+fn flex_contacts_follow_the_body_contacts_as_mujoco() {
+    flex_lists_as_mujoco(
+        "flex",
+        r#"<body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/></body>
+<body name="ball" pos="0.8 0 0.045"><freejoint/><geom name="ball" type="sphere" size="0.05"/></body>
+<body name="ball2" pos="-0.8 0 0.045"><freejoint/><geom name="ball2" type="sphere" size="0.05"/></body>"#,
+    );
+}
+
+/// The flex beside a static body holding two planes and a far sphere:
+/// MuJoCo lists the first plane's vertex contacts (vertices 0 to 8), then
+/// the second's (6 to 8), each geom's in turn; ours, which collides a flex
+/// vertex by vertex, places them so (a flex contact's key within its body
+/// pair is its geom, then its vertex).
+#[test]
+fn flex_contacts_follow_each_plane_in_turn_as_mujoco() {
+    flex_lists_as_mujoco(
+        "flex_two_planes",
+        r#"<body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/>
+<geom name="ramp" type="plane" size="2 2 0.1" pos="0.06 0 0" quat="0.99 0 -0.1 0"/>
+<geom name="far" type="sphere" size="0.05" pos="3 3 3"/></body>
+<body name="ball" pos="0.8 0 0.045"><freejoint/><geom name="ball" type="sphere" size="0.05"/><geom name="ball_b" type="box" size="0.03 0.03 0.03" pos="0.1 0 0"/></body>
+<body name="ball2" pos="-0.8 0 0.045"><freejoint/><geom name="ball2" type="sphere" size="0.05"/></body>"#,
+    );
 }
 
 /// The frames' bound: `make_frame` is MuJoCo's arithmetic, so the frames
@@ -635,4 +671,27 @@ fn primitive_bounding_radii_are_mujocos_bit_for_bit() {
         "rbound {:?}, MuJoCo {want:?}",
         model.geom_rbound
     );
+}
+
+/// The geom-distance sensors (distance, normal, fromto) of two overlapping
+/// boxes, in both argument orders: MuJoCo's within 1e-12 (the review
+/// measured 1.1e-16). `fromto` is rebuilt from the contact point, the
+/// witnesses' midpoint since P40, and its distance and normal (its two ends
+/// the two witnesses), which no test compared with MuJoCo's before.
+#[test]
+fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
+    let cases = golden()["geom_distance"].clone();
+    for (name, case) in cases.as_object().expect("cases") {
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let want = floats(&case["sensordata"]);
+        assert_eq!(data.sensordata.len(), want.len(), "{name}: sensordata");
+        for (k, (a, b)) in data.sensordata.iter().zip(&want).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12,
+                "{name}: sensordata[{k}] {a}, MuJoCo {b}"
+            );
+        }
+    }
 }

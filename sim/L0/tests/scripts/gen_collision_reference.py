@@ -219,6 +219,32 @@ FLEX_XML = """<mujoco><option><flag gravity="disable"/></option><worldbody>
   dim="2" mass="0.1"><contact selfcollide="none"/></flexcomp>
 <body name="ball2" pos="-0.8 0 0.045"><freejoint/><geom name="ball2" type="sphere" size="0.05"/></body>
 </worldbody></mujoco>"""
+# The flex beside a static body holding two planes (and a far sphere): MuJoCo
+# lists each plane's vertex contacts in turn, the first plane's before the
+# second's (its geom-major order); the second plane turned by a quaternion,
+# so no loader sin or cos is read.
+FLEX_TWO_PLANES_XML = """<mujoco><option><flag gravity="disable"/></option><worldbody>
+<body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/>
+<geom name="ramp" type="plane" size="2 2 0.1" pos="0.06 0 0" quat="0.99 0 -0.1 0"/>
+<geom name="far" type="sphere" size="0.05" pos="3 3 3"/></body>
+<body name="ball" pos="0.8 0 0.045"><freejoint/><geom name="ball" type="sphere" size="0.05"/><geom name="ball_b" type="box" size="0.03 0.03 0.03" pos="0.1 0 0"/></body>
+<flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.05 0.05 0.05" pos="0 0 0.005" radius="0.01"
+  dim="2" mass="0.1"><contact selfcollide="none"/></flexcomp>
+<body name="ball2" pos="-0.8 0 0.045"><freejoint/><geom name="ball2" type="sphere" size="0.05"/></body>
+</worldbody></mujoco>"""
+# Explicit pairs within one body: a pair of two geoms of one body keeps its
+# declared order (the compiler puts the lower body's geom first only between
+# two bodies, user_objects.cc:5645-5657).
+SAME_BODY_PAIRS_XML = """<mujoco><option><flag gravity="disable"/></option><worldbody>
+<geom name="floor" type="plane" size="2 2 0.1"/>
+<body name="A" pos="0 0 0.5"><freejoint/>
+  <geom name="s1" type="sphere" size="0.1" pos="-0.05 0.01 0.02"/>
+  <geom name="s2" type="sphere" size="0.1" pos="0.05 0 0"/>
+  <geom name="c1" type="capsule" size="0.05 0.1" pos="0 0.12 0"/>
+  <geom name="c2" type="capsule" size="0.05 0.1" pos="0.03 0.2 0.01" quat="0.7071067811865476 0 0.7071067811865476 0"/>
+</body>
+</worldbody>
+<contact><pair geom1="s2" geom2="s1"/><pair geom1="c2" geom2="c1"/><pair geom1="c1" geom2="s1" margin="0.2"/></contact></mujoco>"""
 SPHERE_BOX_XML = """<mujoco><option><flag gravity="disable"/></option><worldbody>
 <geom name="box" type="box" size="0.2 0.2 0.05"/>
 <body name="ball" pos="0.03 -0.02 0.14"><freejoint/><geom name="ball" type="sphere" size="0.1"/></body>
@@ -265,6 +291,8 @@ def order_cases():
         "pairs_no_midphase": contact_list(ORDER_XML.format(flags=off, pairs=ORDER_PAIRS)),
         "sphere_box": contact_list(SPHERE_BOX_XML),
         "flex": flex_list(FLEX_XML),
+        "flex_two_planes": flex_list(FLEX_TWO_PLANES_XML),
+        "pairs_same_body": contact_list(SAME_BODY_PAIRS_XML),
     }
     # The fixture must show what it is for: a multi-geom body pair whose
     # midphase order differs from the index order, and a pair contact placed
@@ -281,6 +309,11 @@ def order_cases():
     flex = [c["vert"][1] >= 0 for c in cases["flex"]["contacts"]]
     if not (any(flex) and flex == sorted(flex) and not flex[0]):
         sys.exit("order: the flex contacts do not follow the rigid ones")
+    planes = [c["geom"][0] for c in cases["flex_two_planes"]["contacts"] if c["vert"][1] >= 0]
+    if not (planes == sorted(planes) and 0 < planes.count(1) < planes.count(0)):
+        sys.exit(f"order: the two planes' vertex contacts {planes}")
+    if [tuple(c["geom"]) for c in cases["pairs_same_body"]["contacts"]] != [(2, 1), (4, 3), (1, 3)]:
+        sys.exit("order: the same-body pairs are not in their declared order")
     return cases
 
 
@@ -621,6 +654,31 @@ def primitive_rbound():
     return {"xml": PRIMITIVE_RBOUND_XML, "rbound": floats(m.geom_rbound)}
 
 
+# The geom-distance sensors (distance, normal, fromto) of two overlapping
+# boxes, both argument orders (the review's scene; mj_geomDistance from the
+# contact's witnesses).
+GEOM_DISTANCE_XML = {
+    "box_box_ab": """<mujoco><option><flag gravity="disable"/></option><worldbody><body name="sa"><geom name="A" type="box" size="0.08 0.06 0.05" quat="-0.8186561799215278 -0.2544446359207321 -0.18826145467340014 0.4791843184117281"/></body>
+<body name="b" pos="-0.019537640905820452 0.07436838946284911 -0.03261981810392527"><freejoint/><geom name="B" type="box" size="0.07 0.05 0.04" quat="0.6050206971902753 0.23620745038611873 -0.660369143626291 0.3769198727843383"/></body></worldbody>
+<sensor><distance geom1="A" geom2="B" cutoff="1"/><normal geom1="A" geom2="B" cutoff="1"/><fromto geom1="A" geom2="B" cutoff="1"/></sensor></mujoco>""",
+    "box_box_ba": """<mujoco><option><flag gravity="disable"/></option><worldbody><body name="sa"><geom name="A" type="box" size="0.08 0.06 0.05" quat="-0.8186561799215278 -0.2544446359207321 -0.18826145467340014 0.4791843184117281"/></body>
+<body name="b" pos="-0.019537640905820452 0.07436838946284911 -0.03261981810392527"><freejoint/><geom name="B" type="box" size="0.07 0.05 0.04" quat="0.6050206971902753 0.23620745038611873 -0.660369143626291 0.3769198727843383"/></body></worldbody>
+<sensor><distance geom1="B" geom2="A" cutoff="1"/><normal geom1="B" geom2="A" cutoff="1"/><fromto geom1="B" geom2="A" cutoff="1"/></sensor></mujoco>""",
+}
+
+
+def geom_distance_cases():
+    out = {}
+    for name, xml in GEOM_DISTANCE_XML.items():
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        if not d.sensordata[0] < 0:
+            sys.exit(f"geom_distance {name}: the boxes do not overlap")
+        out[name] = {"xml": xml, "sensordata": floats(d.sensordata)}
+    return out
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -641,7 +699,8 @@ def main():
            "touching_spheres": finite_or_string(touching_spheres()),
            "bounds": finite_or_string(bounds()),
            "plane_mesh": finite_or_string(plane_mesh()),
-           "primitive_rbound": finite_or_string(primitive_rbound())}
+           "primitive_rbound": finite_or_string(primitive_rbound()),
+           "geom_distance": finite_or_string(geom_distance_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
     print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "
