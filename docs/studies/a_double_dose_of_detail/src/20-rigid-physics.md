@@ -607,7 +607,7 @@ Each constraint below is a dependency note from a section; the order above satis
 - **Implements:** A17 §11 R3-C sim-core part; bounds in P11's `recompute_derived` (absorbs A17 C7). The data side is Rigid-loading L45. The contacts are built hfield-first (MuJoCo's type order), no negation (C10; prototype `hfield.rs:245`).
 - **Must-fail:** `hfield_bounds_are_centred`, `hfield_contacts_match_mujoco_bitwise` (A17 §11 R3-C tests 3, 5). Test 5 sets `model.hfield_data[0]` in code to a square field in MuJoCo's convention (rows bottom-to-top, elevation normalised, f32 values; A17 §5.1 a, b), so it does not wait for L45; its golden comes from the unfused oracle (C1), and it needs P42's renormalised normal (A17 §2.3).
 - **Flips:** `collision/hfield.rs:954` `test_swapped_geom_order` (asserts `geom1 == 1`, `geom2 == 0` at `:980-981`; the hfield now comes first) (R4).
-- **Note:** the bumpy-field fall-through is fixed by the bounds alone (A17 §5.1); bodies fall through until this lands (A17 §12).
+- **Note:** the bumpy-field fall-through is fixed by the bounds alone (A17 §5.1); bodies fall through until this lands (A17 §12). Both predate chunk 3e's P43a, since which the broadphase reads `geom_rbound` instead of `geom_aabb` (MuJoCo's `mj_broadphase`); a height field's radius is MuJoCo's since the bounds fix in chunk 3e's first pull request. Whether bodies still fall through on that base has not been measured: P52 measures it before its bounds are credited with the fix.
 
 ### P53 · K14 · `docs(sim-core): state, callbacks, finite differences and BatchSim documented as they behave`
 - **Closes:** core-C1, core-C4, core-B1, core-D1, core-D2, core-D3 (the rest after P04's Display), P-L25, P-L31 FD `B`. core-B2 (the `BatchSim::reset` doc and its pin) is P16's.

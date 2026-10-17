@@ -399,7 +399,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Closes:** the flat-mesh item: refused where MuJoCo needs a hull, and the shell without collision that MuJoCo loads, loads (Q103; A10 §5 found no test that can show our collision on a flat mesh right).
 - **Must-fail:** `flat_mesh_with_collision_is_refused`, `flat_shell_mesh_without_collision_loads`, `flat_mesh_legacy_volume_too_small` (A10 §5).
 - **Flips:** `mesh_inertia_modes.rs:339` t16 (rewrite with `contype="0" conaffinity="0"`); `exactmeshinertia.rs:354` ac7 (rewrite as a refusal) (A10 §5).
-- **Note:** re-measure the verdict on top of P40 — A15 found its EPA defect makes box, cylinder and ellipsoid fall through convex mesh slabs, and whether it also caused the planar-hull fall-through "was not measured" (A15 §4.4, §8).
+- **Note:** re-measure the verdict on top of P40 — A15 found its EPA defect makes box, cylinder and ellipsoid fall through convex mesh slabs, and whether it also caused the planar-hull fall-through "was not measured" (A15 §4.4, §8). Re-measured in chunk 3e with P40: a box, a cylinder and an ellipsoid dropped on a flat mesh tile with collision still fall through it (z −19.59 after 1,000 steps, no contact), so the verdict stands.
 
 ### L38 · M23 · `feat(sim-mjcf): a vertex-only mesh gets its convex hull`
 - **Closes:** mjcf-D1 (11-settled #13); U14 (parity): MuJoCo refuses fewer than 4 vertices for every mesh, with faces or without ("at least 4 vertices required", `user_mesh.cc:1806-1808`).
