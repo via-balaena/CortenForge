@@ -385,6 +385,25 @@ fn i_cylinders_nearly_upright() {
     includes_as_mujoco("cylinders_nearly_upright");
 }
 
+/// Two cylinders lying on their sides, at distance 0 and at exactly a geom
+/// margin of 0.25: both caps' rim points listed (`dist ≤ margin`, the far
+/// cap's too); a cube turned 45° about x and one on its corner, each within
+/// its margin, listed corner by corner (`mjc_PlaneBox`).
+#[test]
+fn i_plane_edges() {
+    includes_as_mujoco("plane_edges");
+}
+
+/// Two cubes turned 45° about x within a margin 0.3, one turned so that two
+/// corners' distances along the plane's normal cancel exactly: `mjc_PlaneBox`
+/// takes a corner on the plane's side of the centre at `ldist ≤ 0`, so the
+/// one with `ldist` exactly 0 counts, and stops at four
+/// (`engine_collision_primitive.c:196-239`): four corners each.
+#[test]
+fn i_cube_zero_ldist() {
+    includes_as_mujoco("cube_zero_ldist");
+}
+
 /// Census document 830708de: a box dropped on a plane, tumbling under the
 /// census's first excitation, lands on one corner, then two, then three:
 /// MuJoCo lists each corner by its own distance (`mjc_PlaneBox`), where the
@@ -419,11 +438,14 @@ fn box_plane_lists_each_corner_as_mujoco() {
 /// gap and one past the margin: MuJoCo's body transmission averages the
 /// active contacts' rows (the normal row, or the pyramid's rows at
 /// 0.5/(dim − 1) each) and the excluded contact's normal Jacobian, negated
-/// (`mjTRN_BODY`, `engine_core_smooth.c:1621-1731`); ledger L124.
+/// (`mjTRN_BODY`, `engine_core_smooth.c:1621-1731`); ledger L124. Under each
+/// cone with condim 3, and with condim 1, 4 and 6 (on both geoms): a
+/// condim-1 contact's normal row, and the pyramid's rows, whose weights sum
+/// to the normal row only at 0.5/(dim − 1).
 #[test]
 fn adhesion_transmission_counts_contacts_as_mujoco() {
-    for cone in ["pyramidal", "elliptic"] {
-        let case = &golden()["adhesion"][cone];
+    let cases = golden()["adhesion"].clone();
+    for (cone, case) in cases.as_object().expect("cases") {
         let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();
         data.forward(&model).expect("forward");

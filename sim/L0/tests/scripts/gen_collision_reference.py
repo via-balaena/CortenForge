@@ -329,7 +329,14 @@ def frame_cases():
 # engine_collision_convex.c:1056); and three upright cylinders turned by 1e-12,
 # 3e-11 and 3e-9 about x, 0.001 into a plane (`mjc_PlaneCylinder` takes the
 # rim's direction from the axis while its length squared is at least
-# mjMINVAL^2, engine_collision_primitive.c:115).
+# mjMINVAL^2, engine_collision_primitive.c:115); two cylinders lying on their
+# sides, at distance 0 and at exactly a geom margin of 0.25 (both caps' rim
+# points, `dist <= margin`), a cube turned 45 degrees about x and one on its
+# corner, each within its margin; and two cubes turned 45 degrees about x
+# within a margin 0.3, one turned so that two corners' distances along the
+# plane's normal cancel exactly (`mjc_PlaneBox` takes a corner on the
+# plane's side of the centre, ldist <= 0, and at most four,
+# engine_collision_primitive.c:196-239).
 INCLUSION_XML = {
     "sphere_touching_plane": """<mujoco><worldbody><geom type="plane" size="2 2 0.1"/>
 <body pos="0 0 0.1"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>""",
@@ -347,6 +354,16 @@ INCLUSION_XML = {
     "ellipsoid_at_margin": """<mujoco><worldbody><geom type="plane" size="5 5 0.1" margin="0.125" gap="0.0625"/>
 <body pos="0 0 0.25"><freejoint/><geom type="ellipsoid" size="0.5 0.375 0.25"/></body>
 <body pos="2 0 0.375"><freejoint/><geom type="ellipsoid" size="0.5 0.375 0.25"/></body></worldbody></mujoco>""",
+    "plane_edges": """<mujoco><worldbody><geom name="floor" type="plane" size="20 20 0.1"/>
+<body name="cyl_side" pos="0 0 0.5" quat="0.7071067811865476 0.7071067811865476 0 0"><freejoint/><geom type="cylinder" size="0.5 1"/></body>
+<body name="cyl_side_m" pos="3 0 0.75" quat="0.7071067811865476 0 0.7071067811865476 0"><freejoint/><geom type="cylinder" size="0.5 1" margin="0.25"/></body>
+<body name="cube45q" pos="9 0 0.15" quat="0.9238795325112867 0.3826834323650898 0 0"><freejoint/><geom type="box" size="0.1 0.1 0.1" margin="0.3"/></body>
+<body name="cube_corner" pos="12 0 0.2" quat="0.8880738339771153 0.3250575836718682 0.3250575836718682 0"><freejoint/><geom type="box" size="0.1 0.1 0.1" margin="0.05"/></body>
+</worldbody></mujoco>""",
+    "cube_zero_ldist": """<mujoco><worldbody><geom name="floor" type="plane" size="20 20 0.1"/>
+<body name="c1" pos="0 0 0.15" quat="0.9238795325112867 0.3826834323650897 0 0"><freejoint/><geom type="box" size="0.1 0.1 0.1" margin="0.3"/></body>
+<body name="c2" pos="3 0 0.15" quat="0.9238795325112868 0.38268343236508984 0 0"><freejoint/><geom type="box" size="0.1 0.1 0.1" margin="0.3"/></body>
+</worldbody></mujoco>""",
     "cylinders_nearly_upright": """<mujoco><worldbody><geom type="plane" size="5 5 0.1"/>
 <body pos="0 0 0.149" quat="1 1e-12 0 0"><freejoint/><geom type="cylinder" size="0.1 0.15"/></body>
 <body pos="1 0 0.149" quat="1 3e-11 0 0"><freejoint/><geom type="cylinder" size="0.1 0.15"/></body>
@@ -380,6 +397,13 @@ def inclusion_cases():
         sys.exit(f"inclusion: the ellipsoids in the margin: {at_margin}")
     if len(out["cylinders_nearly_upright"]["contacts"]) != 9:
         sys.exit("inclusion: the cylinders do not list three rim points each")
+    per_geom = lambda name: sorted(
+        (g, sum(1 for c in out[name]["contacts"] if c["geom"][1] == g))
+        for g in {c["geom"][1] for c in out[name]["contacts"]})
+    if per_geom("plane_edges") != [(1, 2), (2, 2), (3, 4), (4, 1)]:
+        sys.exit(f"inclusion: plane_edges per geom {per_geom('plane_edges')}")
+    if per_geom("cube_zero_ldist") != [(1, 4), (2, 4)]:
+        sys.exit(f"inclusion: cube_zero_ldist per geom {per_geom('cube_zero_ldist')}")
     return out
 
 
@@ -421,6 +445,14 @@ ADHESION_XML = """<mujoco><option cone="{cone}"/><worldbody><geom type="plane" s
 <actuator><adhesion body="box" ctrlrange="0 1" gain="10"/></actuator></mujoco>"""
 
 
+# The same box under condim 1, 4 and 6 (both geoms, as MuJoCo takes the
+# larger): the pyramid's rows at 0.5/(dim-1) each sum to the normal row, so
+# the moment is the same, where any other weight moves it.
+ADHESION_CONDIM_XML = """<mujoco><option cone="{cone}"/><default><geom condim="{condim}"/></default><worldbody><geom type="plane" size="2 2 0.1" margin="0.04" gap="0.02"/>
+<body name="box" pos="0 0 0.08" euler="12 7 0"><freejoint/><geom type="box" size="0.1 0.08 0.06"/></body></worldbody>
+<actuator><adhesion body="box" ctrlrange="0 1" gain="10"/></actuator></mujoco>"""
+
+
 def adhesion_cases():
     out = {}
     for cone in ("pyramidal", "elliptic"):
@@ -436,6 +468,22 @@ def adhesion_cases():
         if sorted(excluded) != [0, 0, 1]:
             sys.exit(f"adhesion {cone}: not two active corners and one in the gap: {excluded}")
         out[cone] = {"xml": xml, "ncon": int(d.ncon), "nefc": int(d.nefc), "moment": floats(moment)}
+    for cone, condim in (("pyramidal", 1), ("pyramidal", 4), ("pyramidal", 6),
+                         ("elliptic", 4), ("elliptic", 6)):
+        xml = ADHESION_CONDIM_XML.format(cone=cone, condim=condim)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        moment = np.zeros(m.nv)
+        adr, nnz = d.moment_rowadr[0], d.moment_rownnz[0]
+        for k in range(nnz):
+            moment[d.moment_colind[adr + k]] = d.actuator_moment[adr + k]
+        if [int(c.dim) for c in d.contact[:d.ncon]] != [condim] * d.ncon:
+            sys.exit(f"adhesion {cone} condim {condim}: contact dims")
+        if sorted(int(c.exclude) for c in d.contact[:d.ncon]) != [0, 0, 1]:
+            sys.exit(f"adhesion {cone} condim {condim}: not two active corners and one in the gap")
+        out[f"{cone}_condim{condim}"] = {"xml": xml, "ncon": int(d.ncon), "nefc": int(d.nefc),
+                                         "moment": floats(moment)}
     return out
 
 
