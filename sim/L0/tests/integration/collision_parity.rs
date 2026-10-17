@@ -416,3 +416,32 @@ fn adhesion_transmission_counts_contacts_as_mujoco() {
         }
     }
 }
+
+/// Census document 31833131's two touching spheres, 1.1e-16 into each other
+/// after 7 steps: MuJoCo's broadphase sorts the bodies' bounds along its
+/// first axis cast to `f32` (`mj_SAP`), where they meet, so it pairs them
+/// only with a margin wide enough to part the bounds in `f32`. MuJoCo's
+/// contact count from that state at geom margins 0, 1e-9 and 1e-6.
+#[test]
+fn broadphase_culls_touching_spheres_as_mujoco() {
+    let case = &golden()["touching_spheres"];
+    for (margin, label) in [(0.0, "0.0"), (1e-9, "1e-09"), (1e-6, "1e-06")] {
+        let mut model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        for m in &mut model.geom_margin {
+            *m = margin;
+        }
+        let mut data = model.make_data();
+        for (q, v) in data.qpos.iter_mut().zip(floats(&case["qpos"])) {
+            *q = v;
+        }
+        for (q, v) in data.qvel.iter_mut().zip(floats(&case["qvel"])) {
+            *q = v;
+        }
+        data.forward(&model).expect("forward");
+        assert_eq!(
+            data.ncon,
+            count(&case["ncon"][label]),
+            "margin {margin}: contacts"
+        );
+    }
+}

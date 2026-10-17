@@ -72,10 +72,8 @@ pub(crate) use velocity::mj_subtree_vel;
 // Re-exports for external consumers (derivatives.rs, collision/, constraint/, etc.)
 pub(crate) use actuation::{mj_next_activation, unclamped_next_activation};
 pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
-pub(crate) use position::SweepAndPrune;
 pub(crate) use position::{
-    aabb_from_geom_aabb, closest_point_segment, closest_points_segments,
-    closest_points_segments_parametric,
+    closest_point_segment, closest_points_segments, closest_points_segments_parametric,
 };
 
 use crate::types::flags::{disabled, enabled};

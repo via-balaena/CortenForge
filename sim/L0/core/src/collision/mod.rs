@@ -8,6 +8,7 @@
 //! Corresponds to MuJoCo's `engine_collision_driver.c` (broad-phase dispatch)
 //! and parameter combination from `engine_collision_primitive.c`.
 
+mod broadphase;
 pub(crate) mod flex_collide;
 pub(crate) mod flex_narrow;
 pub(crate) mod flex_self;
@@ -26,14 +27,12 @@ pub(crate) mod sdf_collide;
 // self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
 // module. No pub(crate) re-export needed.
 
-use crate::forward::{SweepAndPrune, aabb_from_geom_aabb};
 use crate::types::{
     Contact, DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE,
     ENABLE_SLEEP, GeomType, Model, SleepState, disabled, enabled,
 };
-use cf_geometry::Aabb;
-use nalgebra::{Point3, Vector3};
 
+use self::broadphase::{body_pairs, filter_sphere};
 use self::hfield::collide_hfield_multi;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
 use self::order::{ListPlace, Lister, flex_place, pair_place};
@@ -124,15 +123,6 @@ pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize
     let a2 = model.geom_conaffinity[geom2];
 
     (c1 & a2) != 0 || (c2 & a1) != 0
-}
-
-/// Whether the sleep filter drops the pair of `geom1` and `geom2`: both
-/// bodies asleep, or one asleep and the other welded to the world.
-fn asleep_pair_skipped(model: &Model, data: &Data, geom1: usize, geom2: usize) -> bool {
-    let (b1, b2) = (model.geom_body[geom1], model.geom_body[geom2]);
-    let asleep1 = data.body_sleep_state[b1] == SleepState::Asleep;
-    let asleep2 = data.body_sleep_state[b2] == SleepState::Asleep;
-    (asleep1 && (asleep2 || model.body_weldid[b2] == 0)) || (asleep2 && model.body_weldid[b1] == 0)
 }
 
 // ============================================================================
@@ -448,28 +438,16 @@ pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
 
 /// Collision detection: populate contacts from geometry pairs.
 ///
-/// Following `MuJoCo`'s collision detection order:
-/// 1. Broad-phase: sweep-and-prune to find candidate pairs (O(n log n))
-/// 2. Check contact affinity (contype/conaffinity bitmasks)
+/// Following `MuJoCo`'s `mj_collision` (`engine_collision_driver.c:264-482`):
+/// 1. Broadphase: the pairs of bodies MuJoCo's `mj_broadphase` passes
+///    (`broadphase`), each pair's geoms in turn
+/// 2. The geom pair's filters: exclusions, explicit pairs, weld groups and
+///    contype/conaffinity, the user's filter, the bounding spheres
 /// 3. Narrow-phase: analytical or GJK/EPA collision detection
-/// 4. Populate data.contacts with contact information
+/// 4. The explicit pairs, the flexes, and the list in MuJoCo's order (`order`)
 ///
 /// This function is called after forward kinematics (`mj_fwd_position`) so
 /// `geom_xpos` and `geom_xmat` are up-to-date.
-///
-/// # Algorithm: Sweep-and-Prune
-///
-/// Unlike spatial hashing which degrades to O(n²) when objects cluster,
-/// sweep-and-prune maintains O(n log n + k) complexity where k is the
-/// number of overlapping pairs. This is robust against clustering scenarios
-/// like a pile of boxes or a humanoid with many self-collision checks.
-///
-/// # Performance
-///
-/// | Scene Size | Complexity | Notes |
-/// |------------|------------|-------|
-/// | Any n | O(n log n + k) | k = overlapping pairs |
-/// | Coherent | O(n + k) | Nearly-sorted input |
 pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // Unconditional reset (S4.1 — matches MuJoCo's mj_collision).
     data.contacts.clear();
@@ -486,106 +464,82 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // Rigid-rigid collision requires at least 2 geoms for a pair.
     // Even with 0 or 1 geoms, flex-vertex-vs-rigid contacts are still possible.
     if model.ngeom >= 2 {
-        // Build AABBs for all geoms from pre-computed local bounds.
-        // O(n) and cache-friendly — no per-type dispatch, no mesh vertex iteration.
-        let has_precomputed = model.geom_aabb.len() == model.ngeom;
-        let aabbs: Vec<Aabb> = (0..model.ngeom)
-            .map(|geom_id| {
-                let local = if has_precomputed {
-                    model.geom_aabb[geom_id]
-                } else {
-                    // Fallback for programmatic models that skip the builder.
-                    // Primitives get correct bounds; mesh/hfield/sdf get conservative ones.
-                    geom_type_to_local_aabb(model.geom_type[geom_id], model.geom_size[geom_id])
-                };
-                let mut aabb =
-                    aabb_from_geom_aabb(local, data.geom_xpos[geom_id], data.geom_xmat[geom_id]);
-                // Expand AABB by geom margin so SAP doesn't reject pairs
-                // that are within margin distance but not overlapping.
-                // S10: When ENABLE_OVERRIDE is active, use half the global override
-                // margin (AABB expansion is per-geom; narrowphase sums both sides).
-                let m = if enabled(model, ENABLE_OVERRIDE) {
-                    0.5 * model.o_margin
-                } else {
-                    model.geom_margin[geom_id]
-                };
-                if m > 0.0 {
-                    let expand = Vector3::new(m, m, m);
-                    aabb = Aabb::new(
-                        Point3::from(Vector3::new(aabb.min.x, aabb.min.y, aabb.min.z) - expand),
-                        Point3::from(Vector3::new(aabb.max.x, aabb.max.y, aabb.max.z) + expand),
-                    );
-                }
-                aabb
-            })
-            .collect();
-
-        // Sweep-and-prune broad-phase: O(n log n) worst case, O(n + k) for coherent scenes
-        let sap = SweepAndPrune::new(aabbs);
-        let candidates = sap.query_pairs();
-
         let sleep_enabled = enabled(model, ENABLE_SLEEP);
         let lister = Lister::new(model);
 
-        // Process candidate pairs
-        // The SAP already filtered to only AABB-overlapping pairs
-        for (geom1, geom2) in candidates {
-            // Affinity check: same body, parent-child, contype/conaffinity
-            if !check_collision_affinity(model, geom1, geom2) {
+        // MuJoCo's broadphase (`broadphase`): pairs of bodies in signature
+        // order, a repeated pair once (`engine_collision_driver.c:307-312`);
+        // within a pair, the first body's geoms in turn against the second's.
+        // A sleeping body is dropped there, with the body-level filters.
+        let body_geoms =
+            |b: usize| model.body_geom_adr[b]..model.body_geom_adr[b] + model.body_geom_num[b];
+        let mut previous = None;
+        for (body1, body2) in body_pairs(model, data) {
+            if previous == Some((body1, body2)) {
                 continue;
             }
+            previous = Some((body1, body2));
+            for geom1 in body_geoms(body1) {
+                for geom2 in body_geoms(body2) {
+                    // Affinity check: exclusions, explicit pairs, weld groups,
+                    // contype/conaffinity.
+                    if !check_collision_affinity(model, geom1, geom2) {
+                        continue;
+                    }
 
-            // §16.5b: a sleeping body meets neither a sleeping body nor a
-            // static one (MuJoCo's `filterBodyPair`, before the narrow phase
-            // and the contact filter, engine_collision_driver.c:160-187).
-            // Sleeping-vs-awake pairs stay: they wake the sleeping tree.
-            if sleep_enabled && asleep_pair_skipped(model, data, geom1, geom2) {
-                continue;
-            }
+                    // DT-79: User contact filter callback (if set).
+                    // Return false to reject this pair.
+                    if let Some(ref cb) = model.cb_contactfilter
+                        && !(cb.0)(model, data, geom1, geom2)
+                    {
+                        continue;
+                    }
 
-            // DT-79: User contact filter callback (if set).
-            // Return false to reject this pair.
-            if let Some(ref cb) = model.cb_contactfilter
-                && !(cb.0)(model, data, geom1, geom2)
-            {
-                continue;
-            }
+                    // Get world-space poses
+                    let pos1 = data.geom_xpos[geom1];
+                    let mat1 = data.geom_xmat[geom1];
+                    let pos2 = data.geom_xpos[geom2];
+                    let mat2 = data.geom_xmat[geom2];
 
-            // Get world-space poses
-            let pos1 = data.geom_xpos[geom1];
-            let mat1 = data.geom_xmat[geom1];
-            let pos2 = data.geom_xpos[geom2];
-            let mat2 = data.geom_xmat[geom2];
+                    // Compute effective margin for this pair.
+                    // S10: assign_margin returns o_margin directly when override active.
+                    let margin =
+                        assign_margin(model, model.geom_margin[geom1] + model.geom_margin[geom2]);
 
-            // Compute effective margin for this pair.
-            // S10: assign_margin returns o_margin directly when override active.
-            let margin = assign_margin(model, model.geom_margin[geom1] + model.geom_margin[geom2]);
+                    // MuJoCo's bounding-sphere filter (`mj_filterSphere`).
+                    if filter_sphere(model, data, geom1, geom2, margin) {
+                        continue;
+                    }
 
-            // Check if either geom is a heightfield — use multi-contact path.
-            // EXCLUDE SDF-Hfield pairs: MuJoCo uses mjc_HFieldSDF (not
-            // mjc_ConvexHField) for that pair, and CortenForge's collide_with_sdf
-            // already handles it.
-            let is_hfield_pair = (model.geom_type[geom1] == GeomType::Hfield
-                || model.geom_type[geom2] == GeomType::Hfield)
-                && model.geom_type[geom1] != GeomType::Sdf
-                && model.geom_type[geom2] != GeomType::Sdf;
+                    // Check if either geom is a heightfield — use multi-contact path.
+                    // EXCLUDE SDF-Hfield pairs: MuJoCo uses mjc_HFieldSDF (not
+                    // mjc_ConvexHField) for that pair, and CortenForge's collide_with_sdf
+                    // already handles it.
+                    let is_hfield_pair = (model.geom_type[geom1] == GeomType::Hfield
+                        || model.geom_type[geom2] == GeomType::Hfield)
+                        && model.geom_type[geom1] != GeomType::Sdf
+                        && model.geom_type[geom2] != GeomType::Sdf;
 
-            if is_hfield_pair {
-                let hf_contacts =
-                    collide_hfield_multi(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-                for mut contact in hf_contacts {
-                    places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
-                    data.contacts.push(contact);
-                    data.ncon += 1;
-                }
-            } else {
-                // Midphase BVH culling is active for mesh pairs and gated by
-                // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
-                let contacts = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-                for mut contact in contacts {
-                    places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
-                    data.contacts.push(contact);
-                    data.ncon += 1;
+                    if is_hfield_pair {
+                        let hf_contacts = collide_hfield_multi(
+                            model, geom1, geom2, pos1, mat1, pos2, mat2, margin,
+                        );
+                        for mut contact in hf_contacts {
+                            places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
+                            data.contacts.push(contact);
+                            data.ncon += 1;
+                        }
+                    } else {
+                        // Midphase BVH culling is active for mesh pairs and gated by
+                        // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
+                        let contacts =
+                            collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
+                        for mut contact in contacts {
+                            places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
+                            data.contacts.push(contact);
+                            data.ncon += 1;
+                        }
+                    }
                 }
             }
         }
@@ -608,12 +562,8 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             // S10: assign_margin returns o_margin when global override active.
             let margin = assign_margin(model, pair.margin);
 
-            // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
-            // geom_rbound is the bounding sphere radius, pre-computed per geom.
-            // For planes, rbound = INFINITY so this check always passes.
-            // Margin is added to match MuJoCo's mj_filterSphere.
-            let dist = (data.geom_xpos[geom1] - data.geom_xpos[geom2]).norm();
-            if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + margin {
+            // MuJoCo's bounding-sphere filter (`mj_filterSphere`).
+            if filter_sphere(model, data, geom1, geom2, margin) {
                 continue;
             }
 
@@ -684,29 +634,6 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         .extend(listed.into_iter().map(|(_, contact)| contact));
 }
 
-/// Compute local-frame AABB from geom type and size (fallback for programmatic models).
-///
-/// Used when `model.geom_aabb` is not populated (models created via `Model::empty()`
-/// without the MJCF builder). For mesh/hfield/sdf, returns a conservative fallback.
-fn geom_type_to_local_aabb(geom_type: GeomType, size: nalgebra::Vector3<f64>) -> [f64; 6] {
-    match geom_type {
-        GeomType::Sphere => {
-            let r = size.x;
-            [0.0, 0.0, 0.0, r, r, r]
-        }
-        GeomType::Capsule | GeomType::Cylinder => {
-            let r = size.x;
-            let h = size.y;
-            [0.0, 0.0, 0.0, r, r, r + h]
-        }
-        GeomType::Plane => [0.0, 0.0, 0.0, 1e6, 1e6, 1e6],
-        GeomType::Mesh => [0.0, 0.0, 0.0, 10.0, 10.0, 10.0],
-        GeomType::Box | GeomType::Ellipsoid | GeomType::Hfield | GeomType::Sdf => {
-            [0.0, 0.0, 0.0, size.x, size.y, size.z]
-        }
-    }
-}
-
 // =============================================================================
 // Unit tests -- contact_param (#24-#27) Batch 1 contact parameter combination
 // =============================================================================
@@ -718,7 +645,7 @@ mod contact_param_tests {
     use super::*;
     use crate::types::GeomType;
     use approx::assert_relative_eq;
-    use nalgebra::UnitQuaternion;
+    use nalgebra::{UnitQuaternion, Vector3};
 
     /// Helper to create a Model with two geoms and configurable contact fields.
     fn make_two_geom_model() -> Model {

@@ -54,7 +54,10 @@ engine_core_constraint.c:996-1019). `box_plane_tumble` holds census document
 `qpos` and `qvel` after each, the box landing corner by corner (mjc_PlaneBox).
 `adhesion` holds an adhesion actuator's moment, from a box with corners
 active, in the gap and past the margin, under each cone (mjTRN_BODY,
-engine_core_smooth.c:1621-1731).
+engine_core_smooth.c:1621-1731). `touching_spheres` holds census document
+31833131's two touching spheres after 7 steps, 1.1e-16 into each other, and
+MuJoCo's contact count from that state at geom margins 0, 1e-9 and 1e-6:
+its broadphase pairs them only with the margin.
 """
 
 import json
@@ -399,6 +402,45 @@ def adhesion_cases():
     return out
 
 
+# Census document 31833131 (collision_primitives.rs's `sphere_sphere_touch`):
+# two touching free spheres moving together under the census's first
+# excitation, 1.1e-16 into each other after 7 steps. MuJoCo's broadphase
+# sorts the bodies' bounds along its first axis cast to float, so bounds
+# that meet there pair the bodies only with a margin (mj_SAP,
+# engine_collision_driver.c:1021-1114).
+TOUCHING_SPHERES_XML = """<mujoco model="sphere_sphere_touch">
+<option gravity="0 0 0" timestep="0.001"/>
+<worldbody>
+<body name="s1" pos="0 0 0"><joint type="free"/><geom type="sphere" size="0.5"/></body>
+<body name="s2" pos="0.8 0 0"><joint type="free"/><geom type="sphere" size="0.3"/></body>
+</worldbody></mujoco>"""
+
+
+def touching_spheres():
+    m = mujoco.MjModel.from_xml_string(TOUCHING_SPHERES_XML)
+    d = mujoco.MjData(m)
+    for i in range(m.nv):
+        d.qvel[i] = 0.1 * (1 + i % 3)
+    for _ in range(7):
+        mujoco.mj_step(m, d)
+    gap = float(np.linalg.norm(d.geom_xpos[1] - d.geom_xpos[0]) - 0.8)
+    if not gap < 0:
+        sys.exit(f"touching_spheres: the spheres do not overlap ({gap})")
+    ncon = {}
+    for margin in (0.0, 1e-9, 1e-6):
+        mm = mujoco.MjModel.from_xml_string(TOUCHING_SPHERES_XML)
+        mm.geom_margin[:] = margin
+        dd = mujoco.MjData(mm)
+        dd.qpos[:] = d.qpos
+        dd.qvel[:] = d.qvel
+        mujoco.mj_forward(mm, dd)
+        ncon[repr(margin)] = int(dd.ncon)
+    if ncon["0.0"] != 0 or ncon["1e-06"] != 1:
+        sys.exit(f"touching_spheres: MuJoCo's contacts {ncon}")
+    return {"xml": TOUCHING_SPHERES_XML, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
+            "overlap": -gap, "ncon": ncon}
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -415,7 +457,8 @@ def main():
            "frame": finite_or_string(frame_cases()),
            "inclusion": finite_or_string(inclusion_cases()),
            "box_plane_tumble": finite_or_string(box_plane_tumble()),
-           "adhesion": finite_or_string(adhesion_cases())}
+           "adhesion": finite_or_string(adhesion_cases()),
+           "touching_spheres": finite_or_string(touching_spheres())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
     print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "
