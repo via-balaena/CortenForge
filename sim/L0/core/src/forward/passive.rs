@@ -351,6 +351,8 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     // callback and passive plugins still run, unless springs and dampers are
     // both disabled (:658-661).
     if model.nv == 0 {
+        // No tendon force is made: `ten_force` is the force the pass applies.
+        data.ten_force.fill(0.0);
         if model.disableflags & DISABLE_SPRING == 0 || model.disableflags & DISABLE_DAMPER == 0 {
             mj_passive_user(model, data);
         }
@@ -361,8 +363,9 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     let sleep_filter = sleep_enabled && data.nv_awake < model.nv;
 
     // Zero all passive force vectors (S4.7a).
-    // When sleep is active, only zero awake DOFs: a sleeping DOF keeps the values of
-    // its last awake pass, as MuJoCo's mj_passive clears the awake DOFs only.
+    // When sleep is active, only zero awake DOFs, as MuJoCo's mj_passive
+    // (`engine_passive.c:645-649`): a sleeping DOF keeps what it held, and an
+    // awake tendon over it adds its force there on every pass.
     if sleep_filter {
         for &dof in &data.dof_awake_ind[..data.nv_awake] {
             data.qfrc_passive[dof] = 0.0;
@@ -382,8 +385,9 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     // No longer computed in passive forces.
 
     // S4.7a: When both spring AND damper are disabled, skip all sub-functions.
-    // Force vectors are already zeroed above.
+    // Force vectors are already zeroed above, and no tendon force is made.
     if model.disableflags & DISABLE_SPRING != 0 && model.disableflags & DISABLE_DAMPER != 0 {
+        data.ten_force.fill(0.0);
         return;
     }
 
@@ -450,7 +454,7 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
         // NOTE: In ImplicitSpringDamper mode, tendon spring/damper forces are
         // handled implicitly in mj_fwd_acceleration_implicit() via non-diagonal
-        // K_tendon and D_tendon matrices (DT-35). ten_force[t] is always populated
+        // K_tendon and D_tendon matrices (DT-35). ten_force[t] is populated
         // for diagnostic purposes, but the explicit force application is
         // skipped to avoid double-counting, matching the joint spring/damper pattern.
 

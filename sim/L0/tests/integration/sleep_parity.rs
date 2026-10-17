@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use sim_core::{
-    BodyWrench, ENABLE_SLEEP, MakeDataError, MjStage, Model, ResetError, SleepPolicy, SleepState,
-    StepError,
+    BodyWrench, DISABLE_DAMPER, DISABLE_SPRING, ENABLE_SLEEP, MakeDataError, MjStage, Model,
+    ResetError, SleepPolicy, SleepState, StepError,
 };
 use sim_mjcf::load_model;
 
@@ -1408,10 +1408,10 @@ fn a_tendon_spring_energy_is_skipped_as_mujoco() {
 /// while a tree sleeps, as MuJoCo's `mj_springdamper` skips it,
 /// `engine_passive.c:123`, `:446-451`). On the zero-row scene with sleep
 /// enabled, with every tree awake and with tree b asleep, it is the same
-/// model's with sleep disabled, bit for bit; on the static one, so
-/// with every tree awake, and 0 with tree b asleep. Before, a tendon whose
-/// row reached no awake dof was skipped whenever sleep was enabled and
-/// kept the force it held (7 here).
+/// model's with sleep disabled, bit for bit; on the static one it is too
+/// with every tree awake, and is 0 with tree b asleep. Before, a tendon
+/// whose row reached no awake dof was skipped whenever sleep was enabled
+/// and kept the force it held (7 here).
 #[test]
 fn ten_force_is_the_force_the_passive_pass_applies() {
     for (name, xml) in [("zero row", ZERO_ROW_TENDON), ("static", STATIC_TENDON)] {
@@ -1434,4 +1434,115 @@ fn ten_force_is_the_force_the_passive_pass_applies() {
             "{name}, tree b asleep: ten_force {asleep}"
         );
     }
+}
+
+/// A fixed tendon over tree a's joint (coefficient 0) and tree b's
+/// (coefficient 1), its spring stretched by 0.2 at the reset, tree b asleep
+/// from it. The stiffness is 0 here: MuJoCo refuses a tree asleep at load
+/// beside a two-tree tendon with stiffness or damping, so it is set after
+/// loading; energy enabled.
+const ONE_SIDED_TENDON: &str = r#"
+<mujoco>
+  <option gravity="0 0 0"><flag sleep="enable" energy="enable"/></option>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="1 0 1" sleep="init">
+      <joint name="jb" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.2"><joint joint="ja" coef="0"/><joint joint="jb" coef="1"/></fixed>
+  </tendon>
+</mujoco>"#;
+
+/// An awake tendon whose row reaches only a sleeping dof applies its force
+/// there, as MuJoCo's `mj_springdamper` (`engine_passive.c:446-451`, the
+/// tendon awake with one of its two trees), and the sleeping dof's
+/// `qfrc_spring`, which the pass does not clear (`:645-649`), gains it on
+/// every pass: MuJoCo's 10 after `mj_makeData`, then 20, 30 and 40 after
+/// three forwards, with `qfrc_passive` 10, summed over the awake dofs only
+/// (`:677`), and `energy_potential` 1.0 (measured on the oracle; 10 and 1.0
+/// with sleep disabled). Before, a tendon whose row reached no awake dof
+/// was skipped: no force at the sleeping dof, and no energy.
+#[test]
+fn an_awake_tendon_over_a_sleeping_dof_applies_its_force_there_as_mujoco() {
+    let mut model = load_model(ONE_SIDED_TENDON).expect("load");
+    model.tendon_stiffness[0] = 50.0;
+    let mut data = model.make_data();
+    assert_eq!(data.tree_awake, [true, false], "tree a awake, b asleep");
+    assert_eq!(data.qfrc_spring.as_slice(), [0.0, 10.0], "after make_data");
+    for want in [20.0, 30.0, 40.0] {
+        data.forward(&model).expect("forward");
+        assert_eq!(data.ten_J[0].as_slice(), [0.0, 1.0], "the tendon's row");
+        assert_eq!(data.qfrc_spring.as_slice(), [0.0, want], "qfrc_spring");
+        assert_eq!(data.qfrc_passive.as_slice(), [0.0, 10.0], "qfrc_passive");
+        assert_eq!(data.energy_potential, 1.0, "energy_potential");
+    }
+    model.enableflags &= !ENABLE_SLEEP;
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    data.forward(&model).expect("forward");
+    assert_eq!(data.qfrc_spring.as_slice(), [0.0, 10.0], "sleep disabled");
+    assert_eq!(data.energy_potential, 1.0, "sleep disabled");
+}
+
+/// A spatial tendon between two world sites in a model with no dofs, its
+/// spring engaged; energy enabled.
+const NO_DOF_TENDON: &str = r#"
+<mujoco>
+  <option><flag energy="enable"/></option>
+  <worldbody>
+    <site name="w" pos="0.3 0.5 1"/>
+    <site name="w2" pos="0 -0.5 2"/>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="50" springlength="0.2 0.3"><site site="w"/><site site="w2"/></spatial>
+  </tendon>
+</mujoco>"#;
+
+/// Where the passive pass makes no tendon force, `ten_force` is 0: with
+/// springs and dampers both disabled, and in a model with no dofs, where
+/// the pass returns before its tendons. `ten_force` is set to 7 before the
+/// forward. The no-dof model's `energy_potential` is MuJoCo's
+/// 32.81475155779856 (measured on the oracle). Before, both returns left
+/// `ten_force` as it was (7 here).
+#[test]
+fn ten_force_is_0_where_the_passive_pass_makes_no_force() {
+    for sleep in [true, false] {
+        let mut model = load_model(ZERO_ROW_TENDON).expect("load");
+        model.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+        if !sleep {
+            model.enableflags &= !ENABLE_SLEEP;
+        }
+        let mut data = model.make_data();
+        data.ten_force[0] = 7.0;
+        data.forward(&model).expect("forward");
+        assert_eq!(
+            data.ten_force[0].to_bits(),
+            0.0_f64.to_bits(),
+            "springs and dampers disabled, sleep {sleep}: ten_force {}",
+            data.ten_force[0]
+        );
+    }
+    let model = load_model(NO_DOF_TENDON).expect("load");
+    assert_eq!((model.nv, model.ntendon), (0, 1), "no dofs, one tendon");
+    let mut data = model.make_data();
+    data.ten_force[0] = 7.0;
+    data.forward(&model).expect("forward");
+    assert_eq!(
+        data.ten_force[0].to_bits(),
+        0.0_f64.to_bits(),
+        "no dofs: ten_force {}",
+        data.ten_force[0]
+    );
+    let want = 32.81475155779856;
+    assert!(
+        (data.energy_potential - want).abs() <= 1e-12 * want,
+        "no dofs: energy_potential {}, MuJoCo's {want}",
+        data.energy_potential
+    );
 }

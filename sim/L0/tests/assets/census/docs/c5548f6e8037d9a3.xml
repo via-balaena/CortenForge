@@ -1,0 +1,10 @@
+<mujoco>
+  <option><flag energy="enable"/></option>
+  <worldbody>
+    <site name="w" pos="0.3 0.5 1"/>
+    <site name="w2" pos="0 -0.5 2"/>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="50" springlength="0.2 0.3"><site site="w"/><site site="w2"/></spatial>
+  </tendon>
+</mujoco>

@@ -443,7 +443,7 @@ ten_force[t] = frc_spring
 
 qfrc_passive[dof] += ten_J[t][dof] * ten_force    # J^T
 ```
-Note: in `ImplicitSpringDamper` mode, `ten_force[t]` is always computed for
+Note: in `ImplicitSpringDamper` mode, `ten_force[t]` is computed for
 diagnostic purposes, but the explicit `qfrc_passive` application is skipped —
 the forces are instead handled implicitly via non-diagonal `K_tendon = k·J^T·J`
 and `D_tendon = b·J^T·J` matrices in `mj_fwd_acceleration_implicit()` and

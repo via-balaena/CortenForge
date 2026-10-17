@@ -303,7 +303,8 @@ pub struct Data {
     pub ten_velocity: Vec<f64>,
     /// Tendon forces from the passive pass's spring and damper (length
     /// `ntendon`); 0 for a tendon it skips (asleep, or static while a tree
-    /// sleeps).
+    /// sleeps), and for every tendon when it makes none (springs and dampers
+    /// both disabled, or no dofs).
     pub ten_force: Vec<f64>,
     /// Tendon Jacobian: d(length)/d(qpos) (sparse, length varies).
     /// Maps tendon length changes to joint velocities.
