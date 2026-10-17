@@ -69,7 +69,9 @@ impl Data {
     /// of other dimensions or an input array was resized;
     /// [`StepError::UnsupportedInverseDiscrete`] with `ENABLE_INVDISCRETE`
     /// under RK4 (MuJoCo's refusal) or ImplicitSpringDamper. After collision,
-    /// with sleep enabled, [`StepError::ContactWithSleepingGeom`] for a
+    /// [`StepError::UndefinedContactFrame`] for a contact whose normal is
+    /// shorter than 0.5, as MuJoCo's `mju_makeFrame` stops; and, with sleep
+    /// enabled, [`StepError::ContactWithSleepingGeom`] for a
     /// contact that touches a sleeping tree, which this position stage does
     /// not wake, as MuJoCo's `mj_inverse` stops there; a forward pass at the
     /// state first wakes it.

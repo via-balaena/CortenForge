@@ -976,6 +976,17 @@ pub enum StepError {
         /// The integrator.
         integrator: Integrator,
     },
+    /// A contact's normal, as its collision function wrote it, is shorter
+    /// than 0.5: MuJoCo 3.5.0's `mju_makeFrame` stops there ("xaxis of
+    /// contact frame undefined", `engine_util_spatial.c:511-513`, which
+    /// `mj_setContact` calls for every contact), so the position stage
+    /// refuses it after collision. A [`PhysicsShape`](crate::PhysicsShape)
+    /// whose `gradient` is that short writes one. A normal that is not
+    /// finite passes MuJoCo's test and is not refused.
+    UndefinedContactFrame {
+        /// The contact, an index into `Data::contacts`.
+        contact: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -1020,6 +1031,10 @@ impl std::fmt::Display for StepError {
             Self::UnsupportedInverseDiscrete { integrator } => write!(
                 f,
                 "discrete inverse dynamics is not supported by {integrator:?} integrator"
+            ),
+            Self::UndefinedContactFrame { contact } => write!(
+                f,
+                "contact {contact}: xaxis of contact frame undefined (normal shorter than 0.5)"
             ),
         }
     }

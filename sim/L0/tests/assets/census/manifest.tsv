@@ -1748,3 +1748,4 @@ aa8cad299762278f	sim/L0/tests/integration/derivatives.rs:4892
 fcdd943a686639d0	sim/L0/tests/integration/sleep_parity.rs:1296
 7c973d9ff749f189	sim/L0/tests/integration/sleep_parity.rs:1444
 c5548f6e8037d9a3	sim/L0/tests/integration/sleep_parity.rs:1495
+5448e128c37ac0ba	sim/L0/tests/integration/collision_primitives.rs:1832

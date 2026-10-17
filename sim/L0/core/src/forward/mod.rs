@@ -155,8 +155,10 @@ impl Data {
     /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self`
     /// was made by a model of other dimensions or an input array was resized,
-    /// and `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active.
+    /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
+    /// tendon equality is active, and `Err(StepError::UndefinedContactFrame)`
+    /// if a contact's normal, as its collision function wrote it, is shorter
+    /// than 0.5.
     pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;
@@ -205,8 +207,10 @@ impl Data {
     ///
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
-    /// was resized, or if forward acceleration computation fails (e.g.,
-    /// `CholeskyFailed` under the implicit spring-damper integrator).
+    /// was resized, with `ENABLE_FWDINV` under an integrator the discrete
+    /// inverse dynamics refuse (`UnsupportedInverseDiscrete`), or if forward
+    /// acceleration computation fails (e.g., `CholeskyFailed` under the
+    /// implicit spring-damper integrator).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         if enabled(model, ENABLE_FWDINV) {
@@ -251,6 +255,10 @@ impl Data {
     ///   was resized (`DataShapeMismatch`)
     /// - Sleep is enabled and a tendon equality is active
     ///   (`TendonEqualityWithSleep`)
+    /// - `ENABLE_FWDINV` is set under an integrator the discrete inverse
+    ///   dynamics refuse (`UnsupportedInverseDiscrete`)
+    /// - A contact's normal, as its collision function wrote it, is shorter
+    ///   than 0.5 (`UndefinedContactFrame`)
     ///
     /// NaN/divergence in qpos, qvel, or qacc triggers auto-reset (matching
     /// MuJoCo). Disable with `DISABLE_AUTORESET`. Use `data.divergence_detected()`
@@ -332,7 +340,9 @@ impl Data {
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
     /// made by a model of other dimensions or an input array was resized,
     /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active, and `Err(StepError::CholeskyFailed)` under
+    /// tendon equality is active, `Err(StepError::UndefinedContactFrame)` if a
+    /// contact's normal, as its collision function wrote it, is shorter than
+    /// 0.5, and `Err(StepError::CholeskyFailed)` under
     /// the implicit spring-damper integrator when its modified mass matrix is
     /// not positive definite. The implicit and implicitfast integrators'
     /// factor is the integrator's (`integrate`), not this pass's.
@@ -382,7 +392,8 @@ impl Data {
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
     /// was resized, if `skipstage` is `MjStage::None` with sleep enabled and a
-    /// tendon equality active, or if the implicit spring-damper integrator's
+    /// tendon equality active or a contact's normal shorter than 0.5
+    /// (`UndefinedContactFrame`), or if the implicit spring-damper integrator's
     /// factorization fails (`CholeskyFailed`).
     pub fn forward_skip(
         &mut self,
@@ -450,9 +461,11 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// In [`Pass::Inverse`] only, after collision:
-    /// [`StepError::ContactWithSleepingGeom`] ([`check::check_contacts_awake`]),
-    /// which the forward pass's contact wake leaves nothing to refuse.
+    /// After each collision, [`StepError::UndefinedContactFrame`]
+    /// ([`check::check_contact_frames`]). In [`Pass::Inverse`] only, after
+    /// collision: [`StepError::ContactWithSleepingGeom`]
+    /// ([`check::check_contacts_awake`]), which the forward pass's contact
+    /// wake leaves nothing to refuse.
     pub(crate) fn position_stage(
         &mut self,
         model: &Model,
@@ -480,12 +493,14 @@ impl Data {
         }
 
         crate::collision::mj_collision(model, self);
+        check::check_contact_frames(self)?;
 
         // Wake-on-contact: if sleeping body touched awake body, wake it
         // and re-run collision for the newly-awake tree's geoms (§16.5c)
         if wakes && crate::island::mj_wake_collision(model, self) {
             crate::island::mj_update_sleep_arrays(model, self);
             crate::collision::mj_collision(model, self);
+            check::check_contact_frames(self)?;
         }
 
         // §16.13.3: Equality constraint wake — cross-tree equality coupling

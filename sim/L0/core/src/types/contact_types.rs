@@ -221,7 +221,7 @@ impl Contact {
         let depth = if depth.is_finite() { depth } else { 0.0 };
 
         // The normal normalised and the frame completed, as MuJoCo's
-        // mj_setContact (handles NaN/zero normals internally).
+        // mj_setContact (one shorter than 0.5 is kept, for the step to refuse).
         let (normal, frame) = make_frame(&normal, &Vector3::zeros());
 
         Self {
@@ -359,15 +359,18 @@ impl Contact {
 /// the second the normal × the first. Returns the normal and the tangents.
 ///
 /// MuJoCo stops on a normal shorter than 0.5 ("xaxis of contact frame
-/// undefined"). A normal that is not finite or is shorter than 1e-10 is kept
-/// as given, with the tangents `(1, 0, 0)` and `(0, 1, 0)`; one of length
-/// 1e-10 to 0.5 is normalised (registry `D-FRAME-UNDEFINED`).
+/// undefined", `engine_util_spatial.c:511-513`). Such a normal is kept as
+/// written, with the tangents `(1, 0, 0)` and `(0, 1, 0)`, and the position
+/// stage refuses it
+/// ([`StepError::UndefinedContactFrame`](crate::StepError::UndefinedContactFrame)).
+/// A normal that is not finite passes that test, as MuJoCo's does, and its
+/// frame is not finite either.
 #[must_use]
 pub fn make_frame(normal: &Vector3<f64>, hint: &Vector3<f64>) -> (Vector3<f64>, [Vector3<f64>; 2]) {
     let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let mut n = [normal.x, normal.y, normal.z];
     let length = dot(&n, &n).sqrt();
-    if !length.is_finite() || length < 1e-10 {
+    if length < 0.5 {
         return (*normal, [Vector3::x(), Vector3::y()]);
     }
     normalize3(&mut n);
@@ -429,14 +432,40 @@ mod tests {
         );
     }
 
-    /// Registry `D-FRAME-UNDEFINED`: where MuJoCo stops, a zero or non-finite
-    /// normal is kept, with the tangents (1, 0, 0) and (0, 1, 0).
+    /// Where MuJoCo's `mju_makeFrame` stops, a normal shorter than 0.5 is kept
+    /// as written, for the position stage to refuse; from 0.5 on it is
+    /// normalised.
     #[test]
-    fn an_undefined_normal_keeps_the_default_frame() {
-        for normal in [Vector3::zeros(), Vector3::new(f64::NAN, 0.0, 1.0)] {
+    fn a_normal_shorter_than_half_is_kept_as_written() {
+        for normal in [
+            Vector3::zeros(),
+            Vector3::new(0.0, 0.3, 0.0),
+            Vector3::new(0.0, 0.0, 0.499_999),
+        ] {
             let (n, frame) = make_frame(&normal, &Vector3::zeros());
-            assert!(n == normal || n.x.is_nan(), "{n:?}");
+            assert_eq!(n, normal);
             assert_eq!(frame, [Vector3::x(), Vector3::y()]);
+        }
+        assert_eq!(
+            make_frame(&Vector3::new(0.0, 0.0, 0.5), &Vector3::zeros()).0,
+            Vector3::z()
+        );
+    }
+
+    /// A normal that is not finite passes MuJoCo's test (`NaN < 0.5` is
+    /// false), and `mju_normalize3` and `mju_makeFrame`'s arithmetic give a
+    /// frame that is not finite.
+    #[test]
+    fn a_normal_that_is_not_finite_gives_a_frame_that_is_not() {
+        for normal in [
+            Vector3::new(f64::NAN, 0.0, 1.0),
+            Vector3::new(f64::INFINITY, 0.0, 0.0),
+        ] {
+            let (n, frame) = make_frame(&normal, &Vector3::zeros());
+            assert!(n.x.is_nan(), "{n:?}");
+            for t in frame {
+                assert!(t.iter().any(|x| x.is_nan()), "{t:?}");
+            }
         }
     }
 }

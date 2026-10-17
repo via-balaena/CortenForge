@@ -93,6 +93,25 @@ pub fn check_contacts_awake(model: &Model, data: &Data) -> Result<(), StepError>
     Ok(())
 }
 
+/// The check the position stage makes after each collision: MuJoCo 3.5.0's
+/// `mju_makeFrame` stops on a contact normal shorter than 0.5 ("xaxis of
+/// contact frame undefined", `engine_util_spatial.c:511-513`, from
+/// `mj_setContact`), which [`make_frame`](crate::types::make_frame) keeps as
+/// written.
+///
+/// # Errors
+///
+/// [`StepError::UndefinedContactFrame`] naming the first such contact.
+pub fn check_contact_frames(data: &Data) -> Result<(), StepError> {
+    match data.contacts[..data.ncon]
+        .iter()
+        .position(|c| c.normal.norm() < 0.5)
+    {
+        Some(contact) => Err(StepError::UndefinedContactFrame { contact }),
+        None => Ok(()),
+    }
+}
+
 /// The check the calls that run the position stage make before any work
 /// (`step`, `step1`, `forward`, `forward_skip` from `MjStage::None`, the
 /// transition finite differences, the init-sleep reset): MuJoCo 3.5.0's
