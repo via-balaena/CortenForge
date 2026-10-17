@@ -1751,3 +1751,4 @@ c5548f6e8037d9a3	sim/L0/tests/integration/sleep_parity.rs:1495
 5448e128c37ac0ba	sim/L0/tests/integration/collision_primitives.rs:1832
 f1174cb2e12069ae	sim/L0/tests/integration/rk4_sleep.rs:306
 3f2f458613033e63	sim/L0/tests/integration/collision_primitives.rs:1898
+3e2816c5fef90b61	sim/L0/tests/integration/tendon_implicit.rs:1197

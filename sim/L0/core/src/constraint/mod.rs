@@ -332,11 +332,21 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     }
 
     // DT-35: Override data.qacc_smooth and data.qfrc_smooth with implicit
-    // versions so Newton (and other consumers) see the correct values.
+    // versions so Newton (and other consumers) see the correct values, at the
+    // awake dofs: a sleeping dof keeps the values of its last awake pass, as
+    // `compute_qacc_smooth` keeps them (the implicit forces start from the
+    // kept `qfrc_smooth`, so overriding a sleeping dof added its spring again
+    // on every pass).
     if implicit_sd {
-        data.qacc_smooth = qacc_smooth_impl.clone();
-        if let Some(ref qfrc) = qfrc_impl_owned {
-            data.qfrc_smooth = qfrc.clone();
+        let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv;
+        for dof in 0..model.nv {
+            if sleep_filter && !data.tree_awake[model.dof_treeid[dof]] {
+                continue;
+            }
+            data.qacc_smooth[dof] = qacc_smooth_impl[dof];
+            if let Some(ref qfrc) = qfrc_impl_owned {
+                data.qfrc_smooth[dof] = qfrc[dof];
+            }
         }
     }
 

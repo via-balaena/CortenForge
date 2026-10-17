@@ -1,0 +1,5 @@
+<mujoco><option integrator="implicitspringdamper" timestep="0.002"><flag sleep="enable"/></option>
+<worldbody>
+<body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/></body>
+<body name="b" pos="1 0 1" sleep="init"><joint name="jb" type="hinge" axis="0 1 0" stiffness="10" springref="0.5"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/></body>
+</worldbody></mujoco>

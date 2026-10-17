@@ -1183,3 +1183,40 @@ fn implicitspringdamper_under_sleep_steps_the_awake_tree_on_its_own() {
         }
     }
 }
+
+/// A hinge asleep from the reset with a joint spring (stiffness 10, springref
+/// 0.5°), beside an awake one: under ImplicitSpringDamper its `qfrc_smooth`
+/// and `qacc_smooth` keep the values of its last awake pass, as under Euler,
+/// bit for bit over three steps (0, from the reset). Before, the implicit
+/// override wrote every dof, and the implicit forces start from the kept
+/// `qfrc_smooth`, so each pass added the spring again: `qfrc_smooth` 0.0873,
+/// 0.1745, 0.2618 and `qacc_smooth` 2.77, 5.53, 8.30 (Euler's 0).
+#[test]
+fn implicitspringdamper_keeps_a_sleeping_dofs_smooth_force_as_euler_does() {
+    let isd = sim_mjcf::load_model(
+        r#"<mujoco><option integrator="implicitspringdamper" timestep="0.002"><flag sleep="enable"/></option>
+<worldbody>
+<body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/></body>
+<body name="b" pos="1 0 1" sleep="init"><joint name="jb" type="hinge" axis="0 1 0" stiffness="10" springref="0.5"/><geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/></body>
+</worldbody></mujoco>"#,
+    )
+    .unwrap();
+    let mut euler = isd.clone();
+    euler.integrator = sim_core::Integrator::Euler;
+    let mut runs = Vec::new();
+    for model in [&isd, &euler] {
+        let mut data = model.make_data();
+        assert!(!data.tree_awake[1], "{:?}: b is awake", model.integrator);
+        let mut kept = Vec::new();
+        for _ in 0..3 {
+            data.step(model).unwrap();
+            assert!(!data.tree_awake[1], "{:?}: b woke", model.integrator);
+            kept.push((data.qfrc_smooth[1].to_bits(), data.qacc_smooth[1].to_bits()));
+        }
+        runs.push(kept);
+    }
+    assert_eq!(
+        runs[0], runs[1],
+        "the sleeping hinge's (qfrc_smooth, qacc_smooth)"
+    );
+}
