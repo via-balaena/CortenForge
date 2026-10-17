@@ -94,8 +94,8 @@ fn rests_as_mujoco(name: &str, z_tol: f64, contact_tol: f64) {
 // contact was the first geom's support against the normal: a corner of the
 // slab's bottom face, or the body's top. Each body fell through its slab.
 // MuJoCo's EPA is not ported, so contacts on a curved surface agree within
-// the two polytopes' convergence, not bitwise. The bounds sit a decade or
-// more above what was measured.
+// the two polytopes' convergence, not bitwise. Each bound is 2.3 to 62
+// times what was measured, which each test's doc gives.
 
 /// A sphere-shaped ellipsoid on a box slab. Measured: height 1.4e-6, contact
 /// 1.6e-14.
