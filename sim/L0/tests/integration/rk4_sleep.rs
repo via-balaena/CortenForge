@@ -241,34 +241,48 @@ fn rk4_sleep_step_evaluates_the_start_state() {
     assert!(apart > 1e-5, "MuJoCo's: {apart}");
 }
 
-/// A tree woken during an RK4 stage is held at the step's start until the
-/// step ends: a box asleep from the start wakes as a falling sphere reaches
-/// it, after the step MuJoCo's wakes; a forward pass at that step's start
-/// state leaves it asleep, so a stage woke it; after the step its position
-/// and velocity are the start's, bit for bit, and the next step moves it.
+/// A tree woken during an RK4 stage takes, from that stage on, every
+/// stage's acceleration, as MuJoCo's, whose stages hold no tree: a box
+/// asleep from the start with a sphere falling onto it, and a hinged capsule
+/// asleep from the start, held by a spatial and a fixed tendon with springs,
+/// with a sphere falling onto it. Each wakes at MuJoCo's step, where a
+/// forward pass at the step's start state leaves it asleep (so a stage woke
+/// it), and `qpos` and `qvel` are MuJoCo's within 1e-12 after every step to
+/// 20 past it (measured: 2.2e-16 and 6.2e-15). Before (ledger L169), the
+/// woken tree was held at the step's start until the step ended: the
+/// capsule's hinge kept `qvel` 0 where MuJoCo's took 0.241.
 #[test]
-fn rk4_tree_woken_during_a_stage_holds_until_the_step_ends() {
-    let case = &golden()["stage_wake"];
-    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
-    let wake = count(&case["wake"]);
-    let mut data = model.make_data();
-    for k in 0..wake {
-        data.step(&model).expect("step");
-        assert!(data.tree_asleep[0] >= 0, "the box asleep after step {k}");
+fn rk4_tree_woken_during_a_stage_steps_as_mujoco() {
+    for name in ["stage_wake", "stage_wake_hinge"] {
+        let case = &golden()[name];
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let wake = count(&case["wake"]);
+        let mut data = model.make_data();
+        for (k, want) in case["traj"].as_array().expect("traj").iter().enumerate() {
+            if k == wake {
+                let mut probe = data.clone();
+                probe.forward(&model).expect("forward");
+                assert!(
+                    probe.tree_asleep[0] >= 0,
+                    "{name}: the start state wakes nothing"
+                );
+            }
+            data.step(&model).expect("step");
+            assert_eq!(
+                data.tree_asleep[0] < 0,
+                k >= wake,
+                "{name}: tree 0 awake after step {k}"
+            );
+            for (field, ours) in [("qpos", &data.qpos), ("qvel", &data.qvel)] {
+                for (i, (a, b)) in ours.iter().zip(floats(&want[field])).enumerate() {
+                    assert!(
+                        (a - b).abs() <= 1e-12,
+                        "{name} step {k}: {field}[{i}] {a}, MuJoCo {b}"
+                    );
+                }
+            }
+        }
     }
-    let start = data.clone();
-    let mut probe = data.clone();
-    probe.forward(&model).expect("forward");
-    assert!(probe.tree_asleep[0] >= 0, "the start state wakes nothing");
-    data.step(&model).expect("step");
-    assert!(data.tree_asleep[0] < 0, "a stage woke the box");
-    assert_eq!(data.qpos.as_slice()[..7], start.qpos.as_slice()[..7]);
-    assert_eq!(data.qvel.as_slice()[..6], start.qvel.as_slice()[..6]);
-    data.step(&model).expect("step");
-    assert!(
-        data.qvel.as_slice()[..6].iter().any(|&v| v != 0.0),
-        "the next step moves the box"
-    );
 }
 
 /// MuJoCo with both wakes taken out of it (after every step, a sleeping
