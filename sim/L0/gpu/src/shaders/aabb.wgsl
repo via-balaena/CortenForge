@@ -3,8 +3,6 @@
 // One thread per geom. Reads FK-computed geom_xpos and geom_xmat,
 // computes axis-aligned bounding box in world frame.
 //
-// Matches CPU: aabb_from_geom_aabb() in forward/position.rs
-//
 // Output: geom_aabb[g*2+0] = min (vec4, w=0)
 //         geom_aabb[g*2+1] = max (vec4, w=0)
 

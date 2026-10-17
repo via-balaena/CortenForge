@@ -445,3 +445,63 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
         );
     }
 }
+
+/// Two height fields, one reaching farther above its origin than below and
+/// one farther below: each bounding radius is MuJoCo's, from its size,
+/// sqrt(x² + y² + max(top², base²)) (`mjCGeom::GetRBound`). Measured: equal.
+/// The scene's plane and pyramid mesh are not compared: a plane's radius is
+/// infinite here, MuJoCo's 0 (ledger L173), and the mesh's is about its
+/// authored frame, where MuJoCo's is about the mesh's centre of mass (book
+/// Rigid-loading L35 adopts MuJoCo's mesh frame).
+#[test]
+fn height_field_bounds_are_mujocos() {
+    let case = &golden()["bounds"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let want = floats(&case["rbound"]);
+    for g in [1, 2] {
+        assert_eq!(model.geom_type[g], sim_core::GeomType::Hfield);
+        assert_eq!(
+            model.geom_rbound[g].to_bits(),
+            want[g].to_bits(),
+            "geom {g}: rbound {}, MuJoCo {}",
+            model.geom_rbound[g],
+            want[g]
+        );
+    }
+}
+
+/// A pyramid mesh, its apex 0.01 into a plane. The geom's origin is 4.49
+/// above the plane in MuJoCo's mesh frame (the centroid) and 5.99 in
+/// sim-mjcf's (the authored frame; book Rigid-loading L35): farther than the
+/// half-diagonal of the pyramid's box (3.20), within its bounding radius
+/// about the origin (MuJoCo's 4.64, ours 6.10), so the bounding-sphere filter
+/// passes the pair, as MuJoCo's. Our contacts after `forward` against
+/// MuJoCo's: the same geoms in order, each distance within 1e-13 (measured
+/// 6.2e-15). The position is not compared: MuJoCo's is midway between the
+/// apex and the plane, ours at the apex (book P51).
+#[test]
+fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
+    let case = &golden()["bounds"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let want = case["contacts"].as_array().expect("contacts");
+    let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+    let theirs: Vec<[usize; 2]> = want
+        .iter()
+        .map(|w| {
+            let g = floats(&w["geom"]);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            [g[0] as usize, g[1] as usize]
+        })
+        .collect();
+    assert_eq!(ours, theirs, "contact geoms in order");
+    for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
+        let dist = w["dist"].as_f64().expect("dist");
+        assert!(
+            (-c.depth - dist).abs() <= 1e-13,
+            "contact {k}: depth {}, MuJoCo's dist {dist}",
+            c.depth
+        );
+    }
+}

@@ -950,7 +950,7 @@ fn generate(
     emit_linkages(mechanism, &mut model, &part_to_body)?;
 
     // Bounding geometry
-    compute_geom_bounding(&mut model);
+    model.compute_geom_bounding_radii();
 
     // Kinematic tree enumeration
     discover_kinematic_trees(&mut model);
@@ -1086,86 +1086,6 @@ fn build_site_map(tendons: &[TendonDef]) -> HashMap<&str, Vec<(String, [f64; 3])
         }
     }
     map
-}
-
-/// Compute bounding radii and AABBs for all geoms.
-fn compute_geom_bounding(model: &mut Model) {
-    for geom_id in 0..model.ngeom {
-        let geom_type = model.geom_type[geom_id];
-        let size = model.geom_size[geom_id];
-
-        // Bounding radius
-        model.geom_rbound[geom_id] = match geom_type {
-            GeomType::Sdf => {
-                if let Some(sdf_id) = model.geom_shape[geom_id] {
-                    let sdf = model.shape_data[sdf_id].sdf_grid();
-                    let aabb = cf_geometry::Bounded::aabb(sdf);
-                    let half = (aabb.max - aabb.min) * 0.5;
-                    half.norm()
-                } else {
-                    size.norm()
-                }
-            }
-            GeomType::Mesh => {
-                if let Some(mesh_id) = model.geom_mesh[geom_id] {
-                    let tri = &model.mesh_data[mesh_id];
-                    let indexed = tri.indexed_mesh();
-                    if indexed.vertices.is_empty() {
-                        1.0
-                    } else {
-                        indexed
-                            .vertices
-                            .iter()
-                            .map(|v| v.coords.norm())
-                            .fold(0.0_f64, f64::max)
-                    }
-                } else {
-                    10.0
-                }
-            }
-            _ => geom_type.bounding_radius(size),
-        };
-
-        // AABB: [cx, cy, cz, hx, hy, hz]
-        model.geom_aabb[geom_id] = match geom_type {
-            GeomType::Sdf => {
-                if let Some(sdf_id) = model.geom_shape[geom_id] {
-                    let sdf = model.shape_data[sdf_id].sdf_grid();
-                    let aabb = cf_geometry::Bounded::aabb(sdf);
-                    let center = (aabb.max.coords + aabb.min.coords) * 0.5;
-                    let half = (aabb.max.coords - aabb.min.coords) * 0.5;
-                    [center.x, center.y, center.z, half.x, half.y, half.z]
-                } else {
-                    [0.0; 6]
-                }
-            }
-            GeomType::Mesh => {
-                if let Some(mesh_id) = model.geom_mesh[geom_id] {
-                    let tri = &model.mesh_data[mesh_id];
-                    let indexed = tri.indexed_mesh();
-                    if indexed.vertices.is_empty() {
-                        [0.0; 6]
-                    } else {
-                        let mut bmin = indexed.vertices[0].coords;
-                        let mut bmax = indexed.vertices[0].coords;
-                        for v in &indexed.vertices {
-                            bmin = bmin.inf(&v.coords);
-                            bmax = bmax.sup(&v.coords);
-                        }
-                        let center = (bmax + bmin) * 0.5;
-                        let half = (bmax - bmin) * 0.5;
-                        [center.x, center.y, center.z, half.x, half.y, half.z]
-                    }
-                } else {
-                    [0.0; 6]
-                }
-            }
-            _ => {
-                // Primitives: center at origin, half-extents from size
-                [0.0, 0.0, 0.0, size.x, size.y, size.z]
-            }
-        };
-    }
 }
 
 /// The kinematic trees (sim-core's `compute_kinematic_trees`), every one

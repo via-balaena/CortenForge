@@ -333,17 +333,16 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
 | SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
-| Broad-phase (sweep-prune) | Native | `SweepAndPrune` | **Implemented** | - | - |
+| Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
 | Mid-phase (BVH per body) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
 
 ### Implementation Notes: Collision Pipeline
 
 The collision detection pipeline now uses:
-1. ✅ **Broad-phase**: Sweep-and-prune with automatic axis selection (O(n log n))
-   - `SweepAndPrune` for scenes with >32 bodies
-   - `BruteForce` fallback for small scenes
-   - Configurable via `BroadPhaseConfig`
+1. ✅ **Broad-phase**: MuJoCo's `mj_broadphase` (`collision/broadphase.rs`): bodies
+   swept and pruned along the first axis of their geoms' positions' covariance, the
+   bounds cast to float, then each geom pair through the bounding-sphere filter
 2. ✅ **Mid-phase**: AABB tree per complex body for mesh primitive culling
    - `Bvh` - Top-down BVH with median splitting
    - `BvhPrimitive` - Triangle/primitive storage with AABB

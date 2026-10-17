@@ -321,9 +321,9 @@ pub struct Model {
     pub geom_fluid: Vec<[f64; 12]>,
     /// Optional geom names.
     pub geom_name: Vec<Option<String>>,
-    /// Pre-computed bounding sphere radius for each geom (in local frame).
-    /// Used for fast distance culling in collision broad-phase.
-    /// For primitives, computed from geom_size. For meshes, computed from mesh AABB.
+    /// The radius of a sphere about each geom's origin that holds the geom,
+    /// MuJoCo's `mjModel.geom_rbound` ([`Model::compute_geom_bounding_radii`]).
+    /// The broadphase's bounding-sphere filters read it.
     pub geom_rbound: Vec<f64>,
     /// Pre-computed local-frame AABB for each geom: `(center_offset, half_extents)`.
     ///
@@ -331,10 +331,8 @@ pub struct Model {
     /// For primitives centered at their origin, this is `(0,0,0)`.
     /// For meshes, this is the mesh AABB center (may be non-zero).
     ///
-    /// At runtime, the world-space AABB is computed by transforming these
-    /// local bounds by `(geom_xpos, geom_xmat)`. This replaces the per-type
-    /// dispatch in `aabb_from_geom` and eliminates the `MESH_DEFAULT_EXTENT`
-    /// fallback.
+    /// sim-core's collision does not read it (MuJoCo's midphase, which does,
+    /// is not ported).
     ///
     /// Matches MuJoCo's `mjModel.geom_aabb`.
     pub geom_aabb: Vec<[f64; 6]>,

@@ -57,7 +57,13 @@ active, in the gap and past the margin, under each cone (mjTRN_BODY,
 engine_core_smooth.c:1621-1731). `touching_spheres` holds census document
 31833131's two touching spheres after 7 steps, 1.1e-16 into each other, and
 MuJoCo's contact count from that state at geom margins 0, 1e-9 and 1e-6:
-its broadphase pairs them only with the margin.
+its broadphase pairs them only with the margin. `bounds` holds a pyramid
+mesh, its apex 0.01 into a plane, and two height fields: MuJoCo's bounding
+radii, each about its geom's origin (mjCGeom::GetRBound,
+user_objects.cc:3418-3454), and its contacts after mj_forward (geoms,
+`dist`, `pos`). The apex is past the half-diagonal of the pyramid's box
+from its centroid, within the bounding radius; it refuses a scene that is
+not.
 """
 
 import json
@@ -441,6 +447,46 @@ def touching_spheres():
             "overlap": -gap, "ncon": ncon}
 
 
+# A pyramid mesh, its apex 0.01 into a plane, and two height fields, one
+# reaching farther above its origin than below and one farther below. A geom's
+# bounding radius is about its origin (mjCGeom::GetRBound,
+# user_objects.cc:3418-3454): for a mesh, the norm of each axis's larger
+# bound in magnitude, about the centroid where MuJoCo puts the geom's
+# origin; for a height field, sqrt(x^2 + y^2 + max(top^2, base^2)) from its
+# size. The apex is 4.5 below the centroid and the base 1.5 above, so the
+# half-diagonal of the pyramid's box, about the box's centre, does not
+# reach the apex; MuJoCo's plane filter passes the pair (mj_filterSphere,
+# engine_collision_driver.c:139-156).
+BOUNDS_XML = """<mujoco><asset>
+<mesh name="pyramid" vertex="-1 -0.5 0  1 -0.5 0  1 0.5 0  -1 0.5 0  0 0 -6"
+      face="0 1 2  0 2 3  0 4 1  1 4 2  2 4 3  3 4 0"/>
+<hfield name="field" nrow="2" ncol="2" size="1 0.5 0.3 0.1" elevation="0 0.5 1 0.25"/>
+<hfield name="deep" nrow="2" ncol="2" size="0.5 1 0.1 0.3" elevation="0 0.5 1 0.25"/>
+</asset><worldbody><geom name="floor" type="plane" size="20 20 0.1"/>
+<geom name="field" type="hfield" hfield="field" pos="10 10 0"/>
+<geom name="deep" type="hfield" hfield="deep" pos="-10 -10 0"/>
+<body name="pyramid" pos="0 0 5.99"><freejoint/><geom name="pyramid" type="mesh" mesh="pyramid"/></body>
+</worldbody></mujoco>"""
+
+
+def bounds():
+    m = mujoco.MjModel.from_xml_string(BOUNDS_XML)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    p = m.geom("pyramid").id
+    half = float(np.linalg.norm(m.geom_aabb[p][3:]))
+    height = float(d.geom_xpos[p][2])
+    if not half < height < m.geom_rbound[p]:
+        sys.exit(f"bounds: the centroid's height {height} is not between the box's "
+                 f"half-diagonal {half} and the bounding radius {m.geom_rbound[p]}")
+    contacts = [{"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist),
+                 "pos": floats(c.pos)} for c in d.contact[:d.ncon]]
+    if not any(c["geom"] == [0, p] for c in contacts):
+        sys.exit("bounds: MuJoCo lists no contact between the plane and the pyramid")
+    return {"xml": BOUNDS_XML, "rbound": floats(m.geom_rbound), "half_diagonal": half,
+            "height": height, "contacts": contacts}
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -458,7 +504,8 @@ def main():
            "inclusion": finite_or_string(inclusion_cases()),
            "box_plane_tumble": finite_or_string(box_plane_tumble()),
            "adhesion": finite_or_string(adhesion_cases()),
-           "touching_spheres": finite_or_string(touching_spheres())}
+           "touching_spheres": finite_or_string(touching_spheres()),
+           "bounds": finite_or_string(bounds())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
     print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "
