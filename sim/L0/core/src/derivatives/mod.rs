@@ -80,7 +80,9 @@ pub use param::{
 // Crate-internal re-exports
 #[cfg(test)]
 pub(crate) use hybrid::mjd_actuator_pos;
-pub(crate) use hybrid::{mjd_actuator_vel, mjd_rne_vel};
+#[cfg(test)]
+pub(crate) use hybrid::mjd_actuator_vel;
+pub(crate) use hybrid::mjd_smooth_vel_bias;
 
 use crate::types::{BiasType, Data, GainType, Integrator, Model, StepError};
 use nalgebra::DMatrix;

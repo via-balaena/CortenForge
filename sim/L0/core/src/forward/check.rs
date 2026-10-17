@@ -13,8 +13,8 @@ use crate::types::flags::{disabled, enabled};
 use crate::types::validation::is_bad;
 use crate::types::warning::{Warning, mj_warning};
 use crate::types::{
-    DISABLE_AUTORESET, DISABLE_CONSTRAINT, DISABLE_CONTACT, Data, ENABLE_SLEEP, EqualityType,
-    Model, SleepState, StepError,
+    DISABLE_AUTORESET, DISABLE_CONSTRAINT, DISABLE_CONTACT, Data, ENABLE_INVDISCRETE, ENABLE_SLEEP,
+    EqualityType, Integrator, Model, SleepState, StepError,
 };
 
 /// The check every `Result` entry point (`step`, `step1`, `step2`, `forward`,
@@ -30,6 +30,28 @@ pub fn check_step_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
         return Err(StepError::InvalidTimestep);
     }
     check_data_shape(model, data)
+}
+
+/// The integrators the discrete inverse dynamics refuse
+/// ([`StepError::UnsupportedInverseDiscrete`]): with `ENABLE_INVDISCRETE`,
+/// RK4 (MuJoCo's `mj_discreteAcc`, `engine_inverse.c:85-88`) and
+/// ImplicitSpringDamper, which MuJoCo does not have.
+///
+/// # Errors
+///
+/// [`StepError::UnsupportedInverseDiscrete`].
+pub fn check_inverse_discrete(model: &Model) -> Result<(), StepError> {
+    if enabled(model, ENABLE_INVDISCRETE)
+        && matches!(
+            model.integrator,
+            Integrator::RungeKutta4 | Integrator::ImplicitSpringDamper
+        )
+    {
+        return Err(StepError::UnsupportedInverseDiscrete {
+            integrator: model.integrator,
+        });
+    }
+    Ok(())
 }
 
 /// MuJoCo's check in its constraint counting (`mj_nc`,

@@ -71,6 +71,17 @@ state (qpos, qvel):
   tree_asleep, ncon and nefc after the forward, qfrc_inverse after the
   inverse. It refuses the case unless mj_inverse stops with that error and
   mj_forward wakes the box.
+- discrete: a chain of three hinges on turned axes (damped, one past its
+  limit), a velocity actuator on the first and a damped fixed tendon over
+  the first two, with invdiscrete enabled: under Euler (eulerdamp on and
+  off), implicit and implicitfast, after mj_forward at its state,
+  mj_inverse at the forward's qacc shifted: `mj_discreteAcc` turns qacc
+  into the continuous-time one first (`engine_inverse.c:76-153`), and
+  qacc is put back after. qfrc_inverse, efc_force and qacc after it, and
+  the same without the flag. Under RK4, the error mj_inverse stops with,
+  and the one mj_step stops with when fwdinv is on too. It refuses the
+  case unless the flag moves qfrc_inverse under each integrator but Euler
+  with eulerdamp off, which it must leave bit for bit.
 - wake_gap: the same with margin 0.02 and gap 0.02 on the ball's geom and
   the ball 0.01 from the box: the contact is listed (dist <= margin) and
   excluded (dist >= margin - gap), so `mj_nc` skips it and mj_inverse runs;
@@ -402,6 +413,91 @@ def wake_gap():
             "dist": float(near[0].dist)}
 
 
+DISCRETE = """<mujoco model="discrete">
+  <option timestep="0.01" integrator="{integrator}"{extra}/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="h1" type="hinge" axis="0 1 0" damping="0.7"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="0.5"/>
+      <body pos="0.3 0 0">
+        <joint name="h2" type="hinge" axis="1 0.3 0" damping="0.2" limited="true" range="-10 10"/>
+        <geom type="box" size="0.05 0.03 0.02" pos="0.05 0 0" mass="0.3"/>
+        <body pos="0.1 0 0">
+          <joint name="h3" type="hinge" axis="0.2 0.1 1" damping="0.4"/>
+          <geom type="sphere" size="0.03" pos="0.04 0.01 0" mass="0.2"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" damping="0.9"><joint joint="h1" coef="1"/><joint joint="h2" coef="-0.6"/></fixed>
+  </tendon>
+  <actuator><velocity joint="h1" kv="0.4"/></actuator>
+</mujoco>"""
+DISCRETE_STATE = ([0.3, 0.25, -0.4], [1.1, -0.7, 0.9], [0.5, -1.2, 0.8])
+
+
+def discrete():
+    """The discrete chain under each integrator, mj_inverse with and without
+    invdiscrete; under RK4 the errors."""
+    qpos, qvel, shift = DISCRETE_STATE
+    out = {}
+    for name, integrator, extra in (("euler", "Euler", ""),
+                                    ("euler_no_eulerdamp", "Euler", ""),
+                                    ("implicit", "implicit", ""),
+                                    ("implicitfast", "implicitfast", "")):
+        xml = DISCRETE.format(integrator=integrator, extra=extra)
+        if name == "euler_no_eulerdamp":
+            xml = xml.replace('integrator="Euler"/>', 'integrator="Euler">\n    <flag eulerdamp="disable"/>\n  </option>', 1)
+            assert "eulerdamp" in xml, xml
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        d.qpos[:] = qpos
+        d.qvel[:] = qvel
+        d.ctrl[:] = [0.25]
+        mujoco.mj_forward(m, d)
+        if d.nefc == 0:
+            sys.exit(f"discrete {name}: no constraint row")
+        qacc = d.qacc + np.array(shift)
+        runs = {}
+        for flagged in (False, True):
+            if flagged:
+                m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+            d.qacc[:] = qacc
+            mujoco.mj_inverse(m, d)
+            if not np.array_equal(d.qacc, qacc):
+                sys.exit(f"discrete {name}: qacc not put back")
+            runs["flagged" if flagged else "plain"] = {
+                "qfrc_inverse": floats(d.qfrc_inverse), "efc_force": floats(d.efc_force)}
+        moved = runs["flagged"]["qfrc_inverse"] != runs["plain"]["qfrc_inverse"]
+        if moved != (name != "euler_no_eulerdamp"):
+            sys.exit(f"discrete {name}: the flag {'moved' if moved else 'left'} qfrc_inverse")
+        out[name] = {"xml": xml, "qpos": qpos, "qvel": qvel, "ctrl": [0.25], "qacc": floats(qacc),
+                     "nefc": int(d.nefc), **runs}
+    xml = DISCRETE.format(integrator="RK4", extra="")
+    m = mujoco.MjModel.from_xml_string(xml)
+    m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+    errors = {}
+    for what in ("inverse", "step"):
+        d = mujoco.MjData(m)
+        d.qpos[:] = qpos
+        d.qvel[:] = qvel
+        try:
+            if what == "inverse":
+                mujoco.mj_forward(m, d)
+                mujoco.mj_inverse(m, d)
+            else:
+                m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_FWDINV
+                mujoco.mj_step(m, d)
+            sys.exit(f"discrete rk4: {what} ran")
+        except mujoco.FatalError as e:
+            errors[what] = str(e)
+        if "not supported by RK4" not in errors[what]:
+            sys.exit(f"discrete rk4: {errors[what]}")
+    out["rk4"] = {"xml": xml, "errors": errors}
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -430,6 +526,7 @@ def main():
     cases["sleep"] = sleep()
     cases["wake"] = wake()
     cases["wake_gap"] = wake_gap()
+    cases["discrete"] = discrete()
     out = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "inverse.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"))

@@ -947,6 +947,18 @@ pub enum StepError {
         /// Its sleeping geom.
         geom: usize,
     },
+    /// `ENABLE_INVDISCRETE` under an integrator the discrete inverse
+    /// dynamics do not support: RK4, which MuJoCo 3.5.0's `mj_discreteAcc`
+    /// refuses ("discrete inverse dynamics is not supported by RK4
+    /// integrator", `engine_inverse.c:85-88`), and ImplicitSpringDamper,
+    /// which MuJoCo does not have. Refused by
+    /// [`Data::inverse`](crate::Data::inverse), and, with `ENABLE_FWDINV`,
+    /// by the steps that compare the forward and the inverse dynamics
+    /// (`step`, `step2`), before any work.
+    UnsupportedInverseDiscrete {
+        /// The integrator.
+        integrator: Integrator,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -988,6 +1000,10 @@ impl std::fmt::Display for StepError {
             Self::ContactWithSleepingGeom { contact, geom } => {
                 write!(f, "contact {contact} involves sleeping geom {geom}")
             }
+            Self::UnsupportedInverseDiscrete { integrator } => write!(
+                f,
+                "discrete inverse dynamics is not supported by {integrator:?} integrator"
+            ),
         }
     }
 }

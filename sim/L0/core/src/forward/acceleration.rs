@@ -290,26 +290,15 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
 /// [`StepError::LuSingular`] under implicit when a diagonal of the factor is
 /// smaller than mjMINVAL in magnitude, where MuJoCo stops with an error.
 pub fn mj_implicit_factor(model: &Model, data: &mut Data) -> Result<(), StepError> {
-    use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel, mjd_rne_vel};
-
-    data.qDeriv.fill(0.0);
-    mjd_passive_vel(model, data);
-    mjd_actuator_vel(model, data);
-    if model.integrator == Integrator::Implicit {
-        mjd_rne_vel(model, data);
+    crate::derivatives::mjd_smooth_vel_bias(model, data, model.integrator == Integrator::Implicit);
+    match model.integrator {
+        Integrator::ImplicitFast => implicit_fast_matrix(model, data),
+        Integrator::Implicit => implicit_matrix(model, data),
+        _ => {}
     }
-    let neg_h = -model.timestep;
     let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
     match model.integrator {
         Integrator::ImplicitFast => {
-            // qH = M + qDeriv·(−h) on M's pattern: MuJoCo gathers qDeriv's
-            // lower entries there (`mapD2M`), then adds M (`mju_addScl`).
-            for i in 0..model.nv {
-                for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
-                    let j = model.M_colind[adr];
-                    data.qH[adr] = data.qM[(i, j)] + data.qDeriv[(i, j)] * neg_h;
-                }
-            }
             mj_factor_i(
                 &mut data.qH,
                 &mut data.qHDiagInv,
@@ -320,27 +309,43 @@ pub fn mj_implicit_factor(model: &Model, data: &mut Data) -> Result<(), StepErro
             );
             Ok(())
         }
-        Integrator::Implicit => {
-            // qLU = M + qDeriv·(−h) on D's pattern: MuJoCo gathers M there, 0
-            // where M's pattern holds no entry (`mapM2D`), then adds qDeriv
-            // (`mju_addToScl`).
-            for i in 0..model.nv {
-                for adr in model.D_rowadr[i]..model.D_rowadr[i] + model.D_rownnz[i] {
-                    let j = model.D_colind[adr];
-                    let in_m = i == j || model.dof_simplenum[i.max(j)] == 0;
-                    let m = if in_m { data.qM[(i, j)] } else { 0.0 };
-                    data.qLU[adr] = m + data.qDeriv[(i, j)] * neg_h;
-                }
-            }
-            lu_factor_sparse(
-                &mut data.qLU,
-                &model.D_rownnz,
-                &model.D_rowadr,
-                &model.D_colind,
-                index,
-            )
-        }
+        Integrator::Implicit => lu_factor_sparse(
+            &mut data.qLU,
+            &model.D_rownnz,
+            &model.D_rowadr,
+            &model.D_colind,
+            index,
+        ),
         _ => Ok(()),
+    }
+}
+
+/// `qH = M + qDeriv·(−h)` on M's pattern, implicitfast's matrix: MuJoCo
+/// gathers qDeriv's lower entries there (`mapD2M`), then adds M
+/// (`mju_addScl`, `engine_forward.c:1180-1184`, `engine_inverse.c:139-142`).
+pub fn implicit_fast_matrix(model: &Model, data: &mut Data) {
+    let neg_h = -model.timestep;
+    for i in 0..model.nv {
+        for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
+            let j = model.M_colind[adr];
+            data.qH[adr] = data.qM[(i, j)] + data.qDeriv[(i, j)] * neg_h;
+        }
+    }
+}
+
+/// `qLU = M + qDeriv·(−h)` on D's pattern, implicit's matrix: MuJoCo
+/// gathers M there, 0 where M's pattern holds no entry (`mapM2D`), then
+/// adds qDeriv (`mju_addToScl`, `engine_forward.c:1173-1177`,
+/// `engine_inverse.c:120-123`).
+pub fn implicit_matrix(model: &Model, data: &mut Data) {
+    let neg_h = -model.timestep;
+    for i in 0..model.nv {
+        for adr in model.D_rowadr[i]..model.D_rowadr[i] + model.D_rownnz[i] {
+            let j = model.D_colind[adr];
+            let in_m = i == j || model.dof_simplenum[i.max(j)] == 0;
+            let m = if in_m { data.qM[(i, j)] } else { 0.0 };
+            data.qLU[adr] = m + data.qDeriv[(i, j)] * neg_h;
+        }
     }
 }
 

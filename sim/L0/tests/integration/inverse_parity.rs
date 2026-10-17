@@ -585,3 +585,109 @@ fn inverse_fd_at_a_sleeping_state_takes_each_point_from_the_centre() {
         mujoco_q[arm * nv + 2]
     );
 }
+
+/// With `ENABLE_INVDISCRETE` the inverse takes `qacc` as the integrator's
+/// discrete-time acceleration and turns it into the continuous-time one
+/// first, as MuJoCo's `mj_discreteAcc` (`engine_inverse.c:76-153`): a chain
+/// of three damped hinges on turned axes, one past its limit, a velocity
+/// actuator and a damped fixed tendon, at the forward's `qacc` shifted,
+/// under Euler, Euler with eulerdamp disabled (where the flag changes
+/// nothing), implicit and implicitfast. `qfrc_inverse` and `efc_force` are
+/// MuJoCo's within 1e-12·max(1, |MuJoCo's|) with the flag and without it,
+/// and `qacc` is put back bit for bit. Before, the flag was not read
+/// (ledger L155): the flagged `qfrc_inverse` was the unflagged one.
+#[test]
+fn inverse_takes_the_discrete_acceleration_as_mujoco() {
+    let g = golden();
+    for (name, case) in g["cases"]["discrete"].as_object().expect("cases") {
+        if name == "rk4" {
+            continue;
+        }
+        let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qpos
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qpos"]));
+        data.qvel
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qvel"]));
+        data.ctrl
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["ctrl"]));
+        data.forward(&model).expect("forward");
+        let qacc = floats(&case["qacc"]);
+        for run in ["plain", "flagged"] {
+            if run == "flagged" {
+                model.enableflags |= sim_core::ENABLE_INVDISCRETE;
+            }
+            data.qacc.as_mut_slice().copy_from_slice(&qacc);
+            data.inverse(&model).expect("inverse");
+            assert_eq!(
+                bits(data.qacc.as_slice()),
+                bits(&qacc),
+                "{name} {run}: qacc put back"
+            );
+            let want = &case[run];
+            assert_rel(
+                &format!("{name} {run} qfrc_inverse"),
+                data.qfrc_inverse.as_slice(),
+                &floats(&want["qfrc_inverse"]),
+            );
+            assert_rel(
+                &format!("{name} {run} efc_force"),
+                data.efc_force.as_slice(),
+                &floats(&want["efc_force"]),
+            );
+        }
+    }
+}
+
+/// The discrete inverse under RK4 is refused, as MuJoCo's `mj_discreteAcc`
+/// stops ("discrete inverse dynamics is not supported by RK4 integrator",
+/// both from `mj_inverse` and, with fwdinv on, from `mj_step`'s comparison:
+/// the golden): `inverse()` returns
+/// `StepError::UnsupportedInverseDiscrete`, and with fwdinv on `step()` and
+/// `step2()` refuse it before any work. ImplicitSpringDamper, which MuJoCo
+/// does not have, is refused the same way. Without fwdinv a step does not
+/// compare, and runs.
+#[test]
+fn the_discrete_inverse_refuses_rk4_as_mujoco() {
+    let case = &golden()["cases"]["discrete"]["rk4"];
+    let errors = &case["errors"];
+    for what in ["inverse", "step"] {
+        assert!(
+            errors[what]
+                .as_str()
+                .expect("error")
+                .ends_with("discrete inverse dynamics is not supported by RK4 integrator"),
+            "MuJoCo's {what}: {}",
+            errors[what]
+        );
+    }
+    let rk4 = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut isd = rk4.clone();
+    isd.integrator = sim_core::Integrator::ImplicitSpringDamper;
+    for base in [rk4, isd] {
+        let integrator = base.integrator;
+        let refused = Err(StepError::UnsupportedInverseDiscrete { integrator });
+        let mut model = base.clone();
+        model.enableflags |= sim_core::ENABLE_INVDISCRETE;
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_eq!(data.inverse(&model), refused, "{integrator:?}: inverse");
+        data.step(&model).expect("a step without fwdinv");
+        model.enableflags |= sim_core::ENABLE_FWDINV;
+        let (time, qpos) = (data.time, data.qpos.clone());
+        assert_eq!(data.step(&model), refused, "{integrator:?}: step");
+        assert_eq!(data.step2(&model), refused, "{integrator:?}: step2");
+        assert_eq!(
+            (data.time.to_bits(), bits(data.qpos.as_slice())),
+            (time.to_bits(), bits(qpos.as_slice())),
+            "{integrator:?}: refused before any work"
+        );
+        assert_eq!(
+            StepError::UnsupportedInverseDiscrete { integrator }.to_string(),
+            format!("discrete inverse dynamics is not supported by {integrator:?} integrator")
+        );
+    }
+}

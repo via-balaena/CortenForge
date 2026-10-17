@@ -50,13 +50,27 @@ pub fn mj_mul_m(model: &Model, data: &Data, vec: &[f64]) -> DVector<f64> {
 
 /// [`mj_mul_m`] into `res` (`nv` long).
 pub fn mj_mul_m_to(model: &Model, data: &Data, vec: &[f64], res: &mut [f64]) {
+    mul_sym_on_m_pattern(model, |_, i, j| data.qM[(i, j)], vec, res);
+}
+
+/// `A·vec` into `res` for a symmetric `A` on the mass matrix's pattern, as
+/// MuJoCo's `mju_mulSymVecSparse` (`engine_util_sparse.c:240-265`): each
+/// row's diagonal term, then its entries from the diagonal down, each added
+/// to its row and its column. `entry(adr, i, j)` is `A`'s entry `(i, j)`,
+/// held at `adr` of the pattern (`Model::M_*`).
+pub fn mul_sym_on_m_pattern(
+    model: &Model,
+    entry: impl Fn(usize, usize, usize) -> f64,
+    vec: &[f64],
+    res: &mut [f64],
+) {
     for i in 0..model.nv {
         let adr = model.M_rowadr[i];
         let diag = model.M_rownnz[i] - 1;
-        res[i] = data.qM[(i, i)] * vec[i];
+        res[i] = entry(adr + diag, i, i) * vec[i];
         for k in (0..diag).rev() {
             let j = model.M_colind[adr + k];
-            let val = data.qM[(i, j)];
+            let val = entry(adr + k, i, j);
             res[i] += val * vec[j];
             res[j] += val * vec[i];
         }

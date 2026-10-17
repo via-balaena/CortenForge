@@ -211,6 +211,9 @@ impl Data {
     /// `CholeskyFailed` under the implicit spring-damper integrator).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
+        if enabled(model, ENABLE_FWDINV) {
+            check::check_inverse_discrete(model)?;
+        }
 
         // §53: RK4 is not compatible with split-step — warn if configured.
         if model.integrator == Integrator::RungeKutta4 {
@@ -276,6 +279,9 @@ impl Data {
     ) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;
+        if enabled(model, ENABLE_FWDINV) {
+            check::check_inverse_discrete(model)?;
+        }
 
         // Validate state before stepping — void, auto-resets internally.
         check::mj_check_pos(model, self);
@@ -630,7 +636,9 @@ impl Data {
     /// A step runs it after its forward pass and `mj_check_acc`, as MuJoCo's
     /// `mj_step`, `mj_step2` and `mj_stepSkip` (`engine_forward.c:1431-1434`,
     /// `:1500-1503`; `engine_derivative_fd.c:122-125`); a forward pass alone
-    /// does not. `ENABLE_INVDISCRETE` is not read.
+    /// does not. With `ENABLE_INVDISCRETE` the inverse is the discrete one
+    /// ([`Data::inverse`]), as MuJoCo's: RK4 and ImplicitSpringDamper then
+    /// refuse the step before any work (`check_inverse_discrete`).
     fn compare_fwd_inv(&mut self, model: &Model) {
         self.solver_fwdinv = [0.0, 0.0];
         if self.efc_type.is_empty() {
