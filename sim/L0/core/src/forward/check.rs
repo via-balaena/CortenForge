@@ -77,9 +77,7 @@ pub fn check_contacts_awake(model: &Model, data: &Data) -> Result<(), StepError>
         data.body_sleep_state[model.body_weldid[model.geom_body[geom]]] == SleepState::Asleep
     };
     for (i, contact) in data.contacts[..data.ncon].iter().enumerate() {
-        if -contact.depth >= contact.includemargin
-            || contact.flex_vertex.is_some()
-            || contact.flex_vertex2.is_some()
+        if contact.is_excluded() || contact.flex_vertex.is_some() || contact.flex_vertex2.is_some()
         {
             continue;
         }

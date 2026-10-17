@@ -429,7 +429,7 @@ fn inverse_refuses_a_contact_with_a_sleeping_tree_as_mujoco() {
         Err(StepError::ContactWithSleepingGeom { contact, geom }) => {
             assert_eq!(geom, box_geom, "MuJoCo's: {mujoco}");
             assert!(
-                mujoco.ends_with(&format!("involves sleeping geom {geom}")),
+                mujoco.ends_with(&format!("contact {contact} involves sleeping geom {geom}")),
                 "MuJoCo's: {mujoco}"
             );
             assert_eq!(
