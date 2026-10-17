@@ -327,9 +327,12 @@ fn wrap_edges_as_mujoco() {
 /// length is NaN (`engine_util_misc.c:55-71`; the golden holds "nan").
 /// Ours clamps the cosine (registry `D-WRAP-ACOS`): the length is finite, the
 /// straight segment's between the tendon's ends, as for a path that only
-/// touches the sphere, to within the arc the clamp drops (the radius times an
-/// angle whose cosine rounds to 1). Everything else, the cylinder tendons'
-/// lengths included, is MuJoCo's ([`Tol::Golden`]).
+/// touches the sphere, to within the arc the clamp drops. The clamp acts
+/// where the computed cosine is at least 1 while the true one is 1 − θ²/2;
+/// with the dot of the two unit directions within 4 ulps of 1, θ ≤ √(8ε),
+/// 4.2e-8 (the chunk 3e-1 review measured at most 1.67e-8 over 7,200 grazing
+/// segments). Everything else, the cylinder tendons' lengths included, is
+/// MuJoCo's ([`Tol::Golden`]).
 #[test]
 fn grazing_sphere_wrap_keeps_a_finite_length() {
     let g = golden();
@@ -337,10 +340,8 @@ fn grazing_sphere_wrap_keeps_a_finite_length() {
         let model = load(case);
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
-        // The clamp drops the arc of an angle whose cosine rounds to 1: up to
-        // about 1e-8 rad.
-        assert_eq!(1e-8_f64.cos(), 1.0);
-        let dropped = model.geom_size[0].x * 1e-8;
+        // The arc the clamp drops: the radius times √(8ε) (above).
+        let dropped = model.geom_size[0].x * (8.0 * f64::EPSILON).sqrt();
         let mut want = case["forward"].clone();
         let mut nan = 0;
         for (t, tendon) in want.as_array_mut().expect("array").iter_mut().enumerate() {
