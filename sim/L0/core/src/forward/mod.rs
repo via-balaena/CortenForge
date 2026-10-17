@@ -601,6 +601,13 @@ impl Data {
         // qfrc_gravcomp comes from the velocity stage's passive forces.
         actuation::mj_gravcomp_to_actuator(model, self);
 
+        // ImplicitSpringDamper's solves are over every dof; a sleeping dof
+        // keeps its acceleration, as the other integrators' solves over the
+        // awake dofs leave it.
+        let kept = (model.integrator == Integrator::ImplicitSpringDamper
+            && acceleration::awake_dofs(model, self))
+        .then(|| self.qacc.clone());
+
         // The solve over the rows the position stage made, Newton's and CG's
         // island by island as MuJoCo's (`constraint/solver/primal.rs`).
         crate::constraint::mj_fwd_constraint(model, self)?;
@@ -611,6 +618,13 @@ impl Data {
         // solves for the acceleration it advances qvel with.
         if !self.primal_qacc {
             acceleration::mj_fwd_acceleration(model, self)?;
+        }
+        if let Some(kept) = kept {
+            for dof in 0..model.nv {
+                if crate::island::sleep::dof_asleep(model, self, dof) {
+                    self.qacc[dof] = kept[dof];
+                }
+            }
         }
 
         // (§27F) Pinned flex vertex DOF clamping removed — pinned vertices now have

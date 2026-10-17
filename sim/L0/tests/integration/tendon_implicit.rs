@@ -1021,13 +1021,19 @@ fn tendon_implicit_newton_joint_spring_bonus() {
 }
 
 // ============================================================================
-// 6s. tendon_implicit_sleep_guard_skips_sleeping_tendons
+// 6s. tendon_implicit_step_leaves_a_sleeping_tree_as_euler_does
 // ============================================================================
 
+/// A tree forced asleep by hand after a forward pass (a hinge pair held by
+/// a stiff, damped fixed tendon, displaced, no gravity): a step under
+/// ImplicitSpringDamper leaves it as it was, as a step under Euler does,
+/// `qpos`, `qvel` and `qacc` bit for bit — the acceleration the forward
+/// pass left, as a sleeping dof keeps it. Before, the implicit
+/// spring-damper's solve over every dof wrote the sleeping dofs'
+/// acceleration (0 here, with the tendon's terms at sleeping dofs skipped),
+/// where Euler's solve over the awake dofs leaves it.
 #[test]
-fn tendon_implicit_sleep_guard_skips_sleeping_tendons() {
-    // Zero gravity so sleeping DOFs have no external forces — qacc must be
-    // exactly zero when all trees are forced asleep.
+fn tendon_implicit_step_leaves_a_sleeping_tree_as_euler_does() {
     let mjcf = r#"
         <mujoco model="tendon_sleep">
             <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 0">
@@ -1054,40 +1060,42 @@ fn tendon_implicit_sleep_guard_skips_sleeping_tendons() {
             </tendon>
         </mujoco>
     "#;
-    let model = sim_mjcf::load_model(mjcf).unwrap();
+    let isd = sim_mjcf::load_model(mjcf).unwrap();
+    let mut euler = isd.clone();
+    euler.integrator = sim_core::Integrator::Euler;
 
-    // --- Awake: tendon spring should produce restoring acceleration ---
-    let mut data_awake = model.make_data();
-    data_awake.qpos[0] = 0.3;
-    data_awake.step(&model).unwrap();
-    let qacc_awake_norm = data_awake.qacc.norm();
-    assert!(
-        qacc_awake_norm > 1e-3,
-        "Awake: tendon spring should produce non-trivial qacc, got {qacc_awake_norm}"
-    );
+    for model in [&isd, &euler] {
+        // Awake, the tendon's spring accelerates the hinges.
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.forward(model).unwrap();
+        assert!(
+            data.qacc.norm() > 1e-3,
+            "{:?}: the spring gives no acceleration",
+            model.integrator
+        );
 
-    // --- Sleeping: force all trees asleep, verify tendon K/D is skipped ---
-    let mut data_sleep = model.make_data();
-    data_sleep.qpos[0] = 0.3;
-    // Run forward to compute tendon Jacobians/lengths with the displacement
-    data_sleep.forward(&model).unwrap();
+        // Force every tree asleep (as gravcomp.rs does).
+        for i in 0..model.ntree {
+            data.tree_awake[i] = false;
+        }
+        data.nv_awake = 0;
+        data.dof_awake_ind.clear();
+        // The sleep filter counts the awake trees (MuJoCo's `ntree_awake`).
+        data.ntree_awake = 0;
+        let bits = |d: &sim_core::Data| {
+            [&d.qpos, &d.qvel, &d.qacc].map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>())
+        };
+        let before = bits(&data);
 
-    // Force ALL trees to sleep (same pattern as gravcomp.rs:412-414)
-    for i in 0..model.ntree {
-        data_sleep.tree_awake[i] = false;
+        data.step(model).unwrap();
+        assert_eq!(
+            bits(&data),
+            before,
+            "{:?}: the step moved the sleeping tree (qpos, qvel, qacc)",
+            model.integrator
+        );
     }
-    data_sleep.nv_awake = 0;
-    data_sleep.dof_awake_ind.clear();
-    // The sleep filter counts the awake trees (MuJoCo's `ntree_awake`).
-    data_sleep.ntree_awake = 0;
-
-    // Step — implicit solver should skip tendon K/D for sleeping DOFs
-    data_sleep.step(&model).unwrap();
-    let qacc_sleep_norm = data_sleep.qacc.norm();
-    assert!(
-        qacc_sleep_norm < 1e-10,
-        "Sleeping: tendon forces should be skipped, got qacc norm={qacc_sleep_norm}"
-    );
 }
 
 // ============================================================================
@@ -1105,7 +1113,10 @@ fn tendon_implicit_sleep_guard_skips_sleeping_tendons() {
 /// on and off, and sparse (the solve's own Hessian), and under PGS, so the
 /// matrix, the constraint path's forces and the Hessian are taken at the
 /// awake dof. Before, the tendons'
-/// entries at the sleeping dof coupled it into the solve.
+/// entries at the sleeping dof coupled it into the solve. The sleeping
+/// hinge's acceleration, and so its warm start, stays the 0 it kept from the
+/// reset, as the other integrators leave a sleeping dof's (before, the solve
+/// over every dof wrote it: 46.69 under these springs).
 #[test]
 fn implicitspringdamper_under_sleep_steps_the_awake_tree_on_its_own() {
     let arm = |name: &str, x: f64, sleep: &str| {
@@ -1145,10 +1156,17 @@ fn implicitspringdamper_under_sleep_steps_the_awake_tree_on_its_own() {
             data.qvel[0] = 5.0;
             let mut limited = false;
             let mut traj = Vec::new();
-            for _ in 0..100 {
+            for k in 0..100 {
                 data.step(&model).unwrap();
                 limited |= !data.efc_type.is_empty();
                 traj.push((data.qpos[0], data.qvel[0], data.solver_niter));
+                if model.ntree == 2 {
+                    assert_eq!(
+                        (data.qacc[1], data.qacc_warmstart[1]),
+                        (0.0, 0.0),
+                        "{solver} step {k}: the sleeping hinge's qacc and warm start"
+                    );
+                }
             }
             assert!(limited, "{solver}: the limit never engaged");
             if model.ntree == 2 {
