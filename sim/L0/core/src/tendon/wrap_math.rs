@@ -229,7 +229,8 @@ fn wrap_circle(end: &[f64; 4], side: Option<&[f64; 2]>, radius: f64) -> Option<(
 /// `length_circle`, `engine_util_misc.c:55-71`): the angle between their
 /// directions, taken the long way round where their cross product's sign
 /// and the tangent pair `ind` ask for it. The angle's cosine is clamped to
-/// [−1, 1]; MuJoCo's `acos` is not, and gives NaN past it.
+/// [−1, 1]; MuJoCo's `acos` is not, and gives NaN past it (registry
+/// `D-WRAP-ACOS`).
 fn length_circle(p0: &[f64], p1: &[f64], ind: usize, radius: f64) -> f64 {
     let mut p0n = [p0[0], p0[1]];
     let mut p1n = [p1[0], p1[1]];

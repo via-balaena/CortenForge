@@ -78,6 +78,12 @@ The cases:
   four tendons over them (with and without the sidesite); each tendon's
   state after mj_forward. It refuses a scene with a length not finite
   (MuJoCo's `acos` gives NaN past |cos| 1 on some grazing segments).
+- grazing: two scenes from the same sweep, as wrap_edges, whose segment
+  grazes the sphere (ends at +-1.5 r at y = r(1 - 1e-16); ends at +-100 r
+  at y = r(1 - 1e-9)): the directions of the sphere wrap's two tangent
+  points round to a cosine past 1, so MuJoCo's `length_circle` takes `acos`
+  of it and the sphere tendons' length is NaN (`engine_util_misc.c:55-71`).
+  It refuses a scene where every length is finite.
 """
 import json
 import os
@@ -347,6 +353,14 @@ WRAP_EDGES = {
                 r=1e-14, side=(1.8227075602838276, -0.1733222787061681, 2.611907351770347)),
 }
 
+GRAZING = {
+    "graze_near": dict(x0=(0.15000000000000002, 0.09999999999999999, 0.0),
+                       x1=(-0.15000000000000002, 0.09999999999999999, 0.0),
+                       xpos=(0.0, 0.0, 0.0), quat=None, r=0.1, side=(0.0, 0.3, 0.0)),
+    "graze_far": dict(x0=(10.0, 0.09999999990000001, 0.0), x1=(-10.0, 0.09999999990000001, 0.0),
+                      xpos=(0.0, 0.0, 0.0), quat=None, r=0.1, side=(0.0, 0.3, 0.0)),
+}
+
 
 def wrap_edge_xml(name, x0, x1, xpos, quat, r, side):
     """A sphere and a cylinder of radius r at xpos, turned by quat, with
@@ -380,6 +394,18 @@ def wrap_edges():
         case = sphere_wrap(wrap_edge_xml(name, **spec), name, [], False)
         if not all(np.isfinite(t["ten_length"]) for t in case["forward"]):
             sys.exit(f"wrap_edges {name}: a length is not finite")
+        out[name] = case
+    return out
+
+
+def grazing():
+    """GRAZING as scenes, as wrap_edges. It refuses a scene where every
+    tendon's length is finite."""
+    out = {}
+    for name, spec in GRAZING.items():
+        case = sphere_wrap(wrap_edge_xml(name, **spec), name, [], False)
+        if all(np.isfinite(t["ten_length"]) for t in case["forward"]):
+            sys.exit(f"grazing {name}: every length is finite")
         out[name] = case
     return out
 
@@ -618,6 +644,7 @@ def main():
         "fixed_repeated_sparse": fixed_repeated(FIXED_REPEATED_SPARSE),
         "tendon_motors": tendon_motors(),
         "wrap_edges": wrap_edges(),
+        "grazing": grazing(),
     }
     check_planes(cases)
     out = {"oracle": marker, "cases": finite_or_string(cases)}

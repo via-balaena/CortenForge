@@ -7,7 +7,8 @@
 //! Jacobian and wrap points bit for bit (on the golden's platform: see
 //! [`Tol::Golden`]); a tendon's velocity is summed as MuJoCo's at both sizes,
 //! a fixed tendon naming a joint twice keeps MuJoCo's row, and a tendon
-//! motor's force is MuJoCo's.
+//! motor's force is MuJoCo's. A segment grazing a sphere keeps a finite
+//! length where MuJoCo's is NaN (registry `D-WRAP-ACOS`).
 //!
 //! The golden is `assets/golden/tendon/tendon.json`, from the unfused MuJoCo
 //! 3.5.0 oracle (`scripts/gen_tendon_reference.py`, which describes its
@@ -317,6 +318,47 @@ fn wrap_edges_as_mujoco() {
     let g = golden();
     for (name, case) in g["cases"]["wrap_edges"].as_object().expect("cases") {
         assert_wrap(name, case, Tol::Golden);
+    }
+}
+
+/// Two segments grazing a sphere, from the same sweep: the directions of the
+/// sphere wrap's two tangent points round to a cosine past 1, and MuJoCo's
+/// `length_circle` takes `acos` of it unclamped, so its sphere tendons'
+/// length is NaN (`engine_util_misc.c:55-71`; the golden holds "nan").
+/// Ours clamps the cosine (registry `D-WRAP-ACOS`): the length is finite, the
+/// straight segment's between the tendon's ends, as for a path that only
+/// touches the sphere, to within the arc the clamp drops (the radius times an
+/// angle whose cosine rounds to 1). Everything else, the cylinder tendons'
+/// lengths included, is MuJoCo's ([`Tol::Golden`]).
+#[test]
+fn grazing_sphere_wrap_keeps_a_finite_length() {
+    let g = golden();
+    for (name, case) in g["cases"]["grazing"].as_object().expect("cases") {
+        let model = load(case);
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        // The clamp drops the arc of an angle whose cosine rounds to 1: up to
+        // about 1e-8 rad.
+        assert_eq!(1e-8_f64.cos(), 1.0);
+        let dropped = model.geom_size[0].x * 1e-8;
+        let mut want = case["forward"].clone();
+        let mut nan = 0;
+        for (t, tendon) in want.as_array_mut().expect("array").iter_mut().enumerate() {
+            if tendon["ten_length"] != "nan" {
+                continue;
+            }
+            nan += 1;
+            let (adr, num) = (data.ten_wrapadr[t], data.ten_wrapnum[t]);
+            let straight = (data.wrap_xpos[adr + num - 1] - data.wrap_xpos[adr]).norm();
+            let got = data.ten_length[t];
+            assert!(
+                (got - straight).abs() <= dropped,
+                "{name} tendon {t}: length {got}, the segment's {straight}"
+            );
+            tendon["ten_length"] = got.into();
+        }
+        assert!(nan > 0, "{name}: no length of MuJoCo's is NaN");
+        assert_tendons(name, &model, &data, &want, Tol::Golden);
     }
 }
 
