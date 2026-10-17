@@ -18,15 +18,19 @@ const EPSILON: f64 = 1e-8;
 const EPA_MAX_FACES: usize = 128;
 
 /// Penetration information from EPA.
+///
+/// The witness points come from the closest face of the EPA polytope, as
+/// MuJoCo's `epaWitness`: `point_a − point_b` is `depth · normal`, up to the
+/// polytope's rounding.
 #[derive(Debug, Clone)]
 pub struct Penetration {
     /// Penetration depth (positive when overlapping).
     pub depth: f64,
-    /// Contact normal (points from shape B toward shape A).
+    /// Contact normal (points from shape A toward shape B).
     pub normal: Vector3<f64>,
-    /// Contact point on shape A's surface.
+    /// Witness point of shape A.
     pub point_a: Point3<f64>,
-    /// Contact point on shape B's surface.
+    /// Witness point of shape B.
     pub point_b: Point3<f64>,
 }
 
@@ -70,15 +74,11 @@ pub fn epa_penetration(
     // Run EPA with the GJK simplex
     let epa_result = epa_query_impl(a, b, &gjk_result.simplex, max_iterations, tolerance)?;
 
-    // Recover witness points: support on each shape in the contact normal direction
-    let point_a = a.support(&(-epa_result.normal));
-    let point_b = b.support(&epa_result.normal);
-
     Some(Penetration {
         depth: epa_result.depth,
         normal: epa_result.normal,
-        point_a,
-        point_b,
+        point_a: epa_result.witness_a,
+        point_b: epa_result.witness_b,
     })
 }
 
@@ -90,6 +90,71 @@ pub fn epa_penetration(
 struct EpaResult {
     depth: f64,
     normal: Vector3<f64>,
+    witness_a: Point3<f64>,
+    witness_b: Point3<f64>,
+}
+
+impl EpaResult {
+    /// The result at the polytope's closest face, its witness points as
+    /// MuJoCo's `epaWitness` recovers them (`engine_collision_gjk.c:1273-1287`):
+    /// the affine coordinates of the origin's projection on the face, applied
+    /// to the face vertices' support points on each shape.
+    fn from_face(vertices: &[MinkowskiPoint], face: &EpaFace) -> Self {
+        let [v1, v2, v3] = face.vertices.map(|i| &vertices[i]);
+        let lambda = tri_affine_coord(
+            &v1.point.coords,
+            &v2.point.coords,
+            &v3.point.coords,
+            &(face.normal * face.distance),
+        );
+        let combine = |p1: &Point3<f64>, p2: &Point3<f64>, p3: &Point3<f64>| {
+            Point3::from(p1.coords * lambda[0] + p2.coords * lambda[1] + p3.coords * lambda[2])
+        };
+        Self {
+            depth: face.distance,
+            normal: face.normal,
+            witness_a: combine(&v1.support_a, &v2.support_a, &v3.support_a),
+            witness_b: combine(&v1.support_b, &v2.support_b, &v3.support_b),
+        }
+    }
+}
+
+/// Affine coordinates of `p` in the triangle `v1 v2 v3`, as MuJoCo's
+/// `triAffineCoord` (`engine_collision_gjk.c:979-1020`): the signed areas of
+/// the projection onto the coordinate plane where the triangle's is largest.
+#[allow(clippy::many_single_char_names)] // MuJoCo's names
+fn tri_affine_coord(
+    v1: &Vector3<f64>,
+    v2: &Vector3<f64>,
+    v3: &Vector3<f64>,
+    p: &Vector3<f64>,
+) -> [f64; 3] {
+    let m_14 = v2[1] * v3[2] - v2[2] * v3[1] - v1[1] * v3[2] + v1[2] * v3[1] + v1[1] * v2[2]
+        - v1[2] * v2[1];
+    let m_24 = v2[0] * v3[2] - v2[2] * v3[0] - v1[0] * v3[2] + v1[2] * v3[0] + v1[0] * v2[2]
+        - v1[2] * v2[0];
+    let m_34 = v2[0] * v3[1] - v2[1] * v3[0] - v1[0] * v3[1] + v1[1] * v3[0] + v1[0] * v2[1]
+        - v1[1] * v2[0];
+
+    // Project onto the coordinate plane where the triangle's area is largest.
+    let (mu1, mu2, mu3) = (m_14.abs(), m_24.abs(), m_34.abs());
+    let (m_max, x, y) = if mu1 >= mu2 && mu1 >= mu3 {
+        (m_14, 1, 2)
+    } else if mu2 >= mu3 {
+        (m_24, 0, 2)
+    } else {
+        (m_34, 0, 1)
+    };
+
+    // Signed areas of (p, v2, v3), (p, v1, v3) and (p, v1, v2).
+    let c31 =
+        p[x] * v2[y] + p[y] * v3[x] + v2[x] * v3[y] - p[x] * v3[y] - p[y] * v2[x] - v3[x] * v2[y];
+    let c32 =
+        p[x] * v3[y] + p[y] * v1[x] + v3[x] * v1[y] - p[x] * v1[y] - p[y] * v3[x] - v1[x] * v3[y];
+    let c33 =
+        p[x] * v1[y] + p[y] * v2[x] + v1[x] * v2[y] - p[x] * v2[y] - p[y] * v1[x] - v2[x] * v1[y];
+
+    [c31 / m_max, c32 / m_max, c33 / m_max]
 }
 
 // =============================================================================
@@ -129,10 +194,7 @@ fn epa_query_impl(
 
         let new_distance = new_point.point.coords.dot(&closest.normal);
         if new_distance - closest.distance < tolerance {
-            return Some(EpaResult {
-                depth: closest.distance,
-                normal: closest.normal,
-            });
+            return Some(EpaResult::from_face(&vertices, closest));
         }
 
         let new_vertex_idx = vertices.len();
@@ -171,11 +233,7 @@ fn epa_query_impl(
 
     // Return best found
     let closest_idx = find_closest_face(&faces)?;
-    let closest = &faces[closest_idx];
-    Some(EpaResult {
-        depth: closest.distance,
-        normal: closest.normal,
-    })
+    Some(EpaResult::from_face(&vertices, &faces[closest_idx]))
 }
 
 /// Expand a simplex with fewer than 4 points for EPA.
@@ -361,8 +419,8 @@ mod tests {
         let p = result.unwrap();
         // Penetration depth: radii sum 2.0, centers 1.5 apart → 0.5
         assert_relative_eq!(p.depth, 0.5, epsilon = 0.1);
-        // Normal should be along X (B→A direction)
-        assert!(p.normal.x.abs() > 0.9);
+        // The normal points from A toward B: +x
+        assert!(p.normal.x > 0.9);
         assert_relative_eq!(p.normal.norm(), 1.0, epsilon = 1e-6);
     }
 
@@ -474,5 +532,111 @@ mod tests {
         if let Some(p) = result {
             assert!(p.depth > 0.0);
         }
+    }
+
+    // Helper: a support map rotated, then translated.
+    struct Posed<'a> {
+        inner: &'a dyn SupportMap,
+        rotation: nalgebra::UnitQuaternion<f64>,
+        offset: Vector3<f64>,
+    }
+
+    impl crate::Bounded for Posed<'_> {
+        fn aabb(&self) -> crate::Aabb {
+            let mut min = Vector3::repeat(f64::INFINITY);
+            let mut max = Vector3::repeat(f64::NEG_INFINITY);
+            for axis in 0..3 {
+                let mut d = Vector3::zeros();
+                d[axis] = 1.0;
+                max[axis] = self.support(&d)[axis];
+                min[axis] = self.support(&-d)[axis];
+            }
+            crate::Aabb::new(Point3::from(min), Point3::from(max))
+        }
+    }
+
+    impl SupportMap for Posed<'_> {
+        fn support(&self, direction: &Vector3<f64>) -> Point3<f64> {
+            let local = self
+                .inner
+                .support(&self.rotation.inverse_transform_vector(direction));
+            Point3::from(self.rotation * local.coords + self.offset)
+        }
+    }
+
+    /// The witness points are the closest face's (MuJoCo's `epaWitness`), so
+    /// their difference is the penetration vector. Each shape's support along
+    /// the normal, which the witnesses were before, misses it by up to the
+    /// shapes' size.
+    #[test]
+    fn epa_witness_difference_is_depth_times_normal() {
+        // A fixed linear congruential sequence (Knuth's MMIX constants).
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut uniform = |lo: f64, hi: f64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_precision_loss)]
+            let u = (state >> 11) as f64 / (1u64 << 53) as f64;
+            lo + (hi - lo) * u
+        };
+        let mut overlaps = 0;
+        let mut worst = 0.0_f64;
+        for _ in 0..2000 {
+            let shape = |u: &mut dyn FnMut(f64, f64) -> f64| -> Box<dyn SupportMap> {
+                let (a, b, c) = (u(0.05, 0.5), u(0.05, 0.5), u(0.05, 0.5));
+                let kind = u(0.0, 4.0);
+                if kind < 1.0 {
+                    Box::new(SupportBox {
+                        half_extents: Vector3::new(a, b, c),
+                    })
+                } else if kind < 2.0 {
+                    Box::new(SupportEllipsoid {
+                        radii: Vector3::new(a, b, c),
+                    })
+                } else if kind < 3.0 {
+                    Box::new(SupportCylinder {
+                        half_length: a,
+                        radius: b,
+                    })
+                } else {
+                    Box::new(SupportCapsule {
+                        half_length: a,
+                        radius: b,
+                    })
+                }
+            };
+            let (shape_a, shape_b) = (shape(&mut uniform), shape(&mut uniform));
+            let mut pose = || {
+                let axis = Vector3::new(uniform(-1.0, 1.0), uniform(-1.0, 1.0), uniform(-1.0, 1.0));
+                let rotation = nalgebra::UnitQuaternion::from_scaled_axis(
+                    axis.normalize() * uniform(0.0, std::f64::consts::PI),
+                );
+                let offset =
+                    Vector3::new(uniform(-0.4, 0.4), uniform(-0.4, 0.4), uniform(-0.4, 0.4));
+                (rotation, offset)
+            };
+            let ((rotation_a, offset_a), (rotation_b, offset_b)) = (pose(), pose());
+            let a = Posed {
+                inner: shape_a.as_ref(),
+                rotation: rotation_a,
+                offset: offset_a,
+            };
+            let b = Posed {
+                inner: shape_b.as_ref(),
+                rotation: rotation_b,
+                offset: offset_b,
+            };
+            if let Some(p) = epa_penetration(&a, &b, 35, 1e-6) {
+                overlaps += 1;
+                let off = (p.point_a - p.point_b - p.normal * p.depth).norm();
+                worst = worst.max(off);
+            }
+        }
+        assert!(overlaps >= 1000, "{overlaps} overlaps of 2000 poses");
+        assert!(
+            worst <= 1e-10,
+            "point_a − point_b misses depth · normal by {worst}"
+        );
     }
 }

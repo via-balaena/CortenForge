@@ -18,7 +18,7 @@ use sim_types::Pose;
 ///
 /// Arguments must be in geom-order: shape1/pose1 correspond to geom1,
 /// shape2/pose2 correspond to geom2. This ensures the GJK normal convention
-/// ("from B toward A" = from geom2 toward geom1) is correct without
+/// ("from A toward B" = from geom1 toward geom2) is correct without
 /// manual negation.
 ///
 /// Returns `Contact`(s) directly — no `MeshContact` intermediate.

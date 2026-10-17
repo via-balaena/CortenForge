@@ -1585,12 +1585,11 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "swapped order should produce contact");
 
         let c = &contacts[0];
-        // Normal convention: from geom2 toward geom1.
-        // GJK(shape1=cyl, shape2=hull) → normal from hull toward cyl = +Z.
-        // geom1=cyl, geom2=mesh, so normal from geom2(mesh) toward geom1(cyl) = +Z.
+        // The normal points from geom1 (the cylinder) toward geom2 (the mesh
+        // below it): −Z.
         assert!(
-            c.normal.z.abs() > 0.9,
-            "normal should be along Z axis, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point down, got {:?}",
             c.normal
         );
         assert!(
@@ -1777,9 +1776,11 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "swapped order should produce contact");
 
         let c = &contacts[0];
+        // The normal points from geom1 (the ellipsoid) toward geom2 (the mesh
+        // below it): −Z.
         assert!(
-            c.normal.z.abs() > 0.9,
-            "normal should be along Z axis, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point down, got {:?}",
             c.normal
         );
         assert!(
