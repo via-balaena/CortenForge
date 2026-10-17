@@ -601,6 +601,26 @@ def plane_mesh():
     return out
 
 
+# One of each primitive: MuJoCo's bounding radii (mjCGeom::GetRBound,
+# user_objects.cc:3428-3441), bit for bit. The cylinder's is
+# sqrt(r*r + h*h), which hypot rounds otherwise here.
+PRIMITIVE_RBOUND_XML = """<mujoco><worldbody>
+<body><freejoint/><geom type="sphere" size="0.3"/></body>
+<body pos="1 0 0"><freejoint/><geom type="capsule" size="0.1 0.25"/></body>
+<body pos="2 0 0"><freejoint/><geom type="cylinder" size="0.2 0.5"/></body>
+<body pos="3 0 0"><freejoint/><geom type="ellipsoid" size="0.5 0.375 0.25"/></body>
+<body pos="4 0 0"><freejoint/><geom type="box" size="0.1 0.2 0.3"/></body>
+</worldbody></mujoco>"""
+
+
+def primitive_rbound():
+    m = mujoco.MjModel.from_xml_string(PRIMITIVE_RBOUND_XML)
+    cylinder = float(m.geom_rbound[2])
+    if cylinder == float(np.hypot(0.2, 0.5)):
+        sys.exit("primitive_rbound: hypot gives the cylinder's radius here")
+    return {"xml": PRIMITIVE_RBOUND_XML, "rbound": floats(m.geom_rbound)}
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -620,7 +640,8 @@ def main():
            "adhesion": finite_or_string(adhesion_cases()),
            "touching_spheres": finite_or_string(touching_spheres()),
            "bounds": finite_or_string(bounds()),
-           "plane_mesh": finite_or_string(plane_mesh())}
+           "plane_mesh": finite_or_string(plane_mesh()),
+           "primitive_rbound": finite_or_string(primitive_rbound())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
     print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "

@@ -152,15 +152,19 @@ impl GeomType {
     ///   - Ellipsoid: `[radius_x, radius_y, radius_z]`
     ///   - Plane: ignored (returns infinity)
     ///   - Mesh: `[scale_x, scale_y, scale_z]` (conservative estimate)
+    // `imprecise_flops`: the cylinder's naive `sqrt(r² + h²)` (not `hypot`)
+    // to match MuJoCo's `GetRBound` bit for bit.
+    #[allow(clippy::imprecise_flops)]
     #[must_use]
     pub fn bounding_radius(self, size: Vector3<f64>) -> f64 {
         match self {
             Self::Sphere => size.x,
             Self::Box => size.norm(), // Distance from center to corner
             Self::Capsule => size.x + size.y, // radius + half_length
-            Self::Cylinder => size.x.hypot(size.y), // sqrt(r² + h²)
+            // sqrt(r² + h²), as MuJoCo's `GetRBound` (`user_objects.cc:3435`).
+            Self::Cylinder => (size.x * size.x + size.y * size.y).sqrt(),
             Self::Ellipsoid => size.x.max(size.y).max(size.z), // Max semi-axis
-            Self::Plane => f64::INFINITY, // Planes are infinite
+            Self::Plane => f64::INFINITY,                      // Planes are infinite
             Self::Mesh => {
                 // Conservative estimate from scale factors.
                 // Full implementation would use mesh AABB at load time.

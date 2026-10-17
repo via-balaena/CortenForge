@@ -614,3 +614,25 @@ fn plane_mesh_contacts_are_spaced_by_the_bounding_radius_as_mujoco() {
         }
     }
 }
+
+/// One of each primitive (sphere, capsule, cylinder, ellipsoid, box): each
+/// bounding radius is MuJoCo's bit for bit (`mjCGeom::GetRBound`,
+/// `user_objects.cc:3428-3441`). The cylinder's is `sqrt(r² + h²)` as
+/// MuJoCo's computes it; before, `hypot` gave 0.5385164807134504 where
+/// MuJoCo's is 0.5385164807134505 (r 0.2, h 0.5).
+#[test]
+fn primitive_bounding_radii_are_mujocos_bit_for_bit() {
+    let case = &golden()["primitive_rbound"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let want = floats(&case["rbound"]);
+    assert_eq!(
+        model
+            .geom_rbound
+            .iter()
+            .map(|r| r.to_bits())
+            .collect::<Vec<_>>(),
+        want.iter().map(|r| r.to_bits()).collect::<Vec<_>>(),
+        "rbound {:?}, MuJoCo {want:?}",
+        model.geom_rbound
+    );
+}
