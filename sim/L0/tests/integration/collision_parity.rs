@@ -298,3 +298,121 @@ fn f_sphere_sphere_diagonal() {
 fn f_plane_capsule() {
     frames_as_mujoco("plane_capsule", FRAME_TOL);
 }
+
+/// MuJoCo's contacts after `forward` and how many constraint rows they make:
+/// each contact listed at `dist ≤ margin` by its collision function, with no
+/// rows where its distance is at or past `margin − gap` or the model has no
+/// dofs (`mj_setContact`, `mj_instantiateContact`).
+fn includes_as_mujoco(name: &str) {
+    let case = &golden()["inclusion"][name];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let want = case["contacts"].as_array().expect("contacts");
+    assert_eq!(data.ncon, want.len(), "{name}: contacts listed");
+    for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
+        let dist = w["dist"].as_f64().expect("dist");
+        assert!(
+            (-c.depth - dist).abs() <= 1e-12,
+            "{name}: contact {k} depth {}, MuJoCo's dist {dist}",
+            c.depth
+        );
+        let pos = floats(&w["pos"]);
+        for i in 0..3 {
+            assert!(
+                (c.pos[i] - pos[i]).abs() <= 1e-12,
+                "{name}: contact {k} pos {:?}, MuJoCo {pos:?}",
+                c.pos
+            );
+        }
+        assert_eq!(
+            c.is_excluded(),
+            w["exclude"].as_u64() == Some(1),
+            "{name}: contact {k} excluded"
+        );
+    }
+    assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{name}: rows");
+}
+
+/// A sphere resting on a plane at distance 0: MuJoCo lists the contact
+/// (inclusive) and excludes it (`dist ≥ includemargin` = 0), so no rows.
+#[test]
+fn i_sphere_touching_plane() {
+    includes_as_mujoco("sphere_touching_plane");
+}
+
+/// An upright cylinder and a box resting on a plane at distance 0: each
+/// touching point listed and excluded (ledger L41's zero-distance contacts).
+#[test]
+fn i_cylinder_and_box_touching_plane() {
+    includes_as_mujoco("cylinder_touching_plane");
+    includes_as_mujoco("box_touching_plane");
+}
+
+/// A box tilted 10 degrees within a plane's margin 0.1 and gap 0.08: four
+/// corners listed, the two in the gap with no rows (`mjc_PlaneBox` per
+/// corner).
+#[test]
+fn i_box_plane_gap() {
+    includes_as_mujoco("box_plane_gap");
+}
+
+/// An explicit pair of two static spheres: listed, but with no dofs no rows.
+#[test]
+fn i_static_pair() {
+    includes_as_mujoco("static_pair");
+}
+
+/// Census document 830708de: a box dropped on a plane, tumbling under the
+/// census's first excitation, lands on one corner, then two, then three:
+/// MuJoCo lists each corner by its own distance (`mjc_PlaneBox`), where the
+/// box's whole bottom face was listed once its deepest corner was within the
+/// margin. The contact count after every step, and the state within 1e-12.
+#[test]
+fn box_plane_lists_each_corner_as_mujoco() {
+    let case = &golden()["box_plane_tumble"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    for (i, v) in data.qvel.iter_mut().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        {
+            *v = 0.1 * (1.0 + (i % 3) as f64);
+        }
+    }
+    for (k, want) in case["rows"].as_array().expect("rows").iter().enumerate() {
+        data.step(&model).expect("step");
+        assert_eq!(data.ncon, count(&want["ncon"]), "step {k}: contacts");
+        for (field, ours) in [("qpos", &data.qpos), ("qvel", &data.qvel)] {
+            for (i, (a, b)) in ours.iter().zip(floats(&want[field])).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-12,
+                    "step {k}: {field}[{i}] {a}, MuJoCo {b}"
+                );
+            }
+        }
+    }
+}
+
+/// An adhesion actuator on a tilted box with two corners active, one in the
+/// gap and one past the margin: MuJoCo's body transmission averages the
+/// active contacts' rows (the normal row, or the pyramid's rows at
+/// 0.5/(dim − 1) each) and the excluded contact's normal Jacobian, negated
+/// (`mjTRN_BODY`, `engine_core_smooth.c:1621-1731`); ledger L124.
+#[test]
+fn adhesion_transmission_counts_contacts_as_mujoco() {
+    for cone in ["pyramidal", "elliptic"] {
+        let case = &golden()["adhesion"][cone];
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_eq!(data.ncon, count(&case["ncon"]), "{cone}: contacts");
+        assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{cone}: rows");
+        let want = floats(&case["moment"]);
+        for (j, (a, b)) in data.actuator_moment[0].iter().zip(&want).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12,
+                "{cone}: moment[{j}] {a}, MuJoCo {b}"
+            );
+        }
+    }
+}

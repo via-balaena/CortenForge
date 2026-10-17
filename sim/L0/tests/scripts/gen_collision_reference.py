@@ -44,6 +44,17 @@ the normal first, then the two tangents: `mju_makeFrame` from
 two spheres along a diagonal whose normal's y is past 0.5, and a
 horizontal capsule on a plane, whose frame takes the capsule's axis as its
 first tangent (mjc_PlaneCapsule's hint).
+
+`inclusion` holds, for scenes at the edge of the margin and the gap, MuJoCo's
+contacts after mj_forward (geoms, `dist`, `includemargin`, `exclude`, `pos`)
+and `nefc`: a contact is listed at `dist <= margin` and makes rows only below
+`margin - gap`, and none with no dofs (engine_collision_driver.c:1414-1415,
+engine_core_constraint.c:996-1019). `box_plane_tumble` holds census document
+830708de's box under the census's first excitation for 100 steps: `ncon`,
+`qpos` and `qvel` after each, the box landing corner by corner (mjc_PlaneBox).
+`adhesion` holds an adhesion actuator's moment, from a box with corners
+active, in the gap and past the margin, under each cone (mjTRN_BODY,
+engine_core_smooth.c:1621-1731).
 """
 
 import json
@@ -290,6 +301,104 @@ def frame_cases():
     return out
 
 
+# Which listed contacts get rows (mj_setContact's `exclude`,
+# engine_collision_driver.c:1414-1415; mj_instantiateContact,
+# engine_core_constraint.c:996-1019): a sphere, an upright cylinder and a box
+# resting on a plane at distance 0; a box tilted 10 degrees within a plane's
+# margin 0.1 and gap 0.08, two of its corners in the gap; an explicit pair
+# of two static spheres (nv 0).
+INCLUSION_XML = {
+    "sphere_touching_plane": """<mujoco><worldbody><geom type="plane" size="2 2 0.1"/>
+<body pos="0 0 0.1"><freejoint/><geom type="sphere" size="0.1"/></body></worldbody></mujoco>""",
+    "cylinder_touching_plane": """<mujoco><worldbody><geom type="plane" size="2 2 0.1"/>
+<body pos="0 0 0.1"><freejoint/><geom type="cylinder" size="0.05 0.1"/></body></worldbody></mujoco>""",
+    "box_touching_plane": """<mujoco><worldbody><geom type="plane" size="2 2 0.1"/>
+<body pos="0 0 0.1"><freejoint/><geom type="box" size="0.1 0.1 0.1"/></body></worldbody></mujoco>""",
+    "box_plane_gap": """<mujoco><worldbody><geom type="plane" size="2 2 0.1" margin="0.1" gap="0.08"/>
+<body pos="0 0 0.12" euler="10 0 0"><freejoint/><geom type="box" size="0.1 0.1 0.1"/></body></worldbody></mujoco>""",
+    "static_pair": """<mujoco><worldbody><geom name="a" type="sphere" size="0.1"/>
+<body pos="0.15 0 0"><geom name="b" type="sphere" size="0.1"/></body></worldbody>
+<contact><pair geom1="a" geom2="b"/></contact></mujoco>""",
+}
+
+
+def inclusion_cases():
+    out = {}
+    for name, xml in INCLUSION_XML.items():
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        out[name] = {"xml": xml, "nefc": int(d.nefc), "contacts": [
+            {"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist),
+             "includemargin": float(c.includemargin), "exclude": int(c.exclude),
+             "pos": floats(c.pos)} for c in d.contact[:d.ncon]]}
+    for name in ("sphere_touching_plane", "cylinder_touching_plane", "box_touching_plane"):
+        if out[name]["nefc"] != 0 or not out[name]["contacts"] or any(
+                c["exclude"] != 1 for c in out[name]["contacts"]):
+            sys.exit(f"inclusion: {name}'s contacts are not all listed and excluded")
+    if sorted(c["exclude"] for c in out["box_plane_gap"]["contacts"]) != [0, 0, 1, 1]:
+        sys.exit("inclusion: the box does not have two corners in the gap")
+    if out["static_pair"]["nefc"] != 0:
+        sys.exit("inclusion: the static pair has rows")
+    return out
+
+
+# Census document 830708de (collision_plane.rs's `box_plane_stable`): a box
+# dropped on a plane under the census's first excitation, qvel_i =
+# 0.1 (1 + i mod 3), so it lands on one corner first (mjc_PlaneBox lists the
+# corners within the margin, each by its own distance,
+# engine_collision_primitive.c:196-239).
+BOX_PLANE_TUMBLE_XML = """<mujoco model="box_plane_stable">
+<option gravity="0 0 -9.81" solver="Newton" cone="elliptic" iterations="100" tolerance="1e-8"/>
+<worldbody><geom type="plane" size="5 5 0.1"/>
+<body name="box" pos="0 0 0.11"><joint type="free"/>
+<geom type="box" size="0.1 0.1 0.1" mass="1.0" friction="0.5 0.5 0.005"/></body>
+</worldbody></mujoco>"""
+
+
+def box_plane_tumble():
+    m = mujoco.MjModel.from_xml_string(BOX_PLANE_TUMBLE_XML)
+    d = mujoco.MjData(m)
+    for i in range(m.nv):
+        d.qvel[i] = 0.1 * (1 + i % 3)
+    rows = []
+    for _ in range(100):
+        mujoco.mj_step(m, d)
+        rows.append({"qpos": floats(d.qpos), "qvel": floats(d.qvel), "ncon": int(d.ncon)})
+    if not any(0 < r["ncon"] < 4 for r in rows):
+        sys.exit("box_plane_tumble: no step lists some corners and not others")
+    return {"xml": BOX_PLANE_TUMBLE_XML, "rows": rows}
+
+
+# An adhesion actuator on a tilted box within a plane's margin 0.04 and gap
+# 0.02: three corners listed, two with rows and one in the gap, the fourth
+# past the margin. MuJoCo's body transmission averages the active contacts'
+# rows (the normal row, or the pyramid's rows at 0.5/(dim-1) each) and the
+# excluded contacts' normal Jacobians, negated (mjTRN_BODY,
+# engine_core_smooth.c:1621-1731).
+ADHESION_XML = """<mujoco><option cone="{cone}"/><worldbody><geom type="plane" size="2 2 0.1" margin="0.04" gap="0.02"/>
+<body name="box" pos="0 0 0.08" euler="12 7 0"><freejoint/><geom type="box" size="0.1 0.08 0.06"/></body></worldbody>
+<actuator><adhesion body="box" ctrlrange="0 1" gain="10"/></actuator></mujoco>"""
+
+
+def adhesion_cases():
+    out = {}
+    for cone in ("pyramidal", "elliptic"):
+        xml = ADHESION_XML.format(cone=cone)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        moment = np.zeros(m.nv)
+        adr, nnz = d.moment_rowadr[0], d.moment_rownnz[0]
+        for k in range(nnz):
+            moment[d.moment_colind[adr + k]] = d.actuator_moment[adr + k]
+        excluded = [int(c.exclude) for c in d.contact[:d.ncon]]
+        if sorted(excluded) != [0, 0, 1]:
+            sys.exit(f"adhesion {cone}: not two active corners and one in the gap: {excluded}")
+        out[cone] = {"xml": xml, "ncon": int(d.ncon), "nefc": int(d.nefc), "moment": floats(moment)}
+    return out
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -303,11 +412,15 @@ def main():
     doc = {"oracle": marker,
            "rest": finite_or_string({name: case(*c) for name, c in CASES.items()}),
            "order": finite_or_string(order_cases()),
-           "frame": finite_or_string(frame_cases())}
+           "frame": finite_or_string(frame_cases()),
+           "inclusion": finite_or_string(inclusion_cases()),
+           "box_plane_tumble": finite_or_string(box_plane_tumble()),
+           "adhesion": finite_or_string(adhesion_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
     print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "
-          f"{len(doc['frame'])} frame cases -> {sys.argv[1]}")
+          f"{len(doc['frame'])} frame cases, {len(doc['inclusion'])} inclusion cases, "
+          f"{len(doc['adhesion'])} adhesion cases -> {sys.argv[1]}")
 
 
 if __name__ == "__main__":

@@ -144,6 +144,16 @@ impl Contact {
         }
     }
 
+    /// Whether the contact lies in the gap: its distance at or past
+    /// `includemargin` (margin − gap), MuJoCo's `exclude` (`mj_setContact`,
+    /// `engine_collision_driver.c:1414-1415`). An excluded contact is listed
+    /// (it counts in `ncon`, wakes the trees it joins and counts for an
+    /// adhesion actuator) but makes no constraint rows.
+    #[must_use]
+    pub fn is_excluded(&self) -> bool {
+        -self.depth >= self.includemargin
+    }
+
     /// Create a new contact with basic parameters.
     ///
     /// The contact frame (tangent vectors) is computed automatically from the normal.
