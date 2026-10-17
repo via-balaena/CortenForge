@@ -227,6 +227,20 @@ fn mj_transmission_body(model: &Model, data: &mut Data, actuator_id: usize) {
     let mut moment_exclude = DVector::zeros(nv);
     let mut counter = 0usize;
 
+    // Each contact's first row (its `efc_address`; none with no dofs or
+    // excluded), in one pass over the rows.
+    let mut first_row = vec![None; data.contacts.len()];
+    for r in (0..nefc).rev() {
+        if matches!(
+            data.efc_type[r],
+            ConstraintType::ContactFrictionless
+                | ConstraintType::ContactPyramidal
+                | ConstraintType::ContactElliptic
+        ) {
+            first_row[data.efc_id[r]] = Some(r);
+        }
+    }
+
     for (ci, contact) in data.contacts.iter().enumerate() {
         // A flex contact (MuJoCo: a geom id below 0).
         if contact.flex_vertex.is_some() {
@@ -242,16 +256,7 @@ fn mj_transmission_body(model: &Model, data: &mut Data, actuator_id: usize) {
             moment_exclude += &compute_contact_normal_jacobian(model, data, contact);
             continue;
         }
-        // The contact's first row (its `efc_address`); none with no dofs.
-        let Some(first) = (0..nefc).find(|&r| {
-            data.efc_id[r] == ci
-                && matches!(
-                    data.efc_type[r],
-                    ConstraintType::ContactFrictionless
-                        | ConstraintType::ContactPyramidal
-                        | ConstraintType::ContactElliptic
-                )
-        }) else {
+        let Some(first) = first_row[ci] else {
             continue;
         };
         counter += 1;
