@@ -208,8 +208,11 @@ fn inverse_fd_as_mujoco() {
 /// (the contact one with a wrench on the box); a damped three-hinge chain
 /// with no rows; the box under PGS, where the inverse's constraint force is
 /// not the forward's; the limit case with friction loss and the elliptic
-/// box with noslip, where its row states are not the forward's; and the
-/// PGS box under RK4. After
+/// box with noslip, where its row states are not the forward's; the PGS box
+/// under RK4; and a free box resting on a plane whose centre of mass is off
+/// its body's origin, with a force on it, which the comparison's applied
+/// forces take at the centre of mass (`xipos`), as MuJoCo's
+/// `mj_xfrcAccumulate`. After
 /// `forward()`, `solver_fwdinv` is MuJoCo's after `mj_forward`, still 0,
 /// and `efc_state` a forward's with the flag off; after `step()`,
 /// `solver_fwdinv` is MuJoCo's within 1e-12
@@ -240,6 +243,7 @@ fn fwdinv_compares_in_the_step_as_mujoco() {
         "floss_fwdinv",
         "noslip_fwdinv",
         "rk4_fwdinv",
+        "offset_fwdinv",
     ] {
         let case = &g["cases"][name];
         let (model, forwarded) = at_state(case);

@@ -54,7 +54,8 @@ engine_core_constraint.c:996-1019). `box_plane_tumble` holds census document
 `qpos` and `qvel` after each, the box landing corner by corner (mjc_PlaneBox).
 `adhesion` holds an adhesion actuator's moment, from a box with corners
 active, in the gap and past the margin, under each cone (mjTRN_BODY,
-engine_core_smooth.c:1621-1731). `touching_spheres` holds census document
+engine_core_smooth.c:1621-1731), and with friction loss on its joint, whose
+rows come ahead of the contact rows. `touching_spheres` holds census document
 31833131's two touching spheres after 7 steps, 1.1e-16 into each other, and
 MuJoCo's contact count from that state at geom margins 0, 1e-9 and 1e-6:
 its broadphase pairs them only with the margin. `bounds` holds a pyramid
@@ -486,6 +487,13 @@ ADHESION_CONDIM_XML = """<mujoco><option cone="{cone}"/><default><geom condim="{
 <actuator><adhesion body="box" ctrlrange="0 1" gain="10"/></actuator></mujoco>"""
 
 
+# The same box with friction loss on its free joint: its six friction-loss
+# rows come ahead of the contact rows, so the transmission must find each
+# contact's first row among rows of other types.
+ADHESION_FRICTIONLOSS_XML = ADHESION_XML.replace("<freejoint/>", '<joint type="free" frictionloss="0.01"/>', 1)
+assert ADHESION_FRICTIONLOSS_XML.count("frictionloss") == 1, ADHESION_FRICTIONLOSS_XML
+
+
 def adhesion_cases():
     out = {}
     for cone in ("pyramidal", "elliptic"):
@@ -517,6 +525,22 @@ def adhesion_cases():
             sys.exit(f"adhesion {cone} condim {condim}: not two active corners and one in the gap")
         out[f"{cone}_condim{condim}"] = {"xml": xml, "ncon": int(d.ncon), "nefc": int(d.nefc),
                                          "moment": floats(moment)}
+    for cone in ("pyramidal", "elliptic"):
+        xml = ADHESION_FRICTIONLOSS_XML.format(cone=cone)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        moment = np.zeros(m.nv)
+        adr, nnz = d.moment_rowadr[0], d.moment_rownnz[0]
+        for k in range(nnz):
+            moment[d.moment_colind[adr + k]] = d.actuator_moment[adr + k]
+        types = [int(t) for t in d.efc_type]
+        if types[:6] != [int(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF)] * 6:
+            sys.exit(f"adhesion {cone} frictionloss: the first rows are not friction loss: {types}")
+        if sorted(int(c.exclude) for c in d.contact[:d.ncon]) != [0, 0, 1]:
+            sys.exit(f"adhesion {cone} frictionloss: not two active corners and one in the gap")
+        out[f"{cone}_frictionloss"] = {"xml": xml, "ncon": int(d.ncon), "nefc": int(d.nefc),
+                                       "moment": floats(moment)}
     return out
 
 

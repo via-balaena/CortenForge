@@ -23,13 +23,15 @@ state (qpos, qvel):
   eps 1e-6, no actuation), DfDq, DfDv and DfDa, row-major as MuJoCo
   writes them.
 - limit_fwdinv, contact_fwdinv, free_fwdinv, pgs_fwdinv, floss_fwdinv,
-  noslip_fwdinv, rk4_fwdinv, with the fwdinv flag enabled: the limit and
+  noslip_fwdinv, rk4_fwdinv, offset_fwdinv, with the fwdinv flag enabled: the limit and
   contact cases, the contact one with a wrench on the box (xfrc_applied);
   a damped three-hinge chain with no rows; the box under PGS at 4
   iterations, settled 100 steps, where the inverse's constraint force is
   not the forward's; the limit case with friction loss on both hinges and
   the elliptic box with 5 noslip iterations, where the inverse's row states
-  are not the forward's; and the PGS box under RK4.
+  are not the forward's; the PGS box under RK4; and a free box resting on
+  a plane whose centre of mass is off its body's origin, with a force on
+  it (xfrc_applied).
   Their state (qpos, qvel, qacc_warmstart, time), then from it, each on a
   fresh MjData: after mj_forward, solver_fwdinv (mj_forward does not
   compare); after mj_step, which runs `mj_compareFwdInv`
@@ -231,6 +233,18 @@ FREE = """<mujoco model="free">
         <geom type="box" size="0.1 0.02 0.02" pos="0.1 0 0" mass="0.4"/>
         <body pos="0.2 0 0"><joint type="hinge" axis="0 0 1"/>
           <geom type="sphere" size="0.04" pos="0.05 0.01 0" mass="0.2"/></body></body></body>
+  </worldbody>
+</mujoco>"""
+
+
+# A free box whose geom, and so its centre of mass, is off the body's origin,
+# resting on a plane: a wrench on it acts at the centre of mass (MuJoCo's
+# `mj_xfrcAccumulate` takes `xipos`), not at the body's origin.
+OFFSET = """<mujoco model="offset">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1"/>
+    <body name="box" pos="0 0 0.1"><freejoint/><geom type="box" size="0.1 0.1 0.1" pos="0.3 0.1 0" mass="1"/></body>
   </worldbody>
 </mujoco>"""
 
@@ -619,6 +633,7 @@ def main():
         ("floss_fwdinv", (FLOSS, limit[1], limit[2]), {}),
         ("noslip_fwdinv", (CASES["elliptic"][0], None, None), {"opt": ' noslip_iterations="5"'}),
         ("rk4_fwdinv", (contact[0], None, None), {"opt": pgs + ' integrator="RK4"'}),
+        ("offset_fwdinv", (OFFSET, None, None, (1, [2.0, -1.0, 3.0, 0.0, 0.0, 0.0])), {}),
     ]:
         cases[name], forward_states[name] = fwdinv(*args, **kwargs)
     for name in ("pgs_fwdinv", "rk4_fwdinv"):

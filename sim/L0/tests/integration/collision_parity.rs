@@ -477,7 +477,9 @@ fn box_plane_lists_each_corner_as_mujoco() {
 /// (`mjTRN_BODY`, `engine_core_smooth.c:1621-1731`); ledger L124. Under each
 /// cone with condim 3, and with condim 1, 4 and 6 (on both geoms): a
 /// condim-1 contact's normal row, and the pyramid's rows, whose weights sum
-/// to the normal row only at 0.5/(dim − 1).
+/// to the normal row only at 0.5/(dim − 1); and under each cone with
+/// friction loss on the box's free joint, whose six rows come ahead of the
+/// contact rows.
 #[test]
 fn adhesion_transmission_counts_contacts_as_mujoco() {
     let cases = golden()["adhesion"].clone();
