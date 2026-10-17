@@ -969,9 +969,12 @@ pub enum StepError {
     /// refuses ("discrete inverse dynamics is not supported by RK4
     /// integrator", `engine_inverse.c:85-88`), and ImplicitSpringDamper,
     /// which MuJoCo does not have. Refused by
-    /// [`Data::inverse`](crate::Data::inverse), and, with `ENABLE_FWDINV`,
-    /// by the steps that compare the forward and the inverse dynamics
-    /// (`step`, `step2`), before any work.
+    /// [`Data::inverse`](crate::Data::inverse) and
+    /// [`mjd_inverse_fd`](crate::mjd_inverse_fd) before any work, and, with
+    /// `ENABLE_FWDINV`, by the steps that compare the forward and the inverse
+    /// dynamics (`step`, `step2`) when the comparison reaches the inverse
+    /// (the forward pass made constraint rows), before the advance, as
+    /// MuJoCo's `mj_step` stops there.
     UnsupportedInverseDiscrete {
         /// The integrator.
         integrator: Integrator,

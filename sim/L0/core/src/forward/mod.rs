@@ -208,14 +208,12 @@ impl Data {
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
     /// was resized, with `ENABLE_FWDINV` under an integrator the discrete
-    /// inverse dynamics refuse (`UnsupportedInverseDiscrete`), or if forward
+    /// inverse dynamics refuse when the comparison reaches the inverse (the
+    /// pass made constraint rows; `UnsupportedInverseDiscrete`), or if forward
     /// acceleration computation fails (e.g., `CholeskyFailed` under the
     /// implicit spring-damper integrator).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
-        if enabled(model, ENABLE_FWDINV) {
-            check::check_inverse_discrete(model)?;
-        }
 
         // §53: RK4 is not compatible with split-step — warn if configured.
         if model.integrator == Integrator::RungeKutta4 {
@@ -230,7 +228,7 @@ impl Data {
         // Validate accelerations
         check::mj_check_acc(model, self);
         if enabled(model, ENABLE_FWDINV) {
-            self.compare_fwd_inv(model);
+            self.compare_fwd_inv(model)?;
         }
 
         // The advance (as step() for non-RK4 integrators)
@@ -256,7 +254,8 @@ impl Data {
     /// - Sleep is enabled and a tendon equality is active
     ///   (`TendonEqualityWithSleep`)
     /// - `ENABLE_FWDINV` is set under an integrator the discrete inverse
-    ///   dynamics refuse (`UnsupportedInverseDiscrete`)
+    ///   dynamics refuse, and the forward pass made constraint rows, so that
+    ///   the comparison reaches the inverse (`UnsupportedInverseDiscrete`)
     /// - A contact's normal, as its collision function wrote it, is shorter
     ///   than 0.5 (`UndefinedContactFrame`)
     ///
@@ -285,9 +284,6 @@ impl Data {
     ) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;
-        if enabled(model, ENABLE_FWDINV) {
-            check::check_inverse_discrete(model)?;
-        }
 
         // Validate state before stepping — void, auto-resets internally.
         check::mj_check_pos(model, self);
@@ -300,7 +296,7 @@ impl Data {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
                 if enabled(model, ENABLE_FWDINV) {
-                    self.compare_fwd_inv(model);
+                    self.compare_fwd_inv(model)?;
                 }
                 crate::integrate::rk4::mj_runge_kutta(model, self)
             }
@@ -311,7 +307,7 @@ impl Data {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
                 if enabled(model, ENABLE_FWDINV) {
-                    self.compare_fwd_inv(model);
+                    self.compare_fwd_inv(model)?;
                 }
                 self.integrate_skip_unchecked(model, skipfactor)
             }
@@ -650,13 +646,17 @@ impl Data {
     /// `mj_step`, `mj_step2` and `mj_stepSkip` (`engine_forward.c:1431-1434`,
     /// `:1500-1503`; `engine_derivative_fd.c:122-125`); a forward pass alone
     /// does not. With `ENABLE_INVDISCRETE` the inverse is the discrete one
-    /// ([`Data::inverse`]), as MuJoCo's: RK4 and ImplicitSpringDamper then
-    /// refuse the step before any work (`check_inverse_discrete`).
-    fn compare_fwd_inv(&mut self, model: &Model) {
+    /// ([`Data::inverse`]), as MuJoCo's: with rows, RK4 and
+    /// ImplicitSpringDamper refuse the step there, before the advance
+    /// (`check_inverse_discrete`), where MuJoCo's `mj_discreteAcc` stops;
+    /// with none, the comparison returns first and the step runs, as
+    /// MuJoCo's (`engine_inverse.c:267-270`).
+    fn compare_fwd_inv(&mut self, model: &Model) -> Result<(), StepError> {
         self.solver_fwdinv = [0.0, 0.0];
         if self.efc_type.is_empty() {
-            return;
+            return Ok(());
         }
+        check::check_inverse_discrete(model)?;
 
         // qforce = qfrc_applied + qfrc_actuator + Jᵀ·xfrc_applied
         // (`mju_add`, `mj_xfrcAccumulate`).
@@ -693,5 +693,6 @@ impl Data {
 
         self.qfrc_constraint = qfrc_constraint;
         self.efc_force = efc_force;
+        Ok(())
     }
 }

@@ -517,7 +517,12 @@ pub struct InverseDynamicsDerivatives {
 /// ([`StepError::InvalidTimestep`], [`StepError::DataShapeMismatch`]), then
 /// [`StepError::UnsupportedIntegrator`] for RK4 and
 /// [`StepError::UnsupportedNoslip`] for a model with noslip iterations, as
-/// MuJoCo's `mjd_inverseFD` refuses them.
+/// MuJoCo's `mjd_inverseFD` refuses them, then
+/// [`StepError::UnsupportedInverseDiscrete`] where
+/// [`Data::inverse`](crate::Data::inverse) refuses it. From the inverse at
+/// each point, the errors `inverse` returns after collision
+/// ([`StepError::UndefinedContactFrame`],
+/// [`StepError::ContactWithSleepingGeom`]).
 // Mathematical symbols (J, M, K, qfrc) follow MuJoCo's inverse-dynamics-derivatives notation.
 #[allow(non_snake_case, clippy::similar_names)]
 pub fn mjd_inverse_fd(

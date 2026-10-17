@@ -74,14 +74,20 @@ state (qpos, qvel):
 - discrete: a chain of three hinges on turned axes (damped, one past its
   limit), a velocity actuator on the first and a damped fixed tendon over
   the first two, with invdiscrete enabled: under Euler (eulerdamp on and
-  off), implicit and implicitfast, after mj_forward at its state,
+  off, and the damper flag off, which mj_discreteAcc does not read),
+  implicit and implicitfast, after mj_forward at its state,
   mj_inverse at the forward's qacc shifted: `mj_discreteAcc` turns qacc
   into the continuous-time one first (`engine_inverse.c:76-153`), and
   qacc is put back after. qfrc_inverse, efc_force and qacc after it, and
   the same without the flag. Under RK4, the error mj_inverse stops with,
-  and the one mj_step stops with when fwdinv is on too. It refuses the
-  case unless the flag moves qfrc_inverse under each integrator but Euler
-  with eulerdamp off, which it must leave bit for bit.
+  and the one mj_step stops with when fwdinv is on too; and from rest,
+  with both flags, mj_step's runs until a step's forward pass makes a
+  constraint row, since the comparison returns before the inverse when
+  there is none (`engine_inverse.c:267-270`): qpos after each step that
+  ran, and the step that stopped. It refuses the case unless the flag
+  moves qfrc_inverse under each integrator but Euler with eulerdamp off,
+  which it must leave bit for bit, and unless from rest a step runs
+  before one stops.
 - wake_gap: the same with margin 0.02 and gap 0.02 on the ball's geom and
   the ball 0.01 from the box: the contact is listed (dist <= margin) and
   excluded (dist >= margin - gap), so `mj_nc` skips it and mj_inverse runs;
@@ -444,12 +450,14 @@ def discrete():
     out = {}
     for name, integrator, extra in (("euler", "Euler", ""),
                                     ("euler_no_eulerdamp", "Euler", ""),
+                                    ("euler_no_damper", "Euler", ""),
                                     ("implicit", "implicit", ""),
                                     ("implicitfast", "implicitfast", "")):
         xml = DISCRETE.format(integrator=integrator, extra=extra)
-        if name == "euler_no_eulerdamp":
-            xml = xml.replace('integrator="Euler"/>', 'integrator="Euler">\n    <flag eulerdamp="disable"/>\n  </option>', 1)
-            assert "eulerdamp" in xml, xml
+        if name in ("euler_no_eulerdamp", "euler_no_damper"):
+            flag = name.removeprefix("euler_no_")
+            xml = xml.replace('integrator="Euler"/>', f'integrator="Euler">\n    <flag {flag}="disable"/>\n  </option>', 1)
+            assert flag in xml, xml
         m = mujoco.MjModel.from_xml_string(xml)
         d = mujoco.MjData(m)
         d.qpos[:] = qpos
@@ -494,7 +502,22 @@ def discrete():
             errors[what] = str(e)
         if "not supported by RK4" not in errors[what]:
             sys.exit(f"discrete rk4: {errors[what]}")
-    out["rk4"] = {"xml": xml, "errors": errors}
+    m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_FWDINV
+    d = mujoco.MjData(m)
+    ran = []
+    for k in range(100):
+        try:
+            mujoco.mj_step(m, d)
+        except mujoco.FatalError as e:
+            if "not supported by RK4" not in str(e) or d.nefc == 0:
+                sys.exit(f"discrete rk4 from rest: step {k}: {e}, nefc {d.nefc}")
+            break
+        ran.append(floats(d.qpos))
+    else:
+        sys.exit("discrete rk4 from rest: no step stopped")
+    if not ran:
+        sys.exit("discrete rk4 from rest: the first step stopped")
+    out["rk4"] = {"xml": xml, "errors": errors, "from_rest": {"qpos_after": ran, "stopped_at": len(ran)}}
     return out
 
 

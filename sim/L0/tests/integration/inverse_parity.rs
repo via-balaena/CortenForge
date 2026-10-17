@@ -592,7 +592,9 @@ fn inverse_fd_at_a_sleeping_state_takes_each_point_from_the_centre() {
 /// of three damped hinges on turned axes, one past its limit, a velocity
 /// actuator and a damped fixed tendon, at the forward's `qacc` shifted,
 /// under Euler, Euler with eulerdamp disabled (where the flag changes
-/// nothing), implicit and implicitfast. `qfrc_inverse` and `efc_force` are
+/// nothing), Euler with the damper flag disabled (which `mj_discreteAcc`
+/// does not read: its dofs' damping still counts), implicit and
+/// implicitfast. `qfrc_inverse` and `efc_force` are
 /// MuJoCo's within 1e-12·max(1, |MuJoCo's|) with the flag and without it,
 /// and `qacc` is put back bit for bit. Before, the flag was not read
 /// (ledger L155): the flagged `qfrc_inverse` was the unflagged one.
@@ -647,12 +649,18 @@ fn inverse_takes_the_discrete_acceleration_as_mujoco() {
 /// both from `mj_inverse` and, with fwdinv on, from `mj_step`'s comparison:
 /// the golden): `inverse()` returns
 /// `StepError::UnsupportedInverseDiscrete`, and with fwdinv on `step()` and
-/// `step2()` refuse it before any work. ImplicitSpringDamper, which MuJoCo
-/// does not have, is refused the same way. Without fwdinv a step does not
-/// compare, and runs.
+/// `step2()` refuse it when the comparison reaches the inverse, at a state
+/// whose forward pass makes a constraint row, before the advance. From rest,
+/// where the chain's limit makes no row, MuJoCo's comparison returns first
+/// and its step runs (`engine_inverse.c:267-270`): ours runs that step, to
+/// MuJoCo's `qpos` within 1e-12·max(1, |MuJoCo's|), and refuses the next one,
+/// where MuJoCo's stops. ImplicitSpringDamper, which MuJoCo does not have,
+/// is refused the same way. Without fwdinv a step does not compare, and
+/// runs.
 #[test]
 fn the_discrete_inverse_refuses_rk4_as_mujoco() {
-    let case = &golden()["cases"]["discrete"]["rk4"];
+    let g = golden();
+    let case = &g["cases"]["discrete"]["rk4"];
     let errors = &case["errors"];
     for what in ["inverse", "step"] {
         assert!(
@@ -664,6 +672,14 @@ fn the_discrete_inverse_refuses_rk4_as_mujoco() {
             errors[what]
         );
     }
+    let from_rest = &case["from_rest"];
+    let mujoco_ran = from_rest["qpos_after"].as_array().expect("qpos_after");
+    assert_eq!(
+        from_rest["stopped_at"].as_u64(),
+        Some(1),
+        "MuJoCo's first step from rest runs and its second stops"
+    );
+    let row_state = &g["cases"]["discrete"]["euler"];
     let rk4 = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let mut isd = rk4.clone();
     isd.integrator = sim_core::Integrator::ImplicitSpringDamper;
@@ -675,19 +691,94 @@ fn the_discrete_inverse_refuses_rk4_as_mujoco() {
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
         assert_eq!(data.inverse(&model), refused, "{integrator:?}: inverse");
-        data.step(&model).expect("a step without fwdinv");
+
         model.enableflags |= sim_core::ENABLE_FWDINV;
+        let mut data = model.make_data();
+        data.step(&model)
+            .unwrap_or_else(|e| panic!("{integrator:?}: the step from rest, with no row: {e}"));
+        if integrator == sim_core::Integrator::RungeKutta4 {
+            assert_rel(
+                "rk4 qpos after the step from rest",
+                data.qpos.as_slice(),
+                &floats(&mujoco_ran[0]),
+            );
+            let (time, qpos) = (data.time, data.qpos.clone());
+            assert_eq!(
+                data.step(&model),
+                refused,
+                "rk4: the second step, as MuJoCo's"
+            );
+            assert_eq!(
+                (data.time.to_bits(), bits(data.qpos.as_slice())),
+                (time.to_bits(), bits(qpos.as_slice())),
+                "rk4: refused before the advance"
+            );
+        }
+
+        set_state(row_state, &mut data);
         let (time, qpos) = (data.time, data.qpos.clone());
-        assert_eq!(data.step(&model), refused, "{integrator:?}: step");
-        assert_eq!(data.step2(&model), refused, "{integrator:?}: step2");
+        assert_eq!(data.step(&model), refused, "{integrator:?}: step at a row");
+        assert_eq!(
+            data.step2(&model),
+            refused,
+            "{integrator:?}: step2 at a row"
+        );
         assert_eq!(
             (data.time.to_bits(), bits(data.qpos.as_slice())),
             (time.to_bits(), bits(qpos.as_slice())),
-            "{integrator:?}: refused before any work"
+            "{integrator:?}: refused before the advance"
         );
+        model.enableflags &= !sim_core::ENABLE_FWDINV;
+        data.step(&model)
+            .unwrap_or_else(|e| panic!("{integrator:?}: a step without fwdinv: {e}"));
         assert_eq!(
             StepError::UnsupportedInverseDiscrete { integrator }.to_string(),
             format!("discrete inverse dynamics is not supported by {integrator:?} integrator")
         );
+    }
+}
+
+/// `mjd_inverse_fd` refuses the discrete inverse where `inverse()` does,
+/// before any work: under ImplicitSpringDamper with `ENABLE_INVDISCRETE`
+/// (before, its points took the continuous-time inverse, the flag dropped);
+/// under RK4 its own refusal of the integrator comes first, as MuJoCo's
+/// `mjd_inverseFD` checks the integrator before its inverse passes reach
+/// `mj_discreteAcc`. Without the flag it runs.
+#[test]
+fn the_inverse_finite_differences_refuse_the_discrete_inverse_as_inverse_does() {
+    let case = &golden()["cases"]["discrete"]["rk4"];
+    let rk4 = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut isd = rk4.clone();
+    isd.integrator = sim_core::Integrator::ImplicitSpringDamper;
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: false,
+        ..Default::default()
+    };
+    for (base, want) in [
+        (
+            rk4,
+            StepError::UnsupportedIntegrator {
+                integrator: sim_core::Integrator::RungeKutta4,
+            },
+        ),
+        (
+            isd,
+            StepError::UnsupportedInverseDiscrete {
+                integrator: sim_core::Integrator::ImplicitSpringDamper,
+            },
+        ),
+    ] {
+        let mut model = base.clone();
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        if model.integrator == sim_core::Integrator::ImplicitSpringDamper {
+            mjd_inverse_fd(&model, &data, &config).expect("without the flag");
+        }
+        model.enableflags |= sim_core::ENABLE_INVDISCRETE;
+        match mjd_inverse_fd(&model, &data, &config) {
+            Err(e) => assert_eq!(e, want, "{:?}", model.integrator),
+            Ok(_) => panic!("{:?}: mjd_inverse_fd ran with the flag", model.integrator),
+        }
     }
 }
