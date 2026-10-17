@@ -55,6 +55,17 @@ Each trajectory also records the factor its first step left (`qH` and
   origin, held by one vertical slide 5 mm into a plane (ledger L112): the
   body's `body_invweight0` and `dof_invweight0` and the contact's force
   after mj_forward.
+- isd_referent: two hinged capsules on two trees, the second asleep from
+  the reset, joined by two damped fixed tendons (coefficients 0.7 and 0.3;
+  0 and 1), the damping set after loading (MuJoCo refuses a tree asleep
+  at load beside a damped two-tree tendon), under implicitfast from a
+  moving first arm: qpos and qvel after each of 50 steps. With damping
+  alone, MuJoCo's step solves (M - h*qDeriv)*qacc = f over the awake dofs,
+  which is the system sim-core's own ImplicitSpringDamper solves,
+  (M + h*D)*v' = M*v + h*f', at the awake dofs when it takes each tendon's
+  row there only; implicitfast's D leaves out a tendon's entries between
+  dofs on different branches, which then lie at a sleeping dof. It refuses
+  the case unless the second tree sleeps throughout and the first moves.
 """
 import json
 import os
@@ -548,6 +559,36 @@ def flags():
             "invweight": invweight}
 
 
+ISD_REFERENT = ('<mujoco><option gravity="0 0 -9.81" integrator="{integrator}" timestep="0.002">'
+                '<flag sleep="enable"/></option><worldbody>'
+                '<body name="a" pos="0 0 1"><joint name="ja" type="hinge" axis="0 1 0"/>'
+                '<geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/></body>'
+                '<body name="b" pos="1 0 1" sleep="init"><joint name="jb" type="hinge" axis="0 1 0"/>'
+                '<geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/></body>'
+                '</worldbody><tendon>'
+                '<fixed name="t1"><joint joint="ja" coef="0.7"/><joint joint="jb" coef="0.3"/></fixed>'
+                '<fixed name="t2"><joint joint="ja" coef="0"/><joint joint="jb" coef="1"/></fixed>'
+                '</tendon></mujoco>')
+ISD_REFERENT_DAMPING = [3.0, 2.0]
+
+
+def isd_referent():
+    m = mujoco.MjModel.from_xml_string(ISD_REFERENT.format(integrator="implicitfast"))
+    m.tendon_damping[:] = ISD_REFERENT_DAMPING
+    d = mujoco.MjData(m)
+    d.qvel[0] = 0.5
+    rows = []
+    for _ in range(50):
+        mujoco.mj_step(m, d)
+        if d.tree_asleep[0] >= 0 or d.tree_asleep[1] < 0:
+            sys.exit(f"isd_referent: tree_asleep {d.tree_asleep}")
+        rows.append({"qpos": floats(d.qpos), "qvel": floats(d.qvel)})
+    if rows[-1]["qvel"][0] == rows[0]["qvel"][0]:
+        sys.exit("isd_referent: the first arm does not move")
+    return {"xml": ISD_REFERENT.format(integrator="implicitspringdamper"),
+            "tendon_damping": ISD_REFERENT_DAMPING, "qvel0": 0.5, "rows": rows}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -562,6 +603,7 @@ def main():
         "flags": flags(),
         "sibling_branches": sibling_branches(),
         "slide_contact": slide_contact(),
+        "isd_referent": isd_referent(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "implicit.json"), "w", encoding="utf-8") as f:

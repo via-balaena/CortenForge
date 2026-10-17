@@ -12,8 +12,7 @@ use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::integrate::implicit::{
-    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_stiffness,
-    tendon_all_dofs_sleeping,
+    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_j, isd_tendon_stiffness,
 };
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
@@ -158,8 +157,8 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     // DT-35: Non-diagonal tendon stiffness and damping (Step 0 helper).
     // Adds Σ_t (h²·k_active_t + h·b_t) · J_t^T · J_t to scratch_m_impl.
     // Spring K is deadband-aware: zero inside [lower, upper], k outside.
-    // Damping D always applies. Sleep guard skips fully-sleeping tendons.
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // Damping D always applies. Each row at the awake dofs only (sleep).
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     accumulate_tendon_kd(
         &mut data.scratch_m_impl,
         model,
@@ -167,7 +166,7 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
         &data.ten_length,
         &data.tree_awake,
         h,
-        sleep_enabled,
+        sleep_filter,
     );
 
     // Build RHS into scratch buffer: M*v_old + h*f_ext - h*K*(q - q_eq)
@@ -194,13 +193,9 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
 
     // DT-35: Tendon spring displacement contribution to implicit RHS
     // RHS[dof] -= h · Σ_t k_t · J_t[dof] · deadband_disp(L_t)
-    // (sleep_enabled already computed in Step 2, same function scope)
+    // Each row at the awake dofs only, as in accumulate_tendon_kd: the LHS
+    // and the RHS take the same entries.
     for t in 0..model.ntendon {
-        // Must match the guard in accumulate_tendon_kd — if K is not in the
-        // LHS, the corresponding spring displacement must not be in the RHS.
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
-            continue;
-        }
         let kt = isd_tendon_stiffness(model, t);
         if kt == 0.0 {
             continue;
@@ -217,11 +212,11 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
         // Spring force in tendon space: F = k * (ref - L) = -k * displacement
         // Joint-space force: qfrc = J^T * F = -J^T * k * displacement
         // RHS += h * qfrc = -h * k * displacement * J^T
-        let j = &data.ten_J[t];
         let scale = -h * kt * displacement;
         for dof in 0..model.nv {
-            if j[dof] != 0.0 {
-                data.scratch_rhs[dof] += scale * j[dof];
+            let j = isd_tendon_j(model, &data.tree_awake, sleep_filter, &data.ten_J[t], dof);
+            if j != 0.0 {
+                data.scratch_rhs[dof] += scale * j;
             }
         }
     }

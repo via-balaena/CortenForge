@@ -37,8 +37,8 @@ use crate::constraint::solver::pgs::pgs_solve_unified;
 use crate::constraint::solver::primal::{PrimalMass, mj_sol_primal};
 
 use crate::integrate::implicit::{
-    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness,
-    tendon_all_dofs_sleeping,
+    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_j,
+    isd_tendon_stiffness,
 };
 
 /// Compute the unconstrained acceleration (`qacc_smooth`) and smooth forces.
@@ -131,7 +131,7 @@ fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
     let h = model.timestep;
     let h2 = h * h;
     let nv = model.nv;
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
 
     let mut m_impl = data.qM.clone();
 
@@ -148,7 +148,7 @@ fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
         &data.ten_length,
         &data.tree_awake,
         h,
-        sleep_enabled,
+        sleep_filter,
     );
 
     m_impl
@@ -172,7 +172,10 @@ fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
 fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     let h = model.timestep;
     let nv = model.nv;
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
+    let awake_j = |t: usize, dof: usize| {
+        isd_tendon_j(model, &data.tree_awake, sleep_filter, &data.ten_J[t], dof)
+    };
 
     // Start with existing qfrc_smooth (which has everything EXCEPT
     // implicit spring/damper forces)
@@ -215,10 +218,8 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
 
     // Add tendon spring forces: −k·(δ + h·V_ten) projected via J^T
     // and tendon damper forces: −b · V projected via J^T
+    // (each row at the awake dofs only, as in build_m_impl)
     for t in 0..model.ntendon {
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
-            continue;
-        }
         let kt = isd_tendon_stiffness(model, t);
         if kt != 0.0 {
             let displacement =
@@ -231,10 +232,9 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
                 // In the joint spring's order (above), so a coefficient-1 tendon
                 // rounds as the joint does.
                 let f = -kt * displacement - h * kt * velocity;
-                let j = &data.ten_J[t];
                 for dof in 0..nv {
-                    if j[dof] != 0.0 {
-                        qfrc[dof] += f * j[dof];
+                    if awake_j(t, dof) != 0.0 {
+                        qfrc[dof] += f * awake_j(t, dof);
                     }
                 }
             }
@@ -242,12 +242,11 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
         // Add tendon damper forces: −b · V projected via J^T
         let bt = isd_tendon_damping(model, t);
         if bt != 0.0 {
-            let j = &data.ten_J[t];
             let velocity = data.ten_velocity[t]; // J · qvel
             let f = -bt * velocity;
             for dof in 0..nv {
-                if j[dof] != 0.0 {
-                    qfrc[dof] += f * j[dof];
+                if awake_j(t, dof) != 0.0 {
+                    qfrc[dof] += f * awake_j(t, dof);
                 }
             }
         }

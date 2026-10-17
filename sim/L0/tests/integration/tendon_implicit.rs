@@ -1078,6 +1078,8 @@ fn tendon_implicit_sleep_guard_skips_sleeping_tendons() {
     }
     data_sleep.nv_awake = 0;
     data_sleep.dof_awake_ind.clear();
+    // The sleep filter counts the awake trees (MuJoCo's `ntree_awake`).
+    data_sleep.ntree_awake = 0;
 
     // Step — implicit solver should skip tendon K/D for sleeping DOFs
     data_sleep.step(&model).unwrap();
@@ -1086,4 +1088,80 @@ fn tendon_implicit_sleep_guard_skips_sleeping_tendons() {
         qacc_sleep_norm < 1e-10,
         "Sleeping: tendon forces should be skipped, got qacc norm={qacc_sleep_norm}"
     );
+}
+
+// ============================================================================
+// ImplicitSpringDamper under sleep: the awake tree steps as on its own
+// ============================================================================
+
+/// Under sleep the implicit spring-damper takes each tendon's row at the
+/// awake dofs only (ledger L167), so a moving hinge joined to a sleeping one
+/// by two fixed tendons with springs and dampers (coefficients 0.7 and 0.3;
+/// 0 and 1; set after loading) steps as on a model without the sleeping
+/// tree, whose tendons take the awake hinge's coefficients alone (the same
+/// lengths, the sleeping hinge at 0): `qpos` and `qvel` within 1e-12 over
+/// 100 steps, with the solver's iterations equal, the hinge's limit
+/// engaging: under Newton with dense Jacobians (`M_impl`'s factor), islands
+/// on and off, and sparse (the solve's own Hessian), and under PGS, so the
+/// matrix, the constraint path's forces and the Hessian are taken at the
+/// awake dof. Before, the tendons'
+/// entries at the sleeping dof coupled it into the solve.
+#[test]
+fn implicitspringdamper_under_sleep_steps_the_awake_tree_on_its_own() {
+    let arm = |name: &str, x: f64, sleep: &str| {
+        format!(
+            r#"<body name="{name}" pos="{x} 0 1"{sleep}><joint name="j{name}" type="hinge" axis="0 1 0" limited="true" range="-5 5"/>
+               <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1" contype="0" conaffinity="0"/></body>"#
+        )
+    };
+    for (solver, island, jacobian) in [
+        ("Newton", "enable", "dense"),
+        ("Newton", "disable", "dense"),
+        ("Newton", "enable", "sparse"),
+        ("PGS", "enable", "dense"),
+    ] {
+        let option = format!(
+            r#"<option gravity="0 0 -9.81" integrator="implicitspringdamper" timestep="0.002" solver="{solver}" jacobian="{jacobian}"><flag sleep="enable" island="{island}"/></option>"#
+        );
+        let both = format!(
+            r#"<mujoco>{option}<worldbody>{}{}</worldbody><tendon>
+               <fixed name="t1"><joint joint="ja" coef="0.7"/><joint joint="jb" coef="0.3"/></fixed>
+               <fixed name="t2"><joint joint="ja" coef="0"/><joint joint="jb" coef="1"/></fixed></tendon></mujoco>"#,
+            arm("a", 0.0, ""),
+            arm("b", 1.0, r#" sleep="init""#)
+        );
+        let alone = format!(
+            r#"<mujoco>{option}<worldbody>{}</worldbody><tendon>
+               <fixed name="t1"><joint joint="ja" coef="0.7"/></fixed>
+               <fixed name="t2"><joint joint="ja" coef="0"/></fixed></tendon></mujoco>"#,
+            arm("a", 0.0, "")
+        );
+        let mut runs = Vec::new();
+        for xml in [&both, &alone] {
+            let mut model = sim_mjcf::load_model(xml).unwrap();
+            model.tendon_stiffness.copy_from_slice(&[50.0, 40.0]);
+            model.tendon_damping.copy_from_slice(&[3.0, 2.0]);
+            let mut data = model.make_data();
+            data.qvel[0] = 5.0;
+            let mut limited = false;
+            let mut traj = Vec::new();
+            for _ in 0..100 {
+                data.step(&model).unwrap();
+                limited |= !data.efc_type.is_empty();
+                traj.push((data.qpos[0], data.qvel[0], data.solver_niter));
+            }
+            assert!(limited, "{solver}: the limit never engaged");
+            if model.ntree == 2 {
+                assert_eq!(data.tree_awake, [true, false], "{solver}: trees");
+            }
+            runs.push(traj);
+        }
+        for (k, (a, b)) in runs[0].iter().zip(&runs[1]).enumerate() {
+            assert!(
+                (a.0 - b.0).abs() <= 1e-12 && (a.1 - b.1).abs() <= 1e-12 && a.2 == b.2,
+                "{solver} step {k}: (qpos, qvel, iterations) {a:?} with the sleeping tree, \
+                 {b:?} without"
+            );
+        }
+    }
 }
