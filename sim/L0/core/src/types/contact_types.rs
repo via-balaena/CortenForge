@@ -42,7 +42,11 @@ pub struct ContactPair {
 pub struct Contact {
     /// Contact position in world frame.
     pub pos: Vector3<f64>,
-    /// Contact normal (from geom1 toward geom2, unit vector).
+    /// Contact normal: from geom1 toward geom2 (but for capsule–box, listed in
+    /// MuJoCo's geom order with its normal the other way until book P45 ports
+    /// that collision function), unit as `make_frame` normalises it; one
+    /// shorter than 0.5 is kept as written and refuses the step
+    /// ([`StepError::UndefinedContactFrame`](crate::StepError::UndefinedContactFrame)).
     pub normal: Vector3<f64>,
     /// Penetration depth (positive = penetrating).
     pub depth: f64,
@@ -162,7 +166,7 @@ impl Contact {
     /// # Numerical Safety
     /// - Negative or NaN friction is clamped to 0.0
     /// - NaN depth is set to 0.0
-    /// - NaN position/normal components are handled gracefully
+    /// - A normal that is not finite gives a frame that is not (`make_frame`)
     #[must_use]
     #[inline]
     pub fn new(
@@ -196,7 +200,7 @@ impl Contact {
     /// # Numerical Safety
     /// - Negative or NaN friction is clamped to 0.0
     /// - NaN depth is set to 0.0
-    /// - NaN position/normal components are handled gracefully
+    /// - A normal that is not finite gives a frame that is not (`make_frame`)
     #[must_use]
     #[inline]
     #[allow(clippy::too_many_arguments)] // Matches MuJoCo's contact fields; grouping into a struct would add indirection for no benefit

@@ -115,9 +115,10 @@ pub fn check_contact_frames(data: &Data) -> Result<(), StepError> {
 /// transition finite differences, the init-sleep reset): MuJoCo 3.5.0's
 /// position stage raises an error on an active tendon equality with sleep
 /// enabled (`mj_wakeEquality`, `engine_sleep.c:398-400`). `step2`,
-/// `integrate`, `forward_skip` past the position stage and the inverse
-/// finite differences run, as MuJoCo's `mj_step2`, `mj_Euler`,
-/// `mj_forwardSkip` and `mjd_inverseFD` do.
+/// `integrate`, `forward_skip` past the position stage, `inverse` (whose
+/// position stage runs no equality wake) and the inverse finite differences
+/// run, as MuJoCo's `mj_step2`, `mj_Euler`, `mj_forwardSkip`, `mj_inverse`
+/// (`mj_invPosition`) and `mjd_inverseFD` do.
 ///
 /// # Errors
 ///

@@ -355,7 +355,7 @@ MuJoCo's two-mechanism architecture:
 
 | Phase | Method | Output |
 |-------|--------|--------|
-| Broad | Sweep-and-prune on AABBs | Candidate pairs |
+| Broad | MuJoCo's `mj_broadphase`: bodies swept and pruned, their geoms' bounding spheres projected on the rows of `mju_eig3`'s matrix of the geoms' positions' covariance, the bounds cast to `f32`; then each geom pair through the bounding-sphere filter | Candidate pairs |
 | Filter | Body-pair excludes, explicit pair-set suppression, same-body, parent-child, contype/conaffinity bitmasks | Filtered pairs |
 | Narrow | Per-pair geometry tests | Contact points |
 

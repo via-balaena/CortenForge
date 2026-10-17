@@ -22,7 +22,7 @@ joints, motor actuators with gear=1, no contacts).
 
 ```rust
 // Inverse dynamics: what forces produce the current accelerations?
-data.inverse(&model);
+data.inverse(&model)?; // returns Result<(), StepError>
 // Output: data.qfrc_inverse (length nv)
 
 // Site Jacobian: 3×nv translational + 3×nv rotational

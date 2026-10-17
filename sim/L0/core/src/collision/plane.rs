@@ -228,8 +228,8 @@ pub fn collide_with_plane(
 ///    offset by `sqrt(3)/2 * radius`, pulled back to `-0.5 * vec`
 ///
 /// Uses all-or-nothing inclusion: if contact 1 (deepest) is within margin,
-/// emit all candidate contacts that individually pass the margin test.
-/// See `MULTI_CONTACT_ANALYSIS.md` Appendix A for rationale.
+/// emit all candidate contacts that individually pass the margin test, as
+/// MuJoCo's `mjc_PlaneCylinder` (`engine_collision_primitive.c:92-191`).
 ///
 /// # Returns
 /// `Vec` with 0–4 contacts.

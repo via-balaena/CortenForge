@@ -564,9 +564,9 @@ solver) has been deleted.
 
 ### §36 — Body-Transmission Actuators (Adhesion)
 
-**Status:** ✅ Complete, but for two contact cases: MuJoCo weights a pyramidal contact's facet rows
-and adds an excluded contact in the gap, where sim-core takes each contact's normal row (ledger-L124,
-book P43).
+**Status:** ✅ Complete: as MuJoCo's `mjTRN_BODY`, an active contact counts through its rows (the
+normal row, or each pyramid row at 0.5/(dim − 1)) and a contact in the gap through its normal
+Jacobian (ledger-L124, closed by book P43).
 
 Body transmission (`ActuatorTransmission::Body`) for adhesion actuators, matching
 MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.

@@ -334,15 +334,18 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
 | SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
 | Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
-| Mid-phase (BVH per body) | Static AABB | `Bvh` | **Implemented** | - | - |
+| Mid-phase (BVH per mesh, its triangles) | Static AABB | `Bvh` | **Implemented** | - | - |
+| Mid-phase (`mj_collideTree`, a body pair's geoms) | Oriented boxes | - | **Not ported** (every geom pair the bounding-sphere filter passes reaches the narrow phase; ledger L178) | - | - |
 | Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
 
 ### Implementation Notes: Collision Pipeline
 
 The collision detection pipeline now uses:
 1. ✅ **Broad-phase**: MuJoCo's `mj_broadphase` (`collision/broadphase.rs`): bodies
-   swept and pruned along the first axis of their geoms' positions' covariance, the
-   bounds cast to float, then each geom pair through the bounding-sphere filter
+   swept and pruned along the first row of `mju_eig3`'s matrix of their geoms'
+   positions' covariance (its columns are the eigenvectors, so the row is not, in
+   general, one), the bounds cast to float, then each geom pair through the
+   bounding-sphere filter
 2. ✅ **Mid-phase**: AABB tree per complex body for mesh primitive culling
    - `Bvh` - Top-down BVH with median splitting
    - `BvhPrimitive` - Triangle/primitive storage with AABB

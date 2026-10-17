@@ -47,7 +47,8 @@ state (qpos, qvel):
   (`mj_invPosition`, `mj_invVelocity`, `engine_inverse.c:38-72`) with their
   sensors and energy, then the acceleration sensors. qfrc_inverse,
   efc_force, qfrc_constraint, sensordata, energy and nisland after it (its
-  position stage makes no islands: nisland stays the forward's 0). It
+  position stage makes no islands: nisland is 0 after it, whatever the
+  forward made). It
   refuses the case unless the first state has no row and the second has.
 - sleep: a box resting on a plane and a damped hanging arm, sleep enabled,
   3,000 steps from rest (both trees asleep), then mj_forward and mj_inverse

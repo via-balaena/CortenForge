@@ -961,7 +961,7 @@ available as `Data::transition_derivatives()`.
 | `actuator_moment[nu]` | `Vec<DVector(nv)>` | Transmission moment arm vectors (Site, Body and slider-crank transmissions, and Joint on a ball or free joint; zero for Joint on a hinge or slide and for Tendon) |
 | `actuator_force[nu]` | `Vec<f64>` | Scalar actuator force (after gain/bias/clamp) |
 | `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
-| `contacts[ncon]` | `Vec<Contact>` | Active contact points |
+| `contacts[ncon]` | `Vec<Contact>` | Contact points listed at `dist ≤ margin`, in MuJoCo's order; one at or past `margin − gap` (`Contact::is_excluded`) makes no constraint rows |
 | `efc_lambda` | `HashMap` | Warmstart cache (keyed by geom pair) |
 | `qDeriv[nv,nv]` | `DMatrix` | Analytical ∂(qfrc_smooth)/∂qvel (populated by `mjd_smooth_vel`) |
 | `deriv_Dcvel[nbody]` | `Vec<DMatrix(6,nv)>` | Per-body ∂(cvel)/∂(qvel) scratch Jacobians |

@@ -3,9 +3,11 @@
 //!
 //! The world body, when it holds geoms, and each body welded to the world
 //! that holds a plane, pair with every other body. The rest are bounded along
-//! the axes of the covariance of the geoms' (and flex vertices') positions,
-//! each body by its geoms' bounding spheres, and swept and pruned along the
-//! first axis with the bounds cast to `f32` (`mj_SAP`, `:1021-1114`): bounds
+//! the three rows of the matrix `mju_eig3` makes of the covariance of the
+//! geoms' (and flex vertices') positions (its columns are the eigenvectors,
+//! so a row is not, in general, one), each body by its geoms' bounding
+//! spheres, and swept and pruned along the first row with the bounds cast to
+//! `f32` (`mj_SAP`, `:1021-1114`): bounds
 //! equal in `f32` sort in the order the bodies are numbered, a lower body's
 //! upper bound ahead of a higher body's lower bound, so two bodies that only
 //! touch along that axis do not pair.
@@ -286,8 +288,11 @@ fn sweep_and_prune(aamm: &[[f64; 6]]) -> Vec<(usize, usize)> {
 
 /// MuJoCo's `mju_eig3` (`engine_util_solve.c:889-983`): the eigenvectors of
 /// the symmetric `mat` by Jacobi rotations accumulated in a quaternion, the
-/// eigenvalues sorted in decreasing order, as the rows of a row-major matrix
-/// whose rows the broadphase uses as its axes.
+/// eigenvalues sorted in decreasing order, as the columns of a row-major
+/// matrix (the quaternion's, `mju_quat2Mat`). The broadphase takes its rows
+/// as its axes, as MuJoCo's `mj_broadphase` does: a row is not, in general,
+/// an eigenvector (`diag(0, 0, 2/3)` gives row 0 (0, −1, 0) and column 0
+/// (0, 0, 1)).
 fn eig3(mat: &[f64; 9]) -> [f64; 9] {
     const EIG_EPS: f64 = MJ_MINVAL * 1000.0;
     let mut quat = [1.0, 0.0, 0.0, 0.0];
