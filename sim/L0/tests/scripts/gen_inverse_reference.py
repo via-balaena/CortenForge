@@ -71,6 +71,17 @@ state (qpos, qvel):
   tree_asleep, ncon and nefc after the forward, qfrc_inverse after the
   inverse. It refuses the case unless mj_inverse stops with that error and
   mj_forward wakes the box.
+- sleep_init: the wake case's scene as written (the box asleep from the
+  reset, the sphere resting away from it): after mj_forward, three
+  mj_inverse calls, qfrc_inverse after each (the box keeps qacc 0, so
+  MuJoCo's sum adds 0 there); from a fresh MjData after mj_forward, a dof
+  force and a wrench applied to the box, then mj_inverse: its kinematics
+  wake the box (`mj_wake`: a tree with an applied force cannot sleep,
+  `engine_sleep.c:240-275`), tree_asleep and qfrc_inverse after it; then
+  from a fresh MjData with fwdinv on, five mj_step calls, solver_fwdinv and
+  nefc after each. It refuses the case unless the box sleeps throughout the
+  calls and the steps, the applied forces wake it, and a step has a
+  constraint row.
 - discrete: a chain of three hinges on turned axes (damped, one past its
   limit), a velocity actuator on the first and a damped fixed tendon over
   the first two, with invdiscrete enabled: under Euler (eulerdamp on and
@@ -401,6 +412,45 @@ def wake():
     return out
 
 
+def sleep_init():
+    """The box asleep from the reset, the sphere away from it: three mj_inverse
+    calls after mj_forward; then five steps with fwdinv on."""
+    m = mujoco.MjModel.from_xml_string(WAKE)
+    box = m.body_treeid[m.body("box").id]
+    d = mujoco.MjData(m)
+    if d.tree_asleep[box] < 0:
+        sys.exit("sleep_init: the box is awake after the reset")
+    mujoco.mj_forward(m, d)
+    out = {"xml": WAKE, "box_dofs": [int(m.body_dofadr[m.body("box").id]) + k for k in range(6)],
+           "qacc": floats(d.qacc), "qfrc_bias": floats(d.qfrc_bias), "qfrc_inverse": []}
+    for _ in range(3):
+        mujoco.mj_inverse(m, d)
+        if d.tree_asleep[box] < 0:
+            sys.exit("sleep_init: the inverse woke the box")
+        out["qfrc_inverse"].append(floats(d.qfrc_inverse))
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    d.qfrc_applied[out["box_dofs"][2]] = 5.0
+    d.xfrc_applied[m.body("box").id] = [1.0, -2.0, 3.0, 0.0, 0.0, 0.0]
+    mujoco.mj_inverse(m, d)
+    if d.tree_asleep[box] >= 0:
+        sys.exit("sleep_init: the applied forces left the box asleep")
+    out["applied"] = {"qfrc_applied_dof": out["box_dofs"][2], "qfrc_applied": 5.0,
+                      "xfrc_applied": [1.0, -2.0, 3.0, 0.0, 0.0, 0.0],
+                      "tree_asleep": ints(d.tree_asleep), "qfrc_inverse": floats(d.qfrc_inverse)}
+    m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_FWDINV
+    d = mujoco.MjData(m)
+    out["steps"] = []
+    for _ in range(5):
+        mujoco.mj_step(m, d)
+        if d.tree_asleep[box] < 0:
+            sys.exit("sleep_init: the box woke")
+        out["steps"].append({"solver_fwdinv": floats(d.solver_fwdinv), "nefc": int(d.nefc)})
+    if not any(step["nefc"] for step in out["steps"]):
+        sys.exit("sleep_init: no step has a constraint row")
+    return out
+
+
 WAKE_GAP = WAKE.replace('<geom type="sphere" size="0.1" mass="1"/>',
                         '<geom type="sphere" size="0.1" mass="1" margin="0.02" gap="0.02"/>', 1)
 assert WAKE_GAP.count('gap="0.02"') == 1, WAKE_GAP
@@ -580,6 +630,7 @@ def main():
     cases["sleep"] = sleep()
     cases["wake"] = wake()
     cases["wake_gap"] = wake_gap()
+    cases["sleep_init"] = sleep_init()
     cases["discrete"] = discrete()
     out = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "inverse.json"), "w", encoding="utf-8") as f:

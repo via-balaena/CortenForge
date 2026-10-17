@@ -10,17 +10,20 @@
 //! energy, the constraint force from `qacc` (`mj_invConstraint`), then the
 //! sum; with `mjENBL_INVDISCRETE`, at the discrete-time acceleration
 //! (`mj_discreteAcc`, `:76-153`). A sleeping dof's `qfrc_inverse` is the
-//! sum over its kept bias force, where MuJoCo's adds to the value its last
-//! call left (registry `D-INVERSE-SLEEP`).
+//! forces applied there, where MuJoCo's adds to the value its last call left
+//! (registry `D-INVERSE-SLEEP`).
 
 use crate::constraint::solver::primal::mj_inv_constraint;
 use crate::derivatives::mjd_smooth_vel_bias;
 use crate::dynamics::factor::{mj_mul_m, mj_solve_m, mul_sym_on_m_pattern};
 use crate::forward::acceleration::{implicit_fast_matrix, implicit_matrix};
 use crate::forward::{MjStage, Pass, check, mj_body_accumulators};
+use crate::island::sleep::dof_asleep;
 use crate::linalg::dot_sparse;
 use crate::types::flags::{disabled, enabled};
-use crate::types::{DISABLE_EULERDAMP, Data, ENABLE_INVDISCRETE, Integrator, Model, StepError};
+use crate::types::{
+    DISABLE_EULERDAMP, Data, ENABLE_INVDISCRETE, ENABLE_SLEEP, Integrator, Model, StepError,
+};
 use nalgebra::DVector;
 
 impl Data {
@@ -57,9 +60,10 @@ impl Data {
     /// solve's (to its tolerance), and `qfrc_inverse` equals
     /// `qfrc_applied + qfrc_actuator + J^T * xfrc_applied`, but under
     /// `ImplicitSpringDamper`, whose springs and dampers the step applies
-    /// implicitly, outside `qfrc_passive`. At a sleeping dof it does too,
-    /// call after call, where MuJoCo's adds to its last value (registry
-    /// `D-INVERSE-SLEEP`).
+    /// implicitly, outside `qfrc_passive`. At a sleeping dof, which the
+    /// forward pass does not solve for, `qfrc_inverse` is those forces,
+    /// whatever `qacc` holds, call after call, where MuJoCo's adds the sum to
+    /// its last value (registry `D-INVERSE-SLEEP`).
     ///
     /// # Errors
     ///
@@ -149,17 +153,45 @@ impl Data {
 
     /// `qfrc_inverse = qfrc_bias + (M·qacc − qfrc_passive − qfrc_constraint)`,
     /// summed as MuJoCo's `mj_inverseSkip` does, `M·qacc` by `mj_mulM`
-    /// (`engine_inverse.c:235-241`). MuJoCo's starts from `mj_rne`'s bias
-    /// written into `qfrc_inverse` at the awake dofs only (`mj_rne`,
-    /// `engine_core_smooth.c:2481-2484`); this one from `qfrc_bias`, which
-    /// keeps a sleeping dof's.
+    /// (`engine_inverse.c:235-241`), at an awake dof; at a sleeping dof the
+    /// forces applied there ([`applied_forces`]). MuJoCo's starts from
+    /// `mj_rne`'s bias written into `qfrc_inverse` at the awake dofs only
+    /// (`mj_rne`, `engine_core_smooth.c:2481-2484`) and adds the sum at every
+    /// dof, so a sleeping dof's grows by `M·qacc` at the acceleration it keeps
+    /// (registry `D-INVERSE-SLEEP`).
     pub(crate) fn inverse_sum(&mut self, model: &Model) {
         let ma = mj_mul_m(model, self, self.qacc.as_slice());
+        let applied = enabled(model, ENABLE_SLEEP).then(|| applied_forces(model, self));
         for i in 0..model.nv {
-            self.qfrc_inverse[i] =
-                self.qfrc_bias[i] + (ma[i] - self.qfrc_passive[i] - self.qfrc_constraint[i]);
+            self.qfrc_inverse[i] = match &applied {
+                Some(applied) if dof_asleep(model, self, i) => applied[i],
+                _ => self.qfrc_bias[i] + (ma[i] - self.qfrc_passive[i] - self.qfrc_constraint[i]),
+            };
         }
     }
+}
+
+/// `qfrc_applied + qfrc_actuator + Jᵀ·xfrc_applied`, the forces a forward
+/// pass applies, summed as MuJoCo's `mj_compareFwdInv` sums them (`mju_add`,
+/// then `mj_xfrcAccumulate`, `engine_inverse.c:281-282`).
+pub(crate) fn applied_forces(model: &Model, data: &Data) -> DVector<f64> {
+    let mut qforce = &data.qfrc_applied + &data.qfrc_actuator;
+    for body_id in 1..model.nbody {
+        let wrench = data.xfrc_applied[body_id];
+        if wrench.is_zero() {
+            continue;
+        }
+        crate::jacobian::mj_apply_ft(
+            model,
+            data,
+            &wrench.force,
+            &wrench.torque,
+            &data.xipos[body_id],
+            body_id,
+            &mut qforce,
+        );
+    }
+    qforce
 }
 
 /// `qacc` from the discrete-time acceleration to the continuous-time one,

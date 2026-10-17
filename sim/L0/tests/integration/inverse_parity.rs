@@ -497,15 +497,28 @@ fn inverse_takes_no_drift_baseline() {
     assert_eq!(data.energy_initial, data.total_energy(), "the forward's");
 }
 
-/// With every tree asleep (a box resting on a plane and a damped hanging
-/// arm, 3,000 steps from rest; the state is MuJoCo's: `qacc` and
-/// `qfrc_bias` after the forward pass within 1e-12), `inverse()` gives,
-/// call after call, the forces the forward pass applied,
-/// `qfrc_applied + qfrc_actuator` (0 here), within 1e-12: its sum starts
-/// from each sleeping dof's kept bias force. MuJoCo's `mj_rne` writes the
-/// awake dofs only (`engine_core_smooth.c:2481-2484`) and its sum adds to
-/// `qfrc_inverse` (`engine_inverse.c:238-241`), so its value grows call by
-/// call (the golden: −19.62, −39.24, −58.86 on the box's vertical dof).
+/// At a sleeping dof, which the forward pass does not solve for, `inverse()`
+/// gives the forces applied there, `qfrc_applied + qfrc_actuator +
+/// Jᵀ·xfrc_applied` (0 here), call after call, within 1e-12, whatever
+/// acceleration the dof keeps. MuJoCo's `mj_rne` writes the awake dofs only
+/// (`engine_core_smooth.c:2481-2484`) and its sum adds to `qfrc_inverse` at
+/// every dof (`engine_inverse.c:238-241`), so a sleeping dof's grows by
+/// `M·qacc` at the acceleration it keeps. Two states (each MuJoCo's: `qacc`
+/// and `qfrc_bias` after the forward pass within 1e-12):
+/// - every tree asleep after 3,000 steps from rest (a box resting on a plane
+///   and a damped hanging arm): MuJoCo's value grows, −19.62, −39.24,
+///   −58.86 on the box's vertical dof;
+/// - a box asleep from the reset (`qacc` 0) beside a sphere resting on the
+///   plane: MuJoCo's stays 0, as ours; the sum at the box's kept bias force
+///   would read its weight, 19.62 (before, this inverse did). A dof force
+///   and a wrench applied to it wake it in the inverse's kinematics, as
+///   MuJoCo's `mj_wake`, and it takes MuJoCo's awake sum; from the position
+///   stage (`inverse_skip`, which runs no kinematics) it sleeps on and its
+///   dofs read them. With fwdinv
+///   on, the sleeping box then adds nothing to `solver_fwdinv[1]`: over five
+///   steps, the sphere's contact making rows from the second, both
+///   statistics are MuJoCo's within 1e-12 (MuJoCo's at most 2.2e-14).
+///
 /// Registry `D-INVERSE-SLEEP`.
 #[test]
 fn inverse_at_a_sleeping_state_gives_the_applied_forces() {
@@ -540,13 +553,133 @@ fn inverse_at_a_sleeping_state_gives_the_applied_forces() {
             );
         }
     }
+
+    let case = &golden()["cases"]["sleep_init"];
+    let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let box_tree = model.body_treeid[1];
+    let mut data = model.make_data();
+    assert!(
+        !data.tree_awake[box_tree],
+        "the box is awake after the reset"
+    );
+    data.forward(&model).expect("forward");
+    for (field, values) in [("qacc", &data.qacc), ("qfrc_bias", &data.qfrc_bias)] {
+        for (k, (a, b)) in values.iter().zip(floats(&case[field])).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12,
+                "init: {field}[{k}]: {a}, MuJoCo {b}"
+            );
+        }
+    }
+    let applied = &data.qfrc_applied + &data.qfrc_actuator;
+    let box_dofs: Vec<usize> = case["box_dofs"]
+        .as_array()
+        .expect("box_dofs")
+        .iter()
+        .map(|k| usize::try_from(k.as_u64().expect("dof")).expect("dof"))
+        .collect();
+    for (call, theirs) in case["qfrc_inverse"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .enumerate()
+    {
+        data.inverse(&model).expect("inverse");
+        for (k, (a, b)) in data.qfrc_inverse.iter().zip(floats(theirs)).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12,
+                "init call {call}: qfrc_inverse[{k}] {a}, MuJoCo {b}"
+            );
+        }
+        for &k in &box_dofs {
+            assert!(
+                (data.qfrc_inverse[k] - applied[k]).abs() <= 1e-12,
+                "init call {call}: the box's qfrc_inverse[{k}] {}, applied {}",
+                data.qfrc_inverse[k],
+                applied[k]
+            );
+        }
+    }
+    // Forces applied to the sleeping box after the forward pass: the
+    // inverse's kinematics wake it, as MuJoCo's `mj_wake` wakes a tree that
+    // cannot sleep, and its dofs take the awake sum, MuJoCo's within 1e-12.
+    // From the position stage (`inverse_skip`, no kinematics, no wake) the
+    // box sleeps on and its dofs read the applied forces: the dof force and
+    // the wrench through its centre on its translational dofs.
+    let applied_case = &case["applied"];
+    let apply = |data: &mut Data| {
+        let dof =
+            usize::try_from(applied_case["qfrc_applied_dof"].as_u64().expect("dof")).expect("dof");
+        data.qfrc_applied[dof] = applied_case["qfrc_applied"].as_f64().expect("force");
+        let w = floats(&applied_case["xfrc_applied"]);
+        data.xfrc_applied[1] = sim_core::BodyWrench::new(
+            nalgebra::Vector3::new(w[0], w[1], w[2]),
+            nalgebra::Vector3::new(w[3], w[4], w[5]),
+        );
+    };
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    apply(&mut data);
+    data.inverse(&model).expect("inverse");
+    assert!(
+        data.tree_awake[box_tree],
+        "the applied forces left the box asleep"
+    );
+    for (k, (a, b)) in data
+        .qfrc_inverse
+        .iter()
+        .zip(floats(&applied_case["qfrc_inverse"]))
+        .enumerate()
+    {
+        assert!(
+            (a - b).abs() <= 1e-12,
+            "applied: qfrc_inverse[{k}] {a}, MuJoCo {b}"
+        );
+    }
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    apply(&mut data);
+    data.inverse_skip(&model, sim_core::MjStage::Pos, false)
+        .expect("inverse_skip");
+    assert!(!data.tree_awake[box_tree], "inverse_skip woke the box");
+    let want = [1.0, -2.0, 8.0, 0.0, 0.0, 0.0];
+    for (&k, want) in box_dofs.iter().zip(want) {
+        assert!(
+            (data.qfrc_inverse[k] - want).abs() <= 1e-12,
+            "applied, skipped: the box's qfrc_inverse[{k}] {}, applied {want}",
+            data.qfrc_inverse[k]
+        );
+    }
+
+    model.enableflags |= sim_core::ENABLE_FWDINV;
+    let mut data = model.make_data();
+    for (k, theirs) in case["steps"].as_array().expect("steps").iter().enumerate() {
+        data.step(&model).expect("step");
+        assert!(!data.tree_awake[box_tree], "step {k}: the box woke");
+        assert_eq!(
+            data.efc_type.len(),
+            usize::try_from(theirs["nefc"].as_u64().expect("nefc")).expect("nefc"),
+            "step {k}: nefc"
+        );
+        for (i, (a, b)) in data
+            .solver_fwdinv
+            .iter()
+            .zip(floats(&theirs["solver_fwdinv"]))
+            .enumerate()
+        {
+            assert!(
+                (a - b).abs() <= 1e-12,
+                "step {k}: solver_fwdinv[{i}] {a}, MuJoCo {b}"
+            );
+        }
+    }
 }
 
 /// `mjd_inverse_fd` at the state where every tree sleeps (above): each point
-/// starts from the centre's whole state, its sleep state included, so DfDa
-/// is the mass matrix (a sleeping tree has no rows) within 1e-9 of its
-/// largest entry, and the hinge arm's qpos column, whose nudge wakes the arm
-/// alone, is 0 at the box's dofs. MuJoCo's `mjd_inverseFD` adds each point
+/// starts from the centre's whole state, its sleep state included, and a
+/// sleeping dof's value is the forces applied there, so DfDa is 0 (no
+/// `qacc` nudge wakes a tree), and the hinge arm's qpos column, whose nudge
+/// wakes the arm alone, is 0 at the box's dofs. MuJoCo's `mjd_inverseFD` adds each point
 /// to the sleeping dofs' `qfrc_inverse` (the golden's DfDa reads −1.962e7
 /// at the box's vertical dof for the first input) and carries the box's
 /// wake from its own columns into the arm's (−7.16e8 there). Registry
@@ -568,13 +701,7 @@ fn inverse_fd_at_a_sleeping_state_takes_each_point_from_the_centre() {
     };
     let fd = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd");
     let nv = model.nv;
-    let scale = data.qM.iter().fold(0.0_f64, |a, x| a.max(x.abs()));
-    for i in 0..nv {
-        for j in 0..nv {
-            let (a, m) = (fd.DfDa[(i, j)], data.qM[(i, j)]);
-            assert!((a - m).abs() <= 1e-9 * scale, "DfDa[{i}][{j}]: {a}, M {m}");
-        }
-    }
+    assert!(fd.DfDa.iter().all(|&a| a == 0.0), "DfDa {}", fd.DfDa);
     let arm = nv - 1;
     for j in 0..arm {
         assert_eq!(fd.DfDq[(j, arm)], 0.0, "DfDq[{j}] of the arm's input");

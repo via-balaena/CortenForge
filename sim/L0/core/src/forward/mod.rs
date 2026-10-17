@@ -660,25 +660,7 @@ impl Data {
         }
         check::check_inverse_discrete(model)?;
 
-        // qforce = qfrc_applied + qfrc_actuator + Jᵀ·xfrc_applied
-        // (`mju_add`, `mj_xfrcAccumulate`).
-        let mut qforce = &self.qfrc_applied + &self.qfrc_actuator;
-        for body_id in 1..model.nbody {
-            let wrench = self.xfrc_applied[body_id];
-            if wrench.is_zero() {
-                continue;
-            }
-            let point = self.xipos[body_id];
-            crate::jacobian::mj_apply_ft(
-                model,
-                self,
-                &wrench.force,
-                &wrench.torque,
-                &point,
-                body_id,
-                &mut qforce,
-            );
-        }
+        let qforce = crate::inverse::applied_forces(model, self);
 
         let qfrc_constraint = self.qfrc_constraint.clone();
         let efc_force = self.efc_force.clone();
