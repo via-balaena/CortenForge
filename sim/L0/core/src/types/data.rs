@@ -638,8 +638,8 @@ pub struct Data {
     pub rk4_act_dot: [DVector<f64>; 4],
 
     /// RK4: the dofs of the trees asleep at the step's start (length nv),
-    /// held at the start state through the stages and the advance (registry
-    /// `D-RK4-SLEEP`).
+    /// held at the start state through the stages and the advance until a
+    /// stage's forward pass wakes their tree (registry `D-RK4-SLEEP`).
     pub(crate) rk4_dof_asleep: Vec<bool>,
 
     // ==================== Derivative Scratch Buffers ====================

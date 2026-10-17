@@ -69,7 +69,8 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     // other) and their positions. MuJoCo's stages move them with the stale
     // acceleration a sleeping dof keeps, and the stage's forward pass then
     // wakes the tree (registry `D-RK4-SLEEP`). A tree a stage's forward pass
-    // wakes (a contact, say) is let go from that stage on, as MuJoCo's.
+    // wakes (a contact, say) is let go from that stage on; the stages it was
+    // held through count as 0 for it, the acceleration they moved it with.
     let hold = model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < nv;
     if hold {
         data.rk4_dof_asleep.fill(true);
@@ -149,7 +150,7 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         // 2h. Evaluate full forward pipeline (without sensors)
         data.forward_skip_sensors(model)?;
         if hold {
-            release_woken_dofs(model, data);
+            release_woken_dofs(model, data, i);
         }
 
         // 2i. Store rates
@@ -276,14 +277,20 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     Ok(())
 }
 
-/// Let go of the held dofs whose tree a stage's forward pass woke (a
-/// contact, say): from that stage on they take every stage's acceleration,
-/// those before included, as MuJoCo's stages, which hold no tree
-/// (`mj_RungeKutta`, `engine_forward.c:1061-1123`).
-fn release_woken_dofs(model: &Model, data: &mut Data) {
-    for (v, asleep) in data.rk4_dof_asleep.iter_mut().enumerate() {
-        if *asleep && data.tree_awake[model.dof_treeid[v]] {
-            *asleep = false;
+/// Let go of the held dofs whose tree stage `stage`'s forward pass woke (a
+/// contact, say): from that stage on they take each stage's acceleration, as
+/// MuJoCo's stages, which hold no tree (`mj_RungeKutta`,
+/// `engine_forward.c:1061-1123`). The stages before, which held them, moved
+/// them with 0, so their accelerations there count as 0 in the final
+/// combination, not the one a sleeping dof keeps (which MuJoCo's stages
+/// move it with; registry `D-RK4-SLEEP`).
+fn release_woken_dofs(model: &Model, data: &mut Data, stage: usize) {
+    for v in 0..model.nv {
+        if data.rk4_dof_asleep[v] && data.tree_awake[model.dof_treeid[v]] {
+            data.rk4_dof_asleep[v] = false;
+            for held in &mut data.rk4_qacc[..stage] {
+                held[v] = 0.0;
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Sleep under RK4 (registry `D-RK4-SLEEP`): a tree asleep at a step's start
-//! is held there through the stages and the advance, and the sleep step
+//! is held there through the stages and the advance until a stage's forward
+//! pass wakes it, and the sleep step
 //! evaluates its forward pass again from the position stage. MuJoCo 3.5.0
 //! wakes such a tree the next step: its sleep step keeps the last stage's
 //! frames, which the next kinematics find changed, and its stages move a
@@ -241,8 +242,9 @@ fn rk4_sleep_step_evaluates_the_start_state() {
     assert!(apart > 1e-5, "MuJoCo's: {apart}");
 }
 
-/// A tree woken during an RK4 stage takes, from that stage on, every
-/// stage's acceleration, as MuJoCo's, whose stages hold no tree: a box
+/// A tree woken during an RK4 stage takes, from that stage on, each
+/// stage's acceleration, as MuJoCo's, whose stages hold no tree (the stages
+/// before count as 0, its kept acceleration here, asleep from the start): a box
 /// asleep from the start with a sphere falling onto it, and a hinged capsule
 /// asleep from the start, held by a spatial and a fixed tendon with springs,
 /// with a sphere falling onto it. Each wakes at MuJoCo's step, where a
@@ -282,6 +284,97 @@ fn rk4_tree_woken_during_a_stage_steps_as_mujoco() {
                 }
             }
         }
+    }
+}
+
+/// A tree woken during an RK4 stage after an earlier step put it to sleep
+/// takes no acceleration from the stages it was held through: a box resting
+/// on a plane falls asleep (once in 600 steps, keeping the free-fall
+/// acceleration −9.81 on its vertical dof), then a sphere launched onto it
+/// wakes it in a stage (a forward pass at that step's start leaves it
+/// asleep), from two heights: the contact first appears in the second
+/// stage, and in the last. After the waking step the box's vertical
+/// acceleration is 0 at each stage that held it (one, then three), the
+/// acceleration those stages moved it with, and not 0 at the stage that
+/// woke it; and its velocity is h·Σ Bⱼ·(stage j's acceleration) within
+/// 1e-15·max(1, |it|). Before, the held stages counted with the kept
+/// acceleration (−9.81; on the first launch the box's vertical velocity
+/// after the step −0.010526, where with the held stage at 0 it is
+/// −0.007256).
+/// MuJoCo's stages move a sleeping tree with its kept acceleration (registry
+/// `D-RK4-SLEEP`); on this scene it sleeps and wakes again and again, so no
+/// MuJoCo trajectory is compared.
+#[test]
+fn rk4_tree_woken_during_a_stage_takes_no_kept_acceleration() {
+    let model = load_model(
+        r#"<mujoco model="rk4_kept">
+  <option timestep="0.002" integrator="RK4"><flag sleep="enable"/></option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+    <body name="s" pos="0 0 0.5" gravcomp="1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+  </worldbody>
+</mujoco>"#,
+    )
+    .expect("load");
+    let box_tree = model.body_treeid[1];
+    let mut settled = model.make_data();
+    for _ in 0..600 {
+        settled.step(&model).expect("step");
+    }
+    assert!(
+        !settled.tree_awake[box_tree],
+        "the box is awake after 600 steps"
+    );
+    let mut probe = settled.clone();
+    probe.forward(&model).expect("forward");
+    assert!(
+        probe.qacc[2].abs() > 1.0,
+        "the box's kept acceleration {}",
+        probe.qacc[2]
+    );
+    let h = model.timestep;
+    let weights = [1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0];
+    // The sphere launched from two heights: its contact with the box first
+    // appears in the second stage, and in the last (the gap at the step's
+    // start between h·2 m/s and its half), so one stage, then three, hold it.
+    for (height, held) in [(0.5, 1), (0.5025, 3)] {
+        let mut data = settled.clone();
+        data.qpos[9] = height;
+        data.qvel[8] = -2.0;
+        let mut woke = false;
+        for k in 0..200 {
+            let was_asleep = !data.tree_awake[box_tree];
+            let mut probe = data.clone();
+            probe.forward(&model).expect("forward");
+            data.step(&model).expect("step");
+            if was_asleep && data.tree_awake[box_tree] {
+                assert!(
+                    !probe.tree_awake[box_tree],
+                    "{height}, step {k}: the start state wakes the box"
+                );
+                let stages: Vec<f64> = (0..4).map(|j| data.rk4_qacc[j][2]).collect();
+                assert!(
+                    stages[..held].iter().all(|&a| a == 0.0) && stages[held] != 0.0,
+                    "{height}, step {k}: the box's vertical acceleration at each stage {stages:?}, \
+                     {held} held"
+                );
+                for dof in 0..6 {
+                    let advance: f64 = (0..4)
+                        .map(|j| weights[j] * data.rk4_qacc[j][dof])
+                        .sum::<f64>()
+                        * h;
+                    assert!(
+                        (data.qvel[dof] - advance).abs() <= 1e-15 * advance.abs().max(1.0),
+                        "{height}, step {k}: the box's qvel[{dof}] {}, its stages' {advance}",
+                        data.qvel[dof]
+                    );
+                }
+                woke = true;
+                break;
+            }
+        }
+        assert!(woke, "{height}: the sphere never woke the box");
     }
 }
 
