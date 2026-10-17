@@ -235,7 +235,7 @@ fn step_trajectory(
         data.qacc[1] = qacc[1];
 
         // inverse() → qfrc_inverse = required torques
-        data.inverse(&model);
+        data.inverse(&model).expect("inverse");
 
         torques.shoulder = data.qfrc_inverse[0];
         torques.elbow = data.qfrc_inverse[1];

@@ -39,6 +39,43 @@ state (qpos, qvel):
   efc_state). It refuses the file unless the PGS case's solver_fwdinv[0]
   and the RK4 case's are above 1e-6 and the friction-loss and noslip
   cases' states after mj_step differ from those after mj_forward.
+- stages: the limit case's arm with sensors at every stage (joint position,
+  a site's position, joint velocity, a velocimeter, an accelerometer, a
+  force and a torque) and the energy flag, after mj_forward at a state with
+  no constraint row, then qpos and qvel moved to one past the limit and
+  qacc set: mj_inverse runs its own position and velocity stages
+  (`mj_invPosition`, `mj_invVelocity`, `engine_inverse.c:38-72`) with their
+  sensors and energy, then the acceleration sensors. qfrc_inverse,
+  efc_force, qfrc_constraint, sensordata, energy and nisland after it (its
+  position stage makes no islands: nisland stays the forward's 0). It
+  refuses the case unless the first state has no row and the second has.
+- sleep: a box resting on a plane and a damped hanging arm, sleep enabled,
+  3,000 steps from rest (both trees asleep), then mj_forward and mj_inverse
+  three times: qacc and qfrc_bias after the forward, qfrc_applied and
+  qfrc_actuator, and qfrc_inverse after each call. MuJoCo's `mj_rne` writes
+  the awake dofs only (`engine_core_smooth.c:2481-2484`) and the sum adds to
+  `qfrc_inverse` (`engine_inverse.c:238-241`), so a sleeping dof's value
+  grows call by call. Then, from a fresh MjData at the same state (the same
+  steps and mj_forward), mjd_inverseFD (forward differences, eps 1e-6):
+  its centre and every point add to the sleeping dofs' qfrc_inverse in
+  turn, and a qpos nudge that wakes a tree carries into the later points.
+  It refuses the case unless every tree sleeps and the third call's value
+  differs from the first's.
+- wake: a box resting on a plane that starts asleep (sleep="init") and an
+  awake sphere away from it; the sphere's qpos moved to overlap the box.
+  mj_inverse there stops with an error: its position stage wakes no tree a
+  contact touches (no `mj_wakeCollision`), and its constraint counting
+  refuses a contact with a sleeping geom (`mj_nc`,
+  `engine_core_constraint.c:1944-1956`); the message. From a fresh MjData
+  at that state, mj_forward wakes the box and mj_inverse then runs:
+  tree_asleep, ncon and nefc after the forward, qfrc_inverse after the
+  inverse. It refuses the case unless mj_inverse stops with that error and
+  mj_forward wakes the box.
+- wake_gap: the same with margin 0.02 and gap 0.02 on the ball's geom and
+  the ball 0.01 from the box: the contact is listed (dist <= margin) and
+  excluded (dist >= margin - gap), so `mj_nc` skips it and mj_inverse runs;
+  the box sleeps on. ncon and tree_asleep after it. It refuses the case
+  unless the contact is listed and excluded and the box sleeps.
 """
 import json
 import os
@@ -207,6 +244,164 @@ def fwdinv(xml, qpos, qvel, xfrc=None, opt=""):
     return {"xml": on, **before, "after_forward": forward, "after_step": step}, forward_states
 
 
+STAGES = LIMIT.replace('<mujoco model="limit">', '<mujoco model="stages">', 1).replace(
+    '<option timestep="0.002"/>',
+                      '<option timestep="0.002">\n    <flag energy="enable"/>\n  </option>', 1).replace(
+    '<geom type="box" size="0.2 0.03 0.03" pos="0.2 0 0" mass="1"/>',
+    '<geom type="box" size="0.2 0.03 0.03" pos="0.2 0 0" mass="1"/>\n      <site name="tip" pos="0.4 0 0"/>', 1).replace(
+    '<geom type="sphere" size="0.05" mass="0.3"/>',
+    '<geom type="sphere" size="0.05" mass="0.3"/>\n        <site name="ball" pos="0.02 0 0.01"/>', 1).replace(
+    "  </worldbody>",
+    """  </worldbody>
+  <sensor>
+    <jointpos joint="h2"/>
+    <framepos objtype="site" objname="ball"/>
+    <jointvel joint="h"/>
+    <velocimeter site="ball"/>
+    <accelerometer site="ball"/>
+    <force site="tip"/>
+    <torque site="tip"/>
+  </sensor>""", 1)
+assert STAGES.count("<sensor>") == 1 and STAGES.count("site name=") == 2 and "energy" in STAGES \
+    and 'model="stages"' in STAGES, STAGES
+
+
+def stages():
+    """mj_forward at a state with no row, then qpos, qvel and qacc moved and
+    mj_inverse: its own stages, sensors and energy at the moved state."""
+    m = mujoco.MjModel.from_xml_string(STAGES)
+    d = mujoco.MjData(m)
+    d.qpos[:] = [0.003, 0.4]
+    d.qvel[:] = [-0.3, 0.6]
+    mujoco.mj_forward(m, d)
+    if d.nefc != 0:
+        sys.exit(f"stages: {d.nefc} rows at the first state")
+    out = {"xml": STAGES, "forward_qpos": floats(d.qpos), "forward_qvel": floats(d.qvel)}
+    d.qpos[:] = [0.52, -0.3]
+    d.qvel[:] = [0.4, -0.2]
+    d.qacc[:] = [0.7, -1.3]
+    mujoco.mj_inverse(m, d)
+    if d.nefc == 0:
+        sys.exit("stages: no row at the moved state")
+    out.update({"qpos": floats(d.qpos), "qvel": floats(d.qvel), "qacc": floats(d.qacc), "nefc": int(d.nefc),
+                "qfrc_inverse": floats(d.qfrc_inverse), "efc_force": floats(d.efc_force),
+                "qfrc_constraint": floats(d.qfrc_constraint), "sensordata": floats(d.sensordata),
+                "energy": floats(d.energy), "nisland": int(d.nisland)})
+    return out
+
+
+SLEEP = """<mujoco model="sleep">
+  <option timestep="0.002">
+    <flag sleep="enable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="box" pos="0 0 0.1"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="2"/></body>
+    <body name="arm" pos="1 0 1"><joint name="h" type="hinge" axis="0 1 0" damping="0.3"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="0.5"/></body>
+  </worldbody>
+</mujoco>"""
+SLEEP_STEPS = 3000
+
+
+def sleep():
+    """Every tree asleep after SLEEP_STEPS steps, then mj_forward and three
+    mj_inverse calls."""
+    m = mujoco.MjModel.from_xml_string(SLEEP)
+    d = mujoco.MjData(m)
+    for _ in range(SLEEP_STEPS):
+        mujoco.mj_step(m, d)
+    if np.any(d.tree_asleep < 0):
+        sys.exit(f"sleep: a tree is awake, {d.tree_asleep}")
+    mujoco.mj_forward(m, d)
+    out = {"xml": SLEEP, "steps": SLEEP_STEPS, "qpos": floats(d.qpos), "qacc": floats(d.qacc),
+           "qfrc_bias": floats(d.qfrc_bias), "qfrc_applied": floats(d.qfrc_applied),
+           "qfrc_actuator": floats(d.qfrc_actuator), "qfrc_inverse": []}
+    for _ in range(3):
+        mujoco.mj_inverse(m, d)
+        out["qfrc_inverse"].append(floats(d.qfrc_inverse))
+    if out["qfrc_inverse"][2] == out["qfrc_inverse"][0]:
+        sys.exit("sleep: qfrc_inverse does not grow")
+    d = mujoco.MjData(m)
+    for _ in range(SLEEP_STEPS):
+        mujoco.mj_step(m, d)
+    mujoco.mj_forward(m, d)
+    nv = m.nv
+    dfdq, dfdv, dfda = (np.zeros((nv, nv)) for _ in range(3))
+    mujoco.mjd_inverseFD(m, d, 1e-6, 0, dfdq, dfdv, dfda, None, None, None, None)
+    out.update({"DfDq": floats(dfdq), "DfDv": floats(dfdv), "DfDa": floats(dfda)})
+    return out
+
+
+WAKE = """<mujoco model="wake">
+  <option timestep="0.002">
+    <flag sleep="enable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="box" pos="0 0 0.1" sleep="init"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="2"/></body>
+    <body name="ball" pos="1 0 0.1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+  </worldbody>
+</mujoco>"""
+WAKE_BALL_X = 0.15
+
+
+def wake():
+    """The box asleep from the reset, the ball moved onto it: mj_inverse's
+    error; then, from a fresh MjData, mj_forward and mj_inverse."""
+    m = mujoco.MjModel.from_xml_string(WAKE)
+    box = m.body_treeid[m.body("box").id]
+    ball = m.jnt_qposadr[m.body_jntadr[m.body("ball").id]]
+
+    def at_state():
+        d = mujoco.MjData(m)
+        if d.tree_asleep[box] < 0:
+            sys.exit("wake: the box is awake after the reset")
+        d.qpos[ball] = WAKE_BALL_X
+        return d
+
+    d = at_state()
+    out = {"xml": WAKE, "qpos": floats(d.qpos), "box_geom": int(m.body_geomadr[m.body("box").id])}
+    try:
+        mujoco.mj_inverse(m, d)
+        sys.exit("wake: mj_inverse ran")
+    except mujoco.FatalError as e:
+        out["inverse_error"] = str(e)
+    if "involves sleeping geom" not in out["inverse_error"]:
+        sys.exit(f"wake: {out['inverse_error']}")
+    d = at_state()
+    mujoco.mj_forward(m, d)
+    if d.tree_asleep[box] >= 0:
+        sys.exit("wake: mj_forward left the box asleep")
+    out["after_forward"] = {"tree_asleep": ints(d.tree_asleep), "ncon": int(d.ncon), "nefc": int(d.nefc)}
+    mujoco.mj_inverse(m, d)
+    out["qfrc_inverse"] = floats(d.qfrc_inverse)
+    return out
+
+
+WAKE_GAP = WAKE.replace('<geom type="sphere" size="0.1" mass="1"/>',
+                        '<geom type="sphere" size="0.1" mass="1" margin="0.02" gap="0.02"/>', 1)
+assert WAKE_GAP.count('gap="0.02"') == 1, WAKE_GAP
+WAKE_GAP_BALL_X = 0.21
+
+
+def wake_gap():
+    """The ball 0.01 from the sleeping box, inside its margin and its gap:
+    mj_inverse runs and the box sleeps on."""
+    m = mujoco.MjModel.from_xml_string(WAKE_GAP)
+    d = mujoco.MjData(m)
+    box = m.body_treeid[m.body("box").id]
+    ball = m.jnt_qposadr[m.body_jntadr[m.body("ball").id]]
+    d.qpos[ball] = WAKE_GAP_BALL_X
+    mujoco.mj_inverse(m, d)
+    geoms = {int(m.body_geomadr[m.body(n).id]) for n in ("box", "ball")}
+    near = [c for c in d.contact[:d.ncon] if {int(c.geom[0]), int(c.geom[1])} == geoms]
+    if len(near) != 1 or not near[0].exclude or d.tree_asleep[box] < 0:
+        sys.exit(f"wake_gap: {near}, tree_asleep {d.tree_asleep}")
+    return {"xml": WAKE_GAP, "qpos": floats(d.qpos), "ncon": int(d.ncon), "tree_asleep": ints(d.tree_asleep),
+            "dist": float(near[0].dist)}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -231,6 +426,10 @@ def main():
     for name in ("floss_fwdinv", "noslip_fwdinv"):
         if cases[name]["after_step"]["efc_state"] == forward_states[name]:
             sys.exit(f"{name}: the inverse's states are the forward's {forward_states[name]}")
+    cases["stages"] = stages()
+    cases["sleep"] = sleep()
+    cases["wake"] = wake()
+    cases["wake_gap"] = wake_gap()
     out = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "inverse.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"))

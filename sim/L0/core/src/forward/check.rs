@@ -12,11 +12,14 @@
 use crate::types::flags::{disabled, enabled};
 use crate::types::validation::is_bad;
 use crate::types::warning::{Warning, mj_warning};
-use crate::types::{DISABLE_AUTORESET, Data, ENABLE_SLEEP, EqualityType, Model, StepError};
+use crate::types::{
+    DISABLE_AUTORESET, DISABLE_CONSTRAINT, DISABLE_CONTACT, Data, ENABLE_SLEEP, EqualityType,
+    Model, SleepState, StepError,
+};
 
 /// The check every `Result` entry point (`step`, `step1`, `step2`, `forward`,
-/// `forward_skip`, `integrate`) runs before any work: the timestep, then the
-/// shape of `data`.
+/// `forward_skip`, `integrate`, `inverse`, `inverse_skip`) runs before any
+/// work: the timestep, then the shape of `data`.
 ///
 /// # Errors
 ///
@@ -27,6 +30,45 @@ pub fn check_step_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
         return Err(StepError::InvalidTimestep);
     }
     check_data_shape(model, data)
+}
+
+/// MuJoCo's check in its constraint counting (`mj_nc`,
+/// `engine_core_constraint.c:1915-1956`), which its inverse dynamics' position
+/// stage reaches, running no contact wake: with sleep enabled and a tree
+/// asleep, constraints and contacts not disabled, a contact between two geoms
+/// that is not excluded (`dist ≥ includemargin`, MuJoCo's `exclude`) and
+/// involves a sleeping body (its weld's) is refused.
+///
+/// # Errors
+///
+/// [`StepError::ContactWithSleepingGeom`] naming the first such contact and
+/// its sleeping geom (the first one's where both sleep).
+pub fn check_contacts_awake(model: &Model, data: &Data) -> Result<(), StepError> {
+    if !enabled(model, ENABLE_SLEEP)
+        || data.ntree_awake >= model.ntree
+        || disabled(model, DISABLE_CONSTRAINT)
+        || disabled(model, DISABLE_CONTACT)
+    {
+        return Ok(());
+    }
+    let asleep = |geom: usize| {
+        data.body_sleep_state[model.body_weldid[model.geom_body[geom]]] == SleepState::Asleep
+    };
+    for (i, contact) in data.contacts[..data.ncon].iter().enumerate() {
+        if -contact.depth >= contact.includemargin
+            || contact.flex_vertex.is_some()
+            || contact.flex_vertex2.is_some()
+        {
+            continue;
+        }
+        if let Some(geom) = [contact.geom1, contact.geom2]
+            .into_iter()
+            .find(|&g| asleep(g))
+        {
+            return Err(StepError::ContactWithSleepingGeom { contact: i, geom });
+        }
+    }
+    Ok(())
 }
 
 /// The check the calls that run the position stage make before any work

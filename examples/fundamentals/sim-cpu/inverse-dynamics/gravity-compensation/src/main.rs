@@ -165,7 +165,7 @@ fn setup(
     data.qacc[1] = 0.0;
 
     // 4. inverse() → qfrc_inverse = holding torques
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     let shoulder_torque = data.qfrc_inverse[0];
     let elbow_torque = data.qfrc_inverse[1];

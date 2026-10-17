@@ -138,7 +138,7 @@ fn multi_joint_bodies_match_mujoco_3_5_0_at_a_state() {
         );
         let qm: Vec<f64> = data.qM.transpose().iter().copied().collect();
         assert_close(&format!("{name} qM"), &qm, &floats(&f["qM"]), TOL);
-        data.inverse(&model);
+        data.inverse(&model).expect("inverse");
         for b in 0..model.nbody {
             assert_close(
                 &format!("{name} cacc[{b}]"),

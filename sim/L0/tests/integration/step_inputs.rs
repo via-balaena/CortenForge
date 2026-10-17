@@ -8,8 +8,8 @@ use sim_core::{BodyWrench, Data, MjStage, Model, StepError};
 
 type EntryPoint = fn(&mut Data, &Model) -> Result<(), StepError>;
 
-/// The six `Result` entry points on `Data`.
-const ENTRY_POINTS: [(&str, EntryPoint); 6] = [
+/// The eight `Result` entry points on `Data`.
+const ENTRY_POINTS: [(&str, EntryPoint); 8] = [
     ("step", |d, m| d.step(m)),
     ("step1", |d, m| d.step1(m)),
     ("step2", |d, m| d.step2(m)),
@@ -18,6 +18,8 @@ const ENTRY_POINTS: [(&str, EntryPoint); 6] = [
         d.forward_skip(m, MjStage::None, false)
     }),
     ("integrate", |d, m| d.integrate(m)),
+    ("inverse", |d, m| d.inverse(m)),
+    ("inverse_skip", |d, m| d.inverse_skip(m, MjStage::Vel, true)),
 ];
 
 fn pendulum(links: usize) -> Model {

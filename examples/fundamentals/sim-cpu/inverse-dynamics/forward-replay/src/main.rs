@@ -135,7 +135,7 @@ fn compute_torque_profile(model: &sim_core::Model) -> TorqueProfile {
         // Overwrite qacc with desired, then inverse()
         data.qacc[0] = qacc[0];
         data.qacc[1] = qacc[1];
-        data.inverse(model);
+        data.inverse(model).expect("inverse");
 
         torques.push([data.qfrc_inverse[0], data.qfrc_inverse[1]]);
 

@@ -932,6 +932,21 @@ pub enum StepError {
         /// The equality.
         eq: usize,
     },
+    /// With sleep enabled, the inverse dynamics' position stage
+    /// ([`Data::inverse`](crate::Data::inverse), from `MjStage::None`) met a
+    /// contact between two geoms, not excluded, one of whose bodies sleeps:
+    /// that stage wakes no tree a contact touches (MuJoCo's `mj_invPosition`
+    /// runs no `mj_wakeCollision`), and MuJoCo 3.5.0's constraint counting
+    /// stops there ("contact … involves sleeping geom …", `mj_nc`,
+    /// `engine_core_constraint.c:1944-1956`). The forward pass wakes such a
+    /// tree first, so a forward pass at the same state, then the inverse,
+    /// runs.
+    ContactWithSleepingGeom {
+        /// The contact, an index into `Data::contacts`.
+        contact: usize,
+        /// Its sleeping geom.
+        geom: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -970,6 +985,9 @@ impl std::fmt::Display for StepError {
                 f,
                 "equality {eq}: tendon equality does not yet support sleeping"
             ),
+            Self::ContactWithSleepingGeom { contact, geom } => {
+                write!(f, "contact {contact} involves sleeping geom {geom}")
+            }
         }
     }
 }

@@ -481,32 +481,31 @@ pub struct InverseDynamicsDerivatives {
 ///
 /// # Algorithm
 ///
-/// The centre point runs the whole pipeline at the nominal state, then
-/// `inverse()` with the nominal `qacc`. The columns follow in MuJoCo's order:
+/// Each point is MuJoCo's inverse dynamics (`mj_inverseSkip`,
+/// `engine_inverse.c:184-250`, as [`Data::inverse`] without its sensors)
+/// from the stage its nudge changes, with the nominal `qacc` but where it is
+/// nudged. The centre point runs every stage; the columns follow in
+/// MuJoCo's order:
 ///
-/// 1. **DfDa**: `qacc[i] ± ε`, `inverse()` only, at the centre point (MuJoCo
-///    skips to its acceleration stage).
-/// 2. **DfDv**: `qvel[i] ± ε`, the pipeline from the velocity stage on, then
-///    `inverse()` with the nominal `qacc`.
-/// 3. **DfDq**: `qpos` moved by `± ε` in tangent direction `i`, the whole
-///    pipeline, then `inverse()` with the nominal `qacc`.
+/// 1. **DfDa**: `qacc[i] ± ε`, the constraint force and the sum only.
+/// 2. **DfDv**: `qvel[i] ± ε`, from the velocity stage on.
+/// 3. **DfDq**: `qpos` moved by `± ε` in tangent direction `i`, every stage.
 ///
 /// Forward differences (`centered: false`) take each column against the
 /// centre point; MuJoCo's `mjd_inverseFD` takes forward differences only.
-/// Sensors are skipped. No column fires `cb_control`: MuJoCo's columns run
-/// `mj_inverseSkip`, which fires none (`engine_inverse.c:184-245`), so
+/// Sensors are skipped. No column fires `cb_control`, and none runs the
+/// actuation or the constraint solve, as MuJoCo's `mj_inverseSkip`, so
 /// `ctrl` is read as the caller left it.
 ///
-/// Each `inverse()` remakes the constraint force from that column's
-/// `qacc`, as MuJoCo's `mj_inverseSkip` does (`mj_invConstraint`,
-/// `engine_inverse.c:223`).
+/// Each point remakes the constraint force from its `qacc`, as MuJoCo's
+/// `mj_inverseSkip` does (`mj_invConstraint`, `engine_inverse.c:223`).
 ///
 /// # Cost
 ///
-/// - Centered: `1 + 2·nv` full pipelines and `2·nv` from the velocity stage.
-/// - Forward: `1 + nv` full pipelines and `nv` from the velocity stage.
-///
-/// Every column and the centre point also run `inverse()`.
+/// - Centered: `1 + 2·nv` position and velocity stages, `2·nv` velocity
+///   stages, and `1 + 6·nv` constraint forces and sums.
+/// - Forward: `1 + nv` position and velocity stages, `nv` velocity stages,
+///   and `1 + 3·nv` constraint forces and sums.
 ///
 /// # Panics
 ///
@@ -518,8 +517,7 @@ pub struct InverseDynamicsDerivatives {
 /// ([`StepError::InvalidTimestep`], [`StepError::DataShapeMismatch`]), then
 /// [`StepError::UnsupportedIntegrator`] for RK4 and
 /// [`StepError::UnsupportedNoslip`] for a model with noslip iterations, as
-/// MuJoCo's `mjd_inverseFD` refuses them. Then a `StepError` from the
-/// pipeline.
+/// MuJoCo's `mjd_inverseFD` refuses them.
 // Mathematical symbols (J, M, K, qfrc) follow MuJoCo's inverse-dynamics-derivatives notation.
 #[allow(non_snake_case, clippy::similar_names)]
 pub fn mjd_inverse_fd(
@@ -550,19 +548,25 @@ pub fn mjd_inverse_fd(
     let qacc_0 = data.qacc.clone();
     let mut scratch = data.clone();
 
-    // The force at the perturbed input; `stage` is where the pipeline starts
-    // (None: after a qpos change, Pos: after a qvel change, Vel: qacc only).
+    // The force at the perturbed input; `stage` is the last stage the nudge
+    // leaves as it was (None: a qpos nudge, Pos: a qvel nudge, Vel: qacc).
     let force = |scratch: &mut Data, stage: MjStage| -> Result<DVector<f64>, StepError> {
-        if stage < MjStage::Vel {
-            scratch.forward_skip_without_control(model, stage, true)?;
-            scratch.qacc.copy_from(&qacc_0);
-        }
-        scratch.inverse(model);
+        scratch.inverse_skip_unchecked(model, stage, true)?;
         Ok(scratch.qfrc_inverse.clone())
     };
 
     // Centre point.
     let f_0 = force(&mut scratch, MjStage::None)?;
+
+    // With sleep enabled every point starts from the centre's whole state,
+    // its sleep state included: from less, a nudge that wakes a tree would
+    // reach the later points (registry `D-INVERSE-SLEEP`).
+    let centre = (model.enableflags & ENABLE_SLEEP != 0).then(|| scratch.clone());
+    let fresh = |scratch: &mut Data| {
+        if let Some(centre) = &centre {
+            scratch.clone_from(centre);
+        }
+    };
 
     let mut DfDq = DMatrix::zeros(nv, nv);
     let mut DfDv = DMatrix::zeros(nv, nv);
@@ -574,9 +578,11 @@ pub fn mjd_inverse_fd(
 
     // --- DfDa: perturb qacc, at the centre point ---
     for i in 0..nv {
+        fresh(&mut scratch);
         scratch.qacc[i] = qacc_0[i] + eps;
         let f_plus = force(&mut scratch, MjStage::Vel)?;
         let f_minus = if config.centered {
+            fresh(&mut scratch);
             scratch.qacc[i] = qacc_0[i] - eps;
             Some(force(&mut scratch, MjStage::Vel)?)
         } else {
@@ -589,9 +595,11 @@ pub fn mjd_inverse_fd(
 
     // --- DfDv: perturb qvel; positions are the centre point's ---
     for i in 0..nv {
+        fresh(&mut scratch);
         scratch.qvel[i] = qvel_0[i] + eps;
         let f_plus = force(&mut scratch, MjStage::Pos)?;
         let f_minus = if config.centered {
+            fresh(&mut scratch);
             scratch.qvel[i] = qvel_0[i] - eps;
             Some(force(&mut scratch, MjStage::Pos)?)
         } else {
@@ -606,10 +614,12 @@ pub fn mjd_inverse_fd(
     let mut dq = DVector::zeros(nv);
     for i in 0..nv {
         dq[i] = eps;
+        fresh(&mut scratch);
         mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos_0, &dq, 1.0);
         let f_plus = force(&mut scratch, MjStage::None)?;
         let f_minus = if config.centered {
             dq[i] = -eps;
+            fresh(&mut scratch);
             mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos_0, &dq, 1.0);
             Some(force(&mut scratch, MjStage::None)?)
         } else {
@@ -792,8 +802,8 @@ mod forward_skip_tests {
         assert!(MjStage::None < MjStage::Vel);
     }
 
-    /// Verify that velocity FD columns produce correct derivatives when
-    /// using forward_skip(Pos) to skip the position stage.
+    /// Verify that after a velocity nudge `forward_skip(Pos)` gives the full
+    /// forward's bias force and acceleration, skipping the position stage.
     ///
     /// This is the key use case for forward_skip in FD loops: position
     /// data is unchanged when perturbing velocity, so FK/collision/CRBA
@@ -808,15 +818,11 @@ mod forward_skip_tests {
         data.forward(&model).expect("forward failed");
 
         let eps = 1e-6;
-        let qacc_0 = data.qacc.clone();
 
         // Reference: use full forward() for velocity FD
         let mut d_full = data.clone();
         d_full.qvel[0] += eps;
         d_full.forward(&model).expect("ref fwd+ failed");
-        d_full.qacc.copy_from(&qacc_0);
-        d_full.inverse(&model);
-        let frc_full = d_full.qfrc_inverse.clone();
 
         // Test: use forward_skip(Pos) for velocity FD
         let mut d_skip = data.clone();
@@ -827,19 +833,23 @@ mod forward_skip_tests {
         d_skip
             .forward_skip(&model, MjStage::Pos, true)
             .expect("skip fwd+ failed");
-        d_skip.qacc.copy_from(&qacc_0);
-        d_skip.inverse(&model);
-        let frc_skip = d_skip.qfrc_inverse.clone();
 
-        // Results should match
-        for i in 0..model.nv {
-            assert!(
-                (frc_full[i] - frc_skip[i]).abs() < 1e-12,
-                "qfrc_inverse[{}] mismatch: full={:.16e}, skip={:.16e}",
-                i,
-                frc_full[i],
-                frc_skip[i]
-            );
+        // The velocity stage's bias force and the acceleration should match
+        // (inverse() runs its own stages, so it cannot tell them apart).
+        for (what, full, skip) in [
+            ("qfrc_bias", &d_full.qfrc_bias, &d_skip.qfrc_bias),
+            ("qacc", &d_full.qacc, &d_skip.qacc),
+        ] {
+            for i in 0..model.nv {
+                assert!(
+                    (full[i] - skip[i]).abs() < 1e-12,
+                    "{}[{}] mismatch: full={:.16e}, skip={:.16e}",
+                    what,
+                    i,
+                    full[i],
+                    skip[i]
+                );
+            }
         }
     }
 }
@@ -951,10 +961,10 @@ mod inverse_fd_tests {
         d_minus.qvel[0] -= eps;
         d_plus.forward(&model).expect("fwd+ failed");
         d_plus.qacc.copy_from(&qacc_0);
-        d_plus.inverse(&model);
+        d_plus.inverse(&model).expect("inverse");
         d_minus.forward(&model).expect("fwd- failed");
         d_minus.qacc.copy_from(&qacc_0);
-        d_minus.inverse(&model);
+        d_minus.inverse(&model).expect("inverse");
 
         let col_fd = (&d_plus.qfrc_inverse - &d_minus.qfrc_inverse) / (2.0 * eps);
         for i in 0..model.nv {
@@ -1019,10 +1029,10 @@ mod inverse_fd_tests {
 
         d_plus.forward(&model).expect("fwd+ failed");
         d_plus.qacc.copy_from(&qacc_0);
-        d_plus.inverse(&model);
+        d_plus.inverse(&model).expect("inverse");
         d_minus.forward(&model).expect("fwd- failed");
         d_minus.qacc.copy_from(&qacc_0);
-        d_minus.inverse(&model);
+        d_minus.inverse(&model).expect("inverse");
 
         let col_fd = (&d_plus.qfrc_inverse - &d_minus.qfrc_inverse) / (2.0 * eps);
         for i in 0..model.nv {
@@ -1136,14 +1146,14 @@ mod inverse_fd_tests {
             scratch.qacc.copy_from(&qacc_0);
             scratch.qacc[j] += eps;
             scratch.flg_rnepost = false;
-            scratch.inverse(&model);
+            scratch.inverse(&model).expect("inverse");
             let f_plus = scratch.qfrc_inverse.clone();
 
             // -eps
             scratch.qacc.copy_from(&qacc_0);
             scratch.qacc[j] -= eps;
             scratch.flg_rnepost = false;
-            scratch.inverse(&model);
+            scratch.inverse(&model).expect("inverse");
 
             let col = (&f_plus - &scratch.qfrc_inverse) / (2.0 * eps);
             for i in 0..model.nv {

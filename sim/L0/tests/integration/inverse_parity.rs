@@ -10,7 +10,7 @@
 //! its cases).
 
 use serde_json::Value;
-use sim_core::{ConstraintState, Data, DerivativeConfig, Model, mjd_inverse_fd};
+use sim_core::{ConstraintState, Data, DerivativeConfig, Model, StepError, mjd_inverse_fd};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -105,7 +105,7 @@ fn inverse_takes_the_constraint_force_from_qacc() {
             data.qacc
                 .as_mut_slice()
                 .copy_from_slice(&floats(&want["qacc"]));
-            data.inverse(&model);
+            data.inverse(&model).expect("inverse");
             let what = |field: &str| format!("{name} {at}: {field}");
             assert_eq!(
                 bits(data.efc_force.as_slice()),
@@ -316,4 +316,272 @@ fn fwdinv_compares_in_the_step_as_mujoco() {
             );
         }
     }
+}
+
+/// `values` against MuJoCo's `want` within `1e-12·max(1, |MuJoCo's|)`.
+fn assert_rel(what: &str, values: &[f64], want: &[f64]) {
+    assert_eq!(values.len(), want.len(), "{what}: length");
+    for (k, (a, b)) in values.iter().zip(want).enumerate() {
+        assert!(
+            (a - b).abs() <= 1e-12 * b.abs().max(1.0),
+            "{what}[{k}]: {a}, MuJoCo {b}"
+        );
+    }
+}
+
+/// `inverse()` runs MuJoCo's own position and velocity stages
+/// (`mj_invPosition`, `mj_invVelocity`, `engine_inverse.c:38-72`) with
+/// their sensors and energy, then the acceleration sensors: after a forward
+/// pass at a state with no constraint row, `qpos` and `qvel` moved past the
+/// arm's limit and `qacc` set, it makes the limit's row and gives MuJoCo's
+/// `efc_force` and `qfrc_constraint` bit for bit, and its `qfrc_inverse`,
+/// sensors (joint position, a site's position, joint velocity, a
+/// velocimeter, an accelerometer, a force, a torque) and energy within
+/// 1e-12·max(1, |MuJoCo's|). Before, it read the forward pass's stages: no
+/// row, and the forward's sensors and energy.
+#[test]
+fn inverse_runs_its_own_stages_as_mujoco() {
+    let case = &golden()["cases"]["stages"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["forward_qpos"]));
+    data.qvel
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["forward_qvel"]));
+    data.forward(&model).expect("forward");
+    assert!(data.efc_type.is_empty(), "rows at the forward's state");
+    for (field, target) in [
+        ("qpos", &mut data.qpos),
+        ("qvel", &mut data.qvel),
+        ("qacc", &mut data.qacc),
+    ] {
+        target.as_mut_slice().copy_from_slice(&floats(&case[field]));
+    }
+    data.inverse(&model).expect("inverse");
+    assert_eq!(
+        data.efc_type.len(),
+        usize::try_from(case["nefc"].as_u64().expect("nefc")).expect("nefc"),
+        "rows at the moved state"
+    );
+    assert_eq!(
+        bits(data.efc_force.as_slice()),
+        bits(&floats(&case["efc_force"])),
+        "efc_force {:?}",
+        data.efc_force.as_slice()
+    );
+    assert_eq!(
+        bits(data.qfrc_constraint.as_slice()),
+        bits(&floats(&case["qfrc_constraint"])),
+        "qfrc_constraint {:?}",
+        data.qfrc_constraint.as_slice()
+    );
+    assert_rel(
+        "qfrc_inverse",
+        data.qfrc_inverse.as_slice(),
+        &floats(&case["qfrc_inverse"]),
+    );
+    assert_rel(
+        "sensordata",
+        data.sensordata.as_slice(),
+        &floats(&case["sensordata"]),
+    );
+    assert_rel(
+        "energy",
+        &[data.energy_potential, data.energy_kinetic],
+        &floats(&case["energy"]),
+    );
+    assert_eq!(
+        data.nisland,
+        usize::try_from(case["nisland"].as_u64().expect("nisland")).expect("nisland"),
+        "nisland: the inverse makes no islands"
+    );
+}
+
+/// With sleep enabled, the inverse's position stage wakes no tree a contact
+/// touches (MuJoCo's `mj_invPosition` runs no `mj_wakeCollision`), and a
+/// contact with a sleeping geom is refused, as MuJoCo's `mj_inverse` stops
+/// ("mj_nc: contact … involves sleeping geom …", the golden): a box starting
+/// asleep on a plane and a ball moved onto it give
+/// `StepError::ContactWithSleepingGeom` naming the box's geom. A forward
+/// pass at the same state wakes the box, as MuJoCo's, and the inverse then
+/// gives MuJoCo's `qfrc_inverse` within 1e-9 (the forward's applied forces,
+/// 0). Before, the inverse read the forward's stages and made no rows.
+#[test]
+fn inverse_refuses_a_contact_with_a_sleeping_tree_as_mujoco() {
+    let case = &golden()["cases"]["wake"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let box_geom = usize::try_from(case["box_geom"].as_u64().expect("geom")).expect("geom");
+    let at_state = || {
+        let mut data = model.make_data();
+        assert!(!data.tree_awake[0], "the box is awake after the reset");
+        data.qpos
+            .as_mut_slice()
+            .copy_from_slice(&floats(&case["qpos"]));
+        data
+    };
+    let mujoco = case["inverse_error"].as_str().expect("error");
+    let mut data = at_state();
+    match data.inverse(&model) {
+        Err(StepError::ContactWithSleepingGeom { contact, geom }) => {
+            assert_eq!(geom, box_geom, "MuJoCo's: {mujoco}");
+            assert!(
+                mujoco.ends_with(&format!("involves sleeping geom {geom}")),
+                "MuJoCo's: {mujoco}"
+            );
+            assert_eq!(
+                StepError::ContactWithSleepingGeom { contact, geom }.to_string(),
+                format!("contact {contact} involves sleeping geom {geom}")
+            );
+        }
+        other => panic!("inverse: {other:?}, MuJoCo's: {mujoco}"),
+    }
+    let mut data = at_state();
+    data.forward(&model).expect("forward");
+    assert!(
+        data.tree_awake.iter().all(|&a| a),
+        "the forward wakes the box"
+    );
+    data.inverse(&model).expect("inverse");
+    for (k, (a, b)) in data
+        .qfrc_inverse
+        .iter()
+        .zip(floats(&case["qfrc_inverse"]))
+        .enumerate()
+    {
+        assert!((a - b).abs() <= 1e-9, "qfrc_inverse[{k}]: {a}, MuJoCo {b}");
+    }
+}
+
+/// A contact MuJoCo excludes (`dist ≥ margin − gap`) is not refused: with
+/// margin and gap 0.02 on the ball's geom and the ball 0.01 from the box
+/// asleep, MuJoCo lists the contact and excludes it, its `mj_inverse` runs
+/// and the box sleeps on (the golden); so here. (Its rows are P43's: until
+/// then sim-core gives every listed contact rows.)
+#[test]
+fn inverse_does_not_refuse_an_excluded_contact_with_a_sleeping_tree() {
+    let case = &golden()["cases"]["wake_gap"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qpos"]));
+    data.inverse(&model).expect("inverse");
+    assert!(data.ncon > 0, "no contact listed");
+    assert!(!data.tree_awake[0], "the box woke");
+}
+
+/// The energy the inverse computes is not taken as the drift baseline:
+/// `Data::energy_initial` is a forward pass's (registry
+/// `D-ENERGY-INITIAL`). On the stages case, `inverse()` straight after
+/// `make_data` leaves it 0, and the forward pass after it takes its own
+/// total.
+#[test]
+fn inverse_takes_no_drift_baseline() {
+    let case = &golden()["cases"]["stages"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qpos"]));
+    data.inverse(&model).expect("inverse");
+    assert!(
+        data.energy_potential != 0.0,
+        "the inverse computed no energy"
+    );
+    assert_eq!(data.energy_initial, 0.0, "taken by the inverse");
+    data.forward(&model).expect("forward");
+    assert_eq!(data.energy_initial, data.total_energy(), "the forward's");
+}
+
+/// With every tree asleep (a box resting on a plane and a damped hanging
+/// arm, 3,000 steps from rest; the state is MuJoCo's: `qacc` and
+/// `qfrc_bias` after the forward pass within 1e-12), `inverse()` gives,
+/// call after call, the forces the forward pass applied,
+/// `qfrc_applied + qfrc_actuator` (0 here), within 1e-12: its sum starts
+/// from each sleeping dof's kept bias force. MuJoCo's `mj_rne` writes the
+/// awake dofs only (`engine_core_smooth.c:2481-2484`) and its sum adds to
+/// `qfrc_inverse` (`engine_inverse.c:238-241`), so its value grows call by
+/// call (the golden: −19.62, −39.24, −58.86 on the box's vertical dof).
+/// Registry `D-INVERSE-SLEEP`.
+#[test]
+fn inverse_at_a_sleeping_state_gives_the_applied_forces() {
+    let case = &golden()["cases"]["sleep"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    for _ in 0..case["steps"].as_u64().expect("steps") {
+        data.step(&model).expect("step");
+    }
+    assert!(data.tree_awake.iter().all(|&a| !a), "a tree is awake");
+    data.forward(&model).expect("forward");
+    for (field, values) in [("qacc", &data.qacc), ("qfrc_bias", &data.qfrc_bias)] {
+        for (k, (a, b)) in values.iter().zip(floats(&case[field])).enumerate() {
+            assert!((a - b).abs() <= 1e-12, "{field}[{k}]: {a}, MuJoCo {b}");
+        }
+    }
+    let applied = &data.qfrc_applied + &data.qfrc_actuator;
+    let mujoco: Vec<Vec<f64>> = case["qfrc_inverse"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .map(floats)
+        .collect();
+    assert_ne!(mujoco[0], mujoco[2], "MuJoCo's value does not grow");
+    for (call, theirs) in mujoco.iter().enumerate() {
+        data.inverse(&model).expect("inverse");
+        for (k, (a, b)) in data.qfrc_inverse.iter().zip(applied.iter()).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12,
+                "call {call}: qfrc_inverse[{k}] {a}, applied {b} (MuJoCo's {})",
+                theirs[k]
+            );
+        }
+    }
+}
+
+/// `mjd_inverse_fd` at the state where every tree sleeps (above): each point
+/// starts from the centre's whole state, its sleep state included, so DfDa
+/// is the mass matrix (a sleeping tree has no rows) within 1e-9 of its
+/// largest entry, and the hinge arm's qpos column, whose nudge wakes the arm
+/// alone, is 0 at the box's dofs. MuJoCo's `mjd_inverseFD` adds each point
+/// to the sleeping dofs' `qfrc_inverse` (the golden's DfDa reads −1.962e7
+/// at the box's vertical dof for the first input) and carries the box's
+/// wake from its own columns into the arm's (−7.16e8 there). Registry
+/// `D-INVERSE-SLEEP`.
+#[test]
+fn inverse_fd_at_a_sleeping_state_takes_each_point_from_the_centre() {
+    let case = &golden()["cases"]["sleep"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    for _ in 0..case["steps"].as_u64().expect("steps") {
+        data.step(&model).expect("step");
+    }
+    data.forward(&model).expect("forward");
+    assert!(data.tree_awake.iter().all(|&a| !a), "a tree is awake");
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: false,
+        ..Default::default()
+    };
+    let fd = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd");
+    let nv = model.nv;
+    let scale = data.qM.iter().fold(0.0_f64, |a, x| a.max(x.abs()));
+    for i in 0..nv {
+        for j in 0..nv {
+            let (a, m) = (fd.DfDa[(i, j)], data.qM[(i, j)]);
+            assert!((a - m).abs() <= 1e-9 * scale, "DfDa[{i}][{j}]: {a}, M {m}");
+        }
+    }
+    let arm = nv - 1;
+    for j in 0..arm {
+        assert_eq!(fd.DfDq[(j, arm)], 0.0, "DfDq[{j}] of the arm's input");
+    }
+    let (mujoco_a, mujoco_q) = (floats(&case["DfDa"]), floats(&case["DfDq"]));
+    assert!(mujoco_a[2].abs() > 1e6, "MuJoCo's DfDa {}", mujoco_a[2]);
+    assert!(
+        mujoco_q[arm * nv + 2].abs() > 1e6,
+        "MuJoCo's DfDq {}",
+        mujoco_q[arm * nv + 2]
+    );
 }

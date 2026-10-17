@@ -40,7 +40,6 @@ use crate::integrate::implicit::{
     accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness,
     tendon_all_dofs_sleeping,
 };
-use crate::island::mj_island;
 
 /// Compute the unconstrained acceleration (`qacc_smooth`) and smooth forces.
 ///
@@ -257,11 +256,13 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     qfrc
 }
 
-/// Make the constraint rows and their islands at this pass's positions, as
-/// MuJoCo's position stage does (`mj_makeConstraint` then `mj_island`,
-/// `engine_forward.c:204-205`): none with `DISABLE_CONSTRAINT`
-/// (`engine_core_constraint.c:2042-2049`). Their velocities and reference
-/// accelerations are the velocity stage's ([`mj_reference_constraint`]).
+/// Make the constraint rows at this pass's positions, as MuJoCo's
+/// `mj_makeConstraint`: none with `DISABLE_CONSTRAINT`
+/// (`engine_core_constraint.c:2042-2049`). The forward pass's position stage
+/// then makes their islands (`mj_island`, `engine_forward.c:204-205`), the
+/// inverse dynamics' does not (`engine_inverse.c:58`). Their velocities and
+/// reference accelerations are the velocity stage's
+/// ([`mj_reference_constraint`]).
 pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
     clear_constraint_rows(model, data);
     data.ne = 0;
@@ -269,7 +270,6 @@ pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
     if !disabled(model, DISABLE_CONSTRAINT) {
         assemble_unified_constraints(model, data);
     }
-    mj_island(model, data);
 }
 
 /// Unified constraint pipeline (§29), over the rows the position stage made
