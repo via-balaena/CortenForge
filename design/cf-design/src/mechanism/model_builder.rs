@@ -3292,10 +3292,12 @@ mod tests {
     /// | 250 | 52.296 | 0.200 |
     /// | 400 | 52.327 | 4.540 |
     /// | 450 | 52.380 | 3.226 |
+    /// | 950 | 52.445 | 4.554 |
     ///
-    /// The window starts at step 50, once the pin's centre has dropped 0.55 mm
-    /// onto the bore. Over it the energy RISES 0.54%; what adds it is not
-    /// isolated, so the test bounds the change rather than calling it right.
+    /// The window runs from step 50, once the pin's centre has dropped 0.55 mm
+    /// onto the bore, to step 950. Over it the energy RISES 0.67% (0.54% to
+    /// step 450); what adds it is not isolated, so the test bounds the change
+    /// rather than calling it right.
     #[test]
     fn an_arm_swinging_in_a_frictionless_bore_keeps_its_energy_within_3_percent() {
         use nalgebra::UnitQuaternion;
@@ -3420,7 +3422,7 @@ mod tests {
         }
 
         // ── Run simulation and track energy ──────────────────────────────
-        let steps = 500;
+        let steps = 1000;
         let mut energies = Vec::new();
 
         for step in 0..steps {
@@ -3478,7 +3480,7 @@ mod tests {
 
         // ── Check the energy over two swings ─────────────────────────────
         let e_early = energies[50];
-        let e_late = energies[450];
+        let e_late = energies[950];
         let change = (e_late - e_early) / e_early;
 
         eprintln!();
@@ -3488,14 +3490,16 @@ mod tests {
         );
 
         // ⛔ The line sits at 3% because that DISCRIMINATES: friction 2.0 on
-        // the bore takes the change to -6.59%, a floor in the arm's reach to
-        // -3.86%, the kinetic energy read at the pin to -3.29%, and a 30%
-        // velocity kick at step 100 to +5.59%. A socket left free under
-        // gravity compensation reads -1.12% and passes: the weld is what
-        // anchors it.
+        // the bore takes the change to -6.80%, a floor in the arm's reach to
+        // -4.32%, the kinetic energy read at the pin (half the mass times
+        // `cvel`'s linear part squared) to -5.77%, a 30% velocity kick at
+        // step 100 to +5.59%, and a socket left free under gravity
+        // compensation to -7.54% (to step 450 it read -1.12% and passed: the
+        // longer window is what sees the weld removed). Dropping only the
+        // velocity's ω × r part, the rotation kept, reads -1.46% and passes.
         assert!(
             change.abs() < 0.03,
-            "the arm's energy changed by {:+.2}% between step 50 and 450",
+            "the arm's energy changed by {:+.2}% between step 50 and 950",
             change * 100.0
         );
     }
