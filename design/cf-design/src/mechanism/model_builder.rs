@@ -3246,12 +3246,13 @@ mod tests {
         eprintln!("  newton_csg_subtract: all 4 test points match Solid::gradient() exactly");
     }
 
-    /// An arm released into a pin-in-bore hinge does not GAIN energy.
+    /// An arm swinging in a frictionless bore keeps its energy within 3% over
+    /// two swings.
     ///
     /// ⚠⚠ **This was called `hinge_pendulum_energy_conservation` and billed as
     /// "the critical dynamics validation test", claiming a frictionless hinge
     /// oscillates with <1% loss per period. It could not see whether that was
-    /// true, for two independent reasons, and it was not true.**
+    /// true, for two independent reasons.**
     ///
     /// 1. **The energy was summed over ALL bodies**, and the socket is
     ///    500 000 kg/m³ so it may act as an anchor. Its potential energy is
@@ -3264,31 +3265,43 @@ mod tests {
     ///    trades with PE every swing. Comparing KE at two arbitrary steps is a
     ///    phase coincidence, not a conservation law.
     ///
-    /// ⛔ **What the arm actually does**, measured arm-only with g = 9810:
+    /// ⚠⚠ **Its successor, `an_arm_released_into_a_bore_does_not_gain_energy`,
+    /// reported that the hinge destroys ~97% of the swing energy and never
+    /// oscillates. It measured something else, for four more reasons.**
     ///
-    /// | step | arm energy | arm KE |
+    /// 3. **Kinetic energy at the arm's origin.** `cvel` is the velocity at a
+    ///    body's origin, here the pin's centre, which barely moves: on the
+    ///    swing below it reads 0.0064 at step 150, where the arm's kinetic
+    ///    energy is 4.316.
+    /// 4. **A floor in the arm's reach.** The ground plane was added after the
+    ///    friction was zeroed (its friction 1) and lay above the arm's lowest
+    ///    point: the arm touched it at every step from 76 on.
+    /// 5. **A socket that was not an anchor.** Gravity compensation cancels
+    ///    its own weight, not the arm's: it sank 0.10 mm by step 450.
+    /// 6. **A gain guard that could not fire.** The change was taken as an
+    ///    absolute value, so "may not gain" tested a number never negative.
+    ///
+    /// Now the socket is welded to the world, there is no floor, and the
+    /// energy is the arm's, its kinetic part at its centre of mass. It swings:
+    ///
+    /// | step | arm energy | arm kinetic energy |
     /// |---|---|---|
     /// | 0 | 53.652 | 0 |
-    /// | 100 | 49.250 | 0.0885 |
-    /// | 150-450 | ~50.0 | **0.0005** |
+    /// | 100 | 52.266 | 3.744 |
+    /// | 150 | 52.314 | 4.316 |
+    /// | 250 | 52.296 | 0.200 |
+    /// | 400 | 52.327 | 4.540 |
+    /// | 450 | 52.380 | 3.226 |
     ///
-    /// A free swing from 45 deg would peak at **KE ~ 3.57**. It reaches
-    /// **0.0885 — 2.5%** — and is at rest by step 150. The hinge destroys
-    /// ~97% of the swing energy in a single half-swing and never oscillates.
-    ///
-    /// ★ So this asserts what it CAN: the arm loses energy and never gains
-    /// it, measured on the arm alone so the socket cannot hide the result.
-    /// The 3% line DISCRIMINATES — friction 2.0 on the bore, the one thing
-    /// this setup exists to exclude, takes the loss to 4.5% and fires it.
-    /// That the hinge should oscillate and does not is a sim-core contact
-    /// question, recorded rather than pinned here — pinning 97% dissipation
-    /// as "expected" would cement it.
+    /// The window starts at step 50, once the pin's centre has dropped 0.55 mm
+    /// onto the bore. Over it the energy RISES 0.54%; what adds it is not
+    /// isolated, so the test bounds the change rather than calling it right.
     #[test]
-    fn an_arm_released_into_a_bore_does_not_gain_energy() {
+    fn an_arm_swinging_in_a_frictionless_bore_keeps_its_energy_within_3_percent() {
         use nalgebra::UnitQuaternion;
 
         // ── Geometry: socket + arm-with-pin ──────────────────────────────
-        // Socket: very heavy (acts as fixed anchor), concave bore along Y axis.
+        // Socket: welded to the world, concave bore along Y axis.
         // The bore axis is Y (horizontal), so the arm swings in the XZ plane
         // under gravity (-Z). The bore constrains radial motion (XZ) while
         // allowing rotation around Y.
@@ -3299,7 +3312,7 @@ mod tests {
                 std::f64::consts::FRAC_PI_2,
             )); // rotate 90° around X: Z-axis bore becomes Y-axis bore
 
-        // Very high density so socket barely moves under contact forces
+        // Welded, so its density does not enter the dynamics (nv is the arm's 6).
         let mut mat_heavy = Material::new("steel", 500_000.0);
         mat_heavy.color = Some([0.5, 0.5, 0.7, 1.0]);
 
@@ -3323,11 +3336,11 @@ mod tests {
             .part(Part::new("socket", socket_solid, mat_heavy))
             .part(Part::new("arm", arm_solid, mat_light))
             .joint(JointDef::new(
-                "socket_free",
+                "socket_weld",
                 "world",
                 "socket",
-                JointKind::Free,
-                Point3::new(0.0, 0.0, 20.0), // well above ground
+                JointKind::Fixed,
+                Point3::new(0.0, 0.0, 20.0), // the bore's centre
                 Vector3::z(),
             ))
             .joint(JointDef::new(
@@ -3345,19 +3358,13 @@ mod tests {
         for i in 0..model.ngeom {
             model.geom_friction[i] = Vector3::new(0.0, 0.0, 0.0);
         }
-        // Gravity compensation on the socket body (body 1) so it stays fixed.
-        // Without this, both bodies free-fall equally and the bore constraint
-        // never engages (no relative force to push pin against bore wall).
-        model.body_gravcomp[1] = 1.0;
-        model.ngravcomp = 1;
-        model.add_ground_plane();
 
         let mut data = model.make_data();
 
         // Displace arm from equilibrium: rotate 45° around Y (the bore axis).
         // This tilts the arm from hanging straight down (-Z) to an angle,
         // so gravity creates a restoring torque and the arm swings.
-        let arm_q = 7; // arm qpos start (after socket's 7 DOF)
+        let arm_q = 0; // the arm's free joint is the model's only joint
         let angle = std::f64::consts::FRAC_PI_4; // 45°
         data.qpos[arm_q + 3] = (angle / 2.0).cos(); // qw
         data.qpos[arm_q + 4] = 0.0; // qx
@@ -3393,24 +3400,14 @@ mod tests {
             );
         }
         eprintln!(
-            "  socket qpos: ({:.2},{:.2},{:.2}) quat=({:.3},{:.3},{:.3},{:.3})",
-            data.qpos[0],
-            data.qpos[1],
-            data.qpos[2],
-            data.qpos[3],
-            data.qpos[4],
-            data.qpos[5],
-            data.qpos[6]
-        );
-        eprintln!(
-            "  arm qpos:    ({:.2},{:.2},{:.2}) quat=({:.3},{:.3},{:.3},{:.3})",
-            data.qpos[7],
-            data.qpos[8],
-            data.qpos[9],
-            data.qpos[10],
-            data.qpos[11],
-            data.qpos[12],
-            data.qpos[13]
+            "  arm qpos: ({:.2},{:.2},{:.2}) quat=({:.3},{:.3},{:.3},{:.3})",
+            data.qpos[arm_q],
+            data.qpos[arm_q + 1],
+            data.qpos[arm_q + 2],
+            data.qpos[arm_q + 3],
+            data.qpos[arm_q + 4],
+            data.qpos[arm_q + 5],
+            data.qpos[arm_q + 6]
         );
         eprintln!("  Initial ncon: {}", data.ncon);
 
@@ -3429,38 +3426,26 @@ mod tests {
         for step in 0..steps {
             data.step(&model).expect("step");
 
-            // Total energy = KE + PE
-            let mut ke = 0.0;
-            let mut pe = 0.0;
-            let mut swing_kinetic = 0.0;
-            let mut swing_potential = 0.0;
-            for body in 1..model.nbody {
-                let mass = model.body_mass[body];
-                if body < data.cvel.len() {
-                    let cv = &data.cvel[body];
-                    let vx = cv[3];
-                    let vy = cv[4];
-                    let vz = cv[5];
-                    ke += 0.5 * mass * (vx * vx + vy * vy + vz * vz);
-                }
-                if body < data.xipos.len() {
-                    let z = data.xipos[body].z;
-                    pe += mass * -super::GRAVITY_MM_PER_S2 * z;
-                }
-                if body == 2 {
-                    if body < data.cvel.len() {
-                        let cv = &data.cvel[body];
-                        swing_kinetic =
-                            0.5 * mass * (cv[3] * cv[3] + cv[4] * cv[4] + cv[5] * cv[5]);
-                    }
-                    swing_potential = mass * -super::GRAVITY_MM_PER_S2 * data.xipos[body].z;
-                }
-            }
-
-            // ⚠ The ARM's energy, not the model's. The socket outweighs the
-            // pendulum by three orders of magnitude and would hide any result.
-            let _ = (ke, pe);
-            energies.push(swing_kinetic + swing_potential);
+            // The arm's energy. Its kinetic energy is at its centre of mass,
+            // translation and rotation, the sum
+            // `the_mass_matrix_is_complete_for_welds_and_for_multi_joint_bodies`
+            // checks against the mass matrix: `cvel` is the velocity at the
+            // body's origin, here the pin's centre, which barely moves.
+            let arm_body = 2;
+            let cv = &data.cvel[arm_body];
+            let w = Vector3::new(cv[0], cv[1], cv[2]);
+            let v = Vector3::new(cv[3], cv[4], cv[5])
+                + w.cross(&(data.xipos[arm_body] - data.xpos[arm_body]));
+            let wb = data.ximat[arm_body].transpose() * w;
+            let inertia = model.body_inertia[arm_body];
+            let kinetic = 0.5 * model.body_mass[arm_body] * v.norm_squared()
+                + 0.5
+                    * (inertia.x * wb.x.powi(2)
+                        + inertia.y * wb.y.powi(2)
+                        + inertia.z * wb.z.powi(2));
+            let potential =
+                model.body_mass[arm_body] * -super::GRAVITY_MM_PER_S2 * data.xipos[arm_body].z;
+            energies.push(kinetic + potential);
 
             if step % 50 == 0 || step < 5 {
                 // Body positions
@@ -3475,7 +3460,7 @@ mod tests {
                     Vector3::zeros()
                 };
                 eprintln!(
-                    "  step {step:3}: sock_z={sock_z:.2} arm=({:.2},{:.2},{:.2}) KE={ke:.4} PE={pe:.4} ncon={}",
+                    "  step {step:3}: sock_z={sock_z:.2} arm=({:.2},{:.2},{:.2}) KE={kinetic:.4} PE={potential:.4} ncon={}",
                     arm_pos.x, arm_pos.y, arm_pos.z, data.ncon
                 );
 
@@ -3491,49 +3476,27 @@ mod tests {
             }
         }
 
-        // ── Check energy conservation ────────────────────────────────────
-        // Compare energy at step 50 (after initial transient) with energy
-        // at step 450 (near end). Allow some loss from solver discretization.
+        // ── Check the energy over two swings ─────────────────────────────
         let e_early = energies[50];
         let e_late = energies[450];
-        let loss_fraction = if e_early.abs() > 1e-10 {
-            (e_early - e_late).abs() / e_early.abs()
-        } else {
-            0.0
-        };
+        let change = (e_late - e_early) / e_early;
 
         eprintln!();
         eprintln!(
-            "  Energy: early={e_early:.4}, late={e_late:.4}, loss={:.1}%",
-            loss_fraction * 100.0
+            "  Energy: early={e_early:.4}, late={e_late:.4}, change={:+.2}%",
+            change * 100.0
         );
 
-        // ⛔ Energy may not be CREATED. A contact solve that adds energy is
-        // unstable and will diverge given long enough; one that removes it is
-        // dissipative, which is the state this hinge is measured to be in.
-        //
-        // ⚠ **This half is NOT demonstrated failing.** Three mutations —
-        // friction 2.0, an under-damped `solref`, and a 0.004 s timestep — all
-        // produced LOSS (4.5%, 100%, 82.2%), never gain. It is kept rather
-        // than dropped because without it `loss_fraction < 0.03` passes
-        // silently when energy is created: a negative loss is still less than
-        // three percent. An undemonstrated guard over a real hole is worth
-        // more than a tidy gap, but it has not earned the word "gated".
+        // ⛔ The line sits at 3% because that DISCRIMINATES: friction 2.0 on
+        // the bore takes the change to -6.59%, a floor in the arm's reach to
+        // -3.86%, the kinetic energy read at the pin to -3.29%, and a 30%
+        // velocity kick at step 100 to +5.59%. A socket left free under
+        // gravity compensation reads -1.12% and passes: the weld is what
+        // anchors it.
         assert!(
-            loss_fraction > -0.001,
-            "the arm GAINED {:.2}% of its energy between step 50 and 450 — a \
-             contact solve that creates energy is unstable",
-            -loss_fraction * 100.0
-        );
-        // And it may not bleed. Measured **1.7%** over this window with the arm
-        // already at rest. ⛔ The line sits at 3% because that DISCRIMINATES:
-        // giving the bore friction 2.0 — the one thing the setup exists to
-        // exclude — takes it to **4.5%**, and a threshold above that would
-        // pass the very defect this test is named for.
-        assert!(
-            loss_fraction < 0.03,
-            "the arm lost {:.1}% of its energy between step 50 and 450",
-            loss_fraction * 100.0
+            change.abs() < 0.03,
+            "the arm's energy changed by {:+.2}% between step 50 and 450",
+            change * 100.0
         );
     }
 
