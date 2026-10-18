@@ -93,7 +93,7 @@ Input: *A Double Dose of Detail* at `caa1c1c0` — Parts 0–3 (`00`–`41`) and
 | P49 | A17 C2 | `feat(sim-core): mesh polygons and MuJoCo's mesh multi-contact` | no | P48 |
 | P50 | A17 C3 (+A21 R8) | `fix(sim-core): convex pairs collide through mjc_Convex as MuJoCo` | behaviour | P48, P49, P03, P40, P41, P42, P10, P34 |
 | P51 | A17 C4 | `fix(sim-core): plane–mesh contacts as MuJoCo (midpoint, hull-graph neighbours)` | **yes** (`collide_mesh_plane` deleted) | P50 |
-| P52 | A17 C5 | `fix(sim-core): height fields collide as MuJoCo (prism order, native CCD) and are bounded as MuJoCo` | behaviour | P48, P11, P42 |
+| P52 | A17 C5 | `fix(sim-core): height fields collide as MuJoCo (prism order, native CCD)` | behaviour | P48, P11, P42 |
 | P53 | K14 | `docs(sim-core): state, callbacks, finite differences and BatchSim documented as they behave` | no | all |
 
 56 commits (53 + P08a, P36a, P43a).
@@ -605,11 +605,11 @@ Each constraint below is a dependency note from a section; the order above satis
 - **Also (ledger-L176):** the contacts' spacing (`addplanemesh`'s 0.3 of `geom_rbound`) takes the half-diagonal of the mesh's box until Rigid-loading L35 puts a mesh in MuJoCo's frame: `geom_rbound` about the authored origin spaces a mesh authored off its centre of mass too far apart (chunk 3e's first review measured a corner lost and 25 times the penetration; `plane_mesh_contacts_are_spaced_as_mujoco`).
 - **Also (ledger-L187):** an ellipsoid goes through the same `mjc_PlaneConvex`: take its support (`mjccd_support`, `engine_collision_convex.c:564-575`) and distance (`dot(normal, support − plane pos)`, `:1054-1055`) in MuJoCo's order, which sim-core's `collide_ellipsoid_plane_impl` does not.
 
-### P52 · A17 C5 · `fix(sim-core): height fields collide as MuJoCo (prism order, native CCD) and are bounded as MuJoCo`
-- **Implements:** A17 §11 R3-C sim-core part; bounds in P11's `recompute_derived` (absorbs A17 C7). The data side is Rigid-loading L45. The contacts are built hfield-first (MuJoCo's type order), no negation (C10; prototype `hfield.rs:245`).
-- **Must-fail:** `hfield_bounds_are_centred`, `hfield_contacts_match_mujoco_bitwise` (A17 §11 R3-C tests 3, 5). Test 5 sets `model.hfield_data[0]` in code to a square field in MuJoCo's convention (rows bottom-to-top, elevation normalised, f32 values; A17 §5.1 a, b), so it does not wait for L45; its golden comes from the unfused oracle (C1), and it needs P42's renormalised normal (A17 §2.3).
+### P52 · A17 C5 · `fix(sim-core): height fields collide as MuJoCo (prism order, native CCD)`
+- **Implements:** A17 §11 R3-C sim-core part but its bounds, which are MuJoCo's before it: a height field's radius since chunk 3e's first pull request, its box (`geom_aabb`) since its second (`geom_boxes_are_mujocos_bit_for_bit`). The data side is Rigid-loading L45. The contacts are built hfield-first (MuJoCo's type order), no negation (C10; prototype `hfield.rs:245`).
+- **Must-fail:** `hfield_contacts_match_mujoco_bitwise` (A17 §11 R3-C test 5; its test 3, `hfield_bounds_are_centred`, would pass before P52, as above). Test 5 sets `model.hfield_data[0]` in code to a square field in MuJoCo's convention (rows bottom-to-top, elevation normalised, f32 values; A17 §5.1 a, b), so it does not wait for L45; its golden comes from the unfused oracle (C1), and it needs P42's renormalised normal (A17 §2.3).
 - **Flips:** `collision/hfield.rs:954` `test_swapped_geom_order` (asserts `geom1 == 1`, `geom2 == 0` at `:980-981`; the hfield now comes first) (R4).
-- **Note:** the bumpy-field fall-through is fixed by the bounds alone (A17 §5.1); bodies fall through until this lands (A17 §12). Both predate chunk 3e's P43a, since which the broadphase reads `geom_rbound` instead of `geom_aabb` (MuJoCo's `mj_broadphase`); a height field's radius is MuJoCo's since the bounds fix in chunk 3e's first pull request. Whether bodies still fall through on that base has not been measured: P52 measures it before its bounds are credited with the fix.
+- **Note:** the bumpy-field fall-through is fixed by the bounds alone (A17 §5.1); bodies fall through until this lands (A17 §12). Both predate chunk 3e's P43a, since which the broadphase reads `geom_rbound` instead of `geom_aabb` (MuJoCo's `mj_broadphase`); a height field's radius is MuJoCo's since the bounds fix in chunk 3e's first pull request. Whether bodies still fall through with both bounds MuJoCo's has not been measured: P52 measures it before its own changes.
 
 ### P53 · K14 · `docs(sim-core): state, callbacks, finite differences and BatchSim documented as they behave`
 - **Closes:** core-C1, core-C4, core-B1, core-D1, core-D2, core-D3 (the rest after P04's Display), P-L25, P-L31 FD `B`. core-B2 (the `BatchSim::reset` doc and its pin) is P16's.
