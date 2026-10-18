@@ -473,7 +473,11 @@ fn capsule_capsule_perpendicular() {
     );
 }
 
-/// Two capsules touching at endpoints.
+/// Two capsules end to end along one axis: the axes are parallel, so
+/// MuJoCo's `mjraw_CapsuleCapsule` tests each segment's ends against the
+/// other segment and lists two contacts, here the same point twice (the
+/// first capsule's top end against the second's bottom, then the second's
+/// bottom end against the first), each 0.05 deep. Before the port, one.
 #[test]
 fn capsule_capsule_endpoint_endpoint() {
     let mjcf = r#"
@@ -507,7 +511,11 @@ fn capsule_capsule_endpoint_endpoint() {
     // Actually: endpoint-to-endpoint distance = 1.35 - 0 = 1.35 (center to center)
     // Capsule 1 top endpoint center at 0.5, capsule 2 bottom endpoint center at 0.85
     // Distance = 0.35, penetration = 0.4 - 0.35 = 0.05
-    assert_eq!(data.ncon, 1, "Expected 1 contact");
+    assert_eq!(data.ncon, 2, "Expected 2 contacts");
+    assert_eq!(
+        data.contacts[0].pos, data.contacts[1].pos,
+        "the same point twice"
+    );
 
     let contact = &data.contacts[0];
     let expected_depth = 0.05;

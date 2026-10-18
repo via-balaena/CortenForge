@@ -1,8 +1,8 @@
 //! Analytical pairwise collision for convex primitives (sphere, capsule, box).
 
-use super::mj_primitive::{Frame, raw_sphere_box, raw_sphere_capsule, sphere_sphere};
-use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
-use crate::forward::{closest_point_segment, closest_points_segments};
+use super::mj_primitive::{
+    Frame, raw_capsule_capsule, raw_sphere_box, raw_sphere_capsule, sphere_sphere,
+};
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Vector3};
 
@@ -37,13 +37,10 @@ pub fn collide_sphere_sphere(
         .collect()
 }
 
-/// Capsule-capsule collision detection — up to 2 contacts.
-///
-/// For nearly parallel capsules (matching MuJoCo's `mjc_CapsuleCapsule`),
-/// tests both endpoints of each capsule against the other's segment,
-/// returning 1–2 contacts for stable support. For non-parallel capsules,
-/// returns 1 contact from the closest-points-on-segments algorithm.
-// Sphere-capsule takes the full per-geom pair context (poses, sizes, friction, margin) so dispatch from the broadphase passes one uniform arg list.
+/// Capsule–capsule collision: MuJoCo's `mjraw_CapsuleCapsule`
+/// ([`mj_primitive`](super::mj_primitive)), up to two contacts where the
+/// axes are parallel (`|det|` below mjMINVAL), one otherwise.
+// The full per-geom pair context, so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_capsule_capsule(
     model: &Model,
@@ -57,114 +54,19 @@ pub fn collide_capsule_capsule(
     size2: Vector3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
-    let radius1 = size1.x;
-    let half_len1 = size1.y;
-    let radius2 = size2.x;
-    let half_len2 = size2.y;
-
-    let axis1 = mat1.column(2).into_owned();
-    let axis2 = mat2.column(2).into_owned();
-
-    let p1a = pos1 - axis1 * half_len1;
-    let p1b = pos1 + axis1 * half_len1;
-    let p2a = pos2 - axis2 * half_len2;
-    let p2b = pos2 + axis2 * half_len2;
-
-    let sum_radii = radius1 + radius2;
-
-    // Nearly parallel: endpoint-based contacts for 2-point support
-    if axis1.dot(&axis2).abs() > PARALLEL_THRESHOLD {
-        let mut contacts = Vec::with_capacity(2);
-
-        // Test both endpoints of capsule 1 against capsule 2's segment
-        for &(endpoint, r_self) in &[(p1a, radius1), (p1b, radius1)] {
-            let closest_on_2 = closest_point_segment(p2a, p2b, endpoint);
-            let diff = closest_on_2 - endpoint;
-            let dist = diff.norm();
-            let penetration = sum_radii - dist;
-
-            if penetration > -margin {
-                let normal = if dist > GEOM_EPSILON {
-                    diff / dist
-                } else {
-                    Vector3::z()
-                };
-                let contact_pos = endpoint + normal * (r_self - penetration * 0.5);
-                contacts.push(make_contact_from_geoms(
-                    model,
-                    contact_pos,
-                    normal,
-                    penetration,
-                    geom1,
-                    geom2,
-                    margin,
-                ));
-            }
-        }
-
-        // If neither endpoint of cap1 hit, try endpoints of cap2 against cap1
-        if contacts.is_empty() {
-            for endpoint in &[p2a, p2b] {
-                let closest_on_1 = closest_point_segment(p1a, p1b, *endpoint);
-                let diff = *endpoint - closest_on_1;
-                let dist = diff.norm();
-                let penetration = sum_radii - dist;
-
-                if penetration > -margin {
-                    let normal = if dist > GEOM_EPSILON {
-                        diff / dist
-                    } else {
-                        Vector3::z()
-                    };
-                    let contact_pos = closest_on_1 + normal * (radius1 - penetration * 0.5);
-                    contacts.push(make_contact_from_geoms(
-                        model,
-                        contact_pos,
-                        normal,
-                        penetration,
-                        geom1,
-                        geom2,
-                        margin,
-                    ));
-                }
-            }
-        }
-
-        return contacts;
-    }
-
-    // Non-parallel: standard closest-points → 1 contact
-    let (closest1, closest2) = closest_points_segments(p1a, p1b, p2a, p2b);
-
-    let diff = closest2 - closest1;
-    let dist = diff.norm();
-    let penetration = sum_radii - dist;
-
-    if penetration > -margin {
-        let normal = if dist > GEOM_EPSILON {
-            diff / dist
-        } else {
-            Vector3::z()
-        };
-        let contact_pos = closest1 + normal * (radius1 - penetration * 0.5);
-
-        vec![make_contact_from_geoms(
-            model,
-            contact_pos,
-            normal,
-            penetration,
-            geom1,
-            geom2,
-            margin,
-        )]
-    } else {
-        vec![]
-    }
+    let capsule1 = Frame {
+        pos: &pos1,
+        mat: &mat1,
+    };
+    let capsule2 = Frame {
+        pos: &pos2,
+        mat: &mat2,
+    };
+    raw_capsule_capsule(margin, capsule1, &size1, capsule2, &size2)
+        .iter()
+        .map(|c| c.contact(model, geom1, geom2, margin))
+        .collect()
 }
-
-/// Threshold for considering capsule axes nearly parallel.
-/// |dot(axis1, axis2)| > 0.999 → axes within ~2.6° of parallel.
-const PARALLEL_THRESHOLD: f64 = 0.999;
 
 /// Sphere–capsule collision: MuJoCo's `mjraw_SphereCapsule`
 /// ([`mj_primitive`](super::mj_primitive)), the sphere first.
@@ -234,7 +136,7 @@ pub fn collide_sphere_box(
     } else {
         ((geom2, frame2, size2.x), (geom1, frame1, size1))
     };
-    raw_sphere_box(margin, sphere, radius, box_frame, &size)
+    raw_sphere_box(margin, &sphere.pos(), radius, box_frame, &size)
         .map(|c| c.contact(model, sphere_geom, box_geom, margin))
         .into_iter()
         .collect()

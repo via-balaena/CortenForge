@@ -90,6 +90,15 @@ fn rests_as_mujoco(name: &str, z_tol: f64, contact_tol: f64) {
     }
 }
 
+/// A capsule (radius 0.03, half-length 0.05) on the box slab, as
+/// [`rests_as_mujoco`]: capsule–box is ported (`mjraw_CapsuleBox`), so its
+/// height after every 50th step and its turned pose's contact are MuJoCo's
+/// bit for bit (measured: 0).
+#[test]
+fn capsule_rests_on_box_as_mujoco() {
+    rests_as_mujoco("box_capsule", 0.0, 0.0);
+}
+
 // The pairs below go through GJK/EPA (MuJoCo's through mjc_Convex), whose
 // contact was the first geom's support against the normal: a corner of the
 // slab's bottom face, or the body's top. Each body fell through its slab.
@@ -1008,7 +1017,13 @@ fn contacts_as_mujoco(name: &str, model: &Model, qpos: &[f64], want: &Value) {
 /// margins 0 and 0.02.
 #[test]
 fn sphere_pairs_collide_as_mujoco() {
-    let case = &golden()["sphere_pairs"];
+    pairs_collide_as_mujoco(&golden()["sphere_pairs"]);
+}
+
+/// A golden case of named and random poses of two free bodies
+/// (`sphere_pairs`, `capsule_pairs`): every pose's contacts are MuJoCo's
+/// ([`contacts_as_mujoco`]).
+fn pairs_collide_as_mujoco(case: &Value) {
     for (name, c) in case["named"].as_object().expect("named") {
         let model: Model = load_model(c["xml"].as_str().expect("xml")).expect("load");
         contacts_as_mujoco(name, &model, &floats(&c["qpos"]), &c["contacts"]);
@@ -1033,4 +1048,23 @@ fn sphere_pairs_collide_as_mujoco() {
             );
         }
     }
+}
+
+/// A capsule against a capsule and a box, each pair on two free bodies, the
+/// capsule's body first in the file and second: the contacts are MuJoCo's
+/// within 1e-12 (`mjraw_CapsuleCapsule`,
+/// `engine_collision_primitive.c:389-481`; `mjraw_CapsuleBox`,
+/// `engine_collision_box.c:119-591`), at named poses on the cases those
+/// functions treat apart (capsules end to end and side by side, where the
+/// parallel axes give two contacts, the same point twice end to end; offset
+/// along their axes; crossing through one point, whose normal is the cross
+/// of the two axes, and apart; in a T; skew; a capsule lying on a box's
+/// face, standing on it, tilted on it, across an edge, along one, which
+/// gives a second contact, over a corner, inside the box, over a turned
+/// box, an end inside a box of half-size 1, where MuJoCo takes no second
+/// point) and at 40 seeded random poses per pair, a sixth of them with the
+/// axis along the other capsule's or a box axis, at geom margins 0 and 0.02.
+#[test]
+fn capsule_pairs_collide_as_mujoco() {
+    pairs_collide_as_mujoco(&golden()["capsule_pairs"]);
 }

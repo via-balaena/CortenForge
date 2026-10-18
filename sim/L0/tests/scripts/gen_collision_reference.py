@@ -124,6 +124,19 @@ mjc_SphereCylinder (engine_collision_primitive.c:245-385), mjraw_SphereBox
 (engine_collision_box.c:39-92). It refuses a pair whose poses make no
 contact, or every pose one, and a touching pose without one contact at
 distance 0.
+`capsule_pairs` holds a capsule against a capsule and a box, as
+`sphere_pairs`: named poses at the cases MuJoCo's functions treat apart
+(capsules end to end, side by side, offset along their axes, crossing
+through one point and apart, in a T, skew; a capsule lying on a box's
+face, standing on it, tilted on it, across an edge, along one, over a
+corner, inside the box, over a turned box, an end inside a box of half-size
+1, where MuJoCo takes no second point) and 40 seeded random poses per
+pair, a sixth of them with the axis along the other capsule's or along a
+box axis, at margins 0 and 0.02: mjraw_CapsuleCapsule
+(engine_collision_primitive.c:389-481), mjraw_CapsuleBox
+(engine_collision_box.c:119-591). It refuses a pair whose random poses do
+not make 0, 1 and 2 contacts. The `rest` case `box_capsule` is a capsule on
+the box slab.
 """
 
 import json
@@ -150,6 +163,7 @@ BODIES = {
     "ellipsoid3": ('<geom type="ellipsoid" size="0.06 0.045 0.03" mass="0.5"/>', 0.03),
     "cylinder": ('<geom type="cylinder" size="0.05 0.05" mass="0.5"/>', 0.05),
     "box": ('<geom type="box" size="0.05 0.04 0.03" mass="0.5"/>', 0.03),
+    "capsule": ('<geom type="capsule" size="0.03 0.05" mass="0.5"/>', 0.08),
 }
 
 CASES = {
@@ -158,6 +172,7 @@ CASES = {
     "mesh_box": ("mesh", "box"),
     "mesh_cylinder": ("mesh", "cylinder"),
     "mesh_ellipsoid3": ("mesh", "ellipsoid3"),
+    "box_capsule": ("box", "capsule"),
 }
 
 NSTEP = 1000
@@ -199,6 +214,8 @@ def lowest(m, d, body_id):
         p = np.array([0.0, 0.0, size[1] * np.sign(local[2])])
         if n > 0:
             p[:2] = size[0] * radial[:2] / n
+    elif t == mujoco.mjtGeom.mjGEOM_CAPSULE:
+        p = np.array([0.0, 0.0, size[1] * np.sign(local[2])]) + size[0] * local
     else:
         sys.exit(f"no support for geom type {t}")
     return xpos + xmat @ p
@@ -939,12 +956,19 @@ SPHERE_PAIR_GEOMS = {
 }
 
 
-def sphere_pair_xml(other, sphere_first, margin):
-    sphere = '<body name="s"><freejoint/><geom type="sphere" size="0.1"/></body>'
-    body = f'<body name="o"><freejoint/>{SPHERE_PAIR_GEOMS[other]}</body>'
-    bodies = sphere + body if sphere_first else body + sphere
+def pair_xml(first, other, first_first, margin):
+    """Two free bodies, `s` holding the geom `first` and `o` the geom
+    `other`, `s` first in the file or second, every geom at `margin`."""
+    body1 = f'<body name="s"><freejoint/>{first}</body>'
+    body2 = f'<body name="o"><freejoint/>{other}</body>'
+    bodies = body1 + body2 if first_first else body2 + body1
     return (f'<mujoco><option gravity="0 0 0"/><default><geom margin="{margin!r}"/></default>'
             f"<worldbody>{bodies}</worldbody></mujoco>")
+
+
+def sphere_pair_xml(other, sphere_first, margin):
+    return pair_xml('<geom type="sphere" size="0.1"/>', SPHERE_PAIR_GEOMS[other], sphere_first,
+                    margin)
 
 
 def unit(v):
@@ -1061,6 +1085,86 @@ def sphere_pair_cases():
     return {"named": named, "random": poses}
 
 
+# A capsule (radius 0.05, half-length 0.15) against a capsule and a box, on
+# two free bodies; the body order in the file either way.
+CAPSULE = '<geom type="capsule" size="0.05 0.15"/>'
+CAPSULE_PAIR_GEOMS = {
+    "capsule": '<geom type="capsule" size="0.04 0.12"/>',
+    "box": '<geom type="box" size="0.1 0.07 0.05"/>',
+}
+# Named poses only: a box large enough to hold a point four half-lengths
+# past the capsule's end.
+CAPSULE_NAMED_GEOMS = {**CAPSULE_PAIR_GEOMS, "big_box": '<geom type="box" size="1 1 1"/>'}
+ALONG_X = unit([1, 0, 1, 0])  # turns z onto x
+ALONG_Y = unit([1, -1, 0, 0])  # turns z onto y
+# Named poses: (other, capsule position, quat, other position, quat).
+CAPSULE_PAIR_POSES = {
+    "collinear_end_to_end": ("capsule", [0, 0, 0], [1, 0, 0, 0], [0, 0, 0.35], [1, 0, 0, 0]),
+    "parallel_side_by_side": ("capsule", [0, 0, 0], [1, 0, 0, 0], [0.08, 0, 0.05], [1, 0, 0, 0]),
+    "parallel_offset_ends": ("capsule", [0, 0, 0], [1, 0, 0, 0], [0.07, 0.02, 0.22], [1, 0, 0, 0]),
+    "crossing_axes": ("capsule", [0, 0, 0], ALONG_X, [0, 0, 0], ALONG_Y),
+    "crossing_apart": ("capsule", [0, 0, 0], ALONG_X, [0.02, 0, 0.07], ALONG_Y),
+    "t_cross": ("capsule", [0, 0, 0], ALONG_X, [0.03, 0, 0.2], [1, 0, 0, 0]),
+    "skew": ("capsule", [0, 0, 0], TURN, [0.05, 0.04, 0.03], unit([0.3, 0.9, 0.1, -0.2])),
+    "lying_on_box_face": ("box", [0, 0, 0.098], ALONG_X, [0, 0, 0], [1, 0, 0, 0]),
+    "end_on_box_face": ("box", [0.02, 0.01, 0.245], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "across_box_edge": ("box", [0.13, 0, 0.08], ALONG_Y, [0, 0, 0], [1, 0, 0, 0]),
+    "along_box_edge": ("box", [0.13, 0.03, 0.08], ALONG_X, [0, 0, 0], [1, 0, 0, 0]),
+    "tilted_on_box_face": ("box", [0, 0, 0.12], unit([0.95, 0, 0.31, 0]), [0, 0, 0], [1, 0, 0, 0]),
+    "over_box_corner": ("box", [0.14, 0.11, 0.09], TURN, [0, 0, 0], [1, 0, 0, 0]),
+    "inside_box": ("box", [0.01, 0.0, 0.0], ALONG_X, [0, 0, 0], [1, 0, 0, 0]),
+    "turned_box": ("box", [0.02, 0.03, 0.1], ALONG_Y, [0, 0, 0], TURN),
+    "end_inside_big_box": ("big_box", [0.1, 0.2, 1.1], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+}
+
+
+def capsule_random_poses(rng, other, n):
+    """`n` (capsule position, quat, other position, quat), a sixth of them
+    with the capsule's axis along the other capsule's or one of the box's."""
+    out = []
+    for k in range(n):
+        oq = unit(rng.normal(size=4))
+        if k % 6 == 0:
+            if other == "capsule":
+                sq = oq if k % 12 == 0 else unit([-oq[1], oq[0], -oq[3], oq[2]])
+            else:
+                oq = np.array([1.0, 0.0, 0.0, 0.0])
+                sq = [np.array([1.0, 0, 0, 0]), ALONG_X, ALONG_Y][(k // 6) % 3]
+        else:
+            sq = unit(rng.normal(size=4))
+        sp = unit(rng.normal(size=3)) * rng.uniform(0.0, 0.25)
+        out.append((sp, sq, np.zeros(3), oq))
+    return out
+
+
+def capsule_pair_cases():
+    named = {}
+    for name, (other, sp, sq, op, oq) in CAPSULE_PAIR_POSES.items():
+        for first in (True, False):
+            xml = pair_xml(CAPSULE, CAPSULE_NAMED_GEOMS[other], first, 0.0)
+            qpos = pose_qpos(first, sp, sq, op, oq)
+            named[f"{name}_{'capsule_first' if first else 'capsule_second'}"] = {
+                "xml": xml, "qpos": floats(qpos), "contacts": sphere_pair_contacts(xml, qpos)}
+    rng = np.random.default_rng(20261019)
+    poses = {}
+    for other in CAPSULE_PAIR_GEOMS:
+        xmls, cases = {}, []
+        for pose in capsule_random_poses(rng, other, 40):
+            for first in (True, False):
+                for margin in (0.0, 0.02):
+                    variant = f"{'capsule_first' if first else 'capsule_second'}_margin_{margin!r}"
+                    xml = xmls.setdefault(variant, pair_xml(CAPSULE, CAPSULE_PAIR_GEOMS[other],
+                                                            first, margin))
+                    qpos = pose_qpos(first, *pose)
+                    cases.append({"variant": variant, "qpos": floats(qpos),
+                                  "contacts": sphere_pair_contacts(xml, qpos)})
+        counts = {len(c["contacts"]) for c in cases}
+        if not {0, 1, 2} <= counts:
+            sys.exit(f"capsule_pairs {other}: contact counts {sorted(counts)}, not 0, 1 and 2")
+        poses[other] = {"xml": xmls, "poses": cases}
+    return {"named": named, "random": poses}
+
+
 # The geom-distance sensors (distance, normal, fromto) of two overlapping
 # boxes, both argument orders (the review's scene; mj_geomDistance from the
 # contact's witnesses).
@@ -1111,6 +1215,7 @@ def main():
            "midphase": finite_or_string(midphase_cases()),
            "contact_filter": finite_or_string(contact_filter_cases()),
            "sphere_pairs": finite_or_string(sphere_pair_cases()),
+           "capsule_pairs": finite_or_string(capsule_pair_cases()),
            "geom_distance": finite_or_string(geom_distance_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
