@@ -1,61 +1,40 @@
 //! Analytical pairwise collision for convex primitives (sphere, capsule, box).
 
+use super::mj_primitive::{Frame, raw_sphere_box, raw_sphere_capsule, sphere_sphere};
 use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
 use crate::forward::{closest_point_segment, closest_points_segments};
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Vector3};
 
-/// Sphere-sphere collision detection.
-///
-/// This is a simple analytical calculation that's more robust than GJK/EPA
-/// for the sphere-sphere case.
-// Sphere-sphere takes the full per-geom pair context (poses, sizes, friction, margin) so dispatch from the broadphase passes one uniform arg list.
+/// Sphere–sphere collision: MuJoCo's `mjc_SphereSphere`
+/// ([`mj_primitive`](super::mj_primitive)). The frames are read where the
+/// centres coincide: the normal is then the cross of the two z axes.
+// The full per-geom pair context, so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_sphere_sphere(
     model: &Model,
     geom1: usize,
     geom2: usize,
     pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
-    let radius1 = size1.x;
-    let radius2 = size2.x;
-
-    let diff = pos2 - pos1;
-    let dist = diff.norm();
-
-    // Check for penetration (or within margin zone)
-    let sum_radii = radius1 + radius2;
-    let penetration = sum_radii - dist;
-
-    if penetration > -margin {
-        // Normal points from sphere1 to sphere2.
-        // For coincident/nearly-coincident centers (degenerate case), pick +Z.
-        let normal = if dist > GEOM_EPSILON {
-            diff / dist
-        } else {
-            Vector3::z()
-        };
-
-        // Contact point is on the surface of sphere1 toward sphere2
-        // (midpoint of penetration region)
-        let contact_pos = pos1 + normal * (radius1 - penetration * 0.5);
-
-        vec![make_contact_from_geoms(
-            model,
-            contact_pos,
-            normal,
-            penetration,
-            geom1,
-            geom2,
-            margin,
-        )]
-    } else {
-        vec![]
-    }
+    let sphere1 = Frame {
+        pos: &pos1,
+        mat: &mat1,
+    };
+    let sphere2 = Frame {
+        pos: &pos2,
+        mat: &mat2,
+    };
+    sphere_sphere(margin, sphere1, size1.x, sphere2, size2.x)
+        .map(|c| c.contact(model, geom1, geom2, margin))
+        .into_iter()
+        .collect()
 }
 
 /// Capsule-capsule collision detection — up to 2 contacts.
@@ -187,8 +166,9 @@ pub fn collide_capsule_capsule(
 /// |dot(axis1, axis2)| > 0.999 → axes within ~2.6° of parallel.
 const PARALLEL_THRESHOLD: f64 = 0.999;
 
-/// Sphere-capsule collision detection.
-// Capsule-capsule takes the full per-geom pair context so dispatch from the broadphase passes one uniform arg list.
+/// Sphere–capsule collision: MuJoCo's `mjraw_SphereCapsule`
+/// ([`mj_primitive`](super::mj_primitive)), the sphere first.
+// The full per-geom pair context, so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_sphere_capsule(
     model: &Model,
@@ -203,83 +183,29 @@ pub fn collide_sphere_capsule(
     size2: Vector3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
-    // Determine which is sphere and which is capsule
-    let (
-        sphere_geom,
-        capsule_geom,
-        sphere_pos,
-        capsule_pos,
-        capsule_mat,
-        sphere_radius,
-        capsule_size,
-    ) = if type1 == GeomType::Sphere {
-        (geom1, geom2, pos1, pos2, mat2, size1.x, size2)
-    } else {
-        (geom2, geom1, pos2, pos1, mat1, size2.x, size1)
+    let frame1 = Frame {
+        pos: &pos1,
+        mat: &mat1,
     };
-
-    let capsule_radius = capsule_size.x;
-    let capsule_half_len = capsule_size.y;
-    let capsule_axis = capsule_mat.column(2).into_owned();
-
-    // Capsule endpoints
-    let cap_a = capsule_pos - capsule_axis * capsule_half_len;
-    let cap_b = capsule_pos + capsule_axis * capsule_half_len;
-
-    // Find closest point on capsule line segment to sphere center
-    let closest_on_capsule = closest_point_segment(cap_a, cap_b, sphere_pos);
-
-    // Check distance
-    let diff = sphere_pos - closest_on_capsule;
-    let dist = diff.norm();
-    let sum_radii = sphere_radius + capsule_radius;
-    let penetration = sum_radii - dist;
-
-    if penetration > -margin {
-        // Normal points from capsule toward sphere.
-        // For degenerate case (sphere center on capsule axis), pick +Z.
-        let normal = if dist > GEOM_EPSILON {
-            diff / dist
+    let frame2 = Frame {
+        pos: &pos2,
+        mat: &mat2,
+    };
+    let ((sphere_geom, sphere, radius), (capsule_geom, capsule, size)) =
+        if type1 == GeomType::Sphere {
+            ((geom1, frame1, size1.x), (geom2, frame2, size2))
         } else {
-            Vector3::z()
+            ((geom2, frame2, size2.x), (geom1, frame1, size1))
         };
-        let contact_pos = closest_on_capsule + normal * (capsule_radius - penetration * 0.5);
-
-        // Ensure geom1 < geom2 for consistency
-        let (g1, g2) = if sphere_geom < capsule_geom {
-            (sphere_geom, capsule_geom)
-        } else {
-            (capsule_geom, sphere_geom)
-        };
-
-        // Normal convention: points from g1 toward g2.
-        // `normal` points from capsule toward sphere.
-        // If capsule is g1 (capsule_geom < sphere_geom), normal already points g1→g2.
-        // If sphere is g1 (sphere_geom < capsule_geom), we need -normal to point g1→g2.
-        let final_normal = if capsule_geom < sphere_geom {
-            normal
-        } else {
-            -normal
-        };
-
-        vec![make_contact_from_geoms(
-            model,
-            contact_pos,
-            final_normal,
-            penetration,
-            g1,
-            g2,
-            margin,
-        )]
-    } else {
-        vec![]
-    }
+    raw_sphere_capsule(margin, sphere, radius, capsule, &size)
+        .map(|c| c.contact(model, sphere_geom, capsule_geom, margin))
+        .into_iter()
+        .collect()
 }
 
-/// Sphere-box collision detection.
-///
-/// Uses the closest point on box surface to sphere center algorithm.
-// Capsule-box takes the full per-geom pair context so dispatch from the broadphase passes one uniform arg list.
+/// Sphere–box collision: MuJoCo's `mjraw_SphereBox`
+/// ([`mj_primitive`](super::mj_primitive)), the sphere first.
+// The full per-geom pair context, so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_sphere_box(
     model: &Model,
@@ -294,87 +220,24 @@ pub fn collide_sphere_box(
     size2: Vector3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
-    // Determine which is sphere and which is box
-    let (sphere_geom, box_geom, sphere_pos, box_pos, box_mat, sphere_radius, box_half) =
-        if type1 == GeomType::Sphere {
-            (geom1, geom2, pos1, pos2, mat2, size1.x, size2)
-        } else {
-            (geom2, geom1, pos2, pos1, mat1, size2.x, size1)
-        };
-
-    // Transform sphere center to box local coordinates
-    let local_center = box_mat.transpose() * (sphere_pos - box_pos);
-
-    // Find closest point on box to sphere center (clamp to box bounds)
-    let closest_local = Vector3::new(
-        local_center.x.clamp(-box_half.x, box_half.x),
-        local_center.y.clamp(-box_half.y, box_half.y),
-        local_center.z.clamp(-box_half.z, box_half.z),
-    );
-
-    // Transform back to world space
-    let closest_world = box_pos + box_mat * closest_local;
-
-    // Compute distance and penetration
-    let diff = sphere_pos - closest_world;
-    let dist = diff.norm();
-    let penetration = sphere_radius - dist;
-
-    if penetration > -margin {
-        // Compute normal (from box toward sphere)
-        let normal = if dist > GEOM_EPSILON {
-            diff / dist
-        } else {
-            // Sphere center is inside box - find deepest penetration axis
-            let mut min_pen = f64::MAX;
-            let mut normal_local = Vector3::x();
-            for i in 0..3 {
-                let pen_pos = box_half[i] - local_center[i];
-                let pen_neg = box_half[i] + local_center[i];
-                if pen_pos < min_pen {
-                    min_pen = pen_pos;
-                    normal_local = Vector3::zeros();
-                    normal_local[i] = 1.0;
-                }
-                if pen_neg < min_pen {
-                    min_pen = pen_neg;
-                    normal_local = Vector3::zeros();
-                    normal_local[i] = -1.0;
-                }
-            }
-            box_mat * normal_local
-        };
-
-        let contact_pos = closest_world + normal * (penetration * 0.5);
-
-        let (g1, g2) = if sphere_geom < box_geom {
-            (sphere_geom, box_geom)
-        } else {
-            (box_geom, sphere_geom)
-        };
-
-        // Normal convention: points from geom1 (g1) toward geom2 (g2).
-        // `normal` is computed as sphere_pos - closest_world, i.e., from box toward sphere.
-        // If box is g1 (box_geom < sphere_geom), normal already points g1→g2.
-        // If sphere is g1 (sphere_geom < box_geom), we need -normal to point g1→g2.
-        let final_normal = if box_geom < sphere_geom {
-            normal
-        } else {
-            -normal
-        };
-
-        vec![make_contact_from_geoms(
-            model,
-            contact_pos,
-            final_normal,
-            penetration,
-            g1,
-            g2,
-            margin,
-        )]
+    let frame1 = Frame {
+        pos: &pos1,
+        mat: &mat1,
+    };
+    let frame2 = Frame {
+        pos: &pos2,
+        mat: &mat2,
+    };
+    let ((sphere_geom, sphere, radius), (box_geom, box_frame, size)) = if type1 == GeomType::Sphere
+    {
+        ((geom1, frame1, size1.x), (geom2, frame2, size2))
     } else {
-        vec![]
-    }
+        ((geom2, frame2, size2.x), (geom1, frame1, size1))
+    };
+    raw_sphere_box(margin, sphere, radius, box_frame, &size)
+        .map(|c| c.contact(model, sphere_geom, box_geom, margin))
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]
@@ -410,7 +273,9 @@ mod tests {
             0,
             1,
             Vector3::zeros(),
+            Matrix3::identity(),
             Vector3::new(0.4, 0.0, 0.0),
+            Matrix3::identity(),
             m.geom_size[0],
             m.geom_size[1],
             0.0,
@@ -430,7 +295,9 @@ mod tests {
             0,
             1,
             Vector3::zeros(),
+            Matrix3::identity(),
             Vector3::new(1.0, 0.0, 0.0),
+            Matrix3::identity(),
             m.geom_size[0],
             m.geom_size[1],
             0.0,
@@ -438,9 +305,12 @@ mod tests {
         assert!(c.is_empty());
     }
 
+    /// Coincident centres, both frames upright: the normal is the cross of
+    /// the two z axes, which is 0, so MuJoCo's `mju_normalize3` makes it +x
+    /// (`mjraw_SphereSphere`); the depth is the radii's sum. Before the port
+    /// it was +z.
     #[test]
-    fn sphere_sphere_coincident_picks_z_normal() {
-        // Degenerate: coincident centers → fallback normal +Z, pen = sum radii.
+    fn sphere_sphere_coincident_takes_the_x_normal() {
         let mut m = make_model(2);
         m.geom_size[0] = Vector3::new(0.3, 0.0, 0.0);
         m.geom_size[1] = Vector3::new(0.2, 0.0, 0.0);
@@ -449,14 +319,16 @@ mod tests {
             0,
             1,
             Vector3::zeros(),
+            Matrix3::identity(),
             Vector3::zeros(),
+            Matrix3::identity(),
             m.geom_size[0],
             m.geom_size[1],
             0.0,
         );
         assert_eq!(c.len(), 1);
         assert_relative_eq!(c[0].depth, 0.5, epsilon = 1e-9);
-        assert_relative_eq!(c[0].normal, Vector3::z(), epsilon = 1e-9);
+        assert_relative_eq!(c[0].normal, Vector3::x(), epsilon = 1e-9);
     }
 
     // ── capsule ↔ capsule ─────────────────────────────────────────────
@@ -650,8 +522,8 @@ mod tests {
     #[test]
     fn sphere_box_reversed_order_geom_dispatch() {
         // Box is geom 0 / type1, sphere geom 1: exercises the dispatcher's
-        // `else` branch. Box is now the lower index, so the normal points from
-        // box toward sphere = +X.
+        // `else` branch. The contact lists the sphere first, as MuJoCo's
+        // `mjraw_SphereBox`, its normal from the sphere toward the box = -X.
         let mut m = make_model(2);
         m.geom_type[0] = GeomType::Box;
         m.geom_size[0] = Vector3::new(0.5, 0.5, 0.5);
@@ -671,8 +543,9 @@ mod tests {
             0.0,
         );
         assert_eq!(c.len(), 1);
+        assert_eq!((c[0].geom1, c[0].geom2), (1, 0));
         assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
-        assert_relative_eq!(c[0].normal, Vector3::x(), epsilon = 1e-9);
+        assert_relative_eq!(c[0].normal, -Vector3::x(), epsilon = 1e-9);
     }
 
     #[test]

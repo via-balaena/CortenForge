@@ -1,19 +1,14 @@
 //! Analytical pairwise collision for cylinders and box-box SAT.
 
+use super::mj_primitive::{Frame, sphere_cylinder};
 use super::narrow::{CAP_COLLISION_THRESHOLD, GEOM_EPSILON, make_contact_from_geoms};
 use crate::forward::{closest_points_segments, closest_points_segments_parametric};
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Vector3};
 
-/// Cylinder-sphere collision detection.
-///
-/// Handles three collision cases:
-/// - Side collision: sphere beside cylinder body
-/// - Cap collision: sphere above/below cylinder, within radius
-/// - Edge collision: sphere near rim of cylinder cap
-///
-/// Cylinder axis is local Z.
-// Cylinder-cylinder pair dispatcher takes the full per-geom context (poses, sizes, friction, margin).
+/// Cylinder–sphere collision: MuJoCo's `mjc_SphereCylinder`
+/// ([`mj_primitive`](super::mj_primitive)), the sphere first.
+// The full per-geom pair context, so dispatch from the broadphase passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_cylinder_sphere(
     model: &Model,
@@ -28,107 +23,24 @@ pub fn collide_cylinder_sphere(
     size2: Vector3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
-    // Determine which is cylinder and which is sphere
-    // Note: sphere doesn't use its rotation matrix, but we need mat2 for the cylinder case
-    let (cyl_geom, cyl_pos, cyl_mat, cyl_size, sph_geom, sph_pos, sph_radius) =
-        if type1 == GeomType::Cylinder {
-            (geom1, pos1, mat1, size1, geom2, pos2, size2.x)
+    let frame1 = Frame {
+        pos: &pos1,
+        mat: &mat1,
+    };
+    let frame2 = Frame {
+        pos: &pos2,
+        mat: &mat2,
+    };
+    let ((sphere_geom, sphere, radius), (cylinder_geom, cylinder, size)) =
+        if type1 == GeomType::Sphere {
+            ((geom1, frame1, size1.x), (geom2, frame2, size2))
         } else {
-            (geom2, pos2, mat2, size2, geom1, pos1, size1.x)
+            ((geom2, frame2, size2.x), (geom1, frame1, size1))
         };
-
-    let cyl_radius = cyl_size.x;
-    let cyl_half_height = cyl_size.y;
-    let cyl_axis = cyl_mat.column(2).into_owned();
-
-    // Vector from cylinder center to sphere center
-    let d = sph_pos - cyl_pos;
-
-    // Project onto cylinder axis
-    let axis_dist = d.dot(&cyl_axis);
-
-    // Clamp to cylinder height
-    let clamped_axis = axis_dist.clamp(-cyl_half_height, cyl_half_height);
-
-    // Closest point on cylinder axis to sphere center
-    let axis_point = cyl_pos + cyl_axis * clamped_axis;
-
-    // Radial vector from axis to sphere
-    let radial = sph_pos - axis_point;
-    let radial_dist = radial.norm();
-
-    // Determine closest point on cylinder surface and contact normal
-    let (closest_on_cyl, normal) = if axis_dist.abs() <= cyl_half_height {
-        // Sphere is beside the cylinder (side collision)
-        if radial_dist < GEOM_EPSILON {
-            // Sphere center on axis - degenerate case, pick arbitrary radial direction
-            let arb = if cyl_axis.x.abs() < 0.9 {
-                Vector3::x()
-            } else {
-                Vector3::y()
-            };
-            let n = cyl_axis.cross(&arb).normalize();
-            (axis_point + n * cyl_radius, n)
-        } else {
-            let n = radial / radial_dist;
-            (axis_point + n * cyl_radius, n)
-        }
-    } else {
-        // Sphere is above/below cylinder (cap or edge collision)
-        let cap_center = cyl_pos + cyl_axis * clamped_axis;
-
-        // Compute radial direction in the plane perpendicular to cylinder axis.
-        // d - (d · axis) * axis gives the perpendicular component.
-        let perp = d - cyl_axis * axis_dist;
-        let perp_dist = perp.norm();
-
-        if perp_dist <= cyl_radius {
-            // Cap collision - sphere projects onto cap face
-            let n = if axis_dist > 0.0 { cyl_axis } else { -cyl_axis };
-            (cap_center + perp, n)
-        } else {
-            // Edge collision - sphere near rim of cap
-            let radial_n = perp / perp_dist;
-            let edge_point = cap_center + radial_n * cyl_radius;
-            let to_sphere = sph_pos - edge_point;
-            let to_sphere_dist = to_sphere.norm();
-            let n = if to_sphere_dist > GEOM_EPSILON {
-                to_sphere / to_sphere_dist
-            } else {
-                // Degenerate: sphere center exactly on edge
-                radial_n
-            };
-            (edge_point, n)
-        }
-    };
-
-    // Compute penetration depth
-    let dist = (sph_pos - closest_on_cyl).norm();
-    let penetration = sph_radius - dist;
-
-    if penetration <= -margin {
-        return vec![];
-    }
-
-    // Contact position is on the surface between the two shapes
-    let contact_pos = closest_on_cyl + normal * (penetration * 0.5);
-
-    // Order geoms consistently (lower index first)
-    let (g1, g2, final_normal) = if cyl_geom < sph_geom {
-        (cyl_geom, sph_geom, normal)
-    } else {
-        (sph_geom, cyl_geom, -normal)
-    };
-
-    vec![make_contact_from_geoms(
-        model,
-        contact_pos,
-        final_normal,
-        penetration,
-        g1,
-        g2,
-        margin,
-    )]
+    sphere_cylinder(margin, sphere, radius, cylinder, &size)
+        .map(|c| c.contact(model, sphere_geom, cylinder_geom, margin))
+        .into_iter()
+        .collect()
 }
 
 /// Cylinder-capsule collision detection.
@@ -946,8 +858,10 @@ mod tests {
         );
         assert_eq!(c.len(), 1);
         assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
-        // Cylinder is the lower geom index → normal points from cylinder toward sphere (+X).
-        assert_relative_eq!(c[0].normal, Vector3::x(), epsilon = 1e-9);
+        // The sphere is listed first, as MuJoCo's `mjc_SphereCylinder`, the
+        // normal from it toward the cylinder (-X).
+        assert_eq!((c[0].geom1, c[0].geom2), (1, 0));
+        assert_relative_eq!(c[0].normal, -Vector3::x(), epsilon = 1e-9);
     }
 
     #[test]
@@ -1029,7 +943,8 @@ mod tests {
     #[test]
     fn cyl_sphere_cap_penetration() {
         // Sphere directly above the top cap: cap face at z=0.5, sphere center
-        // z=0.6, gap 0.1, penetration 0.2-0.1=0.1, normal +Z.
+        // z=0.6, gap 0.1, penetration 0.2-0.1=0.1; the sphere listed first,
+        // the normal from it down into the cap, -Z.
         let mut m = make_model(2);
         m.geom_type[0] = GeomType::Cylinder;
         m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
@@ -1048,8 +963,9 @@ mod tests {
             0.0,
         );
         assert_eq!(c.len(), 1);
+        assert_eq!((c[0].geom1, c[0].geom2), (1, 0));
         assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
-        assert_relative_eq!(c[0].normal, Vector3::z(), epsilon = 1e-9);
+        assert_relative_eq!(c[0].normal, -Vector3::z(), epsilon = 1e-9);
     }
 
     #[test]

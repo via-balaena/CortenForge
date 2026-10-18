@@ -950,3 +950,87 @@ fn the_contact_filter_replaces_the_bitmask_as_mujocos() {
         );
     }
 }
+
+/// Forward `model` from `qpos` and compare its contacts with MuJoCo's `want`:
+/// the same geoms in order, each distance, position and normal within 1e-12.
+fn contacts_as_mujoco(name: &str, model: &Model, qpos: &[f64], want: &Value) {
+    let mut data = model.make_data();
+    data.qpos.as_mut_slice().copy_from_slice(qpos);
+    data.forward(model).expect("forward");
+    let want = want.as_array().expect("contacts");
+    let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+    let theirs: Vec<[usize; 2]> = want
+        .iter()
+        .map(|w| {
+            let g: Vec<usize> = indices(&w["geom"]).into_iter().flatten().collect();
+            [g[0], g[1]]
+        })
+        .collect();
+    assert_eq!(ours, theirs, "{name}: contact geoms in order");
+    for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
+        let near = |a: f64, b: f64| (a - b).abs() <= 1e-12;
+        let dist = w["dist"].as_f64().expect("dist");
+        assert!(
+            near(-c.depth, dist),
+            "{name} contact {k}: dist {}, MuJoCo {dist}",
+            -c.depth
+        );
+        let (pos, normal) = (floats(&w["pos"]), floats(&w["normal"]));
+        for i in 0..3 {
+            assert!(
+                near(c.pos[i], pos[i]),
+                "{name} contact {k}: pos {:?}, MuJoCo {pos:?}",
+                c.pos
+            );
+            assert!(
+                near(c.normal[i], normal[i]),
+                "{name} contact {k}: normal {:?}, MuJoCo {normal:?}",
+                c.normal
+            );
+        }
+    }
+}
+
+/// A sphere against a sphere, a capsule, a cylinder and a box, each pair on
+/// two free bodies, the sphere's body first in the file and second: the
+/// contacts are MuJoCo's within 1e-12 (`mjraw_SphereSphere`,
+/// `mjraw_SphereCapsule`, `mjc_SphereCylinder`,
+/// `engine_collision_primitive.c:245-385`; `mjraw_SphereBox`,
+/// `engine_collision_box.c:39-92`), at named poses on the cases those
+/// functions treat apart (coincident centres, upright and turned, whose
+/// normal is the cross of the two z axes or x; a centre on a capsule's or a
+/// cylinder's axis, inside it, where the cylinder takes the side or the cap
+/// by the shallower; inside a box, out through the nearest face; a
+/// cylinder's side, either cap and rim; shallow overlaps, each contact
+/// midway between the surfaces; a sphere exactly touching a sphere and a
+/// box's face, listed at distance 0, MuJoCo's tests being inclusive) and at
+/// 40 seeded random poses per pair, a sixth of them degenerate, at geom
+/// margins 0 and 0.02.
+#[test]
+fn sphere_pairs_collide_as_mujoco() {
+    let case = &golden()["sphere_pairs"];
+    for (name, c) in case["named"].as_object().expect("named") {
+        let model: Model = load_model(c["xml"].as_str().expect("xml")).expect("load");
+        contacts_as_mujoco(name, &model, &floats(&c["qpos"]), &c["contacts"]);
+    }
+    for (other, set) in case["random"].as_object().expect("random") {
+        let models: std::collections::BTreeMap<&str, Model> = set["xml"]
+            .as_object()
+            .expect("xml")
+            .iter()
+            .map(|(variant, xml)| {
+                let model = load_model(xml.as_str().expect("xml")).expect("load");
+                (variant.as_str(), model)
+            })
+            .collect();
+        for (k, pose) in set["poses"].as_array().expect("poses").iter().enumerate() {
+            let variant = pose["variant"].as_str().expect("variant");
+            contacts_as_mujoco(
+                &format!("{other} pose {k} ({variant})"),
+                &models[variant],
+                &floats(&pose["qpos"]),
+                &pose["contacts"],
+            );
+        }
+    }
+}

@@ -110,6 +110,20 @@ each other, which collide only under the filter; `flat` height fields on
 free bodies over a plane and over a height field in the world. It refuses a
 `bitmask` whose contacts the filter does not change, and a `flat` where the
 filter is called or a contact made.
+`sphere_pairs` holds a sphere against a sphere, a capsule, a cylinder and a
+box, each pair on two free bodies (the sphere's body first in the file and
+second): named poses at the degenerate cases MuJoCo's functions treat apart
+(coincident centres, upright and turned; a centre on a capsule's or a
+cylinder's axis, inside it; inside a box; the side, a cap, the other cap
+and the rim of a cylinder; a shallow overlap) and 40 seeded random poses
+per pair, a sixth of them degenerate, at geom margins 0 and 0.02, and a
+sphere exactly touching a sphere and a box's face (distance 0); after
+mj_forward from each `qpos`, MuJoCo's contacts (geoms, `dist`, `pos`, the
+frame's normal): mjraw_SphereSphere, mjraw_SphereCapsule and
+mjc_SphereCylinder (engine_collision_primitive.c:245-385), mjraw_SphereBox
+(engine_collision_box.c:39-92). It refuses a pair whose poses make no
+contact, or every pose one, and a touching pose without one contact at
+distance 0.
 """
 
 import json
@@ -915,6 +929,138 @@ def contact_filter_cases():
     return out
 
 
+# A sphere (radius 0.1) against each primitive MuJoCo's sphere functions
+# collide, on two free bodies; the body order in the file either way.
+SPHERE_PAIR_GEOMS = {
+    "sphere": '<geom type="sphere" size="0.07"/>',
+    "capsule": '<geom type="capsule" size="0.05 0.15"/>',
+    "cylinder": '<geom type="cylinder" size="0.08 0.12"/>',
+    "box": '<geom type="box" size="0.1 0.07 0.05"/>',
+}
+
+
+def sphere_pair_xml(other, sphere_first, margin):
+    sphere = '<body name="s"><freejoint/><geom type="sphere" size="0.1"/></body>'
+    body = f'<body name="o"><freejoint/>{SPHERE_PAIR_GEOMS[other]}</body>'
+    bodies = sphere + body if sphere_first else body + sphere
+    return (f'<mujoco><option gravity="0 0 0"/><default><geom margin="{margin!r}"/></default>'
+            f"<worldbody>{bodies}</worldbody></mujoco>")
+
+
+def unit(v):
+    v = np.asarray(v, dtype=float)
+    return v / np.linalg.norm(v)
+
+
+TURN = unit([0.8, 0.3, -0.4, 0.33])
+# Named poses: (other, sphere position, sphere quat, other position, other quat).
+SPHERE_PAIR_POSES = {
+    "concentric_upright": ("sphere", [0, 0, 0], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "concentric_turned": ("sphere", [0, 0, 0], [1, 0, 0, 0], [0, 0, 0], TURN),
+    "shallow_spheres": ("sphere", [0, 0, 0], [1, 0, 0, 0], [0.1, 0.06, 0.12], TURN),
+    "on_capsule_axis": ("capsule", [0, 0, 0.04], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "capsule_side": ("capsule", [0.13, 0.02, 0.05], [1, 0, 0, 0], [0, 0, 0], TURN),
+    "on_cylinder_axis": ("cylinder", [0, 0, 0.03], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "cylinder_side": ("cylinder", [0.16, 0.0, 0.02], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "cylinder_top_cap": ("cylinder", [0.02, 0.01, 0.2], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "cylinder_bottom_cap": ("cylinder", [0.02, 0.01, -0.2], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "cylinder_rim": ("cylinder", [0.12, 0.0, 0.16], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "inside_cylinder_near_cap": ("cylinder", [0.01, 0.0, 0.1], [1, 0, 0, 0], [0, 0, 0], TURN),
+    "inside_box": ("box", [0.02, 0.01, 0.0], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "inside_box_turned": ("box", [0.03, -0.02, 0.01], [1, 0, 0, 0], [0, 0, 0], TURN),
+    "box_face_shallow": ("box", [0, 0, 0.14], [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0]),
+    "box_edge": ("box", [0.15, 0.1, 0.0], [1, 0, 0, 0], [0, 0, 0], TURN),
+}
+
+
+def sphere_pair_contacts(xml, qpos):
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qpos[:] = qpos
+    mujoco.mj_forward(m, d)
+    return [{"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist),
+             "pos": floats(c.pos), "normal": floats(c.frame[:3])} for c in d.contact[:d.ncon]]
+
+
+def pose_qpos(sphere_first, sp, sq, op, oq):
+    s = list(sp) + list(unit(sq))
+    o = list(op) + list(unit(oq))
+    return s + o if sphere_first else o + s
+
+
+def random_poses(rng, other, n):
+    """`n` (sphere position, quat, other position, quat), a sixth of them
+    degenerate: centres coincident, or the sphere on the other's axis or
+    inside a box."""
+    reach = {"sphere": 0.17, "capsule": 0.2, "cylinder": 0.2, "box": 0.18}[other]
+    out = []
+    for k in range(n):
+        oq = unit(rng.normal(size=4))
+        sq = unit(rng.normal(size=4))
+        if k % 6 == 0:
+            if other in ("capsule", "cylinder"):
+                mat = np.zeros(9)
+                mujoco.mju_quat2Mat(mat, oq)
+                axis = mat.reshape(3, 3)[:, 2]
+                sp = axis * rng.uniform(-0.1, 0.1)
+            elif other == "box":
+                sp = rng.uniform(-0.04, 0.04, size=3)
+            else:
+                sp = np.zeros(3)
+        else:
+            sp = unit(rng.normal(size=3)) * rng.uniform(0.3, 1.1) * reach
+        out.append((sp, sq, np.zeros(3), oq))
+    return out
+
+
+# Exactly touching, at sizes and distances binary floats hold exactly, so
+# the distance is 0 and MuJoCo's inclusive tests list the contact.
+SPHERE_TOUCHING = {
+    "spheres_touching": ('<geom type="sphere" size="0.25"/>', [0.75, 0, 0]),
+    "box_face_touching": ('<geom type="box" size="0.25 0.25 0.25"/>', [0, 0, 0.75]),
+}
+
+
+def sphere_touching_xml(other):
+    return ('<mujoco><option gravity="0 0 0"/><worldbody>'
+            '<body name="s"><freejoint/><geom type="sphere" size="0.5"/></body>'
+            f'<body name="o"><freejoint/>{other}</body></worldbody></mujoco>')
+
+
+def sphere_pair_cases():
+    named = {}
+    for name, (other, sp) in SPHERE_TOUCHING.items():
+        xml = sphere_touching_xml(other)
+        qpos = pose_qpos(True, sp, [1, 0, 0, 0], [0, 0, 0], [1, 0, 0, 0])
+        contacts = sphere_pair_contacts(xml, qpos)
+        if [c["dist"] for c in contacts] != [0.0]:
+            sys.exit(f"sphere_pairs {name}: not one contact at distance 0: {contacts}")
+        named[name] = {"xml": xml, "qpos": floats(qpos), "contacts": contacts}
+    for name, (other, sp, sq, op, oq) in SPHERE_PAIR_POSES.items():
+        for first in (True, False):
+            xml = sphere_pair_xml(other, first, 0.0)
+            qpos = pose_qpos(first, sp, sq, op, oq)
+            named[f"{name}_{'sphere_first' if first else 'sphere_second'}"] = {
+                "xml": xml, "qpos": floats(qpos), "contacts": sphere_pair_contacts(xml, qpos)}
+    rng = np.random.default_rng(20261018)
+    poses = {}
+    for other in SPHERE_PAIR_GEOMS:
+        xmls, cases = {}, []
+        for pose in random_poses(rng, other, 40):
+            for first in (True, False):
+                for margin in (0.0, 0.02):
+                    variant = f"{'sphere_first' if first else 'sphere_second'}_margin_{margin!r}"
+                    xml = xmls.setdefault(variant, sphere_pair_xml(other, first, margin))
+                    qpos = pose_qpos(first, *pose)
+                    cases.append({"variant": variant, "qpos": floats(qpos),
+                                  "contacts": sphere_pair_contacts(xml, qpos)})
+        touching = sum(1 for c in cases if c["contacts"])
+        if touching in (0, len(cases)):
+            sys.exit(f"sphere_pairs {other}: {touching} of {len(cases)} poses make a contact")
+        poses[other] = {"xml": xmls, "poses": cases}
+    return {"named": named, "random": poses}
+
+
 # The geom-distance sensors (distance, normal, fromto) of two overlapping
 # boxes, both argument orders (the review's scene; mj_geomDistance from the
 # contact's witnesses).
@@ -964,6 +1110,7 @@ def main():
            "geom_aabb": finite_or_string(geom_aabb_case()),
            "midphase": finite_or_string(midphase_cases()),
            "contact_filter": finite_or_string(contact_filter_cases()),
+           "sphere_pairs": finite_or_string(sphere_pair_cases()),
            "geom_distance": finite_or_string(geom_distance_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)

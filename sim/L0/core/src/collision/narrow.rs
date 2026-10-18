@@ -99,7 +99,9 @@ pub fn collide_geoms(
 
     // Special case: sphere-sphere collision (analytical, more robust than GJK/EPA)
     if type1 == GeomType::Sphere && type2 == GeomType::Sphere {
-        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin);
+        return collide_sphere_sphere(
+            model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
+        );
     }
 
     // Special case: capsule-capsule collision (analytical, much faster than GJK/EPA)

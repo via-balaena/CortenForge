@@ -15,6 +15,7 @@ pub(crate) mod flex_self;
 pub(crate) mod hfield;
 pub(crate) mod mesh_collide;
 mod midphase;
+mod mj_primitive;
 pub(crate) mod narrow;
 mod order;
 pub(crate) mod pair_convex;
