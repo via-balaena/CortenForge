@@ -8,7 +8,8 @@
 //! [`Tol::Golden`]); a tendon's velocity is summed as MuJoCo's at both sizes,
 //! a fixed tendon naming a joint twice keeps MuJoCo's row, and a tendon
 //! motor's force is MuJoCo's. A segment grazing a sphere keeps a finite
-//! length where MuJoCo's is NaN (registry `D-WRAP-ACOS`).
+//! length where MuJoCo's is NaN, and one tangent to it the straight length
+//! where MuJoCo's adds 2πr (registry `D-WRAP-ACOS`).
 //!
 //! The golden is `assets/golden/tendon/tendon.json`, from the unfused MuJoCo
 //! 3.5.0 oracle (`scripts/gen_tendon_reference.py`, which describes its
@@ -310,9 +311,7 @@ fn assert_configs(name: &str, case: &Value) {
 /// Scenes at the edges of `mju_wrap`'s tests, from reviews' sweeps of them:
 /// an end on the surface, a segment grazing it, a radius of 1e-14
 /// (axis-aligned and turned) and of 1e-15 (turned), a cylinder wrap near
-/// π, a segment tangent to the sphere whose tangent directions' cosine is
-/// exactly 1, which MuJoCo's sphere wrap takes the long way round (ledger
-/// L185); in each a sphere and a cylinder in the world, wrapped with and
+/// π; in each a sphere and a cylinder in the world, wrapped with and
 /// without a sidesite. Each tendon's length,
 /// Jacobian and wrap points are MuJoCo's ([`Tol::Golden`]).
 #[test]
@@ -366,6 +365,41 @@ fn grazing_sphere_wrap_keeps_a_finite_length() {
         assert!(nan > 0, "{name}: no length of MuJoCo's is NaN");
         assert_tendons(name, &model, &data, &want, Tol::Golden);
     }
+}
+
+/// A segment tangent to the sphere where the sphere wrap's two tangent
+/// directions' cosine is exactly 1, from the chunk 3e-1 fix-diff review's
+/// search: MuJoCo's `length_circle` takes `acos(1)` = 0 and still the long
+/// way round where the cross product's sign asks for it, so both its sphere
+/// tendons read the straight segment plus 2πr. Ours takes the arc as 0 at a
+/// cosine of 1 as past it (registry `D-WRAP-ACOS`, ledger L185): each
+/// sphere tendon's length is MuJoCo's less 2πr within 1e-12, the straight
+/// segment's; everything else is MuJoCo's ([`Tol::Golden`]).
+#[test]
+fn a_tangent_sphere_wrap_takes_the_short_way() {
+    let case = &golden()["cases"]["tangent"]["tangent_long_way"];
+    let model = load(case);
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let circle = 2.0 * std::f64::consts::PI * model.geom_size[0].x;
+    let mut want = case["forward"].clone();
+    for (t, tendon) in want
+        .as_array_mut()
+        .expect("array")
+        .iter_mut()
+        .take(2)
+        .enumerate()
+    {
+        let theirs = tendon["ten_length"].as_f64().expect("number");
+        let got = data.ten_length[t];
+        assert!(
+            (theirs - circle - got).abs() <= 1e-12,
+            "sphere tendon {t}: length {got}, MuJoCo's {theirs} less 2πr {}",
+            theirs - circle
+        );
+        tendon["ten_length"] = got.into();
+    }
+    assert_tendons("tangent_long_way", &model, &data, &want, Tol::Golden);
 }
 
 /// Tendons between sites a and 2a on six rays from the centre of a sphere
