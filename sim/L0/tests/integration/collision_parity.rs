@@ -689,6 +689,82 @@ fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
     }
 }
 
+/// The geom-distance sensors of separated pairs, a box, an ellipsoid and a
+/// cylinder each turned, 4 mm apart, in both argument orders: their distance
+/// comes from GJK alone (`gjk_distance`), MuJoCo's within 1e-10. Measured:
+/// 2.0e-15 (box–ellipsoid), 3.1e-15 (box–cylinder), 1.2e-11
+/// (ellipsoid–cylinder).
+#[test]
+fn geom_distance_sensors_of_separated_pairs_as_mujoco() {
+    let cases = golden()["geom_distance_apart"].clone();
+    for (name, case) in cases.as_object().expect("cases") {
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let want = floats(&case["sensordata"]);
+        assert_eq!(data.sensordata.len(), want.len(), "{name}: sensordata");
+        for (k, (a, b)) in data.sensordata.iter().zip(&want).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-10,
+                "{name}: sensordata[{k}] {a}, MuJoCo {b}"
+            );
+        }
+    }
+}
+
+/// A three-axis ellipsoid (0.05, 0.04, 0.03) 1 mm above the box slab, the
+/// slab's margin 0.01: MuJoCo lists one contact from the start, 1 mm apart,
+/// and so does ours, from the margin zone's GJK distance. Its distance
+/// within 1e-6 of MuJoCo's, its normal within 1e-5 and its position within
+/// 1e-3; the height after every 50th of 1,000 steps within 1e-5. Measured:
+/// 2.5e-7, 5.2e-7, 1.0e-4 (MuJoCo's contact is that far from the midpoint
+/// of the ellipsoid's lowest point and the face, ours 7.5e-9) and 1.6e-6.
+#[test]
+fn g_ellipsoid_box_margin() {
+    let case = &golden()["margin"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos[2] = case["z0"].as_f64().expect("z0");
+    data.forward(&model).expect("forward");
+    let contacts = case["contacts"].as_array().expect("contacts");
+    assert_eq!(data.ncon, contacts.len(), "contacts at the start");
+    for want in contacts {
+        let (c, sign) = matching(&data, want);
+        let (pos, normal) = (floats(&want["pos"]), floats(&want["normal"]));
+        for i in 0..3 {
+            assert!(
+                (c.pos[i] - pos[i]).abs() <= 1e-3,
+                "contact pos {:?}, MuJoCo {pos:?}",
+                c.pos
+            );
+            assert!(
+                (sign * c.normal[i] - normal[i]).abs() <= 1e-5,
+                "contact normal {:?} (sign {sign}), MuJoCo {normal:?}",
+                c.normal
+            );
+        }
+        let dist = want["dist"].as_f64().expect("dist");
+        assert!(
+            (-c.depth - dist).abs() <= 1e-6,
+            "depth {}, MuJoCo's dist {dist}",
+            c.depth
+        );
+    }
+
+    let every = count(&case["every"]);
+    let mut want = floats(&case["z"]).into_iter();
+    for k in 0..count(&case["nstep"]) {
+        data.step(&model).expect("step");
+        if k % every == every - 1 {
+            let (ours, theirs) = (data.qpos[2], want.next().expect("a sample"));
+            assert!(
+                (ours - theirs).abs() <= 1e-5,
+                "z after step {k}: {ours}, MuJoCo {theirs}"
+            );
+        }
+    }
+}
+
 /// A plane, two height fields and one of each primitive: each geom's box,
 /// `geom_aabb`, is MuJoCo's bit for bit (`mjCGeom::ComputeAABB`,
 /// `user_objects.cc:3573-3626`): a plane's is the half-space below it, to

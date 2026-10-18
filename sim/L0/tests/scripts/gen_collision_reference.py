@@ -1318,6 +1318,100 @@ def geom_distance_cases():
     return out
 
 
+# The same sensors on separated pairs, a box, an ellipsoid and a cylinder,
+# each turned, both argument orders: B is moved along a fixed direction until
+# MuJoCo's distance is GAP (bisection on its sensor), so each pair is near
+# touching. Its distance comes from GJK alone (mj_geomDistance).
+APART_SHAPES = {
+    "box": 'type="box" size="0.08 0.06 0.05"',
+    "ellipsoid": 'type="ellipsoid" size="0.05 0.04 0.03"',
+    "cylinder": 'type="cylinder" size="0.04 0.05"',
+}
+APART_PAIRS = [("box", "ellipsoid"), ("box", "cylinder"), ("ellipsoid", "cylinder")]
+
+
+def unit_quat(q):
+    q = np.asarray(q, dtype=float) / np.linalg.norm(q)
+    return " ".join(repr(float(x)) for x in q)
+
+
+APART_QUAT_A = unit_quat([0.92, 0.22, 0.22, 0.22])
+APART_QUAT_B = unit_quat([0.88, -0.28, 0.17, 0.36])
+APART_DIR = np.array([0.6, -0.3, 0.74]) / np.linalg.norm([0.6, -0.3, 0.74])
+APART_GAP = 0.004
+
+
+def apart_xml(shape_a, shape_b, pos, first, second):
+    return (f"""<mujoco><option><flag gravity="disable"/></option><worldbody>"""
+            f"""<body name="sa"><geom name="A" {APART_SHAPES[shape_a]} quat="{APART_QUAT_A}"/></body>\n"""
+            f"""<body name="b" pos="{' '.join(repr(float(x)) for x in pos)}"><freejoint/>"""
+            f"""<geom name="B" {APART_SHAPES[shape_b]} quat="{APART_QUAT_B}"/></body></worldbody>\n"""
+            f"""<sensor><distance geom1="{first}" geom2="{second}" cutoff="1"/>"""
+            f"""<normal geom1="{first}" geom2="{second}" cutoff="1"/>"""
+            f"""<fromto geom1="{first}" geom2="{second}" cutoff="1"/></sensor></mujoco>""")
+
+
+def apart_distance(shape_a, shape_b, t):
+    m = mujoco.MjModel.from_xml_string(apart_xml(shape_a, shape_b, t * APART_DIR, "A", "B"))
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    return float(d.sensordata[0])
+
+
+def geom_distance_apart_cases():
+    out = {}
+    for shape_a, shape_b in APART_PAIRS:
+        lo, hi = 0.05, 1.0  # B's offset along APART_DIR: overlapping at lo, apart at hi
+        if not apart_distance(shape_a, shape_b, lo) < 0 < apart_distance(shape_a, shape_b, hi):
+            sys.exit(f"geom_distance_apart {shape_a}_{shape_b}: no bracket")
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if apart_distance(shape_a, shape_b, mid) < APART_GAP:
+                lo = mid
+            else:
+                hi = mid
+        pos = [float(x) for x in hi * APART_DIR]
+        for first, second, tag in (("A", "B", "ab"), ("B", "A", "ba")):
+            xml = apart_xml(shape_a, shape_b, pos, first, second)
+            m = mujoco.MjModel.from_xml_string(xml)
+            d = mujoco.MjData(m)
+            mujoco.mj_forward(m, d)
+            if abs(d.sensordata[0] - APART_GAP) > 1e-9:
+                sys.exit(f"geom_distance_apart {shape_a}_{shape_b}: distance {d.sensordata[0]}")
+            out[f"{shape_a}_{shape_b}_{tag}"] = {"xml": xml, "sensordata": floats(d.sensordata)}
+    return out
+
+
+# A three-axis ellipsoid 1 mm above the box slab, the slab's margin 0.01:
+# MuJoCo lists a contact at distance 1 mm from the start, its convex solver
+# reporting the separation within the margin. `contacts` is its list after
+# mj_forward at the start; `z` the body's height after every 50th step.
+MARGIN_SLAB = '<geom name="slab" type="box" size="0.5 0.4 0.1" pos="0 0 -0.1" margin="0.01"/>'
+
+
+def margin_case():
+    xml = f"""<mujoco>
+<worldbody>{MARGIN_SLAB}
+<body name="b" pos="0.05 -0.03 0"><freejoint/><geom type="ellipsoid" size="0.05 0.04 0.03" mass="0.5"/></body>
+</worldbody></mujoco>"""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    z0 = 0.03 + 0.001
+    d.qpos[2] = z0
+    mujoco.mj_forward(m, d)
+    if d.ncon != 1 or not 0 < d.contact[0].dist < 0.01:
+        sys.exit(f"margin: {d.ncon} contacts at the start, not one in the margin")
+    contacts = [{"geom": [int(c.geom1), int(c.geom2)], "pos": floats(c.pos),
+                 "normal": floats(c.frame[:3]), "dist": float(c.dist)}
+                for c in d.contact[:d.ncon]]
+    z = []
+    for k in range(NSTEP):
+        mujoco.mj_step(m, d)
+        if k % EVERY == EVERY - 1:
+            z.append(float(d.qpos[2]))
+    return {"xml": xml, "z0": z0, "contacts": contacts, "nstep": NSTEP, "every": EVERY, "z": z}
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
@@ -1346,7 +1440,9 @@ def main():
            "capsule_pairs": finite_or_string(capsule_pair_cases()),
            "box_pairs": finite_or_string(box_pair_cases()),
            "box_box_tie": finite_or_string(box_box_tie_case()),
-           "geom_distance": finite_or_string(geom_distance_cases())}
+           "geom_distance": finite_or_string(geom_distance_cases()),
+           "geom_distance_apart": finite_or_string(geom_distance_apart_cases()),
+           "margin": finite_or_string(margin_case())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
     print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "

@@ -971,14 +971,8 @@ fn t27_noise_determinism() {
 
 #[test]
 fn t28_box_sphere_distance() {
-    // Validates that geom_distance works with non-sphere geom types via GJK.
-    // Exact value: 2.0 - 0.5 - 0.3 = 1.2 (MuJoCo-verified).
-    // CortenForge's GJK closest-point query has known precision limitations
-    // for non-sphere pairs (search direction accumulation in simplex processing).
-    // This test validates GJK produces a reasonable positive distance > 0 and
-    // that the non-sphere code path doesn't panic or return garbage.
-    // Full MuJoCo-matching precision for non-sphere pairs is tracked as a GJK
-    // infrastructure improvement (related to DT-122).
+    // A box and a sphere apart, their distance from GJK (`gjk_distance`):
+    // 2.0 - 0.5 - 0.3 = 1.2 (MuJoCo-verified).
     let mjcf = r#"
         <mujoco model="t28">
             <worldbody>
@@ -999,20 +993,8 @@ fn t28_box_sphere_distance() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
 
-    // GJK returns ~1.39 (corner vs face precision issue in simplex direction).
-    // Ideal MuJoCo value: 1.2. The test validates:
-    // 1. Non-sphere path doesn't panic
-    // 2. Distance is positive and in the right ballpark (1.0 < d < 2.0)
-    // 3. Distance is deterministic
     let d = data.sensordata[0];
-    assert!(
-        d > 1.0,
-        "box-sphere distance should be positive and > 1.0, got {d}"
-    );
-    assert!(
-        d < 2.0,
-        "box-sphere distance should be < 2.0 (center distance), got {d}"
-    );
+    assert!((d - 1.2).abs() <= 1e-12, "box-sphere distance {d}, not 1.2");
 }
 
 /// `Model::add_ground_plane` on a model whose world already holds a geom
