@@ -679,3 +679,23 @@ fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
         }
     }
 }
+
+/// A plane, two height fields and one of each primitive: each geom's box,
+/// `geom_aabb`, is MuJoCo's bit for bit (`mjCGeom::ComputeAABB`,
+/// `user_objects.cc:3573-3626`): a plane's is the half-space below it, to
+/// 1e10 each way; a cylinder's half-height is its own; a height field's is
+/// from its size, its base to its top.
+#[test]
+fn geom_boxes_are_mujocos_bit_for_bit() {
+    let case = &golden()["geom_aabb"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let bits = |a: &[f64]| a.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let want: Vec<Vec<u64>> = case["aabb"]
+        .as_array()
+        .expect("aabb")
+        .iter()
+        .map(|a| bits(&floats(a)))
+        .collect();
+    let ours: Vec<Vec<u64>> = model.geom_aabb.iter().map(|a| bits(a)).collect();
+    assert_eq!(ours, want, "geom_aabb {:?}", model.geom_aabb);
+}

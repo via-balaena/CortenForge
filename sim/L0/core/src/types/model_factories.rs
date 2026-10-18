@@ -9,6 +9,7 @@ use std::f64::consts::PI;
 
 use super::enums::{GeomType, MjJointType, SameFrame};
 use super::model::Model;
+use super::model_derived::local_aabb_from_primitive;
 use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
 
 impl Model {
@@ -440,11 +441,12 @@ impl Model {
         let geom_id = self.ngeom;
         self.ngeom += 1;
 
+        let size = Vector3::new(40.0, 40.0, 0.1);
         self.geom_type.push(GeomType::Plane);
         self.geom_body.push(0);
         self.geom_pos.push(Vector3::zeros());
         self.geom_quat.push(UnitQuaternion::identity());
-        self.geom_size.push(Vector3::new(40.0, 40.0, 0.1));
+        self.geom_size.push(size);
         self.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
         self.geom_condim.push(3);
         self.geom_contype.push(1);
@@ -458,7 +460,8 @@ impl Model {
         self.geom_fluid.push([0.0; 12]);
         self.geom_name.push(Some("ground".into()));
         self.geom_rbound.push(0.0);
-        self.geom_aabb.push([0.0, 0.0, 0.0, 1e6, 1e6, 1e6]);
+        self.geom_aabb
+            .push(local_aabb_from_primitive(GeomType::Plane, size));
         // At the world's origin, unturned: the world's frame.
         self.geom_sameframe.push(SameFrame::Body);
         self.geom_mesh.push(None);

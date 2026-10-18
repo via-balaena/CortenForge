@@ -73,6 +73,12 @@ of mass, the principal axes), and its contacts (geoms, `dist`, `pos`).
 bounding radius (engine_collision_convex.c:1018), which leaves three of the
 base's four corners; it refuses a scene where the half-diagonal of the
 mesh's box is not MuJoCo's radius.
+`geom_aabb` holds a plane, two height fields and one of each primitive:
+MuJoCo's boxes, each its centre in the geom's frame and its half-sizes
+(mjCGeom::ComputeAABB, user_objects.cc:3573-3626): a plane's is the
+half-space below it to mjMAXVAL, a cylinder's half-height its own, a height
+field's from its size, its base to its top. It refuses a scene whose
+cylinder box reaches its radius past the half-height.
 """
 
 import json
@@ -679,6 +685,31 @@ def primitive_rbound():
     return {"xml": PRIMITIVE_RBOUND_XML, "rbound": floats(m.geom_rbound)}
 
 
+# A plane, two height fields (one reaching farther above its origin than
+# below, one farther below) and one of each primitive: MuJoCo's local boxes
+# (mjCGeom::ComputeAABB, user_objects.cc:3573-3626).
+GEOM_AABB_XML = """<mujoco><asset>
+<hfield name="field" nrow="2" ncol="2" size="1 0.5 0.3 0.1" elevation="0 0.5 1 0.25"/>
+<hfield name="deep" nrow="2" ncol="2" size="0.5 1 0.1 0.3" elevation="0 0.5 1 0.25"/>
+</asset><worldbody><geom type="plane" size="20 20 0.1"/>
+<geom type="hfield" hfield="field" pos="10 10 0"/>
+<geom type="hfield" hfield="deep" pos="-10 -10 0"/>
+<body pos="0 0 1"><freejoint/><geom type="sphere" size="0.3"/></body>
+<body pos="1 0 1"><freejoint/><geom type="capsule" size="0.1 0.25"/></body>
+<body pos="2 0 1"><freejoint/><geom type="cylinder" size="0.2 0.5"/></body>
+<body pos="3 0 1"><freejoint/><geom type="ellipsoid" size="0.5 0.375 0.25"/></body>
+<body pos="4 0 1"><freejoint/><geom type="box" size="0.1 0.2 0.3"/></body>
+</worldbody></mujoco>"""
+
+
+def geom_aabb_case():
+    m = mujoco.MjModel.from_xml_string(GEOM_AABB_XML)
+    cylinder = [g for g in range(m.ngeom) if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_CYLINDER]
+    if len(cylinder) != 1 or m.geom_aabb[cylinder[0]][5] != m.geom_size[cylinder[0]][1]:
+        sys.exit("geom_aabb: the cylinder's half-height is not its box's")
+    return {"xml": GEOM_AABB_XML, "aabb": [floats(a) for a in m.geom_aabb]}
+
+
 # The geom-distance sensors (distance, normal, fromto) of two overlapping
 # boxes, both argument orders (the review's scene; mj_geomDistance from the
 # contact's witnesses).
@@ -725,6 +756,7 @@ def main():
            "bounds": finite_or_string(bounds()),
            "plane_mesh": finite_or_string(plane_mesh()),
            "primitive_rbound": finite_or_string(primitive_rbound()),
+           "geom_aabb": finite_or_string(geom_aabb_case()),
            "geom_distance": finite_or_string(geom_distance_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)

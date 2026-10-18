@@ -334,7 +334,9 @@ pub struct Model {
     ///
     /// `center_offset` is the AABB center relative to the geom frame origin.
     /// For primitives centered at their origin, this is `(0,0,0)`.
-    /// For meshes, this is the mesh AABB center (may be non-zero).
+    /// For meshes, this is the mesh AABB center (may be non-zero). A plane's
+    /// is the half-space below it, to [`MAX_VAL`](crate::MAX_VAL) each way;
+    /// a height field's is from its size, its base to its top.
     ///
     /// sim-core's collision does not read it (MuJoCo's midphase, which does,
     /// is not ported).

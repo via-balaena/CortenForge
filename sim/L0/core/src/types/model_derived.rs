@@ -9,6 +9,7 @@ use nalgebra::Vector3;
 use super::enums::{GeomType, ModelError, TendonType};
 use super::model::Model;
 use super::model_init::compute_dof_lengths;
+use super::validation::MAX_VAL;
 
 impl Model {
     /// Recompute every field derived from the model's primary fields, in the
@@ -113,8 +114,8 @@ impl Model {
     ///
     /// Populates both `geom_rbound` (bounding sphere radius) and `geom_aabb`
     /// (local-frame AABB as `[cx, cy, cz, hx, hy, hz]` — center offset +
-    /// half-extents). For meshes/hfield/sdf, bounds come from actual geometry
-    /// data. For primitives, bounds come from `geom_size`.
+    /// half-extents). For meshes and SDFs, bounds come from their data; for
+    /// height fields and primitives, from their size.
     ///
     /// `geom_rbound` is the radius of a sphere about the geom's origin that
     /// holds the geom, as MuJoCo's `mjCGeom::GetRBound`
@@ -122,8 +123,9 @@ impl Model {
     /// axis's larger bound in magnitude; for a height field, from its size,
     /// `sqrt(x² + y² + max(top², base²))`. The broadphase's bounding-sphere
     /// filters read it about the geom's origin. `geom_aabb` is MuJoCo's
-    /// `mjModel.geom_aabb`; sim-core's collision does not read it (MuJoCo's
-    /// midphase, which does, is not ported).
+    /// `mjModel.geom_aabb` (`mjCGeom::ComputeAABB`,
+    /// `user_objects.cc:3573-3626`); sim-core's collision does not read it
+    /// (MuJoCo's midphase, which does, is not ported).
     pub fn compute_geom_bounding_radii(&mut self) {
         for geom_id in 0..self.ngeom {
             let (rbound, aabb) = if let Some(mesh_id) = self.geom_mesh[geom_id] {
@@ -137,16 +139,11 @@ impl Model {
                     [center.x, center.y, center.z, half.x, half.y, half.z],
                 )
             } else if let Some(hfield_id) = self.geom_hfield[geom_id] {
-                // Hfield geom: bounds from heightfield data.
-                let aabb = self.hfield_data[hfield_id].aabb();
-                let center = (aabb.min.coords + aabb.max.coords) * 0.5;
-                let half = (aabb.max.coords - aabb.min.coords) * 0.5;
+                // Hfield geom: bounds from its size, its base to its top,
+                // not from its data's heights.
                 let s = self.hfield_size[hfield_id];
                 let rbound = (s[0] * s[0] + s[1] * s[1] + (s[2] * s[2]).max(s[3] * s[3])).sqrt();
-                (
-                    rbound,
-                    [center.x, center.y, center.z, half.x, half.y, half.z],
-                )
+                (rbound, aabb_of([-s[0], -s[1], -s[3]], [s[0], s[1], s[2]]))
             } else if let Some(sdf_id) = self.geom_shape[geom_id] {
                 // SDF geom: bounds from SDF grid data.
                 let aabb = self.shape_data[sdf_id].sdf_grid().aabb();
@@ -224,32 +221,41 @@ fn origin_rbound(min: &Vector3<f64>, max: &Vector3<f64>) -> f64 {
     (h.x * h.x + h.y * h.y + h.z * h.z).sqrt()
 }
 
-/// Compute local-frame AABB `[cx, cy, cz, hx, hy, hz]` for a primitive geom.
-///
-/// Center offset is `(0,0,0)` for all primitives (symmetric about their origin).
-/// Half-extents come from the MuJoCo size convention for each type.
-fn local_aabb_from_primitive(geom_type: GeomType, size: Vector3<f64>) -> [f64; 6] {
+/// A primitive geom's box in its frame, `[cx, cy, cz, hx, hy, hz]`, as
+/// MuJoCo's `mjCGeom::ComputeAABB` (`user_objects.cc:3573-3626`): about the
+/// origin, with half-sizes from the geom's size, except a plane's, which is
+/// the half-space below it, to [`MAX_VAL`] each way.
+pub(super) fn local_aabb_from_primitive(geom_type: GeomType, size: Vector3<f64>) -> [f64; 6] {
     match geom_type {
         GeomType::Sphere => {
             let r = size.x;
             [0.0, 0.0, 0.0, r, r, r]
         }
         GeomType::Box | GeomType::Ellipsoid => [0.0, 0.0, 0.0, size.x, size.y, size.z],
-        GeomType::Capsule | GeomType::Cylinder => {
-            // Local Z is the axis. Half-extents: radius in XY, radius+half_length in Z.
-            let r = size.x;
-            let h = size.y;
-            [0.0, 0.0, 0.0, r, r, r + h]
-        }
-        GeomType::Plane => {
-            // Infinite extent, held as 1e6.
-            const INF: f64 = 1e6;
-            [0.0, 0.0, 0.0, INF, INF, INF]
-        }
+        // Local z is the axis: a capsule's caps reach its radius past its
+        // half-length, a cylinder ends at it.
+        GeomType::Capsule => [0.0, 0.0, 0.0, size.x, size.x, size.x + size.y],
+        GeomType::Cylinder => [0.0, 0.0, 0.0, size.x, size.x, size.y],
+        GeomType::Plane => aabb_of([-MAX_VAL; 3], [MAX_VAL, MAX_VAL, 0.0]),
         // Mesh/Hfield/Sdf are handled by the caller using actual geometry data.
         // This arm is a fallback for programmatic geoms that bypass the builder.
         GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => [0.0, 0.0, 0.0, 0.1, 0.1, 0.1],
     }
+}
+
+/// The box from `min` to `max` as `[cx, cy, cz, hx, hy, hz]`, its centre and
+/// half-sizes computed as MuJoCo's `ComputeAABB` computes them
+/// (`user_objects.cc:3619-3625`); `f64::midpoint` is `(max + min) / 2` for
+/// bounds within `f64::MAX / 2`.
+fn aabb_of(min: [f64; 3], max: [f64; 3]) -> [f64; 6] {
+    [
+        f64::midpoint(max[0], min[0]),
+        f64::midpoint(max[1], min[1]),
+        f64::midpoint(max[2], min[2]),
+        (max[0] - min[0]) / 2.0,
+        (max[1] - min[1]) / 2.0,
+        (max[2] - min[2]) / 2.0,
+    ]
 }
 
 #[cfg(test)]
@@ -284,6 +290,25 @@ mod bounds_tests {
                 (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
             })
             .fold(0.0, f64::max)
+    }
+
+    /// The plane `add_ground_plane` appends after the model is derived has the
+    /// box deriving gives a plane, MuJoCo's half-space below it.
+    #[test]
+    fn a_ground_plane_has_a_planes_box() {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.add_ground_plane();
+        let appended = model.geom_aabb[0];
+        model.compute_geom_bounding_radii();
+        assert_eq!(
+            appended.map(f64::to_bits),
+            model.geom_aabb[0].map(f64::to_bits)
+        );
+        assert_eq!(
+            appended[2].to_bits(),
+            (-0.5e10_f64).to_bits(),
+            "the centre of the half-space below"
+        );
     }
 
     /// A box mesh 20 to 22 below its geom's origin: its bounding radius is
