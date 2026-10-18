@@ -719,7 +719,9 @@ pub const DISABLE_ACTUATION: u32 = 1 << 11;
 pub const DISABLE_REFSAFE: u32 = 1 << 12;
 /// Skip all sensor evaluation.
 pub const DISABLE_SENSOR: u32 = 1 << 13;
-/// Skip BVH midphase → brute-force broadphase.
+/// Skip the midphases: a pair of bodies collides each geom of one with each
+/// of the other (MuJoCo's `mj_collideTree` skipped), and a mesh's and a
+/// flex's hierarchies are not descended.
 pub const DISABLE_MIDPHASE: u32 = 1 << 14;
 /// Skip implicit damping in Euler integrator.
 pub const DISABLE_EULERDAMP: u32 = 1 << 15;

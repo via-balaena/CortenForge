@@ -477,6 +477,8 @@ impl Model {
         if self.body_geom_num[0] == 1 {
             self.body_geom_adr[0] = geom_id;
         }
+        // The world's hierarchy, and margin, now hold the plane.
+        self.compute_body_bvhs();
     }
 }
 
@@ -571,6 +573,9 @@ mod tests {
         check("body_gravcomp", m.body_gravcomp.len(), m.nbody);
         check("body_invweight0", m.body_invweight0.len(), m.nbody);
         check("body_weldid", m.body_weldid.len(), m.nbody);
+        check("body_margin", m.body_margin.len(), m.nbody);
+        check("body_bvhadr", m.body_bvhadr.len(), m.nbody);
+        check("body_bvhnum", m.body_bvhnum.len(), m.nbody);
         check(
             "body_ancestor_joints",
             m.body_ancestor_joints.len(),

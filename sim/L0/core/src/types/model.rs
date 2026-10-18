@@ -338,11 +338,35 @@ pub struct Model {
     /// is the half-space below it, to [`MAX_VAL`](crate::MAX_VAL) each way;
     /// a height field's is from its size, its base to its top.
     ///
-    /// sim-core's collision does not read it (MuJoCo's midphase, which does,
-    /// is not ported).
+    /// The midphase tests a pair of leaf geoms by these boxes, and each
+    /// body's hierarchy bounds its geoms' ([`Model::compute_body_bvhs`]).
     ///
     /// Matches MuJoCo's `mjModel.geom_aabb`.
     pub geom_aabb: Vec<[f64; 6]>,
+    /// Each body's margin: the largest of its geoms' `geom_margin`, 0
+    /// without geoms (MuJoCo's `mjModel.body_margin`). The midphase widens
+    /// the test of two bodies' inner boxes by theirs.
+    pub body_margin: Vec<f64>,
+    /// The first node of each body's bounding-volume hierarchy in the `bvh_*`
+    /// fields, `None` for a body none of whose geoms collides (MuJoCo's
+    /// `mjModel.body_bvhadr`, -1 there) ([`Model::compute_body_bvhs`]).
+    pub body_bvhadr: Vec<Option<usize>>,
+    /// The number of nodes in each body's hierarchy (MuJoCo's
+    /// `mjModel.body_bvhnum`).
+    pub body_bvhnum: Vec<usize>,
+    /// Each hierarchy node's box in its body's inertial frame,
+    /// `[cx, cy, cz, hx, hy, hz]`, its centre then its half-sizes (MuJoCo's
+    /// `mjModel.bvh_aabb`, its bodies' nodes).
+    pub bvh_aabb: Vec<[f64; 6]>,
+    /// Each node's two children, numbered within its body's hierarchy from
+    /// the root, 0; a leaf has none (MuJoCo's `mjModel.bvh_child`, -1 there).
+    pub bvh_child: Vec<[Option<usize>; 2]>,
+    /// A leaf's geom, `None` for an inner node (MuJoCo's
+    /// `mjModel.bvh_nodeid`).
+    pub bvh_nodeid: Vec<Option<usize>>,
+    /// Each node's depth, 0 at its body's root (MuJoCo's
+    /// `mjModel.bvh_depth`).
+    pub bvh_depth: Vec<usize>,
     /// Mesh index for each geom (`None` if not a mesh geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Mesh` have `Some(mesh_id)`.
     pub geom_mesh: Vec<Option<usize>>,

@@ -30,6 +30,7 @@ impl Model {
     /// | spatial tendon geometry, `qpos0`, `qpos_spring` | spatial `tendon_length0`, `tendon_lengthspring` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
+    /// | geom boxes, frames, bodies, `geom_contype`, `geom_conaffinity`, `geom_margin`, body inertial frames | `body_margin`, the bodies' hierarchies (`body_bvhadr`, `body_bvhnum`, `bvh_*`) | [`Self::compute_body_bvhs`] |
     /// | `dof_parent`, `body_dof_*`, `body_weldid`, actuators, tendons, flex vertex bodies | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |
     /// | `qpos0` and what the position stage reads (body, joint and geom frames, `body_ipos`), `geom_rbound`, joint types | `dof_length` | [`compute_dof_lengths`] |
     /// | `body_gravcomp` | `ngravcomp`, the bodies with a positive value | this function |
@@ -61,6 +62,7 @@ impl Model {
         self.compute_stat_meaninertia();
         self.compute_invweight0();
         self.compute_geom_bounding_radii();
+        self.compute_body_bvhs();
         self.compute_fixed_tendon_lengths();
         self.compute_kinematic_trees();
         compute_dof_lengths(self);
@@ -124,8 +126,9 @@ impl Model {
     /// `sqrt(x² + y² + max(top², base²))`. The broadphase's bounding-sphere
     /// filters read it about the geom's origin. `geom_aabb` is MuJoCo's
     /// `mjModel.geom_aabb` (`mjCGeom::ComputeAABB`,
-    /// `user_objects.cc:3573-3626`); sim-core's collision does not read it
-    /// (MuJoCo's midphase, which does, is not ported).
+    /// `user_objects.cc:3573-3626`), which the bodies' hierarchies bound
+    /// ([`Self::compute_body_bvhs`], to run after this) and the midphase
+    /// tests.
     pub fn compute_geom_bounding_radii(&mut self) {
         for geom_id in 0..self.ngeom {
             let (rbound, aabb) = if let Some(mesh_id) = self.geom_mesh[geom_id] {
@@ -247,7 +250,7 @@ pub(super) fn local_aabb_from_primitive(geom_type: GeomType, size: Vector3<f64>)
 /// half-sizes computed as MuJoCo's `ComputeAABB` computes them
 /// (`user_objects.cc:3619-3625`); `f64::midpoint` is `(max + min) / 2` for
 /// bounds within `f64::MAX / 2`.
-fn aabb_of(min: [f64; 3], max: [f64; 3]) -> [f64; 6] {
+pub(super) fn aabb_of(min: [f64; 3], max: [f64; 3]) -> [f64; 6] {
     [
         f64::midpoint(max[0], min[0]),
         f64::midpoint(max[1], min[1]),

@@ -951,6 +951,7 @@ fn generate(
 
     // Bounding geometry
     model.compute_geom_bounding_radii();
+    model.compute_body_bvhs();
 
     // Kinematic tree enumeration
     discover_kinematic_trees(&mut model);
@@ -1217,7 +1218,8 @@ mod tests {
 
     /// The builder derives what `Model::recompute_derived` derives from the
     /// same fields: the simple bodies, the frames copied from their body's,
-    /// and the mass matrix's and the implicit step's dof patterns.
+    /// the bodies' hierarchies, and the mass matrix's and the implicit step's
+    /// dof patterns.
     #[test]
     fn derived_fields_match_recompute_derived() {
         let model = two_part_mechanism().to_model(2.0, 2.0).unwrap();
@@ -1228,6 +1230,27 @@ mod tests {
         assert_eq!(model.site_sameframe, again.site_sameframe);
         assert_eq!(model.body_simple, again.body_simple);
         assert_eq!(model.dof_simplenum, again.dof_simplenum);
+        assert_eq!(model.body_bvhadr, again.body_bvhadr);
+        assert_eq!(model.body_bvhnum, again.body_bvhnum);
+        assert_eq!(model.bvh_child, again.bvh_child);
+        assert_eq!(model.bvh_nodeid, again.bvh_nodeid);
+        assert_eq!(model.bvh_depth, again.bvh_depth);
+        let bits = |boxes: &[[f64; 6]]| -> Vec<[u64; 6]> {
+            boxes.iter().map(|b| b.map(f64::to_bits)).collect()
+        };
+        assert_eq!(bits(&model.bvh_aabb), bits(&again.bvh_aabb));
+        assert_eq!(
+            model
+                .body_margin
+                .iter()
+                .map(|m| m.to_bits())
+                .collect::<Vec<_>>(),
+            again
+                .body_margin
+                .iter()
+                .map(|m| m.to_bits())
+                .collect::<Vec<_>>()
+        );
         for (got, want) in [
             (&model.M_rownnz, &again.M_rownnz),
             (&model.M_rowadr, &again.M_rowadr),

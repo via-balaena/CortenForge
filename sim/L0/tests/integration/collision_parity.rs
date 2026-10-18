@@ -699,3 +699,172 @@ fn geom_boxes_are_mujocos_bit_for_bit() {
     let ours: Vec<Vec<u64>> = model.geom_aabb.iter().map(|a| bits(a)).collect();
     assert_eq!(ours, want, "geom_aabb {:?}", model.geom_aabb);
 }
+
+/// A golden list of integers, -1 for none.
+fn indices(v: &Value) -> Vec<Option<usize>> {
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| usize::try_from(x.as_i64().expect("integer")).ok())
+        .collect()
+}
+
+/// A world body with a plane, a body of six geoms (one visual) in a turned
+/// inertial frame, a body of five spheres two pairs of which tie along the
+/// split axis, a body of visual geoms and one with none: the bodies'
+/// bounding-volume hierarchies are MuJoCo's (`mjCBody::ComputeBVH`,
+/// `user_objects.cc:2323-2335`, `:396-543`). The same nodes, children,
+/// geoms and depths; each box within 1e-12 of MuJoCo's, relative past 1;
+/// the margins bitwise. The inertial frames the boxes are in are compared
+/// first, within 1e-15.
+#[test]
+fn body_hierarchies_are_mujocos() {
+    let case = &golden()["midphase"]["bodies"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let near = |a: f64, b: f64, tol: f64| (a - b).abs() <= tol * b.abs().max(1.0);
+    for (b, (p, q)) in case["body_ipos"]
+        .as_array()
+        .expect("body_ipos")
+        .iter()
+        .zip(case["body_iquat"].as_array().expect("body_iquat"))
+        .enumerate()
+    {
+        let (p, q) = (floats(p), floats(q));
+        let (ours_p, ours_q) = (model.body_ipos[b], model.body_iquat[b]);
+        let ours_q = [ours_q.w, ours_q.i, ours_q.j, ours_q.k];
+        for i in 0..3 {
+            assert!(
+                near(ours_p[i], p[i], 1e-15),
+                "body {b}: ipos {ours_p:?}, MuJoCo {p:?}"
+            );
+        }
+        for i in 0..4 {
+            assert!(
+                near(ours_q[i], q[i], 1e-15),
+                "body {b}: iquat {ours_q:?}, MuJoCo {q:?}"
+            );
+        }
+    }
+    assert_eq!(
+        model
+            .body_margin
+            .iter()
+            .map(|m| m.to_bits())
+            .collect::<Vec<_>>(),
+        floats(&case["body_margin"])
+            .iter()
+            .map(|m| m.to_bits())
+            .collect::<Vec<_>>(),
+        "body_margin {:?}",
+        model.body_margin
+    );
+    assert_eq!(
+        model.body_bvhadr,
+        indices(&case["body_bvhadr"]),
+        "body_bvhadr"
+    );
+    let counts: Vec<usize> = indices(&case["body_bvhnum"])
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(model.body_bvhnum, counts, "body_bvhnum");
+    let children: Vec<[Option<usize>; 2]> = case["bvh_child"]
+        .as_array()
+        .expect("bvh_child")
+        .iter()
+        .map(|c| {
+            let c = indices(c);
+            [c[0], c[1]]
+        })
+        .collect();
+    assert_eq!(model.bvh_child, children, "bvh_child");
+    assert_eq!(model.bvh_nodeid, indices(&case["bvh_nodeid"]), "bvh_nodeid");
+    let depths: Vec<usize> = indices(&case["bvh_depth"]).into_iter().flatten().collect();
+    assert_eq!(model.bvh_depth, depths, "bvh_depth");
+    let boxes = case["bvh_aabb"].as_array().expect("bvh_aabb");
+    assert_eq!(model.bvh_aabb.len(), boxes.len(), "nodes");
+    for (k, (ours, theirs)) in model.bvh_aabb.iter().zip(boxes).enumerate() {
+        let theirs = floats(theirs);
+        for i in 0..6 {
+            assert!(
+                near(ours[i], theirs[i], 1e-12),
+                "node {k}: box {ours:?}, MuJoCo {theirs:?}"
+            );
+        }
+    }
+}
+
+/// Two scenes of bodies of several geoms, so every pair of bodies goes
+/// through the midphase, each body's inertial frame given (the hierarchies'
+/// boxes are in it, and sim-mjcf's principal axes are not MuJoCo's where
+/// moments tie, book Rigid-loading L03; measured on these rafts, their
+/// frames inferred: the same six leaf pairs in another order). The geom
+/// pairs the contact filter is called with,
+/// in order, are MuJoCo's, with the midphase on and with it off
+/// (`DISABLE_MIDPHASE`), and the contacts MuJoCo's (the same geoms in
+/// order, each distance within 1e-12). MuJoCo calls its filter with the
+/// geoms in type order and ours with them as the body pair lists them, so
+/// each pair is compared lowest index first. In `sparse` the midphase calls
+/// the filter once, without it 33 times: a pair whose boxes overlap but
+/// whose bounding spheres do not is dropped at the leaves, and the one
+/// contact, 0.05 apart within a margin of 0.1, is kept by the bodies'
+/// margins. In `rafts` it reaches six leaf pairs, in its order. In
+/// `far_frames` the two bodies' inertial frames are 10 either side of their
+/// overlapping geoms. In `singles` two single-geom bodies whose bounding
+/// spheres are apart are collided without the midphase, as MuJoCo's, so the
+/// filter is called for them.
+#[test]
+fn contact_filter_calls_are_mujocos_with_and_without_the_midphase() {
+    use std::sync::{Arc, Mutex};
+
+    let cases = golden()["midphase"]["filter"].clone();
+    for (name, case) in cases.as_object().expect("cases") {
+        for (key, disable) in [("midphase", false), ("no_midphase", true)] {
+            let mut model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+            if disable {
+                model.disableflags |= sim_core::DISABLE_MIDPHASE;
+            }
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let log = Arc::clone(&calls);
+            model.set_contactfilter_callback(move |_, _, g1, g2| {
+                log.lock().expect("log").push([g1.min(g2), g1.max(g2)]);
+                true
+            });
+            let mut data = model.make_data();
+            data.forward(&model).expect("forward");
+            let want = &case[key];
+            let theirs: Vec<[usize; 2]> = want["calls"]
+                .as_array()
+                .expect("calls")
+                .iter()
+                .map(|c| {
+                    let c: Vec<usize> = indices(c).into_iter().flatten().collect();
+                    [c[0].min(c[1]), c[0].max(c[1])]
+                })
+                .collect();
+            assert_eq!(
+                *calls.lock().expect("log"),
+                theirs,
+                "{name} {key}: the filter's calls"
+            );
+            let contacts = want["contacts"].as_array().expect("contacts");
+            let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+            let listed: Vec<[usize; 2]> = contacts
+                .iter()
+                .map(|w| {
+                    let g: Vec<usize> = indices(&w["geom"]).into_iter().flatten().collect();
+                    [g[0], g[1]]
+                })
+                .collect();
+            assert_eq!(ours, listed, "{name} {key}: contact geoms in order");
+            for (k, (c, w)) in data.contacts.iter().zip(contacts).enumerate() {
+                let dist = w["dist"].as_f64().expect("dist");
+                assert!(
+                    (-c.depth - dist).abs() <= 1e-12,
+                    "{name} {key} contact {k}: depth {}, MuJoCo's dist {dist}",
+                    c.depth
+                );
+            }
+        }
+    }
+}

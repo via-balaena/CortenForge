@@ -45,6 +45,7 @@ impl ModelBuilder {
 
         // Bounding geometry and tendon rest lengths
         model.compute_geom_bounding_radii();
+        model.compute_body_bvhs();
         model.compute_fixed_tendon_lengths();
 
         // Kinematic tree enumeration and sleep policy
@@ -215,6 +216,14 @@ impl ModelBuilder {
             // Pre-computed bounding volumes (computed below after we have geom_type and geom_size)
             geom_rbound: vec![0.0; ngeom],
             geom_aabb: vec![[0.0; 6]; ngeom],
+            // Bodies' hierarchies (computed below from the geom boxes)
+            body_margin: vec![0.0; nbody],
+            body_bvhadr: vec![None; nbody],
+            body_bvhnum: vec![0; nbody],
+            bvh_aabb: vec![],
+            bvh_child: vec![],
+            bvh_nodeid: vec![],
+            bvh_depth: vec![],
             // Mesh index for each geom (populated by process_geom)
             geom_mesh: self.geom_mesh,
             // Hfield index for each geom (populated by process_geom)

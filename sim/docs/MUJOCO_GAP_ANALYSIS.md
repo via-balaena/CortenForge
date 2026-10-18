@@ -335,7 +335,7 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
 | Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
 | Mid-phase (BVH per mesh, its triangles) | Static AABB | `Bvh` | **Implemented** | - | - |
-| Mid-phase (`mj_collideTree`, a body pair's geoms) | Oriented boxes | - | **Not ported** (every geom pair the bounding-sphere filter passes reaches the narrow phase; ledger L178) | - | - |
+| Mid-phase (`mj_collideTree`, a body pair's geoms) | Oriented boxes | `collision::midphase` | **Implemented** (the bodies' hierarchies, `Model::compute_body_bvhs`; a flex's not) | - | - |
 | Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
 
 ### Implementation Notes: Collision Pipeline
@@ -345,8 +345,9 @@ The collision detection pipeline now uses:
    swept and pruned along the first row of `mju_eig3`'s matrix of their geoms'
    positions' covariance (its columns are the eigenvectors), the bounds cast to
    float, then each geom pair through the bounding-sphere filter
-2. ✅ **Mid-phase**: AABB tree per mesh for its triangles (MuJoCo's per-body
-   midphase, `mj_collideTree`, is not ported; ledger L178)
+2. ✅ **Mid-phase**: MuJoCo's `mj_collideTree` over each body's hierarchy of
+   its geoms' oriented boxes (`collision/midphase.rs`), and an AABB tree per
+   mesh for its triangles
    - `Bvh` - Top-down BVH with median splitting
    - `BvhPrimitive` - Triangle/primitive storage with AABB
    - `bvh_from_triangle_mesh()` - Helper for building BVH from mesh
@@ -1338,7 +1339,7 @@ Focus: All collision detection improvements, primarily in sim-core.
 |---------|---------|------------|-------|
 | ~~Cylinder collision shape~~ | §4 Collision, §5 Geoms | Medium | ✅ Native cylinder support with GJK/EPA |
 | ~~Ellipsoid collision shape~~ | §4 Collision, §5 Geoms | Medium | ✅ Native ellipsoid support with GJK/EPA |
-| ~~Mid-phase BVH per mesh~~ | §4 Collision | Medium | ✅ AABB tree for complex meshes (MuJoCo's per-body midphase is not ported; ledger L178) |
+| ~~Mid-phase BVH per mesh~~ | §4 Collision | Medium | ✅ AABB tree for complex meshes; MuJoCo's per-body midphase (`collision/midphase.rs`) |
 | ~~Contact pairs filtering~~ | §3 Contact | Low | ✅ contype/conaffinity bitmasks |
 
 **Implemented:**
