@@ -8,10 +8,10 @@
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::integrate::implicit::{
-    isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness, tendon_active_stiffness,
-    tendon_all_dofs_sleeping,
+    isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_j, isd_tendon_stiffness,
+    tendon_active_stiffness,
 };
-use crate::types::{ConstraintState, ConstraintType, Data, ENABLE_SLEEP, Model, StepError};
+use crate::types::{ConstraintState, ConstraintType, Data, Model, StepError};
 
 /// A cone contact's first row, its dim and its cone Hessian (row-major).
 pub type Cone = (usize, usize, [f64; 36]);
@@ -249,7 +249,7 @@ impl SparseHessian {
             let model = inputs.model;
             let h = model.timestep;
             let h2 = h * h;
-            let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+            let sleep_filter = crate::island::constraint_sleep_filter(model, data);
 
             // Joint diagonal K/D
             for i in 0..nv {
@@ -261,10 +261,8 @@ impl SparseHessian {
 
             // Tendon non-diagonal K/D (rank-1 outer products)
             let mut nz: Vec<(usize, f64)> = Vec::with_capacity(8);
+            // Each row at the awake dofs only, as build_m_impl takes it.
             for t in 0..model.ntendon {
-                if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
-                    continue;
-                }
                 let kt = isd_tendon_stiffness(model, t);
                 let bt = isd_tendon_damping(model, t);
                 if kt == 0.0 && bt == 0.0 {
@@ -279,8 +277,9 @@ impl SparseHessian {
                 }
                 nz.clear();
                 for dof in 0..nv {
-                    if ten_j[dof] != 0.0 {
-                        nz.push((dof, ten_j[dof]));
+                    let j = isd_tendon_j(model, &data.tree_awake, sleep_filter, ten_j, dof);
+                    if j != 0.0 {
+                        nz.push((dof, j));
                     }
                 }
                 for (ai, &(col_a, j_a)) in nz.iter().enumerate() {

@@ -87,11 +87,9 @@ pub fn geom_distance(
     ) {
         // Overlapping — signed distance is negative penetration
         let dist = -contact.penetration;
-        // Surface points: from = geom1 surface, to = geom2 surface
-        // EPA contact.point is on shape A's surface (approximately).
-        // Decompose using contact normal and penetration depth:
-        //   from = contact.point + normal * penetration/2 (on geom1 surface)
-        //   to = contact.point - normal * penetration/2 (on geom2 surface)
+        // contact.point is the midpoint of the EPA witness points, whose
+        // difference is normal * penetration: these are the witnesses,
+        // from on geom1, to on geom2.
         let half_pen = contact.penetration * 0.5;
         let from_pt = contact.point + contact.normal * half_pen;
         let to_pt = contact.point - contact.normal * half_pen;

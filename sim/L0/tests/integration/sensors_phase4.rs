@@ -1783,7 +1783,7 @@ fn c02_inverse_sets_flg_rnepost() {
     );
 
     // inverse() should call mj_body_accumulators → flg_rnepost = true
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
     assert!(
         data.flg_rnepost,
         "flg_rnepost should be true after inverse()"
@@ -1823,7 +1823,7 @@ fn c03_flag_cleared_between_steps() {
 
     // Forward + inverse to set the flag
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
     assert!(data.flg_rnepost, "Flag should be set after inverse");
 
     // Next forward() should clear it (no acc sensors to re-set it)

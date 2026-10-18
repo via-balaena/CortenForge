@@ -8,26 +8,29 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::types::flags::disabled;
-use crate::types::{DISABLE_DAMPER, DISABLE_SPRING, Data, Model};
+use crate::types::{DISABLE_DAMPER, DISABLE_SPRING, Model};
 
-/// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
-pub fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
-    tendon_all_dofs_sleeping_fields(model, &data.ten_J[t], &data.tree_awake)
-}
-
-/// Field-level variant of `tendon_all_dofs_sleeping` that avoids borrowing all of `Data`.
-/// Used by `accumulate_tendon_kd` where `data.scratch_m_impl` is mutably borrowed.
-fn tendon_all_dofs_sleeping_fields(
+/// A tendon's Jacobian entry `j[dof]` as the implicit spring-damper takes
+/// it: 0 at a sleeping dof under the sleep filter (`sleep_filter`, as
+/// [`crate::island::constraint_sleep_filter`]). The matrix and the forces it
+/// builds then couple no sleeping dof to an awake one (the mass matrix
+/// couples dofs within one tree, and a tree's dofs sleep together), so the
+/// awake dofs' solve is over the awake dofs alone, as MuJoCo's implicit
+/// integrators factor (`mj_implicitSkip`); a tendon with no entry on an
+/// awake dof adds nothing.
+#[must_use]
+pub fn isd_tendon_j(
     model: &Model,
-    ten_j: &DVector<f64>,
     tree_awake: &[bool],
-) -> bool {
-    for dof in 0..model.nv {
-        if ten_j[dof] != 0.0 && tree_awake[model.dof_treeid[dof]] {
-            return false; // At least one target DOF is awake
-        }
+    sleep_filter: bool,
+    j: &DVector<f64>,
+    dof: usize,
+) -> f64 {
+    if sleep_filter && !tree_awake[model.dof_treeid[dof]] {
+        0.0
+    } else {
+        j[dof]
     }
-    true
 }
 
 /// Return the effective stiffness for implicit treatment (DT-35).
@@ -104,10 +107,8 @@ pub fn isd_tendon_damping(model: &Model, t: usize) -> f64 {
 /// `build_m_impl` (Step 2b). Both call sites must produce
 /// identical mass matrix modifications — factoring this out guarantees it.
 ///
-/// **Sleep guard:** Skips a tendon whose row reaches no awake dof
-/// ([`tendon_all_dofs_sleeping`]), as the other ImplicitSpringDamper paths
-/// do; `mj_fwd_passive` and `mjd_passive_vel` skip by the tendon's sleep
-/// state instead.
+/// **Sleep:** each tendon's row is taken at the awake dofs only
+/// ([`isd_tendon_j`]), as the other ImplicitSpringDamper paths take it.
 pub fn accumulate_tendon_kd(
     matrix: &mut DMatrix<f64>,
     model: &Model,
@@ -115,19 +116,16 @@ pub fn accumulate_tendon_kd(
     ten_length: &[f64],
     tree_awake: &[bool],
     h: f64,
-    sleep_enabled: bool,
+    sleep_filter: bool,
 ) {
     let h2 = h * h;
     for t in 0..model.ntendon {
-        if sleep_enabled && tendon_all_dofs_sleeping_fields(model, &ten_j[t], tree_awake) {
-            continue;
-        }
         let kt = isd_tendon_stiffness(model, t);
         let bt = isd_tendon_damping(model, t);
         if kt == 0.0 && bt == 0.0 {
             continue;
         }
-        let j = &ten_j[t];
+        let j = |dof| isd_tendon_j(model, tree_awake, sleep_filter, &ten_j[t], dof);
         let k_active = tendon_active_stiffness(kt, ten_length[t], model.tendon_lengthspring[t]);
         // A negative stiffness or damping is folded in as given, as a joint's
         // is: the passive pass leaves these forces to this solve, and a matrix
@@ -146,14 +144,14 @@ pub fn accumulate_tendon_kd(
         // element, which is negligible (well below f64 precision). This
         // matches MuJoCo's own sparse outer-product loops.
         for r in 0..model.nv {
-            if j[r] == 0.0 {
+            if j(r) == 0.0 {
                 continue;
             }
             for c in 0..model.nv {
-                if j[c] == 0.0 {
+                if j(c) == 0.0 {
                     continue;
                 }
-                matrix[(r, c)] += scale * j[r] * j[c];
+                matrix[(r, c)] += scale * j(r) * j(c);
             }
         }
     }

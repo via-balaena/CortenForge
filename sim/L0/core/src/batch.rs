@@ -317,8 +317,8 @@ impl BatchSim {
     /// environment's step failed. NaN/divergence triggers auto-reset (§41 S8)
     /// — use `data.divergence_detected()` to check. Only the errors
     /// [`Data::step`] returns (`CholeskyFailed`, `LuSingular`,
-    /// `InvalidTimestep`, `DataShapeMismatch`, `TendonEqualityWithSleep`)
-    /// return `Some`.
+    /// `InvalidTimestep`, `DataShapeMismatch`, `TendonEqualityWithSleep`,
+    /// `UnsupportedInverseDiscrete`, `UndefinedContactFrame`) return `Some`.
     ///
     /// When the `parallel` feature is enabled, environments are stepped in
     /// parallel via rayon `par_iter_mut`. When disabled, environments are

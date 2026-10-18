@@ -229,15 +229,19 @@ fn wrap_circle(end: &[f64; 4], side: Option<&[f64; 2]>, radius: f64) -> Option<(
 /// `length_circle`, `engine_util_misc.c:55-71`): the angle between their
 /// directions, taken the long way round where their cross product's sign
 /// and the tangent pair `ind` ask for it. The angle's cosine is clamped to
-/// [−1, 1]; MuJoCo's `acos` is not, and gives NaN past it.
+/// [−1, 1]; MuJoCo's `acos` is not, and gives NaN past it (registry
+/// `D-WRAP-ACOS`). Where the cosine rounds past 1 the two directions are one
+/// and the cross product's sign is rounding: the arc is 0, not the long way
+/// round.
 fn length_circle(p0: &[f64], p1: &[f64], ind: usize, radius: f64) -> f64 {
     let mut p0n = [p0[0], p0[1]];
     let mut p1n = [p1[0], p1[1]];
     normalize(&mut p0n);
     normalize(&mut p1n);
-    let mut angle = mju_dot(&p0n, &p1n).clamp(-1.0, 1.0).acos();
+    let cosine = mju_dot(&p0n, &p1n);
+    let mut angle = cosine.clamp(-1.0, 1.0).acos();
     let cross = p0[1] * p1[0] - p0[0] * p1[1];
-    if (cross > 0.0 && ind == 1) || (cross < 0.0 && ind == 0) {
+    if cosine <= 1.0 && ((cross > 0.0 && ind == 1) || (cross < 0.0 && ind == 0)) {
         angle = 2.0 * PI - angle;
     }
     radius * angle

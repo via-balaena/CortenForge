@@ -11,8 +11,8 @@ use crate::linalg::dot_sparse;
 use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
 use crate::tendon::subquat;
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, ENABLE_SLEEP, GainType,
-    MjJointType, Model,
+    ActuatorDynamics, ActuatorTransmission, BiasType, ConstraintType, Contact, Data, ENABLE_SLEEP,
+    GainType, MjJointType, Model,
 };
 use nalgebra::{DVector, Vector3};
 
@@ -211,52 +211,89 @@ fn compute_contact_normal_jacobian(model: &Model, data: &Data, contact: &Contact
     )
 }
 
-/// Compute adhesion moment arm for a single body-transmission actuator.
-///
-/// Iterates all contacts involving the target body, accumulates the contact
-/// normal Jacobians, negates and averages. The negation ensures positive ctrl
-/// produces an attractive force (toward the contact surface).
-///
-/// Gear is NOT applied — MuJoCo's `mjTRN_BODY` case omits gear entirely.
-/// Force magnitude is controlled by `gainprm[0]` (the `gain` attribute).
+/// The moment of a body-transmission (adhesion) actuator, as MuJoCo's
+/// `mjTRN_BODY` (`engine_core_smooth.c:1621-1731`): over the rigid contacts
+/// of the body, an active contact counts through its rows — the normal row
+/// (condim 1 or an elliptic cone), or each pyramid row at 0.5/(dim − 1) —
+/// times the row Jacobians (`mj_mulJacTVec`), and a contact in the gap
+/// through its normal Jacobian; the sum is negated and averaged over the
+/// contacts counted, so a positive control pulls the body to the surface.
+/// The length is 0, and the gear is not applied.
 fn mj_transmission_body(model: &Model, data: &mut Data, actuator_id: usize) {
     let body_id = model.actuator_trnid[actuator_id][0];
     let nv = model.nv;
-    let mut moment = DVector::zeros(nv);
-    let mut count = 0usize;
+    let nefc = data.efc_type.len();
+    let mut row_weight = vec![0.0; nefc];
+    let mut moment_exclude = DVector::zeros(nv);
+    let mut counter = 0usize;
 
-    for c in 0..data.ncon {
-        let contact = &data.contacts[c];
+    // Each contact's first row (its `efc_address`; none with no dofs or
+    // excluded), in one pass over the rows.
+    let mut first_row = vec![None; data.contacts.len()];
+    for r in (0..nefc).rev() {
+        if matches!(
+            data.efc_type[r],
+            ConstraintType::ContactFrictionless
+                | ConstraintType::ContactPyramidal
+                | ConstraintType::ContactElliptic
+        ) {
+            first_row[data.efc_id[r]] = Some(r);
+        }
+    }
 
-        // Skip flex contacts (MuJoCo: geom < 0)
+    for (ci, contact) in data.contacts.iter().enumerate() {
+        // A flex contact (MuJoCo: a geom id below 0).
         if contact.flex_vertex.is_some() {
             continue;
         }
-
-        // Skip contacts not involving target body
         let b1 = model.geom_body[contact.geom1];
         let b2 = model.geom_body[contact.geom2];
         if b1 != body_id && b2 != body_id {
             continue;
         }
-
-        // Compute normal^T · (J(b2, pos) - J(b1, pos))
-        let j_normal = compute_contact_normal_jacobian(model, data, contact);
-        moment += &j_normal;
-        count += 1;
+        if contact.is_excluded() {
+            counter += 1;
+            moment_exclude += &compute_contact_normal_jacobian(model, data, contact);
+            continue;
+        }
+        let Some(first) = first_row[ci] else {
+            continue;
+        };
+        counter += 1;
+        if data.efc_type[first] == ConstraintType::ContactPyramidal {
+            let npyramid = contact.dim - 1;
+            #[allow(clippy::cast_precision_loss)] // a contact's dim is at most 6
+            let weight = 0.5 / npyramid as f64;
+            for w in &mut row_weight[first..first + 2 * npyramid] {
+                *w = weight;
+            }
+        } else {
+            row_weight[first] = 1.0;
+        }
     }
 
-    if count > 0 {
-        // Negate and average. NO gear scaling (MuJoCo omits gear for body
-        // transmission — force magnitude is controlled by gainprm, not gear).
+    let mut moment = DVector::zeros(nv);
+    if counter > 0 {
+        // The rows' Jacobians weighted, summed row by row, a row of weight 0
+        // skipped (`mj_mulJacTVec`, `mju_mulMatTVec`).
+        for (r, &w) in row_weight.iter().enumerate() {
+            // MuJoCo skips an exactly zero weight.
+            #[allow(clippy::float_cmp)]
+            let zero = w == 0.0;
+            if zero {
+                continue;
+            }
+            for j in 0..nv {
+                moment[j] += data.efc_J[(r, j)] * w;
+            }
+        }
+        moment += &moment_exclude;
         #[allow(clippy::cast_precision_loss)] // contact count is always small
-        let inv_count = count as f64;
-        moment *= -1.0 / inv_count;
+        let scale = -1.0 / counter as f64;
+        moment *= scale;
     }
 
     data.actuator_moment[actuator_id] = moment;
-
-    // Body transmission has no length concept
     data.actuator_length[actuator_id] = 0.0;
 }
 

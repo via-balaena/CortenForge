@@ -858,10 +858,22 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
 /// CRBA, RNE outputs needed).
 #[allow(non_snake_case)]
 pub fn mjd_smooth_vel(model: &Model, data: &mut Data) {
+    mjd_smooth_vel_bias(model, data, true);
+}
+
+/// [`mjd_smooth_vel`], the RNE's term only with `flg_bias`, as MuJoCo's
+/// `mjd_smooth_vel` (`engine_derivative.c:1792-1812`): the implicit
+/// integrators' factor and the discrete inverse dynamics take it with
+/// `flg_bias` under implicit, without it under implicitfast. Every row is
+/// cleared first (MuJoCo clears the awake rows only, registry
+/// `D-QDERIV-SLEEP`).
+pub fn mjd_smooth_vel_bias(model: &Model, data: &mut Data, flg_bias: bool) {
     data.qDeriv.fill(0.0);
     mjd_passive_vel(model, data);
     mjd_actuator_vel(model, data);
-    mjd_rne_vel(model, data);
+    if flg_bias {
+        mjd_rne_vel(model, data);
+    }
 }
 
 // ============================================================================

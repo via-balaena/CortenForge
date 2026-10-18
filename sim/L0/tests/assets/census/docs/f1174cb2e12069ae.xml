@@ -1,0 +1,8 @@
+<mujoco model="rk4_kept">
+  <option timestep="0.002" integrator="RK4"><flag sleep="enable"/></option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="b" pos="0 0 0.0995"><freejoint/><geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+    <body name="s" pos="0 0 0.5" gravcomp="1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+  </worldbody>
+</mujoco>

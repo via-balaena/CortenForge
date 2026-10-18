@@ -23,21 +23,21 @@ The decision is to fix every census cluster (01-decisions, second round). Each c
 | cluster | residual | docs | first difference (where measured) | owner |
 |---|---|---|---|---|
 | NEW-FRAME (28) | 10 after P42's 18 | `0f322379`, `b26a81b9`, `c8902cf8` | one of 5 equally deep box–box corners; MuJoCo's C with FMA reproduces the wheel, without FMA reproduces our port (A21 §9) | P46 |
-| | | `53df39ca`, `a1d4ffc7`, `d4ef2aa3`, `eb97180b` | solver termination: agree ≤ 7.9e-11 with `iterations=1000 tolerance=1e-15` on both sides (A21 §9) | isolate at P42 |
-| | | `f935e97a` | t0 `qfrc_constraint`, contacts equal; a tight solver leaves 1.2e-9; not isolated further (A21 §9) | isolate at P42 |
-| | | `1efe8000`, `eaace9f8` | MuJoCo's broadphase culls touching or barely overlapping pairs; the comparison that drops them is not isolated (A21 §9; Q69: parity) | P43a |
-| census L41 (14) | 10 after P43's 3 and P46's 1 | `aeb76329`, `faa6b270` | t0 `qfrc_constraint`, contacts equal; a tight solver leaves 6.6e-8 / 4.3e-6 (A21 §9) | isolate at P43 |
-| | | `05b1f2d2`, `31833131`, `140b7da3` | MuJoCo's broadphase culls touching or barely overlapping pairs (as above) | P43a |
-| | | `a6e04a3c`, `d72ea476`, `a2f14cb1` | the sleep cluster's signature, init-asleep forward; not isolated (A21 §9) | isolate at P43 |
-| | | `46a5290e`, `5dfbbb75` | ≤ 4e-5 at steps 25 / 47; a tight solver brings `5dfbbb75` to 6e-10, `46a5290e` to 3.3e-8 (A21 §9) | isolate at P43 |
-| census L41list (30) | 1 after P43's 29 | `af3775ea` | accelerometer `sensordata` (A21 §9); P27 removes its sensor difference alone (A19 §1.6); P27 with P43 not measured | isolate at P43 |
+| | | `53df39ca`, `a1d4ffc7`, `d4ef2aa3`, `eb97180b` | solver termination: agree ≤ 7.9e-11 with `iterations=1000 tolerance=1e-15` on both sides (A21 §9) | isolate at P42 — re-measured in chunk 3e: `eb97180b` agrees since P42; `53df39ca` first differs in `con_pos` at t0 (capsule–box), `a1d4ffc7` and `d4ef2aa3` at the step-20 checkpoint (capsule–capsule): → P45 (ledger L175) |
+| | | `f935e97a` | t0 `qfrc_constraint`, contacts equal; a tight solver leaves 1.2e-9; not isolated further (A21 §9) | isolate at P42 — re-measured in chunk 3e: first differs in `con_pos` at t0 (capsule–box): → P45 (ledger L175) |
+| | | `1efe8000`, `eaace9f8` | MuJoCo's broadphase culls touching or barely overlapping pairs; the comparison that drops them is not isolated (A21 §9; Q69: parity) | P43a — measured in chunk 3e: MuJoCo lists their contacts at distance 0 (excluded), so its broadphase passes them; sim-core lists the floor's only, its sphere–sphere test strict where MuJoCo's is inclusive (by reading): → P44 (ledger L174) |
+| census L41 (14) | 10 after P43's 3 and P46's 1 | `aeb76329`, `faa6b270` | t0 `qfrc_constraint`, contacts equal; a tight solver leaves 6.6e-8 / 4.3e-6 (A21 §9) | isolate at P43 — re-measured in chunk 3e: `e1:state@40` after P43 (two boxes; not isolated): → P46, the box–box port (ledger L175) |
+| | | `05b1f2d2`, `31833131`, `140b7da3` | MuJoCo's broadphase culls touching or barely overlapping pairs (as above) | P43a — agree since P43a (chunk 3e) |
+| | | `a6e04a3c`, `d72ea476`, `a2f14cb1` | the sleep cluster's signature, init-asleep forward; not isolated (A21 §9) | isolate at P43 — re-measured in chunk 3e: `a6e04a3c` and `d72ea476` agree since P43; `a2f14cb1` first differs in `con_zero` at t0 (three boxes side by side: MuJoCo lists 4 box–box contacts at distance 0 per touching pair, excluded): → P46 (ledger L175) |
+| | | `46a5290e`, `5dfbbb75` | ≤ 4e-5 at steps 25 / 47; a tight solver brings `5dfbbb75` to 6e-10, `46a5290e` to 3.3e-8 (A21 §9) | isolate at P43 — both agree since P43 (chunk 3e) |
+| census L41list (30) | 1 after P43's 29 | `af3775ea` | accelerometer `sensordata` (A21 §9); P27 removes its sensor difference alone (A19 §1.6); P27 with P43 not measured | isolate at P43 — agrees since P43 (chunk 3e) |
 | NEW-DEGEN (18) | 2 after P44's 14 and P45's 2 | `45d3e0ec` | parallel capsule–cylinder: convex-solver precision through our EPA (A21 §9, Q3); not measured through P48's port | isolate at P50 |
 | | | `d985f32c` | equality rows between bodies without dofs (A21 §9); not among P36's 5 measured docs (A18 §7) | isolate at P45 |
 | NEW-PAIRCOUNT (2) | 1 after P45 | `f8879911` | solver termination; agrees with `iterations=1000 tolerance=1e-15` on both sides (A21 §9) | isolate at P45 |
-| Newton (9) | 3 after P34's 6 | `a0ff89f4` | box–plane corners at the late-onset step; agrees with the box–plane rule (A18 §2.5) | P43 |
-| | | `c31a6ac0` | the plane–capsule axis hint (A18 §2.5); not measured with P42 | isolate at P42 |
-| | | `87d99b20` | step 29; no formulation difference found; in MuJoCo itself a 1-ulp change of one `qpos` entry moves the plane contacts by 1.0e-12 (A18 §2.5, Q6); after P34 its state first differs at the step-30 checkpoint (`e1:state@30`), not isolated | isolate at P43 |
-| CG (2) | 1 after P34 | `60c23753` | line-search evaluation count; emulating FMA gives MuJoCo's 51, and the trajectory still first differs at step 32 (A18 §3.3, §3.4); P34 ports MuJoCo's line search; the census verdict, before P34 and after, is `e1:t0:con_zero`, a contact at distance zero on one side only (A8 §9 O1, which P43 closes), reported before any later difference | isolate at P43 |
+| Newton (9) | 3 after P34's 6 | `a0ff89f4` | box–plane corners at the late-onset step; agrees with the box–plane rule (A18 §2.5) | P43 — agrees since P43 (chunk 3e) |
+| | | `c31a6ac0` | the plane–capsule axis hint (A18 §2.5); not measured with P42 | isolate at P42 — agrees since P42 (chunk 3e) |
+| | | `87d99b20` | step 29; no formulation difference found; in MuJoCo itself a 1-ulp change of one `qpos` entry moves the plane contacts by 1.0e-12 (A18 §2.5, Q6); after P34 its state first differs at the step-30 checkpoint (`e1:state@30`), not isolated | isolate at P43 — re-measured in chunk 3e: still `e1:state@30`; not isolated (ledger L175); owner: the chunk that closes the Rigid series |
+| CG (2) | 1 after P34 | `60c23753` | line-search evaluation count; emulating FMA gives MuJoCo's 51, and the trajectory still first differs at step 32 (A18 §3.3, §3.4); P34 ports MuJoCo's line search; the census verdict, before P34 and after, is `e1:t0:con_zero`, a contact at distance zero on one side only (A8 §9 O1, which P43 closes), reported before any later difference | isolate at P43 — agrees since P43 (chunk 3e) |
 | ACCEL (8) | 1 after P27's 7 | `809fc2ad` | MuJoCo reads 0 on a world-welded body (A19 §1.4); Q43: keep ours under the wrong-value rule, with its test | P27 (`divergence=` row) |
 | late onset (6) | 1 after P43's 5 | `28695e44` | box–box contact normals differ by 3.0e-3 (A18 §5.4; U17) | isolate at P46 |
 

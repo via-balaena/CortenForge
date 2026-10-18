@@ -9,7 +9,7 @@
 //! describes its cases).
 
 use serde_json::Value;
-use sim_core::{Data, Model, mj_factor_m, mj_solve_m};
+use sim_core::{Data, MjStage, Model, mj_factor_m, mj_solve_m};
 use sim_mjcf::load_model;
 
 const TOL: f64 = 1e-12;
@@ -91,9 +91,11 @@ fn set_m(model: &Model, data: &mut Data, m: &[f64]) {
 /// bit for bit, of two vectors, the second one whose solve rounds otherwise
 /// when a row's sum is taken left to right. (sim-core's own mass matrix of
 /// the chain rounds otherwise than MuJoCo's, so the test factors MuJoCo's.)
-/// And `inverse` with MuJoCo's matrix and what it reads written in, at an
-/// acceleration whose `M·qacc` by `mj_mulM` rounds otherwise than a dense
-/// product: MuJoCo's `qfrc_inverse` bit for bit.
+/// And the inverse from its acceleration stage (`inverse_skip` past the
+/// velocity stage, which would remake what is written in) with MuJoCo's
+/// matrix and what it reads written in, at an acceleration whose `M·qacc`
+/// by `mj_mulM` rounds otherwise than a dense product: MuJoCo's
+/// `qfrc_inverse` bit for bit.
 #[test]
 fn mass_matrix_factor_and_solve_match_mujoco_3_5_0() {
     let case = &golden()["cases"]["chain"];
@@ -119,7 +121,8 @@ fn mass_matrix_factor_and_solve_match_mujoco_3_5_0() {
     data.qfrc_passive
         .copy_from_slice(&floats(&inv["qfrc_passive"]));
     data.qfrc_constraint.fill(0.0);
-    data.inverse(&model);
+    data.inverse_skip(&model, MjStage::Vel, true)
+        .expect("inverse");
     assert_bits(
         "chain qfrc_inverse",
         data.qfrc_inverse.as_slice(),
@@ -255,7 +258,7 @@ fn two_slides_on_one_axis_step_as_mujoco_3_5_0() {
     data.qfrc_applied
         .copy_from_slice(&floats(&inverse["qfrc_applied"]));
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
     assert_bits(
         "two_slides qfrc_inverse",
         data.qfrc_inverse.as_slice(),

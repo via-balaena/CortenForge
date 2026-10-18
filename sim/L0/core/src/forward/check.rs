@@ -12,11 +12,14 @@
 use crate::types::flags::{disabled, enabled};
 use crate::types::validation::is_bad;
 use crate::types::warning::{Warning, mj_warning};
-use crate::types::{DISABLE_AUTORESET, Data, ENABLE_SLEEP, EqualityType, Model, StepError};
+use crate::types::{
+    DISABLE_AUTORESET, DISABLE_CONSTRAINT, DISABLE_CONTACT, Data, ENABLE_INVDISCRETE, ENABLE_SLEEP,
+    EqualityType, Integrator, Model, SleepState, StepError,
+};
 
 /// The check every `Result` entry point (`step`, `step1`, `step2`, `forward`,
-/// `forward_skip`, `integrate`) runs before any work: the timestep, then the
-/// shape of `data`.
+/// `forward_skip`, `integrate`, `inverse`, `inverse_skip`) runs before any
+/// work: the timestep, then the shape of `data`.
 ///
 /// # Errors
 ///
@@ -29,14 +32,93 @@ pub fn check_step_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
     check_data_shape(model, data)
 }
 
+/// The integrators the discrete inverse dynamics refuse
+/// ([`StepError::UnsupportedInverseDiscrete`]): with `ENABLE_INVDISCRETE`,
+/// RK4 (MuJoCo's `mj_discreteAcc`, `engine_inverse.c:85-88`) and
+/// ImplicitSpringDamper, which MuJoCo does not have.
+///
+/// # Errors
+///
+/// [`StepError::UnsupportedInverseDiscrete`].
+pub fn check_inverse_discrete(model: &Model) -> Result<(), StepError> {
+    if enabled(model, ENABLE_INVDISCRETE)
+        && matches!(
+            model.integrator,
+            Integrator::RungeKutta4 | Integrator::ImplicitSpringDamper
+        )
+    {
+        return Err(StepError::UnsupportedInverseDiscrete {
+            integrator: model.integrator,
+        });
+    }
+    Ok(())
+}
+
+/// MuJoCo's check in its constraint counting (`mj_nc`,
+/// `engine_core_constraint.c:1915-1956`), which its inverse dynamics' position
+/// stage reaches, running no contact wake: with sleep enabled and a tree
+/// asleep, constraints and contacts not disabled, a contact between two geoms
+/// that is not excluded (`dist ≥ includemargin`, MuJoCo's `exclude`) and
+/// involves a sleeping body (its weld's) is refused.
+///
+/// # Errors
+///
+/// [`StepError::ContactWithSleepingGeom`] naming the first such contact and
+/// its sleeping geom (the first one's where both sleep).
+pub fn check_contacts_awake(model: &Model, data: &Data) -> Result<(), StepError> {
+    if !enabled(model, ENABLE_SLEEP)
+        || data.ntree_awake >= model.ntree
+        || disabled(model, DISABLE_CONSTRAINT)
+        || disabled(model, DISABLE_CONTACT)
+    {
+        return Ok(());
+    }
+    let asleep = |geom: usize| {
+        data.body_sleep_state[model.body_weldid[model.geom_body[geom]]] == SleepState::Asleep
+    };
+    for (i, contact) in data.contacts[..data.ncon].iter().enumerate() {
+        if contact.is_excluded() || contact.flex_vertex.is_some() || contact.flex_vertex2.is_some()
+        {
+            continue;
+        }
+        if let Some(geom) = [contact.geom1, contact.geom2]
+            .into_iter()
+            .find(|&g| asleep(g))
+        {
+            return Err(StepError::ContactWithSleepingGeom { contact: i, geom });
+        }
+    }
+    Ok(())
+}
+
+/// The check the position stage makes after each collision: MuJoCo 3.5.0's
+/// `mju_makeFrame` stops on a contact normal shorter than 0.5 ("xaxis of
+/// contact frame undefined", `engine_util_spatial.c:511-513`, from
+/// `mj_setContact`), which [`make_frame`](crate::types::make_frame) keeps as
+/// written.
+///
+/// # Errors
+///
+/// [`StepError::UndefinedContactFrame`] naming the first such contact.
+pub fn check_contact_frames(data: &Data) -> Result<(), StepError> {
+    match data.contacts[..data.ncon]
+        .iter()
+        .position(|c| c.normal.norm() < 0.5)
+    {
+        Some(contact) => Err(StepError::UndefinedContactFrame { contact }),
+        None => Ok(()),
+    }
+}
+
 /// The check the calls that run the position stage make before any work
 /// (`step`, `step1`, `forward`, `forward_skip` from `MjStage::None`, the
 /// transition finite differences, the init-sleep reset): MuJoCo 3.5.0's
 /// position stage raises an error on an active tendon equality with sleep
 /// enabled (`mj_wakeEquality`, `engine_sleep.c:398-400`). `step2`,
-/// `integrate`, `forward_skip` past the position stage and the inverse
-/// finite differences run, as MuJoCo's `mj_step2`, `mj_Euler`,
-/// `mj_forwardSkip` and `mjd_inverseFD` do.
+/// `integrate`, `forward_skip` past the position stage, `inverse` (whose
+/// position stage runs no equality wake) and the inverse finite differences
+/// run, as MuJoCo's `mj_step2`, `mj_Euler`, `mj_forwardSkip`, `mj_inverse`
+/// (`mj_invPosition`) and `mjd_inverseFD` do.
 ///
 /// # Errors
 ///

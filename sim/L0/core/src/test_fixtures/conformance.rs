@@ -1166,6 +1166,7 @@ pub fn contact_rollout_oracle(
         data.contacts.clone_from(&frozen_contacts);
         data.ncon = frozen_ncon;
         crate::constraint::mj_make_constraint(model, &mut data);
+        crate::island::mj_island(model, &mut data);
         crate::constraint::mj_reference_constraint(model, &mut data);
         // Acceleration stage over the injected contacts' rows + integration.
         data.step2(model).expect("rollout oracle: step2");

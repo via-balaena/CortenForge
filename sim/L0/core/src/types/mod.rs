@@ -20,7 +20,7 @@ pub mod validation;
 pub mod warning;
 
 pub use body_wrench::BodyWrench;
-pub(crate) use contact_types::compute_tangent_frame;
+pub(crate) use contact_types::make_frame;
 pub use contact_types::{Contact, ContactPair};
 pub use data::*;
 pub use enums::*;

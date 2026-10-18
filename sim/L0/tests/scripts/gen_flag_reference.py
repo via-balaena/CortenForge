@@ -43,6 +43,11 @@ tell the flag ignored. The cases:
 - island (disable) and warmstart (disable): CG at 2 iterations, so the
   island split and the warmstart change the force the solve stops at.
 - sleep (enable): the free ball starts asleep (sleep="init").
+- invdiscrete (enable): the fwdinv case's scene with the fwdinv flag on in
+  both runs; the flag makes the comparison's inverse the discrete one
+  (`mj_discreteAcc`, engine_inverse.c:76-153), and the scene's damped dofs
+  make Euler's discrete acceleration differ from the continuous one, so
+  solver_fwdinv moves.
 
 Not here:
 - midphase: no rigid-body scene was found where it moves MuJoCo's
@@ -55,7 +60,6 @@ Not here:
 - nativeccd and multiccd: they change convex pairs MuJoCo collides through
   mjc_Convex, which sim-core does not collide as MuJoCo before the book's
   P50, whose tests compare them.
-- invdiscrete: sim-core does not read it (ledger L155).
 """
 import json
 import os
@@ -130,6 +134,15 @@ def with_near_misses(xml):
     return out2
 
 
+def with_fwdinv(xml):
+    old = '<option gravity="0 0 -9.81" timestep="0.002" solver="CG" iterations="2"/>'
+    new = ('<option gravity="0 0 -9.81" timestep="0.002" solver="CG" iterations="2">\n'
+           '    <flag fwdinv="enable"/>\n  </option>')
+    out = xml.replace(old, new, 1)
+    assert out != xml, "the CG option line changed"
+    return out
+
+
 def cases(canon):
     cg2 = with_options(canon, 'solver="CG" iterations="2"')
     override = with_options(with_near_misses(canon), 'o_margin="0.02" o_solref="0.05 0.8" '
@@ -143,6 +156,7 @@ def cases(canon):
         "island": (cg2, "disable", 2.0),
         "warmstart": (cg2, "disable", 2.0),
         "sleep": (with_ball_asleep(canon), "enable", 2.0),
+        "invdiscrete": (with_fwdinv(cg2), "enable", 2.0),
     }
 
 

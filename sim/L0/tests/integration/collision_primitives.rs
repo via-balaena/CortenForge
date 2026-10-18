@@ -336,10 +336,16 @@ fn sphere_capsule_endpoint_contact() {
         contact.depth
     );
 
-    // Normal should point along +Z
+    // MuJoCo lists the sphere first (the lower geom type), so the normal
+    // points from it into the capsule: −Z.
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
     assert!(
-        contact.normal.z > 0.99,
-        "Normal should point +Z, got {:?}",
+        contact.normal.z < -0.99,
+        "Normal should point −Z, got {:?}",
         contact.normal
     );
 }
@@ -554,10 +560,16 @@ fn sphere_box_face_contact() {
         contact.depth
     );
 
-    // Normal should point along +X
+    // MuJoCo lists the sphere first (the lower geom type), so the normal
+    // points from it into the box: −X.
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
     assert!(
-        contact.normal.x > 0.99,
-        "Normal should point +X, got {:?}",
+        contact.normal.x < -0.99,
+        "Normal should point −X, got {:?}",
         contact.normal
     );
 }
@@ -919,10 +931,16 @@ fn cylinder_sphere_side_contact() {
         contact.depth
     );
 
-    // Normal should point along +X
+    // MuJoCo lists the sphere first (the lower geom type), so the normal
+    // points from it into the cylinder: −X.
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
     assert!(
-        contact.normal.x > 0.99,
-        "Normal should point +X, got {:?}",
+        contact.normal.x < -0.99,
+        "Normal should point −X, got {:?}",
         contact.normal
     );
 }
@@ -964,10 +982,16 @@ fn cylinder_sphere_cap_contact() {
         contact.depth
     );
 
-    // Normal should point along +Z
+    // MuJoCo lists the sphere first (the lower geom type), so the normal
+    // points from it into the cylinder: −Z.
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
     assert!(
-        contact.normal.z > 0.99,
-        "Normal should point +Z, got {:?}",
+        contact.normal.z < -0.99,
+        "Normal should point −Z, got {:?}",
         contact.normal
     );
 }
@@ -1760,4 +1784,141 @@ fn sphere_stack_dynamic_sdf() {
     );
     // Gap should be ~10 (2 radii)
     assert!((gap - 10.0).abs() < 2.0, "gap should be ~10, got {gap:.3}");
+}
+
+/// A shape whose `gradient` is shorter than 0.5 writes a contact normal that
+/// MuJoCo's `mju_makeFrame` stops on ("xaxis of contact frame undefined"):
+/// the position stage refuses it, in `forward` and in `step`, naming the
+/// first such contact: the pair listed first keeps its shape's unit gradient
+/// and the pair listed second has its gradient scaled to 0.3. With both
+/// unit, both pairs make contacts and the step runs.
+#[test]
+fn a_contact_normal_shorter_than_half_refuses_the_step() {
+    use nalgebra::{Point3, Vector3};
+    use sim_core::{Aabb, PhysicsShape, StepError};
+
+    /// A sphere whose gradient is scaled, and which is not sphere-like, so
+    /// the pair goes to the octree, whose contacts take the shape's gradient
+    /// as their normal.
+    #[derive(Debug)]
+    struct Scaled(ShapeSphere, f64);
+    impl PhysicsShape for Scaled {
+        fn distance(&self, p: &Point3<f64>) -> Option<f64> {
+            self.0.distance(p)
+        }
+        fn gradient(&self, p: &Point3<f64>) -> Option<Vector3<f64>> {
+            self.0.gradient(p).map(|g| g * self.1)
+        }
+        fn bounds(&self) -> Aabb {
+            self.0.bounds()
+        }
+        fn effective_radius(&self, dir: &Vector3<f64>) -> Option<f64> {
+            self.0.effective_radius(dir)
+        }
+        fn prefers_single_contact(&self) -> bool {
+            false
+        }
+        fn sdf_grid(&self) -> &SdfGrid {
+            self.0.sdf_grid()
+        }
+        fn sdf_grid_arc(&self) -> Arc<SdfGrid> {
+            self.0.sdf_grid_arc()
+        }
+        fn evaluate_interval(&self, aabb: &Aabb) -> Option<(f64, f64)> {
+            self.0.evaluate_interval(aabb)
+        }
+    }
+
+    let mjcf = r#"
+        <mujoco>
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body pos="0 0 0"><joint type="free"/><geom type="sphere" size="5"/></body>
+                <body pos="0 0 9"><joint type="free"/><geom type="sphere" size="5"/></body>
+                <body pos="50 0 0"><joint type="free"/><geom type="sphere" size="5"/></body>
+                <body pos="50 0 9"><joint type="free"/><geom type="sphere" size="5"/></body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 20, 2.0));
+    for second in [1.0, 0.3] {
+        let mut model = load_model(mjcf).expect("load");
+        for geom in 0..4 {
+            let scale = if geom < 2 { 1.0 } else { second };
+            model
+                .shape_data
+                .push(Arc::new(Scaled(ShapeSphere::new(grid.clone(), 5.0), scale)));
+            model.geom_type[geom] = GeomType::Sdf;
+            model.geom_shape[geom] = Some(geom);
+        }
+        model.nshape = 4;
+        let mut data = model.make_data();
+        let forward = data.forward(&model);
+        let unit = |c: &sim_core::Contact| (c.normal.norm() - 1.0).abs() < 1e-12;
+        if second == 1.0 {
+            assert_eq!(forward, Ok(()));
+            let contacts = &data.contacts[..data.ncon];
+            for pair in [(0, 1), (2, 3)] {
+                assert!(
+                    contacts.iter().any(|c| (c.geom1, c.geom2) == pair),
+                    "pair {pair:?} makes no contact: the test cannot see the refusal"
+                );
+            }
+            assert!(contacts.iter().all(unit));
+            data.step(&model).expect("step");
+        } else {
+            let Err(StepError::UndefinedContactFrame { contact }) = forward else {
+                panic!("forward returned {forward:?}");
+            };
+            let c = &data.contacts[contact];
+            assert_eq!((c.geom1, c.geom2), (2, 3));
+            assert!(c.normal.norm() < 0.5, "{:?}", c.normal);
+            assert!(contact > 0 && data.contacts[..contact].iter().all(unit));
+            assert_eq!(
+                model.make_data().step(&model),
+                Err(StepError::UndefinedContactFrame { contact })
+            );
+        }
+    }
+}
+
+/// `Model::add_ground_plane` on a model whose world already holds a geom
+/// appends the plane after the other bodies' geoms, so the world's geoms are
+/// not numbered together; collision takes each body's geoms from `geom_body`,
+/// so every geom still collides, each pair once: on a floor 1 below, a
+/// sphere and a box overlapping each other and the added plane, the plane
+/// with the sphere (1 contact) and with the box (its 4 lower corners), and
+/// the sphere with the box (1). Before, the broadphase walked the world's
+/// widened range, `body_geom_adr..+body_geom_num` (geoms 0 and 1): the added
+/// plane never collided and the sphere–box pair was listed twice (2
+/// contacts).
+#[test]
+fn add_ground_plane_after_world_geoms_collides_every_geom_once() {
+    let mut model = load_model(
+        r#"<mujoco><worldbody><geom name="floor" type="plane" size="5 5 0.1" pos="0 0 -1"/>
+<body pos="0 0 0.05"><freejoint/><geom type="sphere" size="0.1"/></body>
+<body pos="0.15 0 0.05"><freejoint/><geom type="box" size="0.1 0.1 0.1"/></body>
+</worldbody></mujoco>"#,
+    )
+    .expect("load");
+    model.add_ground_plane();
+    let ground = model.ngeom - 1;
+    assert_eq!((model.body_geom_adr[0], model.body_geom_num[0]), (0, 2));
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let mut pairs: Vec<(usize, usize)> = data.contacts[..data.ncon]
+        .iter()
+        .map(|c| (c.geom1, c.geom2))
+        .collect();
+    pairs.sort_unstable();
+    let mut want = vec![
+        (ground, 1),
+        (ground, 2),
+        (ground, 2),
+        (ground, 2),
+        (ground, 2),
+        (1, 2),
+    ];
+    want.sort_unstable();
+    assert_eq!(pairs, want, "contacts (geom1, geom2)");
 }

@@ -12,8 +12,7 @@ use crate::dynamics::spatial::{
     SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::integrate::implicit::{
-    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_stiffness,
-    tendon_all_dofs_sleeping,
+    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_j, isd_tendon_stiffness,
 };
 use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
@@ -158,8 +157,8 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     // DT-35: Non-diagonal tendon stiffness and damping (Step 0 helper).
     // Adds Σ_t (h²·k_active_t + h·b_t) · J_t^T · J_t to scratch_m_impl.
     // Spring K is deadband-aware: zero inside [lower, upper], k outside.
-    // Damping D always applies. Sleep guard skips fully-sleeping tendons.
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // Damping D always applies. Each row at the awake dofs only (sleep).
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
     accumulate_tendon_kd(
         &mut data.scratch_m_impl,
         model,
@@ -167,7 +166,7 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
         &data.ten_length,
         &data.tree_awake,
         h,
-        sleep_enabled,
+        sleep_filter,
     );
 
     // Build RHS into scratch buffer: M*v_old + h*f_ext - h*K*(q - q_eq)
@@ -194,13 +193,9 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
 
     // DT-35: Tendon spring displacement contribution to implicit RHS
     // RHS[dof] -= h · Σ_t k_t · J_t[dof] · deadband_disp(L_t)
-    // (sleep_enabled already computed in Step 2, same function scope)
+    // Each row at the awake dofs only, as in accumulate_tendon_kd: the LHS
+    // and the RHS take the same entries.
     for t in 0..model.ntendon {
-        // Must match the guard in accumulate_tendon_kd — if K is not in the
-        // LHS, the corresponding spring displacement must not be in the RHS.
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
-            continue;
-        }
         let kt = isd_tendon_stiffness(model, t);
         if kt == 0.0 {
             continue;
@@ -217,11 +212,11 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
         // Spring force in tendon space: F = k * (ref - L) = -k * displacement
         // Joint-space force: qfrc = J^T * F = -J^T * k * displacement
         // RHS += h * qfrc = -h * k * displacement * J^T
-        let j = &data.ten_J[t];
         let scale = -h * kt * displacement;
         for dof in 0..model.nv {
-            if j[dof] != 0.0 {
-                data.scratch_rhs[dof] += scale * j[dof];
+            let j = isd_tendon_j(model, &data.tree_awake, sleep_filter, &data.ten_J[t], dof);
+            if j != 0.0 {
+                data.scratch_rhs[dof] += scale * j;
             }
         }
     }
@@ -290,26 +285,15 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
 /// [`StepError::LuSingular`] under implicit when a diagonal of the factor is
 /// smaller than mjMINVAL in magnitude, where MuJoCo stops with an error.
 pub fn mj_implicit_factor(model: &Model, data: &mut Data) -> Result<(), StepError> {
-    use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel, mjd_rne_vel};
-
-    data.qDeriv.fill(0.0);
-    mjd_passive_vel(model, data);
-    mjd_actuator_vel(model, data);
-    if model.integrator == Integrator::Implicit {
-        mjd_rne_vel(model, data);
+    crate::derivatives::mjd_smooth_vel_bias(model, data, model.integrator == Integrator::Implicit);
+    match model.integrator {
+        Integrator::ImplicitFast => implicit_fast_matrix(model, data),
+        Integrator::Implicit => implicit_matrix(model, data),
+        _ => {}
     }
-    let neg_h = -model.timestep;
     let index = awake_dofs(model, data).then(|| &data.dof_awake_ind[..data.nv_awake]);
     match model.integrator {
         Integrator::ImplicitFast => {
-            // qH = M + qDeriv·(−h) on M's pattern: MuJoCo gathers qDeriv's
-            // lower entries there (`mapD2M`), then adds M (`mju_addScl`).
-            for i in 0..model.nv {
-                for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
-                    let j = model.M_colind[adr];
-                    data.qH[adr] = data.qM[(i, j)] + data.qDeriv[(i, j)] * neg_h;
-                }
-            }
             mj_factor_i(
                 &mut data.qH,
                 &mut data.qHDiagInv,
@@ -320,27 +304,43 @@ pub fn mj_implicit_factor(model: &Model, data: &mut Data) -> Result<(), StepErro
             );
             Ok(())
         }
-        Integrator::Implicit => {
-            // qLU = M + qDeriv·(−h) on D's pattern: MuJoCo gathers M there, 0
-            // where M's pattern holds no entry (`mapM2D`), then adds qDeriv
-            // (`mju_addToScl`).
-            for i in 0..model.nv {
-                for adr in model.D_rowadr[i]..model.D_rowadr[i] + model.D_rownnz[i] {
-                    let j = model.D_colind[adr];
-                    let in_m = i == j || model.dof_simplenum[i.max(j)] == 0;
-                    let m = if in_m { data.qM[(i, j)] } else { 0.0 };
-                    data.qLU[adr] = m + data.qDeriv[(i, j)] * neg_h;
-                }
-            }
-            lu_factor_sparse(
-                &mut data.qLU,
-                &model.D_rownnz,
-                &model.D_rowadr,
-                &model.D_colind,
-                index,
-            )
-        }
+        Integrator::Implicit => lu_factor_sparse(
+            &mut data.qLU,
+            &model.D_rownnz,
+            &model.D_rowadr,
+            &model.D_colind,
+            index,
+        ),
         _ => Ok(()),
+    }
+}
+
+/// `qH = M + qDeriv·(−h)` on M's pattern, implicitfast's matrix: MuJoCo
+/// gathers qDeriv's lower entries there (`mapD2M`), then adds M
+/// (`mju_addScl`, `engine_forward.c:1180-1184`, `engine_inverse.c:139-142`).
+pub fn implicit_fast_matrix(model: &Model, data: &mut Data) {
+    let neg_h = -model.timestep;
+    for i in 0..model.nv {
+        for adr in model.M_rowadr[i]..model.M_rowadr[i] + model.M_rownnz[i] {
+            let j = model.M_colind[adr];
+            data.qH[adr] = data.qM[(i, j)] + data.qDeriv[(i, j)] * neg_h;
+        }
+    }
+}
+
+/// `qLU = M + qDeriv·(−h)` on D's pattern, implicit's matrix: MuJoCo
+/// gathers M there, 0 where M's pattern holds no entry (`mapM2D`), then
+/// adds qDeriv (`mju_addToScl`, `engine_forward.c:1173-1177`,
+/// `engine_inverse.c:120-123`).
+pub fn implicit_matrix(model: &Model, data: &mut Data) {
+    let neg_h = -model.timestep;
+    for i in 0..model.nv {
+        for adr in model.D_rowadr[i]..model.D_rowadr[i] + model.D_rownnz[i] {
+            let j = model.D_colind[adr];
+            let in_m = i == j || model.dof_simplenum[i.max(j)] == 0;
+            let m = if in_m { data.qM[(i, j)] } else { 0.0 };
+            data.qLU[adr] = m + data.qDeriv[(i, j)] * neg_h;
+        }
     }
 }
 

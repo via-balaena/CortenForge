@@ -116,9 +116,14 @@ impl Model {
     /// half-extents). For meshes/hfield/sdf, bounds come from actual geometry
     /// data. For primitives, bounds come from `geom_size`.
     ///
-    /// `geom_aabb` is transformed to world-space at runtime by `mj_collision`,
-    /// replacing the per-type dispatch in `aabb_from_geom`. This eliminates the
-    /// `MESH_DEFAULT_EXTENT` fallback and matches MuJoCo's `mjModel.geom_aabb`.
+    /// `geom_rbound` is the radius of a sphere about the geom's origin that
+    /// holds the geom, as MuJoCo's `mjCGeom::GetRBound`
+    /// (`user_objects.cc:3418-3454`): for a mesh or an SDF, the norm of each
+    /// axis's larger bound in magnitude; for a height field, from its size,
+    /// `sqrt(x² + y² + max(top², base²))`. The broadphase's bounding-sphere
+    /// filters read it about the geom's origin. `geom_aabb` is MuJoCo's
+    /// `mjModel.geom_aabb`; sim-core's collision does not read it (MuJoCo's
+    /// midphase, which does, is not ported).
     pub fn compute_geom_bounding_radii(&mut self) {
         for geom_id in 0..self.ngeom {
             let (rbound, aabb) = if let Some(mesh_id) = self.geom_mesh[geom_id] {
@@ -126,7 +131,7 @@ impl Model {
                 let (aabb_min, aabb_max) = self.mesh_data[mesh_id].aabb();
                 let center = (aabb_min.coords + aabb_max.coords) * 0.5;
                 let half = (aabb_max.coords - aabb_min.coords) * 0.5;
-                let rbound = half.norm();
+                let rbound = origin_rbound(&aabb_min.coords, &aabb_max.coords);
                 (
                     rbound,
                     [center.x, center.y, center.z, half.x, half.y, half.z],
@@ -136,7 +141,8 @@ impl Model {
                 let aabb = self.hfield_data[hfield_id].aabb();
                 let center = (aabb.min.coords + aabb.max.coords) * 0.5;
                 let half = (aabb.max.coords - aabb.min.coords) * 0.5;
-                let rbound = half.norm();
+                let s = self.hfield_size[hfield_id];
+                let rbound = (s[0] * s[0] + s[1] * s[1] + (s[2] * s[2]).max(s[3] * s[3])).sqrt();
                 (
                     rbound,
                     [center.x, center.y, center.z, half.x, half.y, half.z],
@@ -146,7 +152,7 @@ impl Model {
                 let aabb = self.shape_data[sdf_id].sdf_grid().aabb();
                 let center = (aabb.min.coords + aabb.max.coords) * 0.5;
                 let half = (aabb.max.coords - aabb.min.coords) * 0.5;
-                let rbound = half.norm();
+                let rbound = origin_rbound(&aabb.min.coords, &aabb.max.coords);
                 (
                     rbound,
                     [center.x, center.y, center.z, half.x, half.y, half.z],
@@ -209,6 +215,15 @@ impl Model {
     }
 }
 
+/// The radius of the sphere about a geom's origin that holds a box from
+/// `min` to `max` in the geom's frame: the norm of each axis's larger bound
+/// in magnitude (MuJoCo's `mjCGeom::GetRBound` for a mesh or an SDF,
+/// `user_objects.cc:3443-3449`).
+fn origin_rbound(min: &Vector3<f64>, max: &Vector3<f64>) -> f64 {
+    let h = min.abs().sup(&max.abs());
+    (h.x * h.x + h.y * h.y + h.z * h.z).sqrt()
+}
+
 /// Compute local-frame AABB `[cx, cy, cz, hx, hy, hz]` for a primitive geom.
 ///
 /// Center offset is `(0,0,0)` for all primitives (symmetric about their origin).
@@ -227,13 +242,98 @@ fn local_aabb_from_primitive(geom_type: GeomType, size: Vector3<f64>) -> [f64; 6
             [0.0, 0.0, 0.0, r, r, r + h]
         }
         GeomType::Plane => {
-            // Infinite extent. The PLANE_EXTENT constant is applied at runtime
-            // in aabb_from_geom_aabb since it depends on world-frame orientation.
+            // Infinite extent, held as 1e6.
             const INF: f64 = 1e6;
             [0.0, 0.0, 0.0, INF, INF, INF]
         }
         // Mesh/Hfield/Sdf are handled by the caller using actual geometry data.
         // This arm is a fallback for programmatic geoms that bypass the builder.
         GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => [0.0, 0.0, 0.0, 0.1, 0.1, 0.1],
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use std::sync::Arc;
+
+    use nalgebra::{Point3, Vector3};
+
+    use crate::mesh::TriangleMeshData;
+    use crate::sdf::{SdfGrid, ShapeConvex};
+    use crate::types::{GeomType, Model};
+
+    /// A model whose one geom, the ground plane's slot, is made `geom_type`.
+    fn one_geom(geom_type: GeomType) -> Model {
+        let mut model = Model::free_body(1.0, Vector3::new(0.01, 0.01, 0.01));
+        model.add_ground_plane();
+        model.geom_type[0] = geom_type;
+        model
+    }
+
+    /// The distance from a geom's origin to the farthest corner of its box,
+    /// `geom_aabb`.
+    fn farthest_corner(aabb: [f64; 6]) -> f64 {
+        (0..8_u32)
+            .map(|corner| {
+                let p: Vec<f64> = (0..3)
+                    .map(|i| {
+                        let sign = if corner >> i & 1 == 1 { 1.0 } else { -1.0 };
+                        aabb[i] + sign * aabb[i + 3]
+                    })
+                    .collect();
+                (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
+            })
+            .fold(0.0, f64::max)
+    }
+
+    /// A box mesh 20 to 22 below its geom's origin: its bounding radius is
+    /// MuJoCo's, about the origin, sqrt(1 + 1 + 22²), which reaches the far
+    /// corners. The half-diagonal of the box, sqrt(3), is about the box's
+    /// centre.
+    #[test]
+    fn an_off_centre_mesh_is_bounded_from_its_origin() {
+        let mut model = one_geom(GeomType::Mesh);
+        let vertices: Vec<Point3<f64>> = (0..8)
+            .map(|k| {
+                let x = if k & 1 == 1 { 1.0 } else { -1.0 };
+                let y = if k & 2 == 2 { 1.0 } else { -1.0 };
+                let z = if k & 4 == 4 { -20.0 } else { -22.0 };
+                Point3::new(x, y, z)
+            })
+            .collect();
+        let indices = vec![
+            0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4,
+            6, 1, 3, 5, 3, 7, 5,
+        ];
+        model
+            .mesh_data
+            .push(Arc::new(TriangleMeshData::new(vertices, indices)));
+        model.geom_mesh[0] = Some(0);
+        model.compute_geom_bounding_radii();
+        assert_eq!(
+            model.geom_rbound[0].to_bits(),
+            486.0_f64.sqrt().to_bits(),
+            "rbound {}",
+            model.geom_rbound[0]
+        );
+    }
+
+    /// An SDF sphere 20 below its geom's origin: its bounding radius is the
+    /// distance to the farthest corner of the grid's box, MuJoCo's rule for an
+    /// SDF.
+    #[test]
+    fn an_off_centre_sdf_is_bounded_from_its_origin() {
+        let mut model = one_geom(GeomType::Sdf);
+        let sdf = SdfGrid::sphere(Point3::new(0.0, 0.0, -20.0), 1.0, 8, 0.5);
+        model.shape_data = vec![Arc::new(ShapeConvex::new(Arc::new(sdf)))];
+        model.geom_shape[0] = Some(0);
+        model.compute_geom_bounding_radii();
+        let far = farthest_corner(model.geom_aabb[0]);
+        assert!(far > 21.5, "the grid's box reaches {far}");
+        assert!(
+            (model.geom_rbound[0] - far).abs() <= 1e-12 * far,
+            "rbound {}, farthest corner {far}",
+            model.geom_rbound[0]
+        );
     }
 }

@@ -346,9 +346,14 @@ pub struct Data {
     pub eq_force: Vec<f64>,
 
     // ==================== Contacts ====================
-    /// Active contacts (pre-allocated with capacity).
+    /// The contacts (pre-allocated with capacity), in the order MuJoCo's
+    /// `mj_collision` lists them: by body (or flex) pair, an explicit pair's
+    /// contacts ahead of the broadphase's for the same bodies, each flex's
+    /// collisions with itself last. A contact in the gap
+    /// ([`Contact::is_excluded`]) is listed, and makes no constraint rows.
     pub contacts: Vec<Contact>,
-    /// Number of active contacts (`contacts.len()` but tracked explicitly).
+    /// Number of contacts listed, those in the gap included (`contacts.len()`
+    /// but tracked explicitly).
     pub ncon: usize,
 
     // ==================== Solver State ====================
@@ -633,8 +638,8 @@ pub struct Data {
     pub rk4_act_dot: [DVector<f64>; 4],
 
     /// RK4: the dofs of the trees asleep at the step's start (length nv),
-    /// held at the start state through the stages and the advance (registry
-    /// `D-RK4-SLEEP`).
+    /// held at the start state through the stages and the advance until a
+    /// stage's forward pass wakes their tree (registry `D-RK4-SLEEP`).
     pub(crate) rk4_dof_asleep: Vec<bool>,
 
     // ==================== Derivative Scratch Buffers ====================
@@ -1092,7 +1097,8 @@ impl Data {
 
     // ==================== Contact Queries ====================
 
-    /// Count active contacts involving a specific geom.
+    /// Count the contacts involving a specific geom, those in the gap
+    /// included.
     #[must_use]
     pub fn contacts_involving_geom(&self, geom_id: usize) -> usize {
         self.contacts
@@ -1101,7 +1107,8 @@ impl Data {
             .count()
     }
 
-    /// Count active contacts between two specific geoms (order-agnostic).
+    /// Count the contacts between two specific geoms (order-agnostic), those
+    /// in the gap included.
     #[must_use]
     pub fn contacts_between_geoms(&self, geom1: usize, geom2: usize) -> usize {
         self.contacts
@@ -1112,7 +1119,8 @@ impl Data {
             .count()
     }
 
-    /// Count active contacts between two bodies (order-agnostic).
+    /// Count the contacts between two bodies (order-agnostic), those in the
+    /// gap included.
     ///
     /// Uses `model.geom_body` to resolve each contact's geom pair to body IDs.
     #[must_use]

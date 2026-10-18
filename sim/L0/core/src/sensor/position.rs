@@ -53,6 +53,21 @@ fn object_xquat(model: &Model, data: &Data, objtype: MjObjectType, objid: usize)
     }
 }
 
+/// The geoms a geom-distance sensor's object names: the geom, or the body's
+/// own geoms in index order (MuJoCo's `body_geomadr..+body_geomnum`,
+/// `engine_sensor.c:676-692`), taken from `geom_body`:
+/// `Model::add_ground_plane` may number the world's geoms apart and widen the
+/// world's range over another body's.
+fn sensor_geoms(model: &Model, objtype: MjObjectType, id: usize) -> Vec<usize> {
+    if objtype == MjObjectType::Body {
+        (0..model.ngeom)
+            .filter(|&g| model.geom_body[g] == id)
+            .collect()
+    } else {
+        vec![id]
+    }
+}
+
 /// Compute position-dependent sensor values.
 ///
 /// This is called after `mj_fwd_position` and computes sensors that depend only
@@ -314,23 +329,14 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
             let cutoff = model.sensor_cutoff[sensor_id];
             let sensor_type = model.sensor_type[sensor_id];
 
-            // Resolve geom lists — body ⇒ iterate body's direct geoms; geom ⇒ single
-            let (n1, id1) = if objtype == MjObjectType::Body {
-                (model.body_geom_num[objid], model.body_geom_adr[objid])
-            } else {
-                (1, objid)
-            };
-            let (n2, id2) = if reftype == MjObjectType::Body {
-                (model.body_geom_num[refid], model.body_geom_adr[refid])
-            } else {
-                (1, refid)
-            };
+            let geoms1 = sensor_geoms(model, objtype, objid);
+            let geoms2 = sensor_geoms(model, reftype, refid);
 
             // All-pairs minimum distance
             let mut dist = cutoff;
             let mut fromto = [0.0f64; 6];
-            for g1 in id1..id1 + n1 {
-                for g2 in id2..id2 + n2 {
+            for &g1 in &geoms1 {
+                for &g2 in &geoms2 {
                     let (dist_new, fromto_new) = geom_distance(model, data, g1, g2, cutoff);
                     if dist_new < dist {
                         dist = dist_new;

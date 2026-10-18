@@ -333,18 +333,20 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
 | SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
-| Broad-phase (sweep-prune) | Native | `SweepAndPrune` | **Implemented** | - | - |
-| Mid-phase (BVH per body) | Static AABB | `Bvh` | **Implemented** | - | - |
+| Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
+| Mid-phase (BVH per mesh, its triangles) | Static AABB | `Bvh` | **Implemented** | - | - |
+| Mid-phase (`mj_collideTree`, a body pair's geoms) | Oriented boxes | - | **Not ported** (every geom pair the bounding-sphere filter passes reaches the narrow phase; ledger L178) | - | - |
 | Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
 
 ### Implementation Notes: Collision Pipeline
 
 The collision detection pipeline now uses:
-1. ✅ **Broad-phase**: Sweep-and-prune with automatic axis selection (O(n log n))
-   - `SweepAndPrune` for scenes with >32 bodies
-   - `BruteForce` fallback for small scenes
-   - Configurable via `BroadPhaseConfig`
-2. ✅ **Mid-phase**: AABB tree per complex body for mesh primitive culling
+1. ✅ **Broad-phase**: MuJoCo's `mj_broadphase` (`collision/broadphase.rs`): bodies
+   swept and pruned along the first row of `mju_eig3`'s matrix of their geoms'
+   positions' covariance (its columns are the eigenvectors), the bounds cast to
+   float, then each geom pair through the bounding-sphere filter
+2. ✅ **Mid-phase**: AABB tree per mesh for its triangles (MuJoCo's per-body
+   midphase, `mj_collideTree`, is not ported; ledger L178)
    - `Bvh` - Top-down BVH with median splitting
    - `BvhPrimitive` - Triangle/primitive storage with AABB
    - `bvh_from_triangle_mesh()` - Helper for building BVH from mesh
@@ -1336,7 +1338,7 @@ Focus: All collision detection improvements, primarily in sim-core.
 |---------|---------|------------|-------|
 | ~~Cylinder collision shape~~ | §4 Collision, §5 Geoms | Medium | ✅ Native cylinder support with GJK/EPA |
 | ~~Ellipsoid collision shape~~ | §4 Collision, §5 Geoms | Medium | ✅ Native ellipsoid support with GJK/EPA |
-| ~~Mid-phase BVH per body~~ | §4 Collision | Medium | ✅ AABB tree for complex meshes |
+| ~~Mid-phase BVH per mesh~~ | §4 Collision | Medium | ✅ AABB tree for complex meshes (MuJoCo's per-body midphase is not ported; ledger L178) |
 | ~~Contact pairs filtering~~ | §3 Contact | Low | ✅ contype/conaffinity bitmasks |
 
 **Implemented:**

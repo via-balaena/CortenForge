@@ -18,8 +18,7 @@ use super::hfield::MAX_CONTACTS_PER_PAIR;
 use super::{assign_friction, assign_imp, assign_ref, contact_param};
 use crate::gjk_epa::{GjkContact, gjk_distance, gjk_epa_contact, support_face_points};
 use crate::types::{
-    Contact, ContactPair, ENABLE_MULTICCD, ENABLE_OVERRIDE, GeomType, Model, compute_tangent_frame,
-    enabled,
+    Contact, ContactPair, ENABLE_MULTICCD, ENABLE_OVERRIDE, GeomType, Model, enabled, make_frame,
 };
 use cf_geometry::Shape;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
@@ -444,7 +443,7 @@ pub fn make_contact_from_geoms(
         _ => 3,
     };
 
-    let (t1, t2) = compute_tangent_frame(&normal);
+    let (normal, frame) = make_frame(&normal, &Vector3::zeros());
 
     Contact {
         pos,
@@ -459,7 +458,7 @@ pub fn make_contact_from_geoms(
         solref,
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
-        frame: (t1, t2).into(),
+        frame,
         flex_vertex: None,
         regularized_mu: 0.0,
         flex_vertex2: None,

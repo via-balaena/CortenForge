@@ -24,7 +24,9 @@ use crate::types::{
 /// Position integration uses `mj_integrate_pos_explicit()` for quaternion correctness.
 ///
 /// A tree asleep at the step's start is held there through the stages and the
-/// advance, and a step that puts a tree to sleep evaluates its forward pass
+/// advance until a stage's forward pass wakes it (a contact, say); from that
+/// stage on it takes every stage's acceleration, as MuJoCo's stages, which
+/// hold no tree. A step that puts a tree to sleep evaluates its forward pass
 /// again from the position stage (registry `D-RK4-SLEEP`), so collision and a
 /// contact filter callback run once more on that step than in MuJoCo, whose
 /// pass starts from the velocity stage.
@@ -66,8 +68,9 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     // velocity a sleeping tree has (the step's first forward pass woke any
     // other) and their positions. MuJoCo's stages move them with the stale
     // acceleration a sleeping dof keeps, and the stage's forward pass then
-    // wakes the tree (registry `D-RK4-SLEEP`). A tree woken during a stage is
-    // held until the step ends.
+    // wakes the tree (registry `D-RK4-SLEEP`). A tree a stage's forward pass
+    // wakes (a contact, say) is let go from that stage on; the stages it was
+    // held through count as 0 for it, the acceleration they moved it with.
     let hold = model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < nv;
     if hold {
         data.rk4_dof_asleep.fill(true);
@@ -146,6 +149,9 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
 
         // 2h. Evaluate full forward pipeline (without sensors)
         data.forward_skip_sensors(model)?;
+        if hold {
+            release_woken_dofs(model, data, i);
+        }
 
         // 2i. Store rates
         data.rk4_qacc[i].copy_from(&data.qacc);
@@ -269,6 +275,24 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     data.qacc_warmstart.copy_from(&data.qacc);
 
     Ok(())
+}
+
+/// Let go of the held dofs whose tree stage `stage`'s forward pass woke (a
+/// contact, say): from that stage on they take each stage's acceleration, as
+/// MuJoCo's stages, which hold no tree (`mj_RungeKutta`,
+/// `engine_forward.c:1061-1123`). The stages before, which held them, moved
+/// them with 0, so their accelerations there count as 0 in the final
+/// combination, not the one a sleeping dof keeps (which MuJoCo's stages
+/// move it with; registry `D-RK4-SLEEP`).
+fn release_woken_dofs(model: &Model, data: &mut Data, stage: usize) {
+    for v in 0..model.nv {
+        if data.rk4_dof_asleep[v] && data.tree_awake[model.dof_treeid[v]] {
+            data.rk4_dof_asleep[v] = false;
+            for held in &mut data.rk4_qacc[..stage] {
+                held[v] = 0.0;
+            }
+        }
+    }
 }
 
 /// Zero the weighted acceleration of the dofs held asleep.

@@ -600,7 +600,8 @@ fn build_pair_plan(model: &Model) -> Vec<NarrowphasePair> {
                 fi.z.max(fj.z) as f32,
             ];
 
-            // Combine margin: max
+            // Combine margin: max. The CPU sums the two, as MuJoCo's
+            // (ledger L180).
             let margin = model.geom_margin[i].max(model.geom_margin[j]) as f32;
 
             let sdf_meta_i = model.geom_shape.get(i).and_then(|o| *o).map(|s| s as u32);

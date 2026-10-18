@@ -1,8 +1,47 @@
 //! Collision detection against infinite planes (sphere, box, capsule, cylinder, ellipsoid).
 
 use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
-use crate::types::{Contact, GeomType, Model};
+use crate::constraint::impedance::MJ_MINVAL;
+use crate::quat::mul_mat_vec3;
+use crate::types::{Contact, GeomType, Model, make_frame};
 use nalgebra::{Matrix3, Vector3};
+
+/// MuJoCo's `mjraw_PlaneSphere` (`engine_collision_primitive.c:28-50`): a
+/// sphere listed when its centre is within `margin` plus its radius of the
+/// plane (inclusive; a NaN distance lists), its contact halfway between its
+/// surface and the plane.
+#[allow(clippy::too_many_arguments)] // MuJoCo's arguments, the geoms named
+fn plane_sphere(
+    model: &Model,
+    plane_geom: usize,
+    sphere_geom: usize,
+    plane_pos: Vector3<f64>,
+    normal: Vector3<f64>,
+    center: Vector3<f64>,
+    radius: f64,
+    margin: f64,
+) -> Option<Contact> {
+    let center_dist = dot3(&(center - plane_pos), &normal);
+    if center_dist > margin + radius {
+        return None;
+    }
+    let dist = center_dist - radius;
+    let pos = center + normal * (-dist / 2.0 - radius);
+    Some(make_contact_from_geoms(
+        model,
+        pos,
+        normal,
+        -dist,
+        plane_geom,
+        sphere_geom,
+        margin,
+    ))
+}
+
+/// `mju_dot3`: the products summed left to right.
+fn dot3(a: &Vector3<f64>, b: &Vector3<f64>) -> f64 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
 
 /// Collision between a plane and another geometry.
 ///
@@ -48,139 +87,87 @@ pub fn collide_with_plane(
     let plane_distance = plane_normal.dot(&plane_pos);
 
     match other_type {
-        GeomType::Sphere => {
-            let radius = other_size.x;
-            let center_dist = plane_normal.dot(&other_pos) - plane_distance;
-            let penetration = radius - center_dist;
-
-            if penetration > -margin {
-                // Contact position: midpoint between sphere surface and plane surface.
-                // sphere_surface = center - normal * radius
-                // plane_surface  = center - normal * center_dist
-                // midpoint = center - normal * midpoint(radius, center_dist)
-                let contact_pos = other_pos - plane_normal * f64::midpoint(radius, center_dist);
-                // Contact normal points from other_geom toward plane_geom (from ball into plane = -plane_normal)
-                // But for force calculation, we want the force to push the ball OUT of the plane,
-                // so we use +plane_normal for the contact force direction.
-                // Store the "push direction" as the normal to simplify force calculation.
-                vec![make_contact_from_geoms(
+        GeomType::Sphere => plane_sphere(
+            model,
+            plane_geom,
+            other_geom,
+            plane_pos,
+            plane_normal,
+            other_pos,
+            other_size.x,
+            margin,
+        )
+        .into_iter()
+        .collect(),
+        GeomType::Box => {
+            // MuJoCo's `mjc_PlaneBox` (`engine_collision_primitive.c:196-239`):
+            // each corner on the plane's side of the box's centre and within
+            // the margin, by its own distance, at most four.
+            let dist = dot3(&(other_pos - plane_pos), &plane_normal);
+            let mut contacts = Vec::with_capacity(4);
+            for i in 0..8 {
+                let local = [
+                    if i & 1 != 0 {
+                        other_size.x
+                    } else {
+                        -other_size.x
+                    },
+                    if i & 2 != 0 {
+                        other_size.y
+                    } else {
+                        -other_size.y
+                    },
+                    if i & 4 != 0 {
+                        other_size.z
+                    } else {
+                        -other_size.z
+                    },
+                ];
+                let corner = Vector3::from(mul_mat_vec3(&other_mat, &local));
+                let ldist = dot3(&plane_normal, &corner);
+                if dist + ldist > margin || ldist > 0.0 {
+                    continue;
+                }
+                let corner_dist = dist + ldist;
+                let pos = (corner + other_pos) + plane_normal * (-corner_dist / 2.0);
+                contacts.push(make_contact_from_geoms(
                     model,
-                    contact_pos,
-                    plane_normal, // Points UP, away from plane (push direction)
-                    penetration,
+                    pos,
+                    plane_normal,
+                    -corner_dist,
                     plane_geom,
                     other_geom,
                     margin,
-                )]
-            } else {
-                vec![]
-            }
-        }
-        GeomType::Box => {
-            // Multi-contact box-plane: return up to 4 contacts (all bottom-face
-            // corners), matching MuJoCo's mjc_PlaneBox algorithm.
-            //
-            // Algorithm (from engine_collision_primitive.c:~178):
-            //   For each of the 8 box corners (bitmask i = 0..7):
-            //     corner_offset = ±half.x * rx ± half.y * ry ± half.z * rz
-            //     ldist = dot(normal, corner_offset)
-            //   Filter: ldist <= 0 selects the bottom face (max 4 of 8).
-            //   Inclusion: if the DEEPEST bottom corner is within margin, emit
-            //   ALL bottom-face corners with their individual depths.
-            //
-            // Why all-or-nothing: on a tilted plane, per-corner depth filtering
-            // produces oscillating contact counts (1–3 per step) that destabilize
-            // the noslip postprocessor. Emitting all 4 bottom-face corners
-            // whenever ANY is in contact ensures stable support. Corners with
-            // negative depth (slightly above plane) produce near-zero constraint
-            // forces — the solver handles this naturally.
-            // See MULTI_CONTACT_ANALYSIS.md Appendix A for verification.
-            let half = other_size;
-            let rx = other_mat.column(0).into_owned();
-            let ry = other_mat.column(1).into_owned();
-            let rz = other_mat.column(2).into_owned();
-
-            // Signed distance from box center to plane (positive = above plane)
-            let dist = plane_normal.dot(&other_pos) - plane_distance;
-
-            // Pass 1: collect bottom-face corners (ldist <= 0) and find deepest
-            let mut bottom_corners: [(Vector3<f64>, f64); 4] = Default::default();
-            let mut n_bottom = 0usize;
-            let mut min_ldist = f64::MAX; // most negative = deepest
-
-            for i in 0u8..8 {
-                let sx = if i & 1 != 0 { 1.0 } else { -1.0 };
-                let sy = if i & 2 != 0 { 1.0 } else { -1.0 };
-                let sz = if i & 4 != 0 { 1.0 } else { -1.0 };
-
-                let corner_offset = rx * (sx * half.x) + ry * (sy * half.y) + rz * (sz * half.z);
-                let ldist = plane_normal.dot(&corner_offset);
-
-                if ldist <= 0.0 && n_bottom < 4 {
-                    bottom_corners[n_bottom] = (corner_offset, ldist);
-                    n_bottom += 1;
-                    if ldist < min_ldist {
-                        min_ldist = ldist;
-                    }
-                }
-            }
-
-            // Pass 2: if the deepest bottom corner is within margin, emit all
-            let deepest_corner_dist = dist + min_ldist; // signed dist of deepest
-            if n_bottom > 0 && deepest_corner_dist <= margin {
-                let mut contacts = Vec::with_capacity(n_bottom);
-                for &(corner_offset, ldist) in &bottom_corners[..n_bottom] {
-                    let corner_depth = -(dist + ldist);
-                    let corner_world = other_pos + corner_offset;
-                    let contact_pos = corner_world + plane_normal * (corner_depth / 2.0);
-
-                    contacts.push(make_contact_from_geoms(
-                        model,
-                        contact_pos,
-                        plane_normal,
-                        corner_depth,
-                        plane_geom,
-                        other_geom,
-                        margin,
-                    ));
-                }
-                contacts
-            } else {
-                vec![]
-            }
-        }
-        GeomType::Capsule => {
-            // Multi-contact capsule-plane: test both endpoint spheres
-            // independently, matching MuJoCo's mjc_PlaneCapsule which
-            // delegates each endpoint to mjraw_PlaneSphere.
-            let radius = other_size.x;
-            let half_length = other_size.y;
-            let axis = other_mat.column(2).into_owned(); // Z is capsule axis
-
-            let endpoints = [
-                other_pos + axis * half_length,
-                other_pos - axis * half_length,
-            ];
-
-            let mut contacts = Vec::with_capacity(2);
-            for end in &endpoints {
-                let dist = plane_normal.dot(end) - plane_distance;
-                let penetration = radius - dist;
-
-                if penetration > -margin {
-                    let contact_pos = end - plane_normal * f64::midpoint(radius, dist);
-                    contacts.push(make_contact_from_geoms(
-                        model,
-                        contact_pos,
-                        plane_normal,
-                        penetration,
-                        plane_geom,
-                        other_geom,
-                        margin,
-                    ));
+                ));
+                if contacts.len() >= 4 {
+                    break;
                 }
             }
             contacts
+        }
+        GeomType::Capsule => {
+            // MuJoCo's `mjc_PlaneCapsule` (`engine_collision_primitive.c:62-87`):
+            // each end of the segment as a sphere, the frame's first tangent
+            // the capsule's axis.
+            let axis = other_mat.column(2).into_owned();
+            let segment = axis * other_size.y;
+            [other_pos + segment, other_pos - segment]
+                .into_iter()
+                .filter_map(|end| {
+                    let mut contact = plane_sphere(
+                        model,
+                        plane_geom,
+                        other_geom,
+                        plane_pos,
+                        plane_normal,
+                        end,
+                        other_size.x,
+                        margin,
+                    )?;
+                    (contact.normal, contact.frame) = make_frame(&plane_normal, &axis);
+                    Some(contact)
+                })
+                .collect()
         }
         GeomType::Cylinder => {
             // Cylinder-plane collision: find deepest point on cylinder
@@ -241,8 +228,8 @@ pub fn collide_with_plane(
 ///    offset by `sqrt(3)/2 * radius`, pulled back to `-0.5 * vec`
 ///
 /// Uses all-or-nothing inclusion: if contact 1 (deepest) is within margin,
-/// emit all candidate contacts that individually pass the margin test.
-/// See `MULTI_CONTACT_ANALYSIS.md` Appendix A for rationale.
+/// emit all candidate contacts that individually pass the margin test, as
+/// MuJoCo's `mjc_PlaneCylinder` (`engine_collision_primitive.c:92-191`).
 ///
 /// # Returns
 /// `Vec` with 0–4 contacts.
@@ -282,10 +269,11 @@ fn collide_cylinder_plane_impl(
     // Radial direction: projection of -normal onto the plane perpendicular to axis,
     // scaled to radius. This gives the rim offset that pushes deepest into the plane.
     let raw_vec = -plane_normal - axis * (-prjaxis); // -normal + axis * prjaxis
-    let vec_len = raw_vec.norm();
+    let len_sqr = raw_vec.dot(&raw_vec);
 
-    let vec = if vec_len > GEOM_EPSILON {
-        raw_vec * (radius / vec_len)
+    // MuJoCo's test (`mjc_PlaneCylinder`, `engine_collision_primitive.c:115`).
+    let vec = if len_sqr >= MJ_MINVAL * MJ_MINVAL {
+        raw_vec * (radius / len_sqr.sqrt())
     } else {
         // Axis is parallel to normal (disk is parallel to plane).
         // Use cylinder's local X-axis as fallback radial direction.
@@ -298,8 +286,9 @@ fn collide_cylinder_plane_impl(
     let pos1 = cyl_pos + axis * half_height + vec;
     let depth1 = -(dist0 + prjaxis * half_height + vec_dot_normal);
 
-    // Early exit: if the deepest point isn't within margin, no contacts.
-    if depth1 <= -margin {
+    // Early exit: if the deepest point isn't within margin, no contacts. Like
+    // MuJoCo's `mjc_PlaneCylinder`, a point at the margin is listed.
+    if depth1 < -margin {
         return vec![];
     }
 
@@ -319,7 +308,7 @@ fn collide_cylinder_plane_impl(
     let pos2 = cyl_pos - axis * half_height + vec;
     let depth2 = -(dist0 - prjaxis * half_height + vec_dot_normal);
 
-    if depth2 > -margin {
+    if depth2 >= -margin {
         let contact_pos2 = pos2 + plane_normal * (depth2 / 2.0);
         contacts.push(make_contact_from_geoms(
             model,
@@ -348,7 +337,7 @@ fn collide_cylinder_plane_impl(
         // component contribution is -0.5 * vec_dot_normal instead of +vec_dot_normal)
         let depth_tri = -(dist0 + prjaxis * half_height - vec_dot_normal * 0.5);
 
-        if depth_tri > -margin {
+        if depth_tri >= -margin {
             let base = cyl_pos + axis * half_height - vec * 0.5;
 
             let pos3 = base + side;
@@ -457,7 +446,9 @@ fn collide_ellipsoid_plane_impl(
     let signed_dist = plane_normal.dot(&world_support) - plane_d;
     let depth = -signed_dist; // Positive = penetrating
 
-    if depth <= -margin {
+    // Listed at `dist ≤ margin`, as MuJoCo's `mjc_PlaneConvex`
+    // (`engine_collision_convex.c:1056`).
+    if depth < -margin {
         return vec![];
     }
 

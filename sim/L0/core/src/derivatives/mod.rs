@@ -80,7 +80,9 @@ pub use param::{
 // Crate-internal re-exports
 #[cfg(test)]
 pub(crate) use hybrid::mjd_actuator_pos;
-pub(crate) use hybrid::{mjd_actuator_vel, mjd_rne_vel};
+#[cfg(test)]
+pub(crate) use hybrid::mjd_actuator_vel;
+pub(crate) use hybrid::mjd_smooth_vel_bias;
 
 use crate::types::{BiasType, Data, GainType, Integrator, Model, StepError};
 use nalgebra::DMatrix;
@@ -219,7 +221,9 @@ pub(crate) fn check_fd_transition_inputs(model: &Model, data: &Data) -> Result<(
 }
 
 /// What `mjd_inverse_fd` checks before any work: the step inputs, then the
-/// integrator and the noslip solver MuJoCo's `mjd_inverseFD` refuses.
+/// integrator and the noslip solver MuJoCo's `mjd_inverseFD` refuses, then
+/// the integrator check [`Data::inverse`] makes for `ENABLE_INVDISCRETE`,
+/// whose refusal MuJoCo's inverse passes reach.
 pub(crate) fn check_fd_inverse_inputs(model: &Model, data: &Data) -> Result<(), StepError> {
     crate::forward::check::check_step_inputs(model, data)?;
     check_fd_integrator(model)?;
@@ -228,7 +232,7 @@ pub(crate) fn check_fd_inverse_inputs(model: &Model, data: &Data) -> Result<(), 
             iterations: model.noslip_iterations,
         });
     }
-    Ok(())
+    crate::forward::check::check_inverse_discrete(model)
 }
 
 fn check_fd_integrator(model: &Model) -> Result<(), StepError> {

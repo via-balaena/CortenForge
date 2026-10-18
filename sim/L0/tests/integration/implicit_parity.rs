@@ -407,3 +407,39 @@ fn simple_bodies_and_copied_frames_match_mujoco() {
         assert_close(name, &ours, &floats(&poses[name]), 0.0);
     }
 }
+
+/// sim-core's own ImplicitSpringDamper under sleep takes each tendon's row
+/// at the awake dofs only, so its solve is over the awake dofs, as MuJoCo's
+/// implicit integrators factor: two hinged capsules on two trees, the second
+/// asleep from the reset, joined by two damped fixed tendons (coefficients
+/// 0.7 and 0.3; 0 and 1), the damping set after loading. With damping alone
+/// MuJoCo's implicitfast step solves the same system there (its D leaves
+/// out the tendons' entries between the two trees, which lie at the
+/// sleeping dof), so its trajectory is the referent: `qpos` and `qvel` within
+/// 1e-12·max(1, |MuJoCo's|) after each of 50 steps (measured: 1.1e-15).
+/// Before (ledger L167), a tendon whose row reached an awake dof was taken
+/// whole, so the solve over every dof coupled the moving arm to the sleeping
+/// one through the tendons: `qvel` 2.3e-2 off by step 41.
+#[test]
+fn implicitspringdamper_under_sleep_solves_the_awake_dofs_as_mujoco() {
+    let case = &golden()["cases"]["isd_referent"];
+    let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    assert_eq!(model.integrator, Integrator::ImplicitSpringDamper);
+    for (t, b) in floats(&case["tendon_damping"]).into_iter().enumerate() {
+        model.tendon_damping[t] = b;
+    }
+    let mut data = model.make_data();
+    data.qvel[0] = case["qvel0"].as_f64().expect("qvel0");
+    for (k, want) in case["rows"].as_array().expect("rows").iter().enumerate() {
+        data.step(&model).expect("step");
+        assert_eq!(data.tree_awake, [true, false], "step {k}: trees");
+        for (field, ours) in [("qpos", &data.qpos), ("qvel", &data.qvel)] {
+            for (i, (a, b)) in ours.iter().zip(floats(&want[field])).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-12 * b.abs().max(1.0),
+                    "step {k}: {field}[{i}] {a}, MuJoCo's implicitfast {b}"
+                );
+            }
+        }
+    }
+}

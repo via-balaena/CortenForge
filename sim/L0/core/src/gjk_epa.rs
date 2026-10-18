@@ -59,9 +59,10 @@ pub const EPA_TOLERANCE: f64 = 1e-6;
 /// Contact information from GJK+EPA.
 #[derive(Debug, Clone)]
 pub struct GjkContact {
-    /// Contact point in world space (approximately on the surface of shape A).
+    /// Contact point in world space: the midpoint of the two EPA witness
+    /// points, as MuJoCo's `pos = ½(x1 + x2)` (`engine_collision_convex.c:807-812`).
     pub point: Point3<f64>,
-    /// Contact normal (points from B toward A).
+    /// Contact normal (points from A toward B).
     pub normal: Vector3<f64>,
     /// Penetration depth (positive when overlapping).
     pub penetration: f64,
@@ -584,7 +585,7 @@ pub fn gjk_epa_contact(
     let pen = cf_geometry::epa_penetration(&a, &b, max_iterations, tolerance)?;
 
     Some(GjkContact {
-        point: pen.point_a,
+        point: nalgebra::center(&pen.point_a, &pen.point_b),
         normal: pen.normal,
         penetration: pen.depth.max(0.0),
     })
@@ -1315,6 +1316,44 @@ mod tests {
             contact.is_some(),
             "should produce contact even with zero tolerance"
         );
+    }
+
+    /// A three-axis ellipsoid 1e-4 into the top face of a slab: the contact
+    /// point is the midpoint of the two EPA witnesses, between the slab's
+    /// face and the ellipsoid's lowest point, in either argument order, and
+    /// the normal points from the first shape toward the second. Before
+    /// MuJoCo's `epaWitness`, the point was the first shape's support along
+    /// the normal's reverse: a corner of the slab's bottom face, or the
+    /// ellipsoid's top.
+    #[test]
+    fn epa_contact_point_is_between_the_two_surfaces_in_both_orders() {
+        let slab = Shape::box_shape(Vector3::new(0.5, 0.5, 0.1));
+        let slab_pose = pose_at(0.0, 0.0, -0.1);
+        let ellipsoid = Shape::ellipsoid_xyz(0.08, 0.05, 0.03);
+        let ellipsoid_pose = pose_at(0.1, -0.05, 0.03 - 1e-4);
+        let midpoint = Point3::new(0.1, -0.05, -5e-5);
+
+        for (first, second, up) in [
+            ((&slab, &slab_pose), (&ellipsoid, &ellipsoid_pose), 1.0),
+            ((&ellipsoid, &ellipsoid_pose), (&slab, &slab_pose), -1.0),
+        ] {
+            let c = gjk_epa_contact(
+                first.0,
+                first.1,
+                second.0,
+                second.1,
+                EPA_MAX_ITERATIONS,
+                EPA_TOLERANCE,
+            )
+            .expect("the shapes overlap");
+            assert!(
+                (c.point - midpoint).norm() <= 1e-5,
+                "point {:?}, the surfaces' midpoint {midpoint:?}",
+                c.point
+            );
+            assert!(c.normal.z * up > 0.99, "normal {:?}", c.normal);
+            assert_relative_eq!(c.penetration, 1e-4, epsilon = 1e-6);
+        }
     }
 
     // =========================================================================

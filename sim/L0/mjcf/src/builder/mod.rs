@@ -971,13 +971,6 @@ fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflag
     set_enable(enableflags, ENABLE_MULTICCD, flag.multiccd);
     set_enable(enableflags, ENABLE_SLEEP, flag.sleep);
 
-    // Stub-only flags: subsystem not yet implemented.
-    // Warn so users don't silently get no-op behavior.
-    if flag.invdiscrete {
-        tracing::warn!(
-            "ENABLE_INVDISCRETE set but discrete-time inverse (M⁻¹·M̂·qacc transform) not implemented — flag has no effect"
-        );
-    }
     // ENABLE_MULTICCD: wired to multi-point convex contact generation (Spec D S4).
     // DISABLE_NATIVECCD: conformant no-op — no libccd fallback exists.
 }

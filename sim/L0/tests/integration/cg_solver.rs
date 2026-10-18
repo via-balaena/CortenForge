@@ -298,10 +298,11 @@ fn test_cg_single_contact_direct() {
     model.solver_type = SolverType::CG;
     let mut data = model.make_data();
 
-    // Step until we get a contact
+    // Step until the contact makes rows: the sphere starts at distance 0,
+    // where its contact is listed in the gap and makes none, as MuJoCo's.
     for _ in 0..100 {
         data.step(&model).expect("step");
-        if !data.contacts.is_empty() {
+        if !data.efc_type.is_empty() {
             // Unified CG (primal Polak-Ribiere) iterates for all constraint counts.
             // With a single contact, convergence should be fast (1-2 iterations).
             assert!(

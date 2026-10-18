@@ -1014,3 +1014,65 @@ fn t28_box_sphere_distance() {
         "box-sphere distance should be < 2.0 (center distance), got {d}"
     );
 }
+
+/// `Model::add_ground_plane` on a model whose world already holds a geom
+/// appends the plane after the other bodies' geoms and widens the world's
+/// range over another body's (`body_geom_adr`/`body_geom_num` (0, 2), geom 1
+/// the free sphere's). A distance sensor naming the world takes the world's
+/// geoms from `geom_body`, so the free sphere is not one of them: on a world
+/// sphere 0.95 from a box that a free sphere overlaps by 0.05, the sensor
+/// reads the same after the call as before, bit for bit (sim-core's geom
+/// distance skips a plane, `geom_distance.rs`, so the added plane adds
+/// none). Before, it
+/// walked the widened range and read the free sphere's −0.05.
+#[test]
+fn distance_from_the_world_reads_the_worlds_geoms_after_add_ground_plane() {
+    let mut model = load_model(
+        r#"<mujoco><worldbody><geom name="ws" type="sphere" size="0.1" pos="-1 0 0.5" contype="0" conaffinity="0"/>
+<body pos="0 0 0.5"><freejoint/><geom type="sphere" size="0.1" contype="0" conaffinity="0"/></body>
+<body pos="0.15 0 0.5"><freejoint/><geom name="cube" type="box" size="0.1 0.1 0.1" contype="0" conaffinity="0"/></body>
+</worldbody><sensor><distance body1="world" geom2="cube" cutoff="10"/></sensor></mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let before = data.sensordata[0];
+    assert_relative_eq!(before, 0.95, epsilon = 1e-9);
+
+    model.add_ground_plane();
+    assert_eq!((model.body_geom_adr[0], model.body_geom_num[0]), (0, 2));
+    assert_eq!(
+        model.geom_body[1], 1,
+        "the world's range covers the free sphere"
+    );
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!(
+        data.sensordata[0].to_bits(),
+        before.to_bits(),
+        "after add_ground_plane: {}, before: {before}",
+        data.sensordata[0]
+    );
+}
+
+/// A body's geoms are taken in index order, as MuJoCo's loop over
+/// `body_geomadr..+body_geomnum` takes them, so on a tie the first wins
+/// (MuJoCo keeps a pair only where it is strictly nearer): a body with two
+/// spheres at x = −1 and x = 1 about a world sphere, each 0.8 from it, the
+/// segment is the first sphere's, from x = −0.9 to x = −0.1, as MuJoCo's.
+#[test]
+fn distance_from_a_body_takes_its_geoms_in_index_order_on_a_tie() {
+    let model = load_model(
+        r#"<mujoco><worldbody><geom name="ws" type="sphere" size="0.1" pos="0 0 1" contype="0" conaffinity="0"/>
+<body name="pair" pos="0 0 1"><freejoint/><geom type="sphere" size="0.1" pos="-1 0 0" contype="0" conaffinity="0"/><geom type="sphere" size="0.1" pos="1 0 0" contype="0" conaffinity="0"/></body>
+</worldbody><sensor><distance body1="pair" geom2="ws" cutoff="10"/><fromto body1="pair" geom2="ws" cutoff="10"/></sensor></mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let want = [0.8, -0.9, 0.0, 1.0, -0.1, 0.0, 1.0];
+    assert_eq!(data.sensordata.len(), want.len());
+    for (&got, &w) in data.sensordata.iter().zip(&want) {
+        assert_relative_eq!(got, w, epsilon = 1e-12);
+    }
+}

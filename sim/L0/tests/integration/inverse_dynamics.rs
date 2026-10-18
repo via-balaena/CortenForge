@@ -47,7 +47,7 @@ fn round_trip() {
     data.forward(&model).expect("forward");
 
     // Inverse dynamics computes forces from qacc
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     // qfrc_inverse should equal qfrc_applied + qfrc_actuator (no xfrc_applied)
     for i in 0..model.nv {
@@ -91,7 +91,7 @@ fn inverse_identity() {
         data.qacc[2]
     );
 
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     // qfrc_inverse should be ~zero for all DOFs
     for i in 0..model.nv {
@@ -126,7 +126,7 @@ fn free_body_inverse() {
     data.forward(&model).expect("forward");
 
     // Now run inverse
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     // With zero gravity and zero velocity (no Coriolis):
     // M * qacc = qfrc_total = qfrc_applied (only force)
@@ -182,7 +182,7 @@ fn inverse_formula_explicit() {
     data.qfrc_applied[0] = 2.0;
 
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     // Assertion 1: qfrc_inverse is nonzero (nontrivial config)
     let inv_norm: f64 = (0..model.nv)

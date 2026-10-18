@@ -154,7 +154,7 @@ fn test_formula() -> (u32, u32) {
     data.qfrc_applied[0] = 2.0;
 
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     let mut max_err: f64 = 0.0;
     for dof in 0..model.nv {
@@ -192,7 +192,7 @@ fn test_round_trip() -> (u32, u32) {
     data.qfrc_applied[1] = -0.5;
 
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     let mut max_err: f64 = 0.0;
     for i in 0..model.nv {
@@ -227,7 +227,7 @@ fn test_freefall() -> (u32, u32) {
     let mut data = model.make_data();
 
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     let mut max_inv: f64 = 0.0;
     for i in 0..model.nv {
@@ -255,7 +255,7 @@ fn test_gravity_comp() -> (u32, u32) {
     data.forward(&model).expect("forward");
     data.qacc[0] = 0.0;
     data.qacc[1] = 0.0;
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     // Check: inv == bias (static case)
     let mut bias_err: f64 = 0.0;
@@ -335,7 +335,7 @@ fn test_dynamic_tracking() -> (u32, u32) {
         inv_data.forward(&model).expect("forward");
         inv_data.qacc[0] = qacc[0];
         inv_data.qacc[1] = qacc[1];
-        inv_data.inverse(&model);
+        inv_data.inverse(&model).expect("inverse");
         torques.push([inv_data.qfrc_inverse[0], inv_data.qfrc_inverse[1]]);
     }
 
@@ -495,7 +495,7 @@ fn test_torque_profile() -> (u32, u32) {
         data.forward(&model).expect("forward");
         data.qacc[0] = qacc[0];
         data.qacc[1] = qacc[1];
-        data.inverse(&model);
+        data.inverse(&model).expect("inverse");
 
         let s_tau = data.qfrc_inverse[0];
         let e_tau = data.qfrc_inverse[1];
@@ -537,7 +537,7 @@ fn test_body_accumulators() -> (u32, u32) {
 
     data.qpos[0] = 0.5;
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     // cacc should be non-zero under gravity
     let mut cacc_mag: f64 = 0.0;
@@ -569,7 +569,7 @@ fn test_body_accumulators() -> (u32, u32) {
     // xfrc_applied is a Cartesian force and torque on the body, world frame
     d2.xfrc_applied[1].force[0] = 10.0; // 10 N in x on body 1
     d2.forward(&m2).expect("forward");
-    d2.inverse(&m2);
+    d2.inverse(&m2).expect("inverse");
 
     // cfrc_ext[1] should reflect the applied Cartesian force
     let fx = d2.cfrc_ext[1][3].abs() + d2.cfrc_ext[1][4].abs() + d2.cfrc_ext[1][5].abs();

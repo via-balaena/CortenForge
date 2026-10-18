@@ -33,6 +33,10 @@ pub(super) fn assemble_contact_rows(
     let mut cones: Vec<(usize, usize)> = Vec::new();
 
     for (ci, contact) in contacts.iter().enumerate() {
+        // A contact in the gap keeps its index and makes no rows.
+        if contact.is_excluded() {
+            continue;
+        }
         let dim = contact.dim;
         let cj = compute_contact_jacobian(model, data, contact);
 

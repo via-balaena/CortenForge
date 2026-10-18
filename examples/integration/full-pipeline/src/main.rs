@@ -267,7 +267,7 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
             nalgebra::Vector3::new(0.0, 5.0, 0.0),
         );
     }
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
     println!("  Simulation complete");
 
     // ── Stress field ─────────────────────────────────────────────────

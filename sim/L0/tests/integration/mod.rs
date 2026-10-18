@@ -28,6 +28,9 @@ pub mod collision_edge_cases;
 /// Performance tests: regression gates, scaling validation.
 pub mod collision_performance;
 
+/// Collision against MuJoCo 3.5.0: contacts and resting bodies.
+pub mod collision_parity;
+
 // ============================================================================
 // Equality Constraint Tests (connect, weld, joint coupling)
 // ============================================================================

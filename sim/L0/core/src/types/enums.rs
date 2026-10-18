@@ -120,6 +120,23 @@ pub enum GeomType {
 }
 
 impl GeomType {
+    /// MuJoCo's `mjtGeom` value: a contact lists the geom of the lower one
+    /// first (`mj_collideGeoms`, `engine_collision_driver.c:1475-1480`).
+    #[must_use]
+    pub(crate) const fn mjtgeom(self) -> u8 {
+        match self {
+            Self::Plane => 0,
+            Self::Hfield => 1,
+            Self::Sphere => 2,
+            Self::Capsule => 3,
+            Self::Ellipsoid => 4,
+            Self::Cylinder => 5,
+            Self::Box => 6,
+            Self::Mesh => 7,
+            Self::Sdf => 8,
+        }
+    }
+
     /// Compute the bounding sphere radius for a geometry from its type and size.
     ///
     /// This is the canonical implementation used by both:
@@ -135,15 +152,19 @@ impl GeomType {
     ///   - Ellipsoid: `[radius_x, radius_y, radius_z]`
     ///   - Plane: ignored (returns infinity)
     ///   - Mesh: `[scale_x, scale_y, scale_z]` (conservative estimate)
+    // `imprecise_flops`: the cylinder's naive `sqrt(r² + h²)` (not `hypot`)
+    // to match MuJoCo's `GetRBound` bit for bit.
+    #[allow(clippy::imprecise_flops)]
     #[must_use]
     pub fn bounding_radius(self, size: Vector3<f64>) -> f64 {
         match self {
             Self::Sphere => size.x,
             Self::Box => size.norm(), // Distance from center to corner
             Self::Capsule => size.x + size.y, // radius + half_length
-            Self::Cylinder => size.x.hypot(size.y), // sqrt(r² + h²)
+            // sqrt(r² + h²), as MuJoCo's `GetRBound` (`user_objects.cc:3435`).
+            Self::Cylinder => (size.x * size.x + size.y * size.y).sqrt(),
             Self::Ellipsoid => size.x.max(size.y).max(size.z), // Max semi-axis
-            Self::Plane => f64::INFINITY, // Planes are infinite
+            Self::Plane => f64::INFINITY,                      // Planes are infinite
             Self::Mesh => {
                 // Conservative estimate from scale factors.
                 // Full implementation would use mesh AABB at load time.
@@ -932,6 +953,47 @@ pub enum StepError {
         /// The equality.
         eq: usize,
     },
+    /// With sleep enabled, the inverse dynamics' position stage
+    /// ([`Data::inverse`](crate::Data::inverse), from `MjStage::None`) met a
+    /// contact between two geoms, not excluded, one of whose bodies sleeps:
+    /// that stage wakes no tree a contact touches (MuJoCo's `mj_invPosition`
+    /// runs no `mj_wakeCollision`), and MuJoCo 3.5.0's constraint counting
+    /// stops there ("contact … involves sleeping geom …", `mj_nc`,
+    /// `engine_core_constraint.c:1944-1956`). The forward pass wakes such a
+    /// tree first, so a forward pass at the same state, then the inverse,
+    /// runs.
+    ContactWithSleepingGeom {
+        /// The contact, an index into `Data::contacts`.
+        contact: usize,
+        /// Its sleeping geom.
+        geom: usize,
+    },
+    /// `ENABLE_INVDISCRETE` under an integrator the discrete inverse
+    /// dynamics do not support: RK4, which MuJoCo 3.5.0's `mj_discreteAcc`
+    /// refuses ("discrete inverse dynamics is not supported by RK4
+    /// integrator", `engine_inverse.c:85-88`), and ImplicitSpringDamper,
+    /// which MuJoCo does not have. Refused by
+    /// [`Data::inverse`](crate::Data::inverse) and
+    /// [`mjd_inverse_fd`](crate::mjd_inverse_fd) before any work, and, with
+    /// `ENABLE_FWDINV`, by the steps that compare the forward and the inverse
+    /// dynamics (`step`, `step2`) when the comparison reaches the inverse
+    /// (the forward pass made constraint rows), before the advance, as
+    /// MuJoCo's `mj_step` stops there.
+    UnsupportedInverseDiscrete {
+        /// The integrator.
+        integrator: Integrator,
+    },
+    /// A contact's normal, as its collision function wrote it, is shorter
+    /// than 0.5: MuJoCo 3.5.0's `mju_makeFrame` stops there ("xaxis of
+    /// contact frame undefined", `engine_util_spatial.c:511-513`, which
+    /// `mj_setContact` calls for every contact), so the position stage
+    /// refuses it after collision. A [`PhysicsShape`](crate::PhysicsShape)
+    /// whose `gradient` is that short writes one. A normal that is not
+    /// finite passes MuJoCo's test and is not refused.
+    UndefinedContactFrame {
+        /// The contact, an index into `Data::contacts`.
+        contact: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -969,6 +1031,17 @@ impl std::fmt::Display for StepError {
             Self::TendonEqualityWithSleep { eq } => write!(
                 f,
                 "equality {eq}: tendon equality does not yet support sleeping"
+            ),
+            Self::ContactWithSleepingGeom { contact, geom } => {
+                write!(f, "contact {contact} involves sleeping geom {geom}")
+            }
+            Self::UnsupportedInverseDiscrete { integrator } => write!(
+                f,
+                "discrete inverse dynamics is not supported by {integrator:?} integrator"
+            ),
+            Self::UndefinedContactFrame { contact } => write!(
+                f,
+                "contact {contact}: xaxis of contact frame undefined (normal shorter than 0.5)"
             ),
         }
     }

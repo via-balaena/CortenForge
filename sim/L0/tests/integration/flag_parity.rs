@@ -3,17 +3,17 @@
 //! `golden_flags` runs every flag on one scene against 3.4.0 goldens, and
 //! twelve of those goldens are within its tolerance of the baseline's
 //! (`golden_flags::goldens_within_tolerance_of_the_baseline` pins which), so
-//! their tests cannot tell their flag ignored. Here eight of those flags
+//! their tests cannot tell their flag ignored. Here nine of those flags
 //! each run on a scene the flag changes, with and without the flag. The
 //! golden is `assets/golden/flags/flags_3_5_0.json`, from the unfused
 //! MuJoCo 3.5.0 oracle (`scripts/gen_flag_reference.py`, which describes
-//! the scenes and says why midphase, nativeccd, multiccd and invdiscrete
-//! are not here).
+//! the scenes and says why midphase, nativeccd and multiccd are not
+//! here).
 
 use serde_json::Value;
 use sim_core::{
     DISABLE_AUTORESET, DISABLE_ISLAND, DISABLE_SENSOR, DISABLE_WARMSTART, Data, ENABLE_ENERGY,
-    ENABLE_FWDINV, ENABLE_OVERRIDE, ENABLE_SLEEP,
+    ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_OVERRIDE, ENABLE_SLEEP,
 };
 use sim_mjcf::load_model;
 
@@ -197,6 +197,12 @@ flag_case!(
     DISABLE_WARMSTART
 );
 flag_case!(golden_3_5_0_enable_sleep, "sleep", "enable", ENABLE_SLEEP);
+flag_case!(
+    golden_3_5_0_enable_invdiscrete,
+    "invdiscrete",
+    "enable",
+    ENABLE_INVDISCRETE
+);
 
 /// Every case in the golden has a test above.
 #[test]
@@ -215,6 +221,7 @@ fn every_golden_case_is_tested() {
             "autoreset",
             "energy",
             "fwdinv",
+            "invdiscrete",
             "island",
             "override",
             "sensor",

@@ -47,7 +47,14 @@ with the box allowed to sleep (`xml_sleeps`, `sleeps`) and with it never
 sleeping (`xml_never`, `never`).
 
 `stage_wake` holds a box asleep from the start and a sphere falling onto it,
-and the step after which MuJoCo's box is first awake (`wake`).
+and `stage_wake_hinge` a hinged capsule asleep from the start, held by a
+spatial and a fixed tendon with springs, and a sphere falling onto it: for
+each, the step after which MuJoCo's sleeping tree is first awake (`wake`),
+and qpos and qvel after every step to 20 past it (`traj`). A contact a
+stage finds wakes the tree in that stage, and MuJoCo's stages hold no tree,
+so the woken tree takes every stage's acceleration. It refuses a case whose
+tree never wakes, or wakes on the step's first forward pass (from the state
+before the step), which no stage would decide.
 """
 
 import json
@@ -104,6 +111,16 @@ STAGE_WAKE = f"""<mujoco>{RK4}
 {BOX.format(policy=' sleep="init"')}
 <body name="s" pos="0 0 0.5"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
 </worldbody></mujoco>"""
+STAGE_WAKE_HINGE = f"""<mujoco>{RK4}
+<worldbody>
+<site name="w" pos="1 0.5 1"/>
+<body name="b" pos="1 0 1" sleep="init"><joint name="jb" type="hinge" axis="0 1 0"/>
+<geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.05" mass="1"/><site name="sb" pos="0.3 0 0"/></body>
+<body name="a" pos="1.15 0 1.2"><freejoint/><geom type="sphere" size="0.05" mass="0.1"/></body>
+</worldbody>
+<tendon><spatial name="t" stiffness="50" damping="2" springlength="0.2 0.3"><site site="w"/><site site="sb"/></spatial>
+<fixed name="tf" stiffness="30" springlength="0.1 0.2"><joint joint="jb" coef="1"/></fixed></tendon>
+</mujoco>"""
 
 
 def ints(a):
@@ -202,16 +219,27 @@ def two_trees():
     return out
 
 
-def stage_wake():
-    m = mujoco.MjModel.from_xml_string(STAGE_WAKE)
+def stage_wake(name, xml):
+    m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
     if d.tree_asleep[0] < 0:
-        sys.exit("stage_wake: the box starts awake")
+        sys.exit(f"{name}: tree 0 starts awake")
+    traj = []
+    wake = None
     for k in range(300):
+        if wake is None:
+            probe = mujoco.MjData(m)
+            mujoco.mj_copyData(probe, m, d)
+            mujoco.mj_forward(m, probe)
+            if probe.tree_asleep[0] < 0:
+                sys.exit(f"{name}: the forward pass before step {k} wakes tree 0")
         mujoco.mj_step(m, d)
-        if d.tree_asleep[0] < 0:
-            return {"xml": STAGE_WAKE, "wake": k}
-    sys.exit("stage_wake: the box never woke")
+        traj.append({"qpos": floats(d.qpos), "qvel": floats(d.qvel)})
+        if wake is None and d.tree_asleep[0] < 0:
+            wake = k
+        if wake is not None and k == wake + 20:
+            return {"xml": xml, "wake": wake, "traj": traj}
+    sys.exit(f"{name}: tree 0 never woke")
 
 
 def write(path, doc):
@@ -227,7 +255,8 @@ def main():
     doc = {"oracle": marker,
            "fixtures": finite_or_string([fixture(name, *f) for name, f in FIXTURES.items()]),
            "two_trees": finite_or_string(two_trees()),
-           "stage_wake": stage_wake()}
+           "stage_wake": stage_wake("stage_wake", STAGE_WAKE),
+           "stage_wake_hinge": stage_wake("stage_wake_hinge", STAGE_WAKE_HINGE)}
     write(os.path.join(sys.argv[1], "rk4_sleep.json"), doc)
     print(f"{len(FIXTURES)} fixtures -> {sys.argv[1]}")
 

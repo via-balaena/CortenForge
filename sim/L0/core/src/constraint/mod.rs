@@ -37,10 +37,9 @@ use crate::constraint::solver::pgs::pgs_solve_unified;
 use crate::constraint::solver::primal::{PrimalMass, mj_sol_primal};
 
 use crate::integrate::implicit::{
-    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_stiffness,
-    tendon_all_dofs_sleeping,
+    accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_damping, isd_tendon_j,
+    isd_tendon_stiffness,
 };
-use crate::island::mj_island;
 
 /// Compute the unconstrained acceleration (`qacc_smooth`) and smooth forces.
 ///
@@ -132,7 +131,7 @@ fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
     let h = model.timestep;
     let h2 = h * h;
     let nv = model.nv;
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
 
     let mut m_impl = data.qM.clone();
 
@@ -149,7 +148,7 @@ fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
         &data.ten_length,
         &data.tree_awake,
         h,
-        sleep_enabled,
+        sleep_filter,
     );
 
     m_impl
@@ -173,7 +172,10 @@ fn build_m_impl(model: &Model, data: &Data) -> DMatrix<f64> {
 fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     let h = model.timestep;
     let nv = model.nv;
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = crate::island::constraint_sleep_filter(model, data);
+    let awake_j = |t: usize, dof: usize| {
+        isd_tendon_j(model, &data.tree_awake, sleep_filter, &data.ten_J[t], dof)
+    };
 
     // Start with existing qfrc_smooth (which has everything EXCEPT
     // implicit spring/damper forces)
@@ -216,10 +218,8 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
 
     // Add tendon spring forces: −k·(δ + h·V_ten) projected via J^T
     // and tendon damper forces: −b · V projected via J^T
+    // (each row at the awake dofs only, as in build_m_impl)
     for t in 0..model.ntendon {
-        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
-            continue;
-        }
         let kt = isd_tendon_stiffness(model, t);
         if kt != 0.0 {
             let displacement =
@@ -232,10 +232,9 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
                 // In the joint spring's order (above), so a coefficient-1 tendon
                 // rounds as the joint does.
                 let f = -kt * displacement - h * kt * velocity;
-                let j = &data.ten_J[t];
                 for dof in 0..nv {
-                    if j[dof] != 0.0 {
-                        qfrc[dof] += f * j[dof];
+                    if awake_j(t, dof) != 0.0 {
+                        qfrc[dof] += f * awake_j(t, dof);
                     }
                 }
             }
@@ -243,12 +242,11 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
         // Add tendon damper forces: −b · V projected via J^T
         let bt = isd_tendon_damping(model, t);
         if bt != 0.0 {
-            let j = &data.ten_J[t];
             let velocity = data.ten_velocity[t]; // J · qvel
             let f = -bt * velocity;
             for dof in 0..nv {
-                if j[dof] != 0.0 {
-                    qfrc[dof] += f * j[dof];
+                if awake_j(t, dof) != 0.0 {
+                    qfrc[dof] += f * awake_j(t, dof);
                 }
             }
         }
@@ -257,11 +255,13 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     qfrc
 }
 
-/// Make the constraint rows and their islands at this pass's positions, as
-/// MuJoCo's position stage does (`mj_makeConstraint` then `mj_island`,
-/// `engine_forward.c:204-205`): none with `DISABLE_CONSTRAINT`
-/// (`engine_core_constraint.c:2042-2049`). Their velocities and reference
-/// accelerations are the velocity stage's ([`mj_reference_constraint`]).
+/// Make the constraint rows at this pass's positions, as MuJoCo's
+/// `mj_makeConstraint`: none with `DISABLE_CONSTRAINT`
+/// (`engine_core_constraint.c:2042-2049`). The forward pass's position stage
+/// then makes their islands (`mj_island`, `engine_forward.c:204-205`), the
+/// inverse dynamics' does not (`engine_inverse.c:58`). Their velocities and
+/// reference accelerations are the velocity stage's
+/// ([`mj_reference_constraint`]).
 pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
     clear_constraint_rows(model, data);
     data.ne = 0;
@@ -269,7 +269,6 @@ pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
     if !disabled(model, DISABLE_CONSTRAINT) {
         assemble_unified_constraints(model, data);
     }
-    mj_island(model, data);
 }
 
 /// Unified constraint pipeline (§29), over the rows the position stage made
@@ -333,11 +332,21 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     }
 
     // DT-35: Override data.qacc_smooth and data.qfrc_smooth with implicit
-    // versions so Newton (and other consumers) see the correct values.
+    // versions so Newton (and other consumers) see the correct values, at the
+    // awake dofs: a sleeping dof keeps the values of its last awake pass, as
+    // `compute_qacc_smooth` keeps them (the implicit forces start from the
+    // kept `qfrc_smooth`, so overriding a sleeping dof added its spring again
+    // on every pass).
     if implicit_sd {
-        data.qacc_smooth = qacc_smooth_impl.clone();
-        if let Some(ref qfrc) = qfrc_impl_owned {
-            data.qfrc_smooth = qfrc.clone();
+        let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nv_awake < model.nv;
+        for dof in 0..model.nv {
+            if sleep_filter && !data.tree_awake[model.dof_treeid[dof]] {
+                continue;
+            }
+            data.qacc_smooth[dof] = qacc_smooth_impl[dof];
+            if let Some(ref qfrc) = qfrc_impl_owned {
+                data.qfrc_smooth[dof] = qfrc[dof];
+            }
         }
     }
 

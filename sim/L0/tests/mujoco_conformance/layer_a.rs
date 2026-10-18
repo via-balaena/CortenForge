@@ -65,7 +65,7 @@ fn layer_a_forward_inverse_hinge_chain() {
     data.qfrc_applied[1] = -0.5;
 
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     for i in 0..model.nv {
         let expected = data.qfrc_applied[i] + data.qfrc_actuator[i];
@@ -108,7 +108,7 @@ fn layer_a_forward_inverse_free_body() {
         data.qacc[2]
     );
 
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     // Round-trip: with no applied forces/actuators, qfrc_inverse ≈ 0
     for i in 0..model.nv {
@@ -149,7 +149,7 @@ fn layer_a_forward_inverse_ball_joint() {
     data.qvel[2] = 0.1;
 
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     for i in 0..model.nv {
         assert!(
@@ -186,7 +186,7 @@ fn layer_a_forward_inverse_slide_joint() {
     data.qfrc_applied[0] = 0.5;
 
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     let expected = data.qfrc_applied[0] + data.qfrc_actuator[0];
     assert!(
@@ -234,7 +234,7 @@ fn layer_a_forward_inverse_formula() {
     data.qfrc_applied[0] = 2.0;
 
     data.forward(&model).expect("forward");
-    data.inverse(&model);
+    data.inverse(&model).expect("inverse");
 
     // Compute M * qacc manually
     let mut m_qacc = nalgebra::DVector::zeros(model.nv);

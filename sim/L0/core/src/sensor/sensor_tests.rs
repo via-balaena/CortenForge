@@ -505,6 +505,8 @@ fn test_rangefinder_hits_sphere() {
     model.geom_name.push(None);
     model.geom_rbound.push(0.5);
     model.geom_mesh.push(None);
+    // The weld groups of the added body, which the broadphase reads.
+    model.compute_ancestors();
 
     // Add rangefinder sensor on site 0
     add_sensor(
@@ -568,6 +570,8 @@ fn test_rangefinder_ignores_objects_behind_sensor() {
     model.geom_name.push(None);
     model.geom_rbound.push(0.5);
     model.geom_mesh.push(None);
+    // The weld groups of the added body, which the broadphase reads.
+    model.compute_ancestors();
 
     add_sensor(
         &mut model,

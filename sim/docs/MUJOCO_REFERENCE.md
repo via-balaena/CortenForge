@@ -63,7 +63,10 @@ Where `X_joint[i]` depends on joint type:
 Two-mechanism architecture:
 
 **Mechanism 1 (automatic pipeline):**
-- Broad phase: sweep-and-prune on AABBs
+- Broad phase: MuJoCo's `mj_broadphase`: bodies swept and pruned, their geoms'
+  bounding spheres projected on the rows of `mju_eig3`'s matrix of the geoms'
+  positions' covariance, the bounds cast to `f32`; then each geom pair through
+  the bounding-sphere filter
 - Filters (in order): body-pair excludes (`contact_excludes`), explicit pair-set
   suppression (`contact_pair_set`), same-body, parent-child,
   contype/conaffinity bitmasks
@@ -961,7 +964,7 @@ available as `Data::transition_derivatives()`.
 | `actuator_moment[nu]` | `Vec<DVector(nv)>` | Transmission moment arm vectors (Site, Body and slider-crank transmissions, and Joint on a ball or free joint; zero for Joint on a hinge or slide and for Tendon) |
 | `actuator_force[nu]` | `Vec<f64>` | Scalar actuator force (after gain/bias/clamp) |
 | `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
-| `contacts[ncon]` | `Vec<Contact>` | Active contact points |
+| `contacts[ncon]` | `Vec<Contact>` | Contact points listed at `dist ≤ margin`, in MuJoCo's order; one at or past `margin − gap` (`Contact::is_excluded`) makes no constraint rows |
 | `efc_lambda` | `HashMap` | Warmstart cache (keyed by geom pair) |
 | `qDeriv[nv,nv]` | `DMatrix` | Analytical ∂(qfrc_smooth)/∂qvel (populated by `mjd_smooth_vel`) |
 | `deriv_Dcvel[nbody]` | `Vec<DMatrix(6,nv)>` | Per-body ∂(cvel)/∂(qvel) scratch Jacobians |

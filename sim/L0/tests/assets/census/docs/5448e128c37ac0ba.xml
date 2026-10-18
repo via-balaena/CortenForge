@@ -1,0 +1,9 @@
+<mujoco>
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body pos="0 0 0"><joint type="free"/><geom type="sphere" size="5"/></body>
+                <body pos="0 0 9"><joint type="free"/><geom type="sphere" size="5"/></body>
+                <body pos="50 0 0"><joint type="free"/><geom type="sphere" size="5"/></body>
+                <body pos="50 0 9"><joint type="free"/><geom type="sphere" size="5"/></body>
+            </worldbody>
+        </mujoco>

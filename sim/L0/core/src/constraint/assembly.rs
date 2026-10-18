@@ -283,9 +283,11 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
 
     // Contacts (S4.1 Site 2: defense-in-depth guard on DISABLE_CONTACT)
     // §32: pyramidal contacts emit 2*(dim-1) facet rows instead of dim rows.
+    // MuJoCo makes no contact rows with no dofs, and none for a contact in
+    // the gap (`mj_instantiateContact`, `engine_core_constraint.c:996-1019`).
     let contact_disabled = disabled(model, DISABLE_CONTACT);
-    if !contact_disabled {
-        for c in &data.contacts {
+    if !contact_disabled && nv > 0 {
+        for c in data.contacts.iter().filter(|c| !c.is_excluded()) {
             let is_pyramidal = c.dim >= 3 && model.cone == 0 && c.mu[0] >= 1e-10;
             if is_pyramidal {
                 nefc += 2 * (c.dim - 1);
@@ -563,7 +565,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
 
     // --- 3f: Contacts (S4.1 Site 2: defense-in-depth guard on DISABLE_CONTACT) ---
     let contacts = data.contacts.clone(); // Clone to avoid borrow conflict
-    if !contact_disabled {
+    if !contact_disabled && nv > 0 {
         let cones = assemble_contact_rows(model, data, nv, &mut row, &contacts);
         regularize_cones(model, data, &cones);
     }

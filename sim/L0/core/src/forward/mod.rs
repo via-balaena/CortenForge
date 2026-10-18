@@ -8,10 +8,10 @@
 //!
 //! As MuJoCo 3.5.0's `mj_forwardSkip`:
 //!
-//! - **`forward_pos()`**: position stage (wake detection, FK, CRBA,
+//! - **`position_stage()`**: position stage (wake detection, FK, CRBA,
 //!   collision, the constraint rows and their islands, transmissions,
 //!   position sensors, potential energy);
-//! - **`forward_vel()`**: velocity stage (velocity FK, actuator lengths and
+//! - **`velocity_stage()`**: velocity stage (velocity FK, actuator lengths and
 //!   velocities, passive forces with `cb_passive` and passive plugins, the
 //!   rows' velocities and reference accelerations, the bias force
 //!   `qfrc_bias` (RNE), velocity sensors, kinetic energy);
@@ -20,7 +20,8 @@
 //!   solve, acceleration, body accumulators, acceleration sensors).
 //!
 //! `step1()` runs the first two and `cb_control` (whatever the flag);
-//! `step2()` runs `forward_acc()` and integrates.
+//! `step2()` runs `forward_acc()` and integrates. `inverse()` runs the first
+//! two as MuJoCo's inverse dynamics do (`Pass::Inverse`).
 
 pub(crate) mod acceleration;
 mod actuation;
@@ -71,16 +72,14 @@ pub(crate) use velocity::mj_subtree_vel;
 // Re-exports for external consumers (derivatives.rs, collision/, constraint/, etc.)
 pub(crate) use actuation::{mj_next_activation, unclamped_next_activation};
 pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
-pub(crate) use position::SweepAndPrune;
 pub(crate) use position::{
-    aabb_from_geom_aabb, closest_point_segment, closest_points_segments,
-    closest_points_segments_parametric,
+    closest_point_segment, closest_points_segments, closest_points_segments_parametric,
 };
 
 use crate::types::flags::{disabled, enabled};
 use crate::types::{
-    DISABLE_ACTUATION, Data, ENABLE_ENERGY, ENABLE_FWDINV, ENABLE_SLEEP, Integrator, Model,
-    StepError,
+    DISABLE_ACTUATION, Data, ENABLE_ENERGY, ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_SLEEP,
+    Integrator, Model, StepError,
 };
 
 /// Pipeline stage for skip-stage forward dispatch.
@@ -103,6 +102,18 @@ pub enum MjStage {
     /// Velocity stage complete — skip the position stage, velocity FK,
     /// passive forces (`cb_passive` included) and the rows' references.
     Vel = 2,
+}
+
+/// The pass a position or velocity stage runs in. MuJoCo's inverse dynamics
+/// run their own two (`mj_invPosition`, `mj_invVelocity`,
+/// `engine_inverse.c:38-72`), which differ from the forward pass's in the
+/// position stage's wakes and islands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pass {
+    /// [`Data::forward`]'s, and every pass that steps.
+    Forward,
+    /// [`Data::inverse`]'s.
+    Inverse,
 }
 
 impl Data {
@@ -144,8 +155,10 @@ impl Data {
     /// Returns `Err(StepError::InvalidTimestep)` if the timestep is not
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self`
     /// was made by a model of other dimensions or an input array was resized,
-    /// and `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active.
+    /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
+    /// tendon equality is active, and `Err(StepError::UndefinedContactFrame)`
+    /// if a contact's normal, as its collision function wrote it, is shorter
+    /// than 0.5.
     pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;
@@ -157,8 +170,8 @@ impl Data {
         // Position and velocity stages, then cb_control whatever
         // DISABLE_ACTUATION says, as MuJoCo's mj_step1 does
         // (engine_forward.c:1481-1483).
-        self.forward_pos(model, true);
-        self.forward_vel(model, true);
+        self.position_stage(model, true, Pass::Forward)?;
+        self.velocity_stage(model, true, Pass::Forward);
         if let Some(ref cb) = model.cb_control {
             (cb.0)(model, self);
         }
@@ -194,8 +207,11 @@ impl Data {
     ///
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
-    /// was resized, or if forward acceleration computation fails (e.g.,
-    /// `CholeskyFailed` under the implicit spring-damper integrator).
+    /// was resized, with `ENABLE_FWDINV` under an integrator the discrete
+    /// inverse dynamics refuse when the comparison reaches the inverse (the
+    /// pass made constraint rows; `UnsupportedInverseDiscrete`), or if forward
+    /// acceleration computation fails (e.g., `CholeskyFailed` under the
+    /// implicit spring-damper integrator).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
 
@@ -212,7 +228,7 @@ impl Data {
         // Validate accelerations
         check::mj_check_acc(model, self);
         if enabled(model, ENABLE_FWDINV) {
-            self.compare_fwd_inv(model);
+            self.compare_fwd_inv(model)?;
         }
 
         // The advance (as step() for non-RK4 integrators)
@@ -237,6 +253,11 @@ impl Data {
     ///   was resized (`DataShapeMismatch`)
     /// - Sleep is enabled and a tendon equality is active
     ///   (`TendonEqualityWithSleep`)
+    /// - `ENABLE_FWDINV` is set under an integrator the discrete inverse
+    ///   dynamics refuse, and the forward pass made constraint rows, so that
+    ///   the comparison reaches the inverse (`UnsupportedInverseDiscrete`)
+    /// - A contact's normal, as its collision function wrote it, is shorter
+    ///   than 0.5 (`UndefinedContactFrame`)
     ///
     /// NaN/divergence in qpos, qvel, or qacc triggers auto-reset (matching
     /// MuJoCo). Disable with `DISABLE_AUTORESET`. Use `data.divergence_detected()`
@@ -275,7 +296,7 @@ impl Data {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
                 if enabled(model, ENABLE_FWDINV) {
-                    self.compare_fwd_inv(model);
+                    self.compare_fwd_inv(model)?;
                 }
                 crate::integrate::rk4::mj_runge_kutta(model, self)
             }
@@ -286,7 +307,7 @@ impl Data {
                 self.forward(model)?;
                 check::mj_check_acc(model, self);
                 if enabled(model, ENABLE_FWDINV) {
-                    self.compare_fwd_inv(model);
+                    self.compare_fwd_inv(model)?;
                 }
                 self.integrate_skip_unchecked(model, skipfactor)
             }
@@ -315,7 +336,9 @@ impl Data {
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self` was
     /// made by a model of other dimensions or an input array was resized,
     /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active, and `Err(StepError::CholeskyFailed)` under
+    /// tendon equality is active, `Err(StepError::UndefinedContactFrame)` if a
+    /// contact's normal, as its collision function wrote it, is shorter than
+    /// 0.5, and `Err(StepError::CholeskyFailed)` under
     /// the implicit spring-damper integrator when its modified mass matrix is
     /// not positive definite. The implicit and implicitfast integrators'
     /// factor is the integrator's (`integrate`), not this pass's.
@@ -365,7 +388,8 @@ impl Data {
     /// Returns `Err(StepError)` if the timestep is not positive and finite,
     /// if `self` was made by a model of other dimensions or an input array
     /// was resized, if `skipstage` is `MjStage::None` with sleep enabled and a
-    /// tendon equality active, or if the implicit spring-damper integrator's
+    /// tendon equality active or a contact's normal shorter than 0.5
+    /// (`UndefinedContactFrame`), or if the implicit spring-damper integrator's
     /// factorization fails (`CholeskyFailed`).
     pub fn forward_skip(
         &mut self,
@@ -377,21 +401,7 @@ impl Data {
         if skipstage == MjStage::None {
             check::check_tendon_equality_sleep(model)?;
         }
-        self.forward_skip_stages(model, skipstage, skipsensor, true)
-    }
-
-    /// [`Self::forward_skip`] without `cb_control`, for the inverse
-    /// finite differences: MuJoCo's `mjd_inverseFD` takes its columns through
-    /// `mj_inverseSkip`, which fires no control callback
-    /// (`engine_inverse.c:184-245`).
-    pub(crate) fn forward_skip_without_control(
-        &mut self,
-        model: &Model,
-        skipstage: MjStage,
-        skipsensor: bool,
-    ) -> Result<(), StepError> {
-        check::check_step_inputs(model, self)?;
-        self.forward_skip_stages(model, skipstage, skipsensor, false)
+        self.forward_skip_unchecked(model, skipstage, skipsensor)
     }
 
     /// [`Self::forward_skip`] without its input checks, for the sleep step
@@ -402,39 +412,25 @@ impl Data {
         skipstage: MjStage,
         skipsensor: bool,
     ) -> Result<(), StepError> {
-        self.forward_skip_stages(model, skipstage, skipsensor, true)
-    }
-
-    fn forward_skip_stages(
-        &mut self,
-        model: &Model,
-        skipstage: MjStage,
-        skipsensor: bool,
-        control: bool,
-    ) -> Result<(), StepError> {
         let compute_sensors = !skipsensor;
 
         // MuJoCo mj_forwardSkip (engine_forward.c:1365-1411): the position
         // stage, the velocity stage, then cb_control whatever `skipstage` is.
         if skipstage < MjStage::Pos {
-            self.forward_pos(model, compute_sensors);
+            self.position_stage(model, compute_sensors, Pass::Forward)?;
         }
         if skipstage < MjStage::Vel {
-            self.forward_vel(model, compute_sensors);
+            self.velocity_stage(model, compute_sensors, Pass::Forward);
         }
-        if control {
-            self.fire_control_gated(model);
-        }
-        self.forward_acc(model, compute_sensors)?;
-
-        Ok(())
+        self.fire_control_gated(model);
+        self.forward_acc(model, compute_sensors)
     }
 
     /// Shared pipeline core with sleep gating (§16.5).
     ///
     /// `compute_sensors`: `true` for `forward()`, `false` for `forward_skip_sensors()`.
     ///
-    /// §53: `forward_pos()`, `forward_vel()`, `cb_control` (unless
+    /// §53: `position_stage()`, `velocity_stage()`, `cb_control` (unless
     /// `DISABLE_ACTUATION`), `forward_acc()`; RK4's stages included.
     fn forward_core(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
         // INVARIANT: forward_core() must NOT call mj_check_pos, mj_check_vel,
@@ -443,8 +439,8 @@ impl Data {
         // qpos0 would cause infinite recursion. step() orchestrates the
         // check → forward → check sequence externally. This function is a
         // pure computation with no validation side-effects.
-        self.forward_pos(model, compute_sensors);
-        self.forward_vel(model, compute_sensors);
+        self.position_stage(model, compute_sensors, Pass::Forward)?;
+        self.velocity_stage(model, compute_sensors, Pass::Forward);
         // cb_control fires on every forward pass, RK4's stages included
         // (engine_forward.c:1399-1401, reached from mj_RungeKutta at :1100).
         self.fire_control_gated(model);
@@ -453,9 +449,26 @@ impl Data {
 
     /// Position stage: wake detection, forward kinematics, CRBA, collision,
     /// the constraint rows and their islands, transmissions, position
-    /// sensors and potential energy.
-    fn forward_pos(&mut self, model: &Model, compute_sensors: bool) {
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    /// sensors and potential energy. In [`Pass::Inverse`] it is MuJoCo's
+    /// `mj_invPosition` (`engine_inverse.c:38-66`): the kinematics still
+    /// wake the trees the user changed (`mj_kinematics` calls `mj_wake`),
+    /// but no tendon, contact or equality wakes the trees they join, and the
+    /// rows get no islands.
+    ///
+    /// # Errors
+    ///
+    /// After each collision, [`StepError::UndefinedContactFrame`]
+    /// ([`check::check_contact_frames`]). In [`Pass::Inverse`] only, after
+    /// collision: [`StepError::ContactWithSleepingGeom`]
+    /// ([`check::check_contacts_awake`]), which the forward pass's contact
+    /// wake leaves nothing to refuse.
+    pub(crate) fn position_stage(
+        &mut self,
+        model: &Model,
+        compute_sensors: bool,
+        pass: Pass,
+    ) -> Result<(), StepError> {
+        let wakes = pass == Pass::Forward && model.enableflags & ENABLE_SLEEP != 0;
 
         // ========== Position Stage ==========
         // The kinematics wake what the user changed (`mj_wake`), before the
@@ -471,27 +484,35 @@ impl Data {
         crate::dynamics::crba::mj_crba(model, self);
 
         // §16.13.2: Tendon wake — multi-tree tendons with active limits
-        if sleep_enabled && crate::island::mj_wake_tendon(model, self) {
+        if wakes && crate::island::mj_wake_tendon(model, self) {
             crate::island::mj_update_sleep_arrays(model, self);
         }
 
         crate::collision::mj_collision(model, self);
+        check::check_contact_frames(self)?;
 
         // Wake-on-contact: if sleeping body touched awake body, wake it
         // and re-run collision for the newly-awake tree's geoms (§16.5c)
-        if sleep_enabled && crate::island::mj_wake_collision(model, self) {
+        if wakes && crate::island::mj_wake_collision(model, self) {
             crate::island::mj_update_sleep_arrays(model, self);
             crate::collision::mj_collision(model, self);
+            check::check_contact_frames(self)?;
         }
 
         // §16.13.3: Equality constraint wake — cross-tree equality coupling
-        if sleep_enabled && crate::island::mj_wake_equality(model, self) {
+        if wakes && crate::island::mj_wake_equality(model, self) {
             crate::island::mj_update_sleep_arrays(model, self);
+        }
+        if pass == Pass::Inverse {
+            check::check_contacts_awake(model, self)?;
         }
 
         // The constraint rows and their islands, after the wakes, as
         // MuJoCo's `mj_fwdPosition` (`engine_forward.c:203-206`).
         crate::constraint::mj_make_constraint(model, self);
+        if pass == Pass::Forward {
+            crate::island::mj_island(model, self);
+        }
 
         // The transmissions, after the wakes, as MuJoCo's `mj_transmission`
         // (`engine_forward.c:209`): an actuator on a tree this pass woke
@@ -510,6 +531,7 @@ impl Data {
         } else {
             self.energy_potential = 0.0;
         }
+        Ok(())
     }
 
     /// Velocity stage: velocity FK, actuator lengths and velocities, passive
@@ -518,8 +540,10 @@ impl Data {
     /// force, velocity sensors and kinetic energy. MuJoCo: `mj_fwdVelocity`
     /// (engine_forward.c:221-259: `mj_passive` at :250,
     /// `mj_referenceConstraint` at :251, `mj_rne` at :254), then
-    /// `mj_sensorVel` and `mj_energyVel` in `mj_forwardSkip`.
-    fn forward_vel(&mut self, model: &Model, compute_sensors: bool) {
+    /// `mj_sensorVel` and `mj_energyVel` in `mj_forwardSkip`. In
+    /// [`Pass::Inverse`] the energy is not taken as the drift baseline
+    /// ([`Data::energy_initial`] is a forward pass's).
+    pub(crate) fn velocity_stage(&mut self, model: &Model, compute_sensors: bool, pass: Pass) {
         velocity::mj_fwd_velocity(model, self);
         actuation::mj_actuator_velocity(model, self);
         passive::mj_fwd_passive(model, self);
@@ -530,7 +554,9 @@ impl Data {
         }
         if enabled(model, ENABLE_ENERGY) {
             crate::energy::mj_energy_vel(model, self);
-            self.capture_energy_initial();
+            if pass == Pass::Forward {
+                self.capture_energy_initial();
+            }
         } else {
             self.energy_kinetic = 0.0;
         }
@@ -575,6 +601,13 @@ impl Data {
         // qfrc_gravcomp comes from the velocity stage's passive forces.
         actuation::mj_gravcomp_to_actuator(model, self);
 
+        // ImplicitSpringDamper's solves are over every dof; a sleeping dof
+        // keeps its acceleration, as the other integrators' solves over the
+        // awake dofs leave it.
+        let kept = (model.integrator == Integrator::ImplicitSpringDamper
+            && acceleration::awake_dofs(model, self))
+        .then(|| self.qacc.clone());
+
         // The solve over the rows the position stage made, Newton's and CG's
         // island by island as MuJoCo's (`constraint/solver/primal.rs`).
         crate::constraint::mj_fwd_constraint(model, self)?;
@@ -585,6 +618,13 @@ impl Data {
         // solves for the acceleration it advances qvel with.
         if !self.primal_qacc {
             acceleration::mj_fwd_acceleration(model, self)?;
+        }
+        if let Some(kept) = kept {
+            for dof in 0..model.nv {
+                if crate::island::sleep::dof_asleep(model, self, dof) {
+                    self.qacc[dof] = kept[dof];
+                }
+            }
         }
 
         // (§27F) Pinned flex vertex DOF clamping removed — pinned vertices now have
@@ -614,42 +654,42 @@ impl Data {
     ///   − qfrc_inverse‖`.
     ///
     /// The forward's `qfrc_constraint` and `efc_force` are put back;
-    /// `efc_state` keeps the inverse's, as MuJoCo's does.
+    /// `efc_state` keeps the inverse's, as MuJoCo's does. With
+    /// `ENABLE_INVDISCRETE` so is the implicit integrators' factor, which
+    /// MuJoCo's leaves overwritten (registry `D-FWDINV-FACTOR`).
     ///
     /// A step runs it after its forward pass and `mj_check_acc`, as MuJoCo's
     /// `mj_step`, `mj_step2` and `mj_stepSkip` (`engine_forward.c:1431-1434`,
     /// `:1500-1503`; `engine_derivative_fd.c:122-125`); a forward pass alone
-    /// does not. `ENABLE_INVDISCRETE` is not read.
-    fn compare_fwd_inv(&mut self, model: &Model) {
+    /// does not. With `ENABLE_INVDISCRETE` the inverse is the discrete one
+    /// ([`Data::inverse`]), as MuJoCo's: with rows, RK4 and
+    /// ImplicitSpringDamper refuse the step there, before the advance
+    /// (`check_inverse_discrete`), where MuJoCo's `mj_discreteAcc` stops;
+    /// with none, the comparison returns first and the step runs, as
+    /// MuJoCo's (`engine_inverse.c:267-270`).
+    fn compare_fwd_inv(&mut self, model: &Model) -> Result<(), StepError> {
         self.solver_fwdinv = [0.0, 0.0];
         if self.efc_type.is_empty() {
-            return;
+            return Ok(());
         }
+        check::check_inverse_discrete(model)?;
 
-        // qforce = qfrc_applied + qfrc_actuator + Jᵀ·xfrc_applied
-        // (`mju_add`, `mj_xfrcAccumulate`).
-        let mut qforce = &self.qfrc_applied + &self.qfrc_actuator;
-        for body_id in 1..model.nbody {
-            let wrench = self.xfrc_applied[body_id];
-            if wrench.is_zero() {
-                continue;
-            }
-            let point = self.xipos[body_id];
-            crate::jacobian::mj_apply_ft(
-                model,
-                self,
-                &wrench.force,
-                &wrench.torque,
-                &point,
-                body_id,
-                &mut qforce,
-            );
-        }
+        let qforce = crate::inverse::applied_forces(model, self);
 
         let qfrc_constraint = self.qfrc_constraint.clone();
         let efc_force = self.efc_force.clone();
-        crate::constraint::solver::primal::mj_inv_constraint(self);
-        self.inverse_sum(model);
+        // The discrete inverse writes the implicit integrators' matrix,
+        // `M − h·qDeriv`, unfactored, into `qLU` or `qH`, where a step that
+        // skips the factor solves (the transition finite differences'
+        // control columns): the forward pass's factor is put back. MuJoCo's
+        // comparison leaves it written (registry `D-FWDINV-FACTOR`).
+        let factor =
+            enabled(model, ENABLE_INVDISCRETE).then(|| (self.qLU.clone(), self.qH.clone()));
+        self.inverse_acc(model, false);
+        if let Some((qlu, qh)) = factor {
+            self.qLU = qlu;
+            self.qH = qh;
+        }
 
         let dif: Vec<f64> = (0..model.nv)
             .map(|i| qfrc_constraint[i] - self.qfrc_constraint[i])
@@ -662,5 +702,6 @@ impl Data {
 
         self.qfrc_constraint = qfrc_constraint;
         self.efc_force = efc_force;
+        Ok(())
     }
 }

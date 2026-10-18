@@ -7,7 +7,8 @@
 //! Jacobian and wrap points bit for bit (on the golden's platform: see
 //! [`Tol::Golden`]); a tendon's velocity is summed as MuJoCo's at both sizes,
 //! a fixed tendon naming a joint twice keeps MuJoCo's row, and a tendon
-//! motor's force is MuJoCo's.
+//! motor's force is MuJoCo's. A segment grazing a sphere keeps a finite
+//! length where MuJoCo's is NaN (registry `D-WRAP-ACOS`).
 //!
 //! The golden is `assets/golden/tendon/tendon.json`, from the unfused MuJoCo
 //! 3.5.0 oracle (`scripts/gen_tendon_reference.py`, which describes its
@@ -306,10 +307,12 @@ fn assert_configs(name: &str, case: &Value) {
     }
 }
 
-/// Six scenes at the edges of `mju_wrap`'s tests, from a review's sweep of
-/// them: an end on the surface, a segment grazing it, a radius of 1e-14
+/// Scenes at the edges of `mju_wrap`'s tests, from reviews' sweeps of them:
+/// an end on the surface, a segment grazing it, a radius of 1e-14
 /// (axis-aligned and turned) and of 1e-15 (turned), a cylinder wrap near
-/// π; in each a sphere and a cylinder in the world, wrapped with and
+/// π, a segment tangent to the sphere whose tangent directions' cosine is
+/// exactly 1, which MuJoCo's sphere wrap takes the long way round (ledger
+/// L185); in each a sphere and a cylinder in the world, wrapped with and
 /// without a sidesite. Each tendon's length,
 /// Jacobian and wrap points are MuJoCo's ([`Tol::Golden`]).
 #[test]
@@ -317,6 +320,51 @@ fn wrap_edges_as_mujoco() {
     let g = golden();
     for (name, case) in g["cases"]["wrap_edges"].as_object().expect("cases") {
         assert_wrap(name, case, Tol::Golden);
+    }
+}
+
+/// Segments grazing a sphere, from the same sweeps: the directions of the
+/// sphere wrap's two tangent points round to a cosine past 1, and MuJoCo's
+/// `length_circle` takes `acos` of it unclamped, so its sphere tendons'
+/// length is NaN (`engine_util_misc.c:55-71`; the golden holds "nan").
+/// Ours clamps the cosine (registry `D-WRAP-ACOS`): the length is finite, the
+/// straight segment's between the tendon's ends, as for a path that only
+/// touches the sphere, to within the arc the clamp drops, and never the long
+/// way round (on the one whose cross product's sign asks for it, before, the
+/// straight segment's plus 2πr). The bound is the
+/// radius times √(8ε), 4.2e-8: the clamp acts where the computed cosine is at
+/// least 1 while the true one is 1 − θ²/2, so θ ≤ √(8ε) if the dot of the two
+/// unit directions rounds within 4 ulps of 1 there, an assumption, not
+/// derived (the chunk 3e-1 review measured at most 1.67e-8 over 7,200 grazing
+/// segments). Everything else, the cylinder tendons' lengths included, is
+/// MuJoCo's ([`Tol::Golden`]).
+#[test]
+fn grazing_sphere_wrap_keeps_a_finite_length() {
+    let g = golden();
+    for (name, case) in g["cases"]["grazing"].as_object().expect("cases") {
+        let model = load(case);
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        // The arc the clamp drops: the radius times √(8ε) (above).
+        let dropped = model.geom_size[0].x * (8.0 * f64::EPSILON).sqrt();
+        let mut want = case["forward"].clone();
+        let mut nan = 0;
+        for (t, tendon) in want.as_array_mut().expect("array").iter_mut().enumerate() {
+            if tendon["ten_length"] != "nan" {
+                continue;
+            }
+            nan += 1;
+            let (adr, num) = (data.ten_wrapadr[t], data.ten_wrapnum[t]);
+            let straight = (data.wrap_xpos[adr + num - 1] - data.wrap_xpos[adr]).norm();
+            let got = data.ten_length[t];
+            assert!(
+                (got - straight).abs() <= dropped,
+                "{name} tendon {t}: length {got}, the segment's {straight}"
+            );
+            tendon["ten_length"] = got.into();
+        }
+        assert!(nan > 0, "{name}: no length of MuJoCo's is NaN");
+        assert_tendons(name, &model, &data, &want, Tol::Golden);
     }
 }
 

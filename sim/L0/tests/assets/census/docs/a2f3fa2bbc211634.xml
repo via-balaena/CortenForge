@@ -1,0 +1,4 @@
+<mujoco><worldbody><geom name="ws" type="sphere" size="0.1" pos="-1 0 0.5" contype="0" conaffinity="0"/>
+<body pos="0 0 0.5"><freejoint/><geom type="sphere" size="0.1" contype="0" conaffinity="0"/></body>
+<body pos="0.15 0 0.5"><freejoint/><geom name="cube" type="box" size="0.1 0.1 0.1" contype="0" conaffinity="0"/></body>
+</worldbody><sensor><distance body1="world" geom2="cube" cutoff="10"/></sensor></mujoco>
