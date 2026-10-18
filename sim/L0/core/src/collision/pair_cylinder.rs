@@ -1,6 +1,6 @@
 //! Analytical pairwise collision for cylinders and box-box SAT.
 
-use super::mj_primitive::{Frame, raw_capsule_box, sphere_cylinder};
+use super::mj_primitive::{Frame, box_box_filter, raw_box_box, raw_capsule_box, sphere_cylinder};
 use super::narrow::{CAP_COLLISION_THRESHOLD, GEOM_EPSILON, make_contact_from_geoms};
 use crate::forward::closest_points_segments;
 use crate::types::{Contact, GeomType, Model};
@@ -191,17 +191,11 @@ pub fn collide_capsule_box(
         .collect()
 }
 
-/// Box-box collision detection using SAT + Sutherland-Hodgman face clipping.
-///
-/// Returns up to ~8 contacts, matching MuJoCo's `_boxbox` algorithm:
-/// - **Face-face**: Clip incident face polygon against reference face edges,
-///   producing up to ~8 contact points with individual depths.
-/// - **Edge-edge**: Closest points on the two contacting edge segments → 1 contact.
-///
-/// Tests 15 potential separating axes: 3 face normals from each box
-/// and 9 edge-edge cross products.
-// Cylinder-box pair dispatcher takes the full per-geom context; inlined as a single function so the close-form geometry math reads top-to-bottom.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+/// Box–box collision: MuJoCo's `mjc_BoxBox` and its driver's box–box filter
+/// ([`mj_primitive`](super::mj_primitive)), up to MuJoCo's `mjMAXCONPAIR`
+/// (50) contacts, the first box's geom first.
+// The full per-geom pair context, so dispatch from the broadphase passes one uniform arg list.
+#[allow(clippy::too_many_arguments)]
 pub fn collide_box_box(
     model: &Model,
     geom1: usize,
@@ -214,322 +208,19 @@ pub fn collide_box_box(
     size2: Vector3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
-    let half1 = size1;
-    let half2 = size2;
-
-    let axes1: [Vector3<f64>; 3] = [
-        mat1.column(0).into_owned(),
-        mat1.column(1).into_owned(),
-        mat1.column(2).into_owned(),
-    ];
-    let axes2: [Vector3<f64>; 3] = [
-        mat2.column(0).into_owned(),
-        mat2.column(1).into_owned(),
-        mat2.column(2).into_owned(),
-    ];
-
-    let center_diff = pos2 - pos1;
-
-    // ── SAT Phase: find minimum penetration axis ──
-
-    let mut min_pen = f64::MAX;
-    let mut best_axis = Vector3::x();
-    let mut best_type = SatAxisType::Face1(0);
-
-    // Test face normals of box 1 (3 axes)
-    for i in 0..3 {
-        let axis = axes1[i];
-        let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-        if pen <= -margin {
-            return vec![];
-        }
-        if pen < min_pen {
-            min_pen = pen;
-            best_axis = axis;
-            best_type = SatAxisType::Face1(i);
-        }
-    }
-
-    // Test face normals of box 2 (3 axes)
-    for i in 0..3 {
-        let axis = axes2[i];
-        let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-        if pen <= -margin {
-            return vec![];
-        }
-        if pen < min_pen {
-            min_pen = pen;
-            best_axis = axis;
-            best_type = SatAxisType::Face2(i);
-        }
-    }
-
-    // Test edge-edge cross products (9 axes)
-    for i in 0..3 {
-        for j in 0..3 {
-            let cross = axes1[i].cross(&axes2[j]);
-            let len = cross.norm();
-            if len < GEOM_EPSILON {
-                continue;
-            }
-            let axis = cross / len;
-
-            let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-            if pen <= -margin {
-                return vec![];
-            }
-            // Edge-edge only wins if significantly better than face (0.95 bias)
-            if pen < min_pen * 0.95 {
-                min_pen = pen;
-                best_axis = axis;
-                best_type = SatAxisType::Edge(i, j);
-            }
-        }
-    }
-
-    // Ensure normal points from box1 to box2
-    if best_axis.dot(&center_diff) < 0.0 {
-        best_axis = -best_axis;
-    }
-
-    // ── Contact Generation ──
-
-    match best_type {
-        SatAxisType::Face1(face_idx) | SatAxisType::Face2(face_idx) => {
-            let is_face1 = matches!(best_type, SatAxisType::Face1(_));
-
-            // Reference box owns the separating face; incident box is the other.
-            let (ref_pos, ref_axes, ref_half, inc_pos, inc_axes, inc_half) = if is_face1 {
-                (pos1, &axes1, &half1, pos2, &axes2, &half2)
-            } else {
-                (pos2, &axes2, &half2, pos1, &axes1, &half1)
-            };
-
-            // Reference face outward normal (from reference box toward the other).
-            let ref_normal = if is_face1 { best_axis } else { -best_axis };
-            let ref_half_arr = [ref_half.x, ref_half.y, ref_half.z];
-            let ref_face_center = ref_pos + ref_normal * ref_half_arr[face_idx];
-
-            // Two axes spanning the reference face
-            let ea = (face_idx + 1) % 3;
-            let eb = (face_idx + 2) % 3;
-            let ref_edge_half = [ref_half_arr[ea], ref_half_arr[eb]];
-            let ref_edge_dirs = [ref_axes[ea], ref_axes[eb]];
-
-            // Incident face: most anti-parallel to ref_normal
-            let inc_half_arr = [inc_half.x, inc_half.y, inc_half.z];
-            let mut best_inc_dot = 0.0_f64;
-            let mut inc_face_idx = 0;
-            let mut inc_face_sign = 1.0_f64;
-            for (k, inc_axis) in inc_axes.iter().enumerate() {
-                let d = ref_normal.dot(inc_axis);
-                if d.abs() > best_inc_dot.abs() {
-                    best_inc_dot = d;
-                    inc_face_idx = k;
-                    inc_face_sign = if d < 0.0 { 1.0 } else { -1.0 };
-                }
-            }
-
-            // Build incident face polygon (4 vertices)
-            let inc_face_normal = inc_axes[inc_face_idx] * inc_face_sign;
-            let inc_face_center = inc_pos + inc_face_normal * inc_half_arr[inc_face_idx];
-            let ia = (inc_face_idx + 1) % 3;
-            let ib = (inc_face_idx + 2) % 3;
-            let ha = inc_half_arr[ia];
-            let hb = inc_half_arr[ib];
-            let da = inc_axes[ia];
-            let db = inc_axes[ib];
-
-            let mut polygon = vec![
-                inc_face_center + da * ha + db * hb,
-                inc_face_center - da * ha + db * hb,
-                inc_face_center - da * ha - db * hb,
-                inc_face_center + da * ha - db * hb,
-            ];
-
-            // Clip polygon against 4 reference face edge planes
-            for &(dir, half) in &[
-                (ref_edge_dirs[0], ref_edge_half[0]),
-                (-ref_edge_dirs[0], ref_edge_half[0]),
-                (ref_edge_dirs[1], ref_edge_half[1]),
-                (-ref_edge_dirs[1], ref_edge_half[1]),
-            ] {
-                let limit = dir.dot(&ref_face_center) + half;
-                polygon = clip_polygon_by_plane(&polygon, &dir, limit);
-                if polygon.is_empty() {
-                    return vec![];
-                }
-            }
-
-            // Compute per-vertex depth along ref_normal
-            let ref_plane_d = ref_normal.dot(&ref_face_center);
-            let mut contacts = Vec::with_capacity(polygon.len());
-
-            for pt in &polygon {
-                let signed_dist = ref_normal.dot(pt) - ref_plane_d;
-                let depth = -signed_dist;
-
-                if depth > -margin {
-                    let contact_pos = pt - ref_normal * (signed_dist / 2.0);
-                    contacts.push(make_contact_from_geoms(
-                        model,
-                        contact_pos,
-                        best_axis,
-                        depth,
-                        geom1,
-                        geom2,
-                        margin,
-                    ));
-                }
-            }
-
-            dedup_contacts(&mut contacts);
-            // NOTE: MuJoCo also applies mju_outsideBox (1% tolerance) and caps
-            // at mjMAXCONPAIR=50. Neither is needed here: S-H clipping already
-            // constrains output to the reference face bounds (max 8 vertices),
-            // and no box-box configuration can exceed the cap.
-            contacts
-        }
-
-        SatAxisType::Edge(edge1_idx, edge2_idx) => {
-            // Edge-edge: closest points on the two contacting edge segments
-            let half1_arr = [half1.x, half1.y, half1.z];
-            let half2_arr = [half2.x, half2.y, half2.z];
-
-            // Edge of box1 along axes1[edge1_idx]. The other two axes pick
-            // which of the 4 parallel edges via support in -best_axis direction.
-            let mut edge1_center = pos1;
-            for k in 0..3 {
-                if k != edge1_idx {
-                    let sign = if best_axis.dot(&axes1[k]) > 0.0 {
-                        -1.0
-                    } else {
-                        1.0
-                    };
-                    edge1_center += axes1[k] * (sign * half1_arr[k]);
-                }
-            }
-            let e1_half = half1_arr[edge1_idx];
-            let e1_start = edge1_center - axes1[edge1_idx] * e1_half;
-            let e1_end = edge1_center + axes1[edge1_idx] * e1_half;
-
-            // Edge of box2 along axes2[edge2_idx]
-            let mut edge2_center = pos2;
-            for k in 0..3 {
-                if k != edge2_idx {
-                    let sign = if best_axis.dot(&axes2[k]) < 0.0 {
-                        -1.0
-                    } else {
-                        1.0
-                    };
-                    edge2_center += axes2[k] * (sign * half2_arr[k]);
-                }
-            }
-            let e2_half = half2_arr[edge2_idx];
-            let e2_start = edge2_center - axes2[edge2_idx] * e2_half;
-            let e2_end = edge2_center + axes2[edge2_idx] * e2_half;
-
-            let (cp1, cp2) = closest_points_segments(e1_start, e1_end, e2_start, e2_end);
-            let contact_pos = (cp1 + cp2) * 0.5;
-
-            vec![make_contact_from_geoms(
-                model,
-                contact_pos,
-                best_axis,
-                min_pen,
-                geom1,
-                geom2,
-                margin,
-            )]
-        }
-    }
-}
-
-/// Classification of the best SAT separating axis.
-#[derive(Clone, Copy)]
-enum SatAxisType {
-    /// Face normal of box 1, axis index 0–2.
-    Face1(usize),
-    /// Face normal of box 2, axis index 0–2.
-    Face2(usize),
-    /// Edge cross-product: edge `i` of box 1 × edge `j` of box 2.
-    Edge(usize, usize),
-}
-
-/// Sutherland-Hodgman: clip polygon against half-plane `dot(normal, p) <= limit`.
-fn clip_polygon_by_plane(
-    polygon: &[Vector3<f64>],
-    normal: &Vector3<f64>,
-    limit: f64,
-) -> Vec<Vector3<f64>> {
-    if polygon.is_empty() {
-        return vec![];
-    }
-
-    let mut output = Vec::with_capacity(polygon.len() + 1);
-    let n = polygon.len();
-
-    for i in 0..n {
-        let current = polygon[i];
-        let next = polygon[(i + 1) % n];
-
-        let d_current = normal.dot(&current) - limit;
-        let d_next = normal.dot(&next) - limit;
-
-        if d_current <= 0.0 {
-            output.push(current);
-        }
-
-        // Edge crosses the plane → emit intersection
-        if (d_current <= 0.0) != (d_next <= 0.0) {
-            let t = d_current / (d_current - d_next);
-            output.push(current + (next - current) * t);
-        }
-    }
-
-    output
-}
-
-/// Remove duplicate contacts within 1e-6 distance.
-fn dedup_contacts(contacts: &mut Vec<Contact>) {
-    const DEDUP_DIST_SQ: f64 = 1e-12; // (1e-6)^2
-
-    let mut i = 0;
-    while i < contacts.len() {
-        let mut j = i + 1;
-        while j < contacts.len() {
-            let diff = contacts[i].pos - contacts[j].pos;
-            if diff.norm_squared() < DEDUP_DIST_SQ {
-                contacts.swap_remove(j);
-            } else {
-                j += 1;
-            }
-        }
-        i += 1;
-    }
-}
-
-/// Test a single SAT axis and return penetration depth (negative = separated).
-#[inline]
-fn test_sat_axis(
-    axis: &Vector3<f64>,
-    center_diff: &Vector3<f64>,
-    axes1: &[Vector3<f64>; 3],
-    half1: &Vector3<f64>,
-    axes2: &[Vector3<f64>; 3],
-    half2: &Vector3<f64>,
-) -> f64 {
-    let r1 = (half1.x * axis.dot(&axes1[0]).abs())
-        + (half1.y * axis.dot(&axes1[1]).abs())
-        + (half1.z * axis.dot(&axes1[2]).abs());
-
-    let r2 = (half2.x * axis.dot(&axes2[0]).abs())
-        + (half2.y * axis.dot(&axes2[1]).abs())
-        + (half2.z * axis.dot(&axes2[2]).abs());
-
-    let dist = axis.dot(center_diff).abs();
-
-    r1 + r2 - dist
+    let box1 = Frame {
+        pos: &pos1,
+        mat: &mat1,
+    };
+    let box2 = Frame {
+        pos: &pos2,
+        mat: &mat2,
+    };
+    let raw = raw_box_box(margin, box1, &size1, box2, &size2);
+    box_box_filter(raw, margin, box1, &size1, box2, &size2)
+        .iter()
+        .map(|c| c.contact(model, geom1, geom2, margin))
+        .collect()
 }
 
 #[cfg(test)]

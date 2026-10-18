@@ -1068,3 +1068,36 @@ fn pairs_collide_as_mujoco(case: &Value) {
 fn capsule_pairs_collide_as_mujoco() {
     pairs_collide_as_mujoco(&golden()["capsule_pairs"]);
 }
+
+/// A box against a box on two free bodies, the first box's body first in
+/// the file and second: the contacts are MuJoCo's within 1e-12
+/// (`mjc_BoxBox`, `engine_collision_box.c:604-1214`, and the driver's
+/// box–box filter, `engine_collision_driver.c:1543-1610`), at named poses
+/// (stacked aligned, turned 45° and tilted; an edge on a face, an edge
+/// across an edge, a corner on a face; side by side; one inside the other;
+/// touching exactly, four contacts at distance 0; equal aligned boxes whose
+/// x and y face axes tie exactly, where MuJoCo takes x; a deep overlap of
+/// equally turned boxes whose every contact the filter drops, book Q74) and
+/// at 40
+/// seeded random poses, a sixth of them turned alike or a quarter turn
+/// apart, at geom margins 0 and 0.02.
+#[test]
+fn box_pairs_collide_as_mujoco() {
+    pairs_collide_as_mujoco(&golden()["box_pairs"]);
+}
+
+/// Census document e6ea68ac, two equal boxes overlapping and aligned, after
+/// two steps of the census's first excitation: MuJoCo's `mjc_BoxBox` lists 4
+/// contacts there and 5 with the first box's quaternion's w one ulp lower,
+/// and so does ours, each contact within 1e-12 (registry `D-BOXBOX-TIE`: our
+/// state there is ulps from MuJoCo's, so the census verdict falls at the
+/// third step).
+#[test]
+fn box_box_contact_count_turns_on_one_ulp_as_mujocos() {
+    let case = &golden()["box_box_tie"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    // The contacts are the pose's; `contacts_as_mujoco` forwards from `qpos`.
+    for (name, state) in case["states"].as_object().expect("states") {
+        contacts_as_mujoco(name, &model, &floats(&state["qpos"]), &state["contacts"]);
+    }
+}

@@ -137,6 +137,23 @@ box axis, at margins 0 and 0.02: mjraw_CapsuleCapsule
 (engine_collision_box.c:119-591). It refuses a pair whose random poses do
 not make 0, 1 and 2 contacts. The `rest` case `box_capsule` is a capsule on
 the box slab.
+`box_pairs` holds a box against a box, as `sphere_pairs`: named poses
+(stacked aligned, turned 45 degrees and tilted; an edge on a face, an edge
+across an edge, a corner on a face; side by side; one inside the other;
+touching exactly, at distance 0; equal aligned boxes whose x and y face
+axes tie exactly, where MuJoCo takes x; a deep overlap of equally turned boxes
+whose contacts MuJoCo's box-box filter drops, every one, book Q74) and 40
+seeded random poses, a sixth of them turned alike or a quarter turn apart,
+at margins 0 and 0.02: mjc_BoxBox (engine_collision_box.c:604-1214) and the
+driver's box-box filter (engine_collision_driver.c:1543-1610). It refuses a
+deep overlap MuJoCo lists a contact for, a touching pose with a contact not
+at distance 0, and random poses that do not make 0, 1 and at least 4
+contacts.
+`box_box_tie` holds census document e6ea68ac (two equal boxes overlapping,
+aligned) after two steps of the census's first excitation: MuJoCo's
+contacts there, 4, and with the first box's quaternion's w one ulp lower,
+5 (mjc_BoxBox's count turns on a one-ulp change of the pose; registry
+D-BOXBOX-TIE). It refuses other counts.
 """
 
 import json
@@ -1165,6 +1182,117 @@ def capsule_pair_cases():
     return {"named": named, "random": poses}
 
 
+# A box against a box, on two free bodies; the body order in the file either
+# way.
+BOX1 = '<geom type="box" size="0.1 0.07 0.05"/>'
+BOX2 = '<geom type="box" size="0.08 0.06 0.04"/>'
+TURN_Z45 = unit([np.cos(np.pi / 8), 0, 0, np.sin(np.pi / 8)])
+TILT = unit([1, 0.05, -0.03, 0.02])
+EDGE_DOWN = unit([np.cos(np.pi / 8), np.sin(np.pi / 8), 0, 0])  # 45 deg about x
+CORNER_DOWN = unit([0.888, 0.325, 0.325, 0.0])
+# Named poses: (first geom, other geom, first position, quat, other position, quat).
+BOX_PAIR_POSES = {
+    "stacked_aligned": (BOX1, BOX2, [0, 0, 0], [1, 0, 0, 0], [0.01, 0.005, 0.085], [1, 0, 0, 0]),
+    "stacked_turned_45": (BOX1, BOX2, [0, 0, 0], [1, 0, 0, 0], [0.01, 0.0, 0.085], TURN_Z45),
+    "stacked_tilted": (BOX1, BOX2, [0, 0, 0], [1, 0, 0, 0], [0.02, -0.01, 0.087], TILT),
+    "edge_on_face": (BOX1, BOX2, [0, 0, 0], [1, 0, 0, 0], [0.0, 0.0, 0.115], EDGE_DOWN),
+    "edge_across_edge": (BOX1, BOX2, [0, 0, 0], [1, 0, 0, 0], [0.12, 0.0, 0.1], unit([0.92, 0.2, 0.33, 0.0])),
+    "corner_on_face": (BOX1, BOX2, [0, 0, 0], [1, 0, 0, 0], [0.01, 0.02, 0.13], CORNER_DOWN),
+    "side_by_side": (BOX1, BOX2, [0, 0, 0], [1, 0, 0, 0], [0.175, 0.01, 0.0], [1, 0, 0, 0]),
+    "inside": (BOX1, BOX2, [0, 0, 0], [1, 0, 0, 0], [0.01, 0.0, 0.0], TURN),
+    "touching_exact": ('<geom type="box" size="0.5 0.5 0.25"/>', '<geom type="box" size="0.25 0.25 0.25"/>',
+                       [0, 0, 0], [1, 0, 0, 0], [0, 0, 0.5], [1, 0, 0, 0]),
+    # Equal aligned boxes overlapping 0.125 along x and along y exactly: the two
+    # face axes tie, and MuJoCo takes the first (strictly shallower only).
+    "face_axes_tie": ('<geom type="box" size="0.25 0.25 0.25"/>', '<geom type="box" size="0.25 0.25 0.25"/>',
+                      [0, 0, 0], [1, 0, 0, 0], [0.375, 0.375, 0], [1, 0, 0, 0]),
+    # A deep overlap of equally turned boxes whose contacts MuJoCo's box-box
+    # filter drops, every one (book Q74).
+    "deep_overlap_filtered": ('<geom type="box" size="0.149 0.056 0.224"/>',
+                              '<geom type="box" size="0.161 0.249 0.108"/>',
+                              [0, 0, 0], [1, 0, 0, 0], [0.059, 0.063, -0.014], [1, 0, 0, 0]),
+}
+
+
+def box_random_poses(rng, n):
+    """`n` (first position, quat, other position, quat), a sixth of them with
+    the two boxes turned alike or a quarter turn apart."""
+    out = []
+    for k in range(n):
+        q1 = unit(rng.normal(size=4))
+        if k % 6 == 0:
+            q2 = q1 if k % 12 == 0 else unit([q1[0] - q1[3], q1[1] - q1[2], q1[2] + q1[1], q1[3] + q1[0]])
+        else:
+            q2 = unit(rng.normal(size=4))
+        p2 = unit(rng.normal(size=3)) * rng.uniform(0.0, 0.2)
+        out.append((np.zeros(3), q1, p2, q2))
+    return out
+
+
+def box_pair_cases():
+    named = {}
+    for name, (first_geom, other_geom, p1, q1, p2, q2) in BOX_PAIR_POSES.items():
+        for first in (True, False):
+            xml = pair_xml(first_geom, other_geom, first, 0.0)
+            qpos = pose_qpos(first, p1, q1, p2, q2)
+            contacts = sphere_pair_contacts(xml, qpos)
+            if name == "deep_overlap_filtered" and contacts:
+                sys.exit(f"box_pairs {name}: MuJoCo lists {len(contacts)} contacts")
+            if name == "touching_exact" and any(c["dist"] != 0 for c in contacts):
+                sys.exit(f"box_pairs {name}: a contact not at distance 0")
+            named[f"{name}_{'first_first' if first else 'first_second'}"] = {
+                "xml": xml, "qpos": floats(qpos), "contacts": contacts}
+    rng = np.random.default_rng(20261020)
+    xmls, cases = {}, []
+    for pose in box_random_poses(rng, 40):
+        for first in (True, False):
+            for margin in (0.0, 0.02):
+                variant = f"{'first_first' if first else 'first_second'}_margin_{margin!r}"
+                xml = xmls.setdefault(variant, pair_xml(BOX1, BOX2, first, margin))
+                qpos = pose_qpos(first, *pose)
+                cases.append({"variant": variant, "qpos": floats(qpos),
+                              "contacts": sphere_pair_contacts(xml, qpos)})
+    counts = {len(c["contacts"]) for c in cases}
+    if not ({0, 1} <= counts and max(counts) >= 4):
+        sys.exit(f"box_pairs: contact counts {sorted(counts)}")
+    return {"named": named, "random": {"box": {"xml": xmls, "poses": cases}}}
+
+
+# Census document e6ea68ac (two equal boxes overlapping, aligned): after two
+# steps of the census's first excitation, mjc_BoxBox lists 4 contacts, and 5
+# with the first box's quaternion's w one ulp lower.
+BOX_BOX_TIE_DOC = "e6ea68ac5717d086"
+
+
+def box_box_tie_case():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "census",
+                        "docs", f"{BOX_BOX_TIE_DOC}.xml")
+    xml = open(path, encoding="utf-8").read()
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    for i in range(m.nv):
+        d.qvel[i] = 0.1 * (1 + i % 3)
+    mujoco.mj_forward(m, d)
+    for _ in range(2):
+        mujoco.mj_step(m, d)
+    qpos, qvel = d.qpos.copy(), d.qvel.copy()
+    nudged = qpos.copy()
+    nudged[3] = np.nextafter(nudged[3], -np.inf)
+    states = {}
+    for name, q in (("as_stepped", qpos), ("w_one_ulp_lower", nudged)):
+        e = mujoco.MjData(m)
+        e.qpos[:] = q
+        e.qvel[:] = qvel
+        mujoco.mj_forward(m, e)
+        states[name] = {"qpos": floats(q), "qvel": floats(qvel), "contacts": [
+            {"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist), "pos": floats(c.pos),
+             "normal": floats(c.frame[:3])} for c in e.contact[:e.ncon]]}
+    counts = [len(states[k]["contacts"]) for k in ("as_stepped", "w_one_ulp_lower")]
+    if counts != [4, 5]:
+        sys.exit(f"box_box_tie: contact counts {counts}, not 4 and 5")
+    return {"xml": xml, "states": states}
+
+
 # The geom-distance sensors (distance, normal, fromto) of two overlapping
 # boxes, both argument orders (the review's scene; mj_geomDistance from the
 # contact's witnesses).
@@ -1216,6 +1344,8 @@ def main():
            "contact_filter": finite_or_string(contact_filter_cases()),
            "sphere_pairs": finite_or_string(sphere_pair_cases()),
            "capsule_pairs": finite_or_string(capsule_pair_cases()),
+           "box_pairs": finite_or_string(box_pair_cases()),
+           "box_box_tie": finite_or_string(box_box_tie_case()),
            "geom_distance": finite_or_string(geom_distance_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)

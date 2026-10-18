@@ -733,3 +733,679 @@ pub(super) fn raw_capsule_box(
     }
     contacts
 }
+
+/// MuJoCo's maximum contacts per geom pair, `mjMAXCONPAIR` (`mjmodel.h:30`).
+const MAX_CONPAIR: usize = 50;
+
+/// A 3×3 matrix row-major, as MuJoCo stores one.
+type Mat9 = [f64; 9];
+
+impl Frame<'_> {
+    /// The turn as MuJoCo's row-major `geom_xmat`.
+    fn row_major(&self) -> Mat9 {
+        let m = self.mat;
+        std::array::from_fn(|i| m[(i / 3, i % 3)])
+    }
+}
+
+/// `mju_mulMatVec3`.
+fn mat_vec(m: &Mat9, v: &[f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|r| m[3 * r] * v[0] + m[3 * r + 1] * v[1] + m[3 * r + 2] * v[2])
+}
+
+/// `mju_mulMatTVec3`.
+fn mat_t_vec(m: &Mat9, v: &[f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|c| m[c] * v[0] + m[3 + c] * v[1] + m[6 + c] * v[2])
+}
+
+/// `mju_mulMatTMat3`.
+fn mat_t_mat(a: &Mat9, b: &Mat9) -> Mat9 {
+    std::array::from_fn(|i| {
+        let (r, c) = (i / 3, i % 3);
+        a[r] * b[c] + a[3 + r] * b[3 + c] + a[6 + r] * b[6 + c]
+    })
+}
+
+/// `mju_mulMatMatT3`.
+fn mat_mat_t(a: &Mat9, b: &Mat9) -> Mat9 {
+    std::array::from_fn(|i| {
+        let (r, c) = (i / 3, i % 3);
+        a[3 * r] * b[3 * c] + a[3 * r + 1] * b[3 * c + 1] + a[3 * r + 2] * b[3 * c + 2]
+    })
+}
+
+/// `mju_transpose` of a 3×3 matrix.
+fn transpose(m: &Mat9) -> Mat9 {
+    std::array::from_fn(|i| m[3 * (i % 3) + i / 3])
+}
+
+/// Row `k` of a row-major matrix.
+fn row(m: &Mat9, k: usize) -> [f64; 3] {
+    [m[3 * k], m[3 * k + 1], m[3 * k + 2]]
+}
+
+/// `res += v · s` (`mji_addToScl3`).
+fn add_scl(res: &mut [f64; 3], v: &[f64; 3], s: f64) {
+    for i in 0..3 {
+        res[i] += v[i] * s;
+    }
+}
+
+/// The turn `mjc_BoxBox` puts a box's face at +z with (`rotmore`), and the
+/// same turn as an axis permutation with signs (its `rotaxis` and `rotmatx`
+/// macros, `engine_collision_box.c:744-797`): faces 0, 1, 2 face +x, +y,
+/// +z, faces 3, 4, 5 face −x, −y, −z.
+struct FaceTurn {
+    rotmore: Mat9,
+    index: [usize; 3],
+    sign: [f64; 3],
+}
+
+impl FaceTurn {
+    fn of(face: usize) -> Self {
+        let mut rotmore = [0.0; 9];
+        let (mut index, mut sign) = ([0, 1, 2], [1.0; 3]);
+        match face {
+            0 => {
+                (rotmore[2], rotmore[4], rotmore[6]) = (-1.0, 1.0, 1.0);
+                (index[0], sign[0], index[2]) = (2, -1.0, 0);
+            }
+            1 => {
+                (rotmore[0], rotmore[5], rotmore[7]) = (1.0, -1.0, 1.0);
+                (index[1], sign[1], index[2]) = (2, -1.0, 1);
+            }
+            2 => (rotmore[0], rotmore[4], rotmore[8]) = (1.0, 1.0, 1.0),
+            3 => {
+                (rotmore[2], rotmore[4], rotmore[6]) = (1.0, 1.0, -1.0);
+                (index[0], index[2], sign[2]) = (2, 0, -1.0);
+            }
+            4 => {
+                (rotmore[0], rotmore[5], rotmore[7]) = (1.0, 1.0, -1.0);
+                (index[1], index[2], sign[2]) = (2, 1, -1.0);
+            }
+            _ => {
+                (rotmore[0], rotmore[4], rotmore[8]) = (-1.0, 1.0, -1.0);
+                (sign[0], sign[2]) = (-1.0, -1.0);
+            }
+        }
+        Self {
+            rotmore,
+            index,
+            sign,
+        }
+    }
+
+    /// `rotaxis(res, v)`.
+    fn axis(&self, v: &[f64; 3]) -> [f64; 3] {
+        std::array::from_fn(|k| v[self.index[k]] * self.sign[k])
+    }
+
+    /// `rotmatx(res, m)`: row k is `m`'s row `index[k]` times `sign[k]`.
+    fn rows(&self, m: &Mat9) -> Mat9 {
+        std::array::from_fn(|i| m[3 * self.index[i / 3] + i % 3] * self.sign[i / 3])
+    }
+}
+
+/// `mjc_BoxBox` (`engine_collision_box.c:604-1214`): the separating axes,
+/// the boxes' six face normals and nine edge cross products, the shallowest
+/// overlap kept (an edge axis only where shallower by a factor of
+/// 1 − 1e-12); none past `margin`. Along a face, the other box's face, its
+/// edges' crossings of the face's outline and the outline's corners inside
+/// it make the contacts, each midway; along an edge pair, the edges'
+/// crossings of the first box's face and the corners about it. At most
+/// [`MAX_CONPAIR`]. MuJoCo's driver then filters them
+/// ([`box_box_filter`]).
+// MuJoCo's function and names (pos12, pos21, rott, rottabs); its range tests
+// as written, which keep a NaN.
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    clippy::manual_range_contains
+)]
+pub(super) fn raw_box_box(
+    margin: f64,
+    box1: Frame<'_>,
+    size1: &Vector3<f64>,
+    box2: Frame<'_>,
+    size2: &Vector3<f64>,
+) -> Vec<RawContact> {
+    let (pos1, pos2) = (box1.pos(), box2.pos());
+    let (mat1, mat2) = (box1.row_major(), box2.row_major());
+    let (size1, size2) = ([size1.x, size1.y, size1.z], [size2.x, size2.y, size2.z]);
+    let margin2 = margin * margin;
+    let mut code: i32 = -1;
+
+    let pos21 = mat_t_vec(&mat1, &sub3(&pos2, &pos1));
+    let pos12 = mat_t_vec(&mat2, &sub3(&pos1, &pos2));
+    let rot = mat_t_mat(&mat1, &mat2);
+    let rott = transpose(&rot);
+    let rotabs = rot.map(f64::abs);
+    let rottabs = rott.map(f64::abs);
+    let plen2 = mat_vec(&rotabs, &size2);
+    let plen1 = mat_t_vec(&rotabs, &size1);
+
+    // The faces' axes.
+    let mut penetration = margin;
+    for i in 0..3 {
+        penetration += size1[i] * 3.0 + size2[i] * 3.0;
+    }
+    for i in 0..3 {
+        let c1 = -pos21[i].abs() + size1[i] + plen2[i];
+        let c2 = -pos12[i].abs() + size2[i] + plen1[i];
+        if c1 < -margin || c2 < -margin {
+            return Vec::new();
+        }
+        let i32_ = i32::try_from(i).unwrap_or(0);
+        if c1 < penetration {
+            penetration = c1;
+            code = i32_ + 3 * i32::from(pos21[i] < 0.0);
+        }
+        if c2 < penetration {
+            penetration = c2;
+            code = i32_ + 3 * i32::from(pos12[i] < 0.0) + 6;
+        }
+    }
+
+    // The edges' cross products: the first box's axis i with the second's j.
+    let (mut cle1, mut cle2) = (0, 0);
+    let mut clnorm = [0.0; 3];
+    let mut inside = false;
+    for i in 0..3 {
+        for j in 0..3 {
+            let mut tmp2 = [0.0; 3];
+            match i {
+                0 => (tmp2[1], tmp2[2]) = (-rott[3 * j + 2], rott[3 * j + 1]),
+                1 => (tmp2[0], tmp2[2]) = (rott[3 * j + 2], -rott[3 * j]),
+                _ => (tmp2[0], tmp2[1]) = (-rott[3 * j + 1], rott[3 * j]),
+            }
+            let c1 = normalize3(&mut tmp2);
+            if c1 < MJ_MINVAL {
+                continue;
+            }
+            let c2 = dot3(&pos21, &tmp2);
+            let mut c3 = 0.0;
+            for k in (0..3).filter(|&k| k != i) {
+                c3 += size1[k] * tmp2[k].abs();
+            }
+            for k in (0..3).filter(|&k| k != j) {
+                c3 += size2[k] * rotabs[3 * i + 3 - k - j] / c1;
+            }
+            c3 -= c2.abs();
+            if c3 < -margin {
+                return Vec::new();
+            }
+            if c3 < penetration * (1.0 - 1e-12) {
+                penetration = c3;
+                cle1 = 0;
+                for k in (0..3).filter(|&k| k != i) {
+                    if (tmp2[k] > 0.0) ^ (c2 < 0.0) {
+                        cle1 += 1 << k;
+                    }
+                }
+                cle2 = 0;
+                for k in (0..3).filter(|&k| k != j) {
+                    if (rot[3 * i + 3 - k - j] > 0.0) ^ (c2 < 0.0) ^ ((k + 3 - j) % 3 == 1) {
+                        cle2 += 1 << k;
+                    }
+                }
+                code = 12 + i32::try_from(i * 3 + j).unwrap_or(0);
+                clnorm = tmp2;
+                inside = c2 < 0.0;
+            }
+        }
+    }
+
+    let Ok(code) = usize::try_from(code) else {
+        return Vec::new();
+    };
+    if code >= 12 {
+        return box_box_edges(
+            margin2,
+            margin,
+            code - 12,
+            &pos1,
+            &mat1,
+            &size1,
+            &size2,
+            &pos21,
+            &rot,
+            &rotabs,
+            &rottabs,
+            cle1,
+            cle2,
+            &clnorm,
+            inside,
+        );
+    }
+
+    // A face: the box whose face it is, its frame turned to put the face
+    // at z, the other box in that frame.
+    let (q1, q2) = (code % 6, code / 6);
+    let turn = FaceTurn::of(q1);
+    let (r, mut p, tmp1, s) = if q2 == 1 {
+        (
+            mat_mat_t(&turn.rotmore, &rot),
+            turn.axis(&pos12),
+            turn.axis(&size2),
+            size1,
+        )
+    } else {
+        (turn.rows(&rot), turn.axis(&pos21), turn.axis(&size1), size2)
+    };
+    let rt = transpose(&r);
+    let ss = tmp1.map(f64::abs);
+    let [lx, ly, hz] = ss;
+    p[2] -= hz;
+
+    // The other box's corner nearest the face, and its edges along the face.
+    let mut clcorner = 0;
+    for (i, z) in r[6..9].iter().enumerate() {
+        if *z < 0.0 {
+            clcorner += 1 << i;
+        }
+    }
+    let mut lp = p;
+    for (i, half) in s.iter().enumerate() {
+        let side = if clcorner & (1 << i) != 0 { 1.0 } else { -1.0 };
+        add_scl(&mut lp, &row(&rt, i), half * side);
+    }
+    let mut pts = [[0.0; 3]; 6];
+    let mut m = 0;
+    pts[m] = lp;
+    m += 1;
+    for i in 0..3 {
+        if r[6 + i].abs() < 0.5 {
+            let side = if clcorner & (1 << i) != 0 { -2.0 } else { 2.0 };
+            pts[m] = scl3(&row(&rt, i), s[i] * side);
+            m += 1;
+        }
+    }
+    pts[3] = add3(&pts[0], &pts[1]);
+    pts[4] = add3(&pts[0], &pts[2]);
+    pts[5] = add3(&pts[3], &pts[2]);
+
+    let mut lines: Vec<([f64; 3], [f64; 3])> = Vec::new();
+    if m > 1 {
+        lines.push((pts[0], pts[1]));
+    }
+    if m > 2 {
+        lines.push((pts[0], pts[2]));
+        lines.push((pts[3], pts[2]));
+        lines.push((pts[4], pts[1]));
+    }
+    let mut points: Vec<[f64; 3]> = Vec::new();
+    for (start, dir) in &lines {
+        for q in 0..2 {
+            let (a, b, c, d) = (start[q], dir[q], start[1 - q], dir[1 - q]);
+            if b.abs() > MJ_MINVAL {
+                for j in [-1.0, 1.0] {
+                    let l = ss[q] * j;
+                    let c1 = (l - a) * (1.0 / b);
+                    if c1 < 0.0 || c1 > 1.0 {
+                        continue;
+                    }
+                    let c2 = c + d * c1;
+                    if c2.abs() > ss[1 - q] {
+                        continue;
+                    }
+                    let mut point = *start;
+                    add_scl(&mut point, dir, c1);
+                    points.push(point);
+                }
+            }
+        }
+    }
+
+    let (a, b, c, d) = (pts[1][0], pts[2][0], pts[1][1], pts[2][1]);
+    let c1 = a * d - b * c;
+    if m > 2 {
+        for i in 0..4 {
+            let llx = if i / 2 != 0 { lx } else { -lx };
+            let lly = if i % 2 != 0 { ly } else { -ly };
+            let (x, y) = (llx - pts[0][0], lly - pts[0][1]);
+            let u = (x * d - y * b) * (1.0 / c1);
+            let v = (y * a - x * c) * (1.0 / c1);
+            if u <= 0.0 || v <= 0.0 || u >= 1.0 || v >= 1.0 {
+                continue;
+            }
+            points.push([llx, lly, pts[0][2] + u * pts[1][2] + v * pts[2][2]]);
+        }
+    }
+    for i in 0..(1 << (m - 1)) {
+        let corner = pts[if i == 0 { 0 } else { i + 2 }];
+        if i != 0 && (corner[0] <= -lx || corner[0] >= lx || corner[1] <= -ly || corner[1] >= ly) {
+            continue;
+        }
+        points.push(corner);
+    }
+
+    let (r, p, sign) = if q2 == 1 {
+        (mat_mat_t(&mat2, &turn.rotmore), pos2, -1.0)
+    } else {
+        (mat_mat_t(&mat1, &turn.rotmore), pos1, 1.0)
+    };
+    let normal = [sign * r[2], sign * r[5], sign * r[8]];
+    let mut contacts = Vec::new();
+    for mut point in points {
+        if point[2] > margin {
+            continue;
+        }
+        point[2] *= 0.5;
+        let dist = 2.0 * point[2];
+        point[2] += hz;
+        contacts.push(RawContact {
+            dist,
+            pos: add3(&mat_vec(&r, &point), &p),
+            normal,
+        });
+    }
+    contacts
+}
+
+/// `mjc_BoxBox`'s edge–edge case (`engine_collision_box.c:991-1214`): the
+/// first box's face nearest the edge pair, turned to z; the second box's
+/// edge and its neighbour projected along the normal onto it; their
+/// crossings of the face's outline, the outline's corners within them, and
+/// their ends over the face, each where within `margin`.
+// MuJoCo's function, its locals passed in, its names; its range tests as
+// written, which keep a NaN.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    clippy::manual_range_contains
+)]
+fn box_box_edges(
+    margin2: f64,
+    margin: f64,
+    code: usize,
+    pos1: &[f64; 3],
+    mat1: &Mat9,
+    size1: &[f64; 3],
+    size2: &[f64; 3],
+    pos21: &[f64; 3],
+    rot: &Mat9,
+    rotabs: &Mat9,
+    rottabs: &Mat9,
+    cle1: usize,
+    cle2: usize,
+    clnorm: &[f64; 3],
+    inside: bool,
+) -> Vec<RawContact> {
+    let (q1, q2) = (code / 3, code % 3);
+    let (mut ax1, mut ax2) = match q2 {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (1, 0),
+    };
+    let (pax1, pax2) = match q1 {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (1, 0),
+    };
+    if rotabs[3 * q1 + ax1] < rotabs[3 * q1 + ax2] {
+        ax1 = ax2;
+        ax2 = 3 - q2 - ax1;
+    }
+    // MuJoCo's `pax1 = pax2; pax2 = 3 - q1 - pax1;`: only `pax2` is read.
+    let pax2 = if rottabs[3 * q2 + pax1] < rottabs[3 * q2 + pax2] {
+        3 - q1 - pax2
+    } else {
+        pax2
+    };
+    let clface = if cle1 & (1 << pax2) != 0 {
+        pax2
+    } else {
+        pax2 + 3
+    };
+
+    let turn = FaceTurn::of(clface);
+    let mut p = turn.axis(pos21);
+    let rnorm = turn.axis(clnorm);
+    let r = turn.rows(rot);
+    let s = mat_t_vec(&turn.rotmore, size1).map(f64::abs);
+    let rt = transpose(&r);
+    let [lx, ly, hz] = s;
+    p[2] -= hz;
+
+    // The second box's edge (two ends) and the one beside it.
+    let side = |axis: usize, flip: bool| {
+        let set = cle2 & (1 << axis) != 0;
+        if set == flip { -1.0 } else { 1.0 }
+    };
+    let mut points = [[0.0; 3]; 4];
+    for (first, flip) in [(0, false), (2, true)] {
+        let mut point = p;
+        add_scl(&mut point, &row(&rt, ax1), size2[ax1] * side(ax1, flip));
+        add_scl(&mut point, &row(&rt, ax2), size2[ax2] * side(ax2, false));
+        points[first + 1] = point;
+        add_scl(&mut points[first + 1], &row(&rt, q2), -size2[q2]);
+        add_scl(&mut point, &row(&rt, q2), size2[q2]);
+        points[first] = point;
+    }
+
+    let axi = [
+        points[0],
+        sub3(&points[1], &points[0]),
+        sub3(&points[2], &points[0]),
+    ];
+    if rnorm[2].abs() < MJ_MINVAL {
+        return Vec::new();
+    }
+    let innorm = (1.0 / rnorm[2]) * if inside { -1.0 } else { 1.0 };
+
+    let mut pu = [[0.0; 3]; 4];
+    let mut ppts2 = [[0.0; 2]; 4];
+    for i in 0..4 {
+        let c1 = -points[i][2] * (1.0 / rnorm[2]);
+        pu[i] = points[i];
+        add_scl(&mut points[i], &rnorm, c1);
+        ppts2[i] = [points[i][0], points[i][1]];
+    }
+    let pts = [
+        points[0],
+        sub3(&points[1], &points[0]),
+        sub3(&points[2], &points[0]),
+    ];
+
+    // The projected edges (lines) and the edges themselves (linesu).
+    let lines = [
+        (pts[0], pts[1], axi[0], axi[1]),
+        (pts[0], pts[2], axi[0], axi[2]),
+        (
+            add3(&pts[0], &pts[1]),
+            pts[2],
+            add3(&axi[0], &axi[1]),
+            axi[2],
+        ),
+        (
+            add3(&pts[0], &pts[2]),
+            pts[1],
+            add3(&axi[0], &axi[2]),
+            axi[1],
+        ),
+    ];
+    let mut out: Vec<([f64; 3], f64)> = Vec::new();
+    for (start, dir, ustart, udir) in &lines {
+        for q in 0..2 {
+            let (a, b, c, d) = (start[q], dir[q], start[1 - q], dir[1 - q]);
+            if b.abs() > MJ_MINVAL {
+                for j in [-1.0, 1.0] {
+                    if out.len() < MAX_CONPAIR {
+                        let l = s[q] * j;
+                        let c1 = (l - a) * (1.0 / b);
+                        if c1 < 0.0 || c1 > 1.0 {
+                            continue;
+                        }
+                        let c2 = c + d * c1;
+                        if c2.abs() > s[1 - q] {
+                            continue;
+                        }
+                        if (ustart[2] + udir[2] * c1) * innorm > margin {
+                            continue;
+                        }
+                        let mut point = scl3(ustart, 0.5);
+                        add_scl(&mut point, udir, 0.5 * c1);
+                        point[q] += 0.5 * l;
+                        point[1 - q] += 0.5 * c2;
+                        let depth = point[2] * innorm * 2.0;
+                        out.push((point, depth));
+                    }
+                }
+            }
+        }
+    }
+    let nl = out.len();
+
+    // The face's corners within the projected edges. MuJoCo's `c1` holds the
+    // determinant, then each kept corner's squared distance, which the
+    // corners after it divide by (`:1213-1262`): as written.
+    let (a, b, c, d) = (pts[1][0], pts[2][0], pts[1][1], pts[2][1]);
+    let mut c1 = a * d - b * c;
+    for i in 0..4 {
+        if out.len() < MAX_CONPAIR {
+            let llx = if i / 2 != 0 { lx } else { -lx };
+            let lly = if i % 2 != 0 { ly } else { -ly };
+            let (x, y) = (llx - pts[0][0], lly - pts[0][1]);
+            let mut u = (x * d - y * b) * (1.0 / c1);
+            let mut v = (y * a - x * c) * (1.0 / c1);
+            let outside_u = u < 0.0 || u > 1.0;
+            let outside_v = v < 0.0 || v > 1.0;
+            if (nl == 0 && outside_u && outside_v) || (nl != 0 && (outside_u || outside_v)) {
+                continue;
+            }
+            u = u.clamp(0.0, 1.0);
+            v = v.clamp(0.0, 1.0);
+            let mut tmp1 = scl3(&pu[0], 1.0 - u - v);
+            add_scl(&mut tmp1, &pu[1], u);
+            add_scl(&mut tmp1, &pu[2], v);
+            let mut point = [llx, lly, 0.0];
+            let tmp2 = sub3(&point, &tmp1);
+            c1 = dot3(&tmp2, &tmp2);
+            if tmp1[2] > 0.0 && c1 > margin2 {
+                continue;
+            }
+            point = scl3(&add3(&point, &tmp1), 0.5);
+            let depth = c1.sqrt() * if tmp1[2] < 0.0 { -1.0 } else { 1.0 };
+            out.push((point, depth));
+        }
+    }
+    let nf = out.len();
+
+    // The edges' ends over the face.
+    for i in 0..4 {
+        if out.len() < MAX_CONPAIR {
+            let (x, y) = (ppts2[i][0], ppts2[i][1]);
+            let off_x = x < -lx || x > lx;
+            let off_y = y < -ly || y > ly;
+            if (nl == 0 && nf != 0 && off_x && off_y) || (nl != 0 && (off_x || off_y)) {
+                continue;
+            }
+            let mut c1 = 0.0;
+            for j in 0..2 {
+                if ppts2[i][j] < -s[j] {
+                    c1 += (ppts2[i][j] + s[j]) * (ppts2[i][j] + s[j]);
+                } else if ppts2[i][j] > s[j] {
+                    c1 += (ppts2[i][j] - s[j]) * (ppts2[i][j] - s[j]);
+                }
+            }
+            c1 += pu[i][2] * innorm * pu[i][2] * innorm;
+            if pu[i][2] > 0.0 && c1 > margin2 {
+                continue;
+            }
+            let mut tmp1 = [ppts2[i][0] * 0.5, ppts2[i][1] * 0.5, 0.0];
+            for j in 0..2 {
+                if ppts2[i][j] < -s[j] {
+                    tmp1[j] = -s[j] * 0.5;
+                } else if ppts2[i][j] > s[j] {
+                    tmp1[j] = s[j] * 0.5;
+                }
+            }
+            add_scl(&mut tmp1, &pu[i], 0.5);
+            let depth = c1.sqrt() * if pu[i][2] < 0.0 { -1.0 } else { 1.0 };
+            out.push((tmp1, depth));
+        }
+    }
+
+    let r = mat_mat_t(mat1, &turn.rotmore);
+    let normal = scl3(&mat_vec(&r, &rnorm), if inside { -1.0 } else { 1.0 });
+    out.into_iter()
+        .map(|(mut point, dist)| {
+            point[2] += hz;
+            RawContact {
+                dist,
+                pos: add3(&mat_vec(&r, &point), pos1),
+                normal,
+            }
+        })
+        .collect()
+}
+
+/// `mju_outsideBox` (`engine_util_misc.c:1217-1253`): 1 where `point` is
+/// outside the box of half-sizes `size` grown by `inflate`, −1 inside the
+/// box shrunk by it, 0 between.
+fn outside_box(point: &[f64; 3], frame: Frame<'_>, size: &[f64; 3], inflate: f64) -> i32 {
+    let vec = mat_t_vec(&frame.row_major(), &sub3(point, &frame.pos()));
+    let big = if inflate > 1.0 {
+        scl3(size, inflate)
+    } else {
+        *size
+    };
+    if (0..3).any(|k| vec[k] > big[k] || vec[k] < -big[k]) {
+        return 1;
+    }
+    // MuJoCo tests the inflation exactly.
+    #[allow(clippy::float_cmp)]
+    if inflate == 1.0 {
+        return -1;
+    }
+    let small: [f64; 3] = std::array::from_fn(|k| size[k] / inflate);
+    if (0..3).all(|k| vec[k] < small[k] && vec[k] > -small[k]) {
+        return -1;
+    }
+    0
+}
+
+/// The box–box filter of MuJoCo's driver (`mj_collideGeoms`,
+/// `engine_collision_driver.c:1543-1610`): a contact outside either box
+/// grown by `margin` and 1% (`kRemoveRatio`) and not inside the other's
+/// shrunk by it is dropped, and so is one whose position a later contact
+/// repeats exactly; the rest keep their order. It can drop every contact of
+/// a deep overlap (book Q74).
+pub(super) fn box_box_filter(
+    contacts: Vec<RawContact>,
+    margin: f64,
+    box1: Frame<'_>,
+    size1: &Vector3<f64>,
+    box2: Frame<'_>,
+    size2: &Vector3<f64>,
+) -> Vec<RawContact> {
+    const REMOVE_RATIO: f64 = 1.01;
+    let sz1 = [size1.x + margin, size1.y + margin, size1.z + margin];
+    let sz2 = [size2.x + margin, size2.y + margin, size2.z + margin];
+    let mut bad: Vec<bool> = contacts
+        .iter()
+        .map(|c| {
+            let out1 = outside_box(&c.pos, box1, &sz1, REMOVE_RATIO);
+            let out2 = outside_box(&c.pos, box2, &sz2, REMOVE_RATIO);
+            (out1 == 1 && out2 != -1) || (out2 == 1 && out1 != -1)
+        })
+        .collect();
+    for i in 0..contacts.len().saturating_sub(1) {
+        if bad[i] {
+            continue;
+        }
+        // MuJoCo compares the positions exactly.
+        #[allow(clippy::float_cmp)]
+        if (i + 1..contacts.len()).any(|j| !bad[j] && contacts[i].pos == contacts[j].pos) {
+            bad[i] = true;
+        }
+    }
+    contacts
+        .into_iter()
+        .zip(bad)
+        .filter_map(|(c, bad)| (!bad).then_some(c))
+        .collect()
+}

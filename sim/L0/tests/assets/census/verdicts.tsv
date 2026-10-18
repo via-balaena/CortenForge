@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1019
+# agree_floor 1029
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -95,7 +95,7 @@
 0ef3d42be35e6671	mj-refuses
 0f1cfd553bbdf7ff	agree
 0f1dd292de12918d	agree
-0f3223790e2e7f30	e1:s1:ncon
+0f3223790e2e7f30	agree
 0f7327704479234a	agree
 0f8aac1594db7c84	agree
 1056aab9f4b9c918	agree
@@ -246,7 +246,7 @@
 27f9154a529f3aa3	agree
 280671eca694f13b	agree
 284dc51e979ce392	agree
-28695e44d434cd12	e1:t0:con_zero
+28695e44d434cd12	agree
 286b5b47ad2618b3	agree
 287f29a683d013af	mj-refuses
 288ca8b38d7df547	agree
@@ -663,7 +663,7 @@
 636fc5d54faed8c4	model:body_I;dyn:e1:t0:qM
 638e4c2b2c7e7c4c	agree
 6473b191de530dcc	agree
-6486c8d75bea13b6	e2:s1:con_dist
+6486c8d75bea13b6	agree
 6495c9d767c1d0d5	agree
 64ae6249487ca0c5	model:geom_quat;dyn:agree
 653b19a3be1d7f96	agree
@@ -729,7 +729,7 @@
 702ce4099ead83bb	agree
 703108e1d9d887bb	agree
 70609a6f4a28d099	agree
-70b20f041f46fcdb	e1:state@1
+70b20f041f46fcdb	agree
 70b30fc5d2190ee4	agree
 70e982bc2f4ae719	agree
 715d053641a93059	agree
@@ -1027,7 +1027,7 @@ a2025dd2e7d7f3f5	agree
 a26b692ba4312717	agree
 a2af719fc1350713	agree
 a2e224dfb21dfa6c	model:geom_quat;dyn:agree
-a2f14cb1b0a4bc8b	e1:t0:con_zero
+a2f14cb1b0a4bc8b	agree
 a2f3fa2bbc211634	e1:s1:sensordata
 a31b921e488cf8fe	model:geom_quat;dyn:agree
 a31eb368a4284ccb	both-refuse
@@ -1115,7 +1115,7 @@ ae28c0f1c05a21f9	agree
 ae48710b73877765	agree
 ae6ec6348ac13540	mj-refuses
 ae8934e681fb8ab3	agree
-aeb763299c7d2303	e1:state@40
+aeb763299c7d2303	agree
 aeb829cc18447e0c	agree
 aeed2155d7ad2495	agree
 af29464e8c060446	agree
@@ -1139,7 +1139,7 @@ b1f0077db210fee8	agree
 b1f13f4eac5239b5	mj-refuses
 b20bb365655b0bde	agree
 b25bb57e15046bae	mj-refuses
-b26a81b924f19019	e1:s1:ncon
+b26a81b924f19019	agree
 b27eba70e803583c	model:geom_quat;dyn:agree
 b28779fb9f0dd940	agree
 b288a3c1f45a9aa8	agree
@@ -1192,7 +1192,7 @@ ba54b8132b9a565f	agree
 ba62543002737d31	agree
 baa0e121fae6b603	agree
 bae36c97c6a70859	agree
-bb644760e47a468a	e2:s1:con_dist
+bb644760e47a468a	agree
 bb69b8b2790a4a69	agree
 bb6c01d439f57bb5	model:geom_quat;dyn:agree
 bb8ae7362684356d	agree
@@ -1289,7 +1289,7 @@ c840e0c6a82e22e9	agree
 c8585eb74a13c4d0	agree
 c861e93a1fa9b35d	mj-refuses
 c881ba19f9c5d559	agree
-c8902cf8aa6803d8	e1:s1:ncon
+c8902cf8aa6803d8	agree
 c89e53a74bfe9a74	agree
 c8a1b1c24b2833fe	agree
 c8c2d20d083f6cae	agree
@@ -1438,7 +1438,7 @@ df6c77363a4574ec	agree
 df920996e01dcf04	agree
 dfbd8ab3086d2254	agree
 dfde93de54545f73	agree
-e0554f47dc05a731	e1:t0:qfrc_constraint
+e0554f47dc05a731	agree
 e0a6a88f715ffc55	agree
 e0b185d18cf2ff26	agree
 e12b0ed5dc386282	agree
@@ -1484,7 +1484,7 @@ e64076f828aed57d	agree
 e67472e1681c2d87	agree
 e6a8fc5ad5bb52c4	agree
 e6cc4b19185315a2	agree
-e6ea68ac5717d086	agree
+e6ea68ac5717d086	e1:state@3	divergence=D-BOXBOX-TIE
 e760971781c2d0e5	agree
 e7d0591875da22c7	agree
 e7e340ec20f0087f	agree
@@ -1626,7 +1626,7 @@ fa05af96246149a5	agree
 fa1670856b72726c	model:geom_quat;dyn:agree
 fa26353557800171	agree
 fa7328a07177aff1	mj-refuses
-faa6b2702545d43c	e1:state@40
+faa6b2702545d43c	agree
 faad979812e18455	agree
 fab255001870f623	agree
 fb0e21fd300a63de	model:geom_quat;dyn:agree

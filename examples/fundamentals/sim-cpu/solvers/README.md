@@ -1,7 +1,9 @@
 # Solvers
 
 Constraint solver examples. All use the same scene — two boxes stacked on
-a ground plane — to isolate solver behavior from scene complexity.
+a ground plane — to isolate solver behavior from scene complexity; the
+headless `stress-test/` sets its upper box 1 cm off the lower one's axis
+(its README says why).
 
 ## The 3 solvers
 
