@@ -709,6 +709,18 @@ fn indices(v: &Value) -> Vec<Option<usize>> {
         .collect()
 }
 
+/// A golden list of geom pairs.
+fn pairs(v: &Value) -> Vec<[usize; 2]> {
+    v.as_array()
+        .expect("pairs")
+        .iter()
+        .map(|p| {
+            let p: Vec<usize> = indices(p).into_iter().flatten().collect();
+            [p[0], p[1]]
+        })
+        .collect()
+}
+
 /// A world body with a plane, a body of six geoms (one visual) in a turned
 /// inertial frame, a body of five spheres two pairs of which tie along the
 /// split axis, a body of visual geoms and one with none: the bodies'
@@ -801,10 +813,9 @@ fn body_hierarchies_are_mujocos() {
 /// frames inferred: the same six leaf pairs in another order). The geom
 /// pairs the contact filter is called with,
 /// in order, are MuJoCo's, with the midphase on and with it off
-/// (`DISABLE_MIDPHASE`), and the contacts MuJoCo's (the same geoms in
-/// order, each distance within 1e-12). MuJoCo calls its filter with the
-/// geoms in type order and ours with them as the body pair lists them, so
-/// each pair is compared lowest index first. In `sparse` the midphase calls
+/// (`DISABLE_MIDPHASE`), each in MuJoCo's type order, and the contacts
+/// MuJoCo's (the same geoms in order, each distance within 1e-12). In
+/// `sparse` the midphase calls
 /// the filter once, without it 33 times: a pair whose boxes overlap but
 /// whose bounding spheres do not is dropped at the leaves, and the one
 /// contact, 0.05 apart within a margin of 0.1, is kept by the bodies'
@@ -827,21 +838,13 @@ fn contact_filter_calls_are_mujocos_with_and_without_the_midphase() {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let log = Arc::clone(&calls);
             model.set_contactfilter_callback(move |_, _, g1, g2| {
-                log.lock().expect("log").push([g1.min(g2), g1.max(g2)]);
+                log.lock().expect("log").push([g1, g2]);
                 true
             });
             let mut data = model.make_data();
             data.forward(&model).expect("forward");
             let want = &case[key];
-            let theirs: Vec<[usize; 2]> = want["calls"]
-                .as_array()
-                .expect("calls")
-                .iter()
-                .map(|c| {
-                    let c: Vec<usize> = indices(c).into_iter().flatten().collect();
-                    [c[0].min(c[1]), c[0].max(c[1])]
-                })
-                .collect();
+            let theirs = pairs(&want["calls"]);
             assert_eq!(
                 *calls.lock().expect("log"),
                 theirs,
@@ -866,5 +869,84 @@ fn contact_filter_calls_are_mujocos_with_and_without_the_midphase() {
                 );
             }
         }
+    }
+}
+
+/// The user's contact filter in place of the geoms' bitmask, as MuJoCo's
+/// `mjcb_contactfilter` (`engine_collision_driver.c:1475-1507`): with a
+/// filter that keeps every pair, the geom pairs it is called with, in order
+/// and in MuJoCo's type order, and the contacts are MuJoCo's, and without a
+/// filter the contacts are too. In `bitmask` two touching spheres whose
+/// contype and conaffinity reject each other collide under the filter only;
+/// in `flat` height fields on free bodies over a plane and over a height
+/// field in the world, which MuJoCo has no collision function for, are
+/// never given to the filter, and nothing collides.
+#[test]
+fn the_contact_filter_replaces_the_bitmask_as_mujocos() {
+    use std::sync::{Arc, Mutex};
+
+    let contacts_of = |data: &Data| -> Vec<([usize; 2], f64)> {
+        data.contacts
+            .iter()
+            .map(|c| ([c.geom1, c.geom2], -c.depth))
+            .collect()
+    };
+    let theirs_of = |v: &Value| -> Vec<([usize; 2], f64)> {
+        v.as_array()
+            .expect("contacts")
+            .iter()
+            .map(|c| {
+                let g: Vec<usize> = indices(&c["geom"]).into_iter().flatten().collect();
+                ([g[0], g[1]], c["dist"].as_f64().expect("dist"))
+            })
+            .collect()
+    };
+    let same =
+        |name: &str, what: &str, ours: &[([usize; 2], f64)], theirs: &[([usize; 2], f64)]| {
+            assert_eq!(
+                ours.iter().map(|c| c.0).collect::<Vec<_>>(),
+                theirs.iter().map(|c| c.0).collect::<Vec<_>>(),
+                "{name}: {what} contact geoms in order"
+            );
+            for (k, (a, b)) in ours.iter().zip(theirs).enumerate() {
+                assert!(
+                    (a.1 - b.1).abs() <= 1e-12,
+                    "{name}: {what} contact {k}: {} against {}",
+                    a.1,
+                    b.1
+                );
+            }
+        };
+    let cases = golden()["contact_filter"].clone();
+    for (name, case) in cases.as_object().expect("cases") {
+        let mut model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        same(
+            name,
+            "unfiltered",
+            &contacts_of(&data),
+            &theirs_of(&case["unfiltered"]),
+        );
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&calls);
+        model.set_contactfilter_callback(move |_, _, g1, g2| {
+            log.lock().expect("log").push([g1, g2]);
+            true
+        });
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_eq!(
+            *calls.lock().expect("log"),
+            pairs(&case["calls"]),
+            "{name}: the filter's calls"
+        );
+        same(
+            name,
+            "filtered",
+            &contacts_of(&data),
+            &theirs_of(&case["contacts"]),
+        );
     }
 }

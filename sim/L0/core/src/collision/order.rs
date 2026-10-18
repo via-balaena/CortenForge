@@ -117,7 +117,7 @@ fn bodies(model: &Model, (geom1, geom2): (usize, usize)) -> (usize, usize) {
 
 /// `tested` in MuJoCo's type order: the lower `mjtGeom` first, equal types
 /// as tested.
-fn type_ordered(model: &Model, tested: (usize, usize)) -> (usize, usize) {
+pub(super) fn type_ordered(model: &Model, tested: (usize, usize)) -> (usize, usize) {
     if model.geom_type[tested.0].mjtgeom() > model.geom_type[tested.1].mjtgeom() {
         (tested.1, tested.0)
     } else {

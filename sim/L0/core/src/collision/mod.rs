@@ -37,26 +37,28 @@ use self::broadphase::{BodyGeoms, body_pairs, filter_sphere};
 use self::hfield::collide_hfield_multi;
 use self::midphase::collide_tree;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
-use self::order::{ListPlace, Lister, flex_place, pair_place};
+use self::order::{ListPlace, Lister, flex_place, pair_place, type_ordered};
 use self::pairs::{mj_collide_flex_flex, mj_collision_flex, mj_collision_flex_self};
 
 // ============================================================================
 // Collision affinity filtering
 // ============================================================================
 
-/// Check if two geometries can collide based on contype/conaffinity bitmasks.
-///
-/// Following MuJoCo's collision filtering:
-/// 1. Same body - no collision
-/// 2. Parent-child (adjacent bodies in kinematic tree) - no collision
-///    Exception: World body (0) collides with all non-child bodies
-/// 3. contype/conaffinity check: (c1 & a2) != 0 || (c2 & a1) != 0
+/// Whether two geoms' bodies may collide, the filters MuJoCo applies to the
+/// pair of bodies (`engine_collision_driver.c:160-186`, `:332-343`):
+/// 1. an excluded body pair (`<contact><exclude>`) - no collision
+/// 2. an explicit `<pair>` of these geoms - collided with the explicit pairs
+/// 3. Same body - no collision
+/// 4. Same weld group, or one the other's parent group - no collision
+///    Exception: the world's group is exempt from the parent rule
 ///
 /// The world body exception ensures ground planes can collide with objects
-/// even when those objects are direct children of the world body.
+/// even when those objects are direct children of the world body. The
+/// geoms' own bitmask is [`bitmask_allows`], which the user's contact
+/// filter replaces.
 #[allow(clippy::inline_always)] // Hot path - profiling shows inlining improves debug performance
 #[inline(always)]
-pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize) -> bool {
+pub(crate) fn bodies_allow(model: &Model, geom1: usize, geom2: usize) -> bool {
     let body1 = model.geom_body[geom1];
     let body2 = model.geom_body[geom2];
 
@@ -117,8 +119,13 @@ pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize
             return false;
         }
     }
+    true
+}
 
-    // contype/conaffinity bitmask check
+/// Whether two geoms' contype/conaffinity bitmasks let them collide,
+/// `(c1 & a2) != 0 || (c2 & a1) != 0` (MuJoCo's `filterBitmask`,
+/// `engine_collision_driver.c:99-102`, negated).
+fn bitmask_allows(model: &Model, geom1: usize, geom2: usize) -> bool {
     let c1 = model.geom_contype[geom1];
     let a1 = model.geom_conaffinity[geom1];
     let c2 = model.geom_contype[geom2];
@@ -601,17 +608,28 @@ fn collide_geom_pair(
     geom1: usize,
     geom2: usize,
 ) {
-    // Affinity check: exclusions, explicit pairs, weld groups,
-    // contype/conaffinity.
-    if !check_collision_affinity(model, geom1, geom2) {
+    // The body pair's filters: exclusions, explicit pairs, weld groups.
+    if !bodies_allow(model, geom1, geom2) {
         return;
     }
 
-    // DT-79: User contact filter callback (if set).
-    // Return false to reject this pair.
-    if let Some(ref cb) = model.cb_contactfilter
-        && !(cb.0)(model, data, geom1, geom2)
-    {
+    // MuJoCo takes the pair in type order, the lower `mjtGeom` first, and
+    // collides nothing where it has no collision function: a plane or a
+    // height field with a plane or a height field (`:1475-1490`, `:41-53`).
+    let (typed1, typed2) = type_ordered(model, (geom1, geom2));
+    let flat = |g: usize| matches!(model.geom_type[g], GeomType::Plane | GeomType::Hfield);
+    if flat(typed1) && flat(typed2) {
+        return;
+    }
+
+    // DT-79: the user's contact filter, given the pair in type order, in
+    // place of the bitmask, as MuJoCo's (`:1493-1507`). Return false to
+    // reject the pair.
+    let allowed = match model.cb_contactfilter {
+        Some(ref cb) => (cb.0)(model, data, typed1, typed2),
+        None => bitmask_allows(model, geom1, geom2),
+    };
+    if !allowed {
         return;
     }
 

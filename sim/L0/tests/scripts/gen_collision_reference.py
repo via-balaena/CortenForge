@@ -100,6 +100,16 @@ apart, which MuJoCo collides without the midphase, so its filter is called
 (engine_collision_driver.c:354-357). It refuses a scene where the midphase
 changes the contacts, or where it calls the filter as many times as
 without it, but `singles`, where it must.
+`contact_filter` holds, for two scenes, the geom pairs a contact filter that
+keeps every pair is called with, in order, and the contacts (geoms, `dist`)
+with that filter and with none: MuJoCo calls its filter in place of the
+geoms' bitmask, with the geoms in type order, and not for a pair it has no
+collision function for (engine_collision_driver.c:1475-1507, :41-53).
+`bitmask` holds two touching spheres whose contype and conaffinity reject
+each other, which collide only under the filter; `flat` height fields on
+free bodies over a plane and over a height field in the world. It refuses a
+`bitmask` whose contacts the filter does not change, and a `flat` where the
+filter is called or a contact made.
 """
 
 import json
@@ -869,6 +879,42 @@ def midphase_cases():
     return {"bodies": bodies, "filter": filters}
 
 
+# Two touching spheres whose contype and conaffinity reject each other, on
+# bodies with a second sphere each; and height fields on free bodies over a
+# plane and over a height field in the world, pairs MuJoCo has no collision
+# function for (engine_collision_driver.c:41-53).
+CONTACT_FILTER_XML = {
+    "bitmask": """<mujoco><option gravity="0 0 0"/><worldbody>
+<body pos="0 0 0"><freejoint/><geom type="sphere" size="0.1" contype="1" conaffinity="0"/><geom type="sphere" size="0.05" pos="0 0 -1"/></body>
+<body pos="0.15 0 0"><freejoint/><geom type="sphere" size="0.1" contype="1" conaffinity="0"/><geom type="sphere" size="0.05" pos="0 0 -1"/></body>
+</worldbody></mujoco>""",
+    "flat": """<mujoco><asset><hfield name="f" nrow="3" ncol="3" size="1 1 0.1 0.1" elevation="0 0 0 0 1 0 0 0 0"/></asset><worldbody>
+<geom name="floor" type="plane" size="5 5 0.1"/>
+<geom name="ground_field" type="hfield" hfield="f" pos="3 0 0"/>
+<body name="ff" pos="0 0 0.05"><freejoint/><geom name="free_field" type="hfield" hfield="f"/></body>
+<body name="ff2" pos="3 0 0.08"><freejoint/><geom name="free_field2" type="hfield" hfield="f"/></body>
+</worldbody></mujoco>""",
+}
+
+
+def contact_filter_cases():
+    out = {}
+    for name, xml in CONTACT_FILTER_XML.items():
+        kept = filter_calls(xml, True)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        unfiltered = [{"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist)}
+                      for c in d.contact[:d.ncon]]
+        if name == "bitmask" and kept["contacts"] == unfiltered:
+            sys.exit("contact_filter bitmask: the filter changes no contact")
+        if name == "flat" and (kept["calls"] or kept["contacts"] or unfiltered):
+            sys.exit("contact_filter flat: a call or a contact")
+        out[name] = {"xml": xml, "calls": kept["calls"], "contacts": kept["contacts"],
+                     "unfiltered": unfiltered}
+    return out
+
+
 # The geom-distance sensors (distance, normal, fromto) of two overlapping
 # boxes, both argument orders (the review's scene; mj_geomDistance from the
 # contact's witnesses).
@@ -917,6 +963,7 @@ def main():
            "primitive_rbound": finite_or_string(primitive_rbound()),
            "geom_aabb": finite_or_string(geom_aabb_case()),
            "midphase": finite_or_string(midphase_cases()),
+           "contact_filter": finite_or_string(contact_filter_cases()),
            "geom_distance": finite_or_string(geom_distance_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)

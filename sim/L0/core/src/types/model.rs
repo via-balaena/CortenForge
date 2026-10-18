@@ -1088,7 +1088,8 @@ pub struct Model {
     pub cb_passive: Option<super::callbacks::CbPassive>,
     /// Control callback; when it runs: [`CbControl`](super::callbacks::CbControl).
     pub cb_control: Option<super::callbacks::CbControl>,
-    /// Contact filter callback: called after affinity check in collision.
+    /// Contact filter callback; when it runs, in place of the geoms' bitmask:
+    /// [`CbContactFilter`](super::callbacks::CbContactFilter).
     pub cb_contactfilter: Option<super::callbacks::CbContactFilter>,
     /// User sensor callback: called for `MjSensorType::User` sensors.
     pub cb_sensor: Option<super::callbacks::CbSensor>,
@@ -1351,10 +1352,13 @@ impl Model {
         self.cb_control = None;
     }
 
-    /// Set the contact filter callback.
+    /// Set the contact filter callback, which replaces the geoms'
+    /// contype/conaffinity test (see
+    /// [`CbContactFilter`](super::callbacks::CbContactFilter)).
     ///
-    /// The callback receives `(model, data, geom1_id, geom2_id)` and should
-    /// return `true` to KEEP the contact, `false` to REJECT it.
+    /// The callback receives `(model, data, geom1_id, geom2_id)`, the geoms
+    /// in MuJoCo's type order, and should return `true` to KEEP the contact,
+    /// `false` to REJECT it.
     pub fn set_contactfilter_callback<F>(&mut self, f: F)
     where
         F: Fn(&Self, &super::data::Data, usize, usize) -> bool + Send + Sync + 'static,
