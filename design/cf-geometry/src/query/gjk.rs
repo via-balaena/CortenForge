@@ -117,7 +117,9 @@ impl Simplex {
 /// and witness points (closest points on each shape). Returns `None` where
 /// the iteration ends on a tetrahedron about the origin (an overlap; use
 /// [`epa_penetration`](super::epa_penetration)), where `x` comes within
-/// 1e-15 of the origin, or where a coordinate is `NaN`.
+/// 1e-15 of the origin, or where every weight of the simplex comes out 0
+/// (MuJoCo's "should not occur"). A `NaN` coordinate can give a `NaN`
+/// distance.
 ///
 /// The iteration is MuJoCo's GJK asked for a distance (`gjk`,
 /// `engine_collision_gjk.c:171-296`), but for one weight: in `S3D`'s fourth
@@ -186,7 +188,7 @@ pub fn gjk_distance(
             }
         }
         if n == 0 {
-            return None; // MuJoCo's "should not occur": a NaN coordinate
+            return None; // MuJoCo's "should not occur": every weight 0
         }
 
         let next = lincomb(&lambda[..n], simplex[..n].iter().map(|p| p.point.coords));
@@ -714,6 +716,28 @@ mod tests {
         }
     }
 
+    // A support map whose centre is given, not its bounding box's.
+    struct Centred<'a, S: SupportMap> {
+        inner: &'a S,
+        centre: Point3<f64>,
+    }
+
+    impl<S: SupportMap> crate::Bounded for Centred<'_, S> {
+        fn aabb(&self) -> crate::Aabb {
+            self.inner.aabb()
+        }
+    }
+
+    impl<S: SupportMap> SupportMap for Centred<'_, S> {
+        fn support(&self, direction: &Vector3<f64>) -> Point3<f64> {
+            self.inner.support(direction)
+        }
+
+        fn center(&self) -> Point3<f64> {
+            self.centre
+        }
+    }
+
     fn at<S: SupportMap>(shape: &S, x: f64, y: f64, z: f64) -> Translated<'_, S> {
         Translated {
             inner: shape,
@@ -934,6 +958,25 @@ mod tests {
                 result.point_b
             );
         }
+    }
+
+    /// The iteration starts from the shapes' centres (`SupportMap::center`),
+    /// not their bounding boxes': with no step to take, a sphere whose centre
+    /// is given 0.25 along x and a sphere at 3 along x are 2.75 apart, the
+    /// witnesses the two centres.
+    #[test]
+    fn gjk_distance_starts_from_the_shapes_centres() {
+        let sphere = SupportSphere { radius: 0.5 };
+        let a = Centred {
+            inner: &sphere,
+            centre: Point3::new(0.25, 0.0, 0.0),
+        };
+        let result = gjk_distance(&a, &at(&sphere, 3.0, 0.0, 0.0), 0, 1e-6);
+        assert!(result.is_some(), "no distance");
+        let result = result.unwrap();
+        assert_eq!(result.distance, 2.75);
+        assert_eq!(result.point_a, Point3::new(0.25, 0.0, 0.0));
+        assert_eq!(result.point_b, Point3::new(3.0, 0.0, 0.0));
     }
 
     /// A segment (a capsule of radius 0, half-length 1, along z) and a point

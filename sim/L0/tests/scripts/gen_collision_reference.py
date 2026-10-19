@@ -165,10 +165,11 @@ D-BOXBOX-TIE). It refuses other counts.
 `geom_distance_random` holds the distance, normal and fromto sensors of
 seeded random pairs of boxes, ellipsoids and cylinders, each turned and
 posed through qpos, 12 apart per pair of types, and `s3d_stale` three
-random box pairs whose distance MuJoCo's sensor reads 0 while its own
-box-box function reads them apart (registry D-GJK-S3D).
+box pairs apart whose distance MuJoCo's sensor reads 0, with their exact
+distance (registry D-GJK-S3D).
 """
 
+import itertools
 import json
 import os
 import sys
@@ -1752,26 +1753,94 @@ def geom_distance_random_cases():
     return out
 
 
+def box_corners(c, R, h):
+    return [c + R @ (np.array(s) * h) for s in itertools.product((-1, 1), repeat=3)]
+
+
+def box_edges(c, R, h):
+    out = []
+    for axis in range(3):
+        o = [k for k in range(3) if k != axis]
+        for s1, s2 in itertools.product((-1, 1), repeat=2):
+            a = np.zeros(3)
+            a[o[0]], a[o[1]] = s1 * h[o[0]], s2 * h[o[1]]
+            b = a.copy()
+            a[axis], b[axis] = -h[axis], h[axis]
+            out.append((c + R @ a, c + R @ b))
+    return out
+
+
+def point_box_distance(p, c, R, h):
+    local = R.T @ (p - c)
+    return float(np.linalg.norm(local - np.clip(local, -h, h)))
+
+
+def segment_distance(p1, q1, p2, q2):
+    d1, d2, r = q1 - p1, q2 - p2, p1 - p2
+    a, e, b, c, f = d1 @ d1, d2 @ d2, d1 @ d2, d1 @ r, d2 @ r
+    denom = a * e - b * b
+    s = float(np.clip((b * f - c * e) / denom, 0, 1)) if denom > 1e-300 else 0.0
+    t = (b * s + f) / e
+    if t < 0:
+        t, s = 0.0, float(np.clip(-c / a, 0, 1))
+    elif t > 1:
+        t, s = 1.0, float(np.clip((b - c) / a, 0, 1))
+    return float(np.linalg.norm(p1 + d1 * s - (p2 + d2 * t)))
+
+
+def box_box_distance(m, d):
+    """Two boxes apart, geoms 0 and 1: the least distance of each box's corners
+    to the other box and of the boxes' edges to each other."""
+    frames = [(d.geom_xpos[g], d.geom_xmat[g].reshape(3, 3), m.geom_size[g]) for g in (0, 1)]
+    (c1, R1, h1), (c2, R2, h2) = frames
+    best = min(min(point_box_distance(p, c2, R2, h2) for p in box_corners(c1, R1, h1)),
+               min(point_box_distance(p, c1, R1, h1) for p in box_corners(c2, R2, h2)))
+    for e1 in box_edges(c1, R1, h1):
+        for e2 in box_edges(c2, R2, h2):
+            best = min(best, segment_distance(*e1, *e2))
+    return best
+
+
+# Three box pairs of a seeded random search (seed 20261021, 400 poses where
+# MuJoCo's distance sensor reads 0, chunk 3e-2's fix-diff pass) on which
+# sim-core's sensor with MuJoCo's stale S3D weight kept reads 0 too (46 of the
+# 400): the half-sizes of the first and second box, and the qpos.
+S3D_STALE_POSES = {
+    "boxes_0": ([0.029694731108416524, 0.10587883418451322, 0.24612140180932618],
+                [0.028546667670110527, 0.12663954970674834, 0.27218029215811523],
+                [0.0, 0.0, 0.0, 0.15652194589902432, 0.4039444227930063, 0.20124992893256338,
+                 -0.878537563141751, 0.05834388605567628, 0.36071575115529697, -0.2819457544574844,
+                 -0.44826951068872783, 0.8131963112137083, 0.1195145370798369, 0.3514007408101162]),
+    "boxes_1": ([0.07297412760682928, 0.15974794232003497, 0.12254057208623866],
+                [0.2823397414136928, 0.24543469364474882, 0.23355614200624056],
+                [0.0, 0.0, 0.0, -0.6286412458316549, -0.39664825696103495, -0.4039301933955249,
+                 -0.5332173507608802, 0.3151747000115959, -0.3847141583121704, 0.0320790353562717,
+                 0.2990416236316766, 0.12004242012501694, -0.9415375351218247, 0.09834121548454809]),
+    "boxes_2": ([0.037892491106679534, 0.20791759723459985, 0.29881658112525494],
+                [0.24377867972580544, 0.13465852962667244, 0.083522496501931],
+                [0.0, 0.0, 0.0, -0.6700757371692284, -0.17190133356053772, 0.7094263265235438,
+                 0.13476915527127867, -0.23317650042757723, 0.3378837185057273, 0.3590015354620739,
+                 0.10271494426004128, -0.14749053942805168, -0.19328619172005837, 0.9645395943636713]),
+}
+
+
 def s3d_stale_cases():
-    """Seeded random box pairs where MuJoCo's distance sensor reads 0 while
-    its own box-box function (mjc_BoxBox with native CCD disabled; distmax as
-    the margin, engine_support.c:577-594) reads them apart: the first three."""
-    rng = np.random.default_rng(20261019)
+    """S3D_STALE_POSES: MuJoCo's sensors, its distance 0, and the pair's exact
+    distance (`box_box_distance`)."""
     out = {}
-    for tries in range(20000):
-        xml = sensor_pair_xml("box", random_size(rng, "box"), "box", random_size(rng, "box"))
-        qpos = random_pose_qpos(rng)
+    for name, (size_a, size_b, qpos) in S3D_STALE_POSES.items():
+        xml = sensor_pair_xml("box", size_a, "box", size_b)
         sd = sensors_at(xml, qpos)
-        if sd[0] != 0:
-            continue
-        box_box = sensors_at(xml, qpos, nativeccd=False)[0]
-        if not 0 < box_box < 1:
-            continue
-        out[f"boxes_{len(out)}"] = {"xml": xml, "qpos": floats(qpos), "sensordata": floats(sd),
-                                    "box_box_distance": float(box_box)}
-        if len(out) == 3:
-            return out
-    sys.exit(f"s3d_stale: {len(out)} poses in {tries + 1} tries")
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        d.qpos[:] = qpos
+        mujoco.mj_forward(m, d)
+        exact = box_box_distance(m, d)
+        if sd[0] != 0 or not 0 < exact < 1:
+            sys.exit(f"s3d_stale {name}: MuJoCo's distance {sd[0]}, the exact {exact}")
+        out[name] = {"xml": xml, "qpos": floats(qpos), "sensordata": floats(sd),
+                     "exact_distance": exact}
+    return out
 
 
 # A three-axis ellipsoid 1 mm above the box slab, the slab's margin 0.01:

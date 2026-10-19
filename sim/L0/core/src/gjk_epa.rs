@@ -132,7 +132,9 @@ impl SupportMap for PosedShape<'_> {
         support(self.shape, self.pose, direction, &self.warm_start)
     }
 
-    /// The shape's position, as MuJoCo's `mjc_center` takes a geom's.
+    /// The shape's position, as MuJoCo's `mjc_center` takes a geom's (a mesh's
+    /// frame is its file's until book Rigid-loading L35, where MuJoCo's is at
+    /// the mesh's centre of mass).
     fn center(&self) -> Point3<f64> {
         self.pose.position
     }
@@ -635,7 +637,8 @@ pub struct GjkDistanceResult {
 /// Delegates to `cf_geometry::gjk_distance` via `PosedShape` adapters.
 ///
 /// `max_iterations` and `tolerance` come from `model.ccd_iterations` and
-/// `model.ccd_tolerance` respectively.
+/// `model.ccd_tolerance` respectively, but for the geom-distance sensor's two
+/// boxes, whose tolerance is 0.
 #[must_use]
 pub fn gjk_distance(
     shape_a: &Shape,
@@ -1189,6 +1192,24 @@ mod tests {
     // =========================================================================
     // GJK Distance tests (Spec D S1)
     // =========================================================================
+
+    /// A posed shape's centre is its pose's position, where GJK starts as
+    /// MuJoCo's from a geom's: a hull whose vertices all lie on +x of its
+    /// origin, whose bounding box's centre is elsewhere.
+    #[test]
+    fn a_posed_shapes_centre_is_its_position() {
+        let vertices = vec![
+            Point3::new(0.3, 0.0, 0.0),
+            Point3::new(0.5, 0.0, 0.0),
+            Point3::new(0.4, 0.1, 0.0),
+            Point3::new(0.4, 0.0, 0.1),
+        ];
+        let shape = Shape::convex_mesh(cf_geometry::convex_hull(&vertices, None).unwrap());
+        let pose = pose_at(1.0, 2.0, 3.0);
+        let posed = PosedShape::new(&shape, &pose);
+        assert_ne!(posed.aabb().center(), pose.position);
+        assert_eq!(posed.center(), pose.position);
+    }
 
     /// T1: AC1 — separated spheres, analytically derived
     #[test]

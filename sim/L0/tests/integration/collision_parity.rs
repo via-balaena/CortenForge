@@ -694,10 +694,8 @@ fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
 /// of a random search (an ellipsoid and a box whose distance subalgorithm
 /// meets a minor of exactly 0; an ellipsoid and a cylinder whose GJK runs
 /// out of its 35 iterations): their distance comes from GJK alone
-/// (`gjk_distance`), MuJoCo's within 1e-10, the normal and fromto within
-/// 1e-8. Measured: the distance 1.4e-16 at worst, the normal and fromto
-/// 1.2e-11 (ellipsoid–cylinder); with one quaternion component of either of
-/// that pair's geoms one ulp off, 1.2e-12 and 7.8e-10.
+/// (`gjk_distance`), MuJoCo's within 1e-10. Measured: the distance 1.4e-16
+/// at worst, the normal and fromto 1.2e-11 (ellipsoid–cylinder).
 #[test]
 fn geom_distance_sensors_of_separated_pairs_as_mujoco() {
     let cases = golden()["geom_distance_apart"].clone();
@@ -708,9 +706,8 @@ fn geom_distance_sensors_of_separated_pairs_as_mujoco() {
         let want = floats(&case["sensordata"]);
         assert_eq!(data.sensordata.len(), want.len(), "{name}: sensordata");
         for (k, (a, b)) in data.sensordata.iter().zip(&want).enumerate() {
-            let bound = if k == 0 { 1e-10 } else { 1e-8 };
             assert!(
-                (a - b).abs() <= bound,
+                (a - b).abs() <= 1e-10,
                 "{name}: sensordata[{k}] {a}, MuJoCo {b}"
             );
         }
@@ -734,7 +731,11 @@ fn sensordata_at(case: &Value) -> Vec<f64> {
 /// fromto within 1e-5, and a box against a box all within 1e-14. Measured:
 /// the distance 1.2e-9 at worst (cylinder–cylinder), the normal and fromto
 /// 6.7e-6 (box–ellipsoid); box–box 1.6e-16 and 2.2e-15. Where the curved
-/// pairs' witnesses part from MuJoCo's is not isolated (ledger L191).
+/// pairs' witnesses part from MuJoCo's is not isolated (ledger L191). The
+/// bounds are this seed's: on 1,200 pairs of another seed the fix-diff review
+/// measured 18 past them (a box–box normal 5.7e-14 off at a distance of
+/// 5.5e-4, a cylinder–ellipsoid distance 2.1e-6, an ellipsoid–ellipsoid
+/// normal 1.8e-5).
 #[test]
 fn geom_distance_sensors_of_random_separated_pairs_as_mujoco() {
     let cases = golden()["geom_distance_random"].clone();
@@ -757,12 +758,12 @@ fn geom_distance_sensors_of_random_separated_pairs_as_mujoco() {
     }
 }
 
-/// Registry `D-GJK-S3D`: three seeded random box pairs apart, whose distance
-/// MuJoCo's sensor reads 0 (its GJK keeps a stale weight in `S3D`'s fourth
-/// face, `engine_collision_gjk.c:633-643`, and its `mjc_ccd` takes the pair
-/// as touching) while MuJoCo's own box–box function, `mjc_BoxBox` with native
-/// CCD disabled, reads them apart. Ours reads the box–box function's distance
-/// within 1e-12. Measured: 0, 6.9e-17 and 2.9e-17.
+/// Registry `D-GJK-S3D`: three box pairs apart whose distance MuJoCo's
+/// sensor reads 0 (its GJK keeps a stale weight in `S3D`'s fourth face,
+/// `engine_collision_gjk.c:633-643`, and its `mjc_ccd` takes the pair as
+/// touching), chosen where ours with that weight kept reads 0 too. Ours reads
+/// the pair's exact distance (the generator's, from the boxes' corners and
+/// edges) within 1e-12. Measured: 4.2e-17, 0 and 1.1e-16.
 #[test]
 fn separated_boxes_read_apart_where_mujocos_sensor_reads_0() {
     let cases = golden()["s3d_stale"].clone();
@@ -772,11 +773,11 @@ fn separated_boxes_read_apart_where_mujocos_sensor_reads_0() {
             0.0,
             "{name}: MuJoCo's sensor"
         );
-        let box_box = case["box_box_distance"].as_f64().expect("box_box_distance");
+        let exact = case["exact_distance"].as_f64().expect("exact_distance");
         let ours = sensordata_at(case)[0];
         assert!(
-            box_box > 0.0 && (ours - box_box).abs() <= 1e-12,
-            "{name}: ours {ours}, MuJoCo's box-box function {box_box}"
+            exact > 0.0 && (ours - exact).abs() <= 1e-12,
+            "{name}: ours {ours}, the exact distance {exact}"
         );
     }
 }
