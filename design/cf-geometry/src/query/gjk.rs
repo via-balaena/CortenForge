@@ -440,7 +440,8 @@ fn subdistance(simplex: &[MinkowskiPoint]) -> [f64; 4] {
 /// MuJoCo's `S3D` (`engine_collision_gjk.c:556-644`): a tetrahedron's
 /// signed volumes; where the origin is outside, the nearest of the faces it
 /// is outside.
-#[allow(clippy::similar_names, reason = "MuJoCo's cofactor names C41..C44")]
+// MuJoCo's cofactor names C41..C44.
+#[allow(clippy::similar_names)]
 fn s3d(s1: &Vector3<f64>, s2: &Vector3<f64>, s3: &Vector3<f64>, s4: &Vector3<f64>) -> [f64; 4] {
     let c41 = -det3(s2, s3, s4);
     let c42 = det3(s1, s3, s4);
@@ -491,11 +492,8 @@ fn s3d(s1: &Vector3<f64>, s2: &Vector3<f64>, s3: &Vector3<f64>, s4: &Vector3<f64
 /// MuJoCo's `S2D` (`engine_collision_gjk.c:647-777`): a triangle's signed
 /// areas in the plane it shadows most; where the origin's projection is
 /// outside, the nearest of the edges it is outside.
-#[allow(
-    clippy::similar_names,
-    clippy::suboptimal_flops,
-    reason = "MuJoCo's minor and cofactor names, and its sums as written"
-)]
+// MuJoCo's minor and cofactor names, and its sums as written.
+#[allow(clippy::similar_names, clippy::suboptimal_flops)]
 fn s2d(s1: &Vector3<f64>, s2: &Vector3<f64>, s3: &Vector3<f64>) -> [f64; 3] {
     let Some(p_o) = project_origin_plane(s1, s2, s3) else {
         let [l1, l2] = s1d(s1, s2);
@@ -593,7 +591,8 @@ fn s1d(s1: &Vector3<f64>, s2: &Vector3<f64>) -> [f64; 2] {
 /// origin projected onto the plane through three points, its normal taken
 /// from each pair of edges in turn; `None` where an edge pair's cross product
 /// is exactly zero before a usable one is found.
-#[allow(clippy::float_cmp, reason = "MuJoCo's exact tests against 0")]
+// MuJoCo's exact tests against 0.
+#[allow(clippy::float_cmp)]
 fn project_origin_plane(
     v1: &Vector3<f64>,
     v2: &Vector3<f64>,
@@ -630,7 +629,8 @@ fn same_sign(a: f64, b: f64) -> bool {
 }
 
 /// MuJoCo's `det3`: `v1 · (v2 × v3)`, its terms as written.
-#[allow(clippy::suboptimal_flops, reason = "MuJoCo's sum as written")]
+// MuJoCo's sum as written.
+#[allow(clippy::suboptimal_flops)]
 fn det3(v1: &Vector3<f64>, v2: &Vector3<f64>, v3: &Vector3<f64>) -> f64 {
     v1[0] * (v2[1] * v3[2] - v2[2] * v3[1])
         + v1[1] * (v2[2] * v3[0] - v2[0] * v3[2])
