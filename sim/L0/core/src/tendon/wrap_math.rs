@@ -232,8 +232,9 @@ fn wrap_circle(end: &[f64; 4], side: Option<&[f64; 2]>, radius: f64) -> Option<(
 /// [−1, 1]; MuJoCo's `acos` is not, and gives NaN past it (registry
 /// `D-WRAP-ACOS`). Where the cosine is 1 or rounds past it the two
 /// directions are one and the cross product's sign is rounding: the arc is
-/// 0, not the long way round, where MuJoCo's at exactly 1 is a full circle
-/// (ledger L185).
+/// 0, not the long way round, where MuJoCo's at exactly 1 can be a full
+/// circle (ledger L185). One ulp below 1 ours goes the long way round where
+/// MuJoCo's does (`D-WRAP-ACOS`).
 fn length_circle(p0: &[f64], p1: &[f64], ind: usize, radius: f64) -> f64 {
     let mut p0n = [p0[0], p0[1]];
     let mut p1n = [p1[0], p1[1]];
