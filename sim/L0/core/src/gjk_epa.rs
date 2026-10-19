@@ -131,6 +131,11 @@ impl SupportMap for PosedShape<'_> {
     fn support(&self, direction: &Vector3<f64>) -> Point3<f64> {
         support(self.shape, self.pose, direction, &self.warm_start)
     }
+
+    /// The shape's position, as MuJoCo's `mjc_center` takes a geom's.
+    fn center(&self) -> Point3<f64> {
+        self.pose.position
+    }
 }
 
 // =============================================================================

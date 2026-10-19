@@ -114,18 +114,26 @@ impl Simplex {
 /// Compute minimum separating distance between two convex shapes.
 ///
 /// Returns `Some(GjkDistance)` if the shapes are separated, with the distance
-/// and witness points (closest points on each shape). Returns `None` if the
-/// shapes overlap or touch (use [`epa_penetration`](super::epa_penetration)
-/// instead).
+/// and witness points (closest points on each shape). Returns `None` where
+/// the iteration ends on a tetrahedron about the origin (an overlap; use
+/// [`epa_penetration`](super::epa_penetration)), where `x` comes within
+/// 1e-15 of the origin, or where a coordinate is `NaN`.
 ///
 /// The iteration is MuJoCo's GJK asked for a distance (`gjk`,
-/// `engine_collision_gjk.c:171-293`): from the difference of the shapes'
-/// box centres, each step takes the Minkowski difference's support point
-/// `s` along `−x` and stops once the Frank–Wolfe gap `x · (x − s)` is below
-/// `tolerance² / 2`; else `x` becomes the point nearest the origin of the
-/// simplex with `s` added (MuJoCo's `subdistance`), the simplex keeps the points
-/// that point weighs, and the iteration stops where `x` no longer moves, or
-/// with an overlap where the simplex is a tetrahedron about the origin.
+/// `engine_collision_gjk.c:171-296`), but for one weight: in `S3D`'s fourth
+/// face MuJoCo leaves the fourth point's weight as an earlier face set it
+/// (`:633-643`) and so can read a separated pair as an overlap, and this sets
+/// it to 0 (registry row `D-GJK-S3D`). From the difference of the shapes'
+/// centres ([`SupportMap::center`]), each step takes the Minkowski difference's
+/// support point `s` along `−x / |x|` and stops once the Frank–Wolfe gap `x ·
+/// (x − s)` is below `tolerance² / 2`; else `x` becomes the point nearest the
+/// origin of the simplex with `s` added (MuJoCo's `subdistance`), the simplex
+/// keeps the points that point weighs, and the iteration stops where `x` no
+/// longer moves, or with an overlap where the simplex is a tetrahedron about
+/// the origin. The distance is `|x|` as the last step began, as MuJoCo's.
+/// MuJoCo takes the tolerance as 0 for two boxes or meshes without a margin
+/// (`discreteGeoms`, `:159-167`); the shapes here carry no type, so a caller
+/// passes 0 for them.
 ///
 /// # Arguments
 ///
@@ -140,8 +148,9 @@ pub fn gjk_distance(
     tolerance: f64,
 ) -> Option<GjkDistance> {
     let epsilon = 0.5 * tolerance * tolerance;
-    let (center_a, center_b) = (a.aabb().center(), b.aabb().center());
+    let (center_a, center_b) = (a.center(), b.center());
     let mut x = center_a - center_b;
+    let mut x_norm = x.norm();
     let mut simplex = [MinkowskiPoint::default(); 4];
     let mut lambda = [1.0, 0.0, 0.0, 0.0];
     let mut n = 0;
@@ -151,7 +160,9 @@ pub fn gjk_distance(
         if x_norm_sq < MIN_VAL * MIN_VAL {
             return None; // x is the origin: the shapes touch
         }
-        let support = support_minkowski(a, b, &(-x / x_norm_sq.sqrt()));
+        x_norm = x_norm_sq.sqrt();
+        // `gjkSupport` (`:335`) scales x by the reciprocal of its norm.
+        let support = support_minkowski(a, b, &-(x * (1.0 / x_norm)));
 
         // The Frank–Wolfe duality gap bounds how far |x| is above the distance.
         if x.dot(&(x - support.point.coords)) < epsilon {
@@ -203,7 +214,7 @@ pub fn gjk_distance(
         )
     };
     Some(GjkDistance {
-        distance: x.norm(),
+        distance: x_norm,
         point_a,
         point_b,
     })
@@ -410,9 +421,8 @@ fn triple_product(a: &Vector3<f64>, b: &Vector3<f64>, c: &Vector3<f64>) -> Vecto
 
 /// MuJoCo's `subdistance` (`engine_collision_gjk.c:532-553`, after
 /// Montanari et al., ACM Transactions on Graphics 2017): the barycentric
-/// coordinates, over the
-/// simplex's one to four points, of its point nearest the origin; a point
-/// the nearest point does not weigh takes exactly 0.
+/// coordinates, over the simplex's one to four points, of its point nearest
+/// the origin; a point the nearest point does not weigh takes exactly 0.
 fn subdistance(simplex: &[MinkowskiPoint]) -> [f64; 4] {
     let s = |i: usize| simplex[i].point.coords;
     let mut lambda = [0.0; 4];
@@ -462,8 +472,9 @@ fn s3d(s1: &Vector3<f64>, s2: &Vector3<f64>, s3: &Vector3<f64>, s4: &Vector3<f64
         let d = lincomb(&face, [**p1, **p2, **p3]).norm_squared();
         // MuJoCo takes the first face whatever its distance. Its fourth face
         // leaves the fourth point's weight as an earlier face set it
-        // (`:632-642`), so the weights sum past 1, the simplex keeps four
-        // points and the loop reads the pair as an overlap; ours sets it to 0.
+        // (`:633-643`), so the weights sum past 1, the simplex keeps four
+        // points and the loop reads the pair as an overlap; ours sets it to 0
+        // (registry `D-GJK-S3D`).
         if i == 0 || d < dmin {
             lambda[i] = 0.0;
             for (slot, w) in slots.iter().zip(face) {
@@ -666,6 +677,10 @@ mod tests {
         fn support(&self, direction: &Vector3<f64>) -> Point3<f64> {
             Point3::from(self.inner.support(direction).coords + self.offset)
         }
+
+        fn center(&self) -> Point3<f64> {
+            Point3::from(self.inner.center().coords + self.offset)
+        }
     }
 
     // A support map turned by `rot`, then moved by `offset`; its box from its
@@ -692,6 +707,10 @@ mod tests {
         fn support(&self, direction: &Vector3<f64>) -> Point3<f64> {
             let local = self.inner.support(&(self.rot.inverse() * direction));
             Point3::from(self.rot * local.coords + self.offset)
+        }
+
+        fn center(&self) -> Point3<f64> {
+            Point3::from(self.rot * self.inner.center().coords + self.offset)
         }
     }
 
@@ -963,7 +982,9 @@ mod tests {
     }
 
     /// Unit spheres a nanometre apart: the distance, 1e-9 within 1e-15.
-    /// MuJoCo takes shapes as touching only within 1e-15 (`mjMINVAL`).
+    /// MuJoCo's `gjk` stops on the origin only within 1e-15 (`mjMINVAL`,
+    /// `engine_collision_gjk.c:194-196`); its caller `mjc_ccd` then takes a
+    /// distance up to its tolerance as touching (`:2298`), which this does not.
     #[test]
     fn gjk_distance_reports_a_nanometre_gap() {
         let a = SupportSphere { radius: 1.0 };
@@ -979,15 +1000,79 @@ mod tests {
         assert!((distance - 1e-9).abs() <= 1e-15, "distance {distance}");
     }
 
-    /// An ellipsoid and a box, each turned, 0.0686 apart (one of a random
-    /// search's pairs; their rotations as it drew them). In `S3D`'s fourth
-    /// face MuJoCo keeps the weight an earlier face gave the fourth point
-    /// (`engine_collision_gjk.c:632-642`); with it kept, this loop reads the
-    /// pair as an overlap (measured), where MuJoCo's distance sensor reads
-    /// 0.0685786772243988 on the pose (the oracle). Ours, the weight 0: within
-    /// 1e-12 of it.
+    /// Two boxes, each turned, 0.0402 apart (a random search's pair; the
+    /// rotations are MuJoCo's `geom_xmat`), where MuJoCo's distance sensor
+    /// reads 0: in `S3D`'s fourth face it keeps the weight an earlier face
+    /// gave the fourth point (`engine_collision_gjk.c:633-643`), and with it
+    /// kept this loop reads the pair as an overlap (measured). MuJoCo's own
+    /// box–box function (`mjc_BoxBox`, native CCD disabled) reads
+    /// 0.040212399850898445. Ours, the weight 0 and the tolerance 0 as
+    /// MuJoCo's for two boxes: within 1e-12 of it (registry `D-GJK-S3D`).
     #[test]
-    fn gjk_distance_of_a_pair_s3d_kept_a_stale_weight_for() {
+    fn gjk_distance_of_boxes_mujocos_s3d_reads_as_touching() {
+        let first = SupportBox {
+            half_extents: Vector3::new(
+                0.245_386_986_817_683_2,
+                0.237_512_154_316_019_66,
+                0.484_908_151_077_289_3,
+            ),
+        };
+        let second = SupportBox {
+            half_extents: Vector3::new(
+                0.173_547_517_915_39,
+                0.040_026_588_149_777_46,
+                0.208_256_400_348_419_36,
+            ),
+        };
+        let a = Turned {
+            inner: &first,
+            rot: Rotation3::from_matrix_unchecked(Matrix3::new(
+                -0.062_732_013_780_880_61,
+                0.749_904_151_704_075_1,
+                0.658_565_454_380_949_6,
+                -0.170_129_462_683_314_3,
+                -0.658_242_153_021_689_2,
+                0.733_330_235_236_797_9,
+                0.983_422_930_571_624_2,
+                -0.066_038_104_472_812_55,
+                0.168_873_646_207_914_12,
+            )),
+            offset: Vector3::zeros(),
+        };
+        let b = Turned {
+            inner: &second,
+            rot: Rotation3::from_matrix_unchecked(Matrix3::new(
+                0.312_895_849_063_831_5,
+                0.429_042_914_882_963_4,
+                -0.847_359_643_142_953_8,
+                -0.388_020_336_156_218_34,
+                0.872_053_700_132_505_8,
+                0.298_265_926_338_260_3,
+                0.866_911_994_592_207_2,
+                0.235_466_603_309_121_95,
+                0.439_339_358_990_547_55,
+            )),
+            offset: Vector3::new(
+                -0.415_951_726_116_443_2,
+                -0.501_729_772_562_780_1,
+                0.081_432_428_137_459_25,
+            ),
+        };
+        let result = gjk_distance(&a, &b, 35, 0.0);
+        assert!(result.is_some(), "no distance");
+        let distance = result.unwrap().distance;
+        assert!(
+            (distance - 0.040_212_399_850_898_445).abs() <= 1e-12,
+            "distance {distance}"
+        );
+    }
+
+    /// An ellipsoid and a box, each turned, 0.0686 apart (one of a random
+    /// search's pairs; their rotations as it drew them): MuJoCo's distance
+    /// sensor reads 0.0685786772243988 on the pose (the oracle), and ours
+    /// within 1e-12.
+    #[test]
+    fn gjk_distance_of_a_turned_ellipsoid_and_box_as_mujocos() {
         let ellipsoid = SupportEllipsoid {
             radii: Vector3::new(
                 0.129_446_800_682_902_49,

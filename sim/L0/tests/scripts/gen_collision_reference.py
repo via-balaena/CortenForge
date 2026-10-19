@@ -154,6 +154,11 @@ aligned) after two steps of the census's first excitation: MuJoCo's
 contacts there, 4, and with the first box's quaternion's w one ulp lower,
 5 (mjc_BoxBox's count turns on a one-ulp change of the pose; registry
 D-BOXBOX-TIE). It refuses other counts.
+`geom_distance_random` holds the distance, normal and fromto sensors of
+seeded random pairs of boxes, ellipsoids and cylinders, each turned and
+posed through qpos, 12 apart per pair of types, and `s3d_stale` three
+random box pairs whose distance MuJoCo's sensor reads 0 while its own
+box-box function reads them apart (registry D-GJK-S3D).
 """
 
 import json
@@ -1379,7 +1384,122 @@ def geom_distance_apart_cases():
             if abs(d.sensordata[0] - APART_GAP) > 1e-9:
                 sys.exit(f"geom_distance_apart {shape_a}_{shape_b}: distance {d.sensordata[0]}")
             out[f"{shape_a}_{shape_b}_{tag}"] = {"xml": xml, "sensordata": floats(d.sensordata)}
+    for name, (shape_a, pose_a, pos_b, shape_b, pose_b) in APART_REVIEW_POSES.items():
+        xml = ('<mujoco><option><flag gravity="disable"/></option><worldbody><body name="sa">'
+               f'<geom name="A" {shape_a} quat="{pose_a}"/></body>\n<body name="b" pos="{pos_b}">'
+               f'<freejoint/><geom name="B" {shape_b} quat="{pose_b}"/></body></worldbody>\n'
+               '<sensor><distance geom1="A" geom2="B" cutoff="1"/><normal geom1="A" geom2="B" '
+               'cutoff="1"/><fromto geom1="A" geom2="B" cutoff="1"/></sensor></mujoco>')
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        if not 0 < d.sensordata[0] < 1:
+            sys.exit(f"geom_distance_apart {name}: distance {d.sensordata[0]}")
+        out[name] = {"xml": xml, "sensordata": floats(d.sensordata)}
     return out
+
+
+# Two poses of the chunk 3e-2 review's random search: an ellipsoid and a box
+# whose distance subalgorithm meets a minor of exactly 0, and an ellipsoid
+# and a cylinder whose GJK runs out of its 35 iterations.
+APART_REVIEW_POSES = {
+    "ellipsoid_box_zero_minor": (
+        'type="ellipsoid" size="0.08673362686718303 0.3174287217851005 0.07404581552678578"',
+        "0.6886994495642846 -0.45222952009010126 -0.4840316178391715 -0.2947794468088342",
+        "0.5421205578059004 -0.5236290660044116 0.5061475463952986",
+        'type="box" size="0.1096435380017334 0.23156762439862372 0.12187552185300528"',
+        "-0.05445304671606876 0.8749820225538805 -0.46363594991455964 0.12838626039293366"),
+    "ellipsoid_cylinder_iterations_run_out": (
+        'type="ellipsoid" size="0.15560943392016116 0.23022545281652712 0.19504548314094095"',
+        "-0.017334953717705964 0.4550347894950274 0.33220159871081134 0.8260054101171507",
+        "0.166309147487392 0.38438238940739156 -0.22550574582457805",
+        'type="cylinder" size="0.31767823914843074 0.0627395570568453"',
+        "0.5601127031982474 0.3605621209071797 0.6274124547568352 -0.4032645884513919"),
+}
+
+
+# Two convex geoms on free bodies, each posed through qpos, with the
+# distance, normal and fromto sensors of the first against the second.
+RANDOM_APART_TYPES = [("box", "box"), ("box", "ellipsoid"), ("box", "cylinder"),
+                      ("cylinder", "cylinder"), ("cylinder", "ellipsoid"),
+                      ("ellipsoid", "ellipsoid")]
+
+
+def sensor_pair_xml(type_a, size_a, type_b, size_b):
+    def geom(name, kind, size):
+        return f'<geom name="{name}" type="{kind}" size="{" ".join(repr(float(x)) for x in size)}"/>'
+    return (f'<mujoco><option><flag gravity="disable"/></option><worldbody>'
+            f'<body name="a"><freejoint/>{geom("A", type_a, size_a)}</body>'
+            f'<body name="b"><freejoint/>{geom("B", type_b, size_b)}</body></worldbody>'
+            f'<sensor><distance geom1="A" geom2="B" cutoff="1"/>'
+            f'<normal geom1="A" geom2="B" cutoff="1"/>'
+            f'<fromto geom1="A" geom2="B" cutoff="1"/></sensor></mujoco>')
+
+
+def random_size(rng, kind):
+    return list(rng.uniform(0.02, 0.3, 3 if kind != "cylinder" else 2))
+
+
+def sensors_at(xml, qpos, nativeccd=True):
+    m = mujoco.MjModel.from_xml_string(xml)
+    if not nativeccd:
+        m.opt.disableflags = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+    d = mujoco.MjData(m)
+    d.qpos[:] = qpos
+    mujoco.mj_forward(m, d)
+    return d.sensordata.copy()
+
+
+def random_pose_qpos(rng):
+    """The first geom's body at the origin, the second's within 0.6 of it,
+    each turned at random."""
+    return (list(np.zeros(3)) + list(unit(rng.normal(size=4)))
+            + list(rng.uniform(-0.6, 0.6, 3)) + list(unit(rng.normal(size=4))))
+
+
+def geom_distance_random_cases():
+    """Per pair of types, the first 12 seeded random poses apart (0 < distance
+    < the cutoff) where MuJoCo's distance is not 0; the poses where it is 0
+    are `s3d_stale`'s."""
+    rng = np.random.default_rng(20261018)
+    out = {}
+    for type_a, type_b in RANDOM_APART_TYPES:
+        k = 0
+        for tries in range(2000):
+            xml = sensor_pair_xml(type_a, random_size(rng, type_a), type_b, random_size(rng, type_b))
+            qpos = random_pose_qpos(rng)
+            sd = sensors_at(xml, qpos)
+            if not 0 < sd[0] < 1:
+                continue
+            out[f"{type_a}_{type_b}_{k}"] = {"xml": xml, "qpos": floats(qpos), "sensordata": floats(sd)}
+            k += 1
+            if k == 12:
+                break
+        else:
+            sys.exit(f"geom_distance_random {type_a}_{type_b}: {k} poses in {tries + 1} tries")
+    return out
+
+
+def s3d_stale_cases():
+    """Seeded random box pairs where MuJoCo's distance sensor reads 0 while
+    its own box-box function (mjc_BoxBox with native CCD disabled; distmax as
+    the margin, engine_support.c:577-594) reads them apart: the first three."""
+    rng = np.random.default_rng(20261019)
+    out = {}
+    for tries in range(20000):
+        xml = sensor_pair_xml("box", random_size(rng, "box"), "box", random_size(rng, "box"))
+        qpos = random_pose_qpos(rng)
+        sd = sensors_at(xml, qpos)
+        if sd[0] != 0:
+            continue
+        box_box = sensors_at(xml, qpos, nativeccd=False)[0]
+        if not 0 < box_box < 1:
+            continue
+        out[f"boxes_{len(out)}"] = {"xml": xml, "qpos": floats(qpos), "sensordata": floats(sd),
+                                    "box_box_distance": float(box_box)}
+        if len(out) == 3:
+            return out
+    sys.exit(f"s3d_stale: {len(out)} poses in {tries + 1} tries")
 
 
 # A three-axis ellipsoid 1 mm above the box slab, the slab's margin 0.01:
@@ -1442,6 +1562,8 @@ def main():
            "box_box_tie": finite_or_string(box_box_tie_case()),
            "geom_distance": finite_or_string(geom_distance_cases()),
            "geom_distance_apart": finite_or_string(geom_distance_apart_cases()),
+           "geom_distance_random": finite_or_string(geom_distance_random_cases()),
+           "s3d_stale": finite_or_string(s3d_stale_cases()),
            "margin": finite_or_string(margin_case())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
