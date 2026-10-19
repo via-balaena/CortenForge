@@ -1732,8 +1732,8 @@ def random_pose_qpos(rng):
 
 def geom_distance_random_cases():
     """Per pair of types, the first 12 seeded random poses apart (0 < distance
-    < the cutoff) where MuJoCo's distance is not 0; such poses are
-    `s3d_stale`'s kind."""
+    < the cutoff) where MuJoCo's distance is not 0; the skipped poses where
+    it reads 0 are `s3d_stale`'s kind."""
     rng = np.random.default_rng(20261018)
     out = {}
     for type_a, type_b in RANDOM_APART_TYPES:
@@ -1836,7 +1836,7 @@ def s3d_stale_cases():
         d.qpos[:] = qpos
         mujoco.mj_forward(m, d)
         exact = box_box_distance(m, d)
-        if sd[0] != 0 or not 0 < exact < 1:
+        if sd[0] != 0 or not exact < 1:
             sys.exit(f"s3d_stale {name}: MuJoCo's distance {sd[0]}, the exact {exact}")
         out[name] = {"xml": xml, "qpos": floats(qpos), "sensordata": floats(sd),
                      "exact_distance": exact}

@@ -133,9 +133,9 @@ impl Simplex {
 /// keeps the points that point weighs, and the iteration stops where `x` no
 /// longer moves, or with an overlap where the simplex is a tetrahedron about
 /// the origin. The distance is `|x|` as the last step began, as MuJoCo's.
-/// MuJoCo takes the tolerance as 0 for two boxes or meshes without a margin
-/// (`discreteGeoms`, `:159-167`); the shapes here carry no type, so a caller
-/// passes 0 for them.
+/// MuJoCo takes the tolerance as 0 for two boxes, meshes or height fields
+/// without a margin (`discreteGeoms`, `:159-167`); the shapes here carry no
+/// type, so a caller passes 0 for them.
 ///
 /// # Arguments
 ///

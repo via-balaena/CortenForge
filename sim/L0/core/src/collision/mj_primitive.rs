@@ -467,7 +467,7 @@ pub(super) fn raw_capsule_capsule(
 }
 
 /// `mjraw_CapsuleBox` (`engine_collision_box.c:119-591`, without its
-/// `j == 2` block, `:312-393`, whose values nothing reads): in the box's
+/// `j == 2` block, `:313-394`, whose values nothing reads): in the box's
 /// frame, the capsule's segment point nearest the box, from its ends
 /// against the faces and the segment against the twelve edges; then a
 /// second point along the segment where the segment lies along a face or

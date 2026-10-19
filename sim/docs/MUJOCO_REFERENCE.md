@@ -67,7 +67,8 @@ Two-mechanism architecture:
   bounding spheres projected on the rows of `mju_eig3`'s matrix of the geoms'
   positions' covariance, the bounds cast to `f32`
 - Midphase: MuJoCo's `mj_collideTree`, the two bodies' bounding-volume
-  hierarchies descended together for the geom pairs whose boxes overlap
+  hierarchies descended together for the geom pairs whose bounding spheres
+  pass and whose boxes overlap
 - Filters (in order): body-pair excludes (`contact_excludes`), explicit pair-set
   suppression (`contact_pair_set`), same-body, parent-child; then a user's
   contact filter where one is set (`mjcb_contactfilter`), else the

@@ -344,7 +344,7 @@ The collision detection pipeline now uses:
 1. ✅ **Broad-phase**: MuJoCo's `mj_broadphase` (`collision/broadphase.rs`): bodies
    swept and pruned along the first row of `mju_eig3`'s matrix of their geoms'
    positions' covariance (its columns are the eigenvectors), the bounds cast to
-   float, then each geom pair through the bounding-sphere filter
+   float
 2. ✅ **Mid-phase**: MuJoCo's `mj_collideTree` over each body's hierarchy of
    its geoms' oriented boxes (`collision/midphase.rs`), and an AABB tree per
    mesh for its triangles
