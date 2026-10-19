@@ -21,13 +21,15 @@ use crate::types::{Data, Model};
 /// `body2`'s, whose leaves the midphase reaches and whose geoms pass the
 /// bounding-sphere filter and overlap as boxes, in the order MuJoCo's
 /// `mj_collideTree` reaches them. `false`, appending nothing, when either
-/// body has no hierarchy.
+/// body has no hierarchy. `stack` is scratch for the descent, reused across
+/// calls (MuJoCo's comes from its arena, `engine_collision_driver.c:649-653`).
 pub(super) fn collide_tree(
     model: &Model,
     data: &Data,
     body1: usize,
     body2: usize,
     pairs: &mut Vec<(usize, usize)>,
+    stack: &mut Vec<(usize, usize)>,
 ) -> bool {
     // A model built by hand and never derived has no hierarchies.
     let hierarchy = |b: usize| model.body_bvhadr.get(b).copied().flatten();
@@ -40,7 +42,8 @@ pub(super) fn collide_tree(
     let frame2 = (&data.xipos[body2], &data.ximat[body2]);
     let mut axes: Option<Axes> = None;
 
-    let mut stack = vec![(0, 0)];
+    stack.clear();
+    stack.push((0, 0));
     while let Some((node1, node2)) = stack.pop() {
         let (leaf1, leaf2) = (tree1.is_leaf(node1), tree2.is_leaf(node2));
         if leaf1 && leaf2 {

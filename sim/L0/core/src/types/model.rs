@@ -302,7 +302,8 @@ pub struct Model {
     pub geom_friction: Vec<Vector3<f64>>,
     /// Contact dimensionality (1=frictionless, 3=sliding, 4=+torsional, 6=+rolling).
     pub geom_condim: Vec<i32>,
-    /// Contact type bitmask.
+    /// Contact type bitmask. The bodies' hierarchies read it
+    /// ([`Self::compute_body_bvhs`]).
     pub geom_contype: Vec<u32>,
     /// Contact affinity bitmask.
     pub geom_conaffinity: Vec<u32>,

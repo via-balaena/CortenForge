@@ -356,7 +356,8 @@ MuJoCo's two-mechanism architecture:
 | Phase | Method | Output |
 |-------|--------|--------|
 | Broad | MuJoCo's `mj_broadphase`: bodies swept and pruned, their geoms' bounding spheres projected on the rows of `mju_eig3`'s matrix of the geoms' positions' covariance, the bounds cast to `f32`; then each geom pair through the bounding-sphere filter | Candidate pairs |
-| Filter | Body-pair excludes, explicit pair-set suppression, same-body, parent-child, contype/conaffinity bitmasks | Filtered pairs |
+| Mid | MuJoCo's `mj_collideTree`: two bodies' bounding-volume hierarchies descended together, the geom pairs whose boxes overlap | Geom pairs |
+| Filter | Body-pair excludes, explicit pair-set suppression, same-body, parent-child; then a user's contact filter where one is set, else the contype/conaffinity bitmasks | Filtered pairs |
 | Narrow | Per-pair geometry tests | Contact points |
 
 **Mechanism 2 (explicit `<pair>` pipeline):**

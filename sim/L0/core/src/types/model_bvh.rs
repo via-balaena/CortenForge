@@ -47,7 +47,10 @@ impl Model {
     /// `bvh_child`, `bvh_nodeid` and `bvh_depth`. Reads `geom_body`,
     /// `geom_pos`, `geom_quat`, `geom_aabb` (so it runs after
     /// [`Self::compute_geom_bounding_radii`]), `geom_contype`,
-    /// `geom_conaffinity`, `geom_margin`, `body_ipos` and `body_iquat`.
+    /// `geom_conaffinity`, `geom_margin`, `body_ipos` and `body_iquat`: a
+    /// model edited in any of them afterwards keeps the hierarchies made
+    /// before (as MuJoCo's compiled ones), and the midphase finds the pairs
+    /// those hold, until [`Self::recompute_derived`] runs again.
     pub fn compute_body_bvhs(&mut self) {
         let mut geoms: Vec<Vec<usize>> = vec![Vec::new(); self.nbody];
         for (geom, &body) in self.geom_body.iter().enumerate() {

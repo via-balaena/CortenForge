@@ -1371,7 +1371,8 @@ Focus: All collision detection improvements, primarily in sim-core.
 **Contact Pairs Filtering (MuJoCo pipeline):**
 - `geom_contype: Vec<u32>` - Geom collision type bitmask (in `Model`)
 - `geom_conaffinity: Vec<u32>` - Geom affinity bitmask (in `Model`)
-- Check: `(a.contype & b.conaffinity) != 0 && (b.contype & a.conaffinity) != 0`
+- Check: `(a.contype & b.conaffinity) != 0 || (b.contype & a.conaffinity) != 0`;
+  a user's contact filter, where set, decides in its place (`mjcb_contactfilter`)
 - Defaults: `contype = 1`, `conaffinity = 1` (everything collides)
 
 **MJCF Model Builder Updates (`sim-mjcf/src/builder/`):**

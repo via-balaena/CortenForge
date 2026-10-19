@@ -87,19 +87,27 @@ user_objects.cc:2323-2335, :396-543; user_model.cc:2700-2712): each body's
 margin, address and count, each node's box in its body's inertial frame,
 children, geom and depth, and the bodies' inertial frames. In `filter`,
 for two scenes of bodies of several geoms, each with its inertial frame
-given (sim-mjcf's principal axes are not MuJoCo's where moments tie, book
-Rigid-loading L03, and the boxes are in that frame), the geom pairs MuJoCo's contact
+given (sim-mjcf's principal axes are not MuJoCo's on many bodies, book
+Rigid-loading L03 and ledger L195, and the boxes are in that frame), the geom pairs MuJoCo's contact
 filter is called with, in order, and the contacts (geoms, `dist`), with
-the midphase on and off (mj_collideTree, engine_collision_driver.c:622-850):
+the midphase on and off (mj_collideTree, engine_collision_driver.c:622-847):
 `sparse` holds a pair the leaves' bounding spheres drop though their boxes
 overlap and a pair the bodies' margin keeps, `rafts` two rows of spheres
 whose leaves the midphase reaches in its order, `far_frames` two bodies
-whose inertial frames are 10 from their geoms, and `singles` two
+whose inertial frames are 10 from their geoms, `singles` two
 single-geom bodies the broadphase pairs and whose bounding spheres are
 apart, which MuJoCo collides without the midphase, so its filter is called
-(engine_collision_driver.c:354-357). It refuses a scene where the midphase
-changes the contacts, or where it calls the filter as many times as
-without it, but `singles`, where it must.
+(engine_collision_driver.c:354-357), and the chunk 3e-2 review's scenes:
+`pile`, turned bodies of up to seven geoms, a child and a grandchild, a
+static body of three, a single-geom body, an <exclude> and a <pair>, and a
+geom with contype and conaffinity 0, which no hierarchy holds, so the
+filter is called for it only without the midphase; `twins`, two pairs of
+equal bodies, three spheres and a box along x, and five spheres spread over
+y and z; `twins_spheres`, two equal bodies of two spheres each, whose roots'
+boxes have the same surface. It refuses a scene where the midphase changes
+the contacts other than those of a geom no hierarchy holds, or where it
+calls the filter as many times as without it, but `singles` and
+`twins_spheres`, where it must.
 `contact_filter` holds, for two scenes, the geom pairs a contact filter that
 keeps every pair is called with, in order, and the contacts (geoms, `dist`)
 with that filter and with none: MuJoCo calls its filter in place of the
@@ -888,6 +896,78 @@ MIDPHASE_FILTER_XML = {
                          for p in ["5 0 0", "-5 0 0", "0 3 0", "0 -3 0", "0 0 1", "0 0 -1",
                                    "0 0 0", "0.17 0.17 0.17"])
                + "</worldbody></mujoco>",
+    "pile": """<mujoco><option gravity="0 0 0"/><worldbody>
+<geom name="floor" type="plane" size="5 5 0.1"/>
+<geom name="wbox" type="box" size="0.3 0.3 0.05" pos="0.2 0.1 0.02" euler="0 0 20"/>
+<body name="A" pos="0 0 0.3" euler="17 -23 41">
+ <inertial pos="0.02 0.01 0" quat="0.9 0.1 0.3 0.2" mass="1" diaginertia="0.2 0.25 0.3"/>
+ <freejoint/>
+ <geom name="a0" type="sphere" size="0.1" pos="0 0 -0.15"/>
+ <geom name="a1" type="box" size="0.08 0.05 0.04" pos="0.2 0 -0.1" euler="10 20 30"/>
+ <geom name="a2" type="capsule" size="0.03 0.12" pos="-0.2 0.05 -0.1" euler="0 80 10" margin="0.02"/>
+ <geom name="a3" type="ellipsoid" size="0.08 0.05 0.04" pos="0 0.2 -0.1"/>
+ <geom name="a4" type="cylinder" size="0.05 0.06" pos="0 -0.2 -0.12" euler="30 0 0"/>
+ <geom name="a5" type="sphere" size="0.05" pos="0.25 0.25 0.1"/>
+ <geom name="a6" type="box" size="0.1 0.1 0.01" pos="0 0 0.1"/>
+ <body name="Achild" pos="0 0 0.25">
+  <inertial pos="0 0 0" mass="0.5" diaginertia="0.01 0.01 0.01"/><joint type="hinge" axis="1 0 0"/>
+  <geom name="c0" type="sphere" size="0.08" pos="0 0 -0.1"/>
+  <geom name="c1" type="box" size="0.05 0.05 0.05" pos="0.1 0 0"/>
+  <body name="Agrand" pos="0 0 0.15">
+   <inertial pos="0 0 0" mass="0.5" diaginertia="0.01 0.01 0.01"/><joint type="hinge" axis="0 1 0"/>
+   <geom name="g0" type="sphere" size="0.1" pos="0 0 -0.2"/>
+   <geom name="g1" type="capsule" size="0.02 0.1" pos="0.1 0 -0.25" euler="0 90 0"/>
+  </body>
+ </body>
+</body>
+<body name="B" pos="0.25 0.05 0.45" euler="-12 31 5">
+ <inertial pos="-0.03 0.02 0.01" quat="0.8 -0.2 0.1 0.4" mass="1" diaginertia="0.2 0.25 0.3"/>
+ <freejoint/>
+ <geom name="b0" type="sphere" size="0.07" pos="0 0 0"/>
+ <geom name="b1" type="box" size="0.06 0.06 0.06" pos="0.1 0.1 0" euler="5 6 7"/>
+ <geom name="b2" type="capsule" size="0.02 0.1" pos="-0.1 0 0.05" euler="90 0 0"/>
+ <geom name="b3" type="sphere" size="0.03" pos="0.3 0 0" contype="0" conaffinity="0"/>
+ <geom name="b4" type="box" size="0.06 0.04 0.03" pos="0 -0.12 -0.05" contype="2" conaffinity="2"/>
+</body>
+<body name="C" pos="-0.25 0.05 0.12">
+ <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><freejoint/>
+ <geom name="cc" type="sphere" size="0.1"/>
+</body>
+<body name="S" pos="0.6 0 0.3"><inertial pos="0.01 0.02 0.03" quat="0.6 0.2 0.3 0.4" mass="1" diaginertia="0.2 0.25 0.3"/>
+ <geom name="s0" type="box" size="0.1 0.1 0.1"/>
+ <geom name="s1" type="sphere" size="0.08" pos="-0.15 0 0.1"/>
+ <geom name="s2" type="capsule" size="0.03 0.1" pos="0 0.1 0.1" euler="0 90 0"/>
+</body>
+<body name="D" pos="0.45 0 0.5">
+ <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><freejoint/>
+ <geom name="d0" type="sphere" size="0.1"/>
+ <geom name="d1" type="box" size="0.05 0.05 0.05" pos="0.1 0 -0.1"/>
+ <geom name="d2" type="sphere" size="0.05" pos="-0.12 0 -0.05" margin="0.05"/>
+</body>
+</worldbody>
+<contact>
+ <pair geom1="b0" geom2="a6" condim="1"/>
+ <exclude body1="C" body2="A"/>
+</contact>
+</mujoco>""",
+    "twins": """<mujoco><option gravity="0 0 0"/><worldbody>
+<body name="t1" pos="0 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><freejoint/>
+ <geom type="sphere" size="0.1" pos="-0.3 0 0"/><geom type="sphere" size="0.1" pos="0 0 0"/><geom type="sphere" size="0.1" pos="0.3 0 0"/>
+ <geom type="box" size="0.05 0.25 0.02" pos="0 0 0.15" euler="0 0 30"/></body>
+<body name="t2" pos="0.1 0.12 0.05"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><freejoint/>
+ <geom type="sphere" size="0.1" pos="-0.3 0 0"/><geom type="sphere" size="0.1" pos="0 0 0"/><geom type="sphere" size="0.1" pos="0.3 0 0"/>
+ <geom type="box" size="0.05 0.25 0.02" pos="0 0 0.15" euler="0 0 30"/></body>
+<body name="lng" pos="3 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><freejoint/>
+ <geom type="sphere" size="0.05" pos="0 -0.5 0"/><geom type="sphere" size="0.05" pos="0 0.5 0"/><geom type="sphere" size="0.05" pos="0 -0.4 0.3"/><geom type="sphere" size="0.05" pos="0 0.4 -0.3"/><geom type="sphere" size="0.05" pos="0 0.1 0.1"/></body>
+<body name="lng2" pos="3.05 0.05 0.02"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><freejoint/>
+ <geom type="sphere" size="0.05" pos="0 -0.5 0"/><geom type="sphere" size="0.05" pos="0 0.5 0"/><geom type="sphere" size="0.05" pos="0 -0.4 0.3"/><geom type="sphere" size="0.05" pos="0 0.4 -0.3"/><geom type="sphere" size="0.05" pos="0 0.1 0.1"/></body>
+</worldbody></mujoco>""",
+    "twins_spheres": """<mujoco><option gravity="0 0 0"/><worldbody>
+<body name="t1" pos="0 0 0"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><freejoint/>
+ <geom type="sphere" size="0.2" pos="-0.1 0 0"/><geom type="sphere" size="0.2" pos="0.1 0 0"/></body>
+<body name="t2" pos="0.05 0.1 0"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><freejoint/>
+ <geom type="sphere" size="0.2" pos="-0.1 0 0"/><geom type="sphere" size="0.2" pos="0.1 0 0"/></body>
+</worldbody></mujoco>""",
 }
 
 
@@ -911,6 +991,10 @@ def filter_calls(xml, midphase):
     return {"calls": calls, "contacts": contacts}
 
 
+# Scenes whose midphase calls the filter as often as every pair would.
+MIDPHASE_NOT_FEWER = {"singles", "twins_spheres"}
+
+
 def midphase_cases():
     m = mujoco.MjModel.from_xml_string(MIDPHASE_BODIES_XML)
     if m.nbvh != m.nbvhstatic or m.nbvh != int(np.sum(m.body_bvhnum)):
@@ -925,9 +1009,16 @@ def midphase_cases():
     for name, xml in MIDPHASE_FILTER_XML.items():
         on, off = filter_calls(xml, True), filter_calls(xml, False)
         fewer = len(on["calls"]) < len(off["calls"])
-        if on["contacts"] != off["contacts"] or fewer == (name == "singles") or not on["calls"]:
+        # A geom with contype and conaffinity 0 is in no hierarchy, so the
+        # midphase never offers it to the filter, which keeps every pair.
+        mm = mujoco.MjModel.from_xml_string(xml)
+        visual = {g for g in range(mm.ngeom)
+                  if mm.geom_contype[g] == 0 and mm.geom_conaffinity[g] == 0}
+        kept = [c for c in off["contacts"] if not set(c["geom"]) & visual]
+        if (on["contacts"] != kept or fewer == (name in MIDPHASE_NOT_FEWER)
+                or not on["calls"]):
             sys.exit(f"midphase {name}: the midphase calls the filter {len(on['calls'])} "
-                     f"times against {len(off['calls'])}, or changes the contacts")
+                     f"times against {len(off['calls'])}, or changes other contacts")
         filters[name] = {"xml": xml, "midphase": on, "no_midphase": off}
     return {"bodies": bodies, "filter": filters}
 

@@ -876,8 +876,9 @@ fn pairs(v: &Value) -> Vec<[usize; 2]> {
 }
 
 /// A world body with a plane, a body of six geoms (one visual) in a turned
-/// inertial frame, a body of five spheres two pairs of which tie along the
-/// split axis, a body of visual geoms and one with none: the bodies'
+/// inertial frame, a body of five spheres, three at one place along the
+/// split axis and two at another, a body of visual geoms and one with none:
+/// the bodies'
 /// bounding-volume hierarchies are MuJoCo's (`mjCBody::ComputeBVH`,
 /// `user_objects.cc:2323-2335`, `:396-543`). The same nodes, children,
 /// geoms and depths; each box within 1e-12 of MuJoCo's, relative past 1;
@@ -960,24 +961,30 @@ fn body_hierarchies_are_mujocos() {
     }
 }
 
-/// Two scenes of bodies of several geoms, so every pair of bodies goes
-/// through the midphase, each body's inertial frame given (the hierarchies'
-/// boxes are in it, and sim-mjcf's principal axes are not MuJoCo's where
-/// moments tie, book Rigid-loading L03; measured on these rafts, their
-/// frames inferred: the same six leaf pairs in another order). The geom
-/// pairs the contact filter is called with,
-/// in order, are MuJoCo's, with the midphase on and with it off
-/// (`DISABLE_MIDPHASE`), each in MuJoCo's type order, and the contacts
-/// MuJoCo's (the same geoms in order, each distance within 1e-12). In
-/// `sparse` the midphase calls
-/// the filter once, without it 33 times: a pair whose boxes overlap but
-/// whose bounding spheres do not is dropped at the leaves, and the one
-/// contact, 0.05 apart within a margin of 0.1, is kept by the bodies'
-/// margins. In `rafts` it reaches six leaf pairs, in its order. In
-/// `far_frames` the two bodies' inertial frames are 10 either side of their
-/// overlapping geoms. In `singles` two single-geom bodies whose bounding
-/// spheres are apart are collided without the midphase, as MuJoCo's, so the
-/// filter is called for them.
+/// Scenes of bodies of several geoms, so every pair of bodies goes through
+/// the midphase, each body's inertial frame given (the hierarchies' boxes
+/// are in it, and sim-mjcf's principal axes are not MuJoCo's on many
+/// bodies, book Rigid-loading L03 and ledger L195; measured on these rafts,
+/// their frames inferred: the same six leaf pairs in another order). The
+/// geom pairs the contact filter is called with, in order, are MuJoCo's,
+/// with the midphase on and with it off (`DISABLE_MIDPHASE`), each in
+/// MuJoCo's type order, and the contacts MuJoCo's (the same geoms in order,
+/// each distance within 1e-12). In `sparse` the midphase calls the filter
+/// once, without it 33 times: a pair whose boxes overlap but whose bounding
+/// spheres do not is dropped at the leaves, and the one contact, 0.05 apart
+/// within a margin of 0.1, is kept by the bodies' margins. In `rafts` it
+/// reaches six leaf pairs, in its order. In `far_frames` the two bodies'
+/// inertial frames are 10 either side of their overlapping geoms. In
+/// `singles` two single-geom bodies whose bounding spheres are apart are
+/// collided without the midphase, as MuJoCo's, so the filter is called for
+/// them. In `pile` (turned bodies of up to seven geoms, a child and a
+/// grandchild, a static body, a single-geom body, an `<exclude>` and a
+/// `<pair>`) the midphase calls the filter 13 times, without it 168; its
+/// geom with contype and conaffinity 0 is in no hierarchy, so the filter,
+/// which keeps every pair, is called for it only without the midphase, and
+/// its contact is listed only then. `twins` holds two pairs of equal bodies,
+/// and `twins_spheres` two equal bodies whose roots' boxes have the same
+/// surface, where MuJoCo descends the second.
 #[test]
 fn contact_filter_calls_are_mujocos_with_and_without_the_midphase() {
     use std::sync::{Arc, Mutex};
@@ -1024,6 +1031,50 @@ fn contact_filter_calls_are_mujocos_with_and_without_the_midphase() {
             }
         }
     }
+}
+
+/// The `pile` scene with its bodies' hierarchies taken away, as in a model
+/// built by hand and never derived: each pair of bodies collides each geom of
+/// one with each of the other, so the filter's calls and the contacts are
+/// MuJoCo's without the midphase.
+#[test]
+fn bodies_without_hierarchies_collide_every_pair() {
+    use std::sync::{Arc, Mutex};
+
+    let case = &golden()["midphase"]["filter"]["pile"];
+    let mut model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    assert!(
+        model.body_bvhadr.iter().any(Option::is_some),
+        "pile has hierarchies"
+    );
+    for adr in &mut model.body_bvhadr {
+        *adr = None;
+    }
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&calls);
+    model.set_contactfilter_callback(move |_, _, g1, g2| {
+        log.lock().expect("log").push([g1, g2]);
+        true
+    });
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let want = &case["no_midphase"];
+    assert_eq!(
+        *calls.lock().expect("log"),
+        pairs(&want["calls"]),
+        "the filter's calls"
+    );
+    let listed: Vec<[usize; 2]> = want["contacts"]
+        .as_array()
+        .expect("contacts")
+        .iter()
+        .map(|w| {
+            let g: Vec<usize> = indices(&w["geom"]).into_iter().flatten().collect();
+            [g[0], g[1]]
+        })
+        .collect();
+    let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+    assert_eq!(ours, listed, "contact geoms in order");
 }
 
 /// The user's contact filter in place of the geoms' bitmask, as MuJoCo's

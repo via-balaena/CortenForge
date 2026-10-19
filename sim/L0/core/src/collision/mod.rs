@@ -452,8 +452,9 @@ pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
 /// 1. Broadphase: the pairs of bodies MuJoCo's `mj_broadphase` passes
 ///    (`broadphase`); within a pair, the geom pairs MuJoCo's midphase
 ///    passes (`midphase`), or each pair's geoms in turn
-/// 2. The geom pair's filters: exclusions, explicit pairs, weld groups and
-///    contype/conaffinity, the user's filter, the bounding spheres
+/// 2. The geom pair's filters: exclusions, explicit pairs, weld groups,
+///    then the user's filter where one is set and the contype/conaffinity
+///    bitmask where none is, then the bounding spheres
 /// 3. Narrow-phase: analytical or GJK/EPA collision detection
 /// 4. The explicit pairs, the flexes, and the list in MuJoCo's order (`order`)
 ///
@@ -489,6 +490,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         let midphase = !disabled(model, DISABLE_MIDPHASE);
         let mut previous = None;
         let mut geom_pairs: Vec<(usize, usize)> = Vec::new();
+        let mut tree_stack: Vec<(usize, usize)> = Vec::new();
         for (body1, body2) in body_pairs(model, data, &body_geoms) {
             if previous == Some((body1, body2)) {
                 continue;
@@ -497,7 +499,10 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             let (geoms1, geoms2) = (body_geoms.of(body1), body_geoms.of(body2));
             geom_pairs.clear();
             let single = geoms1.len() == 1 && geoms2.len() == 1;
-            if single || !midphase || !collide_tree(model, data, body1, body2, &mut geom_pairs) {
+            if single
+                || !midphase
+                || !collide_tree(model, data, body1, body2, &mut geom_pairs, &mut tree_stack)
+            {
                 for &geom1 in geoms1 {
                     geom_pairs.extend(geoms2.iter().map(|&geom2| (geom1, geom2)));
                 }
@@ -599,8 +604,9 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
 
 /// Collide one geom pair of a pair of bodies and list its contacts as MuJoCo
 /// does (`mj_collideGeomPair`, `mj_collideGeoms`,
-/// `engine_collision_driver.c:496-519`, `:1453-1529`): the affinity checks,
-/// the user's filter, the bounding spheres, then the narrow phase.
+/// `engine_collision_driver.c:496-519`, `:1453-1529`): the bodies' filters,
+/// the user's filter or else the bitmask, the bounding spheres, then the
+/// narrow phase.
 fn collide_geom_pair(
     model: &Model,
     data: &mut Data,
