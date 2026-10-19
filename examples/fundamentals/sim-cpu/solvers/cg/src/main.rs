@@ -82,7 +82,7 @@ const MJCF: &str = r#"
             friction="0.5 0.005 0.001" rgba="0.82 0.22 0.15 1"/>
     </body>
 
-    <body name="box_b" pos="0 0 0.3">
+    <body name="box_b" pos="0.01 0.01 0.3">
       <joint type="free" name="jnt_b"/>
       <geom name="box_b" type="box" size="0.1 0.1 0.1" mass="0.5"
             friction="0.5 0.005 0.001" rgba="0.15 0.45 0.82 1"/>

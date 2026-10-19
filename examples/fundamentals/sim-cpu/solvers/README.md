@@ -1,21 +1,20 @@
 # Solvers
 
 Constraint solver examples. All use the same scene — two boxes stacked on
-a ground plane — to isolate solver behavior from scene complexity; the
-headless `stress-test/` sets its upper box 1 cm off the lower one's axis
-(its README says why).
+a ground plane, the upper 1 cm off the lower one's axis (`stress-test/`'s
+README says why) — to isolate solver behavior from scene complexity.
 
 ## The 3 solvers
 
 | Solver | Method | Iterations (this scene) |
 |--------|--------|------------------------|
-| **PGS** | Projected Gauss-Seidel (dual-space, iterative) | ~47 |
+| **PGS** | Projected Gauss-Seidel (dual-space, iterative) | ~49 |
 | **CG** | Conjugate Gradient (primal, M^-1 preconditioner) | ~1 |
-| **Newton** | Full Newton (primal, H^-1, line search) | ~0 |
+| **Newton** | Full Newton (primal, H^-1, line search) | ~1 |
 
 All three produce identical results — a rock-solid stack. The difference
 is convergence speed: Newton uses quadratic convergence to solve the same
-contact problem in 0-2 iterations that PGS needs ~47 for.
+contact problem in 1-2 iterations that PGS needs ~49 for.
 
 ## Examples
 

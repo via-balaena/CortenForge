@@ -12,8 +12,8 @@ Three stacks spaced horizontally:
 - **Right** — Newton (green box_a)
 
 The HUD shows per-step iteration count for each solver. Newton sits at
-0 most of the time (quadratic convergence). CG takes 1-3, about 1 on
-average. PGS hovers around 47.
+1 almost every step (quadratic convergence). CG takes 1-25, about 1.2
+on average. PGS hovers around 49.
 
 ## Expected behavior
 
