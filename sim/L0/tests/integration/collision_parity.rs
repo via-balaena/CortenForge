@@ -1157,9 +1157,13 @@ fn contacts_as_mujoco(name: &str, model: &Model, qpos: &[f64], want: &Value) {
 /// by the shallower; inside a box, out through the nearest face; a
 /// cylinder's side, either cap and rim; shallow overlaps, each contact
 /// midway between the surfaces; a sphere exactly touching a sphere and a
-/// box's face, listed at distance 0, MuJoCo's tests being inclusive) and at
-/// 40 seeded random poses per pair, a sixth of them degenerate, at geom
-/// margins 0 and 0.02.
+/// box's face, listed at distance 0, MuJoCo's tests being inclusive), at
+/// edge poses on the functions' exact boundaries (a centre on a cylinder's
+/// rim, equidistant from its side and a cap, at a flat cylinder's centre,
+/// touching a cap or at the margin exactly; on a box's edge or corner, at a
+/// tie inside it, 1e-16 outside it; size ratios of 100; a capsule of
+/// half-length 1e-300) and at 40 seeded random poses per pair, a sixth of
+/// them degenerate, at geom margins 0 and 0.02.
 #[test]
 fn sphere_pairs_collide_as_mujoco() {
     pairs_collide_as_mujoco(&golden()["sphere_pairs"]);
@@ -1207,8 +1211,12 @@ fn pairs_collide_as_mujoco(case: &Value) {
 /// face, standing on it, tilted on it, across an edge, along one, which
 /// gives a second contact, over a corner, inside the box, over a turned
 /// box, an end inside a box of half-size 1, where MuJoCo takes no second
-/// point) and at 40 seeded random poses per pair, a sixth of them with the
-/// axis along the other capsule's or a box axis, at geom margins 0 and 0.02.
+/// point), at edge poses on the functions' exact boundaries (a capsule in a
+/// box's face plane, a short one exactly in it, one wholly inside, an end
+/// exactly on a side plane, along an edge line; capsules antiparallel,
+/// nearly parallel, crossing at an end, a half-length of 1e-300) and at 40
+/// seeded random poses per pair, a sixth of them with the axis along the
+/// other capsule's or a box axis, at geom margins 0 and 0.02.
 #[test]
 fn capsule_pairs_collide_as_mujoco() {
     pairs_collide_as_mujoco(&golden()["capsule_pairs"]);
@@ -1216,15 +1224,20 @@ fn capsule_pairs_collide_as_mujoco() {
 
 /// A box against a box on two free bodies, the first box's body first in
 /// the file and second: the contacts are MuJoCo's within 1e-12
-/// (`mjc_BoxBox`, `engine_collision_box.c:604-1214`, and the driver's
-/// box–box filter, `engine_collision_driver.c:1543-1610`), at named poses
+/// (`mjc_BoxBox`, `engine_collision_box.c:604-1339`, and the driver's
+/// box–box filter, `engine_collision_driver.c:1543-1612`), at named poses
 /// (stacked aligned, turned 45° and tilted; an edge on a face, an edge
 /// across an edge, a corner on a face; side by side; one inside the other;
 /// touching exactly, four contacts at distance 0; equal aligned boxes whose
 /// x and y face axes tie exactly, where MuJoCo takes x; a deep overlap of
-/// equally turned boxes whose every contact the filter drops, book Q74) and
-/// at 40
-/// seeded random poses, a sixth of them turned alike or a quarter turn
+/// equally turned boxes whose every contact the filter drops, book Q74), at
+/// edge poses at geom margins 0 and 0.02 (equal boxes tied on two and three
+/// axes, vertex to vertex; an edge parallel to a face, edges crossing and
+/// touching; a needle turned 90° across an edge; a corner on and into an
+/// edge, into a corner and down onto a face; plates and slats crossed; an
+/// edge, a corner, crossed edges and a vertex near touching), at
+/// four poses of one cube against another's corner at margin 0.01, and at
+/// 40 seeded random poses, a sixth of them turned alike or a quarter turn
 /// apart, at geom margins 0 and 0.02.
 #[test]
 fn box_pairs_collide_as_mujoco() {

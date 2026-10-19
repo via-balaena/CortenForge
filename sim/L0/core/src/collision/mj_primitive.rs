@@ -1,10 +1,16 @@
-//! MuJoCo's collision functions for a sphere against a sphere, a capsule, a
-//! cylinder and a box, ported statement for statement
-//! (`engine_collision_primitive.c:25-385`, `engine_collision_box.c:20-92`),
-//! with MuJoCo's helpers (`mju_normalize3`, `mju_clip`, `mju_clampVec`, the
-//! `mji_*` products). Each function takes the sphere first, as MuJoCo's do
-//! (its `mjtGeom` is the lower), and makes at most one contact, its normal
-//! from the sphere to the other geom.
+//! MuJoCo's collision functions for spheres, capsules and boxes, ported
+//! statement for statement: a sphere against a sphere, a capsule, a cylinder
+//! and a box (`engine_collision_primitive.c:245-385`,
+//! `engine_collision_box.c:39-92`), with the plane–sphere function a
+//! cylinder's caps take (`engine_collision_primitive.c:28-50`); a capsule
+//! against a capsule and a box (`engine_collision_primitive.c:389-481`,
+//! `engine_collision_box.c:119-591`); a box against a box
+//! (`engine_collision_box.c:604-1339`) and the driver's box–box filter
+//! (`engine_collision_driver.c:1543-1612`); with MuJoCo's helpers
+//! (`mju_normalize3`, `mju_clip`, `mju_clampVec`, the `mji_*` products).
+//! Each function takes its geoms in MuJoCo's order (the lower `mjtGeom`
+//! first; two boxes as given), each contact's normal from the first to the
+//! second.
 
 use nalgebra::{Matrix3, Vector3};
 
@@ -793,7 +799,7 @@ fn add_scl(res: &mut [f64; 3], v: &[f64; 3], s: f64) {
 
 /// The turn `mjc_BoxBox` puts a box's face at +z with (`rotmore`), and the
 /// same turn as an axis permutation with signs (its `rotaxis` and `rotmatx`
-/// macros, `engine_collision_box.c:744-797`): faces 0, 1, 2 face +x, +y,
+/// macros, `engine_collision_box.c:746-799`): faces 0, 1, 2 face +x, +y,
 /// +z, faces 3, 4, 5 face −x, −y, −z.
 struct FaceTurn {
     rotmore: Mat9,
@@ -846,7 +852,7 @@ impl FaceTurn {
     }
 }
 
-/// `mjc_BoxBox` (`engine_collision_box.c:604-1214`): the separating axes,
+/// `mjc_BoxBox` (`engine_collision_box.c:604-1339`): the separating axes,
 /// the boxes' six face normals and nine edge cross products, the shallowest
 /// overlap kept (an edge axis only where shallower by a factor of
 /// 1 − 1e-12); none past `margin`. Along a face, the other box's face, its
@@ -1103,7 +1109,7 @@ pub(super) fn raw_box_box(
     contacts
 }
 
-/// `mjc_BoxBox`'s edge–edge case (`engine_collision_box.c:991-1214`): the
+/// `mjc_BoxBox`'s edge–edge case (`engine_collision_box.c:984-1339`): the
 /// first box's face nearest the edge pair, turned to z; the second box's
 /// edge and its neighbour projected along the normal onto it; their
 /// crossings of the face's outline, the outline's corners within them, and
@@ -1260,8 +1266,9 @@ fn box_box_edges(
     let nl = out.len();
 
     // The face's corners within the projected edges. MuJoCo's `c1` holds the
-    // determinant, then each kept corner's squared distance, which the
-    // corners after it divide by (`:1213-1262`): as written.
+    // determinant, then the squared distance of each corner past the range
+    // test, kept or not, which the corners after it divide by
+    // (`:1212-1264`): as written.
     let (a, b, c, d) = (pts[1][0], pts[2][0], pts[1][1], pts[2][1]);
     let mut c1 = a * d - b * c;
     for i in 0..4 {
@@ -1343,7 +1350,7 @@ fn box_box_edges(
         .collect()
 }
 
-/// `mju_outsideBox` (`engine_util_misc.c:1217-1253`): 1 where `point` is
+/// `mju_outsideBox` (`engine_util_misc.c:1217-1256`): 1 where `point` is
 /// outside the box of half-sizes `size` grown by `inflate`, −1 inside the
 /// box shrunk by it, 0 between.
 fn outside_box(point: &[f64; 3], frame: Frame<'_>, size: &[f64; 3], inflate: f64) -> i32 {
@@ -1369,7 +1376,7 @@ fn outside_box(point: &[f64; 3], frame: Frame<'_>, size: &[f64; 3], inflate: f64
 }
 
 /// The box–box filter of MuJoCo's driver (`mj_collideGeoms`,
-/// `engine_collision_driver.c:1543-1610`): a contact outside either box
+/// `engine_collision_driver.c:1543-1612`): a contact outside either box
 /// grown by `margin` and 1% (`kRemoveRatio`) and not inside the other's
 /// shrunk by it is dropped, and so is one whose position a later contact
 /// repeats exactly; the rest keep their order. It can drop every contact of

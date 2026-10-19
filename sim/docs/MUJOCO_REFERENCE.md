@@ -80,7 +80,7 @@ Two-mechanism architecture:
 - `apply_pair_overrides` applies per-pair condim/friction/solref/solimp
 
 Narrow phase dispatches analytically for common pairs (sphere-sphere,
-sphere-capsule, box-box via SAT, etc.) and falls back to GJK/EPA for
+sphere-capsule, box-box, etc., as MuJoCo's) and falls back to GJK/EPA for
 remaining convex pairs. Mesh collisions use BVH-accelerated triangle tests.
 
 Output: contact list with position, normal, penetration depth, and geom IDs.

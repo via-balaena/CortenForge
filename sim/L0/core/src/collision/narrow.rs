@@ -138,7 +138,7 @@ pub fn collide_geoms(
         );
     }
 
-    // Special case: box-box collision (SAT)
+    // Special case: box-box collision (MuJoCo's `mjc_BoxBox`)
     if type1 == GeomType::Box && type2 == GeomType::Box {
         return collide_box_box(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,

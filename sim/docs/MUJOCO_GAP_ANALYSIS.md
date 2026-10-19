@@ -320,14 +320,14 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| Sphere-sphere | GJK/EPA | `ContactPoint::sphere_sphere` | **Implemented** | - | - |
+| Sphere-sphere | Native (`mjc_SphereSphere`) | `mj_primitive::raw_sphere_sphere` | **Implemented** | - | - |
 | Sphere-plane | Native | `ContactPoint::sphere_plane` | **Implemented** | - | - |
-| Box-box | GJK/EPA | `ContactPoint::box_box` | **Implemented** | - | - |
-| Box-sphere | GJK/EPA | `ContactPoint::box_sphere` | **Implemented** | - | - |
+| Box-box | Native (`mjc_BoxBox`) | `mj_primitive::raw_box_box` | **Implemented** | - | - |
+| Box-sphere | Native (`mjc_SphereBox`) | `mj_primitive::raw_sphere_box` | **Implemented** | - | - |
 | Box-plane | Native | `ContactPoint::box_plane` | **Implemented** | - | - |
 | Capsule-plane | Native | `ContactPoint::capsule_plane` | **Implemented** | - | - |
-| Capsule-sphere | Native | `ContactPoint::capsule_sphere` | **Implemented** | - | - |
-| Capsule-capsule | Native | `ContactPoint::capsule_capsule` | **Implemented** | - | - |
+| Capsule-sphere | Native (`mjc_SphereCapsule`) | `mj_primitive::raw_sphere_capsule` | **Implemented** | - | - |
+| Capsule-capsule | Native (`mjc_CapsuleCapsule`) | `mj_primitive::raw_capsule_capsule` | **Implemented** | - | - |
 | Cylinder | Native | `CollisionShape::Cylinder` | **Implemented** | - | - |
 | Ellipsoid | Native | `CollisionShape::Ellipsoid` | **Implemented** | - | - |
 | Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |

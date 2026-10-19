@@ -209,8 +209,7 @@ mod tests {
 
     /// Coincident centres, both frames upright: the normal is the cross of
     /// the two z axes, which is 0, so MuJoCo's `mju_normalize3` makes it +x
-    /// (`mjraw_SphereSphere`); the depth is the radii's sum. Before the port
-    /// it was +z.
+    /// (`mjraw_SphereSphere`); the depth is the radii's sum.
     #[test]
     fn sphere_sphere_coincident_takes_the_x_normal() {
         let mut m = make_model(2);

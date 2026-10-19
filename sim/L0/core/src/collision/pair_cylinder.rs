@@ -1,4 +1,5 @@
-//! Analytical pairwise collision for cylinders and box-box SAT.
+//! Analytical pairwise collision for cylinders, and box–box and capsule–box
+//! through MuJoCo's ported functions (`mj_primitive`).
 
 use super::mj_primitive::{Frame, box_box_filter, raw_box_box, raw_capsule_box, sphere_cylinder};
 use super::narrow::{CAP_COLLISION_THRESHOLD, GEOM_EPSILON, make_contact_from_geoms};
@@ -271,10 +272,10 @@ mod tests {
 
     #[test]
     fn cyl_sphere_reversed_order_geom_dispatch() {
-        // Sphere is geom 0 / type1, cylinder geom 1: exercises the dispatcher's
-        // `else` branch. Same geometry as the side-penetration case; because the
-        // cylinder is the higher index the emitted normal is flipped to point
-        // from geom 0 (sphere) toward geom 1 (cylinder) = -X.
+        // Sphere is geom 0 / type1, cylinder geom 1: the dispatcher's `if`
+        // branch, the sphere first as in MuJoCo's type order. Same geometry as
+        // the side-penetration case; the normal points from the sphere toward
+        // the cylinder = -X.
         let mut m = make_model(2);
         m.geom_type[0] = GeomType::Sphere;
         m.geom_size[0] = Vector3::new(0.2, 0.0, 0.0);

@@ -368,7 +368,7 @@ through a bounding-sphere distance cull and narrow-phase, then
 ### Narrow Phase Dispatch
 
 Analytical algorithms for common pairs (sphere-sphere, sphere-capsule,
-capsule-capsule, box-box via SAT, sphere-box, capsule-box, etc.).
+capsule-capsule, box-box, sphere-box, capsule-box, etc., as MuJoCo's).
 GJK/EPA fallback for remaining convex pairs. BVH-accelerated tests for
 triangle meshes.
 
@@ -377,7 +377,7 @@ triangle meshes.
 | Type | `GeomType` | Notes |
 |------|------------|-------|
 | Sphere | `Sphere` | Analytical collisions |
-| Box | `Box` | SAT for box-box |
+| Box | `Box` | MuJoCo's `mjc_BoxBox` for box-box |
 | Capsule | `Capsule` | Analytical line-line distance |
 | Cylinder | `Cylinder` | GJK/EPA fallback for some pairs |
 | Ellipsoid | `Ellipsoid` | GJK/EPA |

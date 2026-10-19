@@ -144,8 +144,8 @@ touching exactly, at distance 0; equal aligned boxes whose x and y face
 axes tie exactly, where MuJoCo takes x; a deep overlap of equally turned boxes
 whose contacts MuJoCo's box-box filter drops, every one, book Q74) and 40
 seeded random poses, a sixth of them turned alike or a quarter turn apart,
-at margins 0 and 0.02: mjc_BoxBox (engine_collision_box.c:604-1214) and the
-driver's box-box filter (engine_collision_driver.c:1543-1610). It refuses a
+at margins 0 and 0.02: mjc_BoxBox (engine_collision_box.c:604-1339) and the
+driver's box-box filter (engine_collision_driver.c:1543-1612). It refuses a
 deep overlap MuJoCo lists a contact for, a touching pose with a contact not
 at distance 0, and random poses that do not make 0, 1 and at least 4
 contacts.
@@ -1073,6 +1073,184 @@ def sphere_touching_xml(other):
             f'<body name="o"><freejoint/>{other}</body></worldbody></mujoco>')
 
 
+# Edge fixtures of the chunk 3e-2 review: poses on the exact boundaries of
+# the colliders' comparisons, at size ratios of 100, with half-lengths of
+# 1e-300 and with margins (reviewer P's, for the sphere and capsule pairs;
+# reviewer B's, for box against box). Each named pose in both file orders.
+NO_TURN = [1, 0, 0, 0]
+T1 = unit([0.8, 0.3, -0.4, 0.33])
+T2 = unit([0.3, 0.9, 0.1, -0.2])
+T3 = unit([0.1, -0.5, 0.7, 0.4])
+X_TURN = unit([1, 0, 1, 0])
+Y_TURN = unit([1, -1, 0, 0])
+EDGE_DIR = unit([0.3, -0.5, 0.8])
+
+
+def sph(r, extra=""):
+    return f'<geom type="sphere" size="{r!r}" {extra}/>'
+
+
+def cap(r, hl, extra=""):
+    return f'<geom type="capsule" size="{r!r} {hl!r}" {extra}/>'
+
+
+def cyl(r, hh, extra=""):
+    return f'<geom type="cylinder" size="{r!r} {hh!r}" {extra}/>'
+
+
+def boxg(x, y, z, extra=""):
+    return f'<geom type="box" size="{x!r} {y!r} {z!r}" {extra}/>'
+
+
+def axis_angle(axis, angle):
+    return np.concatenate([[np.cos(angle / 2)], np.sin(angle / 2) * unit(axis)])
+
+
+EDGE_B = boxg(0.1, 0.07, 0.05)
+EDGE_C1 = cap(0.05, 0.15)
+EDGE_C2 = cap(0.04, 0.12)
+
+# name: (geom 1, geom 2, position 1, quat 1, position 2, quat 2)
+SPHERE_EDGE_POSES = {
+    "ss_ratio_100": (sph(1.0), sph(0.01), [0, 0, 0], NO_TURN, EDGE_DIR * 1.005, NO_TURN),
+    "ss_ratio_1_100": (sph(0.01), sph(1.0), [0, 0, 0], NO_TURN, EDGE_DIR * 1.0099, NO_TURN),
+    "ss_at_margin": (sph(0.5, 'margin="0.125"'), sph(0.25, 'margin="0.125"'), [0, 0, 0], NO_TURN, [1.0, 0, 0], NO_TURN),
+    "ss_past_margin": (sph(0.5, 'margin="0.125"'), sph(0.25, 'margin="0.125"'), [0, 0, 0], NO_TURN,
+                       [1.0000000000000002, 0, 0], NO_TURN),
+    "sc_axis_through_centre": (sph(0.1), cap(0.05, 0.15), [0, 0, 0.0625], T2, [0, 0, 0], NO_TURN),
+    "sc_at_end_exact": (sph(0.1), cap(0.05, 0.15), [0, 0, 0.15], NO_TURN, [0, 0, 0], NO_TURN),
+    "sc_thin": (sph(0.1), cap(1e-4, 1.0), [0.1, 0, 0.3], NO_TURN, [0, 0, 0], NO_TURN),
+    "sc_tiny_half_length": (sph(0.1), cap(0.05, 1e-300), [0.12, 0, 0.03], NO_TURN, [0, 0, 0], T1),
+    "scy_on_side_surface": (sph(0.1), cyl(0.08, 0.12), [0.08, 0, 0.02], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_on_cap_plane": (sph(0.1), cyl(0.08, 0.12), [0.02, 0.01, 0.12], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_equidistant_inside": (sph(0.1), cyl(0.25, 0.5), [0.125, 0, 0.375], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_on_axis_at_cap": (sph(0.1), cyl(0.08, 0.12), [0, 0, 0.12], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_on_rim_exact": (sph(0.1), cyl(0.08, 0.12), [0.08, 0, 0.12], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_on_rim_exact_turned": (sph(0.1), cyl(0.08, 0.12), [0.08, 0, 0.12], T1, [0, 0, 0], NO_TURN),
+    "scy_at_centre_flat": (sph(0.1), cyl(0.2, 0.05), [0, 0, 0], T1, [0, 0, 0], T2),
+    "scy_ratio_1_100_rim": (sph(0.01), cyl(1.0, 1.0), [1.004, 0, 1.004], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_margin_rim": (sph(0.1, 'margin="0.05"'), cyl(0.08, 0.12), [0.16, 0, 0.2], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_cap_touching_exact": (sph(0.25), cyl(0.5, 0.5), [0.125, 0, 0.75], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_cap_at_margin_exact": (sph(0.25, 'margin="0.125"'), cyl(0.5, 0.5, 'margin="0.125"'),
+                                [0.125, 0, 1.0], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_side_touching_exact": (sph(0.25), cyl(0.5, 0.5), [0.75, 0, 0.25], NO_TURN, [0, 0, 0], NO_TURN),
+    "scy_cap_plane_outside_rim": (sph(0.1), cyl(0.08, 0.12), [0.15, 0, 0.12], NO_TURN, [0, 0, 0], NO_TURN),
+    "sb_on_edge": (sph(0.1), EDGE_B, [0.1, 0.01, 0.05], NO_TURN, [0, 0, 0], NO_TURN),
+    "sb_on_corner": (sph(0.1), EDGE_B, [0.1, 0.07, 0.05], NO_TURN, [0, 0, 0], NO_TURN),
+    "sb_cube_centre": (sph(0.1), boxg(0.25, 0.25, 0.25), [0, 0, 0], NO_TURN, [0, 0, 0], NO_TURN),
+    "sb_inside_tie_xy": (sph(0.1), boxg(0.25, 0.25, 0.5), [0.125, 0.125, 0], NO_TURN, [0, 0, 0], NO_TURN),
+    "sb_just_out_1e-16": (sph(0.1), boxg(0.25, 0.25, 0.25), [0, 0, 0.25000000000000006], NO_TURN, [0, 0, 0], NO_TURN),
+    "sb_ratio_1_100_corner": (sph(0.01), boxg(1.0, 1.0, 1.0), [1.004, 1.004, 1.004], NO_TURN, [0, 0, 0], NO_TURN),
+    "sb_at_margin_exact": (sph(0.5, 'margin="0.125"'), boxg(0.25, 0.25, 0.25, 'margin="0.125"'),
+                           [0, 0, 1.0], NO_TURN, [0, 0, 0], NO_TURN),
+}
+CAPSULE_EDGE_POSES = {
+    "cc_antiparallel_side": (EDGE_C1, EDGE_C2, [0, 0, 0], NO_TURN, [0.08, 0, 0.05], [0, 1, 0, 0]),
+    "cc_parallel_inner_short": (EDGE_C1, cap(0.04, 0.05), [0, 0, 0], NO_TURN, [0.06, 0, 0.02], NO_TURN),
+    "cc_near_parallel": (EDGE_C1, EDGE_C2, [0, 0, 0], NO_TURN, [0.07, 0, 0.03], axis_angle([1, 0.3, 0], 1e-6)),
+    "cc_crossing_at_end": (EDGE_C1, EDGE_C2, [0, 0, 0], NO_TURN, [0, 0, 0.15], X_TURN),
+    "cc_thin": (cap(1e-4, 1.0), cap(1e-4, 1.0), [0, 0, 0], X_TURN, [0, 1.5e-4, 0], Y_TURN),
+    "cc_tiny_half_length": (cap(0.05, 1e-300), EDGE_C2, [0.07, 0, 0.0], NO_TURN, [0, 0, 0], NO_TURN),
+    "cb_in_face_plane": (EDGE_C1, EDGE_B, [0, 0, 0.05], X_TURN, [0, 0, 0], NO_TURN),
+    "cb_in_face_plane_short": (cap(0.05, 0.05), EDGE_B, [0, 0, 0.05], X_TURN, [0, 0, 0], NO_TURN),
+    "cb_on_edge_line": (EDGE_C1, EDGE_B, [0, 0.07, 0.05], X_TURN, [0, 0, 0], NO_TURN),
+    "cb_end_at_corner": (cap(0.05, 0.15), EDGE_B, [0.1, 0.07, 0.2], NO_TURN, [0, 0, 0], NO_TURN),
+    "cb_inside_whole": (cap(0.01, 0.03), EDGE_B, [0.01, 0.0, 0.0], T1, [0, 0, 0], NO_TURN),
+    "cb_short_in_face_exact": (cap(0.05, 0.0625), boxg(0.25, 0.25, 0.125), [0, 0, 0.125], [1, 0, 1, 0],
+                               [0, 0, 0], NO_TURN),
+    "cb_end_on_side_plane_exact": (cap(0.05, 0.25), boxg(0.25, 0.25, 0.25), [0.25, 0.0, 0.5], NO_TURN,
+                                   [0, 0, 0], NO_TURN),
+    "cb_end_exactly_on_side_plane": (cap(0.05, 0.25), boxg(0.125, 0.125, 0.125),
+                                     [-0.125, 0, 0.15625], [0.5, 0.5, -0.5, -0.5], [0, 0, 0], NO_TURN),
+    "cb_end_exactly_on_side_plane_y": (cap(0.05, 0.25), boxg(0.125, 0.125, 0.125),
+                                       [0.0625, -0.125, 0.15625], [0.5, -0.5, 0.5, 0.5], [0, 0, 0], NO_TURN),
+    "cb_big_radius_far_segment": (cap(10.0, 0.01), boxg(0.01, 0.01, 0.01), [6.0, 0, 0], NO_TURN, [0, 0, 0], NO_TURN),
+    "cb_margin": (cap(0.05, 0.15, 'margin="0.03"'), boxg(0.1, 0.07, 0.05, 'margin="0.02"'), [0, 0, 0.13],
+                  X_TURN, [0, 0, 0], T1),
+}
+S2, S3 = np.sqrt(2.0), np.sqrt(3.0)
+
+
+def turn(axis, degrees):
+    half = np.radians(degrees) / 2
+    return [np.cos(half)] + list(unit(axis) * np.sin(half))
+
+
+RX45, RY45, RZ45 = turn([1, 0, 0], 45), turn([0, 1, 0], 45), turn([0, 0, 1], 45)
+RX90, RZ90 = turn([1, 0, 0], 90), turn([0, 0, 1], 90)
+CORNER_TO_Z = turn([1, -1, 0], np.degrees(np.arctan(S2)))  # the body diagonal onto z
+CUBE, BOX_B, BOX_C = [0.1, 0.1, 0.1], [0.1, 0.07, 0.05], [0.08, 0.06, 0.04]
+BIG, SMALL = [1.0, 1.0, 1.0], [0.01, 0.01, 0.01]
+PLATE, SLAT, NEEDLE = [0.1, 0.1, 0.0005], [0.2, 0.001, 0.1], [0.0005, 0.0005, 0.1]
+
+# name: (size 1, size 2, position 1, quat 1, position 2, quat 2), each at
+# geom margins 0 and 0.02.
+BOX_EDGE_POSES = {
+    "eq_xy_tie": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0.15, 0.15, 0], NO_TURN),
+    "eq_xyz_tie": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0.15, 0.15, 0.15], NO_TURN),
+    "coplanar_vertex": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0.2, 0.2, 0.2], NO_TURN),
+    "edge_parallel_face": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0, 0, 0.1 + 0.1 * S2 - 0.005], RX45),
+    "edges_cross": (CUBE, CUBE, [0, 0, 0], RY45, [0, 0, 0.2 * S2 - 0.003], RX45),
+    "edges_cross_touching": (CUBE, CUBE, [0, 0, 0], RY45, [0, 0, 0.2 * S2], RX45),
+    "turned_90_x": (BOX_B, BOX_C, [0, 0, 0], NO_TURN, [0.0, 0.01, 0.085], RX90),
+    "small_on_big_edge": (BIG, SMALL, [0, 0, 0], NO_TURN, [1.0, 0.2, 1.0], unit([0.9, 0.2, 0.1, 0.3])),
+    "small_corner_down": (BIG, SMALL, [0, 0, 0], NO_TURN, [0.3, 0.2, 1.0 + 0.01 * S3 - 0.001], CORNER_TO_Z),
+    "plates_crossed": (PLATE, PLATE, [0, 0, 0], NO_TURN, [0.0, 0.0, 0.0008], RZ45),
+    "slats_crossed": (SLAT, SLAT, [0, 0, 0], NO_TURN, [0.0, 0.0, 0.0], RZ90),
+    "needle_across_edge": (CUBE, NEEDLE, [0, 0, 0], NO_TURN, [0.1, 0.0, 0.1], RX90),
+    "corner_on_edge": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0.1, 0.0, 0.1 + 0.1 * S3], CORNER_TO_Z),
+    "corner_into_edge": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0.1, 0.0, 0.1 + 0.1 * S3 - 0.002], CORNER_TO_Z),
+    "corner_into_corner": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0.1, 0.1, 0.1 + 0.1 * S3 - 0.002], CORNER_TO_Z),
+    "near_edge_gap": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0, 0, 0.1 + 0.1 * S2 + 0.005], RX45),
+    "near_corner_gap": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0.02, 0.03, 0.1 + 0.1 * S3 + 0.005], CORNER_TO_Z),
+    "near_edges_cross_gap": (CUBE, CUBE, [0, 0, 0], RY45, [0, 0, 0.2 * S2 + 0.005], RX45),
+    "near_vertex_vertex_gap": (CUBE, CUBE, [0, 0, 0], NO_TURN, [0.205, 0.206, 0.207], unit([0.9, 0.2, 0.3, 0.1])),
+}
+# Cubes of half-size 0.1 at margin 0.01, the first body first, one set
+# against the other's corner (reviewer B's corner-region search): their qpos.
+BOX_CORNER_REGION_QPOS = {
+    "corner_region_0": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.2584503445417744, 0.1890630542817382,
+                        0.1188544562776137, 0.6448842333099749, -0.3876464869601972, -0.393961758610123,
+                        0.5278718211161142],
+    "corner_region_1": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.21094719825846903, 0.1618790061827134,
+                        0.19452885269059295, 0.24867641841136806, 0.807839261994457, -0.5067662966801224,
+                        0.1695396303389252],
+    "corner_region_2": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.2008489463243207, 0.21504658212992178,
+                        0.1441653715727811, 0.39364991616950545, 0.6716758642933554, -0.5276218168105595,
+                        0.33986246519885055],
+    "corner_region_3": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.2375702905530377, 0.1717919098810329,
+                        0.2000975387883117, 0.3421308840077031, -0.13995733700762747, 0.2197698078433102,
+                        0.9028065316480357],
+}
+
+
+def edge_cases(poses):
+    out = {}
+    for name, (first_geom, other_geom, p1, q1, p2, q2) in poses.items():
+        for first in (True, False):
+            xml = pair_xml(first_geom, other_geom, first, 0.0)
+            qpos = pose_qpos(first, p1, q1, p2, q2)
+            out[f"edge_{name}_{'first_first' if first else 'first_second'}"] = {
+                "xml": xml, "qpos": floats(qpos), "contacts": sphere_pair_contacts(xml, qpos)}
+    return out
+
+
+def box_edge_cases():
+    out = {}
+    for name, (s1, s2, p1, q1, p2, q2) in BOX_EDGE_POSES.items():
+        g1, g2 = (boxg(*map(float, s)) for s in (s1, s2))
+        for first in (True, False):
+            for margin in (0.0, 0.02):
+                xml = pair_xml(g1, g2, first, margin)
+                qpos = pose_qpos(first, p1, q1, p2, q2)
+                key = f"edge_{name}_{'first_first' if first else 'first_second'}_margin_{margin!r}"
+                out[key] = {"xml": xml, "qpos": floats(qpos), "contacts": sphere_pair_contacts(xml, qpos)}
+    xml = pair_xml(boxg(*CUBE), boxg(*CUBE), True, 0.01)
+    for name, qpos in BOX_CORNER_REGION_QPOS.items():
+        out[f"edge_{name}"] = {"xml": xml, "qpos": qpos, "contacts": sphere_pair_contacts(xml, qpos)}
+    return out
+
+
 def sphere_pair_cases():
     named = {}
     for name, (other, sp) in SPHERE_TOUCHING.items():
@@ -1088,6 +1266,7 @@ def sphere_pair_cases():
             qpos = pose_qpos(first, sp, sq, op, oq)
             named[f"{name}_{'sphere_first' if first else 'sphere_second'}"] = {
                 "xml": xml, "qpos": floats(qpos), "contacts": sphere_pair_contacts(xml, qpos)}
+    named.update(edge_cases(SPHERE_EDGE_POSES))
     rng = np.random.default_rng(20261018)
     poses = {}
     for other in SPHERE_PAIR_GEOMS:
@@ -1167,6 +1346,7 @@ def capsule_pair_cases():
             qpos = pose_qpos(first, sp, sq, op, oq)
             named[f"{name}_{'capsule_first' if first else 'capsule_second'}"] = {
                 "xml": xml, "qpos": floats(qpos), "contacts": sphere_pair_contacts(xml, qpos)}
+    named.update(edge_cases(CAPSULE_EDGE_POSES))
     rng = np.random.default_rng(20261019)
     poses = {}
     for other in CAPSULE_PAIR_GEOMS:
@@ -1247,6 +1427,7 @@ def box_pair_cases():
                 sys.exit(f"box_pairs {name}: a contact not at distance 0")
             named[f"{name}_{'first_first' if first else 'first_second'}"] = {
                 "xml": xml, "qpos": floats(qpos), "contacts": contacts}
+    named.update(box_edge_cases())
     rng = np.random.default_rng(20261020)
     xmls, cases = {}, []
     for pose in box_random_poses(rng, 40):
