@@ -42,10 +42,9 @@ pub struct ContactPair {
 pub struct Contact {
     /// Contact position in world frame.
     pub pos: Vector3<f64>,
-    /// Contact normal: from geom1 toward geom2 (but for capsule–box, listed in
-    /// MuJoCo's geom order with its normal the other way until book P45 ports
-    /// that collision function), unit as `make_frame` normalises it; one
-    /// shorter than 0.5 is kept as written and refuses the step
+    /// Contact normal: from geom1 toward geom2, unit as `make_frame`
+    /// normalises it; one shorter than 0.5 is kept as written and refuses
+    /// the step
     /// ([`StepError::UndefinedContactFrame`](crate::StepError::UndefinedContactFrame)).
     pub normal: Vector3<f64>,
     /// Penetration depth (positive = penetrating).

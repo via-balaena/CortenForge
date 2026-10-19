@@ -40,6 +40,14 @@ pub trait SupportMap: Bounded {
     /// `direction` need not be unit-length — implementations handle
     /// normalization internally where needed.
     fn support(&self, direction: &Vector3<f64>) -> Point3<f64>;
+
+    /// The shape's centre, where [`gjk_distance`](crate::gjk_distance)
+    /// starts: MuJoCo starts from a geom's position (`mjc_center`,
+    /// `engine_collision_convex.c:95-115`). By default the centre of the
+    /// shape's bounding box.
+    fn center(&self) -> Point3<f64> {
+        self.aabb().center()
+    }
 }
 
 // =============================================================================

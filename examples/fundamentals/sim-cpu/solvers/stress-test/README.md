@@ -33,15 +33,16 @@ column counts those steps.
 
   Solver         Avg iter   Max iter    Drift(mm)  Max depth(mm)   E drift(%)     At cap
   ──────────────────────────────────────────────────────────────────────────────────
-  PGS                47.4        100        0.000         0.0256      +0.0000%    83/2500
-  CG                  1.1          3        0.000         0.0256      -0.0000%     0/2500
-  Newton              0.2          2        0.000         0.0256      -0.0000%     0/2500
+  PGS                48.9        100        0.000         0.0283      +0.0000%    97/2500
+  CG                  1.2         25        0.000         0.0283      +0.0000%     0/2500
+  Newton              1.0          2        0.000         0.0283      +0.0000%     0/2500
 ```
 
-**Key insight:** Newton converges in 0-2 iterations on this simple scene
-(quadratic convergence near the solution), CG in 1-3 with its M^-1
-preconditioner. PGS needs ~47 iterations with coordinate-wise descent and
-uses its whole budget on 83 of the 2500 steps. All three produce an
+**Key insight:** Newton converges in 1-2 iterations on this simple scene
+(quadratic convergence near the solution), CG in about 1 on average with
+its M^-1 preconditioner. PGS needs ~49 iterations with coordinate-wise
+descent and uses its whole budget on 97 of the 2500 steps. MuJoCo 3.5.0
+on the same scene: 48.9, 1.2 and 1.0 on average (measured). All three produce an
 identical, rock-solid stack — the difference is purely in how fast they get
 there.
 
@@ -60,7 +61,11 @@ there.
 Two 0.2m boxes stacked on a ground plane. Multi-contact (4+ contact points
 per box-plane pair), friction coupling (condim=3), gravity loading. Boxes
 start at their rest positions (box_a center z=0.1, box_b center z=0.3) to
-minimize initial transient.
+minimize initial transient. The upper box is 1 cm off the lower one's axis
+in x and in y: an exactly aligned stack of equal boxes is a tie for
+MuJoCo's box–box (`mjc_BoxBox`), which under Newton then lists a contact
+190 mm deep and drifts the stack 1.04 mm (MuJoCo 3.5.0 and sim-core alike,
+measured) — an artifact of the box pair, not of the solvers.
 
 ## Metrics
 

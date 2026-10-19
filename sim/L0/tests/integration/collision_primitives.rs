@@ -42,7 +42,7 @@
 //! | Sphere-Box | Closest point on box | Corner/edge/face |
 //! | Capsule-Capsule | Segment-segment distance | Parallel case |
 //! | Capsule-Box | Segment-box distance | Complex |
-//! | Box-Box | SAT (15 axes) | Edge-edge cases |
+//! | Box-Box | MuJoCo's `mjc_BoxBox` (face and edge axes) | Edge-edge cases |
 //! | Cylinder-Sphere | Side/cap/rim | Analytical |
 //! | Cylinder-Capsule | Axis-axis distance | Analytical |
 
@@ -473,7 +473,11 @@ fn capsule_capsule_perpendicular() {
     );
 }
 
-/// Two capsules touching at endpoints.
+/// Two capsules end to end along one axis: the axes are parallel, so
+/// MuJoCo's `mjraw_CapsuleCapsule` tests each segment's ends against the
+/// other segment and lists two contacts, here the same point twice (the
+/// first capsule's top end against the second's bottom, then the second's
+/// bottom end against the first), each 0.05 deep.
 #[test]
 fn capsule_capsule_endpoint_endpoint() {
     let mjcf = r#"
@@ -507,7 +511,11 @@ fn capsule_capsule_endpoint_endpoint() {
     // Actually: endpoint-to-endpoint distance = 1.35 - 0 = 1.35 (center to center)
     // Capsule 1 top endpoint center at 0.5, capsule 2 bottom endpoint center at 0.85
     // Distance = 0.35, penetration = 0.4 - 0.35 = 0.05
-    assert_eq!(data.ncon, 1, "Expected 1 contact");
+    assert_eq!(data.ncon, 2, "Expected 2 contacts");
+    assert_eq!(
+        data.contacts[0].pos, data.contacts[1].pos,
+        "the same point twice"
+    );
 
     let contact = &data.contacts[0];
     let expected_depth = 0.05;
@@ -721,7 +729,6 @@ fn box_box_edge_edge() {
 
     // Box 2 rotated 45° about Z, its corner extends further toward box 1
     // This creates an edge-edge or vertex-edge contact
-    // The exact depth depends on SAT implementation
     assert!(data.ncon >= 1, "Expected at least 1 contact");
 
     // Just verify contact is detected and has positive depth
@@ -762,12 +769,9 @@ fn box_box_separated() {
 // Phase 2: Box-Box Multi-Contact Tests
 // ============================================================================
 
-/// Aligned boxes face-face → 4 contacts (clipped incident face has 4 corners).
+/// Aligned boxes face-face → 4 contacts, all at depth 0.1.
 ///
 /// Configuration: two 1×1×1 boxes along X, overlapping by 0.1.
-/// Reference face is box1's +X face. Incident face is box2's -X face (1×1).
-/// Clipped polygon = full incident face (fits inside reference face).
-/// All 4 vertices at same depth = 0.1.
 #[test]
 fn box_box_face_face_4_contacts() {
     let mjcf = r#"
@@ -790,8 +794,7 @@ fn box_box_face_face_4_contacts() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward failed");
 
-    // Two aligned cubes: incident face (1×1) fits inside reference face (1×1)
-    // → 4 contacts, all at depth 0.1
+    // Two aligned cubes → 4 contacts, all at depth 0.1
     assert_eq!(
         data.ncon, 4,
         "Aligned box-box face-face should produce 4 contacts, got {}",

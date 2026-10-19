@@ -65,11 +65,14 @@ Two-mechanism architecture:
 **Mechanism 1 (automatic pipeline):**
 - Broad phase: MuJoCo's `mj_broadphase`: bodies swept and pruned, their geoms'
   bounding spheres projected on the rows of `mju_eig3`'s matrix of the geoms'
-  positions' covariance, the bounds cast to `f32`; then each geom pair through
-  the bounding-sphere filter
+  positions' covariance, the bounds cast to `f32`
+- Midphase: MuJoCo's `mj_collideTree`, the two bodies' bounding-volume
+  hierarchies descended together for the geom pairs whose bounding spheres
+  pass and whose boxes overlap
 - Filters (in order): body-pair excludes (`contact_excludes`), explicit pair-set
-  suppression (`contact_pair_set`), same-body, parent-child,
-  contype/conaffinity bitmasks
+  suppression (`contact_pair_set`), same-body, parent-child; then a user's
+  contact filter where one is set (`mjcb_contactfilter`), else the
+  contype/conaffinity bitmasks; then the bounding-sphere filter
 - Narrow phase: per-pair geometry tests
 
 **Mechanism 2 (explicit `<pair>` pipeline):**
@@ -80,7 +83,7 @@ Two-mechanism architecture:
 - `apply_pair_overrides` applies per-pair condim/friction/solref/solimp
 
 Narrow phase dispatches analytically for common pairs (sphere-sphere,
-sphere-capsule, box-box via SAT, etc.) and falls back to GJK/EPA for
+sphere-capsule, box-box, etc., as MuJoCo's) and falls back to GJK/EPA for
 remaining convex pairs. Mesh collisions use BVH-accelerated triangle tests.
 
 Output: contact list with position, normal, penetration depth, and geom IDs.

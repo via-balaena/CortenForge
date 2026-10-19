@@ -540,9 +540,11 @@ fn make_dispatch(
 /// ⛔⛔ **This does NOT implement the CPU's collision filter, and the gap has
 /// widened.**
 ///
-/// `sim_core::collision::check_collision_affinity` can reject a pair SIX ways.
-/// This function implements two of them, and the count is enumerated rather
-/// than asserted so a reader can check it against that function directly:
+/// The CPU's geom-pair filters, `sim_core::collision::bodies_allow` and then
+/// the bitmask (which a user's contact filter replaces), can reject a pair SIX
+/// ways. This function implements two of them, and the count is enumerated
+/// rather than asserted so a reader can check it against those functions
+/// directly:
 ///
 /// | | rule | here? |
 /// |---|---|---|
@@ -552,6 +554,7 @@ fn make_dispatch(
 /// | 4 | same WELD GROUP | ⛔ no |
 /// | 5 | parent weld group (unless FILTERPARENT is off) | ⛔ no |
 /// | 6 | contype/conaffinity bitmask | ✅ yes |
+/// | | a user's contact filter, where set, in place of rule 6 | ⛔ no: never called; rule 6 holds |
 ///
 /// Rule 4 is the newest and the largest: on cf-trike, same-weld pairs alone are
 /// 113 of 183 step-0 contacts.
@@ -578,7 +581,7 @@ fn build_pair_plan(model: &Model) -> Vec<NarrowphasePair> {
             let ct_j = model.geom_contype[j];
             let ca_j = model.geom_conaffinity[j];
 
-            // Affinity check (same as CPU check_collision_affinity)
+            // Bitmask check (the CPU's `bitmask_allows`)
             if (ct_i & ca_j) == 0 && (ct_j & ca_i) == 0 {
                 continue;
             }

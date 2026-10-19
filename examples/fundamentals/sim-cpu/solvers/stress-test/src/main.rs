@@ -3,6 +3,10 @@
 //! Runs all 3 constraint solvers (PGS, CG, Newton) on an identical two-box
 //! stacking scene for 5 seconds, then prints a formatted comparison table
 //! with convergence speed, constraint satisfaction, and stability metrics.
+//! The upper box sits 1 cm off the lower one's axis: an exactly aligned
+//! stack of equal boxes is a tie for MuJoCo's box–box, which under Newton
+//! then lists a contact 190 mm deep and drifts 1.04 mm (MuJoCo 3.5.0 and
+//! sim-core alike, measured), a box–box artifact, not the solvers'.
 //!
 //! No Bevy window — pure sim-core + sim-mjcf.
 //!
@@ -53,7 +57,7 @@ fn mjcf(solver: &str) -> String {
             friction="0.5 0.005 0.001" rgba="0.82 0.22 0.15 1"/>
     </body>
 
-    <body name="box_b" pos="0 0 0.3">
+    <body name="box_b" pos="0.01 0.01 0.3">
       <joint type="free" name="jnt_b"/>
       <geom name="box_b" type="box" size="0.1 0.1 0.1" mass="0.5"
             friction="0.5 0.005 0.001" rgba="0.15 0.45 0.82 1"/>

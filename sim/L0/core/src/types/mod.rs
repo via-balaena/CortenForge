@@ -11,6 +11,7 @@ pub(crate) mod enums;
 pub mod flags;
 pub(crate) mod keyframe;
 pub(crate) mod model;
+pub(crate) mod model_bvh;
 pub(crate) mod model_derived;
 pub(crate) mod model_factories;
 pub(crate) mod model_init;

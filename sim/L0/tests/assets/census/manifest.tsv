@@ -1754,3 +1754,6 @@ f1174cb2e12069ae	sim/L0/tests/integration/rk4_sleep.rs:306
 3e2816c5fef90b61	sim/L0/tests/integration/tendon_implicit.rs:1197
 0e58d0da558fb30a	sim/L0/tests/integration/sensor_phase6_spec_c.rs:1065
 a2f3fa2bbc211634	sim/L0/tests/integration/sensor_phase6_spec_c.rs:1030
+2e33aa8344ee7a12	examples/fundamentals/sim-cpu/solvers/newton/src/main.rs:74
+9bafbf26622bd9f9	examples/fundamentals/sim-cpu/solvers/cg/src/main.rs:67
+a0460cf27607c89b	examples/fundamentals/sim-cpu/solvers/pgs/src/main.rs:71

@@ -73,9 +73,7 @@ The cases:
 - wrap_edges: scenes at the edges of `mju_wrap`'s tests, from reviews'
   sweeps of them: an end on the surface; a segment grazing it; a
   radius of 1e-14, axis-aligned and turned; a cylinder wrap near pi; a
-  radius of 1e-15, turned; a segment tangent to the sphere whose tangent
-  directions' cosine is exactly 1 and which MuJoCo takes the long way round.
-  Each
+  radius of 1e-15, turned. Each
   a sphere and a cylinder in the world with sites x0, x1 and a sidesite,
   four tendons over them (with and without the sidesite); each tendon's
   state after mj_forward. It refuses a scene with a length not finite
@@ -87,6 +85,13 @@ The cases:
   points round to a cosine past 1, so MuJoCo's `length_circle` takes `acos`
   of it and the sphere tendons' length is NaN (`engine_util_misc.c:55-71`).
   It refuses a scene where every length is finite.
+- tangent: a scene, as wrap_edges, whose segment is tangent to the sphere
+  where the sphere wrap's two tangent directions' cosine is exactly 1 and
+  the cross product's sign asks for the long way round: MuJoCo's
+  `length_circle` takes `acos(1)` = 0 and the long way still, so a sphere
+  tendon's length is the straight segment's plus 2 pi r (from the chunk
+  3e-1 review's fix-diff search). It refuses a scene where no sphere
+  tendon's length is the straight segment's plus 2 pi r within 1e-12.
 """
 import json
 import os
@@ -354,10 +359,13 @@ WRAP_EDGES = {
     "rot_radius_1e-14": dict(x0=(1.9970641950622972, 0.1704844136589891, 2.1744182408273915), x1=(2.1723690524171575, -0.6113447126940592, 2.772758799517692),
                 xpos=(2.084716623739727, -0.22043014951753503, 2.473588520172542), quat=(0.6397294299222246, -0.055622188144259406, 0.41141144188066814, 0.6468330960665971),
                 r=1e-14, side=(1.8227075602838276, -0.1733222787061681, 2.611907351770347)),
-    # A segment tangent to the sphere whose tangent directions' cosine is
-    # exactly 1 and whose cross product's sign asks for the long way round:
-    # MuJoCo's length is the straight segment's plus 2 pi r, finite (the chunk
-    # 3e-1 review's fix-diff search).
+}
+
+# A segment tangent to the sphere whose tangent directions' cosine is exactly
+# 1 and whose cross product's sign asks for the long way round: MuJoCo's
+# length is the straight segment's plus 2 pi r, finite (the chunk 3e-1
+# review's fix-diff search).
+TANGENT = {
     "tangent_long_way": dict(x0=(0.25630755772194524, -0.25596568494771627, -0.1189541478111005),
                 x1=(0.28955104644264124, 0.016706109745594777, 0.2028893005753183),
                 xpos=(0.0, 0.0, 0.0), quat=None, r=0.3, side=(0.0, 0.9, 0.0)),
@@ -422,6 +430,20 @@ def grazing():
         case = sphere_wrap(wrap_edge_xml(name, **spec), name, [], False)
         if all(np.isfinite(t["ten_length"]) for t in case["forward"]):
             sys.exit(f"grazing {name}: every length is finite")
+        out[name] = case
+    return out
+
+
+def tangent():
+    """TANGENT as scenes, as wrap_edges. It refuses a scene where no sphere
+    tendon's length is the straight segment's plus 2 pi r."""
+    out = {}
+    for name, spec in TANGENT.items():
+        case = sphere_wrap(wrap_edge_xml(name, **spec), name, [], False)
+        straight = float(np.linalg.norm(np.subtract(spec["x1"], spec["x0"])))
+        circle = 2 * np.pi * spec["r"]
+        if not any(abs(t["ten_length"] - straight - circle) <= 1e-12 for t in case["forward"][:2]):
+            sys.exit(f"tangent {name}: no sphere tendon goes the long way round")
         out[name] = case
     return out
 
@@ -661,6 +683,7 @@ def main():
         "tendon_motors": tendon_motors(),
         "wrap_edges": wrap_edges(),
         "grazing": grazing(),
+        "tangent": tangent(),
     }
     check_planes(cases)
     out = {"oracle": marker, "cases": finite_or_string(cases)}

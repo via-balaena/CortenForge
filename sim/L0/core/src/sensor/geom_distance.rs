@@ -99,14 +99,23 @@ pub fn geom_distance(
         }
         (dist, fromto)
     } else {
-        // Non-overlapping — use GJK distance to get closest points
+        // Non-overlapping — use GJK distance to get closest points. MuJoCo's
+        // GJK stops two boxes, meshes or height fields without a margin at a
+        // tolerance of 0 (`discreteGeoms`, `engine_collision_gjk.c:159-167`),
+        // and the sensor's geoms have none (`engine_support.c:539-540`); of
+        // those types only boxes reach here (`geom_to_shape`).
+        let tolerance = if gtype1 == GeomType::Box && gtype2 == GeomType::Box {
+            0.0
+        } else {
+            model.ccd_tolerance
+        };
         if let Some(dist_result) = gjk_distance(
             &shape1,
             &pose1,
             &shape2,
             &pose2,
             model.ccd_iterations,
-            model.ccd_tolerance,
+            tolerance,
         ) {
             let fromto = [
                 dist_result.witness_a.x,

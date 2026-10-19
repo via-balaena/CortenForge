@@ -1229,9 +1229,9 @@ deformable dynamics, edge constraint assembly.
 ##### 19. `collision-pairs/` — All Primitive Pair Functions
 
 The collision module has specialized narrow-phase functions for every
-geometry pair type (~2,600 LOC across pair_convex.rs, pair_cylinder.rs,
-plane.rs). Each pair function handles the geometry-specific math — SAT for
-boxes, analytic for spheres, clipping for cylinders. These are exercised
+geometry pair type (pair_convex.rs, pair_cylinder.rs, plane.rs and
+mj_primitive.rs). Each pair function handles the geometry-specific math, the
+sphere, capsule and box pairs as MuJoCo's own functions. These are exercised
 indirectly by other examples but never isolated.
 
 **Examples:**
@@ -1240,8 +1240,8 @@ indirectly by other examples but never isolated.
    cylinder, sphere-plane. Drop each pair, verify contact normal points
    from shape A to shape B, contact depth matches analytical overlap.
 
-2. **box-pairs** — Box-box (SAT + polygon clipping), box-capsule (polyhedral
-   clipping), box-plane (4-corner contacts), box-cylinder. The complex
+2. **box-pairs** — Box-box and box-capsule (MuJoCo's `mjc_BoxBox` and
+   `mjc_CapsuleBox`), box-plane (4-corner contacts), box-cylinder. The complex
    cases: box-box at a tilted angle generates edge-edge contacts. Verify
    stable stacking for each.
 
@@ -1258,9 +1258,9 @@ indirectly by other examples but never isolated.
    - Sphere-sphere: contact depth = r1 + r2 - dist(c1, c2)
    - Sphere-plane: contact depth = radius - height
    - Box-plane: 1-4 contacts depending on orientation
-   - Box-box: SAT separating axis correct
+   - Box-box: MuJoCo's contacts
    - Capsule-capsule: up to 2 contacts (end-end, end-side, side-side)
-   - Capsule-capsule near-parallel: correct fallback
+   - Capsule-capsule near-parallel: MuJoCo's contacts
    - Contact normal is unit length (|n| = 1.0 ± 1e-10)
    - Contact normal points from geom1 to geom2
    - Separated pair: zero contacts
@@ -1275,8 +1275,8 @@ indirectly by other examples but never isolated.
 **Concepts covered:** `collide_sphere_sphere()`, `collide_capsule_capsule()`,
 `collide_sphere_capsule()`, `collide_sphere_box()`, `collide_cylinder_sphere()`,
 `collide_cylinder_capsule()`, `collide_capsule_box()`, `collide_box_box()`,
-`collide_with_plane()`, GJK/EPA fallback, SAT (separating axis theorem),
-polygon clipping, contact normal convention, contact depth.
+`collide_with_plane()`, GJK/EPA fallback, contact normal convention,
+contact depth.
 
 ##### 20. `plugins/` — Custom Sensors and Forces
 

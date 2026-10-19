@@ -107,9 +107,19 @@ pub type CbPassive = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 /// [`MjStage`]: crate::MjStage
 pub type CbControl = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 
-/// Contact filter callback: called after affinity check in collision.
+/// Contact filter callback, in place of the geoms' contype/conaffinity test.
 ///
-/// Arguments: `(model, data, geom1_id, geom2_id)`.
+/// Called for each geom pair of a pair of bodies the broadphase passes (and,
+/// where it runs, the midphase), as MuJoCo's `mjcb_contactfilter`
+/// (`engine_collision_driver.c:1493-1507`): a pair the bitmask would reject
+/// still collides if the filter keeps it. Not called for explicit `<pair>`s,
+/// for pairs the bodies' filters drop (excluded, the same weld group, a
+/// parent's), nor for a plane or a height field with a plane or a height
+/// field, which MuJoCo has no collision function for.
+///
+/// Arguments: `(model, data, geom1_id, geom2_id)`, the geom of the lower
+/// MuJoCo type first (`mjtGeom`: plane, height field, sphere, capsule,
+/// ellipsoid, cylinder, box, mesh, SDF), as MuJoCo passes them.
 /// Return `true` to KEEP the contact, `false` to REJECT it.
 ///
 /// **Polarity note**: MuJoCo's `mjcb_contactfilter` has the *opposite* convention —

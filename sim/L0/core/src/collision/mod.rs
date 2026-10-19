@@ -14,6 +14,8 @@ pub(crate) mod flex_narrow;
 pub(crate) mod flex_self;
 pub(crate) mod hfield;
 pub(crate) mod mesh_collide;
+mod midphase;
+mod mj_primitive;
 pub(crate) mod narrow;
 mod order;
 pub(crate) mod pair_convex;
@@ -28,33 +30,36 @@ pub(crate) mod sdf_collide;
 // module. No pub(crate) re-export needed.
 
 use crate::types::{
-    Contact, DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE,
-    ENABLE_SLEEP, GeomType, Model, SleepState, disabled, enabled,
+    Contact, DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, DISABLE_MIDPHASE, Data,
+    ENABLE_OVERRIDE, ENABLE_SLEEP, GeomType, Model, SleepState, disabled, enabled,
 };
 
 use self::broadphase::{BodyGeoms, body_pairs, filter_sphere};
 use self::hfield::collide_hfield_multi;
+use self::midphase::collide_tree;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
-use self::order::{ListPlace, Lister, flex_place, pair_place};
+use self::order::{ListPlace, Lister, flex_place, pair_place, type_ordered};
 use self::pairs::{mj_collide_flex_flex, mj_collision_flex, mj_collision_flex_self};
 
 // ============================================================================
 // Collision affinity filtering
 // ============================================================================
 
-/// Check if two geometries can collide based on contype/conaffinity bitmasks.
-///
-/// Following MuJoCo's collision filtering:
-/// 1. Same body - no collision
-/// 2. Parent-child (adjacent bodies in kinematic tree) - no collision
-///    Exception: World body (0) collides with all non-child bodies
-/// 3. contype/conaffinity check: (c1 & a2) != 0 || (c2 & a1) != 0
+/// Whether two geoms' bodies may collide, the filters MuJoCo applies to the
+/// pair of bodies (`engine_collision_driver.c:160-186`, `:332-343`):
+/// 1. an excluded body pair (`<contact><exclude>`) - no collision
+/// 2. an explicit `<pair>` of these geoms - collided with the explicit pairs
+/// 3. Same body - no collision
+/// 4. Same weld group, or one the other's parent group - no collision
+///    Exception: the world's group is exempt from the parent rule
 ///
 /// The world body exception ensures ground planes can collide with objects
-/// even when those objects are direct children of the world body.
+/// even when those objects are direct children of the world body. The
+/// geoms' own bitmask is [`bitmask_allows`], which the user's contact
+/// filter replaces.
 #[allow(clippy::inline_always)] // Hot path - profiling shows inlining improves debug performance
 #[inline(always)]
-pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize) -> bool {
+pub(crate) fn bodies_allow(model: &Model, geom1: usize, geom2: usize) -> bool {
     let body1 = model.geom_body[geom1];
     let body2 = model.geom_body[geom2];
 
@@ -115,8 +120,13 @@ pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize
             return false;
         }
     }
+    true
+}
 
-    // contype/conaffinity bitmask check
+/// Whether two geoms' contype/conaffinity bitmasks let them collide,
+/// `(c1 & a2) != 0 || (c2 & a1) != 0` (MuJoCo's `filterBitmask`,
+/// `engine_collision_driver.c:99-102`, negated).
+fn bitmask_allows(model: &Model, geom1: usize, geom2: usize) -> bool {
     let c1 = model.geom_contype[geom1];
     let a1 = model.geom_conaffinity[geom1];
     let c2 = model.geom_contype[geom2];
@@ -440,9 +450,11 @@ pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
 ///
 /// Following `MuJoCo`'s `mj_collision` (`engine_collision_driver.c:264-482`):
 /// 1. Broadphase: the pairs of bodies MuJoCo's `mj_broadphase` passes
-///    (`broadphase`), each pair's geoms in turn
-/// 2. The geom pair's filters: exclusions, explicit pairs, weld groups and
-///    contype/conaffinity, the user's filter, the bounding spheres
+///    (`broadphase`); within a pair, the geom pairs MuJoCo's midphase
+///    passes (`midphase`), or each pair's geoms in turn
+/// 2. The geom pair's filters: exclusions, explicit pairs, weld groups,
+///    then the user's filter where one is set and the contype/conaffinity
+///    bitmask where none is, then the bounding spheres
 /// 3. Narrow-phase: analytical or GJK/EPA collision detection
 /// 4. The explicit pairs, the flexes, and the list in MuJoCo's order (`order`)
 ///
@@ -468,78 +480,35 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         let lister = Lister::new(model);
 
         // MuJoCo's broadphase (`broadphase`): pairs of bodies in signature
-        // order, a repeated pair once (`engine_collision_driver.c:307-312`);
-        // within a pair, the first body's geoms in turn against the second's.
+        // order, a repeated pair once (`engine_collision_driver.c:307-312`).
         // A sleeping body is dropped there, with the body-level filters.
+        // Within a pair (`:354-387`), two single-geom bodies collide their one
+        // pair; other bodies the geom pairs the midphase (`midphase`) finds
+        // overlapping; without the midphase, or a body without a hierarchy,
+        // the first body's geoms in turn against the second's.
         let body_geoms = BodyGeoms::new(model);
+        let midphase = !disabled(model, DISABLE_MIDPHASE);
         let mut previous = None;
+        let mut geom_pairs: Vec<(usize, usize)> = Vec::new();
+        let mut tree_stack: Vec<(usize, usize)> = Vec::new();
         for (body1, body2) in body_pairs(model, data, &body_geoms) {
             if previous == Some((body1, body2)) {
                 continue;
             }
             previous = Some((body1, body2));
-            for &geom1 in body_geoms.of(body1) {
-                for &geom2 in body_geoms.of(body2) {
-                    // Affinity check: exclusions, explicit pairs, weld groups,
-                    // contype/conaffinity.
-                    if !check_collision_affinity(model, geom1, geom2) {
-                        continue;
-                    }
-
-                    // DT-79: User contact filter callback (if set).
-                    // Return false to reject this pair.
-                    if let Some(ref cb) = model.cb_contactfilter
-                        && !(cb.0)(model, data, geom1, geom2)
-                    {
-                        continue;
-                    }
-
-                    // Get world-space poses
-                    let pos1 = data.geom_xpos[geom1];
-                    let mat1 = data.geom_xmat[geom1];
-                    let pos2 = data.geom_xpos[geom2];
-                    let mat2 = data.geom_xmat[geom2];
-
-                    // Compute effective margin for this pair.
-                    // S10: assign_margin returns o_margin directly when override active.
-                    let margin =
-                        assign_margin(model, model.geom_margin[geom1] + model.geom_margin[geom2]);
-
-                    // MuJoCo's bounding-sphere filter (`mj_filterSphere`).
-                    if filter_sphere(model, data, geom1, geom2, margin) {
-                        continue;
-                    }
-
-                    // Check if either geom is a heightfield — use multi-contact path.
-                    // EXCLUDE SDF-Hfield pairs: MuJoCo uses mjc_HFieldSDF (not
-                    // mjc_ConvexHField) for that pair, and CortenForge's collide_with_sdf
-                    // already handles it.
-                    let is_hfield_pair = (model.geom_type[geom1] == GeomType::Hfield
-                        || model.geom_type[geom2] == GeomType::Hfield)
-                        && model.geom_type[geom1] != GeomType::Sdf
-                        && model.geom_type[geom2] != GeomType::Sdf;
-
-                    if is_hfield_pair {
-                        let hf_contacts = collide_hfield_multi(
-                            model, geom1, geom2, pos1, mat1, pos2, mat2, margin,
-                        );
-                        for mut contact in hf_contacts {
-                            places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
-                            data.contacts.push(contact);
-                            data.ncon += 1;
-                        }
-                    } else {
-                        // Midphase BVH culling is active for mesh pairs and gated by
-                        // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
-                        let contacts =
-                            collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-                        for mut contact in contacts {
-                            places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
-                            data.contacts.push(contact);
-                            data.ncon += 1;
-                        }
-                    }
+            let (geoms1, geoms2) = (body_geoms.of(body1), body_geoms.of(body2));
+            geom_pairs.clear();
+            let single = geoms1.len() == 1 && geoms2.len() == 1;
+            if single
+                || !midphase
+                || !collide_tree(model, data, body1, body2, &mut geom_pairs, &mut tree_stack)
+            {
+                for &geom1 in geoms1 {
+                    geom_pairs.extend(geoms2.iter().map(|&geom2| (geom1, geom2)));
                 }
+            }
+            for &(geom1, geom2) in &geom_pairs {
+                collide_geom_pair(model, data, &lister, &mut places, geom1, geom2);
             }
         }
 
@@ -631,6 +600,87 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     listed.sort_by_key(|(place, _)| *place);
     data.contacts
         .extend(listed.into_iter().map(|(_, contact)| contact));
+}
+
+/// Collide one geom pair of a pair of bodies and list its contacts as MuJoCo
+/// does (`mj_collideGeomPair`, `mj_collideGeoms`,
+/// `engine_collision_driver.c:496-519`, `:1453-1529`): the bodies' filters,
+/// the user's filter or else the bitmask, the bounding spheres, then the
+/// narrow phase.
+fn collide_geom_pair(
+    model: &Model,
+    data: &mut Data,
+    lister: &Lister,
+    places: &mut Vec<ListPlace>,
+    geom1: usize,
+    geom2: usize,
+) {
+    // The body pair's filters: exclusions, explicit pairs, weld groups.
+    if !bodies_allow(model, geom1, geom2) {
+        return;
+    }
+
+    // MuJoCo takes the pair in type order, the lower `mjtGeom` first, and
+    // collides nothing where it has no collision function: a plane or a
+    // height field with a plane or a height field (`:1475-1490`, `:41-53`).
+    let (typed1, typed2) = type_ordered(model, (geom1, geom2));
+    let flat = |g: usize| matches!(model.geom_type[g], GeomType::Plane | GeomType::Hfield);
+    if flat(typed1) && flat(typed2) {
+        return;
+    }
+
+    // DT-79: the user's contact filter, given the pair in type order, in
+    // place of the bitmask, as MuJoCo's (`:1493-1507`). Return false to
+    // reject the pair.
+    let allowed = match model.cb_contactfilter {
+        Some(ref cb) => (cb.0)(model, data, typed1, typed2),
+        None => bitmask_allows(model, geom1, geom2),
+    };
+    if !allowed {
+        return;
+    }
+
+    // Get world-space poses
+    let pos1 = data.geom_xpos[geom1];
+    let mat1 = data.geom_xmat[geom1];
+    let pos2 = data.geom_xpos[geom2];
+    let mat2 = data.geom_xmat[geom2];
+
+    // Compute effective margin for this pair.
+    // S10: assign_margin returns o_margin directly when override active.
+    let margin = assign_margin(model, model.geom_margin[geom1] + model.geom_margin[geom2]);
+
+    // MuJoCo's bounding-sphere filter (`mj_filterSphere`).
+    if filter_sphere(model, data, geom1, geom2, margin) {
+        return;
+    }
+
+    // Check if either geom is a heightfield — use multi-contact path.
+    // EXCLUDE SDF-Hfield pairs: MuJoCo uses mjc_HFieldSDF (not
+    // mjc_ConvexHField) for that pair, and CortenForge's collide_with_sdf
+    // already handles it.
+    let is_hfield_pair = (model.geom_type[geom1] == GeomType::Hfield
+        || model.geom_type[geom2] == GeomType::Hfield)
+        && model.geom_type[geom1] != GeomType::Sdf
+        && model.geom_type[geom2] != GeomType::Sdf;
+
+    if is_hfield_pair {
+        let hf_contacts = collide_hfield_multi(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
+        for mut contact in hf_contacts {
+            places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
+            data.contacts.push(contact);
+            data.ncon += 1;
+        }
+    } else {
+        // Midphase BVH culling is active for mesh pairs and gated by
+        // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
+        let contacts = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
+        for mut contact in contacts {
+            places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
+            data.contacts.push(contact);
+            data.ncon += 1;
+        }
+    }
 }
 
 // =============================================================================

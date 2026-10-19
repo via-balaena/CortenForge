@@ -355,8 +355,9 @@ MuJoCo's two-mechanism architecture:
 
 | Phase | Method | Output |
 |-------|--------|--------|
-| Broad | MuJoCo's `mj_broadphase`: bodies swept and pruned, their geoms' bounding spheres projected on the rows of `mju_eig3`'s matrix of the geoms' positions' covariance, the bounds cast to `f32`; then each geom pair through the bounding-sphere filter | Candidate pairs |
-| Filter | Body-pair excludes, explicit pair-set suppression, same-body, parent-child, contype/conaffinity bitmasks | Filtered pairs |
+| Broad | MuJoCo's `mj_broadphase`: bodies swept and pruned, their geoms' bounding spheres projected on the rows of `mju_eig3`'s matrix of the geoms' positions' covariance, the bounds cast to `f32` | Candidate pairs |
+| Mid | MuJoCo's `mj_collideTree`: two bodies' bounding-volume hierarchies descended together, the geom pairs whose bounding spheres pass and whose boxes overlap | Geom pairs |
+| Filter | Body-pair excludes, explicit pair-set suppression, same-body, parent-child; then a user's contact filter where one is set, else the contype/conaffinity bitmasks; then the bounding-sphere filter | Filtered pairs |
 | Narrow | Per-pair geometry tests | Contact points |
 
 **Mechanism 2 (explicit `<pair>` pipeline):**
@@ -368,7 +369,7 @@ through a bounding-sphere distance cull and narrow-phase, then
 ### Narrow Phase Dispatch
 
 Analytical algorithms for common pairs (sphere-sphere, sphere-capsule,
-capsule-capsule, box-box via SAT, sphere-box, capsule-box, etc.).
+capsule-capsule, box-box, sphere-box, capsule-box, etc., as MuJoCo's).
 GJK/EPA fallback for remaining convex pairs. BVH-accelerated tests for
 triangle meshes.
 
@@ -377,7 +378,7 @@ triangle meshes.
 | Type | `GeomType` | Notes |
 |------|------------|-------|
 | Sphere | `Sphere` | Analytical collisions |
-| Box | `Box` | SAT for box-box |
+| Box | `Box` | MuJoCo's `mjc_BoxBox` for box-box |
 | Capsule | `Capsule` | Analytical line-line distance |
 | Cylinder | `Cylinder` | GJK/EPA fallback for some pairs |
 | Ellipsoid | `Ellipsoid` | GJK/EPA |

@@ -630,7 +630,7 @@ fn sphere_plane_zero_radius() {
 /// Box with all dimensions equal (cube).
 ///
 /// This is not degenerate per se, but tests that cube special cases
-/// don't cause issues in SAT.
+/// don't cause issues in the box–box function.
 #[test]
 fn box_box_cubes() {
     let mjcf = r#"

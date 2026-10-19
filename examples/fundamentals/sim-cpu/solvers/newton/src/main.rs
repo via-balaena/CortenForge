@@ -3,7 +3,7 @@
 //! Two boxes stacked on a ground plane, solved with Newton (primal-space,
 //! H^-1 preconditioner, line search). The HUD shows per-step iteration
 //! count, whether Newton stopped on its tolerance or at its iteration cap,
-//! and max contact penetration. Newton converges in 0-2 iterations on this
+//! and max contact penetration. Newton converges in 1-2 iterations on this
 //! simple scene (quadratic convergence).
 //!
 //! Validates:
@@ -62,7 +62,7 @@ use sim_core::validation::{Check, print_report};
 //     7. Convergence: if improvement < tol OR |grad| < tol, stop
 //
 //   Properties:
-//   - Quadratic convergence near solution → fewest iterations (0-2 here)
+//   - Quadratic convergence near solution → fewest iterations (1-2 here)
 //   - Most expensive per-iteration (Hessian assembly + factorization)
 //   - At its iteration cap it keeps its last iterate, as MuJoCo's does
 //   - Best for: precision-critical contact scenarios, complex friction cones
@@ -89,7 +89,7 @@ const MJCF: &str = r#"
             friction="0.5 0.005 0.001" rgba="0.82 0.22 0.15 1"/>
     </body>
 
-    <body name="box_b" pos="0 0 0.3">
+    <body name="box_b" pos="0.01 0.01 0.3">
       <joint type="free" name="jnt_b"/>
       <geom name="box_b" type="box" size="0.1 0.1 0.1" mass="0.5"
             friction="0.5 0.005 0.001" rgba="0.15 0.45 0.82 1"/>
