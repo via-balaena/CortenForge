@@ -6,7 +6,7 @@
 //!
 //! - **PGS** (left) — Projected Gauss-Seidel, ~49 iterations
 //! - **CG** (center) — Conjugate Gradient, ~1 iteration
-//! - **Newton** (right) — Full Newton, ~0 iterations
+//! - **Newton** (right) — Full Newton, ~1 iteration
 //!
 //! Run with: `cargo run -p example-solver-comparison-visual --release`
 

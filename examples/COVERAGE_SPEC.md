@@ -1229,8 +1229,8 @@ deformable dynamics, edge constraint assembly.
 ##### 19. `collision-pairs/` — All Primitive Pair Functions
 
 The collision module has specialized narrow-phase functions for every
-geometry pair type (~2,600 LOC across pair_convex.rs, pair_cylinder.rs,
-plane.rs). Each pair function handles the geometry-specific math, the
+geometry pair type (pair_convex.rs, pair_cylinder.rs, plane.rs and
+mj_primitive.rs). Each pair function handles the geometry-specific math, the
 sphere, capsule and box pairs as MuJoCo's own functions. These are exercised
 indirectly by other examples but never isolated.
 
@@ -1260,7 +1260,7 @@ indirectly by other examples but never isolated.
    - Box-plane: 1-4 contacts depending on orientation
    - Box-box: MuJoCo's contacts
    - Capsule-capsule: up to 2 contacts (end-end, end-side, side-side)
-   - Capsule-capsule near-parallel: correct fallback
+   - Capsule-capsule near-parallel: MuJoCo's contacts
    - Contact normal is unit length (|n| = 1.0 ± 1e-10)
    - Contact normal points from geom1 to geom2
    - Separated pair: zero contacts

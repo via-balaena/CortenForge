@@ -86,7 +86,7 @@ axis across its median, a body of visual geoms and one with none (mjCBody::Compu
 user_objects.cc:2323-2335, :396-543; user_model.cc:2700-2712): each body's
 margin, address and count, each node's box in its body's inertial frame,
 children, geom and depth, and the bodies' inertial frames. In `filter`,
-for two scenes of bodies of several geoms, each with its inertial frame
+for scenes of bodies of several geoms, each with its inertial frame
 given (sim-mjcf's principal axes are not MuJoCo's on many bodies, book
 Rigid-loading L03 and ledger L195, and the boxes are in that frame), the geom pairs MuJoCo's contact
 filter is called with, in order, and the contacts (geoms, `dist`), with
@@ -1732,8 +1732,8 @@ def random_pose_qpos(rng):
 
 def geom_distance_random_cases():
     """Per pair of types, the first 12 seeded random poses apart (0 < distance
-    < the cutoff) where MuJoCo's distance is not 0; the poses where it is 0
-    are `s3d_stale`'s."""
+    < the cutoff) where MuJoCo's distance is not 0; such poses are
+    `s3d_stale`'s kind."""
     rng = np.random.default_rng(20261018)
     out = {}
     for type_a, type_b in RANDOM_APART_TYPES:

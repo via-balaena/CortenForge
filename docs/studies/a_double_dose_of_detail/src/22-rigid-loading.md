@@ -389,7 +389,7 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
 - **Breaking:** the `MeshInertia` default; the meaning of a mesh geom's `geom_pos`/`geom_quat` and of `TriangleMeshData` vertices (Q63, listed as a 0.10 break).
 - **Also (ledger-L176):** with the mesh frame MuJoCo's, `geom_rbound` is MuJoCo's: the collision golden's `bounds` case then compares the mesh's radius too, and the plane–mesh spacing (`mesh_collide.rs`) takes `geom_rbound` in place of the box's half-diagonal, with two meshes added to the `plane_mesh` golden where the two differ (measured by chunk 3e's light verification): `c007e1ec`'s pyramid (vertices `-1 -1 -2.5` … `0 0 7.5`, its base 0.001 into the plane: MuJoCo lists 2 corners, the half-diagonal 3) and a 4 × 0.7 × 0.5 box turned 45° in its vertex data (MuJoCo 3, the half-diagonal 2).
 
-- **Also (ledger-L195):** a mesh geom's box (`geom_aabb`) and its body's hierarchy are not compared with MuJoCo's, whose box comes from its f32 vertices in its mesh frame (chunk 3e's second pull request).
+- **Also (ledger-L195):** a mesh geom's box (`geom_aabb`) and its body's hierarchy are not compared with MuJoCo's, whose box comes from its f32 vertices in its mesh frame (chunk 3e's second pull request); and GJK starts a mesh from its geom's position (since that pull request), MuJoCo's at the mesh's centre of mass, ours the file's origin until this entry.
 
 ### L36 · A10 MH5 · `fix(sim-mjcf): STL vertices deduplicated as MuJoCo; non-finite vertices refused; left-handed scale; binary STL by size` — cross-crate (mesh-io)
 - **Closes:** the known divergence "STL vertex deduplication" (01-decisions); the NaN-STL hang (A10 §1); Q108 (11-settled #14: mesh-io STEP keys sorted).
