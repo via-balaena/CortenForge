@@ -47,8 +47,9 @@ rayon = { workspace = true, optional = true }
 approx = { workspace = true }
 # Random input generation for collision and solver stress tests
 rand = { workspace = true }
-# JSON fixtures and golden files for integration tests
-serde_json = { workspace = true }
+# JSON fixtures and golden files for tests. `float_roundtrip` parses each
+# number to the f64 Python wrote, which a bit-for-bit golden needs.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 # criterion benches live in the sibling `sim-core-benches` crate
 # (L0 plan §4.2: keeps criterion + plotters out of sim-core's dev-graph).

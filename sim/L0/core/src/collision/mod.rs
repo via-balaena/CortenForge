@@ -15,6 +15,10 @@ pub(crate) mod flex_self;
 pub(crate) mod hfield;
 pub(crate) mod mesh_collide;
 mod midphase;
+// Unused by the narrow phase until convex pairs collide through `mjc_Convex`
+// (book P50).
+#[allow(dead_code)]
+mod mj_ccd;
 mod mj_primitive;
 pub(crate) mod narrow;
 mod order;
