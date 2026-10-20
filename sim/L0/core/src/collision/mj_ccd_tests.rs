@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::{CcdConfig, CcdMesh, CcdObj, CcdStatus, HullGraph, STALE_S3D, mjc_ccd};
 use crate::mesh::TriangleMeshData;
-use crate::mesh_polygons::MeshPolygons;
+use crate::mesh_polygons::{MeshPolygons, make_polygons};
 use crate::types::GeomType;
 
 fn golden() -> Value {
@@ -269,7 +269,7 @@ fn mjc_ccd_matches_mujoco_bitwise() {
     let groups = doc.as_object().expect("the golden's groups");
     for (group, cases) in groups
         .iter()
-        .filter(|(k, _)| !["oracle", "meshes"].contains(&k.as_str()))
+        .filter(|(k, _)| !["oracle", "meshes", "merge"].contains(&k.as_str()))
     {
         let cases = cases.as_object().expect("a group of cases");
         assert!(!cases.is_empty(), "no {group} cases");
@@ -348,6 +348,46 @@ fn mesh_polygons_are_mujocos() {
             );
         }
     }
+}
+
+/// `MakePolygons` where its comparison is not a strict weak order: on the
+/// golden's `merge` meshes, whose hulls hold neighbouring faces nearer than
+/// the merge tolerance, our merge of MuJoCo's own hull faces gives MuJoCo's
+/// polygons in its order, each from its corner, and each vertex's polygons.
+#[test]
+fn polygon_merge_is_mujocos_from_its_hull_faces() {
+    let doc = golden();
+    let merge = doc["merge"].as_object().expect("merge meshes");
+    assert!(!merge.is_empty(), "no merge meshes");
+    let mut differ = Vec::new();
+    for (name, m) in merge {
+        let faces: Vec<[usize; 3]> = m["faces"]
+            .as_array()
+            .expect("faces")
+            .iter()
+            .map(|f| {
+                let f = counts(f);
+                [f[0], f[1], f[2]]
+            })
+            .collect();
+        let ours = make_polygons(&points(&m["vert"]), &faces);
+        let paths: Vec<Vec<usize>> = m["polygons"]
+            .as_array()
+            .expect("polygons")
+            .iter()
+            .map(counts)
+            .collect();
+        let map: Vec<Vec<usize>> = m["polymap"]
+            .as_array()
+            .expect("a polygon map")
+            .iter()
+            .map(counts)
+            .collect();
+        if ours.paths != paths || ours.map != map {
+            differ.push(name.as_str());
+        }
+    }
+    assert!(differ.is_empty(), "polygons not MuJoCo's: {differ:?}");
 }
 
 /// Whether two statuses list the same contacts, each witness pair within

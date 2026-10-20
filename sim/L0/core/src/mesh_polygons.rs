@@ -5,10 +5,13 @@
 //! vertex path and unit normal, and for each vertex the faces it lies on. The
 //! multi-contact of MuJoCo's native convex collision clips these faces.
 //!
-//! MuJoCo keeps the faces it merges in a `std::set` ordered by their normals;
-//! this keeps them in a vector searched by the same comparison, which orders
-//! them as the set does where the comparison is a strict weak order (the
-//! normals of faces it does not merge more than its tolerance apart).
+//! MuJoCo keeps the faces it merges in a `std::set` ordered by their normals.
+//! The comparison is not a strict weak order where normals lie near its
+//! tolerance, so which polygon a face joins depends on the set's tree; this
+//! keeps them in the red-black tree of the libc++ the goldens' MuJoCo was
+//! built with, whose `find` walks the tree as its insertion does (a `find`
+//! that takes a lower bound instead, as older libc++'s does, gives other
+//! polygons on the golden's `merge` meshes).
 
 use nalgebra::Point3;
 
@@ -175,26 +178,174 @@ impl Merging {
     }
 }
 
+/// A node of [`PolygonSet`].
+struct Node {
+    polygon: Merging,
+    left: Option<usize>,
+    right: Option<usize>,
+    parent: Option<usize>,
+    black: bool,
+}
+
+/// The polygons being merged, in libc++'s `std::set` (`__tree`): a red-black
+/// tree under [`polygon_less`], its nodes in the order they were made.
+#[derive(Default)]
+struct PolygonSet {
+    nodes: Vec<Node>,
+    root: Option<usize>,
+}
+
+impl PolygonSet {
+    /// MakePolygons' `find`, then `emplace` where it finds none: in libc++
+    /// both walk down the tree as `__find_equal` does, so the face joins the
+    /// first polygon on its path that neither goes before nor after it, or
+    /// starts one where the walk ends, and the tree is rebalanced.
+    fn merge(&mut self, verts: &[Point3<f64>], face: [usize; 3]) {
+        let polygon = Merging::new(verts, face);
+        let mut parent = None;
+        let mut left = true;
+        let mut node = self.root;
+        while let Some(i) = node {
+            parent = Some(i);
+            if polygon_less(&polygon.normal, &self.nodes[i].polygon.normal) {
+                left = true;
+                node = self.nodes[i].left;
+            } else if polygon_less(&self.nodes[i].polygon.normal, &polygon.normal) {
+                left = false;
+                node = self.nodes[i].right;
+            } else {
+                self.nodes[i].polygon.insert_face(face);
+                return;
+            }
+        }
+        let x = self.nodes.len();
+        self.nodes.push(Node {
+            polygon,
+            left: None,
+            right: None,
+            parent,
+            black: false,
+        });
+        match parent {
+            None => self.root = Some(x),
+            Some(p) if left => self.nodes[p].left = Some(x),
+            Some(p) => self.nodes[p].right = Some(x),
+        }
+        self.balance_after_insert(x);
+    }
+
+    fn parent(&self, x: usize) -> usize {
+        self.nodes[x].parent.unwrap_or(x)
+    }
+
+    /// Hang `y` where `x` hung (`__tree_is_left_child` and its parent's link).
+    fn replace_child(&mut self, x: usize, y: usize) {
+        match self.nodes[x].parent {
+            None => self.root = Some(y),
+            Some(p) if self.nodes[p].left == Some(x) => self.nodes[p].left = Some(y),
+            Some(p) => self.nodes[p].right = Some(y),
+        }
+        self.nodes[y].parent = self.nodes[x].parent;
+    }
+
+    /// `__tree_left_rotate`.
+    fn left_rotate(&mut self, x: usize) {
+        let Some(y) = self.nodes[x].right else { return };
+        self.nodes[x].right = self.nodes[y].left;
+        if let Some(c) = self.nodes[x].right {
+            self.nodes[c].parent = Some(x);
+        }
+        self.replace_child(x, y);
+        self.nodes[y].left = Some(x);
+        self.nodes[x].parent = Some(y);
+    }
+
+    /// `__tree_right_rotate`.
+    fn right_rotate(&mut self, x: usize) {
+        let Some(y) = self.nodes[x].left else { return };
+        self.nodes[x].left = self.nodes[y].right;
+        if let Some(c) = self.nodes[x].left {
+            self.nodes[c].parent = Some(x);
+        }
+        self.replace_child(x, y);
+        self.nodes[y].right = Some(x);
+        self.nodes[x].parent = Some(y);
+    }
+
+    /// `__tree_balance_after_insert`.
+    fn balance_after_insert(&mut self, mut x: usize) {
+        self.nodes[x].black = self.root == Some(x);
+        while self.root != Some(x) && !self.nodes[self.parent(x)].black {
+            let p = self.parent(x);
+            let g = self.parent(p);
+            let parent_is_left = self.nodes[g].left == Some(p);
+            let uncle = if parent_is_left {
+                self.nodes[g].right
+            } else {
+                self.nodes[g].left
+            };
+            if let Some(u) = uncle.filter(|&u| !self.nodes[u].black) {
+                self.nodes[p].black = true;
+                x = g;
+                self.nodes[x].black = self.root == Some(x);
+                self.nodes[u].black = true;
+                continue;
+            }
+            if parent_is_left {
+                if self.nodes[p].left != Some(x) {
+                    x = p;
+                    self.left_rotate(x);
+                }
+            } else if self.nodes[p].left == Some(x) {
+                x = p;
+                self.right_rotate(x);
+            }
+            let p = self.parent(x);
+            self.nodes[p].black = true;
+            let g = self.parent(p);
+            self.nodes[g].black = false;
+            if parent_is_left {
+                self.right_rotate(g);
+            } else {
+                self.left_rotate(g);
+            }
+            break;
+        }
+    }
+
+    /// The polygons in the set's order (an in-order walk).
+    fn in_order(&self) -> Vec<&Merging> {
+        let mut out = Vec::with_capacity(self.nodes.len());
+        let mut stack = Vec::new();
+        let mut node = self.root;
+        while node.is_some() || !stack.is_empty() {
+            while let Some(i) = node {
+                stack.push(i);
+                node = self.nodes[i].left;
+            }
+            if let Some(i) = stack.pop() {
+                out.push(&self.nodes[i].polygon);
+                node = self.nodes[i].right;
+            }
+        }
+        out
+    }
+}
+
 /// `MakePolygons` over `faces`, outward triangles of mesh vertex indices,
 /// with `MakePolygonNormals`' normals: each polygon's from its first three
 /// vertices. Paths of fewer than three vertices are dropped.
 pub fn make_polygons(verts: &[Point3<f64>], faces: &[[usize; 3]]) -> MeshPolygons {
-    let mut merging: Vec<Merging> = Vec::new();
+    let mut set = PolygonSet::default();
     for &face in faces {
-        let candidate = Merging::new(verts, face);
-        let i = merging.partition_point(|p| polygon_less(&p.normal, &candidate.normal));
-        if i < merging.len() && !polygon_less(&candidate.normal, &merging[i].normal) {
-            merging[i].insert_face(face);
-        } else {
-            merging.insert(i, candidate);
-        }
+        set.merge(verts, face);
     }
 
     let mut out = MeshPolygons {
         map: vec![Vec::new(); verts.len()],
         ..MeshPolygons::default()
     };
-    for path in merging.iter().flat_map(Merging::paths) {
+    for path in set.in_order().into_iter().flat_map(Merging::paths) {
         if path.len() < 3 {
             continue;
         }

@@ -52,6 +52,14 @@ prism on an irregular hexagon), face to face and edge to face, each held with
 its thinnest axis vertical, tilted within the tolerances and, in two of every
 eight, past them, with four contacts as mjc_Convex asks under MULTICCD; the
 multi-contact clips the meshes' polygons, which `meshes` records.
+`merge`: meshes whose hulls have neighbouring faces nearer than the merge
+tolerance of `PolygonCmp` (user_mesh.cc:2776-2799), where it is not a strict
+weak order, so the polygons `MakePolygons` (:2949-3005) makes depend on the
+tree of its `std::set`: a slab under a shallow dome of random points, two
+ways, a slab whose top is lifted by noise of 2e-5, and points on an
+ellipsoid. Each holds the vertices as `MakePolygons` merges them (as
+authored, rounded to floats), MuJoCo's hull faces (its graph's
+`face_globalid`, in qhull's order) and its polygons in its order.
 It refuses a run whose cases miss a path the port must be checked on (each
 starting polytope, an EPA failure, multi-contact, the sphere and capsule
 inflation, the cutoff, a separating plane found by gjkIntersect, both mesh
@@ -540,6 +548,68 @@ def multi_mesh_cases(rng, compiled):
     return out
 
 
+def dome(seed, n, curve):
+    """A slab whose top is a shallow dome of `n` random points."""
+    rng = np.random.default_rng(seed)
+    hx, hy = 0.05, 0.04
+    pts = [[sx * hx, sy * hy, -0.02] for sx in (-1, 1) for sy in (-1, 1)]
+    top = [(sx * hx, sy * hy) for sx in (-1, 1) for sy in (-1, 1)]
+    top += [(rng.uniform(-hx, hx), rng.uniform(-hy, hy)) for _ in range(n)]
+    pts += [[x, y, 0.02 - curve * (x * x + y * y)] for x, y in top]
+    return np.array(pts)
+
+
+def flat_noise(seed, n, amplitude):
+    """A slab whose top holds `n` random points lifted by up to `amplitude`."""
+    rng = np.random.default_rng(seed)
+    hx, hy = 0.05, 0.04
+    pts = [[sx * hx, sy * hy, sz] for sz in (-0.02, 0.02) for sx in (-1, 1) for sy in (-1, 1)]
+    pts += [[rng.uniform(-hx, hx), rng.uniform(-hy, hy), 0.02 + amplitude * rng.uniform(0, 1)]
+            for _ in range(n)]
+    return np.array(pts)
+
+
+def ellipsoid_points(seed, n):
+    """`n` random points on an ellipsoid."""
+    rng = np.random.default_rng(seed)
+    u, v = rng.uniform(-1, 1, n), rng.uniform(0, 2 * math.pi, n)
+    w = np.sqrt(1 - u * u)
+    return np.stack([0.06 * w * np.cos(v), 0.045 * w * np.sin(v), 0.035 * u], axis=1)
+
+
+MERGE_MESHES = {"dome": dome(1, 220, 0.04), "dome_steep": dome(7, 400, 0.06),
+                "flat_noise": flat_noise(2, 150, 2e-5), "ellipsoid1000": ellipsoid_points(3, 1000)}
+
+
+def merge_meshes():
+    """`MakePolygons` where `PolygonCmp` is not a strict weak order: each mesh's vertices as it
+    merges them, MuJoCo's hull faces in qhull's order, its polygons and each vertex's polygons."""
+    assets = "".join(f'<mesh name="{n}" vertex="{" ".join(repr(float(x)) for x in v.ravel())}"/>'
+                     for n, v in MERGE_MESHES.items())
+    m = mujoco.MjModel.from_xml_string(
+        f"<mujoco><asset>{assets}</asset><worldbody>"
+        + "".join(f'<geom type="mesh" mesh="{n}"/>' for n in MERGE_MESHES)
+        + "</worldbody></mujoco>")
+    out = {}
+    for name, authored in MERGE_MESHES.items():
+        i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MESH, name)
+        adr, num = m.mesh_vertadr[i], m.mesh_vertnum[i]
+        if num != len(authored):
+            sys.exit(f"merge {name}: MuJoCo kept {num} of {len(authored)} vertices")
+        ga = m.mesh_graphadr[i]
+        nv, nf = int(m.mesh_graph[ga]), int(m.mesh_graph[ga + 1])
+        fa = ga + 2 + 3 * nv + 3 * nf
+        faces = [[int(m.mesh_graph[fa + 3 * k + j]) for j in range(3)] for k in range(nf)]
+        pa, pn = m.mesh_polyadr[i], m.mesh_polynum[i]
+        paths = [[int(m.mesh_polyvert[m.mesh_polyvertadr[pa + k] + j])
+                  for j in range(m.mesh_polyvertnum[pa + k])] for k in range(pn)]
+        polymap = [[int(m.mesh_polymap[m.mesh_polymapadr[adr + v] + j])
+                    for j in range(m.mesh_polymapnum[adr + v])] for v in range(num)]
+        out[name] = {"vert": [float(np.float32(x)) for x in authored.ravel()], "faces": faces,
+                     "polygons": paths, "polymap": polymap}
+    return out
+
+
 def census_cases():
     out = {}
     for prefix in ("3a13c90a", "6369216c"):
@@ -619,6 +689,7 @@ def main():
            "first_step": first_step_cases(), "probe": probe_cases(rng), "cutoff": cutoff_cases(rng),
            "multi": multi_cases(rng), "census": census_cases(), "nan": nan_cases()}
     doc["multi_mesh"] = multi_mesh_cases(rng, doc["meshes"])
+    doc["merge"] = merge_meshes()
     cases = [c for k in GROUPS for c in doc[k].values()]
     hist = coverage(cases)
     os.makedirs(sys.argv[1], exist_ok=True)
