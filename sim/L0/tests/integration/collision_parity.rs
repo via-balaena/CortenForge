@@ -1377,8 +1377,10 @@ fn multiccd_skips_ellipsoids() {
 }
 
 /// A three-axis ellipsoid dropped on the box slab turned 45 degrees about x
-/// and then y, tumbling to rest: its height after every 50th of 1000 steps
-/// within 1e-9 of MuJoCo's.
+/// and then y, tumbling to rest: its height after each of 1000 steps within
+/// 1e-14 of MuJoCo's. Measured: 4.7e-16; with the sine and cosine of every
+/// turn about an axis one ulp off (as another platform's libm might round
+/// them), 7.8e-16.
 #[test]
 fn ellipsoid3_tumble_rests_as_mujoco() {
     let case = &golden()["tumble"];
@@ -1394,7 +1396,7 @@ fn ellipsoid3_tumble_rests_as_mujoco() {
         if k % every == every - 1 {
             let (ours, theirs) = (data.qpos[2], want.next().expect("a sample"));
             assert!(
-                (ours - theirs).abs() <= 1e-9,
+                (ours - theirs).abs() <= 1e-14,
                 "z after step {k}: {ours}, MuJoCo {theirs}"
             );
         }
@@ -1599,4 +1601,144 @@ fn geom_distance_special_cases_as_mujoco() {
             want[0]
         );
     }
+}
+
+/// MULTICCD on the convex pairs with a sphere or an ellipsoid (a sphere or
+/// an ellipsoid against an ellipsoid, a mesh, a cylinder or a box, a capsule
+/// against an ellipsoid), 8 seeded random poses each, either body first,
+/// margins 0 and 0.02: `mjc_Convex` makes no extra pass for a sphere or an
+/// ellipsoid, so one contact at most, MuJoCo's within 1e-12.
+#[test]
+fn round_pairs_take_no_multiccd_passes_as_mujoco() {
+    pairs_collide_as_mujoco(&golden()["round_multiccd"]);
+}
+
+/// Four pairs under `ccd_iterations` 12 and `ccd_tolerance` 1e-3, 6 seeded
+/// random poses each, the options changing some of MuJoCo's contacts: the
+/// contacts MuJoCo's within 1e-12 (`mjc_Convex` hands the options to
+/// `mjc_ccd`).
+#[test]
+fn ccd_options_reach_the_convex_solver_as_mujoco() {
+    pairs_collide_as_mujoco(&golden()["ccd_options"]);
+}
+
+/// Registry `D-GJK-S3D` in the sensor: a box against a mesh and two meshes,
+/// apart, at the golden's poses where MuJoCo's distance sensor reads 0. Ours
+/// reads within 3e-9 of MuJoCo's distance with the second body moved 1e-9
+/// along x (where MuJoCo's reads the pair apart). Measured: 6.0e-10 at most.
+#[test]
+fn mesh_pairs_read_apart_where_mujocos_sensor_reads_0() {
+    let cases = golden()["s3d_mesh_sensors"].clone();
+    let cases = cases.as_object().expect("cases");
+    assert!(cases.len() >= 4, "{} cases", cases.len());
+    for (name, case) in cases {
+        let want = floats(&case["sensordata"]);
+        assert_eq!(
+            want[0].to_bits(),
+            0.0_f64.to_bits(),
+            "{name}: MuJoCo reads 0"
+        );
+        let ours = sensordata_at(case)[0];
+        let moved = case["moved_distance"].as_f64().expect("moved distance");
+        assert!(
+            (ours - moved).abs() < 3e-9,
+            "{name}: ours {ours}, MuJoCo moved 1e-9 {moved}"
+        );
+    }
+}
+
+/// Our contacts at a golden case's `qpos`, after a forward.
+fn contacts_at(case: &Value) -> Vec<Contact> {
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qpos"]));
+    data.forward(&model).expect("forward");
+    data.contacts.clone()
+}
+
+/// The largest coordinate gap between our contact `c`'s position and
+/// MuJoCo's contact `w`'s.
+fn pos_gap(c: &Contact, w: &Value) -> f64 {
+    let p = floats(&w["pos"]);
+    (0..3).map(|i| (c.pos[i] - p[i]).abs()).fold(0.0, f64::max)
+}
+
+/// Registry `D-HULL-ORDER`: geoms resting 0.001 into the chamfer mesh's top
+/// face under MULTICCD, whose contacts take the mesh's polygons and hill
+/// climb from our hull. A cylinder lying on it and standing on it: MuJoCo's
+/// contacts within 1e-12. A box turned 0.3 rad about the vertical: MuJoCo's
+/// four contacts to the bit, in an order turned by two. The mesh on itself
+/// so turned: four contacts, two within 1e-12 of MuJoCo's and two more
+/// than 1e-2 from any of MuJoCo's. The mesh on itself unturned at a margin
+/// of 0.01 (one contact per pass): five contacts, the depth more than 1e-7
+/// from MuJoCo's. Measured: 4.9e-2, and 2.2e-7.
+#[test]
+fn mesh_contacts_part_from_mujocos_by_the_hulls_order() {
+    let golden = golden();
+    let cases = &golden["hull_order"];
+    for name in ["cylinder_lying", "cylinder_standing"] {
+        let case = &cases[name];
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        contacts_as_mujoco(name, &model, &floats(&case["qpos"]), &case["contacts"]);
+    }
+
+    let case = &cases["box_on_face_turned"];
+    let (ours, want) = (
+        contacts_at(case),
+        case["contacts"].as_array().expect("contacts"),
+    );
+    assert_eq!(ours.len(), 4, "box: contacts");
+    assert_eq!(want.len(), 4, "box: MuJoCo's contacts");
+    for (k, c) in ours.iter().enumerate() {
+        assert_eq!(
+            pos_gap(c, &want[(k + 2) % 4]),
+            0.0,
+            "box contact {k}: MuJoCo's {}",
+            (k + 2) % 4
+        );
+    }
+
+    let case = &cases["mesh_on_mesh"];
+    let (ours, want) = (
+        contacts_at(case),
+        case["contacts"].as_array().expect("contacts"),
+    );
+    assert_eq!((ours.len(), want.len()), (4, 4), "mesh on mesh: contacts");
+    let nearest: Vec<f64> = ours
+        .iter()
+        .map(|c| {
+            want.iter()
+                .map(|w| pos_gap(c, w))
+                .fold(f64::INFINITY, f64::min)
+        })
+        .collect();
+    assert_eq!(
+        nearest.iter().filter(|&&g| g <= 1e-12).count(),
+        2,
+        "mesh on mesh: {nearest:?}"
+    );
+    assert_eq!(
+        nearest.iter().filter(|&&g| g > 1e-2).count(),
+        2,
+        "mesh on mesh: {nearest:?}"
+    );
+
+    let case = &cases["mesh_on_mesh_margin"];
+    let (ours, want) = (
+        contacts_at(case),
+        case["contacts"].as_array().expect("contacts"),
+    );
+    assert_eq!(
+        (ours.len(), want.len()),
+        (5, 5),
+        "mesh on mesh at a margin: contacts"
+    );
+    let theirs = -want[0]["dist"].as_f64().expect("dist");
+    assert!(
+        (ours[0].depth - theirs).abs() > 1e-7,
+        "mesh on mesh at a margin: depth {}, MuJoCo {theirs}",
+        ours[0].depth
+    );
 }

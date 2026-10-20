@@ -167,6 +167,31 @@ seeded random pairs of boxes, ellipsoids and cylinders, each turned and
 posed through qpos, 12 apart per pair of types, and `s3d_stale` three
 box pairs apart whose distance MuJoCo's sensor reads 0, with their exact
 distance (registry D-GJK-S3D).
+`geom_distance_routes`, `geom_distance_near` and `geom_distance_special`
+hold the sensors as mj_geomDistance routes each pair (engine_support.c:
+556-601): every pair of a sphere, capsule, ellipsoid, cylinder, box and the
+chamfer mesh, and each under a plane, at seeded random poses; eight pairs
+moved until MuJoCo's distance crosses 1e-5, 1e-7 and 1e-9, either side;
+and the special cases their functions describe. `margin` holds a
+three-axis ellipsoid 1 mm above a box slab of margin 0.01.
+`convex_pairs` holds the pairs the collision table gives mjc_Convex
+(engine_collision_driver.c:41-52), on two free bodies, at named poses and
+at 24 seeded random poses per pair, either body first, at margins 0 and
+0.02, and under MULTICCD for the pairs without a sphere or an ellipsoid:
+MuJoCo's contacts after mj_forward. `multiccd` holds a cylinder and a
+three-axis ellipsoid settled on the box slab under MULTICCD; `tumble` a
+three-axis ellipsoid dropped turned on the box slab, its height after each
+of 1000 steps; `exact_touch` a cylinder's cap and two ellipsoids exactly on
+the box slab; `explicit_pairs` two cylinders, two ellipsoids and two meshes
+that collide only as a `<pair>` declared with the second body's geom first.
+`round_multiccd` holds MULTICCD on the convex pairs with a sphere or an
+ellipsoid, which mjc_Convex gives no extra passes, and `ccd_options` four
+pairs under `ccd_iterations` 12 and `ccd_tolerance` 1e-3, both as
+`convex_pairs`' random poses. `s3d_mesh_sensors` holds a box and the mesh,
+and the mesh and itself, apart where MuJoCo's distance sensor reads 0, with
+its reading with the second body moved 1e-9 (registry D-GJK-S3D).
+`hull_order` holds geoms resting 0.001 into the chamfer mesh's top face
+under MULTICCD (registry D-HULL-ORDER).
 """
 
 import itertools
@@ -2067,6 +2092,20 @@ def geom_distance_special_cases():
                f'<body name="b"><freejoint/>{b}</body></worldbody>{sensor_trios()}</mujoco>')
         qpos_x = [0.0, 0.0, z, 1.0, 0.0, 0.0, 0.0]
         aligned[name] = {"xml": xml, "qpos": floats(qpos_x), "sensordata": floats(sensors_at(xml, qpos_x))}
+    # Two geoms of one type, which the sensor takes in its own order (MuJoCo
+    # turns a pair round only where the first's type is the greater): two
+    # unturned spheres with coincident centres, and two parallel capsules
+    # 0.05 apart side by side and offset along their axes, whose nearest
+    # points tie along a segment.
+    for name, a, b, pos in (
+            ("coincident_unturned_spheres", '<geom name="A" type="sphere" size="0.1"/>',
+             '<geom name="B" type="sphere" size="0.0625"/>', [0.0, 0.0, 0.0]),
+            ("parallel_capsules", '<geom name="A" type="capsule" size="0.05 0.15"/>',
+             '<geom name="B" type="capsule" size="0.05 0.15"/>', [0.15, 0.0, 0.0625])):
+        xml = (f'<mujoco><option><flag gravity="disable"/></option><worldbody>{a}'
+               f'<body name="b"><freejoint/>{b}</body></worldbody>{sensor_trios()}</mujoco>')
+        qpos_x = pos + [1.0, 0.0, 0.0, 0.0]
+        aligned[name] = {"xml": xml, "qpos": floats(qpos_x), "sensordata": floats(sensors_at(xml, qpos_x))}
     # A sphere 0.01 into a flat height field and 0.05 above it. MuJoCo
     # refuses a sensor naming a height field (user_objects.cc:7519-7523), not
     # one naming the world that holds it.
@@ -2326,7 +2365,7 @@ def multiccd_cases():
 
 def tumble_case():
     """A three-axis ellipsoid dropped on the box slab turned 45 degrees about
-    x and then y: its height after every 50th of 1000 steps."""
+    x and then y: its height after each of 1000 steps."""
     xml = xml_of("box", "ellipsoid3")
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -2336,13 +2375,12 @@ def tumble_case():
     d.qpos[2] = 0.1
     qpos0 = floats(d.qpos)
     z = []
-    for k in range(NSTEP):
+    for _ in range(NSTEP):
         mujoco.mj_step(m, d)
-        if k % EVERY == EVERY - 1:
-            z.append(float(d.qpos[2]))
+        z.append(float(d.qpos[2]))
     if z[-1] > 0.07 or z[-1] < 0.0:
         sys.exit(f"tumble: the ellipsoid ends at z {z[-1]}, not resting on the slab")
-    return {"xml": xml, "qpos0": qpos0, "nstep": NSTEP, "every": EVERY, "z": z}
+    return {"xml": xml, "qpos0": qpos0, "nstep": NSTEP, "every": 1, "z": z}
 
 
 def exact_touch_cases():
@@ -2368,6 +2406,121 @@ def exact_touch_cases():
             sys.exit(f"exact_touch {name}: MuJoCo lists {len(contacts)} contacts")
         out[name] = {"xml": xml, "qpos": qpos, "contacts": contacts}
     return out
+
+
+# The convex pairs with a sphere or an ellipsoid, which mjc_Convex gives no
+# extra MULTICCD passes (engine_collision_convex.c:917-926).
+ROUND_MULTICCD_TABLE = [("sphere", "ellipsoid"), ("sphere", "mesh"), ("capsule", "ellipsoid"),
+                        ("ellipsoid", "ellipsoid"), ("ellipsoid", "cylinder"), ("ellipsoid", "box"),
+                        ("ellipsoid", "mesh")]
+
+
+def round_multiccd_cases():
+    """MULTICCD on the convex pairs with a sphere or an ellipsoid: 8 seeded
+    random poses each (as `convex_pairs`), either order, margins 0 and 0.02;
+    MuJoCo lists one contact at most."""
+    rng = np.random.default_rng(20261023)
+    out = {}
+    for pair in ROUND_MULTICCD_TABLE:
+        xmls, cases = {}, []
+        for pose in convex_random_poses(rng, pair, 8):
+            for order in (True, False):
+                for margin in (0.0, 0.02):
+                    variant = f"{'first_first' if order else 'first_second'}_margin_{margin!r}_multiccd"
+                    xml = xmls.setdefault(variant, convex_xml(*pair, order, margin, True))
+                    qpos = pose_qpos(order, *pose)
+                    cases.append({"variant": variant, "qpos": floats(qpos),
+                                  "contacts": sphere_pair_contacts(xml, qpos)})
+        touching = sum(1 for c in cases if c["contacts"])
+        if touching in (0, len(cases)) or any(len(c["contacts"]) > 1 for c in cases):
+            sys.exit(f"round_multiccd {pair}: {touching} of {len(cases)} poses touch")
+        out[f"{pair[0]}_{pair[1]}"] = {"xml": xmls, "poses": cases}
+    return out
+
+
+def ccd_option_cases():
+    """Four pairs under `ccd_iterations` 12 and `ccd_tolerance` 1e-3, which
+    mjc_Convex hands mjc_ccd: 6 seeded random poses each (as `convex_pairs`),
+    at least one of whose contacts the options change."""
+    rng = np.random.default_rng(20261024)
+    out = {}
+    for pair in (("capsule", "cylinder"), ("ellipsoid", "box"), ("cylinder", "cylinder"), ("ellipsoid", "ellipsoid")):
+        default = convex_xml(*pair, True, 0.0, False)
+        xml = default.replace('<option gravity="0 0 0">',
+                              '<option gravity="0 0 0" ccd_iterations="12" ccd_tolerance="0.001">', 1)
+        if xml == default:
+            sys.exit("ccd_options: the option line changed")
+        cases, moved = [], 0
+        for pose in convex_random_poses(rng, pair, 6):
+            qpos = pose_qpos(True, *pose)
+            contacts = sphere_pair_contacts(xml, qpos)
+            moved += contacts != sphere_pair_contacts(default, qpos)
+            cases.append({"variant": "options", "qpos": floats(qpos), "contacts": contacts})
+        if not moved:
+            sys.exit(f"ccd_options {pair}: the options change no contact")
+        out[f"{pair[0]}_{pair[1]}"] = {"xml": {"options": xml}, "poses": cases}
+    return out
+
+
+def s3d_mesh_sensor_cases():
+    """A box against the chamfer mesh and the mesh against itself, apart, at
+    seeded random poses where MuJoCo's distance sensor reads 0 (registry
+    D-GJK-S3D), with its sensors and, as the pair's distance, its distance
+    sensor's reading with the second body moved 1e-9 along x."""
+    rng = np.random.default_rng(20261026)
+    out = {}
+    for kind_a, kind_b in (("box", "mesh"), ("mesh", "mesh")):
+        xml = route_xml(kind_a, kind_b)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        found = 0
+        for k in range(20000):
+            qpos = route_pose(rng, kind_a, kind_b, 0.1)
+            d.qpos[:] = qpos
+            mujoco.mj_forward(m, d)
+            if d.sensordata[0] != 0.0 or d.ncon:
+                continue
+            moved = list(qpos)
+            moved[7] += 1e-9
+            d.qpos[:] = moved
+            mujoco.mj_forward(m, d)
+            distance = float(d.sensordata[0])
+            if not 1e-6 < distance < 1.0:
+                continue
+            out[f"{kind_a}_{kind_b}_{k}"] = {"xml": xml, "qpos": floats(qpos),
+                                              "sensordata": floats(sensors_at(xml, qpos)),
+                                              "moved_distance": distance}
+            found += 1
+            if found == 2:
+                break
+        if found < 2:
+            sys.exit(f"s3d_mesh_sensors {kind_a}_{kind_b}: {found} poses found")
+    return out
+
+
+def hull_order_cases():
+    """Geoms resting 0.001 into the chamfer mesh's top face (z 0.125) under MULTICCD, whose
+    contacts take the mesh's polygons and hill climb from its hull (registry
+    D-HULL-ORDER): a box on the mesh's top face, turned 0.3 rad about the
+    vertical; a cylinder lying on it along x and standing on it; the mesh on
+    itself, at margins 0 and 0.01. Each with MuJoCo's contacts after
+    mj_forward."""
+    z_turn = list(axis_angle([0, 0, 1], 0.3))
+    out = {}
+    for name, first, second, p2, q2, margin in (
+            ("box_on_face_turned", "mesh", "box", [0.01, 0.005, 0.174], z_turn, 0.0),
+            ("cylinder_lying", "mesh", "cylinder", [0.01, 0.005, 0.204], list(axis_angle([0, 1, 0], math.pi / 2)), 0.0),
+            ("cylinder_standing", "mesh", "cylinder", [0.01, 0.005, 0.244], [1, 0, 0, 0], 0.0),
+            ("mesh_on_mesh", "mesh", "mesh", [0.01, 0.005, 0.249], z_turn, 0.0),
+            ("mesh_on_mesh_margin", "mesh", "mesh", [0.0, 0.0, 0.249], [1, 0, 0, 0], 0.01)):
+        xml = convex_xml(first, second, True, margin, True)
+        qpos = pose_qpos(True, [0, 0, 0], [1, 0, 0, 0], p2, q2)
+        contacts = sphere_pair_contacts(xml, qpos)
+        if not contacts:
+            sys.exit(f"hull_order {name}: no contact")
+        out[name] = {"xml": xml, "qpos": floats(qpos), "contacts": contacts}
+    return out
+
 
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
@@ -2409,7 +2562,11 @@ def main():
            "multiccd": finite_or_string(multiccd_cases()),
            "tumble": finite_or_string(tumble_case()),
            "exact_touch": finite_or_string(exact_touch_cases()),
-           "explicit_pairs": finite_or_string(explicit_pair_cases())}
+           "explicit_pairs": finite_or_string(explicit_pair_cases()),
+           "round_multiccd": finite_or_string({"named": {}, "random": round_multiccd_cases()}),
+           "ccd_options": finite_or_string({"named": {}, "random": ccd_option_cases()}),
+           "s3d_mesh_sensors": finite_or_string(s3d_mesh_sensor_cases()),
+           "hull_order": finite_or_string(hull_order_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
     print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "
