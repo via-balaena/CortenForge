@@ -10,11 +10,15 @@ use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
 use super::enums::{
-    ENABLE_SLEEP, EqualityType, Integrator, JacobianType, JointLayoutError, MakeDataError,
-    MjJointType, MjSensorType, RangeError, ResetError, SleepPolicy, SleepState, SolverType,
-    StepError,
+    DISABLE_NATIVECCD, ENABLE_SLEEP, EqualityType, Integrator, JacobianType, JointLayoutError,
+    MakeDataError, MjJointType, MjSensorType, RangeError, ResetError, SleepPolicy, SleepState,
+    SolverType, StepError,
 };
 use super::model::Model;
+
+/// What [`Model::try_make_data`] names when it refuses [`DISABLE_NATIVECCD`].
+const NATIVECCD_DISABLED: &str =
+    "DISABLE_NATIVECCD: MuJoCo's libccd convex collision is not ported";
 
 // Types from dynamics module (Phase 7 extraction)
 use crate::dynamics::SpatialVector;
@@ -676,13 +680,21 @@ impl Model {
     /// [`MakeDataError::DelayedUserSensor`]), [`MakeDataError::PluginInit`]
     /// if a plugin's `init` returns an error, or the reset's refusal of the
     /// trees that start asleep ([`MakeDataError::InitSleep`],
-    /// [`MakeDataError::InitForward`]).
+    /// [`MakeDataError::InitForward`]); [`MakeDataError::Unsupported`] with
+    /// [`DISABLE_NATIVECCD`] set, under which MuJoCo collides convex pairs
+    /// with libccd, which sim-core does not port (a flag set after this call
+    /// is not checked).
     ///
     /// # Panics
     /// As [`Self::check_joint_layout`] says.
     pub fn try_make_data(&self) -> Result<Data, MakeDataError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
+        if self.disableflags & DISABLE_NATIVECCD != 0 {
+            return Err(MakeDataError::Unsupported {
+                feature: NATIVECCD_DISABLED,
+            });
+        }
         if let Some(refusal) = self.history_refusal() {
             return Err(refusal.into());
         }
@@ -1592,6 +1604,40 @@ mod joint_layout_tests {
         finalize(&mut m);
         assert_eq!(m.check_joint_layout(), Ok(()));
         assert!(m.try_make_data().is_ok());
+    }
+
+    /// MuJoCo collides convex pairs with libccd's MPR under
+    /// `DISABLE_NATIVECCD`, which sim-core does not port: `try_make_data`
+    /// refuses the model, and makes its `Data` without the flag.
+    #[test]
+    fn try_make_data_refuses_disable_nativeccd() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        hinge(&mut m, b, "h0");
+        finalize(&mut m);
+        m.disableflags |= super::DISABLE_NATIVECCD;
+        assert_eq!(
+            m.try_make_data().err(),
+            Some(MakeDataError::Unsupported {
+                feature: super::NATIVECCD_DISABLED
+            })
+        );
+        m.disableflags &= !super::DISABLE_NATIVECCD;
+        assert!(m.try_make_data().is_ok());
+    }
+
+    /// `make_data` panics with the refusal's message, which names the flag.
+    #[test]
+    #[should_panic(
+        expected = "unsupported: DISABLE_NATIVECCD: MuJoCo's libccd convex collision is not ported"
+    )]
+    fn make_data_panics_naming_disable_nativeccd() {
+        let mut m = Model::empty();
+        let b = body(&mut m, 0, "l0");
+        hinge(&mut m, b, "h0");
+        finalize(&mut m);
+        m.disableflags |= super::DISABLE_NATIVECCD;
+        let _data = m.make_data();
     }
 
     #[test]

@@ -971,8 +971,9 @@ fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflag
     set_enable(enableflags, ENABLE_MULTICCD, flag.multiccd);
     set_enable(enableflags, ENABLE_SLEEP, flag.sleep);
 
-    // ENABLE_MULTICCD: wired to multi-point convex contact generation (Spec D S4).
-    // DISABLE_NATIVECCD: conformant no-op — no libccd fallback exists.
+    // ENABLE_MULTICCD: MuJoCo's multi-contact for convex pairs (mjc_Convex).
+    // DISABLE_NATIVECCD: sim-core refuses a model with it at make_data
+    // (registry D-NATIVECCD); refusing the flag at load is Rigid-loading L47.
 }
 
 #[cfg(test)]

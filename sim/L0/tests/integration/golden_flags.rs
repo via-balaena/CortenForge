@@ -19,7 +19,7 @@ use sim_core::{
     DISABLE_FRICTIONLOSS, DISABLE_GRAVITY, DISABLE_ISLAND, DISABLE_LIMIT, DISABLE_MIDPHASE,
     DISABLE_NATIVECCD, DISABLE_REFSAFE, DISABLE_SENSOR, DISABLE_SPRING, DISABLE_WARMSTART,
     ENABLE_ENERGY, ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_MULTICCD, ENABLE_OVERRIDE,
-    ENABLE_SLEEP,
+    ENABLE_SLEEP, MakeDataError,
 };
 use sim_mjcf::load_model;
 
@@ -190,7 +190,7 @@ fn golden_baseline() {
 }
 
 // ============================================================================
-// Disable flag tests (19 flags)
+// Disable flag tests (18 flags; nativeccd is refused, below)
 // ============================================================================
 
 flag_test!(
@@ -296,12 +296,6 @@ flag_test!(
     "disable_autoreset_qacc.npy"
 );
 flag_test!(
-    golden_disable_nativeccd,
-    disable,
-    DISABLE_NATIVECCD,
-    "disable_nativeccd_qacc.npy"
-);
-flag_test!(
     golden_disable_island,
     disable,
     DISABLE_ISLAND,
@@ -352,6 +346,29 @@ flag_test!(
 // ============================================================================
 // The goldens a test cannot tell from the baseline
 // ============================================================================
+
+/// The flag golden's model with `<flag nativeccd="disable"/>` loads, with
+/// `DISABLE_NATIVECCD` set, and cannot make a `Data`: MuJoCo then collides
+/// convex pairs with libccd, which sim-core does not port (registry
+/// `D-NATIVECCD`). Its 3.4.0 golden stays below, among those within
+/// tolerance of the baseline.
+#[test]
+fn golden_disable_nativeccd_is_refused() {
+    let xml = std::fs::read_to_string(golden_path("flag_golden_test.xml"))
+        .expect("failed to read golden model XML");
+    let option = r#"<option gravity="0 0 -9.81" timestep="0.002"/>"#;
+    assert_eq!(xml.matches(option).count(), 1, "the golden's option");
+    let xml = xml.replace(
+        option,
+        r#"<option gravity="0 0 -9.81" timestep="0.002"><flag nativeccd="disable"/></option>"#,
+    );
+    let model = load_model(&xml).expect("failed to load golden model");
+    assert_ne!(model.disableflags & DISABLE_NATIVECCD, 0);
+    assert!(matches!(
+        model.try_make_data(),
+        Err(MakeDataError::Unsupported { .. })
+    ));
+}
 
 /// The goldens whose `qacc` is within `TOLERANCE` of the baseline's at every
 /// step: a test against one passes with its flag ignored.

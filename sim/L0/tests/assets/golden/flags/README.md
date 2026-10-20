@@ -66,7 +66,9 @@ is expected:
 - DISABLE_WARMSTART: solver converges to same solution
 - DISABLE_MIDPHASE: broadphase produces same contacts for this model
 - DISABLE_AUTORESET: no NaN/divergence in 10 steps
-- DISABLE_NATIVECCD: no convex-convex collisions (sphere-plane only)
+- DISABLE_NATIVECCD: no convex-convex collisions (sphere-plane only). sim-core
+  refuses a model with the flag at `make_data` (registry `D-NATIVECCD`), so
+  `golden_disable_nativeccd_is_refused` takes its flag test's place
 - DISABLE_ISLAND: same solver result regardless of island decomposition
 - ENABLE_*: optional features that either don't affect qacc or aren't triggered
 

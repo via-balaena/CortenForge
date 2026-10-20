@@ -1260,30 +1260,6 @@ mod spec_d_tests {
         );
     }
 
-    /// T10: AC10 — DISABLE_NATIVECCD does not crash, solver works
-    #[test]
-    fn test_disable_nativeccd_no_crash() {
-        let mut model = make_model(
-            GeomType::Cylinder,
-            Vector3::new(0.3, 0.5, 0.0),
-            GeomType::Cylinder,
-            Vector3::new(0.3, 0.5, 0.0),
-        );
-        // Set DISABLE_NATIVECCD flag
-        model.disableflags |= 1 << 17;
-
-        // Overlapping cylinders
-        let pos1 = Vector3::new(0.0, 0.0, 0.0);
-        let pos2 = Vector3::new(0.3, 0.0, 0.0);
-        let mat = Matrix3::identity();
-
-        let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
-        assert!(
-            !contacts.is_empty(),
-            "DISABLE_NATIVECCD should not prevent contacts"
-        );
-    }
-
     /// T13: Edge case — zero margin, GJK/EPA path
     #[test]
     fn test_zero_margin_gjk_epa_path() {
