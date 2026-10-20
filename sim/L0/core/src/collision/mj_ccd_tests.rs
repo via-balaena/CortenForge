@@ -86,6 +86,30 @@ fn points(v: &Value) -> Vec<Point3<f64>> {
         .collect()
 }
 
+/// A mesh's polygons as MuJoCo merged them.
+fn mujoco_polygons(m: &Value) -> MeshPolygons {
+    MeshPolygons {
+        paths: m["polygons"]
+            .as_array()
+            .expect("polygons")
+            .iter()
+            .map(counts)
+            .collect(),
+        normals: m["polynormals"]
+            .as_array()
+            .expect("polygon normals")
+            .iter()
+            .map(floats)
+            .collect(),
+        map: m["polymap"]
+            .as_array()
+            .expect("a polygon map")
+            .iter()
+            .map(counts)
+            .collect(),
+    }
+}
+
 fn meshes(doc: &Value) -> HashMap<String, Mesh> {
     let mut out = HashMap::new();
     for (name, m) in doc["meshes"].as_object().expect("meshes") {
@@ -96,26 +120,7 @@ fn meshes(doc: &Value) -> HashMap<String, Mesh> {
             Some(verts.len() >= 10),
             "mesh {name}'s search"
         );
-        let mujocos = MeshPolygons {
-            paths: m["polygons"]
-                .as_array()
-                .expect("polygons")
-                .iter()
-                .map(counts)
-                .collect(),
-            normals: m["polynormals"]
-                .as_array()
-                .expect("polygon normals")
-                .iter()
-                .map(floats)
-                .collect(),
-            map: m["polymap"]
-                .as_array()
-                .expect("a polygon map")
-                .iter()
-                .map(counts)
-                .collect(),
-        };
+        let mujocos = mujoco_polygons(m);
         let data = mesh_data(verts);
         assert_eq!(
             data.hull_vertex().len(),
@@ -159,6 +164,81 @@ fn meshes(doc: &Value) -> HashMap<String, Mesh> {
     out
 }
 
+/// A mesh of the golden on MuJoCo's own hull graph (`graph_meshes`): its
+/// vertices as MuJoCo compiled them, its graph (each hull vertex's index
+/// among the mesh's vertices, `vert_globalid`, and its neighbours among the
+/// hull's vertices) and its polygons. Its cases are compared on MuJoCo's
+/// graph and polygons.
+struct GraphMesh {
+    verts: Vec<Point3<f64>>,
+    vertex: Vec<usize>,
+    neighbours: Vec<Vec<u32>>,
+    polygons: MeshPolygons,
+    /// Our mesh data over its vertices, for its cases on our hull's graph.
+    ours: TriangleMeshData,
+}
+
+fn graph_meshes(doc: &Value) -> HashMap<String, GraphMesh> {
+    let mut out = HashMap::new();
+    for (name, m) in doc["graph_meshes"].as_object().expect("graph meshes") {
+        let verts = points(&m["vert"]);
+        assert_eq!(
+            m["hillclimb"].as_bool(),
+            Some(verts.len() >= 10),
+            "mesh {name}'s search"
+        );
+        let neighbours = m["graph"]["neighbours"]
+            .as_array()
+            .expect("each hull vertex's neighbours")
+            .iter()
+            .map(|n| {
+                counts(n)
+                    .into_iter()
+                    .map(|i| u32::try_from(i).expect("a hull vertex"))
+                    .collect()
+            })
+            .collect();
+        let ours = mesh_data(verts.clone());
+        assert_eq!(
+            ours.hull_vertex().len(),
+            ours.convex_hull()
+                .expect("the mesh has a hull")
+                .vertices
+                .len(),
+            "mesh {name}: a hull vertex that is not a mesh vertex"
+        );
+        out.insert(
+            name.clone(),
+            GraphMesh {
+                verts,
+                vertex: counts(&m["graph"]["vertex"]),
+                neighbours,
+                polygons: mujoco_polygons(m),
+                ours,
+            },
+        );
+    }
+    out
+}
+
+/// The golden's meshes: on our hull's graph (`meshes`) and on MuJoCo's
+/// (`graph_meshes`, which `our_graph` puts on ours).
+struct Meshes {
+    ours: HashMap<String, Mesh>,
+    on_mujocos_graph: HashMap<String, GraphMesh>,
+    our_graph: bool,
+}
+
+impl Meshes {
+    fn of(doc: &Value) -> Self {
+        Self {
+            ours: meshes(doc),
+            on_mujocos_graph: graph_meshes(doc),
+            our_graph: false,
+        }
+    }
+}
+
 fn geom_type(name: &str) -> GeomType {
     match name {
         "sphere" => GeomType::Sphere,
@@ -171,9 +251,29 @@ fn geom_type(name: &str) -> GeomType {
     }
 }
 
-fn object<'a>(v: &Value, meshes: &'a HashMap<String, Mesh>, polygons: Polygons) -> CcdObj<'a> {
+/// The object of a case; a mesh of `graph_meshes` takes MuJoCo's polygons
+/// whichever `polygons` asks for.
+fn object<'a>(v: &Value, meshes: &'a Meshes, polygons: Polygons) -> CcdObj<'a> {
     let mesh = v["mesh"].as_str().map(|name| {
-        let m = &meshes[name];
+        if let Some(g) = meshes.on_mujocos_graph.get(name) {
+            let hull = if meshes.our_graph {
+                HullGraph {
+                    vertex: g.ours.hull_vertex(),
+                    neighbours: &g.ours.convex_hull().expect("the mesh has a hull").adjacency,
+                }
+            } else {
+                HullGraph {
+                    vertex: &g.vertex,
+                    neighbours: &g.neighbours,
+                }
+            };
+            return CcdMesh {
+                verts: &g.verts,
+                hull: Some(hull),
+                polygons: &g.polygons,
+            };
+        }
+        let m = &meshes.ours[name];
         let hull = m.data.convex_hull().expect("the mesh has a hull");
         CcdMesh {
             verts: m.data.vertices(),
@@ -244,7 +344,7 @@ fn first_difference(st: &CcdStatus, want: &Value) -> Option<String> {
 
 /// `mjc_ccd` on a case, with `S3D`'s fourth weight as MuJoCo keeps it or as
 /// ours resets it, and a mesh's polygons MuJoCo's or ours.
-fn run(case: &Value, meshes: &HashMap<String, Mesh>, stale: bool, polygons: Polygons) -> CcdStatus {
+fn run(case: &Value, meshes: &Meshes, stale: bool, polygons: Polygons) -> CcdStatus {
     let mut o1 = object(&case["obj"][0], meshes, polygons);
     let mut o2 = object(&case["obj"][1], meshes, polygons);
     STALE_S3D.with(|s| s.set(stale));
@@ -255,21 +355,21 @@ fn run(case: &Value, meshes: &HashMap<String, Mesh>, stale: bool, polygons: Poly
 
 /// Every case of the golden: the distance, the witness points, the GJK and
 /// EPA iteration counts, the EPA status and the simplex size, to the bit,
-/// a mesh taking MuJoCo's polygons. With `S3D`'s fourth weight kept as
-/// MuJoCo keeps it every case is MuJoCo's; with ours reset, a case differs
-/// only where keeping it gives MuJoCo's (registry `D-GJK-S3D`), and the
-/// golden holds such a case.
+/// a mesh taking MuJoCo's polygons (and a mesh of `graph_meshes` MuJoCo's
+/// hull graph). With `S3D`'s fourth weight kept as MuJoCo keeps it every
+/// case is MuJoCo's; with ours reset, a case differs only where keeping it
+/// gives MuJoCo's (registry `D-GJK-S3D`), and the golden holds such a case.
 #[test]
 fn mjc_ccd_matches_mujoco_bitwise() {
     let doc = golden();
-    let meshes = meshes(&doc);
+    let meshes = Meshes::of(&doc);
     let mut compared = 0;
     let mut failures = Vec::new();
     let mut stale_weight = Vec::new();
     let groups = doc.as_object().expect("the golden's groups");
     for (group, cases) in groups
         .iter()
-        .filter(|(k, _)| !["oracle", "meshes", "merge"].contains(&k.as_str()))
+        .filter(|(k, _)| !["oracle", "meshes", "merge", "graph_meshes"].contains(&k.as_str()))
     {
         let cases = cases.as_object().expect("a group of cases");
         assert!(!cases.is_empty(), "no {group} cases");
@@ -294,6 +394,40 @@ fn mjc_ccd_matches_mujoco_bitwise() {
     assert!(
         !stale_weight.is_empty(),
         "no case shows S3D's stale weight: the reset is not checked"
+    );
+}
+
+/// The cases on `graph_meshes` need MuJoCo's hull graph: on our hull's
+/// graph (with MuJoCo's polygons and its `S3D` weight) the golden holds
+/// cases that are not MuJoCo's to the bit, where a hill climb ends on
+/// another vertex than MuJoCo's.
+#[test]
+fn graph_cases_need_mujocos_graph() {
+    let doc = golden();
+    let mut meshes = Meshes::of(&doc);
+    meshes.our_graph = true;
+    let on_graph_meshes = |case: &&Value| {
+        (0..2).any(|i| {
+            case["obj"][i]["mesh"]
+                .as_str()
+                .is_some_and(|name| meshes.on_mujocos_graph.contains_key(name))
+        })
+    };
+    let differ = doc
+        .as_object()
+        .expect("the golden's groups")
+        .iter()
+        .filter(|(k, _)| !["oracle", "meshes", "merge", "graph_meshes"].contains(&k.as_str()))
+        .flat_map(|(_, cases)| cases.as_object().expect("a group of cases").values())
+        .filter(on_graph_meshes)
+        .filter(|case| {
+            let st = run(case, &meshes, true, Polygons::Mujocos);
+            first_difference(&st, &case["out"]).is_some()
+        })
+        .count();
+    assert!(
+        differ > 0,
+        "no case differs on our hull's graph: MuJoCo's graph is not checked"
     );
 }
 
@@ -354,13 +488,22 @@ fn mesh_polygons_are_mujocos() {
 /// golden's `merge` meshes, whose hulls hold neighbouring faces nearer than
 /// the merge tolerance, our merge of MuJoCo's own hull faces gives MuJoCo's
 /// polygons in its order, each from its corner, and each vertex's polygons.
+/// The same on the meshes on MuJoCo's graph (`graph_meshes`), whose cases
+/// take MuJoCo's polygons.
 #[test]
 fn polygon_merge_is_mujocos_from_its_hull_faces() {
     let doc = golden();
     let merge = doc["merge"].as_object().expect("merge meshes");
     assert!(!merge.is_empty(), "no merge meshes");
+    let graph = doc["graph_meshes"].as_object().expect("graph meshes");
     let mut differ = Vec::new();
-    for (name, m) in merge {
+    // `merge` holds the vertices as `MakePolygons` merges them in `vert`,
+    // `graph_meshes` in `authored` (its `vert` is as MuJoCo compiled them).
+    let all = merge
+        .iter()
+        .map(|(name, m)| (name, &m["vert"], m))
+        .chain(graph.iter().map(|(name, m)| (name, &m["authored"], m)));
+    for (name, verts, m) in all {
         let faces: Vec<[usize; 3]> = m["faces"]
             .as_array()
             .expect("faces")
@@ -370,7 +513,7 @@ fn polygon_merge_is_mujocos_from_its_hull_faces() {
                 [f[0], f[1], f[2]]
             })
             .collect();
-        let ours = make_polygons(&points(&m["vert"]), &faces);
+        let ours = make_polygons(&points(verts), &faces);
         let paths: Vec<Vec<usize>> = m["polygons"]
             .as_array()
             .expect("polygons")
@@ -411,7 +554,7 @@ fn same_contacts(a: &CcdStatus, b: &CcdStatus) -> bool {
 #[test]
 fn box_on_mesh_multiccd_as_mujoco() {
     let doc = golden();
-    let meshes = meshes(&doc);
+    let meshes = Meshes::of(&doc);
     let cases = doc["multi_mesh"].as_object().expect("the multi_mesh cases");
     let mut other_corners = 0;
     let mut mujocos_four = 0;

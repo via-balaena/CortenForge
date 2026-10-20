@@ -60,10 +60,50 @@ ways, a slab whose top is lifted by noise of 2e-5, and points on an
 ellipsoid. Each holds the vertices as `MakePolygons` merges them (as
 authored, rounded to floats), MuJoCo's hull faces (its graph's
 `face_globalid`, in qhull's order) and its polygons in its order.
+
+The groups after `merge` each draw from their own generator, so that the
+groups before them are as they were. `graph_meshes`: meshes whose cases are
+compared on MuJoCo's own hull graph, each with its vertices as MuJoCo
+compiled them, as authored rounded to floats, whether it hill-climbs, its
+graph (`vert_globalid` and each hull vertex's neighbours, as
+`mjc_hillclimbSupport` walks them), its hull faces in qhull's order and its
+polygons: a wedge of ten vertices (mjMESH_HILLCLIMB_MIN), its two top faces
+at 1e-3 to each other; a cone on a base of 151 corners (more than
+mjMAX_POLYVERT); and a slab with a vertex raised 1e-5 above its top, 2e-3 in
+from one edge, whose sliver of top to that edge is a polygon of three
+corners all of which the polygon of the rest of the top holds. `small`: the
+pairs of primitives mjc_ccd takes, shrunk by 1e-2 to 1e-4 and overlapping,
+as mjc_Convex calls them. `large`: a box grown by 1 to 1e6 against a box, a
+mesh or an ellipsoid, overlapping, with one contact, with four (as
+mjc_Convex asks under MULTICCD), or as mj_geomDistance calls them. `touch`:
+a primitive resting exactly on a box (sizes and heights dyadic), unturned or
+turned about the vertical, centred or off, either first. `degenerate`: geoms
+turned by a matrix of rank 2 or 1, and geoms of a size 0 (a box or an
+ellipsoid flat, an ellipsoid a point, a cylinder a disc or a segment) on one
+turn, offset along one or two of its axes. `long_epa`: deep overlaps under
+`ccd_iterations` of 60 to 400 (past mjMAX_EPA_ITERATIONS mjc_ccd allocates
+the polytope through the configuration's alloc and free) and
+`ccd_tolerance` of 0 to 1e-10, with one contact or four. `overflow`:
+primitives grown by 1e150 to 1e154 or shrunk by 1e-150 to 1e-300, where
+products of three of their coordinates overflow or underflow a double, every
+number of each case finite. `flush`: two unturned boxes, the upper pressed
+into the lower with sides flush, so that corners lie on the clip planes,
+with four and eight contacts. `graph`: a box against the wedge and the cone,
+and those meshes against each other: faces pressed together, an edge or a
+vertex against a face, within the face and edge tolerances or past them,
+with 4, 5, 8 or 50 contacts. `notch`: a box's corner pressed onto the slab's
+sliver, the box's face within the face tolerance of it, with four and eight
+contacts.
+
 It refuses a run whose cases miss a path the port must be checked on (each
 starting polytope, an EPA failure, multi-contact, the sphere and capsule
 inflation, the cutoff, a separating plane found by gjkIntersect, both mesh
-searches).
+searches; and what the later groups are for: polytope2's and polytope3's
+failures, an exact touch inflated to the cutoff, a geom of size 0, a
+singular turn, a box past size 1 through EPA, geoms below 1e-6 and past
+1e150, EPA past mjMAX_EPA_ITERATIONS, mjMAXCONPAIR contacts, a
+multi-contact on a face past mjMAX_POLYVERT corners, a hill climb on
+mjMESH_HILLCLIMB_MIN vertices, and a multi-contact on the notched slab).
 """
 
 import ctypes
@@ -71,7 +111,7 @@ import json
 import math
 import os
 import sys
-from ctypes import POINTER, byref, c_double, c_int, c_void_p
+from ctypes import CFUNCTYPE, POINTER, byref, c_double, c_int, c_size_t, c_void_p
 
 import mujoco
 import numpy as np
@@ -118,6 +158,23 @@ LIB.mjc_initCCDObj.restype = None
 LIB.mjc_ccd.argtypes = [POINTER(CCDConfig), POINTER(CCDStatus), POINTER(CCDObj), POINTER(CCDObj)]
 LIB.mjc_ccd.restype = c_double
 
+# `mjCCDConfig`'s alloc and free, which mjc_ccd calls for the polytope only past
+# mjMAX_EPA_ITERATIONS (engine_collision_gjk.c:2314-2333, :2353-2355); each buffer is held
+# until it is freed.
+EPA_BUFFERS = {}
+
+
+@CFUNCTYPE(c_void_p, c_void_p, c_size_t)
+def epa_alloc(_context, nbytes):
+    buffer = ctypes.create_string_buffer(nbytes)
+    EPA_BUFFERS[ctypes.addressof(buffer)] = buffer
+    return ctypes.addressof(buffer)
+
+
+@CFUNCTYPE(None, c_void_p, c_void_p)
+def epa_free(_context, address):
+    EPA_BUFFERS.pop(address, None)
+
 TYPES = {"sphere": 2, "capsule": 3, "ellipsoid": 4, "cylinder": 5, "box": 6, "mesh": 7}
 
 # The pairs the collision table sends to mjc_Convex (engine_collision_driver.c:41-52),
@@ -137,7 +194,8 @@ REVERSED_PAIRS = [("ellipsoid", "sphere"), ("mesh", "sphere"), ("ellipsoid", "ca
                   ("sphere", "cylinder"), ("cylinder", "sphere"), ("sphere", "box"),
                   ("box", "sphere"), ("capsule", "box"), ("box", "capsule")]
 GROUPS = ("contact", "distance", "deep", "aligned", "reversed", "first_step", "probe", "cutoff",
-          "multi", "census", "nan", "multi_mesh")
+          "multi", "census", "nan", "multi_mesh", "small", "large", "touch", "degenerate",
+          "long_epa", "overflow", "flush", "graph", "notch")
 
 
 def gem8():
@@ -280,11 +338,14 @@ def run(m, d, geoms, margin, config, meshes):
                 or list(obj.rotate) != [1, 0, 0, 0] or not obj.support):
             sys.exit(f"mjCCDObj layout: geom {obj.geom} type {obj.geom_type} margin {obj.margin}")
     cfg = CCDConfig(config["max_iterations"], config["tolerance"], config["max_contacts"],
-                    config["dist_cutoff"], None, None, None)
+                    config["dist_cutoff"], None, ctypes.cast(epa_alloc, c_void_p),
+                    ctypes.cast(epa_free, c_void_p))
     st = CCDStatus()
     ret = LIB.mjc_ccd(byref(cfg), byref(st), byref(objs[0]), byref(objs[1]))
     if st.max_iterations != config["max_iterations"] or st.tolerance != config["tolerance"]:
         sys.exit("mjCCDStatus layout: the configuration did not come back")
+    if EPA_BUFFERS:
+        sys.exit("mjc_ccd did not free the polytope it allocated")
     if ret != st.dist and not (math.isnan(ret) and math.isnan(st.dist)):
         sys.exit(f"mjc_ccd returned {ret}, its status holds {st.dist}")
     nx = st.nx
@@ -632,7 +693,515 @@ def census_cases():
     return out
 
 
-def coverage(cases):
+# The groups after `merge` each draw from their own generator, so that the groups before them
+# stay as they were.
+
+
+def sized_call(kinds, sizes, meshes, poses, margin, cfg):
+    """`call`, each primitive compiled with sizes of 1 and its sizes then written into
+    `geom_size`, which mjc_ccd's support functions read (the compiler refuses a size of 0)."""
+    xml = (f"<mujoco>{mesh_assets()}<worldbody>"
+           + "".join(geom_xml(k, [1.0] * len(s), me) for k, s, me in zip(kinds, sizes, meshes))
+           + "</worldbody></mujoco>")
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    for g, (kind, size) in enumerate(zip(kinds, sizes)):
+        if kind != "mesh":
+            m.geom_size[g] = (list(size) + [0.0, 0.0, 0.0])[:3]
+    for g, (pos, mat) in enumerate(poses):
+        d.geom_xpos[g] = pos
+        d.geom_xmat[g] = mat
+    return run(m, d, (0, 1), margin, cfg, meshes)
+
+
+def ccd_config(max_iterations, tolerance, max_contacts, dist_cutoff):
+    return {"max_iterations": max_iterations, "tolerance": tolerance,
+            "max_contacts": max_contacts, "dist_cutoff": dist_cutoff}
+
+
+# The pairs of primitives mjc_ccd takes in the collision table and mj_geomDistance.
+PRIMITIVE_PAIRS = [p for p in DISTANCE_PAIRS if "mesh" not in p]
+
+
+def small_cases():
+    """The geoms shrunk by 1e-2 to 1e-4, overlapping, as mjc_Convex calls them."""
+    rng = np.random.default_rng(101)
+    out = {}
+    for pair in PRIMITIVE_PAIRS:
+        for i, scale in enumerate([1e-2, 1e-3, 3e-4, 1e-4]):
+            sizes, meshes, poses = random_setup(rng, pair, i, (0.0, 0.5))
+            sizes = [[x * scale for x in s] for s in sizes]
+            poses = [(pos * scale, mat) for pos, mat in poses]
+            out[f"{pair[0]}_{pair[1]}_{i}"] = call(pair, sizes, meshes, poses, 0.0,
+                                                   config(1, 0.0))
+    return out
+
+
+def large_cases():
+    """A box, grown by 1 to 1e6, against a box, a mesh or an ellipsoid, overlapping."""
+    rng = np.random.default_rng(102)
+    out = {}
+    for pair in [("box", "box"), ("box", "mesh"), ("mesh", "box"), ("ellipsoid", "box")]:
+        for i, scale in enumerate([1.0, 1e2, 1e3, 1e4, 1e5, 1e6]):
+            meshes = mesh_names(pair, i)
+            sizes = [[x * scale for x in random_size(rng, k)] for k in pair]
+            reach = sum(rbound(k, s, me) for k, s, me in zip(pair, sizes, meshes))
+            pos1 = rng.uniform(-0.1, 0.1, 3) * scale
+            u = rng.normal(size=3)
+            u /= np.linalg.norm(u)
+            pos2 = pos1 + u * reach * rng.uniform(0.0, 0.7)
+            poses = [(pos1, random_mat(rng)), (pos2, random_mat(rng))]
+            cfg = [config(1, 0.0), config(4, 0.0), config(1, 10.0 * scale)][i % 3]
+            out[f"{pair[0]}_{pair[1]}_{i}"] = call(pair, sizes, meshes, poses, 0.0, cfg)
+    return out
+
+
+def z_turn(rng):
+    return axis_mat([0, 0, 1], rng.uniform(0, 2 * math.pi))
+
+
+def touch_cases():
+    """A geom resting exactly on a box's top: sizes and heights dyadic, so that the touch is
+    exact; unturned or turned about the vertical, centred or off; either geom first."""
+    rng = np.random.default_rng(103)
+    out = {}
+    eye = np.eye(3).ravel()
+    low, top = [0.25, 0.1875, 0.125], 0.125
+    for up in ["cylinder", "ellipsoid", "capsule", "sphere", "box"]:
+        for i in range(8):
+            if up == "cylinder":
+                usize = [[0.125, 0.0625], [0.0625, 0.125]][i % 2]
+                h = usize[1]
+            elif up == "ellipsoid":
+                usize = [[0.25, 0.25, 0.0625], [0.125, 0.0625, 0.03125]][i % 2]
+                h = usize[2]
+            elif up == "capsule":
+                usize = [0.0625, 0.125]
+                h = usize[0] + (usize[1] if i % 2 == 0 else 0)
+            elif up == "sphere":
+                usize = [0.0625]
+                h = 0.0625
+            else:
+                usize = [0.0625, 0.03125, 0.046875]
+                h = 0.046875
+            umat = eye
+            if up == "capsule" and i % 2 == 1:
+                umat = axis_mat([1, 0, 0], math.pi / 2)  # lying down
+            if i % 4 >= 2:
+                umat = mat_mul(z_turn(rng), umat)
+            off = [0.0, 0.0] if i % 3 == 0 else [0.03125, -0.015625]
+            pos2 = np.array([off[0], off[1], top + h])
+            cfg = [config(1, 0.0), config(4, 0.0), config(1, 10.0)][i % 3]
+            for order in (0, 1):
+                geoms = [("box", low, (np.zeros(3), eye)), (up, usize, (pos2, umat))]
+                if order:
+                    geoms.reverse()
+                out[f"box_{up}_{i}_{order}"] = call(
+                    [g[0] for g in geoms], [g[1] for g in geoms], (None, None),
+                    [g[2] for g in geoms], 0.0, cfg)
+    return out
+
+
+def singular_mat(rng, rank):
+    """A turn squashed to rank 2 or 1: a geom flattened to a plane or a line."""
+    r1 = random_mat(rng).reshape(3, 3)
+    r2 = random_mat(rng).reshape(3, 3)
+    return (r1 @ np.diag([1.0, 1.0 if rank > 1 else 0.0, 0.0]) @ r2.T).ravel()
+
+
+def degenerate_cases():
+    """Geoms MuJoCo's compiler and kinematics do not make: turned by a matrix of rank 2 or 1;
+    or of a size 0 (a box or an ellipsoid flat, an ellipsoid a point, a cylinder a disc or a
+    segment), the two on one turn, the second offset along one or two of its axes. The geoms of
+    a size 0 draw from a generator of their own."""
+    rng = np.random.default_rng(104)
+    out = {}
+    for pair in [("ellipsoid", "sphere"), ("capsule", "ellipsoid"), ("cylinder", "mesh")]:
+        for i in range(6):
+            sizes = [random_size(rng, k) for k in pair]
+            meshes = mesh_names(pair, i)
+            reach = sum(rbound(k, s, me) for k, s, me in zip(pair, sizes, meshes))
+            pos1 = rng.uniform(-0.05, 0.05, 3)
+            u = rng.normal(size=3)
+            u /= np.linalg.norm(u)
+            pos2 = pos1 + u * reach * rng.uniform(0.0, 0.6)
+            rank = 2 if i < 3 else 1
+            mats = [singular_mat(rng, rank) if i % 3 in (0, 2) else random_mat(rng),
+                    singular_mat(rng, rank) if i % 3 in (1, 2) else random_mat(rng)]
+            cfg = [config(1, 0.0), config(4, 0.0), config(1, 10.0)][i % 3]
+            out[f"singular_{pair[0]}_{pair[1]}_{i}"] = call(
+                pair, sizes, meshes, [(pos1, mats[0]), (pos2, mats[1])], 0.0, cfg)
+    rng = np.random.default_rng(204)
+    for pair in [("box", "box"), ("box", "ellipsoid"), ("ellipsoid", "box"),
+                 ("ellipsoid", "ellipsoid"), ("cylinder", "cylinder"), ("box", "cylinder"),
+                 ("cylinder", "ellipsoid")]:
+        for i in range(12):
+            sizes = []
+            for kind in pair:
+                size = random_size(rng, kind)
+                if kind in ("box", "ellipsoid"):
+                    if i % 2 == 0:
+                        size[i % 3] = 0.0
+                    if i % 5 == 0 and kind == "ellipsoid":
+                        size = [0.0, 0.0, 0.0]
+                elif kind == "cylinder":
+                    size[1 if i % 2 == 0 else 0] = 0.0
+                sizes.append(size)
+            turn = random_mat(rng) if i % 4 >= 2 else np.eye(3).ravel()
+            off = np.zeros(3)
+            off[(i + 1) % 3] = rng.uniform(-0.03, 0.03)
+            if i % 3 == 0:
+                off[(i + 2) % 3] = rng.uniform(-0.03, 0.03)
+            pos2 = turn.reshape(3, 3) @ off
+            cfg = [config(1, 0.0), config(4, 0.0), config(1, 10.0), config(1, 0.0)][i % 4]
+            out[f"flat_{pair[0]}_{pair[1]}_{i}"] = sized_call(
+                pair, sizes, (None, None), [(np.zeros(3), turn), (pos2, turn)], 0.0, cfg)
+    return out
+
+
+def long_epa_cases():
+    """Deep overlaps under 60 to 400 iterations (past mjMAX_EPA_ITERATIONS mjc_ccd allocates
+    the polytope) and tolerances of 0 to 1e-10, with one contact or four."""
+    rng = np.random.default_rng(105)
+    out = {}
+    for pair in [("ellipsoid", "ellipsoid"), ("capsule", "ellipsoid"), ("ellipsoid", "cylinder"),
+                 ("ellipsoid", "box"), ("cylinder", "box"), ("box", "mesh")]:
+        for i, (n, tol) in enumerate([(170, 0.0), (300, 0.0), (170, 1e-15), (400, 1e-14),
+                                      (120, 1e-12), (60, 1e-10)]):
+            sizes, meshes, poses = random_setup(rng, pair, i, (0.0, 0.4))
+            cfg = ccd_config(n, tol, 4 if i % 4 == 1 else 1, 0.0)
+            out[f"{pair[0]}_{pair[1]}_{i}"] = call(pair, sizes, meshes, poses, 0.0, cfg)
+    return out
+
+
+def finite(o):
+    if isinstance(o, float):
+        return math.isfinite(o)
+    if isinstance(o, list):
+        return all(finite(x) for x in o)
+    if isinstance(o, dict):
+        return all(finite(v) for v in o.values())
+    return True
+
+
+def overflow_cases():
+    """Primitives grown or shrunk by 1e±150 and more, where products of their coordinates
+    leave the range of a double, every number of each case still finite."""
+    rng = np.random.default_rng(106)
+    out = {}
+    eye = np.eye(3).ravel()
+    for pair in [("box", "box"), ("ellipsoid", "box"), ("capsule", "cylinder"),
+                 ("cylinder", "ellipsoid")]:
+        for i, scale in enumerate([1e150, 1e152, 1e-160, 1e-300, 1e154, 1e-150]):
+            sizes = [[x * scale for x in random_size(rng, k)] for k in pair]
+            u = rng.normal(size=3)
+            pos2 = u / np.linalg.norm(u) * scale * 0.03
+            mats = [random_mat(rng), random_mat(rng)] if i % 2 else [eye, eye]
+            cfg = [config(1, 0.0), config(1, 10.0)][i % 2]
+            case = sized_call(pair, sizes, (None, None), [(np.zeros(3), mats[0]), (pos2, mats[1])],
+                              0.0, cfg)
+            if not finite(case):
+                sys.exit(f"overflow {pair} {i}: a number past a double's range")
+            out[f"{pair[0]}_{pair[1]}_{i}"] = case
+    return out
+
+
+def flush_cases():
+    """Two boxes unturned, the upper pressed 1e-3 or 5e-4 into the lower with sides flush, so
+    that corners lie on the clip planes: the same footprint, offset along x or both axes, and
+    at a corner; four and eight contacts; either box first."""
+    out = {}
+    eye = np.eye(3).ravel()
+    for name, s1, s2, p2 in [
+            ("same", [0.05, 0.04, 0.03], [0.05, 0.04, 0.02], [0.0, 0.0, 0.049]),
+            ("offset_x", [0.05, 0.04, 0.03], [0.05, 0.04, 0.02], [0.01, 0.0, 0.049]),
+            ("offset_xy", [0.05, 0.04, 0.03], [0.03, 0.04, 0.02], [0.02, 0.0, 0.0495]),
+            ("corner", [0.05, 0.04, 0.03], [0.02, 0.02, 0.02], [0.03, 0.02, 0.0495])]:
+        for max_contacts in (4, 8):
+            for order in (0, 1):
+                boxes = [(s1, (np.zeros(3), eye)), (s2, (np.array(p2), eye))]
+                if order:
+                    boxes.reverse()
+                out[f"{name}_{max_contacts}_{order}"] = call(
+                    ("box", "box"), [b[0] for b in boxes], (None, None), [b[1] for b in boxes],
+                    0.0, config(max_contacts, 0.0))
+    return out
+
+
+def wedge10(angle):
+    """A slab whose top is two faces meeting at a ridge, `angle` apart: ten vertices."""
+    hx, hy = 0.05, 0.04
+    t = math.tan(angle / 2)
+    pts = [[sx * hx, sy * hy, -0.02] for sx in (-1, 1) for sy in (-1, 1)]
+    pts += [[sx * hx, sy * hy, 0.02 - t * hx] for sx in (-1, 1) for sy in (-1, 1)]
+    pts += [[0.0, sy * hy, 0.02] for sy in (-1, 1)]
+    return np.array(pts)
+
+
+def cone(n):
+    """A cone on an `n`-cornered base (on an ellipse), its apex off the axis."""
+    a = np.linspace(0, 2 * math.pi, n, endpoint=False) + 0.013
+    base = [[0.05 * math.cos(t), 0.045 * math.sin(t), -0.04 / 3] for t in a]
+    return np.array([[0.002, -0.001, 0.08 / 3]] + base)
+
+
+def notch9():
+    """A slab with a vertex raised 1e-5 above its top, 2e-3 in from one of its edges: nine
+    vertices. The sliver of top to that edge is tilted past the merge tolerance and the rest
+    of the top lies within it, so that one polygon runs along two of the sliver's edges."""
+    hx, hy, hz = 0.05, 0.04, 0.02
+    pts = [[sx * hx, sy * hy, sz * hz] for sz in (-1, 1) for sy in (-1, 1) for sx in (-1, 1)]
+    return np.array(pts + [[0.0, hy - 2e-3, hz + 1e-5]])
+
+
+# The meshes whose cases are compared on MuJoCo's hull graph: a wedge of mjMESH_HILLCLIMB_MIN
+# vertices, its top nearly flat; a cone whose base has more than mjMAX_POLYVERT corners; the
+# notched slab.
+GRAPH_MESHES = {"wedge10": wedge10(1e-3), "cone152": cone(151), "notch9": notch9()}
+
+
+def graph_assets():
+    return "<asset>" + "".join(
+        f'<mesh name="{n}" vertex="{" ".join(repr(float(x)) for x in v.ravel())}"/>'
+        for n, v in GRAPH_MESHES.items()) + "</asset>"
+
+
+def graph_meshes():
+    """Each of `GRAPH_MESHES` as MuJoCo compiles it: its vertices, as authored rounded to
+    floats (as `MakePolygons` merges them), whether it hill-climbs, its hull graph (each hull
+    vertex's index among the mesh's vertices, `vert_globalid`, and its neighbours among the
+    hull's vertices, as `mjc_hillclimbSupport` walks them, engine_collision_convex.c:383-417),
+    its hull faces in qhull's order, and its polygons."""
+    m = mujoco.MjModel.from_xml_string(
+        f"<mujoco>{graph_assets()}<worldbody>"
+        + "".join(f'<geom type="mesh" mesh="{n}"/>' for n in GRAPH_MESHES)
+        + "</worldbody></mujoco>")
+    out = {}
+    for name, authored in GRAPH_MESHES.items():
+        i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MESH, name)
+        adr, num = m.mesh_vertadr[i], m.mesh_vertnum[i]
+        if num != len(authored):
+            sys.exit(f"graph mesh {name}: MuJoCo kept {num} of {len(authored)} vertices")
+        verts = np.asarray(m.mesh_vert[adr:adr + num], dtype=np.float64)
+        ga = m.mesh_graphadr[i]
+        nv, nf = int(m.mesh_graph[ga]), int(m.mesh_graph[ga + 1])
+        edgeadr = [int(x) for x in m.mesh_graph[ga + 2:ga + 2 + nv]]
+        globalid = [int(x) for x in m.mesh_graph[ga + 2 + nv:ga + 2 + 2 * nv]]
+        localid = m.mesh_graph[ga + 2 + 2 * nv:ga + 2 + 3 * nv + 3 * nf]
+        neighbours = []
+        for v in range(nv):
+            k, around = edgeadr[v], []
+            while localid[k] >= 0:
+                around.append(int(localid[k]))
+                k += 1
+            neighbours.append(around)
+        fa = ga + 2 + 3 * nv + 3 * nf
+        faces = [[int(m.mesh_graph[fa + 3 * k + j]) for j in range(3)] for k in range(nf)]
+        pa, pn = m.mesh_polyadr[i], m.mesh_polynum[i]
+        paths = [[int(m.mesh_polyvert[m.mesh_polyvertadr[pa + k] + j])
+                  for j in range(m.mesh_polyvertnum[pa + k])] for k in range(pn)]
+        normals = [[float(x) for x in m.mesh_polynormal[pa + k]] for k in range(pn)]
+        polymap = [[int(m.mesh_polymap[m.mesh_polymapadr[adr + v] + j])
+                    for j in range(m.mesh_polymapnum[adr + v])] for v in range(num)]
+        out[name] = {"vert": [float(x) for x in verts.ravel()],
+                     "authored": [float(np.float32(x)) for x in authored.ravel()],
+                     "hillclimb": bool(ga >= 0 and num >= 10),
+                     "graph": {"vertex": globalid, "neighbours": neighbours}, "faces": faces,
+                     "polygons": paths, "polynormals": normals, "polymap": polymap}
+    return out
+
+
+def unit_turn(axis, angle):
+    """`axis_mat` about the unit `axis` (`mju_axisAngle2Quat` takes the axis as it is)."""
+    return axis_mat(np.asarray(axis, float) / np.linalg.norm(axis), angle)
+
+
+def align_mat(a, b):
+    """The turn taking the direction `a` to `b`."""
+    a = a / np.linalg.norm(a)
+    b = b / np.linalg.norm(b)
+    axis = np.cross(a, b)
+    if np.linalg.norm(axis) < 1e-12:
+        if a @ b > 0:
+            return np.eye(3).ravel()
+        axis = np.cross(a, [1.0, 0.0, 0.0] if abs(a[0]) < 0.9 else [0.0, 1.0, 0.0])
+        return unit_turn(axis, math.pi)
+    return unit_turn(axis, math.atan2(np.linalg.norm(axis), a @ b))
+
+
+def shape_faces(meshes, shape, size):
+    """A box's or mesh's faces in its frame: each face's normal and corners."""
+    if shape == "box":
+        out = []
+        for ax in range(3):
+            for sgn in (1, -1):
+                n = np.zeros(3)
+                n[ax] = sgn
+                u = np.zeros(3)
+                u[(ax + 1) % 3] = size[(ax + 1) % 3]
+                w = np.zeros(3)
+                w[(ax + 2) % 3] = size[(ax + 2) % 3]
+                c = n * size[ax]
+                out.append((n, [c + u + w, c - u + w, c - u - w, c + u - w]))
+        return out
+    m = meshes[shape]
+    verts = np.array(m["vert"]).reshape(-1, 3)
+    return [(np.array(n), [verts[v] for v in path])
+            for n, path in zip(m["polynormals"], m["polygons"])]
+
+
+def place_dist(m, d, pos2, meshes):
+    """MuJoCo's distance between the two geoms, the second at `pos2`."""
+    d.geom_xpos[1] = pos2
+    return run(m, d, (0, 1), 0.0, config(1, 10.0), meshes)["out"]["dist"]
+
+
+def pressed_case(rng, meshes, assets, pair, faces, mode, tilted, max_contacts):
+    """Two shapes (a box or a mesh of `meshes`) pressed together: a face of each (`faces`: the
+    one of most corners, or one at random) turned to face the other's, or an edge or a vertex
+    of the second against the first's face; the second tilted within the face and edge
+    tolerances or past them; brought to touch on MuJoCo's own distance (by bisection), then
+    pressed in by 5e-5 to 2e-3; either first. None where the pose does not touch within the
+    bisection's bracket."""
+    sizes = [list(rng.uniform(0.015, 0.05, 3)) if s == "box" else [] for s in pair]
+    kinds = ["box" if s == "box" else "mesh" for s in pair]
+    names = [None if s == "box" else s for s in pair]
+    xml = (f"<mujoco>{assets}<worldbody>"
+           + "".join(geom_xml(k, s, me) for k, s, me in zip(kinds, sizes, names))
+           + "</worldbody></mujoco>")
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    fa = shape_faces(meshes, pair[0], sizes[0])
+    fb = shape_faces(meshes, pair[1], sizes[1])
+    if faces == "any":
+        ia, ib = int(rng.integers(len(fa))), int(rng.integers(len(fb)))
+    else:
+        ia, ib = (int(np.argmax([len(c) for _, c in f])) for f in (fa, fb))
+    na, ca = fa[ia]
+    nb, cb = fb[ib]
+    r1 = random_mat(rng)
+    n_a = r1.reshape(3, 3) @ na
+    r2 = mat_mul(unit_turn(n_a, rng.uniform(0, 2 * math.pi)), align_mat(nb, -n_a))
+    anchor = np.mean(cb, axis=0)
+    if mode == "edge":
+        # Leaning about one of its edges, away from the first's face.
+        k = int(rng.integers(len(cb)))
+        e0, e1 = cb[k], cb[(k + 1) % len(cb)]
+        axis = r2.reshape(3, 3) @ (e1 - e0)
+        lean = rng.uniform(0.15, 0.7)
+        for sgn in (1, -1):
+            turned = mat_mul(unit_turn(axis, sgn * lean), r2)
+            if (turned.reshape(3, 3) @ (np.mean(cb, axis=0) - (e0 + e1) / 2)) @ n_a > 0:
+                break
+        r2 = turned
+        anchor = (e0 + e1) / 2
+    elif mode == "vertex":
+        # Turned at random, its lowest corner down.
+        r2 = random_mat(rng)
+        corners = np.array([v for _, c in fb for v in c])
+        anchor = corners[np.argmin([(r2.reshape(3, 3) @ v) @ n_a for v in corners])]
+    tilt = rng.uniform(2e-3, 3e-2) if tilted else rng.uniform(0, 5e-4)
+    r2 = mat_mul(unit_turn(rng.normal(size=3), tilt), r2)
+    reach = max(np.ptp(np.array(ca), axis=0))
+    t1 = np.cross(n_a, rng.normal(size=3))
+    t1 /= np.linalg.norm(t1)
+    centre = r1.reshape(3, 3) @ np.mean(ca, axis=0) + t1 * rng.uniform(0, 0.3) * reach
+    base = centre - r2.reshape(3, 3) @ anchor
+    d.geom_xpos[0] = 0.0
+    d.geom_xmat[0] = r1
+    d.geom_xmat[1] = r2
+    lo, hi = -0.02, 0.06
+    if not place_dist(m, d, base + lo * n_a, names) < 0 < place_dist(m, d, base + hi * n_a,
+                                                                     names):
+        return None
+    for _ in range(50):
+        mid = 0.5 * (lo + hi)
+        if place_dist(m, d, base + mid * n_a, names) < 0:
+            lo = mid
+        else:
+            hi = mid
+    d.geom_xpos[1] = base + (hi - rng.uniform(5e-5, 2e-3)) * n_a
+    geoms = (1, 0) if rng.uniform() < 0.5 else (0, 1)
+    return run(m, d, geoms, 0.0, config(max_contacts, 0.0), [names[g] for g in geoms])
+
+
+# The poses of `graph`: the faces, the mode, tilted past the tolerances, and the contacts asked.
+GRAPH_POSES = [("most", "face", False, 50), ("most", "face", False, 4), ("most", "face", True, 8),
+               ("most", "face", True, 5), ("most", "edge", False, 8), ("most", "vertex", False, 4),
+               ("any", "face", False, 50), ("any", "face", False, 4), ("any", "face", True, 5),
+               ("any", "edge", False, 8), ("any", "edge", True, 50), ("any", "vertex", False, 5)]
+
+
+def graph_cases(meshes):
+    """A box against the wedge and the cone, and the wedge and the cone against each other and
+    themselves, in each pose of `GRAPH_POSES` (`pressed_case`)."""
+    rng = np.random.default_rng(107)
+    out = {}
+    assets = graph_assets()
+    for pair in [("box", "wedge10"), ("box", "cone152"), ("wedge10", "wedge10"),
+                 ("wedge10", "cone152"), ("cone152", "cone152")]:
+        for i, (faces, mode, tilted, max_contacts) in enumerate(GRAPH_POSES):
+            case = pressed_case(rng, meshes, assets, pair, faces, mode, tilted, max_contacts)
+            if case is not None:
+                out[f"{pair[0]}_{pair[1]}_{i}"] = case
+    return out
+
+
+def notch_cases(meshes):
+    """A box against notch9's sliver (its polygon of three corners): the box's face turned to
+    face it, then 2e-4 to 1.4e-3 off it (within the face tolerance) about an axis in the face,
+    its lowest corner over a point of the sliver at random; brought to touch on MuJoCo's own
+    distance (by bisection), then pressed in by up to 2e-5; four and eight contacts, either
+    first. A pose that does not touch within the bisection's bracket is passed over."""
+    rng = np.random.default_rng(108)
+    out = {}
+    notch = meshes["notch9"]
+    verts = np.array(notch["vert"]).reshape(-1, 3)
+    (sliver,) = [k for k, path in enumerate(notch["polygons"]) if len(path) == 3]
+    normal = np.array(notch["polynormals"][sliver])
+    corners = verts[notch["polygons"][sliver]]
+    assets = graph_assets()
+    for i in range(8):
+        size = list(rng.uniform(0.015, 0.05, 3))
+        names = ["notch9", None]
+        xml = (f"<mujoco>{assets}<worldbody>{geom_xml('mesh', [], 'notch9')}"
+               f"{geom_xml('box', size, None)}</worldbody></mujoco>")
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        r1 = random_mat(rng)
+        n_a = r1.reshape(3, 3) @ normal
+        point = r1.reshape(3, 3) @ (rng.dirichlet([1.0, 1.0, 1.0]) @ corners)
+        r2 = mat_mul(unit_turn(n_a, rng.uniform(0, 2 * math.pi)),
+                     align_mat(np.array([0.0, 0.0, -1.0]), -n_a))
+        r2 = mat_mul(unit_turn(np.cross(n_a, rng.normal(size=3)), rng.uniform(2e-4, 1.4e-3)), r2)
+        box = np.array([np.array(size) * np.array([sx, sy, sz])
+                        for sz in (-1, 1) for sy in (-1, 1) for sx in (-1, 1)])
+        lowest = box[np.argmin([(r2.reshape(3, 3) @ c) @ n_a for c in box])]
+        base = point - r2.reshape(3, 3) @ lowest
+        d.geom_xpos[0] = 0.0
+        d.geom_xmat[0] = r1
+        d.geom_xmat[1] = r2
+        lo, hi = -0.005, 0.01
+        if not place_dist(m, d, base + lo * n_a, names) < 0 < place_dist(m, d, base + hi * n_a,
+                                                                         names):
+            continue
+        for _ in range(50):
+            mid = 0.5 * (lo + hi)
+            if place_dist(m, d, base + mid * n_a, names) < 0:
+                lo = mid
+            else:
+                hi = mid
+        d.geom_xpos[1] = base + (hi - rng.uniform(1e-7, 2e-5)) * n_a
+        geoms = (1, 0) if i % 2 else (0, 1)
+        out[f"box_{i}"] = run(m, d, geoms, 0.0, config([4, 8][(i // 2) % 2], 0.0),
+                              [names[g] for g in geoms])
+    return out
+
+
+def coverage(cases, graph):
     """Refuse a golden that misses a path the port must be checked on."""
     outs = [c["out"] for c in cases]
     shrink = [c for c in cases if {"sphere", "capsule"} & {o["type"] for o in c["obj"]}]
@@ -661,6 +1230,38 @@ def coverage(cases):
                                                                  for o in c["obj"])
                                       for c in cases),
         "hill-climbed mesh": any(o.get("mesh") == "pebble24" for c in cases for o in c["obj"]),
+        # What the groups after `merge` are for.
+        "P2_NONCONVEX": any(o["epa_status"] == 2 for o in outs),
+        "P3_INVALID_V4": any(o["epa_status"] == 5 for o in outs),
+        "P3_INVALID_V5": any(o["epa_status"] == 6 for o in outs),
+        "P3_ORIGIN_ON_FACE": any(o["epa_status"] == 8 for o in outs),
+        "an exact touch inflated to the cutoff": any(
+            c["out"]["dist"] == 0.0 == c["config"]["dist_cutoff"] and c["out"]["nx"] == 1
+            and c["out"]["epa_status"] == -1 for c in shrink),
+        "a geom of size 0": any(0.0 in o["size"][:{"cylinder": 2}.get(o["type"], 3)]
+                                for c in cases for o in c["obj"]
+                                if o["type"] in ("ellipsoid", "cylinder", "box")),
+        "a turn of rank below 3": any(np.isfinite(o["mat"]).all()
+                                      and abs(np.linalg.det(np.reshape(o["mat"], (3, 3)))) < 1e-9
+                                      for c in cases for o in c["obj"]),
+        "a box past size 1 in EPA": any(
+            c["out"]["epa_status"] == 0 and any(o["type"] == "box" and max(o["size"]) > 1
+                                                for o in c["obj"]) for c in cases),
+        "geoms below 1e-6": any(max(abs(x) for o in c["obj"] for x in o["size"]) < 1e-6
+                                and c["out"]["nx"] == 1 for c in cases),
+        "geoms past 1e150": any(max(abs(x) for o in c["obj"] for x in o["size"]) > 1e150
+                                and c["out"]["nx"] == 1 for c in cases),
+        "EPA past mjMAX_EPA_ITERATIONS": any(o["epa_iterations"] > 170 for o in outs),
+        "mjMAXCONPAIR contacts": any(o["nx"] == MAXCONPAIR for o in outs),
+        "a face past mjMAX_POLYVERT corners in a multi-contact": any(
+            c["out"]["nx"] > 1 and any(max(map(len, graph[o["mesh"]]["polygons"])) > 150
+                                       for o in c["obj"] if o["mesh"] in graph)
+            for c in cases),
+        "a mesh of mjMESH_HILLCLIMB_MIN vertices hill-climbed": any(
+            len(graph[o["mesh"]]["vert"]) // 3 == 10 and graph[o["mesh"]]["hillclimb"]
+            for c in cases for o in c["obj"] if o["mesh"] in graph),
+        "a multi-contact on the notched slab": any(
+            c["out"]["nx"] > 1 and any(o["mesh"] == "notch9" for o in c["obj"]) for c in cases),
     }
     missing = [k for k, v in need.items() if not v]
     if missing:
@@ -690,8 +1291,14 @@ def main():
            "multi": multi_cases(rng), "census": census_cases(), "nan": nan_cases()}
     doc["multi_mesh"] = multi_mesh_cases(rng, doc["meshes"])
     doc["merge"] = merge_meshes()
+    doc["graph_meshes"] = graph_meshes()
+    doc.update({"small": small_cases(), "large": large_cases(), "touch": touch_cases(),
+                "degenerate": degenerate_cases(), "long_epa": long_epa_cases(),
+                "overflow": overflow_cases(), "flush": flush_cases(),
+                "graph": graph_cases(doc["graph_meshes"]),
+                "notch": notch_cases(doc["graph_meshes"])})
     cases = [c for k in GROUPS for c in doc[k].values()]
-    hist = coverage(cases)
+    hist = coverage(cases, doc["graph_meshes"])
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "ccd.json"), finite_or_string(doc))
     print(f"{len(cases)} cases -> {sys.argv[1]}")
