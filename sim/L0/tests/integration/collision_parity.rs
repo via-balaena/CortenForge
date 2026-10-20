@@ -535,6 +535,40 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
     }
 }
 
+/// Bodies dropped from rest on a bumpy height field whose data sim-mjcf
+/// loads as MuJoCo compiles it (`bumpy`: 9 × 9, elevations multiples of 1/8
+/// from 0 to 1, rows symmetric; each body turned by its frame, so its
+/// inertial frame is the body's in both, ledger L195), at two spots each:
+/// the height after every 50th of 1000 steps against MuJoCo's. A sphere, a
+/// capsule and an ellipsoid within 1e-12 (measured 5.5e-13, a capsule that
+/// rolls off the field's edge as MuJoCo's does); a cylinder and a box within
+/// 5e-3 (measured 4.8e-3; where they part from MuJoCo's is not isolated).
+#[test]
+fn bodies_on_a_bumpy_height_field_as_mujoco() {
+    let golden = golden();
+    for (name, case) in golden["bumpy"].as_object().expect("bumpy") {
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        let want = floats(&case["z"]);
+        let bound = if name.starts_with("cylinder") || name.starts_with("box") {
+            5e-3
+        } else {
+            1e-12
+        };
+        for k in 0..1000 {
+            data.step(&model).expect("step");
+            if k % 50 == 49 {
+                let z = want[k / 50];
+                assert!(
+                    (data.qpos[2] - z).abs() <= bound,
+                    "{name} step {k}: height {}, MuJoCo's {z}",
+                    data.qpos[2]
+                );
+            }
+        }
+    }
+}
+
 /// Two height fields, one reaching farther above its origin than below and
 /// one farther below: each bounding radius is MuJoCo's, from its size,
 /// sqrt(x² + y² + max(top², base²)) (`mjCGeom::GetRBound`). Measured: equal.
@@ -1548,11 +1582,12 @@ fn geom_distance_sensors_near_touching_as_mujoco() {
 /// search where MuJoCo's convex solver exits without witnesses, a distance of
 /// 0 and no segment: MuJoCo's bit for bit. Two planes, which
 /// have no collision function: the cutoff and zeros. The world's sensor of
-/// a sphere and a flat height field takes the field's collision function
+/// a sphere and a height field takes the field's collision function
 /// (MuJoCo refuses a sensor naming a height field, ledger L197, not the
-/// world that holds it): 0.01 into the field it reads a contact, not the
-/// cutoff; the values are sim-core's height-field contacts, not MuJoCo's
-/// (−0.7 into the field and above it), until book P52 ports MuJoCo's.
+/// world that holds it), `mjc_ConvexHField`: 0.01 into the field and 0.05
+/// above it, MuJoCo's −0.7 bit for bit (a contact within the margin is
+/// listed at a distance below 0; the field's elevations are 0 and 1 and its
+/// rows symmetric, so sim-mjcf's data is MuJoCo's, book Rigid-loading L45).
 #[test]
 fn geom_distance_special_cases_as_mujoco() {
     let golden = golden();
@@ -1579,17 +1614,15 @@ fn geom_distance_special_cases_as_mujoco() {
     let ours: Vec<f64> = data.sensordata.iter().copied().collect();
     sensors_as_mujoco("planes", &ours, &floats(&case["sensordata"]), 0.0, 0.0);
 
-    let into = sensordata_at(&special["hfield"]["into"]);
-    assert!(into[0] < 0.0 && into[10] < 0.0, "hfield into: {into:?}");
     for tag in ["into", "above"] {
         let case = &special["hfield"][tag];
-        let ours = sensordata_at(case);
         let want = floats(&case["sensordata"]);
-        assert!(
-            (ours[0] - want[0]).abs() > 0.1,
-            "hfield {tag}: ours {}, MuJoCo {}: book P52's",
-            ours[0],
-            want[0]
+        sensors_as_mujoco(
+            &format!("hfield {tag}"),
+            &sensordata_at(case),
+            &want,
+            0.0,
+            0.0,
         );
     }
 }

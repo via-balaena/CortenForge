@@ -1844,12 +1844,14 @@ mod spec_d_tests {
 
     /// A geom turned by a matrix holding a NaN or an infinity collides as
     /// nothing at every site that turned it into a quaternion (nalgebra's
-    /// `from_matrix`, which iterates without a cap): a sphere on a height
-    /// field or a signed distance field, and a flex vertex against a mesh, a
-    /// height field or a signed distance field, each geom's matrix bad in
-    /// turn. A mesh so turned on a plane is MuJoCo's one contact at a NaN
-    /// distance (`mjc_PlaneConvex`, which takes no quaternion; the ccd
-    /// golden's `plane_convex` `nan` cases). Each call returns.
+    /// `from_matrix`, which iterates without a cap): a sphere on a signed
+    /// distance field, and a flex vertex against a mesh, a height field or a
+    /// signed distance field, each geom's matrix bad in turn. MuJoCo's
+    /// functions, which take no quaternion, give MuJoCo's results (the ccd
+    /// golden's `plane_convex` and `hfield_convex` `nan` cases): a mesh so
+    /// turned on a plane, one contact at a NaN distance; a height field so
+    /// turned, none; a sphere so turned on a height field, its contacts, a
+    /// sphere's support not reading its turn. Each call returns.
     #[test]
     fn a_non_finite_turn_collides_as_nothing() {
         let n = 5;
@@ -1904,12 +1906,35 @@ mod spec_d_tests {
                 nan.len() == 1 && nan[0].depth.is_nan(),
                 "mesh turned on a plane, {bad}: {nan:?}"
             );
+            assert!(
+                collide_hfield_multi(
+                    &hfield_sphere,
+                    0,
+                    1,
+                    Vector3::zeros(),
+                    turned,
+                    near,
+                    ok,
+                    0.0
+                )
+                .is_empty(),
+                "height field turned, {bad}"
+            );
+            let sphere = collide_hfield_multi(
+                &hfield_sphere,
+                0,
+                1,
+                Vector3::zeros(),
+                ok,
+                near,
+                turned,
+                0.0,
+            );
+            assert!(
+                !sphere.is_empty() && sphere.iter().all(|c| c.depth.is_finite()),
+                "sphere turned on a height field, {bad}: {sphere:?}"
+            );
             for (m1, m2) in [(turned, ok), (ok, turned)] {
-                assert!(
-                    collide_hfield_multi(&hfield_sphere, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
-                        .is_empty(),
-                    "height field and sphere, {bad}"
-                );
                 assert!(
                     collide_with_sdf(&sdf_sphere, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
                         .is_empty(),

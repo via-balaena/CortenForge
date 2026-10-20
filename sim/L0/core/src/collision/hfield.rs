@@ -1,38 +1,20 @@
-//! Height field collision — prism-based convex-vs-heightfield collision.
-//!
-//! Implements MuJoCo's `mjc_ConvexHField()`: decomposes the heightfield into
-//! triangular prisms in the sub-grid overlapping the convex geom, then tests
-//! each prism against the geom using GJK/EPA penetration. Returns 0..50
-//! contacts per geom pair.
+//! Height field collision: MuJoCo's `mjc_ConvexHField`
+//! ([`mjc_convex_hfield`]), the convex geom against the triangular prisms of
+//! the grid under it, one contact per prism it overlaps through MuJoCo's
+//! native convex collision, up to `mjMAXCONPAIR`.
 
-use super::finite_rotation;
-use super::narrow::{geom_to_shape, make_contact_from_geoms};
-use crate::gjk_epa::{gjk_epa_contact, support};
-use crate::heightfield::HeightFieldData;
+use super::mj_ccd::{CcdObj, mjc_convex_hfield};
+use super::mj_primitive::Mat9;
 use crate::types::{Contact, GeomType, Model};
-use cf_geometry::Shape;
-use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
-use sim_types::Pose;
-use std::cell::Cell;
+use nalgebra::{Matrix3, Vector3};
 
-/// Maximum contacts per heightfield-geom pair (MuJoCo `mjMAXCONPAIR`).
-pub const MAX_CONTACTS_PER_PAIR: usize = 50;
-
-/// Prism-based heightfield collision for all convex geom types.
-///
-/// Implements MuJoCo's `mjc_ConvexHField`: decomposes the heightfield into
-/// triangular prisms in the sub-grid overlapping the convex geom, then tests
-/// each prism against the geom using GJK/EPA penetration.
-///
-/// Returns 0..50 contacts.
-// Pair dispatcher takes the full per-geom heightfield context; cast lints are usize → f64 for grid-cell math (grid extents far below 2^52); paired pose identifiers are intentionally similar.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::similar_names
-)]
+/// A height field against a convex geom, either first, through
+/// [`mjc_convex_hfield`]: each contact listed with the height field first
+/// (MuJoCo's type order), its normal from the field toward the geom. None
+/// for a geom `mjc_ccd` does not take (a plane, a height field, a signed
+/// distance field, a mesh without vertices).
+// MuJoCo's pair context, as the other collision functions take it.
+#[allow(clippy::too_many_arguments)]
 pub fn collide_hfield_multi(
     model: &Model,
     geom1: usize,
@@ -43,260 +25,32 @@ pub fn collide_hfield_multi(
     mat2: Matrix3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
-    let mut contacts = Vec::new();
-
-    // --- Phase 0: Identify hfield and convex geom ---
     let (hf_geom, conv_geom, hf_pos, hf_mat, conv_pos, conv_mat) =
         if model.geom_type[geom1] == GeomType::Hfield {
             (geom1, geom2, pos1, mat1, pos2, mat2)
         } else {
             (geom2, geom1, pos2, mat2, pos1, mat1)
         };
-
     let Some(hfield_id) = model.geom_hfield[hf_geom] else {
-        return contacts;
+        return vec![];
     };
-    let hfield = &model.hfield_data[hfield_id];
-    let hf_size = &model.hfield_size[hfield_id];
-
-    // Build convex collision shape
-    let conv_type = model.geom_type[conv_geom];
-    let conv_size = model.geom_size[conv_geom];
-    let conv_shape = match conv_type {
-        GeomType::Mesh => {
-            let Some(mesh_id) = model.geom_mesh[conv_geom] else {
-                return contacts;
-            };
-            let Some(hull) = model.mesh_data[mesh_id].convex_hull() else {
-                return contacts;
-            };
-            Shape::convex_mesh(hull.clone())
-        }
-        _ => match geom_to_shape(conv_type, conv_size) {
-            Some(s) => s,
-            None => return contacts,
-        },
+    let Some(mut obj) = CcdObj::of_geom(model, conv_geom, &conv_pos, &conv_mat, 0.0) else {
+        return vec![];
     };
-
-    // Hfield pose: world position WITHOUT centering offset — the offset is
-    // baked into prism vertex positions via `dx * c - hf_x_half`.
-    let (Some(hf_quat), Some(conv_quat)) = (finite_rotation(&hf_mat), finite_rotation(&conv_mat))
-    else {
-        return contacts;
-    };
-    let hf_pose = Pose::from_position_rotation(Point3::from(hf_pos), hf_quat);
-
-    // Convex geom pose
-    let conv_pose = Pose::from_position_rotation(Point3::from(conv_pos), conv_quat);
-
-    // --- Phase 1: Express convex geom in hfield-local frame ---
-    let local_pos = hf_mat.transpose() * (conv_pos - hf_pos);
-
-    // --- Phase 2: Bounding sphere early exit ---
-    let rbound = model.geom_rbound[conv_geom] + margin;
-    let hf_x_half = hf_size[0];
-    let hf_y_half = hf_size[1];
-    let hf_z_top = hfield.max_height();
-    let hf_z_bot = -hf_size[3];
-
-    if local_pos.x + rbound < -hf_x_half
-        || local_pos.x - rbound > hf_x_half
-        || local_pos.y + rbound < -hf_y_half
-        || local_pos.y - rbound > hf_y_half
-        || local_pos.z + rbound < hf_z_bot
-        || local_pos.z - rbound > hf_z_top
-    {
-        return contacts;
-    }
-
-    // --- Phase 3: AABB via support queries ---
-    let local_mat = hf_mat.transpose() * conv_mat;
-    let local_quat = UnitQuaternion::from_matrix(&local_mat);
-    let local_pose = Pose::from_position_rotation(Point3::from(local_pos), local_quat);
-
-    let (aabb_min, aabb_max) = compute_local_aabb(&conv_shape, &local_pose);
-
-    if aabb_max.x < -hf_x_half
-        || aabb_min.x > hf_x_half
-        || aabb_max.y < -hf_y_half
-        || aabb_min.y > hf_y_half
-        || aabb_max.z < hf_z_bot
-        || aabb_min.z > hf_z_top
-    {
-        return contacts;
-    }
-
-    // --- Phase 4: Sub-grid clipping ---
-    let ncol = hfield.width();
-    let nrow = hfield.depth();
-    if ncol < 2 || nrow < 2 {
-        return contacts;
-    }
-    let dx = 2.0 * hf_x_half / (ncol - 1) as f64;
-    let dy = 2.0 * hf_y_half / (nrow - 1) as f64;
-
-    let cmin = ((aabb_min.x + hf_x_half) / dx).floor().max(0.0) as usize;
-    let cmax = ((aabb_max.x + hf_x_half) / dx)
-        .ceil()
-        .min((ncol - 1) as f64) as usize;
-    let rmin = ((aabb_min.y + hf_y_half) / dy).floor().max(0.0) as usize;
-    let rmax = ((aabb_max.y + hf_y_half) / dy)
-        .ceil()
-        .min((nrow - 1) as f64) as usize;
-
-    let zmin = aabb_min.z;
-
-    // --- Phase 5 & 6: Prism iteration and collision ---
-    for r in rmin..rmax {
-        for c in cmin..cmax {
-            for i in 0..2u8 {
-                let prism_verts = build_prism(hfield, hf_size, r, c, i, dx, dy, margin);
-
-                // Skip if all 3 top vertices are below zmin
-                if prism_verts[3].z < zmin && prism_verts[4].z < zmin && prism_verts[5].z < zmin {
-                    continue;
-                }
-
-                // Build prism as ConvexMesh (6 vertices)
-                let prism_points: Vec<Point3<f64>> =
-                    prism_verts.iter().map(|v| Point3::from(*v)).collect();
-                let Some(hull) = cf_geometry::convex_hull(&prism_points, None) else {
-                    continue;
-                };
-                let prism_shape = Shape::convex_mesh(hull);
-
-                // Test prism vs convex geom using GJK/EPA.
-                // Prism is in hfield-local coords → use hfield world pose.
-                if let Some(result) = gjk_epa_contact(
-                    &prism_shape,
-                    &hf_pose,
-                    &conv_shape,
-                    &conv_pose,
-                    model.ccd_iterations,
-                    model.ccd_tolerance,
-                ) {
-                    // Contact normal: GJK/EPA returns normal from shape_a
-                    // (prism/hfield) toward shape_b (convex geom).
-                    // When hfield is geom1, normal points from geom1 to geom2
-                    // (correct convention). When hfield is geom2, negate.
-                    let normal = if hf_geom == geom1 {
-                        result.normal
-                    } else {
-                        -result.normal
-                    };
-
-                    contacts.push(make_contact_from_geoms(
-                        model,
-                        result.point.coords,
-                        normal,
-                        result.penetration,
-                        geom1,
-                        geom2,
-                        margin,
-                    ));
-
-                    if contacts.len() >= MAX_CONTACTS_PER_PAIR {
-                        return contacts;
-                    }
-                }
-            }
-        }
-    }
-
-    contacts
-}
-
-/// Build a triangular prism for one triangle of a heightfield grid cell.
-///
-/// Returns 6 vertices: [bottom0, bottom1, bottom2, top0, top1, top2].
-/// Bottom vertices are at `Z = -size[3]` (base elevation).
-/// Top vertices are at Z = height + margin (surface elevation).
-///
-/// `i=0`: lower-left triangle (vertices at (c,r), (c+1,r), (c,r+1))
-/// `i=1`: upper-right triangle (vertices at (c+1,r), (c+1,r+1), (c,r+1))
-// Prism builder takes the full per-cell context (grid handle, indices, cell extents, margin); usize → f64 casts for cell coordinates are exact below 2^52.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::too_many_arguments,
-    clippy::similar_names
-)]
-fn build_prism(
-    hfield: &HeightFieldData,
-    hf_size: &[f64; 4],
-    r: usize,
-    c: usize,
-    i: u8,
-    dx: f64,
-    dy: f64,
-    margin: f64,
-) -> [Vector3<f64>; 6] {
-    let base_z = -hf_size[3];
-    let hf_x_half = hf_size[0];
-    let hf_y_half = hf_size[1];
-
-    // Grid vertex positions in MuJoCo center-origin coords
-    let (v0, v1, v2) = if i == 0 {
-        // Lower-left triangle: (c,r), (c+1,r), (c,r+1)
-        ((c, r), (c + 1, r), (c, r + 1))
-    } else {
-        // Upper-right triangle: (c+1,r), (c+1,r+1), (c,r+1)
-        ((c + 1, r), (c + 1, r + 1), (c, r + 1))
-    };
-
-    let x0 = dx * v0.0 as f64 - hf_x_half;
-    let y0 = dy * v0.1 as f64 - hf_y_half;
-    let x1 = dx * v1.0 as f64 - hf_x_half;
-    let y1 = dy * v1.1 as f64 - hf_y_half;
-    let x2 = dx * v2.0 as f64 - hf_x_half;
-    let y2 = dy * v2.1 as f64 - hf_y_half;
-
-    // Heights from HeightFieldData — already pre-scaled by size[2].
-    // MuJoCo (c, r) maps to CortenForge (x=c, y=r).
-    let h0 = hfield.get(v0.0, v0.1).unwrap_or(0.0) + margin;
-    let h1 = hfield.get(v1.0, v1.1).unwrap_or(0.0) + margin;
-    let h2 = hfield.get(v2.0, v2.1).unwrap_or(0.0) + margin;
-
-    [
-        // Bottom layer (at base elevation)
-        Vector3::new(x0, y0, base_z),
-        Vector3::new(x1, y1, base_z),
-        Vector3::new(x2, y2, base_z),
-        // Top layer (at surface + margin)
-        Vector3::new(x0, y0, h0),
-        Vector3::new(x1, y1, h1),
-        Vector3::new(x2, y2, h2),
-    ]
-}
-
-/// Compute tight AABB of a shape at a given pose.
-///
-/// Queries the GJK support function along ±X, ±Y, ±Z to get exact
-/// extremes of the convex shape.
-fn compute_local_aabb(shape: &Shape, pose: &Pose) -> (Vector3<f64>, Vector3<f64>) {
-    let dirs = [
-        Vector3::x(),
-        -Vector3::x(),
-        Vector3::y(),
-        -Vector3::y(),
-        Vector3::z(),
-        -Vector3::z(),
-    ];
-
-    let warm_start = Cell::new(0);
-    let mut min = Vector3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-    let mut max = Vector3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-
-    for dir in &dirs {
-        let pt = support(shape, pose, dir, &warm_start);
-        min.x = min.x.min(pt.x);
-        min.y = min.y.min(pt.y);
-        min.z = min.z.min(pt.z);
-        max.x = max.x.max(pt.x);
-        max.y = max.y.max(pt.y);
-        max.z = max.z.max(pt.z);
-    }
-
-    (min, max)
+    let mat: Mat9 = std::array::from_fn(|i| hf_mat[(i / 3, i % 3)]);
+    mjc_convex_hfield(
+        &model.hfield_data[hfield_id],
+        &model.hfield_size[hfield_id],
+        &[hf_pos.x, hf_pos.y, hf_pos.z],
+        &mat,
+        &mut obj,
+        model.geom_rbound[conv_geom],
+        margin,
+        (model.ccd_iterations, model.ccd_tolerance),
+    )
+    .iter()
+    .map(|c| c.contact(model, hf_geom, conv_geom, margin))
+    .collect()
 }
 
 #[cfg(test)]
@@ -305,6 +59,7 @@ mod tests {
     use super::*;
     use crate::heightfield::HeightFieldData;
     use crate::types::Model;
+    use nalgebra::{Point3, UnitQuaternion};
     use std::sync::Arc;
 
     /// Build a minimal Model with one hfield geom (index 0) and one convex geom (index 1).
@@ -955,7 +710,9 @@ mod tests {
     // ========================================================================
     #[test]
     fn test_swapped_geom_order() {
-        // Ensure contacts work when hfield is geom2 (not geom1)
+        // Ensure contacts work when hfield is geom2 (not geom1); each is listed
+        // with the height field first, its normal up from the field (MuJoCo's
+        // type order).
         let model = flat_hfield_model(
             5,
             2.0,
@@ -979,9 +736,10 @@ mod tests {
             !contacts.is_empty(),
             "Swapped order should still produce contacts"
         );
-        // geom1 and geom2 should be assigned correctly
-        assert_eq!(contacts[0].geom1, 1);
-        assert_eq!(contacts[0].geom2, 0);
+        for c in &contacts {
+            assert_eq!([c.geom1, c.geom2], [0, 1]);
+            assert!(c.normal.z > 0.9, "normal {:?}", c.normal);
+        }
     }
 
     // ========================================================================
@@ -1037,5 +795,136 @@ mod tests {
             !contacts.is_empty(),
             "Capsule penetrating terrain should produce contacts"
         );
+    }
+
+    /// A field whose heights pass its top (`size[2]`), as sim-mjcf loads
+    /// elevations above 1 until book Rigid-loading L45 normalises them: a
+    /// sphere resting on it above the top still collides, the box tests
+    /// taking the field's highest point. MuJoCo's field never passes its top,
+    /// so its box tests take `size[2]`.
+    #[test]
+    fn a_field_above_its_top_still_collides() {
+        let model = flat_hfield_model(
+            5,
+            1.0,
+            1.0,
+            2.0,
+            GeomType::Sphere,
+            Vector3::new(0.1, 0.0, 0.0),
+            0.1,
+        );
+        assert!(model.hfield_size[0][2] < 2.0);
+        let contacts = collide_hfield_multi(
+            &model,
+            0,
+            1,
+            Vector3::zeros(),
+            Matrix3::identity(),
+            Vector3::new(0.1, 0.05, 2.09),
+            Matrix3::identity(),
+            0.0,
+        );
+        assert!(!contacts.is_empty(), "a sphere 0.01 into the field");
+        assert!(contacts.iter().all(|c| c.depth > 0.0));
+    }
+
+    /// The ccd golden (`sim/L0/tests/scripts/gen_ccd_reference.py`).
+    fn ccd_golden() -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/assets/golden/ccd/ccd.json"
+        );
+        let text = std::fs::read_to_string(path).expect("the ccd golden reads");
+        serde_json::from_str(&text).expect("the ccd golden parses")
+    }
+
+    fn numbers(v: &serde_json::Value) -> Vec<f64> {
+        v.as_array()
+            .expect("an array")
+            .iter()
+            .map(|x| x.as_f64().expect("a number"))
+            .collect()
+    }
+
+    fn vector(v: &serde_json::Value) -> Vector3<f64> {
+        Vector3::from_column_slice(&numbers(v))
+    }
+
+    /// `mju_normalize3`.
+    fn normalized(v: Vector3<f64>) -> Vector3<f64> {
+        let norm = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+        let inv = 1.0 / norm;
+        Vector3::new(v.x * inv, v.y * inv, v.z * inv)
+    }
+
+    /// Book P52's must-fail: every height-field case of the ccd golden with
+    /// a primitive (`hfield_convex` `pose` and `edge`, 244), through
+    /// `collide_hfield_multi` on a model holding MuJoCo's field data scaled
+    /// by its top (rows bottom to top, normalised: in code, as sim-mjcf does
+    /// not load them so yet, book Rigid-loading L45) and MuJoCo's bounding
+    /// radius: MuJoCo's contacts, the field first, each distance and
+    /// position bit for bit and its normal as `mj_setContact` normalises
+    /// MuJoCo's (`mju_makeFrame`).
+    #[test]
+    fn hfield_contacts_match_mujoco_bitwise() {
+        let doc = ccd_golden();
+        let mut total = 0;
+        for group in ["pose", "edge"] {
+            for (name, case) in doc["hfield_convex"][group].as_object().expect("cases") {
+                let kind = case["type"].as_str().expect("a type");
+                let conv_type = match kind {
+                    "sphere" => GeomType::Sphere,
+                    "capsule" => GeomType::Capsule,
+                    "ellipsoid" => GeomType::Ellipsoid,
+                    "cylinder" => GeomType::Cylinder,
+                    "box" => GeomType::Box,
+                    _ => continue,
+                };
+                let field = &doc["hfield_fields"][case["field"].as_str().expect("a field")];
+                let size = numbers(&field["size"]);
+                let heights = numbers(&field["data"])
+                    .iter()
+                    .map(|h| h * size[2])
+                    .collect();
+                let count =
+                    |v: &serde_json::Value| usize::try_from(v.as_u64().expect("n")).expect("n");
+                let mut model = make_hfield_model(
+                    heights,
+                    count(&field["ncol"]),
+                    count(&field["nrow"]),
+                    [size[0], size[1], size[2], size[3]],
+                    conv_type,
+                    vector(&case["size"]),
+                    case["rbound"].as_f64().expect("rbound"),
+                );
+                model.ccd_iterations = count(&case["ccd"][0]);
+                model.ccd_tolerance = case["ccd"][1].as_f64().expect("tolerance");
+                let contacts = collide_hfield_multi(
+                    &model,
+                    0,
+                    1,
+                    vector(&case["hfield"]["pos"]),
+                    Matrix3::from_row_slice(&numbers(&case["hfield"]["mat"])),
+                    vector(&case["pos"]),
+                    Matrix3::from_row_slice(&numbers(&case["mat"])),
+                    case["margin"].as_f64().expect("margin"),
+                );
+                let want = case["contacts"].as_array().expect("contacts");
+                assert_eq!(contacts.len(), want.len(), "{name}: contacts");
+                for (k, (c, w)) in contacts.iter().zip(want).enumerate() {
+                    assert_eq!([c.geom1, c.geom2], [0, 1], "{name} {k}: order");
+                    let dist = w["dist"].as_f64().expect("dist");
+                    assert_eq!((-c.depth).to_bits(), dist.to_bits(), "{name} {k}: dist");
+                    assert_eq!(c.pos, vector(&w["pos"]), "{name} {k}: position");
+                    assert_eq!(
+                        c.normal,
+                        normalized(vector(&w["normal"])),
+                        "{name} {k}: normal"
+                    );
+                }
+                total += 1;
+            }
+        }
+        assert_eq!(total, 244, "primitive cases");
     }
 }

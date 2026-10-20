@@ -20,10 +20,11 @@
 use nalgebra::{Matrix3, Point3, Vector3};
 
 use super::mj_primitive::{
-    MAX_CONPAIR, Mat9, RawContact, add3, dot3, mat_t_vec, mat_vec, normalize3, scl3, sub3,
-    transpose,
+    MAX_CONPAIR, Mat9, RawContact, add3, dot3, mat_t_mat, mat_t_vec, mat_vec, normalize3, scl3,
+    sub3, transpose,
 };
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::heightfield::HeightFieldData;
 use crate::mesh_polygons::MeshPolygons;
 use crate::quat::quat_to_mat;
 use crate::types::{Data, ENABLE_MULTICCD, GeomType, Model, enabled, make_frame};
@@ -87,6 +88,9 @@ enum Support<'a> {
     Mesh(&'a [Point3<f64>]),
     /// `mjc_hillclimbSupport`: up the hull's graph.
     HillClimb(&'a [Point3<f64>], HullGraph<'a>),
+    /// `mjc_prism_support`: a height field's triangular prism, its three
+    /// bottom corners then its three top ones (`mjCCDObj::prism`).
+    Prism([[f64; 3]; 6]),
 }
 
 /// A geom as `mjc_ccd` reads it (`mjCCDObj`, set up as `mjc_initCCDObj`).
@@ -147,8 +151,53 @@ impl<'a> CcdObj<'a> {
         })
     }
 
-    /// `mjc_center`: the geom's position.
-    const fn center(&self) -> [f64; 3] {
+    /// A height field's prism (`mjc_initCCDObj` for a height field, without
+    /// a margin), its bottom at `-base` (`mjc_ConvexHField`,
+    /// `engine_collision_convex.c:1310`), its corners set by
+    /// [`add_prism_vert`](Self::add_prism_vert).
+    fn prism(base: f64) -> Self {
+        let mut prism = [[0.0; 3]; 6];
+        for corner in &mut prism[..3] {
+            corner[2] = -base;
+        }
+        Self {
+            geom_type: GeomType::Hfield,
+            pos: [0.0; 3],
+            mat: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            size: [0.0; 3],
+            margin: 0.0,
+            support: Support::Prism(prism),
+            mesh: None,
+            vertindex: None,
+            meshindex: None,
+        }
+    }
+
+    /// `addPrismVert` (`:1165-1182`): the prism's corners each moved one
+    /// back, the bottom corner and the top corner at `(x, y)` added last, the
+    /// top at height `z`.
+    fn add_prism_vert(&mut self, x: f64, y: f64, z: f64) {
+        if let Support::Prism(prism) = &mut self.support {
+            prism.copy_within(1..3, 0);
+            prism.copy_within(4..6, 3);
+            prism[2][0] = x;
+            prism[5][0] = x;
+            prism[2][1] = y;
+            prism[5][1] = y;
+            prism[5][2] = z;
+        }
+    }
+
+    /// `mjc_center`: the geom's position; a prism's corners' mean
+    /// (`mjc_prism_center`, `:119-127`).
+    fn center(&self) -> [f64; 3] {
+        if let Support::Prism(prism) = &self.support {
+            let mut res = [0.0; 3];
+            for corner in prism {
+                res = add3(&res, corner);
+            }
+            return scl3(&res, 1.0 / 6.0);
+        }
         self.pos
     }
 
@@ -241,6 +290,21 @@ impl<'a> CcdObj<'a> {
             }
             Support::Mesh(verts) => self.mesh_support(verts, dir),
             Support::HillClimb(verts, hull) => self.hill_climb_support(verts, hull, dir),
+            // `mjc_prism_support` (`:434-451`): the best of the three bottom
+            // corners where `dir` points down, else of the three top ones.
+            Support::Prism(prism) => {
+                let start = if dir[2] < 0.0 { 0 } else { 3 };
+                let mut best = start;
+                let mut max = dot3(&prism[start], dir);
+                for (i, corner) in prism.iter().enumerate().take(start + 3).skip(start + 1) {
+                    let tmp = dot3(corner, dir);
+                    if tmp > max {
+                        best = i;
+                        max = tmp;
+                    }
+                }
+                prism[best]
+            }
         }
     }
 
@@ -2417,6 +2481,150 @@ pub(super) fn mjc_plane_convex(
                     let v = &mesh.verts[hull.vertex[sub as usize]];
                     if dot_point(&local_dir, v) > threshold {
                         add(&mut con, v);
+                    }
+                }
+            }
+        }
+    }
+    con
+}
+
+/// `mjc_ConvexHField` (`engine_collision_convex.c:1185-1363`): the contacts
+/// of a height field `hfield` of size `size` (its half-extents, top and
+/// base), at `pos1` turned by `mat1`, and the convex geom `obj` (made at its
+/// pose, without a margin), whose bounding radius is `rbound`. The geom is
+/// taken into the field's frame. A pair whose geom's bounding sphere, or then
+/// its box from its support points along the field's axes, is clear of the
+/// field's box by `margin` has none. Else each triangular prism of the grid
+/// under that box, the cells split along (c − 1, r)–(c, r + 1) as a window of
+/// three corners slides along each row, its top raised by `margin`, goes to
+/// `mjc_ccd` against the geom inflated by half the margin, for one contact
+/// where they overlap: its distance `mjc_ccd`'s (not raised back by the
+/// margin), its normal the first witness less the second, normalised, its
+/// position their midpoint, back in the world frame. A prism whose three top
+/// corners are below the geom's lowest point is skipped; at most
+/// `mjMAXCONPAIR`.
+///
+/// The fields' tops are `size[2]` in MuJoCo, whose elevations are
+/// normalised to [0, 1]; sim-mjcf's are not yet (book Rigid-loading L45), so
+/// the two box tests take the higher of `size[2]` and the field's highest
+/// point, the same where the elevations are within [0, 1].
+// MuJoCo's arguments, the field's data split out as sim-core holds it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn mjc_convex_hfield(
+    hfield: &HeightFieldData,
+    size: &[f64; 4],
+    pos1: &[f64; 3],
+    mat1: &Mat9,
+    obj: &mut CcdObj<'_>,
+    rbound: f64,
+    margin: f64,
+    (max_iterations, tolerance): (usize, f64),
+) -> Vec<RawContact> {
+    let (nrow, ncol) = (hfield.depth(), hfield.width());
+    if nrow < 2 || ncol < 2 {
+        return Vec::new();
+    }
+    let [size0, size1, size2, size3] = *size;
+    let top = size2.max(hfield.max_height());
+
+    let pos = mat_t_vec(mat1, &sub3(&obj.pos, pos1));
+    let radius = rbound + margin;
+    if size0 < pos[0] - radius
+        || -size0 > pos[0] + radius
+        || size1 < pos[1] - radius
+        || -size1 > pos[1] + radius
+        || top < pos[2] - radius
+        || -size3 > pos[2] + radius
+    {
+        return Vec::new();
+    }
+
+    obj.mat = mat_t_mat(mat1, &obj.mat);
+    obj.pos = pos;
+    let mut bound = |axis: usize, sign: f64| {
+        let mut dir = [0.0; 3];
+        dir[axis] = sign;
+        obj.support(&dir)[axis]
+    };
+    let (xmax, xmin) = (bound(0, 1.0), bound(0, -1.0));
+    let (ymax, ymin) = (bound(1, 1.0), bound(1, -1.0));
+    let (zmax, zmin) = (bound(2, 1.0), bound(2, -1.0));
+    if xmin - margin > size0
+        || xmax + margin < -size0
+        || ymin - margin > size1
+        || ymax + margin < -size1
+        || zmin - margin > top
+        || zmax + margin < -size3
+    {
+        return Vec::new();
+    }
+
+    // A grid's extents are far below 2^52, exact as floats.
+    #[allow(clippy::cast_precision_loss)]
+    let (cols, rows) = ((ncol - 1) as f64, (nrow - 1) as f64);
+    // The sub-grid under the geom's box. A cast to an integer saturates, and
+    // takes a NaN to 0, where C's leaves it undefined.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let (cmin, cmax, rmin, rmax) = (
+        (((xmin + size0) / (2.0 * size0) * cols).floor() as i64).max(0),
+        (((xmax + size0) / (2.0 * size0) * cols).ceil() as i64).min(ncol as i64 - 1),
+        (((ymin + size1) / (2.0 * size1) * rows).floor() as i64).max(0),
+        (((ymax + size1) / (2.0 * size1) * rows).ceil() as i64).min(nrow as i64 - 1),
+    );
+
+    obj.margin = margin;
+    let (dx, dy) = ((2.0 * size0) / cols, (2.0 * size1) / rows);
+    let config = CcdConfig {
+        max_iterations,
+        tolerance,
+        max_contacts: 1,
+        dist_cutoff: 0.0,
+    };
+    let mut prism = CcdObj::prism(size3);
+    // `addPrismVert`: the grid point at column `c` and row `r + 1 - i`, each
+    // within the grid, so not negative, and exact as a float.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let add = |prism: &mut CcdObj<'_>, r: i64, c: i64, i: i64| {
+        let row = r + 1 - i;
+        let height = hfield.get(c as usize, row as usize).unwrap_or(0.0);
+        prism.add_prism_vert(
+            dx * c as f64 - size0,
+            dy * row as f64 - size1,
+            height + margin,
+        );
+    };
+    let mut con = Vec::new();
+    for r in rmin..rmax {
+        add(&mut prism, r, cmin, 0);
+        add(&mut prism, r, cmin, 1);
+        for c in cmin + 1..=cmax {
+            for i in 0..2 {
+                add(&mut prism, r, c, i);
+                if let Support::Prism(p) = &prism.support
+                    && p[3][2] < zmin
+                    && p[4][2] < zmin
+                    && p[5][2] < zmin
+                {
+                    continue;
+                }
+                // `mjc_penetration`, native: one contact where they overlap.
+                let st = mjc_ccd(&config, &mut prism, obj);
+                if st.dist < 0.0 {
+                    let mut dir = sub3(&st.x1[0], &st.x2[0]);
+                    normalize3(&mut dir);
+                    let vec: [f64; 3] = std::array::from_fn(|k| 0.5 * (st.x1[0][k] + st.x2[0][k]));
+                    con.push(RawContact {
+                        dist: st.dist,
+                        pos: add3(&mat_vec(mat1, &vec), pos1),
+                        normal: mat_vec(mat1, &dir),
+                    });
+                    if con.len() >= MAX_CONPAIR {
+                        return con;
                     }
                 }
             }

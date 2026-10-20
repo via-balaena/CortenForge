@@ -369,7 +369,7 @@ through a bounding-sphere distance cull and narrow-phase, then
 
 ### Narrow Phase Dispatch
 
-Each pair but a height field's or a signed distance field's, and a mesh or an ellipsoid on a plane, goes to the function MuJoCo's collision table gives it. The
+Each pair but a signed distance field's goes to the function MuJoCo's collision table gives it. The
 primitive pairs (sphere-sphere, sphere-capsule, capsule-capsule, sphere-box,
 capsule-box, box-box, sphere-cylinder) and the plane pairs have functions of
 their own. An ellipsoid or a mesh against a sphere, capsule,
@@ -377,8 +377,10 @@ ellipsoid, cylinder, box or mesh, and a cylinder against a capsule, cylinder
 or box, collide through MuJoCo's native convex collision (`mjc_Convex`: GJK,
 EPA and its multi-contact; `collision/mj_ccd.rs`). A mesh collides as the
 convex hull of its vertices; it and an ellipsoid against a plane, through
-MuJoCo's `mjc_PlaneConvex` (`collision/mj_ccd.rs`). Height fields and SDFs have
-their own routes.
+MuJoCo's `mjc_PlaneConvex` (`collision/mj_ccd.rs`). A height field against a
+convex geom, through MuJoCo's `mjc_ConvexHField` (`collision/mj_ccd.rs`: each
+triangular prism of its grid under the geom through `mjc_ccd`). SDFs have their
+own routes.
 
 ### Supported Geometry Types
 
@@ -403,7 +405,7 @@ sim-core also provides collision primitives usable outside the pipeline:
 
 Supporting modules: `mid_phase.rs` (BVH construction and traversal),
 `collision/mj_ccd.rs` (MuJoCo's native convex collision), `gjk_epa.rs`
-(sim-core's GJK/EPA, for height-field prisms and flex vertices), `mesh.rs`
+(sim-core's GJK/EPA, for flex vertices), `mesh.rs`
 (triangle tests), `heightfield.rs`, `sdf.rs`, `raycast.rs`.
 
 ## Crate Reference

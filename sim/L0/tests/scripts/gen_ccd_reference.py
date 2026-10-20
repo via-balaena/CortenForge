@@ -122,6 +122,23 @@ its radius (its first vertex farther from the first contact than the
 spacing); and `nan`, a
 mesh and an ellipsoid turned by a matrix holding a NaN, and a plane whose
 normal holds one.
+
+`hfield_fields` and `hfield_convex` hold MuJoCo's mjc_ConvexHField
+(engine_collision_convex.c:1185-1363), called on a height field (geom 0) and
+a convex geom (geom 1) at poses set in mjData: `hfield_fields` each field as
+MuJoCo compiles it (rows, columns, size and its data normalised and turned
+bottom to top), `hfield_convex` the cases, each with the field, the geom's
+type, size, mesh, bounding radius and pose, the field's pose, the margin,
+`ccd_iterations` and `ccd_tolerance`, and the contacts listed: `pose`, each
+of a sphere, capsule, ellipsoid, cylinder, box and two meshes at 12 random
+turns over random points of four fields (9 x 9 bumpy, 5 x 9 of uneven
+cells, 30 x 30 fine, one cell), reaching 0.03 below to 0.02 above the
+surface, the field unturned or turned, at margins 0 and 0.01; `edge`, a
+broad flat box pressed into the fine field (mjMAXCONPAIR contacts), a sphere
+clear of the field by its bounding sphere, a capsule clear by its box, and a
+sphere apart within the margin (listed, at a distance below 0); `nan`, a
+sphere, a box and a mesh turned by a matrix holding a NaN, and the field so
+turned.
 It refuses plane cases that miss 0 to 3 mesh contacts with a graph and
 without, a vertex within the margin skipped as nearer the first contact than
 0.3 of the radius, or a NaN contact.
@@ -1632,6 +1649,184 @@ def plane_coverage(out, meshes):
         sys.exit(f"the plane cases miss: {', '.join(missing)}")
 
 
+# mjc_ConvexHField is not exported either; the collision table holds it for a height field with
+# every convex type (engine_collision_driver.c:44).
+if len({COLLISION[1 * 9 + t] for t in range(2, 8)}) != 1 or COLLISION[1 * 9 + 2] is None:
+    sys.exit("mjCOLLISIONFUNC: no one function for a height field with the convex types")
+HFIELD_CONVEX = CFUNCTYPE(c_int, c_void_p, c_void_p, POINTER(Contact), c_int, c_int, c_double)(
+    COLLISION[1 * 9 + 2])
+
+
+def bumpy9():
+    """9 x 9, elevations multiples of 1/8 from 0 to 1, rows symmetric."""
+    e = np.zeros((9, 9))
+    for r in range(9):
+        for c in range(9):
+            e[r, c] = ((3 * min(r, 8 - r) + 5 * c) % 9) / 8.0
+    e[0, 0], e[4, 4] = 0.0, 1.0
+    return np.minimum(e, 1.0)
+
+
+def noise(seed, nrow, ncol):
+    return np.random.default_rng(seed).uniform(0, 1, (nrow, ncol))
+
+
+# name: (nrow, ncol, size, elevation as authored): square cells, cells of two spacings, a fine
+# field, and a single cell.
+HFIELDS = {"bumpy9": (9, 9, (1.0, 1.0, 0.3, 0.1), bumpy9()),
+           "uneven5x9": (5, 9, (0.8, 0.5, 0.2, 0.1), noise(59, 5, 9)),
+           "fine30": (30, 30, (1.0, 1.0, 0.05, 0.1), noise(30, 30, 30)),
+           "cell2": (2, 2, (0.5, 0.5, 0.2, 0.1), np.array([[0.0, 0.5], [1.0, 0.25]]))}
+HFIELD_GEOMS = ("sphere", "capsule", "ellipsoid", "cylinder", "box", "gem8", "pebble24")
+
+
+def hfield_model(field, geom, size):
+    """A height field (geom 0) and a convex geom (geom 1)."""
+    nrow, ncol, hsize, elev = HFIELDS[field]
+    body = geom_xml("mesh", None, geom) if geom in PLANE_MESHES else geom_xml(geom, size, None)
+    return mujoco.MjModel.from_xml_string(
+        f'<mujoco>{mesh_assets()}{graph_assets()}<asset><hfield name="f" nrow="{nrow}" '
+        f'ncol="{ncol}" size="{" ".join(repr(x) for x in hsize)}" '
+        f'elevation="{" ".join(repr(float(x)) for x in elev.ravel())}"/></asset><worldbody>'
+        f'<geom type="hfield" hfield="f"/>{body}</worldbody></mujoco>')
+
+
+def hfield_fields():
+    """Each field as MuJoCo compiles it: its rows and columns, size and data (normalised to
+    [0, 1] and its rows turned bottom to top, as floats)."""
+    out = {}
+    for field, (nrow, ncol, hsize, _) in HFIELDS.items():
+        m = hfield_model(field, "sphere", [0.1])
+        if (m.hfield_nrow[0], m.hfield_ncol[0]) != (nrow, ncol):
+            sys.exit(f"hfield {field}: compiled to {m.hfield_nrow[0]} x {m.hfield_ncol[0]}")
+        data = m.hfield_data[m.hfield_adr[0]:m.hfield_adr[0] + nrow * ncol]
+        out[field] = {"nrow": nrow, "ncol": ncol, "size": [float(x) for x in m.hfield_size[0]],
+                      "data": [float(x) for x in data]}
+    return out
+
+
+def lowest(kind, size, rel, verts):
+    """How far below its centre a geom turned by `rel` (in the field's frame) reaches."""
+    if verts is not None:
+        return -float(((rel @ verts.T).T)[:, 2].min())
+    z = rel[2]
+    if kind == "sphere":
+        return size[0]
+    if kind == "capsule":
+        return size[0] + size[1] * abs(z[2])
+    if kind == "ellipsoid":
+        return float(np.sqrt(sum((z[i] * size[i]) ** 2 for i in range(3))))
+    if kind == "cylinder":
+        return size[0] * math.sqrt(max(0.0, 1 - z[2] ** 2)) + size[1] * abs(z[2])
+    return float(sum(abs(z[i]) * size[i] for i in range(3)))
+
+
+def hfield_call(m, d, field_pose, obj_pose, margin):
+    """MuJoCo's mjc_ConvexHField on the field (geom 0) and geom 1 at the given poses: its
+    contacts (`dist`, `pos`, the frame's normal)."""
+    for g, (pos, mat) in enumerate((field_pose, obj_pose)):
+        d.geom_xpos[g] = pos
+        d.geom_xmat[g] = mat
+    con = (Contact * (MAXCONPAIR + 1))()
+    for c in con:
+        c.dist = SENTINEL
+        c.frame[3] = SENTINEL
+    n = HFIELD_CONVEX(m._address, d._address, con, 0, 1, margin)
+    if n > MAXCONPAIR or con[n].dist != SENTINEL or con[n].frame[3] != SENTINEL:
+        sys.exit(f"mjc_ConvexHField wrote past its {n} contacts")
+    for k in range(n):
+        if list(con[k].frame[3:6]) != [0.0, 0.0, 0.0]:
+            sys.exit(f"mjContact layout: contact {k} of {n}")
+    # Its poses back as they were: mjc_ConvexHField moves geom 1 into the field's frame and back.
+    if (d.geom_xpos[1] != obj_pose[0]).any() and not np.isnan(obj_pose[0]).any():
+        sys.exit("mjc_ConvexHField left geom 1 moved")
+    return [{"dist": con[k].dist, "pos": list(con[k].pos), "normal": list(con[k].frame[:3])}
+            for k in range(n)]
+
+
+def hfield_case(field, geom, size, field_pose, obj_pose, margin):
+    m = hfield_model(field, geom, size)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    mesh = geom if geom in PLANE_MESHES else None
+    return {"field": field, "type": "mesh" if mesh else geom,
+            "size": [float(x) for x in m.geom_size[1]], "mesh": mesh,
+            "rbound": float(m.geom_rbound[1]),
+            "hfield": {"pos": [float(x) for x in field_pose[0]],
+                       "mat": [float(x) for x in field_pose[1]]},
+            "pos": [float(x) for x in obj_pose[0]], "mat": [float(x) for x in obj_pose[1]],
+            "margin": margin, "ccd": [int(m.opt.ccd_iterations), float(m.opt.ccd_tolerance)],
+            "contacts": hfield_call(m, d, field_pose, obj_pose, margin)}
+
+
+def hfield_convex_cases(meshes, fields):
+    """The height-field cases (module docs): `pose`, `edge`, `nan`."""
+    rng = np.random.default_rng(52)
+    out = {"pose": {}, "edge": {}, "nan": {}}
+    for field, (nrow, ncol, hsize, _) in HFIELDS.items():
+        data = np.reshape(fields[field]["data"], (nrow, ncol))
+        for geom in HFIELD_GEOMS:
+            verts = np.reshape(meshes[geom]["vert"], (-1, 3)) if geom in PLANE_MESHES else None
+            for i in range(12):
+                size = random_size(rng, geom) if verts is None else []
+                field_pose = (rng.uniform(-1, 1, 3), random_mat(rng) if i % 2 else np.eye(3).ravel())
+                rel = np.reshape(random_mat(rng), (3, 3))
+                x, y = rng.uniform(-1.1, 1.1) * hsize[0], rng.uniform(-1.1, 1.1) * hsize[1]
+                c = int(np.clip(round((x + hsize[0]) / (2 * hsize[0]) * (ncol - 1)), 0, ncol - 1))
+                r = int(np.clip(round((y + hsize[1]) / (2 * hsize[1]) * (nrow - 1)), 0, nrow - 1))
+                z = data[r, c] * hsize[2] + lowest(geom, size, rel, verts) + rng.uniform(-0.03, 0.02)
+                fmat = np.reshape(field_pose[1], (3, 3))
+                obj_pose = (field_pose[0] + fmat @ np.array([x, y, z]), (fmat @ rel).ravel())
+                margin = float(rng.choice([0.0, 0.01]))
+                out["pose"][f"{field}_{geom}_{i}"] = hfield_case(field, geom, size, field_pose,
+                                                                 obj_pose, margin)
+    eye = np.eye(3).ravel()
+    origin = np.zeros(3)
+    # A broad flat box pressed into the fine field: more prisms overlap than mjMAXCONPAIR.
+    out["edge"]["fine30_broad_box"] = hfield_case(
+        "fine30", "box", [0.6, 0.6, 0.05], (origin, eye), (np.array([0.0, 0.0, 0.07]), eye), 0.0)
+    # Clear of the field's box by its bounding sphere; within it but clear by its box (a long
+    # capsule lying past the field's edge); above the field within the margin only.
+    out["edge"]["bumpy9_far"] = hfield_case("bumpy9", "sphere", [0.1], (origin, eye),
+                                            (np.array([3.0, 0.0, 0.2]), eye), 0.0)
+    out["edge"]["bumpy9_capsule_past_edge"] = hfield_case(
+        "bumpy9", "capsule", [0.05, 0.6], (origin, eye),
+        (np.array([1.2, 0.0, 0.2]), axis_mat([1, 0, 0], np.pi / 2)), 0.0)
+    out["edge"]["cell2_sphere_in_margin"] = hfield_case(
+        "cell2", "sphere", [0.1], (origin, eye), (np.array([0.0, 0.0, 0.42]), eye), 0.2)
+    bad = eye.copy()
+    bad[1] = math.nan
+    up = np.array([0.1, 0.05, 0.25])
+    for geom, size in (("sphere", [0.1]), ("box", [0.08, 0.06, 0.05]), ("gem8", [])):
+        out["nan"][f"{geom}_turn"] = hfield_case("bumpy9", geom, size, (origin, eye), (up, bad), 0.0)
+    out["nan"]["field_turn"] = hfield_case("bumpy9", "sphere", [0.1], (origin, bad), (up, eye), 0.0)
+    hfield_coverage(out)
+    return out
+
+
+def hfield_coverage(out):
+    """Refuse height-field cases that miss a path the port must be checked on."""
+    pose = out["pose"].values()
+    counts = [len(c["contacts"]) for c in pose]
+    edge = out["edge"]
+    need = {"every geom with a contact": all(any(c["contacts"] for c in pose if (c["mesh"] or c["type"]) == g)
+                                             for g in HFIELD_GEOMS),
+            "several contacts": max(counts) >= 3,
+            "none": 0 in counts,
+            # Apart from the field by more than its radius and less than the margin: listed, at
+            # a distance below 0 (the prism raised by the margin, the geom inflated by half of
+            # it, and the distance not raised back).
+            "a geom apart listed within the margin": bool(edge["cell2_sphere_in_margin"]["contacts"])
+            and all(x["dist"] < 0 for x in edge["cell2_sphere_in_margin"]["contacts"]),
+            "mjMAXCONPAIR contacts": len(edge["fine30_broad_box"]["contacts"]) == MAXCONPAIR,
+            "the far and past-edge geoms with none": not edge["bumpy9_far"]["contacts"]
+            and not edge["bumpy9_capsule_past_edge"]["contacts"],
+            "a NaN turn listing a contact": any(c["contacts"] for c in out["nan"].values())}
+    missing = [k for k, v in need.items() if not v]
+    if missing:
+        sys.exit(f"the height-field cases miss: {', '.join(missing)}")
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"), allow_nan=False)
@@ -1659,6 +1854,8 @@ def main():
     doc["s3d"] = s3d_cases()
     doc["plane_meshes"] = plane_meshes()
     doc["plane_convex"] = plane_convex_cases(doc["plane_meshes"])
+    doc["hfield_fields"] = hfield_fields()
+    doc["hfield_convex"] = hfield_convex_cases(doc["plane_meshes"], doc["hfield_fields"])
     cases = [c for k in GROUPS for c in doc[k].values()]
     hist = coverage(cases, doc["graph_meshes"])
     os.makedirs(sys.argv[1], exist_ok=True)
