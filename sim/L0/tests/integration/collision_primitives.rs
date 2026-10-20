@@ -1,7 +1,8 @@
 //! Primitive-primitive collision tests — analytical collision pairs.
 //!
-//! This module validates collision detection between primitive geometry pairs
-//! that have analytical (closed-form) solutions, avoiding GJK/EPA.
+//! This module validates collision detection between primitive geometry pairs:
+//! those with analytical (closed-form) solutions, and cylinder-capsule, which
+//! MuJoCo collides through `mjc_Convex` (GJK and EPA).
 //!
 //!
 //! # ⛔ Every collidable body here carries a joint, deliberately
@@ -44,7 +45,7 @@
 //! | Capsule-Box | Segment-box distance | Complex |
 //! | Box-Box | MuJoCo's `mjc_BoxBox` (face and edge axes) | Edge-edge cases |
 //! | Cylinder-Sphere | Side/cap/rim | Analytical |
-//! | Cylinder-Capsule | Axis-axis distance | Analytical |
+//! | Cylinder-Capsule | MuJoCo's `mjc_Convex` (GJK, EPA) | Not analytical |
 
 use sim_core::{GeomType, SdfGrid, ShapeSphere};
 use sim_mjcf::load_model;

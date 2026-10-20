@@ -26,7 +26,7 @@ nalgebra = { workspace = true }
 # Derive macros for solver / collision error enums
 thiserror = { workspace = true }
 # Lightweight logging facade for `mj_warning` + auto-reset error /
-# RK4-step2 / mesh-collision fallback warn sites. No tracing-subscriber
+# RK4-step2 / EPA (`collision/mj_ccd.rs`) warn sites. No tracing-subscriber
 # is installed workspace-wide, so the `tracing` crate's structured-
 # spans surface was paying full transitive cost (tracing +
 # tracing-attributes + tracing-core) for output that already goes to

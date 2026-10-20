@@ -138,7 +138,7 @@ A headless training run uses `sim-core` directly. A visualization demo uses `sim
 | **Spatial** | Build (cf-spatial) + kiddo | Voxels ourselves, KD-trees from crate |
 | **Rigid Physics** | Build (sim-core) | MuJoCo-aligned: Model/Data, CRBA, RNE, Newton/PGS/CG solvers, implicit integration, sleeping |
 | **Soft Physics** | Build (sim-soft, sim-core) | Hyperelastic FEM (NeoHookean/Yeoh), SDF→tet, contact (sim-soft); XPBD deformables + Hill-type muscles (sim-core) |
-| **Collision** | Build (sim-core) | MuJoCo-aligned: analytical + GJK/EPA + BVH mesh |
+| **Collision** | Build (sim-core) | MuJoCo-aligned: analytical pairs, MuJoCo's native convex collision (GJK/EPA; meshes as convex hulls), BVH midphase |
 | **Scan ingest** | Build (cf-scan-prep) | Scan cleanup, repair, cap detection, centerline |
 | **Fabrication** | Build (cf-cast, mesh-printability) | Multi-material mold/plug generation, pour/vent, printability gating, procedure generation |
 | **RL / Optimization** | Build (sim-ml-chassis, sim-rl, sim-opt) | VecEnv, PPO/TD3/SAC/REINFORCE, CEM, parallel tempering |

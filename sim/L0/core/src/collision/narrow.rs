@@ -141,14 +141,14 @@ pub fn collide_geoms(
         );
     }
 
-    // Special case: sphere-sphere collision (analytical, more robust than GJK/EPA)
+    // Special case: sphere-sphere collision (MuJoCo's `mjc_SphereSphere`)
     if type1 == GeomType::Sphere && type2 == GeomType::Sphere {
         return collide_sphere_sphere(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
-    // Special case: capsule-capsule collision (analytical, much faster than GJK/EPA)
+    // Special case: capsule-capsule collision (MuJoCo's `mjraw_CapsuleCapsule`)
     if type1 == GeomType::Capsule && type2 == GeomType::Capsule {
         return collide_capsule_capsule(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,

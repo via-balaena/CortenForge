@@ -36,7 +36,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (D without Coriolis), Implicit (D with Coriolis)
 - Constraint solver: PGS (Gauss-Seidel, MuJoCo-aligned — no SOR) + CG (primal Polak-Ribiere, shares mj_sol_primal with Newton) + Newton (reduced primal, default, matching MuJoCo), Warm Starting via `qacc_warmstart`
 - Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture, `contact_param()` with element-wise max friction, `geom/@priority` gating, `solmix`-weighted solver param mixing, margin/gap broadphase + narrow-phase + constraint assembly)
-- Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
+- Collision detection (All primitive shapes, MuJoCo's native convex collision (GJK/EPA), Height fields, BVH, meshes as their convex hulls, **SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, **Free** — matching MuJoCo's 4 joint types; Universal/Planar/Cylindrical are CortenForge standalone extensions); **Joint limits** for all 3 supported types: hinge/slide (scalar upper/lower), **ball** (rotation cone via quaternion logarithm, [future_work_10 §38](./todo/future_work_10.md) ✅); free joint limits silently ignored (matching MuJoCo). **Gap:** `jnt_margin` (joint limit activation margin) not yet parsed or wired — hardcoded to 0.0 for all joint types ([future_work_15 §64a](./todo/future_work_15.md))
 - Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping; **Site transmissions** (6D gear, refsite, Jacobian-based wrench projection, common-ancestor zeroing); **Body transmission** (adhesion: contact normal Jacobian moment arms, negated average, `mj_transmission_body()` + `compute_contact_normal_jacobian()`, [future_work_9 §36](./todo/future_work_9.md) ✅)
 - Sensors (32 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, JointLimitFrc, TendonLimitFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim)
@@ -86,7 +86,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | General gain/bias actuator force model | All 8 shortcut types with `GainType`/`BiasType` dispatch, `FilterExact` dynamics, `ctrllimited` enforcement for Damper/Adhesion | [§7](#7-actuators) |
 | RK4 integrator | True 4-stage Runge-Kutta via `mj_runge_kutta()` with quaternion-safe position updates | [§1](#1-integration-methods) |
 | Pipeline sensors (32 types) | All 32 types functional and wired from MJCF `<sensor>` elements via `builder/`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
-| Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
+| Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration; geom pairs since replaced: a mesh geom collides as the convex hull of its vertices through MuJoCo's native convex collision (`collision/mj_ccd.rs`), as MuJoCo's | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
 | MJCF `<default>` element | ✅ Full — `DefaultResolver` with Option<T> pattern, complete four-stage pipeline (types → parser → merge → apply) for all 8 element types; 91+ defaultable fields across geom/joint/site/tendon/actuator/sensor/mesh/pair | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing + pipeline | Fixed + spatial tendons fully wired (kinematics, wrapping, actuation, passive, constraints, sensors) | [§13](#13-model-format) |
@@ -328,15 +328,15 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Capsule-plane | Native | `ContactPoint::capsule_plane` | **Implemented** | - | - |
 | Capsule-sphere | Native (`mjc_SphereCapsule`) | `mj_primitive::raw_sphere_capsule` | **Implemented** | - | - |
 | Capsule-capsule | Native (`mjc_CapsuleCapsule`) | `mj_primitive::raw_capsule_capsule` | **Implemented** | - | - |
-| Cylinder | Native | `CollisionShape::Cylinder` | **Implemented** | - | - |
-| Ellipsoid | Native | `CollisionShape::Ellipsoid` | **Implemented** | - | - |
-| Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
+| Cylinder | Native (`mjc_Convex`; with a sphere or plane, their own functions) | `collision::mj_ccd` | **Implemented** | - | - |
+| Ellipsoid | Native (`mjc_Convex`; with a plane, its own function) | `collision::mj_ccd` | **Implemented** | - | - |
+| Convex mesh | GJK/EPA (`mjc_Convex`) | `collision::mj_ccd` (with a plane, `collide_mesh_plane`) | **Implemented** | - | - |
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
 | SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
 | Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
 | Mid-phase (BVH per mesh, its triangles) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Mid-phase (`mj_collideTree`, a body pair's geoms) | Oriented boxes | `collision::midphase` | **Implemented** (the bodies' hierarchies, `Model::compute_body_bvhs`; a flex's not) | - | - |
-| Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
+| Narrow-phase (GJK/EPA) | Native (`mjc_ccd`) | `collision::mj_ccd` (geom pairs); `gjk_epa` module (height-field prisms, flex vertices) | **Implemented** | - | - |
 
 ### Implementation Notes: Collision Pipeline
 
@@ -352,6 +352,7 @@ The collision detection pipeline now uses:
    - `BvhPrimitive` - Triangle/primitive storage with AABB
    - `bvh_from_triangle_mesh()` - Helper for building BVH from mesh
 3. ✅ **Narrow-phase**: GJK for intersection testing, EPA for penetration depth
+   (for geom pairs, MuJoCo's own, ported in `collision/mj_ccd.rs`)
 
 **Files:** `sim-core/src/mid_phase.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/collision_shape.rs`
 
@@ -359,6 +360,10 @@ The collision detection pipeline now uses:
 
 GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm) provide
 general convex collision detection for arbitrary convex shapes.
+
+Geom pairs no longer use `gjk_epa.rs`: they collide through MuJoCo's own GJK
+and EPA, ported in `collision/mj_ccd.rs`. `gjk_epa.rs` serves height-field
+prisms and flex vertices against a mesh's hull.
 
 **GJK Algorithm:**
 - Works in Minkowski difference space (A - B)
@@ -378,7 +383,6 @@ general convex collision detection for arbitrary convex shapes.
 - Support functions for all shape types (sphere, box, capsule, plane, convex mesh)
 - `gjk_intersection()` - Fast intersection test
 - `gjk_epa_contact()` - Full contact information (point, normal, depth)
-- Automatic GJK/EPA fallback for capsule-box and other mixed collisions
 
 **Usage:**
 ```rust
@@ -433,6 +437,11 @@ Full triangle mesh collision support is now implemented:
 **Implementation files:**
 - `sim-core/src/mesh.rs` - Triangle mesh collision and mesh-mesh BVH traversal
 - `sim-core/src/mid_phase.rs` - BVH for collision culling
+
+Geom pairs no longer use these: a mesh geom collides as the convex hull of its
+vertices through MuJoCo's native convex collision (`collision/mj_ccd.rs`), as
+MuJoCo's. A flex vertex against a mesh without a hull still takes
+`mesh_sphere_contact`.
 
 ### Implementation Notes: SDF Collision ✅ COMPLETED
 
@@ -1191,15 +1200,21 @@ Full support for MuJoCo's `<option>` element with all simulation configuration:
 - `o_friction` - Global friction override [5 values]
 
 **Flags (`<flag>` child element):**
-All 21 MuJoCo flags supported:
+25 flags parsed:
 - `constraint`, `equality`, `frictionloss`, `limit`, `contact`
-- `passive`, `gravity`, `clampctrl`, `warmstart`, `filterparent`
-- `actuation`, `refsafe`, `sensor`, `midphase`, `eulerdamp`
-- `override`, `energy`, `multiccd`, `island`, `nativeccd`, `sleep`
+- `spring`, `damper`, `gravity`, `clampctrl`, `warmstart`, `filterparent`
+- `actuation`, `refsafe`, `sensor`, `midphase`, `nativeccd`, `eulerdamp`
+- `autoreset`, `island`
+- `override`, `energy`, `fwdinv`, `invdiscrete`, `multiccd`, `sleep`
+
+A model with `nativeccd` disabled loads with the flag set and is refused at
+`make_data` (`Model::try_make_data` returns `MakeDataError::Unsupported`):
+sim-core does not port the libccd collision MuJoCo then uses. `passive`,
+which MuJoCo split into `spring` and `damper`, is ignored.
 
 **Configuration Types:**
 - `MjcfOption` - Complete option parsing with defaults
-- `MjcfFlag` - All 21 boolean flags
+- `MjcfFlag` - All 25 boolean flags
 - `MjcfIntegrator` - Euler, RK4, Implicit, ImplicitFast, ImplicitSpringDamper
 - `MjcfConeType` - Pyramidal, Elliptic
 - `MjcfSolverType` - PGS, CG, Newton
@@ -1244,7 +1259,7 @@ The following were completed in January 2026:
 
 | Feature | Section | Notes |
 |---------|---------|-------|
-| Non-convex mesh collision | §5 Geoms | `CollisionShape::TriangleMesh` with BVH acceleration |
+| ⚠️ Non-convex mesh collision | §5 Geoms | `CollisionShape::TriangleMesh` with BVH acceleration; geom pairs now collide with a mesh's convex hull (`collision/mj_ccd.rs`) |
 | SDF collision | §5 Geoms | All 10 shape combinations implemented |
 | MJCF `<default>` element | §13 Model Format | ✅ `DefaultResolver` with Option<T> pattern — full four-stage pipeline for all 8 element types (91+ fields) |
 | MJCF `<tendon>` parsing | §13 Model Format | Spatial and fixed tendons |

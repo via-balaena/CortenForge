@@ -530,7 +530,7 @@ pub mod mesh_collision_profile;
 /// DT-180 diagnostic: mesh vs primitive sphere mass/inertia/contact force comparison.
 pub mod mesh_contact_force_diagnostic;
 
-/// Mesh-cylinder and mesh-ellipsoid GJK/EPA dispatch integration tests.
+/// Mesh-cylinder and mesh-ellipsoid integration tests (through `mjc_convex`).
 pub mod mesh_cylinder_ellipsoid;
 
 // ============================================================================

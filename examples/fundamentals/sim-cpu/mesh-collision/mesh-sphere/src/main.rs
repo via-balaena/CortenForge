@@ -1,8 +1,9 @@
-//! Mesh-Sphere — BVH-Accelerated Mesh Collision
+//! Mesh-Sphere — Sphere on a Mesh's Convex Hull
 //!
-//! A sphere dropped onto a mesh ground slab (2x2x2 box mesh). Demonstrates
-//! `mesh_sphere_contact()` with BVH triangle acceleration. The sphere settles
-//! at z = radius = 0.1.
+//! A sphere dropped onto a mesh ground slab (2x2x2 box mesh). The pair
+//! collides through `mjc_convex()`, MuJoCo's native convex collision, against
+//! the convex hull of the slab's vertices. The sphere settles at
+//! z = radius = 0.1.
 //!
 //! Run with: `cargo run -p example-mesh-collision-sphere --release`
 
@@ -65,7 +66,7 @@ const MJCF: &str = r#"
 
 fn main() {
     println!("=== CortenForge: Mesh-Sphere ===");
-    println!("  Sphere (r=0.1) on mesh ground slab (BVH path)");
+    println!("  Sphere (r=0.1) on mesh ground slab (convex collision)");
     println!("  Expected rest height: z ≈ {REST_HEIGHT:.3}");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 

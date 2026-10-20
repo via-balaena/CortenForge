@@ -1,45 +1,49 @@
 # Mesh Collision
 
 Seven visual examples + one headless stress test covering every mesh collision
-pair in the dispatch table (`sim-core/src/collision/mesh_collide.rs`). Each
+pair the narrow phase dispatches (`sim-core/src/collision/narrow.rs`). Each
 visual example teaches exactly one concept about mesh collision.
 
 ## Dispatch Table Coverage
 
-| # | Example | Pair | Narrow-phase | Needs MULTICCD? |
-|---|---------|------|--------------|-----------------|
+| # | Example | Pair | Narrow-phase | MULTICCD on? |
+|---|---------|------|--------------|--------------|
 | 1 | [mesh-on-plane](mesh-on-plane/) | mesh-plane | `collide_mesh_plane()` | No |
-| 2 | [mesh-sphere](mesh-sphere/) | mesh-sphere | `mesh_sphere_contact()` BVH | No |
-| 3 | [mesh-box](mesh-box/) | mesh-box | `gjk_epa_shape_pair()` | Yes |
-| 4 | [mesh-capsule](mesh-capsule/) | mesh-capsule | `mesh_capsule_contact()` BVH | No |
-| 5 | [mesh-cylinder](mesh-cylinder/) | mesh-cylinder | `gjk_epa_shape_pair()` | Yes |
-| 6 | [mesh-ellipsoid](mesh-ellipsoid/) | mesh-ellipsoid | `gjk_epa_shape_pair()` | No |
-| 7 | [mesh-on-mesh](mesh-on-mesh/) | mesh-mesh | `gjk_epa_shape_pair()` hull-hull | Yes |
+| 2 | [mesh-sphere](mesh-sphere/) | mesh-sphere | `mjc_convex()` | No |
+| 3 | [mesh-box](mesh-box/) | mesh-box | `mjc_convex()` | Yes |
+| 4 | [mesh-capsule](mesh-capsule/) | mesh-capsule | `mjc_convex()` | No |
+| 5 | [mesh-cylinder](mesh-cylinder/) | mesh-cylinder | `mjc_convex()` | Yes |
+| 6 | [mesh-ellipsoid](mesh-ellipsoid/) | mesh-ellipsoid | `mjc_convex()` | No |
+| 7 | [mesh-on-mesh](mesh-on-mesh/) | mesh-mesh | `mjc_convex()` | Yes |
 | 8 | [stress-test](stress-test/) | all 7 | headless, 21 checks | — |
 
 ## Two Dispatch Paths
 
-**BVH path** (sphere, capsule): The BVH finds candidate triangles near the
-primitive, then each triangle is tested individually. Works on any mesh
-topology — no convex hull required.
+**Mesh against a plane**: `collide_with_mesh()` (`mesh_collide.rs`) calls
+sim-core's own `collide_mesh_plane()`, which scans the mesh's vertices for
+those below the plane or within the margin above it: up to three contacts.
 
-**GJK/EPA path** (box, cylinder, ellipsoid, mesh-mesh): Uses the mesh's convex
-hull (computed at load time) as a single shape. Requires >= 4 non-coplanar
-vertices. MULTICCD generates additional contact points for flat-on-flat
-stability.
+**Mesh against anything else** (sphere, capsule, box, cylinder, ellipsoid,
+mesh): MuJoCo's native convex collision, `mjc_convex()` in `mj_ccd.rs` (GJK,
+EPA and MuJoCo's multi-contact). The mesh collides as the convex hull of its
+vertices; a mesh with no hull computed is searched vertex by vertex.
 
-## Branch Highlights
+MULTICCD (`<flag multiccd="enable"/>`) adds contacts:
 
-Two GJK/EPA fixes landed on this branch:
+- A box or a mesh against a mesh, neither with a margin: one pass clips the
+  touching faces, up to 4 contacts.
+- A capsule or a cylinder against a mesh (and a box or a mesh against a mesh
+  with a margin): four more passes with the geoms turned by ±1e-3 rad, up to
+  5 contacts.
+- A sphere or an ellipsoid against a mesh: no extra pass, one contact.
 
-- **Cylinder** — previously approximated as a capsule (rounded caps). Now uses
-  exact GJK/EPA support functions. MULTICCD provides 8 rim contacts for flat-cap
-  stability.
-- **Ellipsoid** — previously approximated as a sphere (max radius). An oblate
-  disc with rz=0.05 would rest at z=0.3 (6x error). Now rests at the correct
-  z=0.05.
-- **Box** — `triangle_box_contact()` was algorithmically incomplete (only tested
-  triangle vertices inside box). Replaced with GJK/EPA on convex hull.
+## What the checks pin
+
+- **Cylinder** — rests on its flat cap at z = half_length (stress-test check
+  10), where a capsule of the same radius and half-length would rest a radius
+  higher.
+- **Ellipsoid** — an oblate disc with rz=0.05 rests at z=0.05 (check 13); a
+  sphere of its largest radius would rest at z=0.3 (check 14 fails z ≥ 0.1).
 
 ## Running
 

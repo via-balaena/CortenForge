@@ -675,8 +675,8 @@ fn collide_geom_pair(
             data.ncon += 1;
         }
     } else {
-        // Midphase BVH culling is active for mesh pairs and gated by
-        // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
+        // The narrow phase does not read DISABLE_MIDPHASE: a mesh collides as
+        // its convex hull, with no triangle hierarchy.
         let contacts = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
         for mut contact in contacts {
             places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
@@ -1262,7 +1262,7 @@ mod spec_d_tests {
         );
     }
 
-    /// T13: Edge case — zero margin, GJK/EPA path
+    /// T13: Edge case — zero margin, through `mjc_convex`
     #[test]
     fn test_zero_margin_gjk_epa_path() {
         let model = make_model(
@@ -1292,7 +1292,7 @@ mod spec_d_tests {
             GeomType::Cylinder,
             Vector3::new(0.3, 0.5, 0.0),
         );
-        // Overlapping cylinders (GJK/EPA path)
+        // Overlapping cylinders (through `mjc_convex`)
         let pos1 = Vector3::new(0.0, 0.0, 0.0);
         let pos2 = Vector3::new(0.3, 0.0, 0.0);
         let mat = Matrix3::identity();
@@ -1398,13 +1398,12 @@ mod spec_d_tests {
         let mat = Matrix3::identity();
 
         let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
-        // Curved surfaces: perturbed directions should find the same contact region
-        // or very close contacts that get deduplicated
+        // `mjc_convex` makes no extra MULTICCD pass for an ellipsoid
         assert!(!contacts.is_empty(), "should produce at least one contact");
     }
 
     // ========================================================================
-    // Mesh–Cylinder GJK/EPA dispatch tests
+    // Mesh–Cylinder dispatch tests (through `mjc_convex`)
     // ========================================================================
 
     /// Ground slab half-thickness. The slab mesh is centered at origin with
@@ -1622,7 +1621,7 @@ mod spec_d_tests {
     }
 
     // ========================================================================
-    // Mesh–Ellipsoid GJK/EPA dispatch tests
+    // Mesh–Ellipsoid dispatch tests (through `mjc_convex`)
     // ========================================================================
 
     /// Helper: set up a (Mesh, Ellipsoid) model.

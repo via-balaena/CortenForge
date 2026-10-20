@@ -971,7 +971,8 @@ fn t27_noise_determinism() {
 
 #[test]
 fn t28_box_sphere_distance() {
-    // A box and a sphere apart, their distance from GJK (`gjk_distance`):
+    // A box and a sphere apart, their distance from the sphere-box collision
+    // function, MuJoCo's `mj_geomDistance` route for the pair:
     // 2.0 - 0.5 - 0.3 = 1.2 (MuJoCo-verified).
     let mjcf = r#"
         <mujoco model="t28">

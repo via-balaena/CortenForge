@@ -75,8 +75,7 @@ pub fn collide_with_mesh(
 ///      the authored origin (ledger L176)
 /// 3. Return 1–3 contacts with individual depths.
 ///
-/// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`), consistent with
-/// all other mesh collision functions.
+/// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`).
 ///
 /// # Parameters
 /// - `margin`: collision margin — vertices with `depth > -margin` are candidates

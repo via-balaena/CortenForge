@@ -1,8 +1,10 @@
-//! Mesh-on-Mesh — Hull-Hull GJK/EPA
+//! Mesh-on-Mesh — Two Convex Hulls
 //!
 //! A mesh wedge (triangular prism) dropped onto a mesh platform (box slab).
-//! Both objects are `type="mesh"` — no primitives involved. Demonstrates
-//! hull-hull GJK/EPA collision with MULTICCD for face-face stability.
+//! Both objects are `type="mesh"` — no primitives involved. The pair collides
+//! through `mjc_convex()`, MuJoCo's native convex collision, each mesh as its
+//! convex hull; under MULTICCD one pass clips the touching faces for up to
+//! four contacts.
 //!
 //! The wedge is centered at its volumetric centroid so body position = CoM.
 //! Centroid of triangular cross-section: z_c = (0 + 0 + 0.25)/3 ≈ 0.0833.
@@ -86,7 +88,7 @@ const MJCF: &str = r#"
 
 fn main() {
     println!("=== CortenForge: Mesh-on-Mesh ===");
-    println!("  Wedge (triangular prism) on mesh platform — hull-hull GJK/EPA");
+    println!("  Wedge (triangular prism) on mesh platform — two convex hulls, MULTICCD");
     println!("  Expected rest height: z ≈ {REST_HEIGHT:.3}");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 

@@ -1,9 +1,9 @@
-# Mesh-Capsule — BVH Barrel Contact
+# Mesh-Capsule — Barrel on a Mesh
 
-A capsule lying on its side on a mesh ground slab. Demonstrates
-`mesh_capsule_contact()` with BVH-accelerated triangle lookup. The curved
-barrel surface rests against the mesh triangles — visually distinct from the
-upright cylinder in mesh-cylinder.
+A capsule lying on its side on a mesh ground slab. The pair collides through
+`mjc_convex()`, MuJoCo's native convex collision: the capsule against the
+convex hull of the slab's vertices. The curved barrel rests on the slab —
+visually distinct from the upright cylinder in mesh-cylinder.
 
 ## What you see
 
@@ -19,8 +19,7 @@ The capsule is rotated via `quat="0.707 0.707 0 0"` so its axis lies along Y.
 In this orientation, the lowest point of the barrel is at z = -radius in the
 body frame, so the rest height equals the capsule radius.
 
-The BVH finds candidate triangles near the capsule's swept volume, then each
-triangle is tested against the capsule's line segment + radius geometry.
+Without MULTICCD, as here, the pair gets one contact.
 
 | Parameter | Value |
 |-----------|-------|
@@ -30,7 +29,7 @@ triangle is tested against the capsule's line segment + radius geometry.
 | Ground mesh | 8 vertices, 12 faces (2x2x2 box) |
 | Density | 1000 kg/m^3 |
 | Integrator | RK4, dt = 1 ms |
-| Narrow-phase | `mesh_capsule_contact()` via BVH |
+| Narrow-phase | `mjc_convex()` |
 
 ## Validation
 

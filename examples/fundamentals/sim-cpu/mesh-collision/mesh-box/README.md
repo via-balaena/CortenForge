@@ -1,23 +1,22 @@
-# Mesh-Box — GJK/EPA with MULTICCD
+# Mesh-Box — Face Clipping with MULTICCD
 
-A box dropped onto a mesh ground slab. Demonstrates mesh-box collision via
-GJK/EPA with MULTICCD enabled for face-face stability.
+A box dropped onto a mesh ground slab. The pair collides through
+`mjc_convex()`, MuJoCo's native convex collision, against the convex hull of
+the slab's vertices, with MULTICCD enabled.
 
 ## What you see
 
 - **Polished steel box** (0.15 x 0.1 x 0.05 half-sizes) sitting flat on a
   **brushed metal mesh slab**
 - The box drops from z=0.3, lands flat, and settles at z = half_z = 0.05
-- No wobble or drift — MULTICCD generates multiple contact points across the
-  flat face for rotational stability
+- No wobble or drift — MULTICCD gives up to four contacts across the flat
+  face
 
 ## Physics
 
-Mesh-box collision was refactored on this branch to use GJK/EPA (the old
-`triangle_box_contact()` path was removed). Without MULTICCD, GJK/EPA produces
-a single contact point for flat-on-flat contact, which is insufficient to
-prevent rotation. MULTICCD generates additional contact points across the
-contact patch, stabilizing the box.
+Without MULTICCD the pair gets one contact. With it, and no margin on either
+geom, one pass of MuJoCo's multi-contact clips the box's touching face against
+the slab's and keeps up to four contacts.
 
 | Parameter | Value |
 |-----------|-------|
@@ -26,7 +25,7 @@ contact patch, stabilizing the box.
 | Density | 1000 kg/m^3 |
 | Integrator | RK4, dt = 1 ms |
 | MULTICCD | enabled |
-| Narrow-phase | `gjk_epa_shape_pair()` |
+| Narrow-phase | `mjc_convex()` |
 
 ## Validation
 

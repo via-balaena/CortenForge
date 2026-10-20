@@ -1,8 +1,9 @@
 # Stress Test — Headless Validation
 
 Headless (no Bevy) validation of all 7 mesh collision pairs plus edge cases.
-Tests every dispatch path in `mesh_collide.rs`: plane, sphere, box, capsule,
-cylinder, ellipsoid, and mesh-mesh. Exits with code 1 if any check fails.
+Tests a mesh against a plane (`collide_mesh_plane`) and against a sphere, box,
+capsule, cylinder, ellipsoid and mesh (`mjc_convex`). Exits with code 1 if any
+check fails.
 
 ## Checks
 
@@ -15,9 +16,9 @@ cylinder, ellipsoid, and mesh-mesh. Exits with code 1 if any check fails.
 | 5 | Mesh-Sphere | Contact force / weight = 1.0 | 5% |
 | 6 | Mesh-Box | Box rests at z = half_z | < 3mm |
 | 7 | Mesh-Box | Contact force / weight = 1.0 | 5% |
-| 8 | Mesh-Capsule | Sideways capsule rests at z = radius | < 3mm |
+| 8 | Mesh-Capsule | Sideways capsule rests at z = radius | < 5mm |
 | 9 | Mesh-Capsule | Contact force / weight = 1.0 | 5% |
-| 10 | Mesh-Cylinder | Cylinder rests at z = half_length (GJK/EPA) | < 3mm |
+| 10 | Mesh-Cylinder | Cylinder rests at z = half_length | < 3mm |
 | 11 | Mesh-Cylinder | Contact force / weight = 1.0 | 5% |
 | 12 | Mesh-Cylinder | MULTICCD produces >= 2 contacts | -- |
 | 13 | Mesh-Ellipsoid | Oblate ellipsoid rests at z = rz = 0.05 | < 3mm |
@@ -27,8 +28,8 @@ cylinder, ellipsoid, and mesh-mesh. Exits with code 1 if any check fails.
 | 17 | Mesh-Mesh | Wedge above platform surface | -- |
 | 18 | Mesh-Mesh | Contact force / weight = 1.0 | 10% |
 | 19 | Edge: Separated | Two meshes far apart: ncon = 0 | exact |
-| 20 | Edge: Single tri | 1-triangle mesh vs sphere: no crash, contact produced | -- |
-| 21 | Edge: Swapped order | Primitive-mesh (sphere first): same result | < 1mm |
+| 20 | Edge: Single tri | 1-triangle mesh (no hull) vs sphere: no crash, contact produced | -- |
+| 21 | Edge: Swapped order | Sphere's body written before the mesh: rests at z = radius | < 1mm |
 
 ## Run
 

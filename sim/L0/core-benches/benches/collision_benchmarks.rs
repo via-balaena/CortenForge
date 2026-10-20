@@ -121,7 +121,7 @@ fn bench_mesh_mesh_collision(c: &mut Criterion) {
             },
         );
 
-        // Also test deepest contact (what's used in dispatch)
+        // Also test the deepest contact (`mesh_mesh_deepest_contact`)
         group.bench_with_input(
             BenchmarkId::new("deepest", format!("{tri_count}x{tri_count}_tri")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),

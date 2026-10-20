@@ -13,7 +13,7 @@ Each example runs for 15 seconds and prints a validation report to the console.
 | `accelerometer/` | Accelerometer | Acceleration | Free-joint box drop |
 | `touch/` | Touch | Acceleration | Free-joint sphere drop |
 | `actuator-force/` | ActuatorFrc, JointActuatorFrc | Acceleration | Hinge + motor |
-| `geom-distance/` | GeomDist, GeomNormal, GeomFromTo | Position (GJK) | Slide joint + spring |
+| `geom-distance/` | GeomDist, GeomNormal, GeomFromTo | Position | Slide joint + spring |
 
 ## Not covered here
 

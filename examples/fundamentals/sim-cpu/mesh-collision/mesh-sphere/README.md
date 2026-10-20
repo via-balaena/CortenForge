@@ -1,8 +1,8 @@
-# Mesh-Sphere — BVH-Accelerated Triangle Query
+# Mesh-Sphere — Sphere on a Mesh's Convex Hull
 
-A sphere dropped onto a mesh ground slab. Demonstrates `mesh_sphere_contact()`
-with BVH-accelerated triangle lookup — the BVH finds which triangles of the mesh
-are near the sphere, then each candidate triangle is tested for contact.
+A sphere dropped onto a mesh ground slab. The pair collides through
+`mjc_convex()`, MuJoCo's native convex collision: the sphere against the
+convex hull of the slab's vertices.
 
 ## What you see
 
@@ -13,8 +13,8 @@ are near the sphere, then each candidate triangle is tested for contact.
 ## Physics
 
 The mesh ground slab is a convex box mesh positioned at z=-1 so its top face
-sits at z=0. The sphere collides with the top-face triangles via the BVH
-acceleration structure built at model load time.
+sits at z=0. A sphere against a mesh gets one contact, with or without
+MULTICCD.
 
 | Parameter | Value |
 |-----------|-------|
@@ -22,7 +22,7 @@ acceleration structure built at model load time.
 | Ground mesh | 8 vertices, 12 faces (2x2x2 box) |
 | Density | 1000 kg/m^3 |
 | Integrator | RK4, dt = 1 ms |
-| Narrow-phase | `mesh_sphere_contact()` via BVH |
+| Narrow-phase | `mjc_convex()` |
 
 ## Validation
 

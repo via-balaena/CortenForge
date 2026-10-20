@@ -128,7 +128,8 @@ sim-core/src/
 │   ├── plane.rs           # Plane-vs-geom algorithms
 │   ├── pair_convex.rs     # Convex pair algorithms
 │   ├── pair_cylinder.rs   # Cylinder pair algorithms
-│   ├── mesh_collide.rs    # Mesh collision
+│   ├── mesh_collide.rs    # Mesh-plane collision
+│   ├── mj_ccd.rs          # MuJoCo's native convex collision (GJK, EPA, multi-contact)
 │   ├── hfield.rs          # Height field collision
 │   ├── flex_collide.rs    # Flex collision dispatcher
 │   ├── flex_narrow.rs     # Flex sphere-geom narrowphase
@@ -169,6 +170,7 @@ sim-core/src/
 ├── gjk_epa.rs       # GJK/EPA for convex shapes
 ├── mid_phase.rs     # BVH tree (median-split, traversal)
 ├── mesh.rs          # Triangle mesh collision functions
+├── mesh_polygons.rs # A mesh's polygonal faces (MuJoCo's MakePolygons)
 ├── heightfield.rs   # Terrain collision
 ├── raycast.rs       # Ray-shape intersection
 ├── inverse.rs       # Inverse dynamics
@@ -368,22 +370,27 @@ through a bounding-sphere distance cull and narrow-phase, then
 
 ### Narrow Phase Dispatch
 
-Analytical algorithms for common pairs (sphere-sphere, sphere-capsule,
-capsule-capsule, box-box, sphere-box, capsule-box, etc., as MuJoCo's).
-GJK/EPA fallback for remaining convex pairs. BVH-accelerated tests for
-triangle meshes.
+Each pair goes to the function MuJoCo's collision table gives it. The
+primitive pairs (sphere-sphere, sphere-capsule, capsule-capsule, sphere-box,
+capsule-box, box-box, sphere-cylinder) and the plane pairs have functions of
+their own, as in MuJoCo's table. An ellipsoid or a mesh against a sphere, capsule,
+ellipsoid, cylinder, box or mesh, and a cylinder against a capsule, cylinder
+or box, collide through MuJoCo's native convex collision (`mjc_Convex`: GJK,
+EPA and its multi-contact; `collision/mj_ccd.rs`). A mesh collides as the
+convex hull of its vertices; against a plane it takes sim-core's own
+`collide_mesh_plane`. Height fields and SDFs have their own routes.
 
 ### Supported Geometry Types
 
 | Type | `GeomType` | Notes |
 |------|------------|-------|
-| Sphere | `Sphere` | Analytical collisions |
-| Box | `Box` | MuJoCo's `mjc_BoxBox` for box-box |
-| Capsule | `Capsule` | Analytical line-line distance |
-| Cylinder | `Cylinder` | GJK/EPA fallback for some pairs |
-| Ellipsoid | `Ellipsoid` | GJK/EPA |
+| Sphere | `Sphere` | Analytical collisions; `mjc_Convex` with an ellipsoid or mesh |
+| Box | `Box` | MuJoCo's `mjc_BoxBox` for box-box; `mjc_Convex` with an ellipsoid, cylinder or mesh |
+| Capsule | `Capsule` | Analytical line-line distance; `mjc_Convex` with an ellipsoid, cylinder or mesh |
+| Cylinder | `Cylinder` | `mjc_Convex`, but with a sphere or plane |
+| Ellipsoid | `Ellipsoid` | `mjc_Convex`, but with a plane |
 | Plane | `Plane` | Infinite half-space (ground) |
-| Mesh | `Mesh` | BVH-accelerated triangle tests |
+| Mesh | `Mesh` | Its convex hull through `mjc_Convex`; with a plane, `collide_mesh_plane` |
 
 sim-core also provides collision primitives usable outside the pipeline:
 
@@ -395,8 +402,9 @@ sim-core also provides collision primitives usable outside the pipeline:
 | `CollisionShape::ConvexMesh` | GJK/EPA-based convex hull |
 
 Supporting modules: `mid_phase.rs` (BVH construction and traversal),
-`gjk_epa.rs` (convex collision), `mesh.rs` (triangle tests), `heightfield.rs`,
-`sdf.rs`, `raycast.rs`.
+`collision/mj_ccd.rs` (MuJoCo's native convex collision), `gjk_epa.rs`
+(sim-core's GJK/EPA, for height-field prisms and flex vertices), `mesh.rs`
+(triangle tests), `heightfield.rs`, `sdf.rs`, `raycast.rs`.
 
 ## Crate Reference
 

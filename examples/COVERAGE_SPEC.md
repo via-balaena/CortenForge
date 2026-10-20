@@ -85,7 +85,7 @@ integration tests — they find bugs that unit tests miss.
 
 ### Collision (partially covered)
 - SDF-plane ✓, SDF-SDF ✓, analytical convex ✓
-- Convex-convex (GJK/EPA) ✓ (geom-distance sensor example — also fixed a GJK bug)
+- Convex-convex (`mjc_convex`, MuJoCo's native GJK/EPA) ✓ (mesh-collision examples 2-7)
 - Friction tuning ✓ (friction-slide, condim-compare — 2 examples)
 - Solref/solimp (bounce) ✓ (solref-bounce — 1 example)
 - Contact parameter override ✓ (pair-override — 1 example)
@@ -1031,25 +1031,27 @@ rest height, settling, and contact force/weight ratio.
 
 1. **mesh-on-plane** — Tetrahedron (4 verts, 4 faces) on infinite ground plane.
    `collide_mesh_plane()` path. Rest height = centroid-to-base = 0.204.
-2. **mesh-sphere** — Sphere on mesh ground slab. BVH-accelerated
-   `mesh_sphere_contact()`. Rest height = radius = 0.1.
-3. **mesh-box** — Box on mesh slab. GJK/EPA + MULTICCD for face-face stability.
-   `triangle_box_contact()` was removed (algorithmically incomplete).
-4. **mesh-capsule** — Sideways capsule on mesh slab. BVH-accelerated
-   `mesh_capsule_contact()`. Rest height = radius = 0.1.
-5. **mesh-cylinder** — Upright cylinder on mesh slab. GJK/EPA + MULTICCD.
-   Branch highlight: previously used capsule approximation. Rest height = 0.2.
-6. **mesh-ellipsoid** — Oblate disc (0.3×0.3×0.05) on mesh slab. GJK/EPA.
-   Branch highlight: sphere approx gave z=0.3 (6x error). Now z=0.05.
-7. **mesh-on-mesh** — Wedge on mesh platform. Hull-hull GJK/EPA + MULTICCD.
-   Both colliders are `type="mesh"`.
+2. **mesh-sphere** — Sphere on mesh ground slab, through `mjc_convex()`
+   against the mesh's convex hull. Rest height = radius = 0.1.
+3. **mesh-box** — Box on mesh slab. `mjc_convex()` + MULTICCD: one pass clips
+   the touching faces, up to 4 contacts.
+4. **mesh-capsule** — Sideways capsule on mesh slab, through `mjc_convex()`.
+   Rest height = radius = 0.1.
+5. **mesh-cylinder** — Upright cylinder on mesh slab. `mjc_convex()` +
+   MULTICCD: four passes with the geoms turned, up to 5 contacts. Rest
+   height = 0.2, where a capsule would rest a radius higher.
+6. **mesh-ellipsoid** — Oblate disc (0.3×0.3×0.05) on mesh slab, through
+   `mjc_convex()`. A sphere of the largest radius would rest at z=0.3 (6x);
+   the disc rests at z=0.05.
+7. **mesh-on-mesh** — Wedge on mesh platform. Two convex hulls through
+   `mjc_convex()` + MULTICCD (face clipping). Both colliders are
+   `type="mesh"`.
 8. **stress-test** — 21 headless checks: all 7 pairs + edge cases (separated
    meshes, single-triangle mesh, swapped geom order).
 
-**Concepts covered:** `type="mesh"`, inline vertex/face data, BVH triangle
-queries, GJK/EPA on convex hulls, MULTICCD for face-face stability,
-`mesh_sphere_contact()`, `mesh_capsule_contact()`, `gjk_epa_shape_pair()`,
-`collide_mesh_plane()`.
+**Concepts covered:** `type="mesh"`, inline vertex/face data, MuJoCo's
+native convex collision on a mesh's convex hull (`mjc_convex()`), MULTICCD's
+face clipping and turned passes, `collide_mesh_plane()`.
 
 ##### 15. `heightfield/` — Terrain Collision
 
@@ -1246,13 +1248,11 @@ indirectly by other examples but never isolated.
    stable stacking for each.
 
 3. **capsule-cylinder** — Capsule-capsule (segment-segment, up to 2
-   contacts, near-parallel special case), capsule-cylinder, cylinder-
-   cylinder. These are the most geometrically complex pair functions.
-   Verify contact count and normals.
+   contacts, near-parallel special case), capsule-cylinder and cylinder-
+   cylinder (both through `mjc_convex()`). Verify contact count and normals.
 
-4. **ellipsoid** — Ellipsoid-plane, ellipsoid-sphere, ellipsoid-ellipsoid.
-   Ellipsoids use the general GJK/EPA fallback for most pairs. Verify
-   contacts match (EPA supports these natively).
+4. **ellipsoid** — Ellipsoid-plane (the plane function), ellipsoid-sphere
+   and ellipsoid-ellipsoid (`mjc_convex()`). Verify contacts match MuJoCo's.
 
 5. **stress-test** — Headless validation (16+ checks):
    - Sphere-sphere: contact depth = r1 + r2 - dist(c1, c2)
@@ -1269,14 +1269,13 @@ indirectly by other examples but never isolated.
    - All primitive-plane pairs: normal = plane normal
    - Cylinder-sphere: contact on cylinder surface
    - Box-capsule: clipping produces correct contact patch
-   - GJK/EPA fallback agrees with analytical for sphere-sphere
+   - Capsule-cylinder and ellipsoid pairs (`mjc_convex`): MuJoCo's contacts
    - Each pair function exercised at least once
 
 **Concepts covered:** `collide_sphere_sphere()`, `collide_capsule_capsule()`,
 `collide_sphere_capsule()`, `collide_sphere_box()`, `collide_cylinder_sphere()`,
-`collide_cylinder_capsule()`, `collide_capsule_box()`, `collide_box_box()`,
-`collide_with_plane()`, GJK/EPA fallback, contact normal convention,
-contact depth.
+`mjc_convex()`, `collide_capsule_box()`, `collide_box_box()`,
+`collide_with_plane()`, contact normal convention, contact depth.
 
 ##### 20. `plugins/` — Custom Sensors and Forces
 

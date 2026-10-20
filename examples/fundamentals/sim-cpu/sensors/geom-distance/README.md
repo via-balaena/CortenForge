@@ -1,14 +1,17 @@
 # GeomDist + GeomNormal + GeomFromTo Sensors
 
-Geometric proximity sensors using the GJK narrowphase.
+Geometric proximity sensors. Each sensor routes its pair of geoms as MuJoCo's
+`mj_geomDistance` does.
 
 ## What it demonstrates
 
 - `<distance>` measures signed distance between two geoms (1D)
 - `<normal>` measures surface normal at nearest points (3D unit vector)
 - `<fromto>` measures nearest surface points on both geoms (6D)
-- Uses box-sphere pairing to exercise GJK (sphere-sphere would use the
-  analytic fast path, bypassing GJK entirely)
+- A box and a sphere: the sensors take the sphere-box collision function
+  (MuJoCo's `mjraw_SphereBox`) with the cutoff as its margin; a pair MuJoCo
+  collides through `mjc_Convex`, or two boxes, would go to MuJoCo's convex
+  solver (`mjc_ccd`) instead
 - `cutoff="10"` on all sensors to avoid the cutoff=0 initialization edge case
 - Spring-loaded slide joint creates oscillating distance
 
