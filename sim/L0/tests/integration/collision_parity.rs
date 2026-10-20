@@ -1603,9 +1603,10 @@ fn geom_distance_special_cases_as_mujoco() {
     }
 }
 
-/// MULTICCD on the convex pairs with a sphere or an ellipsoid (a sphere or
-/// an ellipsoid against an ellipsoid, a mesh, a cylinder or a box, a capsule
-/// against an ellipsoid), 8 seeded random poses each, either body first,
+/// MULTICCD on the convex pairs with a sphere or an ellipsoid (a sphere
+/// against an ellipsoid or a mesh; an ellipsoid against an ellipsoid, a
+/// cylinder, a box or a mesh; a capsule against an ellipsoid), 8 seeded
+/// random poses each, either body first,
 /// margins 0 and 0.02: `mjc_Convex` makes no extra pass for a sphere or an
 /// ellipsoid, so one contact at most, MuJoCo's within 1e-12.
 #[test]
@@ -1673,7 +1674,7 @@ fn pos_gap(c: &Contact, w: &Value) -> f64 {
 /// so turned: four contacts, two within 1e-12 of MuJoCo's and two more
 /// than 1e-2 from any of MuJoCo's. The mesh on itself unturned at a margin
 /// of 0.01 (one contact per pass): five contacts, the depth more than 1e-7
-/// from MuJoCo's. Measured: 4.9e-2, and 2.2e-7.
+/// from MuJoCo's. Measured: 4.0e-2 and 4.9e-2, and 2.2e-7.
 #[test]
 fn mesh_contacts_part_from_mujocos_by_the_hulls_order() {
     let golden = golden();
@@ -1692,11 +1693,23 @@ fn mesh_contacts_part_from_mujocos_by_the_hulls_order() {
     assert_eq!(ours.len(), 4, "box: contacts");
     assert_eq!(want.len(), 4, "box: MuJoCo's contacts");
     for (k, c) in ours.iter().enumerate() {
+        let w = &want[(k + 2) % 4];
+        let normal = floats(&w["normal"]);
         assert_eq!(
-            pos_gap(c, &want[(k + 2) % 4]),
+            pos_gap(c, w),
             0.0,
             "box contact {k}: MuJoCo's {}",
             (k + 2) % 4
+        );
+        assert_eq!(
+            (-c.depth).to_bits(),
+            w["dist"].as_f64().expect("dist").to_bits(),
+            "box contact {k}: depth"
+        );
+        assert!(
+            (0..3).all(|i| c.normal[i].to_bits() == normal[i].to_bits()),
+            "box contact {k}: normal {:?}, MuJoCo {normal:?}",
+            c.normal
         );
     }
 

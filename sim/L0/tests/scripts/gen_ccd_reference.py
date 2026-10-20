@@ -41,7 +41,10 @@ normal) and edge to face (turned 45 degrees about a horizontal axis, then
 about the vertical), the lower one touching with its +z, -z, -y or -x face,
 tilted within the face and edge tolerances and, in two of every eight, past
 them, either box first, with four and eight contacts, which `multicontact`
-clips (engine_collision_gjk.c:2063-2184).
+clips (engine_collision_gjk.c:2063-2184). Its tilts' axes, and
+`multi_mesh`'s, are not of unit length, which `mju_axisAngle2Quat` does not
+correct, so those turns are not quite rotations; both sides read the same
+matrices.
 `census`: the capsule–cylinder pairs of census documents 3a13c90a and
 6369216c at their start, the second a three-way tie of EPA's starting faces.
 `nan`: an ellipsoid and a box, one turned by a matrix holding a NaN, which
@@ -105,7 +108,7 @@ searches; and what the later groups are for: polytope2's and polytope3's
 failures, an exact touch inflated to the cutoff, a geom of size 0, a
 singular turn, a box past size 1 through EPA, geoms below 1e-6 and past
 1e150, EPA past mjMAX_EPA_ITERATIONS, mjMAXCONPAIR contacts, a
-multi-contact on a face past mjMAX_POLYVERT corners, a hill climb on
+multi-contact on a mesh with a face past mjMAX_POLYVERT corners, a hill climb on
 mjMESH_HILLCLIMB_MIN vertices, and a multi-contact on the notched slab).
 """
 
@@ -1324,7 +1327,7 @@ def coverage(cases, graph):
                                 and c["out"]["nx"] == 1 for c in cases),
         "EPA past mjMAX_EPA_ITERATIONS": any(o["epa_iterations"] > 170 for o in outs),
         "mjMAXCONPAIR contacts": any(o["nx"] == MAXCONPAIR for o in outs),
-        "a face past mjMAX_POLYVERT corners in a multi-contact": any(
+        "a multi-contact on a mesh with a face past mjMAX_POLYVERT corners": any(
             c["out"]["nx"] > 1 and any(max(map(len, graph[o["mesh"]]["polygons"])) > 150
                                        for o in c["obj"] if o["mesh"] in graph)
             for c in cases),

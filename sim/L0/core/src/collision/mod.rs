@@ -28,9 +28,8 @@ pub(crate) mod sdf_collide;
 pub(crate) use mj_ccd::geom_distance_ccd;
 
 /// A geom's rotation as nalgebra's `UnitQuaternion::from_matrix`, or `None`
-/// where the matrix holds a NaN or an infinity: that conversion iterates
-/// until it converges, with no cap on its iterations, and on such a matrix
-/// never does.
+/// where the matrix holds a NaN or an infinity, on which that conversion
+/// never returns.
 pub(crate) fn finite_rotation(
     mat: &nalgebra::Matrix3<f64>,
 ) -> Option<nalgebra::UnitQuaternion<f64>> {
@@ -687,8 +686,7 @@ fn collide_geom_pair(
             data.ncon += 1;
         }
     } else {
-        // The narrow phase does not read DISABLE_MIDPHASE: a mesh collides as
-        // its convex hull, with no triangle hierarchy.
+        // The narrow phase does not read DISABLE_MIDPHASE.
         let contacts = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
         for mut contact in contacts {
             places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));

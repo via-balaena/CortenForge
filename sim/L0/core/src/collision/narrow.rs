@@ -222,9 +222,9 @@ pub fn geom_to_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Shape> {
         }),
         GeomType::Ellipsoid => Some(Shape::Ellipsoid { radii: size }),
         GeomType::Plane => None,  // Handled via collide_with_plane()
-        GeomType::Mesh => None,   // Handled via collide_with_mesh()
+        GeomType::Mesh => None, // Handled via mjc_convex(), or collide_with_mesh() against a plane
         GeomType::Hfield => None, // Handled via collide_hfield_multi at broadphase level
-        GeomType::Sdf => None,    // Handled via collide_with_sdf()
+        GeomType::Sdf => None,  // Handled via collide_with_sdf()
     }
 }
 

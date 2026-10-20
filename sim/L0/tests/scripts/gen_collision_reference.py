@@ -2409,7 +2409,7 @@ def exact_touch_cases():
 
 
 # The convex pairs with a sphere or an ellipsoid, which mjc_Convex gives no
-# extra MULTICCD passes (engine_collision_convex.c:917-926).
+# extra MULTICCD passes (engine_collision_convex.c:935-937).
 ROUND_MULTICCD_TABLE = [("sphere", "ellipsoid"), ("sphere", "mesh"), ("capsule", "ellipsoid"),
                         ("ellipsoid", "ellipsoid"), ("ellipsoid", "cylinder"), ("ellipsoid", "box"),
                         ("ellipsoid", "mesh")]

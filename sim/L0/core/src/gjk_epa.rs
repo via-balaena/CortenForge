@@ -5,8 +5,7 @@
 //!
 //! - **`PosedShape`**: Wraps `(Shape, Pose)` to implement `cf_geometry::SupportMap`
 //!   in world space, with warm-start caching for convex mesh hill-climbing.
-//! - **`support()`**: World-space support function with warm-start, used by
-//!   heightfield collision.
+//! - **`support()`**: World-space support function with warm-start.
 //! - **`gjk_epa_contact()`**: GJK+EPA penetration → `GjkContact`.
 //! - **`gjk_distance()`**: GJK distance → `GjkDistanceResult`.
 //!
