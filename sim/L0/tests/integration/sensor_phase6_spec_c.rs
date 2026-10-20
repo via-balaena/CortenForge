@@ -1003,10 +1003,10 @@ fn t28_box_sphere_distance() {
 /// the free sphere's). A distance sensor naming the world takes the world's
 /// geoms from `geom_body`, so the free sphere is not one of them: on a world
 /// sphere 0.95 from a box that a free sphere overlaps by 0.05, the sensor
-/// reads the same after the call as before, bit for bit (sim-core's geom
-/// distance skips a plane, `geom_distance.rs`, so the added plane adds
-/// none). Before, it
-/// walked the widened range and read the free sphere's −0.05.
+/// reads 0.95 before the call and, after it, the added plane's 0.4 below the
+/// box (a plane's distance is its collision function's, as MuJoCo's
+/// `mj_geomDistance`), not the free sphere's −0.05, which it read when it
+/// walked the widened range.
 #[test]
 fn distance_from_the_world_reads_the_worlds_geoms_after_add_ground_plane() {
     let mut model = load_model(
@@ -1029,12 +1029,7 @@ fn distance_from_the_world_reads_the_worlds_geoms_after_add_ground_plane() {
     );
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
-    assert_eq!(
-        data.sensordata[0].to_bits(),
-        before.to_bits(),
-        "after add_ground_plane: {}, before: {before}",
-        data.sensordata[0]
-    );
+    assert_relative_eq!(data.sensordata[0], 0.4, epsilon = 1e-12);
 }
 
 /// A body's geoms are taken in index order, as MuJoCo's loop over

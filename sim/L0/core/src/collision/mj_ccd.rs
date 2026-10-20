@@ -22,7 +22,7 @@ use super::mj_primitive::{
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::mesh_polygons::MeshPolygons;
 use crate::quat::{axis_angle_to_quat, quat_to_mat};
-use crate::types::{ENABLE_MULTICCD, GeomType, Model, enabled, make_frame};
+use crate::types::{Data, ENABLE_MULTICCD, GeomType, Model, enabled, make_frame};
 
 /// `mjMINVAL²`.
 const MINVAL2: f64 = MJ_MINVAL * MJ_MINVAL;
@@ -2260,6 +2260,40 @@ pub(super) fn mjc_convex(
         }
     }
     con
+}
+
+/// `mj_geomDistanceCCD` (`engine_support.c:527-552`): the distance of `g1`
+/// and `g2` at their poses in `data`, without their margins, from `mjc_ccd`
+/// asked for one contact up to `distmax`, and the witness points from `g1`
+/// to `g2` where it gives them (else zeros); a distance past `distmax` reads
+/// `distmax`.
+#[must_use]
+pub fn geom_distance_ccd(
+    model: &Model,
+    data: &Data,
+    g1: usize,
+    g2: usize,
+    distmax: f64,
+) -> (f64, [f64; 6]) {
+    let mut fromto = [0.0; 6];
+    let (Some(mut o1), Some(mut o2)) = (
+        CcdObj::of_geom(model, g1, &data.geom_xpos[g1], &data.geom_xmat[g1], 0.0),
+        CcdObj::of_geom(model, g2, &data.geom_xpos[g2], &data.geom_xmat[g2], 0.0),
+    ) else {
+        return (distmax, fromto);
+    };
+    let config = CcdConfig {
+        max_iterations: model.ccd_iterations,
+        tolerance: model.ccd_tolerance,
+        max_contacts: 1,
+        dist_cutoff: distmax,
+    };
+    let st = mjc_ccd(&config, &mut o1, &mut o2);
+    if st.nx > 0 {
+        fromto[..3].copy_from_slice(&st.x1[0]);
+        fromto[3..].copy_from_slice(&st.x2[0]);
+    }
+    (if st.dist < distmax { st.dist } else { distmax }, fromto)
 }
 
 // ---------------------------------------------------------------------------

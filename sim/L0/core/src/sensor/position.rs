@@ -351,18 +351,16 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
                     sensor_write(&mut data.sensordata, adr, 0, dist);
                 }
                 MjSensorType::GeomNormal => {
-                    let normal = Vector3::new(
+                    let mut normal = [
                         fromto[3] - fromto[0],
                         fromto[4] - fromto[1],
                         fromto[5] - fromto[2],
-                    );
-                    // Zero-vector guard: only normalize if non-zero
-                    let output = if normal.norm_squared() > 0.0 {
-                        normal.normalize()
-                    } else {
-                        normal // stays [0, 0, 0]
-                    };
-                    sensor_write3(&mut data.sensordata, adr, &output);
+                    ];
+                    // MuJoCo's: normalised unless every component is 0.
+                    if normal.iter().any(|&x| x != 0.0) {
+                        quat::normalize3(&mut normal);
+                    }
+                    sensor_write3(&mut data.sensordata, adr, &Vector3::from(normal));
                 }
                 MjSensorType::GeomFromTo => {
                     sensor_write6(&mut data.sensordata, adr, &fromto);

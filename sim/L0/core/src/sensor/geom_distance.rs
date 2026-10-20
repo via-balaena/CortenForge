@@ -1,171 +1,65 @@
-//! Geom distance computation for distance/normal/fromto sensors.
-//!
-//! Implements `geom_distance()` — the CortenForge equivalent of MuJoCo's
-//! `mj_geomDistance()` in `engine_support.c`. Returns the signed distance
-//! and nearest surface points between two geoms.
+//! The geom-distance sensors' distance between two geoms: MuJoCo's
+//! `mj_geomDistance` (`engine_support.c:556-601`).
 
-use crate::collision::narrow::geom_to_shape;
-use crate::gjk_epa::{gjk_distance, gjk_epa_contact};
+use crate::collision::geom_distance_ccd;
+use crate::collision::hfield::collide_hfield_multi;
+use crate::collision::narrow::{collide_geoms, convex_pair};
 use crate::types::{Data, GeomType, Model};
-use nalgebra::{Point3, UnitQuaternion, Vector3};
-use sim_types::Pose;
 
-/// Compute signed distance and nearest surface points between two geoms.
+/// `mj_geomDistance`: the smallest distance between `geom1` and `geom2`, at
+/// most `distmax` (negative in penetration), and the segment
+/// `[from, to]` from `geom1` to `geom2` it spans, zeros where nothing is
+/// found below `distmax`.
 ///
-/// Returns `(signed_distance, fromto)` where:
-/// - `signed_distance` > 0: separation gap (non-overlapping)
-/// - `signed_distance` < 0: penetration depth (overlapping)
-/// - `fromto = [from_x, from_y, from_z, to_x, to_y, to_z]`:
-///   from = nearest surface point on geom1, to = nearest surface point on geom2
-///
-/// When `signed_distance >= cutoff` (and cutoff > 0), returns `(cutoff, [0; 6])` —
-/// geoms beyond cutoff are not computed.
-///
-/// MuJoCo ref: `mj_geomDistance()` in `engine_support.c`.
-// Paired geom identifiers (geom1/geom2, pos1/pos2) are intentionally similar.
+/// MuJoCo takes the pair in type order, the lower `mjtGeom` first. A plane
+/// or height field with a plane or height field has no collision function
+/// and reads `distmax`. A pair its collision table gives `mjc_Convex` or
+/// `mjc_BoxBox` goes to `mjc_ccd` ([`geom_distance_ccd`]), the geoms in the
+/// order given. Every other pair goes to its collision function with
+/// `distmax` as the margin: the smallest distance it lists, the segment
+/// along that contact's normal, centred on its position.
+// Paired geom identifiers (geom1/geom2, g1/g2) are intentionally similar.
 #[allow(clippy::similar_names)]
 pub fn geom_distance(
     model: &Model,
     data: &Data,
     geom1: usize,
     geom2: usize,
-    cutoff: f64,
+    distmax: f64,
 ) -> (f64, [f64; 6]) {
-    let zero_fromto = [0.0f64; 6];
-
-    // 1. Read world-frame poses from Data
-    let pos1 = data.geom_xpos[geom1];
-    let pos2 = data.geom_xpos[geom2];
-    let mat1 = data.geom_xmat[geom1];
-    let mat2 = data.geom_xmat[geom2];
-
-    // 2. Bounding sphere early-out
-    let center_dist = (pos2 - pos1).norm();
-    let rbound1 = model.geom_rbound[geom1];
-    let rbound2 = model.geom_rbound[geom2];
-    let min_possible = center_dist - rbound1 - rbound2;
-    if cutoff > 0.0 && min_possible > cutoff {
-        return (cutoff, zero_fromto);
+    let mut fromto = [0.0; 6];
+    let flip = model.geom_type[geom1].mjtgeom() > model.geom_type[geom2].mjtgeom();
+    let (g1, g2) = if flip { (geom2, geom1) } else { (geom1, geom2) };
+    let (type1, type2) = (model.geom_type[g1], model.geom_type[g2]);
+    if matches!(type2, GeomType::Plane | GeomType::Hfield) {
+        return (distmax, fromto);
+    }
+    if convex_pair(type1, type2) || (type1 == GeomType::Box && type2 == GeomType::Box) {
+        return geom_distance_ccd(model, data, geom1, geom2, distmax);
     }
 
-    // 3. Read shape parameters
-    let gtype1 = model.geom_type[geom1];
-    let gtype2 = model.geom_type[geom2];
-    let size1 = model.geom_size[geom1];
-    let size2 = model.geom_size[geom2];
-
-    // 4. Analytic sphere-sphere fast path
-    if gtype1 == GeomType::Sphere && gtype2 == GeomType::Sphere {
-        return sphere_sphere_distance(pos1, size1.x, pos2, size2.x, cutoff);
-    }
-
-    // 5. Convert to Shape (convex primitives only)
-    let Some(shape1) = geom_to_shape(gtype1, size1) else {
-        // Non-convex or plane — deferred (DT-122)
-        return (cutoff, zero_fromto);
-    };
-    let Some(shape2) = geom_to_shape(gtype2, size2) else {
-        return (cutoff, zero_fromto);
-    };
-
-    // 6. Build Pose from Data pose arrays
-    let rot1 =
-        UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_matrix_unchecked(mat1));
-    let rot2 =
-        UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_matrix_unchecked(mat2));
-    let pose1 = Pose::from_position_rotation(Point3::from(pos1), rot1);
-    let pose2 = Pose::from_position_rotation(Point3::from(pos2), rot2);
-
-    // 7. GJK/EPA query
-    if let Some(contact) = gjk_epa_contact(
-        &shape1,
-        &pose1,
-        &shape2,
-        &pose2,
-        model.ccd_iterations,
-        model.ccd_tolerance,
-    ) {
-        // Overlapping — signed distance is negative penetration
-        let dist = -contact.penetration;
-        // contact.point is the midpoint of the EPA witness points, whose
-        // difference is normal * penetration: these are the witnesses,
-        // from on geom1, to on geom2.
-        let half_pen = contact.penetration * 0.5;
-        let from_pt = contact.point + contact.normal * half_pen;
-        let to_pt = contact.point - contact.normal * half_pen;
-        let fromto = [from_pt.x, from_pt.y, from_pt.z, to_pt.x, to_pt.y, to_pt.z];
-        if cutoff > 0.0 && dist >= cutoff {
-            return (cutoff, zero_fromto);
-        }
-        (dist, fromto)
+    let (pos1, mat1) = (data.geom_xpos[g1], data.geom_xmat[g1]);
+    let (pos2, mat2) = (data.geom_xpos[g2], data.geom_xmat[g2]);
+    let contacts = if type1 == GeomType::Hfield && type2 != GeomType::Sdf {
+        collide_hfield_multi(model, g1, g2, pos1, mat1, pos2, mat2, distmax)
     } else {
-        // Non-overlapping — use GJK distance to get closest points. MuJoCo's
-        // GJK stops two boxes, meshes or height fields without a margin at a
-        // tolerance of 0 (`discreteGeoms`, `engine_collision_gjk.c:159-167`),
-        // and the sensor's geoms have none (`engine_support.c:539-540`); of
-        // those types only boxes reach here (`geom_to_shape`).
-        let tolerance = if gtype1 == GeomType::Box && gtype2 == GeomType::Box {
-            0.0
-        } else {
-            model.ccd_tolerance
-        };
-        if let Some(dist_result) = gjk_distance(
-            &shape1,
-            &pose1,
-            &shape2,
-            &pose2,
-            model.ccd_iterations,
-            tolerance,
-        ) {
-            let fromto = [
-                dist_result.witness_a.x,
-                dist_result.witness_a.y,
-                dist_result.witness_a.z,
-                dist_result.witness_b.x,
-                dist_result.witness_b.y,
-                dist_result.witness_b.z,
-            ];
-            if cutoff > 0.0 && dist_result.distance >= cutoff {
-                return (cutoff, zero_fromto);
-            }
-            (dist_result.distance, fromto)
-        } else {
-            // Touching — distance = 0
-            (0.0, zero_fromto)
+        collide_geoms(model, g1, g2, pos1, mat1, pos2, mat2, distmax)
+    };
+    let mut dist = distmax;
+    let mut smallest = None;
+    for contact in &contacts {
+        if -contact.depth < dist {
+            dist = -contact.depth;
+            smallest = Some(contact);
         }
     }
-}
-
-/// Analytic sphere-sphere distance computation.
-///
-/// Exact and fast — no need for GJK/EPA.
-fn sphere_sphere_distance(
-    pos1: Vector3<f64>,
-    r1: f64,
-    pos2: Vector3<f64>,
-    r2: f64,
-    cutoff: f64,
-) -> (f64, [f64; 6]) {
-    let zero_fromto = [0.0f64; 6];
-    let diff = pos2 - pos1;
-    let center_dist = diff.norm();
-    let dist = center_dist - r1 - r2;
-
-    // Direction from geom1 center to geom2 center
-    let dir = if center_dist > 1e-14 {
-        diff / center_dist
-    } else {
-        Vector3::x() // arbitrary for coincident centers
-    };
-
-    // Surface points: from = g1 surface toward g2, to = g2 surface toward g1
-    let from_pt = pos1 + r1 * dir;
-    let to_pt = pos2 - r2 * dir;
-    let fromto = [from_pt.x, from_pt.y, from_pt.z, to_pt.x, to_pt.y, to_pt.z];
-
-    // Cutoff cap (matches mj_geomDistance return-value semantics)
-    if cutoff > 0.0 && dist >= cutoff {
-        return (cutoff, zero_fromto);
+    if let Some(contact) = smallest {
+        let sign = if flip { -1.0 } else { 1.0 };
+        let (from, to) = (-0.5 * sign * dist, 0.5 * sign * dist);
+        for k in 0..3 {
+            fromto[k] = contact.pos[k] + from * contact.normal[k];
+            fromto[3 + k] = contact.pos[k] + to * contact.normal[k];
+        }
     }
     (dist, fromto)
 }

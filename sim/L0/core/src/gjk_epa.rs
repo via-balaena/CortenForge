@@ -636,9 +636,8 @@ pub struct GjkDistanceResult {
 /// Returns `None` if shapes are overlapping (use `gjk_epa_contact` instead).
 /// Delegates to `cf_geometry::gjk_distance` via `PosedShape` adapters.
 ///
-/// `max_iterations` and `tolerance` come from `model.ccd_iterations` and
-/// `model.ccd_tolerance` respectively, but for the geom-distance sensor's two
-/// boxes, whose tolerance is 0.
+/// `max_iterations` and `tolerance` go to `cf_geometry::gjk_distance` as
+/// given.
 #[must_use]
 pub fn gjk_distance(
     shape_a: &Shape,

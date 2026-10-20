@@ -40,7 +40,7 @@ pub const GEOM_EPSILON: f64 = 1e-10;
 
 /// Whether MuJoCo collides two geom types through `mjc_Convex`
 /// (`engine_collision_driver.c:41-52`).
-fn convex_pair(type1: GeomType, type2: GeomType) -> bool {
+pub fn convex_pair(type1: GeomType, type2: GeomType) -> bool {
     let (a, b) = if type1.mjtgeom() <= type2.mjtgeom() {
         (type1, type2)
     } else {

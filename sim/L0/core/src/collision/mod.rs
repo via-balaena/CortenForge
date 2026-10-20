@@ -25,6 +25,8 @@ mod pairs;
 pub(crate) mod plane;
 pub(crate) mod sdf_collide;
 
+pub(crate) use mj_ccd::geom_distance_ccd;
+
 // Note: collide_geoms, geom_to_shape, make_contact_flex_rigid, and
 // narrowphase_sphere_geom are accessed internally via self::narrow::,
 // self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this

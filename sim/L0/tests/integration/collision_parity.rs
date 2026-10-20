@@ -665,11 +665,25 @@ fn primitive_bounding_radii_are_mujocos_bit_for_bit() {
     );
 }
 
+/// Our geom-distance sensors against MuJoCo's: each value within `bound`
+/// of MuJoCo's for the distance (every tenth, from the first) and `rest`
+/// for the normal and fromto, and where a bound is 0, MuJoCo's bit for bit.
+fn sensors_as_mujoco(name: &str, ours: &[f64], want: &[f64], bound: f64, rest: f64) {
+    assert_eq!(ours.len(), want.len(), "{name}: sensordata");
+    for (k, (a, b)) in ours.iter().zip(want).enumerate() {
+        let bound = if k % 10 == 0 { bound } else { rest };
+        let within = if bound == 0.0 {
+            a.to_bits() == b.to_bits()
+        } else {
+            (a - b).abs() <= bound
+        };
+        assert!(within, "{name}: sensordata[{k}] {a}, MuJoCo {b}");
+    }
+}
+
 /// The geom-distance sensors (distance, normal, fromto) of two overlapping
-/// boxes, in both argument orders: MuJoCo's within 1e-12 (the review
-/// measured 1.1e-16). `fromto` is rebuilt from the contact point, the
-/// witnesses' midpoint since P40, and its distance and normal (its two ends
-/// the two witnesses), which no test compared with MuJoCo's before.
+/// boxes, in both argument orders: through `mjc_ccd` as MuJoCo's
+/// `mj_geomDistance` takes two boxes, MuJoCo's bit for bit.
 #[test]
 fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
     let cases = golden()["geom_distance"].clone();
@@ -678,13 +692,8 @@ fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
         let want = floats(&case["sensordata"]);
-        assert_eq!(data.sensordata.len(), want.len(), "{name}: sensordata");
-        for (k, (a, b)) in data.sensordata.iter().zip(&want).enumerate() {
-            assert!(
-                (a - b).abs() <= 1e-12,
-                "{name}: sensordata[{k}] {a}, MuJoCo {b}"
-            );
-        }
+        let ours: Vec<f64> = data.sensordata.iter().copied().collect();
+        sensors_as_mujoco(name, &ours, &want, 0.0, 0.0);
     }
 }
 
@@ -692,9 +701,11 @@ fn geom_distance_sensors_of_overlapping_boxes_as_mujoco() {
 /// cylinder each turned, 4 mm apart, in both argument orders, and two poses
 /// of a random search (an ellipsoid and a box whose distance subalgorithm
 /// meets a minor of exactly 0; an ellipsoid and a cylinder whose GJK runs
-/// out of its 35 iterations): their distance comes from GJK alone
-/// (`gjk_distance`), MuJoCo's within 1e-10. Measured: the distance 1.4e-16
-/// at worst, the normal and fromto 1.2e-11 (ellipsoid–cylinder).
+/// out of its 35 iterations): MuJoCo's bit for bit, but on the second pose
+/// of the search the distance within 1e-15 and the normal and fromto within
+/// 1e-10. Measured there: 6.8e-17, 6.0e-12 (the normal) and 8.0e-16; that
+/// pose's second geom, turned by an MJCF quaternion, has a frame up to
+/// 4.4e-16 off MuJoCo's (ledger L166).
 #[test]
 fn geom_distance_sensors_of_separated_pairs_as_mujoco() {
     let cases = golden()["geom_distance_apart"].clone();
@@ -703,13 +714,13 @@ fn geom_distance_sensors_of_separated_pairs_as_mujoco() {
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
         let want = floats(&case["sensordata"]);
-        assert_eq!(data.sensordata.len(), want.len(), "{name}: sensordata");
-        for (k, (a, b)) in data.sensordata.iter().zip(&want).enumerate() {
-            assert!(
-                (a - b).abs() <= 1e-10,
-                "{name}: sensordata[{k}] {a}, MuJoCo {b}"
-            );
-        }
+        let ours: Vec<f64> = data.sensordata.iter().copied().collect();
+        let (bound, rest) = if name == "ellipsoid_cylinder_iterations_run_out" {
+            (1e-15, 1e-10)
+        } else {
+            (0.0, 0.0)
+        };
+        sensors_as_mujoco(name, &ours, &want, bound, rest);
     }
 }
 
@@ -726,34 +737,15 @@ fn sensordata_at(case: &Value) -> Vec<f64> {
 
 /// The geom-distance sensors of seeded random separated pairs of boxes,
 /// ellipsoids and cylinders, each turned and posed through `qpos`, 12 per
-/// pair of types: the distance within 1e-8 of MuJoCo's and the normal and
-/// fromto within 1e-5, and a box against a box all within 1e-14. Measured:
-/// the distance 1.2e-9 at worst (cylinder–cylinder), the normal and fromto
-/// 6.7e-6 (box–ellipsoid); box–box 1.6e-16 and 2.2e-15. Where the curved
-/// pairs' witnesses part from MuJoCo's is not isolated (ledger L191). The
-/// bounds are this seed's: on 1,200 pairs of another seed the fix-diff review
-/// measured 18 past them (a box–box normal 5.7e-14 off at a distance of
-/// 5.5e-4, a cylinder–ellipsoid distance 2.1e-6, an ellipsoid–ellipsoid
-/// normal 1.8e-5).
+/// pair of types: MuJoCo's bit for bit (before, from cf-geometry's GJK on
+/// quaternions made from `geom_xmat`, the normal and fromto up to 6.7e-6
+/// off, ledger L191).
 #[test]
 fn geom_distance_sensors_of_random_separated_pairs_as_mujoco() {
     let cases = golden()["geom_distance_random"].clone();
     for (name, case) in cases.as_object().expect("cases") {
-        let ours = sensordata_at(case);
         let want = floats(&case["sensordata"]);
-        assert_eq!(ours.len(), want.len(), "{name}: sensordata");
-        let (distance, rest) = if name.starts_with("box_box_") {
-            (1e-14, 1e-14)
-        } else {
-            (1e-8, 1e-5)
-        };
-        for (k, (a, b)) in ours.iter().zip(&want).enumerate() {
-            let bound = if k == 0 { distance } else { rest };
-            assert!(
-                (a - b).abs() <= bound,
-                "{name}: sensordata[{k}] {a}, MuJoCo {b}"
-            );
-        }
+        sensors_as_mujoco(name, &sensordata_at(case), &want, 0.0, 0.0);
     }
 }
 
@@ -762,7 +754,7 @@ fn geom_distance_sensors_of_random_separated_pairs_as_mujoco() {
 /// `engine_collision_gjk.c:633-643`, and its `mjc_ccd` takes the pair as
 /// touching), chosen where ours with that weight kept reads 0 too. Ours reads
 /// the pair's exact distance (the generator's, from the boxes' corners and
-/// edges) within 1e-12. Measured: 4.2e-17, 0 and 1.1e-16.
+/// edges) within 1e-12. Measured: 2.8e-17 at most.
 #[test]
 fn separated_boxes_read_apart_where_mujocos_sensor_reads_0() {
     let cases = golden()["s3d_stale"].clone();
@@ -1436,5 +1428,175 @@ fn explicit_convex_pairs_collide_lower_body_first_as_mujoco() {
     {
         let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         contacts_as_mujoco(name, &model, &floats(&case["qpos"]), &case["contacts"]);
+    }
+}
+
+/// Where ours may part from MuJoCo's sensors on a route pair: the distance,
+/// and the normal and fromto. The pairs of a collision function list a
+/// contact whose normal its frame has normalised a second time
+/// (`make_frame`), where MuJoCo's sensor reads the function's: with that
+/// second normalisation skipped, measured, they read MuJoCo's bit for bit.
+/// Where the two plane pairs and the box's or mesh's pair with a mesh part
+/// from MuJoCo's is not isolated.
+fn route_bounds(pair: &str) -> (f64, f64) {
+    match pair {
+        "sphere_sphere" | "sphere_capsule" | "sphere_cylinder" | "sphere_box"
+        | "capsule_capsule" | "capsule_box" | "plane_cylinder" | "plane_ellipsoid" => {
+            (1e-15, 1e-15)
+        }
+        "box_mesh" | "mesh_mesh" => (1e-16, 1e-14),
+        _ => (0.0, 0.0),
+    }
+}
+
+/// The geom-distance sensors through each route of MuJoCo's
+/// `mj_geomDistance`, as MuJoCo's: every pair of a sphere, capsule,
+/// ellipsoid, cylinder, box and mesh, and each under a plane, at 12 seeded
+/// random poses (5 overlapping, 5 apart within the cutoff, 2 past it), the
+/// distance, normal and fromto of the first against the second and of the
+/// second against the first at cutoff 1, and of the first against the
+/// second at MuJoCo's default cutoff of 0. A pair `mjc_Convex` or
+/// `mjc_BoxBox` collides through `mjc_ccd`, and every other through its
+/// collision function at the cutoff as its margin. MuJoCo's bit for bit
+/// but as `route_bounds` says; measured there: the distance 1.1e-16 at most,
+/// the normal and fromto 3.3e-16, but the normal 2.3e-15 for a box against
+/// a mesh. A mesh under a plane: the distance and normal within 1e-15; its
+/// fromto is sim-core's plane–mesh contact, one case at least 1e-3 from
+/// MuJoCo's (0.46 measured), until book P51 ports MuJoCo's.
+#[test]
+fn geom_distance_sensors_route_as_mujoco() {
+    let golden = golden();
+    for (pair, routes) in golden["geom_distance_routes"].as_object().expect("routes") {
+        let model: Model = load_model(routes["xml"].as_str().expect("xml")).expect("load");
+        let mut plane_mesh_fromto: f64 = 0.0;
+        for (i, case) in routes["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .enumerate()
+        {
+            let mut data = model.make_data();
+            for (q, v) in data.qpos.iter_mut().zip(floats(&case["qpos"])) {
+                *q = v;
+            }
+            data.forward(&model).expect("forward");
+            let ours: Vec<f64> = data.sensordata.iter().copied().collect();
+            let want = floats(&case["sensordata"]);
+            let name = format!("{pair} {i}");
+            if pair == "plane_mesh" {
+                for (k, (a, b)) in ours.iter().zip(&want).enumerate() {
+                    if k % 10 < 4 {
+                        assert!(
+                            (a - b).abs() <= 1e-15,
+                            "{name}: sensordata[{k}] {a}, MuJoCo {b}"
+                        );
+                    } else {
+                        plane_mesh_fromto = plane_mesh_fromto.max((a - b).abs());
+                    }
+                }
+            } else {
+                let (bound, rest) = route_bounds(pair);
+                sensors_as_mujoco(&name, &ours, &want, bound, rest);
+            }
+        }
+        if pair == "plane_mesh" {
+            assert!(
+                plane_mesh_fromto >= 1e-3,
+                "plane_mesh fromto {plane_mesh_fromto}: book P51's"
+            );
+        }
+    }
+}
+
+/// The geom-distance sensors of pairs near touching, each moved until
+/// MuJoCo's distance crosses 1e-5, 1e-7 and 1e-9, on either side of the
+/// crossing: MuJoCo's bit for bit (a plane's pair within 1e-15, as
+/// `route_bounds`), the convex solver's included, which below its tolerance
+/// (1e-6) reads a negative EPA depth as MuJoCo's does (down to −0.028 at a
+/// gap under 1e-6; ledger L192). Two boxes whose distance MuJoCo's reads 0
+/// (registry `D-GJK-S3D`) read their exact distance within 1e-12.
+#[test]
+fn geom_distance_sensors_near_touching_as_mujoco() {
+    let golden = golden();
+    for (name, case) in golden["geom_distance_near"].as_object().expect("near") {
+        let ours = sensordata_at(case);
+        let want = floats(&case["sensordata"]);
+        if let Some(exact) = case.get("exact_distance").and_then(Value::as_f64)
+            && want[0] == 0.0
+        {
+            assert!(
+                exact > 0.0 && (ours[0] - exact).abs() <= 1e-12,
+                "{name}: ours {}, the exact distance {exact}",
+                ours[0]
+            );
+            continue;
+        }
+        let bound = if name.starts_with("plane_") {
+            1e-15
+        } else {
+            0.0
+        };
+        sensors_as_mujoco(name, &ours, &want, bound, bound);
+    }
+}
+
+/// Two spheres with coincident centres, turned apart (MuJoCo's normal is
+/// then the cross product of their z axes); a box and an ellipsoid with
+/// coincident centres (MuJoCo's convex solver reads 0: its GJK starts from
+/// the centres' difference); and geoms with margins 0.05, which neither
+/// route reads (a box and an ellipsoid through `mjc_ccd`, given margin 0;
+/// a sphere and a box through `mjc_SphereBox`, given the cutoff), 0.03
+/// apart and 0.03 into each other; unturned geoms at dyadic positions (a
+/// cylinder's cap, a round and a flat ellipsoid exactly on a box, where the
+/// convex solver's touching exits give a distance of 0 and no witnesses; a
+/// box 1/64 into a plane, four contacts at one distance, of which MuJoCo's
+/// keeps the first; two boxes face to face 1/64 into each other, whose
+/// multi-contact the sensor does not ask for); and four poses of a seeded
+/// search where MuJoCo's convex solver exits without witnesses, a distance of
+/// 0 and no segment: MuJoCo's bit for bit. Two planes, which
+/// have no collision function: the cutoff and zeros. The world's sensor of
+/// a sphere and a flat height field takes the field's collision function
+/// (MuJoCo refuses a sensor naming a height field, not the world that holds
+/// it): 0.01 into the field it reads a contact, not the cutoff; the values
+/// are sim-core's height-field contacts, not MuJoCo's (−0.7 into the field
+/// and 0.05 above it), until book P52 ports MuJoCo's (ledger L197).
+#[test]
+fn geom_distance_special_cases_as_mujoco() {
+    let golden = golden();
+    let special = &golden["geom_distance_special"];
+    for name in ["coincident_spheres", "concentric_box_ellipsoid"] {
+        let case = &special[name];
+        let want = floats(&case["sensordata"]);
+        sensors_as_mujoco(name, &sensordata_at(case), &want, 0.0, 0.0);
+    }
+    for (name, case) in special["margins"]
+        .as_object()
+        .expect("margins")
+        .iter()
+        .chain(special["aligned"].as_object().expect("aligned"))
+        .chain(special["witnessless"].as_object().expect("witnessless"))
+    {
+        let want = floats(&case["sensordata"]);
+        sensors_as_mujoco(name, &sensordata_at(case), &want, 0.0, 0.0);
+    }
+    let case = &special["planes"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let ours: Vec<f64> = data.sensordata.iter().copied().collect();
+    sensors_as_mujoco("planes", &ours, &floats(&case["sensordata"]), 0.0, 0.0);
+
+    let into = sensordata_at(&special["hfield"]["into"]);
+    assert!(into[0] < 0.0 && into[10] < 0.0, "hfield into: {into:?}");
+    for tag in ["into", "above"] {
+        let case = &special["hfield"][tag];
+        let ours = sensordata_at(case);
+        let want = floats(&case["sensordata"]);
+        assert!(
+            (ours[0] - want[0]).abs() > 0.1,
+            "hfield {tag}: ours {}, MuJoCo {}: book P52's",
+            ours[0],
+            want[0]
+        );
     }
 }

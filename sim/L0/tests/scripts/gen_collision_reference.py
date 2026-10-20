@@ -1844,6 +1844,251 @@ def s3d_stale_cases():
     return out
 
 
+# The geom-distance sensors through each route of mj_geomDistance
+# (engine_support.c:556-601): every pair of the six convex geoms, and each
+# under a plane at the origin, the convex geoms on free bodies posed through
+# qpos. Each model holds the distance, normal and fromto sensors of A against
+# B and of B against A at cutoff 1, then of A against B without a cutoff
+# (MuJoCo's default, 0): 30 values.
+ROUTE_KINDS = ["sphere", "capsule", "ellipsoid", "cylinder", "box", "mesh"]
+ROUTE_PAIRS = ([("plane", k) for k in ROUTE_KINDS]
+               + [(a, b) for i, a in enumerate(ROUTE_KINDS) for b in ROUTE_KINDS[i:]])
+
+
+def sensor_trios():
+    """The distance, normal and fromto sensors of A against B and of B
+    against A at cutoff 1, then of A against B without a cutoff."""
+    def trio(g1, g2, cutoff):
+        c = f' cutoff="{cutoff}"' if cutoff is not None else ""
+        return "".join(f'<{s} geom1="{g1}" geom2="{g2}"{c}/>' for s in ("distance", "normal", "fromto"))
+    return f'<sensor>{trio("A", "B", 1)}{trio("B", "A", 1)}{trio("A", "B", None)}</sensor>'
+
+
+def route_xml(kind_a, kind_b):
+    def named(name, kind):
+        return CONVEX_GEOMS[kind].replace("<geom", f'<geom name="{name}"')
+    a = ('<geom name="A" type="plane" size="1 1 0.1"/>' if kind_a == "plane"
+         else f'<body name="a"><freejoint/>{named("A", kind_a)}</body>')
+    return (f'<mujoco>{CHAMFER_ASSET}<option><flag gravity="disable"/></option><worldbody>{a}'
+            f'<body name="b"><freejoint/>{named("B", kind_b)}</body></worldbody>{sensor_trios()}</mujoco>')
+
+
+def route_pose(rng, kind_a, kind_b, far):
+    """A at the origin (a plane unturned), B within `far` of A's reach and
+    its own, each turned at random."""
+    qb = list(unit(rng.normal(size=4)))
+    if kind_a == "plane":
+        pb = [rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3), rng.uniform(-0.1, CONVEX_REACH[kind_b] + far)]
+        return [float(x) for x in pb] + qb
+    r = rng.uniform(0, CONVEX_REACH[kind_a] + CONVEX_REACH[kind_b] + far)
+    pb = r * unit(rng.normal(size=3))
+    return [0.0, 0.0, 0.0] + list(unit(rng.normal(size=4))) + [float(x) for x in pb] + qb
+
+
+def geom_distance_route_cases():
+    """Per route pair, 12 seeded random poses: 5 overlapping, 5 apart within
+    the cutoff and 2 past it, by MuJoCo's distance of A against B."""
+    rng = np.random.default_rng(20261022)
+    pairs = {}
+    for kind_a, kind_b in ROUTE_PAIRS:
+        xml = route_xml(kind_a, kind_b)
+        want = {"over": 5, "apart": 5, "past": 2}
+        cases = []
+        for tries in range(4000):
+            qpos = route_pose(rng, kind_a, kind_b, 1.2)
+            sd = sensors_at(xml, qpos)
+            kind = "over" if sd[0] < 0 else "past" if sd[0] == 1 else "apart"
+            if want[kind] == 0:
+                continue
+            want[kind] -= 1
+            cases.append({"qpos": floats(qpos), "sensordata": floats(sd)})
+            if not any(want.values()):
+                break
+        else:
+            sys.exit(f"geom_distance_routes {kind_a}_{kind_b}: {want} short in {tries + 1} tries")
+        pairs[f"{kind_a}_{kind_b}"] = {"xml": xml, "cases": cases}
+    return pairs
+
+
+# Pairs near touching, B moved along a direction from A until MuJoCo's
+# distance of A against B crosses each gap (bisection, 60 halvings): the
+# poses on either side of the crossing, each once. Below the convex solver's
+# tolerance (1e-6) MuJoCo's reads a negative EPA depth (ledger L192), so for
+# its pairs the smaller gaps find that jump.
+NEAR_PAIRS = [("box", "ellipsoid"), ("cylinder", "cylinder"), ("box", "box"), ("ellipsoid", "mesh"),
+              ("capsule", "box"), ("sphere", "box"), ("sphere", "capsule"), ("plane", "cylinder")]
+NEAR_GAPS = [1e-5, 1e-7, 1e-9]
+
+
+def geom_distance_near_cases():
+    rng = np.random.default_rng(20261023)
+    out = {}
+    for kind_a, kind_b in NEAR_PAIRS:
+        xml = route_xml(kind_a, kind_b)
+        pose = route_pose(rng, kind_a, kind_b, 0.0)
+        b = 0 if kind_a == "plane" else 7
+        direction = unit([0.1, 0.2, 1.0]) if kind_a == "plane" else unit(rng.normal(size=3))
+        # Overlapping at the start: B 0.02 from A's centre (at the centre,
+        # `geom_distance_special`'s case), or half a unit under the plane.
+        start = np.array(pose[b:b + 3]) - 0.5 * direction if kind_a == "plane" else 0.02 * direction
+
+        def at(t):
+            qpos = list(pose)
+            qpos[b:b + 3] = [float(x) for x in start + t * direction]
+            return qpos
+        hi = CONVEX_REACH[kind_b] + (0.6 if kind_a == "plane" else CONVEX_REACH[kind_a]) + 0.2
+        if not (sensors_at(xml, at(0.0))[0] < 0 < sensors_at(xml, at(hi))[0]):
+            sys.exit(f"geom_distance_near {kind_a}_{kind_b}: no bracket")
+        for gap in NEAR_GAPS:
+            lo, h = 0.0, hi
+            for _ in range(60):
+                mid = 0.5 * (lo + h)
+                if sensors_at(xml, at(mid))[0] < gap:
+                    lo = mid
+                else:
+                    h = mid
+            for side, t in (("out", h), ("in", lo)):
+                qpos = floats(at(t))
+                if any(c["xml"] == xml and c["qpos"] == qpos for c in out.values()):
+                    continue
+                case = {"xml": xml, "qpos": qpos, "sensordata": floats(sensors_at(xml, qpos))}
+                if kind_a == kind_b == "box":
+                    m = mujoco.MjModel.from_xml_string(xml)
+                    d = mujoco.MjData(m)
+                    d.qpos[:] = qpos
+                    mujoco.mj_forward(m, d)
+                    case["exact_distance"] = box_box_distance(m, d)
+                out[f"{kind_a}_{kind_b}_{gap!r}_{side}"] = case
+    return out
+
+
+WITNESSLESS_PAIRS = [("ellipsoid", "ellipsoid"), ("cylinder", "cylinder"), ("box", "ellipsoid"),
+                     ("cylinder", "box"), ("ellipsoid", "mesh"), ("box", "mesh"), ("capsule", "cylinder")]
+
+
+def geom_distance_witnessless_cases():
+    """The first four poses of a seeded search where MuJoCo's sensor reads a
+    distance of 0 and no segment (the convex solver's exits without
+    witnesses): convex pairs but two boxes, B moved along a random direction
+    from 0.02 off A's centre to MuJoCo's touching (bisection on a reading
+    below 1e-12, 60 halvings), the poses either side of it and between."""
+    rng = np.random.default_rng(7)
+    out = {}
+    for trial in range(300):
+        kind_a, kind_b = WITNESSLESS_PAIRS[trial % len(WITNESSLESS_PAIRS)]
+        xml = route_xml(kind_a, kind_b)
+        pose = route_pose(rng, kind_a, kind_b, 0.0)
+        direction = unit(rng.normal(size=3))
+
+        def at(t):
+            qpos = list(pose)
+            qpos[7:10] = [float(x) for x in 0.02 * direction + t * direction]
+            return qpos
+        lo, hi = 0.0, CONVEX_REACH[kind_a] + CONVEX_REACH[kind_b] + 0.2
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if sensors_at(xml, at(mid))[0] < 1e-12:
+                lo = mid
+            else:
+                hi = mid
+        for t in (lo, hi, 0.5 * (lo + hi)):
+            sd = sensors_at(xml, at(t))
+            if sd[0] == 0 and all(x == 0 for x in sd[4:10]):
+                out[f"{kind_a}_{kind_b}_{trial}"] = {"xml": xml, "qpos": floats(at(t)), "sensordata": floats(sd)}
+                break
+        if len(out) == 4:
+            return out
+    sys.exit(f"geom_distance_witnessless: {len(out)} poses in 300 trials")
+
+
+def geom_distance_special_cases():
+    """Two spheres with coincident centres, turned apart (mjraw_SphereSphere's
+    normal is then the cross product of their z axes); a box and an
+    ellipsoid with coincident centres (MuJoCo's convex solver reads 0: its
+    GJK starts from the centres' difference); and two planes (no collision
+    function: the cutoff and zeros)."""
+    spheres = route_xml("sphere", "sphere")
+    qpos = [0.1, -0.2, 0.3] + list(unit([0.9, 0.1, 0.3, -0.2])) + [0.1, -0.2, 0.3] + list(unit([0.4, -0.5, 0.2, 0.6]))
+    concentric = route_xml("box", "ellipsoid")
+    qpos_c = [0.1, -0.2, 0.3] + list(unit([0.9, 0.1, 0.3, -0.2])) + [0.1, -0.2, 0.3] + list(unit([0.4, -0.5, 0.2, 0.6]))
+    sd_c = sensors_at(concentric, qpos_c)
+    if sd_c[0] != 0:
+        sys.exit(f"geom_distance_special concentric: {sd_c[0]}")
+    planes = ('<mujoco><worldbody><geom name="A" type="plane" size="1 1 0.1"/>'
+              '<geom name="B" type="plane" size="1 1 0.1" pos="0 0 0.5" quat="0.9 0.3 0 0"/></worldbody>'
+              '<sensor><distance geom1="A" geom2="B" cutoff="1"/><normal geom1="A" geom2="B" cutoff="1"/>'
+              '<fromto geom1="A" geom2="B" cutoff="1"/></sensor></mujoco>')
+    m = mujoco.MjModel.from_xml_string(planes)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    if list(d.sensordata) != [1.0] + [0.0] * 9:
+        sys.exit(f"geom_distance_special planes: {list(d.sensordata)}")
+    # Geoms with margins, which neither route reads: a box and an ellipsoid
+    # (mjc_ccd, given margin 0) and a sphere and a box (mjc_SphereBox, given
+    # the cutoff), each 0.03 apart and 0.03 into each other.
+    margins = {}
+    for kind_a, kind_b in (("box", "ellipsoid"), ("sphere", "box")):
+        xml = route_xml(kind_a, kind_b).replace("<geom ", '<geom margin="0.05" ')
+        for tag, gap in (("apart", 0.03), ("into", -0.03)):
+            x = CONVEX_REACH[kind_a] + CONVEX_REACH[kind_b]
+            qpos_x = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+            lo, hi = 0.0, x + 0.2
+            for _ in range(60):
+                mid = 0.5 * (lo + hi)
+                qpos_x[9] = mid
+                if sensors_at(xml, qpos_x)[0] < gap:
+                    lo = mid
+                else:
+                    hi = mid
+            qpos_x[9] = hi
+            sd = sensors_at(xml, qpos_x)
+            if abs(sd[0] - gap) > 1e-9:
+                sys.exit(f"geom_distance_special margins {kind_a}_{kind_b} {tag}: {sd[0]}")
+            margins[f"{kind_a}_{kind_b}_{tag}"] = {"xml": xml, "qpos": floats(qpos_x), "sensordata": floats(sd)}
+    # Unturned geoms at dyadic positions, so their contacts tie exactly or
+    # touch exactly: a cylinder's cap, a round and a flat ellipsoid exactly on
+    # a box (the convex solver's touching exits, whose distance is 0 without
+    # witnesses), a box 1/64 into a plane (four contacts at one distance),
+    # and a box 1/64 into a wider box face to face (two boxes' multi-contact,
+    # which the sensor does not ask for).
+    aligned = {}
+    for name, a, b, z in (
+            ("cylinder_touch", '<geom name="A" type="box" size="0.5 0.375 0.125" pos="0 0 -0.125"/>',
+             '<geom name="B" type="cylinder" size="0.0625 0.125"/>', 0.125),
+            ("round_ellipsoid_touch", '<geom name="A" type="box" size="0.5 0.375 0.125" pos="0 0 -0.125"/>',
+             '<geom name="B" type="ellipsoid" size="0.0625 0.0625 0.0625"/>', 0.0625),
+            ("flat_ellipsoid_touch", '<geom name="A" type="box" size="0.5 0.375 0.125" pos="0 0 -0.125"/>',
+             '<geom name="B" type="ellipsoid" size="0.25 0.125 0.0625"/>', 0.0625),
+            ("box_in_plane", '<geom name="A" type="plane" size="1 1 0.1"/>',
+             '<geom name="B" type="box" size="0.125 0.0625 0.0625"/>', 0.046875),
+            ("boxes_face_to_face", '<geom name="A" type="box" size="0.25 0.25 0.125"/>',
+             '<geom name="B" type="box" size="0.125 0.125 0.0625"/>', 0.171875)):
+        xml = (f'<mujoco><option><flag gravity="disable"/></option><worldbody>{a}'
+               f'<body name="b"><freejoint/>{b}</body></worldbody>{sensor_trios()}</mujoco>')
+        qpos_x = [0.0, 0.0, z, 1.0, 0.0, 0.0, 0.0]
+        aligned[name] = {"xml": xml, "qpos": floats(qpos_x), "sensordata": floats(sensors_at(xml, qpos_x))}
+    # A sphere 0.01 into a flat height field and 0.05 above it. MuJoCo
+    # refuses a sensor naming a height field (user_objects.cc:7519-7523), not
+    # one naming the world that holds it.
+    hfield = ('<mujoco><asset><hfield name="h" nrow="3" ncol="3" size="1 1 0.1 0.1" '
+              'elevation="0 0 0 0 0 0 0 0 0"/></asset><option><flag gravity="disable"/></option><worldbody>'
+              '<geom name="A" type="hfield" hfield="h"/><body name="b"><freejoint/>'
+              '<geom name="B" type="sphere" size="0.1"/></body></worldbody><sensor>'
+              '<distance body1="world" geom2="B" cutoff="1"/><normal body1="world" geom2="B" cutoff="1"/>'
+              '<fromto body1="world" geom2="B" cutoff="1"/><distance geom1="B" body2="world" cutoff="1"/>'
+              '<normal geom1="B" body2="world" cutoff="1"/><fromto geom1="B" body2="world" cutoff="1"/>'
+              '</sensor></mujoco>')
+    hfields = {}
+    for tag, z in (("into", 0.09), ("above", 0.15)):
+        qpos_x = [0.2, -0.1, z, 1.0, 0.0, 0.0, 0.0]
+        hfields[tag] = {"xml": hfield, "qpos": floats(qpos_x), "sensordata": floats(sensors_at(hfield, qpos_x))}
+    return {"coincident_spheres": {"xml": spheres, "qpos": floats(qpos), "sensordata": floats(sensors_at(spheres, qpos))},
+            "concentric_box_ellipsoid": {"xml": concentric, "qpos": floats(qpos_c), "sensordata": floats(sd_c)},
+            "planes": {"xml": planes, "sensordata": floats(d.sensordata)},
+            "margins": margins, "aligned": aligned, "witnessless": geom_distance_witnessless_cases(),
+            "hfield": hfields}
+
+
 # A three-axis ellipsoid 1 mm above the box slab, the slab's margin 0.01:
 # MuJoCo lists a contact at distance 1 mm from the start, its convex solver
 # reporting the separation within the margin. `contacts` is its list after
@@ -2156,6 +2401,9 @@ def main():
            "geom_distance_apart": finite_or_string(geom_distance_apart_cases()),
            "geom_distance_random": finite_or_string(geom_distance_random_cases()),
            "s3d_stale": finite_or_string(s3d_stale_cases()),
+           "geom_distance_routes": finite_or_string(geom_distance_route_cases()),
+           "geom_distance_near": finite_or_string(geom_distance_near_cases()),
+           "geom_distance_special": finite_or_string(geom_distance_special_cases()),
            "margin": finite_or_string(margin_case()),
            "convex_pairs": finite_or_string(convex_pair_cases()),
            "multiccd": finite_or_string(multiccd_cases()),
