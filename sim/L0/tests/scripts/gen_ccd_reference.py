@@ -93,7 +93,10 @@ and those meshes against each other: faces pressed together, an edge or a
 vertex against a face, within the face and edge tolerances or past them,
 with 4, 5, 8 or 50 contacts. `notch`: a box's corner pressed onto the slab's
 sliver, the box's face within the face tolerance of it, with four and eight
-contacts.
+contacts. `s3d`: a sphere or a capsule against an ellipsoid or a cylinder,
+overlapping, at the chunk 3e-3 review's poses where S3D's stale fourth
+weight changes mjc_Convex's contact (registry D-GJK-S3D), as mjc_Convex
+calls mjc_ccd; a sphere and an ellipsoid with the exact distance.
 
 It refuses a run whose cases miss a path the port must be checked on (each
 starting polytope, an EPA failure, multi-contact, the sphere and capsule
@@ -195,7 +198,7 @@ REVERSED_PAIRS = [("ellipsoid", "sphere"), ("mesh", "sphere"), ("ellipsoid", "ca
                   ("box", "sphere"), ("capsule", "box"), ("box", "capsule")]
 GROUPS = ("contact", "distance", "deep", "aligned", "reversed", "first_step", "probe", "cutoff",
           "multi", "census", "nan", "multi_mesh", "small", "large", "touch", "degenerate",
-          "long_epa", "overflow", "flush", "graph", "notch")
+          "long_epa", "overflow", "flush", "graph", "notch", "s3d")
 
 
 def gem8():
@@ -1201,6 +1204,74 @@ def notch_cases(meshes):
     return out
 
 
+# The chunk 3e-3 review's poses, from a random sweep of mjc_Convex run with
+# S3D's fourth weight kept and reset, where the two differ: (first type, size,
+# turn, second type, size, position, turn, margin), the first geom at the
+# origin, turns row-major.
+S3D_POSES = [
+    ('sphere', [0.19431643263362547], [-0.14066240579386236, 0.979904636996789, -0.1414248563318145, 0.8021439870650064, 0.19652516691946387, 0.5638642414471164, 0.5803267283278775, -0.03412859738501467, -0.8136683152420241],
+     'ellipsoid', [0.18137875349531246, 0.4007446788351061, 0.14571340680083741], [-0.18822418909450248, 0.1609455439820394, -0.12743465562536366], [0.009172830441457877, 0.6660796527733304, 0.7458242120922679, -0.08182457488085249, 0.743854314909841, -0.663314026035617, -0.9966045344705493, -0.054942282000031095, 0.06132493392877837], 0.0),
+    ('sphere', [0.3483822396013471], [0.27446136593595016, 0.7505871322110216, 0.6010739684662835, 0.6107379257078698, -0.6188807756081062, 0.49394915900804737, 0.7427450065201521, 0.23152870781383292, -0.6282708912144791],
+     'ellipsoid', [0.29794101115611127, 0.35113609179488564, 0.07609180867010275], [-0.3223250275083347, 0.1839395212355326, -0.09656603979586885], [-0.15018593003650826, 0.804793694111978, -0.5742397550994403, 0.9748650646090378, 0.023868123081255202, -0.22151392395376543, -0.16456698400312736, -0.5930745506411265, -0.7881499128706038], 0.02),
+    ('sphere', [0.36461681799750456], [0.37266141179267126, 0.6602625341288096, -0.6520558704486112, -0.888005703922441, 0.049751662438963895, -0.45713306802917864, -0.26938697437311887, 0.7493851867433478, 0.6048574211562049],
+     'ellipsoid', [0.11500982658916105, 0.34519283135196294, 0.3434037362703882], [0.13250514923939288, -0.14909811572557063, -0.4067405963349228], [0.6942382796698352, -0.7052462975373064, 0.14373889818343855, 0.37694208855724076, 0.18612960429051734, -0.9073425110071504, 0.6131458822459571, 0.6840931444010944, 0.3950553086192495], 0.02),
+    ('sphere', [0.3804227362795654], [-0.8387991360871244, 0.3215243910876274, 0.4393609851081727, -0.5429631073662189, -0.4345947989822558, -0.7185530076040265, -0.04008831923033576, -0.841278447740879, 0.5391136244132433],
+     'ellipsoid', [0.27380710526333246, 0.23438394712150545, 0.41910560783592204], [0.31492508732437496, -0.22010214450048385, -0.06911072294721943], [-0.24712225018995182, 0.40407940347762034, 0.8807101845364487, 0.30955981873491717, -0.8283489408788393, 0.4669162138646619, 0.9182065737544358, 0.3880178705035065, 0.07961670731739645], 0.02),
+    ('sphere', [0.4271688823992272], [0.18094888154167785, -0.9802930235745597, -0.07926594602894721, -0.4054428895845415, -0.14778223971629548, 0.902095600759572, -0.8960321230592982, -0.13109537579748382, -0.42419386710602425],
+     'ellipsoid', [0.42714460776966034, 0.40132354579129037, 0.46742434580403197], [0.34145331418173536, 0.3972985745213519, -0.1167410027943267], [-0.03229074797136894, -0.4637933130793133, 0.8853547708903835, -0.32779623869768654, -0.831907100772121, -0.44775015531049606, 0.9441964485694165, -0.3046741512301923, -0.1251668010339127], 0.02),
+    ('sphere', [0.058287239655370936], [0.3447734057825807, -0.7573889240014136, 0.5545207989472175, -0.3606815138811969, 0.438502304706172, 0.8231795516846511, -0.8666257232562667, -0.48381581884778846, -0.12199225066862272],
+     'ellipsoid', [0.4126756042842923, 0.4170383748048545, 0.22510650431108464], [0.2780364801837688, -0.3122662538041742, -0.022046996541299074], [0.3729861126837072, 0.921864656506072, 0.10510430452668695, -0.844024874346228, 0.3841585569546099, -0.3742248182622121, -0.38536135150003137, 0.05087001281200473, 0.9213625076844486], 0.02),
+    ('capsule', [0.32278816092237844, 0.05579297750806402], [0.4245235177295487, 0.42864546262823816, 0.7975229465430782, 0.18499198876245254, -0.9033171260441537, 0.3870350551165145, 0.8863169562793225, -0.01677012711801734, -0.4627753405792096],
+     'ellipsoid', [0.45994680136291566, 0.23350642375677305, 0.2673899847201243], [-0.49174881412297, 0.215281667622043, -0.039071822591319694], [-0.6287069224387408, 0.7769540884937132, 0.03271009095846322, 0.08127588451077133, 0.023818843558727487, 0.9964069917902609, 0.7733833695358333, 0.6291065148799755, -0.078122702596444], 0.0),
+    ('capsule', [0.3146805989155094, 0.37078012772969576], [-0.8095957985432566, 0.08170627190514514, -0.5812733677990672, 0.05447724877114697, -0.9755321232743206, -0.21300071790072173, -0.5844543372646266, -0.2041106601607539, 0.7853355754461324],
+     'cylinder', [0.3388141940927644, 0.48194367674319916], [-0.5440039770816825, -0.5526569472950295, 0.5391841799757686], [0.44905842809762453, -0.40150374777951225, 0.7982112932510395, 0.5877854536687582, -0.5400853578763118, -0.6023421508271098, 0.672944862979058, 0.7396638065544525, -0.006531819308192244], 0.0),
+]
+
+
+def point_ellipsoid(p, radii):
+    """The signed distance from `p` to the ellipsoid of semi-axes `radii`
+    (negative inside) and the outward unit normal at the nearest surface
+    point: the root t of sum((r_i y_i / (t + r_i^2))^2) = 1 (y = |p|) by
+    bisection to the last bit."""
+    p = np.asarray(p, float)
+    y, r = np.abs(p), np.asarray(radii, float)
+    outside = float(np.sum((y / r) ** 2)) > 1.0
+    lo, hi = -float(np.min(r)) ** 2, (float(np.linalg.norm(r * y)) if outside else 0.0)
+    while True:
+        mid = 0.5 * (lo + hi)
+        if mid in (lo, hi):
+            break
+        if float(np.sum((r * y / (mid + r * r)) ** 2)) > 1.0:
+            lo = mid
+        else:
+            hi = mid
+    q = r * r * y / (mid + r * r) * np.where(p < 0, -1.0, 1.0)
+    n = q / (r * r)
+    dist = float(np.linalg.norm(p - q))
+    return (dist if outside else -dist), n / np.linalg.norm(n)
+
+
+def s3d_cases():
+    """Registry D-GJK-S3D in a contact: a sphere or a capsule against an
+    ellipsoid or a cylinder, overlapping, at S3D_POSES, called as mjc_Convex
+    calls mjc_ccd (the pair's margin on both, one contact, no cutoff). A
+    sphere and an ellipsoid also hold `exact_dist`, the sphere centre's
+    signed distance from the ellipsoid less the radius and the margin (each
+    geom is inflated by half of it)."""
+    out = {}
+    for k, (k1, s1, m1, k2, s2, p2, m2, margin) in enumerate(S3D_POSES):
+        case = call([k1, k2], [s1, s2], [None, None], [([0.0, 0.0, 0.0], m1), (p2, m2)], margin,
+                    config(1, 0.0))
+        if case["out"]["nx"] != 1 or not case["out"]["dist"] < 0:
+            sys.exit(f"s3d {k1}_{k2}_{k}: {case['out']}")
+        if (k1, k2) == ("sphere", "ellipsoid"):
+            mat = np.array(m2).reshape(3, 3)
+            sd, _ = point_ellipsoid(mat.T @ -np.array(p2), s2)
+            case["exact_dist"] = sd - s1[0] - margin
+        out[f"{k1}_{k2}_{k}"] = case
+    return out
+
+
 def coverage(cases, graph):
     """Refuse a golden that misses a path the port must be checked on."""
     outs = [c["out"] for c in cases]
@@ -1297,6 +1368,7 @@ def main():
                 "overflow": overflow_cases(), "flush": flush_cases(),
                 "graph": graph_cases(doc["graph_meshes"]),
                 "notch": notch_cases(doc["graph_meshes"])})
+    doc["s3d"] = s3d_cases()
     cases = [c for k in GROUPS for c in doc[k].values()]
     hist = coverage(cases, doc["graph_meshes"])
     os.makedirs(sys.argv[1], exist_ok=True)

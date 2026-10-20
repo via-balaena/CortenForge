@@ -397,6 +397,50 @@ fn mjc_ccd_matches_mujoco_bitwise() {
     );
 }
 
+/// Registry `D-GJK-S3D` in a contact: the golden's `s3d` cases, a sphere or
+/// a capsule against an ellipsoid or a cylinder, overlapping, as `mjc_Convex`
+/// calls `mjc_ccd`. With `S3D`'s fourth weight as MuJoCo keeps it each case
+/// is MuJoCo's to the bit; with ours reset none is. On a sphere and an
+/// ellipsoid ours is within 1e-7 of the exact distance (the generator's
+/// `exact_dist`, from the sphere centre's signed distance to the
+/// ellipsoid), where MuJoCo's parts from it by more than 5e-7. Measured:
+/// ours 3.0e-8 at most; MuJoCo's 5.8e-7 to 3.1e-6.
+#[test]
+fn s3d_reset_changes_contacts_toward_the_exact_distance() {
+    let doc = golden();
+    let meshes = Meshes::of(&doc);
+    let cases = doc["s3d"].as_object().expect("the s3d cases");
+    let mut exact_checked = 0;
+    for (name, case) in cases {
+        let want = &case["out"];
+        let kept = run(case, &meshes, true, Polygons::Mujocos);
+        assert_eq!(
+            first_difference(&kept, want),
+            None,
+            "{name}: MuJoCo's weight"
+        );
+        let ours = run(case, &meshes, false, Polygons::Mujocos);
+        assert!(
+            first_difference(&ours, want).is_some(),
+            "{name}: ours is MuJoCo's"
+        );
+        if let Some(exact) = case["exact_dist"].as_f64() {
+            let theirs = number(&want["dist"]);
+            assert!(
+                (theirs - exact).abs() > 5e-7,
+                "{name}: MuJoCo's {theirs}, exact {exact}"
+            );
+            assert!(
+                (ours.dist - exact).abs() < 1e-7,
+                "{name}: ours {}, exact {exact}",
+                ours.dist
+            );
+            exact_checked += 1;
+        }
+    }
+    assert!(exact_checked > 0, "no case with an exact distance");
+}
+
 /// The cases on `graph_meshes` need MuJoCo's hull graph: on our hull's
 /// graph (with MuJoCo's polygons and its `S3D` weight) the golden holds
 /// cases that are not MuJoCo's to the bit, where a hill climb ends on
