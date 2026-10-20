@@ -166,8 +166,8 @@ fn measure_contact_force(
 /// DT-180: Mesh sphere on plane produces correct contact force and normal.
 ///
 /// Verifies the (Plane, Mesh) geom ordering — plane is geom1, mesh is geom2.
-/// The `(prim_type, Mesh)` branch in `collide_with_mesh` negates the normal
-/// returned by `collide_mesh_plane`. With the fix (normal = -plane_normal),
+/// With the plane first, `collide_with_mesh` negates the normal returned by
+/// `collide_mesh_plane`. With the fix (normal = -plane_normal),
 /// negation produces +plane_normal = +Z. Correct.
 #[test]
 fn dt180_mesh_contact_force_plane_mesh_order() {
@@ -228,17 +228,9 @@ fn dt180_mesh_contact_force_plane_mesh_order() {
     }
 }
 
-/// DT-180: Mesh sphere on plane with (Mesh, Plane) geom ordering.
-///
-/// The `(Mesh, prim_type)` branch in `collide_with_mesh` does NOT negate the normal.
-/// With the fix (normal = -plane_normal = -Z), the contact normal passed to
-/// `make_contact_from_geoms` is -Z. The Contact convention is "normal from geom1
-/// toward geom2", so geom1=Mesh, geom2=Plane → normal should point downward (-Z)
-/// from mesh toward plane. The solver interprets this correctly as a support force.
-///
-/// We verify by placing the mesh geom before the plane geom in the MJCF, which
-/// gives the mesh a lower geom index. The broadphase sorts pairs by (smaller, larger)
-/// index, so if mesh=0 and plane=1, we get (Mesh, Plane) ordering.
+/// DT-180: Mesh sphere on plane, the mesh's body first in the MJCF. sim-mjcf
+/// numbers the world's geoms first, so the plane is still geom 0, and the pair
+/// collides plane first (MuJoCo's type order) as in the test above.
 #[test]
 fn dt180_mesh_contact_force_mesh_plane_order() {
     let radius: f64 = 0.5;
@@ -249,8 +241,6 @@ fn dt180_mesh_contact_force_mesh_plane_order() {
 
     let (verts, faces) = icosphere_mjcf_strings(radius, 1);
 
-    // Mesh body first (geom index 0), plane second (geom index 1)
-    // This gives (Mesh, Plane) ordering in collision dispatch.
     let mjcf = format!(
         r#"<mujoco>
   <option gravity="0 0 -{gravity}" timestep="0.002"/>
@@ -283,8 +273,6 @@ fn dt180_mesh_contact_force_mesh_plane_order() {
         "Mesh contact force should be within 5% of weight: force={avg_force:.4}, weight={mesh_weight:.4}, ratio={force_ratio:.6}"
     );
 
-    // In (Mesh, Plane) ordering, contact normal points from mesh toward plane = -Z.
-    // This is correct — the solver uses it as a support constraint.
     assert!(
         !last_contacts.is_empty(),
         "Should have at least one contact at steady state"

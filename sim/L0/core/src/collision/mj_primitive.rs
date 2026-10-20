@@ -58,28 +58,28 @@ impl Frame<'_> {
 }
 
 /// `mju_dot3`.
-fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+pub(super) fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// `mji_sub3`.
-fn sub3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
+pub(super) fn sub3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// `mji_add3`.
-fn add3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
+pub(super) fn add3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// `mji_scl3`.
-fn scl3(v: &[f64; 3], s: f64) -> [f64; 3] {
+pub(super) fn scl3(v: &[f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
 /// `mju_normalize3`: `v` made unit, or (1, 0, 0) where its norm is below
 /// mjMINVAL; its norm before.
-fn normalize3(v: &mut [f64; 3]) -> f64 {
+pub(super) fn normalize3(v: &mut [f64; 3]) -> f64 {
     let norm = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if norm < MJ_MINVAL {
         *v = [1.0, 0.0, 0.0];
@@ -741,10 +741,10 @@ pub(super) fn raw_capsule_box(
 }
 
 /// MuJoCo's maximum contacts per geom pair, `mjMAXCONPAIR` (`mjmodel.h:30`).
-const MAX_CONPAIR: usize = 50;
+pub(super) const MAX_CONPAIR: usize = 50;
 
 /// A 3×3 matrix row-major, as MuJoCo stores one.
-type Mat9 = [f64; 9];
+pub(super) type Mat9 = [f64; 9];
 
 impl Frame<'_> {
     /// The turn as MuJoCo's row-major `geom_xmat`.
@@ -755,12 +755,12 @@ impl Frame<'_> {
 }
 
 /// `mju_mulMatVec3`.
-fn mat_vec(m: &Mat9, v: &[f64; 3]) -> [f64; 3] {
+pub(super) fn mat_vec(m: &Mat9, v: &[f64; 3]) -> [f64; 3] {
     std::array::from_fn(|r| m[3 * r] * v[0] + m[3 * r + 1] * v[1] + m[3 * r + 2] * v[2])
 }
 
 /// `mju_mulMatTVec3`.
-fn mat_t_vec(m: &Mat9, v: &[f64; 3]) -> [f64; 3] {
+pub(super) fn mat_t_vec(m: &Mat9, v: &[f64; 3]) -> [f64; 3] {
     std::array::from_fn(|c| m[c] * v[0] + m[3 + c] * v[1] + m[6 + c] * v[2])
 }
 
@@ -781,7 +781,7 @@ fn mat_mat_t(a: &Mat9, b: &Mat9) -> Mat9 {
 }
 
 /// `mju_transpose` of a 3×3 matrix.
-fn transpose(m: &Mat9) -> Mat9 {
+pub(super) fn transpose(m: &Mat9) -> Mat9 {
     std::array::from_fn(|i| m[3 * (i % 3) + i / 3])
 }
 

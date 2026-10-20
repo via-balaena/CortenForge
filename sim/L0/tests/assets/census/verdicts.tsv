@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1032
+# agree_floor 1035
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -363,7 +363,7 @@
 39584eefa9ea2e0d	agree
 39ba3f1f2bc7645a	mj-refuses
 3a07f107b943ab4d	agree
-3a13c90a262a82ab	e1:t0:con_dist
+3a13c90a262a82ab	agree
 3a1e78e0e6a31111	agree
 3a282add3ebb7ed3	agree
 3a36709226ba29e0	agree
@@ -445,7 +445,7 @@
 454201bfc3c446d5	agree
 45708941412f6679	agree
 45995f1dd089c384	mj-refuses
-45d3e0eca0bd3461	e1:t0:con_pos
+45d3e0eca0bd3461	e1:state@6
 45ddb7e29abb9d59	agree
 45e5bfb7a427dc83	mj-refuses
 46053abbf5a9797f	agree
@@ -660,7 +660,7 @@
 633ea937ce5676f9	agree
 6342adaf75be64c3	model:geom_quat;dyn:agree
 6343fad7d79d7b23	model:geom_quat;dyn:agree
-6369216c6a77046c	e1:t0:con_dist
+6369216c6a77046c	agree
 636fc5d54faed8c4	model:body_I;dyn:e1:t0:qM
 638e4c2b2c7e7c4c	agree
 6473b191de530dcc	agree
@@ -858,7 +858,7 @@
 8775cd363c47205b	agree
 8778072ab02467e0	agree
 878a4e11cd364c21	agree
-87d99b20e8f75e3b	e1:state@30
+87d99b20e8f75e3b	agree
 88276f87c385573b	agree
 884499f54edd8412	agree
 88481999e8020574	agree

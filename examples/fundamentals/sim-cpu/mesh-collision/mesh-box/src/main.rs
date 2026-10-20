@@ -1,8 +1,9 @@
-//! Mesh-Box — GJK/EPA Mesh Collision
+//! Mesh-Box — Face Clipping with MULTICCD
 //!
-//! A box (0.15 x 0.1 x 0.05 half-sizes) dropped onto a mesh ground slab.
-//! Demonstrates `mesh_box_contact()` via GJK/EPA. The box lands flat and
-//! settles at z = half_z = 0.05.
+//! A box (0.15 x 0.1 x 0.05 half-sizes) dropped onto a mesh ground slab. The
+//! pair collides through `mjc_convex()`, MuJoCo's native convex collision;
+//! under MULTICCD one pass clips the touching faces for up to four contacts.
+//! The box lands flat and settles at z = half_z = 0.05.
 //!
 //! Run with: `cargo run -p example-mesh-collision-box --release`
 
@@ -67,7 +68,7 @@ const MJCF: &str = r#"
 
 fn main() {
     println!("=== CortenForge: Mesh-Box ===");
-    println!("  Box (0.15×0.1×0.05) on mesh ground slab (GJK/EPA path)");
+    println!("  Box (0.15×0.1×0.05) on mesh ground slab (convex collision, MULTICCD)");
     println!("  Expected rest height: z ≈ {REST_HEIGHT:.3}");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 

@@ -1,4 +1,5 @@
-//! Integration tests for mesh-cylinder and mesh-ellipsoid GJK/EPA dispatch.
+//! Integration tests for mesh-cylinder and mesh-ellipsoid collision, which
+//! goes through `mjc_convex` (MuJoCo's native convex collision).
 //!
 //! Verifies that cylinder and ellipsoid geoms collide correctly with mesh
 //! geoms in full MJCF-based simulation (settling under gravity).
@@ -103,8 +104,8 @@ fn settle_and_measure(
 /// Expected rest height: center at z = half_length = 0.2.
 /// Contact force ≈ weight.
 ///
-/// With cylinder MULTICCD face enumeration (8 cap rim points), the flat cap
-/// produces multiple contacts providing rotational stability.
+/// Under MULTICCD, `mjc_convex`'s four extra passes, the geoms turned by
+/// ±1e-3 rad, add up to four contacts to the first.
 #[test]
 fn mesh_cylinder_settling() {
     let half_length: f64 = 0.2;

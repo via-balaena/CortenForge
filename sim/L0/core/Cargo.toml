@@ -26,7 +26,7 @@ nalgebra = { workspace = true }
 # Derive macros for solver / collision error enums
 thiserror = { workspace = true }
 # Lightweight logging facade for `mj_warning` + auto-reset error /
-# RK4-step2 / mesh-collision fallback warn sites. No tracing-subscriber
+# RK4-step2 / EPA (`collision/mj_ccd.rs`) warn sites. No tracing-subscriber
 # is installed workspace-wide, so the `tracing` crate's structured-
 # spans surface was paying full transitive cost (tracing +
 # tracing-attributes + tracing-core) for output that already goes to
@@ -47,8 +47,9 @@ rayon = { workspace = true, optional = true }
 approx = { workspace = true }
 # Random input generation for collision and solver stress tests
 rand = { workspace = true }
-# JSON fixtures and golden files for integration tests
-serde_json = { workspace = true }
+# JSON fixtures and golden files for tests. `float_roundtrip` parses each
+# number to the f64 Python wrote, which a bit-for-bit golden needs.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 # criterion benches live in the sibling `sim-core-benches` crate
 # (L0 plan §4.2: keeps criterion + plotters out of sim-core's dev-graph).

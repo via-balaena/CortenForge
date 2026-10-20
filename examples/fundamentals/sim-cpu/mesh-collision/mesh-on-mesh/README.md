@@ -1,8 +1,9 @@
-# Mesh-on-Mesh — Hull-Hull GJK/EPA
+# Mesh-on-Mesh — Two Convex Hulls
 
 A mesh wedge (triangular prism) dropped onto a mesh platform (box slab). Both
-objects are `type="mesh"` — no primitives involved. Demonstrates hull-hull
-GJK/EPA collision where both colliders are convex hulls computed at load time.
+objects are `type="mesh"` — no primitives involved. The pair collides through
+`mjc_convex()`, MuJoCo's native convex collision, each mesh as the convex hull
+of its vertices.
 
 ## What you see
 
@@ -10,14 +11,16 @@ GJK/EPA collision where both colliders are convex hulls computed at load time.
 - Both the wedge and platform are defined with inline vertex/face data
 - The platform sits on a grey ground plane
 - The wedge drops from above, settles on its flat base, and stays stable
-- MULTICCD provides multi-point contact for face-face stability
+- MULTICCD clips the touching faces for up to four contacts
 
 ## Physics
 
-Both meshes must have >= 4 non-coplanar vertices for `compute_convex_hull()` to
-succeed. The platform (8 vertices) and wedge (6 vertices) both satisfy this.
-At load time, convex hulls are built from the vertex data. At collision time,
-GJK finds the closest features and EPA refines the penetration depth.
+At load time each mesh's convex hull is computed (`compute_convex_hull()`
+needs at least 4 non-coplanar vertices; a mesh without a hull is searched
+vertex by vertex). At collision time GJK tests the two hulls for overlap and
+EPA finds its depth; under MULTICCD, with no margin on either mesh, one pass
+of MuJoCo's multi-contact clips the touching faces and keeps up to four
+contacts.
 
 The wedge is centered at its volumetric centroid so body position = center of
 mass. The centroid-to-base distance is h/3 = 0.25/3 = 0.0833 m.
@@ -32,7 +35,7 @@ mass. The centroid-to-base distance is h/3 = 0.25/3 = 0.0833 m.
 | Density | 1000 kg/m^3 |
 | Integrator | RK4, dt = 1 ms |
 | MULTICCD | enabled |
-| Narrow-phase | `gjk_epa_shape_pair()` (hull-hull) |
+| Narrow-phase | `mjc_convex()` |
 
 ## Validation
 

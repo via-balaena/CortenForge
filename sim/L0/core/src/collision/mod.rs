@@ -15,6 +15,7 @@ pub(crate) mod flex_self;
 pub(crate) mod hfield;
 pub(crate) mod mesh_collide;
 mod midphase;
+mod mj_ccd;
 mod mj_primitive;
 pub(crate) mod narrow;
 mod order;
@@ -23,6 +24,19 @@ pub(crate) mod pair_cylinder;
 mod pairs;
 pub(crate) mod plane;
 pub(crate) mod sdf_collide;
+
+pub(crate) use mj_ccd::geom_distance_ccd;
+
+/// A geom's rotation as nalgebra's `UnitQuaternion::from_matrix`, or `None`
+/// where the matrix holds a NaN or an infinity, on which that conversion
+/// never returns.
+pub(crate) fn finite_rotation(
+    mat: &nalgebra::Matrix3<f64>,
+) -> Option<nalgebra::UnitQuaternion<f64>> {
+    mat.iter()
+        .all(|x| x.is_finite())
+        .then(|| nalgebra::UnitQuaternion::from_matrix(mat))
+}
 
 // Note: collide_geoms, geom_to_shape, make_contact_flex_rigid, and
 // narrowphase_sphere_geom are accessed internally via self::narrow::,
@@ -672,8 +686,7 @@ fn collide_geom_pair(
             data.ncon += 1;
         }
     } else {
-        // Midphase BVH culling is active for mesh pairs and gated by
-        // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
+        // The narrow phase does not read DISABLE_MIDPHASE.
         let contacts = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
         for mut contact in contacts {
             places.push(lister.broadphase(model, &mut contact, (geom1, geom2)));
@@ -1175,8 +1188,13 @@ mod contact_param_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod spec_d_tests {
+    use super::flex_narrow::narrowphase_sphere_geom;
+    use super::hfield::collide_hfield_multi;
     use super::narrow::collide_geoms;
+    use super::sdf_collide::collide_with_sdf;
+    use crate::heightfield::HeightFieldData;
     use crate::mesh::TriangleMeshData;
+    use crate::sdf::{PhysicsShape, SdfGrid, ShapeConvex};
     use crate::types::{ENABLE_MULTICCD, GeomType, Model};
     use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
     use std::sync::Arc;
@@ -1259,31 +1277,7 @@ mod spec_d_tests {
         );
     }
 
-    /// T10: AC10 — DISABLE_NATIVECCD does not crash, solver works
-    #[test]
-    fn test_disable_nativeccd_no_crash() {
-        let mut model = make_model(
-            GeomType::Cylinder,
-            Vector3::new(0.3, 0.5, 0.0),
-            GeomType::Cylinder,
-            Vector3::new(0.3, 0.5, 0.0),
-        );
-        // Set DISABLE_NATIVECCD flag
-        model.disableflags |= 1 << 17;
-
-        // Overlapping cylinders
-        let pos1 = Vector3::new(0.0, 0.0, 0.0);
-        let pos2 = Vector3::new(0.3, 0.0, 0.0);
-        let mat = Matrix3::identity();
-
-        let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
-        assert!(
-            !contacts.is_empty(),
-            "DISABLE_NATIVECCD should not prevent contacts"
-        );
-    }
-
-    /// T13: Edge case — zero margin, GJK/EPA path
+    /// T13: Edge case — zero margin, through `mjc_convex`
     #[test]
     fn test_zero_margin_gjk_epa_path() {
         let model = make_model(
@@ -1313,7 +1307,7 @@ mod spec_d_tests {
             GeomType::Cylinder,
             Vector3::new(0.3, 0.5, 0.0),
         );
-        // Overlapping cylinders (GJK/EPA path)
+        // Overlapping cylinders (through `mjc_convex`)
         let pos1 = Vector3::new(0.0, 0.0, 0.0);
         let pos2 = Vector3::new(0.3, 0.0, 0.0);
         let mat = Matrix3::identity();
@@ -1419,13 +1413,12 @@ mod spec_d_tests {
         let mat = Matrix3::identity();
 
         let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
-        // Curved surfaces: perturbed directions should find the same contact region
-        // or very close contacts that get deduplicated
+        // `mjc_convex` makes no extra MULTICCD pass for an ellipsoid
         assert!(!contacts.is_empty(), "should produce at least one contact");
     }
 
     // ========================================================================
-    // Mesh–Cylinder GJK/EPA dispatch tests
+    // Mesh–Cylinder dispatch tests (through `mjc_convex`)
     // ========================================================================
 
     /// Ground slab half-thickness. The slab mesh is centered at origin with
@@ -1473,10 +1466,12 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
-        // Contact normal should point roughly +Z (from mesh toward cylinder)
+        // MuJoCo lists the cylinder first (the lower geom type), its normal
+        // toward the mesh below: -Z.
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            c.normal.z > 0.9,
-            "normal should point +Z, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
             c.normal
         );
         // Penetration ~0.02
@@ -1507,47 +1502,38 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
-        // Contact normal should point roughly +Z
+        // From the cylinder, listed first, toward the mesh: -Z.
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            c.normal.z > 0.9,
-            "normal should point +Z, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
             c.normal
         );
     }
 
-    /// T5: Cylinder vs mesh — capsule regression.
-    /// With correct cylinder: center at z=0.18, bottom cap at z=-0.02 → penetrates slab.
-    /// With capsule approx: center at z=0.18, hemisphere bottom at z=-0.02
-    /// (half_length=0.2, but hemisphere extends radius=0.1 further).
-    /// Actually capsule bottom = z - half_length - radius = 0.18 - 0.2 - 0.1 = -0.12.
-    /// Both would detect contact at this position.
-    ///
-    /// The key regression test: place cylinder center at z = half_length = 0.2
-    /// (cap exactly at z=0 = slab top). Cylinder: barely touching → depth ~SLAB_HZ.
-    /// Capsule: hemisphere center at z=0, hemisphere extends to z=-0.1 → much deeper.
-    /// We verify depth is small (~SLAB_HZ), not large (~0.1).
+    /// T5: Cylinder vs mesh — capsule regression. The cylinder's flat cap
+    /// 0.01 into the slab's top: a cylinder is 0.01 deep, a capsule of the
+    /// same half-length would be 0.11 (its hemisphere reaches 0.1 further).
     #[test]
     fn test_mesh_cylinder_not_capsule_regression() {
         let mesh = ground_slab_mesh();
         let model = mesh_cylinder_model(mesh, 0.2, 0.1);
 
         let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
-        // Cylinder center at z=0.2: bottom flat cap at z=0 (just at slab top)
-        let pos_cyl = Vector3::new(0.0, 0.0, 0.2);
+        // Cylinder center at z=0.19: bottom flat cap at z=-0.01
+        let pos_cyl = Vector3::new(0.0, 0.0, 0.19);
         let mat = Matrix3::identity();
 
         let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_cyl, mat, 0.0);
         assert!(
             !contacts.is_empty(),
-            "cylinder at z=0.2 should contact slab"
+            "cylinder at z=0.19 should contact slab"
         );
 
         let c = &contacts[0];
-        // With correct cylinder: cap at z=0, slab top at z=0, depth = SLAB_HZ (~0.01)
-        // With capsule: hemisphere bottom at z=0.2-0.2-0.1=-0.1, depth would be ~0.11
         assert!(
-            c.depth < 0.05,
-            "depth should be small (~{SLAB_HZ}) not large (~0.1 from capsule approx), got {}",
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small (~0.01) not large (~0.11 from capsule approx), got {}",
             c.depth
         );
     }
@@ -1591,9 +1577,11 @@ mod spec_d_tests {
         );
     }
 
-    /// T9: No convex hull — graceful fallback (empty contacts, no panic).
+    /// T9: No convex hull — MuJoCo's support without a graph searches every
+    /// vertex (`mjc_meshSupport`), so the slab of eight vertices still
+    /// collides: one contact, from the cylinder toward the mesh.
     #[test]
-    fn test_mesh_cylinder_no_hull_graceful() {
+    fn test_mesh_cylinder_no_hull_searches_the_vertices() {
         // Create mesh WITHOUT computing convex hull
         let vertices = vec![
             Point3::new(-1.0, -1.0, -0.01),
@@ -1631,17 +1619,24 @@ mod spec_d_tests {
         let pos2 = Vector3::new(0.0, 0.0, 0.18);
         let mat = Matrix3::identity();
 
-        // Should return empty contacts, not panic
         let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
+        assert_eq!(contacts.len(), 1, "one contact from the vertex set");
+        let c = &contacts[0];
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            contacts.is_empty(),
-            "no hull → no contacts, got {}",
-            contacts.len()
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
+            c.normal
+        );
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive (~0.02), got {}",
+            c.depth
         );
     }
 
     // ========================================================================
-    // Mesh–Ellipsoid GJK/EPA dispatch tests
+    // Mesh–Ellipsoid dispatch tests (through `mjc_convex`)
     // ========================================================================
 
     /// Helper: set up a (Mesh, Ellipsoid) model.
@@ -1672,10 +1667,11 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
-        // Normal should point +Z (from mesh toward ellipsoid)
+        // From the ellipsoid, listed first, toward the mesh: -Z.
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            c.normal.z > 0.9,
-            "normal should point +Z, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
             c.normal
         );
         // Penetration ~0.02
@@ -1704,9 +1700,10 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            c.normal.z > 0.9,
-            "normal should point +Z, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
             c.normal
         );
         assert!(
@@ -1716,11 +1713,9 @@ mod spec_d_tests {
         );
     }
 
-    /// T6: Ellipsoid vs mesh — sphere regression.
-    /// Oblate ellipsoid (radii [0.3, 0.3, 0.05]) with center at z = 0.05
-    /// (bottom at z=0 = slab top). Old sphere approx used max_r=0.3, so
-    /// the "sphere" bottom would be at z = 0.05 - 0.3 = -0.25 → depth ~0.26.
-    /// Correct ellipsoid: bottom at z = 0.05 - 0.05 = 0.0 → depth ~SLAB_HZ.
+    /// T6: Ellipsoid vs mesh — sphere regression. An oblate ellipsoid (radii
+    /// [0.3, 0.3, 0.05]) with its bottom 0.01 into the slab's top: 0.01
+    /// deep, where a sphere of the largest radius would be 0.26.
     #[test]
     fn test_mesh_ellipsoid_not_sphere_regression() {
         let mesh = ground_slab_mesh();
@@ -1728,23 +1723,42 @@ mod spec_d_tests {
         let model = mesh_ellipsoid_model(mesh, radii);
 
         let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
-        // Center at z=0.05: correct bottom at z=0 (just at slab top)
-        let pos_ell = Vector3::new(0.0, 0.0, 0.05);
+        // Center at z=0.04: bottom at z=-0.01
+        let pos_ell = Vector3::new(0.0, 0.0, 0.04);
         let mat = Matrix3::identity();
 
         let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_ell, mat, 0.0);
         assert!(
             !contacts.is_empty(),
-            "ellipsoid at z=0.05 should contact slab"
+            "ellipsoid at z=0.04 should contact slab"
         );
 
         let c = &contacts[0];
-        // With correct ellipsoid: depth ~SLAB_HZ (~0.01)
-        // With sphere approx (r=0.3): depth ~0.26
         assert!(
-            c.depth < 0.05,
-            "depth should be small (~{SLAB_HZ}) not large (~0.26 from sphere approx), got {}",
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small (~0.01) not large (~0.26 from sphere approx), got {}",
             c.depth
+        );
+    }
+
+    /// MuJoCo's convex collision lists a contact only where the geoms
+    /// penetrate (`dist < 0`, `engine_collision_convex.c:804`): a cylinder's
+    /// cap and an ellipsoid's bottom exactly on the slab's top give none.
+    #[test]
+    fn convex_contact_at_exact_touch_is_absent() {
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        let mat = Matrix3::identity();
+        let cylinder = mesh_cylinder_model(ground_slab_mesh(), 0.2, 0.1);
+        let touching = Vector3::new(0.0, 0.0, 0.2);
+        assert!(
+            collide_geoms(&cylinder, 0, 1, pos_mesh, mat, touching, mat, 0.0).is_empty(),
+            "a cylinder's cap on the slab"
+        );
+        let ellipsoid = mesh_ellipsoid_model(ground_slab_mesh(), Vector3::new(0.3, 0.3, 0.05));
+        let touching = Vector3::new(0.0, 0.0, 0.05);
+        assert!(
+            collide_geoms(&ellipsoid, 0, 1, pos_mesh, mat, touching, mat, 0.0).is_empty(),
+            "an ellipsoid's bottom on the slab"
         );
     }
 
@@ -1780,5 +1794,127 @@ mod spec_d_tests {
             "depth should be small positive, got {}",
             c.depth
         );
+    }
+
+    /// A box, and a mesh with polygons, resting on a mesh whose polygons were
+    /// never merged (no `compute_convex_hull`) under MULTICCD, the unmerged
+    /// mesh the second object of the pair and then the first: the
+    /// multi-contact has no faces to clip, so each pair takes one contact per
+    /// pass: the first, and those MULTICCD's four turned passes add (all four
+    /// for the box, three for the mesh).
+    #[test]
+    fn a_mesh_without_polygons_under_multiccd() {
+        let slab = box_mesh(1.0, 1.0, SLAB_HZ);
+        let unmerged = Arc::new(TriangleMeshData::from_faces(
+            slab.vertices().to_vec(),
+            slab.triangles().to_vec(),
+        ));
+        assert!(
+            unmerged.polygons().paths.is_empty(),
+            "precondition: no polygons"
+        );
+        let pos_slab = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        let pos_upper = Vector3::new(0.0, 0.0, 0.099);
+        let mat = Matrix3::identity();
+        for (upper, upper_mesh, count) in [
+            (GeomType::Box, None, 5),
+            (GeomType::Mesh, Some(box_mesh(0.1, 0.1, 0.1)), 4),
+        ] {
+            let mut model = make_model(
+                GeomType::Mesh,
+                Vector3::zeros(),
+                upper,
+                Vector3::new(0.1, 0.1, 0.1),
+            );
+            model.enableflags |= ENABLE_MULTICCD;
+            model.geom_mesh = vec![Some(0), upper_mesh.as_ref().map(|_| 1)];
+            model.mesh_data = std::iter::once(Arc::clone(&unmerged))
+                .chain(upper_mesh)
+                .collect();
+            let contacts = collide_geoms(&model, 0, 1, pos_slab, mat, pos_upper, mat, 0.0);
+            assert_eq!(contacts.len(), count, "{upper:?}: one contact per pass");
+            for c in &contacts {
+                assert!(
+                    (c.depth - 0.001).abs() < 1e-9,
+                    "{upper:?}: depth {}",
+                    c.depth
+                );
+            }
+        }
+    }
+
+    /// A geom turned by a matrix holding a NaN or an infinity collides as
+    /// nothing at every site that turned it into a quaternion (nalgebra's
+    /// `from_matrix`, which iterates without a cap): a mesh on a plane, a
+    /// sphere on a height field or a signed distance field, and a flex
+    /// vertex against a mesh, a height field or a signed distance field,
+    /// each geom's matrix bad in turn. Each call returns.
+    #[test]
+    fn a_non_finite_turn_collides_as_nothing() {
+        let n = 5;
+        let hfield = Arc::new(HeightFieldData::new(vec![0.5; n * n], n, n, 1.0));
+        let sdf: Arc<dyn PhysicsShape> = Arc::new(ShapeConvex::new(Arc::new(SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            16,
+            1.0,
+        ))));
+        let ok = Matrix3::identity();
+        for bad in [f64::NAN, f64::INFINITY] {
+            let mut turned = Matrix3::identity();
+            turned[(0, 1)] = bad;
+
+            let mut plane_mesh = make_model(
+                GeomType::Plane,
+                Vector3::new(5.0, 5.0, 0.1),
+                GeomType::Mesh,
+                Vector3::zeros(),
+            );
+            plane_mesh.geom_mesh = vec![None, Some(0)];
+            plane_mesh.mesh_data = vec![box_mesh(0.1, 0.1, 0.1)];
+            let mut hfield_sphere = make_model(
+                GeomType::Hfield,
+                Vector3::zeros(),
+                GeomType::Sphere,
+                Vector3::new(0.3, 0.0, 0.0),
+            );
+            hfield_sphere.hfield_data = vec![Arc::clone(&hfield)];
+            hfield_sphere.hfield_size = vec![[2.0, 2.0, 1.0, 1.0]];
+            hfield_sphere.geom_hfield = vec![Some(0), None];
+            let mut sdf_sphere = make_model(
+                GeomType::Sdf,
+                Vector3::zeros(),
+                GeomType::Sphere,
+                Vector3::new(0.3, 0.0, 0.0),
+            );
+            sdf_sphere.shape_data = vec![Arc::clone(&sdf)];
+            sdf_sphere.geom_shape = vec![Some(0), None];
+
+            let near = Vector3::new(0.0, 0.0, 0.7);
+            for (m1, m2) in [(turned, ok), (ok, turned)] {
+                assert!(
+                    collide_geoms(&plane_mesh, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
+                        .is_empty(),
+                    "plane and mesh, {bad}"
+                );
+                assert!(
+                    collide_hfield_multi(&hfield_sphere, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
+                        .is_empty(),
+                    "height field and sphere, {bad}"
+                );
+                assert!(
+                    collide_with_sdf(&sdf_sphere, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
+                        .is_empty(),
+                    "signed distance field and sphere, {bad}"
+                );
+            }
+            for (model, g) in [(&plane_mesh, 1), (&hfield_sphere, 0), (&sdf_sphere, 0)] {
+                assert!(
+                    narrowphase_sphere_geom(near, 0.5, g, model, Vector3::zeros(), turned)
+                        .is_none(),
+                    "flex vertex against geom {g}, {bad}"
+                );
+            }
+        }
     }
 }

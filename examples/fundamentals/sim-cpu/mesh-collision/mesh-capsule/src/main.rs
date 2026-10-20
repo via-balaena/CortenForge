@@ -1,8 +1,9 @@
-//! Mesh-Capsule — BVH-Accelerated Mesh Collision
+//! Mesh-Capsule — Barrel on a Mesh
 //!
-//! A capsule lying on its side (axis along Y) on a mesh ground slab.
-//! Demonstrates `mesh_capsule_contact()` with BVH triangle acceleration.
-//! The curved barrel surface rests against the mesh triangles at z = radius = 0.1.
+//! A capsule lying on its side (axis along Y) on a mesh ground slab. The pair
+//! collides through `mjc_convex()`, MuJoCo's native convex collision, against
+//! the convex hull of the slab's vertices. The curved barrel rests on the slab
+//! near z = radius = 0.1.
 //!
 //! Run with: `cargo run -p example-mesh-collision-capsule --release`
 

@@ -82,9 +82,13 @@ Two-mechanism architecture:
 - Narrow phase via `collide_geoms`
 - `apply_pair_overrides` applies per-pair condim/friction/solref/solimp
 
-Narrow phase dispatches analytically for common pairs (sphere-sphere,
-sphere-capsule, box-box, etc., as MuJoCo's) and falls back to GJK/EPA for
-remaining convex pairs. Mesh collisions use BVH-accelerated triangle tests.
+Narrow phase gives each pair but a height field's or a signed distance field's, and a mesh or an ellipsoid on a plane, the function MuJoCo's collision table gives it:
+the primitive pairs (sphere-sphere, sphere-capsule, box-box, etc.) and the
+plane pairs functions of their own; an ellipsoid or a mesh against a sphere,
+capsule, ellipsoid, cylinder, box or mesh, and a cylinder against a capsule,
+cylinder or box, MuJoCo's native convex collision (`mjc_Convex`: GJK, EPA and
+its multi-contact; `collision/mj_ccd.rs`). A mesh collides as the convex hull
+of its vertices; against a plane it takes sim-core's own `collide_mesh_plane`.
 
 Output: contact list with position, normal, penetration depth, and geom IDs.
 

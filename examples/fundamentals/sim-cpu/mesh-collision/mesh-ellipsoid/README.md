@@ -1,14 +1,11 @@
-# Mesh-Ellipsoid — GJK/EPA Exact Support (Branch Highlight)
+# Mesh-Ellipsoid — Exact Ellipsoid Support
 
 An oblate ellipsoid (disc-shaped, like a hockey puck) sitting on a mesh ground
-slab. This example exposes the bug that GJK/EPA exact support functions fixed.
+slab. The pair collides through `mjc_convex()`, MuJoCo's native convex
+collision, with the ellipsoid's exact support function.
 
-**Before this branch:** mesh-ellipsoid collision approximated the ellipsoid as a
-sphere using the maximum radius (0.3). The disc would rest at z=0.3 — a 6x
-error for an oblate shape with rz=0.05.
-
-**After this branch:** exact GJK/EPA support functions use the true ellipsoid
-surface. The disc rests at the correct z = rz = 0.05.
+A sphere of the largest radius (0.3) would rest at z=0.3 — six times too high
+for an oblate shape with rz=0.05. The disc rests at z = rz = 0.05.
 
 ## What you see
 
@@ -27,7 +24,7 @@ surface. The disc rests at the correct z = rz = 0.05.
 | Ground mesh | 8 vertices, 12 faces (2x2x2 box) |
 | Density | 1000 kg/m^3 |
 | Integrator | RK4, dt = 1 ms |
-| Narrow-phase | `gjk_epa_shape_pair()` |
+| Narrow-phase | `mjc_convex()` |
 
 **The key number:** rest height z=0.05, not z=0.3. If validation reports
 z > 0.1, the sphere approximation bug has regressed.

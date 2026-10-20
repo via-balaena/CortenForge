@@ -1,8 +1,8 @@
 //! GeomDist + GeomNormal + GeomFromTo Sensors
 //!
-//! A box on a spring-loaded slide joint oscillates near a fixed sphere.
-//! Uses box-sphere pairing to exercise the GJK narrowphase (sphere-sphere
-//! would use the analytic fast path, bypassing GJK entirely).
+//! A box on a spring-loaded slide joint oscillates near a fixed sphere. The
+//! sensors route the pair as MuJoCo's `mj_geomDistance` does: to the
+//! sphere-box collision function, with the cutoff as its margin.
 //!
 //! All three distance sensors use `cutoff="10"` to avoid the cutoff=0 edge case.
 //!
@@ -81,7 +81,7 @@ const MJCF: &str = r#"
 
 fn main() {
     println!("=== CortenForge: GeomDist + GeomNormal + GeomFromTo ===");
-    println!("  Box on spring oscillates near fixed sphere (GJK path)");
+    println!("  Box on spring oscillates near fixed sphere (sphere-box route)");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()

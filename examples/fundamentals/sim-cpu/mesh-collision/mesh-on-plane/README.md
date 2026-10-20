@@ -17,7 +17,7 @@ volumetric centroid so that body position = center of mass. The base face
 (vertices 0,1,2) sits at z = -0.204 in the local frame.
 
 The narrow-phase path is `collide_mesh_plane()` — the mesh dispatcher
-recognizes the plane geom and iterates over mesh triangles to find contact
+recognizes the plane geom and scans the mesh's vertices to find contact
 points below the plane surface.
 
 | Parameter | Value |

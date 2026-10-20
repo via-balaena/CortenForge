@@ -1,9 +1,10 @@
-//! Mesh-Ellipsoid — GJK/EPA Exact Support Function
+//! Mesh-Ellipsoid — Exact Ellipsoid Support
 //!
 //! An oblate ellipsoid (disc-shaped, like a puck) sitting on a mesh ground slab.
-//! Previously approximated as a sphere (using max radius), which gave a rest
-//! height of z=0.3 — a 6x error. With exact GJK/EPA support functions, the
-//! ellipsoid rests at the correct z = rz = 0.05.
+//! The pair collides through `mjc_convex()`, MuJoCo's native convex collision,
+//! with the ellipsoid's exact support function. A sphere of the largest radius
+//! would rest at z=0.3, six times too high; the ellipsoid rests at
+//! z = rz = 0.05.
 //!
 //! Run with: `cargo run -p example-mesh-collision-ellipsoid --release`
 
@@ -66,7 +67,7 @@ const MJCF: &str = r#"
 
 fn main() {
     println!("=== CortenForge: Mesh-Ellipsoid ===");
-    println!("  Oblate ellipsoid (0.3×0.3×0.05) on mesh ground slab (GJK/EPA)");
+    println!("  Oblate ellipsoid (0.3×0.3×0.05) on mesh ground slab (convex collision)");
     println!("  Expected rest height: z ≈ {REST_HEIGHT:.3} (not 0.3 — sphere approx bug)");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 

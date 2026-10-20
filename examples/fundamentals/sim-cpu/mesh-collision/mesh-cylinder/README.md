@@ -1,15 +1,11 @@
-# Mesh-Cylinder — GJK/EPA Flat-Cap Fix (Branch Highlight)
+# Mesh-Cylinder — Flat Cap on a Mesh
 
-An upright cylinder on a mesh ground slab. This is the "money shot" for the
-GJK/EPA cylinder fix landed on this branch.
+An upright cylinder on a mesh ground slab. The pair collides through
+`mjc_convex()`, MuJoCo's native convex collision, with the cylinder's exact
+support function: flat caps, not a capsule's rounded ends.
 
-**Before this branch:** mesh-cylinder collision used a capsule approximation —
-the cylinder's flat caps were treated as rounded hemispheres, giving wrong
-contact geometry and unstable resting behavior.
-
-**After this branch:** exact GJK/EPA support functions for cylinders. MULTICCD
-generates 8 rim contact points around the flat cap edge, providing full
-rotational stability for flat-on-flat contact.
+Under MULTICCD, `mjc_convex()` makes four more passes with the geoms turned
+by ±1e-3 rad about the first contact's tangents, for up to five contacts.
 
 ## What you see
 
@@ -29,8 +25,8 @@ rotational stability for flat-on-flat contact.
 | Ground mesh | 8 vertices, 12 faces (2x2x2 box) |
 | Density | 1000 kg/m^3 |
 | Integrator | RK4, dt = 1 ms |
-| MULTICCD | enabled (8 rim contacts) |
-| Narrow-phase | `gjk_epa_shape_pair()` |
+| MULTICCD | enabled (up to 5 contacts) |
+| Narrow-phase | `mjc_convex()` |
 
 ## Validation
 

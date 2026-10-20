@@ -1,9 +1,9 @@
-//! Mesh-Cylinder — GJK/EPA with MULTICCD
+//! Mesh-Cylinder — Flat Cap on a Mesh
 //!
-//! An upright cylinder on a mesh ground slab. This is the "money shot" for the
-//! GJK/EPA cylinder fix landed on this branch. Before, mesh-cylinder used a
-//! capsule approximation (rounded caps). Now it uses exact GJK/EPA, and MULTICCD
-//! provides 8 rim contact points on the flat cap for stable flat-on-flat contact.
+//! An upright cylinder on a mesh ground slab. The pair collides through
+//! `mjc_convex()`, MuJoCo's native convex collision, with the cylinder's exact
+//! support function (flat caps, not a capsule's rounded ends). Under MULTICCD
+//! four more passes, the geoms turned by ±1e-3 rad, give up to five contacts.
 //!
 //! The cylinder drops, settles, and stays perfectly upright — no wobble, no drift.
 //!
@@ -71,7 +71,7 @@ const MJCF: &str = r#"
 fn main() {
     println!("=== CortenForge: Mesh-Cylinder ===");
     println!("  Cylinder (r=0.1, half_len=0.2) upright on mesh ground slab");
-    println!("  GJK/EPA + MULTICCD for flat-cap stability");
+    println!("  Convex collision + MULTICCD (up to 5 contacts)");
     println!("  Expected rest height: z ≈ {REST_HEIGHT:.3}");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 

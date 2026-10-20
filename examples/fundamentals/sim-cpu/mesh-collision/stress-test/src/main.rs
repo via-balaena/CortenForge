@@ -237,12 +237,12 @@ fn check_mesh_sphere() -> (u32, u32) {
 
 // ============================================================================
 // Group C: Mesh-Box (checks 6-7)
-// Now uses GJK/EPA on mesh convex hull (same path as cylinder/ellipsoid).
-// MULTICCD required for flat box face on flat mesh face stability.
+// Through `mjc_convex` on the mesh's convex hull, as every mesh pair but the
+// plane. MULTICCD on: one pass clips the touching faces, up to 4 contacts.
 // ============================================================================
 
 fn check_mesh_box() -> (u32, u32) {
-    println!("\n--- C: Mesh-Box (GJK/EPA + MULTICCD) ---");
+    println!("\n--- C: Mesh-Box (MULTICCD) ---");
 
     let half_z: f64 = 0.05;
     let gravity: f64 = 9.81;
@@ -302,9 +302,10 @@ fn check_mesh_box() -> (u32, u32) {
 fn check_mesh_capsule() -> (u32, u32) {
     println!("\n--- D: Mesh-Capsule ---");
 
-    // Sideways capsule: axis along Y, rest height = radius.
-    // Barrel-on-mesh contact is ~4.5mm less precise than endpoint contact
-    // (curved surface vs flat triangle approximation), so we use 5mm tolerance.
+    // Sideways capsule: axis along Y, rest height = radius. It ends 4.4 mm
+    // below that (z = 0.0956 after the 3000 steps), on one contact, as
+    // MuJoCo 3.5.0's does from this scene (0.09558), so the tolerance is
+    // 5 mm.
     let radius: f64 = 0.1;
     let gravity: f64 = 9.81;
     let (gnd_v, gnd_f) = box_mesh_verts_faces(1.0, 1.0, 1.0);
@@ -394,7 +395,7 @@ fn check_mesh_cylinder() -> (u32, u32) {
 
     total += 1;
     if check(
-        "10. Rest height (GJK/EPA)",
+        "10. Rest height",
         (z - half_length).abs() < 0.003,
         &format!("z={z:.4}, expect≈{half_length}"),
     ) {
@@ -455,7 +456,7 @@ fn check_mesh_ellipsoid() -> (u32, u32) {
 
     total += 1;
     if check(
-        "13. Rest height (GJK/EPA)",
+        "13. Rest height",
         (z - rz).abs() < 0.003,
         &format!("z={z:.4}, expect≈{rz}"),
     ) {
@@ -485,9 +486,9 @@ fn check_mesh_ellipsoid() -> (u32, u32) {
 
 // ============================================================================
 // Group G: Mesh-Mesh (checks 16-18)
-// MULTICCD required: hull-hull GJK/EPA returns a single contact point, which
-// is insufficient for face-face stacking. MULTICCD generates multiple points
-// along flat faces, just like it does for cylinder caps.
+// MULTICCD on: a mesh against a mesh gets up to 4 contacts from one pass that
+// clips the touching faces (a cylinder gets its extra contacts from turned
+// passes instead); without it, one contact.
 // ============================================================================
 
 fn check_mesh_mesh() -> (u32, u32) {
@@ -603,9 +604,10 @@ fn check_edge_cases() -> (u32, u32) {
         }
     }
 
-    // Check 20: Single-triangle mesh vs sphere (BVH path, no hull needed)
+    // Check 20: Single-triangle mesh vs sphere (no hull)
     {
-        // 3 vertices, 1 face — below the 4-point hull minimum, but BVH path works
+        // 3 vertices, 1 face — below the 4-point hull minimum, so the convex
+        // collision searches the three vertices: the flat triangle collides
         let tri_v = "-0.5 -0.5 0.0  0.5 -0.5 0.0  0.0 0.5 0.0";
         let tri_f = "0 1 2";
 
@@ -637,20 +639,22 @@ fn check_edge_cases() -> (u32, u32) {
         if check(
             "20. Single-tri mesh vs sphere",
             ncon >= 1,
-            &format!("ncon={ncon} (BVH path, no hull required)"),
+            &format!("ncon={ncon} (no hull: searched vertex by vertex)"),
         ) {
             pass += 1;
         }
     }
 
-    // Check 21: Swapped geom order — sphere before mesh in worldbody
+    // Check 21: the sphere's body written before the mesh geom in the MJCF
     // Should produce same rest height as mesh-sphere (check 4)
     {
         let radius: f64 = 0.1;
         let (gnd_v, gnd_f) = box_mesh_verts_faces(1.0, 1.0, 1.0);
 
-        // Sphere geom is on the worldbody (geom1), mesh body is second (geom2).
-        // This tests the (Primitive, Mesh) dispatch path with normal negation.
+        // sim-mjcf numbers the worldbody's geoms first, so the mesh is geom 0
+        // here as in check 4; and a convex pair collides in MuJoCo's order
+        // (the lower body's geom first, then the lower geom type) whatever
+        // order it arrives in.
         let mjcf = format!(
             r#"<mujoco>
   <option gravity="0 0 -{gravity}" timestep="0.001" integrator="RK4"/>

@@ -1,127 +1,17 @@
-//! Mesh collision dispatch — routes mesh-geom pairs to the standalone mesh library.
+//! Mesh–plane collision: the mesh pairs MuJoCo's table does not give
+//! `mjc_Convex` (the others collide through [`mj_ccd`](super::mj_ccd)).
 
-use super::narrow::{GEOM_EPSILON, make_contact_from_geoms, multiccd_contacts};
-use crate::gjk_epa::{gjk_distance, gjk_epa_contact};
-use crate::mesh::{
-    MeshContact, TriangleMeshData, mesh_capsule_contact, mesh_mesh_deepest_contact,
-    mesh_sphere_contact,
-};
-use crate::types::{
-    Contact, DISABLE_MIDPHASE, ENABLE_MULTICCD, GeomType, Model, disabled, enabled,
-};
-use cf_geometry::Shape;
-use log::warn;
-use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
+use super::finite_rotation;
+use super::narrow::make_contact_from_geoms;
+use crate::mesh::{MeshContact, TriangleMeshData};
+use crate::types::{Contact, GeomType, Model};
+use nalgebra::{Matrix3, Point3, Vector3};
 use sim_types::Pose;
 
-/// GJK/EPA collision between two convex shapes with MULTICCD and margin support.
-///
-/// Arguments must be in geom-order: shape1/pose1 correspond to geom1,
-/// shape2/pose2 correspond to geom2. This ensures the GJK normal convention
-/// ("from A toward B" = from geom1 toward geom2) is correct without
-/// manual negation.
-///
-/// Returns `Contact`(s) directly — no `MeshContact` intermediate.
-// Pair dispatcher takes the full per-geom collision context (model handle, geom indices, poses, sizes, friction, output sink); bundling would just move the long argument list one level up.
+/// A mesh against a plane, either first: up to three contacts
+/// ([`collide_mesh_plane`]), each normal from `geom1` toward `geom2`.
+// Pair dispatcher takes the full per-geom collision context (poses, output sink); bundling would just move the argument list one level up.
 #[allow(clippy::too_many_arguments)]
-fn gjk_epa_shape_pair(
-    model: &Model,
-    shape1: &Shape,
-    pose1: &Pose,
-    shape2: &Shape,
-    pose2: &Pose,
-    geom1: usize,
-    geom2: usize,
-    margin: f64,
-) -> Vec<Contact> {
-    if let Some(gjk) = gjk_epa_contact(
-        shape1,
-        pose1,
-        shape2,
-        pose2,
-        model.ccd_iterations,
-        model.ccd_tolerance,
-    ) {
-        // MULTICCD: generate multiple contacts for flat surfaces
-        if enabled(model, ENABLE_MULTICCD) {
-            let multi = multiccd_contacts(
-                shape1,
-                pose1,
-                shape2,
-                pose2,
-                &gjk,
-                model.ccd_iterations,
-                model.ccd_tolerance,
-            );
-            return multi
-                .into_iter()
-                .map(|c| {
-                    make_contact_from_geoms(
-                        model,
-                        c.point.coords,
-                        c.normal,
-                        c.penetration,
-                        geom1,
-                        geom2,
-                        margin,
-                    )
-                })
-                .collect();
-        }
-
-        return vec![make_contact_from_geoms(
-            model,
-            gjk.point.coords,
-            gjk.normal,
-            gjk.penetration,
-            geom1,
-            geom2,
-            margin,
-        )];
-    } else if margin > 0.0 {
-        // Margin-zone contact: shapes don't overlap but are within margin distance
-        if let Some(dist) = gjk_distance(
-            shape1,
-            pose1,
-            shape2,
-            pose2,
-            model.ccd_iterations,
-            model.ccd_tolerance,
-        ) && dist.distance < margin
-        {
-            let depth = -dist.distance;
-            let diff = dist.witness_b - dist.witness_a;
-            let diff_norm = diff.norm();
-            let normal = if diff_norm > GEOM_EPSILON {
-                diff / diff_norm
-            } else {
-                Vector3::z()
-            };
-            let midpoint = nalgebra::center(&dist.witness_a, &dist.witness_b);
-            return vec![make_contact_from_geoms(
-                model,
-                midpoint.coords,
-                normal,
-                depth,
-                geom1,
-                geom2,
-                margin,
-            )];
-        }
-    }
-
-    vec![]
-}
-
-/// Collision detection involving at least one mesh geometry.
-///
-/// Dispatches to specialized mesh-primitive or mesh-mesh implementations.
-/// Cylinder and ellipsoid pairs use GJK/EPA on the mesh's convex hull.
-/// Sphere, capsule, and box pairs use dedicated triangle-level functions.
-// Pair dispatcher takes the full per-geom collision context (poses, sizes, output sink); bundling would just move the argument list one level up.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
-#[allow(clippy::unreachable)] // exhaustiveness guards; mesh/sdf/hfield pairs dispatched before reaching this code
 pub fn collide_with_mesh(
     model: &Model,
     geom1: usize,
@@ -132,249 +22,38 @@ pub fn collide_with_mesh(
     mat2: Matrix3<f64>,
     margin: f64, // DT-175: thread margin into mesh collision helpers
 ) -> Vec<Contact> {
-    let type1 = model.geom_type[geom1];
-    let type2 = model.geom_type[geom2];
-    let size1 = model.geom_size[geom1];
-    let size2 = model.geom_size[geom2];
-
-    // Decide once whether to use BVH midphase (§41 DISABLE_MIDPHASE)
-    let use_bvh = !disabled(model, DISABLE_MIDPHASE);
-
-    // Build poses (expensive quaternion conversion, but needed for mesh collision)
-    let quat1 = UnitQuaternion::from_matrix(&mat1);
-    let quat2 = UnitQuaternion::from_matrix(&mat2);
-    let pose1 = Pose::from_position_rotation(Point3::from(pos1), quat1);
-    let pose2 = Pose::from_position_rotation(Point3::from(pos2), quat2);
-
-    let mesh_contact: Option<MeshContact> = match (type1, type2) {
-        // Mesh-Mesh
-        (GeomType::Mesh, GeomType::Mesh) => {
-            let Some(mesh1_id) = model.geom_mesh[geom1] else {
-                return vec![];
-            };
-            let Some(mesh2_id) = model.geom_mesh[geom2] else {
-                return vec![];
-            };
-            let mesh1 = &model.mesh_data[mesh1_id];
-            let mesh2 = &model.mesh_data[mesh2_id];
-
-            // If both meshes have convex hulls, use GJK/EPA on hulls
-            // (MuJoCo-conformant path). Early return: hull path produces
-            // Contact directly, bypassing the MeshContact→Contact conversion.
-            if let (Some(hull1), Some(hull2)) = (mesh1.convex_hull(), mesh2.convex_hull()) {
-                let shape1 = Shape::convex_mesh(hull1.clone());
-                let shape2 = Shape::convex_mesh(hull2.clone());
-                return gjk_epa_shape_pair(
-                    model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
-                );
-            }
-
-            // Fallback to per-triangle BVH if either mesh lacks hull.
-            mesh_mesh_deepest_contact(mesh1, &pose1, mesh2, &pose2, use_bvh)
-        }
-
-        // Mesh (geom1) vs Primitive (geom2)
-        (GeomType::Mesh, prim_type) => {
-            let Some(mesh_id) = model.geom_mesh[geom1] else {
-                return vec![];
-            };
-            let mesh = &model.mesh_data[mesh_id];
-
-            match prim_type {
-                GeomType::Sphere => {
-                    mesh_sphere_contact(mesh, &pose1, pose2.position, size2.x, use_bvh)
-                }
-                GeomType::Capsule => {
-                    let half_len = size2.y;
-                    let axis = pose2.rotation * Vector3::z();
-                    let start = pose2.position - axis * half_len;
-                    let end = pose2.position + axis * half_len;
-                    mesh_capsule_contact(mesh, &pose1, start, end, size2.x, use_bvh)
-                }
-                GeomType::Cylinder => {
-                    // Exact cylinder collision via GJK/EPA on mesh convex hull
-                    if let Some(hull) = mesh.convex_hull() {
-                        let shape1 = Shape::convex_mesh(hull.clone());
-                        let shape2 = Shape::Cylinder {
-                            half_length: size2.y,
-                            radius: size2.x,
-                        };
-                        return gjk_epa_shape_pair(
-                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
-                        );
-                    }
-                    warn!("mesh-cylinder collision requires convex hull; returning no contacts");
-                    return vec![];
-                }
-                GeomType::Box => {
-                    // Exact box collision via GJK/EPA on mesh convex hull
-                    if let Some(hull) = mesh.convex_hull() {
-                        let shape1 = Shape::convex_mesh(hull.clone());
-                        let shape2 = Shape::Box {
-                            half_extents: size2,
-                        };
-                        return gjk_epa_shape_pair(
-                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
-                        );
-                    }
-                    warn!("mesh-box collision requires convex hull; returning no contacts");
-                    return vec![];
-                }
-                GeomType::Ellipsoid => {
-                    // Exact ellipsoid collision via GJK/EPA on mesh convex hull
-                    if let Some(hull) = mesh.convex_hull() {
-                        let shape1 = Shape::convex_mesh(hull.clone());
-                        let shape2 = Shape::Ellipsoid { radii: size2 };
-                        return gjk_epa_shape_pair(
-                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
-                        );
-                    }
-                    warn!("mesh-ellipsoid collision requires convex hull; returning no contacts");
-                    return vec![];
-                }
-                GeomType::Plane => {
-                    // Plane normal is local Z-axis — multi-contact (up to 3)
-                    let plane_normal = mat2.column(2).into_owned();
-                    let plane_d = plane_normal.dot(&pos2);
-                    let mesh_contacts =
-                        collide_mesh_plane(mesh, &pose1, plane_normal, plane_d, margin);
-                    return mesh_contacts
-                        .into_iter()
-                        .map(|mc| {
-                            make_contact_from_geoms(
-                                model,
-                                mc.point.coords,
-                                mc.normal,
-                                mc.penetration,
-                                geom1,
-                                geom2,
-                                margin,
-                            )
-                        })
-                        .collect();
-                }
-                GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
-                // Hfield pairs routed before mesh dispatch (narrow.rs S1 ordering fix)
-                GeomType::Hfield => return vec![],
-                GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
-            }
-        }
-
-        // Primitive (geom1) vs Mesh (geom2) - swap and negate normal
-        (prim_type, GeomType::Mesh) => {
-            let Some(mesh_id) = model.geom_mesh[geom2] else {
-                return vec![];
-            };
-            let mesh = &model.mesh_data[mesh_id];
-
-            let contact = match prim_type {
-                GeomType::Sphere => {
-                    mesh_sphere_contact(mesh, &pose2, pose1.position, size1.x, use_bvh)
-                }
-                GeomType::Capsule => {
-                    let half_len = size1.y;
-                    let axis = pose1.rotation * Vector3::z();
-                    let start = pose1.position - axis * half_len;
-                    let end = pose1.position + axis * half_len;
-                    mesh_capsule_contact(mesh, &pose2, start, end, size1.x, use_bvh)
-                }
-                GeomType::Cylinder => {
-                    // Exact cylinder collision via GJK/EPA on mesh convex hull.
-                    // Arguments in geom-order: shape1=cylinder (geom1), shape2=hull (geom2).
-                    if let Some(hull) = mesh.convex_hull() {
-                        let shape1 = Shape::Cylinder {
-                            half_length: size1.y,
-                            radius: size1.x,
-                        };
-                        let shape2 = Shape::convex_mesh(hull.clone());
-                        return gjk_epa_shape_pair(
-                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
-                        );
-                    }
-                    warn!("mesh-cylinder collision requires convex hull; returning no contacts");
-                    return vec![];
-                }
-                GeomType::Box => {
-                    // Exact box collision via GJK/EPA on mesh convex hull.
-                    // Arguments in geom-order: shape1=box (geom1), shape2=hull (geom2).
-                    if let Some(hull) = mesh.convex_hull() {
-                        let shape1 = Shape::Box {
-                            half_extents: size1,
-                        };
-                        let shape2 = Shape::convex_mesh(hull.clone());
-                        return gjk_epa_shape_pair(
-                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
-                        );
-                    }
-                    warn!("mesh-box collision requires convex hull; returning no contacts");
-                    return vec![];
-                }
-                GeomType::Ellipsoid => {
-                    // Exact ellipsoid collision via GJK/EPA on mesh convex hull.
-                    // Arguments in geom-order: shape1=ellipsoid (geom1), shape2=hull (geom2).
-                    if let Some(hull) = mesh.convex_hull() {
-                        let shape1 = Shape::Ellipsoid { radii: size1 };
-                        let shape2 = Shape::convex_mesh(hull.clone());
-                        return gjk_epa_shape_pair(
-                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
-                        );
-                    }
-                    warn!("mesh-ellipsoid collision requires convex hull; returning no contacts");
-                    return vec![];
-                }
-                GeomType::Plane => {
-                    // Multi-contact (up to 3) — negate normals for swapped order
-                    let plane_normal = mat1.column(2).into_owned();
-                    let plane_d = plane_normal.dot(&pos1);
-                    let mesh_contacts =
-                        collide_mesh_plane(mesh, &pose2, plane_normal, plane_d, margin);
-                    return mesh_contacts
-                        .into_iter()
-                        .map(|mut mc| {
-                            mc.normal = -mc.normal;
-                            make_contact_from_geoms(
-                                model,
-                                mc.point.coords,
-                                mc.normal,
-                                mc.penetration,
-                                geom1,
-                                geom2,
-                                margin,
-                            )
-                        })
-                        .collect();
-                }
-                GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
-                // Hfield pairs routed before mesh dispatch (narrow.rs S1 ordering fix)
-                GeomType::Hfield => return vec![],
-                GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
-            };
-
-            // Negate normal since we swapped the order (mesh was geom2, but contact
-            // normal points from mesh outward - we need it pointing from geom1 to geom2)
-            contact.map(|mut c| {
-                c.normal = -c.normal;
-                c
-            })
-        }
-
-        _ => unreachable!("collide_with_mesh called but neither geom is a mesh"),
+    // The mesh, its pose, the plane's normal and offset, and whether the
+    // normal (from the mesh outward) turns round for the listed order.
+    let (mesh_geom, mesh_pos, mesh_mat, plane_pos, plane_mat, flip) =
+        match (model.geom_type[geom1], model.geom_type[geom2]) {
+            (GeomType::Mesh, GeomType::Plane) => (geom1, pos1, mat1, pos2, mat2, false),
+            (GeomType::Plane, GeomType::Mesh) => (geom2, pos2, mat2, pos1, mat1, true),
+            _ => return vec![],
+        };
+    let Some(mesh_id) = model.geom_mesh[mesh_geom] else {
+        return vec![];
     };
-
-    // Convert MeshContact to Contact
-    mesh_contact
+    let mesh: &TriangleMeshData = &model.mesh_data[mesh_id];
+    let Some(mesh_quat) = finite_rotation(&mesh_mat) else {
+        return vec![];
+    };
+    let mesh_pose = Pose::from_position_rotation(Point3::from(mesh_pos), mesh_quat);
+    let plane_normal = plane_mat.column(2).into_owned();
+    let plane_d = plane_normal.dot(&plane_pos);
+    collide_mesh_plane(mesh, &mesh_pose, plane_normal, plane_d, margin)
+        .into_iter()
         .map(|mc| {
+            let normal = if flip { -mc.normal } else { mc.normal };
             make_contact_from_geoms(
                 model,
                 mc.point.coords,
-                mc.normal,
+                normal,
                 mc.penetration,
                 geom1,
                 geom2,
                 margin,
             )
         })
-        .into_iter()
         .collect()
 }
 
@@ -397,8 +76,7 @@ pub fn collide_with_mesh(
 ///      the authored origin (ledger L176)
 /// 3. Return 1–3 contacts with individual depths.
 ///
-/// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`), consistent with
-/// all other mesh collision functions.
+/// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`).
 ///
 /// # Parameters
 /// - `margin`: collision margin — vertices with `depth > -margin` are candidates

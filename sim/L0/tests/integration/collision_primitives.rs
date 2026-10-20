@@ -1,7 +1,8 @@
 //! Primitive-primitive collision tests — analytical collision pairs.
 //!
-//! This module validates collision detection between primitive geometry pairs
-//! that have analytical (closed-form) solutions, avoiding GJK/EPA.
+//! This module validates collision detection between primitive geometry pairs:
+//! those with analytical (closed-form) solutions, and cylinder-capsule, which
+//! MuJoCo collides through `mjc_Convex` (GJK and EPA).
 //!
 //!
 //! # ⛔ Every collidable body here carries a joint, deliberately
@@ -44,7 +45,7 @@
 //! | Capsule-Box | Segment-box distance | Complex |
 //! | Box-Box | MuJoCo's `mjc_BoxBox` (face and edge axes) | Edge-edge cases |
 //! | Cylinder-Sphere | Side/cap/rim | Analytical |
-//! | Cylinder-Capsule | Axis-axis distance | Analytical |
+//! | Cylinder-Capsule | MuJoCo's `mjc_Convex` (GJK, EPA) | Not analytical |
 
 use sim_core::{GeomType, SdfGrid, ShapeSphere};
 use sim_mjcf::load_model;
@@ -1138,22 +1139,47 @@ fn cylinder_capsule_perpendicular() {
     // Cylinder at origin, axis Z, radius 0.3, half-length 0.5
     // Capsule at (0.45, 0, 0), axis X (after 90° Y rotation), radius 0.2, half-length 0.4
     //
-    // Capsule spine: (0.05, 0, 0) to (0.85, 0, 0)
-    // Cylinder axis: Z line at (0, 0, z)
-    //
-    // The closest approach is from (0, 0, 0) on cylinder axis to (0.05, 0, 0) on capsule.
-    // Distance = 0.05
-    // Penetration = 0.3 + 0.2 - 0.05 = 0.45
+    // Capsule spine: (0.05, 0, 0) to (0.85, 0, 0); the geometric penetration
+    // is 0.3 + 0.2 - 0.05 = 0.45. MuJoCo collides the pair through
+    // `mjc_Convex`, whose EPA ends 1e-5 short of that, its normal 9.5e-3 rad
+    // off the x axis: MuJoCo 3.5.0's contact (the unfused oracle), the
+    // capsule listed first, its normal toward the cylinder.
     assert_eq!(data.ncon, 1, "Expected 1 contact");
 
     let contact = &data.contacts[0];
-    let expected_depth = 0.45;
+    assert_eq!(
+        (contact.geom1, contact.geom2),
+        (1, 0),
+        "MuJoCo's geom order"
+    );
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-12;
     assert!(
-        (contact.depth - expected_depth).abs() < DEPTH_TOL,
-        "Cylinder-capsule perpendicular depth: expected {}, got {}",
-        expected_depth,
+        near(contact.depth, 0.449_989_883_304_585),
+        "Cylinder-capsule perpendicular depth: MuJoCo 0.449989883304585, got {}",
         contact.depth
     );
+    let pos = [
+        0.074_996_945_802_081_22,
+        -0.000_428_753_849_995_747_65,
+        5.940_058_789_321_353e-7,
+    ];
+    let normal = [
+        -0.999_954_606_626_829_3,
+        0.009_528_077_485_628_894,
+        -2.062_064_502_369_396_8e-5,
+    ];
+    for i in 0..3 {
+        assert!(
+            near(contact.pos[i], pos[i]),
+            "pos {:?}, MuJoCo {pos:?}",
+            contact.pos
+        );
+        assert!(
+            near(contact.normal[i], normal[i]),
+            "normal {:?}, MuJoCo {normal:?}",
+            contact.normal
+        );
+    }
 }
 
 // ============================================================================

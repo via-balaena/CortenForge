@@ -727,7 +727,12 @@ pub const DISABLE_MIDPHASE: u32 = 1 << 14;
 pub const DISABLE_EULERDAMP: u32 = 1 << 15;
 /// Skip auto-reset on NaN/divergence.
 pub const DISABLE_AUTORESET: u32 = 1 << 16;
-/// Fall back to libccd for convex collision.
+/// Collide convex pairs with libccd instead of MuJoCo's native convex collision.
+///
+/// sim-core does not port libccd: [`Model::try_make_data`] refuses a model
+/// with this flag (registry `D-NATIVECCD`).
+///
+/// [`Model::try_make_data`]: crate::Model::try_make_data
 pub const DISABLE_NATIVECCD: u32 = 1 << 17;
 /// Skip island discovery.
 pub const DISABLE_ISLAND: u32 = 1 << 18;
@@ -1180,6 +1185,11 @@ pub enum MakeDataError {
     /// The forward pass before the `Init` trees sleep failed; see
     /// [`ResetError::InitForward`].
     InitForward(StepError),
+    /// The model sets a flag for a part of MuJoCo sim-core does not port.
+    Unsupported {
+        /// The flag and what it would take.
+        feature: &'static str,
+    },
 }
 
 impl std::fmt::Display for MakeDataError {
@@ -1199,6 +1209,7 @@ impl std::fmt::Display for MakeDataError {
                 root_body,
             } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
             Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
+            Self::Unsupported { feature } => write!(f, "unsupported: {feature}"),
         }
     }
 }
@@ -1212,7 +1223,8 @@ impl std::error::Error for MakeDataError {
             Self::PluginInit { .. }
             | Self::InvalidTimestep
             | Self::DelayedUserSensor { .. }
-            | Self::InitSleep { .. } => None,
+            | Self::InitSleep { .. }
+            | Self::Unsupported { .. } => None,
         }
     }
 }
