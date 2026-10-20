@@ -2,8 +2,6 @@
 //! through MuJoCo's ported functions (`mj_primitive`).
 
 use super::mj_primitive::{Frame, box_box_filter, raw_box_box, raw_capsule_box, sphere_cylinder};
-use super::narrow::{CAP_COLLISION_THRESHOLD, GEOM_EPSILON, make_contact_from_geoms};
-use crate::forward::closest_points_segments;
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Vector3};
 
@@ -42,116 +40,6 @@ pub fn collide_cylinder_sphere(
         .map(|c| c.contact(model, sphere_geom, cylinder_geom, margin))
         .into_iter()
         .collect()
-}
-
-/// Cylinder-capsule collision detection.
-///
-/// Computes collision between a cylinder and a capsule by finding the closest
-/// points between the cylinder axis segment and the capsule axis segment,
-/// then checking if the cylinder surface intersects the capsule's swept sphere.
-///
-/// # Limitations
-///
-/// This algorithm treats the cylinder's curved surface correctly but does not
-/// handle collisions with the flat caps. For cap collisions (capsule directly
-/// above/below cylinder), returns empty `Vec` to fall through to GJK/EPA.
-///
-/// Both shapes have their axis along local Z.
-// Cylinder-sphere pair dispatcher takes the full per-geom context (poses, sizes, friction, margin).
-#[allow(clippy::too_many_arguments)]
-pub fn collide_cylinder_capsule(
-    model: &Model,
-    geom1: usize,
-    geom2: usize,
-    type1: GeomType,
-    pos1: Vector3<f64>,
-    mat1: Matrix3<f64>,
-    pos2: Vector3<f64>,
-    mat2: Matrix3<f64>,
-    size1: Vector3<f64>,
-    size2: Vector3<f64>,
-    margin: f64,
-) -> Vec<Contact> {
-    // Identify cylinder and capsule
-    let (cyl_geom, cyl_pos, cyl_mat, cyl_size, cap_geom, cap_pos, cap_mat, cap_size) =
-        if type1 == GeomType::Cylinder {
-            (geom1, pos1, mat1, size1, geom2, pos2, mat2, size2)
-        } else {
-            (geom2, pos2, mat2, size2, geom1, pos1, mat1, size1)
-        };
-
-    let cyl_radius = cyl_size.x;
-    let cyl_half_height = cyl_size.y;
-    let cap_radius = cap_size.x;
-    let cap_half_len = cap_size.y;
-
-    let cyl_axis = cyl_mat.column(2).into_owned();
-    let cap_axis = cap_mat.column(2).into_owned();
-
-    // Cylinder axis segment endpoints
-    let cyl_a = cyl_pos - cyl_axis * cyl_half_height;
-    let cyl_b = cyl_pos + cyl_axis * cyl_half_height;
-
-    // Capsule axis segment endpoints
-    let cap_a = cap_pos - cap_axis * cap_half_len;
-    let cap_b = cap_pos + cap_axis * cap_half_len;
-
-    // Find closest points between the two axis segments
-    let (cyl_closest, cap_closest) = closest_points_segments(cyl_a, cyl_b, cap_a, cap_b);
-
-    // Vector from cylinder axis point to capsule axis point
-    let diff = cap_closest - cyl_closest;
-    let dist = diff.norm();
-
-    if dist < GEOM_EPSILON {
-        // Axes intersect or nearly intersect - degenerate case where analytical
-        // solution is unreliable. Return None to fall through to GJK/EPA.
-        return vec![];
-    }
-
-    let normal = diff / dist;
-
-    // Check if this is a cap collision scenario:
-    // If cyl_closest is at an endpoint AND normal points mostly along the axis,
-    // we're hitting the flat cap, not the curved surface. Fall back to GJK/EPA.
-    let cyl_closest_on_cap =
-        (cyl_closest - cyl_a).norm() < GEOM_EPSILON || (cyl_closest - cyl_b).norm() < GEOM_EPSILON;
-    let normal_along_axis = normal.dot(&cyl_axis).abs();
-    if cyl_closest_on_cap && normal_along_axis > CAP_COLLISION_THRESHOLD {
-        // Cap collision - this algorithm doesn't handle flat caps correctly
-        return vec![];
-    }
-
-    // Closest point on cylinder surface (in direction of capsule)
-    let cyl_surface = cyl_closest + normal * cyl_radius;
-
-    // Distance from cylinder surface to capsule axis
-    let surface_to_cap_dist = (cap_closest - cyl_surface).dot(&normal);
-    let penetration = cap_radius - surface_to_cap_dist;
-
-    if penetration <= -margin {
-        return vec![];
-    }
-
-    // Contact position is between the two surfaces
-    let contact_pos = cyl_surface + normal * (penetration * 0.5);
-
-    // Order geoms consistently (lower index first)
-    let (g1, g2, final_normal) = if cyl_geom < cap_geom {
-        (cyl_geom, cap_geom, normal)
-    } else {
-        (cap_geom, cyl_geom, -normal)
-    };
-
-    vec![make_contact_from_geoms(
-        model,
-        contact_pos,
-        final_normal,
-        penetration,
-        g1,
-        g2,
-        margin,
-    )]
 }
 
 /// Capsule–box collision: MuJoCo's `mjraw_CapsuleBox`
@@ -227,9 +115,7 @@ pub fn collide_box_box(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
-    use super::{
-        collide_box_box, collide_capsule_box, collide_cylinder_capsule, collide_cylinder_sphere,
-    };
+    use super::{collide_box_box, collide_capsule_box, collide_cylinder_sphere};
     use crate::test_fixtures::collision::collision_geoms as make_model;
     use crate::types::GeomType;
     use approx::assert_relative_eq;
@@ -400,59 +286,6 @@ mod tests {
         let expected = 0.2 - 0.1_f64.hypot(0.1);
         assert_relative_eq!(c[0].depth, expected, epsilon = 1e-9);
         assert_relative_eq!(c[0].normal.norm(), 1.0, epsilon = 1e-9);
-    }
-
-    // ── cylinder ↔ capsule ────────────────────────────────────────────
-
-    #[test]
-    fn cyl_capsule_parallel_side_penetration() {
-        // Both axes +Z, side-by-side. Cylinder r=0.3 at origin, capsule r=0.2
-        // hl=0.4 at x=0.4. Axes 0.4 apart; cyl surface at x=0.3; capsule surface
-        // reaches x=0.4-0.2=0.2 → overlap 0.1.
-        let mut m = make_model(2);
-        m.geom_type[0] = GeomType::Cylinder;
-        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
-        m.geom_type[1] = GeomType::Capsule;
-        m.geom_size[1] = Vector3::new(0.2, 0.4, 0.0);
-        let c = collide_cylinder_capsule(
-            &m,
-            0,
-            1,
-            GeomType::Cylinder,
-            Vector3::zeros(),
-            I(),
-            Vector3::new(0.4, 0.0, 0.0),
-            I(),
-            m.geom_size[0],
-            m.geom_size[1],
-            0.0,
-        );
-        assert_eq!(c.len(), 1);
-        assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
-        assert_relative_eq!(c[0].normal, Vector3::x(), epsilon = 1e-9);
-    }
-
-    #[test]
-    fn cyl_capsule_separated_returns_empty() {
-        let mut m = make_model(2);
-        m.geom_type[0] = GeomType::Cylinder;
-        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
-        m.geom_type[1] = GeomType::Capsule;
-        m.geom_size[1] = Vector3::new(0.2, 0.4, 0.0);
-        let c = collide_cylinder_capsule(
-            &m,
-            0,
-            1,
-            GeomType::Cylinder,
-            Vector3::zeros(),
-            I(),
-            Vector3::new(1.2, 0.0, 0.0),
-            I(),
-            m.geom_size[0],
-            m.geom_size[1],
-            0.0,
-        );
-        assert!(c.is_empty());
     }
 
     // ── capsule ↔ box ─────────────────────────────────────────────────

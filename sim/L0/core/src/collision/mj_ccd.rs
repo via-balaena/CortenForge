@@ -13,14 +13,16 @@
 //! can read a pair apart as an overlap; this sets it to 0, as cf-geometry's
 //! `gjk_distance` does (registry `D-GJK-S3D`).
 
-use nalgebra::Point3;
+use nalgebra::{Matrix3, Point3, Vector3};
 
 use super::mj_primitive::{
-    MAX_CONPAIR, Mat9, add3, dot3, mat_t_vec, mat_vec, normalize3, scl3, sub3,
+    MAX_CONPAIR, Mat9, RawContact, add3, dot3, mat_t_vec, mat_vec, normalize3, scl3, sub3,
+    transpose,
 };
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::mesh_polygons::MeshPolygons;
-use crate::types::GeomType;
+use crate::quat::{axis_angle_to_quat, quat_to_mat};
+use crate::types::{ENABLE_MULTICCD, GeomType, Model, enabled, make_frame};
 
 /// `mjMINVAL²`.
 const MINVAL2: f64 = MJ_MINVAL * MJ_MINVAL;
@@ -2078,6 +2080,186 @@ fn multicontact(pt: &Polytope, f: usize, status: &mut CcdStatus, o1: &CcdObj<'_>
         let approx_dir = scl3(&n2[j], dnorm);
         polygon_clip(status, &face1, &face2, &n1[i], &approx_dir);
     }
+}
+
+// ---------------------------------------------------------------------------
+// mjc_Convex
+// ---------------------------------------------------------------------------
+
+impl<'a> CcdObj<'a> {
+    /// `mjc_initCCDObj` for geom `g` of `model` at `pos`, turned by `mat`:
+    /// a mesh with its vertices, its hull's graph where every hull vertex is
+    /// one of its vertices, and its polygons.
+    pub(super) fn of_geom(
+        model: &'a Model,
+        g: usize,
+        pos: &Vector3<f64>,
+        mat: &Matrix3<f64>,
+        margin: f64,
+    ) -> Option<Self> {
+        let mesh = model.geom_mesh[g].map(|id| {
+            let data = &*model.mesh_data[id];
+            CcdMesh {
+                verts: data.vertices(),
+                hull: data
+                    .convex_hull()
+                    .filter(|_| !data.hull_vertex().is_empty())
+                    .map(|hull| HullGraph {
+                        vertex: data.hull_vertex(),
+                        neighbours: &hull.adjacency,
+                    }),
+                polygons: data.polygons(),
+            }
+        });
+        let size = model.geom_size[g];
+        Self::new(
+            model.geom_type[g],
+            [pos.x, pos.y, pos.z],
+            std::array::from_fn(|i| mat[(i / 3, i % 3)]),
+            [size.x, size.y, size.z],
+            margin,
+            mesh,
+        )
+    }
+}
+
+/// `mjc_CCDIteration`, its native branch (`engine_collision_convex.c:788-818`):
+/// `mjc_ccd` asked for up to `max_contacts` contacts; where the geoms
+/// penetrate, one per witness pair, its distance `margin + dist`, its normal
+/// the first witness less the second, normalised, and its position their
+/// midpoint.
+fn ccd_iteration(
+    model: &Model,
+    o1: &mut CcdObj<'_>,
+    o2: &mut CcdObj<'_>,
+    max_contacts: usize,
+    margin: f64,
+) -> Vec<RawContact> {
+    let config = CcdConfig {
+        max_iterations: model.ccd_iterations,
+        tolerance: model.ccd_tolerance,
+        max_contacts,
+        dist_cutoff: 0.0,
+    };
+    let st = mjc_ccd(&config, o1, o2);
+    if st.dist < 0.0 {
+        (0..st.nx)
+            .map(|i| {
+                let mut normal = sub3(&st.x1[i], &st.x2[i]);
+                normalize3(&mut normal);
+                RawContact {
+                    dist: margin + st.dist,
+                    pos: std::array::from_fn(|k| 0.5 * (st.x1[i][k] + st.x2[i][k])),
+                    normal,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// `maxContacts`: the contacts one pass of `mjc_ccd` recovers: 1 with a
+/// margin; 8 for two boxes; 4 for two boxes or meshes under MULTICCD; else 1.
+fn max_contacts(model: &Model, o1: &CcdObj<'_>, o2: &CcdObj<'_>) -> usize {
+    if o1.margin > 0.0 || o2.margin > 0.0 {
+        return 1;
+    }
+    match (o1.geom_type, o2.geom_type) {
+        (GeomType::Box, GeomType::Box) => 8,
+        (GeomType::Box | GeomType::Mesh, GeomType::Box | GeomType::Mesh)
+            if enabled(model, ENABLE_MULTICCD) =>
+        {
+            4
+        }
+        _ => 1,
+    }
+}
+
+/// `mju_mulMatMat3`.
+fn mat_mat(a: &Mat9, b: &Mat9) -> Mat9 {
+    std::array::from_fn(|i| {
+        let (r, c) = (i / 3, i % 3);
+        a[3 * r] * b[c] + a[3 * r + 1] * b[3 + c] + a[3 * r + 2] * b[6 + c]
+    })
+}
+
+/// `mju_rotateFrame`: a frame turned by `rot` about `origin`.
+fn rotate_frame(origin: &[f64; 3], rot: &Mat9, xmat: &mut Mat9, xpos: &mut [f64; 3]) {
+    *xmat = mat_mat(rot, xmat);
+    let rel = sub3(origin, xpos);
+    let moved = sub3(&mat_vec(rot, &rel), &rel);
+    *xpos = sub3(xpos, &moved);
+}
+
+/// `mju_dist3`.
+fn dist3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    let d = sub3(a, b);
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
+/// `mjc_Convex` (`engine_collision_convex.c:917-1000`): the contacts of two
+/// convex geoms, `g1` first, at `pos1`, `mat1` and `pos2`, `mat2`, each
+/// inflated by `margin`. One pass of `mjc_ccd`, which recovers several
+/// contacts for two boxes or meshes; for other pairs under MULTICCD, but a
+/// sphere's or an ellipsoid's, four more passes with the first geom turned
+/// by ±1e-3 rad about each tangent of the first contact, and the second
+/// back, keeping each new contact farther than 1e-3 of the smaller bounding
+/// radius from all before it, at the first contact's distance.
+// MuJoCo's pair context, as the other collision functions take it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn mjc_convex(
+    model: &Model,
+    g1: usize,
+    pos1: &Vector3<f64>,
+    mat1: &Matrix3<f64>,
+    g2: usize,
+    pos2: &Vector3<f64>,
+    mat2: &Matrix3<f64>,
+    margin: f64,
+) -> Vec<RawContact> {
+    const RELATIVE_TOLERANCE: f64 = 1e-3;
+    const PERTURBATION_ANGLE: f64 = 1e-3;
+    let (Some(mut o1), Some(mut o2)) = (
+        CcdObj::of_geom(model, g1, pos1, mat1, margin),
+        CcdObj::of_geom(model, g2, pos2, mat2, margin),
+    ) else {
+        return Vec::new();
+    };
+    let max_contacts = max_contacts(model, &o1, &o2);
+    let mut con = ccd_iteration(model, &mut o1, &mut o2, max_contacts, margin);
+    if max_contacts > 1 {
+        return con;
+    }
+
+    let round = |t| matches!(t, GeomType::Ellipsoid | GeomType::Sphere);
+    if con.len() == 1
+        && enabled(model, ENABLE_MULTICCD)
+        && !round(o1.geom_type)
+        && !round(o2.geom_type)
+    {
+        let saved = (o1.pos, o1.mat, o2.pos, o2.mat);
+        let (_, tangents) = make_frame(&Vector3::from(con[0].normal), &Vector3::zeros());
+        let (r1, r2) = (model.geom_rbound[g1], model.geom_rbound[g2]);
+        let tolerance = RELATIVE_TOLERANCE * if r1 < r2 { r1 } else { r2 };
+        let origin = con[0].pos;
+        for axis in tangents {
+            for angle in [-PERTURBATION_ANGLE, PERTURBATION_ANGLE] {
+                let rot = quat_to_mat(&axis_angle_to_quat(&[axis.x, axis.y, axis.z], angle));
+                rotate_frame(&origin, &rot, &mut o1.mat, &mut o1.pos);
+                rotate_frame(&origin, &transpose(&rot), &mut o2.mat, &mut o2.pos);
+                // `mjc_isDistinctContact`: farther than the tolerance from each.
+                if let Some(mut new) = ccd_iteration(model, &mut o1, &mut o2, 1, margin).pop()
+                    && !con.iter().any(|c| dist3(&c.pos, &new.pos) <= tolerance)
+                {
+                    new.dist = con[0].dist;
+                    con.push(new);
+                }
+                (o1.pos, o1.mat, o2.pos, o2.mat) = saved;
+            }
+        }
+    }
+    con
 }
 
 // ---------------------------------------------------------------------------

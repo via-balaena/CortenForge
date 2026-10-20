@@ -15,9 +15,6 @@ pub(crate) mod flex_self;
 pub(crate) mod hfield;
 pub(crate) mod mesh_collide;
 mod midphase;
-// Unused by the narrow phase until convex pairs collide through `mjc_Convex`
-// (book P50).
-#[allow(dead_code)]
 mod mj_ccd;
 mod mj_primitive;
 pub(crate) mod narrow;
@@ -1477,10 +1474,12 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
-        // Contact normal should point roughly +Z (from mesh toward cylinder)
+        // MuJoCo lists the cylinder first (the lower geom type), its normal
+        // toward the mesh below: -Z.
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            c.normal.z > 0.9,
-            "normal should point +Z, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
             c.normal
         );
         // Penetration ~0.02
@@ -1511,47 +1510,38 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
-        // Contact normal should point roughly +Z
+        // From the cylinder, listed first, toward the mesh: -Z.
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            c.normal.z > 0.9,
-            "normal should point +Z, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
             c.normal
         );
     }
 
-    /// T5: Cylinder vs mesh — capsule regression.
-    /// With correct cylinder: center at z=0.18, bottom cap at z=-0.02 → penetrates slab.
-    /// With capsule approx: center at z=0.18, hemisphere bottom at z=-0.02
-    /// (half_length=0.2, but hemisphere extends radius=0.1 further).
-    /// Actually capsule bottom = z - half_length - radius = 0.18 - 0.2 - 0.1 = -0.12.
-    /// Both would detect contact at this position.
-    ///
-    /// The key regression test: place cylinder center at z = half_length = 0.2
-    /// (cap exactly at z=0 = slab top). Cylinder: barely touching → depth ~SLAB_HZ.
-    /// Capsule: hemisphere center at z=0, hemisphere extends to z=-0.1 → much deeper.
-    /// We verify depth is small (~SLAB_HZ), not large (~0.1).
+    /// T5: Cylinder vs mesh — capsule regression. The cylinder's flat cap
+    /// 0.01 into the slab's top: a cylinder is 0.01 deep, a capsule of the
+    /// same half-length would be 0.11 (its hemisphere reaches 0.1 further).
     #[test]
     fn test_mesh_cylinder_not_capsule_regression() {
         let mesh = ground_slab_mesh();
         let model = mesh_cylinder_model(mesh, 0.2, 0.1);
 
         let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
-        // Cylinder center at z=0.2: bottom flat cap at z=0 (just at slab top)
-        let pos_cyl = Vector3::new(0.0, 0.0, 0.2);
+        // Cylinder center at z=0.19: bottom flat cap at z=-0.01
+        let pos_cyl = Vector3::new(0.0, 0.0, 0.19);
         let mat = Matrix3::identity();
 
         let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_cyl, mat, 0.0);
         assert!(
             !contacts.is_empty(),
-            "cylinder at z=0.2 should contact slab"
+            "cylinder at z=0.19 should contact slab"
         );
 
         let c = &contacts[0];
-        // With correct cylinder: cap at z=0, slab top at z=0, depth = SLAB_HZ (~0.01)
-        // With capsule: hemisphere bottom at z=0.2-0.2-0.1=-0.1, depth would be ~0.11
         assert!(
-            c.depth < 0.05,
-            "depth should be small (~{SLAB_HZ}) not large (~0.1 from capsule approx), got {}",
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small (~0.01) not large (~0.11 from capsule approx), got {}",
             c.depth
         );
     }
@@ -1595,9 +1585,11 @@ mod spec_d_tests {
         );
     }
 
-    /// T9: No convex hull — graceful fallback (empty contacts, no panic).
+    /// T9: No convex hull — MuJoCo's support without a graph searches every
+    /// vertex (`mjc_meshSupport`), so the slab of eight vertices still
+    /// collides: one contact, from the cylinder toward the mesh.
     #[test]
-    fn test_mesh_cylinder_no_hull_graceful() {
+    fn test_mesh_cylinder_no_hull_searches_the_vertices() {
         // Create mesh WITHOUT computing convex hull
         let vertices = vec![
             Point3::new(-1.0, -1.0, -0.01),
@@ -1635,12 +1627,19 @@ mod spec_d_tests {
         let pos2 = Vector3::new(0.0, 0.0, 0.18);
         let mat = Matrix3::identity();
 
-        // Should return empty contacts, not panic
         let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
+        assert_eq!(contacts.len(), 1, "one contact from the vertex set");
+        let c = &contacts[0];
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            contacts.is_empty(),
-            "no hull → no contacts, got {}",
-            contacts.len()
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
+            c.normal
+        );
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive (~0.02), got {}",
+            c.depth
         );
     }
 
@@ -1676,10 +1675,11 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
-        // Normal should point +Z (from mesh toward ellipsoid)
+        // From the ellipsoid, listed first, toward the mesh: -Z.
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            c.normal.z > 0.9,
-            "normal should point +Z, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
             c.normal
         );
         // Penetration ~0.02
@@ -1708,9 +1708,10 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
+        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
         assert!(
-            c.normal.z > 0.9,
-            "normal should point +Z, got {:?}",
+            c.normal.z < -0.9,
+            "normal should point -Z, got {:?}",
             c.normal
         );
         assert!(
@@ -1720,11 +1721,9 @@ mod spec_d_tests {
         );
     }
 
-    /// T6: Ellipsoid vs mesh — sphere regression.
-    /// Oblate ellipsoid (radii [0.3, 0.3, 0.05]) with center at z = 0.05
-    /// (bottom at z=0 = slab top). Old sphere approx used max_r=0.3, so
-    /// the "sphere" bottom would be at z = 0.05 - 0.3 = -0.25 → depth ~0.26.
-    /// Correct ellipsoid: bottom at z = 0.05 - 0.05 = 0.0 → depth ~SLAB_HZ.
+    /// T6: Ellipsoid vs mesh — sphere regression. An oblate ellipsoid (radii
+    /// [0.3, 0.3, 0.05]) with its bottom 0.01 into the slab's top: 0.01
+    /// deep, where a sphere of the largest radius would be 0.26.
     #[test]
     fn test_mesh_ellipsoid_not_sphere_regression() {
         let mesh = ground_slab_mesh();
@@ -1732,23 +1731,42 @@ mod spec_d_tests {
         let model = mesh_ellipsoid_model(mesh, radii);
 
         let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
-        // Center at z=0.05: correct bottom at z=0 (just at slab top)
-        let pos_ell = Vector3::new(0.0, 0.0, 0.05);
+        // Center at z=0.04: bottom at z=-0.01
+        let pos_ell = Vector3::new(0.0, 0.0, 0.04);
         let mat = Matrix3::identity();
 
         let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_ell, mat, 0.0);
         assert!(
             !contacts.is_empty(),
-            "ellipsoid at z=0.05 should contact slab"
+            "ellipsoid at z=0.04 should contact slab"
         );
 
         let c = &contacts[0];
-        // With correct ellipsoid: depth ~SLAB_HZ (~0.01)
-        // With sphere approx (r=0.3): depth ~0.26
         assert!(
-            c.depth < 0.05,
-            "depth should be small (~{SLAB_HZ}) not large (~0.26 from sphere approx), got {}",
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small (~0.01) not large (~0.26 from sphere approx), got {}",
             c.depth
+        );
+    }
+
+    /// MuJoCo's convex collision lists a contact only where the geoms
+    /// penetrate (`dist < 0`, `engine_collision_convex.c:804`): a cylinder's
+    /// cap and an ellipsoid's bottom exactly on the slab's top give none.
+    #[test]
+    fn convex_contact_at_exact_touch_is_absent() {
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        let mat = Matrix3::identity();
+        let cylinder = mesh_cylinder_model(ground_slab_mesh(), 0.2, 0.1);
+        let touching = Vector3::new(0.0, 0.0, 0.2);
+        assert!(
+            collide_geoms(&cylinder, 0, 1, pos_mesh, mat, touching, mat, 0.0).is_empty(),
+            "a cylinder's cap on the slab"
+        );
+        let ellipsoid = mesh_ellipsoid_model(ground_slab_mesh(), Vector3::new(0.3, 0.3, 0.05));
+        let touching = Vector3::new(0.0, 0.0, 0.05);
+        assert!(
+            collide_geoms(&ellipsoid, 0, 1, pos_mesh, mat, touching, mat, 0.0).is_empty(),
+            "an ellipsoid's bottom on the slab"
         );
     }
 

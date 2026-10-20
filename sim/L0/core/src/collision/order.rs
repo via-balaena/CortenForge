@@ -103,7 +103,7 @@ pub(super) fn flex_place(model: &Model, contact: &Contact) -> ListPlace {
 
 /// `(geom1, geom2)` with the geom of the lower body first, equal bodies as
 /// given.
-fn lower_body_first(model: &Model, (geom1, geom2): (usize, usize)) -> (usize, usize) {
+pub(super) fn lower_body_first(model: &Model, (geom1, geom2): (usize, usize)) -> (usize, usize) {
     if model.geom_body[geom1] > model.geom_body[geom2] {
         (geom2, geom1)
     } else {

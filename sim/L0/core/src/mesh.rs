@@ -254,18 +254,12 @@ impl TriangleMeshData {
 
     /// Each hull vertex's index among the mesh's vertices; empty without a
     /// hull.
-    // Read by the narrow phase once convex pairs collide through `mjc_Convex`
-    // (book P50).
-    #[allow(dead_code)]
     pub(crate) fn hull_vertex(&self) -> &[usize] {
         &self.hull_vertex
     }
 
     /// The mesh's polygons (MuJoCo's `MakePolygons`); empty until the hull is
     /// computed.
-    // Read by the narrow phase once convex pairs collide through `mjc_Convex`
-    // (book P50).
-    #[allow(dead_code)]
     pub(crate) const fn polygons(&self) -> &MeshPolygons {
         &self.polygons
     }

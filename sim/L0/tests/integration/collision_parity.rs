@@ -99,36 +99,35 @@ fn capsule_rests_on_box_as_mujoco() {
     rests_as_mujoco("box_capsule", 0.0, 0.0);
 }
 
-// The pairs below go through GJK/EPA (MuJoCo's through mjc_Convex), whose
-// contact was the first geom's support against the normal: a corner of the
-// slab's bottom face, or the body's top. Each body fell through its slab.
-// MuJoCo's EPA is not ported, so contacts on a curved surface agree within
-// the two polytopes' convergence, not bitwise. Each bound is 2.3 to 62
-// times what was measured, which each test's doc gives.
+// The pairs below collide through `mjc_Convex` (sim-core's port): at the
+// turned pose each contact is MuJoCo's, bit for bit on the box slab, and
+// within 1.5e-9 on the mesh slab, the size of 0.1's rounding to a float
+// (MuJoCo stores mesh vertices as floats, book Rigid-loading L35). The
+// heights part where the forward's smooth forces first differ in their last
+// bits (ledger L154; on the box slab's cylinder at step 8). Each bound is
+// 2.6 to 12 times what was measured, which each test's doc gives.
 
-/// A sphere-shaped ellipsoid on a box slab. Measured: height 1.4e-6, contact
-/// 1.6e-14.
+/// A sphere-shaped ellipsoid on a box slab. Measured: height 8.3e-17,
+/// contact 0.
 #[test]
 fn ellipsoid_rests_on_box_as_mujoco() {
-    rests_as_mujoco("box_ellipsoid", 1e-5, 1e-12);
+    rests_as_mujoco("box_ellipsoid", 1e-15, 0.0);
 }
 
-/// A cylinder on a box slab. Upright on its cap, the touching set is a disc
-/// over which both engines' single contact moves; at the turned pose, a rim
-/// point. Measured: height 6.6e-5, contact 2.0e-4.
+/// A cylinder on a box slab. Measured: height 2.7e-4, contact 0.
 #[test]
 fn cylinder_rests_on_box_as_mujoco() {
-    rests_as_mujoco("box_cylinder", 1e-3, 1e-3);
+    rests_as_mujoco("box_cylinder", 1e-3, 0.0);
 }
 
-/// A box, a cylinder and a three-axis ellipsoid on a convex mesh slab,
-/// through GJK/EPA on the mesh's hull. Measured: height 1.6e-9, 2.9e-4 and
-/// 1.7e-9; contact 1.5e-9, 2.0e-4 and 4.3e-6.
+/// A box, a cylinder and a three-axis ellipsoid on a convex mesh slab, the
+/// mesh through its hull. Measured: height 1.6e-9, 3.9e-5 and 1.5e-9;
+/// contact 1.5e-9 each.
 #[test]
 fn box_cylinder_ellipsoid_rest_on_convex_mesh_slab_as_mujoco() {
     rests_as_mujoco("mesh_box", 1e-8, 1e-8);
-    rests_as_mujoco("mesh_cylinder", 1e-3, 1e-3);
-    rests_as_mujoco("mesh_ellipsoid3", 1e-8, 1e-5);
+    rests_as_mujoco("mesh_cylinder", 1e-4, 1e-8);
+    rests_as_mujoco("mesh_ellipsoid3", 1e-8, 1e-8);
 }
 
 /// Our contacts after `forward` against MuJoCo's list: the same geoms in the
@@ -1309,5 +1308,133 @@ fn box_box_contact_count_turns_on_one_ulp_as_mujocos() {
     // The contacts are the pose's; `contacts_as_mujoco` forwards from `qpos`.
     for (name, state) in case["states"].as_object().expect("states") {
         contacts_as_mujoco(name, &model, &floats(&state["qpos"]), &state["contacts"]);
+    }
+}
+
+/// Every pair MuJoCo's collision table gives `mjc_Convex`
+/// (`engine_collision_driver.c:41-52`; a sphere, capsule, ellipsoid,
+/// cylinder, box or mesh against an ellipsoid, cylinder, box or mesh), each
+/// on two free bodies, either body first in the file: the contacts are
+/// MuJoCo's within 1e-12, at named poses (a capsule deep across a cylinder,
+/// upright on its cap, beside it; a cylinder on a cylinder's cap and on a
+/// box's face by its rim; an ellipsoid inside another; a sphere on a mesh's
+/// face; a box and a mesh on a mesh) and at 24 seeded random poses per pair,
+/// a sixth unturned along one axis, at geom margins 0 and 0.02, and, for the
+/// pairs MULTICCD's extra passes reach, under MULTICCD. The mesh is a prism
+/// MuJoCo keeps in its authored frame, its vertices exact in floats.
+#[test]
+fn convex_pairs_collide_as_mujoco() {
+    pairs_collide_as_mujoco(&golden()["convex_pairs"]);
+}
+
+/// A named pose of `convex_pairs`, either body first: MuJoCo's contacts.
+fn convex_named_as_mujoco(name: &str) {
+    let golden = golden();
+    for order in ["first_first", "first_second"] {
+        let case = &golden["convex_pairs"]["named"][format!("{name}_{order}")];
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        contacts_as_mujoco(name, &model, &floats(&case["qpos"]), &case["contacts"]);
+    }
+}
+
+/// A capsule across a cylinder, its segment through the cylinder's axis:
+/// MuJoCo's EPA ends short of the geometric depth, at its tolerance, and
+/// the contact is MuJoCo's (census document 3a13c90a is this pair).
+#[test]
+fn capsule_cylinder_deep_matches_mujoco() {
+    convex_named_as_mujoco("capsule_cylinder_deep");
+}
+
+/// A capsule upright on a cylinder's cap, coaxial, where EPA's starting
+/// faces tie three ways: MuJoCo's contact (census document 6369216c is such
+/// a pair).
+#[test]
+fn capsule_cylinder_coaxial_tie_matches_mujoco() {
+    convex_named_as_mujoco("capsule_cylinder_coaxial_tie");
+}
+
+/// A capsule upright beside a cylinder, their axes parallel: MuJoCo's
+/// contact, where cf-geometry's EPA was 2e-3 rad off in the normal (book
+/// A21 Y).
+#[test]
+fn y_capsule_cylinder_parallel() {
+    convex_named_as_mujoco("capsule_cylinder_parallel");
+}
+
+/// A body settled on the box slab under MULTICCD (`multiccd`): at MuJoCo's
+/// state its contacts are MuJoCo's.
+fn settled_as_mujoco(body: &str) {
+    let case = &golden()["multiccd"][body];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    contacts_as_mujoco(body, &model, &floats(&case["qpos"]), &case["contacts"]);
+}
+
+/// A cylinder settled on its cap on a box under MULTICCD: `mjc_Convex`'s
+/// four extra passes, the cylinder turned 1e-3 rad either way about each
+/// tangent, find MuJoCo's five contacts.
+#[test]
+fn multiccd_cylinder_on_box_as_mujoco() {
+    settled_as_mujoco("cylinder");
+}
+
+/// A three-axis ellipsoid settled on a box under MULTICCD: `mjc_Convex`
+/// makes no extra pass for an ellipsoid, so one contact, MuJoCo's.
+#[test]
+fn multiccd_skips_ellipsoids() {
+    settled_as_mujoco("ellipsoid3");
+}
+
+/// A three-axis ellipsoid dropped on the box slab turned 45 degrees about x
+/// and then y, tumbling to rest: its height after every 50th of 1000 steps
+/// within 1e-9 of MuJoCo's.
+#[test]
+fn ellipsoid3_tumble_rests_as_mujoco() {
+    let case = &golden()["tumble"];
+    let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos
+        .as_mut_slice()
+        .copy_from_slice(&floats(&case["qpos0"]));
+    let every = count(&case["every"]);
+    let mut want = floats(&case["z"]).into_iter();
+    for k in 0..count(&case["nstep"]) {
+        data.step(&model).expect("step");
+        if k % every == every - 1 {
+            let (ours, theirs) = (data.qpos[2], want.next().expect("a sample"));
+            assert!(
+                (ours - theirs).abs() <= 1e-9,
+                "z after step {k}: {ours}, MuJoCo {theirs}"
+            );
+        }
+    }
+}
+
+/// A cylinder's cap and a round ellipsoid's bottom exactly on the box
+/// slab's top: no contact, MuJoCo's convex collision listing one only at a
+/// negative distance (`engine_collision_convex.c:804`); a flat ellipsoid
+/// exactly on it: MuJoCo's one contact, which its EPA places at the box's
+/// edge.
+#[test]
+fn convex_exact_touch_as_mujoco() {
+    let golden = golden();
+    for (name, case) in golden["exact_touch"].as_object().expect("exact_touch") {
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        contacts_as_mujoco(name, &model, &floats(&case["qpos"]), &case["contacts"]);
+    }
+}
+
+/// Two cylinders, two ellipsoids and two meshes that collide only as an
+/// explicit pair declared with the second body's geom first: MuJoCo
+/// collides the pair with the lower body's geom first, and so do we, the
+/// contacts MuJoCo's within 1e-12.
+#[test]
+fn explicit_convex_pairs_collide_lower_body_first_as_mujoco() {
+    let golden = golden();
+    for (name, case) in golden["explicit_pairs"]
+        .as_object()
+        .expect("explicit_pairs")
+    {
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        contacts_as_mujoco(name, &model, &floats(&case["qpos"]), &case["contacts"]);
     }
 }

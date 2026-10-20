@@ -1,28 +1,23 @@
-//! Narrow-phase collision dispatch — selects analytical or GJK/EPA path for a geom pair.
+//! Narrow-phase collision dispatch — selects a geom pair's collision function.
 //!
 //! Contains the top-level `collide_geoms` dispatcher, the `geom_to_shape` converter,
 //! `make_contact_from_geoms` contact constructor, `apply_pair_overrides` for mechanism-2
 //! contacts, and shared collision constants.
 
 use super::mesh_collide::collide_with_mesh;
+use super::mj_ccd::mjc_convex;
+use super::order::{lower_body_first, type_ordered};
 use super::pair_convex::{
     collide_capsule_capsule, collide_sphere_box, collide_sphere_capsule, collide_sphere_sphere,
 };
-use super::pair_cylinder::{
-    collide_box_box, collide_capsule_box, collide_cylinder_capsule, collide_cylinder_sphere,
-};
+use super::pair_cylinder::{collide_box_box, collide_capsule_box, collide_cylinder_sphere};
 use super::plane::collide_with_plane;
 use super::sdf_collide::collide_with_sdf;
 
-use super::hfield::MAX_CONTACTS_PER_PAIR;
 use super::{assign_friction, assign_imp, assign_ref, contact_param};
-use crate::gjk_epa::{GjkContact, gjk_distance, gjk_epa_contact, support_face_points};
-use crate::types::{
-    Contact, ContactPair, ENABLE_MULTICCD, ENABLE_OVERRIDE, GeomType, Model, enabled, make_frame,
-};
+use crate::types::{Contact, ContactPair, ENABLE_OVERRIDE, GeomType, Model, enabled, make_frame};
 use cf_geometry::Shape;
-use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
-use sim_types::Pose;
+use nalgebra::{Matrix3, Vector3};
 
 // ============================================================================
 // Collision constants
@@ -39,20 +34,66 @@ use sim_types::Pose;
 /// magnitude of safety margin while still detecting near-degenerate cases.
 pub const GEOM_EPSILON: f64 = 1e-10;
 
-/// Threshold for detecting cylinder cap collision in cylinder-capsule.
-/// When normal is within ~45 deg of cylinder axis (cos > 0.7), treat as cap collision.
-pub const CAP_COLLISION_THRESHOLD: f64 = 0.7;
-
 // ============================================================================
 // Narrow-phase dispatch
 // ============================================================================
 
+/// Whether MuJoCo collides two geom types through `mjc_Convex`
+/// (`engine_collision_driver.c:41-52`).
+fn convex_pair(type1: GeomType, type2: GeomType) -> bool {
+    let (a, b) = if type1.mjtgeom() <= type2.mjtgeom() {
+        (type1, type2)
+    } else {
+        (type2, type1)
+    };
+    matches!(
+        (a, b),
+        (GeomType::Sphere, GeomType::Ellipsoid | GeomType::Mesh)
+            | (
+                GeomType::Capsule,
+                GeomType::Ellipsoid | GeomType::Cylinder | GeomType::Mesh
+            )
+            | (
+                GeomType::Ellipsoid,
+                GeomType::Ellipsoid | GeomType::Cylinder | GeomType::Box | GeomType::Mesh
+            )
+            | (
+                GeomType::Cylinder,
+                GeomType::Cylinder | GeomType::Box | GeomType::Mesh
+            )
+            | (GeomType::Box | GeomType::Mesh, GeomType::Mesh)
+    )
+}
+
+/// A convex pair through `mjc_Convex` ([`mjc_convex`]), its geoms taken as
+/// MuJoCo takes them: the geom of the lower body first, then the lower
+/// `mjtGeom` first.
+// The full per-geom pair context, so dispatch passes one uniform arg list.
+#[allow(clippy::too_many_arguments)]
+fn collide_convex(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: &Vector3<f64>,
+    mat1: &Matrix3<f64>,
+    pos2: &Vector3<f64>,
+    mat2: &Matrix3<f64>,
+    margin: f64,
+) -> Vec<Contact> {
+    let (g1, g2) = type_ordered(model, lower_body_first(model, (geom1, geom2)));
+    let ((p1, m1), (p2, m2)) = if g1 == geom1 {
+        ((pos1, mat1), (pos2, mat2))
+    } else {
+        ((pos2, mat2), (pos1, mat1))
+    };
+    mjc_convex(model, g1, p1, m1, g2, p2, m2, margin)
+        .iter()
+        .map(|c| c.contact(model, g1, g2, margin))
+        .collect()
+}
+
 /// Narrow-phase collision between two geometries.
-#[allow(clippy::similar_names)]
-// pos1/pose1, pos2/pose2 are intentionally related
-// use statement placed after special cases for readability
-#[allow(clippy::items_after_statements)]
-// Narrowphase dispatcher takes the full per-pair geometry context plus the contact output sink.
+// The full per-geom pair context, so dispatch passes one uniform arg list.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_geoms(
     model: &Model,
@@ -69,11 +110,8 @@ pub fn collide_geoms(
     let size1 = model.geom_size[geom1];
     let size2 = model.geom_size[geom2];
 
-    // Fast path: handle all analytical collision cases first
-    // These avoid the expensive quaternion conversion and GJK/EPA
-
-    // Special case: SDF collision (before mesh/hfield/plane — SDF has its own
-    // contact functions for all shapes including Mesh, Hfield, and Plane)
+    // SDF collision first: SDF has its own contact functions for every
+    // shape, including meshes, height fields and planes.
     if type1 == GeomType::Sdf || type2 == GeomType::Sdf {
         return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
@@ -85,7 +123,13 @@ pub fn collide_geoms(
         return vec![];
     }
 
-    // Special case: mesh collision (has its own BVH-accelerated path)
+    // MuJoCo's native convex collision for every pair its table gives
+    // `mjc_Convex`.
+    if convex_pair(type1, type2) {
+        return collide_convex(model, geom1, geom2, &pos1, &mat1, &pos2, &mat2, margin);
+    }
+
+    // A mesh with a plane.
     if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
         return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
@@ -154,177 +198,8 @@ pub fn collide_geoms(
         );
     }
 
-    // Special case: cylinder-capsule collision (analytical with GJK/EPA fallback)
-    // Analytical solution handles common cases; degenerate cases fall through to GJK/EPA
-    if (type1 == GeomType::Cylinder && type2 == GeomType::Capsule)
-        || (type1 == GeomType::Capsule && type2 == GeomType::Cylinder)
-    {
-        let contacts = collide_cylinder_capsule(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        );
-        if !contacts.is_empty() {
-            return contacts;
-        }
-        // Fall through to GJK/EPA for degenerate cases (intersecting/parallel axes, cap collisions)
-    }
-
-    // Slow path: Build shapes and poses for GJK/EPA (cylinder-cylinder, cylinder-box, ellipsoid-*, and fallback cases)
-    let shape1 = geom_to_shape(type1, size1);
-    let shape2 = geom_to_shape(type2, size2);
-
-    // Build poses for GJK/EPA - expensive quaternion conversion
-    let quat1 = UnitQuaternion::from_matrix(&mat1);
-    let quat2 = UnitQuaternion::from_matrix(&mat2);
-    let pose1 = Pose::from_position_rotation(Point3::from(pos1), quat1);
-    let pose2 = Pose::from_position_rotation(Point3::from(pos2), quat2);
-
-    // Use GJK/EPA for general convex collision
-    let Some(shape1) = shape1 else {
-        return vec![];
-    };
-    let Some(shape2) = shape2 else {
-        return vec![];
-    };
-
-    if let Some(result) = gjk_epa_contact(
-        &shape1,
-        &pose1,
-        &shape2,
-        &pose2,
-        model.ccd_iterations,
-        model.ccd_tolerance,
-    ) {
-        if result.penetration > -margin {
-            // MULTICCD: generate multiple contacts for flat contact surfaces
-            if enabled(model, ENABLE_MULTICCD) {
-                let multi = multiccd_contacts(
-                    &shape1,
-                    &pose1,
-                    &shape2,
-                    &pose2,
-                    &result,
-                    model.ccd_iterations,
-                    model.ccd_tolerance,
-                );
-                return multi
-                    .into_iter()
-                    .map(|gjk| {
-                        make_contact_from_geoms(
-                            model,
-                            Vector3::new(gjk.point.x, gjk.point.y, gjk.point.z),
-                            gjk.normal,
-                            gjk.penetration,
-                            geom1,
-                            geom2,
-                            margin,
-                        )
-                    })
-                    .collect();
-            }
-
-            return vec![make_contact_from_geoms(
-                model,
-                Vector3::new(result.point.x, result.point.y, result.point.z),
-                result.normal,
-                result.penetration,
-                geom1,
-                geom2,
-                margin,
-            )];
-        }
-    } else if margin > 0.0 {
-        // Shapes don't overlap — check if within margin distance (margin-zone contact).
-        // MuJoCo's convex solver returns separation distance for non-overlapping shapes;
-        // CortenForge uses gjk_distance() as the equivalent.
-        if let Some(dist_result) = gjk_distance(
-            &shape1,
-            &pose1,
-            &shape2,
-            &pose2,
-            model.ccd_iterations,
-            model.ccd_tolerance,
-        ) && dist_result.distance < margin
-        {
-            // Margin-zone contact: depth is negative (separated)
-            let depth = -dist_result.distance;
-            let diff = dist_result.witness_b - dist_result.witness_a;
-            let diff_norm = diff.norm();
-            let normal = if diff_norm > GEOM_EPSILON {
-                diff / diff_norm
-            } else {
-                Vector3::z()
-            };
-            let midpoint = nalgebra::center(&dist_result.witness_a, &dist_result.witness_b);
-            return vec![make_contact_from_geoms(
-                model,
-                midpoint.coords,
-                normal,
-                depth,
-                geom1,
-                geom2,
-                margin,
-            )];
-        }
-    }
-
+    // Every other pair is above: MuJoCo's table has no further function.
     vec![]
-}
-
-// ============================================================================
-// MULTICCD helper
-// ============================================================================
-
-/// Duplicate contact distance threshold for MULTICCD filtering.
-const MULTICCD_DEDUP_DIST: f64 = 1e-4;
-
-/// Generate multiple contacts for a convex-convex pair using MULTICCD.
-///
-/// Enumerates face vertices on shape A's contact face to find additional
-/// contact points on flat surfaces. Returns 1-4 contacts.
-/// Only called when `ENABLE_MULTICCD` is set.
-pub fn multiccd_contacts(
-    shape_a: &Shape,
-    pose_a: &Pose,
-    _shape_b: &Shape,
-    _pose_b: &Pose,
-    primary: &GjkContact,
-    _max_iterations: usize,
-    _tolerance: f64,
-) -> Vec<GjkContact> {
-    // MULTICCD strategy: enumerate all vertices on shape A's contact face
-    // (the set of vertices sharing the maximum support value in the normal
-    // direction). The EPA normal points outward from the Minkowski difference
-    // toward shape A's contact face, so using +normal selects the face of A
-    // that faces B. For flat faces (box, convex mesh), this gives the face
-    // corners. For curved shapes, this gives a single point.
-    let face_points = support_face_points(shape_a, pose_a, &primary.normal);
-
-    if face_points.len() <= 1 {
-        // Curved surface or single vertex — no additional contacts
-        return vec![primary.clone()];
-    }
-
-    let mut contacts: Vec<GjkContact> =
-        Vec::with_capacity(face_points.len().min(MAX_CONTACTS_PER_PAIR));
-
-    for pt in &face_points {
-        if contacts.len() >= MAX_CONTACTS_PER_PAIR {
-            break;
-        }
-        // Check for duplicates
-        let dominated = contacts
-            .iter()
-            .any(|existing| (existing.point - pt).norm() < MULTICCD_DEDUP_DIST);
-        if !dominated {
-            contacts.push(GjkContact {
-                point: *pt,
-                normal: primary.normal,
-                penetration: primary.penetration,
-            });
-        }
-    }
-
-    contacts
 }
 
 // ============================================================================
@@ -464,5 +339,46 @@ pub fn make_contact_from_geoms(
         flex_vertex: None,
         regularized_mu: 0.0,
         flex_vertex2: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collide_geoms;
+    use crate::test_fixtures::collision::collision_geoms;
+    use crate::types::GeomType;
+    use approx::assert_relative_eq;
+    use nalgebra::{Matrix3, Vector3};
+
+    /// A cylinder (geom 0) and a capsule (geom 1) side by side, 0.1 into
+    /// each other: through `mjc_Convex`, listed as MuJoCo lists them, the
+    /// capsule (the lower geom type) first, its normal from the capsule to
+    /// the cylinder, the same contact to the bit whichever geom is given
+    /// first; apart, none.
+    #[test]
+    fn convex_dispatch_returns_mujoco_order() {
+        let mut m = collision_geoms(2);
+        m.geom_type[0] = GeomType::Cylinder;
+        m.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
+        m.geom_type[1] = GeomType::Capsule;
+        m.geom_size[1] = Vector3::new(0.2, 0.4, 0.0);
+        let mat = Matrix3::identity();
+        let (cylinder, capsule) = (Vector3::zeros(), Vector3::new(0.4, 0.0, 0.0));
+
+        let given = collide_geoms(&m, 0, 1, cylinder, mat, capsule, mat, 0.0);
+        let swapped = collide_geoms(&m, 1, 0, capsule, mat, cylinder, mat, 0.0);
+        assert_eq!(given.len(), 1);
+        let c = &given[0];
+        assert_eq!((c.geom1, c.geom2), (1, 0), "the capsule first");
+        assert_relative_eq!(c.depth, 0.1, epsilon = 1e-9);
+        assert_relative_eq!(c.normal, -Vector3::x(), epsilon = 1e-9);
+        assert_eq!(swapped.len(), 1);
+        let bits = |v: &Vector3<f64>| v.map(f64::to_bits);
+        assert_eq!(swapped[0].depth.to_bits(), c.depth.to_bits());
+        assert_eq!(bits(&swapped[0].pos), bits(&c.pos));
+        assert_eq!(bits(&swapped[0].normal), bits(&c.normal));
+
+        let apart = Vector3::new(1.2, 0.0, 0.0);
+        assert!(collide_geoms(&m, 0, 1, cylinder, mat, apart, mat, 0.0).is_empty());
     }
 }

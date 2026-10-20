@@ -781,7 +781,7 @@ fn mat_mat_t(a: &Mat9, b: &Mat9) -> Mat9 {
 }
 
 /// `mju_transpose` of a 3×3 matrix.
-fn transpose(m: &Mat9) -> Mat9 {
+pub(super) fn transpose(m: &Mat9) -> Mat9 {
     std::array::from_fn(|i| m[3 * (i % 3) + i / 3])
 }
 
