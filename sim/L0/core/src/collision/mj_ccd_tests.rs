@@ -7,11 +7,12 @@
 
 use std::collections::HashMap;
 
-use cf_geometry::convex_hull;
 use nalgebra::Point3;
 use serde_json::Value;
 
 use super::{CcdConfig, CcdMesh, CcdObj, CcdStatus, HullGraph, STALE_S3D, mjc_ccd};
+use crate::mesh::TriangleMeshData;
+use crate::mesh_polygons::MeshPolygons;
 use crate::types::GeomType;
 
 fn golden() -> Value {
@@ -41,51 +42,117 @@ fn floats<const N: usize>(v: &Value) -> [f64; N] {
     std::array::from_fn(|i| number(&a[i]))
 }
 
-/// A mesh of the golden as MuJoCo compiled it, with our hull's graph over
-/// it: each hull vertex's index among the mesh's vertices and its
-/// neighbours.
+fn counts(v: &Value) -> Vec<usize> {
+    v.as_array().expect("an array").iter().map(count).collect()
+}
+
+/// A mesh of the golden as MuJoCo compiled it: our mesh data over its
+/// vertices (its hull, each hull vertex's index among the mesh's vertices,
+/// the polygons we merge), MuJoCo's polygons, those started at the corner
+/// ours start at, and our mesh data over the vertices as authored.
 struct Mesh {
-    verts: Vec<Point3<f64>>,
-    hull_vertex: Vec<usize>,
-    neighbours: Vec<Vec<u32>>,
+    data: TriangleMeshData,
+    mujocos: MeshPolygons,
+    started_as_ours: MeshPolygons,
+    authored: TriangleMeshData,
+}
+
+/// Whose polygons a mesh takes.
+#[derive(Clone, Copy)]
+enum Polygons {
+    Mujocos,
+    Ours,
+    MujocosStartedAsOurs,
+}
+
+/// Whether `a` is `b` started from another of its corners.
+fn is_rotation(a: &[usize], b: &[usize]) -> bool {
+    a.len() == b.len() && (0..a.len()).any(|r| a.iter().cycle().skip(r).take(a.len()).eq(b))
+}
+
+/// Our mesh data over `verts`, its faces one triangle: the hull and our
+/// polygons come from the vertices alone (polygons merged from the mesh's
+/// faces instead would show).
+fn mesh_data(verts: Vec<Point3<f64>>) -> TriangleMeshData {
+    let mut data = TriangleMeshData::from_faces(verts, vec![[0, 1, 2]]);
+    data.compute_convex_hull(None);
+    data
+}
+
+fn points(v: &Value) -> Vec<Point3<f64>> {
+    let flat: Vec<f64> = v.as_array().expect("vertices").iter().map(number).collect();
+    flat.chunks_exact(3)
+        .map(|c| Point3::new(c[0], c[1], c[2]))
+        .collect()
 }
 
 fn meshes(doc: &Value) -> HashMap<String, Mesh> {
     let mut out = HashMap::new();
     for (name, m) in doc["meshes"].as_object().expect("meshes") {
-        let flat: Vec<f64> = m["vert"]
-            .as_array()
-            .expect("vertices")
-            .iter()
-            .map(number)
-            .collect();
-        let verts: Vec<Point3<f64>> = flat
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
+        let verts = points(&m["vert"]);
         // Our selection of the search agrees with MuJoCo's on these meshes.
         assert_eq!(
             m["hillclimb"].as_bool(),
             Some(verts.len() >= 10),
             "mesh {name}'s search"
         );
-        let hull = convex_hull(&verts, None).expect("the mesh has a hull");
-        let hull_vertex = hull
-            .vertices
-            .iter()
-            .map(|h| {
-                verts
-                    .iter()
-                    .position(|v| v == h)
-                    .expect("a hull vertex is a mesh vertex")
-            })
-            .collect();
+        let mujocos = MeshPolygons {
+            paths: m["polygons"]
+                .as_array()
+                .expect("polygons")
+                .iter()
+                .map(counts)
+                .collect(),
+            normals: m["polynormals"]
+                .as_array()
+                .expect("polygon normals")
+                .iter()
+                .map(floats)
+                .collect(),
+            map: m["polymap"]
+                .as_array()
+                .expect("a polygon map")
+                .iter()
+                .map(counts)
+                .collect(),
+        };
+        let data = mesh_data(verts);
+        assert_eq!(
+            data.hull_vertex().len(),
+            data.convex_hull()
+                .expect("the mesh has a hull")
+                .vertices
+                .len(),
+            "mesh {name}: a hull vertex that is not a mesh vertex"
+        );
+        let started_as_ours = MeshPolygons {
+            paths: mujocos
+                .paths
+                .iter()
+                .map(|path| {
+                    let ours = data
+                        .polygons()
+                        .paths
+                        .iter()
+                        .find(|q| is_rotation(q, path))
+                        .expect("each of MuJoCo's polygons is one of ours");
+                    let start = path
+                        .iter()
+                        .position(|&v| v == ours[0])
+                        .expect("a shared corner");
+                    [&path[start..], &path[..start]].concat()
+                })
+                .collect(),
+            ..mujocos.clone()
+        };
+        let authored = mesh_data(points(&m["authored"]));
         out.insert(
             name.clone(),
             Mesh {
-                verts,
-                hull_vertex,
-                neighbours: hull.adjacency,
+                data,
+                mujocos,
+                started_as_ours,
+                authored,
             },
         );
     }
@@ -104,15 +171,21 @@ fn geom_type(name: &str) -> GeomType {
     }
 }
 
-fn object<'a>(v: &Value, meshes: &'a HashMap<String, Mesh>) -> CcdObj<'a> {
+fn object<'a>(v: &Value, meshes: &'a HashMap<String, Mesh>, polygons: Polygons) -> CcdObj<'a> {
     let mesh = v["mesh"].as_str().map(|name| {
         let m = &meshes[name];
+        let hull = m.data.convex_hull().expect("the mesh has a hull");
         CcdMesh {
-            verts: &m.verts,
+            verts: m.data.vertices(),
             hull: Some(HullGraph {
-                vertex: &m.hull_vertex,
-                neighbours: &m.neighbours,
+                vertex: m.data.hull_vertex(),
+                neighbours: &hull.adjacency,
             }),
+            polygons: match polygons {
+                Polygons::Mujocos => &m.mujocos,
+                Polygons::Ours => m.data.polygons(),
+                Polygons::MujocosStartedAsOurs => &m.started_as_ours,
+            },
         }
     });
     CcdObj::new(
@@ -170,10 +243,10 @@ fn first_difference(st: &CcdStatus, want: &Value) -> Option<String> {
 }
 
 /// `mjc_ccd` on a case, with `S3D`'s fourth weight as MuJoCo keeps it or as
-/// ours resets it.
-fn run(case: &Value, meshes: &HashMap<String, Mesh>, stale: bool) -> CcdStatus {
-    let mut o1 = object(&case["obj"][0], meshes);
-    let mut o2 = object(&case["obj"][1], meshes);
+/// ours resets it, and a mesh's polygons MuJoCo's or ours.
+fn run(case: &Value, meshes: &HashMap<String, Mesh>, stale: bool, polygons: Polygons) -> CcdStatus {
+    let mut o1 = object(&case["obj"][0], meshes, polygons);
+    let mut o2 = object(&case["obj"][1], meshes, polygons);
     STALE_S3D.with(|s| s.set(stale));
     let st = mjc_ccd(&config(&case["config"]), &mut o1, &mut o2);
     STALE_S3D.with(|s| s.set(false));
@@ -181,10 +254,11 @@ fn run(case: &Value, meshes: &HashMap<String, Mesh>, stale: bool) -> CcdStatus {
 }
 
 /// Every case of the golden: the distance, the witness points, the GJK and
-/// EPA iteration counts, the EPA status and the simplex size, to the bit.
-/// With `S3D`'s fourth weight kept as MuJoCo keeps it every case is
-/// MuJoCo's; with ours reset, a case differs only where keeping it gives
-/// MuJoCo's (registry `D-GJK-S3D`), and the golden holds such a case.
+/// EPA iteration counts, the EPA status and the simplex size, to the bit,
+/// a mesh taking MuJoCo's polygons. With `S3D`'s fourth weight kept as
+/// MuJoCo keeps it every case is MuJoCo's; with ours reset, a case differs
+/// only where keeping it gives MuJoCo's (registry `D-GJK-S3D`), and the
+/// golden holds such a case.
 #[test]
 fn mjc_ccd_matches_mujoco_bitwise() {
     let doc = golden();
@@ -201,8 +275,9 @@ fn mjc_ccd_matches_mujoco_bitwise() {
         assert!(!cases.is_empty(), "no {group} cases");
         for (name, case) in cases {
             let want = &case["out"];
-            let mujocos = first_difference(&run(case, &meshes, true), want);
-            match (first_difference(&run(case, &meshes, false), want), mujocos) {
+            let mujocos = first_difference(&run(case, &meshes, true, Polygons::Mujocos), want);
+            let ours = first_difference(&run(case, &meshes, false, Polygons::Mujocos), want);
+            match (ours, mujocos) {
                 (None, None) => {}
                 (Some(_), None) => stale_weight.push(format!("{group}/{name}")),
                 (_, Some(d)) => failures.push(format!("{group}/{name}: {d}")),
@@ -219,5 +294,115 @@ fn mjc_ccd_matches_mujoco_bitwise() {
     assert!(
         !stale_weight.is_empty(),
         "no case shows S3D's stale weight: the reset is not checked"
+    );
+}
+
+/// The polygons we merge from our hull are MuJoCo's from qhull's. On the
+/// vertices as authored, where MuJoCo merges them: the same faces in the
+/// same order, each the same corners round in the same direction (from any
+/// one of them), and each vertex on the same faces. On the compiled
+/// vertices, each face's normal within 1e-6 of MuJoCo's, which come from
+/// the vertices before they are rounded to floats.
+#[test]
+fn mesh_polygons_are_mujocos() {
+    let doc = golden();
+    let meshes = meshes(&doc);
+    assert!(
+        meshes
+            .values()
+            .any(|m| m.mujocos.paths.iter().any(|p| p.len() > 3)),
+        "no polygon past a triangle"
+    );
+    for (name, m) in &meshes {
+        let theirs = &m.mujocos;
+        let ours = m.authored.polygons();
+        assert_eq!(
+            ours.paths.len(),
+            theirs.paths.len(),
+            "mesh {name}: polygons"
+        );
+        for (i, (a, b)) in ours.paths.iter().zip(&theirs.paths).enumerate() {
+            assert!(
+                is_rotation(a, b),
+                "mesh {name} polygon {i}: {a:?}, MuJoCo {b:?}"
+            );
+        }
+        assert_eq!(ours.map, theirs.map, "mesh {name}: each vertex's polygons");
+
+        let compiled = m.data.polygons();
+        for (path, normal) in theirs.paths.iter().zip(&theirs.normals) {
+            let j = compiled
+                .paths
+                .iter()
+                .position(|q| is_rotation(q, path))
+                .expect("each of MuJoCo's polygons is one of ours");
+            let gap = compiled.normals[j]
+                .iter()
+                .zip(normal)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0, f64::max);
+            assert!(
+                gap < 1e-6,
+                "mesh {name} polygon {path:?}: normal {:?}, MuJoCo {normal:?}",
+                compiled.normals[j]
+            );
+        }
+    }
+}
+
+/// Whether two statuses list the same contacts, each witness pair within
+/// 1e-9, in any order.
+fn same_contacts(a: &CcdStatus, b: &CcdStatus) -> bool {
+    let near = |i: usize, j: usize| {
+        (0..3).all(|k| {
+            (a.x1[i][k] - b.x1[j][k]).abs() < 1e-9 && (a.x2[i][k] - b.x2[j][k]).abs() < 1e-9
+        })
+    };
+    a.nx == b.nx && (0..a.nx).all(|i| (0..b.nx).any(|j| near(i, j)))
+}
+
+/// A box on a mesh and two meshes under MULTICCD, end to end on our
+/// polygons: every case's contact count and distance are MuJoCo's, and its
+/// contacts are those MuJoCo's own polygons give when each is started at
+/// the corner ours start at. That start is where the multi-contact's
+/// pruning of a clipped face to four corners begins (registry
+/// `D-HULL-ORDER`): the golden holds cases where it keeps other corners
+/// than MuJoCo's, and cases of four contacts where it keeps MuJoCo's.
+#[test]
+fn box_on_mesh_multiccd_as_mujoco() {
+    let doc = golden();
+    let meshes = meshes(&doc);
+    let cases = doc["multi_mesh"].as_object().expect("the multi_mesh cases");
+    let mut other_corners = 0;
+    let mut mujocos_four = 0;
+    for (name, case) in cases {
+        let ours = run(case, &meshes, false, Polygons::Ours);
+        let mujocos = run(case, &meshes, false, Polygons::Mujocos);
+        let started = run(case, &meshes, false, Polygons::MujocosStartedAsOurs);
+        let want = &case["out"];
+        assert_eq!(ours.nx, count(&want["nx"]), "{name}: contacts");
+        let dist = number(&want["dist"]);
+        assert!(
+            (ours.dist - dist).abs() < 1e-12,
+            "{name}: dist {}, MuJoCo {dist}",
+            ours.dist
+        );
+        assert!(
+            same_contacts(&ours, &started),
+            "{name}: not the contacts of MuJoCo's polygons started as ours"
+        );
+        if !same_contacts(&ours, &mujocos) {
+            other_corners += 1;
+        } else if ours.nx == 4 {
+            mujocos_four += 1;
+        }
+    }
+    assert!(
+        other_corners > 0,
+        "no case where the start keeps other corners"
+    );
+    assert!(
+        mujocos_four > 0,
+        "no case of four contacts kept as MuJoCo's"
     );
 }

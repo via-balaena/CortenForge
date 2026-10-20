@@ -52,6 +52,8 @@ use cf_geometry::{
     convex_hull,
 };
 
+use crate::mesh_polygons::{MeshPolygons, make_polygons};
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +80,12 @@ pub struct TriangleMeshData {
     /// Convex hull for collision (computed at build time via Quickhull).
     /// Serialized (unlike BVH) because hull computation is expensive.
     convex_hull: Option<ConvexHull>,
+    /// Each hull vertex's index among the mesh's vertices (MuJoCo's
+    /// `vert_globalid`), with the hull.
+    hull_vertex: Vec<usize>,
+    /// The polygons MuJoCo merges from the hull's faces, or from the mesh's
+    /// own without a hull (`mjCMesh::MakePolygons`), with the hull.
+    polygons: MeshPolygons,
 }
 
 impl PartialEq for TriangleMeshData {
@@ -130,6 +138,8 @@ impl TriangleMeshData {
             aabb,
             bvh,
             convex_hull: None,
+            hull_vertex: Vec::new(),
+            polygons: MeshPolygons::default(),
         }
     }
 
@@ -161,6 +171,8 @@ impl TriangleMeshData {
             aabb,
             bvh,
             convex_hull: None,
+            hull_vertex: Vec::new(),
+            polygons: MeshPolygons::default(),
         }
     }
 
@@ -202,15 +214,60 @@ impl TriangleMeshData {
 
     /// Compute and store the convex hull of this mesh's vertices.
     /// If the mesh has fewer than 4 vertices or all points are degenerate,
-    /// `convex_hull` remains `None`.
+    /// `convex_hull` remains `None`. With it, each hull vertex's index among
+    /// the mesh's vertices (the first of equal ones), and the mesh's polygons
+    /// from the hull's faces, or from its own where it has no hull.
     pub fn compute_convex_hull(&mut self, max_vertices: Option<usize>) {
         self.convex_hull = convex_hull(self.vertices(), max_vertices);
+        let mut first = std::collections::HashMap::new();
+        for (i, v) in self.mesh.vertices.iter().enumerate() {
+            first.entry(v.coords.map(f64::to_bits)).or_insert(i);
+        }
+        let hull_vertex: Option<Vec<usize>> = self.convex_hull.as_ref().and_then(|hull| {
+            hull.vertices
+                .iter()
+                .map(|v| first.get(&v.coords.map(f64::to_bits)).copied())
+                .collect()
+        });
+        self.hull_vertex = hull_vertex.unwrap_or_default();
+        let faces: Vec<[usize; 3]> = match &self.convex_hull {
+            Some(hull) if !self.hull_vertex.is_empty() => hull
+                .faces
+                .iter()
+                .map(|f| f.map(|i| self.hull_vertex[i as usize]))
+                .collect(),
+            _ => self
+                .mesh
+                .faces
+                .iter()
+                .map(|f| f.map(|i| i as usize))
+                .collect(),
+        };
+        self.polygons = make_polygons(&self.mesh.vertices, &faces);
     }
 
     /// Returns the convex hull if computed.
     #[must_use]
     pub fn convex_hull(&self) -> Option<&ConvexHull> {
         self.convex_hull.as_ref()
+    }
+
+    /// Each hull vertex's index among the mesh's vertices; empty without a
+    /// hull.
+    // Read by the narrow phase once convex pairs collide through `mjc_Convex`
+    // (book P50).
+    #[allow(dead_code)]
+    pub(crate) fn hull_vertex(&self) -> &[usize] {
+        &self.hull_vertex
+    }
+
+    /// The mesh's polygons (MuJoCo's `MakePolygons`); empty until the hull is
+    /// computed.
+    // Read by the narrow phase once convex pairs collide through `mjc_Convex`
+    // (book P50).
+    #[allow(dead_code)]
+    pub(crate) const fn polygons(&self) -> &MeshPolygons {
+        &self.polygons
     }
 
     /// Get a triangle's three vertex positions by face index.

@@ -19,6 +19,7 @@ use super::mj_primitive::{
     MAX_CONPAIR, Mat9, add3, dot3, mat_t_vec, mat_vec, normalize3, scl3, sub3,
 };
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::mesh_polygons::MeshPolygons;
 use crate::types::GeomType;
 
 /// `mjMINVAL²`.
@@ -37,6 +38,9 @@ const EDGE_TOL: f64 = 0.001_599_999_31;
 /// `mjMESH_HILLCLIMB_MIN`: a mesh with fewer vertices is searched vertex by
 /// vertex.
 const MESH_HILLCLIMB_MIN: usize = 10;
+/// `mjMAX_POLYVERT`: the most corners of a mesh face, or faces at a vertex,
+/// the multi-contact reads.
+const MAX_POLYVERT: usize = 150;
 
 // ---------------------------------------------------------------------------
 // Objects and their support functions
@@ -49,6 +53,8 @@ pub(super) struct CcdMesh<'a> {
     pub(super) verts: &'a [Point3<f64>],
     /// The convex hull's graph (`mesh_graph`), if the mesh has one.
     pub(super) hull: Option<HullGraph<'a>>,
+    /// The mesh's polygons, which the multi-contact clips.
+    pub(super) polygons: &'a MeshPolygons,
 }
 
 /// A convex hull's vertex graph: each hull vertex's index among the mesh's
@@ -85,6 +91,7 @@ pub(super) struct CcdObj<'a> {
     size: [f64; 3],
     margin: f64,
     support: Support<'a>,
+    mesh: Option<CcdMesh<'a>>,
     /// The last support point's vertex on a box or mesh (`vertindex`).
     vertindex: Option<usize>,
     /// The hull vertex the last hill climb ended at, where the next starts
@@ -128,6 +135,7 @@ impl<'a> CcdObj<'a> {
             size,
             margin,
             support,
+            mesh,
             vertindex: None,
             meshindex: None,
         })
@@ -1858,40 +1866,143 @@ fn simplex_dim(index: &mut [Option<usize>; 3], vert: &mut [[f64; 3]; 3]) -> usiz
     1
 }
 
-/// The face normals a feature of a geom can touch (`boxNormals`; a mesh
-/// offers none, its polygons not being ported).
+/// `intersect`: up to two values `a` and `b` share, in `a`'s order.
+fn intersect(a: &[usize], b: &[usize]) -> Vec<usize> {
+    let mut res = Vec::with_capacity(2);
+    for x in a {
+        for y in b {
+            if x == y {
+                res.push(*x);
+                if res.len() == 2 {
+                    return res;
+                }
+            }
+        }
+    }
+    res
+}
+
+/// `meshNormals`: the normals of the mesh faces a feature of `dim` vertices
+/// lies on, and their indices: the one face of three vertices; up to two
+/// faces of an edge; up to `mjMAX_POLYVERT` faces at a vertex.
+fn mesh_normals(
+    o: &CcdObj<'_>,
+    polygons: &MeshPolygons,
+    dim: usize,
+    v: [usize; 3],
+) -> Vec<([f64; 3], usize)> {
+    let map = &polygons.map;
+    let normal = |p: usize| (global_coord(&o.mat, None, polygons.normals[p]), p);
+    match dim {
+        3 => {
+            let edgeset = intersect(&map[v[0]], &map[v[1]]);
+            intersect(&edgeset, &map[v[2]])
+                .first()
+                .map(|&p| vec![normal(p)])
+                .unwrap_or_default()
+        }
+        2 => intersect(&map[v[0]], &map[v[1]])
+            .into_iter()
+            .map(normal)
+            .collect(),
+        1 => map[v[0]]
+            .iter()
+            .take(MAX_POLYVERT)
+            .map(|&p| normal(p))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `meshEdgeNormals`: the unit directions of the mesh edges a feature of
+/// `dim` vertices lies on (the edge itself; or from a vertex, the edge to
+/// the vertex before it on each face it lies on), each with its other end.
+fn mesh_edge_normals(
+    o: &CcdObj<'_>,
+    mesh: &CcdMesh<'_>,
+    dim: usize,
+    v1: &[f64; 3],
+    v2: &[f64; 3],
+    v1i: usize,
+) -> Vec<([f64; 3], [f64; 3])> {
+    let unit = |end: [f64; 3]| {
+        let mut d = sub3(&end, v1);
+        normalize3(&mut d);
+        (d, end)
+    };
+    match dim {
+        2 => vec![unit(*v2)],
+        1 => mesh.polygons.map[v1i]
+            .iter()
+            .take(MAX_POLYVERT)
+            .filter_map(|&p| {
+                let path = &mesh.polygons.paths[p];
+                let j = path.iter().position(|&v| v == v1i)?;
+                let prev = path[if j == 0 { path.len() - 1 } else { j - 1 }];
+                let v = &mesh.verts[prev];
+                Some(unit(global_coord(&o.mat, Some(&o.pos), [v.x, v.y, v.z])))
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `meshFace`: a mesh face's corners, up to `mjMAX_POLYVERT`, in reverse
+/// order.
+fn mesh_face(o: &CcdObj<'_>, mesh: &CcdMesh<'_>, idx: usize) -> Vec<[f64; 3]> {
+    let path = &mesh.polygons.paths[idx];
+    path[..path.len().min(MAX_POLYVERT)]
+        .iter()
+        .rev()
+        .map(|&i| {
+            let v = &mesh.verts[i];
+            global_coord(&o.mat, Some(&o.pos), [v.x, v.y, v.z])
+        })
+        .collect()
+}
+
+/// The face normals a feature of a geom can touch (`boxNormals`,
+/// `meshNormals`).
 fn face_normals(
     o: &CcdObj<'_>,
     dim: usize,
     index: &[Option<usize>; 3],
     dir: &[f64; 3],
 ) -> Vec<([f64; 3], usize)> {
-    match (o.geom_type, index) {
-        (GeomType::Box, [Some(a), Some(b), Some(c)]) => box_normals(&o.mat, dim, [*a, *b, *c], dir),
+    let [Some(a), Some(b), Some(c)] = *index else {
+        return Vec::new();
+    };
+    match (o.geom_type, &o.mesh) {
+        (GeomType::Box, _) => box_normals(&o.mat, dim, [a, b, c], dir),
+        (GeomType::Mesh, Some(mesh)) => mesh_normals(o, mesh.polygons, dim, [a, b, c]),
         _ => Vec::new(),
     }
 }
 
-/// The edge directions a feature of a geom lies on (`boxEdgeNormals`; a
-/// mesh offers none).
+/// The edge directions a feature of a geom lies on (`boxEdgeNormals`,
+/// `meshEdgeNormals`).
 fn edge_normals(
     o: &CcdObj<'_>,
     dim: usize,
     vert: &[[f64; 3]; 3],
     index: &[Option<usize>; 3],
 ) -> Vec<([f64; 3], [f64; 3])> {
-    match (o.geom_type, index[0]) {
-        (GeomType::Box, Some(v1i)) => box_edge_normals(o, dim, &vert[0], &vert[1], v1i),
+    let Some(v1i) = index[0] else {
+        return Vec::new();
+    };
+    match (o.geom_type, &o.mesh) {
+        (GeomType::Box, _) => box_edge_normals(o, dim, &vert[0], &vert[1], v1i),
+        (GeomType::Mesh, Some(mesh)) => mesh_edge_normals(o, mesh, dim, &vert[0], &vert[1], v1i),
         _ => Vec::new(),
     }
 }
 
-/// A geom's face from its index (`boxFace`).
+/// A geom's face from its index (`boxFace`, `meshFace`).
 fn face_polygon(o: &CcdObj<'_>, idx: usize) -> Vec<[f64; 3]> {
-    if o.geom_type == GeomType::Box {
-        box_face(o, idx)
-    } else {
-        Vec::new()
+    match (o.geom_type, &o.mesh) {
+        (GeomType::Box, _) => box_face(o, idx),
+        (GeomType::Mesh, Some(mesh)) => mesh_face(o, mesh, idx),
+        _ => Vec::new(),
     }
 }
 

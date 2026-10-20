@@ -46,7 +46,12 @@ clips (engine_collision_gjk.c:2063-2184).
 6369216c at their start, the second a three-way tie of EPA's starting faces.
 `nan`: an ellipsoid and a box, one turned by a matrix holding a NaN, which
 MuJoCo returns from (NaN, after GJK's last iteration); a NaN is written as
-the string "nan", as gen_census_golden.py writes one.
+the string "nan", as gen_census_golden.py writes one. `multi_mesh`: a box and
+a mesh, or two meshes, of polygonal faces (a slab of four-cornered faces, a
+prism on an irregular hexagon), face to face and edge to face, each held with
+its thinnest axis vertical, tilted within the tolerances and, in two of every
+eight, past them, with four contacts as mjc_Convex asks under MULTICCD; the
+multi-contact clips the meshes' polygons, which `meshes` records.
 It refuses a run whose cases miss a path the port must be checked on (each
 starting polytope, an EPA failure, multi-contact, the sphere and capsule
 inflation, the cutoff, a separating plane found by gjkIntersect, both mesh
@@ -124,7 +129,7 @@ REVERSED_PAIRS = [("ellipsoid", "sphere"), ("mesh", "sphere"), ("ellipsoid", "ca
                   ("sphere", "cylinder"), ("cylinder", "sphere"), ("sphere", "box"),
                   ("box", "sphere"), ("capsule", "box"), ("box", "capsule")]
 GROUPS = ("contact", "distance", "deep", "aligned", "reversed", "first_step", "probe", "cutoff",
-          "multi", "census", "nan")
+          "multi", "census", "nan", "multi_mesh")
 
 
 def gem8():
@@ -144,7 +149,22 @@ def pebble24():
     return d * np.array([0.06, 0.045, 0.035])
 
 
-MESHES = {"gem8": gem8(), "pebble24": pebble24()}
+def slab8():
+    """A box: polygonal faces of four corners, below the hill-climb threshold."""
+    half = np.array([0.09, 0.07, 0.02])
+    return np.array([half * np.array([sx, sy, sz])
+                     for sz in (-1, 1) for sy in (-1, 1) for sx in (-1, 1)])
+
+
+def prism12():
+    """A prism on an irregular hexagon: two six-cornered faces, hill-climbed."""
+    angles = np.array([0.0, 1.1, 2.0, 3.2, 4.1, 5.3])
+    radii = np.array([0.060, 0.055, 0.062, 0.058, 0.061, 0.056])
+    ring = np.stack([radii * np.cos(angles), radii * np.sin(angles)], axis=1)
+    return np.array([[x, y, z] for z in (-0.015, 0.015) for x, y in ring])
+
+
+MESHES = {"gem8": gem8(), "pebble24": pebble24(), "slab8": slab8(), "prism12": prism12()}
 
 
 def mesh_assets():
@@ -203,7 +223,10 @@ def axis_mat(axis, angle):
 
 
 def compiled_meshes():
-    """Each mesh's vertices as MuJoCo compiles them, and whether it hill-climbs."""
+    """Each mesh's vertices as MuJoCo compiles them and as authored, whether it hill-climbs, and
+    its polygons (`mjCMesh::MakePolygons`, which merges them in the authored frame): each one's
+    vertex path and normal (from the compiled vertices, before they are rounded to floats), and
+    each vertex's polygons."""
     m = mujoco.MjModel.from_xml_string(
         f"<mujoco>{mesh_assets()}<worldbody>"
         + "".join(f'<geom type="mesh" mesh="{n}"/>' for n in MESHES) + "</worldbody></mujoco>")
@@ -212,8 +235,16 @@ def compiled_meshes():
         i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MESH, name)
         adr, num = m.mesh_vertadr[i], m.mesh_vertnum[i]
         verts = np.asarray(m.mesh_vert[adr:adr + num], dtype=np.float64)
+        pa, pn = m.mesh_polyadr[i], m.mesh_polynum[i]
+        paths = [[int(m.mesh_polyvert[m.mesh_polyvertadr[pa + k] + j])
+                  for j in range(m.mesh_polyvertnum[pa + k])] for k in range(pn)]
+        normals = [[float(x) for x in m.mesh_polynormal[pa + k]] for k in range(pn)]
+        polymap = [[int(m.mesh_polymap[m.mesh_polymapadr[adr + v] + j])
+                    for j in range(m.mesh_polymapnum[adr + v])] for v in range(num)]
         out[name] = {"vert": [float(x) for x in verts.ravel()],
-                     "hillclimb": bool(m.mesh_graphadr[i] >= 0 and num >= 10)}
+                     "authored": [float(x) for x in MESHES[name].ravel()],
+                     "hillclimb": bool(m.mesh_graphadr[i] >= 0 and num >= 10),
+                     "polygons": paths, "polynormals": normals, "polymap": polymap}
     return out
 
 
@@ -458,6 +489,57 @@ def multi_cases(rng):
     return out
 
 
+def compiled_vertices(compiled, shape, size):
+    """A shape's vertices in its frame: a box's corners, or a mesh's as MuJoCo compiled them."""
+    if shape == "box":
+        return np.array([np.array(size) * np.array([sx, sy, sz])
+                         for sz in (-1, 1) for sy in (-1, 1) for sx in (-1, 1)])
+    return np.array(compiled[shape]["vert"]).reshape(-1, 3)
+
+
+def thin_up(verts):
+    """The turn that holds a shape's thinnest axis vertical."""
+    up = int(np.argmin(verts.max(axis=0) - verts.min(axis=0)))
+    if up == 2:
+        return np.eye(3).ravel()
+    return axis_mat([1, 0, 0], math.pi / 2) if up == 1 else axis_mat([0, 1, 0], -math.pi / 2)
+
+
+def multi_mesh_cases(rng, compiled):
+    out = {}
+    combos = [("box", "slab8"), ("box", "prism12"), ("slab8", "box"), ("prism12", "box"),
+              ("slab8", "prism12"), ("prism12", "slab8"), ("slab8", "slab8"),
+              ("prism12", "prism12")]
+    for lower, upper in combos:
+        for i in range(8):
+            sizes = {name: list(rng.uniform(0.02, 0.05, 3)) for name in ("lower", "upper")}
+            v_low = compiled_vertices(compiled, lower, sizes["lower"])
+            v_up = compiled_vertices(compiled, upper, sizes["upper"])
+            mat1 = mat_mul(axis_mat(rng.normal(size=3), rng.uniform(0, 5e-4)), thin_up(v_low))
+            yaw = axis_mat([0, 0, 1], rng.uniform(0, 2 * math.pi))
+            # Face to face, or an edge (along x before the yaw) down; tilted within the face
+            # and edge tolerances, past them in one face and one edge case of the eight.
+            lean = np.eye(3).ravel() if i % 2 == 0 else axis_mat([1, 0, 0], math.pi / 4)
+            tilt = rng.uniform(2e-3, 5e-2) if i >= 6 else rng.uniform(0, 5e-4)
+            mat2 = mat_mul(axis_mat(rng.normal(size=3), tilt),
+                           mat_mul(yaw, mat_mul(lean, thin_up(v_up))))
+            top = max((mat1.reshape(3, 3) @ v)[2] for v in v_low)
+            bottom = min((mat2.reshape(3, 3) @ v)[2] for v in v_up)
+            reach = 0.3 * min(np.ptp(v_low[:, 0]), np.ptp(v_low[:, 1]), np.ptp(v_up[:, 0]))
+            off = rng.uniform(-1, 1, 2) * reach
+            pos2 = np.array([off[0], off[1], top - bottom - rng.uniform(1e-4, 3e-3)])
+            geoms = [(lower, sizes["lower"], (np.zeros(3), mat1)),
+                     (upper, sizes["upper"], (pos2, mat2))]
+            # MuJoCo's type order puts a box first; two meshes either way.
+            if upper == "box" or (lower != "box" and i % 4 >= 2):
+                geoms.reverse()
+            kinds = [("box" if g[0] == "box" else "mesh") for g in geoms]
+            meshes = [(None if g[0] == "box" else g[0]) for g in geoms]
+            out[f"{lower}_{upper}_{i}"] = call(kinds, [g[1] for g in geoms], meshes,
+                                               [g[2] for g in geoms], 0.0, config(4, 0.0))
+    return out
+
+
 def census_cases():
     out = {}
     for prefix in ("3a13c90a", "6369216c"):
@@ -505,6 +587,9 @@ def coverage(cases):
         "the cutoff after inflation": any(c["out"]["dist"] == DBL_MAX and c["out"]["nx"] == 1
                                           and c["config"]["dist_cutoff"] > 0 for c in cases),
         "exhaustive mesh": any(o.get("mesh") == "gem8" for c in cases for o in c["obj"]),
+        "a mesh's multi-contact": any(c["out"]["nx"] > 1 and any(o["type"] == "mesh"
+                                                                 for o in c["obj"])
+                                      for c in cases),
         "hill-climbed mesh": any(o.get("mesh") == "pebble24" for c in cases for o in c["obj"]),
     }
     missing = [k for k, v in need.items() if not v]
@@ -533,6 +618,7 @@ def main():
            "aligned": aligned_cases(rng), "reversed": reversed_cases(rng),
            "first_step": first_step_cases(), "probe": probe_cases(rng), "cutoff": cutoff_cases(rng),
            "multi": multi_cases(rng), "census": census_cases(), "nan": nan_cases()}
+    doc["multi_mesh"] = multi_mesh_cases(rng, doc["meshes"])
     cases = [c for k in GROUPS for c in doc[k].values()]
     hist = coverage(cases)
     os.makedirs(sys.argv[1], exist_ok=True)
