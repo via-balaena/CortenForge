@@ -1780,4 +1780,51 @@ mod spec_d_tests {
             c.depth
         );
     }
+
+    /// A box, and a mesh with polygons, resting on a mesh whose polygons were
+    /// never merged (no `compute_convex_hull`) under MULTICCD, the unmerged
+    /// mesh the second object of the pair and then the first: the
+    /// multi-contact has no faces to clip, so each pair takes one contact per
+    /// pass: the first, and those MULTICCD's four turned passes add (all four
+    /// for the box, three for the mesh).
+    #[test]
+    fn a_mesh_without_polygons_under_multiccd() {
+        let slab = box_mesh(1.0, 1.0, SLAB_HZ);
+        let unmerged = Arc::new(TriangleMeshData::from_faces(
+            slab.vertices().to_vec(),
+            slab.triangles().to_vec(),
+        ));
+        assert!(
+            unmerged.polygons().paths.is_empty(),
+            "precondition: no polygons"
+        );
+        let pos_slab = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        let pos_upper = Vector3::new(0.0, 0.0, 0.099);
+        let mat = Matrix3::identity();
+        for (upper, upper_mesh, count) in [
+            (GeomType::Box, None, 5),
+            (GeomType::Mesh, Some(box_mesh(0.1, 0.1, 0.1)), 4),
+        ] {
+            let mut model = make_model(
+                GeomType::Mesh,
+                Vector3::zeros(),
+                upper,
+                Vector3::new(0.1, 0.1, 0.1),
+            );
+            model.enableflags |= ENABLE_MULTICCD;
+            model.geom_mesh = vec![Some(0), upper_mesh.as_ref().map(|_| 1)];
+            model.mesh_data = std::iter::once(Arc::clone(&unmerged))
+                .chain(upper_mesh)
+                .collect();
+            let contacts = collide_geoms(&model, 0, 1, pos_slab, mat, pos_upper, mat, 0.0);
+            assert_eq!(contacts.len(), count, "{upper:?}: one contact per pass");
+            for c in &contacts {
+                assert!(
+                    (c.depth - 0.001).abs() < 1e-9,
+                    "{upper:?}: depth {}",
+                    c.depth
+                );
+            }
+        }
+    }
 }

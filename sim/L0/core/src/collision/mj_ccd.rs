@@ -2161,14 +2161,18 @@ fn ccd_iteration(
 
 /// `maxContacts`: the contacts one pass of `mjc_ccd` recovers: 1 with a
 /// margin; 8 for two boxes; 4 for two boxes or meshes under MULTICCD; else 1.
+/// A mesh without polygons gives the multi-contact no faces to clip, so its
+/// pair takes 1 (MuJoCo's compiler merges polygons for every mesh; here a
+/// `TriangleMeshData` never given `compute_convex_hull` has none).
 fn max_contacts(model: &Model, o1: &CcdObj<'_>, o2: &CcdObj<'_>) -> usize {
     if o1.margin > 0.0 || o2.margin > 0.0 {
         return 1;
     }
+    let unmerged = |o: &CcdObj<'_>| o.mesh.is_some_and(|m| m.polygons.paths.is_empty());
     match (o1.geom_type, o2.geom_type) {
         (GeomType::Box, GeomType::Box) => 8,
         (GeomType::Box | GeomType::Mesh, GeomType::Box | GeomType::Mesh)
-            if enabled(model, ENABLE_MULTICCD) =>
+            if enabled(model, ENABLE_MULTICCD) && !unmerged(o1) && !unmerged(o2) =>
         {
             4
         }
