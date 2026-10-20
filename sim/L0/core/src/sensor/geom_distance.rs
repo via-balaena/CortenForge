@@ -17,7 +17,11 @@ use crate::types::{Data, GeomType, Model};
 /// `mjc_BoxBox` goes to `mjc_ccd` ([`geom_distance_ccd`]), the geoms in the
 /// order given. Every other pair goes to its collision function with
 /// `distmax` as the margin: the smallest distance it lists, the segment
-/// along that contact's normal, centred on its position.
+/// along that contact's normal, centred on its position. That normal the
+/// contact's frame has normalised a second time, where MuJoCo's has not
+/// (`collision_parity.rs`' route test bounds the difference); a plane and a
+/// mesh, and a height field, take sim-core's own functions until book P51
+/// and P52.
 // Paired geom identifiers (geom1/geom2, g1/g2) are intentionally similar.
 #[allow(clippy::similar_names)]
 pub fn geom_distance(

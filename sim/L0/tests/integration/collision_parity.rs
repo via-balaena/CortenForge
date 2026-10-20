@@ -102,10 +102,10 @@ fn capsule_rests_on_box_as_mujoco() {
 // The pairs below collide through `mjc_Convex` (sim-core's port): at the
 // turned pose each contact is MuJoCo's, bit for bit on the box slab, and
 // within 1.5e-9 on the mesh slab, the size of 0.1's rounding to a float
-// (MuJoCo stores mesh vertices as floats, book Rigid-loading L35). The
-// heights part where the forward's smooth forces first differ in their last
-// bits (ledger L154; on the box slab's cylinder at step 8). Each bound is
-// 2.6 to 12 times what was measured, which each test's doc gives.
+// (MuJoCo stores mesh vertices as floats, book Rigid-loading L35). The box
+// slab's cylinder parts where the forward's smooth forces first differ in
+// their last bits, at step 8 (ledger L154). Each bound is 2.6 to 12 times
+// what was measured, which each test's doc gives.
 
 /// A sphere-shaped ellipsoid on a box slab. Measured: height 8.3e-17,
 /// contact 0.
@@ -1558,10 +1558,10 @@ fn geom_distance_sensors_near_touching_as_mujoco() {
 /// 0 and no segment: MuJoCo's bit for bit. Two planes, which
 /// have no collision function: the cutoff and zeros. The world's sensor of
 /// a sphere and a flat height field takes the field's collision function
-/// (MuJoCo refuses a sensor naming a height field, not the world that holds
-/// it): 0.01 into the field it reads a contact, not the cutoff; the values
-/// are sim-core's height-field contacts, not MuJoCo's (−0.7 into the field
-/// and 0.05 above it), until book P52 ports MuJoCo's (ledger L197).
+/// (MuJoCo refuses a sensor naming a height field, ledger L197, not the
+/// world that holds it): 0.01 into the field it reads a contact, not the
+/// cutoff; the values are sim-core's height-field contacts, not MuJoCo's
+/// (−0.7 into the field and above it), until book P52 ports MuJoCo's.
 #[test]
 fn geom_distance_special_cases_as_mujoco() {
     let golden = golden();

@@ -536,6 +536,8 @@ fn gjk(status: &mut CcdStatus, o1: &mut CcdObj<'_>, o2: &mut CcdObj<'_>) {
     } else {
         0.5 * status.tolerance * status.tolerance
     };
+    // MuJoCo leaves `x_norm` unset (`engine_collision_gjk.c:186`) and reads it
+    // when no iteration runs (a `max_iterations` of 0); here it is 0.
     let mut x_norm = 0.0;
 
     while k < kmax {
@@ -2204,7 +2206,7 @@ fn dist3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 
 /// `mjc_Convex` (`engine_collision_convex.c:917-1000`): the contacts of two
 /// convex geoms, `g1` first, at `pos1`, `mat1` and `pos2`, `mat2`, each
-/// inflated by `margin`. One pass of `mjc_ccd`, which recovers several
+/// inflated by half of `margin`. One pass of `mjc_ccd`, which recovers several
 /// contacts for two boxes or meshes; for other pairs under MULTICCD, but a
 /// sphere's or an ellipsoid's, four more passes with the first geom turned
 /// by ±1e-3 rad about each tangent of the first contact, and the second
