@@ -1,10 +1,11 @@
 //! Mesh–plane collision: the mesh pairs MuJoCo's table does not give
 //! `mjc_Convex` (the others collide through [`mj_ccd`](super::mj_ccd)).
 
+use super::finite_rotation;
 use super::narrow::make_contact_from_geoms;
 use crate::mesh::{MeshContact, TriangleMeshData};
 use crate::types::{Contact, GeomType, Model};
-use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Point3, Vector3};
 use sim_types::Pose;
 
 /// A mesh against a plane, either first: up to three contacts
@@ -33,10 +34,10 @@ pub fn collide_with_mesh(
         return vec![];
     };
     let mesh: &TriangleMeshData = &model.mesh_data[mesh_id];
-    let mesh_pose = Pose::from_position_rotation(
-        Point3::from(mesh_pos),
-        UnitQuaternion::from_matrix(&mesh_mat),
-    );
+    let Some(mesh_quat) = finite_rotation(&mesh_mat) else {
+        return vec![];
+    };
+    let mesh_pose = Pose::from_position_rotation(Point3::from(mesh_pos), mesh_quat);
     let plane_normal = plane_mat.column(2).into_owned();
     let plane_d = plane_normal.dot(&plane_pos);
     collide_mesh_plane(mesh, &mesh_pose, plane_normal, plane_d, margin)

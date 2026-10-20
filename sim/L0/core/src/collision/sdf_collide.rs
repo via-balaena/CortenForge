@@ -1,5 +1,6 @@
 //! SDF collision dispatch — routes geom-SDF pairs to the standalone SDF library.
 
+use super::finite_rotation;
 use super::narrow::make_contact_from_geoms;
 use crate::sdf::{
     SdfContact, compute_shape_contact, compute_shape_plane_contact, sdf_box_contact,
@@ -7,7 +8,7 @@ use crate::sdf::{
     sdf_sphere_contact, sdf_triangle_mesh_contact,
 };
 use crate::types::{Contact, GeomType, Model};
-use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Point3, Vector3};
 use sim_types::Pose;
 
 /// Cap SDF-SDF contacts per pair with greedy spatial selection.
@@ -91,11 +92,14 @@ pub fn collide_with_sdf(
     // Build SDF pose (no centering offset needed — SdfGrid uses an
     // arbitrary origin stored internally, unlike HeightFieldData which
     // uses corner-origin requiring a centering offset)
-    let sdf_quat = UnitQuaternion::from_matrix(&sdf_mat);
+    let (Some(sdf_quat), Some(other_quat)) =
+        (finite_rotation(&sdf_mat), finite_rotation(&other_mat))
+    else {
+        return vec![];
+    };
     let sdf_pose = Pose::from_position_rotation(Point3::from(sdf_pos), sdf_quat);
 
     // Build other geom's parameters
-    let other_quat = UnitQuaternion::from_matrix(&other_mat);
     let other_pose = Pose::from_position_rotation(Point3::from(other_pos), other_quat);
     let other_size = model.geom_size[other_geom];
 

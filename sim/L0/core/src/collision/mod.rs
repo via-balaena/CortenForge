@@ -27,6 +27,18 @@ pub(crate) mod sdf_collide;
 
 pub(crate) use mj_ccd::geom_distance_ccd;
 
+/// A geom's rotation as nalgebra's `UnitQuaternion::from_matrix`, or `None`
+/// where the matrix holds a NaN or an infinity: that conversion iterates
+/// until it converges, with no cap on its iterations, and on such a matrix
+/// never does.
+pub(crate) fn finite_rotation(
+    mat: &nalgebra::Matrix3<f64>,
+) -> Option<nalgebra::UnitQuaternion<f64>> {
+    mat.iter()
+        .all(|x| x.is_finite())
+        .then(|| nalgebra::UnitQuaternion::from_matrix(mat))
+}
+
 // Note: collide_geoms, geom_to_shape, make_contact_flex_rigid, and
 // narrowphase_sphere_geom are accessed internally via self::narrow::,
 // self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
@@ -1178,8 +1190,13 @@ mod contact_param_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod spec_d_tests {
+    use super::flex_narrow::narrowphase_sphere_geom;
+    use super::hfield::collide_hfield_multi;
     use super::narrow::collide_geoms;
+    use super::sdf_collide::collide_with_sdf;
+    use crate::heightfield::HeightFieldData;
     use crate::mesh::TriangleMeshData;
+    use crate::sdf::{PhysicsShape, SdfGrid, ShapeConvex};
     use crate::types::{ENABLE_MULTICCD, GeomType, Model};
     use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
     use std::sync::Arc;
@@ -1823,6 +1840,81 @@ mod spec_d_tests {
                     (c.depth - 0.001).abs() < 1e-9,
                     "{upper:?}: depth {}",
                     c.depth
+                );
+            }
+        }
+    }
+
+    /// A geom turned by a matrix holding a NaN or an infinity collides as
+    /// nothing at every site that turned it into a quaternion (nalgebra's
+    /// `from_matrix`, which iterates without a cap): a mesh on a plane, a
+    /// sphere on a height field or a signed distance field, and a flex
+    /// vertex against a mesh, a height field or a signed distance field,
+    /// each geom's matrix bad in turn. Each call returns.
+    #[test]
+    fn a_non_finite_turn_collides_as_nothing() {
+        let n = 5;
+        let hfield = Arc::new(HeightFieldData::new(vec![0.5; n * n], n, n, 1.0));
+        let sdf: Arc<dyn PhysicsShape> = Arc::new(ShapeConvex::new(Arc::new(SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            16,
+            1.0,
+        ))));
+        let ok = Matrix3::identity();
+        for bad in [f64::NAN, f64::INFINITY] {
+            let mut turned = Matrix3::identity();
+            turned[(0, 1)] = bad;
+
+            let mut plane_mesh = make_model(
+                GeomType::Plane,
+                Vector3::new(5.0, 5.0, 0.1),
+                GeomType::Mesh,
+                Vector3::zeros(),
+            );
+            plane_mesh.geom_mesh = vec![None, Some(0)];
+            plane_mesh.mesh_data = vec![box_mesh(0.1, 0.1, 0.1)];
+            let mut hfield_sphere = make_model(
+                GeomType::Hfield,
+                Vector3::zeros(),
+                GeomType::Sphere,
+                Vector3::new(0.3, 0.0, 0.0),
+            );
+            hfield_sphere.hfield_data = vec![Arc::clone(&hfield)];
+            hfield_sphere.hfield_size = vec![[2.0, 2.0, 1.0, 1.0]];
+            hfield_sphere.geom_hfield = vec![Some(0), None];
+            let mut sdf_sphere = make_model(
+                GeomType::Sdf,
+                Vector3::zeros(),
+                GeomType::Sphere,
+                Vector3::new(0.3, 0.0, 0.0),
+            );
+            sdf_sphere.shape_data = vec![Arc::clone(&sdf)];
+            sdf_sphere.geom_shape = vec![Some(0), None];
+
+            let near = Vector3::new(0.0, 0.0, 0.7);
+            for (m1, m2) in [(turned, ok), (ok, turned)] {
+                assert!(
+                    collide_geoms(&plane_mesh, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
+                        .is_empty(),
+                    "plane and mesh, {bad}"
+                );
+                assert!(
+                    collide_hfield_multi(&hfield_sphere, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
+                        .is_empty(),
+                    "height field and sphere, {bad}"
+                );
+                assert!(
+                    collide_with_sdf(&sdf_sphere, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
+                        .is_empty(),
+                    "signed distance field and sphere, {bad}"
+                );
+            }
+            for (model, g) in [(&plane_mesh, 1), (&hfield_sphere, 0), (&sdf_sphere, 0)] {
+                assert!(
+                    narrowphase_sphere_geom(near, 0.5, g, model, Vector3::zeros(), turned)
+                        .is_none(),
+                    "flex vertex against geom {g}, {bad}"
                 );
             }
         }

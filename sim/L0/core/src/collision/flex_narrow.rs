@@ -3,7 +3,7 @@
 
 use super::{
     assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flex_flex,
-    contact_param_flex_rigid, contact_param_flex_self,
+    contact_param_flex_rigid, contact_param_flex_self, finite_rotation,
 };
 use crate::forward::closest_point_segment;
 use crate::gjk_epa::gjk_epa_contact;
@@ -162,7 +162,7 @@ pub fn narrowphase_sphere_geom(
         GeomType::Mesh => {
             let mesh_id = model.geom_mesh[geom_idx]?;
             let mesh = &model.mesh_data[mesh_id];
-            let geom_quat = UnitQuaternion::from_matrix(&geom_mat);
+            let geom_quat = finite_rotation(&geom_mat)?;
             let mesh_pose = Pose::from_position_rotation(Point3::from(geom_pos), geom_quat);
 
             // Primary path: convex hull GJK (MuJoCo-conformant)
@@ -207,7 +207,7 @@ pub fn narrowphase_sphere_geom(
 
             // Centering offset: convert center-origin to corner-origin
             let hf_offset = geom_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0);
-            let geom_quat = UnitQuaternion::from_matrix(&geom_mat);
+            let geom_quat = finite_rotation(&geom_mat)?;
             let hf_pose =
                 Pose::from_position_rotation(Point3::from(geom_pos + hf_offset), geom_quat);
 
@@ -221,7 +221,7 @@ pub fn narrowphase_sphere_geom(
         GeomType::Sdf => {
             let sdf_id = model.geom_shape[geom_idx]?;
             let sdf = model.shape_data[sdf_id].sdf_grid();
-            let geom_quat = UnitQuaternion::from_matrix(&geom_mat);
+            let geom_quat = finite_rotation(&geom_mat)?;
             let sdf_pose = Pose::from_position_rotation(Point3::from(geom_pos), geom_quat);
 
             if let Some(sc) = sdf_sphere_contact(sdf, &sdf_pose, Point3::from(v), sphere_radius) {

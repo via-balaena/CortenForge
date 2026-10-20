@@ -5,6 +5,7 @@
 //! each prism against the geom using GJK/EPA penetration. Returns 0..50
 //! contacts per geom pair.
 
+use super::finite_rotation;
 use super::narrow::{geom_to_shape, make_contact_from_geoms};
 use crate::gjk_epa::{gjk_epa_contact, support};
 use crate::heightfield::HeightFieldData;
@@ -79,11 +80,13 @@ pub fn collide_hfield_multi(
 
     // Hfield pose: world position WITHOUT centering offset — the offset is
     // baked into prism vertex positions via `dx * c - hf_x_half`.
-    let hf_quat = UnitQuaternion::from_matrix(&hf_mat);
+    let (Some(hf_quat), Some(conv_quat)) = (finite_rotation(&hf_mat), finite_rotation(&conv_mat))
+    else {
+        return contacts;
+    };
     let hf_pose = Pose::from_position_rotation(Point3::from(hf_pos), hf_quat);
 
     // Convex geom pose
-    let conv_quat = UnitQuaternion::from_matrix(&conv_mat);
     let conv_pose = Pose::from_position_rotation(Point3::from(conv_pos), conv_quat);
 
     // --- Phase 1: Express convex geom in hfield-local frame ---
