@@ -21,7 +21,7 @@ use super::mj_primitive::{
 };
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::mesh_polygons::MeshPolygons;
-use crate::quat::{axis_angle_to_quat, quat_to_mat};
+use crate::quat::quat_to_mat;
 use crate::types::{Data, ENABLE_MULTICCD, GeomType, Model, enabled, make_frame};
 
 /// `mjMINVAL²`.
@@ -2223,7 +2223,11 @@ pub(super) fn mjc_convex(
     margin: f64,
 ) -> Vec<RawContact> {
     const RELATIVE_TOLERANCE: f64 = 1e-3;
-    const PERTURBATION_ANGLE: f64 = 1e-3;
+    // `mji_axisAngle2Quat` of MuJoCo's ±1e-3 rad turn: the sine and cosine of
+    // its half, correctly rounded, as literals (`rotmat`'s sine is one), so
+    // the turn does not take the platform's libm's last bit.
+    const HALF_TURN_SIN: f64 = 4.999_999_791_666_669e-4;
+    const HALF_TURN_COS: f64 = 0.999_999_875_000_002_6;
     let (Some(mut o1), Some(mut o2)) = (
         CcdObj::of_geom(model, g1, pos1, mat1, margin),
         CcdObj::of_geom(model, g2, pos2, mat2, margin),
@@ -2248,8 +2252,8 @@ pub(super) fn mjc_convex(
         let tolerance = RELATIVE_TOLERANCE * if r1 < r2 { r1 } else { r2 };
         let origin = con[0].pos;
         for axis in tangents {
-            for angle in [-PERTURBATION_ANGLE, PERTURBATION_ANGLE] {
-                let rot = quat_to_mat(&axis_angle_to_quat(&[axis.x, axis.y, axis.z], angle));
+            for s in [-HALF_TURN_SIN, HALF_TURN_SIN] {
+                let rot = quat_to_mat(&[HALF_TURN_COS, axis.x * s, axis.y * s, axis.z * s]);
                 rotate_frame(&origin, &rot, &mut o1.mat, &mut o1.pos);
                 rotate_frame(&origin, &transpose(&rot), &mut o2.mat, &mut o2.pos);
                 // `mjc_isDistinctContact`: farther than the tolerance from each.
