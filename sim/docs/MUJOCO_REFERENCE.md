@@ -88,7 +88,8 @@ plane pairs functions of their own; an ellipsoid or a mesh against a sphere,
 capsule, ellipsoid, cylinder, box or mesh, and a cylinder against a capsule,
 cylinder or box, MuJoCo's native convex collision (`mjc_Convex`: GJK, EPA and
 its multi-contact; `collision/mj_ccd.rs`). A mesh collides as the convex hull
-of its vertices; against a plane it takes sim-core's own `collide_mesh_plane`.
+of its vertices; it and an ellipsoid against a plane, through MuJoCo's
+`mjc_PlaneConvex`.
 
 Output: contact list with position, normal, penetration depth, and geom IDs.
 

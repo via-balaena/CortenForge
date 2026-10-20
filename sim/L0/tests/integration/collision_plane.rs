@@ -1486,8 +1486,9 @@ fn cylinder_plane_slight_tilt_3_contacts() {
 /// Box-shaped mesh on horizontal plane → 3 contacts (capped from 4 bottom vertices).
 ///
 /// Configuration: 1×1×1 box mesh at z=0.4. Bottom face at z=-0.1 has 4 vertices,
-/// all penetrating with depth=0.1. Proximity filter (0.3 * rbound ≈ 0.26) passes
-/// all 4 since they're 1.0 apart. Capped at maxplanemesh=3.
+/// all penetrating with depth=0.1. The first contact is at one of them; its
+/// neighbours on the hull among the other three are 1.0 or more from it, past
+/// the spacing (0.3 of the half-diagonal ≈ 0.26). Capped at maxplanemesh=3.
 #[test]
 fn mesh_plane_box_3_contacts() {
     let mjcf = r#"

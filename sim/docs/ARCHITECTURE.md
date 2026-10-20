@@ -128,8 +128,7 @@ sim-core/src/
 │   ├── plane.rs           # Plane-vs-geom algorithms
 │   ├── pair_convex.rs     # Convex pair algorithms
 │   ├── pair_cylinder.rs   # Cylinder pair algorithms
-│   ├── mesh_collide.rs    # Mesh-plane collision
-│   ├── mj_ccd.rs          # MuJoCo's native convex collision (GJK, EPA, multi-contact)
+│   ├── mj_ccd.rs          # MuJoCo's native convex collision (GJK, EPA, multi-contact; plane-convex)
 │   ├── hfield.rs          # Height field collision
 │   ├── flex_collide.rs    # Flex collision dispatcher
 │   ├── flex_narrow.rs     # Flex sphere-geom narrowphase
@@ -377,8 +376,9 @@ their own. An ellipsoid or a mesh against a sphere, capsule,
 ellipsoid, cylinder, box or mesh, and a cylinder against a capsule, cylinder
 or box, collide through MuJoCo's native convex collision (`mjc_Convex`: GJK,
 EPA and its multi-contact; `collision/mj_ccd.rs`). A mesh collides as the
-convex hull of its vertices; against a plane it takes sim-core's own
-`collide_mesh_plane`. Height fields and SDFs have their own routes.
+convex hull of its vertices; it and an ellipsoid against a plane, through
+MuJoCo's `mjc_PlaneConvex` (`collision/mj_ccd.rs`). Height fields and SDFs have
+their own routes.
 
 ### Supported Geometry Types
 
@@ -388,9 +388,9 @@ convex hull of its vertices; against a plane it takes sim-core's own
 | Box | `Box` | MuJoCo's `mjc_BoxBox` for box-box; `mjc_Convex` with an ellipsoid, cylinder or mesh |
 | Capsule | `Capsule` | Analytical line-line distance; `mjc_Convex` with an ellipsoid, cylinder or mesh |
 | Cylinder | `Cylinder` | `mjc_Convex`, but with a sphere or plane |
-| Ellipsoid | `Ellipsoid` | `mjc_Convex`, but with a plane |
+| Ellipsoid | `Ellipsoid` | `mjc_Convex`; with a plane, `mjc_PlaneConvex` |
 | Plane | `Plane` | Infinite half-space (ground) |
-| Mesh | `Mesh` | Its convex hull through `mjc_Convex`; with a plane, `collide_mesh_plane` |
+| Mesh | `Mesh` | Its convex hull through `mjc_Convex`; with a plane, `mjc_PlaneConvex` |
 
 sim-core also provides collision primitives usable outside the pipeline:
 

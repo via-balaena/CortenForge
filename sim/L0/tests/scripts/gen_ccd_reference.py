@@ -101,6 +101,31 @@ ellipsoid or a cylinder, overlapping, at the chunk 3e-3 review's poses where S3D
 weight changes mjc_Convex's contact (registry D-GJK-S3D), as mjc_Convex
 calls mjc_ccd; a sphere and an ellipsoid with the exact distance.
 
+`plane_meshes` and `plane_convex` hold MuJoCo's mjc_PlaneConvex
+(engine_collision_convex.c:1042-1139), called on a plane (geom 0) and an
+ellipsoid or a mesh (geom 1) at poses set in mjData: `plane_meshes` each mesh
+above as MuJoCo compiles it (its vertices; its hull graph where its geom
+collides, `vert_globalid` and each hull vertex's neighbours; its radius,
+`geom_rbound`), `plane_convex` the cases, each with the plane's pose, the
+geom's type, size, mesh and pose, the margin and the contacts listed (`dist`,
+`pos`, the frame's normal): `ellipsoid`, ellipsoids of random sizes and turns
+within 0.05 of planes of random poses, at margins 0, 0.01 and 0.1;
+`ellipsoid_at_margin`, those apart at a margin equal to MuJoCo's own distance
+(each listed: the comparison is inclusive); `mesh`, each mesh within 0.02 of a
+plane at random turns and with its local -z face down, at margins 0 and 0.02;
+`mesh_bare`, the same draws on the mesh compiled without a graph (its geom
+not colliding), where mjc_PlaneConvex searches every vertex; `edge`, an
+unturned mesh over an unturned plane at a margin equal to its lowest
+vertices' distance exactly (the first listed, the rest not), with a graph and
+without, and a mesh without a graph apart by 0.7 of its radius at a margin of
+its radius (its first vertex farther from the first contact than the
+spacing); and `nan`, a
+mesh and an ellipsoid turned by a matrix holding a NaN, and a plane whose
+normal holds one.
+It refuses plane cases that miss 0 to 3 mesh contacts with a graph and
+without, a vertex within the margin skipped as nearer the first contact than
+0.3 of the radius, or a NaN contact.
+
 It refuses a run whose cases miss a path the port must be checked on (each
 starting polytope, an EPA failure, multi-contact, the sphere and capsule
 inflation, the cutoff, a separating plane found by gjkIntersect, both mesh
@@ -1347,6 +1372,266 @@ def coverage(cases, graph):
     return hist
 
 
+class Contact(ctypes.Structure):
+    """`mjContact` (mjdata.h:127-158)."""
+    _fields_ = [("dist", c_double), ("pos", c_double * 3), ("frame", c_double * 9),
+                ("includemargin", c_double), ("friction", c_double * 5), ("solref", c_double * 2),
+                ("solreffriction", c_double * 2), ("solimp", c_double * 5), ("mu", c_double),
+                ("H", c_double * 36), ("dim", c_int), ("geom1", c_int), ("geom2", c_int),
+                ("geom", c_int * 2), ("flex", c_int * 2), ("elem", c_int * 2), ("vert", c_int * 2),
+                ("exclude", c_int), ("efc_address", c_int)]
+
+
+# mjc_PlaneConvex is not exported; MuJoCo's collision table is (engine_collision_driver.c:41-52),
+# and holds it for a plane with an ellipsoid and with a mesh.
+COLLISION = (c_void_p * 81).in_dll(LIB, "mjCOLLISIONFUNC")
+if COLLISION[0 * 9 + 4] is None or COLLISION[0 * 9 + 4] != COLLISION[0 * 9 + 7]:
+    sys.exit("mjCOLLISIONFUNC: no one function for a plane with an ellipsoid and a mesh")
+PLANE_CONVEX = CFUNCTYPE(c_int, c_void_p, c_void_p, POINTER(Contact), c_int, c_int, c_double)(
+    COLLISION[0 * 9 + 4])
+PLANE_MESHES = {**MESHES, **GRAPH_MESHES}
+
+
+def plane_mesh_model(name, faces=None):
+    """A plane (geom 0) and the mesh `name` (geom 1): colliding, so MuJoCo makes its hull graph;
+    or, given `faces`, with those faces and not colliding (contype and conaffinity 0, in no
+    pair), so it makes none (user_model.cc:4915-4921, user_mesh.cc:1567)."""
+    if faces is None:
+        return mujoco.MjModel.from_xml_string(
+            f'<mujoco>{mesh_assets()}{graph_assets()}<worldbody>'
+            f'<geom type="plane" size="5 5 0.1"/><geom type="mesh" mesh="{name}"/>'
+            '</worldbody></mujoco>')
+    vert = " ".join(repr(float(x)) for x in PLANE_MESHES[name].ravel())
+    face = " ".join(str(i) for f in faces for i in f)
+    return mujoco.MjModel.from_xml_string(
+        f'<mujoco><asset><mesh name="{name}" vertex="{vert}" face="{face}"/></asset><worldbody>'
+        f'<geom type="plane" size="5 5 0.1"/><geom type="mesh" mesh="{name}" contype="0"'
+        ' conaffinity="0"/></worldbody></mujoco>')
+
+
+def plane_meshes():
+    """Each of `PLANE_MESHES` as MuJoCo compiles it: its vertices, its hull graph where its geom
+    collides (`vert_globalid` and each hull vertex's neighbours, as `mjccd_support` and
+    `mjc_PlaneConvex` walk them), its hull's faces (in the authored vertices' numbering) and its
+    bounding radius (`geom_rbound`, in its mesh frame). Given those faces and not colliding, it
+    compiles to the same vertices and radius and no graph."""
+    out = {}
+    for name in PLANE_MESHES:
+        m = plane_mesh_model(name)
+        mid = m.geom_dataid[1]
+        ga = m.mesh_graphadr[mid]
+        nv, nf = int(m.mesh_graph[ga]), int(m.mesh_graph[ga + 1])
+        fa = ga + 2 + 3 * nv + 3 * nf
+        faces = [[int(m.mesh_graph[fa + 3 * k + j]) for j in range(3)] for k in range(nf)]
+        bare = plane_mesh_model(name, faces)
+        bid = bare.geom_dataid[1]
+        adr, num = m.mesh_vertadr[mid], m.mesh_vertnum[mid]
+        verts = np.asarray(m.mesh_vert[adr:adr + num], dtype=np.float64)
+        bare_verts = np.asarray(bare.mesh_vert[bare.mesh_vertadr[bid]:][:bare.mesh_vertnum[bid]],
+                                dtype=np.float64)
+        if bare.mesh_graphadr[bid] >= 0 or ga < 0:
+            sys.exit(f"plane mesh {name}: graphs {ga}, {bare.mesh_graphadr[bid]}")
+        if bare_verts.shape != verts.shape or (bare_verts != verts).any():
+            sys.exit(f"plane mesh {name}: compiled without a graph, other vertices")
+        if m.geom_rbound[1] != bare.geom_rbound[1]:
+            sys.exit(f"plane mesh {name}: another radius without a graph")
+        edgeadr = [int(x) for x in m.mesh_graph[ga + 2:ga + 2 + nv]]
+        globalid = [int(x) for x in m.mesh_graph[ga + 2 + nv:ga + 2 + 2 * nv]]
+        localid = m.mesh_graph[ga + 2 + 2 * nv:]
+        neighbours = []
+        for v in range(nv):
+            k, around = edgeadr[v], []
+            while localid[k] >= 0:
+                around.append(int(localid[k]))
+                k += 1
+            neighbours.append(around)
+        out[name] = {"vert": [float(x) for x in verts.ravel()],
+                     "graph": {"vertex": globalid, "neighbours": neighbours}, "faces": faces,
+                     "rbound": float(m.geom_rbound[1])}
+    return out
+
+
+SENTINEL = -1.0e300
+
+
+def plane_call(m, d, plane, obj, margin):
+    """MuJoCo's mjc_PlaneConvex on the plane (geom 0) and geom 1 of `m` at the given poses; the
+    contacts it lists (`dist`, `pos`, the frame's normal)."""
+    for g, (pos, mat) in enumerate((plane, obj)):
+        d.geom_xpos[g] = pos
+        d.geom_xmat[g] = mat
+    con = (Contact * 4)()
+    for c in con:
+        c.dist = SENTINEL
+        c.frame[3] = SENTINEL
+    n = PLANE_CONVEX(m._address, d._address, con, 0, 1, margin)
+    normal = [plane[1][2], plane[1][5], plane[1][8]]
+    # The layout is right only if each contact's writes land where they are read: the normal
+    # in the first three of the frame and zeros in the next three, nothing past the last.
+    for k in range(n):
+        if list(con[k].frame[3:6]) != [0.0, 0.0, 0.0] or not all(
+                a == b or (a != a and b != b) for a, b in zip(con[k].frame[:3], normal)):
+            sys.exit(f"mjContact layout: contact {k} of {n}")
+    if n >= 4 or con[n].dist != SENTINEL or con[n].frame[3] != SENTINEL:
+        sys.exit(f"mjc_PlaneConvex wrote past its {n} contacts")
+    return [{"dist": con[k].dist, "pos": list(con[k].pos), "normal": list(con[k].frame[:3])}
+            for k in range(n)]
+
+
+def plane_case(m, d, kind, size, mesh, plane, obj, margin):
+    return {"type": kind, "size": [float(x) for x in size], "mesh": mesh,
+            "plane": {"pos": [float(x) for x in plane[0]], "mat": [float(x) for x in plane[1]]},
+            "pos": [float(x) for x in obj[0]], "mat": [float(x) for x in obj[1]],
+            "margin": margin, "contacts": plane_call(m, d, plane, obj, margin)}
+
+
+def random_plane(rng):
+    return rng.uniform(-1, 1, 3), random_mat(rng)
+
+
+def in_plane(rng, plane_mat, spread):
+    """A random offset along the plane's two tangents."""
+    t = np.reshape(plane_mat, (3, 3))
+    return spread * (rng.uniform(-1, 1) * t[:, 0] + rng.uniform(-1, 1) * t[:, 1])
+
+
+def face_down(rng, plane_mat, mesh_mat):
+    """`mesh_mat` turned so that the mesh's local -z faces the plane, about the plane's normal
+    by a random angle."""
+    spin = np.reshape(axis_mat([0, 0, 1], rng.uniform(0, 2 * np.pi)), (3, 3))
+    return (np.reshape(plane_mat, (3, 3)) @ spin @ np.reshape(mesh_mat, (3, 3))).ravel()
+
+
+def plane_convex_cases(meshes):
+    """The plane cases (module docs): `ellipsoid`, `ellipsoid_at_margin`, `mesh`, `mesh_bare`,
+    `edge`, `nan`."""
+    rng = np.random.default_rng(51)
+    out = {"ellipsoid": {}, "ellipsoid_at_margin": {}, "mesh": {}, "mesh_bare": {}, "edge": {},
+           "nan": {}}
+    m = mujoco.MjModel.from_xml_string(
+        '<mujoco><worldbody><geom type="plane" size="5 5 0.1"/>'
+        '<geom type="ellipsoid" size="0.1 0.1 0.1"/></worldbody></mujoco>')
+    d = mujoco.MjData(m)
+    for i in range(200):
+        size = rng.uniform(0.02, 0.5, 3)
+        m.geom_size[1] = size
+        plane, mat = random_plane(rng), random_mat(rng)
+        normal = plane[1][[2, 5, 8]]
+        reach = np.linalg.norm(size * (np.reshape(mat, (3, 3)).T @ normal))
+        pos = plane[0] + normal * (reach + rng.uniform(-0.05, 0.05)) + in_plane(rng, plane[1], 1.0)
+        margin = float(rng.choice([0.0, 0.01, 0.1]))
+        out["ellipsoid"][f"e{i}"] = plane_case(m, d, "ellipsoid", size, None, plane,
+                                               (pos, mat), margin)
+        # The same pose at a margin equal to MuJoCo's own distance, listed (inclusive).
+        dist = plane_call(m, d, plane, (pos, mat), 1.0)[0]["dist"]
+        if dist > 0:
+            case = plane_case(m, d, "ellipsoid", size, None, plane, (pos, mat), dist)
+            if len(case["contacts"]) != 1:
+                sys.exit(f"ellipsoid at margin e{i}: {len(case['contacts'])} contacts")
+            out["ellipsoid_at_margin"][f"e{i}"] = case
+    for name, mesh in meshes.items():
+        verts = np.reshape(mesh["vert"], (-1, 3))
+        for group, faces in (("mesh", None), ("mesh_bare", mesh["faces"])):
+            pm = plane_mesh_model(name, faces)
+            pd = mujoco.MjData(pm)
+            for i in range(24):
+                plane = random_plane(rng)
+                normal = plane[1][[2, 5, 8]]
+                mat = random_mat(rng) if i % 3 else face_down(rng, plane[1], np.eye(3).ravel())
+                low = (np.reshape(mat, (3, 3)) @ verts.T).T @ normal
+                depth = rng.uniform(-0.01, 0.02)
+                pos = plane[0] + normal * (-depth - low.min()) + in_plane(rng, plane[1], 0.5)
+                margin = float(rng.choice([0.0, 0.02]))
+                out[group][f"{name}_{i}"] = plane_case(pm, pd, "mesh", [0, 0, 0], name, plane,
+                                                       (pos, mat), margin)
+    # Edges of the comparisons. An unturned mesh over an unturned plane at height 0.25, at a
+    # margin of 0.25 plus its lowest vertex's z: each lowest vertex's distance is the margin
+    # exactly (each sum and difference is exact here), so the first is listed (`dist <= margin`)
+    # and the others are not (`vdot > threshold`), with a graph and without. And a mesh without a
+    # graph apart from the plane by 0.7 of its radius at a margin of its radius: its first vertex
+    # is farther than 0.3 of the radius from the first contact (half its distance), so only its
+    # index keeps it from being listed again.
+    out["edge"] = {}
+    eye = np.eye(3).ravel()
+    for name in ("slab8", "prism12"):
+        verts = np.reshape(meshes[name]["vert"], (-1, 3))
+        low = float(verts[:, 2].min())
+        for tag, faces in (("graph", None), ("bare", meshes[name]["faces"])):
+            pm = plane_mesh_model(name, faces)
+            pd = mujoco.MjData(pm)
+            out["edge"][f"{name}_{tag}_at_margin"] = plane_case(
+                pm, pd, "mesh", [0, 0, 0], name, (np.zeros(3), eye),
+                (np.array([0.0, 0.0, 0.25]), eye), 0.25 + low)
+    for name in ("gem8", "pebble24"):
+        verts = np.reshape(meshes[name]["vert"], (-1, 3))
+        r = meshes[name]["rbound"]
+        pm = plane_mesh_model(name, meshes[name]["faces"])
+        pd = mujoco.MjData(pm)
+        for i in range(4):
+            plane, mat = random_plane(rng), random_mat(rng)
+            normal = plane[1][[2, 5, 8]]
+            low = ((np.reshape(mat, (3, 3)) @ verts.T).T @ normal).min()
+            pos = plane[0] + normal * (0.7 * r - low)
+            out["edge"][f"{name}_bare_apart_{i}"] = plane_case(pm, pd, "mesh", [0, 0, 0], name,
+                                                               plane, (pos, mat), r)
+    bad = eye.copy()
+    bad[1] = math.nan
+    # A plane's normal is its matrix's third column (mat[2], mat[5], mat[8]).
+    bad_normal = eye.copy()
+    bad_normal[2] = math.nan
+    up = np.array([0.0, 0.0, 0.01])
+    for name, bare in (("slab8", False), ("pebble24", False), ("slab8", True)):
+        pm = plane_mesh_model(name, meshes[name]["faces"] if bare else None)
+        pd = mujoco.MjData(pm)
+        tag = f"{name}_bare" if bare else name
+        out["nan"][f"{tag}_turn"] = plane_case(pm, pd, "mesh", [0, 0, 0], name,
+                                               (np.zeros(3), eye), (up, bad), 0.0)
+        out["nan"][f"{tag}_plane"] = plane_case(pm, pd, "mesh", [0, 0, 0], name,
+                                                (np.zeros(3), bad_normal), (up, eye), 0.0)
+    m.geom_size[1] = [0.05, 0.04, 0.03]
+    out["nan"]["ellipsoid_turn"] = plane_case(m, d, "ellipsoid", m.geom_size[1], None,
+                                              (np.zeros(3), eye), (up, bad), 0.0)
+    plane_coverage(out, meshes)
+    return out
+
+
+def plane_coverage(out, meshes):
+    """Refuse plane cases that miss a path the port must be checked on."""
+    counts = {g: {len(c["contacts"]) for c in out[g].values()} for g in out}
+    need = {"an ellipsoid listed and not": counts["ellipsoid"] >= {0, 1},
+            "an ellipsoid at its distance": len(out["ellipsoid_at_margin"]) >= 50,
+            "1, 2 and 3 mesh contacts on the graph": counts["mesh"] >= {0, 1, 2, 3},
+            "1, 2 and 3 mesh contacts without one": counts["mesh_bare"] >= {0, 1, 2, 3},
+            "a NaN contact": any(c["contacts"] and c["contacts"][0]["dist"] != c["contacts"][0]["dist"]
+                                 for c in out["nan"].values())}
+    # A vertex closer than the margin but nearer the first contact than 0.3 of the radius, so
+    # skipped (with 1e-6 of the radius to spare either way).
+    near = 0
+    for group in ("mesh", "mesh_bare"):
+        for c in out[group].values():
+            if not c["contacts"] or len(c["contacts"]) == 3:
+                continue
+            verts = np.reshape(meshes[c["mesh"]]["vert"], (-1, 3))
+            mat = np.reshape(c["mat"], (3, 3))
+            pts = (mat @ verts.T).T + c["pos"]
+            normal = np.reshape(c["plane"]["mat"], (3, 3))[:, 2]
+            dist = (pts - c["plane"]["pos"]) @ normal
+            gap = np.linalg.norm(pts - c["contacts"][0]["pos"], axis=1)
+            r = meshes[c["mesh"]]["rbound"]
+            near += int(any((dist < c["margin"] - 1e-9) & (gap < 0.3 * r - 1e-6 * r) & (gap > 0)))
+    need["a vertex skipped as too near the first"] = near > 0
+    edge = out["edge"]
+    need["each lowest vertex at the margin exactly, the first listed alone"] = all(
+        len(c["contacts"]) == 1 and c["contacts"][0]["dist"] == c["margin"]
+        for k, c in edge.items() if k.endswith("_at_margin"))
+    need["a first vertex past the spacing without a graph"] = all(
+        c["contacts"] and 0.5 * abs(c["contacts"][0]["dist"]) > 0.3 * meshes[c["mesh"]]["rbound"]
+        for k, c in edge.items() if "_apart_" in k)
+    missing = [k for k, v in need.items() if not v]
+    if missing:
+        sys.exit(f"the plane cases miss: {', '.join(missing)}")
+
+
 def write(path, doc):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"), allow_nan=False)
@@ -1372,6 +1657,8 @@ def main():
                 "graph": graph_cases(doc["graph_meshes"]),
                 "notch": notch_cases(doc["graph_meshes"])})
     doc["s3d"] = s3d_cases()
+    doc["plane_meshes"] = plane_meshes()
+    doc["plane_convex"] = plane_convex_cases(doc["plane_meshes"])
     cases = [c for k in GROUPS for c in doc[k].values()]
     hist = coverage(cases, doc["graph_meshes"])
     os.makedirs(sys.argv[1], exist_ok=True)

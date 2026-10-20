@@ -1030,7 +1030,8 @@ rest height, settling, and contact force/weight ratio.
 **Examples:**
 
 1. **mesh-on-plane** — Tetrahedron (4 verts, 4 faces) on infinite ground plane.
-   `collide_mesh_plane()` path. Rest height = centroid-to-base = 0.204.
+   `mjc_plane_convex()` path (MuJoCo's `mjc_PlaneConvex`). Rest height =
+   centroid-to-base = 0.204.
 2. **mesh-sphere** — Sphere on mesh ground slab, through `mjc_convex()`
    against the mesh's convex hull. Rest height = radius = 0.1.
 3. **mesh-box** — Box on mesh slab. `mjc_convex()` + MULTICCD: one pass clips
@@ -1051,7 +1052,8 @@ rest height, settling, and contact force/weight ratio.
 
 **Concepts covered:** `type="mesh"`, inline vertex/face data, MuJoCo's
 native convex collision on a mesh's convex hull (`mjc_convex()`), MULTICCD's
-face clipping and turned passes, `collide_mesh_plane()`.
+face clipping and turned passes, MuJoCo's plane–mesh collision
+(`mjc_plane_convex()`).
 
 ##### 15. `heightfield/` — Terrain Collision
 

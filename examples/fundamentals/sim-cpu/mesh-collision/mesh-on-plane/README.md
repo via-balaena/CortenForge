@@ -16,9 +16,10 @@ The tetrahedron is a regular tetrahedron (edge length 1), centered at its
 volumetric centroid so that body position = center of mass. The base face
 (vertices 0,1,2) sits at z = -0.204 in the local frame.
 
-The narrow-phase path is `collide_mesh_plane()` — the mesh dispatcher
-recognizes the plane geom and scans the mesh's vertices to find contact
-points below the plane surface.
+The narrow-phase path is `mjc_plane_convex()`, MuJoCo's `mjc_PlaneConvex`:
+the tetrahedron's vertex deepest along the plane's normal, then up to two of
+its neighbours within the margin, each contact midway between its vertex and
+the plane.
 
 | Parameter | Value |
 |-----------|-------|
@@ -26,7 +27,7 @@ points below the plane surface.
 | Centroid-to-base | sqrt(6)/12 = 0.204 m |
 | Density | 1000 kg/m^3 |
 | Integrator | RK4, dt = 1 ms |
-| Narrow-phase | `collide_mesh_plane()` |
+| Narrow-phase | `mjc_plane_convex()` |
 
 ## Validation
 

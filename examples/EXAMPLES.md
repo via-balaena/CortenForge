@@ -283,7 +283,7 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `mesh-collision/mesh-on-plane` | `example-mesh-collision-plane` | Working | Tetrahedron on ground plane, `collide_mesh_plane()` |
+| `mesh-collision/mesh-on-plane` | `example-mesh-collision-plane` | Working | Tetrahedron on ground plane, `mjc_plane_convex()` |
 | `mesh-collision/mesh-sphere` | `example-mesh-collision-sphere` | Working | Sphere on mesh slab, `mjc_convex()` on the mesh's convex hull |
 | `mesh-collision/mesh-box` | `example-mesh-collision-box` | Working | Box on mesh slab, `mjc_convex()` + MULTICCD (face clipping) |
 | `mesh-collision/mesh-capsule` | `example-mesh-collision-capsule` | Working | Sideways capsule on mesh slab, `mjc_convex()` |

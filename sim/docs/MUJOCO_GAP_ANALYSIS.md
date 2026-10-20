@@ -330,7 +330,7 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Capsule-capsule | Native (`mjc_CapsuleCapsule`) | `mj_primitive::raw_capsule_capsule` | **Implemented** | - | - |
 | Cylinder | Native (`mjc_Convex`; with a sphere or plane, their own functions) | `collision::mj_ccd` | **Implemented** | - | - |
 | Ellipsoid | Native (`mjc_Convex`; with a plane, its own function) | `collision::mj_ccd` | **Implemented** | - | - |
-| Convex mesh | GJK/EPA (`mjc_Convex`) | `collision::mj_ccd` (with a plane, `collide_mesh_plane`) | **Implemented** | - | - |
+| Convex mesh | GJK/EPA (`mjc_Convex`) | `collision::mj_ccd` (with a plane, `mjc_PlaneConvex`) | **Implemented** | - | - |
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
 | SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
 | Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
