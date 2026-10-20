@@ -981,7 +981,7 @@ impl Model {
             // Time
             time: 0.0,
 
-            // Scratch buffers (pre-allocated for allocation-free stepping)
+            // Scratch buffers
             scratch_m_impl: DMatrix::zeros(self.nv, self.nv),
             scratch_force: DVector::zeros(self.nv),
             scratch_rhs: DVector::zeros(self.nv),

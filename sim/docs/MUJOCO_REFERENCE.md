@@ -907,7 +907,7 @@ available as `Data::transition_derivatives()`.
 
 ## Key Data Structures
 
-### Model (static, immutable after loading)
+### Model (what stepping does not change; edit between steps, then `Model::recompute_derived`)
 
 | Field | Type | Description |
 |-------|------|-------------|

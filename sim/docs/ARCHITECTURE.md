@@ -10,8 +10,10 @@ The `sim-*` crates provide a MuJoCo-aligned physics simulation stack for:
 - **Domain randomization** (tunable contact parameters for robust policies)
 
 The primary API is a `Model`/`Data` architecture modeled after MuJoCo:
-`Model` is static (immutable after loading), `Data` is dynamic (`qpos`/`qvel`
-are the source of truth), and body poses are computed via forward kinematics.
+`Model` holds what stepping does not change (its fields are public and may be
+edited between steps; `Model::recompute_derived` then recomputes the fields
+derived from them), `Data` is dynamic (`qpos`/`qvel` are the source of truth),
+and body poses are computed via forward kinematics.
 
 ## Directory Structure
 

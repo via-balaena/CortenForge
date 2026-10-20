@@ -1757,3 +1757,5 @@ a2f3fa2bbc211634	sim/L0/tests/integration/sensor_phase6_spec_c.rs:1030
 2e33aa8344ee7a12	examples/fundamentals/sim-cpu/solvers/newton/src/main.rs:74
 9bafbf26622bd9f9	examples/fundamentals/sim-cpu/solvers/cg/src/main.rs:67
 a0460cf27607c89b	examples/fundamentals/sim-cpu/solvers/pgs/src/main.rs:71
+890dee7740613285	sim/L0/tests/integration/derivatives.rs:4979
+bd0efdf0e9a5354e	sim/L0/tests/integration/derivatives.rs:4986

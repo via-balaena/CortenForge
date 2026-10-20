@@ -62,7 +62,8 @@ use crate::types::{Data, MakeDataError, Model, StepError};
 ///    aliasing.
 ///
 /// Each environment owns a full [`Data`] instance with its own heap
-/// allocations (scratch buffers, contact vectors, warmstart `HashMap`).
+/// allocations (scratch buffers, `qacc_warmstart`, the contact and constraint
+/// vectors).
 /// Cross-environment parallelism comes from rayon task-level parallelism,
 /// applied across independent per-environment [`Data`] instances.
 ///

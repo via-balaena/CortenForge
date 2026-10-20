@@ -21,14 +21,18 @@ use crate::dynamics::SpatialVector;
 
 /// Dynamic simulation state (like mjData).
 ///
-/// All arrays pre-allocated - no heap allocation during simulation.
-/// This contains the current state (qpos, qvel) and computed quantities
-/// (body poses, forces, contacts).
+/// This contains the current state and computed quantities (body poses,
+/// forces, contacts). Its arrays sized by the model are allocated by
+/// [`Model::make_data`](crate::Model::make_data); a step still allocates.
 ///
-/// # Key Invariant
+/// # State
 ///
-/// `qpos` and `qvel` are the ONLY state variables. Everything else
-/// (xpos, xquat, qfrc_*, etc.) is COMPUTED from them via forward dynamics.
+/// As MuJoCo splits it (`mjtState`, `mjdata.h:26-53`): the physics state
+/// (`time`, `qpos`, `qvel`, `act`, `history`, `plugin_state`), the inputs
+/// (`ctrl`, `qfrc_applied`, `xfrc_applied`, `mocap_pos`, `mocap_quat`; MuJoCo's
+/// `eq_active` is the model's here, and there is no `userdata`) and the warm
+/// start (`qacc_warmstart`). Everything else (xpos, xquat, qfrc_*, etc.) is
+/// computed from them by the forward pass.
 #[derive(Debug)]
 #[allow(non_snake_case)] // qM matches MuJoCo naming convention
 #[allow(clippy::struct_excessive_bools)] // MuJoCo lazy evaluation flags (flg_rnepost, flg_subtreevel, etc.)
@@ -585,7 +589,7 @@ pub struct Data {
     /// Simulation time in seconds.
     pub time: f64,
 
-    // ==================== Scratch Buffers (for allocation-free stepping) ====================
+    // ==================== Scratch Buffers ====================
     /// Scratch matrix for the implicit spring-damper integrator:
     /// `M + h·D + h²·K`, then its Cholesky factor.
     /// Pre-allocated to avoid O(n²) allocation per step.
@@ -606,7 +610,7 @@ pub struct Data {
 
     // ==================== RK4 Scratch Buffers ====================
     // State and rate buffers for 4-stage Runge-Kutta integration.
-    // Pre-allocated in make_data() — no heap allocation during stepping.
+    // Allocated in make_data().
     /// Saved initial position for RK4: `X[0].qpos` (length nq).
     /// Read at every stage (step 2c) and the final advance (step 4).
     pub rk4_qpos_saved: DVector<f64>,
