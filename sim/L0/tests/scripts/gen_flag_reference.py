@@ -48,6 +48,10 @@ tell the flag ignored. The cases:
   (`mj_discreteAcc`, engine_inverse.c:76-153), and the scene's damped dofs
   make Euler's discrete acceleration differ from the continuous one, so
   solver_fwdinv moves.
+- multiccd (enable): a cylinder standing 1 mm into a box; mjc_Convex lists
+  one contact at its cap without the flag, and with it four more passes
+  with the geoms turned 1e-3 rad find the cap's other contacts
+  (engine_collision_convex.c:917-1000).
 
 Not here:
 - midphase: no rigid-body scene was found where it moves MuJoCo's
@@ -57,9 +61,9 @@ Not here:
   order (engine_collision_driver.c:235, :360-371), but not a flex's
   self-collision's (:446-472), and sim-core's does not read the flag
   (ledger L158).
-- nativeccd and multiccd: they change convex pairs MuJoCo collides through
-  mjc_Convex, which sim-core does not collide as MuJoCo before the book's
-  P50, whose tests compare them.
+- nativeccd: with it MuJoCo collides convex pairs with libccd, which
+  sim-core does not port; sim-core refuses a model with the flag
+  (`Model::try_make_data`, registry D-NATIVECCD).
 """
 import json
 import os
@@ -86,6 +90,18 @@ SLIDE = """<mujoco model="autoreset">
   <actuator>
     <motor joint="z" gear="1e12"/>
   </actuator>
+</mujoco>"""
+
+
+CYLINDER = """<mujoco model="multiccd">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="slab" type="box" size="0.5 0.4 0.1" pos="0 0 -0.1"/>
+    <body name="c" pos="0.02 -0.01 0.049">
+      <freejoint/>
+      <geom type="cylinder" size="0.05 0.05" mass="0.5"/>
+    </body>
+  </worldbody>
 </mujoco>"""
 
 
@@ -157,6 +173,7 @@ def cases(canon):
         "warmstart": (cg2, "disable", 2.0),
         "sleep": (with_ball_asleep(canon), "enable", 2.0),
         "invdiscrete": (with_fwdinv(cg2), "enable", 2.0),
+        "multiccd": (CYLINDER, "enable", 0.0),
     }
 
 

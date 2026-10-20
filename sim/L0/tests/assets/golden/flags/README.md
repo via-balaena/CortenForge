@@ -76,8 +76,9 @@ is expected:
 
 `flags_3_5_0.json`, from the unfused MuJoCo 3.5.0 oracle
 (`gen_flag_reference.py`, whose docstring holds its run line and cases), gives
-nine of those flags (autoreset, sensor, energy, fwdinv, override, island,
-warmstart, sleep, and invdiscrete with fwdinv on) a scene each changes, run
+ten of those flags (autoreset, sensor, energy, fwdinv, override, island,
+warmstart, sleep, invdiscrete with fwdinv on, and multiccd on a cylinder
+standing on a box) a scene each changes, run
 without the flag and with it; the
 generator refuses a case whose flagged run is within 1e-5 of its baseline.
 The test is `integration/flag_parity.rs`. The 3.4.0 files above stay as they
