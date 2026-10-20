@@ -23,7 +23,7 @@ visual example teaches exactly one concept about mesh collision.
 sim-core's own `collide_mesh_plane()`, which scans the mesh's vertices for
 those below the plane or within the margin above it: up to three contacts.
 
-**Mesh against anything else** (sphere, capsule, box, cylinder, ellipsoid,
+**Mesh against a primitive or a mesh** (sphere, capsule, box, cylinder, ellipsoid,
 mesh): MuJoCo's native convex collision, `mjc_convex()` in `mj_ccd.rs` (GJK,
 EPA and MuJoCo's multi-contact). The mesh collides as the convex hull of its
 vertices; a mesh with no hull computed is searched vertex by vertex.

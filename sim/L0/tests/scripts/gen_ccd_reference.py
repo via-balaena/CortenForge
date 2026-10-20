@@ -96,8 +96,8 @@ and those meshes against each other: faces pressed together, an edge or a
 vertex against a face, within the face and edge tolerances or past them,
 with 4, 5, 8 or 50 contacts. `notch`: a box's corner pressed onto the slab's
 sliver, the box's face within the face tolerance of it, with four and eight
-contacts. `s3d`: a sphere or a capsule against an ellipsoid or a cylinder,
-overlapping, at the chunk 3e-3 review's poses where S3D's stale fourth
+contacts. `s3d`: a sphere against an ellipsoid, and a capsule against an
+ellipsoid or a cylinder, overlapping, at the chunk 3e-3 review's poses where S3D's stale fourth
 weight changes mjc_Convex's contact (registry D-GJK-S3D), as mjc_Convex
 calls mjc_ccd; a sphere and an ellipsoid with the exact distance.
 
@@ -1255,8 +1255,8 @@ def point_ellipsoid(p, radii):
 
 
 def s3d_cases():
-    """Registry D-GJK-S3D in a contact: a sphere or a capsule against an
-    ellipsoid or a cylinder, overlapping, at S3D_POSES, called as mjc_Convex
+    """Registry D-GJK-S3D in a contact: a sphere against an ellipsoid, and a
+    capsule against an ellipsoid or a cylinder, overlapping, at S3D_POSES, called as mjc_Convex
     calls mjc_ccd (the pair's margin on both, one contact, no cutoff). A
     sphere and an ellipsoid also hold `exact_dist`, the sphere centre's
     signed distance from the ellipsoid less the radius and the margin (each

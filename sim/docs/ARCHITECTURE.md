@@ -370,10 +370,10 @@ through a bounding-sphere distance cull and narrow-phase, then
 
 ### Narrow Phase Dispatch
 
-Each pair but a height field's or a signed distance field's, and a mesh on a plane, goes to the function MuJoCo's collision table gives it. The
+Each pair but a height field's or a signed distance field's, and a mesh or an ellipsoid on a plane, goes to the function MuJoCo's collision table gives it. The
 primitive pairs (sphere-sphere, sphere-capsule, capsule-capsule, sphere-box,
 capsule-box, box-box, sphere-cylinder) and the plane pairs have functions of
-their own, as in MuJoCo's table. An ellipsoid or a mesh against a sphere, capsule,
+their own. An ellipsoid or a mesh against a sphere, capsule,
 ellipsoid, cylinder, box or mesh, and a cylinder against a capsule, cylinder
 or box, collide through MuJoCo's native convex collision (`mjc_Convex`: GJK,
 EPA and its multi-contact; `collision/mj_ccd.rs`). A mesh collides as the

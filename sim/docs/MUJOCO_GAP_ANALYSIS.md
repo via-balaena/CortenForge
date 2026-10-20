@@ -361,8 +361,7 @@ The collision detection pipeline now uses:
 GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm) provide
 general convex collision detection for arbitrary convex shapes.
 
-Geom pairs but a height field's no longer use `gjk_epa.rs`: they collide through MuJoCo's own GJK
-and EPA, ported in `collision/mj_ccd.rs`. `gjk_epa.rs` serves height-field
+Geom pairs but a height field's no longer use `gjk_epa.rs`. `gjk_epa.rs` serves height-field
 prisms and flex vertices against a mesh's hull.
 
 **GJK Algorithm:**

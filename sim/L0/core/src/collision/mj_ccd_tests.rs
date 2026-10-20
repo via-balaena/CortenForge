@@ -397,8 +397,9 @@ fn mjc_ccd_matches_mujoco_bitwise() {
     );
 }
 
-/// Registry `D-GJK-S3D` in a contact: the golden's `s3d` cases, a sphere or
-/// a capsule against an ellipsoid or a cylinder, overlapping, as `mjc_Convex`
+/// Registry `D-GJK-S3D` in a contact: the golden's `s3d` cases, a sphere
+/// against an ellipsoid and a capsule against an ellipsoid or a cylinder,
+/// overlapping, as `mjc_Convex`
 /// calls `mjc_ccd`. With `S3D`'s fourth weight as MuJoCo keeps it each case
 /// is MuJoCo's to the bit; with ours reset none is. On a sphere and an
 /// ellipsoid ours is within 1e-7 of the exact distance (the generator's
