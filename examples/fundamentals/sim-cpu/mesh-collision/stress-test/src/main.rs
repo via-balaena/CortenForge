@@ -302,10 +302,10 @@ fn check_mesh_box() -> (u32, u32) {
 fn check_mesh_capsule() -> (u32, u32) {
     println!("\n--- D: Mesh-Capsule ---");
 
-    // Sideways capsule: axis along Y, rest height = radius. Measured, it ends
-    // 4.4 mm below that (z = 0.0956 at the last step), with at most one
-    // contact, on the mesh's convex hull; what sets the 4.4 mm has not been
-    // isolated, so the tolerance is 5 mm.
+    // Sideways capsule: axis along Y, rest height = radius. It ends 4.4 mm
+    // below that (z = 0.0956 after the 3000 steps), on one contact, as
+    // MuJoCo 3.5.0's does from this scene (0.09558), so the tolerance is
+    // 5 mm.
     let radius: f64 = 0.1;
     let gravity: f64 = 9.81;
     let (gnd_v, gnd_f) = box_mesh_verts_faces(1.0, 1.0, 1.0);
