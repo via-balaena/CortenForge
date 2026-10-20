@@ -82,7 +82,7 @@ Two-mechanism architecture:
 - Narrow phase via `collide_geoms`
 - `apply_pair_overrides` applies per-pair condim/friction/solref/solimp
 
-Narrow phase gives each pair the function MuJoCo's collision table gives it:
+Narrow phase gives each pair but a height field's or a signed distance field's the function MuJoCo's collision table gives it:
 the primitive pairs (sphere-sphere, sphere-capsule, box-box, etc.) and the
 plane pairs functions of their own; an ellipsoid or a mesh against a sphere,
 capsule, ellipsoid, cylinder, box or mesh, and a cylinder against a capsule,

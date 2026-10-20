@@ -361,7 +361,7 @@ The collision detection pipeline now uses:
 GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm) provide
 general convex collision detection for arbitrary convex shapes.
 
-Geom pairs no longer use `gjk_epa.rs`: they collide through MuJoCo's own GJK
+Geom pairs but a height field's no longer use `gjk_epa.rs`: they collide through MuJoCo's own GJK
 and EPA, ported in `collision/mj_ccd.rs`. `gjk_epa.rs` serves height-field
 prisms and flex vertices against a mesh's hull.
 
@@ -1364,14 +1364,14 @@ Focus: All collision detection improvements, primarily in sim-core.
 - `CollisionShape::cylinder(half_length, radius)` - Constructor
 - `support_cylinder()` - GJK support function with proper local direction handling
 - Tight AABB computation accounting for rotation
-- All collision pairs routed through GJK/EPA
+- All collision pairs routed through GJK/EPA (since replaced by `mjc_Convex`, `collision/mj_ccd.rs`)
 
 **Ellipsoid Collision Shape (`sim-core/src/collision_shape.rs`, `gjk_epa.rs`):**
 - `CollisionShape::Ellipsoid { radii }` - Axis-aligned ellipsoid
 - `CollisionShape::ellipsoid(radii)`, `ellipsoid_xyz(rx, ry, rz)` - Constructors
 - `support_ellipsoid()` - GJK support function using normalized gradient
 - AABB computation via rotation matrix column projection
-- All collision pairs routed through GJK/EPA
+- All collision pairs routed through GJK/EPA (since replaced by `mjc_Convex`, `collision/mj_ccd.rs`)
 
 **Mid-Phase BVH (`sim-core/src/mid_phase.rs`):**
 - `Bvh` - Top-down AABB tree for triangle meshes

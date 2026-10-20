@@ -1,7 +1,7 @@
 # Mesh Collision
 
-Seven visual examples + one headless stress test covering every mesh collision
-pair the narrow phase dispatches (`sim-core/src/collision/narrow.rs`). Each
+Seven visual examples + one headless stress test covering a mesh against a
+plane and against each primitive and mesh (`sim-core/src/collision/narrow.rs`). Each
 visual example teaches exactly one concept about mesh collision.
 
 ## Dispatch Table Coverage
