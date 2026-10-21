@@ -35,7 +35,8 @@ a rotated geom's inertial frame, and normalises a tilted axis, otherwise than
 MuJoCo (ledger L198, L195, L146). The cases:
 
 - compos: two trees. One hangs a hinge with an offset anchor, a ball with an
-  offset anchor under it, then a body with a slide and a hinge. The other is
+  offset anchor under it (the two with armature), then a body with a slide
+  and a hinge. The other is
   a free body carrying a hinged body, which carries a jointless body with
   mass; two subtree sensors make the forward pass compute the subtree
   velocities. There is no massless body: the loader places its inertial frame
@@ -68,10 +69,10 @@ COMPOS = """<mujoco model="compos">
   </option>
   <worldbody>
     <body name="a" pos="0.1 0 1">
-      <joint type="hinge" axis="0 1 0" pos="0 0 0.05"/>
+      <joint type="hinge" axis="0 1 0" pos="0 0 0.05" armature="0.02"/>
       <inertial pos="0.01 0 -0.15" mass="1" diaginertia="0.0078 0.0078 0.0006"/>
       <body name="b" pos="0 0 -0.3">
-        <joint type="ball" pos="0.01 0.02 0"/>
+        <joint type="ball" pos="0.01 0.02 0" armature="0.01"/>
         <inertial pos="0.02 0 -0.12" mass="0.7" diaginertia="0.00373 0.00357 0.00058"/>
         <body name="c" pos="0 0.05 -0.25">
           <joint type="slide" axis="1 0 0"/>

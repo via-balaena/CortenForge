@@ -35,6 +35,14 @@ pub(crate) fn mju_dot(vec1: &[f64], vec2: &[f64]) -> f64 {
     res
 }
 
+/// The dot product of two 6-vectors in MuJoCo's order (`mji_dot6`,
+/// `engine_inline.h:422-429`): `((v0·w0 + v2·w2) + (v1·w1 + v3·w3)) +
+/// (v4·w4 + v5·w5)`, as `mju_dot` groups six but without its 0 start.
+pub(crate) fn mji_dot6(vec1: &[f64], vec2: &[f64]) -> f64 {
+    ((vec1[0] * vec2[0] + vec1[2] * vec2[2]) + (vec1[1] * vec2[1] + vec1[3] * vec2[3]))
+        + (vec1[4] * vec2[4] + vec1[5] * vec2[5])
+}
+
 /// `Σ vec1[k]·vec2(k)` in MuJoCo's order (`mju_dotSparse`,
 /// `engine_util_sparse.h:159-185`): four partial sums over each block of
 /// four, joined as `(s0 + s2) + (s1 + s3)`, then the rest one by one.

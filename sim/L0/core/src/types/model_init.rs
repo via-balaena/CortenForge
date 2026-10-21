@@ -5,7 +5,7 @@
 //! implicit integration parameter caching, mean-inertia statistics, and
 //! per-DOF mechanism length computation (§16.14).
 
-use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, UnitQuaternion, Vector3};
 use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
@@ -859,9 +859,9 @@ impl Model {
             qLU: vec![0.0; self.D_colind.len()],
 
             // Body spatial inertias (computed once in FK, used by CRBA and RNE)
-            cinert: vec![Matrix6::zeros(); self.nbody],
+            cinert: vec![[0.0; 10]; self.nbody],
             // Composite rigid body inertias (for Featherstone CRBA)
-            crb_inertia: vec![Matrix6::zeros(); self.nbody],
+            crb: vec![[0.0; 10]; self.nbody],
 
             // Subtree mass/COM/velocity
             subtree_mass: vec![0.0; self.nbody],

@@ -287,3 +287,47 @@ fn subtree_velocities_are_mujocos() {
         );
     }
 }
+
+/// The mass matrix `qM` (both triangles) and the bias force `qfrc_bias` are
+/// MuJoCo's bit for bit (`mj_crb`, `engine_core_smooth.c:1811-1885`; `mj_rne`,
+/// `:2425-2488`), at velocities of 1e-7 too and with gravity disabled. A
+/// simple dof's row is its diagonal only, which MuJoCo takes from `dof_M0`,
+/// made at `qpos0`; sim-core makes it at the state, so the `simple` case's
+/// mass matrix is not compared.
+#[test]
+fn mass_matrix_and_bias_force_are_mujocos() {
+    for name in CASES {
+        let (model, data, case) = forward(name);
+        if name != "simple" {
+            let nv = model.nv;
+            let qm: Vec<f64> = (0..nv * nv).map(|k| data.qM[(k / nv, k % nv)]).collect();
+            assert_golden(&format!("{name} qM"), &qm, &floats(&case["qM"]));
+        }
+        assert_golden(
+            &format!("{name} qfrc_bias"),
+            data.qfrc_bias.as_slice(),
+            &floats(&case["qfrc_bias"]),
+        );
+    }
+}
+
+/// Each body's inertia about its tree's subtree centre of mass (`cinert`,
+/// `mju_inertCom`) and its composite inertia (`crb`, `mj_crb`) are MuJoCo's
+/// 10-vectors bit for bit.
+#[test]
+fn cinert_and_crb_are_mujocos() {
+    for name in CASES {
+        let (_, data, case) = forward(name);
+        let flat = |v: &[[f64; 10]]| -> Vec<f64> { v.iter().flatten().copied().collect() };
+        assert_golden(
+            &format!("{name} cinert"),
+            &flat(&data.cinert),
+            &floats(&case["cinert"]),
+        );
+        assert_golden(
+            &format!("{name} crb"),
+            &flat(&data.crb),
+            &floats(&case["crb"]),
+        );
+    }
+}

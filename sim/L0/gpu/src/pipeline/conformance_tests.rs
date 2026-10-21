@@ -66,6 +66,22 @@ use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
 use crate::submit::read_buffer;
 
+/// The CPU's bias acceleration of body `b` as the GPU's: about the body's
+/// origin and without gravity (`cacc_bias` is about the tree's subtree centre
+/// of mass and holds the world's `-gravity`, which every body adds).
+fn cpu_bias_acc_at_origin(model: &Model, data: &Data, b: usize) -> nalgebra::Vector6<f64> {
+    let mut a = data.cacc_bias[b];
+    if model.disableflags & sim_core::types::DISABLE_GRAVITY == 0 {
+        for k in 0..3 {
+            a[3 + k] += model.gravity[k];
+        }
+    }
+    let angular = Vector3::new(a[0], a[1], a[2]);
+    let dif = data.xpos[b] - data.subtree_com[model.body_rootid[b]];
+    let linear = Vector3::new(a[3], a[4], a[5]) - dif.cross(&angular);
+    nalgebra::Vector6::new(a[0], a[1], a[2], linear.x, linear.y, linear.z)
+}
+
 /// The CPU's spatial velocity of body `b` about its origin `xpos`, the GPU's
 /// reference point (`cvel` is about the tree's subtree centre of mass).
 fn cpu_cvel_at_origin(model: &Model, data: &Data, b: usize) -> nalgebra::Vector6<f64> {
@@ -261,8 +277,8 @@ fn check_spatial(
     }
 }
 
-/// Compare GPU `body_cinert` (compact `[mass, h, I_com]`) against the CPU
-/// `Matrix6` cinert, reversing the parallel-axis term to recover `I_com`
+/// Compare GPU `body_cinert` (compact `[mass, h, I_com]`) against the CPU's
+/// 10-vector cinert, reversing its parallel-axis term to recover `I_com`
 /// (mirrors `tests.rs` T4). `h = xipos − xpos`.
 fn check_cinert(
     fails: &mut Failures,
@@ -289,17 +305,21 @@ fn check_cinert(
             gpu[base + 2][1],
         ];
 
+        // The CPU's cinert is MuJoCo's 10-vector `[xx, yy, zz, xy, xz, yz, m·d,
+        // m]` about the tree's subtree centre of mass; the GPU's is (m, h, I_COM)
+        // with h = xipos - xpos.
         let cpu = &data.cinert[b];
-        let cpu_mass = cpu[(3, 3)];
+        let cpu_mass = cpu[9];
         let h = data.xipos[b] - data.xpos[b];
-        let hh = h.dot(&h);
+        let d = data.xipos[b] - data.subtree_com[model.body_rootid[b]];
+        let dd = d.dot(&d);
         let cpu_i = [
-            cpu[(0, 0)] - cpu_mass * (hh - h.x * h.x),
-            cpu[(0, 1)] - cpu_mass * (0.0 - h.x * h.y),
-            cpu[(0, 2)] - cpu_mass * (0.0 - h.x * h.z),
-            cpu[(1, 1)] - cpu_mass * (hh - h.y * h.y),
-            cpu[(1, 2)] - cpu_mass * (0.0 - h.y * h.z),
-            cpu[(2, 2)] - cpu_mass * (hh - h.z * h.z),
+            cpu[0] - cpu_mass * (dd - d.x * d.x),
+            cpu[3] - cpu_mass * (0.0 - d.x * d.y),
+            cpu[4] - cpu_mass * (0.0 - d.x * d.z),
+            cpu[1] - cpu_mass * (dd - d.y * d.y),
+            cpu[5] - cpu_mass * (0.0 - d.y * d.z),
+            cpu[2] - cpu_mass * (dd - d.z * d.z),
         ];
 
         check(
@@ -454,7 +474,7 @@ fn compare_env_fields(
             fails,
             &gpu_cacc,
             (off_b + b) * 2,
-            &data.cacc_bias[b],
+            &cpu_bias_acc_at_origin(model, data, b),
             TOL_DYNAMIC,
             name,
             "cacc_bias",

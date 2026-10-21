@@ -9,8 +9,8 @@ use crate::constraint::solver::decode_pyramid_into;
 use crate::dynamics::factor::{mj_factor_i, mj_solve_ld, mj_solve_m};
 use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
-    SpatialVector, body_origin_velocity, spatial_cross_force, spatial_cross_motion,
-    transport_motion_spatial,
+    SpatialVector, body_origin_inertia, body_origin_velocity, spatial_cross_force,
+    spatial_cross_motion, transport_motion_spatial,
 };
 use crate::integrate::implicit::{
     accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_j, isd_tendon_stiffness,
@@ -695,7 +695,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // ===== Step 3: cfrc_int backward pass (leaf → root) =====
     // For each body: cfrc_int = I*cacc + v×*(I*v) - cfrc_ext
     for body_id in 1..model.nbody {
-        let inertia = &data.cinert[body_id];
+        let inertia = &body_origin_inertia(model, data, body_id);
         let v = body_origin_velocity(model, data, body_id);
         let acc = data.cacc[body_id];
 

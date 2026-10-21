@@ -131,6 +131,80 @@ pub fn mju_transform_spatial(
     SpatialVector::new(ang[0], ang[1], ang[2], lin[0], lin[1], lin[2])
 }
 
+/// A body's inertia about a reference point, as MuJoCo's 10-vector
+/// `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz, m·dx, m·dy, m·dz, m]`: MuJoCo's
+/// `mju_inertCom` (`engine_util_spatial.c:400-431`). `inert` is the
+/// principal inertia, `mat` the inertial frame's rotation, `dif` the centre
+/// of mass from the reference point.
+#[must_use]
+pub fn mju_inert_com(
+    inert: &Vector3<f64>,
+    mat: &Matrix3<f64>,
+    dif: &Vector3<f64>,
+    mass: f64,
+) -> [f64; 10] {
+    let m = |k: usize| mat[(k / 3, k % 3)];
+    // tmp = diag(inert) · matᵀ, row-major
+    let tmp = [
+        m(0) * inert[0],
+        m(3) * inert[0],
+        m(6) * inert[0],
+        m(1) * inert[1],
+        m(4) * inert[1],
+        m(7) * inert[1],
+        m(2) * inert[2],
+        m(5) * inert[2],
+        m(8) * inert[2],
+    ];
+    let mut res = [
+        m(0) * tmp[0] + m(1) * tmp[3] + m(2) * tmp[6],
+        m(3) * tmp[1] + m(4) * tmp[4] + m(5) * tmp[7],
+        m(6) * tmp[2] + m(7) * tmp[5] + m(8) * tmp[8],
+        m(0) * tmp[1] + m(1) * tmp[4] + m(2) * tmp[7],
+        m(0) * tmp[2] + m(1) * tmp[5] + m(2) * tmp[8],
+        m(3) * tmp[2] + m(4) * tmp[5] + m(5) * tmp[8],
+        mass * dif[0],
+        mass * dif[1],
+        mass * dif[2],
+        mass,
+    ];
+    res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2]);
+    res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2]);
+    res[2] += mass * (dif[0] * dif[0] + dif[1] * dif[1]);
+    res[3] -= mass * dif[0] * dif[1];
+    res[4] -= mass * dif[0] * dif[2];
+    res[5] -= mass * dif[1] * dif[2];
+    res
+}
+
+/// A 10-vector inertia times a motion vector, the momentum `[I·ω + h×v;
+/// m·v − h×ω]` (`h` = `m·dif`): MuJoCo's `mju_mulInertVec`
+/// (`engine_util_spatial.c:434-442`).
+#[must_use]
+pub fn mju_mul_inert_vec(i: &[f64; 10], v: &SpatialVector) -> SpatialVector {
+    SpatialVector::new(
+        i[0] * v[0] + i[3] * v[1] + i[4] * v[2] - i[8] * v[4] + i[7] * v[5],
+        i[3] * v[0] + i[1] * v[1] + i[5] * v[2] + i[8] * v[3] - i[6] * v[5],
+        i[4] * v[0] + i[5] * v[1] + i[2] * v[2] - i[7] * v[3] + i[6] * v[4],
+        i[8] * v[1] - i[7] * v[2] + i[9] * v[3],
+        i[6] * v[2] - i[8] * v[0] + i[9] * v[4],
+        i[7] * v[0] - i[6] * v[1] + i[9] * v[5],
+    )
+}
+
+/// Body `body`'s 6×6 spatial inertia about its origin `xpos`, from the
+/// model (`cinert` is MuJoCo's 10-vector about its tree's subtree centre of
+/// mass).
+#[must_use]
+pub fn body_origin_inertia(model: &Model, data: &Data, body: usize) -> Matrix6<f64> {
+    compute_body_spatial_inertia(
+        model.body_mass[body],
+        model.body_inertia[body],
+        &data.ximat[body],
+        data.xipos[body] - data.xpos[body],
+    )
+}
+
 /// Body `body`'s spatial velocity `[angular; linear]` about its origin
 /// `xpos` (`cvel` is about its tree's subtree centre of mass).
 #[must_use]
@@ -217,101 +291,12 @@ pub fn compute_body_spatial_inertia(
     crb
 }
 
-/// Shift a 6×6 spatial inertia from one reference point to another.
-///
-/// Given Φ (spatial inertia about point A in world frame) and
-/// d = xpos_child - xpos_parent (vector from parent to child origin),
-/// returns the equivalent spatial inertia about the parent's origin.
-///
-/// Uses the approach: extract (I_COM, m, h) from Φ_A, then recompute
-/// Φ_B with h_new = h + d (since COM - parent = (COM - child) + (child - parent)).
-///
-/// Convention: rows 0-2 = angular, rows 3-5 = linear.
-/// Off-diagonal coupling block (upper-right 3x3) = m * skew(h).
-// Paired spatial-vector identifiers (pos_a/pos_b, twist_a/twist_b) are intentionally similar.
-#[allow(clippy::similar_names)]
-pub fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f64> {
-    // Extract mass from lower-right diagonal
-    let m = phi[(3, 3)];
-    if m == 0.0 {
-        return *phi;
-    }
-
-    // Extract m*h from coupling block: H = m*skew(h)
-    // skew(h) = [0, -hz, hy; hz, 0, -hx; -hy, hx, 0]
-    // So: phi[(2,4)] = m*hx, phi[(0,5)] = m*hy, phi[(1,3)] = m*hz
-    let mh_x = phi[(2, 4)];
-    let mh_y = phi[(0, 5)];
-    let mh_z = phi[(1, 3)];
-    let h_x = mh_x / m;
-    let h_y = mh_y / m;
-    let h_z = mh_z / m;
-
-    // Extract I_about_A (rotational block, upper-left 3x3)
-    // Then reverse parallel axis to get I_COM:
-    // I_COM = I_A - m*(|h|²I₃ - h*hᵀ)
-    let hh = h_x * h_x + h_y * h_y + h_z * h_z;
-    let mut i_com = Matrix3::zeros();
-    for row in 0..3 {
-        for col in 0..3 {
-            let h_rc = [h_x, h_y, h_z];
-            let delta = if row == col { 1.0 } else { 0.0 };
-            i_com[(row, col)] = phi[(row, col)] - m * (hh * delta - h_rc[row] * h_rc[col]);
-        }
-    }
-
-    // Compute new h: h_new = h + d (COM offset from parent origin)
-    let h_new_x = h_x + d.x;
-    let h_new_y = h_y + d.y;
-    let h_new_z = h_z + d.z;
-
-    // Build new 6x6 spatial inertia about parent origin
-    let h_new = [h_new_x, h_new_y, h_new_z];
-    let hh_new = h_new_x * h_new_x + h_new_y * h_new_y + h_new_z * h_new_z;
-
-    let mut result = Matrix6::zeros();
-
-    // Upper-left 3x3: I_parent = I_COM + m*(|h_new|²I₃ - h_new*h_newᵀ)
-    for row in 0..3 {
-        for col in 0..3 {
-            let delta = if row == col { 1.0 } else { 0.0 };
-            result[(row, col)] = i_com[(row, col)] + m * (hh_new * delta - h_new[row] * h_new[col]);
-        }
-    }
-
-    // Lower-right 3x3: mass
-    result[(3, 3)] = m;
-    result[(4, 4)] = m;
-    result[(5, 5)] = m;
-
-    // Off-diagonal coupling: m * skew(h_new)
-    let mhn_x = m * h_new_x;
-    let mhn_y = m * h_new_y;
-    let mhn_z = m * h_new_z;
-
-    result[(0, 4)] = -mhn_z;
-    result[(0, 5)] = mhn_y;
-    result[(1, 3)] = mhn_z;
-    result[(1, 5)] = -mhn_x;
-    result[(2, 3)] = -mhn_y;
-    result[(2, 4)] = mhn_x;
-    // Transpose (lower-left)
-    result[(4, 0)] = -mhn_z;
-    result[(5, 0)] = mhn_y;
-    result[(3, 1)] = mhn_z;
-    result[(5, 1)] = -mhn_x;
-    result[(3, 2)] = -mhn_y;
-    result[(4, 2)] = mhn_x;
-
-    result
-}
-
 /// Transport a 6D spatial motion vector by the world-frame offset `r` (from the
 /// current reference point to the target).
 ///
-/// Pure-translation motion transport: angular unchanged, linear += angular × r.
-/// Used to bring a parent body's spatial velocity to a child's origin, where
-/// the velocity products of the child's joints start (`mj_rne`).
+/// Pure-translation motion transport: angular unchanged, linear += angular × r:
+/// a parent body's velocity or acceleration about its origin brought to a
+/// child's origin.
 #[inline]
 #[must_use]
 pub fn transport_motion_spatial(m: SpatialVector, r: &Vector3<f64>) -> SpatialVector {

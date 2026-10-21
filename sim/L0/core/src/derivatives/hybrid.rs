@@ -17,8 +17,8 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::factor::mj_solve_m;
 use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{
-    SpatialVector, body_origin_velocity, spatial_cross_force, spatial_cross_motion,
-    transport_motion_spatial,
+    SpatialVector, body_origin_inertia, body_origin_velocity, spatial_cross_force,
+    spatial_cross_motion, transport_motion_spatial,
 };
 use crate::forward::{
     MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
@@ -753,7 +753,7 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
 
     // ========== Backward pass — Phase 1: Compute local body force derivatives ==========
     for body_id in 1..nbody {
-        let inertia = &data.cinert[body_id];
+        let inertia = &body_origin_inertia(model, data, body_id);
         let cvel = body_origin_velocity(model, data, body_id);
         let i_v = inertia * cvel; // I · v (momentum vector)
 
@@ -1556,7 +1556,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // Backward: f_A = I·a_A (no gyroscopic), then X_b^T accumulation
     let mut cfrc_a = vec![SpatialVector::zeros(); nbody];
     for b in 1..nbody {
-        cfrc_a[b] = data.cinert[b] * cacc_a[b];
+        cfrc_a[b] = body_origin_inertia(model, data, b) * cacc_a[b];
     }
     for b in (1..nbody).rev() {
         let pid = model.body_parent[b];
@@ -1636,9 +1636,9 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // Backward: f_B = I·a_B + gyroscopic, then simple-add accumulation
     let mut cfrc_b = vec![SpatialVector::zeros(); nbody];
     for b in 1..nbody {
-        let i_a = data.cinert[b] * cacc_b[b];
+        let i_a = body_origin_inertia(model, data, b) * cacc_b[b];
         let v = body_origin_velocity(model, data, b);
-        let i_v = data.cinert[b] * v;
+        let i_v = body_origin_inertia(model, data, b) * v;
         cfrc_b[b] = i_a + spatial_cross_force(v, i_v);
     }
     for b in (1..nbody).rev() {
@@ -1980,7 +1980,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
     // Local force derivatives for Part A: I · dcacc_A (no gyroscopic)
     for b in 1..nbody {
-        let inertia = &data.cinert[b];
+        let inertia = &body_origin_inertia(model, data, b);
         let dcacc = data.deriv_Dcacc_pos[b].clone();
         for c in 0..nv {
             let col = inertia * dcacc.column(c);
@@ -1994,7 +1994,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // Only the ANGULAR part of the motion subspace affects inertia rotation.
     // Translation DOFs (slide, free linear) don't rotate the body, so ∂I/∂q = 0.
     for b in 1..nbody {
-        let inertia = &data.cinert[b];
+        let inertia = &body_origin_inertia(model, data, b);
         let i_cacc = inertia * cacc_a[b];
         // A free body's inertia is in its ABSOLUTE frame, so ∂I/∂q_ancestor = 0 —
         // only the same-body (own free-DOF) rotation changes it.
@@ -2483,7 +2483,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // Local force derivatives for Part B:
     //   I · dcacc_B + gyroscopic velocity derivatives + (∂I/∂q) terms
     for b in 1..nbody {
-        let inertia = &data.cinert[b];
+        let inertia = &body_origin_inertia(model, data, b);
         let cvel_b = body_origin_velocity(model, data, b);
         let i_v = inertia * cvel_b;
 
@@ -2520,7 +2520,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     //   (∂I/∂q) · a_B + v ×* ((∂I/∂q) · v)
     // Only angular part of motion subspace affects inertia rotation.
     for b in 1..nbody {
-        let inertia = &data.cinert[b];
+        let inertia = &body_origin_inertia(model, data, b);
         let i_cacc = inertia * cacc_b[b];
         let cvel_b = body_origin_velocity(model, data, b);
         let i_cvel = inertia * cvel_b;

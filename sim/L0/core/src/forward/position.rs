@@ -6,12 +6,12 @@
 
 use crate::collision::narrow::GEOM_EPSILON;
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::dynamics::{compute_body_spatial_inertia, mju_dof_com};
+use crate::dynamics::{mju_dof_com, mju_inert_com};
 use crate::quat;
 use crate::quat::mul_mat_vec3;
 use crate::tendon::mj_fwd_tendon;
 use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SameFrame, SleepState};
-use nalgebra::{DVector, Matrix3, Matrix6, Quaternion, UnitQuaternion, Vector3};
+use nalgebra::{DVector, Matrix3, Quaternion, UnitQuaternion, Vector3};
 
 /// Forward kinematics: compute body poses from qpos.
 ///
@@ -66,20 +66,7 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
         );
         data.xipos[body_id] = xipos;
         data.ximat[body_id] = ximat;
-
-        // Compute body spatial inertia in world frame (cinert, shared).
-        // MuJoCo does NOT zero mass for mocap bodies, and neither do we.
-        let h = data.xipos[body_id] - pos; // COM offset from body origin in world frame
-        data.cinert[body_id] = compute_body_spatial_inertia(
-            model.body_mass[body_id],
-            model.body_inertia[body_id],
-            &data.ximat[body_id],
-            h,
-        );
     }
-
-    // World body has zero inertia
-    data.cinert[0] = Matrix6::zeros();
 
     // Wake what the user changed (§16.4) after the bodies' poses, which find
     // a sleeping pose changed, and before the geoms', sites' and tendons', as
@@ -128,12 +115,13 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
     mj_fwd_tendon(model, data);
 }
 
-/// The subtree masses and centres of mass, then each dof's motion axis
-/// (`cdof`) in the world's orientation about its tree's subtree centre of
-/// mass, `subtree_com[body_rootid[b]]`: MuJoCo's `mj_comPos`
-/// (`engine_core_smooth.c:245-350`). The axes are the awake bodies', as
-/// MuJoCo's: a sleeping body keeps those of its last awake pass (for a tree
-/// that starts asleep, the reset's forward pass, `Model::start_sleep`).
+/// The subtree masses and centres of mass, then each body's inertia
+/// (`cinert`) and each dof's motion axis (`cdof`) in the world's orientation
+/// about its tree's subtree centre of mass, `subtree_com[body_rootid[b]]`:
+/// MuJoCo's `mj_comPos` (`engine_core_smooth.c:245-350`). The inertias and
+/// axes are the awake bodies', as MuJoCo's: a sleeping body keeps those of
+/// its last awake pass (for a tree that starts asleep, the reset's forward
+/// pass, `Model::start_sleep`).
 fn mj_com_pos(model: &Model, data: &mut Data) {
     // Initialize with each body's own mass and COM
     for body_id in 0..model.nbody {
@@ -163,16 +151,34 @@ fn mj_com_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // Each dof's motion axis (`mju_dofCom`, `:298-350`): a hinge's axis, a
-    // ball's or a free joint's rotation the columns of the body's `xmat`,
-    // each about the joint's anchor; a slide's axis, a free joint's
-    // translation the world's axes.
     let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
     let nbody = if sleep_filter {
         data.nbody_awake
     } else {
         model.nbody
     };
+    // Each body's inertia about its tree's subtree centre of mass
+    // (`mju_inertCom`, `:286-296`); the world's is 0.
+    data.cinert[0] = [0.0; 10];
+    for b in 1..nbody {
+        let body = if sleep_filter {
+            data.body_awake_ind[b]
+        } else {
+            b
+        };
+        let offset = data.xipos[body] - data.subtree_com[model.body_rootid[body]];
+        data.cinert[body] = mju_inert_com(
+            &model.body_inertia[body],
+            &data.ximat[body],
+            &offset,
+            model.body_mass[body],
+        );
+    }
+
+    // Each dof's motion axis (`mju_dofCom`, `:298-350`): a hinge's axis, a
+    // ball's or a free joint's rotation the columns of the body's `xmat`,
+    // each about the joint's anchor; a slide's axis, a free joint's
+    // translation the world's axes.
     for b in 1..nbody {
         let body = if sleep_filter {
             data.body_awake_ind[b]

@@ -694,7 +694,7 @@ pub(super) fn scramble(data: &mut sim_core::Data) {
     data.xpos.fill(nalgebra::Vector3::repeat(7.0));
     data.xipos.fill(nalgebra::Vector3::repeat(7.0));
     data.subtree_com.fill(nalgebra::Vector3::repeat(7.0));
-    data.cinert.fill(nalgebra::Matrix6::repeat(7.0));
+    data.cinert.fill([7.0; 10]);
     data.qM.fill(7.0);
     data.qLD_valid = true;
     data.qfrc_bias.fill(7.0);

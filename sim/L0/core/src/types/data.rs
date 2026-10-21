@@ -5,7 +5,7 @@
 //! It is the mutable counterpart to [`Model`] — one `Data` is created per
 //! simulation environment via `model.make_data()`.
 
-use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, UnitQuaternion, Vector3};
 
 // Imports from sibling modules
 use super::body_wrench::BodyWrench;
@@ -276,16 +276,17 @@ pub struct Data {
     /// layout `Model::D_*`, length `model.D_colind.len()`).
     pub qLU: Vec<f64>,
 
-    // ==================== Body and Composite Inertia (for Featherstone CRBA/RNE) ====================
-    /// Body spatial inertia in world frame (before composite accumulation).
-    /// These are 6×6 spatial inertias for individual bodies, computed once in FK.
-    /// Used by both CRBA (as starting point) and RNE (for bias forces).
-    /// This is equivalent to MuJoCo's `mjData.cinert`.
-    pub cinert: Vec<Matrix6<f64>>,
-    /// Composite rigid body inertia in world frame.
-    /// These are 6×6 spatial inertias accumulated from subtrees during CRBA.
-    /// Starts as a copy of `cinert`, then accumulates child inertias.
-    pub crb_inertia: Vec<Matrix6<f64>>,
+    // ==================== Body and Composite Inertia ====================
+    /// Each body's inertia about its tree's subtree centre of mass, in the
+    /// world's orientation (length `nbody`): MuJoCo's `cinert`, the 10-vector
+    /// `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz, m·dx, m·dy, m·dz, m]` with `d` the
+    /// body's centre of mass from that point, made by the position stage
+    /// (`mj_comPos`); the world's is 0.
+    pub cinert: Vec<[f64; 10]>,
+    /// Each body's composite inertia, its subtree's, in `cinert`'s frame and
+    /// layout (length `nbody`): MuJoCo's `crb`, made by `mj_crb` with the mass
+    /// matrix.
+    pub crb: Vec<[f64; 10]>,
 
     // ==================== Subtree Mass/COM/Velocity ====================
     /// Total mass of subtree rooted at each body (including the body itself).
@@ -832,7 +833,7 @@ impl Clone for Data {
             qLU: self.qLU.clone(),
             // Body/composite inertia
             cinert: self.cinert.clone(),
-            crb_inertia: self.crb_inertia.clone(),
+            crb: self.crb.clone(),
             // Subtree mass/COM/velocity
             subtree_mass: self.subtree_mass.clone(),
             subtree_com: self.subtree_com.clone(),
