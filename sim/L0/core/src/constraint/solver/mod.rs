@@ -1,15 +1,15 @@
 //! Constraint solvers and shared infrastructure.
 //!
-//! The primal solver Newton and CG share (`primal`, with Newton's sparse
-//! Hessian in `hessian`), PGS, noslip, and the shared post-solve operations
+//! The primal solver Newton and CG share (`primal`, with its sparse
+//! structures in `sparse`), PGS, noslip, and the shared post-solve operations
 //! (qfrc recovery, friction pyramid decoding). Corresponds to MuJoCo's
 //! `engine_solver.c`.
 
-pub mod hessian;
 pub mod noslip;
 pub mod pgs;
 pub mod primal;
 pub mod qcqp;
+pub mod sparse;
 
 use crate::linalg::mju_norm;
 use crate::types::{ConstraintState, ConstraintType, Data, Model};

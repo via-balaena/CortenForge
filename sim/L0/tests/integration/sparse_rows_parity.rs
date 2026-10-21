@@ -100,14 +100,13 @@ fn rows_list_their_dof_chains_as_mujoco() {
 /// form (it refuses its `<deformable>` documents; Rigid-loading L31): a
 /// two-triangle cloth whose vertices are in a free slab under it, its edges'
 /// rows and its vertices' contacts, whose chains join a vertex's dofs to the
-/// slab's. (A world plane makes no contact with it here: ledger L171. Under
-/// CG, which solves it, as dense Newton does; sparse Newton's factor fails on
-/// it with `CholeskyFailed`.) Every row's chain is strictly ascending and
+/// slab's. (A world plane makes no contact with it here: ledger L171.) The
+/// forward pass, under Newton with its sparse Hessian, solves it. Every row's chain is strictly ascending and
 /// holds every dof its row has a nonzero entry at.
 #[test]
 fn a_flex_s_rows_hold_their_entries_in_their_chains() {
     let xml = r#"<mujoco>
-  <option gravity="0 0 -9.81" timestep="0.001" jacobian="sparse" solver="CG"/>
+  <option gravity="0 0 -9.81" timestep="0.001" jacobian="sparse"/>
   <worldbody>
     <body name="slab" pos="0.05 0.05 -0.01">
       <freejoint/>

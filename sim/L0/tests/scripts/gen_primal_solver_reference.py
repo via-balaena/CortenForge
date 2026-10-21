@@ -924,15 +924,17 @@ def main():
         xml = MIXED_ROWS.format(solver=solver, cone="elliptic", condim=3).replace(
             f'solver="{solver}"', f'solver="{solver}" {opt}')
         same[f"{solver}_elliptic_3_{tag}"] = same_input(xml, MIXED_QVEL)
-    # At the sparse size (jacobian="sparse"), CG: its products run over the
-    # rows' chains (`mju_mulMatVecSparse`).
-    for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6)):
-        xml = MIXED_ROWS.format(solver="CG", cone=cone, condim=condim).replace(
-            'solver="CG"', 'solver="CG" jacobian="sparse"')
-        same[f"CG_{cone}_{condim}_sparse"] = same_input(xml, MIXED_QVEL)
-    # The tilted box's four contacts: each box dof in sixteen rows, all pushing.
-    same["CG_box_sparse"] = same_input(NEWTON_BOX.format(iterations=100).replace(
-        'iterations="100"', 'iterations="100" solver="CG" jacobian="sparse"'), None, census_start)
+    # At the sparse size (jacobian="sparse"): the products run over the rows'
+    # chains (`mju_mulMatVecSparse`), and Newton's Hessian is the sparse one.
+    for solver in ("Newton", "CG"):
+        for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6)):
+            xml = MIXED_ROWS.format(solver=solver, cone=cone, condim=condim).replace(
+                f'solver="{solver}"', f'solver="{solver}" jacobian="sparse"')
+            same[f"{solver}_{cone}_{condim}_sparse"] = same_input(xml, MIXED_QVEL)
+        # The tilted box's four contacts: each box dof in sixteen rows, all pushing.
+        same[f"{solver}_box_sparse"] = same_input(NEWTON_BOX.format(iterations=100).replace(
+            'iterations="100"', f'iterations="100" solver="{solver}" jacobian="sparse"'), None,
+            census_start)
     cases["same_input"] = same
     cases["islands_mixed"] = {
         f"{solver}_{cone}_{condim}": island_trajectory(

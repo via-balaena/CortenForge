@@ -921,9 +921,11 @@ pub enum Integrator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepError {
-    /// Cholesky decomposition failed under the implicit spring-damper
-    /// integrator: the modified mass matrix (M + h*D + h²*K) is not positive
-    /// definite.
+    /// A Cholesky factorization failed: under the implicit spring-damper
+    /// integrator the modified mass matrix (M + h*D + h²*K) is not positive
+    /// definite; or Newton's sparse Hessian has a diagonal under mjMINVAL,
+    /// where MuJoCo stops ("rank-deficient sparse Hessian",
+    /// `engine_solver.c:1644-1646`).
     CholeskyFailed,
     /// Under the implicit integrator, a diagonal of `M − h·D`'s LU factor is
     /// below mjMINVAL in magnitude.
@@ -1029,7 +1031,10 @@ impl std::fmt::Display for StepError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CholeskyFailed => {
-                write!(f, "Cholesky decomposition failed in implicit integration")
+                write!(
+                    f,
+                    "Cholesky decomposition failed (implicit integration, or Newton's sparse Hessian)"
+                )
             }
             Self::LuSingular => {
                 write!(f, "LU decomposition failed in implicit integration")
