@@ -3,8 +3,8 @@
 This document defines the physics pipeline architecture implemented in
 `sim/L0/core/src/` (decomposed across `types/`, `dynamics/`, `collision/`, `sensor/`, `constraint/`, `forward/`, `integrate/`, `island/`, `jacobian.rs`, `energy.rs`). The pipeline follows MuJoCo's computation
 model: `forward()` (8 sub-stages) then either `integrate()` (Euler/ImplicitSpringDamper)
-or `mj_runge_kutta()` (RK4) run each timestep, operating on a static `Model` and
-mutable `Data`.
+or `mj_runge_kutta()` (RK4) run each timestep, reading the `Model` (not writing it)
+and writing the `Data`.
 
 ---
 
@@ -907,7 +907,7 @@ available as `Data::transition_derivatives()`.
 
 ## Key Data Structures
 
-### Model (what stepping does not change; edit between steps, then `Model::recompute_derived`)
+### Model (what stepping reads and does not write; edit between steps, then `Model::recompute_derived`)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -942,9 +942,9 @@ available as `Data::transition_derivatives()`.
 | `solver_iterations` | `usize` | Max constraint-solver iterations (default 100) |
 | `solver_tolerance` | `f64` | Constraint-solver convergence threshold (default 1e-8) |
 
-### Data (dynamic, mutable, pre-allocated)
+### Data (dynamic: allocated by `make_data`; a step still allocates)
 
-**State (source of truth):**
+**State, in part (`Data`'s doc lists all of it):**
 
 | Field | Type | Description |
 |-------|------|-------------|

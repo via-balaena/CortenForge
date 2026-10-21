@@ -10,7 +10,7 @@ The `sim-*` crates provide a MuJoCo-aligned physics simulation stack for:
 - **Domain randomization** (tunable contact parameters for robust policies)
 
 The primary API is a `Model`/`Data` architecture modeled after MuJoCo:
-`Model` holds what stepping does not change (its fields are public and may be
+`Model` holds what stepping reads and does not write (its fields are public and may be
 edited between steps; `Model::recompute_derived` then recomputes the fields
 derived from them), `Data` is dynamic (the state, and what the forward pass
 computes from it), and body poses are computed via forward kinematics.
@@ -69,7 +69,7 @@ pipeline-stage directories:
 sim-core/src/
 ├── types/           # Model, Data, enums, contacts, keyframes, flags
 │   ├── mod.rs             # Type re-exports
-│   ├── model.rs           # Model struct (static configuration)
+│   ├── model.rs           # Model struct (configuration)
 │   ├── data.rs            # Data struct (mutable state)
 │   ├── enums.rs           # MjJointType, GeomType, SolverType, etc.
 │   ├── contact_types.rs   # Contact, ContactPair
@@ -225,7 +225,7 @@ model; a step still allocates (its vectors are not pooled).
 
 | Category | Fields | Description |
 |----------|--------|-------------|
-| State | `qpos`, `qvel`, `act`, `ctrl`, `time` | Source of truth (act = activation states for muscles/filters) |
+| State, in part | `qpos`, `qvel`, `act`, `ctrl`, `time` | `Data`'s doc lists all of it (act = activation states for muscles/filters) |
 | Mocap state | `mocap_pos`, `mocap_quat` | User-settable kinematic input for mocap bodies (length nmocap); FK overrides body pose |
 | Body poses | `xpos`, `xquat`, `xmat` | Computed by forward kinematics |
 | Mass matrix | `qM`, `qLD_data`, `qLD_diag_inv` | Computed by CRBA; sparse L^T D L factorization in flat CSR storage (diagonal D[i,i] stored as the last element of each CSR row in `qLD_data`; `qLD_diag_inv` stores precomputed 1/D[i,i] for fast solves) |
@@ -247,7 +247,7 @@ use sim_mjcf::{load_model, load_model_from_file};
 let model = load_model(mjcf_string)?;  // From an MJCF XML string
 // Or from file (supports <include> file resolution):
 // let model = load_model_from_file("robot.xml")?;
-let mut data = model.make_data();      // Pre-allocated
+let mut data = model.make_data();      // Arrays sized by the model
 
 // Simulation loop
 loop {
@@ -426,7 +426,7 @@ The physics engine. Depends on sim-types. Organized as a module
 tree mirroring MuJoCo's pipeline stages (see directory listing above). Key
 modules:
 
-- `types/` — `Model` (static), `Data` (mutable), enums, contact types, keyframes, flags, callbacks
+- `types/` — `Model` (configuration), `Data` (state and computed values), enums, contact types, keyframes, flags, callbacks
 - `dynamics/` — CRBA, RNE, sparse LDL factorization, spatial algebra
 - `forward/` — Pipeline orchestration (`step`, `forward`), per-stage functions (position, velocity, passive, actuation, acceleration, muscle/hill/fiber)
 - `constraint/` — Unified constraint assembly (contact + equality sub-modules) + solver dispatch (PGS, CG, Newton, Noslip, QCQP)

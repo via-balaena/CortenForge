@@ -6,8 +6,8 @@
 //! - `Arc<dyn Fn>` preserves `#[derive(Clone)]` on Model (Arc is Clone); a
 //!   clone shares the closure and its state
 //! - `Fn + Send + Sync`: callable from several threads at once
-//!   ([`BatchSim`](crate::BatchSim) steps environments in parallel over one
-//!   shared `Model`). Interior mutability (an atomic counter, an RNG behind a
+//!   ([`BatchSim`](crate::BatchSim) can step environments in parallel over
+//!   one shared `Model`). Interior mutability (an atomic counter, an RNG behind a
 //!   `Mutex`) is allowed, but what it returns then depends on the order the
 //!   threads call it (see [`BatchSim::step_all`](crate::BatchSim::step_all))
 //! - `Option<Callback<...>>` — None = no overhead (branch predicted away)

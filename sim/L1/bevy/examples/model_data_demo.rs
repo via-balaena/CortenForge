@@ -3,8 +3,8 @@
 //! This example demonstrates the MuJoCo-style Model/Data architecture with Bevy.
 //!
 //! Key concepts:
-//! - Model (static) contains the kinematic tree, joint definitions, masses
-//! - Data (dynamic) contains qpos/qvel as the source of truth
+//! - Model (read by each step) contains the kinematic tree, joint definitions, masses
+//! - Data (dynamic) contains qpos/qvel, the joints' state
 //! - Body poses (xpos/xquat) are COMPUTED from qpos via forward kinematics
 //! - xipos (COM position) shows where the mass is — use this for visualization
 //!
@@ -95,7 +95,7 @@ fn setup_physics_and_scene(
     println!("========================================");
     println!("Model/Data Architecture Demo");
     println!("========================================");
-    println!("Model (static):");
+    println!("Model (read by each step):");
     println!("  nbody: {}", model.nbody);
     println!("  njnt:  {}", model.njnt);
     println!("  nq:    {} (position coordinates)", model.nq);

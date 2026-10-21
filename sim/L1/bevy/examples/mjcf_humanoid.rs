@@ -11,7 +11,7 @@
 //!
 //! ## Key Architectural Points
 //!
-//! - **Model** is static: parsed from MJCF, contains kinematic tree
+//! - **Model** is read by each step, not written: parsed from MJCF, contains kinematic tree
 //! - **Data** is dynamic: qpos/qvel span all joints (nq may differ from nv)
 //! - Body poses (xpos/xquat) are COMPUTED via forward kinematics
 //! - MJCF provides a declarative way to define complex articulated systems
@@ -216,7 +216,7 @@ fn setup_physics_and_scene(
     println!("=============================================");
     println!("MJCF Humanoid (Model/Data Architecture)");
     println!("=============================================");
-    println!("Model (static, from MJCF):");
+    println!("Model (from MJCF, read by each step):");
     println!("  nbody:  {} bodies", model.nbody);
     println!("  njnt:   {} joints", model.njnt);
     println!("  nq:     {} (position coordinates)", model.nq);
@@ -233,7 +233,7 @@ fn setup_physics_and_scene(
     println!("=============================================");
     println!("Key invariants:");
     println!("  - MJCF parsed directly to Model (no World)");
-    println!("  - qpos/qvel are ONLY state variables");
+    println!("  - qpos/qvel hold the joints' state");
     println!("  - All {} body poses via FK", model.nbody);
     println!("=============================================");
     println!();
