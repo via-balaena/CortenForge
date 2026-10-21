@@ -116,7 +116,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q50 | `Data::newton_solved` | A18 Q2 | delete / crate-private / keep pub | crate-private | (b) | always true without the PGS fallback |
 | Q51 | solver statistics shape | A18 Q3 | MuJoCo's per-island arrays / sum + concatenation | sum + concatenation, MuJoCo's `SolverStat` fields | (b) | — |
 | Q52 | mixed-sign `solref`/`solreffriction` | A18 Q4 | parity (replace + warn) / refuse at load | parity | (a) | parity: MuJoCo warns, so it is not silent |
-| Q53 | PGS/noslip scale and `Data::stat_meaninertia` | A18 Q5 | MuJoCo's constant / leave | leave until a fixture fails (0 of 1,408 docs change) | (b) | — |
+| Q53 | PGS/noslip scale and `Data::stat_meaninertia` | A18 Q5 | MuJoCo's constant / leave | leave until a fixture fails (0 of 1,408 docs change); one did (the closing work's third pull request): MuJoCo's constant, the field removed | (b) | MuJoCo itself, given the per-step scale, takes 66 iterations against 65 at step 340 of a two-link arm under PGS |
 | Q54 | emulate the reference build's FMA | A10 Q2.1; A17 §2.2, Q1; A18 §3.4, Q6; A21 §1.3, Q2 | `f64::mul_add` where clang contracts / plain arithmetic | A10, A17: emulate; A18, A21: accept | **(c)** | C1 |
 | Q55 | solver: full port vs patches | A18 Q7 | port / patches | port | (b) | — |
 
