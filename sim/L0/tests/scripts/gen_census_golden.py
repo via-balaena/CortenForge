@@ -32,8 +32,6 @@ The rules are the census's, and layer_e_census.rs runs the same ones on our side
   qpos, qvel, act and time at 19 checkpoints (steps 1-10, 20, 30, ..., 100).
 """
 import copy
-import fnmatch
-import hashlib
 import json
 import math
 import os
@@ -42,6 +40,9 @@ import sys
 
 import numpy as np
 import mujoco
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from oracle_libraries import libraries_sha256  # noqa: E402
 
 NSTEP = 100
 DUMPS = (0, 1, 100)
@@ -262,21 +263,6 @@ def golden(path):
     return finite_or_string(out)
 
 
-def libraries_sha256(pkg):
-    """build_mujoco_oracle.sh's hash: sha256 over "<path in pkg>\\t<sha256>\\n" per library."""
-    lines = []
-    for root, _, files in os.walk(pkg):
-        for name in files:
-            path = os.path.join(root, name)
-            if os.path.islink(path) or not any(
-                    fnmatch.fnmatch(name, g) for g in ('*.dylib', '*.so', '*.so.*')):
-                continue
-            with open(path, 'rb') as f:
-                lines.append((os.path.relpath(path, pkg), hashlib.sha256(f.read()).hexdigest()))
-    text = ''.join(f'{rel}\t{digest}\n' for rel, digest in sorted(lines))
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
 def oracle():
     """The marker build_mujoco_oracle.sh writes beside the venv, checked against this run."""
     marker = os.path.join(os.path.dirname(sys.prefix), 'oracle.json')
@@ -289,9 +275,9 @@ def oracle():
     if o['mujoco'] != mujoco.__version__ or o['platform'] != here:
         sys.exit(f'oracle marker {o} does not match mujoco {mujoco.__version__} on {here}')
     loaded = libraries_sha256(os.path.dirname(mujoco.__file__))
-    if o.get('libraries_sha256') != loaded:
+    if o.get('libraries_sha256_without_uuid') != loaded:
         sys.exit(f'the mujoco this interpreter loads ({loaded}) is not the build the marker '
-                 f'{marker} records ({o.get("libraries_sha256")})')
+                 f'{marker} records ({o.get("libraries_sha256_without_uuid")})')
     return o
 
 
