@@ -2,6 +2,7 @@
 //
 // 2 entry points:
 //   1. smooth_assemble  — per-DOF: qfrc_smooth = applied + actuator + passive - bias
+//                         - damping · qvel
 //   2. smooth_solve     — single thread: forward/back substitution using qM_factor
 
 // ── Packed struct types ─────────────────────────────────────────────

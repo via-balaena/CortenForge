@@ -348,8 +348,8 @@ fn t5_cdof_matches_cpu() {
 // vs partial-frame distinction is invisible. `multi_joint_body` carries
 // hinge→slide→hinge on a single body: the first hinge and the slide are each
 // followed by a later *rotating* joint, so a final-frame cdof over-rotates
-// their subspace. It and the conformance matrix's `multi_joint_body` case
-// catch a final-frame cdof in fk.wgsl.
+// their subspace. It and `dynamics_conformance_matrix`'s `multi_joint_body`
+// case catch a final-frame cdof in fk.wgsl (by reading).
 #[test]
 fn t5b_cdof_multi_joint_body() {
     let ctx = gpu_or_skip!();

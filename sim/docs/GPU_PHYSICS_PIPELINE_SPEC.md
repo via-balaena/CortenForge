@@ -146,7 +146,8 @@ in sequence.
 **n_env dimension:** Every per-state buffer has a leading `n_env`
 dimension. For `n_env=1` (interactive), this is just an offset of 0.
 For `n_env=1000` (batch), each thread computes
-`env_id * stride + element_id`. Same shader, wider dispatch.
+`env_id * stride + element_id`. Same shader, wider dispatch. FK's mocap
+reads are the exception: every env reads env 0's (`state_buffers.rs`).
 
 **Batching:** `GpuPhysicsPipeline::new_batched` steps `n_env`
 environments in lockstep.
@@ -655,13 +656,13 @@ for j in body_jnt_adr[body] .. body_jnt_adr[body] + body_jnt_num[body]:
             dq           = normalize(vec4(qpos[adr+1], qpos[adr+2], qpos[adr+3], qpos[adr]))
             quat         = quat × dq              // RIGHT multiply (local frame)
             // NOTE: The original spec had MJX-style LEFT multiply with conjugate sandwich.
-            // Session 1 matched the CPU (`body_pose`, position.rs), which uses RIGHT multiply.
+            // Session 1 matched the CPU, which uses RIGHT multiply.
             // This is simpler and correct — Ball joints rotate in the body's local frame.
         Slide:
             pos += rotate(quat, jnt_axis[j]) × (qpos[adr] - qpos0[adr])
 ```
 
-**Critical hinge details (verified against CPU `body_pose`, `position.rs`):**
+**Critical hinge details:**
 - `jnt_axis` is in local frame → must be rotated to world.
 - Rotation is LEFT-multiplied (`rot × quat`), not right-multiplied.
   The rotation is in world frame (axis was rotated to world).
@@ -681,9 +682,9 @@ xipos = pos + rotate(quat, body_ipos[body])
 In the joint loop each joint's axis and anchor, in the frame before it
 turns, are written to `jnt_xaxis` / `jnt_xanchor` (MuJoCo's `xaxis`,
 `xanchor`): `rotate(quat, jnt_axis[j])` and `pos + rotate(quat,
-jnt_pos[j])`. A free joint (alone on its body, as `Model::make_data`
-requires) takes its position as its anchor and the model's axis as its
-axis (MuJoCo's `mj_kinematics1`); a ball takes the body's origin as its
+jnt_pos[j])`. A free joint takes its position as its anchor and the
+model's axis as its axis (MuJoCo's `mj_kinematics1` for one alone on its
+body; `GpuFkPipeline` says what it does otherwise); a ball takes the body's origin as its
 anchor (the GPU turns a ball about it, not about its `jnt_pos` as the CPU
 does; see `GpuFkPipeline`).
 
