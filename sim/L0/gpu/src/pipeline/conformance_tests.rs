@@ -49,7 +49,7 @@ use nalgebra::DVector;
 use sim_core::mj_integrate_pos_explicit;
 use sim_core::test_fixtures::conformance::{
     ConformanceCase, damped_conformance_matrix, dynamics_conformance_matrix, light_subtree_cases,
-    two_slides_case,
+    two_slides_case, two_trees_case,
 };
 use sim_core::types::{Data, Model};
 
@@ -205,11 +205,13 @@ fn check_spatial(
 
 /// Compare a GPU buffer of per-body 10-vector inertias (`body_cinert` or
 /// `body_crb`, 3 vec4 a body: MuJoCo's `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz, m·dx,
-/// m·dy, m·dz, m]`, the CPU's layout) against the CPU's, body by body.
+/// m·dy, m·dz, m]`, the CPU's layout) against the CPU's, body by body,
+/// within `tol`.
 fn check_inertia(
     fails: &mut Failures,
     gpu: &[[f32; 4]],
     cpu: &[[f64; 10]],
+    tol: f32,
     case: &str,
     field: &str,
     env: usize,
@@ -222,7 +224,7 @@ fn check_inertia(
                 fails,
                 gpu[base + k / 4][k % 4],
                 c as f32,
-                TOL_DYNAMIC,
+                tol,
                 format!("[{case}] {field}[{b}][{k}]"),
             );
         }
@@ -308,9 +310,17 @@ fn compare_env_fields(
 
     // cinert and crb (body_crb's atomic u32s hold f32 bit patterns)
     let gpu_cinert = read_buffer::<[f32; 4]>(ctx, &state.body_cinert, nbody * 3 * n_env);
-    check_inertia(fails, &gpu_cinert, &data.cinert, name, "cinert", env);
+    check_inertia(
+        fails,
+        &gpu_cinert,
+        &data.cinert,
+        TOL_KINEMATIC,
+        name,
+        "cinert",
+        env,
+    );
     let gpu_crb = read_buffer::<[f32; 4]>(ctx, &state.body_crb, nbody * 3 * n_env);
-    check_inertia(fails, &gpu_crb, &data.crb, name, "crb", env);
+    check_inertia(fails, &gpu_crb, &data.crb, TOL_DYNAMIC, name, "crb", env);
 
     let gpu_cdof = read_buffer::<[f32; 4]>(ctx, &state.cdof, nv * 2 * n_env);
     for dof in 0..nv {
@@ -535,13 +545,17 @@ fn gpu_simple_body_mass_matrix_matches_cpu() {
 }
 
 /// A simple dof's diagonal is the model's `dof_M0`, made at `qpos0` (MuJoCo's
-/// `mj_setM0`), as the CPU's. With the body's mass doubled in place and
-/// `dof_M0` not remade, the CPU keeps the diagonal of the mass it was made
-/// with (asserted), where the state's mass would give twice it.
+/// `mj_setM0`), its armature included, as the CPU's. The slides carry
+/// armature; with the body's mass doubled in place and `dof_M0` not remade,
+/// the CPU keeps the diagonal of the mass it was made with (asserted), where
+/// the state's mass would give the doubled one.
 #[test]
 fn gpu_simple_dof_diagonal_is_dof_m0() {
     let ctx = gpu_or_skip!();
     let mut case = two_slides_case();
+    let armature = 0.05;
+    case.model.dof_armature.fill(armature);
+    case.model.compute_dof_m0();
     let made_with = case.model.body_mass[1];
     case.model.body_mass[1] *= 2.0;
     let (data, fails) = case_against_cpu(&ctx, &case);
@@ -552,13 +566,40 @@ fn gpu_simple_dof_diagonal_is_dof_m0() {
             "the CPU's diagonal {dof} is dof_M0"
         );
         assert_eq!(
-            case.model.dof_M0[dof], made_with,
-            "dof_M0 {dof} is the mass it was made with"
+            case.model.dof_M0[dof],
+            armature + made_with,
+            "dof_M0 {dof} is the armature and the mass it was made with"
         );
     }
     assert!(
         fails.is_empty(),
         "GPU↔CPU on a simple body edited in place: {} divergence(s):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+/// Each body's quantities are about its own tree's subtree centre of mass:
+/// on two trees, neither of whose subtree centres of mass is the world's
+/// (asserted), the world's point or the other tree's diverges.
+#[test]
+fn gpu_two_trees_match_cpu() {
+    let ctx = gpu_or_skip!();
+    let case = two_trees_case();
+    let (data, fails) = case_against_cpu(&ctx, &case);
+    let model = &case.model;
+    let mut roots: Vec<usize> = (1..model.nbody).map(|b| model.body_rootid[b]).collect();
+    roots.dedup();
+    assert_eq!(roots.len(), 2, "two trees: {roots:?}");
+    for &root in &roots {
+        assert!(
+            (data.subtree_com[root] - data.subtree_com[0]).norm() > 0.1,
+            "tree {root}'s subtree centre of mass is the world's"
+        );
+    }
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU on two trees: {} divergence(s):\n  {}",
         fails.len(),
         fails.join("\n  ")
     );

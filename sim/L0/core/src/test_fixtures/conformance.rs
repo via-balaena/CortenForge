@@ -989,6 +989,53 @@ pub fn two_slides_case() -> ConformanceCase {
     }
 }
 
+/// Two trees under the world, a hinge chain and a free body.
+///
+/// The chain has two links; the free body carries a welded link, 1.5 from
+/// the chain. Each body's `cinert`, `cdof` and velocities are about its own
+/// tree's subtree centre of mass, where on a model of one tree that point and
+/// the world's agree (the world has no mass).
+#[must_use]
+pub fn two_trees_case() -> ConformanceCase {
+    let l = 0.4;
+    let mut m = Model::empty();
+    let a0 = link_body(&mut m, 0, "a0", Vector3::zeros(), l);
+    add_hinge_joint(
+        &mut m,
+        a0,
+        "h0",
+        Vector3::y(),
+        0.0,
+        0.0,
+        0.0,
+        false,
+        (-3.0, 3.0),
+    );
+    let a1 = link_body(&mut m, a0, "a1", Vector3::new(0.0, 0.0, -l), l);
+    add_hinge_joint(
+        &mut m,
+        a1,
+        "h1",
+        Vector3::x(),
+        0.0,
+        0.0,
+        0.0,
+        false,
+        (-3.0, 3.0),
+    );
+    let b0 = link_body(&mut m, 0, "b0", Vector3::new(1.5, 0.0, 0.0), l);
+    add_freejoint(&mut m, b0, "free0");
+    link_body(&mut m, b0, "b1", Vector3::new(0.0, 0.2, -l), l);
+    finalize(&mut m);
+    let q = tilted_quat();
+    ConformanceCase {
+        name: "two_trees",
+        model: m,
+        qpos: vec![0.4, -0.3, 1.5, 0.1, -0.2, q[0], q[1], q[2], q[3]],
+        qvel: vec![0.6, -0.8, 0.3, -0.2, 0.5, 0.9, -0.4, 0.7],
+    }
+}
+
 /// A contact whose lever arm lies within 1e-6 of its length of the normal.
 ///
 /// `contact_normal_only` with its sphere 3 below the body's origin and
