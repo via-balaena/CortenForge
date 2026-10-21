@@ -510,7 +510,7 @@ impl Data {
         // MuJoCo's `mj_fwdPosition` (`engine_forward.c:203-206`).
         crate::constraint::mj_make_constraint(model, self);
         if pass == Pass::Forward {
-            crate::island::mj_island(model, self);
+            crate::island::mj_island(model, self)?;
         }
 
         // The transmissions, after the wakes, as MuJoCo's `mj_transmission`

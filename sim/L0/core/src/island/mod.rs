@@ -8,7 +8,7 @@
 
 pub(crate) mod sleep;
 
-use crate::types::{ConstraintType, DISABLE_ISLAND, Data, EqualityType, Model};
+use crate::types::{ConstraintType, DISABLE_ISLAND, Data, EqualityType, Model, StepError};
 
 // Re-exports — island functions for external consumers.
 pub(crate) use sleep::{
@@ -29,9 +29,17 @@ pub(crate) use sleep::{
 /// Runs after the rows are made, in the position stage, as MuJoCo's
 /// (`mj_fwdPosition`). The primal solver copies each island's block of the
 /// mass matrix and the Jacobian for itself (`constraint/solver/primal.rs`).
+///
+/// # Errors
+///
+/// [`StepError::ConstraintWithoutTree`] for a geom contact between two static
+/// bodies at the dense size, where MuJoCo stops (`treeFirst`,
+/// `engine_island.c:225-228`). A flex contact whose sides have no dofs reaches
+/// no tree either, and stays in no island: MuJoCo stops there too ("no tree
+/// found", `:271-277`), not ported (ledger L220).
 // Tree, dof and row indices are usize stored as i32 in mjData's arrays, bounded by realistic model sizes.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
-pub(crate) fn mj_island(model: &Model, data: &mut Data) {
+pub(crate) fn mj_island(model: &Model, data: &mut Data) -> Result<(), StepError> {
     let (ntree, nv) = (model.ntree, model.nv);
     let nefc = data.efc_type.len();
     data.nisland = 0;
@@ -43,7 +51,7 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
     data.contact_island.clear();
     data.contact_island.resize(data.contacts.len(), -1);
     if model.disableflags & DISABLE_ISLAND != 0 || nefc == 0 || ntree == 0 {
-        return;
+        return Ok(());
     }
 
     // Edges (`findEdges`): one constraint per run of rows with the same type
@@ -70,6 +78,9 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
         }
         previous = Some(key);
         if let Some((a, b)) = row_tree_pair(model, data, row) {
+            if a.is_none() && b.is_none() {
+                return Err(StepError::ConstraintWithoutTree { row });
+            }
             add_edge(a, b);
         } else {
             let trees = row_trees(model, data, row);
@@ -102,7 +113,7 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
     }
     data.nisland = nisland;
     if nisland == 0 {
-        return;
+        return Ok(());
     }
     let island_of = |i: i32| usize::try_from(i).ok();
 
@@ -180,6 +191,7 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
             data.contact_island[c] = data.tree_island[tree];
         }
     }
+    Ok(())
 }
 
 /// Write the exclusive prefix sums of `counts` into `adr` and return a copy,

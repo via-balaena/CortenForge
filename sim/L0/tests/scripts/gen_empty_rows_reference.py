@@ -297,6 +297,42 @@ def case(xml):
     return {"xml": xml, "nefc": int(d.nefc), "efc_type": [int(t) for t in d.efc_type[:d.nefc]]}
 
 
+STATIC_PAIR = """<mujoco model="static_pair">
+  <option timestep="0.002" jacobian="{jacobian}">{flag}</option>
+  <worldbody>
+    <geom name="floor" type="plane" size="1 1 0.1"/>
+    <geom name="post" type="sphere" size="0.05" pos="0 0 0.049"/>
+    <body name="free" pos="0.5 0 0.3">
+      <freejoint/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <contact>
+    <pair geom1="post" geom2="floor"/>
+  </contact>
+</mujoco>"""
+
+
+def static_pair(jacobian, islands):
+    """A contact between two static geoms under a `<pair>` (a sphere 1 mm into
+    the floor, both on the world body) beside a free body, so nv is 6: at the
+    sparse size MuJoCo makes no row for it (exclude 3, efc_address -1); at
+    the dense size it makes its rows, and with islands `mj_island` stops
+    (`treeFirst`); the case records the error then."""
+    flag = "" if islands else '<flag island="disable"/>'
+    xml = STATIC_PAIR.format(jacobian=jacobian, flag=flag)
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    try:
+        mujoco.mj_forward(m, d)
+    except mujoco.FatalError as e:
+        return {"xml": xml, "error": str(e)}
+    con = d.contact[0]
+    return {"xml": xml, "nefc": int(d.nefc), "efc_type": [int(t) for t in d.efc_type[:d.nefc]],
+            "ncon": int(d.ncon), "exclude": int(con.exclude), "efc_address": int(con.efc_address),
+            "qacc": [float(x) for x in d.qacc]}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -315,6 +351,9 @@ def main():
         "joint_equality_sparse": case(JOINT_EQUALITY),
         "tendon_equality_half_static_sparse": case(TENDON_EQUALITY_HALF_STATIC),
         "tendon_chains": tendon_chains(),
+        "static_pair_sparse": static_pair("sparse", True),
+        "static_pair_dense_islands": static_pair("dense", True),
+        "static_pair_dense_no_islands": static_pair("dense", False),
     }
     for kind in CHAIN_CONSTRAINTS:
         for nv, settings in ((61, ("auto", "dense")), (60, ("auto",)), (59, ("auto",)),

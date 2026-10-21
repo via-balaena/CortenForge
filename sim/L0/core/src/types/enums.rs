@@ -1014,6 +1014,15 @@ pub enum StepError {
         /// The contact, an index into `Data::contacts`.
         contact: usize,
     },
+    /// A geom contact between two static bodies (under a `<pair>`), whose
+    /// rows reach no kinematic tree, at the dense size with islands: MuJoCo
+    /// 3.5.0's `mj_island` stops there ("contact … is between two static
+    /// bodies", `treeFirst`, `engine_island.c:225-228`). At the sparse size
+    /// the contact makes no rows, and without islands its rows are solved.
+    ConstraintWithoutTree {
+        /// The row, an index into the `efc_*` arrays.
+        row: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
@@ -1063,6 +1072,9 @@ impl std::fmt::Display for StepError {
                 f,
                 "contact {contact}: xaxis of contact frame undefined (normal shorter than 0.5)"
             ),
+            Self::ConstraintWithoutTree { row } => {
+                write!(f, "constraint row {row} reaches no kinematic tree")
+            }
         }
     }
 }

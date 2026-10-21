@@ -37,9 +37,15 @@ pub(super) fn assemble_contact_rows(
         if contact.is_excluded() {
             continue;
         }
+        // At the sparse size a contact whose dof chain is empty (between
+        // two objects without dofs) makes no rows, as MuJoCo's ("skip
+        // contact if no DOFs affected", `engine_core_constraint.c:1028-1033`).
+        let chain = contact_chain(model, contact);
+        if model.is_sparse() && chain.is_empty() {
+            continue;
+        }
         let dim = contact.dim;
         let cj = compute_contact_jacobian(model, data, contact);
-        let chain = contact_chain(model, contact);
 
         let sr_normal = contact.solref;
         let sr_friction = checked_solreffriction(contact.solreffriction);

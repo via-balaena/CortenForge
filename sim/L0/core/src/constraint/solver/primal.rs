@@ -220,9 +220,11 @@ impl Subproblem {
     /// contact's, connect's, weld's or joint limit's trees from its bodies or
     /// joint, and any other row's from its dof chain at the sparse size and
     /// its nonzero Jacobian entries at the dense size (`row_tree_pair` and
-    /// `row_trees` in `island`). Rows in none include a contact between two
-    /// static geoms under a `<pair>`, which MuJoCo does not make at the
-    /// sparse size (ledger L148).
+    /// `row_trees` in `island`). At the sparse size a contact without dofs
+    /// makes no rows and every row reaches a tree; at the dense size a geom
+    /// contact between two static bodies is refused (ledger L148), and the
+    /// rows in none are a flex contact's whose sides have no dofs, where
+    /// MuJoCo's partition stops instead (ledger L220).
     fn outside(data: &Data) -> Self {
         let rows = (0..data.efc_type.len())
             .filter(|&r| data.efc_island.get(r).is_none_or(|&i| i < 0))

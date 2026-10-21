@@ -1,6 +1,7 @@
 //! A constraint other than a contact whose Jacobian rows are all zero adds no
 //! rows, and at the sparse size one whose dof chain is empty, against MuJoCo
-//! 3.5.0 (`mj_addConstraint`, `engine_core_constraint.c:237-329`).
+//! 3.5.0 (`mj_addConstraint`, `engine_core_constraint.c:237-329`); and a
+//! contact between two static geoms.
 //!
 //! The golden is `assets/golden/empty_rows/empty_rows.json`, from the unfused
 //! MuJoCo 3.5.0 oracle (`scripts/gen_empty_rows_reference.py`, which describes
@@ -8,7 +9,7 @@
 //! crate's `<flex>` documents.
 
 use serde_json::Value;
-use sim_core::ConstraintType;
+use sim_core::{ConstraintType, StepError};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -128,8 +129,12 @@ fn row_type(mj: &Value) -> ConstraintType {
         0 => ConstraintType::Equality,
         1 => ConstraintType::FrictionDof,
         2 => ConstraintType::FrictionTendon,
+        3 => ConstraintType::LimitJoint,
         4 => ConstraintType::LimitTendon,
-        other => panic!("no such row in these cases: {other}"),
+        5 => ConstraintType::ContactFrictionless,
+        6 => ConstraintType::ContactPyramidal,
+        7 => ConstraintType::ContactElliptic,
+        other => panic!("no such row type: {other}"),
     }
 }
 
@@ -265,4 +270,54 @@ fn ball_limit_rows_take_mujocos_direction() {
             );
         }
     }
+}
+
+/// A contact between two static geoms under a `<pair>` (a sphere 1 mm into
+/// the floor, both on the world body), beside a free body. At the sparse size
+/// it makes no rows, as MuJoCo's ("skip contact if no DOFs affected",
+/// `engine_core_constraint.c:1028-1033`); at the dense size without islands
+/// it makes its rows, their Jacobians zero, and the forward pass goes on, as
+/// MuJoCo's; at the dense size with islands MuJoCo stops (`treeFirst`,
+/// `engine_island.c:225-228`, the golden's message) and the forward pass
+/// refuses it (ledger L148).
+#[test]
+fn a_contact_between_two_static_geoms_makes_no_rows_or_is_refused() {
+    let g = golden();
+    for name in ["static_pair_sparse", "static_pair_dense_no_islands"] {
+        let case = &g["cases"][name];
+        let data = forward(case);
+        assert_row_arrays(name, &data, nefc(case));
+        let want: Vec<ConstraintType> = case["efc_type"]
+            .as_array()
+            .expect("types")
+            .iter()
+            .map(row_type)
+            .collect();
+        assert_eq!(data.efc_type, want, "{name}: rows");
+        assert_eq!(data.contacts.len(), 1, "{name}: the contact");
+        let qacc: Vec<f64> = case["qacc"]
+            .as_array()
+            .expect("qacc")
+            .iter()
+            .map(|x| x.as_f64().expect("number"))
+            .collect();
+        assert_eq!(data.qacc.as_slice(), qacc.as_slice(), "{name}: qacc");
+    }
+    let case = &g["cases"]["static_pair_dense_islands"];
+    assert!(
+        case["error"]
+            .as_str()
+            .expect("MuJoCo's error")
+            .contains("between two static bodies"),
+        "MuJoCo stops"
+    );
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    assert!(
+        matches!(
+            data.forward(&model),
+            Err(StepError::ConstraintWithoutTree { row: 0 })
+        ),
+        "the forward pass refuses the contact's first row"
+    );
 }
