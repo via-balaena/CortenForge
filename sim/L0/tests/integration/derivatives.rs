@@ -5,10 +5,10 @@
 
 use approx::assert_relative_eq;
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_GRAVITY, DISABLE_SPRING,
-    DerivativeConfig, GainType, Integrator, MjStage, Model, mj_integrate_pos_explicit, mj_solve_m,
-    mjd_inverse_fd, mjd_smooth_pos, mjd_smooth_vel, mjd_transition, mjd_transition_fd,
-    mjd_transition_hybrid, validate_analytical_vs_fd,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_DAMPER, DISABLE_GRAVITY,
+    DISABLE_SPRING, DerivativeConfig, GainType, Integrator, MjStage, Model,
+    mj_integrate_pos_explicit, mj_solve_m, mjd_inverse_fd, mjd_smooth_pos, mjd_smooth_vel,
+    mjd_transition, mjd_transition_fd, mjd_transition_hybrid, validate_analytical_vs_fd,
 };
 
 // ============================================================================
@@ -5076,6 +5076,69 @@ fn fd_callback_counts() {
             );
         }
     }
+}
+
+/// The conditions on the `derivatives` module docs' callback counts, on
+/// [`callback_fixture`]'s hinge (nv 1, na 0, nu 1) through
+/// `mjd_transition_fd`: a control at a limit of its range is differenced one
+/// way, so centered differences make one pass fewer (forward ones as many);
+/// the control callback does not fire under `DISABLE_ACTUATION`, nor the
+/// passive one under `DISABLE_SPRING` with `DISABLE_DAMPER`.
+#[test]
+fn fd_callback_counts_at_a_control_limit_and_under_flags() {
+    use sim_core::DISABLE_ACTUATION;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (base, data) = callback_fixture(false);
+    let counted = |model: &Model, data: &sim_core::Data, centered: bool| {
+        let mut model = model.clone();
+        let (passive, control) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (p, c) = (Arc::clone(&passive), Arc::clone(&control));
+        model.set_passive_callback(move |_, _| {
+            p.fetch_add(1, Ordering::Relaxed);
+        });
+        model.set_control_callback(move |_, _| {
+            c.fetch_add(1, Ordering::Relaxed);
+        });
+        let cfg = DerivativeConfig {
+            centered,
+            ..DerivativeConfig::default()
+        };
+        mjd_transition_fd(&model, data, &cfg).expect("fd");
+        (
+            passive.load(Ordering::Relaxed),
+            control.load(Ordering::Relaxed),
+        )
+    };
+    // 2nv + na + nu columns: 3.
+    let mut limited = base.clone();
+    limited.actuator_ctrlrange[0] = (-1.0, 1.0);
+    let mut at_limit = data.clone();
+    at_limit.ctrl[0] = 1.0;
+    assert_eq!(
+        counted(&limited, &at_limit, true),
+        (6, 6),
+        "centered, at the limit"
+    );
+    assert_eq!(
+        counted(&limited, &at_limit, false),
+        (4, 4),
+        "forward, at the limit"
+    );
+    let mut no_actuation = base.clone();
+    no_actuation.disableflags |= DISABLE_ACTUATION;
+    assert_eq!(
+        counted(&no_actuation, &data, true),
+        (7, 0),
+        "DISABLE_ACTUATION"
+    );
+    let mut no_passive = base.clone();
+    no_passive.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+    assert_eq!(
+        counted(&no_passive, &data, true),
+        (0, 7),
+        "DISABLE_SPRING | DISABLE_DAMPER"
+    );
 }
 
 /// A control callback that writes `ctrl` overwrites each control

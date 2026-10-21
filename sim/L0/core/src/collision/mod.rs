@@ -1853,7 +1853,7 @@ mod spec_d_tests {
     /// turned, none; a sphere so turned on a height field, its contacts, a
     /// sphere's support not reading its turn. Each call returns.
     #[test]
-    fn a_non_finite_turn_collides_as_nothing() {
+    fn a_non_finite_turn_returns() {
         let n = 5;
         let hfield = Arc::new(HeightFieldData::new(vec![0.5; n * n], n, n, 1.0));
         let sdf: Arc<dyn PhysicsShape> = Arc::new(ShapeConvex::new(Arc::new(SdfGrid::sphere(

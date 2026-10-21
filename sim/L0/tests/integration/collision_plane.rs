@@ -1566,3 +1566,35 @@ fn mesh_plane_box_separated() {
         data.ncon
     );
 }
+
+/// A free body turned by a NaN quaternion over a plane: the forward pass
+/// returns, with the contacts the collision functions list at a NaN distance
+/// (as MuJoCo's: one for a mesh and for an ellipsoid through
+/// `mjc_PlaneConvex`, four corners for a box through `mjc_PlaneBox`). The
+/// constraint impedance's debug check admits a NaN violation; before, a debug
+/// build panicked there.
+#[test]
+fn a_nan_turned_body_over_a_plane_forwards() {
+    let cube = r#"<mesh name="m" vertex="-.1 -.1 -.1 .1 -.1 -.1 .1 .1 -.1 -.1 .1 -.1 -.1 -.1 .1 .1 -.1 .1 .1 .1 .1 -.1 .1 .1"
+        face="0 2 1 0 3 2 4 5 6 4 6 7 0 1 5 0 5 4 2 3 7 2 7 6 0 4 7 0 7 3 1 2 6 1 6 5"/>"#;
+    for (geom, contacts) in [
+        (r#"<geom type="mesh" mesh="m"/>"#, 1),
+        (r#"<geom type="ellipsoid" size="0.1 0.08 0.06"/>"#, 1),
+        (r#"<geom type="box" size="0.1 0.1 0.1"/>"#, 4),
+    ] {
+        let xml = format!(
+            r#"<mujoco><asset>{cube}</asset><worldbody><geom type="plane" size="5 5 0.1"/>
+<body pos="0 0 0.09"><freejoint/>{geom}</body></worldbody></mujoco>"#
+        );
+        let model = load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.qpos[3] = f64::NAN;
+        data.forward(&model).expect("forward");
+        assert_eq!(data.ncon, contacts, "{geom}: contacts");
+        assert!(
+            data.contacts.iter().all(|c| c.depth.is_nan()),
+            "{geom}: depths {:?}",
+            data.contacts.iter().map(|c| c.depth).collect::<Vec<_>>()
+        );
+    }
+}

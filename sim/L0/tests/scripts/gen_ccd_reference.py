@@ -102,26 +102,33 @@ weight changes mjc_Convex's contact (registry D-GJK-S3D), as mjc_Convex
 calls mjc_ccd; a sphere and an ellipsoid with the exact distance.
 
 `plane_meshes` and `plane_convex` hold MuJoCo's mjc_PlaneConvex
-(engine_collision_convex.c:1042-1139), called on a plane (geom 0) and an
+(engine_collision_convex.c:1042-1138), called on a plane (geom 0) and an
 ellipsoid or a mesh (geom 1) at poses set in mjData: `plane_meshes` each mesh
-above as MuJoCo compiles it (its vertices; its hull graph where its geom
-collides, `vert_globalid` and each hull vertex's neighbours; its radius,
-`geom_rbound`), `plane_convex` the cases, each with the plane's pose, the
-geom's type, size, mesh and pose, the margin and the contacts listed (`dist`,
-`pos`, the frame's normal): `ellipsoid`, ellipsoids of random sizes and turns
-within 0.05 of planes of random poses, at margins 0, 0.01 and 0.1;
-`ellipsoid_at_margin`, those apart at a margin equal to MuJoCo's own distance
-(each listed: the comparison is inclusive); `mesh`, each mesh within 0.02 of a
-plane at random turns and with its local -z face down, at margins 0 and 0.02;
-`mesh_bare`, the same draws on the mesh compiled without a graph (its geom
-not colliding), where mjc_PlaneConvex searches every vertex; `edge`, an
-unturned mesh over an unturned plane at a margin equal to its lowest
-vertices' distance exactly (the first listed, the rest not), with a graph and
-without, and a mesh without a graph apart by 0.7 of its radius at a margin of
-its radius (its first vertex farther from the first contact than the
-spacing); and `nan`, a
-mesh and an ellipsoid turned by a matrix holding a NaN, and a plane whose
-normal holds one.
+above and a tetrahedron as MuJoCo compiles them (their vertices; their hull
+graphs where the geom collides, `vert_globalid` and each hull vertex's
+neighbours; their radii, `geom_rbound`), `plane_convex` the cases, each with
+the plane's pose, the geom's type, size, mesh and pose, the margin and the
+contacts listed (`dist`, `pos`, the frame's normal): `ellipsoid`, ellipsoids
+of random sizes and turns within 0.05 of planes of random poses, at margins
+0, 0.01 and 0.1; `ellipsoid_at_margin`, those apart at a margin equal to
+MuJoCo's own distance (each listed: the comparison is inclusive); `mesh`,
+each mesh within 0.02 of a plane at random turns and with its local -z face
+down, at margins 0 and 0.02; `mesh_bare`, the same draws on the mesh compiled
+without a graph (its geom not colliding), where mjc_PlaneConvex searches
+every vertex; `edge`, an unturned mesh over an unturned plane at a margin
+equal to its lowest vertices' distance exactly (the first listed, the rest
+not), with a graph and without, and a mesh without a graph apart by 0.7 of
+its radius at a margin of its radius (its first vertex farther from the first
+contact than the spacing); `nan`, a mesh and an ellipsoid turned by a matrix
+holding a NaN, and a plane whose normal holds one; and `tetra`, the
+tetrahedron laid on each of its faces at three spins (its corners tie, so the
+hill climb's path decides the first contact), at six random turns and with
+its local -z face down at 12 (margins up to 1, every vertex within it), with
+its graph and without, from its own generator, and one pose where two base
+corners tie exactly for the deepest. It refuses plane cases that
+miss 0 to 3 mesh contacts with a graph and without, a vertex within the
+margin skipped as nearer the first contact than 0.3 of the radius, a NaN
+contact, or the tetrahedron face down listed with its graph.
 
 `hfield_fields` and `hfield_convex` hold MuJoCo's mjc_ConvexHField
 (engine_collision_convex.c:1185-1363), called on a height field (geom 0) and
@@ -135,13 +142,16 @@ turns over random points of four fields (9 x 9 bumpy, 5 x 9 of uneven
 cells, 30 x 30 fine, one cell), reaching 0.03 below to 0.02 above the
 surface, the field unturned or turned, at margins 0 and 0.01; `edge`, a
 broad flat box pressed into the fine field (mjMAXCONPAIR contacts), a sphere
-clear of the field by its bounding sphere, a capsule clear by its box, and a
-sphere apart within the margin (listed, at a distance below 0); `nan`, a
-sphere, a box and a mesh turned by a matrix holding a NaN, and the field so
-turned.
-It refuses plane cases that miss 0 to 3 mesh contacts with a graph and
-without, a vertex within the margin skipped as nearer the first contact than
-0.3 of the radius, or a NaN contact.
+clear of the field by its bounding sphere, a capsule clear by its box, a
+sphere apart within the margin (listed, at a distance below 0), boxes resting
+exactly on a 5 x 5 flat field of dyadic cells (on a grid vertex, a grid line
+and mid-cell: unlisted) and a sphere under that field's base within the
+margin (listed); `nan`, a sphere, a box and a mesh turned by a matrix holding
+a NaN, and the field so turned. It refuses height-field cases that miss a
+contact for every geom, three or more contacts, none, a geom apart listed
+within the margin, mjMAXCONPAIR contacts, the far and past-edge geoms with
+none, a NaN turn listing a contact, the touching boxes unlisted or the sphere
+under the base listed.
 
 It refuses a run whose cases miss a path the port must be checked on (each
 starting polytope, an EPA failure, multi-contact, the sphere and capsule
@@ -1407,6 +1417,17 @@ if COLLISION[0 * 9 + 4] is None or COLLISION[0 * 9 + 4] != COLLISION[0 * 9 + 7]:
 PLANE_CONVEX = CFUNCTYPE(c_int, c_void_p, c_void_p, POINTER(Contact), c_int, c_int, c_double)(
     COLLISION[0 * 9 + 4])
 PLANE_MESHES = {**MESHES, **GRAPH_MESHES}
+# A tetrahedron on a base of three corners in its plane z = -0.03, for the `tetra` cases
+# (kept out of `PLANE_MESHES`, whose cases draw from one generator).
+TETRA_MESHES = {"tetra4": np.array([[0.0, 0.0, 0.08], [0.06, 0.0, -0.03], [-0.03, 0.05, -0.03],
+                                    [-0.03, -0.05, -0.03]])}
+ALL_PLANE_MESHES = {**PLANE_MESHES, **TETRA_MESHES}
+
+
+def tetra_assets():
+    return "<asset>" + "".join(
+        f'<mesh name="{n}" vertex="{" ".join(repr(float(x)) for x in v.ravel())}"/>'
+        for n, v in TETRA_MESHES.items()) + "</asset>"
 
 
 def plane_mesh_model(name, faces=None):
@@ -1415,10 +1436,10 @@ def plane_mesh_model(name, faces=None):
     pair), so it makes none (user_model.cc:4915-4921, user_mesh.cc:1567)."""
     if faces is None:
         return mujoco.MjModel.from_xml_string(
-            f'<mujoco>{mesh_assets()}{graph_assets()}<worldbody>'
+            f'<mujoco>{mesh_assets()}{graph_assets()}{tetra_assets()}<worldbody>'
             f'<geom type="plane" size="5 5 0.1"/><geom type="mesh" mesh="{name}"/>'
             '</worldbody></mujoco>')
-    vert = " ".join(repr(float(x)) for x in PLANE_MESHES[name].ravel())
+    vert = " ".join(repr(float(x)) for x in ALL_PLANE_MESHES[name].ravel())
     face = " ".join(str(i) for f in faces for i in f)
     return mujoco.MjModel.from_xml_string(
         f'<mujoco><asset><mesh name="{name}" vertex="{vert}" face="{face}"/></asset><worldbody>'
@@ -1433,7 +1454,7 @@ def plane_meshes():
     bounding radius (`geom_rbound`, in its mesh frame). Given those faces and not colliding, it
     compiles to the same vertices and radius and no graph."""
     out = {}
-    for name in PLANE_MESHES:
+    for name in ALL_PLANE_MESHES:
         m = plane_mesh_model(name)
         mid = m.geom_dataid[1]
         ga = m.mesh_graphadr[mid]
@@ -1546,7 +1567,8 @@ def plane_convex_cases(meshes):
             if len(case["contacts"]) != 1:
                 sys.exit(f"ellipsoid at margin e{i}: {len(case['contacts'])} contacts")
             out["ellipsoid_at_margin"][f"e{i}"] = case
-    for name, mesh in meshes.items():
+    for name in PLANE_MESHES:
+        mesh = meshes[name]
         verts = np.reshape(mesh["vert"], (-1, 3))
         for group, faces in (("mesh", None), ("mesh_bare", mesh["faces"])):
             pm = plane_mesh_model(name, faces)
@@ -1608,7 +1630,68 @@ def plane_convex_cases(meshes):
     m.geom_size[1] = [0.05, 0.04, 0.03]
     out["nan"]["ellipsoid_turn"] = plane_case(m, d, "ellipsoid", m.geom_size[1], None,
                                               (np.zeros(3), eye), (up, bad), 0.0)
+    out["tetra"] = tetra_cases(meshes)
     plane_coverage(out, meshes)
+    return out
+
+
+def tetra_cases(meshes):
+    """The tetrahedron with each of its faces down on a plane (its corners tie for the
+    deepest, so the hill climb's path decides the first contact) at three spins, at six
+    random turns (margins 0 and 0.02), and with its local -z face down at 12 (margins 0, 0.05
+    and 1, the last taking every vertex within it); with its graph and without. Its own
+    generator."""
+    rng = np.random.default_rng(53)
+    out = {}
+    mesh = meshes["tetra4"]
+    verts = np.reshape(mesh["vert"], (-1, 3))
+    centre = verts.mean(axis=0)
+    for group, faces in (("graph", None), ("bare", mesh["faces"])):
+        pm = plane_mesh_model("tetra4", faces)
+        pd = mujoco.MjData(pm)
+        poses = []
+        for k, f in enumerate(mesh["faces"]):
+            a, b, c = verts[f[0]], verts[f[1]], verts[f[2]]
+            n = np.cross(b - a, c - a)
+            if n @ (a - centre) < 0:
+                n = -n
+            for spin in range(3):
+                poses.append((f"face{k}_{spin}", n))
+        poses += [(f"random{i}", None) for i in range(6)]
+        poses += [(f"local_down{i}", "local") for i in range(12)]
+        for tag, n in poses:
+            plane = random_plane(rng)
+            normal = plane[1][[2, 5, 8]]
+            if n is None:
+                mat = random_mat(rng)
+            elif isinstance(n, str):
+                mat = face_down(rng, plane[1], np.eye(3).ravel())
+            else:
+                down = np.reshape(align_mat(n, np.array([0.0, 0.0, -1.0])), (3, 3))
+                spin = np.reshape(axis_mat([0, 0, 1], rng.uniform(0, 2 * np.pi)), (3, 3))
+                mat = (np.reshape(plane[1], (3, 3)) @ spin @ down).ravel()
+            low = (np.reshape(mat, (3, 3)) @ verts.T).T @ normal
+            depth = rng.uniform(-0.004, 0.01)
+            pos = plane[0] + normal * (-depth - low.min()) + in_plane(rng, plane[1], 0.5)
+            margin = float(rng.choice([0.0, 0.02] if n is None or not isinstance(n, str)
+                                      else [0.0, 0.05, 1.0]))
+            out[f"{group}_{tag}"] = plane_case(pm, pd, "mesh", [0, 0, 0], "tetra4", plane,
+                                               (pos, mat), margin)
+    # A pose (found by chunk 3e's fourth review) where two base corners tie exactly for the
+    # deepest and the third is a little higher: MuJoCo's climb from the apex sweeps the apex's
+    # neighbours in full and ends at the tie it meets first; one that moved on at the first
+    # better neighbour would end at the other.
+    pm = plane_mesh_model("tetra4")
+    plane = (np.array([-0.2603940917362395, 0.41086838762342937, 0.36293235617641084]),
+             np.array([0.34719917119006816, 0.6923025713999409, 0.6325898237862821,
+                       -0.8711983857691097, -0.01154522591796997, 0.4907953549003909,
+                       0.34708227865770863, -0.7215149737819256, 0.5991243897975109]))
+    obj = (np.array([-0.07339101648023977, 0.04491025035578622, 0.49002397306165996]),
+           np.array([-0.7690295370629232, 0.0917806404794969, 0.6325898237862821,
+                     0.3063771337310541, -0.8156304135666739, 0.4907953549003909,
+                     0.5610050116099945, 0.5712471816107544, 0.5991243897975109]))
+    out["graph_tie"] = plane_case(pm, mujoco.MjData(pm), "mesh", [0, 0, 0], "tetra4", plane,
+                                  obj, 1.0)
     return out
 
 
@@ -1644,6 +1727,8 @@ def plane_coverage(out, meshes):
     need["a first vertex past the spacing without a graph"] = all(
         c["contacts"] and 0.5 * abs(c["contacts"][0]["dist"]) > 0.3 * meshes[c["mesh"]]["rbound"]
         for k, c in edge.items() if "_apart_" in k)
+    need["the tetrahedron face down, listed with its graph"] = any(
+        k.startswith("graph_face") and len(c["contacts"]) >= 2 for k, c in out["tetra"].items())
     missing = [k for k, v in need.items() if not v]
     if missing:
         sys.exit(f"the plane cases miss: {', '.join(missing)}")
@@ -1676,7 +1761,11 @@ def noise(seed, nrow, ncol):
 HFIELDS = {"bumpy9": (9, 9, (1.0, 1.0, 0.3, 0.1), bumpy9()),
            "uneven5x9": (5, 9, (0.8, 0.5, 0.2, 0.1), noise(59, 5, 9)),
            "fine30": (30, 30, (1.0, 1.0, 0.05, 0.1), noise(30, 30, 30)),
-           "cell2": (2, 2, (0.5, 0.5, 0.2, 0.1), np.array([[0.0, 0.5], [1.0, 0.25]]))}
+           "cell2": (2, 2, (0.5, 0.5, 0.2, 0.1), np.array([[0.0, 0.5], [1.0, 0.25]])),
+           "flat5": (5, 5, (0.5, 0.5, 0.25, 0.125),
+                     np.array([[0.0] * 5] * 4 + [[0.0, 0.0, 0.0, 0.0, 1.0]]))}
+# The fields the `pose` cases draw over (`flat5` serves the `edge` cases only).
+POSE_FIELDS = ("bumpy9", "uneven5x9", "fine30", "cell2")
 HFIELD_GEOMS = ("sphere", "capsule", "ellipsoid", "cylinder", "box", "gem8", "pebble24")
 
 
@@ -1763,7 +1852,8 @@ def hfield_convex_cases(meshes, fields):
     """The height-field cases (module docs): `pose`, `edge`, `nan`."""
     rng = np.random.default_rng(52)
     out = {"pose": {}, "edge": {}, "nan": {}}
-    for field, (nrow, ncol, hsize, _) in HFIELDS.items():
+    for field in POSE_FIELDS:
+        nrow, ncol, hsize, _ = HFIELDS[field]
         data = np.reshape(fields[field]["data"], (nrow, ncol))
         for geom in HFIELD_GEOMS:
             verts = np.reshape(meshes[geom]["vert"], (-1, 3)) if geom in PLANE_MESHES else None
@@ -1794,6 +1884,16 @@ def hfield_convex_cases(meshes, fields):
         (np.array([1.2, 0.0, 0.2]), axis_mat([1, 0, 0], np.pi / 2)), 0.0)
     out["edge"]["cell2_sphere_in_margin"] = hfield_case(
         "cell2", "sphere", [0.1], (origin, eye), (np.array([0.0, 0.0, 0.42]), eye), 0.2)
+    # Boxes resting exactly on the flat part of a dyadic field (height 0, cells 0.25), on a
+    # grid vertex, on a grid line and mid-cell: they touch, and MuJoCo lists no contact (its
+    # distance must be below 0). And a sphere under the field's base by less than the margin.
+    for x, y in ((-0.25, 0.0), (-0.125, 0.0), (-0.125, 0.125), (-0.25, 0.25)):
+        out["edge"][f"flat5_box_touching_{x}_{y}"] = hfield_case(
+            "flat5", "box", [0.0625, 0.0625, 0.125], (origin, eye),
+            (np.array([x, y, 0.125]), eye), 0.0)
+    out["edge"]["flat5_sphere_under_base"] = hfield_case(
+        "flat5", "sphere", [0.05], (origin, eye), (np.array([-0.125, 0.125, -0.18]), eye),
+        0.02)
     bad = eye.copy()
     bad[1] = math.nan
     up = np.array([0.1, 0.05, 0.25])
@@ -1821,7 +1921,11 @@ def hfield_coverage(out):
             "mjMAXCONPAIR contacts": len(edge["fine30_broad_box"]["contacts"]) == MAXCONPAIR,
             "the far and past-edge geoms with none": not edge["bumpy9_far"]["contacts"]
             and not edge["bumpy9_capsule_past_edge"]["contacts"],
-            "a NaN turn listing a contact": any(c["contacts"] for c in out["nan"].values())}
+            "a NaN turn listing a contact": any(c["contacts"] for c in out["nan"].values()),
+            "boxes touching exactly, unlisted": all(
+                not c["contacts"] for k, c in edge.items() if "_touching_" in k),
+            "a sphere under the base listed within the margin":
+            bool(edge["flat5_sphere_under_base"]["contacts"])}
     missing = [k for k, v in need.items() if not v]
     if missing:
         sys.exit(f"the height-field cases miss: {', '.join(missing)}")

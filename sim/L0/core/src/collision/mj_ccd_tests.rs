@@ -763,7 +763,7 @@ fn contacts_match(ours: &[RawContact], want: &Value) -> bool {
 /// The graph a plane case's mesh takes on MuJoCo's side: none in
 /// `mesh_bare` and the `nan` cases named `_bare`.
 fn mujocos_plane_graph(group: &str, name: &str) -> PlaneGraph {
-    if group == "mesh_bare" || name.contains("_bare") {
+    if group == "mesh_bare" || name.contains("_bare") || name.starts_with("bare_") {
         PlaneGraph::None
     } else {
         PlaneGraph::Mujocos
@@ -774,8 +774,9 @@ fn mujocos_plane_graph(group: &str, name: &str) -> PlaneGraph {
 /// for bit, on every plane case of the golden (`plane_convex`): ellipsoids,
 /// those apart at a margin of their own distance, meshes on MuJoCo's hull
 /// graph and without one, the comparisons' edges (vertices at the margin
-/// exactly; a first vertex past the spacing without a graph) and NaN turns
-/// (MuJoCo's NaN contact).
+/// exactly; a first vertex past the spacing without a graph), NaN turns
+/// (MuJoCo's NaN contact) and a tetrahedron laid on each face (its corners
+/// tie, so the hill climb's path decides the first contact).
 #[test]
 fn plane_convex_matches_mujoco_bitwise() {
     let doc = golden();
@@ -795,7 +796,7 @@ fn plane_convex_matches_mujoco_bitwise() {
             total += 1;
         }
     }
-    assert_eq!(total, 650, "plane cases");
+    assert_eq!(total, 711, "plane cases");
 }
 
 /// On our hull's graph (registry D-HULL-ORDER) a plane–mesh contact after
@@ -804,8 +805,8 @@ fn plane_convex_matches_mujoco_bitwise() {
 /// and where a face lies on the plane its corners tie for the first. On the
 /// golden's 168 `mesh` cases: 47 differ from MuJoCo's (4 in count; positions
 /// up to 0.14 apart and distances up to 2.7e-2, measured); the first contact
-/// is listed where MuJoCo's is, at its distance within 1e-16 (measured
-/// 8.3e-17, at a tie).
+/// is listed whenever MuJoCo's is, at its distance within 1e-16 (measured
+/// 8.3e-17), on 15 face-down poses at another of the tied corners.
 #[test]
 fn plane_mesh_contacts_part_from_mujocos_by_the_hulls_order() {
     let doc = golden();
@@ -891,7 +892,9 @@ fn hfield_run(case: &Value, doc: &Value, meshes: &HashMap<String, PlaneMesh>) ->
 /// case of the golden (`hfield_convex`): four fields (square cells, cells of
 /// two spacings, a fine grid, one cell), each convex type and two meshes on
 /// MuJoCo's hull graph at random poses, the box tests' edges, mjMAXCONPAIR
-/// contacts, a geom apart listed within the margin, and NaN turns.
+/// contacts, a geom apart listed within the margin, boxes resting exactly on
+/// a flat field (unlisted), a sphere under the base within the margin, and
+/// NaN turns.
 #[test]
 fn hfield_convex_matches_mujoco_bitwise() {
     let doc = golden();
@@ -914,5 +917,5 @@ fn hfield_convex_matches_mujoco_bitwise() {
             total += 1;
         }
     }
-    assert_eq!(total, 344, "height-field cases");
+    assert_eq!(total, 349, "height-field cases");
 }

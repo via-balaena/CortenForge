@@ -5,17 +5,19 @@
 //! `polytope3` and `polytope4`, the horizon, `epa` and `epaWitness`,
 //! `:815-1436`) and its multi-contact (`multicontact` and `polygonClip`,
 //! `:1442-2184`), with the support functions and the object set-up it reads
-//! (`engine_collision_convex.c:95-430`, `:709-767`); and the entry points
-//! that call it, `mjc_Convex` (`:917-1000`), and `mjc_PlaneConvex`
-//! (`:1042-1138`) on the support function libccd's callers take
+//! (`engine_collision_convex.c:95-451`, a height field's prism among them,
+//! `:709-767`); the entry points that call it, `mjc_Convex` (`:917-1000`) and
+//! `mjc_ConvexHField` (`:1185-1363`); and `mjc_PlaneConvex` (`:1042-1138`),
+//! which calls no solver, only the support function libccd's callers take
 //! (`mjccd_support`, `:495-698`). The arithmetic is plain, as MuJoCo's C
 //! compiled without contracting multiply-adds (book C1).
 //!
-//! It departs from MuJoCo in one weight: in `S3D`'s fourth face MuJoCo leaves
-//! the fourth point's weight as an earlier face set it
+//! It departs from MuJoCo twice. In `S3D`'s fourth face MuJoCo leaves the
+//! fourth point's weight as an earlier face set it
 //! (`engine_collision_gjk.c:633-643`), which can read a pair apart as an
 //! overlap; this sets it to 0, as cf-geometry's `gjk_distance` does (registry
-//! `D-GJK-S3D`).
+//! `D-GJK-S3D`). And [`mjc_convex_hfield`]'s box tests take a field's highest
+//! point as its top where it passes `size[2]` (its doc says why).
 
 use nalgebra::{Matrix3, Point3, Vector3};
 
@@ -2522,6 +2524,8 @@ pub(super) fn mjc_convex_hfield(
     (max_iterations, tolerance): (usize, f64),
 ) -> Vec<RawContact> {
     let (nrow, ncol) = (hfield.depth(), hfield.width());
+    // MuJoCo's loops are empty for a field of one row or column; this returns
+    // before dividing by `ncol - 1` or `nrow - 1`.
     if nrow < 2 || ncol < 2 {
         return Vec::new();
     }
@@ -2564,12 +2568,14 @@ pub(super) fn mjc_convex_hfield(
     #[allow(clippy::cast_precision_loss)]
     let (cols, rows) = ((ncol - 1) as f64, (nrow - 1) as f64);
     // The sub-grid under the geom's box. A cast to an integer saturates, and
-    // takes a NaN to 0, where C's leaves it undefined.
+    // takes a NaN to 0, where C's leaves it undefined. The first column and
+    // row are kept within the grid as well: past its last, MuJoCo's loops are
+    // empty, as ours are from there, and `cmin + 1` cannot overflow.
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let (cmin, cmax, rmin, rmax) = (
-        (((xmin + size0) / (2.0 * size0) * cols).floor() as i64).max(0),
+        (((xmin + size0) / (2.0 * size0) * cols).floor() as i64).clamp(0, ncol as i64 - 1),
         (((xmax + size0) / (2.0 * size0) * cols).ceil() as i64).min(ncol as i64 - 1),
-        (((ymin + size1) / (2.0 * size1) * rows).floor() as i64).max(0),
+        (((ymin + size1) / (2.0 * size1) * rows).floor() as i64).clamp(0, nrow as i64 - 1),
         (((ymax + size1) / (2.0 * size1) * rows).ceil() as i64).min(nrow as i64 - 1),
     );
 
@@ -2583,7 +2589,8 @@ pub(super) fn mjc_convex_hfield(
     };
     let mut prism = CcdObj::prism(size3);
     // `addPrismVert`: the grid point at column `c` and row `r + 1 - i`, each
-    // within the grid, so not negative, and exact as a float.
+    // within the grid (as the sub-grid is), so not negative, and exact as a
+    // float.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -2614,6 +2621,8 @@ pub(super) fn mjc_convex_hfield(
                 }
                 // `mjc_penetration`, native: one contact where they overlap.
                 let st = mjc_ccd(&config, &mut prism, obj);
+                // MuJoCo also skips a contact whose normal is the zero vector
+                // (`ccdVec3Eq`, :1331), which `mju_normalize3` never leaves.
                 if st.dist < 0.0 {
                     let mut dir = sub3(&st.x1[0], &st.x2[0]);
                     normalize3(&mut dir);

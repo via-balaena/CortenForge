@@ -540,9 +540,15 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
 /// from 0 to 1, rows symmetric; each body turned by its frame, so its
 /// inertial frame is the body's in both, ledger L195), at two spots each:
 /// the height after every 50th of 1000 steps against MuJoCo's. A sphere, a
-/// capsule and an ellipsoid within 1e-12 (measured 5.5e-13, a capsule that
+/// capsule and an ellipsoid within 5e-12 (measured 5.5e-13, a capsule that
 /// rolls off the field's edge as MuJoCo's does); a cylinder and a box within
-/// 5e-3 (measured 4.8e-3; where they part from MuJoCo's is not isolated).
+/// 5e-2 (measured 4.8e-3; where they part from MuJoCo's is not isolated).
+/// The rolling bodies take a sine and a cosine at each step, which a libm
+/// need not round correctly. With one such result off by an ulp (measured by
+/// chunk 3e's fourth review: each result near a rounding midpoint rounded the
+/// other way in turn, and one result moved at chosen steps), the capsule
+/// parted from MuJoCo's by up to 1.45e-12 and the box by up to 2.2e-2, so the
+/// bounds leave about three times that for another platform's libm.
 #[test]
 fn bodies_on_a_bumpy_height_field_as_mujoco() {
     let golden = golden();
@@ -551,9 +557,9 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
         let mut data = model.make_data();
         let want = floats(&case["z"]);
         let bound = if name.starts_with("cylinder") || name.starts_with("box") {
-            5e-3
+            5e-2
         } else {
-            1e-12
+            5e-12
         };
         for k in 0..1000 {
             data.step(&model).expect("step");
@@ -1586,8 +1592,8 @@ fn geom_distance_sensors_near_touching_as_mujoco() {
 /// (MuJoCo refuses a sensor naming a height field, ledger L197, not the
 /// world that holds it), `mjc_ConvexHField`: 0.01 into the field and 0.05
 /// above it, MuJoCo's −0.7 bit for bit (a contact within the margin is
-/// listed at a distance below 0; the field's elevations are 0 and 1 and its
-/// rows symmetric, so sim-mjcf's data is MuJoCo's, book Rigid-loading L45).
+/// listed at a distance below 0; the field's elevations are all 0, so
+/// sim-mjcf's data is MuJoCo's, book Rigid-loading L45).
 #[test]
 fn geom_distance_special_cases_as_mujoco() {
     let golden = golden();

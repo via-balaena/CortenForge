@@ -255,9 +255,8 @@ mod tests {
             !contacts.is_empty(),
             "Mesh with convex hull penetrating terrain should produce contacts"
         );
-        // Verify at least one contact has positive depth. Some prism-mesh contacts
-        // may be edge/corner touches with depth=0; the important thing is that
-        // penetrating prisms produce positive-depth contacts.
+        // Verify at least one contact has positive depth (`mjc_ConvexHField`
+        // lists a prism only where it and the mesh overlap).
         let max_depth = contacts.iter().map(|c| c.depth).fold(0.0_f64, f64::max);
         assert!(
             max_depth > 0.0,
@@ -361,7 +360,7 @@ mod tests {
     }
 
     // ========================================================================
-    // T6: MAX_CONTACTS_PER_PAIR = 50 limit → AC6
+    // T6: mjMAXCONPAIR = 50 limit → AC6
     // ========================================================================
     #[test]
     fn t6_max_contacts_limit() {
@@ -429,8 +428,8 @@ mod tests {
     // ========================================================================
     #[test]
     fn t8_mesh_no_hull_no_contact() {
-        // Model with mesh geom but no hull → 0 contacts, no panic.
-        // geom_mesh[1] = None (no mesh data) → early return
+        // A mesh geom with no mesh data → 0 contacts, no panic.
+        // geom_mesh[1] = None → `CcdObj::of_geom` makes no object
         let model = flat_hfield_model(
             5,
             2.0,
@@ -454,7 +453,7 @@ mod tests {
     // ========================================================================
     #[test]
     fn t11_hfield_plane_no_contact() {
-        // Plane has no Shape → geom_to_shape returns None → 0 contacts
+        // `CcdObj::of_geom` takes no plane → 0 contacts
         let model = flat_hfield_model(
             5,
             2.0,
@@ -636,7 +635,7 @@ mod tests {
     // ========================================================================
     #[test]
     fn ts6_hfield_hfield_no_crash() {
-        // Two hfield geoms — should return 0 contacts (Hfield has no convex Shape)
+        // Two hfield geoms — 0 contacts (`CcdObj::of_geom` takes no height field)
         let heights = vec![0.5; 25];
         let cell_size = 1.0;
         let hfield = HeightFieldData::new(heights, 5, 5, cell_size);
@@ -697,7 +696,7 @@ mod tests {
         let pos2 = Vector3::new(0.0, 0.0, 0.0);
         let mat2 = Matrix3::identity();
 
-        // Hfield-hfield: the "convex" geom is also Hfield → geom_to_shape returns None → 0 contacts
+        // Hfield-hfield: the "convex" geom is also Hfield, which `CcdObj::of_geom` does not take → 0 contacts
         let contacts = collide_hfield_multi(&model, 0, 1, pos1, mat1, pos2, mat2, 0.0);
         assert!(
             contacts.is_empty(),
@@ -797,6 +796,38 @@ mod tests {
         );
     }
 
+    /// A field of zero width, or of a width of 1e-300, with a sphere beside it
+    /// (past its +x edge, within the margin): the sub-grid's first column lies
+    /// far past the grid (its cell index saturates), and the port lists
+    /// nothing, as MuJoCo's empty loop would, where `cmin + 1` once
+    /// overflowed.
+    #[test]
+    fn a_field_of_no_width_collides_as_nothing() {
+        for half in [0.0, 1e-300] {
+            let mut model = flat_hfield_model(
+                5,
+                1.0,
+                1.0,
+                0.0,
+                GeomType::Sphere,
+                Vector3::new(0.1, 0.0, 0.0),
+                0.1,
+            );
+            model.hfield_size[0][0] = half;
+            let contacts = collide_hfield_multi(
+                &model,
+                0,
+                1,
+                Vector3::zeros(),
+                Matrix3::identity(),
+                Vector3::new(0.15, 0.0, 0.05),
+                Matrix3::identity(),
+                0.1,
+            );
+            assert!(contacts.is_empty(), "half-width {half}: {contacts:?}");
+        }
+    }
+
     /// A field whose heights pass its top (`size[2]`), as sim-mjcf loads
     /// elevations above 1 until book Rigid-loading L45 normalises them: a
     /// sphere resting on it above the top still collides, the box tests
@@ -858,7 +889,7 @@ mod tests {
     }
 
     /// Book P52's must-fail: every height-field case of the ccd golden with
-    /// a primitive (`hfield_convex` `pose` and `edge`, 244), through
+    /// a primitive (`hfield_convex` `pose` and `edge`, 249), through
     /// `collide_hfield_multi` on a model holding MuJoCo's field data scaled
     /// by its top (rows bottom to top, normalised: in code, as sim-mjcf does
     /// not load them so yet, book Rigid-loading L45) and MuJoCo's bounding
@@ -925,6 +956,6 @@ mod tests {
                 total += 1;
             }
         }
-        assert_eq!(total, 244, "primitive cases");
+        assert_eq!(total, 249, "primitive cases");
     }
 }
