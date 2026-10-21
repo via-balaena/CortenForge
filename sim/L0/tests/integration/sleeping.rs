@@ -2399,11 +2399,7 @@ fn test_sleep_trees_keep_their_last_awake_arrays() {
                 "cacc_bias[{body_id}][{}]",
                 3 + k
             );
-            assert!(
-                cfrc[k].abs() < 1e-12,
-                "cfrc_bias[{body_id}][{k}] = {}",
-                cfrc[k]
-            );
+            assert_eq!(cfrc[k], 0.0, "cfrc_bias[{body_id}][{k}]");
             assert_eq!(
                 cfrc[3 + k],
                 mass * cacc[3 + k],

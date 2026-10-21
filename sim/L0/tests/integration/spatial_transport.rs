@@ -332,7 +332,7 @@ fn t14_object_velocity_local_moves_cvel_to_the_point() {
       <worldbody>
         <body name="b1" pos="0 0 0">
           <joint name="j1" type="hinge" axis="0 0 1"/>
-          <geom type="sphere" size="0.1" mass="1.0"/>
+          <geom type="sphere" size="0.1" mass="1.0" pos="0.1 0.05 0"/>
           <site name="s1" pos="0.3 0 0"/>
         </body>
       </worldbody>
@@ -350,6 +350,11 @@ fn t14_object_velocity_local_moves_cvel_to_the_point() {
     let site_pos = data.site_xpos[0];
     let site_mat = data.site_xmat[0];
 
+    // The geom off the hinge: the tree's centre of mass is not the origin.
+    assert!(
+        (data.subtree_com[model.body_rootid[body_id]] - data.xpos[body_id]).norm() > 0.1,
+        "subtree centre of mass at the origin"
+    );
     let result = object_velocity_local(&model, &data, body_id, &site_pos, &site_mat);
 
     // `cvel` is about the tree's subtree centre of mass.

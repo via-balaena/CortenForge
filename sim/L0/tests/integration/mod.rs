@@ -244,8 +244,11 @@ pub mod primal_solver_parity;
 pub mod jacobian_parity;
 
 /// The body spatial quantities against MuJoCo 3.5.0, about each tree's
-/// subtree centre of mass: the dofs' motion axes, the body velocities and
-/// the axes' rates, and the object and subtree velocities read from them.
+/// subtree centre of mass: the dofs' motion axes, the body and composite
+/// inertias, the mass matrix (with `dof_M0`) and the bias force, the body
+/// velocities and the axes' rates, the object and subtree velocities read
+/// from them, the body accelerations and forces with the accelerometer, and
+/// the bias force's derivative in the velocities.
 pub mod com_frame_parity;
 
 // ============================================================================

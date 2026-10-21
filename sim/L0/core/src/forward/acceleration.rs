@@ -469,7 +469,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         }
     }
 
-    // Applied wrenches, from the centre of mass (`:2500-2514`).
+    // Applied wrenches, from the centre of mass (`:2503-2517`).
     data.cfrc_ext.fill(SpatialVector::zeros());
     for b in 1..model.nbody {
         let (t, f) = (data.xfrc_applied[b].torque, data.xfrc_applied[b].force);
@@ -481,7 +481,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         data.cfrc_ext[b] += moved;
     }
 
-    // Contact forces (`:2516-2546`): each contact's force and torque in its
+    // Contact forces (`:2519-2560`): each contact's force and torque in its
     // own frame, as `mj_contactForce` decodes them (`engine_core_util.c:891-908`),
     // turned to the world and moved from the contact point.
     {
@@ -535,7 +535,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         }
     }
 
-    // Connect and weld forces (`:2548-2628`): the rows' force, and a weld's
+    // Connect and weld forces (`:2562-2651`): the rows' force, and a weld's
     // torque, at each body's anchor, placed by `mj_local2Global` (the body's
     // `xmat`), `+` on body1 and `−` on body2. MuJoCo's anchors: a connect's
     // `eq_data[0..3]` on body1 and `[3..6]` on body2, a weld's the other way.
@@ -602,7 +602,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         }
     }
 
-    // Accelerations and internal forces, root to leaf (`:2630-2650`).
+    // Accelerations and internal forces, root to leaf (`:2653-2674`).
     data.cfrc_int[0] = SpatialVector::zeros();
     for b in 1..model.nbody {
         let dofs = model.body_dof_adr[b]..model.body_dof_adr[b] + model.body_dof_num[b];
@@ -619,7 +619,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         data.cfrc_int[b] = force - data.cfrc_ext[b];
     }
 
-    // Summed into each parent, leaf to root (`:2652-2656`); a root's moved to
+    // Summed into each parent, leaf to root (`:2676-2679`); a root's moved to
     // the world's reference point (`D-WORLD-CFRC-INT`).
     for b in (1..model.nbody).rev() {
         let parent = model.body_parent[b];

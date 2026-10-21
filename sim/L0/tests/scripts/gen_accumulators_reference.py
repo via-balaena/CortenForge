@@ -29,7 +29,7 @@ sim-core keeps it):
 - contact_torque: a free, frictionless sphere (condim 1 on both geoms:
   MuJoCo takes the larger; geom off its body's origin, the centre of mass
   elsewhere) 5 mm into a plane: cfrc_ext holds the contact's torque about
-  the body's origin.
+  the tree's subtree centre of mass.
 - applied_wrench: a body on a ball joint, its centre of mass off its
   origin, with an xfrc_applied wrench; force and torque at its origin.
 - world_wrench: applied_wrench with an xfrc_applied wrench on the world body

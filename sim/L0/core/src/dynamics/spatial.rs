@@ -1,8 +1,8 @@
 //! Spatial algebra utilities for 6D motion and force vectors.
 //!
-//! Implements Featherstone's spatial vector algebra used throughout the
-//! dynamics pipeline (CRBA, RNE, forward kinematics). Functions here are
-//! pure math — no pipeline state dependencies.
+//! MuJoCo's spatial helpers (`mju_*`), the object velocity, acceleration and
+//! force readers over a `Data`, and the body-origin views `mjd_rne_pos`
+//! reads.
 
 use crate::types::{Data, Model};
 use nalgebra::{Matrix3, Matrix6, Vector3, Vector6};
@@ -232,9 +232,8 @@ pub fn body_origin_velocity(model: &Model, data: &Data, body: usize) -> SpatialV
 ///     [m*[h]×ᵀ,                  m*I_3×3 ]
 /// ```
 ///
-/// This is the canonical implementation - computed once per body in FK,
-/// then used by both CRBA (as starting point for composite) and RNE (directly).
-#[allow(clippy::inline_always)] // Called once per body in FK - inlining avoids function call overhead
+/// Read through [`body_origin_inertia`].
+#[allow(clippy::inline_always)] // called per body per pass of `mjd_rne_pos`
 #[inline(always)]
 pub fn compute_body_spatial_inertia(
     mass: f64,

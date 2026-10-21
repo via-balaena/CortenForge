@@ -110,14 +110,12 @@ pub fn mj_crba(model: &Model, data: &mut Data) {
         }
     }
 
-    // Phase 5b: M = L'·D·L on M's pattern (MuJoCo's mj_factorM): the awake
+    // M = L'·D·L on M's pattern (MuJoCo's mj_factorM): the awake
     // rows only when a tree sleeps, a sleeping row keeping its factor.
     mj_factor_m(model, data);
 
-    // Phase 5c: (§27F) Flex DOFs now handled by standard sparse factorization above.
-
     // ============================================================
-    // Phase 6: Cache body effective mass/inertia from qM diagonal
+    // Cache body effective mass/inertia from qM diagonal
     // ============================================================
     // Extract per-body min mass/inertia for constraint force limiting.
     // This avoids O(joints) traversal per constraint.

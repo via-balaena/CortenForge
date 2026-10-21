@@ -102,10 +102,9 @@ fn capsule_rests_on_box_as_mujoco() {
 // The pairs below collide through `mjc_Convex` (sim-core's port): at the
 // turned pose each contact is MuJoCo's, bit for bit on the box slab, and
 // within 1.5e-9 on the mesh slab, the size of 0.1's rounding to a float
-// (MuJoCo stores mesh vertices as floats, book Rigid-loading L35). The box
-// slab's cylinder parts where the forward's smooth forces first differ in
-// their last bits, at step 8 (ledger L154). Each bound is 2.6 to 12 times
-// what was measured, which each test's doc gives.
+// (MuJoCo stores mesh vertices as floats, book Rigid-loading L35). Each
+// bound is 0 where the run was MuJoCo's bit for bit, else 2.6 to 12 times
+// what was measured on macOS arm64, which each test's doc gives.
 
 /// A sphere-shaped ellipsoid on a box slab. Measured: height 8.3e-17,
 /// contact 0.
@@ -114,10 +113,11 @@ fn ellipsoid_rests_on_box_as_mujoco() {
     rests_as_mujoco("box_ellipsoid", 1e-15, 0.0);
 }
 
-/// A cylinder on a box slab. Measured: height 2.7e-4, contact 0.
+/// A cylinder on a box slab. Measured: height and contact 0, every sample
+/// of the run MuJoCo's bit for bit.
 #[test]
 fn cylinder_rests_on_box_as_mujoco() {
-    rests_as_mujoco("box_cylinder", 1e-3, 0.0);
+    rests_as_mujoco("box_cylinder", 0.0, 0.0);
 }
 
 /// A box, a cylinder and a three-axis ellipsoid on a convex mesh slab, the
@@ -125,11 +125,11 @@ fn cylinder_rests_on_box_as_mujoco() {
 /// contact 1.5e-9 each. The cylinder is MuJoCo's bit for bit until its first
 /// contact (step 7) and parts from it there, by 1e-9 to 1e-12 in every
 /// entry of the state, its rolling wholly different by step 99 (ledger
-/// L214, not isolated): its height is a diverged system's, held to 3e-4.
+/// L214, not isolated): its height is a diverged system's, held to 7e-4.
 #[test]
 fn box_cylinder_ellipsoid_rest_on_convex_mesh_slab_as_mujoco() {
     rests_as_mujoco("mesh_box", 1e-8, 1e-8);
-    rests_as_mujoco("mesh_cylinder", 3e-4, 1e-8);
+    rests_as_mujoco("mesh_cylinder", 7e-4, 1e-8);
     rests_as_mujoco("mesh_ellipsoid3", 1e-8, 1e-8);
 }
 

@@ -169,6 +169,11 @@ fn forward(name: &str) -> (Model, Data, Value) {
         &model.body_subtreemass,
         &floats(&case["body_subtreemass"]),
     );
+    assert_bits(
+        &format!("{name} dof_armature"),
+        &model.dof_armature,
+        &floats(&case["dof_armature"]),
+    );
 
     assert_golden(
         &format!("{name} xpos"),
@@ -303,17 +308,18 @@ fn mass_matrix_and_bias_force_are_mujocos() {
     for name in CASES {
         let (model, data, case) = forward(name);
         let nv = model.nv;
+        // `dof_M0` first: a simple dof's row of `qM` is it.
+        assert_golden(
+            &format!("{name} dof_M0"),
+            &model.dof_M0,
+            &floats(&case["dof_M0"]),
+        );
         let qm: Vec<f64> = (0..nv * nv).map(|k| data.qM[(k / nv, k % nv)]).collect();
         assert_golden(&format!("{name} qM"), &qm, &floats(&case["qM"]));
         assert_golden(
             &format!("{name} qfrc_bias"),
             data.qfrc_bias.as_slice(),
             &floats(&case["qfrc_bias"]),
-        );
-        assert_golden(
-            &format!("{name} dof_M0"),
-            &model.dof_M0,
-            &floats(&case["dof_M0"]),
         );
     }
 }
@@ -351,6 +357,12 @@ fn cinert_and_crb_are_mujocos() {
 fn body_accelerations_and_forces_are_mujocos() {
     for name in ["compos", "slow", "nogravity", "sleeping"] {
         let (_, data, case) = forward(name);
+        // The accelerations `cacc` is made from first.
+        assert_golden(
+            &format!("{name} qacc"),
+            data.qacc.as_slice(),
+            &floats(&case["qacc"]),
+        );
         for (field, ours) in [
             ("cacc", &data.cacc),
             ("cfrc_int", &data.cfrc_int),

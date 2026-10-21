@@ -596,7 +596,7 @@ fn generate(
                     // emits no joint, so a welded body has no dofs, and
                     // stopping there cuts this dof off from everything above
                     // it. CRBA walks exactly this chain to write the mass
-                    // matrix's off-diagonal entries (`crba.rs`, phase 3), so a
+                    // matrix's off-diagonal entries (`mj_crba`, `dof_parent`), so a
                     // chain that ends early leaves `M[i, j]` at zero for every
                     // ancestor past the weld.
                     //

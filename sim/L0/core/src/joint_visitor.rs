@@ -1,8 +1,9 @@
 //! Joint visitor pattern and motion subspace computation.
 //!
 //! Provides the single source of truth for joint iteration via
-//! [`Model::visit_joints()`] and the motion subspace matrix S used by
-//! CRBA, RNE, and analytical derivatives.
+//! [`Model::visit_joints()`] and the motion subspace matrix S about each
+//! body's origin, which `mjd_rne_pos` reads (the forward passes read
+//! `Data::cdof`).
 
 use crate::types::{Data, MjJointType, Model};
 
@@ -132,7 +133,7 @@ impl Model {
 /// Format: rows 0-2 = angular velocity, rows 3-5 = linear velocity
 // Paired joint-frame identifiers (pos_a/pos_b, axis_a/axis_b) are intentionally similar.
 #[allow(clippy::similar_names)]
-#[allow(clippy::inline_always)] // Hot path in CRBA/RNE - profiling shows inlining improves debug performance
+#[allow(clippy::inline_always)] // called per joint per pass of `mjd_rne_pos`
 #[inline(always)]
 pub(crate) fn joint_motion_subspace(
     model: &Model,

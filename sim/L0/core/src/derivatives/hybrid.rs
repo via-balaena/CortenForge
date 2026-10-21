@@ -608,10 +608,10 @@ fn parent_and_child(
 /// Each body's velocity, acceleration and force derivatives (`deriv_Dcvel`,
 /// `deriv_Dcacc`, `deriv_Dcfrc`, about its tree's subtree centre of mass, a
 /// column per dof) and each dof's `cdof_dot` derivative are taken over the
-/// dofs the body moves with, its own and its ancestors' (MuJoCo's sparse row
-/// `B`), in MuJoCo's order and no other column, then each awake dof's row of
-/// `qDeriv` over the same columns takes `cdof · Dcfrc` off. When some trees
-/// sleep, the awake bodies and dofs only.
+/// dofs of the body's ancestors and subtree, its own included (MuJoCo's
+/// sparse row `B`), in MuJoCo's order and no other column, then each awake
+/// dof's row of `qDeriv` over its body's columns takes `cdof · Dcfrc` off.
+/// When some trees sleep, the awake bodies and dofs only.
 #[allow(non_snake_case)]
 pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
     let nv_model = model.nv;
@@ -634,7 +634,7 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
 
     // Each body's dofs: its ancestors' (`ancestors`), and with its subtree's
     // (`columns`, MuJoCo's sparse row `B`, `mj_makeBSparse`,
-    // `engine_io.c:782-856`), ascending.
+    // `engine_io.c:783-866`), ascending.
     let own = |b: usize| model.body_dof_adr[b]..model.body_dof_adr[b] + model.body_dof_num[b];
     let ancestors: Vec<Vec<usize>> = (0..model.nbody)
         .map(|b| {
@@ -892,11 +892,6 @@ pub fn mjd_smooth_vel_bias(model: &Model, data: &mut Data, flg_bias: bool) {
 /// Forward pass must have completed (data.qacc populated).
 #[allow(non_snake_case)]
 pub fn mjd_smooth_pos(model: &Model, data: &mut Data) {
-    // Ensure cacc/cfrc_int are populated (lazy — may not have been computed yet).
-    if !data.flg_rnepost {
-        crate::forward::acceleration::mj_body_accumulators(model, data);
-    }
-
     data.qDeriv_pos.fill(0.0);
     mjd_passive_pos(model, data);
     mjd_actuator_pos(model, data);
@@ -1404,6 +1399,11 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
 ///
 /// Critical difference from `mjd_rne_vel`: position derivatives are evaluated
 /// at ACTUAL acceleration qacc (not zero), capturing the (∂M/∂q)·qacc term.
+///
+/// It works about each body's origin, through the body-origin views
+/// (`body_origin_velocity`, `body_origin_inertia`), where `mj_rne` works about
+/// each tree's subtree centre of mass: `cvel`, `cinert` and `cacc` in the
+/// comments below mean those views, not `Data`'s fields.
 // Mathematical symbols (J, M, S, X, qfrc) follow Featherstone's RNE-derivatives notation; indexed loops mutate parallel per-body Jacobian buffers; inlined as a single function so the forward / backward / projection phases read end-to-end.
 #[allow(
     non_snake_case,
@@ -1564,19 +1564,18 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     }
 
     // ==================== Part B operating point ====================
-    // Coriolis/gyroscopic RNEA — matches `mj_rne`'s bias-acceleration recursion EXACTLY:
+    // Coriolis/gyroscopic RNEA about each body's origin:
     // `a_B[b] = X_b(a_B[parent]) + Σ_j v_<j ×_m (S_j·qvel_j)` (X_b motion transport:
     // angular unchanged, linear += α_parent × r), `v_<j` the body's velocity before
     // joint j: `vt` plus the earlier joints' `S·qvel`. The velocity-product uses the parent
     // velocity TRANSPORTED to this body's origin `vt = X_b(v[parent])`, `v` a body's
     // velocity about its origin (`body_origin_velocity`); `v[parent]` left at the
     // parent origin drops the `[0; ω_parent×r] ×_m (S·qvel)` lever
-    // and corrupts a non-parallel ≥3-link chain (see `mj_rne`). The X_b transport of the
+    // and corrupts a non-parallel ≥3-link chain. The X_b transport of the
     // parent bias accel is ZERO for the root's children and for a single hop, but its
     // angular part is nonzero once the chain is ≥3 links with non-parallel axes, so
-    // dropping `α_parent × r` would make Sᵀ·cfrc_B diverge from `mj_rne`'s qfrc_bias (the
-    // forward identity it must satisfy). The backward pass transports X_bᵀ, exactly as
-    // `mj_rne` does.
+    // dropping `α_parent × r` would make Sᵀ·cfrc_B diverge from the bias force's velocity
+    // part (the forward identity it must satisfy). The backward pass transports X_bᵀ.
     let mut cacc_b = vec![SpatialVector::zeros(); nbody];
     for b in 1..nbody {
         let pid = model.body_parent[b];
@@ -1607,8 +1606,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
             // Free-joint correction: the spatial-acceleration convention is
             // `a = [α; a_O − ω×v_O]`, but a free joint's translational DOFs carry
-            // world-frame velocity directly. `mj_rne` subtracts `[0; ω×v]` here
-            // (rne.rs `Free joint correction`); without it the backward pass emits
+            // world-frame velocity directly. The origin-frame recursion subtracts
+            // `[0; ω×v]` here; without it the backward pass emits
             // a spurious `m·(ω×v)` force on the translational DOFs (wrong for a
             // tumbling free base). ω = body angular velocity, v = the joint's
             // world-frame linear velocity (constant in q).
@@ -1633,8 +1632,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     for b in (1..nbody).rev() {
         let pid = model.body_parent[b];
         if pid > 0 {
-            // X_bᵀ transport to the parent origin (matches the corrected `mj_rne`
-            // backward): force unchanged, torque gains the (x_child−x_parent)×f lever.
+            // X_bᵀ transport to the parent origin: force unchanged, torque gains
+            // the (x_child−x_parent)×f lever.
             let fc = cfrc_b[b];
             let r = data.xpos[b] - data.xpos[pid];
             let f_lin = Vector3::new(fc[3], fc[4], fc[5]);
@@ -2192,8 +2191,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     //         + (∂vt/∂q) ×_m v_joint  (Term C, ∂vt/∂q = dvt_pos[b])
     //         + vt ×_m (∂S/∂q · qvel)  (ancestor/same-body ∂S/∂q, added per-body below)
     //         + ∂P/∂q  (added per-body below)
-    // The velocity-product uses the TRANSPORTED parent velocity vt (matching `mj_rne` and the
-    // Part B operating point above) — NOT cvel[b] = vt + S·qvel — so the term stays exactly
+    // The velocity-product uses the TRANSPORTED parent velocity vt (as the Part B
+    // operating point above) — NOT cvel[b] = vt + S·qvel — so the term stays exactly
     // zero at the root instead of differentiating a cancelling `(S·qvel)×_m(S·qvel)`.
     for b in 1..nbody {
         let pid = model.body_parent[b];
@@ -2551,8 +2550,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
     }
 
     // Backward pass for Part B: X_b^T transport + transport derivative.
-    // `mj_rne` now transports the Coriolis bias force to the parent origin with the
-    // same Xᵀ moment lever (rne.rs), so the derivative must match it or it drifts
+    // The Part B operating point transports the Coriolis bias force to the parent
+    // origin with the Xᵀ moment lever, so the derivative must match it or it drifts
     // from FD. Identical structure to Part A's backward, using the Part B operating
     // point force `cfrc_b`.
     for b in (1..nbody).rev() {
