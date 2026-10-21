@@ -379,6 +379,7 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
         // ∂M/∂m_b (no armature), linear in the perturbation inertia; only qM is read
         // (the bogus factorization of this non-PD derivative matrix is unused).
         mj_crba(&model_no_arm, &mut d_pert);
+        hold_simple_diagonals(model, &mut d_pert);
         let d_mass_qacc = &d_pert.qM * &qacc;
 
         // ∂v⁺/∂m_b = h · M_impl⁻¹ · [ −∂qfrc_bias/∂m_b − (∂M/∂m_b)·qacc ].
@@ -392,6 +393,19 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
     }
 
     Ok(MassJacobian { dxdm })
+}
+
+/// A simple dof's row of the mass matrix is `dof_M0`, a field derived when
+/// the model is built, held as the model's other derived fields are when one
+/// body's mass or inertia is perturbed (as the finite differences do): its
+/// derivative is 0, where the mass-matrix pass on a perturbation would copy
+/// the model's own `dof_M0`.
+fn hold_simple_diagonals(model: &Model, d_pert: &mut Data) {
+    for i in 0..model.nv {
+        if model.dof_simplenum.get(i).is_some_and(|&n| n > 0) {
+            d_pert.qM[(i, i)] = 0.0;
+        }
+    }
 }
 
 /// Analytic single-step Jacobian of the next state w.r.t. per-body principal
@@ -564,6 +578,7 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
             // ∂M/∂I_bk (no armature), linear in the perturbation inertia; only qM
             // is read (the bogus factorization of this non-PD matrix is unused).
             mj_crba(&model_no_arm, &mut d_pert);
+            hold_simple_diagonals(model, &mut d_pert);
             let d_mass_qacc = &d_pert.qM * &qacc;
 
             // ∂v⁺/∂I_bk = h · M_impl⁻¹ · [ −∂qfrc_bias/∂I_bk − (∂M/∂I_bk)·qacc ].
@@ -1103,6 +1118,81 @@ mod tests {
             jac.column_mut(b).copy_from(&((yp - ym) / (2.0 * eps)));
         }
         jac
+    }
+
+    /// A simple dof's mass-matrix diagonal is `dof_M0`, held when a body's
+    /// mass or inertia is perturbed: a body MuJoCo marks simple (a hinge
+    /// through its centre of mass, childless, under the world), pushed by an
+    /// applied force beside a pendulum, has no sensitivity to its own mass or
+    /// inertia, and the analytic Jacobians match finite differences.
+    #[test]
+    fn mass_and_inertia_jacobians_hold_a_simple_dofs_diagonal() {
+        use crate::test_fixtures::builders::{add_body, add_hinge_joint, finalize};
+        let mut model = Model::empty();
+        let wheel = add_body(
+            &mut model,
+            0,
+            "wheel",
+            Vector3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vector3::new(0.1, 0.2, 0.3),
+            Vector3::zeros(),
+        );
+        add_hinge_joint(
+            &mut model,
+            wheel,
+            "w",
+            Vector3::y(),
+            0.0,
+            0.3,
+            0.0,
+            false,
+            (0.0, 0.0),
+        );
+        let arm = add_body(
+            &mut model,
+            0,
+            "arm",
+            Vector3::new(1.0, 0.0, 1.0),
+            1.0,
+            Vector3::new(0.01, 0.01, 0.01),
+            Vector3::new(0.0, 0.0, -0.5),
+        );
+        add_hinge_joint(
+            &mut model,
+            arm,
+            "a",
+            Vector3::y(),
+            0.0,
+            0.2,
+            0.0,
+            false,
+            (0.0, 0.0),
+        );
+        finalize(&mut model);
+        assert_eq!(
+            model.dof_simplenum,
+            vec![1, 0],
+            "the wheel's dof is simple, the arm's not"
+        );
+
+        let mut data = model.make_data();
+        data.qpos[1] = 0.4;
+        data.qvel[0] = 0.5;
+        data.qvel[1] = -0.3;
+        data.qfrc_applied[0] = 0.7;
+        data.forward(&model).unwrap();
+
+        let mass = mjd_mass_jacobian(&model, &data).unwrap().dxdm;
+        let (err, loc) = max_relative_error(&mass, &fd_mass_jacobian(&model, &data, 1e-6), 1e-3);
+        assert!(
+            err < 1e-5,
+            "mass: max_rel_err={err:.3e} at {loc:?}\n{mass:.6}"
+        );
+        let inertia = mjd_inertia_jacobian(&model, &data).unwrap().dxdI;
+        let (err, loc) =
+            max_relative_error(&inertia, &fd_inertia_jacobian(&model, &data, 1e-6), 1e-3);
+        assert!(err < 1e-5, "inertia: max_rel_err={err:.3e} at {loc:?}");
     }
 
     /// Armature does not depend on the bodies' masses or inertias: with an

@@ -57,6 +57,7 @@ impl Model {
         self.compute_simple_bodies();
         self.compute_dof_patterns();
         self.compute_implicit_params();
+        self.compute_dof_m0();
         self.compute_spatial_tendon_length0();
         self.compute_actuator_params();
         self.compute_stat_meaninertia();

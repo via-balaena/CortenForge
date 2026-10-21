@@ -271,6 +271,10 @@ pub struct Model {
     /// to the next dof of a body that is not (length `nv`; MuJoCo
     /// `dof_simplenum`).
     pub dof_simplenum: Vec<usize>,
+    /// Each dof's mass-matrix diagonal at `qpos0`, its armature plus
+    /// `cdof · (crb · cdof)` (length `nv`; MuJoCo `dof_M0`, made by
+    /// [`Self::compute_dof_m0`]): a simple dof's row of the mass matrix.
+    pub dof_M0: Vec<f64>,
     /// Entries per row of the mass matrix's lower triangle as MuJoCo stores
     /// it, a simple dof's row holding only its diagonal (length `nv`):
     /// `Data::qH`'s layout.

@@ -288,25 +288,27 @@ fn subtree_velocities_are_mujocos() {
     }
 }
 
-/// The mass matrix `qM` (both triangles) and the bias force `qfrc_bias` are
-/// MuJoCo's bit for bit (`mj_crb`, `engine_core_smooth.c:1811-1885`; `mj_rne`,
-/// `:2425-2488`), at velocities of 1e-7 too and with gravity disabled. A
-/// simple dof's row is its diagonal only, which MuJoCo takes from `dof_M0`,
-/// made at `qpos0`; sim-core makes it at the state, so the `simple` case's
-/// mass matrix is not compared.
+/// The mass matrix `qM` (both triangles; a simple dof's row its diagonal,
+/// `dof_M0`) and the bias force `qfrc_bias` are MuJoCo's bit for bit
+/// (`mj_crb`, `engine_core_smooth.c:1811-1885`; `mj_rne`, `:2425-2488`), at
+/// velocities of 1e-7 too and with gravity disabled; and `dof_M0`, each dof's
+/// diagonal at `qpos0`, is MuJoCo's (`mj_setM0`, `engine_setconst.c:36-59`).
 #[test]
 fn mass_matrix_and_bias_force_are_mujocos() {
     for name in CASES {
         let (model, data, case) = forward(name);
-        if name != "simple" {
-            let nv = model.nv;
-            let qm: Vec<f64> = (0..nv * nv).map(|k| data.qM[(k / nv, k % nv)]).collect();
-            assert_golden(&format!("{name} qM"), &qm, &floats(&case["qM"]));
-        }
+        let nv = model.nv;
+        let qm: Vec<f64> = (0..nv * nv).map(|k| data.qM[(k / nv, k % nv)]).collect();
+        assert_golden(&format!("{name} qM"), &qm, &floats(&case["qM"]));
         assert_golden(
             &format!("{name} qfrc_bias"),
             data.qfrc_bias.as_slice(),
             &floats(&case["qfrc_bias"]),
+        );
+        assert_golden(
+            &format!("{name} dof_M0"),
+            &model.dof_M0,
+            &floats(&case["dof_M0"]),
         );
     }
 }

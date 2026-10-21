@@ -29,8 +29,9 @@ pub const DEFAULT_MASS_FALLBACK: f64 = 1.0;
 /// summed into its ancestors' (the world's left out), then for each awake
 /// dof `i` and each dof `j` it descends from (itself included),
 /// `M(i, j) = cdof_j · (crb_body(i) · cdof_i)`, plus `i`'s armature on the
-/// diagonal. Then the factor (`mj_factor_m`) and each body's smallest mass
-/// and inertia on the diagonal.
+/// diagonal; a simple dof's row is its diagonal alone, `dof_M0`. Then the
+/// factor (`mj_factor_m`) and each body's smallest mass and inertia on the
+/// diagonal.
 pub fn mj_crba(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     data.qLD_valid = false;
@@ -90,19 +91,22 @@ pub fn mj_crba(model: &Model, data: &mut Data) {
 
     // Each awake dof's row: its armature, then `cdof_j · (crb_i · cdof_i)`
     // for it and each dof it descends from. A simple dof's row is its
-    // diagonal alone, so two slides of one body on one axis are not coupled;
-    // MuJoCo takes that diagonal from `dof_M0`, made at `qpos0` the same way.
+    // diagonal alone, `dof_M0` (so two slides of one body on one axis are not
+    // coupled).
     let nv = if crb_filter { data.nv_awake } else { model.nv };
     for v in 0..nv {
         let i = if crb_filter { data.dof_awake_ind[v] } else { v };
+        if model.dof_simplenum.get(i).is_some_and(|&n| n > 0) {
+            data.qM[(i, i)] = model.dof_M0[i];
+            continue;
+        }
         let buf = mju_mul_inert_vec(&data.crb[model.dof_body[i]], &data.cdof[i]);
         data.qM[(i, i)] = model.dof_armature[i];
-        let simple = model.dof_simplenum.get(i).is_some_and(|&n| n > 0);
         let mut j = Some(i);
         while let Some(jj) = j {
             data.qM[(i, jj)] += mji_dot6(data.cdof[jj].as_slice(), buf.as_slice());
             data.qM[(jj, i)] = data.qM[(i, jj)];
-            j = if simple { None } else { model.dof_parent[jj] };
+            j = model.dof_parent[jj];
         }
     }
 

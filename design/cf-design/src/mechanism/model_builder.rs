@@ -939,6 +939,7 @@ fn generate(
     model.compute_simple_bodies();
     model.compute_dof_patterns();
     model.compute_implicit_params();
+    model.compute_dof_m0();
 
     // Tendon/actuator derived parameters
     model.compute_spatial_tendon_length0();
