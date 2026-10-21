@@ -424,10 +424,10 @@ mod tests {
     }
 
     // ========================================================================
-    // T8: Mesh with no convex hull → AC8
+    // T8: Mesh geom without mesh data → AC8
     // ========================================================================
     #[test]
-    fn t8_mesh_no_hull_no_contact() {
+    fn t8_mesh_without_data_no_contact() {
         // A mesh geom with no mesh data → 0 contacts, no panic.
         // geom_mesh[1] = None → `CcdObj::of_geom` makes no object
         let model = flat_hfield_model(
@@ -796,11 +796,10 @@ mod tests {
         );
     }
 
-    /// A field of zero width, or of a width of 1e-300, with a sphere beside it
-    /// (past its +x edge, within the margin): the sub-grid's first column lies
-    /// far past the grid (its cell index saturates), and the port lists
-    /// nothing, as MuJoCo's empty loop would, where `cmin + 1` once
-    /// overflowed.
+    /// A field of half-width 0, or 1e-300, with a sphere beside it (past its
+    /// +x edge, within the margin): the sub-grid's first column lies far past
+    /// the grid (its cell index saturates), and the port lists nothing, where
+    /// `cmin + 1` once overflowed (MuJoCo's C reads past the grid here).
     #[test]
     fn a_field_of_no_width_collides_as_nothing() {
         for half in [0.0, 1e-300] {
@@ -956,6 +955,6 @@ mod tests {
                 total += 1;
             }
         }
-        assert_eq!(total, 249, "primitive cases");
+        assert_eq!(total, 252, "primitive cases");
     }
 }

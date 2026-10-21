@@ -2524,8 +2524,9 @@ pub(super) fn mjc_convex_hfield(
     (max_iterations, tolerance): (usize, f64),
 ) -> Vec<RawContact> {
     let (nrow, ncol) = (hfield.depth(), hfield.width());
-    // MuJoCo's loops are empty for a field of one row or column; this returns
-    // before dividing by `ncol - 1` or `nrow - 1`.
+    // For a field of one row or column MuJoCo lists nothing (its column loop,
+    // or both, is empty); this returns before dividing by `ncol - 1` or
+    // `nrow - 1`.
     if nrow < 2 || ncol < 2 {
         return Vec::new();
     }
@@ -2569,8 +2570,9 @@ pub(super) fn mjc_convex_hfield(
     let (cols, rows) = ((ncol - 1) as f64, (nrow - 1) as f64);
     // The sub-grid under the geom's box. A cast to an integer saturates, and
     // takes a NaN to 0, where C's leaves it undefined. The first column and
-    // row are kept within the grid as well: past its last, MuJoCo's loops are
-    // empty, as ours are from there, and `cmin + 1` cannot overflow.
+    // row are kept within the grid as well, so `cmin + 1` cannot overflow:
+    // past the last column MuJoCo's column loop is empty, though its row loop
+    // reads past the grid (:1315-1316, :1177); ours lists nothing.
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let (cmin, cmax, rmin, rmax) = (
         (((xmin + size0) / (2.0 * size0) * cols).floor() as i64).clamp(0, ncol as i64 - 1),
@@ -2619,13 +2621,17 @@ pub(super) fn mjc_convex_hfield(
                 {
                     continue;
                 }
-                // `mjc_penetration`, native: one contact where they overlap.
+                // `mjc_penetration`, native: one contact where they overlap,
+                // unless its normal is libccd's zero vector (`ccdVec3Eq`
+                // against the origin, :1331: each component below `CCD_EPS`,
+                // `DBL_EPSILON`).
                 let st = mjc_ccd(&config, &mut prism, obj);
-                // MuJoCo also skips a contact whose normal is the zero vector
-                // (`ccdVec3Eq`, :1331), which `mju_normalize3` never leaves.
                 if st.dist < 0.0 {
                     let mut dir = sub3(&st.x1[0], &st.x2[0]);
                     normalize3(&mut dir);
+                    if dir.iter().all(|v| v.abs() < f64::EPSILON) {
+                        continue;
+                    }
                     let vec: [f64; 3] = std::array::from_fn(|k| 0.5 * (st.x1[0][k] + st.x2[0][k]));
                     con.push(RawContact {
                         dist: st.dist,

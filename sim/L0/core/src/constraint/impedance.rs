@@ -545,6 +545,13 @@ mod impedance_tests {
     }
 
     #[test]
+    fn test_impedance_admits_nan_violation() {
+        // A contact at a NaN distance (a geom turned by a NaN) reaches here;
+        // the debug check lets it pass, as MuJoCo's `getimpedance` has none
+        compute_impedance(DEFAULT, f64::NAN);
+    }
+
+    #[test]
     fn test_impedance_flat_when_d0_equals_dwidth() {
         // When d0 == d_width, impedance is constant
         let solimp = [0.9, 0.9, 0.001, 0.5, 2.0];

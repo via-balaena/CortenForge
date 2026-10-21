@@ -539,16 +539,19 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
 /// loads as MuJoCo compiles it (`bumpy`: 9 × 9, elevations multiples of 1/8
 /// from 0 to 1, rows symmetric; each body turned by its frame, so its
 /// inertial frame is the body's in both, ledger L195), at two spots each:
-/// the height after every 50th of 1000 steps against MuJoCo's. A sphere, a
-/// capsule and an ellipsoid within 5e-12 (measured 5.5e-13, a capsule that
-/// rolls off the field's edge as MuJoCo's does); a cylinder and a box within
-/// 5e-2 (measured 4.8e-3; where they part from MuJoCo's is not isolated).
-/// The rolling bodies take a sine and a cosine at each step, which a libm
-/// need not round correctly. With one such result off by an ulp (measured by
-/// chunk 3e's fourth review: each result near a rounding midpoint rounded the
-/// other way in turn, and one result moved at chosen steps), the capsule
-/// parted from MuJoCo's by up to 1.45e-12 and the box by up to 2.2e-2, so the
-/// bounds leave about three times that for another platform's libm.
+/// the height after every 50th of 1000 steps against MuJoCo's, within 5e-12
+/// for a sphere, a capsule and an ellipsoid (a capsule rolls off the field's
+/// edge as MuJoCo's does), 5e-3 for a cylinder and 5e-2 for a box; where the
+/// cylinders and boxes part from MuJoCo's is not isolated (ledger L206). The
+/// bodies take sines and cosines, which a libm need not round correctly; the
+/// bounds are set above the largest gaps measured here and with such results
+/// moved by an ulp (chunk 3e's fourth review and its fix-diff pass):
+///
+/// | bodies | measured | an ulp moved |
+/// |---|---|---|
+/// | sphere, capsule, ellipsoid | 5.5e-13 | 1.45e-12 |
+/// | cylinder | 8.5e-5 | 2.0e-3 |
+/// | box | 4.8e-3 | 2.2e-2 |
 #[test]
 fn bodies_on_a_bumpy_height_field_as_mujoco() {
     let golden = golden();
@@ -556,8 +559,10 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
         let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();
         let want = floats(&case["z"]);
-        let bound = if name.starts_with("cylinder") || name.starts_with("box") {
+        let bound = if name.starts_with("box") {
             5e-2
+        } else if name.starts_with("cylinder") {
+            5e-3
         } else {
             5e-12
         };

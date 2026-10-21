@@ -121,14 +121,16 @@ not), with a graph and without, and a mesh without a graph apart by 0.7 of
 its radius at a margin of its radius (its first vertex farther from the first
 contact than the spacing); `nan`, a mesh and an ellipsoid turned by a matrix
 holding a NaN, and a plane whose normal holds one; and `tetra`, the
-tetrahedron laid on each of its faces at three spins (its corners tie, so the
-hill climb's path decides the first contact), at six random turns and with
-its local -z face down at 12 (margins up to 1, every vertex within it), with
-its graph and without, from its own generator, and one pose where two base
-corners tie exactly for the deepest. It refuses plane cases that
-miss 0 to 3 mesh contacts with a graph and without, a vertex within the
-margin skipped as nearer the first contact than 0.3 of the radius, a NaN
-contact, or the tetrahedron face down listed with its graph.
+tetrahedron laid on each of its faces at three spins, at six random turns and
+with its local -z face down at 12 (margins up to 1, every vertex within it),
+with its graph and without, from its own generator, and one pose where two
+base corners tie exactly for the deepest. It refuses plane cases that miss
+an ellipsoid listed and one not, 50 ellipsoids at their own distance, 0 to 3
+mesh contacts with a graph and without, a NaN contact, a vertex within the
+margin skipped as nearer the first contact than 0.3 of the radius, each
+lowest vertex at the margin exactly with the first listed alone, a first
+vertex past the spacing without a graph, or the tetrahedron face down listed
+with its graph.
 
 `hfield_fields` and `hfield_convex` hold MuJoCo's mjc_ConvexHField
 (engine_collision_convex.c:1185-1363), called on a height field (geom 0) and
@@ -143,15 +145,19 @@ cells, 30 x 30 fine, one cell), reaching 0.03 below to 0.02 above the
 surface, the field unturned or turned, at margins 0 and 0.01; `edge`, a
 broad flat box pressed into the fine field (mjMAXCONPAIR contacts), a sphere
 clear of the field by its bounding sphere, a capsule clear by its box, a
-sphere apart within the margin (listed, at a distance below 0), boxes resting
-exactly on a 5 x 5 flat field of dyadic cells (on a grid vertex, a grid line
-and mid-cell: unlisted) and a sphere under that field's base within the
-margin (listed); `nan`, a sphere, a box and a mesh turned by a matrix holding
-a NaN, and the field so turned. It refuses height-field cases that miss a
-contact for every geom, three or more contacts, none, a geom apart listed
-within the margin, mjMAXCONPAIR contacts, the far and past-edge geoms with
-none, a NaN turn listing a contact, the touching boxes unlisted or the sphere
-under the base listed.
+sphere apart within the margin (listed, at a distance below 0), a sphere past
+the field's +x edge within the margin (unlisted), boxes resting exactly on
+the flat part of a 5 x 5 field of dyadic cells (on a grid vertex, a grid line
+and mid-cell: unlisted), a sphere under that field's base within the margin
+(listed), and a sphere on a 3 x 3 field scaled to 1e153 and to 1e154, where
+the squared norm of the witness points' difference overflows and MuJoCo skips
+the contacts whose normal is then zero; `nan`, a sphere, a box and a mesh turned by a
+matrix holding a NaN, and the field so turned. It refuses height-field cases
+that miss a contact for every geom, three or more contacts, none, a geom
+apart listed within the margin, mjMAXCONPAIR contacts, the far and past-edge
+geoms with none, a NaN turn listing a contact, the touching boxes unlisted,
+the sphere under the base listed, or contacts at 1e153 and none at
+1e154.
 
 It refuses a run whose cases miss a path the port must be checked on (each
 starting polytope, an EPA failure, multi-contact, the sphere and capsule
@@ -1636,10 +1642,9 @@ def plane_convex_cases(meshes):
 
 
 def tetra_cases(meshes):
-    """The tetrahedron with each of its faces down on a plane (its corners tie for the
-    deepest, so the hill climb's path decides the first contact) at three spins, at six
-    random turns (margins 0 and 0.02), and with its local -z face down at 12 (margins 0, 0.05
-    and 1, the last taking every vertex within it); with its graph and without. Its own
+    """The tetrahedron with each of its faces down on a plane at three spins, at six random
+    turns (margins 0 and 0.02), and with its local -z face down at 12 (margins 0, 0.05 and 1,
+    the last taking every vertex within it); with its graph and without. Its own
     generator."""
     rng = np.random.default_rng(53)
     out = {}
@@ -1763,8 +1768,10 @@ HFIELDS = {"bumpy9": (9, 9, (1.0, 1.0, 0.3, 0.1), bumpy9()),
            "fine30": (30, 30, (1.0, 1.0, 0.05, 0.1), noise(30, 30, 30)),
            "cell2": (2, 2, (0.5, 0.5, 0.2, 0.1), np.array([[0.0, 0.5], [1.0, 0.25]])),
            "flat5": (5, 5, (0.5, 0.5, 0.25, 0.125),
-                     np.array([[0.0] * 5] * 4 + [[0.0, 0.0, 0.0, 0.0, 1.0]]))}
-# The fields the `pose` cases draw over (`flat5` serves the `edge` cases only).
+                     np.array([[0.0] * 5] * 4 + [[0.0, 0.0, 0.0, 0.0, 1.0]])),
+           "large3": (3, 3, (1e153, 1e153, 1e153, 1e153), np.array([[0, 0, 0], [0, 1.0, 0], [0, 0, 0]])),
+           "huge3": (3, 3, (1e154, 1e154, 1e154, 1e154), np.array([[0, 0, 0], [0, 1.0, 0], [0, 0, 0]]))}
+# The fields the `pose` cases draw over (the others serve the `edge` cases only).
 POSE_FIELDS = ("bumpy9", "uneven5x9", "fine30", "cell2")
 HFIELD_GEOMS = ("sphere", "capsule", "ellipsoid", "cylinder", "box", "gem8", "pebble24")
 
@@ -1884,6 +1891,17 @@ def hfield_convex_cases(meshes, fields):
         (np.array([1.2, 0.0, 0.2]), axis_mat([1, 0, 0], np.pi / 2)), 0.0)
     out["edge"]["cell2_sphere_in_margin"] = hfield_case(
         "cell2", "sphere", [0.1], (origin, eye), (np.array([0.0, 0.0, 0.42]), eye), 0.2)
+    # Past the field's +x edge, its box within the margin of the field's: the sub-grid starts
+    # at the last column, and MuJoCo lists nothing.
+    out["edge"]["bumpy9_sphere_past_edge_in_margin"] = hfield_case(
+        "bumpy9", "sphere", [0.1], (origin, eye), (np.array([1.15, 0.0, 0.3]), eye), 0.3)
+    # A sphere sunk into a field's centre bump, at 1e153 and at 1e154: at the latter the
+    # squared norm of the witness points' difference overflows, and MuJoCo skips the
+    # contacts whose normal is then zero.
+    for field in ("large3", "huge3"):
+        s = HFIELDS[field][2][0]
+        out["edge"][f"{field}_sphere"] = hfield_case(
+            field, "sphere", [0.6 * s], (origin, eye), (np.array([0.0, 0.0, 0.5 * s]), eye), 0.0)
     # Boxes resting exactly on the flat part of a dyadic field (height 0, cells 0.25), on a
     # grid vertex, on a grid line and mid-cell: they touch, and MuJoCo lists no contact (its
     # distance must be below 0). And a sphere under the field's base by less than the margin.
@@ -1920,12 +1938,15 @@ def hfield_coverage(out):
             and all(x["dist"] < 0 for x in edge["cell2_sphere_in_margin"]["contacts"]),
             "mjMAXCONPAIR contacts": len(edge["fine30_broad_box"]["contacts"]) == MAXCONPAIR,
             "the far and past-edge geoms with none": not edge["bumpy9_far"]["contacts"]
-            and not edge["bumpy9_capsule_past_edge"]["contacts"],
+            and not edge["bumpy9_capsule_past_edge"]["contacts"]
+            and not edge["bumpy9_sphere_past_edge_in_margin"]["contacts"],
             "a NaN turn listing a contact": any(c["contacts"] for c in out["nan"].values()),
             "boxes touching exactly, unlisted": all(
                 not c["contacts"] for k, c in edge.items() if "_touching_" in k),
             "a sphere under the base listed within the margin":
-            bool(edge["flat5_sphere_under_base"]["contacts"])}
+            bool(edge["flat5_sphere_under_base"]["contacts"]),
+            "contacts at 1e153 and none at 1e154":
+            bool(edge["large3_sphere"]["contacts"]) and not edge["huge3_sphere"]["contacts"]}
     missing = [k for k, v in need.items() if not v]
     if missing:
         sys.exit(f"the height-field cases miss: {', '.join(missing)}")

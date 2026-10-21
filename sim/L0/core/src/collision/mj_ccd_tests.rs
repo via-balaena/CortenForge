@@ -761,7 +761,7 @@ fn contacts_match(ours: &[RawContact], want: &Value) -> bool {
 }
 
 /// The graph a plane case's mesh takes on MuJoCo's side: none in
-/// `mesh_bare` and the `nan` cases named `_bare`.
+/// `mesh_bare` and every case named `_bare` or `bare_`.
 fn mujocos_plane_graph(group: &str, name: &str) -> PlaneGraph {
     if group == "mesh_bare" || name.contains("_bare") || name.starts_with("bare_") {
         PlaneGraph::None
@@ -775,8 +775,8 @@ fn mujocos_plane_graph(group: &str, name: &str) -> PlaneGraph {
 /// those apart at a margin of their own distance, meshes on MuJoCo's hull
 /// graph and without one, the comparisons' edges (vertices at the margin
 /// exactly; a first vertex past the spacing without a graph), NaN turns
-/// (MuJoCo's NaN contact) and a tetrahedron laid on each face (its corners
-/// tie, so the hill climb's path decides the first contact).
+/// (MuJoCo's NaN contact) and a tetrahedron (on each face, at random turns,
+/// and where two corners tie exactly for the deepest).
 #[test]
 fn plane_convex_matches_mujoco_bitwise() {
     let doc = golden();
@@ -892,9 +892,10 @@ fn hfield_run(case: &Value, doc: &Value, meshes: &HashMap<String, PlaneMesh>) ->
 /// case of the golden (`hfield_convex`): four fields (square cells, cells of
 /// two spacings, a fine grid, one cell), each convex type and two meshes on
 /// MuJoCo's hull graph at random poses, the box tests' edges, mjMAXCONPAIR
-/// contacts, a geom apart listed within the margin, boxes resting exactly on
-/// a flat field (unlisted), a sphere under the base within the margin, and
-/// NaN turns.
+/// contacts, a geom apart listed within the margin, a geom past an edge
+/// within the margin (unlisted), boxes resting exactly on a field's flat part
+/// (unlisted), a sphere under the base within the margin, a field at 1e154
+/// (its contacts' normals zero, skipped), and NaN turns.
 #[test]
 fn hfield_convex_matches_mujoco_bitwise() {
     let doc = golden();
@@ -917,5 +918,5 @@ fn hfield_convex_matches_mujoco_bitwise() {
             total += 1;
         }
     }
-    assert_eq!(total, 349, "height-field cases");
+    assert_eq!(total, 352, "height-field cases");
 }
