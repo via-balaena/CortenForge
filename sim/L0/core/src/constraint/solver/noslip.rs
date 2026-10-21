@@ -92,7 +92,7 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data, m_impl_factor: Option<
         let dim = data.efc_dim[i];
 
         match ctype {
-            ConstraintType::FrictionLoss => {
+            ConstraintType::FrictionDof | ConstraintType::FrictionTendon => {
                 let floss = data.efc_floss[i];
                 noslip_rows.push(i);
                 noslip_kinds.push(NoslipRowKind::FrictionLoss { floss });

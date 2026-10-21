@@ -74,7 +74,8 @@ fn load_npy_2d(subdir: &str, name: &str) -> Option<(usize, usize, Vec<f64>)> {
 fn type_name(ct: &ConstraintType) -> &'static str {
     match ct {
         ConstraintType::Equality => "Equality",
-        ConstraintType::FrictionLoss => "FrictionLoss",
+        ConstraintType::FrictionDof => "FrictionDof",
+        ConstraintType::FrictionTendon => "FrictionTendon",
         ConstraintType::LimitJoint => "LimitJoint",
         ConstraintType::LimitTendon => "LimitTendon",
         ConstraintType::ContactFrictionless => "ContactFrictionless",

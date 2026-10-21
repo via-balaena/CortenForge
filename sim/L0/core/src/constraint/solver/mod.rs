@@ -146,7 +146,7 @@ pub fn extract_qfrc_frictionloss(data: &mut Data, nv: usize) {
     data.qfrc_frictionloss.fill(0.0);
     let nefc = data.efc_type.len();
     for i in 0..nefc {
-        if matches!(data.efc_type[i], ConstraintType::FrictionLoss) {
+        if data.efc_type[i].is_friction_loss() {
             let force = data.efc_force[i];
             for col in 0..nv {
                 data.qfrc_frictionloss[col] += data.efc_J[(i, col)] * force;

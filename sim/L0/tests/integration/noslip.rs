@@ -313,7 +313,7 @@ fn test_noslip_friction_loss_clamping() {
     // Find friction-loss rows
     let mut found_floss = false;
     for i in 0..data.efc_type.len() {
-        if data.efc_type[i] == sim_core::ConstraintType::FrictionLoss {
+        if data.efc_type[i].is_friction_loss() {
             let floss = data.efc_floss[i];
             let force = data.efc_force[i];
             assert!(
@@ -526,7 +526,7 @@ fn test_noslip_mixed_friction_loss_and_contact() {
 
     // Verify friction-loss rows are clamped
     for i in 0..data.efc_type.len() {
-        if data.efc_type[i] == sim_core::ConstraintType::FrictionLoss {
+        if data.efc_type[i].is_friction_loss() {
             let floss = data.efc_floss[i];
             let force = data.efc_force[i];
             assert!(
@@ -628,7 +628,7 @@ fn test_noslip_residual_uses_efc_b() {
         let ctype = data.efc_type[i];
         let dim = data.efc_dim[i];
         match ctype {
-            ConstraintType::FrictionLoss => {
+            ConstraintType::FrictionDof | ConstraintType::FrictionTendon => {
                 friction_rows.push(i);
                 i += 1;
             }

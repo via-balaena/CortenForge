@@ -431,7 +431,8 @@ fn diag_approx_as_mujoco() {
         for (i, kind) in data.efc_type.iter().enumerate() {
             if !matches!(
                 kind,
-                ConstraintType::FrictionLoss
+                ConstraintType::FrictionDof
+                    | ConstraintType::FrictionTendon
                     | ConstraintType::LimitJoint
                     | ConstraintType::LimitTendon
             ) {

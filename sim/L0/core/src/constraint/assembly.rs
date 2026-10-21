@@ -353,7 +353,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                 0.0,
                 0.0,
                 fl,
-                ConstraintType::FrictionLoss,
+                ConstraintType::FrictionDof,
                 1,
                 dof_idx,
                 [0.0; 5],
@@ -385,7 +385,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                 0.0,
                 0.0,
                 fl,
-                ConstraintType::FrictionLoss,
+                ConstraintType::FrictionTendon,
                 1,
                 t,
                 [0.0; 5],
@@ -592,7 +592,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
     for i in 0..nefc {
         match data.efc_type[i] {
             ConstraintType::Equality => data.ne += 1,
-            ConstraintType::FrictionLoss => data.nf += 1,
+            ConstraintType::FrictionDof | ConstraintType::FrictionTendon => data.nf += 1,
             _ => {}
         }
     }
@@ -610,7 +610,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
             .iter()
             .skip(data.ne)
             .take(data.nf)
-            .all(|t| matches!(t, ConstraintType::FrictionLoss)),
+            .all(|t| t.is_friction_loss()),
         "Non-friction row found within friction block [{}..{})",
         data.ne,
         data.ne + data.nf,
@@ -880,7 +880,7 @@ mod dt23_friction_solref_tests {
     //! Verifies multi-DOF fan-out, defaults cascade, and end-to-end wiring.
 
     use crate::constraint::assembly::assemble_unified_constraints;
-    use crate::types::{ConstraintType, MjJointType, Model};
+    use crate::types::{MjJointType, Model};
     use nalgebra::{DVector, UnitQuaternion, Vector3};
 
     /// Build a minimal model with a single hinge joint and frictionloss.
@@ -1103,7 +1103,7 @@ mod dt23_friction_solref_tests {
             .efc_type
             .iter()
             .enumerate()
-            .filter(|(_, t)| matches!(t, ConstraintType::FrictionLoss))
+            .filter(|(_, t)| t.is_friction_loss())
             .map(|(i, _)| i)
             .collect();
         assert_eq!(
@@ -1145,7 +1145,7 @@ mod dt23_friction_solref_tests {
             .efc_type
             .iter()
             .enumerate()
-            .filter(|(_, t)| matches!(t, ConstraintType::FrictionLoss))
+            .filter(|(_, t)| t.is_friction_loss())
             .map(|(i, _)| i)
             .collect();
         assert_eq!(
@@ -1184,7 +1184,7 @@ mod dt23_friction_solref_tests {
             .efc_type
             .iter()
             .enumerate()
-            .filter(|(_, t)| matches!(t, ConstraintType::FrictionLoss))
+            .filter(|(_, t)| t.is_friction_loss())
             .map(|(i, _)| i)
             .collect();
         assert_eq!(friction_rows.len(), 1);
@@ -1209,7 +1209,7 @@ mod dt23_friction_solref_tests {
             .efc_type
             .iter()
             .enumerate()
-            .filter(|(_, t)| matches!(t, ConstraintType::FrictionLoss))
+            .filter(|(_, t)| t.is_friction_loss())
             .map(|(i, _)| i)
             .collect();
         assert_eq!(friction_rows.len(), 1, "Expected 1 friction row");
@@ -1233,7 +1233,7 @@ mod dt23_friction_solref_tests {
         let fl_count = data_no_fl
             .efc_type
             .iter()
-            .filter(|t| matches!(t, ConstraintType::FrictionLoss))
+            .filter(|t| t.is_friction_loss())
             .count();
         assert_eq!(fl_count, 0, "frictionloss=0 should produce 0 friction rows");
     }
@@ -1285,7 +1285,7 @@ mod dt23_friction_solref_tests {
             .efc_type
             .iter()
             .enumerate()
-            .filter(|(_, t)| matches!(t, ConstraintType::FrictionLoss))
+            .filter(|(_, t)| t.is_friction_loss())
             .map(|(i, _)| i)
             .collect();
         assert_eq!(friction_rows.len(), 1, "Expected 1 tendon friction row");

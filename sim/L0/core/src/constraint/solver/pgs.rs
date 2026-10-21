@@ -468,7 +468,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
                 // Project per constraint type
                 match ctype {
                     ConstraintType::Equality => {}
-                    ConstraintType::FrictionLoss => {
+                    ConstraintType::FrictionDof | ConstraintType::FrictionTendon => {
                         let fl = data.efc_floss[i];
                         data.efc_force[i] = data.efc_force[i].clamp(-fl, fl);
                     }
@@ -600,7 +600,7 @@ pub fn classify_constraint_states(
                 i += 1;
             }
 
-            ConstraintType::FrictionLoss => {
+            ConstraintType::FrictionDof | ConstraintType::FrictionTendon => {
                 let floss = data.efc_floss[i];
                 let threshold = r * floss;
                 if jar >= threshold {

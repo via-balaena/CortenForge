@@ -812,8 +812,12 @@ pub enum JacobianType {
 pub enum ConstraintType {
     /// Equality constraint (connect, weld, joint, tendon, distance, flex).
     Equality,
-    /// DOF or tendon friction loss (Huber cost).
-    FrictionLoss,
+    /// A dof's friction loss (Huber cost), MuJoCo's `mjCNSTR_FRICTION_DOF`;
+    /// `efc_id` is the dof.
+    FrictionDof,
+    /// A tendon's friction loss (Huber cost), MuJoCo's
+    /// `mjCNSTR_FRICTION_TENDON`; `efc_id` is the tendon.
+    FrictionTendon,
     /// Joint limit constraint.
     LimitJoint,
     /// Tendon limit constraint.
@@ -826,6 +830,14 @@ pub enum ConstraintType {
     ContactPyramidal,
     /// Contact with elliptic friction cone (condim ≥ 3 and cone == elliptic).
     ContactElliptic,
+}
+
+impl ConstraintType {
+    /// A friction-loss row, a dof's or a tendon's.
+    #[must_use]
+    pub const fn is_friction_loss(self) -> bool {
+        matches!(self, Self::FrictionDof | Self::FrictionTendon)
+    }
 }
 
 /// Constraint state per scalar row, determined by `PrimalUpdateConstraint`.

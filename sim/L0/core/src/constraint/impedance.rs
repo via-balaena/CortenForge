@@ -283,20 +283,15 @@ pub fn compute_diag_approx_bodyweight(
     row_offset: usize,
 ) -> f64 {
     match ctype {
-        // Friction loss: `id` is DOF index for DOF friction, tendon index
-        // for tendon friction. The caller pre-computes the bodyweight value
-        // at each call site; this arm handles both via dof_invweight0 lookup
-        // with tendon_invweight0 fallback.
-        ConstraintType::FrictionLoss => {
-            if id < model.dof_invweight0.len() {
-                model.dof_invweight0[id].max(MJ_MINVAL)
-            } else if id < model.tendon_invweight0.len() {
-                // Fallback: assume tendon id (shouldn't reach here normally)
-                model.tendon_invweight0[id].max(MJ_MINVAL)
-            } else {
-                MJ_MINVAL
-            }
-        }
+        // Friction loss: `id` is the dof, or the tendon.
+        ConstraintType::FrictionDof => model
+            .dof_invweight0
+            .get(id)
+            .map_or(MJ_MINVAL, |w| w.max(MJ_MINVAL)),
+        ConstraintType::FrictionTendon => model
+            .tendon_invweight0
+            .get(id)
+            .map_or(MJ_MINVAL, |w| w.max(MJ_MINVAL)),
         // Joint limits: look up DOF from joint
         ConstraintType::LimitJoint => {
             if id < model.njnt {

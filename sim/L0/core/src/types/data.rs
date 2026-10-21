@@ -448,7 +448,7 @@ pub struct Data {
     pub efc_dim: Vec<usize>,
     /// Per-row source object index (joint ID for LimitJoint, tendon ID for
     /// LimitTendon, equality ID for Equality, contact index for Contact*,
-    /// DOF/tendon index for FrictionLoss).
+    /// the dof for FrictionDof, the tendon for FrictionTendon).
     pub efc_id: Vec<usize>,
 
     // Solver output (written to Data in RECOVER after convergence)

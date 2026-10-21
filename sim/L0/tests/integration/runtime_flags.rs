@@ -1606,9 +1606,7 @@ fn ac15_filterparent_disable() {
 
 #[test]
 fn ac16_frictionloss_disable() {
-    use sim_core::ConstraintType;
-
-    // With frictionloss enabled (default): should have FrictionLoss rows
+    // With frictionloss enabled (default): should have friction-loss rows
     let model_enabled = load_model(frictionloss_test_mjcf()).expect("load");
     let mut data_enabled = model_enabled.make_data();
     data_enabled.qvel[0] = 1.0; // need velocity for friction to matter
@@ -1617,15 +1615,15 @@ fn ac16_frictionloss_disable() {
     let fl_rows_enabled = data_enabled
         .efc_type
         .iter()
-        .filter(|t| matches!(t, ConstraintType::FrictionLoss))
+        .filter(|t| t.is_friction_loss())
         .count();
 
     assert!(
         fl_rows_enabled > 0,
-        "should have FrictionLoss constraint rows with frictionloss > 0"
+        "should have friction-loss constraint rows with frictionloss > 0"
     );
 
-    // With DISABLE_FRICTIONLOSS: no FrictionLoss rows
+    // With DISABLE_FRICTIONLOSS: no friction-loss rows
     let mut model_disabled = load_model(frictionloss_test_mjcf()).expect("load");
     model_disabled.disableflags |= DISABLE_FRICTIONLOSS;
     let mut data_disabled = model_disabled.make_data();
@@ -1635,12 +1633,12 @@ fn ac16_frictionloss_disable() {
     let fl_rows_disabled = data_disabled
         .efc_type
         .iter()
-        .filter(|t| matches!(t, ConstraintType::FrictionLoss))
+        .filter(|t| t.is_friction_loss())
         .count();
 
     assert_eq!(
         fl_rows_disabled, 0,
-        "should have zero FrictionLoss rows with DISABLE_FRICTIONLOSS"
+        "should have zero friction-loss rows with DISABLE_FRICTIONLOSS"
     );
 }
 

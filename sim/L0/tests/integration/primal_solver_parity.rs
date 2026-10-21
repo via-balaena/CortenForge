@@ -1047,6 +1047,46 @@ fn island_rows_keep_their_solves_states() {
     }
 }
 
+/// A dof's friction-loss row and a tendon's, both of id 0 and adjacent, are
+/// two constraints, as MuJoCo's `mjCNSTR_FRICTION_DOF` and
+/// `mjCNSTR_FRICTION_TENDON` are, so the tendon's row joins the trees it
+/// couples (`findEdges`, `engine_island.c:327-336`): two slides in two
+/// trees, the first with friction loss, a fixed tendon over both with
+/// friction loss. The first forward's islands, each tree's and row's island,
+/// the forces and the acceleration are MuJoCo's.
+#[test]
+fn a_tendon_friction_row_after_a_dof_friction_row_joins_its_trees() {
+    let case = &golden()["cases"]["islands_friction_key"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qvel.copy_from_slice(&floats(&case["qvel"]));
+    data.forward(&model).expect("forward");
+    let ints = |v: &Value| -> Vec<i64> {
+        v.as_array()
+            .expect("array")
+            .iter()
+            .map(|x| x.as_i64().expect("int"))
+            .collect()
+    };
+    assert_eq!(data.nisland, count(&case["nisland"]), "islands");
+    let trees: Vec<i64> = data.tree_island.iter().map(|&i| i64::from(i)).collect();
+    assert_eq!(trees, ints(&case["tree_island"]), "tree_island");
+    let rows: Vec<i64> = data.efc_island.iter().map(|&i| i64::from(i)).collect();
+    assert_eq!(rows, ints(&case["efc_island"]), "efc_island");
+    for (what, ours, want) in [
+        (
+            "efc_force",
+            data.efc_force.as_slice(),
+            floats(&case["efc_force"]),
+        ),
+        ("qacc", data.qacc.as_slice(), floats(&case["qacc"])),
+    ] {
+        for (k, (a, b)) in ours.iter().zip(&want).enumerate() {
+            assert!((a - b).abs() <= 1e-12, "{what}[{k}]: {a}, MuJoCo {b}");
+        }
+    }
+}
+
 /// At jacobian="sparse", a hinge with friction loss beside a second hinge
 /// under a fixed tendon of coef 0 with friction loss and a range its length
 /// exceeds: the tendon's two rows are all zero. A row in no island takes the

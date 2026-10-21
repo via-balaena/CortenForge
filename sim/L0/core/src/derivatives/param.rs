@@ -716,7 +716,6 @@ fn assert_friction_scope(model: &Model) {
 /// Returns [`StepError::CholeskyFailed`] if `M_impl` is not positive definite, or
 /// any step error encountered while evaluating the operating point.
 pub fn mjd_friction_jacobian(model: &Model, data: &Data) -> Result<FrictionJacobian, StepError> {
-    use crate::types::enums::ConstraintType;
     assert_friction_scope(model);
 
     let nv = model.nv;
@@ -733,9 +732,7 @@ pub fn mjd_friction_jacobian(model: &Model, data: &Data) -> Result<FrictionJacob
     // constraint. A contact/limit/equality force would enter qfrc_constraint with a
     // state-dependence this channel does not differentiate → silently wrong.
     assert!(
-        d_op.efc_type
-            .iter()
-            .all(|t| matches!(t, ConstraintType::FrictionLoss)),
+        d_op.efc_type.iter().all(|t| t.is_friction_loss()),
         "analytic friction Jacobian requires friction loss to be the only active \
          constraint (no contacts, joint limits, or equality constraints)",
     );
@@ -1979,7 +1976,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "only active constraint")]
     fn friction_rejects_active_joint_limit() {
-        // A joint limit the pose violates adds a non-FrictionLoss efc row, which the
+        // A joint limit the pose violates adds an efc row other than friction loss, which the
         // operating-point guard must reject (the channel cannot differentiate it).
         let (mut model, mut data) = friction_pendulum(0.05);
         model.jnt_limited[0] = true;

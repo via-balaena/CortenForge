@@ -134,7 +134,7 @@ fn test_ne_nf_ordering_equality_then_friction() {
         );
         if data.efc_type.len() > 1 {
             assert!(
-                matches!(data.efc_type[1], sim_core::ConstraintType::FrictionLoss),
+                data.efc_type[1].is_friction_loss(),
                 "second row should be friction loss, got {:?}",
                 data.efc_type[1]
             );
@@ -346,7 +346,7 @@ fn test_pgs_cost_guard_dual_cost_nonpositive() {
                     "unilateral force[{i}] should be >= 0, got {force}"
                 );
             }
-            sim_core::ConstraintType::FrictionLoss => {
+            sim_core::ConstraintType::FrictionDof | sim_core::ConstraintType::FrictionTendon => {
                 let fl = data.efc_floss[i];
                 assert!(
                     force >= -fl - 1e-12 && force <= fl + 1e-12,

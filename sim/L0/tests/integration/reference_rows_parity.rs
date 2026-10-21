@@ -60,8 +60,8 @@ fn rows_reference_under(solver: SolverType) {
         data.efc_type,
         [
             ConstraintType::Equality,
-            ConstraintType::FrictionLoss,
-            ConstraintType::FrictionLoss,
+            ConstraintType::FrictionDof,
+            ConstraintType::FrictionTendon,
             ConstraintType::LimitTendon,
         ],
         "{solver:?}"

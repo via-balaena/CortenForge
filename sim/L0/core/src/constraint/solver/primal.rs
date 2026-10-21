@@ -270,7 +270,7 @@ impl Rows {
         let count = |ty: ConstraintType| rows.iter().filter(|&&r| data.efc_type[r] == ty).count();
         Self {
             ne: count(ConstraintType::Equality),
-            nf: count(ConstraintType::FrictionLoss),
+            nf: count(ConstraintType::FrictionDof) + count(ConstraintType::FrictionTendon),
             d: gather(&data.efc_D),
             r: gather(&data.efc_R),
             floss: gather(&data.efc_floss),

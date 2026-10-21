@@ -830,6 +830,47 @@ def zero_row(solver, warmstart=True):
     return out
 
 
+FRICTION_KEY = """<mujoco model="friction_key">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="slide" axis="1 0 0" frictionloss="0.2"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+    <body name="b" pos="0.5 0 1">
+      <joint name="jb" type="slide" axis="1 0 0"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" frictionloss="0.3">
+      <joint joint="ja" coef="1"/>
+      <joint joint="jb" coef="-1"/>
+    </fixed>
+  </tendon>
+</mujoco>"""
+FRICTION_KEY_QVEL = [0.5, -0.4]
+
+
+def friction_key():
+    """A dof's friction-loss row and a tendon's, both of id 0 and adjacent,
+    are two constraints (`mjCNSTR_FRICTION_DOF`, `mjCNSTR_FRICTION_TENDON`),
+    so the tendon's row joins the trees it couples (`findEdges`,
+    `engine_island.c:327-336`): two slides in two trees, the first with
+    friction loss, a fixed tendon over both with friction loss, no gravity,
+    moving. The first forward's islands, rows, forces and acceleration."""
+    m = mujoco.MjModel.from_xml_string(FRICTION_KEY)
+    d = mujoco.MjData(m)
+    d.qvel[:] = FRICTION_KEY_QVEL
+    mujoco.mj_forward(m, d)
+    assert list(d.efc_type) == [mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF,
+                                mujoco.mjtConstraint.mjCNSTR_FRICTION_TENDON], list(d.efc_type)
+    assert list(d.efc_id) == [0, 0] and d.nisland == 1, (list(d.efc_id), d.nisland)
+    return {"xml": FRICTION_KEY, "qvel": FRICTION_KEY_QVEL, "nisland": int(d.nisland),
+            "tree_island": [int(x) for x in d.tree_island], "efc_island": [int(x) for x in d.efc_island],
+            "efc_force": floats(d.efc_force[:d.nefc]), "qacc": floats(d.qacc)}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -916,6 +957,7 @@ def main():
     for solver in ("Newton", "CG"):
         cases["islands_review"][f"noslip_{solver}"] = island_trajectory(
             NOSLIP_ISLANDS.format(solver=solver), NOSLIP_ISLANDS_QVEL, 200, (1, 10, 50, 200))
+    cases["islands_friction_key"] = friction_key()
     cases["islands_zero_row"] = {solver: zero_row(solver) for solver in ("Newton", "CG")}
     for solver in ("Newton", "CG"):
         cases["islands_zero_row"][f"{solver}_coldstart"] = zero_row(solver, warmstart=False)

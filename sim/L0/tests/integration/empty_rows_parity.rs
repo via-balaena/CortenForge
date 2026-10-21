@@ -73,7 +73,7 @@ fn empty_tendon_rows_are_not_made() {
     assert_row_arrays("tendon_static", &data, nefc(case));
     assert_eq!(
         data.efc_type,
-        [ConstraintType::FrictionLoss],
+        [ConstraintType::FrictionDof],
         "the hinge's row"
     );
     assert_eq!(data.efc_id, [0], "on dof 0");
@@ -122,11 +122,12 @@ fn empty_flex_edge_rows_are_not_made() {
 }
 
 /// The row type for MuJoCo's `mjtConstraint` value, for the kinds these
-/// cases make (a dof's and a tendon's friction loss are one type here).
+/// cases make.
 fn row_type(mj: &Value) -> ConstraintType {
     match mj.as_u64().expect("type") {
         0 => ConstraintType::Equality,
-        1 | 2 => ConstraintType::FrictionLoss,
+        1 => ConstraintType::FrictionDof,
+        2 => ConstraintType::FrictionTendon,
         4 => ConstraintType::LimitTendon,
         other => panic!("no such row in these cases: {other}"),
     }
