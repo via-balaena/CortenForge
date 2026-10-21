@@ -8,8 +8,8 @@
 > **removed in #499** once the full pipeline superseded it. Sections describing
 > that baseline (§1, §10.4, §11) and the pre-implementation API sketches
 > (§10.1–§10.3) are kept as historical design record; the dated session log (§14)
-> is a point-in-time account. The living shader/buffer specs (§6–§9) describe the
-> current code.
+> is a point-in-time account. The living shader/buffer specs (§6–§8) describe the
+> current code; §9's command-buffer sketch is the original plan.
 
 ## 1. Problem
 
@@ -146,11 +146,11 @@ in sequence.
 **n_env dimension:** Every per-state buffer has a leading `n_env`
 dimension. For `n_env=1` (interactive), this is just an offset of 0.
 For `n_env=1000` (batch), each thread computes
-`env_id * stride + element_id`. Same shader, wider dispatch.
+`env_id * stride + element_id`. Same shader, wider dispatch. FK's mocap
+reads are the exception: every env reads env 0's (`state_buffers.rs`).
 
-**Note:** Session 1 hardcodes `n_env=1`. Batch support (n_env > 1)
-requires adding env-offset math to qpos indexing and CAS atomics for
-backward scans. Deferred to a future session.
+**Batching:** `GpuPhysicsPipeline::new_batched` steps `n_env`
+environments in lockstep.
 
 **f32 throughout:** All GPU physics uses f32. Conversion from f64
 happens at the CPU→GPU boundary (upload) and GPU→CPU boundary
@@ -193,7 +193,7 @@ These encode the model structure. Shared across all environments.
 | `dof_adr` | u32 | Index of first DOF for this body. |
 | `dof_num` | u32 | Number of DOFs on this body. |
 | `mocap_id` | u32 | Mocap index (0xFFFFFFFF = not mocap). |
-| `_pad` | u32 | Alignment padding. |
+| `rootid` | u32 | Root of the body's tree (`body_rootid`): its subtree COM is the point the body's cinert, cdof and velocities are about. |
 | `pos` | vec4\<f32\> | Body position offset in parent frame (w=0). |
 | `quat` | vec4\<f32\> | Body orientation offset in parent frame (x,y,z,w). |
 | `ipos` | vec4\<f32\> | Inertial frame offset (w=0). |
@@ -234,15 +234,16 @@ that reference `array<GeomModel>` (currently `fk.wgsl`, `aabb.wgsl`,
 `sdf_sdf_narrow.wgsl`, `sdf_plane_narrow.wgsl`) must use the 96-byte struct
 definition for correct array stride.
 
-**DofModel struct** (20 bytes, five 4-byte fields, array stride 20) — added in Session 2:
+**DofModel struct** (24 bytes, six 4-byte fields, array stride 24) — added in Session 2:
 
 | Field | Type | Notes |
 |---|---|---|
 | `body_id` | u32 | Body that owns this DOF (`model.dof_body[i]`). |
 | `parent` | u32 | Parent DOF in kinematic tree (0xFFFFFFFF = none). |
-| `armature` | f32 | Combined `jnt_armature[jnt] + dof_armature[i]`, pre-computed at upload. |
+| `armature` | f32 | The dof's armature, `dof_armature[i]` (MuJoCo's, which `mj_crb` adds to the diagonal). |
 | `damping` | f32 | Implicit damping (`model.implicit_damping[i]`). |
 | `simple` | u32 | 1 if the dof's body is simple (`model.dof_simplenum[i] > 0`): the CRBA writes its row of `qM` as the diagonal alone. |
+| `m0` | f32 | The dof's mass-matrix diagonal at `qpos0`, `model.dof_M0[i]` (MuJoCo's `mj_setM0`): a simple dof's diagonal. |
 
 | GPU buffer | Rust type | WGSL type | Bind group |
 |---|---|---|---|
@@ -334,11 +335,11 @@ These hold the simulation state. Each environment has its own copy.
 | `body_xpos` | nbody × 16 | World-frame position (vec4<f32>, w=0). |
 | `body_xquat` | nbody × 16 | World-frame quaternion (vec4<f32>, x,y,z,w). |
 | `body_xipos` | nbody × 16 | COM position in world frame (vec4<f32>, w=0). |
-| `body_cinert` | nbody × 48 | Spatial inertia (12 f32 = 3×vec4). See §8.1 for layout. |
-| `body_crb` | nbody × 48 | Composite rigid body inertia (same 12-float format). Written by CRBA. |
-| `body_cvel` | nbody × 32 | Body spatial velocity (2×vec4: [ω,0; v,0]). Written by velocity_fk. |
-| `body_cacc` | nbody × 24 | Body bias acceleration (6 × f32). |
-| `body_cfrc` | nbody × 24 | Body bias force (6 × f32). |
+| `body_cinert` | nbody × 48 | Inertia about the tree's subtree COM, MuJoCo's 10-vector (12 f32 = 3×vec4). See §8.1 for layout. Written by FK. |
+| `body_crb` | nbody × 48 | Composite rigid body inertia (cinert's format, as 12 atomic u32). Written by CRBA. |
+| `body_cvel` | nbody × 32 | Body spatial velocity about the tree's subtree COM (2×vec4: [ω,0; v,0]). Written by velocity_fk. |
+| `body_cacc` | nbody × 32 | Body bias acceleration, gravity's included (2×vec4). Written by RNE. |
+| `body_cfrc` | nbody × 32 | Body bias force (8 atomic u32: 6 f32 + 2 padding). Written by RNE. |
 | `subtree_mass` | nbody × 4 | Subtree total mass (f32). |
 | `subtree_com` | nbody × 16 | Subtree COM position (vec4<f32>, w=0). |
 
@@ -373,7 +374,15 @@ These hold the simulation state. Each environment has its own copy.
 
 | Buffer | Size per env | Contents |
 |---|---|---|
-| `cdof` | nv × 32 | Joint motion subspace in world frame (2×vec4 = 8 f32 per DOF; 6 used, 2 padding). |
+| `cdof` | nv × 32 | Each DOF's motion axis about its tree's subtree COM, world orientation (2×vec4 = 8 f32 per DOF; 6 used, 2 padding). |
+| `cdof_dot` | nv × 32 | Each DOF's axis rate (as cdof). Written by velocity_fk. |
+
+**Per-joint computed state (FK):**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
+| `jnt_xaxis` | njnt × 16 | Each joint's axis in the frame before it turns (MuJoCo's `xaxis`; vec4, w=0). |
+| `jnt_xanchor` | njnt × 16 | Each joint's anchor in that frame (MuJoCo's `xanchor`; vec4, w=0). |
 
 **Collision output (Session 4):**
 
@@ -483,8 +492,9 @@ values (inertias, forces) into parent bodies without f32 atomics.
 **Strategy (implemented in Session 2): global CAS atomics.**
 
 The accumulation buffer (e.g., `body_crb`) is declared as
-`array<atomic<u32>>`. Each child thread shifts its contribution,
-then CAS-atomic-adds each f32 element into the parent's slots:
+`array<atomic<u32>>`. Each child thread CAS-atomic-adds each f32 element
+of its own into the parent's slots (every body of a tree is about the same
+point, so nothing is moved first):
 
 ```wgsl
 fn atomic_add_f32_crb(idx: u32, val: f32) {
@@ -638,7 +648,7 @@ for j in body_jnt_adr[body] .. body_jnt_adr[body] + body_jnt_num[body]:
             // Rotate around joint anchor in world frame
             world_axis   = rotate(quat, jnt_axis[j])
             world_anchor = pos + rotate(quat, jnt_pos[j])
-            rot          = axis_angle_to_quat(world_axis, qpos[adr])
+            rot          = axis_angle_to_quat(world_axis, qpos[adr] - qpos0[adr])
             quat         = rot × quat              // LEFT multiply (world frame)
             pos          = world_anchor + rotate(rot, pos - world_anchor)
         Ball:
@@ -646,13 +656,13 @@ for j in body_jnt_adr[body] .. body_jnt_adr[body] + body_jnt_num[body]:
             dq           = normalize(vec4(qpos[adr+1], qpos[adr+2], qpos[adr+3], qpos[adr]))
             quat         = quat × dq              // RIGHT multiply (local frame)
             // NOTE: The original spec had MJX-style LEFT multiply with conjugate sandwich.
-            // Session 1 matched the CPU (position.rs:90-98) which uses RIGHT multiply.
+            // Session 1 matched the CPU, which uses RIGHT multiply.
             // This is simpler and correct — Ball joints rotate in the body's local frame.
         Slide:
-            pos += rotate(quat, jnt_axis[j]) × qpos[adr]
+            pos += rotate(quat, jnt_axis[j]) × (qpos[adr] - qpos0[adr])
 ```
 
-**Critical hinge details (verified against CPU `position.rs:61-82`):**
+**Critical hinge details:**
 - `jnt_axis` is in local frame → must be rotated to world.
 - Rotation is LEFT-multiplied (`rot × quat`), not right-multiplied.
   The rotation is in world frame (axis was rotated to world).
@@ -667,34 +677,18 @@ quat = normalize(quat)   // Prevent f32 drift. Critical for Free/Ball.
 
 **Step 5 — Derived quantities:**
 ```
-xmat  = quat_to_mat3(quat)
 xipos = pos + rotate(quat, body_ipos[body])
-ximat = quat_to_mat3(quat × body_iquat[body])
 ```
+In the joint loop each joint's axis and anchor, in the frame before it
+turns, are written to `jnt_xaxis` / `jnt_xanchor` (MuJoCo's `xaxis`,
+`xanchor`): `rotate(quat, jnt_axis[j])` and `pos + rotate(quat,
+jnt_pos[j])`. A free joint takes its position as its anchor and the
+model's axis as its axis (MuJoCo's `mj_kinematics1` for one alone on its
+body; `GpuFkPipeline` says what it does otherwise); a ball takes the body's origin as its
+anchor (the GPU turns a ball about it, not about its `jnt_pos` as the CPU
+does; see `GpuFkPipeline`).
 
-**Step 6 — Spatial inertia (cinert):**
-Compute the 6×6 spatial inertia in world frame, stored as 12 floats
-(3 × vec4, padded from 10 for alignment):
-```
-h = xipos - pos                    // COM offset from body origin (world frame)
-I_COM = ximat × diag(body_inertia[body]) × ximat^T   // rotated inertia
-cinert[body*3 + 0] = vec4(mass, h.x, h.y, h.z)
-cinert[body*3 + 1] = vec4(I_COM[0,0], I_COM[0,1], I_COM[0,2], I_COM[1,1])
-cinert[body*3 + 2] = vec4(I_COM[1,2], I_COM[2,2], 0, 0)  // 2 padding floats
-```
-
-**Reconstructing the 6×6 from 12 floats** (needed by CRBA and RNE):
-```
-v0 = cinert[body*3 + 0]    // (mass, h.x, h.y, h.z)
-v1 = cinert[body*3 + 1]    // (I_00, I_01, I_02, I_11)
-v2 = cinert[body*3 + 2]    // (I_12, I_22, _, _)
-m = v0.x; h = v0.yzw; I_COM = symmetric3(v1.xyzw, v2.xy)
-I_rot = I_COM + m × (dot(h,h) × I₃ - outer(h,h))   // parallel axis
-coupling = m × skew(h)
-I_spatial = [[I_rot, coupling], [coupling^T, m × I₃]]
-```
-
-**Step 7 — Geom poses:**
+**Step 6 — Geom poses:**
 For each geom on this body:
 ```
 geom_xpos[g] = pos + rotate(quat, geom_pos[g])
@@ -703,97 +697,93 @@ geom_xmat[g] = quat_to_mat3(quat × geom_quat[g])
 Alternatively: emit geom poses in a separate per-geom dispatch after
 FK completes (better load balance when bodies have unequal geom counts).
 
-**Step 8 — Motion subspace (cdof):**
-Per DOF on this body, compute the 6-vector spatial motion subspace
-in world frame (GPU optimization — CPU computes this inside CRBA/RNE):
-```
-Hinge DOF: cdof = [world_axis; cross(world_axis, pos - world_anchor)]
-Slide DOF: cdof = [0; world_axis]
-Ball DOFs: cdof = [R[:,k]; 0]  for k=0,1,2  (columns of xmat)
-Free linear DOFs: cdof = [0; e_k]  for k=0,1,2  (world basis)
-Free angular DOFs: cdof = [R[:,k]; 0]  for k=0,1,2
-```
-
-**World body (depth 0):** Identity pose, zero cinert. Written as
-initialization before the scan starts.
+**World body (depth 0):** identity pose (`fk_forward`), zero cinert
+(`fk_com_pos`).
 
 **Subtree COM (backward pass after FK):**
 A separate backward tree scan accumulates weighted COM:
 ```
 Phase 1 (per-body): subtree_mass[b] = mass[b];
                      weighted_com[b] = mass[b] × xipos[b]
-Phase 2 (backward): accumulate into parent (see §7.3 for f32 workaround)
+Phase 2 (backward): one thread per env adds each body into its parent, leaves first
 Phase 3 (per-body): subtree_com[b] = weighted_com[b] × (1 / subtree_mass[b])
                      Guard: if subtree_mass < mjMINVAL (1e-15), use xipos[b]
                      (the CPU's rule, MuJoCo's mj_comPos)
 ```
 
+**`fk_com_pos` — cinert and cdof (per body, after the subtree COM):**
+MuJoCo's `mj_comPos`, the CPU's `mj_com_pos`. A pass of its own, with its
+own pipeline layout (its outputs, `body_cinert` and `cdof`, at group 3's
+bindings 3 and 4: one layout for all five passes would hold 17 storage
+buffers, past the 16 per stage `GpuContext` requests). With `p =
+subtree_com[rootid]`, the body's tree's subtree centre of mass:
+```
+d     = xipos - p
+ximat = quat_to_mat3(quat × body_iquat[body])
+I     = ximat × diag(body_inertia[body]) × ximat^T + m·(|d|²·I₃ − d⊗d)   // mju_inertCom
+cinert[body*3 + 0] = vec4(I_xx, I_yy, I_zz, I_xy)
+cinert[body*3 + 1] = vec4(I_xz, I_yz, m·d.x, m·d.y)
+cinert[body*3 + 2] = vec4(m·d.z, m, 0, 0)          // 2 padding floats
+```
+That is MuJoCo's 10-vector `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz, m·dx, m·dy,
+m·dz, m]`, the CPU's `Data::cinert` layout; two bodies' about the same point
+add element by element. Per DOF, with `offset = p − xanchor[j]`
+(`mju_dofCom`):
+```
+Hinge DOF:         cdof = [xaxis; xaxis × offset]
+Slide DOF:         cdof = [0; xaxis]
+Ball DOFs:         cdof = [R[:,k]; R[:,k] × offset]  for k=0,1,2  (columns of xmat)
+Free linear DOFs:  cdof = [0; e_k]                   for k=0,1,2  (world basis)
+Free angular DOFs: cdof = [R[:,k]; R[:,k] × offset]  for k=0,1,2
+```
+
 ### 8.2 `crba.wgsl` — Composite Rigid Body Algorithm — COMPLETE (Session 2)
 
-**Actual:** ~300 lines WGSL. 4 entry points.
-**Pattern:** Format conversion + backward tree scan + per-DOF parallel M assembly + Cholesky.
-**Reference:** CPU `crba.rs`, `spatial.rs:shift_spatial_inertia()`
+**Actual:** ~270 lines WGSL. 4 entry points.
+**Pattern:** Per-body copy + backward tree scan + per-DOF parallel M assembly + Cholesky.
+**Reference:** CPU `crba.rs:mj_crba()` (MuJoCo's `mj_crb`)
 
-**Bindings (9 total, 4 bind groups):**
+**Bindings (8 total, 4 bind groups):**
 - Group 0: `FkParams` uniform (dynamic offset) — reuses FK params struct
 - Group 1: `bodies` (read), `dofs` (read) — static model
-- Group 2: `body_xpos`, `body_cinert`, `cdof` (read) — FK outputs
+- Group 2: `body_cinert`, `cdof` (read) — FK outputs
 - Group 3: `body_crb` (atomic read/write), `qM`, `qM_factor` (read/write)
 
-**Phase 1: `crba_init` — convert cinert to crb format (per-body parallel)**
+**Phase 1: `crba_init` — crb = cinert (per-body parallel)**
 
-cinert from FK stores `(m, h, I_COM)` — NOT additive (h doesn't sum
-correctly). CRBA needs an additive format for accumulation.
-
-crb format: `(m, m·h, I_ref)` where `I_ref = I_COM + m·(|h|²·I₃ − h⊗h)`.
-All 10 useful values are element-wise additive when both operands share
-the same reference point.
-
-```
-crb[body*3+0] = (m, m·h_x, m·h_y, m·h_z)
-crb[body*3+1] = (I_ref_00, I_ref_01, I_ref_02, I_ref_11)
-crb[body*3+2] = (I_ref_12, I_ref_22, 0, 0)
-```
-
-Stored in `array<atomic<u32>>` via `atomicStore` + `bitcast<u32>`.
+crb has cinert's format, the 10-vector about the tree's subtree centre of
+mass. Every body of a tree is about that one point, so two bodies' crb add
+element by element. Stored in `array<atomic<u32>>` via `atomicStore` +
+`bitcast<u32>` (12 u32 a body, the last 2 padding).
 
 **Phase 2: `crba_backward` — CAS atomic accumulation (per depth, leaves→root)**
 ```
 for d in max_depth..=1:
   per body at depth d:
     if parent == 0: skip     // world body has no DOFs
-    d = body_xpos[body] - body_xpos[parent]
-    shifted = shift_crb(crb[body], d)
-    CAS-atomic-add 10 floats into crb[parent]
-```
-
-The `shift_crb` operates on the crb format directly:
-```
-h = mh / m; h_new = h + d; mh_new = mh + m·d
-I_ref_new[r,c] = I_ref_old[r,c] + m·((|h_new|²−|h|²)·δ_rc − (h_new[r]·h_new[c] − h[r]·h[c]))
+    CAS-atomic-add the 10 floats of crb[body] into crb[parent]
 ```
 
 **Phase 3: `crba_mass_matrix` — per-DOF parallel M assembly**
 
 qM is zeroed via `queue.write_buffer` before this dispatch. Each DOF i
-computes its column independently. The 6×6 multiply uses an **implicit
-formulation** — no matrix materialization:
+computes its row independently. The inertia times a motion vector is
+MuJoCo's `mju_mulInertVec` (`h` = m·d, the 10-vector's entries 6–8):
 
 ```
-buf_angular = I_ref · ω + cross(mh, v)
-buf_linear  = cross(ω, mh) + m · v
+buf_angular = I · ω + cross(h, v)
+buf_linear  = m · v − cross(h, ω)
+M[i,i] = armature[i] + cdof[i] · buf
+M[j,i] = cdof[j] · buf    for each DOF j on i's dof_parent chain
 ```
 
-Off-diagonal entries use the `dof_parent` walk with spatial force
-transport at body boundaries (`buf.angular += cross(r, buf.linear)`).
-A simple dof (`dofs[i].simple`, the CPU's `dof_simplenum > 0`) has none:
-its row is its diagonal alone, as the CPU's `mj_crba` (MuJoCo's `mj_crb`).
-Verified against CPU `crba.rs:196-225`.
+Nothing is moved between bodies: every DOF's cdof and its body's crb are
+about the same point. A simple dof (`dofs[i].simple`, the CPU's
+`dof_simplenum > 0`) has no off-diagonal entries: its row is its diagonal
+alone, the model's `dof_M0` (`dofs[i].m0`, made at `qpos0`), as the CPU's
+`mj_crba` (MuJoCo's `mj_crb`).
 
-For flat trees (hockey), all DOFs share the same body so no cross-body
-transport occurs. For articulated chains, the transport is essential.
-
-Armature is pre-combined at upload: `dofs[i].armature = jnt_armature + dof_armature`.
+The diagonal adds the dof's armature, `dofs[i].armature = dof_armature[i]`, as the CPU's `mj_crba`.
 
 **Phase 4: `crba_cholesky` — dense Cholesky (single thread, global memory)**
 
@@ -806,44 +796,39 @@ Needed by `smooth.wgsl` for `qacc_smooth`.
 
 ### 8.3 `velocity_fk.wgsl` — Velocity forward kinematics — COMPLETE (Session 2)
 
-**Actual:** ~100 lines WGSL. 1 entry point.
+**Actual:** ~150 lines WGSL. 1 entry point.
 **Pattern:** Tree scan (forward), one dispatch per depth level.
-**Reference:** CPU `velocity.rs:mj_fwd_velocity()`
+**Reference:** CPU `velocity.rs:mj_fwd_velocity()` (MuJoCo's `mj_comVel`)
 
-**Bindings (6 total, 3 bind groups):**
+**Bindings (7 total, 3 bind groups):**
 - Group 0: `FkParams` uniform (dynamic offset)
-- Group 1: `bodies` (read) — static model (no joints needed)
-- Group 2: `body_xpos`, `cdof`, `qvel` (read), `body_cvel` (write)
+- Group 1: `bodies`, `joints` (read) — static model
+- Group 2: `cdof`, `qvel` (read), `body_cvel`, `cdof_dot` (write)
 
-Computes body spatial velocities (`cvel`) by propagating `qvel` from
-root to leaves. **Must run after FK (needs cdof, body_xpos) and before
-RNE (which reads cvel for Coriolis/centrifugal/gyroscopic forces).**
+Computes body spatial velocities (`cvel`) and DOF axis rates (`cdof_dot`)
+by propagating `qvel` from root to leaves. **Must run after FK (needs
+cdof) and before RNE (which reads cvel and cdof_dot for the Coriolis,
+centrifugal and gyroscopic forces).**
 
 **Per body (at its depth level):**
 ```
-// Transport parent velocity to this body's origin
-omega = parent_omega
-v_lin = parent_v_lin + cross(parent_omega, r)   // lever arm
-
-// Add joint velocity contributions using cdof (no joint-type branching)
-for each DOF d on this body:
-    omega += cdof[d].angular × qvel[d]
-    v_lin += cdof[d].linear  × qvel[d]
+cvel = cvel[parent]      // every body of a tree is about the same point
+for each joint on this body, in order:
+    Free:          cdof_dot = 0 for its 3 translation DOFs; cvel += their cdof · qvel;
+                   then its 3 rotation DOFs as a Ball's
+    Ball:          cdof_dot[d] = cvel ×_m cdof[d] for its 3 DOFs (the same cvel);
+                   then cvel += their cdof · qvel
+    Hinge, Slide:  cdof_dot[d] = cvel ×_m cdof[d]; cvel += cdof[d] · qvel[d]
 ```
-
-**Key deviation from CPU:** The CPU `velocity.rs` branches on joint type
-to compute velocity contributions. The GPU uses `cdof[d] × qvel[d]`
-directly, which is mathematically equivalent (cdof encodes the motion
-subspace) and eliminates all branching. For zero-offset joints
-(`jnt_pos = 0`, which includes all current test models), the results
-match exactly. For offset joints, the GPU cdof approach would be more
-correct than the CPU's angular-only hinge addition.
+`×_m` is the spatial motion cross product, `[ω×s_ang; ω×s_lin + v_lin×s_ang]`.
 
 **World body (depth 0):** `cvel[0] = [0; 0; 0; 0; 0; 0]`.
 
-**cvel layout:** 2×vec4 per body (32 bytes):
+**cvel layout:** 2×vec4 per body (32 bytes), about the tree's subtree centre of mass:
 - `cvel[body*2+0]` = `(ω_x, ω_y, ω_z, 0)` — angular velocity
-- `cvel[body*2+1]` = `(v_x, v_y, v_z, 0)` — linear velocity at body origin
+- `cvel[body*2+1]` = `(v_x, v_y, v_z, 0)` — linear velocity
+
+**cdof_dot layout:** 2×vec4 per DOF, as cdof's.
 
 **Why this stage is critical:** Without cvel, RNE produces zero
 Coriolis, centrifugal, and gyroscopic forces. At the hockey stick's
@@ -852,49 +837,30 @@ dynamics.
 
 ### 8.4 `rne.wgsl` — Recursive Newton-Euler — COMPLETE (Session 3)
 
-**Actual:** ~300 lines WGSL. 5 entry points.
-**Pattern:** Per-joint map + forward tree scan + per-body map + backward tree scan + per-DOF map.
-**Reference:** CPU `rne.rs`, MJX `smooth.py:rne()`
-**Prerequisite:** `velocity_fk.wgsl` must have written `body_cvel`.
+**Actual:** ~240 lines WGSL. 4 entry points.
+**Pattern:** Forward tree scan + per-body map + backward tree scan + per-DOF map.
+**Reference:** CPU `rne.rs:mj_rne()` (MuJoCo's `mj_rne` with `flg_acc` 0), MJX `smooth.py:rne()`
+**Prerequisite:** `velocity_fk.wgsl` must have written `body_cvel` and `cdof_dot`.
 
-**Bindings (16 total, max 9 per entry point — under 16-per-stage limit):**
+**Bindings (11 total, 4 bind groups):**
 - Group 0: `PhysicsParams` uniform (dynamic offset)
-- Group 1: `bodies`, `joints`, `dofs` (read) — static model
-- Group 2: `body_xpos`, `body_xquat`, `body_cinert`, `cdof`, `body_cvel`,
-  `subtree_mass`, `subtree_com`, `qvel`, `qpos` (read)
+- Group 1: `bodies`, `dofs` (read) — static model
+- Group 2: `body_cinert`, `cdof`, `cdof_dot`, `body_cvel`, `qvel` (read)
 - Group 3: `body_cacc`, `body_cfrc` (atomic), `qfrc_bias` (read-write)
 
-**Phase 1: `rne_gravity` — per-joint parallel (no tree dependency)**
+Every quantity is about the body's tree's subtree centre of mass.
 
-Uses `subtree_mass[body]` and `subtree_com[body]` from FK. Joint-type
-dependent gravity projection (hinge=axis·torque, slide=axis·force,
-ball=body-local rotation, free=direct force + world-frame torque).
-Requires `JointModelGpu.body_id` (added Session 3).
+**Phase 1: `rne_forward` — bias accelerations (root → leaves)**
 ```
-for each joint:
-  gravity_force = -subtree_mass[body] * gravity
-  qfrc_bias[dof] = project(gravity_force, jnt_type, subtree_com, jnt_axis, ...)
-```
-Note: gravity is computed ONLY here, not in passive forces.
-
-**Phase 2a: `rne_forward` — bias accelerations (root → leaves)**
-```
-for d in 0..=max_depth:
+cacc[0] = [0; −gravity]     // so every body's acceleration carries gravity
+for d in 1..=max_depth:
   per body at depth d:
-    // Transport parent bias acceleration
-    r = body_xpos[body] - body_xpos[parent]
-    cacc[body].angular = cacc[parent].angular
-    cacc[body].linear  = cacc[parent].linear + cross(cacc[parent].angular, r)
-    // Velocity-product acceleration (Coriolis) using cdof:
-    for each DOF d on body:
-      vj = cdof[d] * qvel[d]
-      cacc += spatial_cross_motion(cvel[parent], vj)
-    // Free joint correction: subtract [0; ω × v_linear]
-    if dof_num == 6: cacc.linear -= cross(omega, v_linear)
+    cacc[body] = cacc[parent] + Σ over the body's DOFs of cdof_dot[d] · qvel[d]
 ```
-`spatial_cross_motion(v, s)` = `[ω×s_ang; ω×s_lin + v_lin×s_ang]`
+`gravity` is `model.gravity`; the GPU applies it whatever the model's
+disable flags say.
 
-**Phase 2b: `rne_cfrc_init` — per-body parallel (no depth ordering)**
+**Phase 2: `rne_cfrc_init` — per-body parallel (no depth ordering)**
 
 **CRITICAL: Must be a separate dispatch from the backward accumulation.**
 Computes each body's own cfrc, writes via
@@ -905,13 +871,10 @@ per body (all parallel):
   cfrc[body] = I × cacc[body] + cvel[body] ×* (I × cvel[body])
 ```
 The gyroscopic term is `v ×* (I·v)` where `×*` is the spatial force
-cross product: `[ω×f_ang + v_lin×f_lin; ω×f_lin]`.
+cross product: `[ω×f_ang + v_lin×f_lin; ω×f_lin]`. `I × v` is MuJoCo's
+`mju_mulInertVec`, as in CRBA.
 
-Uses `cinert_mul_spatial()` — converts cinert `(m, h, I_COM)` to I_ref
-inline via parallel axis theorem, then does implicit 6×6 multiply (same
-math as CRBA's `crb_mul_cdof`).
-
-**Phase 2c: `rne_backward` — accumulate cfrc (leaves → root)**
+**Phase 3: `rne_backward` — accumulate cfrc (leaves → root)**
 
 Only CAS-accumulates into parent — does NOT write own cfrc (that was
 done in `rne_cfrc_init`). Uses buffer-specific `atomic_add_f32_cfrc()`.
@@ -921,15 +884,13 @@ for d in max_depth..=1:
     if parent == 0: skip  (world body has no DOFs)
     CAS-atomic-add cfrc[body] into cfrc[parent]
 ```
+Nothing is moved between bodies: every body of a tree is about the same
+point (the CPU's `mj_rne` sums them as plainly).
 
-**No spatial transport in backward pass:** The CPU (`rne.rs:271-278`)
-does plain `cfrc[parent] += cfrc[child]` — no frame change — because
-all quantities are in world frame.
-
-**Phase 2d: `rne_project` — per-DOF parallel**
+**Phase 4: `rne_project` — per-DOF parallel**
 ```
 for each DOF d:
-  qfrc_bias[d] += dot(cdof[d], cfrc[dof_body])
+  qfrc_bias[d] = dot(cdof[d], cfrc[dof_body])
 ```
 Uses `cdof` to avoid joint-type branching — `S^T · f = dot(cdof, cfrc)`.
 
@@ -965,8 +926,8 @@ Shader will be added when a test model with springs/dampers exists.
 1. Joint damping: `qfrc_passive[dof] = -damping[dof] × qvel[dof]`
 2. Joint stiffness: `qfrc_passive[dof] -= stiffness[dof] × (qpos - qpos_spring)`
 
-**Gravity is NOT computed here.** Gravity is computed exclusively in
-`rne.wgsl` Phase 1 (via subtree COM). The CPU passive force function
+**Gravity is NOT computed here.** Gravity enters in `rne.wgsl` Phase 1,
+as the world's acceleration `[0; −gravity]`. The CPU passive force function
 (`mj_fwd_passive`) also does not compute gravity — it handles springs,
 dampers, fluid forces, and gravity compensation. Computing gravity in
 both RNE and passive would double-count it.
@@ -976,12 +937,12 @@ passive forces remain CPU-only for the initial implementation.
 
 ### 8.7 `smooth.wgsl` — Smooth forces + qacc_smooth — COMPLETE (Session 3)
 
-**Actual:** ~98 lines WGSL. 2 entry points.
+**Actual:** ~120 lines WGSL. 2 entry points.
 **Pattern:** Per-DOF parallel + single-thread Cholesky solve.
 
-**Bindings (8 total, 4 bind groups):**
+**Bindings (10 total, 4 bind groups):**
 - Group 0: `PhysicsParams` uniform (dynamic offset)
-- Group 1: `qfrc_bias`, `qfrc_applied`, `qfrc_actuator`, `qfrc_passive` (read)
+- Group 1: `qfrc_bias`, `qfrc_applied`, `qfrc_actuator`, `qfrc_passive`, `qvel`, `dofs` (read)
 - Group 2: `qM_factor` (read)
 - Group 3: `qfrc_smooth`, `qacc_smooth` (read-write)
 
@@ -989,17 +950,18 @@ passive forces remain CPU-only for the initial implementation.
 ```
 qfrc_smooth[dof] = qfrc_applied[dof] + qfrc_actuator[dof]
                  + qfrc_passive[dof] - qfrc_bias[dof]
+                 - dofs[dof].damping * qvel[dof]
 ```
 
 **Note on xfrc_applied projection (DEFERRED):** The CPU
-(`constraint/mod.rs:89-107`) projects body-frame Cartesian forces
+(`constraint/mod.rs:76-94`) projects body-frame Cartesian forces
 `xfrc_applied[B]` into joint space by walking ancestor DOFs via
 `mj_apply_ft`. For gravity-only (Session 3), `xfrc_applied` is zeroed.
 The projection will be added when external forces are needed. The spec
 below describes the full algorithm for future implementation:
 ```
-for each body B with non-zero xfrc_applied[B]:
-  lever = xipos[B] - body_xpos[dof_body[d]]
+for each body B with non-zero xfrc_applied[B], each DOF d of B or its ancestors:
+  lever = xipos[B] - subtree_com[rootid[B]]   // cdof's reference point
   qfrc_smooth[d] += dot(cdof[d], [torque; force])
                   + dot(cdof[d].angular, cross(lever, force))
 ```
@@ -1439,7 +1401,7 @@ Each shader group is validated independently:
 | Shader group | Validation method |
 |---|---|
 | FK (fk.wgsl) | Compare GPU body_xpos/xquat/cinert vs CPU mj_fwd_position(). Test hinge pivot-point rotation with non-zero jnt_pos. |
-| CRBA (crba.wgsl) | Compare GPU qM vs CPU mj_crba(). Test off-diagonal entries on a 3-body chain (depth 2+) to verify spatial force transport. |
+| CRBA (crba.wgsl) | Compare GPU qM and crb vs CPU mj_crba(). Test off-diagonal entries on a 3-body chain (depth 2+) to verify the composite inertias' sums. |
 | Velocity FK (velocity_fk.wgsl) | Compare GPU body_cvel vs CPU mj_fwd_velocity(). Verify Coriolis terms at high angular velocity. |
 | RNE (rne.wgsl) | Compare GPU qfrc_bias vs CPU mj_rne(). Verify gyroscopic terms are non-zero when cvel is non-zero. |
 | Smooth (smooth.wgsl) | Compare GPU qacc_smooth vs CPU compute_qacc_smooth() |

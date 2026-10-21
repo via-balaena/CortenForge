@@ -48,7 +48,7 @@ struct BodyModel {
     dof_adr: u32,
     dof_num: u32,
     mocap_id: u32,
-    _pad: u32,
+    rootid: u32,
     pos: vec4<f32>,
     quat: vec4<f32>,
     ipos: vec4<f32>,

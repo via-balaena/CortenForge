@@ -10256,6 +10256,7 @@ dependencies = [
  "bytemuck",
  "cortenforge-geometry",
  "cortenforge-sim-core",
+ "cortenforge-sim-mjcf",
  "cortenforge-sim-soft-explicit",
  "log",
  "nalgebra 0.34.2",

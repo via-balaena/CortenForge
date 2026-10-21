@@ -1989,8 +1989,8 @@ fn test_pos_deriv_zero_mass_body() {
     let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
     model.body_mass[2] = 1e-8; // near-zero mass
     model.body_inertia[2] = nalgebra::Vector3::new(1e-10, 1e-10, 1e-10);
-    model.jnt_armature[1] = 0.01; // regularize mass matrix diagonal
-    model.dof_armature[1] = 0.01;
+    model.jnt_armature[1] = 0.01;
+    model.dof_armature[1] = 0.01; // regularize mass matrix diagonal
     model.compute_ancestors();
     model.compute_implicit_params();
     model.compute_dof_patterns();

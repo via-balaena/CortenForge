@@ -85,7 +85,7 @@ pub const SDF_META_NONE: u32 = 0xFFFF_FFFF;
 /// Layout matches WGSL `BodyModel` exactly.
 /// ```text
 /// offset  0: parent, depth, jnt_adr, jnt_num       (4 × u32 = 16 bytes)
-/// offset 16: dof_adr, dof_num, mocap_id, _pad       (4 × u32 = 16 bytes)
+/// offset 16: dof_adr, dof_num, mocap_id, rootid     (4 × u32 = 16 bytes)
 /// offset 32: pos                                     (vec4<f32> = 16 bytes)
 /// offset 48: quat                                    (vec4<f32> = 16 bytes)
 /// offset 64: ipos                                    (vec4<f32> = 16 bytes)
@@ -102,7 +102,10 @@ pub struct BodyModelGpu {
     pub dof_adr: u32,
     pub dof_num: u32,
     pub mocap_id: u32,
-    pub _pad: u32,
+    /// The root of the body's tree (`model.body_rootid[b]`): its subtree
+    /// centre of mass is the point the body's `cinert`, `cdof` and velocities
+    /// are about.
+    pub rootid: u32,
     pub pos: [f32; 4],
     pub quat: [f32; 4],
     pub ipos: [f32; 4],
@@ -162,12 +165,12 @@ pub struct GeomModelGpu {
     pub _pad: [u32; 2],
 }
 
-/// Per-DOF static model data. 20 bytes.
+/// Per-DOF static model data. 24 bytes.
 ///
 /// Layout matches WGSL `DofModel` exactly.
 /// ```text
 /// offset 0:  body_id, parent, armature, damping  (2 × u32 + 2 × f32)
-/// offset 16: simple                              (u32)
+/// offset 16: simple, m0                          (u32 + f32)
 /// ```
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -176,7 +179,8 @@ pub struct DofModelGpu {
     pub body_id: u32,
     /// Parent DOF in kinematic tree (`DOF_PARENT_NONE` if root DOF).
     pub parent: u32,
-    /// Combined armature: `jnt_armature[jnt] + dof_armature[i]`.
+    /// The dof's armature, `dof_armature[i]`, which the mass matrix's
+    /// diagonal adds (MuJoCo's `mj_crb`, the CPU's `mj_crba`).
     pub armature: f32,
     /// Implicit damping (`model.implicit_damping[i]`): `jnt_damping` for
     /// hinge/slide, `dof_damping` for ball/free; 0 with dampers disabled. Read by
@@ -186,6 +190,9 @@ pub struct DofModelGpu {
     /// 1 if the dof's body is simple (`model.dof_simplenum[i] > 0`), else 0:
     /// the CRBA writes a simple dof's row of `qM` as its diagonal alone.
     pub simple: u32,
+    /// The dof's mass-matrix diagonal at `qpos0`, `model.dof_M0[i]` (MuJoCo's
+    /// `mj_setM0`): a simple dof's diagonal, as the CPU's `mj_crba`.
+    pub m0: f32,
 }
 
 /// Per-dispatch FK parameters. 32 bytes, 16-byte aligned.

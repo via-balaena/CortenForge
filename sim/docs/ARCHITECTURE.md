@@ -315,7 +315,7 @@ mjd_smooth_vel():
   Zeros data.qDeriv, then accumulates:
     mjd_passive_vel        ∂(qfrc_passive)/∂qvel (fluid §40a + damping + flex edge + tendon; all but flex edge sleep-filtered §40c)
     mjd_actuator_vel       ∂(qfrc_actuator)/∂qvel (affine gain/bias velocity terms)
-    mjd_rne_vel            −∂(qfrc_bias)/∂qvel (chain-rule RNE + direct gyroscopic)
+    mjd_rne_vel            −∂(qfrc_bias)/∂qvel (MuJoCo's mjd_rne_vel + mjd_comVel_vel)
 mjd_transition_fd():
   Pure FD Jacobians: A = ∂x⁺/∂x, B = ∂x⁺/∂u via centered/forward differences
   Tangent-space perturbation for quaternion joints (Ball, Free)

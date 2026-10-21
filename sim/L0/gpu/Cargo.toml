@@ -38,6 +38,9 @@ cf-geometry = { workspace = true }
 # GPU-vs-CPU dynamics suite draws from the SAME model list as sim-core's CPU
 # transition harness — no drift. Feature-unions with the normal sim-core dep.
 sim-core = { workspace = true, features = ["test-fixtures"] }
+# MJCF loading for the tests whose subject is a LOADED model: the loader's own
+# field writes (a joint's armature into both armature arrays) reach the GPU
+sim-mjcf = { workspace = true }
 
 [lints]
 workspace = true

@@ -2,6 +2,7 @@
 //
 // 2 entry points:
 //   1. smooth_assemble  — per-DOF: qfrc_smooth = applied + actuator + passive - bias
+//                         - damping · qvel
 //   2. smooth_solve     — single thread: forward/back substitution using qM_factor
 
 // ── Packed struct types ─────────────────────────────────────────────
@@ -31,6 +32,7 @@ struct DofModel {
     armature: f32,
     damping: f32,
     simple: u32,
+    m0: f32,
 };
 
 // Group 1: force inputs (read-only)

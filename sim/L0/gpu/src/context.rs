@@ -49,8 +49,8 @@ impl GpuContext {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("sim-gpu-physics"),
                 required_features: features,
-                // Raise storage buffer limit for physics pipeline (FK uses
-                // ~12 storage buffers per shader stage). Metal supports 31,
+                // Raise storage buffer limit for physics pipeline (FK's main
+                // pipeline layout holds 15 storage buffers). Metal supports 31,
                 // Vulkan/NVIDIA supports many more. WebGPU default is 8.
                 //
                 // Also request the adapter's full buffer-size limits (not wgpu's

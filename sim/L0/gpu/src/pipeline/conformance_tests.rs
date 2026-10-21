@@ -11,14 +11,13 @@
 //!
 //! For each case we run FK → CRBA → velocity-FK → RNE on the GPU and compare the
 //! full chain against `data.forward()`:
-//!   `xpos`/`xquat` · `subtree_com` · `cdof` · `cinert` · `cvel` · `qM` ·
-//!   `cacc_bias` · `qfrc_bias`
+//!   `xpos`/`xquat` · `subtree_com` · `cdof` · `cinert` · `crb` · `cvel` ·
+//!   `cdof_dot` · `qM` · `cacc_bias` · `qfrc_bias`
 //! at a non-degenerate operating point (off-axis COM, tilted quaternions,
 //! NONZERO `qvel`, gravity on) so every Coriolis / subspace / gravity term is
-//! live. The `cdof` oracle is computed from the CPU's PARTIAL frames
-//! (`data.xaxis`/`data.xanchor`, plus the ball/free `[R]` blocks) rather than
-//! `data.cdof`, which the CPU takes about the tree's subtree centre of mass
-//! (MuJoCo's frame) where the GPU takes it about the body's origin.
+//! live. Both sides take every spatial quantity about the tree's subtree
+//! centre of mass (MuJoCo's frame), so each GPU field is compared with the
+//! CPU's own.
 //!
 //! Scope: n_env = 1, no contacts, no damping (Slice 1). The tendon case is
 //! filtered out — there is no GPU tendon shader.
@@ -45,14 +44,14 @@
 #[cfg(test)]
 const _: () = ();
 
-use nalgebra::{DVector, Vector3};
+use nalgebra::DVector;
 
 use sim_core::mj_integrate_pos_explicit;
 use sim_core::test_fixtures::conformance::{
     ConformanceCase, damped_conformance_matrix, dynamics_conformance_matrix, light_subtree_cases,
-    two_slides_case,
+    two_slides_case, two_trees_case,
 };
-use sim_core::types::{Data, MjJointType, Model};
+use sim_core::types::{Data, Model};
 
 use super::crba::GpuCrbaPipeline;
 use super::eulerdamp::GpuEulerdampPipeline;
@@ -65,29 +64,6 @@ use super::state_buffers::GpuStateBuffers;
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
 use crate::submit::read_buffer;
-
-/// The CPU's bias acceleration of body `b` as the GPU's: about the body's
-/// origin and without gravity (`cacc_bias` is about the tree's subtree centre
-/// of mass and holds the world's `-gravity`, which every body adds).
-fn cpu_bias_acc_at_origin(model: &Model, data: &Data, b: usize) -> nalgebra::Vector6<f64> {
-    let mut a = data.cacc_bias[b];
-    if model.disableflags & sim_core::types::DISABLE_GRAVITY == 0 {
-        for k in 0..3 {
-            a[3 + k] += model.gravity[k];
-        }
-    }
-    let angular = Vector3::new(a[0], a[1], a[2]);
-    let dif = data.xpos[b] - data.subtree_com[model.body_rootid[b]];
-    let linear = Vector3::new(a[3], a[4], a[5]) - dif.cross(&angular);
-    nalgebra::Vector6::new(a[0], a[1], a[2], linear.x, linear.y, linear.z)
-}
-
-/// The CPU's spatial velocity of body `b` about its origin `xpos`, the GPU's
-/// reference point (`cvel` is about the tree's subtree centre of mass).
-fn cpu_cvel_at_origin(model: &Model, data: &Data, b: usize) -> nalgebra::Vector6<f64> {
-    let (w, v) = sim_core::dynamics::object_velocity(model, data, b, &data.xpos[b], None);
-    nalgebra::Vector6::new(w.x, w.y, w.z, v.x, v.y, v.z)
-}
 
 /// Name used in this file's skip line.
 const SUITE: &str = "conformance suite";
@@ -112,56 +88,6 @@ const TOL_KINEMATIC: f32 = 1e-4;
 /// RNE-stage tolerance (velocity-product / Coriolis / mass-matrix / bias).
 /// Looser to absorb f32 accumulation across the deeper chains (nv up to 8).
 const TOL_DYNAMIC: f32 = 1e-3;
-
-/// CPU motion-subspace column(s) for one scalar DOF, in the same `[ang; lin]`
-/// layout the GPU `cdof` buffer uses (2×vec4 per DOF). Mirrors
-/// `joint_motion_subspace` but read out per-DOF from the PARTIAL frames, about
-/// the body's origin as the GPU's (`data.cdof` is about the tree's subtree
-/// centre of mass).
-fn cpu_cdof_dof(model: &Model, data: &Data, dof: usize) -> [f32; 6] {
-    let jnt = model.dof_jnt[dof];
-    let body = model.jnt_body[jnt];
-    let local = dof - model.jnt_dof_adr[jnt];
-    let mk = |ang: Vector3<f64>, lin: Vector3<f64>| {
-        [
-            ang.x as f32,
-            ang.y as f32,
-            ang.z as f32,
-            lin.x as f32,
-            lin.y as f32,
-            lin.z as f32,
-        ]
-    };
-    match model.jnt_type[jnt] {
-        MjJointType::Hinge => {
-            let axis = data.xaxis[jnt];
-            let r = data.xpos[body] - data.xanchor[jnt];
-            mk(axis, axis.cross(&r))
-        }
-        MjJointType::Slide => mk(Vector3::zeros(), data.xaxis[jnt]),
-        MjJointType::Ball => {
-            // Angular column = body-orientation matrix column `local`; linear = 0
-            // (rotation about the body origin, anchor at origin for these models).
-            let rot = data.xquat[body].to_rotation_matrix().into_inner();
-            let col = Vector3::new(rot[(0, local)], rot[(1, local)], rot[(2, local)]);
-            mk(col, Vector3::zeros())
-        }
-        MjJointType::Free => {
-            if local < 3 {
-                // Linear DOF: world-basis translation.
-                let mut e = Vector3::zeros();
-                e[local] = 1.0;
-                mk(Vector3::zeros(), e)
-            } else {
-                // Angular DOF: body-orientation matrix column `local - 3`.
-                let rot = data.xquat[body].to_rotation_matrix().into_inner();
-                let c = local - 3;
-                let col = Vector3::new(rot[(0, c)], rot[(1, c)], rot[(2, c)]);
-                mk(col, Vector3::zeros())
-            }
-        }
-    }
-}
 
 /// Run FK → CRBA → velocity-FK → RNE on the GPU for `model` at the operating
 /// point already loaded into `data`, returning the populated state buffers.
@@ -277,74 +203,29 @@ fn check_spatial(
     }
 }
 
-/// Compare GPU `body_cinert` (compact `[mass, h, I_com]`) against the CPU's
-/// 10-vector cinert, reversing its parallel-axis term to recover `I_com`
-/// (mirrors `tests.rs` T4). `h = xipos − xpos`.
-fn check_cinert(
+/// Compare a GPU buffer of per-body 10-vector inertias (`body_cinert` or
+/// `body_crb`, 3 vec4 a body: MuJoCo's `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz, m·dx,
+/// m·dy, m·dz, m]`, the CPU's layout) against the CPU's, body by body,
+/// within `tol`.
+fn check_inertia(
     fails: &mut Failures,
-    ctx: &GpuContext,
-    state: &GpuStateBuffers,
-    data: &Data,
-    model: &Model,
+    gpu: &[[f32; 4]],
+    cpu: &[[f64; 10]],
+    tol: f32,
     case: &str,
+    field: &str,
     env: usize,
-    n_env: usize,
 ) {
-    let gpu = read_buffer::<[f32; 4]>(ctx, &state.body_cinert, model.nbody * 3 * n_env);
-    let env_off = env * model.nbody * 3;
-    for b in 1..model.nbody {
-        let base = env_off + b * 3;
-        let gpu_mass = gpu[base][0];
-        let gpu_h = [gpu[base][1], gpu[base][2], gpu[base][3]];
-        let gpu_i = [
-            gpu[base + 1][0],
-            gpu[base + 1][1],
-            gpu[base + 1][2],
-            gpu[base + 1][3],
-            gpu[base + 2][0],
-            gpu[base + 2][1],
-        ];
-
-        // The CPU's cinert is MuJoCo's 10-vector `[xx, yy, zz, xy, xz, yz, m·d,
-        // m]` about the tree's subtree centre of mass; the GPU's is (m, h, I_COM)
-        // with h = xipos - xpos.
-        let cpu = &data.cinert[b];
-        let cpu_mass = cpu[9];
-        let h = data.xipos[b] - data.xpos[b];
-        let d = data.xipos[b] - data.subtree_com[model.body_rootid[b]];
-        let dd = d.dot(&d);
-        let cpu_i = [
-            cpu[0] - cpu_mass * (dd - d.x * d.x),
-            cpu[3] - cpu_mass * (0.0 - d.x * d.y),
-            cpu[4] - cpu_mass * (0.0 - d.x * d.z),
-            cpu[1] - cpu_mass * (dd - d.y * d.y),
-            cpu[5] - cpu_mass * (0.0 - d.y * d.z),
-            cpu[2] - cpu_mass * (dd - d.z * d.z),
-        ];
-
-        check(
-            fails,
-            gpu_mass,
-            cpu_mass as f32,
-            TOL_DYNAMIC,
-            format!("[{case}] cinert[{b}] mass"),
-        );
-        for k in 0..3 {
+    let nbody = cpu.len();
+    for (b, inertia) in cpu.iter().enumerate() {
+        let base = (env * nbody + b) * 3;
+        for (k, &c) in inertia.iter().enumerate() {
             check(
                 fails,
-                gpu_h[k],
-                [h.x, h.y, h.z][k] as f32,
-                TOL_DYNAMIC,
-                format!("[{case}] cinert[{b}] h[{k}]"),
-            );
-        }
-        for k in 0..6 {
-            check(
-                fails,
-                gpu_i[k],
-                cpu_i[k] as f32,
-                TOL_DYNAMIC,
-                format!("[{case}] cinert[{b}] I[{k}]"),
+                gpu[base + k / 4][k % 4],
+                c as f32,
+                tol,
+                format!("[{case}] {field}[{b}][{k}]"),
             );
         }
     }
@@ -352,8 +233,8 @@ fn check_cinert(
 
 /// Compare environment `env` of a (possibly batched) GPU state against the CPU
 /// `forward()` result in `data`, field by field, using the Slice-1 oracle table
-/// (`xpos`/`xquat` · `subtree_com`/`subtree_mass` · `cinert` · `cdof` · `cvel` ·
-/// `cacc_bias` · `qM` · `qfrc_bias`).
+/// (`xpos`/`xquat` · `subtree_com`/`subtree_mass` · `cinert` · `crb` · `cdof` ·
+/// `cvel` · `cdof_dot` · `cacc_bias` · `qM` · `qfrc_bias`).
 ///
 /// Every per-env buffer is sized `n_env ×` its single-env footprint, so env `k`
 /// lives at offset `k · count`; this reads the full batched buffer and slices
@@ -427,30 +308,32 @@ fn compare_env_fields(
         }
     }
 
-    // cinert (compact, parallel-axis reversed)
-    check_cinert(fails, ctx, state, data, model, name, env, n_env);
+    // cinert and crb (body_crb's atomic u32s hold f32 bit patterns)
+    let gpu_cinert = read_buffer::<[f32; 4]>(ctx, &state.body_cinert, nbody * 3 * n_env);
+    check_inertia(
+        fails,
+        &gpu_cinert,
+        &data.cinert,
+        TOL_KINEMATIC,
+        name,
+        "cinert",
+        env,
+    );
+    let gpu_crb = read_buffer::<[f32; 4]>(ctx, &state.body_crb, nbody * 3 * n_env);
+    check_inertia(fails, &gpu_crb, &data.crb, TOL_DYNAMIC, name, "crb", env);
 
-    // cdof — partial-frame oracle about the body's origin (data.cdof is about
-    // the tree's subtree centre of mass)
     let gpu_cdof = read_buffer::<[f32; 4]>(ctx, &state.cdof, nv * 2 * n_env);
     for dof in 0..nv {
-        let cpu = cpu_cdof_dof(model, data, dof);
-        for k in 0..3 {
-            check(
-                fails,
-                gpu_cdof[(off_v + dof) * 2][k],
-                cpu[k],
-                TOL_KINEMATIC,
-                format!("[{name}] cdof[{dof}] angular[{k}]"),
-            );
-            check(
-                fails,
-                gpu_cdof[(off_v + dof) * 2 + 1][k],
-                cpu[k + 3],
-                TOL_KINEMATIC,
-                format!("[{name}] cdof[{dof}] linear[{k}]"),
-            );
-        }
+        check_spatial(
+            fails,
+            &gpu_cdof,
+            (off_v + dof) * 2,
+            &data.cdof[dof],
+            TOL_KINEMATIC,
+            name,
+            "cdof",
+            dof,
+        );
     }
 
     // ── Velocity / dynamics ───────────────────────────────────────
@@ -460,11 +343,25 @@ fn compare_env_fields(
             fails,
             &gpu_cvel,
             (off_b + b) * 2,
-            &cpu_cvel_at_origin(model, data, b),
+            &data.cvel[b],
             TOL_DYNAMIC,
             name,
             "cvel",
             b,
+        );
+    }
+
+    let gpu_cdof_dot = read_buffer::<[f32; 4]>(ctx, &state.cdof_dot, nv * 2 * n_env);
+    for dof in 0..nv {
+        check_spatial(
+            fails,
+            &gpu_cdof_dot,
+            (off_v + dof) * 2,
+            &data.cdof_dot[dof],
+            TOL_DYNAMIC,
+            name,
+            "cdof_dot",
+            dof,
         );
     }
 
@@ -474,7 +371,7 @@ fn compare_env_fields(
             fails,
             &gpu_cacc,
             (off_b + b) * 2,
-            &cpu_bias_acc_at_origin(model, data, b),
+            &data.cacc_bias[b],
             TOL_DYNAMIC,
             name,
             "cacc_bias",
@@ -645,6 +542,119 @@ fn gpu_simple_body_mass_matrix_matches_cpu() {
         fails.len(),
         fails.join("\n  ")
     );
+}
+
+/// A simple dof's diagonal is the model's `dof_M0`, made at `qpos0` (MuJoCo's
+/// `mj_setM0`), its armature included, as the CPU's. The slides carry
+/// armature; with the body's mass doubled in place and `dof_M0` not remade,
+/// the CPU keeps the diagonal of the mass it was made with (asserted), where
+/// the state's mass would give the doubled one.
+#[test]
+fn gpu_simple_dof_diagonal_is_dof_m0() {
+    let ctx = gpu_or_skip!();
+    let mut case = two_slides_case();
+    let armature = 0.05;
+    case.model.dof_armature.fill(armature);
+    case.model.compute_dof_m0();
+    let made_with = case.model.body_mass[1];
+    case.model.body_mass[1] *= 2.0;
+    let (data, fails) = case_against_cpu(&ctx, &case);
+    for dof in 0..case.model.nv {
+        assert_eq!(
+            data.qM[(dof, dof)],
+            case.model.dof_M0[dof],
+            "the CPU's diagonal {dof} is dof_M0"
+        );
+        assert_eq!(
+            case.model.dof_M0[dof],
+            armature + made_with,
+            "dof_M0 {dof} is the armature and the mass it was made with"
+        );
+    }
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU on a simple body edited in place: {} divergence(s):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+/// Each body's quantities are about its own tree's subtree centre of mass:
+/// on two trees, neither of whose subtree centres of mass is the world's
+/// (asserted), the world's point or the other tree's diverges.
+#[test]
+fn gpu_two_trees_match_cpu() {
+    let ctx = gpu_or_skip!();
+    let case = two_trees_case();
+    let (data, fails) = case_against_cpu(&ctx, &case);
+    let model = &case.model;
+    let mut roots: Vec<usize> = (1..model.nbody).map(|b| model.body_rootid[b]).collect();
+    roots.dedup();
+    assert_eq!(roots.len(), 2, "two trees: {roots:?}");
+    for &root in &roots {
+        assert!(
+            (data.subtree_com[root] - data.subtree_com[0]).norm() > 0.1,
+            "tree {root}'s subtree centre of mass is the world's"
+        );
+    }
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU on two trees: {} divergence(s):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
+}
+
+/// A two-hinge chain whose joints carry armature, loaded from MJCF.
+const ARMATURE_CHAIN: &str = r#"
+<mujoco model="armature_chain">
+  <worldbody>
+    <body name="upper" pos="0 0 1">
+      <joint name="shoulder" type="hinge" axis="0 1 0" armature="0.05"/>
+      <inertial pos="0.15 0 0" mass="1.2" diaginertia="0.002 0.01 0.01"/>
+      <body name="lower" pos="0.3 0 0">
+        <joint name="elbow" type="hinge" axis="0 0 1" armature="0.02"/>
+        <inertial pos="0.1 0.02 0" mass="0.7" diaginertia="0.001 0.004 0.004"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"#;
+
+/// A loaded model's armature counts once on the GPU, as on the CPU, which
+/// adds `dof_armature` to the mass matrix's diagonal (MuJoCo's `mj_crb`). The
+/// loader writes a joint's armature into both `jnt_armature` and
+/// `dof_armature` (asserted), so adding the two doubles it; with the joint's
+/// copy cleared the CPU's matrix keeps its armature, and so must the GPU's.
+#[test]
+fn gpu_loaded_armature_counts_once() {
+    let ctx = gpu_or_skip!();
+    let loaded = sim_mjcf::load_model(ARMATURE_CHAIN).expect("the chain loads");
+    for dof in 0..loaded.nv {
+        let armature = loaded.dof_armature[dof];
+        assert!(armature > 0.0, "dof {dof} carries armature");
+        assert_eq!(
+            loaded.jnt_armature[loaded.dof_jnt[dof]], armature,
+            "the loader wrote dof {dof}'s armature into both arrays"
+        );
+    }
+    let mut dof_only = loaded.clone();
+    dof_only.jnt_armature.fill(0.0);
+    for (name, model) in [("armature_chain", loaded), ("dof_armature_only", dof_only)] {
+        let case = ConformanceCase {
+            name,
+            model,
+            qpos: vec![0.3, -0.4],
+            qvel: vec![0.8, -0.5],
+        };
+        let (_, fails) = case_against_cpu(&ctx, &case);
+        assert!(
+            fails.is_empty(),
+            "GPU↔CPU on a chain with armature: {} divergence(s):\n  {}",
+            fails.len(),
+            fails.join("\n  ")
+        );
+    }
 }
 
 /// Route a single case's new failures through the known-divergence allowlist.

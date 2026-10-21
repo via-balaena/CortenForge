@@ -206,9 +206,9 @@ pub struct Model {
     /// Damping coefficient (Ns/rad for hinge, Ns/m for slide).
     /// Applied as: τ = -damping * qvel
     pub jnt_damping: Vec<f64>,
-    /// Armature inertia (motor rotor inertia), per joint. The CPU engine reads
-    /// `dof_armature` (MuJoCo's only armature field), not this; the GPU adds
-    /// both (ledger L213).
+    /// Armature inertia (motor rotor inertia), per joint. The CPU engine and
+    /// the GPU read `dof_armature` (MuJoCo's only armature field), not this
+    /// (ledger L213).
     pub jnt_armature: Vec<f64>,
     /// Solver reference parameters for joint limits [timeconst, dampratio].
     /// Controls how stiffly/softly limits are enforced.

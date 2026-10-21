@@ -1,7 +1,10 @@
 //! GPU forward kinematics pipeline.
 //!
-//! Compiles the `fk.wgsl` shader (4 entry points), creates bind group
-//! layouts and bind groups, and dispatches the tree-scan FK passes.
+//! Compiles the `fk.wgsl` shader (5 entry points), creates bind group
+//! layouts and bind groups, and dispatches the tree-scan FK passes: the
+//! bodies' poses, the subtree centres of mass, then each body's `cinert` and
+//! each dof's `cdof` about its tree's subtree centre of mass (MuJoCo's
+//! `mj_kinematics` and `mj_comPos`, the CPU's position stage).
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -21,12 +24,17 @@ const UNIFORM_ALIGN: u64 = 256;
 
 /// GPU forward kinematics pipeline.
 ///
-/// Owns 4 compute pipelines (one per entry point), a shared pipeline
-/// layout (4 bind groups), and pre-allocated bind groups + uniform buffer.
+/// Owns 5 compute pipelines (one per entry point), two pipeline layouts
+/// (4 bind groups each: the com pass's group 3 holds its outputs, every
+/// other pass's the geoms, as one layout holding both would pass the
+/// device's 16 storage buffers per stage), and pre-allocated bind groups +
+/// uniform buffer.
 ///
 /// It validates nothing: it turns a ball joint about its body's origin, not
-/// about its `jnt_pos` as sim-core does. [`GpuPhysicsPipeline`] refuses
-/// every joint but a free one.
+/// about its `jnt_pos` as sim-core does, and it anchors a free joint at its
+/// position even where the joint shares its body (a model MuJoCo refuses,
+/// which sim-core anchors in the frame before the joint).
+/// [`GpuPhysicsPipeline`] refuses every joint but a free one.
 ///
 /// [`GpuPhysicsPipeline`]: crate::pipeline::GpuPhysicsPipeline
 pub struct GpuFkPipeline {
@@ -35,12 +43,14 @@ pub struct GpuFkPipeline {
     geom_pipeline: wgpu::ComputePipeline,
     subtree_backward_pipeline: wgpu::ComputePipeline,
     subtree_normalize_pipeline: wgpu::ComputePipeline,
+    com_pos_pipeline: wgpu::ComputePipeline,
 
     // Bind groups (created once, reused every dispatch)
     params_bind_group: wgpu::BindGroup,
     model_bind_group: wgpu::BindGroup,
     state_bind_group: wgpu::BindGroup,
     geom_bind_group: wgpu::BindGroup,
+    com_bind_group: wgpu::BindGroup,
 
     // Params uniform buffer with one 256-byte slot per depth level
     params_buffer: wgpu::Buffer,
@@ -107,12 +117,12 @@ impl GpuFkPipeline {
                     storage_entry(1, false), // body_xpos (rw)
                     storage_entry(2, false), // body_xquat (rw)
                     storage_entry(3, false), // body_xipos (rw)
-                    storage_entry(4, false), // body_cinert (rw)
-                    storage_entry(5, false), // cdof (rw)
-                    storage_entry(6, false), // subtree_mass (rw)
-                    storage_entry(7, false), // subtree_com (rw)
-                    storage_entry(8, true),  // mocap_pos (read)
-                    storage_entry(9, true),  // mocap_quat (read)
+                    storage_entry(4, false), // subtree_mass (rw)
+                    storage_entry(5, false), // subtree_com (rw)
+                    storage_entry(6, true),  // mocap_pos (read)
+                    storage_entry(7, true),  // mocap_quat (read)
+                    storage_entry(8, false), // jnt_xaxis (rw)
+                    storage_entry(9, false), // jnt_xanchor (rw)
                 ],
             });
 
@@ -128,7 +138,19 @@ impl GpuFkPipeline {
                 ],
             });
 
-        // ── Pipeline layout (shared by all 4 entry points) ───────────
+        // Group 3 of the com pass: its outputs (2 bindings, after the geoms')
+        let com_layout = ctx
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("fk_com_layout"),
+                entries: &[
+                    storage_entry(3, false), // body_cinert (rw)
+                    storage_entry(4, false), // cdof (rw)
+                ],
+            });
+
+        // ── Pipeline layouts (one for the first 4 entry points, one for the
+        //    com pass) ─────────────────────────────────────────────────
         let pipeline_layout = ctx
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -136,8 +158,20 @@ impl GpuFkPipeline {
                 bind_group_layouts: &[&params_layout, &model_layout, &state_layout, &geom_layout],
                 push_constant_ranges: &[],
             });
+        let com_pipeline_layout =
+            ctx.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("fk_com_pipeline_layout"),
+                    bind_group_layouts: &[
+                        &params_layout,
+                        &model_layout,
+                        &state_layout,
+                        &com_layout,
+                    ],
+                    push_constant_ranges: &[],
+                });
 
-        // ── Create 4 pipelines ────────────────────────────────────────
+        // ── Create 5 pipelines ────────────────────────────────────────
         let fk_forward_pipeline =
             create_pipeline(ctx, &pipeline_layout, &shader_module, "fk_forward");
         let geom_pipeline = create_pipeline(ctx, &pipeline_layout, &shader_module, "fk_geom_poses");
@@ -149,6 +183,8 @@ impl GpuFkPipeline {
             &shader_module,
             "fk_subtree_normalize",
         );
+        let com_pos_pipeline =
+            create_pipeline(ctx, &com_pipeline_layout, &shader_module, "fk_com_pos");
 
         // ── Params uniform buffer ─────────────────────────────────────
         // One 256-byte slot per depth level (+ extras for geom/subtree dispatches)
@@ -188,12 +224,12 @@ impl GpuFkPipeline {
                 buf_entry(1, &state.body_xpos),
                 buf_entry(2, &state.body_xquat),
                 buf_entry(3, &state.body_xipos),
-                buf_entry(4, &state.body_cinert),
-                buf_entry(5, &state.cdof),
-                buf_entry(6, &state.subtree_mass),
-                buf_entry(7, &state.subtree_com),
-                buf_entry(8, &state.mocap_pos),
-                buf_entry(9, &state.mocap_quat),
+                buf_entry(4, &state.subtree_mass),
+                buf_entry(5, &state.subtree_com),
+                buf_entry(6, &state.mocap_pos),
+                buf_entry(7, &state.mocap_quat),
+                buf_entry(8, &state.jnt_xaxis),
+                buf_entry(9, &state.jnt_xanchor),
             ],
         });
 
@@ -207,15 +243,23 @@ impl GpuFkPipeline {
             ],
         });
 
+        let com_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fk_com_bg"),
+            layout: &com_layout,
+            entries: &[buf_entry(3, &state.body_cinert), buf_entry(4, &state.cdof)],
+        });
+
         Self {
             fk_forward_pipeline,
             geom_pipeline,
             subtree_backward_pipeline,
             subtree_normalize_pipeline,
+            com_pos_pipeline,
             params_bind_group,
             model_bind_group,
             state_bind_group,
             geom_bind_group,
+            com_bind_group,
             params_buffer,
             max_depth: model.max_depth,
             nbody: model.nbody,
@@ -269,7 +313,7 @@ impl GpuFkPipeline {
         // Subtree backward slots (reuse forward params with reversed depth)
         // We'll reuse the forward slots since they have the right depth values.
 
-        // Subtree normalize slot
+        // Subtree normalize slot (the com pass reads it too)
         let normalize_slot = geom_slot + 1;
         {
             let params = FkParams {
@@ -292,8 +336,8 @@ impl GpuFkPipeline {
 
     /// Encode the full FK compute passes into a command encoder.
     ///
-    /// Encodes forward FK, geom poses, subtree backward, and subtree
-    /// normalize dispatches. Must be called after [`Self::write_params`].
+    /// Encodes forward FK, geom poses, subtree backward, subtree normalize,
+    /// and the com pass. Must be called after [`Self::write_params`].
     pub fn encode(&self, rec: &mut impl Recording) {
         let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
         let geom_slot = u64::from(self.max_depth) + 1;
@@ -349,9 +393,22 @@ impl GpuFkPipeline {
             pass.set_bind_group(3, &self.geom_bind_group, &[]);
             pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
+
+        // ── cinert and cdof about each tree's subtree COM ─────────────
+        {
+            let offset = (normalize_slot * UNIFORM_ALIGN) as u32;
+            let mut pass = rec.pass("fk_com_pos");
+            pass.set_pipeline(&self.com_pos_pipeline);
+            pass.set_bind_group(0, &self.params_bind_group, &[offset]);
+            pass.set_bind_group(1, &self.model_bind_group, &[]);
+            pass.set_bind_group(2, &self.state_bind_group, &[]);
+            pass.set_bind_group(3, &self.com_bind_group, &[]);
+            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
+        }
     }
 
-    /// Dispatch the full FK sequence: forward scan → geom poses → subtree COM.
+    /// Dispatch the full FK sequence: forward scan → geom poses → subtree COM
+    /// → cinert and cdof.
     ///
     /// Writes all depth-level params before encoding, then encodes all
     /// dispatches into the command encoder. After encoding, call

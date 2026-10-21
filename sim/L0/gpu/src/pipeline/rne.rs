@@ -1,12 +1,12 @@
 //! GPU RNE pipeline — bias forces (gravity + Coriolis + gyroscopic).
 //!
-//! Compiles `rne.wgsl` (5 entry points), creates bind groups, and
-//! dispatches the RNE sequence:
-//!   1. `rne_gravity`   — per-joint parallel gravity projection
-//!   2. `rne_forward`   — root→leaves bias acceleration scan
-//!   3. `rne_cfrc_init` — per-body parallel net spatial-force seed (I·a + v×*I·v)
-//!   4. `rne_backward`  — leaves→root bias force accumulation (CAS atomics)
-//!   5. `rne_project`   — per-DOF parallel S^T · cfrc projection
+//! Compiles `rne.wgsl` (4 entry points), creates bind groups, and
+//! dispatches the RNE sequence, the CPU's `mj_rne` (MuJoCo's with `flg_acc`
+//! 0), about each tree's subtree centre of mass:
+//!   1. `rne_forward`   — root→leaves bias acceleration scan, gravity the world's
+//!   2. `rne_cfrc_init` — per-body parallel net spatial-force seed (I·a + v×*I·v)
+//!   3. `rne_backward`  — leaves→root bias force accumulation (CAS atomics)
+//!   4. `rne_project`   — per-DOF parallel S^T · cfrc projection
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -28,7 +28,6 @@ const UNIFORM_ALIGN: u64 = 256;
 
 /// GPU RNE pipeline.
 pub struct GpuRnePipeline {
-    gravity_pipeline: wgpu::ComputePipeline,
     forward_pipeline: wgpu::ComputePipeline,
     cfrc_init_pipeline: wgpu::ComputePipeline,
     backward_pipeline: wgpu::ComputePipeline,
@@ -42,7 +41,6 @@ pub struct GpuRnePipeline {
     params_buffer: wgpu::Buffer,
     max_depth: u32,
     nbody: u32,
-    njnt: u32,
     nv: u32,
     n_env: u32,
 }
@@ -85,15 +83,14 @@ impl GpuRnePipeline {
                 }],
             });
 
-        // Group 1: static model (bodies, joints, dofs)
+        // Group 1: static model (bodies, dofs)
         let model_layout = ctx
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rne_model_layout"),
                 entries: &[
                     storage_entry(0, true), // bodies
-                    storage_entry(1, true), // joints
-                    storage_entry(2, true), // dofs
+                    storage_entry(1, true), // dofs
                 ],
             });
 
@@ -103,13 +100,11 @@ impl GpuRnePipeline {
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rne_state_layout"),
                 entries: &[
-                    storage_entry(0, true), // body_xpos
-                    storage_entry(1, true), // body_cinert
-                    storage_entry(2, true), // cdof
+                    storage_entry(0, true), // body_cinert
+                    storage_entry(1, true), // cdof
+                    storage_entry(2, true), // cdof_dot
                     storage_entry(3, true), // body_cvel
-                    storage_entry(4, true), // subtree_mass
-                    storage_entry(5, true), // subtree_com
-                    storage_entry(6, true), // qvel
+                    storage_entry(4, true), // qvel
                 ],
             });
 
@@ -135,8 +130,6 @@ impl GpuRnePipeline {
             });
 
         // ── Create 4 pipelines ────────────────────────────────────────
-        let gravity_pipeline =
-            create_pipeline(ctx, &pipeline_layout, &shader_module, "rne_gravity");
         let forward_pipeline =
             create_pipeline(ctx, &pipeline_layout, &shader_module, "rne_forward");
         let cfrc_init_pipeline =
@@ -147,8 +140,8 @@ impl GpuRnePipeline {
             create_pipeline(ctx, &pipeline_layout, &shader_module, "rne_project");
 
         // ── Params uniform buffer ─────────────────────────────────────
-        // Slots: gravity(1) + forward(max_depth+1) + cfrc_init(1) + backward(max_depth) + project(1)
-        let n_slots = u64::from(gpu_model.max_depth) * 2 + 5;
+        // Slots: depth-free(1) + forward(max_depth+1) + backward(max_depth)
+        let n_slots = u64::from(gpu_model.max_depth) * 2 + 2;
         let params_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rne_params"),
             size: n_slots * UNIFORM_ALIGN,
@@ -175,8 +168,7 @@ impl GpuRnePipeline {
             layout: &model_layout,
             entries: &[
                 buf_entry(0, &gpu_model.bodies),
-                buf_entry(1, &gpu_model.joints),
-                buf_entry(2, &gpu_model.dofs),
+                buf_entry(1, &gpu_model.dofs),
             ],
         });
 
@@ -184,13 +176,11 @@ impl GpuRnePipeline {
             label: Some("rne_state_bg"),
             layout: &state_layout,
             entries: &[
-                buf_entry(0, &state.body_xpos),
-                buf_entry(1, &state.body_cinert),
-                buf_entry(2, &state.cdof),
+                buf_entry(0, &state.body_cinert),
+                buf_entry(1, &state.cdof),
+                buf_entry(2, &state.cdof_dot),
                 buf_entry(3, &state.body_cvel),
-                buf_entry(4, &state.subtree_mass),
-                buf_entry(5, &state.subtree_com),
-                buf_entry(6, &state.qvel),
+                buf_entry(4, &state.qvel),
             ],
         });
 
@@ -207,7 +197,6 @@ impl GpuRnePipeline {
         let _ = model; // used only for future extensions
 
         Self {
-            gravity_pipeline,
             forward_pipeline,
             cfrc_init_pipeline,
             backward_pipeline,
@@ -219,7 +208,6 @@ impl GpuRnePipeline {
             params_buffer,
             max_depth: gpu_model.max_depth,
             nbody: gpu_model.nbody,
-            njnt: gpu_model.njnt,
             nv: gpu_model.nv,
             n_env: state.n_env,
         }
@@ -228,10 +216,9 @@ impl GpuRnePipeline {
     /// Write the `PhysicsParams` uniform slots for the RNE sequence.
     ///
     /// Slot layout:
-    /// - 0: gravity
+    /// - 0: the passes that read no depth (`rne_cfrc_init`, `rne_project`)
     /// - `1..=max_depth+1`: forward (depth 0 → `max_depth`)
     /// - `max_depth+2`...: backward (`max_depth` → 1)
-    /// - last: project
     pub fn write_params(
         &self,
         ctx: &GpuContext,
@@ -258,7 +245,7 @@ impl GpuRnePipeline {
         };
 
         // ── Write param slots ─────────────────────────────────────────
-        // Slot 0: gravity (depth unused)
+        // Slot 0: depth unused
         let mut slot = 0u64;
         ctx.queue.write_buffer(
             &self.params_buffer,
@@ -294,14 +281,6 @@ impl GpuRnePipeline {
             );
             slot += 1;
         }
-
-        // Slot for project (depth unused)
-        let project_slot = slot;
-        ctx.queue.write_buffer(
-            &self.params_buffer,
-            project_slot * UNIFORM_ALIGN,
-            bytemuck::bytes_of(&base_params),
-        );
     }
 
     /// Encode the RNE compute passes into the given command encoder.
@@ -312,20 +291,8 @@ impl GpuRnePipeline {
     pub fn encode(&self, rec: &mut impl Recording) {
         let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
         let backward_slot_start = u64::from(self.max_depth) + 2;
-        let project_slot = backward_slot_start + u64::from(self.max_depth);
 
-        // ── 1. rne_gravity — all joints parallel ─────────────────────
-        if self.njnt > 0 {
-            let mut pass = rec.pass("rne_gravity");
-            pass.set_pipeline(&self.gravity_pipeline);
-            pass.set_bind_group(0, &self.params_bind_group, &[0]);
-            pass.set_bind_group(1, &self.model_bind_group, &[]);
-            pass.set_bind_group(2, &self.state_bind_group, &[]);
-            pass.set_bind_group(3, &self.output_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.njnt), self.n_env, 1);
-        }
-
-        // ── 2. rne_forward — one dispatch per depth (0 → max_depth) ──
+        // ── 1. rne_forward — one dispatch per depth (0 → max_depth) ──
         for depth in 0..=self.max_depth {
             let offset = ((1 + u64::from(depth)) * UNIFORM_ALIGN) as u32;
             let mut pass = rec.pass("rne_forward");
@@ -337,7 +304,7 @@ impl GpuRnePipeline {
             pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
 
-        // ── 3a. rne_cfrc_init — all bodies parallel ──────────────────
+        // ── 2. rne_cfrc_init — all bodies parallel ───────────────────
         // Compute cfrc = I·a_bias + v ×* (I·v) for each body.
         // Must run AFTER forward scan, BEFORE backward accumulation.
         {
@@ -350,7 +317,7 @@ impl GpuRnePipeline {
             pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
 
-        // ── 3b. rne_backward — one dispatch per depth (max_depth → 1)
+        // ── 3. rne_backward — one dispatch per depth (max_depth → 1) ─
         for (i, _depth) in (1..=self.max_depth).rev().enumerate() {
             let offset = ((backward_slot_start + i as u64) * UNIFORM_ALIGN) as u32;
             let mut pass = rec.pass("rne_backward");
@@ -364,10 +331,9 @@ impl GpuRnePipeline {
 
         // ── 4. rne_project — all DOFs parallel ───────────────────────
         if self.nv > 0 {
-            let offset = (project_slot * UNIFORM_ALIGN) as u32;
             let mut pass = rec.pass("rne_project");
             pass.set_pipeline(&self.project_pipeline);
-            pass.set_bind_group(0, &self.params_bind_group, &[offset]);
+            pass.set_bind_group(0, &self.params_bind_group, &[0]); // depth unused
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.output_bind_group, &[]);

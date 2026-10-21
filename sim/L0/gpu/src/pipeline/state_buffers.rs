@@ -36,6 +36,11 @@ pub struct GpuStateBuffers {
     // FK output — motion subspace
     pub cdof: wgpu::Buffer,
 
+    // FK output — each joint's axis and anchor in the frame before it turns
+    // (MuJoCo's `xaxis`, `xanchor`): `vec4<f32>` × njnt, xyz used.
+    pub jnt_xaxis: wgpu::Buffer,
+    pub jnt_xanchor: wgpu::Buffer,
+
     // FK output — subtree COM
     pub subtree_mass: wgpu::Buffer,
     pub subtree_com: wgpu::Buffer,
@@ -61,6 +66,8 @@ pub struct GpuStateBuffers {
     pub qvel: wgpu::Buffer,
     /// Body spatial velocities: `vec4<f32>` × 2 per body [angular, linear].
     pub body_cvel: wgpu::Buffer,
+    /// Each dof's axis rate: `vec4<f32>` × 2 per dof [angular, linear].
+    pub cdof_dot: wgpu::Buffer,
 
     // RNE state (Session 3)
     /// Body bias accelerations: `vec4<f32>` × 2 per body [angular, linear].
@@ -170,6 +177,7 @@ impl GpuStateBuffers {
         // `env_id * params.nv` etc.). A buffer's byte size is `ne · single-env`, so
         // here `nv = ne · model.nv`; the per-env stride lives in the shader.
         let nbody = ne * u64::from(model.nbody);
+        let njnt = ne * u64::from(model.njnt);
         let ngeom = ne * u64::from(model.ngeom);
         let nv = ne * u64::from(model.nv);
         let nmocap = ne * u64::from(model.nmocap.max(1)); // At least 1 for buffer sizing
@@ -203,6 +211,10 @@ impl GpuStateBuffers {
         // cdof: 8 floats (2 × vec4) per DOF
         let cdof = alloc(ctx, "cdof", nv * 32, usage_inout);
 
+        // Joint axes and anchors: vec4 per joint
+        let jnt_xaxis = alloc(ctx, "jnt_xaxis", njnt * 16, usage_inout);
+        let jnt_xanchor = alloc(ctx, "jnt_xanchor", njnt * 16, usage_inout);
+
         // Subtree COM
         let subtree_mass = alloc(ctx, "subtree_mass", nbody * 4, usage_inout);
         let subtree_com = alloc(ctx, "subtree_com", nbody * 16, usage_inout);
@@ -235,6 +247,8 @@ impl GpuStateBuffers {
         );
         // body_cvel: 2 × vec4 per body = 32 bytes/body
         let body_cvel = alloc(ctx, "body_cvel", nbody * 32, usage_inout);
+        // cdof_dot: 2 × vec4 per DOF (as cdof)
+        let cdof_dot = alloc(ctx, "cdof_dot", nv * 32, usage_inout);
 
         // RNE state (Session 3)
         // body_cacc: 2 × vec4 per body = 32 bytes/body (matching cvel layout)
@@ -283,6 +297,8 @@ impl GpuStateBuffers {
             geom_xpos,
             geom_xmat,
             cdof,
+            jnt_xaxis,
+            jnt_xanchor,
             subtree_mass,
             subtree_com,
             mocap_pos,
@@ -293,6 +309,7 @@ impl GpuStateBuffers {
             qm_eulerdamp_factor,
             qvel,
             body_cvel,
+            cdof_dot,
             body_cacc,
             body_cfrc,
             qfrc_bias,
