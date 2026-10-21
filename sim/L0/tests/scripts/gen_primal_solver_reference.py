@@ -674,8 +674,8 @@ def statistics_cap():
     early, so CG and Newton run to `iterations` (300) unless the line search
     finds no step, noslip runs its 250 sweeps and PGS its 300 iterations; the
     first forward's counts and kept statistics: CG over every row and by island,
-    Newton by island (over every row it stops after 3 iterations). PGS's statistics are
-    not MuJoCo's (ledger L132): its count only."""
+    Newton by island (over every row it stops after 3 iterations), PGS over every
+    row, with the rows' states it leaves (`dualState`'s)."""
     out = {}
     for solver in ("CG", "Newton", "PGS"):
         whole = MIXED_ROWS.format(solver=solver, cone="pyramidal", condim=3).replace(
@@ -691,12 +691,12 @@ def statistics_cap():
             d.qvel[:] = MIXED_QVEL
             mujoco.mj_forward(m, d)
             name = f"{solver}_{tag}" if tag != "noslip" else "noslip"
-            if solver == "PGS" and tag == "whole":
-                case = {"niter": int(d.solver_niter[0])}
-            elif tag == "islands":
+            if tag == "islands":
                 case = island_stats(m, d)
             else:
                 case = stats(m, d)
+            if solver == "PGS" and tag == "whole":
+                case["efc_state"] = [int(s) for s in d.efc_state]
             assert (sum(case["niter"]) if tag == "islands" else case["niter"]) > MJNSOLVER, name
             out[name] = {"xml": xml, "qvel": floats(d.qvel), "stats": case}
     return out

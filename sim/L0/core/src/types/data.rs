@@ -480,9 +480,9 @@ pub struct Data {
     /// Per-iteration solver statistics, as MuJoCo keeps them: the first 200
     /// (`mjNSOLVER`) of a solve's iterations, or solved island by island of
     /// each island `solver_niter` counts, in island order; then noslip's
-    /// sweeps while there are fewer than 200. PGS fills `improvement` only
-    /// (other fields zeroed); CG and Newton fill all fields; noslip
-    /// `improvement`, `nactive` and `nchange`. Cleared with no rows.
+    /// sweeps while there are fewer than 200. CG and Newton fill all fields;
+    /// PGS and noslip `improvement`, `nactive` and `nchange` (the others
+    /// zeroed). Cleared with no rows.
     pub solver_stat: Vec<SolverStat>,
 
     /// Per-step mean inertia: `trace(qM) / nv`, set at each constraint

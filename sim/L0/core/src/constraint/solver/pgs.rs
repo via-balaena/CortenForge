@@ -17,6 +17,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::dual_state;
 use crate::constraint::solver::primal::MJ_NSOLVER;
 use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::cholesky_solve_in_place;
@@ -260,6 +261,11 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
         }
     };
 
+    // The rows' states from the starting forces, MuJoCo's `dualState`
+    // (`engine_solver.c:332`).
+    let mut state = std::mem::take(&mut data.efc_state);
+    dual_state(data, &mut state);
+
     let max_iters = model.solver_iterations;
     // `niter` and `nv` are usize → f64 for convergence diagnostics; bounded by solver budget, far below 2^52.
     #[allow(clippy::cast_precision_loss)]
@@ -494,6 +500,10 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
             }
         }
 
+        // The sweep's rows' states and how many changed (`engine_solver.c:490-495`).
+        let old_state = state.clone();
+        let nactive = dual_state(data, &mut state);
+        let nchange = old_state.iter().zip(&state).filter(|(a, b)| a != b).count();
         improvement *= scale;
 
         // The first mjNSOLVER kept, as MuJoCo's `saveStats`.
@@ -502,8 +512,8 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
                 improvement,
                 gradient: 0.0,
                 lineslope: 0.0,
-                nactive: 0,
-                nchange: 0,
+                nactive,
+                nchange,
                 neval: 0,
                 nupdate: 0,
             });
@@ -516,6 +526,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
         }
     }
 
+    data.efc_state = state;
     data.solver_niter = iter;
     data.solver_stat = solver_stats;
 }

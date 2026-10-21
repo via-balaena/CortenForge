@@ -246,9 +246,8 @@ assert FLOSS.count("frictionloss") == 2, FLOSS
 
 def fwdinv(xml, qpos, qvel, xfrc=None, opt=""):
     """`xml` with the fwdinv flag enabled (and `opt` added to its option),
-    at its state, with `xfrc` (body, wrench) applied: after mj_forward,
-    solver_fwdinv (and, not written, efc_state); after mj_step,
-    solver_fwdinv and efc_state."""
+    at its state, with `xfrc` (body, wrench) applied: after mj_forward and
+    after mj_step, solver_fwdinv and efc_state."""
     assert xml.count("<option ") == 1, xml
     start = xml.index("<option ")
     end = xml.index("/>", start)
@@ -273,8 +272,8 @@ def fwdinv(xml, qpos, qvel, xfrc=None, opt=""):
 
     d = at_state()
     mujoco.mj_forward(m, d)
-    forward = {"solver_fwdinv": floats(d.solver_fwdinv)}
     forward_states = ints(d.efc_state)
+    forward = {"solver_fwdinv": floats(d.solver_fwdinv), "efc_state": forward_states}
     d = at_state()
     mujoco.mj_step(m, d)
     step = {"solver_fwdinv": floats(d.solver_fwdinv), "efc_state": ints(d.efc_state)}

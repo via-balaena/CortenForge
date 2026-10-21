@@ -6,11 +6,12 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::dual_state;
 use crate::constraint::solver::primal::MJ_NSOLVER;
 use crate::constraint::solver::qcqp;
 use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::{cholesky_solve_in_place, mju_dot};
-use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
+use crate::types::{ConstraintType, Data, Model, SolverStat};
 
 /// Tag for each noslip row, used to select the correct projection.
 #[derive(Clone, Copy)]
@@ -495,62 +496,6 @@ fn cost_change(a: &[f64], force: &mut [f64], old: &[f64], res: &[f64]) -> f64 {
         return 0.0;
     }
     change
-}
-
-/// Each row's state from its force alone, MuJoCo's `dualState`
-/// (`engine_solver.c:233-310`); returns the rows not satisfied. Equality rows
-/// are quadratic; a friction-loss row is linear at its bound, the side
-/// opposite the primal's; a limit or non-elliptic contact row is quadratic
-/// while its force is positive; an elliptic contact's rows take its zone in
-/// the regular cone.
-fn dual_state(data: &Data, state: &mut [ConstraintState]) -> usize {
-    let (ne, nf, nefc) = (data.ne, data.nf, data.efc_type.len());
-    let force = &data.efc_force;
-    let mut nactive = ne + nf;
-    state[..ne].fill(ConstraintState::Quadratic);
-    for i in ne..ne + nf {
-        let floss = data.efc_floss[i];
-        state[i] = if force[i] <= -floss {
-            ConstraintState::LinearPos
-        } else if force[i] >= floss {
-            ConstraintState::LinearNeg
-        } else {
-            ConstraintState::Quadratic
-        };
-    }
-    let mut i = ne + nf;
-    while i < nefc {
-        if data.efc_type[i] != ConstraintType::ContactElliptic {
-            if force[i] <= 0.0 {
-                state[i] = ConstraintState::Satisfied;
-            } else {
-                state[i] = ConstraintState::Quadratic;
-                nactive += 1;
-            }
-            i += 1;
-            continue;
-        }
-        let dim = data.efc_dim[i];
-        let friction = &data.efc_mu[i];
-        let mu = data.contacts[data.efc_id[i]].regularized_mu;
-        let n = force[i] / mu;
-        let t = (1..dim)
-            .map(|j| (force[i + j] / friction[j - 1]).powi(2))
-            .sum::<f64>()
-            .sqrt();
-        let zone = if mu * n >= t {
-            ConstraintState::Satisfied
-        } else if n + mu * t <= 0.0 {
-            nactive += dim;
-            ConstraintState::Quadratic
-        } else {
-            nactive += dim;
-            ConstraintState::Cone
-        };
-        state[i..i + dim].fill(zone);
-        i += dim;
-    }
-    nactive
 }
 
 #[cfg(test)]

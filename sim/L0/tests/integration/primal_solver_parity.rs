@@ -561,8 +561,8 @@ fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
 /// (over every row it stops after 3 iterations), noslip's 250 sweeps and
 /// PGS's 300 iterations. The
 /// first forward's iteration count and kept statistics are MuJoCo's, each
-/// improvement within 1e-12 of the case's largest; PGS's count only (its
-/// statistics are not MuJoCo's, ledger L132). sim-mjcf refuses a tolerance
+/// improvement within 1e-12 of the case's largest, and PGS's rows' states
+/// (`dualState`'s) MuJoCo's. sim-mjcf refuses a tolerance
 /// that is not positive (ledger L131), so the document loads without it and
 /// the model takes MuJoCo's.
 #[test]
@@ -601,6 +601,12 @@ fn statistics_past_the_200th_are_counted_not_kept() {
                 "{name} kept: {}, MuJoCo {kept}",
                 data.solver_stat.len()
             ));
+        }
+        if let Some(want) = stats.get("efc_state") {
+            let ours: Vec<usize> = data.efc_state.iter().map(|&s| mj_state(s)).collect();
+            if ours != usizes(want) {
+                off.push(format!("{name} efc_state: {ours:?}, MuJoCo {want}"));
+            }
         }
         if stats.get("improvement").is_none() {
             continue;
