@@ -216,8 +216,8 @@ fn t09_object_force_translation_invariance() {
     let pos_origin = data.xpos[body_id];
     let pos_offset = data.site_xpos[1];
 
-    let (_torque_a, force_a) = object_force(&data, body_id, &pos_origin, None);
-    let (_torque_b, force_b) = object_force(&data, body_id, &pos_offset, None);
+    let (_torque_a, force_a) = object_force(&model, &data, body_id, &pos_origin, None);
+    let (_torque_b, force_b) = object_force(&model, &data, body_id, &pos_offset, None);
 
     assert_eq!(force_a, force_b, "Force should be identical at both points");
 }
@@ -254,8 +254,8 @@ fn t10_object_force_torque_transport() {
     let pos_origin = data.xpos[body_id];
     let pos_offset = data.site_xpos[1]; // s2 at [0.5, 0, 0] offset
 
-    let (torque_origin, force_origin) = object_force(&data, body_id, &pos_origin, None);
-    let (torque_offset, _force_offset) = object_force(&data, body_id, &pos_offset, None);
+    let (torque_origin, force_origin) = object_force(&model, &data, body_id, &pos_origin, None);
+    let (torque_offset, _force_offset) = object_force(&model, &data, body_id, &pos_offset, None);
 
     // Expected: torque_offset = torque_origin − r × force
     let r = pos_offset - pos_origin;

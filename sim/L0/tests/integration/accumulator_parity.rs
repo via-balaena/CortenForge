@@ -4,8 +4,8 @@
 //!
 //! The golden is `assets/golden/accumulators/accumulators.json`, from the
 //! unfused MuJoCo 3.5.0 oracle (`scripts/gen_accumulators_reference.py`,
-//! which describes its cases). sim-core keeps `cfrc_ext` at each body's
-//! origin `xpos`; the generator moved MuJoCo's there.
+//! which describes its cases). sim-core keeps `cfrc_ext` as MuJoCo does,
+//! about the subtree centre of mass of the body's root.
 
 use serde_json::Value;
 use sim_core::{BodyWrench, Data, Model};
@@ -117,24 +117,48 @@ fn assert_trajectory(name: &str, tol: f64) {
     }
 }
 
+/// `cfrc_ext` bit for bit on macOS arm64, where the golden was made: each
+/// anchor placed by its body's `xmat`, as MuJoCo's `mj_local2Global` places
+/// it, where turning it by the body's quaternion rounds `weld_force`'s
+/// otherwise, within `FORCE_TOL`. Elsewhere `assert_case`'s tolerance alone.
+fn assert_cfrc_ext_bits(name: &str, model: &Model, data: &Data) {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return;
+    }
+    let case = &golden()["cases"][name];
+    for b in 0..model.nbody {
+        let want = floats(&case["cfrc_ext"][b]);
+        for (k, (a, w)) in data.cfrc_ext[b].iter().zip(&want).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                w.to_bits(),
+                "{name} cfrc_ext[{b}][{k}]: {a:e}, MuJoCo {w:e}"
+            );
+        }
+    }
+}
+
 /// A pendulum whose tip is connected to the world: the connect's force
 /// reaches `cfrc_ext` at the anchor and the force sensor reads it.
 #[test]
 fn force_sensor_includes_connect_force() {
-    assert_case("connect_force", FORCE_TOL);
+    let (model, data) = assert_case("connect_force", FORCE_TOL);
+    assert_cfrc_ext_bits("connect_force", &model, &data);
 }
 
 /// A box on a hinge welded to the world at its own pose, turned 0.3 rad: the
 /// weld's force and torque reach `cfrc_ext` at its anchors.
 #[test]
 fn force_sensor_includes_weld_force() {
-    assert_case("weld_force", FORCE_TOL);
+    let (model, data) = assert_case("weld_force", FORCE_TOL);
+    assert_cfrc_ext_bits("weld_force", &model, &data);
 }
 
 /// A free, frictionless sphere whose geom is off its body's origin, pressed
-/// into a plane: cfrc_ext holds the contact's torque about the origin.
+/// into a plane: cfrc_ext holds the contact's torque about the tree's subtree
+/// centre of mass.
 #[test]
-fn contact_torque_is_taken_about_the_origin() {
+fn contact_torque_is_taken_about_the_subtree_com() {
     assert_case("contact_torque", TOL);
 }
 
@@ -290,9 +314,9 @@ fn a_flex_contact_stays_out_of_cfrc_ext() {
 }
 
 /// An applied wrench acts at the centre of mass; `cfrc_ext` holds it at the
-/// body's origin, its torque moved there.
+/// tree's subtree centre of mass, its torque moved there.
 #[test]
-fn xfrc_torque_moved_to_origin() {
+fn xfrc_torque_moved_to_the_subtree_com() {
     assert_case("applied_wrench", TOL);
 }
 
@@ -362,10 +386,11 @@ fn static_site_reads_gravity() {
 }
 
 /// A torque sensor on a world site reads the root bodies' wrenches moved to
-/// the site: sim-core's `cfrc_int[0]` holds them moved to the world origin.
-/// MuJoCo adds each root's `cfrc_int`, held at that root's subtree centre of
-/// mass, into body 0 without moving it (`engine_core_smooth.c:2676-2679`), so
-/// its torque mixes reference points: registry row D-WORLD-CFRC-INT.
+/// the site: sim-core's `cfrc_int[0]` holds them moved to the world's
+/// reference point, the model's centre of mass `subtree_com[0]`. MuJoCo adds
+/// each root's `cfrc_int`, held at that root's subtree centre of mass, into
+/// body 0 without moving it (`engine_core_smooth.c:2676-2679`), so its torque
+/// mixes reference points: registry row D-WORLD-CFRC-INT.
 #[test]
 fn world_site_torque_is_the_sum_of_root_wrenches_moved_to_it() {
     let model = load_model(
@@ -398,7 +423,8 @@ fn world_site_torque_is_the_sum_of_root_wrenches_moved_to_it() {
             nalgebra::Vector3::new(w[0], w[1], w[2]),
             nalgebra::Vector3::new(w[3], w[4], w[5]),
         );
-        torque += t + (data.xpos[b] - site).cross(&f);
+        // Each root's wrench is about its own subtree centre of mass.
+        torque += t + (data.subtree_com[model.body_rootid[b]] - site).cross(&f);
     }
     let expected = data.site_xmat[0].transpose() * torque;
     assert_close(

@@ -133,7 +133,7 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
             // Force is translation-invariant — only torque shifts. The torque
             // component is computed but discarded (minor wasted work, acceptable
             // for API consistency with Torque arm which reads the same wrench).
-            let (_torque, force) = object_force(data, body_id, &site_pos, Some(&site_mat));
+            let (_torque, force) = object_force(model, data, body_id, &site_pos, Some(&site_mat));
             sensor_write3(&mut data.sensordata, adr, &force);
         }
 
@@ -152,7 +152,7 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                     return;
                 }
             };
-            let (torque, _force) = object_force(data, body_id, &site_pos, Some(&site_mat));
+            let (torque, _force) = object_force(model, data, body_id, &site_pos, Some(&site_mat));
             sensor_write3(&mut data.sensordata, adr, &torque);
         }
 

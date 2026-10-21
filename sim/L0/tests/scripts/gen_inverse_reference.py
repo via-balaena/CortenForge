@@ -19,7 +19,7 @@ state (qpos, qvel):
   elliptic: the same box, elliptic. For each: mj_inverse at the forward's
   qacc and at that qacc plus a shift, giving qfrc_inverse, efc_force,
   qfrc_constraint and efc_state, and then mj_rnePostConstraint's cfrc_ext,
-  from the inverse's force, moved to each body's xpos; and mjd_inverseFD (forward differences,
+  from the inverse's force; and mjd_inverseFD (forward differences,
   eps 1e-6, no actuation), DfDq, DfDv and DfDa, row-major as MuJoCo
   writes them.
 - limit_fwdinv, contact_fwdinv, free_fwdinv, pgs_fwdinv, floss_fwdinv,
@@ -180,17 +180,6 @@ def state(m, qpos, qvel):
     return d
 
 
-def cfrc_ext_at_origin(m, d):
-    """cfrc_ext ([torque; force]) moved from the subtree COM to each body's
-    xpos, where sim-core keeps it (gen_accumulators_reference.py's)."""
-    out = []
-    for b in range(m.nbody):
-        c = d.subtree_com[m.body_rootid[b]]
-        tq, f = d.cfrc_ext[b, :3], d.cfrc_ext[b, 3:]
-        out.append(floats(np.concatenate([tq - np.cross(d.xpos[b] - c, f), f])))
-    return out
-
-
 def inverse_at(m, d, qacc):
     d.qacc[:] = qacc
     mujoco.mj_inverse(m, d)
@@ -199,7 +188,7 @@ def inverse_at(m, d, qacc):
            "efc_state": ints(d.efc_state)}
     # The body accumulators from the inverse's force.
     mujoco.mj_rnePostConstraint(m, d)
-    out["cfrc_ext"] = cfrc_ext_at_origin(m, d)
+    out["cfrc_ext"] = [floats(row) for row in d.cfrc_ext]
     return out
 
 

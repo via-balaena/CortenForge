@@ -36,12 +36,12 @@ MuJoCo (ledger L198, L195, L146). The cases:
 
 - compos: two trees. One hangs a hinge with an offset anchor, a ball with an
   offset anchor under it (the two with armature), then a body with a slide
-  and a hinge. The other is
-  a free body carrying a hinged body, which carries a jointless body with
-  mass; two subtree sensors make the forward pass compute the subtree
-  velocities. There is no massless body: the loader places its inertial frame
-  otherwise than MuJoCo, and refuses MuJoCo's way of giving it one (ledger
-  L212).
+  and a hinge. The other is a free body carrying a hinged body, which carries
+  a jointless body with mass. Two subtree sensors make the forward pass
+  compute the subtree velocities, and an accelerometer makes it compute the
+  body accelerations and forces. There is no massless body: the loader places
+  its inertial frame otherwise than MuJoCo, and refuses MuJoCo's way of giving
+  it one (ledger L212).
 - chain: a hinge-hinge-ball chain with a hinge off its root (shaped as the
   mass factor golden's chain).
 - slow: compos at velocities 1e-7 of compos's.
@@ -50,8 +50,9 @@ MuJoCo (ledger L198, L195, L146). The cases:
   centred and childless) beside one it does not (an off-centre hinge).
 - mocap: a mocap body, a static body and a hinged body.
 - sleeping: two double pendulums, the first asleep from the start
-  (`sleep="init"`), the second moved. A sleeping body keeps what MuJoCo last
-  computed for it; the awake bodies are not the first ones.
+  (`sleep="init"`), the second moved, with an accelerometer. A sleeping body
+  keeps what MuJoCo last computed for it; the awake bodies are not the first
+  ones.
 """
 import json
 import os
@@ -71,6 +72,7 @@ COMPOS = """<mujoco model="compos">
     <body name="a" pos="0.1 0 1">
       <joint type="hinge" axis="0 1 0" pos="0 0 0.05" armature="0.02"/>
       <inertial pos="0.01 0 -0.15" mass="1" diaginertia="0.0078 0.0078 0.0006"/>
+      <site name="a" pos="0.02 0.01 -0.2"/>
       <body name="b" pos="0 0 -0.3">
         <joint type="ball" pos="0.01 0.02 0" armature="0.01"/>
         <inertial pos="0.02 0 -0.12" mass="0.7" diaginertia="0.00373 0.00357 0.00058"/>
@@ -96,6 +98,7 @@ COMPOS = """<mujoco model="compos">
   <sensor>
     <subtreelinvel body="a"/>
     <subtreeangmom body="f"/>
+    <accelerometer site="a"/>
   </sensor>
 </mujoco>"""
 
@@ -182,12 +185,16 @@ SLEEPING = """<mujoco model="sleeping">
     <body name="moving" pos="0 0 1">
       <joint type="hinge" axis="0 1 0"/>
       <inertial pos="0 0 -0.2" mass="1" diaginertia="0.0134 0.0134 0.0003"/>
+      <site name="m" pos="0.01 0 -0.3"/>
       <body pos="0 0 -0.4">
         <joint type="hinge" axis="1 0 0"/>
         <inertial pos="0 0 -0.1" mass="0.5" diaginertia="0.0017 0.0017 0.00013"/>
       </body>
     </body>
   </worldbody>
+  <sensor>
+    <accelerometer site="m"/>
+  </sensor>
 </mujoco>"""
 
 
@@ -272,6 +279,7 @@ def record(xml, seed, scale=1.0, trees=None, simple=None):
         "subtree_linvel": floats(d.subtree_linvel), "subtree_angmom": floats(d.subtree_angmom),
         "qfrc_bias": floats(d.qfrc_bias),
         "cacc": floats(d.cacc), "cfrc_int": floats(d.cfrc_int), "cfrc_ext": floats(d.cfrc_ext),
+        "sensordata": floats(d.sensordata),
     }
 
 

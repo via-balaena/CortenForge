@@ -903,7 +903,6 @@ pub fn mjd_smooth_vel_bias(model: &Model, data: &mut Data, flg_bias: bool) {
 #[allow(non_snake_case)]
 pub fn mjd_smooth_pos(model: &Model, data: &mut Data) {
     // Ensure cacc/cfrc_int are populated (lazy — may not have been computed yet).
-    // mjd_rne_pos reads cacc[] to compute the acceleration transform derivatives.
     if !data.flg_rnepost {
         crate::forward::acceleration::mj_body_accumulators(model, data);
     }

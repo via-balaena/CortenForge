@@ -715,19 +715,21 @@ pub struct Data {
     pub qfrc_inverse: DVector<f64>,
 
     // ==================== Body Force Accumulators (§51) ====================
-    /// Per-body 6D acceleration in world frame (length `nbody`).
-    /// Forward pass: propagates accelerations root→leaf through joints.
-    /// `cacc[0]` = `[0,0,0, -gx,-gy,-gz]` (gravity pseudo-acceleration).
+    // Each about the body's tree's subtree centre of mass in the world's
+    // orientation, as MuJoCo's, made by `mj_body_accumulators()`
+    // (`mj_rnePostConstraint`).
+    /// Each body's acceleration `[angular; linear]` (length `nbody`): its
+    /// parent's plus `cdof_dot · qvel + cdof · qacc`; the world's
+    /// `[0, 0, 0, −gravity]`.
     pub cacc: Vec<SpatialVector>,
-    /// Per-body internal (constraint + inertial) forces in world frame (length `nbody`).
-    /// Backward pass: `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`,
-    /// accumulated into parent.
+    /// Each body's internal force `[torque; force]`, its subtree's
+    /// `cinert · cacc + cvel ×* (cinert · cvel) − cfrc_ext` (length `nbody`);
+    /// the world's sums its roots', each moved to the world's reference point
+    /// `subtree_com[0]` (registry `D-WORLD-CFRC-INT`).
     pub cfrc_int: Vec<SpatialVector>,
-    /// Per-body external forces in world frame (length `nbody`), laid out
-    /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`):
-    /// `xfrc_applied` and the contact (but not a flex's), connect and weld forces, referenced at
-    /// the body's origin `xpos` like `cacc` and `cfrc_int`; the world body's is
-    /// zero. Populated by `mj_body_accumulators()`.
+    /// Each body's external force `[torque; force]` (length `nbody`, MuJoCo's
+    /// `cfrc_ext`, unlike `xfrc_applied`'s layout): its applied wrench and its
+    /// contact (but not a flex's), connect and weld forces; the world's is 0.
     pub cfrc_ext: Vec<SpatialVector>,
     /// Lazy flag: `mj_body_accumulators()` has been called this step.
     /// Cleared after constraint solve (before sensors), set by

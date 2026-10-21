@@ -333,3 +333,35 @@ fn cinert_and_crb_are_mujocos() {
         );
     }
 }
+
+/// Each body's acceleration `cacc` and its internal and external forces
+/// `cfrc_int`, `cfrc_ext`, about its tree's subtree centre of mass, are
+/// MuJoCo's bit for bit (`mj_rnePostConstraint`,
+/// `engine_core_smooth.c:2491-2683`), and so is the accelerometer that has the
+/// forward pass compute them (`mj_objectAcceleration`): the cases with one,
+/// a sleeping tree's bodies included. Not the world's torque, `cfrc_int[0]`'s
+/// first three: MuJoCo sums each root's about that root's own point, here
+/// each is moved to the world's first (registry `D-WORLD-CFRC-INT`).
+#[test]
+fn body_accelerations_and_forces_are_mujocos() {
+    for name in ["compos", "slow", "nogravity", "sleeping"] {
+        let (_, data, case) = forward(name);
+        for (field, ours) in [
+            ("cacc", &data.cacc),
+            ("cfrc_int", &data.cfrc_int),
+            ("cfrc_ext", &data.cfrc_ext),
+        ] {
+            let skip = if field == "cfrc_int" { 3 } else { 0 };
+            assert_golden(
+                &format!("{name} {field}"),
+                &spatial(ours)[skip..],
+                &floats(&case[field])[skip..],
+            );
+        }
+        assert_golden(
+            &format!("{name} sensordata"),
+            data.sensordata.as_slice(),
+            &floats(&case["sensordata"]),
+        );
+    }
+}

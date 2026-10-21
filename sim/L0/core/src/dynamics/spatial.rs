@@ -305,37 +305,6 @@ pub fn transport_motion_spatial(m: SpatialVector, r: &Vector3<f64>) -> SpatialVe
     SpatialVector::new(m[0], m[1], m[2], lin.x, lin.y, lin.z)
 }
 
-/// Shift a spatial motion vector (velocity or acceleration) from `body_origin`
-/// to `target_pos`.
-///
-/// Motion transport: angular unchanged, linear += angular × r.
-/// Equivalent to `mju_transformSpatial` with `flg_force=0` and no rotation.
-#[inline]
-pub fn transport_motion(
-    angular: &Vector3<f64>,
-    linear: &Vector3<f64>,
-    target_pos: &Vector3<f64>,
-    body_origin: &Vector3<f64>,
-) -> (Vector3<f64>, Vector3<f64>) {
-    let r = target_pos - body_origin;
-    (*angular, linear + angular.cross(&r))
-}
-
-/// Shift a spatial force vector (wrench) from `body_origin` to `target_pos`.
-///
-/// Force transport: force unchanged, torque -= r × force.
-/// Equivalent to `mju_transformSpatial` with `flg_force=1` and no rotation.
-#[inline]
-pub fn transport_force(
-    torque: &Vector3<f64>,
-    force: &Vector3<f64>,
-    target_pos: &Vector3<f64>,
-    body_origin: &Vector3<f64>,
-) -> (Vector3<f64>, Vector3<f64>) {
-    let r = target_pos - body_origin;
-    (torque - r.cross(force), *force)
-}
-
 /// The spatial velocity `(angular, linear)` of a point fixed to a body.
 ///
 /// `target_pos` moves with body `body_id`; the velocity is in the world's
@@ -367,16 +336,16 @@ pub fn object_velocity(
     )
 }
 
-/// Compute 6D acceleration at `target_pos` on body `body_id` with Coriolis
-/// correction, optionally rotated into a local frame.
+/// The spatial acceleration `(angular, linear)` of a point fixed to a body.
 ///
-/// Equivalent to `mj_objectAcceleration(m, d, ..., flg_local)`:
-/// 1. Motion transport of `cacc` from body origin to target
-/// 2. The velocity at the target (world frame), [`object_velocity`]
-/// 3. Coriolis: a_lin += omega × v_lin
-/// 4. Optional rotation
-///
-/// Convention: reads `cacc[body_id]` at `xpos[body_id]`.
+/// `target_pos` moves with body `body_id`; the acceleration is in the world's
+/// orientation or, given `local_rot`, in that frame: MuJoCo's
+/// `mj_objectAcceleration` (`engine_core_util.c:777-840`), `cacc` and `cvel`
+/// moved from the tree's subtree centre of mass to the point and turned, then
+/// the turned angular velocity crossed with the turned linear velocity added
+/// to the linear part. One deliberate difference (registry
+/// `D-STATIC-ACCELEROMETER`): a static body's (welded to the world, or mocap)
+/// is its proper acceleration, gravity's, where MuJoCo's returns 0.
 #[must_use]
 pub fn object_acceleration(
     model: &Model,
@@ -385,56 +354,43 @@ pub fn object_acceleration(
     target_pos: &Vector3<f64>,
     local_rot: Option<&Matrix3<f64>>,
 ) -> (Vector3<f64>, Vector3<f64>) {
-    let cacc = data.cacc[body_id];
-    let alpha = Vector3::new(cacc[0], cacc[1], cacc[2]);
-    let a_lin = Vector3::new(cacc[3], cacc[4], cacc[5]);
-
-    let (alpha_at_point, a_at_point) =
-        transport_motion(&alpha, &a_lin, target_pos, &data.xpos[body_id]);
-
-    // Velocity at target point (world frame) for Coriolis
-    let (omega_at_point, v_at_point) = object_velocity(model, data, body_id, target_pos, None);
-
-    // Coriolis correction: a += omega × v
-    let a_corrected = a_at_point + omega_at_point.cross(&v_at_point);
-
-    match local_rot {
-        Some(rot) => (
-            rot.transpose() * alpha_at_point,
-            rot.transpose() * a_corrected,
-        ),
-        None => (alpha_at_point, a_corrected),
-    }
+    let reference = &data.subtree_com[model.body_rootid[body_id]];
+    let res = mju_transform_spatial(&data.cacc[body_id], false, target_pos, reference, local_rot);
+    let vel = mju_transform_spatial(&data.cvel[body_id], false, target_pos, reference, local_rot);
+    let correction =
+        Vector3::new(vel[0], vel[1], vel[2]).cross(&Vector3::new(vel[3], vel[4], vel[5]));
+    (
+        Vector3::new(res[0], res[1], res[2]),
+        Vector3::new(res[3], res[4], res[5]) + correction,
+    )
 }
 
-/// Compute constraint wrench at `target_pos` on body `body_id`, optionally
-/// rotated into a local frame.
+/// The internal wrench `(torque, force)` of a body's subtree at a point.
 ///
-/// Force transport: force unchanged, torque shifted by lever arm.
-/// No Coriolis — wrenches are not velocity-dependent.
-///
-/// Convention: reads `cfrc_int[body_id]` at `xpos[body_id]`.
+/// `cfrc_int[body_id]` moved, as a force, from the tree's subtree centre of
+/// mass to `target_pos` and, given `local_rot`, turned into that frame, as
+/// MuJoCo's force and torque sensors read it (`engine_sensor.c:1239-1263`).
+/// The world's is about its own reference point, `subtree_com[0]`.
 #[must_use]
 pub fn object_force(
+    model: &Model,
     data: &Data,
     body_id: usize,
     target_pos: &Vector3<f64>,
     local_rot: Option<&Matrix3<f64>>,
 ) -> (Vector3<f64>, Vector3<f64>) {
-    let cfrc = data.cfrc_int[body_id];
-    let torque = Vector3::new(cfrc[0], cfrc[1], cfrc[2]);
-    let force = Vector3::new(cfrc[3], cfrc[4], cfrc[5]);
-
-    let (torque_at_point, force_at_point) =
-        transport_force(&torque, &force, target_pos, &data.xpos[body_id]);
-
-    match local_rot {
-        Some(rot) => (
-            rot.transpose() * torque_at_point,
-            rot.transpose() * force_at_point,
-        ),
-        None => (torque_at_point, force_at_point),
-    }
+    let reference = &data.subtree_com[model.body_rootid[body_id]];
+    let res = mju_transform_spatial(
+        &data.cfrc_int[body_id],
+        true,
+        target_pos,
+        reference,
+        local_rot,
+    );
+    (
+        Vector3::new(res[0], res[1], res[2]),
+        Vector3::new(res[3], res[4], res[5]),
+    )
 }
 
 /// Compute 6D velocity at an object center in its local frame.
@@ -460,29 +416,21 @@ pub fn object_velocity_local(
 mod tests {
     use super::*;
 
-    /// T1: transport_motion — zero offset. Output equals input.
+    /// T1: `mju_transform_spatial` of a motion, zero offset: the input.
     #[test]
-    fn t01_transport_motion_zero_offset() {
-        let angular = Vector3::new(0.0, 0.0, 10.0);
-        let linear = Vector3::new(1.0, 2.0, 3.0);
+    fn t01_transform_motion_zero_offset() {
+        let m = SpatialVector::new(0.0, 0.0, 10.0, 1.0, 2.0, 3.0);
         let pos = Vector3::new(5.0, 6.0, 7.0);
-        let (ang_out, lin_out) = transport_motion(&angular, &linear, &pos, &pos);
-        assert_eq!(ang_out, angular);
-        assert_eq!(lin_out, linear);
+        assert_eq!(mju_transform_spatial(&m, false, &pos, &pos, None), m);
     }
 
-    /// T2: transport_motion — cross product direction.
+    /// T2: a motion moved one along x under a spin about z gains ŷ, the
+    /// angular part unchanged.
     #[test]
-    fn t02_transport_motion_cross_product() {
-        let angular = Vector3::new(0.0, 0.0, 1.0);
-        let linear = Vector3::new(0.0, 0.0, 0.0);
-        let origin = Vector3::new(0.0, 0.0, 0.0);
-        let target = Vector3::new(1.0, 0.0, 0.0);
-        let (ang_out, lin_out) = transport_motion(&angular, &linear, &target, &origin);
-        assert_eq!(ang_out, angular);
-        assert!((lin_out.x - 0.0).abs() < 1e-15);
-        assert!((lin_out.y - 1.0).abs() < 1e-15);
-        assert!((lin_out.z - 0.0).abs() < 1e-15);
+    fn t02_transform_motion_cross_product() {
+        let spin = SpatialVector::new(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        let out = mju_transform_spatial(&spin, false, &Vector3::x(), &Vector3::zeros(), None);
+        assert_eq!(out, SpatialVector::new(0.0, 0.0, 1.0, 0.0, 1.0, 0.0));
     }
 
     /// T2b: transport_motion_spatial — zero offset returns the input unchanged,
@@ -506,38 +454,42 @@ mod tests {
         assert!((out[5] - 0.0).abs() < 1e-15);
     }
 
-    /// T3: transport_force — moment arm.
+    /// T3: a force along z moved one along x gains the torque ŷ, the force
+    /// unchanged.
     #[test]
-    fn t03_transport_force_moment_arm() {
-        let torque = Vector3::new(0.0, 0.0, 0.0);
-        let force = Vector3::new(0.0, 0.0, 1.0);
-        let origin = Vector3::new(0.0, 0.0, 0.0);
-        let target = Vector3::new(1.0, 0.0, 0.0);
-        let (torque_out, force_out) = transport_force(&torque, &force, &target, &origin);
-        assert_eq!(force_out, force);
-        assert!((torque_out.x - 0.0).abs() < 1e-15);
-        assert!((torque_out.y - (1.0)).abs() < 1e-15);
-        assert!((torque_out.z - 0.0).abs() < 1e-15);
+    fn t03_transform_force_moment_arm() {
+        let push = SpatialVector::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let out = mju_transform_spatial(&push, true, &Vector3::x(), &Vector3::zeros(), None);
+        assert_eq!(out, SpatialVector::new(0.0, 1.0, 0.0, 0.0, 0.0, 1.0));
     }
 
-    /// T4: transport_force — force invariance across multiple offsets.
+    /// T4: a force is the same at every point.
     #[test]
-    fn t04_transport_force_invariance() {
-        let torque = Vector3::new(1.0, 2.0, 3.0);
-        let force = Vector3::new(3.0, 7.0, 11.0);
-        let origin = Vector3::new(0.0, 0.0, 0.0);
-
-        let offsets = [
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(0.5, -0.3, 0.8),
-        ];
-        for offset in &offsets {
-            let (_, force_out) = transport_force(&torque, &force, offset, &origin);
+    fn t04_transform_force_invariance() {
+        let wrench = SpatialVector::new(1.0, 2.0, 3.0, 3.0, 7.0, 11.0);
+        for offset in [Vector3::zeros(), Vector3::x(), Vector3::new(0.5, -0.3, 0.8)] {
+            let out = mju_transform_spatial(&wrench, true, &offset, &Vector3::zeros(), None);
             assert_eq!(
-                force_out, force,
-                "Force should be invariant for offset {offset:?}"
+                (out[3], out[4], out[5]),
+                (3.0, 7.0, 11.0),
+                "offset {offset:?}"
             );
         }
+    }
+
+    /// T5: given a frame, both parts are turned into it: a frame turned a
+    /// quarter about z reads the world's x̂ as its −ŷ.
+    #[test]
+    fn t05_transform_into_a_frame() {
+        let quarter = Matrix3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let m = SpatialVector::new(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        let out = mju_transform_spatial(
+            &m,
+            false,
+            &Vector3::zeros(),
+            &Vector3::zeros(),
+            Some(&quarter),
+        );
+        assert_eq!(out, SpatialVector::new(0.0, -1.0, 0.0, 0.0, -1.0, 0.0));
     }
 }
