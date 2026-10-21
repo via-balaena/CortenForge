@@ -647,6 +647,36 @@ fn gpu_simple_body_mass_matrix_matches_cpu() {
     );
 }
 
+/// A simple dof's diagonal is the model's `dof_M0`, made at `qpos0` (MuJoCo's
+/// `mj_setM0`), as the CPU's. With the body's mass doubled in place and
+/// `dof_M0` not remade, the CPU keeps the diagonal of the mass it was made
+/// with (asserted), where the state's mass would give twice it.
+#[test]
+fn gpu_simple_dof_diagonal_is_dof_m0() {
+    let ctx = gpu_or_skip!();
+    let mut case = two_slides_case();
+    let made_with = case.model.body_mass[1];
+    case.model.body_mass[1] *= 2.0;
+    let (data, fails) = case_against_cpu(&ctx, &case);
+    for dof in 0..case.model.nv {
+        assert_eq!(
+            data.qM[(dof, dof)],
+            case.model.dof_M0[dof],
+            "the CPU's diagonal {dof} is dof_M0"
+        );
+        assert_eq!(
+            case.model.dof_M0[dof], made_with,
+            "dof_M0 {dof} is the mass it was made with"
+        );
+    }
+    assert!(
+        fails.is_empty(),
+        "GPU↔CPU on a simple body edited in place: {} divergence(s):\n  {}",
+        fails.len(),
+        fails.join("\n  ")
+    );
+}
+
 /// A two-hinge chain whose joints carry armature, loaded from MJCF.
 const ARMATURE_CHAIN: &str = r#"
 <mujoco model="armature_chain">

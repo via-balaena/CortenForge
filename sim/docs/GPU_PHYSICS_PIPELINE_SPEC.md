@@ -234,7 +234,7 @@ that reference `array<GeomModel>` (currently `fk.wgsl`, `aabb.wgsl`,
 `sdf_sdf_narrow.wgsl`, `sdf_plane_narrow.wgsl`) must use the 96-byte struct
 definition for correct array stride.
 
-**DofModel struct** (20 bytes, five 4-byte fields, array stride 20) — added in Session 2:
+**DofModel struct** (24 bytes, six 4-byte fields, array stride 24) — added in Session 2:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -243,6 +243,7 @@ definition for correct array stride.
 | `armature` | f32 | The dof's armature, `dof_armature[i]` (MuJoCo's, which `mj_crb` adds to the diagonal). |
 | `damping` | f32 | Implicit damping (`model.implicit_damping[i]`). |
 | `simple` | u32 | 1 if the dof's body is simple (`model.dof_simplenum[i] > 0`): the CRBA writes its row of `qM` as the diagonal alone. |
+| `m0` | f32 | The dof's mass-matrix diagonal at `qpos0`, `model.dof_M0[i]` (MuJoCo's `mj_setM0`): a simple dof's diagonal. |
 
 | GPU buffer | Rust type | WGSL type | Bind group |
 |---|---|---|---|
@@ -787,7 +788,8 @@ buf_linear  = cross(ω, mh) + m · v
 Off-diagonal entries use the `dof_parent` walk with spatial force
 transport at body boundaries (`buf.angular += cross(r, buf.linear)`).
 A simple dof (`dofs[i].simple`, the CPU's `dof_simplenum > 0`) has none:
-its row is its diagonal alone, as the CPU's `mj_crba` (MuJoCo's `mj_crb`).
+its row is its diagonal alone, the model's `dof_M0` (`dofs[i].m0`, made at
+`qpos0`), as the CPU's `mj_crba` (MuJoCo's `mj_crb`).
 Verified against CPU `crba.rs:196-225`.
 
 For flat trees (hockey), all DOFs share the same body so no cross-body

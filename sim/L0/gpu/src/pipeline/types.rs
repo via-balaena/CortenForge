@@ -162,12 +162,12 @@ pub struct GeomModelGpu {
     pub _pad: [u32; 2],
 }
 
-/// Per-DOF static model data. 20 bytes.
+/// Per-DOF static model data. 24 bytes.
 ///
 /// Layout matches WGSL `DofModel` exactly.
 /// ```text
 /// offset 0:  body_id, parent, armature, damping  (2 × u32 + 2 × f32)
-/// offset 16: simple                              (u32)
+/// offset 16: simple, m0                          (u32 + f32)
 /// ```
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -187,6 +187,9 @@ pub struct DofModelGpu {
     /// 1 if the dof's body is simple (`model.dof_simplenum[i] > 0`), else 0:
     /// the CRBA writes a simple dof's row of `qM` as its diagonal alone.
     pub simple: u32,
+    /// The dof's mass-matrix diagonal at `qpos0`, `model.dof_M0[i]` (MuJoCo's
+    /// `mj_setM0`): a simple dof's diagonal, as the CPU's `mj_crba`.
+    pub m0: f32,
 }
 
 /// Per-dispatch FK parameters. 32 bytes, 16-byte aligned.
