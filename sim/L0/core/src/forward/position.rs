@@ -123,35 +123,61 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
 /// its last awake pass (for a tree that starts asleep, the reset's forward
 /// pass, `Model::start_sleep`).
 fn mj_com_pos(model: &Model, data: &mut Data) {
-    // Initialize with each body's own mass and COM
-    for body_id in 0..model.nbody {
-        data.subtree_mass[body_id] = model.body_mass[body_id];
-        data.subtree_com[body_id] = model.body_mass[body_id] * data.xipos[body_id];
-    }
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
+    let (nbody_awake, nparent_awake) = if sleep_filter {
+        (data.nbody_awake, data.nparent_awake)
+    } else {
+        (model.nbody, model.nbody)
+    };
 
-    // Backward pass: accumulate children's contributions to parents
+    // The subtree masses, which no state changes.
+    data.subtree_mass.copy_from_slice(&model.body_mass);
     for body_id in (1..model.nbody).rev() {
-        let parent_id = model.body_parent[body_id];
-        // Copy child data first to satisfy borrow checker
         let child_mass = data.subtree_mass[body_id];
-        let child_weighted_com = data.subtree_com[body_id];
-        data.subtree_mass[parent_id] += child_mass;
-        data.subtree_com[parent_id] += child_weighted_com;
+        data.subtree_mass[model.body_parent[body_id]] += child_mass;
     }
 
-    // Convert weighted sum to actual COM as `mj_comPos` normalizes it
-    // (`engine_core_smooth.c:274-284`): a subtree with less than mjMINVAL of
-    // mass takes the body's own centre of mass; another is scaled by the
-    // reciprocal of its mass.
-    for body_id in 0..model.nbody {
-        if data.subtree_mass[body_id] < MJ_MINVAL {
-            data.subtree_com[body_id] = data.xipos[body_id];
+    // The subtree centres of mass, of the awake bodies (`:250-284`): each
+    // body's moment, summed into its parent, a sleeping child's from its
+    // centre of mass as it was; then the moment over the subtree's mass, or
+    // the body's own centre of mass under mjMINVAL of it.
+    for b in 0..nbody_awake {
+        let i = if sleep_filter {
+            data.body_awake_ind[b]
         } else {
-            data.subtree_com[body_id] *= 1.0 / data.subtree_mass[body_id];
+            b
+        };
+        data.subtree_com[i] = data.xipos[i] * model.body_mass[i];
+    }
+    for b in (0..nparent_awake).rev() {
+        let i = if sleep_filter {
+            data.parent_awake_ind[b]
+        } else {
+            b
+        };
+        if i == 0 {
+            continue;
+        }
+        let child_moment = if sleep_filter && data.body_sleep_state[i] == SleepState::Asleep {
+            data.subtree_com[i] * data.subtree_mass[i]
+        } else {
+            data.subtree_com[i]
+        };
+        data.subtree_com[model.body_parent[i]] += child_moment;
+    }
+    for b in 0..nbody_awake {
+        let i = if sleep_filter {
+            data.body_awake_ind[b]
+        } else {
+            b
+        };
+        if data.subtree_mass[i] < MJ_MINVAL {
+            data.subtree_com[i] = data.xipos[i];
+        } else {
+            data.subtree_com[i] *= 1.0 / data.subtree_mass[i];
         }
     }
 
-    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
     let nbody = if sleep_filter {
         data.nbody_awake
     } else {

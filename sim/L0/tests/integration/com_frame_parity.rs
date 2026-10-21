@@ -274,10 +274,11 @@ fn object_velocities_are_mujocos() {
 /// The subtree velocities and angular momenta are MuJoCo's bit for bit
 /// (`mj_subtreeVel`, `engine_core_smooth.c:2346-2420`), which read each
 /// body's velocity at its centre of mass: the cases whose subtree sensors
-/// make the forward pass compute them.
+/// make the forward pass compute them, `sleeping`'s on the world, which
+/// MuJoCo takes over the awake bodies alone.
 #[test]
 fn subtree_velocities_are_mujocos() {
-    for name in ["compos", "slow", "nogravity"] {
+    for name in ["compos", "slow", "nogravity", "sleeping"] {
         let (_, data, case) = forward(name);
         assert_golden(
             &format!("{name} subtree_linvel"),

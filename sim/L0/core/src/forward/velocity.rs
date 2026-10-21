@@ -113,20 +113,33 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
 /// 2. Backward accumulate linear momentum → convert to velocity
 /// 3. Backward accumulate angular momentum with reference-point corrections
 ///
-/// Requires `subtree_com` and `subtree_mass` from position stage,
-/// and `cvel` from velocity stage.
+/// Requires `subtree_com` from the position stage, `cvel` from the velocity
+/// stage, and `Model::body_subtreemass`.
 ///
 /// # MuJoCo Equivalence
 ///
-/// Matches `mj_subtreeVel()` in `engine_core_smooth.c`.
+/// MuJoCo's `mj_subtreeVel()` (`engine_core_smooth.c:2346-2420`): when some
+/// trees sleep, each phase walks the awake bodies only, and a sleeping body
+/// adds nothing to its parent.
 #[allow(clippy::similar_names)] // dx/dv/dp are physics convention (displacement/velocity/momentum)
 pub fn mj_subtree_vel(model: &Model, data: &mut Data) {
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
+    let nbody_awake = if sleep_filter {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+    let awake: Vec<usize> = if sleep_filter {
+        data.body_awake_ind[..nbody_awake].to_vec()
+    } else {
+        (0..model.nbody).collect()
+    };
+
     // Temporary: per-body 6D velocity at COM in world frame
     let mut body_vel: Vec<[f64; 6]> = vec![[0.0; 6]; model.nbody];
 
     // Phase 1: Per-body quantities
-    #[allow(clippy::needless_range_loop)] // b indexes data.*[b] and body_vel[b] together
-    for b in 0..model.nbody {
+    for &b in &awake {
         // The body's velocity at its centre of mass (`mj_objectVelocity`).
         let (omega, v_com) = object_velocity(model, data, b, &data.xipos[b], None);
 
@@ -148,19 +161,19 @@ pub fn mj_subtree_vel(model: &Model, data: &mut Data) {
     }
 
     // Phase 2: Backward accumulate linear momentum, then convert to velocity
-    for b in (0..model.nbody).rev() {
+    for &b in awake.iter().rev() {
         if b > 0 {
             let parent = model.body_parent[b];
             let linvel_b = data.subtree_linvel[b];
             data.subtree_linvel[parent] += linvel_b;
         }
         // Momentum to velocity, times the reciprocal of the subtree's mass,
-        // at least mjMINVAL (`engine_core_smooth.c:2386-2387`).
+        // at least mjMINVAL (`engine_core_smooth.c:2383-2384`).
         data.subtree_linvel[b] *= 1.0 / model.body_subtreemass[b].max(MJ_MINVAL);
     }
 
     // Phase 3: Backward accumulate angular momentum
-    for b in (1..model.nbody).rev() {
+    for &b in awake[1..].iter().rev() {
         let parent = model.body_parent[b];
         let mass = model.body_mass[b];
         let smass = model.body_subtreemass[b];

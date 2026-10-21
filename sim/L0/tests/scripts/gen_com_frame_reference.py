@@ -54,9 +54,12 @@ MuJoCo (ledger L198, L195, L146). The cases:
   centred and childless) beside one it does not (an off-centre hinge).
 - mocap: a mocap body, a static body and a hinged body.
 - sleeping: two double pendulums, the first asleep from the start
-  (`sleep="init"`), the second moved, with an accelerometer. A sleeping body
-  keeps what MuJoCo last computed for it; the awake bodies are not the first
-  ones.
+  (`sleep="init"`), the second moved, with an accelerometer and the world's
+  subtree sensors (MuJoCo leaves a sleeping tree out of the world's subtree
+  velocities). The sleeping tree's place and masses make MuJoCo's world
+  centre of mass, which adds that tree's from its stored centre of mass,
+  differ from a sum over every body in its last bit. A sleeping body keeps
+  what MuJoCo last computed for it; the awake bodies are not the first ones.
 """
 import copy
 import json
@@ -179,12 +182,12 @@ SLEEPING = """<mujoco model="sleeping">
     <flag contact="disable" sleep="enable"/>
   </option>
   <worldbody>
-    <body name="resting" pos="1 0 1" sleep="init">
+    <body name="resting" pos="1.13 0.37 0.93" sleep="init">
       <joint type="hinge" axis="0 1 0"/>
-      <inertial pos="0 0 -0.2" mass="1" diaginertia="0.0134 0.0134 0.0003"/>
+      <inertial pos="0 0 -0.2" mass="1.1" diaginertia="0.0134 0.0134 0.0003"/>
       <body pos="0 0 -0.4">
         <joint type="hinge" axis="0 1 0"/>
-        <inertial pos="0.01 0 -0.1" mass="0.5" diaginertia="0.0018 0.0019 0.0002"/>
+        <inertial pos="0.01 0 -0.1" mass="0.3" diaginertia="0.0018 0.0019 0.0002"/>
       </body>
     </body>
     <body name="moving" pos="0 0 1">
@@ -199,6 +202,8 @@ SLEEPING = """<mujoco model="sleeping">
   </worldbody>
   <sensor>
     <accelerometer site="m"/>
+    <subtreelinvel body="world"/>
+    <subtreeangmom body="world"/>
   </sensor>
 </mujoco>"""
 
@@ -318,7 +323,7 @@ def main():
         "mocap": record(MOCAP, 11),
         "sleeping": record(SLEEPING, 13, trees=[1]),
     }
-    if cases["sleeping"]["body_awake"] == [1] * len(cases["sleeping"]["body_awake"]):
+    if 0 not in cases["sleeping"]["body_awake"][1:]:
         sys.exit("sleeping: no body asleep")
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     with open(os.path.join(sys.argv[1], "com_frame.json"), "w", encoding="utf-8") as f:
