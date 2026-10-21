@@ -2,7 +2,7 @@
 //!
 //! Compiles `crba.wgsl` (4 entry points), creates bind group layouts and
 //! bind groups, and dispatches the CRBA sequence:
-//!   1. `crba_init` — convert cinert to crb accumulation format
+//!   1. `crba_init` — each body's crb from its cinert
 //!   2. `crba_backward` — leaves-to-root CAS atomic accumulation
 //!   3. `crba_mass_matrix` — per-DOF parallel M assembly
 //!   4. `crba_cholesky` — dense Cholesky factorization (single thread)
@@ -100,9 +100,8 @@ impl GpuCrbaPipeline {
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("crba_fk_state_layout"),
                     entries: &[
-                        storage_entry(0, true), // body_xpos
-                        storage_entry(1, true), // body_cinert
-                        storage_entry(2, true), // cdof
+                        storage_entry(0, true), // body_cinert
+                        storage_entry(1, true), // cdof
                     ],
                 });
 
@@ -174,11 +173,7 @@ impl GpuCrbaPipeline {
         let fk_state_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("crba_fk_state_bg"),
             layout: &fk_state_layout,
-            entries: &[
-                buf_entry(0, &state.body_xpos),
-                buf_entry(1, &state.body_cinert),
-                buf_entry(2, &state.cdof),
-            ],
+            entries: &[buf_entry(0, &state.body_cinert), buf_entry(1, &state.cdof)],
         });
 
         let crba_output_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {

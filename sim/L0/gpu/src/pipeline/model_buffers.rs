@@ -121,7 +121,7 @@ impl GpuModelBuffers {
                     dof_adr: model.body_dof_adr[b] as u32,
                     dof_num: model.body_dof_num[b] as u32,
                     mocap_id,
-                    _pad: 0,
+                    rootid: model.body_rootid[b] as u32,
                     pos: [pos.x as f32, pos.y as f32, pos.z as f32, 0.0],
                     quat: [qc.x as f32, qc.y as f32, qc.z as f32, qc.w as f32],
                     ipos: [ipos.x as f32, ipos.y as f32, ipos.z as f32, 0.0],

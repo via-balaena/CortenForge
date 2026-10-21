@@ -46,11 +46,27 @@ use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
 use crate::submit::read_buffer;
 
-/// The CPU's spatial velocity of body `b` about its origin `xpos`, the GPU's
-/// reference point (`cvel` is about the tree's subtree centre of mass).
-fn cpu_cvel_at_origin(model: &Model, data: &Data, b: usize) -> nalgebra::Vector6<f64> {
-    let (w, v) = sim_core::dynamics::object_velocity(model, data, b, &data.xpos[b], None);
-    nalgebra::Vector6::new(w.x, w.y, w.z, v.x, v.y, v.z)
+/// Body `b`'s `cinert` from the GPU's buffer: MuJoCo's 10-vector `[Ixx, Iyy,
+/// Izz, Ixy, Ixz, Iyz, m·dx, m·dy, m·dz, m]`, the CPU's layout, in 3 vec4.
+fn gpu_cinert(gpu: &[[f32; 4]], b: usize) -> [f32; 10] {
+    let c = |k: usize| gpu[b * 3 + k / 4][k % 4];
+    std::array::from_fn(c)
+}
+
+/// Spatial vector `i` (`[angular; linear]`) from a GPU buffer of 2 vec4 each.
+fn gpu_spatial(gpu: &[[f32; 4]], i: usize) -> [f32; 6] {
+    std::array::from_fn(|k| gpu[i * 2 + k / 3][k % 3])
+}
+
+/// Assert every entry of `gpu` within `tol` of the CPU's `cpu`.
+fn assert_entries(gpu: &[f32], cpu: &[f64], tol: f32, what: &str) {
+    for (k, (&g, &c)) in gpu.iter().zip(cpu).enumerate() {
+        let err = (g - c as f32).abs();
+        assert!(
+            err < tol,
+            "{what}[{k}]: GPU={g:.6} CPU={c:.6} err={err:.2e}"
+        );
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -277,102 +293,20 @@ fn t4_cinert_matches_cpu() {
     pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 
-    // Readback cinert (3 vec4 per body)
-    let gpu_cinert = read_buffer::<[f32; 4]>(&ctx, &state_buf.body_cinert, model.nbody * 3);
-
-    // Compare each body's cinert against CPU
+    // Readback cinert (3 vec4 per body), each body's against the CPU's
+    let gpu = read_buffer::<[f32; 4]>(&ctx, &state_buf.body_cinert, model.nbody * 3);
     for body_id in 0..model.nbody {
-        let base = body_id * 3;
-        let gpu_mass = gpu_cinert[base][0];
-        let gpu_h = [
-            gpu_cinert[base][1],
-            gpu_cinert[base][2],
-            gpu_cinert[base][3],
-        ];
-        let gpu_i = [
-            gpu_cinert[base + 1][0],
-            gpu_cinert[base + 1][1],
-            gpu_cinert[base + 1][2],
-            gpu_cinert[base + 1][3],
-            gpu_cinert[base + 2][0],
-            gpu_cinert[base + 2][1],
-        ];
-
-        // Reconstruct CPU cinert compact form for comparison
-        let cpu = &data.cinert[body_id];
-        let cpu_mass = cpu[9];
-        let cpu_h = Vector3::new(
-            data.xipos[body_id].x - data.xpos[body_id].x,
-            data.xipos[body_id].y - data.xpos[body_id].y,
-            data.xipos[body_id].z - data.xpos[body_id].z,
+        assert_entries(
+            &gpu_cinert(&gpu, body_id),
+            &data.cinert[body_id],
+            1e-4,
+            &format!("body {body_id} cinert"),
         );
-
-        // Extract rotational inertia about COM from CPU cinert. The CPU's is
-        // MuJoCo's 10-vector `[xx, yy, zz, xy, xz, yz, m·d, m]` about the
-        // tree's subtree centre of mass: rotational part I_COM + m*(|d|²I -
-        // d⊗d), d = xipos - subtree_com[root]. GPU stores I_COM directly.
-        let d = data.xipos[body_id] - data.subtree_com[model.body_rootid[body_id]];
-        let dd = d.dot(&d);
-        let cpu_i_com_00 = cpu[0] - cpu_mass * (dd - d.x * d.x);
-        let cpu_i_com_01 = cpu[3] - cpu_mass * (0.0 - d.x * d.y);
-        let cpu_i_com_02 = cpu[4] - cpu_mass * (0.0 - d.x * d.z);
-        let cpu_i_com_11 = cpu[1] - cpu_mass * (dd - d.y * d.y);
-        let cpu_i_com_12 = cpu[5] - cpu_mass * (0.0 - d.y * d.z);
-        let cpu_i_com_22 = cpu[2] - cpu_mass * (dd - d.z * d.z);
-
-        let tol = 1e-4;
-        assert!(
-            (gpu_mass - cpu_mass as f32).abs() < tol,
-            "body {body_id} mass: GPU={gpu_mass:.6} CPU={cpu_mass:.6}",
-        );
-
-        for k in 0..3 {
-            let g = gpu_h[k];
-            let c = [cpu_h.x, cpu_h.y, cpu_h.z][k] as f32;
-            assert!(
-                (g - c).abs() < tol,
-                "body {body_id} h[{k}]: GPU={g:.6} CPU={c:.6}"
-            );
-        }
-
-        let cpu_i_vec = [
-            cpu_i_com_00,
-            cpu_i_com_01,
-            cpu_i_com_02,
-            cpu_i_com_11,
-            cpu_i_com_12,
-            cpu_i_com_22,
-        ];
-        for k in 0..6 {
-            let g = gpu_i[k];
-            let c = cpu_i_vec[k] as f32;
-            assert!(
-                (g - c).abs() < tol,
-                "body {body_id} I[{k}]: GPU={g:.6} CPU={c:.6}"
-            );
-        }
     }
     eprintln!("  T4 passed: cinert matches CPU");
 }
 
 // ── T5: cdof validation ───────────────────────────────────────────────
-
-/// Compute hinge cdof on CPU: [axis; cross(axis, body_origin - anchor)]
-fn cpu_hinge_cdof(model: &Model, data: &Data, jnt_id: usize) -> [f32; 6] {
-    let body_id = model.jnt_body[jnt_id];
-    let axis_world = data.xquat[body_id] * model.jnt_axis[jnt_id];
-    let anchor_world = data.xpos[body_id] + data.xquat[body_id] * model.jnt_pos[jnt_id];
-    let r = data.xpos[body_id] - anchor_world;
-    let lin = axis_world.cross(&r);
-    [
-        axis_world.x as f32,
-        axis_world.y as f32,
-        axis_world.z as f32,
-        lin.x as f32,
-        lin.y as f32,
-        lin.z as f32,
-    ]
-}
 
 #[test]
 fn t5_cdof_matches_cpu() {
@@ -396,61 +330,17 @@ fn t5_cdof_matches_cpu() {
     pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 
-    // Readback cdof (2 vec4 per DOF)
-    let gpu_cdof = read_buffer::<[f32; 4]>(&ctx, &state_buf.cdof, model.nv * 2);
-
-    // All 3 DOFs are hinge joints
+    // Readback cdof (2 vec4 per DOF), each dof's against the CPU's
+    let gpu = read_buffer::<[f32; 4]>(&ctx, &state_buf.cdof, model.nv * 2);
     for dof in 0..model.nv {
-        let jnt_id = model.dof_jnt[dof];
-        let cpu = cpu_hinge_cdof(&model, &data, jnt_id);
-
-        let gpu_ang = &gpu_cdof[dof * 2];
-        let gpu_lin = &gpu_cdof[dof * 2 + 1];
-
-        let tol = 1e-4;
-        for r in 0..3 {
-            let g = gpu_ang[r];
-            let c = cpu[r];
-            assert!(
-                (g - c).abs() < tol,
-                "dof {dof} angular[{r}]: GPU={g:.6} CPU={c:.6}"
-            );
-        }
-        for r in 0..3 {
-            let g = gpu_lin[r];
-            let c = cpu[r + 3];
-            assert!(
-                (g - c).abs() < tol,
-                "dof {dof} linear[{r}]: GPU={g:.6} CPU={c:.6}"
-            );
-        }
+        assert_entries(
+            &gpu_spatial(&gpu, dof),
+            data.cdof[dof].as_slice(),
+            1e-4,
+            &format!("dof {dof} cdof"),
+        );
     }
     eprintln!("  T5 passed: cdof matches CPU for 3-link pendulum");
-}
-
-/// Expected hinge/slide `cdof` from the CPU's stored PARTIAL frames
-/// (`data.xaxis`/`data.xanchor`) — the exact source `joint_motion_subspace`
-/// consumes. Unlike `cpu_hinge_cdof` (which rebuilds from the final `xquat`),
-/// this is correct for a multi-joint body where later joints rotate the frame.
-fn cpu_cdof_partial(model: &Model, data: &Data, jnt_id: usize) -> [f32; 6] {
-    let body_id = model.jnt_body[jnt_id];
-    let axis = data.xaxis[jnt_id];
-    match model.jnt_type[jnt_id] {
-        MjJointType::Hinge => {
-            let r = data.xpos[body_id] - data.xanchor[jnt_id];
-            let lin = axis.cross(&r);
-            [
-                axis.x as f32,
-                axis.y as f32,
-                axis.z as f32,
-                lin.x as f32,
-                lin.y as f32,
-                lin.z as f32,
-            ]
-        }
-        MjJointType::Slide => [0.0, 0.0, 0.0, axis.x as f32, axis.y as f32, axis.z as f32],
-        other => panic!("cpu_cdof_partial: unexpected joint type {other:?}"),
-    }
 }
 
 // ── T5b: cdof for a MULTI-JOINT body (partial-frame subspace) ─────────
@@ -482,28 +372,14 @@ fn t5b_cdof_multi_joint_body() {
     pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 
-    let gpu_cdof = read_buffer::<[f32; 4]>(&ctx, &state_buf.cdof, model.nv * 2);
-
-    let tol = 1e-4;
+    let gpu = read_buffer::<[f32; 4]>(&ctx, &state_buf.cdof, model.nv * 2);
     for dof in 0..model.nv {
-        let jnt_id = model.dof_jnt[dof];
-        let cpu = cpu_cdof_partial(&model, &data, jnt_id);
-        let gpu_ang = &gpu_cdof[dof * 2];
-        let gpu_lin = &gpu_cdof[dof * 2 + 1];
-        for r in 0..3 {
-            assert!(
-                (gpu_ang[r] - cpu[r]).abs() < tol,
-                "dof {dof} angular[{r}]: GPU={:.6} CPU={:.6}",
-                gpu_ang[r],
-                cpu[r]
-            );
-            assert!(
-                (gpu_lin[r] - cpu[r + 3]).abs() < tol,
-                "dof {dof} linear[{r}]: GPU={:.6} CPU={:.6}",
-                gpu_lin[r],
-                cpu[r + 3]
-            );
-        }
+        assert_entries(
+            &gpu_spatial(&gpu, dof),
+            data.cdof[dof].as_slice(),
+            1e-4,
+            &format!("dof {dof} cdof"),
+        );
     }
     eprintln!("  T5b passed: cdof matches CPU for multi-joint body");
 }
@@ -581,19 +457,16 @@ fn t7_cinert_hinge_chain() {
     pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 
-    let gpu_cinert = read_buffer::<[f32; 4]>(&ctx, &state_buf.body_cinert, model.nbody * 3);
-
-    let tol = 1e-3; // Looser for chain + rotated inertia
+    let gpu = read_buffer::<[f32; 4]>(&ctx, &state_buf.body_cinert, model.nbody * 3);
     for body_id in 1..model.nbody {
-        let base = body_id * 3;
-        let gpu_mass = gpu_cinert[base][0];
-        let cpu_mass = data.cinert[body_id][9];
-        assert!(
-            (gpu_mass - cpu_mass as f32).abs() < tol,
-            "body {body_id} mass: GPU={gpu_mass:.6} CPU={cpu_mass:.6}"
+        assert_entries(
+            &gpu_cinert(&gpu, body_id),
+            &data.cinert[body_id],
+            1e-3, // Looser for chain + rotated inertia
+            &format!("body {body_id} cinert"),
         );
     }
-    eprintln!("  T7 passed: cinert mass matches CPU for hinge chain");
+    eprintln!("  T7 passed: cinert matches CPU for hinge chain");
 }
 
 // ── Helpers for CRBA / velocity FK tests ─────────────────────────────
@@ -684,7 +557,7 @@ fn t8_qm_diagonal_free_body() {
     eprintln!("  T8 passed: qM diagonal matches CPU for free body (nv={nv})");
 }
 
-// ── T9: qM for 3-link pendulum (off-diagonal + spatial force transport)
+// ── T9: qM for 3-link pendulum (off-diagonal) ────────────────────────
 
 #[test]
 fn t9_qm_pendulum_full_matrix() {
@@ -762,8 +635,7 @@ fn t10_qm_flat_tree_free_bodies() {
 // ── T10b: qM for a MULTI-JOINT body ──────────────────────────────────
 // CRBA's mass-matrix kernel walks the dof_parent chain and projects cdof; the
 // intra-body off-diagonals M[i,j] for two DOFs on the SAME body must use the
-// partial-frame cdof (no spurious body-boundary transport between them). Guards
-// CRBA on the hinge→slide→hinge single-body fixture.
+// partial-frame cdof. Guards CRBA on the hinge→slide→hinge single-body fixture.
 #[test]
 fn t10b_qm_multi_joint_body() {
     let ctx = gpu_or_skip!();
@@ -835,7 +707,7 @@ fn t11_cvel_free_body() {
     for b in 0..model.nbody {
         let gpu_ang = &gpu_cvel[b * 2];
         let gpu_lin = &gpu_cvel[b * 2 + 1];
-        let cpu = &cpu_cvel_at_origin(&model, &data, b);
+        let cpu = &data.cvel[b];
 
         for k in 0..3 {
             let g_a = gpu_ang[k];
@@ -893,7 +765,7 @@ fn t12_cvel_pendulum() {
     for b in 0..model.nbody {
         let gpu_ang = &gpu_cvel[b * 2];
         let gpu_lin = &gpu_cvel[b * 2 + 1];
-        let cpu = &cpu_cvel_at_origin(&model, &data, b);
+        let cpu = &data.cvel[b];
 
         for k in 0..3 {
             let g_a = gpu_ang[k];
@@ -1143,12 +1015,11 @@ fn t15_qfrc_bias_pendulum() {
 }
 
 // ── T15b: qfrc_bias for a NON-PARALLEL (spatial) 3-link chain ────────
-// Guards the RNE forward velocity-product transport. `n_link_pendulum` is an
-// all-Y (planar, parallel-axis) chain, where the `[0; ω_parent×r]` transport
-// lever of the Coriolis term vanishes — so T15 stays green even if the shader
-// drops it. A non-parallel ≥3-link chain is the first geometry where the lever
-// is material and the leaf transports a nonzero parent bias acceleration; this
-// is exactly where the CPU bug (fixed alongside this shader) showed up vs MuJoCo.
+// `n_link_pendulum` is an all-Y (planar, parallel-axis) chain: every dof's
+// axis is parallel to the velocity's angular part, so each cdof_dot's angular
+// part, ω × axis, is 0 — and T15 stays green even if the velocity shader drops
+// it. A non-parallel ≥3-link chain makes it material; it is where the CPU bug
+// (fixed alongside an earlier version of this shader) showed up vs MuJoCo.
 #[test]
 fn t15b_qfrc_bias_spatial_chain() {
     let ctx = gpu_or_skip!();

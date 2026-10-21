@@ -85,7 +85,7 @@ pub const SDF_META_NONE: u32 = 0xFFFF_FFFF;
 /// Layout matches WGSL `BodyModel` exactly.
 /// ```text
 /// offset  0: parent, depth, jnt_adr, jnt_num       (4 × u32 = 16 bytes)
-/// offset 16: dof_adr, dof_num, mocap_id, _pad       (4 × u32 = 16 bytes)
+/// offset 16: dof_adr, dof_num, mocap_id, rootid     (4 × u32 = 16 bytes)
 /// offset 32: pos                                     (vec4<f32> = 16 bytes)
 /// offset 48: quat                                    (vec4<f32> = 16 bytes)
 /// offset 64: ipos                                    (vec4<f32> = 16 bytes)
@@ -102,7 +102,10 @@ pub struct BodyModelGpu {
     pub dof_adr: u32,
     pub dof_num: u32,
     pub mocap_id: u32,
-    pub _pad: u32,
+    /// The root of the body's tree (`model.body_rootid[b]`): its subtree
+    /// centre of mass is the point the body's `cinert`, `cdof` and velocities
+    /// are about.
+    pub rootid: u32,
     pub pos: [f32; 4],
     pub quat: [f32; 4],
     pub ipos: [f32; 4],

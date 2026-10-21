@@ -1,7 +1,9 @@
 //! GPU velocity FK pipeline — body spatial velocities from qvel.
 //!
 //! Compiles `velocity_fk.wgsl` (1 entry point), creates bind groups,
-//! and dispatches the forward tree scan for body cvel.
+//! and dispatches the forward tree scan for each body's `cvel` and each
+//! dof's `cdof_dot`, about its tree's subtree centre of mass (MuJoCo's
+//! `mj_comVel`, the CPU's `mj_fwd_velocity`).
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -68,24 +70,27 @@ impl GpuVelocityFkPipeline {
                 }],
             });
 
-        // Group 1: static model (bodies only)
+        // Group 1: static model (bodies, joints)
         let model_layout = ctx
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("vel_fk_model_layout"),
-                entries: &[storage_entry(0, true)], // bodies
+                entries: &[
+                    storage_entry(0, true), // bodies
+                    storage_entry(1, true), // joints
+                ],
             });
 
-        // Group 2: state (body_xpos, cdof, qvel read; body_cvel write)
+        // Group 2: state (cdof, qvel read; body_cvel, cdof_dot write)
         let state_layout = ctx
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("vel_fk_state_layout"),
                 entries: &[
-                    storage_entry(0, true),  // body_xpos
-                    storage_entry(1, true),  // cdof
-                    storage_entry(2, true),  // qvel
-                    storage_entry(3, false), // body_cvel
+                    storage_entry(0, true),  // cdof
+                    storage_entry(1, true),  // qvel
+                    storage_entry(2, false), // body_cvel
+                    storage_entry(3, false), // cdof_dot
                 ],
             });
 
@@ -127,17 +132,17 @@ impl GpuVelocityFkPipeline {
         let model_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("vel_fk_model_bg"),
             layout: &model_layout,
-            entries: &[buf_entry(0, &model.bodies)],
+            entries: &[buf_entry(0, &model.bodies), buf_entry(1, &model.joints)],
         });
 
         let state_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("vel_fk_state_bg"),
             layout: &state_layout,
             entries: &[
-                buf_entry(0, &state.body_xpos),
-                buf_entry(1, &state.cdof),
-                buf_entry(2, &state.qvel),
-                buf_entry(3, &state.body_cvel),
+                buf_entry(0, &state.cdof),
+                buf_entry(1, &state.qvel),
+                buf_entry(2, &state.body_cvel),
+                buf_entry(3, &state.cdof_dot),
             ],
         });
 
