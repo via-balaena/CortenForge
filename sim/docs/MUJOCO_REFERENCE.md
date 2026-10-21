@@ -1039,8 +1039,8 @@ When `ENABLE_SLEEP` is set, pipeline stages use awake-index indirection
 ### Selective CRBA + Partial LDL (Phase C)
 
 `mj_crba` with sleep filter:
-- Phase 2 (backward pass): only accumulates composite inertia for awake bodies
-- Phase 3 (build M): only computes mass matrix entries for awake DOFs
+- Phase 1 (composite inertias): only accumulates composite inertia for awake bodies
+- Phase 2 (build M): only computes mass matrix entries for awake DOFs
 - Sleeping DOFs retain their last-awake `qM` entries
 
 `mj_factor_m` (MuJoCo's `mj_factorM`): with a tree asleep, copies and

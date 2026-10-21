@@ -148,9 +148,9 @@ dimension. For `n_env=1` (interactive), this is just an offset of 0.
 For `n_env=1000` (batch), each thread computes
 `env_id * stride + element_id`. Same shader, wider dispatch.
 
-**Note:** Session 1 hardcodes `n_env=1`. Batch support (n_env > 1)
-requires adding env-offset math to qpos indexing and CAS atomics for
-backward scans. Deferred to a future session.
+**Batching:** `GpuPhysicsPipeline::new_batched` steps `n_env`
+environments in lockstep; every shader offsets its reads and writes by
+`env_id`.
 
 **f32 throughout:** All GPU physics uses f32. Conversion from f64
 happens at the CPU→GPU boundary (upload) and GPU→CPU boundary
@@ -648,7 +648,7 @@ for j in body_jnt_adr[body] .. body_jnt_adr[body] + body_jnt_num[body]:
             // Rotate around joint anchor in world frame
             world_axis   = rotate(quat, jnt_axis[j])
             world_anchor = pos + rotate(quat, jnt_pos[j])
-            rot          = axis_angle_to_quat(world_axis, qpos[adr])
+            rot          = axis_angle_to_quat(world_axis, qpos[adr] - qpos0[adr])
             quat         = rot × quat              // LEFT multiply (world frame)
             pos          = world_anchor + rotate(rot, pos - world_anchor)
         Ball:
@@ -659,7 +659,7 @@ for j in body_jnt_adr[body] .. body_jnt_adr[body] + body_jnt_num[body]:
             // Session 1 matched the CPU (position.rs:90-98) which uses RIGHT multiply.
             // This is simpler and correct — Ball joints rotate in the body's local frame.
         Slide:
-            pos += rotate(quat, jnt_axis[j]) × qpos[adr]
+            pos += rotate(quat, jnt_axis[j]) × (qpos[adr] - qpos0[adr])
 ```
 
 **Critical hinge details (verified against CPU `position.rs:61-82`):**
@@ -682,8 +682,10 @@ xipos = pos + rotate(quat, body_ipos[body])
 In the joint loop each joint's axis and anchor, in the frame before it
 turns, are written to `jnt_xaxis` / `jnt_xanchor` (MuJoCo's `xaxis`,
 `xanchor`): `rotate(quat, jnt_axis[j])` and `pos + rotate(quat,
-jnt_pos[j])`; a free joint's anchor is its position, a ball's the body's
-origin (the GPU turns a ball about it, not about its `jnt_pos` as the CPU
+jnt_pos[j])`. A free joint (alone on its body, as `Model::make_data`
+requires) takes its position as its anchor and the model's axis as its
+axis (MuJoCo's `mj_kinematics1`); a ball takes the body's origin as its
+anchor (the GPU turns a ball about it, not about its `jnt_pos` as the CPU
 does; see `GpuFkPipeline`).
 
 **Step 6 — Geom poses:**
@@ -703,7 +705,7 @@ A separate backward tree scan accumulates weighted COM:
 ```
 Phase 1 (per-body): subtree_mass[b] = mass[b];
                      weighted_com[b] = mass[b] × xipos[b]
-Phase 2 (backward): accumulate into parent (see §7.3 for f32 workaround)
+Phase 2 (backward): one thread per env adds each body into its parent, leaves first
 Phase 3 (per-body): subtree_com[b] = weighted_com[b] × (1 / subtree_mass[b])
                      Guard: if subtree_mass < mjMINVAL (1e-15), use xipos[b]
                      (the CPU's rule, MuJoCo's mj_comPos)
@@ -938,9 +940,9 @@ passive forces remain CPU-only for the initial implementation.
 **Actual:** ~98 lines WGSL. 2 entry points.
 **Pattern:** Per-DOF parallel + single-thread Cholesky solve.
 
-**Bindings (8 total, 4 bind groups):**
+**Bindings (10 total, 4 bind groups):**
 - Group 0: `PhysicsParams` uniform (dynamic offset)
-- Group 1: `qfrc_bias`, `qfrc_applied`, `qfrc_actuator`, `qfrc_passive` (read)
+- Group 1: `qfrc_bias`, `qfrc_applied`, `qfrc_actuator`, `qfrc_passive`, `qvel`, `dofs` (read)
 - Group 2: `qM_factor` (read)
 - Group 3: `qfrc_smooth`, `qacc_smooth` (read-write)
 
@@ -951,7 +953,7 @@ qfrc_smooth[dof] = qfrc_applied[dof] + qfrc_actuator[dof]
 ```
 
 **Note on xfrc_applied projection (DEFERRED):** The CPU
-(`constraint/mod.rs:89-107`) projects body-frame Cartesian forces
+(`constraint/mod.rs:76-94`) projects body-frame Cartesian forces
 `xfrc_applied[B]` into joint space by walking ancestor DOFs via
 `mj_apply_ft`. For gravity-only (Session 3), `xfrc_applied` is zeroed.
 The projection will be added when external forces are needed. The spec

@@ -169,7 +169,7 @@ impl GpuFkPipeline {
                     push_constant_ranges: &[],
                 });
 
-        // ── Create 4 pipelines ────────────────────────────────────────
+        // ── Create 5 pipelines ────────────────────────────────────────
         let fk_forward_pipeline =
             create_pipeline(ctx, &pipeline_layout, &shader_module, "fk_forward");
         let geom_pipeline = create_pipeline(ctx, &pipeline_layout, &shader_module, "fk_geom_poses");

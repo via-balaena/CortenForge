@@ -146,9 +146,9 @@ struct GeomModel {
 @group(2) @binding(9) var<storage, read_write> jnt_xanchor: array<vec4<f32>>;
 
 // Group 3: geom data (model + output), read by fk_geom_poses; and, at its
-// own bindings, fk_com_pos's outputs. Each entry point's pipeline layout
-// holds only its own group 3 bindings (one layout holding both would pass
-// the device's 16 storage buffers per stage).
+// own bindings, fk_com_pos's outputs. fk_com_pos's pipeline layout holds
+// group 3's bindings 3 and 4, the other passes' layout its bindings 0–2 (one
+// layout holding both would pass the device's 16 storage buffers per stage).
 @group(3) @binding(0) var<storage, read> geom_models: array<GeomModel>;
 @group(3) @binding(1) var<storage, read_write> geom_xpos: array<vec4<f32>>;
 @group(3) @binding(2) var<storage, read_write> geom_xmat: array<vec4<f32>>;

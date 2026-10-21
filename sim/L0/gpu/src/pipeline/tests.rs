@@ -348,8 +348,8 @@ fn t5_cdof_matches_cpu() {
 // vs partial-frame distinction is invisible. `multi_joint_body` carries
 // hinge→slide→hinge on a single body: the first hinge and the slide are each
 // followed by a later *rotating* joint, so a final-frame cdof over-rotates
-// their subspace. This is the only fixture that catches the GPU fk.wgsl
-// partial-frame gap (mirrors CPU project-multi-joint-partial-frame).
+// their subspace. It and the conformance matrix's `multi_joint_body` case
+// catch a final-frame cdof in fk.wgsl.
 #[test]
 fn t5b_cdof_multi_joint_body() {
     let ctx = gpu_or_skip!();
@@ -1018,7 +1018,7 @@ fn t15_qfrc_bias_pendulum() {
 // `n_link_pendulum` is an all-Y (planar, parallel-axis) chain: every dof's
 // axis is parallel to the velocity's angular part, so each cdof_dot's angular
 // part, ω × axis, is 0 — and T15 stays green even if the velocity shader drops
-// it. A non-parallel ≥3-link chain makes it material; it is where the CPU bug
+// it. A non-parallel chain makes it material; it is where the CPU bug
 // (fixed alongside an earlier version of this shader) showed up vs MuJoCo.
 #[test]
 fn t15b_qfrc_bias_spatial_chain() {
