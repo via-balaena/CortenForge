@@ -229,17 +229,25 @@ fn row_tree_pair(model: &Model, data: &Data, row: usize) -> Option<(Option<usize
     }
 }
 
-/// The distinct trees of row `row`'s nonzero Jacobian columns, in column
-/// order (MuJoCo's `treeNext` scan). Dofs are numbered tree by tree, so each
+/// The distinct trees of row `row`'s dofs, in dof order, as MuJoCo's
+/// `treeNext` scans them (`engine_island.c:144-185`): at the sparse size
+/// ([`Model::is_sparse`]) its chain's dofs, whatever their values; at the
+/// dense size its nonzero entries'. Dofs are numbered tree by tree, so each
 /// tree appears once.
 fn row_trees(model: &Model, data: &Data, row: usize) -> Vec<usize> {
+    let dofs: Vec<usize> = if model.is_sparse() {
+        let adr = data.efc_J_rowadr[row];
+        data.efc_J_colind[adr..adr + data.efc_J_rownnz[row]].to_vec()
+    } else {
+        (0..model.nv)
+            .filter(|&dof| data.efc_J[(row, dof)] != 0.0)
+            .collect()
+    };
     let mut trees: Vec<usize> = Vec::new();
-    for dof in 0..model.nv {
-        if data.efc_J[(row, dof)] != 0.0 {
-            let tree = model.dof_treeid[dof];
-            if trees.last() != Some(&tree) {
-                trees.push(tree);
-            }
+    for dof in dofs {
+        let tree = model.dof_treeid[dof];
+        if trees.last() != Some(&tree) {
+            trees.push(tree);
         }
     }
     trees

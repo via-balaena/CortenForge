@@ -1089,29 +1089,23 @@ fn a_tendon_friction_row_after_a_dof_friction_row_joins_its_trees() {
 
 /// At jacobian="sparse", a hinge with friction loss beside a second hinge
 /// under a fixed tendon of coef 0 with friction loss and a range its length
-/// exceeds: the tendon's two rows are all zero. A row in no island takes the
-/// force and state at its residual `efc_b`, with the warmstart and without:
-/// every row's force and the acceleration are MuJoCo's, and every row's
-/// state is MuJoCo's `efc_state` (with the warmstart) or its island solve's
-/// (without, where MuJoCo writes no `efc_state`). Not matched (ledger L143):
-/// MuJoCo's partition reads a row's dof chain (`treeNext`,
-/// `engine_island.c:148-162`), so the tendon's rows make the second hinge an
-/// island (2 islands; with the warmstart 2 iterations a step, without it the
-/// first island's 1 and the second's 0 or 1); sim-core's reads the nonzero
-/// entries, so they are in none (1 island, 1 iteration).
+/// exceeds: the tendon's two rows are all zero, and their dof chain is the
+/// second hinge's. The partition reads a row's chain at the sparse size, as
+/// MuJoCo's (`treeNext`, `engine_island.c:148-162`), so the tendon's rows
+/// make the second hinge an island. With the warmstart and without: the
+/// islands, every row's force and the acceleration are MuJoCo's, every
+/// row's state is MuJoCo's `efc_state` (with the warmstart) or its island
+/// solve's (without, where MuJoCo writes no `efc_state`), and each step's
+/// iterations over the islands are MuJoCo's.
 #[test]
-fn a_row_in_no_island_takes_its_force_at_its_residual() {
+fn a_zero_row_joins_the_island_of_its_chain() {
     let g = golden();
     for (solver, case) in g["cases"]["islands_zero_row"].as_object().expect("cases") {
         let (model, mut data) = start(case);
         assert!(model.is_sparse(), "{solver}: the sparse size");
         data.forward(&model).expect("forward");
         assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{solver}: nefc");
-        assert_eq!(
-            (data.nisland, count(&case["nisland"])),
-            (1, 2),
-            "{solver}: islands, ours and MuJoCo's"
-        );
+        assert_eq!(data.nisland, count(&case["nisland"]), "{solver}: islands");
         assert_bits(
             &format!("{solver} efc_force"),
             data.efc_force.as_slice(),
@@ -1126,8 +1120,8 @@ fn a_row_in_no_island_takes_its_force_at_its_residual() {
             &floats(&case["qacc"]),
             1e-12,
         );
-        // The cost holds the rows in no island: the tendon limit's ½·D·jar²
-        // (its R is 1e-15) outweighs the rest by far.
+        // The cost is the tendon limit's ½·D·jar² (its R is 1e-15), which
+        // outweighs the rest by far.
         let limit = data.efc_D[2] * data.efc_jar[2] * data.efc_jar[2] / 2.0;
         assert!(
             (data.efc_cost - limit).abs() <= 1e-9 * limit,
@@ -1136,22 +1130,12 @@ fn a_row_in_no_island_takes_its_force_at_its_residual() {
         );
         for (k, &want) in usizes(&case["niter"]).iter().enumerate() {
             data.step(&model).expect("step");
-            match case.get("island_niter") {
-                // Without the warmstart, MuJoCo's second island (the tendon's
-                // rows) takes 0 or 1 iterations a step: compare its first.
-                Some(per_island) => assert_eq!(
-                    data.solver_niter,
-                    count(&per_island[k][0]),
-                    "{solver}: iterations at step {}, MuJoCo's first island's",
-                    k + 1
-                ),
-                None => assert_eq!(
-                    (data.solver_niter, want),
-                    (1, 2),
-                    "{solver}: iterations at step {}, ours and MuJoCo's",
-                    k + 1
-                ),
-            }
+            assert_eq!(
+                data.solver_niter,
+                want,
+                "{solver}: iterations at step {}",
+                k + 1
+            );
         }
     }
 }

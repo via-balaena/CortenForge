@@ -218,11 +218,11 @@ impl Subproblem {
 
     /// The rows in no island, without dofs. The partition takes a geom
     /// contact's, connect's, weld's or joint limit's trees from its bodies or
-    /// joint, and any other row's from its nonzero Jacobian entries
-    /// (`row_tree_pair` and `row_trees` in `island`). Rows in none include a
-    /// coef-0 fixed tendon's at the sparse size, which MuJoCo puts in an
-    /// island (ledger L143), and a contact between two static geoms under a
-    /// `<pair>`, which MuJoCo does not make at the sparse size (ledger L148).
+    /// joint, and any other row's from its dof chain at the sparse size and
+    /// its nonzero Jacobian entries at the dense size (`row_tree_pair` and
+    /// `row_trees` in `island`). Rows in none include a contact between two
+    /// static geoms under a `<pair>`, which MuJoCo does not make at the
+    /// sparse size (ledger L148).
     fn outside(data: &Data) -> Self {
         let rows = (0..data.efc_type.len())
             .filter(|&r| data.efc_island.get(r).is_none_or(|&i| i < 0))
@@ -1318,9 +1318,10 @@ pub fn mj_sol_primal(
             data.solver_stat.extend(stats.into_iter().take(MJ_NSOLVER));
         }
     }
-    // A row in no island has a zero Jacobian (the partition reads its
-    // nonzero entries), so its residual is `efc_b` at every iterate: its
-    // force and state are made there, with the warmstart or without.
+    // A row in no island has a zero Jacobian (the partition reads its chain
+    // at the sparse size, its nonzero entries at the dense size), so its
+    // residual is `efc_b` at every iterate: its force and state are made
+    // there, with the warmstart or without.
     let outside = Subproblem::outside(data);
     if !outside.rows.is_empty() {
         let tree = TreeMass::new(model, data, &outside);
