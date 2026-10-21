@@ -27,7 +27,7 @@ use crate::dynamics::SpatialVector;
 ///
 /// # State
 ///
-/// As MuJoCo splits it (`mjtState`, `mjdata.h:26-53`): the full physics state
+/// As MuJoCo splits it (`mjtState`, `mjdata.h:27-52`): the full physics state
 /// (`mjSTATE_FULLPHYSICS`: `time`, `qpos`, `qvel`, `act`, `history`,
 /// `plugin_state`), the inputs (`ctrl`, `qfrc_applied`, `xfrc_applied`,
 /// `mocap_pos`, `mocap_quat`; MuJoCo's `eq_active` is the model's here, and

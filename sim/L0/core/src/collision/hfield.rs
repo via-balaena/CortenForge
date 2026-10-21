@@ -799,7 +799,7 @@ mod tests {
     /// A field of half-width 0, or 1e-300, with a sphere beside it (past its
     /// +x edge, within the margin): the sub-grid's first column lies far past
     /// the grid (its cell index saturates), and the port lists nothing, where
-    /// `cmin + 1` once overflowed (MuJoCo's C reads past the grid here).
+    /// `cmin + 1` once overflowed.
     #[test]
     fn a_field_of_no_width_collides_as_nothing() {
         for half in [0.0, 1e-300] {
@@ -888,7 +888,7 @@ mod tests {
     }
 
     /// Book P52's must-fail: every height-field case of the ccd golden with
-    /// a primitive (`hfield_convex` `pose` and `edge`, 249), through
+    /// a primitive (`hfield_convex` `pose` and `edge`), through
     /// `collide_hfield_multi` on a model holding MuJoCo's field data scaled
     /// by its top (rows bottom to top, normalised: in code, as sim-mjcf does
     /// not load them so yet, book Rigid-loading L45) and MuJoCo's bounding

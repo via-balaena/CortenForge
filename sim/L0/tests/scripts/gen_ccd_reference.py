@@ -149,10 +149,9 @@ sphere apart within the margin (listed, at a distance below 0), a sphere past
 the field's +x edge within the margin (unlisted), boxes resting exactly on
 the flat part of a 5 x 5 field of dyadic cells (on a grid vertex, a grid line
 and mid-cell: unlisted), a sphere under that field's base within the margin
-(listed), and a sphere on a 3 x 3 field scaled to 1e153 and to 1e154, where
-the squared norm of the witness points' difference overflows and MuJoCo skips
-the contacts whose normal is then zero; `nan`, a sphere, a box and a mesh turned by a
-matrix holding a NaN, and the field so turned. It refuses height-field cases
+(listed), and a sphere on a 3 x 3 field scaled to 1e153 (listed) and to 1e154
+(unlisted); `nan`, a sphere, a box and a mesh turned by a matrix holding a
+NaN, and the field so turned. It refuses height-field cases
 that miss a contact for every geom, three or more contacts, none, a geom
 apart listed within the margin, mjMAXCONPAIR contacts, the far and past-edge
 geoms with none, a NaN turn listing a contact, the touching boxes unlisted,

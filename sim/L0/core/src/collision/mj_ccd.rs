@@ -2623,8 +2623,8 @@ pub(super) fn mjc_convex_hfield(
                 }
                 // `mjc_penetration`, native: one contact where they overlap,
                 // unless its normal is libccd's zero vector (`ccdVec3Eq`
-                // against the origin, :1331: each component below `CCD_EPS`,
-                // `DBL_EPSILON`).
+                // against the origin, :1331: each component's magnitude below
+                // `CCD_EPS`, `DBL_EPSILON`).
                 let st = mjc_ccd(&config, &mut prism, obj);
                 if st.dist < 0.0 {
                     let mut dir = sub3(&st.x1[0], &st.x2[0]);
