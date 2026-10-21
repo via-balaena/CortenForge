@@ -13,7 +13,6 @@ pub(crate) mod flex_collide;
 pub(crate) mod flex_narrow;
 pub(crate) mod flex_self;
 pub(crate) mod hfield;
-pub(crate) mod mesh_collide;
 mod midphase;
 mod mj_ccd;
 mod mj_primitive;
@@ -1845,12 +1844,16 @@ mod spec_d_tests {
 
     /// A geom turned by a matrix holding a NaN or an infinity collides as
     /// nothing at every site that turned it into a quaternion (nalgebra's
-    /// `from_matrix`, which iterates without a cap): a mesh on a plane, a
-    /// sphere on a height field or a signed distance field, and a flex
-    /// vertex against a mesh, a height field or a signed distance field,
-    /// each geom's matrix bad in turn. Each call returns.
+    /// `from_matrix`, which iterates without a cap): a sphere on a signed
+    /// distance field, and a flex vertex against a mesh, a height field or a
+    /// signed distance field, each geom's matrix bad in turn. MuJoCo's
+    /// functions, which take no quaternion, give MuJoCo's results (the ccd
+    /// golden's `plane_convex` and `hfield_convex` `nan` cases): a mesh so
+    /// turned on a plane, one contact at a NaN distance; a height field so
+    /// turned, none; a sphere so turned on a height field, its contacts, a
+    /// sphere's support not reading its turn. Each call returns.
     #[test]
-    fn a_non_finite_turn_collides_as_nothing() {
+    fn a_non_finite_turn_returns() {
         let n = 5;
         let hfield = Arc::new(HeightFieldData::new(vec![0.5; n * n], n, n, 1.0));
         let sdf: Arc<dyn PhysicsShape> = Arc::new(ShapeConvex::new(Arc::new(SdfGrid::sphere(
@@ -1891,17 +1894,47 @@ mod spec_d_tests {
             sdf_sphere.geom_shape = vec![Some(0), None];
 
             let near = Vector3::new(0.0, 0.0, 0.7);
+            // The plane's normal is its matrix's third column, which `turned`
+            // leaves finite: the mesh is above the plane.
+            assert!(
+                collide_geoms(&plane_mesh, 0, 1, Vector3::zeros(), turned, near, ok, 0.0)
+                    .is_empty(),
+                "plane turned, {bad}"
+            );
+            let nan = collide_geoms(&plane_mesh, 0, 1, Vector3::zeros(), ok, near, turned, 0.0);
+            assert!(
+                nan.len() == 1 && nan[0].depth.is_nan(),
+                "mesh turned on a plane, {bad}: {nan:?}"
+            );
+            assert!(
+                collide_hfield_multi(
+                    &hfield_sphere,
+                    0,
+                    1,
+                    Vector3::zeros(),
+                    turned,
+                    near,
+                    ok,
+                    0.0
+                )
+                .is_empty(),
+                "height field turned, {bad}"
+            );
+            let sphere = collide_hfield_multi(
+                &hfield_sphere,
+                0,
+                1,
+                Vector3::zeros(),
+                ok,
+                near,
+                turned,
+                0.0,
+            );
+            assert!(
+                !sphere.is_empty() && sphere.iter().all(|c| c.depth.is_finite()),
+                "sphere turned on a height field, {bad}: {sphere:?}"
+            );
             for (m1, m2) in [(turned, ok), (ok, turned)] {
-                assert!(
-                    collide_geoms(&plane_mesh, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
-                        .is_empty(),
-                    "plane and mesh, {bad}"
-                );
-                assert!(
-                    collide_hfield_multi(&hfield_sphere, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
-                        .is_empty(),
-                    "height field and sphere, {bad}"
-                );
                 assert!(
                     collide_with_sdf(&sdf_sphere, 0, 1, Vector3::zeros(), m1, near, m2, 0.0)
                         .is_empty(),
@@ -1915,6 +1948,138 @@ mod spec_d_tests {
                     "flex vertex against geom {g}, {bad}"
                 );
             }
+        }
+    }
+
+    /// A box mesh with its base 1/64 into a plane, either geom first: each
+    /// contact is listed plane first, its normal the plane's, midway
+    /// between its corner and the plane (`mjc_PlaneConvex`'s position,
+    /// `engine_collision_convex.c:1062-1063`, `:1030-1031`), at the corner's
+    /// depth; three of the base's four corners (`maxplanemesh`). Before, each
+    /// was at its corner, in the argument order.
+    #[test]
+    fn mesh_plane_contacts_at_midpoint() {
+        for plane in [0, 1] {
+            let mesh = 1 - plane;
+            let mut model = make_model(
+                GeomType::Plane,
+                Vector3::new(5.0, 5.0, 0.1),
+                GeomType::Mesh,
+                Vector3::zeros(),
+            );
+            model.geom_type.swap(0, plane);
+            model.geom_mesh[mesh] = Some(0);
+            model.mesh_data = vec![box_mesh(0.125, 0.125, 0.0625)];
+            let mut pos = [Vector3::zeros(), Vector3::zeros()];
+            pos[mesh] = Vector3::new(0.25, -0.5, 0.0625 - 0.015_625);
+            let eye = Matrix3::identity();
+            let contacts = collide_geoms(&model, 0, 1, pos[0], eye, pos[1], eye, 0.0);
+            assert_eq!(contacts.len(), 3, "plane geom {plane}: contacts");
+            for c in &contacts {
+                assert_eq!(
+                    [c.geom1, c.geom2],
+                    [plane, mesh],
+                    "plane geom {plane}: order"
+                );
+                assert_eq!(c.normal, Vector3::z(), "plane geom {plane}: normal");
+                assert_eq!(
+                    c.depth.to_bits(),
+                    0.015_625_f64.to_bits(),
+                    "plane geom {plane}: depth"
+                );
+                assert_eq!(
+                    c.pos.z.to_bits(),
+                    (-0.007_812_5_f64).to_bits(),
+                    "plane geom {plane}: midway"
+                );
+                assert!(
+                    [0.125, 0.375].contains(&c.pos.x),
+                    "plane geom {plane}: a corner's x, {}",
+                    c.pos.x
+                );
+                assert!(
+                    [-0.625, -0.375].contains(&c.pos.y),
+                    "plane geom {plane}: a corner's y, {}",
+                    c.pos.y
+                );
+            }
+        }
+    }
+
+    /// The ccd golden (`sim/L0/tests/scripts/gen_ccd_reference.py`).
+    fn ccd_golden() -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/assets/golden/ccd/ccd.json"
+        );
+        let text = std::fs::read_to_string(path).expect("the ccd golden reads");
+        serde_json::from_str(&text).expect("the ccd golden parses")
+    }
+
+    fn golden_vector(v: &serde_json::Value) -> Vector3<f64> {
+        let a: Vec<f64> = v
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|x| x.as_f64().expect("a number"))
+            .collect();
+        Vector3::new(a[0], a[1], a[2])
+    }
+
+    fn golden_matrix(v: &serde_json::Value) -> Matrix3<f64> {
+        let a: Vec<f64> = v
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|x| x.as_f64().expect("a number"))
+            .collect();
+        Matrix3::from_row_slice(&a)
+    }
+
+    /// Ellipsoids of random sizes and turns apart from planes of random
+    /// poses, each at a margin equal to MuJoCo's own distance (the ccd
+    /// golden's `plane_convex` `ellipsoid_at_margin`, 95 cases): each is
+    /// listed, as MuJoCo lists it (`dist <= margin`), at MuJoCo's distance
+    /// and position bit for bit, from its support point taken as
+    /// `mjccd_support` takes it (ledger L187). Before, the support and the
+    /// distance were computed in another order, which lists fewer.
+    #[test]
+    fn plane_ellipsoid_listed_at_mujocos_distance() {
+        let doc = ccd_golden();
+        let cases = doc["plane_convex"]["ellipsoid_at_margin"]
+            .as_object()
+            .expect("cases");
+        assert_eq!(cases.len(), 95, "cases");
+        for (name, case) in cases {
+            let model = make_model(
+                GeomType::Plane,
+                Vector3::new(5.0, 5.0, 0.1),
+                GeomType::Ellipsoid,
+                golden_vector(&case["size"]),
+            );
+            let want = &case["contacts"][0];
+            let contacts = collide_geoms(
+                &model,
+                0,
+                1,
+                golden_vector(&case["plane"]["pos"]),
+                golden_matrix(&case["plane"]["mat"]),
+                golden_vector(&case["pos"]),
+                golden_matrix(&case["mat"]),
+                case["margin"].as_f64().expect("margin"),
+            );
+            assert_eq!(contacts.len(), 1, "{name}: listed");
+            let dist = want["dist"].as_f64().expect("dist");
+            assert_eq!(
+                (-contacts[0].depth).to_bits(),
+                dist.to_bits(),
+                "{name}: dist"
+            );
+            assert_eq!(
+                contacts[0].pos,
+                golden_vector(&want["pos"]),
+                "{name}: position"
+            );
         }
     }
 }

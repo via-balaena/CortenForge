@@ -11,8 +11,8 @@
 //!
 //! ## Key Architectural Points
 //!
-//! - **Model** is static: kinematic tree for n bodies in a serial chain
-//! - **Data** is dynamic: qpos[0..n] and qvel[0..n] are the ONLY state
+//! - **Model** is read by each step, not written: kinematic tree for n bodies in a serial chain
+//! - **Data** is dynamic: qpos[0..n] and qvel[0..n] hold the joints' state
 //! - Body poses xpos[1..n+1] are COMPUTED via forward kinematics
 //! - Uses canonical systems from `sim_bevy::model_data` module
 //!
@@ -107,7 +107,7 @@ fn setup_physics_and_scene(
     println!("=============================================");
     println!("{}-Link Pendulum (Model/Data Architecture)", N_LINKS);
     println!("=============================================");
-    println!("Model (static):");
+    println!("Model (read by each step):");
     println!("  nbody:  {} (world + {} links)", model.nbody, N_LINKS);
     println!("  njnt:   {} (hinge joints)", model.njnt);
     println!("  nq:     {} (joint angles)", model.nq);
@@ -129,7 +129,7 @@ fn setup_physics_and_scene(
     println!("  dt = {:.5} s", model.timestep);
     println!("=============================================");
     println!("Key invariants:");
-    println!("  - qpos/qvel are the ONLY state variables");
+    println!("  - qpos/qvel hold the joints' state");
     println!("  - xpos computed via forward kinematics");
     println!("  - Energy drift should be minimal");
     println!("=============================================");

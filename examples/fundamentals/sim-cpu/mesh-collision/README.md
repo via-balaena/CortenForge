@@ -8,7 +8,7 @@ visual example teaches exactly one concept about mesh collision.
 
 | # | Example | Pair | Narrow-phase | MULTICCD on? |
 |---|---------|------|--------------|--------------|
-| 1 | [mesh-on-plane](mesh-on-plane/) | mesh-plane | `collide_mesh_plane()` | No |
+| 1 | [mesh-on-plane](mesh-on-plane/) | mesh-plane | `mjc_plane_convex()` | No |
 | 2 | [mesh-sphere](mesh-sphere/) | mesh-sphere | `mjc_convex()` | No |
 | 3 | [mesh-box](mesh-box/) | mesh-box | `mjc_convex()` | Yes |
 | 4 | [mesh-capsule](mesh-capsule/) | mesh-capsule | `mjc_convex()` | No |
@@ -19,9 +19,11 @@ visual example teaches exactly one concept about mesh collision.
 
 ## Two Dispatch Paths
 
-**Mesh against a plane**: `collide_with_mesh()` (`mesh_collide.rs`) calls
-sim-core's own `collide_mesh_plane()`, which scans the mesh's vertices for
-those below the plane or within the margin above it: up to three contacts.
+**Mesh against a plane**: MuJoCo's plane–convex collision, `mjc_plane_convex()`
+in `mj_ccd.rs` (`mjc_PlaneConvex`): the mesh's vertex deepest along the plane's
+normal, then up to two of its neighbours on the convex hull closer to the plane
+than the margin and at least 0.3 of the mesh's radius from the first contact,
+each contact midway between its vertex and the plane: up to three contacts.
 
 **Mesh against a primitive or a mesh** (sphere, capsule, box, cylinder, ellipsoid,
 mesh): MuJoCo's native convex collision, `mjc_convex()` in `mj_ccd.rs` (GJK,

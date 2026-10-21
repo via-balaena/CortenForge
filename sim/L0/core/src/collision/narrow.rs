@@ -4,7 +4,6 @@
 //! `make_contact_from_geoms` contact constructor, `apply_pair_overrides` for mechanism-2
 //! contacts, and shared collision constants.
 
-use super::mesh_collide::collide_with_mesh;
 use super::mj_ccd::mjc_convex;
 use super::order::{lower_body_first, type_ordered};
 use super::pair_convex::{
@@ -129,12 +128,8 @@ pub fn collide_geoms(
         return collide_convex(model, geom1, geom2, &pos1, &mat1, &pos2, &mat2, margin);
     }
 
-    // A mesh with a plane.
-    if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
-        return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-    }
-
-    // Special case: plane collision
+    // A plane with another geom (a mesh or an ellipsoid through
+    // `mjc_PlaneConvex`).
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
             model, geom1, geom2, type1, type2, pos1, mat1, pos2, mat2, size1, size2, margin,

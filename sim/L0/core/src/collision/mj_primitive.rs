@@ -765,7 +765,7 @@ pub(super) fn mat_t_vec(m: &Mat9, v: &[f64; 3]) -> [f64; 3] {
 }
 
 /// `mju_mulMatTMat3`.
-fn mat_t_mat(a: &Mat9, b: &Mat9) -> Mat9 {
+pub(super) fn mat_t_mat(a: &Mat9, b: &Mat9) -> Mat9 {
     std::array::from_fn(|i| {
         let (r, c) = (i / 3, i % 3);
         a[r] * b[c] + a[3 + r] * b[3 + c] + a[6 + r] * b[6 + c]

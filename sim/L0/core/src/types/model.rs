@@ -1,9 +1,10 @@
 //! Model struct definition and field accessors.
 //!
-//! [`Model`] is the static, immutable description of the simulated system:
-//! kinematic tree, joint definitions, geometries, constraints, and options.
-//! It is constructed by sim-mjcf's model builder and shared (read-only)
-//! across all pipeline stages.
+//! [`Model`] describes the simulated system: kinematic tree, joint
+//! definitions, geometries, constraints, and options. It is constructed by
+//! sim-mjcf's model builder; the pipeline stages read it and do not write it.
+//! Its fields are public and may be edited between steps, after which
+//! [`Model::recompute_derived`] recomputes the fields derived from them.
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 use std::collections::{HashMap, HashSet};
@@ -28,11 +29,12 @@ use crate::heightfield::HeightFieldData;
 use crate::mesh::TriangleMeshData;
 use crate::sdf::shape::PhysicsShape;
 
-/// Static model definition (like mjModel).
-///
-/// Immutable after construction - all memory allocated upfront.
-/// This contains the kinematic tree structure, body properties,
+/// The model (like mjModel): the kinematic tree structure, body properties,
 /// joint properties, and simulation options.
+///
+/// Its fields are public and may be edited between steps; after editing one
+/// that other fields are derived from, call [`Model::recompute_derived`] (its
+/// doc lists which).
 ///
 /// # Memory Layout
 ///
@@ -993,10 +995,13 @@ pub struct Model {
     /// Number of initial sample points for SDF collision search (default: 40).
     /// MuJoCo ref: `mjOption.sdf_initpoints` in `mjmodel.h`.
     pub sdf_initpoints: usize,
-    /// Maximum contacts per SDF-SDF pair (default: 50).
-    /// Grid-based SDF tracing can produce hundreds of contacts for concave
-    /// geometry. This caps the per-pair count to keep the constraint solver
-    /// tractable — the deepest contacts are retained.
+    /// Maximum contacts per SDF-SDF pair (default: 50), of those already
+    /// found: the octree tier keeps at most that many spread over its leaves,
+    /// the grid tier at most that many by depth and spacing
+    /// (`collision/sdf_collide.rs`). So it bounds the constraint solve, not
+    /// detection, whose cost the SDF grids set: the octree's leaf cell is no
+    /// larger than twice the finer of the two shapes' grid cells. An SDF
+    /// against a plane keeps at most 8, whatever this is.
     pub sdf_maxcontact: usize,
 
     /// Integration method.
@@ -1327,7 +1332,30 @@ impl Model {
 
     // ==================== Callback Setters (DT-79) ====================
 
-    /// Set the passive force callback.
+    /// Set the passive force callback, replacing any callback already set.
+    ///
+    /// There is one slot. To run two callbacks, clone the current one out of
+    /// [`Model::cb_passive`] and call it from the new closure (a clone shares
+    /// the closure and its state):
+    ///
+    /// ```
+    /// # use sim_core::Model;
+    /// # fn main() -> Result<(), sim_core::StepError> {
+    /// let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
+    /// model.set_passive_callback(|_, data| data.qfrc_passive[0] += 1.0);
+    /// let first = model.cb_passive.clone();
+    /// model.set_passive_callback(move |m, data| {
+    ///     if let Some(cb) = &first {
+    ///         (cb.0)(m, data);
+    ///     }
+    ///     data.qfrc_passive[0] += 2.0;
+    /// });
+    /// let mut data = model.make_data();
+    /// data.forward(&model)?;
+    /// assert!((data.qfrc_passive[0] - 3.0).abs() < 1e-12);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn set_passive_callback<F>(&mut self, f: F)
     where
         F: Fn(&Self, &mut super::data::Data) + Send + Sync + 'static,
@@ -1340,7 +1368,8 @@ impl Model {
         self.cb_passive = None;
     }
 
-    /// Set the control callback.
+    /// Set the control callback, replacing any callback already set; to run
+    /// two, chain them as [`Self::set_passive_callback`]'s example does.
     pub fn set_control_callback<F>(&mut self, f: F)
     where
         F: Fn(&Self, &mut super::data::Data) + Send + Sync + 'static,
@@ -1355,7 +1384,10 @@ impl Model {
 
     /// Set the contact filter callback, which replaces the geoms'
     /// contype/conaffinity test (see
-    /// [`CbContactFilter`](super::callbacks::CbContactFilter)).
+    /// [`CbContactFilter`](super::callbacks::CbContactFilter)), replacing any
+    /// callback already set; to run two, chain them as
+    /// [`Self::set_passive_callback`]'s example does, deciding how to combine
+    /// their results.
     ///
     /// The callback receives `(model, data, geom1_id, geom2_id)`, the geoms
     /// in MuJoCo's type order, and should return `true` to KEEP the contact,
@@ -1372,7 +1404,8 @@ impl Model {
         self.cb_contactfilter = None;
     }
 
-    /// Set the user sensor callback.
+    /// Set the user sensor callback, replacing any callback already set; to
+    /// run two, chain them as [`Self::set_passive_callback`]'s example does.
     ///
     /// Called for each `MjSensorType::User` sensor at the appropriate stage.
     pub fn set_sensor_callback<F>(&mut self, f: F)
@@ -1390,7 +1423,9 @@ impl Model {
         self.cb_sensor = None;
     }
 
-    /// Set the user actuator dynamics callback.
+    /// Set the user actuator dynamics callback, replacing any callback already
+    /// set; to run two, chain them as [`Self::set_passive_callback`]'s example
+    /// does, deciding how to combine their results.
     ///
     /// Called for each actuator with `ActuatorDynamics::User`.
     /// Should return `act_dot` (activation derivative).
@@ -1406,7 +1441,9 @@ impl Model {
         self.cb_act_dyn = None;
     }
 
-    /// Set the user actuator gain callback.
+    /// Set the user actuator gain callback, replacing any callback already
+    /// set; to run two, chain them as [`Self::set_passive_callback`]'s example
+    /// does, deciding how to combine their results.
     ///
     /// Called for each actuator with `GainType::User`.
     /// Should return the gain value.
@@ -1422,7 +1459,9 @@ impl Model {
         self.cb_act_gain = None;
     }
 
-    /// Set the user actuator bias callback.
+    /// Set the user actuator bias callback, replacing any callback already
+    /// set; to run two, chain them as [`Self::set_passive_callback`]'s example
+    /// does, deciding how to combine their results.
     ///
     /// Called for each actuator with `BiasType::User`.
     /// Should return the bias value.

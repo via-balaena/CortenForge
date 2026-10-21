@@ -535,6 +535,51 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
     }
 }
 
+/// Bodies dropped from rest on a bumpy height field whose data sim-mjcf
+/// loads as MuJoCo compiles it (`bumpy`: 9 × 9, elevations multiples of 1/8
+/// from 0 to 1, rows symmetric; each body turned by its frame, so its
+/// inertial frame is the body's in both, ledger L195), at two spots each:
+/// the height after every 50th of 1000 steps against MuJoCo's, within 5e-12
+/// for a sphere, a capsule and an ellipsoid (a capsule rolls off the field's
+/// edge as MuJoCo's does), 5e-3 for a cylinder and 5e-2 for a box; where the
+/// cylinders and boxes part from MuJoCo's is not isolated (ledger L206). The
+/// bodies take sines and cosines, which a libm need not round correctly; the
+/// bounds are set above the largest gaps measured here and with such results
+/// moved by an ulp (chunk 3e's fourth review and its fix-diff pass):
+///
+/// | bodies | measured | an ulp moved |
+/// |---|---|---|
+/// | sphere, capsule, ellipsoid | 5.5e-13 | 1.45e-12 |
+/// | cylinder | 8.5e-5 | 2.0e-3 |
+/// | box | 4.8e-3 | 2.2e-2 |
+#[test]
+fn bodies_on_a_bumpy_height_field_as_mujoco() {
+    let golden = golden();
+    for (name, case) in golden["bumpy"].as_object().expect("bumpy") {
+        let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        let want = floats(&case["z"]);
+        let bound = if name.starts_with("box") {
+            5e-2
+        } else if name.starts_with("cylinder") {
+            5e-3
+        } else {
+            5e-12
+        };
+        for k in 0..1000 {
+            data.step(&model).expect("step");
+            if k % 50 == 49 {
+                let z = want[k / 50];
+                assert!(
+                    (data.qpos[2] - z).abs() <= bound,
+                    "{name} step {k}: height {}, MuJoCo's {z}",
+                    data.qpos[2]
+                );
+            }
+        }
+    }
+}
+
 /// Two height fields, one reaching farther above its origin than below and
 /// one farther below: each bounding radius is MuJoCo's, from its size,
 /// sqrt(x² + y² + max(top², base²)) (`mjCGeom::GetRBound`). Measured: equal.
@@ -566,8 +611,9 @@ fn height_field_bounds_are_mujocos() {
 /// about the origin (MuJoCo's 4.64, ours 6.10), so the bounding-sphere filter
 /// passes the pair, as MuJoCo's. Our contacts after `forward` against
 /// MuJoCo's: the same geoms in order, each distance within 1e-13 (measured
-/// 6.2e-15). The position is not compared: MuJoCo's is midway between the
-/// apex and the plane, ours at the apex (book P51).
+/// 6.2e-15) and position within 1e-14, midway between the apex and the
+/// plane (`mjc_PlaneConvex`; measured 3.1e-15 in height, the rest bit for
+/// bit).
 #[test]
 fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
     let case = &golden()["bounds"];
@@ -592,6 +638,12 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
             "contact {k}: depth {}, MuJoCo's dist {dist}",
             c.depth
         );
+        let pos = floats(&w["pos"]);
+        assert!(
+            (0..3).all(|i| (c.pos[i] - pos[i]).abs() <= 1e-14),
+            "contact {k}: position {:?}, MuJoCo's {pos:?}",
+            c.pos
+        );
     }
 }
 
@@ -605,11 +657,12 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
 /// Rigid-loading L35), so the spacing takes the half-diagonal of the mesh's
 /// box, which here is MuJoCo's radius (2.077) within 1e-12: three of the
 /// base's four corners, the same count and geoms as MuJoCo's, each distance
-/// within 1e-13. Which three is not compared: the corners tie for the
-/// deepest, which ours takes in vertex order and MuJoCo's in its hull's (book
-/// P51's limitation row), nor the height (MuJoCo's contact is midway, ours at
-/// the corner; book P51). Before, the spacing took our `geom_rbound`, about
-/// the authored origin (4.153), and listed two.
+/// within 1e-13 and each height within 1e-15, midway between its corner and
+/// the plane (`mjc_PlaneConvex`; measured 5.3e-16). Which three is not
+/// compared: the corners tie for the deepest, and the first corner's
+/// neighbours are taken in the hull graph's order, ours and MuJoCo's
+/// (registry D-HULL-ORDER; here the third differs). Before, the spacing took
+/// our `geom_rbound`, about the authored origin (4.153), and listed two.
 #[test]
 fn plane_mesh_contacts_are_spaced_as_mujoco() {
     let cases = golden()["plane_mesh"].clone();
@@ -638,6 +691,12 @@ fn plane_mesh_contacts_are_spaced_as_mujoco() {
                 (-c.depth - dist).abs() <= 1e-13,
                 "{name} contact {k}: depth {}, MuJoCo's dist {dist}",
                 c.depth
+            );
+            let height = floats(&w["pos"])[2];
+            assert!(
+                (c.pos.z - height).abs() <= 1e-15,
+                "{name} contact {k}: height {}, MuJoCo's {height}",
+                c.pos.z
             );
         }
     }
@@ -1438,14 +1497,12 @@ fn explicit_convex_pairs_collide_lower_body_first_as_mujoco() {
 /// contact whose normal its frame has normalised a second time
 /// (`make_frame`), where MuJoCo's sensor reads the function's: with that
 /// second normalisation skipped, measured, they read MuJoCo's bit for bit.
-/// Where the two plane pairs and the box's or mesh's pair with a mesh part
-/// from MuJoCo's is not isolated.
+/// Where the plane–cylinder pair and the box's or mesh's pair with a mesh
+/// part from MuJoCo's is not isolated.
 fn route_bounds(pair: &str) -> (f64, f64) {
     match pair {
         "sphere_sphere" | "sphere_capsule" | "sphere_cylinder" | "sphere_box"
-        | "capsule_capsule" | "capsule_box" | "plane_cylinder" | "plane_ellipsoid" => {
-            (1e-15, 1e-15)
-        }
+        | "capsule_capsule" | "capsule_box" | "plane_cylinder" => (1e-15, 1e-15),
         "box_mesh" | "mesh_mesh" => (1e-16, 1e-14),
         _ => (0.0, 0.0),
     }
@@ -1460,17 +1517,15 @@ fn route_bounds(pair: &str) -> (f64, f64) {
 /// second at MuJoCo's default cutoff of 0. A pair `mjc_Convex` or
 /// `mjc_BoxBox` collides through `mjc_ccd`, and every other through its
 /// collision function at the cutoff as its margin. MuJoCo's bit for bit
-/// but as `route_bounds` says; measured there: the distance 1.1e-16 at most,
-/// the normal and fromto 3.3e-16, but the normal 2.3e-15 for a box against
-/// a mesh. A mesh under a plane: the distance and normal within 1e-15; its
-/// fromto is sim-core's plane–mesh contact, one case at least 1e-3 from
-/// MuJoCo's (0.46 measured), until book P51 ports MuJoCo's.
+/// but as `route_bounds` says; measured there: the distance 2.8e-17 at most
+/// (a mesh against a mesh), the normal and fromto 3.3e-16, but the normal
+/// 2.3e-15 for a box against a mesh. A mesh and an ellipsoid under a plane
+/// (`mjc_PlaneConvex`): bit for bit.
 #[test]
 fn geom_distance_sensors_route_as_mujoco() {
     let golden = golden();
     for (pair, routes) in golden["geom_distance_routes"].as_object().expect("routes") {
         let model: Model = load_model(routes["xml"].as_str().expect("xml")).expect("load");
-        let mut plane_mesh_fromto: f64 = 0.0;
         for (i, case) in routes["cases"]
             .as_array()
             .expect("cases")
@@ -1485,27 +1540,8 @@ fn geom_distance_sensors_route_as_mujoco() {
             let ours: Vec<f64> = data.sensordata.iter().copied().collect();
             let want = floats(&case["sensordata"]);
             let name = format!("{pair} {i}");
-            if pair == "plane_mesh" {
-                for (k, (a, b)) in ours.iter().zip(&want).enumerate() {
-                    if k % 10 < 4 {
-                        assert!(
-                            (a - b).abs() <= 1e-15,
-                            "{name}: sensordata[{k}] {a}, MuJoCo {b}"
-                        );
-                    } else {
-                        plane_mesh_fromto = plane_mesh_fromto.max((a - b).abs());
-                    }
-                }
-            } else {
-                let (bound, rest) = route_bounds(pair);
-                sensors_as_mujoco(&name, &ours, &want, bound, rest);
-            }
-        }
-        if pair == "plane_mesh" {
-            assert!(
-                plane_mesh_fromto >= 1e-3,
-                "plane_mesh fromto {plane_mesh_fromto}: book P51's"
-            );
+            let (bound, rest) = route_bounds(pair);
+            sensors_as_mujoco(&name, &ours, &want, bound, rest);
         }
     }
 }
@@ -1557,11 +1593,12 @@ fn geom_distance_sensors_near_touching_as_mujoco() {
 /// search where MuJoCo's convex solver exits without witnesses, a distance of
 /// 0 and no segment: MuJoCo's bit for bit. Two planes, which
 /// have no collision function: the cutoff and zeros. The world's sensor of
-/// a sphere and a flat height field takes the field's collision function
+/// a sphere and a height field takes the field's collision function
 /// (MuJoCo refuses a sensor naming a height field, ledger L197, not the
-/// world that holds it): 0.01 into the field it reads a contact, not the
-/// cutoff; the values are sim-core's height-field contacts, not MuJoCo's
-/// (−0.7 into the field and above it), until book P52 ports MuJoCo's.
+/// world that holds it), `mjc_ConvexHField`: 0.01 into the field and 0.05
+/// above it, MuJoCo's −0.7 bit for bit (a contact within the margin is
+/// listed at a distance below 0; the field's elevations are all 0, so
+/// sim-mjcf's data is MuJoCo's, book Rigid-loading L45).
 #[test]
 fn geom_distance_special_cases_as_mujoco() {
     let golden = golden();
@@ -1588,17 +1625,15 @@ fn geom_distance_special_cases_as_mujoco() {
     let ours: Vec<f64> = data.sensordata.iter().copied().collect();
     sensors_as_mujoco("planes", &ours, &floats(&case["sensordata"]), 0.0, 0.0);
 
-    let into = sensordata_at(&special["hfield"]["into"]);
-    assert!(into[0] < 0.0 && into[10] < 0.0, "hfield into: {into:?}");
     for tag in ["into", "above"] {
         let case = &special["hfield"][tag];
-        let ours = sensordata_at(case);
         let want = floats(&case["sensordata"]);
-        assert!(
-            (ours[0] - want[0]).abs() > 0.1,
-            "hfield {tag}: ours {}, MuJoCo {}: book P52's",
-            ours[0],
-            want[0]
+        sensors_as_mujoco(
+            &format!("hfield {tag}"),
+            &sensordata_at(case),
+            &want,
+            0.0,
+            0.0,
         );
     }
 }

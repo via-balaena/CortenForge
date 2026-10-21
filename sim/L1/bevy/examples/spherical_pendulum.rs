@@ -10,7 +10,7 @@
 //!
 //! ## Key Architectural Points
 //!
-//! - **Model** is static: ball joint connecting pendulum bob to world
+//! - **Model** is read by each step, not written: ball joint connecting pendulum bob to world
 //! - **Data** is dynamic: qpos[0..4] is quaternion [w,x,y,z], qvel[0..3] is angular velocity
 //! - The quaternion is the ONLY rotational state; xpos/xquat are computed via FK
 //! - Uses canonical systems from `sim_bevy::model_data` module
@@ -164,7 +164,7 @@ fn setup_physics_and_scene(
     println!("=============================================");
     println!("Spherical Pendulum (Model/Data Architecture)");
     println!("=============================================");
-    println!("Model (static):");
+    println!("Model (read by each step):");
     println!("  nbody:  {} (world + bob)", model.nbody);
     println!("  njnt:   {} (ball joint)", model.njnt);
     println!("  nq:     {} (quaternion: w,x,y,z)", model.nq);

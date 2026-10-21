@@ -1,5 +1,8 @@
-//! Collision detection against infinite planes (sphere, box, capsule, cylinder, ellipsoid).
+//! Collision detection against infinite planes (sphere, box, capsule, cylinder, ellipsoid,
+//! mesh).
 
+use super::mj_ccd::{CcdObj, mjc_plane_convex};
+use super::mj_primitive::Mat9;
 use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::quat::mul_mat_vec3;
@@ -48,7 +51,7 @@ fn dot3(a: &Vector3<f64>, b: &Vector3<f64>) -> f64 {
 /// Dispatches to specialized implementations based on the other geometry's type.
 /// The plane is always treated as an infinite half-space with normal along its
 /// local Z-axis.
-// Plane-mesh dispatcher takes the full per-geom context; inlined as a single function so the SAT loop and contact emission read top-to-bottom.
+// The plane dispatcher takes the full per-geom context; one function, its arms per geom type.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 #[inline]
 pub fn collide_with_plane(
@@ -183,25 +186,8 @@ pub fn collide_with_plane(
                 margin,
             )
         }
-        GeomType::Ellipsoid => {
-            // Ellipsoid-plane collision: find support point in plane normal direction
-            collide_ellipsoid_plane_impl(
-                model,
-                plane_geom,
-                other_geom,
-                plane_normal,
-                plane_distance,
-                other_pos,
-                other_mat,
-                other_size,
-                margin,
-            )
-        }
-        // INVARIANT: collide_geoms() dispatches mesh collision before plane collision.
-        // If either geom is a mesh, collide_with_mesh() handles it—including mesh-plane.
-        // This branch exists only for match exhaustiveness; reaching it indicates a bug.
-        GeomType::Mesh => unreachable!(
-            "mesh collision must be dispatched before plane collision in collide_geoms"
+        GeomType::Ellipsoid | GeomType::Mesh => collide_plane_convex(
+            model, plane_geom, other_geom, &plane_pos, &plane_mat, &other_pos, &other_mat, margin,
         ),
         // Plane-plane: two infinite half-spaces. Intersection is either empty, a plane,
         // or a half-space—none of which produce a meaningful contact point.
@@ -372,101 +358,44 @@ fn collide_cylinder_plane_impl(
 /// sqrt(3) / 2 — used for equilateral triangle inscribed in the cap disk.
 const SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
 
-/// Ellipsoid-plane collision detection (internal helper).
-///
-/// Finds the support point on the ellipsoid surface in the direction toward the plane.
-/// Ellipsoid is defined by radii (a, b, c) = (rx, ry, rz) along local axes.
-///
-/// # Algorithm
-///
-/// For an ellipsoid `x²/a² + y²/b² + z²/c² = 1`, the support point in direction `-n`
-/// (i.e., the point on the surface with outward normal parallel to `-n`) is:
-///
-/// ```text
-/// p = -(r ⊙ r ⊙ n) / ||r ⊙ n||
-///   = -(a²·nₓ, b²·nᵧ, c²·nᵤ) / ||(a·nₓ, b·nᵧ, c·nᵤ)||
-/// ```
-///
-/// where `⊙` denotes element-wise (Hadamard) product.
-///
-/// **Derivation**: The outward normal at point `(x,y,z)` on the ellipsoid is
-/// `∇f = (2x/a², 2y/b², 2z/c²)`. Setting this parallel to `n` and solving with
-/// the ellipsoid constraint yields the support point formula.
-///
-/// # Parameters
-/// - `plane_normal`: Unit normal of the plane
-/// - `plane_d`: Signed distance from origin to plane
-/// - `ell_radii`: Ellipsoid radii [rx, ry, rz]
-///
-/// # Returns
-/// `Vec` with one contact if ellipsoid penetrates plane, empty otherwise.
-#[inline]
-// Plane-capsule pair dispatcher takes the full per-geom context (poses, sizes, friction, margin).
+/// A plane and an ellipsoid or a mesh, through MuJoCo's `mjc_PlaneConvex`
+/// ([`mjc_plane_convex`]), the plane first. A mesh's further contacts are
+/// spaced by the half-diagonal of its box, where MuJoCo's take its
+/// `geom_rbound`: sim-mjcf keeps a mesh in its authored frame (book
+/// Rigid-loading L35), where `geom_rbound` is about the authored origin, and
+/// the half-diagonal is MuJoCo's radius where the mesh's box is centred on its
+/// centre of mass along its principal axes (`GetRBound`,
+/// `user_objects.cc:3443-3449`; ledger L176).
+// MuJoCo's pair context, as the other collision functions take it.
 #[allow(clippy::too_many_arguments)]
-fn collide_ellipsoid_plane_impl(
+fn collide_plane_convex(
     model: &Model,
     plane_geom: usize,
-    ell_geom: usize,
-    plane_normal: Vector3<f64>,
-    plane_d: f64,
-    ell_pos: Vector3<f64>,
-    ell_mat: Matrix3<f64>,
-    ell_radii: Vector3<f64>,
+    other_geom: usize,
+    plane_pos: &Vector3<f64>,
+    plane_mat: &Matrix3<f64>,
+    other_pos: &Vector3<f64>,
+    other_mat: &Matrix3<f64>,
     margin: f64,
 ) -> Vec<Contact> {
-    // Transform plane normal to ellipsoid local frame
-    let local_normal = ell_mat.transpose() * plane_normal;
-
-    // Compute support point in local frame
-    // For ellipsoid, support in direction -n is: -(r² ⊙ n) / ||r ⊙ n||
-    // where ⊙ is element-wise multiply and r = radii
-    let scaled = Vector3::new(
-        ell_radii.x * local_normal.x,
-        ell_radii.y * local_normal.y,
-        ell_radii.z * local_normal.z,
-    );
-    let scale_norm = scaled.norm();
-
-    if scale_norm < GEOM_EPSILON {
-        // Degenerate case: normal perpendicular to all radii (shouldn't happen)
+    let Some(mut obj) = CcdObj::of_geom(model, other_geom, other_pos, other_mat, 0.0) else {
         return vec![];
-    }
-
-    // Support point on ellipsoid surface in direction toward plane (negative normal)
-    let local_support = -Vector3::new(
-        ell_radii.x * scaled.x / scale_norm,
-        ell_radii.y * scaled.y / scale_norm,
-        ell_radii.z * scaled.z / scale_norm,
-    );
-
-    // Transform to world frame
-    let world_support = ell_pos + ell_mat * local_support;
-
-    // Check penetration depth
-    let signed_dist = plane_normal.dot(&world_support) - plane_d;
-    let depth = -signed_dist; // Positive = penetrating
-
-    // Listed at `dist ≤ margin`, as MuJoCo's `mjc_PlaneConvex`
-    // (`engine_collision_convex.c:1056`).
-    if depth < -margin {
-        return vec![];
-    }
-
-    // Contact position: midpoint between ellipsoid surface and plane surface.
-    // ellipsoid_surface = world_support (already on ellipsoid surface)
-    // plane_surface = world_support + normal * depth
-    // midpoint = world_support + normal * depth / 2
-    let contact_pos = world_support + plane_normal * (depth / 2.0);
-
-    vec![make_contact_from_geoms(
-        model,
-        contact_pos,
-        plane_normal,
-        depth,
-        plane_geom,
-        ell_geom,
+    };
+    let rbound = model.geom_mesh[other_geom].map_or(model.geom_rbound[other_geom], |id| {
+        let (lo, hi) = model.mesh_data[id].aabb();
+        (hi - lo).norm() / 2.0
+    });
+    let mat: Mat9 = std::array::from_fn(|i| plane_mat[(i / 3, i % 3)]);
+    mjc_plane_convex(
+        &[plane_pos.x, plane_pos.y, plane_pos.z],
+        &mat,
+        &mut obj,
+        rbound,
         margin,
-    )]
+    )
+    .iter()
+    .map(|c| c.contact(model, plane_geom, other_geom, margin))
+    .collect()
 }
 
 // ============================================================================

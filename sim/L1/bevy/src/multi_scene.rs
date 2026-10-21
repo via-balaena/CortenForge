@@ -68,7 +68,7 @@ use crate::model_data::{GeomMaterialOverride, ModelGeomIndex};
 /// Each scene runs independently with its own accumulator, ensuring fair
 /// comparison even when scenes have different timesteps.
 pub struct PhysicsScene {
-    /// The static physics model.
+    /// The physics model.
     pub model: Model,
     /// The dynamic physics data.
     pub data: Data,

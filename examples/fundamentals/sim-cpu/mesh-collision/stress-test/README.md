@@ -1,7 +1,7 @@
 # Stress Test — Headless Validation
 
 Headless (no Bevy) validation of all 7 mesh collision pairs plus edge cases.
-Tests a mesh against a plane (`collide_mesh_plane`) and against a sphere, box,
+Tests a mesh against a plane (`mjc_plane_convex`) and against a sphere, box,
 capsule, cylinder, ellipsoid and mesh (`mjc_convex`). Exits with code 1 if any
 check fails.
 

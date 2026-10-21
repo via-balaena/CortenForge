@@ -19,9 +19,8 @@ use crate::types::{Data, GeomType, Model};
 /// `distmax` as the margin: the smallest distance it lists, the segment
 /// along that contact's normal, centred on its position. That normal the
 /// contact's frame has normalised a second time, where MuJoCo's has not
-/// (`collision_parity.rs`' route test bounds the difference). A plane and a
-/// mesh, a height field and a signed distance field take sim-core's own
-/// functions.
+/// (`collision_parity.rs`' route test bounds the difference). A signed
+/// distance field takes sim-core's own functions.
 // Paired geom identifiers (geom1/geom2, g1/g2) are intentionally similar.
 #[allow(clippy::similar_names)]
 pub fn geom_distance(

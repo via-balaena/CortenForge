@@ -40,6 +40,37 @@
 //! | `mjd_rne_vel` | `mjd_rne_vel` |
 //! | `Data.qDeriv` | `mjData.qDeriv` (sparse → dense) |
 //!
+//! # Callbacks during finite differences
+//!
+//! Finite differences step or forward the model many times, and its callbacks
+//! fire in those passes. With `nv` dofs, `na` activations and `nu` actuators,
+//! each control free to move both ways, the passive and the control callback
+//! each fire, per call, with or without sensor derivatives (the integration
+//! tests' `fd_callback_counts`):
+//!
+//! | call | centered | forward |
+//! |---|---|---|
+//! | [`mjd_transition_fd`]; [`mjd_transition`] and [`mjd_transition_hybrid`], which take pure finite differences for a model with either callback | `2·(2nv + na + nu) + 1` | `(2nv + na + nu) + 1` |
+//! | [`mjd_inverse_fd`], the passive callback | `4nv + 1` | `2nv + 1` |
+//!
+//! A control at a limit of its range is differenced one way, so centered
+//! differences make one pass fewer for it; the control callback does not fire
+//! under `DISABLE_ACTUATION`, nor the passive one under `DISABLE_SPRING` with
+//! `DISABLE_DAMPER` (`fd_callback_counts_at_a_control_limit_and_under_flags`).
+//! [`mjd_inverse_fd`]'s acceleration passes fire neither callback, and it fires
+//! no control callback, as MuJoCo's `mjd_inverseFD`.
+//! MuJoCo's `mjd_transitionFD` fires the passive callback in fewer passes: its
+//! control and activation columns skip the velocity stage, keeping the
+//! nominal passive force, where ours step in full, so B holds a passive
+//! callback's dependence on `ctrl` (registry `D-FD-CTRL-COLUMNS`).
+//!
+//! So a stochastic passive callback draws noise on every pass and makes the
+//! derivatives noisy (sim-thermostat's `PassiveStack::disable_stochastic`
+//! turns it off for the call). And a control callback that writes `ctrl`
+//! overwrites each control perturbation, so B comes back 0, as MuJoCo's does
+//! (the integration tests' `a_ctrl_writing_control_callback_zeroes_fd_b`): the
+//! three transition calls above all take pure finite differences then.
+//!
 //! # Quick start
 //!
 //! ```ignore

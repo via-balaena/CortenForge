@@ -2,7 +2,7 @@
 //!
 //! A convex tetrahedron defined by 4 vertices and 4 triangular faces, dropped
 //! onto an infinite ground plane. Demonstrates `type="mesh"` with inline
-//! vertex/face data and the `collide_mesh_plane()` narrow-phase.
+//! vertex/face data and MuJoCo's plane–mesh narrow phase (`mjc_PlaneConvex`).
 //!
 //! The tetrahedron is centered at its volumetric centroid so the body position
 //! tracks the center of mass. Expected rest height: centroid-to-base distance

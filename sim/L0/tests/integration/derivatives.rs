@@ -5,10 +5,10 @@
 
 use approx::assert_relative_eq;
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_GRAVITY, DISABLE_SPRING,
-    DerivativeConfig, GainType, Integrator, MjStage, Model, mj_integrate_pos_explicit, mj_solve_m,
-    mjd_smooth_pos, mjd_smooth_vel, mjd_transition_fd, mjd_transition_hybrid,
-    validate_analytical_vs_fd,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_DAMPER, DISABLE_GRAVITY,
+    DISABLE_SPRING, DerivativeConfig, GainType, Integrator, MjStage, Model,
+    mj_integrate_pos_explicit, mj_solve_m, mjd_inverse_fd, mjd_smooth_pos, mjd_smooth_vel,
+    mjd_transition, mjd_transition_fd, mjd_transition_hybrid, validate_analytical_vs_fd,
 };
 
 // ============================================================================
@@ -4968,5 +4968,217 @@ fn a_sleeping_dofs_velocity_derivative_is_its_damping_forces_at_every_step() {
             (got - fd).abs() <= 1e-8,
             "step {step}: qDeriv[1][1] {got}, the damping force's {fd}"
         );
+    }
+}
+
+/// A hinge with a motor (nv 1, na 0, nu 1), or two hinges with a motor and
+/// an actuator with an activation (nv 2, na 1, nu 2), a sensor on the first,
+/// forwarded at a tilt.
+fn callback_fixture(two: bool) -> (Model, sim_core::Data) {
+    let xml = if two {
+        r#"<mujoco><worldbody><body><joint name="a" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/>
+<body pos="0.5 0 0"><joint name="b" type="hinge" axis="0 1 0"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></body></worldbody>
+<actuator><motor joint="a"/><general joint="b" dyntype="integrator" gainprm="1"/></actuator>
+<sensor><jointpos joint="a"/></sensor></mujoco>"#
+    } else {
+        r#"<mujoco><worldbody><body><joint name="a" type="hinge" axis="0 1 0" damping="0.1"/>
+<geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.05" mass="1"/></body></worldbody>
+<actuator><motor joint="a"/></actuator><sensor><jointpos joint="a"/></sensor></mujoco>"#
+    };
+    let model = sim_mjcf::load_model(xml).expect("load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.2;
+    data.forward(&model).expect("forward");
+    (model, data)
+}
+
+/// The passive and control callbacks fire per finite-difference call as the
+/// `derivatives` module docs count them, on [`callback_fixture`]'s two
+/// models: `2·(2nv + na + nu) + 1` times centered and `(2nv + na + nu) + 1`
+/// forward for `mjd_transition_fd`, `mjd_transition` and
+/// `mjd_transition_hybrid`, with sensor derivatives or without; the passive
+/// callback `4nv + 1` and `2nv + 1` times for `mjd_inverse_fd`, and the
+/// control callback never, as MuJoCo's `mjd_inverseFD`.
+#[test]
+fn fd_callback_counts() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for two in [false, true] {
+        let (mut model, data) = callback_fixture(two);
+        let (passive, control) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (p, c) = (Arc::clone(&passive), Arc::clone(&control));
+        model.set_passive_callback(move |_, _| {
+            p.fetch_add(1, Ordering::Relaxed);
+        });
+        model.set_control_callback(move |_, _| {
+            c.fetch_add(1, Ordering::Relaxed);
+        });
+        let columns = 2 * model.nv + model.na + model.nu;
+        let counted = |run: &dyn Fn()| {
+            passive.store(0, Ordering::Relaxed);
+            control.store(0, Ordering::Relaxed);
+            run();
+            (
+                passive.load(Ordering::Relaxed),
+                control.load(Ordering::Relaxed),
+            )
+        };
+        for centered in [true, false] {
+            let passes = if centered {
+                2 * columns + 1
+            } else {
+                columns + 1
+            };
+            for sensors in [false, true] {
+                let cfg = DerivativeConfig {
+                    centered,
+                    compute_sensor_derivatives: sensors,
+                    ..DerivativeConfig::default()
+                };
+                let calls: [(&str, &dyn Fn()); 3] = [
+                    ("mjd_transition_fd", &|| {
+                        mjd_transition_fd(&model, &data, &cfg).expect("fd");
+                    }),
+                    ("mjd_transition", &|| {
+                        mjd_transition(&model, &data, &cfg).expect("transition");
+                    }),
+                    ("mjd_transition_hybrid", &|| {
+                        mjd_transition_hybrid(&model, &data, &cfg).expect("hybrid");
+                    }),
+                ];
+                for (name, run) in calls {
+                    assert_eq!(
+                        counted(run),
+                        (passes, passes),
+                        "{name}, nv {}, centered {centered}, sensors {sensors}",
+                        model.nv
+                    );
+                }
+            }
+            let cfg = DerivativeConfig {
+                centered,
+                ..DerivativeConfig::default()
+            };
+            let passive_passes = if centered {
+                4 * model.nv + 1
+            } else {
+                2 * model.nv + 1
+            };
+            assert_eq!(
+                counted(&|| {
+                    mjd_inverse_fd(&model, &data, &cfg).expect("inverse");
+                }),
+                (passive_passes, 0),
+                "mjd_inverse_fd, nv {}, centered {centered}",
+                model.nv
+            );
+        }
+    }
+}
+
+/// The conditions on the `derivatives` module docs' callback counts, on
+/// [`callback_fixture`]'s hinge (nv 1, na 0, nu 1) through
+/// `mjd_transition_fd`: a control at a limit of its range is differenced one
+/// way, so centered differences make one pass fewer (forward ones as many);
+/// the control callback does not fire under `DISABLE_ACTUATION`, nor the
+/// passive one under `DISABLE_SPRING` with `DISABLE_DAMPER`.
+#[test]
+fn fd_callback_counts_at_a_control_limit_and_under_flags() {
+    use sim_core::DISABLE_ACTUATION;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (base, data) = callback_fixture(false);
+    let counted = |model: &Model, data: &sim_core::Data, centered: bool| {
+        let mut model = model.clone();
+        let (passive, control) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (p, c) = (Arc::clone(&passive), Arc::clone(&control));
+        model.set_passive_callback(move |_, _| {
+            p.fetch_add(1, Ordering::Relaxed);
+        });
+        model.set_control_callback(move |_, _| {
+            c.fetch_add(1, Ordering::Relaxed);
+        });
+        let cfg = DerivativeConfig {
+            centered,
+            ..DerivativeConfig::default()
+        };
+        mjd_transition_fd(&model, data, &cfg).expect("fd");
+        (
+            passive.load(Ordering::Relaxed),
+            control.load(Ordering::Relaxed),
+        )
+    };
+    // 2nv + na + nu columns: 3.
+    let mut limited = base.clone();
+    limited.actuator_ctrlrange[0] = (-1.0, 1.0);
+    let mut at_limit = data.clone();
+    at_limit.ctrl[0] = 1.0;
+    assert_eq!(
+        counted(&limited, &at_limit, true),
+        (6, 6),
+        "centered, at the limit"
+    );
+    assert_eq!(
+        counted(&limited, &at_limit, false),
+        (4, 4),
+        "forward, at the limit"
+    );
+    let mut no_actuation = base.clone();
+    no_actuation.disableflags |= DISABLE_ACTUATION;
+    assert_eq!(
+        counted(&no_actuation, &data, true),
+        (7, 0),
+        "DISABLE_ACTUATION"
+    );
+    let mut no_passive = base.clone();
+    no_passive.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+    assert_eq!(
+        counted(&no_passive, &data, true),
+        (0, 7),
+        "DISABLE_SPRING | DISABLE_DAMPER"
+    );
+}
+
+/// A control callback that writes `ctrl` overwrites each control
+/// perturbation, so B comes back 0 from `mjd_transition_fd`, and from
+/// `mjd_transition` and `mjd_transition_hybrid`, which take pure finite
+/// differences for a model with a control callback; as MuJoCo 3.5.0's
+/// `mjd_transitionFD` on this hinge (measured: B 0 with the callback, forward
+/// and centered; 4.43e-5 and 2.22e-2 without it). A is not changed by it.
+#[test]
+fn a_ctrl_writing_control_callback_zeroes_fd_b() {
+    let (plain, data) = callback_fixture(false);
+    let mut model = plain.clone();
+    model.set_control_callback(|_, d| d.ctrl[0] = 0.3);
+    for centered in [true, false] {
+        let cfg = DerivativeConfig {
+            centered,
+            ..DerivativeConfig::default()
+        };
+        let without = mjd_transition_fd(&plain, &data, &cfg).expect("fd");
+        assert!(
+            without.B[(1, 0)] > 0.02,
+            "B without the callback {}",
+            without.B
+        );
+        let runs = [
+            ("mjd_transition_fd", mjd_transition_fd(&model, &data, &cfg)),
+            ("mjd_transition", mjd_transition(&model, &data, &cfg)),
+            (
+                "mjd_transition_hybrid",
+                mjd_transition_hybrid(&model, &data, &cfg),
+            ),
+        ];
+        for (name, run) in runs {
+            let m = run.expect("derivatives");
+            assert!(
+                m.B.iter().all(|&b| b == 0.0),
+                "{name}, centered {centered}: B {}",
+                m.B
+            );
+            assert_relative_eq!(m.A, without.A, epsilon = 1e-9);
+        }
     }
 }

@@ -330,13 +330,13 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Capsule-capsule | Native (`mjc_CapsuleCapsule`) | `mj_primitive::raw_capsule_capsule` | **Implemented** | - | - |
 | Cylinder | Native (`mjc_Convex`; with a sphere or plane, their own functions) | `collision::mj_ccd` | **Implemented** | - | - |
 | Ellipsoid | Native (`mjc_Convex`; with a plane, its own function) | `collision::mj_ccd` | **Implemented** | - | - |
-| Convex mesh | GJK/EPA (`mjc_Convex`) | `collision::mj_ccd` (with a plane, `collide_mesh_plane`) | **Implemented** | - | - |
+| Convex mesh | GJK/EPA (`mjc_Convex`) | `collision::mj_ccd` (with a plane, `mjc_PlaneConvex`) | **Implemented** | - | - |
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
 | SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
 | Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
 | Mid-phase (BVH per mesh, its triangles) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Mid-phase (`mj_collideTree`, a body pair's geoms) | Oriented boxes | `collision::midphase` | **Implemented** (the bodies' hierarchies, `Model::compute_body_bvhs`; a flex's not) | - | - |
-| Narrow-phase (GJK/EPA) | Native (`mjc_ccd`) | `collision::mj_ccd` (geom pairs); `gjk_epa` module (height-field prisms, flex vertices) | **Implemented** | - | - |
+| Narrow-phase (GJK/EPA) | Native (`mjc_ccd`) | `collision::mj_ccd` (geom pairs, height-field prisms); `gjk_epa` module (flex vertices) | **Implemented** | - | - |
 
 ### Implementation Notes: Collision Pipeline
 
@@ -361,8 +361,7 @@ The collision detection pipeline now uses:
 GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm) provide
 general convex collision detection for arbitrary convex shapes.
 
-Geom pairs but a height field's no longer use `gjk_epa.rs`. `gjk_epa.rs` serves height-field
-prisms and flex vertices against a mesh's hull.
+Geom pairs no longer use `gjk_epa.rs`; it serves flex vertices against a mesh's hull.
 
 **GJK Algorithm:**
 - Works in Minkowski difference space (A - B)

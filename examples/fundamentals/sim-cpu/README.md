@@ -34,7 +34,7 @@ and prints a validation report to the console. 151 examples across 27 domains.
 | [`composites/`](composites/) | 4 | Cable composites — hanging, catenary, loaded, stress-test |
 | [`batch-sim/`](batch-sim/) | 3 | Parallel multi-env — parameter sweep, soft landing (reset_where), stress-test |
 | [`urdf-loading/`](urdf-loading/) | 10 | URDF→Model pipeline: all joint types, geometry, mimic, errors |
-| [`mesh-collision/`](mesh-collision/) | 8 | All 7 mesh collision pairs (`collide_mesh_plane` + `mjc_convex`) + stress-test |
+| [`mesh-collision/`](mesh-collision/) | 8 | All 7 mesh collision pairs (`mjc_plane_convex` + `mjc_convex`) + stress-test |
 | [`multi-scene-test/`](multi-scene-test/) | 1 | Multi-scene infrastructure test |
 
 ## How to use

@@ -100,8 +100,10 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
     const MJ_MIN_IMP: f64 = 0.0001;
     const MJ_MAX_IMP: f64 = 0.9999;
 
+    // A NaN passes: a contact at a NaN distance (a geom turned by a NaN, as
+    // MuJoCo's collision functions list it) reaches here.
     debug_assert!(
-        violation >= 0.0,
+        !(violation < 0.0),
         "compute_impedance expects non-negative violation, got {violation}"
     );
 
@@ -540,6 +542,13 @@ mod impedance_tests {
     fn test_impedance_rejects_negative_violation() {
         // Negative violation is a caller bug — debug_assert catches it
         compute_impedance(DEFAULT, -0.0005);
+    }
+
+    #[test]
+    fn test_impedance_admits_nan_violation() {
+        // A contact at a NaN distance (a geom turned by a NaN) reaches here;
+        // the debug check lets it pass, as MuJoCo's `getimpedance` has none
+        compute_impedance(DEFAULT, f64::NAN);
     }
 
     #[test]

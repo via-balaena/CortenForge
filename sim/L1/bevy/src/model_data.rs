@@ -3,8 +3,9 @@
 //! This module provides resources and systems for the new Model/Data physics
 //! pipeline, which follows `MuJoCo`'s architecture:
 //!
-//! - [`Model`] is static (immutable after loading)
-//! - [`Data`] is dynamic (qpos/qvel are the source of truth)
+//! - [`Model`] holds what stepping reads and does not write (its fields may be
+//!   edited between steps; see sim-core's `Model::recompute_derived`)
+//! - [`Data`] is dynamic: the state and what the forward pass computes from it
 //! - Body poses (xpos/xquat) are computed via forward kinematics
 //!
 //! # Architecture
@@ -15,7 +16,7 @@
 //! │                                                                 │
 //! │  ┌─────────────────┐          ┌─────────────────────────────┐  │
 //! │  │  PhysicsModel   │          │      PhysicsData            │  │
-//! │  │  (Immutable)    │          │  (qpos, qvel → xpos, xquat) │  │
+//! │  │ (read by steps) │          │  (qpos, qvel → xpos, xquat) │  │
 //! │  └────────┬────────┘          └──────────────┬──────────────┘  │
 //! │           │                                   │                 │
 //! └───────────┼───────────────────────────────────┼─────────────────┘
@@ -58,10 +59,10 @@ use crate::mesh::{mesh_from_shape, triangle_mesh_from_indexed};
 // Resources
 // ============================================================================
 
-/// Bevy resource wrapping the static physics model.
+/// Bevy resource wrapping the physics model.
 ///
-/// The model is immutable after construction - it contains the kinematic tree,
-/// joint definitions, collision geometries, and other static configuration.
+/// The model holds the kinematic tree, joint definitions, collision
+/// geometries, and other configuration that stepping reads and does not write.
 ///
 /// # Example
 ///
@@ -100,10 +101,9 @@ impl std::ops::Deref for PhysicsModel {
 
 /// Bevy resource wrapping the dynamic physics data.
 ///
-/// The data contains the current simulation state (qpos, qvel) and all
-/// computed quantities (body poses, forces, contacts). The key invariant
-/// is that `qpos`/`qvel` are the ONLY state variables - everything else
-/// is computed from them via forward dynamics.
+/// The data contains the current simulation state (sim-core's `Data` doc
+/// lists it: `qpos` and `qvel` among it) and what the forward pass computes
+/// from it (body poses, forces, contacts).
 ///
 /// # Example
 ///

@@ -56,9 +56,9 @@ fn test_free_fall_matches_mujoco() {
 }
 ```
 
-**Status:** ✅ Complete — Phase 12 conformance suite (79/79 tests passing).
+**Status:** ✅ Complete — Phase 12 conformance suite.
 Conformance tests run via `cargo test -p sim-conformance-tests` in `quality-gate.yml`.
-Covers model loading (Menagerie + DM Control), integration tests (forward dynamics,
+Covers integration tests (forward dynamics,
 collision, constraints, sensors, tendons, derivatives, sleeping, flex), and golden
 flag tests (26 flag permutations validated against MuJoCo 3.5.0 reference data).
 
@@ -147,70 +147,72 @@ Phases 5–13. Remaining gaps tracked as DT items in POST_V1_ROADMAP.md.
 
 ---
 
-### 3. Real-World Model Loading ✅ COMPLETE
+### 3. Real-World Model Loading
 
 Load and validate models from established sources.
 
-**Status:** Completed 2026-01-24 — model loading tests passing
+**Status (measured 2026-10-20, each file through `load_model_from_file` in its own
+process):** 53 of the two submodules' 253 MJCF files load: 17 of mujoco_menagerie's
+188 and 36 of dm_control's 65. MuJoCo 3.5.0 loads 238 of the 253 (183 and 55),
+and we load 52 of those (17 and 35); of the 200 files we do not load, 14 are
+files MuJoCo refuses too, and we load one it refuses
+(`dm_control/mjcf/test_assets/test_model.xml`: MuJoCo, "mass and inertia of
+moving bodies must be larger than mjMINVAL"). The rest are loader gaps: most of
+Menagerie's on `mesh '': duplicate mesh name`, many of the control suite's on a
+single-value `friction`. No test requires the submodules to load (one sim-mjcf test, behind
+the `hfields` feature, opens a Menagerie scene if it is there and accepts a
+failure), and CI does not check them out. The tables below give each model's
+result.
 
-**Implementation:** `sim/L0/tests/` (sim-conformance-tests) with git submodules for test assets.
-
-Run tests: `cargo test -p sim-conformance-tests`
-
-> **Note:** Conformance tests are being migrated to the Model/Data API.
-> See `sim/L0/tests/integration/model_data_pipeline.rs` for the new test patterns.
+**Implementation:** git submodules `sim/L0/tests/assets/mujoco_menagerie/` and
+`sim/L0/tests/assets/dm_control/`.
 
 #### MuJoCo Menagerie (Model Zoo)
 https://github.com/google-deepmind/mujoco_menagerie
 
-| Model | Category | Status | Notes |
+| Model | Category | Loads | Notes |
 |-------|----------|--------|-------|
-| `franka_emika_panda` | Robot arm | [x] | 7-DOF manipulator |
-| `universal_robots_ur5e` | Robot arm | [x] | Industrial arm |
-| `kuka_iiwa_14` | Robot arm | [x] | 7-DOF arm |
-| `unitree_go1` | Quadruped | [x] | Walking robot |
-| `unitree_go2` | Quadruped | [x] | Walking robot |
-| `unitree_h1` | Humanoid | [x] | Full humanoid |
-| `unitree_g1` | Humanoid | [x] | Compact humanoid |
-| `shadow_hand` | Dexterous hand | [x] | High-DOF hand |
-| `robotiq_2f85` | Gripper | [x] | 2-finger gripper |
-| `anymal_c` | Quadruped | [x] | ANYmal robot |
-| `anymal_b` | Quadruped | [x] | ANYmal robot |
-| `agility_digit` | Humanoid | [x] | Bipedal robot |
-| `robotis_op3` | Humanoid | [x] | Small humanoid |
-| `google_robot` | Mobile manip | [x] | Google robot |
-| `google_barkour` | Quadruped | [x] | Barkour robot |
-| `aloha` | Dual arm | [x] | Bimanual robot |
+| `franka_emika_panda` | Robot arm | no | 7-DOF manipulator |
+| `universal_robots_ur5e` | Robot arm | no | Industrial arm |
+| `kuka_iiwa_14` | Robot arm | no | 7-DOF arm |
+| `unitree_go1` | Quadruped | no | Walking robot |
+| `unitree_go2` | Quadruped | no | Walking robot |
+| `unitree_h1` | Humanoid | no | Full humanoid |
+| `unitree_g1` | Humanoid | no | Compact humanoid |
+| `shadow_hand` | Dexterous hand | no | High-DOF hand |
+| `robotiq_2f85` | Gripper | no | 2-finger gripper |
+| `anymal_c` | Quadruped | no | `anybotics_anymal_c` |
+| `anymal_b` | Quadruped | no | `anybotics_anymal_b` |
+| `agility_digit` | Humanoid | — | Not in the submodule; its `agility_cassie` loads (2 of 2 files) |
+| `robotis_op3` | Humanoid | no | Small humanoid |
+| `google_robot` | Mobile manip | no | Google robot |
+| `google_barkour` | Quadruped | 5 of its 10 files | Barkour robot |
+| `aloha` | Dual arm | no | Bimanual robot |
 
 #### DeepMind Control Suite
 https://github.com/google-deepmind/dm_control
 
-| Domain | Task | Status | Notes |
+| Domain | Task | Loads | Notes |
 |--------|------|--------|-------|
-| `acrobot` | swingup | [x] | Double pendulum |
-| `ball_in_cup` | catch | [x] | Ball manipulation |
-| `cartpole` | balance | [x] | Classic control |
-| `cheetah` | run | [x] | Planar runner |
-| `finger` | spin | [x] | Object manipulation |
-| `fish` | swim | [x] | 3D swimming |
-| `hopper` | hop | [x] | Single-leg hopper |
-| `humanoid` | walk | [x] | Full humanoid |
-| `humanoid_CMU` | walk | [x] | CMU humanoid |
-| `manipulator` | bring_ball | [x] | Arm with objects |
-| `pendulum` | swingup | [x] | Single pendulum |
-| `point_mass` | easy | [x] | 2D navigation |
-| `reacher` | easy | [x] | Planar arm |
-| `swimmer` | swimmer6 | [x] | Multi-link swimmer |
-| `walker` | walk | [x] | Bipedal walker |
-| `quadruped` | walk | [x] | 4-legged walker |
-| `dog` | run | [x] | Realistic dog |
-| `stacker` | stack | [x] | Block stacking |
-| `lqr` | control | [x] | LQR benchmark |
-
-**Test infrastructure:**
-- Git submodules: `sim/L0/tests/assets/mujoco_menagerie/`, `sim/L0/tests/assets/dm_control/`
-- Test crate: `sim/L0/tests/` (sim-conformance-tests)
-- Macro-based tests verify body/joint counts match expectations
+| `acrobot` | swingup | yes | Double pendulum |
+| `ball_in_cup` | catch | yes | Ball manipulation |
+| `cartpole` | balance | yes | Classic control |
+| `cheetah` | run | yes | Planar runner |
+| `finger` | spin | yes | Object manipulation |
+| `fish` | swim | yes | 3D swimming |
+| `hopper` | hop | yes | Single-leg hopper |
+| `humanoid` | walk | no (single-value `friction`) | Full humanoid |
+| `humanoid_CMU` | walk | no (single-value `friction`) | CMU humanoid |
+| `manipulator` | bring_ball | no (single-value `friction`) | Arm with objects |
+| `pendulum` | swingup | yes | Single pendulum |
+| `point_mass` | easy | yes | 2D navigation |
+| `reacher` | easy | yes | Planar arm |
+| `swimmer` | swimmer6 | yes (a template: dm_control adds the links in Python) | Multi-link swimmer |
+| `walker` | walk | yes | Bipedal walker |
+| `quadruped` | walk | no (its height field) | 4-legged walker |
+| `dog` | run | no (single-value `friction`) | Realistic dog |
+| `stacker` | stack | no (single-value `friction`) | Block stacking |
+| `lqr` | control | yes (a template: dm_control adds the bodies in Python) | LQR benchmark |
 
 ---
 
@@ -314,7 +316,7 @@ fn test_pendulum_trajectory_matches_mujoco() {
 
 **Status:** ✅ Complete — Phase 12 conformance suite includes trajectory comparison
 infrastructure. Golden flag tests compare per-timestep `qacc` against MuJoCo 3.5.0
-reference data with tolerance-based assertions. 79/79 conformance tests passing.
+reference data with tolerance-based assertions.
 
 ---
 
@@ -324,8 +326,8 @@ Some differences from MuJoCo are by design:
 
 | ID | Area | MuJoCo | CortenForge | Rationale |
 |----|------|--------|-------------|-----------|
-| A-MEMORY | Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
-| A-THREADS | Threading | OpenMP | Rayon | Rust ecosystem |
+| A-MEMORY | Memory model | `mj_makeData` allocates one buffer and an arena; a step takes its scratch from the arena | `make_data` allocates the arrays sized by the model; a step still allocates (its vectors are not pooled) | Not yet pooled |
+| A-THREADS | Threading | A thread pool (`mjThreadPool`) | Rayon | Rust ecosystem |
 | A-GPU | GPU | Custom CUDA / MJX (JAX) | Removed (rebuild when needed) | — |
 | A-SOLVER | Contact solver | Custom sparse | PGS + CG/PGD + Newton (reduced primal, §15) with variable condim (1/3/4/6), elliptic friction cones | Maintainability |
 | A-VIS | Visualization | Built-in | Separate L1 crate | Headless training |
@@ -400,9 +402,9 @@ with MuJoCo 3.5.0.
 
 | Approach | Priority | Status | Notes |
 |----------|----------|--------|-------|
-| Conformance tests | High | ✅ Complete | Phase 12 — 79/79 tests, 26 golden flag permutations |
+| Conformance tests | High | ✅ Complete | Phase 12 — 26 golden flag permutations |
 | Doc comparison | Medium | ✅ Substantially complete | Maintained through Phases 5–13 |
-| Model loading | High | ✅ Complete | Menagerie + DM Control models load (2026-01-24) |
+| Model loading | High | Partial | 53 of the submodules' 253 files load (2026-10-20, §3) |
 | Trajectory comparison | High | ✅ Complete | Golden flag tests with MuJoCo 3.5.0 reference data |
 
 ### §5 — Site-Transmission Actuator Conformance

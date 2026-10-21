@@ -3,8 +3,8 @@
 This document defines the physics pipeline architecture implemented in
 `sim/L0/core/src/` (decomposed across `types/`, `dynamics/`, `collision/`, `sensor/`, `constraint/`, `forward/`, `integrate/`, `island/`, `jacobian.rs`, `energy.rs`). The pipeline follows MuJoCo's computation
 model: `forward()` (8 sub-stages) then either `integrate()` (Euler/ImplicitSpringDamper)
-or `mj_runge_kutta()` (RK4) run each timestep, operating on a static `Model` and
-mutable `Data`.
+or `mj_runge_kutta()` (RK4) run each timestep, reading the `Model` (not writing it)
+and writing the `Data`.
 
 ---
 
@@ -82,13 +82,14 @@ Two-mechanism architecture:
 - Narrow phase via `collide_geoms`
 - `apply_pair_overrides` applies per-pair condim/friction/solref/solimp
 
-Narrow phase gives each pair but a height field's or a signed distance field's, and a mesh or an ellipsoid on a plane, the function MuJoCo's collision table gives it:
+Narrow phase gives each pair but a signed distance field's the function MuJoCo's collision table gives it:
 the primitive pairs (sphere-sphere, sphere-capsule, box-box, etc.) and the
 plane pairs functions of their own; an ellipsoid or a mesh against a sphere,
 capsule, ellipsoid, cylinder, box or mesh, and a cylinder against a capsule,
 cylinder or box, MuJoCo's native convex collision (`mjc_Convex`: GJK, EPA and
 its multi-contact; `collision/mj_ccd.rs`). A mesh collides as the convex hull
-of its vertices; against a plane it takes sim-core's own `collide_mesh_plane`.
+of its vertices; it and an ellipsoid against a plane, through MuJoCo's
+`mjc_PlaneConvex`.
 
 Output: contact list with position, normal, penetration depth, and geom IDs.
 
@@ -906,7 +907,7 @@ available as `Data::transition_derivatives()`.
 
 ## Key Data Structures
 
-### Model (static, immutable after loading)
+### Model (what stepping reads and does not write; edit between steps, then `Model::recompute_derived`)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -941,9 +942,9 @@ available as `Data::transition_derivatives()`.
 | `solver_iterations` | `usize` | Max constraint-solver iterations (default 100) |
 | `solver_tolerance` | `f64` | Constraint-solver convergence threshold (default 1e-8) |
 
-### Data (dynamic, mutable, pre-allocated)
+### Data (dynamic: allocated by `make_data`; a step still allocates)
 
-**State (source of truth):**
+**State, in part (`Data`'s doc lists all of it):**
 
 | Field | Type | Description |
 |-------|------|-------------|

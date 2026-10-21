@@ -472,7 +472,7 @@ impl Model {
             ccd_tolerance: 1e-6, // MuJoCo default for convex solver tolerance
             sdf_iterations: 10,  // MuJoCo default for SDF Newton iterations
             sdf_initpoints: 40,  // MuJoCo default for SDF initial sample points
-            sdf_maxcontact: 50,  // Cap SDF-SDF contacts per pair (deepest kept)
+            sdf_maxcontact: 50,  // Cap SDF-SDF contacts per pair (see the field's doc)
             integrator: Integrator::Euler,
             solver_type: SolverType::Newton, // MuJoCo's default since 2.0; matches the GPU path
 
@@ -981,7 +981,7 @@ impl Model {
             // Time
             time: 0.0,
 
-            // Scratch buffers (pre-allocated for allocation-free stepping)
+            // Scratch buffers
             scratch_m_impl: DMatrix::zeros(self.nv, self.nv),
             scratch_force: DVector::zeros(self.nv),
             scratch_rhs: DVector::zeros(self.nv),

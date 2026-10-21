@@ -10,10 +10,26 @@ use std::collections::HashMap;
 use nalgebra::Point3;
 use serde_json::Value;
 
-use super::{CcdConfig, CcdMesh, CcdObj, CcdStatus, HullGraph, STALE_S3D, mjc_ccd};
+use super::{
+    CcdConfig, CcdMesh, CcdObj, CcdStatus, HullGraph, RawContact, STALE_S3D, mjc_ccd,
+    mjc_convex_hfield, mjc_plane_convex,
+};
+use crate::heightfield::HeightFieldData;
 use crate::mesh::TriangleMeshData;
 use crate::mesh_polygons::{MeshPolygons, make_polygons};
 use crate::types::GeomType;
+
+/// The golden's groups that hold no `mjc_ccd` case.
+const NOT_CCD_CASES: [&str; 8] = [
+    "oracle",
+    "meshes",
+    "merge",
+    "graph_meshes",
+    "plane_meshes",
+    "plane_convex",
+    "hfield_fields",
+    "hfield_convex",
+];
 
 fn golden() -> Value {
     let path = concat!(
@@ -369,7 +385,7 @@ fn mjc_ccd_matches_mujoco_bitwise() {
     let groups = doc.as_object().expect("the golden's groups");
     for (group, cases) in groups
         .iter()
-        .filter(|(k, _)| !["oracle", "meshes", "merge", "graph_meshes"].contains(&k.as_str()))
+        .filter(|(k, _)| !NOT_CCD_CASES.contains(&k.as_str()))
     {
         let cases = cases.as_object().expect("a group of cases");
         assert!(!cases.is_empty(), "no {group} cases");
@@ -462,7 +478,7 @@ fn graph_cases_need_mujocos_graph() {
         .as_object()
         .expect("the golden's groups")
         .iter()
-        .filter(|(k, _)| !["oracle", "meshes", "merge", "graph_meshes"].contains(&k.as_str()))
+        .filter(|(k, _)| !NOT_CCD_CASES.contains(&k.as_str()))
         .flat_map(|(_, cases)| cases.as_object().expect("a group of cases").values())
         .filter(on_graph_meshes)
         .filter(|case| {
@@ -633,4 +649,274 @@ fn box_on_mesh_multiccd_as_mujoco() {
         mujocos_four > 0,
         "no case of four contacts kept as MuJoCo's"
     );
+}
+
+/// A mesh of the golden's plane cases (`plane_meshes`) as MuJoCo compiled
+/// it: its vertices, its hull graph, its radius, and our mesh data over its
+/// vertices (our hull's graph).
+struct PlaneMesh {
+    verts: Vec<Point3<f64>>,
+    vertex: Vec<usize>,
+    neighbours: Vec<Vec<u32>>,
+    rbound: f64,
+    ours: TriangleMeshData,
+}
+
+fn plane_meshes(doc: &Value) -> HashMap<String, PlaneMesh> {
+    let mut out = HashMap::new();
+    for (name, m) in doc["plane_meshes"].as_object().expect("plane meshes") {
+        let verts = points(&m["vert"]);
+        let neighbours = m["graph"]["neighbours"]
+            .as_array()
+            .expect("each hull vertex's neighbours")
+            .iter()
+            .map(|n| {
+                counts(n)
+                    .into_iter()
+                    .map(|i| u32::try_from(i).expect("a hull vertex"))
+                    .collect()
+            })
+            .collect();
+        out.insert(
+            name.clone(),
+            PlaneMesh {
+                ours: mesh_data(verts.clone()),
+                verts,
+                vertex: counts(&m["graph"]["vertex"]),
+                neighbours,
+                rbound: number(&m["rbound"]),
+            },
+        );
+    }
+    out
+}
+
+/// Which hull graph a plane case's mesh takes.
+#[derive(Clone, Copy, PartialEq)]
+enum PlaneGraph {
+    Mujocos,
+    Ours,
+    None,
+}
+
+/// Our `mjc_PlaneConvex` on a plane case: its geom made without a margin, a
+/// mesh on `graph` with no polygons (the plane takes none), spaced by
+/// MuJoCo's radius.
+fn plane_run(
+    case: &Value,
+    meshes: &HashMap<String, PlaneMesh>,
+    graph: PlaneGraph,
+) -> Vec<RawContact> {
+    let none = MeshPolygons::default();
+    let mesh = case["mesh"].as_str().map(|name| &meshes[name]);
+    let ccd_mesh = mesh.map(|m| CcdMesh {
+        verts: &m.verts,
+        hull: match graph {
+            PlaneGraph::Mujocos => Some(HullGraph {
+                vertex: &m.vertex,
+                neighbours: &m.neighbours,
+            }),
+            PlaneGraph::Ours => Some(HullGraph {
+                vertex: m.ours.hull_vertex(),
+                neighbours: &m.ours.convex_hull().expect("the mesh has a hull").adjacency,
+            }),
+            PlaneGraph::None => None,
+        },
+        polygons: &none,
+    });
+    let mut obj = CcdObj::new(
+        geom_type(case["type"].as_str().expect("a type")),
+        floats(&case["pos"]),
+        floats(&case["mat"]),
+        floats(&case["size"]),
+        0.0,
+        ccd_mesh,
+    )
+    .expect("a geom mjc_PlaneConvex takes");
+    mjc_plane_convex(
+        &floats(&case["plane"]["pos"]),
+        &floats(&case["plane"]["mat"]),
+        &mut obj,
+        mesh.map_or(0.0, |m| m.rbound),
+        number(&case["margin"]),
+    )
+}
+
+/// Whether two numbers are one, or both NaN.
+fn same_bits(a: f64, b: f64) -> bool {
+    a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+}
+
+/// Our contacts are MuJoCo's, each `dist`, `pos` and normal bit for bit.
+fn contacts_match(ours: &[RawContact], want: &Value) -> bool {
+    let want = want.as_array().expect("contacts");
+    ours.len() == want.len()
+        && ours.iter().zip(want).all(|(c, w)| {
+            same_bits(c.dist, number(&w["dist"]))
+                && (0..3).all(|k| {
+                    same_bits(c.pos[k], number(&w["pos"][k]))
+                        && same_bits(c.normal[k], number(&w["normal"][k]))
+                })
+        })
+}
+
+/// The graph a plane case's mesh takes on MuJoCo's side: none in
+/// `mesh_bare` and every case named `_bare` or `bare_`.
+fn mujocos_plane_graph(group: &str, name: &str) -> PlaneGraph {
+    if group == "mesh_bare" || name.contains("_bare") || name.starts_with("bare_") {
+        PlaneGraph::None
+    } else {
+        PlaneGraph::Mujocos
+    }
+}
+
+/// `mjc_PlaneConvex` (and `mjccd_support` under it) against MuJoCo's, bit
+/// for bit, on every plane case of the golden (`plane_convex`): ellipsoids,
+/// those apart at a margin of their own distance, meshes on MuJoCo's hull
+/// graph and without one, the comparisons' edges (vertices at the margin
+/// exactly; a first vertex past the spacing without a graph), NaN turns
+/// (MuJoCo's NaN contact) and a tetrahedron (on each face, at random turns,
+/// and where two corners tie exactly for the deepest).
+#[test]
+fn plane_convex_matches_mujoco_bitwise() {
+    let doc = golden();
+    let meshes = plane_meshes(&doc);
+    let mut total = 0;
+    for (group, cases) in doc["plane_convex"].as_object().expect("plane groups") {
+        let cases = cases.as_object().expect("plane cases");
+        assert!(!cases.is_empty(), "plane group {group} is empty");
+        for (name, case) in cases {
+            let ours = plane_run(case, &meshes, mujocos_plane_graph(group, name));
+            assert!(
+                contacts_match(&ours, &case["contacts"]),
+                "{group}/{name}: ours {:?}, MuJoCo {}",
+                ours.iter().map(|c| (c.dist, c.pos)).collect::<Vec<_>>(),
+                case["contacts"]
+            );
+            total += 1;
+        }
+    }
+    assert_eq!(total, 711, "plane cases");
+}
+
+/// On our hull's graph (registry D-HULL-ORDER) a plane–mesh contact after
+/// the first can be at another vertex: `mjc_PlaneConvex` takes the first
+/// vertex's neighbours within the margin in the graph's order, up to two,
+/// and where a face lies on the plane its corners tie for the first. On the
+/// golden's 168 `mesh` cases: 47 differ from MuJoCo's (4 in count; positions
+/// up to 0.14 apart and distances up to 2.7e-2, measured); the first contact
+/// is listed whenever MuJoCo's is, at its distance within 1e-16 (measured
+/// 8.3e-17), on 15 face-down poses at another of the tied corners.
+#[test]
+fn plane_mesh_contacts_part_from_mujocos_by_the_hulls_order() {
+    let doc = golden();
+    let meshes = plane_meshes(&doc);
+    let mut differ = 0;
+    for (name, case) in doc["plane_convex"]["mesh"]
+        .as_object()
+        .expect("plane cases")
+    {
+        let ours = plane_run(case, &meshes, PlaneGraph::Ours);
+        let want = case["contacts"].as_array().expect("contacts");
+        assert_eq!(ours.is_empty(), want.is_empty(), "{name}: listed");
+        if let (Some(c), Some(w)) = (ours.first(), want.first()) {
+            let dist = number(&w["dist"]);
+            assert!(
+                (c.dist - dist).abs() <= 1e-16,
+                "{name}: first dist {}, MuJoCo {dist}",
+                c.dist
+            );
+        }
+        differ += usize::from(!contacts_match(&ours, &case["contacts"]));
+    }
+    assert_eq!(differ, 47, "plane-mesh cases our hull's graph changes");
+}
+
+/// A height field of the golden (`hfield_fields`) as sim-core holds it:
+/// MuJoCo's data scaled by the field's top, as `mjc_ConvexHField` scales
+/// each height it reads, and its size.
+fn hfield_of(field: &Value) -> (HeightFieldData, [f64; 4]) {
+    let (nrow, ncol) = (count(&field["nrow"]), count(&field["ncol"]));
+    let size: [f64; 4] = floats(&field["size"]);
+    let heights = field["data"]
+        .as_array()
+        .expect("data")
+        .iter()
+        .map(|h| number(h) * size[2])
+        .collect();
+    // A grid's extent, far below 2^52, exact as a float.
+    #[allow(clippy::cast_precision_loss)]
+    let cell = 2.0 * size[0] / (ncol - 1) as f64;
+    (HeightFieldData::new(heights, ncol, nrow, cell), size)
+}
+
+/// Our `mjc_ConvexHField` on a height-field case, its mesh on MuJoCo's
+/// hull graph, with MuJoCo's bounding radius.
+fn hfield_run(case: &Value, doc: &Value, meshes: &HashMap<String, PlaneMesh>) -> Vec<RawContact> {
+    let none = MeshPolygons::default();
+    let field = case["field"].as_str().expect("a field");
+    let (hfield, size) = hfield_of(&doc["hfield_fields"][field]);
+    let mesh = case["mesh"].as_str().map(|name| {
+        let m = &meshes[name];
+        CcdMesh {
+            verts: &m.verts,
+            hull: Some(HullGraph {
+                vertex: &m.vertex,
+                neighbours: &m.neighbours,
+            }),
+            polygons: &none,
+        }
+    });
+    let mut obj = CcdObj::new(
+        geom_type(case["type"].as_str().expect("a type")),
+        floats(&case["pos"]),
+        floats(&case["mat"]),
+        floats(&case["size"]),
+        0.0,
+        mesh,
+    )
+    .expect("a geom mjc_ConvexHField takes");
+    mjc_convex_hfield(
+        &hfield,
+        &size,
+        &floats(&case["hfield"]["pos"]),
+        &floats(&case["hfield"]["mat"]),
+        &mut obj,
+        number(&case["rbound"]),
+        number(&case["margin"]),
+        (count(&case["ccd"][0]), number(&case["ccd"][1])),
+    )
+}
+
+/// `mjc_ConvexHField` against MuJoCo's, bit for bit, on every height-field
+/// case of the golden (`hfield_convex`): four fields (square cells, cells of
+/// two spacings, a fine grid, one cell), each convex type and two meshes on
+/// MuJoCo's hull graph at random poses, the box tests' edges, mjMAXCONPAIR
+/// contacts, a geom apart listed within the margin, a geom past an edge
+/// within the margin (unlisted), boxes resting exactly on a field's flat part
+/// (unlisted), a sphere under the base within the margin, a field at 1e154
+/// (its contacts' normals zero, skipped), and NaN turns.
+#[test]
+fn hfield_convex_matches_mujoco_bitwise() {
+    let doc = golden();
+    let meshes = plane_meshes(&doc);
+    let mut total = 0;
+    for (group, cases) in doc["hfield_convex"]
+        .as_object()
+        .expect("height-field groups")
+    {
+        let cases = cases.as_object().expect("height-field cases");
+        assert!(!cases.is_empty(), "height-field group {group} is empty");
+        for (name, case) in cases {
+            let ours = hfield_run(case, &doc, &meshes);
+            assert!(
+                contacts_match(&ours, &case["contacts"]),
+                "{group}/{name}: ours {:?}, MuJoCo {}",
+                ours.iter().map(|c| (c.dist, c.pos)).collect::<Vec<_>>(),
+                case["contacts"]
+            );
+            total += 1;
+        }
+    }
+    assert_eq!(total, 352, "height-field cases");
 }

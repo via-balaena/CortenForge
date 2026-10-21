@@ -11,8 +11,8 @@
 //!
 //! ## Key Architectural Points
 //!
-//! - **Model** is static: kinematic tree, joint definitions, mass properties
-//! - **Data** is dynamic: qpos/qvel are the ONLY state variables
+//! - **Model** is read by each step, not written: kinematic tree, joint definitions, mass properties
+//! - **Data** is dynamic: qpos/qvel hold the joints' state
 //! - Body poses (xpos/xquat) are COMPUTED via forward kinematics, never stored
 //! - Uses canonical systems from `sim_bevy::model_data` module
 //!
@@ -114,7 +114,7 @@ fn setup_physics_and_scene(
     println!("=============================================");
     println!("Double Pendulum (Model/Data Architecture)");
     println!("=============================================");
-    println!("Model (static):");
+    println!("Model (read by each step):");
     println!("  nbody:  {} (world + 2 links)", model.nbody);
     println!("  njnt:   {} (2 hinge joints)", model.njnt);
     println!("  nq:     {} (joint angles)", model.nq);
@@ -133,7 +133,7 @@ fn setup_physics_and_scene(
     println!("  dt = {:.5} s (timestep)", model.timestep);
     println!("=============================================");
     println!("Key invariants to observe:");
-    println!("  - qpos/qvel are the ONLY state variables");
+    println!("  - qpos/qvel hold the joints' state");
     println!("  - xpos/xquat computed via forward kinematics");
     println!("  - Energy drift should be minimal (ΔE < 1%)");
     println!("  - Links stay connected (FK guarantees this)");

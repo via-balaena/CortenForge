@@ -191,7 +191,11 @@ pairs under `ccd_iterations` 12 and `ccd_tolerance` 1e-3, both as
 and the mesh and itself, apart where MuJoCo's distance sensor reads 0, with
 its reading with the second body moved 1e-9 (registry D-GJK-S3D).
 `hull_order` holds geoms resting 0.001 into the chamfer mesh's top face
-under MULTICCD (registry D-HULL-ORDER).
+under MULTICCD (registry D-HULL-ORDER). `bumpy` holds a sphere, a capsule,
+an ellipsoid, a cylinder and a box, each turned by its body's frame,
+dropped from rest at two spots of a 9 x 9 bumpy height field whose data
+sim-mjcf loads as MuJoCo compiles it (elevations multiples of 1/8 from 0 to
+1, rows symmetric): the free joint's height after every 50th of 1000 steps.
 """
 
 import itertools
@@ -2528,6 +2532,48 @@ def write(path, doc):
         f.write("\n")
 
 
+# Bodies dropped on a bumpy height field whose data sim-mjcf loads as MuJoCo compiles it: 9 x 9,
+# square cells (size 1 1), elevations multiples of 1/8 from 0 to 1 (MuJoCo's normalisation leaves
+# them) and rows symmetric (its row flip leaves them; book Rigid-loading L45 is the rest). Each
+# body is turned by its frame, its one geom unturned in it, so its inertial frame is the body's in
+# both (a turned geom's is not yet MuJoCo's in sim-mjcf, ledger L195).
+BUMPY_ELEVATION = [((3 * min(r, 8 - r) + 5 * c) % 9) / 8.0 for r in range(9) for c in range(9)]
+BUMPY_ELEVATION[0], BUMPY_ELEVATION[4 * 9 + 4] = 0.0, 1.0
+BUMPY_BODIES = {"sphere": ('<geom type="sphere" size="0.1"/>', "0 0 0"),
+                "capsule": ('<geom type="capsule" size="0.05 0.1"/>', "40 20 0"),
+                "ellipsoid": ('<geom type="ellipsoid" size="0.12 0.08 0.06"/>', "10 30 0"),
+                "cylinder": ('<geom type="cylinder" size="0.07 0.08"/>', "25 0 15"),
+                "box": ('<geom type="box" size="0.08 0.06 0.05"/>', "15 10 5")}
+BUMPY_SPOTS = {"ne": (0.3, 0.2), "sw": (-0.35, -0.4)}
+
+
+def bumpy_cases():
+    """Each body from rest at two spots: MuJoCo's free joint's height after every 50th of 1000
+    steps (from step 49)."""
+    elevation = " ".join(repr(e) for e in BUMPY_ELEVATION)
+    out = {}
+    for body, (geom, euler) in BUMPY_BODIES.items():
+        for spot, (x, y) in BUMPY_SPOTS.items():
+            xml = (f'<mujoco><asset><hfield name="f" nrow="9" ncol="9" size="1 1 0.3 0.1" '
+                   f'elevation="{elevation}"/></asset><worldbody><geom type="hfield" hfield="f"/>'
+                   f'<body pos="{x} {y} 0.6" euler="{euler}"><freejoint/>{geom}</body>'
+                   '</worldbody></mujoco>')
+            m = mujoco.MjModel.from_xml_string(xml)
+            data = np.reshape(m.hfield_data, (9, 9)) * m.hfield_size[0][2]
+            if (data != np.reshape(BUMPY_ELEVATION, (9, 9)) * 0.3).any():
+                sys.exit(f"bumpy {body}_{spot}: MuJoCo's data is not the elevation as written")
+            if (m.body_iquat[1] != [1, 0, 0, 0]).any():
+                sys.exit(f"bumpy {body}_{spot}: an inertial frame turned off the body's")
+            d = mujoco.MjData(m)
+            z = []
+            for k in range(1000):
+                mujoco.mj_step(m, d)
+                if k % 50 == 49:
+                    z.append(float(d.qpos[2]))
+            out[f"{body}_{spot}"] = {"xml": xml, "z": z}
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -2566,7 +2612,8 @@ def main():
            "round_multiccd": finite_or_string({"named": {}, "random": round_multiccd_cases()}),
            "ccd_options": finite_or_string({"named": {}, "random": ccd_option_cases()}),
            "s3d_mesh_sensors": finite_or_string(s3d_mesh_sensor_cases()),
-           "hull_order": finite_or_string(hull_order_cases())}
+           "hull_order": finite_or_string(hull_order_cases()),
+           "bumpy": finite_or_string(bumpy_cases())}
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], "collision.json"), doc)
     print(f"{len(CASES)} rest cases, {len(doc['order'])} order cases, "

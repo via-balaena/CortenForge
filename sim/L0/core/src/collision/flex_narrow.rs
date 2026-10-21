@@ -183,7 +183,7 @@ pub fn narrowphase_sphere_geom(
                     model.ccd_tolerance,
                 ) {
                     // GJK/EPA returns normal from shape_a toward shape_b
-                    // (see hfield.rs:170 comment). Here A=sphere, B=hull, so
+                    // (`GjkContact::normal`). Here A=sphere, B=hull, so
                     // the raw normal points from vertex toward mesh. Negate to
                     // get outward-from-mesh-toward-vertex convention.
                     return Some((gjk.penetration, -gjk.normal, gjk.point.coords));

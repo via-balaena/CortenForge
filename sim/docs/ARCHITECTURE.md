@@ -10,8 +10,10 @@ The `sim-*` crates provide a MuJoCo-aligned physics simulation stack for:
 - **Domain randomization** (tunable contact parameters for robust policies)
 
 The primary API is a `Model`/`Data` architecture modeled after MuJoCo:
-`Model` is static (immutable after loading), `Data` is dynamic (`qpos`/`qvel`
-are the source of truth), and body poses are computed via forward kinematics.
+`Model` holds what stepping reads and does not write (its fields are public and may be
+edited between steps; `Model::recompute_derived` then recomputes the fields
+derived from them), `Data` is dynamic (the state, and what the forward pass
+computes from it), and body poses are computed via forward kinematics.
 
 ## Directory Structure
 
@@ -67,7 +69,7 @@ pipeline-stage directories:
 sim-core/src/
 ├── types/           # Model, Data, enums, contacts, keyframes, flags
 │   ├── mod.rs             # Type re-exports
-│   ├── model.rs           # Model struct (static configuration)
+│   ├── model.rs           # Model struct (configuration)
 │   ├── data.rs            # Data struct (mutable state)
 │   ├── enums.rs           # MjJointType, GeomType, SolverType, etc.
 │   ├── contact_types.rs   # Contact, ContactPair
@@ -128,8 +130,7 @@ sim-core/src/
 │   ├── plane.rs           # Plane-vs-geom algorithms
 │   ├── pair_convex.rs     # Convex pair algorithms
 │   ├── pair_cylinder.rs   # Cylinder pair algorithms
-│   ├── mesh_collide.rs    # Mesh-plane collision
-│   ├── mj_ccd.rs          # MuJoCo's native convex collision (GJK, EPA, multi-contact)
+│   ├── mj_ccd.rs          # MuJoCo's native convex collision (GJK, EPA, multi-contact; plane-convex, convex-height field)
 │   ├── hfield.rs          # Height field collision
 │   ├── flex_collide.rs    # Flex collision dispatcher
 │   ├── flex_narrow.rs     # Flex sphere-geom narrowphase
@@ -184,10 +185,12 @@ collision, contact types, model/data structs) range from 1,000–4,000 lines.
 The pipeline flows:
 **types -> dynamics -> forward -> constraint -> integrate -> island**.
 
-### Model (static)
+### Model
 
-Immutable after loading. Contains the kinematic tree, joint definitions,
-geometry specifications, actuator configuration, and solver parameters.
+What stepping reads and does not write: the kinematic tree, joint definitions,
+geometry specifications, actuator configuration, and solver parameters. Its
+fields are public and may be edited between steps; `Model::recompute_derived`
+then recomputes the fields derived from them.
 
 Key fields:
 - `nq`/`nv` — position coordinates vs velocity DOFs (differ for quaternion joints); includes flex vertex DOFs when `nflex > 0`
@@ -217,12 +220,12 @@ Constructed from MJCF via `sim-mjcf` or URDF via `sim-urdf`.
 
 ### Data (mutable)
 
-Pre-allocated state and computed quantities. Most buffers are pre-allocated;
-residual heap allocation occurs for contact vector growth and RK4 warmstart save.
+State and computed quantities. `make_data` allocates the arrays sized by the
+model; a step still allocates (its vectors are not pooled).
 
 | Category | Fields | Description |
 |----------|--------|-------------|
-| State | `qpos`, `qvel`, `act`, `ctrl`, `time` | Source of truth (act = activation states for muscles/filters) |
+| State, in part | `qpos`, `qvel`, `act`, `ctrl`, `time` | `Data`'s doc lists all of it (act = activation states for muscles/filters) |
 | Mocap state | `mocap_pos`, `mocap_quat` | User-settable kinematic input for mocap bodies (length nmocap); FK overrides body pose |
 | Body poses | `xpos`, `xquat`, `xmat` | Computed by forward kinematics |
 | Mass matrix | `qM`, `qLD_data`, `qLD_diag_inv` | Computed by CRBA; sparse L^T D L factorization in flat CSR storage (diagonal D[i,i] stored as the last element of each CSR row in `qLD_data`; `qLD_diag_inv` stores precomputed 1/D[i,i] for fast solves) |
@@ -241,10 +244,10 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 use sim_core::{Model, Data};
 use sim_mjcf::{load_model, load_model_from_file};
 
-let model = load_model(mjcf_string)?;  // Static (from MJCF XML string)
+let model = load_model(mjcf_string)?;  // From an MJCF XML string
 // Or from file (supports <include> file resolution):
 // let model = load_model_from_file("robot.xml")?;
-let mut data = model.make_data();      // Pre-allocated
+let mut data = model.make_data();      // Arrays sized by the model
 
 // Simulation loop
 loop {
@@ -370,15 +373,18 @@ through a bounding-sphere distance cull and narrow-phase, then
 
 ### Narrow Phase Dispatch
 
-Each pair but a height field's or a signed distance field's, and a mesh or an ellipsoid on a plane, goes to the function MuJoCo's collision table gives it. The
+Each pair but a signed distance field's goes to the function MuJoCo's collision table gives it. The
 primitive pairs (sphere-sphere, sphere-capsule, capsule-capsule, sphere-box,
 capsule-box, box-box, sphere-cylinder) and the plane pairs have functions of
 their own. An ellipsoid or a mesh against a sphere, capsule,
 ellipsoid, cylinder, box or mesh, and a cylinder against a capsule, cylinder
 or box, collide through MuJoCo's native convex collision (`mjc_Convex`: GJK,
 EPA and its multi-contact; `collision/mj_ccd.rs`). A mesh collides as the
-convex hull of its vertices; against a plane it takes sim-core's own
-`collide_mesh_plane`. Height fields and SDFs have their own routes.
+convex hull of its vertices; it and an ellipsoid against a plane, through
+MuJoCo's `mjc_PlaneConvex` (`collision/mj_ccd.rs`). A height field against a
+convex geom, through MuJoCo's `mjc_ConvexHField` (`collision/mj_ccd.rs`: each
+triangular prism of its grid under the geom through `mjc_ccd`). SDFs have their
+own routes.
 
 ### Supported Geometry Types
 
@@ -388,9 +394,9 @@ convex hull of its vertices; against a plane it takes sim-core's own
 | Box | `Box` | MuJoCo's `mjc_BoxBox` for box-box; `mjc_Convex` with an ellipsoid, cylinder or mesh |
 | Capsule | `Capsule` | Analytical line-line distance; `mjc_Convex` with an ellipsoid, cylinder or mesh |
 | Cylinder | `Cylinder` | `mjc_Convex`, but with a sphere or plane |
-| Ellipsoid | `Ellipsoid` | `mjc_Convex`, but with a plane |
+| Ellipsoid | `Ellipsoid` | `mjc_Convex`; with a plane, `mjc_PlaneConvex` |
 | Plane | `Plane` | Infinite half-space (ground) |
-| Mesh | `Mesh` | Its convex hull through `mjc_Convex`; with a plane, `collide_mesh_plane` |
+| Mesh | `Mesh` | Its convex hull through `mjc_Convex`; with a plane, `mjc_PlaneConvex` |
 
 sim-core also provides collision primitives usable outside the pipeline:
 
@@ -403,7 +409,7 @@ sim-core also provides collision primitives usable outside the pipeline:
 
 Supporting modules: `mid_phase.rs` (BVH construction and traversal),
 `collision/mj_ccd.rs` (MuJoCo's native convex collision), `gjk_epa.rs`
-(sim-core's GJK/EPA, for height-field prisms and flex vertices), `mesh.rs`
+(sim-core's GJK/EPA, for flex vertices), `mesh.rs`
 (triangle tests), `heightfield.rs`, `sdf.rs`, `raycast.rs`.
 
 ## Crate Reference
@@ -420,7 +426,7 @@ The physics engine. Depends on sim-types. Organized as a module
 tree mirroring MuJoCo's pipeline stages (see directory listing above). Key
 modules:
 
-- `types/` — `Model` (static), `Data` (mutable), enums, contact types, keyframes, flags, callbacks
+- `types/` — `Model` (configuration), `Data` (state and computed values), enums, contact types, keyframes, flags, callbacks
 - `dynamics/` — CRBA, RNE, sparse LDL factorization, spatial algebra
 - `forward/` — Pipeline orchestration (`step`, `forward`), per-stage functions (position, velocity, passive, actuation, acceleration, muscle/hill/fiber)
 - `constraint/` — Unified constraint assembly (contact + equality sub-modules) + solver dispatch (PGS, CG, Newton, Noslip, QCQP)
