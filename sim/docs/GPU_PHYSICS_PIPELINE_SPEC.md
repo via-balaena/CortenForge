@@ -240,7 +240,7 @@ definition for correct array stride.
 |---|---|---|
 | `body_id` | u32 | Body that owns this DOF (`model.dof_body[i]`). |
 | `parent` | u32 | Parent DOF in kinematic tree (0xFFFFFFFF = none). |
-| `armature` | f32 | Combined `jnt_armature[jnt] + dof_armature[i]`, pre-computed at upload. |
+| `armature` | f32 | The dof's armature, `dof_armature[i]` (MuJoCo's, which `mj_crb` adds to the diagonal). |
 | `damping` | f32 | Implicit damping (`model.implicit_damping[i]`). |
 | `simple` | u32 | 1 if the dof's body is simple (`model.dof_simplenum[i] > 0`): the CRBA writes its row of `qM` as the diagonal alone. |
 
@@ -793,7 +793,7 @@ Verified against CPU `crba.rs:196-225`.
 For flat trees (hockey), all DOFs share the same body so no cross-body
 transport occurs. For articulated chains, the transport is essential.
 
-Armature is pre-combined at upload: `dofs[i].armature = jnt_armature + dof_armature`.
+The diagonal adds the dof's armature, `dofs[i].armature = dof_armature[i]`, as the CPU's `mj_crba`.
 
 **Phase 4: `crba_cholesky` — dense Cholesky (single thread, global memory)**
 

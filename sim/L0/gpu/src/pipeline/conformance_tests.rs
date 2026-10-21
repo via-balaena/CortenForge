@@ -647,6 +647,58 @@ fn gpu_simple_body_mass_matrix_matches_cpu() {
     );
 }
 
+/// A two-hinge chain whose joints carry armature, loaded from MJCF.
+const ARMATURE_CHAIN: &str = r#"
+<mujoco model="armature_chain">
+  <worldbody>
+    <body name="upper" pos="0 0 1">
+      <joint name="shoulder" type="hinge" axis="0 1 0" armature="0.05"/>
+      <inertial pos="0.15 0 0" mass="1.2" diaginertia="0.002 0.01 0.01"/>
+      <body name="lower" pos="0.3 0 0">
+        <joint name="elbow" type="hinge" axis="0 0 1" armature="0.02"/>
+        <inertial pos="0.1 0.02 0" mass="0.7" diaginertia="0.001 0.004 0.004"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"#;
+
+/// A loaded model's armature counts once on the GPU, as on the CPU, which
+/// adds `dof_armature` to the mass matrix's diagonal (MuJoCo's `mj_crb`). The
+/// loader writes a joint's armature into both `jnt_armature` and
+/// `dof_armature` (asserted), so adding the two doubles it; with the joint's
+/// copy cleared the CPU's matrix keeps its armature, and so must the GPU's.
+#[test]
+fn gpu_loaded_armature_counts_once() {
+    let ctx = gpu_or_skip!();
+    let loaded = sim_mjcf::load_model(ARMATURE_CHAIN).expect("the chain loads");
+    for dof in 0..loaded.nv {
+        let armature = loaded.dof_armature[dof];
+        assert!(armature > 0.0, "dof {dof} carries armature");
+        assert_eq!(
+            loaded.jnt_armature[loaded.dof_jnt[dof]], armature,
+            "the loader wrote dof {dof}'s armature into both arrays"
+        );
+    }
+    let mut dof_only = loaded.clone();
+    dof_only.jnt_armature.fill(0.0);
+    for (name, model) in [("armature_chain", loaded), ("dof_armature_only", dof_only)] {
+        let case = ConformanceCase {
+            name,
+            model,
+            qpos: vec![0.3, -0.4],
+            qvel: vec![0.8, -0.5],
+        };
+        let (_, fails) = case_against_cpu(&ctx, &case);
+        assert!(
+            fails.is_empty(),
+            "GPU↔CPU on a chain with armature: {} divergence(s):\n  {}",
+            fails.len(),
+            fails.join("\n  ")
+        );
+    }
+}
+
 /// Route a single case's new failures through the known-divergence allowlist.
 ///
 /// - Allowlisted case: assert it STILL diverges (else the GPU was fixed →

@@ -176,7 +176,8 @@ pub struct DofModelGpu {
     pub body_id: u32,
     /// Parent DOF in kinematic tree (`DOF_PARENT_NONE` if root DOF).
     pub parent: u32,
-    /// Combined armature: `jnt_armature[jnt] + dof_armature[i]`.
+    /// The dof's armature, `dof_armature[i]`, which the mass matrix's
+    /// diagonal adds (MuJoCo's `mj_crb`, the CPU's `mj_crba`).
     pub armature: f32,
     /// Implicit damping (`model.implicit_damping[i]`): `jnt_damping` for
     /// hinge/slide, `dof_damping` for ball/free; 0 with dampers disabled. Read by

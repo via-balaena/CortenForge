@@ -1,0 +1,12 @@
+<mujoco model="armature_chain">
+  <worldbody>
+    <body name="upper" pos="0 0 1">
+      <joint name="shoulder" type="hinge" axis="0 1 0" armature="0.05"/>
+      <inertial pos="0.15 0 0" mass="1.2" diaginertia="0.002 0.01 0.01"/>
+      <body name="lower" pos="0.3 0 0">
+        <joint name="elbow" type="hinge" axis="0 0 1" armature="0.02"/>
+        <inertial pos="0.1 0.02 0" mass="0.7" diaginertia="0.001 0.004 0.004"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

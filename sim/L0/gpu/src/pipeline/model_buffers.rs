@@ -202,21 +202,16 @@ impl GpuModelBuffers {
         // pass's damper force and the eulerdamp matrix read it.
         let damper = model.disableflags & DISABLE_DAMPER == 0;
         let dofs_cpu: Vec<DofModelGpu> = (0..nv)
-            .map(|dof| {
-                let jnt = model.dof_jnt[dof];
-                let arm_jnt = model.jnt_armature[jnt];
-                let arm_dof = model.dof_armature.get(dof).copied().unwrap_or(0.0);
-                DofModelGpu {
-                    body_id: model.dof_body[dof] as u32,
-                    parent: model.dof_parent[dof].map_or(DOF_PARENT_NONE, |p| p as u32),
-                    armature: (arm_jnt + arm_dof) as f32,
-                    damping: if damper {
-                        model.implicit_damping.get(dof).copied().unwrap_or(0.0) as f32
-                    } else {
-                        0.0
-                    },
-                    simple: u32::from(model.dof_simplenum.get(dof).is_some_and(|&n| n > 0)),
-                }
+            .map(|dof| DofModelGpu {
+                body_id: model.dof_body[dof] as u32,
+                parent: model.dof_parent[dof].map_or(DOF_PARENT_NONE, |p| p as u32),
+                armature: model.dof_armature[dof] as f32,
+                damping: if damper {
+                    model.implicit_damping.get(dof).copied().unwrap_or(0.0) as f32
+                } else {
+                    0.0
+                },
+                simple: u32::from(model.dof_simplenum.get(dof).is_some_and(|&n| n > 0)),
             })
             .collect();
 
