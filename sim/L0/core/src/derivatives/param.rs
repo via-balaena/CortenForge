@@ -61,6 +61,7 @@ use super::{DerivativeConfig, mjd_transition};
 use crate::dynamics::compute_body_spatial_inertia;
 use crate::dynamics::crba::mj_crba;
 use crate::dynamics::rne::mj_rne;
+use crate::dynamics::spatial::mju_transform_spatial;
 use crate::integrate::eulerdamp_applies;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
 use crate::types::{DISABLE_DAMPER, DISABLE_EULERDAMP, Integrator, MjJointType, StepError};
@@ -382,6 +383,14 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
         for k in 0..nbody {
             d_pert.subtree_mass[k] = 0.0;
             d_pert.subtree_com[k] = xipos_b;
+        }
+        // Each body's `cvel` is about its tree's subtree centre of mass, now
+        // `xipos_b`: moved there, the RNE's velocities stay the operating
+        // point's.
+        for i in 0..nbody {
+            let reference = d_op.subtree_com[model.body_rootid[i]];
+            d_pert.cvel[i] =
+                mju_transform_spatial(&d_op.cvel[i], false, &xipos_b, &reference, None);
         }
         let mut k = b;
         loop {

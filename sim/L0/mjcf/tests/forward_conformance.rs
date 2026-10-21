@@ -13,9 +13,9 @@
 //! regenerates against the latest MuJoCo to catch upstream behavior changes.
 //!
 //! Compared quantities are convention-independent: world poses (`xpos`, `xmat`)
-//! and generalized quantities (`qM`, `qfrc_bias`, `qacc`). `cvel` is deliberately
-//! excluded (MuJoCo references it at the subtree COM, sim-core at the body
-//! origin — a raw diff would be a false mismatch).
+//! and generalized quantities (`qM`, `qfrc_bias`, `qacc`). `cvel` is not
+//! compared here; sim-conformance-tests' `com_frame_parity` compares it with
+//! MuJoCo's.
 #![allow(clippy::expect_used)] // test harness: expect() gives a clear panic site
 
 use serde::Deserialize;

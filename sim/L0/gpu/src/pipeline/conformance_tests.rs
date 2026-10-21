@@ -66,6 +66,13 @@ use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
 use crate::submit::read_buffer;
 
+/// The CPU's spatial velocity of body `b` about its origin `xpos`, the GPU's
+/// reference point (`cvel` is about the tree's subtree centre of mass).
+fn cpu_cvel_at_origin(model: &Model, data: &Data, b: usize) -> nalgebra::Vector6<f64> {
+    let (w, v) = sim_core::dynamics::object_velocity(model, data, b, &data.xpos[b], None);
+    nalgebra::Vector6::new(w.x, w.y, w.z, v.x, v.y, v.z)
+}
+
 /// Name used in this file's skip line.
 const SUITE: &str = "conformance suite";
 
@@ -433,7 +440,7 @@ fn compare_env_fields(
             fails,
             &gpu_cvel,
             (off_b + b) * 2,
-            &data.cvel[b],
+            &cpu_cvel_at_origin(model, data, b),
             TOL_DYNAMIC,
             name,
             "cvel",

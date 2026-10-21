@@ -187,6 +187,12 @@ pub struct Data {
     /// about its tree's subtree centre of mass (length `nv`), MuJoCo's
     /// `cdof`, made by the position stage (`mj_comPos`).
     pub cdof: Vec<SpatialVector>,
+    /// Each dof's motion axis's rate (length `nv`), MuJoCo's `cdof_dot`, made
+    /// by the velocity stage (`mj_comVel`): the axis crossed by the body's
+    /// velocity before its joint moves it (a free joint's rotation: after
+    /// the joint's translation), as motion vectors; 0 for a free joint's
+    /// translation.
+    pub cdof_dot: Vec<SpatialVector>,
 
     // ==================== RNE Intermediate Quantities ====================
     /// Body bias accelerations for RNE (Coriolis/centrifugal).
@@ -799,6 +805,7 @@ impl Clone for Data {
             // Velocities
             cvel: self.cvel.clone(),
             cdof: self.cdof.clone(),
+            cdof_dot: self.cdof_dot.clone(),
             // RNE intermediate
             cacc_bias: self.cacc_bias.clone(),
             cfrc_bias: self.cfrc_bias.clone(),

@@ -7,7 +7,8 @@
 use nalgebra::Vector3;
 
 use crate::dynamics::spatial::{
-    SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
+    SpatialVector, body_origin_velocity, spatial_cross_force, spatial_cross_motion,
+    transport_motion_spatial,
 };
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::joint_motion_subspace;
@@ -232,11 +233,11 @@ fn rne_bias(model: &Model, data: &mut Data) {
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
 
-        // The parent velocity transported to this body's origin (cvel is
-        // referenced at each body's xpos; the raw cvel[parent], at the parent
-        // origin, drops the lever [0; ω_parent×r]), then each joint's S·qdot
-        // after its velocity product is taken.
-        let mut v_partial = transport_motion_spatial(data.cvel[parent_id], &r);
+        // The parent's velocity about its origin, moved to this body's origin
+        // (left at the parent's origin it drops the lever [0; ω_parent×r]),
+        // then each joint's S·qdot after its velocity product is taken.
+        let mut v_partial =
+            transport_motion_spatial(body_origin_velocity(model, data, parent_id), &r);
 
         for jnt_id in jnt_start..jnt_end {
             let dof_adr = model.jnt_dof_adr[jnt_id];
@@ -288,7 +289,7 @@ fn rne_bias(model: &Model, data: &mut Data) {
     // First compute f_bias for each body using cinert (computed once in FK)
     for body_id in 1..model.nbody {
         let i = &data.cinert[body_id];
-        let v = data.cvel[body_id];
+        let v = body_origin_velocity(model, data, body_id);
         let a_bias = data.cacc_bias[body_id];
 
         // I @ v (momentum)

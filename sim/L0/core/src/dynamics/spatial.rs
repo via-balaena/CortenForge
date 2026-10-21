@@ -76,6 +76,74 @@ pub fn mju_dof_com(axis: &Vector3<f64>, offset: Option<&Vector3<f64>>) -> Spatia
     }
 }
 
+/// The motion of `dof.len()` dofs at the rates `vec`, `Σ dof[r]·vec[r]`, as
+/// MuJoCo's `mju_mulDofVec` (`engine_util_spatial.c:461-470`): one dof is
+/// scaled; several are summed from 0, a dof at rate 0 left out
+/// (`mju_mulMatTVec`).
+#[must_use]
+pub fn mju_mul_dof_vec(dof: &[SpatialVector], vec: &[f64]) -> SpatialVector {
+    match vec {
+        [] => SpatialVector::zeros(),
+        [rate] => dof[0] * *rate,
+        _ => {
+            let mut res = SpatialVector::zeros();
+            for (axis, &rate) in dof.iter().zip(vec) {
+                if rate != 0.0 {
+                    res += axis * rate;
+                }
+            }
+            res
+        }
+    }
+}
+
+/// A spatial vector moved from `oldpos` to `newpos`, then, given
+/// `rotnew2old`, turned into that frame: MuJoCo's `mju_transformSpatial`
+/// (`engine_util_spatial.c:473-504`). A force's torque loses
+/// `(newpos − oldpos) × force`; a motion's linear part loses
+/// `(newpos − oldpos) × angular`.
+#[must_use]
+pub fn mju_transform_spatial(
+    vec: &SpatialVector,
+    flg_force: bool,
+    newpos: &Vector3<f64>,
+    oldpos: &Vector3<f64>,
+    rotnew2old: Option<&Matrix3<f64>>,
+) -> SpatialVector {
+    let mut tran = *vec;
+    let dif = newpos - oldpos;
+    let (moved, by) = if flg_force { (0, 3) } else { (3, 0) };
+    let cros = dif.cross(&Vector3::new(vec[by], vec[by + 1], vec[by + 2]));
+    for k in 0..3 {
+        tran[moved + k] = vec[moved + k] - cros[k];
+    }
+    let Some(rot) = rotnew2old else {
+        return tran;
+    };
+    // `mji_mulMatTVec3`: each part times the rotation's transpose.
+    let turn = |v: usize| {
+        let row = |k: usize| {
+            rot[(0, k)] * tran[v] + rot[(1, k)] * tran[v + 1] + rot[(2, k)] * tran[v + 2]
+        };
+        [row(0), row(1), row(2)]
+    };
+    let (ang, lin) = (turn(0), turn(3));
+    SpatialVector::new(ang[0], ang[1], ang[2], lin[0], lin[1], lin[2])
+}
+
+/// Body `body`'s spatial velocity `[angular; linear]` about its origin
+/// `xpos` (`cvel` is about its tree's subtree centre of mass).
+#[must_use]
+pub fn body_origin_velocity(model: &Model, data: &Data, body: usize) -> SpatialVector {
+    mju_transform_spatial(
+        &data.cvel[body],
+        false,
+        &data.xpos[body],
+        &data.subtree_com[model.body_rootid[body]],
+        None,
+    )
+}
+
 /// Compute body spatial inertia in world frame.
 ///
 /// This builds the 6×6 spatial inertia matrix from:
@@ -283,35 +351,35 @@ pub fn transport_force(
     (torque - r.cross(force), *force)
 }
 
-/// Compute 6D velocity at `target_pos` on body `body_id`, optionally rotated
-/// into a local frame.
+/// The spatial velocity `(angular, linear)` of a point fixed to a body.
 ///
-/// Equivalent to `mj_objectVelocity(m, d, ..., flg_local)`:
-/// - `local_rot = None` → world frame (flg_local=0)
-/// - `local_rot = Some(&mat)` → local frame (flg_local=1)
-///
-/// Convention: reads `cvel[body_id]` at `xpos[body_id]` (our convention).
+/// `target_pos` moves with body `body_id`; the velocity is in the world's
+/// orientation or, given `local_rot`, in that frame: MuJoCo's
+/// `mj_objectVelocity` (`engine_core_util.c:720-774`), `cvel` moved from the
+/// tree's subtree centre of mass to the point; 0 for a body welded to the
+/// world.
 #[must_use]
 pub fn object_velocity(
+    model: &Model,
     data: &Data,
     body_id: usize,
     target_pos: &Vector3<f64>,
     local_rot: Option<&Matrix3<f64>>,
 ) -> (Vector3<f64>, Vector3<f64>) {
-    let cvel = data.cvel[body_id];
-    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
-    let v_lin = Vector3::new(cvel[3], cvel[4], cvel[5]);
-
-    let (omega_at_point, v_at_point) =
-        transport_motion(&omega, &v_lin, target_pos, &data.xpos[body_id]);
-
-    match local_rot {
-        Some(rot) => (
-            rot.transpose() * omega_at_point,
-            rot.transpose() * v_at_point,
-        ),
-        None => (omega_at_point, v_at_point),
+    if model.body_weldid[body_id] == 0 {
+        return (Vector3::zeros(), Vector3::zeros());
     }
+    let res = mju_transform_spatial(
+        &data.cvel[body_id],
+        false,
+        target_pos,
+        &data.subtree_com[model.body_rootid[body_id]],
+        local_rot,
+    );
+    (
+        Vector3::new(res[0], res[1], res[2]),
+        Vector3::new(res[3], res[4], res[5]),
+    )
 }
 
 /// Compute 6D acceleration at `target_pos` on body `body_id` with Coriolis
@@ -319,13 +387,14 @@ pub fn object_velocity(
 ///
 /// Equivalent to `mj_objectAcceleration(m, d, ..., flg_local)`:
 /// 1. Motion transport of `cacc` from body origin to target
-/// 2. Motion transport of `cvel` from body origin to target (world frame)
+/// 2. The velocity at the target (world frame), [`object_velocity`]
 /// 3. Coriolis: a_lin += omega × v_lin
 /// 4. Optional rotation
 ///
-/// Convention: reads `cacc[body_id]` and `cvel[body_id]` at `xpos[body_id]`.
+/// Convention: reads `cacc[body_id]` at `xpos[body_id]`.
 #[must_use]
 pub fn object_acceleration(
+    model: &Model,
     data: &Data,
     body_id: usize,
     target_pos: &Vector3<f64>,
@@ -339,7 +408,7 @@ pub fn object_acceleration(
         transport_motion(&alpha, &a_lin, target_pos, &data.xpos[body_id]);
 
     // Velocity at target point (world frame) for Coriolis
-    let (omega_at_point, v_at_point) = object_velocity(data, body_id, target_pos, None);
+    let (omega_at_point, v_at_point) = object_velocity(model, data, body_id, target_pos, None);
 
     // Coriolis correction: a += omega × v
     let a_corrected = a_at_point + omega_at_point.cross(&v_at_point);
@@ -392,16 +461,13 @@ pub fn object_force(
 /// should call `object_velocity` directly.
 #[must_use]
 pub fn object_velocity_local(
-    _model: &Model,
+    model: &Model,
     data: &Data,
     body_id: usize,
     point: &Vector3<f64>,
     rot: &Matrix3<f64>,
 ) -> [f64; 6] {
-    if body_id == 0 {
-        return [0.0; 6];
-    }
-    let (omega, v) = object_velocity(data, body_id, point, Some(rot));
+    let (omega, v) = object_velocity(model, data, body_id, point, Some(rot));
     [omega.x, omega.y, omega.z, v.x, v.y, v.z]
 }
 

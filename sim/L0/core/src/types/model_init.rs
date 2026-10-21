@@ -826,6 +826,7 @@ impl Model {
             // Velocities
             cvel: vec![SpatialVector::zeros(); self.nbody],
             cdof: vec![SpatialVector::zeros(); self.nv],
+            cdof_dot: vec![SpatialVector::zeros(); self.nv],
 
             // RNE intermediate quantities
             cacc_bias: vec![SpatialVector::zeros(); self.nbody],

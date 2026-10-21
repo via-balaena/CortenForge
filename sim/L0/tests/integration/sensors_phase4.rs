@@ -760,11 +760,9 @@ fn a01_velocimeter_site_offset() {
     );
 }
 
-/// B1-AC2: Velocimeter on body (not site). Output matches cvel directly.
+/// B1-AC2: Velocimeter at the body's origin, on the axis its hinge turns about.
 #[test]
 fn a02_velocimeter_body_origin() {
-    // Velocimeter attached to body directly (objtype=Body) reads cvel at body origin.
-    // No spatial shift needed.
     let xml = r#"
     <mujoco>
       <option gravity="0 0 0"/>
@@ -1207,7 +1205,7 @@ fn b02_subtree_linvel_chain_average() {
 
     // subtree_linvel[b1] = (m1*v1 + m2*v2) / (m1+m2)
     // But v is at COM, not at origin! The COM of b1 is at xipos[1], COM of b2 is at xipos[2].
-    // cvel is at xpos (body origin). mj_subtree_vel shifts from xpos to xipos.
+    // mj_subtree_vel reads each body's velocity at its centre of mass, xipos.
     // For a sphere with pos="0 0 0" and size="0.1", xipos = xpos (COM at origin).
     // So: subtree_linvel[b1] = (2*[1,0,0] + 1*[2,0,0]) / 3 = [4/3, 0, 0]
     let adr1 = model.sensor_adr[0];

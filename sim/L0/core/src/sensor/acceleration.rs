@@ -110,7 +110,8 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                     return;
                 }
             };
-            let (_alpha, a_lin) = object_acceleration(data, body_id, &site_pos, Some(&site_mat));
+            let (_alpha, a_lin) =
+                object_acceleration(model, data, body_id, &site_pos, Some(&site_mat));
             sensor_write3(&mut data.sensordata, adr, &a_lin);
         }
 
@@ -250,7 +251,7 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                     return;
                 }
             };
-            let (_alpha, a_lin) = object_acceleration(data, body_id, &obj_pos, None);
+            let (_alpha, a_lin) = object_acceleration(model, data, body_id, &obj_pos, None);
             sensor_write3(&mut data.sensordata, adr, &a_lin);
         }
 

@@ -9,7 +9,8 @@ use crate::constraint::solver::decode_pyramid_into;
 use crate::dynamics::factor::{mj_factor_i, mj_solve_ld, mj_solve_m};
 use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
-    SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
+    SpatialVector, body_origin_velocity, spatial_cross_force, spatial_cross_motion,
+    transport_motion_spatial,
 };
 use crate::integrate::implicit::{
     accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_j, isd_tendon_stiffness,
@@ -466,11 +467,12 @@ fn contact_force(rows: &[f64], mu: &[f64; 5], dim: usize, pyramidal: bool) -> [f
 ///
 /// # Convention Difference
 ///
-/// Our `cacc[b]`, `cfrc_int[b]`, and `cvel[b]` are stored at `xpos[b]` (body
-/// origin). MuJoCo stores them at `subtree_com[body_rootid[b]]`. The spatial
-/// transform formulas are identical — only the shift vector differs. When
-/// porting MuJoCo code that reads these fields, substitute `xpos[body_id]`
-/// wherever MuJoCo uses `subtree_com + 3*rootid`.
+/// Our `cacc[b]` and `cfrc_int[b]` are stored at `xpos[b]` (body origin), and
+/// the body velocities this reads are moved there (`body_origin_velocity`).
+/// MuJoCo stores them at `subtree_com[body_rootid[b]]`, as `cvel` is here.
+/// The spatial transform formulas are identical — only the shift vector
+/// differs. When porting MuJoCo code that reads `cacc` or `cfrc_int`,
+/// substitute `xpos[body_id]` wherever MuJoCo uses `subtree_com + 3*rootid`.
 #[allow(clippy::needless_range_loop)] // jnt_id indexes both joint_subspaces and model arrays
 pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // ===== Step 1: cfrc_ext = xfrc_applied + contact/constraint forces =====
@@ -653,7 +655,8 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         // The body's velocity before each joint, as `mj_rne`'s bias pass
         // (`dynamics/rne.rs`): the parent velocity transported to this body's
         // origin, then each earlier joint's S·qvel.
-        let mut v_partial = transport_motion_spatial(data.cvel[parent_id], &r);
+        let mut v_partial =
+            transport_motion_spatial(body_origin_velocity(model, data, parent_id), &r);
 
         for jnt_id in jnt_start..jnt_end {
             let dof_adr = model.jnt_dof_adr[jnt_id];
@@ -693,7 +696,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // For each body: cfrc_int = I*cacc + v×*(I*v) - cfrc_ext
     for body_id in 1..model.nbody {
         let inertia = &data.cinert[body_id];
-        let v = data.cvel[body_id];
+        let v = body_origin_velocity(model, data, body_id);
         let acc = data.cacc[body_id];
 
         // I * cacc (inertial force from acceleration)

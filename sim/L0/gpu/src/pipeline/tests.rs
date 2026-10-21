@@ -46,6 +46,13 @@ use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
 use crate::submit::read_buffer;
 
+/// The CPU's spatial velocity of body `b` about its origin `xpos`, the GPU's
+/// reference point (`cvel` is about the tree's subtree centre of mass).
+fn cpu_cvel_at_origin(model: &Model, data: &Data, b: usize) -> nalgebra::Vector6<f64> {
+    let (w, v) = sim_core::dynamics::object_velocity(model, data, b, &data.xpos[b], None);
+    nalgebra::Vector6::new(w.x, w.y, w.z, v.x, v.y, v.z)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 /// Name used in this file's skip line.
@@ -828,7 +835,7 @@ fn t11_cvel_free_body() {
     for b in 0..model.nbody {
         let gpu_ang = &gpu_cvel[b * 2];
         let gpu_lin = &gpu_cvel[b * 2 + 1];
-        let cpu = &data.cvel[b];
+        let cpu = &cpu_cvel_at_origin(&model, &data, b);
 
         for k in 0..3 {
             let g_a = gpu_ang[k];
@@ -886,7 +893,7 @@ fn t12_cvel_pendulum() {
     for b in 0..model.nbody {
         let gpu_ang = &gpu_cvel[b * 2];
         let gpu_lin = &gpu_cvel[b * 2 + 1];
-        let cpu = &data.cvel[b];
+        let cpu = &cpu_cvel_at_origin(&model, &data, b);
 
         for k in 0..3 {
             let g_a = gpu_ang[k];

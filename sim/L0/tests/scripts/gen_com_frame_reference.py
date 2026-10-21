@@ -17,25 +17,32 @@ the body velocities `cvel` and the axes' rates `cdof_dot` in `mj_comVel`
 (`:2276-2343`), the bias force in `mj_rne` (`:2425-2488`), and the body
 accelerations and forces `cacc`, `cfrc_int`, `cfrc_ext` in
 `mj_rnePostConstraint` (`:2491-2683`); `dof_M0`, a simple dof's mass-matrix
-diagonal, comes from `mj_setM0` at `qpos0` (`engine_setconst.c:36-59`).
+diagonal, comes from `mj_setM0` at `qpos0` (`engine_setconst.c:36-59`). Read
+through them: each body's velocity at its centre of mass, in the world's
+orientation and in the inertial frame's (`mj_objectVelocity`,
+`engine_core_util.c:720-774`), and the subtree velocities and angular
+momenta (`mj_subtreeVel`, `engine_core_smooth.c:2346-2420`).
 
 Each case records, after `mj_forward` at a moved state and then
 `mj_rnePostConstraint`, what those functions read (the kinematics: `xpos`,
 `xmat`, `xipos`, `ximat`, `xanchor`, `xaxis`, `subtree_com`) and what they
 write, so a test can check that its inputs are MuJoCo's before it compares
-the outputs. Contacts are disabled throughout: the bodies' forces here are
-the dynamics' own. The geoms are unrotated and the joint axes axis-aligned:
-sim-mjcf loads a rotated geom's inertial frame and a tilted axis otherwise
-than MuJoCo (ledger L195, L146). The cases:
+the outputs, the compiled masses and inertias among them. Contacts are
+disabled throughout: the bodies' forces here are the dynamics' own. Each
+body's mass and inertia are given (`<inertial>`), not computed from geoms,
+and the joint axes are axis-aligned: sim-mjcf computes a geom's moments and
+a rotated geom's inertial frame, and normalises a tilted axis, otherwise than
+MuJoCo (ledger L198, L195, L146). The cases:
 
 - compos: two trees. One hangs a hinge with an offset anchor, a ball with an
   offset anchor under it, then a body with a slide and a hinge. The other is
   a free body carrying a hinged body, which carries a jointless body with
-  mass. There is no massless body: the loader places its inertial frame
+  mass; two subtree sensors make the forward pass compute the subtree
+  velocities. There is no massless body: the loader places its inertial frame
   otherwise than MuJoCo, and refuses MuJoCo's way of giving it one (ledger
   L212).
-- chain: a hinge-hinge-ball chain with a hinge off its root (the mass factor
-  golden's chain).
+- chain: a hinge-hinge-ball chain with a hinge off its root (shaped as the
+  mass factor golden's chain).
 - slow: compos at velocities 1e-7 of compos's.
 - nogravity: compos with gravity disabled.
 - simple: bodies MuJoCo marks simple (a hinge, two slides, a free joint, each
@@ -62,29 +69,33 @@ COMPOS = """<mujoco model="compos">
   <worldbody>
     <body name="a" pos="0.1 0 1">
       <joint type="hinge" axis="0 1 0" pos="0 0 0.05"/>
-      <geom type="box" size="0.03 0.03 0.15" pos="0.01 0 -0.15" mass="1"/>
+      <inertial pos="0.01 0 -0.15" mass="1" diaginertia="0.0078 0.0078 0.0006"/>
       <body name="b" pos="0 0 -0.3">
         <joint type="ball" pos="0.01 0.02 0"/>
-        <geom type="box" size="0.03 0.04 0.12" pos="0.02 0 -0.12" mass="0.7"/>
+        <inertial pos="0.02 0 -0.12" mass="0.7" diaginertia="0.00373 0.00357 0.00058"/>
         <body name="c" pos="0 0.05 -0.25">
           <joint type="slide" axis="1 0 0"/>
           <joint type="hinge" axis="0 0 1" pos="0.02 0 0"/>
-          <geom type="box" size="0.05 0.03 0.08" pos="0.03 0.01 -0.08" mass="0.4"/>
+          <inertial pos="0.03 0.01 -0.08" mass="0.4" diaginertia="0.00097 0.00119 0.00045"/>
         </body>
       </body>
     </body>
     <body name="f" pos="0.5 0.2 0.8">
       <freejoint/>
-      <geom type="box" size="0.1 0.05 0.03" pos="0.02 -0.01 0.03" mass="1.3"/>
+      <inertial pos="0.02 -0.01 0.03" mass="1.3" diaginertia="0.00147 0.00472 0.00542"/>
       <body name="g" pos="0.1 0 0">
         <joint type="hinge" axis="0 1 0"/>
-        <geom type="box" size="0.1 0.02 0.015" pos="0.05 0 0" mass="0.3"/>
+        <inertial pos="0.05 0 0" mass="0.3" diaginertia="0.0000625 0.00102 0.00104"/>
         <body name="w" pos="0.2 0 0">
-          <geom type="sphere" size="0.02" mass="0.1"/>
+          <inertial pos="0 0 0" mass="0.1" diaginertia="0.000016 0.000016 0.000016"/>
         </body>
       </body>
     </body>
   </worldbody>
+  <sensor>
+    <subtreelinvel body="a"/>
+    <subtreeangmom body="f"/>
+  </sensor>
 </mujoco>"""
 
 CHAIN = """<mujoco model="chain">
@@ -94,18 +105,18 @@ CHAIN = """<mujoco model="chain">
   <worldbody>
     <body name="a" pos="0 0 1">
       <joint type="hinge" axis="0 1 0"/>
-      <geom type="box" size="0.03 0.03 0.15" pos="0 0 -0.15" mass="1"/>
+      <inertial pos="0 0 -0.15" mass="1" diaginertia="0.0078 0.0078 0.0006"/>
       <body name="b" pos="0 0 -0.3">
         <joint type="hinge" axis="1 0 0"/>
-        <geom type="box" size="0.03 0.03 0.12" pos="0.02 0 -0.12" mass="0.7"/>
+        <inertial pos="0.02 0 -0.12" mass="0.7" diaginertia="0.0037 0.0036 0.0006"/>
         <body name="c" pos="0 0 -0.25">
           <joint type="ball"/>
-          <geom type="box" size="0.05 0.03 0.08" pos="0.03 0.01 -0.08" mass="0.4"/>
+          <inertial pos="0.03 0.01 -0.08" mass="0.4" diaginertia="0.00097 0.00119 0.00045"/>
         </body>
       </body>
       <body name="d" pos="0.2 0 0">
         <joint type="hinge" axis="0 0 1"/>
-        <geom type="box" size="0.1 0.02 0.02" pos="0.1 0 0" mass="0.5"/>
+        <inertial pos="0.1 0 0" mass="0.5" diaginertia="0.0003 0.0017 0.0017"/>
       </body>
     </body>
   </worldbody>
@@ -131,7 +142,7 @@ SIMPLE = """<mujoco model="simple">
     </body>
     <body name="offset" pos="0 2 1">
       <joint type="hinge" axis="1 0 0"/>
-      <geom type="box" size="0.1 0.05 0.02" pos="0.05 0 0" mass="1"/>
+      <inertial pos="0.05 0 0" mass="1" diaginertia="0.001 0.0035 0.0042"/>
     </body>
   </worldbody>
 </mujoco>"""
@@ -142,14 +153,14 @@ MOCAP = """<mujoco model="mocap">
   </option>
   <worldbody>
     <body name="mocap" mocap="true" pos="0.3 0 1">
-      <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.0067 0.0067 0.0067"/>
     </body>
     <body name="static" pos="0 0 0.5">
-      <geom type="sphere" size="0.1" mass="1"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.004 0.004 0.004"/>
     </body>
     <body name="pendulum" pos="0 0 1">
       <joint type="hinge" axis="0 1 0"/>
-      <geom type="box" size="0.02 0.02 0.2" pos="0.01 0 -0.2" mass="1"/>
+      <inertial pos="0.01 0 -0.2" mass="1" diaginertia="0.0134 0.0134 0.0003"/>
     </body>
   </worldbody>
 </mujoco>"""
@@ -161,18 +172,18 @@ SLEEPING = """<mujoco model="sleeping">
   <worldbody>
     <body name="resting" pos="1 0 1" sleep="init">
       <joint type="hinge" axis="0 1 0"/>
-      <geom type="box" size="0.02 0.02 0.2" pos="0 0 -0.2" mass="1"/>
+      <inertial pos="0 0 -0.2" mass="1" diaginertia="0.0134 0.0134 0.0003"/>
       <body pos="0 0 -0.4">
         <joint type="hinge" axis="0 1 0"/>
-        <geom type="box" size="0.03 0.02 0.1" pos="0.01 0 -0.1" mass="0.5"/>
+        <inertial pos="0.01 0 -0.1" mass="0.5" diaginertia="0.0018 0.0019 0.0002"/>
       </body>
     </body>
     <body name="moving" pos="0 0 1">
       <joint type="hinge" axis="0 1 0"/>
-      <geom type="box" size="0.02 0.02 0.2" pos="0 0 -0.2" mass="1"/>
+      <inertial pos="0 0 -0.2" mass="1" diaginertia="0.0134 0.0134 0.0003"/>
       <body pos="0 0 -0.4">
         <joint type="hinge" axis="1 0 0"/>
-        <geom type="box" size="0.02 0.02 0.1" pos="0 0 -0.1" mass="0.5"/>
+        <inertial pos="0 0 -0.1" mass="0.5" diaginertia="0.0017 0.0017 0.00013"/>
       </body>
     </body>
   </worldbody>
@@ -235,11 +246,19 @@ def record(xml, seed, scale=1.0, trees=None, simple=None):
     if d.ncon or d.nefc:
         sys.exit(f"{xml[:40]}: {d.ncon} contacts, {d.nefc} rows")
     mujoco.mj_rnePostConstraint(m, d)
+    mujoco.mj_subtreeVel(m, d)
+    objvel = np.zeros((m.nbody, 2, 6))
+    for b in range(m.nbody):
+        for local in (0, 1):
+            mujoco.mj_objectVelocity(m, d, mujoco.mjtObj.mjOBJ_BODY, b, objvel[b, local], local)
     full = np.zeros((m.nv, m.nv))
     mujoco.mj_fullM(m, full, d.qM)
     return {
         "xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
         "body_rootid": ints(m.body_rootid), "dof_simplenum": ints(m.dof_simplenum),
+        "body_mass": floats(m.body_mass), "body_inertia": floats(m.body_inertia),
+        "body_ipos": floats(m.body_ipos), "body_iquat": floats(m.body_iquat),
+        "body_subtreemass": floats(m.body_subtreemass),
         "body_awake": ints(d.body_awake),
         "xpos": floats(d.xpos), "xmat": floats(d.xmat), "xipos": floats(d.xipos),
         "ximat": floats(d.ximat),
@@ -248,6 +267,8 @@ def record(xml, seed, scale=1.0, trees=None, simple=None):
         "cdof": floats(d.cdof), "cinert": floats(d.cinert), "crb": floats(d.crb),
         "qM": floats(full), "dof_M0": floats(m.dof_M0),
         "cvel": floats(d.cvel), "cdof_dot": floats(d.cdof_dot),
+        "objvel": floats(objvel[:, 0]), "objvel_local": floats(objvel[:, 1]),
+        "subtree_linvel": floats(d.subtree_linvel), "subtree_angmom": floats(d.subtree_angmom),
         "qfrc_bias": floats(d.qfrc_bias),
         "cacc": floats(d.cacc), "cfrc_int": floats(d.cfrc_int), "cfrc_ext": floats(d.cfrc_ext),
     }
