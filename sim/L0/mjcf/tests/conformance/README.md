@@ -23,7 +23,8 @@ can; that is what this harness is for.
 
 Compared quantities are **convention-independent**: world poses (`xpos`, `xmat`)
 and generalized quantities (`qM`, `qfrc_bias`, `qacc`). `cvel` is not compared
-here: sim-conformance-tests' `com_frame_parity` compares it bit for bit.
+here: sim-conformance-tests' `com_frame_parity` compares it (bit for bit on
+macOS arm64).
 
 ## Why golden values (not live MuJoCo in CI)
 

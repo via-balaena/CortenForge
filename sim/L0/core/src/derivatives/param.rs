@@ -306,8 +306,9 @@ fn assert_mass_scope(model: &Model) {
 /// dof's mass-matrix row is `dof_M0`, which a model edited in `body_mass` (or
 /// `body_inertia`, or `dof_armature`) remakes with [`Model::compute_dof_m0`]
 /// (as `Model::recompute_derived` does); the row is the same at every state up
-/// to rounding, so the pass takes its derivative from the perturbation as any
-/// other row's.
+/// to rounding, so the pass takes its derivative from the perturbation, the
+/// general path's, then keeps of that row only what the mass matrix holds, its
+/// diagonal.
 ///
 /// The position-tangent row uses the hinge/slide semi-implicit map
 /// `∂qpos⁺/∂m = h·∂v⁺/∂m`.
@@ -386,6 +387,7 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
         // ∂M/∂m_b (no armature), linear in the perturbation inertia; only qM is read
         // (the bogus factorization of this non-PD derivative matrix is unused).
         mj_crba(&pass_model, &mut d_pert);
+        keep_simple_rows_diagonal(model, &mut d_pert);
         let d_mass_qacc = &d_pert.qM * &qacc;
 
         // ∂v⁺/∂m_b = h · M_impl⁻¹ · [ −∂qfrc_bias/∂m_b − (∂M/∂m_b)·qacc ].
@@ -399,6 +401,24 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
     }
 
     Ok(MassJacobian { dxdm })
+}
+
+/// The mass matrix holds a simple dof's row as its diagonal alone (`mj_crba`):
+/// the perturbation pass, which takes every row by the general path, also
+/// writes the row's entries at the dof's ancestors, and their mirrors, which
+/// are put back to 0.
+fn keep_simple_rows_diagonal(model: &Model, d_pert: &mut Data) {
+    for i in 0..model.nv {
+        if model.dof_simplenum[i] == 0 {
+            continue;
+        }
+        let mut ancestor = model.dof_parent[i];
+        while let Some(j) = ancestor {
+            d_pert.qM[(i, j)] = 0.0;
+            d_pert.qM[(j, i)] = 0.0;
+            ancestor = model.dof_parent[j];
+        }
+    }
 }
 
 /// Analytic single-step Jacobian of the next state w.r.t. per-body principal
@@ -572,6 +592,7 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
             // ∂M/∂I_bk (no armature), linear in the perturbation inertia; only qM
             // is read (the bogus factorization of this non-PD matrix is unused).
             mj_crba(&pass_model, &mut d_pert);
+            keep_simple_rows_diagonal(model, &mut d_pert);
             let d_mass_qacc = &d_pert.qM * &qacc;
 
             // ∂v⁺/∂I_bk = h · M_impl⁻¹ · [ −∂qfrc_bias/∂I_bk − (∂M/∂I_bk)·qacc ].
@@ -1113,6 +1134,42 @@ mod tests {
             jac.column_mut(b).copy_from(&((yp - ym) / (2.0 * eps)));
         }
         jac
+    }
+
+    /// A body MuJoCo marks simple whose two dofs slide on one axis: its mass
+    /// matrix is diagonal (a simple dof's row its diagonal alone), so under a
+    /// sideways gravity its mass leaves its acceleration as it is, and the
+    /// analytic mass Jacobian matches finite differences of the remade model.
+    #[test]
+    fn mass_jacobian_keeps_a_simple_rows_diagonal_alone() {
+        use crate::test_fixtures::builders::{add_body, add_slide_joint, finalize};
+        let mut model = Model::empty();
+        let block = add_body(
+            &mut model,
+            0,
+            "block",
+            Vector3::new(0.0, 0.0, 1.0),
+            1.5,
+            Vector3::new(0.1, 0.1, 0.1),
+            Vector3::zeros(),
+        );
+        add_slide_joint(&mut model, block, "s1", Vector3::x(), 0.0, 0.0, 0.0);
+        add_slide_joint(&mut model, block, "s2", Vector3::x(), 0.0, 0.0, 0.0);
+        model.gravity = Vector3::new(-9.81, 0.0, -9.81);
+        finalize(&mut model);
+        assert_eq!(model.dof_simplenum, vec![2, 1], "both dofs simple");
+
+        let mut data = model.make_data();
+        data.qvel[0] = 0.4;
+        data.qvel[1] = -0.2;
+        data.forward(&model).unwrap();
+
+        let mass = mjd_mass_jacobian(&model, &data).unwrap().dxdm;
+        let (err, loc) = max_relative_error(&mass, &fd_mass_jacobian(&model, &data, 1e-6), 1e-3);
+        assert!(
+            err < 1e-5,
+            "mass: max_rel_err={err:.3e} at {loc:?}\n{mass:.6}"
+        );
     }
 
     /// A simple dof's mass-matrix row is `dof_M0`, remade after an edit of

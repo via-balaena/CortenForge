@@ -21,7 +21,8 @@ the result against the checked-in golden to detect upstream behavior drift.
 
 Compared quantities are convention-independent: world poses (`xpos`, `xmat`) and
 generalized quantities (`qM`, `qfrc_bias`, `qacc`). `cvel` is not compared
-here: sim-conformance-tests' `com_frame_parity` compares it bit for bit.
+here: sim-conformance-tests' `com_frame_parity` compares it (bit for bit on
+macOS arm64).
 """
 
 import json

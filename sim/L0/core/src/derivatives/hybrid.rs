@@ -1621,7 +1621,8 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
         }
     }
-    // Backward: f_B = I·a_B + gyroscopic, then simple-add accumulation
+    // Backward: f_B = I·a_B + gyroscopic, then summed into the parent with the
+    // Xᵀ lever
     let mut cfrc_b = vec![SpatialVector::zeros(); nbody];
     for b in 1..nbody {
         let i_a = body_origin_inertia(model, data, b) * cacc_b[b];
