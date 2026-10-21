@@ -27,17 +27,20 @@ use crate::dynamics::SpatialVector;
 ///
 /// # State
 ///
-/// As MuJoCo splits it (`mjtState`, `mjdata.h:26-53`): the physics state
-/// (`time`, `qpos`, `qvel`, `act`, `history`, `plugin_state`), the inputs
-/// (`ctrl`, `qfrc_applied`, `xfrc_applied`, `mocap_pos`, `mocap_quat`; MuJoCo's
-/// `eq_active` is the model's here, and there is no `userdata`) and the warm
-/// start (`qacc_warmstart`). Everything else (xpos, xquat, qfrc_*, etc.) is
-/// computed from them by the forward pass.
+/// As MuJoCo splits it (`mjtState`, `mjdata.h:26-53`): the full physics state
+/// (`mjSTATE_FULLPHYSICS`: `time`, `qpos`, `qvel`, `act`, `history`,
+/// `plugin_state`), the inputs (`ctrl`, `qfrc_applied`, `xfrc_applied`,
+/// `mocap_pos`, `mocap_quat`; MuJoCo's `eq_active` is the model's here, and
+/// there is no `userdata`) and the warm start (`qacc_warmstart`). Outside that
+/// split, the sleep state (`tree_asleep`, which the other sleep arrays follow)
+/// is state too: a `Data` given only the fields above wakes the sleeping
+/// trees. The rest (xpos, xquat, qfrc_*, etc.) is computed by the forward
+/// pass.
 #[derive(Debug)]
 #[allow(non_snake_case)] // qM matches MuJoCo naming convention
 #[allow(clippy::struct_excessive_bools)] // MuJoCo lazy evaluation flags (flg_rnepost, flg_subtreevel, etc.)
 pub struct Data {
-    // ==================== Generalized Coordinates (THE source of truth) ====================
+    // ==================== Generalized Coordinates ====================
     /// Joint positions (length `nq`) - includes quaternion components for ball/free joints.
     pub qpos: DVector<f64>,
     /// Joint velocities (length `nv`).

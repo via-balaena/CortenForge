@@ -161,7 +161,7 @@
 19e2a2d46a432f7d	agree
 19e99c3473884443	agree
 1a42c10cb886ee78	agree
-1aab796f3649ca89	e1:t0:con_pos
+1aab796f3649ca89	e1:t0:con_pos	divergence=D-HULL-ORDER
 1ad1721ca9766f0e	agree
 1ae573fd46cc9326	mj-refuses
 1b0408692d06c36e	model:geom_quat;dyn:agree

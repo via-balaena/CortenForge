@@ -12,8 +12,8 @@ The `sim-*` crates provide a MuJoCo-aligned physics simulation stack for:
 The primary API is a `Model`/`Data` architecture modeled after MuJoCo:
 `Model` holds what stepping does not change (its fields are public and may be
 edited between steps; `Model::recompute_derived` then recomputes the fields
-derived from them), `Data` is dynamic (`qpos`/`qvel` are the source of truth),
-and body poses are computed via forward kinematics.
+derived from them), `Data` is dynamic (the state, and what the forward pass
+computes from it), and body poses are computed via forward kinematics.
 
 ## Directory Structure
 
@@ -130,7 +130,7 @@ sim-core/src/
 │   ├── plane.rs           # Plane-vs-geom algorithms
 │   ├── pair_convex.rs     # Convex pair algorithms
 │   ├── pair_cylinder.rs   # Cylinder pair algorithms
-│   ├── mj_ccd.rs          # MuJoCo's native convex collision (GJK, EPA, multi-contact; plane-convex)
+│   ├── mj_ccd.rs          # MuJoCo's native convex collision (GJK, EPA, multi-contact; plane-convex, convex-height field)
 │   ├── hfield.rs          # Height field collision
 │   ├── flex_collide.rs    # Flex collision dispatcher
 │   ├── flex_narrow.rs     # Flex sphere-geom narrowphase
@@ -185,10 +185,12 @@ collision, contact types, model/data structs) range from 1,000–4,000 lines.
 The pipeline flows:
 **types -> dynamics -> forward -> constraint -> integrate -> island**.
 
-### Model (static)
+### Model
 
-Immutable after loading. Contains the kinematic tree, joint definitions,
-geometry specifications, actuator configuration, and solver parameters.
+What stepping reads and does not write: the kinematic tree, joint definitions,
+geometry specifications, actuator configuration, and solver parameters. Its
+fields are public and may be edited between steps; `Model::recompute_derived`
+then recomputes the fields derived from them.
 
 Key fields:
 - `nq`/`nv` — position coordinates vs velocity DOFs (differ for quaternion joints); includes flex vertex DOFs when `nflex > 0`
@@ -218,8 +220,8 @@ Constructed from MJCF via `sim-mjcf` or URDF via `sim-urdf`.
 
 ### Data (mutable)
 
-Pre-allocated state and computed quantities. Most buffers are pre-allocated;
-residual heap allocation occurs for contact vector growth and RK4 warmstart save.
+State and computed quantities. `make_data` allocates the arrays sized by the
+model; a step still allocates (its vectors are not pooled).
 
 | Category | Fields | Description |
 |----------|--------|-------------|
@@ -242,7 +244,7 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 use sim_core::{Model, Data};
 use sim_mjcf::{load_model, load_model_from_file};
 
-let model = load_model(mjcf_string)?;  // Static (from MJCF XML string)
+let model = load_model(mjcf_string)?;  // From an MJCF XML string
 // Or from file (supports <include> file resolution):
 // let model = load_model_from_file("robot.xml")?;
 let mut data = model.make_data();      // Pre-allocated

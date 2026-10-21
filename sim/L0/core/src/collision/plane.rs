@@ -51,7 +51,7 @@ fn dot3(a: &Vector3<f64>, b: &Vector3<f64>) -> f64 {
 /// Dispatches to specialized implementations based on the other geometry's type.
 /// The plane is always treated as an infinite half-space with normal along its
 /// local Z-axis.
-// Plane-mesh dispatcher takes the full per-geom context; inlined as a single function so the SAT loop and contact emission read top-to-bottom.
+// The plane dispatcher takes the full per-geom context; one function, its arms per geom type.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 #[inline]
 pub fn collide_with_plane(

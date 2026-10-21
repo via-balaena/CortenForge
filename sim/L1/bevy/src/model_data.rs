@@ -3,8 +3,9 @@
 //! This module provides resources and systems for the new Model/Data physics
 //! pipeline, which follows `MuJoCo`'s architecture:
 //!
-//! - [`Model`] is static (immutable after loading)
-//! - [`Data`] is dynamic (qpos/qvel are the source of truth)
+//! - [`Model`] holds what stepping reads and does not write (its fields may be
+//!   edited between steps; see sim-core's `Model::recompute_derived`)
+//! - [`Data`] is dynamic: the state and what the forward pass computes from it
 //! - Body poses (xpos/xquat) are computed via forward kinematics
 //!
 //! # Architecture
@@ -60,8 +61,8 @@ use crate::mesh::{mesh_from_shape, triangle_mesh_from_indexed};
 
 /// Bevy resource wrapping the static physics model.
 ///
-/// The model is immutable after construction - it contains the kinematic tree,
-/// joint definitions, collision geometries, and other static configuration.
+/// The model holds the kinematic tree, joint definitions, collision
+/// geometries, and other configuration that stepping reads and does not write.
 ///
 /// # Example
 ///

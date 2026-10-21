@@ -165,8 +165,8 @@ fn measure_contact_force(
 
 /// DT-180: Mesh sphere on plane produces correct contact force and normal.
 ///
-/// Verifies the (Plane, Mesh) geom ordering — plane is geom1, mesh is geom2,
-/// as MuJoCo's `mjc_PlaneConvex` lists them, the normal the plane's: +Z.
+/// The (Plane, Mesh) geom ordering: the contact normal is the plane's, +Z (as
+/// MuJoCo's `mjc_PlaneConvex` lists the plane first).
 #[test]
 fn dt180_mesh_contact_force_plane_mesh_order() {
     let radius: f64 = 0.5;

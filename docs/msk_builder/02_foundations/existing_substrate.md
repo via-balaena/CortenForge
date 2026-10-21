@@ -7,7 +7,7 @@ recycle list — what we build *on*, so the new work is only the connective tiss
 
 ## Rigid-body engine — `sim/L0/core`
 
-MuJoCo-aligned, immutable `Model` + mutable `Data` split (`types/model.rs`, `types/data.rs`).
+MuJoCo-aligned `Model` (what stepping reads) + `Data` (the state) split (`types/model.rs`, `types/data.rs`).
 - **Kinematic trees & joints** — hinge / ball / slide / free, with limits, stiffness, damping,
   armature. A knee hinge is a first-class primitive.
 - **Spatial tendons with wrapping** — `tendon/spatial.rs`, `tendon/wrap_math.rs`. Wrap types are

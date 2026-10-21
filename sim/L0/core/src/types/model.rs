@@ -1,9 +1,10 @@
 //! Model struct definition and field accessors.
 //!
-//! [`Model`] is the static, immutable description of the simulated system:
-//! kinematic tree, joint definitions, geometries, constraints, and options.
-//! It is constructed by sim-mjcf's model builder and shared (read-only)
-//! across all pipeline stages.
+//! [`Model`] describes the simulated system: kinematic tree, joint
+//! definitions, geometries, constraints, and options. It is constructed by
+//! sim-mjcf's model builder; the pipeline stages read it and do not write it.
+//! Its fields are public and may be edited between steps, after which
+//! [`Model::recompute_derived`] recomputes the fields derived from them.
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 use std::collections::{HashMap, HashSet};
@@ -995,11 +996,12 @@ pub struct Model {
     /// MuJoCo ref: `mjOption.sdf_initpoints` in `mjmodel.h`.
     pub sdf_initpoints: usize,
     /// Maximum contacts per SDF-SDF pair (default: 50), of those already
-    /// found: the octree tier keeps that many spread over its leaves, the grid
-    /// tier that many by depth and spacing (`collision/sdf_collide.rs`). So it
-    /// bounds the constraint solve, not detection, whose cost the SDF grids
-    /// set: the octree's leaf cell is twice the finer of the two shapes' grid
-    /// cells. An SDF against a plane keeps at most 8, whatever this is.
+    /// found: the octree tier keeps at most that many spread over its leaves,
+    /// the grid tier at most that many by depth and spacing
+    /// (`collision/sdf_collide.rs`). So it bounds the constraint solve, not
+    /// detection, whose cost the SDF grids set: the octree's leaf cell is no
+    /// larger than twice the finer of the two shapes' grid cells. An SDF
+    /// against a plane keeps at most 8, whatever this is.
     pub sdf_maxcontact: usize,
 
     /// Integration method.

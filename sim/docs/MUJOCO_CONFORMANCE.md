@@ -56,7 +56,7 @@ fn test_free_fall_matches_mujoco() {
 }
 ```
 
-**Status:** ✅ Complete — Phase 12 conformance suite (79/79 tests passing).
+**Status:** ✅ Complete — Phase 12 conformance suite.
 Conformance tests run via `cargo test -p sim-conformance-tests` in `quality-gate.yml`.
 Covers integration tests (forward dynamics,
 collision, constraints, sensors, tendons, derivatives, sleeping, flex), and golden
@@ -153,18 +153,19 @@ Load and validate models from established sources.
 
 **Status (measured 2026-10-20, each file through `load_model_from_file` in its own
 process):** 53 of the two submodules' 253 MJCF files load: 17 of mujoco_menagerie's
-188 and 36 of dm_control's 65. The failures are loader gaps: most of Menagerie's
-on `mesh '': duplicate mesh name`, many of the control suite's on a single-value
-`friction`. No test requires the submodules to load (one sim-mjcf test, behind
+188 and 36 of dm_control's 65. MuJoCo 3.5.0 loads 238 of the 253 (183 and 55),
+and we load 52 of those (17 and 35); of the 200 files we do not load, 14 are
+files MuJoCo refuses too, and we load one it refuses
+(`dm_control/mjcf/test_assets/test_model.xml`: MuJoCo, "mass and inertia of
+moving bodies must be larger than mjMINVAL"). The rest are loader gaps: most of
+Menagerie's on `mesh '': duplicate mesh name`, many of the control suite's on a
+single-value `friction`. No test requires the submodules to load (one sim-mjcf test, behind
 the `hfields` feature, opens a Menagerie scene if it is there and accepts a
 failure), and CI does not check them out. The tables below give each model's
 result.
 
 **Implementation:** git submodules `sim/L0/tests/assets/mujoco_menagerie/` and
 `sim/L0/tests/assets/dm_control/`.
-
-> **Note:** Conformance tests are being migrated to the Model/Data API.
-> See `sim/L0/tests/integration/model_data_pipeline.rs` for the new test patterns.
 
 #### MuJoCo Menagerie (Model Zoo)
 https://github.com/google-deepmind/mujoco_menagerie
@@ -180,9 +181,9 @@ https://github.com/google-deepmind/mujoco_menagerie
 | `unitree_g1` | Humanoid | no | Compact humanoid |
 | `shadow_hand` | Dexterous hand | no | High-DOF hand |
 | `robotiq_2f85` | Gripper | no | 2-finger gripper |
-| `anymal_c` | Quadruped | — | Not in the submodule |
-| `anymal_b` | Quadruped | — | Not in the submodule |
-| `agility_digit` | Humanoid | — | Not in the submodule |
+| `anymal_c` | Quadruped | no | `anybotics_anymal_c` |
+| `anymal_b` | Quadruped | no | `anybotics_anymal_b` |
+| `agility_digit` | Humanoid | — | Not in the submodule; its `agility_cassie` loads (2 of 2 files) |
 | `robotis_op3` | Humanoid | no | Small humanoid |
 | `google_robot` | Mobile manip | no | Google robot |
 | `google_barkour` | Quadruped | 5 of its 10 files | Barkour robot |
@@ -206,12 +207,12 @@ https://github.com/google-deepmind/dm_control
 | `pendulum` | swingup | yes | Single pendulum |
 | `point_mass` | easy | yes | 2D navigation |
 | `reacher` | easy | yes | Planar arm |
-| `swimmer` | swimmer6 | yes | Multi-link swimmer |
+| `swimmer` | swimmer6 | yes (a template: dm_control adds the links in Python) | Multi-link swimmer |
 | `walker` | walk | yes | Bipedal walker |
 | `quadruped` | walk | no (its height field) | 4-legged walker |
 | `dog` | run | no (single-value `friction`) | Realistic dog |
 | `stacker` | stack | no (single-value `friction`) | Block stacking |
-| `lqr` | control | yes | LQR benchmark |
+| `lqr` | control | yes (a template: dm_control adds the bodies in Python) | LQR benchmark |
 
 ---
 
@@ -315,7 +316,7 @@ fn test_pendulum_trajectory_matches_mujoco() {
 
 **Status:** ✅ Complete — Phase 12 conformance suite includes trajectory comparison
 infrastructure. Golden flag tests compare per-timestep `qacc` against MuJoCo 3.5.0
-reference data with tolerance-based assertions. 79/79 conformance tests passing.
+reference data with tolerance-based assertions.
 
 ---
 
@@ -326,7 +327,7 @@ Some differences from MuJoCo are by design:
 | ID | Area | MuJoCo | CortenForge | Rationale |
 |----|------|--------|-------------|-----------|
 | A-MEMORY | Memory model | `mj_makeData` allocates one buffer and an arena; a step takes its scratch from the arena | `make_data` allocates the arrays sized by the model; a step still allocates (its vectors are not pooled) | Not yet pooled |
-| A-THREADS | Threading | OpenMP | Rayon | Rust ecosystem |
+| A-THREADS | Threading | A thread pool (`mjThreadPool`) | Rayon | Rust ecosystem |
 | A-GPU | GPU | Custom CUDA / MJX (JAX) | Removed (rebuild when needed) | — |
 | A-SOLVER | Contact solver | Custom sparse | PGS + CG/PGD + Newton (reduced primal, §15) with variable condim (1/3/4/6), elliptic friction cones | Maintainability |
 | A-VIS | Visualization | Built-in | Separate L1 crate | Headless training |
@@ -401,7 +402,7 @@ with MuJoCo 3.5.0.
 
 | Approach | Priority | Status | Notes |
 |----------|----------|--------|-------|
-| Conformance tests | High | ✅ Complete | Phase 12 — 79/79 tests, 26 golden flag permutations |
+| Conformance tests | High | ✅ Complete | Phase 12 — 26 golden flag permutations |
 | Doc comparison | Medium | ✅ Substantially complete | Maintained through Phases 5–13 |
 | Model loading | High | Partial | 53 of the submodules' 253 files load (2026-10-20, §3) |
 | Trajectory comparison | High | ✅ Complete | Golden flag tests with MuJoCo 3.5.0 reference data |

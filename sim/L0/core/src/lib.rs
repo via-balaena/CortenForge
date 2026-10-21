@@ -5,10 +5,11 @@
 //! contact resolution, and forward/inverse dynamics. It follows
 //! Todorov's design where:
 //!
-//! - [`Model`] holds what stepping does not change; its fields are public and
-//!   may be edited between steps, after which [`Model::recompute_derived`]
-//!   recomputes the fields derived from them
-//! - [`Data`] is dynamic (qpos/qvel are the source of truth)
+//! - [`Model`] holds what stepping reads and does not write; its fields are
+//!   public and may be edited between steps, after which
+//!   [`Model::recompute_derived`] recomputes the fields derived from them
+//! - [`Data`] is dynamic: the state (its doc lists which fields) and what the
+//!   forward pass computes from it
 //! - Body poses are computed via forward kinematics
 //!
 //! # Architecture
@@ -30,8 +31,9 @@
 //! [`Data::step`] checks its inputs and the state (a NaN or a diverging value
 //! in `qpos` or `qvel` resets the data, unless `DISABLE_AUTORESET`), runs the
 //! forward pass ([`Data::forward`]), checks the acceleration the same way, and
-//! advances with the model's integrator ([`Data::integrate`], which takes the
-//! sleep step and saves the warm start; under RK4, its four stages). Calling
+//! advances with the model's integrator: [`Data::integrate`] (the history, the
+//! activations, the sleep step, velocity, position and time, the warm start),
+//! or under RK4 its four stages. Calling
 //! `forward()` and `integrate()` by hand skips the state and acceleration
 //! checks (and `ENABLE_FWDINV`'s comparison), and under RK4 takes an Euler
 //! step. A step runs on the calling thread: the `parallel` feature steps the
