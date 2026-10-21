@@ -1,9 +1,13 @@
 //! The body spatial quantities against MuJoCo 3.5.0, which takes them about
 //! each tree's subtree centre of mass (`subtree_com[body_rootid[b]]`) in the
-//! world's orientation: the dofs' motion axes `cdof` (`mj_comPos`,
-//! `engine_core_smooth.c:245-350`), the body velocities `cvel` and the axes'
-//! rates `cdof_dot` (`mj_comVel`, `:2276-2343`), and what reads `cvel`: the
-//! object velocities and the subtree velocities.
+//! world's orientation: the dofs' motion axes `cdof` and the body inertias
+//! `cinert` (`mj_comPos`, `engine_core_smooth.c:245-350`), the composite
+//! inertias and the mass matrix (`mj_crb`, `:1811-1885`), the body velocities
+//! `cvel` and the axes' rates `cdof_dot` (`mj_comVel`, `:2276-2343`), the bias
+//! force (`mj_rne`, `:2425-2488`) and its derivative in the velocities
+//! (`mjd_rne_vel`, `engine_derivative.c:524-707`), the body accelerations and
+//! forces (`mj_rnePostConstraint`, `engine_core_smooth.c:2491-2683`), and what
+//! reads `cvel`: the object velocities and the subtree velocities.
 //!
 //! The golden is `assets/golden/com_frame/com_frame.json`, from the unfused
 //! MuJoCo 3.5.0 oracle (`scripts/gen_com_frame_reference.py`, which describes
@@ -363,5 +367,22 @@ fn body_accelerations_and_forces_are_mujocos() {
             data.sensordata.as_slice(),
             &floats(&case["sensordata"]),
         );
+    }
+}
+
+/// The bias force's derivative in the velocities, about each tree's subtree
+/// centre of mass (`mjd_rne_vel`), is MuJoCo's bit for bit: `qDeriv` after
+/// `mjd_smooth_vel`, which with no damping and no actuator holds it alone,
+/// negated; 0 outside MuJoCo's sparsity, a sleeping tree's rows included.
+#[test]
+fn bias_force_velocity_derivative_is_mujocos() {
+    for name in CASES {
+        let (model, mut data, case) = forward(name);
+        sim_core::mjd_smooth_vel(&model, &mut data);
+        let nv = model.nv;
+        let q: Vec<f64> = (0..nv * nv)
+            .map(|k| data.qDeriv[(k / nv, k % nv)])
+            .collect();
+        assert_golden(&format!("{name} qDeriv"), &q, &floats(&case["qDeriv"]));
     }
 }

@@ -21,7 +21,11 @@ diagonal, comes from `mj_setM0` at `qpos0` (`engine_setconst.c:36-59`). Read
 through them: each body's velocity at its centre of mass, in the world's
 orientation and in the inertial frame's (`mj_objectVelocity`,
 `engine_core_util.c:720-774`), and the subtree velocities and angular
-momenta (`mj_subtreeVel`, `engine_core_smooth.c:2346-2420`).
+momenta (`mj_subtreeVel`, `engine_core_smooth.c:2346-2420`). The bias force's
+derivative in the velocities, `mjd_rne_vel` (`engine_derivative.c:524-707`),
+works in the same frame; MuJoCo's `qDeriv` holds it, negated, after an
+implicit step (`mjd_smooth_vel` with its bias term, `engine_forward.c:1167-1171`),
+there being no damping and no actuator here.
 
 Each case records, after `mj_forward` at a moved state and then
 `mj_rnePostConstraint`, what those functions read (the kinematics: `xpos`,
@@ -54,6 +58,7 @@ MuJoCo (ledger L198, L195, L146). The cases:
   keeps what MuJoCo last computed for it; the awake bodies are not the first
   ones.
 """
+import copy
 import json
 import os
 import sys
@@ -233,6 +238,22 @@ def moved_state(m, seed, scale=1.0, trees=None):
     return qpos, qvel
 
 
+def q_deriv(m, d):
+    """MuJoCo's `qDeriv` at `d`'s state, dense and row-major (0 outside its
+    sparsity): a copy of `d` takes one implicit step, which computes it at the
+    step's start."""
+    integrator = m.opt.integrator
+    m.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
+    stepped = copy.copy(d)
+    mujoco.mj_step(m, stepped)
+    m.opt.integrator = integrator
+    dense = np.zeros((m.nv, m.nv))
+    for i in range(m.nv):
+        for adr in range(m.D_rowadr[i], m.D_rowadr[i] + m.D_rownnz[i]):
+            dense[i, m.D_colind[adr]] = stepped.qDeriv[adr]
+    return dense
+
+
 def record(xml, seed, scale=1.0, trees=None, simple=None):
     m = mujoco.MjModel.from_xml_string(xml)
     if simple is not None and ints(m.dof_simplenum) != simple:
@@ -280,6 +301,7 @@ def record(xml, seed, scale=1.0, trees=None, simple=None):
         "qfrc_bias": floats(d.qfrc_bias),
         "cacc": floats(d.cacc), "cfrc_int": floats(d.cfrc_int), "cfrc_ext": floats(d.cfrc_ext),
         "sensordata": floats(d.sensordata),
+        "qDeriv": floats(q_deriv(m, d)),
     }
 
 

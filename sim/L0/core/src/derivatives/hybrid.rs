@@ -17,8 +17,8 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::factor::mj_solve_m;
 use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{
-    SpatialVector, body_origin_inertia, body_origin_velocity, spatial_cross_force,
-    spatial_cross_motion, transport_motion_spatial,
+    SpatialVector, body_origin_inertia, body_origin_velocity, mju_mul_inert_vec,
+    spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::forward::{
     MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
@@ -30,7 +30,7 @@ use crate::integrate::eulerdamp_applies;
 use crate::integrate::implicit::isd_damping;
 use crate::jacobian::{mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom};
 use crate::joint_visitor::joint_motion_subspace;
-use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mju_dot};
 use crate::plugin::PluginCapabilityBit;
 use crate::quat::{qpos_quat, quat_to_vel};
 use crate::types::flags::{actuator_disabled, disabled};
@@ -437,409 +437,399 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
 // Step 6 — mjd_rne_vel: Bias force velocity derivative via chain-rule RNE
 // ============================================================================
 
-/// Derivative of spatial_cross_motion(v, s) w.r.t. v.
-/// Returns 6×6 matrix M such that d(v ×_m s)/dv = M · dv.
-///
-/// spatial_cross_motion(v, s):
-///   result_ang = w × s_ang
-///   result_lin = w × s_lin + v_lin × s_ang
-///
-/// Derivative w.r.t. v = [w; v_lin] with s fixed:
-///   `d(result_ang)/d(w) = -[s_ang]×`  (3×3)
-///   d(result_ang)/d(v_lin) = 0
-///   `d(result_lin)/d(w) = -[s_lin]×`  (3×3)
-///   `d(result_lin)/d(v_lin) = -[s_ang]×` (3×3)
-fn mjd_cross_motion_vel(s: &SpatialVector) -> Matrix6<f64> {
-    let s_ang = Vector3::new(s[0], s[1], s[2]);
-    let s_lin = Vector3::new(s[3], s[4], s[5]);
-
-    let neg_skew_ang = neg_skew(&s_ang);
-    let neg_skew_lin = neg_skew(&s_lin);
-
-    let mut m = Matrix6::zeros();
-    // Top-left 3×3: d(result_ang)/d(w) = -[s_ang]×
-    m.fixed_view_mut::<3, 3>(0, 0).copy_from(&neg_skew_ang);
-    // Bottom-left 3×3: d(result_lin)/d(w) = -[s_lin]×
-    m.fixed_view_mut::<3, 3>(3, 0).copy_from(&neg_skew_lin);
-    // Bottom-right 3×3: d(result_lin)/d(v_lin) = -[s_ang]×
-    m.fixed_view_mut::<3, 3>(3, 3).copy_from(&neg_skew_ang);
-
-    m
+/// A row-major 6×6, zero but at the given `(row, column, value)` entries.
+fn matrix6_from_entries(entries: &[(usize, usize, f64)]) -> [f64; 36] {
+    let mut d = [0.0; 36];
+    for &(row, col, value) in entries {
+        d[6 * row + col] = value;
+    }
+    d
 }
 
-/// Derivative of spatial_cross_force(v, f) w.r.t. v.
-/// Returns 6×6 matrix M such that d(v ×_f f)/dv = M · dv.
-///
-/// spatial_cross_force(v, f):
-///   result_ang = w × f_ang + v_lin × f_lin
-///   result_lin = w × f_lin
-///
-/// Derivative w.r.t. v = [w; v_lin] with f fixed:
-///   `d(result_ang)/d(w) = -[f_ang]×`
-///   `d(result_ang)/d(v_lin) = -[f_lin]×`
-///   `d(result_lin)/d(w) = -[f_lin]×`
-///   d(result_lin)/d(v_lin) = 0
-fn mjd_cross_force_vel(f: &SpatialVector) -> Matrix6<f64> {
-    let f_ang = Vector3::new(f[0], f[1], f[2]);
-    let f_lin = Vector3::new(f[3], f[4], f[5]);
-
-    let neg_skew_fang = neg_skew(&f_ang);
-    let neg_skew_flin = neg_skew(&f_lin);
-
-    let mut m = Matrix6::zeros();
-    // Top-left 3×3: d(result_ang)/d(w) = -[f_ang]×
-    m.fixed_view_mut::<3, 3>(0, 0).copy_from(&neg_skew_fang);
-    // Top-right 3×3: d(result_ang)/d(v_lin) = -[f_lin]×
-    m.fixed_view_mut::<3, 3>(0, 3).copy_from(&neg_skew_flin);
-    // Bottom-left 3×3: d(result_lin)/d(w) = -[f_lin]×
-    m.fixed_view_mut::<3, 3>(3, 0).copy_from(&neg_skew_flin);
-
-    m
+/// `mjd_crossMotion_vel` (`engine_derivative.c:64-98`): the derivative of
+/// `vel ×ₘ v` (`mju_crossMotion`) in `vel`, `v` held, row-major.
+fn mjd_cross_motion_vel(v: &[f64]) -> [f64; 36] {
+    matrix6_from_entries(&[
+        (0, 2, -v[1]),
+        (0, 1, v[2]),
+        (1, 2, v[0]),
+        (1, 0, -v[2]),
+        (2, 1, -v[0]),
+        (2, 0, v[1]),
+        (3, 2, -v[4]),
+        (3, 1, v[5]),
+        (3, 5, -v[1]),
+        (3, 4, v[2]),
+        (4, 2, v[3]),
+        (4, 0, -v[5]),
+        (4, 5, v[0]),
+        (4, 3, -v[2]),
+        (5, 1, -v[3]),
+        (5, 0, v[4]),
+        (5, 4, -v[0]),
+        (5, 3, v[1]),
+    ])
 }
 
-/// Derivative of spatial_cross_force(v, f) w.r.t. f.
-/// Returns 6×6 matrix M such that d(v ×_f f)/df = M · df.
-///
-/// spatial_cross_force(v, f):
-///   result_ang = w × f_ang + v_lin × f_lin
-///   result_lin = w × f_lin
-///
-/// Derivative w.r.t. f = [f_ang; f_lin] with v fixed:
-///   `d(result_ang)/d(f_ang) = [w]×`
-///   `d(result_ang)/d(f_lin) = [v_lin]×`
-///   d(result_lin)/d(f_ang) = 0
-///   `d(result_lin)/d(f_lin) = [w]×`
-///
-/// Note: `d(a × b)/d(b) = [a]×` (positive skew), whereas
-/// `d(a × b)/d(a) = -[b]×` (negative skew). This function differentiates
-/// w.r.t. the second argument `f`, so it uses the positive skew `[v]×`.
-fn mjd_cross_force_frc(v: &SpatialVector) -> Matrix6<f64> {
-    let w = Vector3::new(v[0], v[1], v[2]);
-    let v_lin = Vector3::new(v[3], v[4], v[5]);
-
-    let skew_w = skew(&w);
-    let skew_vlin = skew(&v_lin);
-
-    let mut m = Matrix6::zeros();
-    // Top-left 3×3: d(result_ang)/d(f_ang) = [w]×
-    m.fixed_view_mut::<3, 3>(0, 0).copy_from(&skew_w);
-    // Top-right 3×3: d(result_ang)/d(f_lin) = [v_lin]×
-    m.fixed_view_mut::<3, 3>(0, 3).copy_from(&skew_vlin);
-    // Bottom-right 3×3: d(result_lin)/d(f_lin) = [w]×
-    m.fixed_view_mut::<3, 3>(3, 3).copy_from(&skew_w);
-
-    m
+/// `mjd_crossForce_vel` (`engine_derivative.c:100-134`): the derivative of
+/// `vel ×* f` (`mju_crossForce`) in `vel`, `f` held, row-major.
+fn mjd_cross_force_vel(f: &[f64]) -> [f64; 36] {
+    matrix6_from_entries(&[
+        (0, 2, -f[1]),
+        (0, 1, f[2]),
+        (0, 5, -f[4]),
+        (0, 4, f[5]),
+        (1, 2, f[0]),
+        (1, 0, -f[2]),
+        (1, 5, f[3]),
+        (1, 3, -f[5]),
+        (2, 1, -f[0]),
+        (2, 0, f[1]),
+        (2, 4, -f[3]),
+        (2, 3, f[4]),
+        (3, 2, -f[4]),
+        (3, 1, f[5]),
+        (4, 2, f[3]),
+        (4, 0, -f[5]),
+        (5, 1, -f[3]),
+        (5, 0, f[4]),
+    ])
 }
 
-/// Negative skew-symmetric matrix: `-[a]×`.
-///
-/// `[a]× · b = a × b`, so `-[a]× · b = -(a × b) = b × a`.
-///
-/// This is the Jacobian of `a × b` w.r.t. `a` (first argument, with b fixed):
-/// `d(a × b)/da = -[b]×`, so `neg_skew(b)` gives the correct derivative.
-fn neg_skew(a: &Vector3<f64>) -> nalgebra::Matrix3<f64> {
-    nalgebra::Matrix3::new(0.0, a[2], -a[1], -a[2], 0.0, a[0], a[1], -a[0], 0.0)
+/// `mjd_crossForce_frc` (`engine_derivative.c:136-170`): the derivative of
+/// `vel ×* f` (`mju_crossForce`) in `f`, `vel` held, row-major.
+fn mjd_cross_force_frc(vel: &[f64]) -> [f64; 36] {
+    matrix6_from_entries(&[
+        (0, 1, -vel[2]),
+        (0, 2, vel[1]),
+        (0, 4, -vel[5]),
+        (0, 5, vel[4]),
+        (1, 0, vel[2]),
+        (1, 2, -vel[0]),
+        (1, 3, vel[5]),
+        (1, 5, -vel[3]),
+        (2, 0, -vel[1]),
+        (2, 1, vel[0]),
+        (2, 3, -vel[4]),
+        (2, 4, vel[3]),
+        (3, 4, -vel[2]),
+        (3, 5, vel[1]),
+        (4, 3, vel[2]),
+        (4, 5, -vel[0]),
+        (5, 3, -vel[1]),
+        (5, 4, vel[0]),
+    ])
 }
 
-/// Positive skew-symmetric matrix: `[a]×`.
-///
-/// `[a]× · b = a × b`.
-///
-/// This is the Jacobian of `a × b` w.r.t. `b` (second argument, with a fixed):
-/// `d(a × b)/db = [a]×`, so `skew(a)` gives the correct derivative.
-fn skew(a: &Vector3<f64>) -> nalgebra::Matrix3<f64> {
-    nalgebra::Matrix3::new(0.0, -a[2], a[1], a[2], 0.0, -a[0], -a[1], a[0], 0.0)
+/// `mjd_mulInertVec_vel` (`engine_derivative.c:172-212`): the derivative of
+/// `i · v` (`mju_mulInertVec`, `i` a 10-vector inertia) in `v`, row-major.
+fn mjd_mul_inert_vec_vel(i: &[f64; 10]) -> [f64; 36] {
+    matrix6_from_entries(&[
+        (0, 0, i[0]),
+        (0, 1, i[3]),
+        (0, 2, i[4]),
+        (0, 4, -i[8]),
+        (0, 5, i[7]),
+        (1, 0, i[3]),
+        (1, 1, i[1]),
+        (1, 2, i[5]),
+        (1, 3, i[8]),
+        (1, 5, -i[6]),
+        (2, 0, i[4]),
+        (2, 1, i[5]),
+        (2, 2, i[2]),
+        (2, 3, -i[7]),
+        (2, 4, i[6]),
+        (3, 1, i[8]),
+        (3, 2, -i[7]),
+        (3, 3, i[9]),
+        (4, 2, i[6]),
+        (4, 0, -i[8]),
+        (4, 4, i[9]),
+        (5, 0, i[7]),
+        (5, 1, -i[6]),
+        (5, 5, i[9]),
+    ])
 }
 
-/// Compute ∂(qfrc_bias)/∂qvel and SUBTRACT from data.qDeriv.
+/// `mju_transpose` of a row-major 6×6.
+fn transpose6(mat: &[f64; 36]) -> [f64; 36] {
+    let mut res = [0.0; 36];
+    for i in 0..6 {
+        for j in 0..6 {
+            res[6 * j + i] = mat[6 * i + j];
+        }
+    }
+    res
+}
+
+/// `mju_mulMatMat` (`engine_util_blas.c:858-871`): `res = mat1 · mat2`, an
+/// `r1 × c1` by a `c1 × c2`, row-major: each row from +0, a zero entry of
+/// `mat1` skipped, the others' rows of `mat2` added scaled (`mju_addToScl`).
+fn mju_mul_mat_mat(res: &mut [f64], mat1: &[f64], mat2: &[f64], r1: usize, c1: usize, c2: usize) {
+    res[..r1 * c2].fill(0.0);
+    for i in 0..r1 {
+        for k in 0..c1 {
+            let scale = mat1[i * c1 + k];
+            if scale != 0.0 {
+                for j in 0..c2 {
+                    res[i * c2 + j] += mat2[k * c2 + j] * scale;
+                }
+            }
+        }
+    }
+}
+
+/// Column `c` of a 6-row scratch Jacobian.
+fn column6(mat: &DMatrix<f64>, c: usize) -> [f64; 6] {
+    let mut col = [0.0; 6];
+    col.copy_from_slice(&mat.as_slice()[6 * c..6 * c + 6]);
+    col
+}
+
+/// Column `c` of a 6-row scratch Jacobian, to write.
+fn column6_mut(mat: &mut DMatrix<f64>, c: usize) -> &mut [f64] {
+    &mut mat.as_mut_slice()[6 * c..6 * c + 6]
+}
+
+/// A parent's scratch Jacobian and its child's, apart (`parent < child`).
+fn parent_and_child(
+    mats: &mut [DMatrix<f64>],
+    parent: usize,
+    child: usize,
+) -> (&mut DMatrix<f64>, &mut DMatrix<f64>) {
+    let (lower, upper) = mats.split_at_mut(child);
+    (&mut lower[parent], &mut upper[0])
+}
+
+/// Subtracts the bias force's derivative in the velocities from `qDeriv`, as
+/// MuJoCo's `mjd_rne_vel` with `mjd_comVel_vel` (`engine_derivative.c:524-707`).
 ///
-/// Uses chain-rule propagation through the kinematic tree to compute the
-/// Coriolis matrix derivative analytically. Single-pass O(nbody · nv) algorithm.
-///
-/// The bias force `qfrc_bias = C(q)·v + g(q)` has:
-/// - Gravity `g(q)`: ∂/∂qvel = 0 (position-only)
-/// - Coriolis/centrifugal: quadratic in velocity, differentiated here
-// Mathematical symbols (J, C, M) follow Featherstone's chain-rule notation; indexed loops mutate parallel per-body arrays at the same body index.
-#[allow(non_snake_case, clippy::similar_names, clippy::needless_range_loop)]
+/// Each body's velocity, acceleration and force derivatives (`deriv_Dcvel`,
+/// `deriv_Dcacc`, `deriv_Dcfrc`, about its tree's subtree centre of mass, a
+/// column per dof) and each dof's `cdof_dot` derivative are taken over the
+/// dofs the body moves with, its own and its ancestors' (MuJoCo's sparse row
+/// `B`), in MuJoCo's order and no other column, then each awake dof's row of
+/// `qDeriv` over the same columns takes `cdof · Dcfrc` off. When some trees
+/// sleep, the awake bodies and dofs only.
+#[allow(non_snake_case)]
 pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
-    let nv = model.nv;
-    let nbody = model.nbody;
-
-    if nv == 0 {
+    let nv_model = model.nv;
+    if nv_model == 0 {
         return;
     }
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
+    let (nbody, nparent, nv) = if sleep_filter {
+        (data.nbody_awake, data.nparent_awake, data.nv_awake)
+    } else {
+        (model.nbody, model.nbody, model.nv)
+    };
+    let awake_body = |b: usize| {
+        if sleep_filter {
+            data.body_awake_ind[b]
+        } else {
+            b
+        }
+    };
 
-    // Zero scratch Jacobians
-    for b in 0..nbody {
-        data.deriv_Dcvel[b].fill(0.0);
-        data.deriv_Dcacc[b].fill(0.0);
-        data.deriv_Dcfrc[b].fill(0.0);
-    }
-
-    // Pre-compute joint motion subspaces (same optimization as mj_rne)
-    let joint_subspaces: Vec<_> = (0..model.njnt)
-        .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
+    // Each body's dofs: its ancestors' (`ancestors`), and with its subtree's
+    // (`columns`, MuJoCo's sparse row `B`, `mj_makeBSparse`,
+    // `engine_io.c:782-856`), ascending.
+    let own = |b: usize| model.body_dof_adr[b]..model.body_dof_adr[b] + model.body_dof_num[b];
+    let ancestors: Vec<Vec<usize>> = (0..model.nbody)
+        .map(|b| {
+            let mut dofs = Vec::new();
+            let mut a = b;
+            while a != 0 {
+                a = model.body_parent[a];
+                dofs.extend(own(a));
+            }
+            dofs.sort_unstable();
+            dofs
+        })
         .collect();
+    let mut columns: Vec<Vec<usize>> = (0..model.nbody).map(|b| own(b).collect()).collect();
+    for b in (1..model.nbody).rev() {
+        let subtree = columns[b].clone();
+        columns[model.body_parent[b]].extend(subtree);
+    }
+    for (cols, before) in columns.iter_mut().zip(&ancestors) {
+        cols.extend(before);
+        cols.sort_unstable();
+    }
+    // Dof j's `cdof_dot` derivative, column c: `[6 * (j * nv + c)..][..6]`.
+    let mut dcdofdot = vec![0.0; 6 * nv_model * nv_model];
 
-    // ========== Forward pass (root to leaves) ==========
-    for body_id in 1..nbody {
-        let parent_id = model.body_parent[body_id];
+    for b in 0..nbody {
+        let i = awake_body(b);
+        data.deriv_Dcvel[i].fill(0.0);
+        data.deriv_Dcacc[i].fill(0.0);
+        data.deriv_Dcfrc[i].fill(0.0);
+    }
 
-        // Spatial transport X(r) from parent body origin to child body origin.
-        // Dcvel differentiates each body's velocity about its origin
-        // (`body_origin_velocity`), so propagation needs:
-        //   Dcvel[child][angular, :] = Dcvel[parent][angular, :]
-        //   Dcvel[child][linear, :]  = Dcvel[parent][linear, :] + r× · Dcvel[parent][angular, :]
-        // where r = xpos[child] - xpos[parent].
-        let r = data.xpos[body_id] - data.xpos[parent_id];
-
-        let parent_dcvel = data.deriv_Dcvel[parent_id].clone();
-        for c in 0..nv {
-            // Angular part: copy directly
-            for row in 0..3 {
-                data.deriv_Dcvel[body_id][(row, c)] = parent_dcvel[(row, c)];
+    // `mjd_comVel_vel` (`:524-593`): each body's velocity derivative from its
+    // parent's at its ancestors' dofs (`copyFromParent`), then per dof the
+    // axis rate's derivative over the dofs before it, from the running
+    // velocity derivative, before the dof's own axis joins it. A free joint's
+    // translation adds its axes first, with no rate derivative.
+    for b in 1..nbody {
+        let i = awake_body(b);
+        let parent = model.body_parent[i];
+        let (from, to) = parent_and_child(&mut data.deriv_Dcvel, parent, i);
+        for &c in &ancestors[i] {
+            column6_mut(to, c).copy_from_slice(&column6(from, c));
+        }
+        let dcvel = &mut data.deriv_Dcvel[i];
+        let rate = |dcvel: &DMatrix<f64>, dcdofdot: &mut [f64], j: usize| {
+            let mat_t = transpose6(&mjd_cross_motion_vel(data.cdof[j].as_slice()));
+            for &c in columns[i].iter().take_while(|&&c| c < j) {
+                let at = 6 * (j * nv_model + c);
+                mju_mul_mat_mat(
+                    &mut dcdofdot[at..at + 6],
+                    &column6(dcvel, c),
+                    &mat_t,
+                    1,
+                    6,
+                    6,
+                );
             }
-            // Linear part: add lever arm ω × r contribution
-            let omega_col = Vector3::new(
-                parent_dcvel[(0, c)],
-                parent_dcvel[(1, c)],
-                parent_dcvel[(2, c)],
+        };
+        let add_axis = |dcvel: &mut DMatrix<f64>, j: usize| {
+            for (v, a) in column6_mut(dcvel, j).iter_mut().zip(data.cdof[j].iter()) {
+                *v += a;
+            }
+        };
+        let dof_end = model.body_dof_adr[i] + model.body_dof_num[i];
+        let mut j = model.body_dof_adr[i];
+        while j < dof_end {
+            let joint = model.jnt_type[model.dof_jnt[j]];
+            if joint == MjJointType::Free {
+                for k in 0..3 {
+                    add_axis(dcvel, j + k);
+                }
+                j += 3;
+            }
+            if matches!(joint, MjJointType::Free | MjJointType::Ball) {
+                for k in 0..3 {
+                    rate(dcvel, &mut dcdofdot, j + k);
+                }
+                for k in 0..3 {
+                    add_axis(dcvel, j + k);
+                }
+                j += 3;
+            } else {
+                rate(dcvel, &mut dcdofdot, j);
+                add_axis(dcvel, j);
+                j += 1;
+            }
+        }
+    }
+
+    // Each body's acceleration derivative from its parent's, plus per dof
+    // `cdof_dot` at its own column and the rate derivative times its
+    // velocity; then the force derivative,
+    // `D(cinert · cacc + cvel ×* (cinert · cvel))`.
+    for b in 1..nbody {
+        let i = awake_body(b);
+        let parent = model.body_parent[i];
+        let (from, to) = parent_and_child(&mut data.deriv_Dcacc, parent, i);
+        for &c in &ancestors[i] {
+            column6_mut(to, c).copy_from_slice(&column6(from, c));
+        }
+        let dcacc = &mut data.deriv_Dcacc[i];
+        for j in model.body_dof_adr[i]..model.body_dof_adr[i] + model.body_dof_num[i] {
+            for (v, a) in column6_mut(dcacc, j)
+                .iter_mut()
+                .zip(data.cdof_dot[j].iter())
+            {
+                *v += a;
+            }
+            let qvel = data.qvel[j];
+            for &c in &columns[i] {
+                let at = 6 * (j * nv_model + c);
+                for (v, d) in column6_mut(dcacc, c).iter_mut().zip(&dcdofdot[at..at + 6]) {
+                    *v += d * qvel;
+                }
+            }
+        }
+
+        let dmul = mjd_mul_inert_vec_vel(&data.cinert[i]);
+        let dmul_t = transpose6(&dmul);
+        let momentum = mju_mul_inert_vec(&data.cinert[i], &data.cvel[i]);
+        let mut mat = mjd_cross_force_vel(momentum.as_slice());
+        let mut mat2 = [0.0; 36];
+        mju_mul_mat_mat(
+            &mut mat2,
+            &mjd_cross_force_frc(data.cvel[i].as_slice()),
+            &dmul,
+            6,
+            6,
+            6,
+        );
+        for (m, m2) in mat.iter_mut().zip(mat2) {
+            *m += m2;
+        }
+        let mat_t = transpose6(&mat);
+        for &c in &columns[i] {
+            let mut force = [0.0; 6];
+            mju_mul_mat_mat(
+                &mut force,
+                &column6(&data.deriv_Dcacc[i], c),
+                &dmul_t,
+                1,
+                6,
+                6,
             );
-            let lever = omega_col.cross(&r);
-            data.deriv_Dcvel[body_id][(3, c)] = parent_dcvel[(3, c)] + lever.x;
-            data.deriv_Dcvel[body_id][(4, c)] = parent_dcvel[(4, c)] + lever.y;
-            data.deriv_Dcvel[body_id][(5, c)] = parent_dcvel[(5, c)] + lever.z;
-        }
-
-        // Snapshot the TRANSPORTED parent velocity Jacobian `∂vt/∂qvel = X_b·Dcvel[parent]`
-        // before this body's own joint subspace is added below. The velocity-product
-        // term differentiates `vt`, the body's velocity before each joint: the parent
-        // velocity transported to this body's origin, then each earlier joint's
-        // `S·qvel` (see `mj_rne`). `vt` and `dvt` advance after each joint below, as
-        // MuJoCo's running `Dcvel` (`mjd_comVel_vel_dense`, `engine_derivative.c:329-372`).
-        let mut dvt = data.deriv_Dcvel[body_id].clone();
-        let mut vt = transport_motion_spatial(body_origin_velocity(model, data, parent_id), &r);
-
-        // For each joint of this body
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
-
-        for jnt_id in jnt_start..jnt_end {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-            let s = &joint_subspaces[jnt_id];
-            let ndof = model.jnt_type[jnt_id].nv();
-
-            // Direct contribution: ∂(cvel)/∂(v_dof) += S[:, d]
-            for d in 0..ndof {
-                for row in 0..6 {
-                    data.deriv_Dcvel[body_id][(row, dof_adr + d)] += s[(row, d)];
-                }
-            }
-        }
-
-        // Propagate acceleration Jacobian with same spatial transport X(r).
-        let parent_dcacc = data.deriv_Dcacc[parent_id].clone();
-        for c in 0..nv {
-            for row in 0..3 {
-                data.deriv_Dcacc[body_id][(row, c)] = parent_dcacc[(row, c)];
-            }
-            let omega_col = Vector3::new(
-                parent_dcacc[(0, c)],
-                parent_dcacc[(1, c)],
-                parent_dcacc[(2, c)],
+            let mut velocity_term = [0.0; 6];
+            mju_mul_mat_mat(
+                &mut velocity_term,
+                &column6(&data.deriv_Dcvel[i], c),
+                &mat_t,
+                1,
+                6,
+                6,
             );
-            let lever = omega_col.cross(&r);
-            data.deriv_Dcacc[body_id][(3, c)] = parent_dcacc[(3, c)] + lever.x;
-            data.deriv_Dcacc[body_id][(4, c)] = parent_dcacc[(4, c)] + lever.y;
-            data.deriv_Dcacc[body_id][(5, c)] = parent_dcacc[(5, c)] + lever.z;
+            for (f, t) in force.iter_mut().zip(velocity_term) {
+                *f += t;
+            }
+            column6_mut(&mut data.deriv_Dcfrc[i], c).copy_from_slice(&force);
         }
+    }
 
-        // For each joint of this body
-        for jnt_id in jnt_start..jnt_end {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-            let s = &joint_subspaces[jnt_id];
-            let ndof = model.jnt_type[jnt_id].nv();
-
-            // Compute v_joint = S · qvel[dof_adr..dof_adr+ndof]
-            let mut v_joint = SpatialVector::zeros();
-            for d in 0..ndof {
-                for row in 0..6 {
-                    v_joint[row] += s[(row, d)] * data.qvel[dof_adr + d];
-                }
-            }
-
-            // The forward velocity-product term is `crossMotion(vt, v_joint)` with
-            // `vt` the velocity before this joint (see `mj_rne`). Its qvel-derivative:
-            // Term 1 (direct, ∂v_joint): crossMotion(vt, S[:, d])
-            for d in 0..ndof {
-                let s_col = SpatialVector::new(
-                    s[(0, d)],
-                    s[(1, d)],
-                    s[(2, d)],
-                    s[(3, d)],
-                    s[(4, d)],
-                    s[(5, d)],
-                );
-                let cross = spatial_cross_motion(vt, s_col);
-                for row in 0..6 {
-                    data.deriv_Dcacc[body_id][(row, dof_adr + d)] += cross[row];
-                }
-            }
-
-            // Term 2 (chain rule, ∂vt): mjd_cross_motion_vel(v_joint) · (∂vt/∂qvel)
-            let mat = mjd_cross_motion_vel(&v_joint); // 6×6
-            // Dcacc[b] += mat · dvt  (6×nv += 6×6 · 6×nv)
-            // Column-by-column to avoid mixed static/dynamic type
-            for c in 0..nv {
-                let col = mat * dvt.column(c);
-                for r in 0..6 {
-                    data.deriv_Dcacc[body_id][(r, c)] += col[r];
-                }
-            }
-
-            // Free joint correction derivative:
-            // rne.rs subtracts ω × v from a_bias[3:6] for free joints, where
-            //   ω = cvel[body][0:3] (world angular velocity)
-            //   v = qvel[dof:dof+3] (world translational velocity)
-            //
-            // Derivative: Dcacc[3:6, k] -= d(ω × v)/d(qvel_k)
-            //   = (dω/d(qvel_k)) × v + ω × (dv/d(qvel_k))
-            //
-            // Term A: -(Dcvel[body][0:3, k]) × v = v × Dcvel[body][0:3, k]
-            // Term B: -(ω × e_i) for k = dof_adr+i  (i=0,1,2)
-            if model.jnt_type[jnt_id] == MjJointType::Free {
-                let omega = Vector3::new(
-                    data.cvel[body_id][0],
-                    data.cvel[body_id][1],
-                    data.cvel[body_id][2],
-                );
-                let v_trans = Vector3::new(
-                    data.qvel[dof_adr],
-                    data.qvel[dof_adr + 1],
-                    data.qvel[dof_adr + 2],
-                );
-
-                // Term A: Dcacc[3:6, c] += v × Dcvel[0:3, c]  (= -(Dcvel × v))
-                let dcvel_body = data.deriv_Dcvel[body_id].clone();
-                for c in 0..nv {
-                    let dcvel_ang =
-                        Vector3::new(dcvel_body[(0, c)], dcvel_body[(1, c)], dcvel_body[(2, c)]);
-                    let cross = v_trans.cross(&dcvel_ang);
-                    data.deriv_Dcacc[body_id][(3, c)] += cross.x;
-                    data.deriv_Dcacc[body_id][(4, c)] += cross.y;
-                    data.deriv_Dcacc[body_id][(5, c)] += cross.z;
-                }
-
-                // Term B: Dcacc[3:6, dof+i] -= ω × e_i  for i=0,1,2
-                for i in 0..3 {
-                    let mut e_i = Vector3::zeros();
-                    e_i[i] = 1.0;
-                    let cross = omega.cross(&e_i);
-                    data.deriv_Dcacc[body_id][(3, dof_adr + i)] -= cross.x;
-                    data.deriv_Dcacc[body_id][(4, dof_adr + i)] -= cross.y;
-                    data.deriv_Dcacc[body_id][(5, dof_adr + i)] -= cross.z;
-                }
-            }
-
-            // The next joint's velocity product takes this joint's velocity too.
-            vt += v_joint;
-            for d in 0..ndof {
-                for row in 0..6 {
-                    dvt[(row, dof_adr + d)] += s[(row, d)];
-                }
+    // Summed into each parent, leaf to root (`addToParent`): a parent's row
+    // holds its child's. MuJoCo skips a parent welded to the world: no dof
+    // reads its force.
+    for b in (1..nparent).rev() {
+        let i = if sleep_filter {
+            data.parent_awake_ind[b]
+        } else {
+            b
+        };
+        let parent = model.body_parent[i];
+        if model.body_weldid[parent] == 0 {
+            continue;
+        }
+        let (to, from) = parent_and_child(&mut data.deriv_Dcfrc, parent, i);
+        for &c in &columns[i] {
+            for (v, f) in column6_mut(to, c).iter_mut().zip(column6(from, c)) {
+                *v += f;
             }
         }
     }
 
-    // ========== Backward pass — Phase 1: Compute local body force derivatives ==========
-    for body_id in 1..nbody {
-        let inertia = &body_origin_inertia(model, data, body_id);
-        let cvel = body_origin_velocity(model, data, body_id);
-        let i_v = inertia * cvel; // I · v (momentum vector)
-
-        // Dcfrc[b] = I · Dcacc[b]
-        let dcacc = data.deriv_Dcacc[body_id].clone();
-        // Matrix6 * DMatrix produces a mixed static/dynamic type;
-        // multiply column-by-column into the pre-allocated DMatrix.
-        for c in 0..nv {
-            let col = inertia * dcacc.column(c);
-            for r in 0..6 {
-                data.deriv_Dcfrc[body_id][(r, c)] = col[r];
-            }
-        }
-
-        // + crossForce_vel(I·v) · Dcvel[b]
-        let cross_vel_mat = mjd_cross_force_vel(&i_v); // 6×6
-        let dcvel = data.deriv_Dcvel[body_id].clone();
-        for c in 0..nv {
-            let col = cross_vel_mat * dcvel.column(c);
-            for r in 0..6 {
-                data.deriv_Dcfrc[body_id][(r, c)] += col[r];
-            }
-        }
-
-        // + crossForce_frc(v) · I · Dcvel[b]
-        let cross_frc_mat = mjd_cross_force_frc(&cvel); // 6×6
-        for c in 0..nv {
-            let i_col = inertia * dcvel.column(c); // 6×1
-            let result = cross_frc_mat * i_col; // 6×1
-            for r in 0..6 {
-                data.deriv_Dcfrc[body_id][(r, c)] += result[r];
-            }
+    // `qDeriv[j, c] −= cdof_j · Dcfrc[c]` (`mju_mulMatVec`, `mju_dot`).
+    for v in 0..nv {
+        let j = if sleep_filter {
+            data.dof_awake_ind[v]
+        } else {
+            v
+        };
+        let i = model.dof_body[j];
+        for &c in &columns[i] {
+            let row = mju_dot(&column6(&data.deriv_Dcfrc[i], c), data.cdof[j].as_slice());
+            data.qDeriv[(j, c)] -= row;
         }
     }
-
-    // ========== Backward pass — Phase 2: Accumulate to parent (leaves to root) ==========
-    // X_bᵀ transport to the parent origin (matches the corrected `mj_rne` backward):
-    // each column's force is unchanged, its torque gains the r×f lever. No transport
-    // derivative here — this is ∂/∂qvel and r = xpos[child]−xpos[parent] is q-only.
-    for body_id in (1..nbody).rev() {
-        let parent_id = model.body_parent[body_id];
-        if parent_id != 0 {
-            let child_dcfrc = data.deriv_Dcfrc[body_id].clone();
-            let r = data.xpos[body_id] - data.xpos[parent_id];
-            for col in 0..nv {
-                let fx = child_dcfrc[(3, col)];
-                let fy = child_dcfrc[(4, col)];
-                let fz = child_dcfrc[(5, col)];
-                data.deriv_Dcfrc[parent_id][(0, col)] +=
-                    child_dcfrc[(0, col)] + r.y * fz - r.z * fy;
-                data.deriv_Dcfrc[parent_id][(1, col)] +=
-                    child_dcfrc[(1, col)] + r.z * fx - r.x * fz;
-                data.deriv_Dcfrc[parent_id][(2, col)] +=
-                    child_dcfrc[(2, col)] + r.x * fy - r.y * fx;
-                data.deriv_Dcfrc[parent_id][(3, col)] += fx;
-                data.deriv_Dcfrc[parent_id][(4, col)] += fy;
-                data.deriv_Dcfrc[parent_id][(5, col)] += fz;
-            }
-        }
-    }
-
-    // ========== Projection: qDeriv[dof, :] -= S[:, d]^T · Dcfrc[body] ==========
-    for jnt_id in 0..model.njnt {
-        let body_id = model.jnt_body[jnt_id];
-        let dof_adr = model.jnt_dof_adr[jnt_id];
-        let s = &joint_subspaces[jnt_id];
-        let ndof = model.jnt_type[jnt_id].nv();
-
-        for d in 0..ndof {
-            // qDeriv[dof_adr + d, :] -= S[:, d]^T · Dcfrc[body_id]
-            // Each column c: qDeriv[dof_adr+d, c] -= Σ_row S[row,d] · Dcfrc[body_id][row, c]
-            for c in 0..nv {
-                let mut val = 0.0;
-                for row in 0..6 {
-                    val += s[(row, d)] * data.deriv_Dcfrc[body_id][(row, c)];
-                }
-                data.qDeriv[(dof_adr + d, c)] -= val;
-            }
-        }
-    }
-
-    // NOTE: Gyroscopic derivative for Ball/Free joints is NOT computed
-    // directly here. The Featherstone backward pass above captures the
-    // full gyroscopic derivative via the v ×* (I @ v) term, including
-    // both the crossForce_vel(I·v) and crossForce_frc(v)·I contributions.
-    // Adding a direct gyroscopic derivative would double-count the effect.
 }
 // ============================================================================
 // Step 7 — mjd_smooth_vel: Combined analytical dispatch
@@ -2277,7 +2267,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
 
             // Term C: (∂vt/∂q) ×_m v_joint, with ∂vt/∂q = dvt_pos[b]
-            let mat = mjd_cross_motion_vel(&v_joint);
+            let mat = Matrix6::from_row_slice(&mjd_cross_motion_vel(v_joint.as_slice()));
             for c in 0..nv {
                 let col = mat * dvt_pos[b].column(c);
                 for row in 0..6 {
@@ -2497,7 +2487,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
         // Gyroscopic velocity derivatives: ∂(v ×* (I·v))/∂q
         // = crossForce_vel(I·v) · Dcvel + crossForce_frc(v) · I · Dcvel
-        let cross_vel_mat = mjd_cross_force_vel(&i_v);
+        let cross_vel_mat = Matrix6::from_row_slice(&mjd_cross_force_vel(i_v.as_slice()));
         let dcvel = data.deriv_Dcvel_pos[b].clone();
         for c in 0..nv {
             let col = cross_vel_mat * dcvel.column(c);
@@ -2505,7 +2495,7 @@ pub fn mjd_rne_pos(model: &Model, data: &mut Data) {
                 data.deriv_Dcfrc_pos[b][(r, c)] += col[r];
             }
         }
-        let cross_frc_mat = mjd_cross_force_frc(&cvel_b);
+        let cross_frc_mat = Matrix6::from_row_slice(&mjd_cross_force_frc(cvel_b.as_slice()));
         for c in 0..nv {
             let i_col = inertia * dcvel.column(c);
             let result = cross_frc_mat * i_col;

@@ -40,9 +40,9 @@ const MJ_TOL_FAST: f64 = 1e-8;
 // Both our code and MuJoCo use [v₁v₂v₃ω₁ω₂ω₃] DOF ordering for free joints
 // (linear DOFs first, angular DOFs second). No permutation needed.
 //
-// Free joint conformance tests compare fluid-only qDeriv (full − zero-fluid)
-// to isolate the fluid contribution from Coriolis terms that differ between
-// our Featherstone RNE pass and MuJoCo's split bias computation.
+// Free joint conformance tests compare the fluid-only qDeriv (full − zero-fluid),
+// which their arrays hold; the bias force's part of qDeriv is compared bit for
+// bit in `com_frame_parity::bias_force_velocity_derivative_is_mujocos`.
 //
 // Non-free joint tests (hinge, ball, chain) compare full qDeriv directly.
 // Each array is stored in row-major order: entry [i*nv + j] = qDeriv[i,j].

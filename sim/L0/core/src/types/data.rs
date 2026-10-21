@@ -671,14 +671,16 @@ pub struct Data {
     #[allow(non_snake_case)]
     pub qDeriv: DMatrix<f64>,
 
-    /// Scratch Jacobian ∂(cvel)/∂(qvel) per body (length `nbody`, each 6 × nv).
-    /// Used by `mjd_rne_vel()` for chain-rule derivative propagation.
+    /// `mjd_rne_vel()`'s scratch: each body's velocity `cvel` differentiated in
+    /// `qvel` (length `nbody`, each 6 × nv, a column per dof), about its tree's
+    /// subtree centre of mass; written at the columns of the dofs of the
+    /// body's ancestors and subtree only.
     #[allow(non_snake_case)]
     pub deriv_Dcvel: Vec<DMatrix<f64>>,
-    /// Scratch Jacobian ∂(cacc)/∂(qvel) per body (length `nbody`, each 6 × nv).
+    /// The same for each body's bias acceleration.
     #[allow(non_snake_case)]
     pub deriv_Dcacc: Vec<DMatrix<f64>>,
-    /// Scratch Jacobian ∂(cfrc)/∂(qvel) per body (length `nbody`, each 6 × nv).
+    /// The same for each body's bias force, its subtree's summed in.
     #[allow(non_snake_case)]
     pub deriv_Dcfrc: Vec<DMatrix<f64>>,
 
