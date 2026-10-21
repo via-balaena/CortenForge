@@ -485,10 +485,6 @@ pub struct Data {
     /// zeroed). Cleared with no rows.
     pub solver_stat: Vec<SolverStat>,
 
-    /// Per-step mean inertia: `trace(qM) / nv`, set at each constraint
-    /// solve from the current `qM`. PGS scales by it.
-    pub stat_meaninertia: f64,
-
     // ==================== Sensors ====================
     /// Sensor data array (length `nsensordata`).
     /// Each sensor writes to `sensordata[sensor_adr[i]..sensor_adr[i]+sensor_dim[i]]`.
@@ -904,7 +900,6 @@ impl Clone for Data {
             nf: self.nf,
             primal_qacc: self.primal_qacc,
             solver_stat: self.solver_stat.clone(),
-            stat_meaninertia: self.stat_meaninertia,
             // Sensors
             sensordata: self.sensordata.clone(),
             // Warnings

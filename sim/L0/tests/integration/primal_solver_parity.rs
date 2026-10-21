@@ -638,6 +638,61 @@ fn statistics_past_the_200th_are_counted_not_kept() {
     assert!(off.is_empty(), "{off:#?}");
 }
 
+/// PGS scales its statistics by the model's mean inertia, the mass matrix's
+/// trace over nv at qpos0, at every state, as MuJoCo's `mj_solPGS`
+/// (`engine_solver.c:326`): the golden's two-hinge arm bent past its
+/// shoulder's limit with its hand on the floor, where the trace over nv is
+/// the golden's `trace_over_nv`, more than 1% from the model's. The first
+/// forward's iteration count, active and changed counts and states are
+/// MuJoCo's, each improvement within 1e-12 of the largest.
+#[test]
+fn pgs_scales_its_statistics_by_the_models_mean_inertia() {
+    let case = &golden()["cases"]["pgs_scale"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos.copy_from_slice(&floats(&case["qpos"]));
+    data.qvel.copy_from_slice(&floats(&case["qvel"]));
+    data.forward(&model).expect("forward");
+
+    let nv = f64::from(u32::try_from(model.nv).expect("nv"));
+    let trace = (0..model.nv).map(|i| data.qM[(i, i)]).sum::<f64>() / nv;
+    let (want_trace, want_mean) = (
+        case["trace_over_nv"].as_f64().expect("trace"),
+        case["meaninertia"].as_f64().expect("meaninertia"),
+    );
+    assert!(
+        (trace - want_trace).abs() <= 1e-12 * want_trace,
+        "trace over nv {trace}"
+    );
+    assert!(
+        (model.stat_meaninertia - want_mean).abs() <= 1e-12 * want_mean,
+        "mean inertia {}",
+        model.stat_meaninertia
+    );
+    assert!(
+        (trace / want_mean - 1.0).abs() > 0.01,
+        "the fixture tells the scales apart"
+    );
+
+    let stats = &case["stats"];
+    assert_eq!(data.solver_niter, count(&stats["niter"]), "iterations");
+    let field =
+        |f: fn(&SolverStat) -> usize| -> Vec<usize> { data.solver_stat.iter().map(f).collect() };
+    assert_eq!(field(|s| s.nactive), usizes(&stats["nactive"]), "nactive");
+    assert_eq!(field(|s| s.nchange), usizes(&stats["nchange"]), "nchange");
+    let states: Vec<usize> = data.efc_state.iter().map(|&s| mj_state(s)).collect();
+    assert_eq!(states, usizes(&stats["efc_state"]), "states");
+    let want = floats(&stats["improvement"]);
+    let scale = want.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    for (k, (s, w)) in data.solver_stat.iter().zip(&want).enumerate() {
+        assert!(
+            (s.improvement - w).abs() <= 1e-12 * scale,
+            "improvement {k}: {:e}, MuJoCo {w:e}",
+            s.improvement
+        );
+    }
+}
+
 /// Noslip's active-row count is `dualState`'s: every row not satisfied, a
 /// contact in the cone counting each of its rows (`engine_solver.c:233-310`).
 /// noslip_rows' box sliding at about 1 m/s and spinning, three starts,

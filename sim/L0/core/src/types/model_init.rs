@@ -929,7 +929,6 @@ impl Model {
             nf: 0,
             primal_qacc: false,
             solver_stat: Vec::new(),
-            stat_meaninertia: 1.0,
 
             // Sensors
             sensordata: DVector::zeros(self.nsensordata),

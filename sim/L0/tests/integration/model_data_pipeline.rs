@@ -699,7 +699,6 @@ pub(super) fn scramble(data: &mut sim_core::Data) {
     data.qLD_valid = true;
     data.qfrc_bias.fill(7.0);
     data.qfrc_applied.fill(7.0);
-    data.stat_meaninertia = 7.0;
     data.solver_niter = 7;
     data.energy_potential = 7.0;
     data.sensordata.fill(7.0);

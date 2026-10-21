@@ -702,6 +702,49 @@ def statistics_cap():
     return out
 
 
+PGS_SCALE = """<mujoco model="pgs_scale">
+  <option timestep="0.002" solver="PGS" tolerance="1e-10"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1"/>
+    <body name="upper" pos="0 0 0.4">
+      <joint name="shoulder" type="hinge" axis="0 1 0" range="-30 50" limited="true"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+      <body name="fore" pos="0.3 0 0">
+        <joint name="elbow" type="hinge" axis="0 1 0" frictionloss="0.05"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.6"/>
+        <geom type="sphere" pos="0.3 0 0" size="0.05" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+PGS_SCALE_QPOS = [0.9, -0.5]
+PGS_SCALE_QVEL = [0.4, -0.3]
+
+
+def pgs_scale():
+    """PGS scales its statistics by the model's mean inertia, the mass
+    matrix's trace over nv at qpos0 (`engine_solver.c:326`), at any state: a
+    two-hinge arm bent past its shoulder's limit, its hand on the floor (a
+    friction-loss row, a limit, a pyramidal contact), where the mass matrix's
+    trace over nv is not the model's (the generator refuses a gap under 1%).
+    The first forward's statistics and states, and both values."""
+    m = mujoco.MjModel.from_xml_string(PGS_SCALE)
+    d = mujoco.MjData(m)
+    d.qpos[:] = PGS_SCALE_QPOS
+    d.qvel[:] = PGS_SCALE_QVEL
+    mujoco.mj_forward(m, d)
+    full = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(m, full, d.qM)
+    here = float(np.trace(full) / m.nv)
+    gap = abs(here / m.stat.meaninertia - 1.0)
+    if gap < 0.01:
+        sys.exit(f"pgs_scale: the trace over nv is {gap:.3%} from the model's: a test could not tell")
+    case = stats(m, d)
+    case["efc_state"] = [int(s) for s in d.efc_state]
+    return {"xml": PGS_SCALE, "qpos": PGS_SCALE_QPOS, "qvel": PGS_SCALE_QVEL, "stats": case,
+            "meaninertia": float(m.stat.meaninertia), "trace_over_nv": here}
+
+
 def same_input(xml, qvel, start=None):
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -862,6 +905,7 @@ def main():
             same_islands[f"{solver}_{cone}_{condim}"] = case
     cases["same_input_islands"] = same_islands
     cases["statistics_cap"] = statistics_cap()
+    cases["pgs_scale"] = pgs_scale()
     cases["islands_review"] = {
         "coupled_CG": island_trajectory(COUPLED.format(solver="CG", spheres=""), COUPLED_QVEL,
                                         200, (1, 10, 50, 200)),

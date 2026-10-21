@@ -11,7 +11,7 @@
 //! - Equality constraints (connect, weld)
 //! - Multi-constraint stability
 //! - Stiff contacts (AC3) and direct mode solref (AC12)
-//! - Solver statistics, per-step meaninertia, noslip, sparse Hessian
+//! - Solver statistics, noslip, sparse Hessian
 //! - MuJoCo reference value conformance
 
 use approx::assert_relative_eq;
@@ -601,51 +601,6 @@ fn test_newton_solver_niter_zero_constraints() {
     assert!(
         data.solver_stat.is_empty(),
         "Zero constraints → solver_stat should be empty"
-    );
-}
-
-// ============================================================================
-// Phase C: Per-step meaninertia
-// ============================================================================
-
-#[test]
-fn test_newton_per_step_meaninertia() {
-    let (model, mut data) = model_from_mjcf(
-        r#"
-        <mujoco model="meaninertia_test">
-            <option gravity="0 0 -9.81" solver="Newton"/>
-            <worldbody>
-                <body pos="0 0 1">
-                    <joint type="free"/>
-                    <geom type="sphere" size="0.1" mass="1.0"/>
-                </body>
-                <geom type="plane" size="5 5 0.1"/>
-            </worldbody>
-        </mujoco>
-    "#,
-    );
-
-    data.step(&model).unwrap();
-
-    // Per-step meaninertia should be positive and finite
-    assert!(
-        data.stat_meaninertia > 0.0,
-        "per-step meaninertia should be positive, got {}",
-        data.stat_meaninertia
-    );
-    assert!(
-        data.stat_meaninertia.is_finite(),
-        "per-step meaninertia should be finite"
-    );
-
-    // For a simple rigid body, should be close to model-level constant
-    let ratio = data.stat_meaninertia / model.stat_meaninertia;
-    assert!(
-        ratio > 0.5 && ratio < 2.0,
-        "per-step ({}) should be close to model-level ({}), ratio={}",
-        data.stat_meaninertia,
-        model.stat_meaninertia,
-        ratio
     );
 }
 

@@ -269,7 +269,9 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
     let max_iters = model.solver_iterations;
     // `niter` and `nv` are usize → f64 for convergence diagnostics; bounded by solver budget, far below 2^52.
     #[allow(clippy::cast_precision_loss)]
-    let scale = 1.0 / (data.stat_meaninertia * 1.0_f64.max(nv as f64));
+    // Scaled by the model's mean inertia at every state, as MuJoCo's
+    // `mj_solPGS` (`engine_solver.c:326`).
+    let scale = 1.0 / (model.stat_meaninertia * 1.0_f64.max(nv as f64));
     let tolerance = model.solver_tolerance;
 
     let mut iter = 0;

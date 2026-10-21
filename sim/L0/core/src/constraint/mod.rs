@@ -51,20 +51,6 @@ use crate::integrate::implicit::{
 fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector<f64>) {
     let nv = model.nv;
 
-    // Per-step meaninertia: trace(qM) / nv
-    if nv > 0 {
-        let mut trace = 0.0_f64;
-        for i in 0..nv {
-            trace += data.qM[(i, i)];
-        }
-        // `nconmax` and constraint counts are usize → f64 for diagnostic averaging; far below 2^52.
-        #[allow(clippy::cast_precision_loss)]
-        let mi = trace / nv as f64;
-        data.stat_meaninertia = if mi > 0.0 { mi } else { model.stat_meaninertia };
-    } else {
-        data.stat_meaninertia = model.stat_meaninertia;
-    }
-
     // qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
     // Note: friction loss is no longer in qfrc_passive or subtracted here.
     let mut qfrc_smooth = DVector::<f64>::zeros(nv);
