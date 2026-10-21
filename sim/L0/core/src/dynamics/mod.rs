@@ -12,5 +12,5 @@ pub(crate) mod rne;
 pub(crate) mod spatial;
 
 pub use spatial::SpatialVector;
-pub(crate) use spatial::{compute_body_spatial_inertia, shift_spatial_inertia};
+pub(crate) use spatial::{mju_dof_com, mju_inert_com, mju_mul_dof_vec};
 pub use spatial::{object_acceleration, object_force, object_velocity, object_velocity_local};

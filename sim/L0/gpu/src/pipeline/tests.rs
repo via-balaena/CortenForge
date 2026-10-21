@@ -46,6 +46,13 @@ use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
 use crate::submit::read_buffer;
 
+/// The CPU's spatial velocity of body `b` about its origin `xpos`, the GPU's
+/// reference point (`cvel` is about the tree's subtree centre of mass).
+fn cpu_cvel_at_origin(model: &Model, data: &Data, b: usize) -> nalgebra::Vector6<f64> {
+    let (w, v) = sim_core::dynamics::object_velocity(model, data, b, &data.xpos[b], None);
+    nalgebra::Vector6::new(w.x, w.y, w.z, v.x, v.y, v.z)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 /// Name used in this file's skip line.
@@ -293,24 +300,25 @@ fn t4_cinert_matches_cpu() {
 
         // Reconstruct CPU cinert compact form for comparison
         let cpu = &data.cinert[body_id];
-        let cpu_mass = cpu[(3, 3)]; // lower-right diagonal = mass
+        let cpu_mass = cpu[9];
         let cpu_h = Vector3::new(
             data.xipos[body_id].x - data.xpos[body_id].x,
             data.xipos[body_id].y - data.xpos[body_id].y,
             data.xipos[body_id].z - data.xpos[body_id].z,
         );
 
-        // Extract rotational inertia about COM from CPU cinert
-        // CPU cinert upper-left 3×3 = I_rot + m*(|h|²I - h⊗h)  [parallel axis]
-        // GPU stores I_COM directly (pre-parallel-axis)
-        // So extract I_COM = CPU_upper_left - m*(|h|²I - h⊗h)
-        let hh = cpu_h.dot(&cpu_h);
-        let cpu_i_com_00 = cpu[(0, 0)] - cpu_mass * (hh - cpu_h.x * cpu_h.x);
-        let cpu_i_com_01 = cpu[(0, 1)] - cpu_mass * (0.0 - cpu_h.x * cpu_h.y);
-        let cpu_i_com_02 = cpu[(0, 2)] - cpu_mass * (0.0 - cpu_h.x * cpu_h.z);
-        let cpu_i_com_11 = cpu[(1, 1)] - cpu_mass * (hh - cpu_h.y * cpu_h.y);
-        let cpu_i_com_12 = cpu[(1, 2)] - cpu_mass * (0.0 - cpu_h.y * cpu_h.z);
-        let cpu_i_com_22 = cpu[(2, 2)] - cpu_mass * (hh - cpu_h.z * cpu_h.z);
+        // Extract rotational inertia about COM from CPU cinert. The CPU's is
+        // MuJoCo's 10-vector `[xx, yy, zz, xy, xz, yz, m·d, m]` about the
+        // tree's subtree centre of mass: rotational part I_COM + m*(|d|²I -
+        // d⊗d), d = xipos - subtree_com[root]. GPU stores I_COM directly.
+        let d = data.xipos[body_id] - data.subtree_com[model.body_rootid[body_id]];
+        let dd = d.dot(&d);
+        let cpu_i_com_00 = cpu[0] - cpu_mass * (dd - d.x * d.x);
+        let cpu_i_com_01 = cpu[3] - cpu_mass * (0.0 - d.x * d.y);
+        let cpu_i_com_02 = cpu[4] - cpu_mass * (0.0 - d.x * d.z);
+        let cpu_i_com_11 = cpu[1] - cpu_mass * (dd - d.y * d.y);
+        let cpu_i_com_12 = cpu[5] - cpu_mass * (0.0 - d.y * d.z);
+        let cpu_i_com_22 = cpu[2] - cpu_mass * (dd - d.z * d.z);
 
         let tol = 1e-4;
         assert!(
@@ -579,8 +587,7 @@ fn t7_cinert_hinge_chain() {
     for body_id in 1..model.nbody {
         let base = body_id * 3;
         let gpu_mass = gpu_cinert[base][0];
-        let cpu = &data.cinert[body_id];
-        let cpu_mass = cpu[(3, 3)];
+        let cpu_mass = data.cinert[body_id][9];
         assert!(
             (gpu_mass - cpu_mass as f32).abs() < tol,
             "body {body_id} mass: GPU={gpu_mass:.6} CPU={cpu_mass:.6}"
@@ -828,7 +835,7 @@ fn t11_cvel_free_body() {
     for b in 0..model.nbody {
         let gpu_ang = &gpu_cvel[b * 2];
         let gpu_lin = &gpu_cvel[b * 2 + 1];
-        let cpu = &data.cvel[b];
+        let cpu = &cpu_cvel_at_origin(&model, &data, b);
 
         for k in 0..3 {
             let g_a = gpu_ang[k];
@@ -886,7 +893,7 @@ fn t12_cvel_pendulum() {
     for b in 0..model.nbody {
         let gpu_ang = &gpu_cvel[b * 2];
         let gpu_lin = &gpu_cvel[b * 2 + 1];
-        let cpu = &data.cvel[b];
+        let cpu = &cpu_cvel_at_origin(&model, &data, b);
 
         for k in 0..3 {
             let g_a = gpu_ang[k];

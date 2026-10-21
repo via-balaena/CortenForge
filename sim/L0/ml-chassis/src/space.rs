@@ -370,7 +370,10 @@ impl ObservationSpaceBuilder {
         self
     }
 
-    /// Observe body spatial velocities: 6 floats per body in `body_range`.
+    /// Observe body spatial velocities, `Data::cvel`: 6 floats per body in
+    /// `body_range`, `[angular; linear]`, the linear part the velocity of the
+    /// point moving with the body at its tree's subtree centre of mass
+    /// (MuJoCo's `cvel`), not at the body's origin.
     #[must_use]
     pub fn cvel(mut self, body_range: Range<usize>) -> Self {
         self.entries

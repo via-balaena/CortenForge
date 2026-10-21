@@ -14,9 +14,8 @@ joints split over bodies chained through 1e-9 kg intermediates where the case
 names a split. For each it writes the XML, the model fields the dynamics read,
 a state (qpos from qpos0 moved by `mj_integratePos`, so quaternions stay unit;
 qvel set), and at that state after `mj_forward` and `mj_rnePostConstraint`:
-qfrc_bias, qacc, the dense mass matrix, and each body's cacc and cfrc_int moved
-from MuJoCo's frame (at the subtree centre of mass of the body's root) to the
-body's origin xpos, where sim-core keeps them. Then qpos and qvel after steps
+qfrc_bias, qacc, the dense mass matrix, and each body's cacc and cfrc_int (about
+the subtree centre of mass of the body's root, as sim-core keeps them). Then qpos and qvel after steps
 1, 10, 100 and 500 of mj_step from that state under Euler, RK4, implicit and
 implicitfast.
 """
@@ -107,20 +106,6 @@ def state(m, seed):
     return qpos, qvel
 
 
-def at_origin(m, d, vec, kind):
-    """MuJoCo's com-frame spatial vectors (nbody x 6, [ang; lin]) moved to each body's xpos."""
-    out = []
-    for b in range(m.nbody):
-        c = d.subtree_com[m.body_rootid[b]]
-        ang, lin = vec[b, :3], vec[b, 3:]
-        off = d.xpos[b] - c
-        if kind == "motion":
-            out.append(floats(np.concatenate([ang, lin + np.cross(ang, off)])))
-        else:
-            out.append(floats(np.concatenate([ang - np.cross(off, lin), lin])))
-    return out
-
-
 def forward(m, qpos, qvel):
     d = mujoco.MjData(m)
     d.qpos[:] = qpos
@@ -134,8 +119,8 @@ def forward(m, qpos, qvel):
         "qfrc_bias": floats(d.qfrc_bias),
         "qacc": floats(d.qacc),
         "qM": floats(M),
-        "cacc": at_origin(m, d, d.cacc, "motion"),
-        "cfrc_int": at_origin(m, d, d.cfrc_int, "force"),
+        "cacc": [floats(row) for row in d.cacc],
+        "cfrc_int": [floats(row) for row in d.cfrc_int],
     }
 
 

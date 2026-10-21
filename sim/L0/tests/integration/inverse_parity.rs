@@ -84,13 +84,12 @@ fn set_state(case: &Value, data: &mut Data) {
 /// A hinge held past its limit carrying a second hinge, and a box resting on
 /// a plane under the pyramidal and the elliptic cone: at MuJoCo's forward
 /// `qacc` and at it shifted, `inverse()` gives MuJoCo's constraint force,
-/// row states and `qfrc_constraint` bit for bit, `qfrc_inverse` within
-/// 1e-12 (the forward's `qfrc_bias` differs from MuJoCo's in 1 entry of the
-/// hinges' and 3 of the box's, ledger L154), and the body accumulators'
-/// `cfrc_ext` within 1e-12·max(1, |MuJoCo's|), made from the inverse's force
-/// (MuJoCo's `mj_rnePostConstraint` after `mj_inverse`). Before, `inverse()` kept the
-/// forward solve's force: at the shifted `qacc` the limit's force was the
-/// forward's 136.48 where MuJoCo's is remade from `qacc`.
+/// row states, `qfrc_constraint` and `qfrc_inverse` bit for bit, and the
+/// body accumulators' `cfrc_ext` within 1e-12·max(1, |MuJoCo's|), made from
+/// the inverse's force (MuJoCo's `mj_rnePostConstraint` after `mj_inverse`).
+/// Before, `inverse()` kept the forward solve's force: at the shifted `qacc`
+/// the limit's force was the forward's 136.48 where MuJoCo's is remade from
+/// `qacc`.
 #[test]
 fn inverse_takes_the_constraint_force_from_qacc() {
     let g = golden();
@@ -131,18 +130,13 @@ fn inverse_takes_the_constraint_force_from_qacc() {
                 what("qfrc_constraint"),
                 data.qfrc_constraint.as_slice()
             );
-            for (k, (a, b)) in data
-                .qfrc_inverse
-                .iter()
-                .zip(floats(&want["qfrc_inverse"]))
-                .enumerate()
-            {
-                assert!(
-                    (a - b).abs() <= 1e-12,
-                    "{}[{k}]: {a}, MuJoCo {b}",
-                    what("qfrc_inverse")
-                );
-            }
+            assert_eq!(
+                bits(data.qfrc_inverse.as_slice()),
+                bits(&floats(&want["qfrc_inverse"])),
+                "{} {:?}",
+                what("qfrc_inverse"),
+                data.qfrc_inverse.as_slice()
+            );
             // The body accumulators come from the inverse's force.
             for b in 0..model.nbody {
                 for (k, (x, y)) in data.cfrc_ext[b]

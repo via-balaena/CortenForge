@@ -58,14 +58,14 @@
 
 use super::fd::extract_state;
 use super::{DerivativeConfig, mjd_transition};
-use crate::dynamics::compute_body_spatial_inertia;
 use crate::dynamics::crba::mj_crba;
 use crate::dynamics::rne::mj_rne;
+use crate::dynamics::spatial::mju_inert_com;
 use crate::integrate::eulerdamp_applies;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
 use crate::types::{DISABLE_DAMPER, DISABLE_EULERDAMP, Integrator, MjJointType, StepError};
 use crate::{Data, Model};
-use nalgebra::{DMatrix, DVector, Matrix6, Vector3};
+use nalgebra::{DMatrix, DVector, Vector3};
 
 /// The matrix the Euler step from `data` solves for its acceleration,
 /// factored: `M + h·D` under eulerdamp, else `M`, as the step chooses
@@ -293,17 +293,22 @@ fn assert_mass_scope(model: &Model) {
 /// `(∂M/∂m_b)·qacc` and `∂qfrc_bias/∂m_b` are obtained by re-running the existing
 /// `mj_crba` and `mj_rne` on a perturbation inertia distribution:
 ///
-/// - `∂cinert[b]/∂m_b = compute_body_spatial_inertia(1, 0, R_b, h_b)` (the
-///   unit-mass, zero-rotational-inertia spatial inertia of body `b`), zero for
-///   all other bodies — feeds the CRBA composite-inertia and RNE Coriolis passes.
-/// - For gravity, the joint torque is built from the mass-moment
-///   `subtree_mass·subtree_com` (and a `subtree_mass·jpos` lever), so the exact
-///   `∂/∂m_b` is reproduced by "a unit point mass at body `b`'s COM in every
-///   subtree containing `b`": `subtree_mass[k] ← [b ∈ subtree(k)]`,
-///   `subtree_com[k] ← xipos[b]`.
+/// - `∂cinert[b]/∂m_b`: a unit point mass at body `b`'s centre of mass, about
+///   its tree's subtree centre of mass held at the operating point's
+///   (`mju_inert_com(0, R_b, xipos_b − com, 1)`), zero for all other bodies.
+///   `mj_rne` takes gravity through the inertias (the world's acceleration is
+///   `−gravity`), so gravity's derivative comes with the velocities'. The mass
+///   matrix and the bias force do not depend on the reference point, so
+///   holding it while the subtree's centre of mass would move with `m_b`
+///   leaves them exact.
 ///
-/// Reusing the production CRBA/RNE inherits their conformance fixes (the spatial
-/// transport / `Xᵀ` moment lever) rather than re-deriving them.
+/// Reusing the production CRBA and RNE rather than re-deriving them. A simple
+/// dof's mass-matrix row is `dof_M0`, which a model edited in `body_mass` (or
+/// `body_inertia`, or `dof_armature`) remakes with [`Model::compute_dof_m0`]
+/// (as `Model::recompute_derived` does); the row is the same at every state up
+/// to rounding, so the pass takes its derivative from the perturbation, the
+/// general path's, then keeps of that row only what the mass matrix holds, its
+/// diagonal.
 ///
 /// The position-tangent row uses the hinge/slide semi-implicit map
 /// `∂qpos⁺/∂m = h·∂v⁺/∂m`.
@@ -357,40 +362,22 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
     // The step's matrix, M_impl = M + h·D under eulerdamp.
     let m_impl = factor_euler_step_matrix(model, &d_op)?;
 
-    // Armature is mass-independent, so the ∂M/∂m CRBA pass must exclude it.
-    let mut model_no_arm = model.clone();
-    model_no_arm.jnt_armature.iter_mut().for_each(|a| *a = 0.0);
+    // The ∂M/∂m CRBA pass: no armature (mass-independent), and every dof's row
+    // from the perturbation, a simple dof's too.
+    let mut pass_model = model.clone();
+    pass_model.dof_armature.iter_mut().for_each(|a| *a = 0.0);
+    pass_model.dof_simplenum.iter_mut().for_each(|n| *n = 0);
 
     let mut dxdm = DMatrix::zeros(nx, nbody);
     for b in 1..nbody {
         let mut d_pert = d_op.clone();
 
-        // ∂cinert/∂m_b: unit-mass, zero-rotational-inertia spatial inertia at body
-        // b's COM offset; zero for every other body.
-        let h_b = d_op.xipos[b] - d_op.xpos[b];
-        let d_inertia = compute_body_spatial_inertia(1.0, Vector3::zeros(), &d_op.ximat[b], h_b);
+        // ∂cinert/∂m_b: a unit point mass at body b's centre of mass, about its
+        // tree's subtree centre of mass; zero for every other body.
+        let offset = d_op.xipos[b] - d_op.subtree_com[model.body_rootid[b]];
+        let d_inertia = mju_inert_com(&Vector3::zeros(), &d_op.ximat[b], &offset, 1.0);
         for i in 0..nbody {
-            d_pert.cinert[i] = if i == b { d_inertia } else { Matrix6::zeros() };
-        }
-
-        // ∂(subtree mass-moment)/∂m_b: a unit point mass at body b's COM in every
-        // subtree containing b (b and its ancestors). The gravity block reads only
-        // `subtree_mass` and `subtree_com`, and its torque depends on the product
-        // `subtree_mass·subtree_com`, so these substitutions give the exact
-        // gravity-torque derivative.
-        let xipos_b = d_op.xipos[b];
-        for k in 0..nbody {
-            d_pert.subtree_mass[k] = 0.0;
-            d_pert.subtree_com[k] = xipos_b;
-        }
-        let mut k = b;
-        loop {
-            d_pert.subtree_mass[k] = 1.0;
-            let parent = model.body_parent[k];
-            if parent == k {
-                break; // reached the world root (its own parent)
-            }
-            k = parent;
+            d_pert.cinert[i] = if i == b { d_inertia } else { [0.0; 10] };
         }
 
         // ∂qfrc_bias/∂m_b (gravity + Coriolis), linear in the perturbation inertia.
@@ -399,7 +386,8 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
 
         // ∂M/∂m_b (no armature), linear in the perturbation inertia; only qM is read
         // (the bogus factorization of this non-PD derivative matrix is unused).
-        mj_crba(&model_no_arm, &mut d_pert);
+        mj_crba(&pass_model, &mut d_pert);
+        keep_simple_rows_diagonal(model, &mut d_pert);
         let d_mass_qacc = &d_pert.qM * &qacc;
 
         // ∂v⁺/∂m_b = h · M_impl⁻¹ · [ −∂qfrc_bias/∂m_b − (∂M/∂m_b)·qacc ].
@@ -413,6 +401,24 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
     }
 
     Ok(MassJacobian { dxdm })
+}
+
+/// The mass matrix holds a simple dof's row as its diagonal alone (`mj_crba`):
+/// the perturbation pass, which takes every row by the general path, also
+/// writes the row's entries at the dof's ancestors, and their mirrors, which
+/// are put back to 0.
+fn keep_simple_rows_diagonal(model: &Model, d_pert: &mut Data) {
+    for i in 0..model.nv {
+        if model.dof_simplenum.get(i).is_none_or(|&n| n == 0) {
+            continue;
+        }
+        let mut ancestor = model.dof_parent[i];
+        while let Some(j) = ancestor {
+            d_pert.qM[(i, j)] = 0.0;
+            d_pert.qM[(j, i)] = 0.0;
+            ancestor = model.dof_parent[j];
+        }
+    }
 }
 
 /// Analytic single-step Jacobian of the next state w.r.t. per-body principal
@@ -496,16 +502,13 @@ fn assert_inertia_scope(model: &Model) {
 ///
 /// - The world-frame rotational inertia is `i_rot = R·diag(I_diag)·Rᵀ` with
 ///   `R = ximat[b]` (the body's principal-axis frame), **linear** in `I_diag`. So
-///   `∂cinert[b]/∂I_diag[b][k]` is a 6×6 whose upper-left 3×3 is the rank-1 outer
-///   product `r_k ⊗ r_k` (`r_k = ximat[b].column(k)`, the `k`-th principal axis in
-///   world) and zero everywhere else — the mass-dependent parallel-axis, COM-
-///   coupling, and translational blocks all have `∂/∂I = 0`. Zero for every body
-///   other than `b`.
-/// - **Gravity is inertia-independent** (the RNE gravity block reads only
-///   `subtree_mass`/`subtree_com`), so the perturbation sets `subtree_mass = 0`
-///   everywhere; only the Coriolis backward pass (which reads `cinert`)
-///   contributes to `∂qfrc_bias/∂I`. (Contrast mass, which substitutes a unit
-///   point-mass mass-moment for the gravity-torque derivative.)
+///   `∂cinert[b]/∂I_diag[b][k]` is the rank-1 outer product `r_k ⊗ r_k`
+///   (`r_k = ximat[b].column(k)`, the `k`-th principal axis in world) in
+///   `cinert`'s rotational entries and zero in the rest — the parallel-axis
+///   term, `m·d` and `m` have `∂/∂I = 0`. Zero for every body other than `b`.
+/// - **Gravity is inertia-independent**: with no mass in the perturbation,
+///   `mj_rne`'s gravity (`cinert · [0; −gravity]`) contributes nothing, and only
+///   the velocity terms give `∂qfrc_bias/∂I`.
 ///
 /// The position-tangent row uses the hinge/slide semi-implicit map
 /// `∂qpos⁺/∂I = h·∂v⁺/∂I`.
@@ -552,10 +555,11 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
     // The step's matrix, M_impl = M + h·D under eulerdamp.
     let m_impl = factor_euler_step_matrix(model, &d_op)?;
 
-    // Armature is inertia-independent (added straight to the qM diagonal), so the
-    // ∂M/∂I CRBA pass must exclude it.
-    let mut model_no_arm = model.clone();
-    model_no_arm.jnt_armature.iter_mut().for_each(|a| *a = 0.0);
+    // The ∂M/∂I CRBA pass: no armature (inertia-independent), and every dof's
+    // row from the perturbation, a simple dof's too.
+    let mut pass_model = model.clone();
+    pass_model.dof_armature.iter_mut().for_each(|a| *a = 0.0);
+    pass_model.dof_simplenum.iter_mut().for_each(|n| *n = 0);
 
     let mut dxdI = DMatrix::zeros(nx, 3 * nbody);
     for b in 1..nbody {
@@ -563,24 +567,23 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
         for k in 0..3 {
             let mut d_pert = d_op.clone();
 
-            // ∂cinert[b]/∂I_diag[b][k]: 6×6 with upper-left 3×3 = r_k ⊗ r_k, where
-            // r_k is body b's k-th principal axis in world; zero elsewhere and for
-            // every other body.
+            // ∂cinert[b]/∂I_diag[b][k]: the rotational part r_k ⊗ r_k (MuJoCo's
+            // `Ixx, Iyy, Izz, Ixy, Ixz, Iyz`), r_k body b's k-th principal axis in
+            // world; no mass, so gravity contributes nothing; zero for every other
+            // body.
             let r_k = r_mat.column(k);
-            let mut d_inertia = Matrix6::zeros();
-            for row in 0..3 {
-                for col in 0..3 {
-                    d_inertia[(row, col)] = r_k[row] * r_k[col];
-                }
-            }
+            let mut d_inertia = [0.0; 10];
+            d_inertia[..6].copy_from_slice(&[
+                r_k[0] * r_k[0],
+                r_k[1] * r_k[1],
+                r_k[2] * r_k[2],
+                r_k[0] * r_k[1],
+                r_k[0] * r_k[2],
+                r_k[1] * r_k[2],
+            ]);
             for i in 0..nbody {
-                d_pert.cinert[i] = if i == b { d_inertia } else { Matrix6::zeros() };
+                d_pert.cinert[i] = if i == b { d_inertia } else { [0.0; 10] };
             }
-
-            // Gravity is inertia-independent → zero the subtree mass so the RNE
-            // gravity block contributes nothing; only the Coriolis pass (reads
-            // cinert) yields ∂qfrc_bias/∂I.
-            d_pert.subtree_mass.iter_mut().for_each(|m| *m = 0.0);
 
             // ∂qfrc_bias/∂I_bk (Coriolis only), linear in the perturbation inertia.
             mj_rne(model, &mut d_pert);
@@ -588,7 +591,8 @@ pub fn mjd_inertia_jacobian(model: &Model, data: &Data) -> Result<InertiaJacobia
 
             // ∂M/∂I_bk (no armature), linear in the perturbation inertia; only qM
             // is read (the bogus factorization of this non-PD matrix is unused).
-            mj_crba(&model_no_arm, &mut d_pert);
+            mj_crba(&pass_model, &mut d_pert);
+            keep_simple_rows_diagonal(model, &mut d_pert);
             let d_mass_qacc = &d_pert.qM * &qacc;
 
             // ∂v⁺/∂I_bk = h · M_impl⁻¹ · [ −∂qfrc_bias/∂I_bk − (∂M/∂I_bk)·qacc ].
@@ -1115,12 +1119,14 @@ mod tests {
         for b in 1..model.nbody {
             let mut mp = model.clone();
             mp.body_mass[b] += eps;
+            mp.compute_dof_m0();
             let mut dp = data.clone();
             dp.step(&mp).unwrap();
             let yp = extract_state(&mp, &dp, &qpos_0);
 
             let mut mm = model.clone();
             mm.body_mass[b] -= eps;
+            mm.compute_dof_m0();
             let mut dm = data.clone();
             dm.step(&mm).unwrap();
             let ym = extract_state(&mm, &dm, &qpos_0);
@@ -1128,6 +1134,164 @@ mod tests {
             jac.column_mut(b).copy_from(&((yp - ym) / (2.0 * eps)));
         }
         jac
+    }
+
+    /// A model with no simple-dof table (`dof_simplenum` empty, which
+    /// `compute_dof_patterns` allows and the mass-matrix pass reads as no
+    /// simple dof): the mass and inertia Jacobians run on it.
+    #[test]
+    fn mass_and_inertia_jacobians_take_a_model_without_the_simple_table() {
+        let mut model = Model::n_link_pendulum(2, 1.0, 0.5);
+        model.dof_simplenum.clear();
+        let mut data = model.make_data();
+        data.qpos[1] = 0.3;
+        data.forward(&model).unwrap();
+        assert!(mjd_mass_jacobian(&model, &data).is_ok(), "mass");
+        assert!(mjd_inertia_jacobian(&model, &data).is_ok(), "inertia");
+    }
+
+    /// A body MuJoCo marks simple whose two dofs slide on one axis: its mass
+    /// matrix is diagonal (a simple dof's row its diagonal alone), so under a
+    /// sideways gravity its mass leaves its acceleration as it is, and the
+    /// analytic mass Jacobian matches finite differences of the remade model.
+    #[test]
+    fn mass_jacobian_keeps_a_simple_rows_diagonal_alone() {
+        use crate::test_fixtures::builders::{add_body, add_slide_joint, finalize};
+        let mut model = Model::empty();
+        let block = add_body(
+            &mut model,
+            0,
+            "block",
+            Vector3::new(0.0, 0.0, 1.0),
+            1.5,
+            Vector3::new(0.1, 0.1, 0.1),
+            Vector3::zeros(),
+        );
+        add_slide_joint(&mut model, block, "s1", Vector3::x(), 0.0, 0.0, 0.0);
+        add_slide_joint(&mut model, block, "s2", Vector3::x(), 0.0, 0.0, 0.0);
+        model.gravity = Vector3::new(-9.81, 0.0, -9.81);
+        finalize(&mut model);
+        assert_eq!(model.dof_simplenum, vec![2, 1], "both dofs simple");
+
+        let mut data = model.make_data();
+        data.qvel[0] = 0.4;
+        data.qvel[1] = -0.2;
+        data.forward(&model).unwrap();
+
+        let mass = mjd_mass_jacobian(&model, &data).unwrap().dxdm;
+        let (err, loc) = max_relative_error(&mass, &fd_mass_jacobian(&model, &data, 1e-6), 1e-3);
+        assert!(
+            err < 1e-5,
+            "mass: max_rel_err={err:.3e} at {loc:?}\n{mass:.6}"
+        );
+    }
+
+    /// A simple dof's mass-matrix row is `dof_M0`, remade after an edit of
+    /// the body's mass or inertia: a body MuJoCo marks simple (a hinge through
+    /// its centre of mass, childless, under the world), pushed by an applied
+    /// force beside a pendulum, turns slower with more inertia about its hinge
+    /// and is unmoved by its mass (its centre on the hinge), and the analytic
+    /// Jacobians match finite differences of the remade model.
+    #[test]
+    #[allow(clippy::float_cmp)] // the wheel's own-mass entry is exactly 0
+    fn mass_and_inertia_jacobians_take_a_simple_dofs_diagonal() {
+        use crate::test_fixtures::builders::{add_body, add_hinge_joint, finalize};
+        let mut model = Model::empty();
+        let wheel = add_body(
+            &mut model,
+            0,
+            "wheel",
+            Vector3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vector3::new(0.1, 0.2, 0.3),
+            Vector3::zeros(),
+        );
+        add_hinge_joint(
+            &mut model,
+            wheel,
+            "w",
+            Vector3::y(),
+            0.0,
+            0.3,
+            0.0,
+            false,
+            (0.0, 0.0),
+        );
+        let arm = add_body(
+            &mut model,
+            0,
+            "arm",
+            Vector3::new(1.0, 0.0, 1.0),
+            1.0,
+            Vector3::new(0.01, 0.01, 0.01),
+            Vector3::new(0.0, 0.0, -0.5),
+        );
+        add_hinge_joint(
+            &mut model,
+            arm,
+            "a",
+            Vector3::y(),
+            0.0,
+            0.2,
+            0.0,
+            false,
+            (0.0, 0.0),
+        );
+        finalize(&mut model);
+        assert_eq!(
+            model.dof_simplenum,
+            vec![1, 0],
+            "the wheel's dof is simple, the arm's not"
+        );
+
+        let mut data = model.make_data();
+        data.qpos[1] = 0.4;
+        data.qvel[0] = 0.5;
+        data.qvel[1] = -0.3;
+        data.qfrc_applied[0] = 0.7;
+        data.forward(&model).unwrap();
+
+        let mass = mjd_mass_jacobian(&model, &data).unwrap().dxdm;
+        let (err, loc) = max_relative_error(&mass, &fd_mass_jacobian(&model, &data, 1e-6), 1e-3);
+        assert!(
+            err < 1e-5,
+            "mass: max_rel_err={err:.3e} at {loc:?}\n{mass:.6}"
+        );
+        let inertia = mjd_inertia_jacobian(&model, &data).unwrap().dxdI;
+        let (err, loc) =
+            max_relative_error(&inertia, &fd_inertia_jacobian(&model, &data, 1e-6), 1e-3);
+        assert!(err < 1e-5, "inertia: max_rel_err={err:.3e} at {loc:?}");
+
+        // The wheel's velocity row: its inertia about the hinge (y) slows it.
+        let nv = model.nv;
+        assert_eq!(mass[(nv, wheel)], 0.0, "the wheel's own mass");
+        assert!(
+            inertia[(nv, 3 * wheel + 1)] < -1e-3,
+            "the wheel's inertia about its hinge: {}",
+            inertia[(nv, 3 * wheel + 1)]
+        );
+    }
+
+    /// Armature does not depend on the bodies' masses or inertias: with an
+    /// armature on both hinges, the analytic mass and inertia Jacobians still
+    /// match finite differences, their mass-matrix pass leaving
+    /// `dof_armature` out.
+    #[test]
+    fn mass_and_inertia_jacobians_leave_out_the_armature() {
+        let (mut model, start) = damped_pendulum();
+        model.dof_armature = vec![0.3, 0.2];
+        let mut data = model.make_data();
+        data.qpos.copy_from(&start.qpos);
+        data.qvel.copy_from(&start.qvel);
+        data.forward(&model).unwrap();
+
+        let mass = mjd_mass_jacobian(&model, &data).unwrap().dxdm;
+        let (err, loc) = max_relative_error(&mass, &fd_mass_jacobian(&model, &data, 1e-6), 1e-3);
+        assert!(err < 1e-5, "mass: max_rel_err={err:.3e} at {loc:?}");
+        let inertia = mjd_inertia_jacobian(&model, &data).unwrap().dxdI;
+        let (err, loc) =
+            max_relative_error(&inertia, &fd_inertia_jacobian(&model, &data, 1e-6), 1e-3);
+        assert!(err < 1e-5, "inertia: max_rel_err={err:.3e} at {loc:?}");
     }
 
     #[test]
@@ -1232,6 +1396,7 @@ mod tests {
         let rollout = |body: usize, delta: f64| -> DVector<f64> {
             let mut m = model.clone();
             m.body_mass[body] += delta;
+            m.compute_dof_m0();
             let mut d = data0.clone();
             for _ in 0..n_steps {
                 d.step(&m).unwrap();
@@ -1289,12 +1454,14 @@ mod tests {
             for k in 0..3 {
                 let mut mp = model.clone();
                 mp.body_inertia[b][k] += eps;
+                mp.compute_dof_m0();
                 let mut dp = data.clone();
                 dp.step(&mp).unwrap();
                 let yp = extract_state(&mp, &dp, &qpos_0);
 
                 let mut mm = model.clone();
                 mm.body_inertia[b][k] -= eps;
+                mm.compute_dof_m0();
                 let mut dm = data.clone();
                 dm.step(&mm).unwrap();
                 let ym = extract_state(&mm, &dm, &qpos_0);
@@ -1407,6 +1574,7 @@ mod tests {
         let rollout = |body: usize, axis: usize, delta: f64| -> DVector<f64> {
             let mut m = model.clone();
             m.body_inertia[body][axis] += delta;
+            m.compute_dof_m0();
             let mut d = data0.clone();
             for _ in 0..n_steps {
                 d.step(&m).unwrap();

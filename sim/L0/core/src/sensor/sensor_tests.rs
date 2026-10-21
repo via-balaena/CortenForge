@@ -100,6 +100,7 @@ fn make_sensor_test_model() -> Model {
     model.qpos0 = DVector::zeros(model.nq);
 
     // Pre-compute CSR sparsity metadata for sparse LDL factorization
+    model.compute_ancestors();
     model.compute_dof_patterns();
 
     model
@@ -1006,6 +1007,7 @@ fn test_accelerometer_in_free_fall_reads_zero() {
     model.qpos0[3] = 1.0; // w component of quaternion
 
     // Pre-compute CSR sparsity metadata for sparse LDL factorization
+    model.compute_ancestors();
     model.compute_dof_patterns();
 
     add_sensor(
@@ -1145,6 +1147,7 @@ fn make_ball_joint_model() -> Model {
     model.qpos0[0] = 1.0; // w component
 
     // Pre-compute CSR sparsity metadata for sparse LDL factorization
+    model.compute_ancestors();
     model.compute_dof_patterns();
 
     model

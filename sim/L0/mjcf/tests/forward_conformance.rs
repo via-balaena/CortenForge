@@ -13,9 +13,9 @@
 //! regenerates against the latest MuJoCo to catch upstream behavior changes.
 //!
 //! Compared quantities are convention-independent: world poses (`xpos`, `xmat`)
-//! and generalized quantities (`qM`, `qfrc_bias`, `qacc`). `cvel` is deliberately
-//! excluded (MuJoCo references it at the subtree COM, sim-core at the body
-//! origin — a raw diff would be a false mismatch).
+//! and generalized quantities (`qM`, `qfrc_bias`, `qacc`). `cvel` is not
+//! compared here; sim-conformance-tests' `com_frame_parity` compares it with
+//! MuJoCo's.
 #![allow(clippy::expect_used)] // test harness: expect() gives a clear panic site
 
 use serde::Deserialize;
@@ -55,25 +55,8 @@ const TOL_QACC: f64 = 1e-7;
 /// force. Pose and `qM` stay machine-exact for every fixture; only the listed ones
 /// loosen `qfrc_bias`/`qacc`. Mirrors the transition harness's `known_limit`.
 ///
-/// CLOSED — `two_link_hinge` (backward `Xᵀ` moment-lever): `rne.rs`'s Featherstone
-/// backward pass accumulated each child's bias force into its parent with a simple
-/// add, but `cfrc_bias[child]` is a spatial force at the *child's* origin —
-/// combining it at the parent origin needs `+= (xpos[child]−xpos[parent])×f_child`
-/// on the torque rows. Fixed by giving the `rne.rs` backward the `Xᵀ` lever and
-/// matching it in the analytic Part-B and velocity-derivative backward passes;
-/// `two_link_hinge` (one transport hop) is now machine-exact.
-///
-/// CLOSED — `three_link_spatial` (forward velocity-product reference point): the
-/// bias-acceleration recursion's Coriolis term `c[i] = v[i] ×_m (S·qvel)` used the
-/// *raw* `cvel[parent]` (referenced at the parent origin) instead of this body's own
-/// `cvel[body]`. The Featherstone identity `v[i] ×_m (S·qvel) = v[parent] ×_m
-/// (S·qvel)` holds only when `v[parent]` is transported to the body origin; the raw
-/// value drops the `[0; ω_parent×r] ×_m (S·qvel)` lever, which vanishes for
-/// single/two-link chains by geometry but corrupts a non-parallel ≥3-link chain
-/// (first nonzero at the leaf, which the backward `Xᵀ` cannot reach). Fixed in
-/// `rne.rs` (and the sibling `cacc` pass in `forward/acceleration.rs`), with matching
-/// `cvel[body]`/`Dcvel[body]` updates in the analytic `mjd_rne_vel` and `mjd_rne_pos`
-/// Part B so the transition harness stays machine-exact. Now machine-exact.
+/// CLOSED — `two_link_hinge` and `three_link_spatial`, the two divergences this
+/// list held; how each was fixed is in the git history.
 ///
 /// No open divergences remain — every fixture/quantity is held to the machine-exact
 /// bounds above.

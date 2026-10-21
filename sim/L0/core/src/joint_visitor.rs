@@ -1,8 +1,9 @@
 //! Joint visitor pattern and motion subspace computation.
 //!
 //! Provides the single source of truth for joint iteration via
-//! [`Model::visit_joints()`] and the motion subspace matrix S used by
-//! CRBA, RNE, and analytical derivatives.
+//! [`Model::visit_joints()`] and the motion subspace matrix S about each
+//! body's origin, which `mjd_rne_pos` reads (the forward passes read
+//! `Data::cdof`).
 
 use crate::types::{Data, MjJointType, Model};
 
@@ -132,7 +133,7 @@ impl Model {
 /// Format: rows 0-2 = angular velocity, rows 3-5 = linear velocity
 // Paired joint-frame identifiers (pos_a/pos_b, axis_a/axis_b) are intentionally similar.
 #[allow(clippy::similar_names)]
-#[allow(clippy::inline_always)] // Hot path in CRBA/RNE - profiling shows inlining improves debug performance
+#[allow(clippy::inline_always)] // called per joint per pass of `mjd_rne_pos`
 #[inline(always)]
 pub(crate) fn joint_motion_subspace(
     model: &Model,
@@ -336,13 +337,12 @@ mod tests {
         assert_subspace_matches_fd(&m, &[0.5], &[(j, 0, b)]);
     }
 
-    /// The forward velocity stage (`velocity.rs`) builds the body spatial
-    /// velocity from its OWN copy of the motion subspace; it must stay
-    /// consistent with `joint_motion_subspace` (the original bug was these two
-    /// drifting apart on a multi-joint body). Guards `cvel[b] == Σ_j S_j·qvel_j`,
-    /// including a `jnt_pos ≠ 0` (offset-pivot) hinge — without the linear lever
-    /// `â×r` in `velocity.rs` the two drift apart only when the anchor is off the
-    /// body origin, which is why that case stayed latent.
+    /// The forward velocity stage builds the body velocity from MuJoCo's
+    /// `cdof`, about the tree's subtree centre of mass; moved to the body's
+    /// origin it must equal `Σ_j S_j·qvel_j` of `joint_motion_subspace`, the
+    /// origin's subspace, on a multi-joint body whose two hinges are anchored
+    /// off its origin (`jnt_pos ≠ 0`, where an offset pivot's lever `â×r`
+    /// shows).
     #[test]
     fn forward_cvel_matches_joint_subspace() {
         let ax0 = Vector3::new(1.0, 0.3, 0.0).normalize();
@@ -371,10 +371,11 @@ mod tests {
                 expected += s.column(d) * data.qvel[da + d];
             }
         }
+        let at_origin = crate::dynamics::spatial::body_origin_velocity(&m, &data, b);
         assert!(
-            (data.cvel[b] - expected).norm() < 1e-12,
-            "cvel {:?} != Σ S·qvel {:?}",
-            data.cvel[b].as_slice(),
+            (at_origin - expected).norm() < 1e-12,
+            "velocity at the origin {:?} != Σ S·qvel {:?}",
+            at_origin.as_slice(),
             expected.as_slice()
         );
     }

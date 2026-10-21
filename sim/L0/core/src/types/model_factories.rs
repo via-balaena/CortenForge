@@ -550,6 +550,7 @@ mod tests {
         check("dof_solimp", m.dof_solimp.len(), m.nv);
         check("dof_invweight0", m.dof_invweight0.len(), m.nv);
         check("dof_simplenum", m.dof_simplenum.len(), m.nv);
+        check("dof_M0", m.dof_M0.len(), m.nv);
         check("body_treeid", m.body_treeid.len(), m.nbody);
         check("body_parent", m.body_parent.len(), m.nbody);
         check("body_rootid", m.body_rootid.len(), m.nbody);

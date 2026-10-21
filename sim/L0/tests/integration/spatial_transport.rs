@@ -46,7 +46,7 @@ fn t05_object_velocity_matches_local() {
     let site_pos = data.site_xpos[0];
     let site_mat = data.site_xmat[0];
 
-    let (omega_new, v_new) = object_velocity(&data, body_id, &site_pos, Some(&site_mat));
+    let (omega_new, v_new) = object_velocity(&model, &data, body_id, &site_pos, Some(&site_mat));
     let old = object_velocity_local(&model, &data, body_id, &site_pos, &site_mat);
 
     assert!((omega_new.x - old[0]).abs() < TOL_TIGHT, "omega.x mismatch");
@@ -86,7 +86,7 @@ fn t06_object_velocity_world_frame() {
 
     let body_id = 1;
     let site_pos = data.site_xpos[0];
-    let (_omega, v) = object_velocity(&data, body_id, &site_pos, None);
+    let (_omega, v) = object_velocity(&model, &data, body_id, &site_pos, None);
 
     let adr = model.sensor_adr[0];
     assert!(
@@ -131,7 +131,7 @@ fn t07_object_acceleration_static_gravity() {
 
     let body_id = 1;
     let pos = data.xpos[body_id];
-    let (alpha, a_lin) = object_acceleration(&data, body_id, &pos, None);
+    let (alpha, a_lin) = object_acceleration(&model, &data, body_id, &pos, None);
 
     assert!(alpha.x.abs() < TOL, "alpha.x should be ~0, got {}", alpha.x);
     assert!(alpha.y.abs() < TOL, "alpha.y should be ~0, got {}", alpha.y);
@@ -174,7 +174,7 @@ fn t08_object_acceleration_centripetal() {
 
     let body_id = 1;
     let site_pos = data.site_xpos[0];
-    let (_alpha, a_lin) = object_acceleration(&data, body_id, &site_pos, None);
+    let (_alpha, a_lin) = object_acceleration(&model, &data, body_id, &site_pos, None);
 
     assert!(
         (a_lin.x - (-50.0)).abs() < 1e-8,
@@ -216,8 +216,8 @@ fn t09_object_force_translation_invariance() {
     let pos_origin = data.xpos[body_id];
     let pos_offset = data.site_xpos[1];
 
-    let (_torque_a, force_a) = object_force(&data, body_id, &pos_origin, None);
-    let (_torque_b, force_b) = object_force(&data, body_id, &pos_offset, None);
+    let (_torque_a, force_a) = object_force(&model, &data, body_id, &pos_origin, None);
+    let (_torque_b, force_b) = object_force(&model, &data, body_id, &pos_offset, None);
 
     assert_eq!(force_a, force_b, "Force should be identical at both points");
 }
@@ -254,8 +254,8 @@ fn t10_object_force_torque_transport() {
     let pos_origin = data.xpos[body_id];
     let pos_offset = data.site_xpos[1]; // s2 at [0.5, 0, 0] offset
 
-    let (torque_origin, force_origin) = object_force(&data, body_id, &pos_origin, None);
-    let (torque_offset, _force_offset) = object_force(&data, body_id, &pos_offset, None);
+    let (torque_origin, force_origin) = object_force(&model, &data, body_id, &pos_origin, None);
+    let (torque_offset, _force_offset) = object_force(&model, &data, body_id, &pos_offset, None);
 
     // Expected: torque_offset = torque_origin − r × force
     let r = pos_offset - pos_origin;
@@ -300,14 +300,14 @@ fn t13_world_body() {
     let point = Vector3::new(1.0, 0.0, 0.0);
 
     // Velocity: world body is static → zero
-    let (omega, v) = object_velocity(&data, 0, &point, None);
+    let (omega, v) = object_velocity(&model, &data, 0, &point, None);
     assert!(omega.norm() < TOL_TIGHT, "World body omega should be 0");
     assert!(v.norm() < TOL_TIGHT, "World body v should be 0");
     assert!(omega.x.is_finite() && omega.y.is_finite() && omega.z.is_finite());
     assert!(v.x.is_finite() && v.y.is_finite() && v.z.is_finite());
 
     // Acceleration: world body has gravity pseudo-acceleration
-    let (alpha, a_lin) = object_acceleration(&data, 0, &point, None);
+    let (alpha, a_lin) = object_acceleration(&model, &data, 0, &point, None);
     assert!(alpha.norm() < TOL, "World body alpha should be ~0");
     assert!(
         (a_lin.z - 9.81).abs() < TOL,
@@ -318,20 +318,21 @@ fn t13_world_body() {
 }
 
 // ============================================================================
-// T14: object_velocity_local backward compatibility
+// T14: object_velocity_local moves cvel to the point
 // ============================================================================
 
-/// T14: object_velocity_local returns identical results to the pre-refactor
-/// implementation (bit-identical).
+/// T14: object_velocity_local is `cvel` moved from the tree's subtree centre
+/// of mass to the point and turned into the given frame, as MuJoCo's
+/// `mj_objectVelocity`.
 #[test]
-fn t14_object_velocity_local_backward_compat() {
+fn t14_object_velocity_local_moves_cvel_to_the_point() {
     let xml = r#"
     <mujoco>
       <option gravity="0 0 0"/>
       <worldbody>
         <body name="b1" pos="0 0 0">
           <joint name="j1" type="hinge" axis="0 0 1"/>
-          <geom type="sphere" size="0.1" mass="1.0"/>
+          <geom type="sphere" size="0.1" mass="1.0" pos="0.1 0.05 0"/>
           <site name="s1" pos="0.3 0 0"/>
         </body>
       </worldbody>
@@ -349,14 +350,19 @@ fn t14_object_velocity_local_backward_compat() {
     let site_pos = data.site_xpos[0];
     let site_mat = data.site_xmat[0];
 
+    // The geom off the hinge: the tree's centre of mass is not the origin.
+    assert!(
+        (data.subtree_com[model.body_rootid[body_id]] - data.xpos[body_id]).norm() > 0.1,
+        "subtree centre of mass at the origin"
+    );
     let result = object_velocity_local(&model, &data, body_id, &site_pos, &site_mat);
 
-    // Manually compute expected (pre-refactor logic):
+    // `cvel` is about the tree's subtree centre of mass.
     let cvel = &data.cvel[body_id];
     let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
-    let v_origin = Vector3::new(cvel[3], cvel[4], cvel[5]);
-    let dif = site_pos - data.xpos[body_id];
-    let v_point = v_origin + omega.cross(&dif);
+    let v_com = Vector3::new(cvel[3], cvel[4], cvel[5]);
+    let dif = site_pos - data.subtree_com[model.body_rootid[body_id]];
+    let v_point = v_com + omega.cross(&dif);
     let omega_local = site_mat.transpose() * omega;
     let v_local = site_mat.transpose() * v_point;
 

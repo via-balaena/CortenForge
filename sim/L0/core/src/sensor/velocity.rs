@@ -159,7 +159,7 @@ pub fn compute_vel_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
                     return;
                 }
             };
-            let (_omega, v) = object_velocity(data, body_id, &site_pos, Some(&site_mat));
+            let (_omega, v) = object_velocity(model, data, body_id, &site_pos, Some(&site_mat));
             sensor_write3(&mut data.sensordata, adr, &v);
         }
 
@@ -180,7 +180,7 @@ pub fn compute_vel_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
             };
 
             if model.sensor_reftype[sensor_id] == MjObjectType::None {
-                let (_omega, v) = object_velocity(data, body_id, &obj_pos, None);
+                let (_omega, v) = object_velocity(model, data, body_id, &obj_pos, None);
                 sensor_write3(&mut data.sensordata, adr, &v);
             } else {
                 let reftype = model.sensor_reftype[sensor_id];
@@ -199,9 +199,9 @@ pub fn compute_vel_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
                 };
 
                 // Object velocity in world frame (flg_local = 0 → local_rot = None)
-                let (_w_obj, v_obj) = object_velocity(data, body_id, &obj_pos, None);
+                let (_w_obj, v_obj) = object_velocity(model, data, body_id, &obj_pos, None);
                 // Reference velocity in world frame
-                let (w_ref, v_ref) = object_velocity(data, ref_body_id, &ref_pos, None);
+                let (w_ref, v_ref) = object_velocity(model, data, ref_body_id, &ref_pos, None);
 
                 // Coriolis correction: v_relative = v_obj - v_ref - w_ref × (p_obj - p_ref)
                 let dif = obj_pos - ref_pos;

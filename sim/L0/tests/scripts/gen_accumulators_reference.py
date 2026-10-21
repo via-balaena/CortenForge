@@ -12,8 +12,8 @@ MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2492-2683`) fills
 cfrc_ext (applied wrenches, contacts, connects and welds), cacc and cfrc_int,
 which the acceleration-stage sensors read. Each case writes its XML, a state,
 and after mj_forward and mj_rnePostConstraint the sensordata and every
-body's cfrc_ext, moved from MuJoCo's frame (at the subtree centre of mass of
-the body's root) to the body's origin xpos, where sim-core keeps it:
+body's cfrc_ext (about the subtree centre of mass of the body's root, as
+sim-core keeps it):
 
 - free_box: a rotated free box (geom off its origin) with a hinged child,
   accelerometer, framelinacc (site, body, xbody), frameangacc, force and
@@ -29,7 +29,7 @@ the body's root) to the body's origin xpos, where sim-core keeps it:
 - contact_torque: a free, frictionless sphere (condim 1 on both geoms:
   MuJoCo takes the larger; geom off its body's origin, the centre of mass
   elsewhere) 5 mm into a plane: cfrc_ext holds the contact's torque about
-  the body's origin.
+  the tree's subtree centre of mass.
 - applied_wrench: a body on a ball joint, its centre of mass off its
   origin, with an xfrc_applied wrench; force and torque at its origin.
 - world_wrench: applied_wrench with an xfrc_applied wrench on the world body
@@ -290,16 +290,6 @@ def stable(d, what):
             sys.exit(f"{what}: MuJoCo warned {w.name}")
 
 
-def cfrc_ext_at_origin(m, d):
-    """cfrc_ext ([torque; force]) moved from the subtree COM to each body's xpos."""
-    out = []
-    for b in range(m.nbody):
-        c = d.subtree_com[m.body_rootid[b]]
-        tq, f = d.cfrc_ext[b, :3], d.cfrc_ext[b, 3:]
-        out.append(floats(np.concatenate([tq - np.cross(d.xpos[b] - c, f), f])))
-    return out
-
-
 def distinct(m, d):
     """Exit unless contact 1's wrench changes by more than 1e-9 with any of
     contact 0's friction components or its point, the two differ in bodies
@@ -344,7 +334,7 @@ def state(xml, qpos=None, qvel=None, xfrc=None, steps=(), solve=False, check=Non
         check(m, d)
     out = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
            "xfrc_applied": {str(b): w for b, w in (xfrc or {}).items()},
-           "sensordata": floats(d.sensordata), "cfrc_ext": cfrc_ext_at_origin(m, d)}
+           "sensordata": floats(d.sensordata), "cfrc_ext": [floats(row) for row in d.cfrc_ext]}
     if solve:
         if d.ncon == 0:
             sys.exit("solve: no contact")

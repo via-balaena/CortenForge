@@ -2606,7 +2606,8 @@ pub trait RigidParamSpec {
     fn apply(model: &mut sim_core::Model, target: Self::Target, value: f64);
 
     /// Refresh any cached parameters after all targets have been applied. Default
-    /// is a no-op; the damping spec overrides it to recompute `implicit_damping`.
+    /// is a no-op; the damping spec overrides it to recompute `implicit_damping`,
+    /// the mass and inertia specs to remake `dof_M0`.
     fn finalize(_model: &mut sim_core::Model) {}
 
     /// Compute the terminal-state Jacobian of an `n_steps` rollout, returning
@@ -3018,6 +3019,11 @@ impl RigidParamSpec for MassSpec {
         model.body_mass[body] = value;
     }
 
+    fn finalize(model: &mut sim_core::Model) {
+        // A simple dof's mass-matrix row is `dof_M0`, made from the masses.
+        model.compute_dof_m0();
+    }
+
     fn trajectory_jacobian(
         model: &sim_core::Model,
         data0: &sim_core::Data,
@@ -3044,6 +3050,11 @@ impl RigidParamSpec for InertiaSpec {
 
     fn apply(model: &mut sim_core::Model, (body, axis): (usize, usize), value: f64) {
         model.body_inertia[body][axis] = value;
+    }
+
+    fn finalize(model: &mut sim_core::Model) {
+        // A simple dof's mass-matrix row is `dof_M0`, made from the inertias.
+        model.compute_dof_m0();
     }
 
     fn trajectory_jacobian(
@@ -3327,6 +3338,44 @@ pub fn identifiability(jacobian: &sim_core::DMatrix<f64>, rel_tol: f64) -> Ident
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mass and inertia specs remake a simple dof's mass-matrix row
+    /// (`dof_M0`) after their edit: a free body, every dof simple, given twice
+    /// its mass has it as its translations' rows and falls at gravity's rate,
+    /// and its edited inertia is its rotation's row.
+    #[test]
+    #[allow(clippy::float_cmp)] // the rows are the edited values exactly
+    fn mass_and_inertia_specs_remake_a_simple_dofs_row() {
+        let free_body = || {
+            let model = sim_core::Model::free_body(1.0, sim_core::Vector3::new(0.1, 0.1, 0.1));
+            assert!(
+                model.dof_simplenum.iter().all(|&n| n > 0),
+                "every dof simple"
+            );
+            model
+        };
+        let forward = |model: &sim_core::Model| {
+            let mut data = model.make_data();
+            data.forward(model).expect("forward");
+            data
+        };
+
+        let mut model = free_body();
+        MassSpec::apply(&mut model, 1, 2.0);
+        MassSpec::finalize(&mut model);
+        let data = forward(&model);
+        assert_eq!(data.qM[(2, 2)], 2.0, "the edited mass");
+        assert!(
+            (data.qacc[2] - model.gravity.z).abs() < 1e-12,
+            "falls at gravity's rate: {}",
+            data.qacc[2]
+        );
+
+        let mut model = free_body();
+        InertiaSpec::apply(&mut model, (1, 0), 0.3);
+        InertiaSpec::finalize(&mut model);
+        assert_eq!(forward(&model).qM[(3, 3)], 0.3, "the edited inertia");
+    }
 
     /// A stub problem returning a non-finite loss — to verify [`Normalized`]'s
     /// finite-loss guard (an overflowed `log_space` `μ = exp(p)` could feed a NaN

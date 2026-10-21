@@ -6,12 +6,12 @@
 
 use crate::collision::narrow::GEOM_EPSILON;
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::dynamics::compute_body_spatial_inertia;
+use crate::dynamics::{mju_dof_com, mju_inert_com};
 use crate::quat;
 use crate::quat::mul_mat_vec3;
 use crate::tendon::mj_fwd_tendon;
 use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SameFrame, SleepState};
-use nalgebra::{DVector, Matrix3, Matrix6, Quaternion, UnitQuaternion, Vector3};
+use nalgebra::{DVector, Matrix3, Quaternion, UnitQuaternion, Vector3};
 
 /// Forward kinematics: compute body poses from qpos.
 ///
@@ -66,20 +66,7 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
         );
         data.xipos[body_id] = xipos;
         data.ximat[body_id] = ximat;
-
-        // Compute body spatial inertia in world frame (cinert, shared).
-        // MuJoCo does NOT zero mass for mocap bodies, and neither do we.
-        let h = data.xipos[body_id] - pos; // COM offset from body origin in world frame
-        data.cinert[body_id] = compute_body_spatial_inertia(
-            model.body_mass[body_id],
-            model.body_inertia[body_id],
-            &data.ximat[body_id],
-            h,
-        );
     }
-
-    // World body has zero inertia
-    data.cinert[0] = Matrix6::zeros();
 
     // Wake what the user changed (§16.4) after the bodies' poses, which find
     // a sleeping pose changed, and before the geoms', sites' and tendons', as
@@ -119,39 +106,136 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             UnitQuaternion::new_unchecked(Quaternion::new(xquat[0], xquat[1], xquat[2], xquat[3]));
     }
 
-    // ========== Subtree mass and COM, before the tendons (MuJoCo's `mj_comPos`
-    // precedes `mj_tendon`, `engine_forward.c:140-145`; a spatial tendon's
-    // Jacobian reads `subtree_com`) ==========
-    // Initialize with each body's own mass and COM
-    for body_id in 0..model.nbody {
-        data.subtree_mass[body_id] = model.body_mass[body_id];
-        data.subtree_com[body_id] = model.body_mass[body_id] * data.xipos[body_id];
-    }
-
-    // Backward pass: accumulate children's contributions to parents
-    for body_id in (1..model.nbody).rev() {
-        let parent_id = model.body_parent[body_id];
-        // Copy child data first to satisfy borrow checker
-        let child_mass = data.subtree_mass[body_id];
-        let child_weighted_com = data.subtree_com[body_id];
-        data.subtree_mass[parent_id] += child_mass;
-        data.subtree_com[parent_id] += child_weighted_com;
-    }
-
-    // Convert weighted sum to actual COM as `mj_comPos` normalizes it
-    // (`engine_core_smooth.c:274-284`): a subtree with less than mjMINVAL of
-    // mass takes the body's own centre of mass; another is scaled by the
-    // reciprocal of its mass.
-    for body_id in 0..model.nbody {
-        if data.subtree_mass[body_id] < MJ_MINVAL {
-            data.subtree_com[body_id] = data.xipos[body_id];
-        } else {
-            data.subtree_com[body_id] *= 1.0 / data.subtree_mass[body_id];
-        }
-    }
+    // Before the tendons: MuJoCo's `mj_comPos` precedes `mj_tendon`
+    // (`engine_forward.c:140-145`), and a spatial tendon's Jacobian reads
+    // `subtree_com` and `cdof`.
+    mj_com_pos(model, data);
 
     // Tendon kinematics (after site poses and the subtree COM)
     mj_fwd_tendon(model, data);
+}
+
+/// The subtree masses and centres of mass, then each body's inertia
+/// (`cinert`) and each dof's motion axis (`cdof`) in the world's orientation
+/// about its tree's subtree centre of mass, `subtree_com[body_rootid[b]]`:
+/// MuJoCo's `mj_comPos` (`engine_core_smooth.c:245-350`). The inertias and
+/// axes are the awake bodies', as MuJoCo's: a sleeping body keeps those of
+/// its last awake pass (for a tree that starts asleep, the reset's forward
+/// pass, `Model::start_sleep`).
+fn mj_com_pos(model: &Model, data: &mut Data) {
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
+    let (nbody_awake, nparent_awake) = if sleep_filter {
+        (data.nbody_awake, data.nparent_awake)
+    } else {
+        (model.nbody, model.nbody)
+    };
+
+    // The subtree masses, which no state changes.
+    data.subtree_mass.copy_from_slice(&model.body_mass);
+    for body_id in (1..model.nbody).rev() {
+        let child_mass = data.subtree_mass[body_id];
+        data.subtree_mass[model.body_parent[body_id]] += child_mass;
+    }
+
+    // The subtree centres of mass, of the awake bodies (`:250-284`): each
+    // body's moment, summed into its parent, a sleeping child's from its
+    // centre of mass as it was; then the moment over the subtree's mass, or
+    // the body's own centre of mass under mjMINVAL of it.
+    for b in 0..nbody_awake {
+        let i = if sleep_filter {
+            data.body_awake_ind[b]
+        } else {
+            b
+        };
+        data.subtree_com[i] = data.xipos[i] * model.body_mass[i];
+    }
+    for b in (0..nparent_awake).rev() {
+        let i = if sleep_filter {
+            data.parent_awake_ind[b]
+        } else {
+            b
+        };
+        if i == 0 {
+            continue;
+        }
+        let child_moment = if sleep_filter && data.body_sleep_state[i] == SleepState::Asleep {
+            data.subtree_com[i] * data.subtree_mass[i]
+        } else {
+            data.subtree_com[i]
+        };
+        data.subtree_com[model.body_parent[i]] += child_moment;
+    }
+    for b in 0..nbody_awake {
+        let i = if sleep_filter {
+            data.body_awake_ind[b]
+        } else {
+            b
+        };
+        if data.subtree_mass[i] < MJ_MINVAL {
+            data.subtree_com[i] = data.xipos[i];
+        } else {
+            data.subtree_com[i] *= 1.0 / data.subtree_mass[i];
+        }
+    }
+
+    let nbody = if sleep_filter {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+    // Each body's inertia about its tree's subtree centre of mass
+    // (`mju_inertCom`, `:286-296`); the world's is 0.
+    data.cinert[0] = [0.0; 10];
+    for b in 1..nbody {
+        let body = if sleep_filter {
+            data.body_awake_ind[b]
+        } else {
+            b
+        };
+        let offset = data.xipos[body] - data.subtree_com[model.body_rootid[body]];
+        data.cinert[body] = mju_inert_com(
+            &model.body_inertia[body],
+            &data.ximat[body],
+            &offset,
+            model.body_mass[body],
+        );
+    }
+
+    // Each dof's motion axis (`mju_dofCom`, `:298-350`): a hinge's axis, a
+    // ball's or a free joint's rotation the columns of the body's `xmat`,
+    // each about the joint's anchor; a slide's axis, a free joint's
+    // translation the world's axes.
+    for b in 1..nbody {
+        let body = if sleep_filter {
+            data.body_awake_ind[b]
+        } else {
+            b
+        };
+        let joints = model.body_jnt_adr[body]..model.body_jnt_adr[body] + model.body_jnt_num[body];
+        for jnt in joints {
+            let dof = model.jnt_dof_adr[jnt];
+            let offset = data.subtree_com[model.body_rootid[body]] - data.xanchor[jnt];
+            let xmat = data.xmat[body];
+            let column = |k: usize| xmat.column(k).into_owned();
+            match model.jnt_type[jnt] {
+                MjJointType::Free => {
+                    for k in 0..3 {
+                        data.cdof[dof + k] = mju_dof_com(&Vector3::ith(k, 1.0), None);
+                        data.cdof[dof + 3 + k] = mju_dof_com(&column(k), Some(&offset));
+                    }
+                }
+                MjJointType::Ball => {
+                    for k in 0..3 {
+                        data.cdof[dof + k] = mju_dof_com(&column(k), Some(&offset));
+                    }
+                }
+                MjJointType::Slide => data.cdof[dof] = mju_dof_com(&data.xaxis[jnt], None),
+                MjJointType::Hinge => {
+                    data.cdof[dof] = mju_dof_com(&data.xaxis[jnt], Some(&offset));
+                }
+            }
+        }
+    }
 }
 
 /// The world pose of body `body_id` (`[x, y, z]`, `[w, x, y, z]`) from its

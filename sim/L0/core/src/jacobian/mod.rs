@@ -11,36 +11,8 @@ mod position;
 
 pub use position::{mj_differentiate_pos, mj_integrate_pos_explicit};
 
-use crate::types::{Data, MjJointType, Model};
+use crate::types::{Data, Model};
 use nalgebra::{DMatrix, DVector, Vector3};
-
-/// MuJoCo's motion dof `dof` in the global frame centred at its tree's
-/// subtree centre of mass, `[angular; linear]`, as `mj_comPos` builds `cdof`
-/// (`engine_core_smooth.c:298-350`, `mju_dofCom`): a rotation about `axis`
-/// through the joint's anchor is `[axis; axis × (com − anchor)]` (a hinge's
-/// axis, a ball's or a free joint's the columns of the body's `xmat`), a
-/// translation `[0; axis]` (a slide's axis, a free joint's the coordinate
-/// axes). sim-core takes its own motion subspace about the body's origin
-/// (`joint_motion_subspace`) and does not fill `Data::cdof` (ledger L123);
-/// this one is built from the kinematics, which equal MuJoCo's.
-fn mujoco_cdof(model: &Model, data: &Data, dof: usize) -> [f64; 6] {
-    let jnt = model.dof_jnt[dof];
-    let body = model.jnt_body[jnt];
-    let k = dof - model.jnt_dof_adr[jnt];
-    let rotation = |axis: Vector3<f64>| {
-        let offset = data.subtree_com[model.body_rootid[body]] - data.xanchor[jnt];
-        let lin = axis.cross(&offset);
-        [axis.x, axis.y, axis.z, lin.x, lin.y, lin.z]
-    };
-    let translation = |axis: Vector3<f64>| [0.0, 0.0, 0.0, axis.x, axis.y, axis.z];
-    match model.jnt_type[jnt] {
-        MjJointType::Hinge => rotation(data.xaxis[jnt]),
-        MjJointType::Slide => translation(data.xaxis[jnt]),
-        MjJointType::Ball => rotation(data.xmat[body].column(k).into_owned()),
-        MjJointType::Free if k < 3 => translation(Vector3::ith(k, 1.0)),
-        MjJointType::Free => rotation(data.xmat[body].column(k - 3).into_owned()),
-    }
-}
 
 /// The translational (`jacp`) and rotational (`jacr`) Jacobians, 3×nv each,
 /// of a world-frame point attached to `body_id`: MuJoCo 3.5.0's `mj_jac`
@@ -49,8 +21,7 @@ fn mujoco_cdof(model: &Model, data: &Data, dof: usize) -> [f64; 6] {
 /// For each dof on the chain from the last one moving the body (its
 /// `body_weldid`'s) to the root, `jacr` is the dof's angular part and `jacp`
 /// its linear part plus the angular part × (`point` − the tree's subtree
-/// centre of mass), with MuJoCo's `cdof` (built from the kinematics;
-/// sim-core keeps no `cdof` in that frame, ledger L123).
+/// centre of mass), from the position stage's `cdof`.
 #[must_use]
 #[allow(clippy::similar_names)] // jacp/jacr are canonical MuJoCo names
 pub fn mj_jac(
@@ -68,7 +39,7 @@ pub fn mj_jac(
     }
     let mut dof = Some(model.body_dof_adr[body] + model.body_dof_num[body] - 1);
     while let Some(i) = dof {
-        let c = mujoco_cdof(model, data, i);
+        let c = &data.cdof[i];
         let tmp = Vector3::new(c[0], c[1], c[2]).cross(&offset);
         for k in 0..3 {
             jacr[(k, i)] = c[k];
@@ -232,7 +203,7 @@ pub fn mj_apply_ft(
 mod jac_site_tests {
     use super::*;
     use crate::forward::mj_fwd_position;
-    use crate::types::{GeomType, Model};
+    use crate::types::{GeomType, MjJointType, Model};
     use approx::assert_relative_eq;
     use nalgebra::DVector;
     use nalgebra::UnitQuaternion;
@@ -434,7 +405,7 @@ mod jac_site_tests {
 mod mj_jac_tests {
     use super::*;
     use crate::forward::mj_fwd_position;
-    use crate::types::{GeomType, Model};
+    use crate::types::{GeomType, MjJointType, Model};
     use approx::assert_relative_eq;
     use nalgebra::DVector;
     use nalgebra::UnitQuaternion;

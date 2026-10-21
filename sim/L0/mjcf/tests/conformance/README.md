@@ -22,9 +22,9 @@ can; that is what this harness is for.
   `mjcf::load_model`, runs sim-core's forward, asserts agreement.
 
 Compared quantities are **convention-independent**: world poses (`xpos`, `xmat`)
-and generalized quantities (`qM`, `qfrc_bias`, `qacc`). `cvel` is deliberately
-**not** compared — MuJoCo references it at the subtree COM, sim-core at the body
-origin, so a raw diff would be a false mismatch.
+and generalized quantities (`qM`, `qfrc_bias`, `qacc`). `cvel` is not compared
+here: sim-conformance-tests' `com_frame_parity` compares it (bit for bit on
+macOS arm64).
 
 ## Why golden values (not live MuJoCo in CI)
 

@@ -376,12 +376,12 @@ fn add_6dof_segments(model: &mut Model) {
         0.015,
     );
 
-    // Reflected motor-rotor inertia on the six arm hinges just added. They are
-    // the only joints in the model at this point (both callers add any obstacle
-    // body — which is static / joint-free — afterwards), so writing every
-    // `jnt_armature` entry targets exactly j1..=j6. `crba` adds this to the
+    // Reflected motor-rotor inertia on the six arm hinges just added. Their
+    // dofs are the only ones in the model at this point (both callers add any
+    // obstacle body — which is static / joint-free — afterwards), so writing
+    // every `dof_armature` entry targets exactly j1..=j6. `crba` adds it to the
     // mass-matrix diagonal; see `ARMATURE_6DOF` for why it is required.
-    for a in &mut model.jnt_armature {
+    for a in &mut model.dof_armature {
         *a = ARMATURE_6DOF;
     }
 }
@@ -448,7 +448,7 @@ mod tests {
         // Negative control: with armature removed, the same arm blows up under
         // RK4 — pinning that armature (not some other change) is what stabilizes.
         let mut model = reaching_6dof();
-        for a in &mut model.jnt_armature {
+        for a in &mut model.dof_armature {
             *a = 0.0;
         }
         let peak = peak_qvel_under_gravity(&model, 200);

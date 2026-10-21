@@ -113,8 +113,8 @@ fn assert_same_fixture(name: &str, model: &Model, golden: &Value) {
 }
 
 /// Each case at its state: the bias force, the acceleration, the mass matrix,
-/// and each body's acceleration and internal force (sim-core keeps them at
-/// the body's origin; the generator moved MuJoCo's there).
+/// and each body's acceleration and internal force, about the subtree centre
+/// of mass of the body's root, as MuJoCo's.
 #[test]
 fn multi_joint_bodies_match_mujoco_3_5_0_at_a_state() {
     let golden = golden();

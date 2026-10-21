@@ -5,7 +5,7 @@
 //! It is the mutable counterpart to [`Model`] — one `Data` is created per
 //! simulation environment via `model.make_data()`.
 
-use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, UnitQuaternion, Vector3};
 
 // Imports from sibling modules
 use super::body_wrench::BodyWrench;
@@ -181,19 +181,30 @@ pub struct Data {
     pub flexedge_J: Vec<f64>,
 
     // ==================== Velocities (computed from qvel) ====================
-    /// Body spatial velocities (length `nbody`): (angular, linear).
+    /// Each body's spatial velocity `[angular; linear]` in the world's
+    /// orientation about its tree's subtree centre of mass (length `nbody`),
+    /// MuJoCo's `cvel`, made by the velocity stage (`mj_comVel`): its
+    /// parent's plus `cdof · qvel` over its dofs.
     pub cvel: Vec<SpatialVector>,
-    /// MuJoCo's dof motion axes (`cdof`, length `nv`). The CPU leaves them
-    /// 0: `mj_jac` builds MuJoCo's from the kinematics (ledger-L123).
+    /// Each dof's motion axis `[angular; linear]` in the world's orientation
+    /// about its tree's subtree centre of mass (length `nv`), MuJoCo's
+    /// `cdof`, made by the position stage (`mj_comPos`).
     pub cdof: Vec<SpatialVector>,
+    /// Each dof's motion axis's rate (length `nv`), MuJoCo's `cdof_dot`, made
+    /// by the velocity stage (`mj_comVel`): the axis crossed by the body's
+    /// velocity before its joint moves it (a free joint's rotation: after
+    /// the joint's translation), as motion vectors; 0 for a free joint's
+    /// translation.
+    pub cdof_dot: Vec<SpatialVector>,
 
     // ==================== RNE Intermediate Quantities ====================
-    /// Body bias accelerations for RNE (Coriolis/centrifugal).
-    /// `a_bias[i] = X[i] @ a_bias[parent] + Σ_j v_j ×_m S_j @ qdot_j` over body
-    /// `i`'s joints `j`, `v_j` the body's velocity before joint `j`.
+    /// `mj_rne`'s body accelerations (length `nbody`), in `cvel`'s frame: the
+    /// world's `[0; −gravity]` (0 with gravity disabled), each body's its
+    /// parent's plus `cdof_dot · qvel`.
     pub cacc_bias: Vec<SpatialVector>,
-    /// Body forces for RNE backward pass.
-    /// `f[i] = I[i] @ a_bias[i] + v[i] ×* (I[i] @ v[i])`
+    /// `mj_rne`'s body forces (length `nbody`), in `cvel`'s frame: each
+    /// body's `cinert · cacc_bias + cvel ×* (cinert · cvel)` with its
+    /// subtree's summed in, but not a root's into the world (whose is 0).
     pub cfrc_bias: Vec<SpatialVector>,
 
     // ==================== Forces in Generalized Coordinates ====================
@@ -269,16 +280,17 @@ pub struct Data {
     /// layout `Model::D_*`, length `model.D_colind.len()`).
     pub qLU: Vec<f64>,
 
-    // ==================== Body and Composite Inertia (for Featherstone CRBA/RNE) ====================
-    /// Body spatial inertia in world frame (before composite accumulation).
-    /// These are 6×6 spatial inertias for individual bodies, computed once in FK.
-    /// Used by both CRBA (as starting point) and RNE (for bias forces).
-    /// This is equivalent to MuJoCo's `mjData.cinert`.
-    pub cinert: Vec<Matrix6<f64>>,
-    /// Composite rigid body inertia in world frame.
-    /// These are 6×6 spatial inertias accumulated from subtrees during CRBA.
-    /// Starts as a copy of `cinert`, then accumulates child inertias.
-    pub crb_inertia: Vec<Matrix6<f64>>,
+    // ==================== Body and Composite Inertia ====================
+    /// Each body's inertia about its tree's subtree centre of mass, in the
+    /// world's orientation (length `nbody`): MuJoCo's `cinert`, the 10-vector
+    /// `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz, m·dx, m·dy, m·dz, m]` with `d` the
+    /// body's centre of mass from that point, made by the position stage
+    /// (`mj_comPos`); the world's is 0.
+    pub cinert: Vec<[f64; 10]>,
+    /// Each body's composite inertia, its subtree's, in `cinert`'s frame and
+    /// layout (length `nbody`): MuJoCo's `crb`, made by `mj_crb` with the mass
+    /// matrix; no root's is summed into the world's, which is 0.
+    pub crb: Vec<[f64; 10]>,
 
     // ==================== Subtree Mass/COM/Velocity ====================
     /// Total mass of subtree rooted at each body (including the body itself).
@@ -663,14 +675,18 @@ pub struct Data {
     #[allow(non_snake_case)]
     pub qDeriv: DMatrix<f64>,
 
-    /// Scratch Jacobian ∂(cvel)/∂(qvel) per body (length `nbody`, each 6 × nv).
-    /// Used by `mjd_rne_vel()` for chain-rule derivative propagation.
+    /// `mjd_rne_vel()`'s scratch: each body's velocity `cvel` differentiated in
+    /// `qvel` (length `nbody`, each 6 × nv, a column per dof), about its tree's
+    /// subtree centre of mass; written at the columns of the dofs of the
+    /// body's ancestors and subtree only, and a sleeping body's left as the
+    /// last call made it.
     #[allow(non_snake_case)]
     pub deriv_Dcvel: Vec<DMatrix<f64>>,
-    /// Scratch Jacobian ∂(cacc)/∂(qvel) per body (length `nbody`, each 6 × nv).
+    /// The same for each body's bias acceleration.
     #[allow(non_snake_case)]
     pub deriv_Dcacc: Vec<DMatrix<f64>>,
-    /// Scratch Jacobian ∂(cfrc)/∂(qvel) per body (length `nbody`, each 6 × nv).
+    /// The same for each body's bias force, its subtree's summed in (none
+    /// into a body welded to the world, as MuJoCo's).
     #[allow(non_snake_case)]
     pub deriv_Dcfrc: Vec<DMatrix<f64>>,
 
@@ -687,15 +703,18 @@ pub struct Data {
     #[allow(non_snake_case)]
     pub qDeriv_pos: DMatrix<f64>,
 
-    /// Scratch Jacobian ∂(cvel)/∂(qpos) per body (length `nbody`, each 6 × nv).
+    /// Scratch Jacobian of each body's velocity about its origin (the
+    /// body-origin view, not `cvel`) in `qpos` (length `nbody`, each 6 × nv).
     /// Used by `mjd_rne_pos()` for position chain-rule propagation.
     #[allow(non_snake_case)]
     pub deriv_Dcvel_pos: Vec<DMatrix<f64>>,
-    /// Scratch Jacobian ∂(cacc_full)/∂(qpos) per body (length `nbody`, each 6 × nv).
-    /// Uses full acceleration (including qacc) — not just bias.
+    /// Scratch Jacobian of each body's acceleration about its origin, the
+    /// full acceleration (`qacc` included, not just the bias), in `qpos`
+    /// (length `nbody`, each 6 × nv), by `mjd_rne_pos()`.
     #[allow(non_snake_case)]
     pub deriv_Dcacc_pos: Vec<DMatrix<f64>>,
-    /// Scratch Jacobian ∂(cfrc)/∂(qpos) per body (length `nbody`, each 6 × nv).
+    /// Scratch Jacobian of each body's force about its origin in `qpos`
+    /// (length `nbody`, each 6 × nv), by `mjd_rne_pos()`.
     #[allow(non_snake_case)]
     pub deriv_Dcfrc_pos: Vec<DMatrix<f64>>,
 
@@ -707,19 +726,20 @@ pub struct Data {
     pub qfrc_inverse: DVector<f64>,
 
     // ==================== Body Force Accumulators (§51) ====================
-    /// Per-body 6D acceleration in world frame (length `nbody`).
-    /// Forward pass: propagates accelerations root→leaf through joints.
-    /// `cacc[0]` = `[0,0,0, -gx,-gy,-gz]` (gravity pseudo-acceleration).
+    /// Each body's acceleration `[angular; linear]` (length `nbody`) in
+    /// `cvel`'s frame, made by `mj_body_accumulators()` (MuJoCo's
+    /// `mj_rnePostConstraint`): its parent's plus `cdof_dot · qvel + cdof ·
+    /// qacc`; the world's `[0, 0, 0, −gravity]` (0 with gravity disabled).
     pub cacc: Vec<SpatialVector>,
-    /// Per-body internal (constraint + inertial) forces in world frame (length `nbody`).
-    /// Backward pass: `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`,
-    /// accumulated into parent.
+    /// Each body's internal force `[torque; force]` in `cvel`'s frame, its
+    /// subtree's `cinert · cacc + cvel ×* (cinert · cvel) − cfrc_ext` (length
+    /// `nbody`); the world's sums its roots', each moved to the world's
+    /// reference point `subtree_com[0]` (registry `D-WORLD-CFRC-INT`).
     pub cfrc_int: Vec<SpatialVector>,
-    /// Per-body external forces in world frame (length `nbody`), laid out
-    /// `[torque; force]` as MuJoCo's `cfrc_ext` (unlike `xfrc_applied`):
-    /// `xfrc_applied` and the contact (but not a flex's), connect and weld forces, referenced at
-    /// the body's origin `xpos` like `cacc` and `cfrc_int`; the world body's is
-    /// zero. Populated by `mj_body_accumulators()`.
+    /// Each body's external force `[torque; force]` in `cvel`'s frame (length
+    /// `nbody`, MuJoCo's `cfrc_ext`, unlike `xfrc_applied`'s layout): its
+    /// applied wrench and its contact (but not a flex's), connect and weld
+    /// forces; the world's is 0.
     pub cfrc_ext: Vec<SpatialVector>,
     /// Lazy flag: `mj_body_accumulators()` has been called this step.
     /// Cleared after constraint solve (before sensors), set by
@@ -798,6 +818,7 @@ impl Clone for Data {
             // Velocities
             cvel: self.cvel.clone(),
             cdof: self.cdof.clone(),
+            cdof_dot: self.cdof_dot.clone(),
             // RNE intermediate
             cacc_bias: self.cacc_bias.clone(),
             cfrc_bias: self.cfrc_bias.clone(),
@@ -824,7 +845,7 @@ impl Clone for Data {
             qLU: self.qLU.clone(),
             // Body/composite inertia
             cinert: self.cinert.clone(),
-            crb_inertia: self.crb_inertia.clone(),
+            crb: self.crb.clone(),
             // Subtree mass/COM/velocity
             subtree_mass: self.subtree_mass.clone(),
             subtree_com: self.subtree_com.clone(),

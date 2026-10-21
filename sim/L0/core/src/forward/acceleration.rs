@@ -7,21 +7,20 @@
 use crate::constraint::assembly::tendon_deadband_displacement;
 use crate::constraint::solver::decode_pyramid_into;
 use crate::dynamics::factor::{mj_factor_i, mj_solve_ld, mj_solve_m};
-use crate::dynamics::rne::free_joint_velocity_product;
 use crate::dynamics::spatial::{
-    SpatialVector, spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
+    SpatialVector, mju_mul_dof_vec, mju_mul_inert_vec, mju_transform_spatial, spatial_cross_force,
 };
 use crate::integrate::implicit::{
     accumulate_tendon_kd, isd_damping, isd_stiffness, isd_tendon_j, isd_tendon_stiffness,
 };
-use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
+use crate::joint_visitor::{JointContext, JointVisitor};
 use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_factor_sparse, lu_solve_sparse,
 };
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, EqualityType, Integrator,
-    MjJointType, Model, StepError,
+    Model, StepError,
 };
 use nalgebra::DVector;
 
@@ -442,54 +441,49 @@ fn contact_force(rows: &[f64], mu: &[f64; 5], dim: usize, pyramidal: bool) -> [f
     f
 }
 
-/// Compute per-body accelerations and forces after forward dynamics (§51).
+/// Each body's acceleration `cacc` and its external and internal forces
+/// `cfrc_ext`, `cfrc_int` after the constraint forces, about its tree's subtree
+/// centre of mass in the world's orientation: MuJoCo's `mj_rnePostConstraint`
+/// (`engine_core_smooth.c:2491-2683`), every body, a sleeping one included.
 ///
-/// Populates `data.cacc`, `data.cfrc_int`, and `data.cfrc_ext`:
+/// `cfrc_ext` holds each body's applied wrench (from its centre of mass), its
+/// contacts' forces (`−` on the first geom's body, `+` on the second's; a
+/// contact with a flex adds nothing) and its connect and weld forces (at the
+/// anchor, placed by the body's `xmat`; `+` on the first body, `−` on the
+/// second), each moved to the body's reference point. `cacc` is the parent's
+/// plus `cdof_dot · qvel + cdof · qacc`, the world's `[0; −gravity]`.
+/// `cfrc_int = cinert · cacc + cvel ×* (cinert · cvel) − cfrc_ext`, summed into
+/// each ancestor's, the world's included.
 ///
-/// 1. **cfrc_ext**: External forces on each body — `xfrc_applied` plus contact
-///    and constraint forces from the solver.
-///
-/// 2. **cacc forward pass** (root→leaf): Propagate accelerations through the
-///    kinematic chain. `cacc[0] = [0,0,0, -gx,-gy,-gz]` (gravity pseudo-acceleration).
-///    For each body: `cacc[b] = cacc[parent] + S * qacc + cvel×(S * qvel)` (joint
-///    acceleration plus Coriolis term).
-///
-/// 3. **cfrc_int backward pass** (leaf→root):
-///    `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`, accumulated into parent.
-///    Propagation includes world body (`cfrc_int[0]` = total gravity force).
-///
-/// Mirrors the RNE algorithm structure but uses actual `qacc` instead of bias-only.
-///
-/// # MuJoCo Equivalence
-///
-/// MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2492-2683`).
-///
-/// # Convention Difference
-///
-/// Our `cacc[b]`, `cfrc_int[b]`, and `cvel[b]` are stored at `xpos[b]` (body
-/// origin). MuJoCo stores them at `subtree_com[body_rootid[b]]`. The spatial
-/// transform formulas are identical — only the shift vector differs. When
-/// porting MuJoCo code that reads these fields, substitute `xpos[body_id]`
-/// wherever MuJoCo uses `subtree_com + 3*rootid`.
-#[allow(clippy::needless_range_loop)] // jnt_id indexes both joint_subspaces and model arrays
+/// One deliberate difference (registry `D-WORLD-CFRC-INT`): MuJoCo adds each
+/// root's `cfrc_int`, about that root's own subtree centre of mass, into the
+/// world's without moving it; here each is moved to the world's reference
+/// point, `subtree_com[0]`, first.
 pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
-    // ===== Step 1: cfrc_ext = xfrc_applied + contact/constraint forces =====
-    // As MuJoCo's `mj_rnePostConstraint` (`engine_core_smooth.c:2503-2517`):
-    // its loop over applied wrenches starts at body 1, so one applied to the
-    // world body reaches nothing; an applied force acts at the centre of mass,
-    // and cfrc_ext holds it at the body's origin, its torque moved there.
-    data.cfrc_ext[0] = SpatialVector::zeros();
-    for b in 1..model.nbody {
-        let (t, f) = (data.xfrc_applied[b].torque, data.xfrc_applied[b].force);
-        let t = t + (data.xipos[b] - data.xpos[b]).cross(&f);
-        data.cfrc_ext[b] = SpatialVector::new(t.x, t.y, t.z, f.x, f.y, f.z);
+    let reference = |data: &Data, body: usize| data.subtree_com[model.body_rootid[body]];
+
+    data.cacc[0] = SpatialVector::zeros();
+    if model.disableflags & DISABLE_GRAVITY == 0 {
+        for k in 0..3 {
+            data.cacc[0][3 + k] = -model.gravity[k];
+        }
     }
 
-    // Contact forces (`engine_core_smooth.c:2519-2560`): each contact's force
-    // and torque in its own frame, as `mj_contactForce` decodes them
-    // (`engine_core_util.c:891-908`), turned to the world and moved from the
-    // contact point to the body's origin, `−` on body1 and `+` on body2. A
-    // contact that involves a flex adds nothing: MuJoCo's loop skips it.
+    // Applied wrenches, from the centre of mass (`:2503-2517`).
+    data.cfrc_ext.fill(SpatialVector::zeros());
+    for b in 1..model.nbody {
+        let (t, f) = (data.xfrc_applied[b].torque, data.xfrc_applied[b].force);
+        if t.iter().chain(f.iter()).all(|&x| x == 0.0) {
+            continue;
+        }
+        let cfrc = SpatialVector::new(t.x, t.y, t.z, f.x, f.y, f.z);
+        let moved = mju_transform_spatial(&cfrc, true, &reference(data, b), &data.xipos[b], None);
+        data.cfrc_ext[b] += moved;
+    }
+
+    // Contact forces (`:2519-2560`): each contact's force and torque in its
+    // own frame, as `mj_contactForce` decodes them (`engine_core_util.c:891-908`),
+    // turned to the world and moved from the contact point.
     {
         let nefc = data.efc_type.len();
         let mut row = 0;
@@ -523,33 +517,28 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                     frame[0][k] * v[0] + frame[1][k] * v[1] + frame[2][k] * v[2]
                 })
             };
-            let torque = to_world(&lfrc[3..6]);
-            let force = to_world(&lfrc[0..3]);
+            let (torque, force) = (to_world(&lfrc[3..6]), to_world(&lfrc[0..3]));
+            let cfrc = SpatialVector::new(torque.x, torque.y, torque.z, force.x, force.y, force.z);
+            let pos = contact.pos;
             let (body1, body2) = contact.bodies(model);
             for (body, add) in [(body1, false), (body2, true)] {
                 if body == 0 {
                     continue;
                 }
-                // `mju_transformSpatial` of a force: the torque less the lever
-                // from the contact point to the new point, crossed with the force.
-                let t = torque - (data.xpos[body] - contact.pos).cross(&force);
-                for k in 0..3 {
-                    if add {
-                        data.cfrc_ext[body][k] += t[k];
-                        data.cfrc_ext[body][3 + k] += force[k];
-                    } else {
-                        data.cfrc_ext[body][k] -= t[k];
-                        data.cfrc_ext[body][3 + k] -= force[k];
-                    }
+                let moved = mju_transform_spatial(&cfrc, true, &reference(data, body), &pos, None);
+                if add {
+                    data.cfrc_ext[body] += moved;
+                } else {
+                    data.cfrc_ext[body] -= moved;
                 }
             }
         }
     }
 
-    // Connect and weld forces (`engine_core_smooth.c:2562-2622`): the rows'
-    // force, and a weld's torque, act at each body's anchor, `+` on body1 and
-    // `−` on body2. MuJoCo's anchors: a connect's `eq_data[0..3]` on body1 and
-    // `[3..6]` on body2, a weld's the other way round, as the rows' Jacobians.
+    // Connect and weld forces (`:2562-2651`): the rows' force, and a weld's
+    // torque, at each body's anchor, placed by `mj_local2Global` (the body's
+    // `xmat`), `+` on body1 and `−` on body2. MuJoCo's anchors: a connect's
+    // `eq_data[0..3]` on body1 and `[3..6]` on body2, a weld's the other way.
     {
         let nefc = data.efc_type.len();
         let mut i = 0;
@@ -570,165 +559,82 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                     continue;
                 }
             };
-            let f = nalgebra::Vector3::new(
+            let t = if weld {
+                [
+                    data.efc_force[i + 3],
+                    data.efc_force[i + 4],
+                    data.efc_force[i + 5],
+                ]
+            } else {
+                [0.0; 3]
+            };
+            let cfrc = SpatialVector::new(
+                t[0],
+                t[1],
+                t[2],
                 data.efc_force[i],
                 data.efc_force[i + 1],
                 data.efc_force[i + 2],
             );
-            let t = if weld {
-                nalgebra::Vector3::new(
-                    data.efc_force[i + 3],
-                    data.efc_force[i + 4],
-                    data.efc_force[i + 5],
-                )
-            } else {
-                nalgebra::Vector3::zeros()
-            };
             let ed = &model.eq_data[eq_id];
             let lo = nalgebra::Vector3::new(ed[0], ed[1], ed[2]);
             let hi = nalgebra::Vector3::new(ed[3], ed[4], ed[5]);
             let (anchor1, anchor2) = if weld { (hi, lo) } else { (lo, hi) };
-            for (body, anchor, sign) in [
-                (model.eq_obj1id[eq_id], anchor1, 1.0_f64),
-                (model.eq_obj2id[eq_id], anchor2, -1.0_f64),
+            for (body, anchor, add) in [
+                (model.eq_obj1id[eq_id], anchor1, true),
+                (model.eq_obj2id[eq_id], anchor2, false),
             ] {
                 if body == 0 {
                     continue;
                 }
-                let lever = data.xquat[body] * anchor;
-                let torque = t + lever.cross(&f);
-                for k in 0..3 {
-                    data.cfrc_ext[body][k] += sign * torque[k];
-                    data.cfrc_ext[body][3 + k] += sign * f[k];
+                let m = &data.xmat[body];
+                let pos = nalgebra::Vector3::from_fn(|r, _| {
+                    m[(r, 0)] * anchor.x + m[(r, 1)] * anchor.y + m[(r, 2)] * anchor.z
+                }) + data.xpos[body];
+                let moved = mju_transform_spatial(&cfrc, true, &reference(data, body), &pos, None);
+                if add {
+                    data.cfrc_ext[body] += moved;
+                } else {
+                    data.cfrc_ext[body] -= moved;
                 }
             }
             i += if weld { 6 } else { 3 };
         }
     }
 
-    // ===== Step 2: cacc forward pass (root → leaf) =====
-    // Root pseudo-acceleration: gravity acts as downward acceleration on all bodies.
-    let grav = if model.disableflags & DISABLE_GRAVITY != 0 {
-        SpatialVector::zeros()
-    } else {
-        // Spatial convention: [angular; linear]. Gravity pseudo-acceleration has
-        // zero angular and negative gravity as linear acceleration.
-        let mut sv = SpatialVector::zeros();
-        sv[3] = -model.gravity[0];
-        sv[4] = -model.gravity[1];
-        sv[5] = -model.gravity[2];
-        sv
-    };
-    data.cacc[0] = grav;
-
-    // Pre-compute joint motion subspaces (same cache as RNE)
-    let joint_subspaces: Vec<_> = (0..model.njnt)
-        .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
-        .collect();
-
-    for body_id in 1..model.nbody {
-        let parent_id = model.body_parent[body_id];
-
-        // Start with parent's acceleration, transported from xpos[parent] to xpos[child].
-        // Spatial motion transport: angular unchanged, linear += alpha × r.
-        // Our joint_motion_subspace computes S with linear part at xpos[body], so
-        // cacc is stored at xpos[body]. We must transport when propagating.
-        let parent_cacc = data.cacc[parent_id];
-        let alpha_p = nalgebra::Vector3::new(parent_cacc[0], parent_cacc[1], parent_cacc[2]);
-        let a_p = nalgebra::Vector3::new(parent_cacc[3], parent_cacc[4], parent_cacc[5]);
-        let r = data.xpos[body_id] - data.xpos[parent_id];
-        let a_transported = a_p + alpha_p.cross(&r);
-        let mut acc = SpatialVector::zeros();
-        acc[0] = alpha_p.x;
-        acc[1] = alpha_p.y;
-        acc[2] = alpha_p.z;
-        acc[3] = a_transported.x;
-        acc[4] = a_transported.y;
-        acc[5] = a_transported.z;
-
-        // Add joint acceleration + Coriolis contribution
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
-
-        // The body's velocity before each joint, as `mj_rne`'s bias pass
-        // (`dynamics/rne.rs`): the parent velocity transported to this body's
-        // origin, then each earlier joint's S·qvel.
-        let mut v_partial = transport_motion_spatial(data.cvel[parent_id], &r);
-
-        for jnt_id in jnt_start..jnt_end {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-            let s = &joint_subspaces[jnt_id];
-            let nv = model.jnt_type[jnt_id].nv();
-
-            // S * qacc (joint acceleration contribution)
-            for row in 0..6 {
-                for d in 0..nv {
-                    acc[row] += s[(row, d)] * data.qacc[dof_adr + d];
-                }
-            }
-
-            // Coriolis acceleration c = v ×_m (S·qvel), v the velocity before this
-            // joint (`v_partial`).
-            let mut v_joint = SpatialVector::zeros();
-            for d in 0..nv {
-                for row in 0..6 {
-                    v_joint[row] += s[(row, d)] * data.qvel[dof_adr + d];
-                }
-            }
-            acc += spatial_cross_motion(v_partial, v_joint);
-            v_partial += v_joint;
-            // A free joint's term, as `mj_rne`'s bias pass.
-            if model.jnt_type[jnt_id] == MjJointType::Free {
-                let c = free_joint_velocity_product(data, body_id, dof_adr);
-                acc[3] -= c.x;
-                acc[4] -= c.y;
-                acc[5] -= c.z;
-            }
-        }
-
-        data.cacc[body_id] = acc;
-    }
-
-    // ===== Step 3: cfrc_int backward pass (leaf → root) =====
-    // For each body: cfrc_int = I*cacc + v×*(I*v) - cfrc_ext
-    for body_id in 1..model.nbody {
-        let inertia = &data.cinert[body_id];
-        let v = data.cvel[body_id];
-        let acc = data.cacc[body_id];
-
-        // I * cacc (inertial force from acceleration)
-        let i_a = inertia * acc;
-
-        // v ×* (I * v) (gyroscopic force, same as RNE backward pass)
-        let i_v = inertia * v;
-        let gyro = spatial_cross_force(v, i_v);
-
-        // cfrc_int = I*cacc + v×*(I*v) - cfrc_ext
-        data.cfrc_int[body_id] = i_a + gyro - data.cfrc_ext[body_id];
-    }
-
-    // §51 Fix C: Propagate internal forces from leaves to root,
-    // including accumulation into world body (body 0).
-    // MuJoCo propagates cfrc_int[0] = sum of all children.
-    //
-    // Spatial-force transport (Xᵀ) to the parent ORIGIN: `cfrc_int[b]` is a spatial
-    // force at body `b`'s own origin, so the torque gains the moment lever
-    // (xpos[child] − xpos[parent]) × f when moved to the parent. A plain sum drops
-    // it and corrupts the accumulated wrench on ancestor / world bodies of a
-    // multi-link chain — the same defect fixed in `mj_rne`'s backward pass.
+    // Accelerations and internal forces, root to leaf (`:2653-2674`).
     data.cfrc_int[0] = SpatialVector::zeros();
-    for body_id in (1..model.nbody).rev() {
-        let parent_id = model.body_parent[body_id];
-        let child_force = data.cfrc_int[body_id];
-        let r = data.xpos[body_id] - data.xpos[parent_id];
-        let f_lin = nalgebra::Vector3::new(child_force[3], child_force[4], child_force[5]);
-        let lever = r.cross(&f_lin);
-        data.cfrc_int[parent_id][0] += child_force[0] + lever.x;
-        data.cfrc_int[parent_id][1] += child_force[1] + lever.y;
-        data.cfrc_int[parent_id][2] += child_force[2] + lever.z;
-        data.cfrc_int[parent_id][3] += child_force[3];
-        data.cfrc_int[parent_id][4] += child_force[4];
-        data.cfrc_int[parent_id][5] += child_force[5];
+    for b in 1..model.nbody {
+        let dofs = model.body_dof_adr[b]..model.body_dof_adr[b] + model.body_dof_num[b];
+        let qvel = &data.qvel.as_slice()[dofs.clone()];
+        let qacc = &data.qacc.as_slice()[dofs.clone()];
+        data.cacc[b] =
+            data.cacc[model.body_parent[b]] + mju_mul_dof_vec(&data.cdof_dot[dofs.clone()], qvel);
+        data.cacc[b] += mju_mul_dof_vec(&data.cdof[dofs], qacc);
+
+        let inertia = data.cinert[b];
+        let momentum = mju_mul_inert_vec(&inertia, &data.cvel[b]);
+        let force = mju_mul_inert_vec(&inertia, &data.cacc[b])
+            + spatial_cross_force(data.cvel[b], momentum);
+        data.cfrc_int[b] = force - data.cfrc_ext[b];
+    }
+
+    // Summed into each parent, leaf to root (`:2676-2679`); a root's moved to
+    // the world's reference point (`D-WORLD-CFRC-INT`).
+    for b in (1..model.nbody).rev() {
+        let parent = model.body_parent[b];
+        let force = if parent == 0 {
+            mju_transform_spatial(
+                &data.cfrc_int[b],
+                true,
+                &reference(data, 0),
+                &reference(data, b),
+                None,
+            )
+        } else {
+            data.cfrc_int[b]
+        };
+        data.cfrc_int[parent] += force;
     }
 
     data.flg_rnepost = true;

@@ -160,8 +160,8 @@ contacts.
 `box_box_tie` holds census document e6ea68ac (two equal boxes overlapping,
 aligned) after two steps of the census's first excitation: MuJoCo's
 contacts there, 4, and with the first box's quaternion's w one ulp lower,
-5 (mjc_BoxBox's count turns on a one-ulp change of the pose; registry
-D-BOXBOX-TIE). It refuses other counts.
+5 (mjc_BoxBox's count turns on a one-ulp change of the pose). It refuses
+other counts.
 `geom_distance_random` holds the distance, normal and fromto sensors of
 seeded random pairs of boxes, ellipsoids and cylinders, each turned and
 posed through qpos, 12 apart per pair of types, and `s3d_stale` three

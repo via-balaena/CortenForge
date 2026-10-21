@@ -2378,17 +2378,34 @@ fn test_sleep_trees_keep_their_last_awake_arrays() {
         );
     }
 
-    // The body velocity arrays: zero
+    // The body arrays of that pass: velocity 0; the bias force's acceleration
+    // and force (`mj_rne`'s), at zero velocity gravity's alone: the
+    // acceleration `-gravity`, the force the ball's weight, carried upward,
+    // about its own centre of mass (its tree's).
     let body_start = model.tree_body_adr[tree];
     let body_end = body_start + model.tree_body_num[tree];
     for body_id in body_start..body_end {
         let cvel = &data.cvel[body_id];
         let cacc = &data.cacc_bias[body_id];
         let cfrc = &data.cfrc_bias[body_id];
-        for k in 0..6 {
+        let mass = model.body_mass[body_id];
+        for k in 0..3 {
             assert_eq!(cvel[k], 0.0, "cvel[{body_id}][{k}] should be 0");
-            assert_eq!(cacc[k], 0.0, "cacc_bias[{body_id}][{k}] should be 0");
-            assert_eq!(cfrc[k], 0.0, "cfrc_bias[{body_id}][{k}] should be 0");
+            assert_eq!(cvel[3 + k], 0.0, "cvel[{body_id}][{}] should be 0", 3 + k);
+            assert_eq!(cacc[k], 0.0, "cacc_bias[{body_id}][{k}]");
+            assert_eq!(
+                cacc[3 + k],
+                -model.gravity[k],
+                "cacc_bias[{body_id}][{}]",
+                3 + k
+            );
+            assert_eq!(cfrc[k], 0.0, "cfrc_bias[{body_id}][{k}]");
+            assert_eq!(
+                cfrc[3 + k],
+                mass * cacc[3 + k],
+                "cfrc_bias[{body_id}][{}]",
+                3 + k
+            );
         }
     }
 }
@@ -3432,10 +3449,10 @@ fn test_indirection_rne_gyroscopic_equivalence() {
     }
 }
 
-/// T82: Featherstone RNE forward/backward/projection loops produce zero
-/// contributions from sleeping bodies (cvel=0, cacc_bias=0 invariant) (AC #53).
+/// T82: the RNE leaves a sleeping tree as it was: its bodies' `cvel` 0, its
+/// dofs' bias force that of the last awake pass (AC #53).
 #[test]
-fn test_rne_featherstone_sleeping_zero_contribution() {
+fn test_rne_leaves_a_sleeping_tree_as_it_was() {
     let model = load_model(two_tree_sleep_mjcf()).expect("load model");
     let mut data = model.make_data();
 
@@ -3457,19 +3474,19 @@ fn test_rne_featherstone_sleeping_zero_contribution() {
         }
     }
 
-    // Step once — Featherstone runs over all bodies including sleeping;
-    // a sleeping DOF then keeps the qfrc_bias of its last awake pass.
+    // Step once — the RNE computes the awake bodies and dofs; a sleeping
+    // DOF keeps the qfrc_bias of its last awake pass.
     let bias = data.qfrc_bias.clone();
     data.step(&model).expect("step");
 
-    // After Featherstone: sleeping DOFs' qfrc_bias is unchanged
+    // After the step: sleeping DOFs' qfrc_bias is unchanged
     for dof in 0..model.nv {
         if dof < model.dof_treeid.len() {
             let tree = model.dof_treeid[dof];
             if tree < model.ntree && !data.tree_awake(tree) {
                 assert_eq!(
                     data.qfrc_bias[dof], bias[dof],
-                    "sleeping DOF {dof} qfrc_bias should be kept after Featherstone"
+                    "sleeping DOF {dof} qfrc_bias should be kept after the step"
                 );
             }
         }
@@ -4101,11 +4118,11 @@ fn test_selective_crba_all_awake_noop() {
     }
 }
 
-/// T93: crb_inertia is frozen for sleeping bodies (AC #64).
+/// T93: crb is frozen for sleeping bodies (AC #64).
 ///
-/// Records crb_inertia for a sleeping body, then checks it doesn't change.
+/// Records crb for a sleeping body, then checks it doesn't change.
 #[test]
-fn test_selective_crba_crb_inertia_preserved() {
+fn test_selective_crba_crb_preserved() {
     let model = load_model(three_tree_crba_mjcf()).expect("load model");
     let mut data = model.make_data();
 
@@ -4121,9 +4138,9 @@ fn test_selective_crba_crb_inertia_preserved() {
     let body_start = model.tree_body_adr[slept_tree];
     let body_count = model.tree_body_num[slept_tree];
 
-    // Record crb_inertia for all bodies in sleeping tree
+    // Record crb for all bodies in sleeping tree
     let saved_crb: Vec<_> = (body_start..body_start + body_count)
-        .map(|b| data.crb_inertia[b])
+        .map(|b| data.crb[b])
         .collect();
 
     // Step several more times
@@ -4136,8 +4153,8 @@ fn test_selective_crba_crb_inertia_preserved() {
 
         for (idx, b) in (body_start..body_start + body_count).enumerate() {
             assert_eq!(
-                data.crb_inertia[b], saved_crb[idx],
-                "crb_inertia[{b}] changed while sleeping at step {step}"
+                data.crb[b], saved_crb[idx],
+                "crb[{b}] changed while sleeping at step {step}"
             );
         }
     }
@@ -4145,8 +4162,9 @@ fn test_selective_crba_crb_inertia_preserved() {
 
 /// T94: Armature is correctly applied for awake joints (AC #65).
 ///
-/// Verifies that jnt_armature and dof_armature are both added to qM diagonal
-/// for awake joints, with some trees sleeping.
+/// Verifies that an awake dof's armature (`dof_armature`, which MuJoCo's
+/// `mj_crb` starts its row with) is on its qM diagonal, with some trees
+/// sleeping.
 #[test]
 fn test_selective_crba_armature_correct() {
     // Model with armature on joints
@@ -4193,8 +4211,7 @@ fn test_selective_crba_armature_correct() {
     let dof_count = model.tree_dof_num[awake_tree];
 
     for d in dof_start..dof_start + dof_count {
-        let jnt_id = model.dof_jnt[d];
-        let armature = model.jnt_armature[jnt_id];
+        let armature = model.dof_armature[d];
         // qM diagonal should include the armature contribution
         assert!(
             data.qM[(d, d)] >= armature,

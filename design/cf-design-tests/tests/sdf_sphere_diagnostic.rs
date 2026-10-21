@@ -434,6 +434,7 @@ fn diagnose_sdf_sphere_gap() {
         cfd_full.body_inertia[body_id] = Vector3::new(0.00655, 0.00655, 0.00655);
     }
     cfd_full.compute_implicit_params();
+    cfd_full.compute_dof_m0();
     cfd_full.compute_invweight0();
 
     // Both have same mass, inertia, SDF, invweight0.
@@ -630,6 +631,7 @@ fn diagnose_sdf_sphere_gap() {
         m2.body_inertia[b] = cfd_model.body_inertia[b];
     }
     m2.compute_implicit_params();
+    m2.compute_dof_m0();
     m2.compute_stat_meaninertia();
     m2.compute_invweight0();
     test_model("+ cfd mass/inertia", &m2);
@@ -646,6 +648,7 @@ fn diagnose_sdf_sphere_gap() {
         m4.body_inertia[b] = cfd_model.body_inertia[b];
     }
     m4.compute_implicit_params();
+    m4.compute_dof_m0();
     m4.compute_stat_meaninertia();
     m4.compute_invweight0();
     test_model("cfd mass only", &m4);
@@ -660,6 +663,7 @@ fn diagnose_sdf_sphere_gap() {
         m1_model.body_inertia[b] = cfd_model.body_inertia[b];
     }
     m1_model.compute_implicit_params();
+    m1_model.compute_dof_m0();
     m1_model.compute_stat_meaninertia();
     m1_model.compute_invweight0();
     let m1 = &m1_model;

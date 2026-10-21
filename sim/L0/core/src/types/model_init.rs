@@ -5,7 +5,7 @@
 //! implicit integration parameter caching, mean-inertia statistics, and
 //! per-DOF mechanism length computation (§16.14).
 
-use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, UnitQuaternion, Vector3};
 use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
@@ -24,6 +24,7 @@ const NATIVECCD_DISABLED: &str =
 use crate::dynamics::SpatialVector;
 use crate::dynamics::crba::{DEFAULT_MASS_FALLBACK, mj_crba};
 use crate::dynamics::factor::mj_solve_m;
+use crate::dynamics::spatial::mju_mul_inert_vec;
 use crate::forward::MjStage;
 use crate::jacobian::mj_jac_body_com;
 use crate::linalg::mju_dot;
@@ -218,6 +219,7 @@ impl Model {
             body_simple: vec![],
             dof_simplenum: vec![],
             M_rownnz: vec![],
+            dof_M0: vec![],
             M_rowadr: vec![],
             M_colind: vec![],
             D_rownnz: vec![],
@@ -826,6 +828,7 @@ impl Model {
             // Velocities
             cvel: vec![SpatialVector::zeros(); self.nbody],
             cdof: vec![SpatialVector::zeros(); self.nv],
+            cdof_dot: vec![SpatialVector::zeros(); self.nv],
 
             // RNE intermediate quantities
             cacc_bias: vec![SpatialVector::zeros(); self.nbody],
@@ -858,9 +861,9 @@ impl Model {
             qLU: vec![0.0; self.D_colind.len()],
 
             // Body spatial inertias (computed once in FK, used by CRBA and RNE)
-            cinert: vec![Matrix6::zeros(); self.nbody],
+            cinert: vec![[0.0; 10]; self.nbody],
             // Composite rigid body inertias (for Featherstone CRBA)
-            crb_inertia: vec![Matrix6::zeros(); self.nbody],
+            crb: vec![[0.0; 10]; self.nbody],
 
             // Subtree mass/COM/velocity
             subtree_mass: vec![0.0; self.nbody],
@@ -1182,6 +1185,42 @@ impl Model {
         }
     }
 
+    /// Each dof's mass-matrix diagonal at `qpos0`, `dof_M0`, as MuJoCo's
+    /// `mj_setM0` (`engine_setconst.c:36-59`): the position stage at `qpos0`
+    /// with every tree awake, each body's `cinert` summed into its parent's
+    /// (not the world's), then the dof's armature plus `cdof · (crb · cdof)`
+    /// (`mju_dot`). The mass matrix takes a simple dof's row from it.
+    ///
+    /// Must be called after `compute_simple_bodies()` and
+    /// `compute_dof_patterns()`, and once the bodies, joints and armature are
+    /// populated; before what builds the mass matrix at `qpos0`
+    /// ([`Self::compute_actuator_params`], [`Self::compute_stat_meaninertia`],
+    /// [`Self::compute_invweight0`]).
+    pub fn compute_dof_m0(&mut self) {
+        if self.nv == 0 {
+            self.dof_M0 = Vec::new();
+            return;
+        }
+        let mut data = self.make_data_for_derivation();
+        mj_fwd_position(self, &mut data);
+        let mut crb = data.cinert.clone();
+        for i in (1..self.nbody).rev() {
+            let parent = self.body_parent[i];
+            if parent > 0 {
+                let child = crb[i];
+                for (sum, add) in crb[parent].iter_mut().zip(child) {
+                    *sum += add;
+                }
+            }
+        }
+        self.dof_M0 = (0..self.nv)
+            .map(|i| {
+                let buf = mju_mul_inert_vec(&crb[self.dof_body[i]], &data.cdof[i]);
+                self.dof_armature[i] + mju_dot(data.cdof[i].as_slice(), buf.as_slice())
+            })
+            .collect();
+    }
+
     /// Compute `body_invweight0`, `dof_invweight0`, and `tendon_invweight0`.
     ///
     /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
@@ -1206,8 +1245,8 @@ impl Model {
     ///   with vertex bodies on different moving bodies the two differ (book
     ///   Rigid-loading L10, rule (c))
     ///
-    /// Must be called after `compute_simple_bodies()` and
-    /// `compute_dof_patterns()`, and once body_mass, body_inertia, dof_body,
+    /// Must be called after `compute_simple_bodies()`, `compute_dof_patterns()`
+    /// and `compute_dof_m0()`, and once body_mass, body_inertia, dof_body,
     /// dof_jnt, jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
     pub fn compute_invweight0(&mut self) {
         const MIN_VAL: f64 = 1e-15; // mjMINVAL

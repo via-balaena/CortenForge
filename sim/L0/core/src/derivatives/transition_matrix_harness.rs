@@ -54,37 +54,8 @@ fn forward_at(model: &Model, qpos: &[f64], qvel: &[f64]) -> Data {
 /// subsystem fixes that closed each (kept as a map from symptom → root cause for
 /// the next person who touches this code), rather than silently widening the tol.
 ///
-/// (`multi_joint_body` was a known limit here — a multi-joint body's earlier
-/// joint had its motion subspace built from the body's FINAL orientation rather
-/// than the PARTIAL frame that precedes the later joints' rotations. It is now
-/// machine-exact: forward kinematics stores per-joint partial-frame `xaxis`/
-/// `xanchor`, consumed by `joint_motion_subspace`, `velocity.rs`, and the
-/// `rne.rs` gravity projection, and the analytic `∂S/∂q` in `mjd_rne_pos`
-/// restricts the same-body cross-term to joints applied at-or-before `j`.)
-///
-/// (`hinge_then_free` was a known limit here — a free child's ancestor-DOF bias
-/// derivative. A Free joint sets its body's world pose ABSOLUTELY (`position.rs`
-/// overwrites `pos`/`quat` from qpos), so the free body's frame — and hence its
-/// velocity, inertia, and motion subspace — is INDEPENDENT of every ancestor DOF
-/// (FD confirms `∂cvel/∂q_ancestor = ∂qfrc_bias/∂q_ancestor = 0` exactly). The
-/// `mjd_rne_pos` passes treated it as a relative child (applying `axis×r`
-/// transport, ancestor `∂S/∂q`, ancestor `∂I/∂q`), which is spurious. It is now
-/// machine-exact: for a free body the ancestor `∂S/∂q` and `∂I/∂q` terms are
-/// dropped and the offset derivative uses `∂r/∂q = −axis×(xpos[parent]−xanchor)`
-/// — only the parent origin moves — across all six transport/subspace/inertia/
-/// projection sites in `mjd_rne_pos`.)
-///
-/// (`hinge_offset_pivot` was a known limit here — a hinge with `jnt_pos ≠ 0`
-/// rotates the body about an anchor off the body origin, so the origin moves at
-/// `â×r` (r = origin − anchor). The residual was NOT in the derivative: the
-/// FORWARD `velocity.rs` built a hinge's `cvel` from the angular axis ONLY,
-/// omitting the linear lever `â×r` of the motion subspace `S = [â; â×r]` — so
-/// `cvel ≠ S·q̇` for offset pivots, while `mjd_rne_pos` (and CRBA, `mj_jac`) all
-/// project with the lever-correct `S`. The analytic derivative differentiated the
-/// consistent `S·q̇`, but the operating point did not, leaving the ~5e-3 mismatch.
-/// It is now machine-exact: `velocity.rs` adds the `â×r` lever (byte-identical for
-/// `jnt_pos = 0`, where `r = 0`), restoring `cvel = S·q̇`. Guarded by
-/// `forward_cvel_matches_joint_subspace` extended to a `jnt_pos ≠ 0` body.)
+/// (`multi_joint_body`, `hinge_then_free` and `hinge_offset_pivot` were known
+/// limits here and are machine-exact; how each was fixed is in the git history.)
 fn known_limit(_name: &str) -> Option<f64> {
     // No known limitations remain — every case in the matrix is machine-exact.
     None

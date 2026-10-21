@@ -37,6 +37,7 @@ impl ModelBuilder {
         // joint layout or a range `try_make_data` refuses skips them: the
         // model loads, and making its `Data` refuses it.
         if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
+            model.compute_dof_m0();
             model.compute_spatial_tendon_length0();
             model.compute_actuator_params();
             model.compute_stat_meaninertia();
@@ -190,6 +191,7 @@ impl ModelBuilder {
             body_simple: vec![],
             dof_simplenum: vec![],
             M_rownnz: vec![],
+            dof_M0: vec![],
             M_rowadr: vec![],
             M_colind: vec![],
             D_rownnz: vec![],

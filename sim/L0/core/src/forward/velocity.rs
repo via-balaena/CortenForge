@@ -3,17 +3,24 @@
 //! Computes body velocities and tendon velocities from joint velocities.
 //! Corresponds to MuJoCo's velocity-stage of `engine_core_smooth.c`.
 
-use crate::dynamics::SpatialVector;
+use crate::constraint::impedance::MJ_MINVAL;
+use crate::dynamics::spatial::spatial_cross_motion;
+use crate::dynamics::{SpatialVector, mju_mul_dof_vec, object_velocity};
 use crate::linalg::{dot_sparse, mju_dot};
 use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model};
 use nalgebra::Vector3;
 
-/// Velocity kinematics: compute body velocities from qvel.
+/// Velocity kinematics: each body's spatial velocity `cvel[b]`
+/// `[angular; linear]` about its tree's subtree centre of mass, and each
+/// dof's axis rate `cdof_dot`, as MuJoCo's `mj_comVel`
+/// (`engine_core_smooth.c:2276-2343`); then the tendon velocities.
 ///
-/// Populates `cvel[b]` — the 6D spatial velocity at `xpos[b]` (body origin).
-/// MuJoCo stores `cvel[b]` at `subtree_com[body_rootid[b]]` instead. When
-/// porting MuJoCo code that reads `cvel`, substitute `xpos[body_id]` for
-/// `subtree_com + 3*rootid` in spatial transport calculations.
+/// A body's velocity is its parent's plus each of its joints' `cdof·qvel`,
+/// in the joints' order; a dof's `cdof_dot` is the velocity before its joint
+/// crossed with its axis (`cvel ×` the axis, motion vectors), a free joint's
+/// rotation taking the velocity after the joint's translation, whose own
+/// rates are 0. Only the awake bodies are computed; a sleeping body keeps
+/// its velocity and rates.
 pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     // §16.27: Use indirection array for cache-friendly iteration over awake bodies.
@@ -24,16 +31,6 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
 
     // World body has zero velocity
     data.cvel[0] = SpatialVector::zeros();
-
-    // Compute body velocities by propagating through tree
-    // v[i] = X[i←parent] @ v[parent] + S[i] @ qdot[i]
-    //
-    // The spatial transform X accounts for the offset between body origins.
-    // For a pure translation r (from parent to child), the velocity transforms as:
-    //   ω_child = ω_parent
-    //   v_child = v_parent + ω_parent × r
-    //
-    // This lever arm effect is critical for Coriolis forces in serial chains!
 
     let nbody = if use_body_ind {
         data.nbody_awake
@@ -47,102 +44,48 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
             idx
         };
 
-        let parent_id = model.body_parent[body_id];
-
-        // Parent velocity
-        let v_parent = data.cvel[parent_id];
-        let omega_parent = Vector3::new(v_parent[0], v_parent[1], v_parent[2]);
-        let v_lin_parent = Vector3::new(v_parent[3], v_parent[4], v_parent[5]);
-
-        // Offset from parent origin to this body's origin (in world frame)
-        let r = data.xpos[body_id] - data.xpos[parent_id];
-
-        // Transform parent velocity to this body's frame
-        // Linear velocity gets contribution from lever arm: v_new = v_old + ω × r
-        let v_lin_at_child = v_lin_parent + omega_parent.cross(&r);
-
-        let mut vel = SpatialVector::new(
-            omega_parent.x,
-            omega_parent.y,
-            omega_parent.z,
-            v_lin_at_child.x,
-            v_lin_at_child.y,
-            v_lin_at_child.z,
-        );
-
-        // Add contribution from joints on this body
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
-
-        for jnt_id in jnt_start..jnt_end {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    // Angular velocity contribution. Use the PARTIAL-frame world
-                    // axis (`xaxis`, set in forward kinematics) — for a multi-joint
-                    // body an earlier joint's axis must not be rotated by the later
-                    // joints (same fix as `joint_motion_subspace`).
-                    let omega = data.xaxis[jnt_id] * data.qvel[dof_adr];
-                    vel[0] += omega.x;
-                    vel[1] += omega.y;
-                    vel[2] += omega.z;
-                    // Linear lever: when the joint anchor is off the body origin
-                    // (`jnt_pos ≠ 0`), rotating about the anchor moves the body
-                    // origin at `â × r_anchor` (r_anchor = origin − anchor). This is
-                    // the linear block of the hinge motion subspace `S = [â; â×r]`;
-                    // omitting it left `cvel ≠ S·q̇` for offset pivots.
-                    let r_anchor = data.xpos[body_id] - data.xanchor[jnt_id];
-                    let lin = data.xaxis[jnt_id].cross(&r_anchor) * data.qvel[dof_adr];
-                    vel[3] += lin.x;
-                    vel[4] += lin.y;
-                    vel[5] += lin.z;
+        let mut cvel = data.cvel[model.body_parent[body_id]];
+        let bda = model.body_dof_adr[body_id];
+        let end = bda + model.body_dof_num[body_id];
+        let mut dof = bda;
+        while dof < end {
+            // A ball's three axes share the velocity before the ball; a free
+            // joint's rotation, the velocity after its translation.
+            let rotation = |data: &mut Data, cvel: &mut SpatialVector, first: usize| {
+                for k in first..first + 3 {
+                    data.cdof_dot[k] = spatial_cross_motion(*cvel, data.cdof[k]);
                 }
-                MjJointType::Slide => {
-                    // Linear velocity contribution (partial-frame world axis).
-                    let v = data.xaxis[jnt_id] * data.qvel[dof_adr];
-                    vel[3] += v.x;
-                    vel[4] += v.y;
-                    vel[5] += v.z;
+                *cvel += mju_mul_dof_vec(
+                    &data.cdof[first..first + 3],
+                    &data.qvel.as_slice()[first..first + 3],
+                );
+            };
+            match model.jnt_type[model.dof_jnt[dof]] {
+                MjJointType::Free => {
+                    for k in dof..dof + 3 {
+                        data.cdof_dot[k] = SpatialVector::zeros();
+                    }
+                    cvel += mju_mul_dof_vec(
+                        &data.cdof[dof..dof + 3],
+                        &data.qvel.as_slice()[dof..dof + 3],
+                    );
+                    rotation(data, &mut cvel, dof + 3);
+                    dof += 6;
                 }
                 MjJointType::Ball => {
-                    // 3-DOF angular velocity
-                    let omega = Vector3::new(
-                        data.qvel[dof_adr],
-                        data.qvel[dof_adr + 1],
-                        data.qvel[dof_adr + 2],
-                    );
-                    let world_omega = data.xmat[body_id] * omega;
-                    vel[0] += world_omega.x;
-                    vel[1] += world_omega.y;
-                    vel[2] += world_omega.z;
-                    // The ball turns about its anchor, which moves the body
-                    // origin when the two differ (`jnt_pos ≠ 0`).
-                    let lin = world_omega.cross(&(data.xpos[body_id] - data.xanchor[jnt_id]));
-                    vel[3] += lin.x;
-                    vel[4] += lin.y;
-                    vel[5] += lin.z;
+                    rotation(data, &mut cvel, dof);
+                    dof += 3;
                 }
-                MjJointType::Free => {
-                    // 6-DOF: linear (world frame) + angular (body-local → world)
-                    vel[3] += data.qvel[dof_adr];
-                    vel[4] += data.qvel[dof_adr + 1];
-                    vel[5] += data.qvel[dof_adr + 2];
-                    // Angular velocity: rotate from body-local to world frame
-                    let omega_local = Vector3::new(
-                        data.qvel[dof_adr + 3],
-                        data.qvel[dof_adr + 4],
-                        data.qvel[dof_adr + 5],
-                    );
-                    let omega_world = data.xmat[body_id] * omega_local;
-                    vel[0] += omega_world.x;
-                    vel[1] += omega_world.y;
-                    vel[2] += omega_world.z;
+                MjJointType::Hinge | MjJointType::Slide => {
+                    data.cdof_dot[dof] = spatial_cross_motion(cvel, data.cdof[dof]);
+                    cvel +=
+                        mju_mul_dof_vec(&data.cdof[dof..=dof], &data.qvel.as_slice()[dof..=dof]);
+                    dof += 1;
                 }
             }
         }
 
-        data.cvel[body_id] = vel;
+        data.cvel[body_id] = cvel;
     }
 
     // Tendon velocities, `ten_J · qvel`: at the sparse size over each
@@ -170,27 +113,35 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
 /// 2. Backward accumulate linear momentum → convert to velocity
 /// 3. Backward accumulate angular momentum with reference-point corrections
 ///
-/// Requires `subtree_com` and `subtree_mass` from position stage,
-/// and `cvel` from velocity stage.
+/// Requires `subtree_com` from the position stage, `cvel` from the velocity
+/// stage, and `Model::body_subtreemass`.
 ///
 /// # MuJoCo Equivalence
 ///
-/// Matches `mj_subtreeVel()` in `engine_core_smooth.c`.
+/// MuJoCo's `mj_subtreeVel()` (`engine_core_smooth.c:2346-2420`): when some
+/// trees sleep, each phase walks the awake bodies only, and a sleeping body
+/// adds nothing to its parent.
 #[allow(clippy::similar_names)] // dx/dv/dp are physics convention (displacement/velocity/momentum)
 pub fn mj_subtree_vel(model: &Model, data: &mut Data) {
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
+    let nbody_awake = if sleep_filter {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+    let awake: Vec<usize> = if sleep_filter {
+        data.body_awake_ind[..nbody_awake].to_vec()
+    } else {
+        (0..model.nbody).collect()
+    };
+
     // Temporary: per-body 6D velocity at COM in world frame
     let mut body_vel: Vec<[f64; 6]> = vec![[0.0; 6]; model.nbody];
 
     // Phase 1: Per-body quantities
-    #[allow(clippy::needless_range_loop)] // b indexes data.*[b] and body_vel[b] together
-    for b in 0..model.nbody {
-        let cvel = &data.cvel[b];
-        let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
-        let v_origin = Vector3::new(cvel[3], cvel[4], cvel[5]);
-
-        // Shift linear velocity from xpos[b] to xipos[b] (body COM)
-        let dif = data.xipos[b] - data.xpos[b];
-        let v_com = v_origin + omega.cross(&dif);
+    for &b in &awake {
+        // The body's velocity at its centre of mass (`mj_objectVelocity`).
+        let (omega, v_com) = object_velocity(model, data, b, &data.xipos[b], None);
 
         body_vel[b] = [omega.x, omega.y, omega.z, v_com.x, v_com.y, v_com.z];
 
@@ -198,39 +149,34 @@ pub fn mj_subtree_vel(model: &Model, data: &mut Data) {
         let mass = model.body_mass[b];
         data.subtree_linvel[b] = mass * v_com;
 
-        // Spin angular momentum: ximat * diag(I) * ximat^T * omega
+        // Spin angular momentum, `ximat · diag(I) · ximatᵀ · ω`, each product
+        // summed left to right (`mju_mulMatTVec3`, `mji_mulMatVec3`).
         let inertia = model.body_inertia[b];
-        let ximat = &data.ximat[b];
-        let omega_local = ximat.transpose() * omega;
-        let i_omega_local = Vector3::new(
-            inertia.x * omega_local.x,
-            inertia.y * omega_local.y,
-            inertia.z * omega_local.z,
-        );
-        data.subtree_angmom[b] = ximat * i_omega_local;
+        let r = &data.ximat[b];
+        let dv = Vector3::from_fn(|k, _| {
+            (r[(0, k)] * omega.x + r[(1, k)] * omega.y + r[(2, k)] * omega.z) * inertia[k]
+        });
+        data.subtree_angmom[b] =
+            Vector3::from_fn(|k, _| r[(k, 0)] * dv.x + r[(k, 1)] * dv.y + r[(k, 2)] * dv.z);
     }
 
     // Phase 2: Backward accumulate linear momentum, then convert to velocity
-    for b in (0..model.nbody).rev() {
+    for &b in awake.iter().rev() {
         if b > 0 {
             let parent = model.body_parent[b];
             let linvel_b = data.subtree_linvel[b];
             data.subtree_linvel[parent] += linvel_b;
         }
-        let smass = data.subtree_mass[b];
-        // MuJoCo uses MJ_MINVAL = 1e-15 as the zero-mass guard
-        if smass > 1e-15 {
-            data.subtree_linvel[b] /= smass;
-        } else {
-            data.subtree_linvel[b] = Vector3::zeros();
-        }
+        // Momentum to velocity, times the reciprocal of the subtree's mass,
+        // at least mjMINVAL (`engine_core_smooth.c:2383-2384`).
+        data.subtree_linvel[b] *= 1.0 / model.body_subtreemass[b].max(MJ_MINVAL);
     }
 
     // Phase 3: Backward accumulate angular momentum
-    for b in (1..model.nbody).rev() {
+    for &b in awake[1..].iter().rev() {
         let parent = model.body_parent[b];
         let mass = model.body_mass[b];
-        let smass = data.subtree_mass[b];
+        let smass = model.body_subtreemass[b];
         let v_body = Vector3::new(body_vel[b][3], body_vel[b][4], body_vel[b][5]);
 
         // Part A: Correct angmom from "about xipos[b]" to "about subtree_com[b]"

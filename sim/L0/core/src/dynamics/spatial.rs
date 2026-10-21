@@ -1,8 +1,8 @@
 //! Spatial algebra utilities for 6D motion and force vectors.
 //!
-//! Implements Featherstone's spatial vector algebra used throughout the
-//! dynamics pipeline (CRBA, RNE, forward kinematics). Functions here are
-//! pure math — no pipeline state dependencies.
+//! MuJoCo's spatial helpers (`mju_*`), the object velocity, acceleration and
+//! force readers over a `Data`, and the body-origin views `mjd_rne_pos`
+//! reads.
 
 use crate::types::{Data, Model};
 use nalgebra::{Matrix3, Matrix6, Vector3, Vector6};
@@ -60,6 +60,164 @@ pub fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector 
     )
 }
 
+/// A dof's motion axis about a reference point, MuJoCo's `mju_dofCom`
+/// (`engine_util_spatial.c:445-458`): a rotation about `axis` through a point
+/// `offset` away from the reference point (`offset` = reference − point) is
+/// `[axis; axis × offset]`, a translation along `axis` (`offset` `None`) is
+/// `[0; axis]`.
+#[must_use]
+pub fn mju_dof_com(axis: &Vector3<f64>, offset: Option<&Vector3<f64>>) -> SpatialVector {
+    match offset {
+        Some(offset) => {
+            let lin = axis.cross(offset);
+            SpatialVector::new(axis.x, axis.y, axis.z, lin.x, lin.y, lin.z)
+        }
+        None => SpatialVector::new(0.0, 0.0, 0.0, axis.x, axis.y, axis.z),
+    }
+}
+
+/// The motion of `dof.len()` dofs at the rates `vec`, `Σ dof[r]·vec[r]`, as
+/// MuJoCo's `mju_mulDofVec` (`engine_util_spatial.c:461-470`): one dof is
+/// scaled; several are summed from 0, a dof at rate 0 left out
+/// (`mju_mulMatTVec`).
+#[must_use]
+pub fn mju_mul_dof_vec(dof: &[SpatialVector], vec: &[f64]) -> SpatialVector {
+    match vec {
+        [] => SpatialVector::zeros(),
+        [rate] => dof[0] * *rate,
+        _ => {
+            let mut res = SpatialVector::zeros();
+            for (axis, &rate) in dof.iter().zip(vec) {
+                if rate != 0.0 {
+                    res += axis * rate;
+                }
+            }
+            res
+        }
+    }
+}
+
+/// A spatial vector moved from `oldpos` to `newpos`, then, given
+/// `rotnew2old`, turned into that frame: MuJoCo's `mju_transformSpatial`
+/// (`engine_util_spatial.c:473-504`). A force's torque loses
+/// `(newpos − oldpos) × force`; a motion's linear part loses
+/// `(newpos − oldpos) × angular`.
+#[must_use]
+pub fn mju_transform_spatial(
+    vec: &SpatialVector,
+    flg_force: bool,
+    newpos: &Vector3<f64>,
+    oldpos: &Vector3<f64>,
+    rotnew2old: Option<&Matrix3<f64>>,
+) -> SpatialVector {
+    let mut tran = *vec;
+    let dif = newpos - oldpos;
+    let (moved, by) = if flg_force { (0, 3) } else { (3, 0) };
+    let cros = dif.cross(&Vector3::new(vec[by], vec[by + 1], vec[by + 2]));
+    for k in 0..3 {
+        tran[moved + k] = vec[moved + k] - cros[k];
+    }
+    let Some(rot) = rotnew2old else {
+        return tran;
+    };
+    // `mji_mulMatTVec3`: each part times the rotation's transpose.
+    let turn = |v: usize| {
+        let row = |k: usize| {
+            rot[(0, k)] * tran[v] + rot[(1, k)] * tran[v + 1] + rot[(2, k)] * tran[v + 2]
+        };
+        [row(0), row(1), row(2)]
+    };
+    let (ang, lin) = (turn(0), turn(3));
+    SpatialVector::new(ang[0], ang[1], ang[2], lin[0], lin[1], lin[2])
+}
+
+/// A body's inertia about a reference point, as MuJoCo's 10-vector
+/// `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz, m·dx, m·dy, m·dz, m]`: MuJoCo's
+/// `mju_inertCom` (`engine_util_spatial.c:400-431`). `inert` is the
+/// principal inertia, `mat` the inertial frame's rotation, `dif` the centre
+/// of mass from the reference point.
+#[must_use]
+pub fn mju_inert_com(
+    inert: &Vector3<f64>,
+    mat: &Matrix3<f64>,
+    dif: &Vector3<f64>,
+    mass: f64,
+) -> [f64; 10] {
+    let m = |k: usize| mat[(k / 3, k % 3)];
+    // tmp = diag(inert) · matᵀ, row-major
+    let tmp = [
+        m(0) * inert[0],
+        m(3) * inert[0],
+        m(6) * inert[0],
+        m(1) * inert[1],
+        m(4) * inert[1],
+        m(7) * inert[1],
+        m(2) * inert[2],
+        m(5) * inert[2],
+        m(8) * inert[2],
+    ];
+    let mut res = [
+        m(0) * tmp[0] + m(1) * tmp[3] + m(2) * tmp[6],
+        m(3) * tmp[1] + m(4) * tmp[4] + m(5) * tmp[7],
+        m(6) * tmp[2] + m(7) * tmp[5] + m(8) * tmp[8],
+        m(0) * tmp[1] + m(1) * tmp[4] + m(2) * tmp[7],
+        m(0) * tmp[2] + m(1) * tmp[5] + m(2) * tmp[8],
+        m(3) * tmp[2] + m(4) * tmp[5] + m(5) * tmp[8],
+        mass * dif[0],
+        mass * dif[1],
+        mass * dif[2],
+        mass,
+    ];
+    res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2]);
+    res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2]);
+    res[2] += mass * (dif[0] * dif[0] + dif[1] * dif[1]);
+    res[3] -= mass * dif[0] * dif[1];
+    res[4] -= mass * dif[0] * dif[2];
+    res[5] -= mass * dif[1] * dif[2];
+    res
+}
+
+/// A 10-vector inertia times a motion vector, the momentum `[I·ω + h×v;
+/// m·v − h×ω]` (`h` = `m·dif`): MuJoCo's `mju_mulInertVec`
+/// (`engine_util_spatial.c:434-442`).
+#[must_use]
+pub fn mju_mul_inert_vec(i: &[f64; 10], v: &SpatialVector) -> SpatialVector {
+    SpatialVector::new(
+        i[0] * v[0] + i[3] * v[1] + i[4] * v[2] - i[8] * v[4] + i[7] * v[5],
+        i[3] * v[0] + i[1] * v[1] + i[5] * v[2] + i[8] * v[3] - i[6] * v[5],
+        i[4] * v[0] + i[5] * v[1] + i[2] * v[2] - i[7] * v[3] + i[6] * v[4],
+        i[8] * v[1] - i[7] * v[2] + i[9] * v[3],
+        i[6] * v[2] - i[8] * v[0] + i[9] * v[4],
+        i[7] * v[0] - i[6] * v[1] + i[9] * v[5],
+    )
+}
+
+/// Body `body`'s 6×6 spatial inertia about its origin `xpos`, from the
+/// model (`cinert` is MuJoCo's 10-vector about its tree's subtree centre of
+/// mass).
+#[must_use]
+pub fn body_origin_inertia(model: &Model, data: &Data, body: usize) -> Matrix6<f64> {
+    compute_body_spatial_inertia(
+        model.body_mass[body],
+        model.body_inertia[body],
+        &data.ximat[body],
+        data.xipos[body] - data.xpos[body],
+    )
+}
+
+/// Body `body`'s spatial velocity `[angular; linear]` about its origin
+/// `xpos` (`cvel` is about its tree's subtree centre of mass).
+#[must_use]
+pub fn body_origin_velocity(model: &Model, data: &Data, body: usize) -> SpatialVector {
+    mju_transform_spatial(
+        &data.cvel[body],
+        false,
+        &data.xpos[body],
+        &data.subtree_com[model.body_rootid[body]],
+        None,
+    )
+}
+
 /// Compute body spatial inertia in world frame.
 ///
 /// This builds the 6×6 spatial inertia matrix from:
@@ -74,9 +232,8 @@ pub fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector 
 ///     [m*[h]×ᵀ,                  m*I_3×3 ]
 /// ```
 ///
-/// This is the canonical implementation - computed once per body in FK,
-/// then used by both CRBA (as starting point for composite) and RNE (directly).
-#[allow(clippy::inline_always)] // Called once per body in FK - inlining avoids function call overhead
+/// Read through [`body_origin_inertia`].
+#[allow(clippy::inline_always)] // called per body per pass of `mjd_rne_pos`
 #[inline(always)]
 pub fn compute_body_spatial_inertia(
     mass: f64,
@@ -133,101 +290,12 @@ pub fn compute_body_spatial_inertia(
     crb
 }
 
-/// Shift a 6×6 spatial inertia from one reference point to another.
-///
-/// Given Φ (spatial inertia about point A in world frame) and
-/// d = xpos_child - xpos_parent (vector from parent to child origin),
-/// returns the equivalent spatial inertia about the parent's origin.
-///
-/// Uses the approach: extract (I_COM, m, h) from Φ_A, then recompute
-/// Φ_B with h_new = h + d (since COM - parent = (COM - child) + (child - parent)).
-///
-/// Convention: rows 0-2 = angular, rows 3-5 = linear.
-/// Off-diagonal coupling block (upper-right 3x3) = m * skew(h).
-// Paired spatial-vector identifiers (pos_a/pos_b, twist_a/twist_b) are intentionally similar.
-#[allow(clippy::similar_names)]
-pub fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f64> {
-    // Extract mass from lower-right diagonal
-    let m = phi[(3, 3)];
-    if m == 0.0 {
-        return *phi;
-    }
-
-    // Extract m*h from coupling block: H = m*skew(h)
-    // skew(h) = [0, -hz, hy; hz, 0, -hx; -hy, hx, 0]
-    // So: phi[(2,4)] = m*hx, phi[(0,5)] = m*hy, phi[(1,3)] = m*hz
-    let mh_x = phi[(2, 4)];
-    let mh_y = phi[(0, 5)];
-    let mh_z = phi[(1, 3)];
-    let h_x = mh_x / m;
-    let h_y = mh_y / m;
-    let h_z = mh_z / m;
-
-    // Extract I_about_A (rotational block, upper-left 3x3)
-    // Then reverse parallel axis to get I_COM:
-    // I_COM = I_A - m*(|h|²I₃ - h*hᵀ)
-    let hh = h_x * h_x + h_y * h_y + h_z * h_z;
-    let mut i_com = Matrix3::zeros();
-    for row in 0..3 {
-        for col in 0..3 {
-            let h_rc = [h_x, h_y, h_z];
-            let delta = if row == col { 1.0 } else { 0.0 };
-            i_com[(row, col)] = phi[(row, col)] - m * (hh * delta - h_rc[row] * h_rc[col]);
-        }
-    }
-
-    // Compute new h: h_new = h + d (COM offset from parent origin)
-    let h_new_x = h_x + d.x;
-    let h_new_y = h_y + d.y;
-    let h_new_z = h_z + d.z;
-
-    // Build new 6x6 spatial inertia about parent origin
-    let h_new = [h_new_x, h_new_y, h_new_z];
-    let hh_new = h_new_x * h_new_x + h_new_y * h_new_y + h_new_z * h_new_z;
-
-    let mut result = Matrix6::zeros();
-
-    // Upper-left 3x3: I_parent = I_COM + m*(|h_new|²I₃ - h_new*h_newᵀ)
-    for row in 0..3 {
-        for col in 0..3 {
-            let delta = if row == col { 1.0 } else { 0.0 };
-            result[(row, col)] = i_com[(row, col)] + m * (hh_new * delta - h_new[row] * h_new[col]);
-        }
-    }
-
-    // Lower-right 3x3: mass
-    result[(3, 3)] = m;
-    result[(4, 4)] = m;
-    result[(5, 5)] = m;
-
-    // Off-diagonal coupling: m * skew(h_new)
-    let mhn_x = m * h_new_x;
-    let mhn_y = m * h_new_y;
-    let mhn_z = m * h_new_z;
-
-    result[(0, 4)] = -mhn_z;
-    result[(0, 5)] = mhn_y;
-    result[(1, 3)] = mhn_z;
-    result[(1, 5)] = -mhn_x;
-    result[(2, 3)] = -mhn_y;
-    result[(2, 4)] = mhn_x;
-    // Transpose (lower-left)
-    result[(4, 0)] = -mhn_z;
-    result[(5, 0)] = mhn_y;
-    result[(3, 1)] = mhn_z;
-    result[(5, 1)] = -mhn_x;
-    result[(3, 2)] = -mhn_y;
-    result[(4, 2)] = mhn_x;
-
-    result
-}
-
 /// Transport a 6D spatial motion vector by the world-frame offset `r` (from the
 /// current reference point to the target).
 ///
-/// Pure-translation motion transport: angular unchanged, linear += angular × r.
-/// Used to bring a parent body's spatial velocity to a child's origin, where
-/// the velocity products of the child's joints start (`mj_rne`).
+/// Pure-translation motion transport: angular unchanged, linear += angular × r:
+/// a parent body's velocity or acceleration about its origin brought to a
+/// child's origin.
 #[inline]
 #[must_use]
 pub fn transport_motion_spatial(m: SpatialVector, r: &Vector3<f64>) -> SpatialVector {
@@ -236,135 +304,92 @@ pub fn transport_motion_spatial(m: SpatialVector, r: &Vector3<f64>) -> SpatialVe
     SpatialVector::new(m[0], m[1], m[2], lin.x, lin.y, lin.z)
 }
 
-/// Shift a spatial motion vector (velocity or acceleration) from `body_origin`
-/// to `target_pos`.
+/// The spatial velocity `(angular, linear)` of a point fixed to a body.
 ///
-/// Motion transport: angular unchanged, linear += angular × r.
-/// Equivalent to `mju_transformSpatial` with `flg_force=0` and no rotation.
-#[inline]
-pub fn transport_motion(
-    angular: &Vector3<f64>,
-    linear: &Vector3<f64>,
-    target_pos: &Vector3<f64>,
-    body_origin: &Vector3<f64>,
-) -> (Vector3<f64>, Vector3<f64>) {
-    let r = target_pos - body_origin;
-    (*angular, linear + angular.cross(&r))
-}
-
-/// Shift a spatial force vector (wrench) from `body_origin` to `target_pos`.
-///
-/// Force transport: force unchanged, torque -= r × force.
-/// Equivalent to `mju_transformSpatial` with `flg_force=1` and no rotation.
-#[inline]
-pub fn transport_force(
-    torque: &Vector3<f64>,
-    force: &Vector3<f64>,
-    target_pos: &Vector3<f64>,
-    body_origin: &Vector3<f64>,
-) -> (Vector3<f64>, Vector3<f64>) {
-    let r = target_pos - body_origin;
-    (torque - r.cross(force), *force)
-}
-
-/// Compute 6D velocity at `target_pos` on body `body_id`, optionally rotated
-/// into a local frame.
-///
-/// Equivalent to `mj_objectVelocity(m, d, ..., flg_local)`:
-/// - `local_rot = None` → world frame (flg_local=0)
-/// - `local_rot = Some(&mat)` → local frame (flg_local=1)
-///
-/// Convention: reads `cvel[body_id]` at `xpos[body_id]` (our convention).
+/// `target_pos` moves with body `body_id`; the velocity is in the world's
+/// orientation or, given `local_rot`, in that frame: MuJoCo's
+/// `mj_objectVelocity` (`engine_core_util.c:720-774`), `cvel` moved from the
+/// tree's subtree centre of mass to the point; 0 for a body welded to the
+/// world.
 #[must_use]
 pub fn object_velocity(
+    model: &Model,
     data: &Data,
     body_id: usize,
     target_pos: &Vector3<f64>,
     local_rot: Option<&Matrix3<f64>>,
 ) -> (Vector3<f64>, Vector3<f64>) {
-    let cvel = data.cvel[body_id];
-    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
-    let v_lin = Vector3::new(cvel[3], cvel[4], cvel[5]);
-
-    let (omega_at_point, v_at_point) =
-        transport_motion(&omega, &v_lin, target_pos, &data.xpos[body_id]);
-
-    match local_rot {
-        Some(rot) => (
-            rot.transpose() * omega_at_point,
-            rot.transpose() * v_at_point,
-        ),
-        None => (omega_at_point, v_at_point),
+    if model.body_weldid[body_id] == 0 {
+        return (Vector3::zeros(), Vector3::zeros());
     }
+    let res = mju_transform_spatial(
+        &data.cvel[body_id],
+        false,
+        target_pos,
+        &data.subtree_com[model.body_rootid[body_id]],
+        local_rot,
+    );
+    (
+        Vector3::new(res[0], res[1], res[2]),
+        Vector3::new(res[3], res[4], res[5]),
+    )
 }
 
-/// Compute 6D acceleration at `target_pos` on body `body_id` with Coriolis
-/// correction, optionally rotated into a local frame.
+/// The spatial acceleration `(angular, linear)` of a point fixed to a body.
 ///
-/// Equivalent to `mj_objectAcceleration(m, d, ..., flg_local)`:
-/// 1. Motion transport of `cacc` from body origin to target
-/// 2. Motion transport of `cvel` from body origin to target (world frame)
-/// 3. Coriolis: a_lin += omega × v_lin
-/// 4. Optional rotation
-///
-/// Convention: reads `cacc[body_id]` and `cvel[body_id]` at `xpos[body_id]`.
+/// `target_pos` moves with body `body_id`; the acceleration is in the world's
+/// orientation or, given `local_rot`, in that frame: MuJoCo's
+/// `mj_objectAcceleration` (`engine_core_util.c:777-840`), `cacc` and `cvel`
+/// moved from the tree's subtree centre of mass to the point and turned, then
+/// the turned angular velocity crossed with the turned linear velocity added
+/// to the linear part. One deliberate difference (registry
+/// `D-STATIC-ACCELEROMETER`): a static body's (welded to the world, or mocap)
+/// is its proper acceleration, gravity's, where MuJoCo's returns 0.
 #[must_use]
 pub fn object_acceleration(
+    model: &Model,
     data: &Data,
     body_id: usize,
     target_pos: &Vector3<f64>,
     local_rot: Option<&Matrix3<f64>>,
 ) -> (Vector3<f64>, Vector3<f64>) {
-    let cacc = data.cacc[body_id];
-    let alpha = Vector3::new(cacc[0], cacc[1], cacc[2]);
-    let a_lin = Vector3::new(cacc[3], cacc[4], cacc[5]);
-
-    let (alpha_at_point, a_at_point) =
-        transport_motion(&alpha, &a_lin, target_pos, &data.xpos[body_id]);
-
-    // Velocity at target point (world frame) for Coriolis
-    let (omega_at_point, v_at_point) = object_velocity(data, body_id, target_pos, None);
-
-    // Coriolis correction: a += omega × v
-    let a_corrected = a_at_point + omega_at_point.cross(&v_at_point);
-
-    match local_rot {
-        Some(rot) => (
-            rot.transpose() * alpha_at_point,
-            rot.transpose() * a_corrected,
-        ),
-        None => (alpha_at_point, a_corrected),
-    }
+    let reference = &data.subtree_com[model.body_rootid[body_id]];
+    let res = mju_transform_spatial(&data.cacc[body_id], false, target_pos, reference, local_rot);
+    let vel = mju_transform_spatial(&data.cvel[body_id], false, target_pos, reference, local_rot);
+    let correction =
+        Vector3::new(vel[0], vel[1], vel[2]).cross(&Vector3::new(vel[3], vel[4], vel[5]));
+    (
+        Vector3::new(res[0], res[1], res[2]),
+        Vector3::new(res[3], res[4], res[5]) + correction,
+    )
 }
 
-/// Compute constraint wrench at `target_pos` on body `body_id`, optionally
-/// rotated into a local frame.
+/// The internal wrench `(torque, force)` of a body's subtree at a point.
 ///
-/// Force transport: force unchanged, torque shifted by lever arm.
-/// No Coriolis — wrenches are not velocity-dependent.
-///
-/// Convention: reads `cfrc_int[body_id]` at `xpos[body_id]`.
+/// `cfrc_int[body_id]` moved, as a force, from the tree's subtree centre of
+/// mass to `target_pos` and, given `local_rot`, turned into that frame, as
+/// MuJoCo's force and torque sensors read it (`engine_sensor.c:1239-1263`).
+/// The world's is about its own reference point, `subtree_com[0]`.
 #[must_use]
 pub fn object_force(
+    model: &Model,
     data: &Data,
     body_id: usize,
     target_pos: &Vector3<f64>,
     local_rot: Option<&Matrix3<f64>>,
 ) -> (Vector3<f64>, Vector3<f64>) {
-    let cfrc = data.cfrc_int[body_id];
-    let torque = Vector3::new(cfrc[0], cfrc[1], cfrc[2]);
-    let force = Vector3::new(cfrc[3], cfrc[4], cfrc[5]);
-
-    let (torque_at_point, force_at_point) =
-        transport_force(&torque, &force, target_pos, &data.xpos[body_id]);
-
-    match local_rot {
-        Some(rot) => (
-            rot.transpose() * torque_at_point,
-            rot.transpose() * force_at_point,
-        ),
-        None => (torque_at_point, force_at_point),
-    }
+    let reference = &data.subtree_com[model.body_rootid[body_id]];
+    let res = mju_transform_spatial(
+        &data.cfrc_int[body_id],
+        true,
+        target_pos,
+        reference,
+        local_rot,
+    );
+    (
+        Vector3::new(res[0], res[1], res[2]),
+        Vector3::new(res[3], res[4], res[5]),
+    )
 }
 
 /// Compute 6D velocity at an object center in its local frame.
@@ -376,16 +401,13 @@ pub fn object_force(
 /// should call `object_velocity` directly.
 #[must_use]
 pub fn object_velocity_local(
-    _model: &Model,
+    model: &Model,
     data: &Data,
     body_id: usize,
     point: &Vector3<f64>,
     rot: &Matrix3<f64>,
 ) -> [f64; 6] {
-    if body_id == 0 {
-        return [0.0; 6];
-    }
-    let (omega, v) = object_velocity(data, body_id, point, Some(rot));
+    let (omega, v) = object_velocity(model, data, body_id, point, Some(rot));
     [omega.x, omega.y, omega.z, v.x, v.y, v.z]
 }
 
@@ -393,29 +415,21 @@ pub fn object_velocity_local(
 mod tests {
     use super::*;
 
-    /// T1: transport_motion — zero offset. Output equals input.
+    /// T1: `mju_transform_spatial` of a motion, zero offset: the input.
     #[test]
-    fn t01_transport_motion_zero_offset() {
-        let angular = Vector3::new(0.0, 0.0, 10.0);
-        let linear = Vector3::new(1.0, 2.0, 3.0);
+    fn t01_transform_motion_zero_offset() {
+        let m = SpatialVector::new(0.0, 0.0, 10.0, 1.0, 2.0, 3.0);
         let pos = Vector3::new(5.0, 6.0, 7.0);
-        let (ang_out, lin_out) = transport_motion(&angular, &linear, &pos, &pos);
-        assert_eq!(ang_out, angular);
-        assert_eq!(lin_out, linear);
+        assert_eq!(mju_transform_spatial(&m, false, &pos, &pos, None), m);
     }
 
-    /// T2: transport_motion — cross product direction.
+    /// T2: a motion moved one along x under a spin about z gains ŷ, the
+    /// angular part unchanged.
     #[test]
-    fn t02_transport_motion_cross_product() {
-        let angular = Vector3::new(0.0, 0.0, 1.0);
-        let linear = Vector3::new(0.0, 0.0, 0.0);
-        let origin = Vector3::new(0.0, 0.0, 0.0);
-        let target = Vector3::new(1.0, 0.0, 0.0);
-        let (ang_out, lin_out) = transport_motion(&angular, &linear, &target, &origin);
-        assert_eq!(ang_out, angular);
-        assert!((lin_out.x - 0.0).abs() < 1e-15);
-        assert!((lin_out.y - 1.0).abs() < 1e-15);
-        assert!((lin_out.z - 0.0).abs() < 1e-15);
+    fn t02_transform_motion_cross_product() {
+        let spin = SpatialVector::new(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        let out = mju_transform_spatial(&spin, false, &Vector3::x(), &Vector3::zeros(), None);
+        assert_eq!(out, SpatialVector::new(0.0, 0.0, 1.0, 0.0, 1.0, 0.0));
     }
 
     /// T2b: transport_motion_spatial — zero offset returns the input unchanged,
@@ -439,38 +453,42 @@ mod tests {
         assert!((out[5] - 0.0).abs() < 1e-15);
     }
 
-    /// T3: transport_force — moment arm.
+    /// T3: a force along z moved one along x gains the torque ŷ, the force
+    /// unchanged.
     #[test]
-    fn t03_transport_force_moment_arm() {
-        let torque = Vector3::new(0.0, 0.0, 0.0);
-        let force = Vector3::new(0.0, 0.0, 1.0);
-        let origin = Vector3::new(0.0, 0.0, 0.0);
-        let target = Vector3::new(1.0, 0.0, 0.0);
-        let (torque_out, force_out) = transport_force(&torque, &force, &target, &origin);
-        assert_eq!(force_out, force);
-        assert!((torque_out.x - 0.0).abs() < 1e-15);
-        assert!((torque_out.y - (1.0)).abs() < 1e-15);
-        assert!((torque_out.z - 0.0).abs() < 1e-15);
+    fn t03_transform_force_moment_arm() {
+        let push = SpatialVector::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let out = mju_transform_spatial(&push, true, &Vector3::x(), &Vector3::zeros(), None);
+        assert_eq!(out, SpatialVector::new(0.0, 1.0, 0.0, 0.0, 0.0, 1.0));
     }
 
-    /// T4: transport_force — force invariance across multiple offsets.
+    /// T4: a force is the same at every point.
     #[test]
-    fn t04_transport_force_invariance() {
-        let torque = Vector3::new(1.0, 2.0, 3.0);
-        let force = Vector3::new(3.0, 7.0, 11.0);
-        let origin = Vector3::new(0.0, 0.0, 0.0);
-
-        let offsets = [
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(0.5, -0.3, 0.8),
-        ];
-        for offset in &offsets {
-            let (_, force_out) = transport_force(&torque, &force, offset, &origin);
+    fn t04_transform_force_invariance() {
+        let wrench = SpatialVector::new(1.0, 2.0, 3.0, 3.0, 7.0, 11.0);
+        for offset in [Vector3::zeros(), Vector3::x(), Vector3::new(0.5, -0.3, 0.8)] {
+            let out = mju_transform_spatial(&wrench, true, &offset, &Vector3::zeros(), None);
             assert_eq!(
-                force_out, force,
-                "Force should be invariant for offset {offset:?}"
+                (out[3], out[4], out[5]),
+                (3.0, 7.0, 11.0),
+                "offset {offset:?}"
             );
         }
+    }
+
+    /// T5: given a frame, both parts are turned into it: a frame turned a
+    /// quarter about z reads the world's x̂ as its −ŷ.
+    #[test]
+    fn t05_transform_into_a_frame() {
+        let quarter = Matrix3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let m = SpatialVector::new(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        let out = mju_transform_spatial(
+            &m,
+            false,
+            &Vector3::zeros(),
+            &Vector3::zeros(),
+            Some(&quarter),
+        );
+        assert_eq!(out, SpatialVector::new(0.0, -1.0, 0.0, 0.0, -1.0, 0.0));
     }
 }

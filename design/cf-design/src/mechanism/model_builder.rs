@@ -596,7 +596,7 @@ fn generate(
                     // emits no joint, so a welded body has no dofs, and
                     // stopping there cuts this dof off from everything above
                     // it. CRBA walks exactly this chain to write the mass
-                    // matrix's off-diagonal entries (`crba.rs`, phase 3), so a
+                    // matrix's off-diagonal entries (`mj_crba`, `dof_parent`), so a
                     // chain that ends early leaves `M[i, j]` at zero for every
                     // ancestor past the weld.
                     //
@@ -939,6 +939,7 @@ fn generate(
     model.compute_simple_bodies();
     model.compute_dof_patterns();
     model.compute_implicit_params();
+    model.compute_dof_m0();
 
     // Tendon/actuator derived parameters
     model.compute_spatial_tendon_length0();
@@ -2214,9 +2215,9 @@ mod tests {
             let mut via_bodies = 0.0;
             for b in 1..model.nbody {
                 let inertia = model.body_inertia[b];
-                let w = Vector3::new(data.cvel[b][0], data.cvel[b][1], data.cvel[b][2]);
-                let v_origin = Vector3::new(data.cvel[b][3], data.cvel[b][4], data.cvel[b][5]);
-                let v = v_origin + w.cross(&(data.xipos[b] - data.xpos[b]));
+                // The body's velocity at its centre of mass.
+                let (w, v) =
+                    sim_core::dynamics::object_velocity(&model, &data, b, &data.xipos[b], None);
                 via_bodies += 0.5 * model.body_mass[b] * v.norm_squared();
                 // ⚠ The principal frame, not the body frame. `body_inertia`
                 // is the diagonal in the frame `body_iquat` names, and
@@ -3292,7 +3293,7 @@ mod tests {
     /// reported that the hinge destroys ~97% of the swing energy and never
     /// oscillates. It measured something else, for four more reasons.**
     ///
-    /// 3. **Kinetic energy at the arm's origin.** `cvel` is the velocity at a
+    /// 3. **Kinetic energy at the arm's origin.** It read the velocity at the
     ///    body's origin, here the pin's centre, which barely moves: on the
     ///    swing below it reads 0.0064 at step 150, where the arm's kinetic
     ///    energy is 4.316.
@@ -3454,13 +3455,16 @@ mod tests {
             // The arm's energy. Its kinetic energy is at its centre of mass,
             // translation and rotation, the sum
             // `the_mass_matrix_is_complete_for_welds_and_for_multi_joint_bodies`
-            // checks against the mass matrix: `cvel` is the velocity at the
-            // body's origin, here the pin's centre, which barely moves.
+            // checks against the mass matrix, not at the body's origin, here
+            // the pin's centre, which barely moves.
             let arm_body = 2;
-            let cv = &data.cvel[arm_body];
-            let w = Vector3::new(cv[0], cv[1], cv[2]);
-            let v = Vector3::new(cv[3], cv[4], cv[5])
-                + w.cross(&(data.xipos[arm_body] - data.xpos[arm_body]));
+            let (w, v) = sim_core::dynamics::object_velocity(
+                &model,
+                &data,
+                arm_body,
+                &data.xipos[arm_body],
+                None,
+            );
             let wb = data.ximat[arm_body].transpose() * w;
             let inertia = model.body_inertia[arm_body];
             let kinetic = 0.5 * model.body_mass[arm_body] * v.norm_squared()
@@ -3515,7 +3519,7 @@ mod tests {
         // ⛔ The line sits at 3% because that DISCRIMINATES: friction 2.0 on
         // the bore takes the change to -6.80%, a floor in the arm's reach to
         // -4.32%, the kinetic energy read at the pin (half the mass times
-        // `cvel`'s linear part squared) to -5.77%, a 30% velocity kick at
+        // the pin's velocity squared) to -5.77%, a 30% velocity kick at
         // step 100 to +5.59%, and a socket left free under gravity
         // compensation to -6.77% (to step 450 it read -1.12% and passed: the
         // longer window is what sees the weld removed). Dropping only the
