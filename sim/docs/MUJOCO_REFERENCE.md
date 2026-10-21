@@ -97,19 +97,27 @@ Output: contact list with position, normal, penetration depth, and geom IDs.
 
 ## Stage 2: Forward Velocity (`mj_fwd_velocity`)
 
-Computes body spatial velocities from joint velocities.
+Computes body spatial velocities from joint velocities, as MuJoCo's
+`mj_comVel`. Every body's velocity `cvel` is about its tree's subtree centre
+of mass (`subtree_com[body_rootid]`), the point its `cdof` is about, so no
+lever arm is added between bodies.
 
 For each body in tree order:
 ```python
-v[i] = v[parent[i]] + omega[parent[i]] x r[parent->i] + S[i] @ qdot[i]
+v = cvel[parent[i]]
+for each joint on body i, in order:
+    for each dof d of the joint:       # a ball's three share the velocity before it
+        cdof_dot[d] = v x_m cdof[d]
+    v += cdof[joint dofs] @ qvel[joint dofs]
+cvel[i] = v
 ```
+A free joint's translation has `cdof_dot` 0 and is added before its
+rotation, whose three dofs then take the velocity after it.
 
 Where:
-- `v[i]` is the 6D spatial velocity (angular, linear) of body i
-- `S[i]` is the joint motion subspace (6 x ndof matrix)
-- `r[parent->i]` is the position vector from parent to child (lever arm)
-
-The lever arm cross-product `omega x r` is critical for correct Coriolis forces.
+- `cvel[i]` is the 6D spatial velocity (angular, linear) of body i
+- `cdof[d]` is dof d's motion axis, from the position stage (`mj_comPos`)
+- `x_m` is the spatial motion cross-product
 
 ---
 
@@ -297,45 +305,38 @@ actuator:
 
 Computes the joint-space inertia matrix M using Featherstone's algorithm.
 
-**Phase 1 — Initialize composite inertias:**
+As MuJoCo's `mj_crb`. `cinert[i]` is body i's inertia about its tree's
+subtree centre of mass, MuJoCo's 10-vector `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz,
+m·dx, m·dy, m·dz, m]` (the position stage's `mj_comPos`); every body of a
+tree is about that one point, so inertias add element by element.
+
+**Phase 1 — Composite inertias:**
 ```python
 for i in range(nbody):
-    Ic[i] = I[i]   # Body's own 6x6 spatial inertia
-```
-
-**Phase 2 — Backward pass (accumulate subtree inertias):**
-```python
+    crb[i] = cinert[i]
 for i in range(nbody-1, 0, -1):
-    Ic[parent[i]] += Ic[i]
+    if parent[i] != 0:
+        crb[parent[i]] += crb[i]
 ```
 
-**Phase 3 — Build mass matrix:**
+**Phase 2 — Build mass matrix:**
 ```python
-for i in range(njnt):
-    body_i = jnt_body[i]
-
-    # Diagonal: project composite inertia through joint subspace
-    M[i,i] = S[i].T @ Ic[body_i] @ S[i]
-
-    # Off-diagonal: propagate force up kinematic chain
-    F = Ic[body_i] @ S[i]
-    j = body_i
-    while parent[j] != 0:
-        # Spatial force transform via lever arm
-        r = xpos[j] - xpos[parent[j]]
-        F_angular += r x F_linear
-        j = parent[j]
-        for each joint k on body j:
-            M[k,i] = S[k].T @ F
-            M[i,k] = M[k,i]
+for i in range(nv):
+    if dof_simplenum[i] > 0:
+        M[i,i] = dof_M0[i]                 # a simple dof's row: its diagonal alone
+        continue
+    buf = crb[dof_body[i]] @ cdof[i]       # mju_mulInertVec
+    M[i,i] = dof_armature[i]
+    j = i
+    while j >= 0:                          # i and each dof it descends from
+        M[i,j] += cdof[j] . buf
+        M[j,i] = M[i,j]
+        j = dof_parent[j]
 ```
+`dof_M0` is each dof's diagonal at `qpos0`, armature included (MuJoCo's
+`mj_setM0`, made when the model is built).
 
-**Phase 4 — Add armature inertia:**
-```python
-M[dof,dof] += armature[dof]
-```
-
-**Phase 5 — `L'·D·L` factor on the mass matrix's pattern (`mj_factor_m`):**
+**Phase 3 — `L'·D·L` factor on the mass matrix's pattern (`mj_factor_m`):**
 
 As MuJoCo's `mj_factorM` and `mj_factorI`. The pattern is `Model::M_*`:
 row `i` holds `i`'s ancestors in ascending order, then `i` itself, except
@@ -366,62 +367,39 @@ for k in reversed(rows):
 
 ### 4.2 Recursive Newton-Euler (`mj_rne`)
 
-Computes bias forces `qfrc_bias` (gravity + Coriolis + centrifugal + gyroscopic).
+Computes bias forces `qfrc_bias` (gravity + Coriolis + centrifugal +
+gyroscopic), as MuJoCo's `mj_rne` with `flg_acc` 0. Every quantity is about
+the body's tree's subtree centre of mass.
 
-**Gravity (O(n) using precomputed subtree mass and COM):**
+**Forward pass (bias accelerations; gravity is the world's):**
 ```python
-for each joint i on body b:
-    F_grav = -subtree_mass[b] * gravity
-    if Hinge:
-        tau = ((subtree_com[b] - jnt_pos) x F_grav) . axis
-    if Slide:
-        tau = F_grav . axis
-    if Ball:
-        tau = R_body^-1 * ((subtree_com[b] - jnt_pos) x F_grav)
-    if Free:
-        tau_lin = F_grav
-        tau_ang = (subtree_com[b] - jnt_pos) x F_grav
-    qfrc_bias[dof] += tau
+cacc[0] = [0; -gravity]            # [0; 0] with gravity disabled
+for i in range(1, nbody):
+    cacc[i] = cacc[parent[i]] + cdof_dot[body dofs] @ qvel[body dofs]
 ```
 
-**Gyroscopic terms (Ball and Free joints only):**
-```python
-omega = angular velocity of body in world frame
-tau_gyro = omega x (I_body @ omega)
-qfrc_bias[angular_dofs] += S.T @ tau_gyro
-```
-
-**Coriolis and centrifugal — Forward pass (bias accelerations):**
+**Bias forces:**
 ```python
 for i in range(1, nbody):
-    a_bias[i] = a_bias[parent[i]]
-    for each joint on body i:
-        v_joint = S @ qdot
-        # Velocity-product acceleration (centripetal/Coriolis)
-        # Uses parent velocity because v[i] x_m v_joint = v[parent] x_m v_joint
-        # (since v_joint x_m v_joint = 0)
-        a_bias[i] += v[parent[i]] x_m v_joint
+    cfrc[i] = cinert[i] @ cacc[i] + cvel[i] x* (cinert[i] @ cvel[i])
 ```
 
-**Coriolis and centrifugal — Forward pass (bias forces):**
-```python
-for i in range(1, nbody):
-    f_bias[i] = I[i] @ a_bias[i] + v[i] x* (I[i] @ v[i])
-```
-
-**Coriolis and centrifugal — Backward pass (project to joint space):**
+**Backward pass (project to joint space):**
 ```python
 for i in range(nbody-1, 0, -1):
-    f_bias[parent[i]] += f_bias[i]
+    if parent[i] != 0:
+        cfrc[parent[i]] += cfrc[i]
 
-for each joint i on body b:
-    qfrc_bias[dof] += S[i].T @ f_bias[b]
+for each dof d:
+    qfrc_bias[d] = cdof[d] . cfrc[dof_body[d]]
 ```
 
 Where:
-- `x_m` is the spatial motion cross-product
 - `x*` is the spatial force cross-product
-- `I[i]` is the body's own spatial inertia (not the composite)
+- `cinert[i]` is the body's own inertia (not the composite), and `@` its
+  product with a motion vector (`mju_mulInertVec`)
+- the gyroscopic terms are in `cvel x* (cinert @ cvel)`; there is no
+  separate pass for them, nor for gravity
 
 ### 4.3 Passive Forces (`mj_fwd_passive`)
 
@@ -531,16 +509,12 @@ Each contact produces 3 constraint rows (normal + 2 tangent directions).
 The Jacobian maps joint velocities to contact-frame relative velocity:
 
 ```python
-for each body in kinematic chain from contact to root:
-    r = contact_point - body_position
-    for each joint on body:
-        if Hinge: J_col = axis x r          (angular)
-        if Slide: J_col = axis              (linear)
-        if Ball:  J_col = basis vectors x r  (3 angular DOFs)
-        if Free:  J_lin = I, J_ang = [.] x r (6 DOFs)
+# mj_jac: each dof on the chain from the body to its tree's root
+for each dof d on the chain:
+    jacr[:, d] = cdof[d].angular
+    jacp[:, d] = cdof[d].linear + cdof[d].angular x (contact_point - subtree_com[rootid])
+J = frame @ (jacp(body2) - jacp(body1))     # second minus first (mj_jacDifPair)
 ```
-
-Signs are positive for body1 and negative for body2.
 
 **PGS iteration:**
 ```python
@@ -843,7 +817,8 @@ mjd_actuator_vel():  affine gain/bias velocity terms via transmission
 mjd_rne_vel():       chain-rule derivative propagation through kinematic tree
                      Forward pass: Dcvel, Dcacc (6×nv per body)
                      Backward pass: Dcfrc accumulation + projection to joint space
-                     + direct gyroscopic derivative for Ball/Free joints
+                     (MuJoCo's mjd_rne_vel with mjd_comVel_vel, about each tree's
+                     subtree COM, over each body's sparse row B)
 ```
 
 Cross-product derivative signs (critical):

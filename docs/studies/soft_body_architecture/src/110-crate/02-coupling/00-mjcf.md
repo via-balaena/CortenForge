@@ -31,7 +31,7 @@ The fixed-point iterate count is 1–3 in steady state; [the fixed-point sub-lea
 pub struct RigidBoundary {
     pub body_id:     BodyId,        // sim-core body index (from sim-mjcf load)
     pub pose:        Pose,          // SE(3): rotation + translation
-    pub spatial_vel: SpatialVec,    // MuJoCo cvel: world-aligned axes, linear at COM
+    pub spatial_vel: SpatialVec,    // MuJoCo cvel: world-aligned axes, linear at the tree's subtree COM
 }
 
 pub struct ContactReaction {

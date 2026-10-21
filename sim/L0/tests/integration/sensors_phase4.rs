@@ -83,7 +83,8 @@ fn d01_accelerometer_static_gravity() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
 
-    // Accelerometer is dim=3, at adr=0. Site is at body origin, so no spatial shift.
+    // Accelerometer is dim=3, at adr=0. Site is at the body's centre of mass, its
+    // tree's subtree COM (`cacc`'s reference point), so no spatial shift.
     // cacc[1] = cacc[0] + S*qacc. The hinge constrains all DOF except rotation
     // around Y, so qacc has 1 DOF (angular about Y). The gravity pseudo-acc
     // from cacc[0] = [0,0,0, 0,0,+9.81] passes through to cacc[1] in the
@@ -342,8 +343,9 @@ fn d06_force_sensor_static() {
 /// 4A.6-T8 / AC6: Torque sensor spatial force transform (moment arm shift).
 ///
 /// Verifies that the torque sensor correctly applies the spatial force transform
-/// when shifting the reference point from body origin to site position:
-///   torque_at_site = torque_at_origin - r × force
+/// when shifting the reference point from `cfrc_int`'s (the tree's subtree
+/// centre of mass) to the site position, `r` = site − that point:
+///   torque_at_site = torque_at_ref - r × force
 ///
 /// Uses a simple hinge body with the geom at body origin (no COM offset).
 /// Two torque sensors at different positions verify the shift formula.

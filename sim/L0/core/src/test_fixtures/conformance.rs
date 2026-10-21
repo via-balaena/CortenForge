@@ -192,7 +192,8 @@ pub fn dynamics_conformance_matrix() -> Vec<ConformanceCase> {
     }
     {
         // free_root_tumbling — root free body translating AND rotating; the
-        // `[0; ω×v]` Coriolis correction is its own-velocity gyroscopic term.
+        // `[0; ω×v]` Coriolis correction of `mjd_rne_pos`'s body-origin
+        // recursion is its own-velocity gyroscopic term.
         let mut m = Model::empty();
         let b = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
         add_freejoint(&mut m, b, "free0");
@@ -264,7 +265,7 @@ pub fn dynamics_conformance_matrix() -> Vec<ConformanceCase> {
         });
     }
     {
-        // hinge → free: non-root free (both `ω×v` and same-body ∂S/∂q bite)
+        // hinge → free: non-root free (both `mjd_rne_pos`'s `ω×v` and same-body ∂S/∂q bite)
         let mut m = Model::empty();
         let b0 = link_body(&mut m, 0, "l0", Vector3::zeros(), l);
         add_hinge_joint(&mut m, b0, "h0", ax[1], 0.0, 0.0, 0.0, false, (-3.0, 3.0));
