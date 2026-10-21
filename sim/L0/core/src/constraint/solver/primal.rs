@@ -15,9 +15,9 @@
 //! `engine_core_util.c:32-39`: `jacobian="sparse"`, or 60 dofs under the
 //! default) Newton factors its Hessian with
 //! [`SparseHessian`], made anew at every iteration where MuJoCo updates its
-//! sparse factor: the same matrix, rounded otherwise. There MuJoCo also takes
-//! `J·v` and `J'·f` as sparse products, which sim-core takes dense,
-//! so CG as well rounds otherwise.
+//! sparse factor: the same matrix, rounded otherwise. There `J·v` and `J'·f`
+//! are MuJoCo's sparse products, each row's or each dof's `mju_dotSparse`
+//! over its dof chain, so CG is MuJoCo's at that size too.
 
 use nalgebra::{DMatrix, DVector};
 
@@ -26,7 +26,8 @@ use crate::constraint::mul_jac_vec;
 use crate::constraint::solver::hessian::{SparseHessian, SparseInputs};
 use crate::dynamics::factor::mj_solve_ld;
 use crate::linalg::{
-    cholesky_solve_in_place, mju_chol_factor, mju_chol_solve, mju_chol_update, mju_dot, mju_norm,
+    cholesky_solve_in_place, dot_sparse, mju_chol_factor, mju_chol_solve, mju_chol_update, mju_dot,
+    mju_norm,
 };
 use crate::types::flags::disabled;
 use crate::types::{
@@ -299,10 +300,11 @@ impl Rows {
 /// `qfrc_constraint` is 0; else each row's state and force as
 /// `mj_constraintUpdate` makes them at `jar = J·qacc − aref` (no cone
 /// Hessian, no cost kept), and `qfrc_constraint = J'·force` (`mj_mulJacTVec`,
-/// `engine_core_constraint.c:2592-2598`), over every row in row order. Here
-/// `J·qacc` and `J'·force` are dense products; at MuJoCo's sparse size its
-/// are sparse, so the last bits can differ there.
-pub fn mj_inv_constraint(data: &mut Data) {
+/// `engine_core_constraint.c:2592-2598`), over every row in row order.
+/// `J·qacc` is [`mul_jac_vec`]'s, sparse at the sparse size; `J'·force` adds
+/// the rows in row order, as MuJoCo's dense and sparse products both do
+/// (`mju_mulMatTVec`, `mju_mulMatTVecSparse`).
+pub fn mj_inv_constraint(model: &Model, data: &mut Data) {
     let (nv, nefc) = (data.qacc.len(), data.efc_type.len());
     if nefc == 0 {
         data.qfrc_constraint.fill(0.0);
@@ -310,7 +312,7 @@ pub fn mj_inv_constraint(data: &mut Data) {
     }
     let all: Vec<usize> = (0..nefc).collect();
     let rows = Rows::of(data, &all);
-    let mut jar = mul_jac_vec(data, data.qacc.as_slice());
+    let mut jar = mul_jac_vec(model, data, data.qacc.as_slice());
     for (x, a) in jar.iter_mut().zip(data.efc_aref.iter()) {
         *x -= a;
     }
@@ -485,6 +487,100 @@ fn mul_mat_t_vec(mat: &[f64], vec: &[f64], res: &mut [f64], nc: usize) {
     }
 }
 
+/// `res = J·vec` over a subproblem's rows: each row's `mju_dot` at the dense
+/// size, its `mju_dotSparse` over its dof chain at the sparse size
+/// (`mju_mulMatVecSparse`, `engine_solver.c:1839-1846`, `:1352-1358`).
+fn mul_j_vec(j: &[f64], sparse: Option<&SparseJ>, nv: usize, vec: &[f64], res: &mut [f64]) {
+    match sparse {
+        None => mul_mat_vec(j, vec, res, nv),
+        Some(s) => {
+            for (r, out) in res.iter_mut().enumerate() {
+                let adr = s.rowadr[r];
+                *out = dot_sparse(&s.val[adr..adr + s.rownnz[r]], |k| vec[s.colind[adr + k]]);
+            }
+        }
+    }
+}
+
+/// `res = J'·vec` over a subproblem's dofs: the rows added in row order at
+/// the dense size (`mju_mulMatTVec`), each dof's `mju_dotSparse` over its
+/// rows at the sparse size (`mju_mulMatVecSparse` on the transpose,
+/// `PrimalUpdateConstraint`, `engine_solver.c:1019-1025`).
+fn mul_jt_vec(j: &[f64], sparse: Option<&SparseJ>, nv: usize, vec: &[f64], res: &mut [f64]) {
+    match sparse {
+        None => mul_mat_t_vec(j, vec, res, nv),
+        Some(s) => {
+            for (c, out) in res.iter_mut().enumerate() {
+                let adr = s.t_rowadr[c];
+                *out = dot_sparse(&s.t_val[adr..adr + s.t_rownnz[c]], |k| {
+                    vec[s.t_colind[adr + k]]
+                });
+            }
+        }
+    }
+}
+
+/// A subproblem's Jacobian at the sparse size in MuJoCo's compressed form, in
+/// its numbering (`PrimalAllocate`, `engine_solver.c:960-986`): each row's
+/// dof chain and the values there, and the transpose, each dof's rows in row
+/// order with their values (`mju_transposeSparse`). A row's chain dofs are in
+/// its island, in the island's order, which keeps the chain's.
+struct SparseJ {
+    rownnz: Vec<usize>,
+    rowadr: Vec<usize>,
+    colind: Vec<usize>,
+    val: Vec<f64>,
+    t_rownnz: Vec<usize>,
+    t_rowadr: Vec<usize>,
+    t_colind: Vec<usize>,
+    t_val: Vec<f64>,
+}
+
+impl SparseJ {
+    fn of(data: &Data, sub: &Subproblem) -> Self {
+        let (mut rownnz, mut rowadr) = (Vec::new(), Vec::new());
+        let (mut colind, mut val) = (Vec::new(), Vec::new());
+        for &r in &sub.rows {
+            let adr = data.efc_J_rowadr[r];
+            rowadr.push(colind.len());
+            rownnz.push(data.efc_J_rownnz[r]);
+            for &c in &data.efc_J_colind[adr..adr + data.efc_J_rownnz[r]] {
+                colind.push(sub.local(data, c));
+                val.push(data.efc_J[(r, c)]);
+            }
+        }
+        let nv = sub.dofs.len();
+        let mut t_rownnz = vec![0; nv];
+        for &c in &colind {
+            t_rownnz[c] += 1;
+        }
+        let mut t_rowadr = vec![0; nv];
+        for c in 1..nv {
+            t_rowadr[c] = t_rowadr[c - 1] + t_rownnz[c - 1];
+        }
+        let mut next = t_rowadr.clone();
+        let (mut t_colind, mut t_val) = (vec![0; colind.len()], vec![0.0; colind.len()]);
+        for (r, (&adr, &nnz)) in rowadr.iter().zip(&rownnz).enumerate() {
+            for k in adr..adr + nnz {
+                let c = colind[k];
+                t_colind[next[c]] = r;
+                t_val[next[c]] = val[k];
+                next[c] += 1;
+            }
+        }
+        Self {
+            rownnz,
+            rowadr,
+            colind,
+            val,
+            t_rownnz,
+            t_rowadr,
+            t_colind,
+            t_val,
+        }
+    }
+}
+
 /// A line-search point (`mjPrimalPnt`).
 #[derive(Debug, Clone, Copy, Default)]
 struct Pnt {
@@ -509,6 +605,8 @@ struct Primal<'a> {
     parent: Vec<Option<usize>>,
     rows: Rows,
     j: Vec<f64>,
+    /// At the sparse size, the rows' Jacobian in MuJoCo's compressed form.
+    sparse_j: Option<SparseJ>,
     aref: Vec<f64>,
     state: Vec<ConstraintState>,
     force: Vec<f64>,
@@ -576,6 +674,7 @@ impl<'a> Primal<'a> {
         let gather_rows = |a: &[f64]| sub.rows.iter().map(|&r| a[r]).collect::<Vec<_>>();
         let gather_dofs = |a: &[f64]| sub.dofs.iter().map(|&d| a[d]).collect::<Vec<_>>();
         let rows = Rows::of(data, &sub.rows);
+        let sparse_j = model.is_sparse().then(|| SparseJ::of(data, &sub));
         let dense_newton = newton && !model.is_sparse();
         Self {
             newton,
@@ -584,6 +683,7 @@ impl<'a> Primal<'a> {
             parent,
             rows,
             j,
+            sparse_j,
             aref: gather_rows(data.efc_aref.as_slice()),
             state: vec![ConstraintState::Satisfied; nefc],
             force: vec![0.0; nefc],
@@ -631,7 +731,7 @@ impl<'a> Primal<'a> {
         let warm = data.qacc_warmstart.as_slice();
         self.qacc.copy_from_slice(warm);
         let mut jar = vec![0.0; self.nefc];
-        mul_mat_vec(&self.j, warm, &mut jar, nv);
+        mul_j_vec(&self.j, self.sparse_j.as_ref(), nv, warm, &mut jar);
         for (x, a) in jar.iter_mut().zip(&self.aref) {
             *x -= a;
         }
@@ -667,7 +767,13 @@ impl<'a> Primal<'a> {
             &mut self.force,
             cones,
         );
-        mul_mat_t_vec(&self.j, &self.force, &mut self.qfrc_constraint, self.nv);
+        mul_jt_vec(
+            &self.j,
+            self.sparse_j.as_ref(),
+            self.nv,
+            &self.force,
+            &mut self.qfrc_constraint,
+        );
         self.nactive = 0;
         self.ncone = 0;
         for s in &self.state {
@@ -875,7 +981,13 @@ impl<'a> Primal<'a> {
         let gtol = tolerance * snorm / self.scale;
         let slopescl = self.scale / snorm;
         self.mass.mul(&self.search, &mut self.mv);
-        mul_mat_vec(&self.j, &self.search, &mut self.jv, self.nv);
+        mul_j_vec(
+            &self.j,
+            self.sparse_j.as_ref(),
+            self.nv,
+            &self.search,
+            &mut self.jv,
+        );
         self.prepare();
 
         let p0 = self.eval(0.0);
@@ -1121,7 +1233,13 @@ impl Primal<'_> {
         let mut mgraddif = vec![0.0; if newton { 0 } else { nv }];
 
         self.mass.mul(&self.qacc, &mut self.ma);
-        mul_mat_vec(&self.j, &self.qacc, &mut self.jaref, nv);
+        mul_j_vec(
+            &self.j,
+            self.sparse_j.as_ref(),
+            nv,
+            &self.qacc,
+            &mut self.jaref,
+        );
         for (x, a) in self.jaref.iter_mut().zip(&self.aref) {
             *x -= a;
         }

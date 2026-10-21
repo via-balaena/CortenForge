@@ -754,15 +754,25 @@ def same_input(xml, qvel, start=None):
         d.qvel[:] = qvel
     mujoco.mj_forward(m, d)
     n = d.nefc
-    assert not mujoco.mj_isSparse(m), "a dense case"
-    return {"xml": xml, "qvel": floats(d.qvel), "newton": int(m.opt.solver) == 2,
-            "M": floats(d.M), "qLD": floats(d.qLD), "qLDiagInv": floats(d.qLDiagInv),
-            "M_rowadr": [int(x) for x in m.M_rowadr], "M_rownnz": [int(x) for x in m.M_rownnz],
-            "M_colind": [int(x) for x in m.M_colind],
-            "qacc_smooth": floats(d.qacc_smooth), "qfrc_smooth": floats(d.qfrc_smooth),
-            "efc_J": floats(d.efc_J[:n * m.nv]), "efc_aref": floats(d.efc_aref[:n]),
-            "efc_D": floats(d.efc_D[:n]), "efc_R": floats(d.efc_R[:n]),
-            "qacc": floats(d.qacc), "efc_force": floats(d.efc_force[:n]), "stats": stats(m, d)}
+    out = {"xml": xml, "qvel": floats(d.qvel), "newton": int(m.opt.solver) == 2,
+           "M": floats(d.M), "qLD": floats(d.qLD), "qLDiagInv": floats(d.qLDiagInv),
+           "M_rowadr": [int(x) for x in m.M_rowadr], "M_rownnz": [int(x) for x in m.M_rownnz],
+           "M_colind": [int(x) for x in m.M_colind],
+           "qacc_smooth": floats(d.qacc_smooth), "qfrc_smooth": floats(d.qfrc_smooth),
+           "efc_aref": floats(d.efc_aref[:n]),
+           "efc_D": floats(d.efc_D[:n]), "efc_R": floats(d.efc_R[:n]),
+           "qacc": floats(d.qacc), "efc_force": floats(d.efc_force[:n]),
+           "qfrc_constraint": floats(d.qfrc_constraint), "stats": stats(m, d)}
+    if mujoco.mj_isSparse(m):
+        # The rows' chains and their values there (`efc_J_*`), as MuJoCo keeps them.
+        nnz = int(sum(d.efc_J_rownnz[:n]))
+        out.update({"efc_J_rownnz": [int(x) for x in d.efc_J_rownnz[:n]],
+                    "efc_J_rowadr": [int(x) for x in d.efc_J_rowadr[:n]],
+                    "efc_J_colind": [int(x) for x in d.efc_J_colind[:nnz]],
+                    "efc_J": floats(d.efc_J[:nnz])})
+    else:
+        out["efc_J"] = floats(d.efc_J[:n * m.nv])
+    return out
 
 
 def two_tree_cone(xml, qvel):
@@ -914,6 +924,15 @@ def main():
         xml = MIXED_ROWS.format(solver=solver, cone="elliptic", condim=3).replace(
             f'solver="{solver}"', f'solver="{solver}" {opt}')
         same[f"{solver}_elliptic_3_{tag}"] = same_input(xml, MIXED_QVEL)
+    # At the sparse size (jacobian="sparse"), CG: its products run over the
+    # rows' chains (`mju_mulMatVecSparse`).
+    for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6)):
+        xml = MIXED_ROWS.format(solver="CG", cone=cone, condim=condim).replace(
+            'solver="CG"', 'solver="CG" jacobian="sparse"')
+        same[f"CG_{cone}_{condim}_sparse"] = same_input(xml, MIXED_QVEL)
+    # The tilted box's four contacts: each box dof in sixteen rows, all pushing.
+    same["CG_box_sparse"] = same_input(NEWTON_BOX.format(iterations=100).replace(
+        'iterations="100"', 'iterations="100" solver="CG" jacobian="sparse"'), None, census_start)
     cases["same_input"] = same
     cases["islands_mixed"] = {
         f"{solver}_{cone}_{condim}": island_trajectory(

@@ -22,7 +22,7 @@ use nalgebra::{DMatrix, DVector};
 use crate::constraint::impedance::{compute_aref, compute_kbip};
 use crate::dynamics::factor::mj_solve_m;
 use crate::jacobian::mj_apply_ft;
-use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mju_dot};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, dot_sparse, mju_dot};
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, Data, ENABLE_SLEEP, Integrator, MjJointType, Model,
@@ -350,7 +350,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     // Step 2: `efc_b`, with the implicit-corrected qacc_smooth under
     // ImplicitSpringDamper (MuJoCo `mj_fwdConstraint`,
     // `engine_forward.c:755-756`).
-    data.efc_b = mul_jac_vec(data, data.qacc_smooth.as_slice()) - &data.efc_aref;
+    data.efc_b = mul_jac_vec(model, data, data.qacc_smooth.as_slice()) - &data.efc_aref;
 
     let qfrc_eff: DVector<f64> = qfrc_impl_owned.unwrap_or_else(|| data.qfrc_smooth.clone());
 
@@ -378,8 +378,12 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
         data.primal_qacc = false;
     }
 
-    // Step 4: Map efc_force → qfrc_constraint via J^T
-    compute_qfrc_constraint_from_efc(model, data);
+    // Step 4: Map efc_force → qfrc_constraint via J^T, except after the primal
+    // solver, whose own MuJoCo keeps (`PrimalUpdateConstraint`; at the sparse
+    // size a product over the transpose that rounds otherwise).
+    if !data.primal_qacc {
+        compute_qfrc_constraint_from_efc(model, data);
+    }
 
     // Step 5: Extract qfrc_frictionloss from efc_force
     extract_qfrc_frictionloss(data, model.nv);
@@ -448,11 +452,22 @@ pub(crate) fn clear_constraint_rows(model: &Model, data: &mut Data) {
     data.nisland = 0;
 }
 
-/// `J·vec` over the constraint rows, as MuJoCo's dense `mj_mulJacVec`
-/// (`engine_core_constraint.c:333-349`): each row's `mju_dot` with `vec`.
-/// At the sparse size MuJoCo takes it as a sparse product, which rounds
-/// otherwise.
-pub(crate) fn mul_jac_vec(data: &Data, vec: &[f64]) -> DVector<f64> {
+/// `J·vec` over the constraint rows, as MuJoCo's `mj_mulJacVec`
+/// (`engine_core_constraint.c:333-349`): at the dense size each row's
+/// `mju_dot` with `vec`, at the sparse size ([`Model::is_sparse`]) each row's
+/// `mju_dotSparse` over its dof chain (`mju_mulMatVecSparse`).
+pub(crate) fn mul_jac_vec(model: &Model, data: &Data, vec: &[f64]) -> DVector<f64> {
+    if model.is_sparse() {
+        return DVector::from_iterator(
+            data.efc_type.len(),
+            (0..data.efc_type.len()).map(|r| {
+                let adr = data.efc_J_rowadr[r];
+                let chain = &data.efc_J_colind[adr..adr + data.efc_J_rownnz[r]];
+                let values: Vec<f64> = chain.iter().map(|&c| data.efc_J[(r, c)]).collect();
+                dot_sparse(&values, |k| vec[chain[k]])
+            }),
+        );
+    }
     let rows = data.efc_J.transpose();
     DVector::from_iterator(
         rows.ncols(),
@@ -466,7 +481,7 @@ pub(crate) fn mul_jac_vec(data: &Data, vec: &[f64]) -> DVector<f64> {
 /// and `B` from the row's `solref` and `solimp` as `mj_makeImpedance` makes
 /// them.
 pub(crate) fn mj_reference_constraint(model: &Model, data: &mut Data) {
-    data.efc_vel = mul_jac_vec(data, data.qvel.as_slice());
+    data.efc_vel = mul_jac_vec(model, data, data.qvel.as_slice());
     let aref = (0..data.efc_type.len()).map(|i| {
         let (k, b) = compute_kbip(model, data.efc_solref[i], data.efc_solimp[i]);
         compute_aref(
@@ -493,7 +508,7 @@ pub(crate) fn mj_reference_constraint(model: &Model, data: &mut Data) {
 /// under mjMINVAL.
 #[doc(hidden)]
 pub fn mj_sol_primal_rows(model: &Model, data: &mut Data, newton: bool) -> Result<(), StepError> {
-    data.efc_b = mul_jac_vec(data, data.qacc_smooth.as_slice()) - &data.efc_aref;
+    data.efc_b = mul_jac_vec(model, data, data.qacc_smooth.as_slice()) - &data.efc_aref;
     let qfrc_smooth = data.qfrc_smooth.clone();
     mj_sol_primal(model, data, &PrimalMass::Tree, &qfrc_smooth, newton)
 }

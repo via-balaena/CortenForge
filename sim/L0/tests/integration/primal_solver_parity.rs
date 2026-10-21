@@ -176,9 +176,37 @@ fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
     data.qfrc_smooth
         .copy_from_slice(&floats(&case["qfrc_smooth"]));
     let j = floats(&case["efc_J"]);
-    for r in 0..nefc {
-        for c in 0..model.nv {
-            data.efc_J[(r, c)] = j[r * model.nv + c];
+    if case.get("efc_J_colind").is_some() {
+        // At the sparse size MuJoCo keeps each row's chain and the values
+        // there: the chains are ours, and the values go in at their columns.
+        assert!(model.is_sparse(), "{name}: the sparse size");
+        assert_eq!(
+            data.efc_J_rownnz,
+            usizes(&case["efc_J_rownnz"]),
+            "{name}: rownnz"
+        );
+        assert_eq!(
+            data.efc_J_rowadr,
+            usizes(&case["efc_J_rowadr"]),
+            "{name}: rowadr"
+        );
+        assert_eq!(
+            data.efc_J_colind,
+            usizes(&case["efc_J_colind"]),
+            "{name}: colind"
+        );
+        data.efc_J.fill(0.0);
+        for r in 0..nefc {
+            let span = data.efc_J_rowadr[r]..data.efc_J_rowadr[r] + data.efc_J_rownnz[r];
+            for (&c, &value) in data.efc_J_colind[span.clone()].iter().zip(&j[span]) {
+                data.efc_J[(r, c)] = value;
+            }
+        }
+    } else {
+        for r in 0..nefc {
+            for c in 0..model.nv {
+                data.efc_J[(r, c)] = j[r * model.nv + c];
+            }
         }
     }
     data.efc_aref.copy_from_slice(&floats(&case["efc_aref"]));
@@ -226,7 +254,35 @@ fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
         data.efc_force.as_slice(),
         &floats(&case["efc_force"]),
     );
+    assert_bits(
+        &format!("{name} qfrc_constraint"),
+        data.qfrc_constraint.as_slice(),
+        &floats(&case["qfrc_constraint"]),
+    );
     data
+}
+
+/// The forward pass keeps the primal solver's `qfrc_constraint`, as MuJoCo's
+/// (`PrimalUpdateConstraint`, `engine_solver.c:1019-1025`), not `J'·force`
+/// made again: at the sparse size the solver's sums each dof's rows over the
+/// transpose in four lanes (`mju_dotSparse`), where adding the rows one by
+/// one rounds otherwise. The golden's sparse tilted box, whose dofs are each
+/// in its four contacts' sixteen rows: after a forward pass, the solver run
+/// again on that forward's inputs gives the same `qfrc_constraint`, bit for
+/// bit.
+#[test]
+fn the_forward_pass_keeps_the_solver_s_constraint_force() {
+    let case = &golden()["cases"]["same_input"]["CG_box_sparse"];
+    let (model, mut data) = start(case);
+    assert!(model.is_sparse(), "the sparse size");
+    data.forward(&model).expect("forward");
+    let mut again = data.clone();
+    sim_core::constraint::mj_sol_primal_rows(&model, &mut again, false).expect("solve");
+    assert_bits(
+        "qfrc_constraint",
+        data.qfrc_constraint.as_slice(),
+        again.qfrc_constraint.as_slice(),
+    );
 }
 
 /// Census doc 406a1991, a box on a tilted plane, at the census start: three
