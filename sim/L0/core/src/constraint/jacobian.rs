@@ -4,6 +4,7 @@
 
 use nalgebra::{DMatrix, Vector3};
 
+use crate::constraint::chain::body_pair_chain;
 use crate::jacobian::mj_jac;
 use crate::types::{Contact, Data, Model};
 
@@ -22,6 +23,14 @@ fn contact_sides(model: &Model, contact: &Contact) -> (usize, usize) {
             model.geom_body[contact.geom2],
         ),
     }
+}
+
+/// A contact's dof chain at the sparse size: its two sides' bodies' merged
+/// chain (`mj_contactJacobian`'s `mj_jacDifPair`,
+/// `engine_core_constraint.c:913-929`).
+pub fn contact_chain(model: &Model, contact: &Contact) -> Vec<usize> {
+    let (b1, b2) = contact_sides(model, contact);
+    body_pair_chain(model, b1, b2)
 }
 
 /// `rows` of `j` from row `row0` on: each row of `frame` times `jacdif`

@@ -1761,3 +1761,4 @@ a0460cf27607c89b	examples/fundamentals/sim-cpu/solvers/pgs/src/main.rs:71
 bd0efdf0e9a5354e	sim/L0/tests/integration/derivatives.rs:4986
 00a14f6697237365	sim/L0/tests/integration/spatial_transport.rs:329
 7e666b75a612388a	sim/L0/gpu/src/pipeline/conformance_tests.rs:651
+94a48120a9d830e1	sim/L0/tests/integration/sparse_rows_parity.rs:110

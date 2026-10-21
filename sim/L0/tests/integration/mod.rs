@@ -230,6 +230,10 @@ pub mod empty_rows_parity;
 /// MuJoCo 3.5.0, bit for bit.
 pub mod reference_rows_parity;
 
+/// Each row's dof chain at the sparse size against MuJoCo 3.5.0: every rigid
+/// row kind's chain and values.
+pub mod sparse_rows_parity;
+
 /// A flex's edge rows from a flex equality, as MuJoCo's: one per non-rigid
 /// edge, R from `flexedge_invweight0` and the diagonal approximation from R.
 pub mod flex_equality_rows;

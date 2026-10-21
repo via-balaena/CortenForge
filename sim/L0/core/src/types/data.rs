@@ -406,6 +406,15 @@ pub struct Data {
     /// Unified constraint Jacobian (nefc × nv). Rows ordered: equality,
     /// friction loss, joint limits, tendon limits, contacts.
     pub efc_J: DMatrix<f64>,
+    /// At the sparse size ([`Model::is_sparse`]) each row's dof chain length,
+    /// MuJoCo's `efc_J_rownnz`: the dofs its sparse Jacobian row lists,
+    /// whatever their values. Empty at the dense size.
+    pub efc_J_rownnz: Vec<usize>,
+    /// Where each row's chain starts in `efc_J_colind` (`efc_J_rowadr`).
+    pub efc_J_rowadr: Vec<usize>,
+    /// The rows' dof chains, each ascending (`efc_J_colind`); a row's values
+    /// are `efc_J`'s at those columns.
+    pub efc_J_colind: Vec<usize>,
     /// Per-row constraint type annotation.
     pub efc_type: Vec<ConstraintType>,
     /// Per-row constraint violation (penetration distance for contacts).
@@ -875,6 +884,9 @@ impl Clone for Data {
             qfrc_smooth: self.qfrc_smooth.clone(),
             efc_b: self.efc_b.clone(),
             efc_J: self.efc_J.clone(),
+            efc_J_rownnz: self.efc_J_rownnz.clone(),
+            efc_J_rowadr: self.efc_J_rowadr.clone(),
+            efc_J_colind: self.efc_J_colind.clone(),
             efc_type: self.efc_type.clone(),
             efc_pos: self.efc_pos.clone(),
             efc_margin: self.efc_margin.clone(),

@@ -9,6 +9,7 @@
 
 use nalgebra::{DMatrix, DVector};
 
+use crate::constraint::chain::tendon_chain;
 use crate::constraint::impedance::{
     MJ_MINVAL, ball_limit_axis_angle, checked_solref, compute_diag_approx_exact, compute_impedance,
     compute_regularization,
@@ -50,6 +51,9 @@ pub fn tendon_deadband_displacement(length: f64, range: [f64; 2]) -> f64 {
 /// impedance and regularization. The velocity and the reference acceleration
 /// are every row's at once ([`crate::constraint::mj_reference_constraint`]).
 ///
+/// At the sparse size ([`Model::is_sparse`]) it records `chain`, the row's
+/// dof chain, in `efc_J_rownnz`, `efc_J_rowadr` and `efc_J_colind`.
+///
 /// Increments `*row` by 1 on completion.
 // Assembly takes the full per-iteration constraint state (model, data, J/M/b/lambda buffers, output sink); bundling would obscure the math against the analytical references.
 #[allow(clippy::too_many_arguments)]
@@ -68,6 +72,7 @@ pub fn finalize_constraint_row(
     id_val: usize,
     mu_val: [f64; 5],
     bw_diag: f64,
+    chain: &[usize],
 ) {
     let imp_violation = (pos - margin).abs();
     finalize_constraint_row_imp(
@@ -86,6 +91,7 @@ pub fn finalize_constraint_row(
         mu_val,
         bw_diag,
         imp_violation,
+        chain,
     );
 }
 
@@ -111,6 +117,7 @@ pub fn finalize_constraint_row_imp(
     mu_val: [f64; 5],
     bw_diag: f64,
     imp_violation: f64,
+    chain: &[usize],
 ) {
     data.efc_type.push(ctype);
     data.efc_pos.push(pos);
@@ -139,6 +146,14 @@ pub fn finalize_constraint_row_imp(
     let (r_val, d_val) = compute_regularization(imp, diag);
     data.efc_R.push(r_val);
     data.efc_D.push(d_val);
+
+    // The row's dof chain at the sparse size, MuJoCo's `efc_J_rownnz`,
+    // `efc_J_rowadr` and `efc_J_colind` (`mj_addConstraint`).
+    if model.is_sparse() {
+        data.efc_J_rowadr.push(data.efc_J_colind.len());
+        data.efc_J_rownnz.push(chain.len());
+        data.efc_J_colind.extend_from_slice(chain);
+    }
 
     *row += 1;
 }
@@ -323,6 +338,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
     data.efc_b = DVector::zeros(nefc);
     data.efc_cone_hessian = vec![None; data.contacts.len()];
     data.ncone = 0;
+    data.efc_J_rownnz.clear();
+    data.efc_J_rowadr.clear();
+    data.efc_J_colind.clear();
 
     let mut row = 0usize;
 
@@ -358,6 +376,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                 dof_idx,
                 [0.0; 5],
                 bw,
+                &[dof_idx],
             );
         }
 
@@ -375,6 +394,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                 continue;
             }
             let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
+            let chain = tendon_chain(data, nv, t);
             finalize_constraint_row(
                 model,
                 data,
@@ -390,6 +410,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                 t,
                 [0.0; 5],
                 bw,
+                &chain,
             );
         }
     } // end if !frictionloss_disabled (3b+3c)
@@ -430,6 +451,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                             jnt_id,
                             [0.0; 5],
                             bw,
+                            &[dof_adr],
                         );
                     }
 
@@ -452,6 +474,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                             jnt_id,
                             [0.0; 5],
                             bw,
+                            &[dof_adr],
                         );
                     }
                 }
@@ -484,6 +507,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                             jnt_id,
                             [0.0; 5],
                             bw,
+                            &[dof_adr, dof_adr + 1, dof_adr + 2],
                         );
                     }
                 }
@@ -504,6 +528,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
             let si = model.tendon_solimp_lim[t];
             let margin = model.tendon_margin[t];
             let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
+            let chain = tendon_chain(data, nv, t);
 
             // Lower tendon limit: dist = length - limit_min
             let dist_lower = length - limit_min;
@@ -530,6 +555,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                     t,
                     [0.0; 5],
                     bw,
+                    &chain,
                 );
             }
 
@@ -558,6 +584,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                     t,
                     [0.0; 5],
                     bw,
+                    &chain,
                 );
             }
         }

@@ -9,6 +9,7 @@
 //! dispatch in `engine_forward.c`.
 
 pub(crate) mod assembly;
+pub(crate) mod chain;
 pub(crate) mod contact_assembly;
 pub(crate) mod equality;
 pub(crate) mod equality_assembly;
@@ -439,6 +440,9 @@ pub(crate) fn clear_constraint_rows(model: &Model, data: &mut Data) {
     data.efc_mu.clear();
     data.efc_dim.clear();
     data.efc_id.clear();
+    data.efc_J_rownnz.clear();
+    data.efc_J_rowadr.clear();
+    data.efc_J_colind.clear();
     data.efc_state.clear();
     data.efc_cone_hessian.clear();
     data.nisland = 0;
