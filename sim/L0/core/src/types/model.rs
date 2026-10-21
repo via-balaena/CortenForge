@@ -206,7 +206,9 @@ pub struct Model {
     /// Damping coefficient (Ns/rad for hinge, Ns/m for slide).
     /// Applied as: τ = -damping * qvel
     pub jnt_damping: Vec<f64>,
-    /// Armature inertia (motor rotor inertia).
+    /// Armature inertia (motor rotor inertia), per joint. The CPU engine reads
+    /// `dof_armature` (MuJoCo's only armature field), not this; the GPU adds
+    /// both (ledger L213).
     pub jnt_armature: Vec<f64>,
     /// Solver reference parameters for joint limits [timeconst, dampratio].
     /// Controls how stiffly/softly limits are enforced.
@@ -273,7 +275,10 @@ pub struct Model {
     pub dof_simplenum: Vec<usize>,
     /// Each dof's mass-matrix diagonal at `qpos0`, its armature plus
     /// `cdof · (crb · cdof)` (length `nv`; MuJoCo `dof_M0`, made by
-    /// [`Self::compute_dof_m0`]): a simple dof's row of the mass matrix.
+    /// [`Self::compute_dof_m0`]): a simple dof's row of the mass matrix. An
+    /// edit of the masses, inertias, `dof_armature`, body poses, `qpos0` or
+    /// joint axes leaves it as it was until it is made again, as
+    /// [`Self::recompute_derived`] does; a model with simple dofs must have it.
     pub dof_M0: Vec<f64>,
     /// Entries per row of the mass matrix's lower triangle as MuJoCo stores
     /// it, a simple dof's row holding only its diagonal (length `nv`):

@@ -1245,8 +1245,8 @@ impl Model {
     ///   with vertex bodies on different moving bodies the two differ (book
     ///   Rigid-loading L10, rule (c))
     ///
-    /// Must be called after `compute_simple_bodies()` and
-    /// `compute_dof_patterns()`, and once body_mass, body_inertia, dof_body,
+    /// Must be called after `compute_simple_bodies()`, `compute_dof_patterns()`
+    /// and `compute_dof_m0()`, and once body_mass, body_inertia, dof_body,
     /// dof_jnt, jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
     pub fn compute_invweight0(&mut self) {
         const MIN_VAL: f64 = 1e-15; // mjMINVAL

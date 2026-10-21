@@ -4166,8 +4166,9 @@ fn test_selective_crba_crb_preserved() {
 
 /// T94: Armature is correctly applied for awake joints (AC #65).
 ///
-/// Verifies that jnt_armature and dof_armature are both added to qM diagonal
-/// for awake joints, with some trees sleeping.
+/// Verifies that an awake dof's armature (`dof_armature`, which MuJoCo's
+/// `mj_crb` starts its row with) is on its qM diagonal, with some trees
+/// sleeping.
 #[test]
 fn test_selective_crba_armature_correct() {
     // Model with armature on joints
@@ -4214,8 +4215,7 @@ fn test_selective_crba_armature_correct() {
     let dof_count = model.tree_dof_num[awake_tree];
 
     for d in dof_start..dof_start + dof_count {
-        let jnt_id = model.dof_jnt[d];
-        let armature = model.jnt_armature[jnt_id];
+        let armature = model.dof_armature[d];
         // qM diagonal should include the armature contribution
         assert!(
             data.qM[(d, d)] >= armature,

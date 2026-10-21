@@ -789,6 +789,7 @@ fn recompute_derived_changes_nothing_on_a_built_model() {
 /// The derived fields an edit reaches, printed for comparison.
 fn derived_fields(m: &sim_core::Model) -> Vec<(&'static str, String)> {
     vec![
+        ("dof_M0", format!("{:?}", m.dof_M0)),
         ("body_subtreemass", format!("{:?}", m.body_subtreemass)),
         ("body_invweight0", format!("{:?}", m.body_invweight0)),
         ("dof_invweight0", format!("{:?}", m.dof_invweight0)),
