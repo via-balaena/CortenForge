@@ -104,8 +104,9 @@ fn capsule_rests_on_box_as_mujoco() {
 // within 1.5e-9 on the mesh slab, the size of 0.1's rounding to a float
 // (MuJoCo stores mesh vertices as floats, book Rigid-loading L35). Each
 // bound is 0 where the run was MuJoCo's bit for bit, else 2.6 to 12 times
-// what was measured on macOS arm64, which each test's doc gives; a body that
-// turns is held to 0 on macOS arm64 alone.
+// what was measured on macOS arm64, which each test's doc gives; the box
+// slab's cylinder's height is held to 0 on macOS arm64 alone (its test says
+// why).
 
 /// A sphere-shaped ellipsoid on a box slab. Measured: height 8.3e-17,
 /// contact 0.

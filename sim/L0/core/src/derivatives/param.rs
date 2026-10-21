@@ -409,7 +409,7 @@ pub fn mjd_mass_jacobian(model: &Model, data: &Data) -> Result<MassJacobian, Ste
 /// are put back to 0.
 fn keep_simple_rows_diagonal(model: &Model, d_pert: &mut Data) {
     for i in 0..model.nv {
-        if model.dof_simplenum[i] == 0 {
+        if model.dof_simplenum.get(i).is_none_or(|&n| n == 0) {
             continue;
         }
         let mut ancestor = model.dof_parent[i];
@@ -1134,6 +1134,20 @@ mod tests {
             jac.column_mut(b).copy_from(&((yp - ym) / (2.0 * eps)));
         }
         jac
+    }
+
+    /// A model with no simple-dof table (`dof_simplenum` empty, which
+    /// `compute_dof_patterns` allows and the mass-matrix pass reads as no
+    /// simple dof): the mass and inertia Jacobians run on it.
+    #[test]
+    fn mass_and_inertia_jacobians_take_a_model_without_the_simple_table() {
+        let mut model = Model::n_link_pendulum(2, 1.0, 0.5);
+        model.dof_simplenum.clear();
+        let mut data = model.make_data();
+        data.qpos[1] = 0.3;
+        data.forward(&model).unwrap();
+        assert!(mjd_mass_jacobian(&model, &data).is_ok(), "mass");
+        assert!(mjd_inertia_jacobian(&model, &data).is_ok(), "inertia");
     }
 
     /// A body MuJoCo marks simple whose two dofs slide on one axis: its mass
