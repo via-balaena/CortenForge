@@ -60,6 +60,22 @@ pub fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector 
     )
 }
 
+/// A dof's motion axis about a reference point, MuJoCo's `mju_dofCom`
+/// (`engine_util_spatial.c:445-458`): a rotation about `axis` through a point
+/// `offset` away from the reference point (`offset` = reference − point) is
+/// `[axis; axis × offset]`, a translation along `axis` (`offset` `None`) is
+/// `[0; axis]`.
+#[must_use]
+pub fn mju_dof_com(axis: &Vector3<f64>, offset: Option<&Vector3<f64>>) -> SpatialVector {
+    match offset {
+        Some(offset) => {
+            let lin = axis.cross(offset);
+            SpatialVector::new(axis.x, axis.y, axis.z, lin.x, lin.y, lin.z)
+        }
+        None => SpatialVector::new(0.0, 0.0, 0.0, axis.x, axis.y, axis.z),
+    }
+}
+
 /// Compute body spatial inertia in world frame.
 ///
 /// This builds the 6×6 spatial inertia matrix from:

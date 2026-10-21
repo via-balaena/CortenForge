@@ -183,8 +183,9 @@ pub struct Data {
     // ==================== Velocities (computed from qvel) ====================
     /// Body spatial velocities (length `nbody`): (angular, linear).
     pub cvel: Vec<SpatialVector>,
-    /// MuJoCo's dof motion axes (`cdof`, length `nv`). The CPU leaves them
-    /// 0: `mj_jac` builds MuJoCo's from the kinematics (ledger-L123).
+    /// Each dof's motion axis `[angular; linear]` in the world's orientation
+    /// about its tree's subtree centre of mass (length `nv`), MuJoCo's
+    /// `cdof`, made by the position stage (`mj_comPos`).
     pub cdof: Vec<SpatialVector>,
 
     // ==================== RNE Intermediate Quantities ====================

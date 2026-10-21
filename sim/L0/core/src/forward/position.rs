@@ -6,7 +6,7 @@
 
 use crate::collision::narrow::GEOM_EPSILON;
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::dynamics::compute_body_spatial_inertia;
+use crate::dynamics::{compute_body_spatial_inertia, mju_dof_com};
 use crate::quat;
 use crate::quat::mul_mat_vec3;
 use crate::tendon::mj_fwd_tendon;
@@ -119,9 +119,22 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
             UnitQuaternion::new_unchecked(Quaternion::new(xquat[0], xquat[1], xquat[2], xquat[3]));
     }
 
-    // ========== Subtree mass and COM, before the tendons (MuJoCo's `mj_comPos`
-    // precedes `mj_tendon`, `engine_forward.c:140-145`; a spatial tendon's
-    // Jacobian reads `subtree_com`) ==========
+    // Before the tendons: MuJoCo's `mj_comPos` precedes `mj_tendon`
+    // (`engine_forward.c:140-145`), and a spatial tendon's Jacobian reads
+    // `subtree_com` and `cdof`.
+    mj_com_pos(model, data);
+
+    // Tendon kinematics (after site poses and the subtree COM)
+    mj_fwd_tendon(model, data);
+}
+
+/// The subtree masses and centres of mass, then each dof's motion axis
+/// (`cdof`) in the world's orientation about its tree's subtree centre of
+/// mass, `subtree_com[body_rootid[b]]`: MuJoCo's `mj_comPos`
+/// (`engine_core_smooth.c:245-350`). The axes are the awake bodies', as
+/// MuJoCo's: a sleeping body keeps those of its last awake pass (for a tree
+/// that starts asleep, the reset's forward pass, `Model::start_sleep`).
+fn mj_com_pos(model: &Model, data: &mut Data) {
     // Initialize with each body's own mass and COM
     for body_id in 0..model.nbody {
         data.subtree_mass[body_id] = model.body_mass[body_id];
@@ -150,8 +163,47 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
         }
     }
 
-    // Tendon kinematics (after site poses and the subtree COM)
-    mj_fwd_tendon(model, data);
+    // Each dof's motion axis (`mju_dofCom`, `:298-350`): a hinge's axis, a
+    // ball's or a free joint's rotation the columns of the body's `xmat`,
+    // each about the joint's anchor; a slide's axis, a free joint's
+    // translation the world's axes.
+    let sleep_filter = model.enableflags & ENABLE_SLEEP != 0 && data.nbody_awake < model.nbody;
+    let nbody = if sleep_filter {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+    for b in 1..nbody {
+        let body = if sleep_filter {
+            data.body_awake_ind[b]
+        } else {
+            b
+        };
+        let joints = model.body_jnt_adr[body]..model.body_jnt_adr[body] + model.body_jnt_num[body];
+        for jnt in joints {
+            let dof = model.jnt_dof_adr[jnt];
+            let offset = data.subtree_com[model.body_rootid[body]] - data.xanchor[jnt];
+            let xmat = data.xmat[body];
+            let column = |k: usize| xmat.column(k).into_owned();
+            match model.jnt_type[jnt] {
+                MjJointType::Free => {
+                    for k in 0..3 {
+                        data.cdof[dof + k] = mju_dof_com(&Vector3::ith(k, 1.0), None);
+                        data.cdof[dof + 3 + k] = mju_dof_com(&column(k), Some(&offset));
+                    }
+                }
+                MjJointType::Ball => {
+                    for k in 0..3 {
+                        data.cdof[dof + k] = mju_dof_com(&column(k), Some(&offset));
+                    }
+                }
+                MjJointType::Slide => data.cdof[dof] = mju_dof_com(&data.xaxis[jnt], None),
+                MjJointType::Hinge => {
+                    data.cdof[dof] = mju_dof_com(&data.xaxis[jnt], Some(&offset));
+                }
+            }
+        }
+    }
 }
 
 /// The world pose of body `body_id` (`[x, y, z]`, `[w, x, y, z]`) from its

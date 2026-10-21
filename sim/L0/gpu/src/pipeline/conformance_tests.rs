@@ -17,7 +17,8 @@
 //! NONZERO `qvel`, gravity on) so every Coriolis / subspace / gravity term is
 //! live. The `cdof` oracle is computed from the CPU's PARTIAL frames
 //! (`data.xaxis`/`data.xanchor`, plus the ball/free `[R]` blocks) rather than
-//! `data.cdof`, which is vestigial (allocated as zeros, never written).
+//! `data.cdof`, which the CPU takes about the tree's subtree centre of mass
+//! (MuJoCo's frame) where the GPU takes it about the body's origin.
 //!
 //! Scope: n_env = 1, no contacts, no damping (Slice 1). The tendon case is
 //! filtered out — there is no GPU tendon shader.
@@ -91,8 +92,9 @@ const TOL_DYNAMIC: f32 = 1e-3;
 
 /// CPU motion-subspace column(s) for one scalar DOF, in the same `[ang; lin]`
 /// layout the GPU `cdof` buffer uses (2×vec4 per DOF). Mirrors
-/// `joint_motion_subspace` but read out per-DOF from the PARTIAL frames — the
-/// only trustworthy oracle, since `data.cdof` is never populated.
+/// `joint_motion_subspace` but read out per-DOF from the PARTIAL frames, about
+/// the body's origin as the GPU's (`data.cdof` is about the tree's subtree
+/// centre of mass).
 fn cpu_cdof_dof(model: &Model, data: &Data, dof: usize) -> [f32; 6] {
     let jnt = model.dof_jnt[dof];
     let body = model.jnt_body[jnt];
@@ -401,7 +403,8 @@ fn compare_env_fields(
     // cinert (compact, parallel-axis reversed)
     check_cinert(fails, ctx, state, data, model, name, env, n_env);
 
-    // cdof — partial-frame oracle (data.cdof is vestigial)
+    // cdof — partial-frame oracle about the body's origin (data.cdof is about
+    // the tree's subtree centre of mass)
     let gpu_cdof = read_buffer::<[f32; 4]>(ctx, &state.cdof, nv * 2 * n_env);
     for dof in 0..nv {
         let cpu = cpu_cdof_dof(model, data, dof);

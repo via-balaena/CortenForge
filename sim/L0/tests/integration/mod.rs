@@ -243,6 +243,10 @@ pub mod primal_solver_parity;
 /// rows, the spatial tendons' Jacobians, and the kinetic energy.
 pub mod jacobian_parity;
 
+/// The body spatial quantities against MuJoCo 3.5.0, about each tree's
+/// subtree centre of mass: the dofs' motion axes.
+pub mod com_frame_parity;
+
 // ============================================================================
 // Flex Solver Unification Tests (§6b)
 // ============================================================================
