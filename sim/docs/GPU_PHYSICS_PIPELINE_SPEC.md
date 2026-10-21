@@ -149,8 +149,7 @@ For `n_env=1000` (batch), each thread computes
 `env_id * stride + element_id`. Same shader, wider dispatch.
 
 **Batching:** `GpuPhysicsPipeline::new_batched` steps `n_env`
-environments in lockstep; every shader offsets its reads and writes by
-`env_id`.
+environments in lockstep.
 
 **f32 throughout:** All GPU physics uses f32. Conversion from f64
 happens at the CPU→GPU boundary (upload) and GPU→CPU boundary
@@ -656,13 +655,13 @@ for j in body_jnt_adr[body] .. body_jnt_adr[body] + body_jnt_num[body]:
             dq           = normalize(vec4(qpos[adr+1], qpos[adr+2], qpos[adr+3], qpos[adr]))
             quat         = quat × dq              // RIGHT multiply (local frame)
             // NOTE: The original spec had MJX-style LEFT multiply with conjugate sandwich.
-            // Session 1 matched the CPU (position.rs:90-98) which uses RIGHT multiply.
+            // Session 1 matched the CPU (`body_pose`, position.rs), which uses RIGHT multiply.
             // This is simpler and correct — Ball joints rotate in the body's local frame.
         Slide:
             pos += rotate(quat, jnt_axis[j]) × (qpos[adr] - qpos0[adr])
 ```
 
-**Critical hinge details (verified against CPU `position.rs:61-82`):**
+**Critical hinge details (verified against CPU `body_pose`, `position.rs`):**
 - `jnt_axis` is in local frame → must be rotated to world.
 - Rotation is LEFT-multiplied (`rot × quat`), not right-multiplied.
   The rotation is in world frame (axis was rotated to world).
@@ -937,7 +936,7 @@ passive forces remain CPU-only for the initial implementation.
 
 ### 8.7 `smooth.wgsl` — Smooth forces + qacc_smooth — COMPLETE (Session 3)
 
-**Actual:** ~98 lines WGSL. 2 entry points.
+**Actual:** ~120 lines WGSL. 2 entry points.
 **Pattern:** Per-DOF parallel + single-thread Cholesky solve.
 
 **Bindings (10 total, 4 bind groups):**
@@ -950,6 +949,7 @@ passive forces remain CPU-only for the initial implementation.
 ```
 qfrc_smooth[dof] = qfrc_applied[dof] + qfrc_actuator[dof]
                  + qfrc_passive[dof] - qfrc_bias[dof]
+                 - dofs[dof].damping * qvel[dof]
 ```
 
 **Note on xfrc_applied projection (DEFERRED):** The CPU

@@ -31,8 +31,10 @@ const UNIFORM_ALIGN: u64 = 256;
 /// uniform buffer.
 ///
 /// It validates nothing: it turns a ball joint about its body's origin, not
-/// about its `jnt_pos` as sim-core does. [`GpuPhysicsPipeline`] refuses
-/// every joint but a free one.
+/// about its `jnt_pos` as sim-core does, and it anchors a free joint at its
+/// position even where the joint shares its body (a model MuJoCo refuses,
+/// which sim-core anchors in the frame before the joint).
+/// [`GpuPhysicsPipeline`] refuses every joint but a free one.
 ///
 /// [`GpuPhysicsPipeline`]: crate::pipeline::GpuPhysicsPipeline
 pub struct GpuFkPipeline {
