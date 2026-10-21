@@ -4,7 +4,8 @@
 //! twelve of those goldens are within its tolerance of the baseline's
 //! (`golden_flags::goldens_within_tolerance_of_the_baseline` pins which), so
 //! their tests cannot tell their flag ignored. Here ten of those flags
-//! each run on a scene the flag changes, with and without the flag. The
+//! each run on a scene the flag changes, with and without the flag, and the
+//! warmstart flag runs a second time under PGS. The
 //! golden is `assets/golden/flags/flags_3_5_0.json`, from the unfused
 //! MuJoCo 3.5.0 oracle (`scripts/gen_flag_reference.py`, which describes
 //! the scenes and says why midphase and nativeccd are not here).
@@ -195,6 +196,12 @@ flag_case!(
     "disable",
     DISABLE_WARMSTART
 );
+flag_case!(
+    golden_3_5_0_disable_warmstart_under_pgs,
+    "warmstart_pgs",
+    "disable",
+    DISABLE_WARMSTART
+);
 flag_case!(golden_3_5_0_enable_sleep, "sleep", "enable", ENABLE_SLEEP);
 flag_case!(
     golden_3_5_0_enable_invdiscrete,
@@ -233,7 +240,8 @@ fn every_golden_case_is_tested() {
             "override",
             "sensor",
             "sleep",
-            "warmstart"
+            "warmstart",
+            "warmstart_pgs"
         ]
     );
 }

@@ -20,7 +20,8 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::primal::MJ_NSOLVER;
 use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::cholesky_solve_in_place;
-use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
+use crate::types::flags::disabled;
+use crate::types::{ConstraintState, ConstraintType, DISABLE_WARMSTART, Data, Model, SolverStat};
 
 /// Precomputed data for sparse PGS iteration.
 ///
@@ -211,44 +212,52 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
     data.efc_force = DVector::zeros(nefc);
     data.efc_jar = DVector::zeros(nefc);
 
-    // Warmstart: classify at qacc_warmstart to get warmstart forces
-    classify_constraint_states(
-        model,
-        data,
-        &data.qacc_warmstart.clone(),
-        &qacc_smooth,
-        &qfrc_smooth,
-    );
-    let warm_forces = data.efc_force.clone();
+    // Start from zero forces with warmstart disabled, as MuJoCo's `warmstart`
+    // does for PGS (`engine_forward.c:682-686`); otherwise from the warmstart's
+    // forces when their dual cost is negative, else from zero forces (MuJoCo
+    // keeps them at a cost of exactly 0 too, and sums the cost otherwise:
+    // ledger L219).
+    let mut qacc = if disabled(model, DISABLE_WARMSTART) {
+        qacc_smooth.clone()
+    } else {
+        // Warmstart: classify at qacc_warmstart to get warmstart forces
+        classify_constraint_states(
+            model,
+            data,
+            &data.qacc_warmstart.clone(),
+            &qacc_smooth,
+            &qfrc_smooth,
+        );
+        let warm_forces = data.efc_force.clone();
 
-    // Evaluate warmstart dual cost using qacc: O(nefc × nv) instead of O(nefc²)
-    // qacc_warm = qacc_smooth + minv_jt · warm_forces
-    let mut qacc_warm = qacc_smooth.clone();
-    for i in 0..nefc {
-        if warm_forces[i] != 0.0 {
-            for k in 0..nv {
-                qacc_warm[k] += warm_forces[i] * sp.minv_jt[(k, i)];
+        // Evaluate warmstart dual cost using qacc: O(nefc × nv) instead of O(nefc²)
+        // qacc_warm = qacc_smooth + minv_jt · warm_forces
+        let mut qacc_warm = qacc_smooth.clone();
+        for i in 0..nefc {
+            if warm_forces[i] != 0.0 {
+                for k in 0..nv {
+                    qacc_warm[k] += warm_forces[i] * sp.minv_jt[(k, i)];
+                }
             }
         }
-    }
-    let mut dual_cost_warm = 0.0;
-    for i in 0..nefc {
-        // AR · f_i = J_i · (qacc_warm - qacc_smooth) + R_i · f_i
-        let mut j_delta = 0.0;
-        for k in 0..nv {
-            j_delta += data.efc_J[(i, k)] * (qacc_warm[k] - qacc_smooth[k]);
+        let mut dual_cost_warm = 0.0;
+        for i in 0..nefc {
+            // AR · f_i = J_i · (qacc_warm - qacc_smooth) + R_i · f_i
+            let mut j_delta = 0.0;
+            for k in 0..nv {
+                j_delta += data.efc_J[(i, k)] * (qacc_warm[k] - qacc_smooth[k]);
+            }
+            let ar_f_i = j_delta + data.efc_R[i] * warm_forces[i];
+            dual_cost_warm += 0.5 * warm_forces[i] * ar_f_i + warm_forces[i] * data.efc_b[i];
         }
-        let ar_f_i = j_delta + data.efc_R[i] * warm_forces[i];
-        dual_cost_warm += 0.5 * warm_forces[i] * ar_f_i + warm_forces[i] * data.efc_b[i];
-    }
 
-    // Initialize qacc and forces from warmstart or cold start
-    let mut qacc = if dual_cost_warm < 0.0 {
-        data.efc_force.copy_from(&warm_forces);
-        qacc_warm
-    } else {
-        data.efc_force.fill(0.0);
-        qacc_smooth.clone()
+        if dual_cost_warm < 0.0 {
+            data.efc_force.copy_from(&warm_forces);
+            qacc_warm
+        } else {
+            data.efc_force.fill(0.0);
+            qacc_smooth.clone()
+        }
     };
 
     let max_iters = model.solver_iterations;

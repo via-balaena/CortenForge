@@ -42,6 +42,10 @@ tell the flag ignored. The cases:
   parameters o_* replace.
 - island (disable) and warmstart (disable): CG at 2 iterations, so the
   island split and the warmstart change the force the solve stops at.
+- warmstart_pgs (disable): the warmstart flag under PGS at 2 iterations;
+  MuJoCo starts PGS from zero forces under the flag (engine_forward.c:
+  682-686), and the warm forces it would otherwise keep move where the
+  solve stops.
 - sleep (enable): the free ball starts asleep (sleep="init").
 - invdiscrete (enable): the fwdinv case's scene with the fwdinv flag on in
   both runs; the flag makes the comparison's inverse the discrete one
@@ -160,20 +164,23 @@ def with_fwdinv(xml):
 
 
 def cases(canon):
+    """Each case's (scene, kind, flag, ctrl), by name."""
     cg2 = with_options(canon, 'solver="CG" iterations="2"')
+    pgs2 = with_options(canon, 'solver="PGS" iterations="2"')
     override = with_options(with_near_misses(canon), 'o_margin="0.02" o_solref="0.05 0.8" '
                             'o_solimp="0.8 0.9 0.01 0.5 2" o_friction="0.4 0.4 0.01 0.001 0.001"')
     return {
-        "autoreset": (SLIDE, "disable", 1.0),
-        "sensor": (with_sensors(canon), "disable", 2.0),
-        "energy": (canon, "enable", 2.0),
-        "fwdinv": (cg2, "enable", 2.0),
-        "override": (override, "enable", 2.0),
-        "island": (cg2, "disable", 2.0),
-        "warmstart": (cg2, "disable", 2.0),
-        "sleep": (with_ball_asleep(canon), "enable", 2.0),
-        "invdiscrete": (with_fwdinv(cg2), "enable", 2.0),
-        "multiccd": (CYLINDER, "enable", 0.0),
+        "autoreset": (SLIDE, "disable", "autoreset", 1.0),
+        "sensor": (with_sensors(canon), "disable", "sensor", 2.0),
+        "energy": (canon, "enable", "energy", 2.0),
+        "fwdinv": (cg2, "enable", "fwdinv", 2.0),
+        "override": (override, "enable", "override", 2.0),
+        "island": (cg2, "disable", "island", 2.0),
+        "warmstart": (cg2, "disable", "warmstart", 2.0),
+        "warmstart_pgs": (pgs2, "disable", "warmstart", 2.0),
+        "sleep": (with_ball_asleep(canon), "enable", "sleep", 2.0),
+        "invdiscrete": (with_fwdinv(cg2), "enable", "invdiscrete", 2.0),
+        "multiccd": (CYLINDER, "enable", "multiccd", 0.0),
     }
 
 
@@ -222,14 +229,14 @@ def main():
     mujoco.set_mju_user_warning(warned.append)
     out = {}
     canon = canonical(os.path.join(sys.argv[1], "flag_golden_test.xml"))
-    for name, (xml, kind, ctrl) in cases(canon).items():
-        baseline = run(xml, kind, name, False, ctrl)
-        flagged = run(xml, kind, name, True, ctrl)
+    for name, (xml, kind, flag, ctrl) in cases(canon).items():
+        baseline = run(xml, kind, flag, False, ctrl)
+        flagged = run(xml, kind, flag, True, ctrl)
         gap = distance(baseline, flagged)
         if gap <= REFUSE_BELOW:
             sys.exit(f"{name}: the flag moves the trajectory by {gap:.3e}, "
                      f"not above {REFUSE_BELOW:.0e}: a test could not tell it ignored")
-        out[name] = {"xml": xml, "kind": kind, "flag": name, "ctrl": ctrl, "distance": gap,
+        out[name] = {"xml": xml, "kind": kind, "flag": flag, "ctrl": ctrl, "distance": gap,
                      "baseline": baseline, "flagged": flagged}
     bad_qacc = int(mujoco.mjtWarning.mjWARN_BADQACC)
     if out["autoreset"]["baseline"][0]["warnings"][bad_qacc] != 1:
