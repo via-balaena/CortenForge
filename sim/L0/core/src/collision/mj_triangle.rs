@@ -3,7 +3,7 @@
 //! radius (`mjraw_SphereTriangle`, `mjraw_BoxTriangle`,
 //! `mjraw_CapsuleTriangle`, `engine_collision_primitive.c:490-766`), and the
 //! capsule a cable's element is (`mj_makeCapsule`,
-//! `engine_collision_driver.c:1432-1451`), which the sphere, capsule and box
+//! `engine_collision_driver.c:1432-1449`), which the sphere, capsule and box
 //! functions of `mj_primitive` meet. Each contact's normal points from the
 //! geom to the element.
 
@@ -267,7 +267,7 @@ pub(super) fn raw_capsule_triangle(
     contacts
 }
 
-/// `mj_makeCapsule` (`engine_collision_driver.c:1432-1451`): the capsule a
+/// `mj_makeCapsule` (`engine_collision_driver.c:1432-1449`): the capsule a
 /// cable's element is, between its vertices `v1` and `v2`: its position
 /// halfway, its z axis from `v2` to `v1` (`mju_quatZ2Vec`), its radius the
 /// flex's and its half-length half the distance.

@@ -3987,9 +3987,9 @@ pub struct MjcfFlex {
     /// between elements sharing an edge are generated (adjacent element
     /// contacts).
     pub internal: bool,
-    /// Number of active element layers for self-collision (default 1,
-    /// MuJoCo's): a dim-3 element is active while its layer, its distance
-    /// from the border, is below it (`mj_isElemActive`).
+    /// Number of active element layers (default 1, MuJoCo's): a dim-3
+    /// element is active while its layer, its distance from the border, is
+    /// below it (`mj_isElemActive`).
     pub activelayers: i32,
     /// Per-vertex collision mode (default false). When true, vertex spheres
     /// collide with other geoms even when not part of a flex element face.

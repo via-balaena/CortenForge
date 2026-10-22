@@ -465,7 +465,7 @@ fn ac4_cloth_on_sphere_contact() {
             let max_vel = data.qvel.iter().fold(0.0_f64, |mx, v| mx.max(v.abs()));
             panic!("step {} failed: {:?}, max_vel={:.2e}", step, e, max_vel);
         }
-        // Check for flex contacts (contacts where flex_vertex is Some)
+        // Check for flex contacts (a flex on a side)
         for contact in &data.contacts {
             if contact.flex.iter().any(Option::is_some) {
                 had_flex_contacts = true;

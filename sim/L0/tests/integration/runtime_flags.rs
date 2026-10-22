@@ -2317,8 +2317,6 @@ fn ac35b_override_with_pair_contacts() {
 fn ac35c_override_with_flex_contacts() {
     // Flex cloth near a rigid sphere with ENABLE_OVERRIDE. Verify flex-rigid
     // contacts use global override params (solref, solimp, friction, margin).
-    // Uses a sphere on a separate body (not world body) to avoid the
-    // parent-child filter that rejects flex-vertex-vs-worldbody-geom contacts.
     let mjcf = r#"
     <mujoco model="override_flex_test">
         <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
@@ -2355,7 +2353,7 @@ fn ac35c_override_with_flex_contacts() {
     // With o_margin=0.2, detection threshold is generous. Step once.
     data.forward(&model).expect("forward");
 
-    // Find a flex contact (flex_vertex is Some).
+    // Find a flex contact (a flex on a side).
     let flex_contact = data
         .contacts
         .iter()

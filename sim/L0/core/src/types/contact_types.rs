@@ -117,8 +117,8 @@ impl Contact {
 
     /// Whether a side is a flex marked passive (`flex_passive`): MuJoCo's
     /// `exclude` 4 (`mj_nc`, `engine_core_constraint.c:1932-1937`). Such a
-    /// contact makes no constraint rows, its own gap aside, and pushes along
-    /// its normal as a spring instead (`forward::passive`).
+    /// contact makes no constraint rows, in the gap or out of it, and pushes
+    /// along its normal as a spring instead (`forward::passive`).
     #[must_use]
     pub fn is_passive(&self, model: &Model) -> bool {
         self.flex.iter().flatten().any(|&f| model.flex_passive[f])

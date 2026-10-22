@@ -98,7 +98,7 @@ pub fn mj_flex(model: &Model, data: &mut Data) {
 }
 
 /// The edges' lengths (`flexedge_length`) and sparse Jacobians
-/// (`flexedge_J`), as MuJoCo's `mj_flex` (`engine_core_smooth.c:671-713`).
+/// (`flexedge_J`), as MuJoCo's `mj_flex` (`engine_core_smooth.c:671-720`).
 ///
 /// Called after `mj_flex()` populates `flexvert_xpos`. Every Jacobian is
 /// cleared first; a rigid flex is then skipped, its lengths staying as they

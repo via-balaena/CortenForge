@@ -39,10 +39,6 @@ pub(crate) fn finite_rotation(
         .then(|| nalgebra::UnitQuaternion::from_matrix(mat))
 }
 
-// Note: collide_geoms and geom_to_shape are accessed internally via
-// self::narrow::, self::flex_collide::, self::flex_narrow::, and
-// self::flex_self:: within this module. No pub(crate) re-export needed.
-
 use crate::types::{
     Contact, DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, DISABLE_MIDPHASE, Data,
     ENABLE_OVERRIDE, ENABLE_SLEEP, GeomType, Model, SleepState, disabled, enabled,
@@ -456,14 +452,16 @@ pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
 /// Collision detection: populate contacts from geometry pairs.
 ///
 /// Following `MuJoCo`'s `mj_collision` (`engine_collision_driver.c:264-482`):
-/// 1. Broadphase: the pairs of bodies MuJoCo's `mj_broadphase` passes
-///    (`broadphase`); within a pair, the geom pairs MuJoCo's midphase
-///    passes (`midphase`), or each pair's geoms in turn
+/// 1. Broadphase: the pairs of bodies and flexes MuJoCo's `mj_broadphase`
+///    passes (`broadphase`); within a pair of bodies, the geom pairs
+///    MuJoCo's midphase passes (`midphase`), or each pair's geoms in turn;
+///    a body and a flex, their geoms and elements (`flex_rigid`)
 /// 2. The geom pair's filters: exclusions, explicit pairs, weld groups,
 ///    then the user's filter where one is set and the contype/conaffinity
 ///    bitmask where none is, then the bounding spheres
 /// 3. Narrow-phase: analytical or GJK/EPA collision detection
-/// 4. The explicit pairs, the flexes, and the list in MuJoCo's order (`order`)
+/// 4. The explicit pairs, the flexes' own passes, and the list in MuJoCo's
+///    order (`order`)
 ///
 /// This function is called after forward kinematics (`mj_fwd_position`) so
 /// `geom_xpos` and `geom_xmat` are up-to-date.
@@ -471,7 +469,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // Unconditional reset (S4.1 — matches MuJoCo's mj_collision).
     data.contacts.clear();
     data.ncon = 0;
-    // Each rigid contact's place in MuJoCo's list, as it is made.
+    // Each contact's place in MuJoCo's list, as it is made.
     let mut places: Vec<ListPlace> = Vec::new();
 
     // S4.1: Skip collision detection when contacts or constraints are disabled.

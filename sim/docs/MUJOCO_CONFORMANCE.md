@@ -543,7 +543,7 @@ solver) has been deleted.
 |-----------|----------------|-------|--------|
 | Model data extension | `flex_*` fields, `nq_rigid`/`nv_rigid` | AC9 (rigid regression), AC10 (MJCF round-trip) | ✅ |
 | Mass + LDL | `mj_crba_flex()`, `mj_factor_flex()` | AC8 (pinned vertices) | ✅ |
-| Collision | `mj_collision_flex()` (brute-force O(V×G)) | AC2 (flex-rigid contact) | ✅ |
+| Collision | `collide_body_flex()` (a body's geoms against a flex's elements, as MuJoCo's driver) | AC2 (flex-rigid contact) | ✅ |
 | Edge constraints | flex equality rows (`EqualityType::Flex`) in unified Jacobian + penalty path | AC5 (edge stiffness) | ✅ |
 | Bending | Passive spring-damper in `mj_fwd_passive()` | AC6 (bending stiffness), AC20 (stability clamp) | ✅ |
 | Integration | `mj_integrate_pos_flex()`, gravity, damping | AC1 (cloth drape), AC3 (solid compression) | ✅ |

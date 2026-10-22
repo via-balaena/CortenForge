@@ -59,7 +59,7 @@ pub fn axis_angle_to_quat(axis: &[f64; 3], angle: f64) -> [f64; 4] {
 }
 
 /// The rotation taking the z axis to `vec`'s direction (MuJoCo
-/// `mju_quatZ2Vec`, `engine_util_spatial.c:246-276`): the identity for a
+/// `mju_quatZ2Vec`, `engine_util_spatial.c:247-277`): the identity for a
 /// vector shorter than [`MJ_MINVAL`] or along +z, half a turn about x along
 /// −z.
 pub fn quat_z2vec(vec: &[f64; 3]) -> [f64; 4] {

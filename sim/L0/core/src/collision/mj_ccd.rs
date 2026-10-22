@@ -2909,10 +2909,10 @@ fn ellipsoid_outside(nrm: &mut [f64; 3], pos: &[f64; 3], size: &[f64; 3]) -> boo
 /// vertex skipped. The field's top is the higher of `size[2]` and its
 /// highest point, as `mjc_convex_hfield` takes it. MuJoCo sets only its
 /// prism object's centre and support (`:1663-1664`), never calling
-/// `mjc_initCCDObj`, so GJK's support reads the object's margin and geom
-/// unset (`engine_collision_gjk.c:304`), undefined in C; this prism is
-/// `mjc_ConvexHField`'s (`:1220`), margin 0, and `mj_triangle`'s
-/// `convex_route_contacts_as_mujoco` holds its contacts to the oracle's.
+/// `mjc_initCCDObj`, so `mjc_ccd` reads its other fields unset, undefined in
+/// C; this prism is `mjc_ConvexHField`'s (`:1220`), margin 0, and
+/// `mj_triangle`'s `convex_route_contacts_as_mujoco` holds its contacts to
+/// the oracle's.
 // MuJoCo's arguments, the field and the element split out as sim-core holds them.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn mjc_hfield_elem(

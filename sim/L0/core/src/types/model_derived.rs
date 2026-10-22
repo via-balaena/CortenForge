@@ -31,7 +31,9 @@ impl Model {
     /// | spatial tendon geometry, `qpos0`, `qpos_spring` | spatial `tendon_length0`, `tendon_lengthspring` | [`Self::compute_spatial_tendon_length0`] |
     /// | fixed tendon wraps, `qpos0`, `qpos_spring` | fixed `tendon_length0`, `tendon_lengthspring` | [`Self::compute_fixed_tendon_lengths`] |
     /// | `geom_size`, `geom_type`, mesh, height field or SDF data | `geom_rbound`, `geom_aabb` | [`Self::compute_geom_bounding_radii`] |
-    /// | geom boxes, frames, bodies, `geom_contype`, `geom_conaffinity`, `geom_margin`, body inertial frames | `body_margin`, the bodies' hierarchies (`body_bvhadr`, `body_bvhnum`, `bvh_*`) | [`Self::compute_body_bvhs`] |
+    /// | geom boxes, frames, bodies, `geom_contype`, `geom_conaffinity`, `geom_margin`, body inertial frames | `body_margin`, the bodies' hierarchies (`body_bvhadr`, `body_bvhnum`, `bvh_*`), dropping the flexes' | [`Self::compute_body_bvhs`] |
+    /// | flex elements | `flex_elemlayer`, `flex_evpair`, `flex_evpairadr`, `flex_evpairnum` | [`Self::compute_flex_topology`] |
+    /// | flex elements, `flex_activelayers`, `flex_radius`, `qpos0` and the vertices' bodies, the bodies' hierarchies | the flexes' hierarchies (`flex_bvhadr`, `flex_bvhnum`, `nbvhstatic`, `nbvhdynamic`, `bvh_*` past the bodies'), so `Data::bvh_aabb_dyn`'s length: make a new `Data` | [`Self::compute_flex_bvhs`] |
     /// | `dof_parent`, `body_dof_*`, `body_weldid`, actuators, tendons, flex vertex bodies | the tree tables, the tendon trees, the automatic sleep policies | [`Self::compute_kinematic_trees`] |
     /// | `qpos0` and what the position stage reads (body, joint and geom frames, `body_ipos`), `geom_rbound`, joint types | `dof_length` | [`compute_dof_lengths`] |
     /// | `body_gravcomp` | `ngravcomp`, the bodies with a positive value | this function |

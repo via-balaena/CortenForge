@@ -469,10 +469,10 @@ pub struct Model {
     /// contacts between elements sharing an edge are generated (adjacent
     /// element contacts).
     pub flex_internal: Vec<bool>,
-    /// Per-flex: number of active element layers for self-collision
-    /// (MuJoCo's default 1): a dim-3 element is active while its layer, its
-    /// distance from the border, is below it (`mj_isElemActive`). Read by no
-    /// collision code yet.
+    /// Per-flex: number of active element layers (MuJoCo's default 1): a
+    /// dim-3 element is active while its layer, its distance from the
+    /// border, is below it (`mj_isElemActive`); only an active element is
+    /// in the flex's hierarchy ([`Model::compute_flex_bvhs`]).
     pub flex_activelayers: Vec<i32>,
     /// Per-flex: per-vertex collision mode (default false). When true, vertex spheres
     /// collide with other geoms even when not part of a flex element face.

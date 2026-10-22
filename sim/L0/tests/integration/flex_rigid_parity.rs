@@ -469,11 +469,12 @@ fn a_non_finite_turn_against_a_flex_returns() {
 }
 
 /// A flex's `<contact passive>` (registry `D-FLEX-PASSIVE-READ`): MuJoCo
-/// 3.5.0's reader sets the flag to the `internal` flag's value whenever the
-/// attribute is given (`xml_native_reader.cc:1521-1523`), so the golden's
-/// passive cases, `internal="false" passive="true"`, read as not passive
-/// there (the generator sets the flag on MuJoCo's compiled model). sim-mjcf
-/// reads the attribute as written.
+/// 3.5.0's reader overwrites the flag with a stale variable whenever the
+/// attribute is given (`xml_native_reader.cc:1457-1523`), here the
+/// `internal` flag's value, so the golden's passive cases,
+/// `internal="false" passive="true"`, read as not passive there (the
+/// generator sets the flag on MuJoCo's compiled model). sim-mjcf reads the
+/// attribute as written.
 #[test]
 fn a_flex_s_passive_attribute_reads_as_written() {
     let golden = golden();

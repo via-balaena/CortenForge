@@ -86,8 +86,8 @@ pub(super) fn collide_body_flex(
         }
     }
     // MuJoCo sorts a midphase pair's contacts by geom, then element or
-    // vertex (`contactcompare`, `:226-256`, stably); taken in turn they
-    // come in that order already.
+    // vertex (`contactcompare`, `:226-256`, stably), the order taken in
+    // turn already has; `flex_place` keys each contact so.
     for contact in &data.contacts[start..] {
         places.push(flex_place(model, contact));
     }

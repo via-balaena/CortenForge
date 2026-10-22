@@ -24,8 +24,8 @@ struct Element {
     corners: [[f64; 3]; 8],
 }
 
-/// One body's hierarchy as it is built, its nodes in the order made: a node,
-/// its first child's subtree, then its second's.
+/// The nodes of the hierarchies built, a body's or each flex's in turn, in
+/// the order made: a node, its first child's subtree, then its second's.
 #[derive(Default)]
 struct Tree {
     aabb: Vec<[f64; 6]>,
