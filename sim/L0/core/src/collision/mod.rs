@@ -469,7 +469,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // Unconditional reset (S4.1 — matches MuJoCo's mj_collision).
     data.contacts.clear();
     data.ncon = 0;
-    // Each contact's place in MuJoCo's list, as it is made.
+    // Each contact's place in MuJoCo's list.
     let mut places: Vec<ListPlace> = Vec::new();
 
     // S4.1: Skip collision detection when contacts or constraints are disabled.

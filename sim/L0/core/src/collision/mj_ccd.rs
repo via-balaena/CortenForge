@@ -2797,8 +2797,9 @@ fn fix_normal(
                 }
             }
         }
-        // The round wall's normal, unless within 5% of a cap's height or
-        // not 4 times nearer the round wall than the flat one.
+        // The round wall's normal, unless within 5% of a cap's height or the
+        // flat wall 4 times nearer than the round one (MuJoCo's code, `:1577`;
+        // its comment, `:1576`, says the reverse).
         GeomType::Cylinder => {
             let flat = (size[1] - pos[2].abs()).abs();
             let round = (size[0] - mju_dot(&pos[..2], &pos[..2]).sqrt()).abs();
@@ -2907,10 +2908,9 @@ fn ellipsoid_outside(nrm: &mut [f64; 3], pos: &[f64; 3], size: &[f64; 3]) -> boo
 /// not their radius) is clear of the field's by the margin; else the prisms
 /// under that box against the element, a prism below the box's lowest
 /// vertex skipped. The field's top is the higher of `size[2]` and its
-/// highest point, as `mjc_convex_hfield` takes it. MuJoCo sets only its
-/// prism object's centre and support (`:1663-1664`), never calling
-/// `mjc_initCCDObj`, so `mjc_ccd` reads its other fields unset, undefined in
-/// C; this prism is `mjc_ConvexHField`'s (`:1220`), margin 0, and
+/// highest point, as `mjc_convex_hfield` takes it. MuJoCo never passes its
+/// prism object to `mjc_initCCDObj` (`:1663-1664`); this prism is
+/// `mjc_ConvexHField`'s (`:1220`), margin 0, and
 /// `mj_triangle`'s `convex_route_contacts_as_mujoco` holds its contacts to
 /// the oracle's.
 // MuJoCo's arguments, the field and the element split out as sim-core holds them.

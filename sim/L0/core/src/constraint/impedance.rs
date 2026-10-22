@@ -262,11 +262,8 @@ pub fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: 
 /// Body-weight diagonal approximation for row `row_offset` of equality
 /// constraint `id` (DT-39; MuJoCo ref: `mj_diagApprox()` in
 /// `engine_core_constraint.c`): an O(1) approximation of
-/// `diag(J · M⁻¹ · J^T)` from the precomputed `body_invweight0`, instead of
-/// solving `M · w = J^T` (which is O(nv)) — a connect's rows the two
-/// bodies' translational weights, a weld's rows 0-2 translational and 3-5
-/// rotational. Clamped to `MJ_MINVAL`. Every other row takes its weight
-/// where it is assembled (`assembly`, `contact_assembly`).
+/// `diag(J · M⁻¹ · J^T)` from the precomputed inverse weights, instead of
+/// solving `M · w = J^T` (which is O(nv)). Clamped to `MJ_MINVAL`.
 #[inline]
 pub fn compute_diag_approx_bodyweight(model: &Model, id: usize, row_offset: usize) -> f64 {
     if id < model.neq {
