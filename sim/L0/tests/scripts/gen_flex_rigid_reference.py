@@ -66,6 +66,10 @@ TET = ([[-0.1, -0.1, -0.05], [0.12, -0.08, -0.04], [-0.02, 0.13, -0.06], [0.0, 0
 # Elevations exact in float32, rows symmetric and the highest 1: sim-mjcf
 # loads them as MuJoCo does (book Rigid-loading L45 makes its data MuJoCo's
 # otherwise: float32, rows bottom to top, normalised).
+CUBE = ([[(i & 1) * 0.1, ((i >> 1) & 1) * 0.1, ((i >> 2) & 1) * 0.1] for i in range(8)],
+        [0, 1, 2, 4, 3, 2, 1, 7, 5, 1, 4, 7, 6, 4, 2, 7, 1, 2, 4, 7], 3, NONE)
+PLANE_BITS = ('<geom type="plane" size="2 2 0.1" contype="2" conaffinity="2"/>'
+              '<geom type="box" size="0.05 0.05 0.01" pos="0.06 0 0"/>')
 FIELD = ('<hfield name="hf" nrow="5" ncol="6" size="0.3 0.25 0.08 0.05" '
          'elevation="0 0.25 0.5 0.25 0 0  0.25 0.5 0.75 0.5 0.25 0  0.25 0.75 1 0.75 0.5 0.25  '
          '0.25 0.5 0.75 0.5 0.25 0  0 0.25 0.5 0.25 0 0"/>')
@@ -81,11 +85,11 @@ def body(pos, geoms, quat="1 0 0 0"):
     return f'<body name="b" pos="{pos}" quat="{quat}"><freejoint/>{INERTIAL}{geoms}</body>'
 
 
-def settled(rigid, flex, option, flag, asset):
+def settled(rigid, flex, option, flag, asset, tail=""):
     """The rigid text with body b's quat MuJoCo's compiled one, which sim-mjcf
     keeps as it is: MuJoCo's normalisation of another quat can differ from
     sim-mjcf's in the last bit."""
-    _, _, m = documents(rigid, flex, option, flag, asset)
+    _, _, m = documents(rigid, flex, option, flag, asset, tail)
     b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "b")
     if b < 0:
         return rigid
@@ -156,10 +160,40 @@ CASES = {
                                 "", "", ""),
     "hfield_cloth": ('<geom type="hfield" hfield="hf" pos="0.01 -0.02 0.0" quat="0.99 0.02 0.03 0.1"/>',
                      (*grid(3, 0.1, 0.075)[:3], NONE), "", "", FIELD),
+    "hfield_cable": ('<geom type="hfield" hfield="hf" pos="0.01 -0.02 0.0" quat="0.99 0.02 0.03 0.1"/>',
+                     ([[-0.1, 0.0, 0.075], [0.0, 0.0, 0.075], [0.1, 0.02, 0.08]], [0, 1, 1, 2], 1, NONE),
+                     "", "", FIELD),
+    "hfield_tet": ('<geom type="hfield" hfield="hf" pos="0.01 -0.02 0.0" quat="0.99 0.02 0.03 0.1"/>',
+                   ([[-0.1, -0.1, 0.07], [0.12, -0.08, 0.075], [-0.02, 0.13, 0.07], [0.0, 0.0, 0.2]],
+                    [0, 1, 2, 3], 3, NONE), "", "", FIELD),
+    # Five tetrahedra in a cube, the middle one on layer 1, inactive: out of
+    # the hierarchy, so the midphase never meets it; without it, every
+    # element is met.
+    "cube_sphere": (body("0.05 0.05 0.09", '<geom type="sphere" size="0.04"/>'), CUBE, "", "", ""),
+    "cube_sphere_no_midphase": (body("0.05 0.05 0.09", '<geom type="sphere" size="0.04"/>'), CUBE,
+                                "", 'midphase="disable"', ""),
+    "cube_box": (body("0.06 0.06 0.06", '<geom type="box" size="0.03 0.03 0.03"/>'), CUBE, "", "", ""),
+    "cube_box_no_midphase": (body("0.06 0.06 0.06", '<geom type="box" size="0.03 0.03 0.03"/>'), CUBE,
+                             "", 'midphase="disable"', ""),
+    # A world plane whose bits miss the flex's, beside a box: under the
+    # midphase the plane meets every vertex without its bitmask; without it,
+    # the bitmask drops it.
+    "plane_bitmask_cloth": (PLANE_BITS, (*grid(3, 0.05, 0.012)[:3], NONE), "", "", ""),
+    "plane_bitmask_cloth_no_midphase": (PLANE_BITS, (*grid(3, 0.05, 0.012)[:3], NONE), "",
+                                        'midphase="disable"', ""),
+    # The override's margin, halved, bounds a flex in the broadphase.
+    "override_sphere_cloth_alone": (body("0.025 0.025 0.047", '<geom type="sphere" size="0.03"/>'), [CLOTH],
+                                    'o_margin="0.01"', 'override="enable" gravity="disable"', ""),
+    # An adhesion actuator counts the body's contacts with geoms, not with a
+    # flex (engine_core_smooth.c:1653-1656): a sphere on a cloth, touching a
+    # world sphere.
+    "adhesion_sphere_cloth": (body("0.025 0.025 0.035", '<geom type="sphere" size="0.03"/>')
+                              + '<geom type="sphere" size="0.025" pos="0.025 0.075 0.04"/>', CLOTH, "", "", "",
+                              '<actuator><adhesion body="b" ctrlrange="0 1" gain="2"/></actuator>'),
 }
 
 
-def documents(rigid, flex, option, flag, asset):
+def documents(rigid, flex, option, flag, asset, tail=""):
     head = (f'<mujoco><option timestep="0.002" {option}><flag equality="disable" {flag}/></option>'
             f'<asset>{asset}</asset><worldbody>{rigid}')
     mj_bodies, mj_flexes, ours = "", "", ""
@@ -176,7 +210,7 @@ def documents(rigid, flex, option, flag, asset):
         mj_flexes += (f'<flex name="f{f}" dim="{dim}" radius="0.01" body="{" ".join(names)}" '
                       f'vertex="{" ".join(["0 0 0"] * len(verts))}" '
                       f'element="{" ".join(map(str, elems))}"><contact {contact}/></flex>')
-    mj = f'{head}{mj_bodies}</worldbody><deformable>{mj_flexes}</deformable></mujoco>'
+    mj = f'{head}{mj_bodies}</worldbody><deformable>{mj_flexes}</deformable>{tail}</mujoco>'
     m = mujoco.MjModel.from_xml_string(mj)
     for f, (verts, _, dim, contact) in enumerate(flexes):
         va, vn = m.flex_vertadr[f], m.flex_vertnum[f]
@@ -187,7 +221,7 @@ def documents(rigid, flex, option, flag, asset):
         assert total / len(verts) == MASS, "sim-mjcf's vertex mass must be exactly MASS"
         ours += (f'<flex name="f{f}" dim="{dim}" radius="0.01" mass="{total!r}"><contact {contact}/>'
                  f'<vertex pos="{vtxt}"/><element data="{etxt}"/></flex>')
-    ours = f'{head}</worldbody><deformable>{ours}</deformable></mujoco>'
+    ours = f'{head}</worldbody><deformable>{ours}</deformable>{tail}</mujoco>'
     return mj, ours, m
 
 
@@ -215,21 +249,24 @@ def forward(m, d):
     return out
 
 
-def case(name, rigid, flex, option, flag, asset):
-    rigid = settled(rigid, flex, option, flag, asset)
-    mj, ours, m = documents(rigid, flex, option, flag, asset)
+def case(name, rigid, flex, option, flag, asset, tail=""):
+    rigid = settled(rigid, flex, option, flag, asset, tail)
+    mj, ours, m = documents(rigid, flex, option, flag, asset, tail)
     out = {"name": name, "xml": mj, "ours": ours, "nv": int(m.nv), "nbody": int(m.nbody)}
     flexes = flex if isinstance(flex, list) else [DUMMY, flex]
     passive = [int('passive="true"' in contact) for (_, _, _, contact) in flexes]
     if any(passive):
-        # MuJoCo 3.5.0's reader sets a flex's passive flag to its internal
-        # flag's value whenever `passive` is given (xml_native_reader.cc:
-        # 1521-1523; registry D-FLEX-PASSIVE-READ): the attribute is set on
-        # the compiled model, and what the reader gave is recorded.
+        # MuJoCo 3.5.0's reader overwrites a flex's passive flag with a stale
+        # variable whenever `passive` is given (xml_native_reader.cc:1457-1523;
+        # registry D-FLEX-PASSIVE-READ): the attribute is set on the compiled
+        # model, and what the reader gave is recorded.
         out["flex_passive_read"] = ints(m.flex_passive)
         m.flex_passive[:] = passive
     d = mujoco.MjData(m)
     out["qpos0"] = floats(d.qpos)
+    if m.nu:
+        d.ctrl[:] = 0.5
+        out["ctrl"] = floats(d.ctrl)
     mujoco.mj_forward(m, d)
     out.update(forward(m, d))
     trajectory = {}

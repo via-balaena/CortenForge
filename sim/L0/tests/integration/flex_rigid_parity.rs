@@ -238,6 +238,9 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
             off.push(format!("{name}: qpos0 {:?}, MuJoCo's {qpos0:?}", data.qpos));
             continue;
         }
+        if let Some(ctrl) = case.get("ctrl") {
+            data.ctrl.copy_from_slice(&floats(ctrl));
+        }
         data.forward(&model).expect("forward");
         contacts(
             &mut off,
@@ -305,8 +308,9 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
 
 /// A cloth of nine vertices (a 3×3 grid, 5 cm apart, radius 1 cm, margin
 /// 5 mm) whose middle sits 5 cm above the centre of a world sphere of radius
-/// 6.5 cm.
-fn cloth_over_a_sphere(midphase: bool) -> (Model, Data) {
+/// 6.5 cm, the sphere's own attributes `bits`; a far box of the world's
+/// lets the world body pair with the flex whatever the sphere's bits.
+fn cloth_over_a_sphere(midphase: bool, bits: &str) -> (Model, Data) {
     let flag = if midphase {
         ""
     } else {
@@ -315,7 +319,10 @@ fn cloth_over_a_sphere(midphase: bool) -> (Model, Data) {
     let xml = format!(
         r#"<mujoco>
           <option gravity="0 0 0">{flag}</option>
-          <worldbody><geom type="sphere" size="0.065" pos="0 0 -0.05"/></worldbody>
+          <worldbody>
+            <geom type="sphere" size="0.065" pos="0 0 -0.05" {bits}/>
+            <geom type="box" size="0.01 0.01 0.01" pos="1 1 1"/>
+          </worldbody>
           <deformable>
             <flex name="c" dim="2" radius="0.01">
               <contact selfcollide="none" internal="false" margin="0.005"/>
@@ -348,10 +355,11 @@ fn cloth_over_a_sphere(midphase: bool) -> (Model, Data) {
 /// 0.57 cm off), none at its corners (2.2 cm off), each listing the field
 /// and the vertex, none an element; its distance the vertex's from the
 /// sphere less the radius (the margin not in it), to the field's grid; the
-/// same list, bit for bit, with the midphase on and off.
+/// same list, bit for bit, with the midphase on and off; none where the
+/// field's bitmask misses the flex's.
 #[test]
 fn a_signed_distance_field_meets_each_flex_vertex() {
-    let (model, data) = cloth_over_a_sphere(true);
+    let (model, data) = cloth_over_a_sphere(true, "");
     let verts: Vec<usize> = data.contacts.iter().filter_map(|c| c.vert[1]).collect();
     assert_eq!(verts, [1, 3, 4, 5, 7], "the vertices within reach");
     for c in &data.contacts {
@@ -366,7 +374,7 @@ fn a_signed_distance_field_meets_each_flex_vertex() {
             -c.depth
         );
     }
-    let (_, all_to_all) = cloth_over_a_sphere(false);
+    let (_, all_to_all) = cloth_over_a_sphere(false, "");
     let key = |d: &Data| -> Vec<(Option<usize>, u64, [u64; 3])> {
         d.contacts
             .iter()
@@ -374,6 +382,90 @@ fn a_signed_distance_field_meets_each_flex_vertex() {
             .collect()
     };
     assert_eq!(key(&data), key(&all_to_all), "the midphase on and off");
+    for midphase in [true, false] {
+        let (_, missed) = cloth_over_a_sphere(midphase, r#"contype="2" conaffinity="2""#);
+        assert!(
+            missed.contacts.is_empty(),
+            "midphase {midphase}: the bitmask"
+        );
+    }
+}
+
+/// A geom turned by a NaN against a flex: each call returns, with the
+/// midphase on and off, for a height field, a box, an ellipsoid, a cylinder
+/// and a signed distance field (which collides as nothing there, its turn
+/// not a quaternion).
+#[test]
+fn a_non_finite_turn_against_a_flex_returns() {
+    use nalgebra::{Quaternion, UnitQuaternion};
+    let cloth = r#"<deformable><flex name="c" dim="2" radius="0.01">
+      <contact selfcollide="none" internal="false"/>
+      <vertex pos="0 0 0.005  0.05 0 0.005  0.1 0 0.005  0 0.05 0.005  0.05 0.05 0.005  0.1 0.05 0.005
+                   0 0.1 0.005  0.05 0.1 0.005  0.1 0.1 0.005"/>
+      <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+    </flex></deformable>"#;
+    let geoms = [
+        (
+            "hfield",
+            r#"<asset><hfield name="h" nrow="3" ncol="3" size="1 1 0.05 0.05" elevation="1 1 1 1 1 1 1 1 1"/></asset>"#,
+            r#"<geom type="hfield" hfield="h"/>"#,
+        ),
+        (
+            "box",
+            "",
+            r#"<geom type="box" size="1 1 0.01" pos="0 0 -0.005"/>"#,
+        ),
+        (
+            "ellipsoid",
+            "",
+            r#"<geom type="ellipsoid" size="0.1 0.1 0.02" pos="0.05 0.05 -0.015"/>"#,
+        ),
+        (
+            "cylinder",
+            "",
+            r#"<geom type="cylinder" size="0.1 0.02" pos="0.05 0.05 -0.015"/>"#,
+        ),
+        (
+            "sdf",
+            "",
+            r#"<geom type="sphere" size="0.1" pos="0.05 0.05 -0.09"/>"#,
+        ),
+    ];
+    for (name, asset, geom) in geoms {
+        for midphase in [true, false] {
+            let flag = if midphase {
+                ""
+            } else {
+                r#"midphase="disable""#
+            };
+            let xml = format!(
+                r#"<mujoco><option><flag equality="disable" {flag}/></option>{asset}
+                   <worldbody>{geom}</worldbody>{cloth}</mujoco>"#
+            );
+            let mut model = load_model(&xml).expect("load");
+            if name == "sdf" {
+                let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 0.1, 16, 0.02));
+                model.shape_data.push(Arc::new(ShapeSphere::new(grid, 0.1)));
+                model.nshape = model.shape_data.len();
+                model.geom_type[0] = GeomType::Sdf;
+                model.geom_shape[0] = Some(model.nshape - 1);
+            }
+            let mut data = model.make_data();
+            data.forward(&model).expect("forward, unturned");
+            assert!(
+                data.ncon > 0,
+                "{name} midphase {midphase}: the cloth touches the geom"
+            );
+            model.geom_quat[0] =
+                UnitQuaternion::new_unchecked(Quaternion::new(f64::NAN, 0.0, 0.0, 0.0));
+            model.geom_sameframe[0] = Default::default();
+            // Each call returns; its result is not asserted.
+            let _ = data.forward(&model);
+            if name == "sdf" {
+                assert_eq!(data.ncon, 0, "{name} midphase {midphase}: nothing");
+            }
+        }
+    }
 }
 
 /// A flex's `<contact passive>` (registry `D-FLEX-PASSIVE-READ`): MuJoCo

@@ -45,6 +45,9 @@ CASES = {
     "cable_and_cloth": HEAD + CABLE + CLOTH + '</worldbody></mujoco>',
     "cable_and_tets": HEAD + CABLE + TETS.format(layers='') + '</worldbody></mujoco>',
     "cable_and_tets_two_layers": HEAD + CABLE + TETS.format(layers=' activelayers="2"') + '</worldbody></mujoco>',
+    # A flex of dim below 3 has every element active, whatever activelayers says.
+    "cloth_no_layer_active": HEAD + CLOTH.replace('internal="false"/>', 'internal="false" activelayers="0"/>')
+    + '</worldbody></mujoco>',
 }
 
 

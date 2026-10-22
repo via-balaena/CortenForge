@@ -85,6 +85,16 @@ CONVEX = [
     ("cylinder_tet", '<geom type="cylinder" size="0.03 0.04" pos="0.0 0.0 0.12" quat="0.9 0.2 0.3 0.1"/>', TET, 0.01, 0.0),
     ("ellipsoid_cable", '<geom type="ellipsoid" size="0.04 0.03 0.02" pos="0.0 0.01 0.025"/>', SEG, 0.01, 0.0),
     ("cylinder_cable", '<geom type="cylinder" size="0.03 0.05" pos="0.0 0.01 0.035" quat="0.7071 0.7071 0 0"/>', SEG, 0.01, 0.0),
+    # A flat triangle: vertices tie along the support's axes, the first taken.
+    ("ellipsoid_flat_triangle", '<geom type="ellipsoid" size="0.04 0.03 0.02" pos="0.0 0.0 0.025"/>',
+     [[-0.1, -0.1, 0.0], [0.1, -0.1, 0.0], [-0.1, 0.1, 0.0]], 0.01, 0.0),
+    # A cylinder's normal kept as mjc_ccd's: at a triangle's apex under its
+    # cap (4 times nearer the flat wall), and at its rim (within 5% of the cap).
+    ("cylinder_apex_triangle", '<geom type="cylinder" size="0.03 0.05" pos="0.002 -0.001 0.047" quat="0.9995 0.01 0.02 0.0"/>',
+     [[-0.05, -0.01, -0.06], [0.05, -0.012, -0.06], [0.001, 0.002, 0.0]], 0.01, 0.0),
+    ("cylinder_rim_triangle", '<geom type="cylinder" size="0.03 0.05" pos="-0.02 -0.02 0.04329178578986069" '
+     'quat="0.8191520442889918 0.573576436351046 0 0"/>', [[-0.1, -0.1, 0.0], [0.1, -0.1, 0.0], [-0.1, 0.1, 0.0]],
+     0.01, 0.0),
     ("hfield_triangle", "HFIELD", [[-0.05, -0.05, 0.075], [0.08, -0.03, 0.07], [0.0, 0.07, 0.072]], 0.01, 0.0),
     ("hfield_tet", "HFIELD", [[-0.1, -0.05, 0.05], [0.1, -0.06, 0.06], [0.0, 0.09, 0.055], [0.0, 0.0, 0.2]], 0.01, 0.0),
     ("hfield_triangle_deep", "HFIELD", [[-0.05, -0.05, 0.01], [0.08, -0.03, 0.012], [0.0, 0.07, 0.008]], 0.01, 0.0),

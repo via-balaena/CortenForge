@@ -1849,8 +1849,7 @@ mod spec_d_tests {
     /// A geom turned by a matrix holding a NaN or an infinity collides as
     /// nothing at every site that turned it into a quaternion (nalgebra's
     /// `from_matrix`, which iterates without a cap): a sphere on a signed
-    /// distance field, and a flex vertex against a mesh, a height field or a
-    /// signed distance field, each geom's matrix bad in turn. MuJoCo's
+    /// distance field, each geom's matrix bad in turn. MuJoCo's
     /// functions, which take no quaternion, give MuJoCo's results (the ccd
     /// golden's `plane_convex` and `hfield_convex` `nan` cases): a mesh so
     /// turned on a plane, one contact at a NaN distance; a height field so

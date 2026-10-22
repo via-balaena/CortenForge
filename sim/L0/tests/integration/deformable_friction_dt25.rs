@@ -15,7 +15,7 @@ use sim_mjcf::load_model;
 /// capsule between its vertices. The box is tilted 30° about Y so gravity
 /// has a tangential component. With sufficient friction (μ=1.0), the cable
 /// should decelerate. condim=3 → sliding friction (2 tangent directions).
-fn flex_vertex_on_tilted_plane_mjcf() -> &'static str {
+fn flex_cable_on_tilted_plane_mjcf() -> &'static str {
     r#"
     <mujoco model="flex_friction_tilt">
         <option gravity="0 0 -9.81" timestep="0.001" solver="PGS" iterations="50"/>
@@ -139,7 +139,7 @@ fn dt25_flex_contact_condim3_has_friction_rows() {
 
 #[test]
 fn dt25_flex_friction_resists_sliding_on_tilted_plane() {
-    let model = load_model(flex_vertex_on_tilted_plane_mjcf()).expect("should load");
+    let model = load_model(flex_cable_on_tilted_plane_mjcf()).expect("should load");
     let mut data = model.make_data();
 
     // Run simulation
@@ -154,7 +154,6 @@ fn dt25_flex_friction_resists_sliding_on_tilted_plane() {
     // Coulomb cone is not exceeded. The cable should remain nearly
     // stationary — any significant sliding indicates the friction projection
     // is broken.
-    assert!(data.ncon > 0, "the cable rests on the box");
     let x_displacement = data.flexvert_xpos[0].x.abs();
     let y_displacement = data.flexvert_xpos[0].y.abs();
 
@@ -166,6 +165,7 @@ fn dt25_flex_friction_resists_sliding_on_tilted_plane() {
         y_displacement < 0.05,
         "vertex slid in y: {y_displacement:.4} (unexpected lateral motion)"
     );
+    assert!(data.ncon > 0, "the cable rests on the box");
 }
 
 // ============================================================================

@@ -404,6 +404,21 @@ pub fn make_frame(normal: &Vector3<f64>, hint: &Vector3<f64>) -> (Vector3<f64>, 
 mod tests {
     use super::*;
 
+    /// `Data`'s contact counts read both sides, in either order: a contact
+    /// lists its geoms in MuJoCo's type order, not the order asked.
+    #[test]
+    fn contact_counts_read_both_sides() {
+        let mut data = Model::empty().make_data();
+        data.contacts
+            .push(Contact::new(Vector3::zeros(), Vector3::z(), 0.0, 1, 2, 1.0));
+        assert_eq!(data.contacts_involving_geom(1), 1, "side 0");
+        assert_eq!(data.contacts_involving_geom(2), 1, "side 1");
+        assert_eq!(data.contacts_involving_geom(3), 0, "neither");
+        assert_eq!(data.contacts_between_geoms(1, 2), 1, "as listed");
+        assert_eq!(data.contacts_between_geoms(2, 1), 1, "the other order");
+        assert_eq!(data.contacts_between_geoms(1, 3), 0, "another pair");
+    }
+
     /// `mju_makeFrame` seeds the first tangent with (0, 1, 0) only while the
     /// normal's `y` lies strictly inside (−0.5, 0.5): (1, ±1, √2), whose
     /// unit normal's `y` is ±0.5 exactly, is seeded with (0, 0, 1), so its
