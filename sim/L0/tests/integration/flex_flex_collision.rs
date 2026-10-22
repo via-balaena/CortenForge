@@ -83,20 +83,19 @@ fn t02_compatible_bitmask_generates_contacts() {
         .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .collect();
 
-    // AC2: contact count. MuJoCo 3.5.0 produces 32 for this geometry (EGT-2/EGT-8).
-    // CortenForge produces 36 — a pre-existing narrowphase conformance gap in
-    // triangle-triangle intersection (Spec C territory). Assert our count to
-    // catch regressions; the MuJoCo delta is tracked separately.
-    assert_eq!(
-        ff_contacts.len(),
-        36,
-        "compatible bitmask must produce 36 flex-flex contacts (MuJoCo: 32)"
-    );
+    // AC2: contact count, MuJoCo 3.5.0's for these grids (the golden
+    // `flex_self.json`'s case `coplanar_grids`, the same grids with a body
+    // for each vertex).
+    assert_eq!(ff_contacts.len(), 31, "MuJoCo's 31 flex-flex contacts");
 
     // AC9: contact encoding
     for c in &ff_contacts {
         assert_eq!(c.geom, [None; 2], "a flex-flex contact has no geom");
-        assert!(c.vert.iter().all(Option::is_some), "a vertex on each side");
+        assert!(
+            c.elem.iter().all(Option::is_some),
+            "an element on each side"
+        );
+        assert_eq!(c.vert, [None; 2], "no vertex");
         let [Some(fid1), Some(fid2)] = c.flex else {
             panic!("a flex on each side: {:?}", c.flex);
         };
@@ -735,9 +734,9 @@ fn t13_contact_param_flex_flex_unit() {
 #[test]
 fn t14_zero_element_flex_no_panic() {
     // A flex with zero elements should not panic in flex-flex dispatch.
-    // The guard in mj_collide_flex_pair (line 1118) early-returns for zero
-    // elements. MJCF always generates elements, so we load a normal model
-    // then zero out one flex's element count to exercise the guard.
+    // MJCF always generates elements, so we load a normal model, zero out one
+    // flex's element count, and derive its element pairs and hierarchy again
+    // (`Model::recompute_derived`'s table).
     let mjcf = r#"
         <mujoco model="zero_elem">
             <option gravity="0 0 0" timestep="0.001"/>
@@ -770,8 +769,10 @@ fn t14_zero_element_flex_no_panic() {
         "baseline must produce flex-flex contacts"
     );
 
-    // Zero out flex 1's element count to exercise the early-return guard
+    // Zero out flex 1's element count
     model.flex_elemnum[1] = 0;
+    model.compute_flex_topology();
+    model.compute_flex_bvhs();
     let mut data = model.make_data();
     data.forward(&model).expect("forward zero-elem");
 
@@ -826,24 +827,35 @@ fn t15_flex_flex_contact_jacobian_takes_each_vertex_body() {
     }
 }
 
-/// [`sim_core::Data::contacts_between_bodies`] reads a flex contact's sides
-/// by their own bodies: two overlapping grids' contacts between the flexes
-/// count between their vertex bodies, and none against the world.
+/// [`sim_core::Data::contacts_between_bodies`] counts a contact with a flex
+/// element on a side for no pair of bodies: two overlapping grids' contacts,
+/// each between an element of each, count for none, the world's included.
 #[test]
-fn contacts_between_bodies_read_flex_flex_contacts_without_a_geom() {
-    let model = load_model(&two_overlapping_grids_mjcf(1, 1, 1, 1)).expect("load");
+fn contacts_between_bodies_count_no_pair_for_two_flexes_elements() {
+    let grids = two_overlapping_grids_mjcf(1, 1, 1, 1);
+    let alone = r#"margin="0.01" selfcollide="none"/>"#;
+    let xml = grids.replace(r#"margin="0.01"/>"#, alone);
+    assert_eq!(
+        xml.matches(alone).count(),
+        2,
+        "each grid without self-collision"
+    );
+    let model = load_model(&xml).expect("load");
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
     assert!(data.ncon > 0, "the grids touch");
+    for c in &data.contacts {
+        assert!(
+            c.elem.iter().all(Option::is_some),
+            "an element on each side"
+        );
+    }
     assert_eq!(data.contacts_between_bodies(&model, 0, 0), 0);
     let pairs: usize = (0..model.nflexvert)
-        .flat_map(|a| (a + 1..model.nflexvert).map(move |b| (a, b)))
+        .flat_map(|a| (0..model.nflexvert).map(move |b| (a, b)))
         .map(|(a, b)| {
             data.contacts_between_bodies(&model, model.flexvert_bodyid[a], model.flexvert_bodyid[b])
         })
         .sum();
-    assert_eq!(
-        pairs, data.ncon,
-        "every contact is between two vertex bodies"
-    );
+    assert_eq!(pairs, 0, "no contact is between two vertex bodies");
 }

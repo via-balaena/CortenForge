@@ -10,6 +10,7 @@
 
 mod broadphase;
 pub(crate) mod flex_collide;
+mod flex_flex;
 pub(crate) mod flex_narrow;
 mod flex_rigid;
 pub(crate) mod flex_self;
@@ -45,12 +46,13 @@ use crate::types::{
 };
 
 use self::broadphase::{BodyGeoms, bodyflex_pairs, filter_sphere};
+use self::flex_flex::collide_flex_flex;
 use self::flex_rigid::collide_body_flex;
 use self::hfield::collide_hfield_multi;
 use self::midphase::collide_tree;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
 use self::order::{ListPlace, Lister, flex_place, pair_place, type_ordered};
-use self::pairs::{mj_collide_flex_flex, mj_collision_flex_self};
+use self::pairs::mj_collision_flex_self;
 
 // ============================================================================
 // Collision affinity filtering
@@ -282,16 +284,19 @@ pub(crate) fn contact_param_flex_self(
     )
 }
 
-/// Contact parameter combination for flex-flex cross-object collision pairs.
-///
-/// Both sides read `flex_*` arrays. Follows MuJoCo's `mj_contactParam()`
-/// with the same priority + solmix protocol as geom-geom and flex-rigid.
-/// Gap is additive: `flex_gap[f1] + flex_gap[f2]`.
-pub(crate) fn contact_param_flex_flex(
+/// A contact's parameters as `mj_contactParam` returns them: condim, gap,
+/// solref, solimp and the five frictions.
+pub(crate) type ContactParams = (i32, f64, [f64; 2], [f64; 5], [f64; 5]);
+
+/// `mj_contactParam(-1, -1, f1, f2)` (`engine_collision_driver.c:1305-1398`):
+/// flex `flex_id1`'s and flex `flex_id2`'s contact parameters combined as
+/// [`contact_param_geom_flex`] combines a geom's and a flex's, the same
+/// flex's with itself included.
+pub(crate) fn contact_param_flexes(
     model: &Model,
     flex_id1: usize,
     flex_id2: usize,
-) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+) -> ContactParams {
     let priority1 = model.flex_priority[flex_id1];
     let priority2 = model.flex_priority[flex_id2];
     let gap = model.flex_gap[flex_id1] + model.flex_gap[flex_id2];
@@ -455,13 +460,14 @@ pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
 /// 1. Broadphase: the pairs of bodies and flexes MuJoCo's `mj_broadphase`
 ///    passes (`broadphase`); within a pair of bodies, the geom pairs
 ///    MuJoCo's midphase passes (`midphase`), or each pair's geoms in turn;
-///    a body and a flex, their geoms and elements (`flex_rigid`)
+///    a body and a flex, their geoms and elements (`flex_rigid`); two
+///    flexes, their elements (`flex_flex`)
 /// 2. The geom pair's filters: exclusions, explicit pairs, weld groups,
 ///    then the user's filter where one is set and the contype/conaffinity
 ///    bitmask where none is, then the bounding spheres
 /// 3. Narrow-phase: analytical or GJK/EPA collision detection
-/// 4. The explicit pairs, the flexes' own passes, and the list in MuJoCo's
-///    order (`order`)
+/// 4. The explicit pairs, each flex's collisions with itself, and the list
+///    in MuJoCo's order (`order`)
 ///
 /// This function is called after forward kinematics (`mj_fwd_position`) so
 /// `geom_xpos` and `geom_xmat` are up-to-date.
@@ -489,8 +495,8 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // bodies the geom pairs the midphase (`midphase`) finds overlapping;
     // without the midphase, or a body without a hierarchy, the first body's
     // geoms in turn against the second's. A body and a flex collide their
-    // geoms and elements (`flex_rigid`); two flexes, the flexes' own pass
-    // below.
+    // geoms and elements (`flex_rigid`); two flexes, their elements
+    // (`flex_flex`).
     let body_geoms = BodyGeoms::new(model);
     let midphase = !disabled(model, DISABLE_MIDPHASE);
     let mut previous = None;
@@ -502,9 +508,9 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         }
         previous = Some((body1, body2));
         if body2 >= model.nbody {
+            let flex = body2 - model.nbody;
+            let scratch = (&mut geom_pairs, &mut tree_stack);
             if body1 < model.nbody {
-                let flex = body2 - model.nbody;
-                let scratch = (&mut geom_pairs, &mut tree_stack);
                 collide_body_flex(
                     model,
                     data,
@@ -513,6 +519,9 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                     (body1, flex),
                     scratch,
                 );
+            } else {
+                let flexes = (body1 - model.nbody, flex);
+                collide_flex_flex(model, data, &mut places, flexes, scratch);
             }
             continue;
         }
@@ -600,9 +609,6 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
 
     // Mechanism 4: flex self-collision (internal + non-adjacent)
     mj_collision_flex_self(model, data);
-
-    // Mechanism 5: flex-flex cross-object collision
-    mj_collide_flex_flex(model, data);
 
     // List the contacts as MuJoCo does (`order`); the sort is stable, so a
     // pair's contacts keep the order its collision function made them in.

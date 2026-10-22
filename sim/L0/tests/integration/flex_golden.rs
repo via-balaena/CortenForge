@@ -1,6 +1,7 @@
-//! The flex collision golden (`assets/golden/flex/flex_rigid.json`, from
-//! the unfused MuJoCo 3.5.0 oracle by `scripts/gen_flex_rigid_reference.py`)
-//! and its comparison with sim-core.
+//! The flex collision goldens (`assets/golden/flex/flex_rigid.json` and
+//! `flex_self.json`, from the unfused MuJoCo 3.5.0 oracle by
+//! `scripts/gen_flex_rigid_reference.py` and `gen_flex_self_reference.py`)
+//! and their comparison with sim-core.
 
 use nalgebra::Vector3;
 use serde_json::Value;

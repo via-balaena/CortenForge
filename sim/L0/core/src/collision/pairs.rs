@@ -1,5 +1,4 @@
-//! Collision pair enumeration — flex self-collision and flex-flex
-//! cross-object collision dispatch.
+//! Collision pair enumeration — flex self-collision dispatch.
 //!
 //! Extracted from the collision module to separate pair enumeration logic
 //! from broad-phase dispatch and contact parameter mixing.
@@ -7,8 +6,8 @@
 use crate::types::{Data, FlexSelfCollide, Model};
 
 use super::flex_collide::{
-    mj_collide_flex_internal, mj_collide_flex_pair, mj_collide_flex_self_bvh,
-    mj_collide_flex_self_narrow, mj_collide_flex_self_sap,
+    mj_collide_flex_internal, mj_collide_flex_self_bvh, mj_collide_flex_self_narrow,
+    mj_collide_flex_self_sap,
 };
 
 /// Dispatch flex self-collision: internal (adjacent) + self (non-adjacent).
@@ -57,34 +56,6 @@ pub(super) fn mj_collision_flex_self(model: &Model, data: &mut Data) {
                     mj_collide_flex_self_sap(model, data, f);
                 }
             }
-        }
-    }
-}
-
-/// Dispatch flex-flex cross-object collision.
-///
-/// Iterates all flex pair combinations (f1 < f2), applies bitmask filter,
-/// dispatches to element-element narrowphase with BVH midphase. No
-/// `flex_rigid` check — rigid flexes still participate in cross-object
-/// collision (MuJoCo behavior, EGT-4 verified).
-pub(super) fn mj_collide_flex_flex(model: &Model, data: &mut Data) {
-    if model.nflex < 2 {
-        return;
-    }
-
-    for f1 in 0..model.nflex {
-        let ct1 = model.flex_contype[f1];
-        let ca1 = model.flex_conaffinity[f1];
-
-        for f2 in (f1 + 1)..model.nflex {
-            // filterBitmask: (ct1 & ca2) != 0 || (ct2 & ca1) != 0
-            let ct2 = model.flex_contype[f2];
-            let ca2 = model.flex_conaffinity[f2];
-            if (ct1 & ca2) == 0 && (ct2 & ca1) == 0 {
-                continue;
-            }
-
-            mj_collide_flex_pair(model, data, f1, f2);
         }
     }
 }

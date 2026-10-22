@@ -1,15 +1,11 @@
-//! Flex collision dispatcher — internal collision (adjacent elements) and
-//! flex-flex cross-object pair enumeration.
+//! Flex collision dispatcher — internal collision (adjacent elements).
 //!
 //! Narrowphase primitives live in `flex_narrow`, self-collision modes in
 //! `flex_self`.
 
 use super::flex_narrow::{make_contact_flex_flex, make_contact_flex_self, sphere_triangle_contact};
-use super::flex_self::collide_element_pair;
-use crate::mid_phase::{Bvh, BvhPrimitive};
 use crate::types::{Data, Model};
-use cf_geometry::Aabb;
-use nalgebra::{Point3, Vector3};
+use nalgebra::Vector3;
 
 // Re-export public items so existing import paths in collision/mod.rs continue
 // to work without modification.
@@ -175,88 +171,4 @@ pub(super) fn nearest_vertex(pos: Vector3<f64>, candidates: &[usize], data: &Dat
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         })
         .unwrap_or(candidates[0])
-}
-
-// =============================================================================
-// Flex-flex cross-object collision (Spec D)
-// =============================================================================
-
-/// Flex-flex element pair enumeration with BVH midphase.
-///
-/// Builds BVH from the larger flex's elements, queries with each element
-/// of the smaller flex. No adjacency filtering (cross-object elements
-/// cannot be adjacent). Dispatches to `collide_element_pair()` for each
-/// AABB-overlapping pair.
-pub fn mj_collide_flex_pair(model: &Model, data: &mut Data, f1: usize, f2: usize) {
-    let elem_start1 = model.flex_elemadr[f1];
-    let elem_count1 = model.flex_elemnum[f1];
-    let elem_start2 = model.flex_elemadr[f2];
-    let elem_count2 = model.flex_elemnum[f2];
-
-    if elem_count1 == 0 || elem_count2 == 0 {
-        return;
-    }
-
-    // Mixed dimensions: use the minimum dim for narrowphase dispatch.
-    let dim1 = model.flex_dim[f1];
-    let dim2 = model.flex_dim[f2];
-    let dim = dim1.min(dim2);
-
-    // Build BVH from the flex with more elements (better tree balance)
-    let (bvh_start, bvh_count, query_start, query_count, bvh_flex, query_flex) =
-        if elem_count2 >= elem_count1 {
-            (elem_start2, elem_count2, elem_start1, elem_count1, f2, f1)
-        } else {
-            (elem_start1, elem_count1, elem_start2, elem_count2, f1, f2)
-        };
-
-    // Build BVH from larger flex's elements
-    let primitives: Vec<BvhPrimitive> = (0..bvh_count)
-        .map(|i| {
-            let e = bvh_start + i;
-            let verts = elem_vertices(model, e);
-            let aabb = element_aabb(&verts, data);
-            BvhPrimitive {
-                aabb,
-                index: i,
-                data: 0,
-            }
-        })
-        .collect();
-
-    let bvh = Bvh::build(primitives);
-
-    // Query each element of smaller flex against BVH
-    for i in 0..query_count {
-        let e_query = query_start + i;
-        let verts_query = elem_vertices(model, e_query);
-        let aabb_query = element_aabb(&verts_query, data);
-
-        for candidate_idx in bvh.query(&aabb_query) {
-            let e_bvh = bvh_start + candidate_idx;
-
-            // No adjacency filtering — cross-object elements are never adjacent
-            // No duplicate filtering — each (query, bvh) pair is unique
-
-            collide_element_pair(model, data, e_query, e_bvh, dim, query_flex, bvh_flex);
-        }
-    }
-}
-
-/// Compute AABB for an element from its vertex positions.
-fn element_aabb(verts: &[usize], data: &Data) -> Aabb {
-    let first = data.flexvert_xpos[verts[0]];
-    let mut min_v = first;
-    let mut max_v = first;
-
-    for &v in &verts[1..] {
-        let p = data.flexvert_xpos[v];
-        min_v = Vector3::new(min_v.x.min(p.x), min_v.y.min(p.y), min_v.z.min(p.z));
-        max_v = Vector3::new(max_v.x.max(p.x), max_v.y.max(p.y), max_v.z.max(p.z));
-    }
-
-    Aabb {
-        min: Point3::from(min_v),
-        max: Point3::from(max_v),
-    }
 }

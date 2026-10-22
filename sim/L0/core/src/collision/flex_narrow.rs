@@ -2,8 +2,8 @@
 //! vertex–triangle test they use.
 
 use super::{
-    assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flex_flex,
-    contact_param_flex_self,
+    assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flex_self,
+    contact_param_flexes,
 };
 use crate::types::{Contact, Model, make_frame};
 use nalgebra::Vector3;
@@ -75,7 +75,7 @@ pub fn make_contact_flex_flex(
 ) -> Contact {
     let flex_id1 = model.flexvert_flexid[vertex1];
     let flex_id2 = model.flexvert_flexid[vertex2];
-    let (condim, gap, solref, solimp, mu) = contact_param_flex_flex(model, flex_id1, flex_id2);
+    let (condim, gap, solref, solimp, mu) = contact_param_flexes(model, flex_id1, flex_id2);
     let solref = assign_ref(model, &solref);
     let solimp = assign_imp(model, &solimp);
     let mu = assign_friction(model, &mu);
