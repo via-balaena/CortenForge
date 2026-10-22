@@ -472,10 +472,9 @@ fn every_row_kind_steps_as_mujoco_3_5_0() {
 }
 
 /// Ten spheres sliding and spinning on a plane under Newton with an elliptic
-/// cone: 60 dofs, MuJoCo's sparse size. Its Hessian factor, with the cones'
-/// contributions, is made anew at each iteration where MuJoCo updates its
-/// own (the same matrix, rounded otherwise): 50 steps, each with MuJoCo's
-/// iteration count, the state within 1e-12. Then two of the spheres in
+/// cone: 60 dofs, MuJoCo's sparse size, and its sparse Hessian
+/// (`constraint/solver/sparse.rs`): 50 steps, each with MuJoCo's iteration
+/// count, the state within 1e-12. Then two of the spheres in
 /// contact with each other, so an elliptic contact couples two trees and its
 /// cone term pairs columns of different rows: the first forward's iteration,
 /// evaluation and update counts are MuJoCo's, and 100 steps keep its

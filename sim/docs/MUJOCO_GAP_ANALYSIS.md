@@ -204,21 +204,21 @@ data.step(&model).expect("step");
 > pipeline-native Newton solver was then implemented as §15 in the pipeline.
 
 The pipeline Newton solver is MuJoCo's `mj_solPrimal` with Newton directions (`mj_sol_primal()` in
-`constraint/solver/primal.rs`), ported operation for operation on MuJoCo's dense path; CG is the same
+`constraint/solver/primal.rs`), ported operation for operation at the dense and the sparse size; CG is the same
 solver with Polak-Ribière directions:
 
 - **Primal formulation**: minimizes the cost over the acceleration, on the unified constraint rows
   (equality, friction loss, limits, contacts)
 - **Hessian**: `M + J'·D·J` plus the cones' contributions, factored by `mju_cholFactor` and updated by
   `mju_cholUpdate` as rows change state; at MuJoCo's sparse size (`Model::is_sparse`:
-  `jacobian="sparse"`, or 60 dofs under the default) a sparse factor (`SparseHessian`),
-  made anew at each iteration
+  `jacobian="sparse"`, or 60 dofs under the default) MuJoCo's sparse factor
+  (`SparseHessian`), updated by `mju_cholUpdateSparse`
 - **Scale**: over every row, `1/(meaninertia·nv)`, the model's mean inertia; with
   islands, each island's 1/Σ of its mass matrix's diagonal
 - No fallback: at its iteration cap it keeps its last iterate, as MuJoCo's
 - Selected via `<option solver="Newton"/>` in MJCF (the default)
 
-**Files:** `sim-core/src/constraint/solver/primal.rs`, `constraint/solver/hessian.rs`; tests `sim/L0/tests/integration/primal_solver_parity.rs`
+**Files:** `sim-core/src/constraint/solver/primal.rs`, `constraint/solver/sparse.rs`; tests `sim/L0/tests/integration/primal_solver_parity.rs`
 
 ### Implementation Notes: PGS (Gauss-Seidel) Solver ⚠️ REMOVED from sim-constraint; reimplemented in pipeline
 

@@ -8,8 +8,11 @@ use crate::types::{Data, Model};
 /// Bodies `b1` and `b2`'s merged dof chain, as `mj_jacDifPair` forms it
 /// (`engine_core_util.c:429-448`): every dof from each body's weld body up
 /// to the world, merged (`mj_mergeChain`). Two bodies welded to the world
-/// have none. For two simple bodies MuJoCo takes `mj_mergeChainSimple`,
-/// which lists the same dofs: a simple body's parent has none.
+/// have none. For two different simple bodies MuJoCo takes
+/// `mj_mergeChainSimple`, which lists the same dofs (a simple body's parent
+/// has none); for one body with itself (a `<pair>` of two of its geoms) it
+/// lists each dof twice and stops at the sparse size, where this lists each
+/// once (ledger L222).
 pub fn body_pair_chain(model: &Model, b1: usize, b2: usize) -> Vec<usize> {
     let last = |body: usize| {
         let weld = model.body_weldid[body];

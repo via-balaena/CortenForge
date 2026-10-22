@@ -101,19 +101,18 @@ sim-core/src/
 ├── constraint/      # Constraint assembly + solver dispatch
 │   ├── mod.rs             # mj_fwd_constraint, island dispatch
 │   ├── assembly.rs        # assemble_unified_constraints() orchestrator
+│   ├── chain.rs           # A row's dof chain at the sparse size
 │   ├── contact_assembly.rs # Contact constraint row assembly
 │   ├── equality_assembly.rs # Equality constraint row assembly
 │   ├── equality.rs        # Equality constraint Jacobians
 │   ├── impedance.rs       # Solver impedance (solref/solimp)
 │   ├── jacobian.rs        # Constraint Jacobian computation
-│   └── solver/            # PGS, CG, Newton, Noslip, Hessian, QCQP
-│       ├── mod.rs         # Solver dispatch
+│   └── solver/            # PGS, the primal solver (Newton, CG), Noslip, QCQP
+│       ├── mod.rs         # Solver dispatch, PGS's row states
 │       ├── pgs.rs         # Projected Gauss-Seidel
-│       ├── cg.rs          # Conjugate Gradient
-│       ├── newton.rs      # Newton (H⁻¹ preconditioner)
-│       ├── primal.rs      # Shared primal infrastructure
+│       ├── primal.rs      # Newton and CG: MuJoCo's mj_solPrimal
+│       ├── sparse.rs      # The sparse Jacobian and Newton's sparse Hessian
 │       ├── noslip.rs      # Noslip post-processing
-│       ├── hessian.rs     # Analytical second-order derivatives
 │       └── qcqp.rs        # QCQP cone projection
 ├── integrate/       # Time integration
 │   ├── mod.rs             # integrate() dispatch
@@ -730,9 +729,10 @@ no separate contact-only assembly path.
 - **CG** and **Newton** (Newton the default, as MuJoCo's) — MuJoCo's primal
   solver `mj_solPrimal`, ported operation for operation
   (`constraint/solver/primal.rs`): CG preconditioned by M^-1 with Polak-Ribière
-  directions, Newton by the Hessian, factored densely and updated row by row
-  below MuJoCo's sparse size (`Model::is_sparse`: `jacobian="sparse"`, or 60
-  dofs under the default), as a sparse LDL factor at it. With islands enabled
+  directions, Newton by the Hessian, factored and updated row by row as
+  MuJoCo's: densely below MuJoCo's sparse size (`Model::is_sparse`:
+  `jacobian="sparse"`, or 60 dofs under the default), as its sparse L'L at it
+  (`constraint/solver/sparse.rs`). With islands enabled
   each island is solved apart, unless noslip is on or under
   implicitspringdamper. Their iterate is the acceleration; neither
   falls back to another solver.

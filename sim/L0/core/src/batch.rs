@@ -319,7 +319,8 @@ impl BatchSim {
     /// — use `data.divergence_detected()` to check. Only the errors
     /// [`Data::step`] returns (`CholeskyFailed`, `LuSingular`,
     /// `InvalidTimestep`, `DataShapeMismatch`, `TendonEqualityWithSleep`,
-    /// `UnsupportedInverseDiscrete`, `UndefinedContactFrame`) return `Some`.
+    /// `UnsupportedInverseDiscrete`, `UndefinedContactFrame`,
+    /// `ConstraintWithoutTree`) return `Some`.
     ///
     /// When the `parallel` feature is enabled, environments are stepped in
     /// parallel via rayon `par_iter_mut`. When disabled, environments are

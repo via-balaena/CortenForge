@@ -2740,8 +2740,8 @@ fn implicitspringdamper_solvers_agree() {
 /// implicitspringdamper holds a stiff tendon's coupling between two trees,
 /// outside the mass matrix's pattern: with one row and no state change the
 /// problem is quadratic, so one Newton step is the converged answer (ledger
-/// L106). Without the tendon in the pattern the step lands 897 away and the
-/// solve does not converge in 100 iterations (measured).
+/// L106). Without the tendon in the pattern the solve does not converge in
+/// 100 iterations (measured on `constraint/solver/sparse.rs`'s Hessian).
 #[test]
 fn sparse_hessian_holds_a_tendon_across_trees() {
     let chain = |name: &str, y: f64| {

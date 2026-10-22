@@ -380,7 +380,8 @@ pub struct Data {
     /// the first 20 islands' summed, the islands MuJoCo counts (`mjNISLAND`);
     /// then noslip's sweeps.
     pub solver_niter: usize,
-    /// Non-zeros in constraint Jacobian.
+    /// Never written: 0 (ledger L221). MuJoCo's counts, per island, the
+    /// nonzeros of Newton's Hessian or of PGS's `efc_AR`.
     pub solver_nnz: usize,
     // ==================== Unified Constraint System (Newton solver, §15) ====================
     // The rows are made in the position stage, their velocities and reference
@@ -465,14 +466,21 @@ pub struct Data {
     pub efc_state: Vec<ConstraintState>,
     /// Per-row constraint force (length nefc).
     pub efc_force: DVector<f64>,
-    /// Per-row J·qacc − aref (constraint residual, length nefc).
+    /// Per-row `J·qacc − aref` (length nefc): the primal solver's at its last
+    /// iterate; after PGS, the warmstart's (0 with the warmstart disabled).
     pub efc_jar: DVector<f64>,
-    /// Total cost (Gauss + constraint terms) at convergence.
+    /// Total cost (Gauss + constraint terms): the primal solver's when it
+    /// solves every row at once (0 island by island); after PGS, the
+    /// warmstart's (0 with the warmstart disabled).
     pub efc_cost: f64,
     /// Per-contact cone Hessian matrices (dim x dim). Indexed parallel to contacts.
-    /// Only populated for contacts in the Cone state. `None` for non-cone or Satisfied contacts.
+    /// Populated for the contacts the primal classification leaves in the Cone
+    /// state (Newton, CG; under PGS the warmstart's, which `efc_state`, from
+    /// `dualState`, need not keep; none with the warmstart disabled). `None`
+    /// for the others.
     pub efc_cone_hessian: Vec<Option<DMatrix<f64>>>,
-    /// Number of contacts currently in the Cone state.
+    /// Number of contacts the primal classification leaves in the Cone state
+    /// (see `efc_cone_hessian`).
     pub ncone: usize,
     /// Number of equality constraint rows (a flex equality's edge rows among
     /// them). These occupy `efc_*[0..ne)`.

@@ -948,7 +948,8 @@ fn test_sparse_hessian_coupled_contacts() {
     // resting on a ground plane. nv = 11 × 6 = 66 > 60, triggering the sparse
     // path. The equality constraints create J rows spanning DOFs of adjacent
     // bodies, producing off-diagonal fill in H = M + J^T·D·J. This tests that
-    // the sparse LDL^T factorization correctly handles off-diagonal entries.
+    // the sparse factorization (`constraint/solver/sparse.rs`) correctly
+    // handles off-diagonal entries.
     let mjcf = build_coupled_chain_mjcf(11);
     let (model, mut data) = model_from_mjcf(&mjcf);
 

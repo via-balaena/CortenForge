@@ -115,7 +115,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-180 | T2 | Mesh-plane contact forces ~10^16× too large vs primitive-plane -- sphere(0.05) mesh geom on plane produces 2.5e17 N (expected ~6 N from weight). Primitive sphere of same size produces correct ~5100 N. `collide_mesh_plane` vertex projection + `make_contact_from_geoms` uses same path as primitive; likely mass/inertia computation from mesh or constraint impedance scaling issue. | cf-design Phase 5 |
 | DT-161 | T1 | Pyramidal `efc_diagApprox` bodyweight factor-of-2 -- CF stores `(1+mu^2)*w_tran`, MuJoCo stores `2*(1+mu^2)*w_tran` for pyramidal facet rows. No downstream effect (R_py post-processing overwrites). | ROADMAP_V1 |
 | DT-162 | T1 | ~~PGS `solver_stat` `nactive`/`nchange` per-iteration counting -- MuJoCo calls `dualState()` per sweep; CF uses placeholder 0. Diagnostic only.~~ **Done** -- PGS keeps `dualState`'s counts and leaves its states (Rigid closing work, ledger L132) | Phase 13 |
-| DT-163 | T1 | PGS warmstart primal cost gate -- CF uses dual cost (`< 0`), MuJoCo uses primal cost (`> 0`). Equivalent at optimum; no measurable divergence. | Phase 13 |
+| DT-163 | T1 | ~~PGS warmstart primal cost gate -- CF uses dual cost (`< 0`), MuJoCo uses primal cost (`> 0`). Equivalent at optimum; no measurable divergence.~~ **Superseded** -- MuJoCo's gate is the dual cost too (`engine_forward.c:631-648`), keeping the warm forces unless it is above 0 where CF keeps them when it is below: ledger L219 (Rigid closing work) | Phase 13 |
 | DT-164 | T2 | Newton solver golden flag convergence -- 24/26 golden flag tests fail at ~0.002 qacc divergence. Assembly and PGS verified correct. Residual is Newton convergence behavior. | Phase 13 |
 
 ## Flex / Deformable Body

@@ -154,9 +154,10 @@ impl Data {
     /// positive and finite, `Err(StepError::DataShapeMismatch)` if `self`
     /// was made by a model of other dimensions or an input array was resized,
     /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
-    /// tendon equality is active, and `Err(StepError::UndefinedContactFrame)`
+    /// tendon equality is active, `Err(StepError::UndefinedContactFrame)`
     /// if a contact's normal, as its collision function wrote it, is shorter
-    /// than 0.5.
+    /// than 0.5, and `Err(StepError::ConstraintWithoutTree)` if, at the dense
+    /// size with islands, a contact between two static geoms made rows.
     pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
         check::check_tendon_equality_sleep(model)?;
@@ -208,8 +209,8 @@ impl Data {
     /// was resized, with `ENABLE_FWDINV` under an integrator the discrete
     /// inverse dynamics refuse when the comparison reaches the inverse (the
     /// pass made constraint rows; `UnsupportedInverseDiscrete`), or if forward
-    /// acceleration computation fails (e.g., `CholeskyFailed` under the
-    /// implicit spring-damper integrator).
+    /// acceleration computation fails (`CholeskyFailed` under the implicit
+    /// spring-damper integrator, or when Newton's sparse Hessian loses rank).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
 
@@ -243,7 +244,7 @@ impl Data {
     ///
     /// Returns `Err(StepError)` if:
     /// - the implicit spring-damper integrator's matrix is not positive
-    ///   definite (`CholeskyFailed`)
+    ///   definite, or Newton's sparse Hessian loses rank (`CholeskyFailed`)
     /// - under the implicit integrator, a diagonal of the LU factor is below
     ///   mjMINVAL in magnitude (`LuSingular`)
     /// - The timestep is not positive and finite (`InvalidTimestep`)
@@ -256,6 +257,8 @@ impl Data {
     ///   the comparison reaches the inverse (`UnsupportedInverseDiscrete`)
     /// - A contact's normal, as its collision function wrote it, is shorter
     ///   than 0.5 (`UndefinedContactFrame`)
+    /// - At the dense size with islands, a contact between two static geoms
+    ///   made rows (`ConstraintWithoutTree`)
     ///
     /// NaN/divergence in qpos, qvel, or qacc triggers auto-reset (matching
     /// MuJoCo). Disable with `DISABLE_AUTORESET`. Use `data.divergence_detected()`
@@ -337,9 +340,11 @@ impl Data {
     /// `Err(StepError::TendonEqualityWithSleep)` if sleep is enabled and a
     /// tendon equality is active, `Err(StepError::UndefinedContactFrame)` if a
     /// contact's normal, as its collision function wrote it, is shorter than
-    /// 0.5, and `Err(StepError::CholeskyFailed)` under
-    /// the implicit spring-damper integrator when its modified mass matrix is
-    /// not positive definite. The implicit and implicitfast integrators'
+    /// 0.5, `Err(StepError::ConstraintWithoutTree)` if, at the dense size with
+    /// islands, a contact between two static geoms made rows, and
+    /// `Err(StepError::CholeskyFailed)` under the implicit spring-damper
+    /// integrator when its modified mass matrix is not positive definite, or
+    /// when Newton's sparse Hessian loses rank. The implicit and implicitfast integrators'
     /// factor is the integrator's (`integrate`), not this pass's.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         check::check_step_inputs(model, self)?;
@@ -388,8 +393,10 @@ impl Data {
     /// if `self` was made by a model of other dimensions or an input array
     /// was resized, if `skipstage` is `MjStage::None` with sleep enabled and a
     /// tendon equality active or a contact's normal shorter than 0.5
-    /// (`UndefinedContactFrame`), or if the implicit spring-damper integrator's
-    /// factorization fails (`CholeskyFailed`).
+    /// (`UndefinedContactFrame`) or, at the dense size with islands, a contact
+    /// between two static geoms that made rows (`ConstraintWithoutTree`), or
+    /// if the implicit spring-damper integrator's factorization fails or
+    /// Newton's sparse Hessian loses rank (`CholeskyFailed`).
     pub fn forward_skip(
         &mut self,
         model: &Model,
@@ -457,7 +464,9 @@ impl Data {
     /// # Errors
     ///
     /// After each collision, [`StepError::UndefinedContactFrame`]
-    /// ([`check::check_contact_frames`]). In [`Pass::Inverse`] only, after
+    /// ([`check::check_contact_frames`]). In [`Pass::Forward`], from the
+    /// island partition, [`StepError::ConstraintWithoutTree`] (`mj_island`).
+    /// In [`Pass::Inverse`] only, after
     /// collision: [`StepError::ContactWithSleepingGeom`]
     /// ([`check::check_contacts_awake`]), which the forward pass's contact
     /// wake leaves nothing to refuse.

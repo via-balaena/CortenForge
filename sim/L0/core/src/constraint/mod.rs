@@ -268,7 +268,8 @@ pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
 ///    island by island where MuJoCo's is, whose iterate is the acceleration;
 ///    PGS. No solver falls back to
 ///    another (MuJoCo, `engine_forward.c:739-830`).
-/// 4. Map efc_force → qfrc_constraint via J^T
+/// 4. Map efc_force → qfrc_constraint via J^T after PGS or noslip; after the
+///    primal solver, its own is kept
 /// 5. Extract qfrc_frictionloss from efc_force
 ///
 /// Under the implicit spring-damper integrator every solver solves over

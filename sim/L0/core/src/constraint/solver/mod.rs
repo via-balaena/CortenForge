@@ -104,9 +104,11 @@ pub fn dual_state(data: &Data, state: &mut [ConstraintState]) -> usize {
 
 /// The zone of an elliptic contact's forces (its `dim` rows, normal first)
 /// in its regular cone of friction `mu`, `dualState`'s
-/// (`engine_solver.c:268-303`): satisfied inside the cone, quadratic inside
-/// its dual, in the cone between. The friction forces are scaled by their
-/// coefficients and their norm summed as `mju_norm` sums it.
+/// (`engine_solver.c:268-303`), with `N` the scaled normal force and `T` the
+/// norm of the scaled friction forces: satisfied at `mu·N ≥ T` (its top
+/// zone), quadratic at `N + mu·T ≤ 0` (its bottom zone), in the cone between.
+/// The friction forces are scaled by their coefficients and their norm
+/// summed as `mju_norm` sums it.
 fn elliptic_zone(force: &[f64], mu: f64, friction: &[f64; 5]) -> ConstraintState {
     let n = force[0] / mu;
     let mut f = [0.0; 5];
