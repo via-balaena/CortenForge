@@ -166,12 +166,12 @@ pub(super) fn collide_tree_flex(
 
 /// Append to `hits` each pair of an element of flex `flex1` and an element
 /// of flex `flex2` whose leaves the midphase reaches, in the order MuJoCo's
-/// `mj_collideTree` reaches them (`engine_collision_driver.c:768-787`):
+/// `mj_collideTree` reaches them (`engine_collision_driver.c:761-779`):
 /// every pair of leaves, their boxes left to the narrow phase
 /// (`mj_collideElems`), the inner boxes tested within the two flexes'
 /// margins (`filterBox`). With the same flex on both sides, its collision
 /// with itself, a pair of nodes is taken once, the lower node first
-/// (`:677-680`). `false`, appending nothing, when either has no hierarchy.
+/// (`:683-686`). `false`, appending nothing, when either has no hierarchy.
 pub(super) fn collide_tree_flexes(
     model: &Model,
     data: &Data,

@@ -4,10 +4,11 @@
 //! together, each pair of leaves to `mj_collideElems`, and sorts the pair's
 //! contacts by element; without the midphase, every element of the first
 //! against every element of the second. After every pair, each flex's
-//! active elements against each other, through its hierarchy, by sweep and
-//! prune, or each pair in turn. Two cables' elements meet as capsules, any
-//! other two through the convex route (`engine_collision_driver.c:264-482`,
-//! `:622-847`, `:1809-1861`, `:2002-2098`). The golden is
+//! internal collisions, then its active elements against each other,
+//! through its hierarchy, by sweep and prune, or each pair in turn. Two
+//! cables' elements meet as capsules, any other two through the convex route
+//! (`engine_collision_driver.c:264-482`, `:622-847`, `:1714-1806`,
+//! `:1809-1861`, `:2002-2180`). The golden is
 //! `assets/golden/flex/flex_self.json`, from the unfused MuJoCo 3.5.0
 //! oracle (`scripts/gen_flex_self_reference.py`, which describes its
 //! cases).
@@ -35,7 +36,7 @@ fn flexes_collide_with_each_other_as_mujoco() {
 }
 
 /// A flex whose every vertex is pinned is rigid and does not collide with
-/// itself (`engine_collision_driver.c:432`): the golden's folded strip, its
+/// itself (`engine_collision_driver.c:439`): the golden's folded strip, its
 /// elements within reach of each other, collides with itself unpinned, and
 /// not once every vertex is pinned.
 #[test]

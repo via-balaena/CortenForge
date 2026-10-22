@@ -100,7 +100,7 @@ fn t02_compatible_bitmask_generates_contacts() {
         };
         assert_ne!(
             fid1, fid2,
-            "flex-flex vertices must be from different flex objects"
+            "a flex-flex contact's sides are on different flexes"
         );
     }
 }
@@ -412,7 +412,6 @@ fn t07_three_flex_all_pairs_enumeration() {
 #[test]
 fn t08_condim_max_combination() {
     // Test that condim combination uses max: condim=1 vs condim=4 → max=4.
-    // Flex contact factory maps: 1→1, 4→4, _→3. So max(1,4)=4 → dim=4.
     let mjcf = r#"
         <mujoco model="condim_test">
             <option gravity="0 0 0" timestep="0.001"/>
@@ -450,7 +449,7 @@ fn t08_condim_max_combination() {
         "must generate flex-flex contacts for condim test"
     );
 
-    // max(1, 4) = 4 → dim = 4 (flex factory maps 4→4)
+    // max(1, 4) = 4 → dim = 4
     for c in &ff_contacts {
         assert_eq!(c.dim, 4, "condim must be max(1, 4) = 4");
     }
@@ -524,45 +523,6 @@ fn t09_full_forward_step_no_panic() {
     // this model, cfrc_ext stays zero. The qfrc_constraint assertion above
     // proves the full constraint pipeline (collision → Jacobian → assembly →
     // solve → force distribution) works for flex-flex contacts.
-}
-
-// ============================================================================
-// T11: Self-collision regression → AC12
-// ============================================================================
-
-#[test]
-fn t11_self_collision_regression() {
-    // Verify the narrowphase generalization (f, f) produces same results as
-    // the original (f) for self-collision.
-    let mjcf = r#"
-        <mujoco model="self_collision_regression">
-            <option gravity="0 0 -9.81" timestep="0.001"/>
-            <worldbody/>
-            <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01"
-                      selfcollide="auto">
-                    <contact contype="1" conaffinity="1" margin="0.01"/>
-                    <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0  0 2 0  1 2 0  2 2 0"/>
-                    <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
-                </flex>
-            </deformable>
-        </mujoco>
-    "#;
-
-    let model = load_model(mjcf).expect("load");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-
-    // No panic; each contact of the flex with itself lists it on both sides.
-    for c in &data.contacts {
-        if let [Some(f1), Some(f2)] = c.flex {
-            assert_eq!(
-                f1, f2,
-                "a self-collision contact lists the same flex on both sides"
-            );
-        }
-    }
 }
 
 // ============================================================================

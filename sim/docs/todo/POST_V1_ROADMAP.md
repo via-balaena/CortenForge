@@ -122,17 +122,17 @@ DT-181 added during derivatives examples (sensor FD optimization).
 
 | DT | Tier | Description | Source |
 |----|------|-------------|--------|
-| DT-69 | T2 | ~~SAP integration for flex broadphase -- currently brute-force O(V*G)~~ **Done** for a body against a flex (MuJoCo's broadphase and midphase); flex–flex and self-collision remain the flex work's second pull request's | 10i |
+| DT-69 | T2 | ~~SAP integration for flex broadphase -- currently brute-force O(V*G)~~ **Done** -- MuJoCo's broadphase and midphase for a body, a flex and a flex against itself (the flex work's two pull requests) | 10i |
 | DT-71 | T1 | Behavioral friction tests for deformable -- additional coverage beyond DT-25 verification (friction coefficient sweep, stick-slip transition) | 10i |
 | DT-72 | T1 | Flex contacts not wired for adhesion -- AC12 test documented skip | 10i |
 | DT-89 | T1 | `<flexcomp>` deferred rendering attributes: `flatskin`, `material`, `rgba` | 10i |
-| DT-150 | T2 | `activelayers` runtime filtering for flex self-collision -- the flex hierarchy (a geom against a flex) takes only active elements; self-collision does not read it yet | 10i |
-| DT-151 | T2 | Edge-edge tests for dim=3 tetrahedral self-collision -- MuJoCo performs edge-edge proximity tests; CortenForge vertex-face only | 10i |
-| DT-152 | T2 | Barycentric force distribution on face side for flex self-collision contacts -- current Jacobian applies force to nearest vertex | 10i |
-| DT-153 | T1 | Island assignment for flex contacts -- sentinel `usize::MAX` geom indices skipped from island assignment. Affects island-based solving only. | 10i |
+| DT-150 | T2 | ~~`activelayers` runtime filtering for flex self-collision -- the flex hierarchy (a geom against a flex) takes only active elements; self-collision does not read it yet~~ **Done** -- a flex's self-collision takes its active elements alone, as `mj_isElemActive` (`Model::flex_elem_active`) | 10i |
+| DT-151 | T2 | ~~Edge-edge tests for dim=3 tetrahedral self-collision -- MuJoCo performs edge-edge proximity tests; CortenForge vertex-face only~~ **Dropped** -- MuJoCo has no such test: a flex's elements collide through `mj_collideElems`, ported | 10i |
+| DT-152 | T2 | ~~Barycentric force distribution on face side for flex self-collision contacts -- current Jacobian applies force to nearest vertex~~ **Done** -- an element contact's force goes to its vertices by MuJoCo's element weights (`mj_elemBodyWeight`) | 10i |
+| DT-153 | T1 | ~~Island assignment for flex contacts -- sentinel `usize::MAX` geom indices skipped from island assignment. Affects island-based solving only.~~ **Done** -- a contact has no sentinel geom, and a flex contact's rows take their islands from the Jacobian | 10i |
 | DT-154 | T1 | ~~Flex contact factory condim=6 mapping -- the flex–flex and self factories map `condim: 1->1, 4->4, _->3`, so `condim=6` produces `dim=3` (a geom against a flex keeps 6).~~ **Done** -- two flexes' and a flex's own contacts keep condim 6, as MuJoCo (a tetrahedron's faces against its vertices take 1, as `mj_collideFlexInternal`) | 10i |
-| DT-155 | T1 | S10 override test for flex-flex contacts (AC11/T10) -- `ENABLE_OVERRIDE` test infrastructure not wired for flex contact tests | 10i |
-| DT-156 | T2 | Narrowphase triangle-triangle contact count conformance gap -- CortenForge 36 contacts vs MuJoCo 32 for overlapping 3x3 flex grids | 10i |
+| DT-155 | T1 | ~~S10 override test for flex-flex contacts (AC11/T10) -- `ENABLE_OVERRIDE` test infrastructure not wired for flex contact tests~~ **Partly done** -- the override's margin is the golden case `two_cloths_override` (`flex_self.json`); its solref, solimp and friction on flex contacts are untested | 10i |
+| DT-156 | T2 | ~~Narrowphase triangle-triangle contact count conformance gap -- CortenForge 36 contacts vs MuJoCo 32 for overlapping 3x3 flex grids~~ **Done** -- MuJoCo 3.5.0's 31 for these grids, sim-core's too (golden case `coplanar_grids`) | 10i |
 
 ## Plugin and Extension System
 

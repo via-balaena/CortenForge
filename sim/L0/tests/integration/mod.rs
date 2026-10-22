@@ -267,7 +267,8 @@ pub mod com_frame_parity;
 /// sim-core's run.
 pub mod flex_golden;
 pub mod flex_rigid_parity;
-/// A flex against a flex against MuJoCo 3.5.0, from its golden.
+/// A flex against a flex and against itself, against MuJoCo 3.5.0, from
+/// its golden.
 pub mod flex_self_parity;
 /// Flex unification acceptance tests: AC1–AC15 from future_work_6b_precursor_to_7.
 pub mod flex_unified;

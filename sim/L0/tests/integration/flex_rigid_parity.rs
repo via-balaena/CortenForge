@@ -41,7 +41,7 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
 /// A cloth of nine vertices 5 mm over a world plane, its first vertex pinned,
 /// at the dense size: the pinned vertex's contact with the plane has no dof
 /// on either side, so with islands its rows are in no island (MuJoCo stops
-/// on such a row: registry D-FLEX-NO-TREE). Their Jacobian is zero, so their force
+/// on such a row: registry `D-FLEX-NO-TREE`). Their Jacobian is zero, so their force
 /// cannot depend on the other rows': each takes the force and state the
 /// whole problem's solve (islands disabled) gives it.
 #[test]
@@ -91,7 +91,7 @@ fn rows_in_no_island_take_the_whole_solve_s_force() {
 }
 
 /// A sphere asleep (`sleep="init"`) under an awake cloth whose elements
-/// reach it (registry D-FLEX-SLEEP-ISLAND): MuJoCo 3.5.0 wakes no tree for a
+/// reach it (registry `D-FLEX-SLEEP-ISLAND`): MuJoCo 3.5.0 wakes no tree for a
 /// contact with a flex (`mj_wakeCollision`, `engine_sleep.c:290-293`), and
 /// then raises an error at its sixth step when the sphere's tree comes first
 /// in its island (`:542`, as here, sim-mjcf numbering a flex's vertex bodies

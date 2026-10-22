@@ -357,7 +357,7 @@ def mujoco_stops():
     def raises(f):
         try:
             f()
-        except Exception as e:  # noqa: BLE001 - MuJoCo's mjERROR arrives as a plain Exception
+        except Exception as e:  # noqa: BLE001 - MuJoCo's mjERROR arrives as mujoco.FatalError
             return str(e)
         return None
     for option, flag, stops in (("", "", True), ("", 'island="disable"', False), ('jacobian="sparse"', "", False)):

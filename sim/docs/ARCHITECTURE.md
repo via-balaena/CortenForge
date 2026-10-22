@@ -429,7 +429,7 @@ modules:
 - `constraint/` — Unified constraint assembly (contact + equality sub-modules) + solver dispatch (PGS, CG, Newton, Noslip, QCQP)
 - `integrate/` — Euler, implicit, RK4 integration
 - `island/` — Constraint island discovery (DFS flood-fill) + sleep/wake state machine
-- `collision/` — Broad + narrow phase collision pipeline, flex collision (narrow, self-collision), pair enumeration
+- `collision/` — Broad + narrow phase collision pipeline, flex collision (a body, a flex and a flex against itself)
 - `sensor/` — Position/velocity/acceleration sensor stages, geom distance, post-processing
 - `tendon/` — Fixed-path and spatial-path tendon kinematics
 - `derivatives/` — Simulation transition derivatives (FD, analytical qDeriv, hybrid FD+analytical, SO(3) Jacobians)

@@ -16,7 +16,7 @@ radii and margins, overlap; the midphase descends the two hierarchies
 together (mj_collideTree, :622-847), each pair of leaves to mj_collideElems
 (:2002-2098), and sorts the pair's contacts by element (contactSort,
 :366-371); without it, every element of the first against every element of
-the second. A flex against itself (:428-475), after every pair: a flex not
+the second. A flex against itself (:437-475), after every pair: a flex not
 rigid whose contype meets its own conaffinity, its active elements
 (mj_isElemActive, :214-220) through its own hierarchy (selfcollide bvh, or
 auto for a tetrahedral flex), by sweep and prune along the hierarchy's
@@ -208,7 +208,7 @@ CASES = {
     # two cloths, within reach of both, whose bits miss the first cloth's.
     "three_flexes": ([DUMMY, CLOTH, moved(OVER, 0, 0, 0, NONE + ' contype="3" conaffinity="3"'),
                       moved(CROSS, 0, 0, -0.0075, NONE + ' contype="2" conaffinity="2"')], "", ""),
-    # A flex against itself (engine_collision_driver.c:428-475), after every
+    # A flex against itself (engine_collision_driver.c:437-475), after every
     # pair: a cloth's active elements by sweep and prune along its
     # hierarchy's longest axis (auto, sap), its hierarchy (bvh), or each pair
     # in turn (narrow, or without the midphase); none, nothing.
@@ -256,11 +256,10 @@ CASES = {
     "two_cubes_narrow": ([DUMMY, self_flex(TWO_CUBES, "narrow")], "", ""),
     "two_cubes_sap_layers2": ([DUMMY, self_flex(TWO_CUBES, "sap", ' activelayers="2"')], "", ""),
     # A flex's internal collisions (mj_collideFlexInternal, :1745-1806), before
-    # its elements against each other: each element against the vertex of
-    # its neighbour across a shared fragment, a border element's (a cable's
-    # or a cloth's; mj_collideElemVert, :2101-2180), and each tetrahedron's
-    # faces against its opposite vertices (planeVertex, :1714-1740, condim
-    # 1), the margin and gap left out.
+    # its elements against each other: each element against the vertices of
+    # its pairs, the compiler's for a cable or a cloth (mj_collideElemVert,
+    # :2101-2180), and each tetrahedron's faces against its opposite vertices
+    # (planeVertex, :1714-1740, condim 1), the margin and gap left out.
     "cable_v_internal": ([DUMMY, (*CABLE_V, INTERNAL)], "", ""),
     "cable_v_internal_condim4": ([DUMMY, (*CABLE_V, INTERNAL + ' condim="4"')], "", ""),
     "folded_internal": ([DUMMY, folded(INTERNAL)], "", ""),

@@ -462,12 +462,11 @@ pub struct Model {
     ///   2. `(flex_contype[f] & flex_conaffinity[f]) != 0` — self-bitmask check
     ///   3. `flex_selfcollide[f]` — dedicated flag
     ///
-    /// Both `internal` (adjacent elements) and `selfcollide` (non-adjacent)
-    /// are independently gated behind conditions 1+2.
+    /// Both `internal` and `selfcollide` are gated behind conditions 1+2.
     pub flex_selfcollide: Vec<FlexSelfCollide>,
     /// Per-flex: internal collision flag (MuJoCo's default false). When true,
-    /// contacts between elements sharing an edge are generated (adjacent
-    /// element contacts).
+    /// each element meets the vertices of its pairs (`flex_evpair`) and a
+    /// tetrahedron's faces their opposite vertices (`mj_collideFlexInternal`).
     pub flex_internal: Vec<bool>,
     /// Per-flex: number of active element layers (MuJoCo's default 1): a
     /// dim-3 element is active while its layer, its distance from the

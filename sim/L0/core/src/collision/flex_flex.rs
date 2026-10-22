@@ -1,21 +1,20 @@
 //! A flex against a flex, and against itself, as MuJoCo collides them
-//! (`engine_collision_driver.c:346-412`, `:428-475`, `:1809-1861`,
-//! `:2002-2098`).
+//! (`engine_collision_driver.c:359-373`, `:415-426`, `:437-475`,
+//! `:1714-1806`, `:1809-1861`, `:2002-2180`).
 //!
 //! Two flexes: with the midphase, their hierarchies are descended together
 //! ([`collide_tree_flexes`]), each pair of leaves to the narrow phase;
 //! without it, every element of the first against every element of the
-//! second. A flex against itself, after every pair: its active elements
-//! through its own hierarchy, by sweep and prune, or each pair in turn, as
-//! its `selfcollide` and the midphase say. Two elements meet unless their
+//! second. A flex against itself, after every pair: its internal collisions,
+//! then its active elements through its own hierarchy, by sweep and prune,
+//! or each pair in turn, as its `selfcollide` and the midphase say. Two
+//! elements meet unless their
 //! boxes are further apart than the margin (none against itself) or a vertex
 //! of one is on a body a vertex of the other is on: two cables' elements as
 //! capsules, any other two through the convex route. Each contact lists the
 //! first element first, its normal toward the second.
 
-use nalgebra::Vector3;
-
-use nalgebra::Matrix3;
+use nalgebra::{Matrix3, Vector3};
 
 use super::broadphase::sweep_and_prune;
 use super::midphase::{collide_tree_flexes, filter_box};
@@ -30,7 +29,7 @@ use crate::types::{Contact, DISABLE_MIDPHASE, Data, FlexSelfCollide, Model, disa
 
 /// Collide flex `flex1` with flex `flex2`, a pair the broadphase passed, and
 /// list each contact's place (`mj_collision`,
-/// `engine_collision_driver.c:346-412`): through the midphase when it is on
+/// `engine_collision_driver.c:359-373`, `:415-426`): through the midphase when it is on
 /// and both have hierarchies, else each pair of elements in turn. `hits` and
 /// `stack` are scratch, reused across pairs.
 pub(super) fn collide_flex_flex(
@@ -65,7 +64,7 @@ pub(super) fn collide_flex_flex(
 }
 
 /// Collide flex `f` with itself and list each contact's place (`mj_collision`,
-/// `engine_collision_driver.c:428-475`): a flex not rigid whose contype
+/// `engine_collision_driver.c:437-475`): a flex not rigid whose contype
 /// meets its own conaffinity, its internal collisions when `flex_internal`
 /// is set, then, unless its `selfcollide` is none, its active elements
 /// against each other: with the midphase and a hierarchy, through the
@@ -97,8 +96,7 @@ pub(super) fn collide_flex_self(
 }
 
 /// `mj_collideFlexInternal` (`:1745-1806`): flex `f`'s element–vertex pairs
-/// (`flex_evpair`: each border element of a cable or a cloth and the vertex
-/// of its neighbour across a shared fragment), each to [`collide_elem_vert`];
+/// (`flex_evpair`, its compiler's), each to [`collide_elem_vert`];
 /// then, for a tetrahedral flex, each tetrahedron's four faces against their
 /// opposite vertices ([`plane_vertex`]), each contact the element's first,
 /// condim 1, the margin and gap left out.
@@ -188,7 +186,7 @@ fn collide_elem_vert(model: &Model, data: &mut Data, f: usize, e: usize, v: usiz
 }
 
 /// Flex `f`'s active elements against each other, by its `selfcollide` mode
-/// (`:441-472`).
+/// (`:445-473`).
 fn collide_active_elements(
     model: &Model,
     data: &mut Data,
@@ -227,10 +225,9 @@ fn active_elements(model: &Model, f: usize) -> Vec<usize> {
 
 /// `mj_collideFlexSAP` (`:1809-1861`): flex `f`'s active elements, by their
 /// boxes, swept and pruned along the longest axis of its hierarchy's root
-/// box (x unless another is longer, then y unless z is), at most 1,000,000
-/// pairs, each pair to the narrow phase. (From 65,536 active elements
-/// MuJoCo's `mj_SAP` refuses its input and `mj_collideFlexSAP` raises an
-/// error; this sweeps them.)
+/// box (x where it is longer than both others, else y where it is longer than
+/// z, else z), at most 1,000,000 pairs, each pair to the narrow phase. (MuJoCo
+/// stops from 32,770 active elements, registry `D-FLEX-SAP-SIZE`.)
 fn collide_flex_sap(model: &Model, data: &mut Data, f: usize) {
     let active = active_elements(model, f);
     let Some(root) = model.flex_bvhadr.get(f).copied().flatten() else {

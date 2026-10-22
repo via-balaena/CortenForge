@@ -887,7 +887,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | Edge-length constraints | Yes (`mjEQ_FLEX`) | `EqualityType::Flex` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`) | - | - |
 | Bending (dihedral) | Yes (passive forces) | Passive spring-damper in `mj_fwd_passive()` | ✅ **Pipeline** (Bridson et al. 2003 gradient) | - | - |
 | Flex-rigid collision | Yes | `collide_body_flex()` → regular `Contact` entries | ✅ **Pipeline** (MuJoCo's element collision, broadphase and midphase) | - | - |
-| Flex-flex collision | Yes | Not implemented | **Deferred** (self-collision for cloth) | Low | High |
+| Flex-flex collision | Yes | `collide_flex_flex()`, `collide_flex_self()` → regular `Contact` entries | ✅ **Pipeline** (MuJoCo's element collision, midphase and self-collision modes) | - | - |
 | Flex `body`/`node` attrs | Yes (`flexvert_bodyid`) | ~~Hardcoded `usize::MAX`~~ → Parsed + resolved | ✅ **Done** — [#27D](./todo/future_work_7.md) | - | - |
 | Sparse edge Jacobian (`flexedge_J`) | Yes (CSR per edge) | Inline `±direction` (3-DOF only) | **Gap** — [§42A-i](./todo/future_work_10.md) | Medium | High |
 | `flex_rigid`/`flexedge_rigid` | Yes (boolean arrays) | Per-vertex `invmass==0` check | **Gap** — [§42A-ii](./todo/future_work_10.md) (optimization) | Low | Low |
