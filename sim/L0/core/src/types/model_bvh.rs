@@ -101,7 +101,8 @@ impl Model {
     /// its shape is kept (`bvh_child`, `bvh_nodeid`, `bvh_depth`): its boxes
     /// move with the vertices, `Data::bvh_aabb_dyn` (MuJoCo copies no
     /// `bvh_aabb` for a flex, `user_model.cc:3447-3454`). A flex with no
-    /// active element has no hierarchy (`flex_bvhadr` `None`).
+    /// active element has no hierarchy (`flex_bvhadr` `None`; MuJoCo's
+    /// compiler does not take such a flex, registry `D-FLEX-NO-ACTIVE`).
     ///
     /// Writes `flex_bvhadr`, `flex_bvhnum`, `nbvhstatic` and `nbvhdynamic`
     /// and appends to `bvh_child`, `bvh_nodeid` and `bvh_depth`, after the

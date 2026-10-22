@@ -169,13 +169,7 @@ fn flex_layers_pairs_and_hierarchies_as_mujoco() {
             assert_eq!(pairs, ints(&flex["evpair"]), "{at}: pairs");
             let bn = model.flex_bvhnum[f];
             assert_eq!(bn, count(&flex["bvhnum"]), "{at}: nodes");
-            let Some(ba) = model.flex_bvhadr[f] else {
-                assert!(
-                    flex.get("bvhadr_past_static").is_none(),
-                    "{at}: a hierarchy"
-                );
-                continue;
-            };
+            let ba = model.flex_bvhadr[f].expect("a hierarchy");
             assert_eq!(
                 ba - model.nbvhstatic,
                 count(&flex["bvhadr_past_static"]),
@@ -249,4 +243,50 @@ fn flex_element_and_hierarchy_boxes_as_mujoco() {
             "{name}: the element boxes move all the same"
         );
     }
+}
+
+/// A tetrahedral flex with no active layer (`activelayers="0"`, registry
+/// `D-FLEX-NO-ACTIVE`): MuJoCo 3.5.0's compiler crashes on it (it reads the
+/// empty hierarchy's root box, `user_mesh.cc:4392-4402`); sim-mjcf loads it
+/// without a hierarchy, and a sphere on it meets its element as without the
+/// midphase, bit for bit.
+#[test]
+fn a_tetrahedral_flex_with_no_active_layer_loads() {
+    let xml = |flag: &str| {
+        format!(
+            r#"<mujoco>
+              <option gravity="0 0 0"><flag {flag}/></option>
+              <worldbody>
+                <body pos="0.02 0.02 0.12"><freejoint/><geom type="sphere" size="0.05"/></body>
+              </worldbody>
+              <deformable>
+                <flex name="t" dim="3" radius="0.01">
+                  <contact selfcollide="none" internal="false" activelayers="0"/>
+                  <vertex pos="-0.1 -0.1 -0.05  0.12 -0.08 -0.04  -0.02 0.13 -0.06  0 0 0.08"/>
+                  <element data="0 1 2 3"/>
+                </flex>
+              </deformable>
+            </mujoco>"#
+        )
+    };
+    let listed = |flag: &str| {
+        let model = load_model(&xml(flag)).expect("load");
+        assert_eq!(model.flex_bvhadr, [None], "{flag}: no hierarchy");
+        assert_eq!(model.flex_bvhnum, [0], "{flag}: no nodes");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        data.step(&model).expect("step");
+        data.forward(&model).expect("forward");
+        data.contacts
+            .iter()
+            .map(|c| (c.elem, c.depth.to_bits(), c.pos.map(f64::to_bits)))
+            .collect::<Vec<_>>()
+    };
+    let midphase = listed("");
+    assert!(!midphase.is_empty(), "the sphere meets the element");
+    assert_eq!(
+        midphase,
+        listed(r#"midphase="disable""#),
+        "the midphase on and off"
+    );
 }
