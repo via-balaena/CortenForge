@@ -18,15 +18,16 @@ midphase descends the body's and the flex's hierarchies together
 every vertex (mj_collidePlaneFlex, :1658-1710); without it each geom
 against every element; each geom against an element by type
 (mj_collideGeomElem, :1866-1998). Each case: rigid geoms against a flex,
-all but one after a cable that collides with nothing, so the flex's
-vertices and elements start past 0. Each vertex is a body with three slides and mass
+most after a cable that collides with nothing, so the flex's vertices and
+elements start past 0; a case may end with a fragment after the flexes (an
+actuator). Each vertex is a body with three slides and mass
 0.125, so the document is written twice: MuJoCo's <flex body=...> over
 declared bodies, and sim-mjcf's <deformable><flex> with its vertices and
 the flex's whole mass, whose bodies sim-mjcf adds after the others, in the
 same order; equality constraints disabled on both, as sim-mjcf makes a
 flex's edges equality constraints. A rigid body's mass and inertia are
-given and its quat is MuJoCo's compiled one, on both. Recorded: qpos0, and
-after mj_forward each contact
+given and its quat is MuJoCo's compiled one, on both. Recorded: qpos0, each
+control (0.5, when the model has any), and after mj_forward each contact
 (sides, distance, position, frame, dim, includemargin, friction, solref,
 solimp, exclude, efc_address), the constraint rows (efc_J at the dense
 size, each row's columns and values at the sparse one; efc_R, efc_D),
@@ -63,13 +64,13 @@ CLOTH = (*grid(3, 0.1, 0.0), NONE)
 CABLE = ([[-0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.1, 0.02, 0.01]], [0, 1, 1, 2], 1, NONE)
 TET = ([[-0.1, -0.1, -0.05], [0.12, -0.08, -0.04], [-0.02, 0.13, -0.06], [0.0, 0.0, 0.08]],
        [0, 1, 2, 3], 3, NONE)
-# Elevations exact in float32, rows symmetric and the highest 1: sim-mjcf
-# loads them as MuJoCo does (book Rigid-loading L45 makes its data MuJoCo's
-# otherwise: float32, rows bottom to top, normalised).
 CUBE = ([[(i & 1) * 0.1, ((i >> 1) & 1) * 0.1, ((i >> 2) & 1) * 0.1] for i in range(8)],
         [0, 1, 2, 4, 3, 2, 1, 7, 5, 1, 4, 7, 6, 4, 2, 7, 1, 2, 4, 7], 3, NONE)
 PLANE_BITS = ('<geom type="plane" size="2 2 0.1" contype="2" conaffinity="2"/>'
               '<geom type="box" size="0.05 0.05 0.01" pos="0.06 0 0"/>')
+# Elevations exact in float32, rows symmetric and the highest 1: sim-mjcf
+# loads them as MuJoCo does (book Rigid-loading L45 makes its data MuJoCo's
+# otherwise: float32, rows bottom to top, normalised).
 FIELD = ('<hfield name="hf" nrow="5" ncol="6" size="0.3 0.25 0.08 0.05" '
          'elevation="0 0.25 0.5 0.25 0 0  0.25 0.5 0.75 0.5 0.25 0  0.25 0.75 1 0.75 0.5 0.25  '
          '0.25 0.5 0.75 0.5 0.25 0  0 0.25 0.5 0.25 0 0"/>')
@@ -167,8 +168,8 @@ CASES = {
                    ([[-0.1, -0.1, 0.07], [0.12, -0.08, 0.075], [-0.02, 0.13, 0.07], [0.0, 0.0, 0.2]],
                     [0, 1, 2, 3], 3, NONE), "", "", FIELD),
     # Five tetrahedra in a cube, the middle one on layer 1, inactive: out of
-    # the hierarchy, so the midphase never meets it; without it, every
-    # element is met.
+    # the hierarchy, so the midphase never tests it; without it, every
+    # element is tested.
     "cube_sphere": (body("0.05 0.05 0.09", '<geom type="sphere" size="0.04"/>'), CUBE, "", "", ""),
     "cube_sphere_no_midphase": (body("0.05 0.05 0.09", '<geom type="sphere" size="0.04"/>'), CUBE,
                                 "", 'midphase="disable"', ""),
@@ -176,13 +177,16 @@ CASES = {
     "cube_box_no_midphase": (body("0.06 0.06 0.06", '<geom type="box" size="0.03 0.03 0.03"/>'), CUBE,
                              "", 'midphase="disable"', ""),
     # A world plane whose bits miss the flex's, beside a box: under the
-    # midphase the plane meets every vertex without its bitmask; without it,
-    # the bitmask drops it.
+    # midphase the plane is tested against every vertex without its bitmask;
+    # without it, the bitmask drops it.
     "plane_bitmask_cloth": (PLANE_BITS, (*grid(3, 0.05, 0.012)[:3], NONE), "", "", ""),
     "plane_bitmask_cloth_no_midphase": (PLANE_BITS, (*grid(3, 0.05, 0.012)[:3], NONE), "",
                                         'midphase="disable"', ""),
-    # The override's margin, halved, bounds a flex in the broadphase.
-    "override_sphere_cloth_alone": (body("0.025 0.025 0.047", '<geom type="sphere" size="0.03"/>'), [CLOTH],
+    # The override's margin, halved, grows each side's box in the broadphase
+    # (engine_collision_driver.c:915): a gap of 8.5 mm over the cloth's middle
+    # vertex, along an axis of the broadphase's frame, which the margin's half
+    # on one side and a quarter on the other would not pair.
+    "override_sphere_cloth_alone": (body("0 0 0.0485", '<geom type="sphere" size="0.03"/>'), [CLOTH],
                                     'o_margin="0.01"', 'override="enable" gravity="disable"', ""),
     # An adhesion actuator counts the body's contacts with geoms, not with a
     # flex (engine_core_smooth.c:1653-1656): a sphere on a cloth, touching a

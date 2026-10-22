@@ -82,8 +82,9 @@ fn ours(case: &Value) -> Model {
 /// its hierarchy (its nodes' children, leaf elements and depths, numbered
 /// within it, and its first node past the bodies'), as MuJoCo's compiler
 /// makes them (`user_mesh.cc:4423-4671`): a cable, then a cloth, a 4 × 4 × 4
-/// grid of tetrahedra (layers 0 to 3, only layer 0 active), and the same
-/// grid with two layers active. A model derived again comes out the same,
+/// grid of tetrahedra (layers 0 to 3, only layer 0 active), the same grid
+/// with two layers active, and a cloth with no layer active. A model derived
+/// again comes out the same,
 /// and with a ground plane added its flexes keep their hierarchies.
 #[test]
 fn flex_layers_pairs_and_hierarchies_as_mujoco() {
@@ -116,7 +117,7 @@ fn flex_layers_pairs_and_hierarchies_as_mujoco() {
             "{name}: derived again"
         );
         // A ground plane joins the world's hierarchy; each flex's nodes
-        // follow the bodies' again, the same, and the model steps.
+        // follow the bodies' again, the same, and forward runs.
         let mut grounded = model.clone();
         grounded.add_ground_plane();
         let tail = |m: &Model| {

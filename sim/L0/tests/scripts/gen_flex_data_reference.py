@@ -19,8 +19,8 @@ moved (qpos[i] = qpos0[i] + 0.01 sin(i + 1)), each element's box and each
 hierarchy node's box after mj_forward (engine_core_smooth.c:610-662).
 
 Each case is a MuJoCo document, a free sphere then flexcomps under
-<worldbody>, the first a cable so the second's vertices, elements and nodes
-start past 0; with its vertex positions and elements, from which the test
+<worldbody>, in most the first a cable so the second's vertices, elements
+and nodes start past 0; with its vertex positions and elements, from which the test
 writes the same flexes in sim-mjcf's <deformable><flex> form (sim-mjcf adds
 a flex's vertex bodies after every other body, so the flexcomps come last).
 """

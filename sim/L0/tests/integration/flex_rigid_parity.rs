@@ -215,11 +215,12 @@ fn rows(off: &mut Vec<String>, name: &str, model: &Model, data: &Data, case: &Va
     );
 }
 
-/// From MuJoCo's `qpos0`, each case's contacts and rows after `forward`,
-/// then `qacc`, `qfrc_constraint`, `qfrc_spring` and `qfrc_passive`, and
-/// qpos, qvel and the contact count at the golden's checkpoints of a run,
-/// each bit for bit with MuJoCo's. A passive flex's contacts make no rows
-/// and push as springs (`mj_nc`'s exclude 4, `mj_contactPassive`).
+/// From MuJoCo's `qpos0` and controls, each case's contacts and rows after
+/// `forward`, then `qacc`, `qfrc_constraint`, `qfrc_spring` and
+/// `qfrc_passive`, and qpos, qvel and the contact count at the golden's
+/// checkpoints of a run, each bit for bit with MuJoCo's. A passive flex's
+/// contacts make no rows and push as springs (`mj_nc`'s exclude 4,
+/// `mj_contactPassive`).
 #[test]
 fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
     let golden = golden();
