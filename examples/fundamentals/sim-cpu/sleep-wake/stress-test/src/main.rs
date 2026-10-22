@@ -702,8 +702,11 @@ fn check_narrowphase_skip() -> Check {
     let mutual_contacts: usize = data.contacts[..data.ncon]
         .iter()
         .filter(|c| {
-            let g1_body = model.geom_body[c.geom1];
-            let g2_body = model.geom_body[c.geom2];
+            let Some((g1, g2)) = c.geoms() else {
+                return false;
+            };
+            let g1_body = model.geom_body[g1];
+            let g2_body = model.geom_body[g2];
             (g1_body == body_a && g2_body == body_b) || (g1_body == body_b && g2_body == body_a)
         })
         .count();

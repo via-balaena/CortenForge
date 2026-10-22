@@ -152,7 +152,7 @@ mod tests {
         assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
         // The sphere is listed first, as MuJoCo's `mjc_SphereCylinder`, the
         // normal from it toward the cylinder (-X).
-        assert_eq!((c[0].geom1, c[0].geom2), (1, 0));
+        assert_eq!(c[0].geom, [Some(1), Some(0)]);
         assert_relative_eq!(c[0].normal, -Vector3::x(), epsilon = 1e-9);
     }
 
@@ -255,7 +255,7 @@ mod tests {
             0.0,
         );
         assert_eq!(c.len(), 1);
-        assert_eq!((c[0].geom1, c[0].geom2), (1, 0));
+        assert_eq!(c[0].geom, [Some(1), Some(0)]);
         assert_relative_eq!(c[0].depth, 0.1, epsilon = 1e-9);
         assert_relative_eq!(c[0].normal, -Vector3::z(), epsilon = 1e-9);
     }

@@ -4,33 +4,137 @@
 
 use nalgebra::{DMatrix, Vector3};
 
-use crate::constraint::chain::body_pair_chain;
+use crate::constraint::chain::{body_pair_chain, union_chains};
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::jacobian::mj_jac;
 use crate::types::{Contact, Data, Model};
 
-/// The bodies on a contact's two sides, MuJoCo's first (`con->geom[0]` or
-/// its vertex) first: the normal points from the first to the second. A
-/// flex vertex's side is its body (`flex_vertbodyid`), whose slide dofs are
-/// the vertex's (none for a pinned vertex).
-fn contact_sides(model: &Model, contact: &Contact) -> (usize, usize) {
-    match (contact.flex_vertex, contact.flex_vertex2) {
-        // Flex self-contact: the normal points from vertex 2 to vertex 1.
-        (Some(v1), Some(v2)) => (model.flexvert_bodyid[v2], model.flexvert_bodyid[v1]),
-        // Flex-rigid: the normal points from the rigid geom to the vertex.
-        (Some(v), None) => (model.geom_body[contact.geom2], model.flexvert_bodyid[v]),
-        _ => (
-            model.geom_body[contact.geom1],
-            model.geom_body[contact.geom2],
-        ),
+/// Whether MuJoCo takes its special case for the contact, one body a side
+/// (a geom's, or a flex vertex's own; `engine_core_constraint.c:911-930`):
+/// every side but a flex element's. sim-core has no interpolated flex.
+fn one_body_a_side(contact: &Contact) -> bool {
+    contact.elem.iter().all(Option::is_none)
+}
+
+/// The bodies of a contact's side, in MuJoCo's order (`:936-978`): a geom's
+/// body, a flex vertex's own body, or an element's vertices' bodies, the
+/// other side's vertex left out where the element has it
+/// (`mj_elemBodyWeight`, `:142-182`). With their vertices, global, for an
+/// element; `None` for a geom or a vertex.
+fn side_bodies(model: &Model, contact: &Contact, side: usize) -> Vec<(usize, Option<usize>)> {
+    if let Some(geom) = contact.geom[side] {
+        return vec![(model.geom_body[geom], None)];
     }
+    let Some(f) = contact.flex[side] else {
+        return Vec::new();
+    };
+    let vertadr = model.flex_vertadr[f];
+    if let Some(v) = contact.vert[side] {
+        return vec![(model.flexvert_bodyid[vertadr + v], None)];
+    }
+    let Some(e) = contact.elem[side] else {
+        return Vec::new();
+    };
+    let global = model.flex_elemadr[f] + e;
+    let adr = model.flexelem_dataadr[global];
+    let skip = contact.vert[1 - side].map(|v| vertadr + v);
+    model.flexelem_data[adr..adr + model.flexelem_datanum[global]]
+        .iter()
+        .filter(|&&v| Some(v) != skip)
+        .map(|&v| (model.flexvert_bodyid[v], Some(v)))
+        .collect()
+}
+
+/// A contact side's bodies with MuJoCo's weights (`:936-978`): a geom's
+/// body or a flex vertex's own body 1; an element's vertices' bodies each
+/// the inverse of its distance to the contact point (at least `mjMINVAL`),
+/// the weights scaled to sum to 1 (`mj_elemBodyWeight`, `:142-182`; MuJoCo
+/// stops below an `mjMINVAL` sum, which a contact within 10^15 of its
+/// element never reaches).
+pub fn side_weights(
+    model: &Model,
+    data: &Data,
+    contact: &Contact,
+    side: usize,
+) -> Vec<(usize, f64)> {
+    let bodies = side_bodies(model, contact, side);
+    if bodies.iter().all(|(_, v)| v.is_none()) {
+        return bodies.into_iter().map(|(b, _)| (b, 1.0)).collect();
+    }
+    let p = contact.pos;
+    let mut weighted: Vec<(usize, f64)> = bodies
+        .iter()
+        .map(|&(b, v)| {
+            let x = v.map_or(p, |v| data.flexvert_xpos[v]);
+            // `mju_dist3`, then `mju_max(mjMINVAL, dist)`.
+            let d = [p.x - x.x, p.y - x.y, p.z - x.z];
+            let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            (b, 1.0 / if MJ_MINVAL >= dist { MJ_MINVAL } else { dist })
+        })
+        .collect();
+    // `mju_sum`, then `mju_scl` by its inverse.
+    let sum = weighted.iter().fold(0.0, |s, &(_, w)| s + w);
+    let inv = 1.0 / sum;
+    for (_, w) in &mut weighted {
+        *w *= inv;
+    }
+    weighted
+}
+
+/// The contact's Jacobian difference at its point, translational and
+/// rotational (3×nv each), the second side's less the first's: MuJoCo's
+/// special case `mj_jacDifPair` (`J₂ − J₁`, `engine_core_util.c:429-500`),
+/// or its general case `mj_jacSum` (`:503-573`) over the sides' weighted
+/// bodies, the first side's weights negated: the first body's Jacobian
+/// times its weight, then each other's times its weight added in turn.
+fn jacobian_difference(
+    model: &Model,
+    data: &Data,
+    contact: &Contact,
+) -> (DMatrix<f64>, DMatrix<f64>) {
+    let p = &contact.pos;
+    if one_body_a_side(contact) {
+        let [Some(b1), Some(b2)] = contact.bodies(model) else {
+            return (DMatrix::zeros(3, model.nv), DMatrix::zeros(3, model.nv));
+        };
+        let (trans1, rot1) = mj_jac(model, data, b1, p);
+        let (trans2, rot2) = mj_jac(model, data, b2, p);
+        return (trans2 - trans1, rot2 - rot1);
+    }
+    let weighted = side_weights(model, data, contact, 0)
+        .into_iter()
+        .map(|(b, w)| (b, -w))
+        .chain(side_weights(model, data, contact, 1));
+    let (mut trans, mut rot) = (DMatrix::zeros(3, model.nv), DMatrix::zeros(3, model.nv));
+    for (k, (b, w)) in weighted.enumerate() {
+        let (tb, rb) = mj_jac(model, data, b, p);
+        if k == 0 {
+            trans = tb * w;
+            rot = rb * w;
+        } else {
+            trans += tb * w;
+            rot += rb * w;
+        }
+    }
+    (trans, rot)
 }
 
 /// A contact's dof chain at the sparse size: its two sides' bodies' merged
-/// chain (`mj_contactJacobian`'s `mj_jacDifPair`,
-/// `engine_core_constraint.c:913-929`).
+/// chain (`mj_jacDifPair`, `engine_core_constraint.c:913-929`), or with a
+/// flex element on a side every body's chain merged (`mj_jacSum`,
+/// `engine_core_util.c:516-551`).
 pub fn contact_chain(model: &Model, contact: &Contact) -> Vec<usize> {
-    let (b1, b2) = contact_sides(model, contact);
-    body_pair_chain(model, b1, b2)
+    if one_body_a_side(contact) {
+        return match contact.bodies(model) {
+            [Some(b1), Some(b2)] => body_pair_chain(model, b1, b2),
+            _ => Vec::new(),
+        };
+    }
+    (0..2)
+        .flat_map(|side| side_bodies(model, contact, side))
+        .fold(Vec::new(), |chain, (b, _)| {
+            union_chains(&chain, &body_pair_chain(model, b, b))
+        })
 }
 
 /// `rows` of `j` from row `row0` on: each row of `frame` times `jacdif`
@@ -49,14 +153,13 @@ fn frame_rows(j: &mut DMatrix<f64>, row0: usize, frame: &[Vector3<f64>], jacdif:
     }
 }
 
-/// A contact's normal row (1×nv): `normal · (Jp(b2) − Jp(b1))` at the
-/// contact point, as MuJoCo's adhesion transmission projects an excluded
-/// contact's Jacobian difference (`mju_mulMatMat(jac, con->frame, jacdifp,
-/// 1, 3, NV)`, `engine_core_smooth.c:1685-1694`).
+/// A contact's normal row (1×nv): the normal times the translational
+/// Jacobian difference at the contact point, as MuJoCo's adhesion
+/// transmission projects an excluded contact's (`mju_mulMatMat(jac,
+/// con->frame, jacdifp, 1, 3, NV)`, `engine_core_smooth.c:1685-1694`).
 #[must_use]
 pub fn compute_contact_normal_row(model: &Model, data: &Data, contact: &Contact) -> DMatrix<f64> {
-    let (b1, b2) = contact_sides(model, contact);
-    let jacdif = mj_jac(model, data, b2, &contact.pos).0 - mj_jac(model, data, b1, &contact.pos).0;
+    let (jacdif, _) = jacobian_difference(model, data, contact);
     let mut j = DMatrix::zeros(1, model.nv);
     frame_rows(&mut j, 0, &[contact.normal], &jacdif);
     j
@@ -66,7 +169,10 @@ pub fn compute_contact_normal_row(model: &Model, data: &Data, contact: &Contact)
 ///
 /// The translational Jacobians of the contact point on the two sides'
 /// bodies ([`mj_jac`]) are differenced, second minus first
-/// (`mj_jacDifPair`, `engine_core_util.c:429-500`), and turned into the
+/// (`mj_jacDifPair`, `engine_core_util.c:429-500`), or with a flex element
+/// on a side summed over each side's bodies with their weights (`mj_jacSum`,
+/// `:503-573`; an element's vertices weighted by their inverse distance to
+/// the point, `engine_core_constraint.c:142-182`), and turned into the
 /// contact frame (`mju_mulMatMat`): row 0 the normal, rows 1-2 the tangents.
 /// With `dim` above 3 the rotational Jacobians' difference gives the
 /// torsional row (the normal) and, at `dim` 6, the rolling rows (the
@@ -75,14 +181,12 @@ pub fn compute_contact_normal_row(model: &Model, data: &Data, contact: &Contact)
 #[must_use]
 pub fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DMatrix<f64> {
     let dim = contact.dim;
-    let (b1, b2) = contact_sides(model, contact);
-    let (trans1, rot1) = mj_jac(model, data, b1, &contact.pos);
-    let (trans2, rot2) = mj_jac(model, data, b2, &contact.pos);
+    let (trans, rot) = jacobian_difference(model, data, contact);
     let frame = [contact.normal, contact.frame[0], contact.frame[1]];
     let mut j = DMatrix::zeros(dim, model.nv);
-    frame_rows(&mut j, 0, &frame[..dim.min(3)], &(trans2 - trans1));
+    frame_rows(&mut j, 0, &frame[..dim.min(3)], &trans);
     if dim > 3 {
-        frame_rows(&mut j, 3, &frame[..dim - 3], &(rot2 - rot1));
+        frame_rows(&mut j, 3, &frame[..dim - 3], &rot);
     }
     j
 }
@@ -374,8 +478,8 @@ mod contact_jac_free_joint_tests {
         );
         let j = compute_contact_jacobian(&model, &data, &contact);
 
-        let body1 = model.geom_body[contact.geom1]; // world (body 0)
-        let body2 = model.geom_body[contact.geom2]; // free body
+        let body1 = model.geom_body[contact.geom[0].unwrap()]; // world (body 0)
+        let body2 = model.geom_body[contact.geom[1].unwrap()]; // free body
 
         let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
         let (jacp1, _) = mj_jac(&model, &data, body1, &contact.pos);
@@ -428,8 +532,8 @@ mod contact_jac_free_joint_tests {
         assert_eq!(j.nrows(), 6);
         assert_eq!(j.ncols(), 6);
 
-        let body1 = model.geom_body[contact.geom1];
-        let body2 = model.geom_body[contact.geom2];
+        let body1 = model.geom_body[contact.geom[0].unwrap()];
+        let body2 = model.geom_body[contact.geom[1].unwrap()];
 
         let (jacp2, jacr2) = mj_jac(&model, &data, body2, &contact.pos);
         let (jacp1, jacr1) = mj_jac(&model, &data, body1, &contact.pos);
@@ -502,8 +606,8 @@ mod contact_jac_free_joint_tests {
         assert_eq!(j.nrows(), 6);
         assert_eq!(j.ncols(), 12);
 
-        let body1 = model.geom_body[contact.geom1]; // body 1
-        let body2 = model.geom_body[contact.geom2]; // body 2
+        let body1 = model.geom_body[contact.geom[0].unwrap()]; // body 1
+        let body2 = model.geom_body[contact.geom[1].unwrap()]; // body 2
 
         let (jacp1, jacr1) = mj_jac(&model, &data, body1, &contact.pos);
         let (jacp2, jacr2) = mj_jac(&model, &data, body2, &contact.pos);
@@ -564,7 +668,7 @@ mod contact_jac_free_joint_tests {
         let j = compute_contact_jacobian(&model, &data, &contact);
 
         // Cross-check against mj_jac projection
-        let body2 = model.geom_body[contact.geom2];
+        let body2 = model.geom_body[contact.geom[1].unwrap()];
         let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
 
         let directions = [contact.normal, contact.frame[0], contact.frame[1]];
@@ -614,7 +718,7 @@ mod contact_jac_free_joint_tests {
         assert_eq!(j.ncols(), 6);
 
         // Cross-check the single normal row against mj_jac projection
-        let body2 = model.geom_body[contact.geom2];
+        let body2 = model.geom_body[contact.geom[1].unwrap()];
         let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
         let normal = contact.normal;
 

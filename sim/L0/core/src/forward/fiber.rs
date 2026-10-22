@@ -1712,10 +1712,10 @@ mod tests {
         let hill = build_hill_model(-1.0, 0.10, 0.20, 10.0, 0.0, 35.0, 1.0);
         let muscle = build_muscle_model_joint(1.0);
         for (name, auto, length, velocity) in [
-            ("hill", hill, 0.20 + 0.9 * 0.10, -0.1 * 0.10 * 10.0),
+            ("hill", &hill, 0.20 + 0.9 * 0.10, -0.1 * 0.10 * 10.0),
             (
                 "muscle",
-                muscle.clone(),
+                &muscle,
                 {
                     let lr = muscle.actuator_lengthrange[0];
                     lr.0 + 0.4 * (lr.1 - lr.0)
@@ -1742,7 +1742,7 @@ mod tests {
                 vel[(0, 0)] != 0.0 && pos[(0, 0)] != 0.0,
                 "{name}: {vel} {pos}"
             );
-            assert_eq!(derivatives(&auto), (vel, pos), "{name}");
+            assert_eq!(derivatives(auto), (vel, pos), "{name}");
         }
     }
 

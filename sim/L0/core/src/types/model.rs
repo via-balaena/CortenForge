@@ -366,19 +366,34 @@ pub struct Model {
     /// The number of nodes in each body's hierarchy (MuJoCo's
     /// `mjModel.body_bvhnum`).
     pub body_bvhnum: Vec<usize>,
-    /// Each hierarchy node's box in its body's inertial frame,
+    /// Each body hierarchy node's box in its body's inertial frame,
     /// `[cx, cy, cz, hx, hy, hz]`, its centre then its half-sizes (MuJoCo's
-    /// `mjModel.bvh_aabb`, its bodies' nodes).
+    /// `mjModel.bvh_aabb`, its bodies' nodes); a flex's nodes, after them,
+    /// have theirs in `Data::bvh_aabb_dyn`.
     pub bvh_aabb: Vec<[f64; 6]>,
-    /// Each node's two children, numbered within its body's hierarchy from
-    /// the root, 0; a leaf has none (MuJoCo's `mjModel.bvh_child`, -1 there).
+    /// Each node's two children, numbered within its hierarchy from the
+    /// root, 0; a leaf has none (MuJoCo's `mjModel.bvh_child`, -1 there).
     pub bvh_child: Vec<[Option<usize>; 2]>,
-    /// A leaf's geom, `None` for an inner node (MuJoCo's
-    /// `mjModel.bvh_nodeid`).
+    /// A leaf's geom, or a flex leaf's element numbered within its flex;
+    /// `None` for an inner node (MuJoCo's `mjModel.bvh_nodeid`).
     pub bvh_nodeid: Vec<Option<usize>>,
-    /// Each node's depth, 0 at its body's root (MuJoCo's
+    /// Each node's depth, 0 at its hierarchy's root (MuJoCo's
     /// `mjModel.bvh_depth`).
     pub bvh_depth: Vec<usize>,
+    /// The first node of each flex's hierarchy in the `bvh_*` fields, after
+    /// every body's (MuJoCo's `mjModel.flex_bvhadr`), `None` for a flex with
+    /// no active element, which MuJoCo's compiler does not take (registry
+    /// `D-FLEX-NO-ACTIVE`) ([`Model::compute_flex_bvhs`]).
+    pub flex_bvhadr: Vec<Option<usize>>,
+    /// The number of nodes in each flex's hierarchy (MuJoCo's
+    /// `mjModel.flex_bvhnum`).
+    pub flex_bvhnum: Vec<usize>,
+    /// The nodes with a box in `bvh_aabb`, the bodies' (MuJoCo's
+    /// `nbvhstatic`, which counts meshes' too; a mesh's hierarchy is its
+    /// own here).
+    pub nbvhstatic: usize,
+    /// The flexes' nodes, which follow the bodies' (MuJoCo's `nbvhdynamic`).
+    pub nbvhdynamic: usize,
     /// Mesh index for each geom (`None` if not a mesh geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Mesh` have `Some(mesh_id)`.
     pub geom_mesh: Vec<Option<usize>>,
@@ -429,6 +444,9 @@ pub struct Model {
     pub flex_margin: Vec<f64>,
     /// Per-flex: contact gap (buffer zone within margin).
     pub flex_gap: Vec<f64>,
+    /// Per-flex: its vertices' radius and its elements' half-thickness
+    /// (MuJoCo's `mjModel.flex_radius`).
+    pub flex_radius: Vec<f64>,
     /// Per-flex: contact priority (default 0).
     pub flex_priority: Vec<i32>,
     /// Per-flex: solver mixing weight (default 1.0).
@@ -447,17 +465,22 @@ pub struct Model {
     /// Both `internal` (adjacent elements) and `selfcollide` (non-adjacent)
     /// are independently gated behind conditions 1+2.
     pub flex_selfcollide: Vec<FlexSelfCollide>,
-    /// Per-flex: internal collision flag (default true). When true, contacts between
-    /// elements sharing an edge are generated (adjacent element contacts).
+    /// Per-flex: internal collision flag (MuJoCo's default false). When true,
+    /// contacts between elements sharing an edge are generated (adjacent
+    /// element contacts).
     pub flex_internal: Vec<bool>,
-    /// Per-flex: number of active element layers for collision detection (default 0).
-    /// 0 = all layers active.
+    /// Per-flex: number of active element layers (MuJoCo's default 1): a
+    /// dim-3 element is active while its layer, its distance from the
+    /// border, is below it (`mj_isElemActive`); only an active element is
+    /// in the flex's hierarchy ([`Model::compute_flex_bvhs`]).
     pub flex_activelayers: Vec<i32>,
     /// Per-flex: per-vertex collision mode (default false). When true, vertex spheres
     /// collide with other geoms even when not part of a flex element face.
     pub flex_vertcollide: Vec<bool>,
-    /// Per-flex: passive contact flag (default true). When true, flex contacts generate
-    /// passive forces only (no constraint solver involvement).
+    /// Per-flex: passive contact flag (MuJoCo's default false). When true,
+    /// flex contacts generate passive forces only (no constraint solver
+    /// involvement; MuJoCo's `mj_nc` and `mj_contactPassive`):
+    /// [`Contact::is_passive`](crate::types::Contact::is_passive).
     pub flex_passive: Vec<bool>,
     /// Per-flex: passive edge spring stiffness (from `<edge stiffness="..."/>`).
     /// Used in passive force path (spring-damper), not constraint solver.
@@ -567,6 +590,23 @@ pub struct Model {
     pub flexelem_volume0: Vec<f64>,
     /// Which flex object this element belongs to.
     pub flexelem_flexid: Vec<usize>,
+    /// Each element's layer: its distance from its flex's border, in
+    /// elements sharing a face, 0 on the border and for every element of a
+    /// flex of dim below 3 (MuJoCo's `mjModel.flex_elemlayer`, its compiler
+    /// `user_mesh.cc:4613-4642`) ([`Model::compute_flex_topology`]).
+    pub flex_elemlayer: Vec<usize>,
+    /// The element–vertex pairs of the flexes of dim 1 and 2, each numbered
+    /// within its flex: where two elements sharing a fragment (a cable's
+    /// vertex, a cloth's edge) have one on the border, each one's vertex off
+    /// the fragment with the other element (MuJoCo's `mjModel.flex_evpair`,
+    /// `user_mesh.cc:4644-4670`), which internal collision tests
+    /// ([`Model::compute_flex_topology`]).
+    pub flex_evpair: Vec<[usize; 2]>,
+    /// Each flex's first pair in `flex_evpair` (MuJoCo's
+    /// `mjModel.flex_evpairadr`, -1 there for none).
+    pub flex_evpairadr: Vec<usize>,
+    /// Each flex's number of pairs (MuJoCo's `mjModel.flex_evpairnum`).
+    pub flex_evpairnum: Vec<usize>,
 
     // --- Per-element adjacency (for self-collision dispatch) ---
     /// Flat sorted adjacency list. Element `e`'s adjacent elements are

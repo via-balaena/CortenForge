@@ -339,11 +339,7 @@ fn sphere_capsule_endpoint_contact() {
 
     // MuJoCo lists the sphere first (the lower geom type), so the normal
     // points from it into the capsule: −Z.
-    assert_eq!(
-        (contact.geom1, contact.geom2),
-        (1, 0),
-        "MuJoCo's geom order"
-    );
+    assert_eq!(contact.geoms().unwrap(), (1, 0), "MuJoCo's geom order");
     assert!(
         contact.normal.z < -0.99,
         "Normal should point −Z, got {:?}",
@@ -571,11 +567,7 @@ fn sphere_box_face_contact() {
 
     // MuJoCo lists the sphere first (the lower geom type), so the normal
     // points from it into the box: −X.
-    assert_eq!(
-        (contact.geom1, contact.geom2),
-        (1, 0),
-        "MuJoCo's geom order"
-    );
+    assert_eq!(contact.geoms().unwrap(), (1, 0), "MuJoCo's geom order");
     assert!(
         contact.normal.x < -0.99,
         "Normal should point −X, got {:?}",
@@ -937,11 +929,7 @@ fn cylinder_sphere_side_contact() {
 
     // MuJoCo lists the sphere first (the lower geom type), so the normal
     // points from it into the cylinder: −X.
-    assert_eq!(
-        (contact.geom1, contact.geom2),
-        (1, 0),
-        "MuJoCo's geom order"
-    );
+    assert_eq!(contact.geoms().unwrap(), (1, 0), "MuJoCo's geom order");
     assert!(
         contact.normal.x < -0.99,
         "Normal should point −X, got {:?}",
@@ -988,11 +976,7 @@ fn cylinder_sphere_cap_contact() {
 
     // MuJoCo lists the sphere first (the lower geom type), so the normal
     // points from it into the cylinder: −Z.
-    assert_eq!(
-        (contact.geom1, contact.geom2),
-        (1, 0),
-        "MuJoCo's geom order"
-    );
+    assert_eq!(contact.geoms().unwrap(), (1, 0), "MuJoCo's geom order");
     assert!(
         contact.normal.z < -0.99,
         "Normal should point −Z, got {:?}",
@@ -1147,11 +1131,7 @@ fn cylinder_capsule_perpendicular() {
     assert_eq!(data.ncon, 1, "Expected 1 contact");
 
     let contact = &data.contacts[0];
-    assert_eq!(
-        (contact.geom1, contact.geom2),
-        (1, 0),
-        "MuJoCo's geom order"
-    );
+    assert_eq!(contact.geoms().unwrap(), (1, 0), "MuJoCo's geom order");
     let near = |a: f64, b: f64| (a - b).abs() < 1e-12;
     assert!(
         near(contact.depth, 0.449_989_883_304_585),
@@ -1889,7 +1869,7 @@ fn a_contact_normal_shorter_than_half_refuses_the_step() {
             let contacts = &data.contacts[..data.ncon];
             for pair in [(0, 1), (2, 3)] {
                 assert!(
-                    contacts.iter().any(|c| (c.geom1, c.geom2) == pair),
+                    contacts.iter().any(|c| c.geoms() == Some(pair)),
                     "pair {pair:?} makes no contact: the test cannot see the refusal"
                 );
             }
@@ -1900,7 +1880,7 @@ fn a_contact_normal_shorter_than_half_refuses_the_step() {
                 panic!("forward returned {forward:?}");
             };
             let c = &data.contacts[contact];
-            assert_eq!((c.geom1, c.geom2), (2, 3));
+            assert_eq!(c.geoms(), Some((2, 3)));
             assert!(c.normal.norm() < 0.5, "{:?}", c.normal);
             assert!(contact > 0 && data.contacts[..contact].iter().all(unit));
             assert_eq!(
@@ -1937,7 +1917,7 @@ fn add_ground_plane_after_world_geoms_collides_every_geom_once() {
     data.forward(&model).expect("forward");
     let mut pairs: Vec<(usize, usize)> = data.contacts[..data.ncon]
         .iter()
-        .map(|c| (c.geom1, c.geom2))
+        .map(|c| c.geoms().unwrap())
         .collect();
     pairs.sort_unstable();
     let mut want = vec![

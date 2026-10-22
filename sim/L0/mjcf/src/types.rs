@@ -3983,17 +3983,20 @@ pub struct MjcfFlex {
     /// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
     /// None = absent (default "auto"); Some("none") = disabled; other = enabled.
     pub selfcollide: Option<String>,
-    /// Internal collision flag (default true). When true, contacts between
-    /// elements sharing an edge are generated (adjacent element contacts).
+    /// Internal collision flag (default false, MuJoCo's). When true, contacts
+    /// between elements sharing an edge are generated (adjacent element
+    /// contacts).
     pub internal: bool,
-    /// Number of active element layers for collision detection (default 0).
-    /// 0 = all layers active.
+    /// Number of active element layers (default 1, MuJoCo's): a dim-3
+    /// element is active while its layer, its distance from the border, is
+    /// below it (`mj_isElemActive`).
     pub activelayers: i32,
     /// Per-vertex collision mode (default false). When true, vertex spheres
     /// collide with other geoms even when not part of a flex element face.
     pub vertcollide: bool,
-    /// Passive contact flag (default true). When true, flex contacts generate
-    /// passive forces only (no constraint solver involvement).
+    /// Passive contact flag (default false, MuJoCo's). When true, flex
+    /// contacts generate passive forces only (no constraint solver
+    /// involvement).
     pub passive: bool,
 
     // --- <flex><elasticity> child element attributes ---
@@ -4067,10 +4070,10 @@ impl Default for MjcfFlex {
             contype: None,      // MuJoCo default: 1
             conaffinity: None,  // MuJoCo default: 1
             selfcollide: None,  // MuJoCo default is "auto" (enabled)
-            internal: true,     // MuJoCo default
-            activelayers: 0,    // MuJoCo default (0 = all layers)
+            internal: false,    // MuJoCo default
+            activelayers: 1,    // MuJoCo default
             vertcollide: false, // MuJoCo default
-            passive: true,      // MuJoCo default
+            passive: false,     // MuJoCo default
             // <elasticity> child element (MuJoCo defaults)
             young: 0.0, // MuJoCo default; was 1e6
             poisson: 0.0,

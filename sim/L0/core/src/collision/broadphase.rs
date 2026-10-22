@@ -1,18 +1,21 @@
 //! MuJoCo's broadphase (`mj_broadphase`, `engine_collision_driver.c:1154-1299`):
-//! the pairs of bodies whose geoms the narrow phase tests.
+//! the pairs of bodies and flexes whose geoms and elements the narrow phase
+//! tests, a flex numbered after the bodies (MuJoCo's "bodyflex" ids).
 //!
 //! The world body, when it holds geoms, and each body welded to the world
-//! that holds a plane, pair with every other body. The rest are bounded along
-//! the three rows of the matrix `mju_eig3` makes of the covariance of the
-//! geoms' (and flex vertices') positions (its columns are the eigenvectors,
-//! so a row is not, in general, one), each body by its geoms' bounding
-//! spheres, and swept and pruned along the first row with the bounds cast to
-//! `f32` (`mj_SAP`, `:1021-1114`): bounds
-//! equal in `f32` sort in the order the bodies are numbered, a lower body's
-//! upper bound ahead of a higher body's lower bound, so two bodies that only
-//! touch along that axis do not pair.
+//! that holds a plane, pair with every other body and every flex. The rest
+//! are bounded along the three rows of the matrix `mju_eig3` makes of the
+//! covariance of the geoms' and flex vertices' positions (its columns are
+//! the eigenvectors, so a row is not, in general, one), each body by its
+//! geoms' bounding spheres, each flex by its vertices grown by its radius,
+//! and swept and pruned along the first row with the bounds cast to `f32`
+//! (`mj_SAP`, `:1021-1114`): bounds equal in `f32` sort in the order the
+//! bodies and flexes are numbered, a lower one's upper bound ahead of a
+//! higher one's lower bound, so two that only touch along that axis do not
+//! pair. Only a pair of bodies takes the weld, parent and sleep filters.
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::linalg::mju_dot;
 use crate::quat::{mul_quat, normalize4, quat_to_mat};
 use crate::types::{
     DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP, GeomType, Model, SleepState,
@@ -53,23 +56,28 @@ impl BodyGeoms {
     }
 }
 
-/// The pairs of bodies MuJoCo's broadphase passes on, each `(lower,
-/// higher)`, in signature order; a pair may repeat, as in MuJoCo's list.
-pub(super) fn body_pairs(model: &Model, data: &Data, geoms: &BodyGeoms) -> Vec<(usize, usize)> {
+/// The pairs of bodies and flexes MuJoCo's broadphase passes on, each
+/// `(lower, higher)`, flex `f` numbered `nbody + f`, in signature order; a
+/// pair may repeat, as in MuJoCo's list.
+pub(super) fn bodyflex_pairs(model: &Model, data: &Data, geoms: &BodyGeoms) -> Vec<(usize, usize)> {
     let nbody = model.nbody;
+    let nbodyflex = nbody + model.nflex;
     let filterparent = !disabled(model, DISABLE_FILTERPARENT);
     let sleep_filter = enabled(model, ENABLE_SLEEP) && data.nbody_awake < nbody;
     let asleep = |b: usize| sleep_filter && data.body_sleep_state[b] == SleepState::Asleep;
     let weld = |b: usize| model.body_weldid[b];
     let parent_weld = |b: usize| model.body_weldid[model.body_parent[model.body_weldid[b]]];
 
-    // A body's contype and conaffinity: its geoms' together.
-    let mut contype = vec![0; nbody];
-    let mut conaffinity = vec![0; nbody];
+    // A body's contype and conaffinity: its geoms' together; a flex's own
+    // (`canCollide`, `add_pair`, `:190-197`, `:936-989`).
+    let mut contype = vec![0; nbodyflex];
+    let mut conaffinity = vec![0; nbodyflex];
     for g in 0..model.ngeom {
         contype[model.geom_body[g]] |= model.geom_contype[g];
         conaffinity[model.geom_body[g]] |= model.geom_conaffinity[g];
     }
+    contype[nbody..].copy_from_slice(&model.flex_contype);
+    conaffinity[nbody..].copy_from_slice(&model.flex_conaffinity);
     let can_collide = |b: usize| contype[b] != 0 || conaffinity[b] != 0;
     let mut pairs = Vec::new();
     let mut add_pair = |b1: usize, b2: usize| {
@@ -79,7 +87,7 @@ pub(super) fn body_pairs(model: &Model, data: &Data, geoms: &BodyGeoms) -> Vec<(
     };
 
     // The world body with geoms, and world-welded bodies holding a plane,
-    // with every body not welded to the world or asleep.
+    // with every body not welded to the world or asleep, and every flex.
     for b1 in 0..nbody {
         if !can_collide(b1) {
             continue;
@@ -99,6 +107,9 @@ pub(super) fn body_pairs(model: &Model, data: &Data, geoms: &BodyGeoms) -> Vec<(
             {
                 add_pair(b1, b2);
             }
+        }
+        for f in 0..model.nflex {
+            add_pair(b1, nbody + f);
         }
     }
 
@@ -136,23 +147,34 @@ pub(super) fn body_pairs(model: &Model, data: &Data, geoms: &BodyGeoms) -> Vec<(
     }
     let frame = eig3(&cov);
 
-    // The bodies (from 1) that can collide, each bounded along the frame's
-    // axes by its geoms' spheres and margins.
-    let bodies: Vec<usize> = (1..nbody).filter(|&b| can_collide(b)).collect();
-    if bodies.len() > 1 {
-        let aamm: Vec<[f64; 6]> = bodies
+    // The bodies (from 1) and flexes that can collide, each bounded along the
+    // frame's axes: a body by its geoms' spheres and margins, a flex by its
+    // vertices, its radius and its margin.
+    let bodyflexes: Vec<usize> = (1..nbodyflex).filter(|&bf| can_collide(bf)).collect();
+    if bodyflexes.len() > 1 {
+        let aamm: Vec<[f64; 6]> = bodyflexes
             .iter()
-            .map(|&b| body_aamm(model, data, geoms.of(b), &frame))
+            .map(|&bf| {
+                if bf < nbody {
+                    body_aamm(model, data, geoms.of(bf), &frame)
+                } else {
+                    flex_aamm(model, data, bf - nbody, &frame)
+                }
+            })
             .collect();
         for (i1, i2) in sweep_and_prune(&aamm) {
-            let (b1, b2) = (bodies[i1], bodies[i2]);
-            if !filter_body_pair(
-                (weld(b1), parent_weld(b1), asleep(b1)),
-                (weld(b2), parent_weld(b2), asleep(b2)),
-                filterparent,
-            ) {
-                add_pair(b1, b2);
+            let (bf1, bf2) = (bodyflexes[i1], bodyflexes[i2]);
+            if bf1 < nbody
+                && bf2 < nbody
+                && filter_body_pair(
+                    (weld(bf1), parent_weld(bf1), asleep(bf1)),
+                    (weld(bf2), parent_weld(bf2), asleep(bf2)),
+                    filterparent,
+                )
+            {
+                continue;
             }
+            add_pair(bf1, bf2);
         }
     }
 
@@ -236,6 +258,46 @@ fn body_aamm(model: &Model, data: &Data, geoms: &[usize], frame: &[f64; 9]) -> [
                 }
             }
         }
+    }
+    aamm
+}
+
+/// A flex's bounds along the three rows of `frame`, `[min; 3, max; 3]`: over
+/// its vertices, each projected (`mju_mulMatVec`), grown by its radius and
+/// margin (half the override's margin under the override) (`makeAAMM`,
+/// `engine_collision_driver.c:889-923`).
+fn flex_aamm(model: &Model, data: &Data, flex: usize, frame: &[f64; 9]) -> [f64; 6] {
+    let adr = model.flex_vertadr[flex];
+    let mut aamm = [0.0; 6];
+    for (i, x) in data.flexvert_xpos[adr..adr + model.flex_vertnum[flex]]
+        .iter()
+        .enumerate()
+    {
+        let x = [x.x, x.y, x.z];
+        let v: [f64; 3] = std::array::from_fn(|j| mju_dot(&frame[3 * j..3 * j + 3], &x));
+        if i == 0 {
+            aamm = [v[0], v[1], v[2], v[0], v[1], v[2]];
+        } else {
+            for j in 0..3 {
+                // mju_min and mju_max.
+                aamm[j] = if aamm[j] <= v[j] { aamm[j] } else { v[j] };
+                aamm[j + 3] = if aamm[j + 3] >= v[j] {
+                    aamm[j + 3]
+                } else {
+                    v[j]
+                };
+            }
+        }
+    }
+    let margin = if enabled(model, ENABLE_OVERRIDE) {
+        0.5 * model.o_margin
+    } else {
+        model.flex_margin[flex]
+    };
+    let bound = model.flex_radius[flex] + margin;
+    for j in 0..3 {
+        aamm[j] -= bound;
+        aamm[j + 3] += bound;
     }
     aamm
 }

@@ -253,6 +253,10 @@ impl Model {
             bvh_child: vec![],
             bvh_nodeid: vec![],
             bvh_depth: vec![],
+            flex_bvhadr: vec![],
+            flex_bvhnum: vec![],
+            nbvhstatic: 0,
+            nbvhdynamic: 0,
             geom_mesh: vec![],
             geom_hfield: vec![],
             geom_shape: vec![],
@@ -278,6 +282,7 @@ impl Model {
             flex_condim: vec![],
             flex_margin: vec![],
             flex_gap: vec![],
+            flex_radius: vec![],
             flex_priority: vec![],
             flex_solmix: vec![],
             flex_contype: vec![],
@@ -322,6 +327,10 @@ impl Model {
             flex_elem_adj: vec![],
             flex_elem_adj_adr: vec![],
             flex_elem_adj_num: vec![],
+            flex_elemlayer: vec![],
+            flex_evpair: vec![],
+            flex_evpairadr: vec![],
+            flex_evpairnum: vec![],
             flexhinge_vert: vec![],
             flexhinge_angle0: vec![],
             flexhinge_flexid: vec![],
@@ -823,6 +832,8 @@ impl Model {
             // Flex edge pre-computed fields
             flexedge_length: vec![0.0; self.nflexedge],
             flexedge_velocity: vec![0.0; self.nflexedge],
+            flexelem_aabb: vec![[0.0; 6]; self.nflexelem],
+            bvh_aabb_dyn: vec![[0.0; 6]; self.nbvhdynamic],
             flexedge_J: vec![0.0; self.flexedge_J_colind.len()],
 
             // Velocities

@@ -275,7 +275,7 @@ forward():
                                      inside mj_fwd_position
                mj_crba                Selective CRBA (skips sleeping subtrees)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
-                                     + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
+                                     + a body's geoms against a flex's elements (collision/flex_rigid.rs)
                mj_make_constraint     Constraint rows and their islands (mj_island), after the wakes
                mj_transmission_*      Actuator lengths and moments, after the wakes
                                      (body: from the contacts, §36)
@@ -478,7 +478,7 @@ Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching
 MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries
 (discriminated by `flex_vertex: Option<usize>`).
 
-**Key pipeline functions:** `mj_collision_flex()` (brute-force vertex-vs-geom).
+**Key pipeline functions:** `collide_body_flex()` (a body's geoms against a flex's elements, `collision/flex_rigid.rs`).
 Flex vertices are bodies with slide joints, so the rigid CRBA, kinematics and
 integration handle them (`MUJOCO_GAP_ANALYSIS.md`, §27F).
 

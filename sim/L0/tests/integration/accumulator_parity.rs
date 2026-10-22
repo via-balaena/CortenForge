@@ -300,7 +300,10 @@ fn a_flex_contact_stays_out_of_cfrc_ext() {
                 sim_core::ConstraintType::ContactFrictionless
                     | sim_core::ConstraintType::ContactPyramidal
                     | sim_core::ConstraintType::ContactElliptic
-            ) && data.contacts[data.efc_id[r]].flex_vertex.is_some()
+            ) && data.contacts[data.efc_id[r]]
+                .flex
+                .iter()
+                .any(Option::is_some)
         })
         .map(|r| data.efc_force[r])
         .sum();

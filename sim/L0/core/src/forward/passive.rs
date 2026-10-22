@@ -5,6 +5,7 @@
 //! MuJoCo's `engine_passive.c`.
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain};
 use crate::dynamics::object_velocity_local;
 use crate::dynamics::rne::mj_gravcomp;
 use crate::jacobian::mj_apply_ft;
@@ -12,8 +13,8 @@ use crate::joint_visitor::{JointContext, JointVisitor};
 use crate::quat;
 use crate::tendon::apply_tendon_force;
 use crate::types::{
-    DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, FlexBendingType, GeomType, Integrator,
-    MjJointType, Model, SleepState,
+    DISABLE_CONTACT, DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, FlexBendingType, GeomType,
+    Integrator, MjJointType, Model, SleepState, disabled,
 };
 use nalgebra::{Matrix3, Vector3};
 
@@ -501,7 +502,8 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let stiffness = model.flex_edgestiffness[flex_id];
         let damping = model.flex_edgedamping[flex_id];
 
-        if stiffness == 0.0 && damping == 0.0 {
+        // A rigid flex is skipped whole (`engine_passive.c:417-420`).
+        if model.flex_rigid[flex_id] || (stiffness == 0.0 && damping == 0.0) {
             continue;
         }
 
@@ -666,6 +668,9 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     // DOFs with jnt_actgravcomp == true are routed via mj_fwd_actuation() (S4.2).
     let has_gravcomp = mj_gravcomp(model, data);
 
+    // A passive flex's contacts, into qfrc_spring.
+    mj_contact_passive(model, data);
+
     // S4.7e: Aggregation into qfrc_passive (matches MuJoCo mj_passive() pattern).
     // qfrc_passive = qfrc_spring + qfrc_damper [+ qfrc_gravcomp] [+ qfrc_fluid]
     // Uses assignment (=), not accumulation (+=), for the base sum.
@@ -707,17 +712,43 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         }
     }
 
-    // DT-101: mj_contactPassive() insertion point.
-    // When implemented, call here with guard: disabled(CONTACT) || ncon == 0 || nv == 0.
-    // Must go AFTER aggregation because aggregation uses assignment (=), not
-    // accumulation (+=) — contact passive forces would be overwritten if placed
-    // before. The contact passive contribution should use += on qfrc_passive.
-
     // DT-21: xfrc_applied projection moved to acceleration stage (qfrc_smooth
     // in compute_qacc_smooth). MuJoCo projects xfrc_applied into qfrc_smooth in
     // mj_fwdAcceleration, not mj_passive.
 
     mj_passive_user(model, data);
+}
+
+/// MuJoCo's stiffness of a passive contact (`kContactStiffness`,
+/// `engine_passive.c:40`).
+const CONTACT_STIFFNESS: f64 = 1e4;
+
+/// `mj_contactPassive` (`engine_passive.c:555-634`): each contact of a flex
+/// marked passive, which makes no constraint rows, pushes along its normal
+/// as a spring of stiffness 1e4 on its distance (the margin not taken off):
+/// its Jacobian's normal row, in the contact frame, times −1e4·dist, into
+/// `qfrc_spring`, over its dof chain at the sparse size (none for a contact
+/// without dofs, MuJoCo's `exclude` 3) and every dof at the dense size.
+fn mj_contact_passive(model: &Model, data: &mut Data) {
+    if disabled(model, DISABLE_CONTACT) || data.contacts.is_empty() {
+        return;
+    }
+    for i in 0..data.contacts.len() {
+        let contact = &data.contacts[i];
+        if !contact.is_passive(model) {
+            continue;
+        }
+        let scl = -CONTACT_STIFFNESS * -contact.depth;
+        let jac = compute_contact_jacobian(model, data, contact);
+        let dofs = if model.is_sparse() {
+            contact_chain(model, contact)
+        } else {
+            (0..model.nv).collect()
+        };
+        for dof in dofs {
+            data.qfrc_spring[dof] += jac[(0, dof)] * scl;
+        }
+    }
 }
 
 /// The user passive callback, then passive plugins (MuJoCo 3.5.0

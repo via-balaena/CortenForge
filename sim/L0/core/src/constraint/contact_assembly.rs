@@ -8,7 +8,7 @@
 
 use crate::constraint::chain::at_sparse_size;
 use crate::constraint::impedance::{MJ_MINVAL, checked_solreffriction};
-use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain};
+use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain, side_weights};
 use crate::types::{ConstraintType, Contact, Data, Model};
 
 use super::assembly::finalize_constraint_row;
@@ -34,8 +34,9 @@ pub(super) fn assemble_contact_rows(
     let mut cones: Vec<(usize, usize)> = Vec::new();
 
     for (ci, contact) in contacts.iter().enumerate() {
-        // A contact in the gap keeps its index and makes no rows.
-        if contact.is_excluded() {
+        // A contact of a passive flex, or in the gap, keeps its index and
+        // makes no rows.
+        if contact.is_passive(model) || contact.is_excluded() {
             continue;
         }
         // At the sparse size a contact whose dof chain is empty (between
@@ -57,7 +58,7 @@ pub(super) fn assemble_contact_rows(
         let is_pyramidal = dim >= 3 && model.cone == 0 && contact.mu[0] >= 1e-10;
 
         // Precompute contact bodyweight for DT-39
-        let bw_contact = compute_contact_bodyweight(model, contact);
+        let bw_contact = compute_contact_bodyweight(model, data, contact);
 
         if is_pyramidal {
             assemble_pyramidal_contact(
@@ -146,67 +147,20 @@ pub(super) fn regularize_cones(model: &Model, data: &mut Data, cones: &[(usize, 
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Compute contact bodyweight for DT-39 diagApprox.
-fn compute_contact_bodyweight(model: &Model, contact: &Contact) -> [f64; 2] {
-    if let (Some(vi1), Some(vi2)) = (contact.flex_vertex, contact.flex_vertex2) {
-        // Self-collision: both sides are flex vertices — use vertex bodies
-        let b1 = model.flexvert_bodyid[vi1];
-        let b2 = model.flexvert_bodyid[vi2];
-        let w1t = if b1 < model.body_invweight0.len() {
-            model.body_invweight0[b1][0]
-        } else {
-            0.0
-        };
-        let w2t = if b2 < model.body_invweight0.len() {
-            model.body_invweight0[b2][0]
-        } else {
-            0.0
-        };
-        let w1r = if b1 < model.body_invweight0.len() {
-            model.body_invweight0[b1][1]
-        } else {
-            0.0
-        };
-        let w2r = if b2 < model.body_invweight0.len() {
-            model.body_invweight0[b2][1]
-        } else {
-            0.0
-        };
-        [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
-    } else {
-        let b1 = if contact.geom1 < model.geom_body.len() {
-            model.geom_body[contact.geom1]
-        } else {
-            0
-        };
-        let b2 = if contact.geom2 < model.geom_body.len() {
-            model.geom_body[contact.geom2]
-        } else {
-            0
-        };
-        let w1t = if b1 < model.body_invweight0.len() {
-            model.body_invweight0[b1][0]
-        } else {
-            0.0
-        };
-        let w2t = if b2 < model.body_invweight0.len() {
-            model.body_invweight0[b2][0]
-        } else {
-            0.0
-        };
-        let w1r = if b1 < model.body_invweight0.len() {
-            model.body_invweight0[b1][1]
-        } else {
-            0.0
-        };
-        let w2r = if b2 < model.body_invweight0.len() {
-            model.body_invweight0[b2][1]
-        } else {
-            0.0
-        };
-        // [translational, rotational]
-        [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
+/// Contact bodyweight for DT-39 diagApprox: the two sides' bodies' mean
+/// translation and rotation weights (`body_invweight0`) added, as MuJoCo's
+/// `mj_diagApprox` (`engine_core_constraint.c:1208-1257`): a geom's body
+/// and a flex vertex's own body each with weight 1, a flex element's
+/// vertices' bodies with `mj_elemBodyWeight`'s weights.
+fn compute_contact_bodyweight(model: &Model, data: &Data, contact: &Contact) -> [f64; 2] {
+    let mut weight = [0.0; 2];
+    for side in 0..2 {
+        for (b, w) in side_weights(model, data, contact, side) {
+            weight[0] += model.body_invweight0[b][0] * w;
+            weight[1] += model.body_invweight0[b][1] * w;
+        }
     }
+    [weight[0].max(MJ_MINVAL), weight[1].max(MJ_MINVAL)]
 }
 
 /// Assemble pyramidal friction cone facet rows for a single contact.

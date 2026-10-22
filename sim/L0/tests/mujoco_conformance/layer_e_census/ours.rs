@@ -230,12 +230,15 @@ fn data_json(m: &Model, d: &Data) -> Value {
     let contacts: Vec<Value> = d.contacts[..ncon]
         .iter()
         .map(|c| {
-            let vertex = |v: Option<usize>| v.map_or(-1, id);
+            // MuJoCo's golden's layout: each side's geom, then each side's
+            // flex vertex among every flex's, -1 where a side has none.
+            let some = |x: Option<usize>| x.map_or(-1, id);
+            let vertices = c.flex_vertices(m);
             json!([
-                id(c.geom1),
-                id(c.geom2),
-                vertex(c.flex_vertex),
-                vertex(c.flex_vertex2),
+                some(c.geom[0]),
+                some(c.geom[1]),
+                some(vertices[0]),
+                some(vertices[1]),
                 num(-c.depth),
                 nums(c.pos.iter().copied()),
                 nums(c.normal.iter().copied()),

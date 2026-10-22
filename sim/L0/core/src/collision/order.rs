@@ -77,20 +77,17 @@ pub(super) fn pair_place(model: &Model, contact: &mut Contact, pair: usize) -> L
     }
 }
 
-/// The place of a flex contact: a flex vertex against a rigid geom (MuJoCo
-/// takes the body's geoms in turn), two flexes, or a flex with itself. A
-/// contact's flex vertices name its flexes.
+/// The place of a flex contact: a geom against a flex, by the geom and then
+/// the element or vertex (`contactcompare`, `engine_collision_driver.c:
+/// 226-256`), two flexes, or a flex with itself. A flex is numbered after
+/// the bodies in a signature.
 pub(super) fn flex_place(model: &Model, contact: &Contact) -> ListPlace {
-    let flex = |v: Option<usize>| v.map_or(0, |v| model.nbody + model.flexvert_flexid[v]);
-    let f1 = flex(contact.flex_vertex);
-    let (signature, flex_self, within) = if contact.flex_vertex2.is_none() {
-        (
-            (model.geom_body[contact.geom1], f1),
-            false,
-            (contact.geom1, 0),
-        )
+    let flex = |k: usize| contact.flex[k].map_or(0, |f| model.nbody + f);
+    let (signature, flex_self, within) = if let Some(geom) = contact.geom[0] {
+        let object = contact.elem[1].or(contact.vert[1]).unwrap_or(0);
+        ((model.geom_body[geom], flex(1)), false, (geom, object))
     } else {
-        let f2 = flex(contact.flex_vertex2);
+        let (f1, f2) = (flex(0), flex(1));
         ((f1.min(f2), f1.max(f2)), f1 == f2, (0, 0))
     };
     ListPlace {
@@ -134,9 +131,8 @@ pub(super) fn type_ordered(model: &Model, tested: (usize, usize)) -> (usize, usi
 /// turn a 0 it builds as +0 into −0), with the normal normalised once, as
 /// MuJoCo's.
 fn list_as(contact: &mut Contact, (geom1, geom2): (usize, usize)) {
-    if geom1 != geom2 && (contact.geom1, contact.geom2) == (geom2, geom1) {
-        contact.geom1 = geom1;
-        contact.geom2 = geom2;
+    if geom1 != geom2 && contact.geom == [Some(geom2), Some(geom1)] {
+        contact.geom = [Some(geom1), Some(geom2)];
         contact.normal = -contact.normal;
         let (n, t1) = (contact.normal, contact.frame[0]);
         contact.frame[1] = Vector3::new(
@@ -175,7 +171,7 @@ mod tests {
             DEFAULT_SOLIMP,
         );
         list_as(&mut contact, (0, 1));
-        assert_eq!((contact.geom1, contact.geom2), (0, 1));
+        assert_eq!(contact.geom, [Some(0), Some(1)]);
         let (normal, frame) = make_frame(&-raw, &Vector3::zeros());
         let bits = |v: &Vector3<f64>| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
         assert_eq!(bits(&contact.normal), bits(&normal));

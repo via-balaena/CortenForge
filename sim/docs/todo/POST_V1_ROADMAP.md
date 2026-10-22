@@ -109,8 +109,8 @@ DT-181 added during derivatives examples (sensor FD optimization).
 
 | DT | Tier | Description | Source |
 |----|------|-------------|--------|
-| DT-131 | T1 | Flex condim=6 silently downgrades to condim=3 -- `make_contact_flex_rigid()` maps `_ => 3`. Conformant with MuJoCo C but should emit warning. | 10c |
-| DT-132 | T2 | Bodyweight diagApprox double-counts rigid body for flex contacts -- `make_contact_flex_rigid()` sets both geoms to rigid, ignoring flex vertex mass | 10c |
+| DT-131 | T1 | ~~Flex condim=6 silently downgrades to condim=3 -- `make_contact_flex_rigid()` maps `_ => 3`. Conformant with MuJoCo C but should emit warning.~~ **Done** -- a geom against a flex keeps condim 6, as MuJoCo; the flex–flex and self constructors are DT-154's | 10c |
+| DT-132 | T2 | ~~Bodyweight diagApprox double-counts rigid body for flex contacts -- `make_contact_flex_rigid()` sets both geoms to rigid, ignoring flex vertex mass~~ **Done** -- a flex side takes its vertex's or element's weights, as `mj_diagApprox` | 10c |
 | DT-133 | T2 | Bodyweight diagApprox uses rotational weight for flex friction rows -- should use translational component | 10c |
 | DT-180 | T2 | Mesh-plane contact forces ~10^16× too large vs primitive-plane -- sphere(0.05) mesh geom on plane produces 2.5e17 N (expected ~6 N from weight). Primitive sphere of same size produces correct ~5100 N. `collide_mesh_plane` vertex projection + `make_contact_from_geoms` uses same path as primitive; likely mass/inertia computation from mesh or constraint impedance scaling issue. | cf-design Phase 5 |
 | DT-161 | T1 | Pyramidal `efc_diagApprox` bodyweight factor-of-2 -- CF stores `(1+mu^2)*w_tran`, MuJoCo stores `2*(1+mu^2)*w_tran` for pyramidal facet rows. No downstream effect (R_py post-processing overwrites). | ROADMAP_V1 |
@@ -122,15 +122,15 @@ DT-181 added during derivatives examples (sensor FD optimization).
 
 | DT | Tier | Description | Source |
 |----|------|-------------|--------|
-| DT-69 | T2 | SAP integration for flex broadphase -- currently brute-force O(V*G) | 10i |
+| DT-69 | T2 | ~~SAP integration for flex broadphase -- currently brute-force O(V*G)~~ **Done** for a body against a flex (MuJoCo's broadphase and midphase); flex–flex and self-collision remain the flex work's second pull request's | 10i |
 | DT-71 | T1 | Behavioral friction tests for deformable -- additional coverage beyond DT-25 verification (friction coefficient sweep, stick-slip transition) | 10i |
 | DT-72 | T1 | Flex contacts not wired for adhesion -- AC12 test documented skip | 10i |
 | DT-89 | T1 | `<flexcomp>` deferred rendering attributes: `flatskin`, `material`, `rgba` | 10i |
-| DT-150 | T2 | `activelayers` runtime filtering for flex self-collision -- parsed and stored but not consumed at runtime | 10i |
+| DT-150 | T2 | `activelayers` runtime filtering for flex self-collision -- the flex hierarchy (a geom against a flex) takes only active elements; self-collision does not read it yet | 10i |
 | DT-151 | T2 | Edge-edge tests for dim=3 tetrahedral self-collision -- MuJoCo performs edge-edge proximity tests; CortenForge vertex-face only | 10i |
 | DT-152 | T2 | Barycentric force distribution on face side for flex self-collision contacts -- current Jacobian applies force to nearest vertex | 10i |
 | DT-153 | T1 | Island assignment for flex contacts -- sentinel `usize::MAX` geom indices skipped from island assignment. Affects island-based solving only. | 10i |
-| DT-154 | T1 | Flex contact factory condim=6 mapping -- all flex factories map `condim: 1->1, 4->4, _->3`. `condim=6` produces `dim=3`. | 10i |
+| DT-154 | T1 | Flex contact factory condim=6 mapping -- the flex–flex and self factories map `condim: 1->1, 4->4, _->3`, so `condim=6` produces `dim=3` (a geom against a flex keeps 6). | 10i |
 | DT-155 | T1 | S10 override test for flex-flex contacts (AC11/T10) -- `ENABLE_OVERRIDE` test infrastructure not wired for flex contact tests | 10i |
 | DT-156 | T2 | Narrowphase triangle-triangle contact count conformance gap -- CortenForge 36 contacts vs MuJoCo 32 for overlapping 3x3 flex grids | 10i |
 
@@ -177,7 +177,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-81 | T1 | `key_userdata` support -- no `userdata` concept in CortenForge | 10j |
 | DT-84 | T1 | `mju_encodePyramid` utility not implemented -- API compatibility only | 10j |
 | DT-96 | T1 | Lazy energy evaluation (`flg_energypos`/`flg_energyvel`) -- only matters with plugins or energy-dependent sensors | 10j |
-| DT-101 | T2 | `mj_contactPassive()` -- viscous contact damping forces. Guard site already specified in S4.7d. | 10c |
+| DT-101 | T2 | ~~`mj_contactPassive()` -- viscous contact damping forces. Guard site already specified in S4.7d.~~ **Done** -- a passive flex's contacts push as springs into `qfrc_spring`, as `mj_contactPassive` | 10c |
 | DT-104 | T2 | Ball/free joint transmission -- `nv == 3` and `nv == 6` sub-paths in `mj_transmission()` | 10b |
 | DT-107 | T2 | Runtime interpolation logic -- `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators and sensors. | 10g |
 | DT-108 | T1 | `dyntype` enum gating interpolation eligibility -- restrict which `ActuatorDynamics` variants may use history buffer | 10g |
@@ -194,7 +194,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-127 | T1 | ~~Mixed-sign `solref` validation -- `(solref[0] > 0) ^ (solref[1] > 0)` triggers MuJoCo warning and default replacement. Not validated in CortenForge.~~ **Done** -- Rigid-physics chunk 3d-2 (book P37) | 10c |
 | DT-135 | T1 | `needhull_` collision-only hull trigger -- compute convex hulls only for meshes used in collision. Conformance-neutral. | ROADMAP_V1 |
 | DT-139 | T1 | `exactmeshinertia` attribute full removal -- match MuJoCo 3.5.0 schema rejection (currently parsed + warn) | ROADMAP_V1 |
-| DT-144 | T2 | Prism-based hfield collision for flex vertices -- currently uses point-sampling. MuJoCo uses prism-based GJK. | 10i |
+| DT-144 | T2 | ~~Prism-based hfield collision for flex vertices -- currently uses point-sampling. MuJoCo uses prism-based GJK.~~ **Done** -- a height field against a flex element through its prisms, as `mjc_HFieldElem` | 10i |
 | DT-160 | T1 | Additional FK reference fields -- `xmat`, `geom_xpos`, `geom_xmat`, `site_xpos`. Extend conformance reference and add Layer B tests. | 10j |
 | DT-175 | T1 | Thread margin into mesh collision helpers -- `mesh_collide.rs` receives margin but does not propagate into sub-helpers | Cleanup |
 | DT-176 | T1 | Thread margin into SDF collision helpers -- `sdf_collide.rs` receives margin but does not propagate into SDF distance queries | Cleanup |

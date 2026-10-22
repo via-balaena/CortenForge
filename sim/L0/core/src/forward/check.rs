@@ -77,14 +77,11 @@ pub fn check_contacts_awake(model: &Model, data: &Data) -> Result<(), StepError>
         data.body_sleep_state[model.body_weldid[model.geom_body[geom]]] == SleepState::Asleep
     };
     for (i, contact) in data.contacts[..data.ncon].iter().enumerate() {
-        if contact.is_excluded() || contact.flex_vertex.is_some() || contact.flex_vertex2.is_some()
-        {
+        // MuJoCo checks a contact between two geoms only.
+        if contact.geoms().is_none() || contact.is_excluded() {
             continue;
         }
-        if let Some(geom) = [contact.geom1, contact.geom2]
-            .into_iter()
-            .find(|&g| asleep(g))
-        {
+        if let Some(geom) = contact.geom.into_iter().flatten().find(|&g| asleep(g)) {
             return Err(StepError::ContactWithSleepingGeom { contact: i, geom });
         }
     }
@@ -168,6 +165,8 @@ pub fn check_data_shape(model: &Model, data: &Data) -> Result<(), StepError> {
         ("wrap_xpos", data.wrap_xpos.len(), 2 * model.nwrap),
         ("eq_violation", data.eq_violation.len(), 6 * model.neq),
         ("flexvert_xpos", data.flexvert_xpos.len(), model.nflexvert),
+        ("flexelem_aabb", data.flexelem_aabb.len(), model.nflexelem),
+        ("bvh_aabb_dyn", data.bvh_aabb_dyn.len(), model.nbvhdynamic),
         (
             "flexedge_length",
             data.flexedge_length.len(),

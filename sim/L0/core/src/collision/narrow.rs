@@ -321,8 +321,10 @@ pub fn make_contact_from_geoms(
         pos,
         normal,
         depth,
-        geom1,
-        geom2,
+        geom: [Some(geom1), Some(geom2)],
+        flex: [None; 2],
+        elem: [None; 2],
+        vert: [None; 2],
         friction: mu[0],
         dim,
         includemargin,
@@ -331,9 +333,7 @@ pub fn make_contact_from_geoms(
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
         frame,
-        flex_vertex: None,
         regularized_mu: 0.0,
-        flex_vertex2: None,
     }
 }
 
@@ -364,7 +364,7 @@ mod tests {
         let swapped = collide_geoms(&m, 1, 0, capsule, mat, cylinder, mat, 0.0);
         assert_eq!(given.len(), 1);
         let c = &given[0];
-        assert_eq!((c.geom1, c.geom2), (1, 0), "the capsule first");
+        assert_eq!(c.geom, [Some(1), Some(0)], "the capsule first");
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-9);
         assert_relative_eq!(c.normal, -Vector3::x(), epsilon = 1e-9);
         assert_eq!(swapped.len(), 1);

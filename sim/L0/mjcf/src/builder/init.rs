@@ -264,6 +264,7 @@ impl ModelBuilder {
             flex_condim: vec![],
             flex_margin: vec![],
             flex_gap: vec![],
+            flex_radius: vec![],
             flex_priority: vec![],
             flex_solmix: vec![],
             flex_solref: vec![],

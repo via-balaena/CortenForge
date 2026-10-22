@@ -1,28 +1,31 @@
-//! Each body's bounding-volume hierarchy over its colliding geoms, as
-//! MuJoCo's compiler builds it (`mjCBody::ComputeBVH`,
-//! `user_objects.cc:2323-2335`; `mjCBoundingVolumeHierarchy`, `:351-543`).
-//! The midphase descends two bodies' hierarchies together
-//! (`collision::midphase`).
+//! Each body's bounding-volume hierarchy over its colliding geoms, and each
+//! flex's over its active elements, as MuJoCo's compiler builds them
+//! (`mjCBody::ComputeBVH`, `user_objects.cc:2323-2335`; `mjCFlex::CreateBVH`,
+//! `user_mesh.cc:4423-4468`; `mjCBoundingVolumeHierarchy`, `:351-543`). The
+//! midphase descends two hierarchies together (`collision::midphase`).
 
 use super::model::Model;
 use super::model_derived::aabb_of;
+use crate::forward::mj_fwd_position;
 use crate::quat::rot_vec_quat;
+use nalgebra::Vector3;
 
 /// MuJoCo's compiler `mjEPS` (`user_util.h:29`): positions along the split
 /// axis nearer than it tie, and a box flat along an axis is widened by it.
 const EPS: f64 = 1e-14;
 
-/// A colliding geom of a body: its index, its position, and the eight
-/// corners of its box (`geom_aabb`), the last two in the body's inertial
-/// frame (`body_ipos`, `body_iquat`).
+/// A leaf of a hierarchy, its id (a body's geom, a flex's element numbered
+/// within the flex), its position and the eight corners of its box: a geom's
+/// in its body's inertial frame (`body_ipos`, `body_iquat`), a flex
+/// element's in the world's axes.
 struct Element {
-    geom: usize,
+    id: usize,
     pos: [f64; 3],
     corners: [[f64; 3]; 8],
 }
 
-/// One body's hierarchy as it is built, its nodes in the order made: a node,
-/// its first child's subtree, then its second's.
+/// The nodes of the hierarchies built, a body's or each flex's in turn, in
+/// the order made: a node, its first child's subtree, then its second's.
 #[derive(Default)]
 struct Tree {
     aabb: Vec<[f64; 6]>,
@@ -50,7 +53,9 @@ impl Model {
     /// `geom_conaffinity`, `geom_margin`, `body_ipos` and `body_iquat`: a
     /// model edited in any of them afterwards keeps the hierarchies made
     /// before (as MuJoCo's compiled ones), and the midphase finds the pairs
-    /// those hold, until [`Self::recompute_derived`] runs again.
+    /// those hold, until [`Self::recompute_derived`] runs again. The flexes'
+    /// hierarchies, which follow the bodies' nodes, are dropped:
+    /// [`Self::compute_flex_bvhs`] appends them again.
     pub fn compute_body_bvhs(&mut self) {
         let mut geoms: Vec<Vec<usize>> = vec![Vec::new(); self.nbody];
         for (geom, &body) in self.geom_body.iter().enumerate() {
@@ -87,6 +92,77 @@ impl Model {
         }
     }
 
+    /// Build each flex's bounding-volume hierarchy over its active elements,
+    /// after every body's, as MuJoCo's compiler (`mjCFlex::CreateBVH`,
+    /// `user_mesh.cc:4423-4468`): a leaf is an element, numbered within its
+    /// flex, its box over its vertices at `qpos0` grown by the flex's radius,
+    /// unrotated; a dim-3 element is active while its layer is below the
+    /// flex's `flex_activelayers`. The hierarchy is split as a body's. Only
+    /// its shape is kept (`bvh_child`, `bvh_nodeid`, `bvh_depth`): its boxes
+    /// move with the vertices, `Data::bvh_aabb_dyn` (MuJoCo copies no
+    /// `bvh_aabb` for a flex, `user_model.cc:3447-3454`). A flex with no
+    /// active element has no hierarchy (`flex_bvhadr` `None`; MuJoCo's
+    /// compiler does not take such a flex, registry `D-FLEX-NO-ACTIVE`).
+    ///
+    /// Writes `flex_bvhadr`, `flex_bvhnum`, `nbvhstatic` and `nbvhdynamic`
+    /// and appends to `bvh_child`, `bvh_nodeid` and `bvh_depth`, after the
+    /// bodies' nodes (so it runs after [`Self::compute_body_bvhs`]); reads
+    /// `flex_elemlayer` ([`Self::compute_flex_topology`]), `flex_radius`
+    /// and the vertices' bodies at `qpos0`, which forward kinematics on a
+    /// derivation `Data` places: the model's joint layout and ranges must
+    /// pass, as for the derivations that step it.
+    pub fn compute_flex_bvhs(&mut self) {
+        self.nbvhstatic = self.bvh_aabb.len();
+        self.bvh_child.truncate(self.nbvhstatic);
+        self.bvh_nodeid.truncate(self.nbvhstatic);
+        self.bvh_depth.truncate(self.nbvhstatic);
+        self.flex_bvhadr = vec![None; self.nflex];
+        self.flex_bvhnum = vec![0; self.nflex];
+        self.nbvhdynamic = 0;
+        if self.nflexelem == 0 {
+            return;
+        }
+        let mut data = self.make_data_for_derivation();
+        mj_fwd_position(self, &mut data);
+        let position = |v: usize| data.xpos[self.flexvert_bodyid[v]];
+        let mut nodes = Tree::default();
+        for f in 0..self.nflex {
+            let active = |e: usize| {
+                self.flex_dim[f] < 3
+                    || usize::try_from(self.flex_activelayers[f])
+                        .is_ok_and(|layers| self.flex_elemlayer[self.flex_elemadr[f] + e] < layers)
+            };
+            let elements: Vec<Element> = (0..self.flex_elemnum[f])
+                .filter(|&e| active(e))
+                .map(|e| {
+                    let global = self.flex_elemadr[f] + e;
+                    let adr = self.flexelem_dataadr[global];
+                    let vertices = &self.flexelem_data[adr..adr + self.flexelem_datanum[global]];
+                    flex_element(
+                        e,
+                        vertices.iter().map(|&v| position(v)),
+                        self.flex_radius[f],
+                    )
+                })
+                .collect();
+            let mut order: Vec<usize> = (0..elements.len()).collect();
+            let mut tree = Tree::default();
+            make_bvh(&elements, &mut order, 0, &mut tree);
+            if tree.child.is_empty() {
+                continue;
+            }
+            self.flex_bvhadr[f] = Some(self.nbvhstatic + nodes.child.len());
+            self.flex_bvhnum[f] = tree.child.len();
+            nodes.child.extend(tree.child);
+            nodes.nodeid.extend(tree.nodeid);
+            nodes.depth.extend(tree.depth);
+        }
+        self.nbvhdynamic = nodes.child.len();
+        self.bvh_child.extend(nodes.child);
+        self.bvh_nodeid.extend(nodes.nodeid);
+        self.bvh_depth.extend(nodes.depth);
+    }
+
     /// Geom `geom` of body `body`, placed in the body's inertial frame
     /// (`mjCBoundingVolumeHierarchy::Make` and `MakeBVH`,
     /// `user_objects.cc:403-419`, `:436-468`).
@@ -111,10 +187,55 @@ impl Model {
             rot_vec_quat(&placed, &qinv)
         });
         Element {
-            geom,
+            id: geom,
             pos: rot_vec_quat(&offset, &qinv),
             corners,
         }
+    }
+}
+
+/// Flex element `e` (numbered within its flex) as a leaf: its box over its
+/// vertices, grown by the flex's `radius`, centre `0.5 (max + min)` and
+/// half-size `0.5 (max - min) + radius` (`user_mesh.cc:4438-4456`); placed
+/// at the box's centre, with no rotation (`user_objects.cc:409-416`,
+/// `:447-468`).
+fn flex_element(
+    e: usize,
+    mut vertices: impl Iterator<Item = Vector3<f64>>,
+    radius: f64,
+) -> Element {
+    let first = vertices.next().unwrap_or_else(Vector3::zeros);
+    let (mut min, mut max) = (first, first);
+    for v in vertices {
+        for j in 0..3 {
+            // `std::min` and `std::max`.
+            min[j] = if v[j] < min[j] { v[j] } else { min[j] };
+            max[j] = if max[j] < v[j] { v[j] } else { max[j] };
+        }
+    }
+    let centre = [
+        0.5 * (max[0] + min[0]),
+        0.5 * (max[1] + min[1]),
+        0.5 * (max[2] + min[2]),
+    ];
+    let half = [
+        0.5 * (max[0] - min[0]) + radius,
+        0.5 * (max[1] - min[1]) + radius,
+        0.5 * (max[2] - min[2]) + radius,
+    ];
+    let corners = std::array::from_fn(|v| {
+        std::array::from_fn(|i| {
+            if v >> i & 1 == 1 {
+                centre[i] + half[i]
+            } else {
+                centre[i] - half[i]
+            }
+        })
+    });
+    Element {
+        id: e,
+        pos: centre,
+        corners,
     }
 }
 
@@ -149,7 +270,7 @@ fn make_bvh(
     tree.nodeid.push(None);
     tree.depth.push(depth);
     if let [element] = order {
-        tree.nodeid[index] = Some(elements[*element].geom);
+        tree.nodeid[index] = Some(elements[*element].id);
         return Some(index);
     }
 
@@ -166,7 +287,7 @@ fn make_bvh(
         if (pi - pj).abs() > EPS {
             pi < pj
         } else {
-            b[i].geom < b[j].geom
+            b[i].id < b[j].id
         }
     });
     let (lower, upper) = order.split_at_mut(order.len() / 2);
@@ -179,7 +300,7 @@ fn make_bvh(
 
 /// Sort `order` by `before`, keeping equal elements in place: MuJoCo's split
 /// comparison, positions farther apart than [`EPS`] by position and nearer
-/// by geom index (`user_objects.cc:511-517`), need not be transitive, which
+/// by the leaves' order, their ids' (`user_objects.cc:511-517`), need not be transitive, which
 /// `slice::sort_by` may panic on; this never does. Where it is transitive,
 /// the lower half is the half MuJoCo's `nth_element` takes.
 fn merge_sort(order: &mut [usize], before: &impl Fn(usize, usize) -> bool) {

@@ -736,7 +736,7 @@ mod tests {
             "Swapped order should still produce contacts"
         );
         for c in &contacts {
-            assert_eq!([c.geom1, c.geom2], [0, 1]);
+            assert_eq!(c.geom, [Some(0), Some(1)]);
             assert!(c.normal.z > 0.9, "normal {:?}", c.normal);
         }
     }
@@ -942,7 +942,7 @@ mod tests {
                 let want = case["contacts"].as_array().expect("contacts");
                 assert_eq!(contacts.len(), want.len(), "{name}: contacts");
                 for (k, (c, w)) in contacts.iter().zip(want).enumerate() {
-                    assert_eq!([c.geom1, c.geom2], [0, 1], "{name} {k}: order");
+                    assert_eq!(c.geom, [Some(0), Some(1)], "{name} {k}: order");
                     let dist = w["dist"].as_f64().expect("dist");
                     assert_eq!((-c.depth).to_bits(), dist.to_bits(), "{name} {k}: dist");
                     assert_eq!(c.pos, vector(&w["pos"]), "{name} {k}: position");

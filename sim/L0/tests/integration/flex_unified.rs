@@ -465,9 +465,9 @@ fn ac4_cloth_on_sphere_contact() {
             let max_vel = data.qvel.iter().fold(0.0_f64, |mx, v| mx.max(v.abs()));
             panic!("step {} failed: {:?}, max_vel={:.2e}", step, e, max_vel);
         }
-        // Check for flex contacts (contacts where flex_vertex is Some)
+        // Check for flex contacts (a flex on a side)
         for contact in &data.contacts {
-            if contact.flex_vertex.is_some() {
+            if contact.flex.iter().any(Option::is_some) {
                 had_flex_contacts = true;
             }
         }
@@ -3586,4 +3586,242 @@ fn a_cable_edge_spring_skips_rigid_flexes_rigid_edges_and_dim_above_1() {
     let mut dim_2 = model.clone();
     dim_2.flex_dim[0] = 2;
     assert_eq!(energy(&dim_2), 0.0, "flex of dim 2");
+}
+
+/// A free 2 × 2 grid as MuJoCo 3.5.0's `<flex body=…>` of four three-slide
+/// bodies (`scripts/gen_flex_edge_velocity_reference.py`), each dof at its
+/// own rate `0.1·(i + 1)·(−1)^i`.
+fn free_grid_moving() -> (Model, sim_core::Data) {
+    let model = load_model(
+        r#"<mujoco>
+          <option><flag gravity="disable"/></option>
+          <deformable>
+            <flex name="grid" dim="2">
+              <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
+              <element data="0 1 2  1 3 2"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    for v in 0..4 {
+        for k in 0..3 {
+            let i = 3 * v + k;
+            let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+            data.qvel[model.flexvert_dofadr[v] + k] = 0.1 * (i + 1) as f64 * sign;
+        }
+    }
+    (model, data)
+}
+
+/// Each edge's velocity, keyed by its vertices: sim-mjcf lists a flex's
+/// edges in an order that differs between processes (Rigid-loading L02).
+fn edge_velocities(model: &Model, data: &sim_core::Data) -> Vec<([usize; 2], f64)> {
+    let mut out: Vec<([usize; 2], f64)> = model
+        .flexedge_vert
+        .iter()
+        .zip(&data.flexedge_velocity)
+        .map(|(&[a, b], &v)| ([a.min(b), a.max(b)], v))
+        .collect();
+    out.sort_by_key(|&(edge, _)| edge);
+    out
+}
+
+/// MuJoCo makes a flex's edge Jacobians only when an edge equality, an edge
+/// stiffness, an edge damping or the flex's damping needs them; otherwise
+/// they stay 0, and so do the edges' velocities, `J·qvel`
+/// (`engine_core_smooth.c:682-686`, `engine_forward.c:228-230`; ledger
+/// L153). The grid of [`free_grid_moving`] with its edge equality removed
+/// (sim-mjcf gives every flex one, Rigid-loading L31): every velocity 0, as
+/// MuJoCo's loaded grid, and each of the four makes MuJoCo's velocities with
+/// an edge damping, bit for bit (`gen_flex_edge_velocity_reference.py`).
+/// sim-core's own bending damping does not read the edges' Jacobians, so it
+/// makes none.
+#[test]
+fn edge_jacobians_and_velocities_are_made_only_where_mujoco_makes_them() {
+    let (mut model, data) = free_grid_moving();
+    let flex_equality = (0..model.neq)
+        .find(|&eq| model.eq_type[eq] == sim_core::EqualityType::Flex)
+        .expect("the flex's edge equality");
+    model.eq_active[flex_equality] = false;
+    model.flex_edgeequality[0] = false;
+
+    let run = |model: &Model| {
+        let mut data = data.clone();
+        data.forward(model).expect("forward");
+        data
+    };
+    let skipped = |label: &str, model: &Model| {
+        let data = run(model);
+        assert!(
+            data.flexedge_J.iter().all(|&j| j == 0.0),
+            "{label}: Jacobian {:?}",
+            data.flexedge_J
+        );
+        for (edge, v) in edge_velocities(model, &data) {
+            assert_eq!(
+                v.to_bits(),
+                0.0_f64.to_bits(),
+                "{label}: edge {edge:?} velocity {v}"
+            );
+        }
+    };
+    // MuJoCo 3.5.0, with an edge damping.
+    let mujoco: [([usize; 2], f64); 5] = [
+        ([0, 1], -0.5),
+        ([0, 2], -0.600_000_000_000_000_1),
+        ([1, 2], -1.697_056_274_847_714),
+        ([1, 3], 0.600_000_000_000_000_1),
+        ([2, 3], -1.700_000_000_000_000_2),
+    ];
+    let made = |label: &str, model: &Model| {
+        let data = run(model);
+        let ours = edge_velocities(model, &data);
+        assert_eq!(ours.len(), mujoco.len(), "{label}");
+        for ((edge, v), (want_edge, want)) in ours.iter().zip(mujoco) {
+            assert_eq!(*edge, want_edge, "{label}");
+            assert_eq!(
+                v.to_bits(),
+                want.to_bits(),
+                "{label}: edge {edge:?} velocity {v}, MuJoCo {want}"
+            );
+        }
+    };
+
+    skipped("none", &model);
+    let mut bend = model.clone();
+    bend.flex_bend_damping[0] = 1.0;
+    skipped("bending damping alone", &bend);
+
+    let mut equality = model.clone();
+    equality.flex_edgeequality[0] = true;
+    made("edge equality", &equality);
+    let mut stiffness = model.clone();
+    stiffness.flex_edgestiffness[0] = 1.0;
+    made("edge stiffness", &stiffness);
+    let mut damping = model.clone();
+    damping.flex_edgedamping[0] = 1.0;
+    made("edge damping", &damping);
+    let mut flex_damping = model.clone();
+    flex_damping.flex_damping[0] = 1.0;
+    made("flex damping", &flex_damping);
+}
+
+/// MuJoCo clears every edge Jacobian before it skips a rigid flex
+/// (`engine_core_smooth.c:672-681`), and its edge spring-dampers skip a
+/// rigid flex (`engine_passive.c:417-420`): a stretched cable with an edge
+/// stiffness, stepped once, then marked rigid on the model, keeps no
+/// Jacobian, velocity or spring force from the step before (ledger L153,
+/// its review's D2-8).
+#[test]
+fn a_flex_marked_rigid_keeps_no_edge_jacobian_velocity_or_spring_force() {
+    let mut model = load_model(
+        r#"<mujoco>
+          <option><flag gravity="disable"/></option>
+          <deformable>
+            <flex name="c" dim="1" mass="0.2">
+              <vertex pos="0 0 1  0.1 0 1  0.2 0 1"/>
+              <element data="0 1  1 2"/>
+              <edge stiffness="50"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos[model.flexvert_dofadr[2]] = 0.03;
+    data.qvel[model.flexvert_dofadr[2]] = 0.5;
+    data.forward(&model).expect("forward");
+    assert!(
+        data.qfrc_spring.iter().any(|&f| f != 0.0),
+        "stretched: a spring force"
+    );
+    assert!(
+        data.flexedge_velocity.iter().any(|&v| v != 0.0),
+        "moving: a velocity"
+    );
+
+    model.flex_rigid[0] = true;
+    data.forward(&model).expect("forward");
+    assert!(
+        data.flexedge_J.iter().all(|&j| j == 0.0),
+        "{:?}",
+        data.flexedge_J
+    );
+    assert!(
+        data.flexedge_velocity.iter().all(|&v| v == 0.0),
+        "{:?}",
+        data.flexedge_velocity
+    );
+    assert!(
+        data.qfrc_spring.iter().all(|&f| f == 0.0),
+        "{:?}",
+        data.qfrc_spring
+    );
+}
+
+/// A 3 × 3 cloth (mass 0.1, radius 0.01) 5 mm into a plane on a static
+/// body, equality constraints off (sim-mjcf's edge equality, Rigid-loading
+/// L31, and MuJoCo's flexcomp has none): MuJoCo 3.5.0's flexcomp, its
+/// vertices and elements as MuJoCo compiles them
+/// (`scripts/gen_flex_contact_weight_reference.py`).
+const CLOTH_ON_A_STATIC_FLOOR: &str = r#"<mujoco>
+  <option gravity="0 0 0"><flag equality="disable"/></option>
+  <worldbody>
+    <body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/></body>
+  </worldbody>
+  <deformable>
+    <flex name="A" dim="2" radius="0.01" mass="0.1">
+      <contact selfcollide="none" internal="false"/>
+      <vertex pos="-0.05 -0.05 0.005  -0.05 0 0.005  -0.05 0.05 0.005  0 -0.05 0.005  0 0 0.005
+                   0 0.05 0.005  0.05 -0.05 0.005  0.05 0 0.005  0.05 0.05 0.005"/>
+      <element data="0 3 4  0 4 1  1 4 5  1 5 2  3 6 7  3 7 4  4 7 8  4 8 5"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+
+/// A contact row's R takes each side's body weight, as MuJoCo's
+/// `mj_diagApprox` (`engine_core_constraint.c:1201-1285`): for a flex
+/// vertex against a plane, the plane's body and the vertex's body. The
+/// cloth of [`CLOTH_ON_A_STATIC_FLOOR`] makes MuJoCo's 9 contacts, each
+/// vertex on the plane, and every one of its 36 rows takes MuJoCo's R, bit
+/// for bit (`gen_flex_contact_weight_reference.py`).
+#[test]
+fn a_flex_vertex_contact_s_rows_take_the_vertex_and_geom_bodies_weights_as_mujoco() {
+    let model = load_model(CLOTH_ON_A_STATIC_FLOOR).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!(data.ncon, 9);
+    assert_eq!(data.efc_R.len(), 36);
+    for (row, r) in data.efc_R.iter().enumerate() {
+        assert_eq!(
+            r.to_bits(),
+            18.947_368_421_052_648_f64.to_bits(),
+            "row {row}: R {r}, MuJoCo 18.947368421052648"
+        );
+    }
+}
+
+/// [`sim_core::Data::contacts_between_bodies`] counts a contact by its two
+/// sides' bodies, a flex vertex's own body on its side: on
+/// [`CLOTH_ON_A_STATIC_FLOOR`], each vertex body meets the floor's body
+/// once.
+#[test]
+fn contacts_between_bodies_count_a_flex_vertex_by_its_body() {
+    let model = load_model(CLOTH_ON_A_STATIC_FLOOR).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let ground = model.geom_body[0];
+    for v in 0..model.nflexvert {
+        let body = model.flexvert_bodyid[v];
+        assert_eq!(
+            data.contacts_between_bodies(&model, ground, body),
+            1,
+            "vertex {v}"
+        );
+    }
+    assert_eq!(data.contacts_between_bodies(&model, ground, ground), 0);
 }

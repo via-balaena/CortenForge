@@ -128,7 +128,9 @@ fn check_3_contact_exclusions() -> (u32, u32) {
 
     let mut adjacent_contact = false;
     for contact in data.contacts.iter().take(data.ncon) {
-        let (b1, b2) = contact.bodies(&model);
+        let [b1, b2] = contact
+            .bodies(&model)
+            .map(|b| b.expect("a rigid scene: every side a geom's body"));
         let key = (b1.min(b2), b1.max(b2));
         if model.contact_excludes.contains(&key) {
             adjacent_contact = true;

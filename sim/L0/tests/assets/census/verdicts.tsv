@@ -1130,6 +1130,7 @@ af31582a6b281881	agree
 af3775ea5c5c922b	agree
 af4fc784f0351e05	agree
 af7a950254e769f6	agree
+b00bcab73ba86b4a	mj-refuses
 b00ef1f1371d9dc2	agree
 b035b93400e2c75c	agree
 b053b534e0fec8fb	agree
@@ -1353,6 +1354,7 @@ cf224c2bddf9deb3	agree
 cf64ed75113fb614	ours-refused	known=A4-partial-array
 cf852ccea721f4d2	model:geom_quat;dyn:agree
 cfb0d6446376494e	mj-refuses
+d05cc553ff6edf89	mj-refuses
 d0faee34da88b6d9	agree
 d106e445de38b4a3	mj-refuses
 d10da4fab847e3b9	agree
@@ -1495,6 +1497,7 @@ e6a8fc5ad5bb52c4	agree
 e6cc4b19185315a2	agree
 e6ea68ac5717d086	agree
 e760971781c2d0e5	agree
+e7684905da766c66	mj-refuses
 e7d0591875da22c7	agree
 e7e340ec20f0087f	agree
 e7f2491c0d2b5138	model:geom_quat;dyn:agree
@@ -1515,6 +1518,7 @@ ea7cabfe6f37ff3a	agree
 eaa3b013038670d3	both-refuse
 eaace9f862fcf7b9	agree
 eadd4233a43d4364	agree
+eaf578995f7ffed8	mj-refuses
 eafc140cc3510526	e1:s1:qfrc_passive
 eb1d0b9c311aa887	agree
 eb2727bab776c397	agree

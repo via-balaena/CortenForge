@@ -500,9 +500,11 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
             let (ci, adr) = (data.efc_id[row], row);
             row += nrows;
             let contact = &data.contacts[ci];
-            if contact.flex_vertex.is_some() || contact.flex_vertex2.is_some() {
+            // A contact with a flex side adds to no body
+            // (`engine_core_smooth.c:2530-2533`).
+            let Some((geom1, geom2)) = contact.geoms() else {
                 continue;
-            }
+            };
             let lfrc = contact_force(
                 &data.efc_force.as_slice()[adr..adr + nrows],
                 &contact.mu,
@@ -520,7 +522,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
             let (torque, force) = (to_world(&lfrc[3..6]), to_world(&lfrc[0..3]));
             let cfrc = SpatialVector::new(torque.x, torque.y, torque.z, force.x, force.y, force.z);
             let pos = contact.pos;
-            let (body1, body2) = contact.bodies(model);
+            let (body1, body2) = (model.geom_body[geom1], model.geom_body[geom2]);
             for (body, add) in [(body1, false), (body2, true)] {
                 if body == 0 {
                     continue;

@@ -687,8 +687,8 @@ fn ac14_two_body_contact() {
     let left_body_id = model.actuator_trnid[0][0];
     let mut has_body_body_contact = false;
     for c in 0..data.ncon {
-        let b1 = model.geom_body[data.contacts[c].geom1];
-        let b2 = model.geom_body[data.contacts[c].geom2];
+        let b1 = model.geom_body[data.contacts[c].geom[0].unwrap()];
+        let b2 = model.geom_body[data.contacts[c].geom[1].unwrap()];
         // A contact between two non-world bodies
         if (b1 == left_body_id && b2 != 0) || (b2 == left_body_id && b1 != 0) {
             has_body_body_contact = true;

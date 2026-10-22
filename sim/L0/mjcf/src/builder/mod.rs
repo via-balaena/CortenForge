@@ -721,6 +721,7 @@ pub struct ModelBuilder {
     pub(crate) flex_condim: Vec<i32>,
     pub(crate) flex_margin: Vec<f64>,
     pub(crate) flex_gap: Vec<f64>,
+    pub(crate) flex_radius: Vec<f64>,
     pub(crate) flex_priority: Vec<i32>,
     pub(crate) flex_solmix: Vec<f64>,
     pub(crate) flex_solref: Vec<[f64; 2]>,
@@ -1374,6 +1375,9 @@ mod tests {
         assert!(!model.flex_passive[0], "passive should be false");
     }
 
+    /// A flex's contact defaults are MuJoCo 3.5.0's (`mjs_defaultFlex`,
+    /// `user/user_init.c:211-232`): no internal collision, one active layer,
+    /// no vertex collision, not passive.
     #[test]
     fn test_flex_contact_runtime_attrs_defaults() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1402,12 +1406,12 @@ mod tests {
         let model =
             load_model_from_file(&mjcf_path).expect("should load flex contact with defaults");
         assert_eq!(model.nflex, 1);
-        assert!(model.flex_internal[0], "internal default should be true");
-        assert_eq!(model.flex_activelayers[0], 0);
+        assert!(!model.flex_internal[0], "internal default should be false");
+        assert_eq!(model.flex_activelayers[0], 1);
         assert!(
             !model.flex_vertcollide[0],
             "vertcollide default should be false"
         );
-        assert!(model.flex_passive[0], "passive default should be true");
+        assert!(!model.flex_passive[0], "passive default should be false");
     }
 }

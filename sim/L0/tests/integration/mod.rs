@@ -238,6 +238,10 @@ pub mod sparse_rows_parity;
 /// edge, R from `flexedge_invweight0` and the diagonal approximation from R.
 pub mod flex_equality_rows;
 
+/// A flex's radius, element layers, element–vertex pairs and hierarchy, and
+/// its element and node boxes each step, against MuJoCo 3.5.0's.
+pub mod flex_data_parity;
+
 /// Newton and CG against MuJoCo 3.5.0's primal solver: bit for bit given its
 /// inputs, and through the pipeline.
 pub mod primal_solver_parity;
@@ -259,6 +263,7 @@ pub mod com_frame_parity;
 // Flex Solver Unification Tests (§6b)
 // ============================================================================
 
+pub mod flex_rigid_parity;
 /// Flex unification acceptance tests: AC1–AC15 from future_work_6b_precursor_to_7.
 pub mod flex_unified;
 

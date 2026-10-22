@@ -469,14 +469,14 @@ pub fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
     }
     let mut woke = false;
     for c in 0..data.ncon {
-        let contact = &data.contacts[c];
-        if contact.flex_vertex.is_some() || contact.flex_vertex2.is_some() {
+        // A contact with a flex side wakes nothing (`engine_sleep.c:290-293`).
+        let Some((geom1, geom2)) = data.contacts[c].geoms() else {
             continue;
-        }
+        };
         let tree_of = |geom: usize| {
             Some(model.body_treeid[model.geom_body[geom]]).filter(|&t| t < model.ntree)
         };
-        let (Some(tree1), Some(tree2)) = (tree_of(contact.geom1), tree_of(contact.geom2)) else {
+        let (Some(tree1), Some(tree2)) = (tree_of(geom1), tree_of(geom2)) else {
             continue;
         };
         let (awake1, awake2) = (data.tree_awake[tree1], data.tree_awake[tree2]);

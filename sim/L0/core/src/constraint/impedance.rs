@@ -9,7 +9,7 @@ use nalgebra::{DVector, Vector3};
 
 use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
-use crate::types::{ConstraintType, Data, Model};
+use crate::types::{Data, Model};
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
 ///
@@ -259,175 +259,37 @@ pub fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: 
     result.max(MJ_MINVAL)
 }
 
-/// Compute body-weight diagonal approximation for a constraint row (DT-39).
-///
-/// MuJoCo ref: `mj_diagApprox()` in `engine_core_constraint.c`.
-/// Returns an O(1) approximation of `diag(J · M⁻¹ · J^T)` using precomputed
-/// `body_invweight0` / `dof_invweight0` / `tendon_invweight0` instead of
-/// solving `M · w = J^T` (which is O(nv)).
-///
-/// The approximation depends on constraint type:
-/// - DOF friction / Joint limits: `dof_invweight0[dof_id]`
-/// - Tendon friction / Tendon limits: `tendon_invweight0[tendon_id]`
-/// - Equality Connect: `body_invweight0[b1][0] + body_invweight0[b2][0]`
-/// - Equality Weld: row 0-2 → translational, row 3-5 → rotational
-/// - Contact: normal → translational, friction → rotational body weights
-///
-/// Returns the approximate diagonal value, clamped to `MJ_MINVAL`.
+/// Body-weight diagonal approximation for row `row_offset` of equality
+/// constraint `id` (DT-39; MuJoCo ref: `mj_diagApprox()` in
+/// `engine_core_constraint.c`): an O(1) approximation of
+/// `diag(J · M⁻¹ · J^T)` from the precomputed inverse weights, instead of
+/// solving `M · w = J^T` (which is O(nv)). Clamped to `MJ_MINVAL`.
 #[inline]
-pub fn compute_diag_approx_bodyweight(
-    model: &Model,
-    data: &Data,
-    ctype: ConstraintType,
-    id: usize,
-    row_offset: usize,
-) -> f64 {
-    match ctype {
-        // Friction loss: `id` is the dof, or the tendon.
-        ConstraintType::FrictionDof => model
-            .dof_invweight0
-            .get(id)
-            .map_or(MJ_MINVAL, |w| w.max(MJ_MINVAL)),
-        ConstraintType::FrictionTendon => model
-            .tendon_invweight0
-            .get(id)
-            .map_or(MJ_MINVAL, |w| w.max(MJ_MINVAL)),
-        // Joint limits: look up DOF from joint
-        ConstraintType::LimitJoint => {
-            if id < model.njnt {
-                let dof_adr = model.jnt_dof_adr[id];
-                if dof_adr < model.dof_invweight0.len() {
-                    model.dof_invweight0[dof_adr].max(MJ_MINVAL)
+pub fn compute_diag_approx_bodyweight(model: &Model, id: usize, row_offset: usize) -> f64 {
+    if id < model.neq {
+        use crate::types::EqualityType;
+        match model.eq_type[id] {
+            EqualityType::Connect => {
+                // 3 translational rows: sum of translational invweights
+                let b1 = model.eq_obj1id[id];
+                let b2 = model.eq_obj2id[id];
+                let w1 = if b1 < model.body_invweight0.len() {
+                    model.body_invweight0[b1][0]
                 } else {
-                    MJ_MINVAL
-                }
-            } else {
-                MJ_MINVAL
+                    0.0
+                };
+                let w2 = if b2 < model.body_invweight0.len() {
+                    model.body_invweight0[b2][0]
+                } else {
+                    0.0
+                };
+                (w1 + w2).max(MJ_MINVAL)
             }
-        }
-        // Tendon limits: indexed by tendon id
-        ConstraintType::LimitTendon => {
-            if id < model.tendon_invweight0.len() {
-                model.tendon_invweight0[id].max(MJ_MINVAL)
-            } else {
-                MJ_MINVAL
-            }
-        }
-        // Equality constraints: depends on type and row offset
-        ConstraintType::Equality => {
-            if id < model.neq {
-                use crate::types::EqualityType;
-                match model.eq_type[id] {
-                    EqualityType::Connect => {
-                        // 3 translational rows: sum of translational invweights
-                        let b1 = model.eq_obj1id[id];
-                        let b2 = model.eq_obj2id[id];
-                        let w1 = if b1 < model.body_invweight0.len() {
-                            model.body_invweight0[b1][0]
-                        } else {
-                            0.0
-                        };
-                        let w2 = if b2 < model.body_invweight0.len() {
-                            model.body_invweight0[b2][0]
-                        } else {
-                            0.0
-                        };
-                        (w1 + w2).max(MJ_MINVAL)
-                    }
-                    EqualityType::Weld => {
-                        // 6 rows: 0-2 → translational, 3-5 → rotational
-                        let b1 = model.eq_obj1id[id];
-                        let b2 = model.eq_obj2id[id];
-                        let comp = usize::from(row_offset >= 3);
-                        let w1 = if b1 < model.body_invweight0.len() {
-                            model.body_invweight0[b1][comp]
-                        } else {
-                            0.0
-                        };
-                        let w2 = if b2 < model.body_invweight0.len() {
-                            model.body_invweight0[b2][comp]
-                        } else {
-                            0.0
-                        };
-                        (w1 + w2).max(MJ_MINVAL)
-                    }
-                    EqualityType::Joint => {
-                        // MuJoCo: dof_invweight0[dof1] + dof_invweight0[dof2]
-                        let jnt1 = model.eq_obj1id[id];
-                        let jnt2 = model.eq_obj2id[id];
-                        let w1 = if jnt1 < model.njnt {
-                            let dof = model.jnt_dof_adr[jnt1];
-                            if dof < model.dof_invweight0.len() {
-                                model.dof_invweight0[dof]
-                            } else {
-                                0.0
-                            }
-                        } else {
-                            0.0
-                        };
-                        let w2 = if jnt2 < model.njnt {
-                            let dof = model.jnt_dof_adr[jnt2];
-                            if dof < model.dof_invweight0.len() {
-                                model.dof_invweight0[dof]
-                            } else {
-                                0.0
-                            }
-                        } else {
-                            0.0
-                        };
-                        (w1 + w2).max(MJ_MINVAL)
-                    }
-                    EqualityType::Tendon => {
-                        let tid = model.eq_obj1id[id];
-                        if tid < model.tendon_invweight0.len() {
-                            model.tendon_invweight0[tid].max(MJ_MINVAL)
-                        } else {
-                            MJ_MINVAL
-                        }
-                    }
-                    // Not reached: a flex row's diagonal approximation is its
-                    // edge's `flexedge_invweight0`, which
-                    // `assemble_flex_equality_rows` passes itself.
-                    EqualityType::Flex => MJ_MINVAL,
-                    EqualityType::Distance => {
-                        let g1 = model.eq_obj1id[id];
-                        let g2 = model.eq_obj2id[id];
-                        let b1 = if g1 < model.geom_body.len() {
-                            model.geom_body[g1]
-                        } else {
-                            0
-                        };
-                        let b2 = if g2 < model.geom_body.len() {
-                            model.geom_body[g2]
-                        } else {
-                            0
-                        };
-                        let w1 = if b1 < model.body_invweight0.len() {
-                            model.body_invweight0[b1][0]
-                        } else {
-                            0.0
-                        };
-                        let w2 = if b2 < model.body_invweight0.len() {
-                            model.body_invweight0[b2][0]
-                        } else {
-                            0.0
-                        };
-                        (w1 + w2).max(MJ_MINVAL)
-                    }
-                }
-            } else {
-                MJ_MINVAL
-            }
-        }
-        // Contact rows: normal → translational, friction → rotational
-        ConstraintType::ContactFrictionless
-        | ConstraintType::ContactPyramidal
-        | ConstraintType::ContactElliptic => {
-            if id < data.contacts.len() {
-                let contact = &data.contacts[id];
-                let (b1, b2) = contact.bodies(model);
-                // row_offset 0 = normal (translational), others = friction (rotational)
-                let comp = usize::from(row_offset != 0);
+            EqualityType::Weld => {
+                // 6 rows: 0-2 → translational, 3-5 → rotational
+                let b1 = model.eq_obj1id[id];
+                let b2 = model.eq_obj2id[id];
+                let comp = usize::from(row_offset >= 3);
                 let w1 = if b1 < model.body_invweight0.len() {
                     model.body_invweight0[b1][comp]
                 } else {
@@ -439,10 +301,73 @@ pub fn compute_diag_approx_bodyweight(
                     0.0
                 };
                 (w1 + w2).max(MJ_MINVAL)
-            } else {
-                MJ_MINVAL
+            }
+            EqualityType::Joint => {
+                // MuJoCo: dof_invweight0[dof1] + dof_invweight0[dof2]
+                let jnt1 = model.eq_obj1id[id];
+                let jnt2 = model.eq_obj2id[id];
+                let w1 = if jnt1 < model.njnt {
+                    let dof = model.jnt_dof_adr[jnt1];
+                    if dof < model.dof_invweight0.len() {
+                        model.dof_invweight0[dof]
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+                let w2 = if jnt2 < model.njnt {
+                    let dof = model.jnt_dof_adr[jnt2];
+                    if dof < model.dof_invweight0.len() {
+                        model.dof_invweight0[dof]
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+                (w1 + w2).max(MJ_MINVAL)
+            }
+            EqualityType::Tendon => {
+                let tid = model.eq_obj1id[id];
+                if tid < model.tendon_invweight0.len() {
+                    model.tendon_invweight0[tid].max(MJ_MINVAL)
+                } else {
+                    MJ_MINVAL
+                }
+            }
+            // Not reached: a flex row's diagonal approximation is its
+            // edge's `flexedge_invweight0`, which
+            // `assemble_flex_equality_rows` passes itself.
+            EqualityType::Flex => MJ_MINVAL,
+            EqualityType::Distance => {
+                let g1 = model.eq_obj1id[id];
+                let g2 = model.eq_obj2id[id];
+                let b1 = if g1 < model.geom_body.len() {
+                    model.geom_body[g1]
+                } else {
+                    0
+                };
+                let b2 = if g2 < model.geom_body.len() {
+                    model.geom_body[g2]
+                } else {
+                    0
+                };
+                let w1 = if b1 < model.body_invweight0.len() {
+                    model.body_invweight0[b1][0]
+                } else {
+                    0.0
+                };
+                let w2 = if b2 < model.body_invweight0.len() {
+                    model.body_invweight0[b2][0]
+                } else {
+                    0.0
+                };
+                (w1 + w2).max(MJ_MINVAL)
             }
         }
+    } else {
+        MJ_MINVAL
     }
 }
 

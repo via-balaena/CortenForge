@@ -173,11 +173,7 @@ fn contact_with_a_static_body_has_an_island() {
     let island = data.tree_island[model.body_treeid[2]];
     assert!(island >= 0, "the box's tree is in an island");
     for (i, c) in data.contacts.iter().enumerate() {
-        assert_eq!(
-            data.contact_island[i], island,
-            "contact {i} ({} – {})",
-            c.geom1, c.geom2
-        );
+        assert_eq!(data.contact_island[i], island, "contact {i} ({:?})", c.geom);
     }
 }
 

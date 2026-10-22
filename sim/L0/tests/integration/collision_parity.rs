@@ -34,9 +34,9 @@ fn matching<'a>(data: &'a Data, want: &Value) -> (&'a Contact, f64) {
     let c = data
         .contacts
         .iter()
-        .find(|c| (c.geom1, c.geom2) == (g1, g2) || (c.geom1, c.geom2) == (g2, g1))
+        .find(|c| c.geom == [Some(g1), Some(g2)] || c.geom == [Some(g2), Some(g1)])
         .unwrap_or_else(|| panic!("no contact between geoms {g1} and {g2}"));
-    (c, if c.geom1 == g1 { 1.0 } else { -1.0 })
+    (c, if c.geom[0] == Some(g1) { 1.0 } else { -1.0 })
 }
 
 /// A body resting on a slab whose top face is at z = 0 (a box, or a convex
@@ -151,7 +151,11 @@ fn lists_as_mujoco(name: &str, tol: f64) {
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
     let want = case["contacts"].as_array().expect("contacts");
-    let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+    let ours: Vec<[usize; 2]> = data
+        .contacts
+        .iter()
+        .map(|c| c.geom.map(Option::unwrap))
+        .collect();
     let theirs: Vec<[usize; 2]> = want
         .iter()
         .map(|w| {
@@ -250,9 +254,10 @@ fn flex_lists_as_mujoco(name: &str, bodies: &str) {
     assert_eq!(data.ncon, want.len(), "{name}: contacts");
     for (k, (c, w)) in data.contacts.iter().zip(want).enumerate() {
         let (geom, vert) = (floats(&w["geom"]), floats(&w["vert"]));
-        let ours = match c.flex_vertex {
-            Some(v) => format!("plane {} – vertex {v}", c.geom1),
-            None => format!("geoms ({}, {})", c.geom1, c.geom2),
+        let our_geom = c.geom.map(|g| g.map_or(-1, |g| g as i64));
+        let ours = match c.vert[1] {
+            Some(v) => format!("plane {} – vertex {v}", our_geom[0]),
+            None => format!("geoms ({}, {})", our_geom[0], our_geom[1]),
         };
         let theirs = if vert[1] >= 0.0 {
             format!("plane {} – vertex {}", geom[0], vert[1])
@@ -318,7 +323,7 @@ fn frames_as_mujoco(name: &str, tol: f64) {
         let geom = floats(&w["geom"]);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let listed = (geom[0] as usize, geom[1] as usize);
-        assert_eq!((c.geom1, c.geom2), listed, "{name}: contact {k} geoms");
+        assert_eq!(c.geoms(), Some(listed), "{name}: contact {k} geoms");
         let frame = floats(&w["frame"]);
         for (part, ours) in [c.normal, c.frame[0], c.frame[1]].iter().enumerate() {
             for i in 0..3 {
@@ -633,7 +638,11 @@ fn a_mesh_apex_on_a_plane_is_listed_as_mujoco() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
     let want = case["contacts"].as_array().expect("contacts");
-    let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+    let ours: Vec<[usize; 2]> = data
+        .contacts
+        .iter()
+        .map(|c| c.geom.map(Option::unwrap))
+        .collect();
     let theirs: Vec<[usize; 2]> = want
         .iter()
         .map(|w| {
@@ -697,7 +706,11 @@ fn plane_mesh_contacts_are_spaced_as_mujoco() {
             let g = floats(&w["geom"]);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let theirs = [g[0] as usize, g[1] as usize];
-            assert_eq!([c.geom1, c.geom2], theirs, "{name} contact {k}: geoms");
+            assert_eq!(
+                c.geom.map(Option::unwrap),
+                theirs,
+                "{name} contact {k}: geoms"
+            );
             let dist = w["dist"].as_f64().expect("dist");
             assert!(
                 (-c.depth - dist).abs() <= 1e-13,
@@ -1075,7 +1088,11 @@ fn contact_filter_calls_are_mujocos_with_and_without_the_midphase() {
                 "{name} {key}: the filter's calls"
             );
             let contacts = want["contacts"].as_array().expect("contacts");
-            let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+            let ours: Vec<[usize; 2]> = data
+                .contacts
+                .iter()
+                .map(|c| c.geom.map(Option::unwrap))
+                .collect();
             let listed: Vec<[usize; 2]> = contacts
                 .iter()
                 .map(|w| {
@@ -1136,7 +1153,11 @@ fn bodies_without_hierarchies_collide_every_pair() {
             [g[0], g[1]]
         })
         .collect();
-    let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+    let ours: Vec<[usize; 2]> = data
+        .contacts
+        .iter()
+        .map(|c| c.geom.map(Option::unwrap))
+        .collect();
     assert_eq!(ours, listed, "contact geoms in order");
 }
 
@@ -1156,7 +1177,7 @@ fn the_contact_filter_replaces_the_bitmask_as_mujocos() {
     let contacts_of = |data: &Data| -> Vec<([usize; 2], f64)> {
         data.contacts
             .iter()
-            .map(|c| ([c.geom1, c.geom2], -c.depth))
+            .map(|c| (c.geom.map(Option::unwrap), -c.depth))
             .collect()
     };
     let theirs_of = |v: &Value| -> Vec<([usize; 2], f64)> {
@@ -1226,7 +1247,11 @@ fn contacts_as_mujoco(name: &str, model: &Model, qpos: &[f64], want: &Value) {
     data.qpos.as_mut_slice().copy_from_slice(qpos);
     data.forward(model).expect("forward");
     let want = want.as_array().expect("contacts");
-    let ours: Vec<[usize; 2]> = data.contacts.iter().map(|c| [c.geom1, c.geom2]).collect();
+    let ours: Vec<[usize; 2]> = data
+        .contacts
+        .iter()
+        .map(|c| c.geom.map(Option::unwrap))
+        .collect();
     let theirs: Vec<[usize; 2]> = want
         .iter()
         .map(|w| {

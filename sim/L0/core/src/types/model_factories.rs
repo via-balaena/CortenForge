@@ -477,8 +477,10 @@ impl Model {
         if self.body_geom_num[0] == 1 {
             self.body_geom_adr[0] = geom_id;
         }
-        // The world's hierarchy, and margin, now hold the plane.
+        // The world's hierarchy, and margin, now hold the plane; the flexes'
+        // hierarchies follow the bodies' nodes again.
         self.compute_body_bvhs();
+        self.compute_flex_bvhs();
     }
 }
 

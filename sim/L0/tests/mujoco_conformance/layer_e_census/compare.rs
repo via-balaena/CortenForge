@@ -517,22 +517,13 @@ const PIPELINE_ORDER: &[&str] = &[
 /// it first; and whether sorting swapped them, and whether one is a flex vertex.
 type PairKey = Vec<(char, i64)>;
 
-fn pair_key(c: &[Value], ours: bool) -> (PairKey, bool, bool) {
+/// Both lists hold each side's geom, then each side's flex vertex (-1 where
+/// a side has none), MuJoCo's golden's layout.
+fn pair_key(c: &[Value]) -> (PairKey, bool, bool) {
     let at = |i: usize| c.get(i).and_then(Value::as_i64).unwrap_or(-1);
     let (g1, g2, v1, v2) = (at(0), at(1), at(2), at(3));
-    let objects = if ours {
-        // Ours names a flex vertex in place of a geom.
-        if v1 >= 0 && v2 >= 0 {
-            vec![('v', v1), ('v', v2)]
-        } else if v1 >= 0 {
-            vec![('v', v1), ('g', g1)]
-        } else {
-            vec![('g', g1), ('g', g2)]
-        }
-    } else {
-        let side = |g: i64, v: i64| if g >= 0 { ('g', g) } else { ('v', v) };
-        vec![side(g1, v1), side(g2, v2)]
-    };
+    let side = |g: i64, v: i64| if g >= 0 { ('g', g) } else { ('v', v) };
+    let objects = vec![side(g1, v1), side(g2, v2)];
     let mut key = objects.clone();
     key.sort_unstable();
     let swapped = key != objects;
@@ -552,10 +543,10 @@ fn max_abs_diff(a: [f64; 3], b: [f64; 3], sign: f64) -> f64 {
 
 type Grouped<'a> = BTreeMap<PairKey, Vec<(&'a [Value], bool, bool)>>;
 
-fn group<'a>(contacts: &[&'a [Value]], ours: bool) -> Grouped<'a> {
+fn group<'a>(contacts: &[&'a [Value]]) -> Grouped<'a> {
     let mut g: Grouped<'a> = BTreeMap::new();
     for c in contacts {
-        let (key, swapped, flex) = pair_key(c, ours);
+        let (key, swapped, flex) = pair_key(c);
         g.entry(key).or_default().push((c, swapped, flex));
     }
     g
@@ -566,7 +557,7 @@ fn group<'a>(contacts: &[&'a [Value]], ours: bool) -> Grouped<'a> {
 /// compared after undoing a swap (and up to sign against a flex vertex); a
 /// tangent up to sign.
 fn contact_diffs(ours: &[&[Value]], mj: &[&[Value]], out: &mut Vec<(&'static str, f64)>) {
-    let (go, gm) = (group(ours, true), group(mj, false));
+    let (go, gm) = (group(ours), group(mj));
     let counts = |g: &Grouped<'_>| {
         g.iter()
             .map(|(k, v)| (k.clone(), v.len()))

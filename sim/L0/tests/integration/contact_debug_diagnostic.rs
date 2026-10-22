@@ -52,8 +52,8 @@ fn contact_debug_multi_body_diagnostic() {
             println!("contacts: {}", data.ncon);
             for c in &data.contacts {
                 println!(
-                    "  contact: geom{}↔geom{} normal=[{:.3},{:.3},{:.3}] depth={:.6}",
-                    c.geom1, c.geom2, c.normal.x, c.normal.y, c.normal.z, c.depth
+                    "  contact: geom {:?} normal=[{:.3},{:.3},{:.3}] depth={:.6}",
+                    c.geom, c.normal.x, c.normal.y, c.normal.z, c.depth
                 );
             }
             for b in 1..model.nbody {

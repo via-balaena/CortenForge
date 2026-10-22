@@ -11,11 +11,13 @@
 mod broadphase;
 pub(crate) mod flex_collide;
 pub(crate) mod flex_narrow;
+mod flex_rigid;
 pub(crate) mod flex_self;
 pub(crate) mod hfield;
 mod midphase;
 mod mj_ccd;
 mod mj_primitive;
+mod mj_triangle;
 pub(crate) mod narrow;
 mod order;
 pub(crate) mod pair_convex;
@@ -37,22 +39,18 @@ pub(crate) fn finite_rotation(
         .then(|| nalgebra::UnitQuaternion::from_matrix(mat))
 }
 
-// Note: collide_geoms, geom_to_shape, make_contact_flex_rigid, and
-// narrowphase_sphere_geom are accessed internally via self::narrow::,
-// self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
-// module. No pub(crate) re-export needed.
-
 use crate::types::{
     Contact, DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, DISABLE_MIDPHASE, Data,
     ENABLE_OVERRIDE, ENABLE_SLEEP, GeomType, Model, SleepState, disabled, enabled,
 };
 
-use self::broadphase::{BodyGeoms, body_pairs, filter_sphere};
+use self::broadphase::{BodyGeoms, bodyflex_pairs, filter_sphere};
+use self::flex_rigid::collide_body_flex;
 use self::hfield::collide_hfield_multi;
 use self::midphase::collide_tree;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
 use self::order::{ListPlace, Lister, flex_place, pair_place, type_ordered};
-use self::pairs::{mj_collide_flex_flex, mj_collision_flex, mj_collision_flex_self};
+use self::pairs::{mj_collide_flex_flex, mj_collision_flex_self};
 
 // ============================================================================
 // Collision affinity filtering
@@ -213,62 +211,54 @@ pub(crate) fn contact_param(
     (condim, gap, solref, solimp, fri)
 }
 
-/// Contact parameter combination for flex-rigid collision pairs.
-///
-/// Mirrors `contact_param()` for geom-geom pairs, but reads `flex_*` fields
-/// for the flex entity and `geom_*` fields for the rigid entity. Follows
-/// MuJoCo's `mj_contactParam()` with f1=flex_id, f2=-1 (geom).
-pub(crate) fn contact_param_flex_rigid(
+/// `mj_contactParam(g, -1, -1, f)` (`engine_collision_driver.c:1305-1398`):
+/// geom `geom`'s and flex `flex`'s contact parameters combined, the geom's
+/// first as MuJoCo's driver passes them: the higher priority's alone, else
+/// the larger condim, solref and solimp mixed by their solmix (solref's
+/// direct form the smaller), the larger friction of each kind; their gaps
+/// added. Returns (condim, gap, solref, solimp, friction\[5\]).
+pub(crate) fn contact_param_geom_flex(
     model: &Model,
-    flex_id: usize,
-    geom_idx: usize,
+    geom: usize,
+    flex: usize,
 ) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
-    let priority_flex = model.flex_priority[flex_id];
-    let priority_geom = model.geom_priority[geom_idx];
-    let gap = model.flex_gap[flex_id] + model.geom_gap[geom_idx];
+    let priority_geom = model.geom_priority[geom];
+    let priority_flex = model.flex_priority[flex];
+    let gap = model.geom_gap[geom] + model.flex_gap[flex];
 
-    if priority_flex > priority_geom {
-        let f = model.flex_friction[flex_id];
+    if priority_geom > priority_flex {
+        let f = model.geom_friction[geom];
         return (
-            model.flex_condim[flex_id],
+            model.geom_condim[geom],
             gap,
-            model.flex_solref[flex_id],
-            model.flex_solimp[flex_id],
-            [f.x, f.x, f.y, f.z, f.z], // tangential, tangential, torsional, rolling, rolling
+            model.geom_solref[geom],
+            model.geom_solimp[geom],
+            [f.x, f.x, f.y, f.z, f.z],
         );
     }
-    if priority_geom > priority_flex {
-        let f = model.geom_friction[geom_idx];
+    if priority_flex > priority_geom {
+        let f = model.flex_friction[flex];
         return (
-            model.geom_condim[geom_idx],
+            model.flex_condim[flex],
             gap,
-            model.geom_solref[geom_idx],
-            model.geom_solimp[geom_idx],
+            model.flex_solref[flex],
+            model.flex_solimp[flex],
             [f.x, f.x, f.y, f.z, f.z],
         );
     }
 
-    // Equal priority — combine
-    let condim = model.flex_condim[flex_id].max(model.geom_condim[geom_idx]);
-
-    let s1 = model.flex_solmix[flex_id];
-    let s2 = model.geom_solmix[geom_idx];
-    let mix = solmix_weight(s1, s2);
-
-    let solref = combine_solref(model.flex_solref[flex_id], model.geom_solref[geom_idx], mix);
-    let solimp = combine_solimp(model.flex_solimp[flex_id], model.geom_solimp[geom_idx], mix);
-
-    // Friction: element-wise max per component
-    let ff = model.flex_friction[flex_id];
-    let gf = model.geom_friction[geom_idx];
+    let condim = model.geom_condim[geom].max(model.flex_condim[flex]);
+    let mix = solmix_weight(model.geom_solmix[geom], model.flex_solmix[flex]);
+    let solref = combine_solref(model.geom_solref[geom], model.flex_solref[flex], mix);
+    let solimp = combine_solimp(model.geom_solimp[geom], model.flex_solimp[flex], mix);
+    let (gf, ff) = (model.geom_friction[geom], model.flex_friction[flex]);
     let fri = [
-        ff.x.max(gf.x),
-        ff.x.max(gf.x), // tangential1, tangential2
-        ff.y.max(gf.y), // torsional
-        ff.z.max(gf.z),
-        ff.z.max(gf.z), // rolling1, rolling2
+        gf.x.max(ff.x),
+        gf.x.max(ff.x),
+        gf.y.max(ff.y),
+        gf.z.max(ff.z),
+        gf.z.max(ff.z),
     ];
-
     (condim, gap, solref, solimp, fri)
 }
 
@@ -462,14 +452,16 @@ pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
 /// Collision detection: populate contacts from geometry pairs.
 ///
 /// Following `MuJoCo`'s `mj_collision` (`engine_collision_driver.c:264-482`):
-/// 1. Broadphase: the pairs of bodies MuJoCo's `mj_broadphase` passes
-///    (`broadphase`); within a pair, the geom pairs MuJoCo's midphase
-///    passes (`midphase`), or each pair's geoms in turn
+/// 1. Broadphase: the pairs of bodies and flexes MuJoCo's `mj_broadphase`
+///    passes (`broadphase`); within a pair of bodies, the geom pairs
+///    MuJoCo's midphase passes (`midphase`), or each pair's geoms in turn;
+///    a body and a flex, their geoms and elements (`flex_rigid`)
 /// 2. The geom pair's filters: exclusions, explicit pairs, weld groups,
 ///    then the user's filter where one is set and the contype/conaffinity
 ///    bitmask where none is, then the bounding spheres
 /// 3. Narrow-phase: analytical or GJK/EPA collision detection
-/// 4. The explicit pairs, the flexes, and the list in MuJoCo's order (`order`)
+/// 4. The explicit pairs, the flexes' own passes, and the list in MuJoCo's
+///    order (`order`)
 ///
 /// This function is called after forward kinematics (`mj_fwd_position`) so
 /// `geom_xpos` and `geom_xmat` are up-to-date.
@@ -477,7 +469,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // Unconditional reset (S4.1 — matches MuJoCo's mj_collision).
     data.contacts.clear();
     data.ncon = 0;
-    // Each rigid contact's place in MuJoCo's list, as it is made.
+    // Each contact's place in MuJoCo's list.
     let mut places: Vec<ListPlace> = Vec::new();
 
     // S4.1: Skip collision detection when contacts or constraints are disabled.
@@ -486,114 +478,125 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         return;
     }
 
-    // Rigid-rigid collision requires at least 2 geoms for a pair.
-    // Even with 0 or 1 geoms, flex-vertex-vs-rigid contacts are still possible.
-    if model.ngeom >= 2 {
-        let sleep_enabled = enabled(model, ENABLE_SLEEP);
-        let lister = Lister::new(model);
+    let sleep_enabled = enabled(model, ENABLE_SLEEP);
+    let lister = Lister::new(model);
 
-        // MuJoCo's broadphase (`broadphase`): pairs of bodies in signature
-        // order, a repeated pair once (`engine_collision_driver.c:307-312`).
-        // A sleeping body is dropped there, with the body-level filters.
-        // Within a pair (`:354-387`), two single-geom bodies collide their one
-        // pair; other bodies the geom pairs the midphase (`midphase`) finds
-        // overlapping; without the midphase, or a body without a hierarchy,
-        // the first body's geoms in turn against the second's.
-        let body_geoms = BodyGeoms::new(model);
-        let midphase = !disabled(model, DISABLE_MIDPHASE);
-        let mut previous = None;
-        let mut geom_pairs: Vec<(usize, usize)> = Vec::new();
-        let mut tree_stack: Vec<(usize, usize)> = Vec::new();
-        for (body1, body2) in body_pairs(model, data, &body_geoms) {
-            if previous == Some((body1, body2)) {
-                continue;
+    // MuJoCo's broadphase (`broadphase`): pairs of bodies and flexes in
+    // signature order, a repeated pair once
+    // (`engine_collision_driver.c:307-312`). A sleeping body is dropped
+    // there, with the body-level filters. Within a pair of bodies
+    // (`:354-387`), two single-geom bodies collide their one pair; other
+    // bodies the geom pairs the midphase (`midphase`) finds overlapping;
+    // without the midphase, or a body without a hierarchy, the first body's
+    // geoms in turn against the second's. A body and a flex collide their
+    // geoms and elements (`flex_rigid`); two flexes, the flexes' own pass
+    // below.
+    let body_geoms = BodyGeoms::new(model);
+    let midphase = !disabled(model, DISABLE_MIDPHASE);
+    let mut previous = None;
+    let mut geom_pairs: Vec<(usize, usize)> = Vec::new();
+    let mut tree_stack: Vec<(usize, usize)> = Vec::new();
+    for (body1, body2) in bodyflex_pairs(model, data, &body_geoms) {
+        if previous == Some((body1, body2)) {
+            continue;
+        }
+        previous = Some((body1, body2));
+        if body2 >= model.nbody {
+            if body1 < model.nbody {
+                let flex = body2 - model.nbody;
+                let scratch = (&mut geom_pairs, &mut tree_stack);
+                collide_body_flex(
+                    model,
+                    data,
+                    &body_geoms,
+                    &mut places,
+                    (body1, flex),
+                    scratch,
+                );
             }
-            previous = Some((body1, body2));
-            let (geoms1, geoms2) = (body_geoms.of(body1), body_geoms.of(body2));
-            geom_pairs.clear();
-            let single = geoms1.len() == 1 && geoms2.len() == 1;
-            if single
-                || !midphase
-                || !collide_tree(model, data, body1, body2, &mut geom_pairs, &mut tree_stack)
-            {
-                for &geom1 in geoms1 {
-                    geom_pairs.extend(geoms2.iter().map(|&geom2| (geom1, geom2)));
-                }
-            }
-            for &(geom1, geom2) in &geom_pairs {
-                collide_geom_pair(model, data, &lister, &mut places, geom1, geom2);
+            continue;
+        }
+        let (geoms1, geoms2) = (body_geoms.of(body1), body_geoms.of(body2));
+        geom_pairs.clear();
+        let single = geoms1.len() == 1 && geoms2.len() == 1;
+        if single
+            || !midphase
+            || !collide_tree(model, data, body1, body2, &mut geom_pairs, &mut tree_stack)
+        {
+            for &geom1 in geoms1 {
+                geom_pairs.extend(geoms2.iter().map(|&geom2| (geom1, geom2)));
             }
         }
+        for &(geom1, geom2) in &geom_pairs {
+            collide_geom_pair(model, data, &lister, &mut places, geom1, geom2);
+        }
+    }
 
-        // Mechanism 2: explicit contact pairs (bypass kinematic + bitmask filters)
-        for (pair_id, pair) in model.contact_pairs.iter().enumerate() {
-            let geom1 = pair.geom1;
-            let geom2 = pair.geom2;
+    // Mechanism 2: explicit contact pairs (bypass kinematic + bitmask filters)
+    for (pair_id, pair) in model.contact_pairs.iter().enumerate() {
+        let geom1 = pair.geom1;
+        let geom2 = pair.geom2;
 
-            // §16.5b: an explicit pair collides only when one of its bodies
-            // is awake (engine_collision_driver.c:1465-1472).
-            if sleep_enabled
-                && data.body_sleep_state[model.geom_body[geom1]] != SleepState::Awake
-                && data.body_sleep_state[model.geom_body[geom2]] != SleepState::Awake
-            {
-                continue;
-            }
+        // §16.5b: an explicit pair collides only when one of its bodies
+        // is awake (engine_collision_driver.c:1465-1472).
+        if sleep_enabled
+            && data.body_sleep_state[model.geom_body[geom1]] != SleepState::Awake
+            && data.body_sleep_state[model.geom_body[geom2]] != SleepState::Awake
+        {
+            continue;
+        }
 
-            // Pair margin overrides geom margins.
-            // S10: assign_margin returns o_margin when global override active.
-            let margin = assign_margin(model, pair.margin);
+        // Pair margin overrides geom margins.
+        // S10: assign_margin returns o_margin when global override active.
+        let margin = assign_margin(model, pair.margin);
 
-            // MuJoCo's bounding-sphere filter (`mj_filterSphere`).
-            if filter_sphere(model, data, geom1, geom2, margin) {
-                continue;
-            }
+        // MuJoCo's bounding-sphere filter (`mj_filterSphere`).
+        if filter_sphere(model, data, geom1, geom2, margin) {
+            continue;
+        }
 
-            // Narrow-phase collision detection
-            let pos1 = data.geom_xpos[geom1];
-            let mat1 = data.geom_xmat[geom1];
-            let pos2 = data.geom_xpos[geom2];
-            let mat2 = data.geom_xmat[geom2];
+        // Narrow-phase collision detection
+        let pos1 = data.geom_xpos[geom1];
+        let mat1 = data.geom_xmat[geom1];
+        let pos2 = data.geom_xpos[geom2];
+        let mat2 = data.geom_xmat[geom2];
 
-            let is_hfield_pair = (model.geom_type[geom1] == GeomType::Hfield
-                || model.geom_type[geom2] == GeomType::Hfield)
-                && model.geom_type[geom1] != GeomType::Sdf
-                && model.geom_type[geom2] != GeomType::Sdf;
+        let is_hfield_pair = (model.geom_type[geom1] == GeomType::Hfield
+            || model.geom_type[geom2] == GeomType::Hfield)
+            && model.geom_type[geom1] != GeomType::Sdf
+            && model.geom_type[geom2] != GeomType::Sdf;
 
-            if is_hfield_pair {
-                let hf_contacts =
-                    collide_hfield_multi(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-                for mut contact in hf_contacts {
-                    apply_pair_overrides(&mut contact, pair);
-                    apply_global_override(model, &mut contact, pair.gap);
-                    if !enabled(model, ENABLE_OVERRIDE) {
-                        contact.mu = assign_friction(model, &contact.mu);
-                        contact.friction = contact.mu[0];
-                    }
-                    places.push(pair_place(model, &mut contact, pair_id));
-                    data.contacts.push(contact);
-                    data.ncon += 1;
+        if is_hfield_pair {
+            let hf_contacts =
+                collide_hfield_multi(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
+            for mut contact in hf_contacts {
+                apply_pair_overrides(&mut contact, pair);
+                apply_global_override(model, &mut contact, pair.gap);
+                if !enabled(model, ENABLE_OVERRIDE) {
+                    contact.mu = assign_friction(model, &contact.mu);
+                    contact.friction = contact.mu[0];
                 }
-            } else {
-                let contacts = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-                for mut contact in contacts {
-                    apply_pair_overrides(&mut contact, pair);
-                    apply_global_override(model, &mut contact, pair.gap);
-                    // MIN_MU clamp for the non-override pair path (apply_global_override
-                    // already handles the override case; this covers the else branch).
-                    if !enabled(model, ENABLE_OVERRIDE) {
-                        contact.mu = assign_friction(model, &contact.mu);
-                        contact.friction = contact.mu[0];
-                    }
-                    places.push(pair_place(model, &mut contact, pair_id));
-                    data.contacts.push(contact);
-                    data.ncon += 1;
+                places.push(pair_place(model, &mut contact, pair_id));
+                data.contacts.push(contact);
+                data.ncon += 1;
+            }
+        } else {
+            let contacts = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
+            for mut contact in contacts {
+                apply_pair_overrides(&mut contact, pair);
+                apply_global_override(model, &mut contact, pair.gap);
+                // MIN_MU clamp for the non-override pair path (apply_global_override
+                // already handles the override case; this covers the else branch).
+                if !enabled(model, ENABLE_OVERRIDE) {
+                    contact.mu = assign_friction(model, &contact.mu);
+                    contact.friction = contact.mu[0];
                 }
+                places.push(pair_place(model, &mut contact, pair_id));
+                data.contacts.push(contact);
+                data.ncon += 1;
             }
         }
-    } // end if model.ngeom >= 2
-
-    // Mechanism 3: flex vertex vs rigid geom contacts
-    mj_collision_flex(model, data);
+    }
 
     // Mechanism 4: flex self-collision (internal + non-adjacent)
     mj_collision_flex_self(model, data);
@@ -608,11 +611,11 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             .iter()
             .map(|c| flex_place(model, c)),
     );
-    let mut listed: Vec<(ListPlace, Contact)> =
+    let mut ordered: Vec<(ListPlace, Contact)> =
         places.into_iter().zip(data.contacts.drain(..)).collect();
-    listed.sort_by_key(|(place, _)| *place);
+    ordered.sort_by_key(|(place, _)| *place);
     data.contacts
-        .extend(listed.into_iter().map(|(_, contact)| contact));
+        .extend(ordered.into_iter().map(|(_, contact)| contact));
 }
 
 /// Collide one geom pair of a pair of bodies and list its contacts as MuJoCo
@@ -1130,7 +1133,7 @@ mod contact_param_tests {
         model.flex_priority[0] = 5;
         model.flex_friction[0] = Vector3::new(0.8, 0.03, 0.004);
 
-        let (_condim, _gap, _solref, _solimp, mu) = contact_param_flex_rigid(&model, 0, 0);
+        let (_condim, _gap, _solref, _solimp, mu) = contact_param_geom_flex(&model, 0, 0);
 
         assert_relative_eq!(mu[0], 0.8, epsilon = 1e-15); // tangential1
         assert_relative_eq!(mu[1], 0.8, epsilon = 1e-15); // tangential2
@@ -1149,7 +1152,7 @@ mod contact_param_tests {
         model.flex_friction[0] = Vector3::new(0.3, 0.04, 0.001);
         model.geom_friction[0] = Vector3::new(0.9, 0.01, 0.005);
 
-        let (_condim, _gap, _solref, _solimp, mu) = contact_param_flex_rigid(&model, 0, 0);
+        let (_condim, _gap, _solref, _solimp, mu) = contact_param_geom_flex(&model, 0, 0);
 
         // Per-component max:
         assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15); // max(0.3, 0.9) tangential1
@@ -1187,7 +1190,6 @@ mod contact_param_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod spec_d_tests {
-    use super::flex_narrow::narrowphase_sphere_geom;
     use super::hfield::collide_hfield_multi;
     use super::narrow::collide_geoms;
     use super::sdf_collide::collide_with_sdf;
@@ -1467,7 +1469,7 @@ mod spec_d_tests {
         let c = &contacts[0];
         // MuJoCo lists the cylinder first (the lower geom type), its normal
         // toward the mesh below: -Z.
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1502,7 +1504,7 @@ mod spec_d_tests {
 
         let c = &contacts[0];
         // From the cylinder, listed first, toward the mesh: -Z.
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1621,7 +1623,7 @@ mod spec_d_tests {
         let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
         assert_eq!(contacts.len(), 1, "one contact from the vertex set");
         let c = &contacts[0];
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1667,7 +1669,7 @@ mod spec_d_tests {
 
         let c = &contacts[0];
         // From the ellipsoid, listed first, toward the mesh: -Z.
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1699,7 +1701,7 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1845,8 +1847,7 @@ mod spec_d_tests {
     /// A geom turned by a matrix holding a NaN or an infinity collides as
     /// nothing at every site that turned it into a quaternion (nalgebra's
     /// `from_matrix`, which iterates without a cap): a sphere on a signed
-    /// distance field, and a flex vertex against a mesh, a height field or a
-    /// signed distance field, each geom's matrix bad in turn. MuJoCo's
+    /// distance field, each geom's matrix bad in turn. MuJoCo's
     /// functions, which take no quaternion, give MuJoCo's results (the ccd
     /// golden's `plane_convex` and `hfield_convex` `nan` cases): a mesh so
     /// turned on a plane, one contact at a NaN distance; a height field so
@@ -1941,13 +1942,6 @@ mod spec_d_tests {
                     "signed distance field and sphere, {bad}"
                 );
             }
-            for (model, g) in [(&plane_mesh, 1), (&hfield_sphere, 0), (&sdf_sphere, 0)] {
-                assert!(
-                    narrowphase_sphere_geom(near, 0.5, g, model, Vector3::zeros(), turned)
-                        .is_none(),
-                    "flex vertex against geom {g}, {bad}"
-                );
-            }
         }
     }
 
@@ -1977,8 +1971,8 @@ mod spec_d_tests {
             assert_eq!(contacts.len(), 3, "plane geom {plane}: contacts");
             for c in &contacts {
                 assert_eq!(
-                    [c.geom1, c.geom2],
-                    [plane, mesh],
+                    c.geom,
+                    [Some(plane), Some(mesh)],
                     "plane geom {plane}: order"
                 );
                 assert_eq!(c.normal, Vector3::z(), "plane geom {plane}: normal");

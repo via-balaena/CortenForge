@@ -27,6 +27,7 @@ use super::mj_primitive::{
 };
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::heightfield::HeightFieldData;
+use crate::linalg::mju_dot;
 use crate::mesh_polygons::MeshPolygons;
 use crate::quat::quat_to_mat;
 use crate::types::{Data, ENABLE_MULTICCD, GeomType, Model, enabled, make_frame};
@@ -93,11 +94,21 @@ enum Support<'a> {
     /// `mjc_prism_support`: a height field's triangular prism, its three
     /// bottom corners then its three top ones (`mjCCDObj::prism`).
     Prism([[f64; 3]; 6]),
+    /// `mjc_flexSupport`: a flex element's vertices (`count` of them, one
+    /// for a flex vertex) in the frame the collision takes, and the flex's
+    /// radius.
+    Flex {
+        vertices: [[f64; 3]; 4],
+        count: usize,
+        radius: f64,
+    },
 }
 
 /// A geom as `mjc_ccd` reads it (`mjCCDObj`, set up as `mjc_initCCDObj`).
 pub(super) struct CcdObj<'a> {
-    geom_type: GeomType,
+    /// The geom's type; `None` for a flex element or vertex (MuJoCo's
+    /// `mjGEOM_FLEX`), which no geom-type test takes.
+    geom_type: Option<GeomType>,
     pos: [f64; 3],
     mat: Mat9,
     size: [f64; 3],
@@ -141,7 +152,7 @@ impl<'a> CcdObj<'a> {
             GeomType::Plane | GeomType::Hfield | GeomType::Sdf => return None,
         };
         Some(Self {
-            geom_type,
+            geom_type: Some(geom_type),
             pos,
             mat,
             size,
@@ -151,6 +162,32 @@ impl<'a> CcdObj<'a> {
             vertindex: None,
             meshindex: None,
         })
+    }
+
+    /// A flex element or vertex (`mjc_initCCDObj` without a geom, then
+    /// `mjc_setCCDObjFlex`, `engine_collision_convex.c:709-775`): its
+    /// vertices (one for a vertex) and centre in the collision's frame (an
+    /// element's box's centre, `flexelem_aabb`; a vertex's position,
+    /// `mjc_center`, `:95-115`), the flex's radius, and the margin, which its
+    /// support adds itself.
+    pub(super) fn flex(vertices: &[[f64; 3]], center: [f64; 3], radius: f64, margin: f64) -> Self {
+        let mut corners = [[0.0; 3]; 4];
+        corners[..vertices.len()].copy_from_slice(vertices);
+        Self {
+            geom_type: None,
+            pos: center,
+            mat: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            size: [0.0; 3],
+            margin,
+            support: Support::Flex {
+                vertices: corners,
+                count: vertices.len(),
+                radius,
+            },
+            mesh: None,
+            vertindex: None,
+            meshindex: None,
+        }
     }
 
     /// A height field's prism (`mjc_initCCDObj` for a height field, without
@@ -163,7 +200,7 @@ impl<'a> CcdObj<'a> {
             corner[2] = -base;
         }
         Self {
-            geom_type: GeomType::Hfield,
+            geom_type: Some(GeomType::Hfield),
             pos: [0.0; 3],
             mat: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
             size: [0.0; 3],
@@ -307,6 +344,30 @@ impl<'a> CcdObj<'a> {
                 }
                 prism[best]
             }
+            // `mjc_flexSupport` (`engine_collision_convex.c:455-491`): the
+            // vertex furthest along `dir` (the first of equals), pushed out by
+            // the flex's radius and half the margin in one step.
+            Support::Flex {
+                vertices,
+                count,
+                radius,
+            } => {
+                let mut best = vertices[0];
+                let mut max = dot3(&best, dir);
+                for vertex in &vertices[1..count] {
+                    let dot = dot3(vertex, dir);
+                    if dot > max {
+                        max = dot;
+                        best = *vertex;
+                    }
+                }
+                let scl = radius + 0.5 * self.margin;
+                [
+                    best[0] + dir[0] * scl,
+                    best[1] + dir[1] * scl,
+                    best[2] + dir[2] * scl,
+                ]
+            }
         }
     }
 
@@ -369,8 +430,8 @@ impl<'a> CcdObj<'a> {
     /// radius and half the margin, added back after GJK.
     fn shrink(&mut self) -> f64 {
         let support = match self.geom_type {
-            GeomType::Sphere => Support::Point,
-            GeomType::Capsule => Support::Line,
+            Some(GeomType::Sphere) => Support::Point,
+            Some(GeomType::Capsule) => Support::Line,
             _ => return 0.0,
         };
         let full_margin = self.size[0] + 0.5 * self.margin;
@@ -559,7 +620,8 @@ pub(super) fn mjc_ccd(config: &CcdConfig, o1: &mut CcdObj<'_>, o2: &mut CcdObj<'
     status.x1[0] = o1.center();
     status.x2[0] = o2.center();
 
-    let shrinks = |o: &CcdObj<'_>| matches!(o.geom_type, GeomType::Sphere | GeomType::Capsule);
+    let shrinks =
+        |o: &CcdObj<'_>| matches!(o.geom_type, Some(GeomType::Sphere | GeomType::Capsule));
     if shrinks(o1) || shrinks(o2) {
         let (support1, support2) = (o1.support, o2.support);
         let (margin1, margin2) = (o1.margin, o2.margin);
@@ -646,7 +708,8 @@ fn discrete_geoms(o1: &CcdObj<'_>, o2: &CcdObj<'_>) -> bool {
     if o1.margin != 0.0 || o2.margin != 0.0 {
         return false;
     }
-    let discrete = |t| matches!(t, GeomType::Mesh | GeomType::Box | GeomType::Hfield);
+    let discrete =
+        |t: Option<GeomType>| matches!(t, Some(GeomType::Mesh | GeomType::Box | GeomType::Hfield));
     discrete(o1.geom_type) && discrete(o2.geom_type)
 }
 
@@ -760,17 +823,18 @@ fn gjk(status: &mut CcdStatus, o1: &mut CcdObj<'_>, o2: &mut CcdObj<'_>) {
 }
 
 /// `support`: the Minkowski difference's support point along `dir`, each
-/// geom's support point pushed out by half its margin.
+/// geom's support point pushed out by half its margin (a flex's support
+/// adds its own, `engine_collision_gjk.c:300-326`).
 fn support(o1: &mut CcdObj<'_>, o2: &mut CcdObj<'_>, dir: &[f64; 3], dir_neg: &[f64; 3]) -> Vertex {
     let mut vert1 = o1.support(dir);
-    if o1.margin > 0.0 {
+    if o1.margin > 0.0 && o1.geom_type.is_some() {
         let margin = 0.5 * o1.margin;
         for (v, d) in vert1.iter_mut().zip(dir) {
             *v += d * margin;
         }
     }
     let mut vert2 = o2.support(dir_neg);
-    if o2.margin > 0.0 {
+    if o2.margin > 0.0 && o2.geom_type.is_some() {
         let margin = 0.5 * o2.margin;
         for (v, d) in vert2.iter_mut().zip(dir_neg) {
             *v += d * margin;
@@ -2114,8 +2178,8 @@ fn face_normals(
         return Vec::new();
     };
     match (o.geom_type, &o.mesh) {
-        (GeomType::Box, _) => box_normals(&o.mat, dim, [a, b, c], dir),
-        (GeomType::Mesh, Some(mesh)) => mesh_normals(o, mesh.polygons, dim, [a, b, c]),
+        (Some(GeomType::Box), _) => box_normals(&o.mat, dim, [a, b, c], dir),
+        (Some(GeomType::Mesh), Some(mesh)) => mesh_normals(o, mesh.polygons, dim, [a, b, c]),
         _ => Vec::new(),
     }
 }
@@ -2132,8 +2196,10 @@ fn edge_normals(
         return Vec::new();
     };
     match (o.geom_type, &o.mesh) {
-        (GeomType::Box, _) => box_edge_normals(o, dim, &vert[0], &vert[1], v1i),
-        (GeomType::Mesh, Some(mesh)) => mesh_edge_normals(o, mesh, dim, &vert[0], &vert[1], v1i),
+        (Some(GeomType::Box), _) => box_edge_normals(o, dim, &vert[0], &vert[1], v1i),
+        (Some(GeomType::Mesh), Some(mesh)) => {
+            mesh_edge_normals(o, mesh, dim, &vert[0], &vert[1], v1i)
+        }
         _ => Vec::new(),
     }
 }
@@ -2141,8 +2207,8 @@ fn edge_normals(
 /// A geom's face from its index (`boxFace`, `meshFace`).
 fn face_polygon(o: &CcdObj<'_>, idx: usize) -> Vec<[f64; 3]> {
     match (o.geom_type, &o.mesh) {
-        (GeomType::Box, _) => box_face(o, idx),
-        (GeomType::Mesh, Some(mesh)) => mesh_face(o, mesh, idx),
+        (Some(GeomType::Box), _) => box_face(o, idx),
+        (Some(GeomType::Mesh), Some(mesh)) => mesh_face(o, mesh, idx),
         _ => Vec::new(),
     }
 }
@@ -2309,8 +2375,8 @@ fn max_contacts(model: &Model, o1: &CcdObj<'_>, o2: &CcdObj<'_>) -> usize {
     }
     let unmerged = |o: &CcdObj<'_>| o.mesh.is_some_and(|m| m.polygons.paths.is_empty());
     match (o1.geom_type, o2.geom_type) {
-        (GeomType::Box, GeomType::Box) => 8,
-        (GeomType::Box | GeomType::Mesh, GeomType::Box | GeomType::Mesh)
+        (Some(GeomType::Box), Some(GeomType::Box)) => 8,
+        (Some(GeomType::Box | GeomType::Mesh), Some(GeomType::Box | GeomType::Mesh))
             if enabled(model, ENABLE_MULTICCD) && !unmerged(o1) && !unmerged(o2) =>
         {
             4
@@ -2379,7 +2445,7 @@ pub(super) fn mjc_convex(
         return con;
     }
 
-    let round = |t| matches!(t, GeomType::Ellipsoid | GeomType::Sphere);
+    let round = |t: Option<GeomType>| matches!(t, Some(GeomType::Ellipsoid | GeomType::Sphere));
     if con.len() == 1
         && enabled(model, ENABLE_MULTICCD)
         && !round(o1.geom_type)
@@ -2565,6 +2631,38 @@ pub(super) fn mjc_convex_hfield(
         return Vec::new();
     }
 
+    obj.margin = margin;
+    field_prisms(
+        hfield,
+        size,
+        (pos1, mat1),
+        obj,
+        margin,
+        [xmin, xmax, ymin, ymax, zmin],
+        (max_iterations, tolerance),
+    )
+}
+
+/// The prisms of a height field under a box in its frame,
+/// `[xmin, xmax, ymin, ymax]` with the box's lowest point `zmin`, each
+/// against `obj` (in the field's frame, its margin set) by `mjc_ccd` for one
+/// contact, back in the world frame (`pos1`, `mat1`): the loop
+/// `mjc_ConvexHField` and `mjc_HFieldElem` share
+/// (`engine_collision_convex.c:1310-1363`, `:1735-1807`). The cells split
+/// along (c − 1, r)–(c, r + 1) as a window of three corners slides along each
+/// row, each prism's top raised by `margin`; a prism whose three top corners
+/// are below `zmin` is skipped; at most `mjMAXCONPAIR`.
+fn field_prisms(
+    hfield: &HeightFieldData,
+    size: &[f64; 4],
+    (pos1, mat1): (&[f64; 3], &Mat9),
+    obj: &mut CcdObj<'_>,
+    margin: f64,
+    [xmin, xmax, ymin, ymax, zmin]: [f64; 5],
+    (max_iterations, tolerance): (usize, f64),
+) -> Vec<RawContact> {
+    let (nrow, ncol) = (hfield.depth(), hfield.width());
+    let [size0, size1, _, size3] = *size;
     // A grid's extents are far below 2^52, exact as floats.
     #[allow(clippy::cast_precision_loss)]
     let (cols, rows) = ((ncol - 1) as f64, (nrow - 1) as f64);
@@ -2581,7 +2679,6 @@ pub(super) fn mjc_convex_hfield(
         (((ymax + size1) / (2.0 * size1) * rows).ceil() as i64).min(nrow as i64 - 1),
     );
 
-    obj.margin = margin;
     let (dx, dy) = ((2.0 * size0) / cols, (2.0 * size1) / rows);
     let config = CcdConfig {
         max_iterations,
@@ -2646,6 +2743,228 @@ pub(super) fn mjc_convex_hfield(
         }
     }
     con
+}
+
+/// `mjc_ConvexElem` (`engine_collision_convex.c:1627-1653`): `o1` (a geom,
+/// or a flex element or vertex) against the flex element `o2` by `mjc_ccd`,
+/// one contact (`mjc_CCDIteration`: its distance `margin + dist`); with a
+/// flex of dim 2 on either side each contact's normal then turned to the
+/// geom's own (`mjc_fixNormal`; `fix` that geom's type, position, turn and
+/// size, `None` without a geom). MuJoCo turns it only under native CCD, the
+/// one sim-core runs (registry `D-NATIVECCD`).
+pub(super) fn mjc_convex_elem(
+    model: &Model,
+    o1: &mut CcdObj<'_>,
+    o2: &mut CcdObj<'_>,
+    margin: f64,
+    fix: Option<(GeomType, [f64; 3], &Mat9, [f64; 3])>,
+) -> Vec<RawContact> {
+    let mut contacts = ccd_iteration(model, o1, o2, 1, margin);
+    if let Some((geom_type, pos, mat, size)) = fix {
+        for contact in &mut contacts {
+            fix_normal(geom_type, &pos, mat, &size, contact);
+        }
+    }
+    contacts
+}
+
+/// `mjc_fixNormal` (`:1473-1621`) with a geom on the first side only, the
+/// second a flex of dim 2: an ellipsoid's or a cylinder's own normal at the
+/// contact point in place of `mjc_ccd`'s, where it is found. (Its sphere and
+/// capsule branches never run for a flex: against a triangle those take the
+/// raw functions, `engine_collision_driver.c:1931-1960`.)
+fn fix_normal(
+    geom_type: GeomType,
+    gpos: &[f64; 3],
+    mat: &Mat9,
+    size: &[f64; 3],
+    contact: &mut RawContact,
+) {
+    let pos = mat_t_vec(mat, &sub3(&contact.pos, gpos));
+    let mut nrm = mat_t_vec(mat, &contact.normal);
+    let processed = match geom_type {
+        GeomType::Ellipsoid => {
+            if size[0] < MJ_MINVAL || size[1] < MJ_MINVAL || size[2] < MJ_MINVAL {
+                false
+            } else {
+                let dst = pos[0] * pos[0] / (size[0] * size[0])
+                    + pos[1] * pos[1] / (size[1] * size[1])
+                    + pos[2] * pos[2] / (size[2] * size[2]);
+                if dst <= 1.0 {
+                    ellipsoid_inside(&mut nrm, &pos, size)
+                } else {
+                    ellipsoid_outside(&mut nrm, &pos, size)
+                }
+            }
+        }
+        // The round wall's normal, unless within 5% of a cap's height or the
+        // flat wall 4 times nearer than the round one (MuJoCo's code, `:1577`;
+        // its comment, `:1576`, says the reverse).
+        GeomType::Cylinder => {
+            let flat = (size[1] - pos[2].abs()).abs();
+            let round = (size[0] - mju_dot(&pos[..2], &pos[..2]).sqrt()).abs();
+            if pos[2].abs() > 0.95 * size[1] || flat < 0.25 * round {
+                false
+            } else {
+                nrm = [pos[0], pos[1], 0.0];
+                true
+            }
+        }
+        _ => false,
+    };
+    if processed {
+        normalize3(&mut nrm);
+        contact.normal = mat_vec(mat, &nrm);
+    }
+}
+
+/// `mjc_ellipsoidInside` (`:1369-1420`): the normal of an ellipsoid of
+/// half-sizes `size` at the point where the ray from `pos` (inside) along
+/// `nrm` leaves it, iterated to 1e-6, at most 30 times; whether one was
+/// found.
+fn ellipsoid_inside(nrm: &mut [f64; 3], pos: &[f64; 3], size: &[f64; 3]) -> bool {
+    let s2inv = [
+        1.0 / (size[0] * size[0]),
+        1.0 / (size[1] * size[1]),
+        1.0 / (size[2] * size[2]),
+    ];
+    let coef_c =
+        pos[0] * pos[0] * s2inv[0] + pos[1] * pos[1] * s2inv[1] + pos[2] * pos[2] * s2inv[2] - 1.0;
+    if coef_c > 0.0 {
+        return false;
+    }
+    normalize3(nrm);
+    for iter in 0..30 {
+        let coef_a =
+            nrm[0] * nrm[0] * s2inv[0] + nrm[1] * nrm[1] * s2inv[1] + nrm[2] * nrm[2] * s2inv[2];
+        let coef_b =
+            pos[0] * nrm[0] * s2inv[0] + pos[1] * nrm[1] * s2inv[1] + pos[2] * nrm[2] * s2inv[2];
+        // The quadratic's discriminant, B² − AC, as MuJoCo's.
+        #[allow(clippy::suspicious_operation_groupings)]
+        let det = coef_b * coef_b - coef_a * coef_c;
+        if det < MJ_MINVAL || coef_a < MJ_MINVAL {
+            return iter > 0;
+        }
+        let x = (-coef_b + det.sqrt()) / coef_a;
+        if x < 0.0 {
+            return iter > 0;
+        }
+        let pnt = std::array::from_fn::<f64, 3, _>(|k| pos[k] + nrm[k] * x);
+        let mut newnrm = [pnt[0] * s2inv[0], pnt[1] * s2inv[1], pnt[2] * s2inv[2]];
+        normalize3(&mut newnrm);
+        let dif = sub3(nrm, &newnrm);
+        let change = (dif[0] * dif[0] + dif[1] * dif[1] + dif[2] * dif[2]).sqrt();
+        *nrm = newnrm;
+        if change < 1e-6 {
+            break;
+        }
+    }
+    true
+}
+
+/// `mjc_ellipsoidOutside` (`:1424-1469`): the normal of an ellipsoid of
+/// half-sizes `size` at its point nearest `pos` (outside), by Newton's
+/// method on the multiplier, to 1e-6, at most 30 times.
+fn ellipsoid_outside(nrm: &mut [f64; 3], pos: &[f64; 3], size: &[f64; 3]) -> bool {
+    let s2 = [size[0] * size[0], size[1] * size[1], size[2] * size[2]];
+    let ps2 = [
+        pos[0] * pos[0] * s2[0],
+        pos[1] * pos[1] * s2[1],
+        pos[2] * pos[2] * s2[2],
+    ];
+    let mut la = 0.0;
+    for _ in 0..30 {
+        let r = [1.0 / (s2[0] + la), 1.0 / (s2[1] + la), 1.0 / (s2[2] + la)];
+        let val = ps2[0] * r[0] * r[0] + ps2[1] * r[1] * r[1] + ps2[2] * r[2] * r[2] - 1.0;
+        if val < 1e-6 {
+            break;
+        }
+        let deriv = -2.0
+            * (ps2[0] * r[0] * r[0] * r[0]
+                + ps2[1] * r[1] * r[1] * r[1]
+                + ps2[2] * r[2] * r[2] * r[2]);
+        if deriv > -MJ_MINVAL {
+            break;
+        }
+        let delta = -val / deriv;
+        if delta < 1e-6 {
+            break;
+        }
+        la += delta;
+    }
+    *nrm = [
+        pos[0] / (s2[0] + la),
+        pos[1] / (s2[1] + la),
+        pos[2] / (s2[2] + la),
+    ];
+    normalize3(nrm);
+    true
+}
+
+/// `mjc_HFieldElem` (`:1657-1816`): a height field (`hfield`, `size`, at
+/// `pos1` turned by `mat1`) against a flex element (its world `vertices`,
+/// its box's `center`, the flex's `radius`), within `margin`. The element is
+/// taken into the field's frame; nothing when its box (over its vertices,
+/// not their radius) is clear of the field's by the margin; else the prisms
+/// under that box against the element, a prism below the box's lowest
+/// vertex skipped. The field's top is the higher of `size[2]` and its
+/// highest point, as `mjc_convex_hfield` takes it. MuJoCo never passes its
+/// prism object to `mjc_initCCDObj` (`:1663-1664`); this prism is
+/// `mjc_ConvexHField`'s (`:1220`), margin 0, and
+/// `mj_triangle`'s `convex_route_contacts_as_mujoco` holds its contacts to
+/// the oracle's.
+// MuJoCo's arguments, the field and the element split out as sim-core holds them.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn mjc_hfield_elem(
+    hfield: &HeightFieldData,
+    size: &[f64; 4],
+    pos1: &[f64; 3],
+    mat1: &Mat9,
+    vertices: &[[f64; 3]],
+    center: &[f64; 3],
+    radius: f64,
+    margin: f64,
+    ccd: (usize, f64),
+) -> Vec<RawContact> {
+    let (nrow, ncol) = (hfield.depth(), hfield.width());
+    if nrow < 2 || ncol < 2 || vertices.is_empty() {
+        return Vec::new();
+    }
+    let [size0, size1, size2, size3] = *size;
+    let top = size2.max(hfield.max_height());
+    let local: Vec<[f64; 3]> = vertices
+        .iter()
+        .map(|v| mat_t_vec(mat1, &sub3(v, pos1)))
+        .collect();
+    // `mju_min` and `mju_max` over the vertices.
+    let mut lo = local[0];
+    let mut hi = local[0];
+    for v in &local[1..] {
+        for k in 0..3 {
+            lo[k] = if lo[k] <= v[k] { lo[k] } else { v[k] };
+            hi[k] = if hi[k] >= v[k] { hi[k] } else { v[k] };
+        }
+    }
+    if lo[0] - margin > size0
+        || hi[0] + margin < -size0
+        || lo[1] - margin > size1
+        || hi[1] + margin < -size1
+        || lo[2] - margin > top
+        || hi[2] + margin < -size3
+    {
+        return Vec::new();
+    }
+    let center = mat_t_vec(mat1, &sub3(center, pos1));
+    let mut elem = CcdObj::flex(&local, center, radius, margin);
+    field_prisms(
+        hfield,
+        size,
+        (pos1, mat1),
+        &mut elem,
+        margin,
+        [lo[0], hi[0], lo[1], hi[1], lo[2]],
+        ccd,
+    )
 }
 
 /// `mj_geomDistanceCCD` (`engine_support.c:527-552`): the distance of `g1`

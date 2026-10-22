@@ -302,6 +302,10 @@ All new model arrays follow the existing `{element}_{name}` pattern:
 | `flex_vertcollide` | `Vec<bool>` | `false` | T1 |
 | `flex_passive` | `Vec<bool>` | `true` | T1 |
 
+(Corrected 2026-10-22: MuJoCo 3.5.0's defaults are `internal` false,
+`activelayers` 1 and `passive` false, `mjs_defaultFlex`,
+`user/user_init.c:211-232`; sim-mjcf now matches them.)
+
 **`nuser_*` default convention:** MuJoCo uses `-1` as the default for
 `nuser_*` fields (meaning "use the length of the `user` attribute"). When
 `nuser_* >= 0`, the user array is padded with zeros or truncated to that
@@ -325,6 +329,9 @@ Rust model field names use the `{element}_{attr}` snake_case pattern.
   uses a different default (e.g., `nuser_*` defaults to `-1`).
 - Boolean fields default to their MuJoCo default (e.g., `internal` defaults to
   `true`, `passive` defaults to `true`, `vertcollide` defaults to `false`).
+  (Corrected 2026-10-22: MuJoCo 3.5.0's `internal` and `passive` defaults
+  are false, `mjs_defaultFlex`, `user/user_init.c:211-232`; sim-mjcf now
+  matches them.)
 - `Option<T>` fields default to `None`.
 - New arrays initialized in `model_init.rs` as empty `vec![]`.
 
