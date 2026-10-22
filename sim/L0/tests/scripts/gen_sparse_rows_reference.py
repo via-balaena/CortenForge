@@ -16,9 +16,11 @@ values. One scene at jacobian="sparse" makes every rigid row kind:
 - connects (an arm's forearm to a free ball, and to the arm, whose chains share
   the arm's dof) and a weld (a ball joint's slide-jointed child to the arm), the
   bodies' merged chains (`mj_mergeChain`);
-- a joint equality (a hinge and the slide) and a tendon equality (a fixed
-  tendon over the first hinge and the slide, the slide's coefficient 0, and one
-  over both hinges), their joints' and tendons' chains' unions;
+- two joint equalities (the second hinge and the slide; the slide and the
+  first hinge, its first joint's dof above its second's) and a tendon equality
+  (a fixed tendon over the first hinge and the slide, the slide's coefficient
+  0, and one over both hinges), their joints' and tendons' chains' unions,
+  ascending;
 - the first hinge's and the slide's friction loss, the first tendon's;
 - the first hinge, the ball joint and the slide past their ranges, the first
   tendon and a spatial tendon (forearm to a world site) past theirs;
@@ -78,6 +80,7 @@ SCENE = """<mujoco model="sparse_rows">
     <connect body1="fore" body2="arm" anchor="0.1 0 0"/>
     <weld body1="link" body2="arm"/>
     <joint joint1="h2" joint2="s1"/>
+    <joint joint1="s1" joint2="h1"/>
     <tendon tendon1="t1" tendon2="t2"/>
   </equality>
   <tendon>
@@ -105,7 +108,7 @@ def case(cone, condim, contacts):
     mujoco.mj_forward(m, d)
     kinds = {mujoco.mjtConstraint(int(t)).name for t in d.efc_type[:d.nefc]}
     if not KINDS | contacts <= kinds:
-        sys.exit(f"{cone} {condim}: rows {sorted(kinds)} miss {sorted(KINDS | contacts - kinds)}")
+        sys.exit(f"{cone} {condim}: rows {sorted(kinds)} miss {sorted((KINDS | contacts) - kinds)}")
     pairs = {tuple(sorted(m.geom(int(g)).name for g in c.geom))
              for c in d.contact[:d.ncon] if c.efc_address >= 0}
     if not {("floor", "hand"), ("b", "b2")} <= pairs:

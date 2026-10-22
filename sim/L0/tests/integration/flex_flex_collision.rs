@@ -6,6 +6,7 @@
 //! sentinel-safe downstream pipeline, and self/flex-rigid regression.
 
 use approx::assert_relative_eq;
+use sim_core::DISABLE_ISLAND;
 use sim_mjcf::load_model;
 
 /// Helper: count flex-flex contacts (both flex_vertex and flex_vertex2 set,
@@ -513,11 +514,9 @@ fn t08_condim_max_combination() {
 // T9: Full forward step — no panic, active constraint forces → AC10, AC15
 // ============================================================================
 
-#[test]
-fn t09_full_forward_step_no_panic() {
-    // Use 3×3 grids (known to produce contacts from T2) with gravity and
-    // pinned top-row vertices so they stay overlapping under gravity.
-    let mjcf = r#"
+/// Two 3×3 grids (known to produce contacts from T2) with gravity and
+/// pinned top-row vertices, so they stay overlapping under gravity.
+const FULL_STEP_SCENE: &str = r#"
         <mujoco model="full_step_test">
             <option gravity="0 0 -9.81" timestep="0.001"/>
             <worldbody/>
@@ -540,7 +539,9 @@ fn t09_full_forward_step_no_panic() {
         </mujoco>
     "#;
 
-    let model = load_model(mjcf).expect("load");
+#[test]
+fn t09_full_forward_step_no_panic() {
+    let model = load_model(FULL_STEP_SCENE).expect("load");
     let mut data = model.make_data();
 
     // Step 1: forward() to generate contacts and verify they exist
@@ -577,6 +578,45 @@ fn t09_full_forward_step_no_panic() {
     // this model, cfrc_ext stays zero. The qfrc_constraint assertion above
     // proves the full constraint pipeline (collision → Jacobian → assembly →
     // solve → force distribution) works for flex-flex contacts.
+}
+
+/// T9's scene at the dense size: a contact between two pinned vertices has
+/// no dof on either side, so with islands its rows are in no island (MuJoCo
+/// stops on such a row, ledger L220). Their Jacobian is zero, so their force
+/// cannot depend on the other rows': each takes the force and state the
+/// whole problem's solve (islands disabled) gives it.
+#[test]
+fn rows_in_no_island_take_the_whole_solve_s_force() {
+    let model = load_model(FULL_STEP_SCENE).expect("load");
+    assert!(!model.is_sparse(), "the dense size");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let outside: Vec<usize> = (0..data.efc_type.len())
+        .filter(|&row| data.efc_island[row] < 0)
+        .collect();
+    assert!(
+        outside.iter().any(|&row| data.efc_force[row] != 0.0),
+        "rows in no island, one with a force"
+    );
+
+    let mut whole_model = model.clone();
+    whole_model.disableflags |= DISABLE_ISLAND;
+    let mut whole = whole_model.make_data();
+    whole
+        .forward(&whole_model)
+        .expect("forward without islands");
+    assert_eq!(whole.efc_type, data.efc_type, "the same rows");
+    for &row in &outside {
+        assert_eq!(
+            data.efc_force[row].to_bits(),
+            whole.efc_force[row].to_bits(),
+            "row {row}'s force"
+        );
+        assert_eq!(
+            data.efc_state[row], whole.efc_state[row],
+            "row {row}'s state"
+        );
+    }
 }
 
 // ============================================================================
