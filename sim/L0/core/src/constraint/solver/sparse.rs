@@ -45,7 +45,17 @@ impl SparseJ {
                 val.push(data.efc_J[(r, c)]);
             }
         }
-        let nv = sub.dofs.len();
+        Self::with_transpose(rownnz, rowadr, colind, val, sub.dofs.len())
+    }
+
+    /// The rows given, over `nv` dofs, and their transpose.
+    fn with_transpose(
+        rownnz: Vec<usize>,
+        rowadr: Vec<usize>,
+        colind: Vec<usize>,
+        val: Vec<f64>,
+        nv: usize,
+    ) -> Self {
         let mut t_rownnz = vec![0; nv];
         for &c in &colind {
             t_rownnz[c] += 1;
@@ -260,7 +270,7 @@ impl SparseHessian {
             if m == NO_MASS {
                 continue;
             }
-            self.h[k] = if has_jdj || self.h_colind[k] == self.row_of(k) {
+            self.h[k] = if has_jdj {
                 self.h[k] + mass.val[m]
             } else {
                 mass.val[m]
@@ -276,11 +286,6 @@ impl SparseHessian {
             .binary_search(&col)
             // `fill` writes only the entries `make` put in the pattern.
             .unwrap_or_else(|_| unreachable!("in the pattern"))
-    }
-
-    /// The row of `h`'s entry `k`.
-    fn row_of(&self, k: usize) -> usize {
-        self.h_rowadr.partition_point(|&adr| adr <= k) - 1
     }
 
     /// `mju_cholFactorSymbolic` (`engine_util_solve.c:195-294`): `L`'s and
@@ -477,5 +482,41 @@ impl SparseHessian {
             }
             x[i] /= mat[adr + nnz - 1];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Hessian made at one `D` and filled at another is, bit for bit, the
+    /// one made at the second, and so is its factor: `fill` rewrites every
+    /// entry, M's alone among them (row 1, column 0, which no row of `J`
+    /// has). It is how `factorize_hessian` rebuilds after an update loses
+    /// rank.
+    #[test]
+    fn a_hessian_filled_again_is_made_anew() {
+        // Rows: dof 0; dofs 1 and 2.
+        let jac = SparseJ::with_transpose(
+            vec![1, 2],
+            vec![0, 1],
+            vec![0, 1, 2],
+            vec![2.0, 1.5, -0.5],
+            3,
+        );
+        let mass = LowerRows {
+            rownnz: vec![1, 2, 1],
+            rowadr: vec![0, 1, 3],
+            colind: vec![0, 0, 1, 2],
+            val: vec![1.0, 0.3, 2.0, 1.5],
+        };
+        let mut filled = SparseHessian::make(&jac, &[0.7, 1.9], &mass);
+        filled.fill(&jac, &[0.2, 0.4], &mass);
+        let mut made = SparseHessian::make(&jac, &[0.2, 0.4], &mass);
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&filled.h), bits(&made.h), "H");
+        assert_eq!(filled.factor(), 3, "full rank");
+        assert_eq!(made.factor(), 3, "full rank");
+        assert_eq!(bits(&filled.l), bits(&made.l), "L");
     }
 }

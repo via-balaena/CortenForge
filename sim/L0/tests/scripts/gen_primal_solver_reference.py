@@ -82,10 +82,16 @@ cases:
   ones also with the sphere rolling about x and y, so all five tangential components
   are nonzero), the first forward's solver inputs as mj_fwdConstraint hands them to
   the solver (`d.M` on the mass matrix's pattern and its factor `d.qLD`,
-  `d.qLDiagInv`, `qacc_smooth`, `qfrc_smooth`, the dense `efc_J`, `efc_aref`,
-  `efc_D`, `efc_R`) and its outputs (`qacc`, `efc_force`, each iteration's
-  statistics), so a test can hand the solver MuJoCo's own inputs and compare its
-  outputs bit for bit, whatever the stages before it round. The elliptic condim-3
+  `d.qLDiagInv`, `qacc_smooth`, `qfrc_smooth`, the dense `efc_J` (at the sparse
+  size the rows' chains and their values, `efc_J_rownnz`, `efc_J_rowadr`,
+  `efc_J_colind`, `efc_J`), `efc_aref`, `efc_D`, `efc_R`) and its outputs (`qacc`,
+  `efc_force`, `qfrc_constraint`, each iteration's statistics), so a test can hand
+  the solver MuJoCo's own inputs and compare its outputs bit for bit, whatever the
+  stages before it round. At jacobian="sparse" (MuJoCo's sparse products, and
+  Newton's sparse Hessian): Newton and CG for each mixed_rows cone and for
+  newton_box's tilted box; and under Newton a chain on the plane (a free sphere,
+  three links on four hinges below it, a second free sphere), each cone at four
+  velocities (seed 7). The elliptic condim-3
   variant also runs under CG with `ls_iterations` 1, and under CG and Newton with
   `tolerance` 1e-300 and iterations capped at 40: a mutant of the line search's exit
   at its iteration cap is caught by the first, one of its midpoint exit by CG's
@@ -123,6 +129,9 @@ with `niter` per island:
   with the warmstart disabled, where MuJoCo writes no efc_state: each row's state from
   its island's solve (iefc_state) and each step's iteration count per island.
 - statistics_cap: runs past mjNSOLVER (200) iterations (see `statistics_cap`).
+- pgs_scale: PGS's statistics scale, a two-hinge arm away from qpos0 (see `pgs_scale`).
+- islands_friction_key: a dof's friction-loss row and a tendon's of the same id, two
+  constraints and so two island edges (see `friction_key`).
 - islands_review: islands whose mass matrix couples their dofs (a two-link arm; a free
   body whose centre of mass is off its origin), under CG and at the sparse size under
   Newton, and noslip on with islands enabled, Newton and CG: the first forward's
@@ -319,6 +328,37 @@ MIXED_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 0, 0, 3.0]
 # ... and rolls about x and y too, so a condim-6 contact's five tangential
 # components are all nonzero.
 ROLLING_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 1.0, -0.7, 3.0]
+# A chain on the plane at the sparse size: a free sphere, three links on four
+# hinges below it, and a second free sphere, every body touching the plane.
+CHAIN = """<mujoco model="chain">
+  <option timestep="0.002" solver="Newton" cone="{cone}" jacobian="sparse">
+    <flag island="disable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="root" pos="0 0 0.06">
+      <freejoint/>
+      <geom type="sphere" size="0.07" mass="2" condim="{condim}"/>
+      <body name="l1" pos="0.07 0 0">
+        <joint type="hinge" axis="0 1 0"/>
+        <joint type="hinge" axis="0 0 1"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 -0.01" size="0.03" mass="0.7" condim="{condim}"/>
+        <body name="l2" pos="0.2 0 -0.01">
+          <joint type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.2 0.02 -0.015" size="0.03" mass="0.5" condim="{condim}"/>
+          <body name="l3" pos="0.2 0.02 -0.015">
+            <joint type="hinge" axis="1 0 0"/>
+            <geom type="sphere" size="0.035" mass="0.3" condim="{condim}"/>
+          </body>
+        </body>
+      </body>
+    </body>
+    <body name="ball2" pos="-0.4 0.1 0.049">
+      <freejoint/>
+      <geom type="sphere" size="0.05" mass="0.8" condim="{condim}"/>
+    </body>
+  </worldbody>
+</mujoco>"""
 # ... and with the sphere at a tenth of that speed, so its friction holds inside the cone.
 NOSLIP_STICK_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.05, 0.02, 0, 0, 0, 3.0]
 
@@ -935,6 +975,13 @@ def main():
         same[f"{solver}_box_sparse"] = same_input(NEWTON_BOX.format(iterations=100).replace(
             'iterations="100"', f'iterations="100" solver="{solver}" jacobian="sparse"'), None,
             census_start)
+    # The chain under Newton, each cone at four velocities (seed 7).
+    for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6)):
+        xml = CHAIN.format(cone=cone, condim=condim)
+        rng = np.random.default_rng(7)
+        nv = mujoco.MjModel.from_xml_string(xml).nv
+        for k in range(4):
+            same[f"Newton_chain_{cone}_{condim}_{k}"] = same_input(xml, list(rng.normal(0, 0.8, nv)))
     cases["same_input"] = same
     cases["islands_mixed"] = {
         f"{solver}_{cone}_{condim}": island_trajectory(

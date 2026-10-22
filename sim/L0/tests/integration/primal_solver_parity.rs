@@ -211,8 +211,10 @@ fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
     }
     data.efc_aref.copy_from_slice(&floats(&case["efc_aref"]));
     // sim-core's own regularization is MuJoCo's bit for bit, but in the
-    // condim-6 cases, whose torsional and rolling rows take P38's.
-    if !name.contains("_6") {
+    // condim-6 cases, whose torsional and rolling rows take P38's, and the
+    // chain's, whose bodies' and dofs' invweight0 round otherwise (ledger
+    // L223).
+    if !name.contains("_6") && !name.contains("_chain_") {
         assert_bits(
             &format!("{name} efc_R"),
             &data.efc_R,
