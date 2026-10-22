@@ -10,14 +10,11 @@ use sim_mjcf::load_model;
 // MJCF Fixtures
 // ============================================================================
 
-/// A single flex vertex resting on a tilted large box with friction.
-/// The box is tilted 30° about Y so gravity has a tangential component.
-/// With sufficient friction (μ=1.0), the vertex should decelerate.
-/// condim=3 → sliding friction (2 tangent directions).
-///
-/// Note: The collision geom is on a separate kinematic body (not world body)
-/// because flex vertices parented to the world body cannot collide with
-/// world-body geoms (parent-child filter in mj_collision_flex).
+/// A two-vertex cable lying across a tilted large box with friction, along
+/// the tilt axis: a flex collides through its elements, a cable's element a
+/// capsule between its vertices. The box is tilted 30° about Y so gravity
+/// has a tangential component. With sufficient friction (μ=1.0), the cable
+/// should decelerate. condim=3 → sliding friction (2 tangent directions).
 fn flex_vertex_on_tilted_plane_mjcf() -> &'static str {
     r#"
     <mujoco model="flex_friction_tilt">
@@ -28,11 +25,11 @@ fn flex_vertex_on_tilted_plane_mjcf() -> &'static str {
             </body>
         </worldbody>
         <deformable>
-            <flex name="point" dim="1" density="1.0" radius="0.01">
+            <flex name="rod" dim="1" density="1.0" radius="0.01">
                 <contact condim="3" friction="1.0 0.005 0.0001" solref="0.02 1.0"/>
                 <elasticity young="1e4"/>
-                <vertex pos="0 0 0.1"/>
-                <element data="0"/>
+                <vertex pos="0 0 0.1  0 0.05 0.1"/>
+                <element data="0 1"/>
             </flex>
         </deformable>
     </mujoco>
@@ -43,9 +40,6 @@ fn flex_vertex_on_tilted_plane_mjcf() -> &'static str {
 /// Vertices start within contact distance (z=0.002 < radius=0.005) so
 /// contacts are generated immediately. With condim=3 friction, contact
 /// constraint rows should include tangential components.
-///
-/// Note: Uses a box geom on a separate body because flex vertices parented
-/// to the world body skip collision with world-body geoms (parent-child filter).
 fn flex_cloth_friction_mjcf() -> &'static str {
     r#"
     <mujoco model="flex_cloth_friction">
@@ -69,9 +63,6 @@ fn flex_cloth_friction_mjcf() -> &'static str {
 
 /// Frictionless flex contact (condim=1) for comparison.
 /// Vertices start within contact distance (z=0.002 < radius=0.005).
-///
-/// Note: Uses a box geom on a separate body because flex vertices parented
-/// to the world body skip collision with world-body geoms (parent-child filter).
 fn flex_cloth_frictionless_mjcf() -> &'static str {
     r#"
     <mujoco model="flex_cloth_frictionless">
@@ -158,10 +149,12 @@ fn dt25_flex_friction_resists_sliding_on_tilted_plane() {
         }
     }
 
-    // With μ=1.0 on a 30° slope, static friction should hold the vertex.
-    // tan(30°) ≈ 0.577 < μ=1.0, so the Coulomb cone is not exceeded.
-    // The vertex should remain nearly stationary — any significant sliding
-    // indicates the friction projection is broken.
+    // With μ=1.0 on a 30° slope, static friction should hold the cable,
+    // which still rests on the box. tan(30°) ≈ 0.577 < μ=1.0, so the
+    // Coulomb cone is not exceeded. The cable should remain nearly
+    // stationary — any significant sliding indicates the friction projection
+    // is broken.
+    assert!(data.ncon > 0, "the cable rests on the box");
     let x_displacement = data.flexvert_xpos[0].x.abs();
     let y_displacement = data.flexvert_xpos[0].y.abs();
 

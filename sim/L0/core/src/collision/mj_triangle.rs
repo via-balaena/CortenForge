@@ -7,10 +7,6 @@
 //! functions of `mj_primitive` meet. Each contact's normal points from the
 //! geom to the element.
 
-// The flex collision driver calls these; until it is ported, only this
-// module's tests do.
-#![allow(dead_code)]
-
 use nalgebra::{Matrix3, Vector3};
 
 use super::mj_primitive::{

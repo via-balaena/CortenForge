@@ -32,7 +32,7 @@ use super::{SdfContact, SdfGrid};
 /// The collision pipeline calls `distance()` and `gradient()` for all
 /// point queries — these are the primary evaluation interface. The grid
 /// (`sdf_grid()`) is used by GPU compute shaders, SDF-vs-primitive
-/// contacts, and flex vertex collision.
+/// contacts, and a flex's vertices against a distance field.
 ///
 /// Shapes that provide `evaluate_interval()` enable octree-based contact
 /// detection (Tier 2), which replaces the O(N³) grid scan with adaptive
@@ -83,7 +83,8 @@ pub trait PhysicsShape: Send + Sync + std::fmt::Debug {
     /// The underlying SDF grid.
     ///
     /// Used by GPU compute shaders, SDF-vs-primitive contacts
-    /// (primitives.rs), and flex vertex collision (flex_narrow.rs).
+    /// (primitives.rs), and a flex's vertices against a distance field
+    /// (`collision/flex_rigid.rs`).
     fn sdf_grid(&self) -> &SdfGrid;
 
     /// The underlying SDF grid as a shared handle.

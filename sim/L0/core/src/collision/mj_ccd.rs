@@ -170,9 +170,6 @@ impl<'a> CcdObj<'a> {
     /// element's box's centre, `flexelem_aabb`; a vertex's position,
     /// `mjc_center`, `:95-115`), the flex's radius, and the margin, which its
     /// support adds itself.
-    // The flex collision driver calls this; until it is ported, only the
-    // tests do.
-    #[allow(dead_code)]
     pub(super) fn flex(vertices: &[[f64; 3]], center: [f64; 3], radius: f64, margin: f64) -> Self {
         let mut corners = [[0.0; 3]; 4];
         corners[..vertices.len()].copy_from_slice(vertices);
@@ -2755,9 +2752,6 @@ fn field_prisms(
 /// geom's own (`mjc_fixNormal`; `fix` that geom's type, position, turn and
 /// size, `None` without a geom). MuJoCo turns it only under native CCD, the
 /// one sim-core runs (registry `D-NATIVECCD`).
-// The flex collision driver calls this; until it is ported, only the tests
-// do.
-#[allow(dead_code)]
 pub(super) fn mjc_convex_elem(
     model: &Model,
     o1: &mut CcdObj<'_>,
@@ -2919,9 +2913,8 @@ fn ellipsoid_outside(nrm: &mut [f64; 3], pos: &[f64; 3], size: &[f64; 3]) -> boo
 /// unset (`engine_collision_gjk.c:304`), undefined in C; this prism is
 /// `mjc_ConvexHField`'s (`:1220`), margin 0, and `mj_triangle`'s
 /// `convex_route_contacts_as_mujoco` holds its contacts to the oracle's.
-// MuJoCo's arguments, the field and the element split out as sim-core holds them;
-// the flex collision driver calls this, until it is ported only the tests do.
-#[allow(clippy::too_many_arguments, dead_code)]
+// MuJoCo's arguments, the field and the element split out as sim-core holds them.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn mjc_hfield_elem(
     hfield: &HeightFieldData,
     size: &[f64; 4],

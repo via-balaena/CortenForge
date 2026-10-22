@@ -4,7 +4,6 @@
 //! and AABBs from joint positions. Corresponds to the position-stage of
 //! MuJoCo's `engine_core_smooth.c`.
 
-use crate::collision::narrow::GEOM_EPSILON;
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::{mju_dof_com, mju_inert_com};
 use crate::quat;
@@ -376,19 +375,4 @@ fn quat_array(q: &UnitQuaternion<f64>) -> [f64; 4] {
 
 fn add3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-/// Find closest point on line segment AB to point P.
-#[inline]
-pub fn closest_point_segment(a: Vector3<f64>, b: Vector3<f64>, p: Vector3<f64>) -> Vector3<f64> {
-    let ab = b - a;
-    let ap = p - a;
-    let ab_len_sq = ab.dot(&ab);
-
-    if ab_len_sq < GEOM_EPSILON {
-        return a; // Degenerate segment
-    }
-
-    let t = (ap.dot(&ab) / ab_len_sq).clamp(0.0, 1.0);
-    a + ab * t
 }

@@ -62,9 +62,6 @@ pub fn axis_angle_to_quat(axis: &[f64; 3], angle: f64) -> [f64; 4] {
 /// `mju_quatZ2Vec`, `engine_util_spatial.c:246-276`): the identity for a
 /// vector shorter than [`MJ_MINVAL`] or along +z, half a turn about x along
 /// −z.
-// The flex collision driver's capsules call this; until it is ported, only
-// the tests do.
-#[allow(dead_code)]
 pub fn quat_z2vec(vec: &[f64; 3]) -> [f64; 4] {
     let mut vn = *vec;
     if normalize3(&mut vn) < MJ_MINVAL {

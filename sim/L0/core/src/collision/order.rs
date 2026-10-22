@@ -77,13 +77,15 @@ pub(super) fn pair_place(model: &Model, contact: &mut Contact, pair: usize) -> L
     }
 }
 
-/// The place of a flex contact: a geom against a flex (MuJoCo takes the
-/// body's geoms in turn), two flexes, or a flex with itself. A flex is
-/// numbered after the bodies in a signature.
+/// The place of a flex contact: a geom against a flex, by the geom and then
+/// the element or vertex (`contactcompare`, `engine_collision_driver.c:
+/// 226-256`), two flexes, or a flex with itself. A flex is numbered after
+/// the bodies in a signature.
 pub(super) fn flex_place(model: &Model, contact: &Contact) -> ListPlace {
     let flex = |k: usize| contact.flex[k].map_or(0, |f| model.nbody + f);
     let (signature, flex_self, within) = if let Some(geom) = contact.geom[0] {
-        ((model.geom_body[geom], flex(1)), false, (geom, 0))
+        let object = contact.elem[1].or(contact.vert[1]).unwrap_or(0);
+        ((model.geom_body[geom], flex(1)), false, (geom, object))
     } else {
         let (f1, f2) = (flex(0), flex(1));
         ((f1.min(f2), f1.max(f2)), f1 == f2, (0, 0))
