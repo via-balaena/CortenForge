@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Generate the flex primitive golden from the unfused MuJoCo 3.5.0 oracle.
+
+Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
+
+    <workdir>/venv/bin/python -I sim/L0/tests/scripts/gen_flex_primitive_reference.py \\
+        sim/L0/tests/assets/golden/flex
+
+It refuses any other interpreter, as gen_census_golden.py does, and writes
+flex_primitives.json.
+
+The raw functions a geom meets a flex element through
+(engine_collision_driver.c:1890-1963) are not in MuJoCo's API, but a scene
+holding one geom and one element calls exactly one of them, so its contact
+list is that function's output after mj_setContact (which normalises the
+normal, mju_makeFrame). Each case: a geom (sphere, box or capsule, turned
+by a quaternion) and a flex of one element, a triangle (mjraw_SphereTriangle,
+mjraw_BoxTriangle, mjraw_CapsuleTriangle) or a cable's segment, the capsule
+mj_makeCapsule builds from its two vertices (with mju_quatZ2Vec), met by
+mjraw_SphereCapsule, mjraw_CapsuleCapsule or mjraw_CapsuleBox; the vertices
+on three (two) static bodies, so the element moves with nothing. Recorded:
+the geom's position, matrix and size, the vertices, the flex radius, the
+margin the driver passes (geom margin + flex margin), and each contact's
+distance, position and normal. Also mju_quatZ2Vec on its own, on vectors
+along +z, -z, tiny, and general.
+"""
+import os
+import sys
+
+import mujoco
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gen_census_golden import floats, oracle  # noqa: E402
+
+# (name, geom xml, vertices, flex radius, flex margin)
+TRI = [[-0.1, -0.1, 0.0], [0.1, -0.08, 0.01], [-0.02, 0.12, -0.005]]
+CASES = [
+    ("sphere_interior", '<geom type="sphere" size="0.03" pos="0.0 0.0 0.025"/>', TRI, 0.01, 0.0),
+    ("sphere_below", '<geom type="sphere" size="0.03" pos="0.01 -0.01 -0.03"/>', TRI, 0.01, 0.0),
+    ("sphere_edge", '<geom type="sphere" size="0.03" pos="0.0 -0.12 0.01"/>', TRI, 0.01, 0.0),
+    ("sphere_vertex", '<geom type="sphere" size="0.03" pos="0.12 -0.1 0.03"/>', TRI, 0.01, 0.0),
+    ("sphere_in_margin", '<geom type="sphere" size="0.03" pos="0.0 0.0 0.045" margin="0.004"/>', TRI, 0.01, 0.003),
+    ("sphere_apart", '<geom type="sphere" size="0.03" pos="0.0 0.0 0.2"/>', TRI, 0.01, 0.0),
+    ("sphere_degenerate", '<geom type="sphere" size="0.03" pos="0.0 0.0 0.02"/>',
+     [[-0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], 0.01, 0.0),
+    ("sphere_degenerate_near", '<geom type="sphere" size="0.03" pos="-0.09 0.0 0.02"/>',
+     [[-0.1, 0.0, 0.0], [0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], 0.01, 0.0),
+    ("box_resting", '<geom type="box" size="0.03 0.02 0.01" pos="0.0 0.0 0.015" quat="0.98 0.1 0.15 0.05"/>', TRI, 0.01, 0.0),
+    ("box_through", '<geom type="box" size="0.05 0.05 0.02" pos="0.01 0.0 0.0" quat="0.9 0.3 -0.2 0.1"/>', TRI, 0.01, 0.0),
+    ("box_margin", '<geom type="box" size="0.03 0.03 0.03" pos="0.0 0.0 0.045" margin="0.01"/>', TRI, 0.01, 0.0),
+    ("box_vertex_inside", '<geom type="box" size="0.03 0.03 0.03" pos="0.0 0.0 0.0"/>',
+     [[0.005, -0.004, 0.02], [0.15, 0.0, 0.08], [0.0, 0.15, 0.08]], 0.01, 0.0),
+    ("box_vertex_in_radius", '<geom type="box" size="0.03 0.03 0.03" pos="0.0 0.0 0.0"/>',
+     [[0.035, 0.0, 0.02], [0.15, 0.0, 0.08], [0.1, 0.15, 0.08]], 0.01, 0.0),
+    ("capsule_lying", '<geom type="capsule" size="0.02 0.05" pos="0.0 0.0 0.025" quat="0.7071 0 0.7071 0"/>', TRI, 0.01, 0.0),
+    ("capsule_upright", '<geom type="capsule" size="0.02 0.05" pos="0.01 0.0 0.075"/>', TRI, 0.01, 0.0),
+    ("capsule_vertex_on_axis", '<geom type="capsule" size="0.02 0.2" pos="0.11 -0.1 0.02" quat="0.7071 0.7071 0 0"/>', TRI, 0.01, 0.0),
+    ("capsule_vertex_past_end", '<geom type="capsule" size="0.02 0.09" pos="0.22 -0.08 0.02" quat="0.7071 0 0.7071 0"/>', TRI, 0.01, 0.0),
+    ("cable_sphere", '<geom type="sphere" size="0.03" pos="0.0 0.01 0.035"/>', [[-0.1, 0.0, 0.0], [0.1, 0.02, 0.01]], 0.01, 0.0),
+    ("cable_capsule", '<geom type="capsule" size="0.02 0.05" pos="0.0 0.0 0.025" quat="0.9 0.1 0.4 0.1"/>', [[-0.1, 0.0, 0.0], [0.1, 0.02, 0.01]], 0.01, 0.0),
+    ("cable_box", '<geom type="box" size="0.03 0.02 0.01" pos="0.0 0.0 0.02" quat="0.98 0.1 0.15 0.05"/>', [[-0.1, 0.0, 0.0], [0.1, 0.02, 0.01]], 0.01, 0.0),
+    ("cable_past_end", '<geom type="sphere" size="0.03" pos="0.135 0.02 0.01"/>', [[-0.1, 0.0, 0.0], [0.1, 0.02, 0.01]], 0.01, 0.0),
+    ("cable_vertical", '<geom type="sphere" size="0.03" pos="0.035 0.0 0.0"/>', [[0.0, 0.0, -0.1], [0.0, 0.0, 0.1]], 0.01, 0.0),
+    ("cable_downward", '<geom type="sphere" size="0.03" pos="0.035 0.0 0.0"/>', [[0.0, 0.0, 0.1], [0.0, 0.0, -0.1]], 0.01, 0.0),
+]
+Z2VEC = [[0, 0, 1], [0, 0, -2], [1e-17, 0, 0], [0.3, -0.4, 0.5], [0, 1e-20, 1], [-0.2, 0.1, -0.9]]
+
+
+def case(name, geom, verts, radius, fmargin):
+    bodies = "".join(f'<body name="v{i}" pos="{v[0]} {v[1]} {v[2]}"/>' for i, v in enumerate(verts))
+    names = " ".join(f"v{i}" for i in range(len(verts)))
+    dim = len(verts) - 1
+    named = geom.replace(' pos=', ' name="geom" pos=')
+    xml = (f'<mujoco><option gravity="0 0 0"/><worldbody>{bodies}'
+           f'<body name="g" pos="0 0 0"><freejoint/>{named}</body>'
+           f'</worldbody><deformable><flex name="f" dim="{dim}" body="{names}" '
+           f'vertex="{" ".join(["0 0 0"] * len(verts))}" element="{" ".join(map(str, range(len(verts))))}" '
+           f'radius="{radius}"><contact margin="{fmargin}" selfcollide="none" internal="false"/></flex>'
+           f'</deformable></mujoco>')
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    g = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "geom")
+    assert m.flex_elemnum[0] == 1 and m.ngeom == 1, name
+    cons = [{"dist": float(c.dist), "pos": floats(c.pos), "normal": floats(c.frame[:3]),
+             "elem": int(c.elem[1]), "geom": int(c.geom[0])} for c in d.contact[:d.ncon]]
+    assert all(c["geom"] == g and c["elem"] == 0 for c in cons), name
+    return {"name": name, "type": int(m.geom_type[g]), "pos": floats(d.geom_xpos[g]),
+            "mat": floats(d.geom_xmat[g]), "size": floats(m.geom_size[g]),
+            "vertices": [floats(v) for v in d.flexvert_xpos], "radius": float(m.flex_radius[0]),
+            "margin": float(m.geom_margin[g] + m.flex_margin[0]), "contacts": cons}
+
+
+def z2vec(v):
+    q = np.zeros(4)
+    mujoco.mju_quatZ2Vec(q, np.array(v, dtype=float))
+    return {"vec": floats(v), "quat": floats(q)}
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    import json
+    marker = oracle()
+    doc = {"oracle": marker, "cases": [case(*c) for c in CASES], "quat_z2vec": [z2vec(v) for v in Z2VEC]}
+    for c in doc["cases"]:
+        print(f'{c["name"]:24s} type {c["type"]} contacts {len(c["contacts"])}')
+    with open(os.path.join(sys.argv[1], "flex_primitives.json"), "w", encoding="utf-8") as f:
+        json.dump(doc, f, separators=(",", ":"))
+        f.write("\n")
+
+
+if __name__ == "__main__":
+    main()

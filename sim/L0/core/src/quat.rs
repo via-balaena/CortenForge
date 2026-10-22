@@ -58,6 +58,37 @@ pub fn axis_angle_to_quat(axis: &[f64; 3], angle: f64) -> [f64; 4] {
     }
 }
 
+/// The rotation taking the z axis to `vec`'s direction (MuJoCo
+/// `mju_quatZ2Vec`, `engine_util_spatial.c:246-276`): the identity for a
+/// vector shorter than [`MJ_MINVAL`] or along +z, half a turn about x along
+/// −z.
+// The flex collision driver's capsules call this; until it is ported, only
+// the tests do.
+#[allow(dead_code)]
+pub fn quat_z2vec(vec: &[f64; 3]) -> [f64; 4] {
+    let mut vn = *vec;
+    if normalize3(&mut vn) < MJ_MINVAL {
+        return [1.0, 0.0, 0.0, 0.0];
+    }
+    // `mji_cross(axis, z, vn)` and `mju_dot3(vn, z)`, z = (0, 0, 1).
+    let z = [0.0, 0.0, 1.0];
+    let mut axis = [
+        z[1] * vn[2] - z[2] * vn[1],
+        z[2] * vn[0] - z[0] * vn[2],
+        z[0] * vn[1] - z[1] * vn[0],
+    ];
+    let along = vn[0] * z[0] + vn[1] * z[1] + vn[2] * z[2];
+    let a = normalize3(&mut axis);
+    if a.abs() < MJ_MINVAL {
+        return if along < 0.0 {
+            [0.0, 1.0, 0.0, 0.0]
+        } else {
+            [1.0, 0.0, 0.0, 0.0]
+        };
+    }
+    axis_angle_to_quat(&axis, a.atan2(along))
+}
+
 /// The product `a * b` (MuJoCo `mju_mulQuat`, `engine_util_spatial.c:66-77`).
 pub fn mul_quat(a: &[f64; 4], b: &[f64; 4]) -> [f64; 4] {
     [
