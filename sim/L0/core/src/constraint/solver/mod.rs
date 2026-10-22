@@ -152,8 +152,38 @@ pub fn extract_qfrc_frictionloss(data: &mut Data, nv: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::elliptic_zone;
-    use crate::types::ConstraintState;
+    use nalgebra::{DMatrix, DVector};
+
+    use super::{compute_qfrc_constraint_from_efc, elliptic_zone};
+    use crate::types::{ConstraintState, ConstraintType, JacobianType};
+
+    /// `qfrc_constraint = J'·efc_force` after PGS and noslip is MuJoCo's
+    /// `mj_mulJacTVec`: a NaN force is added, along its row's chain at the
+    /// sparse size and over every dof at the dense size (`0·NaN`), and a
+    /// zero force is skipped.
+    #[test]
+    fn a_nan_force_reaches_its_row_s_dofs_as_mujoco_s() {
+        let mut model = crate::test_fixtures::hinge_chain(3);
+        let mut data = model.make_data();
+        // Rows: dofs 0 and 1, NaN; dof 2, 0.5; dof 0, 0.
+        data.efc_type = vec![ConstraintType::Equality; 3];
+        data.efc_J = DMatrix::from_row_slice(3, 3, &[1.0, 2.0, 0.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0]);
+        data.efc_J_rownnz = vec![2, 1, 1];
+        data.efc_J_rowadr = vec![0, 2, 3];
+        data.efc_J_colind = vec![0, 1, 2, 0];
+        data.efc_force = DVector::from_vec(vec![f64::NAN, 0.5, 0.0]);
+
+        model.jacobian = JacobianType::Sparse;
+        compute_qfrc_constraint_from_efc(&model, &mut data);
+        let q = data.qfrc_constraint.clone();
+        assert!(q[0].is_nan() && q[1].is_nan(), "sparse: {q:?}");
+        assert_eq!(q[2].to_bits(), 1.5_f64.to_bits(), "sparse: {q:?}");
+
+        model.jacobian = JacobianType::Dense;
+        compute_qfrc_constraint_from_efc(&model, &mut data);
+        let q = &data.qfrc_constraint;
+        assert!(q.iter().all(|x| x.is_nan()), "dense: {q:?}");
+    }
 
     /// At condim 6 the friction's norm is `mju_norm`'s, which sums in four
     /// lanes: on these forces it is one ulp below the sequential sum

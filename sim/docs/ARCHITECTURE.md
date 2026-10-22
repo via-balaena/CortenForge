@@ -99,7 +99,7 @@ sim-core/src/
 │   ├── acceleration.rs    # mj_fwd_acceleration (qacc = M⁻¹·f)
 │   └── check.rs           # Position/velocity limit checking
 ├── constraint/      # Constraint assembly + solver dispatch
-│   ├── mod.rs             # mj_fwd_constraint, island dispatch
+│   ├── mod.rs             # mj_fwd_constraint, solver dispatch
 │   ├── assembly.rs        # assemble_unified_constraints() orchestrator
 │   ├── chain.rs           # A row's dof chain at the sparse size
 │   ├── contact_assembly.rs # Contact constraint row assembly
@@ -108,7 +108,7 @@ sim-core/src/
 │   ├── impedance.rs       # Solver impedance (solref/solimp)
 │   ├── jacobian.rs        # Constraint Jacobian computation
 │   └── solver/            # PGS, the primal solver (Newton, CG), Noslip, QCQP
-│       ├── mod.rs         # Solver dispatch, PGS's row states
+│       ├── mod.rs         # Shared solver infrastructure
 │       ├── pgs.rs         # Projected Gauss-Seidel
 │       ├── primal.rs      # Newton and CG: MuJoCo's mj_solPrimal
 │       ├── sparse.rs      # The sparse Jacobian and Newton's sparse Hessian

@@ -329,7 +329,7 @@ MIXED_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 0, 0, 3.0]
 # components are all nonzero.
 ROLLING_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 1.0, -0.7, 3.0]
 # A chain on the plane at the sparse size: a free sphere, three links on four
-# hinges below it, and a second free sphere, every body touching the plane.
+# hinges below it, and a second free sphere.
 CHAIN = """<mujoco model="chain">
   <option timestep="0.002" solver="Newton" cone="{cone}" jacobian="sparse">
     <flag island="disable"/>
