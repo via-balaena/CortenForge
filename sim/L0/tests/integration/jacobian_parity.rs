@@ -355,3 +355,123 @@ fn flex_vertex_contact_row_moves_with_its_parent() {
     let z_slide = model.flexvert_dofadr[0] + 2;
     assert_eq!(row[(0, z_slide)], 1.0, "the vertical slide's column");
 }
+
+fn flex_golden() -> Value {
+    serde_json::from_str(include_str!("../assets/golden/flex/flex_jacobian.json"))
+        .expect("flex jacobian golden parses")
+}
+
+/// MuJoCo's id for a contact side's object: -1 for none.
+fn side(v: &Value, k: usize) -> Option<usize> {
+    usize::try_from(v[k].as_i64().expect("id")).ok()
+}
+
+/// A contact with a flex element on a side takes MuJoCo's general Jacobian
+/// (`engine_core_constraint.c:932-985`): each side's bodies with weights,
+/// an element's vertices' bodies weighted by their inverse distance to the
+/// contact (`mj_elemBodyWeight`, `:142-182`, the vertex on the other side
+/// left out), summed (`mj_jacSum`, `engine_core_util.c:503-573`). For
+/// MuJoCo's own contacts (`gen_flex_jacobian_reference.py`: a free sphere
+/// on a cloth's cell at condim 3 and 6, a box across one, a sphere on a
+/// cable's element, a thin tetrahedron's internal contacts, each flex after
+/// a cable; the elliptic cone, whose rows are the Jacobian's), each row bit
+/// for bit with MuJoCo's `efc_J`; at the sparse size MuJoCo's values at its
+/// columns, and nothing elsewhere. A rotational row at the sparse size is
+/// the dense size's (divergence `D-FLEX-SPARSE-ROT`: MuJoCo's sparse
+/// rotational rows of such a contact are other than its dense ones, which
+/// the test confirms).
+#[test]
+fn flex_contact_jacobians_match_mujoco_3_5_0_bit_for_bit() {
+    let golden = flex_golden();
+    let cases = golden["cases"].as_array().expect("cases");
+    for case in cases {
+        let name = case["name"].as_str().expect("name");
+        let dense_twin = name.strip_suffix("_sparse").map(|dense| {
+            cases
+                .iter()
+                .find(|c| c["name"].as_str() == Some(dense))
+                .expect("the dense twin")
+        });
+        let model = load_model(case["ours"].as_str().expect("ours")).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let nv = usize::try_from(case["nv"].as_u64().expect("nv")).expect("fits");
+        assert_eq!(model.nv, nv, "{name}: nv");
+        for (i, c) in case["contacts"]
+            .as_array()
+            .expect("contacts")
+            .iter()
+            .enumerate()
+        {
+            if c["efc_address"].as_i64().expect("efc_address") < 0 {
+                continue;
+            }
+            let frame = floats(&c["frame"]);
+            let dim = usize::try_from(c["dim"].as_u64().expect("dim")).expect("fits");
+            let contact = Contact {
+                pos: vec3(&c["pos"]),
+                normal: Vector3::from_column_slice(&frame[0..3]),
+                depth: 0.0,
+                geom: [side(&c["geom"], 0), side(&c["geom"], 1)],
+                flex: [side(&c["flex"], 0), side(&c["flex"], 1)],
+                elem: [side(&c["elem"], 0), side(&c["elem"], 1)],
+                vert: [side(&c["vert"], 0), side(&c["vert"], 1)],
+                friction: 1.0,
+                dim,
+                includemargin: 0.0,
+                mu: [1.0, 1.0, 0.005, 0.0001, 0.0001],
+                solref: [0.02, 1.0],
+                solreffriction: [0.0, 0.0],
+                solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+                frame: [
+                    Vector3::from_column_slice(&frame[3..6]),
+                    Vector3::from_column_slice(&frame[6..9]),
+                ],
+                regularized_mu: 0.0,
+            };
+            let j = compute_contact_jacobian(&model, &data, &contact);
+            let what = format!("{name} contact {i} (dim {dim})");
+            if let Some(rows) = c["rows"].as_array() {
+                for (r, row) in rows.iter().enumerate() {
+                    let colind: Vec<usize> = row["colind"]
+                        .as_array()
+                        .expect("colind")
+                        .iter()
+                        .map(|x| usize::try_from(x.as_u64().expect("col")).expect("fits"))
+                        .collect();
+                    let values = floats(&row["values"]);
+                    if r >= 3 {
+                        // A rotational row: MuJoCo's dense one, which MuJoCo's
+                        // sparse one is not (D-FLEX-SPARSE-ROT).
+                        let twin = dense_twin.expect("a dense twin for a rotational row");
+                        let dense = floats(&twin["contacts"][i]["efc_J"]);
+                        let want = &dense[r * nv..(r + 1) * nv];
+                        let ours_row: Vec<f64> = (0..nv).map(|col| j[(r, col)]).collect();
+                        assert_bits(&format!("{what} row {r}, MuJoCo's dense"), &ours_row, want);
+                        let sparse: Vec<f64> = (0..nv)
+                            .map(|col| {
+                                colind
+                                    .iter()
+                                    .position(|&c| c == col)
+                                    .map_or(0.0, |k| values[k])
+                            })
+                            .collect();
+                        assert_ne!(sparse, want, "{what} row {r}: drop D-FLEX-SPARSE-ROT");
+                        continue;
+                    }
+                    let ours: Vec<f64> = colind.iter().map(|&col| j[(r, col)]).collect();
+                    assert_bits(&format!("{what} row {r}"), &ours, &values);
+                    for col in (0..nv).filter(|col| !colind.contains(col)) {
+                        assert_eq!(
+                            j[(r, col)],
+                            0.0,
+                            "{what} row {r}: column {col} off the chain"
+                        );
+                    }
+                }
+            } else {
+                assert_bits(&what, &row_major(&j), &floats(&c["efc_J"]));
+            }
+        }
+    }
+}

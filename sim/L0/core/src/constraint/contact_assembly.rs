@@ -8,7 +8,7 @@
 
 use crate::constraint::chain::at_sparse_size;
 use crate::constraint::impedance::{MJ_MINVAL, checked_solreffriction};
-use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain};
+use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain, side_weights};
 use crate::types::{ConstraintType, Contact, Data, Model};
 
 use super::assembly::finalize_constraint_row;
@@ -57,7 +57,7 @@ pub(super) fn assemble_contact_rows(
         let is_pyramidal = dim >= 3 && model.cone == 0 && contact.mu[0] >= 1e-10;
 
         // Precompute contact bodyweight for DT-39
-        let bw_contact = compute_contact_bodyweight(model, contact);
+        let bw_contact = compute_contact_bodyweight(model, data, contact);
 
         if is_pyramidal {
             assemble_pyramidal_contact(
@@ -149,18 +149,14 @@ pub(super) fn regularize_cones(model: &Model, data: &mut Data, cones: &[(usize, 
 /// Contact bodyweight for DT-39 diagApprox: the two sides' bodies' mean
 /// translation and rotation weights (`body_invweight0`) added, as MuJoCo's
 /// `mj_diagApprox` (`engine_core_constraint.c:1208-1257`): a geom's body
-/// and a flex vertex's own body, each with weight 1.
-fn compute_contact_bodyweight(model: &Model, contact: &Contact) -> [f64; 2] {
+/// and a flex vertex's own body each with weight 1, a flex element's
+/// vertices' bodies with `mj_elemBodyWeight`'s weights.
+fn compute_contact_bodyweight(model: &Model, data: &Data, contact: &Contact) -> [f64; 2] {
     let mut weight = [0.0; 2];
-    for body in contact.bodies(model) {
-        match body {
-            Some(b) => {
-                weight[0] += model.body_invweight0[b][0];
-                weight[1] += model.body_invweight0[b][1];
-            }
-            // An element side's weights (`mj_elemBodyWeight`) come with the
-            // contact Jacobian's general case; no collision makes one before.
-            None => unreachable!("an element contact side before its weights"),
+    for side in 0..2 {
+        for (b, w) in side_weights(model, data, contact, side) {
+            weight[0] += model.body_invweight0[b][0] * w;
+            weight[1] += model.body_invweight0[b][1] * w;
         }
     }
     [weight[0].max(MJ_MINVAL), weight[1].max(MJ_MINVAL)]
