@@ -1,17 +1,10 @@
 //! Flex collision dispatcher — internal collision (adjacent elements).
 //!
-//! Narrowphase primitives live in `flex_narrow`, self-collision modes in
-//! `flex_self`.
+//! Narrowphase primitives live in `flex_narrow`.
 
 use super::flex_narrow::{make_contact_flex_flex, make_contact_flex_self, sphere_triangle_contact};
 use crate::types::{Data, Model};
 use nalgebra::Vector3;
-
-// Re-export public items so existing import paths in collision/mod.rs continue
-// to work without modification.
-pub use super::flex_self::{
-    mj_collide_flex_self_bvh, mj_collide_flex_self_narrow, mj_collide_flex_self_sap,
-};
 
 // =============================================================================
 // S6: Internal collision (adjacent elements)

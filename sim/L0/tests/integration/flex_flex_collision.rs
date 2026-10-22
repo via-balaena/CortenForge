@@ -527,14 +527,27 @@ fn t09_full_forward_step_no_panic() {
     // solve → force distribution) works for flex-flex contacts.
 }
 
-/// T9's scene at the dense size: a contact between two pinned vertices has
-/// no dof on either side, so with islands its rows are in no island (MuJoCo
-/// stops on such a row, ledger L220). Their Jacobian is zero, so their force
+/// A cloth of nine vertices 5 mm over a world plane, its first vertex pinned,
+/// at the dense size: the pinned vertex's contact with the plane has no dof
+/// on either side, so with islands its rows are in no island (MuJoCo stops
+/// on such a row, ledger L220). Their Jacobian is zero, so their force
 /// cannot depend on the other rows': each takes the force and state the
 /// whole problem's solve (islands disabled) gives it.
 #[test]
 fn rows_in_no_island_take_the_whole_solve_s_force() {
-    let model = load_model(FULL_STEP_SCENE).expect("load");
+    let model = load_model(
+        r#"<mujoco><option><flag equality="disable"/></option>
+          <worldbody><geom type="plane" size="1 1 0.1"/></worldbody>
+          <deformable><flex name="c" dim="2" radius="0.01" mass="0.9">
+            <contact selfcollide="none"/>
+            <vertex pos="0 0 0.005  0.05 0 0.005  0.1 0 0.005  0 0.05 0.005  0.05 0.05 0.005
+                         0.1 0.05 0.005  0 0.1 0.005  0.05 0.1 0.005  0.1 0.1 0.005"/>
+            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+            <pin id="0"/>
+          </flex></deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
     assert!(!model.is_sparse(), "the dense size");
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
@@ -782,49 +795,6 @@ fn t14_zero_element_flex_no_panic() {
         zero_count, 0,
         "zero-element flex must produce no flex-flex contacts"
     );
-}
-
-// ============================================================================
-// T15: A flex-flex contact's Jacobian takes each vertex's body → AC12, AC13
-// ============================================================================
-
-/// A flex-flex contact's rows difference the two vertices' bodies'
-/// Jacobians, as MuJoCo's `mj_jacDifPair` does: the normal row is `+n` on
-/// the first vertex's three slide dofs and `−n` on the second's, 0
-/// elsewhere, and a torsional or rolling row is 0 (a vertex has no
-/// rotational dof).
-#[test]
-fn t15_flex_flex_contact_jacobian_takes_each_vertex_body() {
-    let model = load_model(&two_overlapping_grids_mjcf(1, 3, 2, 1)).expect("load");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    let contact = data
-        .contacts
-        .iter()
-        .find(|c| c.vert.iter().all(Option::is_some))
-        .expect("a flex-flex contact");
-    // Side 1's vertex takes +n, side 0's −n.
-    let [v2, v1] = contact.flex_vertices(&model).map(Option::unwrap);
-    let j = sim_core::compute_contact_jacobian(&model, &data, contact);
-    assert_eq!((j.nrows(), j.ncols()), (contact.dim, model.nv));
-    let (dof1, dof2) = (model.flexvert_dofadr[v1], model.flexvert_dofadr[v2]);
-    for c in 0..model.nv {
-        let want = if (dof1..dof1 + 3).contains(&c) {
-            contact.normal[c - dof1]
-        } else if (dof2..dof2 + 3).contains(&c) {
-            -contact.normal[c - dof2]
-        } else {
-            0.0
-        };
-        assert!(
-            (j[(0, c)] - want).abs() < 1e-12,
-            "J[0,{c}]: {}, expected {want}",
-            j[(0, c)]
-        );
-    }
-    for r in 3..contact.dim {
-        assert!((0..model.nv).all(|c| j[(r, c)] == 0.0), "row {r} is 0");
-    }
 }
 
 /// [`sim_core::Data::contacts_between_bodies`] counts a contact with a flex

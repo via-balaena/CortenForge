@@ -1,17 +1,22 @@
-//! A flex against a flex, as MuJoCo collides them
-//! (`engine_collision_driver.c:346-412`, `:2002-2098`).
+//! A flex against a flex, and against itself, as MuJoCo collides them
+//! (`engine_collision_driver.c:346-412`, `:428-475`, `:1809-1861`,
+//! `:2002-2098`).
 //!
-//! With the midphase, the two flexes' hierarchies are descended together
+//! Two flexes: with the midphase, their hierarchies are descended together
 //! ([`collide_tree_flexes`]), each pair of leaves to the narrow phase;
 //! without it, every element of the first against every element of the
-//! second. Two elements meet unless their boxes are further apart than the
-//! margin or a vertex of one is on a body a vertex of the other is on: two
-//! cables' elements as capsules, any other two through the convex route.
-//! Each contact lists the first flex's element first, its normal toward the
-//! second's.
+//! second. A flex against itself, after every pair: its active elements
+//! through its own hierarchy, by sweep and prune, or each pair in turn, as
+//! its `selfcollide` and the midphase say. Two elements meet unless their
+//! boxes are further apart than the margin (none against itself) or a vertex
+//! of one is on a body a vertex of the other is on: two cables' elements as
+//! capsules, any other two through the convex route. Each contact lists the
+//! first element first, its normal toward the second.
 
 use nalgebra::Vector3;
 
+use super::broadphase::sweep_and_prune;
+use super::flex_collide::mj_collide_flex_internal;
 use super::midphase::{collide_tree_flexes, filter_box};
 use super::mj_ccd::{CcdObj, mjc_convex_elem};
 use super::mj_primitive::{Frame, RawContact, raw_capsule_capsule};
@@ -20,7 +25,7 @@ use super::order::{ListPlace, flex_place};
 use super::{
     ContactParams, assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flexes,
 };
-use crate::types::{Contact, DISABLE_MIDPHASE, Data, Model, disabled, make_frame};
+use crate::types::{Contact, DISABLE_MIDPHASE, Data, FlexSelfCollide, Model, disabled, make_frame};
 
 /// Collide flex `flex1` with flex `flex2`, a pair the broadphase passed, and
 /// list each contact's place (`mj_collision`,
@@ -56,6 +61,120 @@ pub(super) fn collide_flex_flex(
         places.push(flex_place(model, contact));
     }
     data.ncon = data.contacts.len();
+}
+
+/// Collide flex `f` with itself and list each contact's place (`mj_collision`,
+/// `engine_collision_driver.c:428-475`): a flex not rigid whose contype
+/// meets its own conaffinity, its internal collisions when `flex_internal`
+/// is set, then, unless its `selfcollide` is none, its active elements
+/// against each other: with the midphase and a hierarchy, through the
+/// hierarchy (`bvh`, or `auto` for a tetrahedral flex) or by sweep and prune
+/// (`sap`, or `auto` otherwise); else (`narrow`, or without the midphase)
+/// each pair in turn. The contacts keep the order made. `hits` and `stack`
+/// are scratch.
+pub(super) fn collide_flex_self(
+    model: &Model,
+    data: &mut Data,
+    places: &mut Vec<ListPlace>,
+    f: usize,
+    (hits, stack): (&mut Vec<(usize, usize)>, &mut Vec<(usize, usize)>),
+) {
+    if model.flex_rigid[f] || model.flex_contype[f] & model.flex_conaffinity[f] == 0 {
+        return;
+    }
+    let start = data.contacts.len();
+    if model.flex_internal[f] {
+        mj_collide_flex_internal(model, data, f);
+    }
+    if model.flex_selfcollide[f] != FlexSelfCollide::None {
+        collide_active_elements(model, data, f, (hits, stack));
+    }
+    for contact in &data.contacts[start..] {
+        places.push(flex_place(model, contact));
+    }
+    data.ncon = data.contacts.len();
+}
+
+/// Flex `f`'s active elements against each other, by its `selfcollide` mode
+/// (`:441-472`).
+fn collide_active_elements(
+    model: &Model,
+    data: &mut Data,
+    f: usize,
+    (hits, stack): (&mut Vec<(usize, usize)>, &mut Vec<(usize, usize)>),
+) {
+    let mode = model.flex_selfcollide[f];
+    let hierarchy = model.flex_bvhadr.get(f).copied().flatten().is_some();
+    if !disabled(model, DISABLE_MIDPHASE) && mode != FlexSelfCollide::Narrow && hierarchy {
+        if mode == FlexSelfCollide::Bvh || (mode == FlexSelfCollide::Auto && model.flex_dim[f] == 3)
+        {
+            hits.clear();
+            collide_tree_flexes(model, data, f, f, hits, stack);
+            for &(e1, e2) in hits.iter() {
+                collide_elems(model, data, (f, e1), (f, e2));
+            }
+        } else {
+            collide_flex_sap(model, data, f);
+        }
+    } else {
+        let active = active_elements(model, f);
+        for (i, &e1) in active.iter().enumerate() {
+            for &e2 in &active[i + 1..] {
+                collide_elems(model, data, (f, e1), (f, e2));
+            }
+        }
+    }
+}
+
+/// Flex `f`'s active elements (flex-local), in order.
+fn active_elements(model: &Model, f: usize) -> Vec<usize> {
+    (0..model.flex_elemnum[f])
+        .filter(|&e| model.flex_elem_active(f, e))
+        .collect()
+}
+
+/// `mj_collideFlexSAP` (`:1809-1861`): flex `f`'s active elements, by their
+/// boxes, swept and pruned along the longest axis of its hierarchy's root
+/// box (x unless another is longer, then y unless z is), at most 1,000,000
+/// pairs, each pair to the narrow phase. (From 65,536 active elements
+/// MuJoCo's `mj_SAP` refuses its input and `mj_collideFlexSAP` raises an
+/// error; this sweeps them.)
+fn collide_flex_sap(model: &Model, data: &mut Data, f: usize) {
+    let active = active_elements(model, f);
+    let Some(root) = model.flex_bvhadr.get(f).copied().flatten() else {
+        return;
+    };
+    if active.len() < 2 {
+        return;
+    }
+    let adr = model.flex_elemadr[f];
+    let aamm: Vec<[f64; 6]> = active
+        .iter()
+        .map(|&e| {
+            let b = &data.flexelem_aabb[adr + e];
+            [
+                b[0] - b[3],
+                b[1] - b[4],
+                b[2] - b[5],
+                b[0] + b[3],
+                b[1] + b[4],
+                b[2] + b[5],
+            ]
+        })
+        .collect();
+    let r = &data.bvh_aabb_dyn[root - model.nbvhstatic];
+    let axis = if r[3] > r[4] && r[3] > r[5] {
+        0
+    } else if r[4] > r[5] {
+        1
+    } else {
+        2
+    };
+    let mut pairs = sweep_and_prune(&aamm, axis);
+    pairs.truncate(1_000_000);
+    for (i, j) in pairs {
+        collide_elems(model, data, (f, active[i]), (f, active[j]));
+    }
 }
 
 /// `mj_collideElems` (`:2002-2098`): element `e1` of flex `f1` against

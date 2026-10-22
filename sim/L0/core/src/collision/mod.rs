@@ -13,7 +13,6 @@ pub(crate) mod flex_collide;
 mod flex_flex;
 pub(crate) mod flex_narrow;
 mod flex_rigid;
-pub(crate) mod flex_self;
 pub(crate) mod hfield;
 mod midphase;
 mod mj_ccd;
@@ -23,7 +22,6 @@ pub(crate) mod narrow;
 mod order;
 pub(crate) mod pair_convex;
 pub(crate) mod pair_cylinder;
-mod pairs;
 pub(crate) mod plane;
 pub(crate) mod sdf_collide;
 
@@ -46,13 +44,12 @@ use crate::types::{
 };
 
 use self::broadphase::{BodyGeoms, bodyflex_pairs, filter_sphere};
-use self::flex_flex::collide_flex_flex;
+use self::flex_flex::{collide_flex_flex, collide_flex_self};
 use self::flex_rigid::collide_body_flex;
 use self::hfield::collide_hfield_multi;
 use self::midphase::collide_tree;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
-use self::order::{ListPlace, Lister, flex_place, pair_place, type_ordered};
-use self::pairs::mj_collision_flex_self;
+use self::order::{ListPlace, Lister, pair_place, type_ordered};
 
 // ============================================================================
 // Collision affinity filtering
@@ -607,16 +604,14 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         }
     }
 
-    // Mechanism 4: flex self-collision (internal + non-adjacent)
-    mj_collision_flex_self(model, data);
+    // Each flex's collisions with itself, after every pair (`flex_flex`).
+    for f in 0..model.nflex {
+        let scratch = (&mut geom_pairs, &mut tree_stack);
+        collide_flex_self(model, data, &mut places, f, scratch);
+    }
 
     // List the contacts as MuJoCo does (`order`); the sort is stable, so a
     // pair's contacts keep the order its collision function made them in.
-    places.extend(
-        data.contacts[places.len()..]
-            .iter()
-            .map(|c| flex_place(model, c)),
-    );
     let mut ordered: Vec<(ListPlace, Contact)> =
         places.into_iter().zip(data.contacts.drain(..)).collect();
     ordered.sort_by_key(|(place, _)| *place);
