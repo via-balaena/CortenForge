@@ -6,6 +6,7 @@
 //! Called from [`super::assembly::assemble_unified_constraints`] during
 //! Phase 3f.
 
+use crate::constraint::chain::at_sparse_size;
 use crate::constraint::impedance::{MJ_MINVAL, checked_solreffriction};
 use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain};
 use crate::types::{ConstraintType, Contact, Data, Model};
@@ -40,7 +41,7 @@ pub(super) fn assemble_contact_rows(
         // At the sparse size a contact whose dof chain is empty (between
         // two objects without dofs) makes no rows, as MuJoCo's ("skip
         // contact if no DOFs affected", `engine_core_constraint.c:1028-1033`).
-        let chain = contact_chain(model, contact);
+        let chain = at_sparse_size(model, || contact_chain(model, contact));
         if model.is_sparse() && chain.is_empty() {
             continue;
         }

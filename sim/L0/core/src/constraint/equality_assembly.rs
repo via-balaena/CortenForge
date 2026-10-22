@@ -4,7 +4,7 @@
 //! Populates the equality rows in the unified `efc_*` arrays.
 //! Called from [`super::assembly::assemble_unified_constraints`] during Phase 3a.
 
-use crate::constraint::chain::{body_pair_chain, tendon_chain, union_chains};
+use crate::constraint::chain::{at_sparse_size, body_pair_chain, tendon_chain, union_chains};
 use crate::constraint::equality::{
     extract_connect_jacobian, extract_distance_jacobian, extract_joint_equality_jacobian,
     extract_tendon_equality_jacobian, extract_weld_jacobian,
@@ -44,7 +44,7 @@ pub(super) fn assemble_equality_rows(model: &Model, data: &mut Data, nv: usize, 
         // No rows when they are all zero, or at the sparse size when the
         // dof chain is empty (two bodies without dofs, say), as MuJoCo's
         // `mj_addConstraint` (`engine_core_constraint.c:255-283`).
-        let chain = equality_chain(model, data, eq_id);
+        let chain = at_sparse_size(model, || equality_chain(model, data, eq_id));
         let empty = if model.is_sparse() {
             chain.is_empty()
         } else {

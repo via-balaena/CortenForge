@@ -247,19 +247,21 @@ fn row_tree_pair(model: &Model, data: &Data, row: usize) -> Option<(Option<usize
 /// dense size its nonzero entries'. Dofs are numbered tree by tree, so each
 /// tree appears once.
 fn row_trees(model: &Model, data: &Data, row: usize) -> Vec<usize> {
-    let dofs: Vec<usize> = if model.is_sparse() {
-        let adr = data.efc_J_rowadr[row];
-        data.efc_J_colind[adr..adr + data.efc_J_rownnz[row]].to_vec()
-    } else {
-        (0..model.nv)
-            .filter(|&dof| data.efc_J[(row, dof)] != 0.0)
-            .collect()
-    };
     let mut trees: Vec<usize> = Vec::new();
-    for dof in dofs {
+    let mut add = |dof: usize| {
         let tree = model.dof_treeid[dof];
         if trees.last() != Some(&tree) {
             trees.push(tree);
+        }
+    };
+    if model.is_sparse() {
+        let adr = data.efc_J_rowadr[row];
+        for &dof in &data.efc_J_colind[adr..adr + data.efc_J_rownnz[row]] {
+            add(dof);
+        }
+    } else {
+        for dof in (0..model.nv).filter(|&dof| data.efc_J[(row, dof)] != 0.0) {
+            add(dof);
         }
     }
     trees

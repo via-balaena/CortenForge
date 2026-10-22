@@ -32,6 +32,16 @@ pub fn body_pair_chain(model: &Model, b1: usize, b2: usize) -> Vec<usize> {
     chain
 }
 
+/// `chain()` at the sparse size, where a row records its chain; nothing at
+/// the dense size, where no row does.
+pub fn at_sparse_size(model: &Model, chain: impl FnOnce() -> Vec<usize>) -> Vec<usize> {
+    if model.is_sparse() {
+        chain()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Tendon `t`'s dof chain (`ten_J_colind`, ascending).
 pub fn tendon_chain(data: &Data, nv: usize, t: usize) -> Vec<usize> {
     data.ten_J_colind[t * nv..t * nv + data.ten_J_rownnz[t]].to_vec()

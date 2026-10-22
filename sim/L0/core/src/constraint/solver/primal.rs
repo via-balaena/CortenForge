@@ -631,10 +631,14 @@ impl<'a> Primal<'a> {
         newton: bool,
     ) -> Self {
         let (nv, nefc) = (sub.dofs.len(), sub.rows.len());
-        let mut j = vec![0.0; nefc * nv];
-        for (lr, &r) in sub.rows.iter().enumerate() {
-            for (lc, &c) in sub.dofs.iter().enumerate() {
-                j[lr * nv + lc] = data.efc_J[(r, c)];
+        // The dense J, read at the dense size only (`sparse_j` at the sparse).
+        let mut j = Vec::new();
+        if !model.is_sparse() {
+            j = vec![0.0; nefc * nv];
+            for (lr, &r) in sub.rows.iter().enumerate() {
+                for (lc, &c) in sub.dofs.iter().enumerate() {
+                    j[lr * nv + lc] = data.efc_J[(r, c)];
+                }
             }
         }
         let gather_rows = |a: &[f64]| sub.rows.iter().map(|&r| a[r]).collect::<Vec<_>>();

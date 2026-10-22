@@ -9,7 +9,7 @@
 
 use nalgebra::{DMatrix, DVector};
 
-use crate::constraint::chain::tendon_chain;
+use crate::constraint::chain::{at_sparse_size, tendon_chain};
 use crate::constraint::impedance::{
     MJ_MINVAL, ball_limit_axis_angle, checked_solref, compute_diag_approx_exact, compute_impedance,
     compute_regularization,
@@ -394,7 +394,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
                 continue;
             }
             let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
-            let chain = tendon_chain(data, nv, t);
+            let chain = at_sparse_size(model, || tendon_chain(data, nv, t));
             finalize_constraint_row(
                 model,
                 data,
@@ -528,7 +528,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data) {
             let si = model.tendon_solimp_lim[t];
             let margin = model.tendon_margin[t];
             let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
-            let chain = tendon_chain(data, nv, t);
+            let chain = at_sparse_size(model, || tendon_chain(data, nv, t));
 
             // Lower tendon limit: dist = length - limit_min
             let dist_lower = length - limit_min;
