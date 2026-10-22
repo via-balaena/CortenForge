@@ -83,7 +83,8 @@ fn ours(case: &Value) -> Model {
 /// within it, and its first node past the bodies'), as MuJoCo's compiler
 /// makes them (`user_mesh.cc:4423-4671`): a cable, then a cloth, a 4 × 4 × 4
 /// grid of tetrahedra (layers 0 to 3, only layer 0 active), and the same
-/// grid with two layers active. A model derived again comes out the same.
+/// grid with two layers active. A model derived again comes out the same,
+/// and with a ground plane added its flexes keep their hierarchies.
 #[test]
 fn flex_layers_pairs_and_hierarchies_as_mujoco() {
     for case in golden()["cases"].as_array().expect("cases") {
@@ -94,11 +95,47 @@ fn flex_layers_pairs_and_hierarchies_as_mujoco() {
         let mut again = model.clone();
         again.recompute_derived().expect("recompute");
         again.compute_flex_bvhs();
-        assert_eq!(again.bvh_child, model.bvh_child, "{name}: derived again");
+        let flex_data = |m: &Model| {
+            (
+                m.bvh_child.clone(),
+                m.bvh_nodeid.clone(),
+                m.bvh_depth.clone(),
+                (m.nbvhstatic, m.nbvhdynamic),
+                (m.flex_bvhadr.clone(), m.flex_bvhnum.clone()),
+                m.flex_elemlayer.clone(),
+                (
+                    m.flex_evpair.clone(),
+                    m.flex_evpairadr.clone(),
+                    m.flex_evpairnum.clone(),
+                ),
+            )
+        };
         assert_eq!(
-            again.flex_evpair, model.flex_evpair,
+            flex_data(&again),
+            flex_data(&model),
             "{name}: derived again"
         );
+        // A ground plane joins the world's hierarchy; each flex's nodes
+        // follow the bodies' again, the same, and the model steps.
+        let mut grounded = model.clone();
+        grounded.add_ground_plane();
+        let tail = |m: &Model| {
+            let s = m.nbvhstatic;
+            (
+                m.bvh_child[s..].to_vec(),
+                m.bvh_nodeid[s..].to_vec(),
+                m.bvh_depth[s..].to_vec(),
+                m.flex_bvhnum.clone(),
+                m.flex_bvhadr
+                    .iter()
+                    .map(|a| a.map(|a| a - s))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(tail(&grounded), tail(&model), "{name}: with a ground plane");
+        let mut data = grounded.make_data();
+        data.forward(&grounded)
+            .expect("forward with a ground plane");
         assert_eq!(model.nflexelem, count(&case["nflexelem"]), "{name}");
         assert_eq!(
             model.nbvhdynamic,

@@ -53,7 +53,9 @@ impl Model {
     /// `geom_conaffinity`, `geom_margin`, `body_ipos` and `body_iquat`: a
     /// model edited in any of them afterwards keeps the hierarchies made
     /// before (as MuJoCo's compiled ones), and the midphase finds the pairs
-    /// those hold, until [`Self::recompute_derived`] runs again.
+    /// those hold, until [`Self::recompute_derived`] runs again. The flexes'
+    /// hierarchies, which follow the bodies' nodes, are dropped:
+    /// [`Self::compute_flex_bvhs`] appends them again.
     pub fn compute_body_bvhs(&mut self) {
         let mut geoms: Vec<Vec<usize>> = vec![Vec::new(); self.nbody];
         for (geom, &body) in self.geom_body.iter().enumerate() {
