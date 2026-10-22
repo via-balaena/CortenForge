@@ -243,7 +243,7 @@ Measured defects or gaps a section handed off and no section's commit list picke
 |---|---|---|---|---|---|
 | U01 | a limit sensor on an unlimited joint loads; MuJoCo refuses (`mjcf_sensors.rs:221`) | A6 §5.1, §5.3 | (a) | NO-ROW refusal kind; parity | L21 |
 | U02 | `step2` under an RK4 model ignores eulerdamp (qvel 2.6e-2 after 20 steps) | A7 §8 F2 | (a) | MuJoCo's `mj_step2` calls `mj_Euler` | P08a |
-| U03 | collision calls the unbounded `UnitQuaternion::from_matrix` (`narrow.rs:176-177`, `mesh_collide.rs:144-145`, `hfield.rs:82,86,111`, `flex_narrow.rs:165,210,224`); a NaN `geom_xmat` "not traced" | A5 §4.6 | (b) | same mechanism as the H1 hang | — |
+| U03 | collision calls the unbounded `UnitQuaternion::from_matrix` (`narrow.rs:176-177`, `mesh_collide.rs:144-145`, `hfield.rs:82,86,111`); a NaN `geom_xmat` "not traced" | A5 §4.6 | (b) | same mechanism as the H1 hang | — |
 | U04 | muscle force clamps use 1e-10, MuJoCo `mjMINVAL` 1e-15 | A11 §6 item 2 | (a) | parity | P33 |
 | U05 | `BiasType::Muscle` reads `gainprm`, MuJoCo `biasprm` | A11 §6 item 3 | (a) | parity | P33 |
 | U06 | a flex doc plus any `gravcomp` body panics at `rne.rs:357` | A20 §1B.5 | (a) | MuJoCo loads it | L10a |
