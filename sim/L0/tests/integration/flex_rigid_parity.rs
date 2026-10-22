@@ -90,6 +90,17 @@ fn rows_in_no_island_take_the_whole_solve_s_force() {
     }
 }
 
+/// A flex of nine vertices, all pinned, 1 m up and colliding with nothing:
+/// declared first, it numbers the next flex's elements and vertices past its
+/// own, which are on no tree.
+const PINNED_FIRST: &str = r#"<flex name="p" dim="2" radius="0.01">
+            <contact contype="0" conaffinity="0" selfcollide="none" internal="false"/>
+            <vertex pos="0 0 1  0.05 0 1  0.1 0 1  0 0.05 1  0.05 0.05 1  0.1 0.05 1
+                         0 0.1 1  0.05 0.1 1  0.1 0.1 1"/>
+            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+            <pin id="0 1 2 3 4 5 6 7 8"/>
+          </flex>"#;
+
 /// A box of 0.1 kg asleep (`sleep="init"`) on the floor, a flex triangle of
 /// 0.375 kg falling onto it from 2 mm (registry `D-FLEX-WAKE`): the
 /// triangle's contact wakes the box, as a geom's would, and after 200 steps
@@ -97,10 +108,10 @@ fn rows_in_no_island_take_the_whole_solve_s_force() {
 /// with a flex side (`mj_wakeCollision`, `engine_sleep.c:290-293`): with the
 /// box declared after the flex the box stays asleep and the triangle passes
 /// through it, with the box first MuJoCo stops (`gen_flex_rigid_reference.py`'s
-/// `mujoco_stops` asserts both).
+/// `mujoco_stops` asserts both). The triangle comes after [`PINNED_FIRST`].
 #[test]
 fn a_flex_contact_wakes_a_sleeping_body() {
-    let model = load_model(
+    let model = load_model(&format!(
         r#"<mujoco><option timestep="0.002"><flag equality="disable" sleep="enable"/></option>
           <worldbody>
             <geom type="plane" size="1 1 0.1"/>
@@ -109,13 +120,13 @@ fn a_flex_contact_wakes_a_sleeping_body() {
               <geom type="box" size="0.05 0.05 0.05"/>
             </body>
           </worldbody>
-          <deformable><flex name="t" dim="2" radius="0.01" mass="0.375">
+          <deformable>{PINNED_FIRST}<flex name="t" dim="2" radius="0.01" mass="0.375">
             <contact selfcollide="none" internal="false"/>
             <vertex pos="-0.02 -0.02 0.112  0.02 -0.02 0.112  0 0.02 0.112"/>
             <element data="0 1 2"/>
           </flex></deformable>
-        </mujoco>"#,
-    )
+        </mujoco>"#
+    ))
     .expect("load");
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
@@ -135,8 +146,8 @@ fn a_flex_contact_wakes_a_sleeping_body() {
     }
     assert_eq!(data.body_sleep_state[b], SleepState::Awake, "woken");
     let top = data.xpos[b].z + 0.05;
-    let lowest = data
-        .flexvert_xpos
+    let triangle = model.flex_vertadr[1]..model.flex_vertadr[1] + model.flex_vertnum[1];
+    let lowest = data.flexvert_xpos[triangle]
         .iter()
         .map(|x| x.z)
         .fold(f64::INFINITY, f64::min);
@@ -234,24 +245,24 @@ fn a_signed_distance_field_meets_each_flex_vertex() {
 /// A signed distance field on a body asleep (`sleep="init"`) under a cloth
 /// falling onto it from 5 mm beyond reach (registry `D-FLEX-WAKE`): the
 /// first contacts list a vertex, not an element, and wake the body in the
-/// step that makes them.
+/// step that makes them. The cloth comes after [`PINNED_FIRST`].
 #[test]
 fn a_flex_vertex_contact_wakes_a_sleeping_field() {
-    let mut model = load_model(
+    let mut model = load_model(&format!(
         r#"<mujoco><option timestep="0.002"><flag equality="disable" sleep="enable"/></option>
           <worldbody>
             <body name="b" pos="0 0 -0.085" sleep="init"><freejoint/>
               <geom type="sphere" size="0.065"/>
             </body>
           </worldbody>
-          <deformable><flex name="c" dim="2" radius="0.01">
+          <deformable>{PINNED_FIRST}<flex name="c" dim="2" radius="0.01">
             <contact selfcollide="none" internal="false" margin="0.005"/>
             <vertex pos="-0.05 -0.05 0  0 -0.05 0  0.05 -0.05 0  -0.05 0 0  0 0 0  0.05 0 0
                          -0.05 0.05 0  0 0.05 0  0.05 0.05 0"/>
             <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
           </flex></deformable>
-        </mujoco>"#,
-    )
+        </mujoco>"#
+    ))
     .expect("load");
     let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 0.065, 32, 0.02));
     model

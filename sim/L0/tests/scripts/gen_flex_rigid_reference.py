@@ -416,6 +416,8 @@ def mujoco_stops():
                 stopped = step
                 break
         assert stopped == stop_step, (body_last, stopped)
+        if stopped is None:
+            assert d.tree_asleep[m.body_treeid[b]] >= 0, "the sphere asleep"
     for body_last, stop_step in ((False, 11), (True, None)):
         m = mujoco.MjModel.from_xml_string(sleeping_box(body_last))
         d = mujoco.MjData(m)
@@ -430,8 +432,6 @@ def mujoco_stops():
         if stopped is None:
             top = d.xpos[b][2] + 0.05
             assert d.tree_asleep[m.body_treeid[b]] >= 0 and min(d.flexvert_xpos[:, 2]) < top - 0.05, top
-        if stopped is None:
-            assert d.tree_asleep[m.body_treeid[b]] >= 0, "the sphere asleep"
 
 
 def main():

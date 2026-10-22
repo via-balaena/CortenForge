@@ -402,13 +402,15 @@ def mujoco_condim_kept():
     """Registry D-FLEX-CONDIM: MuJoCo 3.5.0 takes a flex's condim of 2 as
     given (its compiler checks a geom's and a pair's condim,
     user_objects.cc:3651-3653, :5666-5668, not a flex's): the bent cable's
-    internal contacts, and a sphere's of condim 1 on a cloth, are of
-    dimension 2. Asserted each time the golden is made."""
+    internal contacts, a sphere's of condim 1 on a cloth, and a sphere's of
+    condim 3 on a cloth of priority 1, are of dimension 2. Asserted each time
+    the golden is made."""
     sphere = ('<body name="b" pos="0.025 0.025 0.035"><freejoint/>'
               '<inertial pos="0 0 0" mass="0.1" diaginertia="2e-5 3e-5 4e-5"/>'
               '<geom type="sphere" size="0.03" condim="1"/></body>')
     for rigid, flex in (("", (*CABLE_V, INTERNAL + ' condim="2"')),
-                        (sphere, (*CLOTH[:3], NONE + ' condim="2"'))):
+                        (sphere, (*CLOTH[:3], NONE + ' condim="2"')),
+                        (sphere.replace(' condim="1"', ""), (*CLOTH[:3], NONE + ' condim="2" priority="1"'))):
         _, _, m = documents(rigid, [DUMMY, flex], "", "", "")
         d = mujoco.MjData(m)
         mujoco.mj_forward(m, d)
