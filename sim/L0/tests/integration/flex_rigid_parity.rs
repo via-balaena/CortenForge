@@ -60,10 +60,12 @@ fn mj_type(t: ConstraintType) -> usize {
 }
 
 /// [`bits`] on macOS arm64, where the golden was made; elsewhere each entry
-/// within `1e-12 · max(1, |MuJoCo's|)`. On CI's Linux every case's `forward`
-/// and first step are MuJoCo's bit for bit, and four runs differ from the
-/// second step in the last bits (at most 1.07e-13 of the value by step 20);
-/// what differs between the platforms there has not been isolated.
+/// within `1e-12 · max(1, |MuJoCo's|)`, and a NaN never. In CI run
+/// 39766239505 (Linux) four cases' checkpoints after the first differed by
+/// up to 1.07e-13 of the value (step 20), past the 1e-13 the repository's
+/// other platform gates take; what differs between the platforms has not
+/// been isolated (ledger-L231). No CI job runs this crate on macOS, so the
+/// bit-for-bit branch runs locally only.
 fn run_bits(off: &mut Vec<String>, what: &str, got: &[f64], want: &[f64]) {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         bits(off, what, got, want);
@@ -78,12 +80,14 @@ fn run_bits(off: &mut Vec<String>, what: &str, got: &[f64], want: &[f64]) {
         return;
     }
     for (i, (a, b)) in got.iter().zip(want).enumerate() {
-        if (a - b).abs() > 1e-12 * b.abs().max(1.0) {
-            off.push(format!(
-                "{what}[{i}]: {a:e}, MuJoCo {b:e} (off {:e})",
-                a - b
-            ));
+        // Within the bound or pushed: a NaN is never within it.
+        if (a - b).abs() <= 1e-12 * b.abs().max(1.0) {
+            continue;
         }
+        off.push(format!(
+            "{what}[{i}]: {a:e}, MuJoCo {b:e} (off {:e})",
+            a - b
+        ));
     }
 }
 
@@ -247,8 +251,9 @@ fn rows(off: &mut Vec<String>, name: &str, model: &Model, data: &Data, case: &Va
 /// `forward`, then `qacc`, `qfrc_constraint`, `qfrc_spring` and
 /// `qfrc_passive`, and qpos, qvel and the contact count at the golden's
 /// checkpoints of a run, each bit for bit with MuJoCo's (a run's qpos and
-/// qvel as [`run_bits`]). A passive flex's contacts make no rows and push as
-/// springs (`mj_nc`'s exclude 4, `mj_contactPassive`).
+/// qvel after the first step as [`run_bits`]). A passive flex's contacts
+/// make no rows and push as springs (`mj_nc`'s exclude 4,
+/// `mj_contactPassive`).
 #[test]
 fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
     let golden = golden();
@@ -305,6 +310,7 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
         for step in 1..=last.expect("a checkpoint") {
             data.step(&model).expect("step");
             if let Some(c) = trajectory.get(&step.to_string()) {
+                let compare = if step == 1 { bits } else { run_bits };
                 let ncon = usize::try_from(c["ncon"].as_u64().expect("ncon")).expect("fits");
                 if data.contacts.len() != ncon {
                     off.push(format!(
@@ -312,13 +318,13 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
                         data.contacts.len()
                     ));
                 }
-                run_bits(
+                compare(
                     &mut off,
                     &format!("{name} step {step} qpos"),
                     data.qpos.as_slice(),
                     &floats(&c["qpos"]),
                 );
-                run_bits(
+                compare(
                     &mut off,
                     &format!("{name} step {step} qvel"),
                     data.qvel.as_slice(),
