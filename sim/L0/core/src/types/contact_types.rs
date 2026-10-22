@@ -66,7 +66,9 @@ pub struct Contact {
     pub vert: [Option<usize>; 2],
     /// Friction coefficient (combined from both geoms).
     pub friction: f64,
-    /// Contact dimension: 1 (frictionless), 3 (friction), 4 (elliptic), 6 (torsional).
+    /// Contact dimension (`mjContact::dim`): 1 (frictionless), 3 (sliding
+    /// friction), 4 (and torsional), 5 or 6 (and one or two rolling); 5 only
+    /// from a flex's condim.
     pub dim: usize,
     /// Distance threshold for constraint force onset.
     /// `includemargin = effective_margin - effective_gap`

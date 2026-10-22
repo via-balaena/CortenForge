@@ -23,6 +23,22 @@ fn golden() -> Value {
         .expect("flex self golden parses")
 }
 
+/// The golden of a body's geoms against a flex (`flex_rigid_parity.rs`'s).
+fn rigid_golden() -> Value {
+    serde_json::from_str(include_str!("../assets/golden/flex/flex_rigid.json"))
+        .expect("flex rigid golden parses")
+}
+
+/// The case `name` of `golden`.
+fn case<'a>(golden: &'a Value, name: &str) -> &'a Value {
+    golden["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("the golden's {name}"))
+}
+
 /// Each case of the golden as [`differences`] compares it.
 #[test]
 fn flexes_collide_with_each_other_as_mujoco() {
@@ -72,30 +88,41 @@ fn a_rigid_flex_does_not_collide_with_itself() {
     assert_eq!(ncon, 0, "a rigid flex: no contact with itself");
 }
 
-/// An elliptic cone of condim 4 or 6 on a flex's contacts at the dense size
-/// with islands (registry `D-FLEX-NO-TREE`): neither side has a rotational
-/// dof, so the torsional and rolling rows reach no tree, and MuJoCo 3.5.0
-/// stops (`gen_flex_self_reference.py`'s `mujoco_cone_stops`). sim-core puts
-/// those rows in their contact's island and steps on: each golden case
-/// recorded without islands, run with them, keeps every contact's rows in
-/// one island, and its acceleration within 1e-8 of MuJoCo's without islands.
+/// An elliptic cone of condim 4, 5 or 6 on a flex's contacts at the dense
+/// size with islands (registry `D-FLEX-NO-TREE`): where neither side turns,
+/// the torsional and rolling rows reach no tree, and MuJoCo 3.5.0 stops
+/// (`gen_flex_self_reference.py`'s `mujoco_cone_stops`,
+/// `gen_flex_rigid_reference.py`'s `mujoco_stops`). sim-core puts those rows
+/// in their contact's island and steps on: each golden case recorded without
+/// islands (a flex's own contacts, two flexes', two such pairs apart, and a
+/// world plane's under a cloth), run with them, keeps every contact's rows
+/// in one island, and its acceleration within 1e-8 of MuJoCo's without
+/// islands.
 #[test]
 fn an_elliptic_cone_s_rows_stay_in_their_contact_s_island() {
-    let golden = golden();
-    let mut cases = 0;
-    for case in golden["cases"].as_array().expect("cases") {
+    let (golden, rigid) = (golden(), rigid_golden());
+    let cases: Vec<&Value> = golden["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .filter(|c| c["name"].as_str().expect("name").ends_with("_no_islands"))
+        .chain([case(&rigid, "plane_cloth_elliptic_condim4_no_islands")])
+        .collect();
+    assert_eq!(cases.len(), 6, "the goldens' cases without islands");
+    for case in cases {
         let name = case["name"].as_str().expect("name");
-        if !name.ends_with("_no_islands") {
-            continue;
-        }
-        cases += 1;
         let ours = case["ours"].as_str().expect("ours");
         let with_islands = ours.replace(r#" island="disable""#, "");
         assert_ne!(with_islands, ours, "{name}: the island flag");
         let model = load_model(&with_islands).expect("load");
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
-        assert!(data.nisland > 0, "{name}: islands");
+        let islands = match name {
+            "two_pairs_elliptic_condim4_no_islands" => 2,
+            "plane_cloth_elliptic_condim4_no_islands" => 9,
+            _ => 1,
+        };
+        assert_eq!(data.nisland, islands, "{name}: islands");
         for row in 0..data.efc_type.len() {
             assert!(data.efc_island[row] >= 0, "{name}: row {row} in an island");
             let same = row > 0
@@ -117,7 +144,6 @@ fn an_elliptic_cone_s_rows_stay_in_their_contact_s_island() {
             );
         }
     }
-    assert_eq!(cases, 3, "the golden's cases without islands");
 }
 
 /// A pinned vertex is a body of its own in sim-mjcf, on its parent body in
@@ -196,34 +222,43 @@ fn pinned_vertices_are_their_own_bodies() {
     }
 }
 
-/// A flex's condim of 2 or 5 is taken as 3 (registry `D-FLEX-CONDIM`), where
-/// MuJoCo 3.5.0 makes contacts of that dimension
+/// A flex's condim of 2 is taken as 3 (registry `D-FLEX-CONDIM`), where
+/// MuJoCo 3.5.0 makes contacts of dimension 2
 /// (`gen_flex_self_reference.py`'s `mujoco_condim_kept`): the golden's bent
-/// cable's internal contacts.
+/// cable's internal contacts, and the rigid golden's sphere, of condim 1, on
+/// a cloth.
 #[test]
-fn a_flex_condim_of_2_or_5_is_taken_as_3() {
-    let golden = golden();
-    let case = golden["cases"]
-        .as_array()
-        .expect("cases")
-        .iter()
-        .find(|c| c["name"] == "cable_v_internal")
-        .expect("the bent cable");
-    let ours = case["ours"].as_str().expect("ours");
-    let internal = r#"selfcollide="none" internal="true"/>"#;
-    assert_eq!(ours.matches(internal).count(), 1, "the cable's contact");
-    for condim in [2, 5] {
-        let xml = ours.replace(
-            internal,
-            &format!(r#"selfcollide="none" internal="true" condim="{condim}"/>"#),
-        );
+fn a_flex_condim_of_2_is_taken_as_3() {
+    let (golden, rigid) = (golden(), rigid_golden());
+    let cable = case(&golden, "cable_v_internal")["ours"]
+        .as_str()
+        .expect("ours");
+    let sphere = case(&rigid, "sphere_cloth")["ours"].as_str().expect("ours");
+    let flex = r#"selfcollide="none" internal="#;
+    let geom = r#"<geom type="sphere" size="0.03"/>"#;
+    assert_eq!(cable.matches(flex).count(), 1, "the cable's contact");
+    assert_eq!(sphere.matches(flex).count(), 1, "the cloth's contact");
+    assert_eq!(sphere.matches(geom).count(), 1, "the sphere");
+    let documents = [
+        (
+            "the cable",
+            cable.replace(flex, &format!(r#"condim="2" {flex}"#)),
+        ),
+        (
+            "the sphere",
+            sphere
+                .replace(flex, &format!(r#"condim="2" {flex}"#))
+                .replace(geom, r#"<geom type="sphere" size="0.03" condim="1"/>"#),
+        ),
+    ];
+    for (name, xml) in documents {
         let model = load_model(&xml).expect("load");
         let mut data = model.make_data();
         data.forward(&model).expect("forward");
-        assert!(data.ncon > 0, "condim {condim}: the cable's contacts");
+        assert!(data.ncon > 0, "{name}: contacts");
         assert!(
             data.contacts.iter().all(|c| c.dim == 3),
-            "condim {condim}: dimension 3"
+            "{name}: dimension 3"
         );
     }
 }

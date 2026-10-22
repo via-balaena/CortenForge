@@ -5,8 +5,8 @@
 //! cycle mechanism. Corresponds to MuJoCo's `engine_sleep.c`.
 
 use crate::types::{
-    ActuatorTransmission, Data, ENABLE_SLEEP, EqualityType, MIN_AWAKE, MjObjectType, MjSensorType,
-    Model, SleepPolicy, SleepState,
+    ActuatorTransmission, Contact, Data, ENABLE_SLEEP, EqualityType, MIN_AWAKE, MjObjectType,
+    MjSensorType, Model, SleepPolicy, SleepState,
 };
 
 // ---------------------------------------------------------------------------
@@ -460,38 +460,56 @@ pub fn mj_wake(model: &Model, data: &mut Data) -> bool {
 }
 
 /// Wake the sleeping trees an awake tree touches (MuJoCo `mj_wakeCollision`,
-/// `:279-329`): geom–geom contacts only, a static partner waking nothing; the
-/// woken cycle takes the awake tree's countdown. Reads the sleep arrays,
-/// which the caller refreshes when it returns `true`.
+/// `:279-329`): a static partner wakes nothing; the woken cycle takes the
+/// awake tree's countdown. A contact with a flex side wakes too, where
+/// MuJoCo's skips it (`:290-293`, registry `D-FLEX-WAKE`), the side's trees
+/// being its element's or vertex's bodies'. Reads the sleep arrays, which the
+/// caller refreshes when it returns `true`.
 pub fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
     if model.enableflags & ENABLE_SLEEP == 0 {
         return false;
     }
     let mut woke = false;
+    let mut trees = Vec::new();
     for c in 0..data.ncon {
-        // A contact with a flex side wakes nothing (`engine_sleep.c:290-293`).
-        let Some((geom1, geom2)) = data.contacts[c].geoms() else {
+        contact_trees(model, &data.contacts[c], &mut trees);
+        let Some(&awake) = trees.iter().find(|&&t| data.tree_awake[t]) else {
             continue;
-        };
-        let tree_of = |geom: usize| {
-            Some(model.body_treeid[model.geom_body[geom]]).filter(|&t| t < model.ntree)
-        };
-        let (Some(tree1), Some(tree2)) = (tree_of(geom1), tree_of(geom2)) else {
-            continue;
-        };
-        let (awake1, awake2) = (data.tree_awake[tree1], data.tree_awake[tree2]);
-        if awake1 == awake2 {
-            continue;
-        }
-        let (sleeping, awake) = if awake1 {
-            (tree2, tree1)
-        } else {
-            (tree1, tree2)
         };
         let wakeval = data.tree_asleep[awake];
-        woke |= mj_wake_tree(&mut data.tree_asleep, sleeping, wakeval) > 0;
+        for &tree in trees.iter().filter(|&&t| !data.tree_awake[t]) {
+            woke |= mj_wake_tree(&mut data.tree_asleep, tree, wakeval) > 0;
+        }
     }
     woke
+}
+
+/// The distinct trees a contact's sides are on, side 0's first, into
+/// `trees`: a geom's body's, a flex element's vertices' bodies' or a flex
+/// vertex's body's; a static body is on none.
+fn contact_trees(model: &Model, contact: &Contact, trees: &mut Vec<usize>) {
+    trees.clear();
+    let mut add = |body: usize| {
+        let tree = model.body_treeid[body];
+        if tree < model.ntree && !trees.contains(&tree) {
+            trees.push(tree);
+        }
+    };
+    for side in 0..2 {
+        if let Some(geom) = contact.geom[side] {
+            add(model.geom_body[geom]);
+        } else if let Some(f) = contact.flex[side] {
+            if let Some(e) = contact.elem[side] {
+                let global = model.flex_elemadr[f] + e;
+                let adr = model.flexelem_dataadr[global];
+                for &v in &model.flexelem_data[adr..adr + model.flexelem_datanum[global]] {
+                    add(model.flexvert_bodyid[v]);
+                }
+            } else if let Some(v) = contact.vert[side] {
+                add(model.flexvert_bodyid[model.flex_vertadr[f] + v]);
+            }
+        }
+    }
 }
 
 /// Check if a tendon's limit constraint is active (§16.13.2).

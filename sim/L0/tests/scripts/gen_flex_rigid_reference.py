@@ -109,6 +109,11 @@ CASES = {
     # No cable: the broadphase's axes are the cloth's and the sphere's, and the
     # sphere's box clears the cloth's vertices by less than the flex's radius.
     "sphere_cloth_alone": (SPHERE, [CLOTH], "", "", ""),
+    # A flex's condim of 5 (MuJoCo's compiler leaves a flex's unchecked): the
+    # cloth's against the sphere's 3, five rows a contact.
+    "sphere_cloth_condim5": (SPHERE, (*grid(3, 0.1, 0.0)[:3], NONE + ' condim="5"'), "", "", ""),
+    "sphere_cloth_elliptic_condim5": (SPHERE, (*grid(3, 0.1, 0.0)[:3], NONE + ' condim="5"'),
+                                      'cone="elliptic"', "", ""),
     "box_cloth": (body("0.03 0.02 0.025", '<geom type="box" size="0.03 0.02 0.02" condim="4"/>',
                        "0.98 0.1 0.15 0.05"), CLOTH, "", "", ""),
     "capsule_cloth": (body("0.01 0.03 0.025", '<geom type="capsule" size="0.02 0.04"/>', "0.7071 0.7071 0 0"),
@@ -148,6 +153,12 @@ CASES = {
     "plane_cloth": ('<geom type="plane" size="2 2 0.1"/>', (*grid(3, 0.05, 0.005)[:3], NONE), "", "", ""),
     "plane_cloth_no_midphase": ('<geom type="plane" size="2 2 0.1"/>', (*grid(3, 0.05, 0.005)[:3], NONE),
                                 "", 'midphase="disable"', ""),
+    # An elliptic cone of condim 4 at the dense size: neither the plane nor a
+    # vertex turns, so each contact's torsional row reaches no tree and with
+    # islands MuJoCo stops (mujoco_stops); recorded without islands.
+    "plane_cloth_elliptic_condim4_no_islands": ('<geom type="plane" size="2 2 0.1"/>',
+                                                (*grid(3, 0.05, 0.005)[:3], NONE + ' condim="4"'),
+                                                'jacobian="dense" cone="elliptic"', 'island="disable"', ""),
     "plane_gap_cloth": ('<body name="ground"><geom type="plane" size="2 2 0.1"/></body>',
                         (*grid(3, 0.05, 0.02)[:3], NONE + ' margin="0.02" gap="0.015"'), "", "", ""),
     # A passive flex (mj_nc's exclude 4, mj_contactPassive): its contacts make
@@ -343,17 +354,39 @@ def sleeping_sphere(body_last):
     return mj
 
 
+def sleeping_box(body_last):
+    """MuJoCo's document of a box of 0.1 kg asleep on the floor (sleep="init")
+    under a flex triangle of 0.375 kg 2 mm above it, the box's body declared
+    first or last; flex_rigid_parity.rs's a_flex_contact_wakes_a_sleeping_body
+    is sim-core's."""
+    box = ('<body name="b" pos="0 0 0.05" quat="1 0 0 0" sleep="init"><freejoint/>' + INERTIAL
+           + '<geom type="box" size="0.05 0.05 0.05"/></body>')
+    tri = ([[-0.02, -0.02, 0.112], [0.02, -0.02, 0.112], [0.0, 0.02, 0.112]], [0, 1, 2], 2,
+           'selfcollide="none" internal="false"')
+    mj, _, _ = documents('<geom type="plane" size="1 1 0.1"/>' + box, [tri], "", 'sleep="enable"', "")
+    if body_last:
+        assert mj.count(box) == 1
+        mj = mj.replace(box, "").replace("</worldbody>", box + "</worldbody>")
+    return mj
+
+
 def mujoco_stops():
-    """Registry D-FLEX-NO-TREE and D-FLEX-SLEEP-ISLAND, where MuJoCo 3.5.0
+    """Registry D-FLEX-NO-TREE and D-FLEX-WAKE, where MuJoCo 3.5.0
     raises an error its own source marks SHOULD NOT OCCUR. The pinned cloth:
     at the dense size with islands mj_forward raises (treeFirst, "no tree
     found", engine_island.c:271-277; the pinned vertex's contact has no dof
     on either side); without islands, and at the sparse size (the contact
-    excluded, mj_instantiateContact's exclude 3), it runs. A sphere asleep
+    excluded, mj_instantiateContact's exclude 3), it runs. The plane under a
+    cloth of condim 4 (plane_cloth_elliptic_condim4_no_islands), with
+    islands: an elliptic cone stops (each contact's torsional row reaches no
+    tree), a pyramidal one runs. A sphere asleep
     under an awake cloth: its body declared first, mj_step raises at the
     sixth step ("found sleeping tree", engine_sleep.c:542; mj_wakeCollision
     skips a contact with a flex side); declared last, 59 steps run, the
-    sphere asleep. Asserted each time the golden is made."""
+    sphere asleep. A box asleep on the floor under a flex triangle
+    (sleeping_box): declared first, mj_step raises at the eleventh step;
+    declared last, after 200 steps the box is asleep and the triangle more
+    than 5 cm below its top. Asserted each time the golden is made."""
     def raises(f):
         try:
             f()
@@ -366,6 +399,12 @@ def mujoco_stops():
         assert not mujoco.mj_isSparse(m) or option, (option, flag)
         err = raises(lambda: mujoco.mj_forward(m, d))
         assert (err is not None and "no tree found" in err) == stops, (option, flag, err)
+    rigid, flex, option, _, asset = CASES["plane_cloth_elliptic_condim4_no_islands"]
+    for cone, stops in (('cone="elliptic"', True), ('cone="pyramidal"', False)):
+        m = documents(rigid, flex, option.replace('cone="elliptic"', cone), "", asset)[2]
+        d = mujoco.MjData(m)
+        err = raises(lambda: mujoco.mj_forward(m, d))
+        assert (err is not None and "no tree found" in err) == stops, (cone, err)
     for body_last, stop_step in ((False, 6), (True, None)):
         m = mujoco.MjModel.from_xml_string(sleeping_sphere(body_last))
         d = mujoco.MjData(m)
@@ -377,6 +416,20 @@ def mujoco_stops():
                 stopped = step
                 break
         assert stopped == stop_step, (body_last, stopped)
+    for body_last, stop_step in ((False, 11), (True, None)):
+        m = mujoco.MjModel.from_xml_string(sleeping_box(body_last))
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "b")
+        stopped = None
+        for step in range(1, 201):
+            if raises(lambda: mujoco.mj_step(m, d)) is not None:
+                stopped = step
+                break
+        assert stopped == stop_step, (body_last, stopped)
+        if stopped is None:
+            top = d.xpos[b][2] + 0.05
+            assert d.tree_asleep[m.body_treeid[b]] >= 0 and min(d.flexvert_xpos[:, 2]) < top - 0.05, top
         if stopped is None:
             assert d.tree_asleep[m.body_treeid[b]] >= 0, "the sphere asleep"
 

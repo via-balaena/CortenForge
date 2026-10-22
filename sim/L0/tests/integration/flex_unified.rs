@@ -3829,8 +3829,7 @@ fn contacts_between_bodies_count_a_flex_vertex_by_its_body() {
 /// A tetrahedral flex as written, `(0,0,0) (1,0,0) (0,1,0) (0,0,1)`, `0 1 2
 /// 3`, loads with its vertices 1 and 2 swapped, as MuJoCo 3.5.0's compiler
 /// turns a tetrahedron so its faces' right-handed normals point out
-/// (`user_mesh.cc:4272-4293`; MuJoCo's `flex_elem` for this document is
-/// `[0, 2, 1, 3]`, the golden `flex_self.json`'s `right_handed_tet_internal`).
+/// (`user_mesh.cc:4272-4293`).
 #[test]
 fn flex_tet_reoriented_as_mujoco() {
     let model =

@@ -90,30 +90,29 @@ fn rows_in_no_island_take_the_whole_solve_s_force() {
     }
 }
 
-/// A sphere asleep (`sleep="init"`) under an awake cloth whose elements
-/// reach it (registry `D-FLEX-SLEEP-ISLAND`): MuJoCo 3.5.0 wakes no tree for a
-/// contact with a flex (`mj_wakeCollision`, `engine_sleep.c:290-293`), and
-/// then raises an error at its sixth step when the sphere's tree comes first
-/// in its island (`:542`, as here, sim-mjcf numbering a flex's vertex bodies
-/// after every body); with the sphere declared after the cloth it steps on,
-/// the sphere asleep (`gen_flex_rigid_reference.py`'s `mujoco_stops` asserts
-/// both). sim-core steps on, as MuJoCo in the second order: the sphere stays
-/// asleep where it was, touching the cloth.
+/// A box of 0.1 kg asleep (`sleep="init"`) on the floor, a flex triangle of
+/// 0.375 kg falling onto it from 2 mm (registry `D-FLEX-WAKE`): the
+/// triangle's contact wakes the box, as a geom's would, and after 200 steps
+/// the triangle rests on its top. MuJoCo 3.5.0 wakes no tree for a contact
+/// with a flex side (`mj_wakeCollision`, `engine_sleep.c:290-293`): with the
+/// box declared after the flex the box stays asleep and the triangle passes
+/// through it, with the box first MuJoCo stops (`gen_flex_rigid_reference.py`'s
+/// `mujoco_stops` asserts both).
 #[test]
-fn a_sleeping_body_under_an_awake_flex_steps_on() {
+fn a_flex_contact_wakes_a_sleeping_body() {
     let model = load_model(
         r#"<mujoco><option timestep="0.002"><flag equality="disable" sleep="enable"/></option>
           <worldbody>
-            <body name="b" pos="0.025 0.025 -0.0405" sleep="init"><freejoint/>
+            <geom type="plane" size="1 1 0.1"/>
+            <body name="b" pos="0 0 0.05" sleep="init"><freejoint/>
               <inertial pos="0 0 0" mass="0.1" diaginertia="2e-5 3e-5 4e-5"/>
-              <geom type="sphere" size="0.03"/>
+              <geom type="box" size="0.05 0.05 0.05"/>
             </body>
           </worldbody>
-          <deformable><flex name="c" dim="2" radius="0.01" mass="1.125">
+          <deformable><flex name="t" dim="2" radius="0.01" mass="0.375">
             <contact selfcollide="none" internal="false"/>
-            <vertex pos="-0.1 -0.1 0  0 -0.1 0  0.1 -0.1 0  -0.1 0 0  0 0 0  0.1 0 0
-                         -0.1 0.1 0  0 0.1 0  0.1 0.1 0"/>
-            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+            <vertex pos="-0.02 -0.02 0.112  0.02 -0.02 0.112  0 0.02 0.112"/>
+            <element data="0 1 2"/>
           </flex></deformable>
         </mujoco>"#,
     )
@@ -124,32 +123,26 @@ fn a_sleeping_body_under_an_awake_flex_steps_on() {
         .body_name
         .iter()
         .position(|n| n.as_deref() == Some("b"))
-        .expect("the sphere's body");
-    let start = data.qpos.clone();
-    for step in 1..60 {
+        .expect("the box's body");
+    assert_eq!(
+        data.body_sleep_state[b],
+        SleepState::Asleep,
+        "asleep at first"
+    );
+    for step in 1..=200 {
         data.step(&model)
             .unwrap_or_else(|e| panic!("step {step}: {e:?}"));
     }
-    assert_eq!(data.body_sleep_state[b], SleepState::Asleep, "asleep");
-    let joint = model.jnt_qpos_adr[model.body_jnt_adr[b]];
-    assert_eq!(
-        data.qpos
-            .rows(joint, 7)
-            .iter()
-            .map(|x| x.to_bits())
-            .collect::<Vec<_>>(),
-        start
-            .rows(joint, 7)
-            .iter()
-            .map(|x| x.to_bits())
-            .collect::<Vec<_>>(),
-        "where it was"
-    );
+    assert_eq!(data.body_sleep_state[b], SleepState::Awake, "woken");
+    let top = data.xpos[b].z + 0.05;
+    let lowest = data
+        .flexvert_xpos
+        .iter()
+        .map(|x| x.z)
+        .fold(f64::INFINITY, f64::min);
     assert!(
-        data.contacts
-            .iter()
-            .any(|c| c.geom[0].is_some() && c.flex[1].is_some()),
-        "touching the cloth"
+        lowest > top,
+        "resting on the box: lowest vertex {lowest}, top {top}"
     );
 }
 
@@ -236,6 +229,57 @@ fn a_signed_distance_field_meets_each_flex_vertex() {
             "midphase {midphase}: the bitmask"
         );
     }
+}
+
+/// A signed distance field on a body asleep (`sleep="init"`) under a cloth
+/// falling onto it from 5 mm beyond reach (registry `D-FLEX-WAKE`): the
+/// first contacts list a vertex, not an element, and wake the body in the
+/// step that makes them.
+#[test]
+fn a_flex_vertex_contact_wakes_a_sleeping_field() {
+    let mut model = load_model(
+        r#"<mujoco><option timestep="0.002"><flag equality="disable" sleep="enable"/></option>
+          <worldbody>
+            <body name="b" pos="0 0 -0.085" sleep="init"><freejoint/>
+              <geom type="sphere" size="0.065"/>
+            </body>
+          </worldbody>
+          <deformable><flex name="c" dim="2" radius="0.01">
+            <contact selfcollide="none" internal="false" margin="0.005"/>
+            <vertex pos="-0.05 -0.05 0  0 -0.05 0  0.05 -0.05 0  -0.05 0 0  0 0 0  0.05 0 0
+                         -0.05 0.05 0  0 0.05 0  0.05 0.05 0"/>
+            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+          </flex></deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 0.065, 32, 0.02));
+    model
+        .shape_data
+        .push(Arc::new(ShapeSphere::new(grid, 0.065)));
+    model.nshape = model.shape_data.len();
+    model.geom_type[0] = GeomType::Sdf;
+    model.geom_shape[0] = Some(model.nshape - 1);
+    let mut data = model.make_data();
+    let b = model.geom_body[0];
+    assert_eq!(
+        data.body_sleep_state[b],
+        SleepState::Asleep,
+        "asleep at first"
+    );
+    data.forward(&model).expect("forward");
+    for step in 1..=100 {
+        data.step(&model)
+            .unwrap_or_else(|e| panic!("step {step}: {e:?}"));
+        if !data.contacts.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        !data.contacts.is_empty() && data.contacts.iter().all(|c| c.vert[1].is_some()),
+        "vertex contacts"
+    );
+    assert_eq!(data.body_sleep_state[b], SleepState::Awake, "woken");
 }
 
 /// A geom turned by a NaN against a flex: each call returns, with the

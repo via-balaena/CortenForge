@@ -279,7 +279,7 @@ number is accounted for.
 
 | DT | Description | Resolved In |
 |----|-------------|-------------|
-| DT-25 | Deformable-rigid friction cone projection (condim=3 verified) | Phase 8 (partial -- remaining gaps: DT-131, DT-132, DT-133) |
+| DT-25 | Deformable-rigid friction cone projection (condim=3 verified) | Phase 8 (partial -- remaining gap: DT-133) |
 | DT-70 | Deformable-vs-mesh/hfield/SDF narrowphase | Phase 9 Spec E |
 | DT-90 | `flex_friction` scalar to `Vector3<f64>` | Phase 4 |
 | DT-142 | Flex self-collision dispatch (BVH/SAP midphase + narrowphase) | Phase 10 Spec C |

@@ -8,11 +8,11 @@
 //! second. A flex against itself, after every pair: its internal collisions,
 //! then its active elements through its own hierarchy, by sweep and prune,
 //! or each pair in turn, as its `selfcollide` and the midphase say. Two
-//! elements meet unless their
-//! boxes are further apart than the margin (none against itself) or a vertex
-//! of one is on a body a vertex of the other is on: two cables' elements as
-//! capsules, any other two through the convex route. Each contact lists the
-//! first element first, its normal toward the second.
+//! elements meet unless their boxes are further apart than the margin (none
+//! against itself) or a vertex of one is on a body a vertex of the other is
+//! on: two cables' elements as capsules, any other two through the convex
+//! route. Each contact lists the first element first, its normal toward the
+//! second.
 
 use nalgebra::{Matrix3, Vector3};
 
@@ -29,9 +29,9 @@ use crate::types::{Contact, DISABLE_MIDPHASE, Data, FlexSelfCollide, Model, disa
 
 /// Collide flex `flex1` with flex `flex2`, a pair the broadphase passed, and
 /// list each contact's place (`mj_collision`,
-/// `engine_collision_driver.c:359-373`, `:415-426`): through the midphase when it is on
-/// and both have hierarchies, else each pair of elements in turn. `hits` and
-/// `stack` are scratch, reused across pairs.
+/// `engine_collision_driver.c:359-373`, `:415-426`): through the midphase
+/// when it is on and both have hierarchies, else each pair of elements in
+/// turn. `hits` and `stack` are scratch, reused across pairs.
 pub(super) fn collide_flex_flex(
     model: &Model,
     data: &mut Data,
@@ -226,8 +226,9 @@ fn active_elements(model: &Model, f: usize) -> Vec<usize> {
 /// `mj_collideFlexSAP` (`:1809-1861`): flex `f`'s active elements, by their
 /// boxes, swept and pruned along the longest axis of its hierarchy's root
 /// box (x where it is longer than both others, else y where it is longer than
-/// z, else z), at most 1,000,000 pairs, each pair to the narrow phase. (MuJoCo
-/// stops from 32,770 active elements, registry `D-FLEX-SAP-SIZE`.)
+/// z, else z), at most 1,000,000 pairs, each pair to the narrow phase.
+/// MuJoCo packs a pair into an int (`:1087`), which a large flex overflows
+/// (registry `D-FLEX-SAP-SIZE`).
 fn collide_flex_sap(model: &Model, data: &mut Data, f: usize) {
     let active = active_elements(model, f);
     let Some(root) = model.flex_bvhadr.get(f).copied().flatten() else {
@@ -362,6 +363,7 @@ fn flex_contact(
     let dim = match condim {
         1 => 1,
         4 => 4,
+        5 => 5,
         6 => 6,
         _ => 3,
     };

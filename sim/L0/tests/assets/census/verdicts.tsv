@@ -1439,6 +1439,7 @@ dd22406b04d2965a	e1:s1:qfrc_passive
 dd22d2d6819c39c4	agree
 dd2d90eb235163f4	agree
 dd5d32a7487f9272	model:geom_quat;dyn:agree
+ddbebb5d5fc1c89a	mj-refuses
 ddd83649665543e7	agree
 de325b5763fcf0d2	model:geom_quat;dyn:agree
 de4398fa9c5a5553	both-refuse
@@ -1631,6 +1632,7 @@ f8b01d7b0d8e60c4	agree
 f933847483f45d7e	agree
 f935e97a66c86ac6	agree
 f94b8208f9bc083c	agree
+f94cbaefaca3a61f	mj-refuses
 f95c2711bf32bf74	agree
 f95fc135a90fc5d0	agree
 f9d500533077430a	agree

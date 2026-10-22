@@ -20,7 +20,7 @@ spec (T2). DT-18/22 implement directly (T1).
 | DT-22 | §15 | `efc_impP` — impedance derivative field for external API introspection | Low | T1 |
 | DT-23 | §15 | `dof_solref_fri` / `dof_solimp_fri` — per-DOF friction loss solver params | Medium | T2 |
 | DT-24 | §16 | Incremental collision detection on tree wake — only re-collide woken geoms | Low | T2 |
-| ~~DT-25~~ | §11 | ~~Deformable-rigid friction cone projection — normal-only solver is current scaffold~~ **Partial** — Phase 8 Session 13 verified condim=3 works correctly (sliding friction, QCQP cone projection, R-scaling with asymmetric Jacobians, 7 tests). Remaining: condim=6 downgrades to 3 (DT-131), bodyweight diagApprox double-counts rigid body (DT-132). | Medium | T3 |
+| ~~DT-25~~ | §11 | ~~Deformable-rigid friction cone projection — normal-only solver is current scaffold~~ **Partial** — Phase 8 Session 13 verified condim=3 works correctly (sliding friction, QCQP cone projection, R-scaling with asymmetric Jacobians, 7 tests). Remaining: DT-133 (DT-131 and DT-132 done). | Medium | T3 |
 | DT-26 | §11 | Contact re-detect + re-solve iteration loop after XPBD projection | Low | T2 |
 | DT-27 | §11 | XPBD solver cross-iteration lambda accumulation fix | Low | T2 |
 | ~~DT-94~~ | §41 | ~~BVH midphase integration into rigid body collision pipeline~~ **Subsumed by §41 S9** | Medium | T3 |

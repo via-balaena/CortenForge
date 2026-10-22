@@ -262,6 +262,7 @@ CASES = {
     # (planeVertex, :1714-1740, condim 1), the margin and gap left out.
     "cable_v_internal": ([DUMMY, (*CABLE_V, INTERNAL)], "", ""),
     "cable_v_internal_condim4": ([DUMMY, (*CABLE_V, INTERNAL + ' condim="4"')], "", ""),
+    "cable_v_internal_condim5": ([DUMMY, (*CABLE_V, INTERNAL + ' condim="5"')], "", ""),
     "folded_internal": ([DUMMY, folded(INTERNAL)], "", ""),
     # Its margin not in the element against its neighbour's vertex: a cable
     # whose vertex is within its margin and clear of contact meets nothing,
@@ -277,9 +278,13 @@ CASES = {
     "squashed_tet_internal": ([DUMMY, (*SQUASHED, INTERNAL)], "", ""),
     "inverted_tet_internal": ([DUMMY, (*INVERTED, INTERNAL)], "", ""),
     "two_radii_tet_internal": ([DUMMY, (*TWO_RADII, INTERNAL)], "", ""),
+    # A flat tetrahedron, its triple product 0: MuJoCo's compiler keeps its
+    # order, which sim-mjcf's loader must not turn.
+    "flat_tet_internal": ([DUMMY, ([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0.03, 0.03, 0]], [0, 1, 2, 3], 3,
+                                   INTERNAL)], "", ""),
     "squashed_internal_margin_gap": ([DUMMY, (*SQUASHED, INTERNAL + ' margin="0.01" gap="0.003" condim="4"')],
                                      "", ""),
-    # An elliptic cone of condim 4 or 6 on a flex's contacts at the dense
+    # An elliptic cone of condim 4, 5 or 6 on a flex's contacts at the dense
     # size: neither side has a rotational dof, so the torsional and rolling
     # rows are zero and reach no tree, and with islands MuJoCo stops
     # (mujoco_cone_stops); recorded without islands.
@@ -289,6 +294,13 @@ CASES = {
                                            'jacobian="dense" cone="elliptic"', 'island="disable"'),
     "cable_v_internal_elliptic_condim6_no_islands": ([DUMMY, (*CABLE_V, INTERNAL + ' condim="6"')],
                                                      'jacobian="dense" cone="elliptic"', 'island="disable"'),
+    "cable_v_internal_elliptic_condim5_no_islands": ([DUMMY, (*CABLE_V, INTERNAL + ' condim="5"')],
+                                                     'jacobian="dense" cone="elliptic"', 'island="disable"'),
+    # Two such pairs of cloths 1 m apart: two islands.
+    "two_pairs_elliptic_condim4_no_islands": ([DUMMY, CLOTH, moved(OVER, 0, 0, 0, NONE + ' condim="4"'),
+                                               moved(CLOTH, 1.0, 0, 0),
+                                               moved(OVER, 1.0, 0, 0, NONE + ' condim="4"')],
+                                              'jacobian="dense" cone="elliptic"', 'island="disable"'),
 }
 
 
@@ -296,7 +308,7 @@ CASES = {
 # faces' right-handed normals point out (user_mesh.cc:4272-4293), and
 # sim-mjcf's document keeps them as written, so its loader must turn them
 # the same. With internal collisions a tetrahedron's faces meet its vertices
-# only where it is thin (the small cube's), none as written here.
+# only where it is thin (the small cube's).
 RIGHT_HANDED = ([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]], [0, 1, 2, 3], 3)
 AS_WRITTEN = {
     "right_handed_tet_internal": ([DUMMY, (*RIGHT_HANDED, INTERNAL)], "", ""),
@@ -372,9 +384,10 @@ except Exception as e:  # noqa: BLE001
 def mujoco_sap_limit():
     """Registry D-FLEX-SAP-SIZE: MuJoCo 3.5.0's sweep of a flex against itself
     packs a pair's indices into an int, (id1 << 16) + id2
-    (engine_collision_driver.c:1087), so from 32,770 active elements
-    mj_collideFlexSAP reads a negative index (:1856): a cable of 32,769
-    elements runs, of 32,770 the process dies of a signal, and of 65,536
+    (engine_collision_driver.c:1087), which overflows once id1 is 32,768 or
+    more, and mj_collideFlexSAP then reads a negative index (:1856): this
+    cable of 32,769 elements runs, of 32,770 the process dies of a signal, and
+    of 65,536
     mj_SAP refuses its input and MuJoCo raises "SAP failed". Asserted each
     time the golden is made, in child processes."""
     def run(n):
@@ -386,16 +399,20 @@ def mujoco_sap_limit():
 
 
 def mujoco_condim_kept():
-    """Registry D-FLEX-CONDIM: MuJoCo 3.5.0 takes a flex's condim of 2 or 5 as
+    """Registry D-FLEX-CONDIM: MuJoCo 3.5.0 takes a flex's condim of 2 as
     given (its compiler checks a geom's and a pair's condim,
     user_objects.cc:3651-3653, :5666-5668, not a flex's): the bent cable's
-    internal contacts are of that dimension. Asserted each time the golden is
-    made."""
-    for condim in (2, 5):
-        mj, _, m = documents("", [DUMMY, (*CABLE_V, INTERNAL + f' condim="{condim}"')], "", "", "")
+    internal contacts, and a sphere's of condim 1 on a cloth, are of
+    dimension 2. Asserted each time the golden is made."""
+    sphere = ('<body name="b" pos="0.025 0.025 0.035"><freejoint/>'
+              '<inertial pos="0 0 0" mass="0.1" diaginertia="2e-5 3e-5 4e-5"/>'
+              '<geom type="sphere" size="0.03" condim="1"/></body>')
+    for rigid, flex in (("", (*CABLE_V, INTERNAL + ' condim="2"')),
+                        (sphere, (*CLOTH[:3], NONE + ' condim="2"'))):
+        _, _, m = documents(rigid, [DUMMY, flex], "", "", "")
         d = mujoco.MjData(m)
         mujoco.mj_forward(m, d)
-        assert d.ncon > 0 and all(int(c.dim) == condim for c in d.contact[:d.ncon]), condim
+        assert d.ncon > 0 and all(int(c.dim) == 2 for c in d.contact[:d.ncon]), rigid
 
 
 def sparse_rotation_rows_vary():
