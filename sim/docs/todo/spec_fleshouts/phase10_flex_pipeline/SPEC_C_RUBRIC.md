@@ -113,7 +113,8 @@ Two independent dispatch paths behind the shared gate:
 
 1. **Internal collision** (`flex_internal[f]`): `mj_collideFlexInternal(m, d, f)`
    — contacts between elements that share vertices or edges (adjacent elements).
-   MuJoCo default `internal=true`.
+   MuJoCo default `internal=true`. (Corrected 2026-10-22: MuJoCo 3.5.0's default is
+   false, `mjs_defaultFlex`, `user/user_init.c:227`; sim-mjcf now matches it.)
 
 2. **Self-collision** (`flex_selfcollide[f] != NONE`): dispatches to midphase
    based on enum value:
