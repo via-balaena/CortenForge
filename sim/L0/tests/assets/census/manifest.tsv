@@ -1763,3 +1763,5 @@ bd0efdf0e9a5354e	sim/L0/tests/integration/derivatives.rs:4986
 7e666b75a612388a	sim/L0/gpu/src/pipeline/conformance_tests.rs:651
 94a48120a9d830e1	sim/L0/tests/integration/sparse_rows_parity.rs:110
 d812bc658fabcec1	sim/L0/tests/integration/sparse_rows_parity.rs:108
+d05cc553ff6edf89	sim/L0/tests/integration/flex_unified.rs:3596
+eaf578995f7ffed8	sim/L0/tests/integration/flex_unified.rs:3721

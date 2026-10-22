@@ -19,32 +19,33 @@ pub fn mj_flex(model: &Model, data: &mut Data) {
     }
 }
 
-/// Pre-compute sparse edge Jacobian (`flexedge_J`), edge lengths
-/// (`flexedge_length`), and edge velocities (`flexedge_velocity`).
+/// The edges' lengths (`flexedge_length`) and sparse Jacobians
+/// (`flexedge_J`), as MuJoCo's `mj_flex` (`engine_core_smooth.c:671-713`).
 ///
-/// Called after `mj_flex()` populates `flexvert_xpos`, before
-/// `mj_fwd_passive()`. Length and J share the direction normalization
-/// step (no double computation). A rigid flex is skipped, as MuJoCo's: its
-/// lengths, Jacobian and velocities stay as they were.
-///
-/// MuJoCo ref: `mj_flex()` in `engine_core_smooth.c` (J computation),
-/// `mj_fwdVelocity()` in `engine_forward.c` (velocity = J * qvel).
+/// Called after `mj_flex()` populates `flexvert_xpos`. Every Jacobian is
+/// cleared first; a rigid flex is then skipped, its lengths staying as they
+/// were (0 from the reset), and an edge's Jacobian is made only when an edge
+/// equality, an edge stiffness, an edge damping or the flex's damping needs
+/// it. The velocities, `J·qvel`, are the velocity stage's
+/// (`mj_fwd_velocity`), as MuJoCo's `mj_fwdVelocity`.
 #[allow(non_snake_case)]
 pub fn mj_flex_edge(model: &Model, data: &mut Data) {
     use nalgebra::Vector3;
 
+    data.flexedge_J.fill(0.0);
     for f in 0..model.nflex {
         // A rigid flex's edges make no force: MuJoCo's `mj_flex` skips the
-        // flex, so its lengths stay as they were, 0 from the reset
-        // (`engine_core_smooth.c:677-680`; MuJoCo's interpolated flexes too,
-        // which sim-core does not build).
+        // flex (`engine_core_smooth.c:677-680`; MuJoCo's interpolated flexes
+        // too, which sim-core does not build).
         if model.flex_rigid[f] {
             continue;
         }
+        // No built-in passive force needs the Jacobian (`:682-686`).
+        // sim-core's bending damping reads the vertices, not the edges.
         let skip_jacobian = model.flex_edgeequality.get(f) != Some(&true)
-            && model.flex_edgestiffness[f] == 0.0
             && model.flex_edgedamping[f] == 0.0
-            && model.flex_bend_damping[f] == 0.0;
+            && model.flex_edgestiffness[f] == 0.0
+            && model.flex_damping[f] == 0.0;
 
         // Iterate over edges belonging to this flex
         let edge_start = model.flex_edgeadr[f];
@@ -65,20 +66,6 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
             };
 
             if skip_jacobian {
-                // Still compute velocity inline (cheaper than J path)
-                let dof0 = model.flexvert_dofadr[v0];
-                let dof1 = model.flexvert_dofadr[v1];
-                let vel0 = if dof0 == usize::MAX {
-                    Vector3::zeros()
-                } else {
-                    Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
-                };
-                let vel1 = if dof1 == usize::MAX {
-                    Vector3::zeros()
-                } else {
-                    Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
-                };
-                data.flexedge_velocity[e] = (vel1 - vel0).dot(&vec);
                 continue;
             }
 
@@ -86,7 +73,6 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
             // For free vertices: jacdif = [-I₃, +I₃]
             // J_edge = [-vec^T, +vec^T]
             let rowadr = model.flexedge_J_rowadr[e];
-            let rownnz = model.flexedge_J_rownnz[e];
             let b0 = model.flexvert_bodyid[v0];
             let b1 = model.flexvert_bodyid[v1];
             let dn0 = model.body_dof_num[b0];
@@ -100,14 +86,6 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
             for k in 0..dn1 {
                 data.flexedge_J[rowadr + dn0 + k] = vec[k];
             }
-
-            // Velocity = J * qvel (sparse dot product)
-            let mut vel = 0.0;
-            for j in 0..rownnz {
-                let col = model.flexedge_J_colind[rowadr + j];
-                vel += data.flexedge_J[rowadr + j] * data.qvel[col];
-            }
-            data.flexedge_velocity[e] = vel;
         }
     }
 }

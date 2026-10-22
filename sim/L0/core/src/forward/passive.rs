@@ -501,7 +501,8 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let stiffness = model.flex_edgestiffness[flex_id];
         let damping = model.flex_edgedamping[flex_id];
 
-        if stiffness == 0.0 && damping == 0.0 {
+        // A rigid flex is skipped whole (`engine_passive.c:417-420`).
+        if model.flex_rigid[flex_id] || (stiffness == 0.0 && damping == 0.0) {
             continue;
         }
 

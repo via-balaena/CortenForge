@@ -3587,3 +3587,178 @@ fn a_cable_edge_spring_skips_rigid_flexes_rigid_edges_and_dim_above_1() {
     dim_2.flex_dim[0] = 2;
     assert_eq!(energy(&dim_2), 0.0, "flex of dim 2");
 }
+
+/// A free 2 × 2 grid as MuJoCo 3.5.0's `<flex body=…>` of four three-slide
+/// bodies (`scripts/gen_flex_edge_velocity_reference.py`), each dof at its
+/// own rate `0.1·(i + 1)·(−1)^i`.
+fn free_grid_moving() -> (Model, sim_core::Data) {
+    let model = load_model(
+        r#"<mujoco>
+          <option><flag gravity="disable"/></option>
+          <deformable>
+            <flex name="grid" dim="2">
+              <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
+              <element data="0 1 2  1 3 2"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    for v in 0..4 {
+        for k in 0..3 {
+            let i = 3 * v + k;
+            let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+            data.qvel[model.flexvert_dofadr[v] + k] = 0.1 * (i + 1) as f64 * sign;
+        }
+    }
+    (model, data)
+}
+
+/// Each edge's velocity, keyed by its vertices: sim-mjcf lists a flex's
+/// edges in an order that differs between processes (Rigid-loading L02).
+fn edge_velocities(model: &Model, data: &sim_core::Data) -> Vec<([usize; 2], f64)> {
+    let mut out: Vec<([usize; 2], f64)> = model
+        .flexedge_vert
+        .iter()
+        .zip(&data.flexedge_velocity)
+        .map(|(&[a, b], &v)| ([a.min(b), a.max(b)], v))
+        .collect();
+    out.sort_by_key(|&(edge, _)| edge);
+    out
+}
+
+/// MuJoCo makes a flex's edge Jacobians only when an edge equality, an edge
+/// stiffness, an edge damping or the flex's damping needs them; otherwise
+/// they stay 0, and so do the edges' velocities, `J·qvel`
+/// (`engine_core_smooth.c:682-686`, `engine_forward.c:228-230`; ledger
+/// L153). The grid of [`free_grid_moving`] with its edge equality removed
+/// (sim-mjcf gives every flex one, Rigid-loading L31): every velocity 0, as
+/// MuJoCo's loaded grid, and each of the four makes MuJoCo's velocities with
+/// an edge damping, bit for bit (`gen_flex_edge_velocity_reference.py`).
+/// sim-core's own bending damping does not read the edges' Jacobians, so it
+/// makes none.
+#[test]
+fn edge_jacobians_and_velocities_are_made_only_where_mujoco_makes_them() {
+    let (mut model, data) = free_grid_moving();
+    let flex_equality = (0..model.neq)
+        .find(|&eq| model.eq_type[eq] == sim_core::EqualityType::Flex)
+        .expect("the flex's edge equality");
+    model.eq_active[flex_equality] = false;
+    model.flex_edgeequality[0] = false;
+
+    let run = |model: &Model| {
+        let mut data = data.clone();
+        data.forward(model).expect("forward");
+        data
+    };
+    let skipped = |label: &str, model: &Model| {
+        let data = run(model);
+        assert!(
+            data.flexedge_J.iter().all(|&j| j == 0.0),
+            "{label}: Jacobian {:?}",
+            data.flexedge_J
+        );
+        for (edge, v) in edge_velocities(model, &data) {
+            assert_eq!(
+                v.to_bits(),
+                0.0_f64.to_bits(),
+                "{label}: edge {edge:?} velocity {v}"
+            );
+        }
+    };
+    // MuJoCo 3.5.0, with an edge damping.
+    let mujoco: [([usize; 2], f64); 5] = [
+        ([0, 1], -0.5),
+        ([0, 2], -0.600_000_000_000_000_1),
+        ([1, 2], -1.697_056_274_847_714),
+        ([1, 3], 0.600_000_000_000_000_1),
+        ([2, 3], -1.700_000_000_000_000_2),
+    ];
+    let made = |label: &str, model: &Model| {
+        let data = run(model);
+        let ours = edge_velocities(model, &data);
+        assert_eq!(ours.len(), mujoco.len(), "{label}");
+        for ((edge, v), (want_edge, want)) in ours.iter().zip(mujoco) {
+            assert_eq!(*edge, want_edge, "{label}");
+            assert_eq!(
+                v.to_bits(),
+                want.to_bits(),
+                "{label}: edge {edge:?} velocity {v}, MuJoCo {want}"
+            );
+        }
+    };
+
+    skipped("none", &model);
+    let mut bend = model.clone();
+    bend.flex_bend_damping[0] = 1.0;
+    skipped("bending damping alone", &bend);
+
+    let mut equality = model.clone();
+    equality.flex_edgeequality[0] = true;
+    made("edge equality", &equality);
+    let mut stiffness = model.clone();
+    stiffness.flex_edgestiffness[0] = 1.0;
+    made("edge stiffness", &stiffness);
+    let mut damping = model.clone();
+    damping.flex_edgedamping[0] = 1.0;
+    made("edge damping", &damping);
+    let mut flex_damping = model.clone();
+    flex_damping.flex_damping[0] = 1.0;
+    made("flex damping", &flex_damping);
+}
+
+/// MuJoCo clears every edge Jacobian before it skips a rigid flex
+/// (`engine_core_smooth.c:672-681`), and its edge spring-dampers skip a
+/// rigid flex (`engine_passive.c:417-420`): a stretched cable with an edge
+/// stiffness, stepped once, then marked rigid on the model, keeps no
+/// Jacobian, velocity or spring force from the step before (ledger L153,
+/// its review's D2-8).
+#[test]
+fn a_flex_marked_rigid_keeps_no_edge_jacobian_velocity_or_spring_force() {
+    let mut model = load_model(
+        r#"<mujoco>
+          <option><flag gravity="disable"/></option>
+          <deformable>
+            <flex name="c" dim="1" mass="0.2">
+              <vertex pos="0 0 1  0.1 0 1  0.2 0 1"/>
+              <element data="0 1  1 2"/>
+              <edge stiffness="50"/>
+              <contact contype="0" conaffinity="0"/>
+            </flex>
+          </deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.qpos[model.flexvert_dofadr[2]] = 0.03;
+    data.qvel[model.flexvert_dofadr[2]] = 0.5;
+    data.forward(&model).expect("forward");
+    assert!(
+        data.qfrc_spring.iter().any(|&f| f != 0.0),
+        "stretched: a spring force"
+    );
+    assert!(
+        data.flexedge_velocity.iter().any(|&v| v != 0.0),
+        "moving: a velocity"
+    );
+
+    model.flex_rigid[0] = true;
+    data.forward(&model).expect("forward");
+    assert!(
+        data.flexedge_J.iter().all(|&j| j == 0.0),
+        "{:?}",
+        data.flexedge_J
+    );
+    assert!(
+        data.flexedge_velocity.iter().all(|&v| v == 0.0),
+        "{:?}",
+        data.flexedge_velocity
+    );
+    assert!(
+        data.qfrc_spring.iter().all(|&f| f == 0.0),
+        "{:?}",
+        data.qfrc_spring
+    );
+}

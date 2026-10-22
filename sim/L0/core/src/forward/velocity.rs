@@ -88,6 +88,17 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
         data.cvel[body_id] = cvel;
     }
 
+    // Flex edge velocities, `flexedge_J · qvel`, always sparse: 0 for an edge
+    // whose Jacobian `mj_flex_edge` left cleared (`engine_forward.c:228-230`).
+    for e in 0..model.nflexedge {
+        let rowadr = model.flexedge_J_rowadr[e];
+        let rownnz = model.flexedge_J_rownnz[e];
+        let colind = &model.flexedge_J_colind[rowadr..rowadr + rownnz];
+        data.flexedge_velocity[e] = dot_sparse(&data.flexedge_J[rowadr..rowadr + rownnz], |k| {
+            data.qvel[colind[k]]
+        });
+    }
+
     // Tendon velocities, `ten_J · qvel`: at the sparse size over each
     // tendon's chain (`mju_mulMatVecSparse`, `mju_dotSparse`), at the dense
     // one over every dof (`mju_mulMatVec`, `mju_dot`), as MuJoCo's
