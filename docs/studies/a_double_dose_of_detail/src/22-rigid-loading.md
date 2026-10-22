@@ -214,8 +214,8 @@ As in 20-rigid-physics.md: `L01…L50` name the commits, a letter suffix (`L10a`
   - Must not change: `flexcomp_vertex_damping_unchanged`: a `<deformable><flexcomp>` with `<elasticity damping>` > 0 (no in-tree test sets one), `qpos` and `qvel` after 100 steps bit-identical to the parent's.
   - A one-off A/B, not in CI: each rewritten doc has the same `nbody`, `body_mass`, `body_pos`, `jnt_*`, `flexvert_*` and `flexedge_*` as the old form at the parent.
 - **Flips:** every in-tree flex doc, through the rewrites; `flex_unified.rs:1362`.
-- **Census:** append the rewritten forms to the snapshot with their MuJoCo 3.5.0 goldens (`gen_census_golden.py`); the old forms move to both-refuse. At main, under e2: 0 of 72 agree, and 35 of 66 are nondeterministic until L02 (A20 §1B.5). The classes after this commit were not measured.
-- **Divergence row:** flex contacts are element-based in MuJoCo and vertex-based in ours (A20 §1B.7; Q81); no research ports them.
+- **Census:** append the rewritten forms to the snapshot with their MuJoCo 3.5.0 goldens (`gen_census_golden.py`); the old forms move to both-refuse. First, the golden's contact sides and our dump's (`layer_e_census/ours.rs`, `compare.rs`) take `flex`, `elem` and `vert`, or an element side reads −1 on both (ledger-L226). At main, under e2: 0 of 72 agree, and 35 of 66 are nondeterministic until L02 (A20 §1B.5). The classes after this commit were not measured.
+- **Divergence row:** none for a geom against a flex but a signed distance field (registry `D-FLEX-SDF`): since the closing work's fourth pull request its contacts are MuJoCo's, element by element; a flex against a flex or itself is the flex work's second pull request's (ledger-L184, L158).
 - **Downstream:** none outside `sim/L0` (R4).
 - **Note:** U06 (the `rne.rs:357` gravcomp panic): by reading, `<flex>` vertex bodies are now ordinary MJCF bodies and avoid it; the flexcomp path keeps it until L10a. Not run. The body-level `<flexcomp>` (`nflex = 0` today, A13 §5) is on L47's refused list (A4 §4).
 
