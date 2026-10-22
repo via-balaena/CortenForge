@@ -11,6 +11,7 @@ pub mod primal;
 pub mod qcqp;
 pub mod sparse;
 
+use crate::constraint::mul_jac_t_vec;
 use crate::linalg::mju_norm;
 use crate::types::{ConstraintState, ConstraintType, Data, Model};
 
@@ -122,19 +123,11 @@ fn elliptic_zone(force: &[f64], mu: f64, friction: &[f64; 5]) -> ConstraintState
     }
 }
 
-/// Map efc_force → qfrc_constraint via J^T · efc_force.
+/// `qfrc_constraint = J'·efc_force` ([`mul_jac_t_vec`], MuJoCo's
+/// `mj_mulJacTVec`), as `dualFinish` makes it after PGS and noslip
+/// (`engine_solver.c:70-77`).
 pub fn compute_qfrc_constraint_from_efc(model: &Model, data: &mut Data) {
-    let nv = model.nv;
-    data.qfrc_constraint.fill(0.0);
-    let nefc = data.efc_type.len();
-    for i in 0..nefc {
-        let force = data.efc_force[i];
-        if force.abs() > 0.0 {
-            for col in 0..nv {
-                data.qfrc_constraint[col] += data.efc_J[(i, col)] * force;
-            }
-        }
-    }
+    data.qfrc_constraint = mul_jac_t_vec(model, data, data.efc_force.as_slice());
 }
 
 /// Extract friction loss forces from efc_force into qfrc_frictionloss.

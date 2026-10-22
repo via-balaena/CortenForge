@@ -475,6 +475,32 @@ pub(crate) fn mul_jac_vec(model: &Model, data: &Data, vec: &[f64]) -> DVector<f6
     )
 }
 
+/// `J'·vec` over the constraint rows, as MuJoCo's `mj_mulJacTVec`
+/// (`engine_core_constraint.c:353-369`): the rows added in row order, a row
+/// skipped only when its entry of `vec` is exactly 0 (a NaN is added); at
+/// the dense size over every dof (`mju_mulMatTVec`), at the sparse size
+/// ([`Model::is_sparse`]) over its dof chain (`mju_mulMatTVecSparse`,
+/// `engine_util_sparse.c:180-200`).
+pub(crate) fn mul_jac_t_vec(model: &Model, data: &Data, vec: &[f64]) -> DVector<f64> {
+    let mut res = DVector::zeros(model.nv);
+    for (r, &v) in vec.iter().enumerate() {
+        if v == 0.0 {
+            continue;
+        }
+        if model.is_sparse() {
+            let adr = data.efc_J_rowadr[r];
+            for &c in &data.efc_J_colind[adr..adr + data.efc_J_rownnz[r]] {
+                res[c] += data.efc_J[(r, c)] * v;
+            }
+        } else {
+            for (c, out) in res.iter_mut().enumerate() {
+                *out += data.efc_J[(r, c)] * v;
+            }
+        }
+    }
+    res
+}
+
 /// Every row's velocity `J·qvel` and reference acceleration
 /// `aref = −B·vel − K·imp·(pos − margin)`, as MuJoCo's
 /// `mj_referenceConstraint` (`engine_core_constraint.c:2375-2387`), with `K`

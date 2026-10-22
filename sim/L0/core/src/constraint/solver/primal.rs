@@ -22,8 +22,8 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::constraint::mul_jac_vec;
 use crate::constraint::solver::sparse::{LowerRows, SparseHessian, SparseJ};
+use crate::constraint::{mul_jac_t_vec, mul_jac_vec};
 use crate::dynamics::factor::mj_solve_ld;
 use crate::linalg::{
     cholesky_solve_in_place, dot_sparse, mju_chol_factor, mju_chol_solve, mju_chol_update, mju_dot,
@@ -331,13 +331,12 @@ impl Rows {
 /// `mj_invConstraint` (`engine_inverse.c:157-180`): with no rows,
 /// `qfrc_constraint` is 0; else each row's state and force as
 /// `mj_constraintUpdate` makes them at `jar = J·qacc − aref` (no cone
-/// Hessian, no cost kept), and `qfrc_constraint = J'·force` (`mj_mulJacTVec`,
-/// `engine_core_constraint.c:2592-2598`), over every row in row order.
-/// `J·qacc` is [`mul_jac_vec`]'s, sparse at the sparse size; `J'·force` adds
-/// the rows in row order, as MuJoCo's dense and sparse products both do
-/// (`mju_mulMatTVec`, `mju_mulMatTVecSparse`).
+/// Hessian, no cost kept), and `qfrc_constraint = J'·force`
+/// (`engine_core_constraint.c:2592-2598`), over every row in row order.
+/// `J·qacc` is [`mul_jac_vec`]'s and `J'·force` [`mul_jac_t_vec`]'s, each
+/// over a row's dof chain at the sparse size.
 pub fn mj_inv_constraint(model: &Model, data: &mut Data) {
-    let (nv, nefc) = (data.qacc.len(), data.efc_type.len());
+    let nefc = data.efc_type.len();
     if nefc == 0 {
         data.qfrc_constraint.fill(0.0);
         return;
@@ -351,17 +350,9 @@ pub fn mj_inv_constraint(model: &Model, data: &mut Data) {
     let mut state = vec![ConstraintState::Satisfied; nefc];
     let mut force = vec![0.0; nefc];
     constraint_update(&rows, jar.as_slice(), &mut state, &mut force, None);
-    let mut j = vec![0.0; nefc * nv];
-    for r in 0..nefc {
-        for c in 0..nv {
-            j[r * nv + c] = data.efc_J[(r, c)];
-        }
-    }
-    let mut qfrc = vec![0.0; nv];
-    mul_mat_t_vec(&j, &force, &mut qfrc, nv);
+    data.qfrc_constraint = mul_jac_t_vec(model, data, &force);
     data.efc_state = state;
     data.efc_force.as_mut_slice().copy_from_slice(&force);
-    data.qfrc_constraint.as_mut_slice().copy_from_slice(&qfrc);
 }
 
 /// A contact's cone Hessian, row-major `dim × dim` (`mjContact::H`).

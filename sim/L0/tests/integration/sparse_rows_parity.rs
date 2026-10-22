@@ -7,7 +7,7 @@
 //! scene: every rigid row kind, at jacobian="sparse").
 
 use serde_json::Value;
-use sim_core::{ConstraintType, EqualityType};
+use sim_core::{ConstraintState, ConstraintType, EqualityType};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -31,6 +31,32 @@ fn floats(v: &Value) -> Vec<f64> {
         .iter()
         .map(|x| x.as_f64().expect("number"))
         .collect()
+}
+
+/// Numbers, each a JSON number or "nan".
+fn nan_or_floats(v: &Value) -> Vec<f64> {
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| {
+            x.as_f64()
+                .unwrap_or_else(|| match x.as_str().expect("number or nan") {
+                    "nan" => f64::NAN,
+                    other => panic!("{other}: not a number"),
+                })
+        })
+        .collect()
+}
+
+/// MuJoCo's `mjtConstraintState` value for a row state.
+fn mj_state(state: ConstraintState) -> usize {
+    match state {
+        ConstraintState::Satisfied => 0,
+        ConstraintState::Quadratic => 1,
+        ConstraintState::LinearNeg => 2,
+        ConstraintState::LinearPos => 3,
+        ConstraintState::Cone => 4,
+    }
 }
 
 /// MuJoCo's `mjtConstraint` value for a row type.
@@ -89,6 +115,49 @@ fn rows_list_their_dof_chains_as_mujoco() {
                     off.push(format!(
                         "{name} row {row} dof {dof}: {ours:e}, MuJoCo {mj:e}"
                     ));
+                }
+            }
+        }
+    }
+    assert!(off.is_empty(), "{} values differ:\n{off:#?}", off.len());
+}
+
+/// The inverse at the pyramidal case's pose, its acceleration NaN at the
+/// slide's dof, at the sparse and the dense size
+/// (`gen_sparse_rows_reference.py`'s inverse_nan): each row's state and
+/// force, and `qfrc_constraint`, are MuJoCo's, NaN exactly where MuJoCo's
+/// is. `J'·force` adds a NaN force over its row's chain at the sparse size
+/// and over every dof at the dense size (`mj_mulJacTVec`).
+#[test]
+fn a_nan_force_reaches_the_dofs_mujoco_s_does() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["inverse_nan"].as_object().expect("cases") {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        assert_eq!(model.is_sparse(), name == "sparse", "{name}: the size");
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&floats(&case["qpos"]));
+        data.forward(&model).expect("forward");
+        data.qacc.copy_from_slice(&nan_or_floats(&case["qacc"]));
+        data.inverse(&model).expect("inverse");
+
+        let states: Vec<usize> = data.efc_state.iter().map(|&s| mj_state(s)).collect();
+        assert_eq!(states, usizes(&case["efc_state"]), "{name}: row states");
+        let pairs = [
+            ("efc_force", data.efc_force.as_slice()),
+            ("qfrc_constraint", data.qfrc_constraint.as_slice()),
+        ];
+        for (field, ours) in pairs {
+            let want = nan_or_floats(&case[field]);
+            assert_eq!(ours.len(), want.len(), "{name} {field}: length");
+            for (i, (&o, &mj)) in ours.iter().zip(&want).enumerate() {
+                let same = if mj.is_nan() {
+                    o.is_nan()
+                } else {
+                    o.to_bits() == mj.to_bits()
+                };
+                if !same {
+                    off.push(format!("{name} {field}[{i}]: {o:e}, MuJoCo {mj:e}"));
                 }
             }
         }

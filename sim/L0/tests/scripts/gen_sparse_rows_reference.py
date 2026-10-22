@@ -33,6 +33,16 @@ Four cases: pyramidal at condim 3, elliptic at condim 6 and 4, and condim 1
 floor's default condim 3). Each, after mj_forward at its pose, records nv,
 efc_type, efc_id, the three chain arrays and efc_J (the rows' values, row by
 row in chain order). The generator refuses a case missing a row kind.
+
+And inverse_nan: mj_inverse at the pyramidal case's pose, at the sparse and
+the dense size, the acceleration mj_forward's but NaN at the slide's dof:
+J·qacc makes NaN the rows whose chain holds the slide (at the dense size
+every row, 0·NaN), and J'·force adds a NaN force over its row's chain at the
+sparse size, over every dof at the dense size (`mj_mulJacTVec`,
+`engine_core_constraint.c:353-369`; `mju_mulMatTVecSparse` and
+`mju_mulMatTVec` skip a row only when its force is exactly 0). Each records
+the acceleration and, after mj_inverse, efc_state, efc_force and
+qfrc_constraint ("nan" where MuJoCo's is NaN).
 """
 import json
 import os
@@ -96,16 +106,22 @@ KINDS = {"mjCNSTR_EQUALITY", "mjCNSTR_FRICTION_DOF", "mjCNSTR_FRICTION_TENDON",
          "mjCNSTR_LIMIT_JOINT", "mjCNSTR_LIMIT_TENDON"}
 
 
-def case(cone, condim, contacts):
-    xml = SCENE.format(cone=cone, condim=condim)
+def posed(xml):
+    """The scene's model and data at its pose, after mj_forward."""
     m = mujoco.MjModel.from_xml_string(xml)
-    assert mujoco.mj_isSparse(m), "the sparse size"
     d = mujoco.MjData(m)
     d.qpos[m.jnt_qposadr[m.joint("h1").id]] = H1_QPOS
     adr = m.jnt_qposadr[m.joint("bj").id]
     d.qpos[adr:adr + 4] = BALL_QUAT
     d.qpos[m.jnt_qposadr[m.joint("s1").id]] = S1_QPOS
     mujoco.mj_forward(m, d)
+    return m, d
+
+
+def case(cone, condim, contacts):
+    xml = SCENE.format(cone=cone, condim=condim)
+    m, d = posed(xml)
+    assert mujoco.mj_isSparse(m), "the sparse size"
     kinds = {mujoco.mjtConstraint(int(t)).name for t in d.efc_type[:d.nefc]}
     if not KINDS | contacts <= kinds:
         sys.exit(f"{cone} {condim}: rows {sorted(kinds)} miss {sorted((KINDS | contacts) - kinds)}")
@@ -123,6 +139,27 @@ def case(cone, condim, contacts):
             "efc_J": [float(x) for x in d.efc_J[:nnz]]}
 
 
+def inverse_nan(jacobian):
+    xml = SCENE.format(cone="pyramidal", condim=3).replace(
+        'jacobian="sparse"', f'jacobian="{jacobian}"')
+    m, d = posed(xml)
+    assert mujoco.mj_isSparse(m) == (jacobian == "sparse"), jacobian
+    qacc = d.qacc.copy()
+    qacc[m.jnt_dofadr[m.joint("s1").id]] = float("nan")
+    d.qacc[:] = qacc
+    mujoco.mj_inverse(m, d)
+    n = d.nefc
+    force = d.efc_force[:n]
+    if not np.isnan(force).any():
+        sys.exit(f"{jacobian}: no NaN force")
+    if jacobian == "sparse" and np.isnan(d.qfrc_constraint).all():
+        sys.exit("sparse: a NaN at every dof")
+    return {"xml": xml, "qpos": [float(x) for x in d.qpos], "qacc": [float(x) for x in qacc],
+            "efc_state": [int(x) for x in d.efc_state[:n]],
+            "efc_force": [float(x) for x in force],
+            "qfrc_constraint": [float(x) for x in d.qfrc_constraint]}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -134,7 +171,8 @@ def main():
         "frictionless_1": case("pyramidal", 1, {"mjCNSTR_CONTACT_FRICTIONLESS",
                                                 "mjCNSTR_CONTACT_PYRAMIDAL"}),
     }
-    doc = {"oracle": marker, "cases": finite_or_string(cases)}
+    nan = {"sparse": inverse_nan("sparse"), "dense": inverse_nan("dense")}
+    doc = {"oracle": marker, "cases": finite_or_string(cases), "inverse_nan": finite_or_string(nan)}
     os.makedirs(sys.argv[1], exist_ok=True)
     with open(os.path.join(sys.argv[1], "sparse_rows.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, separators=(",", ":"))
