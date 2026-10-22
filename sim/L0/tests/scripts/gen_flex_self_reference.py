@@ -241,6 +241,16 @@ CASES = {
     "two_radii_tet_internal": ([DUMMY, (*TWO_RADII, INTERNAL)], "", ""),
     "squashed_internal_margin_gap": ([DUMMY, (*SQUASHED, INTERNAL + ' margin="0.01" gap="0.003" condim="4"')],
                                      "", ""),
+    # An elliptic cone of condim 4 or 6 on a flex's contacts at the dense
+    # size: neither side has a rotational dof, so the torsional and rolling
+    # rows are zero and reach no tree, and with islands MuJoCo stops
+    # (mujoco_cone_stops); recorded without islands.
+    "two_cloths_elliptic_condim4_no_islands": ([DUMMY, CLOTH, moved(OVER, 0, 0, 0, NONE + ' condim="4"')],
+                                               'jacobian="dense" cone="elliptic"', 'island="disable"'),
+    "folded_elliptic_condim4_no_islands": ([DUMMY, folded('selfcollide="sap" internal="false" condim="4"')],
+                                           'jacobian="dense" cone="elliptic"', 'island="disable"'),
+    "cable_v_internal_elliptic_condim6_no_islands": ([DUMMY, (*CABLE_V, INTERNAL + ' condim="6"')],
+                                                     'jacobian="dense" cone="elliptic"', 'island="disable"'),
 }
 
 
@@ -276,12 +286,33 @@ def sparse_rotation_rows_vary():
     assert np.array_equal(dense[0], dense[1]) and np.array_equal(dense[1], dense[2])
 
 
+def mujoco_cone_stops():
+    """Registry D-FLEX-NO-TREE: each *_no_islands case stops MuJoCo 3.5.0
+    with islands ("no tree found", engine_island.c:271-277, its first
+    torsional row reaching no tree) and runs with a pyramidal cone. Asserted
+    each time the golden is made."""
+    for name, (flexes, option, flag) in CASES.items():
+        if not name.endswith("_no_islands"):
+            continue
+        for cone, stops in (('cone="elliptic"', True), ('cone="pyramidal"', False)):
+            mj, _, _ = documents("", flexes, option.replace('cone="elliptic"', cone), "", "")
+            m = mujoco.MjModel.from_xml_string(mj)
+            d = mujoco.MjData(m)
+            try:
+                mujoco.mj_forward(m, d)
+                err = None
+            except Exception as e:  # noqa: BLE001 - mjERROR arrives as mujoco.FatalError
+                err = str(e)
+            assert (err is not None and "no tree found" in err) == stops, (name, cone, err)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     import json
     marker = oracle()
     sparse_rotation_rows_vary()
+    mujoco_cone_stops()
     doc = {"oracle": marker, "cases": [case(n, "", flexes, option, flag, "") for n, (flexes, option, flag)
                                        in CASES.items()]}
     for c in doc["cases"]:
