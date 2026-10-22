@@ -116,7 +116,7 @@ Every open question the 21 research sections raise, deduplicated, with the secti
 | Q50 | `Data::newton_solved` | A18 Q2 | delete / crate-private / keep pub | crate-private | (b) | always true without the PGS fallback |
 | Q51 | solver statistics shape | A18 Q3 | MuJoCo's per-island arrays / sum + concatenation | sum + concatenation, MuJoCo's `SolverStat` fields | (b) | — |
 | Q52 | mixed-sign `solref`/`solreffriction` | A18 Q4 | parity (replace + warn) / refuse at load | parity | (a) | parity: MuJoCo warns, so it is not silent |
-| Q53 | PGS/noslip scale and `Data::stat_meaninertia` | A18 Q5 | MuJoCo's constant / leave | leave until a fixture fails (0 of 1,408 docs change); one did (the closing work's third pull request): MuJoCo's constant, the field removed | (b) | MuJoCo itself, given the per-step scale, takes 66 iterations against 65 at step 340 of a two-link arm under PGS |
+| Q53 | PGS/noslip scale and `Data::stat_meaninertia` | A18 Q5 | MuJoCo's constant / leave | leave until a fixture fails (0 of 1,408 docs change); one did (the closing work's third pull request): MuJoCo's constant, the field removed | (b) | `pgs_scales_its_statistics_by_the_models_mean_inertia`: a pose where the trace over nv is 4.3% below the model's |
 | Q54 | emulate the reference build's FMA | A10 Q2.1; A17 §2.2, Q1; A18 §3.4, Q6; A21 §1.3, Q2 | `f64::mul_add` where clang contracts / plain arithmetic | A10, A17: emulate; A18, A21: accept | **(c)** | C1 |
 | Q55 | solver: full port vs patches | A18 Q7 | port / patches | port | (b) | — |
 
@@ -256,5 +256,5 @@ Measured defects or gaps a section handed off and no section's commit list picke
 | U13 | 17 OBJ files with a face count ≠ MuJoCo's; MuJoCo's OBJ graph ids disagree with its `mesh_vert` | A10 §4.1, §6 item 8 | (b) | not isolated | — |
 | U14 | MuJoCo refuses < 4 vertices for every mesh; ours with faces + 3 vertices "not measured" | A10 §6 item 9 | (a) | parity | L38 |
 | U15 | `<composite type="cable" count="1000">` reached ~2 GB RSS; cause not isolated | A4 §1.4; 41-what-planning | (b) | "whoever owns composites should look before Rigid ships" | — |
-| U16 | `Data::reset` sets `stat_meaninertia = 0.0`, `make_data` 1.0 (settled: since chunk 2b, `reset` rebuilds the `Data` `make_data` makes, both 1.0) | A1 §4 | (b) | readers overwrite it first | — |
+| U16 | `Data::reset` sets `stat_meaninertia = 0.0`, `make_data` 1.0 (settled: since chunk 2b, `reset` rebuilds the `Data` `make_data` makes, both 1.0) | A1 §4 | (b) | readers overwrite it first; the field is since removed (Q53) | — |
 | U17 | box–box contact normals differ (`28695e44` step 56, `496f2186` step 33) | A18 §5.4, §8.1, §16 | (b) | whether A21 R6 (P46) fixes them is not stated; `28695e44` agrees since P46 (chunk 3e's second pull request), `496f2186` still differs, first in its model's `eq_data` | — |
