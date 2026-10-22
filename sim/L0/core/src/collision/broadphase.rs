@@ -466,3 +466,26 @@ fn plane_geom_dist(data: &Data, plane: usize, geom: usize) -> f64 {
     let d = data.geom_xpos[geom] - data.geom_xpos[plane];
     d.x * n[0] + d.y * n[1] + d.z * n[2]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sweep_and_prune;
+
+    /// The sweep takes any number of entries, its pairs not packed into two
+    /// 16-bit halves as MuJoCo's are (registry `D-FLEX-SAP-SIZE`): 70,000
+    /// boxes along x, each overlapping its successor alone, give each
+    /// successive pair, those numbered past 65,535 among them.
+    #[test]
+    fn the_sweep_pairs_entries_numbered_past_16_bits() {
+        let aamm: Vec<[f64; 6]> = (0..70_000_u32)
+            .map(|i| {
+                let x = f64::from(i);
+                [x, 0.0, 0.0, x + 1.5, 1.0, 1.0]
+            })
+            .collect();
+        let pairs = sweep_and_prune(&aamm, 0);
+        assert_eq!(pairs.len(), 69_999);
+        assert!(pairs.iter().all(|&(a, b)| b == a + 1));
+        assert!(pairs.contains(&(65_535, 65_536)));
+    }
+}

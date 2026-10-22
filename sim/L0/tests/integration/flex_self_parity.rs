@@ -118,3 +118,111 @@ fn an_elliptic_cone_s_rows_stay_in_their_contact_s_island() {
     }
     assert_eq!(cases, 3, "the golden's cases without islands");
 }
+
+/// A pinned vertex is a body of its own in sim-mjcf, on its parent body in
+/// MuJoCo (registry `D-FLEX-PINNED-BODY`): two elements each holding a
+/// pinned vertex, or a world geom and such an element, collide here, where
+/// MuJoCo's same-body skip drops them. On each of the golden's pinned scenes
+/// sim-core lists every contact MuJoCo lists, and adds some, each between two
+/// such sides.
+#[test]
+fn pinned_vertices_are_their_own_bodies() {
+    let golden = golden();
+    let scenes = golden["pinned"].as_array().expect("pinned scenes");
+    assert_eq!(scenes.len(), 3, "the golden's pinned scenes");
+    for scene in scenes {
+        let name = scene["name"].as_str().expect("name");
+        let model = load_model(scene["ours"].as_str().expect("ours")).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let id = |o: Option<usize>| o.map_or(-1, |x| i64::try_from(x).expect("fits"));
+        let ours: Vec<Vec<i64>> = data
+            .contacts
+            .iter()
+            .map(|c| {
+                [c.geom, c.flex, c.elem, c.vert]
+                    .iter()
+                    .flat_map(|s| s.map(id))
+                    .collect()
+            })
+            .collect();
+        let mujoco: Vec<Vec<i64>> = scene["contacts"]
+            .as_array()
+            .expect("contacts")
+            .iter()
+            .map(|c| {
+                c.as_array()
+                    .expect("sides")
+                    .iter()
+                    .map(|x| x.as_i64().expect("id"))
+                    .collect()
+            })
+            .collect();
+        for c in &mujoco {
+            assert!(ours.contains(c), "{name}: MuJoCo's contact {c:?}");
+        }
+        let pinned = |f: usize, v: usize| {
+            scene["pins"][f.to_string()]
+                .as_array()
+                .is_some_and(|p| p.iter().any(|x| x.as_u64() == u64::try_from(v).ok()))
+        };
+        let pinned_side = |c: &sim_core::Contact, k: usize| match (c.geom[k], c.flex[k], c.elem[k])
+        {
+            (Some(g), _, _) => model.geom_body[g] == 0,
+            (None, Some(f), Some(e)) => {
+                let global = model.flex_elemadr[f] + e;
+                let adr = model.flexelem_dataadr[global];
+                model.flexelem_data[adr..adr + model.flexelem_datanum[global]]
+                    .iter()
+                    .any(|&v| pinned(f, v - model.flex_vertadr[f]))
+            }
+            _ => false,
+        };
+        let added: Vec<&sim_core::Contact> = data
+            .contacts
+            .iter()
+            .zip(&ours)
+            .filter(|(_, sides)| !mujoco.contains(sides))
+            .map(|(c, _)| c)
+            .collect();
+        assert!(!added.is_empty(), "{name}: contacts MuJoCo skips");
+        for c in added {
+            assert!(
+                pinned_side(c, 0) && pinned_side(c, 1),
+                "{name}: an added contact between two pinned sides, {c:?}"
+            );
+        }
+    }
+}
+
+/// A flex's condim of 2 or 5 is taken as 3 (registry `D-FLEX-CONDIM`), where
+/// MuJoCo 3.5.0 makes contacts of that dimension
+/// (`gen_flex_self_reference.py`'s `mujoco_condim_kept`): the golden's bent
+/// cable's internal contacts.
+#[test]
+fn a_flex_condim_of_2_or_5_is_taken_as_3() {
+    let golden = golden();
+    let case = golden["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == "cable_v_internal")
+        .expect("the bent cable");
+    let ours = case["ours"].as_str().expect("ours");
+    let internal = r#"selfcollide="none" internal="true"/>"#;
+    assert_eq!(ours.matches(internal).count(), 1, "the cable's contact");
+    for condim in [2, 5] {
+        let xml = ours.replace(
+            internal,
+            &format!(r#"selfcollide="none" internal="true" condim="{condim}"/>"#),
+        );
+        let model = load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert!(data.ncon > 0, "condim {condim}: the cable's contacts");
+        assert!(
+            data.contacts.iter().all(|c| c.dim == 3),
+            "condim {condim}: dimension 3"
+        );
+    }
+}

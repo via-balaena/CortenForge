@@ -31,6 +31,7 @@ after the same dummy cable that collides with nothing, and records the same
 values.
 """
 import os
+import subprocess
 import sys
 
 import mujoco
@@ -284,6 +285,82 @@ def as_written(name, flexes, option, flag):
     return record(name, mj, ours, m)
 
 
+# Registry D-FLEX-PINNED-BODY: MuJoCo puts a pinned vertex on its parent
+# body (user_flexcomp.cc:486-488), so two elements each holding one share the
+# world body and mj_collideElems skips them (:2018-2029), as
+# mj_collideGeomElem skips a world geom against such an element (:1880);
+# sim-mjcf gives each pinned vertex a body of its own. Each scene's MuJoCo
+# contacts are recorded, and the test compares sim-core's.
+PINNED = {
+    "folded_ends_pinned": ("", [DUMMY, folded('selfcollide="narrow" internal="false"')], {1: [0, 1, 18, 19]}),
+    "two_cloths_corner_pinned": ("", [DUMMY, CLOTH, OVER], {1: [0], 2: [0]}),
+    "world_box_under_pinned_cloth": ('<geom type="box" size="0.2 0.2 0.01" pos="0 0 -0.012"/>', [DUMMY, CLOTH],
+                                     {1: [0]}),
+}
+
+
+def pinned(name, rigid, flexes, pins):
+    """A pinned scene's sim-mjcf document, its pins, and MuJoCo's contacts'
+    sides after mj_forward."""
+    _, ours, m = documents(rigid, flexes, "", "", "", pins=pins)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    sides = [[int(x) for x in (*c.geom, *c.flex, *c.elem, *c.vert)] for c in d.contact[:d.ncon]]
+    return {"name": name, "ours": ours, "pins": {str(f): v for f, v in pins.items()}, "contacts": sides}
+
+
+# The checks below run MuJoCo in a child process, the sweep's crash being a
+# segmentation fault.
+SAP_SCENE = """
+import sys, mujoco
+n = int(sys.argv[1])
+verts = "  ".join(f"{0.01 * i!r} 0 0" for i in range(n + 1))
+bodies = " ".join("a" if i % 2 == 0 else "b" for i in range(n + 1))
+elems = " ".join(f"{i} {i + 1}" for i in range(n))
+xml = ('<mujoco><option><flag equality="disable"/></option><worldbody>'
+       '<body name="a"><freejoint/><geom size="0.01" contype="0" conaffinity="0"/></body>'
+       '<body name="b"><freejoint/><geom size="0.01" contype="0" conaffinity="0"/></body></worldbody>'
+       f'<deformable><flex name="c" dim="1" radius="0.001" body="{bodies}" vertex="{verts}" element="{elems}">'
+       '<contact selfcollide="sap" internal="false"/></flex></deformable></mujoco>')
+m = mujoco.MjModel.from_xml_string(xml)
+d = mujoco.MjData(m)
+try:
+    mujoco.mj_forward(m, d)
+    print("runs")
+except Exception as e:  # noqa: BLE001
+    print("raises", e)
+"""
+
+
+def mujoco_sap_limit():
+    """Registry D-FLEX-SAP-SIZE: MuJoCo 3.5.0's sweep of a flex against itself
+    packs a pair's indices into an int, (id1 << 16) + id2
+    (engine_collision_driver.c:1087), so from 32,770 active elements
+    mj_collideFlexSAP reads a negative index (:1856): a cable of 32,769
+    elements runs, of 32,770 the process dies of a signal, and of 65,536
+    mj_SAP refuses its input and MuJoCo raises "SAP failed". Asserted each
+    time the golden is made, in child processes."""
+    def run(n):
+        return subprocess.run([sys.executable, "-I", "-c", SAP_SCENE, str(n)], capture_output=True, text=True,
+                              timeout=600)
+    assert run(32769).stdout.strip() == "runs"
+    assert run(32770).returncode < 0
+    assert "SAP failed" in run(65536).stdout
+
+
+def mujoco_condim_kept():
+    """Registry D-FLEX-CONDIM: MuJoCo 3.5.0 takes a flex's condim of 2 or 5 as
+    given (its compiler checks a geom's and a pair's condim,
+    user_objects.cc:3651-3653, :5666-5668, not a flex's): the bent cable's
+    internal contacts are of that dimension. Asserted each time the golden is
+    made."""
+    for condim in (2, 5):
+        mj, _, m = documents("", [DUMMY, (*CABLE_V, INTERNAL + f' condim="{condim}"')], "", "", "")
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        assert d.ncon > 0 and all(int(c.dim) == condim for c in d.contact[:d.ncon]), condim
+
+
 def sparse_rotation_rows_vary():
     """Registry D-FLEX-SPARSE-ROT: at the sparse size MuJoCo 3.5.0's rotational
     rows of an element contact (rows 4-9 of each condim-6 pyramid of
@@ -343,9 +420,12 @@ def main():
     marker = oracle()
     sparse_rotation_rows_vary()
     mujoco_cone_stops()
+    mujoco_sap_limit()
+    mujoco_condim_kept()
     doc = {"oracle": marker, "cases": [case(n, "", flexes, option, flag, "") for n, (flexes, option, flag)
                                        in CASES.items()]
-           + [as_written(n, *c) for n, c in AS_WRITTEN.items()]}
+           + [as_written(n, *c) for n, c in AS_WRITTEN.items()],
+           "pinned": [pinned(n, *c) for n, c in PINNED.items()]}
     for c in doc["cases"]:
         kinds = sorted({("vert" if x["vert"][0] >= 0 else "elem", "self" if x["flex"][0] == x["flex"][1] else "pair",
                          x["dim"], x["exclude"]) for x in c["contacts"]})
