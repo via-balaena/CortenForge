@@ -298,16 +298,23 @@ mod tests {
     use nalgebra::{Matrix3, Vector3};
     use serde_json::Value;
 
+    use super::super::mj_ccd::{CcdObj, mjc_convex_elem, mjc_hfield_elem};
     use super::super::mj_primitive::{
         Frame, RawContact, raw_capsule_box, raw_capsule_capsule, raw_sphere_capsule,
     };
     use super::{make_capsule, raw_box_triangle, raw_capsule_triangle, raw_sphere_triangle};
+    use crate::heightfield::HeightFieldData;
     use crate::quat::quat_z2vec;
     use crate::types::contact_types::make_frame;
+    use crate::types::{GeomType, Model};
 
-    /// MuJoCo's `mjGEOM_SPHERE`, `mjGEOM_CAPSULE` and `mjGEOM_BOX`.
+    /// MuJoCo's `mjGEOM_HFIELD`, `mjGEOM_SPHERE`, `mjGEOM_CAPSULE`,
+    /// `mjGEOM_ELLIPSOID`, `mjGEOM_CYLINDER` and `mjGEOM_BOX`.
+    const HFIELD: u64 = 1;
     const SPHERE: u64 = 2;
     const CAPSULE: u64 = 3;
+    const ELLIPSOID: u64 = 4;
+    const CYLINDER: u64 = 5;
     const BOX: u64 = 6;
 
     fn golden() -> Value {
@@ -405,6 +412,96 @@ mod tests {
         for case in golden()["cases"].as_array().expect("cases") {
             let name = case["name"].as_str().expect("name");
             let ours = ours(case);
+            let want = case["contacts"].as_array().expect("contacts");
+            assert_eq!(ours.len(), want.len(), "{name}: contacts");
+            for (k, (c, w)) in ours.iter().zip(want).enumerate() {
+                let dist = w["dist"].as_f64().expect("dist");
+                assert_eq!(
+                    c.dist.to_bits(),
+                    dist.to_bits(),
+                    "{name} {k}: dist {} {dist}",
+                    c.dist
+                );
+                let (pos, normal) = (vec3(&w["pos"]), vec3(&w["normal"]));
+                for (i, (ours, want)) in c.pos.iter().zip(pos).enumerate() {
+                    assert_eq!(ours.to_bits(), want.to_bits(), "{name} {k}: pos {i}");
+                }
+                let (n, _) = make_frame(&Vector3::from(c.normal), &Vector3::zeros());
+                for (i, (ours, want)) in n.iter().zip(normal).enumerate() {
+                    assert_eq!(ours.to_bits(), want.to_bits(), "{name} {k}: normal {i}");
+                }
+            }
+        }
+    }
+
+    /// The convex route's contacts (`mjc_ConvexElem`, `mjc_HFieldElem`)
+    /// for the case's geom and element, on its inputs.
+    fn convex(case: &Value) -> Vec<RawContact> {
+        let kind = case["type"].as_u64().expect("type");
+        let pos = vec3(&case["pos"]);
+        let mat_rows = floats(&case["mat"]);
+        let mat: [f64; 9] = std::array::from_fn(|i| mat_rows[i]);
+        let size = vec3(&case["size"]);
+        let vertices: Vec<[f64; 3]> = case["vertices"]
+            .as_array()
+            .expect("vertices")
+            .iter()
+            .map(vec3)
+            .collect();
+        let center = vec3(&case["center"]);
+        let radius = case["radius"].as_f64().expect("radius");
+        let margin = case["margin"].as_f64().expect("margin");
+        let ccd = (
+            usize::try_from(case["ccd"][0].as_u64().expect("iterations")).expect("fits"),
+            case["ccd"][1].as_f64().expect("tolerance"),
+        );
+        if kind == HFIELD {
+            let field = &case["hfield"];
+            let count = |k: &str| usize::try_from(field[k].as_u64().expect(k)).expect("fits");
+            let (nrow, ncol) = (count("nrow"), count("ncol"));
+            let hsize = floats(&field["size"]);
+            let hsize = [hsize[0], hsize[1], hsize[2], hsize[3]];
+            let heights = floats(&field["data"])
+                .iter()
+                .map(|h| h * hsize[2])
+                .collect();
+            // A grid's extent, far below 2^52, exact as a float.
+            #[allow(clippy::cast_precision_loss)]
+            let cell = 2.0 * hsize[0] / (ncol - 1) as f64;
+            let hfield = HeightFieldData::new(heights, ncol, nrow, cell);
+            return mjc_hfield_elem(
+                &hfield, &hsize, &pos, &mat, &vertices, &center, radius, margin, ccd,
+            );
+        }
+        let geom_type = match kind {
+            SPHERE => GeomType::Sphere,
+            CAPSULE => GeomType::Capsule,
+            ELLIPSOID => GeomType::Ellipsoid,
+            CYLINDER => GeomType::Cylinder,
+            BOX => GeomType::Box,
+            _ => panic!("geom type {kind}"),
+        };
+        let mut model = Model::empty();
+        (model.ccd_iterations, model.ccd_tolerance) = ccd;
+        let mut geom = CcdObj::new(geom_type, pos, mat, size, margin, None).expect("a convex geom");
+        let mut elem = CcdObj::flex(&vertices, center, radius, margin);
+        let fix = (vertices.len() == 3).then_some((geom_type, pos, &mat, size));
+        mjc_convex_elem(&model, &mut geom, &mut elem, margin, fix)
+    }
+
+    /// The convex route as MuJoCo's, bit for bit: an ellipsoid and a
+    /// cylinder against a triangle (their normals fixed by `mjc_fixNormal`:
+    /// inside and outside the ellipsoid, a cylinder's round wall, and near
+    /// its cap left as `mjc_ccd` gives it), a sphere, a capsule, a box, an
+    /// ellipsoid and a cylinder against a tetrahedron, an ellipsoid and a
+    /// cylinder against a cable's element (`mjc_ConvexElem`), and a height
+    /// field against a triangle and a tetrahedron, one within a margin
+    /// (`mjc_HFieldElem`, its prism set up as `mjc_ConvexHField`'s).
+    #[test]
+    fn convex_route_contacts_as_mujoco() {
+        for case in golden()["convex"].as_array().expect("convex") {
+            let name = case["name"].as_str().expect("name");
+            let ours = convex(case);
             let want = case["contacts"].as_array().expect("contacts");
             assert_eq!(ours.len(), want.len(), "{name}: contacts");
             for (k, (c, w)) in ours.iter().zip(want).enumerate() {
