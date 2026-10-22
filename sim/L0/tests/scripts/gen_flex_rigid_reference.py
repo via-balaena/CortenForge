@@ -256,9 +256,15 @@ def forward(m, d):
 def case(name, rigid, flex, option, flag, asset, tail=""):
     rigid = settled(rigid, flex, option, flag, asset, tail)
     mj, ours, m = documents(rigid, flex, option, flag, asset, tail)
-    out = {"name": name, "xml": mj, "ours": ours, "nv": int(m.nv), "nbody": int(m.nbody)}
     flexes = flex if isinstance(flex, list) else [DUMMY, flex]
     passive = [int('passive="true"' in contact) for (_, _, _, contact) in flexes]
+    return record(name, mj, ours, m, passive)
+
+
+def record(name, mj, ours, m, passive=()):
+    """A case's record of the compiled MuJoCo model `m` of document `mj`,
+    sim-mjcf's being `ours`; `passive` each flex's passive flag as written."""
+    out = {"name": name, "xml": mj, "ours": ours, "nv": int(m.nv), "nbody": int(m.nbody)}
     if any(passive):
         # MuJoCo 3.5.0's reader overwrites a flex's passive flag with a stale
         # variable whenever `passive` is given (xml_native_reader.cc:1457-1523;
@@ -282,12 +288,92 @@ def case(name, rigid, flex, option, flag, asset, tail=""):
     return out
 
 
+# A world plane under a 3x3 cloth 5 mm up, its first vertex pinned: on the
+# world body in MuJoCo's document, a <pin> in sim-mjcf's; the others bodies of
+# mass MASS with three slides.
+PINNED_VERTS = [[x * 0.05, y * 0.05, 0.005] for y in range(3) for x in range(3)]
+PINNED_ELEMS = grid(3, 0.05, 0.005)[1]
+
+
+def pinned_cloth(option, flag):
+    """MuJoCo's and sim-mjcf's documents of the pinned cloth over a plane."""
+    head = (f'<mujoco><option timestep="0.002" {option}><flag equality="disable" {flag}/></option>'
+            '<worldbody><geom type="plane" size="1 1 0.1"/>')
+    v0 = PINNED_VERTS[0]
+    bodies = "".join(f'<body name="v{i}" pos="{v[0]!r} {v[1]!r} {v[2]!r}"><joint type="slide" axis="1 0 0"/>'
+                     '<joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>'
+                     f'<inertial pos="0 0 0" mass="{MASS}" diaginertia="1e-5 1e-5 1e-5"/></body>'
+                     for i, v in enumerate(PINNED_VERTS) if i)
+    names = "world " + " ".join(f"v{i}" for i in range(1, len(PINNED_VERTS)))
+    vertex = f"{v0[0]!r} {v0[1]!r} {v0[2]!r}  " + "  ".join(["0 0 0"] * (len(PINNED_VERTS) - 1))
+    elems = " ".join(map(str, PINNED_ELEMS))
+    mj = (f'{head}{bodies}</worldbody><deformable><flex name="c" dim="2" radius="0.01" body="{names}" '
+          f'vertex="{vertex}" element="{elems}"><contact {NONE}/></flex></deformable></mujoco>')
+    verts = "  ".join(" ".join(repr(x) for x in v) for v in PINNED_VERTS)
+    ours = (f'{head}</worldbody><deformable><flex name="c" dim="2" radius="0.01" mass="{MASS * len(PINNED_VERTS)!r}">'
+            f'<contact {NONE}/><vertex pos="{verts}"/><element data="{elems}"/><pin id="0"/></flex></deformable></mujoco>')
+    return mj, ours
+
+
+def sleeping_sphere(body_last):
+    """MuJoCo's document of a sphere asleep under a cloth (sleep="init"), the
+    sphere's body declared first or last."""
+    rigid = ('<body name="b" pos="0.025 0.025 -0.0405" quat="1 0 0 0" sleep="init"><freejoint/>' + INERTIAL
+             + '<geom type="sphere" size="0.03"/></body>')
+    mj, _, _ = documents(rigid, CLOTH, "", 'sleep="enable"', "")
+    if body_last:
+        assert mj.count(rigid) == 1
+        mj = mj.replace(rigid, "").replace("</worldbody>", rigid + "</worldbody>")
+    return mj
+
+
+def mujoco_stops():
+    """Registry D-FLEX-NO-TREE and D-FLEX-SLEEP-ISLAND, where MuJoCo 3.5.0
+    raises an error its own source marks SHOULD NOT OCCUR. The pinned cloth:
+    at the dense size with islands mj_forward raises (treeFirst, "no tree
+    found", engine_island.c:271-277; the pinned vertex's contact has no dof
+    on either side); without islands, and at the sparse size (the contact
+    excluded, mj_instantiateContact's exclude 3), it runs. A sphere asleep
+    under an awake cloth: its body declared first, mj_step raises at the
+    sixth step ("found sleeping tree", engine_sleep.c:542; mj_wakeCollision
+    skips a contact with a flex side); declared last, 59 steps run, the
+    sphere asleep. Asserted each time the golden is made."""
+    def raises(f):
+        try:
+            f()
+        except Exception as e:  # noqa: BLE001 - MuJoCo's mjERROR arrives as a plain Exception
+            return str(e)
+        return None
+    for option, flag, stops in (("", "", True), ("", 'island="disable"', False), ('jacobian="sparse"', "", False)):
+        m = mujoco.MjModel.from_xml_string(pinned_cloth(option, flag)[0])
+        d = mujoco.MjData(m)
+        assert not mujoco.mj_isSparse(m) or option, (option, flag)
+        err = raises(lambda: mujoco.mj_forward(m, d))
+        assert (err is not None and "no tree found" in err) == stops, (option, flag, err)
+    for body_last, stop_step in ((False, 6), (True, None)):
+        m = mujoco.MjModel.from_xml_string(sleeping_sphere(body_last))
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "b")
+        stopped = None
+        for step in range(1, 60):
+            if raises(lambda: mujoco.mj_step(m, d)) is not None:
+                stopped = step
+                break
+        assert stopped == stop_step, (body_last, stopped)
+        if stopped is None:
+            assert d.tree_asleep[m.body_treeid[b]] >= 0, "the sphere asleep"
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     import json
     marker = oracle()
-    doc = {"oracle": marker, "cases": [case(n, *c) for n, c in CASES.items()]}
+    mujoco_stops()
+    mj, ours = pinned_cloth("", 'island="disable"')
+    pinned = record("pinned_cloth_no_islands", mj, ours, mujoco.MjModel.from_xml_string(mj))
+    doc = {"oracle": marker, "cases": [case(n, *c) for n, c in CASES.items()] + [pinned]}
     for c in doc["cases"]:
         kinds = sorted({("elem" if x["elem"][1] >= 0 else "vert", x["dim"], x["exclude"]) for x in c["contacts"]})
         steps = [c["trajectory"][k]["ncon"] for k in sorted(c["trajectory"], key=int)]

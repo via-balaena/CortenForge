@@ -1768,3 +1768,4 @@ eaf578995f7ffed8	sim/L0/tests/integration/flex_unified.rs:3721
 b00bcab73ba86b4a	sim/L0/tests/integration/flex_unified.rs:3771
 e7684905da766c66	sim/L0/tests/integration/deformable_friction_dt25.rs:19
 7b64e1017e70e9ab	sim/L0/tests/integration/flex_flex_collision.rs:539
+2e206c4d72cdef99	sim/L0/tests/integration/flex_rigid_parity.rs:105

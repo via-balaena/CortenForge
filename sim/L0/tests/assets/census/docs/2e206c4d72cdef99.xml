@@ -1,0 +1,14 @@
+<mujoco><option timestep="0.002"><flag equality="disable" sleep="enable"/></option>
+          <worldbody>
+            <body name="b" pos="0.025 0.025 -0.0405" sleep="init"><freejoint/>
+              <inertial pos="0 0 0" mass="0.1" diaginertia="2e-5 3e-5 4e-5"/>
+              <geom type="sphere" size="0.03"/>
+            </body>
+          </worldbody>
+          <deformable><flex name="c" dim="2" radius="0.01" mass="1.125">
+            <contact selfcollide="none" internal="false"/>
+            <vertex pos="-0.1 -0.1 0  0 -0.1 0  0.1 -0.1 0  -0.1 0 0  0 0 0  0.1 0 0
+                         -0.1 0.1 0  0 0.1 0  0.1 0.1 0"/>
+            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+          </flex></deformable>
+        </mujoco>

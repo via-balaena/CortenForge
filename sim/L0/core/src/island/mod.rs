@@ -36,7 +36,7 @@ pub(crate) use sleep::{
 /// bodies at the dense size, where MuJoCo stops (`treeFirst`,
 /// `engine_island.c:225-228`). A flex contact whose sides have no dofs reaches
 /// no tree either, and stays in no island: MuJoCo stops there too ("no tree
-/// found", `:271-277`), not ported (ledger L220).
+/// found", `:271-277`), which sim-core does not (registry `D-FLEX-NO-TREE`).
 // Tree, dof and row indices are usize stored as i32 in mjData's arrays, bounded by realistic model sizes.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub(crate) fn mj_island(model: &Model, data: &mut Data) -> Result<(), StepError> {

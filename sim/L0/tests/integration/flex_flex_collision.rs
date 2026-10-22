@@ -6,7 +6,6 @@
 //! sentinel-safe downstream pipeline, and self/flex-rigid regression.
 
 use approx::assert_relative_eq;
-use sim_core::DISABLE_ISLAND;
 use sim_mjcf::load_model;
 
 /// Helper: count flex-flex contacts (a flex on each side, two different
@@ -525,58 +524,6 @@ fn t09_full_forward_step_no_panic() {
     // this model, cfrc_ext stays zero. The qfrc_constraint assertion above
     // proves the full constraint pipeline (collision → Jacobian → assembly →
     // solve → force distribution) works for flex-flex contacts.
-}
-
-/// A cloth of nine vertices 5 mm over a world plane, its first vertex pinned,
-/// at the dense size: the pinned vertex's contact with the plane has no dof
-/// on either side, so with islands its rows are in no island (MuJoCo stops
-/// on such a row, ledger L220). Their Jacobian is zero, so their force
-/// cannot depend on the other rows': each takes the force and state the
-/// whole problem's solve (islands disabled) gives it.
-#[test]
-fn rows_in_no_island_take_the_whole_solve_s_force() {
-    let model = load_model(
-        r#"<mujoco><option><flag equality="disable"/></option>
-          <worldbody><geom type="plane" size="1 1 0.1"/></worldbody>
-          <deformable><flex name="c" dim="2" radius="0.01" mass="0.9">
-            <contact selfcollide="none"/>
-            <vertex pos="0 0 0.005  0.05 0 0.005  0.1 0 0.005  0 0.05 0.005  0.05 0.05 0.005
-                         0.1 0.05 0.005  0 0.1 0.005  0.05 0.1 0.005  0.1 0.1 0.005"/>
-            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
-            <pin id="0"/>
-          </flex></deformable>
-        </mujoco>"#,
-    )
-    .expect("load");
-    assert!(!model.is_sparse(), "the dense size");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    let outside: Vec<usize> = (0..data.efc_type.len())
-        .filter(|&row| data.efc_island[row] < 0)
-        .collect();
-    assert!(
-        outside.iter().any(|&row| data.efc_force[row] != 0.0),
-        "rows in no island, one with a force"
-    );
-
-    let mut whole_model = model.clone();
-    whole_model.disableflags |= DISABLE_ISLAND;
-    let mut whole = whole_model.make_data();
-    whole
-        .forward(&whole_model)
-        .expect("forward without islands");
-    assert_eq!(whole.efc_type, data.efc_type, "the same rows");
-    for &row in &outside {
-        assert_eq!(
-            data.efc_force[row].to_bits(),
-            whole.efc_force[row].to_bits(),
-            "row {row}'s force"
-        );
-        assert_eq!(
-            data.efc_state[row], whole.efc_state[row],
-            "row {row}'s state"
-        );
-    }
 }
 
 // ============================================================================

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use nalgebra::{Point3, Vector3};
 use serde_json::Value;
-use sim_core::{Data, GeomType, Model, SdfGrid, ShapeSphere};
+use sim_core::{DISABLE_ISLAND, Data, GeomType, Model, SdfGrid, ShapeSphere, SleepState};
 use sim_mjcf::load_model;
 
 use super::flex_golden::{differences, usizes};
@@ -35,6 +35,121 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
         "{} values differ:\n{}",
         off.len(),
         off.join("\n")
+    );
+}
+
+/// A cloth of nine vertices 5 mm over a world plane, its first vertex pinned,
+/// at the dense size: the pinned vertex's contact with the plane has no dof
+/// on either side, so with islands its rows are in no island (MuJoCo stops
+/// on such a row: registry D-FLEX-NO-TREE). Their Jacobian is zero, so their force
+/// cannot depend on the other rows': each takes the force and state the
+/// whole problem's solve (islands disabled) gives it.
+#[test]
+fn rows_in_no_island_take_the_whole_solve_s_force() {
+    let model = load_model(
+        r#"<mujoco><option><flag equality="disable"/></option>
+          <worldbody><geom type="plane" size="1 1 0.1"/></worldbody>
+          <deformable><flex name="c" dim="2" radius="0.01" mass="0.9">
+            <contact selfcollide="none"/>
+            <vertex pos="0 0 0.005  0.05 0 0.005  0.1 0 0.005  0 0.05 0.005  0.05 0.05 0.005
+                         0.1 0.05 0.005  0 0.1 0.005  0.05 0.1 0.005  0.1 0.1 0.005"/>
+            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+            <pin id="0"/>
+          </flex></deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    assert!(!model.is_sparse(), "the dense size");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let outside: Vec<usize> = (0..data.efc_type.len())
+        .filter(|&row| data.efc_island[row] < 0)
+        .collect();
+    assert!(
+        outside.iter().any(|&row| data.efc_force[row] != 0.0),
+        "rows in no island, one with a force"
+    );
+
+    let mut whole_model = model.clone();
+    whole_model.disableflags |= DISABLE_ISLAND;
+    let mut whole = whole_model.make_data();
+    whole
+        .forward(&whole_model)
+        .expect("forward without islands");
+    assert_eq!(whole.efc_type, data.efc_type, "the same rows");
+    for &row in &outside {
+        assert_eq!(
+            data.efc_force[row].to_bits(),
+            whole.efc_force[row].to_bits(),
+            "row {row}'s force"
+        );
+        assert_eq!(
+            data.efc_state[row], whole.efc_state[row],
+            "row {row}'s state"
+        );
+    }
+}
+
+/// A sphere asleep (`sleep="init"`) under an awake cloth whose elements
+/// reach it (registry D-FLEX-SLEEP-ISLAND): MuJoCo 3.5.0 wakes no tree for a
+/// contact with a flex (`mj_wakeCollision`, `engine_sleep.c:290-293`), and
+/// then raises an error at its sixth step when the sphere's tree comes first
+/// in its island (`:542`, as here, sim-mjcf numbering a flex's vertex bodies
+/// after every body); with the sphere declared after the cloth it steps on,
+/// the sphere asleep (`gen_flex_rigid_reference.py`'s `mujoco_stops` asserts
+/// both). sim-core steps on, as MuJoCo in the second order: the sphere stays
+/// asleep where it was, touching the cloth.
+#[test]
+fn a_sleeping_body_under_an_awake_flex_steps_on() {
+    let model = load_model(
+        r#"<mujoco><option timestep="0.002"><flag equality="disable" sleep="enable"/></option>
+          <worldbody>
+            <body name="b" pos="0.025 0.025 -0.0405" sleep="init"><freejoint/>
+              <inertial pos="0 0 0" mass="0.1" diaginertia="2e-5 3e-5 4e-5"/>
+              <geom type="sphere" size="0.03"/>
+            </body>
+          </worldbody>
+          <deformable><flex name="c" dim="2" radius="0.01" mass="1.125">
+            <contact selfcollide="none" internal="false"/>
+            <vertex pos="-0.1 -0.1 0  0 -0.1 0  0.1 -0.1 0  -0.1 0 0  0 0 0  0.1 0 0
+                         -0.1 0.1 0  0 0.1 0  0.1 0.1 0"/>
+            <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+          </flex></deformable>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let b = model
+        .body_name
+        .iter()
+        .position(|n| n.as_deref() == Some("b"))
+        .expect("the sphere's body");
+    let start = data.qpos.clone();
+    for step in 1..60 {
+        data.step(&model)
+            .unwrap_or_else(|e| panic!("step {step}: {e:?}"));
+    }
+    assert_eq!(data.body_sleep_state[b], SleepState::Asleep, "asleep");
+    let joint = model.jnt_qpos_adr[model.body_jnt_adr[b]];
+    assert_eq!(
+        data.qpos
+            .rows(joint, 7)
+            .iter()
+            .map(|x| x.to_bits())
+            .collect::<Vec<_>>(),
+        start
+            .rows(joint, 7)
+            .iter()
+            .map(|x| x.to_bits())
+            .collect::<Vec<_>>(),
+        "where it was"
+    );
+    assert!(
+        data.contacts
+            .iter()
+            .any(|c| c.geom[0].is_some() && c.flex[1].is_some()),
+        "touching the cloth"
     );
 }
 

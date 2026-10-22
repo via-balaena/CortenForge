@@ -257,7 +257,7 @@ impl Subproblem {
     /// makes no rows and every row reaches a tree; at the dense size a geom
     /// contact between two static bodies is refused (ledger L148), and the
     /// rows in none are a flex contact's whose sides have no dofs, where
-    /// MuJoCo's partition stops instead (ledger L220).
+    /// MuJoCo's partition stops instead (registry `D-FLEX-NO-TREE`).
     fn outside(data: &Data) -> Self {
         let rows = (0..data.efc_type.len())
             .filter(|&r| data.efc_island.get(r).is_none_or(|&i| i < 0))
