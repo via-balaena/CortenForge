@@ -425,19 +425,11 @@ pub fn compute_diag_approx_bodyweight(
         | ConstraintType::ContactElliptic => {
             if id < data.contacts.len() {
                 let contact = &data.contacts[id];
-                let (b1, b2) = contact.bodies(model);
                 // row_offset 0 = normal (translational), others = friction (rotational)
                 let comp = usize::from(row_offset != 0);
-                let w1 = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][comp]
-                } else {
-                    0.0
-                };
-                let w2 = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][comp]
-                } else {
-                    0.0
-                };
+                let [w1, w2] = contact
+                    .bodies(model)
+                    .map(|b| b.map_or(0.0, |b| model.body_invweight0[b][comp]));
                 (w1 + w2).max(MJ_MINVAL)
             } else {
                 MJ_MINVAL

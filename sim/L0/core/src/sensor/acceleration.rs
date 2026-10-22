@@ -182,10 +182,12 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                     let ci = data.efc_id[ei];
                     if ci < data.contacts.len() {
                         let c = &data.contacts[ci];
-                        // Body-level match: check if either contact body matches
-                        // the sensor's body (MuJoCo: geom_bodyid[con->geom[k]] == bodyid)
-                        let (geom1_body, geom2_body) = c.bodies(model);
-                        if body_id == geom1_body || body_id == geom2_body {
+                        // Body-level match: either geom's body is the sensor's
+                        // (MuJoCo: geom_bodyid[con->geom[k]] == bodyid; a flex
+                        // side, with no geom, never matches,
+                        // `engine_sensor.c:898-904`).
+                        let geom_body = |k: usize| c.geom[k].map(|g| model.geom_body[g]);
+                        if geom_body(0) == Some(body_id) || geom_body(1) == Some(body_id) {
                             // This contact's normal force, as `mj_contactForce`
                             // decodes it: an elliptic or frictionless contact's first
                             // row, a pyramidal contact's facets summed first

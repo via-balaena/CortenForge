@@ -731,6 +731,7 @@ mod spec_c_tests {
         model.flex_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.flex_friction = vec![Vector3::new(1.0, 0.005, 0.0001)];
         model.flex_elemadr = vec![0];
+        model.flex_vertadr = vec![0];
         model.flex_elemnum = vec![nelem];
 
         // Vertex arrays
@@ -999,8 +1000,7 @@ mod spec_c_tests {
             contact.normal
         );
         // flex_vertex should be the penetrating vertex (3)
-        assert!(contact.flex_vertex.is_some());
-        assert!(contact.flex_vertex2.is_some());
+        assert!(contact.vert.iter().all(Option::is_some));
     }
 
     // =========================================================================
@@ -1046,25 +1046,13 @@ mod spec_c_tests {
             data.ncon
         );
 
-        // AC11: Verify contact encoding
+        // AC11: Verify contact encoding: a flex vertex on each side, no geom
         let contact = &data.contacts[0];
+        assert_eq!(contact.geom, [None; 2], "no geom on a self-collision");
+        assert_eq!(contact.flex, [Some(0); 2], "the flex on both sides");
         assert!(
-            contact.flex_vertex.is_some(),
-            "flex_vertex should be Some for self-collision"
-        );
-        assert!(
-            contact.flex_vertex2.is_some(),
-            "flex_vertex2 should be Some for self-collision"
-        );
-        assert_eq!(
-            contact.geom1,
-            usize::MAX,
-            "geom1 should be usize::MAX sentinel"
-        );
-        assert_eq!(
-            contact.geom2,
-            usize::MAX,
-            "geom2 should be usize::MAX sentinel"
+            contact.vert.iter().all(Option::is_some),
+            "a vertex on each side"
         );
     }
 
@@ -1085,7 +1073,7 @@ mod spec_c_tests {
             Vector3::new(0.5, 1.0, 0.0),
         ];
 
-        let run_with_mode = |mode: FlexSelfCollide| -> Vec<(Option<usize>, Option<usize>)> {
+        let run_with_mode = |mode: FlexSelfCollide| -> Vec<[Option<usize>; 2]> {
             let (model, mut data) =
                 make_flex_model(7, &elements, 2, mode, false, false, 1, 1, 0.1, 0.0, 0.01);
             for (i, p) in positions.iter().enumerate() {
@@ -1097,12 +1085,8 @@ mod spec_c_tests {
                 FlexSelfCollide::Sap => mj_collide_flex_self_sap(&model, &mut data, 0),
                 _ => unreachable!(),
             }
-            let mut pairs: Vec<_> = data
-                .contacts
-                .iter()
-                .map(|c| (c.flex_vertex, c.flex_vertex2))
-                .collect();
-            pairs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            let mut pairs: Vec<_> = data.contacts.iter().map(|c| c.vert).collect();
+            pairs.sort_unstable();
             pairs
         };
 
@@ -1258,6 +1242,7 @@ mod spec_c_tests {
         model.flex_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
         model.flex_friction = vec![Vector3::new(1.0, 0.005, 0.0001); 2];
         model.flex_elemadr = vec![0, 2]; // flex 0 starts at elem 0, flex 1 at elem 2
+        model.flex_vertadr = vec![0, 4]; // 4 vertices each
         model.flex_elemnum = vec![2, 2];
 
         model.flexvert_flexid = vec![0, 0, 0, 0, 1, 1, 1, 1];
@@ -1301,6 +1286,7 @@ mod spec_c_tests {
         model.flex_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.flex_friction = vec![Vector3::new(1.0, 0.005, 0.0001)];
         model.flex_elemadr = vec![0];
+        model.flex_vertadr = vec![0];
         model.flex_elemnum = vec![3];
 
         // T0=[0,1,2], T1=[0,2,3], T2=[3,4,5]
@@ -1506,16 +1492,13 @@ mod spec_c_tests {
 
         // Structural conformance checks:
         // 1. Contact encoding matches MuJoCo convention
-        assert!(c.flex_vertex.is_some(), "flex_vertex must be Some");
-        assert!(c.flex_vertex2.is_some(), "flex_vertex2 must be Some");
-        assert_eq!(c.geom1, usize::MAX, "geom1 sentinel");
-        assert_eq!(c.geom2, usize::MAX, "geom2 sentinel");
+        assert!(c.vert.iter().all(Option::is_some), "a vertex on each side");
+        assert_eq!(c.geom, [None; 2], "no geom");
 
         // 2. Both vertices belong to the same flex
-        let vi1 = c.flex_vertex.unwrap();
-        let vi2 = c.flex_vertex2.unwrap();
         assert_eq!(
-            model.flexvert_flexid[vi1], model.flexvert_flexid[vi2],
+            c.flex,
+            [Some(0); 2],
             "Both vertices must belong to same flex"
         );
 

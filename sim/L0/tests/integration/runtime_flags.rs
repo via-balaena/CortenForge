@@ -2356,7 +2356,10 @@ fn ac35c_override_with_flex_contacts() {
     data.forward(&model).expect("forward");
 
     // Find a flex contact (flex_vertex is Some).
-    let flex_contact = data.contacts.iter().find(|c| c.flex_vertex.is_some());
+    let flex_contact = data
+        .contacts
+        .iter()
+        .find(|c| c.flex.iter().any(Option::is_some));
     assert!(
         flex_contact.is_some(),
         "should generate at least one flex-rigid contact (ncon={}, nflexvert={})",

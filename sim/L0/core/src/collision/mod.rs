@@ -1467,7 +1467,7 @@ mod spec_d_tests {
         let c = &contacts[0];
         // MuJoCo lists the cylinder first (the lower geom type), its normal
         // toward the mesh below: -Z.
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1502,7 +1502,7 @@ mod spec_d_tests {
 
         let c = &contacts[0];
         // From the cylinder, listed first, toward the mesh: -Z.
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1621,7 +1621,7 @@ mod spec_d_tests {
         let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
         assert_eq!(contacts.len(), 1, "one contact from the vertex set");
         let c = &contacts[0];
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1667,7 +1667,7 @@ mod spec_d_tests {
 
         let c = &contacts[0];
         // From the ellipsoid, listed first, toward the mesh: -Z.
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1699,7 +1699,7 @@ mod spec_d_tests {
         assert!(!contacts.is_empty(), "should produce contact");
 
         let c = &contacts[0];
-        assert_eq!((c.geom1, c.geom2), (1, 0), "MuJoCo's geom order");
+        assert_eq!(c.geom, [Some(1), Some(0)], "MuJoCo's geom order");
         assert!(
             c.normal.z < -0.9,
             "normal should point -Z, got {:?}",
@@ -1977,8 +1977,8 @@ mod spec_d_tests {
             assert_eq!(contacts.len(), 3, "plane geom {plane}: contacts");
             for c in &contacts {
                 assert_eq!(
-                    [c.geom1, c.geom2],
-                    [plane, mesh],
+                    c.geom,
+                    [Some(plane), Some(mesh)],
                     "plane geom {plane}: order"
                 );
                 assert_eq!(c.normal, Vector3::z(), "plane geom {plane}: normal");

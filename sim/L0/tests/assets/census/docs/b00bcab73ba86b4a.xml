@@ -1,0 +1,14 @@
+<mujoco>
+  <option gravity="0 0 0"><flag equality="disable"/></option>
+  <worldbody>
+    <body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/></body>
+  </worldbody>
+  <deformable>
+    <flex name="A" dim="2" radius="0.01" mass="0.1">
+      <contact selfcollide="none" internal="false"/>
+      <vertex pos="-0.05 -0.05 0.005  -0.05 0 0.005  -0.05 0.05 0.005  0 -0.05 0.005  0 0 0.005
+                   0 0.05 0.005  0.05 -0.05 0.005  0.05 0 0.005  0.05 0.05 0.005"/>
+      <element data="0 3 4  0 4 1  1 4 5  1 5 2  3 6 7  3 7 4  4 7 8  4 8 5"/>
+    </flex>
+  </deformable>
+</mujoco>

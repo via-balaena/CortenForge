@@ -504,8 +504,8 @@ fn check_12_pair_condim() -> (u32, u32) {
 
     // Find the contact between left and right, check its dim
     let pair_contact = data.contacts.iter().find(|c| {
-        (c.geom1 == left_geom && c.geom2 == right_geom)
-            || (c.geom1 == right_geom && c.geom2 == left_geom)
+        c.geom == [Some(left_geom), Some(right_geom)]
+            || c.geom == [Some(right_geom), Some(left_geom)]
     });
 
     let (found, dim) = pair_contact.map_or((false, 0), |c| (true, c.dim));

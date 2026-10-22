@@ -8,20 +8,17 @@ use crate::constraint::chain::body_pair_chain;
 use crate::jacobian::mj_jac;
 use crate::types::{Contact, Data, Model};
 
-/// The bodies on a contact's two sides, MuJoCo's first (`con->geom[0]` or
-/// its vertex) first: the normal points from the first to the second. A
-/// flex vertex's side is its body (`flex_vertbodyid`), whose slide dofs are
-/// the vertex's (none for a pinned vertex).
+/// The bodies on a contact's two sides, side 0 first: the normal points
+/// from the first to the second. A geom's side is its body, a flex vertex's
+/// its own body (`flex_vertbodyid`), whose slide dofs are the vertex's (none
+/// for a pinned vertex): MuJoCo's special case, one body a side
+/// (`engine_core_constraint.c:911-930`).
 fn contact_sides(model: &Model, contact: &Contact) -> (usize, usize) {
-    match (contact.flex_vertex, contact.flex_vertex2) {
-        // Flex self-contact: the normal points from vertex 2 to vertex 1.
-        (Some(v1), Some(v2)) => (model.flexvert_bodyid[v2], model.flexvert_bodyid[v1]),
-        // Flex-rigid: the normal points from the rigid geom to the vertex.
-        (Some(v), None) => (model.geom_body[contact.geom2], model.flexvert_bodyid[v]),
-        _ => (
-            model.geom_body[contact.geom1],
-            model.geom_body[contact.geom2],
-        ),
+    match contact.bodies(model) {
+        [Some(b1), Some(b2)] => (b1, b2),
+        // An element side spans its vertices' bodies; no collision makes one
+        // before the Jacobian's general case (`:932-985`) is ported.
+        _ => unreachable!("an element contact side before the general Jacobian"),
     }
 }
 
@@ -374,8 +371,8 @@ mod contact_jac_free_joint_tests {
         );
         let j = compute_contact_jacobian(&model, &data, &contact);
 
-        let body1 = model.geom_body[contact.geom1]; // world (body 0)
-        let body2 = model.geom_body[contact.geom2]; // free body
+        let body1 = model.geom_body[contact.geom[0].unwrap()]; // world (body 0)
+        let body2 = model.geom_body[contact.geom[1].unwrap()]; // free body
 
         let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
         let (jacp1, _) = mj_jac(&model, &data, body1, &contact.pos);
@@ -428,8 +425,8 @@ mod contact_jac_free_joint_tests {
         assert_eq!(j.nrows(), 6);
         assert_eq!(j.ncols(), 6);
 
-        let body1 = model.geom_body[contact.geom1];
-        let body2 = model.geom_body[contact.geom2];
+        let body1 = model.geom_body[contact.geom[0].unwrap()];
+        let body2 = model.geom_body[contact.geom[1].unwrap()];
 
         let (jacp2, jacr2) = mj_jac(&model, &data, body2, &contact.pos);
         let (jacp1, jacr1) = mj_jac(&model, &data, body1, &contact.pos);
@@ -502,8 +499,8 @@ mod contact_jac_free_joint_tests {
         assert_eq!(j.nrows(), 6);
         assert_eq!(j.ncols(), 12);
 
-        let body1 = model.geom_body[contact.geom1]; // body 1
-        let body2 = model.geom_body[contact.geom2]; // body 2
+        let body1 = model.geom_body[contact.geom[0].unwrap()]; // body 1
+        let body2 = model.geom_body[contact.geom[1].unwrap()]; // body 2
 
         let (jacp1, jacr1) = mj_jac(&model, &data, body1, &contact.pos);
         let (jacp2, jacr2) = mj_jac(&model, &data, body2, &contact.pos);
@@ -564,7 +561,7 @@ mod contact_jac_free_joint_tests {
         let j = compute_contact_jacobian(&model, &data, &contact);
 
         // Cross-check against mj_jac projection
-        let body2 = model.geom_body[contact.geom2];
+        let body2 = model.geom_body[contact.geom[1].unwrap()];
         let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
 
         let directions = [contact.normal, contact.frame[0], contact.frame[1]];
@@ -614,7 +611,7 @@ mod contact_jac_free_joint_tests {
         assert_eq!(j.ncols(), 6);
 
         // Cross-check the single normal row against mj_jac projection
-        let body2 = model.geom_body[contact.geom2];
+        let body2 = model.geom_body[contact.geom[1].unwrap()];
         let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
         let normal = contact.normal;
 

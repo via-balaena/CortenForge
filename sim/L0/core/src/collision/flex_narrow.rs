@@ -273,15 +273,16 @@ pub fn make_contact_flex_rigid(
         _ => 3, // condim 3 and any other value default to 3D friction cone
     };
 
+    // The geom on side 0, the vertex on side 1: the normal points from the
+    // geom to the vertex.
     Contact {
         pos,
         normal,
         depth,
-        // For flex contacts, geom1 = geom2 = the rigid geom index.
-        // The vertex index is stored in flex_vertex.
-        // This ensures model.geom_body[contact.geom1] is always valid.
-        geom1: geom_idx,
-        geom2: geom_idx,
+        geom: [Some(geom_idx), None],
+        flex: [None, Some(flex_id)],
+        elem: [None; 2],
+        vert: [None, Some(vertex_idx - model.flex_vertadr[flex_id])],
         friction: mu[0],
         dim,
         includemargin,
@@ -290,21 +291,14 @@ pub fn make_contact_flex_rigid(
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
         frame,
-        // Safety: vertex_idx comes from iterating 0..model.nflexvert in
-        // mj_collision_flex, so it is always in-bounds. Rust's bounds-checked
-        // indexing would panic loudly if a malformed model violated this.
-        // No additional validation needed (Phase 8 DT-25 audit decision).
-        flex_vertex: Some(vertex_idx),
         regularized_mu: 0.0,
-        flex_vertex2: None,
     }
 }
 
 /// Create a Contact for a flex self-collision.
 ///
-/// Side 1: penetrating vertex (`flex_vertex`).
-/// Side 2: nearest opposing vertex (`flex_vertex2`).
-/// No rigid geom — `geom1`/`geom2` set to `usize::MAX` (sentinel).
+/// Side 0: the nearest opposing vertex (`vertex2`); side 1: the penetrating
+/// vertex (`vertex1`); the normal points from the first to the second.
 pub fn make_contact_flex_self(
     model: &Model,
     vertex1: usize,
@@ -333,8 +327,13 @@ pub fn make_contact_flex_self(
         pos,
         normal,
         depth,
-        geom1: usize::MAX, // sentinel — no rigid geom
-        geom2: usize::MAX,
+        geom: [None; 2],
+        flex: [Some(flex_id); 2],
+        elem: [None; 2],
+        vert: [
+            Some(vertex2 - model.flex_vertadr[flex_id]),
+            Some(vertex1 - model.flex_vertadr[flex_id]),
+        ],
         friction: mu[0],
         dim,
         includemargin,
@@ -343,18 +342,16 @@ pub fn make_contact_flex_self(
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
         frame,
-        flex_vertex: Some(vertex1),
         regularized_mu: 0.0,
-        flex_vertex2: Some(vertex2),
     }
 }
 
 /// Create a Contact for a flex-flex cross-object collision.
 ///
-/// Side 1: nearest vertex from flex1 (`flex_vertex`).
-/// Side 2: nearest vertex from flex2 (`flex_vertex2`).
-/// No rigid geom — `geom1`/`geom2` set to `usize::MAX` (sentinel).
-/// Margin = `flex_margin[f1] + flex_margin[f2]` (additive, not doubled).
+/// Side 0: the nearest vertex of the second flex (`vertex2`); side 1: the
+/// vertex of the first (`vertex1`); the normal points from the first side
+/// to the second. Margin = `flex_margin[f1] + flex_margin[f2]` (additive,
+/// not doubled).
 pub fn make_contact_flex_flex(
     model: &Model,
     vertex1: usize,
@@ -387,8 +384,13 @@ pub fn make_contact_flex_flex(
         pos,
         normal,
         depth,
-        geom1: usize::MAX, // sentinel — no rigid geom
-        geom2: usize::MAX,
+        geom: [None; 2],
+        flex: [Some(flex_id2), Some(flex_id1)],
+        elem: [None; 2],
+        vert: [
+            Some(vertex2 - model.flex_vertadr[flex_id2]),
+            Some(vertex1 - model.flex_vertadr[flex_id1]),
+        ],
         friction: mu[0],
         dim,
         includemargin,
@@ -397,9 +399,7 @@ pub fn make_contact_flex_flex(
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
         frame,
-        flex_vertex: Some(vertex1),
         regularized_mu: 0.0,
-        flex_vertex2: Some(vertex2),
     }
 }
 

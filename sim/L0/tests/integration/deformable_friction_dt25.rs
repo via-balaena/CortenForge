@@ -116,7 +116,7 @@ fn dt25_flex_contact_condim3_has_friction_rows() {
     let flex_contacts: Vec<_> = data
         .contacts
         .iter()
-        .filter(|c| c.flex_vertex.is_some())
+        .filter(|c| c.flex.iter().any(Option::is_some))
         .collect();
     assert!(
         !flex_contacts.is_empty(),
@@ -239,7 +239,7 @@ fn dt25_flex_frictionless_contact_dim1() {
     let flex_contacts: Vec<_> = data
         .contacts
         .iter()
-        .filter(|c| c.flex_vertex.is_some())
+        .filter(|c| c.flex.iter().any(Option::is_some))
         .collect();
 
     assert!(

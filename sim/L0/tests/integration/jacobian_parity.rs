@@ -208,8 +208,10 @@ fn contact_jacobians_match_mujoco_3_5_0_bit_for_bit() {
             pos: vec3(&c["pos"]),
             normal: Vector3::from_column_slice(&frame[0..3]),
             depth: 0.0,
-            geom1: geom[0],
-            geom2: geom[1],
+            geom: [Some(geom[0]), Some(geom[1])],
+            flex: [None; 2],
+            elem: [None; 2],
+            vert: [None; 2],
             friction: 1.0,
             dim,
             includemargin: 0.0,
@@ -221,9 +223,7 @@ fn contact_jacobians_match_mujoco_3_5_0_bit_for_bit() {
                 Vector3::from_column_slice(&frame[3..6]),
                 Vector3::from_column_slice(&frame[6..9]),
             ],
-            flex_vertex: None,
             regularized_mu: 0.0,
-            flex_vertex2: None,
         };
         let j = compute_contact_jacobian(&model, &data, &contact);
         assert_golden(
@@ -334,7 +334,7 @@ fn flex_vertex_contact_row_moves_with_its_parent() {
     let contact = data
         .contacts
         .iter()
-        .find(|c| c.flex_vertex == Some(0))
+        .find(|c| c.flex_vertices(&model)[1] == Some(0))
         .expect("the free vertex touches the floor")
         .clone();
     let row = compute_contact_jacobian(&model, &data, &contact);

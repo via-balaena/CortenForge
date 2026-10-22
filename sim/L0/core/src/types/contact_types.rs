@@ -42,21 +42,28 @@ pub struct ContactPair {
 pub struct Contact {
     /// Contact position in world frame.
     pub pos: Vector3<f64>,
-    /// Contact normal: from geom1 toward geom2, unit as `make_frame`
+    /// Contact normal: from side 0 toward side 1, unit as `make_frame`
     /// normalises it; one shorter than 0.5 is kept as written and refuses
     /// the step
     /// ([`StepError::UndefinedContactFrame`](crate::StepError::UndefinedContactFrame)).
     pub normal: Vector3<f64>,
     /// Penetration depth (positive = penetrating).
     pub depth: f64,
-    /// First geometry ID. A contact between two geoms lists them in
-    /// MuJoCo's order (`mj_collideGeoms`): the lower MuJoCo geom type first
-    /// (plane, hfield, sphere, capsule, ellipsoid, cylinder, box, mesh, sdf),
-    /// for equal types the lower body's geom first (an explicit pair whose
-    /// geoms share a body: as declared).
-    pub geom1: usize,
-    /// Second geometry ID.
-    pub geom2: usize,
+    /// Each side's geom, MuJoCo's `mjContact::geom` (`mjdata.h:148`), `None`
+    /// on a flex side. A contact between two geoms lists them in MuJoCo's
+    /// order (`mj_collideGeoms`): the lower MuJoCo geom type first (plane,
+    /// hfield, sphere, capsule, ellipsoid, cylinder, box, mesh, sdf), for
+    /// equal types the lower body's geom first (an explicit pair whose geoms
+    /// share a body: as declared).
+    pub geom: [Option<usize>; 2],
+    /// Each side's flex (`mjContact::flex`), `None` on a geom side.
+    pub flex: [Option<usize>; 2],
+    /// Each flex side's element, numbered within its flex
+    /// (`mjContact::elem`), `None` on a geom or vertex side.
+    pub elem: [Option<usize>; 2],
+    /// Each flex side's vertex, numbered within its flex (`mjContact::vert`),
+    /// `None` on a geom or element side.
+    pub vert: [Option<usize>; 2],
     /// Friction coefficient (combined from both geoms).
     pub friction: f64,
     /// Contact dimension: 1 (frictionless), 3 (friction), 4 (elliptic), 6 (torsional).
@@ -97,54 +104,35 @@ pub struct Contact {
     /// Contact frame tangent vectors (orthogonal to normal).
     /// `frame[0..3]` = t1, `frame[3..6]` = t2 (for friction cone).
     pub frame: [Vector3<f64>; 2],
-    /// If `Some(vertex_idx)`, this is a flex-rigid contact.
-    /// `geom1` and `geom2` both reference the rigid geom index.
-    /// The flex vertex index is stored here. If `None`, standard rigid-rigid contact.
-    pub flex_vertex: Option<usize>,
-    /// If `Some(vertex_idx)`, this is a flex self-collision contact.
-    /// `flex_vertex` = penetrating vertex (side 1).
-    /// `flex_vertex2` = nearest opposing vertex (side 2).
-    /// `geom1 = geom2 = usize::MAX` (no rigid geom).
-    /// If `None`, standard flex-rigid or rigid-rigid contact.
-    pub flex_vertex2: Option<usize>,
 }
 
 impl Contact {
-    /// Derive the two body indices for this contact.
-    ///
-    /// For rigid-rigid: `(geom_body[geom1], geom_body[geom2])`.
-    /// For flex-rigid: `(flexvert_bodyid[vertex], geom_body[geom2])`.
-    /// For flex-self/flex-flex: `(flexvert_bodyid[v1], flexvert_bodyid[v2])`.
-    ///
-    /// Returns world body (0) for out-of-bounds geom indices (defensive
-    /// against synthetic test contacts with sentinel geom values).
+    /// Both sides' geoms, for a contact between two geoms; `None` when a
+    /// side is a flex's.
     #[inline]
     #[must_use]
-    pub fn bodies(&self, model: &Model) -> (usize, usize) {
-        match (self.flex_vertex, self.flex_vertex2) {
-            (Some(vi1), Some(vi2)) => {
-                // Flex self-collision or flex-flex
-                (model.flexvert_bodyid[vi1], model.flexvert_bodyid[vi2])
-            }
-            (Some(vi), None) => {
-                // Flex-rigid: vertex body + rigid geom body
-                (model.flexvert_bodyid[vi], model.geom_body[self.geom2])
-            }
-            _ => {
-                // Rigid-rigid (with bounds guard for synthetic contacts)
-                let b1 = if self.geom1 < model.geom_body.len() {
-                    model.geom_body[self.geom1]
-                } else {
-                    0
-                };
-                let b2 = if self.geom2 < model.geom_body.len() {
-                    model.geom_body[self.geom2]
-                } else {
-                    0
-                };
-                (b1, b2)
-            }
-        }
+    pub fn geoms(&self) -> Option<(usize, usize)> {
+        self.geom[0].zip(self.geom[1])
+    }
+
+    /// Each side's flex vertex, numbered among every flex's vertices
+    /// (`flex_vertadr` + `vert`), `None` on a geom or element side.
+    #[inline]
+    #[must_use]
+    pub fn flex_vertices(&self, model: &Model) -> [Option<usize>; 2] {
+        [0, 1].map(|k| Some(model.flex_vertadr[self.flex[k]?] + self.vert[k]?))
+    }
+
+    /// Each side's body: a geom's body, a flex vertex's own body, `None` on
+    /// an element side, which spans its vertices' bodies.
+    #[inline]
+    #[must_use]
+    pub fn bodies(&self, model: &Model) -> [Option<usize>; 2] {
+        let vertices = self.flex_vertices(model);
+        [0, 1].map(|k| match self.geom[k] {
+            Some(geom) => Some(model.geom_body[geom]),
+            None => vertices[k].map(|v| model.flexvert_bodyid[v]),
+        })
     }
 
     /// Whether the contact lies in the gap: its distance at or past
@@ -231,8 +219,10 @@ impl Contact {
             pos,
             normal,
             depth,
-            geom1,
-            geom2,
+            geom: [Some(geom1), Some(geom2)],
+            flex: [None; 2],
+            elem: [None; 2],
+            vert: [None; 2],
             friction,
             dim: if friction > 0.0 { 3 } else { 1 }, // 3D friction cone or frictionless
             includemargin: 0.0,
@@ -248,9 +238,7 @@ impl Contact {
             solreffriction: [0.0, 0.0],
             solimp,
             frame,
-            flex_vertex: None,
             regularized_mu: 0.0,
-            flex_vertex2: None,
         }
     }
 
@@ -335,8 +323,10 @@ impl Contact {
             pos,
             normal,
             depth,
-            geom1,
-            geom2,
+            geom: [Some(geom1), Some(geom2)],
+            flex: [None; 2],
+            elem: [None; 2],
+            vert: [None; 2],
             friction: sliding, // Keep legacy field for compatibility
             dim,
             includemargin: 0.0,
@@ -346,9 +336,7 @@ impl Contact {
             solreffriction: [0.0, 0.0],
             solimp,
             frame,
-            flex_vertex: None,
             regularized_mu: 0.0,
-            flex_vertex2: None,
         }
     }
 }

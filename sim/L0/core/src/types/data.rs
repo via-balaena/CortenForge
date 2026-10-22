@@ -1141,7 +1141,7 @@ impl Data {
     pub fn contacts_involving_geom(&self, geom_id: usize) -> usize {
         self.contacts
             .iter()
-            .filter(|c| c.geom1 == geom_id || c.geom2 == geom_id)
+            .filter(|c| c.geom.contains(&Some(geom_id)))
             .count()
     }
 
@@ -1152,7 +1152,7 @@ impl Data {
         self.contacts
             .iter()
             .filter(|c| {
-                (c.geom1 == geom1 && c.geom2 == geom2) || (c.geom1 == geom2 && c.geom2 == geom1)
+                c.geom == [Some(geom1), Some(geom2)] || c.geom == [Some(geom2), Some(geom1)]
             })
             .count()
     }
@@ -1160,15 +1160,18 @@ impl Data {
     /// Count the contacts between two bodies (order-agnostic), those in the
     /// gap included.
     ///
-    /// Uses `model.geom_body` to resolve each contact's geom pair to body IDs.
+    /// Each side's body is a geom's body or a flex vertex's own body
+    /// ([`Contact::bodies`]); a contact with a flex element on a side counts
+    /// for no pair.
     #[must_use]
     pub fn contacts_between_bodies(&self, model: &Model, body1: usize, body2: usize) -> usize {
         self.contacts
             .iter()
-            .filter(|c| {
-                let b1 = model.geom_body[c.geom1];
-                let b2 = model.geom_body[c.geom2];
-                (b1 == body1 && b2 == body2) || (b1 == body2 && b2 == body1)
+            .filter(|c| match c.bodies(model) {
+                [Some(b1), Some(b2)] => {
+                    (b1 == body1 && b2 == body2) || (b1 == body2 && b2 == body1)
+                }
+                _ => false,
             })
             .count()
     }

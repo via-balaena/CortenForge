@@ -673,18 +673,21 @@ pub struct ContactSpec {
 }
 
 impl ContactSpec {
-    /// Capture a CPU-generated [`Contact`] for GPU injection.
-    fn from_contact(c: &Contact) -> Self {
-        Self {
+    /// Capture a CPU-generated [`Contact`] between two geoms for GPU
+    /// injection; `None` for a contact with a flex side (sim-gpu has no
+    /// flex).
+    fn from_contact(c: &Contact) -> Option<Self> {
+        let (geom1, geom2) = c.geoms()?;
+        Some(Self {
             pos: [c.pos.x, c.pos.y, c.pos.z],
             normal: [c.normal.x, c.normal.y, c.normal.z],
             depth: c.depth,
             mu: c.mu[0],
             mu_torsion: c.mu[2],
             condim: c.dim,
-            geom1: c.geom1,
-            geom2: c.geom2,
-        }
+            geom1,
+            geom2,
+        })
     }
 }
 
@@ -1123,7 +1126,7 @@ pub fn contact_constraint_oracle(case: &ContactConformanceCase) -> ConstraintOra
         contacts: data
             .contacts
             .iter()
-            .map(ContactSpec::from_contact)
+            .filter_map(ContactSpec::from_contact)
             .collect(),
     }
 }
@@ -1200,7 +1203,7 @@ pub fn contact_rollout_oracle(
     let frozen_ncon = data.ncon;
     let specs: Vec<ContactSpec> = frozen_contacts
         .iter()
-        .map(ContactSpec::from_contact)
+        .filter_map(ContactSpec::from_contact)
         .collect();
 
     let mut steps = Vec::with_capacity(nsteps);

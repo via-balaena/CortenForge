@@ -167,7 +167,13 @@ fn run_collision_test(model_name: &str, ctrl_values: &[f64]) {
     // Build sorted CortenForge contacts by geom pair
     let ncon = data.ncon;
     let mut cf_contacts: Vec<(usize, usize, usize)> = (0..ncon)
-        .map(|i| (data.contacts[i].geom1, data.contacts[i].geom2, i))
+        .map(|i| {
+            (
+                data.contacts[i].geom[0].unwrap(),
+                data.contacts[i].geom[1].unwrap(),
+                i,
+            )
+        })
         .collect();
     cf_contacts.sort_by_key(|&(g1, g2, _)| (g1, g2));
 

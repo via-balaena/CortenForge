@@ -9,18 +9,12 @@ use approx::assert_relative_eq;
 use sim_core::DISABLE_ISLAND;
 use sim_mjcf::load_model;
 
-/// Helper: count flex-flex contacts (both flex_vertex and flex_vertex2 set,
-/// from different flex objects).
-fn count_flex_flex_contacts(model: &sim_core::Model, data: &sim_core::Data) -> usize {
+/// Helper: count flex-flex contacts (a flex on each side, two different
+/// flexes).
+fn count_flex_flex_contacts(data: &sim_core::Data) -> usize {
     data.contacts
         .iter()
-        .filter(|c| {
-            if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
-                model.flexvert_flexid[v1] != model.flexvert_flexid[v2]
-            } else {
-                false
-            }
-        })
+        .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .count()
 }
 
@@ -65,7 +59,7 @@ fn t01_incompatible_bitmask_zero_contacts() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
 
-    let ff_count = count_flex_flex_contacts(&model, &data);
+    let ff_count = count_flex_flex_contacts(&data);
     assert_eq!(
         ff_count, 0,
         "incompatible bitmask: (1&2)=0, (2&1)=0 → zero flex-flex contacts"
@@ -86,13 +80,7 @@ fn t02_compatible_bitmask_generates_contacts() {
     let ff_contacts: Vec<_> = data
         .contacts
         .iter()
-        .filter(|c| {
-            if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
-                model.flexvert_flexid[v1] != model.flexvert_flexid[v2]
-            } else {
-                false
-            }
-        })
+        .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .collect();
 
     // AC2: contact count. MuJoCo 3.5.0 produces 32 for this geometry (EGT-2/EGT-8).
@@ -107,20 +95,11 @@ fn t02_compatible_bitmask_generates_contacts() {
 
     // AC9: contact encoding
     for c in &ff_contacts {
-        assert_eq!(
-            c.geom1,
-            usize::MAX,
-            "flex-flex contact geom1 must be sentinel"
-        );
-        assert_eq!(
-            c.geom2,
-            usize::MAX,
-            "flex-flex contact geom2 must be sentinel"
-        );
-        assert!(c.flex_vertex.is_some(), "flex_vertex must be set");
-        assert!(c.flex_vertex2.is_some(), "flex_vertex2 must be set");
-        let fid1 = model.flexvert_flexid[c.flex_vertex.unwrap()];
-        let fid2 = model.flexvert_flexid[c.flex_vertex2.unwrap()];
+        assert_eq!(c.geom, [None; 2], "a flex-flex contact has no geom");
+        assert!(c.vert.iter().all(Option::is_some), "a vertex on each side");
+        let [Some(fid1), Some(fid2)] = c.flex else {
+            panic!("a flex on each side: {:?}", c.flex);
+        };
         assert_ne!(
             fid1, fid2,
             "flex-flex vertices must be from different flex objects"
@@ -164,13 +143,7 @@ fn t03_priority_winner_takes_all() {
     let ff_contacts: Vec<_> = data
         .contacts
         .iter()
-        .filter(|c| {
-            if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
-                model.flexvert_flexid[v1] != model.flexvert_flexid[v2]
-            } else {
-                false
-            }
-        })
+        .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .collect();
 
     assert!(
@@ -222,13 +195,7 @@ fn t04_solmix_weighted_blend() {
     let ff_contacts: Vec<_> = data
         .contacts
         .iter()
-        .filter(|c| {
-            if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
-                model.flexvert_flexid[v1] != model.flexvert_flexid[v2]
-            } else {
-                false
-            }
-        })
+        .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .collect();
 
     assert!(
@@ -281,13 +248,7 @@ fn t05_margin_gap_additive() {
     let ff_contacts: Vec<_> = data
         .contacts
         .iter()
-        .filter(|c| {
-            if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
-                model.flexvert_flexid[v1] != model.flexvert_flexid[v2]
-            } else {
-                false
-            }
-        })
+        .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .collect();
 
     assert!(
@@ -336,7 +297,7 @@ fn t06_flex_rigid_does_not_gate_flex_flex() {
     );
     let mut data_unpinned = model_unpinned.make_data();
     data_unpinned.forward(&model_unpinned).expect("forward");
-    let unpinned_count = count_flex_flex_contacts(&model_unpinned, &data_unpinned);
+    let unpinned_count = count_flex_flex_contacts(&data_unpinned);
     assert!(
         unpinned_count > 0,
         "baseline must produce flex-flex contacts"
@@ -375,7 +336,7 @@ fn t06_flex_rigid_does_not_gate_flex_flex() {
     let mut data_pinned = model_pinned.make_data();
     data_pinned.forward(&model_pinned).expect("forward");
 
-    let pinned_count = count_flex_flex_contacts(&model_pinned, &data_pinned);
+    let pinned_count = count_flex_flex_contacts(&data_pinned);
     assert_eq!(
         pinned_count, unpinned_count,
         "flex_rigid=true must NOT gate flex-flex: pinned count ({}) must equal unpinned count ({})",
@@ -423,17 +384,10 @@ fn t07_three_flex_all_pairs_enumeration() {
     // Collect flex pairs from contacts
     let mut pairs: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
     for c in &data.contacts {
-        if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
-            let fid1 = model.flexvert_flexid[v1];
-            let fid2 = model.flexvert_flexid[v2];
-            if fid1 != fid2 {
-                let pair = if fid1 < fid2 {
-                    (fid1, fid2)
-                } else {
-                    (fid2, fid1)
-                };
-                pairs.insert(pair);
-            }
+        if let [Some(fid1), Some(fid2)] = c.flex
+            && fid1 != fid2
+        {
+            pairs.insert((fid1.min(fid2), fid1.max(fid2)));
         }
     }
 
@@ -490,13 +444,7 @@ fn t08_condim_max_combination() {
     let ff_contacts: Vec<_> = data
         .contacts
         .iter()
-        .filter(|c| {
-            if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
-                model.flexvert_flexid[v1] != model.flexvert_flexid[v2]
-            } else {
-                false
-            }
-        })
+        .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .collect();
 
     assert!(
@@ -546,7 +494,7 @@ fn t09_full_forward_step_no_panic() {
 
     // Step 1: forward() to generate contacts and verify they exist
     data.forward(&model).expect("forward");
-    let ff_count = count_flex_flex_contacts(&model, &data);
+    let ff_count = count_flex_flex_contacts(&data);
     assert!(
         ff_count > 0,
         "overlapping flexes with large margin must produce flex-flex contacts"
@@ -651,10 +599,10 @@ fn t11_self_collision_regression() {
     // No panic. Self-collision contacts should use make_contact_flex_self()
     // (not make_contact_flex_flex) since flex_id1 == flex_id2.
     for c in &data.contacts {
-        if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
+        if let [Some(f1), Some(f2)] = c.flex {
             // For self-collision contacts, both vertices should be from the same flex
             assert_eq!(
-                model.flexvert_flexid[v1], model.flexvert_flexid[v2],
+                f1, f2,
                 "self-collision contacts must have both vertices from same flex"
             );
         }
@@ -689,13 +637,13 @@ fn t12_flex_rigid_regression() {
     data.forward(&model).expect("forward");
 
     // Flex-rigid contacts should work normally after S7 changes.
-    // Contact.bodies() for flex-rigid should return (flexvert_bodyid, geom_body).
+    // Contact.bodies() for flex-rigid gives (geom_body, flexvert_bodyid).
     for c in &data.contacts {
-        if c.flex_vertex.is_some() && c.flex_vertex2.is_none() {
+        if c.geom[0].is_some() && c.vert[1].is_some() {
             // Flex-rigid contact: bodies() should return valid indices
-            let (b1, b2) = c.bodies(&model);
-            assert!(b1 < model.nbody, "flex body must be valid");
-            assert!(b2 < model.nbody, "rigid geom body must be valid");
+            let [b1, b2] = c.bodies(&model).map(Option::unwrap);
+            assert!(b1 < model.nbody, "rigid geom body must be valid");
+            assert!(b2 < model.nbody, "flex body must be valid");
         }
     }
 
@@ -752,13 +700,7 @@ fn t13_contact_param_flex_flex_unit() {
     let ff_contacts: Vec<_> = data
         .contacts
         .iter()
-        .filter(|c| {
-            if let (Some(v1), Some(v2)) = (c.flex_vertex, c.flex_vertex2) {
-                model.flexvert_flexid[v1] != model.flexvert_flexid[v2]
-            } else {
-                false
-            }
-        })
+        .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .collect();
 
     assert!(
@@ -822,7 +764,7 @@ fn t14_zero_element_flex_no_panic() {
     // Verify baseline: both flexes have elements and produce contacts
     let mut data = model.make_data();
     data.forward(&model).expect("forward baseline");
-    let baseline_count = count_flex_flex_contacts(&model, &data);
+    let baseline_count = count_flex_flex_contacts(&data);
     assert!(
         baseline_count > 0,
         "baseline must produce flex-flex contacts"
@@ -834,7 +776,7 @@ fn t14_zero_element_flex_no_panic() {
     data.forward(&model).expect("forward zero-elem");
 
     // Must not panic, and must produce zero flex-flex contacts
-    let zero_count = count_flex_flex_contacts(&model, &data);
+    let zero_count = count_flex_flex_contacts(&data);
     assert_eq!(
         zero_count, 0,
         "zero-element flex must produce no flex-flex contacts"
@@ -858,9 +800,10 @@ fn t15_flex_flex_contact_jacobian_takes_each_vertex_body() {
     let contact = data
         .contacts
         .iter()
-        .find(|c| c.flex_vertex.is_some() && c.flex_vertex2.is_some())
+        .find(|c| c.vert.iter().all(Option::is_some))
         .expect("a flex-flex contact");
-    let (v1, v2) = (contact.flex_vertex.unwrap(), contact.flex_vertex2.unwrap());
+    // Side 1's vertex takes +n, side 0's −n.
+    let [v2, v1] = contact.flex_vertices(&model).map(Option::unwrap);
     let j = sim_core::compute_contact_jacobian(&model, &data, contact);
     assert_eq!((j.nrows(), j.ncols()), (contact.dim, model.nv));
     let (dof1, dof2) = (model.flexvert_dofadr[v1], model.flexvert_dofadr[v2]);
@@ -881,4 +824,26 @@ fn t15_flex_flex_contact_jacobian_takes_each_vertex_body() {
     for r in 3..contact.dim {
         assert!((0..model.nv).all(|c| j[(r, c)] == 0.0), "row {r} is 0");
     }
+}
+
+/// [`sim_core::Data::contacts_between_bodies`] reads a flex contact's sides
+/// by their own bodies: two overlapping grids' contacts between the flexes
+/// count between their vertex bodies, and none against the world.
+#[test]
+fn contacts_between_bodies_read_flex_flex_contacts_without_a_geom() {
+    let model = load_model(&two_overlapping_grids_mjcf(1, 1, 1, 1)).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert!(data.ncon > 0, "the grids touch");
+    assert_eq!(data.contacts_between_bodies(&model, 0, 0), 0);
+    let pairs: usize = (0..model.nflexvert)
+        .flat_map(|a| (a + 1..model.nflexvert).map(move |b| (a, b)))
+        .map(|(a, b)| {
+            data.contacts_between_bodies(&model, model.flexvert_bodyid[a], model.flexvert_bodyid[b])
+        })
+        .sum();
+    assert_eq!(
+        pairs, data.ncon,
+        "every contact is between two vertex bodies"
+    );
 }

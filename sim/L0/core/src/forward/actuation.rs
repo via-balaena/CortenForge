@@ -242,12 +242,12 @@ fn mj_transmission_body(model: &Model, data: &mut Data, actuator_id: usize) {
     }
 
     for (ci, contact) in data.contacts.iter().enumerate() {
-        // A flex contact (MuJoCo: a geom id below 0).
-        if contact.flex_vertex.is_some() {
+        // A contact with a flex side (MuJoCo: a geom id below 0).
+        let Some((geom1, geom2)) = contact.geoms() else {
             continue;
-        }
-        let b1 = model.geom_body[contact.geom1];
-        let b2 = model.geom_body[contact.geom2];
+        };
+        let b1 = model.geom_body[geom1];
+        let b2 = model.geom_body[geom2];
         if b1 != body_id && b2 != body_id {
             continue;
         }

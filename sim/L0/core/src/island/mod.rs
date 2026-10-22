@@ -181,13 +181,14 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) -> Result<(), StepError>
     }
 
     // Contacts (this crate's readout; MuJoCo has none): the island of the
-    // first of its bodies that is in a tree (a static body is in none).
+    // first of its geoms' bodies that is in a tree (a static body is in
+    // none; a flex side has no geom).
     for (c, contact) in data.contacts.iter().enumerate() {
-        let tree_of = |geom: usize| {
-            let body = *model.geom_body.get(geom)?;
-            model.body_treeid.get(body).copied().filter(|&t| t < ntree)
+        let tree_of = |geom: Option<usize>| {
+            let body = model.geom_body[geom?];
+            Some(model.body_treeid[body]).filter(|&t| t < ntree)
         };
-        if let Some(tree) = tree_of(contact.geom1).or_else(|| tree_of(contact.geom2)) {
+        if let Some(tree) = tree_of(contact.geom[0]).or_else(|| tree_of(contact.geom[1])) {
             data.contact_island[c] = data.tree_island[tree];
         }
     }
@@ -219,12 +220,10 @@ fn row_tree_pair(model: &Model, data: &Data, row: usize) -> Option<(Option<usize
         ConstraintType::ContactFrictionless
         | ConstraintType::ContactPyramidal
         | ConstraintType::ContactElliptic => {
-            let contact = &data.contacts[id];
-            if contact.flex_vertex.is_some() || contact.flex_vertex2.is_some() {
-                return None;
-            }
-            let b1 = model.geom_body[contact.geom1];
-            let b2 = model.geom_body[contact.geom2];
+            // A contact with a flex side takes its trees from its Jacobian.
+            let (geom1, geom2) = data.contacts[id].geoms()?;
+            let b1 = model.geom_body[geom1];
+            let b2 = model.geom_body[geom2];
             Some((tree_of_body(b1), tree_of_body(b2)))
         }
         ConstraintType::Equality

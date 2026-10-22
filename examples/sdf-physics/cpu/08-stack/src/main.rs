@@ -193,9 +193,8 @@ fn track_stack(data: Res<PhysicsData>, mut tracker: ResMut<StackTracker>) {
     if tracker.last_print < 0.001 && t > 0.0 {
         for (i, c) in data.0.contacts.iter().take(6).enumerate() {
             eprintln!(
-                "  [con {i}] g1={} g2={} depth={:.6} n=({:.3},{:.3},{:.3}) margin={:.4} dim={} mu={:.4}",
-                c.geom1,
-                c.geom2,
+                "  [con {i}] geom={:?} depth={:.6} n=({:.3},{:.3},{:.3}) margin={:.4} dim={} mu={:.4}",
+                c.geom,
                 c.depth,
                 c.normal.x,
                 c.normal.y,

@@ -467,7 +467,7 @@ fn ac4_cloth_on_sphere_contact() {
         }
         // Check for flex contacts (contacts where flex_vertex is Some)
         for contact in &data.contacts {
-            if contact.flex_vertex.is_some() {
+            if contact.flex.iter().any(Option::is_some) {
                 had_flex_contacts = true;
             }
         }
@@ -3761,4 +3761,67 @@ fn a_flex_marked_rigid_keeps_no_edge_jacobian_velocity_or_spring_force() {
         "{:?}",
         data.qfrc_spring
     );
+}
+
+/// A 3 × 3 cloth (mass 0.1, radius 0.01) 5 mm into a plane on a static
+/// body, equality constraints off (sim-mjcf's edge equality, Rigid-loading
+/// L31, and MuJoCo's flexcomp has none): MuJoCo 3.5.0's flexcomp, its
+/// vertices and elements as MuJoCo compiles them
+/// (`scripts/gen_flex_contact_weight_reference.py`).
+const CLOTH_ON_A_STATIC_FLOOR: &str = r#"<mujoco>
+  <option gravity="0 0 0"><flag equality="disable"/></option>
+  <worldbody>
+    <body name="ground"><geom name="floor" type="plane" size="2 2 0.1"/></body>
+  </worldbody>
+  <deformable>
+    <flex name="A" dim="2" radius="0.01" mass="0.1">
+      <contact selfcollide="none" internal="false"/>
+      <vertex pos="-0.05 -0.05 0.005  -0.05 0 0.005  -0.05 0.05 0.005  0 -0.05 0.005  0 0 0.005
+                   0 0.05 0.005  0.05 -0.05 0.005  0.05 0 0.005  0.05 0.05 0.005"/>
+      <element data="0 3 4  0 4 1  1 4 5  1 5 2  3 6 7  3 7 4  4 7 8  4 8 5"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+
+/// A contact row's R takes each side's body weight, as MuJoCo's
+/// `mj_diagApprox` (`engine_core_constraint.c:1201-1285`): for a flex
+/// vertex against a plane, the plane's body and the vertex's body. The
+/// cloth of [`CLOTH_ON_A_STATIC_FLOOR`] makes MuJoCo's 9 contacts, each
+/// vertex on the plane, and every one of its 36 rows takes MuJoCo's R, bit
+/// for bit (`gen_flex_contact_weight_reference.py`).
+#[test]
+fn a_flex_vertex_contact_s_rows_take_the_vertex_and_geom_bodies_weights_as_mujoco() {
+    let model = load_model(CLOTH_ON_A_STATIC_FLOOR).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!(data.ncon, 9);
+    assert_eq!(data.efc_R.len(), 36);
+    for (row, r) in data.efc_R.iter().enumerate() {
+        assert_eq!(
+            r.to_bits(),
+            18.947_368_421_052_648_f64.to_bits(),
+            "row {row}: R {r}, MuJoCo 18.947368421052648"
+        );
+    }
+}
+
+/// [`sim_core::Data::contacts_between_bodies`] counts a contact by its two
+/// sides' bodies, a flex vertex's own body on its side: on
+/// [`CLOTH_ON_A_STATIC_FLOOR`], each vertex body meets the floor's body
+/// once.
+#[test]
+fn contacts_between_bodies_count_a_flex_vertex_by_its_body() {
+    let model = load_model(CLOTH_ON_A_STATIC_FLOOR).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let ground = model.geom_body[0];
+    for v in 0..model.nflexvert {
+        let body = model.flexvert_bodyid[v];
+        assert_eq!(
+            data.contacts_between_bodies(&model, ground, body),
+            1,
+            "vertex {v}"
+        );
+    }
+    assert_eq!(data.contacts_between_bodies(&model, ground, ground), 0);
 }

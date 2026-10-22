@@ -303,11 +303,10 @@ mod tests {
         };
         let mut got: Vec<String> = (0..data.ncon)
             .map(|c| {
-                let con = &data.contacts[c];
-                let (mut a, mut b) = (
-                    name(model.geom_body[con.geom1]),
-                    name(model.geom_body[con.geom2]),
-                );
+                let (g1, g2) = data.contacts[c]
+                    .geoms()
+                    .expect("a rigid scene: geom contacts only");
+                let (mut a, mut b) = (name(model.geom_body[g1]), name(model.geom_body[g2]));
                 if a > b {
                     std::mem::swap(&mut a, &mut b);
                 }
