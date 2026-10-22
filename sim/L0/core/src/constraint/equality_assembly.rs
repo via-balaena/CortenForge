@@ -72,8 +72,7 @@ pub(super) fn assemble_equality_rows(model: &Model, data: &mut Data, nv: usize, 
             for col in 0..nv {
                 data.efc_J[(*row, col)] = rows.j_rows[(r, col)];
             }
-            let bw =
-                compute_diag_approx_bodyweight(model, data, ConstraintType::Equality, eq_id, r);
+            let bw = compute_diag_approx_bodyweight(model, eq_id, r);
             finalize_constraint_row_imp(
                 model,
                 data,
