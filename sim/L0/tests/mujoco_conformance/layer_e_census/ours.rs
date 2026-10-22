@@ -244,9 +244,17 @@ fn data_json(m: &Model, d: &Data) -> Value {
             ])
         })
         .collect();
+    // The goldens count a dof's and a tendon's friction loss as one kind
+    // (gen_census_golden.py's CONSTRAINT), and a doc's golden is never
+    // regenerated.
     let mut efc_counts = Map::new();
     for t in &d.efc_type {
-        let n = efc_counts.entry(format!("{t:?}")).or_insert(json!(0));
+        let kind = if t.is_friction_loss() {
+            "FrictionLoss".to_owned()
+        } else {
+            format!("{t:?}")
+        };
+        let n = efc_counts.entry(kind).or_insert(json!(0));
         *n = json!(n.as_u64().unwrap_or(0) + 1);
     }
     json!({

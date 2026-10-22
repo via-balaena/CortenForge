@@ -812,8 +812,12 @@ pub enum JacobianType {
 pub enum ConstraintType {
     /// Equality constraint (connect, weld, joint, tendon, distance, flex).
     Equality,
-    /// DOF or tendon friction loss (Huber cost).
-    FrictionLoss,
+    /// A dof's friction loss (Huber cost), MuJoCo's `mjCNSTR_FRICTION_DOF`;
+    /// `efc_id` is the dof.
+    FrictionDof,
+    /// A tendon's friction loss (Huber cost), MuJoCo's
+    /// `mjCNSTR_FRICTION_TENDON`; `efc_id` is the tendon.
+    FrictionTendon,
     /// Joint limit constraint.
     LimitJoint,
     /// Tendon limit constraint.
@@ -826,6 +830,14 @@ pub enum ConstraintType {
     ContactPyramidal,
     /// Contact with elliptic friction cone (condim ≥ 3 and cone == elliptic).
     ContactElliptic,
+}
+
+impl ConstraintType {
+    /// A friction-loss row, a dof's or a tendon's.
+    #[must_use]
+    pub const fn is_friction_loss(self) -> bool {
+        matches!(self, Self::FrictionDof | Self::FrictionTendon)
+    }
 }
 
 /// Constraint state per scalar row, determined by `PrimalUpdateConstraint`.
@@ -851,7 +863,8 @@ pub enum ConstraintState {
 /// One solver iteration's statistics, MuJoCo's `mjSolverStat`
 /// (`mjdata.h`), as its `saveStats` records them (`engine_solver.c:38-65`).
 ///
-/// Newton and CG fill every field; PGS fills `improvement` only.
+/// Newton and CG fill every field; PGS and noslip `improvement`, `nactive`
+/// and `nchange`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SolverStat {
     /// Cost decrease over the iteration, scaled: `scale · (old − new)`.
@@ -908,9 +921,11 @@ pub enum Integrator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepError {
-    /// Cholesky decomposition failed under the implicit spring-damper
-    /// integrator: the modified mass matrix (M + h*D + h²*K) is not positive
-    /// definite.
+    /// A Cholesky factorization failed: under the implicit spring-damper
+    /// integrator the modified mass matrix (M + h*D + h²*K) is not positive
+    /// definite; or Newton's sparse Hessian has a diagonal under mjMINVAL,
+    /// where MuJoCo stops ("rank-deficient sparse Hessian",
+    /// `engine_solver.c:1644-1646`).
     CholeskyFailed,
     /// Under the implicit integrator, a diagonal of `M − h·D`'s LU factor is
     /// below mjMINVAL in magnitude.
@@ -1001,13 +1016,25 @@ pub enum StepError {
         /// The contact, an index into `Data::contacts`.
         contact: usize,
     },
+    /// A geom contact between two static bodies (under a `<pair>`), whose
+    /// rows reach no kinematic tree, at the dense size with islands: MuJoCo
+    /// 3.5.0's `mj_island` stops there ("contact … is between two static
+    /// bodies", `treeFirst`, `engine_island.c:225-228`). At the sparse size
+    /// the contact makes no rows, and without islands its rows are solved.
+    ConstraintWithoutTree {
+        /// The row, an index into the `efc_*` arrays.
+        row: usize,
+    },
 }
 
 impl std::fmt::Display for StepError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CholeskyFailed => {
-                write!(f, "Cholesky decomposition failed in implicit integration")
+                write!(
+                    f,
+                    "Cholesky decomposition failed (implicit integration, or Newton's sparse Hessian)"
+                )
             }
             Self::LuSingular => {
                 write!(f, "LU decomposition failed in implicit integration")
@@ -1050,6 +1077,9 @@ impl std::fmt::Display for StepError {
                 f,
                 "contact {contact}: xaxis of contact frame undefined (normal shorter than 0.5)"
             ),
+            Self::ConstraintWithoutTree { row } => {
+                write!(f, "constraint row {row} reaches no kinematic tree")
+            }
         }
     }
 }

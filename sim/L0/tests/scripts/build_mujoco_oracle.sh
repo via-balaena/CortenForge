@@ -25,6 +25,7 @@ readonly JOBS=${JOBS:-8}
 
 die() { echo "build_mujoco_oracle: $*" >&2; exit 1; }
 
+scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ $# -eq 1 ]] || die "usage: build_mujoco_oracle.sh <workdir>"
 mkdir -p "$1"
 [[ -z "$(ls -A "$1")" ]] || die "$1 is not empty"
@@ -39,9 +40,11 @@ git clone --quiet --depth 1 --branch "$TAG" https://github.com/google-deepmind/m
 [[ "$(git -C "$src" rev-parse HEAD)" == "$COMMIT" ]] || die "tag $TAG is not $COMMIT"
 
 echo "== C library and plugins"
+# CMAKE_SKIP_BUILD_RPATH keeps <workdir> out of the libraries (see the check below).
 cmake -S "$src" -B "$work/build" \
     -DCMAKE_BUILD_TYPE:STRING=Release \
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
+    -DCMAKE_SKIP_BUILD_RPATH:BOOL=ON \
     -DCMAKE_INSTALL_PREFIX:STRING="$install" \
     -DCMAKE_C_FLAGS:STRING="$FLAGS" \
     -DCMAKE_CXX_FLAGS:STRING="$FLAGS" \
@@ -81,7 +84,7 @@ cp -r "$src/simulate" "$sdist/mujoco"
 echo "== Python bindings"
 MUJOCO_PATH="$install" \
 MUJOCO_PLUGIN_PATH="$plugins" \
-MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF -DCMAKE_C_FLAGS:STRING=$FLAGS -DCMAKE_CXX_FLAGS:STRING=$FLAGS" \
+MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF -DCMAKE_SKIP_BUILD_RPATH:BOOL=ON -DCMAKE_C_FLAGS:STRING=$FLAGS -DCMAKE_CXX_FLAGS:STRING=$FLAGS" \
     "$py" -m pip wheel --quiet --no-deps --wheel-dir "$work/dist" "$work/dist/mujoco-$TAG.tar.gz"
 uv pip install --quiet --python "$py" --no-deps "$work/dist/mujoco-$TAG"-*.whl
 
@@ -115,13 +118,30 @@ for root in "$install" "$pkg"; do
 done
 [[ "$total" -eq 0 ]] || die "$total fused multiply-add instructions found"
 
+# CMake's build rpath put this directory into the libraries (<workdir>/build/lib
+# into each plugin, <workdir>/install/lib into each binding module), with their
+# LC_UUID and code signature following it, and a longer path moved a binding
+# module's code: every build hashed differently. CMAKE_SKIP_BUILD_RPATH leaves a
+# plugin no rpath and a binding module the @loader_path MuJoCo's post-build step
+# adds. Six builds in directories of different lengths then differed in one
+# build's one module only in its LC_UUID and the code signature that hashes it
+# (2026-10-21), both of which the hash leaves out; the engine was byte for byte
+# the one built before the flag.
+echo "== check: no built library names the build directory"
+for dir in "$work" "$(cd "$work" && pwd -P)"; do
+    for root in "$install" "$pkg"; do
+        while IFS= read -r bin; do
+            rc=0
+            grep -qF -- "$dir" "$bin" || rc=$?
+            [[ "$rc" -eq 1 ]] || die "$bin names $dir (grep exit $rc)"
+        done < <(libraries "$root")
+    done
+done
+
 # gen_census_golden.py refuses an interpreter whose mujoco package libraries do
-# not hash to libraries_sha256: sha256 over "<path in the package>\t<sha256>\n",
-# one line per library, in byte order of the path.
-libraries_sha256="$(libraries "$pkg" | while IFS= read -r bin; do
-    printf '%s\t%s\n' "${bin#"$pkg"/}" "$(shasum -a 256 < "$bin" | cut -d' ' -f1)"
-done | shasum -a 256 | cut -d' ' -f1)"
+# not hash to this (oracle_libraries.py says what it leaves out, and why).
+libraries_sha256="$("$py" -I -B "$scripts/oracle_libraries.py" "$pkg")"
 cat > "$work/oracle.json" <<EOF
-{"mujoco": "$TAG", "commit": "$COMMIT", "flags": "$FLAGS", "platform": "$(uname -s)-$(uname -m)", "libraries_sha256": "$libraries_sha256"}
+{"mujoco": "$TAG", "commit": "$COMMIT", "flags": "$FLAGS", "platform": "$(uname -s)-$(uname -m)", "libraries_sha256_without_uuid": "$libraries_sha256"}
 EOF
 echo "oracle ready: $py"

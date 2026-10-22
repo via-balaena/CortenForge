@@ -946,7 +946,9 @@ pub struct Model {
     pub jacobian: JacobianType,
 
     // Newton solver parameters (§15)
-    /// Mean inertia: trace(M) / nv at qpos0. Used by Newton solver for scaling.
+    /// Mean inertia: trace(M) / nv at qpos0. Scales the statistics of a solve
+    /// over every row (`1/(meaninertia·nv)`): the primal solver's (Newton, CG),
+    /// PGS's and noslip's.
     /// Computed at model build time by running CRBA at qpos0.
     pub stat_meaninertia: f64,
     /// Maximum line search iterations for Newton solver (default 50).

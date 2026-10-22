@@ -1,17 +1,19 @@
 //! Constraint solvers and shared infrastructure.
 //!
-//! The primal solver Newton and CG share (`primal`, with Newton's sparse
-//! Hessian in `hessian`), PGS, noslip, and the shared post-solve operations
+//! The primal solver Newton and CG share (`primal`, with its sparse
+//! structures in `sparse`), PGS, noslip, and the shared post-solve operations
 //! (qfrc recovery, friction pyramid decoding). Corresponds to MuJoCo's
 //! `engine_solver.c`.
 
-pub mod hessian;
 pub mod noslip;
 pub mod pgs;
 pub mod primal;
 pub mod qcqp;
+pub mod sparse;
 
-use crate::types::{ConstraintType, Data, Model};
+use crate::constraint::mul_jac_t_vec;
+use crate::linalg::mju_norm;
+use crate::types::{ConstraintState, ConstraintType, Data, Model};
 
 /// Decode pyramidal facet forces into physical normal + friction forces (§32.6).
 ///
@@ -54,19 +56,80 @@ pub fn decode_pyramid_into(facet_forces: &[f64], mu: &[f64; 5], dim: usize, out:
     }
 }
 
-/// Map efc_force → qfrc_constraint via J^T · efc_force.
-pub fn compute_qfrc_constraint_from_efc(model: &Model, data: &mut Data) {
-    let nv = model.nv;
-    data.qfrc_constraint.fill(0.0);
-    let nefc = data.efc_type.len();
-    for i in 0..nefc {
-        let force = data.efc_force[i];
-        if force.abs() > 0.0 {
-            for col in 0..nv {
-                data.qfrc_constraint[col] += data.efc_J[(i, col)] * force;
-            }
-        }
+/// Each row's state from its force alone, MuJoCo's `dualState`
+/// (`engine_solver.c:233-310`); returns the rows not satisfied. Equality rows
+/// are quadratic; a friction-loss row is linear at its bound, the side
+/// opposite the primal's; a limit or non-elliptic contact row is quadratic
+/// while its force is positive; an elliptic contact's rows take its zone in
+/// the regular cone, the friction's norm summed as `mju_norm` sums it. Noslip
+/// and PGS read it.
+pub fn dual_state(data: &Data, state: &mut [ConstraintState]) -> usize {
+    let (ne, nf, nefc) = (data.ne, data.nf, data.efc_type.len());
+    let force = &data.efc_force;
+    let mut nactive = ne + nf;
+    state[..ne].fill(ConstraintState::Quadratic);
+    for i in ne..ne + nf {
+        let floss = data.efc_floss[i];
+        state[i] = if force[i] <= -floss {
+            ConstraintState::LinearPos
+        } else if force[i] >= floss {
+            ConstraintState::LinearNeg
+        } else {
+            ConstraintState::Quadratic
+        };
     }
+    let mut i = ne + nf;
+    while i < nefc {
+        if data.efc_type[i] != ConstraintType::ContactElliptic {
+            if force[i] <= 0.0 {
+                state[i] = ConstraintState::Satisfied;
+            } else {
+                state[i] = ConstraintState::Quadratic;
+                nactive += 1;
+            }
+            i += 1;
+            continue;
+        }
+        let dim = data.efc_dim[i];
+        let mu = data.contacts[data.efc_id[i]].regularized_mu;
+        let zone = elliptic_zone(&force.as_slice()[i..i + dim], mu, &data.efc_mu[i]);
+        if zone != ConstraintState::Satisfied {
+            nactive += dim;
+        }
+        state[i..i + dim].fill(zone);
+        i += dim;
+    }
+    nactive
+}
+
+/// The zone of an elliptic contact's forces (its `dim` rows, normal first)
+/// in its regular cone of friction `mu`, `dualState`'s
+/// (`engine_solver.c:268-303`), with `N` the scaled normal force and `T` the
+/// norm of the scaled friction forces: satisfied at `mu·N ≥ T` (its top
+/// zone), quadratic at `N + mu·T ≤ 0` (its bottom zone), in the cone between.
+/// The friction forces are scaled by their coefficients and their norm
+/// summed as `mju_norm` sums it.
+fn elliptic_zone(force: &[f64], mu: f64, friction: &[f64; 5]) -> ConstraintState {
+    let n = force[0] / mu;
+    let mut f = [0.0; 5];
+    for j in 1..force.len() {
+        f[j - 1] = force[j] / friction[j - 1];
+    }
+    let t = mju_norm(&f[..force.len() - 1]);
+    if mu * n >= t {
+        ConstraintState::Satisfied
+    } else if n + mu * t <= 0.0 {
+        ConstraintState::Quadratic
+    } else {
+        ConstraintState::Cone
+    }
+}
+
+/// `qfrc_constraint = J'·efc_force` ([`mul_jac_t_vec`], MuJoCo's
+/// `mj_mulJacTVec`), as `dualFinish` makes it after PGS and noslip
+/// (`engine_solver.c:70-77`).
+pub fn compute_qfrc_constraint_from_efc(model: &Model, data: &mut Data) {
+    data.qfrc_constraint = mul_jac_t_vec(model, data, data.efc_force.as_slice());
 }
 
 /// Extract friction loss forces from efc_force into qfrc_frictionloss.
@@ -78,11 +141,77 @@ pub fn extract_qfrc_frictionloss(data: &mut Data, nv: usize) {
     data.qfrc_frictionloss.fill(0.0);
     let nefc = data.efc_type.len();
     for i in 0..nefc {
-        if matches!(data.efc_type[i], ConstraintType::FrictionLoss) {
+        if data.efc_type[i].is_friction_loss() {
             let force = data.efc_force[i];
             for col in 0..nv {
                 data.qfrc_frictionloss[col] += data.efc_J[(i, col)] * force;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::{DMatrix, DVector};
+
+    use super::{compute_qfrc_constraint_from_efc, elliptic_zone};
+    use crate::types::{ConstraintState, ConstraintType, JacobianType};
+
+    /// `qfrc_constraint = J'·efc_force` after PGS and noslip is MuJoCo's
+    /// `mj_mulJacTVec`: a NaN force is added, along its row's chain at the
+    /// sparse size and over every dof at the dense size (`0·NaN`).
+    #[test]
+    fn a_nan_force_reaches_its_row_s_dofs_as_mujoco_s() {
+        let mut model = crate::test_fixtures::hinge_chain(3);
+        let mut data = model.make_data();
+        // Rows: dofs 0 and 1, NaN; dof 2, 0.5; dof 0, 0.
+        data.efc_type = vec![ConstraintType::Equality; 3];
+        data.efc_J = DMatrix::from_row_slice(3, 3, &[1.0, 2.0, 0.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0]);
+        data.efc_J_rownnz = vec![2, 1, 1];
+        data.efc_J_rowadr = vec![0, 2, 3];
+        data.efc_J_colind = vec![0, 1, 2, 0];
+        data.efc_force = DVector::from_vec(vec![f64::NAN, 0.5, 0.0]);
+
+        model.jacobian = JacobianType::Sparse;
+        compute_qfrc_constraint_from_efc(&model, &mut data);
+        let q = data.qfrc_constraint.clone();
+        assert!(q[0].is_nan() && q[1].is_nan(), "sparse: {q:?}");
+        assert_eq!(q[2].to_bits(), 1.5_f64.to_bits(), "sparse: {q:?}");
+
+        model.jacobian = JacobianType::Dense;
+        compute_qfrc_constraint_from_efc(&model, &mut data);
+        let q = &data.qfrc_constraint;
+        assert!(q.iter().all(|x| x.is_nan()), "dense: {q:?}");
+    }
+
+    /// At condim 6 the friction's norm is `mju_norm`'s, which sums in four
+    /// lanes: on these forces it is one ulp below the sequential sum
+    /// (0.7995754347083057 against …058), so a normal force equal to it
+    /// leaves the contact satisfied in MuJoCo, where the sequential sum puts
+    /// it in the cone.
+    #[test]
+    fn an_elliptic_zone_sums_the_friction_as_mujoco() {
+        let friction = [
+            1.878_710_267_871_435_3e-9,
+            0.547_744_465_709_557_8,
+            0.564_368_293_133_386_7,
+            0.144_171_098_973_528_56,
+            5.317_202_465_801_857e-9,
+        ];
+        let mut force = vec![0.799_575_434_708_305_7];
+        force.extend(friction);
+        let sequential = friction.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(sequential > force[0], "the sums differ here");
+        assert_eq!(
+            elliptic_zone(&force, 1.0, &[1.0; 5]),
+            ConstraintState::Satisfied
+        );
+        force[0] = 0.7;
+        assert_eq!(elliptic_zone(&force, 1.0, &[1.0; 5]), ConstraintState::Cone);
+        force[0] = -0.9;
+        assert_eq!(
+            elliptic_zone(&force, 1.0, &[1.0; 5]),
+            ConstraintState::Quadratic
+        );
     }
 }

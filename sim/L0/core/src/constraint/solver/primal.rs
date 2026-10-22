@@ -13,25 +13,26 @@
 //!
 //! At MuJoCo's sparse size (`Model::is_sparse`, MuJoCo's `mj_isSparse`,
 //! `engine_core_util.c:32-39`: `jacobian="sparse"`, or 60 dofs under the
-//! default) Newton factors its Hessian with
-//! [`SparseHessian`], made anew at every iteration where MuJoCo updates its
-//! sparse factor: the same matrix, rounded otherwise. There MuJoCo also takes
-//! `J·v` and `J'·f` as sparse products, which sim-core takes dense,
-//! so CG as well rounds otherwise.
+//! default) the rows' Jacobian is MuJoCo's compressed one ([`SparseJ`]):
+//! `J·v` and `J'·f` are each row's or each dof's `mju_dotSparse` over its dof
+//! chain; and Newton's Hessian is MuJoCo's sparse one ([`SparseHessian`]),
+//! made, factored in reverse order, updated row by row and solved as MuJoCo
+//! does.
 
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::constraint::mul_jac_vec;
-use crate::constraint::solver::hessian::{SparseHessian, SparseInputs};
+use crate::constraint::solver::sparse::{LowerRows, SparseHessian, SparseJ};
+use crate::constraint::{mul_jac_t_vec, mul_jac_vec};
 use crate::dynamics::factor::mj_solve_ld;
 use crate::linalg::{
-    cholesky_solve_in_place, mju_chol_factor, mju_chol_solve, mju_chol_update, mju_dot, mju_norm,
+    cholesky_solve_in_place, dot_sparse, mju_chol_factor, mju_chol_solve, mju_chol_update, mju_dot,
+    mju_norm,
 };
 use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintState, ConstraintType, DISABLE_ISLAND, DISABLE_WARMSTART, Data, Integrator, Model,
-    SolverStat, StepError,
+    ConstraintState, ConstraintType, DISABLE_ISLAND, DISABLE_WARMSTART, Data, Model, SolverStat,
+    StepError,
 };
 
 /// The islands MuJoCo keeps iteration counts and statistics for
@@ -168,6 +169,38 @@ impl Mass<'_> {
         }
     }
 
+    /// `M`'s lower triangle and diagonal by rows, each row's columns
+    /// ascending and its diagonal last: on the tree its own pattern (MuJoCo's
+    /// `M_rownnz`, `M_rowadr`, `M_colind`); the implicit spring-damper
+    /// integrator's `M_impl` at its nonzero entries and its diagonal.
+    fn lower_rows(&self, nv: usize) -> LowerRows {
+        match self {
+            Self::Tree(t) => LowerRows {
+                rownnz: t.rownnz.clone(),
+                rowadr: t.rowadr.clone(),
+                colind: t.colind.clone(),
+                val: t.m.clone(),
+            },
+            Self::Implicit { m, .. } => {
+                let mut rows = LowerRows {
+                    rownnz: Vec::with_capacity(nv),
+                    rowadr: Vec::with_capacity(nv),
+                    colind: Vec::new(),
+                    val: Vec::new(),
+                };
+                for i in 0..nv {
+                    rows.rowadr.push(rows.colind.len());
+                    for j in (0..=i).filter(|&j| j == i || m[(i, j)] != 0.0) {
+                        rows.colind.push(j);
+                        rows.val.push(m[(i, j)]);
+                    }
+                    rows.rownnz.push(rows.colind.len() - rows.rowadr[i]);
+                }
+                rows
+            }
+        }
+    }
+
     /// `x ← M⁻¹·x`; on the tree, as `mj_solveLD` solves.
     fn solve(&self, x: &mut [f64]) {
         match self {
@@ -186,9 +219,9 @@ impl Mass<'_> {
 /// The dofs and rows one solve takes, as `PrimalPointers` points the solver
 /// at them (`engine_solver.c:855-951`): every dof and row (MuJoCo's island
 /// −1), one island's in island order, or the rows in no island.
-struct Subproblem {
-    dofs: Vec<usize>,
-    rows: Vec<usize>,
+pub(super) struct Subproblem {
+    pub(super) dofs: Vec<usize>,
+    pub(super) rows: Vec<usize>,
     /// An island's first place in MuJoCo's island dof order
     /// (`island_idofadr`): a dof's place in `dofs` is its `map_dof2idof`
     /// less it. `None` for every dof, where a dof is its own place, and for
@@ -218,11 +251,13 @@ impl Subproblem {
 
     /// The rows in no island, without dofs. The partition takes a geom
     /// contact's, connect's, weld's or joint limit's trees from its bodies or
-    /// joint, and any other row's from its nonzero Jacobian entries
-    /// (`row_tree_pair` and `row_trees` in `island`). Rows in none include a
-    /// coef-0 fixed tendon's at the sparse size, which MuJoCo puts in an
-    /// island (ledger L143), and a contact between two static geoms under a
-    /// `<pair>`, which MuJoCo does not make at the sparse size (ledger L148).
+    /// joint, and any other row's from its dof chain at the sparse size and
+    /// its nonzero Jacobian entries at the dense size (`row_tree_pair` and
+    /// `row_trees` in `island`). At the sparse size a contact without dofs
+    /// makes no rows and every row reaches a tree; at the dense size a geom
+    /// contact between two static bodies is refused (ledger L148), and the
+    /// rows in none are a flex contact's whose sides have no dofs, where
+    /// MuJoCo's partition stops instead (ledger L220).
     fn outside(data: &Data) -> Self {
         let rows = (0..data.efc_type.len())
             .filter(|&r| data.efc_island.get(r).is_none_or(|&i| i < 0))
@@ -237,7 +272,7 @@ impl Subproblem {
     /// The place in `dofs` of `dof`, a dof of the subproblem.
     // An island's dof has a place in MuJoCo's island order, never −1.
     #[allow(clippy::cast_sign_loss)]
-    fn local(&self, data: &Data, dof: usize) -> usize {
+    pub(super) fn local(&self, data: &Data, dof: usize) -> usize {
         match self.idofadr {
             None => dof,
             Some(adr) => data.map_dof2idof[dof] as usize - adr,
@@ -270,7 +305,7 @@ impl Rows {
         let count = |ty: ConstraintType| rows.iter().filter(|&&r| data.efc_type[r] == ty).count();
         Self {
             ne: count(ConstraintType::Equality),
-            nf: count(ConstraintType::FrictionLoss),
+            nf: count(ConstraintType::FrictionDof) + count(ConstraintType::FrictionTendon),
             d: gather(&data.efc_D),
             r: gather(&data.efc_R),
             floss: gather(&data.efc_floss),
@@ -296,36 +331,28 @@ impl Rows {
 /// `mj_invConstraint` (`engine_inverse.c:157-180`): with no rows,
 /// `qfrc_constraint` is 0; else each row's state and force as
 /// `mj_constraintUpdate` makes them at `jar = J·qacc − aref` (no cone
-/// Hessian, no cost kept), and `qfrc_constraint = J'·force` (`mj_mulJacTVec`,
-/// `engine_core_constraint.c:2592-2598`), over every row in row order. Here
-/// `J·qacc` and `J'·force` are dense products; at MuJoCo's sparse size its
-/// are sparse, so the last bits can differ there.
-pub fn mj_inv_constraint(data: &mut Data) {
-    let (nv, nefc) = (data.qacc.len(), data.efc_type.len());
+/// Hessian, no cost kept), and `qfrc_constraint = J'·force`
+/// (`engine_core_constraint.c:2592-2598`), over every row in row order.
+/// `J·qacc` is [`mul_jac_vec`]'s and `J'·force` [`mul_jac_t_vec`]'s, each
+/// over a row's dof chain at the sparse size.
+pub fn mj_inv_constraint(model: &Model, data: &mut Data) {
+    let nefc = data.efc_type.len();
     if nefc == 0 {
         data.qfrc_constraint.fill(0.0);
         return;
     }
     let all: Vec<usize> = (0..nefc).collect();
     let rows = Rows::of(data, &all);
-    let mut jar = mul_jac_vec(data, data.qacc.as_slice());
+    let mut jar = mul_jac_vec(model, data, data.qacc.as_slice());
     for (x, a) in jar.iter_mut().zip(data.efc_aref.iter()) {
         *x -= a;
     }
     let mut state = vec![ConstraintState::Satisfied; nefc];
     let mut force = vec![0.0; nefc];
     constraint_update(&rows, jar.as_slice(), &mut state, &mut force, None);
-    let mut j = vec![0.0; nefc * nv];
-    for r in 0..nefc {
-        for c in 0..nv {
-            j[r * nv + c] = data.efc_J[(r, c)];
-        }
-    }
-    let mut qfrc = vec![0.0; nv];
-    mul_mat_t_vec(&j, &force, &mut qfrc, nv);
+    data.qfrc_constraint = mul_jac_t_vec(model, data, &force);
     data.efc_state = state;
     data.efc_force.as_mut_slice().copy_from_slice(&force);
-    data.qfrc_constraint.as_mut_slice().copy_from_slice(&qfrc);
 }
 
 /// A contact's cone Hessian, row-major `dim × dim` (`mjContact::H`).
@@ -483,6 +510,39 @@ fn mul_mat_t_vec(mat: &[f64], vec: &[f64], res: &mut [f64], nc: usize) {
     }
 }
 
+/// `res = J·vec` over a subproblem's rows: each row's `mju_dot` at the dense
+/// size, its `mju_dotSparse` over its dof chain at the sparse size
+/// (`mju_mulMatVecSparse`, `engine_solver.c:1839-1846`, `:1352-1358`).
+fn mul_j_vec(j: &[f64], sparse: Option<&SparseJ>, nv: usize, vec: &[f64], res: &mut [f64]) {
+    match sparse {
+        None => mul_mat_vec(j, vec, res, nv),
+        Some(s) => {
+            for (r, out) in res.iter_mut().enumerate() {
+                let adr = s.rowadr[r];
+                *out = dot_sparse(&s.val[adr..adr + s.rownnz[r]], |k| vec[s.colind[adr + k]]);
+            }
+        }
+    }
+}
+
+/// `res = J'·vec` over a subproblem's dofs: the rows added in row order at
+/// the dense size (`mju_mulMatTVec`), each dof's `mju_dotSparse` over its
+/// rows at the sparse size (`mju_mulMatVecSparse` on the transpose,
+/// `PrimalUpdateConstraint`, `engine_solver.c:1019-1025`).
+fn mul_jt_vec(j: &[f64], sparse: Option<&SparseJ>, nv: usize, vec: &[f64], res: &mut [f64]) {
+    match sparse {
+        None => mul_mat_t_vec(j, vec, res, nv),
+        Some(s) => {
+            for (c, out) in res.iter_mut().enumerate() {
+                let adr = s.t_rowadr[c];
+                *out = dot_sparse(&s.t_val[adr..adr + s.t_rownnz[c]], |k| {
+                    vec[s.t_colind[adr + k]]
+                });
+            }
+        }
+    }
+}
+
 /// A line-search point (`mjPrimalPnt`).
 #[derive(Debug, Clone, Copy, Default)]
 struct Pnt {
@@ -503,10 +563,10 @@ struct Primal<'a> {
     nefc: usize,
     sub: Subproblem,
     mass: Mass<'a>,
-    /// Each dof's parent dof, for the sparse Hessian.
-    parent: Vec<Option<usize>>,
     rows: Rows,
     j: Vec<f64>,
+    /// At the sparse size, the rows' Jacobian in MuJoCo's compressed form.
+    sparse_j: Option<SparseJ>,
     aref: Vec<f64>,
     state: Vec<ConstraintState>,
     force: Vec<f64>,
@@ -533,8 +593,10 @@ struct Primal<'a> {
     /// Hessian with their contributions.
     l: Vec<f64>,
     lcone: Vec<f64>,
-    /// Newton, sparse: the Hessian with its cones, factored.
+    /// Newton, sparse: the Hessian, its factor and the factor with the cones;
+    /// and `M`'s lower triangle, which the Hessian adds.
     sparse: Option<SparseHessian>,
+    mass_rows: Option<LowerRows>,
     cost: f64,
     /// The Gauss term along `search`: `quad_gauss[0] + α·quad_gauss[1] +
     /// α²·quad_gauss[2]`.
@@ -560,28 +622,28 @@ impl<'a> Primal<'a> {
         newton: bool,
     ) -> Self {
         let (nv, nefc) = (sub.dofs.len(), sub.rows.len());
-        let mut j = vec![0.0; nefc * nv];
-        for (lr, &r) in sub.rows.iter().enumerate() {
-            for (lc, &c) in sub.dofs.iter().enumerate() {
-                j[lr * nv + lc] = data.efc_J[(r, c)];
+        // The dense J, read at the dense size only (`sparse_j` at the sparse).
+        let mut j = Vec::new();
+        if !model.is_sparse() {
+            j = vec![0.0; nefc * nv];
+            for (lr, &r) in sub.rows.iter().enumerate() {
+                for (lc, &c) in sub.dofs.iter().enumerate() {
+                    j[lr * nv + lc] = data.efc_J[(r, c)];
+                }
             }
         }
-        let parent = sub
-            .dofs
-            .iter()
-            .map(|&dof| model.dof_parent[dof].map(|p| sub.local(data, p)))
-            .collect();
         let gather_rows = |a: &[f64]| sub.rows.iter().map(|&r| a[r]).collect::<Vec<_>>();
         let gather_dofs = |a: &[f64]| sub.dofs.iter().map(|&d| a[d]).collect::<Vec<_>>();
         let rows = Rows::of(data, &sub.rows);
+        let sparse_j = model.is_sparse().then(|| SparseJ::of(data, &sub));
         let dense_newton = newton && !model.is_sparse();
         Self {
             newton,
             nv,
             nefc,
-            parent,
             rows,
             j,
+            sparse_j,
             aref: gather_rows(data.efc_aref.as_slice()),
             state: vec![ConstraintState::Satisfied; nefc],
             force: vec![0.0; nefc],
@@ -602,6 +664,7 @@ impl<'a> Primal<'a> {
             l: vec![0.0; if dense_newton { nv * nv } else { 0 }],
             lcone: vec![0.0; if dense_newton { nv * nv } else { 0 }],
             sparse: None,
+            mass_rows: None,
             cost: 0.0,
             quad_gauss: [0.0; 3],
             scale: 0.0,
@@ -629,7 +692,7 @@ impl<'a> Primal<'a> {
         let warm = data.qacc_warmstart.as_slice();
         self.qacc.copy_from_slice(warm);
         let mut jar = vec![0.0; self.nefc];
-        mul_mat_vec(&self.j, warm, &mut jar, nv);
+        mul_j_vec(&self.j, self.sparse_j.as_ref(), nv, warm, &mut jar);
         for (x, a) in jar.iter_mut().zip(&self.aref) {
             *x -= a;
         }
@@ -665,7 +728,13 @@ impl<'a> Primal<'a> {
             &mut self.force,
             cones,
         );
-        mul_mat_t_vec(&self.j, &self.force, &mut self.qfrc_constraint, self.nv);
+        mul_jt_vec(
+            &self.j,
+            self.sparse_j.as_ref(),
+            self.nv,
+            &self.force,
+            &mut self.qfrc_constraint,
+        );
         self.nactive = 0;
         self.ncone = 0;
         for s in &self.state {
@@ -692,7 +761,7 @@ impl<'a> Primal<'a> {
         if !self.newton {
             self.mass.solve(&mut self.mgrad);
         } else if let Some(sparse) = &self.sparse {
-            sparse.solve(&mut self.mgrad);
+            sparse.solve(self.ncone > 0, &mut self.mgrad);
         } else {
             let l = if self.ncone > 0 { &self.lcone } else { &self.l };
             mju_chol_solve(l, &mut self.mgrad, self.nv);
@@ -873,7 +942,13 @@ impl<'a> Primal<'a> {
         let gtol = tolerance * snorm / self.scale;
         let slopescl = self.scale / snorm;
         self.mass.mul(&self.search, &mut self.mv);
-        mul_mat_vec(&self.j, &self.search, &mut self.jv, self.nv);
+        mul_j_vec(
+            &self.j,
+            self.sparse_j.as_ref(),
+            self.nv,
+            &self.search,
+            &mut self.jv,
+        );
         self.prepare();
 
         let p0 = self.eval(0.0);
@@ -946,47 +1021,35 @@ impl<'a> Primal<'a> {
         }
     }
 
-    /// The cone contacts as (first row, dim, Hessian), for the sparse
-    /// Hessian.
-    fn cones(&self) -> Vec<(usize, usize, ConeHessian)> {
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < self.nefc {
-            if self.state[i] == ConstraintState::Cone {
-                let dim = self.rows.dim[i];
-                out.push((i, dim, self.cone_h[i]));
-                i += dim;
-            } else {
-                i += 1;
-            }
-        }
-        out
-    }
-
     /// Make the Hessian `M + J'·D·J` and factor it (`MakeHessian` and
-    /// `FactorizeHessian`, `engine_solver.c:1516-1670`): dense, `D` over the
-    /// quadratic rows into the lower triangle (`mju_sqrMatTD_impl`), `M`
-    /// added, factored with mjMINVAL for the smallest diagonal, then the
-    /// cones added (`HessianCone`); sparse, [`SparseHessian`] with the cones.
-    fn factorize_hessian(&mut self, model: &Model, data: &Data) -> Result<(), StepError> {
+    /// `FactorizeHessian`, `engine_solver.c:1516-1670`), `D` over the
+    /// quadratic rows, factored with mjMINVAL for the smallest diagonal, then
+    /// the cones added (`HessianCone`). Dense, into the lower triangle
+    /// (`mju_sqrMatTD_impl`) with `M` added; sparse, [`SparseHessian`]: its
+    /// pattern and factor pattern once, its values made again after (as
+    /// `FactorizeHessian`'s `flg_recompute`).
+    ///
+    /// # Errors
+    ///
+    /// [`StepError::CholeskyFailed`] when the sparse factor loses rank,
+    /// where MuJoCo stops ("rank-deficient sparse Hessian",
+    /// `engine_solver.c:1644-1646`).
+    fn factorize_hessian(&mut self) -> Result<(), StepError> {
         let nv = self.nv;
         self.hessian_d();
-        if model.is_sparse() {
-            let cones = self.cones();
-            let inputs = SparseInputs {
-                model,
-                data,
-                dofs: &self.sub.dofs,
-                parent: &self.parent,
-                j: &self.j,
-                d: &self.rows.d,
-                ty: &self.rows.ty,
-                dim: &self.rows.dim,
-                implicit_sd: model.integrator == Integrator::ImplicitSpringDamper,
-            };
-            match &mut self.sparse {
-                Some(h) => h.refactor(&inputs, &self.state, &cones)?,
-                None => self.sparse = Some(SparseHessian::assemble(&inputs, &self.state, &cones)?),
+        if let Some(sj) = &self.sparse_j {
+            if let (Some(h), Some(mass)) = (&mut self.sparse, &self.mass_rows) {
+                h.fill(sj, &self.hd, mass);
+            } else {
+                let mass = self.mass.lower_rows(nv);
+                self.sparse = Some(SparseHessian::make(sj, &self.hd, &mass));
+                self.mass_rows = Some(mass);
+            }
+            if self.sparse.as_mut().is_some_and(|h| h.factor() != nv) {
+                return Err(StepError::CholeskyFailed);
+            }
+            if self.ncone > 0 {
+                self.hessian_cone_sparse();
             }
         } else {
             self.l.fill(0.0);
@@ -1050,30 +1113,83 @@ impl<'a> Primal<'a> {
         }
     }
 
+    /// Sparse: `Lcone`, the factor with each cone's contribution `J'·H·J`
+    /// added by rank-one updates of the rows of `L_c'·J`, `L_c` the cone
+    /// Hessian's factor (`HessianCone`, `engine_solver.c:1674-1742`; a
+    /// contact's rows share one chain).
+    fn hessian_cone_sparse(&mut self) {
+        let (Some(sj), Some(h)) = (&self.sparse_j, &mut self.sparse) else {
+            return;
+        };
+        h.copy_to_cone();
+        let mut ltj = Vec::new();
+        let mut i = 0;
+        while i < self.nefc {
+            if self.state[i] != ConstraintState::Cone {
+                i += 1;
+                continue;
+            }
+            let dim = self.rows.dim[i];
+            let mut local = self.cone_h[i];
+            mju_chol_factor(&mut local[..dim * dim], dim, MJ_MINVAL);
+            let nnz = sj.rownnz[i];
+            ltj.clear();
+            ltj.resize(dim * nnz, 0.0);
+            for r in 0..dim {
+                let (_, row) = sj.row(i + r);
+                for c in 0..=r {
+                    let scl = local[r * dim + c];
+                    for (out, &j) in ltj[c * nnz..(c + 1) * nnz].iter_mut().zip(row) {
+                        *out += j * scl;
+                    }
+                }
+            }
+            for r in 0..dim {
+                let (chain, _) = sj.row(i + r);
+                h.update(true, &ltj[r * nnz..(r + 1) * nnz], chain, true);
+            }
+            self.nupdate += dim;
+            i += dim;
+        }
+    }
+
     /// Update the factor for the rows whose quadratic state changed: a
     /// rank-one update with `√D·J` for each row that entered it, a downdate
     /// for each that left; made anew when an update loses rank; then the
-    /// cones (`HessianIncremental`, `engine_solver.c:1746-1807`). Sparse:
-    /// made anew, with MuJoCo's update count.
+    /// cones (`HessianIncremental`, `engine_solver.c:1746-1807`), dense or
+    /// sparse (`mju_cholUpdateSparse` with the row's values at its chain).
     // Rows are read across parallel arrays at one index, as MuJoCo's loop does.
     #[allow(clippy::needless_range_loop)]
-    fn hessian_incremental(
-        &mut self,
-        model: &Model,
-        data: &Data,
-        old_state: &[ConstraintState],
-    ) -> Result<(), StepError> {
+    fn hessian_incremental(&mut self, old_state: &[ConstraintState]) -> Result<(), StepError> {
         let nv = self.nv;
         self.nupdate = 0;
-        if model.is_sparse() {
-            let quad = ConstraintState::Quadratic;
-            let changed = old_state
-                .iter()
-                .zip(&self.state)
-                .filter(|(o, n)| (**o == quad) != (**n == quad))
-                .count();
-            self.factorize_hessian(model, data)?;
-            self.nupdate = changed + self.cones().iter().map(|c| c.1).sum::<usize>();
+        if self.sparse_j.is_some() {
+            let mut vec = Vec::new();
+            for i in 0..self.nefc {
+                let was = old_state[i] == ConstraintState::Quadratic;
+                let is = self.state[i] == ConstraintState::Quadratic;
+                if was == is {
+                    continue;
+                }
+                let rank = match (&self.sparse_j, &mut self.sparse) {
+                    (Some(sj), Some(h)) => {
+                        let (chain, row) = sj.row(i);
+                        let s = self.rows.d[i].sqrt();
+                        vec.clear();
+                        vec.extend(row.iter().map(|j| j * s));
+                        h.update(false, &vec, chain, is)
+                    }
+                    // No factor to update: a rank of 0 has it made anew below.
+                    _ => 0,
+                };
+                self.nupdate += 1;
+                if rank < nv {
+                    return self.factorize_hessian();
+                }
+            }
+            if self.ncone > 0 {
+                self.hessian_cone_sparse();
+            }
             return Ok(());
         }
         let mut vec = vec![0.0; nv];
@@ -1090,7 +1206,7 @@ impl<'a> Primal<'a> {
             let rank = mju_chol_update(&mut self.l, &mut vec, nv, is);
             self.nupdate += 1;
             if rank < nv {
-                return self.factorize_hessian(model, data);
+                return self.factorize_hessian();
             }
         }
         if self.ncone > 0 {
@@ -1106,12 +1222,7 @@ impl Primal<'_> {
     /// statistics.
     // The driver reads as `mj_solPrimal` does, start to end.
     #[allow(clippy::too_many_lines)]
-    fn solve(
-        &mut self,
-        model: &Model,
-        data: &Data,
-        scale: f64,
-    ) -> Result<Vec<SolverStat>, StepError> {
+    fn solve(&mut self, model: &Model, scale: f64) -> Result<Vec<SolverStat>, StepError> {
         let (nv, nefc, newton) = (self.nv, self.nefc, self.newton);
         let cone_hessian = newton && model.cone == 1;
         let mut gradold = vec![0.0; if newton { 0 } else { nv }];
@@ -1119,14 +1230,20 @@ impl Primal<'_> {
         let mut mgraddif = vec![0.0; if newton { 0 } else { nv }];
 
         self.mass.mul(&self.qacc, &mut self.ma);
-        mul_mat_vec(&self.j, &self.qacc, &mut self.jaref, nv);
+        mul_j_vec(
+            &self.j,
+            self.sparse_j.as_ref(),
+            nv,
+            &self.qacc,
+            &mut self.jaref,
+        );
         for (x, a) in self.jaref.iter_mut().zip(&self.aref) {
             *x -= a;
         }
 
         self.update_constraint(cone_hessian);
         if newton {
-            self.factorize_hessian(model, data)?;
+            self.factorize_hessian()?;
         }
         self.update_gradient();
         for (s, g) in self.search.iter_mut().zip(&self.mgrad) {
@@ -1157,7 +1274,7 @@ impl Primal<'_> {
 
             self.update_constraint(cone_hessian);
             if newton {
-                self.hessian_incremental(model, data, &old_state)?;
+                self.hessian_incremental(&old_state)?;
             }
             self.update_gradient();
 
@@ -1291,7 +1408,7 @@ pub fn mj_sol_primal(
         && !disabled(model, DISABLE_ISLAND);
     if !islands {
         let scale = 1.0 / (model.stat_meaninertia * model.nv.max(1) as f64);
-        let stats = ctx.solve(model, data, scale)?;
+        let stats = ctx.solve(model, scale)?;
         ctx.write_back(data);
         data.efc_cost = ctx.cost;
         data.solver_niter = stats.len();
@@ -1310,7 +1427,7 @@ pub fn mj_sol_primal(
         let tree = TreeMass::new(model, data, &sub);
         let scale = 1.0 / tree.trace();
         let mut ictx = Primal::new(model, data, sub, Mass::Tree(tree), qfrc_smooth, newton);
-        let stats = ictx.solve(model, data, scale)?;
+        let stats = ictx.solve(model, scale)?;
         ictx.write_back(data);
         data.efc_cost += ictx.cost;
         if island < MJ_NISLAND {
@@ -1318,9 +1435,10 @@ pub fn mj_sol_primal(
             data.solver_stat.extend(stats.into_iter().take(MJ_NSOLVER));
         }
     }
-    // A row in no island has a zero Jacobian (the partition reads its
-    // nonzero entries), so its residual is `efc_b` at every iterate: its
-    // force and state are made there, with the warmstart or without.
+    // A row in no island has a zero Jacobian (the partition reads its chain
+    // at the sparse size, its nonzero entries at the dense size), so its
+    // residual is `efc_b` at every iterate: its force and state are made
+    // there, with the warmstart or without.
     let outside = Subproblem::outside(data);
     if !outside.rows.is_empty() {
         let tree = TreeMass::new(model, data, &outside);

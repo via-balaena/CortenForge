@@ -8,7 +8,7 @@
 
 pub(crate) mod sleep;
 
-use crate::types::{ConstraintType, DISABLE_ISLAND, Data, EqualityType, Model};
+use crate::types::{ConstraintType, DISABLE_ISLAND, Data, EqualityType, Model, StepError};
 
 // Re-exports — island functions for external consumers.
 pub(crate) use sleep::{
@@ -29,9 +29,17 @@ pub(crate) use sleep::{
 /// Runs after the rows are made, in the position stage, as MuJoCo's
 /// (`mj_fwdPosition`). The primal solver copies each island's block of the
 /// mass matrix and the Jacobian for itself (`constraint/solver/primal.rs`).
+///
+/// # Errors
+///
+/// [`StepError::ConstraintWithoutTree`] for a geom contact between two static
+/// bodies at the dense size, where MuJoCo stops (`treeFirst`,
+/// `engine_island.c:225-228`). A flex contact whose sides have no dofs reaches
+/// no tree either, and stays in no island: MuJoCo stops there too ("no tree
+/// found", `:271-277`), not ported (ledger L220).
 // Tree, dof and row indices are usize stored as i32 in mjData's arrays, bounded by realistic model sizes.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
-pub(crate) fn mj_island(model: &Model, data: &mut Data) {
+pub(crate) fn mj_island(model: &Model, data: &mut Data) -> Result<(), StepError> {
     let (ntree, nv) = (model.ntree, model.nv);
     let nefc = data.efc_type.len();
     data.nisland = 0;
@@ -43,7 +51,7 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
     data.contact_island.clear();
     data.contact_island.resize(data.contacts.len(), -1);
     if model.disableflags & DISABLE_ISLAND != 0 || nefc == 0 || ntree == 0 {
-        return;
+        return Ok(());
     }
 
     // Edges (`findEdges`): one constraint per run of rows with the same type
@@ -70,6 +78,9 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
         }
         previous = Some(key);
         if let Some((a, b)) = row_tree_pair(model, data, row) {
+            if a.is_none() && b.is_none() {
+                return Err(StepError::ConstraintWithoutTree { row });
+            }
             add_edge(a, b);
         } else {
             let trees = row_trees(model, data, row);
@@ -102,7 +113,7 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
     }
     data.nisland = nisland;
     if nisland == 0 {
-        return;
+        return Ok(());
     }
     let island_of = |i: i32| usize::try_from(i).ok();
 
@@ -180,6 +191,7 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
             data.contact_island[c] = data.tree_island[tree];
         }
     }
+    Ok(())
 }
 
 /// Write the exclusive prefix sums of `counts` into `adr` and return a copy,
@@ -229,17 +241,27 @@ fn row_tree_pair(model: &Model, data: &Data, row: usize) -> Option<(Option<usize
     }
 }
 
-/// The distinct trees of row `row`'s nonzero Jacobian columns, in column
-/// order (MuJoCo's `treeNext` scan). Dofs are numbered tree by tree, so each
+/// The distinct trees of row `row`'s dofs, in dof order, as MuJoCo's
+/// `treeNext` scans them (`engine_island.c:144-185`): at the sparse size
+/// ([`Model::is_sparse`]) its chain's dofs, whatever their values; at the
+/// dense size its nonzero entries'. Dofs are numbered tree by tree, so each
 /// tree appears once.
 fn row_trees(model: &Model, data: &Data, row: usize) -> Vec<usize> {
     let mut trees: Vec<usize> = Vec::new();
-    for dof in 0..model.nv {
-        if data.efc_J[(row, dof)] != 0.0 {
-            let tree = model.dof_treeid[dof];
-            if trees.last() != Some(&tree) {
-                trees.push(tree);
-            }
+    let mut add = |dof: usize| {
+        let tree = model.dof_treeid[dof];
+        if trees.last() != Some(&tree) {
+            trees.push(tree);
+        }
+    };
+    if model.is_sparse() {
+        let adr = data.efc_J_rowadr[row];
+        for &dof in &data.efc_J_colind[adr..adr + data.efc_J_rownnz[row]] {
+            add(dof);
+        }
+    } else {
+        for dof in (0..model.nv).filter(|&dof| data.efc_J[(row, dof)] != 0.0) {
+            add(dof);
         }
     }
     trees

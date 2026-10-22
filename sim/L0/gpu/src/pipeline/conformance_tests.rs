@@ -1,7 +1,8 @@
 //! GPU↔CPU dynamics conformance harness (n_env = 1).
 //!
-//! Where `tests.rs` (T1–T32) validates the GPU shaders against hand-picked
-//! pendulum / free-body fixtures, this suite drives the GPU pipeline over the
+//! Where `tests.rs` validates the GPU shaders against hand-picked fixtures
+//! (`Model::free_body`, `n_link_pendulum`, `spherical_pendulum` and
+//! `multi_joint_body`), this suite drives the GPU pipeline over the
 //! SAME joint × topology matrix the CPU analytic-vs-FD transition harness uses
 //! ([`sim_core::test_fixtures::conformance::dynamics_conformance_matrix`]). One
 //! shared fixture list means a GPU shader bug can no longer hide in a topology

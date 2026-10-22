@@ -34,20 +34,23 @@ fn vec_bits(v: &DVector<f64>) -> Vec<u64> {
 /// losses and a tendon limit, at MuJoCo's qvel: the equality's velocity and
 /// `efc_b` and the second tendon's differ in their last bits when the
 /// products are summed in column order, which MuJoCo's `mju_dot` does not.
-/// Under each solver: `efc_b` is made before the solve.
+/// The same at jacobian="sparse", where each is a `mju_dotSparse` over the
+/// row's chain. Under each solver: `efc_b` is made before the solve.
 #[test]
 fn rows_reference_as_mujoco_3_5_0() {
-    for solver in [SolverType::Newton, SolverType::CG, SolverType::PGS] {
-        rows_reference_under(solver);
+    for name in ["tendon_rows", "tendon_rows_sparse"] {
+        for solver in [SolverType::Newton, SolverType::CG, SolverType::PGS] {
+            rows_reference_under(name, solver);
+        }
     }
 }
 
-fn rows_reference_under(solver: SolverType) {
+fn rows_reference_under(name: &str, solver: SolverType) {
     let golden: Value = serde_json::from_str(include_str!(
         "../assets/golden/reference_rows/reference_rows.json"
     ))
     .expect("reference rows golden parses");
-    let case = &golden["cases"]["tendon_rows"];
+    let case = &golden["cases"][name];
     let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     model.solver_type = solver;
     let mut data = model.make_data();
@@ -60,28 +63,28 @@ fn rows_reference_under(solver: SolverType) {
         data.efc_type,
         [
             ConstraintType::Equality,
-            ConstraintType::FrictionLoss,
-            ConstraintType::FrictionLoss,
+            ConstraintType::FrictionDof,
+            ConstraintType::FrictionTendon,
             ConstraintType::LimitTendon,
         ],
-        "{solver:?}"
+        "{name} {solver:?}"
     );
     let nv = model.nv;
     let jacobian = (0..data.efc_type.len()).flat_map(|r| (0..nv).map(move |c| (r, c)));
     assert_eq!(
         bits(jacobian.map(|(r, c)| data.efc_J[(r, c)])),
         bits(floats(&case["efc_J"])),
-        "{solver:?} efc_J"
+        "{name} {solver:?} efc_J"
     );
     assert_eq!(
         bits(data.efc_pos.iter().copied()),
         bits(floats(&case["efc_pos"])),
-        "{solver:?} efc_pos"
+        "{name} {solver:?} efc_pos"
     );
     assert_eq!(
         vec_bits(&data.qacc_smooth),
         bits(floats(&case["qacc_smooth"])),
-        "{solver:?} qacc_smooth"
+        "{name} {solver:?} qacc_smooth"
     );
     for (what, ours) in [
         ("efc_vel", &data.efc_vel),
@@ -91,7 +94,7 @@ fn rows_reference_under(solver: SolverType) {
         assert_eq!(
             vec_bits(ours),
             bits(floats(&case[what])),
-            "{solver:?} {what}"
+            "{name} {solver:?} {what}"
         );
     }
 }

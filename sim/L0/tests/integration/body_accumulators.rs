@@ -9,7 +9,8 @@
 
 use sim_core::SleepState;
 
-/// Test: free-falling body has cacc = [0,0,0, 0,0,-g].
+/// Test: a free-falling body's `cacc` is zero, and the world body's is gravity's
+/// pseudo-acceleration `[0,0,0, 0,0,+g]`.
 #[test]
 fn free_fall_cacc() {
     let xml = r#"

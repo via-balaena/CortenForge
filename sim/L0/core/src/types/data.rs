@@ -380,7 +380,8 @@ pub struct Data {
     /// the first 20 islands' summed, the islands MuJoCo counts (`mjNISLAND`);
     /// then noslip's sweeps.
     pub solver_niter: usize,
-    /// Non-zeros in constraint Jacobian.
+    /// Never written: 0 (ledger L221). MuJoCo's counts, per island, the
+    /// nonzeros of Newton's Hessian or of PGS's `efc_AR`.
     pub solver_nnz: usize,
     // ==================== Unified Constraint System (Newton solver, §15) ====================
     // The rows are made in the position stage, their velocities and reference
@@ -406,6 +407,15 @@ pub struct Data {
     /// Unified constraint Jacobian (nefc × nv). Rows ordered: equality,
     /// friction loss, joint limits, tendon limits, contacts.
     pub efc_J: DMatrix<f64>,
+    /// At the sparse size ([`Model::is_sparse`]) each row's dof chain length,
+    /// MuJoCo's `efc_J_rownnz`: the dofs its sparse Jacobian row lists,
+    /// whatever their values. Empty at the dense size.
+    pub efc_J_rownnz: Vec<usize>,
+    /// Where each row's chain starts in `efc_J_colind` (`efc_J_rowadr`).
+    pub efc_J_rowadr: Vec<usize>,
+    /// The rows' dof chains, each ascending (`efc_J_colind`); a row's values
+    /// are `efc_J`'s at those columns.
+    pub efc_J_colind: Vec<usize>,
     /// Per-row constraint type annotation.
     pub efc_type: Vec<ConstraintType>,
     /// Per-row constraint violation (penetration distance for contacts).
@@ -448,7 +458,7 @@ pub struct Data {
     pub efc_dim: Vec<usize>,
     /// Per-row source object index (joint ID for LimitJoint, tendon ID for
     /// LimitTendon, equality ID for Equality, contact index for Contact*,
-    /// DOF/tendon index for FrictionLoss).
+    /// the dof for FrictionDof, the tendon for FrictionTendon).
     pub efc_id: Vec<usize>,
 
     // Solver output (written to Data in RECOVER after convergence)
@@ -456,14 +466,16 @@ pub struct Data {
     pub efc_state: Vec<ConstraintState>,
     /// Per-row constraint force (length nefc).
     pub efc_force: DVector<f64>,
-    /// Per-row J·qacc − aref (constraint residual, length nefc).
+    /// Per-row `J·qacc − aref` (length nefc): the primal solver's at its last
+    /// iterate; after PGS, the warmstart's (0 with the warmstart disabled).
     pub efc_jar: DVector<f64>,
-    /// Total cost (Gauss + constraint terms) at convergence.
+    /// Total cost (Gauss + constraint terms): the primal solver's; after PGS,
+    /// the warmstart's (0 with the warmstart disabled).
     pub efc_cost: f64,
     /// Per-contact cone Hessian matrices (dim x dim). Indexed parallel to contacts.
-    /// Only populated for contacts in the Cone state. `None` for non-cone or Satisfied contacts.
     pub efc_cone_hessian: Vec<Option<DMatrix<f64>>>,
-    /// Number of contacts currently in the Cone state.
+    /// Number of contacts in the Cone state; after PGS, at its warmstart (0
+    /// with the warmstart disabled; `efc_state` is then `dualState`'s).
     pub ncone: usize,
     /// Number of equality constraint rows (a flex equality's edge rows among
     /// them). These occupy `efc_*[0..ne)`.
@@ -480,14 +492,10 @@ pub struct Data {
     /// Per-iteration solver statistics, as MuJoCo keeps them: the first 200
     /// (`mjNSOLVER`) of a solve's iterations, or solved island by island of
     /// each island `solver_niter` counts, in island order; then noslip's
-    /// sweeps while there are fewer than 200. PGS fills `improvement` only
-    /// (other fields zeroed); CG and Newton fill all fields; noslip
-    /// `improvement`, `nactive` and `nchange`. Cleared with no rows.
+    /// sweeps while there are fewer than 200. CG and Newton fill all fields;
+    /// PGS and noslip `improvement`, `nactive` and `nchange` (the others
+    /// zeroed). Cleared with no rows.
     pub solver_stat: Vec<SolverStat>,
-
-    /// Per-step mean inertia: `trace(qM) / nv`, set at each constraint
-    /// solve from the current `qM`. PGS scales by it.
-    pub stat_meaninertia: f64,
 
     // ==================== Sensors ====================
     /// Sensor data array (length `nsensordata`).
@@ -879,6 +887,9 @@ impl Clone for Data {
             qfrc_smooth: self.qfrc_smooth.clone(),
             efc_b: self.efc_b.clone(),
             efc_J: self.efc_J.clone(),
+            efc_J_rownnz: self.efc_J_rownnz.clone(),
+            efc_J_rowadr: self.efc_J_rowadr.clone(),
+            efc_J_colind: self.efc_J_colind.clone(),
             efc_type: self.efc_type.clone(),
             efc_pos: self.efc_pos.clone(),
             efc_margin: self.efc_margin.clone(),
@@ -904,7 +915,6 @@ impl Clone for Data {
             nf: self.nf,
             primal_qacc: self.primal_qacc,
             solver_stat: self.solver_stat.clone(),
-            stat_meaninertia: self.stat_meaninertia,
             // Sensors
             sensordata: self.sensordata.clone(),
             // Warnings

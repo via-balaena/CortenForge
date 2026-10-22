@@ -9,6 +9,7 @@
 //! dispatch in `engine_forward.c`.
 
 pub(crate) mod assembly;
+pub(crate) mod chain;
 pub(crate) mod contact_assembly;
 pub(crate) mod equality;
 pub(crate) mod equality_assembly;
@@ -21,7 +22,7 @@ use nalgebra::{DMatrix, DVector};
 use crate::constraint::impedance::{compute_aref, compute_kbip};
 use crate::dynamics::factor::mj_solve_m;
 use crate::jacobian::mj_apply_ft;
-use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mju_dot};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, dot_sparse, mju_dot};
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, Data, ENABLE_SLEEP, Integrator, MjJointType, Model,
@@ -50,20 +51,6 @@ use crate::integrate::implicit::{
 /// solver constraint rows and extracted post-solve into `qfrc_frictionloss` (§29).
 fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector<f64>) {
     let nv = model.nv;
-
-    // Per-step meaninertia: trace(qM) / nv
-    if nv > 0 {
-        let mut trace = 0.0_f64;
-        for i in 0..nv {
-            trace += data.qM[(i, i)];
-        }
-        // `nconmax` and constraint counts are usize → f64 for diagnostic averaging; far below 2^52.
-        #[allow(clippy::cast_precision_loss)]
-        let mi = trace / nv as f64;
-        data.stat_meaninertia = if mi > 0.0 { mi } else { model.stat_meaninertia };
-    } else {
-        data.stat_meaninertia = model.stat_meaninertia;
-    }
 
     // qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
     // Note: friction loss is no longer in qfrc_passive or subtracted here.
@@ -281,7 +268,8 @@ pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
 ///    island by island where MuJoCo's is, whose iterate is the acceleration;
 ///    PGS. No solver falls back to
 ///    another (MuJoCo, `engine_forward.c:739-830`).
-/// 4. Map efc_force → qfrc_constraint via J^T
+/// 4. Map efc_force → qfrc_constraint via J^T after PGS or noslip; after the
+///    primal solver, its own is kept
 /// 5. Extract qfrc_frictionloss from efc_force
 ///
 /// Under the implicit spring-damper integrator every solver solves over
@@ -363,7 +351,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     // Step 2: `efc_b`, with the implicit-corrected qacc_smooth under
     // ImplicitSpringDamper (MuJoCo `mj_fwdConstraint`,
     // `engine_forward.c:755-756`).
-    data.efc_b = mul_jac_vec(data, data.qacc_smooth.as_slice()) - &data.efc_aref;
+    data.efc_b = mul_jac_vec(model, data, data.qacc_smooth.as_slice()) - &data.efc_aref;
 
     let qfrc_eff: DVector<f64> = qfrc_impl_owned.unwrap_or_else(|| data.qfrc_smooth.clone());
 
@@ -391,8 +379,12 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
         data.primal_qacc = false;
     }
 
-    // Step 4: Map efc_force → qfrc_constraint via J^T
-    compute_qfrc_constraint_from_efc(model, data);
+    // Step 4: Map efc_force → qfrc_constraint via J^T, except after the primal
+    // solver, whose own MuJoCo keeps (`PrimalUpdateConstraint`; at the sparse
+    // size a product over the transpose that rounds otherwise).
+    if !data.primal_qacc {
+        compute_qfrc_constraint_from_efc(model, data);
+    }
 
     // Step 5: Extract qfrc_frictionloss from efc_force
     extract_qfrc_frictionloss(data, model.nv);
@@ -453,21 +445,61 @@ pub(crate) fn clear_constraint_rows(model: &Model, data: &mut Data) {
     data.efc_mu.clear();
     data.efc_dim.clear();
     data.efc_id.clear();
+    data.efc_J_rownnz.clear();
+    data.efc_J_rowadr.clear();
+    data.efc_J_colind.clear();
     data.efc_state.clear();
     data.efc_cone_hessian.clear();
     data.nisland = 0;
 }
 
-/// `J·vec` over the constraint rows, as MuJoCo's dense `mj_mulJacVec`
-/// (`engine_core_constraint.c:333-349`): each row's `mju_dot` with `vec`.
-/// At the sparse size MuJoCo takes it as a sparse product, which rounds
-/// otherwise.
-pub(crate) fn mul_jac_vec(data: &Data, vec: &[f64]) -> DVector<f64> {
+/// `J·vec` over the constraint rows, as MuJoCo's `mj_mulJacVec`
+/// (`engine_core_constraint.c:333-349`): at the dense size each row's
+/// `mju_dot` with `vec`, at the sparse size ([`Model::is_sparse`]) each row's
+/// `mju_dotSparse` over its dof chain (`mju_mulMatVecSparse`).
+pub(crate) fn mul_jac_vec(model: &Model, data: &Data, vec: &[f64]) -> DVector<f64> {
+    if model.is_sparse() {
+        return DVector::from_iterator(
+            data.efc_type.len(),
+            (0..data.efc_type.len()).map(|r| {
+                let adr = data.efc_J_rowadr[r];
+                let chain = &data.efc_J_colind[adr..adr + data.efc_J_rownnz[r]];
+                let values: Vec<f64> = chain.iter().map(|&c| data.efc_J[(r, c)]).collect();
+                dot_sparse(&values, |k| vec[chain[k]])
+            }),
+        );
+    }
     let rows = data.efc_J.transpose();
     DVector::from_iterator(
         rows.ncols(),
         rows.column_iter().map(|row| mju_dot(row.as_slice(), vec)),
     )
+}
+
+/// `J'·vec` over the constraint rows, as MuJoCo's `mj_mulJacTVec`
+/// (`engine_core_constraint.c:353-369`): the rows added in row order, a row
+/// skipped only when its entry of `vec` is exactly 0 (a NaN is added); at
+/// the dense size over every dof (`mju_mulMatTVec`), at the sparse size
+/// ([`Model::is_sparse`]) over its dof chain (`mju_mulMatTVecSparse`,
+/// `engine_util_sparse.c:180-200`).
+pub(crate) fn mul_jac_t_vec(model: &Model, data: &Data, vec: &[f64]) -> DVector<f64> {
+    let mut res = DVector::zeros(model.nv);
+    for (r, &v) in vec.iter().enumerate() {
+        if v == 0.0 {
+            continue;
+        }
+        if model.is_sparse() {
+            let adr = data.efc_J_rowadr[r];
+            for &c in &data.efc_J_colind[adr..adr + data.efc_J_rownnz[r]] {
+                res[c] += data.efc_J[(r, c)] * v;
+            }
+        } else {
+            for (c, out) in res.iter_mut().enumerate() {
+                *out += data.efc_J[(r, c)] * v;
+            }
+        }
+    }
+    res
 }
 
 /// Every row's velocity `J·qvel` and reference acceleration
@@ -476,7 +508,7 @@ pub(crate) fn mul_jac_vec(data: &Data, vec: &[f64]) -> DVector<f64> {
 /// and `B` from the row's `solref` and `solimp` as `mj_makeImpedance` makes
 /// them.
 pub(crate) fn mj_reference_constraint(model: &Model, data: &mut Data) {
-    data.efc_vel = mul_jac_vec(data, data.qvel.as_slice());
+    data.efc_vel = mul_jac_vec(model, data, data.qvel.as_slice());
     let aref = (0..data.efc_type.len()).map(|i| {
         let (k, b) = compute_kbip(model, data.efc_solref[i], data.efc_solimp[i]);
         compute_aref(
@@ -503,7 +535,7 @@ pub(crate) fn mj_reference_constraint(model: &Model, data: &mut Data) {
 /// under mjMINVAL.
 #[doc(hidden)]
 pub fn mj_sol_primal_rows(model: &Model, data: &mut Data, newton: bool) -> Result<(), StepError> {
-    data.efc_b = mul_jac_vec(data, data.qacc_smooth.as_slice()) - &data.efc_aref;
+    data.efc_b = mul_jac_vec(model, data, data.qacc_smooth.as_slice()) - &data.efc_aref;
     let qfrc_smooth = data.qfrc_smooth.clone();
     mj_sol_primal(model, data, &PrimalMass::Tree, &qfrc_smooth, newton)
 }

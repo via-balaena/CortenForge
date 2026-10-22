@@ -904,6 +904,9 @@ impl Model {
             qfrc_smooth: DVector::zeros(self.nv),
             efc_b: DVector::zeros(0),
             efc_J: DMatrix::zeros(0, self.nv),
+            efc_J_rownnz: Vec::new(),
+            efc_J_rowadr: Vec::new(),
+            efc_J_colind: Vec::new(),
             efc_type: Vec::new(),
             efc_pos: Vec::new(),
             efc_margin: Vec::new(),
@@ -929,7 +932,6 @@ impl Model {
             nf: 0,
             primal_qacc: false,
             solver_stat: Vec::new(),
-            stat_meaninertia: 1.0,
 
             // Sensors
             sensordata: DVector::zeros(self.nsensordata),

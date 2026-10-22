@@ -17,10 +17,12 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::dual_state;
 use crate::constraint::solver::primal::MJ_NSOLVER;
 use crate::dynamics::factor::mj_solve_m;
 use crate::linalg::cholesky_solve_in_place;
-use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
+use crate::types::flags::disabled;
+use crate::types::{ConstraintState, ConstraintType, DISABLE_WARMSTART, Data, Model, SolverStat};
 
 /// Precomputed data for sparse PGS iteration.
 ///
@@ -211,50 +213,65 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
     data.efc_force = DVector::zeros(nefc);
     data.efc_jar = DVector::zeros(nefc);
 
-    // Warmstart: classify at qacc_warmstart to get warmstart forces
-    classify_constraint_states(
-        model,
-        data,
-        &data.qacc_warmstart.clone(),
-        &qacc_smooth,
-        &qfrc_smooth,
-    );
-    let warm_forces = data.efc_force.clone();
+    // Start from zero forces with warmstart disabled, as MuJoCo's `warmstart`
+    // does for PGS (`engine_forward.c:682-686`); otherwise from the warmstart's
+    // forces when their dual cost is negative, else from zero forces (MuJoCo
+    // keeps them at a cost of exactly 0 too, and sums the cost otherwise:
+    // ledger L219).
+    let mut qacc = if disabled(model, DISABLE_WARMSTART) {
+        qacc_smooth.clone()
+    } else {
+        // Warmstart: classify at qacc_warmstart to get warmstart forces
+        classify_constraint_states(
+            model,
+            data,
+            &data.qacc_warmstart.clone(),
+            &qacc_smooth,
+            &qfrc_smooth,
+        );
+        let warm_forces = data.efc_force.clone();
 
-    // Evaluate warmstart dual cost using qacc: O(nefc × nv) instead of O(nefc²)
-    // qacc_warm = qacc_smooth + minv_jt · warm_forces
-    let mut qacc_warm = qacc_smooth.clone();
-    for i in 0..nefc {
-        if warm_forces[i] != 0.0 {
-            for k in 0..nv {
-                qacc_warm[k] += warm_forces[i] * sp.minv_jt[(k, i)];
+        // Evaluate warmstart dual cost using qacc: O(nefc × nv) instead of O(nefc²)
+        // qacc_warm = qacc_smooth + minv_jt · warm_forces
+        let mut qacc_warm = qacc_smooth.clone();
+        for i in 0..nefc {
+            if warm_forces[i] != 0.0 {
+                for k in 0..nv {
+                    qacc_warm[k] += warm_forces[i] * sp.minv_jt[(k, i)];
+                }
             }
         }
-    }
-    let mut dual_cost_warm = 0.0;
-    for i in 0..nefc {
-        // AR · f_i = J_i · (qacc_warm - qacc_smooth) + R_i · f_i
-        let mut j_delta = 0.0;
-        for k in 0..nv {
-            j_delta += data.efc_J[(i, k)] * (qacc_warm[k] - qacc_smooth[k]);
+        let mut dual_cost_warm = 0.0;
+        for i in 0..nefc {
+            // AR · f_i = J_i · (qacc_warm - qacc_smooth) + R_i · f_i
+            let mut j_delta = 0.0;
+            for k in 0..nv {
+                j_delta += data.efc_J[(i, k)] * (qacc_warm[k] - qacc_smooth[k]);
+            }
+            let ar_f_i = j_delta + data.efc_R[i] * warm_forces[i];
+            dual_cost_warm += 0.5 * warm_forces[i] * ar_f_i + warm_forces[i] * data.efc_b[i];
         }
-        let ar_f_i = j_delta + data.efc_R[i] * warm_forces[i];
-        dual_cost_warm += 0.5 * warm_forces[i] * ar_f_i + warm_forces[i] * data.efc_b[i];
-    }
 
-    // Initialize qacc and forces from warmstart or cold start
-    let mut qacc = if dual_cost_warm < 0.0 {
-        data.efc_force.copy_from(&warm_forces);
-        qacc_warm
-    } else {
-        data.efc_force.fill(0.0);
-        qacc_smooth.clone()
+        if dual_cost_warm < 0.0 {
+            data.efc_force.copy_from(&warm_forces);
+            qacc_warm
+        } else {
+            data.efc_force.fill(0.0);
+            qacc_smooth.clone()
+        }
     };
+
+    // The rows' states from the starting forces, MuJoCo's `dualState`
+    // (`engine_solver.c:332`).
+    let mut state = std::mem::take(&mut data.efc_state);
+    dual_state(data, &mut state);
 
     let max_iters = model.solver_iterations;
     // `niter` and `nv` are usize → f64 for convergence diagnostics; bounded by solver budget, far below 2^52.
     #[allow(clippy::cast_precision_loss)]
-    let scale = 1.0 / (data.stat_meaninertia * 1.0_f64.max(nv as f64));
+    // Scaled by the model's mean inertia at every state, as MuJoCo's
+    // `mj_solPGS` (`engine_solver.c:326`).
+    let scale = 1.0 / (model.stat_meaninertia * 1.0_f64.max(nv as f64));
     let tolerance = model.solver_tolerance;
 
     let mut iter = 0;
@@ -451,7 +468,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
                 // Project per constraint type
                 match ctype {
                     ConstraintType::Equality => {}
-                    ConstraintType::FrictionLoss => {
+                    ConstraintType::FrictionDof | ConstraintType::FrictionTendon => {
                         let fl = data.efc_floss[i];
                         data.efc_force[i] = data.efc_force[i].clamp(-fl, fl);
                     }
@@ -485,6 +502,10 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
             }
         }
 
+        // The sweep's rows' states and how many changed (`engine_solver.c:490-495`).
+        let old_state = state.clone();
+        let nactive = dual_state(data, &mut state);
+        let nchange = old_state.iter().zip(&state).filter(|(a, b)| a != b).count();
         improvement *= scale;
 
         // The first mjNSOLVER kept, as MuJoCo's `saveStats`.
@@ -493,8 +514,8 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
                 improvement,
                 gradient: 0.0,
                 lineslope: 0.0,
-                nactive: 0,
-                nchange: 0,
+                nactive,
+                nchange,
                 neval: 0,
                 nupdate: 0,
             });
@@ -507,6 +528,7 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data, m_impl_factor: Option<&
         }
     }
 
+    data.efc_state = state;
     data.solver_niter = iter;
     data.solver_stat = solver_stats;
 }
@@ -578,7 +600,7 @@ pub fn classify_constraint_states(
                 i += 1;
             }
 
-            ConstraintType::FrictionLoss => {
+            ConstraintType::FrictionDof | ConstraintType::FrictionTendon => {
                 let floss = data.efc_floss[i];
                 let threshold = r * floss;
                 if jar >= threshold {

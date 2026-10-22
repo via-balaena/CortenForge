@@ -37,15 +37,16 @@ def dump_constraint_data(model, data, label=""):
     print(f"  solver_type={model.opt.solver}")
     print()
 
-    # Constraint types from MuJoCo
+    # MuJoCo's constraint types (mjtConstraint) under sim-core's names
     type_names = {
         0: "Equality",
-        1: "FrictionLoss",
-        2: "LimitJoint",
-        3: "LimitTendon",
-        4: "ContactFrictionless",
-        5: "ContactPyramidal",
-        6: "ContactElliptic",
+        1: "FrictionDof",
+        2: "FrictionTendon",
+        3: "LimitJoint",
+        4: "LimitTendon",
+        5: "ContactFrictionless",
+        6: "ContactPyramidal",
+        7: "ContactElliptic",
     }
 
     for i in range(nefc):

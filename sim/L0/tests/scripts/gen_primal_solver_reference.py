@@ -82,10 +82,16 @@ cases:
   ones also with the sphere rolling about x and y, so all five tangential components
   are nonzero), the first forward's solver inputs as mj_fwdConstraint hands them to
   the solver (`d.M` on the mass matrix's pattern and its factor `d.qLD`,
-  `d.qLDiagInv`, `qacc_smooth`, `qfrc_smooth`, the dense `efc_J`, `efc_aref`,
-  `efc_D`, `efc_R`) and its outputs (`qacc`, `efc_force`, each iteration's
-  statistics), so a test can hand the solver MuJoCo's own inputs and compare its
-  outputs bit for bit, whatever the stages before it round. The elliptic condim-3
+  `d.qLDiagInv`, `qacc_smooth`, `qfrc_smooth`, the dense `efc_J` (at the sparse
+  size the rows' chains and their values, `efc_J_rownnz`, `efc_J_rowadr`,
+  `efc_J_colind`, `efc_J`), `efc_aref`, `efc_D`, `efc_R`) and its outputs (`qacc`,
+  `efc_force`, `qfrc_constraint`, each iteration's statistics), so a test can hand
+  the solver MuJoCo's own inputs and compare its outputs bit for bit, whatever the
+  stages before it round. At jacobian="sparse" (MuJoCo's sparse products, and
+  Newton's sparse Hessian): Newton and CG for each mixed_rows cone and for
+  newton_box's tilted box; and under Newton a chain on the plane (a free sphere,
+  three links on four hinges below it, a second free sphere), each cone at four
+  velocities (seed 7). The elliptic condim-3
   variant also runs under CG with `ls_iterations` 1, and under CG and Newton with
   `tolerance` 1e-300 and iterations capped at 40: a mutant of the line search's exit
   at its iteration cap is caught by the first, one of its midpoint exit by CG's
@@ -123,6 +129,9 @@ with `niter` per island:
   with the warmstart disabled, where MuJoCo writes no efc_state: each row's state from
   its island's solve (iefc_state) and each step's iteration count per island.
 - statistics_cap: runs past mjNSOLVER (200) iterations (see `statistics_cap`).
+- pgs_scale: PGS's statistics scale, a two-hinge arm away from qpos0 (see `pgs_scale`).
+- islands_friction_key: a dof's friction-loss row and a tendon's of the same id, two
+  constraints and so two island edges (see `friction_key`).
 - islands_review: islands whose mass matrix couples their dofs (a two-link arm; a free
   body whose centre of mass is off its origin), under CG and at the sparse size under
   Newton, and noslip on with islands enabled, Newton and CG: the first forward's
@@ -319,6 +328,37 @@ MIXED_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 0, 0, 3.0]
 # ... and rolls about x and y too, so a condim-6 contact's five tangential
 # components are all nonzero.
 ROLLING_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.5, 0.2, 0, 1.0, -0.7, 3.0]
+# A chain on the plane at the sparse size: a free sphere, three links on four
+# hinges below it, and a second free sphere.
+CHAIN = """<mujoco model="chain">
+  <option timestep="0.002" solver="Newton" cone="{cone}" jacobian="sparse">
+    <flag island="disable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="root" pos="0 0 0.06">
+      <freejoint/>
+      <geom type="sphere" size="0.07" mass="2" condim="{condim}"/>
+      <body name="l1" pos="0.07 0 0">
+        <joint type="hinge" axis="0 1 0"/>
+        <joint type="hinge" axis="0 0 1"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 -0.01" size="0.03" mass="0.7" condim="{condim}"/>
+        <body name="l2" pos="0.2 0 -0.01">
+          <joint type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.2 0.02 -0.015" size="0.03" mass="0.5" condim="{condim}"/>
+          <body name="l3" pos="0.2 0.02 -0.015">
+            <joint type="hinge" axis="1 0 0"/>
+            <geom type="sphere" size="0.035" mass="0.3" condim="{condim}"/>
+          </body>
+        </body>
+      </body>
+    </body>
+    <body name="ball2" pos="-0.4 0.1 0.049">
+      <freejoint/>
+      <geom type="sphere" size="0.05" mass="0.8" condim="{condim}"/>
+    </body>
+  </worldbody>
+</mujoco>"""
 # ... and with the sphere at a tenth of that speed, so its friction holds inside the cone.
 NOSLIP_STICK_QVEL = [2.0, 0, 0, 0, 0, 0, 0, 0.05, 0.02, 0, 0, 0, 3.0]
 
@@ -674,8 +714,8 @@ def statistics_cap():
     early, so CG and Newton run to `iterations` (300) unless the line search
     finds no step, noslip runs its 250 sweeps and PGS its 300 iterations; the
     first forward's counts and kept statistics: CG over every row and by island,
-    Newton by island (over every row it stops after 3 iterations). PGS's statistics are
-    not MuJoCo's (ledger L132): its count only."""
+    Newton by island (over every row it stops after 3 iterations), PGS over every
+    row, with the rows' states it leaves (`dualState`'s)."""
     out = {}
     for solver in ("CG", "Newton", "PGS"):
         whole = MIXED_ROWS.format(solver=solver, cone="pyramidal", condim=3).replace(
@@ -691,15 +731,58 @@ def statistics_cap():
             d.qvel[:] = MIXED_QVEL
             mujoco.mj_forward(m, d)
             name = f"{solver}_{tag}" if tag != "noslip" else "noslip"
-            if solver == "PGS" and tag == "whole":
-                case = {"niter": int(d.solver_niter[0])}
-            elif tag == "islands":
+            if tag == "islands":
                 case = island_stats(m, d)
             else:
                 case = stats(m, d)
+            if solver == "PGS" and tag == "whole":
+                case["efc_state"] = [int(s) for s in d.efc_state]
             assert (sum(case["niter"]) if tag == "islands" else case["niter"]) > MJNSOLVER, name
             out[name] = {"xml": xml, "qvel": floats(d.qvel), "stats": case}
     return out
+
+
+PGS_SCALE = """<mujoco model="pgs_scale">
+  <option timestep="0.002" solver="PGS" tolerance="1e-10"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1"/>
+    <body name="upper" pos="0 0 0.4">
+      <joint name="shoulder" type="hinge" axis="0 1 0" range="-30 50" limited="true"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+      <body name="fore" pos="0.3 0 0">
+        <joint name="elbow" type="hinge" axis="0 1 0" frictionloss="0.05"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.6"/>
+        <geom type="sphere" pos="0.3 0 0" size="0.05" mass="0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+PGS_SCALE_QPOS = [0.9, -0.5]
+PGS_SCALE_QVEL = [0.4, -0.3]
+
+
+def pgs_scale():
+    """PGS scales its statistics by the model's mean inertia, the mass
+    matrix's trace over nv at qpos0 (`engine_solver.c:326`), at any state: a
+    two-hinge arm bent past its shoulder's limit, its hand on the floor (a
+    friction-loss row, a limit, a pyramidal contact), where the mass matrix's
+    trace over nv is not the model's (the generator refuses a gap under 1%).
+    The first forward's statistics and states, and both values."""
+    m = mujoco.MjModel.from_xml_string(PGS_SCALE)
+    d = mujoco.MjData(m)
+    d.qpos[:] = PGS_SCALE_QPOS
+    d.qvel[:] = PGS_SCALE_QVEL
+    mujoco.mj_forward(m, d)
+    full = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(m, full, d.qM)
+    here = float(np.trace(full) / m.nv)
+    gap = abs(here / m.stat.meaninertia - 1.0)
+    if gap < 0.01:
+        sys.exit(f"pgs_scale: the trace over nv is {gap:.3%} from the model's: a test could not tell")
+    case = stats(m, d)
+    case["efc_state"] = [int(s) for s in d.efc_state]
+    return {"xml": PGS_SCALE, "qpos": PGS_SCALE_QPOS, "qvel": PGS_SCALE_QVEL, "stats": case,
+            "meaninertia": float(m.stat.meaninertia), "trace_over_nv": here}
 
 
 def same_input(xml, qvel, start=None):
@@ -711,15 +794,25 @@ def same_input(xml, qvel, start=None):
         d.qvel[:] = qvel
     mujoco.mj_forward(m, d)
     n = d.nefc
-    assert not mujoco.mj_isSparse(m), "a dense case"
-    return {"xml": xml, "qvel": floats(d.qvel), "newton": int(m.opt.solver) == 2,
-            "M": floats(d.M), "qLD": floats(d.qLD), "qLDiagInv": floats(d.qLDiagInv),
-            "M_rowadr": [int(x) for x in m.M_rowadr], "M_rownnz": [int(x) for x in m.M_rownnz],
-            "M_colind": [int(x) for x in m.M_colind],
-            "qacc_smooth": floats(d.qacc_smooth), "qfrc_smooth": floats(d.qfrc_smooth),
-            "efc_J": floats(d.efc_J[:n * m.nv]), "efc_aref": floats(d.efc_aref[:n]),
-            "efc_D": floats(d.efc_D[:n]), "efc_R": floats(d.efc_R[:n]),
-            "qacc": floats(d.qacc), "efc_force": floats(d.efc_force[:n]), "stats": stats(m, d)}
+    out = {"xml": xml, "qvel": floats(d.qvel), "newton": int(m.opt.solver) == 2,
+           "M": floats(d.M), "qLD": floats(d.qLD), "qLDiagInv": floats(d.qLDiagInv),
+           "M_rowadr": [int(x) for x in m.M_rowadr], "M_rownnz": [int(x) for x in m.M_rownnz],
+           "M_colind": [int(x) for x in m.M_colind],
+           "qacc_smooth": floats(d.qacc_smooth), "qfrc_smooth": floats(d.qfrc_smooth),
+           "efc_aref": floats(d.efc_aref[:n]),
+           "efc_D": floats(d.efc_D[:n]), "efc_R": floats(d.efc_R[:n]),
+           "qacc": floats(d.qacc), "efc_force": floats(d.efc_force[:n]),
+           "qfrc_constraint": floats(d.qfrc_constraint), "stats": stats(m, d)}
+    if mujoco.mj_isSparse(m):
+        # The rows' chains and their values there (`efc_J_*`), as MuJoCo keeps them.
+        nnz = int(sum(d.efc_J_rownnz[:n]))
+        out.update({"efc_J_rownnz": [int(x) for x in d.efc_J_rownnz[:n]],
+                    "efc_J_rowadr": [int(x) for x in d.efc_J_rowadr[:n]],
+                    "efc_J_colind": [int(x) for x in d.efc_J_colind[:nnz]],
+                    "efc_J": floats(d.efc_J[:nnz])})
+    else:
+        out["efc_J"] = floats(d.efc_J[:n * m.nv])
+    return out
 
 
 def two_tree_cone(xml, qvel):
@@ -787,6 +880,47 @@ def zero_row(solver, warmstart=True):
     return out
 
 
+FRICTION_KEY = """<mujoco model="friction_key">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <body name="a" pos="0 0 1">
+      <joint name="ja" type="slide" axis="1 0 0" frictionloss="0.2"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+    <body name="b" pos="0.5 0 1">
+      <joint name="jb" type="slide" axis="1 0 0"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" frictionloss="0.3">
+      <joint joint="ja" coef="1"/>
+      <joint joint="jb" coef="-1"/>
+    </fixed>
+  </tendon>
+</mujoco>"""
+FRICTION_KEY_QVEL = [0.5, -0.4]
+
+
+def friction_key():
+    """A dof's friction-loss row and a tendon's, both of id 0 and adjacent,
+    are two constraints (`mjCNSTR_FRICTION_DOF`, `mjCNSTR_FRICTION_TENDON`),
+    so the tendon's row joins the trees it couples (`findEdges`,
+    `engine_island.c:327-336`): two slides in two trees, the first with
+    friction loss, a fixed tendon over both with friction loss, no gravity,
+    moving. The first forward's islands, rows, forces and acceleration."""
+    m = mujoco.MjModel.from_xml_string(FRICTION_KEY)
+    d = mujoco.MjData(m)
+    d.qvel[:] = FRICTION_KEY_QVEL
+    mujoco.mj_forward(m, d)
+    assert list(d.efc_type) == [mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF,
+                                mujoco.mjtConstraint.mjCNSTR_FRICTION_TENDON], list(d.efc_type)
+    assert list(d.efc_id) == [0, 0] and d.nisland == 1, (list(d.efc_id), d.nisland)
+    return {"xml": FRICTION_KEY, "qvel": FRICTION_KEY_QVEL, "nisland": int(d.nisland),
+            "tree_island": [int(x) for x in d.tree_island], "efc_island": [int(x) for x in d.efc_island],
+            "efc_force": floats(d.efc_force[:d.nefc]), "qacc": floats(d.qacc)}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -830,6 +964,24 @@ def main():
         xml = MIXED_ROWS.format(solver=solver, cone="elliptic", condim=3).replace(
             f'solver="{solver}"', f'solver="{solver}" {opt}')
         same[f"{solver}_elliptic_3_{tag}"] = same_input(xml, MIXED_QVEL)
+    # At the sparse size (jacobian="sparse"): the products run over the rows'
+    # chains (`mju_mulMatVecSparse`), and Newton's Hessian is the sparse one.
+    for solver in ("Newton", "CG"):
+        for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6)):
+            xml = MIXED_ROWS.format(solver=solver, cone=cone, condim=condim).replace(
+                f'solver="{solver}"', f'solver="{solver}" jacobian="sparse"')
+            same[f"{solver}_{cone}_{condim}_sparse"] = same_input(xml, MIXED_QVEL)
+        # The tilted box's four contacts: each box dof in sixteen rows, all pushing.
+        same[f"{solver}_box_sparse"] = same_input(NEWTON_BOX.format(iterations=100).replace(
+            'iterations="100"', f'iterations="100" solver="{solver}" jacobian="sparse"'), None,
+            census_start)
+    # The chain under Newton, each cone at four velocities (seed 7).
+    for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6)):
+        xml = CHAIN.format(cone=cone, condim=condim)
+        rng = np.random.default_rng(7)
+        nv = mujoco.MjModel.from_xml_string(xml).nv
+        for k in range(4):
+            same[f"Newton_chain_{cone}_{condim}_{k}"] = same_input(xml, list(rng.normal(0, 0.8, nv)))
     cases["same_input"] = same
     cases["islands_mixed"] = {
         f"{solver}_{cone}_{condim}": island_trajectory(
@@ -862,6 +1014,7 @@ def main():
             same_islands[f"{solver}_{cone}_{condim}"] = case
     cases["same_input_islands"] = same_islands
     cases["statistics_cap"] = statistics_cap()
+    cases["pgs_scale"] = pgs_scale()
     cases["islands_review"] = {
         "coupled_CG": island_trajectory(COUPLED.format(solver="CG", spheres=""), COUPLED_QVEL,
                                         200, (1, 10, 50, 200)),
@@ -872,6 +1025,7 @@ def main():
     for solver in ("Newton", "CG"):
         cases["islands_review"][f"noslip_{solver}"] = island_trajectory(
             NOSLIP_ISLANDS.format(solver=solver), NOSLIP_ISLANDS_QVEL, 200, (1, 10, 50, 200))
+    cases["islands_friction_key"] = friction_key()
     cases["islands_zero_row"] = {solver: zero_row(solver) for solver in ("Newton", "CG")}
     for solver in ("Newton", "CG"):
         cases["islands_zero_row"][f"{solver}_coldstart"] = zero_row(solver, warmstart=False)

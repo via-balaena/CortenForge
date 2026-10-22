@@ -136,7 +136,7 @@ impl Data {
             qacc
         });
 
-        mj_inv_constraint(self);
+        mj_inv_constraint(model, self);
 
         if compute_sensors {
             mj_body_accumulators(model, self);

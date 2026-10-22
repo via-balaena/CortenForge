@@ -11,7 +11,7 @@
 //! - Equality constraints (connect, weld)
 //! - Multi-constraint stability
 //! - Stiff contacts (AC3) and direct mode solref (AC12)
-//! - Solver statistics, per-step meaninertia, noslip, sparse Hessian
+//! - Solver statistics, noslip, sparse Hessian
 //! - MuJoCo reference value conformance
 
 use approx::assert_relative_eq;
@@ -605,51 +605,6 @@ fn test_newton_solver_niter_zero_constraints() {
 }
 
 // ============================================================================
-// Phase C: Per-step meaninertia
-// ============================================================================
-
-#[test]
-fn test_newton_per_step_meaninertia() {
-    let (model, mut data) = model_from_mjcf(
-        r#"
-        <mujoco model="meaninertia_test">
-            <option gravity="0 0 -9.81" solver="Newton"/>
-            <worldbody>
-                <body pos="0 0 1">
-                    <joint type="free"/>
-                    <geom type="sphere" size="0.1" mass="1.0"/>
-                </body>
-                <geom type="plane" size="5 5 0.1"/>
-            </worldbody>
-        </mujoco>
-    "#,
-    );
-
-    data.step(&model).unwrap();
-
-    // Per-step meaninertia should be positive and finite
-    assert!(
-        data.stat_meaninertia > 0.0,
-        "per-step meaninertia should be positive, got {}",
-        data.stat_meaninertia
-    );
-    assert!(
-        data.stat_meaninertia.is_finite(),
-        "per-step meaninertia should be finite"
-    );
-
-    // For a simple rigid body, should be close to model-level constant
-    let ratio = data.stat_meaninertia / model.stat_meaninertia;
-    assert!(
-        ratio > 0.5 && ratio < 2.0,
-        "per-step ({}) should be close to model-level ({}), ratio={}",
-        data.stat_meaninertia,
-        model.stat_meaninertia,
-        ratio
-    );
-}
-
-// ============================================================================
 // Phase C: Noslip post-processor
 // ============================================================================
 
@@ -993,7 +948,8 @@ fn test_sparse_hessian_coupled_contacts() {
     // resting on a ground plane. nv = 11 × 6 = 66 > 60, triggering the sparse
     // path. The equality constraints create J rows spanning DOFs of adjacent
     // bodies, producing off-diagonal fill in H = M + J^T·D·J. This tests that
-    // the sparse LDL^T factorization correctly handles off-diagonal entries.
+    // the sparse factorization (`constraint/solver/sparse.rs`) correctly
+    // handles off-diagonal entries.
     let mjcf = build_coupled_chain_mjcf(11);
     let (model, mut data) = model_from_mjcf(&mjcf);
 

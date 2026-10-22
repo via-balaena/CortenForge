@@ -11,7 +11,8 @@
 
 use serde_json::Value;
 use sim_core::{
-    ConstraintState, Data, DerivativeConfig, Model, StepError, mjd_inverse_fd, mjd_transition_fd,
+    ConstraintState, Data, DerivativeConfig, Model, SolverType, StepError, mjd_inverse_fd,
+    mjd_transition_fd,
 };
 use sim_mjcf::load_model;
 
@@ -208,12 +209,14 @@ fn inverse_fd_as_mujoco() {
 /// forces take at the centre of mass (`xipos`), as MuJoCo's
 /// `mj_xfrcAccumulate`. After
 /// `forward()`, `solver_fwdinv` is MuJoCo's after `mj_forward`, still 0,
-/// and `efc_state` a forward's with the flag off; after `step()`,
+/// and `efc_state` a forward's with the flag off, and MuJoCo's where its
+/// solve leaves its own (PGS, noslip, no islands; D-ISLAND-EFC-STATE); after
+/// `step()`,
 /// `solver_fwdinv` is MuJoCo's within 1e-12
 /// of the larger of 1 and its size (exactly 0 with no rows, which MuJoCo
 /// returns before any inverse) and `efc_state` MuJoCo's, the inverse's
-/// (under RK4 the later stages remake the rows, so it is a flag-off step's,
-/// as in MuJoCo; this PGS's states are not MuJoCo's); and the step's
+/// (under RK4 the later stages remake the rows, so it is also a flag-off
+/// step's, as in MuJoCo); and the step's
 /// `qpos`, `qvel`, `efc_force` and `qfrc_constraint` are bit for bit a
 /// step's with the flag off (the forward's force put back). `step1()` then
 /// `step2()` gives the same `solver_fwdinv` and `efc_state` as `step()`
@@ -255,6 +258,20 @@ fn fwdinv_compares_in_the_step_as_mujoco() {
             forwarded.efc_state, plain.efc_state,
             "{name}: efc_state after forward(), as with the flag off"
         );
+        // MuJoCo's forward leaves each row's own state where its solve
+        // writes efc_state: PGS's and noslip's `dualState`, and a solve
+        // without islands; an island solve leaves the warmstart's
+        // (D-ISLAND-EFC-STATE).
+        if model.solver_type == SolverType::PGS
+            || model.noslip_iterations > 0
+            || forwarded.nisland == 0
+        {
+            assert_eq!(
+                mujoco_states(&forwarded.efc_state),
+                states(&case["after_forward"]["efc_state"]),
+                "{name}: efc_state after forward()"
+            );
+        }
 
         let mut stepped = model.make_data();
         set_state(case, &mut stepped);
@@ -274,17 +291,17 @@ fn fwdinv_compares_in_the_step_as_mujoco() {
         let mut plain = off.make_data();
         set_state(case, &mut plain);
         plain.step(&off).expect("step");
+        assert_eq!(
+            mujoco_states(&stepped.efc_state),
+            states(&case["after_step"]["efc_state"]),
+            "{name}: efc_state after step()"
+        );
         if model.integrator == sim_core::Integrator::RungeKutta4 {
             assert_eq!(
                 stepped.efc_state, plain.efc_state,
                 "{name}: efc_state after step(), as with the flag off"
             );
         } else {
-            assert_eq!(
-                mujoco_states(&stepped.efc_state),
-                states(&case["after_step"]["efc_state"]),
-                "{name}: efc_state after step()"
-            );
             let mut split = model.make_data();
             set_state(case, &mut split);
             split.step1(&model).expect("step1");

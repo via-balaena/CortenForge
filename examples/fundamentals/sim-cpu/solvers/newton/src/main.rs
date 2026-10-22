@@ -46,11 +46,12 @@ use sim_core::validation::{Check, print_report};
 //     (Dᵢ = impedance-scaled constraint weight)
 //     Dense path: Cholesky factorization, rank-1 incremental updates
 //     Sparse path (Model::is_sparse: jacobian="sparse", or nv ≥ 60 under the
-//     default): LDL^T with elimination tree, made anew each iteration
+//     default): MuJoCo's sparse L'L, factored in reverse order by its
+//     elimination tree, rank-1 updates as rows change state
 //
 //   Main loop (for iter = 0..max_iters):
 //     1. Gradient: grad = M·qacc - qfrc_smooth - Jᵀ·efc_force
-//     2. Search direction: search = -H⁻¹ · grad  (Cholesky/LDL solve)
+//     2. Search direction: search = -H⁻¹ · grad  (Cholesky solve)
 //     3. Line search (exact 1D Newton):
 //          - Newton step from α=0: α₁ = -f'(0)/f''(0)
 //          - Bracket search until derivative changes sign
@@ -67,7 +68,7 @@ use sim_core::validation::{Check, print_report};
 //   - At its iteration cap it keeps its last iterate, as MuJoCo's does
 //   - Best for: precision-critical contact scenarios, complex friction cones
 //
-// Source: sim/L0/core/src/constraint/solver/primal.rs, hessian.rs
+// Source: sim/L0/core/src/constraint/solver/primal.rs, sparse.rs
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 

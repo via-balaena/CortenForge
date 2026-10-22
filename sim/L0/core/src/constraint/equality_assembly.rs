@@ -4,6 +4,7 @@
 //! Populates the equality rows in the unified `efc_*` arrays.
 //! Called from [`super::assembly::assemble_unified_constraints`] during Phase 3a.
 
+use crate::constraint::chain::{at_sparse_size, body_pair_chain, tendon_chain, union_chains};
 use crate::constraint::equality::{
     extract_connect_jacobian, extract_distance_jacobian, extract_joint_equality_jacobian,
     extract_tendon_equality_jacobian, extract_weld_jacobian,
@@ -43,8 +44,9 @@ pub(super) fn assemble_equality_rows(model: &Model, data: &mut Data, nv: usize, 
         // No rows when they are all zero, or at the sparse size when the
         // dof chain is empty (two bodies without dofs, say), as MuJoCo's
         // `mj_addConstraint` (`engine_core_constraint.c:255-283`).
+        let chain = at_sparse_size(model, || equality_chain(model, data, eq_id));
         let empty = if model.is_sparse() {
-            equality_chain_empty(model, data, eq_id)
+            chain.is_empty()
         } else {
             rows.j_rows.iter().all(|&x| x == 0.0)
         };
@@ -88,28 +90,47 @@ pub(super) fn assemble_equality_rows(model: &Model, data: &mut Data, nv: usize, 
                 [0.0; 5],
                 bw,
                 shared_violation.unwrap_or_else(|| rows.pos[r].abs()),
+                &chain,
             );
         }
     }
 }
 
-/// Whether equality `eq_id`'s dof chain is empty, as MuJoCo forms it at the
-/// sparse size (`mj_instantiateEquality`, `engine_core_constraint.c:375-687`):
-/// the two bodies' merged chain for a connect or a weld (`mj_jacDifPair`),
-/// and for this crate's distance equality its geoms' bodies'; its tendons'
-/// for a tendon equality; a joint equality's always holds a dof.
-fn equality_chain_empty(model: &Model, data: &Data, eq_id: usize) -> bool {
+/// Equality `eq_id`'s dof chain, as MuJoCo forms it at the sparse size
+/// (`mj_instantiateEquality`, `engine_core_constraint.c:375-687`): the two
+/// bodies' merged chain for a connect or a weld (`mj_jacDifPair`), and for
+/// this crate's distance equality its geoms' bodies'; the union of its
+/// joints' dofs for a joint equality, of its tendons' chains for a tendon
+/// equality. A flex equality's rows each take their edge's chain.
+fn equality_chain(model: &Model, data: &Data, eq_id: usize) -> Vec<usize> {
     let (obj1, obj2) = (model.eq_obj1id[eq_id], model.eq_obj2id[eq_id]);
-    let welded = |body: usize| model.body_weldid[body] == 0;
     match model.eq_type[eq_id] {
-        EqualityType::Connect | EqualityType::Weld => welded(obj1) && welded(obj2),
+        EqualityType::Connect | EqualityType::Weld => body_pair_chain(model, obj1, obj2),
         EqualityType::Distance => {
-            welded(model.geom_body[obj1]) && (obj2 == usize::MAX || welded(model.geom_body[obj2]))
+            let body2 = if obj2 == usize::MAX {
+                0
+            } else {
+                model.geom_body[obj2]
+            };
+            body_pair_chain(model, model.geom_body[obj1], body2)
+        }
+        EqualityType::Joint => {
+            let second = if obj2 == usize::MAX {
+                Vec::new()
+            } else {
+                vec![model.jnt_dof_adr[obj2]]
+            };
+            union_chains(&[model.jnt_dof_adr[obj1]], &second)
         }
         EqualityType::Tendon => {
-            data.ten_J_rownnz[obj1] == 0 && (obj2 == usize::MAX || data.ten_J_rownnz[obj2] == 0)
+            let second = if obj2 == usize::MAX {
+                Vec::new()
+            } else {
+                tendon_chain(data, model.nv, obj2)
+            };
+            union_chains(&tendon_chain(data, model.nv, obj1), &second)
         }
-        EqualityType::Joint | EqualityType::Flex => false,
+        EqualityType::Flex => Vec::new(),
     }
 }
 
@@ -153,6 +174,7 @@ fn assemble_flex_equality_rows(
             eq_id,
             [0.0; 5],
             model.flexedge_invweight0[e],
+            &model.flexedge_J_colind[rowadr..rowadr + model.flexedge_J_rownnz[e]],
         );
     }
 }

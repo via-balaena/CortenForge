@@ -6,8 +6,9 @@
 //! Called from [`super::assembly::assemble_unified_constraints`] during
 //! Phase 3f.
 
+use crate::constraint::chain::at_sparse_size;
 use crate::constraint::impedance::{MJ_MINVAL, checked_solreffriction};
-use crate::constraint::jacobian::compute_contact_jacobian;
+use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain};
 use crate::types::{ConstraintType, Contact, Data, Model};
 
 use super::assembly::finalize_constraint_row;
@@ -37,6 +38,13 @@ pub(super) fn assemble_contact_rows(
         if contact.is_excluded() {
             continue;
         }
+        // At the sparse size a contact whose dof chain is empty (between
+        // two objects without dofs) makes no rows, as MuJoCo's ("skip
+        // contact if no DOFs affected", `engine_core_constraint.c:1028-1033`).
+        let chain = at_sparse_size(model, || contact_chain(model, contact));
+        if model.is_sparse() && chain.is_empty() {
+            continue;
+        }
         let dim = contact.dim;
         let cj = compute_contact_jacobian(model, data, contact);
 
@@ -53,7 +61,7 @@ pub(super) fn assemble_contact_rows(
 
         if is_pyramidal {
             assemble_pyramidal_contact(
-                model, data, nv, row, &cj, contact, ci, sr_normal, si, margin, bw_contact,
+                model, data, nv, row, &cj, contact, ci, sr_normal, si, margin, bw_contact, &chain,
                 &mut cones,
             );
         } else {
@@ -89,7 +97,7 @@ pub(super) fn assemble_contact_rows(
                 let bw_c = if r == 0 { bw_contact[0] } else { bw_contact[1] };
                 finalize_constraint_row(
                     model, data, nv, row, sr, si, pos, margin_r, 0.0, ctype, dim, ci, contact.mu,
-                    bw_c,
+                    bw_c, &chain,
                 );
             }
 
@@ -220,6 +228,7 @@ fn assemble_pyramidal_contact(
     si: [f64; 5],
     margin: f64,
     bw_contact: [f64; 2],
+    chain: &[usize],
     cones: &mut Vec<(usize, usize)>,
 ) {
     let dim = contact.dim;
@@ -256,6 +265,7 @@ fn assemble_pyramidal_contact(
             ci,
             contact.mu,
             bw_py,
+            chain,
         );
 
         // Negative facet: J_normal - μ_d · J_friction_d
@@ -277,6 +287,7 @@ fn assemble_pyramidal_contact(
             ci,
             contact.mu,
             bw_py,
+            chain,
         );
     }
 
