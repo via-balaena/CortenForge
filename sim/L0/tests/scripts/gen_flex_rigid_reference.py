@@ -30,7 +30,7 @@ after mj_forward each contact
 (sides, distance, position, frame, dim, includemargin, friction, solref,
 solimp, exclude, efc_address), the constraint rows (efc_J at the dense
 size, each row's columns and values at the sparse one; efc_R, efc_D),
-qacc and qfrc_constraint; then qpos, qvel and ncon at checkpoints of a
+qacc, qfrc_constraint, qfrc_spring and qfrc_passive; then qpos, qvel and ncon at checkpoints of a
 short run.
 """
 import os
@@ -145,6 +145,15 @@ CASES = {
                                 "", 'midphase="disable"', ""),
     "plane_gap_cloth": ('<body name="ground"><geom type="plane" size="2 2 0.1"/></body>',
                         (*grid(3, 0.05, 0.02)[:3], NONE + ' margin="0.02" gap="0.015"'), "", "", ""),
+    # A passive flex (mj_nc's exclude 4, mj_contactPassive): its contacts make
+    # no rows and push as springs into qfrc_spring, a gap's too.
+    "passive_sphere_cloth": (SPHERE, (*grid(3, 0.1, 0.0)[:3], NONE + ' passive="true"'), "", "", ""),
+    "passive_box_cloth": (body("0.03 0.02 0.025", '<geom type="box" size="0.03 0.02 0.02" condim="4"/>',
+                               "0.98 0.1 0.15 0.05"), (*grid(3, 0.1, 0.0)[:3], NONE + ' passive="true"'),
+                          'jacobian="sparse"', "", ""),
+    "passive_plane_gap_cloth": ('<body name="ground"><geom type="plane" size="2 2 0.1"/></body>',
+                                (*grid(3, 0.05, 0.02)[:3], NONE + ' margin="0.02" gap="0.015" passive="true"'),
+                                "", "", ""),
     "hfield_cloth": ('<geom type="hfield" hfield="hf" pos="0.01 -0.02 0.0" quat="0.99 0.02 0.03 0.1"/>',
                      (*grid(3, 0.1, 0.075)[:3], NONE), "", "", FIELD),
 }
@@ -193,7 +202,8 @@ def forward(m, d):
             "efc_address": int(c.efc_address)})
     out = {"contacts": contacts, "nefc": int(d.nefc), "efc_type": ints(d.efc_type[:d.nefc]),
            "efc_R": floats(d.efc_R[:d.nefc]), "efc_D": floats(d.efc_D[:d.nefc]),
-           "qacc": floats(d.qacc), "qfrc_constraint": floats(d.qfrc_constraint)}
+           "qacc": floats(d.qacc), "qfrc_constraint": floats(d.qfrc_constraint),
+           "qfrc_spring": floats(d.qfrc_spring), "qfrc_passive": floats(d.qfrc_passive)}
     if mujoco.mj_isSparse(m):
         rows = []
         for r in range(d.nefc):
@@ -208,9 +218,18 @@ def forward(m, d):
 def case(name, rigid, flex, option, flag, asset):
     rigid = settled(rigid, flex, option, flag, asset)
     mj, ours, m = documents(rigid, flex, option, flag, asset)
+    out = {"name": name, "xml": mj, "ours": ours, "nv": int(m.nv), "nbody": int(m.nbody)}
+    flexes = flex if isinstance(flex, list) else [DUMMY, flex]
+    passive = [int('passive="true"' in contact) for (_, _, _, contact) in flexes]
+    if any(passive):
+        # MuJoCo 3.5.0's reader sets a flex's passive flag to its internal
+        # flag's value whenever `passive` is given (xml_native_reader.cc:
+        # 1521-1523; registry D-FLEX-PASSIVE-READ): the attribute is set on
+        # the compiled model, and what the reader gave is recorded.
+        out["flex_passive_read"] = ints(m.flex_passive)
+        m.flex_passive[:] = passive
     d = mujoco.MjData(m)
-    out = {"name": name, "xml": mj, "ours": ours, "nv": int(m.nv), "nbody": int(m.nbody),
-           "qpos0": floats(d.qpos)}
+    out["qpos0"] = floats(d.qpos)
     mujoco.mj_forward(m, d)
     out.update(forward(m, d))
     trajectory = {}

@@ -84,9 +84,9 @@ fn v3(v: &Vector3<f64>) -> [f64; 3] {
 }
 
 /// Each contact as MuJoCo lists it: its sides, distance, position, frame,
-/// dimension, margin less gap, friction, solref, solimp, and whether the
-/// gap excludes it.
-fn contacts(off: &mut Vec<String>, name: &str, data: &Data, want: &[Value]) {
+/// dimension, margin less gap, friction, solref, solimp, and its `exclude`
+/// (1 in the gap, 4 of a passive flex, else 0).
+fn contacts(off: &mut Vec<String>, name: &str, model: &Model, data: &Data, want: &[Value]) {
     if data.contacts.len() != want.len() {
         off.push(format!(
             "{name}: ncon {}, MuJoCo {}",
@@ -145,12 +145,14 @@ fn contacts(off: &mut Vec<String>, name: &str, data: &Data, want: &[Value]) {
             &c.solimp,
             &floats(&w["solimp"]),
         );
-        let excluded = w["exclude"].as_i64().expect("exclude") != 0;
-        if c.is_excluded() != excluded {
-            off.push(format!(
-                "{what}: excluded {}, MuJoCo {excluded}",
-                c.is_excluded()
-            ));
+        let exclude = w["exclude"].as_i64().expect("exclude");
+        let ours = if c.is_passive(model) {
+            4
+        } else {
+            i64::from(c.is_excluded())
+        };
+        if ours != exclude {
+            off.push(format!("{what}: exclude {ours}, MuJoCo {exclude}"));
         }
     }
 }
@@ -214,8 +216,10 @@ fn rows(off: &mut Vec<String>, name: &str, model: &Model, data: &Data, case: &Va
 }
 
 /// From MuJoCo's `qpos0`, each case's contacts and rows after `forward`,
-/// then `qacc`, `qfrc_constraint`, and qpos, qvel and the contact count at
-/// the golden's checkpoints of a run, each bit for bit with MuJoCo's.
+/// then `qacc`, `qfrc_constraint`, `qfrc_spring` and `qfrc_passive`, and
+/// qpos, qvel and the contact count at the golden's checkpoints of a run,
+/// each bit for bit with MuJoCo's. A passive flex's contacts make no rows
+/// and push as springs (`mj_nc`'s exclude 4, `mj_contactPassive`).
 #[test]
 fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
     let golden = golden();
@@ -238,6 +242,7 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
         contacts(
             &mut off,
             name,
+            &model,
             &data,
             case["contacts"].as_array().expect("contacts"),
         );
@@ -248,12 +253,18 @@ fn a_body_s_geoms_collide_with_a_flex_as_mujoco() {
             data.qacc.as_slice(),
             &floats(&case["qacc"]),
         );
-        bits(
-            &mut off,
-            &format!("{name} qfrc_constraint"),
-            data.qfrc_constraint.as_slice(),
-            &floats(&case["qfrc_constraint"]),
-        );
+        for (key, ours) in [
+            ("qfrc_constraint", &data.qfrc_constraint),
+            ("qfrc_spring", &data.qfrc_spring),
+            ("qfrc_passive", &data.qfrc_passive),
+        ] {
+            bits(
+                &mut off,
+                &format!("{name} {key}"),
+                ours.as_slice(),
+                &floats(&case[key]),
+            );
+        }
         let trajectory = case["trajectory"].as_object().expect("trajectory");
         let last = trajectory
             .keys()
@@ -363,4 +374,36 @@ fn a_signed_distance_field_meets_each_flex_vertex() {
             .collect()
     };
     assert_eq!(key(&data), key(&all_to_all), "the midphase on and off");
+}
+
+/// A flex's `<contact passive>` (registry `D-FLEX-PASSIVE-READ`): MuJoCo
+/// 3.5.0's reader sets the flag to the `internal` flag's value whenever the
+/// attribute is given (`xml_native_reader.cc:1521-1523`), so the golden's
+/// passive cases, `internal="false" passive="true"`, read as not passive
+/// there (the generator sets the flag on MuJoCo's compiled model). sim-mjcf
+/// reads the attribute as written.
+#[test]
+fn a_flex_s_passive_attribute_reads_as_written() {
+    let golden = golden();
+    let cases: Vec<&Value> = golden["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .filter(|c| c.get("flex_passive_read").is_some())
+        .collect();
+    assert!(!cases.is_empty(), "the golden's passive cases");
+    for case in cases {
+        let name = case["name"].as_str().expect("name");
+        let model = load_model(case["ours"].as_str().expect("ours")).expect("load");
+        assert_eq!(
+            model.flex_passive,
+            [false, true],
+            "{name}: ours, as written"
+        );
+        assert_eq!(
+            usizes(&case["flex_passive_read"]),
+            [0, 0],
+            "{name}: MuJoCo's reader, its internal flag"
+        );
+    }
 }

@@ -115,6 +115,15 @@ impl Contact {
         self.geom[0].zip(self.geom[1])
     }
 
+    /// Whether a side is a flex marked passive (`flex_passive`): MuJoCo's
+    /// `exclude` 4 (`mj_nc`, `engine_core_constraint.c:1932-1937`). Such a
+    /// contact makes no constraint rows, its own gap aside, and pushes along
+    /// its normal as a spring instead (`forward::passive`).
+    #[must_use]
+    pub fn is_passive(&self, model: &Model) -> bool {
+        self.flex.iter().flatten().any(|&f| model.flex_passive[f])
+    }
+
     /// Each side's flex vertex, numbered among every flex's vertices
     /// (`flex_vertadr` + `vert`), `None` on a geom or element side.
     #[inline]

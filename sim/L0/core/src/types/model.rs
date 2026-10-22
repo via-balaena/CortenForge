@@ -478,8 +478,8 @@ pub struct Model {
     pub flex_vertcollide: Vec<bool>,
     /// Per-flex: passive contact flag (MuJoCo's default false). When true,
     /// flex contacts generate passive forces only (no constraint solver
-    /// involvement; MuJoCo's `mj_nc` and `mj_contactPassive`). Read by no
-    /// contact code yet.
+    /// involvement; MuJoCo's `mj_nc` and `mj_contactPassive`):
+    /// [`Contact::is_passive`](crate::types::Contact::is_passive).
     pub flex_passive: Vec<bool>,
     /// Per-flex: passive edge spring stiffness (from `<edge stiffness="..."/>`).
     /// Used in passive force path (spring-damper), not constraint solver.
