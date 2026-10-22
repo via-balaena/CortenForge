@@ -38,7 +38,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gen_census_golden import oracle  # noqa: E402
-from gen_flex_rigid_reference import DUMMY, case, documents, grid  # noqa: E402
+from gen_flex_rigid_reference import DUMMY, case, documents, grid, record  # noqa: E402
 
 NONE = 'selfcollide="none" internal="false"'
 
@@ -254,6 +254,36 @@ CASES = {
 }
 
 
+# Tetrahedra as written, right-handed: MuJoCo's compiler turns each so its
+# faces' right-handed normals point out (user_mesh.cc:4272-4293), and
+# sim-mjcf's document keeps them as written, so its loader must turn them
+# the same. With internal collisions a tetrahedron's faces meet its vertices
+# only where it is thin (the small cube's), none as written here.
+RIGHT_HANDED = ([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]], [0, 1, 2, 3], 3)
+AS_WRITTEN = {
+    "right_handed_tet_internal": ([DUMMY, (*RIGHT_HANDED, INTERNAL)], "", ""),
+    "cube_as_written_internal": ([DUMMY, (CUBE, CUBE_TETS, 3, INTERNAL)], "", ""),
+    "small_cube_as_written_internal": ([DUMMY, (*SMALL_CUBE, INTERNAL)], "", ""),
+}
+
+
+def as_written(name, flexes, option, flag):
+    """A case whose sim-mjcf document lists each flex's elements as written,
+    not in the order MuJoCo compiled them."""
+    mj, ours, m = documents("", flexes, option, flag, "")
+    for f, (_, elems, dim, _) in enumerate(flexes):
+        da, en = m.flex_elemdataadr[f], m.flex_elemnum[f]
+        compiled = " ".join(str(int(i)) for i in m.flex_elem[da:da + en * (dim + 1)])
+        written = " ".join(map(str, elems))
+        if compiled != written:
+            old = f'<element data="{compiled}"/>'
+            assert ours.count(old) == 1, (name, f)
+            ours = ours.replace(old, f'<element data="{written}"/>')
+    assert any(" ".join(map(str, e)) != " ".join(str(int(i)) for i in m.flex_elem[m.flex_elemdataadr[f]:
+               m.flex_elemdataadr[f] + m.flex_elemnum[f] * (d + 1)]) for f, (_, e, d, _) in enumerate(flexes)), name
+    return record(name, mj, ours, m)
+
+
 def sparse_rotation_rows_vary():
     """Registry D-FLEX-SPARSE-ROT: at the sparse size MuJoCo 3.5.0's rotational
     rows of an element contact (rows 4-9 of each condim-6 pyramid of
@@ -314,7 +344,8 @@ def main():
     sparse_rotation_rows_vary()
     mujoco_cone_stops()
     doc = {"oracle": marker, "cases": [case(n, "", flexes, option, flag, "") for n, (flexes, option, flag)
-                                       in CASES.items()]}
+                                       in CASES.items()]
+           + [as_written(n, *c) for n, c in AS_WRITTEN.items()]}
     for c in doc["cases"]:
         kinds = sorted({("vert" if x["vert"][0] >= 0 else "elem", "self" if x["flex"][0] == x["flex"][1] else "pair",
                          x["dim"], x["exclude"]) for x in c["contacts"]})

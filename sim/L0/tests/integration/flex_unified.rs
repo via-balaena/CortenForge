@@ -3825,3 +3825,109 @@ fn contacts_between_bodies_count_a_flex_vertex_by_its_body() {
     }
     assert_eq!(data.contacts_between_bodies(&model, ground, ground), 0);
 }
+
+/// A tetrahedral flex as written, `(0,0,0) (1,0,0) (0,1,0) (0,0,1)`, `0 1 2
+/// 3`, loads with its vertices 1 and 2 swapped, as MuJoCo 3.5.0's compiler
+/// turns a tetrahedron so its faces' right-handed normals point out
+/// (`user_mesh.cc:4272-4293`; MuJoCo's `flex_elem` for this document is
+/// `[0, 2, 1, 3]`, the golden `flex_self.json`'s `right_handed_tet_internal`).
+#[test]
+fn flex_tet_reoriented_as_mujoco() {
+    let model =
+        load_model(&tetrahedra_mjcf("0 0 0  1 0 0  0 1 0  0 0 1", "0 1 2 3")).expect("load");
+    assert_eq!(model.flexelem_data, [0, 2, 1, 3]);
+}
+
+/// Ten tetrahedra of two cubes, written in both orientations, every one
+/// turned so its faces' right-handed normals point out:
+/// `(v1 − v0) × (v2 − v0) · (v3 − v0)` is at most 0 for each after loading.
+#[test]
+fn flex_tets_all_outward_after_build() {
+    let cube = |o: f64| {
+        (0..8)
+            .map(|i| {
+                format!(
+                    "{} {} {}",
+                    o + f64::from(i & 1),
+                    f64::from((i >> 1) & 1),
+                    f64::from((i >> 2) & 1)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let tets = [
+        [0, 1, 2, 4],
+        [3, 2, 1, 7],
+        [5, 1, 4, 7],
+        [6, 4, 2, 7],
+        [1, 2, 4, 7],
+    ];
+    // The first cube's tetrahedra as listed, the second's with vertices 1 and
+    // 2 swapped: one of the two writings of each is right-handed.
+    let mut elements = Vec::new();
+    for t in tets {
+        elements.push(format!("{} {} {} {}", t[0], t[1], t[2], t[3]));
+    }
+    for t in tets {
+        elements.push(format!(
+            "{} {} {} {}",
+            t[0] + 8,
+            t[2] + 8,
+            t[1] + 8,
+            t[3] + 8
+        ));
+    }
+    let model = load_model(&tetrahedra_mjcf(
+        &format!("{}  {}", cube(0.0), cube(2.0)),
+        &elements.join("  "),
+    ))
+    .expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let orientation = |e: &[usize]| {
+        let p = |i: usize| data.flexvert_xpos[e[i]];
+        let (a, b, c) = (p(1) - p(0), p(2) - p(0), p(3) - p(0));
+        a.cross(&b).dot(&c)
+    };
+    let written: Vec<Vec<usize>> = elements
+        .iter()
+        .map(|e| {
+            e.split_whitespace()
+                .map(|v| v.parse().expect("id"))
+                .collect()
+        })
+        .collect();
+    assert!(
+        written.iter().any(|e| orientation(e) > 0.0),
+        "a right-handed tetrahedron as written"
+    );
+    for e in 0..model.nflexelem {
+        let adr = model.flexelem_dataadr[e];
+        let element = &model.flexelem_data[adr..adr + 4];
+        assert!(orientation(element) <= 0.0, "element {e}: {element:?}");
+    }
+}
+
+/// A tetrahedron's rest volume is unsigned: `(0,0,0) (1,0,0) (0,1,0)
+/// (0,0,−1)` holds 1/6 whichever way it is written.
+#[test]
+fn flexelem_volume0_is_unsigned() {
+    for order in ["0 1 2 3", "0 2 1 3"] {
+        let model =
+            load_model(&tetrahedra_mjcf("0 0 0  1 0 0  0 1 0  0 0 -1", order)).expect("load");
+        assert_eq!(model.flexelem_volume0, [1.0 / 6.0], "{order}");
+    }
+}
+
+/// A tetrahedral flex of the given vertices and elements, in sim-mjcf's
+/// `<deformable><flex>` form.
+fn tetrahedra_mjcf(vertices: &str, elements: &str) -> String {
+    format!(
+        r#"<mujoco><option gravity="0 0 0"/><worldbody/><deformable>
+          <flex name="t" dim="3" radius="0.01" mass="1">
+            <contact selfcollide="none" internal="false"/>
+            <vertex pos="{vertices}"/><element data="{elements}"/>
+          </flex></deformable></mujoco>"#
+    )
+}

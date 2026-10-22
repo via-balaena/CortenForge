@@ -584,7 +584,8 @@ pub struct Model {
     pub flexelem_dataadr: Vec<usize>,
     /// Number of vertex indices per element (2, 3, or 4).
     pub flexelem_datanum: Vec<usize>,
-    /// Rest volume of each element (dim=3 only, topology data for future SVK).
+    /// Rest volume of each element, unsigned (dim=3 only, topology data for
+    /// future SVK).
     pub flexelem_volume0: Vec<f64>,
     /// Which flex object this element belongs to.
     pub flexelem_flexid: Vec<usize>,
