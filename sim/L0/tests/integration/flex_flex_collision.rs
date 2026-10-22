@@ -607,15 +607,12 @@ fn t11_self_collision_regression() {
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
 
-    // Self-collision should work the same after generalization.
-    // No panic. Self-collision contacts should use make_contact_flex_self()
-    // (not make_contact_flex_flex) since flex_id1 == flex_id2.
+    // No panic; each contact of the flex with itself lists it on both sides.
     for c in &data.contacts {
         if let [Some(f1), Some(f2)] = c.flex {
-            // For self-collision contacts, both vertices should be from the same flex
             assert_eq!(
                 f1, f2,
-                "self-collision contacts must have both vertices from same flex"
+                "a self-collision contact lists the same flex on both sides"
             );
         }
     }
@@ -664,11 +661,11 @@ fn t12_flex_rigid_regression() {
 }
 
 // ============================================================================
-// T13: contact_param_flex_flex unit test → supplementary
+// T13: contact_param_flexes unit test → supplementary
 // ============================================================================
 
 #[test]
-fn t13_contact_param_flex_flex_unit() {
+fn t13_contact_param_flexes_unit() {
     // Test the parameter combination function via actual flex-flex contacts.
     // Use overlapping 2×2 grids with large margins to ensure contacts are
     // generated for coplanar triangles (depth ≈ 0 needs margin > gap).

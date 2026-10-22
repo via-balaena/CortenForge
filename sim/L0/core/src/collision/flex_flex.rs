@@ -15,12 +15,13 @@
 
 use nalgebra::Vector3;
 
+use nalgebra::Matrix3;
+
 use super::broadphase::sweep_and_prune;
-use super::flex_collide::mj_collide_flex_internal;
 use super::midphase::{collide_tree_flexes, filter_box};
 use super::mj_ccd::{CcdObj, mjc_convex_elem};
-use super::mj_primitive::{Frame, RawContact, raw_capsule_capsule};
-use super::mj_triangle::make_capsule;
+use super::mj_primitive::{Frame, RawContact, raw_capsule_capsule, raw_sphere_capsule};
+use super::mj_triangle::{make_capsule, plane_vertex, raw_sphere_triangle};
 use super::order::{ListPlace, flex_place};
 use super::{
     ContactParams, assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flexes,
@@ -84,7 +85,7 @@ pub(super) fn collide_flex_self(
     }
     let start = data.contacts.len();
     if model.flex_internal[f] {
-        mj_collide_flex_internal(model, data, f);
+        collide_flex_internal(model, data, f);
     }
     if model.flex_selfcollide[f] != FlexSelfCollide::None {
         collide_active_elements(model, data, f, (hits, stack));
@@ -93,6 +94,97 @@ pub(super) fn collide_flex_self(
         places.push(flex_place(model, contact));
     }
     data.ncon = data.contacts.len();
+}
+
+/// `mj_collideFlexInternal` (`:1745-1806`): flex `f`'s element–vertex pairs
+/// (`flex_evpair`: each border element of a cable or a cloth and the vertex
+/// of its neighbour across a shared fragment), each to [`collide_elem_vert`];
+/// then, for a tetrahedral flex, each tetrahedron's four faces against their
+/// opposite vertices ([`plane_vertex`]), each contact the element's first,
+/// condim 1, the margin and gap left out.
+fn collide_flex_internal(model: &Model, data: &mut Data, f: usize) {
+    let adr = model.flex_evpairadr[f];
+    for &[e, v] in &model.flex_evpair[adr..adr + model.flex_evpairnum[f]] {
+        collide_elem_vert(model, data, f, e, v);
+    }
+    if model.flex_dim[f] != 3 {
+        return;
+    }
+    let params = contact_param_flexes(model, f, f);
+    let radius = model.flex_radius[f];
+    let vertadr = model.flex_vertadr[f];
+    for e in 0..model.flex_elemnum[f] {
+        let global = model.flex_elemadr[f] + e;
+        let verts = elem_verts(model, global);
+        let x: Vec<[f64; 3]> = positions(data, verts);
+        for [t0, t1, t2, v] in [[0, 1, 2, 3], [0, 2, 3, 1], [0, 3, 1, 2], [1, 3, 2, 0]] {
+            let Some(raw) = plane_vertex([&x[t0], &x[t1], &x[t2]], &x[v], radius) else {
+                continue;
+            };
+            let sides = ([Some(e), None], [None, Some(verts[v] - vertadr)]);
+            let mut contact = flex_contact(model, &raw, (f, f), sides, &params, 0.0);
+            contact.dim = 1;
+            data.contacts.push(contact);
+        }
+    }
+}
+
+/// `mj_collideElemVert` (`:2101-2180`): element `e` of flex `f` against its
+/// vertex `v` (flex-local), a sphere of the flex's radius: nothing where the
+/// vertex's box, its radius and the margin wide, is clear of the element's;
+/// else, at no margin, a cable's element as a capsule, a cloth's as a
+/// triangle of the flex's radius. Each contact lists the vertex first, the
+/// margin and gap left out. (A tetrahedral flex has no such pairs, its
+/// compiler making them for cables and cloths only, `user_mesh.cc:4644-4645`,
+/// so MuJoCo's convex route for one, `:2143-2146`, is not ported.)
+fn collide_elem_vert(model: &Model, data: &mut Data, f: usize, e: usize, v: usize) {
+    let margin = assign_margin(model, model.flex_margin[f]);
+    let radius = model.flex_radius[f];
+    let vert = data.flexvert_xpos[model.flex_vertadr[f] + v];
+    let global = model.flex_elemadr[f] + e;
+    let aabb = &data.flexelem_aabb[global];
+    let rbound = margin + radius;
+    if aabb[0] - aabb[3] > vert.x + rbound
+        || aabb[1] - aabb[4] > vert.y + rbound
+        || aabb[2] - aabb[5] > vert.z + rbound
+        || aabb[0] + aabb[3] < vert.x - rbound
+        || aabb[1] + aabb[4] < vert.y - rbound
+        || aabb[2] + aabb[5] < vert.z - rbound
+    {
+        return;
+    }
+    let x = positions(data, elem_verts(model, global));
+    let raws: Vec<RawContact> = match x.as_slice() {
+        [v1, v2] => {
+            let (pos, mat, size) = make_capsule(v1, v2, radius);
+            let sphere = Frame {
+                pos: &vert,
+                mat: &Matrix3::identity(),
+            };
+            let capsule = Frame {
+                pos: &pos,
+                mat: &mat,
+            };
+            raw_sphere_capsule(0.0, sphere, radius, capsule, &size)
+                .into_iter()
+                .collect()
+        }
+        [t1, t2, t3] => {
+            raw_sphere_triangle(0.0, &[vert.x, vert.y, vert.z], radius, [t1, t2, t3], radius)
+                .into_iter()
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    if raws.is_empty() {
+        return;
+    }
+    let params = contact_param_flexes(model, f, f);
+    for raw in &raws {
+        let sides = ([None, Some(e)], [Some(v), None]);
+        data.contacts
+            .push(flex_contact(model, raw, (f, f), sides, &params, 0.0));
+    }
 }
 
 /// Flex `f`'s active elements against each other, by its `selfcollide` mode

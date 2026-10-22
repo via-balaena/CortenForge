@@ -1197,7 +1197,7 @@ regressions as the implementation matures.
 2. **cable-drop** — A 1D flex body (chain of vertices, edge elements)
    dropped onto a plane. The cable coils and settles. Edge stiffness
    prevents excessive stretching. Demonstrates flex-rigid contact via
-   `flex_collide.rs`.
+   `flex_rigid.rs`.
 
 3. **bending-modes** — Same cloth, two bending models side by side:
    Cotangent (curvature-based, smoother) vs Bridson (dihedral angle,

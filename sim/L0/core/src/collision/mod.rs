@@ -9,9 +9,7 @@
 //! and parameter combination from `engine_collision_primitive.c`.
 
 mod broadphase;
-pub(crate) mod flex_collide;
 mod flex_flex;
-pub(crate) mod flex_narrow;
 mod flex_rigid;
 pub(crate) mod hfield;
 mod midphase;
@@ -259,26 +257,6 @@ pub(crate) fn contact_param_geom_flex(
         gf.z.max(ff.z),
     ];
     (condim, gap, solref, solimp, fri)
-}
-
-/// Compute contact parameters for flex self-collision.
-///
-/// Both sides are the same flex — parameters are trivially the flex's own
-/// values. Gap and margin are additive (both sides contribute), so they
-/// are doubled. Follows MuJoCo's `mj_contactParam()` convention for
-/// same-entity pairs.
-pub(crate) fn contact_param_flex_self(
-    model: &Model,
-    flex_id: usize,
-) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
-    let f = model.flex_friction[flex_id];
-    (
-        model.flex_condim[flex_id],
-        2.0 * model.flex_gap[flex_id], // additive: flex_gap + flex_gap
-        model.flex_solref[flex_id],
-        model.flex_solimp[flex_id],
-        [f.x, f.x, f.y, f.z, f.z], // tangential, tangential, torsional, rolling, rolling
-    )
 }
 
 /// A contact's parameters as `mj_contactParam` returns them: condim, gap,

@@ -130,7 +130,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-151 | T2 | Edge-edge tests for dim=3 tetrahedral self-collision -- MuJoCo performs edge-edge proximity tests; CortenForge vertex-face only | 10i |
 | DT-152 | T2 | Barycentric force distribution on face side for flex self-collision contacts -- current Jacobian applies force to nearest vertex | 10i |
 | DT-153 | T1 | Island assignment for flex contacts -- sentinel `usize::MAX` geom indices skipped from island assignment. Affects island-based solving only. | 10i |
-| DT-154 | T1 | Flex contact factory condim=6 mapping -- the flex–flex and self factories map `condim: 1->1, 4->4, _->3`, so `condim=6` produces `dim=3` (a geom against a flex keeps 6). | 10i |
+| DT-154 | T1 | ~~Flex contact factory condim=6 mapping -- the flex–flex and self factories map `condim: 1->1, 4->4, _->3`, so `condim=6` produces `dim=3` (a geom against a flex keeps 6).~~ **Done** -- two flexes' and a flex's own contacts keep condim 6, as MuJoCo (a tetrahedron's faces against its vertices take 1, as `mj_collideFlexInternal`) | 10i |
 | DT-155 | T1 | S10 override test for flex-flex contacts (AC11/T10) -- `ENABLE_OVERRIDE` test infrastructure not wired for flex contact tests | 10i |
 | DT-156 | T2 | Narrowphase triangle-triangle contact count conformance gap -- CortenForge 36 contacts vs MuJoCo 32 for overlapping 3x3 flex grids | 10i |
 

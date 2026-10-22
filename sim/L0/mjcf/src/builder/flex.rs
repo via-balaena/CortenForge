@@ -892,64 +892,6 @@ fn compute_bending_coefficients(
     b
 }
 
-/// Compute element adjacency for self-collision dispatch (Spec C S4).
-///
-/// Two elements are adjacent if they share at least one vertex. Returns
-/// CSR-style flat sorted adjacency list: `(adj_data, adj_adr, adj_num)`.
-pub fn compute_element_adjacency(
-    flexelem_data: &[usize],
-    flexelem_dataadr: &[usize],
-    flexelem_datanum: &[usize],
-    nflexelem: usize,
-    nflexvert: usize,
-) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
-    if nflexelem == 0 {
-        return (vec![], vec![], vec![]);
-    }
-
-    // Step 1: vertex → element map
-    let mut vert_to_elems: Vec<Vec<usize>> = vec![vec![]; nflexvert];
-    for e in 0..nflexelem {
-        let adr = flexelem_dataadr[e];
-        let num = flexelem_datanum[e];
-        for i in 0..num {
-            let v = flexelem_data[adr + i];
-            if v < nflexvert {
-                vert_to_elems[v].push(e);
-            }
-        }
-    }
-
-    // Step 2: per-element adjacency
-    let mut adj_data = Vec::new();
-    let mut adj_adr = Vec::with_capacity(nflexelem);
-    let mut adj_num = Vec::with_capacity(nflexelem);
-
-    for e in 0..nflexelem {
-        let adr = flexelem_dataadr[e];
-        let num = flexelem_datanum[e];
-        let mut neighbors = Vec::new();
-        for i in 0..num {
-            let v = flexelem_data[adr + i];
-            if v < nflexvert {
-                for &neighbor in &vert_to_elems[v] {
-                    if neighbor != e {
-                        neighbors.push(neighbor);
-                    }
-                }
-            }
-        }
-        neighbors.sort_unstable();
-        neighbors.dedup();
-
-        adj_adr.push(adj_data.len());
-        adj_num.push(neighbors.len());
-        adj_data.extend(neighbors);
-    }
-
-    (adj_data, adj_adr, adj_num)
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {

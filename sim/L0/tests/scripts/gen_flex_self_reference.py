@@ -107,6 +107,24 @@ CUBE_TETS = [0, 1, 2, 4, 3, 2, 1, 7, 5, 1, 4, 7, 6, 4, 2, 7, 1, 2, 4, 7]
 TWO_CUBES = (CUBE + [[x + 0.03, y + 0.035, z + 0.04] for x, y, z in CUBE], CUBE_TETS + [i + 8 for i in CUBE_TETS], 3)
 
 
+INTERNAL = 'selfcollide="none" internal="true"'
+# A cable bent sharply at its middle vertex: its last vertex 12 mm from its
+# first element.
+CABLE_V = ([[0, 0, 0], [0.1, 0, 0], [0.005, 0.012, 0.0]], [0, 1, 1, 2], 1)
+# The same, its last vertex 25 mm from its first element: 5 mm clear of it,
+# within a 10 mm margin; 1 m along x.
+CABLE_V_CLEAR = ([[1.0, 0, 0], [1.1, 0, 0], [1.005, 0.025, 0.0]], [0, 1, 1, 2], 1)
+# Five tetrahedra of a cube 15 mm on a side: every vertex within two radii of
+# its tetrahedron's opposite faces.
+SMALL_CUBE = ([[(i & 1) * 0.015, ((i >> 1) & 1) * 0.015, ((i >> 2) & 1) * 0.015] for i in range(8)], CUBE_TETS, 3)
+# A tetrahedron 6 mm high, and turned inside out.
+SQUASHED = ([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0.03, 0.03, 0.006]], [0, 1, 2, 3], 3)
+INVERTED = ([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0.03, 0.03, -0.006]], [0, 1, 2, 3], 3)
+# A tetrahedron whose last vertex is two radii behind its first face, exactly
+# (planeVertex's `dst <= -2*rad`, no contact there), one face in contact.
+TWO_RADII = ([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0, 0, -0.02]], [0, 1, 2, 3], 3)
+
+
 def self_flex(shape, mode, extra=""):
     verts, elems, dim = shape
     return verts, elems, dim, f'selfcollide="{mode}" internal="false"{extra}'
@@ -201,6 +219,28 @@ CASES = {
     "two_cubes_layers2": ([DUMMY, self_flex(TWO_CUBES, "auto", ' activelayers="2"')], "", ""),
     "two_cubes_narrow": ([DUMMY, self_flex(TWO_CUBES, "narrow")], "", ""),
     "two_cubes_sap_layers2": ([DUMMY, self_flex(TWO_CUBES, "sap", ' activelayers="2"')], "", ""),
+    # A flex's internal collisions (mj_collideFlexInternal, :1745-1806), before
+    # its elements against each other: each element against the vertex of
+    # its neighbour across a shared fragment, a border element's (a cable's
+    # or a cloth's; mj_collideElemVert, :2101-2180), and each tetrahedron's
+    # faces against its opposite vertices (planeVertex, :1714-1740, condim
+    # 1), the margin and gap left out.
+    "cable_v_internal": ([DUMMY, (*CABLE_V, INTERNAL)], "", ""),
+    "cable_v_internal_condim4": ([DUMMY, (*CABLE_V, INTERNAL + ' condim="4"')], "", ""),
+    "folded_internal": ([DUMMY, folded(INTERNAL)], "", ""),
+    # Its margin not in the element against its neighbour's vertex: a cable
+    # whose vertex is within its margin and clear of contact meets nothing,
+    # beside one in contact, and a folded strip with a margin.
+    "cable_v_internal_margin": ([DUMMY, (*CABLE_V, INTERNAL),
+                                 (*CABLE_V_CLEAR, INTERNAL + ' margin="0.01" gap="0.003"')], "", ""),
+    "folded_internal_margin": ([DUMMY, folded(INTERNAL + ' margin="0.01" gap="0.003"')], "", ""),
+    "folded_internal_and_self": ([DUMMY, folded('selfcollide="sap" internal="true"')], "", ""),
+    "small_cube_internal": ([DUMMY, (*SMALL_CUBE, INTERNAL)], "", ""),
+    "squashed_tet_internal": ([DUMMY, (*SQUASHED, INTERNAL)], "", ""),
+    "inverted_tet_internal": ([DUMMY, (*INVERTED, INTERNAL)], "", ""),
+    "two_radii_tet_internal": ([DUMMY, (*TWO_RADII, INTERNAL)], "", ""),
+    "squashed_internal_margin_gap": ([DUMMY, (*SQUASHED, INTERNAL + ' margin="0.01" gap="0.003" condim="4"')],
+                                     "", ""),
 }
 
 
