@@ -641,7 +641,8 @@ fn gpu_loaded_armature_counts_once() {
     }
     let mut dof_only = loaded.clone();
     dof_only.jnt_armature.fill(0.0);
-    for (name, model) in [("armature_chain", loaded), ("dof_armature_only", dof_only)] {
+    // One model at a time: two in an array would pass clippy's stack limit.
+    let check = |name, model| {
         let case = ConformanceCase {
             name,
             model,
@@ -655,7 +656,9 @@ fn gpu_loaded_armature_counts_once() {
             fails.len(),
             fails.join("\n  ")
         );
-    }
+    };
+    check("armature_chain", loaded);
+    check("dof_armature_only", dof_only);
 }
 
 /// Route a single case's new failures through the known-divergence allowlist.

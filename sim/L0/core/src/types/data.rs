@@ -169,9 +169,9 @@ pub struct Data {
     /// Length `nflexedge`. Computed after `mj_flex()` syncs `flexvert_xpos`;
     /// a rigid flex's are not (0 from the reset), as MuJoCo's `mj_flex`.
     pub flexedge_length: Vec<f64>,
-    /// Pre-computed edge elongation velocities (rate of length change).
-    /// Length `nflexedge`. Computed after `mj_flex()` from `flexvert_xpos` and `qvel`;
-    /// a rigid flex's are not.
+    /// Edge elongation velocities, `flexedge_J · qvel`, by the velocity
+    /// stage (MuJoCo's `mj_fwdVelocity`): 0 for an edge whose Jacobian is not
+    /// made, a rigid flex's included. Length `nflexedge`.
     pub flexedge_velocity: Vec<f64>,
     /// Sparse edge Jacobian values (CSR data array).
     /// Length `total_nnz` (sum of `model.flexedge_J_rownnz`).
@@ -179,6 +179,15 @@ pub struct Data {
     /// column `colind[rowadr[e] + j]`.
     #[allow(non_snake_case)]
     pub flexedge_J: Vec<f64>,
+    /// Each flex element's box, `[cx, cy, cz, hx, hy, hz]`, over its
+    /// vertices' positions, its half-sizes grown by its flex's radius
+    /// (MuJoCo's `mjData.flexelem_aabb`), by `mj_flex`. Length `nflexelem`.
+    pub flexelem_aabb: Vec<[f64; 6]>,
+    /// Each flex hierarchy node's box in the world's axes (MuJoCo's
+    /// `mjData.bvh_aabb_dyn`): a leaf its element's, an inner node its
+    /// children's together, by `mj_flex`; left as they were while the
+    /// midphase is disabled. Length `nbvhdynamic`.
+    pub bvh_aabb_dyn: Vec<[f64; 6]>,
 
     // ==================== Velocities (computed from qvel) ====================
     /// Each body's spatial velocity `[angular; linear]` in the world's
@@ -820,6 +829,8 @@ impl Clone for Data {
             // Flex edge pre-computed fields
             flexedge_length: self.flexedge_length.clone(),
             flexedge_velocity: self.flexedge_velocity.clone(),
+            flexelem_aabb: self.flexelem_aabb.clone(),
+            bvh_aabb_dyn: self.bvh_aabb_dyn.clone(),
             flexedge_J: self.flexedge_J.clone(),
             xanchor: self.xanchor.clone(),
             xaxis: self.xaxis.clone(),

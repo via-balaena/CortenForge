@@ -47,6 +47,12 @@ impl ModelBuilder {
         // Bounding geometry and tendon rest lengths
         model.compute_geom_bounding_radii();
         model.compute_body_bvhs();
+        model.compute_flex_topology();
+        // A flex's hierarchy bounds its elements at qpos0, which a `Data`
+        // gives, as the derivations above.
+        if model.check_joint_layout().is_ok() && model.check_ranges().is_ok() {
+            model.compute_flex_bvhs();
+        }
         model.compute_fixed_tendon_lengths();
 
         // Kinematic tree enumeration and sleep policy
@@ -226,6 +232,11 @@ impl ModelBuilder {
             bvh_child: vec![],
             bvh_nodeid: vec![],
             bvh_depth: vec![],
+            // The flexes' hierarchies (computed below, after the bodies')
+            flex_bvhadr: vec![],
+            flex_bvhnum: vec![],
+            nbvhstatic: 0,
+            nbvhdynamic: 0,
             // Mesh index for each geom (populated by process_geom)
             geom_mesh: self.geom_mesh,
             // Hfield index for each geom (populated by process_geom)
@@ -259,6 +270,7 @@ impl ModelBuilder {
             flex_condim: self.flex_condim,
             flex_margin: self.flex_margin,
             flex_gap: self.flex_gap,
+            flex_radius: self.flex_radius,
             flex_priority: self.flex_priority,
             flex_solmix: self.flex_solmix,
             flex_contype: self.flex_contype,
@@ -305,6 +317,11 @@ impl ModelBuilder {
             flex_elem_adj,
             flex_elem_adj_adr,
             flex_elem_adj_num,
+            // The flexes' element layers and pairs (computed below)
+            flex_elemlayer: vec![],
+            flex_evpair: vec![],
+            flex_evpairadr: vec![],
+            flex_evpairnum: vec![],
             flexhinge_vert: self.flexhinge_vert,
             flexhinge_angle0: self.flexhinge_angle0,
             flexhinge_flexid: self.flexhinge_flexid,

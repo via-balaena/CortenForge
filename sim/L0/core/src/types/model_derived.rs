@@ -65,6 +65,8 @@ impl Model {
         self.compute_invweight0();
         self.compute_geom_bounding_radii();
         self.compute_body_bvhs();
+        self.compute_flex_topology();
+        self.compute_flex_bvhs();
         self.compute_fixed_tendon_lengths();
         self.compute_kinematic_trees();
         compute_dof_lengths(self);

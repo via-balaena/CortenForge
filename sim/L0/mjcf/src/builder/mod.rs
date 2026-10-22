@@ -721,6 +721,7 @@ pub struct ModelBuilder {
     pub(crate) flex_condim: Vec<i32>,
     pub(crate) flex_margin: Vec<f64>,
     pub(crate) flex_gap: Vec<f64>,
+    pub(crate) flex_radius: Vec<f64>,
     pub(crate) flex_priority: Vec<i32>,
     pub(crate) flex_solmix: Vec<f64>,
     pub(crate) flex_solref: Vec<[f64; 2]>,

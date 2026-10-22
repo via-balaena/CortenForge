@@ -1,21 +1,99 @@
-//! Flex vertex world-position synchronization.
+//! Flex vertex world positions, element boxes and hierarchies, and edge
+//! lengths and Jacobians, as MuJoCo's `mj_flex` (`engine_core_smooth.c:
+//! 548-713`).
 //!
-//! Syncs flex vertex positions from body FK results. Each flex vertex has an
-//! associated body (created by `process_flex_bodies`); its `xpos` — computed
-//! by standard forward kinematics — IS the vertex world position.
+//! Each flex vertex has an associated body (created by `process_flex_bodies`);
+//! its `xpos` — computed by standard forward kinematics — IS the vertex world
+//! position.
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::types::{Data, Model};
+use crate::types::{DISABLE_MIDPHASE, Data, Model, disabled};
 
-/// Compute flex vertex world positions from body FK.
-///
-/// Each flex vertex has an associated body (created by process_flex_bodies).
-/// The body's xpos (computed by standard FK) IS the vertex world position.
-/// Pinned vertices (no DOFs) use xpos directly from their static body.
+/// `mju_min` (`engine_util_misc.c:1286-1292`): the first unless it is above
+/// the second (so a tie, `-0.0` with `0.0` too, is the first).
+fn min(a: f64, b: f64) -> f64 {
+    if a <= b { a } else { b }
+}
+
+/// `mju_max` (`:1296-1302`): the first unless it is below the second.
+fn max(a: f64, b: f64) -> f64 {
+    if a >= b { a } else { b }
+}
+
+/// The flex vertices' world positions, their bodies' (each flex vertex has
+/// its own body, whose `xpos` is the vertex's; a pinned vertex's is static);
+/// then every element's box (`flexelem_aabb`) and, unless the midphase is
+/// disabled, each flex's hierarchy's boxes (`bvh_aabb_dyn`), as MuJoCo's
+/// `mj_flex` (`engine_core_smooth.c:610-662`).
 pub fn mj_flex(model: &Model, data: &mut Data) {
     for i in 0..model.nflexvert {
         let body_id = model.flexvert_bodyid[i];
         data.flexvert_xpos[i] = data.xpos[body_id];
+    }
+
+    // Each element's box over its vertices, its half-sizes grown by its
+    // flex's radius; a rigid flex's too.
+    for (e, aabb) in data.flexelem_aabb.iter_mut().enumerate() {
+        let f = model.flexelem_flexid[e];
+        let adr = model.flexelem_dataadr[e];
+        let vertices = &model.flexelem_data[adr..adr + model.flexelem_datanum[e]];
+        let first = data.flexvert_xpos[vertices[0]];
+        let (mut lo, mut hi) = (first, first);
+        for &v in &vertices[1..] {
+            for j in 0..3 {
+                let value = data.flexvert_xpos[v][j];
+                lo[j] = min(lo[j], value);
+                hi[j] = max(hi[j], value);
+            }
+        }
+        let radius = model.flex_radius[f];
+        *aabb = [
+            0.5 * (hi[0] + lo[0]),
+            0.5 * (hi[1] + lo[1]),
+            0.5 * (hi[2] + lo[2]),
+            0.5 * (hi[0] - lo[0]) + radius,
+            0.5 * (hi[1] - lo[1]) + radius,
+            0.5 * (hi[2] - lo[2]) + radius,
+        ];
+    }
+
+    // Each hierarchy's leaves take their elements' boxes, then its inner
+    // nodes their children's together, the last node first (a parent comes
+    // before its children; `mj_updateDynamicBVH`, `:489-533`).
+    if disabled(model, DISABLE_MIDPHASE) {
+        return;
+    }
+    for (f, &bvhadr) in model.flex_bvhadr.iter().enumerate() {
+        let Some(bvhadr) = bvhadr else {
+            continue;
+        };
+        let dynamic = bvhadr - model.nbvhstatic;
+        let num = model.flex_bvhnum[f];
+        for i in 0..num {
+            if let Some(e) = model.bvh_nodeid[bvhadr + i] {
+                data.bvh_aabb_dyn[dynamic + i] = data.flexelem_aabb[model.flex_elemadr[f] + e];
+            }
+        }
+        for i in (0..num).rev() {
+            if model.bvh_nodeid[bvhadr + i].is_some() {
+                continue;
+            }
+            let [Some(c1), Some(c2)] = model.bvh_child[bvhadr + i] else {
+                continue;
+            };
+            let (a1, a2) = (
+                data.bvh_aabb_dyn[dynamic + c1],
+                data.bvh_aabb_dyn[dynamic + c2],
+            );
+            let mut aabb = [0.0; 6];
+            for k in 0..3 {
+                let lo = min(a1[k] - a1[k + 3], a2[k] - a2[k + 3]);
+                let hi = max(a1[k] + a1[k + 3], a2[k] + a2[k + 3]);
+                aabb[k] = 0.5 * (hi + lo);
+                aabb[k + 3] = 0.5 * (hi - lo);
+            }
+            data.bvh_aabb_dyn[dynamic + i] = aabb;
+        }
     }
 }
 
@@ -87,5 +165,22 @@ pub fn mj_flex_edge(model: &Model, data: &mut Data) {
                 data.flexedge_J[rowadr + dn0 + k] = vec[k];
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{max, min};
+
+    /// `mju_min` and `mju_max` keep the first on a tie, the sign of a zero
+    /// included (`engine_util_misc.c:1286-1302`).
+    #[test]
+    fn min_and_max_keep_the_first_on_a_tie() {
+        assert_eq!(min(-0.0, 0.0).to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(min(0.0, -0.0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(max(-0.0, 0.0).to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(max(0.0, -0.0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(min(1.0, 2.0).to_bits(), 1.0_f64.to_bits());
+        assert_eq!(max(1.0, 2.0).to_bits(), 2.0_f64.to_bits());
     }
 }

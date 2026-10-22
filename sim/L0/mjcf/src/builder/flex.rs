@@ -151,6 +151,7 @@ impl ModelBuilder {
             self.flex_condim.push(flex.condim);
             self.flex_margin.push(flex.margin);
             self.flex_gap.push(flex.gap);
+            self.flex_radius.push(flex.radius);
             self.flex_priority.push(flex.priority);
             self.flex_solmix.push(flex.solmix);
             self.flex_solref.push(flex.solref);
