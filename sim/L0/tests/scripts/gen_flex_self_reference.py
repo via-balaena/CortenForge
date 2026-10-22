@@ -50,6 +50,8 @@ def moved(flex, dx, dy, dz, contact=None):
 
 
 CLOTH = (*grid(3, 0.1, 0.0), NONE)
+CLOTH_HALF = (*grid(3, 0.05, 0.0), NONE)
+CELL = (*grid(2, 0.1, 0.0), NONE)
 # The second cloth half a cell over and 15 mm up: its vertices over the
 # first's cell centres.
 OVER = moved(CLOTH, 0.05, 0.05, 0.015)
@@ -96,6 +98,12 @@ def staircase(contact):
     return verts, elems, 2, contact
 
 
+def permuted(flex, axes):
+    """`flex` with its vertices' coordinates taken in the order `axes`."""
+    verts, elems, dim, contact = flex
+    return [[v[a] for a in axes] for v in verts], elems, dim, contact
+
+
 # A cable bent back on itself, its return leg 15 mm above.
 CABLE_FOLD = [[0.0, 0, 0], [0.05, 0, 0], [0.1, 0, 0], [0.1, 0, 0.015], [0.05, 0.002, 0.015], [0.0, 0.004, 0.015]]
 # Two tetrahedra of one flex, overlapping, sharing no vertex.
@@ -115,6 +123,8 @@ CABLE_V = ([[0, 0, 0], [0.1, 0, 0], [0.005, 0.012, 0.0]], [0, 1, 1, 2], 1)
 # The same, its last vertex 25 mm from its first element: 5 mm clear of it,
 # within a 10 mm margin; 1 m along x.
 CABLE_V_CLEAR = ([[1.0, 0, 0], [1.1, 0, 0], [1.005, 0.025, 0.0]], [0, 1, 1, 2], 1)
+# The same, its last vertex 18 mm from its first element.
+CABLE_V_18 = ([[0, 0, 0], [0.1, 0, 0], [0.005, 0.018, 0.0]], [0, 1, 1, 2], 1)
 # Five tetrahedra of a cube 15 mm on a side: every vertex within two radii of
 # its tetrahedron's opposite faces.
 SMALL_CUBE = ([[(i & 1) * 0.015, ((i >> 1) & 1) * 0.015, ((i >> 2) & 1) * 0.015] for i in range(8)], CUBE_TETS, 3)
@@ -176,6 +186,24 @@ CASES = {
                                 NONE + ' contype="1" conaffinity="3" margin="0.01"'),
                         ([[x + 0.5, y + 0.5, 0.0] for y in (0, 1, 2) for x in (0, 1, 2)], CLOTH[1], 2,
                          NONE + ' contype="2" conaffinity="1" margin="0.01"')], "", ""),
+    # Each flex's own radius (capsules, and the convex route's), the cables'
+    # margin through the capsule pair, and the second flex's margin the
+    # larger in the hierarchy's inner test.
+    "radii_cloths": ([DUMMY, (*CLOTH, 'radius="0.004"'), (*OVER, 'radius="0.012"')], "", ""),
+    "radii_cables": ([DUMMY, (*CABLE, 'radius="0.006"'), (*CROSS, 'radius="0.011"')], "", ""),
+    "cables_margin": ([DUMMY, moved(CABLE, 0, 0, 0, NONE + ' margin="0.005"'),
+                       moved(CROSS, 0, 0, 0.008, NONE + ' margin="0.005"')], "", ""),
+    "margins_asym": ([DUMMY, moved(CLOTH, 0, 0, 0, NONE + ' margin="0.001"'),
+                      moved(CLOTH, 0.05, 0.05, 0.026, NONE + ' margin="0.009"')], "", ""),
+    # A tetrahedral flex's inactive element within reach of a cloth: the
+    # hierarchy holds only active elements, every element is taken without it.
+    "cube_cloth": ([DUMMY, (CUBE, CUBE_TETS, 3, NONE), moved(CLOTH_HALF, 0.05, 0.05, 0.115)], "", ""),
+    "cube_cloth_no_midphase": ([DUMMY, (CUBE, CUBE_TETS, 3, NONE), moved(CLOTH_HALF, 0.05, 0.05, 0.115)], "",
+                               'midphase="disable"'),
+    # Four cells of cloth stacked, every pair within reach: the pairs in
+    # signature order (with three, the signatures read either way sort alike).
+    "four_stacked": ([DUMMY, CELL, moved(CELL, 0.01, 0.01, 0.006), moved(CELL, 0.02, 0.0, 0.012),
+                      moved(CELL, 0.0, 0.02, 0.018)], "", ""),
     # Three flexes, each pair's contacts in signature order: a cable between
     # two cloths, within reach of both, whose bits miss the first cloth's.
     "three_flexes": ([DUMMY, CLOTH, moved(OVER, 0, 0, 0, NONE + ' contype="3" conaffinity="3"'),
@@ -206,6 +234,13 @@ CASES = {
     # Swept along y, not x: the first of the root box's equal longest axes
     # after x (engine_collision_driver.c:1844).
     "staircase_sap": ([DUMMY, staircase('selfcollide="sap" internal="false"')], "", ""),
+    # The same along x and z (stacked along y), and along y and z: the root
+    # box's x and z, then y and z, equal and longest, swept along z.
+    "staircase_xz_sap": ([DUMMY, permuted(staircase('selfcollide="sap" internal="false"'), (0, 2, 1))], "", ""),
+    "staircase_yz_sap": ([DUMMY, permuted(staircase('selfcollide="sap" internal="false"'), (2, 0, 1))], "", ""),
+    # Two flexes each against itself, flex by flex, a dummy between them.
+    "two_folded_strips": ([DUMMY, folded('selfcollide="sap" internal="false"'),
+                           moved(folded('selfcollide="narrow" internal="false"'), 0.0, 0.5, 0.0)], "", ""),
     "cable_fold_auto": ([DUMMY, (CABLE_FOLD, [0, 1, 1, 2, 2, 3, 3, 4, 4, 5], 1, 'selfcollide="auto" internal="false"')],
                         "", ""),
     "cable_fold_bvh": ([DUMMY, (CABLE_FOLD, [0, 1, 1, 2, 2, 3, 3, 4, 4, 5], 1, 'selfcollide="bvh" internal="false"')],
@@ -232,6 +267,9 @@ CASES = {
     # Its margin not in the element against its neighbour's vertex: a cable
     # whose vertex is within its margin and clear of contact meets nothing,
     # beside one in contact, and a folded strip with a margin.
+    # A negative margin narrows the box test before the vertex's narrow
+    # phase: the vertex 18 mm from its element, 2 mm within contact.
+    "cable_v_18_internal_negative_margin": ([DUMMY, (*CABLE_V_18, INTERNAL + ' margin="-0.005"')], "", ""),
     "cable_v_internal_margin": ([DUMMY, (*CABLE_V, INTERNAL),
                                  (*CABLE_V_CLEAR, INTERNAL + ' margin="0.01" gap="0.003"')], "", ""),
     "folded_internal_margin": ([DUMMY, folded(INTERNAL + ' margin="0.01" gap="0.003"')], "", ""),

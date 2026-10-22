@@ -199,15 +199,17 @@ CASES = {
 
 def documents(rigid, flex, option, flag, asset, tail="", pins=None):
     """MuJoCo's and sim-mjcf's documents of `flex` beside `rigid`, and
-    MuJoCo's compiled model. `pins` maps a flex's index to its pinned
-    vertices: on MuJoCo's world body, as its <flexcomp> pins them
-    (user_flexcomp.cc:486-488), a <pin> in sim-mjcf's."""
+    MuJoCo's compiled model. A flex is (vertices, elements, dim, its <contact>
+    attributes[, its own attributes, radius="0.01" without]). `pins` maps a
+    flex's index to its pinned vertices: on MuJoCo's world body, as its
+    <flexcomp> pins them (user_flexcomp.cc:486-488), a <pin> in sim-mjcf's."""
     head = (f'<mujoco><option timestep="0.002" {option}><flag equality="disable" {flag}/></option>'
             f'<asset>{asset}</asset><worldbody>{rigid}')
     mj_bodies, mj_flexes, ours = "", "", ""
     flexes = flex if isinstance(flex, list) else [DUMMY, flex]
     pins = pins or {}
-    for f, (verts, elems, dim, contact) in enumerate(flexes):
+    for f, (verts, elems, dim, contact, *own) in enumerate(flexes):
+        attrs = own[0] if own else 'radius="0.01"'
         names, offsets = [], []
         for i, v in enumerate(verts):
             if i in pins.get(f, ()):
@@ -221,12 +223,13 @@ def documents(rigid, flex, option, flag, asset, tail="", pins=None):
                           '<joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/>'
                           '<joint type="slide" axis="0 0 1"/>'
                           f'<inertial pos="0 0 0" mass="{MASS}" diaginertia="1e-5 1e-5 1e-5"/></body>')
-        mj_flexes += (f'<flex name="f{f}" dim="{dim}" radius="0.01" body="{" ".join(names)}" '
+        mj_flexes += (f'<flex name="f{f}" dim="{dim}" {attrs} body="{" ".join(names)}" '
                       f'vertex="{" ".join(offsets)}" '
                       f'element="{" ".join(map(str, elems))}"><contact {contact}/></flex>')
     mj = f'{head}{mj_bodies}</worldbody><deformable>{mj_flexes}</deformable>{tail}</mujoco>'
     m = mujoco.MjModel.from_xml_string(mj)
-    for f, (verts, _, dim, contact) in enumerate(flexes):
+    for f, (verts, _, dim, contact, *own) in enumerate(flexes):
+        attrs = own[0] if own else 'radius="0.01"'
         va, vn = m.flex_vertadr[f], m.flex_vertnum[f]
         da, en = m.flex_elemdataadr[f], m.flex_elemnum[f]
         position = [m.flex_vert[va + i] if i in pins.get(f, ()) else m.body_pos[b]
@@ -236,7 +239,7 @@ def documents(rigid, flex, option, flag, asset, tail="", pins=None):
         total = MASS * len(verts)
         assert total / len(verts) == MASS, "sim-mjcf's vertex mass must be exactly MASS"
         pin = f'<pin id="{" ".join(map(str, sorted(pins[f])))}"/>' if pins.get(f) else ""
-        ours += (f'<flex name="f{f}" dim="{dim}" radius="0.01" mass="{total!r}"><contact {contact}/>'
+        ours += (f'<flex name="f{f}" dim="{dim}" {attrs} mass="{total!r}"><contact {contact}/>'
                  f'<vertex pos="{vtxt}"/><element data="{etxt}"/>{pin}</flex>')
     ours = f'{head}</worldbody><deformable>{ours}</deformable>{tail}</mujoco>'
     return mj, ours, m
@@ -270,7 +273,7 @@ def case(name, rigid, flex, option, flag, asset, tail=""):
     rigid = settled(rigid, flex, option, flag, asset, tail)
     mj, ours, m = documents(rigid, flex, option, flag, asset, tail)
     flexes = flex if isinstance(flex, list) else [DUMMY, flex]
-    passive = [int('passive="true"' in contact) for (_, _, _, contact) in flexes]
+    passive = [int('passive="true"' in flex[3]) for flex in flexes]
     return record(name, mj, ours, m, passive)
 
 
