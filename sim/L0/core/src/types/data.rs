@@ -466,14 +466,16 @@ pub struct Data {
     pub efc_state: Vec<ConstraintState>,
     /// Per-row constraint force (length nefc).
     pub efc_force: DVector<f64>,
-    /// Per-row `J·qacc − aref` (length nefc).
+    /// Per-row `J·qacc − aref` (length nefc): the primal solver's at its last
+    /// iterate; after PGS, the warmstart's (0 with the warmstart disabled).
     pub efc_jar: DVector<f64>,
-    /// Total cost (Gauss + constraint terms).
+    /// Total cost (Gauss + constraint terms): the primal solver's; after PGS,
+    /// the warmstart's (0 with the warmstart disabled).
     pub efc_cost: f64,
     /// Per-contact cone Hessian matrices (dim x dim). Indexed parallel to contacts.
     pub efc_cone_hessian: Vec<Option<DMatrix<f64>>>,
-    /// Number of contacts in the Cone state; after PGS, at its warmstart
-    /// (`efc_state` is then `dualState`'s).
+    /// Number of contacts in the Cone state; after PGS, at its warmstart (0
+    /// with the warmstart disabled; `efc_state` is then `dualState`'s).
     pub ncone: usize,
     /// Number of equality constraint rows (a flex equality's edge rows among
     /// them). These occupy `efc_*[0..ne)`.

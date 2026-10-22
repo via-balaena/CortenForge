@@ -159,8 +159,7 @@ mod tests {
 
     /// `qfrc_constraint = J'·efc_force` after PGS and noslip is MuJoCo's
     /// `mj_mulJacTVec`: a NaN force is added, along its row's chain at the
-    /// sparse size and over every dof at the dense size (`0·NaN`), and a
-    /// zero force is skipped.
+    /// sparse size and over every dof at the dense size (`0·NaN`).
     #[test]
     fn a_nan_force_reaches_its_row_s_dofs_as_mujoco_s() {
         let mut model = crate::test_fixtures::hinge_chain(3);
