@@ -53,8 +53,11 @@ EXCITATIONS = {
     'e2': lambda i: 0.1 * (1 + i % 5) * (1 if i % 2 == 0 else -1),
 }
 
-# MuJoCo enum values under the names sim-core's Debug output uses; SENSOR keeps
-# MuJoCo's mjSENS_ names, and compare.rs maps sim-core's names onto them.
+# MuJoCo enum values under the names sim-core's Debug output uses, but
+# CONSTRAINT's 1 and 2 (a dof's and a tendon's friction loss), both under
+# 'FrictionLoss', one kind, as the census harness counts sim-core's two
+# (layer_e_census/ours.rs); SENSOR keeps MuJoCo's mjSENS_ names, and compare.rs
+# maps sim-core's names onto them.
 INTEGRATOR = {0: 'Euler', 1: 'RungeKutta4', 2: 'Implicit', 3: 'ImplicitFast'}
 SOLVER = {0: 'PGS', 1: 'CG', 2: 'Newton'}
 JOINT = {0: 'Free', 1: 'Ball', 2: 'Slide', 3: 'Hinge'}

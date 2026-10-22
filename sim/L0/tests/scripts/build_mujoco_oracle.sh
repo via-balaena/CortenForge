@@ -123,9 +123,10 @@ done
 # LC_UUID and code signature following it, and a longer path moved a binding
 # module's code: every build hashed differently. CMAKE_SKIP_BUILD_RPATH leaves a
 # plugin no rpath and a binding module the @loader_path MuJoCo's post-build step
-# adds. Six builds in directories of different lengths then differed only in one
-# module's LC_UUID, in one build (2026-10-21), which the hash leaves out; the
-# engine was byte for byte the one built before the flag.
+# adds. Six builds in directories of different lengths then differed in one
+# build's one module only in its LC_UUID and the code signature that hashes it
+# (2026-10-21), both of which the hash leaves out; the engine was byte for byte
+# the one built before the flag.
 echo "== check: no built library names the build directory"
 for dir in "$work" "$(cd "$work" && pwd -P)"; do
     for root in "$install" "$pkg"; do
