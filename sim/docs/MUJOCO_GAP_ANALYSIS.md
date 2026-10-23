@@ -658,7 +658,7 @@ let torque = elbow.compute_joint_force(velocity, dt);
 | ActuatorFrc | Yes | `MjSensorType::ActuatorFrc` | **Implemented** | - |
 | Force | Yes | `MjSensorType::Force` | **Implemented** (inverse dynamics via `compute_site_force_torque()`) | - |
 | Torque | Yes | `MjSensorType::Torque` | **Implemented** (inverse dynamics via `compute_site_force_torque()`) | - |
-| Touch | Yes | `MjSensorType::Touch` | **Implemented** (sums `efc_force` normal forces from contact constraint rows) | - |
+| Touch | Yes | `MjSensorType::Touch` | **Implemented** (sums the decoded normal forces of the contacts of the site's body whose rays meet the site's zone, `mju_rayGeom`) | - |
 | Rangefinder | Yes | `MjSensorType::Rangefinder` | **Implemented** (ray-cast along +Z with mesh support) | - |
 | Magnetometer | Yes | `MjSensorType::Magnetometer` | **Implemented** (`model.magnetic` transformed to sensor frame) | - |
 | ActuatorPos / ActuatorVel | Yes | `MjSensorType::ActuatorPos/Vel` | **Implemented** (joint, tendon, and site transmissions) | - |

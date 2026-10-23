@@ -1,8 +1,8 @@
 //! Touch Sensor
 //!
 //! A sphere hovers at z=4.0 for 1 second, then drops onto a ground plane.
-//! Touch sensor on the sphere reports the sum of normal contact forces in
-//! its site's zone, a sphere just larger than the ball.
+//! Touch sensor on the sphere reports the sum of the normal contact forces
+//! whose rays meet its site's zone, a sphere just larger than the ball.
 //! Uses `condim="1"` (frictionless normal-only contact).
 //!
 //! Two phases after the drop:
@@ -66,7 +66,7 @@ const MJCF: &str = r#"
 // ── How the touch sensor works ──────────────────────────────────────────────
 //
 //   The engine sums the normal contact forces of the contacts involving
-//   geoms attached to the sensor's body that lie in its site's zone:
+//   geoms attached to the sensor's body whose rays meet its site's zone:
 //
 //   1. Iterate all active constraints (efc_type, efc_force)
 //   2. For each contact constraint where either geom belongs to this body:

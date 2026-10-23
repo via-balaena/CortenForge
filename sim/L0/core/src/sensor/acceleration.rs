@@ -194,7 +194,7 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                             // decodes it: an elliptic or frictionless contact's first
                             // row, a pyramidal contact's facets summed first
                             // (`mju_decodePyramid`); added when above 0 and its
-                            // ray meets the site's zone (`engine_sensor.c:906-926`).
+                            // ray meets the site's zone (`engine_sensor.c:906-927`).
                             let normal = if data.efc_type[ei] == ConstraintType::ContactPyramidal {
                                 let mut decoded = [0.0; 6];
                                 decode_pyramid_into(
@@ -301,12 +301,12 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
 }
 
 /// Whether a contact's ray meets the touch sensor's site zone
-/// (`engine_sensor.c:912-926`): from the contact's position, along its
+/// (`engine_sensor.c:913-927`): from the contact's position, along its
 /// normal scaled by its normal force `force` and made unit as
-/// `mju_normalize3` makes it (its first axis below mjMINVAL), turned when
-/// the sensor's body is the contact's second side (`away`), so that it
-/// points from that body toward the other; a ray from inside the zone always
-/// meets it.
+/// `mju_normalize3` makes it ((1, 0, 0) where its norm is below mjMINVAL),
+/// turned when the sensor's body is the contact's second side (`away`), so
+/// that it points from that body toward the other; a ray from inside the
+/// zone always meets it.
 fn in_zone(model: &Model, data: &Data, site: usize, c: &Contact, force: f64, away: bool) -> bool {
     let mut ray = [c.normal.x * force, c.normal.y * force, c.normal.z * force];
     let norm = (ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]).sqrt();

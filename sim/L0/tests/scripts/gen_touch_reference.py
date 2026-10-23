@@ -28,7 +28,9 @@ rays on the edges of its tests (`EDGE_RAYS`), each with MuJoCo's distance. `zone
 eleven sites of the sphere and two of the world, a box on a plane with
 five, a sphere on a box on a plane with two on each, whose zones take some
 of their bodies' contacts and not others (`BALL_SITES` and the rest say
-where they lie), at the same states as the cases above.
+where they lie), at the same states as the cases above. `zone_edges`: the
+zone test at its edges, with forces and a contact's position written over
+MuJoCo's (`EDGE_BALL_XML` and `EDGE_PAIR_XML` say how).
 """
 import json
 import os
@@ -181,9 +183,10 @@ RAY_TYPES = {"plane": 0, "sphere": 2, "capsule": 3, "ellipsoid": 4, "cylinder": 
 
 def rays():
     """mju_rayGeom on each type it takes, 300 rays a type from one generator: sizes of 0.05 to
-    0.5 in each place (a plane's two of 0, unbounded, in one case of five), the centre within 1
-    of the origin, a turn at random; the ray's start within about 0.3 of the centre, inside
-    the geom or not; its direction at random or, in one case of five, along one of the geom's
+    0.5 in each place (a plane's two of 0, unbounded, in one case of five), each place of the
+    centre within 1 of the origin's, a turn at random; the ray's start the centre moved by 0.3
+    times a normal draw in each place, inside the geom or not; its direction at random or, in
+    one case of five, along one of the geom's
     own axes (so that, in the geom's frame, its other two parts are near 0), of length 1 in half
     the cases and 0.1 to 3 in the rest. Each with MuJoCo's distance, -1 where it misses. It
     refuses a type with no hit or no miss."""
@@ -217,8 +220,11 @@ def rays():
     return out + edge_rays()
 
 
-# Rays on the edges of mju_rayGeom's tests, each geom unturned at the origin, in numbers a
-# double holds exactly: (type, size, start, direction).
+# Rays on the edges of mju_rayGeom's tests, each geom unturned at the origin: (type, size,
+# start, direction). The first ten in numbers a double holds exactly, but the short and the
+# near-parallel directions; then a start on a surface aimed outward, rays along a plane's
+# edge and a cylinder end's rim; then rays at a capsule's rim where a cap or the side is
+# taken, found by a search of review round 1 (RC-2) that checked each against mju_rayGeom.
 EDGE_RAYS = [
     # From a sphere's surface inward: the lower root is 0 exactly, and taken.
     ("sphere", [0.5, 0, 0], [0.5, 0, 0], [-1, 0, 0]),
@@ -238,6 +244,36 @@ EDGE_RAYS = [
     # A cylinder's axis from below; an ellipsoid's longest axis from inside.
     ("cylinder", [0.25, 0.5, 0], [0, 0, -2], [0, 0, 1]),
     ("ellipsoid", [0.25, 0.5, 0.125], [0, 0.25, 0], [0, 1, 0]),
+    # From a sphere's surface outward; from a plane, down; down a plane's rectangle's edge.
+    ("sphere", [0.5, 0, 0], [0.5, 0, 0], [1, 0, 0]),
+    ("plane", [0, 0, 0], [0, 0, 0], [0, 0, -1]),
+    ("plane", [0.5, 0.5, 0], [0.5, 0, 1], [0, 0, -1]),
+    # From a capsule's poles outward; up a cylinder end's rim; from a cylinder's top end and a
+    # box's top face outward.
+    ("capsule", [0.25, 0.5, 0], [0, 0, 0.75], [0, 0, 1]),
+    ("capsule", [0.25, 0.5, 0], [0, 0, -0.75], [0, 0, -1]),
+    ("cylinder", [0.25, 0.5, 0], [0.25, 0, -2], [0, 0, 1]),
+    ("cylinder", [0.25, 0.5, 0], [0, 0, 0.5], [0, 0, 1]),
+    ("box", [0.5, 0.5, 0.5], [0, 0, 0.5], [0, 0, 1]),
+    # At a capsule's rim: the top cap, the bottom cap, the side.
+    ("capsule", [0.28581561264326383, 0.3854755773473887, 0],
+     [-0.42133655551772764, -0.17087761266099769, 0.38228095386256383],
+     [0.48948008544190075, 0.8719577026456636, 0.009950414699187995]),
+    ("capsule", [0.27854130571008195, 0.12442899540082805, 0],
+     [0.5149328859586134, 1.1373322999782516, 0.14069203069059408],
+     [-0.3419724585521947, -0.9395643606360015, -0.016542364233362437]),
+    ("capsule", [0.3904362406201048, 0.12462678309589756, 0],
+     [1.2792616707214886, -0.7051566956221821, -0.00042264592356366926],
+     [-0.8703267032758725, 0.4787940684926178, -0.1152721542317907]),
+    ("capsule", [0.2513820758992696, 0.46759846023053947, 0],
+     [0.008403447800340788, 0.33413499048511264, -0.4983238407255258],
+     [-0.49941561646767807, -0.8166522198482731, 0.2892459054940916]),
+    ("capsule", [0.43826415571343064, 0.4087071107807584, 0],
+     [0.272670596943813, 0.9669635161305612, 0.7329665029181224],
+     [0.02212801517404295, -0.4941382936941811, -0.8691016612856407]),
+    ("capsule", [0.4237486395184328, 0.21958420163395212, 0],
+     [-0.1626371786853277, 0.5217001065307303, -0.18437390091586311],
+     [-0.5129956918839691, -0.8472047816302339, -0.13812848399716673]),
 ]
 
 
@@ -259,7 +295,7 @@ def touch_sites(sites):
 
 
 # The sphere's sites: the ray from its contact runs down, from the sphere toward the plane
-# (`engine_sensor.c:915-918`). Enclosing it, about it, beside it and off it, turned and not;
+# (`engine_sensor.c:917-920`). Enclosing it, about it, beside it and off it, turned and not;
 # an ellipsoid of one size written (0.2, 0.005, 0.005: flat across the ray, 0.01 off it).
 BALL_SITES = [("centre", 'type="sphere" size="0.01"'),
               ("enclosing", 'type="sphere" size="0.12"'),
@@ -348,6 +384,79 @@ def zone_case(name, text):
     return {"xml": text, "states": states}
 
 
+# The edges of the zone test (review round 1, RC-3, RC-12), at one state each with MuJoCo's
+# own efc_force written over and the acceleration sensors rerun: a sphere on a plane under
+# condim 1, with sites on the world and on the sphere, its contact's normal force set to 2 and
+# its position to (0, 0, 0.5), on a sphere site's surface and a box site's top face (each ray
+# meets its zone at distance 0); set to 1e-16, where mju_normalize3 takes the ray as (1, 0, 0),
+# turned on the sphere's side; and to 1e-15, mjMINVAL itself. And a body whose two geoms an
+# explicit <pair> sets against each other, so that the sensor's body is the contact's second
+# side as well as its first, and the ray is turned.
+EDGE_BALL_XML = """<mujoco model="zone_edges_ball">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1" condim="1"/>
+    <site name="w_surface" type="sphere" size="0.5"/>
+    <site name="w_box_face" type="box" pos="0 0 0.25" size="0.25 0.25 0.25"/>
+    <site name="w_px" type="sphere" pos="0.5 0 0" size="0.1"/>
+    <site name="w_pz" type="sphere" pos="0 0 0.5" size="0.1"/>
+    <body pos="0 0 0.099"><freejoint/><geom type="sphere" size="0.1" mass="0.3" condim="1"/>
+      <site name="b_mx" type="sphere" pos="-0.5 0 -0.1" size="0.1"/>
+      <site name="b_mz" type="sphere" pos="0 0 -0.6" size="0.1"/>
+    </body>
+  </worldbody>
+  <sensor><touch site="w_surface"/><touch site="w_box_face"/><touch site="w_px"/>
+    <touch site="w_pz"/><touch site="b_mx"/><touch site="b_mz"/></sensor>
+</mujoco>"""
+EDGE_PAIR_XML = """<mujoco model="zone_edges_pair">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <body pos="0 0 1"><freejoint/>
+      <geom name="a" type="sphere" size="0.1" mass="0.3"/>
+      <geom name="b" type="sphere" size="0.1" pos="0 0 0.15" mass="0.3"/>
+      <site name="up" type="sphere" pos="0 0 0.4" size="0.05"/>
+      <site name="down" type="sphere" pos="0 0 -0.3" size="0.05"/>
+    </body>
+  </worldbody>
+  <contact><pair geom1="a" geom2="b"/></contact>
+  <sensor><touch site="up"/><touch site="down"/></sensor>
+</mujoco>"""
+
+
+def edge_state(m, d, force, contact_pos=None):
+    """`d`'s state, and after mj_forward there each row's force set to `force` (and the first
+    contact's position to `contact_pos`) and mj_sensorAcc rerun: ncon, efc_force, sensordata."""
+    st = {"step": int(round(d.time / m.opt.timestep)), "qpos": floats(d.qpos),
+          "qvel": floats(d.qvel), "qacc_warmstart": floats(d.qacc_warmstart),
+          "time": float(d.time)}
+    mujoco.mj_forward(m, d)
+    st["ncon"] = int(d.ncon)
+    d.efc_force[:] = force
+    if contact_pos is not None:
+        d.contact.pos[0] = contact_pos
+        st["contact_pos"] = [floats(d.contact.pos[i]) for i in range(d.ncon)]
+    mujoco.mj_sensorAcc(m, d)
+    st.update({"efc_force": floats(d.efc_force), "sensordata": floats(d.sensordata)})
+    return st
+
+
+def zone_edges():
+    m = mujoco.MjModel.from_xml_string(EDGE_BALL_XML)
+    d = mujoco.MjData(m)
+    for _ in range(100):
+        mujoco.mj_step(m, d)
+    mujoco.mj_forward(m, d)
+    if d.ncon != 1 or d.nefc != 1:
+        sys.exit(f"zone_edges ball: {d.ncon} contacts, {d.nefc} rows")
+    ball = [edge_state(m, d, f, p) for f, p in ((2.0, [0.0, 0.0, 0.5]), (1e-16, None),
+                                                 (1e-15, None))]
+    m = mujoco.MjModel.from_xml_string(EDGE_PAIR_XML)
+    d = mujoco.MjData(m)
+    pair = [edge_state(m, d, 2.0)]
+    return {"ball": {"xml": EDGE_BALL_XML, "states": ball},
+            "pair": {"xml": EDGE_PAIR_XML, "states": pair}}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -356,7 +465,8 @@ def main():
     out = {"oracle": marker, "cases": finite_or_string(cases),
            "site_sizes": finite_or_string(site_sizes()),
            "rays": finite_or_string(rays()),
-           "zones": finite_or_string({n: zone_case(n, t) for n, t in zone_documents().items()})}
+           "zones": finite_or_string({n: zone_case(n, t) for n, t in zone_documents().items()}),
+           "zone_edges": finite_or_string(zone_edges())}
     with open(os.path.join(sys.argv[1], "touch.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"))
         f.write("\n")

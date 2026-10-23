@@ -60,9 +60,26 @@ fn touch_takes_only_the_contacts_whose_rays_meet_its_zone() {
     }
 }
 
+/// The zone test at its edges (the golden's `zone_edges`), each state's
+/// `efc_force` written over MuJoCo's: a contact on a sphere zone's surface
+/// and a box zone's face (its ray meets them at distance 0, which counts);
+/// normal forces of 1e-16 and 1e-15, below and at mjMINVAL, where
+/// `mju_normalize3` takes the ray as (1, 0, 0) and as the normal; and an
+/// explicit pair of two geoms of the sensor's body, which is then the
+/// contact's second side as well as its first and turns the ray. Every
+/// reading MuJoCo's, bit for bit.
+#[test]
+fn touch_at_the_edges_of_its_zone() {
+    let g = golden();
+    for (name, case) in g["zone_edges"].as_object().expect("zone edges") {
+        readings_are_mujocos(name, case);
+    }
+}
+
 /// At each of the case's MuJoCo states: the contacts and rows MuJoCo's, and
-/// with MuJoCo's `efc_force` written in place of the solve's and the
-/// acceleration sensors rerun, every reading MuJoCo's bit for bit.
+/// with MuJoCo's `efc_force` written in place of the solve's (and each
+/// contact's position, where the golden writes one) and the acceleration
+/// sensors rerun, every reading MuJoCo's bit for bit.
 fn readings_are_mujocos(name: &str, case: &Value) {
     let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     for state in case["states"].as_array().expect("states") {
@@ -91,6 +108,11 @@ fn readings_are_mujocos(name: &str, case: &Value) {
             "{name} step {step}: rows"
         );
         data.efc_force.as_mut_slice().copy_from_slice(&force);
+        if let Some(positions) = state["contact_pos"].as_array() {
+            for (contact, pos) in data.contacts.iter_mut().zip(positions) {
+                contact.pos = nalgebra::Vector3::from_column_slice(&floats(pos));
+            }
+        }
         mj_sensor_acc(&model, &mut data);
         let want = floats(&state["sensordata"]);
         assert_eq!(data.sensordata.len(), want.len(), "{name}: sensors");

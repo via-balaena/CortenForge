@@ -1,8 +1,8 @@
-//! MuJoCo's `mju_rayGeom` (`engine_ray.c:972-1002`) on the types it takes:
+//! MuJoCo's `mju_rayGeom` (`engine_ray.c:972-998`) on the types it takes:
 //! along a ray from `pnt` in the direction `vec`, the distance to a geom's
 //! surface, in lengths of `vec`, the nearest crossing at or past the start,
 //! or −1 where the ray misses. The touch sensor's zone
-//! (`engine_sensor.c:920-923`). Each step is MuJoCo's, in its order, so a
+//! (`engine_sensor.c:922-927`). Each step is MuJoCo's, in its order, so a
 //! ray grazing a zone's edge goes the way MuJoCo's does.
 
 use nalgebra::{Matrix3, Vector3};
@@ -259,7 +259,7 @@ mod tests {
 
     /// Each of the touch golden's `rays` (`gen_touch_reference.py`: 300 a
     /// type, from inside a geom and outside it, along its own axes and not;
-    /// and ten on the edges of its tests) meets its geom at MuJoCo's
+    /// and 24 on the edges of its tests) meets its geom at MuJoCo's
     /// distance, or misses it as MuJoCo's does (-1), bit for bit.
     #[test]
     fn rays_meet_each_geom_as_mujoco() {
@@ -270,7 +270,7 @@ mod tests {
         let text = std::fs::read_to_string(path).expect("the touch golden reads");
         let golden: Value = serde_json::from_str(&text).expect("the touch golden parses");
         let rays = golden["rays"].as_array().expect("rays");
-        assert_eq!(rays.len(), 1810);
+        assert_eq!(rays.len(), 1824);
         let mut differ = Vec::new();
         for (i, ray) in rays.iter().enumerate() {
             let geom_type = match ray["type"].as_str().expect("a type") {

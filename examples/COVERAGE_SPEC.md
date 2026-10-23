@@ -261,7 +261,8 @@ acceleration) and verify readings against manually computed values.
 - **Geometric:** `GeomDist` (between arm tip geom and target geom)
 
 **MJCF sketch:** Hinge arm with site at tip (carries accelerometer, gyro,
-velocimeter, touch). Ball-joint wrist. Free-floating target sphere. Contact
+velocimeter, touch; the site encloses the tip, since a touch sensor takes
+only the contacts whose rays meet its site's zone). Ball-joint wrist. Free-floating target sphere. Contact
 between arm tip and ground plane (activates touch sensor). A motor actuator on
 the hinge (activates ActuatorFrc). Sites for frame sensors.
 
