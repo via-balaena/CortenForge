@@ -332,7 +332,7 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Ellipsoid | Native (`mjc_Convex`; with a plane, its own function) | `collision::mj_ccd` | **Implemented** | - | - |
 | Convex mesh | GJK/EPA (`mjc_Convex`) | `collision::mj_ccd` (with a plane, `mjc_PlaneConvex`) | **Implemented** | - | - |
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
-| SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
+| SDF (signed distance) | Native (a plugin's field over a mesh) | `CollisionShape::Sdf` (sim-core's own shapes; registry D-SDF-SHAPE, D-SDF-HFIELD) | **Implemented** | - | - |
 | Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
 | Mid-phase (BVH per mesh, its triangles) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Mid-phase (`mj_collideTree`, a body pair's geoms) | Oriented boxes | `collision::midphase` | **Implemented** (the bodies' hierarchies, `Model::compute_body_bvhs`; a flex's not) | - | - |
@@ -421,7 +421,7 @@ let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 | Ellipsoid | Yes | `CollisionShape::Ellipsoid` | **Implemented** |
 | Height field | Yes | `CollisionShape::HeightField` | **Implemented** ✅ |
 | **Mesh (non-convex)** | Yes | `CollisionShape::TriangleMesh` | **Implemented** ✅ |
-| **SDF** | Yes | `CollisionShape::Sdf` | **Implemented** ✅ |
+| **SDF** | Yes | `CollisionShape::Sdf` (sim-core's own shapes; registry D-SDF-SHAPE) | **Implemented** ✅ |
 
 ### Implementation Notes: Non-Convex Mesh ✅ COMPLETED (January 2026)
 
@@ -658,7 +658,7 @@ let torque = elbow.compute_joint_force(velocity, dt);
 | ActuatorFrc | Yes | `MjSensorType::ActuatorFrc` | **Implemented** | - |
 | Force | Yes | `MjSensorType::Force` | **Implemented** (inverse dynamics via `compute_site_force_torque()`) | - |
 | Torque | Yes | `MjSensorType::Torque` | **Implemented** (inverse dynamics via `compute_site_force_torque()`) | - |
-| Touch | Yes | `MjSensorType::Touch` | **Implemented** (sums `efc_force` normal forces from contact constraint rows) | - |
+| Touch | Yes | `MjSensorType::Touch` | **Implemented** (sums the decoded normal forces of the contacts of the site's body whose rays meet the site's zone, `mju_rayGeom`) | - |
 | Rangefinder | Yes | `MjSensorType::Rangefinder` | **Implemented** (ray-cast along +Z with mesh support) | - |
 | Magnetometer | Yes | `MjSensorType::Magnetometer` | **Implemented** (`model.magnetic` transformed to sensor frame) | - |
 | ActuatorPos / ActuatorVel | Yes | `MjSensorType::ActuatorPos/Vel` | **Implemented** (joint, tendon, and site transmissions) | - |

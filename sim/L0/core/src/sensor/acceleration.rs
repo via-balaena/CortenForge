@@ -10,16 +10,18 @@
 
 use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType,
+    ConstraintType, Contact, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType,
     MjSensorType, Model, SensorStage,
 };
 use nalgebra::Vector3;
 
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::decode_pyramid_into;
 use crate::dynamics::{object_acceleration, object_force};
 use crate::forward::mj_body_accumulators;
 
 use super::postprocess::{sensor_write, sensor_write3};
+use super::ray_geom::ray_geom;
 
 /// Compute acceleration-dependent sensor values.
 ///
@@ -157,10 +159,10 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
         }
 
         MjSensorType::Touch => {
-            // Touch sensor: sum of normal contact forces on all geoms of the
-            // sensor's body. MuJoCo: objid = site_id, resolves to body at
-            // runtime via site_bodyid[objid], then iterates ALL contacts
-            // checking geom_bodyid[con->geom[k]] == bodyid.
+            // Touch sensor: the normal forces of the contacts of the site's
+            // body whose rays meet the site's zone. MuJoCo: objid = site_id,
+            // resolves to body at runtime via site_bodyid[objid], then
+            // iterates ALL contacts checking geom_bodyid[con->geom[k]] == bodyid.
             let body_id = if objid < model.nsite {
                 model.site_body[objid]
             } else {
@@ -191,10 +193,8 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                             // This contact's normal force, as `mj_contactForce`
                             // decodes it: an elliptic or frictionless contact's first
                             // row, a pyramidal contact's facets summed first
-                            // (`mju_decodePyramid`); added when above 0
-                            // (`engine_sensor.c:906-926`). MuJoCo also skips a
-                            // contact whose normal misses the site's zone (ledger
-                            // L150).
+                            // (`mju_decodePyramid`); added when above 0 and its
+                            // ray meets the site's zone (`engine_sensor.c:906-927`).
                             let normal = if data.efc_type[ei] == ConstraintType::ContactPyramidal {
                                 let mut decoded = [0.0; 6];
                                 decode_pyramid_into(
@@ -207,7 +207,8 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
                             } else {
                                 data.efc_force[ei]
                             };
-                            if normal > 0.0 {
+                            let away = geom_body(1) == Some(body_id);
+                            if normal > 0.0 && in_zone(model, data, objid, c, normal, away) {
                                 total_force += normal;
                             }
                         }
@@ -297,4 +298,33 @@ pub(crate) fn compute_acc_sensor(model: &Model, data: &mut Data, sensor_id: usiz
         // Skip position/velocity-dependent sensors
         _ => {}
     }
+}
+
+/// Whether a contact's ray meets the touch sensor's site zone
+/// (`engine_sensor.c:913-927`): from the contact's position, along its
+/// normal scaled by its normal force `force` and made unit as
+/// `mju_normalize3` makes it ((1, 0, 0) where its norm is below mjMINVAL),
+/// turned when the sensor's body is the contact's second side (`away`), so
+/// that it points from that body toward the other; a ray from inside the
+/// zone always meets it.
+fn in_zone(model: &Model, data: &Data, site: usize, c: &Contact, force: f64, away: bool) -> bool {
+    let mut ray = [c.normal.x * force, c.normal.y * force, c.normal.z * force];
+    let norm = (ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]).sqrt();
+    if norm < MJ_MINVAL {
+        ray = [1.0, 0.0, 0.0];
+    } else {
+        let inv = 1.0 / norm;
+        ray = ray.map(|r| r * inv);
+    }
+    if away {
+        ray = ray.map(|r| -r);
+    }
+    ray_geom(
+        &data.site_xpos[site],
+        &data.site_xmat[site],
+        &model.site_size[site],
+        &c.pos,
+        &Vector3::from(ray),
+        model.site_type[site],
+    ) >= 0.0
 }

@@ -3320,8 +3320,14 @@ mod tests {
     ///
     /// The window runs from step 50, once the pin's centre has dropped 0.55 mm
     /// onto the bore, to step 950. Over it the energy RISES 0.67% (0.54% to
-    /// step 450); what adds it is not isolated, so the test bounds the change
-    /// rather than calling it right.
+    /// step 450), +0.35. The contacts are the model's only constraint rows,
+    /// and their forces' work over the window is +0.24 with each step's
+    /// starting velocity and +0.40 with its final one, either side of the
+    /// gain. How they add it is not isolated: split by the normal at each
+    /// contact (with the starting velocity), their work is +0.34 along the
+    /// radius and −0.10 across it about the bore's axis, but +0.05 and +0.19
+    /// about the pin's centre, which sits 0.50 to 0.56 off that axis. The test
+    /// bounds the change rather than calling it right.
     #[test]
     fn an_arm_swinging_in_a_frictionless_bore_keeps_its_energy_within_3_percent() {
         use nalgebra::UnitQuaternion;

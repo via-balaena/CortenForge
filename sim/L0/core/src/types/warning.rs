@@ -13,9 +13,11 @@ use super::data::Data;
 pub enum Warning {
     /// Bad inertia (non-positive definite).
     Inertia = 0,
-    /// Contact buffer full.
+    /// Contact buffer full. Never raised: sim-core keeps every contact
+    /// (registry D-ARENA).
     ContactFull = 1,
-    /// Constraint buffer full.
+    /// Constraint buffer full. Never raised: sim-core makes every row
+    /// (registry D-ARENA).
     ConstraintFull = 2,
     /// Visual geom buffer full.
     VgeomFull = 3,

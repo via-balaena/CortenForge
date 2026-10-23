@@ -663,7 +663,8 @@ pub(super) fn mjc_ccd(config: &CcdConfig, o1: &mut CcdObj<'_>, o2: &mut CcdObj<'
     }
     if status.dist <= config.tolerance && status.nsimplex > 1 {
         status.dist = 0.0; // touching, until EPA says more
-        let mut pt = Polytope::new(config.max_iterations);
+        let mut pt = POLYTOPE.replace(Polytope::EMPTY);
+        pt.reset(config.max_iterations);
         let ret = match status.nsimplex {
             2 => polytope2(&mut pt, &mut status, o1, o2),
             3 => polytope3(&mut pt, &status, o1, o2),
@@ -676,6 +677,7 @@ pub(super) fn mjc_ccd(config: &CcdConfig, o1: &mut CcdObj<'_>, o2: &mut CcdObj<'
         {
             multicontact(&pt, face, &mut status, o1, o2);
         }
+        POLYTOPE.set(pt);
     }
     status
 }
@@ -1207,18 +1209,35 @@ struct Polytope {
     horizon: Vec<(usize, usize)>,
 }
 
+thread_local! {
+    /// The thread's polytope, taken for an EPA call and put back after it,
+    /// as MuJoCo keeps its storage in static thread-local arrays
+    /// (`engine_collision_gjk.c:2211-2215`): a call allocates only to hold
+    /// more than this thread's calls have held before.
+    static POLYTOPE: std::cell::Cell<Polytope> = const { std::cell::Cell::new(Polytope::EMPTY) };
+}
+
 impl Polytope {
-    /// MuJoCo's storage: room for the faces of `mjMAX_EPA_ITERATIONS`
-    /// iterations, or of `max_iterations` past that (`:2304-2333`).
-    fn new(max_iterations: usize) -> Self {
-        let max_faces = 6 * max_iterations.max(MAX_EPA_ITERATIONS);
-        Self {
-            verts: Vec::with_capacity(5 + max_iterations),
-            faces: Vec::with_capacity(6 * max_iterations),
-            max_faces,
-            map: Vec::new(),
-            horizon: Vec::new(),
-        }
+    /// No storage yet.
+    const EMPTY: Self = Self {
+        verts: Vec::new(),
+        faces: Vec::new(),
+        max_faces: 0,
+        map: Vec::new(),
+        horizon: Vec::new(),
+    };
+
+    /// Emptied for a call. MuJoCo's storage holds the faces of
+    /// `mjMAX_EPA_ITERATIONS` iterations, or of `max_iterations` past that
+    /// (`:2304-2333`), and EPA stops when the next faces would not fit
+    /// (`:1368`); `max_faces` is that count, while the vectors grow only as
+    /// EPA fills them, whatever `max_iterations` is (registry D-ARENA).
+    fn reset(&mut self, max_iterations: usize) {
+        self.verts.clear();
+        self.faces.clear();
+        self.map.clear();
+        self.horizon.clear();
+        self.max_faces = 6 * max_iterations.max(MAX_EPA_ITERATIONS);
     }
 
     /// `insertVertex`.

@@ -511,6 +511,7 @@ pub(super) fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     site.axisangle = attr_vec4(e, "axisangle")?;
     site.xyaxes = attr_fixed::<6>(e, "xyaxes")?;
     site.zaxis = attr_vec3(e, "zaxis")?;
+    site.fromto = attr_fixed::<6>(e, "fromto")?;
     if let Some(size) = get_attribute_opt(e, "size") {
         site.size = Some(parse_float_array(&size)?);
     }

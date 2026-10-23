@@ -29,7 +29,6 @@ check fails.
 | 18 | Mesh-Mesh | Contact force / weight = 1.0 | 10% |
 | 19 | Edge: Separated | Two meshes far apart: ncon = 0 | exact |
 | 20 | Edge: Single tri | 1-triangle mesh (no hull) vs sphere: no crash, contact produced | -- |
-| 21 | Edge: Swapped order | Sphere's body written before the mesh: rests at z = radius | < 1mm |
 
 ## Run
 

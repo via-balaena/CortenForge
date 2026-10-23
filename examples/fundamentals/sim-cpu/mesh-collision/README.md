@@ -15,7 +15,7 @@ visual example teaches exactly one concept about mesh collision.
 | 5 | [mesh-cylinder](mesh-cylinder/) | mesh-cylinder | `mjc_convex()` | Yes |
 | 6 | [mesh-ellipsoid](mesh-ellipsoid/) | mesh-ellipsoid | `mjc_convex()` | No |
 | 7 | [mesh-on-mesh](mesh-on-mesh/) | mesh-mesh | `mjc_convex()` | Yes |
-| 8 | [stress-test](stress-test/) | all 7 | headless, 21 checks | — |
+| 8 | [stress-test](stress-test/) | all 7 | headless, 20 checks | — |
 
 ## Two Dispatch Paths
 

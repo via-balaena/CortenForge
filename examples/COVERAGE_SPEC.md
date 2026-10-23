@@ -41,7 +41,7 @@ integration tests — they find bugs that unit tests miss.
   - derivatives: 8 examples (7 visual + 1 stress-test), 61 checks
   - composites: 4 examples (3 visual + 1 stress-test), 15 checks
   - batch-sim: 3 examples (2 visual + 1 stress-test), 18 checks
-  - mesh-collision: 8 examples (7 visual + 1 stress-test), 21 checks
+  - mesh-collision: 8 examples (7 visual + 1 stress-test), 20 checks
   Remaining 6: heightfield terrain,
   Hill muscle, adhesion, flex bodies, collision
   pairs, and plugins.
@@ -61,7 +61,7 @@ integration tests — they find bugs that unit tests miss.
 
 ### Geometry Types (8 types, ~6 covered)
 - Plane, Sphere, Capsule, Cylinder, Box, Ellipsoid → covered
-- Mesh (explicit convex, 2,090 LOC) ✓ (8 examples: 7 visual + 1 stress-test, 21 checks)
+- Mesh (explicit convex, 2,090 LOC) ✓ (8 examples: 7 visual + 1 stress-test, 20 checks)
 - **Hfield (height field terrain, 441 LOC) → Track 1B**
 - Sdf → extensively covered
 
@@ -261,7 +261,8 @@ acceleration) and verify readings against manually computed values.
 - **Geometric:** `GeomDist` (between arm tip geom and target geom)
 
 **MJCF sketch:** Hinge arm with site at tip (carries accelerometer, gyro,
-velocimeter, touch). Ball-joint wrist. Free-floating target sphere. Contact
+velocimeter, touch; the site encloses the tip, since a touch sensor takes
+only the contacts whose rays meet its site's zone). Ball-joint wrist. Free-floating target sphere. Contact
 between arm tip and ground plane (activates touch sensor). A motor actuator on
 the hinge (activates ActuatorFrc). Sites for frame sensors.
 
@@ -511,7 +512,7 @@ fundamentals/
     sensors-advanced/       # DONE — 7 examples, 25 stress-test checks
 
     # --- Layer 5: Geometry types ---
-    mesh-collision/         # DONE — 8 examples (7 visual + 1 stress-test), 21 checks
+    mesh-collision/         # DONE — 8 examples (7 visual + 1 stress-test), 20 checks
     heightfield/            # Terrain collision (441 LOC)
 
     # --- Layer 6: Passive forces and dynamics ---
@@ -1021,7 +1022,7 @@ learning, Monte Carlo sampling, and parameter sweeps.
 `reset_all()`, shared Model, independent Data, parameter sweeps, selective
 reset with adaptation, `sync_batch_geoms` infrastructure.
 
-##### 14. `mesh-collision/` — DONE (8 examples, 21 stress-test checks)
+##### 14. `mesh-collision/` — DONE (8 examples, 20 stress-test checks)
 
 Seven visual examples + one headless stress test covering every mesh collision
 pair in the dispatch table. Each visual example isolates one pair and validates
@@ -1047,8 +1048,8 @@ rest height, settling, and contact force/weight ratio.
 7. **mesh-on-mesh** — Wedge on mesh platform. Two convex hulls through
    `mjc_convex()` + MULTICCD (face clipping). Both colliders are
    `type="mesh"`.
-8. **stress-test** — 21 headless checks: all 7 pairs + edge cases (separated
-   meshes, single-triangle mesh, swapped geom order).
+8. **stress-test** — 20 headless checks: all 7 pairs + edge cases (separated
+   meshes, single-triangle mesh).
 
 **Concepts covered:** `type="mesh"`, inline vertex/face data, MuJoCo's
 native convex collision on a mesh's convex hull (`mjc_convex()`), MULTICCD's

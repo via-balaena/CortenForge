@@ -72,9 +72,12 @@ graph (`vert_globalid` and each hull vertex's neighbours, as
 `mjc_hillclimbSupport` walks them), its hull faces in qhull's order and its
 polygons: a wedge of ten vertices (mjMESH_HILLCLIMB_MIN), its two top faces
 at 1e-3 to each other; a cone on a base of 151 corners (more than
-mjMAX_POLYVERT); and a slab with a vertex raised 1e-5 above its top, 2e-3 in
+mjMAX_POLYVERT); a slab with a vertex raised 1e-5 above its top, 2e-3 in
 from one edge, whose sliver of top to that edge is a polygon of three
-corners all of which the polygon of the rest of the top holds. `small`: the
+corners all of which the polygon of the rest of the top holds; and a fan, a
+cone on a base of 149 corners crowded into 30 degrees and six spread over
+the rest, whose apex lies on 155 polygons, six of the seven wide ones at
+the last six of the apex's polymap positions, 149 to 154. `small`: the
 pairs of primitives mjc_ccd takes, shrunk by 1e-2 to 1e-4 and overlapping,
 as mjc_Convex calls them. `large`: a box grown by 1 to 1e6 against a box, a
 mesh or an ellipsoid, overlapping, with one contact, with four (as
@@ -100,6 +103,14 @@ contacts. `s3d`: a sphere against an ellipsoid, and a capsule against an
 ellipsoid or a cylinder, overlapping, at the chunk 3e-3 review's poses where S3D's stale fourth
 weight changes mjc_Convex's contact (registry D-GJK-S3D), as mjc_Convex
 calls mjc_ccd; a sphere and an ellipsoid with the exact distance.
+`polyvert_cap`: a box laid on a side of the cone at its apex, on the polygons
+at the apex's polymap positions 148, 149 and 150, and a box holding the edge
+the fan's polygon at position 149, 150 or 151 contributes at its apex,
+turned halfway between that edge's polygons; each tilted so that the apex
+is deepest, with four and eight contacts, either first. Past position 149
+the multi-contact reads no face (the cone) and no edge (the fan) of that
+polygon at the apex (mjMAX_POLYVERT, engine_collision_gjk.c:1751, :1787),
+and makes fewer contacts; it refuses a case of another count.
 
 `plane_meshes` and `plane_convex` hold MuJoCo's mjc_PlaneConvex
 (engine_collision_convex.c:1042-1138), called on a plane (geom 0) and an
@@ -258,7 +269,7 @@ REVERSED_PAIRS = [("ellipsoid", "sphere"), ("mesh", "sphere"), ("ellipsoid", "ca
                   ("box", "sphere"), ("capsule", "box"), ("box", "capsule")]
 GROUPS = ("contact", "distance", "deep", "aligned", "reversed", "first_step", "probe", "cutoff",
           "multi", "census", "nan", "multi_mesh", "small", "large", "touch", "degenerate",
-          "long_epa", "overflow", "flush", "graph", "notch", "s3d")
+          "long_epa", "overflow", "flush", "graph", "notch", "s3d", "polyvert_cap")
 
 
 def gem8():
@@ -1009,6 +1020,19 @@ def cone(n):
     return np.array([[0.002, -0.001, 0.08 / 3]] + base)
 
 
+def fan155():
+    """A cone whose base has 149 corners crowded into 30 degrees of a circle and six spread
+    over the other 330: its apex lies on 155 polygons, seven of them wide. Six of those take
+    the apex's last six polymap positions, 149 to 154, and the edge each contributes at the apex
+    is 36 degrees or more from every other edge there; position 149 is the last that
+    mjMAX_POLYVERT lets the multi-contact read. The seventh, at position 75, contributes an
+    edge 0.16 degrees from a crowded one."""
+    crowd = [math.radians(30) * k / 148 for k in range(149)]
+    spread = [math.radians(30) + math.radians(330) * k / 7 for k in range(1, 7)]
+    base = [[0.05 * math.cos(t), 0.05 * math.sin(t), -0.0133] for t in crowd + spread]
+    return np.array([[0.0, 0.0, 0.0267]] + base)
+
+
 def notch9():
     """A slab with a vertex raised 1e-5 above its top, 2e-3 in from one of its edges: nine
     vertices. The sliver of top to that edge is tilted past the merge tolerance and the rest
@@ -1022,26 +1046,30 @@ def notch9():
 # vertices, its top nearly flat; a cone whose base has more than mjMAX_POLYVERT corners; the
 # notched slab.
 GRAPH_MESHES = {"wedge10": wedge10(1e-3), "cone152": cone(151), "notch9": notch9()}
+# The fan, for `polyvert_cap` alone: compiled with the meshes above into `graph_meshes`, but
+# not one of them, whose plane cases draw from one generator mesh after mesh.
+CAP_MESHES = {"fan155": fan155()}
 
 
-def graph_assets():
+def graph_assets(meshes=GRAPH_MESHES):
     return "<asset>" + "".join(
         f'<mesh name="{n}" vertex="{" ".join(repr(float(x)) for x in v.ravel())}"/>'
-        for n, v in GRAPH_MESHES.items()) + "</asset>"
+        for n, v in meshes.items()) + "</asset>"
 
 
 def graph_meshes():
-    """Each of `GRAPH_MESHES` as MuJoCo compiles it: its vertices, as authored rounded to
-    floats (as `MakePolygons` merges them), whether it hill-climbs, its hull graph (each hull
-    vertex's index among the mesh's vertices, `vert_globalid`, and its neighbours among the
-    hull's vertices, as `mjc_hillclimbSupport` walks them, engine_collision_convex.c:383-417),
-    its hull faces in qhull's order, and its polygons."""
+    """Each of `GRAPH_MESHES` and `CAP_MESHES` as MuJoCo compiles it: its vertices, as
+    authored rounded to floats (as `MakePolygons` merges them), whether it hill-climbs, its
+    hull graph (each hull vertex's index among the mesh's vertices, `vert_globalid`, and its
+    neighbours among the hull's vertices, as `mjc_hillclimbSupport` walks them,
+    engine_collision_convex.c:383-417), its hull faces in qhull's order, and its polygons."""
+    meshes = {**GRAPH_MESHES, **CAP_MESHES}
     m = mujoco.MjModel.from_xml_string(
-        f"<mujoco>{graph_assets()}<worldbody>"
-        + "".join(f'<geom type="mesh" mesh="{n}"/>' for n in GRAPH_MESHES)
+        f"<mujoco>{graph_assets(meshes)}<worldbody>"
+        + "".join(f'<geom type="mesh" mesh="{n}"/>' for n in meshes)
         + "</worldbody></mujoco>")
     out = {}
-    for name, authored in GRAPH_MESHES.items():
+    for name, authored in meshes.items():
         i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MESH, name)
         adr, num = m.mesh_vertadr[i], m.mesh_vertnum[i]
         if num != len(authored):
@@ -1329,6 +1357,101 @@ def s3d_cases():
             sd, _ = point_ellipsoid(mat.T @ -np.array(p2), s2)
             case["exact_dist"] = sd - s1[0] - margin
         out[f"{k1}_{k2}_{k}"] = case
+    return out
+
+
+def capped_case(meshes, assets, mesh, normal, point, toward, others, max_contacts, box_first):
+    """A box of half sizes 0.02, 0.02, 0.01 whose -z face is turned to face `normal` at the
+    apex of `mesh`, then 5e-4 about the axis in that face across `toward` (within the face and
+    edge tolerances), the way that puts the apex deeper than each of `others`; its face's
+    centre over `point`; brought to touch on MuJoCo's own distance (by bisection, from 5 mm in
+    to 0.1 mm out), then pressed in by 1e-5."""
+    verts = np.array(meshes[mesh]["vert"]).reshape(-1, 3)
+    apex = max(range(len(verts)), key=lambda v: len(meshes[mesh]["polymap"][v]))
+    size = [0.02, 0.02, 0.01]
+    names = [mesh, None]
+    m = mujoco.MjModel.from_xml_string(f"<mujoco>{assets}<worldbody>{geom_xml('mesh', [], mesh)}"
+                                       f"{geom_xml('box', size, None)}</worldbody></mujoco>")
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    d.geom_xpos[0] = 0.0
+    d.geom_xmat[0] = np.eye(3).ravel()
+    face_up = align_mat(np.array([0.0, 0.0, 1.0]), normal)
+    for sign in (1, -1):
+        turn = mat_mul(unit_turn(np.cross(normal, toward), sign * 5e-4), face_up)
+        down = np.array(turn).reshape(3, 3) @ np.array([0.0, 0.0, -1.0])
+        if all((verts[apex] - verts[o]) @ down < 0 for o in others):
+            break
+    else:
+        sys.exit(f"polyvert_cap {mesh}: no turn puts the apex deepest")
+    d.geom_xmat[1] = turn
+    centre = point + np.array(turn).reshape(3, 3) @ np.array([0.0, 0.0, size[2]])
+    lo, hi = -0.005, 1e-4
+    if not place_dist(m, d, centre + lo * normal, names) < 0 < place_dist(m, d, centre + hi * normal,
+                                                                           names):
+        sys.exit(f"polyvert_cap {mesh}: no touch within the bracket")
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if place_dist(m, d, centre + mid * normal, names) < 0:
+            lo = mid
+        else:
+            hi = mid
+    d.geom_xpos[1] = centre + (hi - 1e-5) * normal
+    geoms = (1, 0) if box_first else (0, 1)
+    return run(m, d, geoms, 0.0, config(max_contacts, 0.0),
+               [names[g] for g in geoms])
+
+
+def polyvert_cap_cases(meshes):
+    """The multi-contact's caps at a vertex: it reads the normals of at most mjMAX_POLYVERT
+    faces there, and the edges of at most as many (engine_collision_gjk.c:1751, :1787). A box
+    laid on the cone152 apex's polygon at polymap position 148 or 149 (both among those read)
+    meets it face to face, three contacts; on the polygon at 150, past the cap, the face is not
+    read, and the multi-contact falls back to an edge at the apex, two. A box holding the edge
+    the fan155 apex's polygon at 149 contributes, turned halfway between that edge's two
+    polygons, meets it edge to face, two contacts (that edge is read last, and no other at the
+    apex is aligned); holding the edge of the polygon at 150 or 151, past the cap, nothing at
+    the apex is read as aligned, one. Each with four and eight contacts, either geom first.
+    It refuses a case of another count."""
+    assets = graph_assets({**GRAPH_MESHES, **CAP_MESHES})
+    out = {}
+    cone = meshes["cone152"]
+    verts = np.array(cone["vert"]).reshape(-1, 3)
+    apex = max(range(len(verts)), key=lambda v: len(cone["polymap"][v]))
+    for pos, want in ((148, 3), (149, 3), (150, 2)):
+        poly = cone["polymap"][apex][pos]
+        path = cone["polygons"][poly]
+        base = [v for v in path if v != apex]
+        mid = 0.5 * (verts[base[0]] + verts[base[1]])
+        toward = (verts[apex] - mid) / np.linalg.norm(verts[apex] - mid)
+        point = verts[apex] + 0.2 * (mid - verts[apex])
+        for k in (4, 8):
+            for box_first in (False, True):
+                case = capped_case(meshes, assets, "cone152", np.array(cone["polynormals"][poly]),
+                                   point, toward, base, k, box_first)
+                if case["out"]["nx"] != want:
+                    sys.exit(f"polyvert_cap face {pos}: {case['out']['nx']} contacts, not {want}")
+                out[f"face_{pos}_{k}_{'box' if box_first else 'cone'}_first"] = case
+    fan = meshes["fan155"]
+    verts = np.array(fan["vert"]).reshape(-1, 3)
+    apex = max(range(len(verts)), key=lambda v: len(fan["polymap"][v]))
+    for pos, want in ((149, 2), (150, 1), (151, 1)):
+        poly = fan["polymap"][apex][pos]
+        path = fan["polygons"][poly]
+        prev = path[path.index(apex) - 1]
+        (other,) = [q for q in fan["polymap"][apex] if q != poly and prev in fan["polygons"][q]]
+        edge = (verts[prev] - verts[apex]) / np.linalg.norm(verts[prev] - verts[apex])
+        normal = np.array(fan["polynormals"][poly]) + np.array(fan["polynormals"][other])
+        normal -= (normal @ edge) * edge
+        normal /= np.linalg.norm(normal)
+        point = verts[apex] + 0.2 * (verts[prev] - verts[apex])
+        for k in (4, 8):
+            for box_first in (False, True):
+                case = capped_case(meshes, assets, "fan155", normal, point, edge, [prev], k,
+                                   box_first)
+                if case["out"]["nx"] != want:
+                    sys.exit(f"polyvert_cap edge {pos}: {case['out']['nx']} contacts, not {want}")
+                out[f"edge_{pos}_{k}_{'box' if box_first else 'fan'}_first"] = case
     return out
 
 
@@ -1976,6 +2099,7 @@ def main():
                 "graph": graph_cases(doc["graph_meshes"]),
                 "notch": notch_cases(doc["graph_meshes"])})
     doc["s3d"] = s3d_cases()
+    doc["polyvert_cap"] = polyvert_cap_cases(doc["graph_meshes"])
     doc["plane_meshes"] = plane_meshes()
     doc["plane_convex"] = plane_convex_cases(doc["plane_meshes"])
     doc["hfield_fields"] = hfield_fields()

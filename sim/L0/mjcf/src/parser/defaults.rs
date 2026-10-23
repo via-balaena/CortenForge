@@ -459,6 +459,7 @@ pub(super) fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
     defaults.axisangle = attr_vec4(e, "axisangle")?;
     defaults.xyaxes = attr_fixed::<6>(e, "xyaxes")?;
     defaults.zaxis = attr_vec3(e, "zaxis")?;
+    defaults.fromto = attr_fixed::<6>(e, "fromto")?;
 
     // Rendering
     defaults.material = get_attribute_opt(e, "material");

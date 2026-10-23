@@ -169,13 +169,14 @@ fn test_touch_sensor_with_contact() {
     let mut data = model.make_data();
     data.forward(&model).unwrap();
 
-    // Manually inject a contact and corresponding efc_force entries
+    // Manually inject a contact, at the site (inside its zone), and
+    // corresponding efc_force entries
     data.contacts.push(Contact::new(
         Vector3::new(0.0, 0.0, -0.5),
         Vector3::z(),
         0.01, // depth
         0,    // geom1 = our sensor geom
-        99,   // geom2 = some other geom
+        0,    // geom2: the model's one geom again, read only for its body
         1.0,  // friction
     ));
     // Inject efc constraint rows for this contact (3-dim elliptic)

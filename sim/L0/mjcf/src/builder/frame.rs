@@ -4,15 +4,17 @@
 //! transform into each child element and then disappear.  This module expands
 //! all frames before the builder processes bodies, matching MuJoCo's ordering.
 //!
-//! Also validates `childclass` references, which must run *before* frame
-//! expansion because `std::mem::take` dissolves the frame nodes.
+//! Also validates `childclass` references and resolves each site, which must
+//! run *before* frame expansion because `std::mem::take` dissolves the frame
+//! nodes.
 
 use nalgebra::{UnitQuaternion, Vector3, Vector4};
 
 use super::ModelConversionError;
-use super::orientation::{quat_to_wxyz, resolve_orientation};
+use super::geom::resolve_site_fromto;
+use super::orientation::{quat_to_wxyz, resolve_orientation, site_quat_as_written};
 use crate::defaults::DefaultResolver;
-use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame};
+use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame, MjcfSite};
 
 /// Core SE(3) composition — direct translation of MuJoCo's `mjuu_frameaccumChild`.
 ///
@@ -87,6 +89,9 @@ fn validate_frame_childclass_refs(
 /// Frames are coordinate-system wrappers that compose their transform into
 /// each child element and then disappear. This runs before `discardvisual`/`fusestatic`
 /// (matching MuJoCo's order) and before `ModelBuilder` processes bodies.
+///
+/// A site reaches it resolved (`resolve_sites`): its class's values applied and its
+/// `fromto` made into its `pos`, `quat` and `size`.
 pub fn expand_frames(
     body: &mut MjcfBody,
     compiler: &MjcfCompiler,
@@ -117,6 +122,69 @@ pub fn expand_frames(
     for child in &mut body.children {
         expand_frames(child, compiler, effective);
     }
+}
+
+/// Each site resolved before frames and static bodies move it, the one place a
+/// site's class is applied: its own values over its class's, then its `fromto`
+/// made into its `pos`, `quat` and `size` (`resolve_site_fromto`). MuJoCo
+/// compiles a site in its own frame, then composes the frame
+/// (`mjCSite::Compile`, `user_objects.cc:3937-3985`), and fusion moves the
+/// compiled pose (`user_model.cc:4194-4202`). A site without a class takes its
+/// body's or frame's childclass, as `expand_frames` and the builder give a geom.
+pub fn resolve_sites(
+    body: &mut MjcfBody,
+    resolver: &DefaultResolver,
+    inherited: Option<&str>,
+) -> std::result::Result<(), ModelConversionError> {
+    let effective = body
+        .childclass
+        .clone()
+        .or_else(|| inherited.map(str::to_string));
+    for site in &mut body.sites {
+        resolve_site(site, resolver, effective.as_deref())?;
+    }
+    for frame in &mut body.frames {
+        resolve_sites_in_frame(frame, resolver, effective.as_deref())?;
+    }
+    for child in &mut body.children {
+        resolve_sites(child, resolver, effective.as_deref())?;
+    }
+    Ok(())
+}
+
+/// `resolve_sites` within a frame, whose childclass its contents take.
+fn resolve_sites_in_frame(
+    frame: &mut MjcfFrame,
+    resolver: &DefaultResolver,
+    inherited: Option<&str>,
+) -> std::result::Result<(), ModelConversionError> {
+    let effective = frame
+        .childclass
+        .clone()
+        .or_else(|| inherited.map(str::to_string));
+    for site in &mut frame.sites {
+        resolve_site(site, resolver, effective.as_deref())?;
+    }
+    for sub in &mut frame.frames {
+        resolve_sites_in_frame(sub, resolver, effective.as_deref())?;
+    }
+    for child in &mut frame.bodies {
+        resolve_sites(child, resolver, effective.as_deref())?;
+    }
+    Ok(())
+}
+
+/// One site's class (its own, else `childclass`) applied, then its `fromto`.
+fn resolve_site(
+    site: &mut MjcfSite,
+    resolver: &DefaultResolver,
+    childclass: Option<&str>,
+) -> std::result::Result<(), ModelConversionError> {
+    if site.class.is_none() {
+        site.class = childclass.map(str::to_string);
+    }
+    *site = resolver.apply_to_site(site);
+    resolve_site_fromto(site)
 }
 
 /// Expand a single frame, composing its transform into children and lifting
@@ -196,24 +264,13 @@ fn expand_single_frame(
         body.geoms.push(g);
     }
 
-    // 5. Process child sites
+    // 5. Process child sites (resolved already: `resolve_sites`). The frame is
+    // composed with the site's quaternion as written; the builder makes the
+    // product unit, as MuJoCo does (`user_objects.cc:3984-3988`).
     for site in &frame.sites {
         let mut s = site.clone();
-
-        if s.class.is_none() {
-            s.class = effective.map(|s| s.to_string());
-        }
-
-        let site_quat = resolve_orientation(
-            s.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
-            s.euler,
-            s.axisangle,
-            s.xyaxes,
-            s.zaxis,
-            compiler,
-        );
         let mut pos = s.pos.unwrap_or_else(Vector3::zeros);
-        let mut quat = site_quat;
+        let mut quat = site_quat_as_written(&s, compiler);
         frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
         s.pos = Some(pos);
         s.quat = Some(quat_to_wxyz(&quat));

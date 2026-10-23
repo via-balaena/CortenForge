@@ -37,8 +37,7 @@ impl ModelBuilder {
 
         // Process worldbody sites
         for site in &worldbody.sites {
-            let site = self.resolver.apply_to_site(site);
-            self.process_site(&site, 0)?;
+            self.process_site(site, 0)?;
         }
 
         // Update body 0's geom range
@@ -253,14 +252,9 @@ impl ModelBuilder {
         }
         self.body_geom_num.push(body.geoms.len());
 
-        // Process sites for this body
+        // Process sites for this body (their classes applied: `resolve_sites`)
         for site in &body.sites {
-            let mut site = site.clone();
-            if site.class.is_none() {
-                site.class = effective_childclass.map(|s| s.to_string());
-            }
-            let site = self.resolver.apply_to_site(&site);
-            self.process_site(&site, body_id)?;
+            self.process_site(site, body_id)?;
         }
 
         // Recursively process children, passing this body's last DOF and world frame

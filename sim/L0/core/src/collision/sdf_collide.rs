@@ -140,7 +140,8 @@ pub fn collide_with_sdf(
     };
 
     // SDF-Plane: dispatch through PhysicsShape trait for analytical depth
-    // (or fallback to grid-based multi-contact plane tracing).
+    // (or fallback to grid-based multi-contact plane tracing). MuJoCo takes
+    // a plane against the field's mesh instead (registry D-SDF-SHAPE).
     if model.geom_type[other_geom] == GeomType::Plane {
         let plane_normal = other_mat.column(2).into_owned();
         let sdf_contacts = compute_shape_plane_contact(
@@ -223,6 +224,7 @@ pub fn collide_with_sdf(
             let mesh_data = &model.mesh_data[mesh_id];
             sdf_triangle_mesh_contact(sdf, &sdf_pose, mesh_data, &other_pose)
         }
+        // MuJoCo makes no contact here (registry D-SDF-HFIELD).
         GeomType::Hfield => {
             let Some(hfield_id) = model.geom_hfield[other_geom] else {
                 return vec![];

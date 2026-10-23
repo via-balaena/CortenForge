@@ -9,7 +9,7 @@ use sim_core::GeomType;
 
 use super::fluid::compute_geom_fluid;
 use super::mesh::MeshProps;
-use super::orientation::resolve_orientation;
+use super::orientation::{MJ_EPS, normvec, resolve_orientation, site_orientation, z2quat};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
 use crate::types::{FluidShape, MjcfGeom, MjcfGeomType, MjcfSite};
 
@@ -133,43 +133,13 @@ impl ModelBuilder {
         }
 
         self.site_body.push(body_id);
+        self.site_type.push(site_geom_type(site));
 
-        // Convert site type string to GeomType (sphere is the MuJoCo default)
-        let site_type_str = site.site_type.as_deref().unwrap_or("sphere");
-        let geom_type = match site_type_str {
-            "capsule" => GeomType::Capsule,
-            "cylinder" => GeomType::Cylinder,
-            "box" => GeomType::Box,
-            "ellipsoid" => GeomType::Ellipsoid,
-            _ => GeomType::Sphere, // Default for "sphere" and unknown types
-        };
-        self.site_type.push(geom_type);
-
+        // The site's class values and its `fromto` are already in it
+        // (`resolve_sites`).
         self.site_pos.push(site.pos.unwrap_or_else(Vector3::zeros));
-        self.site_quat.push(resolve_orientation(
-            site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
-            site.euler,
-            site.axisangle,
-            site.xyaxes,
-            site.zaxis,
-            &self.compiler,
-        ));
-
-        // Convert site size (MuJoCo uses single value for sphere, array for others)
-        let site_size = site.size.as_deref().unwrap_or(&[0.01]);
-        let size = if site_size.is_empty() {
-            Vector3::new(0.01, 0.01, 0.01) // Default small size
-        } else if site_size.len() == 1 {
-            let s = site_size[0];
-            Vector3::new(s, s, s)
-        } else {
-            Vector3::new(
-                site_size[0],
-                site_size.get(1).copied().unwrap_or(site_size[0]),
-                site_size.get(2).copied().unwrap_or(site_size[0]),
-            )
-        };
-        self.site_size.push(size);
+        self.site_quat.push(site_orientation(site, &self.compiler));
+        self.site_size.push(site_size(site));
 
         self.site_name.push(if site.name.is_empty() {
             None
@@ -325,6 +295,96 @@ pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Ve
         return pos + r.transform_vector(&mesh_com);
     }
     pos
+}
+
+/// A site's type (sphere is the MuJoCo default).
+fn site_geom_type(site: &MjcfSite) -> GeomType {
+    match site.site_type.as_deref().unwrap_or("sphere") {
+        "capsule" => GeomType::Capsule,
+        "cylinder" => GeomType::Cylinder,
+        "box" => GeomType::Box,
+        "ellipsoid" => GeomType::Ellipsoid,
+        _ => GeomType::Sphere, // Default for "sphere" and unknown types
+    }
+}
+
+/// MuJoCo's site size: 0.005 in each place (`mjs_defaultSite`,
+/// `user_init.c:159`), the numbers written, the site's over its class's, in
+/// the first places.
+fn site_size(site: &MjcfSite) -> Vector3<f64> {
+    let mut size = Vector3::new(0.005, 0.005, 0.005);
+    for (k, &s) in site.size.iter().flatten().take(3).enumerate() {
+        size[k] = s;
+    }
+    size
+}
+
+/// A site's `fromto` made into its `pos`, `quat` and `size` in the frame it is
+/// written in, as MuJoCo's `mjCSite::Compile` reads it before composing that
+/// frame (`user_objects.cc:3937-3971`): on a capsule, cylinder, ellipsoid or
+/// box only, and not beside a `pos` other than 0; half the segment's length
+/// in `size[1]` (in `size[2]` for an ellipsoid or a box, whose `size[1]` takes
+/// `size[0]`), its middle the position, and the turn of z onto `from − to` the
+/// orientation, in place of any other the site or its class gives.
+pub fn resolve_site_fromto(site: &mut MjcfSite) -> std::result::Result<(), ModelConversionError> {
+    let Some(fromto) = site.fromto.take() else {
+        return Ok(());
+    };
+    let geom_type = site_geom_type(site);
+    let name = if site.name.is_empty() {
+        "<unnamed>"
+    } else {
+        site.name.as_str()
+    };
+    let refuse = |what: &str| ModelConversionError {
+        message: format!("site '{name}': {what}"),
+    };
+    if !matches!(
+        geom_type,
+        GeomType::Capsule | GeomType::Cylinder | GeomType::Ellipsoid | GeomType::Box
+    ) {
+        return Err(refuse(
+            "fromto requires a capsule, cylinder, ellipsoid or box",
+        ));
+    }
+    if site
+        .pos
+        .is_some_and(|p| p.x != 0.0 || p.y != 0.0 || p.z != 0.0)
+    {
+        return Err(refuse("both pos and fromto defined"));
+    }
+    let mut vec = [
+        fromto[0] - fromto[3],
+        fromto[1] - fromto[4],
+        fromto[2] - fromto[5],
+    ];
+    let half = normvec(&mut vec) / 2.0;
+    if half < MJ_EPS {
+        return Err(refuse("fromto points too close"));
+    }
+    let mut size = site_size(site);
+    size[1] = half;
+    if matches!(geom_type, GeomType::Ellipsoid | GeomType::Box) {
+        size[2] = size[1];
+        size[1] = size[0];
+    }
+    // MuJoCo's arithmetic (`(a + b) / 2`), which `f64::midpoint` is not near
+    // overflow.
+    #[allow(clippy::manual_midpoint)]
+    let pos = Vector3::new(
+        (fromto[0] + fromto[3]) / 2.0,
+        (fromto[1] + fromto[4]) / 2.0,
+        (fromto[2] + fromto[5]) / 2.0,
+    );
+    let quat = z2quat(&vec);
+    site.pos = Some(pos);
+    site.quat = Some(Vector4::new(quat[0], quat[1], quat[2], quat[3]));
+    site.size = Some(vec![size.x, size.y, size.z]);
+    site.euler = None;
+    site.axisangle = None;
+    site.xyaxes = None;
+    site.zaxis = None;
+    Ok(())
 }
 
 /// Resolve `fromto` into `pos`/`quat`/`size` for a geom.

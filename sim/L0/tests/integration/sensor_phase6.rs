@@ -304,10 +304,13 @@ fn t08_default_inference_body_is_xbody() {
 #[test]
 fn t09_touch_multi_geom_aggregation() {
     // Body with 3 sphere geoms. Touch sensor on a site of that body.
-    // Inject 3 elliptic contacts (one per geom). All should contribute.
+    // Inject 3 elliptic contacts (one per geom), each against the floor and
+    // below the site, so that each ray, up from the contact, meets the
+    // site's zone. All should contribute.
     let mjcf = r#"
         <mujoco model="t09">
             <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
                 <body name="b1" pos="0 0 1">
                     <joint type="free"/>
                     <geom name="g1" type="sphere" size="0.1" pos="-0.3 0 0" mass="1"/>
@@ -338,6 +341,7 @@ fn t09_touch_multi_geom_aggregation() {
     assert_eq!(geom_ids.len(), 3, "body should have 3 geoms");
 
     // Inject 3 elliptic contacts — one per geom. Each has normal force 9.81.
+    let floor = model.geom_id("floor").expect("the floor");
     for &gid in &geom_ids {
         let ci = data.contacts.len();
         data.contacts.push(Contact::new(
@@ -345,7 +349,7 @@ fn t09_touch_multi_geom_aggregation() {
             Vector3::z(),
             0.01,
             gid,   // geom on our body
-            99999, // other geom (doesn't matter)
+            floor, // the other side's geom
             1.0,
         ));
         // Elliptic contact: 3 rows, first row = normal force

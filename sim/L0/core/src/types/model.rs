@@ -649,13 +649,13 @@ pub struct Model {
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
     pub site_body: Vec<usize>,
-    /// Site geometry type (for visualization, uses GeomType).
+    /// Site geometry type (a touch sensor's zone, and for visualization).
     pub site_type: Vec<GeomType>,
     /// Site position in body frame.
     pub site_pos: Vec<Vector3<f64>>,
     /// Site orientation in body frame.
     pub site_quat: Vec<UnitQuaternion<f64>>,
-    /// Site size (for visualization).
+    /// Site size (a touch sensor's zone, and for visualization).
     pub site_size: Vec<Vector3<f64>>,
     /// Optional site names.
     pub site_name: Vec<Option<String>>,

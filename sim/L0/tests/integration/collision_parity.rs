@@ -5,7 +5,7 @@
 //! its cases).
 
 use serde_json::Value;
-use sim_core::{Contact, Data, Model};
+use sim_core::{Contact, Data, Model, Warning};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -1824,4 +1824,33 @@ fn mesh_contacts_part_from_mujocos_by_the_hulls_order() {
         "mesh on mesh at a margin: depth {}, MuJoCo {theirs}",
         ours[0].depth
     );
+}
+
+/// Registry D-ARENA: a hundred free spheres resting 1 mm into a plane under
+/// `<size memory="100K"/>`. MuJoCo 3.5.0 keeps 93 contacts there, drops the
+/// rest with `mjWARN_CONTACTFULL` and makes no rows (`mjWARN_CNSTRFULL`), as
+/// `gen_collision_reference.py`'s `mujoco_arena_limits` asserts on this
+/// scene; sim-core has no arena, so every contact and row is made and
+/// neither warning is raised.
+#[test]
+fn a_full_arena_drops_no_contact_and_no_row() {
+    let balls: String = (0..100_u32)
+        .map(|i| {
+            format!(
+                r#"<body pos="{} {} 0.099"><freejoint/><geom type="sphere" size="0.1"/></body>"#,
+                f64::from(i % 20) * 0.25,
+                f64::from(i / 20) * 0.25
+            )
+        })
+        .collect();
+    let model = load_model(&format!(
+        r#"<mujoco><size memory="100K"/><worldbody><geom type="plane" size="10 10 0.1"/>{balls}</worldbody></mujoco>"#
+    ))
+    .expect("the spheres load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    assert_eq!((data.ncon, data.efc_type.len()), (100, 400));
+    for warning in [Warning::ContactFull, Warning::ConstraintFull] {
+        assert_eq!(data.warnings[warning as usize].count, 0, "{warning:?}");
+    }
 }

@@ -7,11 +7,92 @@
 
 use nalgebra::{Matrix3, UnitQuaternion, Vector3, Vector4};
 
-use crate::types::{AngleUnit, MjcfCompiler};
+use crate::types::{AngleUnit, MjcfCompiler, MjcfSite};
+
+/// MuJoCo's compiler's `mjEPS` (`user_util.h:29`).
+pub const MJ_EPS: f64 = 1e-14;
+
+/// `mjuu_normvec` (`user_util.cc:149-169`): `v` made unit, unless its norm
+/// lies within mjEPS of 1, and the norm returned; where its squared norm is
+/// below mjEPS, `v` is left as it is and 0 returned.
+pub fn normvec<const N: usize>(v: &mut [f64; N]) -> f64 {
+    let mut nrm = 0.0;
+    for x in v.iter() {
+        nrm += x * x;
+    }
+    if nrm < MJ_EPS {
+        return 0.0;
+    }
+    let nrm = nrm.sqrt();
+    if (nrm - 1.0).abs() > MJ_EPS {
+        for x in v.iter_mut() {
+            *x /= nrm;
+        }
+    }
+    nrm
+}
+
+/// `mjuu_z2quat` (`user_util.cc:395-408`): the turn (w, x, y, z) of the z
+/// axis onto `vec`, about their cross product made unit, or about x where
+/// `normvec` returns 0 for it (a norm below 1e-7).
+pub fn z2quat(vec: &[f64; 3]) -> [f64; 4] {
+    let z = [0.0, 0.0, 1.0];
+    let mut axis = [
+        z[1] * vec[2] - z[2] * vec[1],
+        z[2] * vec[0] - z[0] * vec[2],
+        z[0] * vec[1] - z[1] * vec[0],
+    ];
+    let s = normvec(&mut axis);
+    if s < 1e-10 {
+        axis = [1.0, 0.0, 0.0];
+    }
+    let ang = s.atan2(vec[2]);
+    [
+        (ang / 2.0).cos(),
+        axis[0] * (ang / 2.0).sin(),
+        axis[1] * (ang / 2.0).sin(),
+        axis[2] * (ang / 2.0).sin(),
+    ]
+}
 
 /// Convert an MJCF quaternion `[w, x, y, z]` to a `UnitQuaternion`.
 pub fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
+}
+
+/// A site's orientation as MuJoCo's compiler holds it before composing the
+/// site's frame (`user_objects.cc:3976-3985`): its alternative where it has
+/// one (`resolve_orientation`), else its quaternion as written, not yet made
+/// unit.
+pub fn site_quat_as_written(site: &MjcfSite, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
+    let quat = site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
+    if site.euler.is_some()
+        || site.axisangle.is_some()
+        || site.xyaxes.is_some()
+        || site.zaxis.is_some()
+    {
+        return resolve_orientation(
+            quat,
+            site.euler,
+            site.axisangle,
+            site.xyaxes,
+            site.zaxis,
+            compiler,
+        );
+    }
+    UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(
+        quat[0], quat[1], quat[2], quat[3],
+    ))
+}
+
+/// A site's orientation made unit as MuJoCo's compiler makes it (`normvec`,
+/// `user_objects.cc:3988`): left as it is where its norm lies within mjEPS of
+/// 1 (`quat_from_wxyz` divides by the norm whatever it is).
+pub fn site_orientation(site: &MjcfSite, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
+    let q = site_quat_as_written(site, compiler).into_inner();
+    let mut q = [q.w, q.i, q.j, q.k];
+    normvec(&mut q);
+    UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
 }
 
 /// Convert a `UnitQuaternion` back to MJCF `Vector4<f64>` (w, x, y, z order).

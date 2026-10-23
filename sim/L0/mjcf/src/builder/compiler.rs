@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use super::orientation::{quat_to_wxyz, resolve_orientation};
+use super::orientation::{quat_to_wxyz, resolve_orientation, site_orientation};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfModel};
 
 /// Apply `discardvisual` pre-processing: remove visual-only geoms (contype=0, conaffinity=0)
@@ -184,20 +184,12 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
                 }
             }
 
-            // Transform sites into parent frame
+            // Transform sites into parent frame (resolved already: `resolve_sites`)
             for s in &mut removed.sites {
                 let s_pos = s.pos.unwrap_or_else(nalgebra::Vector3::zeros);
                 if has_rotation {
                     s.pos = Some(body_quat * s_pos + body_pos);
-                    let site_quat = resolve_orientation(
-                        s.quat.unwrap_or(nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0)),
-                        s.euler,
-                        s.axisangle,
-                        s.xyaxes,
-                        s.zaxis,
-                        compiler,
-                    );
-                    let composed = body_quat * site_quat;
+                    let composed = body_quat * site_orientation(s, compiler);
                     s.quat = Some(quat_to_wxyz(&composed));
                     // Normalize to quat-only after composition
                     s.euler = None;

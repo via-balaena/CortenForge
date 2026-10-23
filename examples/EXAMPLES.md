@@ -290,7 +290,7 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `mesh-collision/mesh-cylinder` | `example-mesh-collision-cylinder` | Working | Upright cylinder, `mjc_convex()` + MULTICCD (turned passes) |
 | `mesh-collision/mesh-ellipsoid` | `example-mesh-collision-ellipsoid` | Working | Oblate disc, `mjc_convex()` exact ellipsoid support |
 | `mesh-collision/mesh-on-mesh` | `example-mesh-collision-mesh` | Working | Wedge on mesh platform, two convex hulls, `mjc_convex()` + MULTICCD |
-| `mesh-collision/stress-test` | `example-mesh-collision-stress-test` | Working | Headless validation (21 checks: all 7 pairs + edge cases) |
+| `mesh-collision/stress-test` | `example-mesh-collision-stress-test` | Working | Headless validation (20 checks: all 7 pairs + edge cases) |
 
 ### Other
 

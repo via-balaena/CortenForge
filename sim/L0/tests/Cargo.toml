@@ -45,6 +45,12 @@ path = "mujoco_conformance/mod.rs"
 name = "integration"
 path = "integration/mod.rs"
 
+# The storage EPA takes, counted by a global allocator: a binary of its own, so that
+# the allocator counts no other test's work.
+[[test]]
+name = "epa_storage"
+path = "epa_storage.rs"
+
 # The corpus harness of the Rigid verification protocol (scripts/corpus_harness.rs
 # says how it is run). An example, so it is built and linted with the crate.
 [[example]]
