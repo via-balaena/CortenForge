@@ -327,7 +327,7 @@ pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Ve
 }
 
 /// A site's `fromto`, as MuJoCo's `mjCSite::Compile` reads it
-/// (`user_objects.cc:3937-3967`): on a capsule, cylinder, ellipsoid or box
+/// (`user_objects.cc:3937-3971`, `:3988`): on a capsule, cylinder, ellipsoid or box
 /// only, and not beside a `pos` other than 0; half the segment's length in
 /// `size[1]` (in `size[2]` for an ellipsoid or a box, whose `size[1]` takes
 /// `size[0]`), its middle the position, and the turn of z onto

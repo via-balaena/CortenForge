@@ -12,7 +12,7 @@ use crate::types::{AngleUnit, MjcfCompiler};
 /// MuJoCo's compiler's `mjEPS` (`user_util.h:29`).
 pub const MJ_EPS: f64 = 1e-14;
 
-/// `mjuu_normvec` (`user_util.cc:149-170`): `v` made unit, unless its norm
+/// `mjuu_normvec` (`user_util.cc:149-169`): `v` made unit, unless its norm
 /// lies within mjEPS of 1, and the norm returned; where its squared norm is
 /// below mjEPS, `v` is left as it is and 0 returned.
 pub fn normvec<const N: usize>(v: &mut [f64; N]) -> f64 {
@@ -34,7 +34,7 @@ pub fn normvec<const N: usize>(v: &mut [f64; N]) -> f64 {
 
 /// `mjuu_z2quat` (`user_util.cc:395-408`): the turn (w, x, y, z) of the z
 /// axis onto `vec`, about their cross product made unit, or about x where
-/// that is below 1e-10.
+/// `normvec` returns 0 for it (a norm below 1e-7).
 pub fn z2quat(vec: &[f64; 3]) -> [f64; 4] {
     let z = [0.0, 0.0, 1.0];
     let mut axis = [

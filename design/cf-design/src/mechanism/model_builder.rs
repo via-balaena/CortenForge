@@ -3326,7 +3326,7 @@ mod tests {
     /// gain. How they add it is not isolated: split by the normal at each
     /// contact (with the starting velocity), their work is +0.34 along the
     /// radius and −0.10 across it about the bore's axis, but +0.05 and +0.19
-    /// about the pin's centre, which sits 0.51 to 0.56 off that axis. The test
+    /// about the pin's centre, which sits 0.50 to 0.56 off that axis. The test
     /// bounds the change rather than calling it right.
     #[test]
     fn an_arm_swinging_in_a_frictionless_bore_keeps_its_energy_within_3_percent() {

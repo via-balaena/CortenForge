@@ -131,8 +131,7 @@ fn readings_are_mujocos(name: &str, case: &Value) {
 /// parent's first, then its own, each in the first places; a segment
 /// (`fromto`) on a capsule, cylinder, ellipsoid or box giving the position,
 /// the orientation and the length. Sizes and positions bit for bit; an
-/// orientation, which `mjuu_z2quat` takes through `atan2`, `cos` and `sin`,
-/// within 1e-15 of MuJoCo's.
+/// orientation within 1e-15 of MuJoCo's.
 #[test]
 fn site_sizes_are_mujocos() {
     let g = golden();
@@ -164,7 +163,7 @@ fn site_sizes_are_mujocos() {
 }
 
 /// A site's `fromto` where MuJoCo 3.5.0's compiler refuses it
-/// (`mjCSite::Compile`, `user_objects.cc:3939-3958`), measured on the
+/// (`mjCSite::Compile`, `user_objects.cc:3944-3956`), measured on the
 /// oracle: on a sphere; beside a `pos` other than 0 (along z or y, the
 /// site's own or its class's); with its two points too close. Each refusal
 /// is the one MuJoCo gives. Beside a `pos` of 0 it loads.

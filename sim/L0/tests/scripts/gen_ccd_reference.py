@@ -1411,8 +1411,8 @@ def polyvert_cap_cases(meshes):
     the fan155 apex's polygon at 149 contributes, turned halfway between that edge's two
     polygons, meets it edge to face, two contacts (that edge is read last, and no other at the
     apex is aligned); holding the edge of the polygon at 150 or 151, past the cap, nothing at
-    the apex is read as aligned, one. Each with four and eight contacts, either geom first. It refuses
-    a case of another count."""
+    the apex is read as aligned, one. Each with four and eight contacts, either geom first.
+    It refuses a case of another count."""
     assets = graph_assets({**GRAPH_MESHES, **CAP_MESHES})
     out = {}
     cone = meshes["cone152"]

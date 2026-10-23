@@ -200,10 +200,9 @@ def rays():
     0.5 in each place (a plane's two of 0, unbounded, in one case of five), each place of the
     centre within 1 of the origin's, a turn at random; the ray's start the centre moved by 0.3
     times a normal draw in each place, inside the geom or not; its direction at random or, in
-    one case of five, along one of the geom's
-    own axes (so that, in the geom's frame, its other two parts are near 0), of length 1 in half
-    the cases and 0.1 to 3 in the rest. Each with MuJoCo's distance, -1 where it misses. It
-    refuses a type with no hit or no miss."""
+    one case of five, along one of the geom's own axes (so that, in the geom's frame, its other
+    two parts are near 0), of length 1 in half the cases and 0.1 to 3 in the rest. Each with
+    MuJoCo's distance, -1 where it misses. It refuses a type with no hit or no miss."""
     rng = np.random.default_rng(150)
     out = []
     for kind, geomtype in RAY_TYPES.items():
