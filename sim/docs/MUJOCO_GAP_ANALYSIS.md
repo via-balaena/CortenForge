@@ -332,7 +332,7 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Ellipsoid | Native (`mjc_Convex`; with a plane, its own function) | `collision::mj_ccd` | **Implemented** | - | - |
 | Convex mesh | GJK/EPA (`mjc_Convex`) | `collision::mj_ccd` (with a plane, `mjc_PlaneConvex`) | **Implemented** | - | - |
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
-| SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
+| SDF (signed distance) | Native (a plugin's field over a mesh) | `CollisionShape::Sdf` (sim-core's own shapes; registry D-SDF-SHAPE, D-SDF-HFIELD) | **Implemented** | - | - |
 | Broad-phase (`mj_broadphase`) | Native | `collision::broadphase` | **Implemented** | - | - |
 | Mid-phase (BVH per mesh, its triangles) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Mid-phase (`mj_collideTree`, a body pair's geoms) | Oriented boxes | `collision::midphase` | **Implemented** (the bodies' hierarchies, `Model::compute_body_bvhs`; a flex's not) | - | - |
@@ -421,7 +421,7 @@ let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 | Ellipsoid | Yes | `CollisionShape::Ellipsoid` | **Implemented** |
 | Height field | Yes | `CollisionShape::HeightField` | **Implemented** ✅ |
 | **Mesh (non-convex)** | Yes | `CollisionShape::TriangleMesh` | **Implemented** ✅ |
-| **SDF** | Yes | `CollisionShape::Sdf` | **Implemented** ✅ |
+| **SDF** | Yes | `CollisionShape::Sdf` (sim-core's own shapes; registry D-SDF-SHAPE) | **Implemented** ✅ |
 
 ### Implementation Notes: Non-Convex Mesh ✅ COMPLETED (January 2026)
 

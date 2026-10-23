@@ -1891,63 +1891,88 @@ fn a_contact_normal_shorter_than_half_refuses_the_step() {
     }
 }
 
-/// Registry D-SDF-HFIELD: a sphere of radius 5 as a signed distance field
-/// over a height field (flat where the sphere is). MuJoCo 3.5.0 makes no
-/// contact between a height field and a signed distance field
+/// A sphere of radius 5 as a signed distance field, its centre at `z` over
+/// `ground` (a height field, flat where the sphere is, or a plane), with a
+/// geom-distance sensor naming the two bodies, in each order, of cutoff 10:
+/// the contacts after `forward`, and the two sensors.
+fn field_over(ground: &str, z: f64) -> (Vec<f64>, [f64; 2]) {
+    use nalgebra::Point3;
+
+    let ground = match ground {
+        "hfield" => r#"<geom type="hfield" hfield="field"/>"#,
+        _ => r#"<geom type="plane" size="40 40 0.1"/>"#,
+    };
+    let mut model = load_model(&format!(
+        r#"
+        <mujoco>
+            <option gravity="0 0 0"/>
+            <asset>
+                <hfield name="field" nrow="5" ncol="5" size="40 40 1 1"
+                    elevation="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 1"/>
+            </asset>
+            <worldbody>
+                {ground}
+                <body name="ball" pos="-20 -20 {z}">
+                    <joint type="free"/>
+                    <geom type="sphere" size="5"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <distance body1="world" body2="ball" cutoff="10"/>
+                <distance body1="ball" body2="world" cutoff="10"/>
+            </sensor>
+        </mujoco>
+    "#
+    ))
+    .expect("load");
+    let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 20, 2.0));
+    model.shape_data.push(Arc::new(ShapeSphere::new(grid, 5.0)));
+    model.nshape = 1;
+    model.geom_type[1] = GeomType::Sdf;
+    model.geom_shape[1] = Some(0);
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    (
+        data.contacts.iter().map(|c| c.depth).collect(),
+        [data.sensordata[0], data.sensordata[1]],
+    )
+}
+
+/// Registry D-SDF-HFIELD: a sphere field over a height field. MuJoCo 3.5.0
+/// makes no contact between a height field and a signed distance field
 /// (`mjc_HFieldSDF` warns "HField vs SDF collision not yet supported!",
-/// `engine_collision_sdf.c:640-643`), and its geom-distance sensor reads its
-/// cutoff. sim-core collides them through the field's own contact
-/// (`collide_with_sdf`), in collision and in the geom-distance sensor in
+/// `engine_collision_sdf.c:640-643`), and a geom-distance sensor naming
+/// their bodies reads its cutoff. sim-core collides them through the field's
+/// own contact (`collide_with_sdf`), in collision and in the sensor, in
 /// either order: pressed 0.5 into the field, one contact and each sensor
 /// reads minus its depth; held 1 above it, no contact and each sensor reads
 /// the cutoff (the field's contact has no margin).
 #[test]
 fn a_height_field_meets_a_signed_distance_field() {
-    use nalgebra::Point3;
+    let (depths, sensors) = field_over("hfield", 4.5);
+    assert_eq!(depths.len(), 1, "pressed in");
+    assert!(depths[0] > 0.4, "depth {}", depths[0]);
+    assert_eq!(sensors, [-depths[0], -depths[0]]);
+    let (depths, sensors) = field_over("hfield", 6.0);
+    assert!(depths.is_empty(), "held above");
+    assert_eq!(sensors, [10.0, 10.0]);
+}
 
-    let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 20, 2.0));
-    for z in [4.5, 6.0] {
-        let mut model = load_model(&format!(
-            r#"
-            <mujoco>
-                <option gravity="0 0 0"/>
-                <asset>
-                    <hfield name="field" nrow="5" ncol="5" size="40 40 1 1"
-                        elevation="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 1"/>
-                </asset>
-                <worldbody>
-                    <geom name="field" type="hfield" hfield="field"/>
-                    <body pos="-20 -20 {z}">
-                        <joint type="free"/>
-                        <geom name="ball" type="sphere" size="5"/>
-                    </body>
-                </worldbody>
-                <sensor>
-                    <distance geom1="field" geom2="ball" cutoff="10"/>
-                    <distance geom1="ball" geom2="field" cutoff="10"/>
-                </sensor>
-            </mujoco>
-        "#
-        ))
-        .expect("load");
-        model
-            .shape_data
-            .push(Arc::new(ShapeSphere::new(grid.clone(), 5.0)));
-        model.nshape = 1;
-        model.geom_type[1] = GeomType::Sdf;
-        model.geom_shape[1] = Some(0);
-        let mut data = model.make_data();
-        data.forward(&model).expect("forward");
-        let sensors = [data.sensordata[0], data.sensordata[1]];
-        if z < 5.0 {
-            assert_eq!(data.ncon, 1, "pressed in");
-            let depth = data.contacts[0].depth;
-            assert!(depth > 0.4, "depth {depth}");
-            assert_eq!(sensors, [-depth, -depth]);
-        } else {
-            assert_eq!(data.ncon, 0, "held above");
-            assert_eq!(sensors, [10.0, 10.0]);
-        }
+/// Registry D-SDF-SHAPE: a sphere field over a plane, through the shape's
+/// own plane contact in collision and in the geom-distance sensor, in either
+/// order. Pressed 0.5 in, one contact 0.5 deep and each sensor reads -0.5;
+/// held 1 or 3 above, no contact (no margin), and each sensor, whose cutoff
+/// is the contact's margin, reads 0: the shape's contact lists a pair apart
+/// within the margin at depth 0, where MuJoCo's reads the distance.
+#[test]
+fn a_plane_meets_a_signed_distance_field() {
+    let (depths, sensors) = field_over("plane", 4.5);
+    assert_eq!(depths, [0.5], "pressed in");
+    assert_eq!(sensors, [-0.5, -0.5]);
+    for z in [6.0, 8.0] {
+        let (depths, sensors) = field_over("plane", z);
+        assert!(depths.is_empty(), "{z} above");
+        assert_eq!(sensors, [0.0, 0.0], "{z} above");
     }
 }
 
