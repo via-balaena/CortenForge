@@ -75,9 +75,9 @@ at 1e-3 to each other; a cone on a base of 151 corners (more than
 mjMAX_POLYVERT); a slab with a vertex raised 1e-5 above its top, 2e-3 in
 from one edge, whose sliver of top to that edge is a polygon of three
 corners all of which the polygon of the rest of the top holds; and a fan, a
-cone on a base of 150 corners crowded into 30 degrees and six spread over
-the rest, whose apex lies on 156 polygons, the six wide ones past
-mjMAX_POLYVERT. `small`: the
+cone on a base of 149 corners crowded into 30 degrees and six spread over
+the rest, whose apex lies on 155 polygons, six of the seven wide ones at
+the last six of the apex's polymap positions, 149 to 154. `small`: the
 pairs of primitives mjc_ccd takes, shrunk by 1e-2 to 1e-4 and overlapping,
 as mjc_Convex calls them. `large`: a box grown by 1 to 1e6 against a box, a
 mesh or an ellipsoid, overlapping, with one contact, with four (as
@@ -1020,12 +1020,14 @@ def cone(n):
     return np.array([[0.002, -0.001, 0.08 / 3]] + base)
 
 
-def fan156():
-    """A cone whose base has 150 corners crowded into 30 degrees of a circle and six spread
-    over the other 330: its apex lies on 156 polygons, the six wide ones last in MuJoCo's
-    order, so that the edge each wide one contributes at the apex is past mjMAX_POLYVERT and
-    36 degrees or more from every edge before it."""
-    crowd = [math.radians(30) * k / 149 for k in range(150)]
+def fan155():
+    """A cone whose base has 149 corners crowded into 30 degrees of a circle and six spread
+    over the other 330: its apex lies on 155 polygons, seven of them wide. Six of those take
+    the apex's last six polymap positions, 149 to 154, and the edge each contributes at the apex
+    is 36 degrees or more from every other edge there; position 149 is the last that
+    mjMAX_POLYVERT lets the multi-contact read. The seventh, at position 75, contributes an
+    edge 0.16 degrees from a crowded one."""
+    crowd = [math.radians(30) * k / 148 for k in range(149)]
     spread = [math.radians(30) + math.radians(330) * k / 7 for k in range(1, 7)]
     base = [[0.05 * math.cos(t), 0.05 * math.sin(t), -0.0133] for t in crowd + spread]
     return np.array([[0.0, 0.0, 0.0267]] + base)
@@ -1046,7 +1048,7 @@ def notch9():
 GRAPH_MESHES = {"wedge10": wedge10(1e-3), "cone152": cone(151), "notch9": notch9()}
 # The fan, for `polyvert_cap` alone: compiled with the meshes above into `graph_meshes`, but
 # not one of them, whose plane cases draw from one generator mesh after mesh.
-CAP_MESHES = {"fan156": fan156()}
+CAP_MESHES = {"fan155": fan155()}
 
 
 def graph_assets(meshes=GRAPH_MESHES):
@@ -1363,7 +1365,7 @@ def capped_case(meshes, assets, mesh, normal, point, toward, others, max_contact
     apex of `mesh`, then 5e-4 about the axis in that face across `toward` (within the face and
     edge tolerances), the way that puts the apex deeper than each of `others`; its face's
     centre over `point`; brought to touch on MuJoCo's own distance (by bisection, from 5 mm in
-    to 0.2 mm out), then pressed in by 1e-5."""
+    to 0.1 mm out), then pressed in by 1e-5."""
     verts = np.array(meshes[mesh]["vert"]).reshape(-1, 3)
     apex = max(range(len(verts)), key=lambda v: len(meshes[mesh]["polymap"][v]))
     size = [0.02, 0.02, 0.01]
@@ -1384,7 +1386,7 @@ def capped_case(meshes, assets, mesh, normal, point, toward, others, max_contact
         sys.exit(f"polyvert_cap {mesh}: no turn puts the apex deepest")
     d.geom_xmat[1] = turn
     centre = point + np.array(turn).reshape(3, 3) @ np.array([0.0, 0.0, size[2]])
-    lo, hi = -0.005, 2e-4
+    lo, hi = -0.005, 1e-4
     if not place_dist(m, d, centre + lo * normal, names) < 0 < place_dist(m, d, centre + hi * normal,
                                                                            names):
         sys.exit(f"polyvert_cap {mesh}: no touch within the bracket")
@@ -1404,11 +1406,12 @@ def polyvert_cap_cases(meshes):
     """The multi-contact's caps at a vertex: it reads the normals of at most mjMAX_POLYVERT
     faces there, and the edges of at most as many (engine_collision_gjk.c:1751, :1787). A box
     laid on the cone152 apex's polygon at polymap position 148 or 149 (both among those read)
-    meets it face to face, three contacts; on the polygon at 150, past the cap, the face is not among those
-    read and an edge of it is, two. A box holding the edge the fan156 apex's polygon at 149
-    contributes, turned halfway between that edge's two polygons, meets it edge to face, two
-    contacts; holding the edge of the polygon at 150 or 151, past the cap, nothing at the apex
-    is read as aligned, one. Each with four and eight contacts, either geom first. It refuses
+    meets it face to face, three contacts; on the polygon at 150, past the cap, the face is not
+    read, and the multi-contact falls back to an edge at the apex, two. A box holding the edge
+    the fan155 apex's polygon at 149 contributes, turned halfway between that edge's two
+    polygons, meets it edge to face, two contacts (that edge is read last, and no other at the
+    apex is aligned); holding the edge of the polygon at 150 or 151, past the cap, nothing at
+    the apex is read as aligned, one. Each with four and eight contacts, either geom first. It refuses
     a case of another count."""
     assets = graph_assets({**GRAPH_MESHES, **CAP_MESHES})
     out = {}
@@ -1429,7 +1432,7 @@ def polyvert_cap_cases(meshes):
                 if case["out"]["nx"] != want:
                     sys.exit(f"polyvert_cap face {pos}: {case['out']['nx']} contacts, not {want}")
                 out[f"face_{pos}_{k}_{'box' if box_first else 'cone'}_first"] = case
-    fan = meshes["fan156"]
+    fan = meshes["fan155"]
     verts = np.array(fan["vert"]).reshape(-1, 3)
     apex = max(range(len(verts)), key=lambda v: len(fan["polymap"][v]))
     for pos, want in ((149, 2), (150, 1), (151, 1)):
@@ -1444,7 +1447,7 @@ def polyvert_cap_cases(meshes):
         point = verts[apex] + 0.2 * (verts[prev] - verts[apex])
         for k in (4, 8):
             for box_first in (False, True):
-                case = capped_case(meshes, assets, "fan156", normal, point, edge, [prev], k,
+                case = capped_case(meshes, assets, "fan155", normal, point, edge, [prev], k,
                                    box_first)
                 if case["out"]["nx"] != want:
                     sys.exit(f"polyvert_cap edge {pos}: {case['out']['nx']} contacts, not {want}")
