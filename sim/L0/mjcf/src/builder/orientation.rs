@@ -7,7 +7,7 @@
 
 use nalgebra::{Matrix3, UnitQuaternion, Vector3, Vector4};
 
-use crate::types::{AngleUnit, MjcfCompiler};
+use crate::types::{AngleUnit, MjcfCompiler, MjcfSite};
 
 /// MuJoCo's compiler's `mjEPS` (`user_util.h:29`).
 pub const MJ_EPS: f64 = 1e-14;
@@ -58,6 +58,32 @@ pub fn z2quat(vec: &[f64; 3]) -> [f64; 4] {
 /// Convert an MJCF quaternion `[w, x, y, z]` to a `UnitQuaternion`.
 pub fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
+}
+
+/// A site's orientation: its alternative where it has one
+/// (`resolve_orientation`), else its quaternion made unit as MuJoCo's compiler
+/// makes it (`normvec`, `user_objects.cc:3988`), left as it is where its norm
+/// lies within mjEPS of 1 (`quat_from_wxyz` divides by the norm whatever it
+/// is).
+pub fn site_orientation(site: &MjcfSite, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
+    let quat = site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
+    if site.euler.is_some()
+        || site.axisangle.is_some()
+        || site.xyaxes.is_some()
+        || site.zaxis.is_some()
+    {
+        return resolve_orientation(
+            quat,
+            site.euler,
+            site.axisangle,
+            site.xyaxes,
+            site.zaxis,
+            compiler,
+        );
+    }
+    let mut q = [quat[0], quat[1], quat[2], quat[3]];
+    normvec(&mut q);
+    UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
 }
 
 /// Convert a `UnitQuaternion` back to MJCF `Vector4<f64>` (w, x, y, z order).

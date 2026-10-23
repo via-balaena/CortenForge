@@ -22,10 +22,12 @@ state, step 100's with the sphere's contact rows' forces negated and
 mj_sensorAcc run again, so that contact's normal force is below 0 and the
 sphere's touch reads 0. `site_sizes`: the size MuJoCo compiles for each
 site of a document whose sites write their sizes in part or not at all,
-over default classes (a site's size is its touch sensor's zone). `rays`:
-mju_rayGeom on each type it takes (`rays` says how they are drawn), and
-rays on the edges of its tests (`EDGE_RAYS`), each with MuJoCo's distance. `zones`: a sphere on a plane with touch sensors on
-eleven sites of the sphere and two of the world, a box on a plane with
+over default classes (a site's size is its touch sensor's zone), with each
+site's position and orientation; `sites_turned` the same for sites in turned
+frames and in bodies fusestatic folds away. `rays`: mju_rayGeom on each type
+it takes (`rays` says how they are drawn), and rays on the edges of its
+tests (`EDGE_RAYS`), each with MuJoCo's distance. `zones`: a sphere on a
+plane with touch sensors on eleven sites of the sphere and two of the world, a box on a plane with
 five, a sphere on a box on a plane with two on each, whose zones take some
 of their bodies' contacts and not others (`BALL_SITES` and the rest say
 where they lie), at the same states as the cases above. `zone_edges`: the
@@ -118,9 +120,11 @@ def negated(m, d, st):
 
 # Sites whose sizes are written in part, or not at all, over default classes three deep, a
 # body's childclass among them, and sites given by a segment (`fromto`, on the site, from a
-# class, from a child class over its parent's, nearly along z, and in a moved frame, its own and
-# its class's), and a class's position in a moved frame: the zone a touch sensor reads is its
-# site's size and pose.
+# class, from a child class over its parent's, nearly along z, in a moved frame, its own and
+# its class's, and over the site's own euler), and a class's position in a moved frame: the zone
+# a touch sensor reads is its site's size and pose. And the class each site takes: a frame's
+# childclass, nested frames', a frame's in a body's childclass, a body's over its parent's, a
+# body's in a frame, and a site's own euler over its class's in a moved frame.
 SITE_SIZES_XML = """<mujoco model="site_sizes">
   <default>
     <site size="0.02 0.03"/>
@@ -144,6 +148,12 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
     </default>
     <default class="p">
       <site pos="0.1 0 0"/>
+    </default>
+    <default class="q">
+      <site type="cylinder" size="0.03 0.04" pos="0 0 0.01"/>
+    </default>
+    <default class="r">
+      <site euler="10 20 30"/>
     </default>
   </default>
   <worldbody>
@@ -171,21 +181,104 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
         <site name="class_fromto_in_a_frame" class="d"/>
         <site name="class_pos_in_a_frame" class="p"/>
       </frame>
+      <site name="fromto_over_own_euler" class="d" euler="0 45 0"/>
+      <frame childclass="q" pos="0.3 -0.2 0.1">
+        <site name="frame_childclass"/>
+      </frame>
+      <frame childclass="q" pos="0 0.1 0">
+        <frame pos="0.1 0 0">
+          <site name="nested_frames"/>
+        </frame>
+      </frame>
+      <frame pos="0.2 0 0">
+        <site name="own_euler_over_class_in_a_frame" class="r" euler="0 45 0"/>
+      </frame>
+      <frame pos="0 0 0.3">
+        <body name="b_in_a_frame" childclass="q">
+          <joint type="hinge"/>
+          <geom size="0.1"/>
+          <site name="body_in_a_frame"/>
+        </body>
+      </frame>
       <body name="b1" childclass="a">
         <joint type="hinge"/>
         <geom size="0.1"/>
         <site name="childclass_a"/>
         <site name="childclass_a_two_written" size="0.3 0.4"/>
+        <frame pos="0 0.3 0">
+          <site name="body_childclass_in_a_frame"/>
+        </frame>
+        <frame childclass="q" pos="0 0.2 0">
+          <site name="frame_childclass_in_body_childclass"/>
+        </frame>
+        <body name="b2" childclass="q">
+          <joint type="hinge"/>
+          <geom size="0.1"/>
+          <site name="body_childclass_over_parent"/>
+        </body>
       </body>
     </body>
   </worldbody>
 </mujoco>"""
 
 
-def site_sizes():
-    """Each named site's size, position and orientation as MuJoCo compiles `SITE_SIZES_XML`."""
-    m = mujoco.MjModel.from_xml_string(SITE_SIZES_XML)
-    return {"xml": SITE_SIZES_XML,
+# Sites in a turned frame (a segment, its own and its class's, and a class's euler) and in bodies
+# fusestatic folds away, moved, turned, both, and one fused into another (a class's segment, the
+# site's own, a class's position, a class's euler).
+SITES_TURNED_XML = """<mujoco model="sites_turned">
+  <compiler fusestatic="true"/>
+  <default>
+    <default class="f">
+      <site type="capsule" size="0.02" fromto="0 0 0 0.1 0.05 0.4"/>
+    </default>
+    <default class="fb">
+      <site type="box" size="0.02" fromto="0.1 0 0 0.1 0.3 0.4"/>
+    </default>
+    <default class="q">
+      <site type="cylinder" size="0.03 0.04" pos="0 0 0.01"/>
+    </default>
+    <default class="r">
+      <site euler="10 20 30"/>
+    </default>
+  </default>
+  <worldbody>
+    <frame pos="0.1 0.2 0.3" euler="30 -20 75">
+      <site name="fromto_in_a_turned_frame" type="capsule" size="0.01" fromto="0 0 0 0.1 0.2 0.3"/>
+      <site name="class_fromto_in_a_turned_frame" class="fb"/>
+      <site name="class_euler_in_a_turned_frame" class="r"/>
+    </frame>
+    <body name="b" pos="0.5 0 1" euler="0 15 0">
+      <freejoint/>
+      <geom size="0.05"/>
+      <body name="moved" pos="0.2 0.1 -0.1">
+        <geom size="0.02"/>
+        <site name="fused_moved_class_fromto" class="f"/>
+        <site name="fused_moved_own_fromto" type="box" size="0.02" fromto="0.1 0 0 0.1 0.3 0.4"/>
+        <site name="fused_moved_class_pos" class="q"/>
+      </body>
+      <body name="turned" euler="20 40 -60">
+        <geom size="0.02"/>
+        <site name="fused_turned_class_fromto" class="f"/>
+        <site name="fused_turned_class_euler" class="r"/>
+      </body>
+      <body name="moved_turned" pos="0.2 0.1 -0.1" euler="20 40 -60">
+        <geom size="0.02"/>
+        <site name="fused_moved_turned_class_fromto" class="f"/>
+        <site name="fused_moved_turned_own_fromto" type="box" size="0.02" fromto="0.1 0 0 0.1 0.3 0.4"/>
+        <site name="fused_moved_turned_class_pos" class="q"/>
+        <body name="nested" pos="0 0 0.1" euler="0 0 33">
+          <site name="fused_twice_class_fromto" class="f"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+
+def site_poses(xml):
+    """Each named site's size, position and orientation as MuJoCo compiles `xml`."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    return {"xml": xml,
             "site_size": {m.site(i).name: floats(m.site_size[i]) for i in range(m.nsite)},
             "site_pos": {m.site(i).name: floats(m.site_pos[i]) for i in range(m.nsite)},
             "site_quat": {m.site(i).name: floats(m.site_quat[i]) for i in range(m.nsite)}}
@@ -432,9 +525,9 @@ def zone_case(name, text):
 # its position to (0, 0, 0.5), on a sphere site's surface and a box site's top face (each ray
 # meets its zone at distance 0); set to 1e-16, where mju_normalize3 takes the ray as (1, 0, 0),
 # turned on the sphere's side; to 1e-15, mjMINVAL itself; and the position to (0.3, 0, 0.5), on
-# the bottom of a sphere site off the contact's own line, which only that position's ray meets. And a body whose two geoms an
-# explicit <pair> sets against each other, so that the sensor's body is the contact's second
-# side as well as its first, and the ray is turned.
+# the bottom of a sphere site off the contact's own line, which only that position's ray meets.
+# And a body whose two geoms an explicit <pair> sets against each other, so that the sensor's
+# body is the contact's second side as well as its first, and the ray is turned.
 EDGE_BALL_XML = """<mujoco model="zone_edges_ball">
   <option timestep="0.002"/>
   <worldbody>
@@ -507,7 +600,8 @@ def main():
     marker = oracle()
     cases = {f"{cone}_{condim}": case(cone, condim) for cone, condim in CASES}
     out = {"oracle": marker, "cases": finite_or_string(cases),
-           "site_sizes": finite_or_string(site_sizes()),
+           "site_sizes": finite_or_string(site_poses(SITE_SIZES_XML)),
+           "sites_turned": finite_or_string(site_poses(SITES_TURNED_XML)),
            "rays": finite_or_string(rays()),
            "zones": finite_or_string({n: zone_case(n, t) for n, t in zone_documents().items()}),
            "zone_edges": finite_or_string(zone_edges())}
