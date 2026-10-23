@@ -1830,7 +1830,7 @@ fn mesh_contacts_part_from_mujocos_by_the_hulls_order() {
 /// `<size memory="100K"/>`. MuJoCo 3.5.0 keeps 93 contacts there, drops the
 /// rest with `mjWARN_CONTACTFULL` and makes no rows (`mjWARN_CNSTRFULL`), as
 /// `gen_collision_reference.py`'s `mujoco_arena_limits` asserts on this
-/// document; sim-core has no arena, so every contact and row is made and
+/// scene; sim-core has no arena, so every contact and row is made and
 /// neither warning is raised.
 #[test]
 fn a_full_arena_drops_no_contact_and_no_row() {
