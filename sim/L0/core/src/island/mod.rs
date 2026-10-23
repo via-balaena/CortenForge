@@ -34,9 +34,11 @@ pub(crate) use sleep::{
 ///
 /// [`StepError::ConstraintWithoutTree`] for a geom contact between two static
 /// bodies at the dense size, where MuJoCo stops (`treeFirst`,
-/// `engine_island.c:225-228`). A flex contact whose sides have no dofs reaches
-/// no tree either, and stays in no island: MuJoCo stops there too ("no tree
-/// found", `:271-277`), not ported (ledger L220).
+/// `engine_island.c:225-228`). MuJoCo also stops on a flex contact's row that
+/// reaches no tree ("no tree found", `:271-277`), which sim-core does not
+/// (registry `D-FLEX-NO-TREE`): such a row joins its contact's other rows'
+/// island, and a contact none of whose rows reaches a tree stays in no
+/// island.
 // Tree, dof and row indices are usize stored as i32 in mjData's arrays, bounded by realistic model sizes.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub(crate) fn mj_island(model: &Model, data: &mut Data) -> Result<(), StepError> {
@@ -156,15 +158,44 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) -> Result<(), StepError>
         *slot += 1;
     }
 
-    // Rows: each in the island of its first tree.
+    // Rows: each in the island of its first tree. A contact's row that
+    // reaches no tree takes the first tree of the contact's other rows, where
+    // MuJoCo stops ("no tree found", registry `D-FLEX-NO-TREE`): an elliptic
+    // contact's torsional and rolling rows where neither side has a
+    // rotational dof stay with its other rows.
     data.efc_island.resize(nefc, -1);
     data.island_nefc[..nisland].fill(0);
-    for row in 0..nefc {
-        let first = match row_tree_pair(model, data, row) {
+    let mut firsts: Vec<Option<usize>> = (0..nefc)
+        .map(|row| match row_tree_pair(model, data, row) {
             Some((a, b)) => a.or(b),
             None => row_trees(model, data, row).first().copied(),
-        };
-        if let Some(isl) = first.and_then(|t| island_of(data.tree_island[t])) {
+        })
+        .collect();
+    let contact = |row: usize| {
+        matches!(
+            data.efc_type[row],
+            ConstraintType::ContactFrictionless
+                | ConstraintType::ContactPyramidal
+                | ConstraintType::ContactElliptic
+        )
+    };
+    let mut start = 0;
+    while start < nefc {
+        let key = (data.efc_type[start], data.efc_id[start]);
+        let end = (start..nefc)
+            .find(|&r| (data.efc_type[r], data.efc_id[r]) != key)
+            .unwrap_or(nefc);
+        if contact(start)
+            && let Some(first) = firsts[start..end].iter().flatten().next().copied()
+        {
+            firsts[start..end]
+                .iter_mut()
+                .for_each(|t| *t = t.or(Some(first)));
+        }
+        start = end;
+    }
+    for row in 0..nefc {
+        if let Some(isl) = firsts[row].and_then(|t| island_of(data.tree_island[t])) {
             data.efc_island[row] = isl as i32;
             data.island_nefc[isl] += 1;
         }

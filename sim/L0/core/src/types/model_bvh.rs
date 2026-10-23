@@ -127,13 +127,8 @@ impl Model {
         let position = |v: usize| data.xpos[self.flexvert_bodyid[v]];
         let mut nodes = Tree::default();
         for f in 0..self.nflex {
-            let active = |e: usize| {
-                self.flex_dim[f] < 3
-                    || usize::try_from(self.flex_activelayers[f])
-                        .is_ok_and(|layers| self.flex_elemlayer[self.flex_elemadr[f] + e] < layers)
-            };
             let elements: Vec<Element> = (0..self.flex_elemnum[f])
-                .filter(|&e| active(e))
+                .filter(|&e| self.flex_elem_active(f, e))
                 .map(|e| {
                     let global = self.flex_elemadr[f] + e;
                     let adr = self.flexelem_dataadr[global];

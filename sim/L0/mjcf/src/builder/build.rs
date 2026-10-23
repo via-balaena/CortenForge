@@ -13,8 +13,7 @@ use tracing::warn;
 
 use super::ModelBuilder;
 use super::flex::{
-    compute_element_adjacency, compute_flex_address_table, compute_flex_count_table,
-    compute_flexedge_crosssection,
+    compute_flex_address_table, compute_flex_count_table, compute_flexedge_crosssection,
 };
 
 impl ModelBuilder {
@@ -102,15 +101,6 @@ impl ModelBuilder {
             &self.flex_thickness,
             &self.flexvert_radius,
             &self.flex_vertadr,
-        );
-
-        // Compute element adjacency for self-collision dispatch (Spec C S4).
-        let (flex_elem_adj, flex_elem_adj_adr, flex_elem_adj_num) = compute_element_adjacency(
-            &self.flexelem_data,
-            &self.flexelem_dataadr,
-            &self.flexelem_datanum,
-            self.flexelem_flexid.len(),
-            self.nflexvert,
         );
 
         Model {
@@ -294,7 +284,6 @@ impl ModelBuilder {
             flexvert_dofadr: self.flexvert_dofadr,
             flexvert_mass: self.flexvert_mass,
             flexvert_invmass: self.flexvert_invmass,
-            flexvert_radius: self.flexvert_radius,
             flexvert_flexid: self.flexvert_flexid,
             flexvert_bodyid: self.flexvert_bodyid,
             flexedge_vert: self.flexedge_vert,
@@ -314,9 +303,6 @@ impl ModelBuilder {
             flexelem_datanum: self.flexelem_datanum,
             flexelem_volume0: self.flexelem_volume0,
             flexelem_flexid: self.flexelem_flexid,
-            flex_elem_adj,
-            flex_elem_adj_adr,
-            flex_elem_adj_num,
             // The flexes' element layers and pairs (computed below)
             flex_elemlayer: vec![],
             flex_evpair: vec![],

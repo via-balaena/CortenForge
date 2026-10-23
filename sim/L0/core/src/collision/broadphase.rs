@@ -162,7 +162,7 @@ pub(super) fn bodyflex_pairs(model: &Model, data: &Data, geoms: &BodyGeoms) -> V
                 }
             })
             .collect();
-        for (i1, i2) in sweep_and_prune(&aamm) {
+        for (i1, i2) in sweep_and_prune(&aamm, 0) {
             let (bf1, bf2) = (bodyflexes[i1], bodyflexes[i2]);
             if bf1 < nbody
                 && bf2 < nbody
@@ -302,18 +302,19 @@ fn flex_aamm(model: &Model, data: &Data, flex: usize, frame: &[f64; 9]) -> [f64;
     aamm
 }
 
-/// The pairs `(i, j)` of `aamm` whose bounds overlap, swept along axis 0 with
-/// its bounds cast to `f32` and sorted stably, the minima before the maxima
-/// of each entry, and pruned on axes 1 and 2 (`mj_SAP`,
+/// The pairs `(i, j)` of `aamm` (each `[min; 3, max; 3]`) whose bounds
+/// overlap, swept along `axis` with its bounds cast to `f32` and sorted
+/// stably, the minima before the maxima of each entry, and pruned on the
+/// other two axes; `i` was swept first (`mj_SAP`,
 /// `engine_collision_driver.c:1021-1114`).
-fn sweep_and_prune(aamm: &[[f64; 6]]) -> Vec<(usize, usize)> {
+pub(super) fn sweep_and_prune(aamm: &[[f64; 6]], axis: usize) -> Vec<(usize, usize)> {
     // (value, entry, is the maximum)
     let mut sweep: Vec<(f32, usize, bool)> = Vec::with_capacity(2 * aamm.len());
     for (i, a) in aamm.iter().enumerate() {
         #[allow(clippy::cast_possible_truncation)] // MuJoCo sorts on f32
         {
-            sweep.push((a[0] as f32, i, false));
-            sweep.push((a[3] as f32, i, true));
+            sweep.push((a[axis] as f32, i, false));
+            sweep.push((a[axis + 3] as f32, i, true));
         }
     }
     // MuJoCo's `SAPcmp`: less, equal, or else greater, compared exactly.
@@ -327,6 +328,11 @@ fn sweep_and_prune(aamm: &[[f64; 6]]) -> Vec<(usize, usize)> {
             std::cmp::Ordering::Greater
         }
     });
+    let (y, z) = match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
     let mut active: Vec<usize> = Vec::new();
     let mut pairs = Vec::new();
     for &(_, i, is_max) in &sweep {
@@ -338,7 +344,7 @@ fn sweep_and_prune(aamm: &[[f64; 6]]) -> Vec<(usize, usize)> {
         }
         for &a in &active {
             let (p, q) = (&aamm[a], &aamm[i]);
-            if p[1] > q[4] || q[1] > p[4] || p[2] > q[5] || q[2] > p[5] {
+            if p[y] > q[y + 3] || q[y] > p[y + 3] || p[z] > q[z + 3] || q[z] > p[z + 3] {
                 continue;
             }
             pairs.push((a, i));
@@ -459,4 +465,27 @@ fn plane_geom_dist(data: &Data, plane: usize, geom: usize) -> f64 {
     let n = data.geom_xmat[plane].column(2);
     let d = data.geom_xpos[geom] - data.geom_xpos[plane];
     d.x * n[0] + d.y * n[1] + d.z * n[2]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sweep_and_prune;
+
+    /// The sweep takes any number of entries, its pairs not packed into two
+    /// 16-bit halves as MuJoCo's are (registry `D-FLEX-SAP-SIZE`): 70,000
+    /// boxes along x, each overlapping its successor alone, give each
+    /// successive pair, those numbered past 65,535 among them.
+    #[test]
+    fn the_sweep_pairs_entries_numbered_past_16_bits() {
+        let aamm: Vec<[f64; 6]> = (0..70_000_u32)
+            .map(|i| {
+                let x = f64::from(i);
+                [x, 0.0, 0.0, x + 1.5, 1.0, 1.0]
+            })
+            .collect();
+        let pairs = sweep_and_prune(&aamm, 0);
+        assert_eq!(pairs.len(), 69_999);
+        assert!(pairs.iter().all(|&(a, b)| b == a + 1));
+        assert!(pairs.contains(&(65_535, 65_536)));
+    }
 }

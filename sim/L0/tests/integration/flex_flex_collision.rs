@@ -6,7 +6,6 @@
 //! sentinel-safe downstream pipeline, and self/flex-rigid regression.
 
 use approx::assert_relative_eq;
-use sim_core::DISABLE_ISLAND;
 use sim_mjcf::load_model;
 
 /// Helper: count flex-flex contacts (a flex on each side, two different
@@ -83,26 +82,25 @@ fn t02_compatible_bitmask_generates_contacts() {
         .filter(|c| matches!(c.flex, [Some(f1), Some(f2)] if f1 != f2))
         .collect();
 
-    // AC2: contact count. MuJoCo 3.5.0 produces 32 for this geometry (EGT-2/EGT-8).
-    // CortenForge produces 36 — a pre-existing narrowphase conformance gap in
-    // triangle-triangle intersection (Spec C territory). Assert our count to
-    // catch regressions; the MuJoCo delta is tracked separately.
-    assert_eq!(
-        ff_contacts.len(),
-        36,
-        "compatible bitmask must produce 36 flex-flex contacts (MuJoCo: 32)"
-    );
+    // AC2: contact count, MuJoCo 3.5.0's for these grids (the golden
+    // `flex_self.json`'s case `coplanar_grids`, the same grids with a body
+    // for each vertex).
+    assert_eq!(ff_contacts.len(), 31, "MuJoCo's 31 flex-flex contacts");
 
     // AC9: contact encoding
     for c in &ff_contacts {
         assert_eq!(c.geom, [None; 2], "a flex-flex contact has no geom");
-        assert!(c.vert.iter().all(Option::is_some), "a vertex on each side");
+        assert!(
+            c.elem.iter().all(Option::is_some),
+            "an element on each side"
+        );
+        assert_eq!(c.vert, [None; 2], "no vertex");
         let [Some(fid1), Some(fid2)] = c.flex else {
             panic!("a flex on each side: {:?}", c.flex);
         };
         assert_ne!(
             fid1, fid2,
-            "flex-flex vertices must be from different flex objects"
+            "a flex-flex contact's sides are on different flexes"
         );
     }
 }
@@ -414,7 +412,6 @@ fn t07_three_flex_all_pairs_enumeration() {
 #[test]
 fn t08_condim_max_combination() {
     // Test that condim combination uses max: condim=1 vs condim=4 → max=4.
-    // Flex contact factory maps: 1→1, 4→4, _→3. So max(1,4)=4 → dim=4.
     let mjcf = r#"
         <mujoco model="condim_test">
             <option gravity="0 0 0" timestep="0.001"/>
@@ -452,7 +449,7 @@ fn t08_condim_max_combination() {
         "must generate flex-flex contacts for condim test"
     );
 
-    // max(1, 4) = 4 → dim = 4 (flex factory maps 4→4)
+    // max(1, 4) = 4 → dim = 4
     for c in &ff_contacts {
         assert_eq!(c.dim, 4, "condim must be max(1, 4) = 4");
     }
@@ -528,87 +525,6 @@ fn t09_full_forward_step_no_panic() {
     // solve → force distribution) works for flex-flex contacts.
 }
 
-/// T9's scene at the dense size: a contact between two pinned vertices has
-/// no dof on either side, so with islands its rows are in no island (MuJoCo
-/// stops on such a row, ledger L220). Their Jacobian is zero, so their force
-/// cannot depend on the other rows': each takes the force and state the
-/// whole problem's solve (islands disabled) gives it.
-#[test]
-fn rows_in_no_island_take_the_whole_solve_s_force() {
-    let model = load_model(FULL_STEP_SCENE).expect("load");
-    assert!(!model.is_sparse(), "the dense size");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    let outside: Vec<usize> = (0..data.efc_type.len())
-        .filter(|&row| data.efc_island[row] < 0)
-        .collect();
-    assert!(
-        outside.iter().any(|&row| data.efc_force[row] != 0.0),
-        "rows in no island, one with a force"
-    );
-
-    let mut whole_model = model.clone();
-    whole_model.disableflags |= DISABLE_ISLAND;
-    let mut whole = whole_model.make_data();
-    whole
-        .forward(&whole_model)
-        .expect("forward without islands");
-    assert_eq!(whole.efc_type, data.efc_type, "the same rows");
-    for &row in &outside {
-        assert_eq!(
-            data.efc_force[row].to_bits(),
-            whole.efc_force[row].to_bits(),
-            "row {row}'s force"
-        );
-        assert_eq!(
-            data.efc_state[row], whole.efc_state[row],
-            "row {row}'s state"
-        );
-    }
-}
-
-// ============================================================================
-// T11: Self-collision regression → AC12
-// ============================================================================
-
-#[test]
-fn t11_self_collision_regression() {
-    // Verify the narrowphase generalization (f, f) produces same results as
-    // the original (f) for self-collision.
-    let mjcf = r#"
-        <mujoco model="self_collision_regression">
-            <option gravity="0 0 -9.81" timestep="0.001"/>
-            <worldbody/>
-            <deformable>
-                <flex name="f1" dim="2" density="1000" radius="0.01"
-                      selfcollide="auto">
-                    <contact contype="1" conaffinity="1" margin="0.01"/>
-                    <elasticity young="50"/>
-                    <vertex pos="0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0  0 2 0  1 2 0  2 2 0"/>
-                    <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
-                </flex>
-            </deformable>
-        </mujoco>
-    "#;
-
-    let model = load_model(mjcf).expect("load");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-
-    // Self-collision should work the same after generalization.
-    // No panic. Self-collision contacts should use make_contact_flex_self()
-    // (not make_contact_flex_flex) since flex_id1 == flex_id2.
-    for c in &data.contacts {
-        if let [Some(f1), Some(f2)] = c.flex {
-            // For self-collision contacts, both vertices should be from the same flex
-            assert_eq!(
-                f1, f2,
-                "self-collision contacts must have both vertices from same flex"
-            );
-        }
-    }
-}
-
 // ============================================================================
 // T12: Flex-rigid regression → AC13
 // ============================================================================
@@ -652,11 +568,11 @@ fn t12_flex_rigid_regression() {
 }
 
 // ============================================================================
-// T13: contact_param_flex_flex unit test → supplementary
+// T13: contact_param_flexes unit test → supplementary
 // ============================================================================
 
 #[test]
-fn t13_contact_param_flex_flex_unit() {
+fn t13_contact_param_flexes_unit() {
     // Test the parameter combination function via actual flex-flex contacts.
     // Use overlapping 2×2 grids with large margins to ensure contacts are
     // generated for coplanar triangles (depth ≈ 0 needs margin > gap).
@@ -735,9 +651,9 @@ fn t13_contact_param_flex_flex_unit() {
 #[test]
 fn t14_zero_element_flex_no_panic() {
     // A flex with zero elements should not panic in flex-flex dispatch.
-    // The guard in mj_collide_flex_pair (line 1118) early-returns for zero
-    // elements. MJCF always generates elements, so we load a normal model
-    // then zero out one flex's element count to exercise the guard.
+    // MJCF always generates elements, so we load a normal model, zero out one
+    // flex's element count, and derive its element pairs and hierarchy again
+    // (`Model::recompute_derived`'s table).
     let mjcf = r#"
         <mujoco model="zero_elem">
             <option gravity="0 0 0" timestep="0.001"/>
@@ -770,8 +686,10 @@ fn t14_zero_element_flex_no_panic() {
         "baseline must produce flex-flex contacts"
     );
 
-    // Zero out flex 1's element count to exercise the early-return guard
+    // Zero out flex 1's element count
     model.flex_elemnum[1] = 0;
+    model.compute_flex_topology();
+    model.compute_flex_bvhs();
     let mut data = model.make_data();
     data.forward(&model).expect("forward zero-elem");
 
@@ -783,67 +701,35 @@ fn t14_zero_element_flex_no_panic() {
     );
 }
 
-// ============================================================================
-// T15: A flex-flex contact's Jacobian takes each vertex's body → AC12, AC13
-// ============================================================================
-
-/// A flex-flex contact's rows difference the two vertices' bodies'
-/// Jacobians, as MuJoCo's `mj_jacDifPair` does: the normal row is `+n` on
-/// the first vertex's three slide dofs and `−n` on the second's, 0
-/// elsewhere, and a torsional or rolling row is 0 (a vertex has no
-/// rotational dof).
+/// [`sim_core::Data::contacts_between_bodies`] counts a contact with a flex
+/// element on a side for no pair of bodies: two overlapping grids' contacts,
+/// each between an element of each, count for none, the world's included.
 #[test]
-fn t15_flex_flex_contact_jacobian_takes_each_vertex_body() {
-    let model = load_model(&two_overlapping_grids_mjcf(1, 3, 2, 1)).expect("load");
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
-    let contact = data
-        .contacts
-        .iter()
-        .find(|c| c.vert.iter().all(Option::is_some))
-        .expect("a flex-flex contact");
-    // Side 1's vertex takes +n, side 0's −n.
-    let [v2, v1] = contact.flex_vertices(&model).map(Option::unwrap);
-    let j = sim_core::compute_contact_jacobian(&model, &data, contact);
-    assert_eq!((j.nrows(), j.ncols()), (contact.dim, model.nv));
-    let (dof1, dof2) = (model.flexvert_dofadr[v1], model.flexvert_dofadr[v2]);
-    for c in 0..model.nv {
-        let want = if (dof1..dof1 + 3).contains(&c) {
-            contact.normal[c - dof1]
-        } else if (dof2..dof2 + 3).contains(&c) {
-            -contact.normal[c - dof2]
-        } else {
-            0.0
-        };
-        assert!(
-            (j[(0, c)] - want).abs() < 1e-12,
-            "J[0,{c}]: {}, expected {want}",
-            j[(0, c)]
-        );
-    }
-    for r in 3..contact.dim {
-        assert!((0..model.nv).all(|c| j[(r, c)] == 0.0), "row {r} is 0");
-    }
-}
-
-/// [`sim_core::Data::contacts_between_bodies`] reads a flex contact's sides
-/// by their own bodies: two overlapping grids' contacts between the flexes
-/// count between their vertex bodies, and none against the world.
-#[test]
-fn contacts_between_bodies_read_flex_flex_contacts_without_a_geom() {
-    let model = load_model(&two_overlapping_grids_mjcf(1, 1, 1, 1)).expect("load");
+fn contacts_between_bodies_count_no_pair_for_two_flexes_elements() {
+    let grids = two_overlapping_grids_mjcf(1, 1, 1, 1);
+    let alone = r#"margin="0.01" selfcollide="none"/>"#;
+    let xml = grids.replace(r#"margin="0.01"/>"#, alone);
+    assert_eq!(
+        xml.matches(alone).count(),
+        2,
+        "each grid without self-collision"
+    );
+    let model = load_model(&xml).expect("load");
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
     assert!(data.ncon > 0, "the grids touch");
+    for c in &data.contacts {
+        assert!(
+            c.elem.iter().all(Option::is_some),
+            "an element on each side"
+        );
+    }
     assert_eq!(data.contacts_between_bodies(&model, 0, 0), 0);
     let pairs: usize = (0..model.nflexvert)
-        .flat_map(|a| (a + 1..model.nflexvert).map(move |b| (a, b)))
+        .flat_map(|a| (0..model.nflexvert).map(move |b| (a, b)))
         .map(|(a, b)| {
             data.contacts_between_bodies(&model, model.flexvert_bodyid[a], model.flexvert_bodyid[b])
         })
         .sum();
-    assert_eq!(
-        pairs, data.ncon,
-        "every contact is between two vertex bodies"
-    );
+    assert_eq!(pairs, 0, "no contact is between two vertex bodies");
 }

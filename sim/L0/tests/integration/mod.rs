@@ -263,7 +263,13 @@ pub mod com_frame_parity;
 // Flex Solver Unification Tests (§6b)
 // ============================================================================
 
+/// The flex collision goldens of MuJoCo 3.5.0, each case compared with
+/// sim-core's run.
+pub mod flex_golden;
 pub mod flex_rigid_parity;
+/// A flex against a flex and against itself, against MuJoCo 3.5.0, from
+/// its golden.
+pub mod flex_self_parity;
 /// Flex unification acceptance tests: AC1–AC15 from future_work_6b_precursor_to_7.
 pub mod flex_unified;
 

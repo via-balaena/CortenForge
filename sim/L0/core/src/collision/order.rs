@@ -77,18 +77,28 @@ pub(super) fn pair_place(model: &Model, contact: &mut Contact, pair: usize) -> L
     }
 }
 
-/// The place of a flex contact: a geom against a flex, by the geom and then
-/// the element or vertex (`contactcompare`, `engine_collision_driver.c:
-/// 226-256`), two flexes, or a flex with itself. A flex is numbered after
-/// the bodies in a signature.
+/// The place of a flex contact: a geom against a flex, or two flexes, by
+/// each side's geom, else its element, else its vertex (`contactcompare`,
+/// `engine_collision_driver.c:226-256`); a flex with itself, after every
+/// pair, in the order made. A flex is numbered after the bodies in a
+/// signature.
 pub(super) fn flex_place(model: &Model, contact: &Contact) -> ListPlace {
     let flex = |k: usize| contact.flex[k].map_or(0, |f| model.nbody + f);
+    let object = |k: usize| {
+        contact.geom[k]
+            .or(contact.elem[k])
+            .or(contact.vert[k])
+            .unwrap_or(0)
+    };
     let (signature, flex_self, within) = if let Some(geom) = contact.geom[0] {
-        let object = contact.elem[1].or(contact.vert[1]).unwrap_or(0);
-        ((model.geom_body[geom], flex(1)), false, (geom, object))
+        ((model.geom_body[geom], flex(1)), false, (geom, object(1)))
     } else {
         let (f1, f2) = (flex(0), flex(1));
-        ((f1.min(f2), f1.max(f2)), f1 == f2, (0, 0))
+        if f1 == f2 {
+            ((f1, f2), true, (0, 0))
+        } else {
+            ((f1, f2), false, (object(0), object(1)))
+        }
     };
     ListPlace {
         flex_self,

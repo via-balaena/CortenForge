@@ -40,6 +40,17 @@ impl Model {
             self.flex_evpair.extend(pairs);
         }
     }
+
+    /// Whether element `e` of flex `f` (flex-local) collides with the flex's
+    /// other elements and enters its hierarchy (`mj_isElemActive`,
+    /// `engine_collision_driver.c:214-220`): every element of a flex of dim
+    /// below 3, a tetrahedron while its layer (`flex_elemlayer`) is below
+    /// `flex_activelayers`.
+    pub(crate) fn flex_elem_active(&self, f: usize, e: usize) -> bool {
+        self.flex_dim[f] < 3
+            || usize::try_from(self.flex_activelayers[f])
+                .is_ok_and(|layers| self.flex_elemlayer[self.flex_elemadr[f] + e] < layers)
+    }
 }
 
 /// One flex's element layers and element–vertex pairs, its elements' vertices

@@ -312,6 +312,7 @@ fn geom_flex_contact(
     let dim = match condim {
         1 => 1,
         4 => 4,
+        5 => 5,
         6 => 6,
         _ => 3,
     };

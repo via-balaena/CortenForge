@@ -3015,8 +3015,7 @@ fn ac33_midphase_disable_flag_brute_force() {
     let cube = TriangleMeshData::new(vertices, indices);
     let pose = Pose::identity();
 
-    // use_bvh=false is what a flex vertex against a mesh without a hull takes
-    // when DISABLE_MIDPHASE is set (`flex_narrow`)
+    // use_bvh=false: the brute-force path
     let brute_contact = mesh_sphere_contact(&cube, &pose, Point3::new(0.0, 0.0, 0.7), 0.3, false);
     assert!(
         brute_contact.is_some(),

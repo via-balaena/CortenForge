@@ -124,16 +124,14 @@ sim-core/src/
 │   └── sleep.rs           # Sleep state machine, wake detection
 ├── collision/       # Collision detection pipeline
 │   ├── mod.rs             # mj_collision (broad + narrow dispatch)
-│   ├── pairs.rs           # Collision pair enumeration
 │   ├── narrow.rs          # Narrow-phase dispatch table
 │   ├── plane.rs           # Plane-vs-geom algorithms
 │   ├── pair_convex.rs     # Convex pair algorithms
 │   ├── pair_cylinder.rs   # Cylinder pair algorithms
 │   ├── mj_ccd.rs          # MuJoCo's native convex collision (GJK, EPA, multi-contact; plane-convex, convex-height field)
 │   ├── hfield.rs          # Height field collision
-│   ├── flex_collide.rs    # Flex collision dispatcher
-│   ├── flex_narrow.rs     # Flex sphere-geom narrowphase
-│   ├── flex_self.rs       # Flex self-collision (narrow, BVH, SAP)
+│   ├── flex_rigid.rs      # A body's geoms against a flex's elements
+│   ├── flex_flex.rs       # A flex against a flex and itself (internal, BVH, SAP, direct)
 │   └── sdf_collide.rs     # SDF collision
 ├── sensor/          # Sensor pipeline
 │   ├── mod.rs             # Sensor dispatch + computed sensors
@@ -431,7 +429,7 @@ modules:
 - `constraint/` — Unified constraint assembly (contact + equality sub-modules) + solver dispatch (PGS, CG, Newton, Noslip, QCQP)
 - `integrate/` — Euler, implicit, RK4 integration
 - `island/` — Constraint island discovery (DFS flood-fill) + sleep/wake state machine
-- `collision/` — Broad + narrow phase collision pipeline, flex collision (narrow, self-collision), pair enumeration
+- `collision/` — Broad + narrow phase collision pipeline, flex collision (a body, a flex and a flex against itself)
 - `sensor/` — Position/velocity/acceleration sensor stages, geom distance, post-processing
 - `tendon/` — Fixed-path and spatial-path tendon kinematics
 - `derivatives/` — Simulation transition derivatives (FD, analytical qDeriv, hybrid FD+analytical, SO(3) Jacobians)
@@ -462,7 +460,7 @@ with variable condim (1/3/4/6) and elliptic friction cones.
 Deformable bodies are unified into the rigid pipeline as flex bodies (matching
 MuJoCo's flex architecture). No separate crate — flex code is distributed
 across the sim-core module tree (`dynamics/flex.rs`, `forward/passive.rs`,
-`forward/position.rs`, `collision/flex_collide.rs`, `integrate/euler.rs`)
+`forward/position.rs`, `collision/flex_rigid.rs`, `collision/flex_flex.rs`, `integrate/euler.rs`)
 and the sim-mjcf `builder/flex.rs` module.
 
 | Dimension | Use Cases | MJCF Element |

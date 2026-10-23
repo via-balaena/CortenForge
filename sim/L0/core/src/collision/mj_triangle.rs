@@ -267,6 +267,31 @@ pub(super) fn raw_capsule_triangle(
     contacts
 }
 
+/// `planeVertex` (`engine_collision_driver.c:1714-1740`): vertex `v`, a
+/// sphere of `radius`, against the plane of the face `t0`, `t1`, `t2`, whose
+/// normal is `(t1 − t0) × (t2 − t0)` made unit: nothing where `v` is two
+/// radii or more behind the plane; else its distance minus `v`'s along the
+/// normal less two radii, its normal the plane's turned round, its position
+/// `v` moved along the normal by minus half `v`'s distance.
+pub(super) fn plane_vertex(
+    [t0, t1, t2]: [&[f64; 3]; 3],
+    v: &[f64; 3],
+    radius: f64,
+) -> Option<RawContact> {
+    let (e1, e2, ev) = (sub3(t1, t0), sub3(t2, t0), sub3(v, t0));
+    let mut nrm = cross(&e1, &e2);
+    normalize3(&mut nrm);
+    let dst = dot3(&ev, &nrm);
+    if dst <= -2.0 * radius {
+        return None;
+    }
+    Some(RawContact {
+        dist: -dst - 2.0 * radius,
+        pos: add_scl(v, &nrm, -0.5 * dst),
+        normal: scl3(&nrm, -1.0),
+    })
+}
+
 /// `mj_makeCapsule` (`engine_collision_driver.c:1432-1449`): the capsule a
 /// cable's element is, between its vertices `v1` and `v2`: its position
 /// halfway, its z axis from `v2` to `v1` (`mju_quatZ2Vec`), its radius the

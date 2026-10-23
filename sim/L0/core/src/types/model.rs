@@ -462,12 +462,11 @@ pub struct Model {
     ///   2. `(flex_contype[f] & flex_conaffinity[f]) != 0` — self-bitmask check
     ///   3. `flex_selfcollide[f]` — dedicated flag
     ///
-    /// Both `internal` (adjacent elements) and `selfcollide` (non-adjacent)
-    /// are independently gated behind conditions 1+2.
+    /// Both `internal` and `selfcollide` are gated behind conditions 1+2.
     pub flex_selfcollide: Vec<FlexSelfCollide>,
     /// Per-flex: internal collision flag (MuJoCo's default false). When true,
-    /// contacts between elements sharing an edge are generated (adjacent
-    /// element contacts).
+    /// each element meets the vertices of its pairs (`flex_evpair`) and a
+    /// tetrahedron's faces their opposite vertices (`mj_collideFlexInternal`).
     pub flex_internal: Vec<bool>,
     /// Per-flex: number of active element layers (MuJoCo's default 1): a
     /// dim-3 element is active while its layer, its distance from the
@@ -525,8 +524,6 @@ pub struct Model {
     pub flexvert_mass: Vec<f64>,
     /// Inverse mass (0 for pinned vertices).
     pub flexvert_invmass: Vec<f64>,
-    /// Collision radius per vertex.
-    pub flexvert_radius: Vec<f64>,
     /// Which flex object this vertex belongs to (for material lookup).
     pub flexvert_flexid: Vec<usize>,
     /// Body ID for this vertex. Each flex vertex has a dedicated body created
@@ -586,7 +583,8 @@ pub struct Model {
     pub flexelem_dataadr: Vec<usize>,
     /// Number of vertex indices per element (2, 3, or 4).
     pub flexelem_datanum: Vec<usize>,
-    /// Rest volume of each element (dim=3 only, topology data for future SVK).
+    /// Rest volume of each element, unsigned (dim=3 only, topology data for
+    /// future SVK).
     pub flexelem_volume0: Vec<f64>,
     /// Which flex object this element belongs to.
     pub flexelem_flexid: Vec<usize>,
@@ -607,16 +605,6 @@ pub struct Model {
     pub flex_evpairadr: Vec<usize>,
     /// Each flex's number of pairs (MuJoCo's `mjModel.flex_evpairnum`).
     pub flex_evpairnum: Vec<usize>,
-
-    // --- Per-element adjacency (for self-collision dispatch) ---
-    /// Flat sorted adjacency list. Element `e`'s adjacent elements are
-    /// `flex_elem_adj[flex_elem_adj_adr[e]..+flex_elem_adj_num[e]]`.
-    /// Two elements are adjacent if they share at least one vertex.
-    pub flex_elem_adj: Vec<usize>,
-    /// Start index in `flex_elem_adj` for element `e`. Length `nflexelem`.
-    pub flex_elem_adj_adr: Vec<usize>,
-    /// Number of adjacent elements for element `e`. Length `nflexelem`.
-    pub flex_elem_adj_num: Vec<usize>,
 
     // --- Per-hinge arrays (bending topology, length nflexhinge) ---
     // A hinge is a pair of adjacent elements sharing an edge.

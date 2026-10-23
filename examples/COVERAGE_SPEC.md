@@ -1180,8 +1180,8 @@ The flex system (2,797 LOC across dynamics and collision) implements
 deformable bodies — cloth, cables, and soft objects. Bodies are connected
 by edge constraints with stiffness and damping. Two bending models are
 available: Cotangent (Wardetzky/Garg, MuJoCo-conformant) and Bridson
-(dihedral angle springs). Self-collision uses specialized algorithms
-(brute-force, BVH, or sweep-and-prune).
+(dihedral angle springs). Self-collision takes MuJoCo's modes (each pair,
+hierarchy, or sweep and prune).
 
 **Note:** Flex bodies are beta — core algorithms work but edge cases may
 need refinement. These examples validate the current state and will catch
@@ -1197,7 +1197,7 @@ regressions as the implementation matures.
 2. **cable-drop** — A 1D flex body (chain of vertices, edge elements)
    dropped onto a plane. The cable coils and settles. Edge stiffness
    prevents excessive stretching. Demonstrates flex-rigid contact via
-   `flex_collide.rs`.
+   `flex_rigid.rs`.
 
 3. **bending-modes** — Same cloth, two bending models side by side:
    Cotangent (curvature-based, smoother) vs Bridson (dihedral angle,
@@ -1207,9 +1207,8 @@ regressions as the implementation matures.
 
 4. **self-collision** — A cloth dropped onto itself (folded). Self-collision
    prevents interpenetration. Three variants: `FlexSelfCollide::None`
-   (passes through itself), `FlexSelfCollide::Narrow` (brute-force
-   detection), `FlexSelfCollide::BVH` (accelerated). Only Narrow and BVH
-   prevent self-interpenetration.
+   (passes through itself), `FlexSelfCollide::Narrow` (each pair of
+   elements), `FlexSelfCollide::Bvh` (the flex's hierarchy).
 
 5. **stress-test** — Headless validation (12+ checks):
    - Edge lengths stay within tolerance of rest length
@@ -1217,7 +1216,7 @@ regressions as the implementation matures.
    - Young's modulus scaling: higher = less deformation
    - Bending stiffness: higher = larger bending radius
    - Flex-rigid contact: flex vertices don't penetrate plane
-   - Self-collision: vertex-vertex distance ≥ minimum gap
+   - Self-collision: no element passes through another
    - Cotangent bending energy = ∫κ² dA (curvature integral)
    - Bridson bending energy = Σ k*(θ - θ_rest)² (dihedral angles)
    - Damping: flex oscillations decay over time

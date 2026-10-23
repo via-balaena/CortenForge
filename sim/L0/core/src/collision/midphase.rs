@@ -8,9 +8,10 @@
 //! overlap unless one of the six face axes separates them by more than the
 //! margin (`mj_collideOBB`, `:524-618`). A body's hierarchy also descends
 //! with a flex's ([`collide_tree_flex`]), whose boxes are its elements'
-//! each step, in world coordinates (`bvh_aabb_dyn`). Not ported: two flexes'
-//! hierarchies, whose collisions sim-core finds apart from the pairs, and
-//! `bvh_active`, which marks the nodes visited for drawing.
+//! each step, in world coordinates (`bvh_aabb_dyn`), and two flexes'
+//! hierarchies together, a flex's with its own among them
+//! ([`collide_tree_flexes`]). Not ported: `bvh_active`, which marks the
+//! nodes visited for drawing.
 
 use nalgebra::{Matrix3, Vector3};
 
@@ -163,6 +164,52 @@ pub(super) fn collide_tree_flex(
     true
 }
 
+/// Append to `hits` each pair of an element of flex `flex1` and an element
+/// of flex `flex2` whose leaves the midphase reaches, in the order MuJoCo's
+/// `mj_collideTree` reaches them (`engine_collision_driver.c:761-779`):
+/// every pair of leaves, their boxes left to the narrow phase
+/// (`mj_collideElems`), the inner boxes tested within the two flexes'
+/// margins (`filterBox`). With the same flex on both sides, its collision
+/// with itself, a pair of nodes is taken once, the lower node first
+/// (`:683-686`). `false`, appending nothing, when either has no hierarchy.
+pub(super) fn collide_tree_flexes(
+    model: &Model,
+    data: &Data,
+    flex1: usize,
+    flex2: usize,
+    hits: &mut Vec<(usize, usize)>,
+    stack: &mut Vec<(usize, usize)>,
+) -> bool {
+    let tree = |f: usize| model.flex_bvhadr.get(f).copied().flatten();
+    let (Some(adr1), Some(adr2)) = (tree(flex1), tree(flex2)) else {
+        return false;
+    };
+    let tree1 = Hierarchy::of_flex(model, data, adr1, model.flex_bvhnum[flex1]);
+    let tree2 = Hierarchy::of_flex(model, data, adr2, model.flex_bvhnum[flex2]);
+    stack.clear();
+    stack.push((0, 0));
+    while let Some((node1, node2)) = stack.pop() {
+        if flex1 == flex2 && node1 > node2 {
+            continue;
+        }
+        let (leaf1, leaf2) = (tree1.is_leaf(node1), tree2.is_leaf(node2));
+        if leaf1 && leaf2 {
+            // A leaf always holds its element.
+            if let (Some(e1), Some(e2)) = (tree1.nodeid[node1], tree2.nodeid[node2]) {
+                hits.push((e1, e2));
+            }
+            continue;
+        }
+        // Stop where the two inner boxes do not overlap.
+        let margin = assign_margin(model, model.flex_margin[flex1] + model.flex_margin[flex2]);
+        if filter_box(&tree1.aabb[node1], &tree2.aabb[node2], margin) {
+            continue;
+        }
+        descend(stack, (&tree1, node1, leaf1), (&tree2, node2, leaf2));
+    }
+    true
+}
+
 /// Push the next node pairs: descend the hierarchy that is not at a leaf;
 /// with neither, the one whose box has the larger surface (MuJoCo's
 /// surfaces, from each box's half-sizes less its centre).
@@ -197,6 +244,18 @@ pub(super) fn filter_sphere_box(s: &Vector3<f64>, bound: f64, aabb: &[f64; 6]) -
         || s.x - bound > aabb[0] + aabb[3]
         || s.y - bound > aabb[1] + aabb[4]
         || s.z - bound > aabb[2] + aabb[5]
+}
+
+/// `filterBox` (`engine_collision_driver.c:106-115`): whether two boxes in
+/// world coordinates (centre and half-sizes) are more than `margin` apart
+/// along an axis.
+pub(super) fn filter_box(aabb1: &[f64; 6], aabb2: &[f64; 6], margin: f64) -> bool {
+    aabb1[0] + aabb1[3] + margin < aabb2[0] - aabb2[3]
+        || aabb1[1] + aabb1[4] + margin < aabb2[1] - aabb2[4]
+        || aabb1[2] + aabb1[5] + margin < aabb2[2] - aabb2[5]
+        || aabb2[0] + aabb2[3] + margin < aabb1[0] - aabb1[3]
+        || aabb2[1] + aabb2[4] + margin < aabb1[1] - aabb1[4]
+        || aabb2[2] + aabb2[5] + margin < aabb1[2] - aabb1[5]
 }
 
 /// One body's or flex's hierarchy: its nodes' boxes, children and geoms or

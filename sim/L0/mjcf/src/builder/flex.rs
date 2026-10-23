@@ -75,6 +75,19 @@ impl ModelBuilder {
                 is_node_flex = false;
                 flex_orig
             };
+            // Before the masses, edges, hinges and elements read the order.
+            let oriented;
+            let flex = if flex.dim == 3 {
+                let mut elements = flex.elements.clone();
+                orient_tetrahedra(&flex.vertices, &mut elements);
+                oriented = MjcfFlex {
+                    elements,
+                    ..flex.clone()
+                };
+                &oriented
+            } else {
+                flex
+            };
             let flex_id = self.nflex;
             self.nflex += 1;
 
@@ -117,9 +130,8 @@ impl ModelBuilder {
                     let e1 = flex.vertices[elem[1]] - flex.vertices[elem[0]];
                     let e2 = flex.vertices[elem[2]] - flex.vertices[elem[0]];
                     let e3 = flex.vertices[elem[3]] - flex.vertices[elem[0]];
-                    // Use signed volume to match the constraint assembly formula.
-                    // Positive for right-handed vertex ordering, negative for inverted tets.
-                    e1.dot(&e2.cross(&e3)) / 6.0
+                    // Unsigned: every tetrahedron is turned the same way above.
+                    (e1.dot(&e2.cross(&e3)) / 6.0).abs()
                 } else {
                     0.0
                 };
@@ -559,6 +571,28 @@ impl ModelBuilder {
 // Flex helper functions
 // ============================================================================
 
+/// Each tetrahedron of `elements` turned as MuJoCo's compiler turns it, so
+/// its faces (0,1,2) (0,2,3) (0,3,1) (1,3,2) are right-handed outward
+/// (`mjCFlex::Compile`, `user_mesh.cc:4272-4293`): where
+/// `(v1 − v0) × (v2 − v0) · (v3 − v0)` is positive at the vertices' positions
+/// `world_pos`, vertices 1 and 2 swap.
+fn orient_tetrahedra(world_pos: &[Vector3<f64>], elements: &mut [Vec<usize>]) {
+    for element in elements {
+        if let [i0, i1, i2, i3] = element[..] {
+            let (v0, v1, v2, v3) = (world_pos[i0], world_pos[i1], world_pos[i2], world_pos[i3]);
+            let (a, b, c) = (v1 - v0, v2 - v0, v3 - v0);
+            let nrm = [
+                a.y * b.z - a.z * b.y,
+                a.z * b.x - a.x * b.z,
+                a.x * b.y - a.y * b.x,
+            ];
+            if nrm[0] * c.x + nrm[1] * c.y + nrm[2] * c.z > 0.0 {
+                element.swap(1, 2);
+            }
+        }
+    }
+}
+
 /// Compute per-edge cross-section area based on flex dimensionality.
 ///
 /// - dim=1 (cable): PI * radius^2
@@ -890,64 +924,6 @@ fn compute_bending_coefficients(
     }
 
     b
-}
-
-/// Compute element adjacency for self-collision dispatch (Spec C S4).
-///
-/// Two elements are adjacent if they share at least one vertex. Returns
-/// CSR-style flat sorted adjacency list: `(adj_data, adj_adr, adj_num)`.
-pub fn compute_element_adjacency(
-    flexelem_data: &[usize],
-    flexelem_dataadr: &[usize],
-    flexelem_datanum: &[usize],
-    nflexelem: usize,
-    nflexvert: usize,
-) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
-    if nflexelem == 0 {
-        return (vec![], vec![], vec![]);
-    }
-
-    // Step 1: vertex → element map
-    let mut vert_to_elems: Vec<Vec<usize>> = vec![vec![]; nflexvert];
-    for e in 0..nflexelem {
-        let adr = flexelem_dataadr[e];
-        let num = flexelem_datanum[e];
-        for i in 0..num {
-            let v = flexelem_data[adr + i];
-            if v < nflexvert {
-                vert_to_elems[v].push(e);
-            }
-        }
-    }
-
-    // Step 2: per-element adjacency
-    let mut adj_data = Vec::new();
-    let mut adj_adr = Vec::with_capacity(nflexelem);
-    let mut adj_num = Vec::with_capacity(nflexelem);
-
-    for e in 0..nflexelem {
-        let adr = flexelem_dataadr[e];
-        let num = flexelem_datanum[e];
-        let mut neighbors = Vec::new();
-        for i in 0..num {
-            let v = flexelem_data[adr + i];
-            if v < nflexvert {
-                for &neighbor in &vert_to_elems[v] {
-                    if neighbor != e {
-                        neighbors.push(neighbor);
-                    }
-                }
-            }
-        }
-        neighbors.sort_unstable();
-        neighbors.dedup();
-
-        adj_adr.push(adj_data.len());
-        adj_num.push(neighbors.len());
-        adj_data.extend(neighbors);
-    }
-
-    (adj_data, adj_adr, adj_num)
 }
 
 #[cfg(test)]

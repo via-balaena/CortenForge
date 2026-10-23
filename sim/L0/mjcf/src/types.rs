@@ -3983,9 +3983,9 @@ pub struct MjcfFlex {
     /// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
     /// None = absent (default "auto"); Some("none") = disabled; other = enabled.
     pub selfcollide: Option<String>,
-    /// Internal collision flag (default false, MuJoCo's). When true, contacts
-    /// between elements sharing an edge are generated (adjacent element
-    /// contacts).
+    /// Internal collision flag (default false, MuJoCo's): each element against
+    /// the vertices of its pairs, a tetrahedron's faces against their opposite
+    /// vertices.
     pub internal: bool,
     /// Number of active element layers (default 1, MuJoCo's): a dim-3
     /// element is active while its layer, its distance from the border, is
