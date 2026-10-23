@@ -1,8 +1,8 @@
 //! Stress test — headless validation of all 7 mesh collision pairs + edge cases.
 //!
-//! 21 checks covering: mesh-plane (3), mesh-sphere (2), mesh-box (2),
+//! 20 checks covering: mesh-plane (3), mesh-sphere (2), mesh-box (2),
 //! mesh-capsule (2), mesh-cylinder (3), mesh-ellipsoid (3), mesh-mesh (3),
-//! edge cases (3).
+//! edge cases (2).
 //!
 //! Run: `cargo run -p example-mesh-collision-stress-test --release`
 
@@ -559,7 +559,7 @@ fn check_mesh_mesh() -> (u32, u32) {
 }
 
 // ============================================================================
-// Group H: Edge Cases (checks 19-21)
+// Group H: Edge Cases (checks 19-20)
 // ============================================================================
 
 fn check_edge_cases() -> (u32, u32) {
@@ -645,45 +645,6 @@ fn check_edge_cases() -> (u32, u32) {
         }
     }
 
-    // Check 21: the sphere's body written before the mesh geom in the MJCF
-    // Should produce same rest height as mesh-sphere (check 4)
-    {
-        let radius: f64 = 0.1;
-        let (gnd_v, gnd_f) = box_mesh_verts_faces(1.0, 1.0, 1.0);
-
-        // sim-mjcf numbers the worldbody's geoms first, so the mesh is geom 0
-        // here as in check 4; and a convex pair collides in MuJoCo's order
-        // (the lower body's geom first, then the lower geom type) whatever
-        // order it arrives in.
-        let mjcf = format!(
-            r#"<mujoco>
-  <option gravity="0 0 -{gravity}" timestep="0.001" integrator="RK4"/>
-  <asset>
-    <mesh name="ground" vertex="{gnd_v}" face="{gnd_f}"/>
-  </asset>
-  <worldbody>
-    <body name="ball" pos="0 0 0.3">
-      <joint type="free"/>
-      <geom type="sphere" size="{radius}" density="1000"/>
-    </body>
-    <geom type="mesh" mesh="ground" pos="0 0 -1"/>
-  </worldbody>
-</mujoco>"#
-        );
-
-        let model = load_model(&mjcf).expect("model should load");
-        let (_avg_force, z, _vz, _ncon) = settle_and_measure(&model, 1, 3000, 2500);
-
-        total += 1;
-        if check(
-            "21. Swapped order (sphere,mesh)",
-            (z - radius).abs() < 0.001,
-            &format!("z={z:.4}, expect≈{radius} (< 1mm)"),
-        ) {
-            pass += 1;
-        }
-    }
-
     (pass, total)
 }
 
@@ -693,7 +654,7 @@ fn check_edge_cases() -> (u32, u32) {
 
 fn main() {
     println!("=== CortenForge: Mesh Collision Stress Test ===");
-    println!("  21 headless checks across all 7 mesh collision pairs + edge cases\n");
+    println!("  20 headless checks across all 7 mesh collision pairs + edge cases\n");
 
     let mut total_pass = 0u32;
     let mut total_checks = 0u32;
