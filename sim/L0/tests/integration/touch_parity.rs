@@ -131,10 +131,10 @@ fn readings_are_mujocos(name: &str, case: &Value) {
 /// parent's first, then its own, each in the first places; a segment
 /// (`fromto`) on a capsule, cylinder, ellipsoid or box giving the position,
 /// the orientation and the length; the class a frame's or a body's
-/// childclass gives. Sizes and positions bit for bit; an orientation bit for
-/// bit on macOS arm64, where the golden was made, and elsewhere within 1e-15,
-/// as it goes through `atan2`, `sin` and `cos`, which another platform's
-/// libm may round otherwise.
+/// childclass gives. Sizes and positions bit for bit; an orientation equal to
+/// MuJoCo's on macOS arm64, where the golden was made, and elsewhere within
+/// 1e-15, as it goes through `atan2`, `sin` and `cos`, which another
+/// platform's libm may round otherwise.
 #[test]
 fn site_sizes_are_mujocos() {
     sites_are_mujocos(&golden()["site_sizes"], 0.0, &[]);
@@ -157,9 +157,10 @@ fn sites_in_turned_frames_and_fused_bodies_are_mujocos() {
 }
 
 /// Each site of `case`'s document against MuJoCo's: its size bit for bit,
-/// its position within `pos_tol`, and its orientation bit for bit on macOS
-/// arm64, where the golden was made (elsewhere, and for the sites `loose`
-/// names everywhere, within 1e-15).
+/// its position bit for bit where `pos_tol` is 0 and otherwise within it, and
+/// its orientation equal on macOS arm64, where the golden was made, 0 and −0
+/// alike (elsewhere, and for the sites `loose` names everywhere, within
+/// 1e-15).
 fn sites_are_mujocos(case: &Value, pos_tol: f64, loose: &[&str]) {
     let golden_platform = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
@@ -193,10 +194,11 @@ fn sites_are_mujocos(case: &Value, pos_tol: f64, loose: &[&str]) {
         ] {
             assert_eq!(ours.len(), theirs.len(), "{name}: {what}");
             for (a, b) in ours.iter().zip(&theirs) {
-                assert!(
-                    a.to_bits() == b.to_bits() || (a - b).abs() <= tol,
-                    "{name}: {what} {ours:?}, MuJoCo {theirs:?}"
-                );
+                let same = match (what, tol == 0.0) {
+                    ("pos", true) => a.to_bits() == b.to_bits(),
+                    _ => (a - b).abs() <= tol,
+                };
+                assert!(same, "{name}: {what} {ours:?}, MuJoCo {theirs:?}");
             }
         }
     }

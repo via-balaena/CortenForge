@@ -387,15 +387,16 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
         // Build joint
         let joint = build_cable_joint(composite, &joint_name, is_first);
 
-        // Build sites — first and last body get boundary sites.
-        // MuJoCo uses two separate `if` checks (AddCableBody:436-442),
-        // NOT if/else. For count=2 the single body is both first AND last,
-        // so it gets BOTH S_first and S_last.
+        // Build sites — first and last body get boundary sites, in group 3
+        // as MuJoCo's (`user_composite.cc:112`, `:437`). For count=2 the
+        // single body gets both here; MuJoCo makes one, S_first at the
+        // body's far end (`:350-362`, `:436-441`).
         let mut sites = Vec::new();
         if is_first {
             sites.push(MjcfSite {
                 name: format!("{prefix}S_first"),
                 pos: Some(Vector3::zeros()),
+                group: Some(3),
                 ..Default::default()
             });
         }
@@ -403,6 +404,7 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
             sites.push(MjcfSite {
                 name: format!("{prefix}S_last"),
                 pos: Some(Vector3::new(length, 0.0, 0.0)),
+                group: Some(3),
                 ..Default::default()
             });
         }

@@ -12,7 +12,7 @@ use nalgebra::{UnitQuaternion, Vector3, Vector4};
 
 use super::ModelConversionError;
 use super::geom::resolve_site_fromto;
-use super::orientation::{quat_to_wxyz, resolve_orientation, site_orientation};
+use super::orientation::{quat_to_wxyz, resolve_orientation, site_quat_as_written};
 use crate::defaults::DefaultResolver;
 use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame, MjcfSite};
 
@@ -125,7 +125,7 @@ pub fn expand_frames(
 }
 
 /// Each site resolved before frames and static bodies move it, the one place a
-/// site's class is applied: its class's values over its own, then its `fromto`
+/// site's class is applied: its own values over its class's, then its `fromto`
 /// made into its `pos`, `quat` and `size` (`resolve_site_fromto`). MuJoCo
 /// compiles a site in its own frame, then composes the frame
 /// (`mjCSite::Compile`, `user_objects.cc:3937-3985`), and fusion moves the
@@ -264,11 +264,13 @@ fn expand_single_frame(
         body.geoms.push(g);
     }
 
-    // 5. Process child sites (resolved already: `resolve_sites`)
+    // 5. Process child sites (resolved already: `resolve_sites`). The frame is
+    // composed with the site's quaternion as written; the builder makes the
+    // product unit, as MuJoCo does (`user_objects.cc:3984-3988`).
     for site in &frame.sites {
         let mut s = site.clone();
         let mut pos = s.pos.unwrap_or_else(Vector3::zeros);
-        let mut quat = site_orientation(&s, compiler);
+        let mut quat = site_quat_as_written(&s, compiler);
         frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
         s.pos = Some(pos);
         s.quat = Some(quat_to_wxyz(&quat));

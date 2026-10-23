@@ -453,10 +453,10 @@ fn t12_validation_errors() {
 // ============================================================================
 
 /// A cable's boundary sites take no class of the document's: MuJoCo 3.5.0
-/// builds them from the composite's own default (`user_composite.cc:437`),
-/// and on the oracle they are spheres of size 0.005 under a root default
-/// and under the holder's childclass, each of which makes the holder's own
-/// site a box of (0.03, 0.04, 0.05).
+/// builds them from the composite's own default (`user_composite.cc:112`,
+/// `:437`), and on the oracle they are spheres of size 0.005 in group 3
+/// under a root default and under the holder's childclass, each of which
+/// makes the holder's own site a box of (0.03, 0.04, 0.05) in group 0.
 #[test]
 fn t13_cable_sites_take_no_class() {
     let box_site = r#"<site type="box" size="0.03 0.04 0.05"/>"#;
@@ -482,9 +482,11 @@ fn t13_cable_sites_take_no_class() {
         let model = load_model(&xml);
         let own = model.site_id("own").expect("own");
         assert_eq!(model.site_type[own], GeomType::Box, "{xml}");
+        assert_eq!(model.site_group[own], 0, "{xml}");
         for name in ["S_first", "S_last"] {
             let site = model.site_id(name).expect(name);
             assert_eq!(model.site_type[site], GeomType::Sphere, "{name}: {xml}");
+            assert_eq!(model.site_group[site], 3, "{name}: {xml}");
             assert_eq!(
                 model.site_size[site],
                 nalgebra::Vector3::new(0.005, 0.005, 0.005),

@@ -27,12 +27,12 @@ site's position and orientation; `sites_turned` the same for sites in turned
 frames and in bodies fusestatic folds away. `rays`: mju_rayGeom on each type
 it takes (`rays` says how they are drawn), and rays on the edges of its
 tests (`EDGE_RAYS`), each with MuJoCo's distance. `zones`: a sphere on a
-plane with touch sensors on eleven sites of the sphere and two of the world, a box on a plane with
-five, a sphere on a box on a plane with two on each, whose zones take some
-of their bodies' contacts and not others (`BALL_SITES` and the rest say
-where they lie), at the same states as the cases above. `zone_edges`: the
-zone test at its edges, with forces and a contact's position written over
-MuJoCo's (`EDGE_BALL_XML` and `EDGE_PAIR_XML` say how).
+plane with touch sensors on eleven sites of the sphere and two of the world,
+a box on a plane with five, a sphere on a box on a plane with two on each,
+whose zones take some of their bodies' contacts and not others (`BALL_SITES`
+and the rest say where they lie), at the same states as the cases above.
+`zone_edges`: the zone test at its edges, with forces and a contact's
+position written over MuJoCo's (`EDGE_BALL_XML` and `EDGE_PAIR_XML` say how).
 """
 import json
 import os
@@ -121,10 +121,12 @@ def negated(m, d, st):
 # Sites whose sizes are written in part, or not at all, over default classes three deep, a
 # body's childclass among them, and sites given by a segment (`fromto`, on the site, from a
 # class, from a child class over its parent's, nearly along z, in a moved frame, its own and
-# its class's, and over the site's own euler), and a class's position in a moved frame: the zone
-# a touch sensor reads is its site's size and pose. And the class each site takes: a frame's
-# childclass, nested frames', a frame's in a body's childclass, a body's over its parent's, a
-# body's in a frame, and a site's own euler over its class's in a moved frame.
+# its class's, and over the site's own euler, axisangle, xyaxes or zaxis), and a class's position
+# in a moved frame: the zone a touch sensor reads is its site's size and pose. And the class each
+# site takes: a frame's childclass, nested frames', a frame's in a body's childclass, a body's
+# over its parent's, its parent's for a body with none, a body's in a frame, a childclass
+# frame's for a body in it, the site's own in a childclass, and a site's own euler over its
+# class's in a moved frame.
 SITE_SIZES_XML = """<mujoco model="site_sizes">
   <default>
     <site size="0.02 0.03"/>
@@ -182,6 +184,9 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
         <site name="class_pos_in_a_frame" class="p"/>
       </frame>
       <site name="fromto_over_own_euler" class="d" euler="0 45 0"/>
+      <site name="fromto_over_own_axisangle" class="d" axisangle="0 1 0 30"/>
+      <site name="fromto_over_own_xyaxes" class="d" xyaxes="0 1 0 -1 0 0"/>
+      <site name="fromto_over_own_zaxis" class="d" zaxis="1 0 0"/>
       <frame childclass="q" pos="0.3 -0.2 0.1">
         <site name="frame_childclass"/>
       </frame>
@@ -200,6 +205,13 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
           <site name="body_in_a_frame"/>
         </body>
       </frame>
+      <frame childclass="q" pos="0 0 -0.3">
+        <body name="b_in_a_childclass_frame">
+          <joint type="hinge"/>
+          <geom size="0.1"/>
+          <site name="body_in_a_childclass_frame"/>
+        </body>
+      </frame>
       <body name="b1" childclass="a">
         <joint type="hinge"/>
         <geom size="0.1"/>
@@ -211,6 +223,12 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
         <frame childclass="q" pos="0 0.2 0">
           <site name="frame_childclass_in_body_childclass"/>
         </frame>
+        <site name="own_class_in_a_childclass" class="c"/>
+        <body name="b3">
+          <joint type="hinge"/>
+          <geom size="0.1"/>
+          <site name="body_under_a_childclass"/>
+        </body>
         <body name="b2" childclass="q">
           <joint type="hinge"/>
           <geom size="0.1"/>
@@ -222,9 +240,10 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
 </mujoco>"""
 
 
-# Sites in a turned frame (a segment, its own and its class's, and a class's euler) and in bodies
-# fusestatic folds away, moved, turned, both, and one fused into another (a class's segment, the
-# site's own, a class's position, a class's euler).
+# Sites in a turned frame (a segment, its own and its class's, a class's euler, and a quaternion
+# written not unit, its own and its class's) and in bodies fusestatic folds away, moved, turned,
+# both, and one fused into another (a class's segment, the site's own, a class's position, a
+# class's euler).
 SITES_TURNED_XML = """<mujoco model="sites_turned">
   <compiler fusestatic="true"/>
   <default>
@@ -240,12 +259,17 @@ SITES_TURNED_XML = """<mujoco model="sites_turned">
     <default class="r">
       <site euler="10 20 30"/>
     </default>
+    <default class="w">
+      <site quat="2 0 0 0"/>
+    </default>
   </default>
   <worldbody>
     <frame pos="0.1 0.2 0.3" euler="30 -20 75">
       <site name="fromto_in_a_turned_frame" type="capsule" size="0.01" fromto="0 0 0 0.1 0.2 0.3"/>
       <site name="class_fromto_in_a_turned_frame" class="fb"/>
       <site name="class_euler_in_a_turned_frame" class="r"/>
+      <site name="quat_as_written_in_a_turned_frame" quat="2 0 0 0"/>
+      <site name="class_quat_as_written_in_a_turned_frame" class="w"/>
     </frame>
     <body name="b" pos="0.5 0 1" euler="0 15 0">
       <freejoint/>

@@ -60,12 +60,11 @@ pub fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
 }
 
-/// A site's orientation: its alternative where it has one
-/// (`resolve_orientation`), else its quaternion made unit as MuJoCo's compiler
-/// makes it (`normvec`, `user_objects.cc:3988`), left as it is where its norm
-/// lies within mjEPS of 1 (`quat_from_wxyz` divides by the norm whatever it
-/// is).
-pub fn site_orientation(site: &MjcfSite, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
+/// A site's orientation as MuJoCo's compiler holds it before composing the
+/// site's frame (`user_objects.cc:3976-3985`): its alternative where it has
+/// one (`resolve_orientation`), else its quaternion as written, not yet made
+/// unit.
+pub fn site_quat_as_written(site: &MjcfSite, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
     let quat = site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
     if site.euler.is_some()
         || site.axisangle.is_some()
@@ -81,7 +80,17 @@ pub fn site_orientation(site: &MjcfSite, compiler: &MjcfCompiler) -> UnitQuatern
             compiler,
         );
     }
-    let mut q = [quat[0], quat[1], quat[2], quat[3]];
+    UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(
+        quat[0], quat[1], quat[2], quat[3],
+    ))
+}
+
+/// A site's orientation made unit as MuJoCo's compiler makes it (`normvec`,
+/// `user_objects.cc:3988`): left as it is where its norm lies within mjEPS of
+/// 1 (`quat_from_wxyz` divides by the norm whatever it is).
+pub fn site_orientation(site: &MjcfSite, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
+    let q = site_quat_as_written(site, compiler).into_inner();
+    let mut q = [q.w, q.i, q.j, q.k];
     normvec(&mut q);
     UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
 }
