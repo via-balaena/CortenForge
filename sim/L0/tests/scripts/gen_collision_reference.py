@@ -2575,16 +2575,34 @@ def bumpy_cases():
 
 
 # A hundred free spheres resting 1 mm into a plane, in rows of 20 a quarter apart (registry
-# D-ARENA); collision_parity.rs a_full_arena_drops_no_contact_and_no_row writes the same document.
+# D-ARENA); collision_parity.rs a_full_arena_drops_no_contact_and_no_row writes the same scene.
 ARENA_BALLS = "".join(f'<body pos="{(i % 20) * 0.25} {(i // 20) * 0.25} 0.099"><freejoint/>'
                       '<geom type="sphere" size="0.1"/></body>' for i in range(100))
+
+
+# An ellipsoid sunk 0.3 into a box, so that EPA runs (registry D-ARENA); epa_storage.rs
+# ellipsoid_in_a_box writes the same scene.
+ARENA_EPA = ('<mujoco><option ccd_iterations="{}"/><worldbody><geom type="box" size="0.5 0.5 0.5"/>'
+             '<body pos="0 0 0.3"><freejoint/><geom type="ellipsoid" size="0.2 0.15 0.1"/></body>'
+             '</worldbody></mujoco>')
 
 
 def mujoco_arena_limits():
     """Registry D-ARENA: MuJoCo 3.5.0 keeps a step's contacts and rows in one arena. The hundred
     spheres make 100 contacts and 400 rows in the arena it sizes itself; under <size
     memory="100K"/> it keeps 93 contacts, drops the other seven with mjWARN_CONTACTFULL, and makes
-    no rows at all, with one mjWARN_CNSTRFULL. Asserted each time the golden is made."""
+    no rows at all, with one mjWARN_CNSTRFULL. Past mjMAX_EPA_ITERATIONS, EPA takes room for its
+    polytope from the arena's stack, 6 faces an iteration: the ellipsoid in the box runs under
+    ccd_iterations of 10,000 and stops under 100,000. Asserted each time the golden is made."""
+    for n, stops in ((10000, False), (100000, True)):
+        m = mujoco.MjModel.from_xml_string(ARENA_EPA.format(n))
+        d = mujoco.MjData(m)
+        try:
+            mujoco.mj_forward(m, d)
+            stopped = False
+        except mujoco.FatalError as e:
+            stopped = "mj_stackAlloc: out of memory" in str(e)
+        assert stopped == stops, n
     full, rows_full = mujoco.mjtWarning.mjWARN_CONTACTFULL, mujoco.mjtWarning.mjWARN_CNSTRFULL
     for size, want in (("", (100, 400, 0, 0)), ('<size memory="100K"/>', (93, 0, 7, 1))):
         m = mujoco.MjModel.from_xml_string(f'<mujoco>{size}<worldbody><geom type="plane" '

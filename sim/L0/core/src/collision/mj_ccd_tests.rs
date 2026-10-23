@@ -11,8 +11,8 @@ use nalgebra::Point3;
 use serde_json::Value;
 
 use super::{
-    CcdConfig, CcdMesh, CcdObj, CcdStatus, HullGraph, RawContact, STALE_S3D, mjc_ccd,
-    mjc_convex_hfield, mjc_plane_convex,
+    CcdConfig, CcdMesh, CcdObj, CcdStatus, HullGraph, POLYTOPE, Polytope, RawContact, STALE_S3D,
+    mjc_ccd, mjc_convex_hfield, mjc_plane_convex,
 };
 use crate::heightfield::HeightFieldData;
 use crate::mesh::TriangleMeshData;
@@ -411,6 +411,37 @@ fn mjc_ccd_matches_mujoco_bitwise() {
         !stale_weight.is_empty(),
         "no case shows S3D's stale weight: the reset is not checked"
     );
+}
+
+/// Each call empties the thread's polytope before EPA fills it. With two
+/// edges left on its horizon, as an EPA that stops when its next faces
+/// would not fit, or when it finds fewer than three edges, can leave them,
+/// every case of the golden in which EPA iterates is still MuJoCo's, bit
+/// for bit.
+#[test]
+fn each_call_starts_from_an_empty_polytope() {
+    let doc = golden();
+    let meshes = Meshes::of(&doc);
+    let mut compared = 0;
+    let groups = doc.as_object().expect("the golden's groups");
+    for (group, cases) in groups
+        .iter()
+        .filter(|(k, _)| !NOT_CCD_CASES.contains(&k.as_str()))
+    {
+        for (name, case) in cases.as_object().expect("a group of cases") {
+            let want = &case["out"];
+            if count(&want["epa_iterations"]) == 0 {
+                continue;
+            }
+            let mut left = POLYTOPE.replace(Polytope::EMPTY);
+            left.horizon.extend([(0, 0), (1, 1)]);
+            POLYTOPE.set(left);
+            let st = run(case, &meshes, true, Polygons::Mujocos);
+            assert_eq!(first_difference(&st, want), None, "{group}/{name}");
+            compared += 1;
+        }
+    }
+    assert!(compared > 0, "no case in which EPA iterates");
 }
 
 /// Registry `D-GJK-S3D` in a contact: the golden's `s3d` cases, a sphere
