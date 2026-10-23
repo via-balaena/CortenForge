@@ -1891,6 +1891,66 @@ fn a_contact_normal_shorter_than_half_refuses_the_step() {
     }
 }
 
+/// Registry D-SDF-HFIELD: a sphere of radius 5 as a signed distance field
+/// over a height field (flat where the sphere is). MuJoCo 3.5.0 makes no
+/// contact between a height field and a signed distance field
+/// (`mjc_HFieldSDF` warns "HField vs SDF collision not yet supported!",
+/// `engine_collision_sdf.c:640-643`), and its geom-distance sensor reads its
+/// cutoff. sim-core collides them through the field's own contact
+/// (`collide_with_sdf`), in collision and in the geom-distance sensor in
+/// either order: pressed 0.5 into the field, one contact and each sensor
+/// reads minus its depth; held 1 above it, no contact and each sensor reads
+/// the cutoff (the field's contact has no margin).
+#[test]
+fn a_height_field_meets_a_signed_distance_field() {
+    use nalgebra::Point3;
+
+    let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 20, 2.0));
+    for z in [4.5, 6.0] {
+        let mut model = load_model(&format!(
+            r#"
+            <mujoco>
+                <option gravity="0 0 0"/>
+                <asset>
+                    <hfield name="field" nrow="5" ncol="5" size="40 40 1 1"
+                        elevation="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 1"/>
+                </asset>
+                <worldbody>
+                    <geom name="field" type="hfield" hfield="field"/>
+                    <body pos="-20 -20 {z}">
+                        <joint type="free"/>
+                        <geom name="ball" type="sphere" size="5"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <distance geom1="field" geom2="ball" cutoff="10"/>
+                    <distance geom1="ball" geom2="field" cutoff="10"/>
+                </sensor>
+            </mujoco>
+        "#
+        ))
+        .expect("load");
+        model
+            .shape_data
+            .push(Arc::new(ShapeSphere::new(grid.clone(), 5.0)));
+        model.nshape = 1;
+        model.geom_type[1] = GeomType::Sdf;
+        model.geom_shape[1] = Some(0);
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        let sensors = [data.sensordata[0], data.sensordata[1]];
+        if z < 5.0 {
+            assert_eq!(data.ncon, 1, "pressed in");
+            let depth = data.contacts[0].depth;
+            assert!(depth > 0.4, "depth {depth}");
+            assert_eq!(sensors, [-depth, -depth]);
+        } else {
+            assert_eq!(data.ncon, 0, "held above");
+            assert_eq!(sensors, [10.0, 10.0]);
+        }
+    }
+}
+
 /// `Model::add_ground_plane` on a model whose world already holds a geom
 /// appends the plane after the other bodies' geoms, so the world's geoms are
 /// not numbered together; collision takes each body's geoms from `geom_body`,
