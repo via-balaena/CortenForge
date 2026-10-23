@@ -1040,6 +1040,8 @@ pub struct MjcfSiteDefaults {
     pub xyaxes: Option<[f64; 6]>,
     /// Default z-axis (minimal rotation from Z).
     pub zaxis: Option<Vector3<f64>>,
+    /// Default segment (from x, y, z, to x, y, z).
+    pub fromto: Option<[f64; 6]>,
     /// Default material asset name.
     pub material: Option<String>,
     /// Per-element user data for default class inheritance.
@@ -1611,7 +1613,8 @@ impl MjcfJoint {
 
 /// Site from `<site>` element.
 ///
-/// Sites are markers/attachment points that don't participate in physics.
+/// Sites are markers and attachment points: they make no contacts, but a
+/// touch sensor's zone is its site's type, size and pose.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfSite {
@@ -1633,7 +1636,10 @@ pub struct MjcfSite {
     pub xyaxes: Option<[f64; 6]>,
     /// Alternative orientation as z-axis (minimal rotation from Z).
     pub zaxis: Option<Vector3<f64>>,
-    /// Size (for visualization).
+    /// A segment (from x, y, z, to x, y, z) giving a capsule, cylinder,
+    /// ellipsoid or box site its position, orientation and length.
+    pub fromto: Option<[f64; 6]>,
+    /// Size, read over its class's (a touch sensor's zone).
     pub size: Option<Vec<f64>>,
     /// RGBA color.
     pub rgba: Option<Vector4<f64>>,
@@ -1657,6 +1663,7 @@ impl Default for MjcfSite {
             axisangle: None,
             xyaxes: None,
             zaxis: None,
+            fromto: None,
             size: None,
             rgba: None,
             group: None,

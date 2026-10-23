@@ -115,7 +115,8 @@ def negated(m, d, st):
 
 
 # Sites whose sizes are written in part, or not at all, over default classes three deep, a
-# body's childclass among them: the zone a touch sensor reads is its site's size.
+# body's childclass among them, and sites given by a segment (`fromto`, on the site, from a
+# class and in a moved frame): the zone a touch sensor reads is its site's size and pose.
 SITE_SIZES_XML = """<mujoco model="site_sizes">
   <default>
     <site size="0.02 0.03"/>
@@ -127,6 +128,12 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
     </default>
     <default class="c">
       <site type="ellipsoid" size="0.06 0.07 0.08"/>
+    </default>
+    <default class="d">
+      <site type="box" size="0.03" fromto="0 0 0 0.3 0.1 0.2"/>
+      <default class="e">
+        <site size="0.04"/>
+      </default>
     </default>
   </default>
   <worldbody>
@@ -140,6 +147,14 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
       <site name="class_b_two_written" class="b" size="0.1 0.2"/>
       <site name="class_c_one_written" class="c" size="0.9"/>
       <site name="all_written" type="capsule" size="0.11 0.12 0.13"/>
+      <site name="fromto_capsule" type="capsule" size="0.02" fromto="0 0 0 0 0 0.4"/>
+      <site name="fromto_box_class" class="d"/>
+      <site name="fromto_box_nested_class" class="e"/>
+      <site name="fromto_ellipsoid" type="ellipsoid" size="0.02 0.07" fromto="0.1 -0.2 0.05 -0.3 0.4 0.25"/>
+      <site name="fromto_cylinder" type="cylinder" size="0.01" fromto="0.2 0.1 0 -0.1 0.3 0.4"/>
+      <frame pos="0.5 -0.25 1">
+        <site name="fromto_in_a_frame" type="capsule" size="0.01" fromto="0 0 0 0.1 0.2 0.3"/>
+      </frame>
       <body name="b1" childclass="a">
         <joint type="hinge"/>
         <geom size="0.1"/>
@@ -152,10 +167,12 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
 
 
 def site_sizes():
-    """Each named site's size as MuJoCo compiles `SITE_SIZES_XML`."""
+    """Each named site's size, position and orientation as MuJoCo compiles `SITE_SIZES_XML`."""
     m = mujoco.MjModel.from_xml_string(SITE_SIZES_XML)
     return {"xml": SITE_SIZES_XML,
-            "site_size": {m.site(i).name: floats(m.site_size[i]) for i in range(m.nsite)}}
+            "site_size": {m.site(i).name: floats(m.site_size[i]) for i in range(m.nsite)},
+            "site_pos": {m.site(i).name: floats(m.site_pos[i]) for i in range(m.nsite)},
+            "site_quat": {m.site(i).name: floats(m.site_quat[i]) for i in range(m.nsite)}}
 
 
 # mju_rayGeom's types and their mjtGeom numbers.
@@ -254,7 +271,8 @@ BALL_SITES = [("centre", 'type="sphere" size="0.01"'),
               ("off_ray", 'type="sphere" pos="0.05 0 -0.2" size="0.01"'),
               ("turned_box", 'type="box" pos="0 0 -0.2" euler="45 30 0" size="0.01 0.02 0.005"'),
               ("turned_capsule", 'type="capsule" pos="0.04 0 -0.2" euler="0 90 0" size="0.01 0.03"'),
-              ("flat_ellipsoid", 'type="ellipsoid" pos="0 0.01 -0.12" size="0.2"')]
+              ("flat_ellipsoid", 'type="ellipsoid" pos="0 0.01 -0.12" size="0.2"'),
+              ("fromto_capsule", 'type="capsule" size="0.01" fromto="0 0 -0.2 0 0 0.2"')]
 # The plane's sites: its contact's ray runs up, from the plane toward the sphere.
 WORLD_SITES = [("world_above", 'type="box" pos="0 0 0.05" size="0.05 0.05 0.05"'),
                ("world_below", 'type="box" pos="0 0 -0.2" size="0.05 0.05 0.05"')]

@@ -204,6 +204,20 @@ fn expand_single_frame(
             s.class = effective.map(|s| s.to_string());
         }
 
+        if let Some(ref mut fromto) = s.fromto {
+            // fromto sites, as fromto geoms: both endpoints through the composed
+            // frame; the builder derives pos, quat and the length from them.
+            let from = Vector3::new(fromto[0], fromto[1], fromto[2]);
+            let to = Vector3::new(fromto[3], fromto[4], fromto[5]);
+            let from_new = composed_pos + composed_quat.transform_vector(&from);
+            let to_new = composed_pos + composed_quat.transform_vector(&to);
+            *fromto = [
+                from_new.x, from_new.y, from_new.z, to_new.x, to_new.y, to_new.z,
+            ];
+            body.sites.push(s);
+            continue;
+        }
+
         let site_quat = resolve_orientation(
             s.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
             s.euler,

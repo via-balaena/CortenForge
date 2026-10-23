@@ -9,7 +9,7 @@ use sim_core::GeomType;
 
 use super::fluid::compute_geom_fluid;
 use super::mesh::MeshProps;
-use super::orientation::resolve_orientation;
+use super::orientation::{MJ_EPS, normvec, resolve_orientation, z2quat};
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
 use crate::types::{FluidShape, MjcfGeom, MjcfGeomType, MjcfSite};
 
@@ -145,16 +145,6 @@ impl ModelBuilder {
         };
         self.site_type.push(geom_type);
 
-        self.site_pos.push(site.pos.unwrap_or_else(Vector3::zeros));
-        self.site_quat.push(resolve_orientation(
-            site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
-            site.euler,
-            site.axisangle,
-            site.xyaxes,
-            site.zaxis,
-            &self.compiler,
-        ));
-
         // MuJoCo's site size: 0.005 in each place (`mjs_defaultSite`,
         // `user_init.c:159`), the numbers written, the site's over its
         // class's, in the first places.
@@ -162,6 +152,22 @@ impl ModelBuilder {
         for (k, &s) in site.size.iter().flatten().take(3).enumerate() {
             size[k] = s;
         }
+        let (pos, quat) = match site.fromto {
+            Some(fromto) => site_fromto(site, geom_type, fromto, &mut size)?,
+            None => (
+                site.pos.unwrap_or_else(Vector3::zeros),
+                resolve_orientation(
+                    site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
+                    site.euler,
+                    site.axisangle,
+                    site.xyaxes,
+                    site.zaxis,
+                    &self.compiler,
+                ),
+            ),
+        };
+        self.site_pos.push(pos);
+        self.site_quat.push(quat);
         self.site_size.push(size);
 
         self.site_name.push(if site.name.is_empty() {
@@ -318,6 +324,70 @@ pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Ve
         return pos + r.transform_vector(&mesh_com);
     }
     pos
+}
+
+/// A site's `fromto`, as MuJoCo's `mjCSite::Compile` reads it
+/// (`user_objects.cc:3937-3967`): on a capsule, cylinder, ellipsoid or box
+/// only, and not beside a `pos` other than 0; half the segment's length in
+/// `size[1]` (in `size[2]` for an ellipsoid or a box, whose `size[1]` takes
+/// `size[0]`), its middle the position, and the turn of z onto
+/// `from − to` the orientation.
+fn site_fromto(
+    site: &MjcfSite,
+    geom_type: GeomType,
+    fromto: [f64; 6],
+    size: &mut Vector3<f64>,
+) -> std::result::Result<(Vector3<f64>, UnitQuaternion<f64>), ModelConversionError> {
+    let name = if site.name.is_empty() {
+        "<unnamed>"
+    } else {
+        site.name.as_str()
+    };
+    let refuse = |what: &str| ModelConversionError {
+        message: format!("site '{name}': {what}"),
+    };
+    if !matches!(
+        geom_type,
+        GeomType::Capsule | GeomType::Cylinder | GeomType::Ellipsoid | GeomType::Box
+    ) {
+        return Err(refuse(
+            "fromto requires a capsule, cylinder, ellipsoid or box",
+        ));
+    }
+    if site
+        .pos
+        .is_some_and(|p| p.x != 0.0 || p.y != 0.0 || p.z != 0.0)
+    {
+        return Err(refuse("both pos and fromto defined"));
+    }
+    let mut vec = [
+        fromto[0] - fromto[3],
+        fromto[1] - fromto[4],
+        fromto[2] - fromto[5],
+    ];
+    let half = normvec(&mut vec) / 2.0;
+    if half < MJ_EPS {
+        return Err(refuse("fromto points too close"));
+    }
+    size[1] = half;
+    if matches!(geom_type, GeomType::Ellipsoid | GeomType::Box) {
+        size[2] = size[1];
+        size[1] = size[0];
+    }
+    // MuJoCo's arithmetic (`(a + b) / 2`), which `f64::midpoint` is not near
+    // overflow.
+    #[allow(clippy::manual_midpoint)]
+    let pos = Vector3::new(
+        (fromto[0] + fromto[3]) / 2.0,
+        (fromto[1] + fromto[4]) / 2.0,
+        (fromto[2] + fromto[5]) / 2.0,
+    );
+    let mut quat = z2quat(&vec);
+    normvec(&mut quat);
+    Ok((
+        pos,
+        UnitQuaternion::new_unchecked(Quaternion::new(quat[0], quat[1], quat[2], quat[3])),
+    ))
 }
 
 /// Resolve `fromto` into `pos`/`quat`/`size` for a geom.

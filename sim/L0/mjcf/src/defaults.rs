@@ -541,7 +541,8 @@ impl DefaultResolver {
         let mut result = site.clone();
 
         if let Some(defaults) = self.site_defaults(site.class.as_deref()) {
-            // All Option<T> fields: element value wins if set, otherwise inherit default.
+            // An Option<T> field: the element's value wins if set, otherwise
+            // the default's; the size is read over the default's (`overlay`).
             if result.site_type.is_none() {
                 result.site_type.clone_from(&defaults.site_type);
             }
@@ -569,6 +570,9 @@ impl DefaultResolver {
             }
             if result.zaxis.is_none() {
                 result.zaxis = defaults.zaxis;
+            }
+            if result.fromto.is_none() {
+                result.fromto = defaults.fromto;
             }
 
             // Rendering
@@ -1029,6 +1033,7 @@ impl DefaultResolver {
                 axisangle: c.axisangle.or(p.axisangle),
                 xyaxes: c.xyaxes.or(p.xyaxes),
                 zaxis: c.zaxis.or(p.zaxis),
+                fromto: c.fromto.or(p.fromto),
                 material: c.material.clone().or_else(|| p.material.clone()),
                 user: c.user.clone().or_else(|| p.user.clone()),
             }),

@@ -103,10 +103,14 @@ fn readings_are_mujocos(name: &str, case: &Value) {
     }
 }
 
-/// Each site's size as MuJoCo compiles it, bit for bit: 0.005 in each
-/// place, then the numbers its default classes write, the parent's first,
-/// then its own, each in the first places (the golden's `site_sizes`; a
-/// touch sensor's zone is its site's size).
+/// Each site's size, position and orientation as MuJoCo compiles them (the
+/// golden's `site_sizes`; a touch sensor's zone is its site): the size
+/// 0.005 in each place, then the numbers its default classes write, the
+/// parent's first, then its own, each in the first places; a segment
+/// (`fromto`) on a capsule, cylinder, ellipsoid or box giving the position,
+/// the orientation and the length. Sizes and positions bit for bit; an
+/// orientation, which `mjuu_z2quat` takes through `atan2`, `cos` and `sin`,
+/// within 1e-15 of MuJoCo's.
 #[test]
 fn site_sizes_are_mujocos() {
     let g = golden();
@@ -118,6 +122,62 @@ fn site_sizes_are_mujocos() {
         let site = model.site_id(name).expect("a site of that name");
         let ours = model.site_size[site].map(f64::to_bits);
         let theirs: Vec<u64> = floats(size).into_iter().map(f64::to_bits).collect();
-        assert_eq!(ours.as_slice(), theirs.as_slice(), "{name}");
+        assert_eq!(ours.as_slice(), theirs.as_slice(), "{name}: size");
+        let ours = model.site_pos[site].map(f64::to_bits);
+        let theirs: Vec<u64> = floats(&case["site_pos"][name])
+            .into_iter()
+            .map(f64::to_bits)
+            .collect();
+        assert_eq!(ours.as_slice(), theirs.as_slice(), "{name}: pos");
+        let q = model.site_quat[site];
+        let ours = [q.w, q.i, q.j, q.k];
+        let theirs = floats(&case["site_quat"][name]);
+        for (a, b) in ours.iter().zip(&theirs) {
+            assert!(
+                (a - b).abs() <= 1e-15,
+                "{name}: quat {ours:?}, MuJoCo {theirs:?}"
+            );
+        }
     }
+}
+
+/// A site's `fromto` where MuJoCo 3.5.0's compiler refuses it
+/// (`mjCSite::Compile`, `user_objects.cc:3939-3955`), measured on the
+/// oracle: on a sphere; beside a `pos` other than 0, the site's own or its
+/// class's; with its two points too close. Beside a `pos` of 0 it loads.
+#[test]
+fn a_site_fromto_is_refused_where_mujoco_refuses_it() {
+    let doc = |site: &str, default: &str| {
+        format!(
+            r#"<mujoco><default>{default}</default><worldbody><body name="b"><freejoint/>
+               <geom size="0.1"/>{site}</body></worldbody></mujoco>"#
+        )
+    };
+    let refused = [
+        doc(
+            r#"<site type="sphere" size="0.02" fromto="0 0 0 0 0 0.4"/>"#,
+            "",
+        ),
+        doc(
+            r#"<site type="capsule" size="0.02" pos="0 0 0.1" fromto="0 0 0 0 0 0.4"/>"#,
+            "",
+        ),
+        doc(
+            r#"<site class="c" fromto="0 0 0 0 0 0.4"/>"#,
+            r#"<default class="c"><site type="capsule" size="0.02" pos="0.1 0 0"/></default>"#,
+        ),
+        doc(
+            r#"<site type="capsule" size="0.02" fromto="0 0 0 0 0 1e-15"/>"#,
+            "",
+        ),
+    ];
+    for xml in &refused {
+        assert!(load_model(xml).is_err(), "loads: {xml}");
+    }
+    let zero_pos = doc(
+        r#"<site type="capsule" size="0.02" pos="0 0 0" fromto="0 0 0 0 0 0.4"/>"#,
+        "",
+    );
+    let model = load_model(&zero_pos).expect("a pos of 0 beside fromto loads");
+    assert_eq!(model.site_pos[0], nalgebra::Vector3::new(0.0, 0.0, 0.2));
 }

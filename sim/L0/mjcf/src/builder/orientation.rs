@@ -9,6 +9,52 @@ use nalgebra::{Matrix3, UnitQuaternion, Vector3, Vector4};
 
 use crate::types::{AngleUnit, MjcfCompiler};
 
+/// MuJoCo's compiler's `mjEPS` (`user_util.h:29`).
+pub const MJ_EPS: f64 = 1e-14;
+
+/// `mjuu_normvec` (`user_util.cc:149-170`): `v` made unit, unless its norm
+/// lies within mjEPS of 1, and the norm returned; where its squared norm is
+/// below mjEPS, `v` is left as it is and 0 returned.
+pub fn normvec<const N: usize>(v: &mut [f64; N]) -> f64 {
+    let mut nrm = 0.0;
+    for x in v.iter() {
+        nrm += x * x;
+    }
+    if nrm < MJ_EPS {
+        return 0.0;
+    }
+    let nrm = nrm.sqrt();
+    if (nrm - 1.0).abs() > MJ_EPS {
+        for x in v.iter_mut() {
+            *x /= nrm;
+        }
+    }
+    nrm
+}
+
+/// `mjuu_z2quat` (`user_util.cc:395-408`): the turn (w, x, y, z) of the z
+/// axis onto `vec`, about their cross product made unit, or about x where
+/// that is below 1e-10.
+pub fn z2quat(vec: &[f64; 3]) -> [f64; 4] {
+    let z = [0.0, 0.0, 1.0];
+    let mut axis = [
+        z[1] * vec[2] - z[2] * vec[1],
+        z[2] * vec[0] - z[0] * vec[2],
+        z[0] * vec[1] - z[1] * vec[0],
+    ];
+    let s = normvec(&mut axis);
+    if s < 1e-10 {
+        axis = [1.0, 0.0, 0.0];
+    }
+    let ang = s.atan2(vec[2]);
+    [
+        (ang / 2.0).cos(),
+        axis[0] * (ang / 2.0).sin(),
+        axis[1] * (ang / 2.0).sin(),
+        axis[2] * (ang / 2.0).sin(),
+    ]
+}
+
 /// Convert an MJCF quaternion `[w, x, y, z]` to a `UnitQuaternion`.
 pub fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
