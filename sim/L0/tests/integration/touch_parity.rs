@@ -164,9 +164,10 @@ fn site_sizes_are_mujocos() {
 }
 
 /// A site's `fromto` where MuJoCo 3.5.0's compiler refuses it
-/// (`mjCSite::Compile`, `user_objects.cc:3939-3955`), measured on the
-/// oracle: on a sphere; beside a `pos` other than 0, the site's own or its
-/// class's; with its two points too close. Beside a `pos` of 0 it loads.
+/// (`mjCSite::Compile`, `user_objects.cc:3939-3958`), measured on the
+/// oracle: on a sphere; beside a `pos` other than 0 (along z or y, the
+/// site's own or its class's); with its two points too close. Each refusal
+/// is the one MuJoCo gives. Beside a `pos` of 0 it loads.
 #[test]
 fn a_site_fromto_is_refused_where_mujoco_refuses_it() {
     let doc = |site: &str, default: &str| {
@@ -176,25 +177,47 @@ fn a_site_fromto_is_refused_where_mujoco_refuses_it() {
         )
     };
     let refused = [
-        doc(
-            r#"<site type="sphere" size="0.02" fromto="0 0 0 0 0 0.4"/>"#,
-            "",
+        (
+            doc(
+                r#"<site type="sphere" size="0.02" fromto="0 0 0 0 0 0.4"/>"#,
+                "",
+            ),
+            "fromto requires",
         ),
-        doc(
-            r#"<site type="capsule" size="0.02" pos="0 0 0.1" fromto="0 0 0 0 0 0.4"/>"#,
-            "",
+        (
+            doc(
+                r#"<site type="capsule" size="0.02" pos="0 0 0.1" fromto="0 0 0 0 0 0.4"/>"#,
+                "",
+            ),
+            "both pos and fromto",
         ),
-        doc(
-            r#"<site class="c" fromto="0 0 0 0 0 0.4"/>"#,
-            r#"<default class="c"><site type="capsule" size="0.02" pos="0.1 0 0"/></default>"#,
+        (
+            doc(
+                r#"<site type="capsule" size="0.02" pos="0 0.1 0" fromto="0 0 0 0 0 0.4"/>"#,
+                "",
+            ),
+            "both pos and fromto",
         ),
-        doc(
-            r#"<site type="capsule" size="0.02" fromto="0 0 0 0 0 1e-15"/>"#,
-            "",
+        (
+            doc(
+                r#"<site class="c" fromto="0 0 0 0 0 0.4"/>"#,
+                r#"<default class="c"><site type="capsule" size="0.02" pos="0.1 0 0"/></default>"#,
+            ),
+            "both pos and fromto",
+        ),
+        (
+            doc(
+                r#"<site type="capsule" size="0.02" fromto="0 0 0 0 0 1e-15"/>"#,
+                "",
+            ),
+            "points too close",
         ),
     ];
-    for xml in &refused {
-        assert!(load_model(xml).is_err(), "loads: {xml}");
+    for (xml, why) in &refused {
+        let Err(e) = load_model(xml) else {
+            panic!("loads: {xml}");
+        };
+        assert!(e.to_string().contains(why), "{e}: {xml}");
     }
     let zero_pos = doc(
         r#"<site type="capsule" size="0.02" pos="0 0 0" fromto="0 0 0 0 0 0.4"/>"#,

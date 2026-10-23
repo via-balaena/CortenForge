@@ -50,7 +50,7 @@ use crate::types::{
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
-use self::frame::{expand_frames, validate_childclass_references};
+use self::frame::{apply_site_classes, expand_frames, validate_childclass_references};
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
 ///
@@ -245,6 +245,10 @@ pub fn model_from_mjcf(
     // MuJoCo rejects undefined childclass at schema validation (S7).
     let pre_resolver = DefaultResolver::from_model(&mjcf);
     validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
+
+    // Each site's class values, before frames and static bodies move it (a class may
+    // give it a `fromto`, a `pos` or a `size`).
+    apply_site_classes(&mut mjcf.worldbody, &pre_resolver, None, true);
 
     // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are

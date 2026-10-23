@@ -186,6 +186,21 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
 
             // Transform sites into parent frame
             for s in &mut removed.sites {
+                if let Some(ref mut fromto) = s.fromto {
+                    // fromto sites, as in a frame: both endpoints into the parent;
+                    // the builder derives pos, quat and the length from them.
+                    let place = |p: nalgebra::Vector3<f64>| {
+                        if has_rotation {
+                            body_quat * p + body_pos
+                        } else {
+                            p + body_pos
+                        }
+                    };
+                    let from = place(nalgebra::Vector3::new(fromto[0], fromto[1], fromto[2]));
+                    let to = place(nalgebra::Vector3::new(fromto[3], fromto[4], fromto[5]));
+                    *fromto = [from.x, from.y, from.z, to.x, to.y, to.z];
+                    continue;
+                }
                 let s_pos = s.pos.unwrap_or_else(nalgebra::Vector3::zeros);
                 if has_rotation {
                     s.pos = Some(body_quat * s_pos + body_pos);

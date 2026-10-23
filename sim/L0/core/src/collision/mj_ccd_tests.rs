@@ -413,12 +413,7 @@ fn mjc_ccd_matches_mujoco_bitwise() {
     );
 }
 
-/// Each call empties the thread's polytope before EPA fills it. With two
-/// edges left on its horizon, as an EPA that stops on finding fewer than
-/// three can leave them, every case of the golden in which EPA iterates is
-/// still MuJoCo's, bit for bit.
-///
-/// `reset` also sets EPA's face limit from each call's `ccd_iterations`, as
+/// `reset` sets EPA's face limit from each call's `ccd_iterations`, as
 /// MuJoCo sizes its storage (`engine_collision_gjk.c:2304-2333`): 6 faces an
 /// iteration, for at least `mjMAX_EPA_ITERATIONS` (170), on a thread's
 /// storage after any earlier call.
@@ -437,7 +432,10 @@ fn reset_takes_each_call_s_face_limit() {
     }
 }
 
-/// See `reset_takes_each_call_s_face_limit`.
+/// Each call empties the thread's polytope before EPA fills it. With two
+/// edges left on its horizon, as an EPA that stops on finding fewer than
+/// three can leave them, every case of the golden in which EPA iterates is
+/// still MuJoCo's, bit for bit.
 #[test]
 fn each_call_starts_from_an_empty_polytope() {
     let doc = golden();

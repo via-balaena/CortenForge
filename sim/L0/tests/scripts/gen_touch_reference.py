@@ -118,7 +118,9 @@ def negated(m, d, st):
 
 # Sites whose sizes are written in part, or not at all, over default classes three deep, a
 # body's childclass among them, and sites given by a segment (`fromto`, on the site, from a
-# class and in a moved frame): the zone a touch sensor reads is its site's size and pose.
+# class, from a child class over its parent's, nearly along z, and in a moved frame, its own and
+# its class's), and a class's position in a moved frame: the zone a touch sensor reads is its
+# site's size and pose.
 SITE_SIZES_XML = """<mujoco model="site_sizes">
   <default>
     <site size="0.02 0.03"/>
@@ -136,6 +138,12 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
       <default class="e">
         <site size="0.04"/>
       </default>
+      <default class="g">
+        <site fromto="0 0.1 0 0 0.1 0.2"/>
+      </default>
+    </default>
+    <default class="p">
+      <site pos="0.1 0 0"/>
     </default>
   </default>
   <worldbody>
@@ -156,6 +164,12 @@ SITE_SIZES_XML = """<mujoco model="site_sizes">
       <site name="fromto_cylinder" type="cylinder" size="0.01" fromto="0.2 0.1 0 -0.1 0.3 0.4"/>
       <frame pos="0.5 -0.25 1">
         <site name="fromto_in_a_frame" type="capsule" size="0.01" fromto="0 0 0 0.1 0.2 0.3"/>
+      </frame>
+      <site name="fromto_child_class" class="g"/>
+      <site name="fromto_near_vertical" type="box" size="0.02" fromto="0 0 0 1e-9 0 0.4"/>
+      <frame pos="0.5 0 0">
+        <site name="class_fromto_in_a_frame" class="d"/>
+        <site name="class_pos_in_a_frame" class="p"/>
       </frame>
       <body name="b1" childclass="a">
         <joint type="hinge"/>
@@ -329,12 +343,41 @@ STACK_SITES_BALL = [("ball_under", 'type="sphere" pos="0 0 -0.12" size="0.03"'),
 
 
 def zone_documents():
+    """The zones' documents. `segments`: a sphere on a plane under fusestatic, with sites given
+    by a segment along z through the contact: a class's in a frame turned to lie along x (it
+    misses the ray), a class's in a frame moved down 0.1 (it holds the contact), and the site's
+    own in two jointless child bodies the compiler fuses into the sphere's, one moved down 0.1
+    (it holds the contact) and one moved 0.3 aside (it misses)."""
     ball, ball_sensors = touch_sites(BALL_SITES)
     world, world_sensors = touch_sites(WORLD_SITES)
     box, box_sensors = touch_sites(BOX_SITES)
     stack_box, stack_box_sensors = touch_sites(STACK_SITES_BOX)
     stack_ball, stack_ball_sensors = touch_sites(STACK_SITES_BALL)
     return {
+        "segments": """<mujoco model="zones_segments">
+  <compiler fusestatic="true"/>
+  <option timestep="0.002"/>
+  <default>
+    <default class="seg">
+      <site type="capsule" size="0.01" fromto="0 0 -0.2 0 0 0.2"/>
+    </default>
+  </default>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1"/>
+    <body pos="0 0 0.099"><freejoint/><geom type="sphere" size="0.1" mass="0.3"/>
+      <frame euler="0 90 0"><site name="class_turned" class="seg"/></frame>
+      <frame pos="0 0 -0.1"><site name="class_moved" class="seg"/></frame>
+      <body pos="0 0 -0.1">
+        <site name="fused_own" type="capsule" size="0.01" fromto="0 0 -0.1 0 0 0.1"/>
+      </body>
+      <body pos="0.3 0 0">
+        <site name="fused_aside" type="capsule" size="0.01" fromto="0 0 -0.2 0 0 0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <sensor><touch site="class_turned"/><touch site="class_moved"/><touch site="fused_own"/>
+    <touch site="fused_aside"/></sensor>
+</mujoco>""",
         "ball": f"""<mujoco model="zones_ball">
   <option timestep="0.002"/>
   <worldbody>
@@ -389,7 +432,8 @@ def zone_case(name, text):
 # condim 1, with sites on the world and on the sphere, its contact's normal force set to 2 and
 # its position to (0, 0, 0.5), on a sphere site's surface and a box site's top face (each ray
 # meets its zone at distance 0); set to 1e-16, where mju_normalize3 takes the ray as (1, 0, 0),
-# turned on the sphere's side; and to 1e-15, mjMINVAL itself. And a body whose two geoms an
+# turned on the sphere's side; to 1e-15, mjMINVAL itself; and the position to (0.3, 0, 0.5), on
+# the bottom of a sphere site off the contact's own line, which only that position's ray meets. And a body whose two geoms an
 # explicit <pair> sets against each other, so that the sensor's body is the contact's second
 # side as well as its first, and the ray is turned.
 EDGE_BALL_XML = """<mujoco model="zone_edges_ball">
@@ -400,13 +444,14 @@ EDGE_BALL_XML = """<mujoco model="zone_edges_ball">
     <site name="w_box_face" type="box" pos="0 0 0.25" size="0.25 0.25 0.25"/>
     <site name="w_px" type="sphere" pos="0.5 0 0" size="0.1"/>
     <site name="w_pz" type="sphere" pos="0 0 0.5" size="0.1"/>
+    <site name="w_off" type="sphere" pos="0.3 0 0.75" size="0.25"/>
     <body pos="0 0 0.099"><freejoint/><geom type="sphere" size="0.1" mass="0.3" condim="1"/>
       <site name="b_mx" type="sphere" pos="-0.5 0 -0.1" size="0.1"/>
       <site name="b_mz" type="sphere" pos="0 0 -0.6" size="0.1"/>
     </body>
   </worldbody>
   <sensor><touch site="w_surface"/><touch site="w_box_face"/><touch site="w_px"/>
-    <touch site="w_pz"/><touch site="b_mx"/><touch site="b_mz"/></sensor>
+    <touch site="w_pz"/><touch site="b_mx"/><touch site="b_mz"/><touch site="w_off"/></sensor>
 </mujoco>"""
 EDGE_PAIR_XML = """<mujoco model="zone_edges_pair">
   <option timestep="0.002" gravity="0 0 0"/>
@@ -449,7 +494,7 @@ def zone_edges():
     if d.ncon != 1 or d.nefc != 1:
         sys.exit(f"zone_edges ball: {d.ncon} contacts, {d.nefc} rows")
     ball = [edge_state(m, d, f, p) for f, p in ((2.0, [0.0, 0.0, 0.5]), (1e-16, None),
-                                                 (1e-15, None))]
+                                                 (1e-15, None), (2.0, [0.3, 0.0, 0.5]))]
     m = mujoco.MjModel.from_xml_string(EDGE_PAIR_XML)
     d = mujoco.MjData(m)
     pair = [edge_state(m, d, 2.0)]

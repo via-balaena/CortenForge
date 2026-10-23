@@ -87,6 +87,9 @@ fn validate_frame_childclass_refs(
 /// Frames are coordinate-system wrappers that compose their transform into
 /// each child element and then disappear. This runs before `discardvisual`/`fusestatic`
 /// (matching MuJoCo's order) and before `ModelBuilder` processes bodies.
+///
+/// A site reaches it with its class's values already applied (`apply_site_classes`), so
+/// a `fromto`, a `pos` or a `size` its class gives is moved with it.
 pub fn expand_frames(
     body: &mut MjcfBody,
     compiler: &MjcfCompiler,
@@ -116,6 +119,62 @@ pub fn expand_frames(
     // Recursively expand frames in child bodies
     for child in &mut body.children {
         expand_frames(child, compiler, effective);
+    }
+}
+
+/// Each site's class values, applied before frames and static bodies move it: MuJoCo
+/// reads a site over its class, computes its `fromto` in its own frame, then composes
+/// the frame (`mjCSite::Compile`, `user_objects.cc:3937-3985`). A site without a class
+/// takes its body's or frame's childclass, as the builder gives it; the world passes
+/// none (`is_world`).
+pub fn apply_site_classes(
+    body: &mut MjcfBody,
+    resolver: &DefaultResolver,
+    inherited: Option<&str>,
+    is_world: bool,
+) {
+    let effective: Option<String> = if is_world {
+        None
+    } else {
+        body.childclass
+            .clone()
+            .or_else(|| inherited.map(str::to_string))
+    };
+    for site in &mut body.sites {
+        if site.class.is_none() {
+            site.class.clone_from(&effective);
+        }
+        *site = resolver.apply_to_site(site);
+    }
+    for frame in &mut body.frames {
+        apply_site_classes_in_frame(frame, resolver, effective.as_deref());
+    }
+    for child in &mut body.children {
+        apply_site_classes(child, resolver, effective.as_deref(), false);
+    }
+}
+
+/// `apply_site_classes` within a frame, whose childclass its contents take.
+fn apply_site_classes_in_frame(
+    frame: &mut MjcfFrame,
+    resolver: &DefaultResolver,
+    inherited: Option<&str>,
+) {
+    let effective: Option<String> = frame
+        .childclass
+        .clone()
+        .or_else(|| inherited.map(str::to_string));
+    for site in &mut frame.sites {
+        if site.class.is_none() {
+            site.class.clone_from(&effective);
+        }
+        *site = resolver.apply_to_site(site);
+    }
+    for sub in &mut frame.frames {
+        apply_site_classes_in_frame(sub, resolver, effective.as_deref());
+    }
+    for child in &mut frame.bodies {
+        apply_site_classes(child, resolver, effective.as_deref(), false);
     }
 }
 
