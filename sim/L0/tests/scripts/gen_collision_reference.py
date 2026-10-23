@@ -2574,10 +2574,32 @@ def bumpy_cases():
     return out
 
 
+# A hundred free spheres resting 1 mm into a plane, in rows of 20 a quarter apart (registry
+# D-ARENA); collision_parity.rs a_full_arena_drops_no_contact_and_no_row writes the same document.
+ARENA_BALLS = "".join(f'<body pos="{(i % 20) * 0.25} {(i // 20) * 0.25} 0.099"><freejoint/>'
+                      '<geom type="sphere" size="0.1"/></body>' for i in range(100))
+
+
+def mujoco_arena_limits():
+    """Registry D-ARENA: MuJoCo 3.5.0 keeps a step's contacts and rows in one arena. The hundred
+    spheres make 100 contacts and 400 rows in the arena it sizes itself; under <size
+    memory="100K"/> it keeps 93 contacts, drops the other seven with mjWARN_CONTACTFULL, and makes
+    no rows at all, with one mjWARN_CNSTRFULL. Asserted each time the golden is made."""
+    full, rows_full = mujoco.mjtWarning.mjWARN_CONTACTFULL, mujoco.mjtWarning.mjWARN_CNSTRFULL
+    for size, want in (("", (100, 400, 0, 0)), ('<size memory="100K"/>', (93, 0, 7, 1))):
+        m = mujoco.MjModel.from_xml_string(f'<mujoco>{size}<worldbody><geom type="plane" '
+                                           f'size="10 10 0.1"/>{ARENA_BALLS}</worldbody></mujoco>')
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        got = (int(d.ncon), int(d.nefc), int(d.warning[full].number), int(d.warning[rows_full].number))
+        assert got == want, (size, got)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
+    mujoco_arena_limits()
     doc = {"oracle": marker,
            "rest": finite_or_string({name: case(*c) for name, c in CASES.items()}),
            "order": finite_or_string(order_cases()),
