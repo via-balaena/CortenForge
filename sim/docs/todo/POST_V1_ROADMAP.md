@@ -183,7 +183,7 @@ DT-181 added during derivatives examples (sensor FD optimization).
 | DT-108 | T1 | `dyntype` enum gating interpolation eligibility -- restrict which `ActuatorDynamics` variants may use history buffer | 10g |
 | DT-110 | T1 | `actuator_plugin` model array -- per-actuator plugin ID (`int[nu]`, -1 sentinel). Plugin system dependency satisfied. | 10g |
 | DT-118 | T2 | ~~`mj_contactForce()` -- touch sensor force reconstruction via full contact force vector~~ **Done** -- the touch sensor adds each contact's decoded normal force (Rigid-physics chunk 3d-2, ledger L122) | 10h |
-| DT-119 | T2 | Ray-geom intersection filter for touch sensor. Depends on DT-118. | 10h |
+| DT-119 | T2 | ~~Ray-geom intersection filter for touch sensor. Depends on DT-118.~~ **Done** -- the touch sensor adds a contact only where its ray meets the site's zone (`mju_rayGeom`, `sensor/ray_geom.rs`), as MuJoCo 3.5.0 (Rigid closing work, collision and sensors). | 10h |
 | DT-120 | T1 | `MjObjectType::Camera` -- frame sensor camera support (reftype="camera" currently warns + ignores) | 10h |
 | DT-121 | T1 | `InsideSite` sensor (`mjSENS_INSIDESITE`) -- MuJoCo 3.x sensor type not yet supported | 10h |
 | DT-122 | T2 | Mesh/Hfield/SDF geom distance support for `GeomDist`/`GeomPoint`/`GeomNormal` sensors | 10h |

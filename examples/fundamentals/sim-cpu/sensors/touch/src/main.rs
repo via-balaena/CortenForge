@@ -1,7 +1,8 @@
 //! Touch Sensor
 //!
 //! A sphere hovers at z=4.0 for 1 second, then drops onto a ground plane.
-//! Touch sensor on the sphere reports the sum of normal contact forces.
+//! Touch sensor on the sphere reports the sum of normal contact forces in
+//! its site's zone, a sphere just larger than the ball.
 //! Uses `condim="1"` (frictionless normal-only contact).
 //!
 //! Two phases after the drop:
@@ -52,7 +53,7 @@ const MJCF: &str = r#"
             <inertial pos="0 0 0" mass="1.0" diaginertia="0.004 0.004 0.004"/>
             <geom name="ball" type="sphere" size="0.1" condim="1"
                   contype="1" conaffinity="1" rgba="0.2 0.5 0.85 1"/>
-            <site name="touch_site" pos="0 0 0"/>
+            <site name="touch_site" type="sphere" size="0.11"/>
         </body>
     </worldbody>
 
@@ -64,14 +65,18 @@ const MJCF: &str = r#"
 
 // ── How the touch sensor works ──────────────────────────────────────────────
 //
-//   The engine sums normal contact forces for all contacts involving geoms
-//   attached to the sensor's body:
+//   The engine sums the normal contact forces of the contacts involving
+//   geoms attached to the sensor's body that lie in its site's zone:
 //
 //   1. Iterate all active constraints (efc_type, efc_force)
 //   2. For each contact constraint where either geom belongs to this body:
-//        - Frictionless/Elliptic: add efc_force[normal] (pure normal component)
-//        - Pyramidal: add all efc_force[0..dim] (the facets' sum, the normal
+//        - Frictionless/Elliptic: efc_force[normal] (pure normal component)
+//        - Pyramidal: all efc_force[0..dim] (the facets' sum, the normal
 //          force as mju_decodePyramid decodes it)
+//      added when it is above 0 and the ray from the contact, along the
+//      normal away from this body, meets the site's shape (always, from a
+//      contact inside it). This site encloses the ball, so it takes every
+//      contact; a small site at the ball's centre would take none.
 //   3. Output: scalar = total summed normal force
 //
 //   Touch reads directly from efc_force (constraint solver output), so it's

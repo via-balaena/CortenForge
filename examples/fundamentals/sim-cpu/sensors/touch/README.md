@@ -4,7 +4,10 @@ Contact force measurement via the touch sensor.
 
 ## What it demonstrates
 
-- `<touch>` sums normal contact forces on all geoms of the sensor's body
+- `<touch>` sums the normal contact forces on the geoms of the sensor's
+  body whose contacts lie in its site's zone: here a sphere just larger
+  than the ball, which holds every contact (a small site at the ball's
+  centre would hold none)
 - Acceleration-stage sensor (reads constraint forces from solver)
 - `condim="1"` (frictionless, normal-only)
 - Positive data kind: touch is always >= 0

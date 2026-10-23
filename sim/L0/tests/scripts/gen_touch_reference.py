@@ -22,13 +22,20 @@ state, step 100's with the sphere's contact rows' forces negated and
 mj_sensorAcc run again, so that contact's normal force is below 0 and the
 sphere's touch reads 0. `site_sizes`: the size MuJoCo compiles for each
 site of a document whose sites write their sizes in part or not at all,
-over default classes (a site's size is its touch sensor's zone).
+over default classes (a site's size is its touch sensor's zone). `rays`:
+mju_rayGeom on each type it takes (`rays` says how they are drawn), and
+rays on the edges of its tests (`EDGE_RAYS`), each with MuJoCo's distance. `zones`: a sphere on a plane with touch sensors on
+eleven sites of the sphere and two of the world, a box on a plane with
+five, a sphere on a box on a plane with two on each, whose zones take some
+of their bodies' contacts and not others (`BALL_SITES` and the rest say
+where they lie), at the same states as the cases above.
 """
 import json
 import os
 import sys
 
 import mujoco
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gen_census_golden import finite_or_string, oracle  # noqa: E402
@@ -151,13 +158,187 @@ def site_sizes():
             "site_size": {m.site(i).name: floats(m.site_size[i]) for i in range(m.nsite)}}
 
 
+# mju_rayGeom's types and their mjtGeom numbers.
+RAY_TYPES = {"plane": 0, "sphere": 2, "capsule": 3, "ellipsoid": 4, "cylinder": 5, "box": 6}
+
+
+def rays():
+    """mju_rayGeom on each type it takes, 300 rays a type from one generator: sizes of 0.05 to
+    0.5 in each place (a plane's two of 0, unbounded, in one case of five), the centre within 1
+    of the origin, a turn at random; the ray's start within about 0.3 of the centre, inside
+    the geom or not; its direction at random or, in one case of five, along one of the geom's
+    own axes (so that, in the geom's frame, its other two parts are near 0), of length 1 in half
+    the cases and 0.1 to 3 in the rest. Each with MuJoCo's distance, -1 where it misses. It
+    refuses a type with no hit or no miss."""
+    rng = np.random.default_rng(150)
+    out = []
+    for kind, geomtype in RAY_TYPES.items():
+        hits = 0
+        for i in range(300):
+            size = rng.uniform(0.05, 0.5, 3)
+            if kind == "plane" and i % 5 == 0:
+                size[:2] = 0.0
+            pos = rng.uniform(-1.0, 1.0, 3)
+            quat = rng.normal(size=4)
+            quat /= np.linalg.norm(quat)
+            mat = np.zeros(9)
+            mujoco.mju_quat2Mat(mat, quat)
+            pnt = pos + 0.3 * rng.normal(size=3)
+            if i % 5 == 1:
+                direction = mat.reshape(3, 3)[:, rng.integers(3)] * rng.choice([-1.0, 1.0])
+            else:
+                direction = rng.normal(size=3)
+            vec = direction / np.linalg.norm(direction)
+            if i % 2:
+                vec = vec * rng.uniform(0.1, 3.0)
+            x = mujoco.mju_rayGeom(pos, mat, size, pnt, vec, geomtype, None)
+            hits += x >= 0
+            out.append({"type": kind, "size": floats(size), "pos": floats(pos), "mat": floats(mat),
+                        "pnt": floats(pnt), "vec": floats(vec), "x": float(x)})
+        if not 0 < hits < 300:
+            sys.exit(f"rays {kind}: {hits} hits of 300")
+    return out + edge_rays()
+
+
+# Rays on the edges of mju_rayGeom's tests, each geom unturned at the origin, in numbers a
+# double holds exactly: (type, size, start, direction).
+EDGE_RAYS = [
+    # From a sphere's surface inward: the lower root is 0 exactly, and taken.
+    ("sphere", [0.5, 0, 0], [0.5, 0, 0], [-1, 0, 0]),
+    # A direction so short that ray_quad's a is below mjMINVAL: a miss, though the line crosses.
+    ("sphere", [0.5, 0, 0], [-1, 0, 0], [1e-9, 0, 0]),
+    # Toward an unbounded plane, but within mjMINVAL of parallel to it: a miss.
+    ("plane", [0, 0, 0], [0, 0, 1], [1, 0, -1e-16]),
+    # From a box's top face, across it within mjMINVAL of parallel: that face is passed over.
+    ("box", [0.5, 0.5, 0.5], [0.125, 0.25, 0.5], [1, 0, 1e-16]),
+    # From a cylinder's top end, across it within mjMINVAL of parallel: the end is passed over.
+    ("cylinder", [0.5, 0.5, 0], [0.125, 0.25, 0.5], [1, 0, 1e-16]),
+    # Along a capsule's equator where its side meets its top cap.
+    ("capsule", [0.25, 0.5, 0], [-1, 0, 0.5], [1, 0, 0]),
+    # Along a capsule's axis from below, and from inside its bottom cap.
+    ("capsule", [0.25, 0.5, 0], [0, 0, -2], [0, 0, 1]),
+    ("capsule", [0.25, 0.5, 0], [0, 0, -0.625], [0, 0, 1]),
+    # A cylinder's axis from below; an ellipsoid's longest axis from inside.
+    ("cylinder", [0.25, 0.5, 0], [0, 0, -2], [0, 0, 1]),
+    ("ellipsoid", [0.25, 0.5, 0.125], [0, 0.25, 0], [0, 1, 0]),
+]
+
+
+def edge_rays():
+    out = []
+    for kind, size, pnt, vec in EDGE_RAYS:
+        pos, mat = np.zeros(3), np.eye(3).ravel()
+        size, pnt, vec = (np.array(v, dtype=float) for v in (size, pnt, vec))
+        x = mujoco.mju_rayGeom(pos, mat, size, pnt, vec, RAY_TYPES[kind], None)
+        out.append({"type": kind, "size": floats(size), "pos": floats(pos), "mat": floats(mat),
+                    "pnt": floats(pnt), "vec": floats(vec), "x": float(x)})
+    return out
+
+
+def touch_sites(sites):
+    """Sites written into a body, and a touch sensor on each."""
+    return ("".join(f'<site name="{n}" {a}/>' for n, a in sites),
+            "".join(f'<touch site="{n}"/>' for n, _ in sites))
+
+
+# The sphere's sites: the ray from its contact runs down, from the sphere toward the plane
+# (`engine_sensor.c:915-918`). Enclosing it, about it, beside it and off it, turned and not;
+# an ellipsoid of one size written (0.2, 0.005, 0.005: flat across the ray, 0.01 off it).
+BALL_SITES = [("centre", 'type="sphere" size="0.01"'),
+              ("enclosing", 'type="sphere" size="0.12"'),
+              ("top", 'type="box" pos="0 0 0.1" size="0.05 0.05 0.01"'),
+              ("bottom", 'type="box" pos="0 0 -0.1" size="0.05 0.05 0.01"'),
+              ("below_cylinder", 'type="cylinder" pos="0 0 -0.15" size="0.02 0.01"'),
+              ("below_capsule", 'type="capsule" pos="0 0 -0.2" size="0.01 0.02"'),
+              ("below_ellipsoid", 'type="ellipsoid" pos="0 0 -0.3" size="0.01 0.02 0.03"'),
+              ("off_ray", 'type="sphere" pos="0.05 0 -0.2" size="0.01"'),
+              ("turned_box", 'type="box" pos="0 0 -0.2" euler="45 30 0" size="0.01 0.02 0.005"'),
+              ("turned_capsule", 'type="capsule" pos="0.04 0 -0.2" euler="0 90 0" size="0.01 0.03"'),
+              ("flat_ellipsoid", 'type="ellipsoid" pos="0 0.01 -0.12" size="0.2"')]
+# The plane's sites: its contact's ray runs up, from the plane toward the sphere.
+WORLD_SITES = [("world_above", 'type="box" pos="0 0 0.05" size="0.05 0.05 0.05"'),
+               ("world_below", 'type="box" pos="0 0 -0.2" size="0.05 0.05 0.05"')]
+# The box's sites: its four contacts' rays run down. Under one half, one corner, one edge;
+# about all four; above it.
+BOX_SITES = [("half", 'type="box" pos="0.1 0 -0.15" size="0.1 0.2 0.06"'),
+             ("corner", 'type="sphere" pos="0.2 0.15 -0.15" size="0.03"'),
+             ("edge", 'type="capsule" pos="-0.2 0 -0.12" euler="90 0 0" size="0.02 0.2"'),
+             ("all", 'type="box" size="0.3 0.3 0.3"'),
+             ("above", 'type="box" pos="0 0 0.2" size="0.1 0.1 0.05"')]
+# A sphere on a box on the plane: the sphere's contact with the box is listed sphere first, so
+# the box's sensor turns its ray (up, into the sphere); the box's other sensor sees only the
+# plane's four.
+STACK_SITES_BOX = [("box_top", 'type="box" pos="0 0 0.15" size="0.05 0.05 0.05"'),
+                   ("box_under", 'type="box" pos="0 0 -0.15" size="0.25 0.25 0.06"')]
+STACK_SITES_BALL = [("ball_under", 'type="sphere" pos="0 0 -0.12" size="0.03"'),
+                    ("ball_over", 'type="sphere" pos="0 0 0.12" size="0.03"')]
+
+
+def zone_documents():
+    ball, ball_sensors = touch_sites(BALL_SITES)
+    world, world_sensors = touch_sites(WORLD_SITES)
+    box, box_sensors = touch_sites(BOX_SITES)
+    stack_box, stack_box_sensors = touch_sites(STACK_SITES_BOX)
+    stack_ball, stack_ball_sensors = touch_sites(STACK_SITES_BALL)
+    return {
+        "ball": f"""<mujoco model="zones_ball">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1"/>
+    {world}
+    <body pos="0 0 0.099"><freejoint/><geom type="sphere" size="0.1" mass="0.3"/>{ball}</body>
+  </worldbody>
+  <sensor>{ball_sensors}{world_sensors}</sensor>
+</mujoco>""",
+        "box": f"""<mujoco model="zones_box">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1"/>
+    <body pos="0 0 0.099"><freejoint/><geom type="box" size="0.2 0.15 0.1" mass="2"/>{box}</body>
+  </worldbody>
+  <sensor>{box_sensors}</sensor>
+</mujoco>""",
+        "stack": f"""<mujoco model="zones_stack">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.1"/>
+    <body pos="0 0 0.099"><freejoint/><geom type="box" size="0.2 0.15 0.1" mass="2"/>{stack_box}</body>
+    <body pos="0 0 0.298"><freejoint/><geom type="sphere" size="0.1" mass="0.3"/>{stack_ball}</body>
+  </worldbody>
+  <sensor>{stack_box_sensors}{stack_ball_sensors}</sensor>
+</mujoco>"""}
+
+
+def zone_case(name, text):
+    """MuJoCo's state before each of `STEPS` and, after mj_forward there, its ncon, efc_force
+    and sensordata. It refuses a document whose sensors do not read both 0 and above 0."""
+    m = mujoco.MjModel.from_xml_string(text)
+    d = mujoco.MjData(m)
+    states = []
+    for step in range(max(STEPS) + 1):
+        if step in STEPS:
+            st = {"step": step, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
+                  "qacc_warmstart": floats(d.qacc_warmstart), "time": float(d.time)}
+            mujoco.mj_forward(m, d)
+            st.update({"ncon": int(d.ncon), "efc_force": floats(d.efc_force),
+                       "sensordata": floats(d.sensordata)})
+            states.append(st)
+        mujoco.mj_step(m, d)
+    readings = [x for st in states for x in st["sensordata"]]
+    if not (any(x == 0 for x in readings) and any(x > 0 for x in readings)):
+        sys.exit(f"zones {name}: the sensors read {sorted(set(readings))[:4]}")
+    return {"xml": text, "states": states}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
     cases = {f"{cone}_{condim}": case(cone, condim) for cone, condim in CASES}
     out = {"oracle": marker, "cases": finite_or_string(cases),
-           "site_sizes": finite_or_string(site_sizes())}
+           "site_sizes": finite_or_string(site_sizes()),
+           "rays": finite_or_string(rays()),
+           "zones": finite_or_string({n: zone_case(n, t) for n, t in zone_documents().items()})}
     with open(os.path.join(sys.argv[1], "touch.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"))
         f.write("\n")

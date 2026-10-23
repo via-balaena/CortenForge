@@ -14,6 +14,7 @@ pub mod acceleration;
 pub(crate) mod geom_distance;
 pub(crate) mod position;
 pub(crate) mod postprocess;
+mod ray_geom;
 pub(crate) mod velocity;
 
 // Re-exports added as each sub-module is populated:
