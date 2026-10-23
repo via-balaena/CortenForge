@@ -155,20 +155,13 @@ impl ModelBuilder {
             &self.compiler,
         ));
 
-        // Convert site size (MuJoCo uses single value for sphere, array for others)
-        let site_size = site.size.as_deref().unwrap_or(&[0.01]);
-        let size = if site_size.is_empty() {
-            Vector3::new(0.01, 0.01, 0.01) // Default small size
-        } else if site_size.len() == 1 {
-            let s = site_size[0];
-            Vector3::new(s, s, s)
-        } else {
-            Vector3::new(
-                site_size[0],
-                site_size.get(1).copied().unwrap_or(site_size[0]),
-                site_size.get(2).copied().unwrap_or(site_size[0]),
-            )
-        };
+        // MuJoCo's site size: 0.005 in each place (`mjs_defaultSite`,
+        // `user_init.c:159`), the numbers written, the site's over its
+        // class's, in the first places.
+        let mut size = Vector3::new(0.005, 0.005, 0.005);
+        for (k, &s) in site.size.iter().flatten().take(3).enumerate() {
+            size[k] = s;
+        }
         self.site_size.push(size);
 
         self.site_name.push(if site.name.is_empty() {

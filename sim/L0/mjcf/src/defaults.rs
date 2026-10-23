@@ -545,9 +545,7 @@ impl DefaultResolver {
             if result.site_type.is_none() {
                 result.site_type.clone_from(&defaults.site_type);
             }
-            if result.size.is_none() {
-                result.size.clone_from(&defaults.size);
-            }
+            result.size = overlay(defaults.size.as_ref(), site.size.as_ref());
             if result.rgba.is_none() {
                 result.rgba = defaults.rgba;
             }
@@ -1022,7 +1020,7 @@ impl DefaultResolver {
             (None, Some(c)) => Some(c.clone()),
             (Some(p), Some(c)) => Some(MjcfSiteDefaults {
                 site_type: c.site_type.clone().or_else(|| p.site_type.clone()),
-                size: c.size.clone().or_else(|| p.size.clone()),
+                size: overlay(p.size.as_ref(), c.size.as_ref()),
                 rgba: c.rgba.or(p.rgba),
                 group: c.group.or(p.group),
                 pos: c.pos.or(p.pos),
@@ -1070,6 +1068,26 @@ impl DefaultResolver {
                 solref: c.solref.or(p.solref),
                 solimp: c.solimp.or(p.solimp),
             }),
+        }
+    }
+}
+
+/// An array attribute written over the one it inherits, as MuJoCo's
+/// `ReadAttr` reads one (`xml_util.cc:798-818`): the `n` numbers written take
+/// its first `n` places and the rest keep the inherited ones. A site's
+/// `size` is read so over its class's, and a class's over its parent's
+/// (`xml_native_reader.cc:1928`).
+fn overlay(inherited: Option<&Vec<f64>>, written: Option<&Vec<f64>>) -> Option<Vec<f64>> {
+    match (inherited, written) {
+        (inherited, None) => inherited.cloned(),
+        (None, Some(written)) => Some(written.clone()),
+        (Some(inherited), Some(written)) => {
+            let mut out = inherited.clone();
+            if out.len() < written.len() {
+                out.resize(written.len(), 0.0);
+            }
+            out[..written.len()].copy_from_slice(written);
+            Some(out)
         }
     }
 }

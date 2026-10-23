@@ -80,3 +80,22 @@ fn touch_sums_each_contact_as_mujoco() {
         }
     }
 }
+
+/// Each site's size as MuJoCo compiles it, bit for bit: 0.005 in each
+/// place, then the numbers its default classes write, the parent's first,
+/// then its own, each in the first places (the golden's `site_sizes`; a
+/// touch sensor's zone is its site's size).
+#[test]
+fn site_sizes_are_mujocos() {
+    let g = golden();
+    let case = &g["site_sizes"];
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let want = case["site_size"].as_object().expect("site sizes");
+    assert_eq!(want.len(), model.nsite);
+    for (name, size) in want {
+        let site = model.site_id(name).expect("a site of that name");
+        let ours = model.site_size[site].map(f64::to_bits);
+        let theirs: Vec<u64> = floats(size).into_iter().map(f64::to_bits).collect();
+        assert_eq!(ours.as_slice(), theirs.as_slice(), "{name}");
+    }
+}

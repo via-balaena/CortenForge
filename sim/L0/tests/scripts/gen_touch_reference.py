@@ -20,7 +20,9 @@ pyramidal cone and condim 3 under the elliptic one. For each, MuJoCo's state
 mj_forward at that state: ncon, efc_force and sensordata; and one more
 state, step 100's with the sphere's contact rows' forces negated and
 mj_sensorAcc run again, so that contact's normal force is below 0 and the
-sphere's touch reads 0.
+sphere's touch reads 0. `site_sizes`: the size MuJoCo compiles for each
+site of a document whose sites write their sizes in part or not at all,
+over default classes (a site's size is its touch sensor's zone).
 """
 import json
 import os
@@ -105,12 +107,57 @@ def negated(m, d, st):
     return st
 
 
+# Sites whose sizes are written in part, or not at all, over default classes three deep, a
+# body's childclass among them: the zone a touch sensor reads is its site's size.
+SITE_SIZES_XML = """<mujoco model="site_sizes">
+  <default>
+    <site size="0.02 0.03"/>
+    <default class="a">
+      <site size="0.04"/>
+      <default class="b">
+        <site type="box"/>
+      </default>
+    </default>
+    <default class="c">
+      <site type="ellipsoid" size="0.06 0.07 0.08"/>
+    </default>
+  </default>
+  <worldbody>
+    <site name="world_plain" type="box"/>
+    <body name="b0">
+      <freejoint/>
+      <geom size="0.1"/>
+      <site name="main_class"/>
+      <site name="one_written" size="0.5"/>
+      <site name="class_a" class="a"/>
+      <site name="class_b_two_written" class="b" size="0.1 0.2"/>
+      <site name="class_c_one_written" class="c" size="0.9"/>
+      <site name="all_written" type="capsule" size="0.11 0.12 0.13"/>
+      <body name="b1" childclass="a">
+        <joint type="hinge"/>
+        <geom size="0.1"/>
+        <site name="childclass_a"/>
+        <site name="childclass_a_two_written" size="0.3 0.4"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+
+def site_sizes():
+    """Each named site's size as MuJoCo compiles `SITE_SIZES_XML`."""
+    m = mujoco.MjModel.from_xml_string(SITE_SIZES_XML)
+    return {"xml": SITE_SIZES_XML,
+            "site_size": {m.site(i).name: floats(m.site_size[i]) for i in range(m.nsite)}}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
     cases = {f"{cone}_{condim}": case(cone, condim) for cone, condim in CASES}
-    out = {"oracle": marker, "cases": finite_or_string(cases)}
+    out = {"oracle": marker, "cases": finite_or_string(cases),
+           "site_sizes": finite_or_string(site_sizes())}
     with open(os.path.join(sys.argv[1], "touch.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"))
         f.write("\n")
