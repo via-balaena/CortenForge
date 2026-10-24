@@ -1528,16 +1528,14 @@ fn explicit_convex_pairs_collide_lower_body_first_as_mujoco() {
 }
 
 /// Where ours may part from MuJoCo's sensors on a route pair: the distance,
-/// and the normal and fromto. The pairs of a collision function list a
-/// contact whose normal its frame has normalised a second time
-/// (`make_frame`), where MuJoCo's sensor reads the function's: with that
-/// second normalisation skipped, measured, they read MuJoCo's bit for bit.
-/// Where the plane–cylinder pair and the box's or mesh's pair with a mesh
-/// part from MuJoCo's is not isolated.
+/// and the normal and fromto. A box's or mesh's pair with the mesh: where
+/// two hull vertices tie exactly along a support direction, sim-core's hill
+/// climb and MuJoCo's return different ones; their hull graphs differ, and
+/// with MuJoCo's `mesh_graph` given, measured, bit for bit (ledger L268).
+/// A plane–cylinder pair: its contact positions sum in another order.
 fn route_bounds(pair: &str) -> (f64, f64) {
     match pair {
-        "sphere_sphere" | "sphere_capsule" | "sphere_cylinder" | "sphere_box"
-        | "capsule_capsule" | "capsule_box" | "plane_cylinder" => (1e-15, 1e-15),
+        "plane_cylinder" | "plane_turned_cylinder" => (1e-15, 1e-15),
         "box_mesh" | "mesh_mesh" => (1e-16, 1e-14),
         _ => (0.0, 0.0),
     }
@@ -1551,11 +1549,9 @@ fn route_bounds(pair: &str) -> (f64, f64) {
 /// second against the first at cutoff 1, and of the first against the
 /// second at MuJoCo's default cutoff of 0. A pair `mjc_Convex` or
 /// `mjc_BoxBox` collides through `mjc_ccd`, and every other through its
-/// collision function at the cutoff as its margin. MuJoCo's bit for bit
-/// but as `route_bounds` says; measured there: the distance 2.8e-17 at most
-/// (a mesh against a mesh), the normal and fromto 3.3e-16, but the normal
-/// 2.3e-15 for a box against a mesh. A mesh and an ellipsoid under a plane
-/// (`mjc_PlaneConvex`): bit for bit.
+/// collision function at the cutoff as its margin; a plane's pairs also
+/// under a plane turned off the axes. MuJoCo's bit for bit but as
+/// `route_bounds` says.
 #[test]
 fn geom_distance_sensors_route_as_mujoco() {
     let golden = golden();

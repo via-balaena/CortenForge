@@ -5,6 +5,10 @@
 //! contacts, and shared collision constants.
 
 use super::mj_ccd::mjc_convex;
+use super::mj_primitive::{
+    Frame, RawContact, raw_capsule_box, raw_capsule_capsule, raw_sphere_box, raw_sphere_capsule,
+    sphere_cylinder, sphere_sphere,
+};
 use super::order::{lower_body_first, type_ordered};
 use super::pair_convex::{
     collide_capsule_capsule, collide_sphere_box, collide_sphere_capsule, collide_sphere_sphere,
@@ -89,6 +93,52 @@ fn collide_convex(
         .iter()
         .map(|c| c.contact(model, g1, g2, margin))
         .collect()
+}
+
+/// The contacts MuJoCo's own collision function writes for a sphere with a
+/// sphere, capsule, cylinder or box, or a capsule with a capsule or box
+/// (`mj_primitive`), `geom1` the lower `mjtGeom`: each its distance,
+/// position and normal as the function wrote them, before `mj_setContact`
+/// normalises the normal (`mju_makeFrame`). `None` for any other pair.
+// The full per-geom pair context, as `collide_geoms` takes it.
+#[allow(clippy::too_many_arguments)]
+pub fn primitive_contacts(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: &Vector3<f64>,
+    mat1: &Matrix3<f64>,
+    pos2: &Vector3<f64>,
+    mat2: &Matrix3<f64>,
+    margin: f64,
+) -> Option<Vec<(f64, [f64; 3], [f64; 3])>> {
+    let f1 = Frame {
+        pos: pos1,
+        mat: mat1,
+    };
+    let f2 = Frame {
+        pos: pos2,
+        mat: mat2,
+    };
+    let (s1, s2) = (model.geom_size[geom1], model.geom_size[geom2]);
+    let raw: Vec<RawContact> = match (model.geom_type[geom1], model.geom_type[geom2]) {
+        (GeomType::Sphere, GeomType::Sphere) => sphere_sphere(margin, f1, s1.x, f2, s2.x)
+            .into_iter()
+            .collect(),
+        (GeomType::Sphere, GeomType::Capsule) => raw_sphere_capsule(margin, f1, s1.x, f2, &s2)
+            .into_iter()
+            .collect(),
+        (GeomType::Sphere, GeomType::Cylinder) => sphere_cylinder(margin, f1, s1.x, f2, &s2)
+            .into_iter()
+            .collect(),
+        (GeomType::Sphere, GeomType::Box) => raw_sphere_box(margin, &f1.pos(), s1.x, f2, &s2)
+            .into_iter()
+            .collect(),
+        (GeomType::Capsule, GeomType::Capsule) => raw_capsule_capsule(margin, f1, &s1, f2, &s2),
+        (GeomType::Capsule, GeomType::Box) => raw_capsule_box(margin, f1, &s1, f2, &s2),
+        _ => return None,
+    };
+    Some(raw.into_iter().map(|c| (c.dist, c.pos, c.normal)).collect())
 }
 
 /// Narrow-phase collision between two geometries.

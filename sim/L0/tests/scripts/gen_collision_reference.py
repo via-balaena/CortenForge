@@ -1893,49 +1893,72 @@ def sensor_trios():
     return f'<sensor>{trio("A", "B", 1)}{trio("B", "A", 1)}{trio("A", "B", None)}</sensor>'
 
 
-def route_xml(kind_a, kind_b):
+# A plane's turn whose quaternion is of unit norm in floating point, (2, 4, 5,
+# 6)/9: MuJoCo keeps a written quaternion within 1e-14 of unit norm, sim-mjcf
+# normalises every one (ledger L264), and this one both hold alike.
+PLANE_TURN = "0.2222222222222222 0.4444444444444444 0.5555555555555556 0.6666666666666666"
+
+
+def route_xml(kind_a, kind_b, plane_quat=None):
     def named(name, kind):
         return CONVEX_GEOMS[kind].replace("<geom", f'<geom name="{name}"')
-    a = ('<geom name="A" type="plane" size="1 1 0.1"/>' if kind_a == "plane"
+    turn = f' quat="{plane_quat}"' if plane_quat else ""
+    a = (f'<geom name="A" type="plane" size="1 1 0.1"{turn}/>' if kind_a == "plane"
          else f'<body name="a"><freejoint/>{named("A", kind_a)}</body>')
     return (f'<mujoco>{CHAMFER_ASSET}<option><flag gravity="disable"/></option><worldbody>{a}'
             f'<body name="b"><freejoint/>{named("B", kind_b)}</body></worldbody>{sensor_trios()}</mujoco>')
 
 
-def route_pose(rng, kind_a, kind_b, far):
-    """A at the origin (a plane unturned), B within `far` of A's reach and
-    its own, each turned at random."""
+def route_pose(rng, kind_a, kind_b, far, plane_mat=None):
+    """A at the origin, B within `far` of A's reach and its own, each turned
+    at random; under a plane, B placed in the plane's frame (`plane_mat`, its
+    rotation, when it is turned)."""
     qb = list(unit(rng.normal(size=4)))
     if kind_a == "plane":
         pb = [rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3), rng.uniform(-0.1, CONVEX_REACH[kind_b] + far)]
+        if plane_mat is not None:
+            pb = plane_mat @ np.array(pb)
         return [float(x) for x in pb] + qb
     r = rng.uniform(0, CONVEX_REACH[kind_a] + CONVEX_REACH[kind_b] + far)
     pb = r * unit(rng.normal(size=3))
     return [0.0, 0.0, 0.0] + list(unit(rng.normal(size=4))) + [float(x) for x in pb] + qb
 
 
-def geom_distance_route_cases():
-    """Per route pair, 12 seeded random poses: 5 overlapping, 5 apart within
+def route_cases(rng, xml, kind_a, kind_b, name, plane_mat=None):
+    """12 seeded random poses of a route pair: 5 overlapping, 5 apart within
     the cutoff and 2 past it, by MuJoCo's distance of A against B."""
+    want = {"over": 5, "apart": 5, "past": 2}
+    cases = []
+    for tries in range(4000):
+        qpos = route_pose(rng, kind_a, kind_b, 1.2, plane_mat)
+        sd = sensors_at(xml, qpos)
+        kind = "over" if sd[0] < 0 else "past" if sd[0] == 1 else "apart"
+        if want[kind] == 0:
+            continue
+        want[kind] -= 1
+        cases.append({"qpos": floats(qpos), "sensordata": floats(sd)})
+        if not any(want.values()):
+            break
+    else:
+        sys.exit(f"geom_distance_routes {name}: {want} short in {tries + 1} tries")
+    return {"xml": xml, "cases": cases}
+
+
+def geom_distance_route_cases():
+    """Per route pair, `route_cases`; then each convex geom under a plane
+    turned by PLANE_TURN, whose normal no route reads off an unturned frame."""
     rng = np.random.default_rng(20261022)
     pairs = {}
     for kind_a, kind_b in ROUTE_PAIRS:
-        xml = route_xml(kind_a, kind_b)
-        want = {"over": 5, "apart": 5, "past": 2}
-        cases = []
-        for tries in range(4000):
-            qpos = route_pose(rng, kind_a, kind_b, 1.2)
-            sd = sensors_at(xml, qpos)
-            kind = "over" if sd[0] < 0 else "past" if sd[0] == 1 else "apart"
-            if want[kind] == 0:
-                continue
-            want[kind] -= 1
-            cases.append({"qpos": floats(qpos), "sensordata": floats(sd)})
-            if not any(want.values()):
-                break
-        else:
-            sys.exit(f"geom_distance_routes {kind_a}_{kind_b}: {want} short in {tries + 1} tries")
-        pairs[f"{kind_a}_{kind_b}"] = {"xml": xml, "cases": cases}
+        name = f"{kind_a}_{kind_b}"
+        pairs[name] = route_cases(rng, route_xml(kind_a, kind_b), kind_a, kind_b, name)
+    rng = np.random.default_rng(20261024)
+    turn = np.zeros(9)
+    mujoco.mju_quat2Mat(turn, np.array([float(x) for x in PLANE_TURN.split()]))
+    for kind_b in ROUTE_KINDS:
+        name = f"plane_turned_{kind_b}"
+        pairs[name] = route_cases(rng, route_xml("plane", kind_b, PLANE_TURN), "plane", kind_b, name,
+                                  turn.reshape(3, 3))
     return pairs
 
 
