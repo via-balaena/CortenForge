@@ -111,7 +111,12 @@ then D = 1/R, and every row's diagApprox = R*imp/(1-imp) (`:1570-1578`):
   apart); after mj_forward, every row's efc_diagApprox and efc_R. The
   generator refuses every_row_kind unless each of those kinds makes a
   row, and frictionloss_rows unless one row's diagApprox is not its dof's
-  invweight0.
+  invweight0. Also weightless_limit and weightless_box_* (rows whose weights
+  are below mjMINVAL, which MuJoCo does not floor; refused unless flooring
+  them would change R), tendon_zero_j (a tendon whose Jacobian is 0 at qpos0,
+  its tendon_invweight0 0; refused otherwise) and tendon_chain (a tendon over
+  four hinges whose tendon_invweight0, `mju_dot`'s, rounds otherwise summed
+  in order; refused otherwise), with their weights.
 
 A NaN violation goes on to `getimpedance`'s curve, which gives a NaN impedance,
 and `mju_max` keeps a NaN R (`:1422-1461`, `:1484`):
@@ -120,6 +125,9 @@ and `mju_max` keeps a NaN R (`:1422-1461`, `:1484`):
   ellipsoid, box), its contacts at a NaN distance; after mj_forward, each
   row's impedance (`efc_KBIP`'s third), R, D and diagApprox. The generator
   refuses a case whose rows are not all NaN.
+- nan_param: a NaN impedance parameter (a limit's solimp width, midpoint or
+  power; an elliptic contact's impratio, set on the loaded model), at the
+  case's qpos: the same four per row. The generator refuses a case none of whose rows has a NaN R.
 
 A weld's rotational error and rotational Jacobian rows are scaled by its
 torquescale, `eq_data[10]` (`:482`, `:510`, `:530`):
@@ -880,6 +888,124 @@ def inertial_chain_orders(m, d):
     return tran, rot, dof
 
 
+# Rows whose weights are below mjMINVAL, each body's inertia written out:
+# MuJoCo floors no weight, only R (`mj_makeImpedance`,
+# `engine_core_constraint.c:1484`), and at an impedance below 0.5 a weight
+# floored at mjMINVAL makes another R, which the generator checks. A hinge of
+# armature 1e16 past its limit (dof_invweight0 1e-16), and a box of mass 1e16
+# 1 mm into a plane (body_invweight0 1e-16 and 1e-17), each at solimp d0 0.3.
+WEIGHTLESS_LIMIT = """<mujoco model="weightless_limit">
+  <worldbody>
+    <body>
+      <inertial pos="0.1 0 0" mass="1" diaginertia="0.0001 0.004 0.004"/>
+      <joint type="hinge" axis="0 0 1" range="-0.1 0.1" limited="true" armature="1e16"
+             solimplimit="0.3 0.4 0.001 0.5 2"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+WEIGHTLESS_BOX = """<mujoco model="weightless_box">
+  <option cone="{cone}"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1" solimp="0.3 0.4 0.001 0.5 2"/>
+    <body pos="0 0 0.099">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="1e16" diaginertia="1e17 1e17 1e17"/>
+      <geom type="box" size="0.1 0.1 0.1" solimp="0.3 0.4 0.001 0.5 2"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+# A spatial tendon whose Jacobian is 0 at qpos0 (its arm's motion across the
+# tendon there), past its limit at the hinge's 0.9: MuJoCo's tendon_invweight0
+# is 0 (`engine_setconst.c:752-767`, no floor), which the generator checks.
+TENDON_ZERO_J = """<mujoco model="tendon_zero_j">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0"/>
+  <worldbody>
+    <site name="s0" pos="0.2 0 0"/>
+    <body name="arm">
+      <inertial pos="0.05 0 0" mass="1" diaginertia="0.00005 0.0009 0.0009"/>
+      <joint name="h" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.01" mass="1" contype="0" conaffinity="0"/>
+      <site name="s1" pos="0.1 0 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" limited="true" range="0 0.1001" solimplimit="0.3 0.4 0.001 0.5 2">
+      <site site="s0"/><site site="s1"/>
+    </spatial>
+  </tendon>
+</mujoco>"""
+TENDON_ZERO_J_QPOS = [0.9]
+
+# A fixed tendon over four hinges, each body's inertia written out, past its
+# limit: its tendon_invweight0 is `mju_dot` of the Jacobian and M⁻¹ times it,
+# (p0 + p2) + (p1 + p3) for four dofs (`engine_util_blas.c:742-753`), which
+# rounds otherwise than a sum in order, as the generator checks.
+TENDON_CHAIN = """<mujoco model="tendon_chain">
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b1">
+      <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.00011 0.0053 0.00531"/>
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="0.7" contype="0" conaffinity="0"/>
+      <body name="b2" pos="0.3 0 0">
+        <inertial pos="0.125 0 0" mass="0.45" diaginertia="0.00007 0.0024 0.00243"/>
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.02" mass="0.45" contype="0" conaffinity="0"/>
+        <body name="b3" pos="0.25 0 0">
+          <inertial pos="0.1 0 0" mass="0.33" diaginertia="0.00005 0.0011 0.00113"/>
+          <joint name="j3" type="hinge" axis="0 0 1"/>
+          <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.33" contype="0" conaffinity="0"/>
+          <body name="b4" pos="0.2 0 0">
+            <inertial pos="0.05 0 0" mass="0.21" diaginertia="0.000035 0.000063 0.000091"/>
+            <joint name="j4" type="hinge" axis="1 0 0"/>
+            <geom type="box" size="0.03 0.02 0.01" pos="0.05 0 0" mass="0.21" contype="0" conaffinity="0"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" limited="true" range="-0.05 0.05" solimplimit="0.3 0.4 0.001 0.5 2">
+      <joint joint="j1" coef="-1.657"/>
+      <joint joint="j2" coef="-1.053"/>
+      <joint joint="j3" coef="1.205"/>
+      <joint joint="j4" coef="0.329"/>
+    </fixed>
+  </tendon>
+</mujoco>"""
+TENDON_CHAIN_QPOS = [-0.05, 0.0, 0.0, 0.0]
+
+
+def tendon_dot_orders(m):
+    """Whether tendon 0's weight, as MuJoCo's (p0 + p2) + (p1 + p3) at qpos0,
+    rounds otherwise than summed in order, with MuJoCo's value the former."""
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    j = np.array(d.ten_J[0]).reshape(1, -1)
+    w = np.zeros((1, m.nv))
+    mujoco.mj_solveM(m, d, w, j)
+    p = [float(j[0, k] * w[0, k]) for k in range(4)]
+    four = (p[0] + p[2]) + (p[1] + p[3])
+    return four == m.tendon_invweight0[0] and ((p[0] + p[1]) + p[2]) + p[3] != four
+
+
+def rows_case(xml, qpos=None, keys=()):
+    """A case's rows after mj_forward from qpos0 or the given qpos, with the
+    model's weights named in `keys`; its model and data with it."""
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    if qpos is not None:
+        d.qpos[:] = qpos
+    mujoco.mj_forward(m, d)
+    case = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
+            **{k: floats(getattr(m, k)) for k in keys},
+            "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]), "efc_R": floats(d.efc_R[:d.nefc])}
+    return m, d, case
+
+
 def diag_approx():
     out = {}
     for doc, dz in DIAG_APPROX_DOCS.items():
@@ -952,6 +1078,23 @@ def diag_approx():
                              "dof_invweight0": floats(m.dof_invweight0),
                              "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
                              "efc_R": floats(d.efc_R[:d.nefc])}
+    weights = ("body_invweight0", "dof_invweight0")
+    for name, xml, qpos in (("weightless_limit", WEIGHTLESS_LIMIT, [0.1005]),
+                            ("weightless_box_pyramidal", WEIGHTLESS_BOX.format(cone="pyramidal"), None),
+                            ("weightless_box_elliptic", WEIGHTLESS_BOX.format(cone="elliptic"), None)):
+        m, d, case = rows_case(xml, qpos, weights)
+        heaviest = max(max(m.body_invweight0[1:].ravel()), max(m.dof_invweight0))
+        if d.nefc == 0 or heaviest >= mujoco.mjMINVAL or not (d.efc_KBIP[:d.nefc, 2] < 0.5).all():
+            sys.exit(f"{name}: a weight at mjMINVAL would not change R")
+        out[name] = case
+    m, d, case = rows_case(TENDON_ZERO_J, TENDON_ZERO_J_QPOS, ("tendon_invweight0",))
+    if m.tendon_invweight0[0] != 0 or d.nefc != 1:
+        sys.exit("tendon_zero_j: not a weightless tendon's one row")
+    out["tendon_zero_j"] = case
+    m, d, case = rows_case(TENDON_CHAIN, TENDON_CHAIN_QPOS, ("tendon_invweight0",))
+    if d.nefc != 1 or not tendon_dot_orders(m):
+        sys.exit("tendon_chain: the tendon's weight rounds alike summed either way")
+    out["tendon_chain"] = case
     return out
 
 
@@ -983,6 +1126,54 @@ def nan_turn():
         if n == 0 or not all(np.isnan(v).all() for v in rows.values()):
             sys.exit(f"nan_turn {name}: {n} rows, not all NaN")
         out[name] = {"xml": xml, "nefc": int(n), **rows}
+    return out
+
+
+def nan_param_xml(name, solimp="0.9 0.95 0.001 0.5 2"):
+    return (f'<mujoco model="{name}"><compiler angle="radian"/><worldbody><body>'
+            '<inertial pos="0.1 0 0" mass="1" diaginertia="0.0001 0.004 0.004"/>'
+            f'<joint type="hinge" axis="0 0 1" range="-0.1 0.1" limited="true" solimplimit="{solimp}"/>'
+            '<geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="1"/></body></worldbody></mujoco>')
+
+
+NAN_PARAMS = {
+    "solimp_width": (nan_param_xml("solimp_width", "0.9 0.95 nan 0.5 2"), [0.1005]),
+    "solimp_midpoint": (nan_param_xml("solimp_midpoint", "0.9 0.95 0.001 nan 2"), [0.1005]),
+    "solimp_power": (nan_param_xml("solimp_power", "0.9 0.95 0.001 0.5 nan"), [0.1005]),
+    "impratio": ('<mujoco model="impratio"><option cone="elliptic"/><worldbody>'
+                 '<geom type="plane" size="5 5 0.1"/><body pos="0 0 0.099"><freejoint/>'
+                 '<inertial pos="0 0 0" mass="1" diaginertia="0.004 0.004 0.004"/>'
+                 '<geom type="sphere" size="0.1" condim="3"/></body></worldbody></mujoco>', None),
+}
+# Set on the loaded model (sim-mjcf refuses a NaN impratio, which MuJoCo loads
+# with a warning: ledger L131).
+NAN_IMPRATIO = {"impratio"}
+
+
+def nan_param():
+    """A NaN impedance parameter: a limit's solimp width, midpoint or power,
+    which MuJoCo loads with a warning, and an elliptic contact's impratio, set
+    on the loaded model (the case's `impratio`). Each
+    row's impedance, R, D and diagApprox after mj_forward, NaN where the
+    parameter reaches them (`getsolparam` and `getimpedance` keep a NaN,
+    `engine_core_constraint.c:1291-1461`; impratio divides the friction rows'
+    R, `:1536-1537`). It refuses a case none of whose rows has a NaN R."""
+    out = {}
+    for name, (xml, qpos) in NAN_PARAMS.items():
+        m = mujoco.MjModel.from_xml_string(xml)
+        if name in NAN_IMPRATIO:
+            m.opt.impratio = float("nan")
+        d = mujoco.MjData(m)
+        if qpos is not None:
+            d.qpos[:] = qpos
+        mujoco.mj_forward(m, d)
+        n = d.nefc
+        if not np.isnan(d.efc_R[:n]).any():
+            sys.exit(f"nan_param {name}: no row's R is NaN")
+        out[name] = {"xml": xml, "qpos": floats(d.qpos), "nefc": int(n),
+                     **({"impratio": float("nan")} if name in NAN_IMPRATIO else {}),
+                     "efc_imp": floats(d.efc_KBIP[:n, 2]), "efc_R": floats(d.efc_R[:n]),
+                     "efc_D": floats(d.efc_D[:n]), "efc_diagApprox": floats(d.efc_diagApprox[:n])}
     return out
 
 
@@ -1082,6 +1273,7 @@ def main():
         "aniso_rows": aniso_rows(),
         "diag_approx": diag_approx(),
         "nan_turn": nan_turn(),
+        "nan_param": nan_param(),
         "weld_torquescale": weld_torquescale(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
