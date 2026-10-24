@@ -801,7 +801,10 @@ TENDON_PAIR_QPOS = [0.02, -0.01]
 # inertia written out (`<inertial>`), so the compiled masses, inertias and
 # inertial frames are MuJoCo's (sim-mjcf's own round otherwise: ledgers L195,
 # L198): its bodies' and dofs' invweight0, made from M at qpos0
-# (`engine_setconst.c:620-712`), and its contact rows.
+# (`engine_setconst.c:620-712`), and its contact rows. The inertias are picked
+# so that each average set0 takes, (a + b + c)/3, rounds otherwise grouped as
+# (a + (b + c))/3 for a body's translational weight, a body's rotational weight
+# and a free joint's rotational dofs, which the generator checks.
 INERTIAL_CHAIN = """<mujoco model="inertial_chain">
   <option timestep="0.002" cone="pyramidal" jacobian="sparse">
     <flag island="disable"/>
@@ -809,11 +812,11 @@ INERTIAL_CHAIN = """<mujoco model="inertial_chain">
   <worldbody>
     <geom type="plane" size="5 5 0.1"/>
     <body name="root" pos="0 0 0.06">
-      <inertial pos="0 0 0" mass="2" diaginertia="0.004 0.005 0.006"/>
+      <inertial pos="0 0 0" mass="2" diaginertia="0.00452654 0.00459093 0.00467655"/>
       <freejoint/>
       <geom type="sphere" size="0.07" mass="2"/>
       <body name="l1" pos="0.07 0 0">
-        <inertial pos="0.1 0 -0.005" mass="0.7" diaginertia="0.0003 0.0025 0.0026"/>
+        <inertial pos="0.1 0 -0.005" mass="0.7" diaginertia="0.000361167 0.00202064 0.00226689"/>
         <joint type="hinge" axis="0 1 0"/>
         <joint type="hinge" axis="0 0 1"/>
         <geom type="capsule" fromto="0 0 0 0.2 0 -0.01" size="0.03" mass="0.7"/>
@@ -830,12 +833,43 @@ INERTIAL_CHAIN = """<mujoco model="inertial_chain">
       </body>
     </body>
     <body name="ball2" pos="-0.4 0.1 0.049">
-      <inertial pos="0 0 0" mass="0.8" diaginertia="0.0008 0.0009 0.001"/>
+      <inertial pos="0 0 0" mass="0.8" diaginertia="0.00089568 0.00101225 0.00128392"/>
       <freejoint/>
       <geom type="sphere" size="0.05" mass="0.8"/>
     </body>
   </worldbody>
 </mujoco>"""
+
+
+def inertial_chain_orders(m, d):
+    """Whether some body's translational weight, some body's rotational weight
+    and some free joint's rotational dofs' weight round otherwise as
+    (a + (b + c))/3 than as MuJoCo's (a + b + c)/3, with MuJoCo's value the
+    latter (`engine_setconst.c:648-649`, `:700-704`)."""
+    def split(t, have):
+        return (t[0] + t[1] + t[2]) / 3 != (t[0] + (t[1] + t[2])) / 3 and (t[0] + t[1] + t[2]) / 3 == have
+    tran = rot = dof = False
+    for b in range(1, m.nbody):
+        if m.body_weldid[b] == 0 or m.body_simple[b] == 2:
+            continue
+        jac = np.zeros((6, m.nv))
+        mujoco.mj_jacBodyCom(m, d, jac[:3], jac[3:], b)
+        tmp = np.zeros((6, m.nv))
+        mujoco.mj_solveM(m, d, tmp, jac)
+        a = [float(jac[i] @ tmp[i]) for i in range(6)]
+        tran = tran or split(a[:3], m.body_invweight0[b][0])
+        rot = rot or split(a[3:], m.body_invweight0[b][1])
+    for j in range(m.njnt):
+        if m.jnt_type[j] != mujoco.mjtJoint.mjJNT_FREE:
+            continue
+        adr = m.jnt_dofadr[j]
+        sel = np.zeros((3, m.nv))
+        for k in range(3):
+            sel[k, adr + 3 + k] = 1
+        tmp = np.zeros((3, m.nv))
+        mujoco.mj_solveM(m, d, tmp, sel)
+        dof = dof or split([tmp[k, adr + 3 + k] for k in range(3)], m.dof_invweight0[adr + 3])
+    return tran, rot, dof
 
 
 def diag_approx():
@@ -903,6 +937,8 @@ def diag_approx():
     d = mujoco.MjData(m)
     mujoco.mj_forward(m, d)
     assert d.ncon > 0, "the chain rests on the plane"
+    if not all(inertial_chain_orders(m, d)):
+        sys.exit("inertial_chain: an average rounds alike grouped either way")
     out["inertial_chain"] = {"xml": INERTIAL_CHAIN, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
                              "body_invweight0": floats(m.body_invweight0.flatten()),
                              "dof_invweight0": floats(m.dof_invweight0),

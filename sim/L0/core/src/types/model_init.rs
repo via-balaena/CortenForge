@@ -1321,12 +1321,18 @@ impl Model {
             let mut jt = jac.transpose();
             mj_solve_m(self, &data, jt.as_mut_slice());
 
-            // A = J · W = J · M⁻¹ · J^T (6×6)
-            let a = &jac * &jt;
+            // A = J · W = J · M⁻¹ · J^T (6×6), its diagonal entry k `mju_dot`
+            // of J's row k with W's column k, as MuJoCo's `mju_mulMatMatT`
+            // makes it (`engine_setconst.c:642-644`, `engine_util_blas.c:875-882`).
+            let nv = self.nv;
+            let a = |k: usize| {
+                let row: Vec<f64> = (0..nv).map(|c| jac[(k, c)]).collect();
+                mju_dot(&row, &jt.as_slice()[k * nv..(k + 1) * nv])
+            };
 
             // Our layout: rows 3-5 = linear (translational), rows 0-2 = angular (rotational)
-            let tran = (a[(3, 3)] + a[(4, 4)] + a[(5, 5)]) / 3.0;
-            let rot = (a[(0, 0)] + a[(1, 1)] + a[(2, 2)]) / 3.0;
+            let tran = (a(3) + a(4) + a(5)) / 3.0;
+            let rot = (a(0) + a(1) + a(2)) / 3.0;
 
             // Fallback for degenerate cases (MuJoCo: if one is near-zero, copy the other)
             self.body_invweight0[i] = if tran < MIN_VAL && rot > MIN_VAL {
