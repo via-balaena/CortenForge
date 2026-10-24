@@ -95,8 +95,7 @@ pub fn apply_sensor_cutoff(model: &Model, data: &mut Data, sensor_id: usize) {
 ///
 /// **Layer 2 — data-kind dispatch** (`MjSensorDataKind`):
 /// - `Real` → `clamp(-cutoff, cutoff)` — symmetric clamping.
-/// - `Positive` → `min(cutoff, value)` — preserves negative sentinels (e.g.,
-///   rangefinder's -1.0 no-hit value).
+/// - `Positive` → `min(cutoff, value)` — a negative value is kept.
 /// - `Axis` / `Quaternion` → no clamping. MuJoCo's if/else chain only has
 ///   branches for REAL and POSITIVE; AXIS and QUATERNION fall through without
 ///   clamping. This correctly skips FrameXAxis/YAxis/ZAxis, GeomNormal,

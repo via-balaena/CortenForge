@@ -217,8 +217,9 @@ fn track_closest(
 
 /// Cast a ray against all geoms in the scene, returning the closest hit.
 ///
-/// Matches MuJoCo's `mj_ray` API. Iterates over all geoms, applying optional
-/// filters, and returns the nearest intersection.
+/// Iterates over all geoms, applying optional filters, and returns the
+/// nearest intersection. A rangefinder casts MuJoCo's `mj_ray` instead,
+/// ported in `sensor/ray_geom.rs`.
 ///
 /// # Filters
 ///
@@ -261,64 +262,59 @@ pub fn raycast_scene(
             }
         }
 
-        let pose = geom_pose(data, geom_id);
-        let geom_type = model.geom_type[geom_id];
-
-        // Primitive shapes via geom_to_shape (Sphere, Box, Capsule, Cylinder, Ellipsoid)
-        if let Some(shape) = geom_to_shape(geom_type, model.geom_size[geom_id])
-            && let Some(hit) = raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff)
-        {
+        if let Some(hit) = raycast_geom(model, data, geom_id, ray_origin, ray_direction, cutoff) {
             track_closest(hit, geom_id, &mut cutoff, &mut closest);
-        }
-
-        // Handle types not covered by geom_to_shape
-        match geom_type {
-            GeomType::Plane => {
-                // MuJoCo convention: plane normal = local +Z, passes through geom origin
-                let shape = Shape::plane(Vector3::z(), 0.0);
-                if let Some(hit) = raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff) {
-                    track_closest(hit, geom_id, &mut cutoff, &mut closest);
-                }
-            }
-            GeomType::Mesh => {
-                if let Some(mesh_id) = model.geom_mesh[geom_id]
-                    && let Some(hit) = raycast_triangle_mesh_data(
-                        &pose,
-                        model.mesh_data[mesh_id].as_ref(),
-                        ray_origin,
-                        ray_direction,
-                        cutoff,
-                    )
-                {
-                    track_closest(hit, geom_id, &mut cutoff, &mut closest);
-                }
-            }
-            GeomType::Hfield => {
-                if let Some(hfield_id) = model.geom_hfield[geom_id] {
-                    let shape = Shape::height_field(Arc::clone(&model.hfield_data[hfield_id]));
-                    if let Some(hit) =
-                        raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff)
-                    {
-                        track_closest(hit, geom_id, &mut cutoff, &mut closest);
-                    }
-                }
-            }
-            GeomType::Sdf => {
-                if let Some(shape_id) = model.geom_shape[geom_id] {
-                    let grid = model.shape_data[shape_id].sdf_grid_arc();
-                    let shape = Shape::sdf(grid);
-                    if let Some(hit) =
-                        raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff)
-                    {
-                        track_closest(hit, geom_id, &mut cutoff, &mut closest);
-                    }
-                }
-            }
-            _ => {} // Already handled by geom_to_shape above
         }
     }
 
     closest
+}
+
+/// Geom `geom_id`'s nearest hit along a ray within `max_distance`, as
+/// [`raycast_scene`] casts it at each geom.
+pub(crate) fn raycast_geom(
+    model: &Model,
+    data: &Data,
+    geom_id: usize,
+    ray_origin: Point3<f64>,
+    ray_direction: UnitVector3<f64>,
+    max_distance: f64,
+) -> Option<RaycastHit> {
+    let pose = geom_pose(data, geom_id);
+    let geom_type = model.geom_type[geom_id];
+    // Primitive shapes via geom_to_shape (Sphere, Box, Capsule, Cylinder, Ellipsoid)
+    if let Some(shape) = geom_to_shape(geom_type, model.geom_size[geom_id]) {
+        return raycast_shape(&shape, &pose, ray_origin, ray_direction, max_distance);
+    }
+    match geom_type {
+        // MuJoCo convention: plane normal = local +Z, passes through geom origin
+        GeomType::Plane => raycast_shape(
+            &Shape::plane(Vector3::z(), 0.0),
+            &pose,
+            ray_origin,
+            ray_direction,
+            max_distance,
+        ),
+        GeomType::Mesh => model.geom_mesh[geom_id].and_then(|mesh_id| {
+            raycast_triangle_mesh_data(
+                &pose,
+                model.mesh_data[mesh_id].as_ref(),
+                ray_origin,
+                ray_direction,
+                max_distance,
+            )
+        }),
+        GeomType::Hfield => model.geom_hfield[geom_id].and_then(|hfield_id| {
+            let shape = Shape::height_field(Arc::clone(&model.hfield_data[hfield_id]));
+            raycast_shape(&shape, &pose, ray_origin, ray_direction, max_distance)
+        }),
+        GeomType::Sdf => model.geom_shape[geom_id].and_then(|shape_id| {
+            let shape = Shape::sdf(model.shape_data[shape_id].sdf_grid_arc());
+            raycast_shape(&shape, &pose, ray_origin, ray_direction, max_distance)
+        }),
+        // Already handled by geom_to_shape above
+        _ => None,
+    }
 }
 
 #[cfg(test)]

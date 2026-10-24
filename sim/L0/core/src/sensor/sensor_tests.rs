@@ -85,6 +85,7 @@ fn make_sensor_test_model() -> Model {
     model.geom_solref.push([0.02, 1.0]);
     model.geom_name.push(None);
     model.geom_rbound.push(0.1);
+    model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
     model.geom_mesh.push(None);
 
     // Add site at the body's COM
@@ -506,6 +507,7 @@ fn test_rangefinder_hits_sphere() {
     model.geom_solref.push([0.02, 1.0]);
     model.geom_name.push(None);
     model.geom_rbound.push(0.5);
+    model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
     model.geom_mesh.push(None);
     // The weld groups of the added body, which the broadphase reads.
     model.compute_ancestors();
@@ -571,6 +573,7 @@ fn test_rangefinder_ignores_objects_behind_sensor() {
     model.geom_solref.push([0.02, 1.0]);
     model.geom_name.push(None);
     model.geom_rbound.push(0.5);
+    model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
     model.geom_mesh.push(None);
     // The weld groups of the added body, which the broadphase reads.
     model.compute_ancestors();
@@ -593,8 +596,10 @@ fn test_rangefinder_ignores_objects_behind_sensor() {
     );
 }
 
+/// A rangefinder is a real sensor in MuJoCo 3.5.0 (`user_objects.cc:7209-7217`),
+/// so its cutoff clips a miss's −1 to −cutoff as it clips every reading.
 #[test]
-fn test_rangefinder_cutoff_preserves_no_hit_sentinel() {
+fn test_rangefinder_cutoff_clips_a_miss_as_mujoco() {
     let mut model = make_sensor_test_model();
     add_sensor(
         &mut model,
@@ -603,18 +608,13 @@ fn test_rangefinder_cutoff_preserves_no_hit_sentinel() {
         MjObjectType::Site,
         0,
     );
-    // Set cutoff to 0.5 — should NOT turn -1.0 into -0.5
     model.sensor_cutoff[0] = 0.5;
 
     let mut data = model.make_data();
     data.forward(&model).unwrap();
 
-    // Only one geom on sensor's own body → no hit → -1.0
-    // With positive-type clamping, min(-1.0, 0.5) = -1.0 (preserved)
-    assert_eq!(
-        data.sensordata[0], -1.0,
-        "Rangefinder no-hit sentinel should be preserved with cutoff"
-    );
+    // Only one geom, on the sensor's own body: a miss, −1, clipped to −0.5.
+    assert_eq!(data.sensordata[0], -0.5);
 }
 
 // ========================================================================
@@ -1132,6 +1132,7 @@ fn make_ball_joint_model() -> Model {
     model.geom_solref.push([0.02, 1.0]);
     model.geom_name.push(None);
     model.geom_rbound.push(0.1);
+    model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
     model.geom_mesh.push(None);
 
     // Add site

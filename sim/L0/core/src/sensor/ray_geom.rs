@@ -5,10 +5,73 @@
 //! (`engine_sensor.c:922-927`). Each step is MuJoCo's, in its order, so a
 //! ray grazing a zone's edge goes the way MuJoCo's does.
 
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, Point3, UnitVector3, Vector3};
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::types::GeomType;
+use crate::types::{Data, GeomType, Model};
+
+/// MuJoCo's `mj_ray` (`engine_ray.c:1308-1356`) as a site's rangefinder casts
+/// it (`engine_sensor.c:478-479`: no group filter, static geoms included):
+/// from `pnt` along `vec`, the distance in lengths of `vec` to the nearest
+/// geom that `bodyexclude` does not hold and whose alpha is not 0
+/// (`ray_eliminate`, `:68-98`; sim-mjcf keeps no materials, so a material's
+/// alpha is not read), or −1. A primitive's distance is [`ray_geom`]'s. A
+/// mesh's, a height field's and a signed distance field's are
+/// `raycast_geom`'s along the unit direction, divided by `|vec|`, not
+/// MuJoCo's `mj_rayMesh`, `mj_rayHfield` and `mj_raySdf` (ledger L267); each
+/// is cast no farther than the geom's bounding sphere reaches. A plane is read
+/// as unbounded, as MuJoCo reads one of size 0: sim-mjcf does not keep a
+/// plane's written size until Rigid-loading's L14, and MuJoCo bounds the hit
+/// by it.
+pub fn mj_ray(
+    model: &Model,
+    data: &Data,
+    pnt: &Vector3<f64>,
+    vec: &Vector3<f64>,
+    bodyexclude: usize,
+) -> f64 {
+    let mut dist = -1.0;
+    for g in 0..model.ngeom {
+        if model.geom_body[g] == bodyexclude || model.geom_rgba[g][3] == 0.0 {
+            continue;
+        }
+        let newdist = match model.geom_type[g] {
+            GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => {
+                let norm = vec.norm();
+                let reach = (pnt - data.geom_xpos[g]).norm() + model.geom_rbound[g];
+                crate::raycast::raycast_geom(
+                    model,
+                    data,
+                    g,
+                    Point3::from(*pnt),
+                    UnitVector3::new_unchecked(vec / norm),
+                    reach,
+                )
+                .map_or(-1.0, |hit| hit.distance / norm)
+            }
+            GeomType::Plane => ray_geom(
+                &data.geom_xpos[g],
+                &data.geom_xmat[g],
+                &Vector3::zeros(),
+                pnt,
+                vec,
+                GeomType::Plane,
+            ),
+            geom_type => ray_geom(
+                &data.geom_xpos[g],
+                &data.geom_xmat[g],
+                &model.geom_size[g],
+                pnt,
+                vec,
+                geom_type,
+            ),
+        };
+        if newdist >= 0.0 && (newdist < dist || dist < 0.0) {
+            dist = newdist;
+        }
+    }
+    dist
+}
 
 /// `mju_rayGeom`: the distance along the ray to the geom of `geom_type`,
 /// `size`, centred at `pos` and turned by `mat`, or −1. MuJoCo raises an

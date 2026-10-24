@@ -82,6 +82,9 @@ pub mod smooth_force_parity;
 /// The velocity derivative `qDeriv` against MuJoCo 3.5.0's order of terms.
 pub mod velocity_derivative_parity;
 
+/// A site's rangefinder against MuJoCo 3.5.0's `mj_ray`.
+pub mod rangefinder_parity;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================
