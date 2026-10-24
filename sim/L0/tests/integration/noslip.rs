@@ -912,7 +912,7 @@ fn noslip_under_implicitspringdamper_solves_over_m_impl() {
                 .map(|c| data.efc_J[(r, c)] * data.qacc[c])
                 .sum();
             let residual = jqacc - data.efc_aref[r];
-            if residual.abs() > 1e-9 {
+            if residual.is_nan() || residual.abs() > 1e-9 {
                 off.push(format!("{solver} row {r}: {residual:e}"));
             }
         }

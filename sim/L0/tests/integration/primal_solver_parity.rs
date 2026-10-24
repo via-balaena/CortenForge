@@ -592,7 +592,9 @@ fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
             let want = floats(&stats[key]);
             let scale = want.iter().fold(1.0_f64, |m, x| m.max(x.abs()));
             for (k, (s, w)) in ours.iter().zip(&want).enumerate() {
-                if (s - w).abs() > 1e-12 * scale {
+                // Past the bound or NaN: a NaN is never within it.
+                let off_by = (s - w).abs();
+                if off_by.is_nan() || off_by > 1e-12 * scale {
                     off.push(format!("{name} {what} {k}: {s:e}, MuJoCo {w:e}"));
                 }
             }
@@ -686,7 +688,8 @@ fn statistics_past_the_200th_are_counted_not_kept() {
         let want = floats(&stats["improvement"]);
         let scale = want.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
         for (k, (s, w)) in data.solver_stat.iter().zip(&want).enumerate() {
-            if (s.improvement - w).abs() > 1e-12 * scale {
+            let off_by = (s.improvement - w).abs();
+            if off_by.is_nan() || off_by > 1e-12 * scale {
                 off.push(format!(
                     "{name} improvement {k}: {:e}, MuJoCo {w:e}",
                     s.improvement

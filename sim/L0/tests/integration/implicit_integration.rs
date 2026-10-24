@@ -2671,7 +2671,8 @@ fn implicitspringdamper_follows_the_spring_and_damper_flags() {
                     let fd = sim_core::mjd_transition_fd(&model, &data, &config).expect("fd");
                     assert_ne!(hybrid.A, fd.A, "{what}: the analytic columns ran");
                     for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
-                        if (h - f).abs() > 1e-6 + 1e-5 * h.abs().max(f.abs()) {
+                        let off_by = (h - f).abs();
+                        if off_by.is_nan() || off_by > 1e-6 + 1e-5 * h.abs().max(f.abs()) {
                             failures.push(format!(
                                 "{what}{limit}{size}: hybrid A {h}, finite differences {f}"
                             ));

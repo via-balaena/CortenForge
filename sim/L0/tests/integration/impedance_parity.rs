@@ -262,7 +262,11 @@ fn differs(what: &str, got: &[f64], want: &[f64], tol: f64) -> Option<String> {
     got.iter()
         .zip(want)
         .enumerate()
-        .find(|(_, (a, b))| relative(**a, **b) > tol)
+        .find(|(_, (a, b))| {
+            // Past the bound or NaN: a NaN is never within it.
+            let d = relative(**a, **b);
+            d.is_nan() || d > tol
+        })
         .map(|(i, (a, b))| format!("{what}[{i}]: {a}, expected {b}"))
 }
 
@@ -439,9 +443,11 @@ fn diag_approx_as_mujoco() {
                 continue;
             }
             let (a, b) = (data.efc_diagApprox[i], want[i]);
+            let off_by = (a - b).abs();
             if a.to_bits() != b.to_bits()
                 && (cfg!(all(target_os = "macos", target_arch = "aarch64"))
-                    || (a - b).abs() > 1e-13 * b.abs().max(1.0))
+                    || off_by.is_nan()
+                    || off_by > 1e-13 * b.abs().max(1.0))
             {
                 out.push(format!(
                     "{name}: efc_diagApprox[{i}] ({kind:?}): {a}, expected {b}"
