@@ -36,7 +36,8 @@ solvers MuJoCo's inputs and compare every output bit for bit.
   warmstart's dual cost is positive and PGS starts from zero forces (the
   generator refuses the case otherwise); `nowarm`: the warmstart disabled.
 - noslip: noslip_iterations 10 after PGS, Newton and CG, over mixed_rows'
-  pyramidal and elliptic scenes and the box, warm.
+  pyramidal and elliptic scenes and the box, warm; and after PGS the chain
+  (pyramidal and elliptic, sparse) and the box at a pyramidal cone.
 - nnz: the primal solver's `solver_nnz` after a forward (`engine_solver.c:1953-1964`),
   Newton and CG over mixed_rows at condim 3 and 6, pyramidal and elliptic,
   dense and sparse, islands disabled and enabled (MuJoCo's count per island
@@ -206,6 +207,13 @@ def noslip():
                 tag = f"{solver}_mixed_{cone}" + ("_sparse" if sparse else "")
                 out[tag] = solve(mixed(solver, cone, 3, sparse, opt), MIXED_QVEL, warm_steps=3)[2]
         out[f"{solver}_box"] = solve(box(solver, False, opt), None, census_start, warm_steps=3)[2]
+    # The chain (four contacts, sparse) and the box under PGS at a pyramidal cone.
+    for cone in ("pyramidal", "elliptic"):
+        xml = chain("PGS", cone, 3).replace('jacobian="sparse"', 'jacobian="sparse" noslip_iterations="10"')
+        nv = mujoco.MjModel.from_xml_string(xml).nv
+        out[f"PGS_chain_{cone}"] = solve(xml, list(np.random.default_rng(11).normal(0, 0.8, nv)), warm_steps=3)[2]
+    out["PGS_box_pyramidal"] = solve(box("PGS", False, ' cone="pyramidal" noslip_iterations="10"'), None,
+                                     census_start, warm_steps=3)[2]
     return out
 
 
