@@ -246,6 +246,10 @@ pub mod flex_data_parity;
 /// inputs, and through the pipeline.
 pub mod primal_solver_parity;
 
+/// The rows' inverse inertia `efc_AR`, PGS and noslip against MuJoCo 3.5.0's
+/// dual solvers, bit for bit given its inputs.
+pub mod dual_solver_parity;
+
 /// The Jacobians against MuJoCo 3.5.0: `mj_jac` from MuJoCo's `cdof`,
 /// `mj_applyFT`, gravity compensation, a contact's rows, connect and weld
 /// rows, the spatial tendons' Jacobians, and the kinetic energy.

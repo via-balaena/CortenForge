@@ -446,6 +446,24 @@ pub struct Data {
     /// Per-row D = 1/R (constraint stiffness, inverse of regularization).
     #[allow(non_snake_case)]
     pub efc_D: Vec<f64>,
+    /// The rows' inverse inertia with their regularization, `J·M⁻¹·J' +
+    /// diag(R)`, which the dual solvers read (PGS and noslip,
+    /// [`Model::is_dual`]); made by the forward pass's position stage as
+    /// MuJoCo's `efc_AR` (`mj_projectConstraint`), empty when no dual solver
+    /// runs. Dense, `nefc × nefc` row by row; at the sparse size
+    /// ([`Model::is_sparse`]) each row's values at [`Self::efc_AR_rowadr`],
+    /// their columns in [`Self::efc_AR_colind`], ascending.
+    #[allow(non_snake_case)]
+    pub efc_AR: Vec<f64>,
+    /// `efc_AR`'s entries in each row at the sparse size; empty when it is dense.
+    #[allow(non_snake_case)]
+    pub efc_AR_rownnz: Vec<usize>,
+    /// Where each row of `efc_AR` starts at the sparse size.
+    #[allow(non_snake_case)]
+    pub efc_AR_rowadr: Vec<usize>,
+    /// Each sparse entry's column of `efc_AR`.
+    #[allow(non_snake_case)]
+    pub efc_AR_colind: Vec<usize>,
     /// Per-row impedance value (from solimp sigmoid, in [dmin, dmax]).
     pub efc_imp: Vec<f64>,
     // Note: MuJoCo packs K, B, imp, and impP into a single `efc_KBIP[4*i+{0,1,2,3}]`
@@ -910,6 +928,10 @@ impl Clone for Data {
             efc_diagApprox: self.efc_diagApprox.clone(),
             efc_R: self.efc_R.clone(),
             efc_D: self.efc_D.clone(),
+            efc_AR: self.efc_AR.clone(),
+            efc_AR_rownnz: self.efc_AR_rownnz.clone(),
+            efc_AR_rowadr: self.efc_AR_rowadr.clone(),
+            efc_AR_colind: self.efc_AR_colind.clone(),
             efc_imp: self.efc_imp.clone(),
             efc_aref: self.efc_aref.clone(),
             efc_floss: self.efc_floss.clone(),

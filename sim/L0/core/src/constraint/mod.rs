@@ -15,7 +15,10 @@ pub(crate) mod equality;
 pub(crate) mod equality_assembly;
 pub(crate) mod impedance;
 pub(crate) mod jacobian;
+mod project;
 pub(crate) mod solver;
+
+pub use project::mj_project_constraint;
 
 use nalgebra::{DMatrix, DVector};
 
@@ -440,6 +443,10 @@ pub(crate) fn clear_constraint_rows(model: &Model, data: &mut Data) {
     data.efc_diagApprox.clear();
     data.efc_R.clear();
     data.efc_D.clear();
+    data.efc_AR.clear();
+    data.efc_AR_rownnz.clear();
+    data.efc_AR_rowadr.clear();
+    data.efc_AR_colind.clear();
     data.efc_imp.clear();
     data.efc_floss.clear();
     data.efc_mu.clear();

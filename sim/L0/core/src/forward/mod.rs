@@ -529,6 +529,13 @@ impl Data {
         actuation::mj_transmission_slidercrank(model, self);
         actuation::mj_transmission_body_dispatch(model, self);
 
+        // The rows' inverse inertia while a dual solver runs, as MuJoCo's
+        // `mj_fwdPosition` (`engine_forward.c:213`); its inverse position
+        // pass makes none (`mj_invPosition`).
+        if pass == Pass::Forward {
+            crate::constraint::mj_project_constraint(model, self);
+        }
+
         if compute_sensors {
             crate::sensor::mj_sensor_pos(model, self);
         }

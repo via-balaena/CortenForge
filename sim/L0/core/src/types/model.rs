@@ -1291,6 +1291,13 @@ pub enum LengthRangeError {
 }
 
 impl Model {
+    /// Whether a dual solver runs, PGS or noslip, which read
+    /// `Data::efc_AR`: MuJoCo's `mj_isDual` (`engine_core_constraint.c:88-94`).
+    #[must_use]
+    pub fn is_dual(&self) -> bool {
+        self.solver_type == SolverType::PGS || self.noslip_iterations > 0
+    }
+
     /// Whether the constraint pipeline takes its sparse path, MuJoCo's
     /// `mj_isSparse` (`engine_core_util.c:32-39`): a sparse Jacobian, or the
     /// automatic one from 60 dofs.
