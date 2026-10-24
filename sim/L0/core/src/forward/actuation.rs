@@ -556,7 +556,7 @@ impl<'a> MomentRows<'a> {
     /// Actuator `i`'s moment row as `mj_transmission` stores it
     /// (`engine_core_smooth.c:1250-1730`), its `(column, value)` entries in
     /// order: none for an actuator skipped asleep (`asleep`, `:1287-1290`); a
-    /// hinge's or slide's one entry, the gear (`:1301-1307`); a ball's or free
+    /// hinge's or slide's one entry, the gear (`:1301-1309`); a ball's or free
     /// joint's three or six, zeros kept (`:1311-1375`); a tendon's `ten_J`
     /// chain under the sparse Jacobian, zeros kept, each entry times the gear
     /// (`:1453-1460`); a tendon's row times the gear under the dense Jacobian,

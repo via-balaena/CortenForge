@@ -1053,13 +1053,12 @@ jobs:
   # ============================================================================
   # Every parity golden is made by the unfused MuJoCo 3.5.0 oracle on macOS
   # arm64; most of their checks are bit for bit there and within a tolerance
-  # elsewhere (Linux's runs differ from them; why is not isolated, ledger
-  # L231). The Linux release shard runs the tolerance branch; this job runs
-  # the bit-for-bit one, which no other job reaches. The goldens were made on
-  # macOS 27.0.1; the image is pinned (macos-26, what macos-latest named on
-  # 2026-10-24) so that a red run is not a moved image, and the job prints
-  # the image's macOS. Whether its libm rounds every value as 27.0.1's does
-  # is shown by the job's runs. It refuses a runner that is not arm64, where
+  # elsewhere. The Linux release shard runs the tolerance branch; this job
+  # runs the bit-for-bit one, which no other job reaches. The goldens were
+  # made on macOS 27.0.1. The label is pinned to macos-26 (what macos-latest
+  # named on 2026-10-24); GitHub still updates the image under it, so the job
+  # prints the image's macOS. Whether its libm rounds every value as
+  # 27.0.1's does is shown by the job's runs. It refuses a runner that is not arm64, where
   # the bit-for-bit branch would not run. PR-scoped to sim-conformance-tests;
   # always runs, so it is never a skipped required check.
   conformance-macos:
