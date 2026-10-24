@@ -515,7 +515,7 @@ pub struct Data {
     /// These occupy `efc_*[ne..ne+nf)`.
     pub nf: usize,
     /// Whether the constraint solve made `qacc` this step: the primal
-    /// solver's iterate (Newton, CG), or `dualFinish`'s after PGS. When true,
+    /// solver's iterate (Newton, CG), or `dualFinish`'s after PGS or noslip. When true,
     /// the forward pass keeps it instead of making the acceleration from the
     /// forces.
     pub(crate) solver_qacc: bool,

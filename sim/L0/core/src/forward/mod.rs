@@ -627,8 +627,7 @@ impl Data {
         crate::constraint::mj_fwd_constraint(model, self)?;
 
         // The solver's acceleration is kept (MuJoCo's `mj_fwdConstraint`: the
-        // primal iterate, or PGS's `dualFinish`); after this crate's noslip it
-        // is made from the forces.
+        // primal iterate, or `dualFinish` after PGS or noslip).
         // Under implicit and implicitfast, `integrate` factors M − h·D and
         // solves for the acceleration it advances qvel with.
         if !self.solver_qacc {

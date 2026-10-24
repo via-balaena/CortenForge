@@ -34,10 +34,9 @@ use crate::types::{
 
 use crate::constraint::assembly::assemble_unified_constraints;
 use crate::constraint::assembly::tendon_deadband_displacement;
-use crate::constraint::solver::compute_qfrc_constraint_from_efc;
 use crate::constraint::solver::dual::pgs_warmstart;
 use crate::constraint::solver::extract_qfrc_frictionloss;
-use crate::constraint::solver::noslip::noslip_postprocess;
+use crate::constraint::solver::noslip::mj_sol_noslip;
 use crate::constraint::solver::pgs::mj_sol_pgs;
 use crate::constraint::solver::primal::{PrimalMass, mj_sol_primal};
 
@@ -383,19 +382,9 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     }
     data.solver_qacc = true;
 
-    // §33: Noslip post-processor. It changes the friction forces, so the
-    // acceleration is made from the forces afterwards (`mj_fwd_acceleration`),
-    // not taken from the primal iterate.
+    // §33: noslip after any solver, which ends as PGS does (`dualFinish`).
     if model.noslip_iterations > 0 {
-        noslip_postprocess(model, data, m_impl_owned.as_ref().map(|(_, f)| f));
-        data.solver_qacc = false;
-    }
-
-    // Step 4: Map efc_force → qfrc_constraint via J^T, except after the primal
-    // solver, whose own MuJoCo keeps (`PrimalUpdateConstraint`; at the sparse
-    // size a product over the transpose that rounds otherwise).
-    if !data.solver_qacc {
-        compute_qfrc_constraint_from_efc(model, data);
+        mj_sol_noslip(model, data, &mass);
     }
 
     // Step 5: Extract qfrc_frictionloss from efc_force
@@ -549,6 +538,31 @@ pub fn mj_sol_pgs_rows(model: &Model, data: &mut Data) {
     mj_project_constraint(model, data);
     pgs_warmstart(model, data);
     mj_sol_pgs(model, data, &PrimalMass::Tree);
+}
+
+/// Solve the constraint rows `data` holds with the model's solver, then
+/// noslip, as [`mj_fwd_constraint`] runs them over `qM` and its factor:
+/// `efc_b` and `efc_AR` made first. For tests that give the solvers MuJoCo's
+/// own inputs.
+///
+/// # Errors
+///
+/// `StepError::CholeskyFailed` when Newton's sparse Hessian has a diagonal
+/// under mjMINVAL.
+#[doc(hidden)]
+pub fn mj_sol_noslip_rows(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    data.efc_b = mul_jac_vec(model, data, data.qacc_smooth.as_slice()) - &data.efc_aref;
+    mj_project_constraint(model, data);
+    if model.solver_type == SolverType::PGS {
+        pgs_warmstart(model, data);
+        mj_sol_pgs(model, data, &PrimalMass::Tree);
+    } else {
+        let qfrc_smooth = data.qfrc_smooth.clone();
+        let newton = model.solver_type == SolverType::Newton;
+        mj_sol_primal(model, data, &PrimalMass::Tree, &qfrc_smooth, newton)?;
+    }
+    mj_sol_noslip(model, data, &PrimalMass::Tree);
+    Ok(())
 }
 
 /// Solve the constraint rows `data` holds with MuJoCo's primal solver,

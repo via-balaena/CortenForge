@@ -321,3 +321,22 @@ fn primal_solver_nnz_is_mujocos() {
     }
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }
+
+/// Noslip after PGS, Newton and CG, given MuJoCo's inputs: the main solver as
+/// the forward pass runs it, then noslip's sweeps over the friction rows on
+/// `efc_AR` less R, the normal forces fixed, ended by `dualFinish`
+/// (`mj_solNoSlip`): forces, states, acceleration, constraint force, the
+/// iteration count with noslip's sweeps, every statistic's improvement and
+/// counts, and `solver_nnz` (the main solver's), bit for bit, dense and at
+/// the sparse size.
+#[test]
+fn noslip_matches_mujoco_3_5_0_bit_for_bit_given_its_inputs() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["noslip"].as_object().expect("cases") {
+        let (model, mut data) = given_mujocos_inputs(name, case);
+        sim_core::constraint::mj_sol_noslip_rows(&model, &mut data).expect("solve");
+        assert_solve(&mut off, name, &data, case);
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
