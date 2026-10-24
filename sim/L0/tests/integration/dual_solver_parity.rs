@@ -413,10 +413,11 @@ fn a_forward_from_the_velocity_stage_after_an_inverse_makes_efc_ar() {
 /// Under the implicit spring-damper integrator (this crate's; MuJoCo has
 /// none) the constraint stage makes `efc_AR` over `M_impl`. With the model
 /// then under Euler, a forward pass that skips the position stage remakes it
-/// over `M` before its dual solve: a damped, sprung sphere resting on a plane
-/// gets, under PGS and under Newton with noslip, the acceleration a full
-/// Euler pass gets, bit for bit, and so does a clone of the `Data` the
-/// implicit pass left (ledger L263).
+/// over `M` before its dual solve: a damped, sprung sphere on a plane,
+/// pushed sideways, moving sideways and at rest sideways, gets under PGS and
+/// under Newton with noslip the acceleration a full Euler pass gets, bit for
+/// bit, and so does a clone of the `Data` the implicit pass left (ledger
+/// L263).
 #[test]
 fn a_forward_from_the_velocity_stage_after_the_implicit_spring_damper_remakes_efc_ar() {
     for option in [
@@ -433,23 +434,26 @@ fn a_forward_from_the_velocity_stage_after_the_implicit_spring_damper_remakes_ef
   </body>
 </worldbody></mujoco>"#
         );
-        let mut model = load_model(&xml).expect("load");
-        let mut data = model.make_data();
-        data.qvel.as_mut_slice().copy_from_slice(&[-0.3, 0.4]);
-        data.forward(&model).expect("forward");
-        assert!(data.ncon > 0, "{option}: in contact");
-        let mut copy = data.clone();
-        model.integrator = Integrator::Euler;
-        data.forward_skip(&model, MjStage::Pos, false)
-            .expect("forward from the velocity stage");
-        let skipped: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
-        copy.forward_skip(&model, MjStage::Pos, false)
-            .expect("the clone's forward from the velocity stage");
-        let copied: Vec<u64> = copy.qacc.iter().map(|x| x.to_bits()).collect();
-        data.forward(&model).expect("forward under Euler");
-        let full: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
-        assert_eq!(skipped, full, "{option}: qacc");
-        assert_eq!(copied, full, "{option}: the clone's qacc");
+        for qvel in [[-0.3, 0.4], [-0.3, 0.0]] {
+            let mut model = load_model(&xml).expect("load");
+            let mut data = model.make_data();
+            data.qvel.as_mut_slice().copy_from_slice(&qvel);
+            data.qfrc_applied[1] = 0.5;
+            data.forward(&model).expect("forward");
+            assert!(data.ncon > 0, "{option} {qvel:?}: in contact");
+            let mut copy = data.clone();
+            model.integrator = Integrator::Euler;
+            data.forward_skip(&model, MjStage::Pos, false)
+                .expect("forward from the velocity stage");
+            let skipped: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
+            copy.forward_skip(&model, MjStage::Pos, false)
+                .expect("the clone's forward from the velocity stage");
+            let copied: Vec<u64> = copy.qacc.iter().map(|x| x.to_bits()).collect();
+            data.forward(&model).expect("forward under Euler");
+            let full: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
+            assert_eq!(skipped, full, "{option} {qvel:?}: qacc");
+            assert_eq!(copied, full, "{option} {qvel:?}: the clone's qacc");
+        }
     }
 }
 
