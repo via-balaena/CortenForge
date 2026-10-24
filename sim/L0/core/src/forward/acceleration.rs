@@ -62,8 +62,8 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
 ///
 /// Computes: qacc = M⁻¹ * (qfrc_smooth + qfrc_constraint)
 ///
-/// Uses `data.qfrc_smooth` (already computed by `compute_qacc_smooth()`) which
-/// includes `qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias` plus the
+/// Uses `data.qfrc_smooth` (already computed by `compute_qacc_smooth()`):
+/// `((qfrc_passive - qfrc_bias) + qfrc_applied) + qfrc_actuator`, then the
 /// DT-21 xfrc_applied projection.
 fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
     let mut qfrc_total = data.qfrc_smooth.clone();

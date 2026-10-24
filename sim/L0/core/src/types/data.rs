@@ -407,7 +407,8 @@ pub struct Data {
     /// Smooth unconstrained acceleration: M⁻¹·qfrc_smooth (length nv).
     /// Computed once per step by `compute_qacc_smooth()`, used by all solvers.
     pub qacc_smooth: DVector<f64>,
-    /// Smooth unconstrained force: applied + actuator + passive − bias (length nv).
+    /// Smooth unconstrained force: `((passive − bias) + applied) + actuator`,
+    /// then `xfrc_applied` projected (length nv).
     /// Computed once per step by `compute_qacc_smooth()`, used by all solvers.
     pub qfrc_smooth: DVector<f64>,
 

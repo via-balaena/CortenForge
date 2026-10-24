@@ -892,8 +892,10 @@ constraint islands, wake-on-contact, wake-on-equality, island membership,
 ##### 10. `raycasting/` — Ray Queries and Shape Intersection ✅
 
 The raycast module supports ray intersection queries against all geometry
-types. Used internally by the Rangefinder sensor but also available as a
-direct API for visibility checks, distance queries, and custom sensors.
+types. Available as a direct API for visibility checks, distance queries,
+and custom sensors; the Rangefinder sensor casts MuJoCo's `mj_ray` instead
+(`sensor::ray_geom`), which reads a mesh's, a height field's and a signed
+distance field's shape through this module.
 
 **Examples (4 — all implemented):**
 

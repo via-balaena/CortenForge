@@ -28,6 +28,9 @@
 #   `grade`: on a foundational `sim-core` PR the affected set is nearly the full
 #   crate list, making this the COMPILE-bound long pole, so the heavy GUI dep
 #   tree (Bevy) is isolated on one shard so it compiles once.
+# - `conformance-macos` (macos-26 arm64, --release): sim-conformance-tests on
+#   the parity goldens' platform, the only job that runs their bit-for-bit
+#   branch (see the job's note).
 # - `tests-release` (ubuntu, default features, --release): authoritative
 #   test gate for the crates whose heavy stochastic-physics integration
 #   tests (90M–600M-step Boltzmann/CEM/REINFORCE/SA validators) run 5–10×
@@ -1049,15 +1052,19 @@ jobs:
   # CONFORMANCE ON macOS arm64 — the parity goldens' own platform
   # ============================================================================
   # Every parity golden is made by the unfused MuJoCo 3.5.0 oracle on macOS
-  # arm64 and compared bit for bit there, within a tolerance elsewhere: another
-  # platform's libm may round `sin`/`cos` otherwise (ledger L231). The Linux
-  # release shard runs the tolerance branch; this job runs the bit-for-bit one,
-  # which no other job reaches. It refuses a runner that is not arm64, where
+  # arm64; most of their checks are bit for bit there and within a tolerance
+  # elsewhere (Linux's runs differ from them; why is not isolated, ledger
+  # L231). The Linux release shard runs the tolerance branch; this job runs
+  # the bit-for-bit one, which no other job reaches. The goldens were made on
+  # macOS 27.0.1; the image is pinned (macos-26, what macos-latest named on
+  # 2026-10-24) so that a red run is not a moved image, and the job prints
+  # the image's macOS. Whether its libm rounds every value as 27.0.1's does
+  # is shown by the job's runs. It refuses a runner that is not arm64, where
   # the bit-for-bit branch would not run. PR-scoped to sim-conformance-tests;
   # always runs, so it is never a skipped required check.
   conformance-macos:
     name: Conformance (release, macOS arm64)
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 60
     needs: [affected]
     if: ${{ !cancelled() }}
@@ -1075,7 +1082,7 @@ jobs:
       - name: Refuse a runner that is not arm64
         run: |
           arch=$(uname -m)
-          echo "runner: $(uname -s) $arch"
+          echo "runner: $(uname -s) $arch, macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
           if [ "$arch" != arm64 ]; then
             echo "::error::the bit-for-bit branch runs on macOS arm64 only; this runner is $arch"
             exit 1

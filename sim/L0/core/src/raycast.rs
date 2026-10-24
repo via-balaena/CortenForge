@@ -1,8 +1,9 @@
 //! Ray casting for physics queries.
 //!
 //! This module provides ray casting functionality for distance queries against
-//! collision shapes. It's used for rangefinder sensors, visibility checks, and
-//! other distance-based queries.
+//! collision shapes, for visibility checks and other distance-based queries.
+//! A rangefinder casts MuJoCo's `mj_ray` (`sensor::ray_geom`), which reads a
+//! mesh's, a height field's and a signed distance field's shape here.
 //!
 //! Shape-level intersection is delegated to [`cf_geometry::ray_cast`], which
 //! supports all 10 shape types in local space. This module adds world-space

@@ -129,8 +129,10 @@ Computes actuator-space length and velocity from transmission state. The
 lengths are set in the position stage (`mj_transmission_joint_tendon`,
 `mj_transmission_site`, `mj_transmission_slidercrank`,
 `mj_transmission_body_dispatch`); the velocities
-after `mj_fwd_velocity()` (which populates `ten_velocity`), by
-`mj_actuator_velocity`.
+after `mj_fwd_velocity()`, by `mj_actuator_velocity`, as MuJoCo's
+`mj_fwdVelocity` (`engine_forward.c:240-246`): each the sparse dot of the
+actuator's moment row, as `mj_transmission` stores it, with `qvel`, in
+`mju_dotSparse`'s grouping, and 0 when actuation is disabled.
 
 ```python
 for i in range(nu):
@@ -139,18 +141,20 @@ for i in range(nu):
         jid = actuator_trnid[i]
         if jnt_type[jid] in (Hinge, Slide):   # scalar DOF only
             actuator_length[i] = gear * qpos[qpos_adr[jid]]
-            actuator_velocity[i] = gear * qvel[dof_adr[jid]]
     elif transmission[i] == Tendon:
         tid = actuator_trnid[i]
         actuator_length[i] = gear * ten_length[tid]
-        actuator_velocity[i] = gear * ten_velocity[tid]
     elif transmission[i] == Site:
-        (sid0, sid1) = actuator_trnid[i]    # site pair
         actuator_length[i] = mj_transmission_site(model, data, i, gear)
-        actuator_velocity[i] = gear . (J @ qvel)  # via site Jacobian
-    elif transmission[i] == Body:
-        # Length/moment already set by mj_transmission_body (runs after collision)
-        actuator_velocity[i] = actuator_moment[i] . qvel
+    # Body: length and moment set by mj_transmission_body (after collision)
+
+# velocity stage
+for i in range(nu):
+    # the stored row: a hinge's or slide's gear; a ball's or free joint's
+    # 3 or 6 entries, zeros kept; a tendon's ten_J chain times the gear
+    # (sparse Jacobian, zeros kept) or its nonzero entries (dense); a site's,
+    # slider-crank's or body's nonzero entries; none for an actuator asleep
+    actuator_velocity[i] = 0 if actuation_disabled else dot_sparse(row(i), qvel)
 ```
 
 ---
@@ -615,9 +619,9 @@ MuJoCo factors in `mj_implicitSkip`, which `mj_step` runs after `mj_forward`,
 so a `forward` leaves `qDeriv`, `qH`, `qLU` and `qacc_implicit` as the last
 step left them.
 
-Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/∂(qvel)` via:
-1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + flex edge damping J^T B J + tendon damping J^T B J (all but the flex edges sleep-filtered, §40c)
-2. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
+Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/∂(qvel)` via, in MuJoCo's order (`mjd_smooth_vel`):
+1. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
+2. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + flex edge damping J^T B J + tendon damping J^T B J (all but the flex edges sleep-filtered, §40c)
 
 Solves `(M − h·D) · qacc_implicit = f` with `M − h·D` taken on the mass
 matrix's sparsity pattern (a simple dof's row its diagonal only), factored as
@@ -811,14 +815,14 @@ Captures contact transitions naturally.
 Computes `∂(qfrc_smooth)/∂qvel` analytically, stored in `Data.qDeriv`:
 
 ```
-qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias
+qfrc_smooth = ((qfrc_passive − qfrc_bias) + qfrc_applied) + qfrc_actuator
 
-qDeriv = ∂(passive)/∂v + ∂(actuator)/∂v − ∂(bias)/∂v
+qDeriv = ∂(actuator)/∂v + ∂(passive)/∂v − ∂(bias)/∂v, added in that order
 
+mjd_actuator_vel():  affine gain/bias velocity terms via transmission
 mjd_passive_vel():   fluid derivatives (§40a) + diagonal −damping[i] + flex edge −b·J^T·J
                      + tendon −b·J^T·J (all but the flex edge loop sleep-filtered via
                      §40c indirection, as MuJoCo's)
-mjd_actuator_vel():  affine gain/bias velocity terms via transmission
 mjd_rne_vel():       chain-rule derivative propagation through kinematic tree
                      Forward pass: Dcvel, Dcacc (6×nv per body)
                      Backward pass: Dcfrc accumulation + projection to joint space
@@ -948,7 +952,7 @@ available as `Data::transition_derivatives()`.
 | `qfrc_applied[nv]` | `DVector` | User-applied forces |
 | `qfrc_constraint[nv]` | `DVector` | Contact + limit + equality forces |
 | `actuator_length[nu]` | `Vec<f64>` | Gear × transmission length |
-| `actuator_velocity[nu]` | `Vec<f64>` | Gear × transmission velocity |
+| `actuator_velocity[nu]` | `Vec<f64>` | The sparse dot of the actuator's stored moment row with `qvel`, in MuJoCo's grouping; 0 when actuation is disabled |
 | `actuator_moment[nu]` | `Vec<DVector(nv)>` | Transmission moment arm vectors (Site, Body and slider-crank transmissions, and Joint on a ball or free joint; zero for Joint on a hinge or slide and for Tendon) |
 | `actuator_force[nu]` | `Vec<f64>` | Scalar actuator force (after gain/bias/clamp) |
 | `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
