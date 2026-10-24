@@ -98,7 +98,9 @@ fn check_close(
     want: f64,
     tol: f64,
 ) {
-    if (got - want).abs() > tol {
+    // `<=` fails a NaN, which `>` would let through.
+    let close = (got - want).abs() <= tol;
+    if !close {
         failures.push(format!(
             "{fixture}[s{sample}] {what}: got {got:+.9e} want {want:+.9e} (Δ {:+.2e}, tol {tol:.0e})",
             got - want
