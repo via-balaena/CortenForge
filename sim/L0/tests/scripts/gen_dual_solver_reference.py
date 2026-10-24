@@ -37,6 +37,10 @@ solvers MuJoCo's inputs and compare every output bit for bit.
   generator refuses the case otherwise); `nowarm`: the warmstart disabled.
 - noslip: noslip_iterations 10 after PGS, Newton and CG, over mixed_rows'
   pyramidal and elliptic scenes and the box, warm.
+- nnz: the primal solver's `solver_nnz` after a forward (`engine_solver.c:1953-1964`),
+  Newton and CG over mixed_rows at condim 3 and 6, pyramidal and elliptic,
+  dense and sparse, islands disabled and enabled (MuJoCo's count per island
+  and their sum), the box and the chain under Newton at the sparse size.
 """
 import json
 import os
@@ -48,7 +52,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gen_census_golden import finite_or_string, oracle  # noqa: E402
 from gen_primal_solver_reference import (  # noqa: E402
-    CHAIN, MIXED_QVEL, MIXED_ROWS, NEWTON_BOX, ROLLING_QVEL, census_start, floats, stats)
+    CHAIN, MIXED_QVEL, MIXED_ROWS, NEWTON_BOX, ROLLING_QVEL, census_start, floats, stats, with_islands)
 
 
 def mixed(solver, cone, condim, sparse=False, options=""):
@@ -205,11 +209,48 @@ def noslip():
     return out
 
 
+def nnz():
+    """The primal solver's solver_nnz: Newton's Hessian at the sparse size
+    (its factor's entries, twice under an elliptic cone, and the Hessian's
+    count), nv*nv dense, CG's 0 (`engine_solver.c:1953-1964`), per island
+    with islands enabled; the case keeps MuJoCo's list and its sum."""
+    out = {}
+    for solver in ("Newton", "CG"):
+        for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 6)):
+            for sparse in (False, True):
+                for islands in (False, True):
+                    xml = mixed(solver, cone, condim, sparse)
+                    xml = with_islands(xml) if islands else xml
+                    m = mujoco.MjModel.from_xml_string(xml)
+                    d = mujoco.MjData(m)
+                    d.qvel[:] = MIXED_QVEL
+                    mujoco.mj_forward(m, d)
+                    n = max(1, min(int(d.nisland), 20))
+                    per = [int(x) for x in d.solver_nnz[:n]]
+                    tag = f"{solver}_{cone}_{condim}" + ("_sparse" if sparse else "") + ("_islands" if islands else "")
+                    out[tag] = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
+                                "nisland": int(d.nisland), "solver_nnz_per_island": per,
+                                "solver_nnz": sum(per)}
+    for tag, xml in (("Newton_box_sparse", box("Newton", True)), ("Newton_chain_elliptic", chain("Newton", "elliptic", 3))):
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        if "chain" in tag:
+            d.qvel[:] = list(np.random.default_rng(7).normal(0, 0.8, m.nv))
+        else:
+            census_start(m, d)
+        mujoco.mj_forward(m, d)
+        per = [int(d.solver_nnz[0])]
+        out[tag] = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel), "nisland": int(d.nisland),
+                    "solver_nnz_per_island": per, "solver_nnz": sum(per)}
+    assert any(c["nisland"] > 1 for c in out.values()), "a case with islands"
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
-    cases = {"pgs": pgs(), "noslip": noslip()}
+    cases = {"pgs": pgs(), "noslip": noslip(), "nnz": nnz()}
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     os.makedirs(sys.argv[1], exist_ok=True)
     with open(os.path.join(sys.argv[1], "dual_solver.json"), "w", encoding="utf-8") as f:

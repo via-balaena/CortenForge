@@ -1228,6 +1228,26 @@ impl<'a> Primal<'a> {
 }
 
 impl Primal<'_> {
+    /// MuJoCo's `solver_nnz` for this solve (`engine_solver.c:1953-1964`):
+    /// Newton's Hessian's at the sparse size
+    /// ([`SparseHessian::solver_nnz`], M's entries counted to this solve's
+    /// last, `m_before` of them in the islands solved before it), `nv²`
+    /// dense; CG's 0.
+    fn solver_nnz(&self, model: &Model, m_before: usize) -> usize {
+        if !self.newton {
+            return 0;
+        }
+        match (&self.sparse, &self.mass_rows) {
+            (Some(h), Some(mass)) => h.solver_nnz(m_before + mass.colind.len(), model.cone == 1),
+            _ => self.nv * self.nv,
+        }
+    }
+
+    /// The entries of this solve's M, as MuJoCo's `iM` keeps them.
+    fn mass_nnz(&self) -> usize {
+        self.mass_rows.as_ref().map_or(0, |mass| mass.colind.len())
+    }
+
     /// `mj_solPrimal`'s loop from the start it is given (`engine_solver.c:1811-1945`),
     /// improvement and gradient scaled by `scale`; returns each iteration's
     /// statistics.
@@ -1422,6 +1442,7 @@ pub fn mj_sol_primal(
         let stats = ctx.solve(model, scale)?;
         ctx.write_back(data);
         data.efc_cost = ctx.cost;
+        data.solver_nnz = ctx.solver_nnz(model, 0);
         data.solver_niter = stats.len();
         data.solver_stat = stats;
         data.solver_stat.truncate(MJ_NSOLVER);
@@ -1432,7 +1453,12 @@ pub fn mj_sol_primal(
     data.qacc.as_mut_slice().copy_from_slice(&ctx.qacc);
     data.efc_cost = 0.0;
     data.solver_niter = 0;
+    data.solver_nnz = 0;
     data.solver_stat.clear();
+    // The entries of M in the islands solved so far: MuJoCo addresses an
+    // island's rows of M in the islands' joint array (`iM_rowadr`), so its
+    // Hessian's count takes theirs too (`engine_solver.c:1532-1533`).
+    let mut m_before = 0;
     for island in 0..data.nisland {
         let sub = Subproblem::island(data, island);
         let tree = TreeMass::new(model, data, &sub);
@@ -1442,9 +1468,11 @@ pub fn mj_sol_primal(
         ictx.write_back(data);
         data.efc_cost += ictx.cost;
         if island < MJ_NISLAND {
+            data.solver_nnz += ictx.solver_nnz(model, m_before);
             data.solver_niter += stats.len();
             data.solver_stat.extend(stats.into_iter().take(MJ_NSOLVER));
         }
+        m_before += ictx.mass_nnz();
     }
     // A row in no island has a zero Jacobian (the partition reads its chain
     // at the sparse size, its nonzero entries at the dense size), so its

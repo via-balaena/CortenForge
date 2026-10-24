@@ -389,8 +389,12 @@ pub struct Data {
     /// the first 20 islands' summed, the islands MuJoCo counts (`mjNISLAND`);
     /// then noslip's sweeps.
     pub solver_niter: usize,
-    /// Never written: 0 (ledger L221). MuJoCo's counts, per island, the
-    /// nonzeros of Newton's Hessian or of PGS's `efc_AR`.
+    /// The last constraint solve's nonzeros, as MuJoCo's `solver_nnz` counts
+    /// them: Newton's Hessian (at the sparse size its factor's entries, twice
+    /// under an elliptic cone, and the Hessian's count; `nv²` dense), CG's 0,
+    /// PGS's `efc_AR`. Solved island by island, the first 20 islands' summed,
+    /// as `solver_niter` sums them (MuJoCo keeps one per island). A solve with
+    /// no rows leaves it, as MuJoCo's.
     pub solver_nnz: usize,
     // ==================== Unified Constraint System (Newton solver, §15) ====================
     // The rows are made in the position stage, their velocities and reference

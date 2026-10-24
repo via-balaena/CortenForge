@@ -293,3 +293,31 @@ fn pgs_matches_mujoco_3_5_0_bit_for_bit_given_its_inputs() {
     }
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }
+
+/// The primal solver's `solver_nnz` after a forward pass, as MuJoCo's counts
+/// it (`engine_solver.c:1953-1964`): Newton's sparse Hessian (its factor's
+/// entries, twice under an elliptic cone, and the Hessian's count, which
+/// takes every entry of M), Newton's dense `nv²`, CG's 0; with islands, the
+/// first 20 islands' counts summed (ledger L221).
+#[test]
+fn primal_solver_nnz_is_mujocos() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["nnz"].as_object().expect("cases") {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&floats(&case["qpos"]));
+        data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        data.forward(&model).expect("forward");
+        assert_eq!(data.nisland, count(&case["nisland"]), "{name}: islands");
+        if data.solver_nnz != count(&case["solver_nnz"]) {
+            off.push(format!(
+                "{name}: solver_nnz {}, MuJoCo {} ({:?} by island)",
+                data.solver_nnz,
+                count(&case["solver_nnz"]),
+                usizes(&case["solver_nnz_per_island"])
+            ));
+        }
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
