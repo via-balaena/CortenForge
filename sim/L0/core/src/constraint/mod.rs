@@ -47,7 +47,8 @@ use crate::integrate::implicit::{
 
 /// Compute the unconstrained acceleration (`qacc_smooth`) and smooth forces.
 ///
-/// - `qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias`
+/// - `qfrc_smooth = ((qfrc_passive - qfrc_bias) + qfrc_applied) + qfrc_actuator`,
+///   in MuJoCo's order (`mj_fwdAcceleration`, `engine_forward.c:583-585`)
 /// - `qacc_smooth = M⁻¹ · qfrc_smooth` (via sparse LDL solve)
 ///
 /// Friction loss is no longer subtracted here — it is handled entirely by
@@ -55,12 +56,11 @@ use crate::integrate::implicit::{
 fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector<f64>) {
     let nv = model.nv;
 
-    // qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
     // Note: friction loss is no longer in qfrc_passive or subtracted here.
     let mut qfrc_smooth = DVector::<f64>::zeros(nv);
     for k in 0..nv {
-        qfrc_smooth[k] =
-            data.qfrc_applied[k] + data.qfrc_actuator[k] + data.qfrc_passive[k] - data.qfrc_bias[k];
+        qfrc_smooth[k] = ((data.qfrc_passive[k] - data.qfrc_bias[k]) + data.qfrc_applied[k])
+            + data.qfrc_actuator[k];
     }
 
     // DT-21: Project xfrc_applied (Cartesian body forces) into qfrc_smooth.

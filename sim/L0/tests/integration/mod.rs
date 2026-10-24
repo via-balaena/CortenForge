@@ -76,6 +76,9 @@ pub mod actuator_velocity_parity;
 /// Runs against MuJoCo 3.5.0's on models sim-mjcf compiles as MuJoCo does.
 pub mod trajectory_parity;
 
+/// The smooth force's sum against MuJoCo 3.5.0's order.
+pub mod smooth_force_parity;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================
