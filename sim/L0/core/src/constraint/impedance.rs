@@ -8,7 +8,7 @@
 use nalgebra::{DVector, Vector3};
 
 use crate::dynamics::factor::mj_solve_m;
-use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mju_max, mju_min};
 use crate::types::{Data, Model};
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -101,37 +101,38 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
     const MJ_MAX_IMP: f64 = 0.9999;
 
     // A NaN passes: a contact at a NaN distance (a geom turned by a NaN, as
-    // MuJoCo's collision functions list it) reaches here.
+    // MuJoCo's collision functions list it) reaches here, and its impedance
+    // is NaN, as MuJoCo's `getimpedance` gives (ledger L209).
     debug_assert!(
         !(violation < 0.0),
         "compute_impedance expects non-negative violation, got {violation}"
     );
 
-    // Clamp inputs to valid ranges, matching MuJoCo's getsolparam():
+    // Clamp inputs to valid ranges as MuJoCo's getsolparam() does
+    // (`engine_core_constraint.c:1357-1361`):
     //   d0, d_width, midpoint ∈ [mjMINIMP, mjMAXIMP]
     //   width ≥ 0
     //   power ≥ 1
-    let d0 = solimp[0].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
-    let d_width = solimp[1].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
-    let width = solimp[2].max(0.0);
-    let midpoint = solimp[3].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
-    let power = solimp[4].max(1.0);
+    let clamp = |v: f64| mju_min(MJ_MAX_IMP, mju_max(MJ_MIN_IMP, v));
+    let d0 = clamp(solimp[0]);
+    let d_width = clamp(solimp[1]);
+    let width = mju_max(0.0, solimp[2]);
+    let midpoint = clamp(solimp[3]);
+    let power = mju_max(1.0, solimp[4]);
 
     // Flat function
     if d0 == d_width || width <= MJ_MINVAL {
         return 0.5 * (d0 + d_width);
     }
 
-    // Normalized position: x = violation / width, clamped to [0, 1]
-    let x = (violation / width).min(1.0);
-
-    // Saturated at full width — return d_width
+    // Normalized position: x = violation / width, saturated at either end
+    // (`getimpedance`, `engine_core_constraint.c:1422-1435`). A NaN is
+    // neither and goes on to the curve, which gives NaN.
+    let x = violation / width;
     if x >= 1.0 {
         return d_width;
     }
-
-    // At zero violation — return d0
-    if x == 0.0 {
+    if x <= 0.0 {
         return d0;
     }
 
@@ -188,17 +189,21 @@ pub fn compute_kbip(model: &Model, solref: [f64; 2], solimp: [f64; 5]) -> (f64, 
         };
         let dampratio = solref[1];
 
-        let k = 1.0 / (dmax * dmax * timeconst * timeconst * dampratio * dampratio).max(MJ_MINVAL);
+        let k = 1.0
+            / mju_max(
+                MJ_MINVAL,
+                dmax * dmax * timeconst * timeconst * dampratio * dampratio,
+            );
         let b = if dampratio > 0.0 {
-            2.0 / (dmax * timeconst).max(MJ_MINVAL)
+            2.0 / mju_max(MJ_MINVAL, dmax * timeconst)
         } else {
-            -dampratio / dmax.max(MJ_MINVAL)
+            -dampratio / mju_max(MJ_MINVAL, dmax)
         };
         (k, b)
     } else {
         // Direct mode: solref = [-stiffness, -damping]
-        let k = -solref[0] / (dmax * dmax).max(MJ_MINVAL);
-        let b = -solref[1] / dmax.max(MJ_MINVAL);
+        let k = -solref[0] / mju_max(MJ_MINVAL, dmax * dmax);
+        let b = -solref[1] / mju_max(MJ_MINVAL, dmax);
         (k, b)
     }
 }
@@ -321,11 +326,12 @@ pub fn compute_diag_approx_bodyweight(model: &Model, id: usize, row_offset: usiz
 /// Compute regularization R and constraint stiffness D from impedance and diagApprox (§15.1).
 ///
 /// R = max(mjMINVAL, (1 - imp) · diagApprox / imp), in MuJoCo's order of
-/// operations (`mj_makeImpedance`, `engine_core_constraint.c:1484`)
+/// operations (`mj_makeImpedance`, `engine_core_constraint.c:1484`), its
+/// `mju_max`: a NaN impedance gives a NaN R
 /// D = 1 / R
 #[inline]
 pub fn compute_regularization(imp: f64, diag_approx: f64) -> (f64, f64) {
-    let r = ((1.0 - imp) * diag_approx / imp).max(MJ_MINVAL);
+    let r = mju_max(MJ_MINVAL, (1.0 - imp) * diag_approx / imp);
     let d = 1.0 / r;
     (r, d)
 }
@@ -414,8 +420,9 @@ mod impedance_tests {
     #[test]
     fn test_impedance_admits_nan_violation() {
         // A contact at a NaN distance (a geom turned by a NaN) reaches here;
-        // the debug check lets it pass, as MuJoCo's `getimpedance` has none
-        compute_impedance(DEFAULT, f64::NAN);
+        // the debug check lets it pass, as MuJoCo's `getimpedance` has none,
+        // and the impedance is NaN, as MuJoCo's (ledger L209)
+        assert!(compute_impedance(DEFAULT, f64::NAN).is_nan());
     }
 
     #[test]

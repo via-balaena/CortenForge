@@ -9,6 +9,7 @@
 use crate::constraint::chain::at_sparse_size;
 use crate::constraint::impedance::{MJ_MINVAL, checked_solreffriction};
 use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain, side_weights};
+use crate::linalg::mju_max;
 use crate::types::{ConstraintType, Contact, Data, Model};
 
 use super::assembly::finalize_constraint_row;
@@ -137,7 +138,7 @@ pub(super) fn assemble_contact_rows(
 pub(super) fn regularize_cones(model: &Model, data: &mut Data, cones: &[(usize, usize)]) {
     for &(i, ci) in cones {
         let (friction, dim) = (data.contacts[ci].mu, data.contacts[ci].dim);
-        data.efc_R[i + 1] = data.efc_R[i] / model.impratio.max(MJ_MINVAL);
+        data.efc_R[i + 1] = data.efc_R[i] / mju_max(MJ_MINVAL, model.impratio);
         let mu = friction[0] * (data.efc_R[i + 1] / data.efc_R[i]).sqrt();
         data.contacts[ci].regularized_mu = mu;
         if data.efc_type[i] == ConstraintType::ContactElliptic {

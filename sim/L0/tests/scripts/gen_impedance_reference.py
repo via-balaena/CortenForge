@@ -113,6 +113,14 @@ then D = 1/R, and every row's diagApprox = R*imp/(1-imp) (`:1570-1578`):
   row, and frictionloss_rows unless one row's diagApprox is not its dof's
   invweight0.
 
+A NaN violation goes on to `getimpedance`'s curve, which gives a NaN impedance,
+and `mju_max` keeps a NaN R (`:1422-1461`, `:1484`):
+
+- nan_turn: a free body over a plane turned by a NaN quaternion (mesh,
+  ellipsoid, box), its contacts at a NaN distance; after mj_forward, each
+  row's impedance (`efc_KBIP`'s third), R, D and diagApprox. The generator
+  refuses a case whose rows are not all NaN.
+
 A weld's rotational error and rotational Jacobian rows are scaled by its
 torquescale, `eq_data[10]` (`:482`, `:510`, `:530`):
 
@@ -947,6 +955,37 @@ def diag_approx():
     return out
 
 
+NAN_TURN_CUBE = ('<mesh name="m" vertex="-.1 -.1 -.1 .1 -.1 -.1 .1 .1 -.1 -.1 .1 -.1 -.1 -.1 .1 .1 -.1 .1 '
+                 '.1 .1 .1 -.1 .1 .1" face="0 2 1 0 3 2 4 5 6 4 6 7 0 1 5 0 5 4 2 3 7 2 7 6 0 4 7 0 7 3 1 2 6 '
+                 '1 6 5"/>')
+NAN_TURN_GEOMS = {"mesh": '<geom type="mesh" mesh="m"/>',
+                  "ellipsoid": '<geom type="ellipsoid" size="0.1 0.08 0.06"/>',
+                  "box": '<geom type="box" size="0.1 0.1 0.1"/>'}
+
+
+def nan_turn():
+    """A free body over a plane turned by a NaN quaternion (qpos[3]): its
+    contacts at a NaN distance make rows whose impedance (`efc_KBIP`'s third),
+    R, D and diagApprox are NaN (`getimpedance`, `:1413-1461`, takes a NaN `x`
+    to its curve; `mju_max` keeps a NaN). It refuses a case whose rows are not
+    all NaN, or that makes none."""
+    out = {}
+    for name, geom in NAN_TURN_GEOMS.items():
+        xml = (f'<mujoco><asset>{NAN_TURN_CUBE}</asset><worldbody><geom type="plane" size="5 5 0.1"/>'
+               f'<body pos="0 0 0.09"><freejoint/>{geom}</body></worldbody></mujoco>')
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        d.qpos[3] = float("nan")
+        mujoco.mj_forward(m, d)
+        n = d.nefc
+        rows = {"efc_imp": floats(d.efc_KBIP[:n, 2]), "efc_R": floats(d.efc_R[:n]),
+                "efc_D": floats(d.efc_D[:n]), "efc_diagApprox": floats(d.efc_diagApprox[:n])}
+        if n == 0 or not all(np.isnan(v).all() for v in rows.values()):
+            sys.exit(f"nan_turn {name}: {n} rows, not all NaN")
+        out[name] = {"xml": xml, "nefc": int(n), **rows}
+    return out
+
+
 def weld_box_xml(torquescale):
     return f"""<mujoco model="weld_box_ts">
   <option timestep="0.002"/>
@@ -1042,6 +1081,7 @@ def main():
         "pair_condim6": pair_condim6(),
         "aniso_rows": aniso_rows(),
         "diag_approx": diag_approx(),
+        "nan_turn": nan_turn(),
         "weld_torquescale": weld_torquescale(),
     }
     doc = {"oracle": marker, "cases": finite_or_string(cases)}

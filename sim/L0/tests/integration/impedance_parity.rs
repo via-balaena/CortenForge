@@ -521,6 +521,51 @@ fn diag_approx_rounds_as_mujoco() {
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }
 
+/// A free body over a plane turned by a NaN quaternion (mesh, ellipsoid,
+/// box): its contacts at a NaN distance make rows whose impedance, R, D and
+/// diagApprox are NaN, as MuJoCo's: `getimpedance` takes a NaN `x` on to its
+/// curve and `mju_max` keeps a NaN (`engine_core_constraint.c:1422-1461`,
+/// `:1484`; ledger L209).
+#[test]
+fn a_nan_violation_takes_nan_rows_as_mujoco() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["nan_turn"].as_object().expect("cases") {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qpos[3] = f64::NAN;
+        data.forward(&model).expect("forward");
+        let nefc = usize::try_from(case["nefc"].as_u64().expect("nefc")).expect("fits");
+        assert_eq!(data.efc_type.len(), nefc, "{name}: nefc");
+        for (field, ours) in [
+            ("efc_imp", &data.efc_imp),
+            ("efc_R", &data.efc_R),
+            ("efc_D", &data.efc_D),
+            ("efc_diagApprox", &data.efc_diagApprox),
+        ] {
+            let want = floats_or_nan(&case[field]);
+            for (i, (a, b)) in ours.iter().zip(&want).enumerate() {
+                if a.is_nan() != b.is_nan() || (!a.is_nan() && a.to_bits() != b.to_bits()) {
+                    off.push(format!("{name} {field}[{i}]: {a:e}, MuJoCo {b:e}"));
+                }
+            }
+        }
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
+/// A golden's numbers, its non-finite ones written as strings ("nan").
+fn floats_or_nan(v: &Value) -> Vec<f64> {
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| match x.as_str() {
+            Some(text) => text.parse().expect("a non-finite number"),
+            None => x.as_f64().expect("number"),
+        })
+        .collect()
+}
+
 /// Where `got` differs from `want`, each as a line in `off`: in any bit on
 /// macOS arm64, where the golden was made; elsewhere by more than
 /// `1e-13 · max(1, |MuJoCo's|)`, and a NaN always.
