@@ -1046,6 +1046,59 @@ jobs:
         shell: bash
 
   # ============================================================================
+  # CONFORMANCE ON macOS arm64 — the parity goldens' own platform
+  # ============================================================================
+  # Every parity golden is made by the unfused MuJoCo 3.5.0 oracle on macOS
+  # arm64 and compared bit for bit there, within a tolerance elsewhere: another
+  # platform's libm may round `sin`/`cos` otherwise (ledger L231). The Linux
+  # release shard runs the tolerance branch; this job runs the bit-for-bit one,
+  # which no other job reaches. It refuses a runner that is not arm64, where
+  # the bit-for-bit branch would not run. PR-scoped to sim-conformance-tests;
+  # always runs, so it is never a skipped required check.
+  conformance-macos:
+    name: Conformance (release, macOS arm64)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    needs: [affected]
+    if: ${{ !cancelled() }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      - name: Refuse a runner that is not arm64
+        run: |
+          arch=$(uname -m)
+          echo "runner: $(uname -s) $arch"
+          if [ "$arch" != arm64 ]; then
+            echo "::error::the bit-for-bit branch runs on macOS arm64 only; this runner is $arch"
+            exit 1
+          fi
+        shell: bash
+
+      - name: Select affected packages
+        env:
+          AFFECTED_RESULT: ${{ needs.affected.result }}
+          AFFECTED_FULL: ${{ needs.affected.outputs.needs_full }}
+          AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          PKGS=$(bash .github/scripts/affected-packages.sh "sim-conformance-tests")
+          echo "PKGS=$PKGS" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Run the conformance suite in release
+        if: env.PKGS != ''
+        run: cargo test --release --no-fail-fast $PKGS
+        shell: bash
+
+  # ============================================================================
   # FEATURE COMBOS - Non-default feature paths
   # ============================================================================
   # Default-features tests run in `tests-debug` + `tests-release`; this job
@@ -1574,7 +1627,7 @@ jobs:
 
   quality-gate:
     name: Quality Gate
-    needs: [format, ci-scripts, doc-theft, census-append-only, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates, publish-dry-run]
+    needs: [format, ci-scripts, doc-theft, census-append-only, grade, tests-debug, tests-release, cross-os, conformance-macos, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates, publish-dry-run]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
