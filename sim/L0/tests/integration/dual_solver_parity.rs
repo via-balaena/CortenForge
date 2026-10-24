@@ -457,6 +457,71 @@ fn a_forward_from_the_velocity_stage_after_the_implicit_spring_damper_remakes_ef
     }
 }
 
+/// The forward group's scenes under CG and Newton alone, from MuJoCo's state
+/// after their own three steps, each body's inertial as MuJoCo compiles it:
+/// the acceleration, forces and constraint force as MuJoCo's, bit for bit on
+/// macOS arm64, where the golden was made, elsewhere within `1e-13 · max(1,
+/// |MuJoCo's|)` (a NaN never), and the iteration count (ledger L261).
+#[test]
+fn a_forward_pass_with_a_primal_solver_matches_mujoco_3_5_0() {
+    let g = golden();
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let mut off = Vec::new();
+    let cases = g["cases"]["forward_primal"].as_object().expect("cases");
+    assert_eq!(cases.len(), 2 * 22, "the primal forward cases");
+    for (name, case) in cases {
+        forward_as_mujoco(&mut off, name, case, exact);
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
+/// A forward pass from the case's qpos, qvel and warmstart, against MuJoCo's
+/// `qacc`, `efc_force`, `qfrc_constraint`, row count and `solver_niter`
+/// (bit for bit when `exact`, else within `1e-13 · max(1, |MuJoCo's|)`, a
+/// NaN never); each difference is pushed onto `off`.
+fn forward_as_mujoco(
+    off: &mut Vec<String>,
+    name: &str,
+    case: &Value,
+    exact: bool,
+) -> (Model, Data) {
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos.copy_from_slice(&floats(&case["qpos"]));
+    data.qvel.copy_from_slice(&floats(&case["qvel"]));
+    data.qacc_warmstart
+        .copy_from_slice(&floats(&case["qacc_warmstart"]));
+    data.forward(&model).expect("forward");
+    assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{name}: nefc");
+    if data.solver_niter != count(&case["solver_niter"]) {
+        off.push(format!(
+            "{name}: solver_niter {}, MuJoCo {}",
+            data.solver_niter,
+            count(&case["solver_niter"])
+        ));
+    }
+    for (field, ours) in [
+        ("qacc", data.qacc.as_slice()),
+        ("efc_force", data.efc_force.as_slice()),
+        ("qfrc_constraint", data.qfrc_constraint.as_slice()),
+    ] {
+        let want = floats(&case[field]);
+        let what = format!("{name} {field}");
+        if exact {
+            bits(off, &what, ours, &want);
+        } else if ours.len() != want.len()
+            || ours.iter().zip(&want).any(|(a, b)| {
+                // Past the bound or NaN: a NaN is never within it.
+                let d = (a - b).abs();
+                d.is_nan() || d > 1e-13 * b.abs().max(1.0)
+            })
+        {
+            off.push(format!("{what}: past 1e-13 of MuJoCo's"));
+        }
+    }
+    (model, data)
+}
+
 /// The whole forward pass under PGS, PGS then noslip, Newton then noslip, and
 /// CG then noslip, from MuJoCo's state after three steps (qpos, qvel, the
 /// warmstart): its
@@ -468,7 +533,8 @@ fn a_forward_from_the_velocity_stage_after_the_implicit_spring_damper_remakes_ef
 /// warmstart give it, where one remade from the forces would round otherwise.
 /// CG's scenes carry each body's inertial as MuJoCo compiles it: as written,
 /// sim-mjcf compiles the arm capsule's inertial frame otherwise (ledgers L195,
-/// L261), which moves the mass matrix by an ulp at six of CG's states.
+/// L261; Rigid-loading's L33 copies one geom's frame, L14 a fromto's axis),
+/// which moves the mass matrix by an ulp at six of CG's states.
 #[test]
 fn a_forward_pass_with_a_dual_solver_matches_mujoco_3_5_0() {
     let g = golden();
@@ -477,40 +543,7 @@ fn a_forward_pass_with_a_dual_solver_matches_mujoco_3_5_0() {
     let forward = g["cases"]["forward"].as_object().expect("cases");
     assert_eq!(forward.len(), 66 + 22, "the forward cases");
     for (name, case) in forward {
-        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
-        let mut data = model.make_data();
-        data.qpos.copy_from_slice(&floats(&case["qpos"]));
-        data.qvel.copy_from_slice(&floats(&case["qvel"]));
-        data.qacc_warmstart
-            .copy_from_slice(&floats(&case["qacc_warmstart"]));
-        data.forward(&model).expect("forward");
-        assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{name}: nefc");
-        if data.solver_niter != count(&case["solver_niter"]) {
-            off.push(format!(
-                "{name}: solver_niter {}, MuJoCo {}",
-                data.solver_niter,
-                count(&case["solver_niter"])
-            ));
-        }
-        for (field, ours) in [
-            ("qacc", data.qacc.as_slice()),
-            ("efc_force", data.efc_force.as_slice()),
-            ("qfrc_constraint", data.qfrc_constraint.as_slice()),
-        ] {
-            let want = floats(&case[field]);
-            let what = format!("{name} {field}");
-            if exact {
-                bits(&mut off, &what, ours, &want);
-            } else if ours.len() != want.len()
-                || ours.iter().zip(&want).any(|(a, b)| {
-                    // Past the bound or NaN: a NaN is never within it.
-                    let d = (a - b).abs();
-                    d.is_nan() || d > 1e-13 * b.abs().max(1.0)
-                })
-            {
-                off.push(format!("{what}: past 1e-13 of MuJoCo's"));
-            }
-        }
+        let (model, data) = forward_as_mujoco(&mut off, name, case, exact);
         let mut again = data.clone();
         if model.noslip_iterations > 0 {
             sim_core::constraint::mj_sol_noslip_rows(&model, &mut again).expect("solve");

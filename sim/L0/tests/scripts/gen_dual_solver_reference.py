@@ -54,7 +54,11 @@ solvers MuJoCo's inputs and compare every output bit for bit.
   `efc_force`, `qfrc_constraint`, `solver_niter`. CG then noslip's scenes
   have each body's inertial written out as MuJoCo compiles it: as written,
   sim-mjcf compiles the arm capsule's inertial frame otherwise (ledgers L195,
-  L261), and at six of CG's states that moves the mass matrix by an ulp.
+  L261; Rigid-loading's L33 copies one geom's frame, L14 a fromto's axis),
+  and at six of CG's states that moves the mass matrix by an ulp.
+- forward_primal: the same scenes and outputs under CG and Newton alone (no
+  noslip), from MuJoCo's state after their own three steps, each body's
+  inertial written out as MuJoCo compiles it.
 """
 import json
 import os
@@ -298,12 +302,22 @@ def nnz():
 def forward():
     """The forward pass from MuJoCo's state after three steps: its qacc,
     efc_force, qfrc_constraint and solver_niter."""
-    out = {}
     noslip = ' noslip_iterations="10"'
-    for solver, opt in (("PGS", ""), ("PGS", noslip), ("Newton", noslip), ("CG", noslip)):
+    return forward_runs((("PGS", ""), ("PGS", noslip), ("Newton", noslip), ("CG", noslip)), dual=True)
+
+
+def forward_primal():
+    """`forward`'s scenes under CG and Newton alone."""
+    return forward_runs((("CG", ""), ("Newton", "")), dual=False)
+
+
+def forward_runs(runs, dual):
+    out = {}
+    for solver, opt in runs:
         name = solver + ("+noslip" if opt else "")
-        # CG's scenes with the loader's inertials as MuJoCo's (see the module doc).
-        written = inertia_written if solver == "CG" else (lambda xml: xml)
+        # CG's scenes, and the primal solvers', with the loader's inertials as
+        # MuJoCo's (see the module doc).
+        written = inertia_written if solver == "CG" or not dual else (lambda xml: xml)
         scenes = {"box": (written(box(solver, False, opt)), None, census_start),
                   "box_sparse": (written(box(solver, True, opt)), None, census_start)}
         for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 4), ("elliptic", 6), ("pyramidal", 6)):
@@ -323,7 +337,7 @@ def forward():
             case = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
                     "qacc_warmstart": floats(d.qacc_warmstart)}
             mujoco.mj_forward(m, d)
-            assert d.nefc > 0 and mujoco.mj_isDual(m), tag
+            assert d.nefc > 0 and bool(mujoco.mj_isDual(m)) == dual, tag
             case.update({"nefc": int(d.nefc), "solver_niter": int(d.solver_niter[0]), "qacc": floats(d.qacc),
                          "efc_force": floats(d.efc_force[:d.nefc]), "qfrc_constraint": floats(d.qfrc_constraint)})
             out[f"{name}_{tag}"] = case
@@ -334,7 +348,8 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
-    cases = {"pgs": pgs(), "noslip": noslip(), "nnz": nnz(), "forward": forward()}
+    cases = {"pgs": pgs(), "noslip": noslip(), "nnz": nnz(), "forward": forward(),
+             "forward_primal": forward_primal()}
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     os.makedirs(sys.argv[1], exist_ok=True)
     with open(os.path.join(sys.argv[1], "dual_solver.json"), "w", encoding="utf-8") as f:
