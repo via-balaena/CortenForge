@@ -39,7 +39,8 @@ pub fn mj_project_constraint(model: &Model, data: &mut Data) {
 
 /// `efc_AR` over the implicit spring-damper integrator's `M_impl` (this
 /// crate's own; MuJoCo has no such integrator), from its Cholesky factor:
-/// dense, `AR[i][k] = J_k · M_impl⁻¹ · J_i'` by `mju_dot`, `R` added on the
+/// dense, `AR[i][k] = J_k · M_impl⁻¹ · J_i'` by `mju_dot` on and below the
+/// diagonal, mirrored above it as [`project_dense`]'s, `R` added on the
 /// diagonal; the sparse columns cleared, as `M_impl` need not keep `M`'s
 /// pattern.
 pub fn project_implicit(data: &mut Data, factor: &nalgebra::DMatrix<f64>) {
@@ -55,8 +56,13 @@ pub fn project_implicit(data: &mut Data, factor: &nalgebra::DMatrix<f64>) {
     for i in 0..nefc {
         let mut w = nalgebra::DVector::from_column_slice(&rows[i]);
         crate::linalg::cholesky_solve_in_place(factor, &mut w);
-        for k in 0..nefc {
+        for k in 0..=i {
             ar[i * nefc + k] = mju_dot(&rows[k], w.as_slice());
+        }
+    }
+    for i in 0..nefc {
+        for k in i + 1..nefc {
+            ar[i * nefc + k] = ar[k * nefc + i];
         }
         ar[i * (nefc + 1)] += data.efc_R[i];
     }
@@ -99,8 +105,8 @@ fn project_dense(model: &Model, data: &mut Data, sqrt_inv_d: &[f64]) {
 }
 
 /// `mj_solveM2` (`engine_core_smooth.c:2228-2271`) over `n` rows of `nv`:
-/// `x ← L⁻ᵀ·x` from the last dof to the second, a dof skipped when it is
-/// simple (`dof_simplenum`) or its entry 0, then `x ← D^{-1/2}·x`.
+/// each row `x ← x·L⁻¹` from the last dof to the second, a dof skipped when
+/// it is simple (`dof_simplenum`) or its entry 0, then `x ← x·D^{-1/2}`.
 fn solve_m2(model: &Model, data: &Data, x: &mut [f64], sqrt_inv_d: &[f64], n: usize) {
     let nv = model.nv;
     for i in (1..nv).rev() {
@@ -127,7 +133,7 @@ fn solve_m2(model: &Model, data: &Data, x: &mut [f64], sqrt_inv_d: &[f64], n: us
 
 /// The sparse branch (`engine_core_constraint.c:2157-2335`): `B`'s pattern,
 /// each row's dof chain completed by `M`'s rows; its values, `J`'s at the
-/// chain and 0 at the completed dofs; `B ← B·L⁻ᵀ·D^{-1/2}` in place; `B`'s
+/// chain and 0 at the completed dofs; `B ← B·L⁻¹·D^{-1/2}` in place; `B`'s
 /// supernodes and transpose; `AR`'s pattern counted
 /// (`mju_sqrMatTDSparseCount`) and its values made (`mju_sqrMatTDSparse`,
 /// with no diagonal), `R` added on the diagonal.
@@ -200,7 +206,7 @@ fn project_sparse(model: &Model, data: &mut Data, sqrt_inv_d: &[f64]) {
         debug_assert_eq!(nnz_b, b_rownnz[r], "B's row {r}: counted and filled differ");
     }
 
-    // B ← B·L⁻ᵀ, each row's entries from the last, then times D^{-1/2}.
+    // B ← B·L⁻¹, each row's entries from the last, then times D^{-1/2}.
     for r in 0..nefc {
         let (adr_b, nnz_b) = (b_rowadr[r], b_rownnz[r]);
         for i in (adr_b..adr_b + nnz_b).rev() {
@@ -499,4 +505,53 @@ fn sqr_fill(
         }
     }
     diagind
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::project_implicit;
+    use crate::linalg::cholesky_in_place;
+    use crate::types::{ConstraintType, Model};
+    use nalgebra::{DMatrix, DVector};
+
+    /// Over `M_impl`, every entry of `efc_AR`, off the diagonal too, is
+    /// `J·M_impl⁻¹·J' + diag(R)` within rounding of the product made apart,
+    /// and the matrix is mirrored, as [`super::project_dense`]'s.
+    #[test]
+    fn project_implicit_is_j_m_impl_inverse_j_transposed() {
+        let m_impl =
+            DMatrix::from_row_slice(3, 3, &[4.0, 1.0, 0.5, 1.0, 3.0, 0.25, 0.5, 0.25, 2.0]);
+        let mut factor = m_impl.clone();
+        cholesky_in_place(&mut factor).expect("positive definite");
+        let j = DMatrix::from_row_slice(
+            4,
+            3,
+            &[1.0, 0.0, 0.3, -0.2, 1.0, 0.0, 0.5, 0.5, 0.5, 0.0, -1.0, 2.0],
+        );
+        let r = [0.1, 0.2, 0.3, 0.4];
+        let mut data = Model::empty().make_data();
+        data.efc_type = vec![ConstraintType::Equality; 4];
+        data.efc_J = j.clone();
+        data.efc_R = r.to_vec();
+        project_implicit(&mut data, &factor);
+        let inverse = m_impl.try_inverse().expect("invertible");
+        let want =
+            &j * inverse * j.transpose() + DMatrix::from_diagonal(&DVector::from_row_slice(&r));
+        for i in 0..4 {
+            for k in 0..4 {
+                let got = data.efc_AR[i * 4 + k];
+                assert!(
+                    (got - want[(i, k)]).abs() <= 1e-12,
+                    "AR[{i}][{k}] {got:e}, J·M_impl⁻¹·J' + R {:e}",
+                    want[(i, k)]
+                );
+                assert_eq!(
+                    got.to_bits(),
+                    data.efc_AR[k * 4 + i].to_bits(),
+                    "AR[{i}][{k}] mirrored"
+                );
+            }
+        }
+    }
 }

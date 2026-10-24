@@ -364,11 +364,16 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
         None => PrimalMass::Tree,
     };
     // Under the implicit spring-damper integrator (this crate's) the dual
-    // solvers read the rows' inverse inertia over `M_impl`.
+    // solvers read the rows' inverse inertia over `M_impl`; otherwise the
+    // position stage made it, unless this pass skipped that stage after an
+    // inverse one, whose position stage makes none (`mj_invPosition`), or the
+    // model became dual since: made here then.
     if let Some((_, factor)) = &m_impl_owned
         && model.is_dual()
     {
         project::project_implicit(data, factor);
+    } else if model.is_dual() && data.efc_AR.is_empty() {
+        mj_project_constraint(model, data);
     }
     match model.solver_type {
         SolverType::Newton | SolverType::CG => {

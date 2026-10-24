@@ -13,7 +13,7 @@
 //! `+ − × ÷` and `sqrt` only.
 
 use serde_json::Value;
-use sim_core::{ConstraintState, Data, Model, SolverStat};
+use sim_core::{ConstraintState, Data, MjStage, Model, SolverStat};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -339,4 +339,33 @@ fn noslip_matches_mujoco_3_5_0_bit_for_bit_given_its_inputs() {
         assert_solve(&mut off, name, &data, case);
     }
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
+/// A forward pass that skips the position stage after an inverse one, whose
+/// position stage makes no `efc_AR` (`mj_invPosition`), makes it before its
+/// dual solve: under PGS, and under Newton with noslip, a sphere resting on a
+/// plane gets the acceleration a full forward pass gets, bit for bit.
+#[test]
+fn a_forward_from_the_velocity_stage_after_an_inverse_makes_efc_ar() {
+    for option in [
+        r#"solver="PGS""#,
+        r#"solver="Newton" noslip_iterations="5""#,
+    ] {
+        let xml = format!(
+            r#"<mujoco><option timestep="0.002" {option}/><worldbody>
+  <geom type="plane" size="5 5 0.1"/>
+  <body pos="0 0 0.09"><freejoint/><geom type="sphere" size="0.1"/></body>
+</worldbody></mujoco>"#
+        );
+        let model = load_model(&xml).expect("load");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert!(data.ncon > 0, "{option}: in contact");
+        let full: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
+        data.inverse(&model).expect("inverse");
+        data.forward_skip(&model, MjStage::Pos, false)
+            .expect("forward from the velocity stage");
+        let skipped: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
+        assert_eq!(skipped, full, "{option}: qacc");
+    }
 }

@@ -177,3 +177,37 @@ pub(super) fn dual_finish(model: &Model, data: &mut Data, mass: &PrimalMass) {
     qacc += &data.qacc_smooth;
     data.qacc = qacc;
 }
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::cost_change;
+
+    /// A move that lowers the dual cost is kept and counts its change, the
+    /// block's cross terms included; one that raises it by more than 1e-10
+    /// is undone and counts as none (MuJoCo's `costChange`). Exact in binary.
+    #[test]
+    fn cost_change_keeps_a_fall_and_undoes_a_rise() {
+        let a = [2.0, 0.5, 0.5, 1.0];
+        let (old, res) = ([0.0, 0.0], [-1.0, 0.0]);
+        // δ = (0.5, −0.5): ½·δᵀAδ = ½·0.5, δ·res = −0.5 (the diagonal alone
+        // would give ½·0.75).
+        let mut force = [0.5, -0.5];
+        assert_eq!(cost_change(&a, &mut force, &old, &res), -0.25);
+        assert_eq!(force, [0.5, -0.5]);
+        // δ = (−0.5, 0): ½·0.5 + 0.5, a rise.
+        let mut force = [-0.5, 0.0];
+        assert_eq!(cost_change(&a, &mut force, &old, &res), 0.0);
+        assert_eq!(force, old);
+        // With no residual, δ = (d, 0) changes the cost by d²: a rise of 2⁻³⁴
+        // (under 1e-10) is kept and counted, one of 2⁻³² (over it) undone.
+        let still = [0.0, 0.0];
+        let small = 2f64.powi(-17);
+        let mut force = [small, 0.0];
+        assert_eq!(cost_change(&a, &mut force, &old, &still), 2f64.powi(-34));
+        assert_eq!(force, [small, 0.0]);
+        let mut force = [2.0 * small, 0.0];
+        assert_eq!(cost_change(&a, &mut force, &old, &still), 0.0);
+        assert_eq!(force, old);
+    }
+}

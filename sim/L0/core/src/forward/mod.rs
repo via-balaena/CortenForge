@@ -531,8 +531,10 @@ impl Data {
 
         // The rows' inverse inertia while a dual solver runs, as MuJoCo's
         // `mj_fwdPosition` (`engine_forward.c:213`); its inverse position
-        // pass makes none (`mj_invPosition`).
-        if pass == Pass::Forward {
+        // pass makes none (`mj_invPosition`), nor this one under the implicit
+        // spring-damper integrator, whose constraint stage makes it over
+        // `M_impl`.
+        if pass == Pass::Forward && model.integrator != Integrator::ImplicitSpringDamper {
             crate::constraint::mj_project_constraint(model, self);
         }
 

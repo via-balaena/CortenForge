@@ -456,7 +456,9 @@ pub struct Data {
     /// MuJoCo's `efc_AR` (`mj_projectConstraint`), empty when no dual solver
     /// runs. Dense, `nefc × nefc` row by row; at the sparse size
     /// ([`Model::is_sparse`]) each row's values at [`Self::efc_AR_rowadr`],
-    /// their columns in [`Self::efc_AR_colind`], ascending.
+    /// their columns in [`Self::efc_AR_colind`], ascending. Under the implicit
+    /// spring-damper integrator (this crate's) it is made over `M_impl`
+    /// instead, dense at either size, by the constraint stage.
     #[allow(non_snake_case)]
     pub efc_AR: Vec<f64>,
     /// `efc_AR`'s entries in each row at the sparse size; empty when it is dense.
@@ -498,15 +500,15 @@ pub struct Data {
     /// Per-row constraint force (length nefc).
     pub efc_force: DVector<f64>,
     /// Per-row `J·qacc − aref` (length nefc): the primal solver's at its last
-    /// iterate; after PGS, the warmstart's (0 with the warmstart disabled).
+    /// iterate; after PGS, 0.
     pub efc_jar: DVector<f64>,
     /// Total cost (Gauss + constraint terms): the primal solver's; after PGS,
-    /// the warmstart's (0 with the warmstart disabled).
+    /// 0.
     pub efc_cost: f64,
     /// Per-contact cone Hessian matrices (dim x dim). Indexed parallel to contacts.
     pub efc_cone_hessian: Vec<Option<DMatrix<f64>>>,
-    /// Number of contacts in the Cone state; after PGS, at its warmstart (0
-    /// with the warmstart disabled; `efc_state` is then `dualState`'s).
+    /// Number of contacts in the Cone state, the primal solver's; after PGS,
+    /// 0 (`efc_state` is then `dualState`'s).
     pub ncone: usize,
     /// Number of equality constraint rows (a flex equality's edge rows among
     /// them). These occupy `efc_*[0..ne)`.
