@@ -34,12 +34,14 @@ fn count(v: &Value) -> usize {
     usize::try_from(v.as_u64().expect("count")).expect("count fits")
 }
 
-/// `|ours - want| / max(1, |want|)`, the largest over the entries.
+/// `|ours - want| / max(1, |want|)`, the largest over the entries; a NaN
+/// difference counts as infinitely far, never within a bound.
 fn distance(ours: &[f64], want: &[f64]) -> f64 {
     assert_eq!(ours.len(), want.len(), "lengths");
     ours.iter()
         .zip(want)
         .map(|(x, y)| (x - y).abs() / y.abs().max(1.0))
+        .map(|d| if d.is_nan() { f64::INFINITY } else { d })
         .fold(0.0, f64::max)
 }
 

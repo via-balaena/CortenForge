@@ -83,7 +83,8 @@ fn compare_trajectory(
             }
 
             let diff = (expected - actual).abs();
-            if diff > tol_qpos {
+            // Past the bound or NaN: a NaN is never within it.
+            if diff.is_nan() || diff > tol_qpos {
                 divergences.push(TrajectoryDivergence {
                     step,
                     field: "qpos",
@@ -105,11 +106,14 @@ fn compare_trajectory(
                 ref_qpos[step * nq + 6],
             ];
             let cf_q = [data.qpos[3], data.qpos[4], data.qpos[5], data.qpos[6]];
+            // A NaN difference counts as infinitely far.
             let dist_pos = (0..4)
                 .map(|k| (cf_q[k] - ref_q[k]).abs())
+                .map(|d| if d.is_nan() { f64::INFINITY } else { d })
                 .fold(0.0f64, f64::max);
             let dist_neg = (0..4)
                 .map(|k| (cf_q[k] + ref_q[k]).abs())
+                .map(|d| if d.is_nan() { f64::INFINITY } else { d })
                 .fold(0.0f64, f64::max);
             let dist = dist_pos.min(dist_neg);
             if dist > tol_qpos {
@@ -130,7 +134,7 @@ fn compare_trajectory(
             let expected = ref_qvel[step * nv + d];
             let actual = data.qvel[d];
             let diff = (expected - actual).abs();
-            if diff > tol_qvel {
+            if diff.is_nan() || diff > tol_qvel {
                 divergences.push(TrajectoryDivergence {
                     step,
                     field: "qvel",
@@ -148,7 +152,7 @@ fn compare_trajectory(
             let expected = ref_qacc[step * nv + d];
             let actual = data.qacc[d];
             let diff = (expected - actual).abs();
-            if diff > tol_qacc {
+            if diff.is_nan() || diff > tol_qacc {
                 divergences.push(TrajectoryDivergence {
                     step,
                     field: "qacc",

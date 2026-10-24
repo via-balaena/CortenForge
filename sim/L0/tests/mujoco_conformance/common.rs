@@ -194,11 +194,14 @@ pub fn assert_quat_eq(
     tol: f64,
 ) {
     let cf = [q_cf.w, q_cf.i, q_cf.j, q_cf.k];
+    // A NaN difference counts as infinitely far.
     let dist_pos = (0..4)
         .map(|k| (cf[k] - q_ref[k]).abs())
+        .map(|d| if d.is_nan() { f64::INFINITY } else { d })
         .fold(0.0f64, f64::max);
     let dist_neg = (0..4)
         .map(|k| (cf[k] + q_ref[k]).abs())
+        .map(|d| if d.is_nan() { f64::INFINITY } else { d })
         .fold(0.0f64, f64::max);
     let dist = dist_pos.min(dist_neg);
     assert!(
