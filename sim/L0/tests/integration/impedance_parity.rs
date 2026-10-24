@@ -468,10 +468,13 @@ fn diag_approx_as_mujoco() {
 /// product apart (`engine_core_constraint.c:1276-1280`; the
 /// `pyramidal_friction_*` cases, whose mass makes `(1 + μ²)·tran` round
 /// otherwise, ledger L227), and a tendon equality's two tendons'
-/// `tendon_invweight0` added (`:1139-1150`; `tendon_pair`, ledger L230).
-/// `every_row_kind` is left to [`diag_approx_as_mujoco`]'s 1e-12: its weld's
-/// rotational rows take its box's rotational `body_invweight0`, which rounds
-/// 1 ulp off MuJoCo's (ledger L223).
+/// `tendon_invweight0` added (`:1139-1150`; `tendon_pair`, ledger L230); and
+/// the bodies' and dofs' `invweight0` where the case gives them, made from M
+/// at qpos0 (`engine_setconst.c:620-712`; `inertial_chain`, whose bodies'
+/// inertias are written out, ledger L223). `every_row_kind` is left to
+/// [`diag_approx_as_mujoco`]'s 1e-12: its weld's rotational rows take its
+/// box's rotational `body_invweight0`, from the box's inertia as sim-mjcf
+/// compiles it, an ulp off MuJoCo's in two axes (ledger L198).
 #[test]
 fn diag_approx_rounds_as_mujoco() {
     let g = golden();
@@ -492,6 +495,18 @@ fn diag_approx_rounds_as_mujoco() {
         if let Some(weights) = case.get("tendon_invweight0") {
             let what = format!("{name} tendon_invweight0");
             golden_bits(&mut off, &what, &model.tendon_invweight0, &floats(weights));
+        }
+        if let Some(weights) = case.get("body_invweight0") {
+            let ours: Vec<f64> = model.body_invweight0.iter().flatten().copied().collect();
+            golden_bits(
+                &mut off,
+                &format!("{name} body_invweight0"),
+                &ours,
+                &floats(weights),
+            );
+            let what = format!("{name} dof_invweight0");
+            let want = floats(&case["dof_invweight0"]);
+            golden_bits(&mut off, &what, &model.dof_invweight0, &want);
         }
         let want = floats(&case["efc_diagApprox"]);
         golden_bits(

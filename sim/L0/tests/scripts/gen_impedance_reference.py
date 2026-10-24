@@ -796,6 +796,47 @@ TENDON_PAIR = """<mujoco model="tendon_pair">
 </mujoco>"""
 TENDON_PAIR_QPOS = [0.02, -0.01]
 
+# gen_primal_solver_reference.py's chain (a free sphere, three links on four
+# hinges, a second free sphere) at condim 3 under a pyramidal cone, each body's
+# inertia written out (`<inertial>`), so the compiled masses, inertias and
+# inertial frames are MuJoCo's (sim-mjcf's own round otherwise: ledgers L195,
+# L198): its bodies' and dofs' invweight0, made from M at qpos0
+# (`engine_setconst.c:620-712`), and its contact rows.
+INERTIAL_CHAIN = """<mujoco model="inertial_chain">
+  <option timestep="0.002" cone="pyramidal" jacobian="sparse">
+    <flag island="disable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="root" pos="0 0 0.06">
+      <inertial pos="0 0 0" mass="2" diaginertia="0.004 0.005 0.006"/>
+      <freejoint/>
+      <geom type="sphere" size="0.07" mass="2"/>
+      <body name="l1" pos="0.07 0 0">
+        <inertial pos="0.1 0 -0.005" mass="0.7" diaginertia="0.0003 0.0025 0.0026"/>
+        <joint type="hinge" axis="0 1 0"/>
+        <joint type="hinge" axis="0 0 1"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 -0.01" size="0.03" mass="0.7"/>
+        <body name="l2" pos="0.2 0 -0.01">
+          <inertial pos="0.1 0.01 -0.0075" mass="0.5" diaginertia="0.0002 0.0018 0.0019"/>
+          <joint type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0.2 0.02 -0.015" size="0.03" mass="0.5"/>
+          <body name="l3" pos="0.2 0.02 -0.015">
+            <inertial pos="0 0 0" mass="0.3" diaginertia="0.0001 0.000125 0.00015"/>
+            <joint type="hinge" axis="1 0 0"/>
+            <geom type="sphere" size="0.035" mass="0.3"/>
+          </body>
+        </body>
+      </body>
+    </body>
+    <body name="ball2" pos="-0.4 0.1 0.049">
+      <inertial pos="0 0 0" mass="0.8" diaginertia="0.0008 0.0009 0.001"/>
+      <freejoint/>
+      <geom type="sphere" size="0.05" mass="0.8"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+
 
 def diag_approx():
     out = {}
@@ -858,6 +899,15 @@ def diag_approx():
                           "tendon_invweight0": floats(m.tendon_invweight0),
                           "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
                           "efc_R": floats(d.efc_R[:d.nefc])}
+    m = mujoco.MjModel.from_xml_string(INERTIAL_CHAIN)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    assert d.ncon > 0, "the chain rests on the plane"
+    out["inertial_chain"] = {"xml": INERTIAL_CHAIN, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
+                             "body_invweight0": floats(m.body_invweight0.flatten()),
+                             "dof_invweight0": floats(m.dof_invweight0),
+                             "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
+                             "efc_R": floats(d.efc_R[:d.nefc])}
     return out
 
 
