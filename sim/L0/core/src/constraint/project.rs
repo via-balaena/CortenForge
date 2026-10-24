@@ -20,6 +20,7 @@ const MAX_SUPER: usize = 8;
 /// columns in `efc_AR_colind`, ascending.
 pub fn mj_project_constraint(model: &Model, data: &mut Data) {
     data.efc_AR.clear();
+    data.efc_AR_implicit = false;
     data.efc_AR_rownnz.clear();
     data.efc_AR_rowadr.clear();
     data.efc_AR_colind.clear();
@@ -46,6 +47,7 @@ pub fn mj_project_constraint(model: &Model, data: &mut Data) {
 pub fn project_implicit(data: &mut Data, factor: &nalgebra::DMatrix<f64>) {
     let nefc = data.efc_type.len();
     let nv = data.efc_J.ncols();
+    data.efc_AR_implicit = true;
     data.efc_AR_rownnz.clear();
     data.efc_AR_rowadr.clear();
     data.efc_AR_colind.clear();

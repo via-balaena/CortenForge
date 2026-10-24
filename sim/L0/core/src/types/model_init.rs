@@ -927,6 +927,7 @@ impl Model {
             efc_AR_rownnz: Vec::new(),
             efc_AR_rowadr: Vec::new(),
             efc_AR_colind: Vec::new(),
+            efc_AR_implicit: false,
             efc_imp: Vec::new(),
             efc_aref: DVector::zeros(0),
             efc_floss: Vec::new(),

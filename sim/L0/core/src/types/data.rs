@@ -457,7 +457,8 @@ pub struct Data {
     /// ([`Model::is_sparse`]) each row's values at [`Self::efc_AR_rowadr`],
     /// their columns in [`Self::efc_AR_colind`], ascending. Under the implicit
     /// spring-damper integrator (this crate's) it is made over `M_impl`
-    /// instead, dense at either size, by the constraint stage.
+    /// instead, dense at either size, by the constraint stage; a dual solve
+    /// under another integrator then makes it over `M` again.
     #[allow(non_snake_case)]
     pub efc_AR: Vec<f64>,
     /// `efc_AR`'s entries in each row at the sparse size; empty when it is dense.
@@ -469,6 +470,10 @@ pub struct Data {
     /// Each sparse entry's column of `efc_AR`.
     #[allow(non_snake_case)]
     pub efc_AR_colind: Vec<usize>,
+    /// Whether `efc_AR` was made over the implicit spring-damper integrator's
+    /// `M_impl` (`project_implicit`), not over `M`.
+    #[allow(non_snake_case)]
+    pub(crate) efc_AR_implicit: bool,
     /// Per-row impedance value (from solimp sigmoid, in [dmin, dmax]).
     pub efc_imp: Vec<f64>,
     // Note: MuJoCo packs K, B, imp, and impP into a single `efc_KBIP[4*i+{0,1,2,3}]`
@@ -937,6 +942,7 @@ impl Clone for Data {
             efc_AR_rownnz: self.efc_AR_rownnz.clone(),
             efc_AR_rowadr: self.efc_AR_rowadr.clone(),
             efc_AR_colind: self.efc_AR_colind.clone(),
+            efc_AR_implicit: self.efc_AR_implicit,
             efc_imp: self.efc_imp.clone(),
             efc_aref: self.efc_aref.clone(),
             efc_floss: self.efc_floss.clone(),

@@ -368,12 +368,13 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     // solvers read the rows' inverse inertia over `M_impl`; otherwise the
     // position stage made it, unless this pass skipped that stage after an
     // inverse one, whose position stage makes none (`mj_invPosition`), or the
-    // model became dual since: made here then.
+    // model became dual since, or a pass under that integrator made it over
+    // `M_impl` (ledger L263): made here then.
     if let Some((_, factor)) = &m_impl_owned
         && model.is_dual()
     {
         project::project_implicit(data, factor);
-    } else if model.is_dual() && data.efc_AR.is_empty() {
+    } else if model.is_dual() && (data.efc_AR.is_empty() || data.efc_AR_implicit) {
         mj_project_constraint(model, data);
     }
     match model.solver_type {
