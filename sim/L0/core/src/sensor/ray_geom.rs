@@ -10,11 +10,11 @@ use nalgebra::{Matrix3, Point3, UnitVector3, Vector3};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::types::{Data, GeomType, Model};
 
-/// MuJoCo's `mj_ray` (`engine_ray.c:1308-1356`) as a site's rangefinder casts
+/// MuJoCo's `mj_ray` (`engine_ray.c:1308-1351`) as a site's rangefinder casts
 /// it (`engine_sensor.c:478-479`: no group filter, static geoms included):
 /// from `pnt` along `vec`, the distance in lengths of `vec` to the nearest
 /// geom that `bodyexclude` does not hold and whose alpha is not 0
-/// (`ray_eliminate`, `:68-98`; sim-mjcf keeps no materials, so a material's
+/// (`ray_eliminate`, `:68-99`; sim-mjcf keeps no materials, so a material's
 /// alpha is not read), or −1. A primitive's distance is [`ray_geom`]'s. A
 /// mesh's, a height field's and a signed distance field's are
 /// `raycast_geom`'s along the unit direction, divided by `|vec|`, not

@@ -19,6 +19,8 @@ axis over the geoms its body does not hold. The cases:
   body, at 240 states drawn from a seeded generator (hits and misses);
 - invisible: a box whose rgba alpha is 0 in front of a sphere, and a box on
   the sensor's own body in front of another sphere;
+- translucent: a box whose rgba alpha is 0.25 in front of a sphere (the ray
+  stops at the box);
 - cutoff: a hit at 2 under a cutoff of 0.5, a miss under a cutoff of 0.5,
   and a hit at 150 with no cutoff;
 - mesh: a convex mesh slab below a free body turned to 80 drawn states, one
@@ -49,7 +51,9 @@ def random_model():
     """Five primitives on one free body, unturned in it, and an unbounded plane;
     one rangefinder on an unturned site of a second free body. Every turn comes
     from the states' qpos, so none goes through the compiler's orientations
-    (ledger L264); the plane's size is 0 in x and y (ledger L267)."""
+    (its Euler angles and written quaternions; ledgers L255 and L264); the
+    plane's size is 0 in x and y, which MuJoCo reads unbounded, as sim-core
+    reads every plane until Rigid-loading's L14."""
     rng = np.random.default_rng(236)
     geoms = [
         f'<geom type="sphere" size="{num(rng, 0.1, 0.3)}" pos="{vec(rng, -1.5, 1.5)}"/>',
@@ -98,6 +102,14 @@ CUTOFF = """<mujoco><option gravity="0 0 0"/><worldbody>
   <rangefinder site="miss" cutoff="0.5"/>
   <rangefinder site="far"/>
 </sensor></mujoco>"""
+
+TRANSLUCENT = """<mujoco><option gravity="0 0 0"/><worldbody>
+  <geom type="box" size="0.1 0.1 0.1" pos="0 0 1" rgba="0 0 1 0.25"/>
+  <geom type="sphere" size="0.2" pos="0 0 2"/>
+  <body name="eye"><freejoint/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+    <site name="r"/>
+  </body>
+</worldbody><sensor><rangefinder site="r"/></sensor></mujoco>"""
 
 REST = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
 
@@ -152,7 +164,8 @@ def main():
     marker = oracle()
     xml, states = random_model()
     cases = [case('random', xml, states), case('invisible', INVISIBLE, [REST]),
-             case('cutoff', CUTOFF, [REST]), case('mesh', MESH, turning_states(80))]
+             case('cutoff', CUTOFF, [REST]), case('mesh', MESH, turning_states(80)),
+             case('translucent', TRANSLUCENT, [REST])]
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], 'rangefinder.json'), {'oracle': marker, 'cases': finite_or_string(cases)})
     print(f'{len(cases)} cases -> {sys.argv[1]}')

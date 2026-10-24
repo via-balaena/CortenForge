@@ -540,7 +540,7 @@ impl MjSensorType {
     #[must_use]
     pub const fn data_kind(self) -> MjSensorDataKind {
         match self {
-            // POSITIVE: non-negative sensors (preserve negative sentinels)
+            // POSITIVE: clipped above by the cutoff, not below
             Self::Touch => MjSensorDataKind::Positive,
 
             // QUATERNION: unit quaternions
