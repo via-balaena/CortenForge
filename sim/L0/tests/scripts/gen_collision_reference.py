@@ -1962,6 +1962,67 @@ def geom_distance_route_cases():
     return pairs
 
 
+# A cylinder on a plane, unturned and turned by PLANE_TURN, at seeded poses: its
+# cap nearly flat on the plane (three contacts), tilted (one), or lying on its
+# side (two):
+# each contact's geoms, distance, position and frame as `mjc_PlaneCylinder`
+# makes them (engine_collision_primitive.c), for a test bit for bit.
+PLANE_CYLINDER = ('<mujoco><option><flag gravity="disable"/></option><worldbody>'
+                  '<geom type="plane" size="1 1 0.1"{turn}/><body name="c"><freejoint/>'
+                  '<geom type="cylinder" size="0.08 0.12"/></body></worldbody></mujoco>')
+
+
+def plane_cylinder_cases():
+    rng = np.random.default_rng(20261025)
+    out = {}
+    radius, half = 0.08, 0.12
+    for label, quat in (("unturned", None), ("turned", PLANE_TURN)):
+        xml = PLANE_CYLINDER.format(turn=f' quat="{quat}"' if quat else "")
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        plane_q = np.array([float(x) for x in quat.split()]) if quat else np.array([1.0, 0, 0, 0])
+        plane_m = np.zeros(9)
+        mujoco.mju_quat2Mat(plane_m, plane_q)
+        plane_m = plane_m.reshape(3, 3)
+        want = {1: 4, 2: 4, 3: 4}
+        cases = []
+        for _ in range(20000):
+            kind = rng.uniform()
+            tilt = (rng.uniform(0.0, 0.02) if kind < 0.4 else rng.uniform(0.02, 1.4) if kind < 0.7
+                    else rng.uniform(np.pi / 2 - 0.02, np.pi / 2))
+            phi = rng.uniform(0, 2 * np.pi)
+            axis = np.array([np.sin(tilt) * np.cos(phi), np.sin(tilt) * np.sin(phi), np.cos(tilt)])
+            if rng.uniform() < 0.5:
+                axis = -axis
+            to_axis = np.zeros(4)
+            mujoco.mju_quatZ2Vec(to_axis, axis)
+            spin = np.array([np.cos(rng.uniform(0, np.pi)), 0.0, 0.0, 0.0])
+            spin[3] = np.sqrt(1 - spin[0] ** 2)
+            local = np.zeros(4)
+            mujoco.mju_mulQuat(local, to_axis, spin)
+            body_q = np.zeros(4)
+            mujoco.mju_mulQuat(body_q, plane_q, local)
+            reach = half * abs(np.cos(tilt)) + radius * np.sin(tilt)
+            centre = plane_m @ np.array([rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3),
+                                         reach - rng.uniform(0.0005, 0.01)])
+            mujoco.mj_resetData(m, d)
+            d.qpos[:] = list(centre) + list(body_q / np.linalg.norm(body_q))
+            mujoco.mj_forward(m, d)
+            n = int(d.ncon)
+            if want.get(n, 0) == 0:
+                continue
+            want[n] -= 1
+            cases.append({"qpos": floats(d.qpos), "contacts": [
+                {"geom": [int(c.geom[0]), int(c.geom[1])], "dist": float(c.dist), "pos": floats(c.pos),
+                 "frame": floats(c.frame)} for c in d.contact[:n]]})
+            if not any(want.values()):
+                break
+        else:
+            sys.exit(f"plane_cylinder {label}: {want} short")
+        out[label] = {"xml": xml, "cases": cases}
+    return out
+
+
 # Pairs near touching, B moved along a direction from A until MuJoCo's
 # distance of A against B crosses each gap (bisection, 60 halvings): the
 # poses on either side of the crossing, each once. Below the convex solver's
@@ -2672,6 +2733,7 @@ def main():
            "geom_distance_random": finite_or_string(geom_distance_random_cases()),
            "s3d_stale": finite_or_string(s3d_stale_cases()),
            "geom_distance_routes": finite_or_string(geom_distance_route_cases()),
+           "plane_cylinder": finite_or_string(plane_cylinder_cases()),
            "geom_distance_near": finite_or_string(geom_distance_near_cases()),
            "geom_distance_special": finite_or_string(geom_distance_special_cases()),
            "margin": finite_or_string(margin_case()),

@@ -1527,15 +1527,66 @@ fn explicit_convex_pairs_collide_lower_body_first_as_mujoco() {
     }
 }
 
+/// A cylinder against a plane, unturned and turned off the axes, as MuJoCo's
+/// `mjc_PlaneCylinder` makes its contacts: the cap nearly flat on the plane
+/// (three contacts), tilted (one) and lying on its side (two), at seeded
+/// poses. Each contact's distance, position and normal bit for bit on macOS
+/// arm64, where the golden was made; elsewhere within `1e-13 · max(1,
+/// |MuJoCo's|)`, a NaN failing.
+#[test]
+fn plane_cylinder_contacts_as_mujoco() {
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let same = |a: f64, b: f64| {
+        a.to_bits() == b.to_bits() || (!exact && (a - b).abs() <= 1e-13 * b.abs().max(1.0))
+    };
+    let golden = golden();
+    let mut off = Vec::new();
+    let mut compared = 0;
+    for (label, group) in golden["plane_cylinder"]
+        .as_object()
+        .expect("plane_cylinder")
+    {
+        let model: Model = load_model(group["xml"].as_str().expect("xml")).expect("load");
+        for (k, case) in group["cases"].as_array().expect("cases").iter().enumerate() {
+            let mut data = model.make_data();
+            data.qpos
+                .as_mut_slice()
+                .copy_from_slice(&floats(&case["qpos"]));
+            data.forward(&model).expect("forward");
+            let want = case["contacts"].as_array().expect("contacts");
+            assert_eq!(data.ncon, want.len(), "{label} {k}: contacts");
+            for (i, (c, w)) in data.contacts.iter().zip(want).enumerate() {
+                let frame = floats(&w["frame"]);
+                let ours = [
+                    -c.depth, c.pos.x, c.pos.y, c.pos.z, c.normal.x, c.normal.y, c.normal.z,
+                ];
+                let mj = [
+                    w["dist"].as_f64().expect("dist"),
+                    floats(&w["pos"])[0],
+                    floats(&w["pos"])[1],
+                    floats(&w["pos"])[2],
+                    frame[0],
+                    frame[1],
+                    frame[2],
+                ];
+                if !ours.iter().zip(&mj).all(|(a, b)| same(*a, *b)) {
+                    off.push(format!("{label} {k} contact {i}: {ours:?}, MuJoCo {mj:?}"));
+                }
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, 2 * 4 * (1 + 2 + 3), "every contact compared");
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
 /// Where ours may part from MuJoCo's sensors on a route pair: the distance,
 /// and the normal and fromto. A box's or mesh's pair with the mesh: where
 /// two hull vertices tie exactly along a support direction, sim-core's hill
 /// climb and MuJoCo's return different ones; their hull graphs differ, and
 /// with MuJoCo's `mesh_graph` given, measured, bit for bit (ledger L268).
-/// A plane–cylinder pair: its contact positions sum in another order.
 fn route_bounds(pair: &str) -> (f64, f64) {
     match pair {
-        "plane_cylinder" | "plane_turned_cylinder" => (1e-15, 1e-15),
         "box_mesh" | "mesh_mesh" => (1e-16, 1e-14),
         _ => (0.0, 0.0),
     }
