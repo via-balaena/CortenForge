@@ -47,12 +47,14 @@ solvers MuJoCo's inputs and compare every output bit for bit.
   and their sum), the box and the chain under Newton at the sparse size, and
   mixed_rows with a free body no row reaches beside it (Newton, sparse,
   pyramidal and elliptic, islands disabled and enabled).
-- forward: the whole forward pass under PGS, PGS then noslip, and Newton then
-  noslip, from MuJoCo's state after three steps (qpos, qvel, the warmstart),
-  over mixed_rows' scene at the five cones and condims above, dense and
-  sparse, sliding and rolling, and the box: `qacc`, `efc_force`,
-  `qfrc_constraint`, `solver_niter`. CG then noslip is left out: CG alone
-  differs from MuJoCo's at six of those states (ledger L261).
+- forward: the whole forward pass under PGS, PGS then noslip, Newton then
+  noslip, and CG then noslip, from MuJoCo's state after three steps (qpos,
+  qvel, the warmstart), over mixed_rows' scene at the five cones and condims
+  above, dense and sparse, sliding and rolling, and the box: `qacc`,
+  `efc_force`, `qfrc_constraint`, `solver_niter`. CG then noslip's scenes
+  have each body's inertial written out as MuJoCo compiles it: as written,
+  sim-mjcf compiles the arm capsule's inertial frame otherwise (ledgers L195,
+  L261), and at six of CG's states that moves the mass matrix by an ulp.
 """
 import json
 import os
@@ -65,6 +67,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gen_census_golden import finite_or_string, oracle  # noqa: E402
 from gen_primal_solver_reference import (  # noqa: E402
     CHAIN, MIXED_QVEL, MIXED_ROWS, NEWTON_BOX, ROLLING_QVEL, census_start, floats, stats, with_islands)
+from gen_trajectory_reference import inertia_written  # noqa: E402
 
 
 def mixed(solver, cone, condim, sparse=False, options=""):
@@ -296,15 +299,18 @@ def forward():
     """The forward pass from MuJoCo's state after three steps: its qacc,
     efc_force, qfrc_constraint and solver_niter."""
     out = {}
-    for solver, opt in (("PGS", ""), ("PGS", ' noslip_iterations="10"'), ("Newton", ' noslip_iterations="10"')):
+    noslip = ' noslip_iterations="10"'
+    for solver, opt in (("PGS", ""), ("PGS", noslip), ("Newton", noslip), ("CG", noslip)):
         name = solver + ("+noslip" if opt else "")
-        scenes = {"box": (box(solver, False, opt), None, census_start),
-                  "box_sparse": (box(solver, True, opt), None, census_start)}
+        # CG's scenes with the loader's inertials as MuJoCo's (see the module doc).
+        written = inertia_written if solver == "CG" else (lambda xml: xml)
+        scenes = {"box": (written(box(solver, False, opt)), None, census_start),
+                  "box_sparse": (written(box(solver, True, opt)), None, census_start)}
         for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 4), ("elliptic", 6), ("pyramidal", 6)):
             for sparse in (False, True):
                 for motion, qvel in (("slide", MIXED_QVEL), ("roll", ROLLING_QVEL)):
                     tag = f"mixed_{cone}_{condim}_{motion}" + ("_sparse" if sparse else "")
-                    scenes[tag] = (mixed(solver, cone, condim, sparse, opt), qvel, None)
+                    scenes[tag] = (written(mixed(solver, cone, condim, sparse, opt)), qvel, None)
         for tag, (xml, qvel, start) in scenes.items():
             m = mujoco.MjModel.from_xml_string(xml)
             d = mujoco.MjData(m)

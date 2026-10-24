@@ -453,16 +453,18 @@ fn a_forward_from_the_velocity_stage_after_the_implicit_spring_damper_remakes_ef
     }
 }
 
-/// The whole forward pass under PGS, PGS then noslip, and Newton then noslip,
-/// from MuJoCo's state after three steps (qpos, qvel, the warmstart): its
+/// The whole forward pass under PGS, PGS then noslip, Newton then noslip, and
+/// CG then noslip, from MuJoCo's state after three steps (qpos, qvel, the
+/// warmstart): its
 /// acceleration, forces and constraint force as MuJoCo's, bit for bit on
 /// macOS arm64, where the golden was made, elsewhere within
 /// `1e-13 · max(1, |MuJoCo's|)` (a NaN never), and its iteration count. On
 /// every platform the pass keeps the dual solve's own acceleration
 /// (`dualFinish`'s), bit for bit: the same rows solved again from the same
 /// warmstart give it, where one remade from the forces would round otherwise.
-/// CG then noslip is left out: CG alone differs from MuJoCo's at six of these
-/// states (ledger L261).
+/// CG's scenes carry each body's inertial as MuJoCo compiles it: as written,
+/// sim-mjcf compiles the arm capsule's inertial frame otherwise (ledgers L195,
+/// L261), which moves the mass matrix by an ulp at six of CG's states.
 #[test]
 fn a_forward_pass_with_a_dual_solver_matches_mujoco_3_5_0() {
     let g = golden();
