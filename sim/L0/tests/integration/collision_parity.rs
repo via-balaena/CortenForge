@@ -556,19 +556,23 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
 /// loads as MuJoCo compiles it (`bumpy`: 9 × 9, elevations multiples of 1/8
 /// from 0 to 1, rows symmetric; each body turned by its frame, so its
 /// inertial frame is the body's in both, ledger L195), at two spots each:
-/// the height after every 50th of 1000 steps against MuJoCo's, within 5e-12
-/// for a sphere, a capsule and an ellipsoid (a capsule rolls off the field's
-/// edge as MuJoCo's does), 5e-3 for a cylinder and 5e-2 for a box; where the
-/// cylinders and boxes part from MuJoCo's is not isolated (ledger L206). The
-/// bodies take sines and cosines, which a libm need not round correctly; the
-/// bounds are set above the largest gaps measured here and with such results
-/// moved by an ulp (chunk 3e's fourth review and its fix-diff pass):
+/// the height after every 50th of 1000 steps against MuJoCo's. A sphere's
+/// and a cylinder's bit for bit on macOS arm64, where the golden was made. A
+/// capsule's and an ellipsoid's within 5e-12 and a box's within 5e-2:
+/// sim-mjcf compiles their masses and inertias otherwise (ledger L198), and
+/// with MuJoCo's written in, `trajectory_parity` runs them bit for bit (a
+/// capsule rolls off the field's edge as MuJoCo's does). Elsewhere a sphere
+/// within 5e-12 and a cylinder within 5e-3: the bodies take sines and
+/// cosines, which a libm need not round correctly, and those bounds are set
+/// above the largest gaps measured with such results moved by an ulp (chunk
+/// 3e's fourth review and its fix-diff pass):
 ///
-/// | bodies | measured | an ulp moved |
+/// | bodies | measured on macOS arm64 | an ulp moved |
 /// |---|---|---|
-/// | sphere, capsule, ellipsoid | 5.5e-13 | 1.45e-12 |
-/// | cylinder | 8.5e-5 | 2.0e-3 |
-/// | box | 4.8e-3 | 2.2e-2 |
+/// | sphere | 0 | at most 1.45e-12 |
+/// | capsule, ellipsoid | 5.6e-13 | at most 1.45e-12 |
+/// | cylinder | 0 | 2.0e-3 |
+/// | box | 8.4e-3 | 2.2e-2 |
 #[test]
 fn bodies_on_a_bumpy_height_field_as_mujoco() {
     let golden = golden();
@@ -576,8 +580,13 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
         let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();
         let want = floats(&case["z"]);
+        let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
         let bound = if name.starts_with("box") {
             5e-2
+        } else if name.starts_with("capsule") || name.starts_with("ellipsoid") {
+            5e-12
+        } else if exact {
+            0.0
         } else if name.starts_with("cylinder") {
             5e-3
         } else {

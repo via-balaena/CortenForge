@@ -5,10 +5,9 @@
 //! past its limit, a box resting on a plane, a cylinder dropped onto a box
 //! slab and onto a convex mesh slab, and five bodies dropped at two spots of
 //! a bumpy height field. Each body's inertial is written out as MuJoCo
-//! compiles it and the mesh in the frame MuJoCo moves it to, so a difference
-//! here is the forward pass's or the step's, not the loader's (ledger L198
-//! and Rigid-loading's L35 hold where the loader's differs). These runs
-//! close the forward side of ledgers L154, L206 and L214.
+//! compiles it and the mesh in the frame MuJoCo moves it to (ledger L198 and
+//! Rigid-loading's L35 hold where the loader's differs). These runs close
+//! the forward side of ledgers L154, L206 and L214.
 
 use serde_json::Value;
 
@@ -29,7 +28,10 @@ fn floats(v: &Value) -> Vec<f64> {
 /// golden was made. A run turns through `sin` and `cos`, which another
 /// platform's libm may round otherwise by an ulp, and a contact can make an
 /// ulp large (ledger L231); there the first checkpoint is compared, within
-/// `1e-12 · max(1, |MuJoCo's|)`, a NaN failing, and every one is finite.
+/// `1e-12 · max(1, |MuJoCo's|)`, a NaN failing, and every one is finite. On
+/// every platform no step may find a bad position, velocity or acceleration
+/// (`Data::divergence_detected`): sim-core resets such a state, which would
+/// leave the next checkpoint finite.
 #[test]
 fn runs_as_mujoco_with_the_loaders_inputs_as_mujocos() {
     let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
@@ -57,6 +59,9 @@ fn runs_as_mujoco_with_the_loaders_inputs_as_mujocos() {
             while steps < at {
                 data.step(&model).expect("step");
                 steps += 1;
+                if data.divergence_detected() {
+                    failures.push(format!("{name} step {steps}: diverged"));
+                }
             }
             assert_eq!(at, every * (k as u64 + 1), "{name}: checkpoint {k}");
             for (what, ours, mj) in [

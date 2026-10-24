@@ -9,8 +9,9 @@
 //! on both tendons, so each of the chain's entries of `qDeriv` sums an
 //! actuator's term and more than one passive term; 8 drawn states under
 //! implicit and under implicitfast, one step each; and an undamped slide whose
-//! actuator's kv is 1e-31, whose term MuJoCo adds however small. `qDeriv` is compared on D's
-//! pattern, bit for bit on the golden's platform (see `matches_golden`).
+//! actuator's kv is 1e-31, whose term MuJoCo adds however small. `qDeriv` is
+//! compared on D's pattern, and the step's qpos and qvel, bit for bit on the
+//! golden's platform (see `matches_golden`).
 
 use serde_json::Value;
 
@@ -89,6 +90,16 @@ fn velocity_derivative_sums_as_mujoco() {
                 failures.push(format!(
                     "{integrator} state {k}: qDeriv {ours:?}, MuJoCo {mj:?}"
                 ));
+            }
+            for (what, ours, mj) in [
+                ("qpos", data.qpos.as_slice(), floats(&state["qpos_after"])),
+                ("qvel", data.qvel.as_slice(), floats(&state["qvel_after"])),
+            ] {
+                if !matches_golden(ours, &mj) {
+                    failures.push(format!(
+                        "{integrator} state {k}: {what} after the step {ours:?}, MuJoCo {mj:?}"
+                    ));
+                }
             }
             compared += 1;
         }

@@ -474,7 +474,9 @@ fn a_forward_pass_with_a_dual_solver_matches_mujoco_3_5_0() {
     let g = golden();
     let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     let mut off = Vec::new();
-    for (name, case) in g["cases"]["forward"].as_object().expect("cases") {
+    let forward = g["cases"]["forward"].as_object().expect("cases");
+    assert_eq!(forward.len(), 66 + 22, "the forward cases");
+    for (name, case) in forward {
         let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();
         data.qpos.copy_from_slice(&floats(&case["qpos"]));
