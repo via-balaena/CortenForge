@@ -1491,3 +1491,85 @@ pub fn mj_sol_primal(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::types::JacobianType;
+
+    /// A four-link hinge chain each of whose joints is past its lower limit,
+    /// at the given Jacobian size, after a forward pass: one limit row per
+    /// joint.
+    fn limited_chain(jacobian: JacobianType) -> (Model, Data) {
+        let mut model = crate::test_fixtures::hinge_chain(4);
+        model.jacobian = jacobian;
+        for j in 0..model.njnt {
+            model.jnt_limited[j] = true;
+            model.jnt_range[j] = (0.1, 0.5);
+        }
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_eq!(data.efc_type.len(), model.njnt, "a limit row per joint");
+        (model, data)
+    }
+
+    /// The factor solved against a vector of ones: dense through
+    /// [`mju_chol_solve`], sparse through [`SparseHessian::solve`].
+    fn factor_solve(ctx: &Primal) -> Vec<f64> {
+        let mut x = vec![1.0; ctx.nv];
+        match &ctx.sparse {
+            Some(h) => h.solve(false, &mut x),
+            None => mju_chol_solve(&ctx.l, &mut x, ctx.nv),
+        }
+        x
+    }
+
+    /// An update that loses rank makes the factor anew, as MuJoCo's
+    /// `HessianIncremental` calls `FactorizeHessian` with `flg_recompute`
+    /// (`engine_solver.c:1790-1796`), dense and at the sparse size; no MuJoCo
+    /// fixture was found that reaches it (ledger L224). Every limit row
+    /// quadratic, the factor made; then row 0 leaves the quadratic set with
+    /// its D raised 1e20-fold, so its downdate takes out far more than the
+    /// factor holds and loses rank. The factor after the update solves as
+    /// one made directly with row 0 out, bit for bit.
+    #[test]
+    fn an_update_that_loses_rank_makes_the_factor_anew() {
+        for jacobian in [JacobianType::Dense, JacobianType::Sparse] {
+            let (model, data) = limited_chain(jacobian);
+            let make = || {
+                let sub = Subproblem::whole(&model, &data);
+                let mass = Mass::Tree(TreeMass::new(&model, &data, &sub));
+                Primal::new(&model, &data, sub, mass, data.qfrc_smooth.as_slice(), true)
+            };
+            let all = vec![ConstraintState::Quadratic; data.efc_type.len()];
+
+            let mut ctx = make();
+            ctx.state.clone_from(&all);
+            ctx.factorize_hessian().expect("factor");
+            ctx.rows.d[0] *= 1e20;
+            ctx.state[0] = ConstraintState::Satisfied;
+            ctx.hessian_incremental(&all).expect("update");
+            // A factor made anew counts every row as an update
+            // (`engine_solver.c:1669`); the one row's update alone counts 1.
+            assert_eq!(
+                ctx.nupdate,
+                data.efc_type.len(),
+                "{jacobian:?}: the update lost rank and the factor was made anew"
+            );
+
+            let mut fresh = make();
+            fresh.state.clone_from(&all);
+            fresh.state[0] = ConstraintState::Satisfied;
+            fresh.factorize_hessian().expect("factor");
+
+            let (got, want) = (factor_solve(&ctx), factor_solve(&fresh));
+            assert!(
+                got.iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{jacobian:?}: {got:?}, made anew {want:?}"
+            );
+        }
+    }
+}
