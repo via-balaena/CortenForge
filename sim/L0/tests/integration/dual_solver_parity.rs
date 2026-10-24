@@ -13,7 +13,7 @@
 //! `+ − × ÷` and `sqrt` only.
 
 use serde_json::Value;
-use sim_core::{ConstraintState, Data, MjStage, Model, SolverStat};
+use sim_core::{ConstraintState, ConstraintType, Data, MjStage, Model, SolverStat};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -60,10 +60,23 @@ fn bits(off: &mut Vec<String>, what: &str, got: &[f64], want: &[f64]) {
     }
 }
 
+/// MuJoCo's `mjtConstraint` codes, in order, as this crate's row kinds.
+const MJ_ROW_KINDS: [ConstraintType; 8] = [
+    ConstraintType::Equality,
+    ConstraintType::FrictionDof,
+    ConstraintType::FrictionTendon,
+    ConstraintType::LimitJoint,
+    ConstraintType::LimitTendon,
+    ConstraintType::ContactFrictionless,
+    ConstraintType::ContactPyramidal,
+    ConstraintType::ContactElliptic,
+];
+
 /// The case's model and data after a forward pass from its state, with
-/// MuJoCo's inputs to the constraint solve put in its place.
+/// MuJoCo's inputs to the constraint solve put in its place: every one the
+/// dual solvers read, the rows' kinds and ids checked to be MuJoCo's.
 fn given_mujocos_inputs(name: &str, case: &Value) -> (Model, Data) {
-    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let mut data = model.make_data();
     data.qpos.copy_from_slice(&floats(&case["qpos"]));
     data.qvel.copy_from_slice(&floats(&case["qvel"]));
@@ -138,6 +151,33 @@ fn given_mujocos_inputs(name: &str, case: &Value) -> (Model, Data) {
     for (c, &m) in data.contacts.iter_mut().zip(&mu) {
         c.regularized_mu = m;
     }
+    let kinds: Vec<ConstraintType> = usizes(&case["efc_type"])
+        .into_iter()
+        .map(|t| MJ_ROW_KINDS[t])
+        .collect();
+    assert_eq!(data.efc_type, kinds, "{name}: the rows' kinds");
+    assert_eq!(
+        data.efc_id,
+        usizes(&case["efc_id"]),
+        "{name}: the rows' ids"
+    );
+    data.efc_floss
+        .copy_from_slice(&floats(&case["efc_frictionloss"]));
+    let friction = case["contact_friction"].as_array().expect("contacts");
+    for (c, &dim) in data.contacts.iter_mut().zip(&usizes(&case["contact_dim"])) {
+        c.dim = dim;
+    }
+    for i in 0..nefc {
+        if matches!(
+            data.efc_type[i],
+            ConstraintType::ContactFrictionless
+                | ConstraintType::ContactPyramidal
+                | ConstraintType::ContactElliptic
+        ) {
+            data.efc_mu[i].copy_from_slice(&floats(&friction[data.efc_id[i]]));
+        }
+    }
+    model.stat_meaninertia = case["stat_meaninertia"].as_f64().expect("meaninertia");
     (model, data)
 }
 
@@ -368,4 +408,66 @@ fn a_forward_from_the_velocity_stage_after_an_inverse_makes_efc_ar() {
         let skipped: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
         assert_eq!(skipped, full, "{option}: qacc");
     }
+}
+
+/// The whole forward pass under PGS, PGS then noslip, and Newton then noslip,
+/// from MuJoCo's state after three steps (qpos, qvel, the warmstart): its
+/// acceleration, forces and constraint force as MuJoCo's, bit for bit on
+/// macOS arm64, where the golden was made, elsewhere within
+/// `1e-13 · max(1, |MuJoCo's|)` (a NaN never), and its iteration count. On
+/// every platform the pass keeps the dual solve's own acceleration
+/// (`dualFinish`'s), bit for bit: the same rows solved again from the same
+/// warmstart give it, where one remade from the forces would round otherwise.
+/// CG then noslip is left out: CG alone differs from MuJoCo's at six of these
+/// states (ledger L261).
+#[test]
+fn a_forward_pass_with_a_dual_solver_matches_mujoco_3_5_0() {
+    let g = golden();
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["forward"].as_object().expect("cases") {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        data.qpos.copy_from_slice(&floats(&case["qpos"]));
+        data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        data.qacc_warmstart
+            .copy_from_slice(&floats(&case["qacc_warmstart"]));
+        data.forward(&model).expect("forward");
+        assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{name}: nefc");
+        if data.solver_niter != count(&case["solver_niter"]) {
+            off.push(format!(
+                "{name}: solver_niter {}, MuJoCo {}",
+                data.solver_niter,
+                count(&case["solver_niter"])
+            ));
+        }
+        for (field, ours) in [
+            ("qacc", data.qacc.as_slice()),
+            ("efc_force", data.efc_force.as_slice()),
+            ("qfrc_constraint", data.qfrc_constraint.as_slice()),
+        ] {
+            let want = floats(&case[field]);
+            let what = format!("{name} {field}");
+            if exact {
+                bits(&mut off, &what, ours, &want);
+            } else if ours.len() != want.len()
+                || ours.iter().zip(&want).any(|(a, b)| {
+                    // Past the bound or NaN: a NaN is never within it.
+                    let d = (a - b).abs();
+                    d.is_nan() || d > 1e-13 * b.abs().max(1.0)
+                })
+            {
+                off.push(format!("{what}: past 1e-13 of MuJoCo's"));
+            }
+        }
+        let mut again = data.clone();
+        if model.noslip_iterations > 0 {
+            sim_core::constraint::mj_sol_noslip_rows(&model, &mut again).expect("solve");
+        } else {
+            sim_core::constraint::mj_sol_pgs_rows(&model, &mut again);
+        }
+        let what = format!("{name} qacc against the solve's own");
+        bits(&mut off, &what, data.qacc.as_slice(), again.qacc.as_slice());
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }

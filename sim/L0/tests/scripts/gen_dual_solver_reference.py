@@ -24,7 +24,9 @@ row) or the chain (a free sphere, three links on four hinges, a second free sphe
 dense and at jacobian="sparse". Each records, after the case's forward, the
 inputs the constraint stage hands its solvers (`M` on its pattern, `qLD`,
 `qLDiagInv`, `qacc_smooth`, `qfrc_smooth`, the rows' `efc_J`, `efc_aref`,
-`efc_b`, `efc_R`, `efc_D`, `qacc_warmstart`), MuJoCo's `efc_AR` (at the sparse
+`efc_b`, `efc_R`, `efc_D`, `efc_frictionloss`, kinds and ids, each contact's
+friction, dimension and regularized mu, `stat_meaninertia`, `qacc_warmstart`),
+MuJoCo's `efc_AR` (at the sparse
 size its rows' `efc_AR_rownnz`, `efc_AR_rowadr`, `efc_AR_colind`), and the
 solve's outputs (`efc_force`, `efc_state`, `qacc`, `qfrc_constraint`, each
 iteration's statistics, `solver_niter`, `solver_nnz`), so a test can hand the
@@ -36,12 +38,21 @@ solvers MuJoCo's inputs and compare every output bit for bit.
   warmstart's dual cost is positive and PGS starts from zero forces (the
   generator refuses the case otherwise); `nowarm`: the warmstart disabled.
 - noslip: noslip_iterations 10 after PGS, Newton and CG, over mixed_rows'
-  pyramidal and elliptic scenes and the box, warm; and after PGS the chain
-  (pyramidal and elliptic, sparse) and the box at a pyramidal cone.
+  scene at condim 3 (pyramidal and elliptic), 4 and 6 (elliptic) and 6
+  (pyramidal), dense and sparse, and the box, warm; and after PGS the chain
+  (pyramidal and elliptic, sparse) and the box at an elliptic cone.
 - nnz: the primal solver's `solver_nnz` after a forward (`engine_solver.c:1953-1964`),
   Newton and CG over mixed_rows at condim 3 and 6, pyramidal and elliptic,
   dense and sparse, islands disabled and enabled (MuJoCo's count per island
-  and their sum), the box and the chain under Newton at the sparse size.
+  and their sum), the box and the chain under Newton at the sparse size, and
+  mixed_rows with a free body no row reaches beside it (Newton, sparse,
+  pyramidal and elliptic, islands disabled and enabled).
+- forward: the whole forward pass under PGS, PGS then noslip, and Newton then
+  noslip, from MuJoCo's state after three steps (qpos, qvel, the warmstart),
+  over mixed_rows' scene at the five cones and condims above, dense and
+  sparse, sliding and rolling, and the box: `qacc`, `efc_force`,
+  `qfrc_constraint`, `solver_niter`. CG then noslip is left out: CG alone
+  differs from MuJoCo's at six of those states (ledger L261).
 """
 import json
 import os
@@ -86,7 +97,6 @@ def ar_of(m, d):
             vals += floats(d.efc_AR[rowadr[r]:rowadr[r] + rownnz[r]])
         return {"efc_AR_rownnz": rownnz, "efc_AR_rowadr": rowadr,
                 "efc_AR_colind": cols, "efc_AR": vals, "nA": int(d.nA)}
-    assert d.nA == n * n, (d.nA, n)
     return {"efc_AR": floats(d.efc_AR[:n * n]), "nA": int(d.nA)}
 
 
@@ -100,9 +110,12 @@ def inputs_of(m, d):
            "efc_aref": floats(d.efc_aref[:n]), "efc_b": floats(d.efc_b[:n]),
            "efc_D": floats(d.efc_D[:n]), "efc_R": floats(d.efc_R[:n]),
            "efc_type": [int(x) for x in d.efc_type[:n]], "efc_id": [int(x) for x in d.efc_id[:n]],
-           "ne": int(d.ne), "nf": int(d.nf),
+           "efc_frictionloss": floats(d.efc_frictionloss[:n]),
+           "ne": int(d.ne), "nf": int(d.nf), "stat_meaninertia": float(m.stat.meaninertia),
            # Each contact's regularized cone mu, which MuJoCo makes from its own R.
-           "contact_mu": [float(d.contact[k].mu) for k in range(d.ncon)]}
+           "contact_mu": [float(d.contact[k].mu) for k in range(d.ncon)],
+           "contact_friction": [floats(d.contact[k].friction) for k in range(d.ncon)],
+           "contact_dim": [int(d.contact[k].dim) for k in range(d.ncon)]}
     if mujoco.mj_isSparse(m):
         nnz = int(sum(d.efc_J_rownnz[:n]))
         out.update({"efc_J_rownnz": [int(x) for x in d.efc_J_rownnz[:n]],
@@ -206,14 +219,20 @@ def noslip():
             for sparse in (False, True):
                 tag = f"{solver}_mixed_{cone}" + ("_sparse" if sparse else "")
                 out[tag] = solve(mixed(solver, cone, 3, sparse, opt), MIXED_QVEL, warm_steps=3)[2]
+        # Elliptic blocks of three and five friction rows (QCQP3, QCQP), and
+        # pyramidal condim 6.
+        for cone, condim in (("elliptic", 4), ("elliptic", 6), ("pyramidal", 6)):
+            for sparse in (False, True):
+                tag = f"{solver}_mixed_{cone}_{condim}" + ("_sparse" if sparse else "")
+                out[tag] = solve(mixed(solver, cone, condim, sparse, opt), MIXED_QVEL, warm_steps=3)[2]
         out[f"{solver}_box"] = solve(box(solver, False, opt), None, census_start, warm_steps=3)[2]
-    # The chain (four contacts, sparse) and the box under PGS at a pyramidal cone.
+    # The chain at the sparse size and the box at an elliptic cone, after PGS.
     for cone in ("pyramidal", "elliptic"):
         xml = chain("PGS", cone, 3).replace('jacobian="sparse"', 'jacobian="sparse" noslip_iterations="10"')
         nv = mujoco.MjModel.from_xml_string(xml).nv
         out[f"PGS_chain_{cone}"] = solve(xml, list(np.random.default_rng(11).normal(0, 0.8, nv)), warm_steps=3)[2]
-    out["PGS_box_pyramidal"] = solve(box("PGS", False, ' cone="pyramidal" noslip_iterations="10"'), None,
-                                     census_start, warm_steps=3)[2]
+    out["PGS_box_elliptic"] = solve(box("PGS", False, ' cone="elliptic" noslip_iterations="10"'), None,
+                                    census_start, warm_steps=3)[2]
     return out
 
 
@@ -250,7 +269,58 @@ def nnz():
         per = [int(d.solver_nnz[0])]
         out[tag] = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel), "nisland": int(d.nisland),
                     "solver_nnz_per_island": per, "solver_nnz": sum(per)}
+    # A free body far from everything beside mixed_rows' scene: its dofs make
+    # no row, so Newton's factor counts them (`mju_sqrMatTDSparseCount`) but
+    # its rows' product does not.
+    loose = ('    <body name="loose" pos="3 3 3">\n      <freejoint/>\n'
+             '      <geom type="box" size="0.1 0.2 0.3" mass="2" contype="0" conaffinity="0"/>\n'
+             '    </body>\n  </worldbody>')
+    for cone in ("pyramidal", "elliptic"):
+        for islands in (False, True):
+            xml = mixed("Newton", cone, 3, True).replace("  </worldbody>", loose, 1)
+            xml = with_islands(xml) if islands else xml
+            m = mujoco.MjModel.from_xml_string(xml)
+            d = mujoco.MjData(m)
+            d.qvel[:len(MIXED_QVEL)] = MIXED_QVEL
+            mujoco.mj_forward(m, d)
+            n = max(1, min(int(d.nisland), 20))
+            per = [int(x) for x in d.solver_nnz[:n]]
+            tag = f"Newton_{cone}_sparse_loose" + ("_islands" if islands else "")
+            out[tag] = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel), "nisland": int(d.nisland),
+                        "solver_nnz_per_island": per, "solver_nnz": sum(per)}
     assert any(c["nisland"] > 1 for c in out.values()), "a case with islands"
+    return out
+
+
+def forward():
+    """The forward pass from MuJoCo's state after three steps: its qacc,
+    efc_force, qfrc_constraint and solver_niter."""
+    out = {}
+    for solver, opt in (("PGS", ""), ("PGS", ' noslip_iterations="10"'), ("Newton", ' noslip_iterations="10"')):
+        name = solver + ("+noslip" if opt else "")
+        scenes = {"box": (box(solver, False, opt), None, census_start),
+                  "box_sparse": (box(solver, True, opt), None, census_start)}
+        for cone, condim in (("pyramidal", 3), ("elliptic", 3), ("elliptic", 4), ("elliptic", 6), ("pyramidal", 6)):
+            for sparse in (False, True):
+                for motion, qvel in (("slide", MIXED_QVEL), ("roll", ROLLING_QVEL)):
+                    tag = f"mixed_{cone}_{condim}_{motion}" + ("_sparse" if sparse else "")
+                    scenes[tag] = (mixed(solver, cone, condim, sparse, opt), qvel, None)
+        for tag, (xml, qvel, start) in scenes.items():
+            m = mujoco.MjModel.from_xml_string(xml)
+            d = mujoco.MjData(m)
+            if start is not None:
+                start(m, d)
+            else:
+                d.qvel[:] = qvel
+            for _ in range(3):
+                mujoco.mj_step(m, d)
+            case = {"xml": xml, "qpos": floats(d.qpos), "qvel": floats(d.qvel),
+                    "qacc_warmstart": floats(d.qacc_warmstart)}
+            mujoco.mj_forward(m, d)
+            assert d.nefc > 0 and mujoco.mj_isDual(m), tag
+            case.update({"nefc": int(d.nefc), "solver_niter": int(d.solver_niter[0]), "qacc": floats(d.qacc),
+                         "efc_force": floats(d.efc_force[:d.nefc]), "qfrc_constraint": floats(d.qfrc_constraint)})
+            out[f"{name}_{tag}"] = case
     return out
 
 
@@ -258,7 +328,7 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
-    cases = {"pgs": pgs(), "noslip": noslip(), "nnz": nnz()}
+    cases = {"pgs": pgs(), "noslip": noslip(), "nnz": nnz(), "forward": forward()}
     doc = {"oracle": marker, "cases": finite_or_string(cases)}
     os.makedirs(sys.argv[1], exist_ok=True)
     with open(os.path.join(sys.argv[1], "dual_solver.json"), "w", encoding="utf-8") as f:
