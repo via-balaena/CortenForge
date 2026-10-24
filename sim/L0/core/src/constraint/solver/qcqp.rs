@@ -6,10 +6,10 @@
 //! All functions solve: min 0.5*x'*A*x + b'*x  s.t.  Σ(x_i/d_i)² ≤ r²
 //! Returns (result, active) where active = constraint was projected to boundary.
 
-/// Convergence tolerance for QCQP Newton iteration.
-/// Matches MuJoCo's hardcoded `1e-10` threshold.
 use crate::linalg::{mju_chol_factor, mju_chol_solve, mju_dot};
 
+/// Convergence tolerance for QCQP Newton iteration.
+/// Matches MuJoCo's hardcoded `1e-10` threshold.
 const QCQP_TOL: f64 = 1e-10;
 
 /// Maximum Newton iterations. Matches MuJoCo.
