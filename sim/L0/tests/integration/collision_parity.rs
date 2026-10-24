@@ -1527,10 +1527,11 @@ fn explicit_convex_pairs_collide_lower_body_first_as_mujoco() {
     }
 }
 
-/// A cylinder against a plane, unturned and turned off the axes, as MuJoCo's
-/// `mjc_PlaneCylinder` makes its contacts: the cap nearly flat on the plane
-/// (three contacts), tilted (one) and lying on its side (two), at seeded
-/// poses. Each contact's distance, position and normal bit for bit on macOS
+/// A cylinder against a plane, unturned, turned off the axes, and turned and
+/// off the origin, and a tiny cylinder (radius 1e-6, half-length 1.5e-6), as
+/// MuJoCo's `mjc_PlaneCylinder` makes its contacts: the cap nearly flat on
+/// the plane (three contacts), tilted (one) and lying on its side (two), at
+/// seeded poses. Each contact's distance, position and normal bit for bit on macOS
 /// arm64, where the golden was made; elsewhere within `1e-13 · max(1,
 /// |MuJoCo's|)`, a NaN failing.
 #[test]
@@ -1576,7 +1577,7 @@ fn plane_cylinder_contacts_as_mujoco() {
             }
         }
     }
-    assert_eq!(compared, 2 * 4 * (1 + 2 + 3), "every contact compared");
+    assert_eq!(compared, 4 * 4 * (1 + 2 + 3), "every contact compared");
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }
 
@@ -1601,8 +1602,8 @@ fn route_bounds(pair: &str) -> (f64, f64) {
 /// second at MuJoCo's default cutoff of 0. A pair `mjc_Convex` or
 /// `mjc_BoxBox` collides through `mjc_ccd`, and every other through its
 /// collision function at the cutoff as its margin; a plane's pairs also
-/// under a plane turned off the axes. MuJoCo's bit for bit but as
-/// `route_bounds` says.
+/// under a plane turned off the axes, and under it off the origin. MuJoCo's
+/// bit for bit but as `route_bounds` says.
 #[test]
 fn geom_distance_sensors_route_as_mujoco() {
     let golden = golden();
@@ -1630,8 +1631,7 @@ fn geom_distance_sensors_route_as_mujoco() {
 
 /// The geom-distance sensors of pairs near touching, each moved until
 /// MuJoCo's distance crosses 1e-5, 1e-7 and 1e-9, on either side of the
-/// crossing: MuJoCo's bit for bit (a plane's pair within 1e-15, as
-/// `route_bounds`), the convex solver's included, which below its tolerance
+/// crossing: MuJoCo's bit for bit, the convex solver's included, which below its tolerance
 /// (1e-6) reads a negative EPA depth as MuJoCo's does (down to −0.028 at a
 /// gap under 1e-6; ledger L192). Two boxes whose distance MuJoCo's reads 0
 /// (registry `D-GJK-S3D`) read their exact distance within 1e-12.
@@ -1651,12 +1651,7 @@ fn geom_distance_sensors_near_touching_as_mujoco() {
             );
             continue;
         }
-        let bound = if name.starts_with("plane_") {
-            1e-15
-        } else {
-            0.0
-        };
-        sensors_as_mujoco(name, &ours, &want, bound, bound);
+        sensors_as_mujoco(name, &ours, &want, 0.0, 0.0);
     }
 }
 

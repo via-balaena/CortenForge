@@ -1897,40 +1897,47 @@ def sensor_trios():
 # 6)/9: MuJoCo keeps a written quaternion within 1e-14 of unit norm, sim-mjcf
 # normalises every one (ledger L264), and this one both hold alike.
 PLANE_TURN = "0.2222222222222222 0.4444444444444444 0.5555555555555556 0.6666666666666666"
+# A plane's position off the origin: a pair whose distance MuJoCo takes from
+# the centres' difference (`pos2 - pos1`) and ours from each centre alone
+# parts only here, and only under a turned plane.
+PLANE_POS = "0.37 -0.21 0.13"
 
 
-def route_xml(kind_a, kind_b, plane_quat=None):
+def route_xml(kind_a, kind_b, plane_quat=None, plane_pos=None):
     def named(name, kind):
         return CONVEX_GEOMS[kind].replace("<geom", f'<geom name="{name}"')
-    turn = f' quat="{plane_quat}"' if plane_quat else ""
+    turn = (f' pos="{plane_pos}"' if plane_pos else "") + (f' quat="{plane_quat}"' if plane_quat else "")
     a = (f'<geom name="A" type="plane" size="1 1 0.1"{turn}/>' if kind_a == "plane"
          else f'<body name="a"><freejoint/>{named("A", kind_a)}</body>')
     return (f'<mujoco>{CHAMFER_ASSET}<option><flag gravity="disable"/></option><worldbody>{a}'
             f'<body name="b"><freejoint/>{named("B", kind_b)}</body></worldbody>{sensor_trios()}</mujoco>')
 
 
-def route_pose(rng, kind_a, kind_b, far, plane_mat=None):
+def route_pose(rng, kind_a, kind_b, far, plane_mat=None, plane_pos=None):
     """A at the origin, B within `far` of A's reach and its own, each turned
     at random; under a plane, B placed in the plane's frame (`plane_mat`, its
-    rotation, when it is turned)."""
+    rotation, when it is turned; `plane_pos`, its position, when it is off
+    the origin)."""
     qb = list(unit(rng.normal(size=4)))
     if kind_a == "plane":
         pb = [rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3), rng.uniform(-0.1, CONVEX_REACH[kind_b] + far)]
         if plane_mat is not None:
             pb = plane_mat @ np.array(pb)
+        if plane_pos is not None:
+            pb = np.array([float(x) for x in plane_pos.split()]) + np.array(pb)
         return [float(x) for x in pb] + qb
     r = rng.uniform(0, CONVEX_REACH[kind_a] + CONVEX_REACH[kind_b] + far)
     pb = r * unit(rng.normal(size=3))
     return [0.0, 0.0, 0.0] + list(unit(rng.normal(size=4))) + [float(x) for x in pb] + qb
 
 
-def route_cases(rng, xml, kind_a, kind_b, name, plane_mat=None):
+def route_cases(rng, xml, kind_a, kind_b, name, plane_mat=None, plane_pos=None):
     """12 seeded random poses of a route pair: 5 overlapping, 5 apart within
     the cutoff and 2 past it, by MuJoCo's distance of A against B."""
     want = {"over": 5, "apart": 5, "past": 2}
     cases = []
     for tries in range(4000):
-        qpos = route_pose(rng, kind_a, kind_b, 1.2, plane_mat)
+        qpos = route_pose(rng, kind_a, kind_b, 1.2, plane_mat, plane_pos)
         sd = sensors_at(xml, qpos)
         kind = "over" if sd[0] < 0 else "past" if sd[0] == 1 else "apart"
         if want[kind] == 0:
@@ -1946,7 +1953,8 @@ def route_cases(rng, xml, kind_a, kind_b, name, plane_mat=None):
 
 def geom_distance_route_cases():
     """Per route pair, `route_cases`; then each convex geom under a plane
-    turned by PLANE_TURN, whose normal no route reads off an unturned frame."""
+    turned by PLANE_TURN, whose normal no route reads off an unturned frame;
+    then under that plane at PLANE_POS."""
     rng = np.random.default_rng(20261022)
     pairs = {}
     for kind_a, kind_b in ROUTE_PAIRS:
@@ -1959,25 +1967,38 @@ def geom_distance_route_cases():
         name = f"plane_turned_{kind_b}"
         pairs[name] = route_cases(rng, route_xml("plane", kind_b, PLANE_TURN), "plane", kind_b, name,
                                   turn.reshape(3, 3))
+    rng = np.random.default_rng(20261026)
+    for kind_b in ROUTE_KINDS:
+        name = f"plane_off_origin_{kind_b}"
+        pairs[name] = route_cases(rng, route_xml("plane", kind_b, PLANE_TURN, PLANE_POS), "plane", kind_b,
+                                  name, turn.reshape(3, 3), PLANE_POS)
     return pairs
 
 
-# A cylinder on a plane, unturned and turned by PLANE_TURN, at seeded poses: its
-# cap nearly flat on the plane (three contacts), tilted (one), or lying on its
-# side (two):
+# A cylinder on a plane, unturned, turned by PLANE_TURN, and turned at
+# PLANE_POS, and a tiny one (its rim offset crossed with its half-length axis
+# 1.5e-12 long, which `mju_normalize3` scales as any other), at seeded poses:
+# its cap nearly flat on the plane (three contacts), tilted (one), or lying
+# on its side (two):
 # each contact's geoms, distance, position and frame as `mjc_PlaneCylinder`
 # makes them (engine_collision_primitive.c), for a test bit for bit.
 PLANE_CYLINDER = ('<mujoco><option><flag gravity="disable"/></option><worldbody>'
-                  '<geom type="plane" size="1 1 0.1"{turn}/><body name="c"><freejoint/>'
-                  '<geom type="cylinder" size="0.08 0.12"/></body></worldbody></mujoco>')
+                  '<geom type="plane" size="1 1 0.1"{turn}/><body name="c"><freejoint/>{inertial}'
+                  '<geom type="cylinder" size="{size}"/></body></worldbody></mujoco>')
 
 
 def plane_cylinder_cases():
     rng = np.random.default_rng(20261025)
     out = {}
-    radius, half = 0.08, 0.12
-    for label, quat in (("unturned", None), ("turned", PLANE_TURN)):
-        xml = PLANE_CYLINDER.format(turn=f' quat="{quat}"' if quat else "")
+    tiny = '<inertial pos="0 0 0" mass="1" diaginertia="0.001 0.001 0.001"/>'
+    for label, quat, pos, (radius, half), inertial in (
+            ("unturned", None, None, (0.08, 0.12), ""), ("turned", PLANE_TURN, None, (0.08, 0.12), ""),
+            ("turned_off_origin", PLANE_TURN, PLANE_POS, (0.08, 0.12), ""),
+            ("tiny", None, None, (1e-6, 1.5e-6), tiny)):
+        turn = (f' pos="{pos}"' if pos else "") + (f' quat="{quat}"' if quat else "")
+        xml = PLANE_CYLINDER.format(turn=turn, size=f"{radius:g} {half:g}", inertial=inertial)
+        scale = radius / 0.08
+        plane_p = np.array([float(x) for x in pos.split()]) if pos else np.zeros(3)
         m = mujoco.MjModel.from_xml_string(xml)
         d = mujoco.MjData(m)
         plane_q = np.array([float(x) for x in quat.split()]) if quat else np.array([1.0, 0, 0, 0])
@@ -2003,8 +2024,8 @@ def plane_cylinder_cases():
             body_q = np.zeros(4)
             mujoco.mju_mulQuat(body_q, plane_q, local)
             reach = half * abs(np.cos(tilt)) + radius * np.sin(tilt)
-            centre = plane_m @ np.array([rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3),
-                                         reach - rng.uniform(0.0005, 0.01)])
+            centre = plane_p + plane_m @ np.array([rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3),
+                                                   reach - rng.uniform(0.0005, 0.01) * scale])
             mujoco.mj_resetData(m, d)
             d.qpos[:] = list(centre) + list(body_q / np.linalg.norm(body_q))
             mujoco.mj_forward(m, d)

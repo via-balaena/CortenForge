@@ -23,21 +23,6 @@ use cf_geometry::Shape;
 use nalgebra::{Matrix3, Vector3};
 
 // ============================================================================
-// Collision constants
-// ============================================================================
-
-/// Minimum norm threshold for geometric operations.
-///
-/// Used to prevent division by zero and detect degenerate cases in collision
-/// detection. This value is chosen to be:
-/// - Small enough to not reject valid geometric configurations
-/// - Large enough to avoid numerical instability near machine epsilon
-///
-/// For reference: f64::EPSILON ~= 2.2e-16, so 1e-10 provides ~6 orders of
-/// magnitude of safety margin while still detecting near-degenerate cases.
-pub const GEOM_EPSILON: f64 = 1e-10;
-
-// ============================================================================
 // Narrow-phase dispatch
 // ============================================================================
 

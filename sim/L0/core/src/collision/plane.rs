@@ -3,7 +3,7 @@
 
 use super::mj_ccd::{CcdObj, mjc_plane_convex};
 use super::mj_primitive::{Mat9, normalize3};
-use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
+use super::narrow::make_contact_from_geoms;
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::quat::mul_mat_vec3;
 use crate::types::{Contact, GeomType, Model, make_frame};
@@ -86,8 +86,6 @@ pub fn collide_with_plane(
 
     // Plane normal is the Z-axis of the plane's frame
     let plane_normal = plane_mat.column(2).into_owned();
-    // Plane passes through its position
-    let plane_distance = plane_normal.dot(&plane_pos);
 
     match other_type {
         GeomType::Sphere => plane_sphere(
@@ -179,7 +177,7 @@ pub fn collide_with_plane(
                 plane_geom,
                 other_geom,
                 plane_normal,
-                plane_distance,
+                plane_pos,
                 other_pos,
                 other_mat,
                 other_size,
@@ -227,7 +225,7 @@ fn collide_cylinder_plane_impl(
     plane_geom: usize,
     cyl_geom: usize,
     plane_normal: Vector3<f64>,
-    plane_d: f64,
+    plane_pos: Vector3<f64>,
     cyl_pos: Vector3<f64>,
     cyl_mat: Matrix3<f64>,
     cyl_size: Vector3<f64>,
@@ -239,8 +237,9 @@ fn collide_cylinder_plane_impl(
     // Cylinder axis is local Z transformed to world
     let mut axis = cyl_mat.column(2).into_owned();
 
-    // Signed distance from cylinder center to plane
-    let dist0 = plane_normal.dot(&cyl_pos) - plane_d;
+    // Signed distance from cylinder center to plane, MuJoCo's
+    // `mju_dot3(pos2 - pos1, normal)`
+    let dist0 = dot3(&(cyl_pos - plane_pos), &plane_normal);
 
     // Projection of axis onto plane normal — flip axis so it points toward
     // the plane (prjaxis >= 0 means the near cap is at +axis * half_height).
@@ -314,50 +313,48 @@ fn collide_cylinder_plane_impl(
     // from the rim (at -0.5 * vec). These form an equilateral triangle
     // inscribed in the near-cap disk with contact 1.
     // MuJoCo's: the cross of the rim offset and the half-length axis,
-    // `mju_normalize3`d, scaled by radius·√3/2.
+    // `mju_normalize3`d (the x axis below `MJ_MINVAL`), scaled by
+    // radius·√3/2.
     let axis_scaled = axis * half_height;
     let mut cross = [
         vec.y * axis_scaled.z - vec.z * axis_scaled.y,
         vec.z * axis_scaled.x - vec.x * axis_scaled.z,
         vec.x * axis_scaled.y - vec.y * axis_scaled.x,
     ];
-    let cross_len = normalize3(&mut cross);
+    normalize3(&mut cross);
+    let side = Vector3::from(cross) * (radius * SQRT_3_OVER_2);
 
-    if cross_len > GEOM_EPSILON {
-        let side = Vector3::from(cross) * (radius * SQRT_3_OVER_2);
+    // Triangle depth: near-cap depth with half the radial contribution
+    // (these points are at -0.5*vec instead of +vec, so the radial
+    // component contribution is -0.5 * vec_dot_normal instead of +vec_dot_normal)
+    let depth_tri = -(dist0 + prjaxis * half_height - vec_dot_normal * 0.5);
 
-        // Triangle depth: near-cap depth with half the radial contribution
-        // (these points are at -0.5*vec instead of +vec, so the radial
-        // component contribution is -0.5 * vec_dot_normal instead of +vec_dot_normal)
-        let depth_tri = -(dist0 + prjaxis * half_height - vec_dot_normal * 0.5);
+    if depth_tri >= -margin {
+        // MuJoCo's sums in order: the centre, the side, the axis, the
+        // half rim offset back.
+        let pos3 = cyl_pos + side + axis_scaled + vec * -0.5;
+        let contact_pos3 = pos3 + plane_normal * (depth_tri / 2.0);
+        contacts.push(make_contact_from_geoms(
+            model,
+            contact_pos3,
+            plane_normal,
+            depth_tri,
+            plane_geom,
+            cyl_geom,
+            margin,
+        ));
 
-        if depth_tri >= -margin {
-            // MuJoCo's sums in order: the centre, the side, the axis, the
-            // half rim offset back.
-            let pos3 = cyl_pos + side + axis_scaled + vec * -0.5;
-            let contact_pos3 = pos3 + plane_normal * (depth_tri / 2.0);
-            contacts.push(make_contact_from_geoms(
-                model,
-                contact_pos3,
-                plane_normal,
-                depth_tri,
-                plane_geom,
-                cyl_geom,
-                margin,
-            ));
-
-            let pos4 = cyl_pos - side + axis_scaled + vec * -0.5;
-            let contact_pos4 = pos4 + plane_normal * (depth_tri / 2.0);
-            contacts.push(make_contact_from_geoms(
-                model,
-                contact_pos4,
-                plane_normal,
-                depth_tri,
-                plane_geom,
-                cyl_geom,
-                margin,
-            ));
-        }
+        let pos4 = cyl_pos - side + axis_scaled + vec * -0.5;
+        let contact_pos4 = pos4 + plane_normal * (depth_tri / 2.0);
+        contacts.push(make_contact_from_geoms(
+            model,
+            contact_pos4,
+            plane_normal,
+            depth_tri,
+            plane_geom,
+            cyl_geom,
+            margin,
+        ));
     }
 
     contacts
