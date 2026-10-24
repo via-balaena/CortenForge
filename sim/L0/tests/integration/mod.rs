@@ -69,6 +69,10 @@ pub mod quat_integration;
 /// Joint transmissions on ball and free joints against MuJoCo 3.5.0.
 pub mod joint_transmission;
 
+/// Each actuator's velocity against MuJoCo 3.5.0's sparse dot of its moment
+/// row with `qvel`, at the dense and the sparse Jacobian.
+pub mod actuator_velocity_parity;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================

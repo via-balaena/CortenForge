@@ -1184,38 +1184,29 @@ fn ac41_actuation_plus_pergroup_orthogonality() {
 }
 
 // ============================================================================
-// AC45: actuator_velocity unconditional after pipeline move
+// AC45: actuator_velocity is 0 under DISABLE_ACTUATION, as MuJoCo 3.5.0's
 // ============================================================================
 
+/// MuJoCo 3.5.0's velocity stage zeroes every actuator's velocity when
+/// actuation is disabled (`mj_fwdVelocity`, `engine_forward.c:240-246`);
+/// with it enabled the same state moves the actuator.
 #[test]
-fn ac45_actuator_velocity_unconditional() {
-    let mut model = load_model(flag_test_mjcf()).expect("load");
-    model.disableflags |= DISABLE_ACTUATION;
-
+fn ac45_actuator_velocity_is_zero_when_actuation_is_disabled() {
+    let model = load_model(flag_test_mjcf()).expect("load");
     let mut data = model.make_data();
-    data.qvel[0] = 2.0; // non-zero joint velocity
-
+    data.qvel[0] = 2.0;
     data.forward(&model).expect("forward");
-
-    // actuator_velocity should be computed regardless of DISABLE_ACTUATION
-    // (it's transmission geometry, not force computation)
     assert!(
         data.actuator_velocity[0].abs() > 0.0,
-        "actuator_velocity should be non-zero with non-zero qvel, even with DISABLE_ACTUATION"
+        "the joint's velocity moves the actuator with actuation enabled"
     );
 
-    // Compare with actuation enabled — should be identical
-    let model2 = load_model(flag_test_mjcf()).expect("load");
-    let mut data2 = model2.make_data();
-    data2.qvel[0] = 2.0;
-    data2.forward(&model2).expect("forward");
-
-    // actuator_velocity should be identical with or without DISABLE_ACTUATION
-    assert_relative_eq!(
-        data.actuator_velocity[0],
-        data2.actuator_velocity[0],
-        epsilon = 1e-15
-    );
+    let mut disabled = load_model(flag_test_mjcf()).expect("load");
+    disabled.disableflags |= DISABLE_ACTUATION;
+    let mut data = disabled.make_data();
+    data.qvel[0] = 2.0;
+    data.forward(&disabled).expect("forward");
+    assert_eq!(data.actuator_velocity[0].to_bits(), 0.0_f64.to_bits());
 }
 
 // ============================================================================

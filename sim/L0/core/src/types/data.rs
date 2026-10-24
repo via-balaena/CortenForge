@@ -73,10 +73,9 @@ pub struct Data {
     /// MuJoCo's `mj_transmission` skips it.
     pub actuator_length: Vec<f64>,
 
-    /// Actuator velocity (gear * transmission_velocity, length `nu`).
-    /// For Joint transmission on a hinge or slide: `gear * qvel[dof_adr]`; on a
-    /// ball or free joint, `actuator_moment · qvel`.
-    /// For Tendon transmission: `gear * ten_velocity[tendon_id]`.
+    /// Actuator velocity (length `nu`): the actuator's moment row times
+    /// `qvel`, summed as MuJoCo sums it (`mj_actuator_velocity`); 0 when
+    /// actuation is disabled.
     pub actuator_velocity: Vec<f64>,
 
     /// Actuator force output (length `nu`).
