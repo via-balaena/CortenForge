@@ -107,12 +107,14 @@ sim-core/src/
 │   ├── equality.rs        # Equality constraint Jacobians
 │   ├── impedance.rs       # Solver impedance (solref/solimp)
 │   ├── jacobian.rs        # Constraint Jacobian computation
+│   ├── project.rs         # The rows' inverse inertia efc_AR (mj_projectConstraint)
 │   └── solver/            # PGS, the primal solver (Newton, CG), Noslip, QCQP
 │       ├── mod.rs         # Shared solver infrastructure
-│       ├── pgs.rs         # Projected Gauss-Seidel
+│       ├── dual.rs        # PGS and noslip's shared steps: warmstart, costChange, dualFinish
+│       ├── pgs.rs         # Projected Gauss-Seidel (mj_solPGS)
 │       ├── primal.rs      # Newton and CG: MuJoCo's mj_solPrimal
 │       ├── sparse.rs      # The sparse Jacobian and Newton's sparse Hessian
-│       ├── noslip.rs      # Noslip post-processing
+│       ├── noslip.rs      # Noslip (mj_solNoSlip)
 │       └── qcqp.rs        # QCQP cone projection
 ├── integrate/       # Time integration
 │   ├── mod.rs             # integrate() dispatch
@@ -285,8 +287,9 @@ forward():
                mj_rne                 Bias forces (Recursive Newton-Euler)
   Control      cb_control             Unless DISABLE_ACTUATION
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
-  Constraints  mj_fwd_constraint      efc_b, then the PGS/CG/Newton solve (CG and Newton by island)
-  Solve        mj_fwd_acceleration    qacc = M^-1 * f;
+  Constraints  mj_fwd_constraint      efc_b, then the PGS/CG/Newton solve (CG and Newton by island),
+                                      then noslip; each leaves its own qacc
+  Solve        mj_fwd_acceleration    qacc = M^-1 * f, only when no solve left one (no rows);
                                       ImplicitSpringDamper: qacc = (v_new − qvel) / h
 integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper; RK4 under step2()]:
   ImplicitFast / Implicit first (MuJoCo's mj_implicitSkip):
@@ -719,9 +722,13 @@ stage, a unified constraint Jacobian for ALL constraint types (equality, frictio
 loss, limits, contacts, flex edge); `efc_b` is made when the solve starts. There is
 no separate contact-only assembly path.
 
-- **PGS** — Dual-space Gauss-Seidel on regularized Delassus
-  matrix AR. Uses per-row inline elliptic friction cone projection inside the GS
-  sweep. Warmstarts from `qacc_warmstart` via `classify_constraint_states`.
+- **PGS** — MuJoCo's `mj_solPGS`, operation for operation, on the rows'
+  inverse inertia `efc_AR` (made by the position stage, `mj_projectConstraint`;
+  by the constraint stage under the implicit spring-damper integrator, over
+  `M_impl`, and after an inverse pass, which makes none),
+  an elliptic contact's rows as one block with MuJoCo's QCQP; warmstarted as
+  MuJoCo's `warmstart` (the forces at `qacc_warmstart`, kept unless their dual
+  cost is positive) and ended by `dualFinish`.
   First-order, so under-converged at the default 100 iterations on
   stiff/weakly-coupled DOFs.
 - **CG** and **Newton** (Newton the default, as MuJoCo's) — MuJoCo's primal

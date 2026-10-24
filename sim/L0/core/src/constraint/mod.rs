@@ -15,7 +15,10 @@ pub(crate) mod equality;
 pub(crate) mod equality_assembly;
 pub(crate) mod impedance;
 pub(crate) mod jacobian;
+mod project;
 pub(crate) mod solver;
+
+pub use project::mj_project_constraint;
 
 use nalgebra::{DMatrix, DVector};
 
@@ -31,10 +34,10 @@ use crate::types::{
 
 use crate::constraint::assembly::assemble_unified_constraints;
 use crate::constraint::assembly::tendon_deadband_displacement;
-use crate::constraint::solver::compute_qfrc_constraint_from_efc;
+use crate::constraint::solver::dual::pgs_warmstart;
 use crate::constraint::solver::extract_qfrc_frictionloss;
-use crate::constraint::solver::noslip::noslip_postprocess;
-use crate::constraint::solver::pgs::pgs_solve_unified;
+use crate::constraint::solver::noslip::mj_sol_noslip;
+use crate::constraint::solver::pgs::mj_sol_pgs;
 use crate::constraint::solver::primal::{PrimalMass, mj_sol_primal};
 
 use crate::integrate::implicit::{
@@ -266,10 +269,11 @@ pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
 /// 2. `efc_b = J·qacc_smooth − aref`
 /// 3. Dispatch to configured solver: Newton and CG to MuJoCo's primal solver,
 ///    island by island where MuJoCo's is, whose iterate is the acceleration;
-///    PGS. No solver falls back to
-///    another (MuJoCo, `engine_forward.c:739-830`).
-/// 4. Map efc_force → qfrc_constraint via J^T after PGS or noslip; after the
-///    primal solver, its own is kept
+///    PGS, ended by `dualFinish`, which maps the forces to `qfrc_constraint`
+///    and makes the acceleration from them. No solver falls back to another
+///    (MuJoCo, `engine_forward.c:739-830`).
+/// 4. Noslip after any of them when `noslip_iterations > 0`, ended by
+///    `dualFinish` too
 /// 5. Extract qfrc_frictionloss from efc_force
 ///
 /// Under the implicit spring-damper integrator every solver solves over
@@ -285,7 +289,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     data.qfrc_frictionloss.fill(0.0);
     data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
     data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
-    data.primal_qacc = false;
+    data.solver_qacc = false;
 
     // Step 1: Shared qacc_smooth computation
     let (qacc_smooth, _qfrc_smooth) = compute_qacc_smooth(model, data);
@@ -356,34 +360,38 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     let qfrc_eff: DVector<f64> = qfrc_impl_owned.unwrap_or_else(|| data.qfrc_smooth.clone());
 
     // Step 3: Dispatch to solver
+    let mass = match &m_impl_owned {
+        Some((m, factor)) => PrimalMass::Implicit { m, factor },
+        None => PrimalMass::Tree,
+    };
+    // Under the implicit spring-damper integrator (this crate's) the dual
+    // solvers read the rows' inverse inertia over `M_impl`; otherwise the
+    // position stage made it, unless this pass skipped that stage after an
+    // inverse one, whose position stage makes none (`mj_invPosition`), or the
+    // model became dual since: made here then.
+    if let Some((_, factor)) = &m_impl_owned
+        && model.is_dual()
+    {
+        project::project_implicit(data, factor);
+    } else if model.is_dual() && data.efc_AR.is_empty() {
+        mj_project_constraint(model, data);
+    }
     match model.solver_type {
         SolverType::Newton | SolverType::CG => {
-            let mass = match &m_impl_owned {
-                Some((m, factor)) => PrimalMass::Implicit { m, factor },
-                None => PrimalMass::Tree,
-            };
             let newton = model.solver_type == SolverType::Newton;
             mj_sol_primal(model, data, &mass, &qfrc_eff, newton)?;
-            data.primal_qacc = true;
         }
         SolverType::PGS => {
-            pgs_solve_unified(model, data, m_impl_owned.as_ref().map(|(_, f)| f));
+            pgs_warmstart(model, data);
+            mj_sol_pgs(model, data, &mass);
         }
     }
+    data.solver_qacc = true;
 
-    // §33: Noslip post-processor. It changes the friction forces, so the
-    // acceleration is made from the forces afterwards (`mj_fwd_acceleration`),
-    // not taken from the primal iterate.
+    // Step 4 (§33): noslip after any solver, which ends as PGS does
+    // (`dualFinish`).
     if model.noslip_iterations > 0 {
-        noslip_postprocess(model, data, m_impl_owned.as_ref().map(|(_, f)| f));
-        data.primal_qacc = false;
-    }
-
-    // Step 4: Map efc_force → qfrc_constraint via J^T, except after the primal
-    // solver, whose own MuJoCo keeps (`PrimalUpdateConstraint`; at the sparse
-    // size a product over the transpose that rounds otherwise).
-    if !data.primal_qacc {
-        compute_qfrc_constraint_from_efc(model, data);
+        mj_sol_noslip(model, data, &mass);
     }
 
     // Step 5: Extract qfrc_frictionloss from efc_force
@@ -440,6 +448,10 @@ pub(crate) fn clear_constraint_rows(model: &Model, data: &mut Data) {
     data.efc_diagApprox.clear();
     data.efc_R.clear();
     data.efc_D.clear();
+    data.efc_AR.clear();
+    data.efc_AR_rownnz.clear();
+    data.efc_AR_rowadr.clear();
+    data.efc_AR_colind.clear();
     data.efc_imp.clear();
     data.efc_floss.clear();
     data.efc_mu.clear();
@@ -521,6 +533,43 @@ pub(crate) fn mj_reference_constraint(model: &Model, data: &mut Data) {
         )
     });
     data.efc_aref = DVector::from_iterator(data.efc_type.len(), aref);
+}
+
+/// Solve the constraint rows `data` holds with PGS from its warmstart, as
+/// [`mj_fwd_constraint`] runs it over `qM` and its factor: `efc_b` made
+/// first, then `efc_AR` ([`mj_project_constraint`]). For tests that give the
+/// solver MuJoCo's own inputs.
+#[doc(hidden)]
+pub fn mj_sol_pgs_rows(model: &Model, data: &mut Data) {
+    data.efc_b = mul_jac_vec(model, data, data.qacc_smooth.as_slice()) - &data.efc_aref;
+    mj_project_constraint(model, data);
+    pgs_warmstart(model, data);
+    mj_sol_pgs(model, data, &PrimalMass::Tree);
+}
+
+/// Solve the constraint rows `data` holds with the model's solver, then
+/// noslip, as [`mj_fwd_constraint`] runs them over `qM` and its factor:
+/// `efc_b` and `efc_AR` made first. For tests that give the solvers MuJoCo's
+/// own inputs.
+///
+/// # Errors
+///
+/// `StepError::CholeskyFailed` when Newton's sparse Hessian has a diagonal
+/// under mjMINVAL.
+#[doc(hidden)]
+pub fn mj_sol_noslip_rows(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    data.efc_b = mul_jac_vec(model, data, data.qacc_smooth.as_slice()) - &data.efc_aref;
+    mj_project_constraint(model, data);
+    if model.solver_type == SolverType::PGS {
+        pgs_warmstart(model, data);
+        mj_sol_pgs(model, data, &PrimalMass::Tree);
+    } else {
+        let qfrc_smooth = data.qfrc_smooth.clone();
+        let newton = model.solver_type == SolverType::Newton;
+        mj_sol_primal(model, data, &PrimalMass::Tree, &qfrc_smooth, newton)?;
+    }
+    mj_sol_noslip(model, data, &PrimalMass::Tree);
+    Ok(())
 }
 
 /// Solve the constraint rows `data` holds with MuJoCo's primal solver,

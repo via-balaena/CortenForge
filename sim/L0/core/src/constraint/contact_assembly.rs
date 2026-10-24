@@ -9,6 +9,7 @@
 use crate::constraint::chain::at_sparse_size;
 use crate::constraint::impedance::{MJ_MINVAL, checked_solreffriction};
 use crate::constraint::jacobian::{compute_contact_jacobian, contact_chain, side_weights};
+use crate::linalg::mju_max;
 use crate::types::{ConstraintType, Contact, Data, Model};
 
 use super::assembly::finalize_constraint_row;
@@ -94,8 +95,17 @@ pub(super) fn assemble_contact_rows(
                     sr_normal
                 };
 
-                // row 0 = normal (translational), rows 1+ = friction (rotational)
-                let bw_c = if r == 0 { bw_contact[0] } else { bw_contact[1] };
+                // An elliptic contact's first three rows take the translational
+                // weight and the rest the rotational, as MuJoCo's `mj_diagApprox`
+                // (`engine_core_constraint.c:1265-1273`); a frictionless
+                // contact's normal row the translational, its others the
+                // rotational.
+                let translational = if is_elliptic { r < 3 } else { r == 0 };
+                let bw_c = if translational {
+                    bw_contact[0]
+                } else {
+                    bw_contact[1]
+                };
                 finalize_constraint_row(
                     model, data, nv, row, sr, si, pos, margin_r, 0.0, ctype, dim, ci, contact.mu,
                     bw_c, &chain,
@@ -128,7 +138,7 @@ pub(super) fn assemble_contact_rows(
 pub(super) fn regularize_cones(model: &Model, data: &mut Data, cones: &[(usize, usize)]) {
     for &(i, ci) in cones {
         let (friction, dim) = (data.contacts[ci].mu, data.contacts[ci].dim);
-        data.efc_R[i + 1] = data.efc_R[i] / model.impratio.max(MJ_MINVAL);
+        data.efc_R[i + 1] = data.efc_R[i] / mju_max(MJ_MINVAL, model.impratio);
         let mu = friction[0] * (data.efc_R[i + 1] / data.efc_R[i]).sqrt();
         data.contacts[ci].regularized_mu = mu;
         if data.efc_type[i] == ConstraintType::ContactElliptic {
@@ -149,9 +159,10 @@ pub(super) fn regularize_cones(model: &Model, data: &mut Data, cones: &[(usize, 
 
 /// Contact bodyweight for DT-39 diagApprox: the two sides' bodies' mean
 /// translation and rotation weights (`body_invweight0`) added, as MuJoCo's
-/// `mj_diagApprox` (`engine_core_constraint.c:1208-1257`): a geom's body
+/// `mj_diagApprox` (`engine_core_constraint.c:1208-1258`): a geom's body
 /// and a flex vertex's own body each with weight 1, a flex element's
-/// vertices' bodies with `mj_elemBodyWeight`'s weights.
+/// vertices' bodies with `mj_elemBodyWeight`'s weights. No floor: MuJoCo
+/// floors only `R` (`mj_makeImpedance`).
 fn compute_contact_bodyweight(model: &Model, data: &Data, contact: &Contact) -> [f64; 2] {
     let mut weight = [0.0; 2];
     for side in 0..2 {
@@ -160,7 +171,7 @@ fn compute_contact_bodyweight(model: &Model, data: &Data, contact: &Contact) -> 
             weight[1] += model.body_invweight0[b][1] * w;
         }
     }
-    [weight[0].max(MJ_MINVAL), weight[1].max(MJ_MINVAL)]
+    weight
 }
 
 /// Assemble pyramidal friction cone facet rows for a single contact.
@@ -191,14 +202,14 @@ fn assemble_pyramidal_contact(
 
     let pos = -contact.depth;
 
-    // Pyramidal facets combine normal + mu·friction → invweight includes
-    // both normal (1²) and friction (mu²) components, using translational
-    // body weight.
-    let mu0 = contact.mu[0];
-    let bw_py = (1.0 + mu0 * mu0) * bw_contact[0];
-
     for d in 1..dim {
         let mu_d = contact.mu[d - 1]; // friction coefficient for direction d
+        // The pair's facets combine the normal and friction direction d:
+        // `tran + μ_d²·(tran or rot)`, the translational weight for the first
+        // two directions, in MuJoCo's order (`mj_diagApprox`,
+        // `engine_core_constraint.c:1276-1280`).
+        let weight = if d <= 2 { bw_contact[0] } else { bw_contact[1] };
+        let bw_py = bw_contact[0] + mu_d * mu_d * weight;
 
         // Positive facet: J_normal + μ_d · J_friction_d
         for col in 0..nv {

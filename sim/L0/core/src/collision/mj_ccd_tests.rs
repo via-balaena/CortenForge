@@ -580,10 +580,12 @@ fn mesh_polygons_are_mujocos() {
                 .iter()
                 .position(|q| is_rotation(q, path))
                 .expect("each of MuJoCo's polygons is one of ours");
+            // A NaN difference counts as infinitely far.
             let gap = compiled.normals[j]
                 .iter()
                 .zip(normal)
                 .map(|(x, y)| (x - y).abs())
+                .map(|d| if d.is_nan() { f64::INFINITY } else { d })
                 .fold(0.0, f64::max);
             assert!(
                 gap < 1e-6,

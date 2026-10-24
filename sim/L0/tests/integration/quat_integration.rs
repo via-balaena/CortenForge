@@ -68,11 +68,11 @@ fn spins_integrate_as_mujoco() {
                 step += 1;
             }
             let (qpos, qvel) = (floats(&state["qpos"]), floats(&state["qvel"]));
-            let qvel_off = data
-                .qvel
-                .iter()
-                .zip(&qvel)
-                .any(|(a, b)| (a - b).abs() > 1e-15);
+            let qvel_off = data.qvel.iter().zip(&qvel).any(|(a, b)| {
+                // Past the bound or NaN: a NaN is never within it.
+                let d = (a - b).abs();
+                d.is_nan() || d > 1e-15
+            });
             if !matches_golden(data.qpos.as_slice(), &qpos) || qvel_off {
                 failures.push(format!(
                     "{label}, step {step}: qpos {:?} qvel {:?}, MuJoCo {qpos:?} {qvel:?}",

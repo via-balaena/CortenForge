@@ -35,6 +35,21 @@ pub(crate) fn mju_dot(vec1: &[f64], vec2: &[f64]) -> f64 {
     res
 }
 
+/// `max(a, b)` as MuJoCo's `mju_max` (`engine_util_misc.c:1296-1302`): `a`
+/// when `a ≥ b`, else `b`. A NaN `b` gives NaN, a NaN `a` gives `b`; Rust's
+/// `f64::max` gives the other value for either.
+#[inline]
+pub(crate) fn mju_max(a: f64, b: f64) -> f64 {
+    if a >= b { a } else { b }
+}
+
+/// `min(a, b)` as MuJoCo's `mju_min` (`engine_util_misc.c:1286-1292`): `a`
+/// when `a ≤ b`, else `b`, a NaN in either place as [`mju_max`] takes it.
+#[inline]
+pub(crate) fn mju_min(a: f64, b: f64) -> f64 {
+    if a <= b { a } else { b }
+}
+
 /// The dot product of two 6-vectors in MuJoCo's order (`mji_dot6`,
 /// `engine_inline.h:422-429`): `((v0·w0 + v2·w2) + (v1·w1 + v3·w3)) +
 /// (v4·w4 + v5·w5)`, as `mju_dot` groups six but without its 0 start.

@@ -923,6 +923,10 @@ impl Model {
             efc_diagApprox: Vec::new(),
             efc_R: Vec::new(),
             efc_D: Vec::new(),
+            efc_AR: Vec::new(),
+            efc_AR_rownnz: Vec::new(),
+            efc_AR_rowadr: Vec::new(),
+            efc_AR_colind: Vec::new(),
             efc_imp: Vec::new(),
             efc_aref: DVector::zeros(0),
             efc_floss: Vec::new(),
@@ -937,7 +941,7 @@ impl Model {
             ncone: 0,
             ne: 0,
             nf: 0,
-            primal_qacc: false,
+            solver_qacc: false,
             solver_stat: Vec::new(),
 
             // Sensors
@@ -1241,8 +1245,8 @@ impl Model {
     ///   (`engine_setconst.c:628-635`)
     /// - `dof_invweight0[d]` = avg diagonal of `M⁻¹` subblock for that joint's DOFs;
     ///   `1/mass` on such a body, its armature left out, as MuJoCo's (`:663-673`)
-    /// - `tendon_invweight0[t]` = `J_tendon · M⁻¹ · J_tendon^T` (full quadratic form,
-    ///   matching MuJoCo's `setInertia()` in `engine_setconst.c`)
+    /// - `tendon_invweight0[t]` = `J_tendon · M⁻¹ · J_tendonᵀ` by `mju_dot`, 0 for
+    ///   a tendon whose Jacobian is 0 at qpos0, as MuJoCo's (`:752-767`)
     /// - `flex_edgeequality[f]`: whether a flex equality names flex `f`, set
     ///   first, since an edge's Jacobian is made only then
     /// - `flexedge_invweight0[e]` as MuJoCo's (`engine_setconst.c:716-750`): 0
@@ -1321,12 +1325,18 @@ impl Model {
             let mut jt = jac.transpose();
             mj_solve_m(self, &data, jt.as_mut_slice());
 
-            // A = J · W = J · M⁻¹ · J^T (6×6)
-            let a = &jac * &jt;
+            // A = J · W = J · M⁻¹ · J^T (6×6), its diagonal entry k `mju_dot`
+            // of J's row k with W's column k, as MuJoCo's `mju_mulMatMatT`
+            // makes it (`engine_setconst.c:642-644`, `engine_util_blas.c:875-882`).
+            let nv = self.nv;
+            let a = |k: usize| {
+                let row: Vec<f64> = (0..nv).map(|c| jac[(k, c)]).collect();
+                mju_dot(&row, &jt.as_slice()[k * nv..(k + 1) * nv])
+            };
 
             // Our layout: rows 3-5 = linear (translational), rows 0-2 = angular (rotational)
-            let tran = (a[(3, 3)] + a[(4, 4)] + a[(5, 5)]) / 3.0;
-            let rot = (a[(0, 0)] + a[(1, 1)] + a[(2, 2)]) / 3.0;
+            let tran = (a(3) + a(4) + a(5)) / 3.0;
+            let rot = (a(0) + a(1) + a(2)) / 3.0;
 
             // Fallback for degenerate cases (MuJoCo: if one is near-zero, copy the other)
             self.body_invweight0[i] = if tran < MIN_VAL && rot > MIN_VAL {
@@ -1415,34 +1425,15 @@ impl Model {
             };
         }
 
-        // --- tendon_invweight0 ---
-        // MuJoCo ref: setInertia() in engine_setconst.c
-        // For each tendon: invweight0 = J_tendon · M⁻¹ · J_tendon^T
-        // where J_tendon = data.ten_J[t] (populated by mj_fwd_tendon in mj_fwd_position).
-        // This uses the FULL quadratic form, capturing off-diagonal M⁻¹ coupling
-        // between DOFs in serial kinematic chains. Applies uniformly to all tendon
-        // types (fixed and spatial) — no type-specific branching needed.
+        // --- tendon_invweight0 (`engine_setconst.c:752-767`) ---
+        // J_tendon · M⁻¹ · J_tendon' by `mju_dot`, every tendon alike, with no
+        // floor: a tendon whose Jacobian is 0 at qpos0 weighs 0, as MuJoCo's.
         self.tendon_invweight0 = vec![0.0; self.ntendon];
-        let mut rhs = DMatrix::zeros(self.nv, 1);
         for t in 0..self.ntendon {
-            let j_tendon = &data.ten_J[t];
-
-            // Skip zero Jacobians (no DOFs contribute to this tendon)
-            let j_norm_sq: f64 = j_tendon.iter().map(|&v| v * v).sum();
-            if j_norm_sq < MIN_VAL {
-                self.tendon_invweight0[t] = MIN_VAL;
-                continue;
-            }
-
-            // Copy J_tendon into reusable 1-column RHS for the batch solver
-            rhs.column_mut(0).copy_from(j_tendon);
-
-            // Solve M · w = J_tendon → w = M⁻¹ · J_tendon
-            mj_solve_m(self, &data, rhs.as_mut_slice());
-
-            // tendon_invweight0 = J_tendon · M⁻¹ · J_tendon^T
-            let w = j_tendon.dot(&rhs.column(0));
-            self.tendon_invweight0[t] = w.max(MIN_VAL);
+            let j_tendon = data.ten_J[t].as_slice();
+            let mut w = j_tendon.to_vec();
+            mj_solve_m(self, &data, &mut w);
+            self.tendon_invweight0[t] = mju_dot(j_tendon, &w);
         }
     }
 

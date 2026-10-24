@@ -212,8 +212,10 @@ fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
     data.efc_aref.copy_from_slice(&floats(&case["efc_aref"]));
     // sim-core's own regularization is MuJoCo's bit for bit, but in the
     // condim-6 cases, whose torsional and rolling rows take P38's, and the
-    // chain's, whose bodies' and dofs' invweight0 round otherwise (ledger
-    // L223).
+    // chain's, whose bodies' and dofs' invweight0 round otherwise: its second
+    // free sphere's and its capsules' inertias as sim-mjcf compiles them, a capsule's
+    // inertial frame among them (ledgers L198, L195; with the inertias
+    // written out, impedance_parity's `inertial_chain`, MuJoCo's bit for bit).
     if !name.contains("_6") && !name.contains("_chain_") {
         assert_bits(
             &format!("{name} efc_R"),
@@ -590,7 +592,9 @@ fn noslip_counts_and_records_its_sweeps_as_mujoco_3_5_0() {
             let want = floats(&stats[key]);
             let scale = want.iter().fold(1.0_f64, |m, x| m.max(x.abs()));
             for (k, (s, w)) in ours.iter().zip(&want).enumerate() {
-                if (s - w).abs() > 1e-12 * scale {
+                // Past the bound or NaN: a NaN is never within it.
+                let off_by = (s - w).abs();
+                if off_by.is_nan() || off_by > 1e-12 * scale {
                     off.push(format!("{name} {what} {k}: {s:e}, MuJoCo {w:e}"));
                 }
             }
@@ -684,7 +688,8 @@ fn statistics_past_the_200th_are_counted_not_kept() {
         let want = floats(&stats["improvement"]);
         let scale = want.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
         for (k, (s, w)) in data.solver_stat.iter().zip(&want).enumerate() {
-            if (s.improvement - w).abs() > 1e-12 * scale {
+            let off_by = (s.improvement - w).abs();
+            if off_by.is_nan() || off_by > 1e-12 * scale {
                 off.push(format!(
                     "{name} improvement {k}: {:e}, MuJoCo {w:e}",
                     s.improvement

@@ -229,13 +229,16 @@ pub(crate) fn target_of(crate_root: &Path, file: &Path) -> Option<Target> {
     }
 }
 
-/// Every Rust source file in the workspace, skipping build output.
+/// Every Rust source file in the workspace, skipping build output, git's own
+/// directory and `.claude`, where an agent's worktree is checked out: a
+/// second copy of every crate, whose files the walk would count again
+/// (ledger L257: 159 licence-gated gates listed for 53).
 pub(crate) fn source_files(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
-            name != "target" && name != ".git"
+            name != "target" && name != ".git" && name != ".claude"
         })
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
@@ -1220,6 +1223,37 @@ mod tests {
         assert!(
             msg.contains("UNKNOWN") && msg.contains("owning package"),
             "the error must say the count is unknown and why, got: {msg}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An agent's worktree under `.claude/worktrees/` holds a copy of every
+    /// crate: its gates are not counted again (ledger L257).
+    #[test]
+    fn a_worktree_under_dot_claude_is_not_walked() {
+        let dir = std::env::temp_dir().join("cf_licensed_gates_worktree");
+        std::fs::remove_dir_all(&dir).ok();
+        let worktree = dir.join(".claude").join("worktrees").join("agent");
+        for root in [&dir, &worktree] {
+            let krate = root.join("crate-c");
+            std::fs::create_dir_all(krate.join("tests")).expect("temp dirs");
+            std::fs::write(
+                krate.join("Cargo.toml"),
+                "[package]\nname = \"crate-c\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("manifest");
+            std::fs::write(
+                krate.join("tests").join("gate.rs"),
+                "#[test]\n#[ignore = \"needs $CF_L4_STL\"]\nfn g() {}\n",
+            )
+            .expect("source");
+        }
+
+        assert_eq!(
+            survey(&dir).gates.len(),
+            1,
+            "the worktree's copy of the gate is not a second gate"
         );
 
         std::fs::remove_dir_all(&dir).ok();

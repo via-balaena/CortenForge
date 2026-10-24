@@ -116,9 +116,11 @@ fn elliptic_friction_force_matches_mujoco() {
 
         // The sliding direction carries the grip; its force must match MuJoCo, not
         // the ~62× weaker starved value the bug produced.
+        // A NaN force counts as infinitely large, never MuJoCo's.
         let max_friction_force = friction
             .iter()
             .map(|&fr| data.efc_force[fr].abs())
+            .map(|f| if f.is_nan() { f64::INFINITY } else { f })
             .fold(0.0_f64, f64::max);
         assert!(
             (max_friction_force - 53.9187).abs() < 0.05,

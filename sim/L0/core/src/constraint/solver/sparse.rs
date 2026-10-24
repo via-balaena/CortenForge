@@ -134,6 +134,9 @@ pub(super) struct SparseHessian {
     lt_colind: Vec<usize>,
     lt_map: Vec<usize>,
     lcone: Vec<f64>,
+    /// The entries of `J'·J`'s lower triangle, MuJoCo's
+    /// `mju_sqrMatTDSparseCount` (a dof no row has adds none).
+    jdj_count: usize,
 }
 
 /// No entry of `M` at this place of `H`.
@@ -151,6 +154,7 @@ impl SparseHessian {
         let (mut h_rownnz, mut h_colind) = (Vec::with_capacity(nv), Vec::new());
         let (mut h_jdj, mut h_mass) = (Vec::new(), Vec::new());
         let mut cols = Vec::new();
+        let mut jdj_count = 0;
         for r in 0..nv {
             // The columns c ≤ r that a row with dof r also has.
             cols.clear();
@@ -163,6 +167,7 @@ impl SparseHessian {
                     }
                 }
             }
+            jdj_count += cols.len();
             // Every dof's diagonal, as `mju_sqrMatTDSparse` writes it (0 for
             // a dof no row has).
             if marker[r] != r {
@@ -216,6 +221,7 @@ impl SparseHessian {
             lt_colind: Vec::new(),
             lt_map: Vec::new(),
             lcone: Vec::new(),
+            jdj_count,
         };
         hess.symbolic();
         hess.fill(jac, d_quad, mass);
@@ -276,6 +282,14 @@ impl SparseHessian {
                 mass.val[m]
             };
         }
+    }
+
+    /// MuJoCo's `solver_nnz` for this Hessian (`engine_solver.c:1953-1958`):
+    /// `L`'s entries, twice under an elliptic cone (`Lcone` beside it), and
+    /// `H`'s count as `MakeHessian` keeps it, `J'·J`'s lower triangle and all
+    /// of `M`'s `mass_nnz` entries (its overcount, `:1532-1533`).
+    pub(super) fn solver_nnz(&self, mass_nnz: usize, elliptic: bool) -> usize {
+        (1 + usize::from(elliptic)) * self.l.len() + self.jdj_count + mass_nnz
     }
 
     /// The place in `h` of the entry at row `row`, column `col`.

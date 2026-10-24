@@ -336,6 +336,17 @@ impl Rows {
 /// `J·qacc` is [`mul_jac_vec`]'s and `J'·force` [`mul_jac_t_vec`]'s, each
 /// over a row's dof chain at the sparse size.
 pub fn mj_inv_constraint(model: &Model, data: &mut Data) {
+    let qacc = data.qacc.clone();
+    constraint_update_at(model, data, qacc.as_slice());
+}
+
+/// Each row's state and force as `mj_constraintUpdate` makes them at
+/// `jar = J·qacc − aref` (no cone Hessian, no cost kept), into `efc_state`
+/// and `efc_force`, and `qfrc_constraint = J'·force`
+/// (`engine_core_constraint.c:2592-2598`); with no rows `qfrc_constraint` is
+/// 0. Inverse dynamics takes it at `qacc`, PGS's warmstart at
+/// `qacc_warmstart`.
+pub fn constraint_update_at(model: &Model, data: &mut Data, qacc: &[f64]) {
     let nefc = data.efc_type.len();
     if nefc == 0 {
         data.qfrc_constraint.fill(0.0);
@@ -343,7 +354,7 @@ pub fn mj_inv_constraint(model: &Model, data: &mut Data) {
     }
     let all: Vec<usize> = (0..nefc).collect();
     let rows = Rows::of(data, &all);
-    let mut jar = mul_jac_vec(model, data, data.qacc.as_slice());
+    let mut jar = mul_jac_vec(model, data, qacc);
     for (x, a) in jar.iter_mut().zip(data.efc_aref.iter()) {
         *x -= a;
     }
@@ -1217,6 +1228,26 @@ impl<'a> Primal<'a> {
 }
 
 impl Primal<'_> {
+    /// MuJoCo's `solver_nnz` for this solve (`engine_solver.c:1953-1964`):
+    /// Newton's Hessian's at the sparse size
+    /// ([`SparseHessian::solver_nnz`], M's entries counted to this solve's
+    /// last, `m_before` of them in the islands solved before it), `nv²`
+    /// dense; CG's 0.
+    fn solver_nnz(&self, model: &Model, m_before: usize) -> usize {
+        if !self.newton {
+            return 0;
+        }
+        match (&self.sparse, &self.mass_rows) {
+            (Some(h), Some(mass)) => h.solver_nnz(m_before + mass.colind.len(), model.cone == 1),
+            _ => self.nv * self.nv,
+        }
+    }
+
+    /// The entries of this solve's M, as MuJoCo's `iM` keeps them.
+    fn mass_nnz(&self) -> usize {
+        self.mass_rows.as_ref().map_or(0, |mass| mass.colind.len())
+    }
+
     /// `mj_solPrimal`'s loop from the start it is given (`engine_solver.c:1811-1945`),
     /// improvement and gradient scaled by `scale`; returns each iteration's
     /// statistics.
@@ -1411,6 +1442,7 @@ pub fn mj_sol_primal(
         let stats = ctx.solve(model, scale)?;
         ctx.write_back(data);
         data.efc_cost = ctx.cost;
+        data.solver_nnz = ctx.solver_nnz(model, 0);
         data.solver_niter = stats.len();
         data.solver_stat = stats;
         data.solver_stat.truncate(MJ_NSOLVER);
@@ -1421,7 +1453,12 @@ pub fn mj_sol_primal(
     data.qacc.as_mut_slice().copy_from_slice(&ctx.qacc);
     data.efc_cost = 0.0;
     data.solver_niter = 0;
+    data.solver_nnz = 0;
     data.solver_stat.clear();
+    // The entries of M in the islands solved so far: MuJoCo addresses an
+    // island's rows of M in the islands' joint array (`iM_rowadr`), so its
+    // Hessian's count takes theirs too (`engine_solver.c:1532-1533`).
+    let mut m_before = 0;
     for island in 0..data.nisland {
         let sub = Subproblem::island(data, island);
         let tree = TreeMass::new(model, data, &sub);
@@ -1431,9 +1468,11 @@ pub fn mj_sol_primal(
         ictx.write_back(data);
         data.efc_cost += ictx.cost;
         if island < MJ_NISLAND {
+            data.solver_nnz += ictx.solver_nnz(model, m_before);
             data.solver_niter += stats.len();
             data.solver_stat.extend(stats.into_iter().take(MJ_NSOLVER));
         }
+        m_before += ictx.mass_nnz();
     }
     // A row in no island has a zero Jacobian (the partition reads its chain
     // at the sparse size, its nonzero entries at the dense size), so its
@@ -1451,4 +1490,86 @@ pub fn mj_sol_primal(
         data.efc_cost += octx.cost;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::types::JacobianType;
+
+    /// A four-link hinge chain each of whose joints is past its lower limit,
+    /// at the given Jacobian size, after a forward pass: one limit row per
+    /// joint.
+    fn limited_chain(jacobian: JacobianType) -> (Model, Data) {
+        let mut model = crate::test_fixtures::hinge_chain(4);
+        model.jacobian = jacobian;
+        for j in 0..model.njnt {
+            model.jnt_limited[j] = true;
+            model.jnt_range[j] = (0.1, 0.5);
+        }
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        assert_eq!(data.efc_type.len(), model.njnt, "a limit row per joint");
+        (model, data)
+    }
+
+    /// The factor solved against a vector of ones: dense through
+    /// [`mju_chol_solve`], sparse through [`SparseHessian::solve`].
+    fn factor_solve(ctx: &Primal) -> Vec<f64> {
+        let mut x = vec![1.0; ctx.nv];
+        match &ctx.sparse {
+            Some(h) => h.solve(false, &mut x),
+            None => mju_chol_solve(&ctx.l, &mut x, ctx.nv),
+        }
+        x
+    }
+
+    /// An update that loses rank makes the factor anew, as MuJoCo's
+    /// `HessianIncremental` calls `FactorizeHessian` with `flg_recompute`
+    /// (`engine_solver.c:1790-1796`), dense and at the sparse size; no MuJoCo
+    /// fixture was found that reaches it (ledger L224). Every limit row
+    /// quadratic, the factor made; then row 0 leaves the quadratic set with
+    /// its D raised 1e20-fold, so its downdate takes out far more than the
+    /// factor holds and loses rank. The factor after the update solves as
+    /// one made directly with row 0 out, bit for bit.
+    #[test]
+    fn an_update_that_loses_rank_makes_the_factor_anew() {
+        for jacobian in [JacobianType::Dense, JacobianType::Sparse] {
+            let (model, data) = limited_chain(jacobian);
+            let make = || {
+                let sub = Subproblem::whole(&model, &data);
+                let mass = Mass::Tree(TreeMass::new(&model, &data, &sub));
+                Primal::new(&model, &data, sub, mass, data.qfrc_smooth.as_slice(), true)
+            };
+            let all = vec![ConstraintState::Quadratic; data.efc_type.len()];
+
+            let mut ctx = make();
+            ctx.state.clone_from(&all);
+            ctx.factorize_hessian().expect("factor");
+            ctx.rows.d[0] *= 1e20;
+            ctx.state[0] = ConstraintState::Satisfied;
+            ctx.hessian_incremental(&all).expect("update");
+            // A factor made anew counts every row as an update
+            // (`engine_solver.c:1669`); the one row's update alone counts 1.
+            assert_eq!(
+                ctx.nupdate,
+                data.efc_type.len(),
+                "{jacobian:?}: the update lost rank and the factor was made anew"
+            );
+
+            let mut fresh = make();
+            fresh.state.clone_from(&all);
+            fresh.state[0] = ConstraintState::Satisfied;
+            fresh.factorize_hessian().expect("factor");
+
+            let (got, want) = (factor_solve(&ctx), factor_solve(&fresh));
+            assert!(
+                got.iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{jacobian:?}: {got:?}, made anew {want:?}"
+            );
+        }
+    }
 }

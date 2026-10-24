@@ -5,6 +5,7 @@
 //! (qfrc recovery, friction pyramid decoding). Corresponds to MuJoCo's
 //! `engine_solver.c`.
 
+pub mod dual;
 pub mod noslip;
 pub mod pgs;
 pub mod primal;

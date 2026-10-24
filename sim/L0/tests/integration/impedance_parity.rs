@@ -14,7 +14,7 @@
 //! oracle (`scripts/gen_impedance_reference.py`, which describes its cases).
 
 use serde_json::Value;
-use sim_core::{ConstraintState, ConstraintType, Data, Model};
+use sim_core::{ConstraintState, ConstraintType, Data, EqualityType, Model};
 use sim_mjcf::load_model;
 
 const TOL: f64 = 1e-12;
@@ -262,7 +262,11 @@ fn differs(what: &str, got: &[f64], want: &[f64], tol: f64) -> Option<String> {
     got.iter()
         .zip(want)
         .enumerate()
-        .find(|(_, (a, b))| relative(**a, **b) > tol)
+        .find(|(_, (a, b))| {
+            // Past the bound or NaN: a NaN is never within it.
+            let d = relative(**a, **b);
+            d.is_nan() || d > tol
+        })
         .map(|(i, (a, b))| format!("{what}[{i}]: {a}, expected {b}"))
 }
 
@@ -439,9 +443,11 @@ fn diag_approx_as_mujoco() {
                 continue;
             }
             let (a, b) = (data.efc_diagApprox[i], want[i]);
+            let off_by = (a - b).abs();
             if a.to_bits() != b.to_bits()
                 && (cfg!(all(target_os = "macos", target_arch = "aarch64"))
-                    || (a - b).abs() > 1e-13 * b.abs().max(1.0))
+                    || off_by.is_nan()
+                    || off_by > 1e-13 * b.abs().max(1.0))
             {
                 out.push(format!(
                     "{name}: efc_diagApprox[{i}] ({kind:?}): {a}, expected {b}"
@@ -460,6 +466,166 @@ fn diag_approx_as_mujoco() {
         out.extend(d.map(|d| format!("{name}: {d}")));
     }
     assert!(out.is_empty(), "{} differ:\n{}", out.len(), out.join("\n"));
+}
+
+/// Each diag_approx case's rows' diagApprox and R as MuJoCo's
+/// `mj_diagApprox` and `mj_makeImpedance` round them, bit for bit on macOS
+/// arm64 ([`golden_bits`]): a pyramidal facet pair's `tran + μ²·tran`, each
+/// product apart (`engine_core_constraint.c:1276-1280`; the
+/// `pyramidal_friction_*` cases, whose mass makes `(1 + μ²)·tran` round
+/// otherwise, ledger L227), and a tendon equality's two tendons'
+/// `tendon_invweight0` added (`:1139-1150`; `tendon_pair`, ledger L230); and
+/// the bodies' and dofs' `invweight0` where the case gives them, made from M
+/// at qpos0 (`engine_setconst.c:620-712`; `inertial_chain`, whose bodies'
+/// inertias are written out, ledger L223); rows whose weights are below
+/// mjMINVAL, unfloored (`weightless_*`, ledger L227); and `tendon_invweight0`
+/// by `mju_dot`, 0 for a tendon whose Jacobian is 0 at qpos0
+/// (`engine_setconst.c:752-767`; `tendon_zero_j`, `tendon_chain`). Of
+/// `every_row_kind`, the weld's three rotational rows are left to
+/// [`diag_approx_as_mujoco`]'s 1e-12: they take its box's rotational
+/// `body_invweight0`, from the box's inertia as sim-mjcf compiles it, an ulp
+/// off MuJoCo's in two axes (ledger L198).
+#[test]
+fn diag_approx_rounds_as_mujoco() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["diag_approx"].as_object().expect("cases") {
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        if case["qpos"].is_null() {
+            data.qpos[2] += case["dz"].as_f64().expect("dz");
+        } else {
+            data.qpos.copy_from_slice(&floats(&case["qpos"]));
+            data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        }
+        data.forward(&model).expect("forward");
+        let rotational_weld: Vec<usize> = if name == "every_row_kind" {
+            let weld: Vec<usize> = (0..data.efc_type.len())
+                .filter(|&i| {
+                    data.efc_type[i] == ConstraintType::Equality
+                        && model.eq_type[data.efc_id[i]] == EqualityType::Weld
+                })
+                .collect();
+            assert_eq!(weld.len(), 6, "every_row_kind: the weld's rows");
+            weld[3..].to_vec()
+        } else {
+            Vec::new()
+        };
+        let rows = |v: &[f64]| -> Vec<f64> {
+            (0..v.len())
+                .filter(|i| !rotational_weld.contains(i))
+                .map(|i| v[i])
+                .collect()
+        };
+        if let Some(weights) = case.get("tendon_invweight0") {
+            let what = format!("{name} tendon_invweight0");
+            golden_bits(&mut off, &what, &model.tendon_invweight0, &floats(weights));
+        }
+        if let Some(weights) = case.get("body_invweight0") {
+            let ours: Vec<f64> = model.body_invweight0.iter().flatten().copied().collect();
+            golden_bits(
+                &mut off,
+                &format!("{name} body_invweight0"),
+                &ours,
+                &floats(weights),
+            );
+            let what = format!("{name} dof_invweight0");
+            let want = floats(&case["dof_invweight0"]);
+            golden_bits(&mut off, &what, &model.dof_invweight0, &want);
+        }
+        let want = rows(&floats(&case["efc_diagApprox"]));
+        let what = format!("{name} efc_diagApprox");
+        golden_bits(&mut off, &what, &rows(&data.efc_diagApprox), &want);
+        let want = rows(&floats(&case["efc_R"]));
+        golden_bits(
+            &mut off,
+            &format!("{name} efc_R"),
+            &rows(&data.efc_R),
+            &want,
+        );
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
+/// A free body over a plane turned by a NaN quaternion (mesh, ellipsoid,
+/// box): its contacts at a NaN distance make rows whose impedance, R, D and
+/// diagApprox are NaN, as MuJoCo's: `getimpedance` takes a NaN `x` on to its
+/// curve and `mju_max` keeps a NaN (`engine_core_constraint.c:1422-1461`,
+/// `:1484`; ledger L209). So does a NaN impedance parameter where it reaches a
+/// row (`nan_param`: a limit's solimp width, midpoint or power, an elliptic
+/// contact's impratio set on the loaded model, as sim-mjcf refuses a NaN one,
+/// ledger L131), the other rows as MuJoCo's, bit for bit.
+#[test]
+fn a_nan_violation_takes_nan_rows_as_mujoco() {
+    let g = golden();
+    let mut off = Vec::new();
+    let groups = ["nan_turn", "nan_param"].map(|k| g["cases"][k].as_object().expect("cases"));
+    for (name, case) in groups.into_iter().flatten() {
+        let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        if let Some(impratio) = case.get("impratio") {
+            model.impratio = impratio.as_str().and_then(|t| t.parse().ok()).expect("NaN");
+        }
+        let mut data = model.make_data();
+        match case.get("qpos") {
+            Some(qpos) => data.qpos.copy_from_slice(&floats(qpos)),
+            None => data.qpos[3] = f64::NAN,
+        }
+        data.forward(&model).expect("forward");
+        let nefc = usize::try_from(case["nefc"].as_u64().expect("nefc")).expect("fits");
+        assert_eq!(data.efc_type.len(), nefc, "{name}: nefc");
+        for (field, ours) in [
+            ("efc_imp", &data.efc_imp),
+            ("efc_R", &data.efc_R),
+            ("efc_D", &data.efc_D),
+            ("efc_diagApprox", &data.efc_diagApprox),
+        ] {
+            let want = floats_or_nan(&case[field]);
+            for (i, (a, b)) in ours.iter().zip(&want).enumerate() {
+                if a.is_nan() != b.is_nan() || (!a.is_nan() && a.to_bits() != b.to_bits()) {
+                    off.push(format!("{name} {field}[{i}]: {a:e}, MuJoCo {b:e}"));
+                }
+            }
+        }
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
+/// A golden's numbers, its non-finite ones written as strings ("nan").
+fn floats_or_nan(v: &Value) -> Vec<f64> {
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| match x.as_str() {
+            Some(text) => text.parse().expect("a non-finite number"),
+            None => x.as_f64().expect("number"),
+        })
+        .collect()
+}
+
+/// Where `got` differs from `want`, each as a line in `off`: in any bit on
+/// macOS arm64, where the golden was made; elsewhere by more than
+/// `1e-13 · max(1, |MuJoCo's|)`, and a NaN always.
+fn golden_bits(off: &mut Vec<String>, what: &str, got: &[f64], want: &[f64]) {
+    if got.len() != want.len() {
+        off.push(format!(
+            "{what}: {} values, MuJoCo {}",
+            got.len(),
+            want.len()
+        ));
+        return;
+    }
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    for (i, (a, b)) in got.iter().zip(want).enumerate() {
+        let same = if exact {
+            a.to_bits() == b.to_bits()
+        } else {
+            // Within the bound or pushed: a NaN is never within it.
+            (a - b).abs() <= 1e-13 * b.abs().max(1.0)
+        };
+        if !same {
+            off.push(format!("{what}[{i}]: {a:e}, MuJoCo {b:e}"));
+        }
+    }
 }
 
 /// The sphere at impratio 10, sliding, spinning and rolling, at condim 3 and

@@ -529,6 +529,15 @@ impl Data {
         actuation::mj_transmission_slidercrank(model, self);
         actuation::mj_transmission_body_dispatch(model, self);
 
+        // The rows' inverse inertia while a dual solver runs, as MuJoCo's
+        // `mj_fwdPosition` (`engine_forward.c:213`); its inverse position
+        // pass makes none (`mj_invPosition`), nor this one under the implicit
+        // spring-damper integrator, whose constraint stage makes it over
+        // `M_impl`.
+        if pass == Pass::Forward && model.integrator != Integrator::ImplicitSpringDamper {
+            crate::constraint::mj_project_constraint(model, self);
+        }
+
         if compute_sensors {
             crate::sensor::mj_sensor_pos(model, self);
         }
@@ -619,11 +628,11 @@ impl Data {
         // island by island as MuJoCo's (`constraint/solver/primal.rs`).
         crate::constraint::mj_fwd_constraint(model, self)?;
 
-        // The primal solver's iterate is the acceleration (MuJoCo's
-        // `mj_fwdConstraint`); after PGS or noslip it is made from the forces.
+        // The solver's acceleration is kept (MuJoCo's `mj_fwdConstraint`: the
+        // primal iterate, or `dualFinish` after PGS or noslip).
         // Under implicit and implicitfast, `integrate` factors M − h·D and
         // solves for the acceleration it advances qvel with.
-        if !self.primal_qacc {
+        if !self.solver_qacc {
             acceleration::mj_fwd_acceleration(model, self)?;
         }
         if let Some(kept) = kept {

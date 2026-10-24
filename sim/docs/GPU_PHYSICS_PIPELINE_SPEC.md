@@ -1712,8 +1712,8 @@ Full GPU physics pipeline available via `GpuPhysicsPipeline::new()` + `step()`.
 - **SoA refactor of CPU Data struct:** Align CPU and GPU layouts for
   zero-copy upload. Eliminates f64→f32 conversion at boundary.
 
-- **Noslip post-processor:** Secondary Jacobi pass on friction rows
-  to eliminate residual slip. Matches CPU noslip_postprocess().
+- **Noslip post-processor:** a pass over the friction rows to remove
+  residual slip, as the CPU's `mj_sol_noslip` (MuJoCo's `mj_solNoSlip`).
 
 - **Equality constraints on GPU:** Connect, Weld, Joint, Distance, and
   Tendon constraints are fully implemented on the CPU pipeline

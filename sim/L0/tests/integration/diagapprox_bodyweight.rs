@@ -328,7 +328,7 @@ fn tendon_invweight0_serial_chain_coupling() {
 
 // ============================================================================
 // Test 5d: tendon_invweight0 — spatial tendon regression guard (T5, AC7)
-// Spatial tendons use the same full J·M⁻¹·J^T algorithm; invweight0 > MIN_VAL
+// Spatial tendons use the same full J·M⁻¹·J^T algorithm, unfloored
 // ============================================================================
 
 #[test]
@@ -357,13 +357,15 @@ fn tendon_invweight0_spatial_regression() {
     "#;
     let model = load_model(mjcf).expect("should load");
 
-    // AC7: Spatial tendon invweight0 >= MIN_VAL (1e-15), no panics.
-    // Note: This model has a geometric degeneracy at qpos=0 — the tendon
-    // is collinear with Z and both joints rotate around Y, so
-    // d(length)/d(qvel) = 0. MuJoCo would also give MIN_VAL here.
-    assert!(
-        model.tendon_invweight0[0] >= 1e-15,
-        "Spatial tendon invweight0 should be >= MIN_VAL, got {}",
+    // This model has a geometric degeneracy at qpos=0 — the tendon is
+    // collinear with Z and both joints rotate around Y, so
+    // d(length)/d(qvel) = 0 — and its weight is 0, as MuJoCo's, which floors
+    // no weight (`engine_setconst.c:752-767`; the impedance golden's
+    // `tendon_zero_j` checks such a tendon against MuJoCo's).
+    assert_eq!(
+        model.tendon_invweight0[0].to_bits(),
+        0.0_f64.to_bits(),
+        "spatial tendon invweight0 {}",
         model.tendon_invweight0[0]
     );
 }

@@ -36,35 +36,35 @@ use sim_core::validation::{Check, print_report};
 
 // ── What the engine computes (PGS solver) ──────────────────────────────────
 //
-//   Projected Gauss-Seidel — dual-space iterative constraint solver:
+//   Projected Gauss-Seidel — dual-space iterative constraint solver, MuJoCo's
+//   mj_solPGS operation for operation:
 //
-//   Setup:
-//     Compute M⁻¹·Jᵀ via sparse LDL solves (one per constraint row)
-//     For each constraint i:
-//       ar_diag[i] = Jᵢ · (M⁻¹·Jᵢᵀ) + R[i]   (diagonal Delassus + regularization)
-//       b_eff[i] = efc_b[i] - Jᵢ · qacc_smooth
+//   Setup (the position stage, MuJoCo's mj_projectConstraint):
+//     AR = J·M⁻¹·Jᵀ + diag(R)     (the rows' inverse inertia, efc_AR)
+//   Warmstart: the forces at the last step's acceleration, kept unless their
+//     dual cost f·b + ½·f·(AR·f) is positive, else zero
 //
 //   Main loop (for iter = 0..max_iters):
-//     For each constraint row i:
-//       1. Residual:  r[i] = b_eff[i] + Jᵢ·qacc + R[i]·f[i]
-//       2. Update:    f[i] ← f[i] - r[i] / ar_diag[i]
+//     For each constraint row i (an elliptic contact's rows as one block):
+//       1. Residual:  r = efc_b[i] + AR[i]·f
+//       2. Update:    f[i] ← f[i] − r / AR[i][i]
 //       3. Project per constraint type:
-//            Equality:     no projection (unconstrained)
-//            Contact/Limit: f[i] = max(0, f[i])          (non-negative normal force)
-//            Friction:      f[i] = clamp(f[i], -μ·fₙ, μ·fₙ)  (friction cone)
-//            Elliptic:      QCQP solve for friction cone  (coupled normal+friction)
-//       4. Incremental update: qacc += Δf · (M⁻¹·Jᵢᵀ)
-//     Check convergence: if relative cost improvement < tolerance, stop
+//            Equality:            no projection
+//            Friction loss:       f[i] = clamp(f[i], −frictionloss, frictionloss)
+//            Limit, contact rows: f[i] = max(0, f[i])
+//            Elliptic contact:    the block's friction by MuJoCo's QCQP
+//       4. Keep the move only if it lowers the dual cost
+//     Stop when the sweep's cost improvement, scaled, is below tolerance
 //
-//   Post-solve:
-//     qfrc_constraint = Jᵀ · efc_force
+//   Post-solve (dualFinish):
+//     qfrc_constraint = Jᵀ · efc_force,  qacc = qacc_smooth + M⁻¹·qfrc_constraint
 //
 //   Properties:
-//   - Always converges (guaranteed for convex LCP)
 //   - Linear convergence rate — needs more iterations than CG/Newton
-//   - O(nefc · nv) per iteration (sparse matrix-vector products)
+//   - Each row's residual reads its row of AR: at the dense size a sweep's
+//     work grows as nefc², and AR itself as nefc²·nv
 //
-// Source: sim/L0/core/src/constraint/solver/pgs.rs
+// Source: sim/L0/core/src/constraint/solver/{pgs,dual}.rs, constraint/project.rs
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 

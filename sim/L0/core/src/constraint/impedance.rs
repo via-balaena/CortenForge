@@ -8,7 +8,7 @@
 use nalgebra::{DVector, Vector3};
 
 use crate::dynamics::factor::mj_solve_m;
-use crate::linalg::{cholesky_in_place, cholesky_solve_in_place};
+use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mju_max, mju_min};
 use crate::types::{Data, Model};
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -91,7 +91,8 @@ fn mj_power(a: f64, b: f64) -> f64 {
 /// `getimpedance` (`engine_core_constraint.c:1416`, `:1439`).
 ///
 /// # Returns
-/// Impedance value in (0, 1), clamped to [MIN_IMPEDANCE, MAX_IMPEDANCE].
+/// The impedance, in `[mjMINIMP, mjMAXIMP]` for finite inputs (its
+/// parameters clamped there); NaN where a NaN reaches the curve, as MuJoCo's.
 #[inline]
 // MuJoCo compares the flat and linear cases exactly.
 #[allow(clippy::float_cmp)]
@@ -101,37 +102,38 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
     const MJ_MAX_IMP: f64 = 0.9999;
 
     // A NaN passes: a contact at a NaN distance (a geom turned by a NaN, as
-    // MuJoCo's collision functions list it) reaches here.
+    // MuJoCo's collision functions list it) reaches here, and off a flat curve
+    // its impedance is NaN, as MuJoCo's `getimpedance` gives (ledger L209).
     debug_assert!(
         !(violation < 0.0),
         "compute_impedance expects non-negative violation, got {violation}"
     );
 
-    // Clamp inputs to valid ranges, matching MuJoCo's getsolparam():
+    // Clamp inputs to valid ranges as MuJoCo's getsolparam() does
+    // (`engine_core_constraint.c:1357-1361`):
     //   d0, d_width, midpoint ∈ [mjMINIMP, mjMAXIMP]
     //   width ≥ 0
     //   power ≥ 1
-    let d0 = solimp[0].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
-    let d_width = solimp[1].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
-    let width = solimp[2].max(0.0);
-    let midpoint = solimp[3].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
-    let power = solimp[4].max(1.0);
+    let clamp = |v: f64| mju_min(MJ_MAX_IMP, mju_max(MJ_MIN_IMP, v));
+    let d0 = clamp(solimp[0]);
+    let d_width = clamp(solimp[1]);
+    let width = mju_max(0.0, solimp[2]);
+    let midpoint = clamp(solimp[3]);
+    let power = mju_max(1.0, solimp[4]);
 
     // Flat function
     if d0 == d_width || width <= MJ_MINVAL {
         return 0.5 * (d0 + d_width);
     }
 
-    // Normalized position: x = violation / width, clamped to [0, 1]
-    let x = (violation / width).min(1.0);
-
-    // Saturated at full width — return d_width
+    // Normalized position: x = violation / width, saturated at either end
+    // (`getimpedance`, `engine_core_constraint.c:1422-1435`). A NaN is
+    // neither and goes on to the curve, which gives NaN.
+    let x = violation / width;
     if x >= 1.0 {
         return d_width;
     }
-
-    // At zero violation — return d0
-    if x == 0.0 {
+    if x <= 0.0 {
         return d0;
     }
 
@@ -188,17 +190,21 @@ pub fn compute_kbip(model: &Model, solref: [f64; 2], solimp: [f64; 5]) -> (f64, 
         };
         let dampratio = solref[1];
 
-        let k = 1.0 / (dmax * dmax * timeconst * timeconst * dampratio * dampratio).max(MJ_MINVAL);
+        let k = 1.0
+            / mju_max(
+                MJ_MINVAL,
+                dmax * dmax * timeconst * timeconst * dampratio * dampratio,
+            );
         let b = if dampratio > 0.0 {
-            2.0 / (dmax * timeconst).max(MJ_MINVAL)
+            2.0 / mju_max(MJ_MINVAL, dmax * timeconst)
         } else {
-            -dampratio / dmax.max(MJ_MINVAL)
+            -dampratio / mju_max(MJ_MINVAL, dmax)
         };
         (k, b)
     } else {
         // Direct mode: solref = [-stiffness, -damping]
-        let k = -solref[0] / (dmax * dmax).max(MJ_MINVAL);
-        let b = -solref[1] / dmax.max(MJ_MINVAL);
+        let k = -solref[0] / mju_max(MJ_MINVAL, dmax * dmax);
+        let b = -solref[1] / mju_max(MJ_MINVAL, dmax);
         (k, b)
     }
 }
@@ -260,125 +266,74 @@ pub fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: 
 }
 
 /// Body-weight diagonal approximation for row `row_offset` of equality
-/// constraint `id` (DT-39; MuJoCo ref: `mj_diagApprox()` in
-/// `engine_core_constraint.c`): an O(1) approximation of
-/// `diag(J · M⁻¹ · J^T)` from the precomputed inverse weights, instead of
-/// solving `M · w = J^T` (which is O(nv)). Clamped to `MJ_MINVAL`.
+/// constraint `id`, as MuJoCo's `mj_diagApprox` (`engine_core_constraint.c:1093-1287`):
+/// an O(1) approximation of `diag(J · M⁻¹ · J^T)` from the inverse weights at
+/// `qpos0` instead of solving `M · w = J^T`. A connect's rows take its two
+/// bodies' translational weights, a weld's first three rows those and its
+/// last three their rotational ones, a joint or tendon equality its first
+/// object's `dof_invweight0` or `tendon_invweight0` plus its second's when it
+/// has one. No floor: MuJoCo floors only `R` (`mj_makeImpedance`).
 #[inline]
 pub fn compute_diag_approx_bodyweight(model: &Model, id: usize, row_offset: usize) -> f64 {
-    if id < model.neq {
-        use crate::types::EqualityType;
-        match model.eq_type[id] {
-            EqualityType::Connect => {
-                // 3 translational rows: sum of translational invweights
-                let b1 = model.eq_obj1id[id];
-                let b2 = model.eq_obj2id[id];
-                let w1 = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][0]
-                } else {
-                    0.0
-                };
-                let w2 = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][0]
-                } else {
-                    0.0
-                };
-                (w1 + w2).max(MJ_MINVAL)
-            }
-            EqualityType::Weld => {
-                // 6 rows: 0-2 → translational, 3-5 → rotational
-                let b1 = model.eq_obj1id[id];
-                let b2 = model.eq_obj2id[id];
-                let comp = usize::from(row_offset >= 3);
-                let w1 = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][comp]
-                } else {
-                    0.0
-                };
-                let w2 = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][comp]
-                } else {
-                    0.0
-                };
-                (w1 + w2).max(MJ_MINVAL)
-            }
-            EqualityType::Joint => {
-                // MuJoCo: dof_invweight0[dof1] + dof_invweight0[dof2]
-                let jnt1 = model.eq_obj1id[id];
-                let jnt2 = model.eq_obj2id[id];
-                let w1 = if jnt1 < model.njnt {
-                    let dof = model.jnt_dof_adr[jnt1];
-                    if dof < model.dof_invweight0.len() {
-                        model.dof_invweight0[dof]
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                let w2 = if jnt2 < model.njnt {
-                    let dof = model.jnt_dof_adr[jnt2];
-                    if dof < model.dof_invweight0.len() {
-                        model.dof_invweight0[dof]
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                (w1 + w2).max(MJ_MINVAL)
-            }
-            EqualityType::Tendon => {
-                let tid = model.eq_obj1id[id];
-                if tid < model.tendon_invweight0.len() {
-                    model.tendon_invweight0[tid].max(MJ_MINVAL)
-                } else {
-                    MJ_MINVAL
-                }
-            }
-            // Not reached: a flex row's diagonal approximation is its
-            // edge's `flexedge_invweight0`, which
-            // `assemble_flex_equality_rows` passes itself.
-            EqualityType::Flex => MJ_MINVAL,
-            EqualityType::Distance => {
-                let g1 = model.eq_obj1id[id];
-                let g2 = model.eq_obj2id[id];
-                let b1 = if g1 < model.geom_body.len() {
-                    model.geom_body[g1]
-                } else {
-                    0
-                };
-                let b2 = if g2 < model.geom_body.len() {
-                    model.geom_body[g2]
-                } else {
-                    0
-                };
-                let w1 = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][0]
-                } else {
-                    0.0
-                };
-                let w2 = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][0]
-                } else {
-                    0.0
-                };
-                (w1 + w2).max(MJ_MINVAL)
+    use crate::types::EqualityType;
+    if id >= model.neq {
+        return MJ_MINVAL;
+    }
+    let body = |b: usize, comp: usize| model.body_invweight0.get(b).map_or(0.0, |w| w[comp]);
+    let dof = |jnt: usize| {
+        if jnt < model.njnt {
+            model
+                .dof_invweight0
+                .get(model.jnt_dof_adr[jnt])
+                .copied()
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    };
+    let tendon = |t: usize| model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
+    let (obj1, obj2) = (model.eq_obj1id[id], model.eq_obj2id[id]);
+    match model.eq_type[id] {
+        EqualityType::Connect => body(obj1, 0) + body(obj2, 0),
+        EqualityType::Weld => {
+            let comp = usize::from(row_offset >= 3);
+            body(obj1, comp) + body(obj2, comp)
+        }
+        EqualityType::Joint => {
+            let w = dof(obj1);
+            if obj2 == usize::MAX { w } else { w + dof(obj2) }
+        }
+        EqualityType::Tendon => {
+            let w = tendon(obj1);
+            if obj2 == usize::MAX {
+                w
+            } else {
+                w + tendon(obj2)
             }
         }
-    } else {
-        MJ_MINVAL
+        // Not reached: a flex row's diagonal approximation is its
+        // edge's `flexedge_invweight0`, which
+        // `assemble_flex_equality_rows` passes itself.
+        EqualityType::Flex => MJ_MINVAL,
+        // This crate's own equality (MuJoCo 3.5.0's `mjEQ_DISTANCE` is
+        // unsupported, an error if used): its geoms' bodies' translational
+        // weights, as a connect's.
+        EqualityType::Distance => {
+            let geom_body = |g: usize| model.geom_body.get(g).copied().unwrap_or(0);
+            body(geom_body(obj1), 0) + body(geom_body(obj2), 0)
+        }
     }
 }
 
 /// Compute regularization R and constraint stiffness D from impedance and diagApprox (§15.1).
 ///
 /// R = max(mjMINVAL, (1 - imp) · diagApprox / imp), in MuJoCo's order of
-/// operations (`mj_makeImpedance`, `engine_core_constraint.c:1484`)
+/// operations (`mj_makeImpedance`, `engine_core_constraint.c:1484`), its
+/// `mju_max`: a NaN impedance gives a NaN R
 /// D = 1 / R
 #[inline]
 pub fn compute_regularization(imp: f64, diag_approx: f64) -> (f64, f64) {
-    let r = ((1.0 - imp) * diag_approx / imp).max(MJ_MINVAL);
+    let r = mju_max(MJ_MINVAL, (1.0 - imp) * diag_approx / imp);
     let d = 1.0 / r;
     (r, d)
 }
@@ -467,8 +422,9 @@ mod impedance_tests {
     #[test]
     fn test_impedance_admits_nan_violation() {
         // A contact at a NaN distance (a geom turned by a NaN) reaches here;
-        // the debug check lets it pass, as MuJoCo's `getimpedance` has none
-        compute_impedance(DEFAULT, f64::NAN);
+        // the debug check lets it pass, as MuJoCo's `getimpedance` has none,
+        // and the impedance is NaN, as MuJoCo's (ledger L209)
+        assert!(compute_impedance(DEFAULT, f64::NAN).is_nan());
     }
 
     #[test]

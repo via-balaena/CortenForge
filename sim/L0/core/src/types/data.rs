@@ -389,8 +389,12 @@ pub struct Data {
     /// the first 20 islands' summed, the islands MuJoCo counts (`mjNISLAND`);
     /// then noslip's sweeps.
     pub solver_niter: usize,
-    /// Never written: 0 (ledger L221). MuJoCo's counts, per island, the
-    /// nonzeros of Newton's Hessian or of PGS's `efc_AR`.
+    /// The last constraint solve's nonzeros, as MuJoCo's `solver_nnz` counts
+    /// them: Newton's Hessian (at the sparse size its factor's entries, twice
+    /// under an elliptic cone, and the Hessian's count; `nv²` dense), CG's 0,
+    /// PGS's `efc_AR`. Solved island by island, the first 20 islands' summed,
+    /// as `solver_niter` sums them (MuJoCo keeps one per island). A solve with
+    /// no rows leaves it, as MuJoCo's.
     pub solver_nnz: usize,
     // ==================== Unified Constraint System (Newton solver, §15) ====================
     // The rows are made in the position stage, their velocities and reference
@@ -446,6 +450,26 @@ pub struct Data {
     /// Per-row D = 1/R (constraint stiffness, inverse of regularization).
     #[allow(non_snake_case)]
     pub efc_D: Vec<f64>,
+    /// The rows' inverse inertia with their regularization, `J·M⁻¹·J' +
+    /// diag(R)`, which the dual solvers read (PGS and noslip,
+    /// [`Model::is_dual`]); made by the forward pass's position stage as
+    /// MuJoCo's `efc_AR` (`mj_projectConstraint`), empty when no dual solver
+    /// runs. Dense, `nefc × nefc` row by row; at the sparse size
+    /// ([`Model::is_sparse`]) each row's values at [`Self::efc_AR_rowadr`],
+    /// their columns in [`Self::efc_AR_colind`], ascending. Under the implicit
+    /// spring-damper integrator (this crate's) it is made over `M_impl`
+    /// instead, dense at either size, by the constraint stage.
+    #[allow(non_snake_case)]
+    pub efc_AR: Vec<f64>,
+    /// `efc_AR`'s entries in each row at the sparse size; empty when it is dense.
+    #[allow(non_snake_case)]
+    pub efc_AR_rownnz: Vec<usize>,
+    /// Where each row of `efc_AR` starts at the sparse size.
+    #[allow(non_snake_case)]
+    pub efc_AR_rowadr: Vec<usize>,
+    /// Each sparse entry's column of `efc_AR`.
+    #[allow(non_snake_case)]
+    pub efc_AR_colind: Vec<usize>,
     /// Per-row impedance value (from solimp sigmoid, in [dmin, dmax]).
     pub efc_imp: Vec<f64>,
     // Note: MuJoCo packs K, B, imp, and impP into a single `efc_KBIP[4*i+{0,1,2,3}]`
@@ -476,15 +500,15 @@ pub struct Data {
     /// Per-row constraint force (length nefc).
     pub efc_force: DVector<f64>,
     /// Per-row `J·qacc − aref` (length nefc): the primal solver's at its last
-    /// iterate; after PGS, the warmstart's (0 with the warmstart disabled).
+    /// iterate; after PGS, 0.
     pub efc_jar: DVector<f64>,
     /// Total cost (Gauss + constraint terms): the primal solver's; after PGS,
-    /// the warmstart's (0 with the warmstart disabled).
+    /// 0.
     pub efc_cost: f64,
     /// Per-contact cone Hessian matrices (dim x dim). Indexed parallel to contacts.
     pub efc_cone_hessian: Vec<Option<DMatrix<f64>>>,
-    /// Number of contacts in the Cone state; after PGS, at its warmstart (0
-    /// with the warmstart disabled; `efc_state` is then `dualState`'s).
+    /// Number of contacts in the Cone state, the primal solver's; after PGS,
+    /// 0 (`efc_state` is then `dualState`'s).
     pub ncone: usize,
     /// Number of equality constraint rows (a flex equality's edge rows among
     /// them). These occupy `efc_*[0..ne)`.
@@ -492,11 +516,11 @@ pub struct Data {
     /// Number of friction loss constraint rows (DOF + tendon).
     /// These occupy `efc_*[ne..ne+nf)`.
     pub nf: usize,
-    /// Whether `qacc` is the primal solver's iterate this step (Newton or CG
-    /// solved rows and no noslip pass changed the forces after). When true,
+    /// Whether the constraint solve made `qacc` this step: the primal
+    /// solver's iterate (Newton, CG), or `dualFinish`'s after PGS or noslip. When true,
     /// the forward pass keeps it instead of making the acceleration from the
     /// forces.
-    pub(crate) primal_qacc: bool,
+    pub(crate) solver_qacc: bool,
 
     /// Per-iteration solver statistics, as MuJoCo keeps them: the first 200
     /// (`mjNSOLVER`) of a solve's iterations, or solved island by island of
@@ -910,6 +934,10 @@ impl Clone for Data {
             efc_diagApprox: self.efc_diagApprox.clone(),
             efc_R: self.efc_R.clone(),
             efc_D: self.efc_D.clone(),
+            efc_AR: self.efc_AR.clone(),
+            efc_AR_rownnz: self.efc_AR_rownnz.clone(),
+            efc_AR_rowadr: self.efc_AR_rowadr.clone(),
+            efc_AR_colind: self.efc_AR_colind.clone(),
             efc_imp: self.efc_imp.clone(),
             efc_aref: self.efc_aref.clone(),
             efc_floss: self.efc_floss.clone(),
@@ -924,7 +952,7 @@ impl Clone for Data {
             ncone: self.ncone,
             ne: self.ne,
             nf: self.nf,
-            primal_qacc: self.primal_qacc,
+            solver_qacc: self.solver_qacc,
             solver_stat: self.solver_stat.clone(),
             // Sensors
             sensordata: self.sensordata.clone(),

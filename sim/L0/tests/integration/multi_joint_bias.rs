@@ -63,8 +63,9 @@ fn assert_same_fixture(name: &str, model: &Model, golden: &Value) {
             &quat(&gq[4 * b..4 * b + 4]),
             &Vector3::new(gi[3 * b], gi[3 * b + 1], gi[3 * b + 2]),
         );
+        // Each entry within the bound (`amax` would drop a NaN).
         assert!(
-            (ours - theirs).amax() <= TOL,
+            (ours - theirs).iter().all(|d| d.abs() <= TOL),
             "{name} body {b} inertia tensor: ours {ours}, MuJoCo {theirs}"
         );
     }

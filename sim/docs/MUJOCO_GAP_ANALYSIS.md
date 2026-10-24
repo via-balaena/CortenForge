@@ -189,7 +189,7 @@ data.step(&model).expect("step");
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| PGS (Gauss-Seidel) | Supported (pure GS, no SOR) | `pgs_solve_unified()` in pipeline | **Implemented** (MuJoCo-aligned) | - | - |
+| PGS (Gauss-Seidel) | Supported (pure GS, no SOR) | `mj_sol_pgs()` (MuJoCo's `mj_solPGS`) | **Implemented** (MuJoCo's dual solver, operation for operation) | - | - |
 | Newton solver | Default | `mj_sol_primal()` (MuJoCo's `mj_solPrimal`) | **Implemented** (MuJoCo's primal solver, operation for operation) | - | - |
 | Conjugate Gradient | Supported | `mj_sol_primal()` (MuJoCo's `mj_solPrimal`, Polak-Ribière) | **Implemented** (MuJoCo's primal solver, operation for operation) | - | - |
 | Constraint islands | Auto-detected | `mj_island()` (from the constraint rows) | **Implemented** (replaced old `islands.rs` with pipeline-native island discovery; Newton and CG solve each island apart) | - | - |
@@ -224,7 +224,7 @@ solver with Polak-Ribière directions:
 
 > The standalone `PGSSolver` in `sim-constraint/src/pgs.rs` was **deleted in Phase 3 consolidation**. That solver included an SOR (Successive Over-Relaxation) parameter — this was a design error based on the incorrect assumption that MuJoCo uses SOR in its PGS. Verification against MuJoCo source (`engine_solver.c`, `mj_solPGS`) confirms MuJoCo uses pure Gauss-Seidel with no SOR blending; `mjOption` has no `sor` field and `<option>` has no `sor` attribute.
 
-The pipeline PGS in `constraint/solver/pgs.rs` (`pgs_solve_unified()`) correctly uses pure Gauss-Seidel (ω=1.0), matching MuJoCo's implementation. SOR was considered as future work (§17) but was dropped after the MuJoCo source verification.
+The pipeline PGS in `constraint/solver/pgs.rs` (`mj_sol_pgs()`) correctly uses pure Gauss-Seidel (ω=1.0), matching MuJoCo's implementation. SOR was considered as future work (§17) but was dropped after the MuJoCo source verification.
 
 **Files:** `sim-constraint/src/pgs.rs` (removed in Phase 3 consolidation)
 

@@ -1408,11 +1408,14 @@ fn connect_under_implicitfast_pgs_matches_mujoco_3_5_0() {
         data.step(&model).expect("step");
         for (step, qpos, qvel) in &mujoco {
             if k == *step {
+                // A NaN difference counts as infinitely far.
                 let dq = (data.qpos.iter().zip(qpos))
                     .map(|(a, b)| (a - b).abs())
+                    .map(|d| if d.is_nan() { f64::INFINITY } else { d })
                     .fold(0.0, f64::max);
                 let dv = (data.qvel.iter().zip(qvel))
                     .map(|(a, b)| (a - b).abs())
+                    .map(|d| if d.is_nan() { f64::INFINITY } else { d })
                     .fold(0.0, f64::max);
                 assert!(
                     dq < 1e-12 && dv < 1e-12,
@@ -2671,7 +2674,8 @@ fn implicitspringdamper_follows_the_spring_and_damper_flags() {
                     let fd = sim_core::mjd_transition_fd(&model, &data, &config).expect("fd");
                     assert_ne!(hybrid.A, fd.A, "{what}: the analytic columns ran");
                     for (h, f) in hybrid.A.iter().zip(fd.A.iter()) {
-                        if (h - f).abs() > 1e-6 + 1e-5 * h.abs().max(f.abs()) {
+                        let off_by = (h - f).abs();
+                        if off_by.is_nan() || off_by > 1e-6 + 1e-5 * h.abs().max(f.abs()) {
                             failures.push(format!(
                                 "{what}{limit}{size}: hybrid A {h}, finite differences {f}"
                             ));
@@ -2679,9 +2683,13 @@ fn implicitspringdamper_follows_the_spring_and_damper_flags() {
                         }
                     }
                 }
+                // A NaN difference counts as infinitely far (`amax` drops one).
                 let worst = (&flagged.0 - &zeroed.0)
-                    .amax()
-                    .max((&flagged.1 - &zeroed.1).amax());
+                    .iter()
+                    .chain((&flagged.1 - &zeroed.1).iter())
+                    .map(|d| d.abs())
+                    .map(|d| if d.is_nan() { f64::INFINITY } else { d })
+                    .fold(0.0, f64::max);
                 if worst > 1e-12 {
                     failures.push(format!(
                         "{what}{limit}{size}: {worst:e} from the model without it"

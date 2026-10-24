@@ -106,7 +106,7 @@ fn main() {
     // preserving cf-design's intended impedance. 2kHz is too many steps/frame.
     model.timestep = 0.002;
 
-    // PGS solver — Newton fails for SDF friction contacts; sparse PGS is fast.
+    // PGS solver — Newton fails for SDF friction contacts.
     model.solver_type = sim_core::SolverType::PGS;
 
     // Frictionless bore contacts so the pendulum can swing freely.

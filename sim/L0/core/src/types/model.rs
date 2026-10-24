@@ -881,10 +881,9 @@ pub struct Model {
     /// slots are `usize::MAX`.
     /// Length: 2 * ntendon.
     pub tendon_tree: Vec<usize>,
-    /// Per-tendon inverse weight for diagonal approximation (length `ntendon`).
-    /// For fixed tendons: Σ(coef² * dof_invweight0\[dof\]) across wrap joints.
-    /// For spatial tendons: sum of body_invweight0 translational for endpoint bodies.
-    /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
+    /// Per-tendon inverse weight for diagonal approximation (length `ntendon`):
+    /// `J·M⁻¹·Jᵀ` of the tendon's Jacobian at qpos0, made by
+    /// [`Self::compute_invweight0`].
     pub tendon_invweight0: Vec<f64>,
 
     // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)
@@ -983,9 +982,9 @@ pub struct Model {
     pub ls_iterations: usize,
     /// Line search gradient tolerance for Newton solver (default 0.01).
     pub ls_tolerance: f64,
-    /// Noslip solver iterations (parsed from MJCF, stored, not yet implemented; default 0).
+    /// Noslip solver iterations, after the main solver (MuJoCo's `mj_solNoSlip`; default 0).
     pub noslip_iterations: usize,
-    /// Noslip solver tolerance (parsed from MJCF, stored, not yet implemented; default 1e-6).
+    /// Noslip solver tolerance (default 1e-6).
     pub noslip_tolerance: f64,
     /// Use body-weight diagonal approximation instead of exact M⁻¹ solve (DT-39).
     ///
@@ -1291,6 +1290,13 @@ pub enum LengthRangeError {
 }
 
 impl Model {
+    /// Whether a dual solver runs, PGS or noslip, which read
+    /// `Data::efc_AR`: MuJoCo's `mj_isDual` (`engine_core_constraint.c:88-94`).
+    #[must_use]
+    pub fn is_dual(&self) -> bool {
+        self.solver_type == SolverType::PGS || self.noslip_iterations > 0
+    }
+
     /// Whether the constraint pipeline takes its sparse path, MuJoCo's
     /// `mj_isSparse` (`engine_core_util.c:32-39`): a sparse Jacobian, or the
     /// automatic one from 60 dofs.
