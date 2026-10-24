@@ -941,7 +941,7 @@ impl Model {
             ncone: 0,
             ne: 0,
             nf: 0,
-            primal_qacc: false,
+            solver_qacc: false,
             solver_stat: Vec::new(),
 
             // Sensors

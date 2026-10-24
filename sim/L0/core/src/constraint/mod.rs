@@ -35,9 +35,10 @@ use crate::types::{
 use crate::constraint::assembly::assemble_unified_constraints;
 use crate::constraint::assembly::tendon_deadband_displacement;
 use crate::constraint::solver::compute_qfrc_constraint_from_efc;
+use crate::constraint::solver::dual::pgs_warmstart;
 use crate::constraint::solver::extract_qfrc_frictionloss;
 use crate::constraint::solver::noslip::noslip_postprocess;
-use crate::constraint::solver::pgs::pgs_solve_unified;
+use crate::constraint::solver::pgs::mj_sol_pgs;
 use crate::constraint::solver::primal::{PrimalMass, mj_sol_primal};
 
 use crate::integrate::implicit::{
@@ -288,7 +289,7 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     data.qfrc_frictionloss.fill(0.0);
     data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
     data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
-    data.primal_qacc = false;
+    data.solver_qacc = false;
 
     // Step 1: Shared qacc_smooth computation
     let (qacc_smooth, _qfrc_smooth) = compute_qacc_smooth(model, data);
@@ -359,33 +360,41 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     let qfrc_eff: DVector<f64> = qfrc_impl_owned.unwrap_or_else(|| data.qfrc_smooth.clone());
 
     // Step 3: Dispatch to solver
+    let mass = match &m_impl_owned {
+        Some((m, factor)) => PrimalMass::Implicit { m, factor },
+        None => PrimalMass::Tree,
+    };
+    // Under the implicit spring-damper integrator (this crate's) the dual
+    // solvers read the rows' inverse inertia over `M_impl`.
+    if let Some((_, factor)) = &m_impl_owned
+        && model.is_dual()
+    {
+        project::project_implicit(data, factor);
+    }
     match model.solver_type {
         SolverType::Newton | SolverType::CG => {
-            let mass = match &m_impl_owned {
-                Some((m, factor)) => PrimalMass::Implicit { m, factor },
-                None => PrimalMass::Tree,
-            };
             let newton = model.solver_type == SolverType::Newton;
             mj_sol_primal(model, data, &mass, &qfrc_eff, newton)?;
-            data.primal_qacc = true;
         }
         SolverType::PGS => {
-            pgs_solve_unified(model, data, m_impl_owned.as_ref().map(|(_, f)| f));
+            pgs_warmstart(model, data);
+            mj_sol_pgs(model, data, &mass);
         }
     }
+    data.solver_qacc = true;
 
     // §33: Noslip post-processor. It changes the friction forces, so the
     // acceleration is made from the forces afterwards (`mj_fwd_acceleration`),
     // not taken from the primal iterate.
     if model.noslip_iterations > 0 {
         noslip_postprocess(model, data, m_impl_owned.as_ref().map(|(_, f)| f));
-        data.primal_qacc = false;
+        data.solver_qacc = false;
     }
 
     // Step 4: Map efc_force → qfrc_constraint via J^T, except after the primal
     // solver, whose own MuJoCo keeps (`PrimalUpdateConstraint`; at the sparse
     // size a product over the transpose that rounds otherwise).
-    if !data.primal_qacc {
+    if !data.solver_qacc {
         compute_qfrc_constraint_from_efc(model, data);
     }
 
@@ -528,6 +537,18 @@ pub(crate) fn mj_reference_constraint(model: &Model, data: &mut Data) {
         )
     });
     data.efc_aref = DVector::from_iterator(data.efc_type.len(), aref);
+}
+
+/// Solve the constraint rows `data` holds with PGS from its warmstart, as
+/// [`mj_fwd_constraint`] runs it over `qM` and its factor: `efc_b` made
+/// first, then `efc_AR` ([`mj_project_constraint`]). For tests that give the
+/// solver MuJoCo's own inputs.
+#[doc(hidden)]
+pub fn mj_sol_pgs_rows(model: &Model, data: &mut Data) {
+    data.efc_b = mul_jac_vec(model, data, data.qacc_smooth.as_slice()) - &data.efc_aref;
+    mj_project_constraint(model, data);
+    pgs_warmstart(model, data);
+    mj_sol_pgs(model, data, &PrimalMass::Tree);
 }
 
 /// Solve the constraint rows `data` holds with MuJoCo's primal solver,

@@ -37,6 +37,32 @@ pub fn mj_project_constraint(model: &Model, data: &mut Data) {
     }
 }
 
+/// `efc_AR` over the implicit spring-damper integrator's `M_impl` (this
+/// crate's own; MuJoCo has no such integrator), from its Cholesky factor:
+/// dense, `AR[i][k] = J_k · M_impl⁻¹ · J_i'` by `mju_dot`, `R` added on the
+/// diagonal; the sparse columns cleared, as `M_impl` need not keep `M`'s
+/// pattern.
+pub fn project_implicit(data: &mut Data, factor: &nalgebra::DMatrix<f64>) {
+    let nefc = data.efc_type.len();
+    let nv = data.efc_J.ncols();
+    data.efc_AR_rownnz.clear();
+    data.efc_AR_rowadr.clear();
+    data.efc_AR_colind.clear();
+    let rows: Vec<Vec<f64>> = (0..nefc)
+        .map(|r| (0..nv).map(|c| data.efc_J[(r, c)]).collect())
+        .collect();
+    let mut ar = vec![0.0; nefc * nefc];
+    for i in 0..nefc {
+        let mut w = nalgebra::DVector::from_column_slice(&rows[i]);
+        crate::linalg::cholesky_solve_in_place(factor, &mut w);
+        for k in 0..nefc {
+            ar[i * nefc + k] = mju_dot(&rows[k], w.as_slice());
+        }
+        ar[i * (nefc + 1)] += data.efc_R[i];
+    }
+    data.efc_AR = ar;
+}
+
 /// The dense branch (`engine_core_constraint.c:2337-2368`): `B` by
 /// `mj_solveM2` (`engine_core_smooth.c:2228-2271`), then `AR = B·B'` by
 /// `mju_sqrMatTD` (`engine_util_blas.c:886-926`), each entry on or below the

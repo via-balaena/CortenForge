@@ -13,7 +13,7 @@
 //! `+ − × ÷` and `sqrt` only.
 
 use serde_json::Value;
-use sim_core::{Data, Model};
+use sim_core::{ConstraintState, Data, Model, SolverStat};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -196,6 +196,100 @@ fn efc_ar_is_mujocos_given_its_inputs() {
             sim_core::constraint::mj_project_constraint(&model, &mut data);
             assert_ar(&mut off, name, &data, case);
         }
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
+/// MuJoCo's `mjtConstraintState` code of a row's state.
+fn mj_state(state: ConstraintState) -> usize {
+    match state {
+        ConstraintState::Satisfied => 0,
+        ConstraintState::Quadratic => 1,
+        ConstraintState::LinearNeg => 2,
+        ConstraintState::LinearPos => 3,
+        ConstraintState::Cone => 4,
+    }
+}
+
+/// The solve's outputs against the case's: forces, states, acceleration,
+/// constraint force, iteration count, statistics and `solver_nnz`.
+fn assert_solve(off: &mut Vec<String>, name: &str, data: &Data, case: &Value) {
+    bits(
+        off,
+        &format!("{name} efc_force"),
+        data.efc_force.as_slice(),
+        &floats(&case["efc_force"]),
+    );
+    let states: Vec<usize> = data.efc_state.iter().map(|&s| mj_state(s)).collect();
+    if states != usizes(&case["efc_state"]) {
+        off.push(format!(
+            "{name}: efc_state {states:?}, MuJoCo {:?}",
+            usizes(&case["efc_state"])
+        ));
+    }
+    bits(
+        off,
+        &format!("{name} qacc"),
+        data.qacc.as_slice(),
+        &floats(&case["qacc"]),
+    );
+    bits(
+        off,
+        &format!("{name} qfrc_constraint"),
+        data.qfrc_constraint.as_slice(),
+        &floats(&case["qfrc_constraint"]),
+    );
+    let stats = &case["stats"];
+    if data.solver_niter != count(&stats["niter"]) {
+        off.push(format!(
+            "{name}: niter {}, MuJoCo {}",
+            data.solver_niter,
+            count(&stats["niter"])
+        ));
+    }
+    let field = |f: fn(&SolverStat) -> f64| data.solver_stat.iter().map(f).collect::<Vec<_>>();
+    bits(
+        off,
+        &format!("{name} improvement"),
+        &field(|s| s.improvement),
+        &floats(&stats["improvement"]),
+    );
+    let counts = |f: fn(&SolverStat) -> usize| data.solver_stat.iter().map(f).collect::<Vec<_>>();
+    if counts(|s| s.nactive) != usizes(&stats["nactive"])
+        || counts(|s| s.nchange) != usizes(&stats["nchange"])
+    {
+        off.push(format!("{name}: nactive or nchange"));
+    }
+    if data.solver_nnz != count(&case["solver_nnz"]) {
+        off.push(format!(
+            "{name}: solver_nnz {}, MuJoCo {}",
+            data.solver_nnz,
+            count(&case["solver_nnz"])
+        ));
+    }
+}
+
+/// PGS from its warmstart, given MuJoCo's inputs: the warmstart's forces kept
+/// when their dual cost is not positive (the `*_warm` cases at a cost of
+/// exactly 0 among them), zero otherwise (`*_zeroed`, most `*_warm`) and with
+/// the warmstart disabled (`*_nowarm`); then every sweep as `mj_solPGS`'s, and
+/// `dualFinish`: forces, states, acceleration, constraint force, iteration
+/// count, each iteration's improvement and counts, and `solver_nnz`, bit for
+/// bit, dense and at the sparse size.
+#[test]
+fn pgs_matches_mujoco_3_5_0_bit_for_bit_given_its_inputs() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["pgs"].as_object().expect("cases") {
+        let (model, mut data) = given_mujocos_inputs(name, case);
+        sim_core::constraint::mj_sol_pgs_rows(&model, &mut data);
+        bits(
+            &mut off,
+            &format!("{name} efc_b"),
+            data.efc_b.as_slice(),
+            &floats(&case["efc_b"]),
+        );
+        assert_solve(&mut off, name, &data, case);
     }
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }

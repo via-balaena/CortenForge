@@ -43,7 +43,7 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
             // engine_forward.c:747-750) and factors and solves M − h·D only in
             // the integrator (mj_implicitSkip, :1128; `mj_implicit_factor`).
             // After a primal solve qacc is already its iterate.
-            if !data.primal_qacc {
+            if !data.solver_qacc {
                 mj_fwd_acceleration_explicit(model, data);
             }
             Ok(())

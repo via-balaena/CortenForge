@@ -510,11 +510,11 @@ pub struct Data {
     /// Number of friction loss constraint rows (DOF + tendon).
     /// These occupy `efc_*[ne..ne+nf)`.
     pub nf: usize,
-    /// Whether `qacc` is the primal solver's iterate this step (Newton or CG
-    /// solved rows and no noslip pass changed the forces after). When true,
+    /// Whether the constraint solve made `qacc` this step: the primal
+    /// solver's iterate (Newton, CG), or `dualFinish`'s after PGS. When true,
     /// the forward pass keeps it instead of making the acceleration from the
     /// forces.
-    pub(crate) primal_qacc: bool,
+    pub(crate) solver_qacc: bool,
 
     /// Per-iteration solver statistics, as MuJoCo keeps them: the first 200
     /// (`mjNSOLVER`) of a solve's iterations, or solved island by island of
@@ -946,7 +946,7 @@ impl Clone for Data {
             ncone: self.ncone,
             ne: self.ne,
             nf: self.nf,
-            primal_qacc: self.primal_qacc,
+            solver_qacc: self.solver_qacc,
             solver_stat: self.solver_stat.clone(),
             // Sensors
             sensordata: self.sensordata.clone(),

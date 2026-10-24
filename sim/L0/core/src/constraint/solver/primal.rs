@@ -336,6 +336,17 @@ impl Rows {
 /// `J·qacc` is [`mul_jac_vec`]'s and `J'·force` [`mul_jac_t_vec`]'s, each
 /// over a row's dof chain at the sparse size.
 pub fn mj_inv_constraint(model: &Model, data: &mut Data) {
+    let qacc = data.qacc.clone();
+    constraint_update_at(model, data, qacc.as_slice());
+}
+
+/// Each row's state and force as `mj_constraintUpdate` makes them at
+/// `jar = J·qacc − aref` (no cone Hessian, no cost kept), into `efc_state`
+/// and `efc_force`, and `qfrc_constraint = J'·force`
+/// (`engine_core_constraint.c:2592-2598`); with no rows `qfrc_constraint` is
+/// 0. Inverse dynamics takes it at `qacc`, PGS's warmstart at
+/// `qacc_warmstart`.
+pub fn constraint_update_at(model: &Model, data: &mut Data, qacc: &[f64]) {
     let nefc = data.efc_type.len();
     if nefc == 0 {
         data.qfrc_constraint.fill(0.0);
@@ -343,7 +354,7 @@ pub fn mj_inv_constraint(model: &Model, data: &mut Data) {
     }
     let all: Vec<usize> = (0..nefc).collect();
     let rows = Rows::of(data, &all);
-    let mut jar = mul_jac_vec(model, data, data.qacc.as_slice());
+    let mut jar = mul_jac_vec(model, data, qacc);
     for (x, a) in jar.iter_mut().zip(data.efc_aref.iter()) {
         *x -= a;
     }
