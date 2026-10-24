@@ -260,114 +260,61 @@ pub fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: 
 }
 
 /// Body-weight diagonal approximation for row `row_offset` of equality
-/// constraint `id` (DT-39; MuJoCo ref: `mj_diagApprox()` in
-/// `engine_core_constraint.c`): an O(1) approximation of
-/// `diag(J · M⁻¹ · J^T)` from the precomputed inverse weights, instead of
-/// solving `M · w = J^T` (which is O(nv)). Clamped to `MJ_MINVAL`.
+/// constraint `id`, as MuJoCo's `mj_diagApprox` (`engine_core_constraint.c:1093-1287`):
+/// an O(1) approximation of `diag(J · M⁻¹ · J^T)` from the inverse weights at
+/// `qpos0` instead of solving `M · w = J^T`. A connect's rows take its two
+/// bodies' translational weights, a weld's first three rows those and its
+/// last three their rotational ones, a joint or tendon equality its first
+/// object's `dof_invweight0` or `tendon_invweight0` plus its second's when it
+/// has one. No floor: MuJoCo floors only `R` (`mj_makeImpedance`).
 #[inline]
 pub fn compute_diag_approx_bodyweight(model: &Model, id: usize, row_offset: usize) -> f64 {
-    if id < model.neq {
-        use crate::types::EqualityType;
-        match model.eq_type[id] {
-            EqualityType::Connect => {
-                // 3 translational rows: sum of translational invweights
-                let b1 = model.eq_obj1id[id];
-                let b2 = model.eq_obj2id[id];
-                let w1 = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][0]
-                } else {
-                    0.0
-                };
-                let w2 = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][0]
-                } else {
-                    0.0
-                };
-                (w1 + w2).max(MJ_MINVAL)
-            }
-            EqualityType::Weld => {
-                // 6 rows: 0-2 → translational, 3-5 → rotational
-                let b1 = model.eq_obj1id[id];
-                let b2 = model.eq_obj2id[id];
-                let comp = usize::from(row_offset >= 3);
-                let w1 = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][comp]
-                } else {
-                    0.0
-                };
-                let w2 = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][comp]
-                } else {
-                    0.0
-                };
-                (w1 + w2).max(MJ_MINVAL)
-            }
-            EqualityType::Joint => {
-                // MuJoCo: dof_invweight0[dof1] + dof_invweight0[dof2]
-                let jnt1 = model.eq_obj1id[id];
-                let jnt2 = model.eq_obj2id[id];
-                let w1 = if jnt1 < model.njnt {
-                    let dof = model.jnt_dof_adr[jnt1];
-                    if dof < model.dof_invweight0.len() {
-                        model.dof_invweight0[dof]
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                let w2 = if jnt2 < model.njnt {
-                    let dof = model.jnt_dof_adr[jnt2];
-                    if dof < model.dof_invweight0.len() {
-                        model.dof_invweight0[dof]
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                (w1 + w2).max(MJ_MINVAL)
-            }
-            EqualityType::Tendon => {
-                let tid = model.eq_obj1id[id];
-                if tid < model.tendon_invweight0.len() {
-                    model.tendon_invweight0[tid].max(MJ_MINVAL)
-                } else {
-                    MJ_MINVAL
-                }
-            }
-            // Not reached: a flex row's diagonal approximation is its
-            // edge's `flexedge_invweight0`, which
-            // `assemble_flex_equality_rows` passes itself.
-            EqualityType::Flex => MJ_MINVAL,
-            EqualityType::Distance => {
-                let g1 = model.eq_obj1id[id];
-                let g2 = model.eq_obj2id[id];
-                let b1 = if g1 < model.geom_body.len() {
-                    model.geom_body[g1]
-                } else {
-                    0
-                };
-                let b2 = if g2 < model.geom_body.len() {
-                    model.geom_body[g2]
-                } else {
-                    0
-                };
-                let w1 = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][0]
-                } else {
-                    0.0
-                };
-                let w2 = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][0]
-                } else {
-                    0.0
-                };
-                (w1 + w2).max(MJ_MINVAL)
+    use crate::types::EqualityType;
+    if id >= model.neq {
+        return MJ_MINVAL;
+    }
+    let body = |b: usize, comp: usize| model.body_invweight0.get(b).map_or(0.0, |w| w[comp]);
+    let dof = |jnt: usize| {
+        if jnt < model.njnt {
+            model
+                .dof_invweight0
+                .get(model.jnt_dof_adr[jnt])
+                .copied()
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    };
+    let tendon = |t: usize| model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
+    let (obj1, obj2) = (model.eq_obj1id[id], model.eq_obj2id[id]);
+    match model.eq_type[id] {
+        EqualityType::Connect => body(obj1, 0) + body(obj2, 0),
+        EqualityType::Weld => {
+            let comp = usize::from(row_offset >= 3);
+            body(obj1, comp) + body(obj2, comp)
+        }
+        EqualityType::Joint => {
+            let w = dof(obj1);
+            if obj2 == usize::MAX { w } else { w + dof(obj2) }
+        }
+        EqualityType::Tendon => {
+            let w = tendon(obj1);
+            if obj2 == usize::MAX {
+                w
+            } else {
+                w + tendon(obj2)
             }
         }
-    } else {
-        MJ_MINVAL
+        // Not reached: a flex row's diagonal approximation is its
+        // edge's `flexedge_invweight0`, which
+        // `assemble_flex_equality_rows` passes itself.
+        EqualityType::Flex => MJ_MINVAL,
+        // This crate's own equality (MuJoCo 3.5.0 has none): its geoms'
+        // bodies' translational weights, as a connect's.
+        EqualityType::Distance => {
+            let geom_body = |g: usize| model.geom_body.get(g).copied().unwrap_or(0);
+            body(geom_body(obj1), 0) + body(geom_body(obj2), 0)
+        }
     }
 }
 

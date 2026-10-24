@@ -462,6 +462,76 @@ fn diag_approx_as_mujoco() {
     assert!(out.is_empty(), "{} differ:\n{}", out.len(), out.join("\n"));
 }
 
+/// Each diag_approx case's rows' diagApprox and R as MuJoCo's
+/// `mj_diagApprox` and `mj_makeImpedance` round them, bit for bit on macOS
+/// arm64 ([`golden_bits`]): a pyramidal facet pair's `tran + μ²·tran`, each
+/// product apart (`engine_core_constraint.c:1276-1280`; the
+/// `pyramidal_friction_*` cases, whose mass makes `(1 + μ²)·tran` round
+/// otherwise, ledger L227), and a tendon equality's two tendons'
+/// `tendon_invweight0` added (`:1139-1150`; `tendon_pair`, ledger L230).
+/// `every_row_kind` is left to [`diag_approx_as_mujoco`]'s 1e-12: its weld's
+/// rotational rows take its box's rotational `body_invweight0`, which rounds
+/// 1 ulp off MuJoCo's (ledger L223).
+#[test]
+fn diag_approx_rounds_as_mujoco() {
+    let g = golden();
+    let mut off = Vec::new();
+    for (name, case) in g["cases"]["diag_approx"].as_object().expect("cases") {
+        if name == "every_row_kind" {
+            continue;
+        }
+        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        if case["qpos"].is_null() {
+            data.qpos[2] += case["dz"].as_f64().expect("dz");
+        } else {
+            data.qpos.copy_from_slice(&floats(&case["qpos"]));
+            data.qvel.copy_from_slice(&floats(&case["qvel"]));
+        }
+        data.forward(&model).expect("forward");
+        if let Some(weights) = case.get("tendon_invweight0") {
+            let what = format!("{name} tendon_invweight0");
+            golden_bits(&mut off, &what, &model.tendon_invweight0, &floats(weights));
+        }
+        let want = floats(&case["efc_diagApprox"]);
+        golden_bits(
+            &mut off,
+            &format!("{name} efc_diagApprox"),
+            &data.efc_diagApprox,
+            &want,
+        );
+        let want = floats(&case["efc_R"]);
+        golden_bits(&mut off, &format!("{name} efc_R"), &data.efc_R, &want);
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
+/// Where `got` differs from `want`, each as a line in `off`: in any bit on
+/// macOS arm64, where the golden was made; elsewhere by more than
+/// `1e-13 · max(1, |MuJoCo's|)`, and a NaN always.
+fn golden_bits(off: &mut Vec<String>, what: &str, got: &[f64], want: &[f64]) {
+    if got.len() != want.len() {
+        off.push(format!(
+            "{what}: {} values, MuJoCo {}",
+            got.len(),
+            want.len()
+        ));
+        return;
+    }
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    for (i, (a, b)) in got.iter().zip(want).enumerate() {
+        let same = if exact {
+            a.to_bits() == b.to_bits()
+        } else {
+            // Within the bound or pushed: a NaN is never within it.
+            (a - b).abs() <= 1e-13 * b.abs().max(1.0)
+        };
+        if !same {
+            off.push(format!("{what}[{i}]: {a:e}, MuJoCo {b:e}"));
+        }
+    }
+}
+
 /// The sphere at impratio 10, sliding, spinning and rolling, at condim 3 and
 /// 6 under an elliptic cone (Newton, CG, PGS) and a pyramidal one (Newton):
 /// 300 steps within 1e-9 of MuJoCo's, the book's tolerance (A18 §10), where

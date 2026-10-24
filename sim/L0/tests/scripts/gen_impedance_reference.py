@@ -755,6 +755,47 @@ def aniso_rows():
 # Each doc's height offset of its free joint (qpos[2]) from qpos0.
 DIAG_APPROX_DOCS = {"a0ff89f48fc8fcc9": 0.0, "406a1991539e1cc2": 0.0, "60c23753e7d2ea34": -0.001}
 
+# A sphere 1 mm into a plane, sliding, pyramidal, its sliding friction not 1:
+# a facet pair's diagApprox is tran + friction^2*tran, each product apart
+# (`mj_diagApprox`, `engine_core_constraint.c:1276-1280`); at mass 0.3 that
+# rounds otherwise than (1 + friction^2)*tran, which the generator checks.
+PYRAMIDAL_FRICTION = """<mujoco model="pyramidal_friction">
+  <option timestep="0.002" cone="pyramidal"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1" friction="0.9 0.02 0.002"/>
+    <body pos="0 0 0.099">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="0.3" condim="{condim}" friction="0.9 0.02 0.002"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+PYRAMIDAL_FRICTION_QVEL = [0.05, 0.02, 0, 0, 0, 0.1]
+
+# Two slides of masses 1 and 0.75, each under its own fixed tendon, the
+# tendons coupled by a tendon equality and started apart: its row's
+# diagApprox adds both tendons' invweight0 (`engine_core_constraint.c:1139-1150`).
+TENDON_PAIR = """<mujoco model="tendon_pair">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <body name="a">
+      <joint name="ja" type="slide" axis="1 0 0"/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+    <body name="b" pos="0 0.5 0">
+      <joint name="jb" type="slide" axis="1 0 0"/>
+      <geom type="sphere" size="0.05" mass="0.75" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="ta"><joint joint="ja" coef="1"/></fixed>
+    <fixed name="tb"><joint joint="jb" coef="1"/></fixed>
+  </tendon>
+  <equality>
+    <tendon tendon1="ta" tendon2="tb" polycoef="0 1 0 0 0"/>
+  </equality>
+</mujoco>"""
+TENDON_PAIR_QPOS = [0.02, -0.01]
+
 
 def diag_approx():
     out = {}
@@ -794,6 +835,29 @@ def diag_approx():
     out["frictionloss_rows"] = {"xml": xml, "qpos": floats(d.qpos), "qvel": qvel,
                                 "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
                                 "efc_R": floats(d.efc_R[:d.nefc])}
+    for condim in (3, 6):
+        xml = PYRAMIDAL_FRICTION.format(condim=condim)
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        d.qvel[:] = PYRAMIDAL_FRICTION_QVEL
+        mujoco.mj_forward(m, d)
+        assert d.ncon == 1 and d.nefc == 2 * (condim - 1), (d.ncon, d.nefc)
+        tran = m.body_invweight0[1][0]
+        fri = d.contact[0].friction[0]
+        if tran + fri * fri * tran == (1 + fri * fri) * tran:
+            sys.exit(f"pyramidal_friction_{condim}: the two orders round alike")
+        out[f"pyramidal_friction_{condim}"] = {
+            "xml": xml, "qpos": floats(d.qpos), "qvel": PYRAMIDAL_FRICTION_QVEL,
+            "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]), "efc_R": floats(d.efc_R[:d.nefc])}
+    m = mujoco.MjModel.from_xml_string(TENDON_PAIR)
+    d = mujoco.MjData(m)
+    d.qpos[:] = TENDON_PAIR_QPOS
+    mujoco.mj_forward(m, d)
+    assert d.nefc == 1 and d.efc_type[0] == mujoco.mjtConstraint.mjCNSTR_EQUALITY, d.nefc
+    out["tendon_pair"] = {"xml": TENDON_PAIR, "qpos": TENDON_PAIR_QPOS, "qvel": [0.0, 0.0],
+                          "tendon_invweight0": floats(m.tendon_invweight0),
+                          "efc_diagApprox": floats(d.efc_diagApprox[:d.nefc]),
+                          "efc_R": floats(d.efc_R[:d.nefc])}
     return out
 
 

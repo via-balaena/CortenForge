@@ -11,7 +11,7 @@ use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::chain::{at_sparse_size, tendon_chain};
 use crate::constraint::impedance::{
-    MJ_MINVAL, ball_limit_axis_angle, checked_solref, compute_diag_approx_exact, compute_impedance,
+    ball_limit_axis_angle, checked_solref, compute_diag_approx_exact, compute_impedance,
     compute_regularization,
 };
 use crate::quat::qpos_quat;
@@ -133,9 +133,10 @@ pub fn finalize_constraint_row_imp(
     let imp = compute_impedance(solimp, imp_violation);
     data.efc_imp.push(imp);
 
-    // diagApprox: exact M⁻¹ solve or O(1) bodyweight approximation (DT-39)
+    // diagApprox: exact M⁻¹ solve or O(1) bodyweight approximation (DT-39),
+    // the latter unfloored as MuJoCo's `mj_diagApprox` (R is floored).
     let diag = if model.diagapprox_bodyweight {
-        bw_diag.max(MJ_MINVAL)
+        bw_diag
     } else {
         let j_row_slice: Vec<f64> = (0..nv).map(|col| data.efc_J[(*row, col)]).collect();
         compute_diag_approx_exact(&j_row_slice, nv, model, data)
