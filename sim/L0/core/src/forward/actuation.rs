@@ -513,62 +513,67 @@ pub fn ball_free_transmission(
 /// Compute each actuator's velocity in the velocity stage, after
 /// `mj_fwd_velocity()`, as MuJoCo's `mj_fwdVelocity` does
 /// (`engine_forward.c:240-246`): the sparse dot of the actuator's moment row
-/// with `qvel` (`mju_mulMatVecSparse`), in [`dot_sparse`]'s grouping, over
-/// the entries `mj_transmission` stores (`engine_core_smooth.c:1250-1730`).
-/// Every velocity is 0 when actuation is disabled.
+/// ([`moment_row`]) with `qvel` (`mju_mulMatVecSparse`), in [`dot_sparse`]'s
+/// grouping. Every velocity is 0 when actuation is disabled.
 pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
     if disabled(model, DISABLE_ACTUATION) {
         data.actuator_velocity.fill(0.0);
         return;
     }
-    let nv = model.nv;
     for i in 0..model.nu {
-        let gear = model.actuator_gear[i][0];
-        let trnid = model.actuator_trnid[i][0];
-        let velocity = match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
-                if trnid >= model.njnt {
-                    continue;
-                }
-                let dof_adr = model.jnt_dof_adr[trnid];
-                let n = model.jnt_type[trnid].nv();
-                if n == 1 {
-                    // A hinge's or slide's one entry, the gear (:1301-1307).
-                    dot_sparse(&[gear], |_| data.qvel[dof_adr])
-                } else {
-                    dot_sparse(
-                        &data.actuator_moment[i].as_slice()[dof_adr..dof_adr + n],
-                        |k| data.qvel[dof_adr + k],
-                    )
-                }
+        if let Some((moment, cols)) = moment_row(model, data, i) {
+            data.actuator_velocity[i] = dot_sparse(&moment, |k| data.qvel[cols[k]]);
+        }
+    }
+}
+
+/// Actuator `i`'s moment row as `mj_transmission` stores it
+/// (`engine_core_smooth.c:1250-1730`), its entries and their columns: a
+/// hinge's or slide's one entry, the gear (`:1301-1307`); a ball's or free
+/// joint's three or six (`:1311-1375`); a tendon's `ten_J` chain under the
+/// sparse Jacobian, zeros kept, each entry times the gear (`:1453-1460`); a
+/// tendon's row times the gear under the dense Jacobian, and a site's,
+/// slider-crank's or body's row, their nonzero entries ([`compressed`]).
+/// `None` for a joint or tendon transmission to no object.
+pub fn moment_row(model: &Model, data: &Data, i: usize) -> Option<(Vec<f64>, Vec<usize>)> {
+    let gear = model.actuator_gear[i][0];
+    let trnid = model.actuator_trnid[i][0];
+    match model.actuator_trntype[i] {
+        ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+            if trnid >= model.njnt {
+                return None;
             }
-            ActuatorTransmission::Tendon => {
-                if trnid >= model.ntendon {
-                    continue;
-                }
-                let row = data.ten_J[trnid].as_slice();
-                let (moment, cols) = if model.is_sparse() {
-                    // The tendon's stored chain, zeros kept, each entry
-                    // times the gear (:1452-1460).
-                    let chain =
-                        &data.ten_J_colind[trnid * nv..trnid * nv + data.ten_J_rownnz[trnid]];
-                    (
-                        chain.iter().map(|&c| row[c] * gear).collect(),
-                        chain.to_vec(),
-                    )
-                } else {
-                    compressed(row.iter().map(|&j| j * gear))
-                };
-                dot_sparse(&moment, |k| data.qvel[cols[k]])
+            let dof_adr = model.jnt_dof_adr[trnid];
+            let n = model.jnt_type[trnid].nv();
+            if n == 1 {
+                Some((vec![gear], vec![dof_adr]))
+            } else {
+                let span = dof_adr..dof_adr + n;
+                Some((
+                    data.actuator_moment[i].as_slice()[span.clone()].to_vec(),
+                    span.collect(),
+                ))
             }
-            ActuatorTransmission::Site
-            | ActuatorTransmission::SliderCrank
-            | ActuatorTransmission::Body => {
-                let (moment, cols) = compressed(data.actuator_moment[i].iter().copied());
-                dot_sparse(&moment, |k| data.qvel[cols[k]])
+        }
+        ActuatorTransmission::Tendon => {
+            if trnid >= model.ntendon {
+                return None;
             }
-        };
-        data.actuator_velocity[i] = velocity;
+            let row = data.ten_J[trnid].as_slice();
+            if model.is_sparse() {
+                let nv = model.nv;
+                let chain = &data.ten_J_colind[trnid * nv..trnid * nv + data.ten_J_rownnz[trnid]];
+                Some((
+                    chain.iter().map(|&c| row[c] * gear).collect(),
+                    chain.to_vec(),
+                ))
+            } else {
+                Some(compressed(row.iter().map(|&j| j * gear)))
+            }
+        }
+        ActuatorTransmission::Site
+        | ActuatorTransmission::SliderCrank
+        | ActuatorTransmission::Body => Some(compressed(data.actuator_moment[i].iter().copied())),
     }
 }
 
