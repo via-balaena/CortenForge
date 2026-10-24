@@ -1792,6 +1792,12 @@ fn mesh_contacts_part_from_mujocos_by_the_hulls_order() {
         case["contacts"].as_array().expect("contacts"),
     );
     assert_eq!((ours.len(), want.len()), (4, 4), "mesh on mesh: contacts");
+    // The far count below expects a difference, which a NaN position, counted
+    // infinitely far, would give: every position must be a number first.
+    assert!(
+        ours.iter().all(|c| c.pos.iter().all(|x| x.is_finite())),
+        "mesh on mesh: a position not a number"
+    );
     let nearest: Vec<f64> = ours
         .iter()
         .map(|c| {

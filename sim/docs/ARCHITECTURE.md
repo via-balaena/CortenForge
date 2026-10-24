@@ -723,7 +723,9 @@ loss, limits, contacts, flex edge); `efc_b` is made when the solve starts. There
 no separate contact-only assembly path.
 
 - **PGS** — MuJoCo's `mj_solPGS`, operation for operation, on the rows'
-  inverse inertia `efc_AR` (made by the position stage, `mj_projectConstraint`),
+  inverse inertia `efc_AR` (made by the position stage, `mj_projectConstraint`;
+  by the constraint stage under the implicit spring-damper integrator, over
+  `M_impl`, and after an inverse pass, which makes none),
   an elliptic contact's rows as one block with MuJoCo's QCQP; warmstarted as
   MuJoCo's `warmstart` (the forces at `qacc_warmstart`, kept unless their dual
   cost is positive) and ended by `dualFinish`.
