@@ -269,10 +269,11 @@ pub(crate) fn mj_make_constraint(model: &Model, data: &mut Data) {
 /// 2. `efc_b = J·qacc_smooth − aref`
 /// 3. Dispatch to configured solver: Newton and CG to MuJoCo's primal solver,
 ///    island by island where MuJoCo's is, whose iterate is the acceleration;
-///    PGS. No solver falls back to
-///    another (MuJoCo, `engine_forward.c:739-830`).
-/// 4. Map efc_force → qfrc_constraint via J^T after PGS or noslip; after the
-///    primal solver, its own is kept
+///    PGS, ended by `dualFinish`, which maps the forces to `qfrc_constraint`
+///    and makes the acceleration from them. No solver falls back to another
+///    (MuJoCo, `engine_forward.c:739-830`).
+/// 4. Noslip after any of them when `noslip_iterations > 0`, ended by
+///    `dualFinish` too
 /// 5. Extract qfrc_frictionloss from efc_force
 ///
 /// Under the implicit spring-damper integrator every solver solves over
@@ -387,7 +388,8 @@ pub(crate) fn mj_fwd_constraint(model: &Model, data: &mut Data) -> Result<(), St
     }
     data.solver_qacc = true;
 
-    // §33: noslip after any solver, which ends as PGS does (`dualFinish`).
+    // Step 4 (§33): noslip after any solver, which ends as PGS does
+    // (`dualFinish`).
     if model.noslip_iterations > 0 {
         mj_sol_noslip(model, data, &mass);
     }

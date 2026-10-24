@@ -982,9 +982,9 @@ pub struct Model {
     pub ls_iterations: usize,
     /// Line search gradient tolerance for Newton solver (default 0.01).
     pub ls_tolerance: f64,
-    /// Noslip solver iterations (parsed from MJCF, stored, not yet implemented; default 0).
+    /// Noslip solver iterations, after the main solver (MuJoCo's `mj_solNoSlip`; default 0).
     pub noslip_iterations: usize,
-    /// Noslip solver tolerance (parsed from MJCF, stored, not yet implemented; default 1e-6).
+    /// Noslip solver tolerance (default 1e-6).
     pub noslip_tolerance: f64,
     /// Use body-weight diagonal approximation instead of exact M⁻¹ solve (DT-39).
     ///

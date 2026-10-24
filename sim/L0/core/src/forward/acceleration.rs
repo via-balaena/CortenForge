@@ -42,14 +42,14 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
             // MuJoCo leaves the explicit acceleration in qacc (mj_fwdConstraint,
             // engine_forward.c:747-750) and factors and solves M − h·D only in
             // the integrator (mj_implicitSkip, :1128; `mj_implicit_factor`).
-            // After a primal solve qacc is already its iterate.
+            // After a constraint solve qacc is already the solver's
+            // (`Data::solver_qacc`); the forward pass calls this only when not.
             if !data.solver_qacc {
                 mj_fwd_acceleration_explicit(model, data);
             }
             Ok(())
         }
         Integrator::Euler | Integrator::RungeKutta4 => {
-            // qacc is always computed explicitly for Euler/RK4.
             // MuJoCo's eulerdamp is applied as a post-velocity correction in
             // the Euler integration step (see integrate/mod.rs), not here.
             mj_fwd_acceleration_explicit(model, data);

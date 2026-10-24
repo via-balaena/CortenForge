@@ -145,8 +145,9 @@ CASES = {
                           'solimp="0.8 0.9 0.002 0.4 3" condim="4"/>'),
                      (*grid(3, 0.1, 0.0)[:3], NONE + ' margin="0.002" gap="0.0005" solmix="0.7" '
                       'friction="0.9 0.003 0.0003" solref="0.025 1.1" solimp="0.85 0.97 0.003 0.6 2.5"'),
-                     # Elliptic: a pyramidal row's diagApprox with a friction
-                     # other than 1 rounds otherwise in sim-core (ledger L227).
+                     # Elliptic, chosen while a pyramidal row's diagApprox with a
+                     # friction other than 1 rounded otherwise in sim-core (ledger
+                     # L227, since closed).
                      'cone="elliptic"', "", ""),
     "priority_cloth": (body("0.025 0.025 0.035", '<geom type="sphere" size="0.03" friction="0.7 0.01 0.0002"/>'),
                        (*grid(3, 0.1, 0.0)[:3], NONE + ' priority="1" condim="1"'), "", "", ""),

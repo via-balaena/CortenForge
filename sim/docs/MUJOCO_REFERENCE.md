@@ -28,8 +28,10 @@ Data::step():
         mj_rne              — Bias forces (Recursive Newton-Euler)
         cb_control          — unless DISABLE_ACTUATION
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
-     d. mj_fwd_constraint  — efc_b, then PGS/CG/Newton over the rows (CG and Newton by island)
-     e. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one)
+     d. mj_fwd_constraint  — efc_b, then PGS/CG/Newton over the rows (CG and Newton by island),
+                             then noslip; each leaves its own qacc
+     e. mj_fwd_acceleration — qacc (explicit; implicitspringdamper's implicit one), when no
+                             constraint solve left one
   2a. integrate()          — Under implicit and implicitfast, first M − h·D factored
                               and qacc_implicit solved (MuJoCo's mj_implicitSkip);
                               then activation integration + the integrator's velocity update
@@ -572,6 +574,9 @@ for different condim). When the same key reappears next frame, previous lambda v
 the iteration (with dimension check).
 
 ### 4.8 Forward Acceleration
+
+When a constraint solver ran, `qacc` is the solver's own (the primal iterate,
+or `dualFinish`'s after PGS and noslip) and this stage is skipped.
 
 **Explicit path** (Euler and RK4 — RK4 re-evaluates this at each of stages 1–3 via `forward_skip_sensors()`):
 ```

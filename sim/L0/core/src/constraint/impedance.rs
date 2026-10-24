@@ -91,7 +91,8 @@ fn mj_power(a: f64, b: f64) -> f64 {
 /// `getimpedance` (`engine_core_constraint.c:1416`, `:1439`).
 ///
 /// # Returns
-/// Impedance value in (0, 1), clamped to [MIN_IMPEDANCE, MAX_IMPEDANCE].
+/// The impedance, in `[mjMINIMP, mjMAXIMP]` for finite inputs (its
+/// parameters clamped there); NaN where a NaN reaches the curve, as MuJoCo's.
 #[inline]
 // MuJoCo compares the flat and linear cases exactly.
 #[allow(clippy::float_cmp)]
@@ -101,8 +102,8 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
     const MJ_MAX_IMP: f64 = 0.9999;
 
     // A NaN passes: a contact at a NaN distance (a geom turned by a NaN, as
-    // MuJoCo's collision functions list it) reaches here, and its impedance
-    // is NaN, as MuJoCo's `getimpedance` gives (ledger L209).
+    // MuJoCo's collision functions list it) reaches here, and off a flat curve
+    // its impedance is NaN, as MuJoCo's `getimpedance` gives (ledger L209).
     debug_assert!(
         !(violation < 0.0),
         "compute_impedance expects non-negative violation, got {violation}"
@@ -314,8 +315,9 @@ pub fn compute_diag_approx_bodyweight(model: &Model, id: usize, row_offset: usiz
         // edge's `flexedge_invweight0`, which
         // `assemble_flex_equality_rows` passes itself.
         EqualityType::Flex => MJ_MINVAL,
-        // This crate's own equality (MuJoCo 3.5.0 has none): its geoms'
-        // bodies' translational weights, as a connect's.
+        // This crate's own equality (MuJoCo 3.5.0's `mjEQ_DISTANCE` is
+        // unsupported, an error if used): its geoms' bodies' translational
+        // weights, as a connect's.
         EqualityType::Distance => {
             let geom_body = |g: usize| model.geom_body.get(g).copied().unwrap_or(0);
             body(geom_body(obj1), 0) + body(geom_body(obj2), 0)

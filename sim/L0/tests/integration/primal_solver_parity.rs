@@ -212,8 +212,8 @@ fn solve_given_mujocos_inputs(name: &str, case: &Value) -> Data {
     data.efc_aref.copy_from_slice(&floats(&case["efc_aref"]));
     // sim-core's own regularization is MuJoCo's bit for bit, but in the
     // condim-6 cases, whose torsional and rolling rows take P38's, and the
-    // chain's, whose bodies' and dofs' invweight0 round otherwise: its
-    // spheres' and capsules' inertias as sim-mjcf compiles them, a capsule's
+    // chain's, whose bodies' and dofs' invweight0 round otherwise: its second
+    // free sphere's and its capsules' inertias as sim-mjcf compiles them, a capsule's
     // inertial frame among them (ledgers L198, L195; with the inertias
     // written out, impedance_parity's `inertial_chain`, MuJoCo's bit for bit).
     if !name.contains("_6") && !name.contains("_chain_") {

@@ -4,7 +4,9 @@
 //! row's force, or an elliptic contact's block of forces, to the minimum of
 //! the dual cost over the rows' inverse inertia `efc_AR`, keeps a move only
 //! if it lowers the cost, and stops when the sweep's improvement, scaled by
-//! the model's mean inertia, falls under the tolerance.
+//! the model's mean inertia, falls under the tolerance. Each row's residual
+//! reads its row of `efc_AR`, so at the dense size a sweep's work grows as
+//! nefc², as MuJoCo's.
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::dual_state;
