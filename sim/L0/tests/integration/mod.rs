@@ -73,6 +73,9 @@ pub mod joint_transmission;
 /// row with `qvel`, at the dense and the sparse Jacobian.
 pub mod actuator_velocity_parity;
 
+/// Runs against MuJoCo 3.5.0's on models sim-mjcf compiles as MuJoCo does.
+pub mod trajectory_parity;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================
