@@ -7,7 +7,7 @@
 use super::muscle::muscle_activation_dynamics;
 use crate::constraint::jacobian::compute_contact_normal_row;
 use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
-use crate::linalg::dot_sparse;
+use crate::linalg::dot_sparse_entries;
 use crate::quat::{neg_quat, qpos_quat, quat_to_vel, rot_vec_quat};
 use crate::tendon::subquat;
 use crate::types::{
@@ -439,13 +439,19 @@ pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
 /// (`engine_core_smooth.c:1279-1290`): its length keeps its last value and
 /// its moment is empty (MuJoCo's `rownnz` 0), so its row is cleared here.
 fn transmission_skips_asleep(model: &Model, data: &mut Data, i: usize) -> bool {
-    let asleep = model.enableflags & ENABLE_SLEEP != 0
-        && data.nv_awake < model.nv
-        && crate::island::actuator_asleep(model, data, i);
+    let asleep = actuator_skipped_asleep(model, data, i);
     if asleep {
         data.actuator_moment[i].fill(0.0);
     }
     asleep
+}
+
+/// Whether actuator `i` sleeps while some dof sleeps, which MuJoCo's
+/// `mj_transmission` skips (`engine_core_smooth.c:1279-1290`).
+pub fn actuator_skipped_asleep(model: &Model, data: &Data, i: usize) -> bool {
+    model.enableflags & ENABLE_SLEEP != 0
+        && data.nv_awake < model.nv
+        && crate::island::actuator_asleep(model, data, i)
 }
 
 /// Whether actuator `i` acts through its `actuator_moment` row: a site, body
@@ -513,79 +519,144 @@ pub fn ball_free_transmission(
 /// Compute each actuator's velocity in the velocity stage, after
 /// `mj_fwd_velocity()`, as MuJoCo's `mj_fwdVelocity` does
 /// (`engine_forward.c:240-246`): the sparse dot of the actuator's moment row
-/// ([`moment_row`]) with `qvel` (`mju_mulMatVecSparse`), in [`dot_sparse`]'s
-/// grouping. Every velocity is 0 when actuation is disabled.
+/// ([`MomentRows::entries`]) with `qvel` (`mju_mulMatVecSparse`), in
+/// [`dot_sparse_entries`]'s grouping. Every velocity is 0 when actuation is
+/// disabled.
 pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
     if disabled(model, DISABLE_ACTUATION) {
         data.actuator_velocity.fill(0.0);
         return;
     }
     for i in 0..model.nu {
-        if let Some((moment, cols)) = moment_row(model, data, i) {
-            data.actuator_velocity[i] = dot_sparse(&moment, |k| data.qvel[cols[k]]);
+        let asleep = actuator_skipped_asleep(model, data, i);
+        let rows = MomentRows {
+            moment: &data.actuator_moment,
+            ten_j: &data.ten_J,
+            ten_j_colind: &data.ten_J_colind,
+            ten_j_rownnz: &data.ten_J_rownnz,
+        };
+        if let Some(entries) = rows.entries(model, i, asleep) {
+            data.actuator_velocity[i] = dot_sparse_entries(entries, data.qvel.as_slice());
         }
     }
 }
 
-/// Actuator `i`'s moment row as `mj_transmission` stores it
-/// (`engine_core_smooth.c:1250-1730`), its entries and their columns: a
-/// hinge's or slide's one entry, the gear (`:1301-1307`); a ball's or free
-/// joint's three or six (`:1311-1375`); a tendon's `ten_J` chain under the
-/// sparse Jacobian, zeros kept, each entry times the gear (`:1453-1460`); a
-/// tendon's row times the gear under the dense Jacobian, and a site's,
-/// slider-crank's or body's row, their nonzero entries ([`compressed`]).
-/// `None` for a joint or tendon transmission to no object.
-pub fn moment_row(model: &Model, data: &Data, i: usize) -> Option<(Vec<f64>, Vec<usize>)> {
-    let gear = model.actuator_gear[i][0];
-    let trnid = model.actuator_trnid[i][0];
-    match model.actuator_trntype[i] {
-        ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
-            if trnid >= model.njnt {
-                return None;
+/// What actuators' moment rows are read from: each actuator's dense row
+/// (`Data::actuator_moment`), and each tendon's Jacobian and stored chain
+/// (`Data::ten_J`, `ten_J_colind`, `ten_J_rownnz`). It borrows those fields
+/// alone, so a caller may write another field of `Data` while it reads.
+pub struct MomentRows<'a> {
+    pub moment: &'a [DVector<f64>],
+    pub ten_j: &'a [DVector<f64>],
+    pub ten_j_colind: &'a [usize],
+    pub ten_j_rownnz: &'a [usize],
+}
+
+impl<'a> MomentRows<'a> {
+    /// Actuator `i`'s moment row as `mj_transmission` stores it
+    /// (`engine_core_smooth.c:1250-1730`), its `(column, value)` entries in
+    /// order: none for an actuator skipped asleep (`asleep`, `:1287-1290`); a
+    /// hinge's or slide's one entry, the gear (`:1301-1307`); a ball's or free
+    /// joint's three or six, zeros kept (`:1311-1375`); a tendon's `ten_J`
+    /// chain under the sparse Jacobian, zeros kept, each entry times the gear
+    /// (`:1453-1460`); a tendon's row times the gear under the dense Jacobian,
+    /// and a site's, slider-crank's or body's row, their nonzero entries
+    /// (`:1436-1445`, alike at `:1464-1473`, `:1608-1617` and `:1720-1729`).
+    /// `None` for a joint or tendon transmission to no object.
+    pub fn entries(&self, model: &Model, i: usize, asleep: bool) -> Option<MomentEntries<'a>> {
+        let gear = model.actuator_gear[i][0];
+        let trnid = model.actuator_trnid[i][0];
+        let entries = match model.actuator_trntype[i] {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                if trnid >= model.njnt {
+                    return None;
+                }
+                let dof_adr = model.jnt_dof_adr[trnid];
+                let n = model.jnt_type[trnid].nv();
+                if n == 1 {
+                    MomentEntries::One(Some((dof_adr, gear)))
+                } else {
+                    MomentEntries::Span {
+                        start: dof_adr,
+                        values: self.moment[i].as_slice()[dof_adr..dof_adr + n]
+                            .iter()
+                            .enumerate(),
+                    }
+                }
             }
-            let dof_adr = model.jnt_dof_adr[trnid];
-            let n = model.jnt_type[trnid].nv();
-            if n == 1 {
-                Some((vec![gear], vec![dof_adr]))
-            } else {
-                let span = dof_adr..dof_adr + n;
-                Some((
-                    data.actuator_moment[i].as_slice()[span.clone()].to_vec(),
-                    span.collect(),
-                ))
+            ActuatorTransmission::Tendon => {
+                if trnid >= model.ntendon {
+                    return None;
+                }
+                let row = self.ten_j[trnid].as_slice();
+                if model.is_sparse() {
+                    let nv = model.nv;
+                    MomentEntries::Chain {
+                        cols: self.ten_j_colind[trnid * nv..trnid * nv + self.ten_j_rownnz[trnid]]
+                            .iter(),
+                        row,
+                        gear,
+                    }
+                } else {
+                    MomentEntries::Nonzero {
+                        row: row.iter().enumerate(),
+                        scale: gear,
+                    }
+                }
             }
-        }
-        ActuatorTransmission::Tendon => {
-            if trnid >= model.ntendon {
-                return None;
-            }
-            let row = data.ten_J[trnid].as_slice();
-            if model.is_sparse() {
-                let nv = model.nv;
-                let chain = &data.ten_J_colind[trnid * nv..trnid * nv + data.ten_J_rownnz[trnid]];
-                Some((
-                    chain.iter().map(|&c| row[c] * gear).collect(),
-                    chain.to_vec(),
-                ))
-            } else {
-                Some(compressed(row.iter().map(|&j| j * gear)))
-            }
-        }
-        ActuatorTransmission::Site
-        | ActuatorTransmission::SliderCrank
-        | ActuatorTransmission::Body => Some(compressed(data.actuator_moment[i].iter().copied())),
+            ActuatorTransmission::Site
+            | ActuatorTransmission::SliderCrank
+            | ActuatorTransmission::Body => MomentEntries::Nonzero {
+                row: self.moment[i].as_slice().iter().enumerate(),
+                scale: 1.0,
+            },
+        };
+        Some(if asleep {
+            MomentEntries::One(None)
+        } else {
+            entries
+        })
     }
 }
 
-/// A dense moment row's nonzero entries and their columns, the entries
-/// `mj_transmission` keeps when it compresses a row
-/// (`engine_core_smooth.c:1436-1445`, alike at `:1464-1473`, `:1608-1617`
-/// and `:1720-1729`).
-fn compressed(row: impl Iterator<Item = f64>) -> (Vec<f64>, Vec<usize>) {
-    row.enumerate()
-        .filter(|&(_, m)| m != 0.0)
-        .map(|(c, m)| (m, c))
-        .unzip()
+/// A moment row's stored entries, `(column, value)`, in order
+/// ([`MomentRows::entries`]).
+#[derive(Clone)]
+pub enum MomentEntries<'a> {
+    /// At most one entry.
+    One(Option<(usize, f64)>),
+    /// Consecutive columns from `start`, every value kept.
+    Span {
+        start: usize,
+        values: std::iter::Enumerate<std::slice::Iter<'a, f64>>,
+    },
+    /// The chain's columns, each `row[column] · gear`, every value kept.
+    Chain {
+        cols: std::slice::Iter<'a, usize>,
+        row: &'a [f64],
+        gear: f64,
+    },
+    /// A dense row's entries times `scale`, those not 0.
+    Nonzero {
+        row: std::iter::Enumerate<std::slice::Iter<'a, f64>>,
+        scale: f64,
+    },
+}
+
+impl Iterator for MomentEntries<'_> {
+    type Item = (usize, f64);
+
+    fn next(&mut self) -> Option<(usize, f64)> {
+        match self {
+            Self::One(entry) => entry.take(),
+            Self::Span { start, values } => values.next().map(|(k, &v)| (*start + k, v)),
+            Self::Chain { cols, row, gear } => cols.next().map(|&c| (c, row[c] * *gear)),
+            Self::Nonzero { row, scale } => row.find_map(|(c, &v)| {
+                let m = v * *scale;
+                (m != 0.0).then_some((c, m))
+            }),
+        }
+    }
 }
 
 /// Compute next activation state: integrate act_dot and clamp to actrange.

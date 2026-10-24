@@ -21,8 +21,8 @@ use crate::dynamics::spatial::{
     spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::forward::{
-    MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
-    hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, moment_row,
+    MjStage, MomentRows, acts_through_moment, actuator_ctrl_input, ellipsoid_moment,
+    fluid_geom_semi_axes, hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation,
     muscle_f0, muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
 };
 use crate::forward::{mj_implicit_factor, mj_implicit_solve, solve_implicit};
@@ -358,7 +358,7 @@ fn forward_pass_input(model: &Model, data: &Data, i: usize, bad: bool) -> f64 {
 /// V is the moment row times qvel, so `∂qfrc/∂qvel += moment · ∂force/∂V ·
 /// moment^T`, added as MuJoCo's `addJTBJSparse` adds it
 /// (`engine_derivative.c:746-775`): over the row's stored entries
-/// ([`moment_row`]), entry `(k, p)` takes `J(p) · (J(k) · ∂force/∂V)`.
+/// (`MomentRows::entries`), entry `(k, p)` takes `J(p) · (J(k) · ∂force/∂V)`.
 ///
 /// Supports all gain/bias types including Muscle and HillMuscle (DT-54).
 /// For muscle actuators, the velocity derivative is computed from the
@@ -378,13 +378,20 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         if dforce_dv == 0.0 {
             continue;
         }
-        let Some((moment, cols)) = moment_row(model, data, i) else {
+        // A sleeping actuator was left out above.
+        let rows = MomentRows {
+            moment: &data.actuator_moment,
+            ten_j: &data.ten_J,
+            ten_j_colind: &data.ten_J_colind,
+            ten_j_rownnz: &data.ten_J_rownnz,
+        };
+        let Some(entries) = rows.entries(model, i, false) else {
             continue;
         };
-        for (a, &k) in cols.iter().enumerate() {
-            let scl = moment[a] * dforce_dv;
-            for (b, &p) in cols.iter().enumerate() {
-                data.qDeriv[(k, p)] += moment[b] * scl;
+        for (k, mk) in entries.clone() {
+            let scl = mk * dforce_dv;
+            for (p, mp) in entries.clone() {
+                data.qDeriv[(k, p)] += mp * scl;
             }
         }
     }

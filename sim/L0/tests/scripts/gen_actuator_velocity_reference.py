@@ -16,10 +16,16 @@ each at the dense and the sparse Jacobian; and for each of 12 states (qpos and
 qvel drawn from a seeded generator) after mj_forward each actuator's moment
 (dense rows) and its stored columns (MuJoCo's moment_rownnz and
 moment_colind, which set mju_dotSparse's grouping), its velocity and force,
-qfrc_actuator and the actuatorvel sensors. One case disables actuation. The
-model's joint axes are unit, its bodies' inertias written out and its geoms
-boxes, so what sim-mjcf compiles is MuJoCo's bit for bit (ledgers L146, L198
-and L195 hold where it is not).
+qfrc_actuator and the actuatorvel sensors. One case disables actuation. Two
+more: a free joint's joint and jointinparent actuators, gears with zero
+entries (MuJoCo stores a ball's or free joint's three or six entries, zeros
+kept), dense and sparse; and a tree asleep from the start whose qvel is set
+after a forward pass, then a forward pass from the velocity stage
+(mj_forwardSkip at mjSTAGE_POS), where MuJoCo's row for the sleeping
+actuator is empty. Each case names the actuators whose moment rows sim-core
+fills (`moment_rows`). The models' joint axes are unit, their bodies'
+inertias written out and their geoms boxes, so what sim-mjcf compiles is
+MuJoCo's bit for bit (ledgers L146, L198 and L195 hold where it is not).
 """
 import json
 import os
@@ -107,6 +113,49 @@ CASES = [
     ('actuation disabled', 'dense', '<flag actuation="disable"/>'),
 ]
 
+FREE = """<mujoco>
+  <option timestep="0.002" jacobian="{jacobian}"/>
+  <worldbody>
+    <body name="free" pos="0 0 1">
+      <freejoint name="f"/>
+      <inertial pos="0 0 0" mass="2" diaginertia="0.03 0.025 0.012"/>
+      <geom type="box" size="0.1 0.2 0.3"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <velocity name="joint" joint="f" gear="0.3 0 -0.7 0.4 0.9 -0.2" kv="1.3"/>
+    <velocity name="jointinparent" jointinparent="f" gear="0.5 -0.4 0 0.2 0 0.8" kv="0.6"/>
+  </actuator>
+  <sensor>
+    <actuatorvel actuator="joint"/>
+    <actuatorvel actuator="jointinparent"/>
+  </sensor>
+</mujoco>"""
+
+SLEEPING = """<mujoco>
+  <option timestep="0.002"><flag sleep="enable"/></option>
+  <worldbody>
+    <body name="still" pos="0 0 1" sleep="init">
+      <joint name="hs" axis="0 1 0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+    <body name="moving" pos="1 0 1">
+      <joint name="hm" axis="0 1 0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <velocity name="asleep" joint="hs" gear="-1.5" kv="1"/>
+    <velocity name="awake" joint="hm" gear="2" kv="1"/>
+  </actuator>
+  <sensor>
+    <actuatorvel actuator="asleep"/>
+    <actuatorvel actuator="awake"/>
+  </sensor>
+</mujoco>"""
+
 
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
@@ -164,7 +213,57 @@ def case(name, jacobian, flags):
             'sensordata': floats(d.sensordata),
         })
     return {'name': name, 'xml': text, 'nv': int(m.nv), 'nu': int(m.nu),
-            'sparse': bool(mujoco.mj_isSparse(m)), 'states': states}
+            'sparse': bool(mujoco.mj_isSparse(m)), 'moment_rows': [2, 3, 4, 5], 'states': states}
+
+
+def record(m, d, qpos, qvel):
+    moment = np.zeros((m.nu, m.nv))
+    mujoco.mju_sparse2dense(moment, d.actuator_moment, d.moment_rownnz,
+                            d.moment_rowadr, d.moment_colind)
+    colind = [ints(d.moment_colind[d.moment_rowadr[i]:d.moment_rowadr[i] + d.moment_rownnz[i]])
+              for i in range(m.nu)]
+    return {'qpos': floats(qpos), 'qvel': floats(qvel), 'ctrl': floats(d.ctrl),
+            'actuator_moment': floats(moment), 'moment_colind': colind,
+            'actuator_velocity': floats(d.actuator_velocity),
+            'actuator_force': floats(d.actuator_force),
+            'qfrc_actuator': floats(d.qfrc_actuator), 'sensordata': floats(d.sensordata)}
+
+
+def free_case(name, jacobian):
+    text = FREE.format(jacobian=jacobian)
+    m = mujoco.MjModel.from_xml_string(text)
+    d = mujoco.MjData(m)
+    rng = np.random.default_rng(163)
+    states = []
+    for _ in range(STATES):
+        mujoco.mj_resetData(m, d)
+        q = rng.normal(size=4)
+        qpos = np.concatenate([rng.uniform(-0.2, 0.2, 3) + [0, 0, 1], q / np.linalg.norm(q)])
+        qvel = rng.uniform(-2.0, 2.0, m.nv)
+        d.qpos[:] = qpos
+        d.qvel[:] = qvel
+        d.ctrl[:] = [0.4, -0.7]
+        mujoco.mj_forward(m, d)
+        states.append(record(m, d, qpos, qvel))
+    return {'name': name, 'xml': text, 'nv': int(m.nv), 'nu': int(m.nu),
+            'sparse': bool(mujoco.mj_isSparse(m)), 'moment_rows': [0, 1], 'states': states}
+
+
+def sleeping_case():
+    """A forward pass, then qvel written into the sleeping tree and a forward
+    pass from the velocity stage: MuJoCo's sleeping actuator has an empty row."""
+    m = mujoco.MjModel.from_xml_string(SLEEPING)
+    d = mujoco.MjData(m)
+    mujoco.mj_resetData(m, d)
+    mujoco.mj_forward(m, d)
+    qvel = np.array([0.25, 0.25])
+    d.qvel[:] = qvel
+    mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_POS, 0)
+    if d.moment_rownnz[0] != 0 or d.actuator_velocity[0] != 0.0:
+        sys.exit('sleeping: MuJoCo kept a row for the sleeping actuator')
+    state = record(m, d, d.qpos.copy(), qvel)
+    return {'name': 'sleeping', 'xml': SLEEPING, 'nv': int(m.nv), 'nu': int(m.nu),
+            'sparse': bool(mujoco.mj_isSparse(m)), 'moment_rows': [], 'skip_pos': True, 'states': [state]}
 
 
 def write(path, doc):
@@ -177,11 +276,12 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     marker = oracle()
-    cases = [case(*c) for c in CASES]
+    cases = ([case(*c) for c in CASES] + [free_case('free dense', 'dense'), free_case('free sparse', 'sparse')]
+             + [sleeping_case()])
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], 'actuator_velocity.json'),
           {'oracle': marker, 'cases': finite_or_string(cases)})
-    print(f'{len(cases)} cases x {STATES} states -> {sys.argv[1]}')
+    print(f'{len(cases)} cases -> {sys.argv[1]}')
 
 
 if __name__ == '__main__':

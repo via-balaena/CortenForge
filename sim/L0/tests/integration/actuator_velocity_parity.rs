@@ -9,25 +9,32 @@
 //! velocity actuators through a fixed tendon, a spatial tendon, two sites
 //! (one with a reference site), a slider-crank and a hinge with a negative
 //! gear, under the dense and the sparse Jacobian and with actuation
-//! disabled, each at 12 drawn states, the last holding the hinge still. The
-//! moment rows sim-core fills (`Data::actuator_moment`: not a hinge's or a
-//! tendon's) are compared first, so a difference there is not read as one in
-//! the velocity; then the velocities, the forces, `qfrc_actuator` and the
+//! disabled, each at 12 drawn states, the last holding the hinge still; a
+//! free joint's joint and jointinparent actuators, dense and sparse; and a
+//! sleeping tree whose qvel is set after a forward pass, then a forward pass
+//! from the velocity stage. The moment rows sim-core fills
+//! (`Data::actuator_moment`: not a hinge's or a tendon's; each case names
+//! them) are compared first, so a difference there is not read as one in the
+//! velocity; then the velocities, the forces, `qfrc_actuator` and the
 //! `actuatorvel` sensors, bit for bit on the golden's platform (see
 //! `matches_golden`).
 
 use serde_json::Value;
-
-/// The actuators whose moment rows sim-core fills: the two site actuators,
-/// the reference-site one and the slider-crank (`Data::actuator_moment`
-/// leaves a tendon's and a hinge's row empty).
-const MOMENT_ROWS: [usize; 4] = [2, 3, 4, 5];
+use sim_core::MjStage;
 
 fn golden() -> Value {
     serde_json::from_str(include_str!(
         "../assets/golden/actuator_velocity/actuator_velocity.json"
     ))
     .expect("actuator velocity golden parses")
+}
+
+fn usizes(v: &Value) -> Vec<usize> {
+    v.as_array()
+        .expect("array")
+        .iter()
+        .map(|x| usize::try_from(x.as_u64().expect("index")).expect("fits"))
+        .collect()
 }
 
 fn floats(v: &Value) -> Vec<f64> {
@@ -75,15 +82,22 @@ fn actuator_velocity_as_mujoco() {
             data.qpos
                 .as_mut_slice()
                 .copy_from_slice(&floats(&state["qpos"]));
-            data.qvel
-                .as_mut_slice()
-                .copy_from_slice(&floats(&state["qvel"]));
             data.ctrl
                 .as_mut_slice()
                 .copy_from_slice(&floats(&state["ctrl"]));
-            data.forward(&model).expect("forward");
+            let qvel = floats(&state["qvel"]);
+            if case["skip_pos"].as_bool() == Some(true) {
+                // A forward pass, then qvel set and a pass from the velocity stage.
+                data.forward(&model).expect("forward");
+                data.qvel.as_mut_slice().copy_from_slice(&qvel);
+                data.forward_skip(&model, MjStage::Pos, false)
+                    .expect("forward from the velocity stage");
+            } else {
+                data.qvel.as_mut_slice().copy_from_slice(&qvel);
+                data.forward(&model).expect("forward");
+            }
             let mj_moment = floats(&state["actuator_moment"]);
-            for i in MOMENT_ROWS {
+            for i in usizes(&case["moment_rows"]) {
                 let ours: Vec<f64> = data.actuator_moment[i].iter().copied().collect();
                 let mj = &mj_moment[i * nv..(i + 1) * nv];
                 if !matches_golden(&ours, mj) {
@@ -121,7 +135,7 @@ fn actuator_velocity_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 36, "3 cases of 12 states");
+    assert_eq!(compared, 3 * 12 + 2 * 12 + 1, "every state compared");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",

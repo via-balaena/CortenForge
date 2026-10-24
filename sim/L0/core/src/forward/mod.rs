@@ -58,9 +58,9 @@ pub use muscle::{
 
 #[allow(unused_imports)]
 pub(crate) use actuation::{
-    acts_through_moment, actuator_ctrl_input, ball_free_transmission, mj_actuator_velocity,
-    mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
-    mj_transmission_joint_tendon, mj_transmission_site, mj_transmission_slidercrank, moment_row,
+    MomentRows, acts_through_moment, actuator_ctrl_input, ball_free_transmission,
+    mj_actuator_velocity, mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
+    mj_transmission_joint_tendon, mj_transmission_site, mj_transmission_slidercrank,
 };
 #[allow(unused_imports)]
 pub(crate) use passive::mj_fwd_passive;
