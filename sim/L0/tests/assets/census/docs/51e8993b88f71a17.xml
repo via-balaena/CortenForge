@@ -1,0 +1,20 @@
+<mujoco>
+          <option timestep="0.01"/>
+          <worldbody>
+            <site name="w" pos="0.2 0.1 1"/>
+            <body pos="0 0 1">
+              <joint name="j1" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+              <body pos="0.3 0 0">
+                <joint name="j2" type="hinge" axis="0 0 1"/>
+                <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
+                <site name="s" pos="0.3 0 0"/>
+              </body>
+            </body>
+          </worldbody>
+          <tendon><spatial name="t"><site site="w"/><site site="s"/></spatial></tendon>
+          <actuator>
+            <general tendon="t" gaintype="affine" gainprm="1 0 0"
+                     biastype="affine" biasprm="0 0 0"/>
+          </actuator>
+        </mujoco>
