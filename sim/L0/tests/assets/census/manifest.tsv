@@ -1773,3 +1773,4 @@ ddbebb5d5fc1c89a	sim/L0/tests/integration/flex_rigid_parity.rs:104
 f94cbaefaca3a61f	sim/L0/tests/integration/flex_rigid_parity.rs:241
 44c22cdfe3bb77b3	sim/L0/tests/integration/sensor_phase6.rs:310
 bcd2080c5196a90a	examples/fundamentals/sim-cpu/sensors/touch/src/main.rs:43
+67bba3a77c16482d	sim/L0/tests/integration/rangefinder_parity.rs:126

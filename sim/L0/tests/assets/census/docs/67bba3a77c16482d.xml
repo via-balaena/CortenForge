@@ -1,0 +1,6 @@
+<mujoco><option gravity="0 0 0"/><worldbody>
+  <geom type="sphere" size="1" pos="0 0 3"/>
+  <body name="eye"><freejoint/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+    <site name="r"/>
+  </body>
+</worldbody><sensor><rangefinder site="r"/></sensor></mujoco>
