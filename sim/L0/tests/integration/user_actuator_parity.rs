@@ -3,12 +3,15 @@
 //!
 //! The golden is `assets/golden/user_actuator/user_actuator.json`, from
 //! `scripts/gen_user_actuator_reference.py` on the unfused oracle: two damped
-//! hinges under implicitfast and one actuator on the second, 12 drawn states
-//! each, `act_dot` set before each pass (MuJoCo zeroes an actuator's before
-//! its dynamics write it). sim-mjcf refuses a user type and has no
-//! `actdim`, so each case loads a stand-in and
+//! hinges under implicitfast (one case under implicit) and one actuator on
+//! the second, a user gain's or bias's own parameters written (MuJoCo's reads
+//! none of them), 12 drawn states each, `act_dot` set before each pass
+//! (MuJoCo zeroes an actuator's before its dynamics write it). sim-mjcf
+//! refuses a user type and has no `actdim`, so each case loads a stand-in and
 //! changes it to the user's (`patch`), checked against MuJoCo's compiled
-//! types; the callbacks below are the script's, in the same operations. After
+//! types; the callbacks below are the script's, in the same operations, the
+//! dynamics' reading its own `act_dot` (0 in MuJoCo's when it is called) and,
+//! with two activations, giving the last one's, which MuJoCo's writes. After
 //! a forward pass the actuator's force, `qfrc_actuator` and `act_dot` are
 //! compared; after a step `qDeriv` on D's pattern, which `mjd_actuator_vel`
 //! adds to (`engine_derivative.c:1071-1146`), and qpos, qvel and act; bit for
@@ -80,14 +83,17 @@ fn patched(case: &Value) -> Model {
     match patch["dyn"].as_str() {
         Some("callback") => {
             model.actuator_dyntype[0] = ActuatorDynamics::User;
-            model.set_act_dyn_callback(|m, d, i| (d.ctrl[i] - d.act[m.actuator_act_adr[i]]) / 0.07);
+            model.set_act_dyn_callback(|m, d, i| {
+                let a = m.actuator_act_adr[i] + m.actuator_act_num[i] - 1;
+                (d.ctrl[i] - d.act[a]) / 0.07 + d.act_dot[a]
+            });
         }
         Some("unset") => model.actuator_dyntype[0] = ActuatorDynamics::User,
         _ => {}
     }
     if let Some(actnum) = patch["actnum"].as_u64() {
         model.actuator_act_num[0] = usize::try_from(actnum).expect("fits");
-        model.na = model.actuator_act_num[0];
+        model.na = model.actuator_act_num.iter().sum();
     }
     let gaintype = match model.actuator_gaintype[0] {
         GainType::Fixed => "mjGAIN_FIXED",
@@ -184,7 +190,7 @@ fn user_actuators_act_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 72, "6 cases of 12 states");
+    assert_eq!(compared, 108, "9 cases of 12 states");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",

@@ -10,10 +10,12 @@ It refuses any other interpreter, as gen_census_golden.py does: the PyPI wheel
 fuses multiply-adds.
 
 It writes user_actuator.json, one entry per case: two damped hinges under
-implicitfast and one actuator on the second whose gain or bias is a user's,
-or whose dynamics are a user's with one activation or two (`actdim`), with
-MuJoCo's callback set (`mjcb_act_gain`, `mjcb_act_bias`, `mjcb_act_dyn`) or
-unset; and for each of 12 states (qpos, qvel, ctrl and act drawn from a
+implicitfast (one case under implicit) and one actuator on the second whose
+gain or bias is a user's, its own parameters written (MuJoCo's reads none of
+them), or whose dynamics are a user's with one activation or two (`actdim`,
+with and without `actearly` and an activation range), with MuJoCo's callback
+set (`mjcb_act_gain`, `mjcb_act_bias`, `mjcb_act_dyn`) or unset; and for each
+of 12 states (qpos, qvel, ctrl and act drawn from a
 seeded generator, and act_dot from a second one, set before each pass:
 MuJoCo zeroes an actuator's act_dot before its dynamics write it) after
 mj_forward the actuator's force, qfrc_actuator and act_dot, and after one
@@ -25,7 +27,8 @@ stand-in (`xml`): the same model with a type sim-mjcf loads in place of the
 user's, which the test changes to the user's (`patch`) and checks against
 MuJoCo's compiled types (`gaintype`, `biastype`, `dyntype`, `actnum`). The
 test's callbacks are GAIN, BIAS and DYN below, in the same operations; the
-forces compared pin their values at every state. The models' joint axes are
+forces compared pin GAIN's and BIAS's values at every state, act_dot
+DYN's. The models' joint axes are
 unit, their bodies' inertias written out and their geoms boxes, so what
 sim-mjcf compiles is MuJoCo's bit for bit (ledgers L146, L198 hold where it
 is not).
@@ -43,7 +46,7 @@ from gen_census_golden import finite_or_string, oracle  # noqa: E402
 STATES = 12
 
 MODEL = """<mujoco>
-  <option timestep="0.002" integrator="implicitfast"/>
+  <option timestep="0.002" integrator="{integrator}"/>
   <worldbody>
     <body name="b1" pos="0 0 1">
       <joint name="h1" axis="0 1 0" damping="0.37"/>
@@ -61,23 +64,31 @@ MODEL = """<mujoco>
   </actuator>
 </mujoco>"""
 
-# (name, MuJoCo's actuator, sim-mjcf's stand-in, the patch)
+# A user gain's and a user bias's own parameters, which MuJoCo's reads not.
+USER_GAIN = 'gainprm="2.5 0.4 -0.6"'
+USER_BIAS = 'biasprm="0.3 -0.2 0.45"'
+
+# (name, MuJoCo's actuator, sim-mjcf's stand-in, the patch[, the integrator])
 CASES = [
     ('a user gain with its callback, an affine bias',
-     '<general joint="h2" gaintype="user" biastype="affine" biasprm="0.1 -1 -0.3"/>',
-     '<general joint="h2" gaintype="fixed" biastype="affine" biasprm="0.1 -1 -0.3"/>',
+     f'<general joint="h2" gaintype="user" {USER_GAIN} biastype="affine" biasprm="0.1 -1 -0.3"/>',
+     f'<general joint="h2" gaintype="fixed" {USER_GAIN} biastype="affine" biasprm="0.1 -1 -0.3"/>',
      {'gain': 'callback'}),
+    ('a user gain with its callback, an affine bias, under implicit',
+     f'<general joint="h2" gaintype="user" {USER_GAIN} biastype="affine" biasprm="0.1 -1 -0.3"/>',
+     f'<general joint="h2" gaintype="fixed" {USER_GAIN} biastype="affine" biasprm="0.1 -1 -0.3"/>',
+     {'gain': 'callback'}, 'implicit'),
     ('an affine gain, a user bias with its callback',
-     '<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="user"/>',
-     '<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="none"/>',
+     f'<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="user" {USER_BIAS}/>',
+     f'<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="none" {USER_BIAS}/>',
      {'bias': 'callback'}),
     ('a user gain without a callback, an affine bias',
-     '<general joint="h2" gaintype="user" biastype="affine" biasprm="0.1 -1 -0.3"/>',
-     '<general joint="h2" gaintype="fixed" biastype="affine" biasprm="0.1 -1 -0.3"/>',
+     f'<general joint="h2" gaintype="user" {USER_GAIN} biastype="affine" biasprm="0.1 -1 -0.3"/>',
+     f'<general joint="h2" gaintype="fixed" {USER_GAIN} biastype="affine" biasprm="0.1 -1 -0.3"/>',
      {'gain': 'unset'}),
     ('an affine gain, a user bias without a callback',
-     '<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="user"/>',
-     '<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="none"/>',
+     f'<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="user" {USER_BIAS}/>',
+     f'<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="none" {USER_BIAS}/>',
      {'bias': 'unset'}),
     ('user dynamics with two activations, without a callback',
      '<general joint="h2" dyntype="user" actdim="2" gaintype="affine" gainprm="2 0 0.5" '
@@ -91,6 +102,20 @@ CASES = [
      '<general joint="h2" dyntype="integrator" gaintype="affine" gainprm="2 0 0.5" '
      'biastype="affine" biasprm="0 -1 -0.3"/>',
      {'dyn': 'callback'}),
+    ('user dynamics with two activations, actearly and its callback',
+     '<general joint="h2" dyntype="user" actdim="2" actearly="true" gaintype="affine" '
+     'gainprm="2 0 0.5" biastype="affine" biasprm="0 -1 -0.3"/>',
+     '<general joint="h2" dyntype="integrator" actearly="true" gaintype="affine" '
+     'gainprm="2 0 0.5" biastype="affine" biasprm="0 -1 -0.3"/>',
+     {'dyn': 'callback', 'actnum': 2}),
+    ('user dynamics with two activations, actearly, an activation range and its callback',
+     '<general joint="h2" dyntype="user" actdim="2" actearly="true" actlimited="true" '
+     'actrange="0.1 0.5" gaintype="affine" gainprm="2 0 0.5" biastype="affine" '
+     'biasprm="0 -1 -0.3"/>',
+     '<general joint="h2" dyntype="integrator" actearly="true" actlimited="true" '
+     'actrange="0.1 0.5" gaintype="affine" gainprm="2 0 0.5" biastype="affine" '
+     'biasprm="0 -1 -0.3"/>',
+     {'dyn': 'callback', 'actnum': 2}),
 ]
 
 
@@ -103,7 +128,15 @@ def BIAS(m, d, i):
 
 
 def DYN(m, d, i):
-    return (d.ctrl[i] - d.act[m.actuator_actadr[i]]) / 0.07
+    # The last activation's; its act_dot is 0 here, MuJoCo zeroing it first.
+    a = m.actuator_actadr[i] + m.actuator_actnum[i] - 1
+    act_dot = (d.ctrl[i] - d.act[a]) / 0.07 + d.act_dot[a]
+    if m.actuator_actnum[i] == 1:
+        return act_dot
+    # With several activations MuJoCo's callback writes act_dot itself
+    # (engine_forward.c:361-370).
+    d.act_dot[a] = act_dot
+    return 0.0
 
 
 def floats(a):
@@ -120,10 +153,11 @@ def set_callbacks(patch):
     mujoco.set_mjcb_act_dyn(DYN if patch.get('dyn') == 'callback' else None)
 
 
-def case(name, actuator, stand_in, patch):
+def case(name, actuator, stand_in, patch, integrator='implicitfast'):
     # MuJoCo's compiler runs the model once; the callbacks are set after it.
     set_callbacks({})
-    m = mujoco.MjModel.from_xml_string(MODEL.format(actuator=actuator))
+    text = MODEL.format(integrator=integrator, actuator=actuator)
+    m = mujoco.MjModel.from_xml_string(text)
     d = mujoco.MjData(m)
     set_callbacks(patch)
     rng = np.random.default_rng(7)
@@ -152,8 +186,8 @@ def case(name, actuator, stand_in, patch):
         state.update({'qDeriv': floats(d.qDeriv), 'qpos_after': floats(d.qpos),
                       'qvel_after': floats(d.qvel), 'act_after': floats(d.act)})
         states.append(state)
-    return {'name': name, 'mujoco_xml': MODEL.format(actuator=actuator),
-            'xml': MODEL.format(actuator=stand_in), 'patch': patch,
+    return {'name': name, 'mujoco_xml': text,
+            'xml': MODEL.format(integrator=integrator, actuator=stand_in), 'patch': patch,
             'gaintype': mujoco.mjtGain(m.actuator_gaintype[0]).name,
             'biastype': mujoco.mjtBias(m.actuator_biastype[0]).name,
             'dyntype': mujoco.mjtDyn(m.actuator_dyntype[0]).name,
