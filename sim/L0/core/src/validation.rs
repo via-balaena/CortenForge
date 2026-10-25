@@ -959,6 +959,17 @@ mod tests {
             let check = equilibrium.check(2.0, 1.0);
             assert!(!check.pass, "a NaN at step {nan_at}: {}", check.detail);
         }
+        // A NaN time empties the window, which the later samples refill.
+        let mut clock = EquilibriumTracker::new(1.0);
+        for i in 0..400 {
+            let time = if i == 50 {
+                f64::NAN
+            } else {
+                f64::from(i) * 0.01
+            };
+            clock.sample(2.0, time);
+        }
+        assert!(!clock.check(2.0, 1.0).pass, "a NaN time");
     }
 
     #[test]
