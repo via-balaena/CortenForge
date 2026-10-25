@@ -514,7 +514,7 @@ impl Model {
 /// Size the per-element arrays a factory does not fill, to the defaults the
 /// test-fixture builders push, then derive every field the primary fields
 /// determine.
-// A factory's ranges are fixed and valid, so a refusal is a bug in the factory.
+// A factory's model is fixed and valid, so a refusal is a bug in the factory.
 #[allow(clippy::panic)]
 fn recompute(model: &mut Model) {
     model.jnt_group.resize(model.njnt, 0);
@@ -527,7 +527,7 @@ fn recompute(model: &mut Model) {
     model.body_user.resize(model.nbody, Vec::new());
     model.body_plugin.resize(model.nbody, None);
     if let Err(e) = model.recompute_derived() {
-        panic!("a factory model has an invalid range: {e}");
+        panic!("a factory model is refused: {e}");
     }
 }
 

@@ -678,8 +678,9 @@ impl Model {
 
     /// Create the `Data` for this model, with every array allocated: the joint
     /// layout, range and activation-count checks, then the arrays, each
-    /// plugin's `init`, and a [`Data::reset`], which clears what `init` wrote outside the plugin
-    /// state, sets the sleep state and runs each plugin's `reset`, as MuJoCo
+    /// plugin's `init`, and a [`Data::reset`], which clears what `init` wrote
+    /// outside the plugin state, sets the sleep state and runs each plugin's
+    /// `reset`, as MuJoCo
     /// 3.5.0's `mj_makeData` runs `mj_initPlugin` and then `mj_resetData`
     /// (`engine_io.c:1110-1111`).
     ///
@@ -687,8 +688,7 @@ impl Model {
     /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
     /// [`MakeDataError::Range`] ([`Self::check_ranges`]),
     /// [`MakeDataError::ActivationCount`] ([`Self::check_activation_counts`]),
-    /// the history
-    /// buffers' refusals ([`MakeDataError::InvalidTimestep`],
+    /// the history buffers' refusals ([`MakeDataError::InvalidTimestep`],
     /// [`MakeDataError::DelayedUserSensor`]), [`MakeDataError::PluginInit`]
     /// if a plugin's `init` returns an error, or the reset's refusal of the
     /// trees that start asleep ([`MakeDataError::InitSleep`],
@@ -736,7 +736,11 @@ impl Model {
     /// MuJoCo skips one with none (`engine_forward.c:327-330`).
     ///
     /// # Errors
-    /// The first actuator's [`ActivationCountError`].
+    /// The first [`ActivationCountError`] found.
+    ///
+    /// # Panics
+    /// Panics if `actuator_dyntype` or `actuator_act_num` is shorter than the
+    /// model's actuators.
     pub fn check_activation_counts(&self) -> Result<(), ActivationCountError> {
         let of_an_actuator_plugin = |i: usize| {
             // `get`: a model built in code may leave `actuator_plugin` empty.
@@ -1914,14 +1918,15 @@ mod joint_layout_tests {
         fn compute(&self, _: &Model, _: &mut Data, _: usize, _: PluginCapabilityBit) {}
     }
 
-    /// The activation counts MuJoCo's compiler refuses for an actuator's
-    /// dynamics (`user_objects.cc:6896-6906`), on a one-hinge chain's motor:
-    /// none with dynamics, one without, two with dynamics other than a
-    /// user's. Two with a user's, and as many as the dynamics need, make a
-    /// `Data`. On an actuator of a plugin with the actuator capability only
-    /// the first is refused; an actuator naming a plugin without it, or no
-    /// plugin of the model, is checked as any. `recompute_derived` refuses
-    /// what `try_make_data` refuses.
+    /// The activation counts `check_activation_counts` refuses, on a one-hinge
+    /// chain's motor: none with dynamics, one without, two with dynamics other
+    /// than a user's (MuJoCo's compiler's three, `user_objects.cc:6896-6906`).
+    /// Two with a user's, and as many as the dynamics need, make a `Data`. On
+    /// an actuator of a plugin with the actuator capability only the first is
+    /// refused, which MuJoCo's compiler takes; an actuator naming a plugin
+    /// without it, or no plugin of the model, is checked as any.
+    /// `recompute_derived` refuses what `try_make_data` refuses, leaving the
+    /// model as it was.
     #[test]
     fn try_make_data_refuses_an_activation_count_mujoco_refuses() {
         let model = |dynamics, act_num, plugin: Option<(usize, PluginCapabilityBit)>| {
@@ -1966,13 +1971,17 @@ mod joint_layout_tests {
         assert_eq!(made(ActuatorDynamics::Integrator, 2, passive), refused(2));
         let none = Some((1, PluginCapabilityBit::Actuator));
         assert_eq!(made(ActuatorDynamics::None, 1, none), refused(1));
+        let mut m = model(ActuatorDynamics::Muscle, 0, None);
+        m.jnt_damping[0] = 5.0;
+        let before = format!("{m:?}");
         assert_eq!(
-            model(ActuatorDynamics::Muscle, 0, None).recompute_derived(),
+            m.recompute_derived(),
             Err(ModelError::ActivationCount(ActivationCountError {
                 actuator: 0,
                 act_num: 0,
             }))
         );
+        assert_eq!(format!("{m:?}"), before);
     }
 
     /// Each rule of `check_ranges`, on a one-hinge chain with a motor and on a

@@ -1487,10 +1487,7 @@ impl std::error::Error for RangeError {}
 
 /// An actuator's activation count that
 /// [`Model::check_activation_counts`](crate::Model::check_activation_counts)
-/// refuses.
-///
-/// Actuator `actuator` has `act_num` activations, which MuJoCo's compiler
-/// refuses for its dynamics (`user_objects.cc:6896-6906`).
+/// refuses: actuator `actuator` has `act_num` activations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ActivationCountError {
@@ -1508,7 +1505,7 @@ impl std::fmt::Display for ActivationCountError {
             1 => write!(f, "actuator {actuator} has an activation and no dynamics"),
             n => write!(
                 f,
-                "actuator {actuator} has {n} activations, which only user dynamics may have"
+                "actuator {actuator} has {n} activations and dynamics other than a user's"
             ),
         }
     }
