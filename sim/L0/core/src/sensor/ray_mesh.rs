@@ -297,10 +297,10 @@ fn ray_slab(aabb: &[f64; 6], src: &[f64; 3], dir: &[f64; 3]) -> bool {
 ///
 /// The mesh is as sim-core holds it: its vertices in double precision, where
 /// MuJoCo's ray reads them in single precision (`mesh_vert`; the same for
-/// vertices a float holds), and in its written frame, where MuJoCo turns a
-/// mesh to its principal frame (book Rigid-loading L35). A mesh with no
-/// hierarchy (no face, or a model whose hierarchies were not built,
-/// [`Model::compute_body_bvhs`]) reads −1.
+/// vertices a float holds; ledger L281), and in its written frame, where
+/// MuJoCo turns a mesh to its principal frame (book Rigid-loading L35). A
+/// mesh with no hierarchy (no face, or a model whose hierarchies were not
+/// built, [`Model::compute_body_bvhs`]) reads −1.
 pub(super) fn mj_ray_mesh(
     model: &Model,
     mesh: usize,
@@ -436,6 +436,36 @@ mod tests {
             "{} differ:\n{}",
             differ.len(),
             differ.join("\n")
+        );
+    }
+
+    /// A field of one row, which sim-mjcf refuses (ledger L208) and whose
+    /// sides MuJoCo's test reads past its data for, reads its base box's
+    /// distance only: a ray across its top box at half its height, which
+    /// misses the base, reads −1, though the side's test would read the row
+    /// past it as 0 and take the side; a ray up into its base reads the
+    /// base's.
+    #[test]
+    fn a_field_of_one_row_reads_its_base_only() {
+        let hfield = HeightFieldData::new(vec![0.5; 3], 3, 1, 1.0);
+        let size = [1.0, 1.0, 0.5, 0.25];
+        let ray = |pnt: [f64; 3], vec: [f64; 3]| {
+            mj_ray_hfield(
+                &hfield,
+                &size,
+                &Vector3::zeros(),
+                &Matrix3::identity(),
+                &Vector3::from(pnt),
+                &Vector3::from(vec),
+            )
+        };
+        assert_eq!(
+            ray([-2.0, 0.0, 0.25], [1.0, 0.0, 0.0]).to_bits(),
+            (-1.0_f64).to_bits()
+        );
+        assert_eq!(
+            ray([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]).to_bits(),
+            0.75_f64.to_bits()
         );
     }
 
