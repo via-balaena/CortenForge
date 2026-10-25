@@ -871,6 +871,7 @@ mod inverse_fd_tests {
     use super::*;
     use crate::jacobian::mj_integrate_pos_explicit;
     use crate::types::Model;
+    use crate::validation::max_abs_or_nan;
     use nalgebra::DVector;
 
     /// DfDa should approximately equal the mass matrix M.
@@ -1001,7 +1002,7 @@ mod inverse_fd_tests {
         let config = DerivativeConfig::default();
         let derivs = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd failed");
 
-        let max_abs = derivs.DfDq.abs().max();
+        let max_abs = max_abs_or_nan(&derivs.DfDq);
         assert!(
             max_abs > 1e-3,
             "DfDq should have nonzero entries from gravity; max_abs = {:.8e}",

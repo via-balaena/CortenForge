@@ -29,6 +29,7 @@ use std::sync::Arc;
 use super::SdfGrid;
 use super::shape::compute_shape_contact;
 use super::shapes::{ShapeConcave, ShapeConvex, ShapeSphere};
+use crate::validation::max_or_nan;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ fn identity_pose(pos: Vector3<f64>) -> Pose {
 fn net_force_direction(contacts: &[super::SdfContact]) -> Option<Vector3<f64>> {
     let sum: Vector3<f64> = contacts
         .iter()
-        .map(|c| c.normal * c.penetration.max(0.001)) // floor depth for margin-zone contacts
+        .map(|c| c.normal * max_or_nan(c.penetration, 0.001)) // floor depth for margin-zone contacts
         .sum();
     let len = sum.norm();
     if len < 1e-10 { None } else { Some(sum / len) }
@@ -528,6 +529,10 @@ fn phase3c_hinge_rotation_free() {
     // artifacts (≤ 5) with minor penetration are tolerable — the SDF grid isn't
     // perfectly rotationally symmetric, so a few boundary grid points can shift
     // slightly inside the other shape when rotated 45°.
+    assert!(
+        contacts.iter().all(|c| c.penetration.is_finite()),
+        "every contact's penetration is finite"
+    );
     let penetrating = contacts.iter().filter(|c| c.penetration > 0.1).count();
     let deep_penetrating = contacts.iter().filter(|c| c.penetration > 0.5).count();
     eprintln!(

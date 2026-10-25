@@ -437,8 +437,8 @@ mod tests {
                 assert_eq!(bits(&frame[k]), bits(&seeded[k]), "y {y}: tangent {k}");
             }
             let (_, other) = make_frame(&normal, &Vector3::y());
-            assert_ne!(
-                frame[0], other[0],
+            assert!(
+                (frame[0] - other[0]).norm() > 0.0,
                 "y {y}: the (0, 1, 0) seed gives the same"
             );
         }

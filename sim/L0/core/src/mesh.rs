@@ -1063,6 +1063,7 @@ pub fn mesh_mesh_deepest_contact(
 )]
 mod tests {
     use super::*;
+    use crate::validation::max_or_nan;
     use approx::assert_relative_eq;
 
     /// Create a simple tetrahedron mesh for testing.
@@ -1684,7 +1685,7 @@ mod tests {
             let max_penetration = all_contacts
                 .iter()
                 .map(|c| c.penetration)
-                .fold(f64::NEG_INFINITY, f64::max);
+                .fold(f64::NEG_INFINITY, max_or_nan);
             assert_relative_eq!(
                 deepest_contact.penetration,
                 max_penetration,

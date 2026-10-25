@@ -276,6 +276,7 @@ mod bounds_tests {
     use crate::mesh::TriangleMeshData;
     use crate::sdf::{SdfGrid, ShapeConvex};
     use crate::types::{GeomType, Model};
+    use crate::validation::max_or_nan;
 
     /// A model whose one geom, the ground plane's slot, is made `geom_type`.
     fn one_geom(geom_type: GeomType) -> Model {
@@ -298,7 +299,7 @@ mod bounds_tests {
                     .collect();
                 (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
             })
-            .fold(0.0, f64::max)
+            .fold(0.0, max_or_nan)
     }
 
     /// The plane `add_ground_plane` appends after the model is derived has the

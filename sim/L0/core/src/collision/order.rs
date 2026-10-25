@@ -191,9 +191,8 @@ mod tests {
             frame[1].iter().any(|&x| x == 0.0),
             "the second tangent has no 0, so this test cannot see its sign"
         );
-        assert_ne!(
-            make_frame(&contact.normal, &Vector3::zeros()).0,
-            contact.normal,
+        assert!(
+            (make_frame(&contact.normal, &Vector3::zeros()).0 - contact.normal).norm() > 0.0,
             "normalising the unit normal again must move it, or this test cannot see it"
         );
     }

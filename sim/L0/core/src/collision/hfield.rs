@@ -59,6 +59,7 @@ mod tests {
     use super::*;
     use crate::heightfield::HeightFieldData;
     use crate::types::Model;
+    use crate::validation::max_or_nan;
     use nalgebra::{Point3, UnitQuaternion};
     use std::sync::Arc;
 
@@ -257,7 +258,7 @@ mod tests {
         );
         // Verify at least one contact has positive depth (`mjc_ConvexHField`
         // lists a prism only where it and the mesh overlap).
-        let max_depth = contacts.iter().map(|c| c.depth).fold(0.0_f64, f64::max);
+        let max_depth = contacts.iter().map(|c| c.depth).fold(0.0_f64, max_or_nan);
         assert!(
             max_depth > 0.0,
             "At least one contact should have positive depth, max was {max_depth}",

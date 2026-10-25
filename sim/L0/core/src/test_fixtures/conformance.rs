@@ -1247,6 +1247,7 @@ pub fn contact_rollout_oracle(
 mod tests {
     #![allow(clippy::expect_used)]
     use super::{damped_conformance_matrix, dynamics_conformance_matrix};
+    use crate::validation::max_or_nan;
 
     /// Both matrices are well-formed: operating points sized to `nq`/`nv`, and
     /// each model forward-evaluates without error (a CPU-side fixture sanity
@@ -1414,7 +1415,7 @@ mod tests {
         let max_diff = (0..N)
             .flat_map(|s| (0..case.model.nv).map(move |i| (s, i)))
             .map(|(s, i)| (steps[s].qvel[i] - usteps[s].qvel[i]).abs())
-            .fold(0.0_f64, f64::max);
+            .fold(0.0_f64, max_or_nan);
         assert!(
             max_diff > 5e-4,
             "damping barely perturbs the rollout (max |Δqvel| vs undamped = {max_diff:.2e}); \

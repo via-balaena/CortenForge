@@ -976,7 +976,7 @@ mod tests {
         let shape = Shape::convex_mesh(cf_geometry::convex_hull(&vertices, None).unwrap());
         let pose = pose_at(1.0, 2.0, 3.0);
         let posed = PosedShape::new(&shape, &pose);
-        assert_ne!(posed.aabb().center(), pose.position);
+        assert!((posed.aabb().center() - pose.position).norm() > 0.0);
         assert_eq!(posed.center(), pose.position);
     }
 

@@ -683,6 +683,7 @@ mod post_step_qvel_tests {
 
     use super::*;
     use crate::linalg::cholesky_in_place;
+    use crate::validation::max_abs_or_nan;
 
     /// Under Euler with a damped DOF and an active joint limit,
     /// `post_step_qvel` is the velocity `integrate()` leaves: eulerdamp's
@@ -714,7 +715,7 @@ mod post_step_qvel_tests {
         let want = post_step_qvel(&model, &data, Some(&m_impl));
         let mut stepped = data.clone();
         stepped.integrate(&model).expect("integrate");
-        let err = (want - &stepped.qvel).abs().max();
+        let err = max_abs_or_nan(&(want - &stepped.qvel));
         assert!(err < 1e-12, "post_step_qvel vs integrate: {err:e}");
     }
 }
