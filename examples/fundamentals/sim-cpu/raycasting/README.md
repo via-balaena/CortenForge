@@ -3,8 +3,9 @@
 Four examples demonstrating ray intersection queries against all geometry
 types. The raycast module is available as a direct API for visibility
 checks, distance queries, and custom sensors. The Rangefinder sensor casts
-MuJoCo's `mj_ray` (`sensor::ray_geom`), which reads a mesh's, a height
-field's and a signed distance field's shape through this module.
+MuJoCo's `mj_ray` (`sensor::ray_geom`), which reads a signed distance
+field's shape through this module; a mesh's and a height field's rays are
+MuJoCo's own (`sensor::ray_mesh`).
 
 ## API
 

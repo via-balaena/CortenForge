@@ -115,8 +115,9 @@ fn rangefinders_read_as_mujoco() {
 
 /// Registry D-SDF-RAY: MuJoCo's ray meets a signed distance field by
 /// marching its plugin's field (`mj_raySdf`, `engine_ray.c:885-948`); a
-/// field in sim-core is a shape of its own, and a rangefinder casts the
-/// shape's own ray (`raycast::raycast_geom`). A sphere field of radius 1
+/// field in sim-core is a shape of its own, and a rangefinder casts the ray
+/// of the shape's grid (`raycast::raycast_geom`), an analytic shape's too,
+/// as this sphere is. A sphere field of radius 1
 /// centred 3 above the rangefinder, sampled on a grid of cells 8/39 wide that
 /// holds the rangefinder: unturned, it reads 2 within a cell; turned away, −1.
 /// The same field on a grid that ends 1.5 short of the rangefinder reads −1
