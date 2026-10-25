@@ -474,7 +474,12 @@ fn check_8_centered_convergence() -> (u32, u32) {
 
     // Centered: O(eps²). Halving eps should ~quarter the error.
     // Ratio should be ~4, accept > 2 to be robust.
-    let ratio = if err2 > 1e-14 { err1 / err2 } else { 4.0 };
+    // A NaN error takes the division, so the ratio is NaN and the check fails.
+    let ratio = if err1.is_nan() || err2.is_nan() || err2 > 1e-14 {
+        err1 / err2
+    } else {
+        4.0
+    };
     let p = check(
         "Centered O(eps²) convergence",
         ratio > 2.0,
@@ -519,7 +524,12 @@ fn check_9_forward_convergence() -> (u32, u32) {
 
     // Forward: O(eps). Halving eps should ~halve the error.
     // Ratio should be ~2, accept > 1.5 to be robust.
-    let ratio = if err2 > 1e-14 { err1 / err2 } else { 2.0 };
+    // A NaN error takes the division, so the ratio is NaN and the check fails.
+    let ratio = if err1.is_nan() || err2.is_nan() || err2 > 1e-14 {
+        err1 / err2
+    } else {
+        2.0
+    };
     let p = check(
         "Forward O(eps) convergence",
         ratio > 1.5,
