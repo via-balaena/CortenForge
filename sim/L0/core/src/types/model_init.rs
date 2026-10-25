@@ -335,6 +335,8 @@ impl Model {
             nmesh: 0,
             mesh_name: vec![],
             mesh_data: vec![],
+            mesh_bvhadr: vec![],
+            mesh_bvhnum: vec![],
 
             // Height fields (empty)
             nhfield: 0,

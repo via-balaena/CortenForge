@@ -85,6 +85,9 @@ pub mod velocity_derivative_parity;
 /// A site's rangefinder against MuJoCo 3.5.0's `mj_ray`.
 pub mod rangefinder_parity;
 
+/// Each mesh's bounding-volume hierarchy against MuJoCo 3.5.0's.
+pub mod mesh_bvh_parity;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================

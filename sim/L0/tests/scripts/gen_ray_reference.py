@@ -18,7 +18,16 @@ It writes ray.json:
   each the field's pose (`geom_xpos`, `geom_xmat`, set on the data before the
   call), the ray's start and direction, and MuJoCo's distance, -1 where it
   misses. `hfield_rays` says how they are drawn; `HFIELD_EDGE_RAYS` adds rays
-  on the edges of its tests.
+  on the edges of its tests;
+- `mesh_models`: each mesh in a model of one mesh geom on the world, as MuJoCo
+  compiles it: the model's text, the mesh's vertices (`mesh_vert`, single
+  precision) and faces, the geom's size, whether MuJoCo kept the mesh in its
+  written frame (`authored_frame`: the geom unturned at the origin and the
+  vertices as written), and the model's hierarchies (`nbvhstatic`,
+  `body_bvhnum`, `mesh_bvhadr`, `mesh_bvhnum`, `bvh_*`);
+- `mesh`: rays against those meshes through `mj_rayMesh`, as `hfield`'s.
+  `mesh_rays` says how they are drawn; `MESH_EDGE_RAYS` adds rays on the edges
+  of its tests.
 """
 import json
 import os
@@ -180,6 +189,162 @@ HFIELD_EDGE_RAYS = [
 ]
 
 
+def box(hx, hy, hz, n=1):
+    """A box of half-sizes hx, hy, hz, each face an n by n grid of squares, two triangles
+    each, wound outward."""
+    verts, index, faces = [], {}, []
+
+    def vertex(p):
+        key = tuple(p)
+        if key not in index:
+            index[key] = len(verts)
+            verts.append(p)
+        return index[key]
+
+    h = [hx, hy, hz]
+    for axis in range(3):
+        u, w = [a for a in range(3) if a != axis]
+        for sign in (-1.0, 1.0):
+            for i in range(n):
+                for j in range(n):
+                    def corner(a, b):
+                        p = [0.0, 0.0, 0.0]
+                        p[axis] = sign * h[axis]
+                        p[u] = -h[u] + 2 * h[u] * a / n
+                        p[w] = -h[w] + 2 * h[w] * b / n
+                        return vertex(p)
+                    c00, c10, c11, c01 = corner(i, j), corner(i + 1, j), corner(i + 1, j + 1), corner(i, j + 1)
+                    # (u, w, axis) is right-handed for axis 0 and 2, left-handed for 1.
+                    if (sign > 0) != (axis == 1):
+                        faces += [(c00, c10, c11), (c00, c11, c01)]
+                    else:
+                        faces += [(c00, c11, c10), (c00, c01, c11)]
+    return verts, faces
+
+
+def octahedron(a, b, c):
+    verts = [[a, 0, 0], [-a, 0, 0], [0, b, 0], [0, -b, 0], [0, 0, c], [0, 0, -c]]
+    faces = [(0, 2, 4), (2, 1, 4), (1, 3, 4), (3, 0, 4), (2, 0, 5), (1, 2, 5), (3, 1, 5), (0, 3, 5)]
+    return verts, faces
+
+
+def star(rng):
+    """An icosahedron's vertices pushed out to radii from 0.3 to 0.8, its faces kept: a
+    mesh that is not convex."""
+    t = (1 + 5 ** 0.5) / 2
+    base = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t],
+            [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]]
+    verts = [list(np.array(v) / np.linalg.norm(v) * rng.uniform(0.3, 0.8)) for v in base]
+    faces = [(0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11), (1, 5, 9), (5, 11, 4),
+             (11, 10, 2), (10, 7, 6), (7, 1, 8), (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8),
+             (3, 8, 9), (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1)]
+    return verts, faces
+
+
+SLAB = ([[-0.5, -0.4, -0.1], [0.5, -0.4, -0.1], [0.5, 0.4, -0.1], [-0.5, 0.4, -0.1],
+         [-0.5, -0.4, 0.1], [0.5, -0.4, 0.1], [0.5, 0.4, 0.1], [-0.5, 0.4, 0.1]],
+        [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
+         (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)])
+
+
+def meshes(rng):
+    """Each mesh: (name, vertices, faces or None for MuJoCo's convex hull). The first three
+    MuJoCo keeps in their written frame (their principal axes along x, y, z, the largest
+    moment about x, centred, in numbers a float holds); the slab (the rangefinder golden's)
+    MuJoCo turns; the hull of 20 points it turns and moves; the star is not convex."""
+    return [('box', *box(0.125, 0.375, 0.5)),
+            ('box4', *box(0.125, 0.375, 0.5, 4)),
+            ('octahedron', *octahedron(0.25, 0.5, 0.75)),
+            ('slab', *SLAB),
+            ('hull', [list(rng.uniform(-0.5, 0.5, 3)) for _ in range(20)], None),
+            ('star', *star(rng))]
+
+
+def mesh_model(name, verts, faces):
+    text = ' '.join(repr(float(x)) for p in verts for x in p)
+    face = '' if faces is None else ' face="' + ' '.join(str(i) for f in faces for i in f) + '"'
+    xml = (f'<mujoco><asset><mesh name="{name}" vertex="{text}"{face}/></asset>'
+           f'<worldbody><geom type="mesh" mesh="{name}"/></worldbody></mujoco>')
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    written = np.array(verts, dtype=np.float32)
+    authored = bool(np.array_equal(m.geom_quat[0], [1, 0, 0, 0]) and not m.geom_pos[0].any()
+                    and m.mesh_vert.shape == written.shape and np.array_equal(m.mesh_vert, written))
+    model = {'xml': xml, 'vert': floats(m.mesh_vert), 'face': [int(i) for i in m.mesh_face.ravel()],
+             'size': floats(m.geom_size[0]), 'authored_frame': authored,
+             'nbvhstatic': int(m.nbvhstatic), 'body_bvhnum': [int(x) for x in m.body_bvhnum],
+             'mesh_bvhadr': [int(x) for x in m.mesh_bvhadr], 'mesh_bvhnum': [int(x) for x in m.mesh_bvhnum],
+             'bvh_aabb': [floats(b) for b in m.bvh_aabb], 'bvh_child': [[int(c) for c in b] for b in m.bvh_child],
+             'bvh_nodeid': [int(x) for x in m.bvh_nodeid], 'bvh_depth': [int(x) for x in m.bvh_depth]}
+    return m, d, model
+
+
+def mesh_rays(name, m, d):
+    """300 rays a mesh from one generator: the mesh unturned at the origin in even cases,
+    else turned at random and moved by up to 0.5 in each place; the start within 1.5 of the
+    mesh's centre in each place, aimed at a point within the mesh's bounding radius of its
+    centre (four cases of five) or at random; in one case of five the direction one of the
+    mesh's own axes, the start moved back along it. The direction of length 1 in half the
+    cases, 0.1 to 3 in the rest. It refuses a mesh whose rays never hit or never miss."""
+    rng = np.random.default_rng(2671 + sum(map(ord, name)))
+    rbound = float(m.geom_rbound[0])
+    out, hits = [], 0
+    for i in range(300):
+        if i % 2 == 0:
+            pos, mat = np.zeros(3), np.eye(3).ravel()
+        else:
+            pos, mat = rng.uniform(-0.5, 0.5, 3), turn(rng)
+        r = np.array(mat).reshape(3, 3)
+        lp = rng.uniform(-1.5, 1.5, 3)
+        if i % 5 == 4:
+            lv = np.zeros(3)
+            lv[rng.integers(3)] = rng.choice([-1.0, 1.0])
+            lp = rng.uniform(-0.5, 0.5, 3) * rbound - 2.0 * lv
+        elif i % 5 == 3:
+            lv = rng.normal(size=3)
+        else:
+            lv = rng.uniform(-1, 1, 3) * rbound - lp
+        lv = lv / np.linalg.norm(lv)
+        if i % 4 >= 2:
+            lv = lv * rng.uniform(0.1, 3.0)
+        pnt, vec = pos + r @ lp, r @ lv
+        d.geom_xpos[0], d.geom_xmat[0] = pos, mat
+        x = float(mujoco.mj_rayMesh(m, d, 0, pnt, vec, None))
+        hits += x >= 0
+        out.append({'mesh': name, 'pos': floats(pos), 'mat': floats(mat), 'pnt': floats(pnt),
+                    'vec': floats(vec), 'x': x})
+    if not 0 < hits < 300:
+        sys.exit(f'mesh rays {name}: {hits} hits of 300')
+    print(f'mesh {name}: {hits} hits of 300', file=sys.stderr)
+    return out
+
+
+# Rays on the edges of mj_rayMesh's tests, the mesh unturned at the origin: (mesh, start,
+# direction), in numbers a double holds exactly. On `box` (half-sizes 0.125, 0.375, 0.5):
+# down its z axis onto a face's diagonal; down onto a corner, an edge and a face's middle;
+# across its top face within it, and along its top face's plane from outside; from inside
+# it; from on a face, outward and inward; past it by a hair; a direction so short that the
+# bounding box test misses. On `box4`: down onto a grid point of its top face. On
+# `octahedron`: down onto its apex, and along an edge's line.
+MESH_EDGE_RAYS = [
+    ('box', [0.0, 0.0, 2.0], [0.0, 0.0, -1.0]),
+    ('box', [0.125, 0.375, 2.0], [0.0, 0.0, -1.0]),
+    ('box', [0.125, 0.0, 2.0], [0.0, 0.0, -1.0]),
+    ('box', [0.0625, 0.1875, 2.0], [0.0, 0.0, -1.0]),
+    ('box', [-1.0, 0.0, 0.25], [1.0, 0.0, 0.0]),
+    ('box', [-1.0, 0.0, 0.5], [1.0, 0.0, 0.0]),
+    ('box', [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ('box', [0.0, 0.0, 0.5], [0.0, 0.0, 1.0]),
+    ('box', [0.0, 0.0, 0.5], [0.0, 0.0, -1.0]),
+    ('box', [0.125000001, 0.0, 2.0], [0.0, 0.0, -1.0]),
+    ('box', [0.0, 0.0, 2.0], [0.0, 0.0, -1e-9]),
+    ('box4', [0.0625, 0.1875, 2.0], [0.0, 0.0, -1.0]),
+    ('octahedron', [0.0, 0.0, 2.0], [0.0, 0.0, -1.0]),
+    ('octahedron', [-0.25, -0.5, 0.0], [1.0, 2.0, 0.0]),
+]
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -199,12 +364,27 @@ def main():
         x, _ = cast(m, d, pos, mat, np.array(pnt), np.array(vec))
         rays.append({'field': name, 'pos': floats(pos), 'mat': floats(mat), 'pnt': pnt,
                      'vec': vec, 'x': x})
+    mesh_models, mesh_ray_list, compiled = {}, [], {}
+    for name, verts, faces in meshes(np.random.default_rng(2672)):
+        m, d, model = mesh_model(name, verts, faces)
+        mesh_models[name], compiled[name] = model, (m, d)
+        mesh_ray_list += mesh_rays(name, m, d)
+    for name, pnt, vec in MESH_EDGE_RAYS:
+        m, d = compiled[name]
+        d.geom_xpos[0], d.geom_xmat[0] = np.zeros(3), np.eye(3).ravel()
+        x = float(mujoco.mj_rayMesh(m, d, 0, np.array(pnt), np.array(vec), None))
+        mesh_ray_list.append({'mesh': name, 'pos': [0.0] * 3, 'mat': floats(np.eye(3)), 'pnt': pnt,
+                              'vec': vec, 'x': x})
+    authored = [k for k, v in mesh_models.items() if v['authored_frame']]
+    if authored != ['box', 'box4', 'octahedron']:
+        sys.exit(f'meshes MuJoCo kept in their written frame: {authored}')
     os.makedirs(sys.argv[1], exist_ok=True)
-    doc = {'oracle': marker, 'hfield_fields': fields, 'hfield': rays}
+    doc = {'oracle': marker, 'hfield_fields': fields, 'hfield': rays, 'mesh_models': mesh_models,
+           'mesh': mesh_ray_list}
     with open(os.path.join(sys.argv[1], 'ray.json'), 'w', encoding='utf-8') as f:
         json.dump(finite_or_string(doc), f, separators=(',', ':'))
         f.write('\n')
-    print(f'{len(rays)} hfield rays -> {sys.argv[1]}')
+    print(f'{len(rays)} hfield rays, {len(mesh_ray_list)} mesh rays -> {sys.argv[1]}')
 
 
 if __name__ == '__main__':

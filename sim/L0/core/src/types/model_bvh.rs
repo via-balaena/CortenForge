@@ -1,8 +1,11 @@
-//! Each body's bounding-volume hierarchy over its colliding geoms, and each
-//! flex's over its active elements, as MuJoCo's compiler builds them
-//! (`mjCBody::ComputeBVH`, `user_objects.cc:2323-2335`; `mjCFlex::CreateBVH`,
-//! `user_mesh.cc:4423-4468`; `mjCBoundingVolumeHierarchy`, `:351-543`). The
-//! midphase descends two hierarchies together (`collision::midphase`).
+//! Each body's bounding-volume hierarchy over its colliding geoms, each
+//! mesh's over its faces, and each flex's over its active elements, as
+//! MuJoCo's compiler builds them (`mjCBody::ComputeBVH`,
+//! `user_objects.cc:2323-2335`; `mjCMesh::SetBoundingVolume`,
+//! `user_mesh.cc:847-870`; `mjCFlex::CreateBVH`, `user_mesh.cc:4423-4468`;
+//! `mjCBoundingVolumeHierarchy`, `user_objects.cc:351-543`). The midphase
+//! descends two bodies' hierarchies together (`collision::midphase`); a
+//! mesh's ray descends the mesh's (`sensor::ray_mesh`).
 
 use super::model::Model;
 use super::model_derived::aabb_of;
@@ -14,18 +17,20 @@ use nalgebra::Vector3;
 /// axis nearer than it tie, and a box flat along an axis is widened by it.
 const EPS: f64 = 1e-14;
 
-/// A leaf of a hierarchy, its id (a body's geom, a flex's element numbered
-/// within the flex), its position and the eight corners of its box: a geom's
-/// in its body's inertial frame (`body_ipos`, `body_iquat`), a flex
-/// element's in the world's axes.
+/// A leaf of a hierarchy, its id (a body's geom, a mesh's face, a flex's
+/// element numbered within the flex), its position and the eight corners of
+/// its box: a geom's in its body's inertial frame (`body_ipos`,
+/// `body_iquat`), a face's in its mesh's frame, a flex element's in the
+/// world's axes.
 struct Element {
     id: usize,
     pos: [f64; 3],
     corners: [[f64; 3]; 8],
 }
 
-/// The nodes of the hierarchies built, a body's or each flex's in turn, in
-/// the order made: a node, its first child's subtree, then its second's.
+/// The nodes of the hierarchies built, a body's, a mesh's or each flex's in
+/// turn, in the order made: a node, its first child's subtree, then its
+/// second's.
 #[derive(Default)]
 struct Tree {
     aabb: Vec<[f64; 6]>,
@@ -44,18 +49,21 @@ impl Model {
     /// its geoms' boxes; with more than one geom it splits them in half by
     /// their positions along its box's longest axis (an axis must be longer
     /// by 1e-14, MuJoCo's `mjEPS`, to be taken), the lower half its first child. A body none
-    /// of whose geoms collides has no hierarchy (`body_bvhadr` `None`).
+    /// of whose geoms collides has no hierarchy (`body_bvhadr` `None`). Each
+    /// mesh's hierarchy over its faces follows the bodies'
+    /// (`compute_mesh_bvhs`).
     ///
-    /// Writes `body_margin`, `body_bvhadr`, `body_bvhnum`, `bvh_aabb`,
-    /// `bvh_child`, `bvh_nodeid` and `bvh_depth`. Reads `geom_body`,
-    /// `geom_pos`, `geom_quat`, `geom_aabb` (so it runs after
-    /// [`Self::compute_geom_bounding_radii`]), `geom_contype`,
-    /// `geom_conaffinity`, `geom_margin`, `body_ipos` and `body_iquat`: a
-    /// model edited in any of them afterwards keeps the hierarchies made
-    /// before (as MuJoCo's compiled ones), and the midphase finds the pairs
-    /// those hold, until [`Self::recompute_derived`] runs again. The flexes'
-    /// hierarchies, which follow the bodies' nodes, are dropped:
-    /// [`Self::compute_flex_bvhs`] appends them again.
+    /// Writes `body_margin`, `body_bvhadr`, `body_bvhnum`, `mesh_bvhadr`,
+    /// `mesh_bvhnum`, `bvh_aabb`, `bvh_child`, `bvh_nodeid` and
+    /// `bvh_depth`. Reads `geom_body`, `geom_pos`, `geom_quat`, `geom_aabb`
+    /// (so it runs after [`Self::compute_geom_bounding_radii`]),
+    /// `geom_contype`, `geom_conaffinity`, `geom_margin`, `body_ipos`,
+    /// `body_iquat` and `mesh_data`: a model edited in any of them afterwards
+    /// keeps the hierarchies made before (as MuJoCo's compiled ones), and the
+    /// midphase finds the pairs those hold, and a mesh's ray the faces, until
+    /// [`Self::recompute_derived`] runs again. The flexes' hierarchies, which
+    /// follow the meshes' nodes, are dropped: [`Self::compute_flex_bvhs`]
+    /// appends them again.
     pub fn compute_body_bvhs(&mut self) {
         let mut geoms: Vec<Vec<usize>> = vec![Vec::new(); self.nbody];
         for (geom, &body) in self.geom_body.iter().enumerate() {
@@ -90,10 +98,54 @@ impl Model {
             self.bvh_nodeid.extend(tree.nodeid);
             self.bvh_depth.extend(tree.depth);
         }
+        self.compute_mesh_bvhs();
+    }
+
+    /// Build each mesh's bounding-volume hierarchy over its faces, after
+    /// every body's, as MuJoCo's compiler (`mjCMesh::SetBoundingVolume` and
+    /// its caller, `user_mesh.cc:847-870`, `:1699-1707`; laid out after the
+    /// bodies', `user_model.cc:2134-2145`, `:3280`): a leaf is a face, its
+    /// box over its three vertices, placed at its circumcentre, unrotated;
+    /// split as a body's. The boxes are in the mesh's frame. A mesh with no
+    /// face has no hierarchy (`mesh_bvhadr` `None`). A mesh's ray descends it
+    /// (`sensor::ray_mesh`).
+    fn compute_mesh_bvhs(&mut self) {
+        let trees: Vec<Tree> = self
+            .mesh_data
+            .iter()
+            .map(|mesh| {
+                let vertices = mesh.vertices();
+                let elements: Vec<Element> = mesh
+                    .triangles()
+                    .iter()
+                    .enumerate()
+                    .map(|(f, face)| {
+                        face_element(f, face.map(|v| vertices[v as usize].coords.into()))
+                    })
+                    .collect();
+                let mut order: Vec<usize> = (0..elements.len()).collect();
+                let mut tree = Tree::default();
+                make_bvh(&elements, &mut order, 0, &mut tree);
+                tree
+            })
+            .collect();
+        self.mesh_bvhadr = vec![None; trees.len()];
+        self.mesh_bvhnum = vec![0; trees.len()];
+        for (mesh, tree) in trees.into_iter().enumerate() {
+            if tree.aabb.is_empty() {
+                continue;
+            }
+            self.mesh_bvhadr[mesh] = Some(self.bvh_aabb.len());
+            self.mesh_bvhnum[mesh] = tree.aabb.len();
+            self.bvh_aabb.extend(tree.aabb);
+            self.bvh_child.extend(tree.child);
+            self.bvh_nodeid.extend(tree.nodeid);
+            self.bvh_depth.extend(tree.depth);
+        }
     }
 
     /// Build each flex's bounding-volume hierarchy over its active elements,
-    /// after every body's, as MuJoCo's compiler (`mjCFlex::CreateBVH`,
+    /// after every body's and mesh's, as MuJoCo's compiler (`mjCFlex::CreateBVH`,
     /// `user_mesh.cc:4423-4468`): a leaf is an element, numbered within its
     /// flex, its box over its vertices at `qpos0` grown by the flex's radius,
     /// unrotated; a dim-3 element is active while its layer is below the
@@ -106,7 +158,8 @@ impl Model {
     ///
     /// Writes `flex_bvhadr`, `flex_bvhnum`, `nbvhstatic` and `nbvhdynamic`
     /// and appends to `bvh_child`, `bvh_nodeid` and `bvh_depth`, after the
-    /// bodies' nodes (so it runs after [`Self::compute_body_bvhs`]); reads
+    /// bodies' and meshes' nodes (so it runs after
+    /// [`Self::compute_body_bvhs`]); reads
     /// `flex_elemlayer` ([`Self::compute_flex_topology`]), `flex_radius`
     /// and the vertices' bodies at `qpos0`, which forward kinematics on a
     /// derivation `Data` places: the model's joint layout and ranges must
@@ -234,6 +287,62 @@ fn flex_element(
     }
 }
 
+/// Face `f` of a mesh, its corners `v`, as a leaf: its box over them,
+/// centre `0.5 (min + max)` and half-size `0.5 (max - min)`
+/// (`mjCMesh::SetBoundingVolume`, `user_mesh.cc:847-870`), placed at its
+/// circumcentre, with no rotation (`user_objects.cc:409-416`, `:447-468`).
+fn face_element(f: usize, v: [[f64; 3]; 3]) -> Element {
+    let mut min = [f64::MAX; 3];
+    let mut max = [-f64::MAX; 3];
+    for p in &v {
+        for j in 0..3 {
+            // `std::min` and `std::max`.
+            min[j] = if p[j] < min[j] { p[j] } else { min[j] };
+            max[j] = if max[j] < p[j] { p[j] } else { max[j] };
+        }
+    }
+    let centre: [f64; 3] = std::array::from_fn(|j| 0.5 * (min[j] + max[j]));
+    let half: [f64; 3] = std::array::from_fn(|j| 0.5 * (max[j] - min[j]));
+    let corners = std::array::from_fn(|c| {
+        std::array::from_fn(|i| {
+            if c >> i & 1 == 1 {
+                centre[i] + half[i]
+            } else {
+                centre[i] - half[i]
+            }
+        })
+    });
+    Element {
+        id: f,
+        pos: circumcentre(&v),
+        corners,
+    }
+}
+
+/// The circumcentre of the triangle `v` (`mjCMesh::MakeCenter`,
+/// `user_mesh.cc:2677-2715`): with `a` and `b` its first two corners less
+/// its third and `n = a × b`, the third plus `(|a|² b − |b|² a) × n / (2
+/// |n|²)`.
+fn circumcentre(v: &[[f64; 3]; 3]) -> [f64; 3] {
+    // `mjuu_crossvec` and `mjuu_dot3`.
+    let cross = |p: &[f64; 3], q: &[f64; 3]| {
+        [
+            p[1] * q[2] - p[2] * q[1],
+            p[2] * q[0] - p[0] * q[2],
+            p[0] * q[1] - p[1] * q[0],
+        ]
+    };
+    let dot = |p: &[f64; 3], q: &[f64; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    let a: [f64; 3] = std::array::from_fn(|j| v[0][j] - v[2][j]);
+    let b: [f64; 3] = std::array::from_fn(|j| v[1][j] - v[2][j]);
+    let nrm = cross(&a, &b);
+    let (a_sqr, b_sqr) = (dot(&a, &a), dot(&b, &b));
+    let area = dot(&nrm, &nrm).sqrt();
+    let vec: [f64; 3] = std::array::from_fn(|j| a_sqr * b[j] - b_sqr * a[j]);
+    let res = cross(&vec, &nrm);
+    std::array::from_fn(|j| res[j] / (2.0 * area * area) + v[2][j])
+}
+
 /// Make the node bounding the elements `order` names, then its subtrees;
 /// its index, `None` for no elements (`MakeBVH`, `user_objects.cc:423-543`).
 fn make_bvh(
@@ -324,9 +433,13 @@ fn merge_sort(order: &mut [usize], before: &impl Fn(usize, usize) -> bool) {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use nalgebra::Vector3;
+    use std::sync::Arc;
 
-    use crate::types::Model;
+    use nalgebra::{Point3, Vector3};
+    use serde_json::Value;
+
+    use crate::mesh::TriangleMeshData;
+    use crate::types::{GeomType, Model};
 
     /// Three spheres along x at 0, 0.8e-14 and 1.6e-14, numbered in reverse:
     /// the first two tie, and the last two, but the first and last do not,
@@ -417,5 +530,108 @@ mod tests {
         let mut leaves: Vec<usize> = model.bvh_nodeid.iter().flatten().copied().collect();
         leaves.sort_unstable();
         assert_eq!(leaves, vec![0, 1]);
+    }
+
+    fn numbers(v: &Value) -> Vec<f64> {
+        v.as_array()
+            .expect("an array")
+            .iter()
+            .map(|x| x.as_f64().expect("a number"))
+            .collect()
+    }
+
+    /// MuJoCo's index, -1 for none, as an `Option`.
+    fn index(v: &Value) -> Option<usize> {
+        usize::try_from(v.as_i64().expect("an index")).ok()
+    }
+
+    /// A model of one mesh geom on the world, the mesh's vertices and faces
+    /// `vert` and `face`, derived.
+    fn mesh_model(vert: &[f64], face: &[usize]) -> Model {
+        let mut model = Model::empty();
+        model.add_ground_plane();
+        model.geom_type[0] = GeomType::Mesh;
+        model.geom_mesh[0] = Some(0);
+        let vertices = vert
+            .chunks(3)
+            .map(|v| Point3::new(v[0], v[1], v[2]))
+            .collect();
+        model
+            .mesh_data
+            .push(Arc::new(TriangleMeshData::new(vertices, face.to_vec())));
+        model.mesh_name.push("mesh".into());
+        model.nmesh = 1;
+        model.compute_geom_bounding_radii();
+        model.compute_body_bvhs();
+        model.compute_flex_bvhs();
+        model
+    }
+
+    /// The ray golden's meshes (`gen_ray_reference.py` `mesh_models`: a box,
+    /// a box whose faces are 4 by 4 squares and an octahedron, which MuJoCo
+    /// keeps in their written frame; a slab and a convex hull, which it
+    /// turns; a star that is not convex), each built from MuJoCo's vertices
+    /// and faces as it compiles them: the mesh's hierarchy follows the
+    /// world's node, its children, its leaves' faces and its depths are
+    /// MuJoCo's, and, for the three in their written frame, its boxes are
+    /// MuJoCo's bit for bit. (MuJoCo builds a mesh's boxes over its vertices
+    /// in double precision, before it rounds them to the single precision it
+    /// keeps, which is what this model is given.)
+    #[test]
+    fn each_mesh_hierarchy_is_mujocos() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/assets/golden/ray/ray.json"
+        );
+        let text = std::fs::read_to_string(path).expect("the ray golden reads");
+        let golden: Value = serde_json::from_str(&text).expect("the ray golden parses");
+        let meshes = golden["mesh_models"].as_object().expect("mesh_models");
+        assert_eq!(meshes.len(), 6, "every mesh");
+        for (name, mesh) in meshes {
+            let face: Vec<usize> = mesh["face"]
+                .as_array()
+                .expect("faces")
+                .iter()
+                .map(|i| index(i).expect("a vertex"))
+                .collect();
+            let model = mesh_model(&numbers(&mesh["vert"]), &face);
+            let adr = index(&mesh["mesh_bvhadr"][0]).expect("a hierarchy");
+            let num = index(&mesh["mesh_bvhnum"][0]).expect("its nodes");
+            assert_eq!(model.mesh_bvhadr, vec![Some(adr)], "{name}: mesh_bvhadr");
+            assert_eq!(model.mesh_bvhnum, vec![num], "{name}: mesh_bvhnum");
+            assert_eq!(
+                model.nbvhstatic,
+                index(&mesh["nbvhstatic"]).expect("a count"),
+                "{name}: nbvhstatic"
+            );
+            for k in adr..adr + num {
+                let child = &mesh["bvh_child"][k];
+                assert_eq!(
+                    model.bvh_child[k],
+                    [index(&child[0]), index(&child[1])],
+                    "{name} node {k}: children"
+                );
+                assert_eq!(
+                    model.bvh_nodeid[k],
+                    index(&mesh["bvh_nodeid"][k]),
+                    "{name} node {k}: face"
+                );
+                assert_eq!(
+                    Some(model.bvh_depth[k]),
+                    index(&mesh["bvh_depth"][k]),
+                    "{name} node {k}: depth"
+                );
+                if mesh["authored_frame"].as_bool().expect("a flag") {
+                    let theirs = numbers(&mesh["bvh_aabb"][k]);
+                    let ours = model.bvh_aabb[k];
+                    assert!(
+                        ours.iter()
+                            .zip(&theirs)
+                            .all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "{name} node {k}: box {ours:?}, MuJoCo {theirs:?}"
+                    );
+                }
+            }
+        }
     }
 }
