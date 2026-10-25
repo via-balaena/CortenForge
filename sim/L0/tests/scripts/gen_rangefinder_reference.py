@@ -118,8 +118,9 @@ TRANSLUCENT = """<mujoco><option gravity="0 0 0"/><worldbody>
 
 REST = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
 
-# A mesh slab below a turning eye (ledger L267: a mesh's ray is not MuJoCo's
-# operation for operation).
+# A mesh slab below a turning eye. MuJoCo turns the slab to its principal frame, which
+# sim-mjcf does not (book Rigid-loading L35), and keeps its vertices in single precision,
+# sim-core in double (ledger L281).
 MESH = """<mujoco><option gravity="0 0 0"/>
   <asset>
     <mesh name="slab" vertex="-0.5 -0.4 -0.1  0.5 -0.4 -0.1  0.5 0.4 -0.1  -0.5 0.4 -0.1

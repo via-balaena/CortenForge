@@ -109,6 +109,14 @@ impl Model {
     /// split as a body's. The boxes are in the mesh's frame. A mesh with no
     /// face has no hierarchy (`mesh_bvhadr` `None`). A mesh's ray descends it
     /// (`sensor::ray_mesh`).
+    ///
+    /// A face of no area (a vertex repeated, or three in a line along an
+    /// axis) has no circumcentre (it is NaN, in MuJoCo's too), and MuJoCo's
+    /// split, comparing such a face's place with another's, is no longer an
+    /// order: its tree is then its C++ library's `nth_element`'s, which
+    /// [`merge_sort`] is not (registry `D-MESH-SPLIT`). Its boxes are over
+    /// the vertices sim-core holds, MuJoCo's over its double-precision ones,
+    /// before it rounds them to the single precision it keeps (ledger L281).
     fn compute_mesh_bvhs(&mut self) {
         let trees: Vec<Tree> = self
             .mesh_data
@@ -145,22 +153,22 @@ impl Model {
     }
 
     /// Build each flex's bounding-volume hierarchy over its active elements,
-    /// after every body's and mesh's, as MuJoCo's compiler (`mjCFlex::CreateBVH`,
-    /// `user_mesh.cc:4423-4468`): a leaf is an element, numbered within its
-    /// flex, its box over its vertices at `qpos0` grown by the flex's radius,
-    /// unrotated; a dim-3 element is active while its layer is below the
-    /// flex's `flex_activelayers`. The hierarchy is split as a body's. Only
-    /// its shape is kept (`bvh_child`, `bvh_nodeid`, `bvh_depth`): its boxes
-    /// move with the vertices, `Data::bvh_aabb_dyn` (MuJoCo copies no
-    /// `bvh_aabb` for a flex, `user_model.cc:3447-3454`). A flex with no
-    /// active element has no hierarchy (`flex_bvhadr` `None`; MuJoCo's
-    /// compiler does not take such a flex, registry `D-FLEX-NO-ACTIVE`).
+    /// after every body's and mesh's, as MuJoCo's compiler
+    /// (`mjCFlex::CreateBVH`, `user_mesh.cc:4423-4468`): a leaf is an element,
+    /// numbered within its flex, its box over its vertices at `qpos0` grown by
+    /// the flex's radius, unrotated; a dim-3 element is active while its layer
+    /// is below the flex's `flex_activelayers`. The hierarchy is split as a
+    /// body's. Only its shape is kept (`bvh_child`, `bvh_nodeid`,
+    /// `bvh_depth`): its boxes move with the vertices, `Data::bvh_aabb_dyn`
+    /// (MuJoCo copies no `bvh_aabb` for a flex, `user_model.cc:3447-3454`). A
+    /// flex with no active element has no hierarchy (`flex_bvhadr` `None`;
+    /// MuJoCo's compiler does not take such a flex, registry
+    /// `D-FLEX-NO-ACTIVE`).
     ///
     /// Writes `flex_bvhadr`, `flex_bvhnum`, `nbvhstatic` and `nbvhdynamic`
     /// and appends to `bvh_child`, `bvh_nodeid` and `bvh_depth`, after the
-    /// bodies' and meshes' nodes (so it runs after
-    /// [`Self::compute_body_bvhs`]); reads
-    /// `flex_elemlayer` ([`Self::compute_flex_topology`]), `flex_radius`
+    /// bodies' and meshes' nodes (so it runs after [`Self::compute_body_bvhs`]);
+    /// reads `flex_elemlayer` ([`Self::compute_flex_topology`]), `flex_radius`
     /// and the vertices' bodies at `qpos0`, which forward kinematics on a
     /// derivation `Data` places: the model's joint layout and ranges must
     /// pass, as for the derivations that step it.
@@ -406,7 +414,9 @@ fn make_bvh(
 /// comparison, positions farther apart than [`EPS`] by position and nearer
 /// by the leaves' order, their ids' (`user_objects.cc:511-517`), need not be transitive, which
 /// `slice::sort_by` may panic on; this never does. Where it is transitive,
-/// the lower half is the half MuJoCo's `nth_element` takes.
+/// the lower half is the half MuJoCo's `nth_element` takes; where it is not
+/// (a mesh's face with no circumcentre), it need not be (registry
+/// `D-MESH-SPLIT`).
 fn merge_sort(order: &mut [usize], before: &impl Fn(usize, usize) -> bool) {
     if order.len() < 2 {
         return;
@@ -545,13 +555,16 @@ mod tests {
     /// The ray golden's meshes (`gen_ray_reference.py` `mesh_models`: a box,
     /// a box whose faces are 4 by 4 squares and an octahedron, which MuJoCo
     /// keeps in their written frame; a slab and a convex hull, which it
-    /// turns; a star that is not convex), each built from MuJoCo's vertices
-    /// and faces as it compiles them: the mesh's hierarchy follows the
-    /// world's node, its children, its leaves' faces and its depths are
-    /// MuJoCo's, and, for the three in their written frame, its boxes are
-    /// MuJoCo's bit for bit. (MuJoCo builds a mesh's boxes over its vertices
-    /// in double precision, before it rounds them to the single precision it
-    /// keeps, which is what this model is given.)
+    /// turns; a star that is not convex; and the 4 by 4 box with 27 faces of
+    /// no area added), each built from MuJoCo's vertices and faces as it
+    /// compiles them: the mesh's hierarchy follows the world's node, and its
+    /// children and depths are MuJoCo's. Its leaves' faces are MuJoCo's, and,
+    /// for the meshes in their written frame, its boxes are MuJoCo's bit for
+    /// bit, but for the mesh with faces of no area, whose leaves are not
+    /// (registry D-MESH-SPLIT: MuJoCo's split compares their NaN
+    /// circumcentres). (MuJoCo builds a mesh's boxes over its vertices in
+    /// double precision, before it rounds them to the single precision it
+    /// keeps, which is what this model is given: ledger L281.)
     #[test]
     fn each_mesh_hierarchy_is_mujocos() {
         let path = concat!(
@@ -561,7 +574,8 @@ mod tests {
         let text = std::fs::read_to_string(path).expect("the ray golden reads");
         let golden: Value = serde_json::from_str(&text).expect("the ray golden parses");
         let meshes = golden["mesh_models"].as_object().expect("mesh_models");
-        assert_eq!(meshes.len(), 6, "every mesh");
+        assert_eq!(meshes.len(), 7, "every mesh");
+        let mut split_differs = false;
         for (name, mesh) in meshes {
             let face: Vec<usize> = mesh["face"]
                 .as_array()
@@ -579,6 +593,7 @@ mod tests {
                 index(&mesh["nbvhstatic"]).expect("a count"),
                 "{name}: nbvhstatic"
             );
+            let zero_area = mesh["zero_area_faces"].as_u64().expect("a count") > 0;
             for k in adr..adr + num {
                 let child = &mesh["bvh_child"][k];
                 assert_eq!(
@@ -587,14 +602,18 @@ mod tests {
                     "{name} node {k}: children"
                 );
                 assert_eq!(
-                    model.bvh_nodeid[k],
-                    index(&mesh["bvh_nodeid"][k]),
-                    "{name} node {k}: face"
-                );
-                assert_eq!(
                     Some(model.bvh_depth[k]),
                     index(&mesh["bvh_depth"][k]),
                     "{name} node {k}: depth"
+                );
+                if zero_area {
+                    split_differs |= model.bvh_nodeid[k] != index(&mesh["bvh_nodeid"][k]);
+                    continue;
+                }
+                assert_eq!(
+                    model.bvh_nodeid[k],
+                    index(&mesh["bvh_nodeid"][k]),
+                    "{name} node {k}: face"
                 );
                 if mesh["authored_frame"].as_bool().expect("a flag") {
                     let theirs = numbers(&mesh["bvh_aabb"][k]);
@@ -608,5 +627,9 @@ mod tests {
                 }
             }
         }
+        assert!(
+            split_differs,
+            "the mesh with faces of no area splits as MuJoCo's: registry D-MESH-SPLIT is stale"
+        );
     }
 }

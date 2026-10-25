@@ -382,9 +382,9 @@ pub struct Model {
     /// `mjModel.bvh_depth`).
     pub bvh_depth: Vec<usize>,
     /// The first node of each flex's hierarchy in the `bvh_*` fields, after
-    /// every body's and mesh's (MuJoCo's `mjModel.flex_bvhadr`), `None` for a flex with
-    /// no active element, which MuJoCo's compiler does not take (registry
-    /// `D-FLEX-NO-ACTIVE`) ([`Model::compute_flex_bvhs`]).
+    /// every body's and mesh's (MuJoCo's `mjModel.flex_bvhadr`), `None` for a
+    /// flex with no active element, which MuJoCo's compiler does not take
+    /// (registry `D-FLEX-NO-ACTIVE`) ([`Model::compute_flex_bvhs`]).
     pub flex_bvhadr: Vec<Option<usize>>,
     /// The number of nodes in each flex's hierarchy (MuJoCo's
     /// `mjModel.flex_bvhnum`).

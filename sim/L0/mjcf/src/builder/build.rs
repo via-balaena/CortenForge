@@ -222,7 +222,8 @@ impl ModelBuilder {
             bvh_child: vec![],
             bvh_nodeid: vec![],
             bvh_depth: vec![],
-            // The flexes' hierarchies (computed below, after the bodies')
+            // The flexes' hierarchies (computed below, after the bodies' and
+            // the meshes')
             flex_bvhadr: vec![],
             flex_bvhnum: vec![],
             nbvhstatic: 0,

@@ -8,7 +8,8 @@
 //! box whose faces are 4 by 4 squares, an octahedron) are compared here
 //! through the loader, every hierarchy field of the model bit for bit; the
 //! others MuJoCo turns to their principal frame, which sim-mjcf does not
-//! (book Rigid-loading L35), and sim-core's unit test
+//! (book Rigid-loading L35), or have faces of no area, whose split is not
+//! MuJoCo's (registry D-MESH-SPLIT), and sim-core's unit test
 //! `each_mesh_hierarchy_is_mujocos` builds them from MuJoCo's vertices.
 
 use serde_json::Value;
@@ -31,7 +32,9 @@ fn a_mesh_hierarchy_loads_as_mujocos() {
     let golden = golden();
     let mut compared = Vec::new();
     for (name, case) in golden["mesh_models"].as_object().expect("mesh_models") {
-        if !case["authored_frame"].as_bool().expect("a flag") {
+        if !case["authored_frame"].as_bool().expect("a flag")
+            || case["zero_area_faces"].as_u64().expect("a count") > 0
+        {
             continue;
         }
         let model = sim_mjcf::load_model(case["xml"].as_str().expect("xml")).expect("load");

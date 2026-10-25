@@ -26,7 +26,8 @@ It writes ray.json:
   compiles it: the model's text, the mesh's vertices (`mesh_vert`, single
   precision) and faces, the geom's size, whether MuJoCo kept the mesh in its
   written frame (`authored_frame`: the geom unturned at the origin and the
-  vertices as written), and the model's hierarchies (`nbvhstatic`,
+  vertices as written), how many faces have no area (`zero_area_faces`), and
+  the model's hierarchies (`nbvhstatic`,
   `body_bvhnum`, `mesh_bvhadr`, `mesh_bvhnum`, `bvh_*`);
 - `mesh`: rays against those meshes through `mj_rayMesh`, as `hfield`'s.
   `mesh_rays` says how they are drawn; `MESH_EDGE_RAYS` adds rays on the edges
@@ -255,6 +256,19 @@ def star(rng):
     return verts, faces
 
 
+def zero_area():
+    """`box4` with, after every seventh face, a face of no area: its first vertex twice and
+    its second. Such a face's circumcentre is NaN, in MuJoCo's compiler as here, so the
+    split of its hierarchy compares NaN places (registry D-MESH-SPLIT)."""
+    verts, faces = box(0.125, 0.375, 0.5, 4)
+    out = []
+    for k, f in enumerate(faces):
+        out.append(f)
+        if k % 7 == 6:
+            out.append((f[0], f[0], f[1]))
+    return verts, out
+
+
 SLAB = ([[-0.5, -0.4, -0.1], [0.5, -0.4, -0.1], [0.5, 0.4, -0.1], [-0.5, 0.4, -0.1],
          [-0.5, -0.4, 0.1], [0.5, -0.4, 0.1], [0.5, 0.4, 0.1], [-0.5, 0.4, 0.1]],
         [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
@@ -265,13 +279,26 @@ def meshes(rng):
     """Each mesh: (name, vertices, faces or None for MuJoCo's convex hull). The first three
     MuJoCo keeps in their written frame (their principal axes along x, y, z, the largest
     moment about x, centred, in numbers a float holds); the slab (the rangefinder golden's)
-    MuJoCo turns; the hull of 20 points it turns and moves; the star is not convex."""
+    MuJoCo turns; the hull of 20 points it turns and moves; the star is not convex; the
+    last is `box4` with faces of no area added, which MuJoCo also keeps in its frame."""
     return [('box', *box(0.125, 0.375, 0.5)),
             ('box4', *box(0.125, 0.375, 0.5, 4)),
             ('octahedron', *octahedron(0.25, 0.5, 0.75)),
             ('slab', *SLAB),
             ('hull', [list(rng.uniform(-0.5, 0.5, 3)) for _ in range(20)], None),
-            ('star', *star(rng))]
+            ('star', *star(rng)),
+            ('zero_area', *zero_area())]
+
+
+def zero_area_faces(m):
+    """How many of the mesh's faces, as MuJoCo compiles them, have edges whose cross product
+    is exactly 0 (no circumcentre)."""
+    v = np.array(m.mesh_vert, dtype=np.float64)
+    count = 0
+    for f in m.mesh_face:
+        a, b = v[f[0]] - v[f[2]], v[f[1]] - v[f[2]]
+        count += not np.cross(a, b).any()
+    return count
 
 
 def mesh_model(name, verts, faces):
@@ -287,6 +314,7 @@ def mesh_model(name, verts, faces):
                     and m.mesh_vert.shape == written.shape and np.array_equal(m.mesh_vert, written))
     model = {'xml': xml, 'vert': floats(m.mesh_vert), 'face': [int(i) for i in m.mesh_face.ravel()],
              'size': floats(m.geom_size[0]), 'authored_frame': authored,
+             'zero_area_faces': zero_area_faces(m),
              'nbvhstatic': int(m.nbvhstatic), 'body_bvhnum': [int(x) for x in m.body_bvhnum],
              'mesh_bvhadr': [int(x) for x in m.mesh_bvhadr], 'mesh_bvhnum': [int(x) for x in m.mesh_bvhnum],
              'bvh_aabb': [floats(b) for b in m.bvh_aabb], 'bvh_child': [[int(c) for c in b] for b in m.bvh_child],
@@ -297,8 +325,8 @@ def mesh_model(name, verts, faces):
 def mesh_rays(name, m, d):
     """300 rays a mesh from one generator: the mesh unturned at the origin in even cases,
     else turned at random and moved by up to 0.5 in each place; the start within 1.5 of the
-    mesh's centre in each place, aimed at a point within the mesh's bounding radius of its
-    centre (four cases of five) or at random; in one case of five the direction one of the
+    mesh's centre in each place, aimed at a point within the cube about the mesh's centre
+    whose half-side is its bounding radius (four cases of five) or at random; in one case of five the direction one of the
     mesh's own axes, the start moved back along it. The direction of length 1 in half the
     cases, 0.1 to 3 in the rest. It refuses a mesh whose rays never hit or never miss."""
     rng = np.random.default_rng(2671 + sum(map(ord, name)))
@@ -335,7 +363,7 @@ def mesh_rays(name, m, d):
 
 
 # Rays on the edges of mj_rayMesh's tests, the mesh unturned at the origin: (mesh, start,
-# direction), in numbers a double holds exactly. On `box` (half-sizes 0.125, 0.375, 0.5):
+# direction), in numbers a double holds exactly but the hair's and the short direction's. On `box` (half-sizes 0.125, 0.375, 0.5):
 # down its z axis onto a face's diagonal; down onto a corner, an edge and a face's middle;
 # across its top face within it, and along its top face's plane from outside; from inside
 # it; from on a face, outward and inward; past it by a hair; a direction so short that the
@@ -476,7 +504,7 @@ def main():
         mesh_ray_list.append({'mesh': name, 'pos': [0.0] * 3, 'mat': floats(np.eye(3)), 'pnt': pnt,
                               'vec': vec, 'x': x})
     authored = [k for k, v in mesh_models.items() if v['authored_frame']]
-    if authored != ['box', 'box4', 'octahedron']:
+    if authored != ['box', 'box4', 'octahedron', 'zero_area']:
         sys.exit(f'meshes MuJoCo kept in their written frame: {authored}')
     os.makedirs(sys.argv[1], exist_ok=True)
     doc = {'oracle': marker, 'hfield_fields': fields, 'hfield': rays, 'mesh_models': mesh_models,

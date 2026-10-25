@@ -13,17 +13,20 @@
 //! miss under a cutoff of 0.5, a hit at 150 with no cutoff; and at 80 turned
 //! states, a rangefinder over a convex mesh slab, one between two height
 //! fields, and one between two meshes MuJoCo keeps in their written frame.
-//! Every turn comes from the states' qpos, none from the compiler's
-//! orientations; the height fields' elevations are ones sim-mjcf loads as
-//! MuJoCo compiles them, which it does not for every field until book
-//! Rigid-loading L45. Every reading is compared bit for bit on macOS arm64,
-//! where the golden was made, elsewhere within `1e-13 · max(1, |MuJoCo's|)`,
-//! a NaN failing; but the slab's. MuJoCo turns the slab to its principal
-//! frame, which sim-mjcf does not (book Rigid-loading L35): its readings hit
-//! where MuJoCo's hit, each within `1e-8 · max(1, |MuJoCo's|)` (measured: 18
-//! of the 80 differ, by 4.4e-9 at most). Given MuJoCo's compiled vertices and
-//! pose, the same slab's rays are MuJoCo's bit for bit (sim-core's
-//! `rays_meet_each_mesh_as_mujoco`).
+//! No geom is written turned: every turn but the slab's comes from the states'
+//! qpos, and the height fields' elevations are ones sim-mjcf loads as MuJoCo
+//! compiles them, which it does not for every field until book Rigid-loading
+//! L45. Every reading is compared bit for bit on macOS arm64, where the golden
+//! was made, elsewhere within `1e-13 · max(1, |MuJoCo's|)`, a NaN failing; but
+//! the slab's. MuJoCo turns the slab to its principal frame, which sim-mjcf
+//! does not (book Rigid-loading L35), and keeps its vertices in single
+//! precision (ledger L281): its readings hit where MuJoCo's hit, each within
+//! `1e-8 · max(1, |MuJoCo's|)` (measured: 18 of the 80 differ, by 4.4e-9 at
+//! most, by that measure). The ray golden's rays on the same slab, given
+//! MuJoCo's compiled vertices and pose, are MuJoCo's bit for bit (sim-core's
+//! `rays_meet_each_mesh_as_mujoco`); none of them passes through a vertex or
+//! along an edge, where its hierarchy's boxes, built over other vertices
+//! than MuJoCo's, can turn a ray otherwise.
 
 use std::sync::Arc;
 

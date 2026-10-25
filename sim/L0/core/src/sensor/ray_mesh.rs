@@ -1,14 +1,15 @@
 //! MuJoCo's rays through triangles (`engine_ray.c`): a height field's
 //! (`mj_rayHfield`, `:561-738`) and a mesh's (`mj_rayMesh`, `:951-968`, down
 //! its hierarchy, `mju_rayTree`, `:770-881`), each through `ray_triangle`
-//! (`:131-200`). Each step is MuJoCo's, in its order, so a ray grazing a
-//! triangle's edge goes the way MuJoCo's does.
+//! (`:131-200`). Each step is MuJoCo's, in its order, so that given MuJoCo's
+//! inputs a ray grazing a triangle's edge goes the way MuJoCo's does.
 
 use nalgebra::{Matrix3, Vector3};
 
 use super::ray_geom::{ray_box, ray_map};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::heightfield::HeightFieldData;
+use crate::mesh::TriangleMeshData;
 use crate::quat::normalize3;
 use crate::types::Model;
 
@@ -298,6 +299,18 @@ fn ray_slab(aabb: &[f64; 6], src: &[f64; 3], dir: &[f64; 3]) -> bool {
     tmin < tmax
 }
 
+/// The half-sizes of the box MuJoCo gives a mesh's geom (its `geom_size`,
+/// `user_objects.cc:3765-3769`): along each axis, the larger magnitude of
+/// the mesh's bounds.
+fn mesh_box(mesh: &TriangleMeshData) -> [f64; 3] {
+    let (lo, hi) = mesh.aabb();
+    // `std::max(std::abs(a), std::abs(b))`.
+    std::array::from_fn(|i| {
+        let (a, b) = (lo[i].abs(), hi[i].abs());
+        if a < b { b } else { a }
+    })
+}
+
 /// `mj_rayMesh`: along a ray from `pnt` in the direction `vec`, the distance
 /// in lengths of `vec` to mesh `mesh` of a geom centred at `xpos` and turned
 /// by `xmat`, or −1. None where the ray misses the box MuJoCo gives the geom
@@ -310,9 +323,15 @@ fn ray_slab(aabb: &[f64; 6], src: &[f64; 3], dir: &[f64; 3]) -> bool {
 /// The mesh is as sim-core holds it: its vertices in double precision, where
 /// MuJoCo's ray reads them in single precision (`mesh_vert`; the same for
 /// vertices a float holds; ledger L281), and in its written frame, where
-/// MuJoCo turns a mesh to its principal frame (book Rigid-loading L35). A
-/// mesh with no hierarchy (no face, or a model whose hierarchies were not
-/// built, [`Model::compute_body_bvhs`]) reads −1.
+/// MuJoCo turns a mesh to its principal frame (book Rigid-loading L35). Its
+/// box and its hierarchy's are over those vertices, where MuJoCo's are over
+/// its double-precision ones before it rounds them (ledger L281), and its
+/// hierarchy's split differs where a face has no area (registry
+/// D-MESH-SPLIT): a ray through a vertex or along an edge can then go
+/// otherwise. A mesh with no hierarchy (no face, or a model whose
+/// hierarchies were not built, [`Model::compute_body_bvhs`]) reads −1; a
+/// leaf naming a face the mesh no longer has (the mesh replaced after its
+/// hierarchy was built) is passed over.
 pub(super) fn mj_ray_mesh(
     model: &Model,
     mesh: usize,
@@ -322,13 +341,7 @@ pub(super) fn mj_ray_mesh(
     vec: &Vector3<f64>,
 ) -> f64 {
     let data = &model.mesh_data[mesh];
-    let (lo, hi) = data.aabb();
-    // `std::max(std::abs(a), std::abs(b))`.
-    let size: [f64; 3] = std::array::from_fn(|i| {
-        let (a, b) = (lo[i].abs(), hi[i].abs());
-        if a < b { b } else { a }
-    });
-    if ray_box(xpos, xmat, &size, pnt, vec).0 < 0.0 {
+    if ray_box(xpos, xmat, &mesh_box(data), pnt, vec).0 < 0.0 {
         return -1.0;
     }
     let Some(adr) = model.mesh_bvhadr.get(mesh).copied().flatten() else {
@@ -345,7 +358,10 @@ pub(super) fn mj_ray_mesh(
             continue;
         }
         if let Some(face) = model.bvh_nodeid[adr + node] {
-            let v = faces[face].map(|i| vertices[i as usize].coords.into());
+            let Some(face) = faces.get(face) else {
+                continue;
+            };
+            let v = face.map(|i| vertices[i as usize].coords.into());
             let sol = ray_triangle(&v, &lpnt, &lvec, &b0, &b1);
             if sol >= 0.0 && (x < 0.0 || sol < x) {
                 x = sol;
@@ -454,12 +470,15 @@ mod tests {
     }
 
     /// The ray golden's `mesh` rays (`gen_ray_reference.py`: 300 a mesh over
-    /// its six meshes, the mesh unturned and turned, and 14 on the edges of
-    /// its tests) meet each mesh at MuJoCo's distance, or miss it as MuJoCo's
-    /// does (−1), bit for bit: each mesh built from MuJoCo's vertices and
-    /// faces as it compiles them (`mesh_models`), its hierarchy sim-core's
-    /// (`each_mesh_hierarchy_is_mujocos` compares it), the geom at MuJoCo's
-    /// pose.
+    /// its seven meshes, the mesh unturned and turned, and 14 on the edges of
+    /// the meshes MuJoCo keeps in their written frame) meet each mesh at
+    /// MuJoCo's distance, or miss it as MuJoCo's does (−1), bit for bit: each
+    /// mesh built from MuJoCo's vertices and faces as it compiles them
+    /// (`mesh_models`), its hierarchy sim-core's (`each_mesh_hierarchy_is_mujocos`
+    /// compares it), the geom at MuJoCo's pose. The drawn rays aim at points,
+    /// not at vertices or edges, so they do not tell a tree or a box that
+    /// differs from MuJoCo's at a vertex or an edge (ledger L281, registry
+    /// D-MESH-SPLIT).
     #[test]
     fn rays_meet_each_mesh_as_mujoco() {
         let golden = golden();
@@ -478,7 +497,7 @@ mod tests {
             })
             .collect();
         let rays = golden["mesh"].as_array().expect("rays");
-        assert_eq!(rays.len(), 6 * 300 + 14, "every ray read");
+        assert_eq!(rays.len(), 7 * 300 + 14, "every ray read");
         let mut differ = Vec::new();
         let mut hits = 0;
         for (i, ray) in rays.iter().enumerate() {
@@ -508,5 +527,37 @@ mod tests {
             differ.len(),
             differ.join("\n")
         );
+    }
+
+    /// The box `mj_ray_mesh` gives a mesh's geom is MuJoCo's `geom_size` bit
+    /// for bit for each of the ray golden's meshes MuJoCo keeps in its
+    /// written frame (the others it turns, and builds its box over its
+    /// double-precision vertices: ledger L281).
+    #[test]
+    fn a_mesh_geom_box_is_mujocos() {
+        let golden = golden();
+        let mut compared = 0;
+        for (name, mesh) in golden["mesh_models"].as_object().expect("mesh_models") {
+            if !mesh["authored_frame"].as_bool().expect("a flag") {
+                continue;
+            }
+            let face: Vec<usize> = mesh["face"]
+                .as_array()
+                .expect("faces")
+                .iter()
+                .map(|i| usize::try_from(i.as_u64().expect("a vertex")).expect("a vertex"))
+                .collect();
+            let model = Model::one_mesh(&numbers(&mesh["vert"]), &face);
+            let ours = super::mesh_box(&model.mesh_data[0]);
+            let theirs = numbers(&mesh["size"]);
+            assert!(
+                ours.iter()
+                    .zip(&theirs)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{name}: {ours:?}, MuJoCo {theirs:?}"
+            );
+            compared += 1;
+        }
+        assert_eq!(compared, 4, "the meshes in their written frame");
     }
 }

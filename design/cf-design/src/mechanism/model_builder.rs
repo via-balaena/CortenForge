@@ -1233,6 +1233,8 @@ mod tests {
         assert_eq!(model.dof_simplenum, again.dof_simplenum);
         assert_eq!(model.body_bvhadr, again.body_bvhadr);
         assert_eq!(model.body_bvhnum, again.body_bvhnum);
+        assert_eq!(model.mesh_bvhadr, again.mesh_bvhadr);
+        assert_eq!(model.mesh_bvhnum, again.mesh_bvhnum);
         assert_eq!(model.bvh_child, again.bvh_child);
         assert_eq!(model.bvh_nodeid, again.bvh_nodeid);
         assert_eq!(model.bvh_depth, again.bvh_depth);
