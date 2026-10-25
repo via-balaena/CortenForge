@@ -18,7 +18,10 @@ It writes ray.json:
   each the field's pose (`geom_xpos`, `geom_xmat`, set on the data before the
   call), the ray's start and direction, and MuJoCo's distance, -1 where it
   misses. `hfield_rays` says how they are drawn; `HFIELD_EDGE_RAYS` adds rays
-  on the edges of its tests;
+  on the edges of its tests; `LINE_FIELDS` adds fields of one row and of one
+  column, drawn as the others; `hfield_side_rays` adds rays across each side
+  at its edge's height, to within a few ulps, and refuses a set of them that
+  the side test's single-precision reading decides none of;
 - `mesh_models`: each mesh in a model of one mesh geom on the world, as MuJoCo
   compiles it: the model's text, the mesh's vertices (`mesh_vert`, single
   precision) and faces, the geom's size, whether MuJoCo kept the mesh in its
@@ -65,10 +68,15 @@ FIELDS = [
 ]
 
 
-def field_model(name, nrow, ncol, size, elev):
+def field_model(name, nrow, ncol, size, elev, pad=False):
+    """A model of one height-field geom on the world. With `pad`, a second field follows the
+    first in `hfield_data`, so that MuJoCo's side test, which on a field of one row or column
+    reads one row or column past the data (and multiplies it by 0), reads a number there."""
+    after = ('<hfield name="pad" nrow="2" ncol="2" size="1 1 1 1" elevation="0 1 0.5 0.25"/>'
+             if pad else '')
     xml = (f'<mujoco><asset><hfield name="{name}" nrow="{nrow}" ncol="{ncol}" '
            f'size="{" ".join(repr(s) for s in size)}" '
-           f'elevation="{" ".join(repr(float(e)) for e in elev)}"/></asset>'
+           f'elevation="{" ".join(repr(float(e)) for e in elev)}"/>{after}</asset>'
            f'<worldbody><geom type="hfield" hfield="{name}"/></worldbody></mujoco>')
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -155,7 +163,9 @@ def hfield_rays(name, m, d, size):
                 kinds['triangle'] += 1
         out.append({'field': name, 'pos': floats(pos), 'mat': floats(mat), 'pnt': floats(pnt),
                     'vec': floats(vec), 'x': x})
-    wanted = ['triangle', 'base', 'miss'] + ([] if name == 'flat' else ['side'])
+    line = name in ('row', 'column')
+    wanted = (['base', 'miss'] + ([] if line else ['triangle'])
+              + ([] if name == 'flat' else ['side']))
     if any(kinds[k] == 0 for k in wanted):
         sys.exit(f'hfield rays {name}: {kinds}')
     print(f'hfield {name}: {kinds}', file=sys.stderr)
@@ -163,12 +173,13 @@ def hfield_rays(name, m, d, size):
 
 
 # Rays on the edges of mj_rayHfield's tests, the field unturned at the origin: (field, start,
-# direction), in numbers a double holds exactly. On `bumpy` (cells 0.25 wide): straight down
+# direction), in numbers a double holds exactly but the short direction's. On `bumpy` (cells 0.25 wide): straight down
 # onto a grid point, the middle of a cell's diagonal, a cell's edge, the field's edge, and
 # past it; across the field along x and along y, and along its top; up from under its base,
 # and from inside the base; down from on its top box's top face; a direction so short that
 # the boxes' bounding spheres miss; along (1, 1, -1), so that the basis's first branch takes
-# a tie. On `two`: down its one cell's diagonal and across its two sides.
+# a tie. On `two`: down its one cell's diagonal and across its two sides. Then one from very
+# far.
 HFIELD_EDGE_RAYS = [
     ('bumpy', [0.25, 0.5, 2.0], [0.0, 0.0, -1.0]),
     ('bumpy', [0.125, 0.125, 2.0], [0.0, 0.0, -1.0]),
@@ -186,6 +197,9 @@ HFIELD_EDGE_RAYS = [
     ('two', [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]),
     ('two', [-1.0, -0.25, 0.25], [1.0, 0.0, 0.0]),
     ('two', [0.0, -1.0, 0.125], [0.0, 1.0, 0.0]),
+    # From 2^64 away along a diagonal: the cells under the path run past what an integer
+    # holds, and the cell more each way past that.
+    ('bumpy', [-2.0 ** 64, 2.0 ** 64, 0.25], [1.0, -1.0, 0.0]),
 ]
 
 
@@ -345,6 +359,79 @@ MESH_EDGE_RAYS = [
 ]
 
 
+# Fields of one row and of one column, each followed by a padding field (`field_model`). MuJoCo
+# compiles them; with one row the y spacing is infinite (one column: x), so a ray's place
+# along that axis is 0 and the side test's second elevation is multiplied by 0.
+LINE_FIELDS = [
+    ('row', 1, 4, [1.0, 0.5, 0.7, 0.5], 'random'),
+    ('column', 4, 1, [0.5, 1.0, 0.6, 0.25], 'random'),
+]
+
+
+def field_record(m):
+    """The first field as MuJoCo compiles it: its size, rows, columns and elevations."""
+    nrow, ncol, adr = int(m.hfield_nrow[0]), int(m.hfield_ncol[0]), int(m.hfield_adr[0])
+    return {'size': floats(m.hfield_size[0]), 'nrow': nrow, 'ncol': ncol,
+            'data': floats(m.hfield_data[adr:adr + nrow * ncol])}
+
+
+def hfield_side_rays(name, m, d):
+    """Rays across each of a field's four sides, unturned at the origin, level (along the
+    side's normal), at the height of the side's edge where they cross it and 1 and 2 ulps
+    either way: 6 crossings a side from one generator, each at a place along the side drawn
+    at random. The edge's height is MuJoCo's: the elevations either side of the crossing
+    (single precision) interpolated, times the field's top. Where the start's height over the
+    top falls between that edge and the same edge read from the elevations scaled and
+    unscaled in double precision, the side test's single-precision reading decides the ray;
+    it returns the rays and how many of them that reading decides."""
+    rng = np.random.default_rng(2673 + sum(map(ord, name)))
+    rec = field_record(m)
+    sx, sy, top, _ = rec['size']
+    nrow, ncol = rec['nrow'], rec['ncol']
+    data = np.array(rec['data'])
+    with np.errstate(divide='ignore'):
+        dx = np.float64(2.0 * sx) / np.float64(ncol - 1)
+        dy = np.float64(2.0 * sy) / np.float64(nrow - 1)
+    out, decided = [], 0
+    for i in range(4):
+        for _ in range(6):
+            t = rng.uniform(-0.95, 0.95)
+            if i < 2:
+                along, step, count = t * sy, dy, nrow
+                y = (along + sy) / dy
+                index = lambda k: int(k) * ncol + (ncol - 1 if i == 1 else 0)
+            else:
+                along, step, count = t * sx, dx, ncol
+                y = (along + sx) / dx
+                index = lambda k: int(k) + ((nrow - 1) * ncol if i == 3 else 0)
+            y0 = max(0.0, min(float(count - 2), np.floor(y)))
+            z0 = data[index(np.round(y0))]
+            z1 = data[index(np.round(y0 + 1))] if count > 1 else 0.0
+            edge = z0 * (y0 + 1 - y) + z1 * (y - y0)
+            scaled0 = (z0 * top) / top
+            scaled1 = (z1 * top) / top if count > 1 else 0.0
+            edge_double = scaled0 * (y0 + 1 - y) + scaled1 * (y - y0)
+            height = edge * top
+            for k in (-2, -1, 0, 1, 2):
+                h = height
+                for _ in range(abs(k)):
+                    h = np.nextafter(h, np.inf if k > 0 else -np.inf)
+                z = h / top
+                decided += (z < edge) != (z < edge_double)
+                pnt = [0.0, 0.0, float(h)]
+                vec = [0.0, 0.0, 0.0]
+                axis, sign = (0, -1.0 if i == 0 else 1.0) if i < 2 else (1, -1.0 if i == 2 else 1.0)
+                pnt[axis] = sign * (2.0 * (sx if axis == 0 else sy))
+                pnt[1 - axis] = float(along)
+                vec[axis] = -sign
+                x, _ = cast(m, d, np.zeros(3), np.eye(3).ravel(), np.array(pnt), np.array(vec))
+                out.append({'field': name, 'pos': [0.0] * 3, 'mat': floats(np.eye(3)), 'pnt': pnt,
+                            'vec': vec, 'x': x})
+    print(f'hfield side rays {name}: {len(out)}, {decided} decided by the single-precision reading',
+          file=sys.stderr)
+    return out, decided
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -354,8 +441,7 @@ def main():
     for name, nrow, ncol, size, kind in FIELDS:
         m, d = field_model(name, nrow, ncol, size, elevation(rng, nrow, ncol, kind))
         assert (m.hfield_nrow[0], m.hfield_ncol[0]) == (nrow, ncol)
-        fields[name] = {'size': floats(m.hfield_size[0]), 'nrow': nrow, 'ncol': ncol,
-                        'data': floats(m.hfield_data)}
+        fields[name] = field_record(m)
         models[name] = (m, d)
         rays += hfield_rays(name, m, d, size)
     for name, pnt, vec in HFIELD_EDGE_RAYS:
@@ -364,6 +450,20 @@ def main():
         x, _ = cast(m, d, pos, mat, np.array(pnt), np.array(vec))
         rays.append({'field': name, 'pos': floats(pos), 'mat': floats(mat), 'pnt': pnt,
                      'vec': vec, 'x': x})
+    for name, nrow, ncol, size, kind in LINE_FIELDS:
+        m, d = field_model(name, nrow, ncol, size, elevation(rng, nrow, ncol, kind), pad=True)
+        assert (m.hfield_nrow[0], m.hfield_ncol[0]) == (nrow, ncol)
+        fields[name] = field_record(m)
+        models[name] = (m, d)
+        rays += hfield_rays(name, m, d, size)
+    decided = 0
+    for name in ('cells', 'two', 'row', 'column'):
+        m, d = models[name]
+        side, count = hfield_side_rays(name, m, d)
+        rays += side
+        decided += count
+    if decided == 0:
+        sys.exit('hfield side rays: none decided by the single-precision reading')
     mesh_models, mesh_ray_list, compiled = {}, [], {}
     for name, verts, faces in meshes(np.random.default_rng(2672)):
         m, d, model = mesh_model(name, verts, faces)

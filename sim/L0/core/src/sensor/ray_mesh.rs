@@ -48,7 +48,7 @@ fn mju_round(x: f64) -> f64 {
 }
 
 /// The basis `b0`, `b1` of the plane normal to the ray `lvec` that
-/// [`ray_triangle`] projects onto (`engine_ray.c:609-620`, `:801-812`): `b0` is (1, 1, 1)
+/// [`ray_triangle`] projects onto (`engine_ray.c:614-627`, `:797-809`): `b0` is (1, 1, 1)
 /// with the ray's largest part set to 0 (the first of equals), `b1` that less
 /// its part along the ray, normalised, and then `b0` is `b1 × lvec`,
 /// normalised.
@@ -136,9 +136,12 @@ fn ray_triangle(
 /// precision: the height over `size[2]`, rounded to single precision, which
 /// is that elevation wherever the height is one scaled. sim-mjcf does not yet
 /// load a field's elevations as MuJoCo's (normalised, the rows flipped, in
-/// single precision: book Rigid-loading L45). A field of one row or column,
-/// which sim-mjcf refuses (ledger L208) and whose sides MuJoCo's test reads
-/// past its data for, reads its base box's distance.
+/// single precision: book Rigid-loading L45); where a height is not one
+/// scaled, the sides' edge is that rounding of it, up to an ulp of single
+/// precision from the triangles' edge. A field of one row or column (which
+/// sim-mjcf refuses, ledger L208) has no triangles; along its one row or
+/// column, a ray's place is 0, and the side test's second elevation, past
+/// the data, is multiplied by 0, as in MuJoCo (here it reads 0).
 pub(super) fn mj_ray_hfield(
     hfield: &HeightFieldData,
     size: &[f64; 4],
@@ -165,7 +168,7 @@ pub(super) fn mj_ray_hfield(
 
     let mut x = ray_box(&base_pos, xmat, &base_size, pnt, vec).0;
     let (top_intersect, all) = ray_box(&top_pos, xmat, &top_size, pnt, vec);
-    if top_intersect < 0.0 || nrow < 2 || ncol < 2 {
+    if top_intersect < 0.0 {
         return x;
     }
 
@@ -190,14 +193,22 @@ pub(super) fn mj_ray_hfield(
     let sy = seg.map(|s| (lpnt[1] + s * lvec[1] + size[1]) / dy);
 
     // The cells under the path, a cell more each way, within the grid. A
-    // cast to an integer saturates, and takes a NaN to 0, where C's leaves
-    // it undefined.
+    // cast to an integer, and the cell more, saturate, and the cast takes a
+    // NaN to 0, where C's leave them undefined.
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let (cmin, cmax, rmin, rmax) = (
-        ((mj_min(sx[0], sx[1]).floor() as i64) - 1).max(0),
-        ((mj_max(sx[0], sx[1]).ceil() as i64) + 1).min(ncol as i64 - 1),
-        ((mj_min(sy[0], sy[1]).floor() as i64) - 1).max(0),
-        ((mj_max(sy[0], sy[1]).ceil() as i64) + 1).min(nrow as i64 - 1),
+        (mj_min(sx[0], sx[1]).floor() as i64)
+            .saturating_sub(1)
+            .max(0),
+        (mj_max(sx[0], sx[1]).ceil() as i64)
+            .saturating_add(1)
+            .min(ncol as i64 - 1),
+        (mj_min(sy[0], sy[1]).floor() as i64)
+            .saturating_sub(1)
+            .max(0),
+        (mj_max(sy[0], sy[1]).ceil() as i64)
+            .saturating_add(1)
+            .min(nrow as i64 - 1),
     );
 
     // The height at column `c`, row `r` (within the grid), and the grid
@@ -227,7 +238,8 @@ pub(super) fn mj_ray_hfield(
     }
 
     // MuJoCo's elevation at column `c`, row `r`: the height unscaled, in
-    // single precision.
+    // single precision; 0 past the grid, where a field of one row or column
+    // reads it, times 0.
     #[allow(clippy::cast_possible_truncation)]
     let elevation =
         |c: usize, r: usize| f64::from((hfield.get(c, r).unwrap_or(0.0) / size[2]) as f32);
@@ -379,11 +391,13 @@ mod tests {
     }
 
     /// The ray golden's `hfield` rays (`gen_ray_reference.py`: 400 a field
-    /// over five fields, from above, below, beside and inside them, unturned
-    /// and turned, and 16 on the edges of its tests) meet each field at
-    /// MuJoCo's distance, or miss it as MuJoCo's does (−1), bit for bit: each
-    /// field built from MuJoCo's elevations (`hfield_data`) scaled by its top,
-    /// as sim-mjcf does not load them yet (book Rigid-loading L45).
+    /// over seven fields, one of them a single row and one a single column,
+    /// from above, below, beside and inside them, unturned and turned; 17 on
+    /// the edges of its tests; and 480 across the sides of four fields at
+    /// their edges' height, to within 2 ulps) meet each field at MuJoCo's
+    /// distance, or miss it as MuJoCo's does (−1), bit for bit: each field
+    /// built from MuJoCo's elevations (`hfield_data`) scaled by its top, as
+    /// sim-mjcf does not load them yet (book Rigid-loading L45).
     #[test]
     fn rays_meet_each_height_field_as_mujoco() {
         let golden = golden();
@@ -407,7 +421,7 @@ mod tests {
             })
             .collect();
         let rays = golden["hfield"].as_array().expect("rays");
-        assert_eq!(rays.len(), 5 * 400 + 16, "every ray read");
+        assert_eq!(rays.len(), 7 * 400 + 17 + 4 * 120, "every ray read");
         let mut differ = Vec::new();
         let mut hits = 0;
         for (i, ray) in rays.iter().enumerate() {
@@ -436,36 +450,6 @@ mod tests {
             "{} differ:\n{}",
             differ.len(),
             differ.join("\n")
-        );
-    }
-
-    /// A field of one row, which sim-mjcf refuses (ledger L208) and whose
-    /// sides MuJoCo's test reads past its data for, reads its base box's
-    /// distance only: a ray across its top box at half its height, which
-    /// misses the base, reads −1, though the side's test would read the row
-    /// past it as 0 and take the side; a ray up into its base reads the
-    /// base's.
-    #[test]
-    fn a_field_of_one_row_reads_its_base_only() {
-        let hfield = HeightFieldData::new(vec![0.5; 3], 3, 1, 1.0);
-        let size = [1.0, 1.0, 0.5, 0.25];
-        let ray = |pnt: [f64; 3], vec: [f64; 3]| {
-            mj_ray_hfield(
-                &hfield,
-                &size,
-                &Vector3::zeros(),
-                &Matrix3::identity(),
-                &Vector3::from(pnt),
-                &Vector3::from(vec),
-            )
-        };
-        assert_eq!(
-            ray([-2.0, 0.0, 0.25], [1.0, 0.0, 0.0]).to_bits(),
-            (-1.0_f64).to_bits()
-        );
-        assert_eq!(
-            ray([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]).to_bits(),
-            0.75_f64.to_bits()
         );
     }
 
