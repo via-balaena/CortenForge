@@ -2,7 +2,9 @@
 //!
 //! Provides composable tracker structs that accumulate measurements over time
 //! and produce pass/fail checks. Zero Bevy dependency — pure data structs
-//! with `println!` formatting.
+//! with `println!` formatting. A NaN sample fails every tracker's check, and
+//! [`max_or_nan`], [`min_or_nan`] and [`max_abs_or_nan`] fold measurements so
+//! that a NaN reaches any other check.
 //!
 //! # Usage
 //!
@@ -111,7 +113,8 @@ impl PeriodTracker {
     }
 
     /// Compute the average period from recorded zero crossings.
-    /// Returns `None` if fewer than 2 crossings recorded.
+    /// Returns `None` if fewer than 2 crossings recorded. After a NaN sample
+    /// [`Self::check`] fails, whatever this returns.
     #[must_use]
     pub fn measured_period(&self) -> Option<f64> {
         if self.crossings.len() < 2 {
@@ -198,7 +201,8 @@ impl EnergyMonotonicityTracker {
     /// Feed a new energy sample. Call once per frame. A NaN energy makes
     /// [`Self::max_increase`] NaN, which fails the check.
     pub fn sample(&mut self, energy: f64) {
-        // The first sample's increase is over itself: 0, or NaN for a NaN.
+        // The first sample's increase is over itself: 0, or NaN for a NaN or an
+        // infinite energy.
         let increase = energy - self.prev.unwrap_or(energy);
         self.max_increase = max_or_nan(self.max_increase, increase);
         self.prev = Some(energy);
@@ -431,6 +435,7 @@ impl Default for EnergyConservationTracker {
 pub struct EquilibriumTracker {
     window_duration: f64,
     samples: Vec<(f64, f64)>, // (time, value)
+    saw_nan: bool,
 }
 
 impl EquilibriumTracker {
@@ -443,13 +448,16 @@ impl EquilibriumTracker {
         Self {
             window_duration,
             samples: Vec::new(),
+            saw_nan: false,
         }
     }
 
     /// Feed a new sample. Call once per frame with the current value and time.
     ///
-    /// Older samples outside the trailing window are pruned automatically.
+    /// Older samples outside the trailing window are pruned automatically. A
+    /// NaN value or time fails [`Self::check`] from then on, pruned or not.
     pub fn sample(&mut self, value: f64, time: f64) {
+        self.saw_nan |= value.is_nan() || time.is_nan();
         self.samples.push((time, value));
         let cutoff = time - self.window_duration;
         self.samples.retain(|&(t, _)| t >= cutoff);
@@ -477,9 +485,17 @@ impl EquilibriumTracker {
     /// Check that the trailing-window mean is within `tolerance_pct`% of `expected`.
     ///
     /// Computes `|mean - expected| / |expected| * 100` and compares to `tolerance_pct`.
-    /// Returns a failing check if no samples are in the window or if `expected` is zero.
+    /// Returns a failing check if a NaN was sampled, if no samples are in the
+    /// window or if `expected` is zero.
     #[must_use]
     pub fn check(&self, expected: f64, tolerance_pct: f64) -> Check {
+        if self.saw_nan {
+            return Check {
+                name: "Equilibrium",
+                pass: false,
+                detail: "a NaN sample".to_string(),
+            };
+        }
         match self.mean() {
             None => Check {
                 name: "Equilibrium",
@@ -924,26 +940,48 @@ mod tests {
             "{}",
             conserved.check(0.5).detail
         );
+        let mut nan_first = EnergyConservationTracker::new();
+        nan_first.sample(f64::NAN);
+        nan_first.sample(10.0);
+        assert!(!nan_first.check(0.5).pass, "a NaN first sample");
+
+        let mut bound = LimitTracker::new();
+        bound.sample(0.0, f64::NAN, 1.0);
+        assert!(!bound.check(0.001).pass, "a NaN bound");
+
+        for nan_at in [350, 50] {
+            // A NaN at step 350 is in the last second's window; at step 50 it has left it.
+            let mut equilibrium = EquilibriumTracker::new(1.0);
+            for i in 0..400 {
+                let value = if i == nan_at { f64::NAN } else { 2.0 };
+                equilibrium.sample(value, f64::from(i) * 0.01);
+            }
+            let check = equilibrium.check(2.0, 1.0);
+            assert!(!check.pass, "a NaN at step {nan_at}: {}", check.detail);
+        }
     }
 
     #[test]
     fn a_nan_sample_fails_the_period_check() {
-        let sine = |nan_at: Option<i32>| {
+        // A sine whose value is NaN from step `value_from` on, or whose time is NaN
+        // at step `time_at`.
+        let sine = |value_from: i32, time_at: i32| {
             let mut t = PeriodTracker::new();
             for i in 0..500 {
                 let time = f64::from(i) * 0.01;
-                let value = if Some(i) == nan_at {
+                let value = if i >= value_from {
                     f64::NAN
                 } else {
                     (2.0 * std::f64::consts::PI * time).sin()
                 };
-                t.sample(value, time);
+                t.sample(value, if i == time_at { f64::NAN } else { time });
             }
             t.check(1.0, 2.0)
         };
-        assert!(sine(None).pass, "{}", sine(None).detail);
-        let check = sine(Some(250));
-        assert!(!check.pass);
-        assert!(check.detail.contains("NaN"), "{}", check.detail);
+        assert!(sine(500, 500).pass, "{}", sine(500, 500).detail);
+        for check in [sine(300, 500), sine(500, 125)] {
+            assert!(!check.pass);
+            assert!(check.detail.contains("NaN"), "{}", check.detail);
+        }
     }
 }
