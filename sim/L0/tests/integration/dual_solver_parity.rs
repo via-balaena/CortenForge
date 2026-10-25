@@ -13,7 +13,7 @@
 //! `+ − × ÷` and `sqrt` only.
 
 use serde_json::Value;
-use sim_core::{ConstraintState, ConstraintType, Data, MjStage, Model, SolverStat};
+use sim_core::{ConstraintState, ConstraintType, Data, Integrator, MjStage, Model, SolverStat};
 use sim_mjcf::load_model;
 
 fn golden() -> Value {
@@ -410,56 +410,140 @@ fn a_forward_from_the_velocity_stage_after_an_inverse_makes_efc_ar() {
     }
 }
 
-/// The whole forward pass under PGS, PGS then noslip, and Newton then noslip,
-/// from MuJoCo's state after three steps (qpos, qvel, the warmstart): its
+/// Under the implicit spring-damper integrator (this crate's; MuJoCo has
+/// none) the constraint stage makes `efc_AR` over `M_impl`. With the model
+/// then under Euler, a forward pass that skips the position stage remakes it
+/// over `M` before its dual solve: a damped, sprung sphere on a plane,
+/// pushed sideways, moving sideways and at rest sideways, gets under PGS and
+/// under Newton with noslip the acceleration a full Euler pass gets, bit for
+/// bit, and so does a clone of the `Data` the implicit pass left (ledger
+/// L263).
+#[test]
+fn a_forward_from_the_velocity_stage_after_the_implicit_spring_damper_remakes_efc_ar() {
+    for option in [
+        r#"solver="PGS""#,
+        r#"solver="Newton" noslip_iterations="5""#,
+    ] {
+        let xml = format!(
+            r#"<mujoco><option timestep="0.002" integrator="implicitspringdamper" {option}/><worldbody>
+  <geom type="plane" size="5 5 0.1"/>
+  <body pos="0 0 0.09">
+    <joint type="slide" axis="0 0 1" damping="3" stiffness="20"/>
+    <joint type="slide" axis="1 0 0" damping="2"/>
+    <geom type="sphere" size="0.1"/>
+  </body>
+</worldbody></mujoco>"#
+        );
+        for qvel in [[-0.3, 0.4], [-0.3, 0.0]] {
+            let mut model = load_model(&xml).expect("load");
+            let mut data = model.make_data();
+            data.qvel.as_mut_slice().copy_from_slice(&qvel);
+            data.qfrc_applied[1] = 0.5;
+            data.forward(&model).expect("forward");
+            assert!(data.ncon > 0, "{option} {qvel:?}: in contact");
+            let mut copy = data.clone();
+            model.integrator = Integrator::Euler;
+            data.forward_skip(&model, MjStage::Pos, false)
+                .expect("forward from the velocity stage");
+            let skipped: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
+            copy.forward_skip(&model, MjStage::Pos, false)
+                .expect("the clone's forward from the velocity stage");
+            let copied: Vec<u64> = copy.qacc.iter().map(|x| x.to_bits()).collect();
+            data.forward(&model).expect("forward under Euler");
+            let full: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
+            assert_eq!(skipped, full, "{option} {qvel:?}: qacc");
+            assert_eq!(copied, full, "{option} {qvel:?}: the clone's qacc");
+        }
+    }
+}
+
+/// The forward group's scenes under CG and Newton alone, from MuJoCo's state
+/// after their own three steps, each body's inertial as MuJoCo compiles it:
+/// the acceleration, forces and constraint force as MuJoCo's, bit for bit on
+/// macOS arm64, where the golden was made, elsewhere within `1e-13 · max(1,
+/// |MuJoCo's|)` (a NaN never), and the iteration count (ledger L261).
+#[test]
+fn a_forward_pass_with_a_primal_solver_matches_mujoco_3_5_0() {
+    let g = golden();
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let mut off = Vec::new();
+    let cases = g["cases"]["forward_primal"].as_object().expect("cases");
+    assert_eq!(cases.len(), 2 * 22, "the primal forward cases");
+    for (name, case) in cases {
+        forward_as_mujoco(&mut off, name, case, exact);
+    }
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
+/// A forward pass from the case's qpos, qvel and warmstart, against MuJoCo's
+/// `qacc`, `efc_force`, `qfrc_constraint`, row count and `solver_niter`
+/// (bit for bit when `exact`, else within `1e-13 · max(1, |MuJoCo's|)`, a
+/// NaN never); each difference is pushed onto `off`.
+fn forward_as_mujoco(
+    off: &mut Vec<String>,
+    name: &str,
+    case: &Value,
+    exact: bool,
+) -> (Model, Data) {
+    let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+    let mut data = model.make_data();
+    data.qpos.copy_from_slice(&floats(&case["qpos"]));
+    data.qvel.copy_from_slice(&floats(&case["qvel"]));
+    data.qacc_warmstart
+        .copy_from_slice(&floats(&case["qacc_warmstart"]));
+    data.forward(&model).expect("forward");
+    assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{name}: nefc");
+    if data.solver_niter != count(&case["solver_niter"]) {
+        off.push(format!(
+            "{name}: solver_niter {}, MuJoCo {}",
+            data.solver_niter,
+            count(&case["solver_niter"])
+        ));
+    }
+    for (field, ours) in [
+        ("qacc", data.qacc.as_slice()),
+        ("efc_force", data.efc_force.as_slice()),
+        ("qfrc_constraint", data.qfrc_constraint.as_slice()),
+    ] {
+        let want = floats(&case[field]);
+        let what = format!("{name} {field}");
+        if exact {
+            bits(off, &what, ours, &want);
+        } else if ours.len() != want.len()
+            || ours.iter().zip(&want).any(|(a, b)| {
+                // Past the bound or NaN: a NaN is never within it.
+                let d = (a - b).abs();
+                d.is_nan() || d > 1e-13 * b.abs().max(1.0)
+            })
+        {
+            off.push(format!("{what}: past 1e-13 of MuJoCo's"));
+        }
+    }
+    (model, data)
+}
+
+/// The whole forward pass under PGS, PGS then noslip, Newton then noslip, and
+/// CG then noslip, from MuJoCo's state after three steps (qpos, qvel, the
+/// warmstart): its
 /// acceleration, forces and constraint force as MuJoCo's, bit for bit on
 /// macOS arm64, where the golden was made, elsewhere within
 /// `1e-13 · max(1, |MuJoCo's|)` (a NaN never), and its iteration count. On
 /// every platform the pass keeps the dual solve's own acceleration
 /// (`dualFinish`'s), bit for bit: the same rows solved again from the same
 /// warmstart give it, where one remade from the forces would round otherwise.
-/// CG then noslip is left out: CG alone differs from MuJoCo's at six of these
-/// states (ledger L261).
+/// CG's scenes carry each body's inertial as MuJoCo compiles it: as written,
+/// sim-mjcf compiles the arm capsule's inertial frame otherwise (ledgers L195,
+/// L261; Rigid-loading's L33 copies one geom's frame, L14 a fromto's axis),
+/// which moves the mass matrix by an ulp at six of CG's states.
 #[test]
 fn a_forward_pass_with_a_dual_solver_matches_mujoco_3_5_0() {
     let g = golden();
     let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     let mut off = Vec::new();
-    for (name, case) in g["cases"]["forward"].as_object().expect("cases") {
-        let model = load_model(case["xml"].as_str().expect("xml")).expect("load");
-        let mut data = model.make_data();
-        data.qpos.copy_from_slice(&floats(&case["qpos"]));
-        data.qvel.copy_from_slice(&floats(&case["qvel"]));
-        data.qacc_warmstart
-            .copy_from_slice(&floats(&case["qacc_warmstart"]));
-        data.forward(&model).expect("forward");
-        assert_eq!(data.efc_type.len(), count(&case["nefc"]), "{name}: nefc");
-        if data.solver_niter != count(&case["solver_niter"]) {
-            off.push(format!(
-                "{name}: solver_niter {}, MuJoCo {}",
-                data.solver_niter,
-                count(&case["solver_niter"])
-            ));
-        }
-        for (field, ours) in [
-            ("qacc", data.qacc.as_slice()),
-            ("efc_force", data.efc_force.as_slice()),
-            ("qfrc_constraint", data.qfrc_constraint.as_slice()),
-        ] {
-            let want = floats(&case[field]);
-            let what = format!("{name} {field}");
-            if exact {
-                bits(&mut off, &what, ours, &want);
-            } else if ours.len() != want.len()
-                || ours.iter().zip(&want).any(|(a, b)| {
-                    // Past the bound or NaN: a NaN is never within it.
-                    let d = (a - b).abs();
-                    d.is_nan() || d > 1e-13 * b.abs().max(1.0)
-                })
-            {
-                off.push(format!("{what}: past 1e-13 of MuJoCo's"));
-            }
-        }
+    let forward = g["cases"]["forward"].as_object().expect("cases");
+    assert_eq!(forward.len(), 66 + 22, "the forward cases");
+    for (name, case) in forward {
+        let (model, data) = forward_as_mujoco(&mut off, name, case, exact);
         let mut again = data.clone();
         if model.noslip_iterations > 0 {
             sim_core::constraint::mj_sol_noslip_rows(&model, &mut again).expect("solve");

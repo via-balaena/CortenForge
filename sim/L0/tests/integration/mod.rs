@@ -69,6 +69,22 @@ pub mod quat_integration;
 /// Joint transmissions on ball and free joints against MuJoCo 3.5.0.
 pub mod joint_transmission;
 
+/// Each actuator's velocity against MuJoCo 3.5.0's sparse dot of its moment
+/// row with `qvel`, at the dense and the sparse Jacobian.
+pub mod actuator_velocity_parity;
+
+/// Runs against MuJoCo 3.5.0's on models sim-mjcf compiles as MuJoCo does.
+pub mod trajectory_parity;
+
+/// The smooth force's sum against MuJoCo 3.5.0's order.
+pub mod smooth_force_parity;
+
+/// The velocity derivative `qDeriv` against MuJoCo 3.5.0's order of terms.
+pub mod velocity_derivative_parity;
+
+/// A site's rangefinder against MuJoCo 3.5.0's `mj_ray`.
+pub mod rangefinder_parity;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================

@@ -579,8 +579,8 @@ MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
 | `mj_jacDifPair()` helper | `compute_contact_normal_jacobian()` | J(b2) − J(b1) sign convention via the contact Jacobian's normal row (`compute_contact_normal_row`, through `mj_jac`) | ✅ |
 | Body name → ID resolution | `builder/` body branch | Replaces former `ModelConversionError` with name lookup | ✅ |
 | Phase 3 force application | `mj_fwd_actuation()` Body arm | Moment-based `qfrc += m * force` (merged with Site arm) | ✅ |
-| Actuator velocity | `mj_actuator_velocity()` Body arm | `velocity = moment.dot(&qvel)` | ✅ |
-| Derivatives | `derivatives.rs` Body arm | Merged with Site: `qDeriv += dforce_dv * moment[r] * moment[c]` | ✅ |
+| Actuator velocity | `mj_actuator_velocity()` | The sparse dot of the stored moment row (a body's: its nonzero entries) with `qvel`, in `mju_dotSparse`'s grouping | ✅ |
+| Derivatives | `derivatives/hybrid.rs` | Over the stored moment row (a body's: its nonzero entries): `qDeriv[(k, p)] += moment[p] * (moment[k] * dforce_dv)` | ✅ |
 
 **Key MuJoCo conformance properties:**
 

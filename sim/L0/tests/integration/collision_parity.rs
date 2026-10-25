@@ -556,19 +556,23 @@ fn broadphase_culls_touching_spheres_as_mujoco() {
 /// loads as MuJoCo compiles it (`bumpy`: 9 × 9, elevations multiples of 1/8
 /// from 0 to 1, rows symmetric; each body turned by its frame, so its
 /// inertial frame is the body's in both, ledger L195), at two spots each:
-/// the height after every 50th of 1000 steps against MuJoCo's, within 5e-12
-/// for a sphere, a capsule and an ellipsoid (a capsule rolls off the field's
-/// edge as MuJoCo's does), 5e-3 for a cylinder and 5e-2 for a box; where the
-/// cylinders and boxes part from MuJoCo's is not isolated (ledger L206). The
-/// bodies take sines and cosines, which a libm need not round correctly; the
-/// bounds are set above the largest gaps measured here and with such results
-/// moved by an ulp (chunk 3e's fourth review and its fix-diff pass):
+/// the height after every 50th of 1000 steps against MuJoCo's. A sphere's
+/// and a cylinder's bit for bit on macOS arm64, where the golden was made. A
+/// capsule's and an ellipsoid's within 5e-12 and a box's within 5e-2:
+/// sim-mjcf compiles their masses and inertias otherwise (ledger L198), and
+/// with MuJoCo's written in, `trajectory_parity` runs them bit for bit (a
+/// capsule rolls off the field's edge as MuJoCo's does). Elsewhere a sphere
+/// within 5e-12 and a cylinder within 5e-3: the bodies take sines and
+/// cosines, which a libm need not round correctly, and those bounds are set
+/// above the largest gaps measured with such results moved by an ulp (chunk
+/// 3e's fourth review and its fix-diff pass):
 ///
-/// | bodies | measured | an ulp moved |
+/// | bodies | measured on macOS arm64 | an ulp moved |
 /// |---|---|---|
-/// | sphere, capsule, ellipsoid | 5.5e-13 | 1.45e-12 |
-/// | cylinder | 8.5e-5 | 2.0e-3 |
-/// | box | 4.8e-3 | 2.2e-2 |
+/// | sphere | 0 | at most 1.45e-12 |
+/// | capsule, ellipsoid | 5.6e-13 | at most 1.45e-12 |
+/// | cylinder | 0 | 2.0e-3 |
+/// | box | 8.4e-3 | 2.2e-2 |
 #[test]
 fn bodies_on_a_bumpy_height_field_as_mujoco() {
     let golden = golden();
@@ -576,8 +580,13 @@ fn bodies_on_a_bumpy_height_field_as_mujoco() {
         let model: Model = load_model(case["xml"].as_str().expect("xml")).expect("load");
         let mut data = model.make_data();
         let want = floats(&case["z"]);
+        let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
         let bound = if name.starts_with("box") {
             5e-2
+        } else if name.starts_with("capsule") || name.starts_with("ellipsoid") {
+            5e-12
+        } else if exact {
+            0.0
         } else if name.starts_with("cylinder") {
             5e-3
         } else {
@@ -1527,17 +1536,67 @@ fn explicit_convex_pairs_collide_lower_body_first_as_mujoco() {
     }
 }
 
+/// A cylinder against a plane, unturned, turned off the axes, and turned and
+/// off the origin, and a tiny cylinder (radius 1e-6, half-length 1.5e-6), as
+/// MuJoCo's `mjc_PlaneCylinder` makes its contacts: the cap nearly flat on
+/// the plane (three contacts), tilted (one) and lying on its side (two), at
+/// seeded poses. Each contact's distance, position and normal bit for bit on macOS
+/// arm64, where the golden was made; elsewhere within `1e-13 · max(1,
+/// |MuJoCo's|)`, a NaN failing.
+#[test]
+fn plane_cylinder_contacts_as_mujoco() {
+    let exact = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let same = |a: f64, b: f64| {
+        a.to_bits() == b.to_bits() || (!exact && (a - b).abs() <= 1e-13 * b.abs().max(1.0))
+    };
+    let golden = golden();
+    let mut off = Vec::new();
+    let mut compared = 0;
+    for (label, group) in golden["plane_cylinder"]
+        .as_object()
+        .expect("plane_cylinder")
+    {
+        let model: Model = load_model(group["xml"].as_str().expect("xml")).expect("load");
+        for (k, case) in group["cases"].as_array().expect("cases").iter().enumerate() {
+            let mut data = model.make_data();
+            data.qpos
+                .as_mut_slice()
+                .copy_from_slice(&floats(&case["qpos"]));
+            data.forward(&model).expect("forward");
+            let want = case["contacts"].as_array().expect("contacts");
+            assert_eq!(data.ncon, want.len(), "{label} {k}: contacts");
+            for (i, (c, w)) in data.contacts.iter().zip(want).enumerate() {
+                let frame = floats(&w["frame"]);
+                let ours = [
+                    -c.depth, c.pos.x, c.pos.y, c.pos.z, c.normal.x, c.normal.y, c.normal.z,
+                ];
+                let mj = [
+                    w["dist"].as_f64().expect("dist"),
+                    floats(&w["pos"])[0],
+                    floats(&w["pos"])[1],
+                    floats(&w["pos"])[2],
+                    frame[0],
+                    frame[1],
+                    frame[2],
+                ];
+                if !ours.iter().zip(&mj).all(|(a, b)| same(*a, *b)) {
+                    off.push(format!("{label} {k} contact {i}: {ours:?}, MuJoCo {mj:?}"));
+                }
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, 4 * 4 * (1 + 2 + 3), "every contact compared");
+    assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
+}
+
 /// Where ours may part from MuJoCo's sensors on a route pair: the distance,
-/// and the normal and fromto. The pairs of a collision function list a
-/// contact whose normal its frame has normalised a second time
-/// (`make_frame`), where MuJoCo's sensor reads the function's: with that
-/// second normalisation skipped, measured, they read MuJoCo's bit for bit.
-/// Where the plane–cylinder pair and the box's or mesh's pair with a mesh
-/// part from MuJoCo's is not isolated.
+/// and the normal and fromto. A box's or mesh's pair with the mesh: where
+/// two hull vertices tie exactly along a support direction, sim-core's hill
+/// climb and MuJoCo's return different ones; their hull graphs differ, and
+/// with MuJoCo's `mesh_graph` given, measured, bit for bit (ledger L268).
 fn route_bounds(pair: &str) -> (f64, f64) {
     match pair {
-        "sphere_sphere" | "sphere_capsule" | "sphere_cylinder" | "sphere_box"
-        | "capsule_capsule" | "capsule_box" | "plane_cylinder" => (1e-15, 1e-15),
         "box_mesh" | "mesh_mesh" => (1e-16, 1e-14),
         _ => (0.0, 0.0),
     }
@@ -1551,11 +1610,9 @@ fn route_bounds(pair: &str) -> (f64, f64) {
 /// second against the first at cutoff 1, and of the first against the
 /// second at MuJoCo's default cutoff of 0. A pair `mjc_Convex` or
 /// `mjc_BoxBox` collides through `mjc_ccd`, and every other through its
-/// collision function at the cutoff as its margin. MuJoCo's bit for bit
-/// but as `route_bounds` says; measured there: the distance 2.8e-17 at most
-/// (a mesh against a mesh), the normal and fromto 3.3e-16, but the normal
-/// 2.3e-15 for a box against a mesh. A mesh and an ellipsoid under a plane
-/// (`mjc_PlaneConvex`): bit for bit.
+/// collision function at the cutoff as its margin; a plane's pairs also
+/// under a plane turned off the axes, and under it off the origin. MuJoCo's
+/// bit for bit but as `route_bounds` says.
 #[test]
 fn geom_distance_sensors_route_as_mujoco() {
     let golden = golden();
@@ -1583,8 +1640,7 @@ fn geom_distance_sensors_route_as_mujoco() {
 
 /// The geom-distance sensors of pairs near touching, each moved until
 /// MuJoCo's distance crosses 1e-5, 1e-7 and 1e-9, on either side of the
-/// crossing: MuJoCo's bit for bit (a plane's pair within 1e-15, as
-/// `route_bounds`), the convex solver's included, which below its tolerance
+/// crossing: MuJoCo's bit for bit, the convex solver's included, which below its tolerance
 /// (1e-6) reads a negative EPA depth as MuJoCo's does (down to −0.028 at a
 /// gap under 1e-6; ledger L192). Two boxes whose distance MuJoCo's reads 0
 /// (registry `D-GJK-S3D`) read their exact distance within 1e-12.
@@ -1604,12 +1660,7 @@ fn geom_distance_sensors_near_touching_as_mujoco() {
             );
             continue;
         }
-        let bound = if name.starts_with("plane_") {
-            1e-15
-        } else {
-            0.0
-        };
-        sensors_as_mujoco(name, &ours, &want, bound, bound);
+        sensors_as_mujoco(name, &ours, &want, 0.0, 0.0);
     }
 }
 

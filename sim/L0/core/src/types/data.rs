@@ -73,10 +73,9 @@ pub struct Data {
     /// MuJoCo's `mj_transmission` skips it.
     pub actuator_length: Vec<f64>,
 
-    /// Actuator velocity (gear * transmission_velocity, length `nu`).
-    /// For Joint transmission on a hinge or slide: `gear * qvel[dof_adr]`; on a
-    /// ball or free joint, `actuator_moment · qvel`.
-    /// For Tendon transmission: `gear * ten_velocity[tendon_id]`.
+    /// Actuator velocity (length `nu`): the actuator's moment row times
+    /// `qvel`, summed as MuJoCo sums it (`mj_actuator_velocity`); 0 when
+    /// actuation is disabled.
     pub actuator_velocity: Vec<f64>,
 
     /// Actuator force output (length `nu`).
@@ -408,7 +407,8 @@ pub struct Data {
     /// Smooth unconstrained acceleration: M⁻¹·qfrc_smooth (length nv).
     /// Computed once per step by `compute_qacc_smooth()`, used by all solvers.
     pub qacc_smooth: DVector<f64>,
-    /// Smooth unconstrained force: applied + actuator + passive − bias (length nv).
+    /// Smooth unconstrained force: `((passive − bias) + applied) + actuator`,
+    /// then `xfrc_applied` projected (length nv).
     /// Computed once per step by `compute_qacc_smooth()`, used by all solvers.
     pub qfrc_smooth: DVector<f64>,
 
@@ -458,7 +458,8 @@ pub struct Data {
     /// ([`Model::is_sparse`]) each row's values at [`Self::efc_AR_rowadr`],
     /// their columns in [`Self::efc_AR_colind`], ascending. Under the implicit
     /// spring-damper integrator (this crate's) it is made over `M_impl`
-    /// instead, dense at either size, by the constraint stage.
+    /// instead, dense at either size, by the constraint stage; a dual solve
+    /// under another integrator then makes it over `M` again.
     #[allow(non_snake_case)]
     pub efc_AR: Vec<f64>,
     /// `efc_AR`'s entries in each row at the sparse size; empty when it is dense.
@@ -470,6 +471,10 @@ pub struct Data {
     /// Each sparse entry's column of `efc_AR`.
     #[allow(non_snake_case)]
     pub efc_AR_colind: Vec<usize>,
+    /// Whether `efc_AR` was made over the implicit spring-damper integrator's
+    /// `M_impl` (`project_implicit`), not over `M`.
+    #[allow(non_snake_case)]
+    pub(crate) efc_AR_implicit: bool,
     /// Per-row impedance value (from solimp sigmoid, in [dmin, dmax]).
     pub efc_imp: Vec<f64>,
     // Note: MuJoCo packs K, B, imp, and impP into a single `efc_KBIP[4*i+{0,1,2,3}]`
@@ -938,6 +943,7 @@ impl Clone for Data {
             efc_AR_rownnz: self.efc_AR_rownnz.clone(),
             efc_AR_rowadr: self.efc_AR_rowadr.clone(),
             efc_AR_colind: self.efc_AR_colind.clone(),
+            efc_AR_implicit: self.efc_AR_implicit,
             efc_imp: self.efc_imp.clone(),
             efc_aref: self.efc_aref.clone(),
             efc_floss: self.efc_floss.clone(),

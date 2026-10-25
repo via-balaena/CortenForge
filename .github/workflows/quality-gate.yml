@@ -28,6 +28,9 @@
 #   `grade`: on a foundational `sim-core` PR the affected set is nearly the full
 #   crate list, making this the COMPILE-bound long pole, so the heavy GUI dep
 #   tree (Bevy) is isolated on one shard so it compiles once.
+# - `conformance-macos` (macos-26 arm64, --release): sim-conformance-tests on
+#   the parity goldens' platform, the only job that runs their bit-for-bit
+#   branch (see the job's note).
 # - `tests-release` (ubuntu, default features, --release): authoritative
 #   test gate for the crates whose heavy stochastic-physics integration
 #   tests (90M–600M-step Boltzmann/CEM/REINFORCE/SA validators) run 5–10×
@@ -1046,6 +1049,62 @@ jobs:
         shell: bash
 
   # ============================================================================
+  # CONFORMANCE ON macOS arm64 — the parity goldens' own platform
+  # ============================================================================
+  # Every parity golden is made by the unfused MuJoCo 3.5.0 oracle on macOS
+  # arm64; most of their checks are bit for bit there and within a tolerance
+  # elsewhere. The Linux release shard runs the tolerance branch; this job
+  # runs the bit-for-bit one, which no other job reaches. The goldens were
+  # made on macOS 27.0.1. The label is pinned to macos-26 (what macos-latest
+  # named on 2026-10-24); GitHub still updates the image under it, so the job
+  # prints the image's macOS. Whether its libm rounds every value as
+  # 27.0.1's does is shown by the job's runs. It refuses a runner that is not arm64, where
+  # the bit-for-bit branch would not run. PR-scoped to sim-conformance-tests;
+  # always runs, so it is never a skipped required check.
+  conformance-macos:
+    name: Conformance (release, macOS arm64)
+    runs-on: macos-26
+    timeout-minutes: 60
+    needs: [affected]
+    if: ${{ !cancelled() }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+
+      - name: Refuse a runner that is not arm64
+        run: |
+          arch=$(uname -m)
+          echo "runner: $(uname -s) $arch, macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+          if [ "$arch" != arm64 ]; then
+            echo "::error::the bit-for-bit branch runs on macOS arm64 only; this runner is $arch"
+            exit 1
+          fi
+        shell: bash
+
+      - name: Select affected packages
+        env:
+          AFFECTED_RESULT: ${{ needs.affected.result }}
+          AFFECTED_FULL: ${{ needs.affected.outputs.needs_full }}
+          AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          PKGS=$(bash .github/scripts/affected-packages.sh "sim-conformance-tests")
+          echo "PKGS=$PKGS" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Run the conformance suite in release
+        if: env.PKGS != ''
+        run: cargo test --release --no-fail-fast $PKGS
+        shell: bash
+
+  # ============================================================================
   # FEATURE COMBOS - Non-default feature paths
   # ============================================================================
   # Default-features tests run in `tests-debug` + `tests-release`; this job
@@ -1574,7 +1633,7 @@ jobs:
 
   quality-gate:
     name: Quality Gate
-    needs: [format, ci-scripts, doc-theft, census-append-only, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates, publish-dry-run]
+    needs: [format, ci-scripts, doc-theft, census-append-only, grade, tests-debug, tests-release, cross-os, conformance-macos, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates, publish-dry-run]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -540,8 +540,8 @@ impl MjSensorType {
     #[must_use]
     pub const fn data_kind(self) -> MjSensorDataKind {
         match self {
-            // POSITIVE: non-negative sensors (preserve negative sentinels)
-            Self::Touch | Self::Rangefinder => MjSensorDataKind::Positive,
+            // POSITIVE: clipped above by the cutoff, not below
+            Self::Touch => MjSensorDataKind::Positive,
 
             // QUATERNION: unit quaternions
             Self::BallQuat | Self::FrameQuat => MjSensorDataKind::Quaternion,
@@ -576,7 +576,7 @@ pub enum SensorStage {
 /// MuJoCo's `sensor_datatype` stores the data kind (`mjDATATYPE_REAL`, etc.),
 /// which controls how `apply_cutoff()` clamps sensor values:
 /// - `Real` → `clamp(-cutoff, cutoff)` (symmetric)
-/// - `Positive` → `min(cutoff, value)` (preserves negative sentinels like -1.0)
+/// - `Positive` → `min(cutoff, value)` (preserves negative values)
 /// - `Axis` / `Quaternion` → no clamping (normalized vectors/quaternions
 ///   should not be clamped to a magnitude range)
 ///

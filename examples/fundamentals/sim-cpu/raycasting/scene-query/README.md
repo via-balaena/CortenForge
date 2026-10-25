@@ -5,7 +5,8 @@ point. `raycast_scene` returns the nearest hit across all geoms for each
 ray. The result is a LIDAR-like distance scan of the scene.
 
 **One concept:** `raycast_scene` with body exclusion and geom group
-filtering — the scene-level query that rangefinder sensors use internally.
+filtering — the scene-level query. (A rangefinder sensor casts MuJoCo's
+`mj_ray` instead, which skips a geom whose alpha is 0 and reads no group.)
 
 ## What you see
 

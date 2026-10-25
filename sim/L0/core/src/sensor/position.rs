@@ -12,7 +12,7 @@ use crate::types::{
     DISABLE_SENSOR, Data, ENABLE_SLEEP, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
     Model, SensorStage,
 };
-use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
+use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 
 /// Resolve position and rotation matrix for a reference object.
 /// Mirrors MuJoCo's `get_xpos_xmat()` dispatch.
@@ -245,31 +245,14 @@ pub fn compute_pos_sensor(model: &Model, data: &mut Data, sensor_id: usize) {
                     data.site_xmat[objid][(2, 2)],
                 );
 
-                let ray_norm = site_z.norm();
-                if ray_norm < 1e-10 {
-                    sensor_write(&mut data.sensordata, adr, 0, -1.0);
-                } else {
-                    let ray_direction = UnitVector3::new_normalize(site_z);
-                    let max_range = if model.sensor_cutoff[sensor_id] > 0.0 {
-                        model.sensor_cutoff[sensor_id]
-                    } else {
-                        100.0
-                    };
-                    let parent_body = model.site_body[objid];
-
-                    let closest_dist = crate::raycast::raycast_scene(
-                        model,
-                        data,
-                        ray_origin,
-                        ray_direction,
-                        max_range,
-                        Some(parent_body),
-                        None,
-                    )
-                    .map_or(-1.0, |r| r.hit.distance);
-
-                    sensor_write(&mut data.sensordata, adr, 0, closest_dist);
-                }
+                let dist = super::ray_geom::mj_ray(
+                    model,
+                    data,
+                    &ray_origin.coords,
+                    &site_z,
+                    model.site_body[objid],
+                );
+                sensor_write(&mut data.sensordata, adr, 0, dist);
             } else {
                 sensor_write(&mut data.sensordata, adr, 0, -1.0);
             }

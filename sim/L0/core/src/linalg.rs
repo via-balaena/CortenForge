@@ -81,6 +81,33 @@ pub(crate) fn dot_sparse(vec1: &[f64], vec2: impl Fn(usize) -> f64) -> f64 {
     res
 }
 
+/// [`dot_sparse`] over `(column, value)` entries, `Σ value·vec[column]` in
+/// `mju_dotSparse`'s grouping: the entries in fours, the last one to three one
+/// by one. One pass: a group's products are held until its fourth arrives.
+pub(crate) fn dot_sparse_entries(entries: impl Iterator<Item = (usize, f64)>, vec: &[f64]) -> f64 {
+    let mut s = [0.0_f64; 4];
+    let mut held = [0.0_f64; 3];
+    let mut k = 0;
+    for (c, v) in entries {
+        let product = v * vec[c];
+        if k == 3 {
+            s[0] += held[0];
+            s[1] += held[1];
+            s[2] += held[2];
+            s[3] += product;
+            k = 0;
+        } else {
+            held[k] = product;
+            k += 1;
+        }
+    }
+    let mut res = (s[0] + s[2]) + (s[1] + s[3]);
+    for product in &held[..k] {
+        res += product;
+    }
+    res
+}
+
 /// `‖v‖` in MuJoCo's order (`mju_norm` = `sqrt(mju_dot)`,
 /// `engine_util_blas.c:698-765`): four interleaved sums of squares, added as
 /// `(r0 + r2) + (r1 + r3)`, then the remaining one to three left to right.

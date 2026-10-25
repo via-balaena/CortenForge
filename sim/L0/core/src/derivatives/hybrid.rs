@@ -21,9 +21,9 @@ use crate::dynamics::spatial::{
     spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::forward::{
-    MjStage, acts_through_moment, actuator_ctrl_input, ellipsoid_moment, fluid_geom_semi_axes,
-    hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation, muscle_f0,
-    muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
+    MjStage, MomentRows, acts_through_moment, actuator_ctrl_input, ellipsoid_moment,
+    fluid_geom_semi_axes, hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation,
+    muscle_f0, muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
 };
 use crate::forward::{mj_implicit_factor, mj_implicit_solve, solve_implicit};
 use crate::integrate::eulerdamp_applies;
@@ -355,19 +355,17 @@ fn forward_pass_input(model: &Model, data: &Data, i: usize, bad: bool) -> f64 {
 ///   force = gain(L, V) · input + bias(L, V)
 ///   ∂force/∂V = (∂gain/∂V) · input + (∂bias/∂V)
 ///
-/// The velocity V maps to qvel through the transmission:
-///   Joint on a hinge or slide: `V = gear · qvel[dof_adr]`
-///   Tendon: V = gear · J · qvel
-///   Site, body, slider-crank, joint on a ball or free joint: V = moment^T · qvel
-///
-/// Combined: ∂qfrc/∂qvel += moment · ∂force/∂V · moment^T
+/// V is the moment row times qvel, so `∂qfrc/∂qvel += moment · ∂force/∂V ·
+/// moment^T`, added as MuJoCo's `addJTBJSparse` adds it
+/// (`engine_derivative.c:746-775`): over the row's stored entries
+/// (`MomentRows::entries`), entry `(k, p)` takes `J(p) · (J(k) · ∂force/∂V)`.
 ///
 /// Supports all gain/bias types including Muscle and HillMuscle (DT-54).
 /// For muscle actuators, the velocity derivative is computed from the
 /// piecewise FLV curve gradient (force-velocity derivative).
 #[allow(non_snake_case)]
 pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
-    // As MuJoCo's `mjd_actuator_vel` (`engine_derivative.c:1066-1146`).
+    // As MuJoCo's `mjd_actuator_vel` (`engine_derivative.c:1071-1146`).
     for i in 0..model.nu {
         if actuator_left_out(model, data, i) {
             continue;
@@ -376,58 +374,24 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         let Some(dforce_dv) = actuator_dforce_dv(model, data, i, input) else {
             continue;
         };
-        if dforce_dv.abs() < 1e-30 {
+        // MuJoCo adds every actuator whose derivative is not 0 (`:1142`).
+        if dforce_dv == 0.0 {
             continue;
         }
-
-        let gear = model.actuator_gear[i][0];
-        let trnid = model.actuator_trnid[i][0];
-
-        match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent
-                if !acts_through_moment(model, i) =>
-            {
-                let dof_adr = model.jnt_dof_adr[trnid];
-                // moment = gear, ∂V/∂qvel[dof] = gear
-                // ∂qfrc[dof]/∂qvel[dof] += gear² · ∂force/∂V
-                data.qDeriv[(dof_adr, dof_adr)] += gear * gear * dforce_dv;
-            }
-            ActuatorTransmission::Tendon => {
-                let j = &data.ten_J[trnid];
-                // moment = gear · J^T, ∂V/∂qvel = gear · J
-                // ∂qfrc/∂qvel += gear² · ∂force/∂V · J^T · J
-                let scale = gear * gear * dforce_dv;
-                for r in 0..model.nv {
-                    if j[r] == 0.0 {
-                        continue;
-                    }
-                    for c in 0..model.nv {
-                        if j[c] == 0.0 {
-                            continue;
-                        }
-                        data.qDeriv[(r, c)] += scale * j[r] * j[c];
-                    }
-                }
-            }
-            ActuatorTransmission::Joint
-            | ActuatorTransmission::JointInParent
-            | ActuatorTransmission::Site
-            | ActuatorTransmission::Body
-            | ActuatorTransmission::SliderCrank => {
-                let moment = &data.actuator_moment[i];
-                // moment is nv-dim, ∂V/∂qvel = moment
-                // ∂qfrc/∂qvel += ∂force/∂V · moment · moment^T
-                for r in 0..model.nv {
-                    if moment[r] == 0.0 {
-                        continue;
-                    }
-                    for c in 0..model.nv {
-                        if moment[c] == 0.0 {
-                            continue;
-                        }
-                        data.qDeriv[(r, c)] += dforce_dv * moment[r] * moment[c];
-                    }
-                }
+        // A sleeping actuator was left out above.
+        let rows = MomentRows {
+            moment: &data.actuator_moment,
+            ten_j: &data.ten_J,
+            ten_j_colind: &data.ten_J_colind,
+            ten_j_rownnz: &data.ten_J_rownnz,
+        };
+        let Some(entries) = rows.entries(model, i, false) else {
+            continue;
+        };
+        for (k, mk) in entries.clone() {
+            let scl = mk * dforce_dv;
+            for (p, mp) in entries.clone() {
+                data.qDeriv[(k, p)] += mp * scl;
             }
         }
     }
@@ -840,8 +804,8 @@ pub fn mjd_rne_vel(model: &Model, data: &mut Data) {
 /// `qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias`
 ///
 /// Populates `data.qDeriv` with three analytical contributions:
-///   1. ∂(passive)/∂qvel via `mjd_passive_vel()`
-///   2. ∂(actuator)/∂qvel via `mjd_actuator_vel()`
+///   1. ∂(actuator)/∂qvel via `mjd_actuator_vel()`
+///   2. ∂(passive)/∂qvel via `mjd_passive_vel()`
 ///   3. −∂(bias)/∂qvel via `mjd_rne_vel()`
 ///
 /// # Preconditions
@@ -854,15 +818,16 @@ pub fn mjd_smooth_vel(model: &Model, data: &mut Data) {
 }
 
 /// [`mjd_smooth_vel`], the RNE's term only with `flg_bias`, as MuJoCo's
-/// `mjd_smooth_vel` (`engine_derivative.c:1792-1812`): the implicit
+/// `mjd_smooth_vel` (`engine_derivative.c:1792-1812`), its terms added in
+/// MuJoCo's order (the actuators', the passive forces', the RNE's): the implicit
 /// integrators' factor and the discrete inverse dynamics take it with
 /// `flg_bias` under implicit, without it under implicitfast. Every row is
 /// cleared first (MuJoCo clears the awake rows only, registry
 /// `D-QDERIV-SLEEP`).
 pub fn mjd_smooth_vel_bias(model: &Model, data: &mut Data, flg_bias: bool) {
     data.qDeriv.fill(0.0);
-    mjd_passive_vel(model, data);
     mjd_actuator_vel(model, data);
+    mjd_passive_vel(model, data);
     if flg_bias {
         mjd_rne_vel(model, data);
     }
