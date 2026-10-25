@@ -721,6 +721,10 @@ mod mujoco_factor_tests {
         let row5 = M_ROWADR[5]..M_ROWADR[5] + M_ROWNNZ[5];
         assert_bits("row 5 left out", &part[row5.clone()], &QH_IN[row5]);
         assert_eq!(part_inv[5].to_bits(), 0.0_f64.to_bits());
+        assert!(
+            whole[10..15].iter().all(|x| x.is_finite()),
+            "row 4 is finite"
+        );
         assert_bits("row 4", &part[10..15], &whole[10..15]);
     }
 }

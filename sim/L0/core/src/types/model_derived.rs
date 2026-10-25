@@ -310,6 +310,7 @@ mod bounds_tests {
         model.add_ground_plane();
         let appended = model.geom_aabb[0];
         model.compute_geom_bounding_radii();
+        assert!(appended.iter().all(|x| x.is_finite()), "{appended:?}");
         assert_eq!(
             appended.map(f64::to_bits),
             model.geom_aabb[0].map(f64::to_bits)

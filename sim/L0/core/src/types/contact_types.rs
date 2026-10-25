@@ -435,6 +435,7 @@ mod tests {
             let (_, seeded) = make_frame(&normal, &Vector3::z());
             let bits = |v: &Vector3<f64>| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
             for k in 0..2 {
+                assert!(frame[k].iter().all(|x| x.is_finite()), "y {y}: tangent {k}");
                 assert_eq!(bits(&frame[k]), bits(&seeded[k]), "y {y}: tangent {k}");
             }
             let (_, other) = make_frame(&normal, &Vector3::y());

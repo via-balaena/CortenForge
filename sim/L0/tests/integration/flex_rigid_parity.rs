@@ -237,6 +237,12 @@ fn a_signed_distance_field_meets_each_flex_vertex() {
             .map(|c| (c.vert[1], c.depth.to_bits(), c.pos.map(f64::to_bits).into()))
             .collect()
     };
+    assert!(
+        data.contacts
+            .iter()
+            .all(|c| c.depth.is_finite() && c.pos.iter().all(|x| x.is_finite())),
+        "the contacts are finite"
+    );
     assert_eq!(key(&data), key(&all_to_all), "the midphase on and off");
     for midphase in [true, false] {
         let (_, missed) = cloth_over_a_sphere(midphase, r#"contype="2" conaffinity="2""#);

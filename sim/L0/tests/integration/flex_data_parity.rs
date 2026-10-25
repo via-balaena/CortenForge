@@ -281,6 +281,12 @@ fn a_tetrahedral_flex_with_no_active_layer_loads() {
     };
     let midphase = listed("");
     assert!(!midphase.is_empty(), "the sphere meets the element");
+    assert!(
+        midphase.iter().all(|(_, depth, pos)| {
+            f64::from_bits(*depth).is_finite() && pos.iter().all(|&b| f64::from_bits(b).is_finite())
+        }),
+        "the contacts are finite"
+    );
     assert_eq!(
         midphase,
         listed(r#"midphase="disable""#),

@@ -170,7 +170,13 @@ fn one_pass_a_step_is_the_same_as_a_pass_a_dispatch() {
             ]
             .concat()
         };
-        assert!(bits(&one) == bits(&each), "{}: the runs differ", f.name);
+        let one_bits = bits(&one);
+        assert!(
+            one_bits.iter().all(|&b| f64::from_bits(b).is_finite()),
+            "{}: the run is finite",
+            f.name
+        );
+        assert!(one_bits == bits(&each), "{}: the runs differ", f.name);
     }
 }
 
@@ -429,6 +435,12 @@ fn reading_every_step_or_every_hundred_gives_the_same_run() {
     };
     let (every, hundred) = (run(1), run(100));
     assert!(hundred.2 > super::super::LOG_ROWS_AT_START, "the log grew");
+    assert!(
+        snapshot_bits(&every.0)
+            .iter()
+            .all(|&b| f64::from_bits(b).is_finite()),
+        "the state is finite"
+    );
     assert!(
         snapshot_bits(&every.0) == snapshot_bits(&hundred.0),
         "the state differs"

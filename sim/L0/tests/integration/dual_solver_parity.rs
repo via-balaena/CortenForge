@@ -406,6 +406,7 @@ fn a_forward_from_the_velocity_stage_after_an_inverse_makes_efc_ar() {
         data.forward_skip(&model, MjStage::Pos, false)
             .expect("forward from the velocity stage");
         let skipped: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
+        assert!(data.qacc.iter().all(|x| x.is_finite()), "{option}: qacc");
         assert_eq!(skipped, full, "{option}: qacc");
     }
 }
@@ -451,6 +452,10 @@ fn a_forward_from_the_velocity_stage_after_the_implicit_spring_damper_remakes_ef
             let copied: Vec<u64> = copy.qacc.iter().map(|x| x.to_bits()).collect();
             data.forward(&model).expect("forward under Euler");
             let full: Vec<u64> = data.qacc.iter().map(|x| x.to_bits()).collect();
+            assert!(
+                data.qacc.iter().all(|x| x.is_finite()),
+                "{option} {qvel:?}: qacc"
+            );
             assert_eq!(skipped, full, "{option} {qvel:?}: qacc");
             assert_eq!(copied, full, "{option} {qvel:?}: the clone's qacc");
         }

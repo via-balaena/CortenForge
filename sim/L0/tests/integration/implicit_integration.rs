@@ -1277,6 +1277,7 @@ fn implicitspringdamper_integrate_adds_h_qacc_to_the_current_qvel() {
     data.qpos[0] = 0.1;
     data.forward(&model).expect("forward");
     let qacc = data.qacc[0];
+    assert!(qacc.is_finite(), "qacc {qacc}");
     data.qvel[0] += 1.0;
     data.integrate(&model).expect("integrate");
     assert_eq!(data.qvel[0].to_bits(), (1.0 + qacc * 0.01).to_bits());
@@ -2332,6 +2333,7 @@ fn euler_eulerdamp_leaves_the_mass_matrix_as_computed() {
     data.qvel[1] = -0.4;
     data.forward(&model).expect("forward");
     let mass = data.qM.clone();
+    assert!(mass.iter().all(|x| x.is_finite()), "qM is finite");
     data.integrate(&model).expect("integrate");
     for (i, (a, b)) in data.qM.iter().zip(mass.iter()).enumerate() {
         assert_eq!(

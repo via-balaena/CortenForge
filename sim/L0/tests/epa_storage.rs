@@ -111,9 +111,14 @@ fn sphere_on_an_ellipsoid(z: f64) -> String {
 /// scene, as `gen_collision_reference.py`'s `mujoco_arena_limits` asserts).
 #[test]
 fn epa_storage_grows_with_use_not_with_ccd_iterations() {
+    let small = forward_on_a_new_thread(ellipsoid_in_a_box(35), 0);
+    assert!(
+        small.1.iter().all(|&b| f64::from_bits(b).is_finite()),
+        "the contact is finite"
+    );
     assert_eq!(
         forward_on_a_new_thread(ellipsoid_in_a_box(1_000_000), 0),
-        forward_on_a_new_thread(ellipsoid_in_a_box(35), 0)
+        small
     );
 }
 

@@ -4858,6 +4858,7 @@ fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
             derivative(&b_asleep, true, [true, false]),
         ),
     ] {
+        assert!(on.iter().all(|x| x.is_finite()), "{name}: qDeriv_pos");
         assert_eq!(
             on.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
             off.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),

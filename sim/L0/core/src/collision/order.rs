@@ -186,6 +186,10 @@ mod tests {
         let (normal, frame) = make_frame(&-raw, &Vector3::zeros());
         let bits = |v: &Vector3<f64>| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
         assert_eq!(bits(&contact.normal), bits(&normal));
+        assert!(
+            frame.iter().all(|t| t.iter().all(|x| x.is_finite())),
+            "{frame:?}"
+        );
         assert_eq!(bits(&contact.frame[0]), bits(&frame[0]));
         assert_eq!(bits(&contact.frame[1]), bits(&frame[1]));
         assert!(
