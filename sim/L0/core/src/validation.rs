@@ -59,6 +59,7 @@ pub struct PeriodTracker {
     last_time: f64,
     initialized: bool,
     crossings: Vec<f64>,
+    saw_nan: bool,
 }
 
 impl PeriodTracker {
@@ -70,6 +71,7 @@ impl PeriodTracker {
             last_time: 0.0,
             initialized: false,
             crossings: Vec::new(),
+            saw_nan: false,
         }
     }
 
@@ -78,7 +80,9 @@ impl PeriodTracker {
     /// Gracefully handles edge cases:
     /// - Time going backwards (sim reset): sample is skipped.
     /// - First call: stores initial state, no crossing possible.
+    /// - A NaN value or time: [`Self::check`] fails from then on.
     pub fn sample(&mut self, value: f64, time: f64) {
+        self.saw_nan |= value.is_nan() || time.is_nan();
         if !self.initialized {
             self.last_value = value;
             self.last_time = time;
@@ -128,10 +132,17 @@ impl PeriodTracker {
 
     /// Check measured period against expected, with a percentage threshold.
     ///
-    /// Returns a failing check with descriptive detail if fewer than 2
-    /// crossings were recorded.
+    /// Returns a failing check with descriptive detail if a NaN was sampled
+    /// or fewer than 2 crossings were recorded.
     #[must_use]
     pub fn check(&self, expected: f64, threshold_pct: f64) -> Check {
+        if self.saw_nan {
+            return Check {
+                name: "Period",
+                pass: false,
+                detail: "a NaN sample".to_string(),
+            };
+        }
         match self.measured_period() {
             Some(measured) => {
                 let err_pct = ((measured - expected) / expected).abs() * 100.0;
@@ -184,14 +195,12 @@ impl EnergyMonotonicityTracker {
         }
     }
 
-    /// Feed a new energy sample. Call once per frame.
+    /// Feed a new energy sample. Call once per frame. A NaN energy makes
+    /// [`Self::max_increase`] NaN, which fails the check.
     pub fn sample(&mut self, energy: f64) {
-        if let Some(prev) = self.prev {
-            let increase = energy - prev;
-            if increase > self.max_increase {
-                self.max_increase = increase;
-            }
-        }
+        // The first sample's increase is over itself: 0, or NaN for a NaN.
+        let increase = energy - self.prev.unwrap_or(energy);
+        self.max_increase = max_or_nan(self.max_increase, increase);
         self.prev = Some(energy);
     }
 
@@ -239,12 +248,11 @@ impl LimitTracker {
         Self { max_violation: 0.0 }
     }
 
-    /// Feed a new position sample with the allowed range `[lo, hi]`.
+    /// Feed a new position sample with the allowed range `[lo, hi]`. A NaN
+    /// makes [`Self::max_violation`] NaN, which fails the check.
     pub fn sample(&mut self, value: f64, lo: f64, hi: f64) {
-        let violation = (value - hi).max(lo - value).max(0.0);
-        if violation > self.max_violation {
-            self.max_violation = violation;
-        }
+        let violation = max_or_nan(max_or_nan(value - hi, lo - value), 0.0);
+        self.max_violation = max_or_nan(self.max_violation, violation);
     }
 
     /// The largest violation observed (in meters or radians).
@@ -292,12 +300,11 @@ impl QuaternionNormTracker {
     }
 
     /// Feed a quaternion sample (w, x, y, z). Call once per frame per joint.
+    /// A NaN component makes [`Self::max_deviation`] NaN, which fails the
+    /// check.
     pub fn sample(&mut self, w: f64, x: f64, y: f64, z: f64) {
         let norm = (w * w + x * x + y * y + z * z).sqrt();
-        let deviation = (norm - 1.0).abs();
-        if deviation > self.max_deviation {
-            self.max_deviation = deviation;
-        }
+        self.max_deviation = max_or_nan(self.max_deviation, (norm - 1.0).abs());
     }
 
     /// The largest deviation of `‖q‖` from 1.0 observed.
@@ -350,14 +357,12 @@ impl EnergyConservationTracker {
     }
 
     /// Feed a new energy sample. The first sample sets the reference value.
+    /// A NaN energy makes [`Self::max_drift`] NaN, which fails the check.
     pub fn sample(&mut self, energy: f64) {
         match self.initial {
             None => self.initial = Some(energy),
             Some(initial) => {
-                let drift = (energy - initial).abs();
-                if drift > self.max_drift {
-                    self.max_drift = drift;
-                }
+                self.max_drift = max_or_nan(self.max_drift, (energy - initial).abs());
             }
         }
     }
@@ -513,6 +518,44 @@ pub fn quat_rotation_angle(w: f64, x: f64, y: f64, z: f64) -> f64 {
     2.0 * sin_half.atan2(w.abs())
 }
 
+// ── NaN-propagating extremes ──────────────────────────────────────────────────
+
+/// The larger of `a` and `b`, or NaN when either is NaN.
+///
+/// `f64::max` returns the other operand when one is NaN, so a check that
+/// folds its measurements with `f64::max` drops a NaN and can pass. Folded
+/// with this one, a NaN reaches the check, and `max < tol` fails on it.
+#[inline]
+#[must_use]
+pub fn max_or_nan(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
+/// The smaller of `a` and `b`, or NaN when either is NaN: [`max_or_nan`] for
+/// `f64::min`.
+#[inline]
+#[must_use]
+pub fn min_or_nan(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.min(b)
+    }
+}
+
+/// The largest absolute value, `0.0` for none, or NaN when any value is NaN.
+///
+/// nalgebra's `amax` drops a NaN as `f64::max` does. Takes a matrix, vector
+/// or slice by reference: `max_abs_or_nan(&(&a - &b))`.
+#[must_use]
+pub fn max_abs_or_nan<'a>(values: impl IntoIterator<Item = &'a f64>) -> f64 {
+    values.into_iter().fold(0.0, |m, v| max_or_nan(m, v.abs()))
+}
+
 // ── Report formatting ───────────────────────────────────────────────────────
 
 /// Print a formatted validation report and return whether all checks passed.
@@ -556,6 +599,7 @@ pub fn all_passed(checks: &[Check]) -> bool {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -823,5 +867,83 @@ mod tests {
             },
         ];
         assert!(!all_passed(&checks_fail));
+    }
+
+    #[test]
+    fn max_or_nan_and_min_or_nan_keep_a_nan_that_std_drops() {
+        for (a, b) in [(f64::NAN, 1.0), (1.0, f64::NAN), (f64::NAN, f64::NAN)] {
+            assert!(max_or_nan(a, b).is_nan(), "max_or_nan({a}, {b})");
+            assert!(min_or_nan(a, b).is_nan(), "min_or_nan({a}, {b})");
+        }
+        assert_eq!(f64::NAN.max(1.0), 1.0, "f64::max drops a NaN");
+        assert_eq!(f64::NAN.min(1.0), 1.0, "f64::min drops a NaN");
+        assert_eq!(max_or_nan(-2.0, 3.0), 3.0);
+        assert_eq!(min_or_nan(-2.0, 3.0), -2.0);
+        assert_eq!(max_or_nan(f64::INFINITY, 3.0), f64::INFINITY);
+    }
+
+    #[test]
+    fn max_abs_or_nan_keeps_a_nan_that_amax_drops() {
+        let m = nalgebra::DMatrix::from_row_slice(2, 2, &[1.0, -4.0, f64::NAN, 2.0]);
+        assert_eq!(m.amax(), 4.0, "nalgebra's amax drops a NaN");
+        assert!(max_abs_or_nan(&m).is_nan());
+        let finite = nalgebra::DMatrix::from_row_slice(2, 2, &[1.0, -4.0, 3.0, 2.0]);
+        assert_eq!(max_abs_or_nan(&finite), 4.0);
+        assert_eq!(max_abs_or_nan(&[] as &[f64]), 0.0);
+    }
+
+    #[test]
+    fn a_nan_sample_fails_every_tracker_that_records_an_extreme() {
+        let mut energy = EnergyMonotonicityTracker::new();
+        energy.sample(10.0);
+        energy.sample(f64::NAN);
+        energy.sample(9.0);
+        assert!(!energy.check(1.0).pass, "{}", energy.check(1.0).detail);
+        let mut first = EnergyMonotonicityTracker::new();
+        first.sample(f64::NAN);
+        assert!(!first.check(1.0).pass, "a NaN first sample");
+
+        let mut limits = LimitTracker::new();
+        limits.sample(0.0, -1.0, 1.0);
+        limits.sample(f64::NAN, -1.0, 1.0);
+        limits.sample(0.5, -1.0, 1.0);
+        assert!(!limits.check(0.001).pass, "{}", limits.check(0.001).detail);
+
+        let mut quat = QuaternionNormTracker::new();
+        quat.sample(1.0, 0.0, 0.0, 0.0);
+        quat.sample(f64::NAN, 0.0, 0.0, 0.0);
+        quat.sample(1.0, 0.0, 0.0, 0.0);
+        assert!(!quat.check(1e-10).pass, "{}", quat.check(1e-10).detail);
+
+        let mut conserved = EnergyConservationTracker::new();
+        conserved.sample(10.0);
+        conserved.sample(f64::NAN);
+        conserved.sample(10.0);
+        assert!(
+            !conserved.check(0.5).pass,
+            "{}",
+            conserved.check(0.5).detail
+        );
+    }
+
+    #[test]
+    fn a_nan_sample_fails_the_period_check() {
+        let sine = |nan_at: Option<i32>| {
+            let mut t = PeriodTracker::new();
+            for i in 0..500 {
+                let time = f64::from(i) * 0.01;
+                let value = if Some(i) == nan_at {
+                    f64::NAN
+                } else {
+                    (2.0 * std::f64::consts::PI * time).sin()
+                };
+                t.sample(value, time);
+            }
+            t.check(1.0, 2.0)
+        };
+        assert!(sine(None).pass, "{}", sine(None).detail);
+        let check = sine(Some(250));
+        assert!(!check.pass);
+        assert!(check.detail.contains("NaN"), "{}", check.detail);
     }
 }
