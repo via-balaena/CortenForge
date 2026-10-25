@@ -17,6 +17,7 @@ mod conformance;
 mod fixtures;
 mod gates;
 
+use sim_core::validation::max_or_nan;
 use sim_soft_explicit::executor::{Monitors, PhaseOutputs, Snapshot};
 
 use crate::context::GpuContext;
@@ -32,8 +33,8 @@ fn relative_difference(a: &[f64], b: &[f64]) -> f64 {
     assert_eq!(a.len(), b.len(), "arrays of different lengths");
     let (mut difference, mut largest) = (0.0_f64, 0.0_f64);
     for (x, y) in a.iter().zip(b) {
-        difference = difference.max((x - y).abs());
-        largest = largest.max(x.abs()).max(y.abs());
+        difference = max_or_nan(difference, (x - y).abs());
+        largest = max_or_nan(max_or_nan(largest, x.abs()), y.abs());
     }
     if largest == 0.0 {
         difference

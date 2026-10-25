@@ -65,6 +65,7 @@ use sim_core::test_fixtures::conformance::{
     contact_tiny_facet_case,
 };
 use sim_core::types::{Data, Model};
+use sim_core::validation::{max_abs_or_nan, max_or_nan};
 
 use super::constraint::GpuConstraintPipeline;
 use super::crba::GpuCrbaPipeline;
@@ -347,7 +348,7 @@ fn compare_constraint_env(
     // against this nonzero CPU one is a real divergence (recorded below), not a
     // vacuous run, so it must not panic here.
     assert!(
-        oracle.qfrc_constraint.iter().any(|v| v.abs() > 1e-6),
+        max_abs_or_nan(&oracle.qfrc_constraint) > 1e-6,
         "[{case} env{env}] CPU oracle qfrc_constraint is all-zero — the fixture is vacuous."
     );
 
@@ -646,7 +647,9 @@ fn gpu_batched_constraint_matches_cpu() {
             .qacc
             .iter()
             .zip(&oracle1.qacc)
-            .any(|(a, b)| (a - b).abs() > 1e-4);
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, max_or_nan)
+            > 1e-4;
         assert!(
             differ,
             "[{}] env 0 and env 1 oracles are near-identical — the batched check \
@@ -787,11 +790,11 @@ fn run_rollout(
 
 /// Largest absolute element-wise difference between a GPU f32 vector and the CPU
 /// f64 reference.
-fn max_abs_diff(gpu: &[f32], cpu: &[f64]) -> f32 {
+fn max_abs_diff(gpu: &[f32], cpu: &[f64]) -> f64 {
     gpu.iter()
         .zip(cpu.iter())
-        .map(|(&g, &c)| (g - c as f32).abs())
-        .fold(0.0_f32, f32::max)
+        .map(|(&g, &c)| f64::from((g - c as f32).abs()))
+        .fold(0.0, max_or_nan)
 }
 
 /// Run a frozen-contact resting rollout for one case on both engines and record
@@ -830,23 +833,23 @@ fn check_rollout_case(ctx: &GpuContext, case: &ContactConformanceCase, fails: &m
     // degenerates to free-flight, not the contact path under test.
     let engaged = cpu_steps
         .iter()
-        .all(|s| s.qfrc_constraint.iter().any(|v| v.abs() > 1e-6));
+        .all(|s| max_abs_or_nan(&s.qfrc_constraint) > 1e-6);
     assert!(
         engaged,
         "[{}] CPU rollout disengaged from contact — fixture is vacuous.",
         case.name
     );
 
-    let mut max_seen = 0.0_f32;
+    let mut max_seen = 0.0_f64;
     for (step, (gpu, cpu)) in traj.iter().zip(cpu_steps.iter()).enumerate() {
         let (gpu_qpos, gpu_qvel) = gpu;
         let dq = max_abs_diff(gpu_qpos, &cpu.qpos);
         let dv = max_abs_diff(gpu_qvel, &cpu.qvel);
-        let drift = dq.max(dv);
-        max_seen = max_seen.max(drift);
+        let drift = max_or_nan(dq, dv);
+        max_seen = max_or_nan(max_seen, drift);
 
         let budget = BASE_TOL + DRIFT_PER_STEP * step as f32;
-        if !(drift < budget) {
+        if !(drift < f64::from(budget)) {
             fails.push(format!(
                 "[{}] step {step}: drift {drift:.3e} ≥ budget {budget:.3e} \
                  (dqpos={dq:.3e}, dqvel={dv:.3e})",

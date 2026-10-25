@@ -46,6 +46,7 @@
 const _: () = ();
 
 use nalgebra::DVector;
+use sim_core::validation::max_or_nan;
 
 use sim_core::mj_integrate_pos_explicit;
 use sim_core::test_fixtures::conformance::{
@@ -416,7 +417,9 @@ fn compare_env_fields(
     assert!(
         gpu_cvel[off_b * 2..(off_b + nbody) * 2]
             .iter()
-            .any(|v| v[0].abs() + v[1].abs() + v[2].abs() > 1e-4),
+            .map(|v| f64::from(v[0].abs() + v[1].abs() + v[2].abs()))
+            .fold(0.0, max_or_nan)
+            > 1e-4,
         "[{name}] env{env} cvel is all-zero on the GPU — velocity FK did not run; \
          the conformance check would be vacuous."
     );

@@ -4,6 +4,7 @@
 
 #![cfg(test)]
 
+use sim_core::validation::min_or_nan;
 use sim_soft_explicit::executor::{Obstacle, PhaseOutputs, Snapshot};
 use sim_soft_explicit::f64::{Material, Pose, SdfGridLayout};
 use sim_soft_explicit::fixtures::grid::bricks;
@@ -612,7 +613,7 @@ pub fn margins(fixture: &Fixture, before: &Snapshot, outputs: &PhaseOutputs) -> 
         jacobian: outputs
             .dilations
             .iter()
-            .fold(f64::INFINITY, |m, &d| m.min(1.0 + d)),
+            .fold(f64::INFINITY, |m, &d| min_or_nan(m, 1.0 + d)),
         in_contact: 0,
         slipping: 0,
         fine_contacts: 0,
@@ -651,15 +652,13 @@ pub fn margins(fixture: &Fixture, before: &Snapshot, outputs: &PhaseOutputs) -> 
             continue;
         }
         let depth = obstacle.sample(predicted).distance;
-        margins.touch = margins.touch.min(depth.abs());
+        margins.touch = min_or_nan(margins.touch, depth.abs());
         let body_normal =
             shared::pose_unrotate(next, shared::pose_rotate(pose, obstacle.sample(now).normal));
         let normal = shared::pose_rotate(next, body_normal);
         let along = shared::constrain(normal, first, second);
         let reach = shared::vec3_dot(along, normal);
-        margins.reach = margins
-            .reach
-            .min((reach - shared::KINEMATIC_MIN_REACH).abs());
+        margins.reach = min_or_nan(margins.reach, (reach - shared::KINEMATIC_MIN_REACH).abs());
         if depth < 0.0 && reach < 1.0 - 1e-9 {
             margins.constrained_contacts += 1;
         }
@@ -688,7 +687,7 @@ pub fn margins(fixture: &Fixture, before: &Snapshot, outputs: &PhaseOutputs) -> 
             margins.slipping += 1;
         }
         if obstacle.friction > 0.0 {
-            margins.friction = margins.friction.min((length - limit).abs());
+            margins.friction = min_or_nan(margins.friction, (length - limit).abs());
         }
     }
     margins
