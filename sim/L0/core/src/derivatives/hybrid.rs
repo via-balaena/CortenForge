@@ -241,6 +241,12 @@ fn actuator_left_out(model: &Model, data: &Data, i: usize) -> bool {
     (lo > f64::NEG_INFINITY || hi < f64::INFINITY) && (force <= lo || force >= hi)
 }
 
+/// Whether actuator `i`'s gain or bias is a user's, whose derivatives are
+/// unknown here: [`mjd_actuator_pos`] leaves the actuator out.
+fn user_gain_or_bias(model: &Model, i: usize) -> bool {
+    model.actuator_gaintype[i] == GainType::User || model.actuator_biastype[i] == BiasType::User
+}
+
 /// Actuator `i`'s input as MuJoCo's derivatives read it: the raw control with
 /// no dynamics, else its last activation, the next one under `actearly` (as
 /// its force reads it).
@@ -848,7 +854,10 @@ pub fn mjd_smooth_vel_bias(model: &Model, data: &mut Data, flg_bias: bool) {
 ///
 /// Populates position derivative storage with three analytical contributions:
 ///   1. ∂qfrc_passive/∂qpos via spring chain rules (joint + tendon)
-///   2. ∂qfrc_actuator/∂qpos via gain/bias length derivatives
+///   2. ∂qfrc_actuator/∂qpos via gain/bias length derivatives; an actuator
+///      whose gain or bias is a user's, its derivatives unknown here, adds
+///      only the term of the force it applied through a spatial tendon's
+///      moving moment arm
 ///   3. −∂RNEA(q,v,qacc)/∂qpos via RNE position chain rule
 ///      (includes −(∂M/∂q)·qacc from evaluating RNEA at actual acceleration)
 ///
@@ -1186,7 +1195,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
     // derivative of the force that pass computed.
     let bad = (0..model.nu).any(|i| is_bad(actuator_ctrl_input(model, data, i)));
     for i in 0..model.nu {
-        if actuator_left_out(model, data, i) {
+        if actuator_left_out(model, data, i) || user_gain_or_bias(model, i) {
             continue;
         }
         let input = forward_pass_input(model, data, i, bad);
@@ -1231,7 +1240,8 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
                 let dnl_dl = 1.0 / (cos_penn * optimal_fiber_length).max(1e-10);
                 -f0 * dfl_dnl * dnl_dl * fv * cos_penn
             }
-            // MillardMuscle analytic derivatives deferred (see ∂gain/∂V above).
+            // MillardMuscle analytic derivatives deferred (see ∂gain/∂V above);
+            // a user gain is left out above.
             GainType::MillardMuscle | GainType::User => continue,
         };
 
@@ -1334,11 +1344,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
         }
         let gear = model.actuator_gear[i][0];
         tendon_force[t] += gear * data.actuator_force[i];
-        // A user gain or bias is skipped, as in the length term above.
-        if actuator_left_out(model, data, i)
-            || model.actuator_gaintype[i] == GainType::User
-            || model.actuator_biastype[i] == BiasType::User
-        {
+        if actuator_left_out(model, data, i) || user_gain_or_bias(model, i) {
             continue;
         }
         let input = forward_pass_input(model, data, i, bad);

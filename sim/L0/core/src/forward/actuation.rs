@@ -661,7 +661,8 @@ impl Iterator for MomentEntries<'_> {
 
 /// The last of actuator `i`'s activations, which its dynamics write and its
 /// force reads, as MuJoCo's `actadr + actnum − 1` (`engine_forward.c:340-342`,
-/// `:446-447`). An actuator with dynamics has at least one activation.
+/// `:446-447`). An actuator with dynamics has at least one activation:
+/// [`Model::try_make_data`] refuses a model where one has none.
 pub fn last_activation(model: &Model, i: usize) -> usize {
     model.actuator_act_adr[i] + model.actuator_act_num[i] - 1
 }
@@ -781,7 +782,9 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         };
 
         // The actuator's activations' act_dot are zeroed before its dynamics
-        // write the last of them, as MuJoCo's (`engine_forward.c:332-335`).
+        // write the last of them, as MuJoCo's (`engine_forward.c:332-335`);
+        // only where it has one, as an actuator with none may have no real
+        // address (cf-design gives it `usize::MAX`).
         let act_num = model.actuator_act_num[i];
         if act_num > 0 {
             let act_first = model.actuator_act_adr[i];

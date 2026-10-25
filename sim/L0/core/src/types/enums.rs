@@ -1215,6 +1215,16 @@ pub enum MakeDataError {
     /// The forward pass before the `Init` trees sleep failed; see
     /// [`ResetError::InitForward`].
     InitForward(StepError),
+    /// Actuator `actuator` has `act_num` activations, a count MuJoCo's
+    /// compiler refuses (`user_objects.cc:6896-6906`): none with dynamics,
+    /// one without, or more than one with dynamics other than a user's. A
+    /// plugin's actuator is exempt, as MuJoCo's.
+    ActivationCount {
+        /// The actuator.
+        actuator: usize,
+        /// Its activations.
+        act_num: usize,
+    },
     /// The model sets a flag for a part of MuJoCo sim-core does not port.
     Unsupported {
         /// The flag and what it would take.
@@ -1239,6 +1249,18 @@ impl std::fmt::Display for MakeDataError {
                 root_body,
             } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
             Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
+            Self::ActivationCount {
+                actuator,
+                act_num: 0,
+            } => write!(f, "actuator {actuator} has dynamics and no activation"),
+            Self::ActivationCount {
+                actuator,
+                act_num: 1,
+            } => write!(f, "actuator {actuator} has an activation and no dynamics"),
+            Self::ActivationCount { actuator, act_num } => write!(
+                f,
+                "actuator {actuator} has {act_num} activations, which only user dynamics may have"
+            ),
             Self::Unsupported { feature } => write!(f, "unsupported: {feature}"),
         }
     }
@@ -1253,6 +1275,7 @@ impl std::error::Error for MakeDataError {
             Self::PluginInit { .. }
             | Self::InvalidTimestep
             | Self::DelayedUserSensor { .. }
+            | Self::ActivationCount { .. }
             | Self::InitSleep { .. }
             | Self::Unsupported { .. } => None,
         }
