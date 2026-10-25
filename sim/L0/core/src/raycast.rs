@@ -4,7 +4,8 @@
 //! collision shapes, for visibility checks and other distance-based queries.
 //! A rangefinder casts MuJoCo's `mj_ray` (`sensor::ray_geom`), which reads a
 //! signed distance field's shape here (registry D-SDF-RAY); a mesh's and a
-//! height field's rays are MuJoCo's own (`sensor::ray_mesh`). [`raycast_scene`]
+//! height field's rays are ports of MuJoCo's `mj_rayMesh` and `mj_rayHfield`
+//! (`sensor::ray_mesh`). [`raycast_scene`]
 //! reads a height field's grid from the geom's origin, where MuJoCo's is
 //! centred on it (ledger L280).
 //!

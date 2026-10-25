@@ -5,7 +5,7 @@ types. The raycast module is available as a direct API for visibility
 checks, distance queries, and custom sensors. The Rangefinder sensor casts
 MuJoCo's `mj_ray` (`sensor::ray_geom`), which reads a signed distance
 field's shape through this module; a mesh's and a height field's rays are
-MuJoCo's own (`sensor::ray_mesh`).
+ports of MuJoCo's `mj_rayMesh` and `mj_rayHfield` (`sensor::ray_mesh`).
 
 ## API
 

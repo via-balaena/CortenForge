@@ -26,7 +26,9 @@ It writes ray.json:
   compiles it: the model's text, the mesh's vertices (`mesh_vert`, single
   precision) and faces, the geom's size, whether MuJoCo kept the mesh in its
   written frame (`authored_frame`: the geom unturned at the origin and the
-  vertices as written), how many faces have no area (`zero_area_faces`), and
+  vertices as written), whether its vertices and turn are as written whatever
+  its place (`vertices_as_written`), how many faces have no area
+  (`zero_area_faces`), and
   the model's hierarchies (`nbvhstatic`,
   `body_bvhnum`, `mesh_bvhadr`, `mesh_bvhnum`, `bvh_*`);
 - `mesh`: rays against those meshes through `mj_rayMesh`, as `hfield`'s.
@@ -72,7 +74,7 @@ FIELDS = [
 def field_model(name, nrow, ncol, size, elev, pad=False):
     """A model of one height-field geom on the world. With `pad`, a second field follows the
     first in `hfield_data`, so that MuJoCo's side test, which on a field of one row or column
-    reads one row or column past the data (and multiplies it by 0), reads a number there."""
+    reads past its row or column (and multiplies what it reads by 0), reads a number there."""
     after = ('<hfield name="pad" nrow="2" ncol="2" size="1 1 1 1" elevation="0 1 0.5 0.25"/>'
              if pad else '')
     xml = (f'<mujoco><asset><hfield name="{name}" nrow="{nrow}" ncol="{ncol}" '
@@ -109,7 +111,8 @@ def hfield_rays(name, m, d, size):
     its base and top) aimed in; inside its top box at random; above it along its own -z
     exactly, or across it along its own x or y. The direction of length 1 in half the cases,
     0.1 to 3 in the rest. It refuses a field whose rays never hit its triangles, its base
-    box, or, but for the flat field, its top box's sides above the base."""
+    box, or, but for the flat field, its top box's sides above the base, each hit sorted by
+    MuJoCo's normal only roughly (a side hit on a turned field can count as a triangle's)."""
     rng = np.random.default_rng(267 + sum(map(ord, name)))
     sx, sy, top, base = size
     out = []
@@ -174,8 +177,8 @@ def hfield_rays(name, m, d, size):
 
 
 # Rays on the edges of mj_rayHfield's tests, the field unturned at the origin: (field, start,
-# direction), in numbers a double holds exactly but the short direction's. On `bumpy` (cells 0.25 wide): straight down
-# onto a grid point, the middle of a cell's diagonal, a cell's edge, the field's edge, and
+# direction), in numbers a double holds exactly but the short direction's. On `bumpy` (cells
+# 0.25 wide): straight down onto a grid point, the middle of a cell's diagonal, a cell's edge, the field's edge, and
 # past it; across the field along x and along y, and along its top; up from under its base,
 # and from inside the base; down from on its top box's top face; a direction so short that
 # the boxes' bounding spheres miss; along (1, 1, -1), so that the basis's first branch takes
@@ -269,6 +272,14 @@ def zero_area():
     return verts, out
 
 
+# A pyramid on a 0.25 by 0.75 base at z -0.5, its apex at z 1.5: its centre of mass at the
+# origin, within a rounding, and its principal axes along x, y, z; its geom box's
+# half-height (1.5) is its larger bound in magnitude, not its half-extent (1.0).
+PYRAMID = ([[-0.125, -0.375, -0.5], [0.125, -0.375, -0.5], [0.125, 0.375, -0.5],
+            [-0.125, 0.375, -0.5], [0.0, 0.0, 1.5]],
+           [(0, 2, 1), (0, 3, 2), (0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4)])
+
+
 SLAB = ([[-0.5, -0.4, -0.1], [0.5, -0.4, -0.1], [0.5, 0.4, -0.1], [-0.5, 0.4, -0.1],
          [-0.5, -0.4, 0.1], [0.5, -0.4, 0.1], [0.5, 0.4, 0.1], [-0.5, 0.4, 0.1]],
         [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
@@ -280,14 +291,17 @@ def meshes(rng):
     MuJoCo keeps in their written frame (their principal axes along x, y, z, the largest
     moment about x, centred, in numbers a float holds); the slab (the rangefinder golden's)
     MuJoCo turns; the hull of 20 points it turns and moves; the star is not convex; the
-    last is `box4` with faces of no area added, which MuJoCo also keeps in its frame."""
+    sixth is `box4` with faces of no area added, which MuJoCo also keeps in its frame; the
+    pyramid's bounds are not alike either way along z, and MuJoCo keeps its vertices and its
+    turn as written (it moves it by its centre of mass, -6.9e-18 along z)."""
     return [('box', *box(0.125, 0.375, 0.5)),
             ('box4', *box(0.125, 0.375, 0.5, 4)),
             ('octahedron', *octahedron(0.25, 0.5, 0.75)),
             ('slab', *SLAB),
             ('hull', [list(rng.uniform(-0.5, 0.5, 3)) for _ in range(20)], None),
             ('star', *star(rng)),
-            ('zero_area', *zero_area())]
+            ('zero_area', *zero_area()),
+            ('pyramid', *PYRAMID)]
 
 
 def zero_area_faces(m):
@@ -310,10 +324,12 @@ def mesh_model(name, verts, faces):
     d = mujoco.MjData(m)
     mujoco.mj_forward(m, d)
     written = np.array(verts, dtype=np.float32)
-    authored = bool(np.array_equal(m.geom_quat[0], [1, 0, 0, 0]) and not m.geom_pos[0].any()
-                    and m.mesh_vert.shape == written.shape and np.array_equal(m.mesh_vert, written))
+    as_written = bool(np.array_equal(m.geom_quat[0], [1, 0, 0, 0])
+                      and m.mesh_vert.shape == written.shape and np.array_equal(m.mesh_vert, written))
+    authored = as_written and not m.geom_pos[0].any()
     model = {'xml': xml, 'vert': floats(m.mesh_vert), 'face': [int(i) for i in m.mesh_face.ravel()],
              'size': floats(m.geom_size[0]), 'authored_frame': authored,
+             'vertices_as_written': as_written,
              'zero_area_faces': zero_area_faces(m),
              'nbvhstatic': int(m.nbvhstatic), 'body_bvhnum': [int(x) for x in m.body_bvhnum],
              'mesh_bvhadr': [int(x) for x in m.mesh_bvhadr], 'mesh_bvhnum': [int(x) for x in m.mesh_bvhnum],
@@ -326,9 +342,10 @@ def mesh_rays(name, m, d):
     """300 rays a mesh from one generator: the mesh unturned at the origin in even cases,
     else turned at random and moved by up to 0.5 in each place; the start within 1.5 of the
     mesh's centre in each place, aimed at a point within the cube about the mesh's centre
-    whose half-side is its bounding radius (four cases of five) or at random; in one case of five the direction one of the
-    mesh's own axes, the start moved back along it. The direction of length 1 in half the
-    cases, 0.1 to 3 in the rest. It refuses a mesh whose rays never hit or never miss."""
+    whose half-side is its bounding radius (three cases of five), or at random (one); in
+    the fifth the direction one of the mesh's own axes, the start moved back along it. The
+    direction of length 1 in half the cases, 0.1 to 3 in the rest. It refuses a mesh whose
+    rays never hit or never miss."""
     rng = np.random.default_rng(2671 + sum(map(ord, name)))
     rbound = float(m.geom_rbound[0])
     out, hits = [], 0
@@ -363,7 +380,8 @@ def mesh_rays(name, m, d):
 
 
 # Rays on the edges of mj_rayMesh's tests, the mesh unturned at the origin: (mesh, start,
-# direction), in numbers a double holds exactly but the hair's and the short direction's. On `box` (half-sizes 0.125, 0.375, 0.5):
+# direction), in numbers a double holds exactly but the hair's and the short direction's. On
+# `box` (half-sizes 0.125, 0.375, 0.5):
 # down its z axis onto a face's diagonal; down onto a corner, an edge and a face's middle;
 # across its top face within it, and along its top face's plane from outside; from inside
 # it; from on a face, outward and inward; past it by a hair; a direction so short that the
@@ -506,6 +524,9 @@ def main():
     authored = [k for k, v in mesh_models.items() if v['authored_frame']]
     if authored != ['box', 'box4', 'octahedron', 'zero_area']:
         sys.exit(f'meshes MuJoCo kept in their written frame: {authored}')
+    as_written = [k for k, v in mesh_models.items() if v['vertices_as_written']]
+    if as_written != authored + ['pyramid']:
+        sys.exit(f'meshes MuJoCo kept with their vertices as written: {as_written}')
     os.makedirs(sys.argv[1], exist_ok=True)
     doc = {'oracle': marker, 'hfield_fields': fields, 'hfield': rays, 'mesh_models': mesh_models,
            'mesh': mesh_ray_list}

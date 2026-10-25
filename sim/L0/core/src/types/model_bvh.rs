@@ -110,8 +110,8 @@ impl Model {
     /// face has no hierarchy (`mesh_bvhadr` `None`). A mesh's ray descends it
     /// (`sensor::ray_mesh`).
     ///
-    /// A face of no area (a vertex repeated, or three in a line along an
-    /// axis) has no circumcentre (it is NaN, in MuJoCo's too), and MuJoCo's
+    /// A face of no area (its edges' cross product exactly 0, as where a
+    /// vertex is repeated) has no circumcentre (it is NaN, in MuJoCo's too), and MuJoCo's
     /// split, comparing such a face's place with another's, is no longer an
     /// order: its tree is then its C++ library's `nth_element`'s, which
     /// [`merge_sort`] is not (registry `D-MESH-SPLIT`). Its boxes are over
@@ -560,9 +560,9 @@ mod tests {
     /// compiles them: the mesh's hierarchy follows the world's node, and its
     /// children and depths are MuJoCo's. Its leaves' faces are MuJoCo's, and,
     /// for the meshes in their written frame, its boxes are MuJoCo's bit for
-    /// bit, but for the mesh with faces of no area, whose leaves are not
-    /// (registry D-MESH-SPLIT: MuJoCo's split compares their NaN
-    /// circumcentres). (MuJoCo builds a mesh's boxes over its vertices in
+    /// bit, but for the mesh with faces of no area: 202 of its 219 leaves name
+    /// another face, and 396 of its 437 boxes differ (registry D-MESH-SPLIT:
+    /// MuJoCo's split compares their NaN circumcentres). (MuJoCo builds a mesh's boxes over its vertices in
     /// double precision, before it rounds them to the single precision it
     /// keeps, which is what this model is given: ledger L281.)
     #[test]
@@ -574,8 +574,8 @@ mod tests {
         let text = std::fs::read_to_string(path).expect("the ray golden reads");
         let golden: Value = serde_json::from_str(&text).expect("the ray golden parses");
         let meshes = golden["mesh_models"].as_object().expect("mesh_models");
-        assert_eq!(meshes.len(), 7, "every mesh");
-        let mut split_differs = false;
+        assert_eq!(meshes.len(), 8, "every mesh");
+        let (mut leaves, mut leaves_differ, mut boxes_differ) = (0, 0, 0);
         for (name, mesh) in meshes {
             let face: Vec<usize> = mesh["face"]
                 .as_array()
@@ -607,7 +607,13 @@ mod tests {
                     "{name} node {k}: depth"
                 );
                 if zero_area {
-                    split_differs |= model.bvh_nodeid[k] != index(&mesh["bvh_nodeid"][k]);
+                    let theirs = numbers(&mesh["bvh_aabb"][k]);
+                    leaves += usize::from(model.bvh_nodeid[k].is_some());
+                    leaves_differ +=
+                        usize::from(model.bvh_nodeid[k] != index(&mesh["bvh_nodeid"][k]));
+                    boxes_differ += usize::from(
+                        (0..6).any(|i| model.bvh_aabb[k][i].to_bits() != theirs[i].to_bits()),
+                    );
                     continue;
                 }
                 assert_eq!(
@@ -627,9 +633,11 @@ mod tests {
                 }
             }
         }
-        assert!(
-            split_differs,
-            "the mesh with faces of no area splits as MuJoCo's: registry D-MESH-SPLIT is stale"
+        assert_eq!(
+            (leaves, leaves_differ, boxes_differ),
+            (219, 202, 396),
+            "the mesh with faces of no area: its leaves, those naming another face than MuJoCo's, \
+             its boxes not MuJoCo's (registry D-MESH-SPLIT states these)"
         );
     }
 }

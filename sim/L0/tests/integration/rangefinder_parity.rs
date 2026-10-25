@@ -25,8 +25,7 @@
 //! most, by that measure). The ray golden's rays on the same slab, given
 //! MuJoCo's compiled vertices and pose, are MuJoCo's bit for bit (sim-core's
 //! `rays_meet_each_mesh_as_mujoco`); none of them passes through a vertex or
-//! along an edge, where its hierarchy's boxes, built over other vertices
-//! than MuJoCo's, can turn a ray otherwise.
+//! across an edge, where a ray can read otherwise (ledger L281).
 
 use std::sync::Arc;
 

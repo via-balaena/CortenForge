@@ -142,7 +142,7 @@ fn ray_triangle(
 /// precision from the triangles' edge. A field of one row or column (which
 /// sim-mjcf refuses, ledger L208) has no triangles; along its one row or
 /// column, a ray's place is 0, and the side test's second elevation, past
-/// the data, is multiplied by 0, as in MuJoCo (here it reads 0).
+/// its row or column, is multiplied by 0, as in MuJoCo (here it reads 0).
 pub(super) fn mj_ray_hfield(
     hfield: &HeightFieldData,
     size: &[f64; 4],
@@ -244,8 +244,9 @@ pub(super) fn mj_ray_hfield(
     #[allow(clippy::cast_possible_truncation)]
     let elevation =
         |c: usize, r: usize| f64::from((hfield.get(c, r).unwrap_or(0.0) / size[2]) as f32);
-    // A rounded index within the grid (`y0` is whole and within it); a cast
-    // saturates and takes a NaN to 0.
+    // A rounded index (`y0` is whole; one past the grid on a field of one row
+    // or column, which `elevation` reads as 0); a cast saturates and takes a
+    // NaN to 0.
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     let index = |y: f64| mju_round(y) as usize;
     for (i, &a) in all.iter().enumerate().take(4) {
@@ -326,12 +327,13 @@ fn mesh_box(mesh: &TriangleMeshData) -> [f64; 3] {
 /// MuJoCo turns a mesh to its principal frame (book Rigid-loading L35). Its
 /// box and its hierarchy's are over those vertices, where MuJoCo's are over
 /// its double-precision ones before it rounds them (ledger L281), and its
-/// hierarchy's split differs where a face has no area (registry
-/// D-MESH-SPLIT): a ray through a vertex or along an edge can then go
+/// hierarchy's split can differ where a face has no area (registry
+/// D-MESH-SPLIT): a ray through a vertex or across an edge can then go
 /// otherwise. A mesh with no hierarchy (no face, or a model whose
-/// hierarchies were not built, [`Model::compute_body_bvhs`]) reads −1; a
-/// leaf naming a face the mesh no longer has (the mesh replaced after its
-/// hierarchy was built) is passed over.
+/// hierarchies were not built, [`Model::compute_body_bvhs`]) reads −1. A
+/// model whose mesh was replaced after its hierarchy was built reads
+/// through the old hierarchy, a leaf naming a face the mesh no longer has
+/// passed over, until it is derived again.
 pub(super) fn mj_ray_mesh(
     model: &Model,
     mesh: usize,
@@ -470,8 +472,8 @@ mod tests {
     }
 
     /// The ray golden's `mesh` rays (`gen_ray_reference.py`: 300 a mesh over
-    /// its seven meshes, the mesh unturned and turned, and 14 on the edges of
-    /// the meshes MuJoCo keeps in their written frame) meet each mesh at
+    /// its eight meshes, the mesh unturned and turned, and 14 on the edges of
+    /// three of the meshes MuJoCo keeps in their written frame) meet each mesh at
     /// MuJoCo's distance, or miss it as MuJoCo's does (−1), bit for bit: each
     /// mesh built from MuJoCo's vertices and faces as it compiles them
     /// (`mesh_models`), its hierarchy sim-core's (`each_mesh_hierarchy_is_mujocos`
@@ -497,7 +499,7 @@ mod tests {
             })
             .collect();
         let rays = golden["mesh"].as_array().expect("rays");
-        assert_eq!(rays.len(), 7 * 300 + 14, "every ray read");
+        assert_eq!(rays.len(), 8 * 300 + 14, "every ray read");
         let mut differ = Vec::new();
         let mut hits = 0;
         for (i, ray) in rays.iter().enumerate() {
@@ -530,15 +532,17 @@ mod tests {
     }
 
     /// The box `mj_ray_mesh` gives a mesh's geom is MuJoCo's `geom_size` bit
-    /// for bit for each of the ray golden's meshes MuJoCo keeps in its
-    /// written frame (the others it turns, and builds its box over its
-    /// double-precision vertices: ledger L281).
+    /// for bit for each of the ray golden's meshes whose vertices and turn
+    /// MuJoCo keeps as written, the pyramid among them, whose larger bound in
+    /// magnitude along z (1.5) is not its half-extent (1.0) (the others MuJoCo
+    /// turns, and builds its box over its double-precision vertices: ledger
+    /// L281).
     #[test]
     fn a_mesh_geom_box_is_mujocos() {
         let golden = golden();
         let mut compared = 0;
         for (name, mesh) in golden["mesh_models"].as_object().expect("mesh_models") {
-            if !mesh["authored_frame"].as_bool().expect("a flag") {
+            if !mesh["vertices_as_written"].as_bool().expect("a flag") {
                 continue;
             }
             let face: Vec<usize> = mesh["face"]
@@ -558,6 +562,6 @@ mod tests {
             );
             compared += 1;
         }
-        assert_eq!(compared, 4, "the meshes in their written frame");
+        assert_eq!(compared, 5, "the meshes with their vertices as written");
     }
 }
