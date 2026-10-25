@@ -63,7 +63,7 @@ use cf_fsu_model::{
     CoupledFsu, CoupledFsuTet4, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES,
     moment_ramp,
 };
-use sim_core::validation::max_or_nan;
+use sim_core::validation::{max_or_nan, min_or_nan};
 
 /// Committed max node displacement over the full ramp (native mm), per arm — the plan's
 /// "committed max node displacement", pinned to ±5 % of the measured value so that "the ramp
@@ -120,7 +120,7 @@ fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str) -> (f64, f64) {
         .frames
         .iter()
         .map(|f| f.min_jacobian_ratio)
-        .fold(f64::INFINITY, f64::min);
+        .fold(f64::INFINITY, min_or_nan);
     for f in &traj.frames {
         assert!(
             f.min_jacobian_ratio > 0.0,

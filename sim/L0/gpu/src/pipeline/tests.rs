@@ -942,7 +942,7 @@ fn t13b_qfrc_bias_gravity_rotated_free_body() {
     let angular_signal = (3..6)
         .map(|d| f64::from(gpu_bias[d].abs()))
         .fold(0.0, max_or_nan)
-        > 1e-3;
+        > f64::from(1e-3_f32);
     assert!(
         angular_signal,
         "T13b must exercise non-zero angular gravity to test the body-frame projection"
@@ -988,7 +988,7 @@ fn t14_qfrc_bias_coriolis_spinning() {
     let has_coriolis = (3..6)
         .map(|d| f64::from(gpu_bias[d].abs()))
         .fold(0.0, max_or_nan)
-        > 1e-6;
+        > f64::from(1e-6_f32);
     assert!(has_coriolis, "Expected non-zero Coriolis on angular DOFs");
 
     eprintln!("  T14 passed: qfrc_bias Coriolis matches CPU for spinning body");
@@ -2573,7 +2573,7 @@ fn t34_gpu_batched_collision_substep_matches_single() {
         .zip(&single1.0)
         .map(|(a, b)| f64::from((a - b).abs()))
         .fold(0.0, max_or_nan)
-        > 1e-3;
+        > f64::from(1e-3_f32);
     assert!(
         differ,
         "env 0/1 single-env results are near-identical — the batched check is vacuous"

@@ -2605,7 +2605,8 @@ mod tests {
         let (mut hi, mut lo, mut seated) = (f64::MIN, f64::MAX, 0usize);
         for (raw, conf) in raw_rest.iter().zip(&traj.rest_nodes_native) {
             let moved = (raw - conf).norm();
-            if moved.is_nan() || moved > 0.4 {
+            assert!(moved.is_finite(), "a band node moved {moved} mm");
+            if moved > 0.4 {
                 hi = max_or_nan(hi, conf.z);
                 lo = min_or_nan(lo, conf.z);
                 seated += 1;
@@ -7332,13 +7333,16 @@ mod tests {
         }
         let authorised_set: std::collections::HashSet<VertexId> =
             authorised.iter().copied().collect();
+        assert!(
+            candidates
+                .iter()
+                .all(|&v| (p_raw[v as usize] - p_conf[v as usize]).norm().is_finite()),
+            "a candidate's move is not finite"
+        );
         let moved: Vec<VertexId> = candidates
             .iter()
             .copied()
-            .filter(|&v| {
-                let gap = (p_raw[v as usize] - p_conf[v as usize]).norm();
-                gap.is_nan() || gap > 1e-12
-            })
+            .filter(|&v| (p_raw[v as usize] - p_conf[v as usize]).norm() > 1e-12)
             .collect();
         // `with_projected_nodes` only touches the nodes it is handed, so a moved node must have
         // been authorised — asserted rather than assumed, since it is what makes `backed_off`

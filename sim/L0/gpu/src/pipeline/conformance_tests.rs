@@ -419,7 +419,7 @@ fn compare_env_fields(
             .iter()
             .map(|v| f64::from(v[0].abs() + v[1].abs() + v[2].abs()))
             .fold(0.0, max_or_nan)
-            > 1e-4,
+            > f64::from(1e-4_f32),
         "[{name}] env{env} cvel is all-zero on the GPU — velocity FK did not run; \
          the conformance check would be vacuous."
     );
