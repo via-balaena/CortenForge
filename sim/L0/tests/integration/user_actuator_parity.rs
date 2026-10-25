@@ -1,10 +1,12 @@
-//! An actuator whose gain or bias is a user's against MuJoCo 3.5.0's, with its
-//! callback set and unset.
+//! An actuator whose gain, bias or dynamics are a user's against MuJoCo
+//! 3.5.0's, with its callback set and unset, and with two activations.
 //!
 //! The golden is `assets/golden/user_actuator/user_actuator.json`, from
 //! `scripts/gen_user_actuator_reference.py` on the unfused oracle: two damped
 //! hinges under implicitfast and one actuator on the second, 12 drawn states
-//! each. sim-mjcf refuses a user type, so each case loads a stand-in and
+//! each, `act_dot` set before each pass (MuJoCo zeroes an actuator's before
+//! its dynamics write it). sim-mjcf refuses a user type and has no
+//! `actdim`, so each case loads a stand-in and
 //! changes it to the user's (`patch`), checked against MuJoCo's compiled
 //! types; the callbacks below are the script's, in the same operations. After
 //! a forward pass the actuator's force, `qfrc_actuator` and `act_dot` are
@@ -13,7 +15,7 @@
 //! bit on the golden's platform (see `matches_golden`).
 
 use serde_json::Value;
-use sim_core::{BiasType, GainType, Model};
+use sim_core::{ActuatorDynamics, BiasType, GainType, Model};
 
 fn golden() -> Value {
     serde_json::from_str(include_str!(
@@ -75,6 +77,18 @@ fn patched(case: &Value) -> Model {
         Some("unset") => model.actuator_biastype[0] = BiasType::User,
         _ => {}
     }
+    match patch["dyn"].as_str() {
+        Some("callback") => {
+            model.actuator_dyntype[0] = ActuatorDynamics::User;
+            model.set_act_dyn_callback(|m, d, i| (d.ctrl[i] - d.act[m.actuator_act_adr[i]]) / 0.07);
+        }
+        Some("unset") => model.actuator_dyntype[0] = ActuatorDynamics::User,
+        _ => {}
+    }
+    if let Some(actnum) = patch["actnum"].as_u64() {
+        model.actuator_act_num[0] = usize::try_from(actnum).expect("fits");
+        model.na = model.actuator_act_num[0];
+    }
     let gaintype = match model.actuator_gaintype[0] {
         GainType::Fixed => "mjGAIN_FIXED",
         GainType::Affine => "mjGAIN_AFFINE",
@@ -87,11 +101,17 @@ fn patched(case: &Value) -> Model {
         BiasType::User => "mjBIAS_USER",
         other => panic!("bias {other:?}"),
     };
+    let dyntype = match model.actuator_dyntype[0] {
+        ActuatorDynamics::None => "mjDYN_NONE",
+        ActuatorDynamics::User => "mjDYN_USER",
+        other => panic!("dynamics {other:?}"),
+    };
     assert_eq!(
-        (gaintype, biastype, model.actuator_act_num[0]),
+        (gaintype, biastype, dyntype, model.actuator_act_num[0]),
         (
             case["gaintype"].as_str().expect("gaintype"),
             case["biastype"].as_str().expect("biastype"),
+            case["dyntype"].as_str().expect("dyntype"),
             usize::try_from(case["actnum"].as_u64().expect("actnum")).expect("fits"),
         ),
         "{}: the patched model is not MuJoCo's",
@@ -126,6 +146,7 @@ fn user_actuators_act_as_mujoco() {
                     (data.qvel.as_mut_slice(), "qvel"),
                     (data.ctrl.as_mut_slice(), "ctrl"),
                     (data.act.as_mut_slice(), "act"),
+                    (data.act_dot.as_mut_slice(), "act_dot_before"),
                 ] {
                     field.copy_from_slice(&floats(&state[key]));
                 }
@@ -163,7 +184,7 @@ fn user_actuators_act_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 48, "4 cases of 12 states");
+    assert_eq!(compared, 72, "6 cases of 12 states");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",

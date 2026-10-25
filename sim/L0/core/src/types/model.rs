@@ -1481,7 +1481,8 @@ impl Model {
     /// does, deciding how to combine their results.
     ///
     /// Called for each actuator with `ActuatorDynamics::User`.
-    /// Should return `act_dot` (activation derivative).
+    /// Should return `act_dot` (activation derivative) of the actuator's last
+    /// activation (see [`super::callbacks::CbActDyn`]).
     pub fn set_act_dyn_callback<F>(&mut self, f: F)
     where
         F: Fn(&Self, &super::data::Data, usize) -> f64 + Send + Sync + 'static,

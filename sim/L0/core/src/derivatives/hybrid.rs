@@ -22,8 +22,8 @@ use crate::dynamics::spatial::{
 };
 use crate::forward::{
     MjStage, MomentRows, acts_through_moment, actuator_ctrl_input, ellipsoid_moment,
-    fluid_geom_semi_axes, hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation,
-    muscle_f0, muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
+    fluid_geom_semi_axes, hill_active_fl, hill_force_velocity, last_activation, mj_fwd_position,
+    mj_next_activation, muscle_f0, muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
 };
 use crate::forward::{mj_implicit_factor, mj_implicit_solve, solve_implicit};
 use crate::integrate::eulerdamp_applies;
@@ -242,13 +242,14 @@ fn actuator_left_out(model: &Model, data: &Data, i: usize) -> bool {
 }
 
 /// Actuator `i`'s input as MuJoCo's derivatives read it: the raw control with
-/// no dynamics, else the activation, the next one under `actearly` (as its
-/// force reads it).
+/// no dynamics, else its last activation, the next one under `actearly` (as
+/// its force reads it).
 fn actuator_input(model: &Model, data: &Data, i: usize) -> f64 {
-    let adr = model.actuator_act_adr[i];
     if model.actuator_dyntype[i] == ActuatorDynamics::None {
-        data.ctrl[i]
-    } else if model.actuator_actearly[i] {
+        return data.ctrl[i];
+    }
+    let adr = last_activation(model, i);
+    if model.actuator_actearly[i] {
         mj_next_activation(model, i, data.act[adr], data.act_dot[adr])
     } else {
         data.act[adr]

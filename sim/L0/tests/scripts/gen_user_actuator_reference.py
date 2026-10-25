@@ -11,11 +11,14 @@ fuses multiply-adds.
 
 It writes user_actuator.json, one entry per case: two damped hinges under
 implicitfast and one actuator on the second whose gain or bias is a user's,
-with MuJoCo's callback set (`mjcb_act_gain`, `mjcb_act_bias`) or unset; and
-for each of 12 states (qpos, qvel, ctrl and act drawn from a seeded
-generator) after mj_forward the actuator's force, qfrc_actuator and act_dot,
-and after one mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind),
-qpos, qvel and act.
+or whose dynamics are a user's with one activation or two (`actdim`), with
+MuJoCo's callback set (`mjcb_act_gain`, `mjcb_act_bias`, `mjcb_act_dyn`) or
+unset; and for each of 12 states (qpos, qvel, ctrl and act drawn from a
+seeded generator, and act_dot from a second one, set before each pass:
+MuJoCo zeroes an actuator's act_dot before its dynamics write it) after
+mj_forward the actuator's force, qfrc_actuator and act_dot, and after one
+mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind), qpos, qvel
+and act.
 
 sim-mjcf refuses a user gain, bias or dynamics, so each case also holds a
 stand-in (`xml`): the same model with a type sim-mjcf loads in place of the
@@ -76,6 +79,18 @@ CASES = [
      '<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="user"/>',
      '<general joint="h2" gaintype="affine" gainprm="2 0 0.5" biastype="none"/>',
      {'bias': 'unset'}),
+    ('user dynamics with two activations, without a callback',
+     '<general joint="h2" dyntype="user" actdim="2" gaintype="affine" gainprm="2 0 0.5" '
+     'biastype="affine" biasprm="0 -1 -0.3"/>',
+     '<general joint="h2" dyntype="integrator" gaintype="affine" gainprm="2 0 0.5" '
+     'biastype="affine" biasprm="0 -1 -0.3"/>',
+     {'dyn': 'unset', 'actnum': 2}),
+    ('user dynamics with one activation and its callback',
+     '<general joint="h2" dyntype="user" gaintype="affine" gainprm="2 0 0.5" '
+     'biastype="affine" biasprm="0 -1 -0.3"/>',
+     '<general joint="h2" dyntype="integrator" gaintype="affine" gainprm="2 0 0.5" '
+     'biastype="affine" biasprm="0 -1 -0.3"/>',
+     {'dyn': 'callback'}),
 ]
 
 
@@ -112,21 +127,25 @@ def case(name, actuator, stand_in, patch):
     d = mujoco.MjData(m)
     set_callbacks(patch)
     rng = np.random.default_rng(7)
+    rng_act_dot = np.random.default_rng(8)
     states = []
     for _ in range(STATES):
         qpos = m.qpos0 + rng.uniform(-0.8, 0.8, m.nq)
         qvel = rng.uniform(-2.0, 2.0, m.nv)
         ctrl = rng.uniform(0.0, 1.0, m.nu)
         act = rng.uniform(0.0, 1.0, m.na)
+        act_dot = rng_act_dot.uniform(-1.0, 1.0, m.na)
 
         def start():
             mujoco.mj_resetData(m, d)
             d.qpos[:], d.qvel[:], d.ctrl[:], d.act[:] = qpos, qvel, ctrl, act
+            d.act_dot[:] = act_dot
 
         start()
         mujoco.mj_forward(m, d)
         state = {'qpos': floats(qpos), 'qvel': floats(qvel), 'ctrl': floats(ctrl),
-                 'act': floats(act), 'actuator_force': floats(d.actuator_force),
+                 'act': floats(act), 'act_dot_before': floats(act_dot),
+                 'actuator_force': floats(d.actuator_force),
                  'qfrc_actuator': floats(d.qfrc_actuator), 'act_dot': floats(d.act_dot)}
         start()
         mujoco.mj_step(m, d)
