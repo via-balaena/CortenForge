@@ -1565,9 +1565,11 @@ mod tests {
 
             let (got, want) = (factor_solve(&ctx), factor_solve(&fresh));
             assert!(
-                got.iter()
-                    .zip(&want)
-                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                want.iter().all(|x| x.is_finite())
+                    && got
+                        .iter()
+                        .zip(&want)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
                 "{jacobian:?}: {got:?}, made anew {want:?}"
             );
         }

@@ -12,6 +12,7 @@
 //! 10. Mass matrix SPD (symmetric, positive definite, diagonal > 0)
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_or_nan;
 
 // ============================================================================
 // 6. Momentum Conservation
@@ -184,7 +185,7 @@ fn layer_d_energy_conservation_rk4() {
         data.forward(&model).expect("forward");
         let e = data.total_energy();
         let drift = ((e - e0) / e0).abs();
-        max_drift = max_drift.max(drift);
+        max_drift = max_or_nan(max_drift, drift);
     }
 
     assert!(
@@ -228,7 +229,7 @@ fn layer_d_energy_drift_convergence() {
             data.forward(&model).expect("forward");
             let e = data.total_energy();
             let drift = ((e - e0) / e0).abs();
-            max_drift = max_drift.max(drift);
+            max_drift = max_or_nan(max_drift, drift);
         }
         max_drift
     }
@@ -447,16 +448,12 @@ fn layer_d_contact_normal_nonnegative() {
             // should be >= 0 (compressive).
             // In MuJoCo convention, efc_force for a normal contact is >= 0.
             for i in 0..data.efc_force.len() {
-                // Only check non-friction contact rows (rough check: inequality constraints)
-                // Normal forces are typically the first row of each contact block.
-                if data.efc_force[i].is_finite() {
-                    // We're checking structural property: forces should be finite
-                    assert!(
-                        data.efc_force[i].is_finite(),
-                        "Step {step}: efc_force[{i}] is not finite: {}",
-                        data.efc_force[i]
-                    );
-                }
+                // We're checking structural property: forces should be finite
+                assert!(
+                    data.efc_force[i].is_finite(),
+                    "Step {step}: efc_force[{i}] is not finite: {}",
+                    data.efc_force[i]
+                );
             }
 
             // Contact-level check: qfrc_constraint vertical component should be

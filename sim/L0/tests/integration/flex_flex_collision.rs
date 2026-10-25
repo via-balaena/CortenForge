@@ -6,6 +6,7 @@
 //! sentinel-safe downstream pipeline, and self/flex-rigid regression.
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_abs_or_nan;
 use sim_mjcf::load_model;
 
 /// Helper: count flex-flex contacts (a flex on each side, two different
@@ -511,7 +512,7 @@ fn t09_full_forward_step_no_panic() {
 
     // AC10: constraint forces flow through the full pipeline.
     // Check after the last step's forward() which is embedded in step().
-    let has_constraint_force = data.qfrc_constraint.iter().any(|&f| f.abs() > 1e-15);
+    let has_constraint_force = max_abs_or_nan(&data.qfrc_constraint) > 1e-15;
     assert!(
         has_constraint_force,
         "flex-flex contacts must produce non-zero qfrc_constraint"

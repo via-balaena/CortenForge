@@ -528,9 +528,11 @@ mod tests {
         filled.fill(&jac, &[0.2, 0.4], &mass);
         let mut made = SparseHessian::make(&jac, &[0.2, 0.4], &mass);
         let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert!(made.h.iter().all(|x| x.is_finite()), "H is finite");
         assert_eq!(bits(&filled.h), bits(&made.h), "H");
         assert_eq!(filled.factor(), 3, "full rank");
         assert_eq!(made.factor(), 3, "full rank");
+        assert!(made.l.iter().all(|x| x.is_finite()), "L is finite");
         assert_eq!(bits(&filled.l), bits(&made.l), "L");
     }
 }

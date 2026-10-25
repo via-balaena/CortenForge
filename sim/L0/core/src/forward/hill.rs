@@ -272,6 +272,10 @@ mod tests {
         }
 
         assert!(
+            !act_up.is_nan() && !act_down.is_nan(),
+            "each activation is a number: up {act_up}, down {act_down}"
+        );
+        assert!(
             steps_up < steps_down,
             "Activation should be faster than deactivation: {} steps up vs {} steps down",
             steps_up,

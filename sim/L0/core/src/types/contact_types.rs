@@ -405,6 +405,7 @@ pub fn make_frame(normal: &Vector3<f64>, hint: &Vector3<f64>) -> (Vector3<f64>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validation::max_abs_or_nan;
 
     /// `Data`'s contact counts read both sides, in either order: a contact
     /// lists its geoms in MuJoCo's type order, not the order asked.
@@ -434,11 +435,12 @@ mod tests {
             let (_, seeded) = make_frame(&normal, &Vector3::z());
             let bits = |v: &Vector3<f64>| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
             for k in 0..2 {
+                assert!(frame[k].iter().all(|x| x.is_finite()), "y {y}: tangent {k}");
                 assert_eq!(bits(&frame[k]), bits(&seeded[k]), "y {y}: tangent {k}");
             }
             let (_, other) = make_frame(&normal, &Vector3::y());
-            assert_ne!(
-                frame[0], other[0],
+            assert!(
+                max_abs_or_nan(&(frame[0] - other[0])) > 0.0,
                 "y {y}: the (0, 1, 0) seed gives the same"
             );
         }

@@ -8,6 +8,7 @@
 //! verify behavioral gating correctness.
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_abs_or_nan;
 use sim_core::{
     DISABLE_ACTUATION, DISABLE_AUTORESET, DISABLE_CLAMPCTRL, DISABLE_CONSTRAINT, DISABLE_CONTACT,
     DISABLE_DAMPER, DISABLE_EQUALITY, DISABLE_EULERDAMP, DISABLE_FILTERPARENT,
@@ -415,7 +416,7 @@ fn ac13_energy_gating() {
     // Body at z=1 with gravity → negative potential energy
     // body has downward velocity → positive kinetic energy
     assert!(
-        data2.energy_potential != 0.0,
+        data2.energy_potential.abs() > 0.0,
         "potential energy should be computed"
     );
     assert!(
@@ -487,7 +488,7 @@ fn ac14_fluid_sleep_filtering() {
     }
 
     // Awake body (DOFs 0–5): qfrc_fluid should be non-zero (has velocity + fluid).
-    let awake_has_fluid = (0..6).any(|dof| data.qfrc_fluid[dof] != 0.0);
+    let awake_has_fluid = max_abs_or_nan(data.qfrc_fluid.rows(0, 6)) > 0.0;
     assert!(
         awake_has_fluid,
         "awake body should have non-zero qfrc_fluid with velocity in fluid"
@@ -2057,7 +2058,7 @@ fn ac46_warmstart_plus_islands() {
 
     // qacc_warmstart should still be saved at end of step (unconditional save)
     // It won't be used (warmstart disabled), but the save always happens.
-    let warmstart_nonzero = (0..model.nv).any(|i| data.qacc_warmstart[i] != 0.0);
+    let warmstart_nonzero = max_abs_or_nan(&data.qacc_warmstart) > 0.0;
     assert!(
         warmstart_nonzero,
         "qacc_warmstart should be saved even with DISABLE_WARMSTART"

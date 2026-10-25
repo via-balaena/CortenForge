@@ -8,6 +8,7 @@
 //! `cacc`/`cfrc_int`/`cfrc_ext` must include a triggering sensor.
 
 use sim_core::SleepState;
+use sim_core::validation::max_abs_or_nan;
 
 /// Test: a free-falling body's `cacc` is zero, and the world body's is gravity's
 /// pseudo-acceleration `[0,0,0, 0,0,+g]`.
@@ -245,7 +246,7 @@ fn body_accumulators_zeroed_after_reset() {
     // Run forward to populate accumulators
     data.forward(&model).expect("forward");
     assert!(
-        data.cacc[0].iter().any(|&v| v.abs() > 1e-6),
+        max_abs_or_nan(&data.cacc[0]) > 1e-6,
         "cacc should be nonzero after forward"
     );
 

@@ -101,6 +101,7 @@ fn flex_edge_diag_approx_is_invweight0() {
             model.flexedge_invweight0[e]
         );
         let imp = data.efc_imp[r];
+        assert!(imp > 0.0 && imp < 1.0, "row {r}: impedance {imp}");
         let r_want = ((1.0 - imp) * model.flexedge_invweight0[e] / imp).max(MJ_MINVAL);
         assert_eq!(
             data.efc_R[r].to_bits(),

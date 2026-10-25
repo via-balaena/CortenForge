@@ -6,6 +6,7 @@
 
 #![cfg(test)]
 
+use sim_core::validation::max_or_nan;
 use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Monitors, PhaseOutputs, Snapshot, rigid_motion};
 use sim_soft_explicit::f64 as shared;
@@ -213,14 +214,15 @@ fn conform(f: &Fixture) -> (Vec<String>, Vec<String>) {
             || name.ends_with("normal forces")
             || name.ends_with("friction");
         let bar = if contact {
-            1e-5_f64.max(2.0 * cpu_from_f64)
+            max_or_nan(1e-5, 2.0 * cpu_from_f64)
         } else {
             1e-5
         };
         record.push(format!(
             "  {name:<26} GPU {gpu_from_cpu:.1e}  CPU f32 from f64 {cpu_from_f64:.1e}  bar {bar:.1e}"
         ));
-        if gpu_from_cpu > bar {
+        let within = gpu_from_cpu <= bar;
+        if !within {
             failures.push(format!("{}, {name}: {gpu_from_cpu:e} over {bar:e}", f.name));
         }
     }
@@ -237,7 +239,8 @@ fn conform(f: &Fixture) -> (Vec<String>, Vec<String>) {
         record.push(format!(
             "  {name:<26} GPU {relative:.1e} of its terms' magnitudes"
         ));
-        if difference > 1e-5 * magnitude {
+        let within = difference <= 1e-5 * magnitude;
+        if !within {
             failures.push(format!(
                 "{}, {name}: {difference:e} of {magnitude:e}",
                 f.name
@@ -254,7 +257,8 @@ fn conform(f: &Fixture) -> (Vec<String>, Vec<String>) {
         ),
     ] {
         record.push(format!("  {name:<26} CPU {a:.3e} GPU {b:.3e}"));
-        if (a - b).abs() > 1e-5 * a.abs() {
+        let within = (a - b).abs() <= 1e-5 * a.abs();
+        if !within {
             failures.push(format!("{}, {name}: {a:e} vs {b:e}", f.name));
         }
     }

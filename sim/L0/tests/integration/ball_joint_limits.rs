@@ -44,11 +44,11 @@ fn extract_ball_angle(qpos: &[f64], offset: usize) -> f64 {
         qpos[offset + 3],
     );
     let norm = (w * w + x * x + y * y + z * z).sqrt();
-    let (w, x, y, z) = if norm > 1e-10 {
-        (w / norm, x / norm, y / norm, z / norm)
-    } else {
+    // A NaN norm goes on, to a NaN angle.
+    if norm <= 1e-10 {
         return 0.0;
-    };
+    }
+    let (w, x, y, z) = (w / norm, x / norm, y / norm, z / norm);
     let sin_half = (x * x + y * y + z * z).sqrt();
     if sin_half < 1e-10 {
         return 0.0;

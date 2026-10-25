@@ -158,6 +158,7 @@ mod tests {
     use super::*;
     use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
     use crate::types::make_frame;
+    use crate::validation::max_abs_or_nan;
 
     /// A swapped contact turns its normal round, keeps the first tangent and
     /// rebuilds the second: the frame `make_frame` builds from the reversed
@@ -185,15 +186,19 @@ mod tests {
         let (normal, frame) = make_frame(&-raw, &Vector3::zeros());
         let bits = |v: &Vector3<f64>| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
         assert_eq!(bits(&contact.normal), bits(&normal));
+        assert!(
+            frame.iter().all(|t| t.iter().all(|x| x.is_finite())),
+            "{frame:?}"
+        );
         assert_eq!(bits(&contact.frame[0]), bits(&frame[0]));
         assert_eq!(bits(&contact.frame[1]), bits(&frame[1]));
         assert!(
             frame[1].iter().any(|&x| x == 0.0),
             "the second tangent has no 0, so this test cannot see its sign"
         );
-        assert_ne!(
-            make_frame(&contact.normal, &Vector3::zeros()).0,
-            contact.normal,
+        assert!(
+            max_abs_or_nan(&(make_frame(&contact.normal, &Vector3::zeros()).0 - contact.normal))
+                > 0.0,
             "normalising the unit normal again must move it, or this test cannot see it"
         );
     }

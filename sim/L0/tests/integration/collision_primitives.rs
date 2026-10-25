@@ -47,6 +47,7 @@
 //! | Cylinder-Sphere | Side/cap/rim | Analytical |
 //! | Cylinder-Capsule | MuJoCo's `mjc_Convex` (GJK, EPA) | Not analytical |
 
+use sim_core::validation::max_or_nan;
 use sim_core::{GeomType, SdfGrid, ShapeSphere};
 use sim_mjcf::load_model;
 use std::sync::Arc;
@@ -686,7 +687,7 @@ fn box_box_face_face() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     let expected_depth = 0.1;
     assert!(

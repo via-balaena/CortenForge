@@ -234,13 +234,9 @@ fn flex_element_and_hierarchy_boxes_as_mujoco() {
             .copy_from_slice(model.qpos0.as_slice());
         data.forward(&model).expect("forward");
         assert_eq!(data.bvh_aabb_dyn, before, "{name}: midphase disabled");
-        assert_ne!(
-            data.flexelem_aabb
-                .iter()
-                .flatten()
-                .copied()
-                .collect::<Vec<f64>>(),
-            elements,
+        let boxes: Vec<f64> = data.flexelem_aabb.iter().flatten().copied().collect();
+        assert!(
+            boxes.iter().all(|x| x.is_finite()) && boxes != elements,
             "{name}: the element boxes move all the same"
         );
     }
@@ -285,6 +281,12 @@ fn a_tetrahedral_flex_with_no_active_layer_loads() {
     };
     let midphase = listed("");
     assert!(!midphase.is_empty(), "the sphere meets the element");
+    assert!(
+        midphase.iter().all(|(_, depth, pos)| {
+            f64::from_bits(*depth).is_finite() && pos.iter().all(|&b| f64::from_bits(b).is_finite())
+        }),
+        "the contacts are finite"
+    );
     assert_eq!(
         midphase,
         listed(r#"midphase="disable""#),

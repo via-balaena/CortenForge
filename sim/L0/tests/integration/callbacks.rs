@@ -806,6 +806,6 @@ fn thermostat_reads_its_own_channel_when_another_is_bad() {
         data.forward(&model).expect("forward");
         data.qfrc_passive[0]
     };
-    assert_ne!(noise(0.5), 0.0);
+    assert!(noise(0.5).abs() > 0.0);
     assert_eq!(noise(f64::NAN).to_bits(), noise(0.5).to_bits());
 }

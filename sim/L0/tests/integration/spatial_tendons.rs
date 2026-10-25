@@ -17,6 +17,7 @@
 //! All MuJoCo reference values confirmed against MuJoCo 3.4.0.
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -640,6 +641,11 @@ fn test_tendon_limit_forces() {
         // significantly. Use 2.8 rad and verify.
         data.qpos[1] = 2.8;
         data.forward(&model).expect("forward failed");
+        assert!(
+            data.ten_length[0].is_finite(),
+            "tendon length {}",
+            data.ten_length[0]
+        );
 
         if data.ten_length[0] < limit_min {
             // Good — we're below the lower limit with non-degenerate Jacobian.
@@ -650,7 +656,9 @@ fn test_tendon_limit_forces() {
             // Check that either qfrc_constraint or qfrc_passive provides a
             // non-zero restoring force on this DOF.
             let has_restoring_force = (0..model.nv)
-                .any(|d| (data.qfrc_constraint[d] + data.qfrc_passive[d]).abs() > 1e-10);
+                .map(|d| (data.qfrc_constraint[d] + data.qfrc_passive[d]).abs())
+                .fold(0.0, max_or_nan)
+                > 1e-10;
             assert!(
                 has_restoring_force,
                 "Expected non-zero restoring force when tendon length ({}) < limit_min ({limit_min}). \
@@ -669,6 +677,7 @@ fn test_tendon_limit_forces() {
             // act to reduce qpos[1] (decrease the angle), so the generalized
             // force on DOF 1 should be negative (same sign as J).
             let j = &data.ten_J[0];
+            assert!(j.iter().all(|x| x.is_finite()), "ten_J {j:?}");
             let force_direction_consistent = (0..model.nv).any(|d| {
                 let total_force = data.qfrc_constraint[d] + data.qfrc_passive[d];
                 if j[d].abs() > 1e-10 && total_force.abs() > 1e-10 {
@@ -695,7 +704,9 @@ fn test_tendon_limit_forces() {
             );
 
             let has_restoring_force = (0..model.nv)
-                .any(|d| (data2.qfrc_constraint[d] + data2.qfrc_passive[d]).abs() > 1e-10);
+                .map(|d| (data2.qfrc_constraint[d] + data2.qfrc_passive[d]).abs())
+                .fold(0.0, max_or_nan)
+                > 1e-10;
             assert!(
                 has_restoring_force,
                 "Expected non-zero restoring force when tendon length > limit_max"

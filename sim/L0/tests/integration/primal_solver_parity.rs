@@ -282,6 +282,10 @@ fn the_forward_pass_keeps_the_solver_s_constraint_force() {
     data.forward(&model).expect("forward");
     let mut again = data.clone();
     sim_core::constraint::mj_sol_primal_rows(&model, &mut again, false).expect("solve");
+    assert!(
+        data.qfrc_constraint.iter().all(|x| x.is_finite()),
+        "qfrc_constraint is finite"
+    );
     assert_bits(
         "qfrc_constraint",
         data.qfrc_constraint.as_slice(),

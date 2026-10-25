@@ -19,6 +19,7 @@
 //! - T20: 50-step trajectory match within 1e-6 accumulated tolerance
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_abs_or_nan;
 use sim_mjcf::{MjcfError, load_model, parse_mjcf_str};
 
 // ============================================================================
@@ -1477,13 +1478,10 @@ fn t46_ellipsoid_sleep_qfrc_fluid_zero() {
     }
 
     // Awake DOFs nonzero
-    let mut any_nonzero = false;
-    for i in 0..6 {
-        if data.qfrc_fluid[i] != 0.0 {
-            any_nonzero = true;
-        }
-    }
-    assert!(any_nonzero, "T46 awake body should have nonzero qfrc_fluid");
+    assert!(
+        max_abs_or_nan(data.qfrc_fluid.rows(0, 6)) > 0.0,
+        "T46 awake body should have nonzero qfrc_fluid"
+    );
 }
 
 // ============================================================================
@@ -1518,14 +1516,8 @@ fn t47_wind_sleep_keeps_the_reset_qfrc_fluid() {
     }
 
     // Awake body has nonzero forces (velocity + wind)
-    let mut any_nonzero = false;
-    for i in 0..6 {
-        if data.qfrc_fluid[i] != 0.0 {
-            any_nonzero = true;
-        }
-    }
     assert!(
-        any_nonzero,
+        max_abs_or_nan(data.qfrc_fluid.rows(0, 6)) > 0.0,
         "T47 awake body should have nonzero qfrc_fluid with wind"
     );
 }

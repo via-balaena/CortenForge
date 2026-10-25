@@ -6,6 +6,7 @@
 
 use approx::assert_relative_eq;
 use sim_core::Model;
+use sim_core::validation::{max_abs_or_nan, min_or_nan};
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -497,7 +498,7 @@ fn ac4_cloth_on_sphere_contact() {
         .flexvert_xpos
         .iter()
         .map(|v| v.z)
-        .fold(f64::INFINITY, f64::min);
+        .fold(f64::INFINITY, min_or_nan);
     assert!(
         min_z > -2.0,
         "cloth fell through sphere: min_z = {:.3}, expected > -2.0 \
@@ -2344,7 +2345,7 @@ fn spec_a_t6_constraint_jacobian_scatter() {
         let rownnz = model.flexedge_J_rownnz[e];
         if rownnz > 0 {
             let j_slice = &data.flexedge_J[rowadr..rowadr + rownnz];
-            let has_nonzero = j_slice.iter().any(|&v| v != 0.0);
+            let has_nonzero = max_abs_or_nan(j_slice) > 0.0;
             assert!(has_nonzero, "edge {e} J should have nonzero values");
         }
     }
@@ -2578,7 +2579,7 @@ fn spec_a_t10_multi_flex_model() {
         let rowadr = model.flexedge_J_rowadr[e];
         let rownnz = model.flexedge_J_rownnz[e];
         let j_slice = &data.flexedge_J[rowadr..rowadr + rownnz];
-        let has_nonzero = j_slice.iter().any(|&v| v != 0.0);
+        let has_nonzero = max_abs_or_nan(j_slice) > 0.0;
         assert!(has_nonzero, "edge {e} J should have nonzero values");
     }
 
@@ -2586,7 +2587,7 @@ fn spec_a_t10_multi_flex_model() {
     for _ in 0..5 {
         data.step(&model).expect("step failed");
     }
-    let has_nonzero_spring = (0..model.nv).any(|i| data.qfrc_spring[i] != 0.0);
+    let has_nonzero_spring = max_abs_or_nan(&data.qfrc_spring) > 0.0;
     assert!(
         has_nonzero_spring,
         "multi-flex should produce spring forces"
@@ -3736,11 +3737,11 @@ fn a_flex_marked_rigid_keeps_no_edge_jacobian_velocity_or_spring_force() {
     data.qvel[model.flexvert_dofadr[2]] = 0.5;
     data.forward(&model).expect("forward");
     assert!(
-        data.qfrc_spring.iter().any(|&f| f != 0.0),
+        max_abs_or_nan(&data.qfrc_spring) > 0.0,
         "stretched: a spring force"
     );
     assert!(
-        data.flexedge_velocity.iter().any(|&v| v != 0.0),
+        max_abs_or_nan(&data.flexedge_velocity) > 0.0,
         "moving: a velocity"
     );
 

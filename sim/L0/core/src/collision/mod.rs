@@ -1176,6 +1176,7 @@ mod spec_d_tests {
     use crate::mesh::TriangleMeshData;
     use crate::sdf::{PhysicsShape, SdfGrid, ShapeConvex};
     use crate::types::{ENABLE_MULTICCD, GeomType, Model};
+    use crate::validation::{max_or_nan, min_or_nan};
     use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
     use std::sync::Arc;
 
@@ -1367,8 +1368,8 @@ mod spec_d_tests {
 
         // All contacts should have approximately equal depth (flat face contact)
         let depths: Vec<f64> = contacts.iter().map(|c| c.depth).collect();
-        let max_depth = depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let min_depth = depths.iter().copied().fold(f64::INFINITY, f64::min);
+        let max_depth = depths.iter().copied().fold(f64::NEG_INFINITY, max_or_nan);
+        let min_depth = depths.iter().copied().fold(f64::INFINITY, min_or_nan);
         assert!(
             (max_depth - min_depth).abs() < 0.01,
             "all contacts should have similar depth on flat face, range: {min_depth:.4}..{max_depth:.4}",

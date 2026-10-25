@@ -4,6 +4,7 @@
 //! in `sim/docs/todo/future_work_4.md`, section 12.
 
 use approx::assert_relative_eq;
+use sim_core::validation::{max_abs_or_nan, max_or_nan};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_DAMPER, DISABLE_GRAVITY,
     DISABLE_SPRING, DerivativeConfig, GainType, Integrator, MjStage, Model,
@@ -114,22 +115,10 @@ fn add_filter_actuator(model: &mut Model, jnt_id: usize, tau: f64) {
     model.na += 1;
 }
 
-/// Compute max relative error between two matrices (element-wise).
-/// Denominator uses max(|a|, |b|, floor) to avoid div-by-zero.
+/// `sim_core::max_relative_error` without its location: the largest
+/// `|a − b| / max(|a|, |b|, floor)` over the entries, or the first NaN.
 fn max_relative_error(a: &nalgebra::DMatrix<f64>, b: &nalgebra::DMatrix<f64>, floor: f64) -> f64 {
-    assert_eq!(a.nrows(), b.nrows());
-    assert_eq!(a.ncols(), b.ncols());
-    let mut max_err = 0.0_f64;
-    for r in 0..a.nrows() {
-        for c in 0..a.ncols() {
-            let va = a[(r, c)];
-            let vb = b[(r, c)];
-            let denom = va.abs().max(vb.abs()).max(floor);
-            let err = (va - vb).abs() / denom;
-            max_err = max_err.max(err);
-        }
-    }
-    max_err
+    sim_core::max_relative_error(a, b, floor).0
 }
 
 /// FD of qfrc_bias w.r.t. qvel for a single column (column `col`).
@@ -287,7 +276,7 @@ fn test_b_matrix_structure() {
             let expected = h * vel_block[(r, c)];
             let actual = pos_block[(r, c)];
             // Semi-implicit Euler: ∂q⁺/∂ctrl = h · ∂v⁺/∂ctrl
-            if expected.abs() > 1e-10 {
+            if expected.is_nan() || expected.abs() > 1e-10 {
                 let rel_err = (actual - expected).abs() / expected.abs().max(1e-10);
                 assert!(
                     rel_err < 1e-3,
@@ -1805,7 +1794,7 @@ fn test_pos_deriv_transition_ball_free() {
                 continue; // absolute tolerance: skip FD noise in near-zero entries
             }
             let denom = h_mat[(r, c)].abs().max(f_mat[(r, c)].abs()).max(1e-6);
-            max_err = max_err.max(diff / denom);
+            max_err = max_or_nan(max_err, diff / denom);
         }
     }
     assert!(
@@ -1921,7 +1910,7 @@ fn test_pos_deriv_disabled_springs() {
     mjd_smooth_pos(&model, &mut data);
     // With springs disabled, gravity off, no actuators, and qvel=0,
     // all position derivatives should be zero.
-    let max_val = data.qDeriv_pos.abs().max();
+    let max_val = max_abs_or_nan(&data.qDeriv_pos);
     assert!(
         max_val < 1e-15,
         "Disabled springs: qDeriv_pos should be ~zero, max = {max_val}"
@@ -1959,6 +1948,7 @@ fn test_pos_deriv_fd_convergence() {
     for &eps in &eps_vals {
         let fd = fd_dqacc_dqpos(&model, &data, eps);
         let err = max_relative_error(&analytical, &fd, 1e-6);
+        assert!(err.is_finite(), "FD convergence: error {err} at eps={eps}");
         // Each step should reduce error (at least not increase by much).
         // At extremely small analytical error (< 1e-7), FP noise in FD dominates
         // and monotonic convergence is not guaranteed.
@@ -2203,7 +2193,7 @@ fn test_pos_deriv_zero_model() {
     data.forward(&model).unwrap();
 
     mjd_smooth_pos(&model, &mut data);
-    let max_val = data.qDeriv_pos.abs().max();
+    let max_val = max_abs_or_nan(&data.qDeriv_pos);
     assert!(
         max_val < 1e-15,
         "Zero-derivative model: qDeriv_pos should be zero, max = {max_val}"
@@ -2995,7 +2985,7 @@ fn assert_transition_matches_fd_with_quaternion_joints(integrator: Option<Integr
     .expect("fd");
     let hybrid =
         mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).expect("hybrid");
-    let err = (&fd.A - &hybrid.A).abs().max();
+    let err = max_abs_or_nan(&(&fd.A - &hybrid.A));
     assert!(
         err < 1e-6,
         "{:?}: analytic A vs FD A: max abs difference {err}",
@@ -3150,7 +3140,7 @@ fn hybrid_takes_finite_differences_under_an_active_constraint() {
         hybrid.A, fd.A,
         "without a constraint the hybrid is analytic"
     );
-    assert!((&hybrid.A - &fd.A).abs().max() < 1e-9);
+    assert!(max_abs_or_nan(&(&hybrid.A - &fd.A)) < 1e-9);
 }
 
 /// MuJoCo 3.5.0's `mjd_inverseFD` takes every column through `mj_inverseSkip`,
@@ -4228,7 +4218,7 @@ fn check_transition_with_a_stateful_plugin(integrator: &str) {
     let mut moved = data.clone();
     moved.plugin_state[0] = 0.0;
     moved.step(&model).expect("step");
-    assert_ne!(moved.qvel[0], stepped.qvel[0]);
+    assert!((moved.qvel[0] - stepped.qvel[0]).abs() > 0.0);
 
     assert_transition_matches_a_column_at_a_time(integrator, &model, &data);
 }
@@ -4797,12 +4787,15 @@ fn a_sleeping_tendon_adds_no_position_derivative() {
             .map(|x| x.to_bits())
             .collect::<Vec<_>>()
     };
-    assert_eq!(derivative(50.0, true), derivative(0.0, true), "qDeriv_pos");
-    assert_ne!(
-        derivative(50.0, false),
-        derivative(0.0, false),
-        "awake, the spring's term shows"
+    let asleep = derivative(50.0, true);
+    assert_eq!(asleep, derivative(0.0, true), "qDeriv_pos");
+    let (with, without) = (derivative(50.0, false), derivative(0.0, false));
+    let finite = |bits: &[u64]| bits.iter().all(|&b| f64::from_bits(b).is_finite());
+    assert!(
+        finite(&asleep) && finite(&with) && finite(&without),
+        "qDeriv_pos is finite"
     );
+    assert_ne!(with, without, "awake, the spring's term shows");
 }
 
 /// An awake spatial tendon whose row is 0 at this state (its site moves
@@ -4865,6 +4858,7 @@ fn an_awake_tendon_with_a_zero_row_keeps_its_position_derivative() {
             derivative(&b_asleep, true, [true, false]),
         ),
     ] {
+        assert!(on.iter().all(|x| x.is_finite()), "{name}: qDeriv_pos");
         assert_eq!(
             on.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
             off.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),

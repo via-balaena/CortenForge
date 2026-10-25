@@ -411,6 +411,7 @@ fn add_6dof_motors(model: &mut Model) {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+    use crate::validation::{max_abs_or_nan, max_or_nan};
 
     fn step_once(model: &Model) {
         let mut data = model.make_data();
@@ -425,7 +426,7 @@ mod tests {
         let mut peak = 0.0_f64;
         for _ in 0..n {
             data.step(model).expect("step");
-            peak = peak.max(data.qvel.iter().fold(0.0, |m, &v| m.max(v.abs())));
+            peak = max_or_nan(peak, max_abs_or_nan(&data.qvel));
         }
         peak
     }

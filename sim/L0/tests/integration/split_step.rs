@@ -64,6 +64,13 @@ fn split_step_implicit_equivalence() {
 
     let (qpos_step, qvel_step) = run_step(&model, 100);
     let (qpos_split, qvel_split) = run_split(&model, 100);
+    assert!(
+        qpos_step
+            .iter()
+            .chain(qvel_step.iter())
+            .all(|x| x.is_finite()),
+        "the stepped state is finite"
+    );
 
     for i in 0..qpos_step.len() {
         assert!(

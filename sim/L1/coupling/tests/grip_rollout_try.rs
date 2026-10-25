@@ -148,6 +148,10 @@ fn try_hold_gradient_ok_matches_panic_path_when_feasible() {
     let (c1, m1, t1) = build(3.0e3)
         .try_coupled_trajectory_design_policy_hold_gradient(&LinearFeedback, &params, 5, 0.25)
         .expect("feasible design must solve");
+    assert!(
+        c0.is_finite() && m0.is_finite() && t0.iter().all(|x| x.is_finite()),
+        "the cost and its gradient are finite"
+    );
     assert_eq!(c0.to_bits(), c1.to_bits(), "cost byte-identical");
     assert_eq!(m0.to_bits(), m1.to_bits(), "μ-grad byte-identical");
     assert_eq!(t0.len(), t1.len(), "θ-grad length");

@@ -317,6 +317,10 @@ fn delayed_sensor_reads_the_value_one_step_earlier() {
             data.ctrl[0] = (0.9 * f64::from(k)).sin() + 0.05 * f64::from(k);
             data.step(&model).expect("step");
             let now = data.sensordata.as_slice().to_vec();
+            assert!(
+                now.iter().all(|x| x.is_finite()),
+                "{integrator:?} step {k}: sensordata"
+            );
             if let Some(before) = &previous {
                 for pair in [0, 2, 4, 6] {
                     let (undelayed, delayed) = (pair, pair + 1);

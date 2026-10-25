@@ -14,6 +14,7 @@
 
 use approx::assert_relative_eq;
 use sim_core::EqualityType;
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -425,7 +426,7 @@ fn ac10_solref_sensitivity() {
         - (data_soft.ten_length[1] - model_soft.tendon_length0[1]))
         .abs();
 
-    let ratio = violation_soft / violation_stiff.max(1e-15);
+    let ratio = violation_soft / max_or_nan(violation_stiff, 1e-15);
 
     assert!(
         ratio > 3.0,

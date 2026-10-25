@@ -326,6 +326,7 @@ fn fwdinv_compares_in_the_step_as_mujoco() {
                 &plain.qfrc_constraint,
             ),
         ] {
+            assert!(b.iter().all(|x| x.is_finite()), "{name}: {field}");
             assert_eq!(
                 bits(a.as_slice()),
                 bits(b.as_slice()),
@@ -504,7 +505,7 @@ fn inverse_takes_no_drift_baseline() {
         .copy_from_slice(&floats(&case["qpos"]));
     data.inverse(&model).expect("inverse");
     assert!(
-        data.energy_potential != 0.0,
+        data.energy_potential.abs() > 0.0,
         "the inverse computed no energy"
     );
     assert_eq!(data.energy_initial, 0.0, "taken by the inverse");
@@ -968,6 +969,14 @@ fn the_fwdinv_comparison_leaves_the_transition_derivatives_as_they_are() {
             let t = mjd_transition_fd(&model, &data, &config).expect("mjd_transition_fd");
             matrices.push((bits(t.A.as_slice()), bits(t.B.as_slice()), t.B.clone()));
         }
+        assert!(
+            matrices[0]
+                .0
+                .iter()
+                .chain(&matrices[0].1)
+                .all(|&b| f64::from_bits(b).is_finite()),
+            "{name}: A and B"
+        );
         assert_eq!(matrices[0].0, matrices[1].0, "{name}: A with both flags");
         assert_eq!(
             matrices[0].1, matrices[1].1,

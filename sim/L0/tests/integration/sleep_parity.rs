@@ -1413,7 +1413,7 @@ fn ten_force_is_the_force_the_passive_pass_applies() {
     for (name, xml) in [("zero row", ZERO_ROW_TENDON), ("static", STATIC_TENDON)] {
         let off = forward_tendon_scene(xml, false, false).ten_force[0];
         assert!(
-            off != 7.0 && off != 0.0,
+            (off - 7.0).abs() > 0.0 && off.abs() > 0.0,
             "{name}: sleep disabled, a force is made"
         );
         let awake = forward_tendon_scene(xml, false, true).ten_force[0];

@@ -368,6 +368,12 @@ impl Data {
 /// Uses `floor` to prevent division-by-zero for near-zero entries:
 /// `rel_error(i,j) = |a(i,j) − b(i,j)| / max(|a(i,j)|, |b(i,j)|, floor)`
 ///
+/// An entry where `a` and `b` are finite and equal has error 0, whatever
+/// `floor` is. The first entry whose error is NaN is returned as the maximum,
+/// so a check `err < tol` fails on it. A NaN in either matrix gives one, and
+/// so does an infinite entry (`inf / inf`, or `inf − inf` where both are
+/// infinite).
+///
 /// # Panics
 ///
 /// Panics if `a` and `b` have different dimensions.
@@ -383,7 +389,15 @@ pub fn max_relative_error(a: &DMatrix<f64>, b: &DMatrix<f64>, floor: f64) -> (f6
             let va = a[(r, c)];
             let vb = b[(r, c)];
             let denom = va.abs().max(vb.abs()).max(floor);
-            let err = (va - vb).abs() / denom;
+            let difference = (va - vb).abs();
+            let err = if difference == 0.0 {
+                0.0
+            } else {
+                difference / denom
+            };
+            if err.is_nan() {
+                return (err, (r, c));
+            }
             if err > max_err {
                 max_err = err;
                 max_loc = (r, c);
@@ -397,6 +411,7 @@ pub fn max_relative_error(a: &DMatrix<f64>, b: &DMatrix<f64>, floor: f64) -> (f6
 ///
 /// Returns `(max_error_A, max_error_B)` — the max relative errors between
 /// pure-FD and hybrid A/B matrices. The caller checks against desired tolerance.
+/// An error is NaN where an entry is NaN or infinite ([`max_relative_error`]).
 /// Where [`mjd_transition`] takes pure FD (an active constraint row in `data`,
 /// and the other cases its doc names), this compares pure FD with itself and
 /// returns `(0, 0)`.
@@ -460,4 +475,37 @@ pub fn fd_convergence_check(
     let d2 = mjd_transition_fd(model, data, &c2)?;
     let (err, _) = max_relative_error(&d1.A, &d2.A, 1e-10);
     Ok(err < tol)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_relative_error_returns_the_first_nan_entry() {
+        let a = DMatrix::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        let mut b = DMatrix::from_row_slice(2, 2, &[1.0, 2.5, 3.0, 4.0]);
+        let (err, loc) = max_relative_error(&a, &b, 1e-10);
+        assert!(
+            (err - 0.2).abs() < 1e-15 && loc == (0, 1),
+            "{err} at {loc:?}"
+        );
+
+        b[(1, 0)] = f64::NAN;
+        b[(1, 1)] = f64::NAN;
+        let (err, loc) = max_relative_error(&a, &b, 1e-10);
+        assert!(err.is_nan() && loc == (1, 0), "{err} at {loc:?}");
+
+        let mut inf = a.clone();
+        inf[(1, 1)] = f64::INFINITY;
+        let (err, loc) = max_relative_error(&a, &inf, 1e-10);
+        assert!(err.is_nan() && loc == (1, 1), "{err} at {loc:?}");
+
+        // Two equal zeros are no error, even with a floor that would divide 0 by 0.
+        let zeros = DMatrix::from_row_slice(1, 2, &[0.0, 1.0]);
+        for floor in [0.0, -1.0, f64::NAN] {
+            let (err, _) = max_relative_error(&zeros, &zeros, floor);
+            assert!(err == 0.0, "floor {floor}: {err}");
+        }
+    }
 }

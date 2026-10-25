@@ -21,7 +21,7 @@ fn assert_cone_satisfied(data: &sim_core::Data, tol: f64) {
         if matches!(data.efc_type[i], ConstraintType::ContactElliptic) {
             let dim = data.efc_dim[i];
             let fn_val = data.efc_force[i];
-            if fn_val > 1e-10 {
+            if fn_val.is_nan() || fn_val > 1e-10 {
                 let mu = data.efc_mu[i];
                 let mut ssq = 0.0;
                 for j in 1..dim {

@@ -1696,6 +1696,7 @@ fn test_s32_pyramidal_nonzero_k() {
         if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
             // All facets share the same pos (negative = penetrating)
             let pos = data.efc_pos[i];
+            assert!(pos.is_finite(), "facet {i}: efc_pos {pos}");
             if pos < 0.0 {
                 // Penetrating: aref should be nonzero (K*imp*pos contributes)
                 let aref = data.efc_aref[i];

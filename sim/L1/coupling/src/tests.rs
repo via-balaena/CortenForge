@@ -4,6 +4,7 @@
 
 use super::*;
 use sim_core::SpatialVector;
+use sim_core::validation::{max_or_nan, min_or_nan};
 use sim_mjcf::load_model;
 use sim_ml_chassis::Tensor;
 use sim_ml_chassis::autograd::VjpOp;
@@ -232,7 +233,7 @@ fn differentiability_probes_are_finite_and_consistent() {
     let f_fixed = c.contact_force_at_height(h);
     let f_resolved = c.resolved_contact_force(h);
     assert!(
-        f_fixed.z != 0.0 && f_resolved.z.is_finite(),
+        f_fixed.z.abs() > 0.0 && f_resolved.z.is_finite(),
         "engaged contact force should be nonzero/finite: fixed {f_fixed:?}, resolved {f_resolved:?}"
     );
 
@@ -1053,7 +1054,7 @@ fn contact_wrench_node_matches_readout_fd() {
     let mut worst = 0.0_f64; // max |fd − analytic| / scale over all checked entries
     let mut check = |fd: f64, an: f64, scale: f64| {
         let rel = (fd - an).abs() / scale.max(1.0);
-        worst = worst.max(rel);
+        worst = max_or_nan(worst, rel);
     };
     // Scales per channel (the dominant Jacobian magnitudes seen in this scene).
     let sx = 1.0e3;
@@ -1219,7 +1220,9 @@ fn step_kinematic_poses_at_set_center_and_engages() {
         .soft_positions()
         .iter()
         .zip(&rest)
-        .any(|(a, b)| (a - b).abs() > 1e-9);
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, max_or_nan)
+        > 1e-9;
     assert!(moved, "kinematic step should deform the soft body");
 }
 
@@ -1323,7 +1326,7 @@ fn sphere_contact_wrench_node_matches_readout_fd() {
     let mut worst = 0.0_f64;
     let mut check = |fd: f64, an: f64, scale: f64| {
         let rel = (fd - an).abs() / scale.max(1.0);
-        worst = worst.max(rel);
+        worst = max_or_nan(worst, rel);
     };
     let sx = 1.0e3;
     let sh = 1.0e5;
@@ -1487,7 +1490,7 @@ fn sphere_contact_wrench_node_centre_matches_readout_fd() {
         let wm = wrench_of(&c, &positions);
         for k in 0..6 {
             let fd = (wp[k] - wm[k]) / (2.0 * d);
-            worst = worst.max((fd - pose_rows[k][axis]).abs() / scale);
+            worst = max_or_nan(worst, (fd - pose_rows[k][axis]).abs() / scale);
         }
     }
     assert!(
@@ -1649,7 +1652,7 @@ fn friction_wrench_node_centre_matches_readout_fd() {
         let wm = wrench_of(&mut c, base - d * dir);
         for k in 0..6 {
             let fd = (wp[k] - wm[k]) / (2.0 * d);
-            worst = worst.max((fd - pose_rows[k][axis]).abs() / scale);
+            worst = max_or_nan(worst, (fd - pose_rows[k][axis]).abs() / scale);
         }
     }
     assert!(
@@ -1885,7 +1888,7 @@ fn bonded_sandwich_conserves_and_is_two_way() {
             .iter()
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
                 let rz = r[3 * v as usize + 2];
-                (lo.min(rz), hi.max(rz))
+                (min_or_nan(lo, rz), max_or_nan(hi, rz))
             });
     assert!(
         min_z < 0.0 && max_z > 0.0,

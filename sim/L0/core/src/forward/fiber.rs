@@ -1694,9 +1694,8 @@ mod tests {
         };
         let mut no_passive = explicit.clone();
         no_passive.actuator_biastype[0] = BiasType::None;
-        assert_ne!(
-            force(&explicit),
-            force(&no_passive),
+        assert!(
+            (force(&explicit) - force(&no_passive)).abs() > 0.0,
             "the passive force is 0"
         );
         assert_eq!(force(&auto), force(&explicit));
@@ -1820,7 +1819,7 @@ mod tests {
         // With actearly=true and ctrl=1.0, act=0.0, the predicted next-step
         // activation should be > 0, leading to nonzero force.
         assert!(
-            data.actuator_force[0] != 0.0,
+            data.actuator_force[0].abs() > 0.0,
             "force should be nonzero with actearly=true, got {}",
             data.actuator_force[0]
         );

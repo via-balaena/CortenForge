@@ -670,6 +670,7 @@ fn tendon_implicit_spatial_tendon_basic() {
     );
 
     // Cross-coupling
+    assert!(j1.is_finite(), "Spatial tendon J[1] is {j1}");
     if j1.abs() > 1e-6 {
         assert!(
             data.qacc[1].abs() > 1e-6,
@@ -1211,6 +1212,11 @@ fn implicitspringdamper_keeps_a_sleeping_dofs_smooth_force_as_euler_does() {
         for _ in 0..3 {
             data.step(model).unwrap();
             assert!(!data.tree_awake[1], "{:?}: b woke", model.integrator);
+            assert!(
+                data.qfrc_smooth[1].is_finite() && data.qacc_smooth[1].is_finite(),
+                "{:?}: b's smooth force",
+                model.integrator
+            );
             kept.push((data.qfrc_smooth[1].to_bits(), data.qacc_smooth[1].to_bits()));
         }
         runs.push(kept);

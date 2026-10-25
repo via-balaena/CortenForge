@@ -405,6 +405,7 @@ mod tests {
         assert_eq!(swapped.len(), 1);
         let bits = |v: &Vector3<f64>| v.map(f64::to_bits);
         assert_eq!(swapped[0].depth.to_bits(), c.depth.to_bits());
+        assert!(c.pos.iter().all(|x| x.is_finite()), "pos {}", c.pos);
         assert_eq!(bits(&swapped[0].pos), bits(&c.pos));
         assert_eq!(bits(&swapped[0].normal), bits(&c.normal));
 

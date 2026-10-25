@@ -12,6 +12,7 @@
 
 use approx::assert_relative_eq;
 use nalgebra::{UnitQuaternion, Vector3};
+use sim_core::validation::{max_or_nan, min_or_nan};
 use sim_mjcf::load_model;
 use std::f64::consts::PI;
 use std::time::Instant;
@@ -966,8 +967,8 @@ fn test_energy_conservation_simple_pendulum() {
     for _ in 0..steps {
         data.step(&model).expect("step failed");
         let e = data.total_energy();
-        max_energy = max_energy.max(e);
-        min_energy = min_energy.min(e);
+        max_energy = max_or_nan(max_energy, e);
+        min_energy = min_or_nan(min_energy, e);
     }
 
     let final_energy = data.total_energy();
@@ -1234,7 +1235,7 @@ fn test_contact_ball_stack_stability() {
 
         // Check ball1 doesn't penetrate ground (z >= radius - tolerance)
         let ball1_z = data.xpos[1].z;
-        let penetration1 = (0.5 - ball1_z).max(0.0) * 1000.0; // Convert to mm
+        let penetration1 = max_or_nan(0.5 - ball1_z, 0.0) * 1000.0; // Convert to mm
 
         // Debug: Print first 20 steps
         if i < 20 {
@@ -1258,7 +1259,7 @@ fn test_contact_ball_stack_stability() {
         // Check ball2 doesn't penetrate ball1 (distance >= 2*radius - tolerance)
         let _ball2_z = data.xpos[2].z; // For debugging
         let ball_dist_12 = (data.xpos[2] - data.xpos[1]).norm();
-        let penetration12 = (1.0 - ball_dist_12).max(0.0) * 1000.0; // 2*0.5 = 1.0
+        let penetration12 = max_or_nan(1.0 - ball_dist_12, 0.0) * 1000.0; // 2*0.5 = 1.0
         assert!(
             penetration12 < max_penetration_mm,
             "Ball 2 penetrates ball 1 by {:.2}mm at step {} (dist={:.4})",
@@ -1269,7 +1270,7 @@ fn test_contact_ball_stack_stability() {
 
         // Check ball3 doesn't penetrate ball2
         let ball_dist_23 = (data.xpos[3] - data.xpos[2]).norm();
-        let penetration23 = (1.0 - ball_dist_23).max(0.0) * 1000.0;
+        let penetration23 = max_or_nan(1.0 - ball_dist_23, 0.0) * 1000.0;
         assert!(
             penetration23 < max_penetration_mm,
             "Ball 3 penetrates ball 2 by {:.2}mm at step {} (dist={:.4})",
@@ -1881,7 +1882,7 @@ fn test_mjcf_joint_limits() {
     // SPEC: Limits enforced with < 1% overshoot
     // With soft penalty limits, we target < 5% overshoot as acceptable
     // (true hard limits would require constraint solver)
-    let overshoot = (data.qpos[0] - 1.0).max(0.0);
+    let overshoot = max_or_nan(data.qpos[0] - 1.0, 0.0);
     let overshoot_percent = overshoot / 1.0 * 100.0;
     assert!(
         overshoot_percent < 5.0,
@@ -2095,8 +2096,8 @@ fn test_joint_limit_solref() {
         data_stiff.step(&model_stiff).expect("stiff step failed");
         data_soft.step(&model_soft).expect("soft step failed");
 
-        max_stiff = max_stiff.max(data_stiff.qpos[0] - 1.0);
-        max_soft = max_soft.max(data_soft.qpos[0] - 1.0);
+        max_stiff = max_or_nan(max_stiff, data_stiff.qpos[0] - 1.0);
+        max_soft = max_or_nan(max_soft, data_soft.qpos[0] - 1.0);
     }
 
     // Soft limit should allow more penetration than stiff limit
@@ -2181,6 +2182,10 @@ fn test_contact_solref_from_geoms() {
 
         let z_stiff = data_stiff.qpos[2];
         let z_soft = data_soft.qpos[2];
+        assert!(
+            z_stiff.is_finite() && z_soft.is_finite(),
+            "the balls' heights are finite"
+        );
 
         // Detect when ball hits ground (z < 0.15 = radius + small margin)
         if z_stiff < 0.15 {

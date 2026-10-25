@@ -3,6 +3,7 @@
 #![cfg(test)]
 
 use bytemuck::Zeroable;
+use sim_core::validation::min_or_nan;
 use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Monitors, PhaseOutputs, Snapshot, TopMode};
 use sim_soft_explicit::stepping::{RunError, Stepper, StepperConfig};
@@ -73,9 +74,9 @@ fn a_new_pose_track_between_steps_leaves_the_work_as_a_read_before_it_would() {
         gpu.monitors().obstacle_work
     };
     let (with_read, without) = (work(true, true), work(false, true));
-    assert!(with_read != 0.0, "the obstacle does work");
+    assert!(with_read.abs() > 0.0, "the obstacle does work");
     assert!(
-        with_read != work(false, false),
+        (with_read - work(false, false)).abs() > 0.0,
         "the new track changed nothing: {with_read:e}"
     );
     assert_eq!(
@@ -99,7 +100,10 @@ fn a_read_and_an_estimate_leave_the_steps_outputs_and_count_alone() {
     step(&mut gpu, &f, f.time);
     let before = gpu.phase_outputs();
     let inverted = before.dilations.iter().filter(|&&d| d <= -1.0).count() as u64;
-    let deepest = before.dilations.iter().fold(0.0_f64, |m, &d| m.min(d));
+    let deepest = before
+        .dilations
+        .iter()
+        .fold(0.0_f64, |m, &d| min_or_nan(m, d));
     assert!(
         inverted > 0 && deepest < -1.5,
         "{inverted} inverted, J − 1 down to {deepest}"
@@ -166,7 +170,13 @@ fn one_pass_a_step_is_the_same_as_a_pass_a_dispatch() {
             ]
             .concat()
         };
-        assert!(bits(&one) == bits(&each), "{}: the runs differ", f.name);
+        let one_bits = bits(&one);
+        assert!(
+            one_bits.iter().all(|&b| f64::from_bits(b).is_finite()),
+            "{}: the run is finite",
+            f.name
+        );
+        assert!(one_bits == bits(&each), "{}: the runs differ", f.name);
     }
 }
 
@@ -425,6 +435,12 @@ fn reading_every_step_or_every_hundred_gives_the_same_run() {
     };
     let (every, hundred) = (run(1), run(100));
     assert!(hundred.2 > super::super::LOG_ROWS_AT_START, "the log grew");
+    assert!(
+        snapshot_bits(&every.0)
+            .iter()
+            .all(|&b| f64::from_bits(b).is_finite()),
+        "the state is finite"
+    );
     assert!(
         snapshot_bits(&every.0) == snapshot_bits(&hundred.0),
         "the state differs"

@@ -13,6 +13,7 @@
 
 use approx::assert_relative_eq;
 use sim_core::Integrator;
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 use std::f64::consts::PI;
 
@@ -167,7 +168,7 @@ fn max_energy_drift(h: f64, initial_angle: f64) -> f64 {
         // Need a fresh forward() for accurate energy.
         data.forward(&model).expect("forward failed");
         let drift = ((data.total_energy() - e0) / e0).abs();
-        max_drift = max_drift.max(drift);
+        max_drift = max_or_nan(max_drift, drift);
     }
     max_drift
 }

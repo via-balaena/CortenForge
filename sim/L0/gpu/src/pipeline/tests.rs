@@ -28,6 +28,7 @@
 const _: () = ();
 
 use nalgebra::{UnitQuaternion, Vector3};
+use sim_core::validation::max_or_nan;
 use std::f64::consts::PI;
 
 use sim_core::types::{Data, MjJointType, Model};
@@ -101,9 +102,12 @@ fn compare_xpos(
         let dx = (g[0] - c.x as f32).abs();
         let dy = (g[1] - c.y as f32).abs();
         let dz = (g[2] - c.z as f32).abs();
-        let max_err = dx.max(dy).max(dz);
+        let max_err = [dx, dy, dz]
+            .into_iter()
+            .map(f64::from)
+            .fold(0.0, max_or_nan);
         assert!(
-            max_err < tol,
+            max_err < f64::from(tol),
             "{label}[{i}]: GPU=({:.6},{:.6},{:.6}) CPU=({:.6},{:.6},{:.6}) err={max_err:.2e}",
             g[0],
             g[1],
@@ -136,9 +140,12 @@ fn compare_xquat(
         let dy = (g[1] - sign * cc.y as f32).abs();
         let dz = (g[2] - sign * cc.z as f32).abs();
         let dw = (g[3] - sign * cc.w as f32).abs();
-        let max_err = dx.max(dy).max(dz).max(dw);
+        let max_err = [dx, dy, dz, dw]
+            .into_iter()
+            .map(f64::from)
+            .fold(0.0, max_or_nan);
         assert!(
-            max_err < tol,
+            max_err < f64::from(tol),
             "{label}[{i}]: GPU=({:.6},{:.6},{:.6},{:.6}) CPU=({:.6},{:.6},{:.6},{:.6}) err={max_err:.2e}",
             g[0],
             g[1],
@@ -932,7 +939,10 @@ fn t13b_qfrc_bias_gravity_rotated_free_body() {
     }
     // Guard against silent regression to the zero-torque tautology: the angular
     // DOFs (3–5) must carry real signal for the frame to be discriminated.
-    let angular_signal = (3..6).any(|d| gpu_bias[d].abs() > 1e-3);
+    let angular_signal = (3..6)
+        .map(|d| f64::from(gpu_bias[d].abs()))
+        .fold(0.0, max_or_nan)
+        > f64::from(1e-3_f32);
     assert!(
         angular_signal,
         "T13b must exercise non-zero angular gravity to test the body-frame projection"
@@ -975,7 +985,10 @@ fn t14_qfrc_bias_coriolis_spinning() {
     }
 
     // Verify Coriolis is non-zero (angular DOFs should have non-zero bias)
-    let has_coriolis = (3..6).any(|d| gpu_bias[d].abs() > 1e-6);
+    let has_coriolis = (3..6)
+        .map(|d| f64::from(gpu_bias[d].abs()))
+        .fold(0.0, max_or_nan)
+        > f64::from(1e-6_f32);
     assert!(has_coriolis, "Expected non-zero Coriolis on angular DOFs");
 
     eprintln!("  T14 passed: qfrc_bias Coriolis matches CPU for spinning body");
@@ -1477,6 +1490,12 @@ fn t20_sdf_sdf_contacts_pipeline() {
     // Some contacts should have nonzero depth and X-normal component.
     // Note: SDF-SDF symmetric dispatches (A→B, B→A) produce contacts with
     // opposite normals, so the NET sum cancels. Check individual contacts.
+    assert!(
+        contacts
+            .iter()
+            .all(|c| c.depth.is_finite() && c.normal.iter().all(|n| n.is_finite())),
+        "every contact's depth and normal are finite"
+    );
     let deep_contacts: Vec<_> = contacts.iter().filter(|c| c.depth > 0.01).collect();
     eprintln!("  T20: {} contacts with depth > 0.01", deep_contacts.len());
     assert!(
@@ -2293,7 +2312,7 @@ fn t33_step_applies_implicit_damping() {
     let qvel_diff = |a: &Data, b: &Data| {
         (0..model.nv)
             .map(|i| (a.qvel[i] - b.qvel[i]).abs())
-            .fold(0.0_f64, f64::max)
+            .fold(0.0_f64, max_or_nan)
     };
 
     // (1) GPU-damped tracks CPU-damped: the eulerdamp solve is correct.
@@ -2552,7 +2571,9 @@ fn t34_gpu_batched_collision_substep_matches_single() {
         .0
         .iter()
         .zip(&single1.0)
-        .any(|(a, b)| (a - b).abs() > 1e-3);
+        .map(|(a, b)| f64::from((a - b).abs()))
+        .fold(0.0, max_or_nan)
+        > f64::from(1e-3_f32);
     assert!(
         differ,
         "env 0/1 single-env results are near-identical — the batched check is vacuous"
@@ -2987,7 +3008,10 @@ fn t40_zero_substeps_read_the_state_back() {
     }
     assert_eq!(data.time, init.time);
     // 0.1 has no exact f32, so a state that really went through the GPU moved.
-    assert_ne!(data.qpos[0], init.qpos[0], "the state was not read back");
+    assert!(
+        (data.qpos[0] - init.qpos[0]).abs() > 0.0,
+        "the state was not read back"
+    );
 }
 
 // ── T41: A substep past the pass cap runs ─────────────────────────────

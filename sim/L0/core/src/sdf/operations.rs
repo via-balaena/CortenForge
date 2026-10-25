@@ -292,8 +292,17 @@ fn trace_surface_into_other(
 mod tests {
     use super::*;
     use crate::sdf::shapes::ShapeConvex;
+    use crate::validation::{max_or_nan, min_or_nan};
     use nalgebra::Vector3;
     use std::sync::Arc;
+
+    /// The deepest penetration, NaN if any is NaN.
+    fn deepest(contacts: &[SdfContact]) -> f64 {
+        contacts
+            .iter()
+            .map(|c| c.penetration)
+            .fold(f64::NEG_INFINITY, max_or_nan)
+    }
 
     fn sphere_shape(resolution: usize) -> ShapeConvex {
         ShapeConvex::new(Arc::new(SdfGrid::sphere(
@@ -333,7 +342,7 @@ mod tests {
         // Raw surface tracing: some contacts may have pen = 0 (detected via
         // margin but no geometric overlap). At least one should be penetrating.
         assert!(
-            contacts.iter().any(|c| c.penetration > 0.0),
+            deepest(&contacts) > 0.0,
             "at least one contact should have positive penetration"
         );
         assert!(
@@ -361,13 +370,13 @@ mod tests {
         // penetration ≈ 0. This is correct for the raw algorithm — deep
         // overlap detection is handled by compute_shape_contact's analytical
         // path. Here we just verify contacts are detected.
-        let max_pen = contacts
+        let min_pen = contacts
             .iter()
             .map(|c| c.penetration)
-            .fold(0.0_f64, f64::max);
+            .fold(f64::INFINITY, min_or_nan);
         assert!(
-            max_pen >= 0.0,
-            "penetration should be non-negative (got {max_pen})",
+            min_pen >= 0.0,
+            "penetration should be non-negative (got {min_pen})",
         );
     }
 
@@ -386,7 +395,7 @@ mod tests {
         );
 
         assert!(
-            contacts.iter().any(|c| c.penetration > 0.0),
+            deepest(&contacts) > 0.0,
             "at least one contact should have positive penetration"
         );
         assert!(
@@ -414,7 +423,7 @@ mod tests {
             "Overlapping sphere and box SDFs should have contact"
         );
         assert!(
-            contacts.iter().any(|c| c.penetration > 0.0),
+            deepest(&contacts) > 0.0,
             "at least one contact should have positive penetration"
         );
     }
@@ -443,7 +452,7 @@ mod tests {
             "Overlapping box SDFs should have contact"
         );
         assert!(
-            contacts.iter().any(|c| c.penetration > 0.0),
+            deepest(&contacts) > 0.0,
             "at least one contact should have positive penetration"
         );
     }
@@ -462,7 +471,7 @@ mod tests {
             "SDFs with different resolutions should still detect contact"
         );
         assert!(
-            contacts.iter().any(|c| c.penetration > 0.0),
+            deepest(&contacts) > 0.0,
             "at least one contact should have positive penetration"
         );
     }
@@ -520,7 +529,7 @@ mod tests {
             "overlapping spheres should produce contacts (got 0)"
         );
         assert!(
-            contacts.iter().any(|c| c.penetration > 0.0),
+            deepest(&contacts) > 0.0,
             "at least one contact should have positive penetration"
         );
     }

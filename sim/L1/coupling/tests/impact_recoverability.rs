@@ -39,6 +39,7 @@
 
 #![allow(clippy::expect_used)]
 
+use sim_core::validation::{max_or_nan, min_or_nan};
 use sim_coupling::StaggeredCoupling;
 use sim_mjcf::load_model;
 use sim_soft::material::silicone_table::{DRAGON_SKIN_30A, ECOFLEX_00_30_MEASURED};
@@ -107,7 +108,7 @@ fn run_impact(soft_mu: f64, v_impact: f64) -> Metrics {
         peak_decel = peak_decel.max(((vz - prev_vz) / DT).abs());
         prev_vz = vz;
         peak_force = peak_force.max(s.force_on_soft.z.abs());
-        min_z = min_z.min(s.rigid_z);
+        min_z = min_or_nan(min_z, s.rigid_z);
         rebound_vz = rebound_vz.max(vz);
         assert!(
             s.force_on_soft.z.is_finite() && vz.is_finite(),
@@ -119,7 +120,7 @@ fn run_impact(soft_mu: f64, v_impact: f64) -> Metrics {
         peak_force,
         peak_decel,
         absorbed_frac: (ke0 - ke_rebound) / ke0,
-        max_compression: (block_top - (min_z - HALF_THICK)).max(0.0),
+        max_compression: max_or_nan(block_top - (min_z - HALF_THICK), 0.0),
     }
 }
 

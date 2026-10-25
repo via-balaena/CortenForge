@@ -11,6 +11,7 @@
 //! MuJoCo conformance: T5, T13, T17, T25–T31 compare against MuJoCo 3.5.0
 //! reference values extracted via mj_forward + mj_implicit (tol 1e-10, 1e-8 for implicitfast).
 
+use sim_core::validation::{max_abs_or_nan, max_or_nan};
 use sim_core::{Data, Model};
 use sim_mjcf::load_model;
 
@@ -1111,7 +1112,7 @@ fn t15_implicitfast_b_symmetric() {
     // mj_implicitSkip); forward does not.
     data2.step(&model2).expect("step");
     assert!(
-        data2.qDeriv.iter().any(|&x| x != 0.0),
+        max_abs_or_nan(&data2.qDeriv) > 0.0,
         "T15: the step filled qDeriv"
     );
     for i in 0..model2.nv {
@@ -1150,7 +1151,7 @@ fn t16_implicit_b_asymmetric() {
     for i in 0..nv {
         for j in (i + 1)..nv {
             let asym = (data.qDeriv[(i, j)] - data.qDeriv[(j, i)]).abs();
-            max_asym = max_asym.max(asym);
+            max_asym = max_or_nan(max_asym, asym);
         }
     }
     assert!(
@@ -1162,20 +1163,17 @@ fn t16_implicit_b_asymmetric() {
     // Verify asymmetry is concentrated in the angular-linear coupling block
     // (rows 0–2 = linear DOFs, cols 3–5 = angular DOFs) where the added mass
     // cross-product derivatives live.
-    let mut has_coupling_asymmetry = false;
+    let mut coupling_asymmetry = 0.0_f64;
     for i in 0..3 {
         for j in 3..6 {
-            if (data.qDeriv[(i, j)] - data.qDeriv[(j, i)]).abs() > 1e-10 {
-                has_coupling_asymmetry = true;
-                break;
-            }
-        }
-        if has_coupling_asymmetry {
-            break;
+            coupling_asymmetry = max_or_nan(
+                coupling_asymmetry,
+                (data.qDeriv[(i, j)] - data.qDeriv[(j, i)]).abs(),
+            );
         }
     }
     assert!(
-        has_coupling_asymmetry,
+        coupling_asymmetry > 1e-10,
         "T16: Asymmetry should appear in the linear-angular coupling block (rows 0–2, cols 3–5)"
     );
 }
@@ -2424,16 +2422,8 @@ fn t38_wind_sleep_ibox_zero_derivatives() {
     }
 
     // Awake body derivatives should be nonzero (has velocity + wind)
-    let mut any_nonzero = false;
-    for i in 0..6 {
-        for j in 0..6 {
-            if work.qDeriv[(i, j)] != 0.0 {
-                any_nonzero = true;
-            }
-        }
-    }
     assert!(
-        any_nonzero,
+        max_abs_or_nan(work.qDeriv.view((0, 0), (6, 6))) > 0.0,
         "T38 awake body should have nonzero derivatives"
     );
 }
@@ -2478,16 +2468,8 @@ fn t39_wind_sleep_ellipsoid_zero_derivatives() {
     }
 
     // Awake body derivatives should be nonzero
-    let mut any_nonzero = false;
-    for i in 0..6 {
-        for j in 0..6 {
-            if work.qDeriv[(i, j)] != 0.0 {
-                any_nonzero = true;
-            }
-        }
-    }
     assert!(
-        any_nonzero,
+        max_abs_or_nan(work.qDeriv.view((0, 0), (6, 6))) > 0.0,
         "T39 awake body should have nonzero derivatives"
     );
 }

@@ -22,6 +22,7 @@
 
 #![allow(clippy::expect_used)]
 
+use sim_core::validation::max_or_nan;
 use sim_coupling::{LinearFeedback, StaggeredCoupling};
 use sim_mjcf::load_model;
 
@@ -115,7 +116,7 @@ fn gate_single(n: usize) {
             fd.abs() > 1e-9,
             "n={n}: ∂tip_x/∂θ_{j} should be a nonzero, well-posed target (fd={fd:e})"
         );
-        max_rel = max_rel.max((theta_grad[j] - fd).abs() / fd.abs().max(1e-9));
+        max_rel = max_or_nan(max_rel, (theta_grad[j] - fd).abs() / fd.abs().max(1e-9));
     }
     assert!(
         max_rel < 1e-5,
@@ -226,7 +227,7 @@ fn design_policy_gradient_2link_matches_fd() {
                 fd.abs() > 1e-9,
                 "2-link n={n}: ∂tip_x/∂θ_{j} nonzero (fd={fd:e})"
             );
-            max_rel = max_rel.max((theta_grad[j] - fd).abs() / fd.abs().max(1e-9));
+            max_rel = max_or_nan(max_rel, (theta_grad[j] - fd).abs() / fd.abs().max(1e-9));
         }
         assert!(
             max_rel < 1e-5,

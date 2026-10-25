@@ -970,6 +970,7 @@ mod tests {
     use super::super::fd::extract_state;
     use super::*;
     use crate::derivatives::max_relative_error;
+    use crate::validation::max_abs_or_nan;
 
     /// Central-FD reference for `∂x⁺/∂D` — perturbs the *physical* damping knob
     /// `jnt_damping[joint]` and recomputes the cached `implicit_damping`, so both
@@ -1063,7 +1064,7 @@ mod tests {
         let (fd_terminal, fd_jac) = fd_trajectory_jacobian(&model, &data, n_steps, 1e-6);
 
         // Terminal state must agree (sanity that both roll out the same dynamics).
-        let state_err = (&analytic.terminal_state - &fd_terminal).amax();
+        let state_err = max_abs_or_nan(&(&analytic.terminal_state - &fd_terminal));
         assert!(state_err < 1e-9, "terminal state mismatch: {state_err:.3e}");
 
         // Gradient: analytic recursion (hybrid A) vs full
@@ -1078,7 +1079,7 @@ mod tests {
 
         // The compounded gradient is non-trivial (not a degenerate ~0 match).
         assert!(
-            analytic.dterminal_dD.amax() > 1e-3,
+            max_abs_or_nan(&analytic.dterminal_dD) > 1e-3,
             "expected a non-negligible terminal damping sensitivity"
         );
     }
@@ -1309,7 +1310,7 @@ mod tests {
         // Non-trivial sensitivity (not a degenerate ~0 match), and the world
         // column is exactly zero.
         assert!(
-            analytic.dxdm.amax() > 1e-3,
+            max_abs_or_nan(&analytic.dxdm) > 1e-3,
             "expected a non-negligible mass sensitivity"
         );
         // The world-body column is never written (the loop starts at b=1), so it
@@ -1317,7 +1318,7 @@ mod tests {
         #[allow(clippy::float_cmp)]
         {
             assert_eq!(
-                analytic.dxdm.column(0).amax(),
+                max_abs_or_nan(analytic.dxdm.column(0)),
                 0.0,
                 "world-body mass column must be zero"
             );
@@ -1372,7 +1373,7 @@ mod tests {
             fd
         );
         assert!(
-            analytic.dxdm.amax() > 1e-3,
+            max_abs_or_nan(&analytic.dxdm) > 1e-3,
             "expected non-negligible sensitivity"
         );
     }
@@ -1423,7 +1424,7 @@ mod tests {
         let analytic = mjd_mass_trajectory_jacobian(&model, &data, n_steps, &cfg).unwrap();
         let (fd_terminal, fd_jac) = fd_mass_trajectory_jacobian(&model, &data, n_steps, 1e-6);
 
-        let state_err = (&analytic.terminal_state - &fd_terminal).amax();
+        let state_err = max_abs_or_nan(&(&analytic.terminal_state - &fd_terminal));
         assert!(state_err < 1e-9, "terminal state mismatch: {state_err:.3e}");
 
         let (err, loc) = max_relative_error(&analytic.dterminal_dm, &fd_jac, 1e-3);
@@ -1433,7 +1434,7 @@ mod tests {
         );
 
         assert!(
-            analytic.dterminal_dm.amax() > 1e-3,
+            max_abs_or_nan(&analytic.dterminal_dm) > 1e-3,
             "expected a non-negligible terminal mass sensitivity"
         );
     }
@@ -1488,13 +1489,13 @@ mod tests {
         // Non-trivial sensitivity (not a degenerate ~0 match), and the world
         // body's three columns are exactly the zero they were initialized to.
         assert!(
-            analytic.dxdI.amax() > 1e-3,
+            max_abs_or_nan(&analytic.dxdI) > 1e-3,
             "expected a non-negligible inertia sensitivity"
         );
         #[allow(clippy::float_cmp)]
         {
             assert_eq!(
-                analytic.dxdI.columns(0, 3).amax(),
+                max_abs_or_nan(analytic.dxdI.columns(0, 3)),
                 0.0,
                 "world-body inertia columns must be zero"
             );
@@ -1530,7 +1531,7 @@ mod tests {
             fd
         );
         assert!(
-            analytic.dxdI.amax() > 1e-3,
+            max_abs_or_nan(&analytic.dxdI) > 1e-3,
             "expected non-negligible sensitivity"
         );
     }
@@ -1603,7 +1604,7 @@ mod tests {
         let analytic = mjd_inertia_trajectory_jacobian(&model, &data, n_steps, &cfg).unwrap();
         let (fd_terminal, fd_jac) = fd_inertia_trajectory_jacobian(&model, &data, n_steps, 1e-6);
 
-        let state_err = (&analytic.terminal_state - &fd_terminal).amax();
+        let state_err = max_abs_or_nan(&(&analytic.terminal_state - &fd_terminal));
         assert!(state_err < 1e-9, "terminal state mismatch: {state_err:.3e}");
 
         let (err, loc) = max_relative_error(&analytic.dterminal_dI, &fd_jac, 1e-3);
@@ -1613,7 +1614,7 @@ mod tests {
         );
 
         assert!(
-            analytic.dterminal_dI.amax() > 1e-3,
+            max_abs_or_nan(&analytic.dterminal_dI) > 1e-3,
             "expected a non-negligible terminal inertia sensitivity"
         );
     }
@@ -1714,7 +1715,7 @@ mod tests {
                 err < 1e-5,
                 "{what}: max_rel_err={err:.3e} at {loc:?}\nanalytic=\n{analytic:.6}\nfd=\n{fd:.6}"
             );
-            assert!(fd.amax() > 1e-3, "{what}: a live sensitivity");
+            assert!(max_abs_or_nan(fd) > 1e-3, "{what}: a live sensitivity");
         };
         for (name, flag) in [
             ("eulerdamp disabled", DISABLE_EULERDAMP),
@@ -1726,8 +1727,8 @@ mod tests {
             // Exact zeros: with dampers disabled the coefficient is read nowhere.
             #[allow(clippy::float_cmp)]
             if flag == DISABLE_DAMPER {
-                assert_eq!(fd.amax(), 0.0, "{name}: damping acts nowhere");
-                assert_eq!(damping.amax(), 0.0, "{name}: damping");
+                assert_eq!(max_abs_or_nan(&fd), 0.0, "{name}: damping acts nowhere");
+                assert_eq!(max_abs_or_nan(&damping), 0.0, "{name}: damping");
             } else {
                 check(&format!("{name}: damping"), &damping, &fd);
             }
@@ -1886,7 +1887,7 @@ mod tests {
         let (model, data) = friction_pendulum(0.05);
         // Confirm the regime: friction loss is the only constraint and it is saturated.
         assert!(
-            data.qfrc_constraint.amax() >= 0.05 - 1e-9,
+            max_abs_or_nan(&data.qfrc_constraint) >= 0.05 - 1e-9,
             "fixture should be saturated (sliding)"
         );
 
@@ -1901,7 +1902,7 @@ mod tests {
             fd
         );
         assert!(
-            analytic.dxdf.amax() > 1e-3,
+            max_abs_or_nan(&analytic.dxdf) > 1e-3,
             "expected a non-negligible sliding-regime sensitivity"
         );
     }
@@ -1921,7 +1922,8 @@ mod tests {
 
         let analytic = mjd_friction_jacobian(&model, &data).unwrap();
         assert!(
-            analytic.dxdf.column(0).amax() < 1e-12 && analytic.dxdf.column(1).amax() > 1e-3,
+            max_abs_or_nan(analytic.dxdf.column(0)) < 1e-12
+                && max_abs_or_nan(analytic.dxdf.column(1)) > 1e-3,
             "frictionless DOF 0 → zero column, sliding DOF 1 → live column"
         );
     }
@@ -1933,7 +1935,7 @@ mod tests {
         let (model, data) = friction_pendulum_v(5.0, 0.0, 0.0);
         // Confirm the regime: held force is below the cap.
         assert!(
-            data.qfrc_constraint.amax() < 5.0 - 1e-6,
+            max_abs_or_nan(&data.qfrc_constraint) < 5.0 - 1e-6,
             "fixture should be sticking (held below cap)"
         );
 
@@ -1944,16 +1946,16 @@ mod tests {
         // exact-zero sentinel: stuck columns are skipped, never computed.
         {
             assert_eq!(
-                analytic.dxdf.amax(),
+                max_abs_or_nan(&analytic.dxdf),
                 0.0,
                 "sticking DOFs must have exactly-zero friction columns"
             );
         }
         let fd = fd_friction_jacobian(&model, &data, 1e-7);
         assert!(
-            fd.amax() < 1e-9,
+            max_abs_or_nan(&fd) < 1e-9,
             "FD confirms friction is locally unidentifiable while sticking: {:.3e}",
-            fd.amax()
+            max_abs_or_nan(&fd)
         );
     }
 
