@@ -16,6 +16,7 @@
 
 #![allow(clippy::expect_used)]
 
+use sim_core::validation::max_or_nan;
 use sim_coupling::{LinearFeedback, StaggeredCoupling};
 use sim_mjcf::load_model;
 
@@ -112,7 +113,7 @@ fn capture_frames_are_well_formed_and_deform() {
         .iter()
         .zip(&frames[0].soft_positions)
         .map(|(a, b)| (a - b).abs())
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
     assert!(
         max_disp > 1e-5,
         "the grip should deform the soft body (max vertex displacement {max_disp:e})"

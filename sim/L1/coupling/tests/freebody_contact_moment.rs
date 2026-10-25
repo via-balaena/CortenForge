@@ -47,6 +47,7 @@
     clippy::expect_used
 )]
 
+use sim_core::validation::max_abs_or_nan;
 use sim_coupling::StaggeredCoupling;
 use sim_mjcf::load_model;
 
@@ -167,7 +168,7 @@ fn moment_off_routes_no_torque() {
     let w = &c.data().qvel;
     // No angular force is applied (sf[0..3] stays zero), so the only angular velocity is
     // machine noise from the free-joint solve — ~1e-16, vs the ~1e2 rad/s the moment drives.
-    let max_ang = w[3].abs().max(w[4].abs()).max(w[5].abs());
+    let max_ang = max_abs_or_nan(w.rows(3, 3));
     assert!(
         max_ang < 1.0e-12,
         "with the moment off, an off-centre strike must stay torque-free, got max|ω| = {max_ang} \

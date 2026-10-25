@@ -1606,6 +1606,7 @@ mod tests {
 
     use super::test_support::{box_mesh, sphere_mesh, synthetic_disc};
     use super::*;
+    use sim_core::validation::{max_or_nan, min_or_nan};
 
     // The committed disc-stiffness table, shared with `tests/conform_delta_by_element.rs`.
     // `rung5_step1_mesh_realization_noise_floor_fom` below cross-checks its sweep's shipped
@@ -1710,7 +1711,7 @@ mod tests {
             .iter()
             .zip(&conformed.vertices)
             .map(|(a, b)| (a - b).norm())
-            .fold(0.0, f64::max);
+            .fold(0.0, max_or_nan);
         println!("conform: max cap-band move {max_move:.2} mm");
         assert!(
             max_move < 4.0,
@@ -2054,9 +2055,9 @@ mod tests {
                 ks.len() >= 2,
                 "{element}: need two drivable floors to compare"
             );
-            let (lo, hi) = ks
-                .iter()
-                .fold((f64::MAX, f64::MIN), |(l, h), &k| (l.min(k), h.max(k)));
+            let (lo, hi) = ks.iter().fold((f64::MAX, f64::MIN), |(l, h), &k| {
+                (min_or_nan(l, k), max_or_nan(h, k))
+            });
             let spread = (hi - lo).abs() / lo.abs();
             println!(
                 "[{element}] k_disc across drivable floors: {lo:+.4} … {hi:+.4} ({:.2} %)",
@@ -2288,8 +2289,8 @@ mod tests {
         // The blocker: the CONFORMED arms stop short, measured in the same two senses.
         let (conf4, conf10_flex) = arms(Some(ep), full);
         let (conf4_ext, conf10) = arms(Some(ep), -full);
-        let raw4 = raw4_flex.abs().min(raw4_ext.abs());
-        let raw10 = raw10_flex.abs().min(raw10_ext.abs());
+        let raw4 = min_or_nan(raw4_flex.abs(), raw4_ext.abs());
+        let raw10 = min_or_nan(raw10_flex.abs(), raw10_ext.abs());
 
         println!(
             "lofted envelope (deg), flexion / extension:\n  raw      Tet4 {:+.2} / {:+.2}   \
@@ -2446,7 +2447,7 @@ mod tests {
                 );
             }
             for (p, r) in f.deformed_nodes_native.iter().zip(&traj.rest_nodes_native) {
-                max_disp = max_disp.max((p - r).norm());
+                max_disp = max_or_nan(max_disp, (p - r).norm());
             }
         }
         assert!(
@@ -2533,13 +2534,13 @@ mod tests {
             .frames
             .iter()
             .map(|f| f.moment.abs())
-            .fold(0.0_f64, f64::max);
+            .fold(0.0_f64, max_or_nan);
         let again = disc.capture_flexion(&angles);
         let mut max_moment_drift = 0.0_f64;
         for (a, b) in traj.frames.iter().zip(&again.frames) {
-            max_moment_drift = max_moment_drift.max((a.moment - b.moment).abs());
+            max_moment_drift = max_or_nan(max_moment_drift, (a.moment - b.moment).abs());
         }
-        let moment_rel = max_moment_drift / moment_scale.max(1e-12);
+        let moment_rel = max_moment_drift / max_or_nan(moment_scale, 1e-12);
         println!("re-capture moment drift: {moment_rel:.2e} rel (scale {moment_scale:.2e})");
         assert!(
             moment_rel < 1e-3,
@@ -2603,9 +2604,10 @@ mod tests {
         // lattice orphan nodes (which the conform never touches) and interior solve-relaxation.
         let (mut hi, mut lo, mut seated) = (f64::MIN, f64::MAX, 0usize);
         for (raw, conf) in raw_rest.iter().zip(&traj.rest_nodes_native) {
-            if (raw - conf).norm() > 0.4 {
-                hi = hi.max(conf.z);
-                lo = lo.min(conf.z);
+            let moved = (raw - conf).norm();
+            if moved.is_nan() || moved > 0.4 {
+                hi = max_or_nan(hi, conf.z);
+                lo = min_or_nan(lo, conf.z);
                 seated += 1;
             }
         }
@@ -3050,7 +3052,7 @@ mod tests {
             .iter()
             .zip(&traj_conf.rest_nodes_native)
             .map(|(a, b)| (a - b).norm())
-            .fold(0.0_f64, f64::max);
+            .fold(0.0_f64, max_or_nan);
         println!("max endplate-seat move: {max_seat:.3} mm");
         // COMMITTED (BodyParts3D L4/L5/disc, DiscParams::default): the deepest seated node moves
         // **1.734 mm** onto the bone.
@@ -3777,12 +3779,12 @@ mod tests {
                 if !r.is_finite() || r <= 0.0 {
                     folded.push((t, c, r));
                 }
-                tet_min = tet_min.min(r);
+                tet_min = min_or_nan(tet_min, r);
             }
             if tet_min > 0.0 && tet_min < 1.0e-6 {
                 near_degenerate += 1;
             }
-            worst = worst.min(tet_min);
+            worst = min_or_nan(worst, tet_min);
         }
         RestCensus {
             n_tets,
@@ -5381,8 +5383,8 @@ mod tests {
 
             // The REALIZED clamp planes: the deepest pinned layer on each face. These, not the
             // nominal `band`, are the boundary condition the solve actually sees.
-            let inf_max = p.inferior.iter().map(z).fold(f64::NEG_INFINITY, f64::max);
-            let sup_min = p.superior.iter().map(z).fold(f64::INFINITY, f64::min);
+            let inf_max = p.inferior.iter().map(z).fold(f64::NEG_INFINITY, max_or_nan);
+            let sup_min = p.superior.iter().map(z).fold(f64::INFINITY, min_or_nan);
             let free = sup_min - inf_max;
             let referenced = referenced_vertices(&p.tet).len();
             let tets = p.tet.n_tets();
@@ -7333,7 +7335,10 @@ mod tests {
         let moved: Vec<VertexId> = candidates
             .iter()
             .copied()
-            .filter(|&v| (p_raw[v as usize] - p_conf[v as usize]).norm() > 1e-12)
+            .filter(|&v| {
+                let gap = (p_raw[v as usize] - p_conf[v as usize]).norm();
+                gap.is_nan() || gap > 1e-12
+            })
             .collect();
         // `with_projected_nodes` only touches the nodes it is handed, so a moved node must have
         // been authorised — asserted rather than assumed, since it is what makes `backed_off`
@@ -8428,9 +8433,9 @@ mod tests {
             let x_t = x_ref.transpose();
             let mut elem_min = f64::INFINITY;
             for g in &dense {
-                elem_min = elem_min.min((x_t * g).determinant() / scale);
+                elem_min = min_or_nan(elem_min, (x_t * g).determinant() / scale);
             }
-            worst = worst.min(elem_min);
+            worst = min_or_nan(worst, elem_min);
             if elem_min > 0.0 {
                 continue;
             }

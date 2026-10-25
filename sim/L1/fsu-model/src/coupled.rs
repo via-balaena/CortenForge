@@ -928,6 +928,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::synthetic_disc;
+    use sim_core::validation::max_or_nan;
 
     #[test]
     fn solve_decreasing_finds_a_linear_spring_root() {
@@ -1203,11 +1204,12 @@ mod tests {
              seeing deformation at all"
         );
         assert!(
-            traj.frames.iter().any(|f| f
-                .deformed_nodes_native
+            traj.frames
                 .iter()
-                .zip(&traj.rest_nodes_native)
-                .any(|(d, r)| (d - r).norm() > 1e-9)),
+                .flat_map(|f| f.deformed_nodes_native.iter().zip(&traj.rest_nodes_native))
+                .map(|(d, r)| (d - r).norm())
+                .fold(0.0, max_or_nan)
+                > 1e-9,
             "the ramp must actually deform the disc — a validity check over an undeformed \
              configuration is vacuous"
         );

@@ -23,6 +23,7 @@
 )]
 
 use nalgebra::{UnitQuaternion, Vector6};
+use sim_core::validation::min_or_nan;
 use sim_coupling::{BondStep, BondedSandwich};
 use sim_mjcf::load_model;
 use sim_soft::Vec3;
@@ -173,7 +174,7 @@ fn run_gate(goff: f64) {
             let fd = fd_gradient(body, eps, goff);
             let r = rel(an, &fd);
             eprintln!("[goff={goff:.3} {name}] eps={e:.1e}·EDGE  rel = {r:.3e}");
-            best = best.min(r);
+            best = min_or_nan(best, r);
         }
         eprintln!("[goff={goff:.3} {name}] analytic = {an:?}");
         assert!(

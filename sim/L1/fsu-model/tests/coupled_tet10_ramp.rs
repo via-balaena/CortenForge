@@ -63,6 +63,7 @@ use cf_fsu_model::{
     CoupledFsu, CoupledFsuTet4, CoupledParams, CoupledTrajectory, PHYSIOLOGIC_MOMENT, RAMP_FRAMES,
     moment_ramp,
 };
+use sim_core::validation::max_or_nan;
 
 /// Committed max node displacement over the full ramp (native mm), per arm — the plan's
 /// "committed max node displacement", pinned to ±5 % of the measured value so that "the ramp
@@ -141,9 +142,9 @@ fn assert_sound_ramp(traj: &CoupledTrajectory, label: &str) -> (f64, f64) {
                 .iter()
                 .zip(&traj.rest_nodes_native)
                 .map(|(d, r)| (d - r).norm())
-                .fold(0.0_f64, f64::max)
+                .fold(0.0_f64, max_or_nan)
         })
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
     for w in traj.frames.windows(2) {
         assert!(
             w[1].theta > w[0].theta,

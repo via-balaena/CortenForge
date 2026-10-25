@@ -20,6 +20,7 @@
 
 #![allow(clippy::expect_used)]
 
+use sim_core::validation::max_or_nan;
 use sim_coupling::{LinearFeedback, StaggeredCoupling};
 use sim_mjcf::load_model;
 
@@ -96,7 +97,7 @@ fn gate_single(n: usize) {
             fd.abs() > 1e-9,
             "n={n}: ∂tip_x/∂θ_{j} should be a nonzero, well-posed target (fd={fd:e})"
         );
-        max_rel = max_rel.max((grad[j] - fd).abs() / fd.abs().max(1e-9));
+        max_rel = max_or_nan(max_rel, (grad[j] - fd).abs() / fd.abs().max(1e-9));
     }
     assert!(
         max_rel < 1e-5,

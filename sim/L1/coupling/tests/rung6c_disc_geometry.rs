@@ -56,6 +56,7 @@
 use cf_fsu_geometry::{load_from_env, oracle};
 use cf_geometry::{Aabb, IndexedMesh};
 use nalgebra::{Point3, UnitQuaternion, Vector6};
+use sim_core::validation::{max_abs_or_nan, max_or_nan, min_or_nan};
 use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
 use sim_soft::{
@@ -143,7 +144,7 @@ fn si_spread(tet: &SdfMeshedTetMesh, verts: &[VertexId], si: usize) -> (f64, f64
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
             let s = tet.positions()[v as usize][si];
-            (lo.min(s), hi.max(s))
+            (min_or_nan(lo, s), max_or_nan(hi, s))
         })
 }
 
@@ -311,7 +312,7 @@ fn superior_face_si_reaction_range(c: &BondedSandwich<SdfMeshedTetMesh>, si: usi
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
             let r = react[3 * v as usize + si];
-            (lo.min(r), hi.max(r))
+            (min_or_nan(lo, r), max_or_nan(hi, r))
         })
 }
 
@@ -572,7 +573,7 @@ fn real_disc_pose_gradient_matches_reprobe_fd() {
         .enumerate()
     {
         let an_b = &an[bi];
-        let scale = an_b.iter().map(|x| x.abs()).fold(0.0, f64::max);
+        let scale = max_abs_or_nan(an_b);
         assert!(
             scale > 1.0,
             "{name} pose gradient degenerate (max {scale:.3e})"
@@ -598,7 +599,7 @@ fn real_disc_pose_gradient_matches_reprobe_fd() {
             }
             let worst = (0..6)
                 .map(|k| (an_b[k] - fd[k]).abs() / (fd[k].abs() + floor))
-                .fold(0.0, f64::max);
+                .fold(0.0, max_or_nan);
             println!("[rung6d {name}] eps={e:.1e}  worst per-DOF rel = {worst:.3e}");
             assert!(
                 worst < 1e-4,

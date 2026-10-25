@@ -18,6 +18,7 @@
     clippy::expect_used
 )]
 
+use sim_core::validation::max_or_nan;
 use sim_coupling::StaggeredCoupling;
 use sim_mjcf::load_model;
 
@@ -48,7 +49,7 @@ fn rigid_platen_settles_on_soft_block_at_force_balance() {
     let mut max_abs_z = last.rigid_z.abs();
     for _ in 1..900 {
         last = coupling.step();
-        max_abs_z = max_abs_z.max(last.rigid_z.abs());
+        max_abs_z = max_or_nan(max_abs_z, last.rigid_z.abs());
     }
     let contact_f = -last.force_on_soft.z; // reaction magnitude (up on the platen)
     eprintln!(

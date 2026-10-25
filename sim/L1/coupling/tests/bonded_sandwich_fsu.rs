@@ -29,6 +29,7 @@
 )]
 
 use nalgebra::UnitQuaternion;
+use sim_core::validation::{max_or_nan, min_or_nan};
 use sim_coupling::BondedSandwich;
 use sim_mjcf::load_model;
 use sim_soft::Vec3;
@@ -104,7 +105,7 @@ fn upper_face_reaction_z_range(c: &BondedSandwich) -> (f64, f64) {
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
             let rz = react[3 * v as usize + 2];
-            (lo.min(rz), hi.max(rz))
+            (min_or_nan(lo, rz), max_or_nan(hi, rz))
         })
 }
 
@@ -245,7 +246,7 @@ fn deformed_surface_accessors_track_the_solved_field() {
             let d = |k| deformed[3 * i + k] - rest[3 * i + k];
             (d(0) * d(0) + d(1) * d(1) + d(2) * d(2)).sqrt()
         })
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
     assert!(
         max_disp > 1e-6,
         "probe must deform the disc; max node displacement {max_disp:.2e} m"
@@ -282,10 +283,14 @@ fn compressed_disc_springs_endplates_apart_dynamically() {
     let mut saw_spring_apart = false;
     for k in 0..24 {
         let s = c.step();
+        assert!(
+            s.force_upper.z.is_finite() && s.force_lower.z.is_finite(),
+            "k={k}: the endplate forces are finite"
+        );
         let (f_tot, m_tot) = total_reaction_wrench(&c, Vec3::zeros());
         let scale = s.force_lower.norm().max(s.force_upper.norm()).max(1e-30);
-        max_rel_force = max_rel_force.max(f_tot.norm() / scale);
-        max_norm_moment = max_norm_moment.max(m_tot.norm() / (scale * EDGE).max(1e-30));
+        max_rel_force = max_or_nan(max_rel_force, f_tot.norm() / scale);
+        max_norm_moment = max_or_nan(max_norm_moment, m_tot.norm() / (scale * EDGE).max(1e-30));
         if s.force_upper.z > 1e-6 && s.force_lower.z < -1e-6 {
             saw_spring_apart = true;
         }
