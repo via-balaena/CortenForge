@@ -405,6 +405,7 @@ pub fn make_frame(normal: &Vector3<f64>, hint: &Vector3<f64>) -> (Vector3<f64>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validation::max_abs_or_nan;
 
     /// `Data`'s contact counts read both sides, in either order: a contact
     /// lists its geoms in MuJoCo's type order, not the order asked.
@@ -438,7 +439,7 @@ mod tests {
             }
             let (_, other) = make_frame(&normal, &Vector3::y());
             assert!(
-                (frame[0] - other[0]).norm() > 0.0,
+                max_abs_or_nan(&(frame[0] - other[0])) > 0.0,
                 "y {y}: the (0, 1, 0) seed gives the same"
             );
         }

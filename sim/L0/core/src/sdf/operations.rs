@@ -292,7 +292,7 @@ fn trace_surface_into_other(
 mod tests {
     use super::*;
     use crate::sdf::shapes::ShapeConvex;
-    use crate::validation::max_or_nan;
+    use crate::validation::{max_or_nan, min_or_nan};
     use nalgebra::Vector3;
     use std::sync::Arc;
 
@@ -370,13 +370,13 @@ mod tests {
         // penetration ≈ 0. This is correct for the raw algorithm — deep
         // overlap detection is handled by compute_shape_contact's analytical
         // path. Here we just verify contacts are detected.
-        let max_pen = contacts
+        let min_pen = contacts
             .iter()
             .map(|c| c.penetration)
-            .fold(0.0_f64, max_or_nan);
+            .fold(f64::INFINITY, min_or_nan);
         assert!(
-            max_pen >= 0.0,
-            "penetration should be non-negative (got {max_pen})",
+            min_pen >= 0.0,
+            "penetration should be non-negative (got {min_pen})",
         );
     }
 

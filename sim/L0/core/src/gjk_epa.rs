@@ -559,6 +559,7 @@ pub fn gjk_distance(
 )]
 mod tests {
     use super::*;
+    use crate::validation::max_abs_or_nan;
     use approx::assert_relative_eq;
 
     fn pose_at(x: f64, y: f64, z: f64) -> Pose {
@@ -976,7 +977,7 @@ mod tests {
         let shape = Shape::convex_mesh(cf_geometry::convex_hull(&vertices, None).unwrap());
         let pose = pose_at(1.0, 2.0, 3.0);
         let posed = PosedShape::new(&shape, &pose);
-        assert!((posed.aabb().center() - pose.position).norm() > 0.0);
+        assert!(max_abs_or_nan(&(posed.aabb().center() - pose.position)) > 0.0);
         assert_eq!(posed.center(), pose.position);
     }
 

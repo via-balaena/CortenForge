@@ -272,6 +272,10 @@ mod tests {
         }
 
         assert!(
+            act_up >= 0.9 && act_down <= 0.1,
+            "each loop reaches its target: up {act_up}, down {act_down}"
+        );
+        assert!(
             steps_up < steps_down,
             "Activation should be faster than deactivation: {} steps up vs {} steps down",
             steps_up,
