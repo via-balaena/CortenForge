@@ -433,13 +433,10 @@ fn merge_sort(order: &mut [usize], before: &impl Fn(usize, usize) -> bool) {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use std::sync::Arc;
-
-    use nalgebra::{Point3, Vector3};
+    use nalgebra::Vector3;
     use serde_json::Value;
 
-    use crate::mesh::TriangleMeshData;
-    use crate::types::{GeomType, Model};
+    use crate::types::Model;
 
     /// Three spheres along x at 0, 0.8e-14 and 1.6e-14, numbered in reverse:
     /// the first two tie, and the last two, but the first and last do not,
@@ -545,28 +542,6 @@ mod tests {
         usize::try_from(v.as_i64().expect("an index")).ok()
     }
 
-    /// A model of one mesh geom on the world, the mesh's vertices and faces
-    /// `vert` and `face`, derived.
-    fn mesh_model(vert: &[f64], face: &[usize]) -> Model {
-        let mut model = Model::empty();
-        model.add_ground_plane();
-        model.geom_type[0] = GeomType::Mesh;
-        model.geom_mesh[0] = Some(0);
-        let vertices = vert
-            .chunks(3)
-            .map(|v| Point3::new(v[0], v[1], v[2]))
-            .collect();
-        model
-            .mesh_data
-            .push(Arc::new(TriangleMeshData::new(vertices, face.to_vec())));
-        model.mesh_name.push("mesh".into());
-        model.nmesh = 1;
-        model.compute_geom_bounding_radii();
-        model.compute_body_bvhs();
-        model.compute_flex_bvhs();
-        model
-    }
-
     /// The ray golden's meshes (`gen_ray_reference.py` `mesh_models`: a box,
     /// a box whose faces are 4 by 4 squares and an octahedron, which MuJoCo
     /// keeps in their written frame; a slab and a convex hull, which it
@@ -594,7 +569,7 @@ mod tests {
                 .iter()
                 .map(|i| index(i).expect("a vertex"))
                 .collect();
-            let model = mesh_model(&numbers(&mesh["vert"]), &face);
+            let model = Model::one_mesh(&numbers(&mesh["vert"]), &face);
             let adr = index(&mesh["mesh_bvhadr"][0]).expect("a hierarchy");
             let num = index(&mesh["mesh_bvhnum"][0]).expect("its nodes");
             assert_eq!(model.mesh_bvhadr, vec![Some(adr)], "{name}: mesh_bvhadr");

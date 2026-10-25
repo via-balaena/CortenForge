@@ -1,7 +1,8 @@
 //! MuJoCo's rays through triangles (`engine_ray.c`): a height field's
-//! (`mj_rayHfield`, `:561-738`), through `ray_triangle` (`:131-200`). Each
-//! step is MuJoCo's, in its order, so a ray grazing a triangle's edge goes
-//! the way MuJoCo's does.
+//! (`mj_rayHfield`, `:561-738`) and a mesh's (`mj_rayMesh`, `:951-968`, down
+//! its hierarchy, `mju_rayTree`, `:770-881`), each through `ray_triangle`
+//! (`:131-200`). Each step is MuJoCo's, in its order, so a ray grazing a
+//! triangle's edge goes the way MuJoCo's does.
 
 use nalgebra::{Matrix3, Vector3};
 
@@ -9,6 +10,7 @@ use super::ray_geom::{ray_box, ray_map};
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::heightfield::HeightFieldData;
 use crate::quat::normalize3;
+use crate::types::Model;
 
 /// `mju_dot3`.
 fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
@@ -46,7 +48,7 @@ fn mju_round(x: f64) -> f64 {
 }
 
 /// The basis `b0`, `b1` of the plane normal to the ray `lvec` that
-/// [`ray_triangle`] projects onto (`engine_ray.c:609-620`): `b0` is (1, 1, 1)
+/// [`ray_triangle`] projects onto (`engine_ray.c:609-620`, `:801-812`): `b0` is (1, 1, 1)
 /// with the ray's largest part set to 0 (the first of equals), `b1` that less
 /// its part along the ray, normalised, and then `b0` is `b1 × lvec`,
 /// normalised.
@@ -267,6 +269,82 @@ pub(super) fn mj_ray_hfield(
     x
 }
 
+/// `mju_raySlab` (`engine_ray.c:741-766`): whether the ray from `src` in the
+/// direction `dir`, both in the frame of the box `aabb` (`[cx, cy, cz, hx,
+/// hy, hz]`), crosses it at or past its start: the latest of its entries
+/// into the box's three slabs, from 0, before the earliest of its exits.
+fn ray_slab(aabb: &[f64; 6], src: &[f64; 3], dir: &[f64; 3]) -> bool {
+    let (mut tmin, mut tmax) = (0.0, f64::INFINITY);
+    for d in 0..3 {
+        let invdir = 1.0 / dir[d];
+        let t1 = (aabb[d] - aabb[d + 3] - src[d]) * invdir;
+        let t2 = (aabb[d] + aabb[d + 3] - src[d]) * invdir;
+        let (minval, maxval) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+        tmin = if tmin > minval { tmin } else { minval };
+        tmax = if tmax < maxval { tmax } else { maxval };
+    }
+    tmin < tmax
+}
+
+/// `mj_rayMesh`: along a ray from `pnt` in the direction `vec`, the distance
+/// in lengths of `vec` to mesh `mesh` of a geom centred at `xpos` and turned
+/// by `xmat`, or −1. None where the ray misses the box MuJoCo gives the geom
+/// (each half-size the larger magnitude of the mesh's bounds along that
+/// axis, `user_objects.cc:3765-3769`); else `mju_rayTree`'s: down the mesh's
+/// hierarchy (`mesh_bvhadr`), each node whose box the ray crosses
+/// (`mju_raySlab`), the child pushed last taken first, each leaf's face
+/// through [`ray_triangle`]; the nearest.
+///
+/// The mesh is as sim-core holds it: its vertices in double precision, where
+/// MuJoCo's ray reads them in single precision (`mesh_vert`; the same for
+/// vertices a float holds), and in its written frame, where MuJoCo turns a
+/// mesh to its principal frame (book Rigid-loading L35). A mesh with no
+/// hierarchy (no face, or a model whose hierarchies were not built,
+/// [`Model::compute_body_bvhs`]) reads −1.
+pub(super) fn mj_ray_mesh(
+    model: &Model,
+    mesh: usize,
+    xpos: &Vector3<f64>,
+    xmat: &Matrix3<f64>,
+    pnt: &Vector3<f64>,
+    vec: &Vector3<f64>,
+) -> f64 {
+    let data = &model.mesh_data[mesh];
+    let (lo, hi) = data.aabb();
+    // `std::max(std::abs(a), std::abs(b))`.
+    let size: [f64; 3] = std::array::from_fn(|i| {
+        let (a, b) = (lo[i].abs(), hi[i].abs());
+        if a < b { b } else { a }
+    });
+    if ray_box(xpos, xmat, &size, pnt, vec).0 < 0.0 {
+        return -1.0;
+    }
+    let Some(adr) = model.mesh_bvhadr.get(mesh).copied().flatten() else {
+        return -1.0;
+    };
+
+    let (lpnt, lvec) = ray_map(xpos, xmat, pnt, vec);
+    let (b0, b1) = ray_basis(&lvec);
+    let (vertices, faces) = (data.vertices(), data.triangles());
+    let mut x = -1.0;
+    let mut stack = vec![0];
+    while let Some(node) = stack.pop() {
+        if !ray_slab(&model.bvh_aabb[adr + node], &lpnt, &lvec) {
+            continue;
+        }
+        if let Some(face) = model.bvh_nodeid[adr + node] {
+            let v = faces[face].map(|i| vertices[i as usize].coords.into());
+            let sol = ray_triangle(&v, &lpnt, &lvec, &b0, &b1);
+            if sol >= 0.0 && (x < 0.0 || sol < x) {
+                x = sol;
+            }
+            continue;
+        }
+        stack.extend(model.bvh_child[adr + node].into_iter().flatten());
+    }
+    x
+}
+
 #[cfg(test)]
 mod tests {
     // Test code: a malformed golden is a failed test.
@@ -275,8 +353,9 @@ mod tests {
     use nalgebra::{Matrix3, Vector3};
     use serde_json::Value;
 
-    use super::mj_ray_hfield;
+    use super::{mj_ray_hfield, mj_ray_mesh};
     use crate::heightfield::HeightFieldData;
+    use crate::types::Model;
 
     fn golden() -> Value {
         let path = concat!(
@@ -340,6 +419,63 @@ mod tests {
             let ours = mj_ray_hfield(
                 hfield,
                 size,
+                &vector(&ray["pos"]),
+                &Matrix3::from_row_slice(&numbers(&ray["mat"])),
+                &vector(&ray["pnt"]),
+                &vector(&ray["vec"]),
+            );
+            let theirs = ray["x"].as_f64().expect("a distance");
+            hits += usize::from(theirs >= 0.0);
+            if ours.to_bits() != theirs.to_bits() {
+                differ.push(format!("ray {i} ({name}): {ours:e}, MuJoCo {theirs:e}"));
+            }
+        }
+        assert!(hits > 0 && hits < rays.len(), "hits and misses: {hits}");
+        assert!(
+            differ.is_empty(),
+            "{} differ:\n{}",
+            differ.len(),
+            differ.join("\n")
+        );
+    }
+
+    /// The ray golden's `mesh` rays (`gen_ray_reference.py`: 300 a mesh over
+    /// its six meshes, the mesh unturned and turned, and 14 on the edges of
+    /// its tests) meet each mesh at MuJoCo's distance, or miss it as MuJoCo's
+    /// does (−1), bit for bit: each mesh built from MuJoCo's vertices and
+    /// faces as it compiles them (`mesh_models`), its hierarchy sim-core's
+    /// (`each_mesh_hierarchy_is_mujocos` compares it), the geom at MuJoCo's
+    /// pose.
+    #[test]
+    fn rays_meet_each_mesh_as_mujoco() {
+        let golden = golden();
+        let models: Vec<(&String, Model)> = golden["mesh_models"]
+            .as_object()
+            .expect("mesh_models")
+            .iter()
+            .map(|(name, mesh)| {
+                let face: Vec<usize> = mesh["face"]
+                    .as_array()
+                    .expect("faces")
+                    .iter()
+                    .map(|i| usize::try_from(i.as_u64().expect("a vertex")).expect("a vertex"))
+                    .collect();
+                (name, Model::one_mesh(&numbers(&mesh["vert"]), &face))
+            })
+            .collect();
+        let rays = golden["mesh"].as_array().expect("rays");
+        assert_eq!(rays.len(), 6 * 300 + 14, "every ray read");
+        let mut differ = Vec::new();
+        let mut hits = 0;
+        for (i, ray) in rays.iter().enumerate() {
+            let name = ray["mesh"].as_str().expect("a mesh");
+            let (_, model) = models
+                .iter()
+                .find(|(n, _)| n.as_str() == name)
+                .expect("the ray's mesh");
+            let ours = mj_ray_mesh(
+                model,
+                0,
                 &vector(&ray["pos"]),
                 &Matrix3::from_row_slice(&numbers(&ray["mat"])),
                 &vector(&ray["pnt"]),

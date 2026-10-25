@@ -26,7 +26,10 @@ axis over the geoms its body does not hold. The cases:
 - mesh: a convex mesh slab below a free body turned to 80 drawn states, one
   rangefinder on it;
 - hfield: a height field below the same turning body and one above it, at the
-  same 80 states.
+  same 80 states;
+- mesh_written_frame: a box mesh below the same turning body and an octahedron
+  above it, two meshes MuJoCo keeps in their written frame, at the same 80
+  states.
 """
 import json
 import os
@@ -155,6 +158,29 @@ HFIELD = f"""<mujoco><option gravity="0 0 0"/>
 </mujoco>"""
 
 
+# A box below a turning eye and an octahedron above it, two meshes MuJoCo keeps in their
+# written frame (their principal axes along x, y, z, the largest moment about x, centred, in
+# numbers a float holds), so sim-mjcf loads them as MuJoCo compiles them, which it does not
+# do for a mesh MuJoCo turns until book Rigid-loading L35.
+MESH_BOX = """<mujoco><option gravity="0 0 0"/>
+  <asset>
+    <mesh name="box" vertex="-0.25 -0.75 -1  0.25 -0.75 -1  0.25 0.75 -1  -0.25 0.75 -1
+      -0.25 -0.75 1  0.25 -0.75 1  0.25 0.75 1  -0.25 0.75 1"
+      face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  1 2 6  1 6 5  2 3 7  2 7 6  3 0 4  3 4 7"/>
+    <mesh name="octahedron" vertex="0.5 0 0  -0.5 0 0  0 1 0  0 -1 0  0 0 1.5  0 0 -1.5"
+      face="0 2 4  2 1 4  1 3 4  3 0 4  2 0 5  1 2 5  3 1 5  0 3 5"/>
+  </asset>
+  <worldbody>
+    <geom type="mesh" mesh="box" pos="0.0625 0 -1.25"/>
+    <geom type="mesh" mesh="octahedron" pos="0 0.125 1.75"/>
+    <body name="eye"><freejoint/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+      <site name="r"/>
+    </body>
+  </worldbody>
+  <sensor><rangefinder site="r"/></sensor>
+</mujoco>"""
+
+
 def turning_states(n):
     rng = np.random.default_rng(267)
     states = []
@@ -189,7 +215,8 @@ def main():
     xml, states = random_model()
     cases = [case('random', xml, states), case('invisible', INVISIBLE, [REST]),
              case('cutoff', CUTOFF, [REST]), case('mesh', MESH, turning_states(80)),
-             case('translucent', TRANSLUCENT, [REST]), case('hfield', HFIELD, turning_states(80))]
+             case('translucent', TRANSLUCENT, [REST]), case('hfield', HFIELD, turning_states(80)),
+             case('mesh_written_frame', MESH_BOX, turning_states(80))]
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], 'rangefinder.json'), {'oracle': marker, 'cases': finite_or_string(cases)})
     print(f'{len(cases)} cases -> {sys.argv[1]}')

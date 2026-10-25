@@ -482,6 +482,33 @@ impl Model {
         self.compute_body_bvhs();
         self.compute_flex_bvhs();
     }
+
+    /// A model of one mesh geom on the world, the mesh's vertices `vert`
+    /// (three numbers a vertex) and faces `face` (three vertices a face),
+    /// derived: a fixture for the mesh's hierarchy and ray tests.
+    #[cfg(test)]
+    pub(crate) fn one_mesh(vert: &[f64], face: &[usize]) -> Self {
+        let mut model = Self::empty();
+        model.add_ground_plane();
+        model.geom_type[0] = GeomType::Mesh;
+        model.geom_mesh[0] = Some(0);
+        let vertices = vert
+            .chunks(3)
+            .map(|v| nalgebra::Point3::new(v[0], v[1], v[2]))
+            .collect();
+        model
+            .mesh_data
+            .push(std::sync::Arc::new(crate::mesh::TriangleMeshData::new(
+                vertices,
+                face.to_vec(),
+            )));
+        model.mesh_name.push("mesh".into());
+        model.nmesh = 1;
+        model.compute_geom_bounding_radii();
+        model.compute_body_bvhs();
+        model.compute_flex_bvhs();
+        model
+    }
 }
 
 /// Size the per-element arrays a factory does not fill, to the defaults the

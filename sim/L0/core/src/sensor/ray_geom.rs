@@ -16,14 +16,13 @@ use crate::types::{Data, GeomType, Model};
 /// geom that `bodyexclude` does not hold and whose alpha is not 0
 /// (`ray_eliminate`, `:68-99`; sim-mjcf keeps no materials, so a material's
 /// alpha is not read), or −1. A primitive's distance is [`ray_geom`]'s, a
-/// height field's `mj_rayHfield`'s (`ray_mesh::mj_ray_hfield`). A mesh's
-/// and a signed distance field's are `raycast_geom`'s along the unit
-/// direction, divided by `|vec|`, not MuJoCo's `mj_rayMesh` and `mj_raySdf`
-/// (ledger L267); each is cast no farther than the geom's bounding sphere
-/// reaches. A plane is read
-/// as unbounded, as MuJoCo reads one of size 0: sim-mjcf does not keep a
-/// plane's written size until Rigid-loading's L14, and MuJoCo bounds the hit
-/// by it.
+/// height field's `mj_rayHfield`'s and a mesh's `mj_rayMesh`'s
+/// (`ray_mesh::mj_ray_hfield`, `ray_mesh::mj_ray_mesh`). A signed distance
+/// field's is `raycast_geom`'s along the unit direction, divided by `|vec|`,
+/// cast no farther than the geom's bounding sphere reaches, not MuJoCo's
+/// `mj_raySdf` (ledger L267). A plane is read as unbounded, as MuJoCo reads
+/// one of size 0: sim-mjcf does not keep a plane's written size until
+/// Rigid-loading's L14, and MuJoCo bounds the hit by it.
 pub fn mj_ray(
     model: &Model,
     data: &Data,
@@ -47,7 +46,17 @@ pub fn mj_ray(
                     vec,
                 )
             }),
-            GeomType::Mesh | GeomType::Sdf => {
+            GeomType::Mesh => model.geom_mesh[g].map_or(-1.0, |m| {
+                super::ray_mesh::mj_ray_mesh(
+                    model,
+                    m,
+                    &data.geom_xpos[g],
+                    &data.geom_xmat[g],
+                    pnt,
+                    vec,
+                )
+            }),
+            GeomType::Sdf => {
                 let norm = vec.norm();
                 let reach = (pnt - data.geom_xpos[g]).norm() + model.geom_rbound[g];
                 crate::raycast::raycast_geom(
