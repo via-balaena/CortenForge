@@ -670,6 +670,7 @@ fn tendon_implicit_spatial_tendon_basic() {
     );
 
     // Cross-coupling
+    assert!(j1.is_finite(), "Spatial tendon J[1] is {j1}");
     if j1.abs() > 1e-6 {
         assert!(
             data.qacc[1].abs() > 1e-6,

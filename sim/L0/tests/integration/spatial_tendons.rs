@@ -677,6 +677,7 @@ fn test_tendon_limit_forces() {
             // act to reduce qpos[1] (decrease the angle), so the generalized
             // force on DOF 1 should be negative (same sign as J).
             let j = &data.ten_J[0];
+            assert!(j.iter().all(|x| x.is_finite()), "ten_J {j:?}");
             let force_direction_consistent = (0..model.nv).any(|d| {
                 let total_force = data.qfrc_constraint[d] + data.qfrc_passive[d];
                 if j[d].abs() > 1e-10 && total_force.abs() > 1e-10 {

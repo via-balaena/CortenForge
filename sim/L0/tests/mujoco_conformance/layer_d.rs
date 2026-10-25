@@ -450,14 +450,12 @@ fn layer_d_contact_normal_nonnegative() {
             for i in 0..data.efc_force.len() {
                 // Only check non-friction contact rows (rough check: inequality constraints)
                 // Normal forces are typically the first row of each contact block.
-                if data.efc_force[i].is_finite() {
-                    // We're checking structural property: forces should be finite
-                    assert!(
-                        data.efc_force[i].is_finite(),
-                        "Step {step}: efc_force[{i}] is not finite: {}",
-                        data.efc_force[i]
-                    );
-                }
+                // We're checking structural property: forces should be finite
+                assert!(
+                    data.efc_force[i].is_finite(),
+                    "Step {step}: efc_force[{i}] is not finite: {}",
+                    data.efc_force[i]
+                );
             }
 
             // Contact-level check: qfrc_constraint vertical component should be

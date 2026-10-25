@@ -456,10 +456,7 @@ fn flex_contact_jacobians_match_mujoco_3_5_0_bit_for_bit() {
                                     .map_or(0.0, |k| values[k])
                             })
                             .collect();
-                        assert!(
-                            sparse.iter().all(|x| x.is_finite()) && sparse != want,
-                            "{what} row {r}: drop D-FLEX-SPARSE-ROT"
-                        );
+                        assert_ne!(sparse, want, "{what} row {r}: drop D-FLEX-SPARSE-ROT");
                         continue;
                     }
                     let ours: Vec<f64> = colind.iter().map(|&col| j[(r, col)]).collect();

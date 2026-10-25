@@ -1948,6 +1948,7 @@ fn test_pos_deriv_fd_convergence() {
     for &eps in &eps_vals {
         let fd = fd_dqacc_dqpos(&model, &data, eps);
         let err = max_relative_error(&analytical, &fd, 1e-6);
+        assert!(err.is_finite(), "FD convergence: error {err} at eps={eps}");
         // Each step should reduce error (at least not increase by much).
         // At extremely small analytical error (< 1e-7), FP noise in FD dominates
         // and monotonic convergence is not guaranteed.
@@ -4786,16 +4787,15 @@ fn a_sleeping_tendon_adds_no_position_derivative() {
             .map(|x| x.to_bits())
             .collect::<Vec<_>>()
     };
-    assert_eq!(derivative(50.0, true), derivative(0.0, true), "qDeriv_pos");
+    let asleep = derivative(50.0, true);
+    assert_eq!(asleep, derivative(0.0, true), "qDeriv_pos");
     let (with, without) = (derivative(50.0, false), derivative(0.0, false));
+    let finite = |bits: &[u64]| bits.iter().all(|&b| f64::from_bits(b).is_finite());
     assert!(
-        with.iter()
-            .zip(&without)
-            .map(|(a, b)| (f64::from_bits(*a) - f64::from_bits(*b)).abs())
-            .fold(0.0, max_or_nan)
-            > 0.0,
-        "awake, the spring's term shows"
+        finite(&asleep) && finite(&with) && finite(&without),
+        "qDeriv_pos is finite"
     );
+    assert_ne!(with, without, "awake, the spring's term shows");
 }
 
 /// An awake spatial tendon whose row is 0 at this state (its site moves
