@@ -1775,3 +1775,4 @@ f94cbaefaca3a61f	sim/L0/tests/integration/flex_rigid_parity.rs:241
 bcd2080c5196a90a	examples/fundamentals/sim-cpu/sensors/touch/src/main.rs:43
 67bba3a77c16482d	sim/L0/tests/integration/rangefinder_parity.rs:126
 51e8993b88f71a17	sim/L0/tests/integration/derivatives.rs:3667
+eb2d27f53748110c	sim/L0/tests/integration/muscle_parity.rs:208

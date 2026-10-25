@@ -1529,6 +1529,7 @@ eaf578995f7ffed8	mj-refuses
 eafc140cc3510526	e1:s1:qfrc_passive
 eb1d0b9c311aa887	agree
 eb2727bab776c397	agree
+eb2d27f53748110c	model:actuator_actlimited;dyn:e1:s1:qfrc_actuator
 eb2e288f8f471b6c	agree
 eb35a54eec1b38c9	model:geom_quat;dyn:agree
 eb4b3e04b060c3f8	agree
