@@ -47,11 +47,12 @@ impl Model {
     /// which an edit of the tree sets.
     ///
     /// # Errors
-    /// The [`ModelError`] `check_joint_layout` or `check_ranges` finds; the
-    /// model is then unchanged.
+    /// The [`ModelError`] `check_joint_layout`, `check_ranges` or
+    /// `check_activation_counts` finds; the model is then unchanged.
     pub fn recompute_derived(&mut self) -> Result<(), ModelError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
+        self.check_activation_counts()?;
         // MuJoCo setFixed (engine_setconst.c:98-103).
         self.ngravcomp = self.body_gravcomp.iter().filter(|&&gc| gc > 0.0).count();
         // Before the derivations below, which make a `Data` sized by `nhistory`.

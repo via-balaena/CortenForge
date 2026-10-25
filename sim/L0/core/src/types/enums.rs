@@ -1215,16 +1215,9 @@ pub enum MakeDataError {
     /// The forward pass before the `Init` trees sleep failed; see
     /// [`ResetError::InitForward`].
     InitForward(StepError),
-    /// Actuator `actuator` has `act_num` activations, a count MuJoCo's
-    /// compiler refuses (`user_objects.cc:6896-6906`): none with dynamics,
-    /// one without, or more than one with dynamics other than a user's. A
-    /// plugin's actuator is exempt, as MuJoCo's.
-    ActivationCount {
-        /// The actuator.
-        actuator: usize,
-        /// Its activations.
-        act_num: usize,
-    },
+    /// An actuator's activation count
+    /// ([`Model::check_activation_counts`](crate::Model::check_activation_counts)).
+    ActivationCount(ActivationCountError),
     /// The model sets a flag for a part of MuJoCo sim-core does not port.
     Unsupported {
         /// The flag and what it would take.
@@ -1249,18 +1242,7 @@ impl std::fmt::Display for MakeDataError {
                 root_body,
             } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
             Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
-            Self::ActivationCount {
-                actuator,
-                act_num: 0,
-            } => write!(f, "actuator {actuator} has dynamics and no activation"),
-            Self::ActivationCount {
-                actuator,
-                act_num: 1,
-            } => write!(f, "actuator {actuator} has an activation and no dynamics"),
-            Self::ActivationCount { actuator, act_num } => write!(
-                f,
-                "actuator {actuator} has {act_num} activations, which only user dynamics may have"
-            ),
+            Self::ActivationCount(e) => write!(f, "{e}"),
             Self::Unsupported { feature } => write!(f, "unsupported: {feature}"),
         }
     }
@@ -1272,10 +1254,10 @@ impl std::error::Error for MakeDataError {
             Self::JointLayout(e) => Some(e),
             Self::Range(e) => Some(e),
             Self::InitForward(e) => Some(e),
+            Self::ActivationCount(e) => Some(e),
             Self::PluginInit { .. }
             | Self::InvalidTimestep
             | Self::DelayedUserSensor { .. }
-            | Self::ActivationCount { .. }
             | Self::InitSleep { .. }
             | Self::Unsupported { .. } => None,
         }
@@ -1291,6 +1273,12 @@ impl From<JointLayoutError> for MakeDataError {
 impl From<RangeError> for MakeDataError {
     fn from(e: RangeError) -> Self {
         Self::Range(e)
+    }
+}
+
+impl From<ActivationCountError> for MakeDataError {
+    fn from(e: ActivationCountError) -> Self {
+        Self::ActivationCount(e)
     }
 }
 
@@ -1381,8 +1369,9 @@ impl std::error::Error for HistoryError {}
 
 /// Why [`Model::recompute_derived`](crate::Model::recompute_derived) refuses a model.
 ///
-/// Its joint layout or one of its limited ranges, which
-/// [`Model::try_make_data`](crate::Model::try_make_data) refuses too.
+/// Its joint layout, one of its limited ranges or an actuator's activation
+/// count, which [`Model::try_make_data`](crate::Model::try_make_data) refuses
+/// too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ModelError {
@@ -1390,6 +1379,8 @@ pub enum ModelError {
     JointLayout(JointLayoutError),
     /// [`Model::check_ranges`](crate::Model::check_ranges)'s error.
     Range(RangeError),
+    /// [`Model::check_activation_counts`](crate::Model::check_activation_counts)'s error.
+    ActivationCount(ActivationCountError),
 }
 
 impl std::fmt::Display for ModelError {
@@ -1397,6 +1388,7 @@ impl std::fmt::Display for ModelError {
         match self {
             Self::JointLayout(e) => write!(f, "{e}"),
             Self::Range(e) => write!(f, "{e}"),
+            Self::ActivationCount(e) => write!(f, "{e}"),
         }
     }
 }
@@ -1406,6 +1398,7 @@ impl std::error::Error for ModelError {
         match self {
             Self::JointLayout(e) => Some(e),
             Self::Range(e) => Some(e),
+            Self::ActivationCount(e) => Some(e),
         }
     }
 }
@@ -1419,6 +1412,12 @@ impl From<JointLayoutError> for ModelError {
 impl From<RangeError> for ModelError {
     fn from(e: RangeError) -> Self {
         Self::Range(e)
+    }
+}
+
+impl From<ActivationCountError> for ModelError {
+    fn from(e: ActivationCountError) -> Self {
+        Self::ActivationCount(e)
     }
 }
 
@@ -1485,6 +1484,37 @@ impl std::fmt::Display for RangeError {
 }
 
 impl std::error::Error for RangeError {}
+
+/// An actuator's activation count that
+/// [`Model::check_activation_counts`](crate::Model::check_activation_counts)
+/// refuses.
+///
+/// Actuator `actuator` has `act_num` activations, which MuJoCo's compiler
+/// refuses for its dynamics (`user_objects.cc:6896-6906`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ActivationCountError {
+    /// The actuator.
+    pub actuator: usize,
+    /// Its activations.
+    pub act_num: usize,
+}
+
+impl std::fmt::Display for ActivationCountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let actuator = self.actuator;
+        match self.act_num {
+            0 => write!(f, "actuator {actuator} has dynamics and no activation"),
+            1 => write!(f, "actuator {actuator} has an activation and no dynamics"),
+            n => write!(
+                f,
+                "actuator {actuator} has {n} activations, which only user dynamics may have"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ActivationCountError {}
 
 /// Bending model for dim=2 flex bodies.
 ///

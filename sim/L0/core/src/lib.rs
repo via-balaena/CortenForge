@@ -185,6 +185,7 @@ pub use sdf::{
 
 // Enums, error types, constants, and Model construction (extracted to types/ module)
 pub use types::{
+    ActivationCountError,
     ActuatorDynamics,
     ActuatorTransmission,
     BiasType,

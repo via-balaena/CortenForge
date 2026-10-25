@@ -10,9 +10,9 @@ use std::collections::{HashMap, HashSet};
 
 use super::body_wrench::BodyWrench;
 use super::enums::{
-    ActuatorDynamics, DISABLE_NATIVECCD, ENABLE_SLEEP, EqualityType, Integrator, JacobianType,
-    JointLayoutError, MakeDataError, MjJointType, MjSensorType, RangeError, ResetError,
-    SleepPolicy, SleepState, SolverType, StepError,
+    ActivationCountError, ActuatorDynamics, DISABLE_NATIVECCD, ENABLE_SLEEP, EqualityType,
+    Integrator, JacobianType, JointLayoutError, MakeDataError, MjJointType, MjSensorType,
+    RangeError, ResetError, SleepPolicy, SleepState, SolverType, StepError,
 };
 use super::model::Model;
 
@@ -28,6 +28,7 @@ use crate::dynamics::spatial::mju_mul_inert_vec;
 use crate::forward::MjStage;
 use crate::jacobian::mj_jac_body_com;
 use crate::linalg::mju_dot;
+use crate::plugin::PluginCapabilityBit;
 
 use super::data::Data;
 use crate::forward::mj_fwd_position;
@@ -676,8 +677,8 @@ impl Model {
     }
 
     /// Create the `Data` for this model, with every array allocated: the joint
-    /// layout, range and activation-count checks, then the arrays, each plugin's `init`, and a
-    /// [`Data::reset`], which clears what `init` wrote outside the plugin
+    /// layout, range and activation-count checks, then the arrays, each
+    /// plugin's `init`, and a [`Data::reset`], which clears what `init` wrote outside the plugin
     /// state, sets the sleep state and runs each plugin's `reset`, as MuJoCo
     /// 3.5.0's `mj_makeData` runs `mj_initPlugin` and then `mj_resetData`
     /// (`engine_io.c:1110-1111`).
@@ -685,8 +686,8 @@ impl Model {
     /// # Errors
     /// [`MakeDataError::JointLayout`] ([`Self::check_joint_layout`]),
     /// [`MakeDataError::Range`] ([`Self::check_ranges`]),
-    /// [`MakeDataError::ActivationCount`] (an actuator's activations against
-    /// its dynamics, as MuJoCo's compiler checks them), the history
+    /// [`MakeDataError::ActivationCount`] ([`Self::check_activation_counts`]),
+    /// the history
     /// buffers' refusals ([`MakeDataError::InvalidTimestep`],
     /// [`MakeDataError::DelayedUserSensor`]), [`MakeDataError::PluginInit`]
     /// if a plugin's `init` returns an error, or the reset's refusal of the
@@ -701,12 +702,7 @@ impl Model {
     pub fn try_make_data(&self) -> Result<Data, MakeDataError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
-        if let Some(actuator) = self.activation_count_refusal() {
-            return Err(MakeDataError::ActivationCount {
-                actuator,
-                act_num: self.actuator_act_num[actuator],
-            });
-        }
+        self.check_activation_counts()?;
         if self.disableflags & DISABLE_NATIVECCD != 0 {
             return Err(MakeDataError::Unsupported {
                 feature: NATIVECCD_DISABLED,
@@ -728,22 +724,42 @@ impl Model {
         Ok(data)
     }
 
-    /// The first actuator, not a plugin's, whose activations MuJoCo's compiler
-    /// refuses for its dynamics (`user_objects.cc:6896-6906`): none with
+    /// Check each actuator's activation count against its dynamics, as
+    /// MuJoCo's compiler does (`user_objects.cc:6896-6906`): none with
     /// dynamics, one without, or more than one with dynamics other than a
-    /// user's. The forward pass reads an actuator's last activation, and the
-    /// analytic derivatives take one per actuator with native dynamics.
-    fn activation_count_refusal(&self) -> Option<usize> {
-        (0..self.nu).find(|&i| {
-            let plugin = self.actuator_plugin.get(i).is_some_and(Option::is_some);
+    /// user's is refused.
+    ///
+    /// MuJoCo checks none of them on a plugin's actuator. Here the last two
+    /// are not checked on an actuator of a plugin with the actuator capability
+    /// (`actuator_plugin`); the first is checked on every actuator, as the
+    /// forward pass reads the last activation of each with dynamics, where
+    /// MuJoCo skips one with none (`engine_forward.c:327-330`).
+    ///
+    /// # Errors
+    /// The first actuator's [`ActivationCountError`].
+    pub fn check_activation_counts(&self) -> Result<(), ActivationCountError> {
+        let of_an_actuator_plugin = |i: usize| {
+            // `get`: a model built in code may leave `actuator_plugin` empty.
+            self.actuator_plugin
+                .get(i)
+                .copied()
+                .flatten()
+                .and_then(|p| self.plugin_capabilities.get(p))
+                .is_some_and(|c| c.contains(PluginCapabilityBit::Actuator))
+        };
+        let refused = (0..self.nu).find(|&i| {
             let dynamics = self.actuator_dyntype[i];
-            let act_num = self.actuator_act_num[i];
-            !plugin
-                && match act_num {
-                    0 => dynamics != ActuatorDynamics::None,
-                    1 => dynamics == ActuatorDynamics::None,
-                    _ => dynamics != ActuatorDynamics::User,
-                }
+            match self.actuator_act_num[i] {
+                0 => dynamics != ActuatorDynamics::None,
+                1 => dynamics == ActuatorDynamics::None && !of_an_actuator_plugin(i),
+                _ => dynamics != ActuatorDynamics::User && !of_an_actuator_plugin(i),
+            }
+        });
+        refused.map_or(Ok(()), |actuator| {
+            Err(ActivationCountError {
+                actuator,
+                act_num: self.actuator_act_num[actuator],
+            })
         })
     }
 
@@ -772,7 +788,8 @@ impl Model {
     /// `lengthrange`, `invweight0`, `stat_meaninertia`, tendon `length0`):
     /// every array allocated, with no checks and no plugin `init`. The MJCF
     /// builder and [`Self::recompute_derived`] run those derivations only on a
-    /// model whose joint layout and ranges pass, so they never step a joint
+    /// model whose joint layout and ranges pass (and `recompute_derived` only
+    /// on one whose activation counts pass), so they never step a joint
     /// layout or a range `try_make_data` refuses.
     pub(crate) fn make_data_for_derivation(&self) -> Data {
         let mut data = self.allocate_data();
@@ -1641,11 +1658,13 @@ mod dof_length_tests {
 #[cfg(test)]
 mod joint_layout_tests {
     #![allow(clippy::expect_used)]
+    use crate::plugin::{Plugin, PluginCapabilities, PluginCapabilityBit, PluginStage};
     use crate::test_fixtures::builders::{
         add_ball_joint, add_body, add_freejoint, add_hinge_joint, add_slide_joint, finalize,
     };
     use crate::types::{
-        ActuatorDynamics, JointLayoutError, MakeDataError, Model, ModelError, RangeError,
+        ActivationCountError, ActuatorDynamics, Data, JointLayoutError, MakeDataError, Model,
+        ModelError, RangeError,
     };
     use nalgebra::Vector3;
 
@@ -1880,26 +1899,58 @@ mod joint_layout_tests {
         );
     }
 
+    /// A plugin of the given capability, which computes nothing.
+    struct Capable(PluginCapabilityBit);
+
+    impl Plugin for Capable {
+        fn name(&self) -> &'static str {
+            "test.capable"
+        }
+
+        fn capabilities(&self) -> PluginCapabilities {
+            self.0.into()
+        }
+
+        fn compute(&self, _: &Model, _: &mut Data, _: usize, _: PluginCapabilityBit) {}
+    }
+
     /// The activation counts MuJoCo's compiler refuses for an actuator's
     /// dynamics (`user_objects.cc:6896-6906`), on a one-hinge chain's motor:
     /// none with dynamics, one without, two with dynamics other than a
     /// user's. Two with a user's, and as many as the dynamics need, make a
-    /// `Data`; so does any count on a plugin's actuator.
+    /// `Data`. On an actuator of a plugin with the actuator capability only
+    /// the first is refused; an actuator naming a plugin without it, or no
+    /// plugin of the model, is checked as any. `recompute_derived` refuses
+    /// what `try_make_data` refuses.
     #[test]
     fn try_make_data_refuses_an_activation_count_mujoco_refuses() {
-        let made = |dynamics, act_num, plugin: Option<usize>| {
+        let model = |dynamics, act_num, plugin: Option<(usize, PluginCapabilityBit)>| {
             let mut m = crate::test_fixtures::hinge_chain(1);
             m.actuator_dyntype[0] = dynamics;
             m.actuator_act_num[0] = act_num;
             m.na = act_num;
-            m.actuator_plugin[0] = plugin;
-            m.try_make_data().err()
+            if let Some((index, capability)) = plugin {
+                m.nplugin = 1;
+                m.plugin_objects
+                    .push(std::sync::Arc::new(Capable(capability)));
+                m.plugin_capabilities.push(capability.into());
+                m.plugin_needstage.push(PluginStage::Acc);
+                m.plugin_stateadr.push(0);
+                m.plugin_statenum.push(0);
+                m.plugin_name.push(None);
+                m.plugin_attradr.push(0);
+                m.plugin_attrnum.push(0);
+                m.actuator_plugin[0] = Some(index);
+            }
+            m
         };
+        let made =
+            |dynamics, act_num, plugin| model(dynamics, act_num, plugin).try_make_data().err();
         let refused = |act_num| {
-            Some(MakeDataError::ActivationCount {
+            Some(MakeDataError::ActivationCount(ActivationCountError {
                 actuator: 0,
                 act_num,
-            })
+            }))
         };
         assert_eq!(made(ActuatorDynamics::Filter, 0, None), refused(0));
         assert_eq!(made(ActuatorDynamics::None, 1, None), refused(1));
@@ -1907,7 +1958,21 @@ mod joint_layout_tests {
         assert_eq!(made(ActuatorDynamics::None, 0, None), None);
         assert_eq!(made(ActuatorDynamics::Filter, 1, None), None);
         assert_eq!(made(ActuatorDynamics::User, 2, None), None);
-        assert_eq!(made(ActuatorDynamics::Integrator, 2, Some(0)), None);
+        let actuator = Some((0, PluginCapabilityBit::Actuator));
+        assert_eq!(made(ActuatorDynamics::Filter, 0, actuator), refused(0));
+        assert_eq!(made(ActuatorDynamics::None, 1, actuator), None);
+        assert_eq!(made(ActuatorDynamics::Integrator, 2, actuator), None);
+        let passive = Some((0, PluginCapabilityBit::Passive));
+        assert_eq!(made(ActuatorDynamics::Integrator, 2, passive), refused(2));
+        let none = Some((1, PluginCapabilityBit::Actuator));
+        assert_eq!(made(ActuatorDynamics::None, 1, none), refused(1));
+        assert_eq!(
+            model(ActuatorDynamics::Muscle, 0, None).recompute_derived(),
+            Err(ModelError::ActivationCount(ActivationCountError {
+                actuator: 0,
+                act_num: 0,
+            }))
+        );
     }
 
     /// Each rule of `check_ranges`, on a one-hinge chain with a motor and on a

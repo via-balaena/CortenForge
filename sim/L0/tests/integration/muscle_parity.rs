@@ -200,8 +200,7 @@ fn assert_implicit_steps(name: &str) {
 /// unlimited hinge, its range written, loads with (0, 0), where MuJoCo 3.5.0
 /// compiles the written (-1.5, 1.5) (and refuses the model without it: the
 /// range's simulation does not converge). Rigid-loading's L44 keeps the
-/// written range, and this test fails there; the tests above then need not
-/// set MuJoCo's.
+/// written range, and this test fails there.
 #[test]
 fn a_written_length_range_is_not_read_yet() {
     let model = load_model(
