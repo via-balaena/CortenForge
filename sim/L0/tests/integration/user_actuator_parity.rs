@@ -163,7 +163,7 @@ fn user_actuators_act_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 36, "3 cases of 12 states");
+    assert_eq!(compared, 48, "4 cases of 12 states");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",

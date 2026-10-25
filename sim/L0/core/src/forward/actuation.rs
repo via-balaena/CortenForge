@@ -891,11 +891,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     velocity,
                 )
             }
+            // Without a callback a user gain is 1, as MuJoCo's
+            // (`engine_forward.c:434-440`).
             GainType::User => {
                 if let Some(ref cb) = model.cb_act_gain {
                     (cb.0)(model, data, i)
                 } else {
-                    0.0
+                    1.0
                 }
             }
         };

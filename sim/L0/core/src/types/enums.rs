@@ -257,7 +257,7 @@ pub enum GainType {
     /// gain = −F0 × AFL(l̄) × FV(v̄) × cos(penn), the per-activation active force
     /// (paired with `BiasType::MillardMuscle`). See `forward::millard_active_gain`.
     MillardMuscle,
-    /// User-defined gain (via `cb_act_gain` callback).
+    /// User-defined gain (via `cb_act_gain` callback); 1 without one.
     /// MuJoCo reference: `mjGAIN_USER`.
     User,
 }
