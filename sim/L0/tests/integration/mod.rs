@@ -88,6 +88,10 @@ pub mod rangefinder_parity;
 /// Each mesh's bounding-volume hierarchy against MuJoCo 3.5.0's.
 pub mod mesh_bvh_parity;
 
+/// A user gain's, bias's and dynamics' actuator against MuJoCo 3.5.0's with
+/// its callbacks set and unset.
+pub mod user_actuator_parity;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================

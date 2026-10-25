@@ -261,14 +261,15 @@ fn actuator_input(model: &Model, data: &Data, i: usize) -> f64 {
 
 /// `∂force/∂V` of actuator `i` at `input`, as `mjd_actuator_vel` takes it:
 /// the gain's velocity term times the input, where that term is nonzero,
-/// plus the bias's. `None` for a Millard muscle or a user gain or bias, whose
-/// derivatives are deferred.
+/// plus the bias's. A user gain's or bias's term is 0, as MuJoCo's, which
+/// adds only an affine or a muscle term (`engine_derivative.c:1101-1122`).
+/// `None` for a Millard muscle, whose derivatives are deferred.
 fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Option<f64> {
     let length = data.actuator_length[i];
     let velocity = data.actuator_velocity[i];
     // ∂gain/∂V for this actuator
     let dgain_dv = match model.actuator_gaintype[i] {
-        GainType::Fixed => 0.0,
+        GainType::Fixed | GainType::User => 0.0,
         GainType::Affine => model.actuator_gainprm[i][2],
         GainType::Muscle => {
             // MuJoCo's `mjd_muscleGain_vel` (engine_derivative.c:781-826):
@@ -313,17 +314,17 @@ fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Optio
         // MillardMuscle: the analytic Bézier FV-curve velocity-derivative (and the
         // β·v̄ damping derivative) is deferred — omit this actuator from the implicit
         // velocity-Jacobian (explicit integration is unaffected). See recon R-implicit-deriv.
-        GainType::MillardMuscle | GainType::User => return None,
+        GainType::MillardMuscle => return None,
     };
 
     // ∂bias/∂V for this actuator
     // Muscle/HillMuscle bias (passive force) depends on length only, not velocity → 0.
     let dbias_dv = match model.actuator_biastype[i] {
         BiasType::Affine => model.actuator_biasprm[i][2],
-        BiasType::None | BiasType::Muscle | BiasType::HillMuscle => 0.0,
+        BiasType::None | BiasType::Muscle | BiasType::HillMuscle | BiasType::User => 0.0,
         // MillardMuscle bias has a velocity-dependent damping term; its analytic
         // derivative is deferred (skip — see the gain arm above).
-        BiasType::MillardMuscle | BiasType::User => return None,
+        BiasType::MillardMuscle => return None,
     };
 
     // The gain term only when its velocity part is nonzero, as MuJoCo's:
@@ -1332,7 +1333,11 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
         }
         let gear = model.actuator_gear[i][0];
         tendon_force[t] += gear * data.actuator_force[i];
-        if actuator_left_out(model, data, i) {
+        // A user gain or bias is skipped, as in the length term above.
+        if actuator_left_out(model, data, i)
+            || model.actuator_gaintype[i] == GainType::User
+            || model.actuator_biastype[i] == BiasType::User
+        {
             continue;
         }
         let input = forward_pass_input(model, data, i, bad);
