@@ -2605,7 +2605,7 @@ mod tests {
         let (mut hi, mut lo, mut seated) = (f64::MIN, f64::MAX, 0usize);
         for (raw, conf) in raw_rest.iter().zip(&traj.rest_nodes_native) {
             let moved = (raw - conf).norm();
-            assert!(moved.is_finite(), "a band node moved {moved} mm");
+            assert!(moved.is_finite(), "a node moved {moved} mm");
             if moved > 0.4 {
                 hi = max_or_nan(hi, conf.z);
                 lo = min_or_nan(lo, conf.z);

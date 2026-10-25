@@ -464,7 +464,8 @@ impl EquilibriumTracker {
     }
 
     /// Compute the mean value over the trailing window.
-    /// Returns `None` if no samples are in the window.
+    /// Returns `None` if no samples are in the window. After a NaN sample
+    /// [`Self::check`] fails, whatever this returns.
     #[must_use]
     pub fn mean(&self) -> Option<f64> {
         if self.samples.is_empty() {
@@ -909,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn a_nan_sample_fails_every_tracker_that_records_an_extreme() {
+    fn a_nan_sample_fails_the_trackers_checks() {
         let mut energy = EnergyMonotonicityTracker::new();
         energy.sample(10.0);
         energy.sample(f64::NAN);

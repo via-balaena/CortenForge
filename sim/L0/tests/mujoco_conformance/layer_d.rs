@@ -448,8 +448,6 @@ fn layer_d_contact_normal_nonnegative() {
             // should be >= 0 (compressive).
             // In MuJoCo convention, efc_force for a normal contact is >= 0.
             for i in 0..data.efc_force.len() {
-                // Only check non-friction contact rows (rough check: inequality constraints)
-                // Normal forces are typically the first row of each contact block.
                 // We're checking structural property: forces should be finite
                 assert!(
                     data.efc_force[i].is_finite(),

@@ -368,10 +368,11 @@ impl Data {
 /// Uses `floor` to prevent division-by-zero for near-zero entries:
 /// `rel_error(i,j) = |a(i,j) − b(i,j)| / max(|a(i,j)|, |b(i,j)|, floor)`
 ///
-/// An entry where `a` and `b` are equal has error 0, whatever `floor` is. The
-/// first entry whose error is NaN is returned as the maximum, so a check
-/// `err < tol` fails on it. A NaN in either matrix gives one, and so does an
-/// infinite entry (`inf / inf`, or `inf − inf` where both are infinite).
+/// An entry where `a` and `b` are finite and equal has error 0, whatever
+/// `floor` is. The first entry whose error is NaN is returned as the maximum,
+/// so a check `err < tol` fails on it. A NaN in either matrix gives one, and
+/// so does an infinite entry (`inf / inf`, or `inf − inf` where both are
+/// infinite).
 ///
 /// # Panics
 ///
