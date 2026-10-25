@@ -41,6 +41,7 @@
 //! 4. **Degenerate geometry**: Zero-sized dimensions
 //! 5. **Coincident geometry**: Same position/orientation
 
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 
 use crate::collision_test_utils::{DEPTH_TOL, GEOM_TOL};
@@ -548,7 +549,7 @@ fn box_plane_slab_like() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     let expected_depth = 0.0005;
     assert!(
@@ -659,7 +660,7 @@ fn box_box_cubes() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     let expected_depth = 0.1; // 0.5 + 0.5 - 0.9
     assert!(
@@ -790,11 +791,11 @@ fn box_box_symmetry() {
         let max_depth_ab = data_ab.contacts[..data_ab.ncon]
             .iter()
             .map(|c| c.depth)
-            .fold(0.0_f64, f64::max);
+            .fold(0.0_f64, max_or_nan);
         let max_depth_ba = data_ba.contacts[..data_ba.ncon]
             .iter()
             .map(|c| c.depth)
-            .fold(0.0_f64, f64::max);
+            .fold(0.0_f64, max_or_nan);
 
         assert!(
             (max_depth_ab - max_depth_ba).abs() < DEPTH_TOL,

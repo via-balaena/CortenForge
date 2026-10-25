@@ -10,6 +10,7 @@
 //! convergence detection, and frictionless contacts.
 
 use sim_core::SolverType;
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 
 // ---------------------------------------------------------------------------
@@ -111,7 +112,7 @@ fn test_cg_pgs_parity_sphere_plane() {
         if !data_pgs.contacts.is_empty() && !data_cg.contacts.is_empty() {
             let pgs_norm = data_pgs.qfrc_constraint.norm();
             let cg_norm = data_cg.qfrc_constraint.norm();
-            if pgs_norm > 1e-6 {
+            if pgs_norm.is_nan() || pgs_norm > 1e-6 {
                 let rel_err = (pgs_norm - cg_norm).abs() / pgs_norm;
                 assert!(
                     rel_err < 1e-4,
@@ -143,7 +144,7 @@ fn test_cg_stability_box_stack() {
     let mut data_cg = model_cg.make_data();
 
     let mut cg_had_contacts = false;
-    let mut cg_had_forces = false;
+    let mut cg_peak_force = 0.0_f64;
 
     // Run 200 steps — enough for contacts to develop
     for _ in 0..200 {
@@ -151,9 +152,7 @@ fn test_cg_stability_box_stack() {
         if !data_cg.contacts.is_empty() {
             cg_had_contacts = true;
         }
-        if data_cg.qfrc_constraint.norm() > 1.0 {
-            cg_had_forces = true;
-        }
+        cg_peak_force = max_or_nan(cg_peak_force, data_cg.qfrc_constraint.norm());
     }
 
     // CG should handle multi-contact box stack (contacts exist, forces generated)
@@ -162,7 +161,7 @@ fn test_cg_stability_box_stack() {
         "CG box stack should have had contacts during simulation"
     );
     assert!(
-        cg_had_forces,
+        cg_peak_force > 1.0,
         "CG box stack should have produced meaningful constraint forces"
     );
 }

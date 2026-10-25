@@ -81,7 +81,7 @@ fn integrate_refuses_before_anything_changes() {
     data.qvel[0] = 1.0;
     data.ctrl.fill(0.5);
     data.forward(&model).expect("forward");
-    assert!(data.act_dot[0] != 0.0);
+    assert!(data.act_dot[0].abs() > 0.0);
     let before = data.clone();
     model.timestep = -1e-3;
     assert_eq!(data.integrate(&model), Err(StepError::InvalidTimestep));

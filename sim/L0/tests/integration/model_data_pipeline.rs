@@ -9,6 +9,7 @@
 //! This validates the Phase 4+ consolidation work.
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 
 /// Test: Simple pendulum loads and simulates correctly.
@@ -330,7 +331,8 @@ fn test_joint_limits_model_data() {
 
     // Joint should be within or near limits (with small overshoot allowed)
     // The penalty method allows some penetration but should keep it bounded
-    let limit_violation = (data.qpos[0] - 0.5).max(0.0) + (-0.5 - data.qpos[0]).max(0.0);
+    let limit_violation =
+        max_or_nan(data.qpos[0] - 0.5, 0.0) + max_or_nan(-0.5 - data.qpos[0], 0.0);
     assert!(
         limit_violation < 0.2,
         "joint limit violated too much: qpos={}, limits=[-0.5, 0.5], violation={}",
@@ -587,7 +589,7 @@ fn energy_initial_is_captured_once_even_when_zero() {
     data.qvel[0] = 1.0;
     data.forward_skip(&model, sim_core::MjStage::None, false)
         .unwrap();
-    assert_ne!(data.total_energy(), 0.0);
+    assert!(data.total_energy().abs() > 0.0);
     assert_eq!(
         data.energy_initial, 0.0,
         "baseline moved to {}",
@@ -676,7 +678,7 @@ fn a_clone_keeps_the_energy_baseline() {
     let mut clone = data.clone();
     clone.qpos[0] = 0.6;
     clone.forward(&model).unwrap();
-    assert_ne!(clone.total_energy(), first);
+    assert!((clone.total_energy() - first).abs() > 0.0);
     assert_eq!(clone.energy_initial, first);
 }
 

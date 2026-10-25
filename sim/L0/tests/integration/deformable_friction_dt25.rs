@@ -4,6 +4,7 @@
 //! Confirms deformable-rigid friction works for condim=3 (the common case),
 //! verifies R-scaling with asymmetric Jacobians, and documents gaps.
 
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -188,7 +189,7 @@ fn dt25_flex_friction_nonzero_tangential_forces() {
     }
 
     // Run enough steps for contacts to form and friction to act
-    let mut had_contact_forces = false;
+    let mut peak_contact_force = 0.0_f64;
     for step in 0..300 {
         if let Err(e) = data.step(&model) {
             panic!("step {} failed: {:?}", step, e);
@@ -201,14 +202,12 @@ fn dt25_flex_friction_nonzero_tangential_forces() {
         let nefc = data.efc_type.len();
 
         for i in contact_start..nefc {
-            if data.efc_force[i].abs() > 1e-10 {
-                had_contact_forces = true;
-            }
+            peak_contact_force = max_or_nan(peak_contact_force, data.efc_force[i].abs());
         }
     }
 
     assert!(
-        had_contact_forces,
+        peak_contact_force > 1e-10,
         "should have nonzero contact constraint forces (including friction)"
     );
 }

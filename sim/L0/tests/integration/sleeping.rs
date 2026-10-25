@@ -8,6 +8,7 @@
 use approx::assert_relative_eq;
 use nalgebra::Vector3;
 use sim_core::batch::BatchSim;
+use sim_core::validation::{max_abs_or_nan, max_or_nan};
 use sim_core::{BodyWrench, DISABLE_ISLAND, ENABLE_SLEEP, SleepPolicy, SleepState};
 use sim_mjcf::load_model;
 use std::sync::Arc;
@@ -338,8 +339,8 @@ fn test_sleep_disabled_noop() {
         data.step(&model).expect("step should succeed");
     }
     // Pendulum should have moved after 10 steps
-    assert_ne!(
-        data.qpos[0], qpos_before[0],
+    assert!(
+        (data.qpos[0] - qpos_before[0]).abs() > 0.0,
         "pendulum should move under gravity"
     );
 
@@ -943,7 +944,7 @@ fn test_sensor_frozen_on_sleep() {
     // Values should not be zero (they reflect the resting position)
     // The framepos sensor should report the body's resting position
     assert!(
-        data.sensordata.iter().any(|&v| v.abs() > 1e-10),
+        max_abs_or_nan(&data.sensordata) > 1e-10,
         "sensor values should not all be zero (body is resting, not at origin)"
     );
 }
@@ -3003,7 +3004,7 @@ fn test_actuated_sleep_zeros_qfrc_actuator() {
     let tree = model.body_treeid[1];
     let dof_start = model.tree_dof_adr[tree];
     assert!(
-        data.qfrc_actuator[dof_start] != 0.0,
+        data.qfrc_actuator[dof_start].abs() > 0.0,
         "qfrc_actuator should be nonzero with active control"
     );
 
@@ -3317,7 +3318,7 @@ fn test_energy_all_bodies_always() {
     // PE should be nonzero (bodies have mass and are at nonzero height)
     // For bodies resting on a ground plane at z≈0.1, PE = -m*g*z < 0
     assert!(
-        pe != 0.0,
+        pe.abs() > 0.0,
         "energy_potential should be nonzero (bodies have mass)"
     );
 
@@ -4414,16 +4415,16 @@ fn test_selective_crba_deep_chain() {
 
     // The 3-link hinge chain should have non-zero off-diagonal entries
     // (coupling between joints in the same chain)
-    let mut has_off_diag = false;
+    let mut largest_off_diag = 0.0_f64;
     for i in dof_start_a..dof_start_a + dof_count_a {
         for j in dof_start_a..dof_start_a + dof_count_a {
-            if i != j && data.qM[(i, j)].abs() > 1e-15 {
-                has_off_diag = true;
+            if i != j {
+                largest_off_diag = max_or_nan(largest_off_diag, data.qM[(i, j)].abs());
             }
         }
     }
     assert!(
-        has_off_diag,
+        largest_off_diag > 1e-15,
         "3-link chain should have off-diagonal qM entries"
     );
 
@@ -5067,7 +5068,7 @@ fn test_partial_ldl_solve_zero_sleeping_rhs() {
     // Tree 0 is awake — its qacc should be non-zero (force applied to free body)
     let dof_start_a = model.tree_dof_adr[0];
     let dof_count_a = model.tree_dof_num[0];
-    let any_nonzero = (dof_start_a..dof_start_a + dof_count_a).any(|d| data.qacc[d].abs() > 1e-15);
+    let any_nonzero = max_abs_or_nan(data.qacc.rows(dof_start_a, dof_count_a)) > 1e-15;
     assert!(
         any_nonzero,
         "awake tree 0 should have non-zero qacc (force applied to free body)"

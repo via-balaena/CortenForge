@@ -12,6 +12,7 @@
 //! 10. Mass matrix SPD (symmetric, positive definite, diagonal > 0)
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_or_nan;
 
 // ============================================================================
 // 6. Momentum Conservation
@@ -184,7 +185,7 @@ fn layer_d_energy_conservation_rk4() {
         data.forward(&model).expect("forward");
         let e = data.total_energy();
         let drift = ((e - e0) / e0).abs();
-        max_drift = max_drift.max(drift);
+        max_drift = max_or_nan(max_drift, drift);
     }
 
     assert!(
@@ -228,7 +229,7 @@ fn layer_d_energy_drift_convergence() {
             data.forward(&model).expect("forward");
             let e = data.total_energy();
             let drift = ((e - e0) / e0).abs();
-            max_drift = max_drift.max(drift);
+            max_drift = max_or_nan(max_drift, drift);
         }
         max_drift
     }

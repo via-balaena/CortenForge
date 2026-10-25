@@ -12,6 +12,7 @@
 //! MuJoCo).
 
 use serde_json::Value;
+use sim_core::validation::max_or_nan;
 use sim_core::{Data, ENABLE_SLEEP, Integrator, Model, SleepState};
 use sim_mjcf::load_model;
 
@@ -193,7 +194,11 @@ fn rk4_awake_tree_steps_as_if_nothing_slept() {
         );
     }
     assert!(
-        awake.iter().any(|d| d.qvel[dof].abs() > 0.1),
+        awake
+            .iter()
+            .map(|d| d.qvel[dof].abs())
+            .fold(0.0, max_or_nan)
+            > 0.1,
         "the pendulum swings"
     );
 }
@@ -238,7 +243,7 @@ fn rk4_sleep_step_evaluates_the_start_state() {
         .iter()
         .zip(&theirs)
         .map(|(a, b)| (a - b).abs())
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
     assert!(apart > 1e-5, "MuJoCo's: {apart}");
 }
 
@@ -355,7 +360,7 @@ fn rk4_tree_woken_during_a_stage_takes_no_kept_acceleration() {
                 );
                 let stages: Vec<f64> = (0..4).map(|j| data.rk4_qacc[j][2]).collect();
                 assert!(
-                    stages[..held].iter().all(|&a| a == 0.0) && stages[held] != 0.0,
+                    stages[..held].iter().all(|&a| a == 0.0) && stages[held].abs() > 0.0,
                     "{height}, step {k}: the box's vertical acceleration at each stage {stages:?}, \
                      {held} held"
                 );

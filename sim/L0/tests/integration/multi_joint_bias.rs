@@ -9,6 +9,7 @@
 
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 use serde_json::Value;
+use sim_core::validation::max_abs_or_nan;
 use sim_core::{Data, DerivativeConfig, Model, mjd_transition};
 use sim_mjcf::load_model;
 
@@ -246,8 +247,8 @@ fn multi_joint_bodies_have_the_finite_difference_transition_derivative() {
             };
             let (fd, analytic) = (derivative(false), derivative(true));
             assert_eq!(fd.B.ncols(), 1, "{name}: B has the motor's column");
-            let a = (&fd.A - &analytic.A).amax();
-            let b = (&fd.B - &analytic.B).amax();
+            let a = max_abs_or_nan(&(&fd.A - &analytic.A));
+            let b = max_abs_or_nan(&(&fd.B - &analytic.B));
             assert!(
                 a <= FD_TOL && b <= FD_TOL,
                 "{name} {integrator}: A {a:e}, B {b:e}"

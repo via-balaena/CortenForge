@@ -23,6 +23,7 @@
 //! 3. **High stiffness stability**: Test k=10000 with dt=0.01 (explicit would fail)
 //! 4. **Damped convergence**: Verify critically damped system converges monotonically
 
+use sim_core::validation::{max_abs_or_nan, max_or_nan};
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -145,6 +146,7 @@ fn test_implicit_matches_analytic_oscillator() {
         step += 1;
 
         let q = data.qpos[0];
+        assert!(q.is_finite(), "step {step}: qpos {q}");
 
         // Detect zero crossing (positive to negative)
         if last_q > 0.0 && q <= 0.0 {
@@ -889,7 +891,7 @@ fn test_implicit_vs_implicitfast_coriolis_delta() {
     stepped_fast.step(&model_fast).unwrap();
     let qderiv_fast = stepped_fast.qDeriv.clone();
     assert!(
-        qderiv_fast.iter().any(|&x| x != 0.0),
+        max_abs_or_nan(&qderiv_fast) > 0.0,
         "the implicitfast step filled qDeriv"
     );
 
@@ -898,7 +900,7 @@ fn test_implicit_vs_implicitfast_coriolis_delta() {
     for i in 0..nv {
         for j in 0..nv {
             let diff = (qderiv_full[(i, j)] - qderiv_fast[(i, j)]).abs();
-            max_qderiv_diff = max_qderiv_diff.max(diff);
+            max_qderiv_diff = max_or_nan(max_qderiv_diff, diff);
         }
     }
     assert!(
@@ -1099,7 +1101,7 @@ fn test_implicitfast_derivative_consistency() {
             let a = analytical.A[(nv + i, nv + j)];
             let fd_val = fd.A[(nv + i, nv + j)];
             let err = (a - fd_val).abs();
-            max_err = max_err.max(err);
+            max_err = max_or_nan(max_err, err);
         }
     }
     assert!(
@@ -1171,7 +1173,7 @@ fn test_implicit_derivative_consistency() {
             let a = analytical.A[(nv + i, nv + j)];
             let fd_val = fd.A[(nv + i, nv + j)];
             let err = (a - fd_val).abs();
-            max_err = max_err.max(err);
+            max_err = max_or_nan(max_err, err);
         }
     }
     assert!(
@@ -1230,7 +1232,7 @@ fn test_implicitfast_connect_ball_chain_stability() {
     for step in 0..1000 {
         data.step(&model).expect("step failed");
 
-        let step_max = data.qvel.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        let step_max = max_abs_or_nan(&data.qvel);
         max_qvel = max_qvel.max(step_max);
 
         assert!(
@@ -1242,7 +1244,7 @@ fn test_implicitfast_connect_ball_chain_stability() {
 
     // After settling, velocities should be small (cable hanging under gravity
     // with both ends constrained — it reaches a catenary equilibrium).
-    let final_max = data.qvel.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let final_max = max_abs_or_nan(&data.qvel);
     assert!(
         final_max < 10.0,
         "Cable should be settling: final max_qvel={final_max:.4} rad/s"
@@ -2501,9 +2503,10 @@ fn implicitspringdamper_takes_negative_stiffness_and_damping() {
                 !limit.is_empty(),
                 "{limit}{size}: the limit's row"
             );
-            let worst = (&joint.0 - &tendon.0)
-                .amax()
-                .max((&joint.1 - &tendon.1).amax());
+            let worst = max_or_nan(
+                max_abs_or_nan(&(&joint.0 - &tendon.0)),
+                max_abs_or_nan(&(&joint.1 - &tendon.1)),
+            );
             if worst != 0.0 {
                 failures.push(format!(
                     "{limit}{size}: the tendon form {worst:e} from the joint form"
@@ -2799,8 +2802,8 @@ fn sparse_hessian_holds_a_tendon_across_trees() {
     let (one, _) = solve(1);
     let (converged, niter) = solve(100);
     assert!(niter <= 2, "converged in {niter} iterations");
-    let scale = converged.amax();
-    let gap = (&one - &converged).amax();
+    let scale = max_abs_or_nan(&converged);
+    let gap = max_abs_or_nan(&(&one - &converged));
     assert!(
         gap <= 1e-10 * scale,
         "one step {gap:e} from converged (|qacc| {scale:e})"

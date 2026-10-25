@@ -40,6 +40,7 @@
 //! 4. Error handling works for invalid body/joint names
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -1324,7 +1325,7 @@ fn test_weld_to_mocap_force_asymmetry() {
         .qfrc_constraint
         .iter()
         .map(|x| x.abs())
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
     assert!(
         max_frc > 1e-6,
         "Weld-to-mocap should generate constraint force on dynamic body, max = {max_frc}"
@@ -1397,8 +1398,8 @@ fn test_joint_equality_degree8_tracks_under_motion() {
     for _ in 0..800 {
         data.step(&model).expect("step failed");
         let (q1, q2) = (data.qpos[0], data.qpos[1]);
-        worst = worst.max((q1 - poly(&coef, q2)).abs());
-        max_q2 = max_q2.max(q2);
+        worst = max_or_nan(worst, (q1 - poly(&coef, q2)).abs());
+        max_q2 = max_or_nan(max_q2, q2);
     }
 
     // j2 must sweep far enough that the degree-8 term genuinely engages, and a

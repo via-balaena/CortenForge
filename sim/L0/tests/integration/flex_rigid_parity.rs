@@ -12,6 +12,7 @@
 //! cases). A signed distance field is sim-core's own route (registry
 //! `D-FLEX-SDF`), tested against the sphere it samples.
 
+use sim_core::validation::{max_or_nan, min_or_nan};
 use std::sync::Arc;
 
 use nalgebra::{Point3, Vector3};
@@ -66,7 +67,11 @@ fn rows_in_no_island_take_the_whole_solve_s_force() {
         .filter(|&row| data.efc_island[row] < 0)
         .collect();
     assert!(
-        outside.iter().any(|&row| data.efc_force[row] != 0.0),
+        outside
+            .iter()
+            .map(|&row| data.efc_force[row].abs())
+            .fold(0.0, max_or_nan)
+            > 0.0,
         "rows in no island, one with a force"
     );
 
@@ -150,7 +155,7 @@ fn a_flex_contact_wakes_a_sleeping_body() {
     let lowest = data.flexvert_xpos[triangle]
         .iter()
         .map(|x| x.z)
-        .fold(f64::INFINITY, f64::min);
+        .fold(f64::INFINITY, min_or_nan);
     assert!(
         lowest > top,
         "resting on the box: lowest vertex {lowest}, top {top}"

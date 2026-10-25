@@ -17,6 +17,7 @@
 //! All MuJoCo reference values confirmed against MuJoCo 3.4.0.
 
 use approx::assert_relative_eq;
+use sim_core::validation::max_or_nan;
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -640,6 +641,11 @@ fn test_tendon_limit_forces() {
         // significantly. Use 2.8 rad and verify.
         data.qpos[1] = 2.8;
         data.forward(&model).expect("forward failed");
+        assert!(
+            data.ten_length[0].is_finite(),
+            "tendon length {}",
+            data.ten_length[0]
+        );
 
         if data.ten_length[0] < limit_min {
             // Good — we're below the lower limit with non-degenerate Jacobian.
@@ -650,7 +656,9 @@ fn test_tendon_limit_forces() {
             // Check that either qfrc_constraint or qfrc_passive provides a
             // non-zero restoring force on this DOF.
             let has_restoring_force = (0..model.nv)
-                .any(|d| (data.qfrc_constraint[d] + data.qfrc_passive[d]).abs() > 1e-10);
+                .map(|d| (data.qfrc_constraint[d] + data.qfrc_passive[d]).abs())
+                .fold(0.0, max_or_nan)
+                > 1e-10;
             assert!(
                 has_restoring_force,
                 "Expected non-zero restoring force when tendon length ({}) < limit_min ({limit_min}). \
@@ -695,7 +703,9 @@ fn test_tendon_limit_forces() {
             );
 
             let has_restoring_force = (0..model.nv)
-                .any(|d| (data2.qfrc_constraint[d] + data2.qfrc_passive[d]).abs() > 1e-10);
+                .map(|d| (data2.qfrc_constraint[d] + data2.qfrc_passive[d]).abs())
+                .fold(0.0, max_or_nan)
+                > 1e-10;
             assert!(
                 has_restoring_force,
                 "Expected non-zero restoring force when tendon length > limit_max"

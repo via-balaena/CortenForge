@@ -43,6 +43,7 @@
 //!
 //! Cylinder and Ellipsoid have additional orientation-dependent cases.
 
+use sim_core::validation::{max_or_nan, min_or_nan};
 use sim_mjcf::load_model;
 
 use crate::collision_test_utils::{DEPTH_TOL, GEOM_TOL};
@@ -245,7 +246,7 @@ fn box_plane_corner_penetrating() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     let expected_depth = 0.1;
     assert!(
@@ -353,7 +354,7 @@ fn box_plane_corner_tilted_penetrating() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     // Rough check - exact value depends on which corner
     assert!(
@@ -442,7 +443,7 @@ fn capsule_plane_horizontal_penetrating() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     let expected_depth = 0.05;
     assert!(
@@ -481,7 +482,7 @@ fn capsule_plane_tilted_45() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     // Allow tolerance for trig precision
     assert!(
@@ -569,7 +570,7 @@ fn cylinder_plane_horizontal_penetrating() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     let expected_depth = 0.05;
     assert!(
@@ -616,7 +617,7 @@ fn cylinder_plane_tilted_45_penetrating() {
     let max_depth = data.contacts[..data.ncon]
         .iter()
         .map(|c| c.depth)
-        .fold(0.0_f64, f64::max);
+        .fold(0.0_f64, max_or_nan);
 
     // Allow tolerance for geometric computation
     assert!(
@@ -1099,8 +1100,8 @@ fn box_plane_tilted_4_contacts_distinct_depths() {
 
     // Depths should be distinct (not all identical)
     let depths: Vec<f64> = data.contacts[..4].iter().map(|c| c.depth).collect();
-    let min_depth = depths.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_depth = depths.iter().cloned().fold(f64::INFINITY, min_or_nan);
+    let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, max_or_nan);
     let depth_variation = max_depth - min_depth;
 
     // On a 10° tilt, the y-extent (0.3) contributes sin(10°)*0.6 ≈ 0.104
@@ -1156,7 +1157,7 @@ fn box_plane_single_box_stable() {
     );
 
     // Box should have settled: very small velocities
-    let max_vel = data.qvel.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let max_vel = data.qvel.iter().map(|v| v.abs()).fold(0.0_f64, max_or_nan);
     assert!(
         max_vel < 0.01,
         "Box should have settled: max velocity = {max_vel:.4e}"
@@ -1470,8 +1471,8 @@ fn cylinder_plane_slight_tilt_3_contacts() {
 
     // Depths should vary: rim is deepest, triangles are shallower
     let depths: Vec<f64> = data.contacts[..3].iter().map(|c| c.depth).collect();
-    let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let min_depth = depths.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, max_or_nan);
+    let min_depth = depths.iter().cloned().fold(f64::INFINITY, min_or_nan);
 
     assert!(
         max_depth > min_depth + 0.01,

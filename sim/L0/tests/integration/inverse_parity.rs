@@ -504,7 +504,7 @@ fn inverse_takes_no_drift_baseline() {
         .copy_from_slice(&floats(&case["qpos"]));
     data.inverse(&model).expect("inverse");
     assert!(
-        data.energy_potential != 0.0,
+        data.energy_potential.abs() > 0.0,
         "the inverse computed no energy"
     );
     assert_eq!(data.energy_initial, 0.0, "taken by the inverse");

@@ -234,13 +234,9 @@ fn flex_element_and_hierarchy_boxes_as_mujoco() {
             .copy_from_slice(model.qpos0.as_slice());
         data.forward(&model).expect("forward");
         assert_eq!(data.bvh_aabb_dyn, before, "{name}: midphase disabled");
-        assert_ne!(
-            data.flexelem_aabb
-                .iter()
-                .flatten()
-                .copied()
-                .collect::<Vec<f64>>(),
-            elements,
+        let boxes: Vec<f64> = data.flexelem_aabb.iter().flatten().copied().collect();
+        assert!(
+            boxes.iter().all(|x| x.is_finite()) && boxes != elements,
             "{name}: the element boxes move all the same"
         );
     }

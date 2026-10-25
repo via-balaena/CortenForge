@@ -12,6 +12,7 @@
 //! 5. Sparse/dense mass matrix equivalence
 
 use sim_core::DISABLE_ISLAND;
+use sim_core::validation::max_or_nan;
 
 // ============================================================================
 // 1. Forward/Inverse Equivalence
@@ -492,7 +493,7 @@ fn layer_a_integrator_energy_ordering() {
             data.forward(&model).expect("forward");
             let e = data.total_energy();
             let drift = ((e - e0) / e0).abs();
-            max_drift = max_drift.max(drift);
+            max_drift = max_or_nan(max_drift, drift);
         }
         max_drift
     }

@@ -6,6 +6,7 @@
 use approx::assert_relative_eq;
 use nalgebra::DVector;
 use sim_core::ConstraintType;
+use sim_core::validation::max_abs_or_nan;
 use sim_mjcf::load_model;
 
 /// Helper: load model from MJCF string.
@@ -861,9 +862,9 @@ fn noslip_acceleration_comes_from_its_forces() {
         assert!(data.ncon > 0, "{solver}: in contact");
         let ma = sim_core::mj_mul_m(&model, &data, data.qacc.as_slice());
         let rhs = &data.qfrc_smooth + &data.qfrc_constraint;
-        let gap = (&ma - &rhs).amax();
+        let gap = max_abs_or_nan(&(&ma - &rhs));
         assert!(
-            gap <= 1e-9 * rhs.amax(),
+            gap <= 1e-9 * max_abs_or_nan(&rhs),
             "{solver}: M·qacc is {gap:e} from qfrc_smooth + qfrc_constraint"
         );
     }
