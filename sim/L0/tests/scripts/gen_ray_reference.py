@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Generate the ray golden from the unfused MuJoCo 3.5.0 oracle.
+
+Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
+
+    <workdir>/venv/bin/python -I sim/L0/tests/scripts/gen_ray_reference.py \\
+        sim/L0/tests/assets/golden/ray
+
+It refuses any other interpreter, as gen_census_golden.py does: the PyPI wheel
+fuses multiply-adds.
+
+It writes ray.json:
+
+- `hfield_fields`: each height field as MuJoCo compiles it (`hfield_data`: its
+  elevations normalised to [0, 1], rows from -y, in single precision), with its
+  size (half-extents, top, base), nrow and ncol;
+- `hfield`: rays against those fields through `mj_rayHfield` (`engine_ray.c`),
+  each the field's pose (`geom_xpos`, `geom_xmat`, set on the data before the
+  call), the ray's start and direction, and MuJoCo's distance, -1 where it
+  misses. `hfield_rays` says how they are drawn; `HFIELD_EDGE_RAYS` adds rays
+  on the edges of its tests.
+"""
+import json
+import os
+import sys
+
+import mujoco
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gen_census_golden import finite_or_string, oracle  # noqa: E402
+
+
+def floats(a):
+    return [float(x) for x in np.asarray(a).ravel()]
+
+
+def elevation(rng, nrow, ncol, kind):
+    if kind == 'flat':
+        return np.full(nrow * ncol, 0.3)
+    if kind == 'bumpy':
+        r, c = np.meshgrid(np.arange(nrow), np.arange(ncol), indexing='ij')
+        return (np.sin(1.3 * c) * np.cos(0.9 * r) + 0.2 * rng.normal(size=(nrow, ncol))).ravel()
+    return rng.uniform(-1.0, 2.0, nrow * ncol)
+
+
+# Each field: (name, nrow, ncol, size, elevations). Square and other cells, the
+# fewest rows and columns MuJoCo's ray reads (2), a flat one (its elevations all
+# 0 once normalised) and a tall narrow one, whose sides a ray crosses often.
+FIELDS = [
+    ('bumpy', 9, 9, [1.0, 1.0, 0.5, 0.1], 'bumpy'),
+    ('cells', 5, 7, [0.75, 0.4, 0.3, 0.2], 'random'),
+    ('two', 2, 2, [0.5, 0.25, 0.4, 0.1], 'random'),
+    ('flat', 4, 3, [0.6, 0.5, 0.2, 0.3], 'flat'),
+    ('tall', 3, 4, [0.2, 0.15, 1.0, 0.05], 'random'),
+]
+
+
+def field_model(name, nrow, ncol, size, elev):
+    xml = (f'<mujoco><asset><hfield name="{name}" nrow="{nrow}" ncol="{ncol}" '
+           f'size="{" ".join(repr(s) for s in size)}" '
+           f'elevation="{" ".join(repr(float(e)) for e in elev)}"/></asset>'
+           f'<worldbody><geom type="hfield" hfield="{name}"/></worldbody></mujoco>')
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    return m, d
+
+
+def turn(rng):
+    quat = rng.normal(size=4)
+    quat /= np.linalg.norm(quat)
+    mat = np.zeros(9)
+    mujoco.mju_quat2Mat(mat, quat)
+    return mat
+
+
+def cast(m, d, pos, mat, pnt, vec):
+    d.geom_xpos[0] = pos
+    d.geom_xmat[0] = mat
+    normal = np.zeros(3)
+    x = mujoco.mj_rayHfield(m, d, 0, pnt, vec, normal)
+    return float(x), normal
+
+
+def hfield_rays(name, m, d, size):
+    """400 rays a field from one generator: the field unturned at the origin in even cases,
+    else turned at random and moved by up to 0.5 in each place. The start, in the field's
+    frame, by case of five: above it (up to 1 over its top, over its rectangle grown by a
+    fifth) aimed down at random; below its base aimed up; beside it (past one side, between
+    its base and top) aimed in; inside its top box at random; above it along its own -z
+    exactly, or across it along its own x or y. The direction of length 1 in half the cases,
+    0.1 to 3 in the rest. It refuses a field whose rays never hit its triangles, its base
+    box, or, but for the flat field, its top box's sides above the base."""
+    rng = np.random.default_rng(267 + sum(map(ord, name)))
+    sx, sy, top, base = size
+    out = []
+    kinds = {'triangle': 0, 'side': 0, 'base': 0, 'miss': 0}
+    for i in range(400):
+        if i % 2 == 0:
+            pos, mat = np.zeros(3), np.eye(3).ravel()
+        else:
+            pos, mat = rng.uniform(-0.5, 0.5, 3), turn(rng)
+        case = i % 5
+        if case == 0:
+            lp = [rng.uniform(-1.2, 1.2) * sx, rng.uniform(-1.2, 1.2) * sy, top + rng.uniform(0, 1)]
+            lv = rng.normal(size=3)
+            lv[2] = -abs(lv[2]) - 0.3
+        elif case == 1:
+            lp = [rng.uniform(-1.2, 1.2) * sx, rng.uniform(-1.2, 1.2) * sy, -base - rng.uniform(0.05, 1)]
+            lv = rng.normal(size=3)
+            lv[2] = abs(lv[2]) + 0.3
+        elif case == 2:
+            axis, sign = rng.integers(2), rng.choice([-1.0, 1.0])
+            lp = [rng.uniform(-1, 1) * sx, rng.uniform(-1, 1) * sy, rng.uniform(-base, top)]
+            lp[axis] = sign * ((sx, sy)[axis] + rng.uniform(0.05, 1))
+            lv = rng.normal(size=3)
+            lv[axis] = -sign * (abs(lv[axis]) + 0.3)
+        elif case == 3:
+            lp = [rng.uniform(-1, 1) * sx, rng.uniform(-1, 1) * sy, rng.uniform(0, top)]
+            lv = rng.normal(size=3)
+        else:
+            lp = [rng.uniform(-1, 1) * sx, rng.uniform(-1, 1) * sy, top + rng.uniform(0, 1)]
+            lv = [[0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]][rng.integers(3)]
+            if lv[2] == 0.0:
+                lp[2] = rng.uniform(0, top)
+                lp[0 if lv[0] else 1] = -2.0 * (sx if lv[0] else -sy)
+        lv = np.array(lv, dtype=float)
+        lv /= np.linalg.norm(lv)
+        if i % 4 >= 2:
+            lv = lv * rng.uniform(0.1, 3.0)
+        r = np.array(mat).reshape(3, 3)
+        pnt = pos + r @ np.array(lp, dtype=float)
+        vec = r @ lv
+        x, normal = cast(m, d, pos, mat, pnt, vec)
+        if x < 0:
+            kinds['miss'] += 1
+        else:
+            hit_z = float(lp[2] + x * lv[2])
+            local = r.T @ normal
+            if hit_z <= 0:
+                kinds['base'] += 1
+            elif local[2] == 0 and sorted(abs(local)) == [0.0, 0.0, 1.0]:
+                kinds['side'] += 1
+            else:
+                kinds['triangle'] += 1
+        out.append({'field': name, 'pos': floats(pos), 'mat': floats(mat), 'pnt': floats(pnt),
+                    'vec': floats(vec), 'x': x})
+    wanted = ['triangle', 'base', 'miss'] + ([] if name == 'flat' else ['side'])
+    if any(kinds[k] == 0 for k in wanted):
+        sys.exit(f'hfield rays {name}: {kinds}')
+    print(f'hfield {name}: {kinds}', file=sys.stderr)
+    return out
+
+
+# Rays on the edges of mj_rayHfield's tests, the field unturned at the origin: (field, start,
+# direction), in numbers a double holds exactly. On `bumpy` (cells 0.25 wide): straight down
+# onto a grid point, the middle of a cell's diagonal, a cell's edge, the field's edge, and
+# past it; across the field along x and along y, and along its top; up from under its base,
+# and from inside the base; down from on its top box's top face; a direction so short that
+# the boxes' bounding spheres miss; along (1, 1, -1), so that the basis's first branch takes
+# a tie. On `two`: down its one cell's diagonal and across its two sides.
+HFIELD_EDGE_RAYS = [
+    ('bumpy', [0.25, 0.5, 2.0], [0.0, 0.0, -1.0]),
+    ('bumpy', [0.125, 0.125, 2.0], [0.0, 0.0, -1.0]),
+    ('bumpy', [0.25, 0.125, 2.0], [0.0, 0.0, -1.0]),
+    ('bumpy', [1.0, 0.375, 2.0], [0.0, 0.0, -1.0]),
+    ('bumpy', [1.5, 0.0, 2.0], [0.0, 0.0, -1.0]),
+    ('bumpy', [-2.0, 0.375, 0.25], [1.0, 0.0, 0.0]),
+    ('bumpy', [0.375, -2.0, 0.125], [0.0, 1.0, 0.0]),
+    ('bumpy', [-2.0, 0.0, 0.5], [1.0, 0.0, 0.0]),
+    ('bumpy', [0.375, 0.375, -1.0], [0.0, 0.0, 1.0]),
+    ('bumpy', [0.375, 0.375, -0.0625], [0.0, 0.0, 1.0]),
+    ('bumpy', [0.375, 0.375, 0.5], [0.0, 0.0, -1.0]),
+    ('bumpy', [0.375, 0.375, 2.0], [0.0, 0.0, -1e-9]),
+    ('bumpy', [-1.0, -1.0, 1.0], [1.0, 1.0, -1.0]),
+    ('two', [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]),
+    ('two', [-1.0, -0.25, 0.25], [1.0, 0.0, 0.0]),
+    ('two', [0.0, -1.0, 0.125], [0.0, 1.0, 0.0]),
+]
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    marker = oracle()
+    rng = np.random.default_rng(2670)
+    fields, models, rays = {}, {}, []
+    for name, nrow, ncol, size, kind in FIELDS:
+        m, d = field_model(name, nrow, ncol, size, elevation(rng, nrow, ncol, kind))
+        assert (m.hfield_nrow[0], m.hfield_ncol[0]) == (nrow, ncol)
+        fields[name] = {'size': floats(m.hfield_size[0]), 'nrow': nrow, 'ncol': ncol,
+                        'data': floats(m.hfield_data)}
+        models[name] = (m, d)
+        rays += hfield_rays(name, m, d, size)
+    for name, pnt, vec in HFIELD_EDGE_RAYS:
+        m, d = models[name]
+        pos, mat = np.zeros(3), np.eye(3).ravel()
+        x, _ = cast(m, d, pos, mat, np.array(pnt), np.array(vec))
+        rays.append({'field': name, 'pos': floats(pos), 'mat': floats(mat), 'pnt': pnt,
+                     'vec': vec, 'x': x})
+    os.makedirs(sys.argv[1], exist_ok=True)
+    doc = {'oracle': marker, 'hfield_fields': fields, 'hfield': rays}
+    with open(os.path.join(sys.argv[1], 'ray.json'), 'w', encoding='utf-8') as f:
+        json.dump(finite_or_string(doc), f, separators=(',', ':'))
+        f.write('\n')
+    print(f'{len(rays)} hfield rays -> {sys.argv[1]}')
+
+
+if __name__ == '__main__':
+    main()

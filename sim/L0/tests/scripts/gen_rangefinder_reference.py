@@ -24,7 +24,9 @@ axis over the geoms its body does not hold. The cases:
 - cutoff: a hit at 2 under a cutoff of 0.5, a miss under a cutoff of 0.5,
   and a hit at 150 with no cutoff;
 - mesh: a convex mesh slab below a free body turned to 80 drawn states, one
-  rangefinder on it.
+  rangefinder on it;
+- hfield: a height field below the same turning body and one above it, at the
+  same 80 states.
 """
 import json
 import os
@@ -131,6 +133,28 @@ MESH = """<mujoco><option gravity="0 0 0"/>
 </mujoco>"""
 
 
+# A height field below a turning eye and another above it, base down toward it. Their
+# elevations load in sim-mjcf as MuJoCo compiles them: numbers a float holds, 0 to 1 (so
+# MuJoCo's normalising leaves them), the rows the same read from either end (so its flip
+# does), the cells square (so sim-mjcf does not resample them); book Rigid-loading L45
+# loads any field so.
+HFIELD_ROWS = ['0 0.25 0.5 0.75 1 0.625', '0.125 0.5 1 0.25 0 0.375', '0.5 0.75 0 0.125 0.25 1']
+HFIELD = f"""<mujoco><option gravity="0 0 0"/>
+  <asset>
+    <hfield name="field" nrow="5" ncol="6" size="0.5 0.4 0.3 0.1"
+      elevation="{' '.join(HFIELD_ROWS + HFIELD_ROWS[1::-1])}"/>
+  </asset>
+  <worldbody>
+    <geom type="hfield" hfield="field" pos="0 0 -0.4"/>
+    <geom type="hfield" hfield="field" pos="0.125 -0.25 0.6"/>
+    <body name="eye"><freejoint/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+      <site name="r"/>
+    </body>
+  </worldbody>
+  <sensor><rangefinder site="r"/></sensor>
+</mujoco>"""
+
+
 def turning_states(n):
     rng = np.random.default_rng(267)
     states = []
@@ -165,7 +189,7 @@ def main():
     xml, states = random_model()
     cases = [case('random', xml, states), case('invisible', INVISIBLE, [REST]),
              case('cutoff', CUTOFF, [REST]), case('mesh', MESH, turning_states(80)),
-             case('translucent', TRANSLUCENT, [REST])]
+             case('translucent', TRANSLUCENT, [REST]), case('hfield', HFIELD, turning_states(80))]
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], 'rangefinder.json'), {'oracle': marker, 'cases': finite_or_string(cases)})
     print(f'{len(cases)} cases -> {sys.argv[1]}')

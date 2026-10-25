@@ -9,12 +9,15 @@
 //! among five primitives and an unbounded plane at 240 states (hits and
 //! misses), rays through a geom whose alpha is 0 and through a geom of the
 //! sensor's own body, a ray stopped by a geom whose alpha is 0.25, a hit and a
-//! miss under a cutoff of 0.5, a hit at 150 with no cutoff, and a rangefinder
-//! over a convex mesh at 80 states. In the primitives' cases every turn comes
-//! from the states' qpos, none from the compiler's orientations; the mesh's
-//! geom MuJoCo turns to the mesh's principal frame, which sim-mjcf does not
-//! (Rigid-loading's L35). The primitives' readings are compared bit for bit
-//! on macOS arm64, where the golden was made; elsewhere within `1e-13 ·
+//! miss under a cutoff of 0.5, a hit at 150 with no cutoff, a rangefinder
+//! over a convex mesh at 80 states, and one between two height fields at the
+//! same states (their elevations ones sim-mjcf loads as MuJoCo compiles them,
+//! which it does not for every field until book Rigid-loading L45). In the
+//! primitives' and height fields' cases every turn comes from the states'
+//! qpos, none from the compiler's orientations; the mesh's geom MuJoCo turns
+//! to the mesh's principal frame, which sim-mjcf does not (Rigid-loading's
+//! L35). The primitives' and height fields' readings are compared bit for
+//! bit on macOS arm64, where the golden was made; elsewhere within `1e-13 ·
 //! max(1, |MuJoCo's|)`, a NaN failing. The mesh's readings hit where
 //! MuJoCo's hit, each within `1e-8 · max(1, |MuJoCo's|)` (measured: 4.4e-9
 //! at most); a mesh's ray is not MuJoCo's operation for operation (ledger
@@ -89,7 +92,11 @@ fn rangefinders_read_as_mujoco() {
             }
         }
     }
-    assert_eq!(readings, 240 + 2 + 3 + 80 + 1, "every reading compared");
+    assert_eq!(
+        readings,
+        240 + 2 + 3 + 80 + 1 + 80,
+        "every reading compared"
+    );
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",
