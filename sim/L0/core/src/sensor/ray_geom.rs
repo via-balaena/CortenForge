@@ -20,7 +20,7 @@ use crate::types::{Data, GeomType, Model};
 /// (`ray_mesh::mj_ray_hfield`, `ray_mesh::mj_ray_mesh`). A signed distance
 /// field's is `raycast_geom`'s along the unit direction, divided by `|vec|`,
 /// cast no farther than the geom's bounding sphere reaches, not MuJoCo's
-/// `mj_raySdf` (ledger L267). A plane is read as unbounded, as MuJoCo reads
+/// `mj_raySdf` (registry D-SDF-RAY). A plane is read as unbounded, as MuJoCo reads
 /// one of size 0: sim-mjcf does not keep a plane's written size until
 /// Rigid-loading's L14, and MuJoCo bounds the hit by it.
 pub fn mj_ray(

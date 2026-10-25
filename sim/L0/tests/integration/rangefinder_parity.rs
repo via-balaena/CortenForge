@@ -25,7 +25,11 @@
 //! pose, the same slab's rays are MuJoCo's bit for bit (sim-core's
 //! `rays_meet_each_mesh_as_mujoco`).
 
+use std::sync::Arc;
+
+use nalgebra::Point3;
 use serde_json::Value;
+use sim_core::{GeomType, SdfGrid, ShapeSphere};
 
 fn golden() -> Value {
     serde_json::from_str(include_str!(
@@ -103,5 +107,53 @@ fn rangefinders_read_as_mujoco() {
         "{} differ:\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// Registry D-SDF-RAY: MuJoCo's ray meets a signed distance field by
+/// marching its plugin's field (`mj_raySdf`, `engine_ray.c:885-948`); a
+/// field in sim-core is a shape of its own, and a rangefinder casts the
+/// shape's own ray (`raycast::raycast_geom`). A sphere field of radius 1
+/// centred 3 above the rangefinder, sampled on a grid of cells 8/39 wide that
+/// holds the rangefinder: unturned, it reads 2 within a cell; turned away, −1.
+/// The same field on a grid that ends 1.5 short of the rangefinder reads −1
+/// unturned, the shape's ray missing a grid it starts that far outside
+/// (ledger L282).
+#[test]
+fn a_rangefinder_casts_a_signed_distance_field_through_its_shape() {
+    let read = |padding: f64, resolution: usize, quat: [f64; 4]| {
+        let mut model = sim_mjcf::load_model(
+            r#"<mujoco><option gravity="0 0 0"/><worldbody>
+  <geom type="sphere" size="1" pos="0 0 3"/>
+  <body name="eye"><freejoint/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+    <site name="r"/>
+  </body>
+</worldbody><sensor><rangefinder site="r"/></sensor></mujoco>"#,
+        )
+        .expect("load");
+        let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 1.0, resolution, padding));
+        model.shape_data.push(Arc::new(ShapeSphere::new(grid, 1.0)));
+        model.nshape = 1;
+        model.geom_type[0] = GeomType::Sdf;
+        model.geom_shape[0] = Some(0);
+        let mut data = model.make_data();
+        data.qpos
+            .as_mut_slice()
+            .copy_from_slice(&[0.0, 0.0, 0.0, quat[0], quat[1], quat[2], quat[3]]);
+        data.forward(&model).expect("forward");
+        data.sensordata[0]
+    };
+    let (unturned, turned_away) = ([1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]);
+    let up = read(3.0, 40, unturned);
+    assert!((up - 2.0).abs() <= 8.0 / 39.0, "up: {up}");
+    assert_eq!(
+        read(3.0, 40, turned_away).to_bits(),
+        (-1.0_f64).to_bits(),
+        "turned away"
+    );
+    assert_eq!(
+        read(0.5, 20, unturned).to_bits(),
+        (-1.0_f64).to_bits(),
+        "outside the grid"
     );
 }
