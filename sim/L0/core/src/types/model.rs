@@ -366,33 +366,33 @@ pub struct Model {
     /// The number of nodes in each body's hierarchy (MuJoCo's
     /// `mjModel.body_bvhnum`).
     pub body_bvhnum: Vec<usize>,
-    /// Each body hierarchy node's box in its body's inertial frame,
-    /// `[cx, cy, cz, hx, hy, hz]`, its centre then its half-sizes (MuJoCo's
-    /// `mjModel.bvh_aabb`, its bodies' nodes); a flex's nodes, after them,
-    /// have theirs in `Data::bvh_aabb_dyn`.
+    /// Each body hierarchy node's box in its body's inertial frame, then
+    /// each mesh hierarchy node's in its mesh's frame, `[cx, cy, cz, hx, hy,
+    /// hz]`, its centre then its half-sizes (MuJoCo's `mjModel.bvh_aabb`); a
+    /// flex's nodes, after them, have theirs in `Data::bvh_aabb_dyn`.
     pub bvh_aabb: Vec<[f64; 6]>,
     /// Each node's two children, numbered within its hierarchy from the
     /// root, 0; a leaf has none (MuJoCo's `mjModel.bvh_child`, -1 there).
     pub bvh_child: Vec<[Option<usize>; 2]>,
-    /// A leaf's geom, or a flex leaf's element numbered within its flex;
-    /// `None` for an inner node (MuJoCo's `mjModel.bvh_nodeid`).
+    /// A body leaf's geom, a mesh leaf's face numbered within its mesh, or a
+    /// flex leaf's element numbered within its flex; `None` for an inner
+    /// node (MuJoCo's `mjModel.bvh_nodeid`).
     pub bvh_nodeid: Vec<Option<usize>>,
     /// Each node's depth, 0 at its hierarchy's root (MuJoCo's
     /// `mjModel.bvh_depth`).
     pub bvh_depth: Vec<usize>,
     /// The first node of each flex's hierarchy in the `bvh_*` fields, after
-    /// every body's (MuJoCo's `mjModel.flex_bvhadr`), `None` for a flex with
-    /// no active element, which MuJoCo's compiler does not take (registry
-    /// `D-FLEX-NO-ACTIVE`) ([`Model::compute_flex_bvhs`]).
+    /// every body's and mesh's (MuJoCo's `mjModel.flex_bvhadr`), `None` for a
+    /// flex with no active element, which MuJoCo's compiler does not take
+    /// (registry `D-FLEX-NO-ACTIVE`) ([`Model::compute_flex_bvhs`]).
     pub flex_bvhadr: Vec<Option<usize>>,
     /// The number of nodes in each flex's hierarchy (MuJoCo's
     /// `mjModel.flex_bvhnum`).
     pub flex_bvhnum: Vec<usize>,
-    /// The nodes with a box in `bvh_aabb`, the bodies' (MuJoCo's
-    /// `nbvhstatic`, which counts meshes' too; a mesh's hierarchy is its
-    /// own here).
+    /// The nodes with a box in `bvh_aabb`, the bodies' and the meshes'
+    /// (MuJoCo's `nbvhstatic`).
     pub nbvhstatic: usize,
-    /// The flexes' nodes, which follow the bodies' (MuJoCo's `nbvhdynamic`).
+    /// The flexes' nodes, which follow the meshes' (MuJoCo's `nbvhdynamic`).
     pub nbvhdynamic: usize,
     /// Mesh index for each geom (`None` if not a mesh geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Mesh` have `Some(mesh_id)`.
@@ -628,6 +628,14 @@ pub struct Model {
     /// Triangle mesh data with prebuilt BVH.
     /// `Arc` for cheap cloning (multiple geoms can reference the same mesh asset).
     pub mesh_data: Vec<Arc<TriangleMeshData>>,
+    /// The first node of each mesh's bounding-volume hierarchy over its
+    /// faces in the `bvh_*` fields, after every body's (MuJoCo's
+    /// `mjModel.mesh_bvhadr`), `None` for a mesh with no face
+    /// ([`Model::compute_body_bvhs`]). A mesh's ray descends it.
+    pub mesh_bvhadr: Vec<Option<usize>>,
+    /// The number of nodes in each mesh's hierarchy (MuJoCo's
+    /// `mjModel.mesh_bvhnum`).
+    pub mesh_bvhnum: Vec<usize>,
 
     // ==================== Height Fields (indexed by hfield_id) ====================
     /// Number of height field assets.

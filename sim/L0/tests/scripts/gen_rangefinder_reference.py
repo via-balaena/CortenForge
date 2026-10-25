@@ -24,7 +24,12 @@ axis over the geoms its body does not hold. The cases:
 - cutoff: a hit at 2 under a cutoff of 0.5, a miss under a cutoff of 0.5,
   and a hit at 150 with no cutoff;
 - mesh: a convex mesh slab below a free body turned to 80 drawn states, one
-  rangefinder on it.
+  rangefinder on it;
+- hfield: a height field below the same turning body and one above it, at the
+  same 80 states;
+- mesh_written_frame: a box mesh below the same turning body and an octahedron
+  above it, two meshes MuJoCo keeps in their written frame, at the same 80
+  states.
 """
 import json
 import os
@@ -113,8 +118,9 @@ TRANSLUCENT = """<mujoco><option gravity="0 0 0"/><worldbody>
 
 REST = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
 
-# A mesh slab below a turning eye (ledger L267: a mesh's ray is not MuJoCo's
-# operation for operation).
+# A mesh slab below a turning eye. MuJoCo turns the slab to its principal frame, which
+# sim-mjcf does not (book Rigid-loading L35), and keeps its vertices in single precision,
+# sim-core in double (ledger L281).
 MESH = """<mujoco><option gravity="0 0 0"/>
   <asset>
     <mesh name="slab" vertex="-0.5 -0.4 -0.1  0.5 -0.4 -0.1  0.5 0.4 -0.1  -0.5 0.4 -0.1
@@ -123,6 +129,51 @@ MESH = """<mujoco><option gravity="0 0 0"/>
   </asset>
   <worldbody>
     <geom type="mesh" mesh="slab" pos="0 0 -0.3"/>
+    <body name="eye"><freejoint/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+      <site name="r"/>
+    </body>
+  </worldbody>
+  <sensor><rangefinder site="r"/></sensor>
+</mujoco>"""
+
+
+# A height field below a turning eye and another above it, base down toward it. Their
+# elevations load in sim-mjcf as MuJoCo compiles them: numbers a float holds, 0 to 1 (so
+# MuJoCo's normalising leaves them), the rows the same read from either end (so its flip
+# does), the cells square (so sim-mjcf does not resample them); book Rigid-loading L45
+# loads any field so.
+HFIELD_ROWS = ['0 0.25 0.5 0.75 1 0.625', '0.125 0.5 1 0.25 0 0.375', '0.5 0.75 0 0.125 0.25 1']
+HFIELD = f"""<mujoco><option gravity="0 0 0"/>
+  <asset>
+    <hfield name="field" nrow="5" ncol="6" size="0.5 0.4 0.3 0.1"
+      elevation="{' '.join(HFIELD_ROWS + HFIELD_ROWS[1::-1])}"/>
+  </asset>
+  <worldbody>
+    <geom type="hfield" hfield="field" pos="0 0 -0.4"/>
+    <geom type="hfield" hfield="field" pos="0.125 -0.25 0.6"/>
+    <body name="eye"><freejoint/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+      <site name="r"/>
+    </body>
+  </worldbody>
+  <sensor><rangefinder site="r"/></sensor>
+</mujoco>"""
+
+
+# A box below a turning eye and an octahedron above it, two meshes MuJoCo keeps in their
+# written frame (their principal axes along x, y, z, the largest moment about x, centred, in
+# numbers a float holds), so sim-mjcf loads them as MuJoCo compiles them, which it does not
+# do for a mesh MuJoCo turns until book Rigid-loading L35.
+MESH_BOX = """<mujoco><option gravity="0 0 0"/>
+  <asset>
+    <mesh name="box" vertex="-0.25 -0.75 -1  0.25 -0.75 -1  0.25 0.75 -1  -0.25 0.75 -1
+      -0.25 -0.75 1  0.25 -0.75 1  0.25 0.75 1  -0.25 0.75 1"
+      face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  1 2 6  1 6 5  2 3 7  2 7 6  3 0 4  3 4 7"/>
+    <mesh name="octahedron" vertex="0.5 0 0  -0.5 0 0  0 1 0  0 -1 0  0 0 1.5  0 0 -1.5"
+      face="0 2 4  2 1 4  1 3 4  3 0 4  2 0 5  1 2 5  3 1 5  0 3 5"/>
+  </asset>
+  <worldbody>
+    <geom type="mesh" mesh="box" pos="0.0625 0 -1.25"/>
+    <geom type="mesh" mesh="octahedron" pos="0 0.125 1.75"/>
     <body name="eye"><freejoint/><geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
       <site name="r"/>
     </body>
@@ -165,7 +216,8 @@ def main():
     xml, states = random_model()
     cases = [case('random', xml, states), case('invisible', INVISIBLE, [REST]),
              case('cutoff', CUTOFF, [REST]), case('mesh', MESH, turning_states(80)),
-             case('translucent', TRANSLUCENT, [REST])]
+             case('translucent', TRANSLUCENT, [REST]), case('hfield', HFIELD, turning_states(80)),
+             case('mesh_written_frame', MESH_BOX, turning_states(80))]
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], 'rangefinder.json'), {'oracle': marker, 'cases': finite_or_string(cases)})
     print(f'{len(cases)} cases -> {sys.argv[1]}')

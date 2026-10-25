@@ -222,7 +222,8 @@ impl ModelBuilder {
             bvh_child: vec![],
             bvh_nodeid: vec![],
             bvh_depth: vec![],
-            // The flexes' hierarchies (computed below, after the bodies')
+            // The flexes' hierarchies (computed below, after the bodies' and
+            // the meshes')
             flex_bvhadr: vec![],
             flex_bvhnum: vec![],
             nbvhstatic: 0,
@@ -316,6 +317,8 @@ impl ModelBuilder {
             nmesh: self.mesh_data.len(),
             mesh_name: self.mesh_name,
             mesh_data: self.mesh_data,
+            mesh_bvhadr: vec![],
+            mesh_bvhnum: vec![],
 
             // Height field assets (from MJCF <asset><hfield> elements)
             nhfield: self.hfield_data.len(),

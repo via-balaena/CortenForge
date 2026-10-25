@@ -15,14 +15,14 @@ use crate::types::{Data, GeomType, Model};
 /// from `pnt` along `vec`, the distance in lengths of `vec` to the nearest
 /// geom that `bodyexclude` does not hold and whose alpha is not 0
 /// (`ray_eliminate`, `:68-99`; sim-mjcf keeps no materials, so a material's
-/// alpha is not read), or −1. A primitive's distance is [`ray_geom`]'s. A
-/// mesh's, a height field's and a signed distance field's are
-/// `raycast_geom`'s along the unit direction, divided by `|vec|`, not
-/// MuJoCo's `mj_rayMesh`, `mj_rayHfield` and `mj_raySdf` (ledger L267); each
-/// is cast no farther than the geom's bounding sphere reaches. A plane is read
-/// as unbounded, as MuJoCo reads one of size 0: sim-mjcf does not keep a
-/// plane's written size until Rigid-loading's L14, and MuJoCo bounds the hit
-/// by it.
+/// alpha is not read), or −1. A primitive's distance is [`ray_geom`]'s, a
+/// height field's `mj_rayHfield`'s and a mesh's `mj_rayMesh`'s
+/// (`ray_mesh::mj_ray_hfield`, `ray_mesh::mj_ray_mesh`). A signed distance
+/// field's is `raycast_geom`'s along the unit direction, divided by `|vec|`,
+/// cast no farther than the geom's bounding sphere reaches, not MuJoCo's
+/// `mj_raySdf` (registry D-SDF-RAY). A plane is read as unbounded, as MuJoCo reads
+/// one of size 0: sim-mjcf does not keep a plane's written size until
+/// Rigid-loading's L14, and MuJoCo bounds the hit by it.
 pub fn mj_ray(
     model: &Model,
     data: &Data,
@@ -36,7 +36,27 @@ pub fn mj_ray(
             continue;
         }
         let newdist = match model.geom_type[g] {
-            GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => {
+            GeomType::Hfield => model.geom_hfield[g].map_or(-1.0, |h| {
+                super::ray_mesh::mj_ray_hfield(
+                    &model.hfield_data[h],
+                    &model.hfield_size[h],
+                    &data.geom_xpos[g],
+                    &data.geom_xmat[g],
+                    pnt,
+                    vec,
+                )
+            }),
+            GeomType::Mesh => model.geom_mesh[g].map_or(-1.0, |m| {
+                super::ray_mesh::mj_ray_mesh(
+                    model,
+                    m,
+                    &data.geom_xpos[g],
+                    &data.geom_xmat[g],
+                    pnt,
+                    vec,
+                )
+            }),
+            GeomType::Sdf => {
                 let norm = vec.norm();
                 let reach = (pnt - data.geom_xpos[g]).norm() + model.geom_rbound[g];
                 crate::raycast::raycast_geom(
@@ -92,13 +112,13 @@ pub fn ray_geom(
         GeomType::Capsule => ray_capsule(pos, mat, &size, pnt, vec),
         GeomType::Ellipsoid => ray_ellipsoid(pos, mat, &size, pnt, vec),
         GeomType::Cylinder => ray_cylinder(pos, mat, &size, pnt, vec),
-        GeomType::Box => ray_box(pos, mat, &size, pnt, vec),
+        GeomType::Box => ray_box(pos, mat, &size, pnt, vec).0,
         GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => -1.0,
     }
 }
 
 /// `ray_map`: the ray's start and direction in the geom's frame.
-fn ray_map(
+pub(super) fn ray_map(
     pos: &Vector3<f64>,
     mat: &Matrix3<f64>,
     pnt: &Vector3<f64>,
@@ -268,37 +288,43 @@ fn ray_cylinder(
     x
 }
 
-/// `ray_box`: each face within its rectangle, the nearest crossing.
-fn ray_box(
+/// `ray_box`: each face within its rectangle, the nearest crossing; and
+/// each face's crossing within its rectangle (`all`: −x, +x, −y, +y, −z,
+/// +z), −1 for a face the ray does not cross there.
+pub(super) fn ray_box(
     pos: &Vector3<f64>,
     mat: &Matrix3<f64>,
     size: &[f64; 3],
     pnt: &Vector3<f64>,
     vec: &Vector3<f64>,
-) -> f64 {
+) -> (f64, [f64; 6]) {
     // Each axis's face, and the two axes its rectangle spans.
     const IFACE: [[usize; 2]; 3] = [[1, 2], [0, 2], [0, 1]];
+    let mut all = [-1.0; 6];
     let ssz = size[0] * size[0] + size[1] * size[1] + size[2] * size[2];
     if ray_sphere(pos, ssz, pnt, vec) < 0.0 {
-        return -1.0;
+        return (-1.0, all);
     }
     let (lp, lv) = ray_map(pos, mat, pnt, vec);
     let mut x = -1.0;
     for (i, [j, k]) in IFACE.into_iter().enumerate() {
         if lv[i].abs() > MJ_MINVAL {
-            for side in [-1.0, 1.0] {
+            for (s, side) in [-1.0, 1.0].into_iter().enumerate() {
                 let sol = (side * size[i] - lp[i]) / lv[i];
                 if sol >= 0.0 {
                     let p0 = lp[j] + sol * lv[j];
                     let p1 = lp[k] + sol * lv[k];
-                    if p0.abs() <= size[j] && p1.abs() <= size[k] && (x < 0.0 || sol < x) {
-                        x = sol;
+                    if p0.abs() <= size[j] && p1.abs() <= size[k] {
+                        if x < 0.0 || sol < x {
+                            x = sol;
+                        }
+                        all[2 * i + s] = sol;
                     }
                 }
             }
         }
     }
-    x
+    (x, all)
 }
 
 #[cfg(test)]
