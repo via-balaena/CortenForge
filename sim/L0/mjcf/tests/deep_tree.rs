@@ -139,6 +139,48 @@ fn a_tree_built_in_code_deeper_than_4096_is_refused() {
 }
 
 #[test]
+fn frames_count_toward_a_trees_depth() {
+    // 5000 frames, each in the one before, in the worldbody: past 4096. The
+    // frame type is not exported, so each is a clone of a parsed one.
+    on_big_stack(|| {
+        let mut model =
+            sim_mjcf::parse_mjcf_str("<mujoco><worldbody><frame/></worldbody></mujoco>").unwrap();
+        let empty = model.worldbody.frames.pop().unwrap();
+        let mut inner = empty.clone();
+        for _ in 1..5000 {
+            let mut outer = empty.clone();
+            outer.frames.push(inner);
+            inner = outer;
+        }
+        model.worldbody.frames.push(inner);
+        let err = model_from_mjcf(&model, None).unwrap_err();
+        assert!(
+            matches!(err, MjcfError::TooDeep { limit: 4096, .. }),
+            "{err}"
+        );
+    });
+}
+
+#[test]
+fn a_lookup_finds_the_first_of_two_alike_names_depth_first() {
+    // Built in code, two bodies named "x" and two joints named "j": the first
+    // depth first is a's first child, not the one inside y.
+    let model = MjcfModel::new("m").with_body(
+        MjcfBody::new("a")
+            .with_child(
+                MjcfBody::new("x").with_joint(MjcfJoint::hinge("j", nalgebra::Vector3::z())),
+            )
+            .with_child(MjcfBody::new("y").with_child(
+                MjcfBody::new("x").with_joint(MjcfJoint::hinge("j", nalgebra::Vector3::x())),
+            )),
+    );
+    // The first hinges about z, the one inside y about x.
+    let z = Some(nalgebra::Vector3::z());
+    assert_eq!(model.body("x").unwrap().joints[0].axis, z);
+    assert_eq!(model.joint("j").unwrap().axis, z);
+}
+
+#[test]
 fn a_body_and_a_joint_are_found_at_the_bottom_of_a_deep_tree_from_a_small_thread() {
     // Built and dropped on a big stack (both recurse), searched from 256 KiB.
     on_big_stack(|| {

@@ -169,12 +169,15 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 ///
 /// Returns an error if validation fails.
 pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
-    crate::stack::on_large_stack(|| validate_unwrapped(model))
+    crate::stack::on_large_stack(|| {
+        check_tree_depth(&model.worldbody)?;
+        validate_unwrapped(model)
+    })
 }
 
-/// [`validate`]'s work, on the caller's stack.
+/// [`validate`]'s work, on the caller's stack, for a tree whose depth the
+/// caller has checked.
 pub fn validate_unwrapped(model: &MjcfModel) -> Result<ValidationResult> {
-    check_tree_depth(&model.worldbody)?;
     // Validate options first
     validate_option(&model.option)?;
     // Check for duplicate names
@@ -439,12 +442,15 @@ fn check_geom_finite(geom: &MjcfGeom, body_name: &str) -> Result<()> {
 /// validation pattern which uses `Result<()>` with `MjcfError`, and on a body
 /// and frame tree deeper than the loader takes.
 pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
-    crate::stack::on_large_stack(|| validate_tendons_unwrapped(model))
+    crate::stack::on_large_stack(|| {
+        check_tree_depth(&model.worldbody)?;
+        validate_tendons_unwrapped(model)
+    })
 }
 
-/// [`validate_tendons`]'s work, on the caller's stack.
+/// [`validate_tendons`]'s work, on the caller's stack, for a tree whose depth
+/// the caller has checked.
 pub fn validate_tendons_unwrapped(model: &MjcfModel) -> Result<()> {
-    check_tree_depth(&model.worldbody)?;
     // Collect joint, site, and geom names from the body tree (joints/sites/geoms
     // are nested inside MjcfBody, not top-level on MjcfModel).
     let mut joint_names = HashSet::new();
