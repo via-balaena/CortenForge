@@ -119,9 +119,9 @@ fn rangefinders_read_as_mujoco() {
 /// as this sphere is. A sphere field of radius 1
 /// centred 3 above the rangefinder, sampled on a grid of cells 8/39 wide that
 /// holds the rangefinder: unturned, it reads 2 within a cell; turned away, −1.
-/// The same field on a grid that ends 1.5 short of the rangefinder reads −1
-/// unturned, the shape's ray missing a grid it starts that far outside
-/// (ledger L282).
+/// The same field on a grid of cells 3/19 wide that ends 1.5 short of the
+/// rangefinder reads 2 within a cell too, the shape's ray tracing from where it
+/// enters the grid (ledger L282).
 #[test]
 fn a_rangefinder_casts_a_signed_distance_field_through_its_shape() {
     let read = |padding: f64, resolution: usize, quat: [f64; 4]| {
@@ -154,9 +154,9 @@ fn a_rangefinder_casts_a_signed_distance_field_through_its_shape() {
         (-1.0_f64).to_bits(),
         "turned away"
     );
-    assert_eq!(
-        read(0.5, 20, unturned).to_bits(),
-        (-1.0_f64).to_bits(),
-        "outside the grid"
+    let outside = read(0.5, 20, unturned);
+    assert!(
+        (outside - 2.0).abs() <= 3.0 / 19.0,
+        "outside the grid: {outside}"
     );
 }

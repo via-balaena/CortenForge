@@ -30,7 +30,7 @@
 
 use nalgebra::{Point3, Vector3};
 
-use crate::{Ray, RayHit, Shape};
+use crate::{Bounded, Ray, RayHit, Shape};
 
 /// Safe vector normalization with fallback.
 ///
@@ -540,8 +540,18 @@ fn ray_heightfield(ray: &Ray, data: &crate::HeightFieldData, max_dist: f64) -> O
 }
 
 /// Ray–SDF intersection using sphere tracing.
+///
+/// The field is defined on its grid only, so a ray whose origin is off the
+/// grid starts its trace where it enters the grid's box, if the box lies ahead.
 fn ray_sdf(ray: &Ray, data: &crate::SdfGrid, max_dist: f64) -> Option<RayHit> {
-    let mut t = 0.0;
+    let mut t = if !data.contains(ray.origin)
+        && let Some(t_enter) = ray_box_entry(ray, &data.aabb())
+        && t_enter > 0.0
+    {
+        t_enter
+    } else {
+        0.0
+    };
     let max_steps = 128;
     let epsilon = 1e-4;
 
@@ -572,6 +582,38 @@ fn ray_sdf(ray: &Ray, data: &crate::SdfGrid, max_dist: f64) -> Option<RayHit> {
     }
 
     None
+}
+
+/// Where the ray's line enters the box: at most 0 where the box holds the ray's
+/// origin, negative where the box is behind it, `None` where the line misses it
+/// or the ray's origin or direction is `NaN`. A line parallel to a face is in
+/// that face's slab when it lies on the face.
+fn ray_box_entry(ray: &Ray, aabb: &crate::Aabb) -> Option<f64> {
+    let mut t_enter = f64::NEG_INFINITY;
+    let mut t_exit = f64::INFINITY;
+
+    for i in 0..3 {
+        let origin_i = ray.origin[i];
+        let dir_i = ray.direction[i];
+
+        if dir_i == 0.0 {
+            if !(aabb.min[i] <= origin_i && origin_i <= aabb.max[i]) {
+                return None;
+            }
+        } else {
+            let t1 = (aabb.min[i] - origin_i) / dir_i;
+            let t2 = (aabb.max[i] - origin_i) / dir_i;
+            let (t_near, t_far) = if dir_i > 0.0 { (t1, t2) } else { (t2, t1) };
+
+            if !(t_near <= t_far) {
+                return None;
+            }
+            t_enter = t_enter.max(t_near);
+            t_exit = t_exit.min(t_far);
+        }
+    }
+
+    (t_enter <= t_exit).then_some(t_enter)
 }
 
 // =============================================================================
@@ -911,6 +953,267 @@ mod tests {
         assert!(hit.is_some());
         let hit = hit.unwrap();
         assert_relative_eq!(hit.distance, 0.5, epsilon = 0.15);
+    }
+
+    /// A sphere field of radius 1 on a grid reaching 1.5 each way, cells 3/19
+    /// wide: rays toward its centre from 1.5 and 10 outside each face meet the
+    /// sphere within a cell, the normal facing the ray.
+    #[test]
+    fn sdf_hit_from_outside_the_grid() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            20,
+            0.5,
+        )));
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                for gap in [1.5, 10.0] {
+                    let mut origin = Point3::origin();
+                    origin[axis] = sign * (1.5 + gap);
+                    let mut dir = Vector3::zeros();
+                    dir[axis] = -sign;
+                    let hit = ray_cast(&ray_from(origin, dir), &shape, 100.0);
+                    assert!(hit.is_some(), "axis {axis}, side {sign}, gap {gap}: a miss");
+                    let hit = hit.unwrap();
+                    assert!(
+                        (hit.distance - (0.5 + gap)).abs() <= 3.0 / 19.0,
+                        "axis {axis}, side {sign}, gap {gap}: {}",
+                        hit.distance
+                    );
+                    assert!(hit.normal[axis] * sign > 0.9, "{:?}", hit.normal);
+                }
+            }
+        }
+    }
+
+    /// From 1.5 below the same grid the sphere is 2 away along the ray.
+    #[test]
+    fn sdf_max_dist_ends_the_ray() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            20,
+            0.5,
+        )));
+        let ray = ray_from(Point3::new(0.0, 0.0, -3.0), Vector3::z());
+        assert!(ray_cast(&ray, &shape, 1.0).is_none(), "short of the grid");
+        assert!(ray_cast(&ray, &shape, 1.8).is_none(), "short of the sphere");
+        let hit = ray_cast(&ray, &shape, 2.2).unwrap();
+        assert!((hit.distance - 2.0).abs() <= 3.0 / 19.0, "{}", hit.distance);
+    }
+
+    #[test]
+    fn sdf_miss_beside_or_behind_the_grid() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            20,
+            0.5,
+        )));
+        let beside = ray_from(Point3::new(1.6, 0.0, -3.0), Vector3::z());
+        assert!(ray_cast(&beside, &shape, 100.0).is_none(), "beside");
+        let behind = ray_from(Point3::new(0.0, 0.0, 3.0), Vector3::z());
+        assert!(ray_cast(&behind, &shape, 100.0).is_none(), "behind");
+    }
+
+    /// A box field whose grid ends at the box's faces: a ray from a face into
+    /// the box meets it where it starts, at a distance of +0, a `max_dist` of 0
+    /// included.
+    #[test]
+    fn sdf_hit_where_the_ray_starts_on_the_grid() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(1.0, 1.0, 1.0),
+            21,
+            0.0,
+        )));
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                for max_dist in [0.0, 100.0] {
+                    let mut origin = Point3::origin();
+                    origin[axis] = sign;
+                    let mut dir = Vector3::zeros();
+                    dir[axis] = -sign;
+                    let hit = ray_cast(&ray_from(origin, dir), &shape, max_dist);
+                    let case = format!("axis {axis}, side {sign}, max_dist {max_dist}");
+                    assert!(hit.is_some(), "{case}: a miss");
+                    assert_eq!(hit.unwrap().distance.to_bits(), 0.0_f64.to_bits(), "{case}");
+                }
+            }
+        }
+    }
+
+    /// A sphere field of radius 0.5 on a grid reaching 1.5, 1 and 0.6 each way,
+    /// cells 0.1 wide: from 1.5 outside each face the ray meets the sphere
+    /// within a cell.
+    #[test]
+    fn sdf_hit_from_outside_a_grid_that_is_not_a_cube() {
+        let half = Vector3::new(1.5, 1.0, 0.6);
+        let grid = crate::SdfGrid::from_fn(31, 21, 13, 0.1, Point3::from(-half), |p| {
+            p.coords.norm() - 0.5
+        });
+        let shape = Shape::sdf(Arc::new(grid));
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                let mut origin = Point3::origin();
+                origin[axis] = sign * (half[axis] + 1.5);
+                let mut dir = Vector3::zeros();
+                dir[axis] = -sign;
+                let hit = ray_cast(&ray_from(origin, dir), &shape, 100.0);
+                assert!(hit.is_some(), "axis {axis}, side {sign}: a miss");
+                let distance = hit.unwrap().distance;
+                assert!(
+                    (distance - (half[axis] + 1.0)).abs() <= 0.1,
+                    "axis {axis}, side {sign}: {distance}"
+                );
+            }
+        }
+    }
+
+    /// A field whose zero is the grid's far face (x = 1): rays along x from
+    /// x = k/100, k from -95 to 95, inside the grid meet it where the trace
+    /// lands on that face.
+    #[test]
+    fn sdf_hit_on_the_grids_far_face_from_inside() {
+        let grid = crate::SdfGrid::from_fn(21, 21, 21, 0.1, Point3::new(-1.0, -1.0, -1.0), |p| {
+            1.0 - p.x
+        });
+        let shape = Shape::sdf(Arc::new(grid));
+        for k in -95..=95 {
+            let x = f64::from(k) / 100.0;
+            let hit = ray_cast(
+                &ray_from(Point3::new(x, 0.0, 0.0), Vector3::x()),
+                &shape,
+                100.0,
+            );
+            assert!(hit.is_some(), "from x {x}: a miss");
+            let distance = hit.unwrap().distance;
+            assert!(
+                (distance - (1.0 - x)).abs() <= 1e-4,
+                "from x {x}: {distance}"
+            );
+        }
+    }
+
+    /// An origin the grid holds, though one ulp past its face by the box's
+    /// arithmetic (the box field's grid ends at x = 1): every ray from it meets
+    /// the box where it starts, at +0.
+    #[test]
+    fn sdf_hit_where_the_grid_holds_the_origin() {
+        let data =
+            crate::SdfGrid::box_shape(Point3::origin(), Vector3::new(1.0, 1.0, 1.0), 21, 0.0);
+        let origin = Point3::new(f64::from_bits(1.0_f64.to_bits() + 1), 0.0, 0.0);
+        assert!(data.contains(origin));
+        let shape = Shape::sdf(Arc::new(data));
+        for dir in [
+            -Vector3::x(),
+            Vector3::x(),
+            Vector3::y(),
+            -Vector3::y(),
+            Vector3::z(),
+            -Vector3::z(),
+        ] {
+            for max_dist in [0.0, 100.0] {
+                let hit = ray_cast(&ray_from(origin, dir), &shape, max_dist);
+                let case = format!("direction {dir:?}, max_dist {max_dist}");
+                assert!(hit.is_some(), "{case}: a miss");
+                assert_eq!(hit.unwrap().distance.to_bits(), 0.0_f64.to_bits(), "{case}");
+            }
+        }
+    }
+
+    /// A grid one sample wide (at x = 0) holding a field that is 0 there: a ray
+    /// along x from 1 before it meets it at 1.
+    #[test]
+    fn sdf_hit_on_a_grid_one_sample_wide() {
+        let grid = crate::SdfGrid::from_fn(1, 11, 11, 0.1, Point3::new(0.0, -0.5, -0.5), |p| p.x);
+        let shape = Shape::sdf(Arc::new(grid));
+        let hit = ray_cast(
+            &ray_from(Point3::new(-1.0, 0.0, 0.0), Vector3::x()),
+            &shape,
+            100.0,
+        );
+        assert!(hit.is_some(), "a miss");
+        assert_eq!(hit.unwrap().distance, 1.0);
+    }
+
+    /// A box field whose grid ends at the box's faces: rays from 1 before the
+    /// grid, lying in its face y = 1, meet the box where they enter, at 1; one
+    /// direction has a component of -5e-324 off the face.
+    #[test]
+    fn sdf_hit_along_the_grids_face_from_outside() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(1.0, 1.0, 1.0),
+            21,
+            0.0,
+        )));
+        for dir in [Vector3::x(), Vector3::new(1.0, -5e-324, 0.0)] {
+            let hit = ray_cast(&ray_from(Point3::new(-2.0, 1.0, 0.0), dir), &shape, 100.0);
+            assert!(hit.is_some(), "direction {dir:?}: a miss");
+            assert_eq!(hit.unwrap().distance, 1.0, "direction {dir:?}");
+        }
+    }
+
+    #[test]
+    fn ray_box_entry_enters() {
+        let aabb = crate::Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
+        let through = ray_from(Point3::new(0.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&through, &aabb), Some(2.0));
+        let reversed = ray_from(Point3::new(0.0, 0.0, 3.0), -Vector3::z());
+        assert_eq!(ray_box_entry(&reversed, &aabb), Some(2.0));
+        let inside = ray_from(Point3::origin(), Vector3::x());
+        assert_eq!(ray_box_entry(&inside, &aabb), Some(-1.0));
+        let behind = ray_from(Point3::new(0.0, 0.0, 3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&behind, &aabb), Some(-4.0));
+        let along_a_face = ray_from(Point3::new(1.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&along_a_face, &aabb), Some(2.0));
+        let along_a_min_face = ray_from(Point3::new(-1.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&along_a_min_face, &aabb), Some(2.0));
+        let touching_an_edge = ray_from(
+            Point3::new(-2.0, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 0.0).normalize(),
+        );
+        assert!(
+            ray_box_entry(&touching_an_edge, &aabb).is_some(),
+            "touching an edge"
+        );
+    }
+
+    #[test]
+    fn ray_box_entry_misses() {
+        let aabb = crate::Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
+        let parallel_outside = ray_from(Point3::new(2.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&parallel_outside, &aabb), None);
+        let beside = ray_from(
+            Point3::new(-3.0, 2.5, 0.0),
+            Vector3::new(1.0, 0.1, 0.0).normalize(),
+        );
+        assert_eq!(ray_box_entry(&beside, &aabb), None);
+        // Out of the x slab (at 0.56) before it enters the y slab (at 4.47).
+        let beside_leaving_first = ray_from(
+            Point3::new(0.5, -3.0, 0.0),
+            Vector3::new(1.0, 0.5, 0.0).normalize(),
+        );
+        assert_eq!(ray_box_entry(&beside_leaving_first, &aabb), None);
+        // On the face y = 1, leaving it at 1e-20 a unit: out of the y slab from
+        // its start, no tolerance taking it as parallel.
+        let leaving_a_face = ray_from(
+            Point3::new(-3.0, 1.0, 0.0),
+            Vector3::new(1.0, 1e-20, 0.0).normalize(),
+        );
+        assert_eq!(ray_box_entry(&leaving_a_face, &aabb), None);
+        let nan_origin = Ray {
+            origin: Point3::new(f64::NAN, 0.0, 0.0),
+            direction: Vector3::z(),
+        };
+        assert_eq!(ray_box_entry(&nan_origin, &aabb), None);
+        let nan_direction = Ray {
+            origin: Point3::new(0.0, 0.0, -3.0),
+            direction: Vector3::new(f64::NAN, 0.0, 1.0),
+        };
+        assert_eq!(ray_box_entry(&nan_direction, &aabb), None);
     }
 
     // ── Edge cases ────────────────────────────────────────────────────
