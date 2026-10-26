@@ -30,7 +30,6 @@
 
 use nalgebra::{Point3, Vector3};
 
-use crate::bvh::ray_aabb_intersect_dist;
 use crate::{Bounded, Ray, RayHit, Shape};
 
 /// Safe vector normalization with fallback.
@@ -545,16 +544,14 @@ fn ray_heightfield(ray: &Ray, data: &crate::HeightFieldData, max_dist: f64) -> O
 /// The field is defined on its grid only, so a ray whose origin is off the
 /// grid starts its trace where it enters the grid's box, if the box lies ahead.
 fn ray_sdf(ray: &Ray, data: &crate::SdfGrid, max_dist: f64) -> Option<RayHit> {
-    let mut t = 0.0;
-    if !data.contains(ray.origin) {
-        let dir_inv = ray.direction.map(|d| 1.0 / d);
-        if let Some(t_enter) =
-            ray_aabb_intersect_dist(&ray.origin, &dir_inv, &data.aabb(), f64::INFINITY)
-            && t_enter > 0.0
-        {
-            t = t_enter;
-        }
-    }
+    let mut t = if !data.contains(ray.origin)
+        && let Some(t_enter) = ray_box_entry(ray, &data.aabb())
+        && t_enter > 0.0
+    {
+        t_enter
+    } else {
+        0.0
+    };
     let max_steps = 128;
     let epsilon = 1e-4;
 
@@ -585,6 +582,38 @@ fn ray_sdf(ray: &Ray, data: &crate::SdfGrid, max_dist: f64) -> Option<RayHit> {
     }
 
     None
+}
+
+/// Where the ray's line enters the box: negative where the box is behind the
+/// ray's origin, `None` where the line misses it or the ray's origin or
+/// direction is `NaN`. A line parallel to a face is in that face's slab when it
+/// lies on the face.
+fn ray_box_entry(ray: &Ray, aabb: &crate::Aabb) -> Option<f64> {
+    let mut t_enter = f64::NEG_INFINITY;
+    let mut t_exit = f64::INFINITY;
+
+    for i in 0..3 {
+        let origin_i = ray.origin[i];
+        let dir_i = ray.direction[i];
+
+        if dir_i == 0.0 {
+            if !(aabb.min[i] <= origin_i && origin_i <= aabb.max[i]) {
+                return None;
+            }
+        } else {
+            let t1 = (aabb.min[i] - origin_i) / dir_i;
+            let t2 = (aabb.max[i] - origin_i) / dir_i;
+            let (t_near, t_far) = if dir_i > 0.0 { (t1, t2) } else { (t2, t1) };
+
+            if !(t_near <= t_far) {
+                return None;
+            }
+            t_enter = t_enter.max(t_near);
+            t_exit = t_exit.min(t_far);
+        }
+    }
+
+    (t_enter <= t_exit).then_some(t_enter)
 }
 
 // =============================================================================
@@ -1107,6 +1136,69 @@ mod tests {
         );
         assert!(hit.is_some(), "a miss");
         assert_eq!(hit.unwrap().distance, 1.0);
+    }
+
+    /// A box field whose grid ends at the box's faces: rays from 1 before the
+    /// grid, lying in its face y = 1, meet the box where they enter, at 1; one
+    /// direction has a component of -5e-324 off the face.
+    #[test]
+    fn sdf_hit_along_the_grids_face_from_outside() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(1.0, 1.0, 1.0),
+            21,
+            0.0,
+        )));
+        for dir in [Vector3::x(), Vector3::new(1.0, -5e-324, 0.0)] {
+            let hit = ray_cast(&ray_from(Point3::new(-2.0, 1.0, 0.0), dir), &shape, 100.0);
+            assert!(hit.is_some(), "direction {dir:?}: a miss");
+            assert_eq!(hit.unwrap().distance, 1.0, "direction {dir:?}");
+        }
+    }
+
+    #[test]
+    fn ray_box_entry_enters() {
+        let aabb = crate::Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
+        let through = ray_from(Point3::new(0.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&through, &aabb), Some(2.0));
+        let reversed = ray_from(Point3::new(0.0, 0.0, 3.0), -Vector3::z());
+        assert_eq!(ray_box_entry(&reversed, &aabb), Some(2.0));
+        let inside = ray_from(Point3::origin(), Vector3::x());
+        assert_eq!(ray_box_entry(&inside, &aabb), Some(-1.0));
+        let behind = ray_from(Point3::new(0.0, 0.0, 3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&behind, &aabb), Some(-4.0));
+        let along_a_face = ray_from(Point3::new(1.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&along_a_face, &aabb), Some(2.0));
+        let touching_an_edge = ray_from(
+            Point3::new(-2.0, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 0.0).normalize(),
+        );
+        assert!(
+            ray_box_entry(&touching_an_edge, &aabb).is_some(),
+            "touching an edge"
+        );
+    }
+
+    #[test]
+    fn ray_box_entry_misses() {
+        let aabb = crate::Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
+        let parallel_outside = ray_from(Point3::new(2.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&parallel_outside, &aabb), None);
+        let beside = ray_from(
+            Point3::new(-3.0, 2.5, 0.0),
+            Vector3::new(1.0, 0.1, 0.0).normalize(),
+        );
+        assert_eq!(ray_box_entry(&beside, &aabb), None);
+        let nan_origin = Ray {
+            origin: Point3::new(f64::NAN, 0.0, 0.0),
+            direction: Vector3::z(),
+        };
+        assert_eq!(ray_box_entry(&nan_origin, &aabb), None);
+        let nan_direction = Ray {
+            origin: Point3::new(0.0, 0.0, -3.0),
+            direction: Vector3::new(f64::NAN, 0.0, 1.0),
+        };
+        assert_eq!(ray_box_entry(&nan_direction, &aabb), None);
     }
 
     // ── Edge cases ────────────────────────────────────────────────────
