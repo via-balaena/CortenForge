@@ -16,13 +16,15 @@ mj_fwdActuation does in its passes (engine_forward.c:277-570): every
 actuator's act_dot, then the plugins', then the forces, then the plugins',
 then the clamp and the mapping over every actuator. A callback reads another
 actuator's act_dot or force, or its own force before its bias; a dynamics
-callback writes an earlier actuator's act_dot or a later one's ctrl; a
+callback writes an earlier actuator's act_dot or a later one's ctrl, or adds
+to qfrc_actuator, which a gain callback reads too; a
 `mujoco.pid` plugin's actuator, with an integral term, a filter, a force
 range, MuJoCo's dynamics callback called for it, and a user gain reading its
 act_dot or its force; a force range that excludes 0 on a disabled actuator, and on a sleeping
 tree's; two actuators sharing an activation; an infinite gear on actuators
 with no force. For each of 12 states (qpos, qvel, ctrl and act drawn from a
-seeded generator, and act_dot from a second one, set before each pass) after
+seeded generator, and act_dot from a second one, set before each pass, and
+in one case qfrc_actuator, `qfrc_actuator_before`) after
 mj_forward each actuator's force, qfrc_actuator and act_dot, and after one
 mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind), qpos, qvel and
 act.
@@ -189,6 +191,14 @@ CASES = [
      '    <general joint="h1" dyntype="filter" dynprm="0.1" forcelimited="true" forcerange="0.5 2"/>\n'
      '    <motor joint="h2" forcelimited="true" forcerange="-0.3 0.3"/>',
      {'model': 'sleeping', 'asleep_dofs': [0]}),
+    ('a user gain reading qfrc_actuator, set before the pass',
+     '<general joint="h1" gaintype="user"/>\n    <motor joint="h2"/>',
+     '<general joint="h1"/>\n    <motor joint="h2"/>',
+     {'gain': 'qfrc1', 'qfrc_before': [0.3, -0.7]}),
+    ('a user dynamics callback adding to qfrc_actuator',
+     '<general joint="h1" dyntype="user"/>\n    <motor joint="h2"/>',
+     '<general joint="h1" dyntype="integrator"/>\n    <motor joint="h2"/>',
+     {'dyn': 'add_qfrc0'}),
 ]
 
 
@@ -198,6 +208,10 @@ def GAIN_LATER_ACT_DOT(m, d, i):
 
 def GAIN_EARLIER_FORCE(m, d, i):
     return 1.0 + d.actuator_force[0]
+
+
+def GAIN_QFRC1(m, d, i):
+    return 1.0 + d.qfrc_actuator[1]
 
 
 def BIAS_OWN_FORCE(m, d, i):
@@ -215,16 +229,23 @@ def DYN_WRITE_EARLIER(m, d, i):
     return (d.ctrl[i] - d.act[a]) / 0.07
 
 
+def DYN_ADD_QFRC0(m, d, i):
+    a = m.actuator_actadr[i] + m.actuator_actnum[i] - 1
+    d.qfrc_actuator[0] += 7.0
+    return (d.ctrl[i] - d.act[a]) / 0.07
+
+
 def DYN_WRITE_LATER_CTRL(m, d, i):
     a = m.actuator_actadr[i] + m.actuator_actnum[i] - 1
     d.ctrl[1] += 0.25
     return (d.ctrl[i] - d.act[a]) / 0.07
 
 
-GAINS = {'later_act_dot': GAIN_LATER_ACT_DOT, 'earlier_force': GAIN_EARLIER_FORCE}
+GAINS = {'later_act_dot': GAIN_LATER_ACT_DOT, 'earlier_force': GAIN_EARLIER_FORCE,
+         'qfrc1': GAIN_QFRC1}
 BIASES = {'own_force': BIAS_OWN_FORCE}
 DYNS = {'earlier_force': DYN_EARLIER_FORCE, 'write_earlier': DYN_WRITE_EARLIER,
-        'write_later_ctrl': DYN_WRITE_LATER_CTRL}
+        'write_later_ctrl': DYN_WRITE_LATER_CTRL, 'add_qfrc0': DYN_ADD_QFRC0}
 
 
 def floats(a):
@@ -257,6 +278,7 @@ def case(name, actuator, stand_in, opts):
     rng = np.random.default_rng(7)
     rng_act_dot = np.random.default_rng(8)
     asleep_dofs = opts.get('asleep_dofs', [])
+    qfrc_before = opts.get('qfrc_before')
     states = []
     for _ in range(STATES):
         qpos = m.qpos0 + rng.uniform(-0.8, 0.8, m.nq)
@@ -272,6 +294,8 @@ def case(name, actuator, stand_in, opts):
             mujoco.mj_resetData(m, d)
             d.qpos[:], d.qvel[:], d.ctrl[:], d.act[:] = qpos, qvel, ctrl, act
             d.act_dot[:] = act_dot
+            if qfrc_before is not None:
+                d.qfrc_actuator[:] = qfrc_before
 
         start()
         mujoco.mj_forward(m, d)
@@ -281,6 +305,8 @@ def case(name, actuator, stand_in, opts):
                  'qfrc_actuator': floats(d.qfrc_actuator), 'act_dot': floats(d.act_dot)}
         if asleep_dofs:
             state['tree_asleep'] = ints(d.tree_asleep)
+        if qfrc_before is not None:
+            state['qfrc_actuator_before'] = floats(qfrc_before)
         start()
         mujoco.mj_step(m, d)
         state.update({'qDeriv': floats(d.qDeriv), 'qpos_after': floats(d.qpos),

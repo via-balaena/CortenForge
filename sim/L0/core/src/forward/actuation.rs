@@ -748,7 +748,8 @@ pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
 /// A dynamics callback runs in the first pass, before any force (each is 0
 /// then); a gain or bias callback in the third, after every activation
 /// derivative. The inputs are a clamped copy of the controls taken before
-/// the first pass; `data.ctrl` is not written.
+/// the first pass; `data.ctrl` is not written. `qfrc_actuator` holds the
+/// previous pass's until pass 6 writes it whole, as MuJoCo's.
 ///
 /// **Note**: `cb_control` is NOT invoked here. It fires after the velocity
 /// stage and before this one — see `forward_core()`, `forward_skip()` and
@@ -764,8 +765,6 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         data.qfrc_actuator.fill(0.0);
         return;
     }
-
-    data.qfrc_actuator.fill(0.0);
 
     // A bad input (after clamping) makes every actuator's control input 0
     // for this pass, an actuator with an activation still acting on it;
@@ -1001,9 +1000,11 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         data.actuator_force[i] = data.actuator_force[i].clamp(lo, hi);
     }
 
-    // --- 6. Transmission: qfrc_actuator += moment^T * actuator_force (`:543-545`) ---
-    // where moment = gear * raw_Jacobian; a zero force adds nothing, as
-    // MuJoCo's `mju_mulMatTVecSparse` skips it.
+    // --- 6. Transmission: qfrc_actuator = moment^T * actuator_force (`:543-545`) ---
+    // where moment = gear * raw_Jacobian. MuJoCo's `mju_mulMatTVecSparse`
+    // clears qfrc_actuator here, not before the passes
+    // (`engine_util_sparse.c:183`), and skips a zero force.
+    data.qfrc_actuator.fill(0.0);
     for i in 0..model.nu {
         let force = data.actuator_force[i];
         // A sleeping actuator's moment is empty, as MuJoCo's transmission

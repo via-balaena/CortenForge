@@ -148,6 +148,9 @@ pub type CbSensor =
 /// activations' `act_dot` are 0 when it is called. With one activation it
 /// returns that activation's `act_dot`; with more it writes their `act_dot`
 /// itself and its return is ignored, as MuJoCo's (`engine_forward.c:361-370`).
+/// What it writes to `qfrc_actuator` is overwritten when the forces are
+/// mapped, and a control it writes acts from the next pass, this pass's
+/// inputs having been copied before it, as MuJoCo's.
 pub type CbActDyn = Callback<dyn Fn(&Model, &mut Data, usize) -> f64 + Send + Sync>;
 
 /// User actuator gain callback: called for `GainType::User`.

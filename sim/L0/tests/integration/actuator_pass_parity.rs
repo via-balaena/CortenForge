@@ -7,8 +7,9 @@
 //! `scripts/gen_actuator_pass_reference.py` on the unfused oracle: two damped
 //! hinges under implicitfast, 12 drawn states each, `act_dot` set before each
 //! pass. Its cases: a callback reading another actuator's act_dot or force, or
-//! its own force before its bias; a dynamics callback writing an earlier
-//! actuator's act_dot or a later one's ctrl; a `mujoco.pid` plugin's
+//! its own force before its bias, or `qfrc_actuator` as the pass before left
+//! it; a dynamics callback writing an earlier actuator's act_dot or a later
+//! one's ctrl, or adding to `qfrc_actuator`; a `mujoco.pid` plugin's
 //! actuator, with an integral term, a filter, a force range, the dynamics
 //! callback called for it, and a user gain reading its act_dot or its force;
 //! a force range that excludes 0 on a disabled actuator, and on a sleeping
@@ -180,6 +181,7 @@ fn set_callbacks(model: &mut Model, callbacks: &Value) {
     match callbacks["gain"].as_str() {
         Some("later_act_dot") => model.set_act_gain_callback(|_, d, _| 1.0 + d.act_dot[0]),
         Some("earlier_force") => model.set_act_gain_callback(|_, d, _| 1.0 + d.actuator_force[0]),
+        Some("qfrc1") => model.set_act_gain_callback(|_, d, _| 1.0 + d.qfrc_actuator[1]),
         None => {}
         Some(other) => panic!("gain callback {other}"),
     }
@@ -196,6 +198,11 @@ fn set_callbacks(model: &mut Model, callbacks: &Value) {
         Some("write_earlier") => model.set_act_dyn_callback(|m, d, i| {
             let a = m.actuator_act_adr[i] + m.actuator_act_num[i] - 1;
             d.act_dot[0] += 0.5 * d.ctrl[i];
+            (d.ctrl[i] - d.act[a]) / 0.07
+        }),
+        Some("add_qfrc0") => model.set_act_dyn_callback(|m, d, i| {
+            let a = m.actuator_act_adr[i] + m.actuator_act_num[i] - 1;
+            d.qfrc_actuator[0] += 7.0;
             (d.ctrl[i] - d.act[a]) / 0.07
         }),
         Some("write_later_ctrl") => model.set_act_dyn_callback(|m, d, i| {
@@ -357,6 +364,11 @@ fn actuation_passes_act_as_mujoco() {
                 ] {
                     field.copy_from_slice(&floats(&state[key]));
                 }
+                if let Some(before) = state.get("qfrc_actuator_before") {
+                    data.qfrc_actuator
+                        .as_mut_slice()
+                        .copy_from_slice(&floats(before));
+                }
                 data
             };
             let mut data = start();
@@ -399,7 +411,7 @@ fn actuation_passes_act_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 192, "16 cases of 12 states");
+    assert_eq!(compared, 216, "18 cases of 12 states");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",
