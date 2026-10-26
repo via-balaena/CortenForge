@@ -15,11 +15,12 @@ mj_fwdActuation does in its passes (engine_forward.c:277-570): every
 actuator's act_dot, then the plugins', then the forces, then the plugins',
 then the clamp and the mapping over every actuator. A callback reads another
 actuator's act_dot or force, or its own force before its bias; a dynamics
-callback writes an earlier actuator's act_dot; a `mujoco.pid` plugin's
-actuator, with an integral term, a filter, a force range, and MuJoCo's
-dynamics callback called for it; a force range that excludes 0 on a disabled
-actuator; two actuators sharing an activation; an infinite gear on actuators
-with no force. For each of 12 states (qpos, qvel, ctrl and act drawn from a
+callback writes an earlier actuator's act_dot or a later one's ctrl; a
+`mujoco.pid` plugin's actuator, with an integral term, a filter, a force
+range, MuJoCo's dynamics callback called for it, and a user gain reading its
+act_dot or its force; a force range that excludes 0 on a disabled actuator;
+two actuators sharing an activation; an infinite gear on actuators with no
+force. For each of 12 states (qpos, qvel, ctrl and act drawn from a
 seeded generator, and act_dot from a second one, set before each pass) after
 mj_forward each actuator's force, qfrc_actuator and act_dot, and after one
 mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind), qpos, qvel and
@@ -142,6 +143,19 @@ CASES = [
      '<motor joint="h1"/>\n    <general joint="h2" gainprm="0"/>\n    <motor joint="h2" group="1"/>',
      '<motor joint="h1"/>\n    <general joint="h2" gainprm="0"/>\n    <motor joint="h2" group="1"/>',
      {'option': ' actuatorgroupdisable="1"', 'gear': [[1, float('inf')], [2, float('inf')]]}),
+    ('a user gain reading a later PID plugin actuator act_dot',
+     '<general joint="h1" gaintype="user"/>\n'
+     '    <plugin joint="h2" plugin="mujoco.pid" instance="pid" actdim="1"/>',
+     '<general joint="h1"/>\n    <general joint="h2"/>',
+     {'pid': PID_KI, 'gain': 'later_act_dot'}),
+    ('a user gain reading an earlier PID plugin actuator force',
+     '<plugin joint="h1" plugin="mujoco.pid" instance="pid"/>\n    <general joint="h2" gaintype="user"/>',
+     '<general joint="h1"/>\n    <general joint="h2"/>',
+     {'pid': PID_KD, 'gain': 'earlier_force'}),
+    ('a user dynamics callback writing a later actuator ctrl',
+     '<general joint="h1" dyntype="user"/>\n    <motor joint="h2"/>',
+     '<general joint="h1" dyntype="integrator"/>\n    <motor joint="h2"/>',
+     {'dyn': 'write_later_ctrl'}),
 ]
 
 
@@ -168,9 +182,16 @@ def DYN_WRITE_EARLIER(m, d, i):
     return (d.ctrl[i] - d.act[a]) / 0.07
 
 
+def DYN_WRITE_LATER_CTRL(m, d, i):
+    a = m.actuator_actadr[i] + m.actuator_actnum[i] - 1
+    d.ctrl[1] += 0.25
+    return (d.ctrl[i] - d.act[a]) / 0.07
+
+
 GAINS = {'later_act_dot': GAIN_LATER_ACT_DOT, 'earlier_force': GAIN_EARLIER_FORCE}
 BIASES = {'own_force': BIAS_OWN_FORCE}
-DYNS = {'earlier_force': DYN_EARLIER_FORCE, 'write_earlier': DYN_WRITE_EARLIER}
+DYNS = {'earlier_force': DYN_EARLIER_FORCE, 'write_earlier': DYN_WRITE_EARLIER,
+        'write_later_ctrl': DYN_WRITE_LATER_CTRL}
 
 
 def floats(a):

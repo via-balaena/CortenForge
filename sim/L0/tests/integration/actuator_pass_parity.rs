@@ -8,10 +8,11 @@
 //! hinges under implicitfast, 12 drawn states each, `act_dot` set before each
 //! pass. Its cases: a callback reading another actuator's act_dot or force, or
 //! its own force before its bias; a dynamics callback writing an earlier
-//! actuator's act_dot; a `mujoco.pid` plugin's actuator, with an integral
-//! term, a filter, a force range, and the dynamics callback called for it; a
-//! force range that excludes 0 on a disabled actuator; two actuators sharing
-//! an activation; an infinite gear on actuators with no force. sim-mjcf
+//! actuator's act_dot or a later one's ctrl; a `mujoco.pid` plugin's
+//! actuator, with an integral term, a filter, a force range, the dynamics
+//! callback called for it, and a user gain reading its act_dot or its force;
+//! a force range that excludes 0 on a disabled actuator; two actuators
+//! sharing an activation; an infinite gear on actuators with no force. sim-mjcf
 //! refuses a user type and loads no plugin, so each case loads a stand-in and
 //! changes it to MuJoCo's compiled actuators, then checks it against them; the
 //! callbacks below are the script's, in the same operations, and the plugin is
@@ -194,6 +195,11 @@ fn set_callbacks(model: &mut Model, callbacks: &Value) {
         Some("write_earlier") => model.set_act_dyn_callback(|m, d, i| {
             let a = m.actuator_act_adr[i] + m.actuator_act_num[i] - 1;
             d.act_dot[0] += 0.5 * d.ctrl[i];
+            (d.ctrl[i] - d.act[a]) / 0.07
+        }),
+        Some("write_later_ctrl") => model.set_act_dyn_callback(|m, d, i| {
+            let a = m.actuator_act_adr[i] + m.actuator_act_num[i] - 1;
+            d.ctrl[1] += 0.25;
             (d.ctrl[i] - d.act[a]) / 0.07
         }),
         None => {}
@@ -384,7 +390,7 @@ fn actuation_passes_act_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 144, "12 cases of 12 states");
+    assert_eq!(compared, 180, "15 cases of 12 states");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",
