@@ -1,0 +1,7 @@
+<mujoco>
+  <worldbody>
+    <body name="a">
+      <geom size="0.1 x"/>
+    </body>
+  </worldbody>
+</mujoco>

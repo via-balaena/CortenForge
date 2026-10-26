@@ -1776,3 +1776,8 @@ bcd2080c5196a90a	examples/fundamentals/sim-cpu/sensors/touch/src/main.rs:43
 67bba3a77c16482d	sim/L0/tests/integration/rangefinder_parity.rs:126
 51e8993b88f71a17	sim/L0/tests/integration/derivatives.rs:3667
 eb2d27f53748110c	sim/L0/tests/integration/muscle_parity.rs:208
+19849e313a0d2680	sim/L0/mjcf/tests/errors.rs:12
+87042f94463a826e	sim/L0/mjcf/tests/errors.rs:45
+8f078785a80735d2	sim/L0/mjcf/tests/errors.rs:100
+b07cdbea120ff7ce	sim/L0/mjcf/tests/errors.rs:89
+efc20d922b21a45e	sim/L0/mjcf/tests/errors.rs:69
