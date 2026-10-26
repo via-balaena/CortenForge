@@ -4,8 +4,9 @@
 //! The expected edges and flaps were measured on MuJoCo 3.5.0, each vertex a
 //! body of its own: MuJoCo numbers an edge where it first appears, the elements
 //! in order and each element's edges in its `eledge` order
-//! (`user_mesh.cc:3447-3452`, `:4297-4321`). Each document is loaded twenty
-//! times, so an order that depends on a hash seed cannot pass by chance.
+//! (`user_mesh.cc:3447-3452`, `:4297-4321`). Each document whose edges or
+//! hinges are checked is loaded twenty times, so an order that depends on a
+//! hash seed cannot pass by chance.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -132,6 +133,46 @@ fn an_element_naming_a_vertex_the_flex_lacks_is_refused() {
             "{elements}"
         );
     }
+}
+
+#[test]
+fn an_element_naming_a_vertex_twice_is_refused() {
+    // MuJoCo 3.5.0 refuses each (measured), in every dimension.
+    for (dim, vertices, elements) in [
+        (1, "0 0 0  1 0 0", "0 0"),
+        (2, "0 0 0  1 0 0  0 1 0", "0 1 1"),
+        (3, "0 0 0  1 0 0  0 1 0  0 0 1", "0 1 2 2"),
+    ] {
+        let err = load_model(&flex_doc(dim, vertices, elements)).unwrap_err();
+        assert_eq!(
+            refusal(&err),
+            ("element", "repeated vertex in element"),
+            "{elements}"
+        );
+    }
+}
+
+#[test]
+fn a_flex_with_fewer_vertices_than_an_element_takes_is_refused() {
+    // Checked before the elements, as MuJoCo 3.5.0 does (measured: refused
+    // with this text, though the element also repeats a vertex).
+    let err = load_model(&flex_doc(2, "0 0 0  1 0 0", "0 1 1")).unwrap_err();
+    assert_eq!(refusal(&err), ("vertex", "not enough vertices"));
+}
+
+#[test]
+fn an_unnamed_flexs_refusal_names_it_by_its_index() {
+    let err = load_model(
+        r#"<mujoco>
+            <deformable>
+                <flex name="a" dim="2"><vertex pos="0 0 0  1 0 0  0 1 0"/><element data="0 1 2"/></flex>
+                <flex dim="4"><vertex pos="0 0 0  1 0 0  0 1 0  0 0 1  1 1 1"/><element data="0 1 2 3 4"/></flex>
+            </deformable>
+        </mujoco>"#,
+    )
+    .unwrap_err();
+    assert_eq!(refusal(&err), ("dim", "dim must be 1, 2 or 3"));
+    assert!(err.to_string().ends_with("(flex #1)"), "{err}");
 }
 
 #[test]

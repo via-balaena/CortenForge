@@ -1356,9 +1356,9 @@ mod tests {
                 </body>
               </worldbody>
               <deformable>
-                <flex name="test_flex" body="0" dim="2"
-                      vertex="0 0 0  1 0 0  0 1 0  1 1 0"
-                      element="0 1 2  1 2 3">
+                <flex name="test_flex" dim="2">
+                  <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
+                  <element data="0 1 2  1 2 3"/>
                   <contact internal="false" activelayers="3"
                            vertcollide="true" passive="false"/>
                   <elasticity young="1e6"/>
@@ -1393,9 +1393,9 @@ mod tests {
                 </body>
               </worldbody>
               <deformable>
-                <flex name="test_flex" body="0" dim="2"
-                      vertex="0 0 0  1 0 0  0 1 0  1 1 0"
-                      element="0 1 2  1 2 3">
+                <flex name="test_flex" dim="2">
+                  <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
+                  <element data="0 1 2  1 2 3"/>
                   <contact/>
                   <elasticity young="1e6"/>
                 </flex>

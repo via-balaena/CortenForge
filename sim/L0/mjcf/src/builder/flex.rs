@@ -30,7 +30,8 @@ impl ModelBuilder {
     /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
     /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
     pub(crate) fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) -> Result<()> {
-        for flex_orig in flex_list {
+        for (index, flex_orig) in flex_list.iter().enumerate() {
+            let at = || Location::nth(ElementKind::Flex, Some(&flex_orig.name), index);
             // Resolve `node` attribute: if `node` names are present and no vertices
             // exist, use the named bodies as flex vertices (MuJoCo semantics).
             //
@@ -47,8 +48,7 @@ impl ModelBuilder {
                     let mut f = flex_orig.clone();
                     for node_name in &flex_orig.node {
                         let &bid = self.body_name_to_id.get(node_name).ok_or_else(|| {
-                            MjcfError::undefined(ElementKind::Body, node_name)
-                                .at(Location::named(ElementKind::Flex, &flex_orig.name))
+                            MjcfError::undefined(ElementKind::Body, node_name).at(at())
                         })?;
                         // World position for geometry (rest-lengths, mass lumping).
                         // body_world_pos is indexed by (body_id - 1) since worldbody
@@ -69,7 +69,7 @@ impl ModelBuilder {
                 is_node_flex = false;
                 flex_orig
             };
-            check_flex_elements(flex)?;
+            check_flex_elements(flex).map_err(|e| e.with_location_if_unknown(at()))?;
             // Before the masses, edges, hinges and elements read the order.
             let oriented;
             let flex = if flex.dim == 3 {
@@ -578,14 +578,16 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
 ];
 
 /// MuJoCo's checks of a flex's elements before anything is built from them
-/// (`mjCFlex::Compile`, `user_mesh.cc:4108-4116`, `:4160-4165`): a dimension of
-/// 1, 2 or 3, each element of `dim + 1` vertices, and each of those one of the
-/// flex's vertices.
+/// (`mjCFlex::Compile`, `user_mesh.cc`), in its order: a dimension of 1, 2 or
+/// 3 (`:4108-4110`), each element of `dim + 1` vertices (`:4114-4116`), at
+/// least `dim + 1` vertices (`:4147-4149`), each element's vertices among
+/// them (`:4160-4165`), and none twice in an element (`:4189-4202`). Its
+/// "elem is empty" (`:4111-4113`) is Rigid-loading L10's; the checks it makes
+/// between these, on the flex's bodies, nodes, texture coordinates and
+/// material, are not this function's.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
-    let refuse = |attribute: &str, reason: &str| {
-        MjcfError::invalid_value("flex", attribute, reason)
-            .at(Location::named(ElementKind::Flex, &flex.name))
-    };
+    let refuse =
+        |attribute: &str, reason: &str| MjcfError::invalid_value("flex", attribute, reason);
     if !(1..=3).contains(&flex.dim) {
         return Err(refuse("dim", "dim must be 1, 2 or 3"));
     }
@@ -593,8 +595,18 @@ fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
         return Err(refuse("element", "elem size must be multiple of (dim+1)"));
     }
     let nvert = flex.vertices.len();
+    if nvert < flex.dim + 1 {
+        return Err(refuse("vertex", "not enough vertices"));
+    }
     if flex.elements.iter().flatten().any(|&v| v >= nvert) {
         return Err(refuse("element", "elem vertex id out of range"));
+    }
+    for element in &flex.elements {
+        let mut sorted = element.clone();
+        sorted.sort_unstable();
+        if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(refuse("element", "repeated vertex in element"));
+        }
     }
     Ok(())
 }
