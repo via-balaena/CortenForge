@@ -138,23 +138,29 @@ pub type CbContactFilter = Callback<dyn Fn(&Model, &Data, usize, usize) -> bool 
 pub type CbSensor =
     Callback<dyn Fn(&Model, &mut Data, usize, super::enums::SensorStage) + Send + Sync>;
 
-/// User actuator dynamics callback, the counterpart of MuJoCo's
-/// `mjcb_act_dyn`: called for an actuator with `ActuatorDynamics::User`.
+/// User actuator dynamics callback, the counterpart of MuJoCo's `mjcb_act_dyn`.
 ///
-/// Arguments: `(model, data, actuator_id)`. The actuator's activations'
-/// `act_dot` are 0 when it is called. With one activation it returns that
-/// activation's `act_dot`; with more it writes their `act_dot` itself and
-/// its return is ignored, as MuJoCo's (`engine_forward.c:361-370`).
+/// Called for an actuator with `ActuatorDynamics::User` and, as MuJoCo's, for
+/// a plugin's actuator with no dynamics and an activation.
+///
+/// Arguments: `(model, data, actuator_id)`. It runs in the actuation's first
+/// pass, before any force: every `actuator_force` is 0. The actuator's
+/// activations' `act_dot` are 0 when it is called. With one activation it
+/// returns that activation's `act_dot`; with more it writes their `act_dot`
+/// itself and its return is ignored, as MuJoCo's (`engine_forward.c:361-370`).
 pub type CbActDyn = Callback<dyn Fn(&Model, &mut Data, usize) -> f64 + Send + Sync>;
 
 /// User actuator gain callback: called for `GainType::User`.
 ///
 /// Arguments: `(model, data, actuator_id)`.
-/// Returns the gain value.
+/// Returns the gain value. It runs in the actuation's force pass, after
+/// every actuator's `act_dot` (the plugins' too); an earlier actuator's
+/// `actuator_force` holds its force before the clamp, as MuJoCo's.
 pub type CbActGain = Callback<dyn Fn(&Model, &Data, usize) -> f64 + Send + Sync>;
 
 /// User actuator bias callback: called for `BiasType::User`.
 ///
 /// Arguments: `(model, data, actuator_id)`.
-/// Returns the bias value.
+/// Returns the bias value. It runs after the actuator's gain: its own
+/// `actuator_force` holds its gain times its input, as MuJoCo's.
 pub type CbActBias = Callback<dyn Fn(&Model, &Data, usize) -> f64 + Send + Sync>;

@@ -1145,7 +1145,8 @@ pub struct Model {
     pub cb_contactfilter: Option<super::callbacks::CbContactFilter>,
     /// User sensor callback: called for `MjSensorType::User` sensors.
     pub cb_sensor: Option<super::callbacks::CbSensor>,
-    /// User actuator dynamics callback: called for `ActuatorDynamics::User`.
+    /// User actuator dynamics callback: called for `ActuatorDynamics::User`
+    /// (see [`CbActDyn`](super::callbacks::CbActDyn)).
     pub cb_act_dyn: Option<super::callbacks::CbActDyn>,
     /// User actuator gain callback: called for `GainType::User`.
     pub cb_act_gain: Option<super::callbacks::CbActGain>,
@@ -1480,7 +1481,8 @@ impl Model {
     /// set; to run two, chain them as [`Self::set_passive_callback`]'s example
     /// does, deciding how to combine their results.
     ///
-    /// Called for each actuator with `ActuatorDynamics::User`. With one
+    /// Called for each actuator with `ActuatorDynamics::User`, and for a
+    /// plugin's actuator with no dynamics and an activation. With one
     /// activation it returns that activation's `act_dot`; with more it writes
     /// their `act_dot` (see [`super::callbacks::CbActDyn`]).
     pub fn set_act_dyn_callback<F>(&mut self, f: F)

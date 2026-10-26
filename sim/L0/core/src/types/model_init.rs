@@ -732,8 +732,8 @@ impl Model {
     /// MuJoCo checks none of them on a plugin's actuator. Here the last two
     /// are not checked on an actuator of a plugin with the actuator capability
     /// (`actuator_plugin`); the first is checked on every actuator, as the
-    /// forward pass reads the last activation of each with dynamics, where
-    /// MuJoCo skips one with none (`engine_forward.c:327-330`).
+    /// velocity derivative an implicit integrator's step takes reads the last
+    /// activation of each with dynamics.
     ///
     /// # Errors
     /// The first [`ActivationCountError`] found.
