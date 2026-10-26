@@ -781,6 +781,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         .map(|i| actuator_ctrl_input(model, data, i))
         .collect();
     if let Some(i) = controls.iter().position(|&c| is_bad(c)) {
+        // MuJoCo's warning carries the actuator's index as an `int`.
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         mj_warning(data, Warning::BadCtrl, i as i32);
         controls.fill(0.0);
