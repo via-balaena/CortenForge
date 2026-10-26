@@ -101,18 +101,19 @@ impl ModelBuilder {
 
         // Validate mocap body constraints (before any state mutations)
         if body.mocap {
+            let at = || Location::named(ElementKind::Body, &body.name);
             if parent_id != 0 {
-                return Err(MjcfError::invalid_model(format!(
-                    "mocap body '{}' must be a direct child of worldbody",
-                    body.name
-                )));
+                return Err(MjcfError::invalid_model(
+                    "a mocap body must be a direct child of worldbody",
+                )
+                .at(at()));
             }
             if !body.joints.is_empty() {
                 return Err(MjcfError::invalid_model(format!(
-                    "mocap body '{}' must not have joints (has {})",
-                    body.name,
+                    "a mocap body must not have joints (has {})",
                     body.joints.len()
-                )));
+                ))
+                .at(at()));
             }
         }
 

@@ -43,7 +43,7 @@ pub fn validate_childclass_references(body: &MjcfBody, resolver: &DefaultResolve
         return Err(MjcfError::unknown_class(cc).at(Location::named(ElementKind::Body, &body.name)));
     }
     for frame in &body.frames {
-        validate_frame_childclass_refs(frame, resolver)?;
+        validate_frame_childclass_refs(frame, resolver, &body.name)?;
     }
     for child in &body.children {
         validate_childclass_references(child, resolver)?;
@@ -51,18 +51,24 @@ pub fn validate_childclass_references(body: &MjcfBody, resolver: &DefaultResolve
     Ok(())
 }
 
-/// Validate childclass references on a frame and its nested contents.
-fn validate_frame_childclass_refs(frame: &MjcfFrame, resolver: &DefaultResolver) -> Result<()> {
+/// Validate childclass references on a frame in `body` and its nested
+/// contents.
+fn validate_frame_childclass_refs(
+    frame: &MjcfFrame,
+    resolver: &DefaultResolver,
+    body: &str,
+) -> Result<()> {
     if let Some(ref cc) = frame.childclass
         && resolver.get_defaults(Some(cc.as_str())).is_none()
     {
         return Err(MjcfError::unknown_class(cc).at(Location::named(
             ElementKind::Frame,
             frame.name.as_deref().unwrap_or(""),
-        )));
+        )
+        .in_body(body)));
     }
     for nested in &frame.frames {
-        validate_frame_childclass_refs(nested, resolver)?;
+        validate_frame_childclass_refs(nested, resolver, body)?;
     }
     for child_body in &frame.bodies {
         validate_childclass_references(child_body, resolver)?;
@@ -127,10 +133,10 @@ pub fn resolve_sites(
         .clone()
         .or_else(|| inherited.map(str::to_string));
     for site in &mut body.sites {
-        resolve_site(site, resolver, effective.as_deref())?;
+        resolve_site(site, resolver, effective.as_deref(), &body.name)?;
     }
     for frame in &mut body.frames {
-        resolve_sites_in_frame(frame, resolver, effective.as_deref())?;
+        resolve_sites_in_frame(frame, resolver, effective.as_deref(), &body.name)?;
     }
     for child in &mut body.children {
         resolve_sites(child, resolver, effective.as_deref())?;
@@ -138,21 +144,23 @@ pub fn resolve_sites(
     Ok(())
 }
 
-/// `resolve_sites` within a frame, whose childclass its contents take.
+/// `resolve_sites` within a frame in `body`, whose childclass its contents
+/// take.
 fn resolve_sites_in_frame(
     frame: &mut MjcfFrame,
     resolver: &DefaultResolver,
     inherited: Option<&str>,
+    body: &str,
 ) -> Result<()> {
     let effective = frame
         .childclass
         .clone()
         .or_else(|| inherited.map(str::to_string));
     for site in &mut frame.sites {
-        resolve_site(site, resolver, effective.as_deref())?;
+        resolve_site(site, resolver, effective.as_deref(), body)?;
     }
     for sub in &mut frame.frames {
-        resolve_sites_in_frame(sub, resolver, effective.as_deref())?;
+        resolve_sites_in_frame(sub, resolver, effective.as_deref(), body)?;
     }
     for child in &mut frame.bodies {
         resolve_sites(child, resolver, effective.as_deref())?;
@@ -160,17 +168,21 @@ fn resolve_sites_in_frame(
     Ok(())
 }
 
-/// One site's class (its own, else `childclass`) applied, then its `fromto`.
+/// One site of `body`: its class (its own, else `childclass`) applied, then
+/// its `fromto`.
 fn resolve_site(
     site: &mut MjcfSite,
     resolver: &DefaultResolver,
     childclass: Option<&str>,
+    body: &str,
 ) -> Result<()> {
     if site.class.is_none() {
         site.class = childclass.map(str::to_string);
     }
     *site = resolver.apply_to_site(site);
-    resolve_site_fromto(site)
+    resolve_site_fromto(site).map_err(|e| {
+        e.with_location_if_unknown(Location::named(ElementKind::Site, &site.name).in_body(body))
+    })
 }
 
 /// Expand a single frame, composing its transform into children and lifting

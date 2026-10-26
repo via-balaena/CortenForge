@@ -132,8 +132,8 @@ impl ModelBuilder {
                                 let gt = self.geom_type[geom_id];
                                 if gt != GeomType::Sphere && gt != GeomType::Cylinder {
                                     return Err(MjcfError::invalid_model(format!(
-                                        "wrapping geom '{geom}' has type {gt:?}, \
-                                         but only Sphere and Cylinder are supported"
+                                        "wrapping geom '{geom}' is not a sphere or a cylinder \
+                                         (its type is {gt:?})"
                                     ))
                                     .at(at()));
                                 }

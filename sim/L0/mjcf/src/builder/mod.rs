@@ -821,24 +821,45 @@ impl ModelBuilder {
 
     /// Resolve nuser_* values, validate user data lengths, and pad arrays.
     fn finalize_user_data(&mut self, mjcf: &MjcfModel) -> Result<()> {
-        finalize_user_type("body", mjcf.nuser_body, &mut self.body_user_raw)?;
-        finalize_user_type("jnt", mjcf.nuser_jnt, &mut self.jnt_user_raw)?;
-        finalize_user_type("geom", mjcf.nuser_geom, &mut self.geom_user_raw)?;
-        finalize_user_type("site", mjcf.nuser_site, &mut self.site_user_raw)?;
-        finalize_user_type("tendon", mjcf.nuser_tendon, &mut self.tendon_user_raw)?;
-        finalize_user_type("actuator", mjcf.nuser_actuator, &mut self.actuator_user_raw)?;
-        finalize_user_type("sensor", mjcf.nuser_sensor, &mut self.sensor_user_raw)?;
+        finalize_user_type("body", "body", mjcf.nuser_body, &mut self.body_user_raw)?;
+        finalize_user_type("joint", "jnt", mjcf.nuser_jnt, &mut self.jnt_user_raw)?;
+        finalize_user_type("geom", "geom", mjcf.nuser_geom, &mut self.geom_user_raw)?;
+        finalize_user_type("site", "site", mjcf.nuser_site, &mut self.site_user_raw)?;
+        finalize_user_type(
+            "tendon",
+            "tendon",
+            mjcf.nuser_tendon,
+            &mut self.tendon_user_raw,
+        )?;
+        finalize_user_type(
+            "actuator",
+            "actuator",
+            mjcf.nuser_actuator,
+            &mut self.actuator_user_raw,
+        )?;
+        finalize_user_type(
+            "sensor",
+            "sensor",
+            mjcf.nuser_sensor,
+            &mut self.sensor_user_raw,
+        )?;
         Ok(())
     }
 }
 
-/// For a single element type: resolve nuser, validate, pad.
-fn finalize_user_type(type_name: &str, explicit_nuser: i32, raw: &mut [Vec<f64>]) -> Result<()> {
+/// For a single element type: resolve nuser, validate, pad. `element` is the
+/// type's tag, `suffix` its `nuser_` attribute's (`nuser_jnt`).
+fn finalize_user_type(
+    element: &str,
+    suffix: &str,
+    explicit_nuser: i32,
+    raw: &mut [Vec<f64>],
+) -> Result<()> {
     if explicit_nuser < -1 {
         return Err(MjcfError::invalid_value(
             "size",
-            format!("nuser_{type_name}"),
-            format!("nuser_{type_name} must be >= -1, got {explicit_nuser}"),
+            format!("nuser_{suffix}"),
+            format!("must be >= -1, got {explicit_nuser}"),
         ));
     }
 
@@ -847,9 +868,9 @@ fn finalize_user_type(type_name: &str, explicit_nuser: i32, raw: &mut [Vec<f64>]
         for user in raw.iter() {
             if user.len() > nuser {
                 return Err(MjcfError::invalid_value(
-                    type_name,
+                    element,
                     "user",
-                    format!("user data exceeds nuser_{type_name}={nuser}"),
+                    format!("user data exceeds nuser_{suffix}={nuser}"),
                 ));
             }
         }

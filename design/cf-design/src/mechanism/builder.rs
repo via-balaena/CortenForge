@@ -243,8 +243,9 @@ impl fmt::Display for MechanismError {
 }
 
 /// ⛔ Hand-written rather than derived, matching the workspace's other error
-/// types (`sim_core::StepError`, `sim_gpu::GpuError`): `Display` above carries the message and there is no
-/// wrapped cause to surface, so the default `source()` is correct.
+/// types (`sim_core::StepError`, `sim_gpu::GpuError`): `Display` above carries
+/// the message and there is no wrapped cause to surface, so the default
+/// `source()` is correct.
 ///
 /// ★ It exists because a consumer cannot otherwise write `let xml =
 /// mechanism.to_mjcf(20.0)?;` — the `?` needs this to reach `anyhow::Error`

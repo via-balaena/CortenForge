@@ -18,6 +18,12 @@ impl ModelBuilder {
     pub(crate) fn process_geom(&mut self, geom: &MjcfGeom, body_id: usize) -> Result<usize> {
         let geom_id = self.geom_type.len();
         let geom_type = convert_geom_type(geom.geom_type);
+        let at = Location::nth(ElementKind::Geom, geom.name.as_deref(), geom_id).in_body(
+            self.body_name
+                .get(body_id)
+                .and_then(Option::as_deref)
+                .unwrap_or(""),
+        );
 
         // Reject shellinertia on mesh geoms (MuJoCo 3.5.0 behavior)
         if geom.shellinertia == Some(true) && geom_type == GeomType::Mesh {
@@ -26,14 +32,12 @@ impl ModelBuilder {
                 "shellinertia",
                 "for mesh geoms, inertia should be specified in the mesh asset",
             )
-            .at(Location::nth(
-                ElementKind::Geom,
-                geom.name.as_deref(),
-                geom_id,
-            )));
+            .at(at));
         }
 
-        let (geom_mesh_ref, geom_hfield_ref) = self.resolve_geom_asset_links(geom, geom_type)?;
+        let (geom_mesh_ref, geom_hfield_ref) = self
+            .resolve_geom_asset_links(geom, geom_type)
+            .map_err(|e| e.with_location_if_unknown(at))?;
 
         // Handle fromto for capsules/cylinders
         let (pos, quat, size) = if let Some(fromto) = geom.fromto {
@@ -153,23 +157,24 @@ impl ModelBuilder {
         Ok(site_id)
     }
 
-    /// Resolve mesh and hfield asset references for a geom.
+    /// Resolve mesh and hfield asset references for a geom; the caller
+    /// locates the errors.
     fn resolve_geom_asset_links(
         &self,
         geom: &MjcfGeom,
         geom_type: GeomType,
     ) -> Result<(Option<usize>, Option<usize>)> {
-        let at = || Location::named(ElementKind::Geom, geom.name.as_deref().unwrap_or(""));
         let geom_mesh_ref = if geom_type == GeomType::Mesh {
             match &geom.mesh {
                 Some(mesh_name) => {
-                    let mesh_id = self.mesh_name_to_id.get(mesh_name).ok_or_else(|| {
-                        MjcfError::undefined(ElementKind::Mesh, mesh_name).at(at())
-                    })?;
+                    let mesh_id = self
+                        .mesh_name_to_id
+                        .get(mesh_name)
+                        .ok_or_else(|| MjcfError::undefined(ElementKind::Mesh, mesh_name))?;
                     Some(*mesh_id)
                 }
                 None => {
-                    return Err(MjcfError::missing_attribute("geom", "mesh").at(at()));
+                    return Err(MjcfError::missing_attribute("geom", "mesh"));
                 }
             }
         } else {
@@ -182,11 +187,11 @@ impl ModelBuilder {
                     let hfield_id = self
                         .hfield_name_to_id
                         .get(name)
-                        .ok_or_else(|| MjcfError::undefined(ElementKind::Hfield, name).at(at()))?;
+                        .ok_or_else(|| MjcfError::undefined(ElementKind::Hfield, name))?;
                     Some(*hfield_id)
                 }
                 None => {
-                    return Err(MjcfError::missing_attribute("geom", "hfield").at(at()));
+                    return Err(MjcfError::missing_attribute("geom", "hfield"));
                 }
             }
         } else {
@@ -307,10 +312,7 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
         return Ok(());
     };
     let geom_type = site_geom_type(site);
-    let refuse = |what: &str| {
-        MjcfError::invalid_value("site", "fromto", what)
-            .at(Location::named(ElementKind::Site, &site.name))
-    };
+    let refuse = |what: &str| MjcfError::invalid_value("site", "fromto", what);
     if !matches!(
         geom_type,
         GeomType::Capsule | GeomType::Cylinder | GeomType::Ellipsoid | GeomType::Box

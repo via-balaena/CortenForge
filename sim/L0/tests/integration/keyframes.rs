@@ -5,7 +5,7 @@
 use approx::assert_relative_eq;
 use sim_core::batch::BatchSim;
 use sim_core::{ElementType, ResetError};
-use sim_mjcf::load_model;
+use sim_mjcf::{MjcfError, load_model};
 use std::sync::Arc;
 
 // ============================================================================
@@ -727,17 +727,9 @@ fn ac19_mocap_non_world_child_error() {
     </mujoco>
     "#;
 
-    let result = load_model(xml);
-    assert!(
-        result.is_err(),
-        "mocap body nested under non-world body should fail"
-    );
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(
-        err_msg.contains("mocap") || err_msg.contains("Mocap"),
-        "error should mention 'mocap': {}",
-        err_msg
-    );
+    let err = load_model(xml).expect_err("mocap body nested under non-world body should fail");
+    assert!(matches!(err, MjcfError::InvalidModel { .. }), "{err}");
+    assert!(err.to_string().ends_with("(body 'nested_mocap')"), "{err}");
 }
 
 // ============================================================================
@@ -758,14 +750,9 @@ fn ac20_mocap_with_joints_error() {
     </mujoco>
     "#;
 
-    let result = load_model(xml);
-    assert!(result.is_err(), "mocap body with joints should fail");
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(
-        err_msg.contains("mocap") || err_msg.contains("joint"),
-        "error should mention 'mocap' or 'joint': {}",
-        err_msg
-    );
+    let err = load_model(xml).expect_err("mocap body with joints should fail");
+    assert!(matches!(err, MjcfError::InvalidModel { .. }), "{err}");
+    assert!(err.to_string().ends_with("(body 'bad_mocap')"), "{err}");
 }
 
 // ============================================================================
@@ -789,14 +776,13 @@ fn ac21_keyframe_qpos_wrong_length() {
     </mujoco>
     "#;
 
-    let result = load_model(xml);
-    assert!(result.is_err(), "wrong-length qpos should fail");
-    let err_msg = format!("{}", result.unwrap_err());
+    let err = load_model(xml).expect_err("wrong-length qpos should fail");
     assert!(
-        err_msg.contains("bad") && err_msg.contains("qpos"),
-        "error should name keyframe and field: {}",
-        err_msg
+        matches!(&err, MjcfError::InvalidValue { element, attribute, .. }
+            if element == "key" && attribute == "qpos"),
+        "{err}"
     );
+    assert!(err.to_string().ends_with("(key 'bad')"), "{err}");
 }
 
 // ============================================================================
@@ -820,14 +806,13 @@ fn ac22_keyframe_nan_rejected() {
     </mujoco>
     "#;
 
-    let result = load_model(xml);
-    assert!(result.is_err(), "NaN in keyframe qpos should fail");
-    let err_msg = format!("{}", result.unwrap_err());
+    let err = load_model(xml).expect_err("NaN in keyframe qpos should fail");
     assert!(
-        err_msg.contains("finite") || err_msg.contains("NaN"),
-        "error should mention finiteness: {}",
-        err_msg
+        matches!(&err, MjcfError::NonFinite { attribute, value, .. }
+            if attribute == "qpos[0]" && value.is_nan()),
+        "{err}"
     );
+    assert!(err.to_string().ends_with("(key 'nankey')"), "{err}");
 }
 
 // ============================================================================
@@ -851,14 +836,13 @@ fn ac23_keyframe_inf_time_rejected() {
     </mujoco>
     "#;
 
-    let result = load_model(xml);
-    assert!(result.is_err(), "inf time in keyframe should fail");
-    let err_msg = format!("{}", result.unwrap_err());
+    let err = load_model(xml).expect_err("inf time in keyframe should fail");
     assert!(
-        err_msg.contains("finite") || err_msg.contains("time"),
-        "error should mention time finiteness: {}",
-        err_msg
+        matches!(&err, MjcfError::NonFinite { attribute, value, .. }
+            if attribute == "time" && value.is_infinite()),
+        "{err}"
     );
+    assert!(err.to_string().ends_with("(key 'infkey')"), "{err}");
 }
 
 // ============================================================================

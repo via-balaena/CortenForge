@@ -191,7 +191,11 @@ fn test_unknown_joint_type() {
         "#;
 
     let result = parse_mjcf_str(xml);
-    assert!(matches!(result, Err(MjcfError::InvalidKeyword { .. })));
+    assert!(matches!(
+        result,
+        Err(MjcfError::InvalidKeyword { element, attribute, value, .. })
+            if element == "joint" && attribute == "type" && value == "invalid"
+    ));
 }
 
 #[test]

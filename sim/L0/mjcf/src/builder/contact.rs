@@ -108,15 +108,18 @@ impl ModelBuilder {
         }
 
         // Process excludes
-        for mjcf_exclude in &contact.excludes {
-            let b1 = *self
-                .body_name_to_id
-                .get(&mjcf_exclude.body1)
-                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, &mjcf_exclude.body1))?;
-            let b2 = *self
-                .body_name_to_id
-                .get(&mjcf_exclude.body2)
-                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, &mjcf_exclude.body2))?;
+        for (i, mjcf_exclude) in contact.excludes.iter().enumerate() {
+            let body = |name: &str| {
+                self.body_name_to_id.get(name).copied().ok_or_else(|| {
+                    MjcfError::undefined(ElementKind::Body, name).at(Location::nth(
+                        ElementKind::Exclude,
+                        mjcf_exclude.name.as_deref(),
+                        i,
+                    ))
+                })
+            };
+            let b1 = body(&mjcf_exclude.body1)?;
+            let b2 = body(&mjcf_exclude.body2)?;
             // Canonical key for symmetry
             self.contact_excludes.insert((b1.min(b2), b1.max(b2)));
         }
@@ -129,6 +132,7 @@ impl ModelBuilder {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::builder::load_model;
+    use crate::error::{ElementKind, MjcfError};
     use approx::assert_relative_eq;
 
     /// `<pair>` with explicit `friction`/`condim`/`solref`/`solimp` skips
@@ -276,8 +280,8 @@ mod tests {
     }
 
     /// Both `<pair>` and `<exclude>` resolve names to ids and surface an
-    /// [`MjcfError::UndefinedReference`](crate::MjcfError::UndefinedReference)
-    /// naming the geom or body that doesn't exist.
+    /// [`MjcfError::UndefinedReference`] naming the geom or body that doesn't
+    /// exist.
     #[test]
     fn contact_unknown_name_errors() {
         let pair_xml = r#"
@@ -289,7 +293,11 @@ mod tests {
             </mujoco>
         "#;
         let err = load_model(pair_xml).expect_err("unknown geom2");
-        assert!(err.to_string().contains("ghost"));
+        assert!(
+            matches!(&err, MjcfError::UndefinedReference { kind: ElementKind::Geom, name, .. }
+                if name == "ghost"),
+            "{err}"
+        );
 
         let excl_xml = r#"
             <mujoco model="m">
@@ -300,6 +308,10 @@ mod tests {
             </mujoco>
         "#;
         let err = load_model(excl_xml).expect_err("unknown body2");
-        assert!(err.to_string().contains("ghost"));
+        assert!(
+            matches!(&err, MjcfError::UndefinedReference { kind: ElementKind::Body, name, .. }
+                if name == "ghost"),
+            "{err}"
+        );
     }
 }

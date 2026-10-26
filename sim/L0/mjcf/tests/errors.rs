@@ -112,3 +112,227 @@ fn a_build_error_names_an_unnamed_element_by_its_index() {
     assert!(text.contains("actuator #1"), "{text}");
     assert!(text.contains("'nope'"), "{text}");
 }
+
+/// `xml`'s error, which must exist.
+fn refusal(xml: &str) -> MjcfError {
+    match load_model(xml) {
+        Ok(_) => panic!("loaded: {xml}"),
+        Err(err) => err,
+    }
+}
+
+/// Asserts that `xml`'s error ends with the location `at`.
+fn assert_located(xml: &str, at: &str) -> MjcfError {
+    let err = refusal(xml);
+    assert!(err.to_string().ends_with(at), "wanted {at}: {err}");
+    err
+}
+
+#[test]
+fn a_syntax_error_names_its_own_line_and_the_elements_open_there() {
+    // An unclosed quote on line 3; MuJoCo 3.5.0 reports line 3 too.
+    let err = refusal(
+        "<mujoco>\n  <worldbody>\n    <body name=\"a>\n    </body>\n  </worldbody>\n</mujoco>",
+    );
+    assert!(matches!(err, MjcfError::Xml { .. }), "{err}");
+    assert!(err.to_string().ends_with("(line 3: worldbody)"), "{err}");
+}
+
+#[test]
+fn a_build_error_in_a_sensor_equality_pair_or_exclude_names_it() {
+    let bodies = r#"<worldbody>
+            <body name="a"><joint name="j"/><geom name="g" size="0.1"/></body>
+            <body name="b"><geom size="0.1"/></body>
+        </worldbody>"#;
+    let at = |section: &str, at: &str| {
+        assert_located(&format!("<mujoco>{bodies}{section}</mujoco>"), at);
+    };
+    at(
+        r#"<sensor><jointpos joint="j"/><jointpos joint="nope"/></sensor>"#,
+        "(sensor #1)",
+    );
+    at(
+        r#"<equality><connect name="c" body1="a" body2="nope" anchor="0 0 0"/></equality>"#,
+        "(equality 'c')",
+    );
+    at(
+        r#"<contact><pair geom1="g" geom2="nope"/></contact>"#,
+        "(pair #0)",
+    );
+    let err = refusal(&format!(
+        r#"<mujoco>{bodies}<contact><exclude body1="a" body2="b"/><exclude body1="a" body2="nope"/></contact></mujoco>"#
+    ));
+    assert!(
+        matches!(&err, MjcfError::UndefinedReference { kind: ElementKind::Body, name, .. } if name == "nope"),
+        "{err}"
+    );
+    assert!(err.to_string().ends_with("(exclude #1)"), "{err}");
+}
+
+#[test]
+fn a_build_error_in_a_keyframe_names_it_by_its_tag() {
+    assert_located(
+        r#"<mujoco>
+            <worldbody><body><joint/><geom size="0.1"/></body></worldbody>
+            <keyframe><key name="k" qpos="1 2 3"/></keyframe>
+        </mujoco>"#,
+        "(key 'k')",
+    );
+}
+
+#[test]
+fn an_unnamed_geom_site_frame_or_joint_is_named_by_its_body() {
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body name="b"><geom size="0.1"/><geom type="mesh" mesh="nope"/></body>
+        </worldbody></mujoco>"#,
+        "(geom #1 in body 'b')",
+    );
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body name="b"><geom size="0.1"/><site type="sphere" fromto="0 0 0 0 0 1"/></body>
+        </worldbody></mujoco>"#,
+        "(site in body 'b')",
+    );
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body name="b"><geom size="0.1"/><frame childclass="nope"/></body>
+        </worldbody></mujoco>"#,
+        "(frame in body 'b')",
+    );
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body name="b"><joint name="j" type="cylindrical"/><geom size="0.1"/></body>
+        </worldbody></mujoco>"#,
+        "(joint 'j' in body 'b')",
+    );
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body name="b"><joint name="j"/><joint name="j"/><geom size="0.1"/></body>
+        </worldbody></mujoco>"#,
+        "(joint 'j' in body 'b')",
+    );
+}
+
+#[test]
+fn a_tendons_bad_coefficient_names_its_joint_and_tendon() {
+    let err = assert_located(
+        r#"<mujoco>
+            <worldbody>
+                <body><joint name="j0"/><joint name="j1"/><geom size="0.1"/></body>
+            </worldbody>
+            <tendon><fixed><joint joint="j0" coef="1"/><joint joint="j1" coef="nan"/></fixed></tendon>
+        </mujoco>"#,
+        "(joint 'j1' in tendon #0)",
+    );
+    assert!(
+        matches!(&err, MjcfError::NonFinite { attribute, .. } if attribute == "coef"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_mocap_body_or_composite_error_names_its_element() {
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body name="a"><geom size="0.1"/><body name="m" mocap="true"><geom size="0.1"/></body></body>
+        </worldbody></mujoco>"#,
+        "(body 'm')",
+    );
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body name="holder"><composite type="grid" count="3 3 1"><geom size="0.1"/></composite></body>
+        </worldbody></mujoco>"#,
+        "(body 'holder')",
+    );
+}
+
+#[test]
+fn a_height_field_built_in_code_without_its_rows_names_it() {
+    // The parser refuses a missing `nrow` first, so the builder's check is
+    // reached by a model changed in code.
+    let mut model = sim_mjcf::parse_mjcf_str(
+        r#"<mujoco>
+            <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset>
+            <worldbody><geom type="hfield" hfield="h"/></worldbody>
+        </mujoco>"#,
+    )
+    .unwrap();
+    model.hfields[0].nrow = None;
+    let err = sim_mjcf::model_from_mjcf(&model, None).unwrap_err();
+    assert!(err.to_string().ends_with("(hfield 'h')"), "{err}");
+}
+
+#[test]
+fn an_actuator_error_raised_while_building_names_the_actuator() {
+    // `validate` passes this one; the builder refuses the keyword.
+    let err = assert_located(
+        r#"<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator>
+                <motor joint="j"/>
+                <general joint="j" gaintype="bogus"/>
+            </actuator>
+        </mujoco>"#,
+        "(actuator #1)",
+    );
+    assert!(
+        matches!(&err, MjcfError::InvalidKeyword { attribute, value, .. }
+            if attribute == "gaintype" && value == "bogus"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_nan_option_or_spring_length_is_non_finite() {
+    let err = refusal(r#"<mujoco><option gravity="0 0 nan"/><worldbody/></mujoco>"#);
+    assert!(
+        matches!(&err, MjcfError::NonFinite { element, attribute, .. }
+            if element == "option" && attribute == "gravity"),
+        "{err}"
+    );
+    let err = refusal(
+        r#"<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <tendon><fixed springlength="nan"><joint joint="j" coef="1"/></fixed></tendon>
+        </mujoco>"#,
+    );
+    assert!(
+        matches!(&err, MjcfError::NonFinite { element, attribute, .. }
+            if element == "tendon" && attribute == "springlength"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_reader_that_knows_its_attribute_names_it() {
+    let err = refusal(
+        r#"<mujoco><worldbody><body gravcomp="x"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert!(
+        matches!(&err, MjcfError::BadNumber { element, attribute, value, .. }
+            if element == "body" && attribute == "gravcomp" && value == "x"),
+        "{err}"
+    );
+    let err = refusal(
+        r#"<mujoco><worldbody><geom size="0.1" fluidshape="ellipsoid" fluidcoef="1 2"/></worldbody></mujoco>"#,
+    );
+    assert!(
+        matches!(&err, MjcfError::WrongValueCount { element, attribute, found: 2, .. }
+            if element == "geom" && attribute == "fluidcoef"),
+        "{err}"
+    );
+    assert!(
+        err.to_string()
+            .contains("in attribute 'fluidcoef' on <geom>"),
+        "{err}"
+    );
+    let err = refusal(
+        r#"<mujoco><asset><hfield name="h" nrow="2" ncol="2" size="1 1 1"/></asset><worldbody/></mujoco>"#,
+    );
+    assert!(
+        matches!(&err, MjcfError::WrongValueCount { element, attribute, found: 3, .. }
+            if element == "hfield" && attribute == "size"),
+        "{err}"
+    );
+}

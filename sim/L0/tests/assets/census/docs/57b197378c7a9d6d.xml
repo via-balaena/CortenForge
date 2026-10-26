@@ -1,0 +1,4 @@
+<mujoco>
+            <asset><hfield name="h" nrow="2" ncol="2" size="1 1 1 0.1" elevation="1 2 3 4"/></asset>
+            <worldbody><geom type="hfield" hfield="h"/></worldbody>
+        </mujoco>

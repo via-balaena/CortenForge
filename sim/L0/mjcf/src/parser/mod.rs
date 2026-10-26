@@ -64,13 +64,14 @@ pub fn parse_mjcf_unwrapped(xml: &str) -> Result<MjcfModel> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     parse_mjcf_reader(&mut reader).map_err(|e| {
-        // A syntax error stops the reader where it was found; any other error
-        // was raised after the reader read the element it is about.
-        let offset = match reader.error_position() {
-            0 => reader.buffer_position(),
-            p => p,
+        // A syntax error stops the reader where it was found, so it is named
+        // there; any other error was raised after the reader read the element
+        // it is about.
+        let at = match reader.error_position() {
+            0 => locate(xml, offset_of(reader.buffer_position(), xml)),
+            p => locate_point(xml, offset_of(p, xml)),
         };
-        e.with_location_if_unknown(locate(xml, usize::try_from(offset).unwrap_or(usize::MAX)))
+        e.with_location_if_unknown(at)
     })
 }
 
@@ -100,6 +101,30 @@ fn check_xml_depth(xml: &str) -> Result<()> {
 /// starts before it, and the path of elements open at that element (the root
 /// `<mujoco>` left out, the last eight kept).
 fn locate(xml: &str, offset: usize) -> Location {
+    let (end, _, last) = scan_to(xml, offset);
+    let Some((before, path)) = last else {
+        return Location::parsed(line_at(xml, end), String::new());
+    };
+    let tag = xml[before..end].find('<').map_or(before, |i| before + i);
+    Location::parsed(line_at(xml, tag), show_path(&path))
+}
+
+/// Byte `offset` of `xml` itself: its line, and the path of elements open
+/// there (for a syntax error, found at that byte).
+fn locate_point(xml: &str, offset: usize) -> Location {
+    let (end, open, _) = scan_to(xml, offset);
+    Location::parsed(line_at(xml, end), show_path(&open))
+}
+
+/// A reader's byte position as an offset into `xml`.
+fn offset_of(position: u64, xml: &str) -> usize {
+    usize::try_from(position).unwrap_or(xml.len())
+}
+
+/// `xml` read up to byte `offset` (moved back to a character boundary): that
+/// end, the elements open there, and the last element begun before it with
+/// its start and the path of elements to it.
+fn scan_to(xml: &str, offset: usize) -> (usize, Vec<String>, Option<(usize, Vec<String>)>) {
     let mut end = offset.min(xml.len());
     while !xml.is_char_boundary(end) {
         end -= 1;
@@ -126,21 +151,21 @@ fn locate(xml: &str, offset: usize) -> Location {
             Ok(_) => {}
         }
     }
-    let Some((before, path)) = last else {
-        return Location::parsed(line_at(xml, end), String::new());
-    };
-    let tag = xml[before..end].find('<').map_or(before, |i| before + i);
+    (end, open, last)
+}
+
+/// A path of elements, the root `<mujoco>` left out and the last eight kept.
+fn show_path(path: &[String]) -> String {
     let path: Vec<&str> = path
         .iter()
         .map(String::as_str)
         .skip_while(|s| *s == "mujoco")
         .collect();
-    let shown = if path.len() > 8 {
+    if path.len() > 8 {
         format!("… > {}", path[path.len() - 8..].join(" > "))
     } else {
         path.join(" > ")
-    };
-    Location::parsed(line_at(xml, tag), shown)
+    }
 }
 
 /// An element's tag, with its name when it has one (`body 'a'`).

@@ -24,7 +24,8 @@ pub enum MjcfError {
         source: std::io::Error,
     },
 
-    /// The input is not well-formed XML, or ends inside an element.
+    /// The input is not well-formed XML, ends inside an element, or has no
+    /// `<mujoco>` root.
     #[error("XML syntax error: {message}{at}")]
     #[non_exhaustive]
     Xml {
@@ -45,9 +46,9 @@ pub enum MjcfError {
     },
 
     /// Nested deeper than the loader takes. A document's elements: MuJoCo's
-    /// XML reader's limit, with the root at depth 1 an element with content
-    /// at 498 (a self-closing one loads at 499). A tree of bodies and frames
-    /// built in code or by a composite: 4096.
+    /// XML reader's limit, with the root at depth 1 an element that is not
+    /// self-closing at 498 (a self-closing one loads at 499). A tree of bodies
+    /// and frames built in code or by a composite: 4096.
     #[error("nested deeper than {limit}{at}")]
     #[non_exhaustive]
     TooDeep {
@@ -84,9 +85,13 @@ pub enum MjcfError {
 
     // ── attribute values ──
     /// A value that should be a number is not one.
-    #[error("bad number \"{value}\"{at}")]
+    #[error("bad number \"{value}\"{}{at}", in_attribute(.element, .attribute))]
     #[non_exhaustive]
     BadNumber {
+        /// The element's tag; empty where the reader does not know it.
+        element: String,
+        /// The attribute; empty where the reader does not know it.
+        attribute: String,
         /// The text that does not parse.
         value: String,
         /// Where it was found.
@@ -94,9 +99,13 @@ pub enum MjcfError {
     },
 
     /// An attribute has the wrong number of values.
-    #[error("expected {expected} values, found {found}{at}")]
+    #[error("expected {expected} values, found {found}{}{at}", in_attribute(.element, .attribute))]
     #[non_exhaustive]
     WrongValueCount {
+        /// The element's tag; empty where the reader does not know it.
+        element: String,
+        /// The attribute; empty where the reader does not know it.
+        attribute: String,
         /// How many values the attribute takes.
         expected: ValueCount,
         /// How many it has.
@@ -133,7 +142,8 @@ pub enum MjcfError {
         at: Location,
     },
 
-    /// A value breaks one of MuJoCo's rules for its attribute.
+    /// A value breaks one of the rules for its attribute: MuJoCo's, or a
+    /// stricter one of this crate's, which the divergence registry lists.
     #[error("invalid {attribute} on <{element}>: {reason}{at}")]
     #[non_exhaustive]
     InvalidValue {
@@ -259,7 +269,9 @@ pub enum MjcfError {
     },
 }
 
-/// Which kind of element an error is about. Displays as its MJCF tag.
+/// Which kind of element an error is about. Displays as its MJCF tag, or for
+/// a kind written with several tags (an equality, a tendon, an actuator, a
+/// sensor) as the tag of the section that holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ElementKind {
@@ -281,6 +293,8 @@ pub enum ElementKind {
     Flex,
     /// `<pair>`.
     Pair,
+    /// `<exclude>`.
+    Exclude,
     /// An `<equality>` constraint.
     Equality,
     /// A `<tendon>`.
@@ -305,11 +319,12 @@ impl fmt::Display for ElementKind {
             Self::Hfield => "hfield",
             Self::Flex => "flex",
             Self::Pair => "pair",
+            Self::Exclude => "exclude",
             Self::Equality => "equality",
             Self::Tendon => "tendon",
             Self::Actuator => "actuator",
             Self::Sensor => "sensor",
-            Self::Keyframe => "keyframe",
+            Self::Keyframe => "key",
         })
     }
 }
@@ -338,8 +353,12 @@ impl fmt::Display for ValueCount {
 ///
 /// Display-only. A line counts lines of the text that was parsed: for
 /// [`crate::load_model_from_file`] that is the text after `<include>`s are
-/// expanded, not the included file. A parse error raised after more of the
-/// input was read than its element names the last element read.
+/// expanded, not the included file, whose own syntax errors carry no line. A
+/// syntax error names its own line and the elements open there; any other
+/// parse error, the element the reader last began, which is the one at fault
+/// unless the error was raised after the reader went past it. An element is
+/// named by its name, or, without one, by its index among its kind from 0
+/// where the pass knows it (`actuator #1`), else by its kind alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location(Option<Box<Place>>);
 
@@ -352,7 +371,7 @@ enum Place {
     Element {
         kind: ElementKind,
         ident: Ident,
-        body: Option<String>,
+        within: Option<(ElementKind, Ident)>,
     },
 }
 
@@ -399,17 +418,33 @@ impl Location {
         Self(Some(Box::new(Place::Element {
             kind,
             ident,
-            body: None,
+            within: None,
         })))
     }
 
     /// The body the element belongs to.
-    pub(crate) fn in_body(mut self, body: &str) -> Self {
+    pub(crate) fn in_body(self, body: &str) -> Self {
+        if body.is_empty() {
+            return self;
+        }
+        self.within(ElementKind::Body, Ident::Name(body.to_owned()))
+    }
+
+    /// The element of `kind` this one belongs to, by its name, or by its
+    /// index among its kind where it has none.
+    pub(crate) fn within_nth(self, kind: ElementKind, name: Option<&str>, index: usize) -> Self {
+        let ident = match name {
+            Some(n) if !n.is_empty() => Ident::Name(n.to_owned()),
+            _ => Ident::Index(index),
+        };
+        self.within(kind, ident)
+    }
+
+    fn within(mut self, kind: ElementKind, ident: Ident) -> Self {
         if let Some(place) = self.0.as_deref_mut()
-            && let Place::Element { body: b, .. } = place
-            && !body.is_empty()
+            && let Place::Element { within, .. } = place
         {
-            *b = Some(body.to_owned());
+            *within = Some((kind, ident));
         }
         self
     }
@@ -425,18 +460,38 @@ impl fmt::Display for Location {
             None => Ok(()),
             Some(Place::Parsed { line, path }) if path.is_empty() => write!(f, " (line {line})"),
             Some(Place::Parsed { line, path }) => write!(f, " (line {line}: {path})"),
-            Some(Place::Element { kind, ident, body }) => {
-                match ident {
-                    Ident::Name(n) => write!(f, " ({kind} '{n}'")?,
-                    Ident::Index(i) => write!(f, " ({kind} #{i}")?,
-                    Ident::None => write!(f, " ({kind}")?,
-                }
-                if let Some(b) = body {
-                    write!(f, " in body '{b}'")?;
+            Some(Place::Element {
+                kind,
+                ident,
+                within,
+            }) => {
+                f.write_str(" (")?;
+                write_element(f, *kind, ident)?;
+                if let Some((outer, outer_ident)) = within {
+                    f.write_str(" in ")?;
+                    write_element(f, *outer, outer_ident)?;
                 }
                 f.write_str(")")
             }
         }
+    }
+}
+
+/// `kind 'name'`, `kind #index`, or `kind` alone.
+fn write_element(f: &mut fmt::Formatter<'_>, kind: ElementKind, ident: &Ident) -> fmt::Result {
+    match ident {
+        Ident::Name(n) => write!(f, "{kind} '{n}'"),
+        Ident::Index(i) => write!(f, "{kind} #{i}"),
+        Ident::None => write!(f, "{kind}"),
+    }
+}
+
+/// ` in attribute 'a' on <e>`, or nothing where the attribute is not known.
+fn in_attribute(element: &str, attribute: &str) -> String {
+    if attribute.is_empty() {
+        String::new()
+    } else {
+        format!(" in attribute '{attribute}' on <{element}>")
     }
 }
 
@@ -500,17 +555,42 @@ impl MjcfError {
         }
     }
 
-    /// An [`MjcfError::BadNumber`].
+    /// An [`MjcfError::BadNumber`] from a reader that does not know the
+    /// attribute.
     pub(crate) fn bad_number(value: impl Into<String>) -> Self {
+        Self::bad_number_in("", "", value)
+    }
+
+    /// An [`MjcfError::BadNumber`] in a known attribute.
+    pub(crate) fn bad_number_in(
+        element: impl Into<String>,
+        attribute: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         Self::BadNumber {
+            element: element.into(),
+            attribute: attribute.into(),
             value: value.into(),
             at: Location::unknown(),
         }
     }
 
-    /// An [`MjcfError::WrongValueCount`].
+    /// An [`MjcfError::WrongValueCount`] from a reader that does not know the
+    /// attribute.
     pub(crate) fn wrong_count(expected: ValueCount, found: usize) -> Self {
+        Self::wrong_count_in("", "", expected, found)
+    }
+
+    /// An [`MjcfError::WrongValueCount`] in a known attribute.
+    pub(crate) fn wrong_count_in(
+        element: impl Into<String>,
+        attribute: impl Into<String>,
+        expected: ValueCount,
+        found: usize,
+    ) -> Self {
         Self::WrongValueCount {
+            element: element.into(),
+            attribute: attribute.into(),
             expected,
             found,
             at: Location::unknown(),

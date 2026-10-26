@@ -41,14 +41,39 @@ pub struct ValidationResult {
 ///
 /// Returns an error if any option value is invalid.
 pub fn validate_option(option: &MjcfOption) -> Result<()> {
-    // Timestep validation
-    if !option.timestep.is_finite() || option.timestep <= 0.0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "timestep",
-            format!("must be positive and finite, got {}", option.timestep),
-        ));
-    }
+    let finite = |attribute: &str, value: f64| -> Result<()> {
+        if value.is_finite() {
+            Ok(())
+        } else {
+            Err(MjcfError::non_finite("option", attribute, value))
+        }
+    };
+    let positive = |attribute: &str, value: f64| -> Result<()> {
+        finite(attribute, value)?;
+        if value > 0.0 {
+            Ok(())
+        } else {
+            Err(MjcfError::invalid_value(
+                "option",
+                attribute,
+                format!("must be positive, got {value}"),
+            ))
+        }
+    };
+    let non_negative = |attribute: &str, value: f64| -> Result<()> {
+        finite(attribute, value)?;
+        if value >= 0.0 {
+            Ok(())
+        } else {
+            Err(MjcfError::invalid_value(
+                "option",
+                attribute,
+                format!("must be non-negative, got {value}"),
+            ))
+        }
+    };
+
+    positive("timestep", option.timestep)?;
     if option.timestep > 1.0 {
         return Err(MjcfError::invalid_value(
             "option",
@@ -59,8 +84,6 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
             ),
         ));
     }
-
-    // Iteration count validation
     if option.iterations == 0 {
         return Err(MjcfError::invalid_value(
             "option",
@@ -68,89 +91,23 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
             "must be at least 1",
         ));
     }
-
-    // Tolerance validation
-    if !option.tolerance.is_finite() || option.tolerance <= 0.0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "tolerance",
-            format!("must be positive and finite, got {}", option.tolerance),
-        ));
+    positive("tolerance", option.tolerance)?;
+    positive("impratio", option.impratio)?;
+    positive("regularization", option.regularization)?;
+    positive("friction_smoothing", option.friction_smoothing)?;
+    for &v in option.gravity.iter() {
+        finite("gravity", v)?;
     }
-
-    // Impedance ratio validation
-    if !option.impratio.is_finite() || option.impratio <= 0.0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "impratio",
-            format!("must be positive and finite, got {}", option.impratio),
-        ));
+    for &v in option.wind.iter() {
+        finite("wind", v)?;
     }
-
-    // Constraint solver tuning validation
-    if !option.regularization.is_finite() || option.regularization <= 0.0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "regularization",
-            format!("must be positive and finite, got {}", option.regularization),
-        ));
+    // Density can be zero, which disables it.
+    non_negative("density", option.density)?;
+    non_negative("viscosity", option.viscosity)?;
+    // The override margin, when set (non-negative).
+    if option.o_margin >= 0.0 {
+        finite("o_margin", option.o_margin)?;
     }
-    if !option.friction_smoothing.is_finite() || option.friction_smoothing <= 0.0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "friction_smoothing",
-            format!(
-                "must be positive and finite, got {}",
-                option.friction_smoothing
-            ),
-        ));
-    }
-
-    // Gravity vector validation
-    if !option.gravity.iter().all(|v| v.is_finite()) {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "gravity",
-            "must have finite components",
-        ));
-    }
-
-    // Wind vector validation
-    if !option.wind.iter().all(|v| v.is_finite()) {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "wind",
-            "must have finite components",
-        ));
-    }
-
-    // Density validation (can be zero to disable)
-    if !option.density.is_finite() || option.density < 0.0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "density",
-            format!("must be non-negative and finite, got {}", option.density),
-        ));
-    }
-
-    // Viscosity validation
-    if !option.viscosity.is_finite() || option.viscosity < 0.0 {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "viscosity",
-            format!("must be non-negative and finite, got {}", option.viscosity),
-        ));
-    }
-
-    // Override validation (if set)
-    if option.o_margin >= 0.0 && !option.o_margin.is_finite() {
-        return Err(MjcfError::invalid_value(
-            "option",
-            "o_margin",
-            format!("must be finite when positive, got {}", option.o_margin),
-        ));
-    }
-
     Ok(())
 }
 
@@ -194,7 +151,7 @@ pub fn validate_unwrapped(model: &MjcfModel) -> Result<ValidationResult> {
     // Validate geoms anchored directly on worldbody (e.g., ground planes).
     // Descendant-body geoms are validated inside traverse_body.
     for geom in &model.worldbody.geoms {
-        check_geom_finite(geom, "worldbody")?;
+        check_geom_finite(geom, "world")?;
     }
 
     // Traverse body tree
@@ -235,7 +192,7 @@ pub fn validate_unwrapped(model: &MjcfModel) -> Result<ValidationResult> {
             if !joint.name.is_empty() {
                 if !joint_names.insert(joint.name.clone()) {
                     return Err(MjcfError::duplicate_name(ElementKind::Joint, &joint.name)
-                        .at(Location::named(ElementKind::Body, &body.name)));
+                        .at(Location::named(ElementKind::Joint, &joint.name).in_body(&body.name)));
                 }
                 joint_to_body.insert(joint.name.clone(), body.name.clone());
                 all_joint_names.push(joint.name.clone());
@@ -487,7 +444,7 @@ pub fn validate_tendons_unwrapped(model: &MjcfModel) -> Result<()> {
 
     for (i, tendon) in model.tendons.iter().enumerate() {
         let checked = match tendon.tendon_type {
-            MjcfTendonType::Fixed => validate_fixed_tendon(tendon, &joint_names),
+            MjcfTendonType::Fixed => validate_fixed_tendon(tendon, i, &joint_names),
             MjcfTendonType::Spatial => validate_spatial_tendon(tendon, &site_names, &geom_names),
         }
         .and_then(|()| validate_tendon_params(tendon));
@@ -499,7 +456,11 @@ pub fn validate_tendons_unwrapped(model: &MjcfModel) -> Result<()> {
 }
 
 /// Validate a fixed tendon: joints must exist and coefficients must be finite.
-fn validate_fixed_tendon(tendon: &MjcfTendon, joint_names: &HashSet<String>) -> Result<()> {
+fn validate_fixed_tendon(
+    tendon: &MjcfTendon,
+    index: usize,
+    joint_names: &HashSet<String>,
+) -> Result<()> {
     if tendon.joints.is_empty() {
         return Err(MjcfError::invalid_model(
             "fixed tendon has no joint entries",
@@ -510,7 +471,13 @@ fn validate_fixed_tendon(tendon: &MjcfTendon, joint_names: &HashSet<String>) -> 
             return Err(MjcfError::undefined(ElementKind::Joint, joint_name));
         }
         if !coef.is_finite() {
-            return Err(MjcfError::non_finite("joint", "coef", *coef));
+            return Err(
+                MjcfError::non_finite("joint", "coef", *coef).at(Location::named(
+                    ElementKind::Joint,
+                    joint_name,
+                )
+                .within_nth(ElementKind::Tendon, Some(&tendon.name), index)),
+            );
         }
     }
     Ok(())
@@ -883,7 +850,7 @@ mod tests {
         option.timestep = f64::NAN;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "timestep"
+            Err(MjcfError::NonFinite { attribute, .. }) if attribute == "timestep"
         ));
     }
 
@@ -939,7 +906,7 @@ mod tests {
 
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "gravity"
+            Err(MjcfError::NonFinite { attribute, .. }) if attribute == "gravity"
         ));
     }
 
@@ -998,11 +965,27 @@ mod tests {
         MjcfBody::new(name).with_geom(geom)
     }
 
+    /// Asserts that `model` is refused for a non-finite `attribute` of an
+    /// unnamed geom in `body`.
+    fn assert_geom_non_finite(model: &MjcfModel, attribute: &str, body: &str) {
+        let err = validate(model).unwrap_err();
+        assert!(
+            matches!(&err, MjcfError::NonFinite { element, attribute: a, .. }
+                if element == "geom" && a == attribute),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .ends_with(&format!("(geom in body '{body}')")),
+            "{err}"
+        );
+    }
+
     #[test]
     fn test_invalid_geom_sphere_nan() {
         let model =
             MjcfModel::new("test").with_body(body_with_geom("base", MjcfGeom::sphere(f64::NAN)));
-        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
+        assert_geom_non_finite(&model, "size", "base");
     }
 
     #[test]
@@ -1011,7 +994,7 @@ mod tests {
             "base",
             MjcfGeom::box_shape(Vector3::new(1.0, f64::NAN, 1.0)),
         ));
-        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
+        assert_geom_non_finite(&model, "size", "base");
     }
 
     #[test]
@@ -1020,7 +1003,7 @@ mod tests {
             "base",
             MjcfGeom::capsule(f64::INFINITY, 0.5),
         ));
-        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
+        assert_geom_non_finite(&model, "size", "base");
     }
 
     #[test]
@@ -1032,7 +1015,7 @@ mod tests {
             ..Default::default()
         };
         let model = MjcfModel::new("test").with_body(body_with_geom("base", cylinder));
-        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
+        assert_geom_non_finite(&model, "size", "base");
     }
 
     #[test]
@@ -1044,7 +1027,7 @@ mod tests {
             ..Default::default()
         };
         let model = MjcfModel::new("test").with_body(body_with_geom("base", geom));
-        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
+        assert_geom_non_finite(&model, "fromto", "base");
     }
 
     #[test]
@@ -1053,7 +1036,7 @@ mod tests {
         let model = MjcfModel::new("test").with_body(MjcfBody::new("root").with_child(
             MjcfBody::new("link1").with_child(body_with_geom("link2", MjcfGeom::sphere(f64::NAN))),
         ));
-        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
+        assert_geom_non_finite(&model, "size", "link2");
     }
 
     #[test]
@@ -1061,7 +1044,7 @@ mod tests {
         // Worldbody-anchored geoms (e.g., ground planes) are also validated.
         let mut model = MjcfModel::new("test");
         model.worldbody.geoms.push(MjcfGeom::sphere(f64::NAN));
-        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
+        assert_geom_non_finite(&model, "size", "world");
     }
 
     #[test]

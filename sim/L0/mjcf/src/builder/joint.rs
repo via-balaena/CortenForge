@@ -8,7 +8,7 @@ use sim_core::MjJointType;
 use tracing::warn;
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
-use crate::error::{MjcfError, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{AngleUnit, MjcfJoint, MjcfJointType};
 
 impl ModelBuilder {
@@ -45,6 +45,14 @@ impl ModelBuilder {
         }
 
         // Convert joint type
+        let at = || {
+            Location::named(ElementKind::Joint, &joint.name).in_body(
+                self.body_name
+                    .get(body_id)
+                    .and_then(Option::as_deref)
+                    .unwrap_or(""),
+            )
+        };
         let joint_type = joint.joint_type.unwrap_or(MjcfJointType::Hinge);
         let jnt_type = match joint_type {
             MjcfJointType::Hinge => MjJointType::Hinge,
@@ -53,10 +61,10 @@ impl ModelBuilder {
             MjcfJointType::Free => MjJointType::Free,
             // Not MuJoCo joint types: its reader refuses both keywords.
             MjcfJointType::Cylindrical => {
-                return Err(MjcfError::invalid_keyword("joint", "type", "cylindrical"));
+                return Err(MjcfError::invalid_keyword("joint", "type", "cylindrical").at(at()));
             }
             MjcfJointType::Planar => {
-                return Err(MjcfError::invalid_keyword("joint", "type", "planar"));
+                return Err(MjcfError::invalid_keyword("joint", "type", "planar").at(at()));
             }
         };
 

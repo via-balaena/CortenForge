@@ -204,7 +204,12 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     if let Some(coef_str) = get_attribute_opt(e, "fluidcoef") {
         let parts = parse_float_array(&coef_str)?;
         if parts.len() != 5 {
-            return Err(MjcfError::wrong_count(ValueCount::Exactly(5), parts.len()));
+            return Err(MjcfError::wrong_count_in(
+                "geom",
+                "fluidcoef",
+                ValueCount::Exactly(5),
+                parts.len(),
+            ));
         }
         defaults.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
     }
@@ -342,44 +347,7 @@ pub(super) fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults
 
     // B3: Parse springlength in defaults
     if let Some(sl_str) = get_attribute_opt(e, "springlength") {
-        let parts = parse_float_array(&sl_str)?;
-        match parts.len() {
-            1 => {
-                if parts[0] < 0.0 || !parts[0].is_finite() {
-                    return Err(MjcfError::invalid_value(
-                        "tendon",
-                        "springlength",
-                        format!("value ({}) must be finite and >= 0", parts[0]),
-                    ));
-                }
-                defaults.springlength = Some((parts[0], parts[0]));
-            }
-            n if n >= 2 => {
-                if parts[0] < 0.0
-                    || parts[1] < 0.0
-                    || !parts[0].is_finite()
-                    || !parts[1].is_finite()
-                {
-                    return Err(MjcfError::invalid_value(
-                        "tendon",
-                        "springlength",
-                        format!(
-                            "values ({}, {}) must be finite and >= 0",
-                            parts[0], parts[1]
-                        ),
-                    ));
-                }
-                if parts[0] > parts[1] {
-                    return Err(MjcfError::invalid_value(
-                        "tendon",
-                        "springlength",
-                        format!("low ({}) must be <= high ({})", parts[0], parts[1]),
-                    ));
-                }
-                defaults.springlength = Some((parts[0], parts[1]));
-            }
-            _ => {}
-        }
+        defaults.springlength = super::tendon::springlength(&parse_float_array(&sl_str)?)?;
     }
 
     defaults.width = parse_float_attr(e, "width");

@@ -1,0 +1,1 @@
+<mujoco><worldbody><geom size="0.1" fluidshape="ellipsoid" fluidcoef="1 2"/></worldbody></mujoco>

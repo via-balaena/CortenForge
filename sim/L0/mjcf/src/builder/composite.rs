@@ -33,60 +33,35 @@ fn expand_composites_recursive(
         expand_composites_recursive(child, excludes)?;
     }
 
-    // Then expand composites on this body
+    // Then expand composites on this body; an error names the body that
+    // holds the composite.
     let composites = std::mem::take(&mut body.composites);
     for composite in composites {
-        match composite.comp_type {
-            CompositeType::Cable => {
-                let (bodies, excl) = make_cable(&composite).map_err(|e| {
-                    e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
-                })?;
-                body.children.extend(bodies);
-                excludes.extend(excl);
-            }
-            CompositeType::Particle => {
-                return Err(MjcfError::invalid_value(
-                    "composite",
-                    "type",
-                    "The \"particle\" composite type is deprecated. \
-                     Please use \"replicate\" instead.",
-                ));
-            }
-            CompositeType::Grid => {
-                return Err(MjcfError::invalid_value(
-                    "composite",
-                    "type",
-                    "The \"grid\" composite type is deprecated. \
-                     Please use \"flex\" instead.",
-                ));
-            }
-            CompositeType::Rope => {
-                return Err(MjcfError::invalid_value(
-                    "composite",
-                    "type",
-                    "The \"rope\" composite type is deprecated. \
-                     Please use \"cable\" instead.",
-                ));
-            }
-            CompositeType::Loop => {
-                return Err(MjcfError::invalid_value(
-                    "composite",
-                    "type",
-                    "The \"loop\" composite type is deprecated. \
-                     Please use \"flexcomp\" instead.",
-                ));
-            }
-            CompositeType::Cloth => {
-                return Err(MjcfError::invalid_value(
-                    "composite",
-                    "type",
-                    "The \"cloth\" composite type is deprecated. \
-                     Please use \"shell\" instead.",
-                ));
-            }
-        }
+        let (bodies, excl) = expand_composite(&composite).map_err(|e| {
+            e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
+        })?;
+        body.children.extend(bodies);
+        excludes.extend(excl);
     }
     Ok(())
+}
+
+/// One composite's bodies and contact excludes: a cable's, or MuJoCo's
+/// refusal of a deprecated type.
+fn expand_composite(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfContactExclude>)> {
+    let (kind, instead) = match composite.comp_type {
+        CompositeType::Cable => return make_cable(composite),
+        CompositeType::Particle => ("particle", "replicate"),
+        CompositeType::Grid => ("grid", "flex"),
+        CompositeType::Rope => ("rope", "cable"),
+        CompositeType::Loop => ("loop", "flexcomp"),
+        CompositeType::Cloth => ("cloth", "shell"),
+    };
+    Err(MjcfError::invalid_value(
+        "composite",
+        "type",
+        format!("The \"{kind}\" composite type is deprecated. Please use \"{instead}\" instead."),
+    ))
 }
 
 /// Validate cable composite constraints before generation.

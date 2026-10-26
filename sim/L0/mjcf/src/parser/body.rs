@@ -228,7 +228,10 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
         body.sleep = Some(sleep);
     }
     if let Some(gc) = get_attribute_opt(e, "gravcomp") {
-        body.gravcomp = Some(gc.parse::<f64>().map_err(|_| MjcfError::bad_number(gc))?);
+        body.gravcomp = Some(
+            gc.parse::<f64>()
+                .map_err(|_| MjcfError::bad_number_in("body", "gravcomp", gc))?,
+        );
     }
     if let Some(user) = get_attribute_opt(e, "user")
         && let Ok(parts) = parse_float_array(&user)
@@ -411,7 +414,12 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     if let Some(coef_str) = get_attribute_opt(e, "fluidcoef") {
         let parts = parse_float_array(&coef_str)?;
         if parts.len() != 5 {
-            return Err(MjcfError::wrong_count(ValueCount::Exactly(5), parts.len()));
+            return Err(MjcfError::wrong_count_in(
+                "geom",
+                "fluidcoef",
+                ValueCount::Exactly(5),
+                parts.len(),
+            ));
         }
         geom.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
     }

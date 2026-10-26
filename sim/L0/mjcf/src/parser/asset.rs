@@ -161,7 +161,9 @@ pub(super) fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
         .ok_or_else(|| MjcfError::missing_attribute("hfield", "size"))?;
     let size_vec = parse_float_array(&size_str)?;
     if size_vec.len() != 4 {
-        return Err(MjcfError::wrong_count(
+        return Err(MjcfError::wrong_count_in(
+            "hfield",
+            "size",
             ValueCount::Exactly(4),
             size_vec.len(),
         ));

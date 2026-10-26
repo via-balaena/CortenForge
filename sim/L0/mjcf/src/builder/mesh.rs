@@ -35,9 +35,9 @@ impl ModelBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an [`MjcfError::Asset`] if:
-    /// - Mesh name is a duplicate of an already-processed mesh
-    /// - Mesh conversion fails (see [`convert_mjcf_mesh`] for details)
+    /// Returns [`MjcfError::DuplicateName`] if the mesh's name is an
+    /// already-processed mesh's, and the conversion's error if it fails (see
+    /// [`convert_mjcf_mesh`]).
     pub(crate) fn process_mesh(
         &mut self,
         mjcf_mesh: &MjcfMesh,

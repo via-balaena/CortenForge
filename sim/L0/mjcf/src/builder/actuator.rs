@@ -205,36 +205,36 @@ impl ModelBuilder {
             let stiff = gainprm[8];
             if opt_len <= 0.0 {
                 return Err(MjcfError::invalid_value(
-                    "hillmuscle",
-                    "gainprm[4]",
+                    "general",
+                    "gainprm",
                     "HillMuscle: optimal_fiber_length (gainprm[4]) must be positive",
                 ));
             }
             if slack_len < 0.0 {
                 return Err(MjcfError::invalid_value(
-                    "hillmuscle",
-                    "gainprm[5]",
+                    "general",
+                    "gainprm",
                     "HillMuscle: tendon_slack_length (gainprm[5]) must be non-negative",
                 ));
             }
             if vmax <= 0.0 {
                 return Err(MjcfError::invalid_value(
-                    "hillmuscle",
-                    "gainprm[6]",
+                    "general",
+                    "gainprm",
                     "HillMuscle: max_contraction_velocity (gainprm[6]) must be positive",
                 ));
             }
             if !(0.0..std::f64::consts::FRAC_PI_2).contains(&penn) {
                 return Err(MjcfError::invalid_value(
-                    "hillmuscle",
-                    "gainprm[7]",
+                    "general",
+                    "gainprm",
                     "HillMuscle: pennation_angle (gainprm[7]) must be in [0, π/2)",
                 ));
             }
             if stiff <= 0.0 {
                 return Err(MjcfError::invalid_value(
-                    "hillmuscle",
-                    "gainprm[8]",
+                    "general",
+                    "gainprm",
                     "HillMuscle: tendon_stiffness (gainprm[8]) must be positive",
                 ));
             }
@@ -245,29 +245,29 @@ impl ModelBuilder {
         if dyntype == ActuatorDynamics::MillardMuscle {
             if gainprm[4] <= 0.0 {
                 return Err(MjcfError::invalid_value(
-                    "millardmuscle",
-                    "gainprm[4]",
+                    "general",
+                    "gainprm",
                     "MillardMuscle: optimal_fiber_length (gainprm[4]) must be positive",
                 ));
             }
             if gainprm[5] < 0.0 {
                 return Err(MjcfError::invalid_value(
-                    "millardmuscle",
-                    "gainprm[5]",
+                    "general",
+                    "gainprm",
                     "MillardMuscle: tendon_slack_length (gainprm[5]) must be non-negative",
                 ));
             }
             if gainprm[6] <= 0.0 {
                 return Err(MjcfError::invalid_value(
-                    "millardmuscle",
-                    "gainprm[6]",
+                    "general",
+                    "gainprm",
                     "MillardMuscle: max_contraction_velocity (gainprm[6]) must be positive",
                 ));
             }
             if !(0.0..std::f64::consts::FRAC_PI_2).contains(&gainprm[7]) {
                 return Err(MjcfError::invalid_value(
-                    "millardmuscle",
-                    "gainprm[7]",
+                    "general",
+                    "gainprm",
                     "MillardMuscle: pennation_angle (gainprm[7]) must be in [0, π/2)",
                 ));
             }

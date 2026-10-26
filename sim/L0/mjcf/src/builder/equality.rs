@@ -416,6 +416,7 @@ impl ModelBuilder {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::builder::load_model;
+    use crate::error::{ElementKind, MjcfError};
     use approx::assert_relative_eq;
     use sim_core::EqualityType;
 
@@ -737,19 +738,18 @@ mod tests {
 
     /// Each `process_*` resolves names via `body_name_to_id`/
     /// `joint_name_to_id`/`geom_name_to_id`/`tendon_name_to_id` and returns
-    /// an [`MjcfError::UndefinedReference`](crate::MjcfError::UndefinedReference)
-    /// naming the one that is missing.
+    /// an [`MjcfError::UndefinedReference`] naming the one that is missing.
     /// One test sweeps all four resolver branches by trying each in turn.
     #[test]
     fn equality_unknown_name_errors() {
-        let cases: &[(&str, &str)] = &[
+        let cases: &[(&str, ElementKind)] = &[
             (
                 r#"<mujoco model="m"><worldbody>
                     <body name="a"><geom type="sphere" size="0.1" mass="1.0"/></body>
                 </worldbody><equality>
                     <connect body1="ghost" anchor="0 0 0"/>
                 </equality></mujoco>"#,
-                "ghost",
+                ElementKind::Body,
             ),
             (
                 r#"<mujoco model="m"><worldbody>
@@ -760,7 +760,7 @@ mod tests {
                 </worldbody><equality>
                     <joint joint1="ghost" polycoef="1 0 0 0 0"/>
                 </equality></mujoco>"#,
-                "ghost",
+                ElementKind::Joint,
             ),
             (
                 r#"<mujoco model="m"><worldbody>
@@ -768,7 +768,7 @@ mod tests {
                 </worldbody><equality>
                     <distance geom1="ghost"/>
                 </equality></mujoco>"#,
-                "ghost",
+                ElementKind::Geom,
             ),
             (
                 r#"<mujoco model="m"><worldbody>
@@ -781,15 +781,15 @@ mod tests {
                 <equality>
                     <tendon tendon1="ghost" polycoef="1 0 0 0 0"/>
                 </equality></mujoco>"#,
-                "ghost",
+                ElementKind::Tendon,
             ),
         ];
-        for (xml, needle) in cases {
+        for (xml, kind) in cases {
             let err = load_model(xml).expect_err("should reject unknown name");
-            let msg = err.to_string();
             assert!(
-                msg.contains(needle),
-                "error did not name the missing entity: {msg}"
+                matches!(&err, MjcfError::UndefinedReference { kind: k, name, .. }
+                    if k == kind && name == "ghost"),
+                "{err}"
             );
         }
     }
