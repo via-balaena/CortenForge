@@ -741,7 +741,9 @@ pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
 /// 4. the actuator plugins' forces;
 /// 5. every actuator's force clamped to its range, a sleeping or disabled
 ///    one's 0 too;
-/// 6. the forces mapped to joint forces through the transmissions.
+/// 6. the forces mapped to joint forces through the transmissions, a
+///    sleeping actuator's not (MuJoCo's transmission leaves its moment
+///    empty).
 ///
 /// A dynamics callback runs in the first pass, before any force (each is 0
 /// then); a gain or bias callback in the third, after every activation
@@ -777,15 +779,17 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         ctrl.fill(0.0);
     }
 
-    // A sleeping actuator keeps its act_dot and acts with no force
-    // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394).
+    // A sleeping actuator keeps its act_dot and has no force of its own
+    // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394): pass 5 clamps
+    // its 0 into its range, and pass 6 maps nothing for it.
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     let asleep =
         |data: &Data, i: usize| sleep_enabled && crate::island::actuator_asleep(model, data, i);
 
     // --- 1. Activation derivatives (`engine_forward.c:321-372`) ---
     // A per-group disabled actuator has its act_dot, as MuJoCo's, and no
-    // force; the advance leaves its activation.
+    // force of its own (pass 5 clamps its 0 into its range); the advance
+    // leaves its activation.
     for (i, &ctrl) in ctrl.iter().enumerate() {
         // An actuator with no activation has no act_dot (MuJoCo's address is
         // −1; cf-design gives it `usize::MAX`).
@@ -1002,7 +1006,9 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     // MuJoCo's `mju_mulMatTVecSparse` skips it.
     for i in 0..model.nu {
         let force = data.actuator_force[i];
-        if force == 0.0 {
+        // A sleeping actuator's moment is empty, as MuJoCo's transmission
+        // leaves it (`engine_core_smooth.c:1287-1291`).
+        if force == 0.0 || actuator_skipped_asleep(model, data, i) {
             continue;
         }
         let gear = model.actuator_gear[i][0];

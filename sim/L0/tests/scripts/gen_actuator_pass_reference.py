@@ -10,7 +10,8 @@ It refuses any other interpreter, as gen_census_golden.py does: the PyPI wheel
 fuses multiply-adds.
 
 It writes actuator_pass.json, one entry per case: two damped hinges under
-implicitfast with two or three actuators, each case showing what MuJoCo's
+implicitfast with two to four actuators (one case: on two trees, the first
+asleep, `tree_asleep` recorded), each case showing what MuJoCo's
 mj_fwdActuation does in its passes (engine_forward.c:277-570): every
 actuator's act_dot, then the plugins', then the forces, then the plugins',
 then the clamp and the mapping over every actuator. A callback reads another
@@ -18,9 +19,9 @@ actuator's act_dot or force, or its own force before its bias; a dynamics
 callback writes an earlier actuator's act_dot or a later one's ctrl; a
 `mujoco.pid` plugin's actuator, with an integral term, a filter, a force
 range, MuJoCo's dynamics callback called for it, and a user gain reading its
-act_dot or its force; a force range that excludes 0 on a disabled actuator;
-two actuators sharing an activation; an infinite gear on actuators with no
-force. For each of 12 states (qpos, qvel, ctrl and act drawn from a
+act_dot or its force; a force range that excludes 0 on a disabled actuator, and on a sleeping
+tree's; two actuators sharing an activation; an infinite gear on actuators
+with no force. For each of 12 states (qpos, qvel, ctrl and act drawn from a
 seeded generator, and act_dot from a second one, set before each pass) after
 mj_forward each actuator's force, qfrc_actuator and act_dot, and after one
 mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind), qpos, qvel and
@@ -67,6 +68,28 @@ MODEL = """<mujoco>
     {actuator}
   </actuator>
 </mujoco>"""
+
+# Two trees, the first asleep from the start, its joint under a fixed tendon.
+SLEEPING = """<mujoco>
+  <option timestep="0.002" integrator="implicitfast"{option}><flag sleep="enable"/></option>
+{extension}  <worldbody>
+    <body name="b1" pos="0 0 1" sleep="init">
+      <joint name="h1" axis="0 1 0" damping="0.37"/>
+      <inertial pos="0.15 0 0" mass="0.9" diaginertia="0.004 0.03 0.03"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+    <body name="b2" pos="2 0 1">
+      <joint name="h2" axis="0 0 1" damping="1.13"/>
+      <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.003 0.02 0.02"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+  </worldbody>
+  <tendon><fixed name="t1"><joint joint="h1" coef="0.7"/></fixed></tendon>
+  <actuator>
+    {actuator}
+  </actuator>
+</mujoco>"""
+TEMPLATES = {'chain': MODEL, 'sleeping': SLEEPING}
 
 PID_KD = {'kp': 3.0, 'kd': 0.2}
 PID_KI = {'kp': 3.0, 'ki': 0.5, 'kd': 0.2}
@@ -156,6 +179,16 @@ CASES = [
      '<general joint="h1" dyntype="user"/>\n    <motor joint="h2"/>',
      '<general joint="h1" dyntype="integrator"/>\n    <motor joint="h2"/>',
      {'dyn': 'write_later_ctrl'}),
+    ('a sleeping tree actuators, with force ranges excluding 0',
+     '<motor joint="h1" forcelimited="true" forcerange="1 2"/>\n'
+     '    <motor tendon="t1" forcelimited="true" forcerange="-2 -0.5"/>\n'
+     '    <general joint="h1" dyntype="filter" dynprm="0.1" forcelimited="true" forcerange="0.5 2"/>\n'
+     '    <motor joint="h2" forcelimited="true" forcerange="-0.3 0.3"/>',
+     '<motor joint="h1" forcelimited="true" forcerange="1 2"/>\n'
+     '    <motor tendon="t1" forcelimited="true" forcerange="-2 -0.5"/>\n'
+     '    <general joint="h1" dyntype="filter" dynprm="0.1" forcelimited="true" forcerange="0.5 2"/>\n'
+     '    <motor joint="h2" forcelimited="true" forcerange="-0.3 0.3"/>',
+     {'model': 'sleeping', 'asleep_dofs': [0]}),
 ]
 
 
@@ -212,7 +245,8 @@ def case(name, actuator, stand_in, opts):
     # MuJoCo's compiler runs the model once; the callbacks are set after it.
     set_callbacks({})
     fill = {'option': opts.get('option', ''), 'extension': extension(opts.get('pid'))}
-    text = MODEL.format(actuator=actuator, **fill)
+    template = TEMPLATES[opts.get('model', 'chain')]
+    text = template.format(actuator=actuator, **fill)
     m = mujoco.MjModel.from_xml_string(text)
     for a, adr in opts.get('actadr', []):
         m.actuator_actadr[a] = adr
@@ -222,10 +256,14 @@ def case(name, actuator, stand_in, opts):
     set_callbacks(opts)
     rng = np.random.default_rng(7)
     rng_act_dot = np.random.default_rng(8)
+    asleep_dofs = opts.get('asleep_dofs', [])
     states = []
     for _ in range(STATES):
         qpos = m.qpos0 + rng.uniform(-0.8, 0.8, m.nq)
         qvel = rng.uniform(-2.0, 2.0, m.nv)
+        # A sleeping tree's dofs keep the reset's position and velocity.
+        for k in asleep_dofs:
+            qpos[k], qvel[k] = m.qpos0[k], 0.0
         ctrl = rng.uniform(0.0, 1.0, m.nu)
         act = rng.uniform(0.0, 1.0, m.na)
         act_dot = rng_act_dot.uniform(-1.0, 1.0, m.na)
@@ -241,6 +279,8 @@ def case(name, actuator, stand_in, opts):
                  'act': floats(act), 'act_dot_before': floats(act_dot),
                  'actuator_force': floats(d.actuator_force),
                  'qfrc_actuator': floats(d.qfrc_actuator), 'act_dot': floats(d.act_dot)}
+        if asleep_dofs:
+            state['tree_asleep'] = ints(d.tree_asleep)
         start()
         mujoco.mj_step(m, d)
         state.update({'qDeriv': floats(d.qDeriv), 'qpos_after': floats(d.qpos),
@@ -255,7 +295,7 @@ def case(name, actuator, stand_in, opts):
         'forcelimited': ints(m.actuator_forcelimited), 'forcerange': floats(m.actuator_forcerange),
         'gear0': floats(m.actuator_gear[:, 0]),
     }
-    return {'name': name, 'mujoco_xml': text, 'xml': MODEL.format(actuator=stand_in, **fill),
+    return {'name': name, 'mujoco_xml': text, 'xml': template.format(actuator=stand_in, **fill),
             'callbacks': {k: opts[k] for k in ('gain', 'bias', 'dyn') if k in opts},
             'pid': opts.get('pid'),
             'after_compile': {k: opts[k] for k in ('actadr', 'gear') if k in opts},

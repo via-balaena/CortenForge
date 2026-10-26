@@ -11,8 +11,9 @@
 //! actuator's act_dot or a later one's ctrl; a `mujoco.pid` plugin's
 //! actuator, with an integral term, a filter, a force range, the dynamics
 //! callback called for it, and a user gain reading its act_dot or its force;
-//! a force range that excludes 0 on a disabled actuator; two actuators
-//! sharing an activation; an infinite gear on actuators with no force. sim-mjcf
+//! a force range that excludes 0 on a disabled actuator, and on a sleeping
+//! tree's (its `tree_asleep` checked too); two actuators sharing an
+//! activation; an infinite gear on actuators with no force. sim-mjcf
 //! refuses a user type and loads no plugin, so each case loads a stand-in and
 //! changes it to MuJoCo's compiled actuators, then checks it against them; the
 //! callbacks below are the script's, in the same operations, and the plugin is
@@ -360,6 +361,14 @@ fn actuation_passes_act_as_mujoco() {
             };
             let mut data = start();
             data.forward(&model).expect("forward");
+            if let Some(asleep) = state.get("tree_asleep") {
+                let ours: Vec<i64> = data.tree_asleep.iter().map(|&t| i64::from(t)).collect();
+                if ours != ints(asleep) {
+                    failures.push(format!(
+                        "{name}, state {k}: tree_asleep {ours:?}, MuJoCo {asleep}"
+                    ));
+                }
+            }
             let mut compare = |what: &str, ours: &[f64], key: &str| {
                 let mj = floats(&state[key]);
                 if !matches_golden(ours, &mj) {
@@ -390,7 +399,7 @@ fn actuation_passes_act_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 180, "15 cases of 12 states");
+    assert_eq!(compared, 192, "16 cases of 12 states");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",
