@@ -123,8 +123,15 @@ fn a_flex_of_dimension_four_is_refused() {
 
 #[test]
 fn an_element_naming_a_vertex_the_flex_lacks_is_refused() {
-    let err = load_model(&flex_doc(2, "0 0 0  1 0 0  0 1 0", "0 1 9")).unwrap_err();
-    assert_eq!(refusal(&err), ("element", "elem vertex id out of range"));
+    // Three vertices: index 3, the first past them, and one far past.
+    for elements in ["0 1 3", "0 1 9"] {
+        let err = load_model(&flex_doc(2, "0 0 0  1 0 0  0 1 0", elements)).unwrap_err();
+        assert_eq!(
+            refusal(&err),
+            ("element", "elem vertex id out of range"),
+            "{elements}"
+        );
+    }
 }
 
 #[test]
