@@ -149,8 +149,10 @@ pub type CbSensor =
 /// returns that activation's `act_dot`; with more it writes their `act_dot`
 /// itself and its return is ignored, as MuJoCo's (`engine_forward.c:361-370`).
 /// What it writes to `qfrc_actuator` is overwritten when the forces are
-/// mapped, and a control it writes acts from the next pass, this pass's
-/// inputs having been copied before it, as MuJoCo's.
+/// mapped, and a control it writes is no input to this call's forces, which
+/// act on the controls as copied before its first pass; an implicit
+/// integrator's velocity derivative reads the control of an actuator with no
+/// dynamics as written, as MuJoCo's (`engine_derivative.c:1126-1127`).
 pub type CbActDyn = Callback<dyn Fn(&Model, &mut Data, usize) -> f64 + Send + Sync>;
 
 /// User actuator gain callback: called for `GainType::User`.

@@ -5288,8 +5288,8 @@ fn smooth_pos_leaves_out_a_sleeping_actuators_clamped_force() {
     assert!(asleep, "the first tree sleeps");
     assert_eq!(force, 1.0, "the sleeping motor's force is clamped");
     assert_eq!(with_range, without);
-    let (awake, _, awake_with_range) = qderiv_pos("", limited);
+    let (asleep, _, awake_with_range) = qderiv_pos("", limited);
     let (_, _, awake_without) = qderiv_pos("", "");
-    assert!(!awake);
+    assert!(!asleep, "without sleep=\"init\" the first tree is awake");
     assert_ne!(awake_with_range, awake_without);
 }

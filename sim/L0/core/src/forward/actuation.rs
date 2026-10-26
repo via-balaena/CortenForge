@@ -756,8 +756,8 @@ pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
 /// A dynamics callback runs in the first pass, before any force (each is 0
 /// then); a gain or bias callback in the third, after every activation
 /// derivative. The inputs are a clamped copy of the controls taken before
-/// the first pass; `data.ctrl` is not written. `qfrc_actuator` holds the
-/// previous pass's until pass 6 writes it whole, as MuJoCo's.
+/// the first pass; `data.ctrl` is not written. `qfrc_actuator` holds what
+/// the previous call left until pass 6 writes it whole, as MuJoCo's.
 ///
 /// **Note**: `cb_control` is NOT invoked here. It fires after the velocity
 /// stage and before this one — see `forward_core()`, `forward_skip()` and
