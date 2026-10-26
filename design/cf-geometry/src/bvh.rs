@@ -705,7 +705,7 @@ fn transform_aabb(aabb: &Aabb, transform: &Isometry3<f64>) -> Aabb {
 ///
 /// Returns `Some(tmin)` if the ray hits, `None` if it misses or is beyond
 /// `max_distance`.
-fn ray_aabb_intersect_dist(
+pub fn ray_aabb_intersect_dist(
     ray_origin: &Point3<f64>,
     ray_dir_inv: &Vector3<f64>,
     aabb: &Aabb,
