@@ -3,7 +3,8 @@
 //!
 //! `CASES` are MuJoCo 3.5.0's `body_inertia` and `body_iquat`, as bits, for a
 //! free body whose `<inertial fullinertia>` is each tensor, measured on the
-//! census's unfused oracle: six diagonal permutations, `2 2 2 0.5 0 0`, three
+//! census's unfused oracle: two equal moments with an off-diagonal below the
+//! iteration's stop, six diagonal permutations, `2 2 2 0.5 0 0`, three
 //! axisymmetric tensors and forty box moments turned by seeded random
 //! rotations, written with seventeen significant digits so both sides read the
 //! same bits. MuJoCo's compiler finds them with `mjuu_eig3`
@@ -16,6 +17,13 @@
 use sim_mjcf::{MjcfError, load_model, model_from_mjcf, parse_mjcf_str};
 
 const CASES: &[(&str, [u64; 3], [u64; 4])] = &[
+    // Two equal moments and an off-diagonal below 1e-12: MuJoCo stops at once,
+    // the frame untouched (a turn would be 45° here).
+    (
+        "1 1 0.5 5e-13 0 0",
+        [0x3ff0000000000000, 0x3ff0000000000000, 0x3fe0000000000000],
+        [0x3ff0000000000000, 0, 0, 0],
+    ),
     (
         "1 2 3 0 0 0",
         [0x4008000000000000, 0x4000000000000000, 0x3ff0000000000000],
