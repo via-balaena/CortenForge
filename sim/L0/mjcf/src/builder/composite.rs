@@ -42,38 +42,43 @@ fn expand_composites_recursive(
                 excludes.extend(excl);
             }
             CompositeType::Particle => {
-                return Err(MjcfError::Unsupported(
+                return Err(MjcfError::invalid_value(
+                    "composite",
+                    "type",
                     "The \"particle\" composite type is deprecated. \
-                     Please use \"replicate\" instead."
-                        .to_string(),
+                     Please use \"replicate\" instead.",
                 ));
             }
             CompositeType::Grid => {
-                return Err(MjcfError::Unsupported(
+                return Err(MjcfError::invalid_value(
+                    "composite",
+                    "type",
                     "The \"grid\" composite type is deprecated. \
-                     Please use \"flex\" instead."
-                        .to_string(),
+                     Please use \"flex\" instead.",
                 ));
             }
             CompositeType::Rope => {
-                return Err(MjcfError::Unsupported(
+                return Err(MjcfError::invalid_value(
+                    "composite",
+                    "type",
                     "The \"rope\" composite type is deprecated. \
-                     Please use \"cable\" instead."
-                        .to_string(),
+                     Please use \"cable\" instead.",
                 ));
             }
             CompositeType::Loop => {
-                return Err(MjcfError::Unsupported(
+                return Err(MjcfError::invalid_value(
+                    "composite",
+                    "type",
                     "The \"loop\" composite type is deprecated. \
-                     Please use \"flexcomp\" instead."
-                        .to_string(),
+                     Please use \"flexcomp\" instead.",
                 ));
             }
             CompositeType::Cloth => {
-                return Err(MjcfError::Unsupported(
+                return Err(MjcfError::invalid_value(
+                    "composite",
+                    "type",
                     "The \"cloth\" composite type is deprecated. \
-                     Please use \"shell\" instead."
-                        .to_string(),
+                     Please use \"shell\" instead.",
                 ));
             }
         }
@@ -90,15 +95,17 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
     // Uservert/count mutual exclusion (Make:147-153).
     // If uservert is non-empty, count[0] must be 1 (the default).
     if !composite.uservert.is_empty() && composite.count[0] != 1 {
-        return Err(MjcfError::Unsupported(
-            "Cannot specify both vertex and count for composite".to_string(),
+        return Err(MjcfError::invalid_model(
+            "Cannot specify both vertex and count for composite",
         ));
     }
 
     // Uservert length must be a multiple of 3 (xyz triples)
     if !composite.uservert.is_empty() && !composite.uservert.len().is_multiple_of(3) {
-        return Err(MjcfError::Unsupported(
-            "Composite vertex data must have length divisible by 3".to_string(),
+        return Err(MjcfError::invalid_value(
+            "composite",
+            "vertex",
+            "Composite vertex data must have length divisible by 3",
         ));
     }
 
@@ -117,8 +124,10 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
             + composite.size[1] * composite.size[1]
             + composite.size[2] * composite.size[2];
         if size_sq < 1e-15 {
-            return Err(MjcfError::Unsupported(
-                "Composite size is too small".to_string(),
+            return Err(MjcfError::invalid_value(
+                "composite",
+                "size",
+                "Composite size is too small",
             ));
         }
     }
@@ -127,10 +136,7 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
     match composite.initial.as_str() {
         "ball" | "none" | "free" => {}
         other => {
-            return Err(MjcfError::Unsupported(format!(
-                "Invalid composite initial value: \"{other}\". \
-                 Must be \"ball\", \"none\", or \"free\""
-            )));
+            return Err(MjcfError::invalid_keyword("composite", "initial", other));
         }
     }
 
@@ -138,15 +144,15 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
 
     // Cable must be 1D: count[1] and count[2] must be 1 (MakeCable:245)
     if composite.count[1] != 1 || composite.count[2] != 1 {
-        return Err(MjcfError::Unsupported(
-            "Cable must be one-dimensional".to_string(),
-        ));
+        return Err(MjcfError::invalid_model("Cable must be one-dimensional"));
     }
 
     // Need at least 2 vertices (1 segment)
     if effective_count0 < 2 {
-        return Err(MjcfError::Unsupported(
-            "Cable requires count >= 2 or at least 2 user-specified vertices".to_string(),
+        return Err(MjcfError::invalid_value(
+            "composite",
+            "count",
+            "Cable requires count >= 2 or at least 2 user-specified vertices",
         ));
     }
 
@@ -155,14 +161,16 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
         match geom.geom_type {
             MjcfGeomType::Cylinder | MjcfGeomType::Capsule | MjcfGeomType::Box => {}
             _ => {
-                return Err(MjcfError::Unsupported(
-                    "Cable geom type must be cylinder, capsule or box".to_string(),
+                return Err(MjcfError::invalid_value(
+                    "geom",
+                    "type",
+                    "Cable geom type must be cylinder, capsule or box",
                 ));
             }
         }
     } else {
-        return Err(MjcfError::Unsupported(
-            "Cable composite requires a <geom> child element".to_string(),
+        return Err(MjcfError::invalid_model(
+            "Cable composite requires a <geom> child element",
         ));
     }
 

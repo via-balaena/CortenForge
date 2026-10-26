@@ -7,7 +7,8 @@
 use sim_core::{InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType};
 use tracing::warn;
 
-use super::{ModelBuilder, ModelConversionError};
+use super::ModelBuilder;
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MjcfSensor, MjcfSensorType};
 
 impl ModelBuilder {
@@ -16,125 +17,131 @@ impl ModelBuilder {
     /// Converts `MjcfSensor` objects into the 17 pipeline sensor arrays.
     /// Must be called AFTER all bodies, joints, tendons, and actuators are processed
     /// (requires name→id lookups for object resolution).
-    pub(crate) fn process_sensors(
-        &mut self,
-        sensors: &[MjcfSensor],
-    ) -> std::result::Result<(), ModelConversionError> {
+    pub(crate) fn process_sensors(&mut self, sensors: &[MjcfSensor]) -> Result<()> {
         let mut adr = 0usize;
-
-        for mjcf_sensor in sensors {
-            let mjcf_sensor = self.resolver.apply_to_sensor(mjcf_sensor);
-            let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
-                // Unknown sensor type — skip with log
-                warn!(
-                    "Skipping unsupported sensor type '{:?}' (sensor '{}')",
-                    mjcf_sensor.sensor_type, mjcf_sensor.name,
-                );
-                continue;
-            };
-            let dim = sensor_type.dim();
-            let datatype = sensor_datatype(sensor_type);
-
-            // Dual-object sensors (GeomDist/Normal/FromTo) use geom1/body1 + geom2/body2
-            // instead of the standard objname/refname resolution path.
-            let (objtype, objid, reftype, refid) = if matches!(
-                sensor_type,
-                MjSensorType::GeomDist | MjSensorType::GeomNormal | MjSensorType::GeomFromTo
-            ) {
-                let (ot, oi) = self.resolve_dual_object_side(
-                    mjcf_sensor.geom1.as_deref(),
-                    mjcf_sensor.body1.as_deref(),
-                    "1",
-                )?;
-                let (rt, ri) = self.resolve_dual_object_side(
-                    mjcf_sensor.geom2.as_deref(),
-                    mjcf_sensor.body2.as_deref(),
-                    "2",
-                )?;
-                // Self-distance rejection: same geom on both sides
-                if ot == MjObjectType::Geom && rt == MjObjectType::Geom && oi == ri {
-                    return Err(ModelConversionError {
-                        message:
-                            "distance sensor: 1st body/geom must be different from 2nd body/geom"
-                                .into(),
-                    });
-                }
-                if ot == MjObjectType::Body && rt == MjObjectType::Body && oi == ri {
-                    return Err(ModelConversionError {
-                        message:
-                            "distance sensor: 1st body/geom must be different from 2nd body/geom"
-                                .into(),
-                    });
-                }
-                (ot, oi, rt, ri)
-            } else {
-                let (ot, oi) = self.resolve_sensor_object(
-                    sensor_type,
-                    mjcf_sensor.objname.as_deref(),
-                    mjcf_sensor.objtype.as_deref(),
-                )?;
-                let (rt, ri) = self.resolve_reference_object(
-                    mjcf_sensor.reftype.as_deref(),
-                    mjcf_sensor.refname.as_deref(),
-                )?;
-                (ot, oi, rt, ri)
-            };
-
-            // Parse interp keyword → InterpolationType (mirrors actuator.rs)
-            let interp = match &mjcf_sensor.interp {
-                Some(s) => s
-                    .parse::<InterpolationType>()
-                    .map_err(|e| ModelConversionError { message: e })?,
-                None => InterpolationType::Zoh,
-            };
-
-            // MuJoCo compiler validation: delay > 0 requires nsample > 0
-            let nsample = mjcf_sensor.nsample.unwrap_or(0);
-            let delay = mjcf_sensor.delay.unwrap_or(0.0);
-            if delay > 0.0 && nsample <= 0 {
-                return Err(ModelConversionError {
-                    message: "setting delay > 0 without a history buffer (nsample must be > 0)"
-                        .into(),
-                });
-            }
-
-            // MuJoCo compiler validation: negative interval rejected
-            let interval = mjcf_sensor.interval.unwrap_or(0.0);
-            if interval < 0.0 {
-                return Err(ModelConversionError {
-                    message: "negative interval in sensor".into(),
-                });
-            }
-
-            self.sensor_type.push(sensor_type);
-            self.sensor_datatype.push(datatype);
-            self.sensor_objtype.push(objtype);
-            self.sensor_objid.push(objid);
-            self.sensor_reftype.push(reftype);
-            self.sensor_refid.push(refid);
-            self.sensor_adr.push(adr);
-            self.sensor_dim.push(dim);
-            self.sensor_noise.push(mjcf_sensor.noise);
-            self.sensor_cutoff.push(mjcf_sensor.cutoff);
-            let sensor_id = self.sensor_name_list.len();
-            self.sensor_name_list.push(if mjcf_sensor.name.is_empty() {
-                None
-            } else {
-                self.sensor_name_to_id
-                    .insert(mjcf_sensor.name.clone(), sensor_id);
-                Some(mjcf_sensor.name.clone())
-            });
-            self.sensor_nsample.push(nsample);
-            self.sensor_interp.push(interp);
-            self.sensor_delay.push(delay);
-            self.sensor_interval.push((interval, 0.0));
-            self.sensor_user_raw.push(mjcf_sensor.user.clone());
-
-            adr += dim;
+        for (i, mjcf_sensor) in sensors.iter().enumerate() {
+            self.process_sensor(mjcf_sensor, &mut adr).map_err(|e| {
+                e.with_location_if_unknown(Location::nth(
+                    ElementKind::Sensor,
+                    Some(&mjcf_sensor.name),
+                    i,
+                ))
+            })?;
         }
-
         self.nsensor = self.sensor_type.len();
         self.nsensordata = adr;
+        Ok(())
+    }
+
+    /// One sensor's entries, its data at `adr`, which it advances by its size.
+    fn process_sensor(&mut self, mjcf_sensor: &MjcfSensor, adr: &mut usize) -> Result<()> {
+        let mjcf_sensor = self.resolver.apply_to_sensor(mjcf_sensor);
+        let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
+            // Unknown sensor type — skip with log
+            warn!(
+                "Skipping unsupported sensor type '{:?}' (sensor '{}')",
+                mjcf_sensor.sensor_type, mjcf_sensor.name,
+            );
+            return Ok(());
+        };
+        let dim = sensor_type.dim();
+        let datatype = sensor_datatype(sensor_type);
+
+        // Dual-object sensors (GeomDist/Normal/FromTo) use geom1/body1 + geom2/body2
+        // instead of the standard objname/refname resolution path.
+        let (objtype, objid, reftype, refid) = if matches!(
+            sensor_type,
+            MjSensorType::GeomDist | MjSensorType::GeomNormal | MjSensorType::GeomFromTo
+        ) {
+            let (ot, oi) = self.resolve_dual_object_side(
+                mjcf_sensor.geom1.as_deref(),
+                mjcf_sensor.body1.as_deref(),
+                "1",
+            )?;
+            let (rt, ri) = self.resolve_dual_object_side(
+                mjcf_sensor.geom2.as_deref(),
+                mjcf_sensor.body2.as_deref(),
+                "2",
+            )?;
+            // Self-distance rejection: same geom on both sides
+            if ot == MjObjectType::Geom && rt == MjObjectType::Geom && oi == ri {
+                return Err(MjcfError::invalid_model(
+                    "distance sensor: 1st body/geom must be different from 2nd body/geom",
+                ));
+            }
+            if ot == MjObjectType::Body && rt == MjObjectType::Body && oi == ri {
+                return Err(MjcfError::invalid_model(
+                    "distance sensor: 1st body/geom must be different from 2nd body/geom",
+                ));
+            }
+            (ot, oi, rt, ri)
+        } else {
+            let (ot, oi) = self.resolve_sensor_object(
+                sensor_type,
+                mjcf_sensor.objname.as_deref(),
+                mjcf_sensor.objtype.as_deref(),
+            )?;
+            let (rt, ri) = self.resolve_reference_object(
+                mjcf_sensor.reftype.as_deref(),
+                mjcf_sensor.refname.as_deref(),
+            )?;
+            (ot, oi, rt, ri)
+        };
+
+        // Parse interp keyword → InterpolationType (mirrors actuator.rs)
+        let interp = match &mjcf_sensor.interp {
+            Some(s) => s
+                .parse::<InterpolationType>()
+                .map_err(|_| MjcfError::invalid_keyword("sensor", "interp", s))?,
+            None => InterpolationType::Zoh,
+        };
+
+        // MuJoCo compiler validation: delay > 0 requires nsample > 0
+        let nsample = mjcf_sensor.nsample.unwrap_or(0);
+        let delay = mjcf_sensor.delay.unwrap_or(0.0);
+        if delay > 0.0 && nsample <= 0 {
+            return Err(MjcfError::invalid_value(
+                "sensor",
+                "delay",
+                "setting delay > 0 without a history buffer (nsample must be > 0)",
+            ));
+        }
+
+        // MuJoCo compiler validation: negative interval rejected
+        let interval = mjcf_sensor.interval.unwrap_or(0.0);
+        if interval < 0.0 {
+            return Err(MjcfError::invalid_value(
+                "sensor",
+                "interval",
+                "negative interval in sensor",
+            ));
+        }
+
+        self.sensor_type.push(sensor_type);
+        self.sensor_datatype.push(datatype);
+        self.sensor_objtype.push(objtype);
+        self.sensor_objid.push(objid);
+        self.sensor_reftype.push(reftype);
+        self.sensor_refid.push(refid);
+        self.sensor_adr.push(*adr);
+        self.sensor_dim.push(dim);
+        self.sensor_noise.push(mjcf_sensor.noise);
+        self.sensor_cutoff.push(mjcf_sensor.cutoff);
+        let sensor_id = self.sensor_name_list.len();
+        self.sensor_name_list.push(if mjcf_sensor.name.is_empty() {
+            None
+        } else {
+            self.sensor_name_to_id
+                .insert(mjcf_sensor.name.clone(), sensor_id);
+            Some(mjcf_sensor.name.clone())
+        });
+        self.sensor_nsample.push(nsample);
+        self.sensor_interp.push(interp);
+        self.sensor_delay.push(delay);
+        self.sensor_interval.push((interval, 0.0));
+        self.sensor_user_raw.push(mjcf_sensor.user);
+
+        *adr += dim;
         Ok(())
     }
 
@@ -147,15 +154,13 @@ impl ModelBuilder {
         sensor_type: MjSensorType,
         objname: Option<&str>,
         objtype_str: Option<&str>,
-    ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
+    ) -> Result<(MjObjectType, usize)> {
         // Clock and User sensors have no object reference
         if sensor_type == MjSensorType::User || sensor_type == MjSensorType::Clock {
             return Ok((MjObjectType::None, 0));
         }
 
-        let name = objname.ok_or_else(|| ModelConversionError {
-            message: "sensor missing object name".into(),
-        })?;
+        let name = objname.ok_or_else(|| MjcfError::missing_attribute("sensor", "objname"))?;
 
         match sensor_type {
             // Joint sensors: objname is a joint name
@@ -167,9 +172,7 @@ impl ModelBuilder {
                 let id = *self
                     .joint_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("sensor references unknown joint '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Joint, name))?;
                 Ok((MjObjectType::Joint, id))
             }
 
@@ -178,21 +181,16 @@ impl ModelBuilder {
                 let id = *self
                     .tendon_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("sensor references unknown tendon '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Tendon, name))?;
                 Ok((MjObjectType::Tendon, id))
             }
 
             // Actuator sensors: objname is an actuator name
             MjSensorType::ActuatorPos | MjSensorType::ActuatorVel | MjSensorType::ActuatorFrc => {
-                let id =
-                    *self
-                        .actuator_name_to_id
-                        .get(name)
-                        .ok_or_else(|| ModelConversionError {
-                            message: format!("sensor references unknown actuator '{name}'"),
-                        })?;
+                let id = *self
+                    .actuator_name_to_id
+                    .get(name)
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Actuator, name))?;
                 Ok((MjObjectType::Actuator, id))
             }
 
@@ -207,22 +205,17 @@ impl ModelBuilder {
                 let id = *self
                     .site_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("sensor references unknown site '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))?;
                 Ok((MjObjectType::Site, id))
             }
 
             // Touch: always site-based (MuJoCo: sensor_objtype = mjOBJ_SITE).
             // objtype attribute is silently ignored for non-frame sensors.
             MjSensorType::Touch => {
-                let site_id =
-                    *self
-                        .site_name_to_id
-                        .get(name)
-                        .ok_or_else(|| ModelConversionError {
-                            message: format!("touch sensor references unknown site '{name}'"),
-                        })?;
+                let site_id = *self
+                    .site_name_to_id
+                    .get(name)
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))?;
                 Ok((MjObjectType::Site, site_id))
             }
 
@@ -240,43 +233,31 @@ impl ModelBuilder {
                     // Explicit objtype attribute — dispatch directly
                     match ot {
                         "site" => {
-                            let id = *self.site_name_to_id.get(name).ok_or_else(|| {
-                                ModelConversionError {
-                                    message: format!(
-                                        "frame sensor references unknown site '{name}'"
-                                    ),
-                                }
-                            })?;
+                            let id = *self
+                                .site_name_to_id
+                                .get(name)
+                                .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))?;
                             Ok((MjObjectType::Site, id))
                         }
                         "body" => {
-                            let id = *self.body_name_to_id.get(name).ok_or_else(|| {
-                                ModelConversionError {
-                                    message: format!(
-                                        "frame sensor references unknown body '{name}'"
-                                    ),
-                                }
-                            })?;
+                            let id = *self
+                                .body_name_to_id
+                                .get(name)
+                                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
                             Ok((MjObjectType::Body, id))
                         }
                         "xbody" => {
-                            let id = *self.body_name_to_id.get(name).ok_or_else(|| {
-                                ModelConversionError {
-                                    message: format!(
-                                        "frame sensor references unknown body '{name}'"
-                                    ),
-                                }
-                            })?;
+                            let id = *self
+                                .body_name_to_id
+                                .get(name)
+                                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
                             Ok((MjObjectType::XBody, id))
                         }
                         "geom" => {
-                            let id = *self.geom_name_to_id.get(name).ok_or_else(|| {
-                                ModelConversionError {
-                                    message: format!(
-                                        "frame sensor references unknown geom '{name}'"
-                                    ),
-                                }
-                            })?;
+                            let id = *self
+                                .geom_name_to_id
+                                .get(name)
+                                .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, name))?;
                             Ok((MjObjectType::Geom, id))
                         }
                         "camera" => {
@@ -287,12 +268,7 @@ impl ModelBuilder {
                             );
                             self.resolve_frame_sensor_by_name(name)
                         }
-                        other => Err(ModelConversionError {
-                            message: format!(
-                                "frame sensor has invalid objtype '{other}' \
-                                 (expected site/body/xbody/geom/camera)"
-                            ),
-                        }),
+                        other => Err(MjcfError::invalid_keyword("sensor", "objtype", other)),
                     }
                 } else {
                     // No explicit objtype — infer from name lookup
@@ -306,19 +282,13 @@ impl ModelBuilder {
                 let id = *self
                     .joint_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!(
-                            "jointactuatorfrc sensor references unknown joint '{name}'"
-                        ),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Joint, name))?;
                 // Validate joint type: MuJoCo rejects ball/free joints
                 let jnt_type = self.jnt_type[id];
                 if jnt_type != MjJointType::Hinge && jnt_type != MjJointType::Slide {
-                    return Err(ModelConversionError {
-                        message: format!(
-                            "jointactuatorfrc sensor: joint '{name}' must be slide or hinge"
-                        ),
-                    });
+                    return Err(MjcfError::invalid_model(format!(
+                        "jointactuatorfrc sensor: joint '{name}' must be slide or hinge"
+                    )));
                 }
                 Ok((MjObjectType::Joint, id))
             }
@@ -330,9 +300,7 @@ impl ModelBuilder {
                 let id = *self
                     .body_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("sensor references unknown body '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
                 Ok((MjObjectType::Body, id))
             }
 
@@ -351,10 +319,7 @@ impl ModelBuilder {
     ///
     /// Priority: site → body (as XBody) → geom.
     /// MuJoCo inference: `body=` → `mjOBJ_XBODY` (joint frame, NOT inertial frame).
-    fn resolve_frame_sensor_by_name(
-        &self,
-        name: &str,
-    ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
+    fn resolve_frame_sensor_by_name(&self, name: &str) -> Result<(MjObjectType, usize)> {
         if let Some(&id) = self.site_name_to_id.get(name) {
             Ok((MjObjectType::Site, id))
         } else if let Some(&id) = self.body_name_to_id.get(name) {
@@ -363,9 +328,11 @@ impl ModelBuilder {
         } else if let Some(&id) = self.geom_name_to_id.get(name) {
             Ok((MjObjectType::Geom, id))
         } else {
-            Err(ModelConversionError {
-                message: format!("frame sensor references unknown object '{name}'"),
-            })
+            Err(MjcfError::invalid_value(
+                "sensor",
+                "objname",
+                format!("unknown object '{name}'"),
+            ))
         }
     }
 
@@ -378,32 +345,25 @@ impl ModelBuilder {
         geom_name: Option<&str>,
         body_name: Option<&str>,
         side: &str,
-    ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
+    ) -> Result<(MjObjectType, usize)> {
         match (geom_name, body_name) {
             (Some(name), None) => {
                 let id = *self
                     .geom_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("distance sensor references unknown geom{side} '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, name))?;
                 Ok((MjObjectType::Geom, id))
             }
             (None, Some(name)) => {
                 let id = *self
                     .body_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("distance sensor references unknown body{side} '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
                 Ok((MjObjectType::Body, id))
             }
-            _ => Err(ModelConversionError {
-                message: format!(
-                    "distance sensor: exactly one of (geom{side}, body{side}) \
-                     must be specified"
-                ),
-            }),
+            _ => Err(MjcfError::invalid_model(format!(
+                "distance sensor: exactly one of (geom{side}, body{side}) must be specified"
+            ))),
         }
     }
 
@@ -419,7 +379,7 @@ impl ModelBuilder {
         &self,
         reftype_str: Option<&str>,
         refname: Option<&str>,
-    ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
+    ) -> Result<(MjObjectType, usize)> {
         let Some(name) = refname else {
             return Ok((MjObjectType::None, 0));
         };
@@ -429,36 +389,28 @@ impl ModelBuilder {
                 let id = *self
                     .site_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("sensor refname references unknown site '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Site, name))?;
                 Ok((MjObjectType::Site, id))
             }
             Some("body") => {
                 let id = *self
                     .body_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("sensor refname references unknown body '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
                 Ok((MjObjectType::Body, id))
             }
             Some("xbody") => {
                 let id = *self
                     .body_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("sensor refname references unknown body '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Body, name))?;
                 Ok((MjObjectType::XBody, id))
             }
             Some("geom") => {
                 let id = *self
                     .geom_name_to_id
                     .get(name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("sensor refname references unknown geom '{name}'"),
-                    })?;
+                    .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, name))?;
                 Ok((MjObjectType::Geom, id))
             }
             Some("camera") => {
@@ -469,12 +421,7 @@ impl ModelBuilder {
                 );
                 Ok((MjObjectType::None, 0))
             }
-            Some(other) => Err(ModelConversionError {
-                message: format!(
-                    "sensor has invalid reftype '{other}' \
-                     (expected site/body/xbody/geom/camera)"
-                ),
-            }),
+            Some(other) => Err(MjcfError::invalid_keyword("sensor", "reftype", other)),
             None => {
                 // refname without reftype — infer type from name lookup
                 // Priority: site → body (as XBody) → geom
@@ -485,9 +432,11 @@ impl ModelBuilder {
                 } else if let Some(&id) = self.geom_name_to_id.get(name) {
                     Ok((MjObjectType::Geom, id))
                 } else {
-                    Err(ModelConversionError {
-                        message: format!("sensor refname references unknown object '{name}'"),
-                    })
+                    Err(MjcfError::invalid_value(
+                        "sensor",
+                        "refname",
+                        format!("unknown object '{name}'"),
+                    ))
                 }
             }
         }

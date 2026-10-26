@@ -4,7 +4,7 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
-use crate::error::{MjcfError, Result};
+use crate::error::{MjcfError, Result, ValueCount};
 
 use crate::types::{
     FluidShape, MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint,
@@ -70,10 +70,10 @@ pub(super) fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>) -> Result<Mjcf
             },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"worldbody" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in worldbody".into()));
+                return Err(MjcfError::eof_in("worldbody"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -193,9 +193,9 @@ pub(super) fn parse_body<R: BufRead>(
                 _ => {}
             },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"body" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in body".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("body")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -228,13 +228,7 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
         body.sleep = Some(sleep);
     }
     if let Some(gc) = get_attribute_opt(e, "gravcomp") {
-        body.gravcomp = Some(gc.parse::<f64>().map_err(|_| {
-            crate::error::MjcfError::invalid_attribute(
-                "gravcomp",
-                "body",
-                format!("expected float, got '{gc}'"),
-            )
-        })?);
+        body.gravcomp = Some(gc.parse::<f64>().map_err(|_| MjcfError::bad_number(gc))?);
     }
     if let Some(user) = get_attribute_opt(e, "user")
         && let Ok(parts) = parse_float_array(&user)
@@ -257,9 +251,9 @@ pub(super) fn parse_joint<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::End(ref e)) if e.name().as_ref() == b"joint" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in joint".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("joint")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -276,7 +270,8 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
 
     if let Some(jtype) = get_attribute_opt(e, "type") {
         joint.joint_type = Some(
-            MjcfJointType::from_str(&jtype).ok_or_else(|| MjcfError::UnknownJointType(jtype))?,
+            MjcfJointType::from_str(&jtype)
+                .ok_or_else(|| MjcfError::invalid_keyword("joint", "type", jtype))?,
         );
     }
 
@@ -345,9 +340,9 @@ pub(super) fn parse_geom<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::End(ref e)) if e.name().as_ref() == b"geom" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in geom".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("geom")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -363,8 +358,10 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     geom.class = get_attribute_opt(e, "class");
 
     if let Some(gtype) = get_attribute_opt(e, "type") {
-        geom.geom_type =
-            Some(MjcfGeomType::from_str(&gtype).ok_or_else(|| MjcfError::UnknownGeomType(gtype))?);
+        geom.geom_type = Some(
+            MjcfGeomType::from_str(&gtype)
+                .ok_or_else(|| MjcfError::invalid_keyword("geom", "type", gtype))?,
+        );
     }
 
     geom.pos = attr_vec3(e, "pos")?;
@@ -408,13 +405,13 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         geom.fluidshape = Some(match fs.as_str() {
             "none" => FluidShape::None,
             "ellipsoid" => FluidShape::Ellipsoid,
-            _ => return Err(MjcfError::InvalidFluidShape(fs)),
+            _ => return Err(MjcfError::invalid_keyword("geom", "fluidshape", fs)),
         });
     }
     if let Some(coef_str) = get_attribute_opt(e, "fluidcoef") {
         let parts = parse_float_array(&coef_str)?;
         if parts.len() != 5 {
-            return Err(MjcfError::InvalidFluidCoef(parts.len()));
+            return Err(MjcfError::wrong_count(ValueCount::Exactly(5), parts.len()));
         }
         geom.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
     }
@@ -441,9 +438,9 @@ pub(super) fn parse_inertial<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::End(ref e)) if e.name().as_ref() == b"inertial" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in inertial".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("inertial")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -487,9 +484,9 @@ pub(super) fn parse_site<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::End(ref e)) if e.name().as_ref() == b"site" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in site".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("site")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -564,8 +561,8 @@ pub(super) fn parse_frame<R: BufRead>(
                         skip_element(reader, &elem_name)?;
                     }
                     b"joint" | b"freejoint" | b"inertial" => {
-                        return Err(MjcfError::InvalidElement(format!(
-                            "<{}> is not allowed inside <frame>",
+                        return Err(MjcfError::unsupported(format!(
+                            "<{}> inside <frame>",
                             String::from_utf8_lossy(&elem_name)
                         )));
                     }
@@ -592,17 +589,17 @@ pub(super) fn parse_frame<R: BufRead>(
                     );
                 }
                 b"joint" | b"freejoint" | b"inertial" => {
-                    return Err(MjcfError::InvalidElement(format!(
-                        "<{}/> is not allowed inside <frame>",
+                    return Err(MjcfError::unsupported(format!(
+                        "<{}/> inside <frame>",
                         String::from_utf8_lossy(e.name().as_ref())
                     )));
                 }
                 _ => {}
             },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"frame" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in frame".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("frame")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }

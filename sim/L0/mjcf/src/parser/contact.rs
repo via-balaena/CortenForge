@@ -46,10 +46,10 @@ pub(super) fn parse_contact<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfCo
             },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"contact" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in contact".into()));
+                return Err(MjcfError::eof_in("contact"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -60,9 +60,9 @@ pub(super) fn parse_contact<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfCo
 /// Parse attributes of a `<contact><pair .../>` element.
 pub(super) fn parse_contact_pair_attrs(e: &BytesStart) -> Result<MjcfContactPair> {
     let geom1 = get_attribute_opt(e, "geom1")
-        .ok_or_else(|| MjcfError::missing_attribute("geom1", "pair"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("pair", "geom1"))?;
     let geom2 = get_attribute_opt(e, "geom2")
-        .ok_or_else(|| MjcfError::missing_attribute("geom2", "pair"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("pair", "geom2"))?;
 
     let mut pair = MjcfContactPair {
         name: get_attribute_opt(e, "name"),
@@ -89,9 +89,9 @@ pub(super) fn parse_contact_pair_attrs(e: &BytesStart) -> Result<MjcfContactPair
 /// Parse attributes of a `<contact><exclude .../>` element.
 pub(super) fn parse_contact_exclude_attrs(e: &BytesStart) -> Result<MjcfContactExclude> {
     let body1 = get_attribute_opt(e, "body1")
-        .ok_or_else(|| MjcfError::missing_attribute("body1", "exclude"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("exclude", "body1"))?;
     let body2 = get_attribute_opt(e, "body2")
-        .ok_or_else(|| MjcfError::missing_attribute("body2", "exclude"))?;
+        .ok_or_else(|| MjcfError::missing_attribute("exclude", "body2"))?;
 
     Ok(MjcfContactExclude {
         name: get_attribute_opt(e, "name"),

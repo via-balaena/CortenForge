@@ -7,7 +7,8 @@ use nalgebra::{UnitQuaternion, Vector3};
 use sim_core::MjJointType;
 use tracing::warn;
 
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use crate::error::{MjcfError, Result};
 use crate::types::{AngleUnit, MjcfJoint, MjcfJointType};
 
 impl ModelBuilder {
@@ -35,7 +36,7 @@ impl ModelBuilder {
         parent_last_dof: Option<usize>,
         world_pos: Vector3<f64>,
         world_quat: UnitQuaternion<f64>,
-    ) -> std::result::Result<usize, ModelConversionError> {
+    ) -> Result<usize> {
         let jnt_id = self.jnt_type.len();
 
         // Store name mapping
@@ -50,10 +51,12 @@ impl ModelBuilder {
             MjcfJointType::Slide => MjJointType::Slide,
             MjcfJointType::Ball => MjJointType::Ball,
             MjcfJointType::Free => MjJointType::Free,
-            MjcfJointType::Cylindrical | MjcfJointType::Planar => {
-                return Err(ModelConversionError {
-                    message: format!("Joint type {joint_type:?} not yet supported in Model"),
-                });
+            // Not MuJoCo joint types: its reader refuses both keywords.
+            MjcfJointType::Cylindrical => {
+                return Err(MjcfError::invalid_keyword("joint", "type", "cylindrical"));
+            }
+            MjcfJointType::Planar => {
+                return Err(MjcfError::invalid_keyword("joint", "type", "planar"));
             }
         };
 

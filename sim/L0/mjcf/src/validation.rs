@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{MjcfError, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     MjcfBody, MjcfGeom, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType, SpatialPathElement,
 };
@@ -41,13 +41,15 @@ pub struct ValidationResult {
 pub fn validate_option(option: &MjcfOption) -> Result<()> {
     // Timestep validation
     if !option.timestep.is_finite() || option.timestep <= 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "timestep",
             format!("must be positive and finite, got {}", option.timestep),
         ));
     }
     if option.timestep > 1.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "timestep",
             format!(
                 "value {} is unusually large (> 1 second), likely an error",
@@ -58,7 +60,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Iteration count validation
     if option.iterations == 0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "iterations",
             "must be at least 1",
         ));
@@ -66,7 +69,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Tolerance validation
     if !option.tolerance.is_finite() || option.tolerance <= 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "tolerance",
             format!("must be positive and finite, got {}", option.tolerance),
         ));
@@ -74,7 +78,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Impedance ratio validation
     if !option.impratio.is_finite() || option.impratio <= 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "impratio",
             format!("must be positive and finite, got {}", option.impratio),
         ));
@@ -82,13 +87,15 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Constraint solver tuning validation
     if !option.regularization.is_finite() || option.regularization <= 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "regularization",
             format!("must be positive and finite, got {}", option.regularization),
         ));
     }
     if !option.friction_smoothing.is_finite() || option.friction_smoothing <= 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "friction_smoothing",
             format!(
                 "must be positive and finite, got {}",
@@ -99,7 +106,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Gravity vector validation
     if !option.gravity.iter().all(|v| v.is_finite()) {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "gravity",
             "must have finite components",
         ));
@@ -107,7 +115,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Wind vector validation
     if !option.wind.iter().all(|v| v.is_finite()) {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "wind",
             "must have finite components",
         ));
@@ -115,7 +124,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Density validation (can be zero to disable)
     if !option.density.is_finite() || option.density < 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "density",
             format!("must be non-negative and finite, got {}", option.density),
         ));
@@ -123,7 +133,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Viscosity validation
     if !option.viscosity.is_finite() || option.viscosity < 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "viscosity",
             format!("must be non-negative and finite, got {}", option.viscosity),
         ));
@@ -131,7 +142,8 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 
     // Override validation (if set)
     if option.o_margin >= 0.0 && !option.o_margin.is_finite() {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
+            "option",
             "o_margin",
             format!("must be finite when positive, got {}", option.o_margin),
         ));
@@ -189,7 +201,7 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         // exempt — mirrors the joint-name guard below and the builder's
         // is_empty() contract for body name lookup.
         if !body.name.is_empty() && !body_names.insert(body.name.clone()) {
-            return Err(MjcfError::DuplicateBody(body.name.clone()));
+            return Err(MjcfError::duplicate_name(ElementKind::Body, &body.name));
         }
 
         sorted_bodies.push(body.name.clone());
@@ -210,7 +222,8 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         for joint in &body.joints {
             if !joint.name.is_empty() {
                 if !joint_names.insert(joint.name.clone()) {
-                    return Err(MjcfError::DuplicateJoint(joint.name.clone()));
+                    return Err(MjcfError::duplicate_name(ElementKind::Joint, &joint.name)
+                        .at(Location::named(ElementKind::Body, &body.name)));
                 }
                 joint_to_body.insert(joint.name.clone(), body.name.clone());
                 all_joint_names.push(joint.name.clone());
@@ -220,26 +233,31 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         // Validate inertial if present
         if let Some(ref inertial) = body.inertial {
             // Check mass is positive
+            let at = || Location::named(ElementKind::Body, &body.name);
             if inertial.mass <= 0.0 {
-                return Err(MjcfError::invalid_mass(&body.name, inertial.mass));
+                return Err(MjcfError::invalid_value(
+                    "inertial",
+                    "mass",
+                    format!("must be positive, got {}", inertial.mass),
+                )
+                .at(at()));
             }
             if !inertial.mass.is_finite() {
-                return Err(MjcfError::invalid_mass(&body.name, inertial.mass));
+                return Err(MjcfError::non_finite("inertial", "mass", inertial.mass).at(at()));
             }
 
             // Check inertia tensor if specified
             if let Some(diag) = inertial.diaginertia {
                 if diag.x < 0.0 || diag.y < 0.0 || diag.z < 0.0 {
-                    return Err(MjcfError::invalid_inertia(
-                        &body.name,
+                    return Err(MjcfError::invalid_value(
+                        "inertial",
+                        "diaginertia",
                         "diagonal elements must be non-negative",
-                    ));
+                    )
+                    .at(at()));
                 }
-                if !diag.x.is_finite() || !diag.y.is_finite() || !diag.z.is_finite() {
-                    return Err(MjcfError::invalid_inertia(
-                        &body.name,
-                        "inertia values must be finite",
-                    ));
+                if let Some(v) = diag.iter().find(|v| !v.is_finite()) {
+                    return Err(MjcfError::non_finite("inertial", "diaginertia", *v).at(at()));
                 }
             }
         }
@@ -301,10 +319,14 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
 
     // Check actuators
     let mut all_actuator_names = Vec::new();
-    for actuator in &model.actuators {
+    for (i, actuator) in model.actuators.iter().enumerate() {
+        let at = || Location::nth(ElementKind::Actuator, Some(&actuator.name), i);
         if !actuator.name.is_empty() {
             if !actuator_names.insert(actuator.name.clone()) {
-                return Err(MjcfError::DuplicateActuator(actuator.name.clone()));
+                return Err(MjcfError::duplicate_name(
+                    ElementKind::Actuator,
+                    &actuator.name,
+                ));
             }
             all_actuator_names.push(actuator.name.clone());
         }
@@ -313,30 +335,21 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         if let Some(ref joint_name) = actuator.joint
             && !joint_names.contains(joint_name)
         {
-            return Err(MjcfError::undefined_joint(
-                joint_name,
-                format!("actuator '{}'", actuator.name),
-            ));
+            return Err(MjcfError::undefined(ElementKind::Joint, joint_name).at(at()));
         }
 
         // Check that site reference is valid
         if let Some(ref site_name) = actuator.site
             && !site_names_set.contains(site_name.as_str())
         {
-            return Err(MjcfError::undefined_site(
-                site_name,
-                format!("actuator '{}'", actuator.name),
-            ));
+            return Err(MjcfError::undefined(ElementKind::Site, site_name).at(at()));
         }
 
         // Check that refsite reference is valid
         if let Some(ref refsite_name) = actuator.refsite
             && !site_names_set.contains(refsite_name.as_str())
         {
-            return Err(MjcfError::undefined_site(
-                refsite_name,
-                format!("actuator '{}' refsite", actuator.name),
-            ));
+            return Err(MjcfError::undefined(ElementKind::Site, refsite_name).at(at()));
         }
 
         // Check mutual exclusivity of transmission targets
@@ -350,11 +363,9 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         .filter(|&&v| v)
         .count();
         if target_count > 1 {
-            return Err(MjcfError::invalid_attribute(
-                "joint/tendon/site/body",
-                format!("actuator '{}'", actuator.name),
-                "multiple transmission targets are mutually exclusive",
-            ));
+            return Err(
+                MjcfError::conflicting("actuator", &["joint", "tendon", "site", "body"]).at(at()),
+            );
         }
     }
 
@@ -378,24 +389,14 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
 /// paths via the inertial check, and the rest are deferred as a follow-up
 /// audit candidate.
 fn check_geom_finite(geom: &MjcfGeom, body_name: &str) -> Result<()> {
-    let geom_type_label = geom
-        .geom_type
-        .map(|t| t.as_str())
-        .unwrap_or("<unspecified>");
-
-    if !geom.size.iter().all(|v| v.is_finite()) {
-        return Err(MjcfError::invalid_geom_size(
-            geom_type_label,
-            format!("size values must be finite (body '{body_name}')"),
-        ));
+    let at = || {
+        Location::named(ElementKind::Geom, geom.name.as_deref().unwrap_or("")).in_body(body_name)
+    };
+    if let Some(v) = geom.size.iter().find(|v| !v.is_finite()) {
+        return Err(MjcfError::non_finite("geom", "size", *v).at(at()));
     }
-    if let Some(fromto) = geom.fromto
-        && !fromto.iter().all(|v| v.is_finite())
-    {
-        return Err(MjcfError::invalid_geom_size(
-            geom_type_label,
-            format!("fromto values must be finite (body '{body_name}')"),
-        ));
+    if let Some(v) = geom.fromto.iter().flatten().find(|v| !v.is_finite()) {
+        return Err(MjcfError::non_finite("geom", "fromto", *v).at(at()));
     }
     Ok(())
 }
@@ -439,14 +440,15 @@ pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
         &mut geom_names,
     );
 
-    for tendon in &model.tendons {
-        if tendon.tendon_type == MjcfTendonType::Fixed {
-            validate_fixed_tendon(tendon, &joint_names)?;
+    for (i, tendon) in model.tendons.iter().enumerate() {
+        let checked = match tendon.tendon_type {
+            MjcfTendonType::Fixed => validate_fixed_tendon(tendon, &joint_names),
+            MjcfTendonType::Spatial => validate_spatial_tendon(tendon, &site_names, &geom_names),
         }
-        if tendon.tendon_type == MjcfTendonType::Spatial {
-            validate_spatial_tendon(tendon, &site_names, &geom_names)?;
-        }
-        validate_tendon_params(tendon)?;
+        .and_then(|()| validate_tendon_params(tendon));
+        checked.map_err(|e| {
+            e.with_location_if_unknown(Location::nth(ElementKind::Tendon, Some(&tendon.name), i))
+        })?;
     }
     Ok(())
 }
@@ -454,29 +456,16 @@ pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
 /// Validate a fixed tendon: joints must exist and coefficients must be finite.
 fn validate_fixed_tendon(tendon: &MjcfTendon, joint_names: &HashSet<String>) -> Result<()> {
     if tendon.joints.is_empty() {
-        return Err(MjcfError::invalid_option(
-            "tendon",
-            format!("Fixed tendon '{}' has no joint entries", tendon.name),
+        return Err(MjcfError::invalid_model(
+            "fixed tendon has no joint entries",
         ));
     }
     for (joint_name, coef) in &tendon.joints {
         if !joint_names.contains(joint_name.as_str()) {
-            return Err(MjcfError::invalid_option(
-                "tendon",
-                format!(
-                    "Tendon '{}' references unknown joint '{}'",
-                    tendon.name, joint_name
-                ),
-            ));
+            return Err(MjcfError::undefined(ElementKind::Joint, joint_name));
         }
         if !coef.is_finite() {
-            return Err(MjcfError::invalid_option(
-                "tendon",
-                format!(
-                    "Tendon '{}' has non-finite coefficient {} for joint '{}'",
-                    tendon.name, coef, joint_name
-                ),
-            ));
+            return Err(MjcfError::non_finite("joint", "coef", *coef));
         }
     }
     Ok(())
@@ -496,36 +485,24 @@ fn validate_spatial_tendon(
 
     // Rule 3: must have at least 2 sites
     if site_count < 2 {
-        return Err(MjcfError::invalid_option(
-            "tendon",
-            format!(
-                "Spatial tendon '{}' needs at least 2 sites, has {}",
-                tendon.name, site_count
-            ),
-        ));
+        return Err(MjcfError::invalid_model(format!(
+            "spatial tendon needs at least 2 sites, has {site_count}"
+        )));
     }
 
     // Rule 1: path must start and end with a Site
     if let Some(first) = tendon.path_elements.first()
         && !matches!(first, SpatialPathElement::Site { .. })
     {
-        return Err(MjcfError::invalid_option(
-            "tendon",
-            format!(
-                "Spatial tendon '{}' path must start with a Site element",
-                tendon.name
-            ),
+        return Err(MjcfError::invalid_model(
+            "spatial tendon path must start with a Site element",
         ));
     }
     if let Some(last) = tendon.path_elements.last()
         && !matches!(last, SpatialPathElement::Site { .. })
     {
-        return Err(MjcfError::invalid_option(
-            "tendon",
-            format!(
-                "Spatial tendon '{}' path must end with a Site element",
-                tendon.name
-            ),
+        return Err(MjcfError::invalid_model(
+            "spatial tendon path must end with a Site element",
         ));
     }
 
@@ -536,39 +513,28 @@ fn validate_spatial_tendon(
                 // Rule 2: every Geom must be immediately followed by a Site
                 let next = tendon.path_elements.get(i + 1);
                 if !matches!(next, Some(SpatialPathElement::Site { .. })) {
-                    return Err(MjcfError::invalid_option(
-                        "tendon",
-                        format!(
-                            "Spatial tendon '{}': Geom element at position {} \
-                             must be immediately followed by a Site element",
-                            tendon.name, i
-                        ),
-                    ));
+                    return Err(MjcfError::invalid_model(format!(
+                        "spatial tendon: Geom element at position {i} \
+                         must be immediately followed by a Site element"
+                    )));
                 }
             }
             SpatialPathElement::Pulley { divisor } => {
                 // Rule 7: divisor must be positive
                 if *divisor <= 0.0 {
-                    return Err(MjcfError::invalid_option(
-                        "tendon",
-                        format!(
-                            "Spatial tendon '{}': Pulley at position {} \
-                             has non-positive divisor {}",
-                            tendon.name, i, divisor
-                        ),
+                    return Err(MjcfError::invalid_value(
+                        "pulley",
+                        "divisor",
+                        format!("Pulley at position {i} has non-positive divisor {divisor}"),
                     ));
                 }
                 // Rule 6: Pulley must not be immediately followed by a Geom
                 let next = tendon.path_elements.get(i + 1);
                 if matches!(next, Some(SpatialPathElement::Geom { .. })) {
-                    return Err(MjcfError::invalid_option(
-                        "tendon",
-                        format!(
-                            "Spatial tendon '{}': Pulley at position {} \
-                             must not be immediately followed by a Geom element",
-                            tendon.name, i
-                        ),
-                    ));
+                    return Err(MjcfError::invalid_model(format!(
+                        "spatial tendon: Pulley at position {i} \
+                         must not be immediately followed by a Geom element"
+                    )));
                 }
             }
             SpatialPathElement::Site { .. } => {}
@@ -620,35 +586,17 @@ fn validate_spatial_tendon(
         match elem {
             SpatialPathElement::Site { site } => {
                 if !site_names.contains(site.as_str()) {
-                    return Err(MjcfError::invalid_option(
-                        "tendon",
-                        format!(
-                            "Tendon '{}' references unknown site '{}'",
-                            tendon.name, site
-                        ),
-                    ));
+                    return Err(MjcfError::undefined(ElementKind::Site, site));
                 }
             }
             SpatialPathElement::Geom { geom, sidesite } => {
                 if !geom_names.contains(geom.as_str()) {
-                    return Err(MjcfError::invalid_option(
-                        "tendon",
-                        format!(
-                            "Tendon '{}' references unknown geom '{}'",
-                            tendon.name, geom
-                        ),
-                    ));
+                    return Err(MjcfError::undefined(ElementKind::Geom, geom));
                 }
                 if let Some(ss) = sidesite
                     && !site_names.contains(ss.as_str())
                 {
-                    return Err(MjcfError::invalid_option(
-                        "tendon",
-                        format!(
-                            "Tendon '{}' references unknown sidesite '{}'",
-                            tendon.name, ss
-                        ),
-                    ));
+                    return Err(MjcfError::undefined(ElementKind::Site, ss));
                 }
             }
             SpatialPathElement::Pulley { .. } => {}
@@ -662,46 +610,42 @@ fn validate_spatial_tendon(
 fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
     let stiffness = tendon.stiffness.unwrap_or(0.0);
     if stiffness < 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
             "tendon",
-            format!(
-                "Tendon '{}' has negative stiffness {stiffness}",
-                tendon.name
-            ),
+            "stiffness",
+            format!("negative stiffness {stiffness}"),
         ));
     }
     let damping = tendon.damping.unwrap_or(0.0);
     if damping < 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
             "tendon",
-            format!("Tendon '{}' has negative damping {damping}", tendon.name),
+            "damping",
+            format!("negative damping {damping}"),
         ));
     }
     let frictionloss = tendon.frictionloss.unwrap_or(0.0);
     if frictionloss < 0.0 {
-        return Err(MjcfError::invalid_option(
+        return Err(MjcfError::invalid_value(
             "tendon",
-            format!(
-                "Tendon '{}' has negative frictionloss {frictionloss}",
-                tendon.name
-            ),
+            "frictionloss",
+            format!("negative frictionloss {frictionloss}"),
         ));
     }
     if tendon.limited.unwrap_or(false) {
         if let Some((min, max)) = tendon.range {
             if min >= max {
-                return Err(MjcfError::invalid_option(
+                return Err(MjcfError::invalid_value(
                     "tendon",
-                    format!(
-                        "Tendon '{}' has invalid range [{}, {}]",
-                        tendon.name, min, max
-                    ),
+                    "range",
+                    format!("invalid range [{min}, {max}]"),
                 ));
             }
         } else {
-            return Err(MjcfError::invalid_option(
+            return Err(MjcfError::invalid_value(
                 "tendon",
-                format!("Tendon '{}' is limited but has no range", tendon.name),
+                "range",
+                "the tendon is limited but has no range",
             ));
         }
     }
@@ -744,7 +688,13 @@ mod tests {
             .with_body(MjcfBody::new("duplicate"));
 
         let result = validate(&model);
-        assert!(matches!(result, Err(MjcfError::DuplicateBody(_))));
+        assert!(matches!(
+            result,
+            Err(MjcfError::DuplicateName {
+                kind: ElementKind::Body,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -758,7 +708,13 @@ mod tests {
         );
 
         let result = validate(&model);
-        assert!(matches!(result, Err(MjcfError::DuplicateJoint(_))));
+        assert!(matches!(
+            result,
+            Err(MjcfError::DuplicateName {
+                kind: ElementKind::Joint,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -768,7 +724,13 @@ mod tests {
             .with_actuator(MjcfActuator::motor("motor1", "nonexistent_joint"));
 
         let result = validate(&model);
-        assert!(matches!(result, Err(MjcfError::UndefinedJoint { .. })));
+        assert!(matches!(
+            result,
+            Err(MjcfError::UndefinedReference {
+                kind: ElementKind::Joint,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -783,7 +745,10 @@ mod tests {
         });
 
         let result = validate(&model);
-        assert!(matches!(result, Err(MjcfError::InvalidMass { .. })));
+        assert!(matches!(
+            result,
+            Err(MjcfError::InvalidValue { ref attribute, .. }) if attribute == "mass"
+        ));
     }
 
     #[test]
@@ -799,7 +764,10 @@ mod tests {
         });
 
         let result = validate(&model);
-        assert!(matches!(result, Err(MjcfError::InvalidInertia { .. })));
+        assert!(matches!(
+            result,
+            Err(MjcfError::InvalidValue { ref attribute, .. }) if attribute == "diaginertia"
+        ));
     }
 
     #[test]
@@ -849,28 +817,28 @@ mod tests {
         option.timestep = -0.001;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "timestep"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "timestep"
         ));
 
         // Zero timestep
         option.timestep = 0.0;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "timestep"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "timestep"
         ));
 
         // Very large timestep
         option.timestep = 2.0;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "timestep"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "timestep"
         ));
 
         // NaN timestep
         option.timestep = f64::NAN;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "timestep"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "timestep"
         ));
     }
 
@@ -881,7 +849,7 @@ mod tests {
 
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "iterations"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "iterations"
         ));
     }
 
@@ -892,13 +860,13 @@ mod tests {
         option.tolerance = -1e-8;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "tolerance"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "tolerance"
         ));
 
         option.tolerance = 0.0;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "tolerance"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "tolerance"
         ));
     }
 
@@ -909,13 +877,13 @@ mod tests {
         option.impratio = -1.0;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "impratio"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "impratio"
         ));
 
         option.impratio = 0.0;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "impratio"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "impratio"
         ));
     }
 
@@ -926,7 +894,7 @@ mod tests {
 
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "gravity"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "gravity"
         ));
     }
 
@@ -937,7 +905,7 @@ mod tests {
 
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "density"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "density"
         ));
     }
 
@@ -948,7 +916,7 @@ mod tests {
 
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "viscosity"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "viscosity"
         ));
     }
 
@@ -960,12 +928,12 @@ mod tests {
         option.regularization = -1.0;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "regularization"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "regularization"
         ));
         option.regularization = 0.0;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "regularization"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "regularization"
         ));
         option.regularization = 1e-6; // restore
 
@@ -973,7 +941,7 @@ mod tests {
         option.friction_smoothing = 0.0;
         assert!(matches!(
             validate_option(&option),
-            Err(MjcfError::InvalidOption { option, .. }) if option == "friction_smoothing"
+            Err(MjcfError::InvalidValue { attribute, .. }) if attribute == "friction_smoothing"
         ));
     }
 
@@ -989,10 +957,7 @@ mod tests {
     fn test_invalid_geom_sphere_nan() {
         let model =
             MjcfModel::new("test").with_body(body_with_geom("base", MjcfGeom::sphere(f64::NAN)));
-        assert!(matches!(
-            validate(&model),
-            Err(MjcfError::InvalidGeomSize { .. })
-        ));
+        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
     }
 
     #[test]
@@ -1001,10 +966,7 @@ mod tests {
             "base",
             MjcfGeom::box_shape(Vector3::new(1.0, f64::NAN, 1.0)),
         ));
-        assert!(matches!(
-            validate(&model),
-            Err(MjcfError::InvalidGeomSize { .. })
-        ));
+        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
     }
 
     #[test]
@@ -1013,10 +975,7 @@ mod tests {
             "base",
             MjcfGeom::capsule(f64::INFINITY, 0.5),
         ));
-        assert!(matches!(
-            validate(&model),
-            Err(MjcfError::InvalidGeomSize { .. })
-        ));
+        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
     }
 
     #[test]
@@ -1028,10 +987,7 @@ mod tests {
             ..Default::default()
         };
         let model = MjcfModel::new("test").with_body(body_with_geom("base", cylinder));
-        assert!(matches!(
-            validate(&model),
-            Err(MjcfError::InvalidGeomSize { .. })
-        ));
+        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
     }
 
     #[test]
@@ -1043,10 +999,7 @@ mod tests {
             ..Default::default()
         };
         let model = MjcfModel::new("test").with_body(body_with_geom("base", geom));
-        assert!(matches!(
-            validate(&model),
-            Err(MjcfError::InvalidGeomSize { .. })
-        ));
+        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
     }
 
     #[test]
@@ -1055,10 +1008,7 @@ mod tests {
         let model = MjcfModel::new("test").with_body(MjcfBody::new("root").with_child(
             MjcfBody::new("link1").with_child(body_with_geom("link2", MjcfGeom::sphere(f64::NAN))),
         ));
-        assert!(matches!(
-            validate(&model),
-            Err(MjcfError::InvalidGeomSize { .. })
-        ));
+        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
     }
 
     #[test]
@@ -1066,10 +1016,7 @@ mod tests {
         // Worldbody-anchored geoms (e.g., ground planes) are also validated.
         let mut model = MjcfModel::new("test");
         model.worldbody.geoms.push(MjcfGeom::sphere(f64::NAN));
-        assert!(matches!(
-            validate(&model),
-            Err(MjcfError::InvalidGeomSize { .. })
-        ));
+        assert!(matches!(validate(&model), Err(MjcfError::NonFinite { .. })));
     }
 
     #[test]

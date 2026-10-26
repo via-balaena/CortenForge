@@ -10,7 +10,8 @@
 
 use nalgebra::Vector3;
 
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfEqualityDefaults, MjcfJointEquality,
     MjcfTendonEquality, MjcfWeld,
@@ -47,18 +48,33 @@ impl ModelBuilder {
     /// to produce the same eq_id assignment as MuJoCo.
     ///
     /// Must be called AFTER all bodies and joints are processed (requires name lookups).
-    pub(crate) fn process_equality_constraints(
-        &mut self,
-        equality: &MjcfEquality,
-    ) -> std::result::Result<(), ModelConversionError> {
-        for &(kind, idx) in &equality.order {
-            match kind {
-                EqualityKind::Connect => self.process_connect(&equality.connects[idx])?,
-                EqualityKind::Weld => self.process_weld(&equality.welds[idx])?,
-                EqualityKind::Joint => self.process_joint_equality(&equality.joints[idx])?,
-                EqualityKind::Distance => self.process_distance(&equality.distances[idx])?,
-                EqualityKind::Tendon => self.process_tendon_equality(&equality.tendons[idx])?,
-            }
+    pub(crate) fn process_equality_constraints(&mut self, equality: &MjcfEquality) -> Result<()> {
+        for (i, &(kind, idx)) in equality.order.iter().enumerate() {
+            let (name, done) = match kind {
+                EqualityKind::Connect => {
+                    let c = &equality.connects[idx];
+                    (c.name.as_deref(), self.process_connect(c))
+                }
+                EqualityKind::Weld => {
+                    let w = &equality.welds[idx];
+                    (w.name.as_deref(), self.process_weld(w))
+                }
+                EqualityKind::Joint => {
+                    let j = &equality.joints[idx];
+                    (j.name.as_deref(), self.process_joint_equality(j))
+                }
+                EqualityKind::Distance => {
+                    let d = &equality.distances[idx];
+                    (d.name.as_deref(), self.process_distance(d))
+                }
+                EqualityKind::Tendon => {
+                    let t = &equality.tendons[idx];
+                    (t.name.as_deref(), self.process_tendon_equality(t))
+                }
+            };
+            done.map_err(|e| {
+                e.with_location_if_unknown(Location::nth(ElementKind::Equality, name, i))
+            })?;
         }
         Ok(())
     }
@@ -71,27 +87,17 @@ impl ModelBuilder {
     ///
     /// The body2 anchor is auto-computed so both anchors map to the same world
     /// point at qpos0, matching MuJoCo's `engine_setconst.c` behavior.
-    fn process_connect(
-        &mut self,
-        connect: &MjcfConnect,
-    ) -> std::result::Result<(), ModelConversionError> {
-        let body1_id =
-            self.body_name_to_id
-                .get(&connect.body1)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Connect constraint references unknown body1: '{}'",
-                        connect.body1
-                    ),
-                })?;
+    fn process_connect(&mut self, connect: &MjcfConnect) -> Result<()> {
+        let body1_id = self
+            .body_name_to_id
+            .get(&connect.body1)
+            .ok_or_else(|| MjcfError::undefined(ElementKind::Body, &connect.body1))?;
 
         let body2_id = if let Some(ref body2_name) = connect.body2 {
             *self
                 .body_name_to_id
                 .get(body2_name)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!("Connect constraint references unknown body2: '{body2_name}'"),
-                })?
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, body2_name))?
         } else {
             0 // World body
         };
@@ -146,21 +152,17 @@ impl ModelBuilder {
     /// MuJoCo convention: the `anchor` XML attribute is in body2's frame.
     /// Body1's anchor is auto-computed so both anchor points map to the same
     /// world-space position at qpos0.
-    fn process_weld(&mut self, weld: &MjcfWeld) -> std::result::Result<(), ModelConversionError> {
-        let body1_id =
-            self.body_name_to_id
-                .get(&weld.body1)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!("Weld constraint references unknown body1: '{}'", weld.body1),
-                })?;
+    fn process_weld(&mut self, weld: &MjcfWeld) -> Result<()> {
+        let body1_id = self
+            .body_name_to_id
+            .get(&weld.body1)
+            .ok_or_else(|| MjcfError::undefined(ElementKind::Body, &weld.body1))?;
 
         let body2_id = if let Some(ref body2_name) = weld.body2 {
             *self
                 .body_name_to_id
                 .get(body2_name)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!("Weld constraint references unknown body2: '{body2_name}'"),
-                })?
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, body2_name))?
         } else {
             0 // World body
         };
@@ -228,27 +230,17 @@ impl ModelBuilder {
     /// MuJoCo's own joint equality is a quartic (5 coefficients); we accept up to
     /// degree 10 (11 coefficients) because gait2392's coupled-knee roll-glide
     /// SimmSpline needs degree 8 to track to ≤0.17 mm (the G3 forward-dynamics arc).
-    fn process_joint_equality(
-        &mut self,
-        joint_eq: &MjcfJointEquality,
-    ) -> std::result::Result<(), ModelConversionError> {
-        let joint1_id =
-            self.joint_name_to_id
-                .get(&joint_eq.joint1)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Joint equality references unknown joint1: '{}'",
-                        joint_eq.joint1
-                    ),
-                })?;
+    fn process_joint_equality(&mut self, joint_eq: &MjcfJointEquality) -> Result<()> {
+        let joint1_id = self
+            .joint_name_to_id
+            .get(&joint_eq.joint1)
+            .ok_or_else(|| MjcfError::undefined(ElementKind::Joint, &joint_eq.joint1))?;
 
         let joint2_id = if let Some(ref joint2_name) = joint_eq.joint2 {
             *self
                 .joint_name_to_id
                 .get(joint2_name)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!("Joint equality references unknown joint2: '{joint2_name}'"),
-                })?
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Joint, joint2_name))?
         } else {
             usize::MAX
         };
@@ -285,30 +277,17 @@ impl ModelBuilder {
     /// Process a single Distance constraint (1 DOF scalar distance between geom centers).
     ///
     /// `eq_data[0]` = target distance.
-    fn process_distance(
-        &mut self,
-        dist: &MjcfDistance,
-    ) -> std::result::Result<(), ModelConversionError> {
-        let geom1_id =
-            *self
-                .geom_name_to_id
-                .get(&dist.geom1)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Distance constraint references unknown geom1: '{}'",
-                        dist.geom1
-                    ),
-                })?;
+    fn process_distance(&mut self, dist: &MjcfDistance) -> Result<()> {
+        let geom1_id = *self
+            .geom_name_to_id
+            .get(&dist.geom1)
+            .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, &dist.geom1))?;
 
         let geom2_id = if let Some(ref geom2_name) = dist.geom2 {
             *self
                 .geom_name_to_id
                 .get(geom2_name)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Distance constraint references unknown geom2: '{geom2_name}'"
-                    ),
-                })?
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, geom2_name))?
         } else {
             usize::MAX
         };
@@ -347,27 +326,17 @@ impl ModelBuilder {
     }
 
     /// Process a single Tendon equality constraint (polynomial coupling).
-    fn process_tendon_equality(
-        &mut self,
-        ten_eq: &MjcfTendonEquality,
-    ) -> std::result::Result<(), ModelConversionError> {
+    fn process_tendon_equality(&mut self, ten_eq: &MjcfTendonEquality) -> Result<()> {
         let t1_id = *self
             .tendon_name_to_id
             .get(ten_eq.tendon1.as_str())
-            .ok_or_else(|| ModelConversionError {
-                message: format!(
-                    "Tendon equality references unknown tendon1: '{}'",
-                    ten_eq.tendon1
-                ),
-            })?;
+            .ok_or_else(|| MjcfError::undefined(ElementKind::Tendon, &ten_eq.tendon1))?;
 
         let t2_id = if let Some(ref t2_name) = ten_eq.tendon2 {
             *self
                 .tendon_name_to_id
                 .get(t2_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!("Tendon equality references unknown tendon2: '{t2_name}'"),
-                })?
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Tendon, t2_name))?
         } else {
             usize::MAX
         };
@@ -768,7 +737,8 @@ mod tests {
 
     /// Each `process_*` resolves names via `body_name_to_id`/
     /// `joint_name_to_id`/`geom_name_to_id`/`tendon_name_to_id` and returns
-    /// a `ModelConversionError` containing the offending name if missing.
+    /// an [`MjcfError::UndefinedReference`](crate::MjcfError::UndefinedReference)
+    /// naming the one that is missing.
     /// One test sweeps all four resolver branches by trying each in turn.
     #[test]
     fn equality_unknown_name_errors() {

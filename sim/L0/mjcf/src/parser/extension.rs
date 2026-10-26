@@ -23,11 +23,8 @@ pub(super) fn parse_extension<R: BufRead>(reader: &mut Reader<R>) -> Result<Mjcf
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) if e.name().as_ref() == b"plugin" => {
-                let plugin_name =
-                    get_attribute_opt(e, "plugin").ok_or_else(|| MjcfError::MissingAttribute {
-                        element: "plugin".into(),
-                        attribute: "plugin",
-                    })?;
+                let plugin_name = get_attribute_opt(e, "plugin")
+                    .ok_or_else(|| MjcfError::missing_attribute("plugin", "plugin"))?;
                 let mut ep = MjcfExtensionPlugin {
                     plugin: plugin_name,
                     instances: Vec::new(),
@@ -37,10 +34,10 @@ pub(super) fn parse_extension<R: BufRead>(reader: &mut Reader<R>) -> Result<Mjcf
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"extension" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in extension".into()));
+                return Err(MjcfError::eof_in("extension"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -56,20 +53,14 @@ pub(super) fn parse_extension_plugin<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) if e.name().as_ref() == b"instance" => {
-                let name =
-                    get_attribute_opt(e, "name").ok_or_else(|| MjcfError::MissingAttribute {
-                        element: "instance".into(),
-                        attribute: "name",
-                    })?;
+                let name = get_attribute_opt(e, "name")
+                    .ok_or_else(|| MjcfError::missing_attribute("instance", "name"))?;
                 let config = parse_plugin_config(reader, b"instance")?;
                 ep.instances.push(MjcfPluginInstance { name, config });
             }
             Ok(Event::Empty(ref e)) if e.name().as_ref() == b"instance" => {
-                let name =
-                    get_attribute_opt(e, "name").ok_or_else(|| MjcfError::MissingAttribute {
-                        element: "instance".into(),
-                        attribute: "name",
-                    })?;
+                let name = get_attribute_opt(e, "name")
+                    .ok_or_else(|| MjcfError::missing_attribute("instance", "name"))?;
                 ep.instances.push(MjcfPluginInstance {
                     name,
                     config: Vec::new(),
@@ -77,10 +68,10 @@ pub(super) fn parse_extension_plugin<R: BufRead>(
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"plugin" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in plugin".into()));
+                return Err(MjcfError::eof_in("plugin"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -98,30 +89,25 @@ pub(super) fn parse_plugin_config<R: BufRead>(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Empty(ref e)) if e.name().as_ref() == b"config" => {
-                let key =
-                    get_attribute_opt(e, "key").ok_or_else(|| MjcfError::MissingAttribute {
-                        element: "config".into(),
-                        attribute: "key",
-                    })?;
+                let key = get_attribute_opt(e, "key")
+                    .ok_or_else(|| MjcfError::missing_attribute("config", "key"))?;
                 if !seen_keys.insert(key.clone()) {
-                    return Err(MjcfError::XmlParse(format!("duplicate config key: {key}")));
+                    return Err(MjcfError::invalid_value(
+                        "config",
+                        "key",
+                        format!("duplicate config key: {key}"),
+                    ));
                 }
-                let value =
-                    get_attribute_opt(e, "value").ok_or_else(|| MjcfError::MissingAttribute {
-                        element: "config".into(),
-                        attribute: "value",
-                    })?;
+                let value = get_attribute_opt(e, "value")
+                    .ok_or_else(|| MjcfError::missing_attribute("config", "value"))?;
                 configs.push(MjcfPluginConfig { key, value });
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse(format!(
-                    "unexpected EOF in {}",
-                    String::from_utf8_lossy(parent_tag)
-                )));
+                return Err(MjcfError::eof_in(String::from_utf8_lossy(parent_tag)));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -133,19 +119,16 @@ pub(super) fn parse_plugin_ref<R: BufRead>(
     reader: &mut Reader<R>,
     start: &BytesStart,
 ) -> Result<MjcfPluginRef> {
-    let plugin = get_attribute_opt(start, "plugin").ok_or_else(|| MjcfError::MissingAttribute {
-        element: "plugin".into(),
-        attribute: "plugin",
-    })?;
+    let plugin = get_attribute_opt(start, "plugin")
+        .ok_or_else(|| MjcfError::missing_attribute("plugin", "plugin"))?;
     let instance = get_attribute_opt(start, "instance");
     let config = parse_plugin_config(reader, b"plugin")?;
 
     // Validation: can't have both instance reference and inline config
     if instance.is_some() && !config.is_empty() {
-        return Err(MjcfError::XmlParse(
+        return Err(MjcfError::invalid_model(
             "plugin configuration attributes cannot be used in an element \
-             that references a predefined plugin instance"
-                .into(),
+             that references a predefined plugin instance",
         ));
     }
 
@@ -160,10 +143,8 @@ pub(super) fn parse_plugin_ref<R: BufRead>(
 /// Parse a self-closing `<plugin plugin="..." instance="..."/>` element (Event::Empty).
 /// No child `<config>` elements are possible in a self-closing tag.
 pub(super) fn parse_plugin_ref_empty(start: &BytesStart) -> Result<MjcfPluginRef> {
-    let plugin = get_attribute_opt(start, "plugin").ok_or_else(|| MjcfError::MissingAttribute {
-        element: "plugin".into(),
-        attribute: "plugin",
-    })?;
+    let plugin = get_attribute_opt(start, "plugin")
+        .ok_or_else(|| MjcfError::missing_attribute("plugin", "plugin"))?;
     let instance = get_attribute_opt(start, "instance");
 
     Ok(MjcfPluginRef {

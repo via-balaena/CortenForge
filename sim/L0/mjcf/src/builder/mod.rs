@@ -43,7 +43,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::defaults::DefaultResolver;
-use crate::error::{MjcfError, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
     MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfJacobianType, MjcfKeyframe,
     MjcfModel, MjcfOption, MjcfSolverType,
@@ -66,21 +66,6 @@ pub const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
 /// - midpoint = 0.5, power = 2.0: sigmoid transition shape
 pub const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
 
-/// Error type for MJCF to Model conversion.
-#[derive(Debug, Clone)]
-pub struct ModelConversionError {
-    /// Error message.
-    pub message: String,
-}
-
-impl std::fmt::Display for ModelConversionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MJCF to Model conversion error: {}", self.message)
-    }
-}
-
-impl std::error::Error for ModelConversionError {}
-
 /// Whether an MJCF range makes an automatic limit: `0 0` does not, as MuJoCo
 /// leaves it unlimited (`islimited`, `user_objects.cc:184-189`).
 fn has_range(range: Option<(f64, f64)>) -> bool {
@@ -90,48 +75,33 @@ fn has_range(range: Option<(f64, f64)>) -> bool {
 // Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
 //
 // Validates lengths, finiteness, and fills missing fields with model defaults.
-fn resolve_keyframe(
-    mjcf_kf: &MjcfKeyframe,
-    model: &Model,
-) -> std::result::Result<Keyframe, ModelConversionError> {
+fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
     // Validate time finiteness
     if !mjcf_kf.time.is_finite() {
-        return Err(ModelConversionError {
-            message: format!(
-                "keyframe '{}': time is not finite ({})",
-                mjcf_kf.name, mjcf_kf.time
-            ),
-        });
+        return Err(MjcfError::non_finite("key", "time", mjcf_kf.time));
     }
 
     // Helper: validate length and finiteness for a float array field.
-    let validate_field = |field: &Option<Vec<f64>>,
-                          field_name: &str,
-                          expected_len: usize|
-     -> std::result::Result<(), ModelConversionError> {
-        if let Some(ref v) = *field {
-            if v.len() != expected_len {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "keyframe '{}': {} length {} does not match {}",
-                        mjcf_kf.name,
+    let validate_field =
+        |field: &Option<Vec<f64>>, field_name: &str, expected_len: usize| -> Result<()> {
+            if let Some(ref v) = *field {
+                if v.len() != expected_len {
+                    return Err(MjcfError::invalid_value(
+                        "key",
                         field_name,
-                        v.len(),
-                        expected_len
-                    ),
-                });
+                        format!("length {} does not match {expected_len}", v.len()),
+                    ));
+                }
+                if let Some(pos) = v.iter().position(|x| !x.is_finite()) {
+                    return Err(MjcfError::non_finite(
+                        "key",
+                        format!("{field_name}[{pos}]"),
+                        v[pos],
+                    ));
+                }
             }
-            if let Some(pos) = v.iter().position(|x| !x.is_finite()) {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "keyframe '{}': {}[{}] is not finite ({})",
-                        mjcf_kf.name, field_name, pos, v[pos]
-                    ),
-                });
-            }
-        }
-        Ok(())
-    };
+            Ok(())
+        };
 
     validate_field(&mjcf_kf.qpos, "qpos", model.nq)?;
     validate_field(&mjcf_kf.qvel, "qvel", model.nv)?;
@@ -227,19 +197,14 @@ fn resolve_keyframe(
 /// let mut data = model.make_data();
 /// data.step(&model).expect("step failed");
 /// ```
-pub fn model_from_mjcf(
-    mjcf: &MjcfModel,
-    base_path: Option<&Path>,
-) -> std::result::Result<Model, ModelConversionError> {
+pub fn model_from_mjcf(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Model> {
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
 
     // Active ingress validation (Phase 0): full validate() promoted from
     // defense-in-depth dead code. Fail-closed on any finding. Runs against
     // user input as-parsed, before frame/composite expansion.
-    crate::validation::validate(&mjcf).map_err(|e| ModelConversionError {
-        message: format!("Model validation failed: {e}"),
-    })?;
+    crate::validation::validate(&mjcf)?;
 
     // Validate childclass references before frame expansion dissolves frames.
     // MuJoCo rejects undefined childclass at schema validation (S7).
@@ -257,10 +222,7 @@ pub fn model_from_mjcf(
     // Expand <composite> elements: generates body chains from composite definitions.
     // Runs AFTER frame expansion (composites inside frames work) and BEFORE
     // discardvisual/fusestatic (which need to see the expanded bodies).
-    let composite_excludes =
-        composite::expand_composites(&mut mjcf.worldbody).map_err(|e| ModelConversionError {
-            message: e.to_string(),
-        })?;
+    let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
     mjcf.contact.excludes.extend(composite_excludes);
 
     if mjcf.compiler.discardvisual {
@@ -305,17 +267,21 @@ pub fn model_from_mjcf(
     }
 
     // Validate tendons before processing (catches bad references early)
-    crate::validation::validate_tendons(&mjcf).map_err(|e| ModelConversionError {
-        message: format!("Tendon validation failed: {e}"),
-    })?;
+    crate::validation::validate_tendons(&mjcf)?;
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     builder.process_tendons(&mjcf.tendons)?;
 
     // Process actuators
-    for actuator in &mjcf.actuators {
+    for (i, actuator) in mjcf.actuators.iter().enumerate() {
         let actuator = builder.resolver.apply_to_actuator(actuator);
-        builder.process_actuator(&actuator)?;
+        builder.process_actuator(&actuator).map_err(|e| {
+            e.with_location_if_unknown(Location::nth(
+                ElementKind::Actuator,
+                Some(&actuator.name),
+                i,
+            ))
+        })?;
     }
 
     // Process equality constraints (must be after bodies and joints)
@@ -334,11 +300,7 @@ pub fn model_from_mjcf(
     builder.process_flex_bodies(&mjcf.flex)?;
 
     // Finalize user data: resolve nuser, validate, pad
-    builder
-        .finalize_user_data(&mjcf)
-        .map_err(|e| ModelConversionError {
-            message: format!("User data finalization failed: {e}"),
-        })?;
+    builder.finalize_user_data(&mjcf)?;
 
     // Build final model
     let mut model = builder.build();
@@ -350,8 +312,13 @@ pub fn model_from_mjcf(
     model.keyframes = mjcf
         .keyframes
         .iter()
-        .map(|kf| resolve_keyframe(kf, &model))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        .enumerate()
+        .map(|(i, kf)| {
+            resolve_keyframe(kf, &model).map_err(|e| {
+                e.with_location_if_unknown(Location::nth(ElementKind::Keyframe, Some(&kf.name), i))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     model.nkeyframe = model.keyframes.len();
     model.keyframe_name_to_id = model
         .keyframes
@@ -374,13 +341,12 @@ pub fn model_from_mjcf(
 /// if `<include` is detected in the XML.
 pub fn load_model(xml: &str) -> Result<Model> {
     if xml.contains("<include") {
-        return Err(crate::error::MjcfError::IncludeError(
-            "<include> elements require file-based loading; use load_model_from_file() instead"
-                .to_string(),
+        return Err(MjcfError::include(
+            "<include> elements require file-based loading; use load_model_from_file() instead",
         ));
     }
     let mjcf = crate::parse_mjcf_str(xml)?;
-    model_from_mjcf(&mjcf, None).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
+    model_from_mjcf(&mjcf, None)
 }
 
 /// Load Model from an MJCF file path.
@@ -402,13 +368,7 @@ pub fn load_model(xml: &str) -> Result<Model> {
 /// ```
 pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
     let path = path.as_ref();
-    let xml = std::fs::read_to_string(path).map_err(|e| {
-        crate::error::MjcfError::Unsupported(format!(
-            "failed to read file '{}': {}",
-            path.display(),
-            e
-        ))
-    })?;
+    let xml = std::fs::read_to_string(path).map_err(|e| MjcfError::io(path, e))?;
 
     // Expand <include> elements before parsing
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -417,7 +377,7 @@ pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
     let mjcf = crate::parse_mjcf_str(&expanded_xml)?;
     let base_path = path.parent();
 
-    model_from_mjcf(&mjcf, base_path).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
+    model_from_mjcf(&mjcf, base_path)
 }
 
 /// Builder for constructing Model from MJCF.
@@ -862,18 +822,22 @@ impl ModelBuilder {
 /// For a single element type: resolve nuser, validate, pad.
 fn finalize_user_type(type_name: &str, explicit_nuser: i32, raw: &mut [Vec<f64>]) -> Result<()> {
     if explicit_nuser < -1 {
-        return Err(MjcfError::Unsupported(format!(
-            "nuser_{type_name} must be >= -1, got {explicit_nuser}"
-        )));
+        return Err(MjcfError::invalid_value(
+            "size",
+            format!("nuser_{type_name}"),
+            format!("nuser_{type_name} must be >= -1, got {explicit_nuser}"),
+        ));
     }
 
     let nuser = if explicit_nuser >= 0 {
         let nuser = explicit_nuser as usize;
         for user in raw.iter() {
             if user.len() > nuser {
-                return Err(MjcfError::Unsupported(format!(
-                    "user data exceeds nuser_{type_name}={nuser}"
-                )));
+                return Err(MjcfError::invalid_value(
+                    type_name,
+                    "user",
+                    format!("user data exceeds nuser_{type_name}={nuser}"),
+                ));
             }
         }
         nuser

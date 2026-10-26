@@ -4,7 +4,8 @@
 //! Handles geom/body name resolution, geom-combination fallbacks for unspecified
 //! pair attributes, and deduplication with last-wins semantics.
 
-use super::{ModelBuilder, ModelConversionError};
+use super::ModelBuilder;
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::MjcfContact;
 use sim_core::ContactPair;
 
@@ -18,36 +19,22 @@ impl ModelBuilder {
     ///
     /// For each `<exclude>`: resolve body names to indices and insert into the
     /// exclude set.
-    pub(crate) fn process_contact(
-        &mut self,
-        contact: &MjcfContact,
-    ) -> std::result::Result<(), ModelConversionError> {
+    pub(crate) fn process_contact(&mut self, contact: &MjcfContact) -> Result<()> {
         // Process pairs
-        for mjcf_pair in &contact.pairs {
+        for (i, mjcf_pair) in contact.pairs.iter().enumerate() {
             // Stage 1: apply defaults class
             let pair = self.resolver.apply_to_pair(mjcf_pair);
+            let at = || Location::nth(ElementKind::Pair, pair.name.as_deref(), i);
 
             // Resolve geom names to indices
-            let g1 =
-                *self
-                    .geom_name_to_id
-                    .get(&pair.geom1)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!(
-                            "<pair> references unknown geom '{}' in geom1",
-                            pair.geom1
-                        ),
-                    })?;
-            let g2 =
-                *self
-                    .geom_name_to_id
-                    .get(&pair.geom2)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!(
-                            "<pair> references unknown geom '{}' in geom2",
-                            pair.geom2
-                        ),
-                    })?;
+            let g1 = *self
+                .geom_name_to_id
+                .get(&pair.geom1)
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, &pair.geom1).at(at()))?;
+            let g2 = *self
+                .geom_name_to_id
+                .get(&pair.geom2)
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Geom, &pair.geom2).at(at()))?;
 
             // Stage 2: geom-combination fallbacks for unspecified attributes
             let condim = pair
@@ -105,21 +92,18 @@ impl ModelBuilder {
                 gap,
             };
 
-            // Deduplicate: canonical key (min, max) for symmetry
+            // Deduplicate: canonical key (min, max) for symmetry. The set holds
+            // exactly the keys of `contact_pairs`, so a key already in it has
+            // its pair there, which the last one replaces.
             let key = (g1.min(g2), g1.max(g2));
-            if self.contact_pair_set.contains(&key) {
-                // Last-wins: replace existing entry
-                let pos = self
-                    .contact_pairs
-                    .iter()
-                    .position(|p| (p.geom1.min(p.geom2), p.geom1.max(p.geom2)) == key)
-                    .ok_or_else(|| ModelConversionError {
-                        message: "contact_pair_set and contact_pairs out of sync".into(),
-                    })?;
-                self.contact_pairs[pos] = contact_pair;
-            } else {
-                self.contact_pair_set.insert(key);
+            if self.contact_pair_set.insert(key) {
                 self.contact_pairs.push(contact_pair);
+            } else if let Some(existing) = self
+                .contact_pairs
+                .iter_mut()
+                .find(|p| (p.geom1.min(p.geom2), p.geom1.max(p.geom2)) == key)
+            {
+                *existing = contact_pair;
             }
         }
 
@@ -128,21 +112,11 @@ impl ModelBuilder {
             let b1 = *self
                 .body_name_to_id
                 .get(&mjcf_exclude.body1)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "<exclude> references unknown body '{}' in body1",
-                        mjcf_exclude.body1
-                    ),
-                })?;
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, &mjcf_exclude.body1))?;
             let b2 = *self
                 .body_name_to_id
                 .get(&mjcf_exclude.body2)
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "<exclude> references unknown body '{}' in body2",
-                        mjcf_exclude.body2
-                    ),
-                })?;
+                .ok_or_else(|| MjcfError::undefined(ElementKind::Body, &mjcf_exclude.body2))?;
             // Canonical key for symmetry
             self.contact_excludes.insert((b1.min(b2), b1.max(b2)));
         }
@@ -301,9 +275,9 @@ mod tests {
         assert!(model.contact_excludes.contains(&key));
     }
 
-    /// Both `<pair>` and `<exclude>` resolve names to ids and surface a
-    /// `ModelConversionError` containing the offending name when the
-    /// referenced geom or body doesn't exist.
+    /// Both `<pair>` and `<exclude>` resolve names to ids and surface an
+    /// [`MjcfError::UndefinedReference`](crate::MjcfError::UndefinedReference)
+    /// naming the geom or body that doesn't exist.
     #[test]
     fn contact_unknown_name_errors() {
         let pair_xml = r#"

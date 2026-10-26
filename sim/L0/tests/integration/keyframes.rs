@@ -707,7 +707,7 @@ fn ac18_mocap_site_follows() {
 }
 
 // ============================================================================
-// AC 19: Mocap on non-world-child → ModelConversionError
+// AC 19: Mocap on non-world-child → MjcfError::InvalidModel
 // ============================================================================
 
 #[test]
@@ -741,7 +741,7 @@ fn ac19_mocap_non_world_child_error() {
 }
 
 // ============================================================================
-// AC 20: Mocap body with joints → ModelConversionError
+// AC 20: Mocap body with joints → MjcfError::InvalidModel
 // ============================================================================
 
 #[test]
@@ -769,7 +769,7 @@ fn ac20_mocap_with_joints_error() {
 }
 
 // ============================================================================
-// AC 21: Keyframe qpos wrong length → ModelConversionError
+// AC 21: Keyframe qpos wrong length → MjcfError::InvalidValue
 // ============================================================================
 
 #[test]
@@ -800,7 +800,7 @@ fn ac21_keyframe_qpos_wrong_length() {
 }
 
 // ============================================================================
-// AC 22: Keyframe qpos with NaN → ModelConversionError
+// AC 22: Keyframe qpos with NaN → MjcfError::NonFinite
 // ============================================================================
 
 #[test]
@@ -831,7 +831,7 @@ fn ac22_keyframe_nan_rejected() {
 }
 
 // ============================================================================
-// AC 23: Keyframe time=inf → ModelConversionError
+// AC 23: Keyframe time=inf → MjcfError::NonFinite
 // ============================================================================
 
 #[test]

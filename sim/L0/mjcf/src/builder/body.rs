@@ -8,9 +8,10 @@ use nalgebra::{UnitQuaternion, Vector3};
 use sim_core::SleepPolicy;
 use tracing::warn;
 
+use super::ModelBuilder;
 use super::mass::{compute_inertia_from_geoms, extract_inertial_properties};
 use super::orientation::resolve_orientation;
-use super::{ModelBuilder, ModelConversionError};
+use crate::error::{MjcfError, Result};
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
 
 impl ModelBuilder {
@@ -22,10 +23,7 @@ impl ModelBuilder {
     /// No childclass is applied here — MuJoCo's worldbody accepts no attributes
     /// (including childclass), so worldbody elements use only their own explicit
     /// class or the unnamed top-level default.
-    pub(crate) fn process_worldbody_geoms_and_sites(
-        &mut self,
-        worldbody: &MjcfBody,
-    ) -> std::result::Result<(), ModelConversionError> {
+    pub(crate) fn process_worldbody_geoms_and_sites(&mut self, worldbody: &MjcfBody) -> Result<()> {
         // Track geom start address for body 0
         let geom_adr = self.geom_type.len();
 
@@ -66,7 +64,7 @@ impl ModelBuilder {
         parent_id: usize,
         parent_last_dof: Option<usize>,
         inherited_childclass: Option<&str>,
-    ) -> std::result::Result<usize, ModelConversionError> {
+    ) -> Result<usize> {
         // Start with parent's world frame (world body is at origin)
         let (parent_world_pos, parent_world_quat) = if parent_id == 0 {
             (Vector3::zeros(), UnitQuaternion::identity())
@@ -98,27 +96,23 @@ impl ModelBuilder {
         parent_world_pos: Vector3<f64>,
         parent_world_quat: UnitQuaternion<f64>,
         inherited_childclass: Option<&str>,
-    ) -> std::result::Result<usize, ModelConversionError> {
+    ) -> Result<usize> {
         let body_id = self.body_parent.len();
 
         // Validate mocap body constraints (before any state mutations)
         if body.mocap {
             if parent_id != 0 {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "mocap body '{}' must be a direct child of worldbody",
-                        body.name
-                    ),
-                });
+                return Err(MjcfError::invalid_model(format!(
+                    "mocap body '{}' must be a direct child of worldbody",
+                    body.name
+                )));
             }
             if !body.joints.is_empty() {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "mocap body '{}' must not have joints (has {})",
-                        body.name,
-                        body.joints.len()
-                    ),
-                });
+                return Err(MjcfError::invalid_model(format!(
+                    "mocap body '{}' must not have joints (has {})",
+                    body.name,
+                    body.joints.len()
+                )));
             }
         }
 

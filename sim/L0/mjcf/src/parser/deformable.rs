@@ -64,10 +64,10 @@ pub(super) fn parse_deformable<R: BufRead>(
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"deformable" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in deformable".into()));
+                return Err(MjcfError::eof_in("deformable"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -198,10 +198,10 @@ pub(super) fn parse_flex<R: BufRead>(
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"flex" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in flex".into()));
+                return Err(MjcfError::eof_in("flex"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -456,10 +456,10 @@ pub(super) fn parse_flexcomp<R: BufRead>(
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"flexcomp" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in flexcomp".into()));
+                return Err(MjcfError::eof_in("flexcomp"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -641,9 +641,9 @@ pub(super) fn parse_skin<R: BufRead>(
                 _ => {}
             },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"skin" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in skin".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("skin")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -692,7 +692,7 @@ pub(super) fn parse_skin_bone_attrs(e: &BytesStart) -> Result<MjcfSkinBone> {
 
     // body is required
     bone.body =
-        get_attribute_opt(e, "body").ok_or_else(|| MjcfError::missing_attribute("body", "bone"))?;
+        get_attribute_opt(e, "body").ok_or_else(|| MjcfError::missing_attribute("bone", "body"))?;
 
     if let Some(bindpos) = get_attribute_opt(e, "bindpos") {
         bone.bindpos = parse_vector3(&bindpos)?;
@@ -708,12 +708,12 @@ pub(super) fn parse_skin_bone_attrs(e: &BytesStart) -> Result<MjcfSkinBone> {
 /// Parse skin vertex element attributes.
 pub(super) fn parse_skin_vertex_attrs(e: &BytesStart) -> Result<MjcfSkinVertex> {
     // id is required (vertex index in mesh)
-    let id = parse_int_attr(e, "id").ok_or_else(|| MjcfError::missing_attribute("id", "vertex"))?
+    let id = parse_int_attr(e, "id").ok_or_else(|| MjcfError::missing_attribute("vertex", "id"))?
         as usize;
 
     // bone is required (bone index in skin)
     let bone = parse_int_attr(e, "bone")
-        .ok_or_else(|| MjcfError::missing_attribute("bone", "vertex"))? as usize;
+        .ok_or_else(|| MjcfError::missing_attribute("vertex", "bone"))? as usize;
 
     // weight defaults to 1.0 if not specified
     let weight = parse_float_attr(e, "weight").unwrap_or(1.0);

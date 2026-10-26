@@ -926,7 +926,7 @@ fn t30_sensor_dim_adr_invariance() {
 }
 
 // ============================================================================
-// T31: Invalid reftype → ModelConversionError → AC11
+// T31: Invalid reftype → MjcfError::InvalidKeyword → AC11
 // ============================================================================
 
 #[test]
@@ -955,7 +955,7 @@ fn t31_invalid_reftype_error() {
 }
 
 // ============================================================================
-// T32: Unknown refname → ModelConversionError → AC12
+// T32: Unknown refname → MjcfError::UndefinedReference → AC12
 // ============================================================================
 
 #[test]

@@ -58,9 +58,9 @@ pub(super) fn parse_option<R: BufRead>(
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"option" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in option".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("option")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -206,11 +206,7 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
             "degree" => compiler.angle = AngleUnit::Degree,
             "radian" => compiler.angle = AngleUnit::Radian,
             other => {
-                return Err(MjcfError::invalid_attribute(
-                    "angle",
-                    "compiler",
-                    format!("expected 'degree' or 'radian', got '{other}'"),
-                ));
+                return Err(MjcfError::invalid_keyword("compiler", "angle", other));
             }
         }
     }
@@ -222,9 +218,9 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
                 .chars()
                 .all(|c| matches!(c, 'x' | 'y' | 'z' | 'X' | 'Y' | 'Z'))
         {
-            return Err(MjcfError::invalid_attribute(
-                "eulerseq",
+            return Err(MjcfError::invalid_value(
                 "compiler",
+                "eulerseq",
                 format!("expected 3 characters from {{x,y,z,X,Y,Z}}, got '{seq}'"),
             ));
         }
@@ -254,10 +250,10 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
             "true" => compiler.inertiafromgeom = InertiaFromGeom::True,
             "auto" => compiler.inertiafromgeom = InertiaFromGeom::Auto,
             other => {
-                return Err(MjcfError::invalid_attribute(
-                    "inertiafromgeom",
+                return Err(MjcfError::invalid_keyword(
                     "compiler",
-                    format!("expected 'false', 'true', or 'auto', got '{other}'"),
+                    "inertiafromgeom",
+                    other,
                 ));
             }
         }
@@ -301,16 +297,14 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
         match coord.to_lowercase().as_str() {
             "local" => {} // no-op, matches current behavior
             "global" => {
-                return Err(MjcfError::Unsupported(
-                    "coordinate='global' was removed in MuJoCo 2.3.4".to_string(),
+                return Err(MjcfError::invalid_value(
+                    "compiler",
+                    "coordinate",
+                    "coordinate='global' was removed in MuJoCo 2.3.4",
                 ));
             }
             other => {
-                return Err(MjcfError::invalid_attribute(
-                    "coordinate",
-                    "compiler",
-                    format!("expected 'local' or 'global', got '{other}'"),
-                ));
+                return Err(MjcfError::invalid_keyword("compiler", "coordinate", other));
             }
         }
     }

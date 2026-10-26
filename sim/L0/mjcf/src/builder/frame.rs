@@ -10,10 +10,10 @@
 
 use nalgebra::{UnitQuaternion, Vector3, Vector4};
 
-use super::ModelConversionError;
 use super::geom::resolve_site_fromto;
 use super::orientation::{quat_to_wxyz, resolve_orientation, site_quat_as_written};
 use crate::defaults::DefaultResolver;
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MjcfBody, MjcfCompiler, MjcfFrame, MjcfSite};
 
 /// Core SE(3) composition — direct translation of MuJoCo's `mjuu_frameaccumChild`.
@@ -36,19 +36,11 @@ fn frame_accum_child(
 /// dissolves frames (via `std::mem::take`), losing `frame.childclass` values.
 ///
 /// MuJoCo rejects undefined childclass references at schema validation (S7).
-pub fn validate_childclass_references(
-    body: &MjcfBody,
-    resolver: &DefaultResolver,
-) -> std::result::Result<(), ModelConversionError> {
+pub fn validate_childclass_references(body: &MjcfBody, resolver: &DefaultResolver) -> Result<()> {
     if let Some(ref cc) = body.childclass
         && resolver.get_defaults(Some(cc.as_str())).is_none()
     {
-        return Err(ModelConversionError {
-            message: format!(
-                "childclass '{}' on body '{}' references undefined default class",
-                cc, body.name
-            ),
-        });
+        return Err(MjcfError::unknown_class(cc).at(Location::named(ElementKind::Body, &body.name)));
     }
     for frame in &body.frames {
         validate_frame_childclass_refs(frame, resolver)?;
@@ -60,20 +52,14 @@ pub fn validate_childclass_references(
 }
 
 /// Validate childclass references on a frame and its nested contents.
-fn validate_frame_childclass_refs(
-    frame: &MjcfFrame,
-    resolver: &DefaultResolver,
-) -> std::result::Result<(), ModelConversionError> {
+fn validate_frame_childclass_refs(frame: &MjcfFrame, resolver: &DefaultResolver) -> Result<()> {
     if let Some(ref cc) = frame.childclass
         && resolver.get_defaults(Some(cc.as_str())).is_none()
     {
-        return Err(ModelConversionError {
-            message: format!(
-                "childclass '{}' on frame '{}' references undefined default class",
-                cc,
-                frame.name.as_deref().unwrap_or("<unnamed>")
-            ),
-        });
+        return Err(MjcfError::unknown_class(cc).at(Location::named(
+            ElementKind::Frame,
+            frame.name.as_deref().unwrap_or(""),
+        )));
     }
     for nested in &frame.frames {
         validate_frame_childclass_refs(nested, resolver)?;
@@ -135,7 +121,7 @@ pub fn resolve_sites(
     body: &mut MjcfBody,
     resolver: &DefaultResolver,
     inherited: Option<&str>,
-) -> std::result::Result<(), ModelConversionError> {
+) -> Result<()> {
     let effective = body
         .childclass
         .clone()
@@ -157,7 +143,7 @@ fn resolve_sites_in_frame(
     frame: &mut MjcfFrame,
     resolver: &DefaultResolver,
     inherited: Option<&str>,
-) -> std::result::Result<(), ModelConversionError> {
+) -> Result<()> {
     let effective = frame
         .childclass
         .clone()
@@ -179,7 +165,7 @@ fn resolve_site(
     site: &mut MjcfSite,
     resolver: &DefaultResolver,
     childclass: Option<&str>,
-) -> std::result::Result<(), ModelConversionError> {
+) -> Result<()> {
     if site.class.is_none() {
         site.class = childclass.map(str::to_string);
     }
@@ -320,6 +306,7 @@ fn expand_single_frame(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use crate::builder::load_model;
+    use crate::error::MjcfError;
     use nalgebra::Vector3;
 
     // =========================================================================
@@ -742,8 +729,8 @@ mod tests {
         assert!(result.is_err(), "joint inside frame should error");
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("not allowed inside <frame>"),
-            "error should mention invalid element: {err}"
+            matches!(&err, MjcfError::Unsupported { feature, .. } if feature == "<joint/> inside <frame>"),
+            "{err}"
         );
     }
 

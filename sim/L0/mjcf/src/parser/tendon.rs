@@ -43,9 +43,9 @@ pub(super) fn parse_tendons<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<Mj
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"tendon" => break,
-            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in tendon".into())),
+            Ok(Event::Eof) => return Err(MjcfError::eof_in("tendon")),
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -77,7 +77,7 @@ pub(super) fn parse_tendon<R: BufRead>(
                     }
                     b"joint" => {
                         if tendon.tendon_type == MjcfTendonType::Spatial {
-                            return Err(MjcfError::XmlParse(format!(
+                            return Err(MjcfError::invalid_model(format!(
                                 "Joint elements inside spatial tendons are not supported \
                                  (tendon '{}'). Use a fixed tendon for joint coupling.",
                                 tendon.name
@@ -116,12 +116,10 @@ pub(super) fn parse_tendon<R: BufRead>(
                 }
             }
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse(
-                    "unexpected EOF in tendon element".into(),
-                ));
+                return Err(MjcfError::eof_in("tendon element"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -162,9 +160,9 @@ pub(super) fn parse_tendon_attrs(
         match parts.len() {
             1 => {
                 if parts[0] < 0.0 || !parts[0].is_finite() {
-                    return Err(MjcfError::invalid_attribute(
+                    return Err(MjcfError::invalid_value(
+                        "tendon",
                         "springlength",
-                        tendon.name,
                         format!("value ({}) must be finite and >= 0", parts[0]),
                     ));
                 }
@@ -176,9 +174,9 @@ pub(super) fn parse_tendon_attrs(
                     || !parts[0].is_finite()
                     || !parts[1].is_finite()
                 {
-                    return Err(MjcfError::invalid_attribute(
+                    return Err(MjcfError::invalid_value(
+                        "tendon",
                         "springlength",
-                        tendon.name,
                         format!(
                             "values ({}, {}) must be finite and >= 0",
                             parts[0], parts[1]
@@ -187,9 +185,9 @@ pub(super) fn parse_tendon_attrs(
                 }
                 if parts[0] > parts[1] {
                     // S4
-                    return Err(MjcfError::invalid_attribute(
+                    return Err(MjcfError::invalid_value(
+                        "tendon",
                         "springlength",
-                        tendon.name,
                         format!("low ({}) must be <= high ({})", parts[0], parts[1]),
                     ));
                 }

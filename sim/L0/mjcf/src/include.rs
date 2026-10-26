@@ -21,8 +21,8 @@ use crate::error::{MjcfError, Result};
 /// the main model file). The expansion is recursive: included files may
 /// themselves contain `<include>` elements.
 ///
-/// Each file may be included at most once. Duplicate includes produce
-/// `MjcfError::DuplicateInclude`.
+/// Each file may be included at most once; a second include of a file is an
+/// [`MjcfError::Include`].
 pub fn expand_includes(xml: &str, base_dir: &Path) -> Result<String> {
     let mut seen = HashSet::new();
     expand_includes_inner(xml, base_dir, &mut seen)
@@ -50,26 +50,19 @@ fn expand_includes_inner(
                 let resolved = resolve_include_path(&file_attr, base_dir)?;
 
                 // Check for duplicate includes
-                let canonical = resolved.canonicalize().map_err(|e| {
-                    MjcfError::IncludeError(format!(
-                        "cannot resolve include path '{}': {e}",
-                        resolved.display()
-                    ))
-                })?;
+                let canonical = resolved
+                    .canonicalize()
+                    .map_err(|e| MjcfError::io(&resolved, e))?;
                 if !seen.insert(canonical.clone()) {
-                    return Err(MjcfError::DuplicateInclude(format!(
+                    return Err(MjcfError::include(format!(
                         "file '{}' included more than once",
                         resolved.display()
                     )));
                 }
 
                 // Read the included file
-                let content = std::fs::read_to_string(&resolved).map_err(|e| {
-                    MjcfError::IncludeError(format!(
-                        "cannot read include file '{}' (resolved from '{file_attr}'): {e}",
-                        resolved.display()
-                    ))
-                })?;
+                let content =
+                    std::fs::read_to_string(&resolved).map_err(|e| MjcfError::io(&resolved, e))?;
 
                 // Extract root children and splice them in
                 let children_xml = extract_root_children(&content, &resolved)?;
@@ -82,32 +75,25 @@ fn expand_includes_inner(
                     .write_event(Event::Text(quick_xml::events::BytesText::from_escaped(
                         &expanded,
                     )))
-                    .map_err(|e| MjcfError::XmlParse(format!("write error: {e}")))?;
+                    .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
             }
             Ok(Event::Start(ref e)) if e.name().as_ref() == b"include" => {
                 // <include ...> with children is invalid, but handle gracefully
                 let file_attr = extract_file_attr(e)?;
                 let resolved = resolve_include_path(&file_attr, base_dir)?;
 
-                let canonical = resolved.canonicalize().map_err(|e| {
-                    MjcfError::IncludeError(format!(
-                        "cannot resolve include path '{}': {e}",
-                        resolved.display()
-                    ))
-                })?;
+                let canonical = resolved
+                    .canonicalize()
+                    .map_err(|e| MjcfError::io(&resolved, e))?;
                 if !seen.insert(canonical.clone()) {
-                    return Err(MjcfError::DuplicateInclude(format!(
+                    return Err(MjcfError::include(format!(
                         "file '{}' included more than once",
                         resolved.display()
                     )));
                 }
 
-                let content = std::fs::read_to_string(&resolved).map_err(|e| {
-                    MjcfError::IncludeError(format!(
-                        "cannot read include file '{}' (resolved from '{file_attr}'): {e}",
-                        resolved.display()
-                    ))
-                })?;
+                let content =
+                    std::fs::read_to_string(&resolved).map_err(|e| MjcfError::io(&resolved, e))?;
 
                 let children_xml = extract_root_children(&content, &resolved)?;
                 let expanded = expand_includes_inner(&children_xml, base_dir, seen)?;
@@ -116,7 +102,7 @@ fn expand_includes_inner(
                     .write_event(Event::Text(quick_xml::events::BytesText::from_escaped(
                         &expanded,
                     )))
-                    .map_err(|e| MjcfError::XmlParse(format!("write error: {e}")))?;
+                    .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
 
                 // Skip the closing </include> tag
                 skip_include_element(&mut reader)?;
@@ -125,15 +111,15 @@ fn expand_includes_inner(
             Ok(event) => {
                 writer
                     .write_event(event)
-                    .map_err(|e| MjcfError::XmlParse(format!("write error: {e}")))?;
+                    .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
             }
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
 
     let result = writer.into_inner();
-    String::from_utf8(result).map_err(|e| MjcfError::XmlParse(format!("UTF-8 error: {e}")))
+    String::from_utf8(result).map_err(|e| MjcfError::include(format!("UTF-8 error: {e}")))
 }
 
 /// Extract the `file` attribute from an `<include>` element.
@@ -148,19 +134,17 @@ fn extract_file_attr(e: &BytesStart) -> Result<String> {
             // and MJCF is XML 1.0, so this is the right reading either way.
             let val = attr
                 .normalized_value(XmlVersion::Implicit1_0)
-                .map_err(|e| MjcfError::XmlParse(format!("invalid include file attr: {e}")))?;
+                .map_err(|e| MjcfError::include(format!("invalid include file attr: {e}")))?;
             let val = val.to_string();
             if val.is_empty() {
-                return Err(MjcfError::IncludeError(
-                    "<include> element has empty file attribute".to_string(),
+                return Err(MjcfError::include(
+                    "<include> element has empty file attribute",
                 ));
             }
             return Ok(val);
         }
     }
-    Err(MjcfError::IncludeError(
-        "<include> element missing required 'file' attribute".to_string(),
-    ))
+    Err(MjcfError::missing_attribute("include", "file"))
 }
 
 /// Resolve an include file path relative to the base directory.
@@ -189,13 +173,13 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
             }
             Ok(Event::Empty(_)) => {
                 // Self-closing root → no children
-                return Err(MjcfError::IncludeError(format!(
+                return Err(MjcfError::include(format!(
                     "include file '{}' has empty root element (no children to include)",
                     source_path.display()
                 )));
             }
             Ok(Event::Eof) => {
-                return Err(MjcfError::IncludeError(format!(
+                return Err(MjcfError::include(format!(
                     "include file '{}' has no root element",
                     source_path.display()
                 )));
@@ -213,7 +197,7 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
                 // Skip XML declaration, comments, whitespace, processing instructions
             }
             Err(e) => {
-                return Err(MjcfError::XmlParse(format!(
+                return Err(MjcfError::include(format!(
                     "error parsing include file '{}': {e}",
                     source_path.display()
                 )));
@@ -233,7 +217,7 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
                 depth += 1;
                 children_writer
                     .write_event(Event::Start(e.clone()))
-                    .map_err(|e| MjcfError::XmlParse(format!("write error: {e}")))?;
+                    .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
             }
             Ok(Event::End(ref e)) => {
                 depth -= 1;
@@ -243,10 +227,10 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
                 }
                 children_writer
                     .write_event(Event::End(e.clone()))
-                    .map_err(|e| MjcfError::XmlParse(format!("write error: {e}")))?;
+                    .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
             }
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse(format!(
+                return Err(MjcfError::include(format!(
                     "unexpected EOF in include file '{}'",
                     source_path.display()
                 )));
@@ -254,10 +238,10 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
             Ok(event) => {
                 children_writer
                     .write_event(event)
-                    .map_err(|e| MjcfError::XmlParse(format!("write error: {e}")))?;
+                    .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
             }
             Err(e) => {
-                return Err(MjcfError::XmlParse(format!(
+                return Err(MjcfError::include(format!(
                     "error parsing include file '{}': {e}",
                     source_path.display()
                 )));
@@ -267,7 +251,7 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
     }
 
     let bytes = children_writer.into_inner();
-    String::from_utf8(bytes).map_err(|e| MjcfError::XmlParse(format!("UTF-8 error: {e}")))
+    String::from_utf8(bytes).map_err(|e| MjcfError::include(format!("UTF-8 error: {e}")))
 }
 
 /// Skip past a non-self-closing `<include>...</include>` element.
@@ -284,12 +268,10 @@ fn skip_include_element<R: BufRead>(reader: &mut Reader<R>) -> Result<()> {
                 }
             }
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse(
-                    "unexpected EOF while skipping include element".into(),
-                ));
+                return Err(MjcfError::eof_in("include"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -424,13 +406,13 @@ mod tests {
         let result = expand_includes(xml, dir.path());
         assert!(result.is_err());
         match result.unwrap_err() {
-            MjcfError::DuplicateInclude(msg) => {
+            MjcfError::Include { message, .. } => {
                 assert!(
-                    msg.contains("shared.xml"),
-                    "error should mention file: {msg}"
+                    message.contains("shared.xml") && message.contains("more than once"),
+                    "error should mention file: {message}"
                 );
             }
-            other => panic!("expected DuplicateInclude, got: {other}"),
+            other => panic!("expected Include, got: {other}"),
         }
     }
 
@@ -446,13 +428,15 @@ mod tests {
         let result = expand_includes(xml, dir.path());
         assert!(result.is_err());
         match result.unwrap_err() {
-            MjcfError::IncludeError(msg) => {
+            MjcfError::Io { path, source, .. } => {
                 assert!(
-                    msg.contains("nonexistent.xml"),
-                    "error should mention file: {msg}"
+                    path.ends_with("nonexistent.xml"),
+                    "error should name the file: {}",
+                    path.display()
                 );
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
             }
-            other => panic!("expected IncludeError, got: {other}"),
+            other => panic!("expected Io, got: {other}"),
         }
     }
 
@@ -468,13 +452,12 @@ mod tests {
         let result = expand_includes(xml, dir.path());
         assert!(result.is_err());
         match result.unwrap_err() {
-            MjcfError::IncludeError(msg) => {
-                assert!(
-                    msg.contains("file"),
-                    "error should mention missing attr: {msg}"
-                );
+            MjcfError::MissingAttribute {
+                element, attribute, ..
+            } => {
+                assert_eq!((element.as_str(), attribute.as_str()), ("include", "file"));
             }
-            other => panic!("expected IncludeError, got: {other}"),
+            other => panic!("expected MissingAttribute, got: {other}"),
         }
     }
 

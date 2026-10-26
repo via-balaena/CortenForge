@@ -26,7 +26,7 @@ pub(super) fn parse_composite<R: BufRead>(
     let prefix = get_attribute_opt(e, "prefix").unwrap_or_default();
 
     let comp_type = match get_attribute_opt(e, "type")
-        .ok_or_else(|| MjcfError::missing_attribute("type", "composite"))?
+        .ok_or_else(|| MjcfError::missing_attribute("composite", "type"))?
         .as_str()
     {
         "particle" => CompositeType::Particle,
@@ -36,11 +36,7 @@ pub(super) fn parse_composite<R: BufRead>(
         "cable" => CompositeType::Cable,
         "cloth" => CompositeType::Cloth,
         other => {
-            return Err(MjcfError::invalid_attribute(
-                "type",
-                "composite",
-                format!("unknown composite type: \"{other}\""),
-            ));
+            return Err(MjcfError::invalid_keyword("composite", "type", other));
         }
     };
 
@@ -147,10 +143,10 @@ pub(super) fn parse_composite<R: BufRead>(
             },
             Ok(Event::End(ref end)) if end.name().as_ref() == b"composite" => break,
             Ok(Event::Eof) => {
-                return Err(MjcfError::XmlParse("unexpected EOF in composite".into()));
+                return Err(MjcfError::eof_in("composite"));
             }
             Ok(_) => {}
-            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+            Err(e) => return Err(MjcfError::xml(e)),
         }
         buf.clear();
     }
@@ -202,7 +198,7 @@ pub(super) fn parse_composite_joint_attrs(e: &BytesStart) -> CompositeJoint {
 /// Parse attributes of a `<composite><geom>` child.
 pub(super) fn parse_composite_geom_attrs(e: &BytesStart) -> Result<CompositeGeom> {
     let geom_type = if let Some(s) = get_attribute_opt(e, "type") {
-        MjcfGeomType::from_str(&s).ok_or_else(|| MjcfError::UnknownGeomType(s))?
+        MjcfGeomType::from_str(&s).ok_or_else(|| MjcfError::invalid_keyword("geom", "type", s))?
     } else {
         MjcfGeomType::Capsule
     };
@@ -296,11 +292,7 @@ pub(super) fn parse_curve_shapes(s: &str) -> Result<[CompositeShape; 3]> {
             "l" => CompositeShape::Line,
             "0" | "zero" => CompositeShape::Zero,
             other => {
-                return Err(MjcfError::invalid_attribute(
-                    "curve",
-                    "composite",
-                    format!("unknown curve shape: \"{other}\""),
-                ));
+                return Err(MjcfError::invalid_keyword("composite", "curve", other));
             }
         };
     }

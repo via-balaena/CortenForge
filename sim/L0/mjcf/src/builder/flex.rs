@@ -10,7 +10,8 @@
 
 use nalgebra::{UnitQuaternion, Vector3};
 
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::MjcfFlex;
 use sim_core::{EqualityType, FlexSelfCollide, MjJointType};
 
@@ -28,10 +29,7 @@ impl ModelBuilder {
     ///
     /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
     /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
-    pub(crate) fn process_flex_bodies(
-        &mut self,
-        flex_list: &[MjcfFlex],
-    ) -> std::result::Result<(), ModelConversionError> {
+    pub(crate) fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) -> Result<()> {
         for flex_orig in flex_list {
             // Resolve `node` attribute: if `node` names are present and no vertices
             // exist, use the named bodies as flex vertices (MuJoCo semantics).
@@ -49,12 +47,8 @@ impl ModelBuilder {
                     let mut f = flex_orig.clone();
                     for node_name in &flex_orig.node {
                         let &bid = self.body_name_to_id.get(node_name).ok_or_else(|| {
-                            ModelConversionError {
-                                message: format!(
-                                    "flex '{}' node references undefined body '{}'",
-                                    flex_orig.name, node_name
-                                ),
-                            }
+                            MjcfError::undefined(ElementKind::Body, node_name)
+                                .at(Location::named(ElementKind::Flex, &flex_orig.name))
                         })?;
                         // World position for geometry (rest-lengths, mass lumping).
                         // body_world_pos is indexed by (body_id - 1) since worldbody
