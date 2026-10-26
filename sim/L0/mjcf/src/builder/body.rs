@@ -9,7 +9,9 @@ use sim_core::SleepPolicy;
 use tracing::warn;
 
 use super::ModelBuilder;
-use super::mass::{compute_inertia_from_geoms, extract_inertial_properties};
+use super::mass::{
+    check_replaced_full_inertia, compute_inertia_from_geoms, extract_inertial_properties,
+};
 use super::orientation::resolve_orientation;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
@@ -169,7 +171,11 @@ impl ModelBuilder {
         let (mass, inertia, ipos, iquat) = self
             .resolve_body_inertia(body, &resolved_geoms)
             .map_err(|e| {
-                e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
+                e.with_location_if_unknown(Location::nth(
+                    ElementKind::Body,
+                    Some(&body.name),
+                    body_id,
+                ))
             })?;
 
         // Track joint/DOF addresses for this body
@@ -274,7 +280,8 @@ impl ModelBuilder {
     /// Resolve inertial properties with full MuJoCo semantics.
     ///
     /// Dispatches based on `compiler.inertiafromgeom`:
-    /// - `True`  — always compute from geoms (overrides explicit `<inertial>`)
+    /// - `True`  — always compute from geoms (overrides explicit `<inertial>`,
+    ///   whose `fullinertia` MuJoCo still refuses where it would refuse it)
     /// - `Auto`  — compute from geoms only when no explicit `<inertial>`
     /// - `False` — use explicit `<inertial>` or zero
     fn resolve_body_inertia(
@@ -283,12 +290,15 @@ impl ModelBuilder {
         resolved_geoms: &[MjcfGeom],
     ) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
         match self.compiler.inertiafromgeom {
-            InertiaFromGeom::True => compute_inertia_from_geoms(
-                resolved_geoms,
-                &self.mesh_name_to_id,
-                &self.mesh_data,
-                &self.mesh_inertia_modes,
-            ),
+            InertiaFromGeom::True => {
+                check_replaced_full_inertia(body.inertial.as_ref())?;
+                compute_inertia_from_geoms(
+                    resolved_geoms,
+                    &self.mesh_name_to_id,
+                    &self.mesh_data,
+                    &self.mesh_inertia_modes,
+                )
+            }
             InertiaFromGeom::Auto => {
                 if let Some(ref inertial) = body.inertial {
                     extract_inertial_properties(inertial)

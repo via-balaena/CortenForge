@@ -95,10 +95,13 @@ pub fn extract_inertial_properties(
 
     // Priority: fullinertia > diaginertia > default
     if let Some(full) = inertial.fullinertia {
-        let refuse = |reason: &str| MjcfError::invalid_value("inertial", "fullinertia", reason);
-        let (moments, frame) = full_inertia(&full).map_err(refuse)?;
+        let (moments, frame) = principal_full_inertia(&full)?;
         if !moments.iter().chain(frame.iter()).all(|x| x.is_finite()) {
-            return Err(refuse("its principal moments or axes are not finite"));
+            return Err(MjcfError::invalid_value(
+                "inertial",
+                "fullinertia",
+                "its principal moments or axes are not finite",
+            ));
         }
         let iquat =
             UnitQuaternion::new_unchecked(Quaternion::new(frame[0], frame[1], frame[2], frame[3]));
@@ -122,13 +125,32 @@ pub fn extract_inertial_properties(
     }
 }
 
+/// A `fullinertia` made principal (`full_inertia`), refused with MuJoCo's
+/// text where its smallest moment is below mjEPS.
+fn principal_full_inertia(full: &[f64; 6]) -> Result<([f64; 3], [f64; 4])> {
+    full_inertia(full).map_err(|reason| MjcfError::invalid_value("inertial", "fullinertia", reason))
+}
+
+/// MuJoCo's refusal of a `fullinertia` that `<compiler
+/// inertiafromgeom="true">` replaces with the geoms' inertia: MuJoCo makes
+/// every fullinertia principal before that (`user_objects.cc:2413-2418`), so
+/// its refusal stands, and what it makes, a non-finite one included, is
+/// replaced.
+pub fn check_replaced_full_inertia(inertial: Option<&MjcfInertial>) -> Result<()> {
+    if let Some(full) = inertial.and_then(|i| i.fullinertia) {
+        principal_full_inertia(&full)?;
+    }
+    Ok(())
+}
+
 /// Compute inertia from geoms (fallback when no explicit inertial).
 ///
 /// Accumulates full 3×3 inertia tensor with geom orientation handling,
 /// then eigendecomposes to extract principal inertia and orientation.
-/// Refuses a body whose mass or inertia is not finite (a geom's size can
-/// overflow them; MuJoCo loads such a body with an infinite mass), before the
-/// eigendecomposition, whose frame fit does not end on a non-finite input.
+/// Refuses a body whose mass, inertia or principal moments and axes are not
+/// finite, checked on the tensor and on its decomposition before the frame
+/// is fitted: a geom's size or place can overflow them where MuJoCo loads
+/// the body (registry row D-INERTIA-NONFINITE).
 ///
 /// Mesh inertia is computed once per geom and cached across the mass and
 /// inertia passes (avoids O(3n) calls to `compute_mesh_inertia`).
@@ -218,16 +240,26 @@ pub fn compute_inertia_from_geoms(
         inertia_tensor += i_rotated + parallel_axis;
     }
 
+    let not_finite = || {
+        MjcfError::invalid_model("the body's mass or inertia computed from its geoms is not finite")
+    };
     if !total_mass.is_finite() || !inertia_tensor.iter().all(|x| x.is_finite()) {
-        return Err(MjcfError::invalid_model(
-            "the body's mass or inertia computed from its geoms is not finite",
-        ));
+        return Err(not_finite());
     }
 
     // Eigendecompose to get principal axes. MuJoCo copies a single geom's
     // frame and moments, and finds several geoms' with `eig3`
     // (`InertiaFromGeom`, `user_objects.cc:2157-2227`): Rigid-loading L33's.
+    // A finite tensor's moments can overflow (two geoms far apart).
     let eigen = inertia_tensor.symmetric_eigen();
+    if !eigen
+        .eigenvalues
+        .iter()
+        .chain(eigen.eigenvectors.iter())
+        .all(|x| x.is_finite())
+    {
+        return Err(not_finite());
+    }
     let principal_inertia = Vector3::new(
         eigen.eigenvalues[0].abs(),
         eigen.eigenvalues[1].abs(),

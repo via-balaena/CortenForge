@@ -5,16 +5,18 @@
 //! free body whose `<inertial fullinertia>` is each tensor, measured on the
 //! census's unfused oracle: two equal moments with an off-diagonal below the
 //! iteration's stop, six diagonal permutations, `2 2 2 0.5 0 0`, three
-//! axisymmetric tensors and forty box moments turned by seeded random
-//! rotations, written with seventeen significant digits so both sides read the
-//! same bits. MuJoCo's compiler finds them with `mjuu_eig3`
-//! (`user_util.cc:661-754`) through `mjuu_fullInertia` (`:785-811`).
+//! axisymmetric tensors, forty box moments turned by seeded random rotations
+//! (written as Python's `repr`, the shortest text that reads back to the same
+//! double, so both sides read the same bits) and three tensors whose largest
+//! off-diagonals tie, where the pivot's strict comparison picks the frame.
+//! MuJoCo's compiler finds them with `mjuu_eig3` (`user_util.cc:661-755`)
+//! through `mjuu_fullInertia` (`:785-814`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // The cases are bit patterns, written as MuJoCo's values' raw bits.
 #![allow(clippy::unreadable_literal)]
 
-use sim_mjcf::{MjcfError, load_model, model_from_mjcf, parse_mjcf_str};
+use sim_mjcf::{MjcfError, load_model};
 
 const CASES: &[(&str, [u64; 3], [u64; 4])] = &[
     // Two equal moments and an off-diagonal below 1e-12: MuJoCo stops at once,
@@ -524,6 +526,37 @@ const CASES: &[(&str, [u64; 3], [u64; 4])] = &[
             0x3fd60f5717e0ea91,
         ],
     ),
+    // Tied off-diagonals: the pivot is the first of the largest.
+    (
+        "2 2 2 0.5 0.5 0.5",
+        [0x4007ffffffffffff, 0x3ff8000000000000, 0x3ff8000000000000],
+        [
+            0x3fea415117dce1ea,
+            0x3fd5c01f0226dd78,
+            0xbfc6848b0d51d025,
+            0x3fdb2e6b4da25558,
+        ],
+    ),
+    (
+        "1 1 1 0.3 0.3 0",
+        [0x3ff6c9c91ebfc524, 0x3fefffffffffffff, 0x3fe26c6dc28075b9],
+        [
+            0x3fd6a09e60db383c,
+            0x3feb504f346aace0,
+            0x3fc2bec337ac7f40,
+            0x3fd6a09e6587c81e,
+        ],
+    ),
+    (
+        "1 1 1 0.3 0 0.3",
+        [0x3ff6c9c91ebfc524, 0x3fefffffffffffff, 0x3fe26c6dc28075b9],
+        [
+            0x3fe6a09e6825f110,
+            0x3fdffffffb53f3f6,
+            0xbe2a70c6e8000000,
+            0x3fe0000000003974,
+        ],
+    ),
 ];
 
 fn inertial_doc(full: &str) -> String {
@@ -584,37 +617,108 @@ fn a_full_inertia_mujoco_refuses_is_refused_with_its_text() {
     }
 }
 
+/// Asserts that `xml` is refused for its body 'b''s fullinertia.
+fn assert_full_inertia_refused(xml: &str) {
+    let err = load_model(xml).unwrap_err();
+    assert!(
+        matches!(&err, MjcfError::InvalidValue { element, attribute, .. }
+            if element == "inertial" && attribute == "fullinertia"),
+        "{err}"
+    );
+    assert!(err.to_string().ends_with("(body 'b')"), "{err}");
+}
+
 #[test]
 fn a_non_finite_full_inertia_is_refused_not_a_hang() {
-    // The parser reads no NaN here; a caller can build one.
-    let mut mjcf = parse_mjcf_str(&inertial_doc("1 1 1 0 0 0")).unwrap();
-    mjcf.worldbody.children[0]
-        .inertial
-        .as_mut()
-        .unwrap()
-        .fullinertia = Some([1.0, 1.0, 1.0, f64::NAN, 0.0, 0.0]);
-    let err = model_from_mjcf(&mjcf, None).unwrap_err();
-    assert!(err.to_string().contains("not finite"), "{err}");
-    assert!(err.to_string().contains("(body 'b')"), "{err}");
+    // MuJoCo 3.5.0 refuses the first two on a moving body (its mass and
+    // inertia minimum) and loads them on a jointless one, with a NaN inertia
+    // and frame, or for a NaN first value, which it reads as no fullinertia,
+    // a zero inertia. It loads the third with an infinite moment.
+    for full in [
+        "1 1 1 nan 0 0",
+        "nan 1 1 0 0 0",
+        "1.5e308 1.5e308 1.5e308 1e308 0 0",
+    ] {
+        assert_full_inertia_refused(&inertial_doc(full));
+    }
+    for full in ["1 1 1 nan 0 0", "1 1 1 inf 0 0", "nan 1 1 0 0 0"] {
+        assert_full_inertia_refused(&format!(
+            r#"<mujoco>
+                <worldbody>
+                    <body name="b"><inertial pos="0 0 0" mass="1" fullinertia="{full}"/></body>
+                </worldbody>
+            </mujoco>"#
+        ));
+    }
+}
+
+#[test]
+fn an_unnamed_bodys_inertia_error_names_it_by_its_index() {
+    // The world is body #0.
+    let err = load_model(
+        r#"<mujoco>
+            <worldbody>
+                <body><inertial pos="0 0 0" mass="1" fullinertia="1 1 1 2 0 0"/></body>
+            </worldbody>
+        </mujoco>"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().ends_with("(body #1)"), "{err}");
+}
+
+#[test]
+fn a_full_inertia_replaced_by_the_geoms_is_still_refused_where_mujoco_refuses_it() {
+    // MuJoCo makes every fullinertia principal before inertiafromgeom="true"
+    // replaces it: its refusal stands, and a NaN one, which the decomposition
+    // passes, is replaced (both measured on MuJoCo 3.5.0).
+    let doc = |inertial: &str| {
+        format!(
+            r#"<mujoco>
+                <compiler inertiafromgeom="true"/>
+                <worldbody>
+                    <body name="b"><freejoint/>{inertial}<geom size="0.1"/></body>
+                </worldbody>
+            </mujoco>"#
+        )
+    };
+    assert_full_inertia_refused(&doc(
+        r#"<inertial pos="0 0 0" mass="1" fullinertia="1 1 1 2 0 0"/>"#,
+    ));
+    let replaced = load_model(&doc(
+        r#"<inertial pos="0 0 0" mass="1" fullinertia="1 1 1 nan 0 0"/>"#,
+    ))
+    .unwrap();
+    let geoms_only = load_model(&doc("")).unwrap();
+    assert_eq!(
+        replaced.body_inertia[1].map(f64::to_bits),
+        geoms_only.body_inertia[1].map(f64::to_bits)
+    );
 }
 
 #[test]
 fn a_body_whose_geoms_mass_or_inertia_overflows_is_refused_not_a_hang() {
-    // MuJoCo 3.5.0 loads both: size 1e120 with an infinite mass and inertia,
-    // size 6e99 with a finite mass (9.05e302) and an infinite inertia.
-    for size in ["1e120", "6e99"] {
+    // MuJoCo 3.5.0 loads all three: size 1e120 with an infinite mass and
+    // inertia, size 6e99 with a finite mass (9.05e302) and an infinite
+    // inertia, and two unit spheres far apart, whose summed tensor is finite,
+    // with two infinite principal moments.
+    for geoms in [
+        r#"<geom size="1e120"/>"#,
+        r#"<geom size="6e99"/>"#,
+        r#"<geom size="1" pos="8.92e151 8.92e151 8.92e151"/>
+           <geom size="1" pos="-8.92e151 -8.92e151 -8.92e151"/>"#,
+    ] {
         let err = load_model(&format!(
             r#"<mujoco>
                 <worldbody>
-                    <body name="huge"><freejoint/><geom size="{size}"/></body>
+                    <body name="huge"><freejoint/>{geoms}</body>
                 </worldbody>
             </mujoco>"#
         ))
         .unwrap_err();
         assert!(
             matches!(&err, MjcfError::InvalidModel { reason, .. } if reason.contains("not finite")),
-            "{size}: {err}"
+            "{geoms}: {err}"
         );
-        assert!(err.to_string().contains("(body 'huge')"), "{size}: {err}");
+        assert!(err.to_string().ends_with("(body 'huge')"), "{geoms}: {err}");
     }
 }

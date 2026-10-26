@@ -1805,3 +1805,4 @@ fde9185fcd85cc26	sim/L0/mjcf/tests/errors.rs:320
 143a252455fd7272	sim/L0/mjcf/tests/errors.rs:356
 36596d66155aaefc	sim/L0/mjcf/tests/errors.rs:344
 cedb55734f1d066e	sim/L0/tests/integration/callbacks.rs:454
+a9efc39a81509d70	sim/L0/mjcf/tests/inertia_eig3.rs:659

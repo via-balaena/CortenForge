@@ -11,16 +11,17 @@ use super::orientation::{MJ_EPS, normvec};
 /// the sort's tie margin.
 const EIG_EPS: f64 = 1e-12;
 
-/// `mjuu_eig3` (`user_util.cc:661-754`): the eigenvalues of the symmetric
+/// `mjuu_eig3` (`user_util.cc:661-755`): the eigenvalues of the symmetric
 /// matrix `mat` (row-major) and the quaternion (w, x, y, z) of its eigenvector
 /// frame.
 ///
-/// Jacobi iteration, at most 500 sweeps, the rotation kept as a quaternion; it
-/// stops when the largest off-diagonal element is below 1e-12 or a sweep's
-/// cosine above 1 − 1e-12. The eigenvalues then go in decreasing order by a
-/// 0, 1, 0 bubble that swaps only where the first is more than 1e-12 below the
-/// second, each swap turning the frame a quarter turn. A non-finite `mat`
-/// runs the 500 sweeps and returns non-finite values.
+/// Jacobi iteration, at most 500 iterations of one rotation each, the rotation
+/// kept as a quaternion; it stops when the largest off-diagonal element is
+/// below 1e-12 or an iteration's cosine above 1 − 1e-12. The eigenvalues then
+/// go in decreasing order by a 0, 1, 0 bubble that swaps only where the first
+/// is more than 1e-12 below the second, each swap turning the frame a quarter
+/// turn. A non-finite `mat` runs the 500 iterations and returns non-finite
+/// values.
 pub fn eig3(mat: &[f64; 9]) -> ([f64; 3], [f64; 4]) {
     let mut quat = [1.0, 0.0, 0.0, 0.0];
     let mut eigval = [0.0; 3];
@@ -86,10 +87,12 @@ pub fn eig3(mat: &[f64; 9]) -> ([f64; 3], [f64; 4]) {
     (eigval, quat)
 }
 
-/// `mjuu_fullInertia` (`user_util.cc:785-811`): the principal moments, in
+/// `mjuu_fullInertia` (`user_util.cc:785-814`): the principal moments, in
 /// decreasing order, and the frame (w, x, y, z) of the inertia
 /// `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`; MuJoCo's refusal when the smallest moment
-/// is below mjEPS.
+/// is below mjEPS. Its first branch, which returns nothing when `full[0]` is
+/// NaN (`:786-788`), is not taken: a NaN goes through the decomposition, and
+/// each caller refuses or replaces what comes out.
 pub fn full_inertia(full: &[f64; 6]) -> Result<([f64; 3], [f64; 4]), &'static str> {
     let mat = [
         full[0], full[3], full[4], //
