@@ -155,7 +155,8 @@ pub type CbActDyn = Callback<dyn Fn(&Model, &mut Data, usize) -> f64 + Send + Sy
 /// Arguments: `(model, data, actuator_id)`.
 /// Returns the gain value. It runs in the actuation's force pass, after
 /// every actuator's `act_dot` (the plugins' too); an earlier actuator's
-/// `actuator_force` holds its force before the clamp, as MuJoCo's.
+/// `actuator_force` holds its force before the clamp, a plugin's actuator's
+/// 0 (the plugins compute theirs after this pass), as MuJoCo's.
 pub type CbActGain = Callback<dyn Fn(&Model, &Data, usize) -> f64 + Send + Sync>;
 
 /// User actuator bias callback: called for `BiasType::User`.

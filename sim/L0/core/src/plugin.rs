@@ -168,6 +168,11 @@ pub trait Plugin: Send + Sync {
 
     /// Main computation callback.
     /// `capability` indicates which role is being computed (ACTUATOR/SENSOR/PASSIVE/SDF).
+    ///
+    /// An ACTUATOR plugin writes the `actuator_force` of its actuators (those
+    /// whose `actuator_plugin` is this instance) after every other actuator's
+    /// force; each actuator's force is then clamped to its range and mapped
+    /// through its transmission, as MuJoCo's (`mj_fwdActuation`).
     fn compute(
         &self,
         _model: &Model,
@@ -182,7 +187,8 @@ pub trait Plugin: Send + Sync {
     fn advance(&self, _model: &Model, _data: &mut Data, _instance: usize) {}
 
     /// Actuator activation derivative (ACTUATOR plugins, optional).
-    /// Called before `compute()` during actuation.
+    /// Called during actuation after every actuator's activation derivatives
+    /// and before any actuator's force, as MuJoCo's.
     fn actuator_act_dot(&self, _model: &Model, _data: &mut Data, _instance: usize) {}
 
     /// SDF signed distance (SDF plugins).
