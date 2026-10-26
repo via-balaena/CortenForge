@@ -1013,6 +1013,33 @@ mod tests {
         assert!(ray_cast(&behind, &shape, 100.0).is_none(), "behind");
     }
 
+    /// A box field whose grid ends at the box's faces: a ray from a face into
+    /// the box meets it where it starts, at a distance of +0.
+    #[test]
+    fn sdf_hit_where_the_ray_starts_on_the_grid() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(1.0, 1.0, 1.0),
+            21,
+            0.0,
+        )));
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                let mut origin = Point3::origin();
+                origin[axis] = sign;
+                let mut dir = Vector3::zeros();
+                dir[axis] = -sign;
+                let hit = ray_cast(&ray_from(origin, dir), &shape, 100.0);
+                assert!(hit.is_some(), "axis {axis}, side {sign}: a miss");
+                assert_eq!(
+                    hit.unwrap().distance.to_bits(),
+                    0.0_f64.to_bits(),
+                    "axis {axis}, side {sign}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ray_box_interval_enters_and_leaves() {
         let (min, max) = (Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
