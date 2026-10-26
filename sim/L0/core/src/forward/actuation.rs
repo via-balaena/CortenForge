@@ -832,16 +832,17 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 }
             }
             ActuatorDynamics::User => {
-                // User-defined dynamics via callback
+                // With one activation the callback returns its act_dot; with
+                // more it writes theirs (`engine_forward.c:361-370`).
                 let act_adr = last_activation(model, i);
-                let act_dot = if let Some(ref cb) = model.cb_act_dyn {
-                    (cb.0)(model, data, i)
-                } else {
-                    0.0
-                };
-                data.act_dot[act_adr] = act_dot;
+                if let Some(ref cb) = model.cb_act_dyn {
+                    let act_dot = (cb.0)(model, data, i);
+                    if act_num == 1 {
+                        data.act_dot[act_adr] = act_dot;
+                    }
+                }
                 if model.actuator_actearly[i] {
-                    mj_next_activation(model, i, data.act[act_adr], act_dot)
+                    mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
                 } else {
                     data.act[act_adr]
                 }
