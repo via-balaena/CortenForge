@@ -1189,6 +1189,13 @@ mod tests {
             Vector3::new(1.0, 0.1, 0.0).normalize(),
         );
         assert_eq!(ray_box_entry(&beside, &aabb), None);
+        // On the face y = 1, leaving it at 1e-20 a unit: out of the y slab from
+        // its start, no tolerance taking it as parallel.
+        let leaving_a_face = ray_from(
+            Point3::new(-3.0, 1.0, 0.0),
+            Vector3::new(1.0, 1e-20, 0.0).normalize(),
+        );
+        assert_eq!(ray_box_entry(&leaving_a_face, &aabb), None);
         let nan_origin = Ray {
             origin: Point3::new(f64::NAN, 0.0, 0.0),
             direction: Vector3::z(),
