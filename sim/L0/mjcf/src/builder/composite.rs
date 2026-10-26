@@ -581,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cable_of_4096_bodies_nests_and_one_of_4097_is_refused_before_it_is_built() {
+    fn validate_cable_takes_4096_bodies_and_refuses_4097() {
         // Bodies are one fewer than vertices; only the count is checked here.
         assert!(validate_cable(&make_simple_cable(4097)).is_ok());
         assert!(matches!(

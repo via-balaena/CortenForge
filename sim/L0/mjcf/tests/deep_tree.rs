@@ -38,7 +38,7 @@ fn nested_bodies(n: usize, geoms: bool, self_closing: bool) -> String {
 #[test]
 fn the_deepest_document_mujoco_loads_loads_from_a_small_thread() {
     // 496 nested bodies each with a geom: the deepest MuJoCo 3.5.0 loads. Its
-    // parse alone took 3.3 MiB of stack in this profile (research A4 §1.4).
+    // parse alone took 3,327 KB of stack in this profile (research A4 §1.4).
     let xml = nested_bodies(496, true, false);
     let model = std::thread::Builder::new()
         .stack_size(256 << 10)
@@ -59,13 +59,42 @@ fn depth_limit(xml: &str) -> Option<usize> {
 
 #[test]
 fn a_document_nests_as_deep_as_mujocos_reader_takes() {
-    // With content: the innermost body at depth 498 loads, at 499 is refused.
+    // Not self-closing: the innermost body at depth 498 loads, at 499 is
+    // refused.
     assert_eq!(depth_limit(&nested_bodies(496, false, false)), None);
     assert_eq!(depth_limit(&nested_bodies(497, false, false)), Some(498));
-    // Self-closing at depth 499 loads; one at 500 sits in a body with content
-    // at 499, refused first.
+    // Self-closing at depth 499 loads; one at 500 sits in a body at 499 that
+    // is not self-closing, refused first.
     assert_eq!(depth_limit(&nested_bodies(497, false, true)), None);
     assert_eq!(depth_limit(&nested_bodies(498, false, true)), Some(498));
+}
+
+#[test]
+fn a_chain_of_nested_includes_loads_from_a_small_thread() {
+    // 1000 files, each including the next: the expansion recurses once per
+    // file, on the loader's stack. The spliced document is shallow.
+    let dir = tempfile::tempdir().unwrap();
+    for k in 0..1000 {
+        let inner = if k == 999 {
+            r#"<worldbody><body><geom size="0.1"/></body></worldbody>"#.to_owned()
+        } else {
+            format!(r#"<include file="part{}.xml"/>"#, k + 1)
+        };
+        std::fs::write(
+            dir.path().join(format!("part{k}.xml")),
+            format!("<mujoco>{inner}</mujoco>"),
+        )
+        .unwrap();
+    }
+    let main = dir.path().join("main.xml");
+    std::fs::write(&main, r#"<mujoco><include file="part0.xml"/></mujoco>"#).unwrap();
+    let nbody = std::thread::Builder::new()
+        .stack_size(256 << 10)
+        .spawn(move || load_model_from_file(&main).map(|m| m.nbody))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(nbody.unwrap(), 2);
 }
 
 #[test]
@@ -120,7 +149,9 @@ fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T 
 #[test]
 fn a_tree_built_in_code_deeper_than_4096_is_refused() {
     // 100,000 deep: past the limit, and too deep for the loader's own stack
-    // to clone or walk, so each entry point refuses it before either.
+    // to clone, so model_from_mjcf must refuse it before cloning (with the
+    // guard moved after the clone, this binary aborts). Its walks fit, so
+    // where validate's and validate_tendons' guards sit is not tested here.
     on_big_stack(|| {
         let model = chain(100_000);
         for err in [
@@ -181,8 +212,20 @@ fn a_lookup_finds_the_first_of_two_alike_names_depth_first() {
 }
 
 #[test]
+fn a_lookup_finds_the_first_of_two_alike_top_level_bodies() {
+    // Two bodies named "x" directly in the worldbody, each with a joint "j":
+    // the first written is found, as below the top.
+    let model = MjcfModel::new("m")
+        .with_body(MjcfBody::new("x").with_joint(MjcfJoint::hinge("j", nalgebra::Vector3::z())))
+        .with_body(MjcfBody::new("x").with_joint(MjcfJoint::hinge("j", nalgebra::Vector3::x())));
+    let z = Some(nalgebra::Vector3::z());
+    assert_eq!(model.body("x").unwrap().joints[0].axis, z);
+    assert_eq!(model.joint("j").unwrap().axis, z);
+}
+
+#[test]
 fn a_body_and_a_joint_are_found_at_the_bottom_of_a_deep_tree_from_a_small_thread() {
-    // Built and dropped on a big stack (both recurse), searched from 256 KiB.
+    // Dropped on a big stack, searched from 256 KiB.
     on_big_stack(|| {
         let model = chain(100_000);
         std::thread::scope(|scope| {

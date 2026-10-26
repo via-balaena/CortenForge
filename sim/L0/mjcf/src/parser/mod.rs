@@ -52,10 +52,11 @@ pub fn parse_mjcf_str(xml: &str) -> Result<MjcfModel> {
     crate::stack::on_large_stack(|| parse_mjcf_unwrapped(xml))
 }
 
-/// The deepest element with content MuJoCo 3.5.0's XML reader (tinyxml2)
-/// takes, with the root at depth 1: 498, measured (research A4 §1.1). A
-/// self-closing element loads at 499; one at 500 would need a parent with
-/// content at 499, refused first. It bounds the parser's recursion.
+/// The deepest element that is not self-closing MuJoCo 3.5.0's XML reader
+/// (tinyxml2) takes, with the root at depth 1: 498, measured (research A4
+/// §1.1), an empty `<body></body>` included. A self-closing element loads at
+/// 499; one at 500 would need a parent at 499 that is not self-closing,
+/// refused first. It bounds the parser's recursion.
 const XML_DEPTH_WITH_CONTENT: usize = 498;
 
 /// [`parse_mjcf_str`]'s work, on the caller's stack.
@@ -75,8 +76,10 @@ pub fn parse_mjcf_unwrapped(xml: &str) -> Result<MjcfModel> {
     })
 }
 
-/// MuJoCo's XML reader's depth rule, read without recursing; a syntax error
-/// is left to the parser to report.
+/// MuJoCo's XML reader's depth rule, read without recursing. An error the
+/// XML reader raises ends the check, for the parser to report; a malformed
+/// attribute is not one, so a document with one is refused as too deep when
+/// it nests past the limit, where MuJoCo refuses it for the attribute.
 fn check_xml_depth(xml: &str) -> Result<()> {
     let mut reader = Reader::from_str(xml);
     let mut depth = 0usize;

@@ -382,12 +382,12 @@ pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
     let path = path.as_ref();
     let xml = std::fs::read_to_string(path).map_err(|e| MjcfError::io(path, e))?;
 
-    // Expand <include> elements before parsing
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let expanded_xml = crate::include::expand_includes(&xml, base_dir)?;
-
     let base_path = path.parent();
     crate::stack::on_large_stack(|| {
+        // <include>s are expanded first, on the loader's stack: the expansion
+        // recurses once per nested include.
+        let expanded_xml = crate::include::expand_includes(&xml, base_dir)?;
         let mjcf = crate::parser::parse_mjcf_unwrapped(&expanded_xml)?;
         model_from_mjcf_unwrapped(&mjcf, base_path)
     })

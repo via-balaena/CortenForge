@@ -141,6 +141,7 @@ fn an_element_naming_a_vertex_twice_is_refused() {
     for (dim, vertices, elements) in [
         (1, "0 0 0  1 0 0", "0 0"),
         (2, "0 0 0  1 0 0  0 1 0", "0 1 1"),
+        (2, "0 0 0  1 0 0  0 1 0", "1 0 1"),
         (3, "0 0 0  1 0 0  0 1 0  0 0 1", "0 1 2 2"),
     ] {
         let err = load_model(&flex_doc(dim, vertices, elements)).unwrap_err();

@@ -37,6 +37,14 @@
 //! let loaded = load_mjb_file("robot.mjb").expect("should load");
 //! assert_eq!(loaded.name, "robot");
 //! ```
+//!
+//! # Stack
+//!
+//! The readers and writers encode and decode the body tree recursively on the
+//! caller's stack, to whatever depth the model or file holds: a tree deep
+//! enough overflows it. Unlike the XML loaders, they do not run on the
+//! loader's own stack (`stack`) or bound the depth; that is the spec book's
+//! Rigid-loading L27.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};

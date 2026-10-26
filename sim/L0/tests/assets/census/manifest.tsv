@@ -1809,3 +1809,4 @@ a9efc39a81509d70	sim/L0/mjcf/tests/inertia_eig3.rs:659
 54d35eb373ec7058	sim/L0/mjcf/src/builder/mod.rs:1351
 ab94ae83e3064884	sim/L0/mjcf/src/builder/mod.rs:1388
 f0a1ea0185b428f4	sim/L0/mjcf/tests/flex_edges.rs:166
+95dddb7196249575	sim/L0/mjcf/tests/deep_tree.rs:90

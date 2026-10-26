@@ -50,6 +50,8 @@ approx = { workspace = true }
 mesh-types = { workspace = true }
 # Scratch directories for MJCF / MJB file round-trip tests
 tempfile = { workspace = true }
+# A test subscriber's current span (the loader thread carries the caller's)
+tracing-core = { workspace = true }
 # Parse the checked-in MuJoCo golden values for the forward-conformance harness
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
