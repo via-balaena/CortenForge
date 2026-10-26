@@ -21,9 +21,10 @@ use crate::dynamics::spatial::{
     spatial_cross_force, spatial_cross_motion, transport_motion_spatial,
 };
 use crate::forward::{
-    MjStage, MomentRows, acts_through_moment, actuator_ctrl_input, ellipsoid_moment,
-    fluid_geom_semi_axes, hill_active_fl, hill_force_velocity, last_activation, mj_fwd_position,
-    mj_next_activation, muscle_f0, muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
+    MjStage, MomentRows, acts_through_moment, actuator_ctrl_input, actuator_skipped_asleep,
+    ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, hill_force_velocity, last_activation,
+    mj_fwd_position, mj_next_activation, muscle_f0, muscle_gain_length, muscle_gain_velocity,
+    muscle_length, norm3,
 };
 use crate::forward::{mj_implicit_factor, mj_implicit_solve, solve_implicit};
 use crate::integrate::eulerdamp_applies;
@@ -1330,16 +1331,20 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
     }
 
     // A spatial tendon's moment arm moves with q: the force the pass applied
-    // (`gear · actuator_force`, 0 for an actuator it skipped, the bound for
-    // one its forcerange holds, which `actuator_left_out` leaves out of the
-    // force's own derivative only) adds `(∂Jᵀ/∂q) · gear · force`, and a
+    // (`gear · actuator_force`, for every actuator but a sleeping one, whose
+    // force the pass maps to none; a disabled one's, and one its forcerange
+    // holds, the bound of its range, which `actuator_left_out` leaves out of
+    // the force's own derivative only) adds `(∂Jᵀ/∂q) · gear · force`, and a
     // force that reads the actuator velocity `gear · J · qvel` adds
     // `J · gear² · ∂force/∂V · (∂J/∂q) · qvel`.
     let mut tendon_force = vec![0.0; model.ntendon];
     let mut tendon_dforce_dv = vec![0.0; model.ntendon];
     for i in 0..model.nu {
         let t = model.actuator_trnid[i][0];
-        if model.actuator_trntype[i] != ActuatorTransmission::Tendon || t >= model.ntendon {
+        if model.actuator_trntype[i] != ActuatorTransmission::Tendon
+            || t >= model.ntendon
+            || actuator_skipped_asleep(model, data, i)
+        {
             continue;
         }
         let gear = model.actuator_gear[i][0];
