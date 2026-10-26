@@ -89,11 +89,13 @@ pub struct Data {
     /// actuator while some dof sleeps.
     /// Maps scalar actuator force to generalized forces: `qfrc += moment * force`.
     pub actuator_moment: Vec<DVector<f64>>,
-    /// Whether the last position stage left actuator `i`'s moment empty, as
-    /// MuJoCo's `moment_rownnz` 0: a reset leaves every one empty, and the
-    /// transmission empties a sleeping actuator's while some dof sleeps and
-    /// fills every other's. The actuation maps no force through an empty one,
-    /// in a pass that skips the position stage too.
+    /// Whether actuator `i`'s moment is empty, as MuJoCo's moment row
+    /// (`moment_rownnz` 0) is for an actuator its position stage skips as
+    /// asleep: each position stage's transmission sets it, true where it skips
+    /// the actuator as asleep while some dof sleeps; a reset makes every one
+    /// true until a position stage runs. The actuation reads no velocity and
+    /// maps no force through an empty one, in a pass that skips the position
+    /// stage too.
     pub(crate) actuator_moment_empty: Vec<bool>,
 
     /// Activation time-derivative (length `na`).

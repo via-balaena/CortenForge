@@ -744,10 +744,9 @@ pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
 /// 4. the actuator plugins' forces;
 /// 5. every actuator's force clamped to its range, a sleeping or disabled
 ///    one's 0 too;
-/// 6. the forces mapped to joint forces through the transmissions, but
-///    through a moment the last position stage left empty: a reset leaves
-///    every one empty, and the transmission a sleeping actuator's while some
-///    dof sleeps (MuJoCo's `moment_rownnz` 0).
+/// 6. the forces mapped to joint forces through the transmissions, none
+///    through a moment the last position stage left empty
+///    (`Data::actuator_moment_empty`, MuJoCo's empty row).
 ///
 /// MuJoCo scales the forces of a tendon's actuators to the tendon's
 /// actuator force range between passes 4 and 5 (`:508-538`) and clamps
@@ -756,8 +755,8 @@ pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
 ///
 /// A dynamics callback runs in the first pass, before any force (each is 0
 /// then); a gain or bias callback in the third, after every activation
-/// derivative. The inputs are a clamped copy of the controls taken before
-/// the first pass; `data.ctrl` is not written. `qfrc_actuator` holds what
+/// derivative. The built-in actuators' inputs are a clamped copy of the
+/// controls taken before the first pass; `data.ctrl` is not written. `qfrc_actuator` holds what
 /// the previous call left until pass 6 writes it whole, as MuJoCo's.
 ///
 /// **Note**: `cb_control` is NOT invoked here. It fires after the velocity
@@ -1017,9 +1016,8 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     data.qfrc_actuator.fill(0.0);
     for i in 0..model.nu {
         let force = data.actuator_force[i];
-        // MuJoCo maps through the moment row the last position stage built,
-        // empty after a reset and for an actuator it skipped as asleep
-        // (`engine_core_smooth.c:1287-1291`).
+        // MuJoCo maps through the moment row the last position stage built
+        // (`actuator_moment_empty`; `engine_core_smooth.c:1287-1291`).
         if force == 0.0 || data.actuator_moment_empty[i] {
             continue;
         }
