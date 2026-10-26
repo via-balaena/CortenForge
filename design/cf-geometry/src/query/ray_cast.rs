@@ -540,13 +540,20 @@ fn ray_heightfield(ray: &Ray, data: &crate::HeightFieldData, max_dist: f64) -> O
 }
 
 /// Ray–SDF intersection using sphere tracing.
+///
+/// The field is defined on its grid only, so the trace starts where the ray
+/// enters the grid's box, or at the ray's origin inside it, and ends where the
+/// ray leaves the box or at `max_dist`.
 fn ray_sdf(ray: &Ray, data: &crate::SdfGrid, max_dist: f64) -> Option<RayHit> {
-    let mut t = 0.0;
+    let grid_max = data.origin() + Vector3::new(data.extent_x(), data.extent_y(), data.extent_z());
+    let (t_enter, t_exit) = ray_box_interval(ray, data.origin(), grid_max)?;
+    let t_end = t_exit.min(max_dist);
+    let mut t = if t_enter > 0.0 { t_enter } else { 0.0 };
     let max_steps = 128;
     let epsilon = 1e-4;
 
     for _ in 0..max_steps {
-        if t > max_dist {
+        if t > t_end {
             return None;
         }
 
@@ -572,6 +579,37 @@ fn ray_sdf(ray: &Ray, data: &crate::SdfGrid, max_dist: f64) -> Option<RayHit> {
     }
 
     None
+}
+
+/// The ray's parameters where it enters and leaves the axis-aligned box
+/// `[min, max]`, or `None` if it misses the box or its origin or direction is
+/// `NaN`. The entry is at most 0 for an origin in the box.
+fn ray_box_interval(ray: &Ray, min: Point3<f64>, max: Point3<f64>) -> Option<(f64, f64)> {
+    let mut t_enter = f64::NEG_INFINITY;
+    let mut t_exit = f64::INFINITY;
+
+    for i in 0..3 {
+        let origin_i = ray.origin[i];
+        let dir_i = ray.direction[i];
+
+        if dir_i == 0.0 {
+            if !(min[i] <= origin_i && origin_i <= max[i]) {
+                return None;
+            }
+        } else {
+            let t1 = (min[i] - origin_i) / dir_i;
+            let t2 = (max[i] - origin_i) / dir_i;
+            let (t_near, t_far) = if dir_i > 0.0 { (t1, t2) } else { (t2, t1) };
+
+            if !(t_near <= t_far) {
+                return None;
+            }
+            t_enter = t_enter.max(t_near);
+            t_exit = t_exit.min(t_far);
+        }
+    }
+
+    (t_enter <= t_exit).then_some((t_enter, t_exit))
 }
 
 // =============================================================================
@@ -911,6 +949,103 @@ mod tests {
         assert!(hit.is_some());
         let hit = hit.unwrap();
         assert_relative_eq!(hit.distance, 0.5, epsilon = 0.15);
+    }
+
+    /// A sphere field of radius 1 on a grid reaching 1.5 each way, cells 3/19
+    /// wide: rays toward its centre from 1.5 and 10 outside each face meet the
+    /// sphere within a cell, the normal facing the ray.
+    #[test]
+    fn sdf_hit_from_outside_the_grid() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            20,
+            0.5,
+        )));
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                for gap in [1.5, 10.0] {
+                    let mut origin = Point3::origin();
+                    origin[axis] = sign * (1.5 + gap);
+                    let mut dir = Vector3::zeros();
+                    dir[axis] = -sign;
+                    let hit = ray_cast(&ray_from(origin, dir), &shape, 100.0);
+                    assert!(hit.is_some(), "axis {axis}, side {sign}, gap {gap}: a miss");
+                    let hit = hit.unwrap();
+                    assert!(
+                        (hit.distance - (0.5 + gap)).abs() <= 3.0 / 19.0,
+                        "axis {axis}, side {sign}, gap {gap}: {}",
+                        hit.distance
+                    );
+                    assert!(hit.normal[axis] * sign > 0.9, "{:?}", hit.normal);
+                }
+            }
+        }
+    }
+
+    /// From 1.5 below the same grid the sphere is 2 away along the ray.
+    #[test]
+    fn sdf_max_dist_ends_the_ray() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            20,
+            0.5,
+        )));
+        let ray = ray_from(Point3::new(0.0, 0.0, -3.0), Vector3::z());
+        assert!(ray_cast(&ray, &shape, 1.0).is_none(), "short of the grid");
+        assert!(ray_cast(&ray, &shape, 1.8).is_none(), "short of the sphere");
+        let hit = ray_cast(&ray, &shape, 2.2).unwrap();
+        assert!((hit.distance - 2.0).abs() <= 3.0 / 19.0, "{}", hit.distance);
+    }
+
+    #[test]
+    fn sdf_miss_beside_or_behind_the_grid() {
+        let shape = Shape::sdf(Arc::new(crate::SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            20,
+            0.5,
+        )));
+        let beside = ray_from(Point3::new(1.6, 0.0, -3.0), Vector3::z());
+        assert!(ray_cast(&beside, &shape, 100.0).is_none(), "beside");
+        let behind = ray_from(Point3::new(0.0, 0.0, 3.0), Vector3::z());
+        assert!(ray_cast(&behind, &shape, 100.0).is_none(), "behind");
+    }
+
+    #[test]
+    fn ray_box_interval_enters_and_leaves() {
+        let (min, max) = (Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
+        let through = ray_from(Point3::new(0.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_interval(&through, min, max), Some((2.0, 4.0)));
+        let reversed = ray_from(Point3::new(0.0, 0.0, 3.0), -Vector3::z());
+        assert_eq!(ray_box_interval(&reversed, min, max), Some((2.0, 4.0)));
+        let inside = ray_from(Point3::origin(), Vector3::x());
+        assert_eq!(ray_box_interval(&inside, min, max), Some((-1.0, 1.0)));
+        let behind = ray_from(Point3::new(0.0, 0.0, 3.0), Vector3::z());
+        assert_eq!(ray_box_interval(&behind, min, max), Some((-4.0, -2.0)));
+    }
+
+    #[test]
+    fn ray_box_interval_misses() {
+        let (min, max) = (Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
+        let parallel_outside = ray_from(Point3::new(2.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_interval(&parallel_outside, min, max), None);
+        let beside = ray_from(
+            Point3::new(-3.0, 2.5, 0.0),
+            Vector3::new(1.0, 0.1, 0.0).normalize(),
+        );
+        assert_eq!(ray_box_interval(&beside, min, max), None);
+        let nan_origin = Ray {
+            origin: Point3::new(f64::NAN, 0.0, 0.0),
+            direction: Vector3::z(),
+        };
+        assert_eq!(ray_box_interval(&nan_origin, min, max), None);
+        let nan_direction = Ray {
+            origin: Point3::new(0.0, 0.0, -3.0),
+            direction: Vector3::new(f64::NAN, 0.0, 1.0),
+        };
+        assert_eq!(ray_box_interval(&nan_direction, min, max), None);
     }
 
     // ── Edge cases ────────────────────────────────────────────────────
