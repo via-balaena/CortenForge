@@ -9,7 +9,8 @@
 use nalgebra::{Rotation3, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
-use crate::error::{MjcfError, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
     CompositeType, MjcfBody, MjcfComposite, MjcfContactExclude, MjcfGeom, MjcfGeomType, MjcfJoint,
     MjcfJointType, MjcfSite,
@@ -37,7 +38,9 @@ fn expand_composites_recursive(
     for composite in composites {
         match composite.comp_type {
             CompositeType::Cable => {
-                let (bodies, excl) = make_cable(&composite)?;
+                let (bodies, excl) = make_cable(&composite).map_err(|e| {
+                    e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
+                })?;
                 body.children.extend(bodies);
                 excludes.extend(excl);
             }
@@ -154,6 +157,13 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
             "count",
             "Cable requires count >= 2 or at least 2 user-specified vertices",
         ));
+    }
+
+    // Its bodies (one fewer than its vertices) nest one in the next: refuse a
+    // chain deeper than the loader takes before building one.
+    #[allow(clippy::cast_sign_loss)] // `effective_count0 >= 2` above.
+    if effective_count0 as usize - 1 > MAX_BODY_TREE_DEPTH {
+        return Err(MjcfError::too_deep(MAX_BODY_TREE_DEPTH));
     }
 
     // Validate geom type: must be cylinder, capsule, or box (MakeCable:250-253).
@@ -439,36 +449,17 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
 
         prev_quat = this_quat;
 
-        // Chain: each body is a child of the previous
-        if bodies.is_empty() {
-            bodies.push(cable_body);
-        } else {
-            // Append to the deepest leaf of the chain
-            append_to_chain(
-                bodies
-                    .last_mut()
-                    .unwrap_or_else(|| unreachable!("bodies is non-empty after first push")),
-                cable_body,
-            );
-        }
+        bodies.push(cable_body);
     }
 
-    Ok((bodies, excludes))
-}
-
-/// Append a body to the deepest leaf of a body chain.
-/// Produces linear chain: B_first → B_1 → ... → B_last.
-#[allow(clippy::unreachable)] // unwrap_or_else fallback: children is non-empty in else branch
-fn append_to_chain(parent: &mut MjcfBody, child: MjcfBody) {
-    if parent.children.is_empty() {
-        parent.children.push(child);
-    } else {
-        let last = parent
-            .children
-            .last_mut()
-            .unwrap_or_else(|| unreachable!("children is non-empty in else branch"));
-        append_to_chain(last, child);
+    // Chain: each body a child of the one before it, nested from the last.
+    let mut chain: Option<MjcfBody> = None;
+    while let Some(mut body) = bodies.pop() {
+        body.children.extend(chain.take());
+        chain = Some(body);
     }
+
+    Ok((chain.into_iter().collect(), excludes))
 }
 
 /// Build an `MjcfGeom` from the composite's geom template.
@@ -612,6 +603,16 @@ mod tests {
                 priority: None,
             }),
         }
+    }
+
+    #[test]
+    fn a_cable_of_4096_bodies_nests_and_one_of_4097_is_refused_before_it_is_built() {
+        // Bodies are one fewer than vertices; only the count is checked here.
+        assert!(validate_cable(&make_simple_cable(4097)).is_ok());
+        assert!(matches!(
+            validate_cable(&make_simple_cable(4098)),
+            Err(MjcfError::TooDeep { limit: 4096, .. })
+        ));
     }
 
     #[test]

@@ -44,6 +44,19 @@ pub enum MjcfError {
         at: Location,
     },
 
+    /// Nested deeper than the loader takes. A document's elements: MuJoCo's
+    /// XML reader's limit, with the root at depth 1 an element with content
+    /// at 498 (a self-closing one loads at 499). A tree of bodies and frames
+    /// built in code or by a composite: 4096.
+    #[error("nested deeper than {limit}{at}")]
+    #[non_exhaustive]
+    TooDeep {
+        /// The deepest nesting taken.
+        limit: usize,
+        /// Where the limit was passed.
+        at: Location,
+    },
+
     // ── elements and attributes ──
     /// A required attribute is missing.
     #[error("required attribute missing: '{attribute}' on <{element}>{at}")]
@@ -458,6 +471,14 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::TooDeep`].
+    pub(crate) fn too_deep(limit: usize) -> Self {
+        Self::TooDeep {
+            limit,
+            at: Location::unknown(),
+        }
+    }
+
     /// An [`MjcfError::MissingAttribute`].
     pub(crate) fn missing_attribute(
         element: impl Into<String>,
@@ -617,6 +638,7 @@ impl MjcfError {
         match self {
             Self::Xml { at, .. }
             | Self::Include { at, .. }
+            | Self::TooDeep { at, .. }
             | Self::MissingAttribute { at, .. }
             | Self::ConflictingAttributes { at, .. }
             | Self::BadNumber { at, .. }

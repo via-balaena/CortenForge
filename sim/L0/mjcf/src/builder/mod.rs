@@ -199,13 +199,21 @@ fn resolve_keyframe(mjcf_kf: &MjcfKeyframe, model: &Model) -> Result<Keyframe> {
 /// data.step(&model).expect("step failed");
 /// ```
 pub fn model_from_mjcf(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Model> {
+    crate::stack::on_large_stack(|| model_from_mjcf_unwrapped(mjcf, base_path))
+}
+
+/// [`model_from_mjcf`]'s work, on the caller's stack.
+fn model_from_mjcf_unwrapped(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Model> {
+    // Before anything walks or clones the tree, whoever built it.
+    crate::validation::check_tree_depth(&mjcf.worldbody)?;
+
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
 
     // Active ingress validation (Phase 0): full validate() promoted from
     // defense-in-depth dead code. Fail-closed on any finding. Runs against
     // user input as-parsed, before frame/composite expansion.
-    crate::validation::validate(&mjcf)?;
+    crate::validation::validate_unwrapped(&mjcf)?;
 
     // Validate childclass references before frame expansion dissolves frames.
     // MuJoCo rejects undefined childclass at schema validation (S7).
@@ -224,6 +232,7 @@ pub fn model_from_mjcf(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Mod
     // Runs AFTER frame expansion (composites inside frames work) and BEFORE
     // discardvisual/fusestatic (which need to see the expanded bodies).
     let composite_excludes = composite::expand_composites(&mut mjcf.worldbody)?;
+    crate::validation::check_tree_depth(&mjcf.worldbody)?;
     mjcf.contact.excludes.extend(composite_excludes);
 
     if mjcf.compiler.discardvisual {
@@ -268,7 +277,7 @@ pub fn model_from_mjcf(mjcf: &MjcfModel, base_path: Option<&Path>) -> Result<Mod
     }
 
     // Validate tendons before processing (catches bad references early)
-    crate::validation::validate_tendons(&mjcf)?;
+    crate::validation::validate_tendons_unwrapped(&mjcf)?;
 
     // Process tendons (must be before actuators, since actuators may reference tendons)
     builder.process_tendons(&mjcf.tendons)?;
@@ -346,8 +355,10 @@ pub fn load_model(xml: &str) -> Result<Model> {
             "<include> elements require file-based loading; use load_model_from_file() instead",
         ));
     }
-    let mjcf = crate::parse_mjcf_str(xml)?;
-    model_from_mjcf(&mjcf, None)
+    crate::stack::on_large_stack(|| {
+        let mjcf = crate::parser::parse_mjcf_unwrapped(xml)?;
+        model_from_mjcf_unwrapped(&mjcf, None)
+    })
 }
 
 /// Load Model from an MJCF file path.
@@ -375,10 +386,11 @@ pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let expanded_xml = crate::include::expand_includes(&xml, base_dir)?;
 
-    let mjcf = crate::parse_mjcf_str(&expanded_xml)?;
     let base_path = path.parent();
-
-    model_from_mjcf(&mjcf, base_path)
+    crate::stack::on_large_stack(|| {
+        let mjcf = crate::parser::parse_mjcf_unwrapped(&expanded_xml)?;
+        model_from_mjcf_unwrapped(&mjcf, base_path)
+    })
 }
 
 /// Builder for constructing Model from MJCF.

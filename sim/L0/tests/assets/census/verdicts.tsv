@@ -590,6 +590,7 @@
 57fc71a81bc9d6a2	agree
 582c92650b448b93	agree
 5843268075a929c2	mj-refuses
+5846074f48552d40	both-refuse
 585af6160b77e820	model:geom_quat;dyn:agree
 586fe774f0b95b8d	mj-refuses
 58ce5bdb0d56fe65	mj-refuses
@@ -1268,6 +1269,7 @@ c31b75e357222093	agree
 c3905834aaf8a5d8	model:geom_quat;dyn:agree
 c3c74340311b2ad3	agree
 c3c75e7eba4c4e86	both-refuse
+c3ca80ca6f093477	both-refuse
 c4034a158197f782	agree
 c4053e358edf4624	agree
 c43a7096df2c49fc	agree

@@ -5,8 +5,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::stack::MAX_BODY_TREE_DEPTH;
 use crate::types::{
-    MjcfBody, MjcfGeom, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType, SpatialPathElement,
+    MjcfBody, MjcfFrame, MjcfGeom, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType,
+    SpatialPathElement,
 };
 
 /// Validation result containing the flattened body tree structure.
@@ -161,11 +163,18 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
 /// - Actuators reference valid joints
 /// - Valid mass properties (if present)
 /// - Valid simulation options
+/// - A body and frame tree no deeper than the loader takes
 ///
 /// # Errors
 ///
 /// Returns an error if validation fails.
 pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
+    crate::stack::on_large_stack(|| validate_unwrapped(model))
+}
+
+/// [`validate`]'s work, on the caller's stack.
+pub fn validate_unwrapped(model: &MjcfModel) -> Result<ValidationResult> {
+    check_tree_depth(&model.worldbody)?;
     // Validate options first
     validate_option(&model.option)?;
     // Check for duplicate names
@@ -379,6 +388,29 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
     })
 }
 
+/// Refuses a tree of bodies and frames below `worldbody` deeper than
+/// [`MAX_BODY_TREE_DEPTH`], counting each body and each frame as a level,
+/// read without recursing: every pass after it recurses once per level.
+pub fn check_tree_depth(worldbody: &MjcfBody) -> Result<()> {
+    enum Node<'a> {
+        Body(&'a MjcfBody),
+        Frame(&'a MjcfFrame),
+    }
+    let mut stack: Vec<(Node<'_>, usize)> = vec![(Node::Body(worldbody), 0)];
+    while let Some((node, depth)) = stack.pop() {
+        if depth > MAX_BODY_TREE_DEPTH {
+            return Err(MjcfError::too_deep(MAX_BODY_TREE_DEPTH));
+        }
+        let (bodies, frames) = match node {
+            Node::Body(b) => (&b.children, &b.frames),
+            Node::Frame(f) => (&f.bodies, &f.frames),
+        };
+        stack.extend(bodies.iter().map(|b| (Node::Body(b), depth + 1)));
+        stack.extend(frames.iter().map(|f| (Node::Frame(f), depth + 1)));
+    }
+    Ok(())
+}
+
 /// Check that a geom's dimensional numeric fields are finite.
 ///
 /// Rejects NaN or ±Inf in the user-supplied `size` vector and the optional
@@ -404,8 +436,15 @@ fn check_geom_finite(geom: &MjcfGeom, body_name: &str) -> Result<()> {
 /// Validate tendon definitions against model structure.
 ///
 /// Returns Err on fatal issues (unknown references), matching the existing
-/// validation pattern which uses `Result<()>` with `MjcfError`.
+/// validation pattern which uses `Result<()>` with `MjcfError`, and on a body
+/// and frame tree deeper than the loader takes.
 pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
+    crate::stack::on_large_stack(|| validate_tendons_unwrapped(model))
+}
+
+/// [`validate_tendons`]'s work, on the caller's stack.
+pub fn validate_tendons_unwrapped(model: &MjcfModel) -> Result<()> {
+    check_tree_depth(&model.worldbody)?;
     // Collect joint, site, and geom names from the body tree (joints/sites/geoms
     // are nested inside MjcfBody, not top-level on MjcfModel).
     let mut joint_names = HashSet::new();

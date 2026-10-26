@@ -46,8 +46,21 @@ use self::tendon::parse_tendons;
 ///
 /// # Errors
 ///
-/// Returns an error if the XML is malformed or missing required elements.
+/// Returns an error if the XML is malformed, nested deeper than MuJoCo's XML
+/// reader takes, or missing required elements.
 pub fn parse_mjcf_str(xml: &str) -> Result<MjcfModel> {
+    crate::stack::on_large_stack(|| parse_mjcf_unwrapped(xml))
+}
+
+/// The deepest element with content MuJoCo 3.5.0's XML reader (tinyxml2)
+/// takes, with the root at depth 1: 498, measured (research A4 §1.1). A
+/// self-closing element loads at 499; one at 500 would need a parent with
+/// content at 499, refused first. It bounds the parser's recursion.
+const XML_DEPTH_WITH_CONTENT: usize = 498;
+
+/// [`parse_mjcf_str`]'s work, on the caller's stack.
+pub fn parse_mjcf_unwrapped(xml: &str) -> Result<MjcfModel> {
+    check_xml_depth(xml)?;
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     parse_mjcf_reader(&mut reader).map_err(|e| {
@@ -59,6 +72,28 @@ pub fn parse_mjcf_str(xml: &str) -> Result<MjcfModel> {
         };
         e.with_location_if_unknown(locate(xml, usize::try_from(offset).unwrap_or(usize::MAX)))
     })
+}
+
+/// MuJoCo's XML reader's depth rule, read without recursing; a syntax error
+/// is left to the parser to report.
+fn check_xml_depth(xml: &str) -> Result<()> {
+    let mut reader = Reader::from_str(xml);
+    let mut depth = 0usize;
+    loop {
+        let event = reader.read_event();
+        let after = usize::try_from(reader.buffer_position()).unwrap_or(xml.len());
+        match event {
+            Ok(Event::Start(_)) => {
+                depth += 1;
+                if depth > XML_DEPTH_WITH_CONTENT {
+                    return Err(MjcfError::too_deep(XML_DEPTH_WITH_CONTENT).at(locate(xml, after)));
+                }
+            }
+            Ok(Event::End(_)) => depth = depth.saturating_sub(1),
+            Ok(Event::Eof) | Err(_) => return Ok(()),
+            Ok(_) => {}
+        }
+    }
 }
 
 /// Where byte `offset` of `xml` falls: the line of the last element that

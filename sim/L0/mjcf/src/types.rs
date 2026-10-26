@@ -4281,69 +4281,45 @@ impl MjcfModel {
         self
     }
 
-    /// Get a flattened list of all bodies (breadth-first).
+    /// Get a flattened list of all bodies (breadth-first), the worldbody's
+    /// children first; bodies inside frames are not listed.
     #[must_use]
     pub fn all_bodies(&self) -> Vec<&MjcfBody> {
         let mut bodies = Vec::new();
-        let mut queue = vec![&self.worldbody];
-
-        while let Some(body) = queue.pop() {
-            // Skip worldbody itself but include its children
-            for child in &body.children {
-                bodies.push(child);
-                queue.extend(child.children.iter());
-            }
+        let mut queue: std::collections::VecDeque<&MjcfBody> =
+            self.worldbody.children.iter().collect();
+        while let Some(body) = queue.pop_front() {
+            bodies.push(body);
+            queue.extend(body.children.iter());
         }
-
         bodies
     }
 
-    /// Get a body by name.
+    /// The first body named `name`, depth-first from the worldbody's children,
+    /// found without recursing; bodies inside frames are not searched.
     #[must_use]
     pub fn body(&self, name: &str) -> Option<&MjcfBody> {
-        fn find_body<'a>(body: &'a MjcfBody, name: &str) -> Option<&'a MjcfBody> {
-            if body.name == name {
-                return Some(body);
-            }
-            for child in &body.children {
-                if let Some(found) = find_body(child, name) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-
-        for child in &self.worldbody.children {
-            if let Some(found) = find_body(child, name) {
-                return Some(found);
-            }
-        }
-        None
+        self.bodies_depth_first().find(|b| b.name == name)
     }
 
-    /// Get a joint by name.
+    /// The first joint named `name`, a body's joints before its children's,
+    /// depth-first, found without recursing; bodies inside frames are not
+    /// searched.
     #[must_use]
     pub fn joint(&self, name: &str) -> Option<&MjcfJoint> {
-        fn find_joint<'a>(body: &'a MjcfBody, name: &str) -> Option<&'a MjcfJoint> {
-            for joint in &body.joints {
-                if joint.name == name {
-                    return Some(joint);
-                }
-            }
-            for child in &body.children {
-                if let Some(found) = find_joint(child, name) {
-                    return Some(found);
-                }
-            }
-            None
-        }
+        self.bodies_depth_first()
+            .find_map(|b| b.joints.iter().find(|j| j.name == name))
+    }
 
-        for child in &self.worldbody.children {
-            if let Some(found) = find_joint(child, name) {
-                return Some(found);
-            }
-        }
-        None
+    /// The bodies below the worldbody, each before its children, the children
+    /// in order.
+    fn bodies_depth_first(&self) -> impl Iterator<Item = &MjcfBody> {
+        let mut stack: Vec<&MjcfBody> = self.worldbody.children.iter().rev().collect();
+        std::iter::from_fn(move || {
+            let body = stack.pop()?;
+            stack.extend(body.children.iter().rev());
+            Some(body)
+        })
     }
 
     /// Get a mesh asset by name.
