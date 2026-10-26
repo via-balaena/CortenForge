@@ -9,7 +9,8 @@
 //! pass. Its cases: a callback reading another actuator's act_dot or force, or
 //! its own force before its bias, or `qfrc_actuator` as the pass before left
 //! it; a dynamics callback writing an earlier actuator's act_dot or a later
-//! one's ctrl, or adding to `qfrc_actuator`; a `mujoco.pid` plugin's
+//! one's ctrl (a motor's and an integrator's), or adding to `qfrc_actuator`;
+//! a `mujoco.pid` plugin's
 //! actuator, with an integral term, a filter, a force range, the dynamics
 //! callback called for it, and a user gain reading its act_dot or its force;
 //! a force range that excludes 0 on a disabled actuator, and on a sleeping
@@ -411,7 +412,7 @@ fn actuation_passes_act_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 216, "18 cases of 12 states");
+    assert_eq!(compared, 228, "19 cases of 12 states");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",

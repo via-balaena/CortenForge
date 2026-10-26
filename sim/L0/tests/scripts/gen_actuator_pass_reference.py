@@ -16,7 +16,8 @@ mj_fwdActuation does in its passes (engine_forward.c:277-570): every
 actuator's act_dot, then the plugins', then the forces, then the plugins',
 then the clamp and the mapping over every actuator. A callback reads another
 actuator's act_dot or force, or its own force before its bias; a dynamics
-callback writes an earlier actuator's act_dot or a later one's ctrl, or adds
+callback writes an earlier actuator's act_dot or a later one's ctrl (a motor's
+and an integrator's), or adds
 to qfrc_actuator, which a gain callback reads too; a
 `mujoco.pid` plugin's actuator, with an integral term, a filter, a force
 range, MuJoCo's dynamics callback called for it, and a user gain reading its
@@ -199,6 +200,10 @@ CASES = [
      '<general joint="h1" dyntype="user"/>\n    <motor joint="h2"/>',
      '<general joint="h1" dyntype="integrator"/>\n    <motor joint="h2"/>',
      {'dyn': 'add_qfrc0'}),
+    ('a user dynamics callback writing a later integrator ctrl',
+     '<general joint="h1" dyntype="user"/>\n    <general joint="h2" dyntype="integrator"/>',
+     '<general joint="h1" dyntype="integrator"/>\n    <general joint="h2" dyntype="integrator"/>',
+     {'dyn': 'write_later_ctrl'}),
 ]
 
 
