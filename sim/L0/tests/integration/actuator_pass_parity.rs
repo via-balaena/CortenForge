@@ -22,8 +22,8 @@
 //! [`Pid`], a port of `mujoco.pid`. After a forward pass each actuator's
 //! force, `qfrc_actuator` and `act_dot` are compared; after a step `qDeriv` on
 //! D's pattern, and qpos, qvel and act; bit for bit on the golden's platform
-//! (see `matches_golden`). The golden's sequences hold what the mapping maps
-//! after passes that skip the position stage.
+//! (see `matches_golden`). The golden's sequences hold what the actuation
+//! reads through the moment rows after passes that skip the position stage.
 
 use std::sync::Arc;
 
@@ -423,12 +423,15 @@ fn actuation_passes_act_as_mujoco() {
 }
 
 /// MuJoCo maps each actuator's force through the moment row the last position
-/// stage built: a reset leaves every row empty, and the transmission leaves a
-/// sleeping actuator's empty while some dof sleeps. The golden's sequences
-/// call passes that skip the position stage after a reset and after a step
-/// that puts a tree to sleep, whose motor's range clamps its zero control into
-/// a force; each actuator's force, `qfrc_actuator` and `tree_asleep` are
-/// compared after each recorded call.
+/// stage built, and takes its velocity and the velocity derivative's term from
+/// that row: empty for an actuator that stage skips as asleep while some dof
+/// sleeps, and after a reset, unless the reset ran a forward pass (a tree that
+/// starts asleep). The golden's sequences call passes, and an inverse, that
+/// skip the position stage after a reset, after a step that puts a tree to
+/// sleep and after the reset of a model whose tree starts asleep; each
+/// actuator's force and velocity, `qfrc_actuator`, `tree_asleep` and, under
+/// discrete inverse dynamics, `qDeriv` on D's pattern are compared after each
+/// recorded call.
 #[test]
 fn the_mapping_reads_the_moment_the_position_stage_left() {
     let golden = golden();
@@ -437,17 +440,26 @@ fn the_mapping_reads_the_moment_the_position_stage_left() {
     for sequence in golden["sequences"].as_array().expect("sequences") {
         let name = sequence["name"].as_str().expect("name");
         let model = sim_mjcf::load_model(sequence["xml"].as_str().expect("xml")).expect("load");
+        let (rownnz, rowadr, colind) = (
+            usizes(&sequence["D_rownnz"]),
+            usizes(&sequence["D_rowadr"]),
+            usizes(&sequence["D_colind"]),
+        );
         let mut data = model.make_data();
         let mut records = sequence["records"].as_array().expect("records").iter();
         for call in strings(&sequence["calls"]) {
             match call {
                 "set" => {
-                    data.qpos
-                        .as_mut_slice()
-                        .copy_from_slice(&floats(&sequence["qpos"]));
-                    data.ctrl
-                        .as_mut_slice()
-                        .copy_from_slice(&floats(&sequence["ctrl"]));
+                    let values = &sequence["values"];
+                    for (field, key) in [
+                        (data.qpos.as_mut_slice(), "qpos"),
+                        (data.qvel.as_mut_slice(), "qvel"),
+                        (data.ctrl.as_mut_slice(), "ctrl"),
+                    ] {
+                        if let Some(v) = values.get(key) {
+                            field.copy_from_slice(&floats(v));
+                        }
+                    }
                 }
                 "forward" => data.forward(&model).expect("forward"),
                 "reset" => data.reset(&model),
@@ -457,6 +469,9 @@ fn the_mapping_reads_the_moment_the_position_stage_left() {
                 "skip_vel" => data
                     .forward_skip(&model, MjStage::Vel, false)
                     .expect("skip"),
+                "inverse_skip_pos" => data
+                    .inverse_skip(&model, MjStage::Pos, false)
+                    .expect("inverse"),
                 "step" => data.step(&model).expect("step"),
                 "sleep" => {
                     for _ in 0..index(&sequence["sleep_steps"]) {
@@ -465,11 +480,19 @@ fn the_mapping_reads_the_moment_the_position_stage_left() {
                 }
                 "record" => {
                     let want = records.next().expect("a record");
+                    let qderiv: Vec<f64> = (0..model.nv)
+                        .flat_map(|r| (rowadr[r]..rowadr[r] + rownnz[r]).map(move |j| (r, j)))
+                        .map(|(r, j)| data.qDeriv[(r, colind[j])])
+                        .collect();
                     for (what, ours) in [
                         ("actuator_force", data.actuator_force.as_slice()),
+                        ("actuator_velocity", data.actuator_velocity.as_slice()),
                         ("qfrc_actuator", data.qfrc_actuator.as_slice()),
+                        ("qDeriv", qderiv.as_slice()),
                     ] {
-                        let mj = floats(&want[what]);
+                        let Some(mj) = want.get(what).map(floats) else {
+                            continue;
+                        };
                         if !matches_golden(ours, &mj) {
                             failures.push(format!(
                                 "{name}, record {recorded}: {what} {ours:?}, MuJoCo {mj:?}"
@@ -489,7 +512,7 @@ fn the_mapping_reads_the_moment_the_position_stage_left() {
             }
         }
     }
-    assert_eq!(recorded, 9, "the two sequences' records");
+    assert_eq!(recorded, 15, "the four sequences' records");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",

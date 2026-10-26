@@ -28,9 +28,11 @@ seeded generator, and act_dot from a second one, set before each pass, and
 in one case qfrc_actuator, `qfrc_actuator_before`) after
 mj_forward each actuator's force, qfrc_actuator and act_dot, and after one
 mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind), qpos, qvel and
-act. Its `sequences` call a pass that skips the position stage after a reset
-and after a step that puts a tree to sleep, and record what the mapping maps
-(MuJoCo maps through the moment row the last position stage built).
+act. Its `sequences` call passes (and an inverse) that skip the position stage
+after a reset, after a step that puts a tree to sleep and after the reset of a
+model whose tree starts asleep, and record what the actuation reads through the
+moment rows the last position stage built: the forces mapped, the actuator
+velocities, and under discrete inverse dynamics the velocity derivative.
 
 sim-mjcf refuses a user gain, bias or dynamics and loads no plugin, so each
 case also holds a stand-in (`xml`): the same model with types sim-mjcf loads.
@@ -337,12 +339,14 @@ def case(name, actuator, stand_in, opts):
             'D_colind': ints(m.D_colind), 'states': states}
 
 
-# What the mapping maps through: MuJoCo maps each actuator's force through the
-# moment row the last position stage built (mj_transmission), which a reset
-# empties (moment_rownnz 0) and which the transmission leaves empty for an
-# actuator it skips as asleep. Two trees, the first at rest where its spring
-# holds its motor's force (q = 0.1, so -10 q + 1 = 0), so it falls asleep, the
-# motor's range (1, 2) clamping its zero control to a force of 1.
+# What the actuation reads through the moment: MuJoCo maps each actuator's force
+# through the moment row the last position stage built (mj_transmission), and
+# takes its velocity and the velocity derivative's term from the same row. The
+# row is empty (moment_rownnz 0) for an actuator that stage skips as asleep, and
+# a reset empties every row; a reset whose model has a tree that starts asleep
+# runs a forward pass, which builds them. REST's first tree is at rest where its
+# spring holds its motor's force (q = 0.1, so -10 q + 1 = 0), so it falls
+# asleep, the motor's range (1, 2) clamping its zero control to a force of 1.
 REST = """<mujoco>
   <option timestep="0.002"><flag sleep="enable"/></option>
   <worldbody>
@@ -362,29 +366,61 @@ REST = """<mujoco>
     <motor joint="h2"/>
   </actuator>
 </mujoco>"""
-REST_QPOS = [0.1, 0.0]
-REST_CTRL = [0.0, 0.4]
+REST_INIT = REST.replace('sleep="allowed"', 'sleep="init"')
+# A velocity actuator under implicitfast with discrete inverse dynamics, whose
+# inverse pass takes the velocity derivative.
+VELOCITY = """<mujoco>
+  <option timestep="0.002" integrator="implicitfast"><flag invdiscrete="enable"/></option>
+  <worldbody>
+    <body name="b1" pos="0 0 1">
+      <joint name="h1" axis="0 0 1" damping="2"/>
+      <inertial pos="0.15 0 0" mass="0.9" diaginertia="0.004 0.03 0.03"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+    <body name="b2" pos="2 0 1">
+      <joint name="h2" axis="0 0 1" damping="1.13"/>
+      <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.003 0.02 0.02"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="h1"/>
+    <velocity joint="h2" kv="3"/>
+  </actuator>
+</mujoco>"""
+REST_VALUES = {'qpos': [0.1, 0.0], 'ctrl': [0.0, 0.4]}
 
-# (name, calls): 'set' writes REST_QPOS and REST_CTRL; 'record' records each
-# actuator's force, qfrc_actuator and tree_asleep; 'sleep' steps until the
-# first tree sleeps, the count recorded for the test to replay.
+# (name, model, values, calls): 'set' writes the values given (qpos, qvel,
+# ctrl); 'record' records each actuator's force and velocity, qfrc_actuator,
+# tree_asleep and, under invdiscrete, qDeriv; 'sleep' steps until the first tree
+# sleeps, the count recorded for the test to replay.
 SEQUENCES = [
-    ('a reset, then passes that skip the position stage',
+    ('a reset, then passes that skip the position stage', REST, REST_VALUES,
      ['set', 'forward', 'record', 'reset', 'set', 'skip_pos', 'record', 'skip_vel', 'record',
       'forward', 'record']),
-    ('a tree at rest falling asleep in a step, then passes that skip a stage',
+    ('a tree at rest falling asleep in a step, then passes that skip a stage', REST, REST_VALUES,
      ['set', 'sleep', 'record', 'skip_pos', 'record', 'skip_vel', 'record', 'forward', 'record',
       'step', 'record']),
+    ('a first tree starting asleep, a reset, then passes that skip the position stage',
+     REST_INIT, {'ctrl': [0.0, 0.4]},
+     ['reset', 'set', 'skip_pos', 'record', 'skip_vel', 'record', 'forward', 'record']),
+    ('a velocity actuator after a reset, through a pass and an inverse that skip the position stage',
+     VELOCITY, {'qvel': [0.0, 0.7], 'ctrl': [0.2, 0.5]},
+     ['set', 'forward', 'record', 'reset', 'set', 'skip_pos', 'record', 'reset', 'set',
+      'inverse_skip_pos', 'record']),
 ]
 
 
-def sequence(name, calls):
-    m = mujoco.MjModel.from_xml_string(REST)
+def sequence(name, xml, values, calls):
+    m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
+    qderiv = 'invdiscrete' in xml
     records, sleep_steps = [], None
     for call in calls:
         if call == 'set':
-            d.qpos[:], d.ctrl[:] = REST_QPOS, REST_CTRL
+            for key in ('qpos', 'qvel', 'ctrl'):
+                if key in values:
+                    getattr(d, key)[:] = values[key]
         elif call == 'forward':
             mujoco.mj_forward(m, d)
         elif call == 'reset':
@@ -393,6 +429,8 @@ def sequence(name, calls):
             mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_POS, 0)
         elif call == 'skip_vel':
             mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_VEL, 0)
+        elif call == 'inverse_skip_pos':
+            mujoco.mj_inverseSkip(m, d, mujoco.mjtStage.mjSTAGE_POS, 0)
         elif call == 'step':
             mujoco.mj_step(m, d)
         elif call == 'sleep':
@@ -402,13 +440,18 @@ def sequence(name, calls):
                 sleep_steps += 1
                 assert sleep_steps < 10000, 'the first tree never sleeps'
         elif call == 'record':
-            records.append({'actuator_force': floats(d.actuator_force),
-                            'qfrc_actuator': floats(d.qfrc_actuator),
-                            'tree_asleep': ints(d.tree_asleep)})
+            record = {'actuator_force': floats(d.actuator_force),
+                      'actuator_velocity': floats(d.actuator_velocity),
+                      'qfrc_actuator': floats(d.qfrc_actuator),
+                      'tree_asleep': ints(d.tree_asleep)}
+            if qderiv:
+                record['qDeriv'] = floats(d.qDeriv)
+            records.append(record)
         else:
             raise ValueError(call)
-    return {'name': name, 'xml': REST, 'qpos': REST_QPOS, 'ctrl': REST_CTRL, 'calls': calls,
-            'sleep_steps': sleep_steps, 'records': records}
+    return {'name': name, 'xml': xml, 'values': values, 'calls': calls,
+            'sleep_steps': sleep_steps, 'D_rownnz': ints(m.D_rownnz),
+            'D_rowadr': ints(m.D_rowadr), 'D_colind': ints(m.D_colind), 'records': records}
 
 
 def write(path, doc):

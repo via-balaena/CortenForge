@@ -530,14 +530,14 @@ pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
         return;
     }
     for i in 0..model.nu {
-        let asleep = actuator_skipped_asleep(model, data, i);
+        let empty = data.actuator_moment_empty[i];
         let rows = MomentRows {
             moment: &data.actuator_moment,
             ten_j: &data.ten_J,
             ten_j_colind: &data.ten_J_colind,
             ten_j_rownnz: &data.ten_J_rownnz,
         };
-        if let Some(entries) = rows.entries(model, i, asleep) {
+        if let Some(entries) = rows.entries(model, i, empty) {
             data.actuator_velocity[i] = dot_sparse_entries(entries, data.qvel.as_slice());
         }
     }
@@ -557,7 +557,8 @@ pub struct MomentRows<'a> {
 impl<'a> MomentRows<'a> {
     /// Actuator `i`'s moment row as `mj_transmission` stores it
     /// (`engine_core_smooth.c:1250-1730`), its `(column, value)` entries in
-    /// order: none for an actuator skipped asleep (`asleep`, `:1287-1290`); a
+    /// order: none where the last position stage left the moment empty
+    /// (`empty`, `Data::actuator_moment_empty`; `:1287-1290`); a
     /// hinge's or slide's one entry, the gear (`:1301-1309`); a ball's or free
     /// joint's three or six, zeros kept (`:1311-1375`); a tendon's `ten_J`
     /// chain under the sparse Jacobian, zeros kept, each entry times the gear
@@ -565,7 +566,7 @@ impl<'a> MomentRows<'a> {
     /// and a site's, slider-crank's or body's row, their nonzero entries
     /// (`:1436-1445`, alike at `:1464-1473`, `:1608-1617` and `:1720-1729`).
     /// `None` for a joint or tendon transmission to no object.
-    pub fn entries(&self, model: &Model, i: usize, asleep: bool) -> Option<MomentEntries<'a>> {
+    pub fn entries(&self, model: &Model, i: usize, empty: bool) -> Option<MomentEntries<'a>> {
         let gear = model.actuator_gear[i][0];
         let trnid = model.actuator_trnid[i][0];
         let entries = match model.actuator_trntype[i] {
@@ -613,7 +614,7 @@ impl<'a> MomentRows<'a> {
                 scale: 1.0,
             },
         };
-        Some(if asleep {
+        Some(if empty {
             MomentEntries::One(None)
         } else {
             entries

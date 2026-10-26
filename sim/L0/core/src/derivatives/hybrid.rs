@@ -386,14 +386,16 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         if dforce_dv == 0.0 {
             continue;
         }
-        // A sleeping actuator was left out above.
+        // A sleeping actuator was left out above; a moment the last position
+        // stage left empty adds nothing, as MuJoCo's row
+        // (`engine_derivative.c:1143-1144`).
         let rows = MomentRows {
             moment: &data.actuator_moment,
             ten_j: &data.ten_J,
             ten_j_colind: &data.ten_J_colind,
             ten_j_rownnz: &data.ten_J_rownnz,
         };
-        let Some(entries) = rows.entries(model, i, false) else {
+        let Some(entries) = rows.entries(model, i, data.actuator_moment_empty[i]) else {
             continue;
         };
         for (k, mk) in entries.clone() {
