@@ -11,11 +11,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ModelBuilder;
+use super::eig3::full_inertia;
 use super::geom::{
     compute_geom_inertia, compute_geom_mass, geom_effective_com, resolve_geom_fromto,
 };
 use super::mesh::{MeshProps, compute_mesh_inertia_by_mode, resolve_mesh};
 use super::orientation::quat_from_wxyz;
+use crate::error::{MjcfError, Result};
 use crate::types::{MeshInertia, MjcfGeom, MjcfInertial};
 
 impl ModelBuilder {
@@ -80,59 +82,43 @@ impl ModelBuilder {
 
 /// Extract inertial properties from MjcfInertial with full MuJoCo semantics.
 ///
-/// Handles both `diaginertia` and `fullinertia` specifications.
-/// When `fullinertia` is specified, diagonalizes via eigendecomposition
-/// and returns the principal axis orientation in `iquat`.
+/// Handles both `diaginertia` and `fullinertia` specifications. A
+/// `fullinertia` is made principal as MuJoCo's compiler makes it
+/// (`mjuu_fullInertia`, `user_objects.cc:2413-2417`): its moments in
+/// decreasing order and their frame in `iquat`, refused where the smallest
+/// is below mjEPS, or where they or their frame are not finite.
 pub fn extract_inertial_properties(
     inertial: &MjcfInertial,
-) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
+) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
     let mass = inertial.mass;
     let ipos = inertial.pos;
 
     // Priority: fullinertia > diaginertia > default
     if let Some(full) = inertial.fullinertia {
-        // Full inertia tensor [Ixx, Iyy, Izz, Ixy, Ixz, Iyz]
-        // Build symmetric matrix and diagonalize
-        let inertia_matrix = Matrix3::new(
-            full[0], full[3], full[4], // Ixx, Ixy, Ixz
-            full[3], full[1], full[5], // Ixy, Iyy, Iyz
-            full[4], full[5], full[2], // Ixz, Iyz, Izz
-        );
-
-        // Eigendecomposition to get principal axes
-        let eigen = inertia_matrix.symmetric_eigen();
-        let principal_inertia = Vector3::new(
-            eigen.eigenvalues[0].abs(),
-            eigen.eigenvalues[1].abs(),
-            eigen.eigenvalues[2].abs(),
-        );
-
-        // Eigenvectors form rotation matrix to principal axes
-        // Ensure right-handed coordinate system
-        let mut rot = eigen.eigenvectors;
-        if rot.determinant() < 0.0 {
-            // Flip one column to make it right-handed
-            rot.set_column(2, &(-rot.column(2)));
+        let refuse = |reason: &str| MjcfError::invalid_value("inertial", "fullinertia", reason);
+        let (moments, frame) = full_inertia(&full).map_err(refuse)?;
+        if !moments.iter().chain(frame.iter()).all(|x| x.is_finite()) {
+            return Err(refuse("its principal moments or axes are not finite"));
         }
-
-        let iquat = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_matrix(&rot));
+        let iquat =
+            UnitQuaternion::new_unchecked(Quaternion::new(frame[0], frame[1], frame[2], frame[3]));
 
         // Combine with any existing inertial frame orientation
         let base_iquat = quat_from_wxyz(inertial.quat);
         let final_iquat = base_iquat * iquat;
 
-        (mass, principal_inertia, ipos, final_iquat)
+        Ok((mass, Vector3::from(moments), ipos, final_iquat))
     } else if let Some(diag) = inertial.diaginertia {
         // Diagonal inertia already in principal axes
-        (mass, diag, ipos, quat_from_wxyz(inertial.quat))
+        Ok((mass, diag, ipos, quat_from_wxyz(inertial.quat)))
     } else {
         // Default: small uniform inertia
-        (
+        Ok((
             mass,
             Vector3::new(0.001, 0.001, 0.001),
             ipos,
             quat_from_wxyz(inertial.quat),
-        )
+        ))
     }
 }
 
@@ -140,6 +126,9 @@ pub fn extract_inertial_properties(
 ///
 /// Accumulates full 3×3 inertia tensor with geom orientation handling,
 /// then eigendecomposes to extract principal inertia and orientation.
+/// Refuses a body whose mass or inertia is not finite (a geom's size can
+/// overflow them; MuJoCo loads such a body with an infinite mass), before the
+/// eigendecomposition, whose frame fit does not end on a non-finite input.
 ///
 /// Mesh inertia is computed once per geom and cached across the mass and
 /// inertia passes (avoids O(3n) calls to `compute_mesh_inertia`).
@@ -148,16 +137,16 @@ pub fn compute_inertia_from_geoms(
     mesh_lookup: &HashMap<String, usize>,
     mesh_data: &[Arc<TriangleMeshData>],
     mesh_inertia_modes: &[MeshInertia],
-) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
+) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
     if geoms.is_empty() {
         // No geoms: zero mass/inertia (matches MuJoCo).
         // Use boundmass/boundinertia to set minimums instead.
-        return (
+        return Ok((
             0.0,
             Vector3::zeros(),
             Vector3::zeros(),
             UnitQuaternion::identity(),
-        );
+        ));
     }
 
     // Resolve fromto → pos/quat/size before any computation.
@@ -229,7 +218,15 @@ pub fn compute_inertia_from_geoms(
         inertia_tensor += i_rotated + parallel_axis;
     }
 
-    // Eigendecompose to get principal axes
+    if !total_mass.is_finite() || !inertia_tensor.iter().all(|x| x.is_finite()) {
+        return Err(MjcfError::invalid_model(
+            "the body's mass or inertia computed from its geoms is not finite",
+        ));
+    }
+
+    // Eigendecompose to get principal axes. MuJoCo copies a single geom's
+    // frame and moments, and finds several geoms' with `eig3`
+    // (`InertiaFromGeom`, `user_objects.cc:2157-2227`): Rigid-loading L33's.
     let eigen = inertia_tensor.symmetric_eigen();
     let principal_inertia = Vector3::new(
         eigen.eigenvalues[0].abs(),
@@ -245,7 +242,7 @@ pub fn compute_inertia_from_geoms(
     }
     let iquat = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_matrix(&rot));
 
-    (total_mass, principal_inertia, com, iquat)
+    Ok((total_mass, principal_inertia, com, iquat))
 }
 
 #[cfg(test)]

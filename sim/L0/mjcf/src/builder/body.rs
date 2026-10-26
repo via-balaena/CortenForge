@@ -11,7 +11,7 @@ use tracing::warn;
 use super::ModelBuilder;
 use super::mass::{compute_inertia_from_geoms, extract_inertial_properties};
 use super::orientation::resolve_orientation;
-use crate::error::{MjcfError, Result};
+use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
 
 impl ModelBuilder {
@@ -165,7 +165,11 @@ impl ModelBuilder {
             })
             .collect();
 
-        let (mass, inertia, ipos, iquat) = self.resolve_body_inertia(body, &resolved_geoms);
+        let (mass, inertia, ipos, iquat) = self
+            .resolve_body_inertia(body, &resolved_geoms)
+            .map_err(|e| {
+                e.with_location_if_unknown(Location::named(ElementKind::Body, &body.name))
+            })?;
 
         // Track joint/DOF addresses for this body
         let jnt_adr = self.jnt_type.len();
@@ -276,7 +280,7 @@ impl ModelBuilder {
         &self,
         body: &MjcfBody,
         resolved_geoms: &[MjcfGeom],
-    ) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
+    ) -> Result<(f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>)> {
         match self.compiler.inertiafromgeom {
             InertiaFromGeom::True => compute_inertia_from_geoms(
                 resolved_geoms,
@@ -300,12 +304,12 @@ impl ModelBuilder {
                 if let Some(ref inertial) = body.inertial {
                     extract_inertial_properties(inertial)
                 } else {
-                    (
+                    Ok((
                         0.0,
                         Vector3::zeros(),
                         Vector3::zeros(),
                         UnitQuaternion::identity(),
-                    )
+                    ))
                 }
             }
         }

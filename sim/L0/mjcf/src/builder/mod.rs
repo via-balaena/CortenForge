@@ -13,6 +13,7 @@ mod build;
 pub mod compiler;
 mod composite;
 pub mod contact;
+mod eig3;
 pub mod equality;
 pub mod flex;
 pub mod fluid;
