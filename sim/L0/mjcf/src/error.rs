@@ -429,6 +429,7 @@ impl fmt::Display for Location {
 
 // Constructors, each with an unknown location; `at` sets one.
 impl MjcfError {
+    /// An [`MjcfError::Io`].
     pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
@@ -436,6 +437,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::Xml`].
     pub(crate) fn xml(message: impl fmt::Display) -> Self {
         Self::Xml {
             message: message.to_string(),
@@ -448,6 +450,7 @@ impl MjcfError {
         Self::xml(format!("unexpected EOF in {tag}"))
     }
 
+    /// An [`MjcfError::Include`].
     pub(crate) fn include(message: impl Into<String>) -> Self {
         Self::Include {
             message: message.into(),
@@ -455,6 +458,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::MissingAttribute`].
     pub(crate) fn missing_attribute(
         element: impl Into<String>,
         attribute: impl Into<String>,
@@ -466,6 +470,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::ConflictingAttributes`].
     pub(crate) fn conflicting(element: impl Into<String>, attributes: &[&str]) -> Self {
         Self::ConflictingAttributes {
             element: element.into(),
@@ -474,6 +479,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::BadNumber`].
     pub(crate) fn bad_number(value: impl Into<String>) -> Self {
         Self::BadNumber {
             value: value.into(),
@@ -481,6 +487,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::WrongValueCount`].
     pub(crate) fn wrong_count(expected: ValueCount, found: usize) -> Self {
         Self::WrongValueCount {
             expected,
@@ -489,6 +496,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::InvalidKeyword`].
     pub(crate) fn invalid_keyword(
         element: impl Into<String>,
         attribute: impl Into<String>,
@@ -502,6 +510,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::NonFinite`].
     pub(crate) fn non_finite(
         element: impl Into<String>,
         attribute: impl Into<String>,
@@ -515,6 +524,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::InvalidValue`].
     pub(crate) fn invalid_value(
         element: impl Into<String>,
         attribute: impl Into<String>,
@@ -528,6 +538,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::DuplicateName`].
     pub(crate) fn duplicate_name(kind: ElementKind, name: impl Into<String>) -> Self {
         Self::DuplicateName {
             kind,
@@ -536,6 +547,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::UndefinedReference`].
     pub(crate) fn undefined(kind: ElementKind, name: impl Into<String>) -> Self {
         Self::UndefinedReference {
             kind,
@@ -544,6 +556,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::UnknownClass`].
     pub(crate) fn unknown_class(name: impl Into<String>) -> Self {
         Self::UnknownClass {
             name: name.into(),
@@ -551,6 +564,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::InvalidModel`].
     pub(crate) fn invalid_model(reason: impl Into<String>) -> Self {
         Self::InvalidModel {
             reason: reason.into(),
@@ -558,6 +572,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::Asset`].
     pub(crate) fn asset(
         kind: ElementKind,
         name: impl Into<String>,
@@ -571,6 +586,7 @@ impl MjcfError {
         }
     }
 
+    /// An [`MjcfError::Unsupported`].
     pub(crate) fn unsupported(feature: impl Into<String>) -> Self {
         Self::Unsupported {
             feature: feature.into(),
