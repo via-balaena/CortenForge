@@ -659,6 +659,14 @@ impl Iterator for MomentEntries<'_> {
     }
 }
 
+/// The last of actuator `i`'s activations, which its dynamics write and its
+/// force reads, as MuJoCo's `actadr + actnum − 1` (`engine_forward.c:340-342`,
+/// `:446-447`). An actuator with dynamics has at least one activation:
+/// [`Model::try_make_data`] refuses a model where one has none.
+pub fn last_activation(model: &Model, i: usize) -> usize {
+    model.actuator_act_adr[i] + model.actuator_act_num[i] - 1
+}
+
 /// Compute next activation state: integrate act_dot and clamp to actrange.
 ///
 /// Matches MuJoCo's `mj_nextActivation()` in `engine_forward.c`:
@@ -773,13 +781,23 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             actuator_ctrl_input(model, data, i)
         };
 
+        // The actuator's activations' act_dot are zeroed before its dynamics
+        // write the last of them, as MuJoCo's (`engine_forward.c:332-335`);
+        // only where it has one, as an actuator with none may have no real
+        // address (cf-design gives it `usize::MAX`).
+        let act_num = model.actuator_act_num[i];
+        if act_num > 0 {
+            let act_first = model.actuator_act_adr[i];
+            data.act_dot.as_mut_slice()[act_first..act_first + act_num].fill(0.0);
+        }
+
         let input = match model.actuator_dyntype[i] {
             ActuatorDynamics::None => ctrl,
             ActuatorDynamics::Muscle
             | ActuatorDynamics::HillMuscle
             | ActuatorDynamics::MillardMuscle => {
                 // Hill/Millard reuse MuJoCo-conformant muscle activation dynamics.
-                let act_adr = model.actuator_act_adr[i];
+                let act_adr = last_activation(model, i);
                 // act_dot computed from UNCLAMPED current activation (MuJoCo convention)
                 data.act_dot[act_adr] =
                     muscle_activation_dynamics(ctrl, data.act[act_adr], &model.actuator_dynprm[i]);
@@ -794,7 +812,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 // First-order filter: d(act)/dt = (ctrl - act) / tau
                 // Filter uses Euler integration, FilterExact uses exact integration.
                 // Both compute the same act_dot here; the difference is in integrate().
-                let act_adr = model.actuator_act_adr[i];
+                let act_adr = last_activation(model, i);
                 let tau = model.actuator_dynprm[i][0].max(MIN_VAL);
                 data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
                 if model.actuator_actearly[i] {
@@ -805,7 +823,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             }
             ActuatorDynamics::Integrator => {
                 // Integrator: d(act)/dt = ctrl
-                let act_adr = model.actuator_act_adr[i];
+                let act_adr = last_activation(model, i);
                 data.act_dot[act_adr] = ctrl;
                 if model.actuator_actearly[i] {
                     mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
@@ -815,7 +833,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             }
             ActuatorDynamics::User => {
                 // User-defined dynamics via callback
-                let act_adr = model.actuator_act_adr[i];
+                let act_adr = last_activation(model, i);
                 let act_dot = if let Some(ref cb) = model.cb_act_dyn {
                     (cb.0)(model, data, i)
                 } else {
@@ -891,11 +909,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     velocity,
                 )
             }
+            // Without a callback a user gain is 1, as MuJoCo's
+            // (`engine_forward.c:434-440`).
             GainType::User => {
                 if let Some(ref cb) = model.cb_act_gain {
                     (cb.0)(model, data, i)
                 } else {
-                    0.0
+                    1.0
                 }
             }
         };

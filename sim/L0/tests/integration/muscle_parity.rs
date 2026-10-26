@@ -6,7 +6,8 @@
 //! The golden is `assets/golden/muscle/muscle.json`, from the unfused MuJoCo
 //! 3.5.0 oracle (`scripts/gen_muscle_reference.py`, which describes its
 //! fixtures). sim-mjcf does not read `lengthrange` yet (ledger L44), so each
-//! test sets MuJoCo's after loading.
+//! test sets MuJoCo's after loading; `a_written_length_range_is_not_read_yet`
+//! fails once it does.
 
 use serde_json::Value;
 use sim_mjcf::load_model;
@@ -193,4 +194,28 @@ fn assert_implicit_steps(name: &str) {
             );
         }
     }
+}
+
+/// sim-mjcf drops a written `lengthrange` (ledgers L37, L272): a muscle on an
+/// unlimited hinge, its range written, loads with (0, 0), where MuJoCo 3.5.0
+/// compiles the written (-1.5, 1.5) (and refuses the model without it: the
+/// range's simulation does not converge). Rigid-loading's L44 keeps the
+/// written range, and this test fails there.
+#[test]
+fn a_written_length_range_is_not_read_yet() {
+    let model = load_model(
+        r#"<mujoco>
+          <worldbody>
+            <body name="b" pos="0 0 1">
+              <joint name="h" axis="0 1 0"/>
+              <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <muscle joint="h" force="20" lengthrange="-1.5 1.5"/>
+          </actuator>
+        </mujoco>"#,
+    )
+    .expect("load");
+    assert_eq!(model.actuator_lengthrange[0], (0.0, 0.0));
 }

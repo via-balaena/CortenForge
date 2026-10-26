@@ -297,8 +297,8 @@ fn sensor_callback_fires_for_user_sensor() {
 /// 1. cb_act_dyn fires and act_dot[0] == 1.5
 /// 2. cb_act_gain fires with gain=2.0
 /// 3. cb_act_bias fires with bias=-0.5
-/// 4. force = gain*ctrl + bias = 2.0*1.0 + (-0.5) = 1.5
-/// 5. Safe defaults: no callbacks → act_dot=0, gain=0, bias=0
+/// 4. force = gain*act + bias = 2.0*0 + (-0.5) = -0.5 (user dynamics: the
+///    force reads the activation, 0 on the first step)
 #[test]
 fn actuator_user_callbacks_invoked() {
     use sim_core::{ActuatorDynamics, BiasType, GainType};
@@ -448,7 +448,7 @@ fn control_callback_skipped_when_actuation_disabled() {
     );
 }
 
-/// T5 safe-defaults: no user callbacks → act_dot=0, gain=0, bias=0.
+/// T5 safe-defaults: no user callbacks → act_dot=0, gain=1 (MuJoCo's), bias=0.
 #[test]
 fn actuator_user_callbacks_safe_defaults() {
     use sim_core::{ActuatorDynamics, BiasType, GainType};
@@ -476,9 +476,13 @@ fn actuator_user_callbacks_safe_defaults() {
     model.actuator_act_adr[0] = 0;
     model.actuator_act_num[0] = 1;
     model.na = 1;
+    // Parameters a user gain and bias do not read.
+    model.actuator_gainprm[0][0] = 3.0;
+    model.actuator_biasprm[0][0] = 0.7;
 
     let mut data = model.make_data();
     data.ctrl[0] = 1.0;
+    data.act[0] = 0.5;
     data.forward(&model).expect("forward");
 
     // Safe defaults: act_dot = 0.0 (no cb_act_dyn)
@@ -488,11 +492,10 @@ fn actuator_user_callbacks_safe_defaults() {
         data.act_dot[0]
     );
 
-    // Safe defaults: gain=0, bias=0 → force=0
-    assert!(
-        data.qfrc_actuator[0].abs() < 1e-15,
-        "qfrc_actuator should be 0.0 without gain/bias callbacks, got {}",
-        data.qfrc_actuator[0]
+    // Safe defaults: gain=1, bias=0 → force = act
+    assert_eq!(
+        data.qfrc_actuator[0], 0.5,
+        "qfrc_actuator should be the activation without gain/bias callbacks"
     );
 }
 

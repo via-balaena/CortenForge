@@ -3655,6 +3655,72 @@ fn smooth_pos_reads_the_control_the_forward_pass_acted_on() {
     assert_eq!(qderiv_pos([0.7, f64::NAN]), qderiv_pos([0.0, 0.0]));
 }
 
+/// `mjd_smooth_pos` leaves out an actuator whose gain or bias is a user's
+/// (set in code: the loader refuses `user`), its length term and its
+/// spatial tendon's `∂J/∂q · qvel` term alike. At a `qvel` across the
+/// tendon (its velocity 0, so the force does not read it) the other side's
+/// velocity coefficient reaches only that term: it changes nothing with a
+/// user's gain or bias, and changes `qDeriv_pos` with neither.
+#[test]
+fn smooth_pos_leaves_out_a_user_gain_or_bias() {
+    let base = sim_mjcf::load_model(
+        r#"<mujoco>
+          <option timestep="0.01"/>
+          <worldbody>
+            <site name="w" pos="0.2 0.1 1"/>
+            <body pos="0 0 1">
+              <joint name="j1" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/>
+              <body pos="0.3 0 0">
+                <joint name="j2" type="hinge" axis="0 0 1"/>
+                <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="0.5"/>
+                <site name="s" pos="0.3 0 0"/>
+              </body>
+            </body>
+          </worldbody>
+          <tendon><spatial name="t"><site site="w"/><site site="s"/></spatial></tendon>
+          <actuator>
+            <general tendon="t" gaintype="affine" gainprm="1 0 0"
+                     biastype="affine" biasprm="0 0 0"/>
+          </actuator>
+        </mujoco>"#,
+    )
+    .expect("load");
+    let qderiv_pos = |user_gain: bool, user_bias: bool, kv: f64| {
+        let mut model = base.clone();
+        if user_gain {
+            model.actuator_gaintype[0] = GainType::User;
+            model.set_act_gain_callback(|_, _, _| 1.0);
+        }
+        if user_bias {
+            model.actuator_biastype[0] = BiasType::User;
+            model.set_act_bias_callback(|_, _, _| 0.0);
+        }
+        // The velocity coefficient of the side that is not the user's.
+        if user_bias {
+            model.actuator_gainprm[0][2] = kv;
+        } else {
+            model.actuator_biasprm[0][2] = kv;
+        }
+        let mut data = model.make_data();
+        data.qpos.as_mut_slice().copy_from_slice(&[0.4, -0.3]);
+        data.ctrl[0] = 0.6;
+        data.forward(&model).expect("forward");
+        let j = data.ten_J[0].clone();
+        data.qvel.as_mut_slice().copy_from_slice(&[j[1], -j[0]]);
+        data.forward(&model).expect("forward");
+        assert_eq!(data.ten_velocity[0], 0.0);
+        mjd_smooth_pos(&model, &mut data);
+        data.qDeriv_pos.clone()
+    };
+    assert_ne!(
+        qderiv_pos(false, false, -2.0),
+        qderiv_pos(false, false, 0.0)
+    );
+    assert_eq!(qderiv_pos(true, false, -2.0), qderiv_pos(true, false, 0.0));
+    assert_eq!(qderiv_pos(false, true, 0.5), qderiv_pos(false, true, 0.0));
+}
+
 /// `mjd_smooth_pos` equals a central difference, over the configuration, of
 /// the forces the step applies through a tendon (and the hybrid transition's
 /// `A` equals pure finite differences of the step): `qfrc_passive +

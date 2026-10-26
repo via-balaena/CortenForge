@@ -22,8 +22,8 @@ use crate::dynamics::spatial::{
 };
 use crate::forward::{
     MjStage, MomentRows, acts_through_moment, actuator_ctrl_input, ellipsoid_moment,
-    fluid_geom_semi_axes, hill_active_fl, hill_force_velocity, mj_fwd_position, mj_next_activation,
-    muscle_f0, muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
+    fluid_geom_semi_axes, hill_active_fl, hill_force_velocity, last_activation, mj_fwd_position,
+    mj_next_activation, muscle_f0, muscle_gain_length, muscle_gain_velocity, muscle_length, norm3,
 };
 use crate::forward::{mj_implicit_factor, mj_implicit_solve, solve_implicit};
 use crate::integrate::eulerdamp_applies;
@@ -241,14 +241,21 @@ fn actuator_left_out(model: &Model, data: &Data, i: usize) -> bool {
     (lo > f64::NEG_INFINITY || hi < f64::INFINITY) && (force <= lo || force >= hi)
 }
 
+/// Whether actuator `i`'s gain or bias is a user's, whose derivatives are
+/// unknown here: [`mjd_actuator_pos`] leaves the actuator out.
+fn user_gain_or_bias(model: &Model, i: usize) -> bool {
+    model.actuator_gaintype[i] == GainType::User || model.actuator_biastype[i] == BiasType::User
+}
+
 /// Actuator `i`'s input as MuJoCo's derivatives read it: the raw control with
-/// no dynamics, else the activation, the next one under `actearly` (as its
-/// force reads it).
+/// no dynamics, else its last activation, the next one under `actearly` (as
+/// its force reads it).
 fn actuator_input(model: &Model, data: &Data, i: usize) -> f64 {
-    let adr = model.actuator_act_adr[i];
     if model.actuator_dyntype[i] == ActuatorDynamics::None {
-        data.ctrl[i]
-    } else if model.actuator_actearly[i] {
+        return data.ctrl[i];
+    }
+    let adr = last_activation(model, i);
+    if model.actuator_actearly[i] {
         mj_next_activation(model, i, data.act[adr], data.act_dot[adr])
     } else {
         data.act[adr]
@@ -261,14 +268,15 @@ fn actuator_input(model: &Model, data: &Data, i: usize) -> f64 {
 
 /// `∂force/∂V` of actuator `i` at `input`, as `mjd_actuator_vel` takes it:
 /// the gain's velocity term times the input, where that term is nonzero,
-/// plus the bias's. `None` for a Millard muscle or a user gain or bias, whose
-/// derivatives are deferred.
+/// plus the bias's. A user gain's or bias's term is 0, as MuJoCo's, which
+/// adds only an affine or a muscle term (`engine_derivative.c:1101-1122`).
+/// `None` for a Millard muscle, whose derivatives are deferred.
 fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Option<f64> {
     let length = data.actuator_length[i];
     let velocity = data.actuator_velocity[i];
     // ∂gain/∂V for this actuator
     let dgain_dv = match model.actuator_gaintype[i] {
-        GainType::Fixed => 0.0,
+        GainType::Fixed | GainType::User => 0.0,
         GainType::Affine => model.actuator_gainprm[i][2],
         GainType::Muscle => {
             // MuJoCo's `mjd_muscleGain_vel` (engine_derivative.c:781-826):
@@ -313,17 +321,17 @@ fn actuator_dforce_dv(model: &Model, data: &Data, i: usize, input: f64) -> Optio
         // MillardMuscle: the analytic Bézier FV-curve velocity-derivative (and the
         // β·v̄ damping derivative) is deferred — omit this actuator from the implicit
         // velocity-Jacobian (explicit integration is unaffected). See recon R-implicit-deriv.
-        GainType::MillardMuscle | GainType::User => return None,
+        GainType::MillardMuscle => return None,
     };
 
     // ∂bias/∂V for this actuator
     // Muscle/HillMuscle bias (passive force) depends on length only, not velocity → 0.
     let dbias_dv = match model.actuator_biastype[i] {
         BiasType::Affine => model.actuator_biasprm[i][2],
-        BiasType::None | BiasType::Muscle | BiasType::HillMuscle => 0.0,
+        BiasType::None | BiasType::Muscle | BiasType::HillMuscle | BiasType::User => 0.0,
         // MillardMuscle bias has a velocity-dependent damping term; its analytic
         // derivative is deferred (skip — see the gain arm above).
-        BiasType::MillardMuscle | BiasType::User => return None,
+        BiasType::MillardMuscle => return None,
     };
 
     // The gain term only when its velocity part is nonzero, as MuJoCo's:
@@ -846,7 +854,10 @@ pub fn mjd_smooth_vel_bias(model: &Model, data: &mut Data, flg_bias: bool) {
 ///
 /// Populates position derivative storage with three analytical contributions:
 ///   1. ∂qfrc_passive/∂qpos via spring chain rules (joint + tendon)
-///   2. ∂qfrc_actuator/∂qpos via gain/bias length derivatives
+///   2. ∂qfrc_actuator/∂qpos via gain/bias length derivatives; an actuator
+///      whose gain or bias is a user's, its derivatives unknown here, adds
+///      only the term of the force it applied through a spatial tendon's
+///      moving moment arm
 ///   3. −∂RNEA(q,v,qacc)/∂qpos via RNE position chain rule
 ///      (includes −(∂M/∂q)·qacc from evaluating RNEA at actual acceleration)
 ///
@@ -1184,7 +1195,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
     // derivative of the force that pass computed.
     let bad = (0..model.nu).any(|i| is_bad(actuator_ctrl_input(model, data, i)));
     for i in 0..model.nu {
-        if actuator_left_out(model, data, i) {
+        if actuator_left_out(model, data, i) || user_gain_or_bias(model, i) {
             continue;
         }
         let input = forward_pass_input(model, data, i, bad);
@@ -1229,7 +1240,8 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
                 let dnl_dl = 1.0 / (cos_penn * optimal_fiber_length).max(1e-10);
                 -f0 * dfl_dnl * dnl_dl * fv * cos_penn
             }
-            // MillardMuscle analytic derivatives deferred (see ∂gain/∂V above).
+            // MillardMuscle analytic derivatives deferred (see ∂gain/∂V above);
+            // a user gain is left out above.
             GainType::MillardMuscle | GainType::User => continue,
         };
 
@@ -1332,7 +1344,7 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
         }
         let gear = model.actuator_gear[i][0];
         tendon_force[t] += gear * data.actuator_force[i];
-        if actuator_left_out(model, data, i) {
+        if actuator_left_out(model, data, i) || user_gain_or_bias(model, i) {
             continue;
         }
         let input = forward_pass_input(model, data, i, bad);

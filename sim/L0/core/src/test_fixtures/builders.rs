@@ -807,9 +807,9 @@ pub(super) fn set_options(
 /// `compute_implicit_params` and `compute_dof_patterns`.
 ///
 /// # Panics
-/// Panics if `recompute_derived` refuses one of the fixture's ranges.
-// The documented panic: a fixture's ranges are its author's, and a refusal is
-// a bug in the fixture.
+/// Panics if `recompute_derived` refuses the fixture.
+// The documented panic: a fixture is its author's, and a refusal is a bug in
+// the fixture.
 #[allow(clippy::panic)]
 pub fn finalize(model: &mut Model) {
     // qpos0 mirrors qpos_spring (reference/spring rest configuration).
