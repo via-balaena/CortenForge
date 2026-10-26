@@ -584,10 +584,10 @@ fn ray_sdf(ray: &Ray, data: &crate::SdfGrid, max_dist: f64) -> Option<RayHit> {
     None
 }
 
-/// Where the ray's line enters the box: negative where the box is behind the
-/// ray's origin, `None` where the line misses it or the ray's origin or
-/// direction is `NaN`. A line parallel to a face is in that face's slab when it
-/// lies on the face.
+/// Where the ray's line enters the box: at most 0 where the box holds the ray's
+/// origin, negative where the box is behind it, `None` where the line misses it
+/// or the ray's origin or direction is `NaN`. A line parallel to a face is in
+/// that face's slab when it lies on the face.
 fn ray_box_entry(ray: &Ray, aabb: &crate::Aabb) -> Option<f64> {
     let mut t_enter = f64::NEG_INFINITY;
     let mut t_exit = f64::INFINITY;
@@ -1072,8 +1072,8 @@ mod tests {
     }
 
     /// A field whose zero is the grid's far face (x = 1): rays along x from
-    /// x = -0.95 to 0.95 inside the grid meet it where the trace lands on that
-    /// face.
+    /// x = k/100, k from -95 to 95, inside the grid meet it where the trace
+    /// lands on that face.
     #[test]
     fn sdf_hit_on_the_grids_far_face_from_inside() {
         let grid = crate::SdfGrid::from_fn(21, 21, 21, 0.1, Point3::new(-1.0, -1.0, -1.0), |p| {
@@ -1169,6 +1169,8 @@ mod tests {
         assert_eq!(ray_box_entry(&behind, &aabb), Some(-4.0));
         let along_a_face = ray_from(Point3::new(1.0, 0.0, -3.0), Vector3::z());
         assert_eq!(ray_box_entry(&along_a_face, &aabb), Some(2.0));
+        let along_a_min_face = ray_from(Point3::new(-1.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_entry(&along_a_min_face, &aabb), Some(2.0));
         let touching_an_edge = ray_from(
             Point3::new(-2.0, 0.0, 0.0),
             Vector3::new(1.0, 1.0, 0.0).normalize(),
@@ -1189,6 +1191,12 @@ mod tests {
             Vector3::new(1.0, 0.1, 0.0).normalize(),
         );
         assert_eq!(ray_box_entry(&beside, &aabb), None);
+        // Out of the x slab (at 0.56) before it enters the y slab (at 4.47).
+        let beside_leaving_first = ray_from(
+            Point3::new(0.5, -3.0, 0.0),
+            Vector3::new(1.0, 0.5, 0.0).normalize(),
+        );
+        assert_eq!(ray_box_entry(&beside_leaving_first, &aabb), None);
         // On the face y = 1, leaving it at 1e-20 a unit: out of the y slab from
         // its start, no tolerance taking it as parallel.
         let leaving_a_face = ray_from(
