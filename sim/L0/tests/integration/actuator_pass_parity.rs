@@ -22,13 +22,14 @@
 //! [`Pid`], a port of `mujoco.pid`. After a forward pass each actuator's
 //! force, `qfrc_actuator` and `act_dot` are compared; after a step `qDeriv` on
 //! D's pattern, and qpos, qvel and act; bit for bit on the golden's platform
-//! (see `matches_golden`).
+//! (see `matches_golden`). The golden's sequences hold what the mapping maps
+//! after passes that skip the position stage.
 
 use std::sync::Arc;
 
 use serde_json::Value;
 use sim_core::plugin::{Plugin, PluginCapabilities, PluginCapabilityBit, PluginStage};
-use sim_core::{ActuatorDynamics, BiasType, Data, GainType, Model};
+use sim_core::{ActuatorDynamics, BiasType, Data, GainType, MjStage, Model};
 
 fn golden() -> Value {
     serde_json::from_str(include_str!(
@@ -413,6 +414,82 @@ fn actuation_passes_act_as_mujoco() {
         }
     }
     assert_eq!(compared, 228, "19 cases of 12 states");
+    assert!(
+        failures.is_empty(),
+        "{} differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// MuJoCo maps each actuator's force through the moment row the last position
+/// stage built: a reset leaves every row empty, and the transmission leaves a
+/// sleeping actuator's empty while some dof sleeps. The golden's sequences
+/// call passes that skip the position stage after a reset and after a step
+/// that puts a tree to sleep, whose motor's range clamps its zero control into
+/// a force; each actuator's force, `qfrc_actuator` and `tree_asleep` are
+/// compared after each recorded call.
+#[test]
+fn the_mapping_reads_the_moment_the_position_stage_left() {
+    let golden = golden();
+    let mut failures = Vec::new();
+    let mut recorded = 0;
+    for sequence in golden["sequences"].as_array().expect("sequences") {
+        let name = sequence["name"].as_str().expect("name");
+        let model = sim_mjcf::load_model(sequence["xml"].as_str().expect("xml")).expect("load");
+        let mut data = model.make_data();
+        let mut records = sequence["records"].as_array().expect("records").iter();
+        for call in strings(&sequence["calls"]) {
+            match call {
+                "set" => {
+                    data.qpos
+                        .as_mut_slice()
+                        .copy_from_slice(&floats(&sequence["qpos"]));
+                    data.ctrl
+                        .as_mut_slice()
+                        .copy_from_slice(&floats(&sequence["ctrl"]));
+                }
+                "forward" => data.forward(&model).expect("forward"),
+                "reset" => data.reset(&model),
+                "skip_pos" => data
+                    .forward_skip(&model, MjStage::Pos, false)
+                    .expect("skip"),
+                "skip_vel" => data
+                    .forward_skip(&model, MjStage::Vel, false)
+                    .expect("skip"),
+                "step" => data.step(&model).expect("step"),
+                "sleep" => {
+                    for _ in 0..index(&sequence["sleep_steps"]) {
+                        data.step(&model).expect("step");
+                    }
+                }
+                "record" => {
+                    let want = records.next().expect("a record");
+                    for (what, ours) in [
+                        ("actuator_force", data.actuator_force.as_slice()),
+                        ("qfrc_actuator", data.qfrc_actuator.as_slice()),
+                    ] {
+                        let mj = floats(&want[what]);
+                        if !matches_golden(ours, &mj) {
+                            failures.push(format!(
+                                "{name}, record {recorded}: {what} {ours:?}, MuJoCo {mj:?}"
+                            ));
+                        }
+                    }
+                    let tree: Vec<i64> = data.tree_asleep.iter().map(|&t| i64::from(t)).collect();
+                    if tree != ints(&want["tree_asleep"]) {
+                        failures.push(format!(
+                            "{name}, record {recorded}: tree_asleep {tree:?}, MuJoCo {}",
+                            want["tree_asleep"]
+                        ));
+                    }
+                    recorded += 1;
+                }
+                other => panic!("call {other}"),
+            }
+        }
+    }
+    assert_eq!(recorded, 9, "the two sequences' records");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",

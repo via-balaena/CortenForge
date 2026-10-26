@@ -173,7 +173,8 @@ pub trait Plugin: Send + Sync {
     /// whose `actuator_plugin` is this instance) after every built-in
     /// actuator's force, the plugins in order; each actuator's force, a
     /// sleeping or disabled one's too, is then clamped to its range and mapped
-    /// through its transmission (a sleeping one's to none), as MuJoCo's
+    /// through its transmission (through no moment where the last position
+    /// stage left it empty, a sleeping actuator's), as MuJoCo's
     /// (`mj_fwdActuation`).
     fn compute(
         &self,

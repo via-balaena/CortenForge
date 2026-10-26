@@ -437,12 +437,14 @@ pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
 /// Whether the transmission skips actuator `i`, as MuJoCo's `mj_transmission`
 /// skips a sleeping actuator while some dof sleeps
 /// (`engine_core_smooth.c:1279-1290`): its length keeps its last value and
-/// its moment is empty (MuJoCo's `rownnz` 0), so its row is cleared here.
+/// its moment is empty (MuJoCo's `rownnz` 0), so its row is cleared here and
+/// `actuator_moment_empty` records it, which the actuation reads.
 fn transmission_skips_asleep(model: &Model, data: &mut Data, i: usize) -> bool {
     let asleep = actuator_skipped_asleep(model, data, i);
     if asleep {
         data.actuator_moment[i].fill(0.0);
     }
+    data.actuator_moment_empty[i] = asleep;
     asleep
 }
 
@@ -741,9 +743,10 @@ pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
 /// 4. the actuator plugins' forces;
 /// 5. every actuator's force clamped to its range, a sleeping or disabled
 ///    one's 0 too;
-/// 6. the forces mapped to joint forces through the transmissions, a
-///    sleeping actuator's not (MuJoCo's transmission leaves its moment
-///    empty).
+/// 6. the forces mapped to joint forces through the transmissions, but
+///    through a moment the last position stage left empty: a reset leaves
+///    every one empty, and the transmission a sleeping actuator's while some
+///    dof sleeps (MuJoCo's `moment_rownnz` 0).
 ///
 /// MuJoCo scales the forces of a tendon's actuators to the tendon's
 /// actuator force range between passes 4 and 5 (`:508-538`) and clamps
@@ -785,7 +788,8 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
     // A sleeping actuator keeps its act_dot and has no force of its own
     // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394): pass 5 clamps
-    // its 0 into its range, and pass 6 maps nothing for it.
+    // its 0 into its range, which pass 6 maps through the moment the last
+    // position stage left (empty, if that stage found it asleep).
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     let asleep =
         |data: &Data, i: usize| sleep_enabled && crate::island::actuator_asleep(model, data, i);
@@ -1012,9 +1016,10 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     data.qfrc_actuator.fill(0.0);
     for i in 0..model.nu {
         let force = data.actuator_force[i];
-        // A sleeping actuator's moment is empty, as MuJoCo's transmission
-        // leaves it (`engine_core_smooth.c:1287-1291`).
-        if force == 0.0 || actuator_skipped_asleep(model, data, i) {
+        // MuJoCo maps through the moment row the last position stage built,
+        // empty after a reset and for an actuator it skipped as asleep
+        // (`engine_core_smooth.c:1287-1291`).
+        if force == 0.0 || data.actuator_moment_empty[i] {
             continue;
         }
         let gear = model.actuator_gear[i][0];

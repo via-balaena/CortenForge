@@ -28,7 +28,9 @@ seeded generator, and act_dot from a second one, set before each pass, and
 in one case qfrc_actuator, `qfrc_actuator_before`) after
 mj_forward each actuator's force, qfrc_actuator and act_dot, and after one
 mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind), qpos, qvel and
-act.
+act. Its `sequences` call a pass that skips the position stage after a reset
+and after a step that puts a tree to sleep, and record what the mapping maps
+(MuJoCo maps through the moment row the last position stage built).
 
 sim-mjcf refuses a user gain, bias or dynamics and loads no plugin, so each
 case also holds a stand-in (`xml`): the same model with types sim-mjcf loads.
@@ -335,6 +337,80 @@ def case(name, actuator, stand_in, opts):
             'D_colind': ints(m.D_colind), 'states': states}
 
 
+# What the mapping maps through: MuJoCo maps each actuator's force through the
+# moment row the last position stage built (mj_transmission), which a reset
+# empties (moment_rownnz 0) and which the transmission leaves empty for an
+# actuator it skips as asleep. Two trees, the first at rest where its spring
+# holds its motor's force (q = 0.1, so -10 q + 1 = 0), so it falls asleep, the
+# motor's range (1, 2) clamping its zero control to a force of 1.
+REST = """<mujoco>
+  <option timestep="0.002"><flag sleep="enable"/></option>
+  <worldbody>
+    <body name="b1" pos="0 0 1" sleep="allowed">
+      <joint name="h1" axis="0 0 1" stiffness="10" damping="2"/>
+      <inertial pos="0.15 0 0" mass="0.9" diaginertia="0.004 0.03 0.03"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+    <body name="b2" pos="2 0 1">
+      <joint name="h2" axis="0 0 1" damping="1.13"/>
+      <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.003 0.02 0.02"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="h1" forcelimited="true" forcerange="1 2"/>
+    <motor joint="h2"/>
+  </actuator>
+</mujoco>"""
+REST_QPOS = [0.1, 0.0]
+REST_CTRL = [0.0, 0.4]
+
+# (name, calls): 'set' writes REST_QPOS and REST_CTRL; 'record' records each
+# actuator's force, qfrc_actuator and tree_asleep; 'sleep' steps until the
+# first tree sleeps, the count recorded for the test to replay.
+SEQUENCES = [
+    ('a reset, then passes that skip the position stage',
+     ['set', 'forward', 'record', 'reset', 'set', 'skip_pos', 'record', 'skip_vel', 'record',
+      'forward', 'record']),
+    ('a tree at rest falling asleep in a step, then passes that skip a stage',
+     ['set', 'sleep', 'record', 'skip_pos', 'record', 'skip_vel', 'record', 'forward', 'record',
+      'step', 'record']),
+]
+
+
+def sequence(name, calls):
+    m = mujoco.MjModel.from_xml_string(REST)
+    d = mujoco.MjData(m)
+    records, sleep_steps = [], None
+    for call in calls:
+        if call == 'set':
+            d.qpos[:], d.ctrl[:] = REST_QPOS, REST_CTRL
+        elif call == 'forward':
+            mujoco.mj_forward(m, d)
+        elif call == 'reset':
+            mujoco.mj_resetData(m, d)
+        elif call == 'skip_pos':
+            mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_POS, 0)
+        elif call == 'skip_vel':
+            mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_VEL, 0)
+        elif call == 'step':
+            mujoco.mj_step(m, d)
+        elif call == 'sleep':
+            sleep_steps = 0
+            while d.tree_asleep[0] < 0:
+                mujoco.mj_step(m, d)
+                sleep_steps += 1
+                assert sleep_steps < 10000, 'the first tree never sleeps'
+        elif call == 'record':
+            records.append({'actuator_force': floats(d.actuator_force),
+                            'qfrc_actuator': floats(d.qfrc_actuator),
+                            'tree_asleep': ints(d.tree_asleep)})
+        else:
+            raise ValueError(call)
+    return {'name': name, 'xml': REST, 'qpos': REST_QPOS, 'ctrl': REST_CTRL, 'calls': calls,
+            'sleep_steps': sleep_steps, 'records': records}
+
+
 def write(path, doc):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(doc, f, separators=(',', ':'))
@@ -351,7 +427,8 @@ def main():
         set_callbacks({})
     os.makedirs(sys.argv[1], exist_ok=True)
     write(os.path.join(sys.argv[1], 'actuator_pass.json'),
-          {'oracle': marker, 'cases': finite_or_string(cases)})
+          {'oracle': marker, 'cases': finite_or_string(cases),
+           'sequences': [sequence(*s) for s in SEQUENCES]})
     print(f'{len(cases)} cases -> {sys.argv[1]}')
 
 

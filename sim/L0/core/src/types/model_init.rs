@@ -842,6 +842,7 @@ impl Model {
             actuator_velocity: vec![0.0; self.nu],
             actuator_force: vec![0.0; self.nu],
             actuator_moment: vec![DVector::zeros(self.nv); self.nu],
+            actuator_moment_empty: vec![true; self.nu],
             act_dot: DVector::zeros(self.na),
 
             // History buffers, as `_resetData` fills them
