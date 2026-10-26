@@ -147,6 +147,8 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
+// Model construction must not depend on hash order (ledger L27).
+#![deny(clippy::iter_over_hash_type)]
 #![warn(missing_docs)]
 #![allow(
     clippy::missing_const_for_fn,
