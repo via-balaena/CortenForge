@@ -298,4 +298,39 @@ mod tests {
             data.step(&model).expect("step failed");
         }
     }
+
+    /// A chain of `n` links, each joined to the one before by a revolute
+    /// joint.
+    fn chain(n: usize) -> String {
+        use std::fmt::Write as _;
+        let mut urdf = String::from(r#"<robot name="chain">"#);
+        for k in 0..n {
+            write!(
+                urdf,
+                r#"<link name="l{k}"><inertial><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1"/></inertial></link>"#
+            )
+            .unwrap();
+        }
+        for k in 1..n {
+            write!(
+                urdf,
+                r#"<joint name="j{k}" type="revolute"><parent link="l{}"/><child link="l{k}"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>"#,
+                k - 1
+            )
+            .unwrap();
+        }
+        urdf.push_str("</robot>");
+        urdf
+    }
+
+    /// The conversion nests one body per link, so the XML depth rule sim-mjcf
+    /// applies (MuJoCo's XML reader's) bounds a chain: 496 links load, 497 are
+    /// refused. MuJoCo 3.5.0 loads URDF chains of 497 and 600 links (registry
+    /// row D-URDF-DEPTH).
+    #[test]
+    fn a_chain_of_more_than_496_links_is_refused_by_the_xml_depth_rule() {
+        assert!(load_urdf_model(&chain(496)).is_ok());
+        let err = load_urdf_model(&chain(497)).unwrap_err();
+        assert!(err.to_string().contains("nested deeper than 498"), "{err}");
+    }
 }
