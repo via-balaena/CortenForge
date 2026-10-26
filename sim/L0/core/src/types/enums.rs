@@ -1543,7 +1543,7 @@ impl std::fmt::Display for ActuatorError {
                 na,
             } => write!(
                 f,
-                "actuator {actuator}'s {act_num} activations from address {act_adr} run past \
+                "actuator {actuator}'s activations ({act_num} from address {act_adr}) run past \
                  the model's {na}"
             ),
         }

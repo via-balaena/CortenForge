@@ -677,7 +677,7 @@ impl Model {
     }
 
     /// Create the `Data` for this model, with every array allocated: the joint
-    /// layout, range and activation-count checks, then the arrays, each
+    /// layout, range and actuator checks, then the arrays, each
     /// plugin's `init`, and a [`Data::reset`], which clears what `init` wrote
     /// outside the plugin state, sets the sleep state and runs each plugin's
     /// `reset`, as MuJoCo
@@ -728,7 +728,7 @@ impl Model {
     /// addresses, in that order, the actuators in order.
     ///
     /// - A plugin it names must be one of the model's with the actuator
-    ///   capability, as MuJoCo's compiler (`user_objects.cc:6963-6965`) and
+    ///   capability, as MuJoCo's compiler (`user_objects.cc:6959-6961`) and
     ///   `mj_validateReferences` (`engine_io.c:1794`) require.
     /// - Its activation count against its dynamics, as MuJoCo's compiler
     ///   checks it (`user_objects.cc:6896-6906`): none with dynamics, one
@@ -736,12 +736,15 @@ impl Model {
     ///   refused. MuJoCo checks none of them on a plugin's actuator. Here the
     ///   last two are not checked on a plugin's actuator; the first is checked
     ///   on every actuator, as the velocity derivative an implicit integrator's
-    ///   step takes reads the last activation of each with dynamics.
+    ///   step takes reads the last activation of each with dynamics
+    ///   (`actuator_input`, which `mjd_actuator_vel` calls).
     /// - Its activations must lie within the model's: `act_adr + act_num <=
     ///   na`, as `mj_validateReferences` requires (`engine_io.c:1795`). Two
-    ///   actuators may share activations, as in MuJoCo. The address of an
-    ///   actuator with no activation is not checked (cf-design gives it
-    ///   `usize::MAX`).
+    ///   actuators may share activations, as in MuJoCo. An actuator with no
+    ///   activation is told by its count, where MuJoCo tells it by its address,
+    ///   −1 (`engine_forward.c:328`, `:443`), which a `usize` cannot hold:
+    ///   sim-mjcf gives it the running sum, cf-design `usize::MAX`. Its
+    ///   address is not checked, and the actuation does not read it.
     ///
     /// # Errors
     /// The first [`ActuatorError`] found.
@@ -751,8 +754,7 @@ impl Model {
     /// is shorter than the model's actuators.
     pub fn check_actuators(&self) -> Result<(), ActuatorError> {
         for actuator in 0..self.nu {
-            // `get`: a model built in code may leave `actuator_plugin` empty.
-            let plugin = self.actuator_plugin.get(actuator).copied().flatten();
+            let plugin = crate::forward::actuator_plugin(self, actuator);
             if let Some(plugin) = plugin
                 && !self
                     .plugin_capabilities
@@ -810,7 +812,7 @@ impl Model {
     /// every array allocated, with no checks and no plugin `init`. The MJCF
     /// builder and [`Self::recompute_derived`] run those derivations only on a
     /// model whose joint layout and ranges pass (and `recompute_derived` only
-    /// on one whose activation counts pass), so they never step a joint
+    /// on one whose actuators pass), so they never step a joint
     /// layout or a range `try_make_data` refuses.
     pub(crate) fn make_data_for_derivation(&self) -> Data {
         let mut data = self.allocate_data();
@@ -1940,8 +1942,7 @@ mod joint_layout_tests {
     /// than a user's (MuJoCo's compiler's three, `user_objects.cc:6896-6906`).
     /// Two with a user's, and as many as the dynamics need, make a `Data`. On
     /// an actuator of a plugin with the actuator capability only the first is
-    /// refused, which MuJoCo's compiler takes; an actuator naming a plugin
-    /// without it, or no plugin of the model, is refused for its plugin.
+    /// refused, which MuJoCo's compiler takes.
     /// `recompute_derived` refuses what `try_make_data` refuses, leaving the
     /// model as it was.
     #[test]
@@ -1974,12 +1975,6 @@ mod joint_layout_tests {
                 act_num,
             }))
         };
-        let plugin_refused = |plugin| {
-            Some(MakeDataError::Actuator(ActuatorError::Plugin {
-                actuator: 0,
-                plugin,
-            }))
-        };
         assert_eq!(made(ActuatorDynamics::Filter, 0, None), refused(0));
         assert_eq!(made(ActuatorDynamics::None, 1, None), refused(1));
         assert_eq!(made(ActuatorDynamics::Integrator, 2, None), refused(2));
@@ -1990,13 +1985,6 @@ mod joint_layout_tests {
         assert_eq!(made(ActuatorDynamics::Filter, 0, actuator), refused(0));
         assert_eq!(made(ActuatorDynamics::None, 1, actuator), None);
         assert_eq!(made(ActuatorDynamics::Integrator, 2, actuator), None);
-        let passive = Some((0, PluginCapabilityBit::Passive));
-        assert_eq!(
-            made(ActuatorDynamics::Integrator, 2, passive),
-            plugin_refused(0)
-        );
-        let none = Some((1, PluginCapabilityBit::Actuator));
-        assert_eq!(made(ActuatorDynamics::None, 1, none), plugin_refused(1));
         let mut m = model(ActuatorDynamics::Muscle, 0, None);
         m.jnt_damping[0] = 5.0;
         let before = format!("{m:?}");
@@ -2012,12 +2000,13 @@ mod joint_layout_tests {
 
     /// The activation addresses `check_actuators` refuses, as MuJoCo's
     /// `mj_validateReferences` (`engine_io.c:1795`): a filter's activation at
-    /// 3 of 1, at 1 of 1, and at `usize::MAX`, whose end overflows. At 0 of 1
-    /// it makes a `Data`, and so do two filters sharing it, which MuJoCo
-    /// admits (`actuator_pass_parity` holds what MuJoCo's forward pass does
-    /// with them), and a motor with no activation at `usize::MAX`, as
-    /// cf-design gives it. `recompute_derived` refuses it too, leaving the
-    /// model as it was.
+    /// 3 of 1, at 1 of 1, and at `usize::MAX`, whose end overflows; a user's
+    /// dynamics' two activations from 0 of 1; the second of two filters at 1
+    /// of 1. At 0 of 1 a filter makes a `Data`, and so do two filters sharing
+    /// it, which MuJoCo admits (`actuator_pass_parity` holds what MuJoCo's
+    /// forward pass does with them), and a motor with no activation at
+    /// `usize::MAX`, as cf-design gives it. `recompute_derived` refuses it
+    /// too, leaving the model as it was.
     #[test]
     fn try_make_data_refuses_an_activation_address_past_the_activations() {
         let filters = |n, act_adr: &[usize]| {
@@ -2031,20 +2020,28 @@ mod joint_layout_tests {
             m.na = 1;
             m
         };
-        let refused = |act_adr| {
+        let address = |actuator, act_adr, act_num| {
             Some(MakeDataError::Actuator(ActuatorError::ActivationAddress {
-                actuator: 0,
+                actuator,
                 act_adr,
-                act_num: 1,
+                act_num,
                 na: 1,
             }))
         };
+        let refused = |act_adr| address(0, act_adr, 1);
         assert_eq!(filters(1, &[3]).try_make_data().err(), refused(3));
         assert_eq!(filters(1, &[1]).try_make_data().err(), refused(1));
         assert_eq!(
             filters(1, &[usize::MAX]).try_make_data().err(),
             refused(usize::MAX)
         );
+        let mut user = crate::test_fixtures::hinge_chain(1);
+        user.actuator_dyntype[0] = ActuatorDynamics::User;
+        user.actuator_act_num[0] = 2;
+        user.actuator_act_adr[0] = 0;
+        user.na = 1;
+        assert_eq!(user.try_make_data().err(), address(0, 0, 2));
+        assert_eq!(filters(2, &[0, 1]).try_make_data().err(), address(1, 1, 1));
         assert_eq!(filters(1, &[0]).try_make_data().err(), None);
         assert_eq!(filters(2, &[0, 0]).try_make_data().err(), None);
         let mut motor = crate::test_fixtures::hinge_chain(1);
@@ -2063,6 +2060,55 @@ mod joint_layout_tests {
             }))
         );
         assert_eq!(format!("{m:?}"), before);
+    }
+
+    /// The plugins `check_actuators` refuses, as MuJoCo's compiler
+    /// (`user_objects.cc:6959-6961`) and `mj_validateReferences`
+    /// (`engine_io.c:1794`) do, on a two-hinge chain's second motor, given one
+    /// activation: naming a plugin with no actuator capability, or a plugin
+    /// the model lacks. Naming the model's actuator plugin it makes a `Data`
+    /// with its activation within the model's, and is refused for one past
+    /// them.
+    #[test]
+    fn try_make_data_refuses_a_plugin_an_actuator_cannot_belong_to() {
+        let model = |capability: PluginCapabilityBit, plugin, act_adr| {
+            let mut m = crate::test_fixtures::hinge_chain(2);
+            m.nplugin = 1;
+            m.plugin_objects
+                .push(std::sync::Arc::new(Capable(capability)));
+            m.plugin_capabilities.push(capability.into());
+            m.plugin_needstage.push(PluginStage::Acc);
+            m.plugin_stateadr.push(0);
+            m.plugin_statenum.push(0);
+            m.plugin_name.push(None);
+            m.plugin_attradr.push(0);
+            m.plugin_attrnum.push(0);
+            m.actuator_plugin[1] = Some(plugin);
+            m.actuator_act_num[1] = 1;
+            m.actuator_act_adr[1] = act_adr;
+            m.na = 1;
+            m
+        };
+        let refused = |plugin| {
+            Some(MakeDataError::Actuator(ActuatorError::Plugin {
+                actuator: 1,
+                plugin,
+            }))
+        };
+        let made =
+            |capability, plugin, act_adr| model(capability, plugin, act_adr).try_make_data().err();
+        assert_eq!(made(PluginCapabilityBit::Passive, 0, 0), refused(0));
+        assert_eq!(made(PluginCapabilityBit::Actuator, 1, 0), refused(1));
+        assert_eq!(made(PluginCapabilityBit::Actuator, 0, 0), None);
+        assert_eq!(
+            made(PluginCapabilityBit::Actuator, 0, 1),
+            Some(MakeDataError::Actuator(ActuatorError::ActivationAddress {
+                actuator: 1,
+                act_adr: 1,
+                act_num: 1,
+                na: 1,
+            }))
+        );
     }
 
     /// Each rule of `check_ranges`, on a one-hinge chain with a motor and on a
