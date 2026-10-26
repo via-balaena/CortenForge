@@ -1146,7 +1146,8 @@ pub struct Model {
     /// User sensor callback: called for `MjSensorType::User` sensors.
     pub cb_sensor: Option<super::callbacks::CbSensor>,
     /// User actuator dynamics callback: called for `ActuatorDynamics::User`
-    /// (see [`CbActDyn`](super::callbacks::CbActDyn)).
+    /// and for a plugin's actuator with no dynamics and an activation (see
+    /// [`CbActDyn`](super::callbacks::CbActDyn)).
     pub cb_act_dyn: Option<super::callbacks::CbActDyn>,
     /// User actuator gain callback: called for `GainType::User`.
     pub cb_act_gain: Option<super::callbacks::CbActGain>,

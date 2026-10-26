@@ -170,9 +170,11 @@ pub trait Plugin: Send + Sync {
     /// `capability` indicates which role is being computed (ACTUATOR/SENSOR/PASSIVE/SDF).
     ///
     /// An ACTUATOR plugin writes the `actuator_force` of its actuators (those
-    /// whose `actuator_plugin` is this instance) after every other actuator's
-    /// force; each actuator's force is then clamped to its range and mapped
-    /// through its transmission, as MuJoCo's (`mj_fwdActuation`).
+    /// whose `actuator_plugin` is this instance) after every built-in
+    /// actuator's force, the plugins in order; each actuator's force, a
+    /// sleeping or disabled one's too, is then clamped to its range and mapped
+    /// through its transmission (a sleeping one's to none), as MuJoCo's
+    /// (`mj_fwdActuation`).
     fn compute(
         &self,
         _model: &Model,

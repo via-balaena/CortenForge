@@ -35,8 +35,8 @@ case also holds a stand-in (`xml`): the same model with types sim-mjcf loads.
 The test changes it to MuJoCo's compiled actuators (`compiled`: types,
 activation counts and addresses, plugins, actearly, force ranges, gears),
 including what the case sets after compiling (`after_compile`), and checks the
-result against them. The test's callbacks are GAIN, BIAS and DYN below, in the
-same operations, and its plugin is a port of `mujoco.pid` (`pid.cc`) built
+result against them. The test's callbacks are the GAIN_*, BIAS_* and DYN_*
+functions below, in the same operations, and its plugin is a port of `mujoco.pid` (`pid.cc`) built
 from `pid`. The models' joint axes are unit, their bodies' inertias written
 out and their geoms boxes, so what sim-mjcf compiles is MuJoCo's bit for bit
 (ledgers L146, L198 hold where it is not).

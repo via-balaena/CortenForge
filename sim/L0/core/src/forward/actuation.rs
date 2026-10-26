@@ -745,6 +745,11 @@ pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
 ///    sleeping actuator's not (MuJoCo's transmission leaves its moment
 ///    empty).
 ///
+/// MuJoCo scales the forces of a tendon's actuators to the tendon's
+/// actuator force range between passes 4 and 5 (`:508-538`) and clamps
+/// `qfrc_actuator` to the joints' after the mapping (`:565-566`); sim-core's
+/// model has no field for either (`actuatorfrcrange`).
+///
 /// A dynamics callback runs in the first pass, before any force (each is 0
 /// then); a gain or bias callback in the third, after every activation
 /// derivative. The inputs are a clamped copy of the controls taken before
@@ -769,13 +774,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     // A bad input (after clamping) makes every actuator's control input 0
     // for this pass, an actuator with an activation still acting on it;
     // `ctrl` itself is left as written (MuJoCo `mj_fwdActuation`).
-    let mut ctrl: Vec<f64> = (0..model.nu)
+    let mut controls: Vec<f64> = (0..model.nu)
         .map(|i| actuator_ctrl_input(model, data, i))
         .collect();
-    if let Some(i) = ctrl.iter().position(|&c| is_bad(c)) {
+    if let Some(i) = controls.iter().position(|&c| is_bad(c)) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         mj_warning(data, Warning::BadCtrl, i as i32);
-        ctrl.fill(0.0);
+        controls.fill(0.0);
     }
 
     // A sleeping actuator keeps its act_dot and has no force of its own
@@ -789,7 +794,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     // A per-group disabled actuator has its act_dot, as MuJoCo's, and no
     // force of its own (pass 5 clamps its 0 into its range); the advance
     // leaves its activation.
-    for (i, &ctrl) in ctrl.iter().enumerate() {
+    for (i, &ctrl) in controls.iter().enumerate() {
         // An actuator with no activation has no act_dot (MuJoCo's address is
         // −1; cf-design gives it `usize::MAX`).
         let act_num = model.actuator_act_num[i];
@@ -839,7 +844,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     }
 
     // --- 3. Forces: gain * input + bias (`:391-488`) ---
-    for (i, &ctrl) in ctrl.iter().enumerate() {
+    for (i, &ctrl) in controls.iter().enumerate() {
         // A plugin's actuator's force is the plugin's (pass 4).
         if asleep(data, i) || actuator_disabled(model, i) || actuator_plugin(model, i).is_some() {
             continue;
