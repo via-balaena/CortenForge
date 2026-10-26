@@ -16,8 +16,9 @@
 //! a force range that excludes 0 on a disabled actuator, and on a sleeping
 //! tree's (its `tree_asleep` checked too); two actuators sharing an
 //! activation; an infinite gear on actuators with no force. sim-mjcf
-//! refuses a user type and loads no plugin, so each case loads a stand-in and
-//! changes it to MuJoCo's compiled actuators, then checks it against them; the
+//! loads no plugin, so each case loads a stand-in, written without the plugins
+//! and user types, and changes it to MuJoCo's compiled actuators, then checks
+//! it against them; the
 //! callbacks below are the script's, in the same operations, and the plugin is
 //! [`Pid`], a port of `mujoco.pid`. After a forward pass each actuator's
 //! force, `qfrc_actuator` and `act_dot` are compared; after a step `qDeriv` on

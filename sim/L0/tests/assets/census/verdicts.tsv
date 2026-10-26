@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1044
+# agree_floor 1046
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -113,6 +113,7 @@
 11beabb117c3d1e6	model:body_mass;dyn:agree
 11c09d44bd2ef843	mj-refuses
 127d76572880c247	agree
+128fccf8b94496a2	agree
 12b8f8939ad754b7	agree
 12bd8870ecdbfc83	both-refuse
 12cd7c67c40cd343	mj-refuses
@@ -126,6 +127,7 @@
 13fdd82f2ab90b66	agree
 14074c2917322bdd	mj-refuses
 140b7da39d174c9c	agree
+143a252455fd7272	both-refuse
 144254b62c5c1c46	agree
 145cc768e76735e4	agree
 147c219f64d1c9f0	agree
@@ -339,6 +341,7 @@
 35f68395837baaab	agree
 35fb7b50188fd4c8	agree
 36411f48e3c00665	agree
+36596d66155aaefc	both-refuse
 36a54c4173989021	agree
 372e9587153345eb	agree
 375ed4e860ac3844	agree
@@ -1378,6 +1381,7 @@ ce434d26d9b43713	agree
 ce4efcfe7cb49f86	both-refuse
 ce5597ac65f799c3	agree
 ced09d26f36b4af4	agree
+cedb55734f1d066e	agree
 cf0e230d7b20f2de	agree
 cf224c2bddf9deb3	agree
 cf64ed75113fb614	ours-refused	known=A4-partial-array

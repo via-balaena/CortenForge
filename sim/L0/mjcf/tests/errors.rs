@@ -336,3 +336,34 @@ fn a_reader_that_knows_its_attribute_names_it() {
         "{err}"
     );
 }
+
+#[test]
+fn a_rule_on_an_elements_value_names_the_element_by_its_tag() {
+    // nuser_jnt's errors are a <joint>'s, not a "jnt"'s.
+    let err = refusal(
+        r#"<mujoco>
+            <size nuser_jnt="1"/>
+            <worldbody><body><joint name="j" user="1 2"/><geom size="0.1"/></body></worldbody>
+        </mujoco>"#,
+    );
+    assert!(
+        matches!(&err, MjcfError::InvalidValue { element, attribute, .. }
+            if element == "joint" && attribute == "user"),
+        "{err}"
+    );
+    // A muscle's parameter checks are on the <general> that names it.
+    let err = refusal(
+        r#"<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator>
+                <general joint="j" dyntype="hillmuscle" gaintype="hillmuscle" biastype="hillmuscle"
+                         gainprm="1 1 1 1 0"/>
+            </actuator>
+        </mujoco>"#,
+    );
+    assert!(
+        matches!(&err, MjcfError::InvalidValue { element, attribute, .. }
+            if element == "general" && attribute == "gainprm"),
+        "{err}"
+    );
+}

@@ -1801,3 +1801,7 @@ b0cc7ee3f82e54e0	sim/L0/mjcf/tests/errors.rs:186
 c286526a9c5e4976	sim/L0/mjcf/tests/errors.rs:237
 c6d3abca76ecdd72	sim/L0/mjcf/tests/errors.rs:210
 fde9185fcd85cc26	sim/L0/mjcf/tests/errors.rs:320
+128fccf8b94496a2	sim/L0/tests/integration/callbacks.rs:303
+143a252455fd7272	sim/L0/mjcf/tests/errors.rs:356
+36596d66155aaefc	sim/L0/mjcf/tests/errors.rs:344
+cedb55734f1d066e	sim/L0/tests/integration/callbacks.rs:454

@@ -639,6 +639,7 @@ fn parse_gaintype(s: &str) -> Result<GainType> {
         "muscle" => Ok(GainType::Muscle),
         "hillmuscle" => Ok(GainType::HillMuscle),
         "millardmuscle" => Ok(GainType::MillardMuscle),
+        "user" => Ok(GainType::User),
         _ => Err(MjcfError::invalid_keyword("general", "gaintype", s)),
     }
 }
@@ -650,6 +651,7 @@ fn parse_biastype(s: &str) -> Result<BiasType> {
         "muscle" => Ok(BiasType::Muscle),
         "hillmuscle" => Ok(BiasType::HillMuscle),
         "millardmuscle" => Ok(BiasType::MillardMuscle),
+        "user" => Ok(BiasType::User),
         _ => Err(MjcfError::invalid_keyword("general", "biastype", s)),
     }
 }
@@ -663,6 +665,7 @@ fn parse_dyntype(s: &str) -> Result<ActuatorDynamics> {
         "muscle" => Ok(ActuatorDynamics::Muscle),
         "hillmuscle" => Ok(ActuatorDynamics::HillMuscle),
         "millardmuscle" => Ok(ActuatorDynamics::MillardMuscle),
+        "user" => Ok(ActuatorDynamics::User),
         _ => Err(MjcfError::invalid_keyword("general", "dyntype", s)),
     }
 }
@@ -1053,19 +1056,18 @@ mod tests {
         );
     }
 
-    /// Criterion 10: "user" type produces error (not special-cased).
+    /// Criterion 10: the "user" types are MuJoCo's callback types
+    /// (mjGAIN_USER, mjBIAS_USER, mjDYN_USER), which MuJoCo 3.5.0 loads.
     #[test]
-    fn test_general_user_gaintype_error() {
-        let xml = general_actuator_model(r#"<general joint="j" gaintype="user"/>"#);
-        let err = load_model(&xml).unwrap_err();
-        assert!(
-            matches!(
-                &err,
-                MjcfError::InvalidKeyword { attribute, value, .. }
-                    if attribute == "gaintype" && value == "user"
-            ),
-            "{err}"
+    fn test_general_user_types_are_the_callback_types() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" gaintype="user" biastype="user" dyntype="user"/>"#,
         );
+        let model = load_model(&xml).expect("user types load");
+        assert_eq!(model.actuator_gaintype[0], GainType::User);
+        assert_eq!(model.actuator_biastype[0], BiasType::User);
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::User);
+        assert_eq!(model.actuator_act_num[0], 1);
     }
 
     /// Criterion 11: Shortcut types ignore gaintype/biastype/dyntype attributes.
@@ -1093,6 +1095,7 @@ mod tests {
             ("muscle", ActuatorDynamics::Muscle, 1),
             ("hillmuscle", ActuatorDynamics::HillMuscle, 1),
             ("millardmuscle", ActuatorDynamics::MillardMuscle, 1),
+            ("user", ActuatorDynamics::User, 1),
         ];
         for (dyntype_str, expected_dyn, expected_act_num) in &cases {
             let xml =
