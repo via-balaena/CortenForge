@@ -70,7 +70,9 @@ pub(crate) use velocity::mj_fwd_velocity;
 pub(crate) use velocity::mj_subtree_vel;
 
 // Re-exports for external consumers (derivatives.rs, collision/, constraint/, etc.)
-pub(crate) use actuation::{last_activation, mj_next_activation, unclamped_next_activation};
+pub(crate) use actuation::{
+    actuator_plugin, last_activation, mj_next_activation, unclamped_next_activation,
+};
 pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
 
 use crate::types::flags::{disabled, enabled};

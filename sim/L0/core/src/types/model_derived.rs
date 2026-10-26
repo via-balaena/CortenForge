@@ -14,7 +14,7 @@ use super::validation::MAX_VAL;
 impl Model {
     /// Recompute every field derived from the model's primary fields, in the
     /// order building a model computes them, after [`Self::check_joint_layout`],
-    /// [`Self::check_ranges`] and [`Self::check_activation_counts`]: the
+    /// [`Self::check_ranges`] and [`Self::check_actuators`]: the
     /// equivalent of MuJoCo's `mj_setConst` (3.5.0 `engine_setconst.c:1089-1101`)
     /// plus the muscle length-range simulation, which `mj_setConst` leaves out
     /// (`:1088`). The factories and the test fixtures' `finalize` run it; call
@@ -49,11 +49,11 @@ impl Model {
     ///
     /// # Errors
     /// The [`ModelError`] `check_joint_layout`, `check_ranges` or
-    /// `check_activation_counts` finds; the model is then unchanged.
+    /// `check_actuators` finds; the model is then unchanged.
     pub fn recompute_derived(&mut self) -> Result<(), ModelError> {
         self.check_joint_layout()?;
         self.check_ranges()?;
-        self.check_activation_counts()?;
+        self.check_actuators()?;
         // MuJoCo setFixed (engine_setconst.c:98-103).
         self.ngravcomp = self.body_gravcomp.iter().filter(|&&gc| gc > 0.0).count();
         // Before the derivations below, which make a `Data` sized by `nhistory`.

@@ -386,14 +386,16 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         if dforce_dv == 0.0 {
             continue;
         }
-        // A sleeping actuator was left out above.
+        // A sleeping actuator was left out above; a moment the last position
+        // stage left empty adds nothing, as MuJoCo's row
+        // (`engine_derivative.c:1143-1144`).
         let rows = MomentRows {
             moment: &data.actuator_moment,
             ten_j: &data.ten_J,
             ten_j_colind: &data.ten_J_colind,
             ten_j_rownnz: &data.ten_J_rownnz,
         };
-        let Some(entries) = rows.entries(model, i, false) else {
+        let Some(entries) = rows.entries(model, i, data.actuator_moment_empty[i]) else {
             continue;
         };
         for (k, mk) in entries.clone() {
@@ -1330,16 +1332,21 @@ pub fn mjd_actuator_pos(model: &Model, data: &mut Data) {
     }
 
     // A spatial tendon's moment arm moves with q: the force the pass applied
-    // (`gear · actuator_force`, 0 for an actuator it skipped, the bound for
-    // one its forcerange holds, which `actuator_left_out` leaves out of the
-    // force's own derivative only) adds `(∂Jᵀ/∂q) · gear · force`, and a
+    // (`gear · actuator_force`, but for an actuator whose moment the last
+    // position stage left empty, a sleeping one's, whose force the pass maps
+    // to none; a disabled one's is its 0 clamped into its range, and one its
+    // forcerange holds is at a bound, which `actuator_left_out` leaves out of
+    // the force's own derivative only) adds `(∂Jᵀ/∂q) · gear · force`, and a
     // force that reads the actuator velocity `gear · J · qvel` adds
     // `J · gear² · ∂force/∂V · (∂J/∂q) · qvel`.
     let mut tendon_force = vec![0.0; model.ntendon];
     let mut tendon_dforce_dv = vec![0.0; model.ntendon];
     for i in 0..model.nu {
         let t = model.actuator_trnid[i][0];
-        if model.actuator_trntype[i] != ActuatorTransmission::Tendon || t >= model.ntendon {
+        if model.actuator_trntype[i] != ActuatorTransmission::Tendon
+            || t >= model.ntendon
+            || data.actuator_moment_empty[i]
+        {
             continue;
         }
         let gear = model.actuator_gear[i][0];

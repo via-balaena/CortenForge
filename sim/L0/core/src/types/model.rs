@@ -1145,7 +1145,9 @@ pub struct Model {
     pub cb_contactfilter: Option<super::callbacks::CbContactFilter>,
     /// User sensor callback: called for `MjSensorType::User` sensors.
     pub cb_sensor: Option<super::callbacks::CbSensor>,
-    /// User actuator dynamics callback: called for `ActuatorDynamics::User`.
+    /// User actuator dynamics callback: called for `ActuatorDynamics::User`
+    /// and for a plugin's actuator with no dynamics and an activation (see
+    /// [`CbActDyn`](super::callbacks::CbActDyn)).
     pub cb_act_dyn: Option<super::callbacks::CbActDyn>,
     /// User actuator gain callback: called for `GainType::User`.
     pub cb_act_gain: Option<super::callbacks::CbActGain>,
@@ -1480,12 +1482,13 @@ impl Model {
     /// set; to run two, chain them as [`Self::set_passive_callback`]'s example
     /// does, deciding how to combine their results.
     ///
-    /// Called for each actuator with `ActuatorDynamics::User`.
-    /// Should return `act_dot` (activation derivative) of the actuator's last
-    /// activation (see [`super::callbacks::CbActDyn`]).
+    /// Called for each actuator with `ActuatorDynamics::User`, and for a
+    /// plugin's actuator with no dynamics and an activation. With one
+    /// activation it returns that activation's `act_dot`; with more it writes
+    /// their `act_dot` (see [`super::callbacks::CbActDyn`]).
     pub fn set_act_dyn_callback<F>(&mut self, f: F)
     where
-        F: Fn(&Self, &super::data::Data, usize) -> f64 + Send + Sync + 'static,
+        F: Fn(&Self, &mut super::data::Data, usize) -> f64 + Send + Sync + 'static,
     {
         self.cb_act_dyn = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
     }

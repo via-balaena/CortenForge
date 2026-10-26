@@ -89,6 +89,14 @@ pub struct Data {
     /// actuator while some dof sleeps.
     /// Maps scalar actuator force to generalized forces: `qfrc += moment * force`.
     pub actuator_moment: Vec<DVector<f64>>,
+    /// Whether actuator `i`'s moment is empty, as MuJoCo's moment row
+    /// (`moment_rownnz` 0) is for an actuator its position stage skips as
+    /// asleep: each position stage's transmission sets it, true where it skips
+    /// the actuator as asleep while some dof sleeps; a reset makes every one
+    /// true until a position stage runs. The actuation reads no velocity and
+    /// maps no force through an empty one, in a pass that skips the position
+    /// stage too.
+    pub(crate) actuator_moment_empty: Vec<bool>,
 
     /// Activation time-derivative (length `na`).
     /// Computed by `mj_fwd_actuation()`, integrated by the integrator (Euler/RK4).
@@ -837,6 +845,7 @@ impl Clone for Data {
             actuator_velocity: self.actuator_velocity.clone(),
             actuator_force: self.actuator_force.clone(),
             actuator_moment: self.actuator_moment.clone(),
+            actuator_moment_empty: self.actuator_moment_empty.clone(),
             act_dot: self.act_dot.clone(),
             history: self.history.clone(),
             // Mocap bodies

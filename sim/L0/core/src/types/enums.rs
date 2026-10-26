@@ -1215,9 +1215,9 @@ pub enum MakeDataError {
     /// The forward pass before the `Init` trees sleep failed; see
     /// [`ResetError::InitForward`].
     InitForward(StepError),
-    /// An actuator's activation count
-    /// ([`Model::check_activation_counts`](crate::Model::check_activation_counts)).
-    ActivationCount(ActivationCountError),
+    /// An actuator's plugin, activation count or activation addresses
+    /// ([`Model::check_actuators`](crate::Model::check_actuators)).
+    Actuator(ActuatorError),
     /// The model sets a flag for a part of MuJoCo sim-core does not port.
     Unsupported {
         /// The flag and what it would take.
@@ -1242,7 +1242,7 @@ impl std::fmt::Display for MakeDataError {
                 root_body,
             } => f.write_str(&init_sleep(*marked, *slept, *tree, *root_body)),
             Self::InitForward(e) => write!(f, "{INIT_FORWARD}: {e}"),
-            Self::ActivationCount(e) => write!(f, "{e}"),
+            Self::Actuator(e) => write!(f, "{e}"),
             Self::Unsupported { feature } => write!(f, "unsupported: {feature}"),
         }
     }
@@ -1254,7 +1254,7 @@ impl std::error::Error for MakeDataError {
             Self::JointLayout(e) => Some(e),
             Self::Range(e) => Some(e),
             Self::InitForward(e) => Some(e),
-            Self::ActivationCount(e) => Some(e),
+            Self::Actuator(e) => Some(e),
             Self::PluginInit { .. }
             | Self::InvalidTimestep
             | Self::DelayedUserSensor { .. }
@@ -1276,9 +1276,9 @@ impl From<RangeError> for MakeDataError {
     }
 }
 
-impl From<ActivationCountError> for MakeDataError {
-    fn from(e: ActivationCountError) -> Self {
-        Self::ActivationCount(e)
+impl From<ActuatorError> for MakeDataError {
+    fn from(e: ActuatorError) -> Self {
+        Self::Actuator(e)
     }
 }
 
@@ -1369,9 +1369,9 @@ impl std::error::Error for HistoryError {}
 
 /// Why [`Model::recompute_derived`](crate::Model::recompute_derived) refuses a model.
 ///
-/// Its joint layout, one of its limited ranges or an actuator's activation
-/// count, which [`Model::try_make_data`](crate::Model::try_make_data) refuses
-/// too.
+/// Its joint layout, one of its limited ranges or an actuator's plugin,
+/// activation count or activation addresses, which
+/// [`Model::try_make_data`](crate::Model::try_make_data) refuses too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ModelError {
@@ -1379,8 +1379,8 @@ pub enum ModelError {
     JointLayout(JointLayoutError),
     /// [`Model::check_ranges`](crate::Model::check_ranges)'s error.
     Range(RangeError),
-    /// [`Model::check_activation_counts`](crate::Model::check_activation_counts)'s error.
-    ActivationCount(ActivationCountError),
+    /// [`Model::check_actuators`](crate::Model::check_actuators)'s error.
+    Actuator(ActuatorError),
 }
 
 impl std::fmt::Display for ModelError {
@@ -1388,7 +1388,7 @@ impl std::fmt::Display for ModelError {
         match self {
             Self::JointLayout(e) => write!(f, "{e}"),
             Self::Range(e) => write!(f, "{e}"),
-            Self::ActivationCount(e) => write!(f, "{e}"),
+            Self::Actuator(e) => write!(f, "{e}"),
         }
     }
 }
@@ -1398,7 +1398,7 @@ impl std::error::Error for ModelError {
         match self {
             Self::JointLayout(e) => Some(e),
             Self::Range(e) => Some(e),
-            Self::ActivationCount(e) => Some(e),
+            Self::Actuator(e) => Some(e),
         }
     }
 }
@@ -1415,9 +1415,9 @@ impl From<RangeError> for ModelError {
     }
 }
 
-impl From<ActivationCountError> for ModelError {
-    fn from(e: ActivationCountError) -> Self {
-        Self::ActivationCount(e)
+impl From<ActuatorError> for ModelError {
+    fn from(e: ActuatorError) -> Self {
+        Self::Actuator(e)
     }
 }
 
@@ -1485,33 +1485,72 @@ impl std::fmt::Display for RangeError {
 
 impl std::error::Error for RangeError {}
 
-/// An actuator's activation count that
-/// [`Model::check_activation_counts`](crate::Model::check_activation_counts)
-/// refuses: actuator `actuator` has `act_num` activations.
+/// An actuator [`Model::check_actuators`](crate::Model::check_actuators)
+/// refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct ActivationCountError {
-    /// The actuator.
-    pub actuator: usize,
-    /// Its activations.
-    pub act_num: usize,
+pub enum ActuatorError {
+    /// Actuator `actuator` names plugin `plugin`, which the model lacks or
+    /// which has no actuator capability.
+    Plugin {
+        /// The actuator.
+        actuator: usize,
+        /// The plugin it names.
+        plugin: usize,
+    },
+    /// Actuator `actuator` has `act_num` activations, a count its dynamics
+    /// refuse.
+    ActivationCount {
+        /// The actuator.
+        actuator: usize,
+        /// Its activations.
+        act_num: usize,
+    },
+    /// Actuator `actuator`'s `act_num` activations from `act_adr` run past
+    /// the model's `na`.
+    ActivationAddress {
+        /// The actuator.
+        actuator: usize,
+        /// Its first activation's address.
+        act_adr: usize,
+        /// Its activations.
+        act_num: usize,
+        /// The model's activations.
+        na: usize,
+    },
 }
 
-impl std::fmt::Display for ActivationCountError {
+impl std::fmt::Display for ActuatorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let actuator = self.actuator;
-        match self.act_num {
-            0 => write!(f, "actuator {actuator} has dynamics and no activation"),
-            1 => write!(f, "actuator {actuator} has an activation and no dynamics"),
-            n => write!(
+        match *self {
+            Self::Plugin { actuator, plugin } => write!(
                 f,
-                "actuator {actuator} has {n} activations and dynamics other than a user's"
+                "actuator {actuator} names plugin {plugin}, which the model lacks or which \
+                 has no actuator capability"
+            ),
+            Self::ActivationCount { actuator, act_num } => match act_num {
+                0 => write!(f, "actuator {actuator} has dynamics and no activation"),
+                1 => write!(f, "actuator {actuator} has an activation and no dynamics"),
+                n => write!(
+                    f,
+                    "actuator {actuator} has {n} activations and dynamics other than a user's"
+                ),
+            },
+            Self::ActivationAddress {
+                actuator,
+                act_adr,
+                act_num,
+                na,
+            } => write!(
+                f,
+                "actuator {actuator}'s activations ({act_num} from address {act_adr}) run past \
+                 the model's {na}"
             ),
         }
     }
 }
 
-impl std::error::Error for ActivationCountError {}
+impl std::error::Error for ActuatorError {}
 
 /// Bending model for dim=2 flex bodies.
 ///

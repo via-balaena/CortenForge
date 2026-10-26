@@ -1704,7 +1704,8 @@ mod tests {
     /// The actuator derivatives resolve a force of -1 at each call too: the
     /// velocity and position derivatives of a Hill muscle and of a muscle,
     /// off the optimal length and shortening, equal bit for bit those of the
-    /// same actuator with the resolved force written in.
+    /// same actuator with the resolved force written in. A forward pass first
+    /// builds the actuator's moment, which a reset leaves empty.
     #[test]
     fn test_muscle_derivatives_resolve_auto_f0_at_each_call() {
         use crate::derivatives::{mjd_actuator_pos, mjd_actuator_vel};
@@ -1728,6 +1729,7 @@ mod tests {
             explicit.actuator_biasprm[0][2] = f0;
             let derivatives = |model: &Model| {
                 let mut data = model.make_data();
+                data.forward(model).expect("forward");
                 data.actuator_length[0] = length;
                 data.actuator_velocity[0] = velocity;
                 data.act[0] = 0.5;

@@ -5242,3 +5242,54 @@ fn a_ctrl_writing_control_callback_zeroes_fd_b() {
         }
     }
 }
+
+/// The position derivative's spatial tendon term takes the force the
+/// actuation applied. A sleeping tree's tendon motor has its zero force
+/// clamped to 1 by a force range (1, 2), as MuJoCo's clamp does, and maps it
+/// to no joint force, as MuJoCo's empty moment row does: `mjd_smooth_pos`
+/// gives what it gives with no range. Awake, the same motor's term changes
+/// with the range, so the term can be seen.
+#[test]
+fn smooth_pos_leaves_out_a_sleeping_actuators_clamped_force() {
+    let qderiv_pos = |sleep: &str, range: &str| {
+        let model = sim_mjcf::load_model(&format!(
+            r#"<mujoco>
+              <option timestep="0.002"><flag sleep="enable"/></option>
+              <worldbody>
+                <site name="a" pos="0.4 0.3 1.2"/>
+                <body name="b1" pos="0 0 1"{sleep}>
+                  <joint name="h1" axis="0 1 0" damping="0.37"/>
+                  <inertial pos="0.15 0 0" mass="0.9" diaginertia="0.004 0.03 0.03"/>
+                  <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+                  <site name="b" pos="0.3 0 0"/>
+                </body>
+                <body name="b2" pos="2 0 1">
+                  <joint name="h2" axis="0 0 1" damping="1.13"/>
+                  <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.003 0.02 0.02"/>
+                  <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+                </body>
+              </worldbody>
+              <tendon><spatial name="s"><site site="a"/><site site="b"/></spatial></tendon>
+              <actuator><motor tendon="s" {range}/><motor joint="h2"/></actuator>
+            </mujoco>"#
+        ))
+        .expect("load");
+        let mut data = model.make_data();
+        data.ctrl[1] = 0.4;
+        data.qvel[1] = 0.5;
+        data.forward(&model).expect("forward");
+        let asleep = data.tree_asleep[0] >= 0;
+        mjd_smooth_pos(&model, &mut data);
+        (asleep, data.actuator_force[0], data.qDeriv_pos.clone())
+    };
+    let limited = r#"forcelimited="true" forcerange="1 2""#;
+    let (asleep, force, with_range) = qderiv_pos(r#" sleep="init""#, limited);
+    let (_, _, without) = qderiv_pos(r#" sleep="init""#, "");
+    assert!(asleep, "the first tree sleeps");
+    assert_eq!(force, 1.0, "the sleeping motor's force is clamped");
+    assert_eq!(with_range, without);
+    let (asleep, _, awake_with_range) = qderiv_pos("", limited);
+    let (_, _, awake_without) = qderiv_pos("", "");
+    assert!(!asleep, "without sleep=\"init\" the first tree is awake");
+    assert_ne!(awake_with_range, awake_without);
+}

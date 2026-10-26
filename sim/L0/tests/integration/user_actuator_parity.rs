@@ -11,7 +11,8 @@
 //! changes it to the user's (`patch`), checked against MuJoCo's compiled
 //! types; the callbacks below are the script's, in the same operations, the
 //! dynamics' reading its own `act_dot` (0 in MuJoCo's when it is called) and,
-//! with two activations, giving the last one's, which MuJoCo's writes. After
+//! with two activations, writing the last one's or both and returning a value
+//! MuJoCo ignores. After
 //! a forward pass the actuator's force, `qfrc_actuator` and `act_dot` are
 //! compared; after a step `qDeriv` on D's pattern, which `mjd_actuator_vel`
 //! adds to (`engine_derivative.c:1071-1146`), and qpos, qvel and act; bit for
@@ -85,7 +86,22 @@ fn patched(case: &Value) -> Model {
             model.actuator_dyntype[0] = ActuatorDynamics::User;
             model.set_act_dyn_callback(|m, d, i| {
                 let a = m.actuator_act_adr[i] + m.actuator_act_num[i] - 1;
-                (d.ctrl[i] - d.act[a]) / 0.07 + d.act_dot[a]
+                let act_dot = (d.ctrl[i] - d.act[a]) / 0.07 + d.act_dot[a];
+                if m.actuator_act_num[i] == 1 {
+                    return act_dot;
+                }
+                d.act_dot[a] = act_dot;
+                0.0
+            });
+        }
+        Some("callback_both") => {
+            model.actuator_dyntype[0] = ActuatorDynamics::User;
+            model.set_act_dyn_callback(|m, d, i| {
+                let first = m.actuator_act_adr[i];
+                let a = first + m.actuator_act_num[i] - 1;
+                d.act_dot[first] = 0.5 * d.ctrl[i] - d.act[first];
+                d.act_dot[a] = (d.ctrl[i] - d.act[a]) / 0.07;
+                9.0
             });
         }
         Some("unset") => model.actuator_dyntype[0] = ActuatorDynamics::User,
@@ -190,7 +206,7 @@ fn user_actuators_act_as_mujoco() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 108, "9 cases of 12 states");
+    assert_eq!(compared, 120, "10 cases of 12 states");
     assert!(
         failures.is_empty(),
         "{} differ:\n{}",

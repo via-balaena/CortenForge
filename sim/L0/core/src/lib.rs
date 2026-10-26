@@ -185,8 +185,8 @@ pub use sdf::{
 
 // Enums, error types, constants, and Model construction (extracted to types/ module)
 pub use types::{
-    ActivationCountError,
     ActuatorDynamics,
+    ActuatorError,
     ActuatorTransmission,
     BiasType,
     // One body's applied force and torque (types/body_wrench.rs)

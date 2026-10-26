@@ -92,6 +92,10 @@ pub mod mesh_bvh_parity;
 /// its callbacks set and unset.
 pub mod user_actuator_parity;
 
+/// MuJoCo 3.5.0's actuation passes: callbacks across actuators, a PID
+/// plugin's actuator, the clamp and the mapping over every actuator.
+pub mod actuator_pass_parity;
+
 // ============================================================================
 // Default Class Resolution Tests
 // ============================================================================

@@ -437,12 +437,14 @@ pub fn mj_transmission_joint_tendon(model: &Model, data: &mut Data) {
 /// Whether the transmission skips actuator `i`, as MuJoCo's `mj_transmission`
 /// skips a sleeping actuator while some dof sleeps
 /// (`engine_core_smooth.c:1279-1290`): its length keeps its last value and
-/// its moment is empty (MuJoCo's `rownnz` 0), so its row is cleared here.
+/// its moment is empty (MuJoCo's `rownnz` 0), so its row is cleared here and
+/// `actuator_moment_empty` records it, which the actuation reads.
 fn transmission_skips_asleep(model: &Model, data: &mut Data, i: usize) -> bool {
     let asleep = actuator_skipped_asleep(model, data, i);
     if asleep {
         data.actuator_moment[i].fill(0.0);
     }
+    data.actuator_moment_empty[i] = asleep;
     asleep
 }
 
@@ -528,14 +530,14 @@ pub fn mj_actuator_velocity(model: &Model, data: &mut Data) {
         return;
     }
     for i in 0..model.nu {
-        let asleep = actuator_skipped_asleep(model, data, i);
+        let empty = data.actuator_moment_empty[i];
         let rows = MomentRows {
             moment: &data.actuator_moment,
             ten_j: &data.ten_J,
             ten_j_colind: &data.ten_J_colind,
             ten_j_rownnz: &data.ten_J_rownnz,
         };
-        if let Some(entries) = rows.entries(model, i, asleep) {
+        if let Some(entries) = rows.entries(model, i, empty) {
             data.actuator_velocity[i] = dot_sparse_entries(entries, data.qvel.as_slice());
         }
     }
@@ -555,7 +557,8 @@ pub struct MomentRows<'a> {
 impl<'a> MomentRows<'a> {
     /// Actuator `i`'s moment row as `mj_transmission` stores it
     /// (`engine_core_smooth.c:1250-1730`), its `(column, value)` entries in
-    /// order: none for an actuator skipped asleep (`asleep`, `:1287-1290`); a
+    /// order: none where the last position stage left the moment empty
+    /// (`empty`, `Data::actuator_moment_empty`; `:1287-1290`); a
     /// hinge's or slide's one entry, the gear (`:1301-1309`); a ball's or free
     /// joint's three or six, zeros kept (`:1311-1375`); a tendon's `ten_J`
     /// chain under the sparse Jacobian, zeros kept, each entry times the gear
@@ -563,7 +566,7 @@ impl<'a> MomentRows<'a> {
     /// and a site's, slider-crank's or body's row, their nonzero entries
     /// (`:1436-1445`, alike at `:1464-1473`, `:1608-1617` and `:1720-1729`).
     /// `None` for a joint or tendon transmission to no object.
-    pub fn entries(&self, model: &Model, i: usize, asleep: bool) -> Option<MomentEntries<'a>> {
+    pub fn entries(&self, model: &Model, i: usize, empty: bool) -> Option<MomentEntries<'a>> {
         let gear = model.actuator_gear[i][0];
         let trnid = model.actuator_trnid[i][0];
         let entries = match model.actuator_trntype[i] {
@@ -611,7 +614,7 @@ impl<'a> MomentRows<'a> {
                 scale: 1.0,
             },
         };
-        Some(if asleep {
+        Some(if empty {
             MomentEntries::One(None)
         } else {
             entries
@@ -733,12 +736,28 @@ pub fn actuator_ctrl_input(model: &Model, data: &Data, i: usize) -> f64 {
 
 /// Compute actuator forces from control inputs, activation dynamics, and muscle FLV curves.
 ///
-/// This function:
-/// 1. Computes activation derivatives (`data.act_dot`) without modifying `data.act`.
-/// 2. Computes actuator force using gain/bias (muscle FLV for muscles, raw input for others).
-/// 3. Clamps a copy of the control inputs, and the output forces, to their
-///    declared ranges; `data.ctrl` is not written.
-/// 4. Maps actuator force to joint forces via the transmission.
+/// In MuJoCo's passes (`mj_fwdActuation`, `engine_forward.c:277-570`):
+/// 1. every actuator's activation derivatives (`data.act_dot`), `data.act`
+///    left as it is;
+/// 2. the actuator plugins' activation derivatives;
+/// 3. every actuator's force from its gain, input and bias, but a plugin's;
+/// 4. the actuator plugins' forces;
+/// 5. every actuator's force clamped to its range, a sleeping or disabled
+///    one's 0 too;
+/// 6. the forces mapped to joint forces through the transmissions, none
+///    through a moment the last position stage left empty
+///    (`Data::actuator_moment_empty`, MuJoCo's empty row).
+///
+/// MuJoCo scales the forces of a tendon's actuators to the tendon's
+/// actuator force range between passes 4 and 5 (`:508-538`) and clamps
+/// `qfrc_actuator` to the joints' after the mapping (`:565-566`); sim-core's
+/// model has no field for either (`actuatorfrcrange`).
+///
+/// A dynamics callback runs in the first pass, before any force (each is 0
+/// then); a gain or bias callback in the third, after every activation
+/// derivative. The built-in actuators' inputs are a clamped copy of the
+/// controls taken before the first pass; `data.ctrl` is not written. `qfrc_actuator` holds what
+/// the previous call left until pass 6 writes it whole, as MuJoCo's.
 ///
 /// **Note**: `cb_control` is NOT invoked here. It fires after the velocity
 /// stage and before this one — see `forward_core()`, `forward_skip()` and
@@ -755,107 +774,87 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         return;
     }
 
-    data.qfrc_actuator.fill(0.0);
-
     // A bad input (after clamping) makes every actuator's control input 0
     // for this pass, an actuator with an activation still acting on it;
     // `ctrl` itself is left as written (MuJoCo `mj_fwdActuation`).
-    let bad = (0..model.nu).find(|&i| is_bad(actuator_ctrl_input(model, data, i)));
-    if let Some(i) = bad {
+    let mut controls: Vec<f64> = (0..model.nu)
+        .map(|i| actuator_ctrl_input(model, data, i))
+        .collect();
+    if let Some(i) = controls.iter().position(|&c| is_bad(c)) {
+        // MuJoCo's warning carries the actuator's index as an `int`.
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         mj_warning(data, Warning::BadCtrl, i as i32);
+        controls.fill(0.0);
     }
 
+    // A sleeping actuator keeps its act_dot and has no force of its own
+    // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394): pass 5 clamps
+    // its 0 into its range, which pass 6 maps through the moment the last
+    // position stage left (empty, if that stage found it asleep).
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-    for i in 0..model.nu {
-        // A sleeping actuator keeps its act_dot and acts with no force
-        // (MuJoCo `mj_fwdActuation`, engine_forward.c:323, :394).
-        if sleep_enabled && crate::island::actuator_asleep(model, data, i) {
+    let asleep =
+        |data: &Data, i: usize| sleep_enabled && crate::island::actuator_asleep(model, data, i);
+
+    // --- 1. Activation derivatives (`engine_forward.c:321-372`) ---
+    // A per-group disabled actuator has its act_dot, as MuJoCo's, and no
+    // force of its own (pass 5 clamps its 0 into its range); the advance
+    // leaves its activation.
+    for (i, &ctrl) in controls.iter().enumerate() {
+        // An actuator with no activation has no act_dot (MuJoCo's address is
+        // −1; cf-design gives it `usize::MAX`).
+        let act_num = model.actuator_act_num[i];
+        if act_num == 0 || asleep(data, i) {
             continue;
         }
-
-        // --- Phase 1: Activation dynamics (compute act_dot, do NOT integrate) ---
-        let ctrl = if bad.is_some() {
-            0.0
-        } else {
-            actuator_ctrl_input(model, data, i)
-        };
-
         // The actuator's activations' act_dot are zeroed before its dynamics
-        // write the last of them, as MuJoCo's (`engine_forward.c:332-335`);
-        // only where it has one, as an actuator with none may have no real
-        // address (cf-design gives it `usize::MAX`).
-        let act_num = model.actuator_act_num[i];
-        if act_num > 0 {
-            let act_first = model.actuator_act_adr[i];
-            data.act_dot.as_mut_slice()[act_first..act_first + act_num].fill(0.0);
-        }
-
-        let input = match model.actuator_dyntype[i] {
-            ActuatorDynamics::None => ctrl,
+        // write the last of them (`engine_forward.c:332-335`).
+        let act_first = model.actuator_act_adr[i];
+        data.act_dot.as_mut_slice()[act_first..act_first + act_num].fill(0.0);
+        let act_last = act_first + act_num - 1;
+        match model.actuator_dyntype[i] {
+            ActuatorDynamics::Integrator => data.act_dot[act_last] = ctrl,
+            ActuatorDynamics::Filter | ActuatorDynamics::FilterExact => {
+                // Both compute the same act_dot; they differ in the advance.
+                let tau = model.actuator_dynprm[i][0].max(MIN_VAL);
+                data.act_dot[act_last] = (ctrl - data.act[act_last]) / tau;
+            }
             ActuatorDynamics::Muscle
             | ActuatorDynamics::HillMuscle
             | ActuatorDynamics::MillardMuscle => {
-                // Hill/Millard reuse MuJoCo-conformant muscle activation dynamics.
-                let act_adr = last_activation(model, i);
-                // act_dot computed from UNCLAMPED current activation (MuJoCo convention)
-                data.act_dot[act_adr] =
-                    muscle_activation_dynamics(ctrl, data.act[act_adr], &model.actuator_dynprm[i]);
-                if model.actuator_actearly[i] {
-                    // §34: predict next-step activation (integrated + clamped)
-                    mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
-                } else {
-                    data.act[act_adr]
+                // Hill/Millard reuse MuJoCo-conformant muscle activation
+                // dynamics, from the unclamped activation.
+                data.act_dot[act_last] =
+                    muscle_activation_dynamics(ctrl, data.act[act_last], &model.actuator_dynprm[i]);
+            }
+            // MuJoCo's default branch is a user's dynamics, which a plugin's
+            // actuator with no dynamics and an activation takes too.
+            ActuatorDynamics::None | ActuatorDynamics::User => {
+                // With one activation the callback returns its act_dot; with
+                // more it writes theirs (`engine_forward.c:361-370`).
+                if let Some(ref cb) = model.cb_act_dyn {
+                    let act_dot = (cb.0)(model, data, i);
+                    if act_num == 1 {
+                        data.act_dot[act_last] = act_dot;
+                    }
                 }
             }
-            ActuatorDynamics::Filter | ActuatorDynamics::FilterExact => {
-                // First-order filter: d(act)/dt = (ctrl - act) / tau
-                // Filter uses Euler integration, FilterExact uses exact integration.
-                // Both compute the same act_dot here; the difference is in integrate().
-                let act_adr = last_activation(model, i);
-                let tau = model.actuator_dynprm[i][0].max(MIN_VAL);
-                data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
-                if model.actuator_actearly[i] {
-                    mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
-                } else {
-                    data.act[act_adr]
-                }
-            }
-            ActuatorDynamics::Integrator => {
-                // Integrator: d(act)/dt = ctrl
-                let act_adr = last_activation(model, i);
-                data.act_dot[act_adr] = ctrl;
-                if model.actuator_actearly[i] {
-                    mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
-                } else {
-                    data.act[act_adr]
-                }
-            }
-            ActuatorDynamics::User => {
-                // User-defined dynamics via callback
-                let act_adr = last_activation(model, i);
-                let act_dot = if let Some(ref cb) = model.cb_act_dyn {
-                    (cb.0)(model, data, i)
-                } else {
-                    0.0
-                };
-                data.act_dot[act_adr] = act_dot;
-                if model.actuator_actearly[i] {
-                    mj_next_activation(model, i, data.act[act_adr], act_dot)
-                } else {
-                    data.act[act_adr]
-                }
-            }
-        };
+        }
+    }
 
-        // S7d: a per-group disabled actuator has its act_dot, as MuJoCo's
-        // (whose act_dot loop has no disabled check, engine_forward.c:321-372),
-        // and no force; the advance leaves its activation.
-        if actuator_disabled(model, i) {
+    // --- 2. The actuator plugins' activation derivatives (`:374-389`) ---
+    for i in 0..model.nplugin {
+        if model.plugin_capabilities[i].contains(crate::plugin::PluginCapabilityBit::Actuator) {
+            model.plugin_objects[i].actuator_act_dot(model, data, i);
+        }
+    }
+
+    // --- 3. Forces: gain * input + bias (`:391-488`) ---
+    for (i, &ctrl) in controls.iter().enumerate() {
+        // A plugin's actuator's force is the plugin's (pass 4).
+        if asleep(data, i) || actuator_disabled(model, i) || actuator_plugin(model, i).is_some() {
             continue;
         }
 
-        // --- Phase 2: Force generation (gain * input + bias) ---
         let length = data.actuator_length[i];
         let velocity = data.actuator_velocity[i];
 
@@ -920,6 +919,22 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             }
         };
 
+        // The control with no activation, else the last activation, the
+        // next one under actearly, from its act_dot as pass 1 and the plugins
+        // left it.
+        let input = if model.actuator_act_num[i] == 0 {
+            ctrl
+        } else {
+            let act_adr = last_activation(model, i);
+            if model.actuator_actearly[i] {
+                mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
+            } else {
+                data.act[act_adr]
+            }
+        };
+        // The force before its bias, which a bias callback reads, as MuJoCo's.
+        data.actuator_force[i] = gain * input;
+
         let bias = match model.actuator_biastype[i] {
             BiasType::None => 0.0,
             BiasType::Affine => {
@@ -965,30 +980,48 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 }
             }
         };
-
-        let force = gain * input + bias;
+        data.actuator_force[i] += bias;
 
         // A muscle pulls, never pushes (engine convention: tension is ≤ 0). For
         // MillardMuscle the β·v̄ fiber-damping term can drive the assembled force
         // positive at fast shortening, so floor it here — independent of whether the
         // user set actuator_forcerange (HillMuscle's force is always ≤ 0, so it
         // never needs this). Matches the standalone millard_path_force's max(0, …).
-        let force = if model.actuator_gaintype[i] == GainType::MillardMuscle {
-            force.min(0.0)
-        } else {
-            force
-        };
+        if model.actuator_gaintype[i] == GainType::MillardMuscle {
+            data.actuator_force[i] = data.actuator_force[i].min(0.0);
+        }
+    }
 
-        // Clamp to force range
-        let force = force.clamp(
-            model.actuator_forcerange[i].0,
-            model.actuator_forcerange[i].1,
-        );
-        data.actuator_force[i] = force;
+    // --- 4. The actuator plugins' forces (`:490-506`) ---
+    for i in 0..model.nplugin {
+        if model.plugin_capabilities[i].contains(crate::plugin::PluginCapabilityBit::Actuator) {
+            model.plugin_objects[i].compute(
+                model,
+                data,
+                i,
+                crate::plugin::PluginCapabilityBit::Actuator,
+            );
+        }
+    }
 
-        // --- Phase 3: Transmission (actuator_force → generalized forces) ---
-        // qfrc_actuator += moment^T * actuator_force
-        // where moment = gear * raw_Jacobian.
+    // --- 5. Every actuator's force clamped to its range (`:540-541`) ---
+    for i in 0..model.nu {
+        let (lo, hi) = model.actuator_forcerange[i];
+        data.actuator_force[i] = data.actuator_force[i].clamp(lo, hi);
+    }
+
+    // --- 6. Transmission: qfrc_actuator = moment^T * actuator_force (`:543-545`) ---
+    // where moment = gear * raw_Jacobian. MuJoCo's `mju_mulMatTVecSparse`
+    // clears qfrc_actuator here, not before the passes
+    // (`engine_util_sparse.c:183`), and skips a zero force.
+    data.qfrc_actuator.fill(0.0);
+    for i in 0..model.nu {
+        let force = data.actuator_force[i];
+        // MuJoCo maps through the moment row the last position stage built
+        // (`actuator_moment_empty`; `engine_core_smooth.c:1287-1291`).
+        if force == 0.0 || data.actuator_moment_empty[i] {
+            continue;
+        }
         let gear = model.actuator_gear[i][0];
         let trnid = model.actuator_trnid[i][0];
         match model.actuator_trntype[i] {
@@ -1027,30 +1060,12 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             }
         }
     }
+}
 
-    // §66: Plugin actuator dispatch — Phase 1: activation derivatives
-    // All act_dot calls run before any compute calls (MuJoCo ordering).
-    if model.nplugin > 0 {
-        for i in 0..model.nplugin {
-            if model.plugin_capabilities[i].contains(crate::plugin::PluginCapabilityBit::Actuator) {
-                model.plugin_objects[i].actuator_act_dot(model, data, i);
-            }
-        }
-    }
-
-    // §66: Plugin actuator dispatch — Phase 2: force computation
-    if model.nplugin > 0 {
-        for i in 0..model.nplugin {
-            if model.plugin_capabilities[i].contains(crate::plugin::PluginCapabilityBit::Actuator) {
-                model.plugin_objects[i].compute(
-                    model,
-                    data,
-                    i,
-                    crate::plugin::PluginCapabilityBit::Actuator,
-                );
-            }
-        }
-    }
+/// The plugin instance whose actuator `i` is, if any. A model built in code
+/// may leave `actuator_plugin` empty.
+pub fn actuator_plugin(model: &Model, i: usize) -> Option<usize> {
+    model.actuator_plugin.get(i).copied().flatten()
 }
 
 /// Route gravcomp forces to `qfrc_actuator` for joints with `jnt_actgravcomp`.

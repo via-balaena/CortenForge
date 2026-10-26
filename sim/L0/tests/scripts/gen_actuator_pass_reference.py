@@ -1,0 +1,479 @@
+#!/usr/bin/env python3
+"""Generate the actuator pass golden from the unfused MuJoCo 3.5.0 oracle.
+
+Run it with the oracle's own interpreter (build_mujoco_oracle.sh builds it):
+
+    <workdir>/venv/bin/python -I sim/L0/tests/scripts/gen_actuator_pass_reference.py \\
+        sim/L0/tests/assets/golden/actuator_pass
+
+It refuses any other interpreter, as gen_census_golden.py does: the PyPI wheel
+fuses multiply-adds.
+
+It writes actuator_pass.json, one entry per case: two damped hinges under
+implicitfast with two to four actuators (one case: on two trees, the first
+asleep, `tree_asleep` recorded), each case showing what MuJoCo's
+mj_fwdActuation does in its passes (engine_forward.c:277-570): every
+actuator's act_dot, then the plugins', then the forces, then the plugins',
+then the clamp and the mapping over every actuator. A callback reads another
+actuator's act_dot or force, or its own force before its bias; a dynamics
+callback writes an earlier actuator's act_dot or a later one's ctrl (a motor's
+and an integrator's), or adds
+to qfrc_actuator, which a gain callback reads too; a
+`mujoco.pid` plugin's actuator, with an integral term, a filter, a force
+range, MuJoCo's dynamics callback called for it, and a user gain reading its
+act_dot or its force; a force range that excludes 0 on a disabled actuator, and on a sleeping
+tree's; two actuators sharing an activation; an infinite gear on actuators
+with no force. For each of 12 states (qpos, qvel, ctrl and act drawn from a
+seeded generator, and act_dot from a second one, set before each pass, and
+in one case qfrc_actuator, `qfrc_actuator_before`) after
+mj_forward each actuator's force, qfrc_actuator and act_dot, and after one
+mj_step qDeriv on D's pattern (D_rownnz, D_rowadr, D_colind), qpos, qvel and
+act. Its `sequences` call passes (and an inverse) that skip the position stage
+after a reset, after a step that puts a tree to sleep and after the reset of a
+model whose tree starts asleep, and record what the actuation reads through the
+moment rows the last position stage built: the forces mapped, the actuator
+velocities, and under discrete inverse dynamics the velocity derivative.
+
+sim-mjcf refuses a user gain, bias or dynamics and loads no plugin, so each
+case also holds a stand-in (`xml`): the same model with types sim-mjcf loads.
+The test changes it to MuJoCo's compiled actuators (`compiled`: types,
+activation counts and addresses, plugins, actearly, force ranges, gears),
+including what the case sets after compiling (`after_compile`), and checks the
+result against them. The test's callbacks are the GAIN_*, BIAS_* and DYN_*
+functions below, in the same operations, and its plugin is a port of `mujoco.pid` (`pid.cc`) built
+from `pid`. The models' joint axes are unit, their bodies' inertias written
+out and their geoms boxes, so what sim-mjcf compiles is MuJoCo's bit for bit
+(ledgers L146, L198 hold where it is not).
+"""
+import json
+import os
+import sys
+
+import mujoco
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gen_census_golden import finite_or_string, oracle  # noqa: E402
+
+STATES = 12
+
+MODEL = """<mujoco>
+  <option timestep="0.002" integrator="implicitfast"{option}/>
+{extension}  <worldbody>
+    <body name="b1" pos="0 0 1">
+      <joint name="h1" axis="0 1 0" damping="0.37"/>
+      <inertial pos="0.15 0 0" mass="0.9" diaginertia="0.004 0.03 0.03"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+      <body name="b2" pos="0.3 0 0">
+        <joint name="h2" axis="0 0 1" damping="1.13"/>
+        <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.003 0.02 0.02"/>
+        <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    {actuator}
+  </actuator>
+</mujoco>"""
+
+# Two trees, the first asleep from the start, its joint under a fixed tendon.
+SLEEPING = """<mujoco>
+  <option timestep="0.002" integrator="implicitfast"{option}><flag sleep="enable"/></option>
+{extension}  <worldbody>
+    <body name="b1" pos="0 0 1" sleep="init">
+      <joint name="h1" axis="0 1 0" damping="0.37"/>
+      <inertial pos="0.15 0 0" mass="0.9" diaginertia="0.004 0.03 0.03"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+    <body name="b2" pos="2 0 1">
+      <joint name="h2" axis="0 0 1" damping="1.13"/>
+      <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.003 0.02 0.02"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+  </worldbody>
+  <tendon><fixed name="t1"><joint joint="h1" coef="0.7"/></fixed></tendon>
+  <actuator>
+    {actuator}
+  </actuator>
+</mujoco>"""
+TEMPLATES = {'chain': MODEL, 'sleeping': SLEEPING}
+
+PID_KD = {'kp': 3.0, 'kd': 0.2}
+PID_KI = {'kp': 3.0, 'ki': 0.5, 'kd': 0.2}
+
+
+def extension(pid):
+    if not pid:
+        return ''
+    keys = ''.join(f'<config key="{k}" value="{v}"/>' for k, v in pid.items())
+    return (f'  <extension><plugin plugin="mujoco.pid"><instance name="pid">{keys}'
+            '</instance></plugin></extension>\n')
+
+
+# (name, MuJoCo's actuators, sim-mjcf's stand-in, the case's options)
+CASES = [
+    ('a user gain reading a later actuator act_dot',
+     '<general joint="h1" gaintype="user"/>\n    <general joint="h2" dyntype="integrator"/>',
+     '<general joint="h1"/>\n    <general joint="h2" dyntype="integrator"/>',
+     {'gain': 'later_act_dot'}),
+    ('a user gain reading an earlier actuator force, which its range clamps after',
+     '<motor joint="h1" forcelimited="true" forcerange="-0.1 0.1"/>\n'
+     '    <general joint="h2" gaintype="user" biastype="affine" biasprm="0 -1 -0.3"/>',
+     '<motor joint="h1" forcelimited="true" forcerange="-0.1 0.1"/>\n'
+     '    <general joint="h2" biastype="affine" biasprm="0 -1 -0.3"/>',
+     {'gain': 'earlier_force'}),
+    ('a user bias reading its own actuator force',
+     '<general joint="h1" gaintype="affine" gainprm="2 0 0.5" biastype="user"/>\n'
+     '    <general joint="h2" dyntype="filter" dynprm="0.05" biastype="affine" biasprm="0 -1 -0.3"/>',
+     '<general joint="h1" gaintype="affine" gainprm="2 0 0.5"/>\n'
+     '    <general joint="h2" dyntype="filter" dynprm="0.05" biastype="affine" biasprm="0 -1 -0.3"/>',
+     {'bias': 'own_force'}),
+    ('a user dynamics callback reading an earlier actuator force',
+     '<general joint="h1" gainprm="3"/>\n    <general joint="h2" dyntype="user"/>',
+     '<general joint="h1" gainprm="3"/>\n    <general joint="h2" dyntype="integrator"/>',
+     {'dyn': 'earlier_force'}),
+    ('a user dynamics callback writing an earlier actuator act_dot, which acts early',
+     '<general joint="h1" dyntype="integrator" actearly="true"/>\n    <general joint="h2" dyntype="user"/>',
+     '<general joint="h1" dyntype="integrator" actearly="true"/>\n    <general joint="h2" dyntype="integrator"/>',
+     {'dyn': 'write_earlier'}),
+    ('a PID plugin actuator beside a motor',
+     '<motor joint="h1"/>\n    <plugin joint="h2" plugin="mujoco.pid" instance="pid"/>',
+     '<motor joint="h1"/>\n    <general joint="h2"/>',
+     {'pid': PID_KD}),
+    ('a PID with an integral term and a filter, acting early',
+     '<general joint="h1" dyntype="integrator"/>\n'
+     '    <plugin joint="h2" plugin="mujoco.pid" instance="pid" dyntype="filter" dynprm="0.05" '
+     'actdim="2" actearly="true"/>',
+     '<general joint="h1" dyntype="integrator"/>\n'
+     '    <general joint="h2" dyntype="filter" dynprm="0.05" actearly="true"/>',
+     {'pid': PID_KI}),
+    ('a PID with an integral term and no dynamics, and a dynamics callback',
+     '<general joint="h1" dyntype="integrator"/>\n'
+     '    <plugin joint="h2" plugin="mujoco.pid" instance="pid" actdim="1"/>',
+     '<general joint="h1" dyntype="integrator"/>\n    <general joint="h2"/>',
+     {'pid': PID_KI, 'dyn': 'write_earlier'}),
+    ('a PID with a force range',
+     '<motor joint="h1"/>\n'
+     '    <plugin joint="h2" plugin="mujoco.pid" instance="pid" forcelimited="true" forcerange="-0.1 0.1"/>',
+     '<motor joint="h1"/>\n    <general joint="h2" forcelimited="true" forcerange="-0.1 0.1"/>',
+     {'pid': PID_KD}),
+    ('a force range excluding 0 on a disabled group',
+     '<motor joint="h1" group="1" forcelimited="true" forcerange="1 2"/>\n'
+     '    <motor joint="h2" forcelimited="true" forcerange="-2 -1"/>',
+     '<motor joint="h1" group="1" forcelimited="true" forcerange="1 2"/>\n'
+     '    <motor joint="h2" forcelimited="true" forcerange="-2 -1"/>',
+     {'option': ' actuatorgroupdisable="1"'}),
+    ('two filters sharing an activation',
+     '<general joint="h1" dyntype="filter" dynprm="0.5"/>\n'
+     '    <general joint="h2" dyntype="filter" dynprm="0.25"/>',
+     '<general joint="h1" dyntype="filter" dynprm="0.5"/>\n'
+     '    <general joint="h2" dyntype="filter" dynprm="0.25"/>',
+     {'actadr': [[1, 0]]}),
+    ('an infinite gear on actuators with no force',
+     '<motor joint="h1"/>\n    <general joint="h2" gainprm="0"/>\n    <motor joint="h2" group="1"/>',
+     '<motor joint="h1"/>\n    <general joint="h2" gainprm="0"/>\n    <motor joint="h2" group="1"/>',
+     {'option': ' actuatorgroupdisable="1"', 'gear': [[1, float('inf')], [2, float('inf')]]}),
+    ('a user gain reading a later PID plugin actuator act_dot',
+     '<general joint="h1" gaintype="user"/>\n'
+     '    <plugin joint="h2" plugin="mujoco.pid" instance="pid" actdim="1"/>',
+     '<general joint="h1"/>\n    <general joint="h2"/>',
+     {'pid': PID_KI, 'gain': 'later_act_dot'}),
+    ('a user gain reading an earlier PID plugin actuator force',
+     '<plugin joint="h1" plugin="mujoco.pid" instance="pid"/>\n    <general joint="h2" gaintype="user"/>',
+     '<general joint="h1"/>\n    <general joint="h2"/>',
+     {'pid': PID_KD, 'gain': 'earlier_force'}),
+    ('a user dynamics callback writing a later actuator ctrl',
+     '<general joint="h1" dyntype="user"/>\n    <motor joint="h2"/>',
+     '<general joint="h1" dyntype="integrator"/>\n    <motor joint="h2"/>',
+     {'dyn': 'write_later_ctrl'}),
+    ('a sleeping tree actuators, with force ranges excluding 0',
+     '<motor joint="h1" forcelimited="true" forcerange="1 2"/>\n'
+     '    <motor tendon="t1" forcelimited="true" forcerange="-2 -0.5"/>\n'
+     '    <general joint="h1" dyntype="filter" dynprm="0.1" forcelimited="true" forcerange="0.5 2"/>\n'
+     '    <motor joint="h2" forcelimited="true" forcerange="-0.3 0.3"/>',
+     '<motor joint="h1" forcelimited="true" forcerange="1 2"/>\n'
+     '    <motor tendon="t1" forcelimited="true" forcerange="-2 -0.5"/>\n'
+     '    <general joint="h1" dyntype="filter" dynprm="0.1" forcelimited="true" forcerange="0.5 2"/>\n'
+     '    <motor joint="h2" forcelimited="true" forcerange="-0.3 0.3"/>',
+     {'model': 'sleeping', 'asleep_dofs': [0]}),
+    ('a user gain reading qfrc_actuator, set before the pass',
+     '<general joint="h1" gaintype="user"/>\n    <motor joint="h2"/>',
+     '<general joint="h1"/>\n    <motor joint="h2"/>',
+     {'gain': 'qfrc1', 'qfrc_before': [0.3, -0.7]}),
+    ('a user dynamics callback adding to qfrc_actuator',
+     '<general joint="h1" dyntype="user"/>\n    <motor joint="h2"/>',
+     '<general joint="h1" dyntype="integrator"/>\n    <motor joint="h2"/>',
+     {'dyn': 'add_qfrc0'}),
+    ('a user dynamics callback writing a later integrator ctrl',
+     '<general joint="h1" dyntype="user"/>\n    <general joint="h2" dyntype="integrator"/>',
+     '<general joint="h1" dyntype="integrator"/>\n    <general joint="h2" dyntype="integrator"/>',
+     {'dyn': 'write_later_ctrl'}),
+]
+
+
+def GAIN_LATER_ACT_DOT(m, d, i):
+    return 1.0 + d.act_dot[0]
+
+
+def GAIN_EARLIER_FORCE(m, d, i):
+    return 1.0 + d.actuator_force[0]
+
+
+def GAIN_QFRC1(m, d, i):
+    return 1.0 + d.qfrc_actuator[1]
+
+
+def BIAS_OWN_FORCE(m, d, i):
+    return 0.5 * d.actuator_force[i]
+
+
+def DYN_EARLIER_FORCE(m, d, i):
+    a = m.actuator_actadr[i] + m.actuator_actnum[i] - 1
+    return d.actuator_force[0] + (d.ctrl[i] - d.act[a]) / 0.07
+
+
+def DYN_WRITE_EARLIER(m, d, i):
+    a = m.actuator_actadr[i] + m.actuator_actnum[i] - 1
+    d.act_dot[0] += 0.5 * d.ctrl[i]
+    return (d.ctrl[i] - d.act[a]) / 0.07
+
+
+def DYN_ADD_QFRC0(m, d, i):
+    a = m.actuator_actadr[i] + m.actuator_actnum[i] - 1
+    d.qfrc_actuator[0] += 7.0
+    return (d.ctrl[i] - d.act[a]) / 0.07
+
+
+def DYN_WRITE_LATER_CTRL(m, d, i):
+    a = m.actuator_actadr[i] + m.actuator_actnum[i] - 1
+    d.ctrl[1] += 0.25
+    return (d.ctrl[i] - d.act[a]) / 0.07
+
+
+GAINS = {'later_act_dot': GAIN_LATER_ACT_DOT, 'earlier_force': GAIN_EARLIER_FORCE,
+         'qfrc1': GAIN_QFRC1}
+BIASES = {'own_force': BIAS_OWN_FORCE}
+DYNS = {'earlier_force': DYN_EARLIER_FORCE, 'write_earlier': DYN_WRITE_EARLIER,
+        'write_later_ctrl': DYN_WRITE_LATER_CTRL, 'add_qfrc0': DYN_ADD_QFRC0}
+
+
+def floats(a):
+    return [float(x) for x in np.asarray(a).ravel()]
+
+
+def ints(a):
+    return [int(x) for x in np.asarray(a).ravel()]
+
+
+def set_callbacks(opts):
+    mujoco.set_mjcb_act_gain(GAINS.get(opts.get('gain')))
+    mujoco.set_mjcb_act_bias(BIASES.get(opts.get('bias')))
+    mujoco.set_mjcb_act_dyn(DYNS.get(opts.get('dyn')))
+
+
+def case(name, actuator, stand_in, opts):
+    # MuJoCo's compiler runs the model once; the callbacks are set after it.
+    set_callbacks({})
+    fill = {'option': opts.get('option', ''), 'extension': extension(opts.get('pid'))}
+    template = TEMPLATES[opts.get('model', 'chain')]
+    text = template.format(actuator=actuator, **fill)
+    m = mujoco.MjModel.from_xml_string(text)
+    for a, adr in opts.get('actadr', []):
+        m.actuator_actadr[a] = adr
+    for a, gear in opts.get('gear', []):
+        m.actuator_gear[a, 0] = gear
+    d = mujoco.MjData(m)
+    set_callbacks(opts)
+    rng = np.random.default_rng(7)
+    rng_act_dot = np.random.default_rng(8)
+    asleep_dofs = opts.get('asleep_dofs', [])
+    qfrc_before = opts.get('qfrc_before')
+    states = []
+    for _ in range(STATES):
+        qpos = m.qpos0 + rng.uniform(-0.8, 0.8, m.nq)
+        qvel = rng.uniform(-2.0, 2.0, m.nv)
+        # A sleeping tree's dofs keep the reset's position and velocity.
+        for k in asleep_dofs:
+            qpos[k], qvel[k] = m.qpos0[k], 0.0
+        ctrl = rng.uniform(0.0, 1.0, m.nu)
+        act = rng.uniform(0.0, 1.0, m.na)
+        act_dot = rng_act_dot.uniform(-1.0, 1.0, m.na)
+
+        def start():
+            mujoco.mj_resetData(m, d)
+            d.qpos[:], d.qvel[:], d.ctrl[:], d.act[:] = qpos, qvel, ctrl, act
+            d.act_dot[:] = act_dot
+            if qfrc_before is not None:
+                d.qfrc_actuator[:] = qfrc_before
+
+        start()
+        mujoco.mj_forward(m, d)
+        state = {'qpos': floats(qpos), 'qvel': floats(qvel), 'ctrl': floats(ctrl),
+                 'act': floats(act), 'act_dot_before': floats(act_dot),
+                 'actuator_force': floats(d.actuator_force),
+                 'qfrc_actuator': floats(d.qfrc_actuator), 'act_dot': floats(d.act_dot)}
+        if asleep_dofs:
+            state['tree_asleep'] = ints(d.tree_asleep)
+        if qfrc_before is not None:
+            state['qfrc_actuator_before'] = floats(qfrc_before)
+        start()
+        mujoco.mj_step(m, d)
+        state.update({'qDeriv': floats(d.qDeriv), 'qpos_after': floats(d.qpos),
+                      'qvel_after': floats(d.qvel), 'act_after': floats(d.act)})
+        states.append(state)
+    compiled = {
+        'dyntype': [mujoco.mjtDyn(t).name for t in m.actuator_dyntype],
+        'gaintype': [mujoco.mjtGain(t).name for t in m.actuator_gaintype],
+        'biastype': [mujoco.mjtBias(t).name for t in m.actuator_biastype],
+        'actnum': ints(m.actuator_actnum), 'actadr': ints(m.actuator_actadr), 'na': int(m.na),
+        'plugin': ints(m.actuator_plugin), 'actearly': ints(m.actuator_actearly),
+        'forcelimited': ints(m.actuator_forcelimited), 'forcerange': floats(m.actuator_forcerange),
+        'gear0': floats(m.actuator_gear[:, 0]),
+    }
+    return {'name': name, 'mujoco_xml': text, 'xml': template.format(actuator=stand_in, **fill),
+            'callbacks': {k: opts[k] for k in ('gain', 'bias', 'dyn') if k in opts},
+            'pid': opts.get('pid'),
+            'after_compile': {k: opts[k] for k in ('actadr', 'gear') if k in opts},
+            'compiled': compiled,
+            'D_rownnz': ints(m.D_rownnz), 'D_rowadr': ints(m.D_rowadr),
+            'D_colind': ints(m.D_colind), 'states': states}
+
+
+# What the actuation reads through the moment: MuJoCo maps each actuator's force
+# through the moment row the last position stage built (mj_transmission), and
+# takes its velocity and the velocity derivative's term from the same row. The
+# row is empty (moment_rownnz 0) for an actuator that stage skips as asleep, and
+# a reset empties every row; a reset whose model has a tree that starts asleep
+# runs a forward pass, which builds them. REST's first tree is at rest where its
+# spring holds its motor's force (q = 0.1, so -10 q + 1 = 0), so it falls
+# asleep, the motor's range (1, 2) clamping its zero control to a force of 1.
+REST = """<mujoco>
+  <option timestep="0.002"><flag sleep="enable"/></option>
+  <worldbody>
+    <body name="b1" pos="0 0 1" sleep="allowed">
+      <joint name="h1" axis="0 0 1" stiffness="10" damping="2"/>
+      <inertial pos="0.15 0 0" mass="0.9" diaginertia="0.004 0.03 0.03"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+    <body name="b2" pos="2 0 1">
+      <joint name="h2" axis="0 0 1" damping="1.13"/>
+      <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.003 0.02 0.02"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="h1" forcelimited="true" forcerange="1 2"/>
+    <motor joint="h2"/>
+  </actuator>
+</mujoco>"""
+REST_INIT = REST.replace('sleep="allowed"', 'sleep="init"')
+# A velocity actuator under implicitfast with discrete inverse dynamics, whose
+# inverse pass takes the velocity derivative.
+VELOCITY = """<mujoco>
+  <option timestep="0.002" integrator="implicitfast"><flag invdiscrete="enable"/></option>
+  <worldbody>
+    <body name="b1" pos="0 0 1">
+      <joint name="h1" axis="0 0 1" damping="2"/>
+      <inertial pos="0.15 0 0" mass="0.9" diaginertia="0.004 0.03 0.03"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+    <body name="b2" pos="2 0 1">
+      <joint name="h2" axis="0 0 1" damping="1.13"/>
+      <inertial pos="0.15 0 0" mass="0.7" diaginertia="0.003 0.02 0.02"/>
+      <geom type="box" size="0.15 0.03 0.03" pos="0.15 0 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="h1"/>
+    <velocity joint="h2" kv="3"/>
+  </actuator>
+</mujoco>"""
+REST_VALUES = {'qpos': [0.1, 0.0], 'ctrl': [0.0, 0.4]}
+
+# (name, model, values, calls): 'set' writes the values given (qpos, qvel,
+# ctrl); 'record' records each actuator's force and velocity, qfrc_actuator,
+# tree_asleep and, under invdiscrete, qDeriv; 'sleep' steps until the first tree
+# sleeps, the count recorded for the test to replay.
+SEQUENCES = [
+    ('a reset, then passes that skip the position stage', REST, REST_VALUES,
+     ['set', 'forward', 'record', 'reset', 'set', 'skip_pos', 'record', 'skip_vel', 'record',
+      'forward', 'record']),
+    ('a tree at rest falling asleep in a step, then passes that skip a stage', REST, REST_VALUES,
+     ['set', 'sleep', 'record', 'skip_pos', 'record', 'skip_vel', 'record', 'forward', 'record',
+      'step', 'record']),
+    ('a first tree starting asleep, a reset, then passes that skip the position stage',
+     REST_INIT, {'ctrl': [0.0, 0.4]},
+     ['reset', 'set', 'skip_pos', 'record', 'skip_vel', 'record', 'forward', 'record']),
+    ('a velocity actuator after a reset, through a pass and an inverse that skip the position stage',
+     VELOCITY, {'qvel': [0.0, 0.7], 'ctrl': [0.2, 0.5]},
+     ['set', 'forward', 'record', 'reset', 'set', 'skip_pos', 'record', 'reset', 'set',
+      'inverse_skip_pos', 'record']),
+]
+
+
+def sequence(name, xml, values, calls):
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    qderiv = 'invdiscrete' in xml
+    records, sleep_steps = [], None
+    for call in calls:
+        if call == 'set':
+            for key in ('qpos', 'qvel', 'ctrl'):
+                if key in values:
+                    getattr(d, key)[:] = values[key]
+        elif call == 'forward':
+            mujoco.mj_forward(m, d)
+        elif call == 'reset':
+            mujoco.mj_resetData(m, d)
+        elif call == 'skip_pos':
+            mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_POS, 0)
+        elif call == 'skip_vel':
+            mujoco.mj_forwardSkip(m, d, mujoco.mjtStage.mjSTAGE_VEL, 0)
+        elif call == 'inverse_skip_pos':
+            mujoco.mj_inverseSkip(m, d, mujoco.mjtStage.mjSTAGE_POS, 0)
+        elif call == 'step':
+            mujoco.mj_step(m, d)
+        elif call == 'sleep':
+            sleep_steps = 0
+            while d.tree_asleep[0] < 0:
+                mujoco.mj_step(m, d)
+                sleep_steps += 1
+                assert sleep_steps < 10000, 'the first tree never sleeps'
+        elif call == 'record':
+            record = {'actuator_force': floats(d.actuator_force),
+                      'actuator_velocity': floats(d.actuator_velocity),
+                      'qfrc_actuator': floats(d.qfrc_actuator),
+                      'tree_asleep': ints(d.tree_asleep)}
+            if qderiv:
+                record['qDeriv'] = floats(d.qDeriv)
+            records.append(record)
+        else:
+            raise ValueError(call)
+    return {'name': name, 'xml': xml, 'values': values, 'calls': calls,
+            'sleep_steps': sleep_steps, 'D_rownnz': ints(m.D_rownnz),
+            'D_rowadr': ints(m.D_rowadr), 'D_colind': ints(m.D_colind), 'records': records}
+
+
+def write(path, doc):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(doc, f, separators=(',', ':'))
+        f.write('\n')
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    marker = oracle()
+    try:
+        cases = [case(*c) for c in CASES]
+    finally:
+        set_callbacks({})
+    os.makedirs(sys.argv[1], exist_ok=True)
+    write(os.path.join(sys.argv[1], 'actuator_pass.json'),
+          {'oracle': marker, 'cases': finite_or_string(cases),
+           'sequences': [sequence(*s) for s in SEQUENCES]})
+    print(f'{len(cases)} cases -> {sys.argv[1]}')
+
+
+if __name__ == '__main__':
+    main()

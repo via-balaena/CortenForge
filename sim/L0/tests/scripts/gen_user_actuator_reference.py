@@ -14,7 +14,8 @@ implicitfast (one case under implicit) and one actuator on the second whose
 gain or bias is a user's, its own parameters written (MuJoCo's reads none of
 them), or whose dynamics are a user's with one activation or two (`actdim`,
 with and without `actearly` and an activation range), with MuJoCo's callback
-set (`mjcb_act_gain`, `mjcb_act_bias`, `mjcb_act_dyn`) or unset; and for each
+set (`mjcb_act_gain`, `mjcb_act_bias`, `mjcb_act_dyn`; with two activations
+the dynamics callback writes the last one's act_dot, or both) or unset; and for each
 of 12 states (qpos, qvel, ctrl and act drawn from a
 seeded generator, and act_dot from a second one, set before each pass:
 MuJoCo zeroes an actuator's act_dot before its dynamics write it) after
@@ -116,6 +117,12 @@ CASES = [
      'actrange="0.1 0.5" gaintype="affine" gainprm="2 0 0.5" biastype="affine" '
      'biasprm="0 -1 -0.3"/>',
      {'dyn': 'callback', 'actnum': 2}),
+    ('user dynamics with two activations, actearly and a callback writing both',
+     '<general joint="h2" dyntype="user" actdim="2" actearly="true" gaintype="affine" '
+     'gainprm="2 0 0.5" biastype="affine" biasprm="0 -1 -0.3"/>',
+     '<general joint="h2" dyntype="integrator" actearly="true" gaintype="affine" '
+     'gainprm="2 0 0.5" biastype="affine" biasprm="0 -1 -0.3"/>',
+     {'dyn': 'callback_both', 'actnum': 2}),
 ]
 
 
@@ -139,6 +146,15 @@ def DYN(m, d, i):
     return 0.0
 
 
+def DYN_BOTH(m, d, i):
+    # Writes both activations' act_dot; MuJoCo ignores the return with two.
+    first = m.actuator_actadr[i]
+    a = first + m.actuator_actnum[i] - 1
+    d.act_dot[first] = 0.5 * d.ctrl[i] - d.act[first]
+    d.act_dot[a] = (d.ctrl[i] - d.act[a]) / 0.07
+    return 9.0
+
+
 def floats(a):
     return [float(x) for x in np.asarray(a).ravel()]
 
@@ -150,7 +166,7 @@ def ints(a):
 def set_callbacks(patch):
     mujoco.set_mjcb_act_gain(GAIN if patch.get('gain') == 'callback' else None)
     mujoco.set_mjcb_act_bias(BIAS if patch.get('bias') == 'callback' else None)
-    mujoco.set_mjcb_act_dyn(DYN if patch.get('dyn') == 'callback' else None)
+    mujoco.set_mjcb_act_dyn({'callback': DYN, 'callback_both': DYN_BOTH}.get(patch.get('dyn')))
 
 
 def case(name, actuator, stand_in, patch, integrator='implicitfast'):
