@@ -181,7 +181,7 @@ fn a_build_error_in_a_keyframe_names_it_by_its_tag() {
 }
 
 #[test]
-fn an_unnamed_geom_site_frame_or_joint_is_named_by_its_body() {
+fn an_element_without_a_name_is_named_by_its_body() {
     assert_located(
         r#"<mujoco><worldbody>
             <body name="b"><geom size="0.1"/><geom type="mesh" mesh="nope"/></body>
@@ -366,4 +366,79 @@ fn a_rule_on_an_elements_value_names_the_element_by_its_tag() {
             if element == "general" && attribute == "gainprm"),
         "{err}"
     );
+}
+
+#[test]
+fn a_body_without_a_name_is_named_by_its_index() {
+    // The world is body #0.
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body><geom size="0.1"/><geom type="mesh" mesh="nope"/></body>
+        </worldbody></mujoco>"#,
+        "(geom #1 in body #1)",
+    );
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body><joint name="j" type="planar"/><geom size="0.1"/></body>
+        </worldbody></mujoco>"#,
+        "(joint 'j' in body #1)",
+    );
+    assert_located(
+        r#"<mujoco><worldbody>
+            <body><geom size="0.1"/><body mocap="true"><geom size="0.1"/></body></body>
+        </worldbody></mujoco>"#,
+        "(body #2)",
+    );
+}
+
+#[test]
+fn a_default_classs_fluidcoef_of_the_wrong_length_names_it() {
+    let err = refusal(
+        r#"<mujoco><default><geom fluidshape="ellipsoid" fluidcoef="1 2"/></default><worldbody/></mujoco>"#,
+    );
+    assert!(
+        matches!(&err, MjcfError::WrongValueCount { element, attribute, found: 2, .. }
+            if element == "geom" && attribute == "fluidcoef"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_actuators_actdim_is_refused_as_not_read() {
+    // MuJoCo 3.5.0 gives a user-dynamics actuator the written number of
+    // activations; sim-mjcf gives every stateful actuator one.
+    for xml in [
+        r#"<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator><general joint="j" dyntype="user" actdim="2"/></actuator>
+        </mujoco>"#,
+        r#"<mujoco><default><general actdim="1"/></default><worldbody/></mujoco>"#,
+    ] {
+        let err = refusal(xml);
+        assert!(
+            matches!(&err, MjcfError::Unsupported { feature, .. } if feature.contains("actdim")),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn a_syntax_error_in_a_document_with_includes_names_its_line() {
+    // The include expander reads the document first; its syntax error is
+    // named as the parser would name it.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("part.xml"),
+        r#"<mujoco><option timestep="0.01"/></mujoco>"#,
+    )
+    .unwrap();
+    let path = dir.path().join("main.xml");
+    std::fs::write(
+        &path,
+        "<mujoco>\n  <include file=\"part.xml\"/>\n  <worldbody>\n    <body name=\"a>\n    </body>\n  </worldbody>\n</mujoco>",
+    )
+    .unwrap();
+    let err = load_model_from_file(&path).unwrap_err();
+    assert!(matches!(err, MjcfError::Xml { .. }), "{err}");
+    assert!(err.to_string().ends_with("(line 4: worldbody)"), "{err}");
 }

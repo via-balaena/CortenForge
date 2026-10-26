@@ -46,11 +46,10 @@ impl ModelBuilder {
 
         // Convert joint type
         let at = || {
-            Location::named(ElementKind::Joint, &joint.name).in_body(
-                self.body_name
-                    .get(body_id)
-                    .and_then(Option::as_deref)
-                    .unwrap_or(""),
+            Location::named(ElementKind::Joint, &joint.name).within_nth(
+                ElementKind::Body,
+                self.body_name.get(body_id).and_then(Option::as_deref),
+                body_id,
             )
         };
         let joint_type = joint.joint_type.unwrap_or(MjcfJointType::Hinge);

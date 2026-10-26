@@ -1,0 +1,7 @@
+<mujoco>
+  <include file="part.xml"/>
+  <worldbody>
+    <body name="a>
+    </body>
+  </worldbody>
+</mujoco>

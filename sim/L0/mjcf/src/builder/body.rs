@@ -103,7 +103,7 @@ impl ModelBuilder {
 
         // Validate mocap body constraints (before any state mutations)
         if body.mocap {
-            let at = || Location::named(ElementKind::Body, &body.name);
+            let at = || Location::nth(ElementKind::Body, Some(&body.name), body_id);
             if parent_id != 0 {
                 return Err(MjcfError::invalid_model(
                     "a mocap body must be a direct child of worldbody",

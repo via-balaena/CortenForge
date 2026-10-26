@@ -52,12 +52,11 @@ pub fn parse_mjcf_str(xml: &str) -> Result<MjcfModel> {
     crate::stack::on_large_stack(|| parse_mjcf_unwrapped(xml))
 }
 
-/// The deepest element that is not self-closing MuJoCo 3.5.0's XML reader
-/// (tinyxml2) takes, with the root at depth 1: 498, measured (research A4
-/// §1.1), an empty `<body></body>` included. A self-closing element loads at
-/// 499; one at 500 would need a parent at 499 that is not self-closing,
-/// refused first. It bounds the parser's recursion.
-const XML_DEPTH_WITH_CONTENT: usize = 498;
+/// MuJoCo 3.5.0's XML reader (tinyxml2) takes an element that is not
+/// self-closing, an empty `<body></body>` included, at depth 498 at most, the
+/// root at depth 1 (measured, research A4 §1.1); a self-closing one may sit one
+/// deeper. It bounds the parser's recursion.
+const XML_DEPTH_LIMIT: usize = 498;
 
 /// [`parse_mjcf_str`]'s work, on the caller's stack.
 pub fn parse_mjcf_unwrapped(xml: &str) -> Result<MjcfModel> {
@@ -70,7 +69,7 @@ pub fn parse_mjcf_unwrapped(xml: &str) -> Result<MjcfModel> {
         // it is about.
         let at = match reader.error_position() {
             0 => locate(xml, offset_of(reader.buffer_position(), xml)),
-            p => locate_point(xml, offset_of(p, xml)),
+            p => locate_syntax_error(xml, p),
         };
         e.with_location_if_unknown(at)
     })
@@ -89,8 +88,8 @@ fn check_xml_depth(xml: &str) -> Result<()> {
         match event {
             Ok(Event::Start(_)) => {
                 depth += 1;
-                if depth > XML_DEPTH_WITH_CONTENT {
-                    return Err(MjcfError::too_deep(XML_DEPTH_WITH_CONTENT).at(locate(xml, after)));
+                if depth > XML_DEPTH_LIMIT {
+                    return Err(MjcfError::too_deep(XML_DEPTH_LIMIT).at(locate(xml, after)));
                 }
             }
             Ok(Event::End(_)) => depth = depth.saturating_sub(1),
@@ -112,10 +111,10 @@ fn locate(xml: &str, offset: usize) -> Location {
     Location::parsed(line_at(xml, tag), show_path(&path))
 }
 
-/// Byte `offset` of `xml` itself: its line, and the path of elements open
-/// there (for a syntax error, found at that byte).
-fn locate_point(xml: &str, offset: usize) -> Location {
-    let (end, open, _) = scan_to(xml, offset);
+/// Where a syntax error the XML reader raised at byte `position` of `xml` is:
+/// that byte's line, and the path of elements open there.
+pub fn locate_syntax_error(xml: &str, position: u64) -> Location {
+    let (end, open, _) = scan_to(xml, offset_of(position, xml));
     Location::parsed(line_at(xml, end), show_path(&open))
 }
 

@@ -226,6 +226,7 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
 
 /// Parse actuator defaults.
 pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
+    super::actuator::refuse_actdim(e)?;
     let mut defaults = MjcfActuatorDefaults::default();
 
     if let Some(ctrlrange) = get_attribute_opt(e, "ctrlrange") {

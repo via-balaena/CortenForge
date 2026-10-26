@@ -25,13 +25,16 @@ use crate::error::{MjcfError, Result};
 /// [`MjcfError::Include`].
 pub fn expand_includes(xml: &str, base_dir: &Path) -> Result<String> {
     let mut seen = HashSet::new();
-    expand_includes_inner(xml, base_dir, &mut seen)
+    expand_includes_inner(xml, base_dir, &mut seen, true)
 }
 
+/// `xml`'s includes expanded; a syntax error in `xml` is located in it when it
+/// is the `main` document, and carries no location in an included file.
 fn expand_includes_inner(
     xml: &str,
     base_dir: &Path,
     seen: &mut HashSet<PathBuf>,
+    main: bool,
 ) -> Result<String> {
     // Check if there are any includes to expand (fast path)
     if !xml.contains("<include") {
@@ -68,7 +71,7 @@ fn expand_includes_inner(
                 let children_xml = extract_root_children(&content, &resolved)?;
 
                 // Recursively expand any includes in the children
-                let expanded = expand_includes_inner(&children_xml, base_dir, seen)?;
+                let expanded = expand_includes_inner(&children_xml, base_dir, seen, false)?;
 
                 // Write the expanded content as raw XML
                 writer
@@ -96,7 +99,7 @@ fn expand_includes_inner(
                     std::fs::read_to_string(&resolved).map_err(|e| MjcfError::io(&resolved, e))?;
 
                 let children_xml = extract_root_children(&content, &resolved)?;
-                let expanded = expand_includes_inner(&children_xml, base_dir, seen)?;
+                let expanded = expand_includes_inner(&children_xml, base_dir, seen, false)?;
 
                 writer
                     .write_event(Event::Text(quick_xml::events::BytesText::from_escaped(
@@ -113,7 +116,17 @@ fn expand_includes_inner(
                     .write_event(event)
                     .map_err(|e| MjcfError::include(format!("write error: {e}")))?;
             }
-            Err(e) => return Err(MjcfError::xml(e)),
+            Err(e) => {
+                let err = MjcfError::xml(e);
+                return Err(if main {
+                    err.at(crate::parser::locate_syntax_error(
+                        xml,
+                        reader.error_position(),
+                    ))
+                } else {
+                    err
+                });
+            }
         }
         buf.clear();
     }

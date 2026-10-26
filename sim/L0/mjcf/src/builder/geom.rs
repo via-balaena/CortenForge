@@ -18,12 +18,13 @@ impl ModelBuilder {
     pub(crate) fn process_geom(&mut self, geom: &MjcfGeom, body_id: usize) -> Result<usize> {
         let geom_id = self.geom_type.len();
         let geom_type = convert_geom_type(geom.geom_type);
-        let at = Location::nth(ElementKind::Geom, geom.name.as_deref(), geom_id).in_body(
-            self.body_name
-                .get(body_id)
-                .and_then(Option::as_deref)
-                .unwrap_or(""),
-        );
+        let at = || {
+            Location::nth(ElementKind::Geom, geom.name.as_deref(), geom_id).within_nth(
+                ElementKind::Body,
+                self.body_name.get(body_id).and_then(Option::as_deref),
+                body_id,
+            )
+        };
 
         // Reject shellinertia on mesh geoms (MuJoCo 3.5.0 behavior)
         if geom.shellinertia == Some(true) && geom_type == GeomType::Mesh {
@@ -32,12 +33,12 @@ impl ModelBuilder {
                 "shellinertia",
                 "for mesh geoms, inertia should be specified in the mesh asset",
             )
-            .at(at));
+            .at(at()));
         }
 
         let (geom_mesh_ref, geom_hfield_ref) = self
             .resolve_geom_asset_links(geom, geom_type)
-            .map_err(|e| e.with_location_if_unknown(at))?;
+            .map_err(|e| e.with_location_if_unknown(at()))?;
 
         // Handle fromto for capsules/cylinders
         let (pos, quat, size) = if let Some(fromto) = geom.fromto {

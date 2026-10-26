@@ -1810,3 +1810,11 @@ a9efc39a81509d70	sim/L0/mjcf/tests/inertia_eig3.rs:659
 ab94ae83e3064884	sim/L0/mjcf/src/builder/mod.rs:1388
 f0a1ea0185b428f4	sim/L0/mjcf/tests/flex_edges.rs:166
 95dddb7196249575	sim/L0/mjcf/tests/deep_tree.rs:90
+2030a608e98e3323	sim/L0/mjcf/tests/errors.rs:397
+298b4dbc9bd6c9f6	sim/L0/mjcf/tests/errors.rs:432
+2b6c9b303ec9581d	sim/L0/mjcf/tests/errors.rs:438
+2ff26bd31bc3e252	sim/L0/mjcf/tests/errors.rs:387
+64d97e177f779632	sim/L0/mjcf/tests/errors.rs:375
+a2821d818e56cff5	sim/L0/mjcf/tests/errors.rs:381
+be9e2f1b4e802de3	sim/L0/mjcf/tests/errors.rs:415
+ede96f46d03af648	sim/L0/mjcf/tests/errors.rs:411

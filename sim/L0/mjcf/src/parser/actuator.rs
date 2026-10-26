@@ -49,11 +49,22 @@ pub(super) fn parse_actuators<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<
     Ok(actuators)
 }
 
+/// An actuator's `actdim` is not read: the builder gives a stateful actuator
+/// one activation, so a written count, which MuJoCo honours for `user`
+/// dynamics, is refused rather than ignored.
+pub(super) fn refuse_actdim(e: &BytesStart) -> Result<()> {
+    if get_attribute_opt(e, "actdim").is_some() {
+        return Err(MjcfError::unsupported("an actuator's actdim"));
+    }
+    Ok(())
+}
+
 /// Parse actuator attributes.
 pub(super) fn parse_actuator_attrs(
     e: &BytesStart,
     actuator_type: MjcfActuatorType,
 ) -> Result<MjcfActuator> {
+    refuse_actdim(e)?;
     let mut actuator = MjcfActuator {
         actuator_type,
         ..Default::default()

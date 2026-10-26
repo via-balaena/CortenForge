@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1046
+# agree_floor 1047
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -200,6 +200,7 @@
 1fba4225030df505	agree
 1fdcd7bb9de5a071	mj-refuses
 1fe63d2fd6c19a9a	agree
+2030a608e98e3323	ours-refused	known=A4-partial-array
 20337b1cae736cb2	model:geom_quat;dyn:agree
 206b053fae8e1f0e	agree
 2084726d71be95bf	agree
@@ -261,6 +262,7 @@
 28faab2d562cf86c	agree
 294c3a94e8328d92	mj-refuses
 29661ba2fd5620f9	agree
+298b4dbc9bd6c9f6	agree
 29e16a3020ea81a7	model:geom_quat;dyn:agree
 29e214226c829089	agree
 2a3c0d549621bdf3	mj-refuses
@@ -271,6 +273,7 @@
 2abef0410f096486	agree
 2addf2aba77adfd8	model:geom_quat;dyn:agree
 2b24e15c58d32083	agree
+2b6c9b303ec9581d	both-refuse
 2b9de5431a2e5ffe	agree
 2bd6ec5991aa2e64	agree
 2c3bf7b496acd666	model:geom_quat;dyn:agree
@@ -298,6 +301,7 @@
 2fd0d3c468f14ad6	agree
 2fef0830a5acd6a5	mj-refuses
 2fef3adf2d6aff01	agree
+2ff26bd31bc3e252	both-refuse
 303cd44e1595f4c6	agree
 305664003312a26f	agree
 3058193d2fff1b83	agree
@@ -687,6 +691,7 @@
 6486c8d75bea13b6	agree
 6495c9d767c1d0d5	agree
 64ae6249487ca0c5	model:geom_quat;dyn:agree
+64d97e177f779632	both-refuse
 653b19a3be1d7f96	agree
 655c2c898eefd92e	model:geom_quat;dyn:agree
 6594c42e913ed1f9	e1:t0:sensordata	divergence=D-STATIC-ACCELEROMETER
@@ -1060,6 +1065,7 @@ a19daa9cd12b079a	agree
 a1d4ffc78e5855bd	agree
 a2025dd2e7d7f3f5	agree
 a26b692ba4312717	agree
+a2821d818e56cff5	both-refuse
 a2af719fc1350713	agree
 a2e224dfb21dfa6c	model:geom_quat;dyn:agree
 a2f14cb1b0a4bc8b	agree
@@ -1255,6 +1261,7 @@ bda6718fd70c2a56	agree
 be07776f1145291b	agree
 be54cd4cd4f11295	agree
 be6eee56c82cc94d	agree
+be9e2f1b4e802de3	ours-refused	divergence=D-ACTDIM
 bebd0daf09fbd21a	agree
 bed784a60e01d6c2	agree
 bf337878a5406c3c	agree
@@ -1576,6 +1583,7 @@ eca4fe58c11d1c69	agree
 ed65d8197d4282ec	agree
 ed994df10cc5e1bc	agree
 edb1146b0365719b	mj-refuses
+ede96f46d03af648	ours-refused	divergence=D-ACTDIM
 ee00cbb9cb41686a	mj-refuses
 ee13f2c107f13807	agree
 ee61e84548cacee3	mj-refuses
