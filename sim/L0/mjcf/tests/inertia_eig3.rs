@@ -526,7 +526,7 @@ const CASES: &[(&str, [u64; 3], [u64; 4])] = &[
             0x3fd60f5717e0ea91,
         ],
     ),
-    // Tied off-diagonals: the pivot is the first of the largest.
+    // The largest off-diagonals tied.
     (
         "2 2 2 0.5 0.5 0.5",
         [0x4007ffffffffffff, 0x3ff8000000000000, 0x3ff8000000000000],

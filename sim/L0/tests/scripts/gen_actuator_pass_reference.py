@@ -34,8 +34,9 @@ model whose tree starts asleep, and record what the actuation reads through the
 moment rows the last position stage built: the forces mapped, the actuator
 velocities, and under discrete inverse dynamics the velocity derivative.
 
-sim-mjcf refuses a user gain, bias or dynamics and loads no plugin, so each
-case also holds a stand-in (`xml`): the same model with types sim-mjcf loads.
+sim-mjcf loads no plugin (and refused a user gain, bias or dynamics when this
+golden was made), so each case also holds a stand-in (`xml`): the same model
+with types sim-mjcf loads.
 The test changes it to MuJoCo's compiled actuators (`compiled`: types,
 activation counts and addresses, plugins, actearly, force ranges, gears),
 including what the case sets after compiling (`after_compile`), and checks the

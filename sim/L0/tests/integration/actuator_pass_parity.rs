@@ -18,9 +18,8 @@
 //! activation; an infinite gear on actuators with no force. sim-mjcf
 //! loads no plugin, so each case loads a stand-in, written without the plugins
 //! and user types, and changes it to MuJoCo's compiled actuators, then checks
-//! it against them; the
-//! callbacks below are the script's, in the same operations, and the plugin is
-//! [`Pid`], a port of `mujoco.pid`. After a forward pass each actuator's
+//! it against them; the callbacks below are the script's, in the same
+//! operations, and the plugin is [`Pid`], a port of `mujoco.pid`. After a forward pass each actuator's
 //! force, `qfrc_actuator` and `act_dot` are compared; after a step `qDeriv` on
 //! D's pattern, and qpos, qvel and act; bit for bit on the golden's platform
 //! (see `matches_golden`). The golden's sequences hold what the actuation

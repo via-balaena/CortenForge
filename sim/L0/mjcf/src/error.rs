@@ -143,7 +143,7 @@ pub enum MjcfError {
     },
 
     /// A value breaks one of the rules for its attribute: MuJoCo's, or a
-    /// stricter one of this crate's, which the divergence registry lists.
+    /// stricter one of this crate's.
     #[error("invalid {attribute} on <{element}>: {reason}{at}")]
     #[non_exhaustive]
     InvalidValue {
@@ -269,9 +269,11 @@ pub enum MjcfError {
     },
 }
 
-/// Which kind of element an error is about. Displays as its MJCF tag, or for
-/// a kind written with several tags (an equality, a tendon, an actuator, a
-/// sensor) as the tag of the section that holds them.
+/// Which kind of element an error is about.
+///
+/// Displays as its MJCF tag, or for a kind written with several tags (an
+/// equality, a tendon, an actuator, a sensor) as the tag of the section that
+/// holds them; a flex, `<flex>` or `<flexcomp>`, as `flex`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ElementKind {
@@ -358,7 +360,10 @@ impl fmt::Display for ValueCount {
 /// parse error, the element the reader last began, which is the one at fault
 /// unless the error was raised after the reader went past it. An element is
 /// named by its name, or, without one, by its index among its kind from 0
-/// where the pass knows it (`actuator #1`), else by its kind alone.
+/// where the pass knows it (`actuator #1`), else by its kind alone. A body's
+/// index counts the world as #0; a geom's is its id in the built model, and
+/// its body the one it was built into (after `discardvisual` and
+/// `fusestatic`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location(Option<Box<Place>>);
 

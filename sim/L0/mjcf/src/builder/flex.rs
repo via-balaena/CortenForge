@@ -582,9 +582,8 @@ const ELEMENT_EDGES: [&[(usize, usize)]; 3] = [
 /// 3 (`:4108-4110`), each element of `dim + 1` vertices (`:4114-4116`), at
 /// least `dim + 1` vertices (`:4147-4149`), each element's vertices among
 /// them (`:4160-4165`), and none twice in an element (`:4189-4202`). Its
-/// "elem is empty" (`:4111-4113`) is Rigid-loading L10's; the checks it makes
-/// between these, on the flex's bodies, nodes, texture coordinates and
-/// material, are not this function's.
+/// "elem is empty" (`:4111-4113`) is Rigid-loading L10's; the other checks it
+/// makes between these are not this function's.
 fn check_flex_elements(flex: &MjcfFlex) -> Result<()> {
     let refuse =
         |attribute: &str, reason: &str| MjcfError::invalid_value("flex", attribute, reason);
