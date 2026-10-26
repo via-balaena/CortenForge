@@ -1014,7 +1014,8 @@ mod tests {
     }
 
     /// A box field whose grid ends at the box's faces: a ray from a face into
-    /// the box meets it where it starts, at a distance of +0.
+    /// the box meets it where it starts, at a distance of +0, a `max_dist` of 0
+    /// included.
     #[test]
     fn sdf_hit_where_the_ray_starts_on_the_grid() {
         let shape = Shape::sdf(Arc::new(crate::SdfGrid::box_shape(
@@ -1025,16 +1026,42 @@ mod tests {
         )));
         for axis in 0..3 {
             for sign in [-1.0, 1.0] {
+                for max_dist in [0.0, 100.0] {
+                    let mut origin = Point3::origin();
+                    origin[axis] = sign;
+                    let mut dir = Vector3::zeros();
+                    dir[axis] = -sign;
+                    let hit = ray_cast(&ray_from(origin, dir), &shape, max_dist);
+                    let case = format!("axis {axis}, side {sign}, max_dist {max_dist}");
+                    assert!(hit.is_some(), "{case}: a miss");
+                    assert_eq!(hit.unwrap().distance.to_bits(), 0.0_f64.to_bits(), "{case}");
+                }
+            }
+        }
+    }
+
+    /// A sphere field of radius 0.5 on a grid reaching 1.5, 1 and 0.6 each way,
+    /// cells 0.1 wide: from 1.5 outside each face the ray meets the sphere
+    /// within a cell.
+    #[test]
+    fn sdf_hit_from_outside_a_grid_that_is_not_a_cube() {
+        let half = Vector3::new(1.5, 1.0, 0.6);
+        let grid = crate::SdfGrid::from_fn(31, 21, 13, 0.1, Point3::from(-half), |p| {
+            p.coords.norm() - 0.5
+        });
+        let shape = Shape::sdf(Arc::new(grid));
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
                 let mut origin = Point3::origin();
-                origin[axis] = sign;
+                origin[axis] = sign * (half[axis] + 1.5);
                 let mut dir = Vector3::zeros();
                 dir[axis] = -sign;
                 let hit = ray_cast(&ray_from(origin, dir), &shape, 100.0);
                 assert!(hit.is_some(), "axis {axis}, side {sign}: a miss");
-                assert_eq!(
-                    hit.unwrap().distance.to_bits(),
-                    0.0_f64.to_bits(),
-                    "axis {axis}, side {sign}"
+                let distance = hit.unwrap().distance;
+                assert!(
+                    (distance - (half[axis] + 1.0)).abs() <= 0.1,
+                    "axis {axis}, side {sign}: {distance}"
                 );
             }
         }
@@ -1051,6 +1078,14 @@ mod tests {
         assert_eq!(ray_box_interval(&inside, min, max), Some((-1.0, 1.0)));
         let behind = ray_from(Point3::new(0.0, 0.0, 3.0), Vector3::z());
         assert_eq!(ray_box_interval(&behind, min, max), Some((-4.0, -2.0)));
+        let along_a_face = ray_from(Point3::new(1.0, 0.0, -3.0), Vector3::z());
+        assert_eq!(ray_box_interval(&along_a_face, min, max), Some((2.0, 4.0)));
+        let touching_an_edge = ray_from(
+            Point3::new(-2.0, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 0.0).normalize(),
+        );
+        let (enter, exit) = ray_box_interval(&touching_an_edge, min, max).unwrap();
+        assert_eq!(enter, exit, "touching an edge");
     }
 
     #[test]
