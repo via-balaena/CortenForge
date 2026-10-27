@@ -834,8 +834,8 @@ fn a_malformed_attribute_is_refused_on_an_element_sim_mjcf_does_not_read() {
 #[test]
 fn every_equality_keeps_its_class_tail() {
     let world = r#"<worldbody>
-            <body name="a"><joint name="ja"/><geom size="0.1"/></body>
-            <body name="b" pos="1 0 0"><joint name="jb"/><geom size="0.1"/></body>
+            <body name="a"><joint name="ja"/><geom name="ga" size="0.1"/></body>
+            <body name="b" pos="1 0 0"><joint name="jb"/><geom name="gb" size="0.1"/></body>
         </worldbody>
         <tendon>
             <fixed name="t1"><joint joint="ja" coef="1"/></fixed>
@@ -845,6 +845,9 @@ fn every_equality_keeps_its_class_tail() {
         r#"<connect body1="a" body2="b" anchor="0 0 0" ATTR/>"#,
         r#"<joint joint1="ja" joint2="jb" ATTR/>"#,
         r#"<tendon tendon1="t1" tendon2="t2" ATTR/>"#,
+        // sim-mjcf's <distance> (MuJoCo 3.5.0 refuses the element): no measured
+        // value, so it is held to the other equalities' rule.
+        r#"<distance geom1="ga" geom2="gb" ATTR/>"#,
     ] {
         let doc = |class: &str, written: &str| {
             format!(
