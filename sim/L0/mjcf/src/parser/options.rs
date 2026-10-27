@@ -240,8 +240,8 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A4. autolimits
-    if let Some(autolimits) = a.text("autolimits") {
-        compiler.autolimits = autolimits == "true";
+    if let Some(autolimits) = a.boolean("autolimits")? {
+        compiler.autolimits = autolimits;
     }
 
     // A5. inertiafromgeom
@@ -258,8 +258,8 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A7. balanceinertia
-    if let Some(balance) = a.text("balanceinertia") {
-        compiler.balanceinertia = balance == "true";
+    if let Some(balance) = a.boolean("balanceinertia")? {
+        compiler.balanceinertia = balance;
     }
 
     // A8. settotalmass
@@ -268,18 +268,18 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A9. strippath
-    if let Some(sp) = a.text("strippath") {
-        compiler.strippath = sp == "true";
+    if let Some(sp) = a.boolean("strippath")? {
+        compiler.strippath = sp;
     }
 
     // A10. discardvisual
-    if let Some(dv) = a.text("discardvisual") {
-        compiler.discardvisual = dv == "true";
+    if let Some(dv) = a.boolean("discardvisual")? {
+        compiler.discardvisual = dv;
     }
 
     // A11. fusestatic
-    if let Some(fs) = a.text("fusestatic") {
-        compiler.fusestatic = fs == "true";
+    if let Some(fs) = a.boolean("fusestatic")? {
+        compiler.fusestatic = fs;
     }
 
     // A12. coordinate (deprecated — reject "global")
@@ -292,19 +292,19 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // Deferred attributes (stored but no behavior yet)
-    if let Some(fitaabb) = a.text("fitaabb") {
-        compiler.fitaabb = fitaabb == "true";
+    if let Some(fitaabb) = a.boolean("fitaabb")? {
+        compiler.fitaabb = fitaabb;
     }
-    if let Some(usethread) = a.text("usethread") {
-        compiler.usethread = usethread == "true";
+    if let Some(usethread) = a.boolean("usethread")? {
+        compiler.usethread = usethread;
     }
-    if let Some(alignfree) = a.text("alignfree") {
-        compiler.alignfree = alignfree == "true";
+    if let Some(alignfree) = a.boolean("alignfree")? {
+        compiler.alignfree = alignfree;
     }
 
     // A13. exactmeshinertia (deprecated — no behavioral effect since MuJoCo 3.5.0)
-    if let Some(emi) = a.text("exactmeshinertia") {
-        compiler.exactmeshinertia = emi == "true";
+    if let Some(emi) = a.boolean("exactmeshinertia")? {
+        compiler.exactmeshinertia = emi;
         tracing::warn!(
             "exactmeshinertia is deprecated and has no effect; \
              use <mesh inertia=\"exact\"/> instead"
@@ -319,38 +319,46 @@ pub(super) fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
     let a = Attrs::new(e)?;
     let mut flag = MjcfFlag::default();
 
-    // Helper to parse enable/disable attributes
-    let parse_flag = |name: &str, default: bool| a.text(name).map_or(default, |v| v != "disable");
+    // Each flag is MuJoCo's `enable_map` keyword: exactly `disable` or
+    // `enable`.
+    let parse_flag = |name: &str, default: bool| -> Result<bool> {
+        Ok(a.keyword(name, |s| match s {
+            "disable" => Some(false),
+            "enable" => Some(true),
+            _ => None,
+        })?
+        .unwrap_or(default))
+    };
 
     // Disable flags (true = enabled, false = disabled)
-    flag.constraint = parse_flag("constraint", flag.constraint);
-    flag.equality = parse_flag("equality", flag.equality);
-    flag.frictionloss = parse_flag("frictionloss", flag.frictionloss);
-    flag.limit = parse_flag("limit", flag.limit);
-    flag.contact = parse_flag("contact", flag.contact);
+    flag.constraint = parse_flag("constraint", flag.constraint)?;
+    flag.equality = parse_flag("equality", flag.equality)?;
+    flag.frictionloss = parse_flag("frictionloss", flag.frictionloss)?;
+    flag.limit = parse_flag("limit", flag.limit)?;
+    flag.contact = parse_flag("contact", flag.contact)?;
     // MuJoCo 3.3.6+ split `passive` into independent `spring` + `damper`.
     // `passive` is silently ignored (unrecognized attributes are skipped).
-    flag.spring = parse_flag("spring", flag.spring);
-    flag.damper = parse_flag("damper", flag.damper);
-    flag.gravity = parse_flag("gravity", flag.gravity);
-    flag.clampctrl = parse_flag("clampctrl", flag.clampctrl);
-    flag.warmstart = parse_flag("warmstart", flag.warmstart);
-    flag.filterparent = parse_flag("filterparent", flag.filterparent);
-    flag.actuation = parse_flag("actuation", flag.actuation);
-    flag.refsafe = parse_flag("refsafe", flag.refsafe);
-    flag.sensor = parse_flag("sensor", flag.sensor);
-    flag.midphase = parse_flag("midphase", flag.midphase);
-    flag.nativeccd = parse_flag("nativeccd", flag.nativeccd);
-    flag.eulerdamp = parse_flag("eulerdamp", flag.eulerdamp);
-    flag.autoreset = parse_flag("autoreset", flag.autoreset);
-    flag.island = parse_flag("island", flag.island);
+    flag.spring = parse_flag("spring", flag.spring)?;
+    flag.damper = parse_flag("damper", flag.damper)?;
+    flag.gravity = parse_flag("gravity", flag.gravity)?;
+    flag.clampctrl = parse_flag("clampctrl", flag.clampctrl)?;
+    flag.warmstart = parse_flag("warmstart", flag.warmstart)?;
+    flag.filterparent = parse_flag("filterparent", flag.filterparent)?;
+    flag.actuation = parse_flag("actuation", flag.actuation)?;
+    flag.refsafe = parse_flag("refsafe", flag.refsafe)?;
+    flag.sensor = parse_flag("sensor", flag.sensor)?;
+    flag.midphase = parse_flag("midphase", flag.midphase)?;
+    flag.nativeccd = parse_flag("nativeccd", flag.nativeccd)?;
+    flag.eulerdamp = parse_flag("eulerdamp", flag.eulerdamp)?;
+    flag.autoreset = parse_flag("autoreset", flag.autoreset)?;
+    flag.island = parse_flag("island", flag.island)?;
     // Enable flags (false = disabled, true = enabled)
-    flag.override_contacts = parse_flag("override", flag.override_contacts);
-    flag.energy = parse_flag("energy", flag.energy);
-    flag.fwdinv = parse_flag("fwdinv", flag.fwdinv);
-    flag.invdiscrete = parse_flag("invdiscrete", flag.invdiscrete);
-    flag.multiccd = parse_flag("multiccd", flag.multiccd);
-    flag.sleep = parse_flag("sleep", flag.sleep);
+    flag.override_contacts = parse_flag("override", flag.override_contacts)?;
+    flag.energy = parse_flag("energy", flag.energy)?;
+    flag.fwdinv = parse_flag("fwdinv", flag.fwdinv)?;
+    flag.invdiscrete = parse_flag("invdiscrete", flag.invdiscrete)?;
+    flag.multiccd = parse_flag("multiccd", flag.multiccd)?;
+    flag.sleep = parse_flag("sleep", flag.sleep)?;
 
     Ok(flag)
 }

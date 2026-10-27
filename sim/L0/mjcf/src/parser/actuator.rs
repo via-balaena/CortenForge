@@ -113,8 +113,8 @@ pub(super) fn parse_actuator_attrs(
         actuator.forcerange = Some(pair.into());
     }
 
-    actuator.ctrllimited = a.is_true("ctrllimited");
-    actuator.forcelimited = a.is_true("forcelimited");
+    actuator.ctrllimited = a.tf_auto("ctrllimited")?;
+    actuator.forcelimited = a.tf_auto("forcelimited")?;
 
     if let Some(kp) = a.real("kp")? {
         actuator.kp = kp;
@@ -206,11 +206,11 @@ pub(super) fn parse_actuator_attrs(
     // Activation parameters
     // ========================================================================
     actuator.group = a.int("group")?;
-    actuator.actlimited = a.is_true("actlimited");
+    actuator.actlimited = a.tf_auto("actlimited")?;
     if let Some(pair) = a.array::<2>("actrange")? {
         actuator.actrange = Some(pair.into());
     }
-    actuator.actearly = a.is_true("actearly");
+    actuator.actearly = a.boolean("actearly")?;
     if let Some(pair) = a.array::<2>("lengthrange")? {
         actuator.lengthrange = Some(pair.into());
     }

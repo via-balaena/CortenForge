@@ -78,16 +78,7 @@ impl ModelBuilder {
         };
         self.jnt_axis.push(axis);
         // Autolimits: infer limited from range presence when no explicit value.
-        let limited = match joint.limited {
-            Some(v) => v,
-            None => {
-                if self.compiler.autolimits {
-                    super::has_range(joint.range)
-                } else {
-                    false
-                }
-            }
-        };
+        let limited = super::is_limited(joint.limited, self.compiler.autolimits, joint.range);
         self.jnt_limited.push(limited);
 
         // Angle conversion: hinge and ball joint range/ref/springref are angle-valued.

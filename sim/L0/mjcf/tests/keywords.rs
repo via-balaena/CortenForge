@@ -325,3 +325,143 @@ fn a_composite_type_is_case_sensitive() {
     );
     assert_keyword(&err, "composite", "type", "Cable");
 }
+
+// ── booleans, `false|true|auto` and flags ──
+
+fn hinge(joint_attrs: &str, class: &str) -> String {
+    format!(
+        r#"<mujoco><default>{class}</default><worldbody><body>
+            <joint {joint_attrs}/><geom size="0.1"/>
+        </body></worldbody></mujoco>"#
+    )
+}
+
+#[test]
+fn a_boolean_is_exactly_false_or_true() {
+    // Before: any text but `true` was false.
+    assert_keyword(
+        &refused(&compiler(r#"autolimits="1""#)),
+        "compiler",
+        "autolimits",
+        "1",
+    );
+    assert_keyword(
+        &refused(&compiler(r#"fusestatic="TRUE""#)),
+        "compiler",
+        "fusestatic",
+        "TRUE",
+    );
+    let err = refused(
+        r#"<mujoco><worldbody><body mocap="1"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_keyword(&err, "body", "mocap", "1");
+    let err = refused(
+        r#"<mujoco><worldbody>
+            <body name="a"><freejoint/><geom size="0.1"/></body>
+            <body name="c" pos="1 0 0"><freejoint/><geom size="0.1"/></body>
+        </worldbody><equality><weld body1="a" body2="c" active="1"/></equality></mujoco>"#,
+    );
+    assert_keyword(&err, "weld", "active", "1");
+    let err = refused(
+        r#"<mujoco><worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+        <actuator><general joint="j" dyntype="integrator" actearly="yes"/></actuator></mujoco>"#,
+    );
+    assert_keyword(&err, "general", "actearly", "yes");
+}
+
+#[test]
+fn limited_is_exactly_false_true_or_auto() {
+    // Before: any text but `true` was false.
+    assert_keyword(
+        &refused(&hinge(r#"limited="1" range="-1 1""#, "")),
+        "joint",
+        "limited",
+        "1",
+    );
+    assert_keyword(
+        &refused(&hinge(r#"limited="True" range="-1 1""#, "")),
+        "joint",
+        "limited",
+        "True",
+    );
+    assert_keyword(
+        &refused(&hinge(r#"limited="" range="-1 1""#, "")),
+        "joint",
+        "limited",
+        "",
+    );
+}
+
+#[test]
+fn an_elements_auto_lies_over_its_class() {
+    // MuJoCo 3.5.0, measured: `auto` over a class's `false`, with a range,
+    // gives jnt_limited 1. Before: `auto` was read as `false`.
+    let m = load(&hinge(
+        r#"limited="auto" range="-1 1""#,
+        r#"<joint limited="false"/>"#,
+    ));
+    assert!(m.jnt_limited[0]);
+    let m = load(
+        r#"<mujoco><worldbody><body><joint name="j" type="slide"/><geom size="0.1"/></body></worldbody>
+        <tendon><fixed limited="auto" range="-1 1"><joint joint="j" coef="1"/></fixed></tendon>
+        <actuator><general joint="j" ctrllimited="auto" ctrlrange="-2 2"/></actuator></mujoco>"#,
+    );
+    assert!(m.tendon_limited[0]);
+    assert_eq!(m.actuator_ctrlrange[0], (-2.0, 2.0));
+}
+
+#[test]
+fn a_flag_is_exactly_enable_or_disable() {
+    // Before: any text but `disable` enabled the flag, so `off` kept gravity.
+    let flag =
+        |attrs: &str| format!("<mujoco><option><flag {attrs}/></option><worldbody/></mujoco>");
+    assert_keyword(
+        &refused(&flag(r#"gravity="off""#)),
+        "flag",
+        "gravity",
+        "off",
+    );
+    assert_keyword(
+        &refused(&flag(r#"gravity="true""#)),
+        "flag",
+        "gravity",
+        "true",
+    );
+    assert_keyword(
+        &refused(&flag(r#"energy="Enable""#)),
+        "flag",
+        "energy",
+        "Enable",
+    );
+    let m = load(&flag(r#"gravity="disable" energy="enable""#));
+    assert!(sim_core::disabled(&m, sim_core::DISABLE_GRAVITY));
+    assert!(sim_core::enabled(&m, sim_core::ENABLE_ENERGY));
+}
+
+fn cable_with_joint(joint_attrs: &str) -> String {
+    format!(
+        r#"<mujoco><worldbody><composite type="cable" prefix="C" count="5 1 1" curve="s 0 0" size="1">
+            <joint kind="main" {joint_attrs}/><geom type="capsule" size="0.01"/>
+        </composite></worldbody></mujoco>"#
+    )
+}
+
+#[test]
+fn a_composite_joints_limited_is_read_from_the_joint() {
+    // D-COMPOSITE-JOINT-LIMITED: MuJoCo 3.5.0 reads a composite joint's
+    // `limited` from the <composite> element (xml_native_reader.cc, OneComposite),
+    // whose schema does not hold it, so a written value is never read: measured,
+    // `limited="false"` with a range gives jnt_limited 1 1 1 1, and
+    // `limited="bogus"` loads. sim-mjcf reads it from the joint.
+    let m = load(&cable_with_joint(r#"limited="false" range="0 0.5""#));
+    assert_eq!(m.jnt_limited.len(), 4);
+    assert!(m.jnt_limited.iter().all(|limited| !limited));
+    let m = load(&cable_with_joint(r#"limited="true" range="0 0.5""#));
+    assert!(m.jnt_limited.iter().all(|limited| *limited));
+    assert_keyword(
+        &refused(&cable_with_joint(r#"limited="bogus" range="0 0.5""#)),
+        "joint",
+        "limited",
+        "bogus",
+    );
+}

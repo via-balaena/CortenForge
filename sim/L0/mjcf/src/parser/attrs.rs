@@ -29,7 +29,7 @@ use std::io::BufRead;
 use std::num::IntErrorKind;
 
 use crate::error::{MjcfError, Result, ValueCount};
-use crate::types::Prefix;
+use crate::types::{Prefix, TfAuto};
 
 /// Safe axis normalization with Z fallback for zero-length vectors.
 #[inline]
@@ -293,10 +293,18 @@ impl Attrs {
         self.text(name).is_some()
     }
 
-    /// `Some(true)` for exactly `true`, `Some(false)` for any other text.
-    /// MuJoCo refuses any word but `false` and `true`.
-    pub(super) fn is_true(&self, name: &str) -> Option<bool> {
-        self.text(name).map(|s| s == "true")
+    /// A boolean, MuJoCo's `bool_map` keyword: exactly `false` or `true`.
+    pub(super) fn boolean(&self, name: &str) -> Result<Option<bool>> {
+        self.keyword(name, |s| match s {
+            "false" => Some(false),
+            "true" => Some(true),
+            _ => None,
+        })
+    }
+
+    /// MuJoCo's `TFAuto_map` keyword: exactly `false`, `true` or `auto`.
+    pub(super) fn tf_auto(&self, name: &str) -> Result<Option<TfAuto>> {
+        self.keyword(name, TfAuto::from_str)
     }
 
     /// The attribute's numbers, any count; `None` when absent or empty.

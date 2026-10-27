@@ -1,6 +1,6 @@
 # Parity-census verdicts against MuJoCo 3.5.0: one row per snapshot doc, `doc<TAB>verdict[<TAB>note]`.
 # Written by mujoco_conformance/layer_e_census.rs with CENSUS_BLESS=1; read its module doc before editing.
-# agree_floor 1099
+# agree_floor 1102
 001bc4149d608b24	agree
 00308b83da9d8bab	agree
 0032a4ca7e233aec	agree
@@ -105,7 +105,7 @@
 0ebba01683910c5e	agree
 0eccac56941cb124	both-refuse
 0ee0d13ee3c0e9ed	agree
-0eec3d0de1d13094	mj-refuses
+0eec3d0de1d13094	both-refuse
 0ef3d42be35e6671	mj-refuses
 0f1cfd553bbdf7ff	agree
 0f1dd292de12918d	agree
@@ -283,7 +283,7 @@
 28d58ebfea4dabb1	model:geom_quat;dyn:agree
 28dcb75dcf09996c	agree
 28faab2d562cf86c	agree
-294c3a94e8328d92	mj-refuses
+294c3a94e8328d92	both-refuse
 29661ba2fd5620f9	agree
 298b4dbc9bd6c9f6	agree
 29e16a3020ea81a7	model:geom_quat;dyn:agree
@@ -659,6 +659,7 @@
 57ce70abb0caa643	both-refuse
 57d50d23a453527a	agree
 57fc71a81bc9d6a2	agree
+581b4090d8b04cbe	agree
 582c92650b448b93	agree
 5843268075a929c2	mj-refuses
 5846074f48552d40	both-refuse
@@ -818,6 +819,7 @@
 6f45c8dd430b48dd	agree
 6f5af74b5dc59346	agree
 6f685a768ff198cd	mj-refuses
+6f69f90b165fc105	both-refuse
 6f72c558b0adbb55	mj-refuses
 7010a7d93830f179	both-refuse
 7026bc17c9212a56	agree
@@ -1023,6 +1025,7 @@
 901a8ad78c37be30	both-refuse
 901ffffa67631a39	both-refuse
 907b816f9cca3e6d	both-refuse
+90a3f33bd2829dad	both-refuse
 90ec93d8a45c12bd	mj-refuses
 90fe1274af761012	agree
 91072568fd158c07	agree
@@ -1077,6 +1080,7 @@
 978d8613972e763e	mj-refuses
 97c2da41b6b81ae1	both-refuse
 9802c21f2863943c	agree
+98066541a3bd104d	both-refuse
 980d079ba9552bae	agree
 98306496d345c538	agree
 983763651c688c8a	agree
@@ -1291,6 +1295,7 @@ b159fba84e6550f0	agree
 b15cb449d8f72fad	model:geom_quat;dyn:agree
 b16aed0349b92f60	agree
 b16fc678197ce772	both-refuse
+b182a8b33bf6f1b5	agree
 b1b01745b06617df	agree
 b1f0077db210fee8	agree
 b1f13f4eac5239b5	mj-refuses
@@ -1775,6 +1780,7 @@ f385f69214ef0b6b	mj-refuses
 f3a0bbcc9d46ec1e	both-refuse
 f3ba3abbf4b0e764	agree
 f3d79d5bf27c4aec	agree
+f3f829981e954223	agree
 f435c9d6070fa6f2	agree
 f4aa8beb04bf99ea	agree
 f4b579027d5a5487	agree

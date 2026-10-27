@@ -1,0 +1,4 @@
+<mujoco><worldbody>
+            <body name="a"><freejoint/><geom size="0.1"/></body>
+            <body name="c" pos="1 0 0"><freejoint/><geom size="0.1"/></body>
+        </worldbody><equality><weld body1="a" body2="c" active="1"/></equality></mujoco>

@@ -135,7 +135,7 @@ pub(super) fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
     connect.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    connect.active = a.is_true("active");
+    connect.active = a.boolean("active")?;
 
     Ok(connect)
 }
@@ -169,7 +169,7 @@ pub(super) fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
     weld.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    weld.active = a.is_true("active");
+    weld.active = a.boolean("active")?;
 
     Ok(weld)
 }
@@ -200,7 +200,7 @@ pub(super) fn parse_joint_equality_attrs(e: &BytesStart) -> Result<MjcfJointEqua
     joint_eq.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    joint_eq.active = a.is_true("active");
+    joint_eq.active = a.boolean("active")?;
 
     Ok(joint_eq)
 }
@@ -229,7 +229,7 @@ pub(super) fn parse_distance_attrs(e: &BytesStart) -> Result<MjcfDistance> {
     distance.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    distance.active = a.is_true("active");
+    distance.active = a.boolean("active")?;
 
     Ok(distance)
 }
@@ -260,7 +260,7 @@ pub(super) fn parse_tendon_equality_attrs(e: &BytesStart) -> Result<MjcfTendonEq
     ten_eq.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    ten_eq.active = a.is_true("active");
+    ten_eq.active = a.boolean("active")?;
 
     Ok(ten_eq)
 }

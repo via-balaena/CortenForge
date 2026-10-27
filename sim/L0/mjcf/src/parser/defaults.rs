@@ -122,7 +122,7 @@ pub(super) fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> 
 
     defaults.joint_type = a.keyword("type", MjcfJointType::from_str)?;
     defaults.pos = a.vec3("pos")?;
-    defaults.limited = a.is_true("limited");
+    defaults.limited = a.tf_auto("limited")?;
     defaults.axis = a.vec3("axis")?;
     defaults.ref_pos = a.real("ref")?;
     defaults.spring_ref = a.real("springref")?;
@@ -138,7 +138,7 @@ pub(super) fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> 
     defaults.solimp_limit = a.prefix("solimplimit")?;
     defaults.solreffriction = a.prefix("solreffriction")?;
     defaults.solimpfriction = a.prefix("solimpfriction")?;
-    defaults.actuatorgravcomp = a.is_true("actuatorgravcomp");
+    defaults.actuatorgravcomp = a.boolean("actuatorgravcomp")?;
     defaults.margin = a.real("margin")?;
     defaults.user = a.vector("user")?;
 
@@ -186,7 +186,7 @@ pub(super) fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     defaults.fluidshape = a.keyword("fluidshape", keywords::fluid_shape)?;
     defaults.fluidcoef = a.prefix("fluidcoef")?;
     defaults.user = a.vector("user")?;
-    defaults.shellinertia = a.is_true("shellinertia");
+    defaults.shellinertia = a.boolean("shellinertia")?;
 
     Ok(defaults)
 }
@@ -208,8 +208,8 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
     defaults.kv = a.real("kv")?;
     defaults.dampratio = a.real("dampratio")?;
 
-    defaults.ctrllimited = a.is_true("ctrllimited");
-    defaults.forcelimited = a.is_true("forcelimited");
+    defaults.ctrllimited = a.tf_auto("ctrllimited")?;
+    defaults.forcelimited = a.tf_auto("forcelimited")?;
 
     // <general>-specific attributes — parsed unconditionally because
     // parse_actuator_defaults() is called for all actuator element names
@@ -224,11 +224,11 @@ pub(super) fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefa
 
     // Activation parameters
     defaults.group = a.int("group")?;
-    defaults.actlimited = a.is_true("actlimited");
+    defaults.actlimited = a.tf_auto("actlimited")?;
     if let Some(pair) = a.array::<2>("actrange")? {
         defaults.actrange = Some(pair.into());
     }
-    defaults.actearly = a.is_true("actearly");
+    defaults.actearly = a.boolean("actearly")?;
     if let Some(pair) = a.array::<2>("lengthrange")? {
         defaults.lengthrange = Some(pair.into());
     }
@@ -279,7 +279,7 @@ pub(super) fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults
     if let Some(pair) = a.array::<2>("range")? {
         defaults.range = Some(pair.into());
     }
-    defaults.limited = a.is_true("limited");
+    defaults.limited = a.tf_auto("limited")?;
     defaults.stiffness = a.real("stiffness")?;
     defaults.damping = a.real("damping")?;
     defaults.frictionloss = a.real("frictionloss")?;
@@ -387,7 +387,7 @@ pub(super) fn parse_equality_defaults(e: &BytesStart) -> Result<MjcfEqualityDefa
     let a = Attrs::new(e)?;
     let mut defaults = MjcfEqualityDefaults::default();
 
-    defaults.active = a.is_true("active");
+    defaults.active = a.boolean("active")?;
     defaults.solref = a.prefix("solref")?;
     defaults.solimp = a.prefix("solimp")?;
 

@@ -43,16 +43,11 @@ impl ModelBuilder {
         // (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
         let ctrllimited = match actuator.actuator_type {
             MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
-            _ => match actuator.ctrllimited {
-                Some(v) => v,
-                None => {
-                    if self.compiler.autolimits {
-                        super::has_range(actuator.ctrlrange)
-                    } else {
-                        false
-                    }
-                }
-            },
+            _ => super::is_limited(
+                actuator.ctrllimited,
+                self.compiler.autolimits,
+                actuator.ctrlrange,
+            ),
         };
 
         // Determine dynamics type.
@@ -102,16 +97,11 @@ impl ModelBuilder {
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
         });
-        let forcelimited = match actuator.forcelimited {
-            Some(v) => v,
-            None => {
-                if self.compiler.autolimits {
-                    super::has_range(actuator.forcerange)
-                } else {
-                    false
-                }
-            }
-        };
+        let forcelimited = super::is_limited(
+            actuator.forcelimited,
+            self.compiler.autolimits,
+            actuator.forcerange,
+        );
         self.actuator_forcerange.push(if forcelimited {
             actuator
                 .forcerange
@@ -122,16 +112,11 @@ impl ModelBuilder {
 
         // §34: Activation clamping — actlimited / actrange / actearly.
         // Same autolimits pattern as ctrllimited/forcelimited.
-        let actlimited = match actuator.actlimited {
-            Some(v) => v,
-            None => {
-                if self.compiler.autolimits {
-                    super::has_range(actuator.actrange)
-                } else {
-                    false
-                }
-            }
-        };
+        let actlimited = super::is_limited(
+            actuator.actlimited,
+            self.compiler.autolimits,
+            actuator.actrange,
+        );
         self.actuator_actlimited.push(actlimited);
         self.actuator_actrange.push(if actlimited {
             actuator.actrange.unwrap_or((0.0, 0.0))

@@ -1972,3 +1972,9 @@ b24afa817bb97c81	sim/L0/mjcf/tests/keywords.rs:317
 b7e503a93e51344a	sim/L0/mjcf/tests/keywords.rs:168
 e617caab86ca940f	sim/L0/mjcf/tests/keywords.rs:177
 e9f9e30a78367c7e	sim/L0/mjcf/tests/keywords.rs:307
+581b4090d8b04cbe	sim/docs/MUJOCO_GAP_ANALYSIS.md:1222
+6f69f90b165fc105	sim/L0/mjcf/tests/keywords.rs:359
+90a3f33bd2829dad	sim/L0/mjcf/tests/keywords.rs:355
+98066541a3bd104d	sim/L0/mjcf/tests/keywords.rs:366
+b182a8b33bf6f1b5	sim/L0/mjcf/tests/keywords.rs:405
+f3f829981e954223	sim/L0/tests/integration/runtime_flags.rs:2707

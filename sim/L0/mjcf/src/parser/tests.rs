@@ -7,7 +7,7 @@ use crate::error::MjcfError;
 use crate::types::{
     AngleUnit, CompositeType, InertiaFromGeom, MjcfActuatorType, MjcfConeType, MjcfGeomType,
     MjcfIntegrator, MjcfJacobianType, MjcfJointType, MjcfOption, MjcfSensorType, MjcfSolverType,
-    MjcfTendonType, SpatialPathElement,
+    MjcfTendonType, SpatialPathElement, TfAuto,
 };
 use approx::assert_relative_eq;
 
@@ -67,7 +67,7 @@ fn test_parse_joint() {
     let joint = &body.joints[0];
     assert_eq!(joint.name, "joint1");
     assert_eq!(joint.joint_type, Some(MjcfJointType::Hinge));
-    assert_eq!(joint.limited, Some(true));
+    assert_eq!(joint.limited, Some(TfAuto::True));
     assert_eq!(joint.range, Some((-1.57, 1.57)));
     assert_relative_eq!(joint.damping.unwrap(), 0.5, epsilon = 1e-10);
     assert_relative_eq!(joint.axis.unwrap().y, 1.0, epsilon = 1e-10);
@@ -826,7 +826,7 @@ fn test_parse_default_actuator() {
     assert_eq!(actuator_defaults.ctrlrange, Some((-1.0, 1.0)));
     assert_relative_eq!(actuator_defaults.kp.unwrap(), 50.0, epsilon = 1e-10);
     assert_relative_eq!(actuator_defaults.kv.unwrap(), 5.0, epsilon = 1e-10);
-    assert_eq!(actuator_defaults.ctrllimited, Some(true));
+    assert_eq!(actuator_defaults.ctrllimited, Some(TfAuto::True));
 }
 
 #[test]
@@ -851,7 +851,7 @@ fn test_parse_default_tendon() {
     assert_relative_eq!(tendon_defaults.stiffness.unwrap(), 1000.0, epsilon = 1e-10);
     assert_relative_eq!(tendon_defaults.damping.unwrap(), 10.0, epsilon = 1e-10);
     assert_relative_eq!(tendon_defaults.width.unwrap(), 0.01, epsilon = 1e-10);
-    assert_eq!(tendon_defaults.limited, Some(true));
+    assert_eq!(tendon_defaults.limited, Some(TfAuto::True));
     assert_eq!(tendon_defaults.range, Some((0.0, 0.5)));
 }
 
@@ -1696,7 +1696,7 @@ fn test_parse_fixed_tendon() {
     let tendon = &model.tendons[0];
     assert_eq!(tendon.name, "coupling");
     assert_eq!(tendon.tendon_type, MjcfTendonType::Fixed);
-    assert_eq!(tendon.limited, Some(true));
+    assert_eq!(tendon.limited, Some(TfAuto::True));
     assert_eq!(tendon.range, Some((0.0, 0.5)));
     assert_eq!(
         tendon.joints,

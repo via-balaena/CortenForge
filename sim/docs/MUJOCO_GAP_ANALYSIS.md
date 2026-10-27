@@ -1225,7 +1225,7 @@ use sim_mjcf::parse_mjcf_str;
 let mjcf = r#"
     <mujoco model="test">
         <option timestep="0.001" integrator="RK4" gravity="0 0 -10">
-            <flag warmstart="true" contact="true"/>
+            <flag warmstart="enable" contact="enable"/>
         </option>
         <worldbody>
             <body name="ball">
@@ -1330,7 +1330,7 @@ Focus: Internal solver improvements for better performance.
 
 **Warm Starting (pipeline-native):**
 - `qacc_warmstart`-based warmstart (universal for all solvers)
-- Enabled by `<flag warmstart="true"/>` (default)
+- Enabled by `<flag warmstart="enable"/>` (default)
 - Standalone `NewtonSolverConfig::warm_starting` was removed in Phase 3 consolidation
 
 **Implicit-Fast Integration (re-implemented in §13):**

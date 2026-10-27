@@ -145,7 +145,7 @@ pub(super) fn parse_tendon_attrs(
         tendon.range = Some(pair.into());
     }
 
-    tendon.limited = a.is_true("limited");
+    tendon.limited = a.tf_auto("limited")?;
 
     tendon.stiffness = a.real("stiffness")?;
     tendon.damping = a.real("damping")?;

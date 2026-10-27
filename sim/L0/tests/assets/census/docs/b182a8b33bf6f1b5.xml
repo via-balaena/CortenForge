@@ -1,0 +1,3 @@
+<mujoco><worldbody><body><joint name="j" type="slide"/><geom size="0.1"/></body></worldbody>
+        <tendon><fixed limited="auto" range="-1 1"><joint joint="j" coef="1"/></fixed></tendon>
+        <actuator><general joint="j" ctrllimited="auto" ctrlrange="-2 2"/></actuator></mujoco>

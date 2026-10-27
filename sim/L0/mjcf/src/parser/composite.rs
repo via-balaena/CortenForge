@@ -122,11 +122,9 @@ pub(super) fn parse_composite_joint_attrs(e: &BytesStart) -> Result<CompositeJoi
         damping: a.real("damping")?,
         armature: a.real("armature")?,
         frictionloss: a.real("frictionloss")?,
-        limited: a.text("limited").and_then(|s| match s {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        }),
+        // MuJoCo reads this from the <composite> element, which may not hold
+        // it, so a written value is never read (D-COMPOSITE-JOINT-LIMITED).
+        limited: a.tf_auto("limited")?,
         range: a.array("range")?,
     })
 }

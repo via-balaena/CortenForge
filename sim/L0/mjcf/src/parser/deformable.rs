@@ -278,16 +278,16 @@ pub(super) fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> R
         flex.selfcollide = Some(s);
     }
     // DT-85: Flex contact runtime attributes
-    if let Some(internal) = a.is_true("internal") {
+    if let Some(internal) = a.boolean("internal")? {
         flex.internal = internal;
     }
     if let Some(val) = a.int("activelayers")? {
         flex.activelayers = val;
     }
-    if let Some(vertcollide) = a.is_true("vertcollide") {
+    if let Some(vertcollide) = a.boolean("vertcollide")? {
         flex.vertcollide = vertcollide;
     }
-    if let Some(passive) = a.is_true("passive") {
+    if let Some(passive) = a.boolean("passive")? {
         flex.passive = passive;
     }
     Ok(())

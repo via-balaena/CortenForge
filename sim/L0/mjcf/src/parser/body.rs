@@ -219,7 +219,7 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     body.euler = a.vec3("euler")?;
     body.axisangle = a.vec4("axisangle")?;
     body.childclass = a.string("childclass");
-    if let Some(mocap) = a.is_true("mocap") {
+    if let Some(mocap) = a.boolean("mocap")? {
         body.mocap = mocap;
     }
     body.sleep = a.keyword_text("sleep", keywords::body_sleep)?;
@@ -269,7 +269,7 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     if let Some(axis) = a.vec3("axis")? {
         joint.axis = Some(safe_normalize_axis(axis));
     }
-    joint.limited = a.is_true("limited");
+    joint.limited = a.tf_auto("limited")?;
     if let Some(pair) = a.array::<2>("range")? {
         joint.range = Some(pair.into());
     }
@@ -292,7 +292,7 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.solimpfriction = a.prefix("solimpfriction")?;
 
     // Gravity compensation routing (S4.2a).
-    joint.actuatorgravcomp = a.is_true("actuatorgravcomp");
+    joint.actuatorgravcomp = a.boolean("actuatorgravcomp")?;
 
     joint.margin = a.real("margin")?;
     if let Some(user) = a.vector("user")? {
@@ -393,7 +393,7 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     }
 
     // Parse shellinertia (boolean attribute)
-    geom.shellinertia = a.is_true("shellinertia");
+    geom.shellinertia = a.boolean("shellinertia")?;
 
     Ok(geom)
 }
