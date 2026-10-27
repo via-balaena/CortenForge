@@ -914,6 +914,38 @@ fn an_element_takes_one_orientation() {
 }
 
 #[test]
+fn an_orientation_is_read_before_the_orientations_are_counted() {
+    // MuJoCo 3.5.0 reads axisangle, xyaxes, zaxis and euler, in that order,
+    // before it counts them (measured, each).
+    let err = refused(
+        r#"<mujoco><worldbody><body quat="1 0 0 0" euler="abc"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_bad_number(&err, "body", "euler");
+    let err = refused(
+        r#"<mujoco><worldbody><geom size="0.1" quat="1 0 0 0" euler="1 2"/></worldbody></mujoco>"#,
+    );
+    assert_count(&err, "geom", "euler", ValueCount::Exactly(3), 2);
+    let err = refused(r#"<mujoco><worldbody><site euler="b" xyaxes="a"/></worldbody></mujoco>"#);
+    assert_bad_number(&err, "site", "xyaxes");
+    // A body's xyaxes and zaxis, an inertial's euler: read for the count,
+    // though sim-mjcf does not otherwise read them.
+    let err = refused(
+        r#"<mujoco><worldbody><body xyaxes="abc"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_bad_number(&err, "body", "xyaxes");
+    let err = refused(
+        r#"<mujoco><worldbody><body zaxis="0 1"><geom size="0.1"/></body></worldbody></mujoco>"#,
+    );
+    assert_count(&err, "body", "zaxis", ValueCount::Exactly(3), 2);
+    let err = refused(
+        r#"<mujoco><worldbody><body><inertial pos="0 0 0" mass="1" euler="abc"/></body></worldbody></mujoco>"#,
+    );
+    assert_bad_number(&err, "inertial", "euler");
+    let err = refused(r#"<mujoco><default><geom zaxis="x"/></default><worldbody/></mujoco>"#);
+    assert_bad_number(&err, "geom", "zaxis");
+}
+
+#[test]
 fn a_written_quat_counts_and_an_empty_alternative_does_not() {
     let err = refused(
         r#"<mujoco><worldbody><body quat="" euler="0 0 30"><geom size="0.1"/></body></worldbody></mujoco>"#,

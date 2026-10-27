@@ -330,19 +330,26 @@ impl Attrs {
     /// (`xml_base.cc:54-77`): `quat` when it is written, even empty, and
     /// `axisangle`, `xyaxes`, `zaxis` and `euler` when they hold a value
     /// (measured: `quat="" euler="0 0 30"` is refused, `quat="1 0 0 0"
-    /// euler=""` loads).
+    /// euler=""` loads). Each alternative is read first, in that order and
+    /// with its count, so a malformed one is its own error, on an element
+    /// whose alternatives sim-mjcf does not otherwise read too (measured:
+    /// `euler="b" xyaxes="a"` is a bad xyaxes).
     pub(super) fn one_orientation(&self) -> Result<()> {
         let mut given = Vec::new();
         if self.has("quat") {
             given.push("quat");
         }
-        for name in ["axisangle", "xyaxes", "zaxis", "euler"] {
-            if self
-                .text(name)
-                .is_some_and(|t| t.split(is_c_space).any(|s| !s.is_empty()))
-            {
-                given.push(name);
-            }
+        if self.array::<4>("axisangle")?.is_some() {
+            given.push("axisangle");
+        }
+        if self.array::<6>("xyaxes")?.is_some() {
+            given.push("xyaxes");
+        }
+        if self.array::<3>("zaxis")?.is_some() {
+            given.push("zaxis");
+        }
+        if self.array::<3>("euler")?.is_some() {
+            given.push("euler");
         }
         if given.len() > 1 {
             return Err(MjcfError::conflicting(&self.element, &given));

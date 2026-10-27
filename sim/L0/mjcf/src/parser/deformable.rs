@@ -254,9 +254,10 @@ pub(super) fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) -> R
         flex.gap = gap;
     }
     // MuJoCo friction is real(3): "tangential torsional rolling", read with
-    // `exact = false`: the values not given keep MuJoCo's defaults.
+    // `exact = false`: the values not given keep the flex's, MuJoCo's
+    // defaults, as solref and solimp below do.
     if let Some(friction) = a.prefix("friction")? {
-        flex.friction = Vector3::from(friction.over([1.0, 0.005, 0.0001]));
+        flex.friction = Vector3::from(friction.over(flex.friction.into()));
     }
     if let Some(condim) = a.int("condim")? {
         flex.condim = condim;

@@ -11,30 +11,12 @@
 use nalgebra::Vector3;
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
-use crate::defaults::over;
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{
-    EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfEqualityDefaults, MjcfJointEquality,
-    MjcfTendonEquality, MjcfWeld, Prefix,
+    EqualityKind, MjcfConnect, MjcfDistance, MjcfEquality, MjcfJointEquality, MjcfTendonEquality,
+    MjcfWeld,
 };
 use sim_core::EqualityType;
-
-/// Apply equality defaults to active/solref/solimp fields.
-/// Element-level values take precedence; defaults fill in gaps.
-fn apply_eq_defaults(
-    defaults: Option<&MjcfEqualityDefaults>,
-    active: &mut Option<bool>,
-    solref: &mut Option<Prefix<2>>,
-    solimp: &mut Option<Prefix<5>>,
-) {
-    if let Some(d) = defaults {
-        if active.is_none() {
-            *active = d.active;
-        }
-        *solref = over(*solref, d.solref);
-        *solimp = over(*solimp, d.solimp);
-    }
-}
 
 impl ModelBuilder {
     /// Process equality constraints from MJCF **in document order**.
@@ -99,14 +81,15 @@ impl ModelBuilder {
             0 // World body
         };
 
-        let eq_defaults = self
-            .resolver
-            .equality_defaults(connect.class.as_deref())
-            .cloned();
         let mut active = connect.active;
         let mut solref = connect.solref;
         let mut solimp = connect.solimp;
-        apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+        self.resolver.apply_equality_defaults(
+            connect.class.as_deref(),
+            &mut active,
+            &mut solref,
+            &mut solimp,
+        );
 
         let mut data = [0.0; 11];
         data[0] = connect.anchor.x;
@@ -197,14 +180,15 @@ impl ModelBuilder {
         }
         data[10] = 1.0;
 
-        let eq_defaults = self
-            .resolver
-            .equality_defaults(weld.class.as_deref())
-            .cloned();
         let mut active = weld.active;
         let mut solref = weld.solref;
         let mut solimp = weld.solimp;
-        apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+        self.resolver.apply_equality_defaults(
+            weld.class.as_deref(),
+            &mut active,
+            &mut solref,
+            &mut solimp,
+        );
 
         self.eq_type.push(EqualityType::Weld);
         self.eq_obj1id.push(*body1_id);
@@ -247,14 +231,15 @@ impl ModelBuilder {
             data[i] = coef;
         }
 
-        let eq_defaults = self
-            .resolver
-            .equality_defaults(joint_eq.class.as_deref())
-            .cloned();
         let mut active = joint_eq.active;
         let mut solref = joint_eq.solref;
         let mut solimp = joint_eq.solimp;
-        apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+        self.resolver.apply_equality_defaults(
+            joint_eq.class.as_deref(),
+            &mut active,
+            &mut solref,
+            &mut solimp,
+        );
 
         self.eq_type.push(EqualityType::Joint);
         self.eq_obj1id.push(*joint1_id);
@@ -298,14 +283,15 @@ impl ModelBuilder {
         let mut data = [0.0; 11];
         data[0] = target_distance;
 
-        let eq_defaults = self
-            .resolver
-            .equality_defaults(dist.class.as_deref())
-            .cloned();
         let mut active = dist.active;
         let mut solref = dist.solref;
         let mut solimp = dist.solimp;
-        apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+        self.resolver.apply_equality_defaults(
+            dist.class.as_deref(),
+            &mut active,
+            &mut solref,
+            &mut solimp,
+        );
 
         self.eq_type.push(EqualityType::Distance);
         self.eq_obj1id.push(geom1_id);
@@ -343,14 +329,15 @@ impl ModelBuilder {
             data[i] = coef;
         }
 
-        let eq_defaults = self
-            .resolver
-            .equality_defaults(ten_eq.class.as_deref())
-            .cloned();
         let mut active = ten_eq.active;
         let mut solref = ten_eq.solref;
         let mut solimp = ten_eq.solimp;
-        apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+        self.resolver.apply_equality_defaults(
+            ten_eq.class.as_deref(),
+            &mut active,
+            &mut solref,
+            &mut solimp,
+        );
 
         self.eq_type.push(EqualityType::Tendon);
         self.eq_obj1id.push(t1_id);
@@ -696,7 +683,8 @@ mod tests {
     /// Equality constraints are stored in **document order** regardless of
     /// type, matching MuJoCo's eq_id assignment. Class defaults from
     /// `<default class="cl"><equality solref=…/></default>` are also
-    /// applied via `apply_eq_defaults` when the element doesn't override.
+    /// applied via `DefaultResolver::apply_equality_defaults` when the element
+    /// doesn't override.
     #[test]
     fn equality_document_order_and_class_defaults() {
         let xml = r#"

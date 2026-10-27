@@ -1946,3 +1946,10 @@ f7beea3bc2acf9e4	sim/L0/mjcf/tests/attribute_reader.rs:175
 777e8d0d42459752	sim/L0/mjcf/tests/attribute_reader.rs:1172
 b39f1afefdef0302	sim/L0/mjcf/tests/attribute_reader.rs:1180
 34e084197442a3f7	sim/L0/mjcf/tests/errors.rs:252
+3edb0151bf9a023d	sim/L0/mjcf/tests/attribute_reader.rs:925
+6f0d8b1530fab29b	sim/L0/mjcf/tests/attribute_reader.rs:941
+ab6a4203100d8161	sim/L0/mjcf/tests/attribute_reader.rs:933
+b0e5a70305656fe3	sim/L0/mjcf/tests/attribute_reader.rs:928
+bb8d0186e200a1f3	sim/L0/mjcf/tests/attribute_reader.rs:921
+be9b5e28c2698178	sim/L0/mjcf/tests/attribute_reader.rs:937
+e34ad18642fd0757	sim/L0/mjcf/tests/attribute_reader.rs:944
