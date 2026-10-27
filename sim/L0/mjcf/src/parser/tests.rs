@@ -917,7 +917,12 @@ fn test_parse_nested_defaults() {
     assert_relative_eq!(arm_joint.damping.unwrap(), 0.5, epsilon = 1e-10);
     assert_relative_eq!(arm_joint.armature.unwrap(), 0.01, epsilon = 1e-10);
     let arm_geom = arm.geom.as_ref().expect("arm geom");
-    assert_relative_eq!(arm_geom.rgba.unwrap().x, 0.8, epsilon = 1e-10);
+    // rgba is read as a float, as MuJoCo stores it.
+    assert_relative_eq!(
+        arm_geom.rgba.unwrap().x,
+        f64::from(0.8_f32),
+        epsilon = 1e-15
+    );
 }
 
 #[test]

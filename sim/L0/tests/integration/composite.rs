@@ -521,10 +521,9 @@ fn cable_curve_keywords_as_mujoco() {
     let first = model
         .name2id(ElementType::Body, "CB_first")
         .expect("CB_first");
-    // Until the vertices pass through f32 as MuJoCo's do (book L08), ours
-    // differ from MuJoCo's by up to 1.8e-8 (A9 §4.3).
+    // The vertices pass through f32, as MuJoCo's do (book L08).
     let pos = model.body_pos[b1];
-    assert!((pos.x - 0.231_990_648_333_280_79).abs() < 5e-8, "{pos}");
+    assert!((pos.x - 0.231_990_648_333_280_79).abs() < 1e-15, "{pos}");
     assert!(pos.y.abs() < 1e-15 && pos.z.abs() < 1e-15, "{pos}");
     let q = model.body_quat[first];
     let want = [
@@ -534,7 +533,7 @@ fn cable_curve_keywords_as_mujoco() {
         -0.185_671_935_935_942_9,
     ];
     for (got, want) in [q.w, q.i, q.j, q.k].into_iter().zip(want) {
-        assert!((got - want).abs() < 5e-8, "{q}");
+        assert!((got - want).abs() < 1e-15, "{q}");
     }
     // `cos(s) sin(s) 0` is read (MuJoCo loads it).
     let model = load_model(&curve_cable(6, "cos(s) sin(s) 0", "1 0.5 1"));
@@ -571,4 +570,195 @@ fn space_after_the_last_curve_word_is_read_without_it() {
     // Space before or between words MuJoCo reads too (measured).
     let model = load_model(&curve_cable(5, " s\t 0 0", "1"));
     assert_eq!(model.body_pos, trimmed.body_pos);
+}
+
+// ============================================================================
+// Cable vertices through f32, and the 1- and 2-body cables (book L08)
+// ============================================================================
+
+#[test]
+fn cable_vertices_round_through_f32() {
+    // MuJoCo 3.5.0 stores a cable's vertices as floats (`user_composite.h`
+    // `uservert`), measured: B_1 at x 0.3333333432674408, a third as a float.
+    // Before: 0.3333333333333333.
+    let model = load_model(&curve_cable(4, "s 0 0", "1"));
+    let b1 = model.name2id(ElementType::Body, "CB_1").expect("CB_1");
+    assert_eq!(model.body_pos[b1].x, f64::from((1.0_f64 / 3.0) as f32));
+    assert_eq!(model.body_pos[b1].x, 0.333_333_343_267_440_8);
+}
+
+#[test]
+fn two_body_cable_matches_mujoco_generator() {
+    // D-CABLE-TWO-BODY: MuJoCo 3.5.0 refuses this document ("body 'B_1' not
+    // found in bodypair 0"): its first body is also the second-last, and the
+    // exclude it adds names B_1, which it names B_last. The reference is
+    // MuJoCo's own expansion (MjSpec) with that one name corrected, written
+    // at 17 digits and reloaded; its qpos and qvel at steps 1, 10, 100, 500,
+    // measured on the unfused oracle (A9 §3.2, §3.5).
+    let model = load_model(
+        r#"<mujoco model="cable_uservert"><worldbody>
+            <composite type="cable" vertex="0 0 0 1 0 0 2 0 1">
+                <joint kind="main" damping="0.01"/>
+                <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
+            </composite></worldbody></mujoco>"#,
+    );
+    let first = model
+        .name2id(ElementType::Body, "B_first")
+        .expect("B_first");
+    let last = model.name2id(ElementType::Body, "B_last").expect("B_last");
+    assert_eq!(model.nbody, 3);
+    assert_eq!(model.contact_excludes.len(), 1);
+    assert!(
+        model.contact_excludes.contains(&(first, last))
+            || model.contact_excludes.contains(&(last, first))
+    );
+    let golden: [(usize, [f64; 8], [f64; 6]); 4] = [
+        (
+            1,
+            [
+                0.999_999_999_751_946,
+                8.953_939_595_722_174e-19,
+                5.529_945_652_121_103e-21,
+                -2.227_348_174_714_429_7e-5,
+                0.999_999_999_705_911_1,
+                -3.769_642_584_006_882e-19,
+                6.284_181_367_740_443e-19,
+                2.425_237_540_270_774_7e-5,
+            ],
+            [
+                8.953_939_596_462_529e-16,
+                5.529_945_652_578_346e-18,
+                -0.022_273_481_748_985_975,
+                -3.769_642_584_376_418e-16,
+                6.284_181_368_356_479e-16,
+                0.024_252_375_405_085_198,
+            ],
+        ),
+        (
+            10,
+            [
+                0.999_999_253_068_526_3,
+                6.499_068_096_296_155e-18,
+                2.424_632_405_444_334_4e-19,
+                -0.001_222_236_633_906_899_4,
+                0.999_999_119_628_955_8,
+                -3.254_940_872_205_717e-18,
+                4.390_088_113_566_97e-18,
+                0.001_326_929_279_528_090_3,
+            ],
+            [
+                3.801_822_354_839_432e-16,
+                4.243_494_806_032_707e-17,
+                -0.221_930_447_818_991_4,
+                -4.036_741_762_827_343e-16,
+                2.300_527_761_263_919_6e-16,
+                0.240_492_891_165_991_98,
+            ],
+        ),
+        (
+            100,
+            [
+                0.994_428_437_101_387_6,
+                9.658_378_725_269_55e-17,
+                1.581_522_154_775_960_5e-17,
+                -0.105_413_867_608_072_89,
+                0.994_933_276_017_639_5,
+                5.831_972_834_501_562e-17,
+                6.576_940_518_347_792e-17,
+                0.100_537_437_170_475_92,
+            ],
+            [
+                1.251_485_727_082_517_2e-15,
+                1.196_772_447_386_961_7e-16,
+                -1.990_439_464_273_854,
+                2.307_465_664_822_542_6e-15,
+                1.029_664_681_881_032_7e-15,
+                1.646_146_460_520_004_2,
+            ],
+        ),
+        (
+            500,
+            [
+                0.444_813_913_413_780_4,
+                -3.713_766_464_164_956e-17,
+                1.249_043_912_490_699_5e-16,
+                -0.895_623_013_568_498_6,
+                0.883_496_203_927_752_7,
+                -1.216_184_458_225_102e-16,
+                1.038_383_506_741_981_1e-16,
+                -0.468_438_317_866_131_1,
+            ],
+            [
+                -5.519_423_639_833_345_4e-15,
+                1.147_397_098_257_190_5e-15,
+                -6.212_247_956_365_928,
+                -6.700_500_083_138_36e-15,
+                -3.409_192_451_329_129_7e-15,
+                7.775_807_386_523_438_5,
+            ],
+        ),
+    ];
+    let mut data = model.make_data();
+    let mut step = 0;
+    for (at, qpos, qvel) in golden {
+        while step < at {
+            data.step(&model).expect("step");
+            step += 1;
+        }
+        for (i, want) in qpos.iter().enumerate() {
+            assert!(
+                (data.qpos[i] - want).abs() < 1e-12,
+                "step {at} qpos[{i}] {}",
+                data.qpos[i]
+            );
+        }
+        for (i, want) in qvel.iter().enumerate() {
+            assert!(
+                (data.qvel[i] - want).abs() < 1e-10,
+                "step {at} qvel[{i}] {}",
+                data.qvel[i]
+            );
+        }
+    }
+}
+
+#[test]
+fn one_body_cable_frame_is_defined() {
+    // D-CABLE-ONE-BODY: MuJoCo 3.5.0 builds a 1-body cable's frame from an
+    // uninitialised tangent (`user_composite.cc`, AddCableBody `tnext`, set
+    // only when the body is not the last), so its quaternion depends on what
+    // memory holds (A9 measured NaN; finite garbage in a later run), and makes
+    // one site, S_first, at the far end. sim-mjcf takes that tangent as zero:
+    // the body's x-axis is the edge, and it makes S_first at 0 and S_last at
+    // the far end. Edges along the six axes and two oblique ones, written as
+    // floats exactly.
+    for v in [
+        "1 0 0",
+        "-1 0 0",
+        "0 1 0",
+        "0 -1 0",
+        "0 0 1",
+        "0 0 -1",
+        "0.5 0.25 0.75",
+        "-0.25 1 -0.5",
+    ] {
+        let model = load_model(&format!(
+            r#"<mujoco><worldbody><composite type="cable" vertex="0 0 0 {v}">
+                <geom type="capsule" size=".005"/>
+            </composite></worldbody></mujoco>"#
+        ));
+        assert_eq!(model.nbody, 2, "{v}");
+        assert_eq!(model.nsite, 2, "{v}");
+        let edge: Vec<f64> = v.split(' ').map(|t| t.parse().expect("number")).collect();
+        let edge = nalgebra::Vector3::new(edge[0], edge[1], edge[2]).normalize();
+        let q = model.body_quat[1];
+        assert!((q.quaternion().norm() - 1.0).abs() < 1e-12, "{v}: {q}");
+        let x_axis = q * nalgebra::Vector3::x();
+        assert!((x_axis - edge).norm() < 1e-12, "{v}: {x_axis}");
+        let mut data = model.make_data();
+        for _ in 0..500 {
+            data.step(&model).expect("step");
+        }
+        assert!(data.qpos.iter().all(|x| x.is_finite()), "{v}");
+    }
 }

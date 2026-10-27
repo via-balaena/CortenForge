@@ -202,10 +202,13 @@ fn generate_vertices(composite: &MjcfComposite) -> Vec<[f64; 3]> {
                 }
             };
             let v = [curve_val(0), curve_val(1), curve_val(2)];
-            // Rotate by composite quaternion
+            // Rotated, then stored as a float, as MuJoCo's `uservert` is
+            // (`user_composite.h`); a written vertex is read as one.
             let point = Vector3::new(v[0], v[1], v[2]);
             let rotated = quat * point;
-            [rotated.x, rotated.y, rotated.z]
+            // The rounding to a float is the point: MuJoCo stores the vertex as one.
+            #[allow(clippy::cast_possible_truncation)]
+            [rotated.x, rotated.y, rotated.z].map(|x| f64::from(x as f32))
         })
         .collect()
 }

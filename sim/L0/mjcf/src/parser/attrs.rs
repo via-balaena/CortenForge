@@ -8,8 +8,8 @@
 //!   "number is too large"; `1e-999` and `1e-310` measured);
 //! - a written NaN or infinity is refused, where MuJoCo loads it
 //!   (D-NONFINITE), and a number that overflows is out of range, as MuJoCo's
-//!   "number is too large"; an attribute MuJoCo reads as a `float` keeps to a
-//!   float's range ([`SINGLE_PRECISION`]);
+//!   "number is too large"; an attribute MuJoCo reads as a `float` is read as
+//!   one, to a float's range and rounding ([`SINGLE_PRECISION`]);
 //! - an empty or all-space number list is the attribute absent, except for an
 //!   integer read alone, which is refused (measured);
 //! - an attribute takes exactly its count, or, where MuJoCo reads it with
@@ -179,8 +179,9 @@ fn character_reference(after_amp: &str) -> Reference {
 }
 
 /// The attributes MuJoCo 3.5.0 reads as a `float` (`mjspec.h`), as
-/// (element, attribute): their numbers keep to a float's range, where
-/// `strtof` reports one past it as "number is too large" (measured on each).
+/// (element, attribute): each number is read as `strtof` reads it
+/// (`user_util.cc` `StringToVector<float>`), rounded to a float, and one
+/// past a float's range is "number is too large" (measured on each).
 const SINGLE_PRECISION: [(&str, &str); 12] = [
     ("geom", "rgba"),
     ("site", "rgba"),
@@ -196,13 +197,14 @@ const SINGLE_PRECISION: [(&str, &str); 12] = [
     ("bone", "bindquat"),
 ];
 
-/// Whether `token`, read as a `float`, is neither past the largest float nor,
+/// `token` read as a `float`, when it is neither past the largest float nor,
 /// with digits not all zero, below the smallest normal one. Rust's parser
-/// rounds as `strtof` does.
-fn fits_a_float(token: &str) -> bool {
-    token.parse::<f32>().is_ok_and(|x| {
-        x.is_finite() && !(x.abs() < f32::MIN_POSITIVE && mantissa_is_nonzero(token))
-    })
+/// rounds as `strtof` does: from the decimal, once.
+fn as_a_float(token: &str) -> Option<f32> {
+    token
+        .parse::<f32>()
+        .ok()
+        .filter(|x| x.is_finite() && !(x.abs() < f32::MIN_POSITIVE && mantissa_is_nonzero(token)))
 }
 
 /// Whether `token` is a NaN written with a payload, `nan(…)` in any case and
@@ -463,9 +465,13 @@ impl Attrs {
         })?;
         if x.is_finite() {
             let underflows = x.abs() < f64::MIN_POSITIVE && mantissa_is_nonzero(token);
-            let single = SINGLE_PRECISION.contains(&(self.element.as_str(), name));
-            if underflows || single && !fits_a_float(token) {
+            if underflows {
                 return Err(MjcfError::out_of_range_in(&self.element, name, token));
+            }
+            if SINGLE_PRECISION.contains(&(self.element.as_str(), name)) {
+                return as_a_float(token)
+                    .map(f64::from)
+                    .ok_or_else(|| MjcfError::out_of_range_in(&self.element, name, token));
             }
             return Ok(x);
         }
