@@ -8,7 +8,8 @@
 //!   "number is too large"; `1e-999` and `1e-310` measured);
 //! - a written NaN or infinity is refused, where MuJoCo loads it
 //!   (D-NONFINITE), and a number that overflows is out of range, as MuJoCo's
-//!   "number is too large";
+//!   "number is too large"; an attribute MuJoCo reads as a `float` keeps to a
+//!   float's range ([`SINGLE_PRECISION`]);
 //! - an empty or all-space number list is the attribute absent, except for an
 //!   integer read alone, which is refused (measured);
 //! - an attribute takes exactly its count, or, where MuJoCo reads it with
@@ -61,7 +62,8 @@ fn mantissa_is_nonzero(token: &str) -> bool {
 /// An attribute's text as tinyxml2 gives it to MuJoCo 3.5.0 (`StrPair::GetStr`):
 /// line ends made `\n`; the five predefined entities and numeric character
 /// references replaced; any other `&` kept as written (measured: `a&amp;b` is
-/// `a&b`, while `a & b` and `a&foo;b` load as written). A character reference
+/// `a&b`, while `a & b` and `a&foo;b` load as written), where tinyxml2 leaves
+/// a stale byte once an entity has shortened the text (D-XML-STALE-BYTE). A character reference
 /// of code 0 ends the text, as the NUL tinyxml2 writes ends the C string
 /// MuJoCo reads (measured: `pos="1 2 3&#0;junk"` is 1 2 3).
 fn unescape(raw: &str) -> String {
@@ -133,7 +135,7 @@ enum Reference {
 /// `x`; its digits are those back from the next `;` to the nearest `#` (or
 /// `x`), so `&#1#53;` is `5`; a code past U+10FFFF is kept as written
 /// (measured, each case). A surrogate code, which tinyxml2 writes as bytes no
-/// Rust string holds, is kept as written too.
+/// Rust string holds, is kept as written too (D-XML-SURROGATE).
 fn character_reference(after_amp: &str) -> Reference {
     const MAX_CODE_POINT: u32 = 0x10_FFFF;
     let bytes = after_amp.as_bytes();

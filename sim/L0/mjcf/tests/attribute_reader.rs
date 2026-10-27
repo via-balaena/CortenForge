@@ -182,12 +182,12 @@ const FLOAT_ATTRIBUTES: &[(&str, &str, &str)] = &[
     (
         "bone",
         "bindpos",
-        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" bindpos="0 0 @" bindquat="1 0 0 0"/></skin></deformable></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" bindpos="0 0 @" bindquat="1 0 0 0" vertid="0 1 2" vertweight="1 1 1"/></skin></deformable></mujoco>"#,
     ),
     (
         "bone",
         "bindquat",
-        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" bindpos="0 0 0" bindquat="1 0 0 @"/></skin></deformable></mujoco>"#,
+        r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" bindpos="0 0 0" bindquat="1 0 0 @" vertid="0 1 2" vertweight="1 1 1"/></skin></deformable></mujoco>"#,
     ),
 ];
 
@@ -588,6 +588,9 @@ fn a_character_reference_is_read_as_tinyxml2_reads_it() {
         ("a&#x+33;", "a&#x+33;"),
         ("a&#+53;", "a&#+53;"),
         ("a&#1114112;", "a&#1114112;"),
+        // tinyxml2 writes a surrogate as bytes that are not UTF-8
+        // (D-XML-SURROGATE).
+        ("a&#xD800;b", "a&#xD800;b"),
     ];
     for (written, read) in cases {
         let m = load(&format!(
@@ -603,16 +606,18 @@ fn a_character_reference_is_read_as_tinyxml2_reads_it() {
 
 #[test]
 fn an_ampersand_that_starts_no_known_entity_is_kept() {
-    // tinyxml2 replaces the five predefined entities and character references only.
+    // tinyxml2 replaces the five predefined entities and character references
+    // only. After an entity has shortened the text, it leaves a stale byte at
+    // an unknown `&` (`a&bmc`; D-XML-STALE-BYTE).
     let m = load(
-        r#"<mujoco><worldbody><site name="x &amp; y"/><site name="a & b"/><site name="a&foo;b"/><site name="a&lt;b&#62;"/></worldbody></mujoco>"#,
+        r#"<mujoco><worldbody><site name="x &amp; y"/><site name="a & b"/><site name="a&foo;b"/><site name="a&lt;b&#62;"/><site name="a&amp;b&c"/></worldbody></mujoco>"#,
     );
     let names: Vec<_> = m
         .site_name
         .iter()
         .map(|n| n.as_deref().unwrap_or(""))
         .collect();
-    assert_eq!(names, ["x & y", "a & b", "a&foo;b", "a<b>"]);
+    assert_eq!(names, ["x & y", "a & b", "a&foo;b", "a<b>", "a&b&c"]);
 }
 
 // ── the class merge of every `exact = false` attribute ──
@@ -1153,7 +1158,7 @@ fn a_class_takes_one_orientation_and_no_quaternion_of_zeros() {
 fn a_skin_bone_names_its_bind_pose() {
     let skin = |bone: &str| {
         format!(
-            r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" {bone}/></skin></deformable></mujoco>"#
+            r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="0 1 2"><bone body="b" {bone} vertid="0 1 2" vertweight="1 1 1"/></skin></deformable></mujoco>"#
         )
     };
     assert_missing(&refused(&skin(r#"bindquat="1 0 0 0""#)), "bone", "bindpos");
@@ -1196,7 +1201,7 @@ fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
     };
     let skin = |face: &str, children: &str| {
         format!(
-            r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="{face}"><bone body="b" bindpos="0 0 0" bindquat="1 0 0 0"/>{children}</skin></deformable></mujoco>"#
+            r#"<mujoco><worldbody><body name="b"><geom size="0.1"/></body></worldbody><deformable><skin name="k" vertex="0 0 0 1 0 0 0 1 0" face="{face}"><bone body="b" bindpos="0 0 0" bindquat="1 0 0 0" vertid="0 1 2" vertweight="1 1 1"/>{children}</skin></deformable></mujoco>"#
         )
     };
     let cases = [
@@ -1215,6 +1220,7 @@ fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
         ),
         (skin("0 1 -2", ""), "skin", "face"),
         (skin("0 1 2", r#"<vertex id="-1" bone="0"/>"#), "vertex", "id"),
+        (skin("0 1 2", r#"<vertex id="0" bone="-1"/>"#), "vertex", "bone"),
     ];
     for (xml, element, attribute) in &cases {
         let err = refused(xml);
@@ -1227,6 +1233,8 @@ fn an_index_or_a_count_below_zero_or_with_a_fraction_is_refused() {
     assert_bad_number(&err, "element", "data");
     let err = refused(&flex("1", r#"<element data="0 1  1 2"/><pin id="1.5"/>"#));
     assert_bad_number(&err, "pin", "id");
+    let err = refused(&skin("0 1 2", r#"<vertex id="1.5" bone="0"/>"#));
+    assert_bad_number(&err, "vertex", "id");
 }
 
 // ── non-finite numbers (book L06) ──
