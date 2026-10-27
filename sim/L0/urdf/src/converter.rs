@@ -202,7 +202,7 @@ impl<'a> Converter<'a> {
         self.indent += 1;
 
         // Convert the kinematic tree starting from root
-        self.convert_link(root_link, None)?;
+        self.convert_tree(root_link)?;
 
         self.indent -= 1;
         self.write_line("</worldbody>");
@@ -242,7 +242,42 @@ impl<'a> Converter<'a> {
         Err(UrdfError::NoRootLink)
     }
 
-    fn convert_link(&mut self, link_name: &str, parent_joint: Option<&UrdfJoint>) -> Result<()> {
+    /// Write a link's `<body>` and its subtree, depth-first, children in
+    /// order, without recursing: a URDF chain nests one body per link, and a
+    /// recursion per link overflowed a 2-mebibyte caller's stack at 5000 links
+    /// (ledger L303).
+    fn convert_tree(&mut self, root: &str) -> Result<()> {
+        enum Step {
+            Open(String, Option<Box<UrdfJoint>>),
+            Close,
+        }
+        let mut stack = vec![Step::Open(root.to_string(), None)];
+        while let Some(step) = stack.pop() {
+            match step {
+                Step::Open(link, joint) => {
+                    let children = self.open_link(&link, joint.as_deref())?;
+                    stack.push(Step::Close);
+                    stack.extend(children.into_iter().rev().map(|(child, child_joint)| {
+                        Step::Open(child, Some(Box::new(child_joint)))
+                    }));
+                }
+                Step::Close => {
+                    self.indent -= 1;
+                    self.write_line("</body>");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Write a link's `<body>` opening, its joint, inertial and geoms, and
+    /// return its child links with their joints; [`Self::convert_tree`] closes
+    /// the body after them.
+    fn open_link(
+        &mut self,
+        link_name: &str,
+        parent_joint: Option<&UrdfJoint>,
+    ) -> Result<Vec<(String, UrdfJoint)>> {
         // Clone data we need from the link to avoid borrow conflicts
         let (name, inertial, collisions, visuals) = {
             let link = self
@@ -302,7 +337,7 @@ impl<'a> Converter<'a> {
             self.convert_geom(&visual.geometry, &visual.origin, visual.name.as_ref(), true)?;
         }
 
-        // Recursively convert child links - clone to avoid borrow conflicts
+        // Child links, cloned to avoid borrow conflicts
         let child_joints: Vec<_> = self
             .parent_to_joints
             .get(link_name)
@@ -314,14 +349,7 @@ impl<'a> Converter<'a> {
             })
             .unwrap_or_default();
 
-        for (child_name, child_joint) in &child_joints {
-            self.convert_link(child_name, Some(child_joint))?;
-        }
-
-        self.indent -= 1;
-        self.write_line("</body>");
-
-        Ok(())
+        Ok(child_joints)
     }
 
     #[allow(clippy::unreachable)] // Planar variant dispatched to convert_planar_joint above
@@ -347,19 +375,21 @@ impl<'a> Converter<'a> {
             write!(attrs, r#" axis="{} {} {}""#, axis.x, axis.y, axis.z).ok();
         }
 
-        // Add limits for revolute/prismatic
+        // Add limits for revolute/prismatic, as MuJoCo 3.5.0's URDF importer
+        // reads them (`xml_urdf.cc`): one bound written, or a lower above the
+        // upper, leaves the joint unlimited; otherwise its limit is automatic,
+        // which limits it only where lower < upper. A bound not written is 0.
+        // A continuous joint is left unlimited, as URDF defines it
+        // (D-URDF-CONTINUOUS-LIMIT: MuJoCo limits it).
         if let Some(limit) = &joint.limit
             && matches!(
                 joint.joint_type,
                 UrdfJointType::Revolute | UrdfJointType::Prismatic
             )
         {
-            write!(
-                attrs,
-                r#" limited="true" range="{} {}""#,
-                limit.lower, limit.upper
-            )
-            .ok();
+            let (lower, upper) = (limit.lower.unwrap_or(0.0), limit.upper.unwrap_or(0.0));
+            let limited = limit.lower.is_some() && limit.upper.is_some() && lower < upper;
+            write!(attrs, r#" limited="{limited}" range="{lower} {upper}""#).ok();
         }
 
         // Add dynamics (damping and friction)

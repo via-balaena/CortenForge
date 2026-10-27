@@ -323,6 +323,56 @@ mod tests {
         urdf
     }
 
+    /// A two-link robot whose one revolute (or prismatic) joint has `limit`.
+    fn limited_pair(joint_type: &str, limit: &str) -> String {
+        format!(
+            r#"<robot name="r">
+                <link name="a"><inertial><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link>
+                <link name="b"><inertial><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial></link>
+                <joint name="j" type="{joint_type}"><parent link="a"/><child link="b"/><axis xyz="0 0 1"/>{limit}</joint>
+            </robot>"#
+        )
+    }
+
+    /// Each case's joint limit and range as MuJoCo 3.5.0's URDF importer
+    /// builds them (measured): one bound written, a lower above the upper, or
+    /// equal bounds leave the joint unlimited; a bound not written is 0.
+    #[test]
+    fn a_urdf_limit_is_read_as_mujocos_importer_reads_it() {
+        let cases = [
+            ("revolute", r#"lower="-1" upper="1""#, true, (-1.0, 1.0)),
+            ("revolute", r#"upper="1""#, false, (0.0, 1.0)),
+            ("prismatic", r#"lower="-0.2""#, false, (-0.2, 0.0)),
+            ("revolute", r#"lower="1" upper="0.5""#, false, (1.0, 0.5)),
+            ("revolute", r#"lower="0.5" upper="0.5""#, false, (0.5, 0.5)),
+            ("revolute", "", false, (0.0, 0.0)),
+        ];
+        for (joint_type, bounds, limited, range) in cases {
+            let limit = format!(r#"<limit {bounds} effort="1" velocity="1"/>"#);
+            let model = load_urdf_model(&limited_pair(joint_type, &limit))
+                .map_err(|e| format!("{joint_type} {bounds}: {e}"))
+                .expect("the robot loads");
+            assert_eq!(model.jnt_limited[0], limited, "{joint_type} {bounds}");
+            assert_eq!(model.jnt_range[0], range, "{joint_type} {bounds}");
+        }
+    }
+
+    /// The converter nests a body per link without recursing, so a chain far
+    /// past the XML depth rule is refused by it, not by the caller's stack
+    /// (ledger L303: 5000 links overflowed a 2-mebibyte thread).
+    #[test]
+    fn a_long_chain_is_refused_without_overflowing_the_callers_stack() {
+        let urdf = chain(5000);
+        let err = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || load_urdf_model(&urdf).map(|_| ()))
+            .unwrap()
+            .join()
+            .expect("the converter does not overflow a 2 MiB stack")
+            .unwrap_err();
+        assert!(err.to_string().contains("nested deeper than 498"), "{err}");
+    }
+
     /// The conversion nests one body per link, so the XML depth rule sim-mjcf
     /// applies (MuJoCo's XML reader's) bounds a chain: 496 links load, 497 are
     /// refused. MuJoCo 3.5.0 loads URDF chains of 497 and 600 links (registry
