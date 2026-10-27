@@ -79,7 +79,7 @@ pub(super) fn parse_composite<R: BufRead>(
                     b"joint" => {
                         let kind = Attrs::new(child)?
                             .string("kind")
-                            .unwrap_or_else(|| "main".to_string());
+                            .ok_or_else(|| MjcfError::missing_attribute("joint", "kind"))?;
                         if kind == "main" {
                             joint = Some(parse_composite_joint_attrs(child)?);
                         }
@@ -97,7 +97,7 @@ pub(super) fn parse_composite<R: BufRead>(
                 b"joint" => {
                     let kind = Attrs::new(child)?
                         .string("kind")
-                        .unwrap_or_else(|| "main".to_string());
+                        .ok_or_else(|| MjcfError::missing_attribute("joint", "kind"))?;
                     if kind == "main" {
                         joint = Some(parse_composite_joint_attrs(child)?);
                     }

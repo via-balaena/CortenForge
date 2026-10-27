@@ -66,11 +66,10 @@ pub(super) fn parse_tendon<R: BufRead>(
                 match name_bytes.as_slice() {
                     b"site" => {
                         // Site reference for spatial tendon path
-                        if let Some(site_name) = a.string("site") {
-                            tendon
-                                .path_elements
-                                .push(SpatialPathElement::Site { site: site_name });
-                        }
+                        let site = a
+                            .string("site")
+                            .ok_or_else(|| MjcfError::missing_attribute("site", "site"))?;
+                        tendon.path_elements.push(SpatialPathElement::Site { site });
                     }
                     b"joint" => {
                         if tendon.tendon_type == MjcfTendonType::Spatial {
@@ -80,24 +79,29 @@ pub(super) fn parse_tendon<R: BufRead>(
                             ));
                         }
                         // Joint reference for fixed tendon
-                        if let Some(joint_name) = a.string("joint") {
-                            let coef = a.real("coef")?.unwrap_or(1.0);
-                            tendon.joints.push((joint_name, coef));
-                        }
+                        let joint = a
+                            .string("joint")
+                            .ok_or_else(|| MjcfError::missing_attribute("joint", "joint"))?;
+                        let coef = a
+                            .real("coef")?
+                            .ok_or_else(|| MjcfError::missing_attribute("joint", "coef"))?;
+                        tendon.joints.push((joint, coef));
                     }
                     b"geom" => {
                         // Wrapping geom reference for spatial tendon path
-                        if let Some(geom_name) = a.string("geom") {
-                            let sidesite = a.string("sidesite");
-                            tendon.path_elements.push(SpatialPathElement::Geom {
-                                geom: geom_name,
-                                sidesite,
-                            });
-                        }
+                        let geom = a
+                            .string("geom")
+                            .ok_or_else(|| MjcfError::missing_attribute("geom", "geom"))?;
+                        let sidesite = a.string("sidesite");
+                        tendon
+                            .path_elements
+                            .push(SpatialPathElement::Geom { geom, sidesite });
                     }
                     b"pulley" => {
                         // Pulley element for spatial tendon path
-                        let divisor = a.real("divisor")?.unwrap_or(1.0);
+                        let divisor = a
+                            .real("divisor")?
+                            .ok_or_else(|| MjcfError::missing_attribute("pulley", "divisor"))?;
                         tendon
                             .path_elements
                             .push(SpatialPathElement::Pulley { divisor });

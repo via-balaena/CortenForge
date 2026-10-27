@@ -124,7 +124,7 @@ const ARM_MJCF: &str = r#"
 
     <worldbody>
         <body name="base_link" pos="0 0 0">
-            <inertial mass="5.0" diaginertia="0.5 0.5 0.5"/>
+            <inertial pos="0 0 0" mass="5.0" diaginertia="0.5 0.5 0.5"/>
             <body name="upper_arm" pos="0 0 0.1">
                 <joint name="shoulder" type="hinge" axis="0 1 0" limited="true" range="-3.14 3.14"/>
                 <inertial mass="1.0" pos="0 0 0.25" diaginertia="0.02 0.02 0.005"/>
@@ -135,7 +135,7 @@ const ARM_MJCF: &str = r#"
                     <geom type="box" size="0.03 0.03 0.2" pos="0 0 0.2"/>
                     <body name="gripper" pos="0 0 0.4">
                         <joint name="grip" type="slide" axis="0 0 1" limited="true" range="0 0.05"/>
-                        <inertial mass="0.2" diaginertia="0.001 0.001 0.001"/>
+                        <inertial pos="0 0 0" mass="0.2" diaginertia="0.001 0.001 0.001"/>
                         <geom type="sphere" size="0.03"/>
                     </body>
                 </body>

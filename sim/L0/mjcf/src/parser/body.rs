@@ -442,16 +442,18 @@ pub(super) fn parse_inertial_attrs(e: &BytesStart) -> Result<MjcfInertial> {
     let a = Attrs::new(e)?;
     let mut inertial = MjcfInertial::default();
 
-    if let Some(pos) = a.vec3("pos")? {
-        inertial.pos = pos;
-    }
+    // MuJoCo requires both (`xml_native_reader.cc`, measured: "required
+    // attribute missing"); an empty value is a missing one.
+    inertial.pos = a
+        .vec3("pos")?
+        .ok_or_else(|| MjcfError::missing_attribute("inertial", "pos"))?;
     if let Some(quat) = a.quat("quat")? {
         inertial.quat = quat;
     }
     a.one_orientation()?;
-    if let Some(mass) = a.real("mass")? {
-        inertial.mass = mass;
-    }
+    inertial.mass = a
+        .real("mass")?
+        .ok_or_else(|| MjcfError::missing_attribute("inertial", "mass"))?;
     inertial.diaginertia = a.vec3("diaginertia")?;
     inertial.fullinertia = a.array("fullinertia")?;
 

@@ -1911,3 +1911,8 @@ fc99ebfb217ade84	sim/L0/mjcf/tests/attribute_reader.rs:772
 bb9fa64c52ad06aa	sim/L0/mjcf/tests/attribute_reader.rs:826
 bcfc3e4c6c04c963	sim/L0/mjcf/tests/attribute_reader.rs:825
 d0192af4fe292869	sim/L0/mjcf/tests/attribute_reader.rs:827
+13f93ec68fc96913	examples/fundamentals/sim-cpu/urdf-loading/stress-test/src/main.rs:120
+1b4ffaab887da954	sim/L0/mjcf/tests/attribute_reader.rs:918
+308a5fe7efecb3bb	sim/L0/mjcf/tests/attribute_reader.rs:922
+5c66ff0876c2252c	sim/L0/mjcf/tests/attribute_reader.rs:964
+a259ab8ef4096dcd	sim/L0/mjcf/tests/attribute_reader.rs:926

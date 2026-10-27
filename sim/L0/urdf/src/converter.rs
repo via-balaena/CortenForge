@@ -446,12 +446,12 @@ impl<'a> Converter<'a> {
             )
         };
 
-        let mut attrs = format!(r#"mass="{mass}" {inertia_attr}"#);
-
-        // Add position if non-zero
-        if pos.norm() > 1e-10 {
-            write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
-        }
+        // MJCF requires an inertial's `pos` (MuJoCo 3.5.0 refuses one without
+        // it), so it is written even at the origin.
+        let mut attrs = format!(
+            r#"pos="{} {} {}" mass="{mass}" {inertia_attr}"#,
+            pos.x, pos.y, pos.z
+        );
 
         // Add orientation if non-zero
         if rpy.norm() > 1e-10 {
@@ -632,6 +632,21 @@ mod tests {
         assert!(mjcf.contains(r#"<joint name="joint1" type="hinge""#));
         assert!(mjcf.contains(r#"axis="0 1 0""#));
         assert!(mjcf.contains(r#"limited="true" range="-3.14 3.14""#));
+    }
+
+    /// MJCF requires an inertial's `pos` (MuJoCo 3.5.0 refuses one without
+    /// it), so an inertial at the link's origin is written with `pos="0 0 0"`.
+    #[test]
+    fn an_inertial_at_the_origin_is_written_with_its_pos() {
+        let mjcf = urdf_to_mjcf(
+            r#"<robot name="r">
+                <link name="base">
+                    <inertial><mass value="1"/><inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/></inertial>
+                </link>
+            </robot>"#,
+        )
+        .expect("converts");
+        assert!(mjcf.contains(r#"<inertial pos="0 0 0" mass="1""#), "{mjcf}");
     }
 
     #[test]

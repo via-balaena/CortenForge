@@ -901,3 +901,67 @@ fn a_box_flexcomp_spaces_its_grid_along_z() {
         zs.iter().copied().fold(f64::MIN, f64::max) - zs.iter().copied().fold(f64::MAX, f64::min);
     assert!((span - 3.0).abs() < 1e-12, "{zs:?}");
 }
+
+// ── required attributes (book L05; MuJoCo's reader marks them `required`) ──
+
+/// The error is `attribute` missing on `element`.
+fn assert_missing(err: &MjcfError, element: &str, attribute: &str) {
+    assert!(
+        matches!(err, MjcfError::MissingAttribute { element: e, attribute: a, .. } if e == element && a == attribute),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_inertial_needs_its_pos_and_mass() {
+    let err = refused(
+        r#"<mujoco><worldbody><body><inertial mass="1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+    );
+    assert_missing(&err, "inertial", "pos");
+    let err = refused(
+        r#"<mujoco><worldbody><body><inertial pos="" mass="1" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+    );
+    assert_missing(&err, "inertial", "pos");
+    let err = refused(
+        r#"<mujoco><worldbody><body><inertial pos="0 0 0" diaginertia="1 1 1"/></body></worldbody></mujoco>"#,
+    );
+    assert_missing(&err, "inertial", "mass");
+}
+
+#[test]
+fn a_tendons_path_names_its_parts_and_their_numbers() {
+    let joint = r#"<worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>"#;
+    let err = refused(&format!(
+        r#"<mujoco>{joint}<tendon><fixed><joint joint="j"/></fixed></tendon></mujoco>"#
+    ));
+    assert_missing(&err, "joint", "coef");
+    let err = refused(&format!(
+        r#"<mujoco>{joint}<tendon><fixed><joint joint="j" coef=""/></fixed></tendon></mujoco>"#
+    ));
+    assert_missing(&err, "joint", "coef");
+    let err = refused(&format!(
+        r#"<mujoco>{joint}<tendon><fixed><joint coef="1"/></fixed></tendon></mujoco>"#
+    ));
+    assert_missing(&err, "joint", "joint");
+    let sites = r#"<worldbody><body><geom name="g" size="0.1"/><site name="s1"/><site name="s2" pos="0 0 1"/></body></worldbody>"#;
+    let err = refused(&format!(
+        r#"<mujoco>{sites}<tendon><spatial><site site="s1"/><pulley/><site site="s2"/></spatial></tendon></mujoco>"#
+    ));
+    assert_missing(&err, "pulley", "divisor");
+    let err = refused(&format!(
+        r#"<mujoco>{sites}<tendon><spatial><site site="s1"/><site/><site site="s2"/></spatial></tendon></mujoco>"#
+    ));
+    assert_missing(&err, "site", "site");
+    let err = refused(&format!(
+        r#"<mujoco>{sites}<tendon><spatial><site site="s1"/><geom/><site site="s2"/></spatial></tendon></mujoco>"#
+    ));
+    assert_missing(&err, "geom", "geom");
+}
+
+#[test]
+fn a_composite_joint_names_its_kind() {
+    let err = refused(
+        r#"<mujoco><worldbody><composite type="cable" count="5 1 1" curve="s 0 0" size="1"><joint damping="1"/><geom type="capsule" size="0.01"/></composite></worldbody></mujoco>"#,
+    );
+    assert_missing(&err, "joint", "kind");
+}
