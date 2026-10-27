@@ -241,6 +241,46 @@ fn a_tendons_bad_coefficient_names_its_joint_and_tendon() {
 }
 
 #[test]
+fn a_keyframe_or_an_inertial_built_in_code_is_checked_for_finite_numbers() {
+    fn inertial(mjcf: &mut sim_mjcf::MjcfModel) -> &mut sim_mjcf::MjcfInertial {
+        mjcf.worldbody.children[0].inertial.as_mut().unwrap()
+    }
+    // The reader refuses a written NaN first (D-NONFINITE); a model built in
+    // code is checked when it is built, at each number the row names.
+    let built = || {
+        sim_mjcf::parse_mjcf_str(
+            r#"<mujoco>
+                <worldbody>
+                    <body><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/></body>
+                </worldbody>
+                <keyframe><key time="0" qpos="0 0 0 1 0 0 0"/></keyframe>
+            </mujoco>"#,
+        )
+        .unwrap()
+    };
+    let mut cases: Vec<(sim_mjcf::MjcfModel, &str, &str)> = Vec::new();
+    let mut mjcf = built();
+    mjcf.keyframes[0].time = f64::NAN;
+    cases.push((mjcf, "key", "time"));
+    let mut mjcf = built();
+    mjcf.keyframes[0].qpos.as_mut().unwrap()[0] = f64::INFINITY;
+    cases.push((mjcf, "key", "qpos[0]"));
+    let mut mjcf = built();
+    inertial(&mut mjcf).mass = f64::NAN;
+    cases.push((mjcf, "inertial", "mass"));
+    let mut mjcf = built();
+    inertial(&mut mjcf).diaginertia.as_mut().unwrap().y = f64::NAN;
+    cases.push((mjcf, "inertial", "diaginertia"));
+    for (mjcf, element, attribute) in &cases {
+        let err = sim_mjcf::model_from_mjcf(mjcf, None).unwrap_err();
+        assert!(
+            matches!(&err, MjcfError::NonFinite { element: e, attribute: a, .. } if e == element && a == attribute),
+            "{element} {attribute}: {err}"
+        );
+    }
+}
+
+#[test]
 fn a_mocap_body_or_composite_error_names_its_element() {
     assert_located(
         r#"<mujoco><worldbody>
