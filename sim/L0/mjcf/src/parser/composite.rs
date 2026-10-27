@@ -5,10 +5,9 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result, ValueCount};
+use crate::keywords;
 
-use crate::types::{
-    CompositeGeom, CompositeJoint, CompositeShape, CompositeType, MjcfComposite, MjcfGeomType,
-};
+use crate::types::{CompositeGeom, CompositeJoint, CompositeShape, MjcfComposite, MjcfGeomType};
 
 use super::attrs::{Attrs, skip_element};
 
@@ -24,20 +23,9 @@ pub(super) fn parse_composite<R: BufRead>(
     let a = Attrs::new(e)?;
     let prefix = a.string("prefix").unwrap_or_default();
 
-    let comp_type = match a
-        .text("type")
-        .ok_or_else(|| MjcfError::missing_attribute("composite", "type"))?
-    {
-        "particle" => CompositeType::Particle,
-        "grid" => CompositeType::Grid,
-        "rope" => CompositeType::Rope,
-        "loop" => CompositeType::Loop,
-        "cable" => CompositeType::Cable,
-        "cloth" => CompositeType::Cloth,
-        other => {
-            return Err(MjcfError::invalid_keyword("composite", "type", other));
-        }
-    };
+    let comp_type = a
+        .keyword("type", keywords::composite_type)?
+        .ok_or_else(|| MjcfError::missing_attribute("composite", "type"))?;
 
     // One up to three counts, the rest 1 (MuJoCo reads three with `exact =
     // false`).
@@ -77,12 +65,7 @@ pub(super) fn parse_composite<R: BufRead>(
                 let child_name = child.name().as_ref().to_vec();
                 match child_name.as_slice() {
                     b"joint" => {
-                        let kind = Attrs::new(child)?
-                            .string("kind")
-                            .ok_or_else(|| MjcfError::missing_attribute("joint", "kind"))?;
-                        if kind == "main" {
-                            joint = Some(parse_composite_joint_attrs(child)?);
-                        }
+                        joint = Some(parse_composite_joint_attrs(child)?);
                         // Skip to closing tag (composite <joint> has no children)
                         skip_element(reader, &child_name)?;
                     }
@@ -95,12 +78,7 @@ pub(super) fn parse_composite<R: BufRead>(
             }
             Ok(Event::Empty(ref child)) => match child.name().as_ref() {
                 b"joint" => {
-                    let kind = Attrs::new(child)?
-                        .string("kind")
-                        .ok_or_else(|| MjcfError::missing_attribute("joint", "kind"))?;
-                    if kind == "main" {
-                        joint = Some(parse_composite_joint_attrs(child)?);
-                    }
+                    joint = Some(parse_composite_joint_attrs(child)?);
                 }
                 b"geom" => {
                     geom = Some(parse_composite_geom_attrs(child)?);
@@ -132,9 +110,12 @@ pub(super) fn parse_composite<R: BufRead>(
     })
 }
 
-/// Parse attributes of a `<composite><joint kind="main">` child.
+/// Parse attributes of a `<composite><joint kind="main">` child. `kind` is
+/// required, and `main` is MuJoCo's one kind (`jkind_map`).
 pub(super) fn parse_composite_joint_attrs(e: &BytesStart) -> Result<CompositeJoint> {
     let a = Attrs::new(e)?;
+    a.keyword("kind", |s| (s == "main").then_some(()))?
+        .ok_or_else(|| MjcfError::missing_attribute("joint", "kind"))?;
     Ok(CompositeJoint {
         group: a.int("group")?,
         stiffness: a.real("stiffness")?,
@@ -153,11 +134,9 @@ pub(super) fn parse_composite_joint_attrs(e: &BytesStart) -> Result<CompositeJoi
 /// Parse attributes of a `<composite><geom>` child.
 pub(super) fn parse_composite_geom_attrs(e: &BytesStart) -> Result<CompositeGeom> {
     let a = Attrs::new(e)?;
-    let geom_type = if let Some(s) = a.text("type") {
-        MjcfGeomType::from_str(s).ok_or_else(|| MjcfError::invalid_keyword("geom", "type", s))?
-    } else {
-        MjcfGeomType::Capsule
-    };
+    let geom_type = a
+        .keyword("type", MjcfGeomType::from_str)?
+        .unwrap_or(MjcfGeomType::Capsule);
 
     let size = a
         .prefix::<3>("size")?

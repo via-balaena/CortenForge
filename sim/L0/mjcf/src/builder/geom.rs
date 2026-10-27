@@ -216,7 +216,7 @@ fn convert_geom_type(geom_type: Option<MjcfGeomType>) -> GeomType {
         MjcfGeomType::Cylinder => GeomType::Cylinder,
         MjcfGeomType::Ellipsoid => GeomType::Ellipsoid,
         MjcfGeomType::Plane => GeomType::Plane,
-        MjcfGeomType::Mesh | MjcfGeomType::TriangleMesh => GeomType::Mesh,
+        MjcfGeomType::Mesh => GeomType::Mesh,
         MjcfGeomType::Hfield => GeomType::Hfield,
         MjcfGeomType::Sdf => GeomType::Sdf,
     }

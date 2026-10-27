@@ -5,10 +5,11 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+use crate::keywords;
 
 use crate::types::{
-    AngleUnit, InertiaFromGeom, MjcfCompiler, MjcfConeType, MjcfFlag, MjcfIntegrator,
-    MjcfJacobianType, MjcfModel, MjcfOption, MjcfSolverType,
+    MjcfCompiler, MjcfConeType, MjcfFlag, MjcfIntegrator, MjcfJacobianType, MjcfModel, MjcfOption,
+    MjcfSolverType,
 };
 
 use super::attrs::Attrs;
@@ -78,17 +79,13 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(ts) = a.real("timestep")? {
         option.timestep = ts;
     }
-    if let Some(integrator) = a.text("integrator")
-        && let Some(int) = MjcfIntegrator::from_str(integrator)
-    {
-        option.integrator = int;
+    if let Some(integrator) = a.keyword("integrator", MjcfIntegrator::from_str)? {
+        option.integrator = integrator;
     }
 
     // Solver configuration
-    if let Some(solver) = a.text("solver")
-        && let Some(s) = MjcfSolverType::from_str(solver)
-    {
-        option.solver = s;
+    if let Some(solver) = a.keyword("solver", MjcfSolverType::from_str)? {
+        option.solver = solver;
     }
     if let Some(iter) = a.int("iterations")? {
         option.iterations = iter.max(0) as usize;
@@ -122,15 +119,11 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     }
 
     // Contact configuration
-    if let Some(cone) = a.text("cone")
-        && let Some(c) = MjcfConeType::from_str(cone)
-    {
-        option.cone = c;
+    if let Some(cone) = a.keyword("cone", MjcfConeType::from_str)? {
+        option.cone = cone;
     }
-    if let Some(jacobian) = a.text("jacobian")
-        && let Some(j) = MjcfJacobianType::from_str(jacobian)
-    {
-        option.jacobian = j;
+    if let Some(jacobian) = a.keyword("jacobian", MjcfJacobianType::from_str)? {
+        option.jacobian = jacobian;
     }
     if let Some(impratio) = a.real("impratio")? {
         option.impratio = impratio;
@@ -215,14 +208,8 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     let mut compiler = MjcfCompiler::default();
 
     // A1. angle — angular unit
-    if let Some(angle) = a.text("angle") {
-        match angle.to_lowercase().as_str() {
-            "degree" => compiler.angle = AngleUnit::Degree,
-            "radian" => compiler.angle = AngleUnit::Radian,
-            other => {
-                return Err(MjcfError::invalid_keyword("compiler", "angle", other));
-            }
-        }
+    if let Some(angle) = a.keyword("angle", keywords::angle)? {
+        compiler.angle = angle;
     }
 
     // A2. eulerseq — Euler rotation sequence
@@ -258,19 +245,8 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A5. inertiafromgeom
-    if let Some(ifg) = a.text("inertiafromgeom") {
-        match ifg.to_lowercase().as_str() {
-            "false" => compiler.inertiafromgeom = InertiaFromGeom::False,
-            "true" => compiler.inertiafromgeom = InertiaFromGeom::True,
-            "auto" => compiler.inertiafromgeom = InertiaFromGeom::Auto,
-            other => {
-                return Err(MjcfError::invalid_keyword(
-                    "compiler",
-                    "inertiafromgeom",
-                    other,
-                ));
-            }
-        }
+    if let Some(ifg) = a.keyword("inertiafromgeom", keywords::inertia_from_geom)? {
+        compiler.inertiafromgeom = ifg;
     }
 
     // A6. boundmass / boundinertia
@@ -307,20 +283,12 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A12. coordinate (deprecated — reject "global")
-    if let Some(coord) = a.text("coordinate") {
-        match coord.to_lowercase().as_str() {
-            "local" => {} // no-op, matches current behavior
-            "global" => {
-                return Err(MjcfError::invalid_value(
-                    "compiler",
-                    "coordinate",
-                    "coordinate='global' was removed in MuJoCo 2.3.4",
-                ));
-            }
-            other => {
-                return Err(MjcfError::invalid_keyword("compiler", "coordinate", other));
-            }
-        }
+    if a.keyword("coordinate", keywords::coordinate_is_global)? == Some(true) {
+        return Err(MjcfError::invalid_value(
+            "compiler",
+            "coordinate",
+            "coordinate='global' was removed in MuJoCo 2.3.4",
+        ));
     }
 
     // Deferred attributes (stored but no behavior yet)

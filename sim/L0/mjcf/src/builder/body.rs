@@ -5,8 +5,6 @@
 //! validation, inertia computation dispatch, and child body recursion.
 
 use nalgebra::{UnitQuaternion, Vector3};
-use sim_core::SleepPolicy;
-use tracing::warn;
 
 use super::ModelBuilder;
 use super::mass::{
@@ -14,6 +12,7 @@ use super::mass::{
 };
 use super::orientation::resolve_orientation;
 use crate::error::{ElementKind, Location, MjcfError, Result};
+use crate::keywords;
 use crate::types::{InertiaFromGeom, MjcfBody, MjcfGeom};
 
 impl ModelBuilder {
@@ -206,20 +205,19 @@ impl ModelBuilder {
         } else {
             Some(body.name.clone())
         });
-        // Parse body-level sleep policy
-        let sleep_policy = body.sleep.as_ref().and_then(|s| match s.as_str() {
-            "auto" => Some(SleepPolicy::Auto),
-            "allowed" => Some(SleepPolicy::Allowed),
-            "never" => Some(SleepPolicy::Never),
-            "init" => Some(SleepPolicy::Init),
-            _ => {
-                warn!(
-                    "body '{}': unknown sleep policy '{}', ignoring",
-                    body.name, s
-                );
-                None
-            }
-        });
+        let sleep_policy = body
+            .sleep
+            .as_deref()
+            .map(|s| {
+                keywords::body_sleep(s).ok_or_else(|| {
+                    MjcfError::invalid_keyword("body", "sleep", s).at(Location::nth(
+                        ElementKind::Body,
+                        Some(&body.name),
+                        body_id,
+                    ))
+                })
+            })
+            .transpose()?;
         self.body_sleep_policy.push(sleep_policy);
         self.body_gravcomp.push(body.gravcomp.unwrap_or(0.0));
         self.body_user_raw.push(body.user.clone());

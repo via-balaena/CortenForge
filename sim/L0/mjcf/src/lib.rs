@@ -184,6 +184,7 @@ mod builder;
 mod defaults;
 mod error;
 mod include;
+mod keywords;
 #[cfg(feature = "mjb")]
 mod mjb;
 mod parser;

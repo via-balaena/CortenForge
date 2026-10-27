@@ -202,12 +202,6 @@ fn an_element_without_a_name_is_named_by_its_body() {
     );
     assert_located(
         r#"<mujoco><worldbody>
-            <body name="b"><joint name="j" type="cylindrical"/><geom size="0.1"/></body>
-        </worldbody></mujoco>"#,
-        "(joint 'j' in body 'b')",
-    );
-    assert_located(
-        r#"<mujoco><worldbody>
             <body name="b"><joint name="j"/><joint name="j"/><geom size="0.1"/></body>
         </worldbody></mujoco>"#,
         "(joint 'j' in body 'b')",
@@ -314,17 +308,21 @@ fn a_height_field_built_in_code_without_its_rows_names_it() {
 
 #[test]
 fn an_actuator_error_raised_while_building_names_the_actuator() {
-    // `validate` passes this one; the builder refuses the keyword.
-    let err = assert_located(
+    // The reader refuses the keyword first; a model built in code reaches the
+    // builder, which refuses it with the same words and names the actuator.
+    let mut mjcf = sim_mjcf::parse_mjcf_str(
         r#"<mujoco>
             <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
             <actuator>
                 <motor joint="j"/>
-                <general joint="j" gaintype="bogus"/>
+                <general joint="j"/>
             </actuator>
         </mujoco>"#,
-        "(actuator #1)",
-    );
+    )
+    .unwrap();
+    mjcf.actuators[1].gaintype = Some("bogus".to_owned());
+    let err = sim_mjcf::model_from_mjcf(&mjcf, None).unwrap_err();
+    assert!(err.to_string().ends_with("(actuator #1)"), "{err}");
     assert!(
         matches!(&err, MjcfError::InvalidKeyword { attribute, value, .. }
             if attribute == "gaintype" && value == "bogus"),
@@ -425,12 +423,6 @@ fn a_body_without_a_name_is_named_by_its_index() {
             <body><geom size="0.1"/><geom type="mesh" mesh="nope"/></body>
         </worldbody></mujoco>"#,
         "(geom #1 in body #1)",
-    );
-    assert_located(
-        r#"<mujoco><worldbody>
-            <body><joint name="j" type="planar"/><geom size="0.1"/></body>
-        </worldbody></mujoco>"#,
-        "(joint 'j' in body #1)",
     );
     assert_located(
         r#"<mujoco><worldbody>

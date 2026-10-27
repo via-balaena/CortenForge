@@ -1,0 +1,3 @@
+<mujoco><worldbody><body><joint name="j" range="-1 1"/><geom size="0.1"/></body></worldbody>
+        <actuator><general joint="j" dyntype="hillmuscle" gaintype="hillmuscle"
+            biastype="hillmuscle" lengthrange="0.1 0.5"/></actuator></mujoco>

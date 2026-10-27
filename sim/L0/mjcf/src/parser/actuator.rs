@@ -5,6 +5,7 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+use crate::keywords;
 
 use crate::types::{MjcfActuator, MjcfActuatorType, Prefix};
 
@@ -127,7 +128,7 @@ pub(super) fn parse_actuator_attrs(
 
     // Interpolation attributes (common to all actuator types)
     actuator.nsample = a.int("nsample")?;
-    actuator.interp = a.string("interp");
+    actuator.interp = a.keyword_text("interp", keywords::interp)?;
     actuator.delay = a.real("delay")?;
 
     // ========================================================================
@@ -136,9 +137,9 @@ pub(super) fn parse_actuator_attrs(
     // These are only parsed for <general> actuators. For shortcut types,
     // these attributes are not part of the MJCF schema and are ignored.
     if actuator_type == MjcfActuatorType::General {
-        actuator.gaintype = a.string("gaintype");
-        actuator.biastype = a.string("biastype");
-        actuator.dyntype = a.string("dyntype");
+        actuator.gaintype = a.keyword_text("gaintype", keywords::gain_type)?;
+        actuator.biastype = a.keyword_text("biastype", keywords::bias_type)?;
+        actuator.dyntype = a.keyword_text("dyntype", keywords::dyn_type)?;
         actuator.gainprm = gain_or_bias(&a, "gainprm")?;
         actuator.biasprm = gain_or_bias(&a, "biasprm")?;
         actuator.dynprm = a.prefix("dynprm")?;

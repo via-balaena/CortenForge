@@ -5,10 +5,10 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+use crate::keywords;
 
 use crate::types::{
-    FluidShape, MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint,
-    MjcfJointType, MjcfSite,
+    MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint, MjcfJointType, MjcfSite,
 };
 
 use super::attrs::{Attrs, safe_normalize_axis, skip_element};
@@ -222,9 +222,7 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     if let Some(mocap) = a.is_true("mocap") {
         body.mocap = mocap;
     }
-    if let Some(sleep) = a.string("sleep") {
-        body.sleep = Some(sleep);
-    }
+    body.sleep = a.keyword_text("sleep", keywords::body_sleep)?;
     if let Some(gc) = a.real("gravcomp")? {
         body.gravcomp = Some(gc);
     }
@@ -265,12 +263,7 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.name = a.string("name").unwrap_or_default();
     joint.class = a.string("class");
 
-    if let Some(jtype) = a.text("type") {
-        joint.joint_type = Some(
-            MjcfJointType::from_str(jtype)
-                .ok_or_else(|| MjcfError::invalid_keyword("joint", "type", jtype))?,
-        );
-    }
+    joint.joint_type = a.keyword("type", MjcfJointType::from_str)?;
 
     joint.pos = a.vec3("pos")?;
     if let Some(axis) = a.vec3("axis")? {
@@ -351,12 +344,7 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     geom.name = a.string("name");
     geom.class = a.string("class");
 
-    if let Some(gtype) = a.text("type") {
-        geom.geom_type = Some(
-            MjcfGeomType::from_str(gtype)
-                .ok_or_else(|| MjcfError::invalid_keyword("geom", "type", gtype))?,
-        );
-    }
+    geom.geom_type = a.keyword("type", MjcfGeomType::from_str)?;
 
     geom.pos = a.vec3("pos")?;
     geom.quat = a.quat("quat")?;
@@ -398,13 +386,7 @@ pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     geom.material = a.string("material");
 
     // Fluid force parameters
-    if let Some(fs) = a.text("fluidshape") {
-        geom.fluidshape = Some(match fs {
-            "none" => FluidShape::None,
-            "ellipsoid" => FluidShape::Ellipsoid,
-            _ => return Err(MjcfError::invalid_keyword("geom", "fluidshape", fs)),
-        });
-    }
+    geom.fluidshape = a.keyword("fluidshape", keywords::fluid_shape)?;
     geom.fluidcoef = a.prefix("fluidcoef")?;
     if let Some(user) = a.vector("user")? {
         geom.user = user;
@@ -489,7 +471,7 @@ pub(super) fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     site.name = a.string("name").unwrap_or_default();
     site.class = a.string("class");
 
-    site.site_type = a.string("type");
+    site.site_type = a.keyword_text("type", MjcfGeomType::from_str)?;
     site.pos = a.vec3("pos")?;
     site.quat = a.quat("quat")?;
     a.one_orientation()?;

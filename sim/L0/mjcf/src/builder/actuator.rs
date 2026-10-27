@@ -10,6 +10,7 @@ use tracing::warn;
 
 use super::ModelBuilder;
 use crate::error::{ElementKind, MjcfError, Result};
+use crate::keywords;
 use crate::types::{MjcfActuator, MjcfActuatorType};
 
 /// MuJoCo's default `gear` (`user_init.c` `mjs_defaultActuator`).
@@ -641,41 +642,15 @@ fn compute_general_standard(
 }
 
 fn parse_gaintype(s: &str) -> Result<GainType> {
-    match s {
-        "fixed" => Ok(GainType::Fixed),
-        "affine" => Ok(GainType::Affine),
-        "muscle" => Ok(GainType::Muscle),
-        "hillmuscle" => Ok(GainType::HillMuscle),
-        "millardmuscle" => Ok(GainType::MillardMuscle),
-        "user" => Ok(GainType::User),
-        _ => Err(MjcfError::invalid_keyword("general", "gaintype", s)),
-    }
+    keywords::gain_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "gaintype", s))
 }
 
 fn parse_biastype(s: &str) -> Result<BiasType> {
-    match s {
-        "none" => Ok(BiasType::None),
-        "affine" => Ok(BiasType::Affine),
-        "muscle" => Ok(BiasType::Muscle),
-        "hillmuscle" => Ok(BiasType::HillMuscle),
-        "millardmuscle" => Ok(BiasType::MillardMuscle),
-        "user" => Ok(BiasType::User),
-        _ => Err(MjcfError::invalid_keyword("general", "biastype", s)),
-    }
+    keywords::bias_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "biastype", s))
 }
 
 fn parse_dyntype(s: &str) -> Result<ActuatorDynamics> {
-    match s {
-        "none" => Ok(ActuatorDynamics::None),
-        "integrator" => Ok(ActuatorDynamics::Integrator),
-        "filter" => Ok(ActuatorDynamics::Filter),
-        "filterexact" => Ok(ActuatorDynamics::FilterExact),
-        "muscle" => Ok(ActuatorDynamics::Muscle),
-        "hillmuscle" => Ok(ActuatorDynamics::HillMuscle),
-        "millardmuscle" => Ok(ActuatorDynamics::MillardMuscle),
-        "user" => Ok(ActuatorDynamics::User),
-        _ => Err(MjcfError::invalid_keyword("general", "dyntype", s)),
-    }
+    keywords::dyn_type(s).ok_or_else(|| MjcfError::invalid_keyword("general", "dyntype", s))
 }
 
 #[cfg(test)]

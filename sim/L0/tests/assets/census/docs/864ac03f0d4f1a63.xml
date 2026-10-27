@@ -1,0 +1,2 @@
+<mujoco><default><joint type="bogus"/></default>
+            <worldbody><body><joint/><geom size="0.1"/></body></worldbody></mujoco>

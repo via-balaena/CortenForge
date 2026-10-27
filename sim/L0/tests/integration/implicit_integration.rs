@@ -372,7 +372,7 @@ fn test_explicit_implicit_agreement_low_stiffness() {
     // Low stiffness where explicit is stable
     let mjcf_explicit = r#"
         <mujoco model="low_stiffness_explicit">
-            <option timestep="0.001" integrator="euler" gravity="0 0 0"/>
+            <option timestep="0.001" integrator="Euler" gravity="0 0 0"/>
             <worldbody>
                 <body name="mass" pos="0 0 0">
                     <joint name="slide" type="slide" axis="1 0 0"

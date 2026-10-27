@@ -119,11 +119,13 @@ pub enum MjcfIntegrator {
 }
 
 impl MjcfIntegrator {
-    /// Parse integrator from MJCF string.
+    /// The integrator a keyword names, exactly as written: MuJoCo's
+    /// `integrator_map` (`xml_native_reader.cc`) and `implicitspringdamper`, an
+    /// extension.
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "euler" => Some(Self::Euler),
-            "rk4" => Some(Self::RK4),
+        match s {
+            "Euler" => Some(Self::Euler),
+            "RK4" => Some(Self::RK4),
             "implicit" => Some(Self::Implicit),
             "implicitfast" => Some(Self::ImplicitFast),
             "implicitspringdamper" => Some(Self::ImplicitSpringDamper),
@@ -156,9 +158,9 @@ pub enum MjcfConeType {
 }
 
 impl MjcfConeType {
-    /// Parse cone type from MJCF string.
+    /// The cone a keyword names, exactly as written (MuJoCo's `cone_map`).
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        match s {
             "pyramidal" => Some(Self::Pyramidal),
             "elliptic" => Some(Self::Elliptic),
             _ => None,
@@ -189,12 +191,12 @@ pub enum MjcfSolverType {
 }
 
 impl MjcfSolverType {
-    /// Parse solver type from MJCF string.
+    /// The solver a keyword names, exactly as written (MuJoCo's `solver_map`).
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_uppercase().as_str() {
+        match s {
             "PGS" => Some(Self::PGS),
             "CG" => Some(Self::CG),
-            "NEWTON" => Some(Self::Newton),
+            "Newton" => Some(Self::Newton),
             _ => None,
         }
     }
@@ -224,9 +226,10 @@ pub enum MjcfJacobianType {
 }
 
 impl MjcfJacobianType {
-    /// Parse jacobian type from MJCF string.
+    /// The Jacobian type a keyword names, exactly as written (MuJoCo's
+    /// `jac_map`).
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        match s {
             "dense" => Some(Self::Dense),
             "sparse" => Some(Self::Sparse),
             "auto" => Some(Self::Auto),
@@ -1285,14 +1288,11 @@ pub enum MjcfGeomType {
     Hfield,
     /// Signed distance field.
     Sdf,
-    /// Non-convex triangle mesh.
-    /// Unlike `Mesh` which is treated as a convex hull, this preserves
-    /// the original triangle structure for accurate non-convex collision.
-    TriangleMesh,
 }
 
 impl MjcfGeomType {
-    /// Parse geom type from string.
+    /// The geom type a keyword names, exactly as written (MuJoCo's
+    /// `geom_map`, `xml_native_reader.cc`).
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "plane" => Some(Self::Plane),
@@ -1304,7 +1304,6 @@ impl MjcfGeomType {
             "mesh" => Some(Self::Mesh),
             "hfield" => Some(Self::Hfield),
             "sdf" => Some(Self::Sdf),
-            "trimesh" | "triangle_mesh" | "nonconvex" => Some(Self::TriangleMesh),
             _ => None,
         }
     }
@@ -1322,7 +1321,6 @@ impl MjcfGeomType {
             Self::Mesh => "mesh",
             Self::Hfield => "hfield",
             Self::Sdf => "sdf",
-            Self::TriangleMesh => "trimesh",
         }
     }
 }
@@ -1535,24 +1533,17 @@ pub enum MjcfJointType {
     Ball,
     /// Free joint (6 DOF).
     Free,
-    /// Cylindrical joint (2 DOF: rotation + translation along same axis).
-    /// Note: This is an extension to standard MJCF.
-    Cylindrical,
-    /// Planar joint (3 DOF: x, y translation + rotation about normal).
-    /// Note: This is an extension to standard MJCF.
-    Planar,
 }
 
 impl MjcfJointType {
-    /// Parse joint type from string.
+    /// The joint type a keyword names, exactly as written (MuJoCo's
+    /// `joint_map`, `xml_native_reader.cc`).
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "hinge" => Some(Self::Hinge),
             "slide" => Some(Self::Slide),
             "ball" => Some(Self::Ball),
             "free" => Some(Self::Free),
-            "cylindrical" => Some(Self::Cylindrical),
-            "planar" => Some(Self::Planar),
             _ => None,
         }
     }
@@ -1562,8 +1553,7 @@ impl MjcfJointType {
     pub fn dof(&self) -> usize {
         match self {
             Self::Hinge | Self::Slide => 1,
-            Self::Cylindrical => 2,
-            Self::Ball | Self::Planar => 3,
+            Self::Ball => 3,
             Self::Free => 6,
         }
     }

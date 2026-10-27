@@ -14,6 +14,8 @@
 //!   integer read alone, which is refused (measured);
 //! - an attribute takes exactly its count, or, where MuJoCo reads it with
 //!   `exact = false`, one up to its count ([`Prefix`]); more is always refused;
+//! - a keyword is its whole text, untrimmed and case-sensitive, as MuJoCo's
+//!   `MapValue` reads it ([`Attrs::keyword`]);
 //! - text is read as tinyxml2 gives it to MuJoCo ([`unescape`]); a malformed
 //!   attribute, or one given twice, is an XML error.
 //!
@@ -258,6 +260,32 @@ impl Attrs {
     /// The attribute's text, owned.
     pub(super) fn string(&self, name: &str) -> Option<String> {
         self.text(name).map(str::to_owned)
+    }
+
+    /// A keyword, as MuJoCo's `MapValue` (`xml_util.cc`) reads it: the whole
+    /// text, untrimmed and case-sensitive, must be one `parse` knows; any other
+    /// text, the empty string included, is an invalid keyword.
+    pub(super) fn keyword<T>(
+        &self,
+        name: &str,
+        parse: impl Fn(&str) -> Option<T>,
+    ) -> Result<Option<T>> {
+        let Some(text) = self.text(name) else {
+            return Ok(None);
+        };
+        parse(text)
+            .map(Some)
+            .ok_or_else(|| MjcfError::invalid_keyword(&self.element, name, text))
+    }
+
+    /// A keyword checked as [`Attrs::keyword`] checks it and kept as written,
+    /// for a field the builder converts.
+    pub(super) fn keyword_text<T>(
+        &self,
+        name: &str,
+        parse: impl Fn(&str) -> Option<T>,
+    ) -> Result<Option<String>> {
+        self.keyword(name, |text| parse(text).map(|_| text.to_owned()))
     }
 
     /// Whether the attribute is written.
