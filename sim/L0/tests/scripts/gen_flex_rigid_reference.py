@@ -70,7 +70,7 @@ PLANE_BITS = ('<geom type="plane" size="2 2 0.1" contype="2" conaffinity="2"/>'
               '<geom type="box" size="0.05 0.05 0.01" pos="0.06 0 0"/>')
 # Elevations exact in float32, rows symmetric and the highest 1: sim-mjcf
 # loads them as MuJoCo does (book Rigid-loading L45 makes its data MuJoCo's
-# otherwise: float32, rows bottom to top, normalised).
+# otherwise: rows bottom to top, normalised).
 FIELD = ('<hfield name="hf" nrow="5" ncol="6" size="0.3 0.25 0.08 0.05" '
          'elevation="0 0.25 0.5 0.25 0 0  0.25 0.5 0.75 0.5 0.25 0  0.25 0.75 1 0.75 0.5 0.25  '
          '0.25 0.5 0.75 0.5 0.25 0  0 0.25 0.5 0.25 0 0"/>')

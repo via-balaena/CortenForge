@@ -130,16 +130,23 @@ fn cylinder_rests_on_box_as_mujoco() {
 }
 
 /// A box, a cylinder and a three-axis ellipsoid on a convex mesh slab, the
-/// mesh through its hull. Measured: height 1.6e-9, 2.7e-4 and 1.5e-9;
-/// contact 1.5e-9 each. The cylinder is MuJoCo's bit for bit until its first
-/// contact (step 7) and parts from it there, by 1e-9 to 1e-12 in every
-/// entry of the state, its rolling wholly different by step 99 (ledger
-/// L214, not isolated): its height is a diverged system's, held to 7e-4.
+/// mesh through its hull. Measured on macOS arm64, where the golden was
+/// made: height 4.3e-16, 2.7e-4 and 4.0e-16; contact 8.3e-14, 8.3e-14 and
+/// 5.6e-14; held there to 1e-15 and 1e-13, on other platforms (not
+/// measured) to 1e-8. The cylinder's height is a diverged system's, held to
+/// 7e-4: MuJoCo turns the slab to its principal frame, which sim-mjcf does
+/// not (book Rigid-loading L35); with the slab in MuJoCo's frame the
+/// cylinder's run is MuJoCo's (`trajectory_parity.rs`, ledger L214).
 #[test]
 fn box_cylinder_ellipsoid_rest_on_convex_mesh_slab_as_mujoco() {
-    rests_as_mujoco("mesh_box", 1e-8, 1e-8);
-    rests_as_mujoco("mesh_cylinder", 7e-4, 1e-8);
-    rests_as_mujoco("mesh_ellipsoid3", 1e-8, 1e-8);
+    let (z_tol, contact_tol) = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        (1e-15, 1e-13)
+    } else {
+        (1e-8, 1e-8)
+    };
+    rests_as_mujoco("mesh_box", z_tol, contact_tol);
+    rests_as_mujoco("mesh_cylinder", 7e-4, contact_tol);
+    rests_as_mujoco("mesh_ellipsoid3", z_tol, contact_tol);
 }
 
 /// Our contacts after `forward` against MuJoCo's list: the same geoms in the

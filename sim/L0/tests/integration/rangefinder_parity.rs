@@ -19,13 +19,14 @@
 //! L45. Every reading is compared bit for bit on macOS arm64, where the golden
 //! was made, elsewhere within `1e-13 · max(1, |MuJoCo's|)`, a NaN failing; but
 //! the slab's. MuJoCo turns the slab to its principal frame, which sim-mjcf
-//! does not (book Rigid-loading L35), and keeps its vertices in single
-//! precision (ledger L281): its readings hit where MuJoCo's hit, each within
-//! `1e-8 · max(1, |MuJoCo's|)` (measured: 18 of the 80 differ, by 4.4e-9 at
-//! most, by that measure). The ray golden's rays on the same slab, given
-//! MuJoCo's compiled vertices and pose, are MuJoCo's bit for bit (sim-core's
-//! `rays_meet_each_mesh_as_mujoco`); none of them passes through a vertex or
-//! across an edge, where a ray can read otherwise (ledger L281).
+//! does not (book Rigid-loading L35), and rounds the turned vertices to
+//! single precision (ledger L281): its readings hit where MuJoCo's hit, each
+//! within `1e-13 · max(1, |MuJoCo's|)` (measured on macOS arm64: 18 of the
+//! 80 differ, by 1.2e-15 at most, by that measure). The ray golden's rays on
+//! the same slab, given MuJoCo's compiled vertices and pose, are MuJoCo's bit
+//! for bit (sim-core's `rays_meet_each_mesh_as_mujoco`); none of them passes
+//! through a vertex or across an edge, where a ray can read otherwise (ledger
+//! L281).
 
 use std::sync::Arc;
 
@@ -57,14 +58,14 @@ fn matches_golden(ours: &[f64], mj: &[f64]) -> bool {
         })
 }
 
-/// The slab's readings: a hit where MuJoCo's is one, each within `1e-8 ·
+/// The slab's readings: a hit where MuJoCo's is one, each within `1e-13 ·
 /// max(1, |MuJoCo's|)`, a NaN failing.
 fn matches_slab(ours: &[f64], mj: &[f64]) -> bool {
     ours.len() == mj.len()
         && ours
             .iter()
             .zip(mj)
-            .all(|(a, b)| (*a >= 0.0) == (*b >= 0.0) && (a - b).abs() <= 1e-8 * b.abs().max(1.0))
+            .all(|(a, b)| (*a >= 0.0) == (*b >= 0.0) && (a - b).abs() <= 1e-13 * b.abs().max(1.0))
 }
 
 #[test]
