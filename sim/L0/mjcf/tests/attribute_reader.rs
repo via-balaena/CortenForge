@@ -1001,6 +1001,7 @@ fn a_written_nan_or_infinity_is_refused_naming_its_attribute() {
         (r#"<mujoco><worldbody><body pos="nan 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#.to_string(), "body", "pos"),
         (joint(r#"axis="nan 0 0""#), "joint", "axis"),
         (joint(r#"damping="nan""#), "joint", "damping"),
+        (joint(r#"stiffness="Infinity""#), "joint", "stiffness"),
         (joint(r#"limited="true" range="-inf inf""#), "joint", "range"),
         (r#"<mujoco><worldbody><body quat="nan 0 0 0"><geom size="0.1"/></body></worldbody></mujoco>"#.to_string(), "body", "quat"),
         (r#"<mujoco><worldbody><body><geom size="0.1" friction="nan 0.005 0.0001"/></body></worldbody></mujoco>"#.to_string(), "geom", "friction"),
