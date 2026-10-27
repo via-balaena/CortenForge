@@ -7,7 +7,7 @@
 use sim_core::{GeomType, MjJointType, TendonType, WrapType};
 use tracing::warn;
 
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{MjcfTendon, MjcfTendonType, SpatialPathElement};
 
@@ -42,9 +42,9 @@ impl ModelBuilder {
             self.tendon_frictionloss
                 .push(tendon.frictionloss.unwrap_or(0.0));
             self.tendon_solref_fri
-                .push(tendon.solreffriction.unwrap_or(DEFAULT_SOLREF));
+                .push(written_over(tendon.solreffriction, DEFAULT_SOLREF));
             self.tendon_solimp_fri
-                .push(tendon.solimpfriction.unwrap_or(DEFAULT_SOLIMP));
+                .push(written_over(tendon.solimpfriction, DEFAULT_SOLIMP));
             self.tendon_name.push(if tendon.name.is_empty() {
                 None
             } else {
@@ -56,9 +56,9 @@ impl ModelBuilder {
             self.tendon_rgba
                 .push(tendon.rgba.map_or(default_rgba, |v| [v.x, v.y, v.z, v.w]));
             self.tendon_solref_lim
-                .push(tendon.solref_limit.unwrap_or(DEFAULT_SOLREF));
+                .push(written_over(tendon.solref_limit, DEFAULT_SOLREF));
             self.tendon_solimp_lim
-                .push(tendon.solimp_limit.unwrap_or(DEFAULT_SOLIMP));
+                .push(written_over(tendon.solimp_limit, DEFAULT_SOLIMP));
             self.tendon_margin.push(tendon.margin.unwrap_or(0.0));
             // S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
             self.tendon_lengthspring.push(match tendon.springlength {

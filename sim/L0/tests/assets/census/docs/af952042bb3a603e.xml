@@ -1,0 +1,7 @@
+<mujoco>
+            <worldbody>
+                <body><freejoint/><geom name="a" size="0.1"/></body>
+                <body pos="0 0 1"><freejoint/><geom name="b" size="0.1"/></body>
+            </worldbody>
+            <contact><pair geom1="a" geom2="b" friction="0.7"/></contact>
+        </mujoco>

@@ -10,6 +10,94 @@ use sim_core::FlexBendingType;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
+// Attribute values
+// ============================================================================
+
+/// The first values of an attribute that holds `N`, as written.
+///
+/// MuJoCo 3.5.0 reads these attributes (`friction`, `solref`, `gear`, ...) with
+/// `exact = false` (`xml_util.cc` `ReadAttr`): a document may give the first
+/// `k` of the `N` values, and the others keep the value of the element's
+/// default class, else MuJoCo's default. So `friction="0.7"` on a geom is
+/// `[0.7, 0.005, 0.0001]`, and `[0.7, 0.1, 0.2]` under a class with
+/// `friction="1 0.1 0.2"`.
+#[derive(Debug, Clone, Copy)]
+pub struct Prefix<const N: usize> {
+    values: [f64; N],
+    len: usize,
+}
+
+impl<const N: usize> Prefix<N> {
+    /// The values given; `None` when there are none or more than `N`.
+    #[must_use]
+    pub fn new(given: &[f64]) -> Option<Self> {
+        if given.is_empty() || given.len() > N {
+            return None;
+        }
+        let mut values = [0.0; N];
+        values[..given.len()].copy_from_slice(given);
+        Some(Self {
+            values,
+            len: given.len(),
+        })
+    }
+
+    /// All `N` values, as given.
+    #[must_use]
+    pub fn full(values: [f64; N]) -> Self {
+        Self { values, len: N }
+    }
+
+    /// The values given, from 1 to `N` of them.
+    #[must_use]
+    pub fn given(&self) -> &[f64] {
+        &self.values[..self.len]
+    }
+
+    /// `base` with its first values replaced by the given ones.
+    #[must_use]
+    pub fn over(&self, base: [f64; N]) -> [f64; N] {
+        let mut out = base;
+        out[..self.len].copy_from_slice(self.given());
+        out
+    }
+
+    /// The given values followed by those of `base` past them: how a class's
+    /// values reach an element, or a parent class's reach its child.
+    #[must_use]
+    pub fn over_prefix(&self, base: &Self) -> Self {
+        let len = self.len.max(base.len);
+        let mut values = [0.0; N];
+        values[..len].copy_from_slice(&base.values[..len]);
+        values[..self.len].copy_from_slice(self.given());
+        Self { values, len }
+    }
+}
+
+impl<const N: usize> PartialEq for Prefix<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.given() == other.given()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<const N: usize> Serialize for Prefix<N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.given().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, const N: usize> Deserialize<'de> for Prefix<N> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let given = Vec::<f64>::deserialize(deserializer)?;
+        Self::new(&given).ok_or_else(|| {
+            serde::de::Error::custom(format!("expected 1 to {N} values, found {}", given.len()))
+        })
+    }
+}
+
+// ============================================================================
 // Global Options
 // ============================================================================
 
@@ -488,13 +576,13 @@ pub struct MjcfOption {
     pub o_margin: f64,
 
     /// Override contact solimp parameters.
-    pub o_solimp: Option<[f64; 5]>,
+    pub o_solimp: Option<Prefix<5>>,
 
     /// Override contact solref parameters.
-    pub o_solref: Option<[f64; 2]>,
+    pub o_solref: Option<Prefix<2>>,
 
     /// Override contact friction coefficients.
-    pub o_friction: Option<[f64; 5]>,
+    pub o_friction: Option<Prefix<5>>,
 
     // ========== Sleep ==========
     /// Velocity threshold for body sleeping (default: 1e-4).
@@ -655,13 +743,13 @@ pub struct MjcfJointDefaults {
     /// Position limit range [lower, upper].
     pub range: Option<(f64, f64)>,
     /// Solver reference parameters for joint limits [timeconst, dampratio].
-    pub solref_limit: Option<[f64; 2]>,
+    pub solref_limit: Option<Prefix<2>>,
     /// Solver impedance parameters for joint limits [d0, d_width, width, midpoint, power].
-    pub solimp_limit: Option<[f64; 5]>,
+    pub solimp_limit: Option<Prefix<5>>,
     /// Solver reference parameters for friction loss [timeconst, dampratio].
-    pub solreffriction: Option<[f64; 2]>,
+    pub solreffriction: Option<Prefix<2>>,
     /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
-    pub solimpfriction: Option<[f64; 5]>,
+    pub solimpfriction: Option<Prefix<5>>,
     /// Gravity compensation routing via actuator.
     pub actuatorgravcomp: Option<bool>,
     /// Joint limit activation margin.
@@ -677,7 +765,7 @@ pub struct MjcfGeomDefaults {
     /// Geom type.
     pub geom_type: Option<MjcfGeomType>,
     /// Friction coefficients.
-    pub friction: Option<Vector3<f64>>,
+    pub friction: Option<Prefix<3>>,
     /// Density for mass computation.
     pub density: Option<f64>,
     /// Explicit mass (overrides density).
@@ -699,9 +787,9 @@ pub struct MjcfGeomDefaults {
     /// Contact gap.
     pub gap: Option<f64>,
     /// Solver reference parameters for contacts [timeconst, dampratio].
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Solver impedance parameters for contacts [d0, d_width, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Default position.
@@ -727,7 +815,7 @@ pub struct MjcfGeomDefaults {
     /// Fluid shape for ellipsoid fluid model: `"none"` or `"ellipsoid"`.
     pub fluidshape: Option<FluidShape>,
     /// Fluid coefficients `[C_blunt, C_slender, C_ang, C_K, C_M]`.
-    pub fluidcoef: Option<[f64; 5]>,
+    pub fluidcoef: Option<Prefix<5>>,
     /// Per-element user data for default class inheritance.
     pub user: Option<Vec<f64>>,
     /// Default shell inertia for primitive geoms.
@@ -743,7 +831,7 @@ pub struct MjcfActuatorDefaults {
     /// Force range.
     pub forcerange: Option<(f64, f64)>,
     /// Gear ratio (6D: [tx ty tz rx ry rz]).
-    pub gear: Option<[f64; 6]>,
+    pub gear: Option<Prefix<6>>,
     /// Position gain (kp) for position actuators.
     pub kp: Option<f64>,
     /// Velocity gain (kv) for velocity actuators.
@@ -761,11 +849,11 @@ pub struct MjcfActuatorDefaults {
     /// Dynamics type default for `<general>` actuators.
     pub dyntype: Option<String>,
     /// Gain parameters default for `<general>` actuators.
-    pub gainprm: Option<Vec<f64>>,
+    pub gainprm: Option<Prefix<9>>,
     /// Bias parameters default for `<general>` actuators.
-    pub biasprm: Option<Vec<f64>>,
+    pub biasprm: Option<Prefix<9>>,
     /// Dynamics parameters default for `<general>` actuators.
-    pub dynprm: Option<Vec<f64>>,
+    pub dynprm: Option<Prefix<10>>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Whether activation is clamped to actrange.
@@ -844,13 +932,13 @@ pub struct MjcfTendonDefaults {
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Solver reference parameters for tendon limits [timeconst, dampratio].
-    pub solref_limit: Option<[f64; 2]>,
+    pub solref_limit: Option<Prefix<2>>,
     /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
-    pub solimp_limit: Option<[f64; 5]>,
+    pub solimp_limit: Option<Prefix<5>>,
     /// Solver reference parameters for friction loss [timeconst, dampratio].
-    pub solreffriction: Option<[f64; 2]>,
+    pub solreffriction: Option<Prefix<2>>,
     /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
-    pub solimpfriction: Option<[f64; 5]>,
+    pub solimpfriction: Option<Prefix<5>>,
     /// Contact margin for tendon limits.
     pub margin: Option<f64>,
     /// Default material asset name.
@@ -1023,7 +1111,7 @@ pub struct MjcfSiteDefaults {
     /// Site type (sphere, capsule, ellipsoid, cylinder, box).
     pub site_type: Option<String>,
     /// Site size.
-    pub size: Option<Vec<f64>>,
+    pub size: Option<Prefix<3>>,
     /// RGBA color.
     pub rgba: Option<Vector4<f64>>,
     /// Visualization group (0–5).
@@ -1055,13 +1143,13 @@ pub struct MjcfPairDefaults {
     /// Contact dimensionality (1, 3, 4, 6).
     pub condim: Option<i32>,
     /// 5-element friction: [tan1, tan2, torsional, roll1, roll2].
-    pub friction: Option<[f64; 5]>,
+    pub friction: Option<Prefix<5>>,
     /// Solver reference (normal direction).
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Solver reference (friction directions).
-    pub solreffriction: Option<[f64; 2]>,
+    pub solreffriction: Option<Prefix<2>>,
     /// Solver impedance.
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Distance threshold for contact activation.
     pub margin: Option<f64>,
     /// Contact included if distance < margin - gap.
@@ -1080,9 +1168,9 @@ pub struct MjcfEqualityDefaults {
     /// Whether the constraint is initially active.
     pub active: Option<bool>,
     /// Solver reference parameters [timeconst, dampratio].
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
 }
 
 // ============================================================================
@@ -1271,7 +1359,7 @@ pub struct MjcfGeom {
     /// Alternative specification using fromto (start and end points).
     pub fromto: Option<[f64; 6]>,
     /// Friction coefficients [sliding, torsional, rolling].
-    pub friction: Option<Vector3<f64>>,
+    pub friction: Option<Prefix<3>>,
     /// Density for mass computation (kg/m³).
     pub density: Option<f64>,
     /// Explicit mass (overrides density).
@@ -1290,9 +1378,9 @@ pub struct MjcfGeom {
     pub hfield: Option<String>,
     /// Solver reference parameters for contacts [timeconst, dampratio].
     /// Controls contact softness/stiffness.
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Solver impedance parameters for contacts [d0, d_width, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Contact priority. When priorities differ, higher-priority geom's params win.
     pub priority: Option<i32>,
     /// Solver mixing weight for contact parameter combination (default 1.0).
@@ -1308,7 +1396,7 @@ pub struct MjcfGeom {
     /// Fluid shape for ellipsoid fluid model: `"none"` or `"ellipsoid"`.
     pub fluidshape: Option<FluidShape>,
     /// Fluid coefficients `[C_blunt, C_slender, C_ang, C_K, C_M]`.
-    pub fluidcoef: Option<[f64; 5]>,
+    pub fluidcoef: Option<Prefix<5>>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
     /// Shell inertia for primitive geoms. `None` = not specified (volume).
@@ -1522,13 +1610,13 @@ pub struct MjcfJoint {
     pub group: Option<i32>,
     /// Solver reference parameters for joint limits [timeconst, dampratio].
     /// Controls how stiffly/softly limits are enforced.
-    pub solref_limit: Option<[f64; 2]>,
+    pub solref_limit: Option<Prefix<2>>,
     /// Solver impedance parameters for joint limits [d0, d_width, width, midpoint, power].
-    pub solimp_limit: Option<[f64; 5]>,
+    pub solimp_limit: Option<Prefix<5>>,
     /// Solver reference parameters for friction loss [timeconst, dampratio].
-    pub solreffriction: Option<[f64; 2]>,
+    pub solreffriction: Option<Prefix<2>>,
     /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
-    pub solimpfriction: Option<[f64; 5]>,
+    pub solimpfriction: Option<Prefix<5>>,
     /// If true, gravcomp routes through `qfrc_actuator` instead of `qfrc_passive`.
     pub actuatorgravcomp: Option<bool>,
     /// Joint limit activation margin.
@@ -1640,7 +1728,7 @@ pub struct MjcfSite {
     /// ellipsoid or box site its position, orientation and length.
     pub fromto: Option<[f64; 6]>,
     /// Size, read over its class's (a touch sensor's zone).
-    pub size: Option<Vec<f64>>,
+    pub size: Option<Prefix<3>>,
     /// RGBA color.
     pub rgba: Option<Vector4<f64>>,
     /// Visualization group (0–5). Default 0.
@@ -1697,10 +1785,10 @@ pub struct MjcfConnect {
     pub anchor: Vector3<f64>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
     /// Controls constraint softness/stiffness.
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     /// Controls constraint dynamics.
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Whether this constraint is active (None = not explicitly set).
     pub active: Option<bool>,
 }
@@ -1758,14 +1846,14 @@ impl MjcfConnect {
     /// Set solver reference parameters.
     #[must_use]
     pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
-        self.solref = Some(solref);
+        self.solref = Some(Prefix::full(solref));
         self
     }
 
     /// Set solver impedance parameters.
     #[must_use]
     pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
-        self.solimp = Some(solimp);
+        self.solimp = Some(Prefix::full(solimp));
         self
     }
 }
@@ -1790,9 +1878,9 @@ pub struct MjcfWeld {
     /// Relative position offset between the two anchor frames.
     pub relpose: Option<[f64; 7]>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Whether this constraint is active (None = not explicitly set).
     pub active: Option<bool>,
 }
@@ -1858,14 +1946,14 @@ impl MjcfWeld {
     /// Set solver reference parameters.
     #[must_use]
     pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
-        self.solref = Some(solref);
+        self.solref = Some(Prefix::full(solref));
         self
     }
 
     /// Set solver impedance parameters.
     #[must_use]
     pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
-        self.solimp = Some(solimp);
+        self.solimp = Some(Prefix::full(solimp));
         self
     }
 }
@@ -1889,9 +1977,9 @@ pub struct MjcfJointEquality {
     /// Default is `[0, 1]` meaning `q2 = q1` (mimic).
     pub polycoef: Vec<f64>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Whether this constraint is active (None = not explicitly set).
     pub active: Option<bool>,
 }
@@ -1973,14 +2061,14 @@ impl MjcfJointEquality {
     /// Set solver reference parameters.
     #[must_use]
     pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
-        self.solref = Some(solref);
+        self.solref = Some(Prefix::full(solref));
         self
     }
 
     /// Set solver impedance parameters.
     #[must_use]
     pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
-        self.solimp = Some(solimp);
+        self.solimp = Some(Prefix::full(solimp));
         self
     }
 }
@@ -2002,9 +2090,9 @@ pub struct MjcfDistance {
     /// Target distance between geom centers.
     pub distance: Option<f64>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Whether this constraint is active (None = not explicitly set).
     pub active: Option<bool>,
 }
@@ -2062,14 +2150,14 @@ impl MjcfDistance {
     /// Set solver reference parameters.
     #[must_use]
     pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
-        self.solref = Some(solref);
+        self.solref = Some(Prefix::full(solref));
         self
     }
 
     /// Set solver impedance parameters.
     #[must_use]
     pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
-        self.solimp = Some(solimp);
+        self.solimp = Some(Prefix::full(solimp));
         self
     }
 }
@@ -2093,9 +2181,9 @@ pub struct MjcfTendonEquality {
     /// Default is `[0, 1]` meaning equal deviation from reference (trailing zeros implicit).
     pub polycoef: Vec<f64>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Whether this constraint is active (None = not explicitly set).
     pub active: Option<bool>,
 }
@@ -2155,14 +2243,14 @@ impl MjcfTendonEquality {
     /// Set solver reference parameters.
     #[must_use]
     pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
-        self.solref = Some(solref);
+        self.solref = Some(Prefix::full(solref));
         self
     }
 
     /// Set solver impedance parameters.
     #[must_use]
     pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
-        self.solimp = Some(solimp);
+        self.solimp = Some(Prefix::full(solimp));
         self
     }
 }
@@ -2418,7 +2506,7 @@ pub struct CompositeGeom {
     /// Visualization group.
     pub group: Option<i32>,
     /// Friction coefficients [sliding, torsional, rolling].
-    pub friction: Option<[f64; 3]>,
+    pub friction: Option<Prefix<3>>,
     /// Explicit mass.
     pub mass: Option<f64>,
     /// Density for mass computation (kg/m³).
@@ -2426,9 +2514,9 @@ pub struct CompositeGeom {
     /// Solver mixing weight.
     pub solmix: Option<f64>,
     /// Solver reference parameters for contacts [timeconst, dampratio].
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Solver impedance parameters for contacts.
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Contact margin.
     pub margin: Option<f64>,
     /// Contact gap.
@@ -2699,7 +2787,7 @@ pub struct MjcfActuator {
     /// MuJoCo validates `cranklength > 0` at compile time.
     pub cranklength: Option<f64>,
     /// Gear ratio (6D: [tx ty tz rx ry rz]).
-    pub gear: [f64; 6],
+    pub gear: Option<Prefix<6>>,
     /// Control range [lower, upper].
     pub ctrlrange: Option<(f64, f64)>,
     /// Force range [lower, upper].
@@ -2791,15 +2879,18 @@ pub struct MjcfActuator {
     /// Dynamics type: "none", "integrator", "filter", "filterexact", "muscle".
     /// None means use default (None/direct). Only parsed for `<general>`.
     pub dyntype: Option<String>,
-    /// Gain parameters (up to 9 elements, zero-padded).
-    /// None means use default [1, 0, ..., 0]. Only parsed for `<general>`.
-    pub gainprm: Option<Vec<f64>>,
-    /// Bias parameters (up to 9 elements, zero-padded).
-    /// None means use default [0, ..., 0]. Only parsed for `<general>`.
-    pub biasprm: Option<Vec<f64>>,
-    /// Dynamics parameters (up to 3 elements, zero-padded).
-    /// None means use default [1, 0, 0]. Only parsed for `<general>`.
-    pub dynprm: Option<Vec<f64>>,
+    /// Gain parameters, up to nine (MuJoCo's `exact = false`): those not
+    /// written keep the class's, else MuJoCo's default [1, 0, ..., 0]; a
+    /// tenth is read and refused unless it is zero (D-GAINPRM-10). Only
+    /// parsed for `<general>`.
+    pub gainprm: Option<Prefix<9>>,
+    /// Bias parameters, up to nine, as `gainprm` (MuJoCo's default
+    /// [0, ..., 0]). Only parsed for `<general>`.
+    pub biasprm: Option<Prefix<9>>,
+    /// Dynamics parameters, up to ten (MuJoCo's `exact = false`): those not
+    /// written keep the class's, else MuJoCo's default [1, 0, ..., 0]. Only
+    /// parsed for `<general>`.
+    pub dynprm: Option<Prefix<10>>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
     /// Plugin reference (plugin-controlled actuator). §66.
@@ -2821,7 +2912,7 @@ impl Default for MjcfActuator {
             cranksite: None,
             slidersite: None,
             cranklength: None,
-            gear: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            gear: None,
             ctrlrange: None,
             forcerange: None,
             ctrllimited: None,
@@ -3048,13 +3139,13 @@ pub struct MjcfTendon {
     /// Visualization group (0–5). Default 0.
     pub group: Option<i32>,
     /// Solver reference parameters for tendon limits [timeconst, dampratio].
-    pub solref_limit: Option<[f64; 2]>,
+    pub solref_limit: Option<Prefix<2>>,
     /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
-    pub solimp_limit: Option<[f64; 5]>,
+    pub solimp_limit: Option<Prefix<5>>,
     /// Solver reference parameters for friction loss [timeconst, dampratio].
-    pub solreffriction: Option<[f64; 2]>,
+    pub solreffriction: Option<Prefix<2>>,
     /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
-    pub solimpfriction: Option<[f64; 5]>,
+    pub solimpfriction: Option<Prefix<5>>,
     /// Contact margin for tendon limits.
     pub margin: Option<f64>,
     /// Material asset name (for rendering).
@@ -3854,13 +3945,13 @@ pub struct MjcfContactPair {
     /// Contact dimensionality (1, 3, 4, 6).
     pub condim: Option<i32>,
     /// 5-element friction: [tan1, tan2, torsional, roll1, roll2].
-    pub friction: Option<[f64; 5]>,
+    pub friction: Option<Prefix<5>>,
     /// Solver reference (normal direction).
-    pub solref: Option<[f64; 2]>,
+    pub solref: Option<Prefix<2>>,
     /// Solver reference (friction directions).
-    pub solreffriction: Option<[f64; 2]>,
+    pub solreffriction: Option<Prefix<2>>,
     /// Solver impedance.
-    pub solimp: Option<[f64; 5]>,
+    pub solimp: Option<Prefix<5>>,
     /// Distance threshold for contact activation.
     pub margin: Option<f64>,
     /// Contact included if distance < margin - gap.

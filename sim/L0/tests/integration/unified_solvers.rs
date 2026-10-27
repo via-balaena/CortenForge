@@ -1277,7 +1277,7 @@ fn test_s32_pyramidal_condim3_produces_4_facet_rows() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1414,7 +1414,7 @@ fn test_s32_pyramidal_pgs_facet_forces_nonnegative() {
                 <body name="ball" pos="0 0 0.05">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1486,7 +1486,7 @@ fn test_s32_pyramidal_r_scaling_all_facets_identical() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="{friction0} {friction0} 0.005 0.001 0.001"/>
+                          condim="3" friction="{friction0} {friction0} 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1552,7 +1552,7 @@ fn test_s32_pyramidal_shared_pos_and_margin() {
                 <body name="ball" pos="0 0 0.08">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1599,7 +1599,7 @@ fn test_s32_pyramidal_newton_no_cone_state() {
                 <body name="ball" pos="0 0 0.08">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1637,7 +1637,7 @@ fn test_s32_pyramidal_cg_solver() {
                 <body name="ball" pos="0 0 0.08">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1682,7 +1682,7 @@ fn test_s32_pyramidal_nonzero_k() {
                 <body name="ball" pos="0 0 0.08">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1724,7 +1724,7 @@ fn test_s32_elliptic_no_regression() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1837,7 +1837,7 @@ fn test_s32_ac12_pyramidal_flat_ground_mujoco_cross_validation() {
                 <body name="ball" pos="0 0 0.1">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -1916,7 +1916,7 @@ fn test_s32_ac13_pyramidal_inclined_plane_mujoco_cross_validation() {
                 <body name="ball" pos="0 0 0.115">
                     <joint type="free"/>
                     <geom name="sphere" type="sphere" size="0.1" mass="1.0"
-                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                          condim="3" friction="0.5 0.5 0.005"/>
                 </body>
             </worldbody>
         </mujoco>

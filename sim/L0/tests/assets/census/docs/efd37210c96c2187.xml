@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><freejoint/><geom size="0.1" group="99999999999"/></body></worldbody></mujoco>

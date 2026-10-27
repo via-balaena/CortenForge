@@ -1,0 +1,5 @@
+<mujoco>
+            <default><motor gear="50"/></default>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator><motor joint="j" gear="1"/></actuator>
+        </mujoco>

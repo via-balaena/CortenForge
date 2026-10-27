@@ -4,10 +4,13 @@
 //! Handles geom/body name resolution, geom-combination fallbacks for unspecified
 //! pair attributes, and deduplication with last-wins semantics.
 
-use super::ModelBuilder;
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::MjcfContact;
 use sim_core::ContactPair;
+
+/// MuJoCo's default `<pair friction>` (`user_init.c` `mjs_defaultPair`).
+const PAIR_FRICTION: [f64; 5] = [1.0, 1.0, 0.005, 0.0001, 0.0001];
 
 impl ModelBuilder {
     /// Process `<contact>` element: resolve `<pair>` and `<exclude>` entries.
@@ -41,40 +44,54 @@ impl ModelBuilder {
                 .condim
                 .unwrap_or_else(|| self.geom_condim[g1].max(self.geom_condim[g2]));
 
-            let friction = pair.friction.unwrap_or_else(|| {
-                let f1 = self.geom_friction[g1];
-                let f2 = self.geom_friction[g2];
-                // Geometric mean in 3D, then expand to 5D: [s, s, t, r, r]
-                let s = (f1.x * f2.x).sqrt();
-                let t = (f1.y * f2.y).sqrt();
-                let r = (f1.z * f2.z).sqrt();
-                [s, s, t, r, r]
-            });
+            // A written value lies over MuJoCo's pair default (`mjs_defaultPair`;
+            // measured on 3.5.0: `friction="0.7"` is 0.7 1 0.005 0.0001 0.0001);
+            // an unwritten one comes from the two geoms (ledger L147).
+            let friction = pair
+                .friction
+                .map(|f| f.over(PAIR_FRICTION))
+                .unwrap_or_else(|| {
+                    let f1 = self.geom_friction[g1];
+                    let f2 = self.geom_friction[g2];
+                    // Geometric mean in 3D, then expand to 5D: [s, s, t, r, r]
+                    let s = (f1.x * f2.x).sqrt();
+                    let t = (f1.y * f2.y).sqrt();
+                    let r = (f1.z * f2.z).sqrt();
+                    [s, s, t, r, r]
+                });
 
-            let solref = pair.solref.unwrap_or_else(|| {
-                // Element-wise min (our standing approximation)
-                [
-                    self.geom_solref[g1][0].min(self.geom_solref[g2][0]),
-                    self.geom_solref[g1][1].min(self.geom_solref[g2][1]),
-                ]
-            });
+            let solref = pair
+                .solref
+                .map(|s| s.over(DEFAULT_SOLREF))
+                .unwrap_or_else(|| {
+                    // Element-wise min (our standing approximation)
+                    [
+                        self.geom_solref[g1][0].min(self.geom_solref[g2][0]),
+                        self.geom_solref[g1][1].min(self.geom_solref[g2][1]),
+                    ]
+                });
 
-            let solimp = pair.solimp.unwrap_or_else(|| {
-                // Element-wise max (our standing approximation)
-                let s1 = self.geom_solimp[g1];
-                let s2 = self.geom_solimp[g2];
-                [
-                    s1[0].max(s2[0]),
-                    s1[1].max(s2[1]),
-                    s1[2].max(s2[2]),
-                    s1[3].max(s2[3]),
-                    s1[4].max(s2[4]),
-                ]
-            });
+            let solimp = pair
+                .solimp
+                .map(|s| s.over(DEFAULT_SOLIMP))
+                .unwrap_or_else(|| {
+                    // Element-wise max (our standing approximation)
+                    let s1 = self.geom_solimp[g1];
+                    let s2 = self.geom_solimp[g2];
+                    [
+                        s1[0].max(s2[0]),
+                        s1[1].max(s2[1]),
+                        s1[2].max(s2[2]),
+                        s1[3].max(s2[3]),
+                        s1[4].max(s2[4]),
+                    ]
+                });
 
             // solreffriction: [0,0] sentinel means "use solref" (MuJoCo convention).
             // Only explicit <pair solreffriction="..."/> sets a nonzero value.
-            let solreffriction = pair.solreffriction.unwrap_or([0.0, 0.0]);
+            let solreffriction = pair
+                .solreffriction
+                .map_or([0.0, 0.0], |s| s.over([0.0, 0.0]));
 
             // margin/gap: geom-level not yet parsed, default to 0.0
             let margin = pair.margin.unwrap_or(0.0);

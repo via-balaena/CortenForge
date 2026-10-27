@@ -1,0 +1,1 @@
+<mujoco><worldbody/><deformable><flexcomp name="f" type="grid" count="2 2 1" spacing="1.0" dim="2"/></deformable></mujoco>

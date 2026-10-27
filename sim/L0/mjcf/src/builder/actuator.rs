@@ -12,6 +12,9 @@ use super::ModelBuilder;
 use crate::error::{ElementKind, MjcfError, Result};
 use crate::types::{MjcfActuator, MjcfActuatorType};
 
+/// MuJoCo's default `gear` (`user_init.c` `mjs_defaultActuator`).
+const DEFAULT_GEAR: [f64; 6] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
 impl ModelBuilder {
     pub(crate) fn process_actuator(&mut self, actuator: &MjcfActuator) -> Result<usize> {
         let act_id = self.actuator_trntype.len();
@@ -84,7 +87,12 @@ impl ModelBuilder {
         self.actuator_trntype.push(trntype);
         self.actuator_dyntype.push(dyntype);
         self.actuator_trnid.push(trnid);
-        self.actuator_gear.push(actuator.gear);
+        // MuJoCo's default gear, `1 0 0 0 0 0`, under the values written.
+        self.actuator_gear.push(
+            actuator
+                .gear
+                .map_or(DEFAULT_GEAR, |gear| gear.over(DEFAULT_GEAR)),
+        );
 
         // Gate ctrlrange/forcerange on ctrllimited/forcelimited (MuJoCo semantics).
         // When limited=false, range is effectively unbounded regardless of attribute value.
@@ -526,12 +534,12 @@ fn compute_general_hillmuscle(
     // [range_lo, range_hi, F0(-1=auto), scale, L_opt, L_slack, vmax, penn, stiff, 0]
     let hill_gainprm_default = [0.75, 1.05, -1.0, 200.0, 0.10, 0.20, 10.0, 0.0, 35.0];
     let gp = if let Some(v) = &actuator.gainprm {
-        floats_to_array(v, hill_gainprm_default)
+        v.over(hill_gainprm_default)
     } else {
         hill_gainprm_default
     };
     let bp = if let Some(v) = &actuator.biasprm {
-        floats_to_array(v, [0.0; 9])
+        v.over([0.0; 9])
     } else {
         [0.0; 9]
     };
@@ -543,7 +551,7 @@ fn compute_general_hillmuscle(
         d
     };
     let dp = if let Some(v) = &actuator.dynprm {
-        floats_to_array(v, hill_dynprm_default)
+        v.over(hill_dynprm_default)
     } else {
         hill_dynprm_default
     };
@@ -569,12 +577,12 @@ fn compute_general_millardmuscle(
     // [range_lo, range_hi, F0(-1=auto), scale, L_opt, L_slack, vmax, penn, stiff].
     let millard_gainprm_default = [0.75, 1.05, -1.0, 200.0, 0.10, 0.20, 10.0, 0.0, 35.0];
     let gp = if let Some(v) = &actuator.gainprm {
-        floats_to_array(v, millard_gainprm_default)
+        v.over(millard_gainprm_default)
     } else {
         millard_gainprm_default
     };
     let bp = if let Some(v) = &actuator.biasprm {
-        floats_to_array(v, [0.0; 9])
+        v.over([0.0; 9])
     } else {
         [0.0; 9]
     };
@@ -585,7 +593,7 @@ fn compute_general_millardmuscle(
         d
     };
     let dp = if let Some(v) = &actuator.dynprm {
-        floats_to_array(v, dynprm_default)
+        v.over(dynprm_default)
     } else {
         dynprm_default
     };
@@ -610,12 +618,12 @@ fn compute_general_standard(
         d
     };
     let gp = if let Some(v) = &actuator.gainprm {
-        floats_to_array(v, gainprm_default)
+        v.over(gainprm_default)
     } else {
         gainprm_default
     };
     let bp = if let Some(v) = &actuator.biasprm {
-        floats_to_array(v, [0.0; 9])
+        v.over([0.0; 9])
     } else {
         [0.0; 9]
     };
@@ -625,7 +633,7 @@ fn compute_general_standard(
         d
     };
     let dp = if let Some(v) = &actuator.dynprm {
-        floats_to_array(v, dynprm_default)
+        v.over(dynprm_default)
     } else {
         dynprm_default
     };
@@ -668,16 +676,6 @@ fn parse_dyntype(s: &str) -> Result<ActuatorDynamics> {
         "user" => Ok(ActuatorDynamics::User),
         _ => Err(MjcfError::invalid_keyword("general", "dyntype", s)),
     }
-}
-
-/// Convert a variable-length parsed float vector into a fixed-size array,
-/// padding with the given default value. Truncates if input exceeds `N`.
-fn floats_to_array<const N: usize>(input: &[f64], default: [f64; N]) -> [f64; N] {
-    let mut out = default;
-    for (i, &v) in input.iter().enumerate().take(N) {
-        out[i] = v;
-    }
-    out
 }
 
 #[cfg(test)]
@@ -808,6 +806,30 @@ mod tests {
             </mujoco>
             "#
         )
+    }
+
+    /// A short biasprm or dynprm on a HillMuscle or MillardMuscle (sim-mjcf
+    /// extensions) keeps that type's defaults past the values written.
+    #[test]
+    fn test_muscle_extension_short_bias_and_dyn_params() {
+        for dyntype in ["hillmuscle", "millardmuscle"] {
+            let xml = general_actuator_model(&format!(
+                r#"<general joint="j" dyntype="{dyntype}" biasprm="7" dynprm="0.02"/>"#
+            ));
+            let model = load_model(&xml).expect("should load");
+            let bias = [7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+            for (got, want) in model.actuator_biasprm[0].iter().zip(bias) {
+                assert!((got - want).abs() < 1e-10, "{dyntype} biasprm");
+            }
+            assert!(
+                (model.actuator_dynprm[0][0] - 0.02).abs() < 1e-10,
+                "{dyntype}"
+            );
+            assert!(
+                (model.actuator_dynprm[0][1] - 0.04).abs() < 1e-10,
+                "{dyntype}"
+            );
+        }
     }
 
     /// Criterion 1: Explicit gaintype/biastype on `<general>`.
@@ -1006,9 +1028,11 @@ mod tests {
         let model = load_model(xml).expect("should load");
         // Explicit gaintype="fixed" overrides class default "affine"
         assert_eq!(model.actuator_gaintype[0], GainType::Fixed);
-        // Explicit gainprm="50" overrides class default "0 0 -10"
+        // Explicit gainprm="50" is written over class default "0 0 -10": the
+        // values not written keep the class's (MuJoCo 3.5.0: 50 0 -10 0 ...).
         assert!((model.actuator_gainprm[0][0] - 50.0).abs() < 1e-10);
-        for i in 1..9 {
+        assert!((model.actuator_gainprm[0][2] - (-10.0)).abs() < 1e-10);
+        for i in [1, 3, 4, 5, 6, 7, 8] {
             assert!((model.actuator_gainprm[0][i]).abs() < 1e-10);
         }
     }
@@ -1113,22 +1137,15 @@ mod tests {
         }
     }
 
-    /// Criterion 13: Extra gainprm elements (>9) silently truncated.
+    /// Criterion 13: a nonzero tenth gainprm element is refused, not
+    /// truncated.
     #[test]
-    fn test_general_extra_gainprm_truncated() {
+    fn test_general_tenth_gainprm_is_a_stated_limitation() {
+        // MuJoCo 3.5.0 stores ten gain parameters, sim-core nine: a nonzero
+        // tenth is refused (D-GAINPRM-10).
         let xml = general_actuator_model(r#"<general joint="j" gainprm="1 2 3 4 5 6 7 8 9 10"/>"#);
-        let model = load_model(&xml).expect("should load");
-
-        // First 9 elements stored
-        let expected = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
-        for (i, &exp) in expected.iter().enumerate() {
-            assert!(
-                (model.actuator_gainprm[0][i] - exp).abs() < 1e-10,
-                "gainprm[{i}] expected {exp}, got {}",
-                model.actuator_gainprm[0][i]
-            );
-        }
-        // 10th element (index 9) is silently dropped — no error, and array is only 9 elements
+        let err = load_model(&xml).unwrap_err();
+        assert!(matches!(err, MjcfError::Unsupported { .. }), "{err}");
     }
 
     // ── HillMuscle builder tests (Spec C: T10, T11, T14) ──

@@ -11,34 +11,35 @@ use crate::types::{
     MjcfJacobianType, MjcfModel, MjcfOption, MjcfSolverType,
 };
 
-use super::attrs::{
-    attr_fixed, get_attribute_opt, parse_float_attr, parse_int_attr, parse_vector3,
-};
+use super::attrs::Attrs;
+use crate::error::ValueCount;
 
 /// Parse `<size>` element attributes into MjcfModel nuser_* fields.
 /// Multiple `<size>` elements merge with last-writer-wins per attribute.
-pub(super) fn parse_size_attrs(e: &BytesStart, model: &mut MjcfModel) {
-    if let Some(val) = parse_int_attr(e, "nuser_body") {
+pub(super) fn parse_size_attrs(e: &BytesStart, model: &mut MjcfModel) -> Result<()> {
+    let a = Attrs::new(e)?;
+    if let Some(val) = a.int("nuser_body")? {
         model.nuser_body = val;
     }
-    if let Some(val) = parse_int_attr(e, "nuser_jnt") {
+    if let Some(val) = a.int("nuser_jnt")? {
         model.nuser_jnt = val;
     }
-    if let Some(val) = parse_int_attr(e, "nuser_geom") {
+    if let Some(val) = a.int("nuser_geom")? {
         model.nuser_geom = val;
     }
-    if let Some(val) = parse_int_attr(e, "nuser_site") {
+    if let Some(val) = a.int("nuser_site")? {
         model.nuser_site = val;
     }
-    if let Some(val) = parse_int_attr(e, "nuser_tendon") {
+    if let Some(val) = a.int("nuser_tendon")? {
         model.nuser_tendon = val;
     }
-    if let Some(val) = parse_int_attr(e, "nuser_actuator") {
+    if let Some(val) = a.int("nuser_actuator")? {
         model.nuser_actuator = val;
     }
-    if let Some(val) = parse_int_attr(e, "nuser_sensor") {
+    if let Some(val) = a.int("nuser_sensor")? {
         model.nuser_sensor = val;
     }
+    Ok(())
 }
 
 /// Parse option element.
@@ -70,126 +71,138 @@ pub(super) fn parse_option<R: BufRead>(
 
 /// Parse option attributes only.
 pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
+    let a = Attrs::new(e)?;
     let mut option = MjcfOption::default();
 
     // Core simulation
-    if let Some(ts) = parse_float_attr(e, "timestep") {
+    if let Some(ts) = a.real("timestep")? {
         option.timestep = ts;
     }
-    if let Some(integrator) = get_attribute_opt(e, "integrator")
-        && let Some(int) = MjcfIntegrator::from_str(&integrator)
+    if let Some(integrator) = a.text("integrator")
+        && let Some(int) = MjcfIntegrator::from_str(integrator)
     {
         option.integrator = int;
     }
 
     // Solver configuration
-    if let Some(solver) = get_attribute_opt(e, "solver")
-        && let Some(s) = MjcfSolverType::from_str(&solver)
+    if let Some(solver) = a.text("solver")
+        && let Some(s) = MjcfSolverType::from_str(solver)
     {
         option.solver = s;
     }
-    if let Some(iter) = parse_int_attr(e, "iterations") {
+    if let Some(iter) = a.int("iterations")? {
         option.iterations = iter.max(0) as usize;
     }
-    if let Some(tol) = parse_float_attr(e, "tolerance") {
+    if let Some(tol) = a.real("tolerance")? {
         option.tolerance = tol;
     }
-    if let Some(ls_iter) = parse_int_attr(e, "ls_iterations") {
+    if let Some(ls_iter) = a.int("ls_iterations")? {
         option.ls_iterations = ls_iter.max(0) as usize;
     }
-    if let Some(ls_tol) = parse_float_attr(e, "ls_tolerance") {
+    if let Some(ls_tol) = a.real("ls_tolerance")? {
         option.ls_tolerance = ls_tol;
     }
-    if let Some(noslip) = parse_int_attr(e, "noslip_iterations") {
+    if let Some(noslip) = a.int("noslip_iterations")? {
         option.noslip_iterations = noslip.max(0) as usize;
     }
-    if let Some(noslip_tol) = parse_float_attr(e, "noslip_tolerance") {
+    if let Some(noslip_tol) = a.real("noslip_tolerance")? {
         option.noslip_tolerance = noslip_tol;
     }
-    if let Some(ccd) = parse_int_attr(e, "ccd_iterations") {
+    if let Some(ccd) = a.int("ccd_iterations")? {
         option.ccd_iterations = ccd.max(0) as usize;
     }
-    if let Some(ccd_tol) = parse_float_attr(e, "ccd_tolerance") {
+    if let Some(ccd_tol) = a.real("ccd_tolerance")? {
         option.ccd_tolerance = ccd_tol;
     }
-    if let Some(sdf_iter) = parse_int_attr(e, "sdf_iterations") {
+    if let Some(sdf_iter) = a.int("sdf_iterations")? {
         option.sdf_iterations = sdf_iter.max(0) as usize;
     }
-    if let Some(sdf_init) = parse_int_attr(e, "sdf_initpoints") {
+    if let Some(sdf_init) = a.int("sdf_initpoints")? {
         option.sdf_initpoints = sdf_init.max(0) as usize;
     }
 
     // Contact configuration
-    if let Some(cone) = get_attribute_opt(e, "cone")
-        && let Some(c) = MjcfConeType::from_str(&cone)
+    if let Some(cone) = a.text("cone")
+        && let Some(c) = MjcfConeType::from_str(cone)
     {
         option.cone = c;
     }
-    if let Some(jacobian) = get_attribute_opt(e, "jacobian")
-        && let Some(j) = MjcfJacobianType::from_str(&jacobian)
+    if let Some(jacobian) = a.text("jacobian")
+        && let Some(j) = MjcfJacobianType::from_str(jacobian)
     {
         option.jacobian = j;
     }
-    if let Some(impratio) = parse_float_attr(e, "impratio") {
+    if let Some(impratio) = a.real("impratio")? {
         option.impratio = impratio;
     }
-    if let Some(regularization) = parse_float_attr(e, "regularization") {
+    if let Some(regularization) = a.real("regularization")? {
         option.regularization = regularization;
     }
-    if let Some(fsmooth) = parse_float_attr(e, "friction_smoothing") {
+    if let Some(fsmooth) = a.real("friction_smoothing")? {
         option.friction_smoothing = fsmooth;
     }
 
     // Physics environment
-    if let Some(grav) = get_attribute_opt(e, "gravity") {
-        option.gravity = parse_vector3(&grav)?;
+    if let Some(grav) = a.vec3("gravity")? {
+        option.gravity = grav;
     }
-    if let Some(wind) = get_attribute_opt(e, "wind") {
-        option.wind = parse_vector3(&wind)?;
+    if let Some(wind) = a.vec3("wind")? {
+        option.wind = wind;
     }
-    if let Some(magnetic) = get_attribute_opt(e, "magnetic") {
-        option.magnetic = parse_vector3(&magnetic)?;
+    if let Some(magnetic) = a.vec3("magnetic")? {
+        option.magnetic = magnetic;
     }
-    if let Some(density) = parse_float_attr(e, "density") {
+    if let Some(density) = a.real("density")? {
         option.density = density;
     }
-    if let Some(viscosity) = parse_float_attr(e, "viscosity") {
+    if let Some(viscosity) = a.real("viscosity")? {
         option.viscosity = viscosity;
     }
 
     // Constraint limits
-    if let Some(nconmax) = parse_int_attr(e, "nconmax") {
+    if let Some(nconmax) = a.int("nconmax")? {
         option.nconmax = nconmax.max(0) as usize;
     }
-    if let Some(njmax) = parse_int_attr(e, "njmax") {
+    if let Some(njmax) = a.int("njmax")? {
         option.njmax = njmax.max(0) as usize;
     }
 
     // Overrides
-    if let Some(o_margin) = parse_float_attr(e, "o_margin") {
+    if let Some(o_margin) = a.real("o_margin")? {
         option.o_margin = o_margin;
     }
-    option.o_solimp = attr_fixed::<5>(e, "o_solimp")?;
-    option.o_solref = attr_fixed::<2>(e, "o_solref")?;
-    option.o_friction = attr_fixed::<5>(e, "o_friction")?;
+    option.o_solimp = a.prefix("o_solimp")?;
+    option.o_solref = a.prefix("o_solref")?;
+    option.o_friction = a.prefix("o_friction")?;
 
     // Sleep
-    if let Some(st) = parse_float_attr(e, "sleep_tolerance") {
+    if let Some(st) = a.real("sleep_tolerance")? {
         option.sleep_tolerance = st;
     }
 
-    // Per-group actuator disabling
-    if let Some(groups_str) = get_attribute_opt(e, "actuatorgroupdisable") {
-        for token in groups_str.split_whitespace() {
-            if let Ok(group) = token.parse::<i32>()
-                && (0..=30).contains(&group)
-            {
-                // `group` is bound to 0..=30 by the contains check above.
-                #[allow(clippy::cast_sign_loss)]
-                {
-                    option.actuatorgroupdisable |= 1u32 << (group as u32);
-                }
-            }
+    // Per-group actuator disabling: up to 31 groups, each in 0..=30
+    // (`xml_native_reader.cc` reads 31 with `exact = false` and refuses a
+    // group outside that range).
+    if let Some(groups) = a.int_vector("actuatorgroupdisable")? {
+        if groups.len() > 31 {
+            return Err(a.wrong_count(
+                "actuatorgroupdisable",
+                ValueCount::AtMost(31),
+                groups.len(),
+            ));
+        }
+        for group in groups {
+            let bit = u32::try_from(group)
+                .ok()
+                .filter(|bit| *bit <= 30)
+                .ok_or_else(|| {
+                    MjcfError::invalid_value(
+                        "option",
+                        "actuatorgroupdisable",
+                        format!("group {group} is not in 0..=30"),
+                    )
+                })?;
+            option.actuatorgroupdisable |= 1u32 << bit;
         }
     }
 
@@ -198,10 +211,11 @@ pub(super) fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
 
 /// Parse compiler element attributes.
 pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
+    let a = Attrs::new(e)?;
     let mut compiler = MjcfCompiler::default();
 
     // A1. angle — angular unit
-    if let Some(angle) = get_attribute_opt(e, "angle") {
+    if let Some(angle) = a.text("angle") {
         match angle.to_lowercase().as_str() {
             "degree" => compiler.angle = AngleUnit::Degree,
             "radian" => compiler.angle = AngleUnit::Radian,
@@ -212,7 +226,7 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A2. eulerseq — Euler rotation sequence
-    if let Some(seq) = get_attribute_opt(e, "eulerseq") {
+    if let Some(seq) = a.text("eulerseq") {
         if seq.len() != 3
             || !seq
                 .chars()
@@ -224,27 +238,27 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
                 format!("expected 3 characters from {{x,y,z,X,Y,Z}}, got '{seq}'"),
             ));
         }
-        compiler.eulerseq = seq;
+        seq.clone_into(&mut compiler.eulerseq);
     }
 
     // A3. meshdir / texturedir / assetdir — asset path resolution
-    if let Some(meshdir) = get_attribute_opt(e, "meshdir") {
+    if let Some(meshdir) = a.string("meshdir") {
         compiler.meshdir = Some(meshdir);
     }
-    if let Some(texturedir) = get_attribute_opt(e, "texturedir") {
+    if let Some(texturedir) = a.string("texturedir") {
         compiler.texturedir = Some(texturedir);
     }
-    if let Some(assetdir) = get_attribute_opt(e, "assetdir") {
+    if let Some(assetdir) = a.string("assetdir") {
         compiler.assetdir = Some(assetdir);
     }
 
     // A4. autolimits
-    if let Some(autolimits) = get_attribute_opt(e, "autolimits") {
+    if let Some(autolimits) = a.text("autolimits") {
         compiler.autolimits = autolimits == "true";
     }
 
     // A5. inertiafromgeom
-    if let Some(ifg) = get_attribute_opt(e, "inertiafromgeom") {
+    if let Some(ifg) = a.text("inertiafromgeom") {
         match ifg.to_lowercase().as_str() {
             "false" => compiler.inertiafromgeom = InertiaFromGeom::False,
             "true" => compiler.inertiafromgeom = InertiaFromGeom::True,
@@ -260,40 +274,40 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // A6. boundmass / boundinertia
-    if let Some(bm) = parse_float_attr(e, "boundmass") {
+    if let Some(bm) = a.real("boundmass")? {
         compiler.boundmass = bm;
     }
-    if let Some(bi) = parse_float_attr(e, "boundinertia") {
+    if let Some(bi) = a.real("boundinertia")? {
         compiler.boundinertia = bi;
     }
 
     // A7. balanceinertia
-    if let Some(balance) = get_attribute_opt(e, "balanceinertia") {
+    if let Some(balance) = a.text("balanceinertia") {
         compiler.balanceinertia = balance == "true";
     }
 
     // A8. settotalmass
-    if let Some(stm) = parse_float_attr(e, "settotalmass") {
+    if let Some(stm) = a.real("settotalmass")? {
         compiler.settotalmass = stm;
     }
 
     // A9. strippath
-    if let Some(sp) = get_attribute_opt(e, "strippath") {
+    if let Some(sp) = a.text("strippath") {
         compiler.strippath = sp == "true";
     }
 
     // A10. discardvisual
-    if let Some(dv) = get_attribute_opt(e, "discardvisual") {
+    if let Some(dv) = a.text("discardvisual") {
         compiler.discardvisual = dv == "true";
     }
 
     // A11. fusestatic
-    if let Some(fs) = get_attribute_opt(e, "fusestatic") {
+    if let Some(fs) = a.text("fusestatic") {
         compiler.fusestatic = fs == "true";
     }
 
     // A12. coordinate (deprecated — reject "global")
-    if let Some(coord) = get_attribute_opt(e, "coordinate") {
+    if let Some(coord) = a.text("coordinate") {
         match coord.to_lowercase().as_str() {
             "local" => {} // no-op, matches current behavior
             "global" => {
@@ -310,18 +324,18 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
     }
 
     // Deferred attributes (stored but no behavior yet)
-    if let Some(fitaabb) = get_attribute_opt(e, "fitaabb") {
+    if let Some(fitaabb) = a.text("fitaabb") {
         compiler.fitaabb = fitaabb == "true";
     }
-    if let Some(usethread) = get_attribute_opt(e, "usethread") {
+    if let Some(usethread) = a.text("usethread") {
         compiler.usethread = usethread == "true";
     }
-    if let Some(alignfree) = get_attribute_opt(e, "alignfree") {
+    if let Some(alignfree) = a.text("alignfree") {
         compiler.alignfree = alignfree == "true";
     }
 
     // A13. exactmeshinertia (deprecated — no behavioral effect since MuJoCo 3.5.0)
-    if let Some(emi) = get_attribute_opt(e, "exactmeshinertia") {
+    if let Some(emi) = a.text("exactmeshinertia") {
         compiler.exactmeshinertia = emi == "true";
         tracing::warn!(
             "exactmeshinertia is deprecated and has no effect; \
@@ -334,42 +348,41 @@ pub(super) fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
 
 /// Parse flag element attributes.
 pub(super) fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
+    let a = Attrs::new(e)?;
     let mut flag = MjcfFlag::default();
 
     // Helper to parse enable/disable attributes
-    fn parse_flag(e: &BytesStart, name: &str, default: bool) -> bool {
-        get_attribute_opt(e, name).map_or(default, |v| v != "disable")
-    }
+    let parse_flag = |name: &str, default: bool| a.text(name).map_or(default, |v| v != "disable");
 
     // Disable flags (true = enabled, false = disabled)
-    flag.constraint = parse_flag(e, "constraint", flag.constraint);
-    flag.equality = parse_flag(e, "equality", flag.equality);
-    flag.frictionloss = parse_flag(e, "frictionloss", flag.frictionloss);
-    flag.limit = parse_flag(e, "limit", flag.limit);
-    flag.contact = parse_flag(e, "contact", flag.contact);
+    flag.constraint = parse_flag("constraint", flag.constraint);
+    flag.equality = parse_flag("equality", flag.equality);
+    flag.frictionloss = parse_flag("frictionloss", flag.frictionloss);
+    flag.limit = parse_flag("limit", flag.limit);
+    flag.contact = parse_flag("contact", flag.contact);
     // MuJoCo 3.3.6+ split `passive` into independent `spring` + `damper`.
     // `passive` is silently ignored (unrecognized attributes are skipped).
-    flag.spring = parse_flag(e, "spring", flag.spring);
-    flag.damper = parse_flag(e, "damper", flag.damper);
-    flag.gravity = parse_flag(e, "gravity", flag.gravity);
-    flag.clampctrl = parse_flag(e, "clampctrl", flag.clampctrl);
-    flag.warmstart = parse_flag(e, "warmstart", flag.warmstart);
-    flag.filterparent = parse_flag(e, "filterparent", flag.filterparent);
-    flag.actuation = parse_flag(e, "actuation", flag.actuation);
-    flag.refsafe = parse_flag(e, "refsafe", flag.refsafe);
-    flag.sensor = parse_flag(e, "sensor", flag.sensor);
-    flag.midphase = parse_flag(e, "midphase", flag.midphase);
-    flag.nativeccd = parse_flag(e, "nativeccd", flag.nativeccd);
-    flag.eulerdamp = parse_flag(e, "eulerdamp", flag.eulerdamp);
-    flag.autoreset = parse_flag(e, "autoreset", flag.autoreset);
-    flag.island = parse_flag(e, "island", flag.island);
+    flag.spring = parse_flag("spring", flag.spring);
+    flag.damper = parse_flag("damper", flag.damper);
+    flag.gravity = parse_flag("gravity", flag.gravity);
+    flag.clampctrl = parse_flag("clampctrl", flag.clampctrl);
+    flag.warmstart = parse_flag("warmstart", flag.warmstart);
+    flag.filterparent = parse_flag("filterparent", flag.filterparent);
+    flag.actuation = parse_flag("actuation", flag.actuation);
+    flag.refsafe = parse_flag("refsafe", flag.refsafe);
+    flag.sensor = parse_flag("sensor", flag.sensor);
+    flag.midphase = parse_flag("midphase", flag.midphase);
+    flag.nativeccd = parse_flag("nativeccd", flag.nativeccd);
+    flag.eulerdamp = parse_flag("eulerdamp", flag.eulerdamp);
+    flag.autoreset = parse_flag("autoreset", flag.autoreset);
+    flag.island = parse_flag("island", flag.island);
     // Enable flags (false = disabled, true = enabled)
-    flag.override_contacts = parse_flag(e, "override", flag.override_contacts);
-    flag.energy = parse_flag(e, "energy", flag.energy);
-    flag.fwdinv = parse_flag(e, "fwdinv", flag.fwdinv);
-    flag.invdiscrete = parse_flag(e, "invdiscrete", flag.invdiscrete);
-    flag.multiccd = parse_flag(e, "multiccd", flag.multiccd);
-    flag.sleep = parse_flag(e, "sleep", flag.sleep);
+    flag.override_contacts = parse_flag("override", flag.override_contacts);
+    flag.energy = parse_flag("energy", flag.energy);
+    flag.fwdinv = parse_flag("fwdinv", flag.fwdinv);
+    flag.invdiscrete = parse_flag("invdiscrete", flag.invdiscrete);
+    flag.multiccd = parse_flag("multiccd", flag.multiccd);
+    flag.sleep = parse_flag("sleep", flag.sleep);
 
     Ok(flag)
 }

@@ -11,7 +11,7 @@ use crate::types::{
     MjcfWeld,
 };
 
-use super::attrs::{attr_fixed, get_attribute_opt, parse_float_array, parse_vector3, skip_element};
+use super::attrs::{Attrs, skip_element};
 
 /// Parse equality constraints element.
 pub(super) fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
@@ -111,148 +111,171 @@ pub(super) fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfE
 
 /// Parse connect constraint attributes.
 pub(super) fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
+    let a = Attrs::new(e)?;
     let mut connect = MjcfConnect::default();
 
-    connect.name = get_attribute_opt(e, "name");
-    connect.class = get_attribute_opt(e, "class");
+    connect.name = a.string("name");
+    connect.class = a.string("class");
 
     // body1 is required
-    connect.body1 = get_attribute_opt(e, "body1")
+    connect.body1 = a
+        .string("body1")
         .ok_or_else(|| MjcfError::missing_attribute("connect", "body1"))?;
 
     // body2 is optional (defaults to world)
-    connect.body2 = get_attribute_opt(e, "body2");
+    connect.body2 = a.string("body2");
 
     // Parse anchor point
-    if let Some(anchor) = get_attribute_opt(e, "anchor") {
-        connect.anchor = parse_vector3(&anchor)?;
+    if let Some(anchor) = a.vec3("anchor")? {
+        connect.anchor = anchor;
     }
 
     // Parse solver parameters
-    connect.solimp = attr_fixed::<5>(e, "solimp")?;
-    connect.solref = attr_fixed::<2>(e, "solref")?;
+    connect.solimp = a.prefix("solimp")?;
+    connect.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    connect.active = get_attribute_opt(e, "active").map(|v| v == "true");
+    connect.active = a.is_true("active");
 
     Ok(connect)
 }
 
 /// Parse weld constraint attributes.
 pub(super) fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
+    let a = Attrs::new(e)?;
     let mut weld = MjcfWeld::default();
 
-    weld.name = get_attribute_opt(e, "name");
-    weld.class = get_attribute_opt(e, "class");
+    weld.name = a.string("name");
+    weld.class = a.string("class");
 
     // body1 is required
-    weld.body1 = get_attribute_opt(e, "body1")
+    weld.body1 = a
+        .string("body1")
         .ok_or_else(|| MjcfError::missing_attribute("weld", "body1"))?;
 
     // body2 is optional (defaults to world)
-    weld.body2 = get_attribute_opt(e, "body2");
+    weld.body2 = a.string("body2");
 
     // Parse anchor point
-    if let Some(anchor) = get_attribute_opt(e, "anchor") {
-        weld.anchor = parse_vector3(&anchor)?;
+    if let Some(anchor) = a.vec3("anchor")? {
+        weld.anchor = anchor;
     }
 
     // Parse relpose [x y z qw qx qy qz]
-    weld.relpose = attr_fixed::<7>(e, "relpose")?;
+    weld.relpose = a.array("relpose")?;
 
     // Parse solver parameters
-    weld.solimp = attr_fixed::<5>(e, "solimp")?;
-    weld.solref = attr_fixed::<2>(e, "solref")?;
+    weld.solimp = a.prefix("solimp")?;
+    weld.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    weld.active = get_attribute_opt(e, "active").map(|v| v == "true");
+    weld.active = a.is_true("active");
 
     Ok(weld)
 }
 
 /// Parse joint equality constraint attributes.
 pub(super) fn parse_joint_equality_attrs(e: &BytesStart) -> Result<MjcfJointEquality> {
+    let a = Attrs::new(e)?;
     let mut joint_eq = MjcfJointEquality::default();
 
-    joint_eq.name = get_attribute_opt(e, "name");
-    joint_eq.class = get_attribute_opt(e, "class");
+    joint_eq.name = a.string("name");
+    joint_eq.class = a.string("class");
 
     // joint1 is required
-    joint_eq.joint1 = get_attribute_opt(e, "joint1")
+    joint_eq.joint1 = a
+        .string("joint1")
         .ok_or_else(|| MjcfError::missing_attribute("joint", "joint1"))?;
 
     // joint2 is optional (for coupling constraints)
-    joint_eq.joint2 = get_attribute_opt(e, "joint2");
+    joint_eq.joint2 = a.string("joint2");
 
     // Parse polycoef (polynomial coefficients for coupling)
-    if let Some(polycoef) = get_attribute_opt(e, "polycoef") {
-        joint_eq.polycoef = parse_float_array(&polycoef)?;
+    if let Some(polycoef) = polycoef::<11>(&a)? {
+        joint_eq.polycoef = polycoef;
     }
 
     // Parse solver parameters
-    joint_eq.solimp = attr_fixed::<5>(e, "solimp")?;
-    joint_eq.solref = attr_fixed::<2>(e, "solref")?;
+    joint_eq.solimp = a.prefix("solimp")?;
+    joint_eq.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    joint_eq.active = get_attribute_opt(e, "active").map(|v| v == "true");
+    joint_eq.active = a.is_true("active");
 
     Ok(joint_eq)
 }
 
 /// Parse distance constraint attributes.
 pub(super) fn parse_distance_attrs(e: &BytesStart) -> Result<MjcfDistance> {
+    let a = Attrs::new(e)?;
     let mut distance = MjcfDistance::default();
 
-    distance.name = get_attribute_opt(e, "name");
-    distance.class = get_attribute_opt(e, "class");
+    distance.name = a.string("name");
+    distance.class = a.string("class");
 
     // geom1 is required
-    distance.geom1 = get_attribute_opt(e, "geom1")
+    distance.geom1 = a
+        .string("geom1")
         .ok_or_else(|| MjcfError::missing_attribute("distance", "geom1"))?;
 
     // geom2 is optional (defaults to world origin)
-    distance.geom2 = get_attribute_opt(e, "geom2");
+    distance.geom2 = a.string("geom2");
 
     // Parse target distance
-    if let Some(dist_str) = get_attribute_opt(e, "distance") {
-        distance.distance = dist_str.parse().ok();
-    }
+    distance.distance = a.real("distance")?;
 
     // Parse solver parameters
-    distance.solimp = attr_fixed::<5>(e, "solimp")?;
-    distance.solref = attr_fixed::<2>(e, "solref")?;
+    distance.solimp = a.prefix("solimp")?;
+    distance.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    distance.active = get_attribute_opt(e, "active").map(|v| v == "true");
+    distance.active = a.is_true("active");
 
     Ok(distance)
 }
 
 /// Parse tendon equality constraint attributes.
 pub(super) fn parse_tendon_equality_attrs(e: &BytesStart) -> Result<MjcfTendonEquality> {
+    let a = Attrs::new(e)?;
     let mut ten_eq = MjcfTendonEquality::default();
 
-    ten_eq.name = get_attribute_opt(e, "name");
-    ten_eq.class = get_attribute_opt(e, "class");
+    ten_eq.name = a.string("name");
+    ten_eq.class = a.string("class");
 
     // tendon1 is required
-    ten_eq.tendon1 = get_attribute_opt(e, "tendon1")
+    ten_eq.tendon1 = a
+        .string("tendon1")
         .ok_or_else(|| MjcfError::missing_attribute("tendon", "tendon1"))?;
 
     // tendon2 is optional (for coupling constraints)
-    ten_eq.tendon2 = get_attribute_opt(e, "tendon2");
+    ten_eq.tendon2 = a.string("tendon2");
 
     // Parse polycoef (polynomial coefficients for coupling)
-    if let Some(polycoef) = get_attribute_opt(e, "polycoef") {
-        ten_eq.polycoef = parse_float_array(&polycoef)?;
+    if let Some(polycoef) = polycoef::<5>(&a)? {
+        ten_eq.polycoef = polycoef;
     }
 
     // Parse solver parameters
-    ten_eq.solimp = attr_fixed::<5>(e, "solimp")?;
-    ten_eq.solref = attr_fixed::<2>(e, "solref")?;
+    ten_eq.solimp = a.prefix("solimp")?;
+    ten_eq.solref = a.prefix("solref")?;
 
     // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
-    ten_eq.active = get_attribute_opt(e, "active").map(|v| v == "true");
+    ten_eq.active = a.is_true("active");
 
     Ok(ten_eq)
+}
+
+/// `polycoef`: one up to `N` coefficients, the ones not given MuJoCo's
+/// default `0 1 0 0 0` (`xml_native_reader.cc` reads five with `exact =
+/// false`). A joint coupling takes up to eleven, a degree-10 polynomial: an
+/// extension (D-POLYCOEF-DEGREE).
+fn polycoef<const N: usize>(a: &Attrs) -> Result<Option<Vec<f64>>> {
+    const DEFAULT: [f64; 5] = [0.0, 1.0, 0.0, 0.0, 0.0];
+    Ok(a.prefix::<N>("polycoef")?.map(|given| {
+        let mut coef = given.given().to_vec();
+        if coef.len() < DEFAULT.len() {
+            coef.extend_from_slice(&DEFAULT[coef.len()..]);
+        }
+        coef
+    }))
 }

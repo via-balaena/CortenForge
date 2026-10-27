@@ -1,0 +1,1 @@
+<mujoco><option o_solref="0.05" o_solimp="0.6" o_friction="0.7"><flag override="enable"/></option><worldbody/></mujoco>

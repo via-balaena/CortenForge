@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><geom size="0.1"/><site axisangle="0 0 1 30" xyaxes="1 0 0 0 1 0"/></body></worldbody></mujoco>

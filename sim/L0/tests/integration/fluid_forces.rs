@@ -1200,23 +1200,25 @@ fn t38_invalid_fluidshape() {
 }
 
 // ============================================================================
-// T39: Partial fluidcoef rejected
+// T39: Partial fluidcoef
 // ============================================================================
 
-/// fluidcoef with only 2 values → parse error.
+/// fluidcoef with only 2 values → those two, the rest MuJoCo's defaults
+/// (MuJoCo 3.5.0 reads it with `exact = false`; the built values are
+/// `sim/L0/mjcf/tests/attribute_reader.rs`'s).
 #[test]
 fn t39_partial_fluidcoef() {
-    let result = parse_mjcf_str(
+    let mjcf = parse_mjcf_str(
         r#"<mujoco>
         <worldbody><body>
             <geom type="sphere" size="0.1" fluidcoef="0.5 0.25"/>
         </body></worldbody></mujoco>"#,
-    );
-    assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        MjcfError::WrongValueCount { found: 2, .. }
-    ));
+    )
+    .expect("a partial fluidcoef loads");
+    let coef = mjcf.worldbody.children[0].geoms[0]
+        .fluidcoef
+        .expect("fluidcoef");
+    assert_eq!(coef.given(), &[0.5, 0.25]);
 }
 
 // ============================================================================

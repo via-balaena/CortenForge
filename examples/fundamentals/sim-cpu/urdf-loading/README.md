@@ -27,12 +27,12 @@ headless validator:
 
 | URDF | MJCF | Notes |
 |------|------|-------|
-| `revolute` | `hinge` + `limited="true"` | Range from `<limit>` |
+| `revolute` | `hinge` + range from `<limit>` | Limited when both bounds are written and lower < upper, as MuJoCo's importer reads it |
 | `continuous` | `hinge` + `limited="false"` | No limits |
-| `prismatic` | `slide` + `limited="true"` | Range from `<limit>` |
+| `prismatic` | `slide` + range from `<limit>` | Limited as `revolute` |
 | `fixed` | eliminated by `fusestatic="true"` | Body merges into parent |
 | `floating` | `free` | 6 DOF (3 translate + 3 rotate) |
-| `planar` | 2 slides + 1 hinge | 3 DOF in plane |
+| `planar` | slides `_TX`, `_TY` + hinge `_RZ` | 3 DOF in plane, built as MuJoCo's importer builds it; `<limit>` limits `_TX` |
 | `box size="x y z"` | `box size="x/2 y/2 z/2"` | Full → half extents |
 | `cylinder r l` | `cylinder size="r l/2"` | Full → half length |
 | `sphere r` | `sphere size="r"` | Unchanged |

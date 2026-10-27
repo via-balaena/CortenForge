@@ -8,7 +8,7 @@ use crate::error::{MjcfError, Result};
 
 use crate::types::{MjcfContact, MjcfContactExclude, MjcfContactPair};
 
-use super::attrs::{attr_fixed, get_attribute_opt, parse_float_attr, parse_int_attr, skip_element};
+use super::attrs::{Attrs, skip_element};
 
 /// Parse `<contact>` element containing `<pair>` and `<exclude>` children.
 pub(super) fn parse_contact<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfContact> {
@@ -59,42 +59,41 @@ pub(super) fn parse_contact<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfCo
 
 /// Parse attributes of a `<contact><pair .../>` element.
 pub(super) fn parse_contact_pair_attrs(e: &BytesStart) -> Result<MjcfContactPair> {
-    let geom1 = get_attribute_opt(e, "geom1")
+    let a = Attrs::new(e)?;
+    let geom1 = a
+        .string("geom1")
         .ok_or_else(|| MjcfError::missing_attribute("pair", "geom1"))?;
-    let geom2 = get_attribute_opt(e, "geom2")
+    let geom2 = a
+        .string("geom2")
         .ok_or_else(|| MjcfError::missing_attribute("pair", "geom2"))?;
 
-    let mut pair = MjcfContactPair {
-        name: get_attribute_opt(e, "name"),
-        class: get_attribute_opt(e, "class"),
+    Ok(MjcfContactPair {
+        name: a.string("name"),
+        class: a.string("class"),
         geom1,
         geom2,
-        condim: parse_int_attr(e, "condim"),
-        friction: None,
-        solref: None,
-        solreffriction: None,
-        solimp: None,
-        margin: parse_float_attr(e, "margin"),
-        gap: parse_float_attr(e, "gap"),
-    };
-
-    pair.friction = attr_fixed::<5>(e, "friction")?;
-    pair.solref = attr_fixed::<2>(e, "solref")?;
-    pair.solreffriction = attr_fixed::<2>(e, "solreffriction")?;
-    pair.solimp = attr_fixed::<5>(e, "solimp")?;
-
-    Ok(pair)
+        condim: a.int("condim")?,
+        friction: a.prefix("friction")?,
+        solref: a.prefix("solref")?,
+        solreffriction: a.prefix("solreffriction")?,
+        solimp: a.prefix("solimp")?,
+        margin: a.real("margin")?,
+        gap: a.real("gap")?,
+    })
 }
 
 /// Parse attributes of a `<contact><exclude .../>` element.
 pub(super) fn parse_contact_exclude_attrs(e: &BytesStart) -> Result<MjcfContactExclude> {
-    let body1 = get_attribute_opt(e, "body1")
+    let a = Attrs::new(e)?;
+    let body1 = a
+        .string("body1")
         .ok_or_else(|| MjcfError::missing_attribute("exclude", "body1"))?;
-    let body2 = get_attribute_opt(e, "body2")
+    let body2 = a
+        .string("body2")
         .ok_or_else(|| MjcfError::missing_attribute("exclude", "body2"))?;
 
     Ok(MjcfContactExclude {
-        name: get_attribute_opt(e, "name"),
+        name: a.string("name"),
         body1,
         body2,
     })

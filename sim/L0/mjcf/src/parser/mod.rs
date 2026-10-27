@@ -30,7 +30,7 @@ use crate::types::{EqualityKind, MjcfContact, MjcfModel};
 
 use self::actuator::parse_actuators;
 use self::asset::parse_asset;
-use self::attrs::{get_attribute_opt, skip_element};
+use self::attrs::{Attrs, skip_element};
 use self::body::parse_worldbody;
 use self::contact::parse_contact;
 use self::defaults::parse_default;
@@ -75,10 +75,11 @@ pub fn parse_mjcf_unwrapped(xml: &str) -> Result<MjcfModel> {
     })
 }
 
-/// MuJoCo's XML reader's depth rule, read without recursing. An error the
-/// XML reader raises ends the check, for the parser to report; a malformed
-/// attribute is not one, so a document with one is refused as too deep when
-/// it nests past the limit, where MuJoCo refuses it for the attribute.
+/// MuJoCo's XML reader's depth rule and its attribute syntax, read without
+/// recursing, in document order: an element nested past the limit, or an
+/// attribute that is malformed (`size=`) or given twice, is refused where it
+/// is, as tinyxml2 refuses it (measured). Any other error the XML reader
+/// raises ends the check, for the parser to report.
 fn check_xml_depth(xml: &str) -> Result<()> {
     let mut reader = Reader::from_str(xml);
     let mut depth = 0usize;
@@ -86,7 +87,11 @@ fn check_xml_depth(xml: &str) -> Result<()> {
         let event = reader.read_event();
         let after = usize::try_from(reader.buffer_position()).unwrap_or(xml.len());
         match event {
-            Ok(Event::Start(_)) => {
+            Ok(Event::Empty(e)) => {
+                Attrs::new(&e).map_err(|err| err.at(locate(xml, after)))?;
+            }
+            Ok(Event::Start(e)) => {
+                Attrs::new(&e).map_err(|err| err.at(locate(xml, after)))?;
                 depth += 1;
                 if depth > XML_DEPTH_LIMIT {
                     return Err(MjcfError::too_deep(XML_DEPTH_LIMIT).at(locate(xml, after)));
@@ -173,7 +178,7 @@ fn show_path(path: &[String]) -> String {
 /// An element's tag, with its name when it has one (`body 'a'`).
 fn segment(e: &BytesStart) -> String {
     let tag = String::from_utf8_lossy(e.name().as_ref()).into_owned();
-    match get_attribute_opt(e, "name") {
+    match Attrs::new(e).ok().and_then(|a| a.string("name")) {
         Some(name) => format!("{tag} '{name}'"),
         None => tag,
     }
@@ -206,7 +211,9 @@ fn parse_mjcf_reader<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfModel> {
 
 /// Parse the mujoco root element and its children.
 fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<MjcfModel> {
-    let name = get_attribute_opt(start, "model").unwrap_or_else(|| "unnamed".to_string());
+    let name = Attrs::new(start)?
+        .string("model")
+        .unwrap_or_else(|| "unnamed".to_string());
     let mut model = MjcfModel::new(name);
     let mut buf = Vec::new();
 
@@ -294,7 +301,7 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         model.keyframes.extend(kfs);
                     }
                     b"size" => {
-                        parse_size_attrs(e, &mut model);
+                        parse_size_attrs(e, &mut model)?;
                         skip_element(reader, &elem_name)?;
                     }
                     b"extension" => {
@@ -317,7 +324,7 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     // Empty <keyframe/> — no keyframes defined. model.keyframes is
                     // already Vec::new() from Default, so nothing to do.
                 } else if e.name().as_ref() == b"size" {
-                    parse_size_attrs(e, &mut model);
+                    parse_size_attrs(e, &mut model)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"mujoco" => break,

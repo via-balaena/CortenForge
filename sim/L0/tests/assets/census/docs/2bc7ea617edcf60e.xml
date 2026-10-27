@@ -1,0 +1,4 @@
+<mujoco>
+            <default><geom friction="1 0.1 0.2"/></default>
+            <worldbody><body><freejoint/><geom size="0.1" friction="0.7"/></body></worldbody>
+        </mujoco>

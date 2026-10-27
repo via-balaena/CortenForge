@@ -808,11 +808,11 @@ fn ac22_keyframe_nan_rejected() {
 
     let err = load_model(xml).expect_err("NaN in keyframe qpos should fail");
     assert!(
-        matches!(&err, MjcfError::NonFinite { attribute, value, .. }
-            if attribute == "qpos[0]" && value.is_nan()),
+        matches!(&err, MjcfError::NonFinite { element, attribute, value, .. }
+            if element == "key" && attribute == "qpos" && value.is_nan()),
         "{err}"
     );
-    assert!(err.to_string().ends_with("(key 'nankey')"), "{err}");
+    assert!(err.to_string().ends_with("key 'nankey')"), "{err}");
 }
 
 // ============================================================================
@@ -838,11 +838,11 @@ fn ac23_keyframe_inf_time_rejected() {
 
     let err = load_model(xml).expect_err("inf time in keyframe should fail");
     assert!(
-        matches!(&err, MjcfError::NonFinite { attribute, value, .. }
-            if attribute == "time" && value.is_infinite()),
+        matches!(&err, MjcfError::NonFinite { element, attribute, value, .. }
+            if element == "key" && attribute == "time" && value.is_infinite()),
         "{err}"
     );
-    assert!(err.to_string().ends_with("(key 'infkey')"), "{err}");
+    assert!(err.to_string().ends_with("key 'infkey')"), "{err}");
 }
 
 // ============================================================================

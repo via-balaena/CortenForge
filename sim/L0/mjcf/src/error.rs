@@ -85,12 +85,12 @@ pub enum MjcfError {
 
     // ── attribute values ──
     /// A value that should be a number is not one.
-    #[error("bad number \"{value}\"{}{at}", in_attribute(.element, .attribute))]
+    #[error("bad number \"{value}\" in attribute '{attribute}' on <{element}>{at}")]
     #[non_exhaustive]
     BadNumber {
-        /// The element's tag; empty where the reader does not know it.
+        /// The element's tag.
         element: String,
-        /// The attribute; empty where the reader does not know it.
+        /// The attribute.
         attribute: String,
         /// The text that does not parse.
         value: String,
@@ -98,13 +98,33 @@ pub enum MjcfError {
         at: Location,
     },
 
+    /// A number out of its type's range, which MuJoCo 3.5.0 refuses as
+    /// "number is too large" (`ERANGE`): a literal past a double's range, or
+    /// one whose digits are not all zero that reads as zero or a subnormal; for
+    /// an attribute MuJoCo reads as a `float`, the same against a float's
+    /// range; an integer outside `i32` in a list of integers.
+    #[error("number \"{value}\" is out of range in attribute '{attribute}' on <{element}>{at}")]
+    #[non_exhaustive]
+    OutOfRange {
+        /// The element's tag.
+        element: String,
+        /// The attribute.
+        attribute: String,
+        /// The text of the number.
+        value: String,
+        /// Where it was found.
+        at: Location,
+    },
+
     /// An attribute has the wrong number of values.
-    #[error("expected {expected} values, found {found}{}{at}", in_attribute(.element, .attribute))]
+    #[error(
+        "expected {expected} values, found {found} in attribute '{attribute}' on <{element}>{at}"
+    )]
     #[non_exhaustive]
     WrongValueCount {
-        /// The element's tag; empty where the reader does not know it.
+        /// The element's tag.
         element: String,
-        /// The attribute; empty where the reader does not know it.
+        /// The attribute.
         attribute: String,
         /// How many values the attribute takes.
         expected: ValueCount,
@@ -337,15 +357,16 @@ impl fmt::Display for ElementKind {
 pub enum ValueCount {
     /// Exactly this many.
     Exactly(usize),
-    /// This many or more (the reader takes the first ones).
-    AtLeast(usize),
+    /// One up to this many: MuJoCo's `exact = false` attributes
+    /// ([`crate::Prefix`]).
+    AtMost(usize),
 }
 
 impl fmt::Display for ValueCount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Exactly(n) => write!(f, "exactly {n}"),
-            Self::AtLeast(n) => write!(f, "at least {n}"),
+            Self::AtMost(n) => write!(f, "at most {n}"),
         }
     }
 }
@@ -491,15 +512,6 @@ fn write_element(f: &mut fmt::Formatter<'_>, kind: ElementKind, ident: &Ident) -
     }
 }
 
-/// ` in attribute 'a' on <e>`, or nothing where the attribute is not known.
-fn in_attribute(element: &str, attribute: &str) -> String {
-    if attribute.is_empty() {
-        String::new()
-    } else {
-        format!(" in attribute '{attribute}' on <{element}>")
-    }
-}
-
 // Constructors, each with an unknown location; `at` sets one.
 impl MjcfError {
     /// An [`MjcfError::Io`].
@@ -560,12 +572,6 @@ impl MjcfError {
         }
     }
 
-    /// An [`MjcfError::BadNumber`] from a reader that does not know the
-    /// attribute.
-    pub(crate) fn bad_number(value: impl Into<String>) -> Self {
-        Self::bad_number_in("", "", value)
-    }
-
     /// An [`MjcfError::BadNumber`] in a known attribute.
     pub(crate) fn bad_number_in(
         element: impl Into<String>,
@@ -580,10 +586,18 @@ impl MjcfError {
         }
     }
 
-    /// An [`MjcfError::WrongValueCount`] from a reader that does not know the
-    /// attribute.
-    pub(crate) fn wrong_count(expected: ValueCount, found: usize) -> Self {
-        Self::wrong_count_in("", "", expected, found)
+    /// An [`MjcfError::OutOfRange`].
+    pub(crate) fn out_of_range_in(
+        element: impl Into<String>,
+        attribute: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        Self::OutOfRange {
+            element: element.into(),
+            attribute: attribute.into(),
+            value: value.into(),
+            at: Location::unknown(),
+        }
     }
 
     /// An [`MjcfError::WrongValueCount`] in a known attribute.
@@ -727,6 +741,7 @@ impl MjcfError {
             | Self::MissingAttribute { at, .. }
             | Self::ConflictingAttributes { at, .. }
             | Self::BadNumber { at, .. }
+            | Self::OutOfRange { at, .. }
             | Self::WrongValueCount { at, .. }
             | Self::InvalidKeyword { at, .. }
             | Self::NonFinite { at, .. }
@@ -803,10 +818,17 @@ mod tests {
                 MjcfError::conflicting("actuator", &["joint", "tendon"]),
                 "<actuator> may set only one of: joint, tendon",
             ),
-            (MjcfError::bad_number("x"), "bad number \"x\""),
             (
-                MjcfError::wrong_count(ValueCount::AtLeast(3), 2),
-                "expected at least 3 values, found 2",
+                MjcfError::bad_number_in("geom", "mass", "2kg"),
+                "bad number \"2kg\" in attribute 'mass' on <geom>",
+            ),
+            (
+                MjcfError::out_of_range_in("geom", "mass", "1e-999"),
+                "number \"1e-999\" is out of range in attribute 'mass' on <geom>",
+            ),
+            (
+                MjcfError::wrong_count_in("geom", "friction", ValueCount::AtMost(3), 4),
+                "expected at most 3 values, found 4 in attribute 'friction' on <geom>",
             ),
             (
                 MjcfError::invalid_keyword("compiler", "angle", "grad"),

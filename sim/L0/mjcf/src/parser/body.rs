@@ -4,18 +4,14 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
-use crate::error::{MjcfError, Result, ValueCount};
+use crate::error::{MjcfError, Result};
 
 use crate::types::{
     FluidShape, MjcfBody, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfJoint,
     MjcfJointType, MjcfSite,
 };
 
-use super::attrs::{
-    attr_bool, attr_fixed, attr_vec3, attr_vec4, get_attribute_opt, parse_float_array,
-    parse_float_attr, parse_int_attr, parse_vector3, parse_vector4, safe_normalize_axis,
-    skip_element,
-};
+use super::attrs::{Attrs, safe_normalize_axis, skip_element};
 use super::composite::parse_composite;
 use super::extension::{parse_plugin_ref, parse_plugin_ref_empty};
 
@@ -209,34 +205,31 @@ pub(super) fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     // contract (body.rs:127, 200 — name lookup and Option<String> mapping
     // both use is_empty() as the anonymous sentinel). The previous "unnamed"
     // placeholder collided across multiple anonymous bodies.
-    let name = get_attribute_opt(e, "name").unwrap_or_default();
+    let a = Attrs::new(e)?;
+    let name = a.string("name").unwrap_or_default();
     let mut body = MjcfBody::new(name);
 
-    if let Some(pos) = get_attribute_opt(e, "pos") {
-        body.pos = parse_vector3(&pos)?;
+    if let Some(pos) = a.vec3("pos")? {
+        body.pos = pos;
     }
-    if let Some(quat) = get_attribute_opt(e, "quat") {
-        body.quat = parse_vector4(&quat)?;
+    if let Some(quat) = a.quat("quat")? {
+        body.quat = quat;
     }
-    body.euler = attr_vec3(e, "euler")?;
-    body.axisangle = attr_vec4(e, "axisangle")?;
-    body.childclass = get_attribute_opt(e, "childclass");
-    if let Some(mocap) = get_attribute_opt(e, "mocap") {
-        body.mocap = mocap == "true";
+    a.one_orientation()?;
+    body.euler = a.vec3("euler")?;
+    body.axisangle = a.vec4("axisangle")?;
+    body.childclass = a.string("childclass");
+    if let Some(mocap) = a.is_true("mocap") {
+        body.mocap = mocap;
     }
-    if let Some(sleep) = get_attribute_opt(e, "sleep") {
+    if let Some(sleep) = a.string("sleep") {
         body.sleep = Some(sleep);
     }
-    if let Some(gc) = get_attribute_opt(e, "gravcomp") {
-        body.gravcomp = Some(
-            gc.parse::<f64>()
-                .map_err(|_| MjcfError::bad_number_in("body", "gravcomp", gc))?,
-        );
+    if let Some(gc) = a.real("gravcomp")? {
+        body.gravcomp = Some(gc);
     }
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-    {
-        body.user = parts;
+    if let Some(user) = a.vector("user")? {
+        body.user = user;
     }
 
     Ok(body)
@@ -266,55 +259,51 @@ pub(super) fn parse_joint<R: BufRead>(
 
 /// Parse joint attributes only.
 pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
+    let a = Attrs::new(e)?;
     let mut joint = MjcfJoint::default();
 
-    joint.name = get_attribute_opt(e, "name").unwrap_or_default();
-    joint.class = get_attribute_opt(e, "class");
+    joint.name = a.string("name").unwrap_or_default();
+    joint.class = a.string("class");
 
-    if let Some(jtype) = get_attribute_opt(e, "type") {
+    if let Some(jtype) = a.text("type") {
         joint.joint_type = Some(
-            MjcfJointType::from_str(&jtype)
+            MjcfJointType::from_str(jtype)
                 .ok_or_else(|| MjcfError::invalid_keyword("joint", "type", jtype))?,
         );
     }
 
-    joint.pos = attr_vec3(e, "pos")?;
-    if let Some(axis) = get_attribute_opt(e, "axis") {
-        joint.axis = Some(safe_normalize_axis(parse_vector3(&axis)?));
+    joint.pos = a.vec3("pos")?;
+    if let Some(axis) = a.vec3("axis")? {
+        joint.axis = Some(safe_normalize_axis(axis));
     }
-    joint.limited = attr_bool(e, "limited");
-    if let Some(range) = get_attribute_opt(e, "range") {
-        let parts = parse_float_array(&range)?;
-        if parts.len() >= 2 {
-            joint.range = Some((parts[0], parts[1]));
-        }
+    joint.limited = a.is_true("limited");
+    if let Some(pair) = a.array::<2>("range")? {
+        joint.range = Some(pair.into());
     }
-    joint.ref_pos = parse_float_attr(e, "ref");
-    joint.spring_ref = parse_float_attr(e, "springref");
-    joint.damping = parse_float_attr(e, "damping");
-    joint.stiffness = parse_float_attr(e, "stiffness");
-    joint.armature = parse_float_attr(e, "armature");
-    joint.frictionloss = parse_float_attr(e, "frictionloss");
-    joint.group = parse_int_attr(e, "group");
+    joint.ref_pos = a.real("ref")?;
+    joint.spring_ref = a.real("springref")?;
+    joint.damping = a.real("damping")?;
+    joint.stiffness = a.real("stiffness")?;
+    joint.armature = a.real("armature")?;
+    joint.frictionloss = a.real("frictionloss")?;
+    joint.group = a.int("group")?;
 
     // Joint limit solver parameters: solreflimit=[timeconst, dampratio],
     // solimplimit=[d0, d_width, width, midpoint, power]
-    joint.solref_limit = attr_fixed::<2>(e, "solreflimit")?;
-    joint.solimp_limit = attr_fixed::<5>(e, "solimplimit")?;
+    joint.solref_limit = a.prefix("solreflimit")?;
+    joint.solimp_limit = a.prefix("solimplimit")?;
 
     // Joint friction loss solver parameters: solreffriction=[timeconst, dampratio],
     // solimpfriction=[d0, d_width, width, midpoint, power]
-    joint.solreffriction = attr_fixed::<2>(e, "solreffriction")?;
-    joint.solimpfriction = attr_fixed::<5>(e, "solimpfriction")?;
+    joint.solreffriction = a.prefix("solreffriction")?;
+    joint.solimpfriction = a.prefix("solimpfriction")?;
 
     // Gravity compensation routing (S4.2a).
-    joint.actuatorgravcomp = attr_bool(e, "actuatorgravcomp");
+    joint.actuatorgravcomp = a.is_true("actuatorgravcomp");
 
-    joint.margin = parse_float_attr(e, "margin");
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-    {
-        joint.user = parts;
+    joint.margin = a.real("margin")?;
+    if let Some(user) = a.vector("user")? {
+        joint.user = user;
     }
 
     Ok(joint)
@@ -325,9 +314,10 @@ pub(super) fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
 /// The `<freejoint/>` element is a convenience shorthand in MuJoCo that creates
 /// a 6-DOF free joint. It only supports `name` and `group` attributes.
 pub(super) fn parse_freejoint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
+    let a = Attrs::new(e)?;
     let mut joint = MjcfJoint::default();
     joint.joint_type = Some(MjcfJointType::Free);
-    joint.name = get_attribute_opt(e, "name").unwrap_or_default();
+    joint.name = a.string("name").unwrap_or_default();
     // Note: MuJoCo's freejoint also supports 'group' attribute, but we don't use it
     Ok(joint)
 }
@@ -355,82 +345,73 @@ pub(super) fn parse_geom<R: BufRead>(
 
 /// Parse geom attributes only.
 pub(super) fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
+    let a = Attrs::new(e)?;
     let mut geom = MjcfGeom::default();
 
-    geom.name = get_attribute_opt(e, "name");
-    geom.class = get_attribute_opt(e, "class");
+    geom.name = a.string("name");
+    geom.class = a.string("class");
 
-    if let Some(gtype) = get_attribute_opt(e, "type") {
+    if let Some(gtype) = a.text("type") {
         geom.geom_type = Some(
-            MjcfGeomType::from_str(&gtype)
+            MjcfGeomType::from_str(gtype)
                 .ok_or_else(|| MjcfError::invalid_keyword("geom", "type", gtype))?,
         );
     }
 
-    geom.pos = attr_vec3(e, "pos")?;
-    geom.quat = attr_vec4(e, "quat")?;
-    geom.euler = attr_vec3(e, "euler")?;
-    geom.axisangle = attr_vec4(e, "axisangle")?;
-    geom.xyaxes = attr_fixed::<6>(e, "xyaxes")?;
-    geom.zaxis = attr_vec3(e, "zaxis")?;
-    if let Some(size) = get_attribute_opt(e, "size") {
-        geom.size = parse_float_array(&size)?;
+    geom.pos = a.vec3("pos")?;
+    geom.quat = a.quat("quat")?;
+    a.one_orientation()?;
+    geom.euler = a.vec3("euler")?;
+    geom.axisangle = a.vec4("axisangle")?;
+    geom.xyaxes = a.array("xyaxes")?;
+    geom.zaxis = a.vec3("zaxis")?;
+    // One up to three numbers (MuJoCo's `exact = false`); the type stays a
+    // list until the class overlay of a geom's size is MuJoCo's (book L18).
+    if let Some(size) = a.prefix::<3>("size")? {
+        geom.size = size.given().to_vec();
     }
-    geom.fromto = attr_fixed::<6>(e, "fromto")?;
-    geom.friction = attr_vec3(e, "friction")?;
-    geom.density = parse_float_attr(e, "density");
-    geom.mass = parse_float_attr(e, "mass");
+    geom.fromto = a.array("fromto")?;
+    geom.friction = a.prefix("friction")?;
+    geom.density = a.real("density")?;
+    geom.mass = a.real("mass")?;
 
-    geom.rgba = attr_vec4(e, "rgba")?;
-    geom.contype = parse_int_attr(e, "contype");
-    geom.conaffinity = parse_int_attr(e, "conaffinity");
-    geom.condim = parse_int_attr(e, "condim");
-    geom.mesh = get_attribute_opt(e, "mesh");
-    geom.hfield = get_attribute_opt(e, "hfield");
+    geom.rgba = a.vec4("rgba")?;
+    geom.contype = a.int("contype")?;
+    geom.conaffinity = a.int("conaffinity")?;
+    geom.condim = a.int("condim")?;
+    geom.mesh = a.string("mesh");
+    geom.hfield = a.string("hfield");
 
     // Contact solver parameters: solref=[timeconst, dampratio],
     // solimp=[d0, d_width, width, midpoint, power].
     // When two geoms collide, their params are combined via mj_contactParam:
     // friction = element-wise max, solref/solimp = solmix-weighted average, condim = max.
-    geom.solref = attr_fixed::<2>(e, "solref")?;
-    geom.solimp = attr_fixed::<5>(e, "solimp")?;
+    geom.solref = a.prefix("solref")?;
+    geom.solimp = a.prefix("solimp")?;
 
     // Contact parameter combination attributes (MuJoCo mj_contactParam)
-    geom.priority = parse_int_attr(e, "priority");
-    geom.solmix = parse_float_attr(e, "solmix");
-    geom.margin = parse_float_attr(e, "margin");
-    geom.gap = parse_float_attr(e, "gap");
-    geom.group = parse_int_attr(e, "group");
-    geom.material = get_attribute_opt(e, "material");
+    geom.priority = a.int("priority")?;
+    geom.solmix = a.real("solmix")?;
+    geom.margin = a.real("margin")?;
+    geom.gap = a.real("gap")?;
+    geom.group = a.int("group")?;
+    geom.material = a.string("material");
 
     // Fluid force parameters
-    if let Some(fs) = get_attribute_opt(e, "fluidshape") {
-        geom.fluidshape = Some(match fs.as_str() {
+    if let Some(fs) = a.text("fluidshape") {
+        geom.fluidshape = Some(match fs {
             "none" => FluidShape::None,
             "ellipsoid" => FluidShape::Ellipsoid,
             _ => return Err(MjcfError::invalid_keyword("geom", "fluidshape", fs)),
         });
     }
-    if let Some(coef_str) = get_attribute_opt(e, "fluidcoef") {
-        let parts = parse_float_array(&coef_str)?;
-        if parts.len() != 5 {
-            return Err(MjcfError::wrong_count_in(
-                "geom",
-                "fluidcoef",
-                ValueCount::Exactly(5),
-                parts.len(),
-            ));
-        }
-        geom.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
-    }
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-    {
-        geom.user = parts;
+    geom.fluidcoef = a.prefix("fluidcoef")?;
+    if let Some(user) = a.vector("user")? {
+        geom.user = user;
     }
 
     // Parse shellinertia (boolean attribute)
-    geom.shellinertia = attr_bool(e, "shellinertia");
+    geom.shellinertia = a.is_true("shellinertia");
 
     Ok(geom)
 }
@@ -458,25 +439,23 @@ pub(super) fn parse_inertial<R: BufRead>(
 
 /// Parse inertial attributes only.
 pub(super) fn parse_inertial_attrs(e: &BytesStart) -> Result<MjcfInertial> {
+    let a = Attrs::new(e)?;
     let mut inertial = MjcfInertial::default();
 
-    if let Some(pos) = get_attribute_opt(e, "pos") {
-        inertial.pos = parse_vector3(&pos)?;
+    // MuJoCo requires both (`xml_native_reader.cc`, measured: "required
+    // attribute missing"); an empty value is a missing one.
+    inertial.pos = a
+        .vec3("pos")?
+        .ok_or_else(|| MjcfError::missing_attribute("inertial", "pos"))?;
+    if let Some(quat) = a.quat("quat")? {
+        inertial.quat = quat;
     }
-    if let Some(quat) = get_attribute_opt(e, "quat") {
-        inertial.quat = parse_vector4(&quat)?;
-    }
-    if let Some(mass) = parse_float_attr(e, "mass") {
-        inertial.mass = mass;
-    }
-    inertial.diaginertia = attr_vec3(e, "diaginertia")?;
-    if let Some(full) = get_attribute_opt(e, "fullinertia") {
-        let parts = parse_float_array(&full)?;
-        if parts.len() >= 6 {
-            inertial.fullinertia =
-                Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
-        }
-    }
+    a.one_orientation()?;
+    inertial.mass = a
+        .real("mass")?
+        .ok_or_else(|| MjcfError::missing_attribute("inertial", "mass"))?;
+    inertial.diaginertia = a.vec3("diaginertia")?;
+    inertial.fullinertia = a.array("fullinertia")?;
 
     Ok(inertial)
 }
@@ -504,29 +483,27 @@ pub(super) fn parse_site<R: BufRead>(
 
 /// Parse site attributes only.
 pub(super) fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
+    let a = Attrs::new(e)?;
     let mut site = MjcfSite::default();
 
-    site.name = get_attribute_opt(e, "name").unwrap_or_default();
-    site.class = get_attribute_opt(e, "class");
+    site.name = a.string("name").unwrap_or_default();
+    site.class = a.string("class");
 
-    site.site_type = get_attribute_opt(e, "type");
-    site.pos = attr_vec3(e, "pos")?;
-    site.quat = attr_vec4(e, "quat")?;
-    site.euler = attr_vec3(e, "euler")?;
-    site.axisangle = attr_vec4(e, "axisangle")?;
-    site.xyaxes = attr_fixed::<6>(e, "xyaxes")?;
-    site.zaxis = attr_vec3(e, "zaxis")?;
-    site.fromto = attr_fixed::<6>(e, "fromto")?;
-    if let Some(size) = get_attribute_opt(e, "size") {
-        site.size = Some(parse_float_array(&size)?);
-    }
-    site.rgba = attr_vec4(e, "rgba")?;
-    site.group = parse_int_attr(e, "group");
-    site.material = get_attribute_opt(e, "material");
-    if let Some(user) = get_attribute_opt(e, "user")
-        && let Ok(parts) = parse_float_array(&user)
-    {
-        site.user = parts;
+    site.site_type = a.string("type");
+    site.pos = a.vec3("pos")?;
+    site.quat = a.quat("quat")?;
+    a.one_orientation()?;
+    site.euler = a.vec3("euler")?;
+    site.axisangle = a.vec4("axisangle")?;
+    site.xyaxes = a.array("xyaxes")?;
+    site.zaxis = a.vec3("zaxis")?;
+    site.fromto = a.array("fromto")?;
+    site.size = a.prefix("size")?;
+    site.rgba = a.vec4("rgba")?;
+    site.group = a.int("group")?;
+    site.material = a.string("material");
+    if let Some(user) = a.vector("user")? {
+        site.user = user;
     }
 
     Ok(site)
@@ -617,21 +594,23 @@ pub(super) fn parse_frame<R: BufRead>(
 
 /// Parse frame attributes only (for self-closing `<frame ... />`).
 pub(super) fn parse_frame_attrs(e: &BytesStart) -> Result<MjcfFrame> {
+    let a = Attrs::new(e)?;
     let mut frame = MjcfFrame::default();
 
-    frame.name = get_attribute_opt(e, "name");
-    frame.childclass = get_attribute_opt(e, "childclass");
+    frame.name = a.string("name");
+    frame.childclass = a.string("childclass");
 
-    if let Some(pos) = get_attribute_opt(e, "pos") {
-        frame.pos = parse_vector3(&pos)?;
+    if let Some(pos) = a.vec3("pos")? {
+        frame.pos = pos;
     }
-    if let Some(quat) = get_attribute_opt(e, "quat") {
-        frame.quat = parse_vector4(&quat)?;
+    if let Some(quat) = a.quat("quat")? {
+        frame.quat = quat;
     }
-    frame.euler = attr_vec3(e, "euler")?;
-    frame.axisangle = attr_vec4(e, "axisangle")?;
-    frame.xyaxes = attr_fixed::<6>(e, "xyaxes")?;
-    frame.zaxis = attr_vec3(e, "zaxis")?;
+    a.one_orientation()?;
+    frame.euler = a.vec3("euler")?;
+    frame.axisangle = a.vec4("axisangle")?;
+    frame.xyaxes = a.array("xyaxes")?;
+    frame.zaxis = a.vec3("zaxis")?;
 
     Ok(frame)
 }

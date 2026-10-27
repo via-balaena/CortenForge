@@ -408,8 +408,8 @@ fn parse_joint<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result
 /// Parse joint limit element.
 fn parse_joint_limit(e: &BytesStart) -> Result<UrdfJointLimit> {
     Ok(UrdfJointLimit {
-        lower: parse_float_attr(e, "lower").unwrap_or(0.0),
-        upper: parse_float_attr(e, "upper").unwrap_or(0.0),
+        lower: parse_float_attr(e, "lower"),
+        upper: parse_float_attr(e, "upper"),
         effort: parse_float_attr(e, "effort").unwrap_or(0.0),
         velocity: parse_float_attr(e, "velocity").unwrap_or(0.0),
     })
@@ -556,8 +556,8 @@ mod tests {
         assert_relative_eq!(joint.axis.z, 1.0, epsilon = 1e-10);
 
         let limit = joint.limit.as_ref().expect("should have limit");
-        assert_relative_eq!(limit.lower, -1.57, epsilon = 1e-10);
-        assert_relative_eq!(limit.upper, 1.57, epsilon = 1e-10);
+        assert_relative_eq!(limit.lower.expect("lower"), -1.57, epsilon = 1e-10);
+        assert_relative_eq!(limit.upper.expect("upper"), 1.57, epsilon = 1e-10);
     }
 
     #[test]

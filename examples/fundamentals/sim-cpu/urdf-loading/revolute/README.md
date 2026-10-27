@@ -11,8 +11,9 @@ analytical compound-pendulum formula) and energy conservation.
 
 ## What it tests
 
-The URDF `revolute` joint converts to an MJCF `hinge` with `limited="true"`
-and the range taken from `<limit lower upper>`. This is the most common
+The URDF `revolute` joint converts to an MJCF `hinge` with the range taken
+from `<limit lower upper>`, limited when both bounds are written and lower <
+upper, as this example's are. This is the most common
 joint type in URDF robot descriptions.
 
 ## Physics

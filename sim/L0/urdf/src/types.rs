@@ -295,10 +295,10 @@ impl UrdfJointType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UrdfJointLimit {
-    /// Lower position limit (rad or m). Mapped to MJCF `range`.
-    pub lower: f64,
-    /// Upper position limit (rad or m). Mapped to MJCF `range`.
-    pub upper: f64,
+    /// Lower position limit (rad or m), when written. Mapped to MJCF `range`.
+    pub lower: Option<f64>,
+    /// Upper position limit (rad or m), when written. Mapped to MJCF `range`.
+    pub upper: Option<f64>,
     /// Maximum effort (N or Nm). Parsed but not mapped — see struct docs.
     pub effort: f64,
     /// Maximum velocity (rad/s or m/s). Parsed but not mapped — see struct docs.
@@ -308,8 +308,8 @@ pub struct UrdfJointLimit {
 impl Default for UrdfJointLimit {
     fn default() -> Self {
         Self {
-            lower: 0.0,
-            upper: 0.0,
+            lower: None,
+            upper: None,
             effort: 0.0,
             velocity: 0.0,
         }

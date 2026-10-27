@@ -547,21 +547,47 @@ fn diag_approx_rounds_as_mujoco() {
     assert!(off.is_empty(), "{} differ:\n{}", off.len(), off.join("\n"));
 }
 
+/// `xml` with a `nan` in its joint's `solimplimit` replaced by MuJoCo's
+/// default there, and that value's index.
+fn without_nan_solimplimit(xml: &str) -> (String, Option<usize>) {
+    const DEFAULT: [&str; 5] = ["0.9", "0.95", "0.001", "0.5", "2"];
+    let key = r#"solimplimit=""#;
+    let Some(start) = xml.find(key) else {
+        return (xml.to_owned(), None);
+    };
+    let from = start + key.len();
+    let to = from + xml[from..].find('"').expect("a closing quote");
+    let mut values: Vec<&str> = xml[from..to].split(' ').collect();
+    let Some(k) = values.iter().position(|v| *v == "nan") else {
+        return (xml.to_owned(), None);
+    };
+    values[k] = DEFAULT[k];
+    (
+        format!("{}{}{}", &xml[..from], values.join(" "), &xml[to..]),
+        Some(k),
+    )
+}
+
 /// A free body over a plane turned by a NaN quaternion (mesh, ellipsoid,
 /// box): its contacts at a NaN distance make rows whose impedance, R, D and
 /// diagApprox are NaN, as MuJoCo's: `getimpedance` takes a NaN `x` on to its
 /// curve and `mju_max` keeps a NaN (`engine_core_constraint.c:1422-1461`,
 /// `:1484`; ledger L209). So does a NaN impedance parameter where it reaches a
 /// row (`nan_param`: a limit's solimp width, midpoint or power, an elliptic
-/// contact's impratio set on the loaded model, as sim-mjcf refuses a NaN one,
-/// ledger L131), the other rows as MuJoCo's, bit for bit.
+/// contact's impratio, each set on the loaded model, as sim-mjcf refuses a
+/// NaN it reads: D-NONFINITE, ledger L131), the other rows as MuJoCo's, bit
+/// for bit.
 #[test]
 fn a_nan_violation_takes_nan_rows_as_mujoco() {
     let g = golden();
     let mut off = Vec::new();
     let groups = ["nan_turn", "nan_param"].map(|k| g["cases"][k].as_object().expect("cases"));
     for (name, case) in groups.into_iter().flatten() {
-        let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
+        let (xml, nan_solimp) = without_nan_solimplimit(case["xml"].as_str().expect("xml"));
+        let mut model = load_model(&xml).expect("load");
+        if let Some(k) = nan_solimp {
+            model.jnt_solimp[0][k] = f64::NAN;
+        }
         if let Some(impratio) = case.get("impratio") {
             model.impratio = impratio.as_str().and_then(|t| t.parse().ok()).expect("NaN");
         }

@@ -10,9 +10,9 @@ use sim_core::GeomType;
 use super::fluid::compute_geom_fluid;
 use super::mesh::MeshProps;
 use super::orientation::{MJ_EPS, normvec, resolve_orientation, site_orientation, z2quat};
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::{ElementKind, Location, MjcfError, Result};
-use crate::types::{FluidShape, MjcfGeom, MjcfGeomType, MjcfSite};
+use crate::types::{FluidShape, MjcfGeom, MjcfGeomType, MjcfSite, Prefix};
 
 impl ModelBuilder {
     pub(crate) fn process_geom(&mut self, geom: &MjcfGeom, body_id: usize) -> Result<usize> {
@@ -75,8 +75,10 @@ impl ModelBuilder {
         self.geom_pos.push(pos);
         self.geom_quat.push(quat);
         self.geom_size.push(size);
-        self.geom_friction
-            .push(geom.friction.unwrap_or(Vector3::new(1.0, 0.005, 0.0001)));
+        self.geom_friction.push(Vector3::from(written_over(
+            geom.friction,
+            [1.0, 0.005, 0.0001],
+        )));
 
         self.geom_condim
             .push(validate_condim(geom.condim, geom.name.as_ref()));
@@ -99,8 +101,10 @@ impl ModelBuilder {
         self.geom_sdf.push(None); // SDF geoms are programmatic — never set via MJCF
 
         // Solver parameters (fall back to MuJoCo defaults if not specified in MJCF)
-        self.geom_solref.push(geom.solref.unwrap_or(DEFAULT_SOLREF));
-        self.geom_solimp.push(geom.solimp.unwrap_or(DEFAULT_SOLIMP));
+        self.geom_solref
+            .push(written_over(geom.solref, DEFAULT_SOLREF));
+        self.geom_solimp
+            .push(written_over(geom.solimp, DEFAULT_SOLIMP));
 
         // Contact parameter combination fields (MuJoCo mj_contactParam)
         self.geom_priority.push(geom.priority.unwrap_or(0));
@@ -294,11 +298,7 @@ fn site_geom_type(site: &MjcfSite) -> GeomType {
 /// `user_init.c:159`), the numbers written, the site's over its class's, in
 /// the first places.
 fn site_size(site: &MjcfSite) -> Vector3<f64> {
-    let mut size = Vector3::new(0.005, 0.005, 0.005);
-    for (k, &s) in site.size.iter().flatten().take(3).enumerate() {
-        size[k] = s;
-    }
-    size
+    Vector3::from(written_over(site.size, [0.005; 3]))
 }
 
 /// A site's `fromto` made into its `pos`, `quat` and `size` in the frame it is
@@ -354,7 +354,7 @@ pub fn resolve_site_fromto(site: &mut MjcfSite) -> Result<()> {
     let quat = z2quat(&vec);
     site.pos = Some(pos);
     site.quat = Some(Vector4::new(quat[0], quat[1], quat[2], quat[3]));
-    site.size = Some(vec![size.x, size.y, size.z]);
+    site.size = Some(Prefix::full([size.x, size.y, size.z]));
     site.euler = None;
     site.axisangle = None;
     site.xyaxes = None;
@@ -923,7 +923,7 @@ pub fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::compute_geom_inertia;
-    use crate::types::{MjcfGeom, MjcfGeomType};
+    use crate::types::{MjcfGeom, MjcfGeomType, Prefix};
     use nalgebra::Vector3;
 
     /// Test capsule inertia computation is physically reasonable.
@@ -944,7 +944,7 @@ mod tests {
             fromto: None,
             density: Some(1000.0),
             mass: None,
-            friction: Some(Vector3::new(1.0, 0.005, 0.0001)),
+            friction: Some(Prefix::full([1.0, 0.005, 0.0001])),
             rgba: Some(nalgebra::Vector4::new(0.5, 0.5, 0.5, 1.0)),
             contype: Some(1),
             conaffinity: Some(1),

@@ -1,0 +1,1 @@
+<mujoco><worldbody><body><freejoint/><geom size="0.1" solref="0.05" solimp="0.8 0.9 0.01"/></body></worldbody></mujoco>

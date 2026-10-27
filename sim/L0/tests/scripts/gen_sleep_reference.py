@@ -903,7 +903,7 @@ OURS_XML = {
 <worldbody>
 <body name="f" pos="3 0 1"><freejoint/><geom type="sphere" size="0.1"/></body>
 </worldbody>
-<deformable><flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.1" pos="0 0 1" dim="2"
+<deformable><flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" pos="0 0 1" dim="2"
   radius="0.01" mass="0.1"/></deformable>
 </mujoco>""",
 }

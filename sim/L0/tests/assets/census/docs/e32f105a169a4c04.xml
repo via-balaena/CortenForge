@@ -1,0 +1,4 @@
+<mujoco>
+            <worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
+            <actuator><motor joint="j" gear="1 0 0 0 0 0 0"/></actuator>
+        </mujoco>

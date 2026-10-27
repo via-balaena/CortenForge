@@ -49,9 +49,9 @@ fn case<'a>(golden: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no case {name}"))
 }
 
-/// The case's model. sim-mjcf reads a one-value `interval` until Rigid-loading
-/// (an `"0.03 -0.01"` reads as no interval), so the interval-with-phase
-/// sensor of the sensor models gets its period and phase here.
+/// The case's model. sim-mjcf reads an `interval`'s period but not its phase
+/// until Rigid-loading's delay and history entry (book L48), so the
+/// interval-with-phase sensor of the sensor models gets its phase here.
 fn model_of(case: &Value) -> Model {
     let mut model = load_model(case["xml"].as_str().expect("xml")).expect("load");
     let name = case["name"].as_str().expect("name");

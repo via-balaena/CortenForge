@@ -1,0 +1,7 @@
+<mujoco>
+            <worldbody>
+                <body><joint name="a"/><geom size="0.1"/></body>
+                <body pos="1 0 0"><joint name="b"/><geom size="0.1"/></body>
+            </worldbody>
+            <equality><joint joint1="a" joint2="b" polycoef="0.5"/></equality>
+        </mujoco>

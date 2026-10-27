@@ -7,7 +7,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use sim_core::MjJointType;
 use tracing::warn;
 
-use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder};
+use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, written_over};
 use crate::error::{ElementKind, Location, MjcfError, Result};
 use crate::types::{AngleUnit, MjcfJoint, MjcfJointType};
 
@@ -135,9 +135,9 @@ impl ModelBuilder {
         self.jnt_damping.push(joint.damping.unwrap_or(0.0));
         self.jnt_armature.push(joint.armature.unwrap_or(0.0));
         self.jnt_solref
-            .push(joint.solref_limit.unwrap_or(DEFAULT_SOLREF));
+            .push(written_over(joint.solref_limit, DEFAULT_SOLREF));
         self.jnt_solimp
-            .push(joint.solimp_limit.unwrap_or(DEFAULT_SOLIMP));
+            .push(written_over(joint.solimp_limit, DEFAULT_SOLIMP));
         self.jnt_name.push(if joint.name.is_empty() {
             None
         } else {
@@ -168,9 +168,9 @@ impl ModelBuilder {
             self.dof_frictionloss
                 .push(joint.frictionloss.unwrap_or(0.0));
             self.dof_solref
-                .push(joint.solreffriction.unwrap_or(DEFAULT_SOLREF));
+                .push(written_over(joint.solreffriction, DEFAULT_SOLREF));
             self.dof_solimp
-                .push(joint.solimpfriction.unwrap_or(DEFAULT_SOLIMP));
+                .push(written_over(joint.solimpfriction, DEFAULT_SOLIMP));
         }
 
         // Add qpos0 and qpos_spring values (default positions + spring reference)
